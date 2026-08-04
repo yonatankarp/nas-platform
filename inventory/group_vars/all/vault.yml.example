@@ -1,0 +1,38 @@
+---
+# Sanitized template for inventory/group_vars/all/vault.yml.
+#
+# Generate real values with generate-secrets.yml, then:
+#
+#   mv vault-plain.yml vault.yml && ansible-vault encrypt vault.yml
+#
+# The encrypted vault.yml is committed; its password never is. Keep that in a
+# password manager. This is the root of trust and the one irreducibly manual step.
+
+# Connection details, kept out of committed files.
+vault_nas_address: 192.0.2.1
+vault_nas_user: replace-with-nas-login
+
+# ntfy. Tokens are authored here rather than minted by the server, which is what
+# makes the alerting chain declarative: one value reaches ntfy and every
+# publisher from a single source. Format is tk_ plus 29 lowercase alphanumeric
+# characters, 32 in total. Hashes are bcrypt from the pinned image's own hasher.
+vault_ntfy_admin_user: replace-with-admin-name
+vault_ntfy_admin_password: replace-with-password
+vault_ntfy_admin_password_hash: replace-with-bcrypt-hash
+vault_ntfy_dozzle_password_hash: replace-with-bcrypt-hash
+vault_ntfy_dozzle_token: replace-with-tk-token
+vault_ntfy_beszel_password_hash: replace-with-bcrypt-hash
+vault_ntfy_beszel_token: replace-with-tk-token
+
+# Beszel. Nothing is read back from a running hub: the keypair below is written to
+# /beszel_data/id_ed25519 before first start, so the agent's KEY is the public
+# half and its TOKEN is the authored universal token. Alerts and settings relate
+# to the users collection, so an application user is needed alongside the
+# superuser, and its role must be set to admin explicitly.
+vault_beszel_superuser_email: replace-with-email
+vault_beszel_superuser_password: replace-with-password
+vault_beszel_app_user_email: replace-with-email
+vault_beszel_app_user_password: replace-with-password
+vault_beszel_agent_key: replace-with-ssh-ed25519-public-key
+vault_beszel_universal_token: replace-with-uuid
+vault_beszel_hub_private_key: replace-with-openssh-ed25519-private-key

@@ -1,0 +1,296 @@
+---
+# Beszel appears to force a read-back: the hub generates a keypair on first start
+# and its documentation says to copy the public key out of the Add System dialog.
+# It does not. The keypair is /beszel_data/id_ed25519, the advertised public key is
+# exactly `ssh-keygen -y` of that file, and a keypair placed there before first
+# start is used rather than regenerated. Authoring it in vault therefore removes
+# the read-back, the second deploy pass it required, and the least idempotent step
+# in the design.
+#
+# Read-only lookups below carry check_mode: false. uri is skipped under --check,
+# which would leave their registers without a status or json key and break every
+# conditional that follows. They change nothing, so running them is safe.
+- name: Install the hub keypair before the hub can generate its own
+  ansible.builtin.copy:
+    content: "{{ vault_beszel_hub_private_key }}"
+    dest: "{{ nas_docker_root }}/beszel/hub/id_ed25519"
+    mode: "0600"
+  no_log: "{{ beszel_no_log | default(true) }}"
+
+- name: Render the Beszel environment
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ nas_repo_dir }}/services/beszel/.env"
+    mode: "0600"
+  no_log: "{{ beszel_no_log | default(true) }}"
+
+# The Intel agent needs a render device and CAP_PERFMON. Where no render device
+# exists the hub and its socket proxy still run, which is a real capability
+# difference rather than a testing accommodation.
+- name: Deploy Beszel
+  community.docker.docker_compose_v2:
+    project_src: "{{ nas_repo_dir }}/services/beszel"
+    env_files: ["{{ nas_repo_dir }}/services/beszel/.env"]
+    services: "{{ beszel_services }}"
+    state: present
+    wait: true
+    wait_timeout: 180
+  vars:
+    beszel_services: >-
+      {{ ['hub', 'socket-proxy'] + (preflight_gpu_available | bool) | ternary(['agent'], []) }}
+
+- name: Wait for the hub to report healthy
+  ansible.builtin.uri:
+    url: "{{ beszel_api }}/api/health"
+  register: beszel_health
+  until: beszel_health.status | default(0) == 200
+  retries: 20
+  delay: 3
+  changed_when: false
+  check_mode: false
+
+# Checked before creating, so a converging run never rewrites the password.
+- name: Check whether the superuser can already authenticate
+  ansible.builtin.uri:
+    url: "{{ beszel_api }}/api/collections/_superusers/auth-with-password"
+    method: POST
+    body_format: json
+    body:
+      identity: "{{ vault_beszel_superuser_email }}"
+      password: "{{ vault_beszel_superuser_password }}"
+    status_code: [200, 400]
+  register: beszel_superuser_auth
+  changed_when: false
+  check_mode: false
+  no_log: "{{ beszel_no_log | default(true) }}"
+
+# upsert is idempotent by the tool's own definition, "creates, or updates if email
+# exists". docker_compose_v2_exec rather than docker_container_exec: the latter
+# talks to the Docker API and needs the requests library on the target, which
+# cannot be assumed on ADM. This drives the Compose CLI like the deploy task.
+- name: Create the superuser
+  community.docker.docker_compose_v2_exec:
+    project_src: "{{ nas_repo_dir }}/services/beszel"
+    env_files: ["{{ nas_repo_dir }}/services/beszel/.env"]
+    service: hub
+    argv:
+      - /beszel
+      - superuser
+      - upsert
+      - "{{ vault_beszel_superuser_email }}"
+      - "{{ vault_beszel_superuser_password }}"
+  when: beszel_superuser_auth.status | default(0) != 200
+  no_log: "{{ beszel_no_log | default(true) }}"
+
+- name: Authenticate as the superuser
+  ansible.builtin.uri:
+    url: "{{ beszel_api }}/api/collections/_superusers/auth-with-password"
+    method: POST
+    body_format: json
+    body:
+      identity: "{{ vault_beszel_superuser_email }}"
+      password: "{{ vault_beszel_superuser_password }}"
+    status_code: [200]
+  register: beszel_auth
+  changed_when: false
+  check_mode: false
+  no_log: "{{ beszel_no_log | default(true) }}"
+
+# The point of authoring the keypair is that the hub adopts it, so assert rather
+# than assume. getkey needs superuser authentication, hence its position here.
+- name: Read the public key the hub advertises
+  ansible.builtin.uri:
+    url: "{{ beszel_api }}/api/beszel/getkey"
+    headers:
+      Authorization: "{{ beszel_auth.json.token }}"
+  register: beszel_advertised_key
+  changed_when: false
+  check_mode: false
+
+- name: Verify the advertised key matches vault, proving no read-back is needed
+  ansible.builtin.assert:
+    that:
+      # Type and key material only: SSH public keys carry an optional trailing
+      # comment which the hub does not advertise.
+      - (beszel_advertised_key.json.key | default('')).split()[:2]
+        == vault_beszel_agent_key.split()[:2]
+    fail_msg: >-
+      The hub advertises a different public key than vault holds, so the agent
+      would be rejected. This happens when the hub started once before the keypair
+      was installed. Remove {{ nas_docker_root }}/beszel/hub/id_ed25519 together
+      with the generated database, then run again.
+      Hub advertises '{{ beszel_advertised_key.json.key | default('<none>') }}',
+      vault holds '{{ vault_beszel_agent_key }}'.
+    success_msg: "Hub advertises the keypair from vault, no read-back needed"
+
+# Collections are listed and filtered in Jinja rather than through PocketBase's
+# filter parameter, whose quotes and parentheses need URL encoding that uri does
+# not apply and which returns 400 without it. These collections hold a handful of
+# records, so listing is cheap.
+- name: List application users
+  ansible.builtin.uri:
+    url: "{{ beszel_api }}/api/collections/users/records"
+    headers:
+      Authorization: "{{ beszel_auth.json.token }}"
+  register: beszel_users
+  changed_when: false
+  check_mode: false
+  no_log: "{{ beszel_no_log | default(true) }}"
+
+# Alerts, tokens and settings all relate to the users collection, not to
+# _superusers, so an application user is required alongside the superuser.
+- name: Create the application user
+  ansible.builtin.uri:
+    url: "{{ beszel_api }}/api/collections/users/records"
+    method: POST
+    headers:
+      Authorization: "{{ beszel_auth.json.token }}"
+    body_format: json
+    body:
+      email: "{{ vault_beszel_app_user_email }}"
+      password: "{{ vault_beszel_app_user_password }}"
+      passwordConfirm: "{{ vault_beszel_app_user_password }}"
+      verified: true
+      # Defaults to user, so the admin equivalent is set explicitly. Verified not
+      # to be the cause of the list failure described below.
+      role: admin
+    status_code: [200]
+  register: beszel_created_user
+  when: beszel_matching_users | length == 0
+  no_log: "{{ beszel_no_log | default(true) }}"
+
+# Read the id back from the collection rather than trusting the create response.
+# The id returned by the POST was rejected as a missing relation when used
+# immediately, while an id read from the collection is accepted.
+- name: List application users again to resolve the id
+  ansible.builtin.uri:
+    url: "{{ beszel_api }}/api/collections/users/records"
+    headers:
+      Authorization: "{{ beszel_auth.json.token }}"
+  register: beszel_users_after
+  changed_when: false
+  check_mode: false
+  no_log: "{{ beszel_no_log | default(true) }}"
+
+- name: Resolve the application user id
+  ansible.builtin.set_fact:
+    beszel_user_id: >-
+      {{ (beszel_users_after.json.get('items', [])
+          | selectattr('email', 'equalto', vault_beszel_app_user_email)
+          | list | first | default({})).id | default('') }}
+  no_log: "{{ beszel_no_log | default(true) }}"
+
+- name: Report when Beszel configuration cannot continue
+  ansible.builtin.debug:
+    msg: >-
+      No application user id resolved, so the universal token, notification URL
+      and alerts were skipped. Expected during a dry run, where no record is
+      created.
+  when: beszel_user_id | length == 0
+
+- name: Configure the application user
+  when: beszel_user_id | length > 0
+  block:
+    # Authored verbatim, which Beszel accepts, so the agent's TOKEN comes from
+    # vault rather than a value revealed in the hub's settings page.
+    - name: List universal tokens
+      ansible.builtin.uri:
+        url: "{{ beszel_api }}/api/collections/universal_tokens/records"
+        headers:
+          Authorization: "{{ beszel_auth.json.token }}"
+      register: beszel_tokens
+      changed_when: false
+      check_mode: false
+      no_log: "{{ beszel_no_log | default(true) }}"
+
+    - name: Create the universal token from vault
+      ansible.builtin.uri:
+        url: "{{ beszel_api }}/api/collections/universal_tokens/records"
+        method: POST
+        headers:
+          Authorization: "{{ beszel_auth.json.token }}"
+        body_format: json
+        body:
+          user: "{{ beszel_user_id }}"
+          token: "{{ vault_beszel_universal_token }}"
+        status_code: [200]
+      when: >-
+        beszel_tokens.json.get('items', [])
+        | selectattr('user', 'equalto', beszel_user_id) | list | length == 0
+      no_log: "{{ beszel_no_log | default(true) }}"
+
+    - name: List notification settings
+      ansible.builtin.uri:
+        url: "{{ beszel_api }}/api/collections/user_settings/records"
+        headers:
+          Authorization: "{{ beszel_auth.json.token }}"
+      register: beszel_settings
+      changed_when: false
+      check_mode: false
+      no_log: "{{ beszel_no_log | default(true) }}"
+
+    - name: Point Beszel notifications at ntfy
+      ansible.builtin.uri:
+        url: >-
+          {{ beszel_api }}/api/collections/user_settings/records{{
+             ('/' ~ (beszel_matching_settings | first).id)
+             if beszel_matching_settings | length > 0 else '' }}
+        method: "{{ 'PATCH' if beszel_matching_settings | length > 0 else 'POST' }}"
+        headers:
+          Authorization: "{{ beszel_auth.json.token }}"
+        body_format: json
+        body:
+          user: "{{ beszel_user_id }}"
+          settings:
+            webhooks: ["{{ beszel_notification_url | trim }}"]
+        status_code: [200]
+      when: >-
+        beszel_matching_settings | length == 0
+        or ((beszel_matching_settings | first).settings.webhooks | default([]))
+           != [beszel_notification_url | trim]
+      no_log: "{{ beszel_no_log | default(true) }}"
+
+    # Alerts relate to a system, which exists once the agent has registered. Where
+    # no agent runs this reports what it skipped rather than pretending the
+    # alerting chain is complete.
+    - name: Wait for the agent to register its system
+      ansible.builtin.uri:
+        url: "{{ beszel_api }}/api/collections/systems/records"
+        headers:
+          Authorization: "{{ beszel_auth.json.token }}"
+      register: beszel_systems
+      until: beszel_systems.json.get('items', []) | length > 0
+      retries: "{{ (preflight_gpu_available | bool) | ternary(20, 1) }}"
+      delay: 3
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: "{{ beszel_no_log | default(true) }}"
+
+    - name: Report that alerts need a registered system
+      ansible.builtin.debug:
+        msg: >-
+          No Beszel system is registered, so alerts were skipped. Expected where
+          no render device exists and the agent therefore does not run.
+      when: beszel_systems.json.get('items', []) | length == 0
+
+    - name: Maintain alerts for the registered system
+      ansible.builtin.uri:
+        url: "{{ beszel_api }}/api/collections/alerts/records"
+        method: POST
+        headers:
+          Authorization: "{{ beszel_auth.json.token }}"
+        body_format: json
+        body:
+          user: "{{ beszel_user_id }}"
+          system: "{{ (beszel_systems.json.get('items', []) | first).id }}"
+          name: "{{ item.name }}"
+          value: "{{ item.value }}"
+          min: "{{ item.min }}"
+        # 400 also covers an alert of this type already existing for the system.
+        status_code: [200, 400]
+      loop: "{{ beszel_alerts }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: beszel_systems.json.get('items', []) | length > 0
+      changed_when: false

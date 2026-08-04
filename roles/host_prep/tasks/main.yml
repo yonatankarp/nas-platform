@@ -1,0 +1,29 @@
+---
+# Storage comes from the single nas_storage inventory, which also drives the
+# policy test's cross-check against Compose volume sources and the recovery
+# classification. Previously this was a directory list, a set of chown
+# instructions in prose, and a hand-maintained recovery table: three places to
+# forget.
+- name: Refuse to claim ownership of NAS-managed user files
+  ansible.builtin.assert:
+    that:
+      - not (item.path is match(nas_media_root ~ '/') and (item.owner is defined or item.group is defined))
+    fail_msg: >-
+      {{ item.path }} is under {{ nas_media_root }}, where the NAS owns the files.
+      Grant access through the NAS permission controls rather than declaring
+      owner or group here.
+    success_msg: "{{ item.path }} ownership declaration is acceptable"
+  loop: "{{ nas_storage }}"
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Create service state directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default(omit) }}"
+    group: "{{ item.group | default(omit) }}"
+    mode: "{{ item.mode }}"
+  loop: "{{ nas_storage }}"
+  loop_control:
+    label: "{{ item.path }}"

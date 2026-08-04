@@ -1,0 +1,7 @@
+---
+# Pinned like every other dependency. community.docker provides
+# docker_compose_v2, which reports real change status and supports check mode.
+# It needs only the Docker CLI with the Compose plugin, not the Docker Python SDK.
+collections:
+  - name: community.docker
+    version: 5.2.1

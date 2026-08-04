@@ -1,0 +1,46 @@
+---
+# Validated before the first task runs, so a vault missing a key fails
+# immediately naming the key rather than midway with an undefined-variable trace.
+argument_specs:
+  main:
+    short_description: Provision ntfy declaratively and prove the alerting sink works
+    description:
+      - Renders the environment from vault, deploys the stack, then verifies that
+        provisioning took effect rather than only that a file was written.
+    options:
+      ntfy_port:
+        type: int
+        required: false
+      ntfy_topic:
+        type: str
+        required: false
+        description: Single topic every monitor publishes alerts to.
+      ntfy_base_url:
+        type: str
+        required: false
+        description: Exact URL clients use, which ntfy needs for correct links.
+      ntfy_publishers:
+        type: list
+        elements: dict
+        required: false
+        description: Write-only publisher identities, one token each.
+        options:
+          name:
+            type: str
+            required: true
+          password_hash:
+            type: str
+            required: true
+          token:
+            type: str
+            required: true
+      vault_nas_address:
+        type: str
+        required: true
+      vault_ntfy_admin_user:
+        type: str
+        required: true
+      vault_ntfy_admin_password_hash:
+        type: str
+        required: true
+        description: Bcrypt hash from the pinned ntfy image's own hasher.

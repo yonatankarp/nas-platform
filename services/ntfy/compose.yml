@@ -1,0 +1,48 @@
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
+services:
+  ntfy:
+    container_name: ntfy
+    image: docker.io/binwiederhier/ntfy:v2.27.0@sha256:f2419f405127afa868f10985c1a41449e673477cee1eb19994339a5ae8b592e7
+    command:
+      - serve
+    user: "${NAS_UID:?}:${NAS_GID:?}"
+    ports:
+      - "2586:80"
+    volumes:
+      - ${NAS_DOCKER_ROOT:?}/ntfy/cache:/var/cache/ntfy
+      - ${NAS_DOCKER_ROOT:?}/ntfy/data:/var/lib/ntfy
+    environment:
+      NTFY_ATTACHMENT_CACHE_DIR: /var/cache/ntfy/attachments
+      NTFY_AUTH_DEFAULT_ACCESS: deny-all
+      NTFY_AUTH_FILE: /var/lib/ntfy/auth.db
+      NTFY_CACHE_FILE: /var/cache/ntfy/cache.db
+      NTFY_ENABLE_LOGIN: "true"
+      NTFY_UPSTREAM_BASE_URL: https://ntfy.sh
+      NTFY_BASE_URL: ${NTFY_BASE_URL:?}
+      # Declarative provisioning. Ansible renders these from vault; empty means
+      # no accounts, which stays safe because default access is deny-all.
+      #
+      # Bcrypt hashes contain $, which Compose interpolates. Values must arrive
+      # with every $ doubled. Verified: both --env-file and service-level
+      # env_file interpolate, and an unescaped hash is silently truncated rather
+      # than rejected, so the escaping is enforced by tests/policy_test.rb.
+      NTFY_AUTH_USERS: ${NTFY_AUTH_USERS:-}
+      NTFY_AUTH_ACCESS: ${NTFY_AUTH_ACCESS:-}
+      NTFY_AUTH_TOKENS: ${NTFY_AUTH_TOKENS:-}
+      TZ: ${TZ:?}
+    healthcheck:
+      test: [CMD-SHELL, "wget -q --tries=1 http://localhost:80/v1/health -O - | grep -Eo '\"healthy\"\\s*:\\s*true' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 4
+      start_period: 40s
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    logging: *default-logging

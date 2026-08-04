@@ -1,0 +1,37 @@
+---
+argument_specs:
+  main:
+    short_description: Create service state directories from the storage inventory
+    description:
+      - Consumes nas_storage as the single declaration of path, ownership, mode
+        and recovery class, and refuses to take ownership of NAS-managed files.
+    options:
+      nas_storage:
+        type: list
+        elements: dict
+        required: true
+        description: Every service-owned directory this platform creates.
+        options:
+          path:
+            type: str
+            required: true
+          # Optional on purpose. Omitting both creates the directory without
+          # claiming ownership, which is required under the media root where the
+          # NAS owns the files.
+          owner:
+            type: raw
+            required: false
+          group:
+            type: raw
+            required: false
+          mode:
+            type: str
+            required: true
+          recovery:
+            type: str
+            required: true
+            choices: [critical, user, cache]
+            description: Drives the disaster-recovery classification.
+      nas_media_root:
+        type: str
+        required: true
