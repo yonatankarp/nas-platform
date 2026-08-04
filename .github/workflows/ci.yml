@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Validate shell syntax
+        run: find tests -type f -name '*.sh' -exec sh -n {} +
+
+      - name: Check policy properties
+        run: ruby tests/policy_test.rb
+
+      - name: Install Ansible tooling
+        run: |
+          pipx install 'ansible-core==2.21.2'
+          pipx install 'ansible-lint==26.6.0'
+          ansible-galaxy collection install -r requirements.yml
+
+      - name: Lint Ansible
+        run: ansible-lint --strict
+
+      - name: Check playbook syntax
+        run: |
+          ansible-playbook -i inventory/local.yml site.yml --syntax-check
+          ansible-playbook generate-secrets.yml --syntax-check
+
+      # Exercises the plays rather than parsing them. The two worst bugs so far,
+      # a Darwin-only fact and command being skipped under --check, both passed
+      # syntax checking and were caught here.
+      - name: Converge against a disposable sandbox
+        run: tests/integration.sh site.yml

@@ -1,0 +1,67 @@
+---
+# Non-secret facts. Secrets live in vault.yml; see vault.yml.example.
+
+nas_timezone: Europe/Berlin
+nas_uid: 1000
+nas_gid: 100
+
+# Storage roots. Compose definitions reference these through NAS_DOCKER_ROOT and
+# NAS_MEDIA_ROOT with required-variable syntax, so an unset value fails loudly
+# instead of silently creating a relative bind mount. The integration harness
+# points them at a sandbox, which is why nothing in the definitions is absolute.
+nas_docker_root: /volume1/Docker
+nas_media_root: /volume2
+
+# Where this repository is checked out on the NAS.
+nas_repo_dir: /volume1/nas-platform
+
+# Lowest interpreter the plays are known to work on.
+nas_python_minimum: "3.8"
+
+# community.docker.docker_compose_v2 documents this floor.
+nas_compose_minimum: "2.18.0"
+
+# Presence of this device decides whether GPU-dependent services run. Detected by
+# preflight, never assumed: no workstation or CI runner provides it, and Compose
+# merges devices by appending so an override cannot remove the requirement.
+nas_render_device: /dev/dri/card0
+
+# Single declarative storage inventory. host_prep creates these, the policy test
+# cross-checks them against the Compose volume sources, and the recovery class
+# drives the disaster-recovery documentation. One source of truth replaces a
+# directory list, a set of chown instructions and a hand-maintained recovery table.
+#
+# recovery: critical  irreplaceable service state, must be backed up
+#           user      NAS-managed user files, owned outside this repository
+#           cache     regenerable, safe to lose
+#
+# owner and group are optional. Omitting them creates the directory without
+# claiming ownership, which is required under the media root where the NAS owns
+# the files and access is granted through its own permission controls.
+nas_storage:
+  - path: "{{ nas_docker_root }}/ntfy/data"
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0755"
+    recovery: critical
+  - path: "{{ nas_docker_root }}/ntfy/cache"
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0755"
+    recovery: cache
+
+  # Beszel. The hub database holds systems, alerts and notification settings.
+  - path: "{{ nas_docker_root }}/beszel/hub"
+    mode: "0755"
+    recovery: critical
+  - path: "{{ nas_docker_root }}/beszel/agent"
+    mode: "0755"
+    recovery: cache
+  # Empty bind sources that let Beszel report filesystem capacity without
+  # exposing either volume's contents.
+  - path: "{{ nas_docker_root }}/beszel/volume1"
+    mode: "0755"
+    recovery: cache
+  - path: "{{ nas_media_root }}/.beszel"
+    mode: "0755"
+    recovery: cache

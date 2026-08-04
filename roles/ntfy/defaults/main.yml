@@ -1,0 +1,18 @@
+---
+# Non-secret policy. Credentials come from vault.
+ntfy_port: 2586
+ntfy_base_url: "http://{{ vault_nas_address }}:{{ ntfy_port }}"
+
+# The single topic every monitor publishes to.
+ntfy_topic: nas-critical
+
+# Each publisher is its own user with write-only access and one token, because a
+# token inherits all of its user's rights. Sharing one identity would let a
+# leaked token read notification history.
+ntfy_publishers:
+  - name: dozzle
+    password_hash: "{{ vault_ntfy_dozzle_password_hash }}"
+    token: "{{ vault_ntfy_dozzle_token }}"
+  - name: beszel
+    password_hash: "{{ vault_ntfy_beszel_password_hash }}"
+    token: "{{ vault_ntfy_beszel_token }}"

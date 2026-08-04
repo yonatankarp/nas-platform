@@ -1,0 +1,122 @@
+---
+- name: Report how this run reaches the NAS
+  ansible.builtin.debug:
+    msg: >-
+      Connection {{ ansible_connection | default('ssh') }},
+      interpreter {{ ansible_facts['python_version'] }},
+      host {{ ansible_facts['hostname'] | default('unknown') }}
+
+- name: Require a usable Python interpreter
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['python_version'] is version(nas_python_minimum, '>=')
+    fail_msg: >-
+      Python {{ nas_python_minimum }} or newer is required. Found
+      {{ ansible_facts['python_version'] }}. Both run modes need it: running on
+      the NAS needs it for Ansible itself, and running from a workstation needs
+      it as the target interpreter.
+    success_msg: "Python {{ ansible_facts['python_version'] }} is usable"
+
+# check_mode: false because command is skipped under --check, which would leave
+# these registers empty and make every assertion below fail during a dry run.
+# Both are read-only, so running them in check mode is safe and necessary.
+- name: Confirm the Docker daemon is reachable
+  ansible.builtin.command:
+    argv: [docker, version, --format, json]
+  changed_when: false
+  check_mode: false
+
+- name: Read the Docker Compose plugin version
+  ansible.builtin.command:
+    argv: [docker, compose, version, --short]
+  register: preflight_compose
+  changed_when: false
+  check_mode: false
+
+- name: Require a Compose plugin new enough for docker_compose_v2
+  ansible.builtin.assert:
+    that:
+      - preflight_compose_version is version(nas_compose_minimum, '>=')
+    fail_msg: >-
+      Docker Compose plugin {{ nas_compose_minimum }} or newer is required, which
+      is the floor community.docker.docker_compose_v2 documents. Found
+      '{{ preflight_compose.stdout }}'. Compose is at v5, so this compares
+      versions rather than matching a major.
+    success_msg: "Docker Compose {{ preflight_compose_version }} is usable"
+  vars:
+    preflight_compose_version: "{{ preflight_compose.stdout | trim | regex_replace('^v', '') }}"
+
+- name: Read the kernel mount table
+  ansible.builtin.slurp:
+    src: /proc/mounts
+  register: preflight_mounts
+
+# Checked through /proc/mounts rather than the mounts fact, which is not
+# populated on every platform and raises instead of failing cleanly when absent.
+# Only applied to real NAS volumes: the integration sandbox puts the storage
+# roots under a temporary directory, where a mount check would be meaningless.
+- name: Require the NAS volumes to be mounted
+  ansible.builtin.assert:
+    that:
+      - item | regex_replace('^(/[^/]+).*$', '\1') in preflight_mount_targets
+    fail_msg: >-
+      {{ item }} is not on a mount point. Refusing to continue, because writing
+      service state to an unmounted path would put it on the system volume.
+    success_msg: "{{ item }} is on a mounted volume"
+  loop:
+    - "{{ nas_docker_root }}"
+    - "{{ nas_media_root }}"
+  when: item is match('^/volume')
+  vars:
+    preflight_mount_targets: >-
+      {{ (preflight_mounts.content | b64decode).splitlines()
+         | map('regex_replace', '^(\S+)\s+(\S+).*$', '\2') | list }}
+
+# Detected rather than configured. A host without a render device genuinely
+# cannot run hardware transcoding or the Intel GPU agent, so roles select their
+# services from this instead of from a flag that a test could lie about.
+- name: Look for a render device
+  ansible.builtin.stat:
+    path: "{{ nas_render_device }}"
+  register: preflight_render_device
+
+- name: Record whether hardware acceleration is available
+  ansible.builtin.set_fact:
+    preflight_gpu_available: "{{ preflight_render_device.stat.exists | default(false) }}"
+
+- name: Report the hardware acceleration decision
+  ansible.builtin.debug:
+    msg: >-
+      {{ nas_render_device }}
+      {{ preflight_gpu_available | ternary('present, GPU services enabled',
+                                     'absent, GPU services skipped') }}
+
+- name: Look for the repository checkout
+  ansible.builtin.stat:
+    path: "{{ nas_repo_dir }}/services"
+  register: preflight_services_dir
+
+- name: Require the repository checkout, since the Compose definitions live in it
+  ansible.builtin.assert:
+    that:
+      - preflight_services_dir.stat.exists
+      - preflight_services_dir.stat.isdir
+    fail_msg: >-
+      {{ nas_repo_dir }}/services not found. Clone this repository to
+      {{ nas_repo_dir }}, or override nas_repo_dir.
+    success_msg: "Repository checkout found at {{ nas_repo_dir }}"
+
+# A probe, not a state change, so it reports unchanged. Otherwise every run looks
+# changed and the idempotence check could never be clean.
+- name: Confirm the service state root is writable
+  ansible.builtin.file:
+    path: "{{ nas_docker_root }}/.preflight-probe"
+    state: directory
+    mode: "0755"
+  changed_when: false
+
+- name: Remove the write probe
+  ansible.builtin.file:
+    path: "{{ nas_docker_root }}/.preflight-probe"
+    state: absent
+  changed_when: false

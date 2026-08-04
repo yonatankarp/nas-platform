@@ -1,0 +1,26 @@
+# Rendered by Ansible on the target, never committed.
+**/.env
+
+# Vault password and any decrypted copy. The encrypted vault itself IS committed.
+.vault-password
+vault-password*
+inventory/group_vars/all/vault-plain.yml
+*.decrypted.yml
+
+# Credentials and keys
+*.key
+*.pem
+**/secrets/
+
+# Runtime data never belongs here
+*.db
+*.sqlite
+*.sqlite3
+*.dump
+
+# Local tooling
+.DS_Store
+.idea/
+.vscode/
+__pycache__/
+*.pyc

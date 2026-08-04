@@ -1,0 +1,28 @@
+---
+# Derived values live here rather than in set_fact: role vars are evaluated
+# lazily where used, are not persisted as host facts, and keep the task list
+# describing actions instead of computing strings.
+#
+# ntfy's provisioning formats are <user>:<hash>:<role>, <user>:<topic>:<access>
+# and <user>:<token>[:<label>], each a comma-separated list.
+ntfy_auth_users: >-
+  {{ ([vault_ntfy_admin_user ~ ':' ~ vault_ntfy_admin_password_hash ~ ':admin']
+      + ntfy_publishers
+        | map(attribute='name')
+        | zip(ntfy_publishers | map(attribute='password_hash'))
+        | map('join', ':')
+        | map('regex_replace', '^(.*)$', '\1:user')
+        | list) | join(',') }}
+
+ntfy_auth_access: >-
+  {{ ntfy_publishers
+     | map(attribute='name')
+     | map('regex_replace', '^(.*)$', '\1:' ~ ntfy_topic ~ ':write-only')
+     | list | join(',') }}
+
+ntfy_auth_tokens: >-
+  {{ ntfy_publishers
+     | map(attribute='name')
+     | zip(ntfy_publishers | map(attribute='token'))
+     | map('join', ':')
+     | list | join(',') }}

@@ -1,0 +1,64 @@
+---
+argument_specs:
+  main:
+    short_description: Deploy Beszel and wire it to ntfy with no value read back
+    description:
+      - Installs the hub keypair from vault before first start, so the agent key
+        and universal token are known in advance and the run converges in one pass.
+    options:
+      beszel_port:
+        type: int
+        required: false
+      beszel_app_url:
+        type: str
+        required: false
+      beszel_system_name:
+        type: str
+        required: false
+      beszel_alerts:
+        type: list
+        elements: dict
+        required: false
+        options:
+          name:
+            type: str
+            required: true
+          value:
+            type: int
+            required: true
+          min:
+            type: int
+            required: true
+      beszel_notification_url:
+        type: str
+        required: false
+        description: Shoutrrr URL, built from the ntfy token in vault.
+      vault_nas_address:
+        type: str
+        required: true
+      vault_beszel_hub_private_key:
+        type: str
+        required: true
+        description: OpenSSH ed25519 private key placed at /beszel_data/id_ed25519.
+      vault_beszel_agent_key:
+        type: str
+        required: true
+        description: Public half of that keypair, given to the agent as KEY.
+      vault_beszel_universal_token:
+        type: str
+        required: true
+      vault_beszel_superuser_email:
+        type: str
+        required: true
+      vault_beszel_superuser_password:
+        type: str
+        required: true
+      vault_beszel_app_user_email:
+        type: str
+        required: true
+      vault_beszel_app_user_password:
+        type: str
+        required: true
+      vault_ntfy_beszel_token:
+        type: str
+        required: true

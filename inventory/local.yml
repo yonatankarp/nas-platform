@@ -1,0 +1,6 @@
+# Run directly on the NAS, or in the integration sandbox. Same variables, no
+# transport.
+nas_hosts:
+  hosts:
+    nas:
+      ansible_connection: local

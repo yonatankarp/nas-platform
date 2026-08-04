@@ -1,0 +1,25 @@
+---
+beszel_port: 8090
+beszel_app_url: "http://{{ vault_nas_address }}:{{ beszel_port }}"
+beszel_system_name: ASUSTOR-AS6704T
+
+# Alerts to maintain for the monitored system. name must be one of Beszel's alert
+# types; value and min are its threshold and sustain period.
+beszel_alerts:
+  - name: Status
+    value: 0
+    min: 0
+  - name: CPU
+    value: 90
+    min: 10
+  - name: Memory
+    value: 90
+    min: 10
+  - name: Disk
+    value: 85
+    min: 10
+
+# Shoutrrr URL. Built from the ntfy token in vault so the alerting chain has one
+# source rather than a value copied between two web interfaces.
+beszel_notification_url: >-
+  ntfy://:{{ vault_ntfy_beszel_token }}@{{ vault_nas_address }}:{{ ntfy_port | default(2586) }}/{{ ntfy_topic | default('nas-critical') }}?scheme=http

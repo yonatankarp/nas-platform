@@ -1,0 +1,23 @@
+---
+# Full first-installation run. Identical whether Ansible executes on the NAS
+# (inventory/local.yml) or reaches it from a workstation (inventory/remote.yml):
+# every task, including HTTP calls, runs on the nas host, so loopback addresses
+# are correct in both modes and nothing is delegated to the controller.
+- name: Install and configure the NAS platform
+  hosts: nas_hosts
+  gather_facts: true
+
+  roles:
+    - role: preflight
+      tags: [preflight, always]
+
+    - role: host_prep
+      tags: [host_prep, storage]
+
+    # ntfy first: it is the sink every monitor publishes to, and its tokens are
+    # the values the other services are configured with.
+    - role: ntfy
+      tags: [ntfy, monitoring]
+
+    - role: beszel
+      tags: [beszel, monitoring]

@@ -1,0 +1,63 @@
+---
+# Provisioning is declarative: users, ACL entries and tokens are supplied as
+# configuration, so nothing is created by CLI against a running server and the
+# tokens are the same values the other services are given. ntfy deletes entries
+# it previously provisioned once they leave the configuration, and refuses to
+# change a provisioned token through its own API, which enforces the sole-owner
+# model at the server rather than only in Ansible.
+- name: Render the ntfy environment
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ nas_repo_dir }}/services/ntfy/.env"
+    mode: "0600"
+  no_log: true
+
+- name: Deploy ntfy
+  community.docker.docker_compose_v2:
+    project_src: "{{ nas_repo_dir }}/services/ntfy"
+    env_files: ["{{ nas_repo_dir }}/services/ntfy/.env"]
+    state: present
+    wait: true
+    wait_timeout: 180
+
+- name: Wait for ntfy to report healthy
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ ntfy_port }}/v1/health"
+    return_content: true
+  register: ntfy_health
+  until: ntfy_health.json.healthy | default(false)
+  retries: 20
+  delay: 3
+
+# Proving provisioning took effect matters more than proving a file was written:
+# an unescaped or malformed hash leaves the server running with the alerting
+# chain silently dead.
+- name: Verify anonymous reads are refused
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ ntfy_port }}/{{ ntfy_topic }}/json?poll=1"
+    status_code: [403]
+
+- name: Verify each provisioned token can publish
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ ntfy_port }}/{{ ntfy_topic }}"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ item.token }}"
+    body: "provisioning verified for {{ item.name }}"
+    status_code: [200]
+  loop: "{{ ntfy_publishers }}"
+  loop_control:
+    label: "{{ item.name }}"
+  changed_when: false
+  no_log: true
+
+- name: Verify publisher tokens cannot read, proving the write-only ACL applied
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ ntfy_port }}/{{ ntfy_topic }}/json?poll=1"
+    headers:
+      Authorization: "Bearer {{ item.token }}"
+    status_code: [403]
+  loop: "{{ ntfy_publishers }}"
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true

@@ -1,0 +1,100 @@
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
+services:
+  hub:
+    container_name: beszel
+    image: ghcr.io/henrygd/beszel/beszel:0.18.7@sha256:5b583633750cae65a9c1ab399c4c0eed229666ad74e103801724e3bc465338b8
+    ports:
+      - "8090:8090"
+    volumes:
+      # Holds the PocketBase database and id_ed25519. That keypair is authored in
+      # vault and written here before first start, so the agent's KEY is known in
+      # advance and nothing has to be read back from a running hub.
+      - ${NAS_DOCKER_ROOT:?}/beszel/hub:/beszel_data
+    environment:
+      APP_URL: ${BESZEL_APP_URL:?}
+      TZ: ${TZ:?}
+    healthcheck:
+      test: [CMD, /beszel, health, --url, "http://localhost:8090"]
+      interval: 30s
+      timeout: 10s
+      retries: 4
+      start_period: 5s
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    logging: *default-logging
+
+  agent:
+    container_name: beszel_agent
+    image: ghcr.io/henrygd/beszel/beszel-agent-intel:0.18.7@sha256:7a5ee1cfbd8faf95d10a965bd1cb9e2208b2ce731bb3ef5b00020e1985ffd824
+    # Host networking is a monitoring compatibility exception: the agent must
+    # observe the NAS network interfaces rather than only its own namespace. Its
+    # SSH server is disabled, it publishes no port, and it dials the hub outbound.
+    network_mode: host
+    cap_add:
+      - CAP_PERFMON
+    devices:
+      - ${NAS_RENDER_DEVICE:?}:${NAS_RENDER_DEVICE:?}
+    depends_on:
+      hub:
+        condition: service_healthy
+      socket-proxy:
+        condition: service_healthy
+    volumes:
+      - ${NAS_DOCKER_ROOT:?}/beszel/agent:/var/lib/beszel-agent
+      - ${NAS_DOCKER_ROOT:?}/beszel/volume1:/extra-filesystems/volume1:ro
+      - ${NAS_MEDIA_ROOT:?}/.beszel:/extra-filesystems/volume2:ro
+    environment:
+      DISABLE_SSH: "true"
+      DOCKER_HOST: tcp://127.0.0.1:2375
+      EXCLUDE_SMART: /dev/md0,/dev/md126
+      FILESYSTEM: /extra-filesystems/volume1
+      HUB_URL: http://127.0.0.1:8090
+      INTEL_GPU_DEVICE: drm:${NAS_RENDER_DEVICE:?}
+      KEY: ${BESZEL_AGENT_KEY:?}
+      SYSTEM_NAME: ${BESZEL_SYSTEM_NAME:?}
+      TOKEN: ${BESZEL_AGENT_TOKEN:?}
+      TZ: ${TZ:?}
+    healthcheck:
+      test: [CMD, /agent, health]
+      interval: 30s
+      timeout: 10s
+      retries: 4
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    logging: *default-logging
+
+  socket-proxy:
+    container_name: beszel_socket_proxy
+    # The only Docker socket reader. Read-only access with mutation refused, and
+    # never published beyond loopback.
+    image: lscr.io/linuxserver/socket-proxy:3.4.3@sha256:5253050dd304d351df2ee61bba43c57dd2b19bb640497a679592051de3a3c639
+    ports:
+      - "127.0.0.1:2375:2375"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      CONTAINERS: "1"
+      EVENTS: "0"
+      POST: "0"
+      TZ: ${TZ:?}
+    healthcheck:
+      test: [CMD-SHELL, "wget -q -O - http://127.0.0.1:2375/_ping | grep -qx OK"]
+      interval: 30s
+      timeout: 5s
+      retries: 4
+      start_period: 5s
+    read_only: true
+    tmpfs:
+      - /run
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    logging: *default-logging

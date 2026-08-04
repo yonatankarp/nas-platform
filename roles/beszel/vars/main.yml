@@ -1,0 +1,14 @@
+---
+# Derived values, evaluated lazily where used rather than stored as host facts.
+beszel_api: "http://127.0.0.1:{{ beszel_port }}"
+
+# Records matching the vault identity. Filtered in Jinja because PocketBase's
+# filter parameter needs URL encoding that the uri module does not apply, and
+# returns 400 without it.
+beszel_matching_users: >-
+  {{ beszel_users.json.get('items', [])
+     | selectattr('email', 'equalto', vault_beszel_app_user_email) | list }}
+
+beszel_matching_settings: >-
+  {{ beszel_settings.json.get('items', [])
+     | selectattr('user', 'equalto', beszel_user_id | default('')) | list }}

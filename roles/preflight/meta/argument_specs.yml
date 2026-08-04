@@ -1,0 +1,30 @@
+---
+argument_specs:
+  main:
+    short_description: Assert the host can run the platform before anything changes
+    description:
+      - Fails early and specifically rather than letting a later role fail
+        obscurely. Checks the interpreter, Docker, the Compose floor, that the
+        NAS volumes are mounted, that the repository is present, and that the
+        service state root is writable.
+    options:
+      nas_python_minimum:
+        type: str
+        required: true
+        description: Lowest interpreter version the plays are known to work on.
+      nas_compose_minimum:
+        type: str
+        required: true
+        description: Compose floor required by community.docker.docker_compose_v2.
+      nas_docker_root:
+        type: str
+        required: true
+        description: Directory holding service-owned state.
+      nas_media_root:
+        type: str
+        required: true
+        description: Directory holding NAS-managed user files.
+      nas_repo_dir:
+        type: str
+        required: true
+        description: Where this repository is checked out on the target.
