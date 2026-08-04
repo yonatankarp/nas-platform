@@ -63,8 +63,55 @@ ansible-playbook -i inventory/remote.yml site.yml --check --diff --ask-vault-pas
 ansible-playbook -i inventory/remote.yml site.yml --ask-vault-pass
 ```
 
-Keep the vault password in a password manager. The encrypted vault is committed;
-its password never is.
+## Secrets and the vault
+
+`generate-secrets.yml` writes **plaintext**. Encryption is a separate step you
+run, and you choose the password: nothing encrypts it for you, and no copy of
+that password exists anywhere else.
+
+```sh
+ansible-vault encrypt inventory/group_vars/all/vault.yml   # set the password
+ansible-vault view    inventory/group_vars/all/vault.yml   # read, nothing written to disk
+ansible-vault edit    inventory/group_vars/all/vault.yml   # edit in place, stays encrypted
+ansible-vault decrypt inventory/group_vars/all/vault.yml   # back to plaintext on disk
+ansible-vault rekey   inventory/group_vars/all/vault.yml   # change the password
+```
+
+An encrypted file starts with `$ANSIBLE_VAULT;1.1;AES256` followed by hex
+ciphertext. Plays read it directly given the password, so it never has to be
+decrypted on disk to run anything.
+
+**If you lose the password the vault is unrecoverable.** There is no backdoor.
+Recovery means regenerating every credential and running again, which this design
+survives because everything is authored in vault rather than read back from
+running services, but you would be reprovisioning ntfy, Beszel and every
+administrator account. Keep the password in a password manager.
+
+### Where plaintext exists
+
+Only in two places, both mode `0600` on the NAS, both gitignored and neither ever
+committed:
+
+- `services/<name>/.env`, rendered by Ansible from vault
+- `${NAS_DOCKER_ROOT}/beszel/hub/id_ed25519`, the hub keypair written from vault
+
+Everything else is ciphertext. The encrypted vault **is** committed, so its
+safety rests entirely on the strength of that one password.
+
+### Unattended runs
+
+`--vault-password-file` accepts an **executable**, not only a file, so the
+password can be fetched from a password manager at run time with no plaintext
+copy on disk:
+
+```sh
+ansible-playbook -i inventory/remote.yml site.yml --vault-password-file ~/.nas-vault-pass
+```
+
+where that file is a script that prints the password, for example via the
+1Password CLI. Keep it outside this repository. `.gitignore` covers
+`.vault-password` and `vault-password*` so an in-repo copy cannot be committed by
+accident.
 
 ## Testing
 
