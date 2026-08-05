@@ -1,0 +1,11 @@
+---
+# Integration-only merge fixture. The agent is not started without a render
+# device, and the probe is profile-gated; both exist to prove the deployment
+# manifest records replaced and newly added effective image references.
+services:
+  agent:
+    image: docker.io/binwiederhier/ntfy:v2.27.0@sha256:f2419f405127afa868f10985c1a41449e673477cee1eb19994339a5ae8b592e7
+
+  manifest-probe:
+    image: lscr.io/linuxserver/socket-proxy:3.4.3@sha256:5253050dd304d351df2ee61bba43c57dd2b19bb640497a679592051de3a3c639
+    profiles: [manifest-only]

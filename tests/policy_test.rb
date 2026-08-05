@@ -533,6 +533,112 @@ end
 check(failures, !controller_preflight.nil?,
       "controller bundle cleanliness must be validated before target-mutating roles")
 
+# Target-side deployment paths are hostile inputs until both their lexical form
+# and existing filesystem ancestry have been checked. Validation is read-only,
+# runs before preflight, is repeated next to destructive operations, and runs
+# again before service roles write runtime configuration or consume `current`.
+target_tasks_path = File.join(ROOT, "roles", "deployment_bundle", "tasks", "target.yml")
+target_tasks_body = File.file?(target_tasks_path) ? File.read(target_tasks_path) : ""
+%w[os.lstat os.path.realpath os.path.commonpath os.path.lexists].each do |primitive|
+  check(failures, target_tasks_body.include?(primitive),
+        "target validator must use #{primitive} for symlink-safe canonical containment")
+end
+check(failures, target_tasks_body.include?("concurrent privileged filesystem mutation"),
+      "target validator must document its adjacent-revalidation threat boundary")
+check(failures, target_tasks_body.include?("os.path.abspath(os.sep)") &&
+                target_tasks_body.include?("root_relative_parts"),
+      "target validator must lstat every existing ancestor from filesystem root to nas_docker_root")
+check(failures, target_tasks_body.include?("{{ nas_docker_root }}/.nas-platform-preflight-probe"),
+      "target validator must guard the exact preflight probe leaf")
+
+target_preflight_index = Array(site_play["pre_tasks"]).index do |task|
+  include_role = task["ansible.builtin.include_role"]
+  include_role.is_a?(Hash) && include_role["name"] == "deployment_bundle" &&
+    include_role["tasks_from"] == "target" &&
+    Array(include_role.dig("apply", "tags")).include?("always")
+end
+check(failures, !target_preflight_index.nil?,
+      "target containment must be validated before preflight can mutate the target")
+
+preflight_body = File.read(File.join(ROOT, "roles", "preflight", "tasks", "main.yml"))
+check(failures, preflight_body.include?("{{ nas_docker_root }}/.nas-platform-preflight-probe") &&
+                !preflight_body.include?("{{ platform_deploy_root }}/.preflight-probe"),
+      "fresh-install preflight must probe the existing validated nas_docker_root")
+probe_inspection = preflight_body.index("Inspect the deterministic write probe path")
+probe_creation = preflight_body.index("Confirm the service state root is writable")
+check(failures, probe_inspection && probe_creation && probe_inspection < probe_creation &&
+                preflight_body.include?("not preflight_write_probe.stat.exists"),
+      "preflight must refuse a pre-existing deterministic probe before creating it")
+
+deployment_body = File.read(File.join(ROOT, "roles", "deployment_bundle", "tasks", "main.yml"))
+deployment_tasks = flatten_tasks(YAML.safe_load(deployment_body))
+manifest_path_validation = deployment_tasks.find do |task|
+  task["name"] == "Validate manifest service path components"
+end
+manifest_path_conditions = Array(
+  manifest_path_validation&.dig("ansible.builtin.assert", "that")
+).join(" ")
+check(failures, manifest_path_conditions.include?("item.name is match") &&
+                manifest_path_conditions.include?("item.role is match") &&
+                manifest_path_conditions.include?("item.legacy_path =="),
+      "deployment bundle must validate manifest service path components")
+%w[
+  Validate_manifest_service_path_components
+  Revalidate_before_removing_the_staging_release
+  Revalidate_before_replacing_an_inactive_release
+  Revalidate_before_installing_the_immutable_release
+  Revalidate_before_replacing_the_current_pointer
+  Revalidate_before_activating_the_controller_release
+].each do |task_token|
+  check(failures, deployment_body.tr(" ", "_").include?(task_token),
+        "deployment bundle must #{task_token.downcase.tr('_', ' ')}")
+end
+%w[stat.S_IMODE st.st_uid st.st_gid os.lstat].each do |metadata|
+  check(failures, deployment_body.include?(metadata),
+        "immutable release comparison must include #{metadata}")
+end
+
+%w[ntfy beszel].each do |service_name|
+  service_body = File.read(File.join(ROOT, "roles", service_name, "tasks", "main.yml"))
+  target_validation = service_body.index("tasks_from: target")
+  runtime_use = [service_body.index("platform_runtime_dir"), service_body.index("platform_current_dir")].compact.min
+  check(failures, !runtime_use || (target_validation && target_validation < runtime_use),
+        "#{service_name} must revalidate target paths before runtime/current use")
+  if target_validation
+    check(failures, service_body.include?("/compose.yml") &&
+                    service_body.include?("/compose.{{ platform_kind }}.yml"),
+          "#{service_name} must guard every Compose file consumed by selective runs")
+  end
+end
+
+deployment_manifest_template = File.read(
+  File.join(ROOT, "roles", "deployment_bundle", "templates", "manifest.yml.j2")
+)
+check(failures, deployment_manifest_template.include?("platform_release_id | to_json"),
+      "deployment manifest must quote git_sha as a YAML string")
+check(failures, deployment_manifest_template.include?("platform_compose") &&
+                deployment_manifest_template.include?("canonical_compose") &&
+                deployment_manifest_template.include?("compose_service_name"),
+      "deployment manifest images must merge canonical and platform Compose services")
+
+site_source = File.read(File.join(ROOT, "site.yml"))
+check(failures, !site_source.include?("nothing is delegated to the controller"),
+      "site documentation must acknowledge explicit controller delegation")
+
+integration_evidence = harness + File.read(File.join(ROOT, "tests", "verify_deployment_manifest.rb"))
+%w[
+  FRESH_ROOT_OK SYMLINK_DOCKER_ROOT_REFUSED SYMLINK_DEPLOY_ROOT_REFUSED SYMLINK_RELEASES_REFUSED
+  SYMLINK_RUNTIME_REFUSED SYMLINK_ROOT_ANCESTOR_REFUSED
+  SYMLINK_PREFLIGHT_PROBE_REFUSED SYMLINK_NTFY_COMPOSE_REFUSED
+  EXISTING_PREFLIGHT_PROBE_REFUSED EXISTING_PREFLIGHT_PROBE_PRESERVED
+  SYMLINK_ESCAPE_STATE_UNCHANGED
+  ACTIVE_BYTE_DRIFT_REFUSED ACTIVE_MODE_DRIFT_REFUSED ACTIVE_DRIFT_PRESERVED
+  MANIFEST_EXACT MANIFEST_EFFECTIVE_IMAGES
+].each do |evidence|
+  check(failures, integration_evidence.include?(evidence),
+        "integration must execute and report #{evidence.downcase.tr('_', ' ')}")
+end
+
 # PocketBase runs the records query and its total-count query concurrently.
 # On a bind-mounted SQLite database the count path can race immediately after
 # creating the first user, while this role never consumes pagination totals.

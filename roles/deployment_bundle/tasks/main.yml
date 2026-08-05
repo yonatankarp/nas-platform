@@ -11,6 +11,21 @@
     deployment_bundle_staging_dir: >-
       {{ platform_deploy_root }}/.release-{{ platform_release_id }}
 
+- name: Validate manifest service path components
+  ansible.builtin.assert:
+    that:
+      - item.name is string
+      - item.name is match('^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$')
+      - item.role is string
+      - item.role is match('^[a-z][a-z0-9_]*$')
+      - item.legacy_path == 'compose/' ~ item.name ~ '/compose.yml'
+    fail_msg: >-
+      Manifest service names, roles, and legacy paths must be safe single-path
+      components before they are interpolated into controller or target paths.
+  loop: "{{ deployment_bundle_services }}"
+  loop_control:
+    label: "{{ item.name | default('<invalid>') }}"
+
 - name: Validate deployment paths before destructive operations
   ansible.builtin.assert:
     that:
@@ -59,6 +74,9 @@
   register: deployment_bundle_platform_sources
   delegate_to: localhost
 
+- name: Revalidate before creating deployment and runtime directories
+  ansible.builtin.include_tasks: target.yml
+
 - name: Create deployment and mutable runtime directories
   ansible.builtin.file:
     path: "{{ item }}"
@@ -84,6 +102,9 @@
     path: "{{ platform_current_dir }}"
     follow: false
   register: deployment_bundle_current
+
+- name: Revalidate before removing the staging release
+  ansible.builtin.include_tasks: target.yml
 
 - name: Remove an abandoned staging release
   ansible.builtin.file:
@@ -160,23 +181,33 @@
       - -c
       - |
         import os
-        import pathlib
+        import stat
         import sys
 
         def snapshot(root):
             result = {}
-            for path in sorted(root.rglob("*")):
-                relative = path.relative_to(root).as_posix()
-                if path.is_symlink():
-                    result[relative] = ("link", os.readlink(path))
-                elif path.is_dir():
-                    result[relative] = ("dir",)
+
+            def record(path, relative):
+                st = os.lstat(path)
+                metadata = (stat.S_IMODE(st.st_mode), st.st_uid, st.st_gid)
+                if stat.S_ISLNK(st.st_mode):
+                    result[relative] = ("link", *metadata, os.readlink(path))
+                elif stat.S_ISDIR(st.st_mode):
+                    result[relative] = ("dir", *metadata)
+                    for entry in sorted(os.scandir(path), key=lambda item: item.name):
+                        child_relative = entry.name if relative == "." else f"{relative}/{entry.name}"
+                        record(entry.path, child_relative)
+                elif stat.S_ISREG(st.st_mode):
+                    with open(path, "rb") as handle:
+                        result[relative] = ("file", *metadata, handle.read())
                 else:
-                    result[relative] = ("file", path.read_bytes())
+                    result[relative] = ("other", stat.S_IFMT(st.st_mode), *metadata)
+
+            record(root, ".")
             return result
 
-        expected = snapshot(pathlib.Path(sys.argv[1]))
-        actual = snapshot(pathlib.Path(sys.argv[2]))
+        expected = snapshot(sys.argv[1])
+        actual = snapshot(sys.argv[2])
         raise SystemExit(expected != actual)
       - "{{ deployment_bundle_staging_dir }}"
       - "{{ platform_release_dir }}"
@@ -204,6 +235,13 @@
       Active release {{ platform_release_dir }} differs from the controller
       bundle. Refusing to mutate it in place; deploy a new controller revision.
 
+- name: Revalidate before replacing an inactive release
+  ansible.builtin.include_tasks: target.yml
+  when:
+    - not ansible_check_mode
+    - deployment_bundle_release.stat.exists
+    - deployment_bundle_release_install_required
+
 - name: Remove an inactive stale release
   ansible.builtin.file:
     path: "{{ platform_release_dir }}"
@@ -211,6 +249,12 @@
   when:
     - not ansible_check_mode
     - deployment_bundle_release.stat.exists
+    - deployment_bundle_release_install_required
+
+- name: Revalidate before installing the immutable release
+  ansible.builtin.include_tasks: target.yml
+  when:
+    - not ansible_check_mode
     - deployment_bundle_release_install_required
 
 - name: Atomically install the immutable release
@@ -224,6 +268,12 @@
   when:
     - not ansible_check_mode
     - deployment_bundle_release_install_required
+
+- name: Revalidate before removing the verified staging release
+  ansible.builtin.include_tasks: target.yml
+  when:
+    - not ansible_check_mode
+    - not deployment_bundle_release_install_required
 
 - name: Remove the verified staging release
   ansible.builtin.file:
@@ -240,6 +290,12 @@
       {{ not (deployment_bundle_current.stat.islnk | default(false)) or
          deployment_bundle_current.stat.lnk_source | default('') != platform_release_dir }}
 
+- name: Revalidate before replacing the current pointer
+  ansible.builtin.include_tasks: target.yml
+  when:
+    - deployment_bundle_current.stat.exists
+    - not (deployment_bundle_current.stat.islnk | default(false))
+
 - name: Remove a legacy non-symlink deployment directory
   ansible.builtin.file:
     path: "{{ platform_current_dir }}"
@@ -248,12 +304,20 @@
     - deployment_bundle_current.stat.exists
     - not (deployment_bundle_current.stat.islnk | default(false))
 
+- name: Revalidate before creating the next deployment pointer
+  ansible.builtin.include_tasks: target.yml
+  when: deployment_bundle_switch_required
+
 - name: Create the next deployment pointer
   ansible.builtin.file:
     src: "{{ platform_release_dir }}"
     dest: "{{ platform_deploy_root }}/.current-{{ platform_release_id }}"
     state: link
     force: true
+  when: deployment_bundle_switch_required
+
+- name: Revalidate before activating the controller release
+  ansible.builtin.include_tasks: target.yml
   when: deployment_bundle_switch_required
 
 - name: Atomically activate the controller release
