@@ -539,9 +539,19 @@ expect_failure(failures, "dirty controller enabled by default",
 end
 
 expect_failure(failures, "untracked controller inspection removed",
-               "deployment bundle must inspect tracked and untracked manifest/service sources") do |root|
+               "deployment bundle must inspect the whole tracked and untracked controller checkout") do |root|
   path = File.join(root, "roles", "deployment_bundle", "tasks", "controller.yml")
   tasks = File.read(path).sub("      - --untracked-files=all\n", "")
+  File.write(path, tasks)
+end
+
+expect_failure(failures, "controller inspection narrowed by pathspec",
+               "deployment bundle must inspect the whole tracked and untracked controller checkout") do |root|
+  path = File.join(root, "roles", "deployment_bundle", "tasks", "controller.yml")
+  tasks = File.read(path).sub(
+    "      - --untracked-files=all\n",
+    "      - --untracked-files=all\n      - --\n      - services\n"
+  )
   File.write(path, tasks)
 end
 

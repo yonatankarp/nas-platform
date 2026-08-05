@@ -474,9 +474,9 @@ check(failures, harness.match?(/^ruby_package='ruby=\d+\.\d+\.\d+-r\d+'$/) &&
                 harness.match?(/^curl_package='curl=\d+\.\d+\.\d+-r\d+'$/),
       "integration must pin distro ruby and curl packages")
 
-# A release ID names committed controller content. Production must reject
-# modified or untracked bundle inputs; only the disposable integration platform
-# may opt into copying the deliberately dirty pre-commit working tree.
+# A release ID names committed controller content. Production must reject any
+# modified or untracked file in the controller checkout; only the disposable
+# integration platform may opt into the deliberately dirty pre-commit tree.
 deployment_defaults_path = File.join(ROOT, "roles", "deployment_bundle", "defaults", "main.yml")
 deployment_defaults = File.file?(deployment_defaults_path) ? YAML.safe_load_file(deployment_defaults_path) : {}
 check(failures, deployment_defaults["deployment_bundle_allow_dirty_controller"] == false,
@@ -501,11 +501,11 @@ cleanliness_assert = deployment_tasks.find { |task| task["name"] == "Require com
 check(failures, dirty_guard&.dig("ansible.builtin.assert", "that").to_s.include?("platform_kind == 'integration'"),
       "dirty controller bypass must be accepted only for platform_kind integration")
 cleanliness_argv = cleanliness_check&.dig("ansible.builtin.command", "argv")
-check(failures, cleanliness_argv.is_a?(Array) && cleanliness_argv.include?("status") &&
-                cleanliness_argv.include?("--untracked-files=all") &&
-                cleanliness_argv.include?("services/manifest.yml") &&
-                cleanliness_argv.include?("services"),
-      "deployment bundle must inspect tracked and untracked manifest/service sources")
+expected_cleanliness_argv = [
+  "git", "-C", "{{ playbook_dir }}", "status", "--porcelain=v1", "--untracked-files=all"
+]
+check(failures, cleanliness_argv == expected_cleanliness_argv,
+      "deployment bundle must inspect the whole tracked and untracked controller checkout")
 check(failures, cleanliness_assert&.dig("ansible.builtin.assert", "that").to_s
                 .include?("deployment_bundle_allow_dirty_controller"),
       "deployment bundle must refuse dirty sources unless the guarded bypass is enabled")
@@ -516,6 +516,7 @@ check(failures, harness.include?("-e platform_kind=integration") &&
       "integration must explicitly enable its integration-only dirty controller bypass")
 %w[
   DIRTY_TRACKED_REFUSED DIRTY_UNTRACKED_REFUSED
+  DIRTY_MANIFEST_TEMPLATE_REFUSED DIRTY_ARBITRARY_CONTROLLER_FILE_REFUSED
   DIRTY_PRODUCTION_BYPASS_REFUSED DIRTY_INTEGRATION_ACCEPTED
   DIRTY_REFUSAL_TARGET_UNCHANGED
 ].each do |evidence|

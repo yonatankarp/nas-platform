@@ -1,4 +1,4 @@
 ---
-# Production releases must map one committed Git SHA to one exact bundle. The
-# integration harness opts out explicitly because it validates pre-commit work.
+# Production releases must map one committed Git SHA to one exact controller
+# checkout. The integration harness opts out because it validates pre-commit work.
 deployment_bundle_allow_dirty_controller: false
