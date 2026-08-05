@@ -12,6 +12,9 @@ argument_specs:
         type: str
         required: true
         description: Platform-specific Compose override suffix selected by the bundle.
+      platform_public_host:
+        type: str
+        required: true
       ntfy_port:
         type: int
         required: false
@@ -38,9 +41,6 @@ argument_specs:
           token:
             type: str
             required: true
-      vault_nas_address:
-        type: str
-        required: true
       vault_ntfy_admin_user:
         type: str
         required: true

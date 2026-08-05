@@ -6,3 +6,9 @@ platform_hosts:
       hosts:
         nas:
           ansible_connection: local
+          platform_public_host: >-
+            {{ lookup('env', 'PLATFORM_PUBLIC_HOST') |
+               default(lookup('env', 'PLATFORM_NAS_ADDRESS'), true) }}
+          platform_callback_host: >-
+            {{ lookup('env', 'PLATFORM_CALLBACK_HOST') |
+               default(lookup('env', 'PLATFORM_NAS_ADDRESS'), true) }}

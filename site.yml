@@ -7,8 +7,22 @@
 - name: Install and configure the NAS platform
   hosts: platform_hosts
   gather_facts: true
+  vars:
+    # Controller-side encrypted artifact used for report identity. Disposable
+    # harnesses override this with their encrypted copy.
+    platform_vault_file: >-
+      {{ lookup('env', 'PLATFORM_VAULT_FILE') |
+         default(playbook_dir ~ '/inventory/group_vars/all/vault.yml', true) }}
 
   pre_tasks:
+    - name: Validate portable credentials before target mutation
+      ansible.builtin.include_role:
+        name: vault_contract
+        apply:
+          tags: [always]
+          no_log: true
+      tags: [always]
+
     - name: Validate controller bundle sources before target mutation
       ansible.builtin.include_role:
         name: deployment_bundle

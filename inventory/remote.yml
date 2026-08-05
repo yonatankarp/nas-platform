@@ -1,10 +1,16 @@
-# Run from a workstation over the LAN or Tailscale. The address and login come
-# from vault so no committed file carries them.
+# Run from a workstation over the LAN or Tailscale. Connection coordinates are
+# inventory inputs, not portable application credentials.
 platform_hosts:
   children:
     nas_hosts:
       hosts:
         nas:
           ansible_connection: ssh
-          ansible_host: "{{ vault_nas_address }}"
-          ansible_user: "{{ vault_nas_user }}"
+          ansible_host: "{{ lookup('env', 'PLATFORM_NAS_ADDRESS') }}"
+          ansible_user: "{{ lookup('env', 'PLATFORM_NAS_USER') }}"
+          platform_public_host: >-
+            {{ lookup('env', 'PLATFORM_PUBLIC_HOST') |
+               default(lookup('env', 'PLATFORM_NAS_ADDRESS'), true) }}
+          platform_callback_host: >-
+            {{ lookup('env', 'PLATFORM_CALLBACK_HOST') |
+               default(lookup('env', 'PLATFORM_NAS_ADDRESS'), true) }}

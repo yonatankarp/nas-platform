@@ -1,7 +1,7 @@
 ---
 # Non-secret policy. Credentials come from vault.
 ntfy_port: 2586
-ntfy_base_url: "http://{{ vault_nas_address }}:{{ ntfy_port }}"
+ntfy_base_url: "http://{{ platform_public_host }}:{{ ntfy_port }}"
 
 # The single topic every monitor publishes to.
 ntfy_topic: nas-critical

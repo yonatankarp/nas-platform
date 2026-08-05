@@ -266,11 +266,26 @@ ntfy_token() { docker run --rm "$ntfy_image" token generate 2>/dev/null | grep -
 ssh-keygen -q -t ed25519 -N '' -C 'sandbox beszel hub' -f "$sandbox/beszel_hub_key"
 
 umask 077
+ntfy_admin_password=$(random_password)
+dozzle_admin_password=$(random_password)
 cat > "$sandbox/sandbox-vault.yml" <<EOF
-vault_nas_address: 127.0.0.1
-vault_nas_user: sandbox
+vault_audiobookshelf_admin_username: sandboxadmin
+vault_audiobookshelf_admin_password: $(random_password)
+vault_dozzle_admin_username: sandboxadmin
+vault_dozzle_admin_password: $dozzle_admin_password
+vault_dozzle_admin_password_hash: "$(bcrypt_of "$dozzle_admin_password")"
+vault_immich_admin_email: sandboxadmin@example.invalid
+vault_immich_admin_password: $(random_password)
+vault_immich_db_name: immich
+vault_immich_db_username: immich
+vault_immich_db_password: $(random_password)
+vault_jellyfin_admin_username: sandboxadmin
+vault_jellyfin_admin_password: $(random_password)
+vault_komga_admin_email: sandboxadmin@example.invalid
+vault_komga_admin_password: $(random_password)
 vault_ntfy_admin_user: sandboxadmin
-vault_ntfy_admin_password_hash: "$(bcrypt_of "$(random_password)")"
+vault_ntfy_admin_password: $ntfy_admin_password
+vault_ntfy_admin_password_hash: "$(bcrypt_of "$ntfy_admin_password")"
 vault_ntfy_dozzle_password_hash: "$(bcrypt_of "$(random_password)")"
 vault_ntfy_dozzle_token: $(ntfy_token)
 vault_ntfy_beszel_password_hash: "$(bcrypt_of "$(random_password)")"
@@ -283,6 +298,18 @@ vault_beszel_agent_key: "$(awk '{print $1, $2}' "$sandbox/beszel_hub_key.pub")"
 vault_beszel_universal_token: $(uuidgen | tr 'A-Z' 'a-z')
 vault_beszel_hub_private_key: |
 $(sed 's/^/  /' "$sandbox/beszel_hub_key")
+vault_paperless_admin_username: sandboxadmin
+vault_paperless_admin_password: $(random_password)
+vault_paperless_admin_email: sandboxadmin@example.invalid
+vault_paperless_db_name: paperless
+vault_paperless_db_username: paperless
+vault_paperless_db_password: $(random_password)
+vault_paperless_django_secret_key: $(random_password)$(random_password)
+vault_paperless_gmail_account: sandbox@example.invalid
+vault_paperless_gmail_app_password: $(random_password)
+vault_paperless_mail_account_name: sandbox-gmail
+vault_paperless_mail_rule_name: sandbox-inbox
+vault_tinymediamanager_password: $(random_password)
 EOF
 umask 022
 
@@ -296,6 +323,7 @@ docker run --rm \
   `# this container and on the Docker daemon's host.` \
   -v "$sandbox":"$sandbox" \
   -e ANSIBLE_CONFIG=/repo/ansible.cfg \
+  -e PLATFORM_NAS_ADDRESS=host.docker.internal \
   -w /repo \
   "$runner_image" \
   sh -eu -c "
@@ -395,10 +423,20 @@ docker run --rm \
     printf 'DIRTY_INTEGRATION_ACCEPTED\n'
     git -C '$controller_test_dir' checkout -q -- .
 
+    umask 077
+    python -c 'import secrets; print(secrets.token_urlsafe(32))' \
+      > '$sandbox/vault-password'
+    ansible-vault encrypt \
+      --vault-password-file '$sandbox/vault-password' \
+      '$sandbox/sandbox-vault.yml' >/dev/null
+    umask 022
+
     run_play() {
       ansible-playbook \
         -i inventory/local.yml \
+        --vault-password-file $sandbox/vault-password \
         -e @$sandbox/sandbox-vault.yml \
+        -e platform_vault_file=$sandbox/sandbox-vault.yml \
         -e nas_docker_root=$sandbox/volume1/Docker \
         -e nas_media_root=$sandbox/volume2 \
         -e platform_compose_kind=integration \
