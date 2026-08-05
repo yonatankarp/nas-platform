@@ -748,6 +748,31 @@ end
 check(failures, vault_contract_tasks.none? { |task| task.to_s.match?(/vault_[a-z_]+\s*\|\s*hash/) },
       "vault contract must never hash an individual plaintext credential")
 
+vault_metadata_index = vault_contract_tasks.index do |task|
+  task["name"] == "Inspect the candidate vault artifact without hashing"
+end
+vault_header_index = vault_contract_tasks.index do |task|
+  task["name"] == "Read only the encrypted vault format header"
+end
+vault_encryption_guard_index = vault_contract_tasks.index do |task|
+  task["name"] == "Require the reported vault artifact to be encrypted"
+end
+vault_checksum_index = vault_contract_tasks.index do |task|
+  task["name"] == "Compute the encrypted vault artifact SHA-256"
+end
+vault_metadata_task = vault_metadata_index && vault_contract_tasks[vault_metadata_index]
+vault_order_indexes = [
+  vault_metadata_index,
+  vault_header_index,
+  vault_encryption_guard_index,
+  vault_checksum_index
+]
+check(failures,
+      vault_metadata_task&.dig("ansible.builtin.stat", "get_checksum") == false &&
+        vault_order_indexes.all? { |index| index.is_a?(Integer) } &&
+        vault_order_indexes.each_cons(2).all? { |left, right| left < right },
+      "vault contract must verify encryption header before computing SHA-256")
+
 site_pre_tasks = Array(site_play["pre_tasks"])
 vault_contract_index = site_pre_tasks.index do |task|
   task.dig("ansible.builtin.include_role", "name") == "vault_contract"

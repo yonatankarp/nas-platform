@@ -47,13 +47,13 @@
     success_msg: Portable vault credential shapes are valid; values are redacted.
   no_log: true
 
-- name: Inspect the encrypted vault file without reading plaintext
+- name: Inspect the candidate vault artifact without hashing
   ansible.builtin.stat:
     path: "{{ platform_vault_file }}"
-    checksum_algorithm: sha256
+    get_checksum: false
   delegate_to: localhost
   become: false
-  register: vault_contract_encrypted_file
+  register: vault_contract_candidate_file
   when: platform_vault_file is defined
   no_log: true
 
@@ -75,11 +75,29 @@
 - name: Require the reported vault artifact to be encrypted
   ansible.builtin.assert:
     that:
-      - vault_contract_encrypted_file.stat.isreg | default(false)
-      - vault_contract_encrypted_file.stat.checksum | default('') | length == 64
+      - vault_contract_candidate_file.stat.isreg | default(false)
       - vault_contract_encrypted_header.stdout | default('') is match('^\\$ANSIBLE_VAULT;')
     fail_msg: The encrypted vault file is unavailable; no credential values were read.
-    success_msg: The encrypted vault artifact is available for SHA-256 identification.
+    success_msg: The vault artifact is encrypted and may be identified by SHA-256.
+  when: platform_vault_file is defined
+  no_log: true
+
+- name: Compute the encrypted vault artifact SHA-256
+  ansible.builtin.stat:
+    path: "{{ platform_vault_file }}"
+    checksum_algorithm: sha256
+  delegate_to: localhost
+  become: false
+  register: vault_contract_encrypted_file
+  when: platform_vault_file is defined
+  no_log: true
+
+- name: Require an encrypted vault artifact SHA-256
+  ansible.builtin.assert:
+    that:
+      - vault_contract_encrypted_file.stat.checksum | default('') | length == 64
+    fail_msg: The encrypted vault artifact could not be identified by SHA-256.
+    success_msg: The encrypted vault artifact has a SHA-256 identifier.
   when: platform_vault_file is defined
   no_log: true
 
