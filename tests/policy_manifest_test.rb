@@ -633,6 +633,17 @@ expect_failure(failures, "platform image merge removed",
   File.write(path, File.read(path).gsub("platform_compose", "override_compose"))
 end
 
+expect_failure(failures, "platform override redefines image",
+               "platform overrides must not redefine image keys") do |root|
+  path = File.join(root, "services", "beszel", "compose.integration.yml")
+  File.write(path, <<~YAML)
+    ---
+    services:
+      agent:
+        image: example.invalid/beszel-agent:1@sha256:#{'0' * 64}
+  YAML
+end
+
 if failures.empty?
   puts "policy manifest: all mutation checks hold"
 else
