@@ -13,7 +13,9 @@ include PolicySupport
 ROOT = File.expand_path("..", __dir__)
 failures = []
 BASE_FIXTURE_PATHS = %w[
+  .gitignore
   .github/workflows/ci.yml
+  README.md
   ansible.cfg
   filter_plugins/platform_paths.py
   generate-secrets.yml
@@ -27,6 +29,7 @@ BASE_FIXTURE_PATHS = %w[
   requirements.yml
   site.yml
   validate-vault.yml
+  verify.yml
   roles/host_prep/meta/argument_specs.yml
   roles/host_prep/tasks/main.yml
   roles/deployment_bundle/defaults/main.yml
@@ -47,9 +50,19 @@ BASE_FIXTURE_PATHS = %w[
   tests/integration.sh
   tests/integration_lock.sh
   tests/integration_lock_test.sh
+  tests/sandbox_cleanup.sh
   tests/generate-ephemeral-vault.sh
   tests/generate-secrets-redaction-test.sh
   tests/mac_inventory_path_test.yml
+  tests/mac/cleanup.sh
+  tests/mac/drift.sh
+  tests/mac/fixtures.sh
+  tests/mac/lib.sh
+  tests/mac/manual-review.md
+  tests/mac/report.rb
+  tests/mac/run.sh
+  tests/mac/sanitize-logs.rb
+  tests/mac/verify.sh
   tests/policy_test.rb
   tests/policy_support.rb
   tests/run_contracts.rb
@@ -156,7 +169,7 @@ def expect_failure(failures, label, message)
   output, status = run_policy { |root| yield root }
   failures << "#{label}: policy unexpectedly passed" if status.success?
   failures << "#{label}: missing failure message #{message.inspect}" unless output.include?(message)
-  failures << "#{label}: emitted a Ruby stack trace" if output.match?(/policy_test\.rb:\d+:in/)
+  failures << "#{label}: emitted a Ruby stack trace" if output.match?(/\.rb:\d+:in [`']/)
 end
 
 def expect_success(failures, label)
@@ -1016,6 +1029,25 @@ end
     path = File.join(root, "tests", "generate-ephemeral-vault.sh")
     File.write(path, File.read(path).sub(source, "removed-helper-guard"))
   end
+end
+
+expect_failure(failures, "Mac lifecycle keep-on-failure option removed",
+               "Mac proof harness must accept --keep-on-failure") do |root|
+  path = File.join(root, "tests", "mac", "run.sh")
+  File.write(path, File.read(path).gsub("--keep-on-failure", "removed-keep-on-failure"))
+end
+
+expect_failure(failures, "Mac log sanitizer self-test removed",
+               "validate-policy.sh must run ruby tests/mac/sanitize-logs.rb --self-test") do |root|
+  path = File.join(root, "tests", "validate-policy.sh")
+  File.write(path, File.read(path).gsub("ruby tests/mac/sanitize-logs.rb --self-test", "true"))
+end
+
+expect_failure(failures, "Mac raw log body retained",
+               "Mac log sanitizer self-test must pass without raw values") do |root|
+  path = File.join(root, "tests", "mac", "sanitize-logs.rb")
+  leaked_body = 'line.encode(Encoding::UTF_8, invalid: :replace, undef: :replace, replace: "")'
+  File.write(path, File.read(path).sub('"message" => REDACTION', "\"message\" => #{leaked_body}"))
 end
 
 if failures.empty?

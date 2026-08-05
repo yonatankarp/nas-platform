@@ -172,6 +172,11 @@ the sibling `.reports` directory remains as sanitized evidence. Optional report
 copies under `mac-proof-reports/` are ignored by Git. Complete
 `tests/mac/manual-review.md` against the generated manifest and report.
 
+Failure evidence includes label-scoped container state and bounded log summaries.
+Log message bodies and unparseable lines are always replaced with `[REDACTED]`;
+only validated timestamps, counts, capture status, and container identity remain.
+Raw log content is never written to a temporary file, report, or console.
+
 ## Manual escape hatch
 
 Ansible owns deployment, but a stack can be brought up by hand if needed, using
