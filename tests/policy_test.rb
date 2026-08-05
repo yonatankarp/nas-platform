@@ -21,26 +21,88 @@ EXPECTED_SERVICES = %w[
   audiobookshelf beszel dozzle immich jellyfin komga ntfy paperless-ngx
   tinymediamanager
 ].freeze
+EXPECTED_LEGACY_SOURCE = {
+  "repository" => "yonatankarp/nas-infrastructure",
+  "commit" => "400f03f276ae1bb69f5460c175b9fb923d620f1a",
+  "local_path" => "../nas-infrastructure"
+}.freeze
+EXPECTED_SERVICE_MAPPINGS = {
+  "audiobookshelf" => { "role" => "audiobookshelf", "legacy_path" => "compose/audiobookshelf/compose.yml", "tranche" => 3 },
+  "beszel" => { "role" => "beszel", "legacy_path" => "compose/beszel/compose.yml", "tranche" => 2 },
+  "dozzle" => { "role" => "dozzle", "legacy_path" => "compose/dozzle/compose.yml", "tranche" => 2 },
+  "immich" => { "role" => "immich", "legacy_path" => "compose/immich/compose.yml", "tranche" => 5 },
+  "jellyfin" => { "role" => "jellyfin", "legacy_path" => "compose/jellyfin/compose.yml", "tranche" => 4 },
+  "komga" => { "role" => "komga", "legacy_path" => "compose/komga/compose.yml", "tranche" => 3 },
+  "ntfy" => { "role" => "ntfy", "legacy_path" => "compose/ntfy/compose.yml", "tranche" => 2 },
+  "paperless-ngx" => { "role" => "paperless_ngx", "legacy_path" => "compose/paperless-ngx/compose.yml", "tranche" => 6 },
+  "tinymediamanager" => { "role" => "tinymediamanager", "legacy_path" => "compose/tinymediamanager/compose.yml", "tranche" => 3 }
+}.freeze
 REQUIRED_MANIFEST_FIELDS = %w[name legacy_path role tranche status].freeze
 ALLOWED_SERVICE_STATUSES = %w[planned implemented accepted].freeze
+IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
+
+def verification_task?(tasks)
+  Array(tasks).any? do |task|
+    next false unless task.is_a?(Hash)
+
+    named_verification = task["name"].is_a?(String) &&
+                         task["name"].match?(/\b(?:verify|verification)\b/i)
+    active_probe = %w[ansible.builtin.uri ansible.builtin.assert ansible.builtin.command]
+                   .any? { |module_name| task.key?(module_name) }
+    nested_verification = %w[block rescue always].any? do |section|
+      verification_task?(task[section])
+    end
+    (named_verification && active_probe) || nested_verification
+  end
+end
+
+def role_has_verification?(tasks_path)
+  File.file?(tasks_path) && verification_task?(YAML.safe_load_file(tasks_path))
+rescue Psych::Exception
+  false
+end
+
+def contract_has_verification?(contract_path)
+  return false unless File.file?(contract_path) && File.executable?(contract_path)
+
+  active_lines = File.readlines(contract_path).reject do |line|
+    line.strip.empty? || line.lstrip.start_with?("#")
+  end.join
+  active_lines.match?(
+    /\b(?:test|grep|diff|cmp)\b|(?:^|\s)\[\s|curl[^\n]*(?:--fail|-\w*f\w*)|exit\s+[1-9]\d*|\bfalse\b/
+  )
+end
 
 manifest_path = File.join(ROOT, "services", "manifest.yml")
+manifest_loaded = true
 manifest = begin
   YAML.safe_load_file(manifest_path)
 rescue Errno::ENOENT
   check(failures, false, "service manifest is missing: services/manifest.yml")
+  manifest_loaded = false
   nil
 rescue Psych::Exception => e
   check(failures, false, "service manifest is malformed: #{e.message.lines.first.strip}")
+  manifest_loaded = false
   nil
 end
 
-manifest_entries = if manifest.is_a?(Hash) && manifest["services"].is_a?(Array)
-                     manifest["services"]
-                   else
-                     check(failures, false, "service manifest must contain a services list") if manifest
-                     []
-                   end
+check(failures, manifest.is_a?(Hash), "service manifest top level must be a mapping") if manifest_loaded
+manifest = {} unless manifest.is_a?(Hash)
+
+legacy_source = manifest["legacy_source"]
+check(failures, legacy_source.is_a?(Hash), "service manifest legacy_source must be a mapping") if manifest_loaded
+legacy_source = {} unless legacy_source.is_a?(Hash)
+EXPECTED_LEGACY_SOURCE.each do |field, expected|
+  check(failures, legacy_source[field] == expected,
+        "legacy_source #{field} must equal #{expected}") if manifest_loaded
+end
+
+manifest_entries = manifest["services"]
+unless manifest_entries.is_a?(Array)
+  check(failures, false, "service manifest must contain a services list") if manifest_loaded
+  manifest_entries = []
+end
 
 manifest_names = manifest_entries.filter_map do |service|
   unless service.is_a?(Hash)
@@ -51,17 +113,35 @@ manifest_names = manifest_entries.filter_map do |service|
   missing_fields = REQUIRED_MANIFEST_FIELDS.reject { |field| service.key?(field) }
   check(failures, missing_fields.empty?,
         "service manifest entry is missing required fields: #{missing_fields.join(', ')}")
+  check(failures, service["name"].is_a?(String), "service name must be a string")
+  check(failures, service["role"].is_a?(String),
+        "#{service['name'] || '<unnamed>'}: role must be a string")
+  check(failures, service["legacy_path"].is_a?(String),
+        "#{service['name'] || '<unnamed>'}: legacy_path must be a string")
   check(failures, ALLOWED_SERVICE_STATUSES.include?(service["status"]),
         "#{service['name'] || '<unnamed>'}: status must be planned, implemented, or accepted")
   check(failures, service["tranche"].is_a?(Integer) && service["tranche"].positive?,
         "#{service['name'] || '<unnamed>'}: tranche must be a positive integer")
-  service["name"]
+
+  name = service["name"]
+  if name.is_a?(String) && EXPECTED_SERVICE_MAPPINGS.key?(name)
+    EXPECTED_SERVICE_MAPPINGS.fetch(name).each do |field, expected|
+      check(failures, service[field] == expected, "#{name}: #{field} must equal #{expected}")
+    end
+  end
+  name if name.is_a?(String)
 end.compact
 
 check(failures, manifest_names.sort == EXPECTED_SERVICES.sort,
       "service manifest must list the complete source platform")
 check(failures, (manifest_names - EXPECTED_SERVICES).empty?,
       "service manifest contains unknown services: #{(manifest_names - EXPECTED_SERVICES).uniq.join(', ')}")
+
+%w[ntfy beszel].each do |name|
+  entry = manifest_entries.find { |service| service.is_a?(Hash) && service["name"] == name }
+  check(failures, entry && IMPLEMENTED_STATUSES.include?(entry["status"]),
+        "#{name}: status must be implemented or accepted")
+end
 
 %w[name role legacy_path].each do |field|
   values = manifest_entries.filter_map { |service| service[field] if service.is_a?(Hash) }
@@ -80,7 +160,7 @@ declared_paths = storage.fetch("nas_storage").map { |entry| entry.fetch("path") 
 
 manifest_entries.each do |service|
   next unless service.is_a?(Hash)
-  next unless %w[implemented accepted].include?(service["status"])
+  next unless IMPLEMENTED_STATUSES.include?(service["status"])
 
   name = service["name"]
   role = service["role"]
@@ -96,9 +176,8 @@ manifest_entries.each do |service|
   check(failures, declared_paths.any? { |path| path.include?("/#{name}/") || path.end_with?("/#{name}") },
         "#{name}: implemented service has no storage declaration")
 
-  tasks = File.file?(tasks_path) ? File.read(tasks_path) : ""
-  contract_path = File.join(ROOT, "services", name, "contract.yml")
-  verifies_service = tasks.match?(/ansible\.builtin\.(?:uri|command|assert):/) || File.file?(contract_path)
+  contract_path = File.join(ROOT, "tests", "contracts", "#{name}.sh")
+  verifies_service = role_has_verification?(tasks_path) || contract_has_verification?(contract_path)
   check(failures, verifies_service,
         "#{name}: implemented service has no automated verification or service contract")
 end
