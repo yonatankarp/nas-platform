@@ -1,0 +1,263 @@
+---
+- name: Resolve implemented services from the controller manifest
+  ansible.builtin.set_fact:
+    deployment_bundle_services: >-
+      {{ (lookup('file', playbook_dir ~ '/services/manifest.yml') | from_yaml).services
+         | selectattr('status', 'in', ['implemented', 'accepted']) | list }}
+    deployment_bundle_staging_dir: >-
+      {{ platform_deploy_root }}/.release-{{ platform_release_id }}
+
+- name: Validate deployment paths before destructive operations
+  ansible.builtin.assert:
+    that:
+      - platform_release_id is match('^[0-9a-f]{40}$')
+      - platform_kind is match('^[a-z][a-z0-9_-]*$')
+      - platform_deploy_root == deployment_bundle_expected_root
+      - platform_release_dir == deployment_bundle_expected_release_dir
+      - platform_current_dir == platform_deploy_root ~ '/current'
+      - platform_runtime_dir == platform_deploy_root ~ '/runtime'
+    fail_msg: >-
+      Deployment paths must be derived from nas_docker_root and a full Git SHA;
+      refusing to create, remove, or replace an uncontained path.
+  vars:
+    deployment_bundle_expected_root: >-
+      {{ (nas_docker_root | regex_replace('/+$', '')) ~ '/nas-platform' }}
+    deployment_bundle_expected_release_dir: >-
+      {{ platform_deploy_root }}/releases/{{ platform_release_id }}
+
+- name: Inspect canonical controller Compose definitions
+  ansible.builtin.stat:
+    path: "{{ playbook_dir }}/services/{{ item.name }}/compose.yml"
+  loop: "{{ deployment_bundle_services }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: deployment_bundle_canonical_sources
+  delegate_to: localhost
+
+- name: Require canonical Compose for each implemented service
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isreg
+    fail_msg: >-
+      Implemented service {{ item.item.name }} has no canonical controller
+      Compose definition at {{ item.stat.path }}.
+  loop: "{{ deployment_bundle_canonical_sources.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: Inspect platform-specific controller Compose definitions
+  ansible.builtin.stat:
+    path: "{{ playbook_dir }}/services/{{ item.name }}/compose.{{ platform_kind }}.yml"
+  loop: "{{ deployment_bundle_services }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: deployment_bundle_platform_sources
+  delegate_to: localhost
+
+- name: Create deployment and mutable runtime directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "{{ platform_deploy_root }}"
+    - "{{ platform_deploy_root }}/releases"
+    - "{{ platform_runtime_dir }}"
+    - "{{ platform_runtime_dir }}/services"
+
+- name: Create mutable service runtime directories
+  ansible.builtin.file:
+    path: "{{ platform_runtime_dir }}/services/{{ item.name }}"
+    state: directory
+    mode: "0755"
+  loop: "{{ deployment_bundle_services }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Inspect the current deployment pointer
+  ansible.builtin.stat:
+    path: "{{ platform_current_dir }}"
+    follow: false
+  register: deployment_bundle_current
+
+- name: Remove an abandoned staging release
+  ansible.builtin.file:
+    path: "{{ deployment_bundle_staging_dir }}"
+    state: absent
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Create the clean staging release
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "{{ deployment_bundle_staging_dir }}"
+    - "{{ deployment_bundle_staging_dir }}/services"
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Create implemented service staging directories
+  ansible.builtin.file:
+    path: "{{ deployment_bundle_staging_dir }}/services/{{ item.name }}"
+    state: directory
+    mode: "0755"
+  loop: "{{ deployment_bundle_services }}"
+  loop_control:
+    label: "{{ item.name }}"
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Copy canonical Compose definitions from the controller
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/services/{{ item.name }}/compose.yml"
+    dest: "{{ deployment_bundle_staging_dir }}/services/{{ item.name }}/compose.yml"
+    mode: "0644"
+  loop: "{{ deployment_bundle_services }}"
+  loop_control:
+    label: "{{ item.name }}"
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Copy present platform-specific Compose definitions from the controller
+  ansible.builtin.copy:
+    src: "{{ item.stat.path }}"
+    dest: >-
+      {{ deployment_bundle_staging_dir }}/services/{{ item.item.name }}/compose.{{ platform_kind }}.yml
+    mode: "0644"
+  loop: "{{ deployment_bundle_platform_sources.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  changed_when: false
+  when:
+    - not ansible_check_mode
+    - item.stat.exists
+
+- name: Write the deployment manifest
+  ansible.builtin.template:
+    src: manifest.yml.j2
+    dest: "{{ deployment_bundle_staging_dir }}/manifest.yml"
+    mode: "0644"
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Inspect the immutable release
+  ansible.builtin.stat:
+    path: "{{ platform_release_dir }}"
+    follow: false
+  register: deployment_bundle_release
+
+- name: Compare the staged and immutable releases
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_facts.python.executable }}"
+      - -c
+      - |
+        import os
+        import pathlib
+        import sys
+
+        def snapshot(root):
+            result = {}
+            for path in sorted(root.rglob("*")):
+                relative = path.relative_to(root).as_posix()
+                if path.is_symlink():
+                    result[relative] = ("link", os.readlink(path))
+                elif path.is_dir():
+                    result[relative] = ("dir",)
+                else:
+                    result[relative] = ("file", path.read_bytes())
+            return result
+
+        expected = snapshot(pathlib.Path(sys.argv[1]))
+        actual = snapshot(pathlib.Path(sys.argv[2]))
+        raise SystemExit(expected != actual)
+      - "{{ deployment_bundle_staging_dir }}"
+      - "{{ platform_release_dir }}"
+  register: deployment_bundle_release_compare
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when:
+    - deployment_bundle_release.stat.exists
+    - not ansible_check_mode
+
+- name: Decide whether the immutable release needs installation
+  ansible.builtin.set_fact:
+    deployment_bundle_release_install_required: >-
+      {{ not deployment_bundle_release.stat.exists or
+         deployment_bundle_release_compare.rc | default(0) != 0 }}
+
+- name: Refuse to mutate an active immutable release
+  ansible.builtin.assert:
+    that:
+      - not deployment_bundle_release_install_required or
+        not (deployment_bundle_current.stat.islnk | default(false)) or
+        deployment_bundle_current.stat.lnk_source | default('') != platform_release_dir
+    fail_msg: >-
+      Active release {{ platform_release_dir }} differs from the controller
+      bundle. Refusing to mutate it in place; deploy a new controller revision.
+
+- name: Remove an inactive stale release
+  ansible.builtin.file:
+    path: "{{ platform_release_dir }}"
+    state: absent
+  when:
+    - not ansible_check_mode
+    - deployment_bundle_release.stat.exists
+    - deployment_bundle_release_install_required
+
+- name: Atomically install the immutable release
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_facts.python.executable }}"
+      - -c
+      - import os, sys; os.replace(sys.argv[1], sys.argv[2])
+      - "{{ deployment_bundle_staging_dir }}"
+      - "{{ platform_release_dir }}"
+  when:
+    - not ansible_check_mode
+    - deployment_bundle_release_install_required
+
+- name: Remove the verified staging release
+  ansible.builtin.file:
+    path: "{{ deployment_bundle_staging_dir }}"
+    state: absent
+  changed_when: false
+  when:
+    - not ansible_check_mode
+    - not deployment_bundle_release_install_required
+
+- name: Decide whether the deployment pointer needs to move
+  ansible.builtin.set_fact:
+    deployment_bundle_switch_required: >-
+      {{ not (deployment_bundle_current.stat.islnk | default(false)) or
+         deployment_bundle_current.stat.lnk_source | default('') != platform_release_dir }}
+
+- name: Remove a legacy non-symlink deployment directory
+  ansible.builtin.file:
+    path: "{{ platform_current_dir }}"
+    state: absent
+  when:
+    - deployment_bundle_current.stat.exists
+    - not (deployment_bundle_current.stat.islnk | default(false))
+
+- name: Create the next deployment pointer
+  ansible.builtin.file:
+    src: "{{ platform_release_dir }}"
+    dest: "{{ platform_deploy_root }}/.current-{{ platform_release_id }}"
+    state: link
+    force: true
+  when: deployment_bundle_switch_required
+
+- name: Atomically activate the controller release
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_facts.python.executable }}"
+      - -c
+      - import os, sys; os.replace(sys.argv[1], sys.argv[2])
+      - "{{ platform_deploy_root }}/.current-{{ platform_release_id }}"
+      - "{{ platform_current_dir }}"
+  when: deployment_bundle_switch_required

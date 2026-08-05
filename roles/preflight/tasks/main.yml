@@ -91,32 +91,36 @@
       {{ preflight_gpu_available | ternary('present, GPU services enabled',
                                      'absent, GPU services skipped') }}
 
-- name: Look for the repository checkout
+- name: Look for the controller bundle source
   ansible.builtin.stat:
-    path: "{{ nas_repo_dir }}/services"
+    path: "{{ playbook_dir }}/services"
   register: preflight_services_dir
+  delegate_to: localhost
+  run_once: true
 
-- name: Require the repository checkout, since the Compose definitions live in it
+- name: Require the controller bundle source
   ansible.builtin.assert:
     that:
       - preflight_services_dir.stat.exists
       - preflight_services_dir.stat.isdir
     fail_msg: >-
-      {{ nas_repo_dir }}/services not found. Clone this repository to
-      {{ nas_repo_dir }}, or override nas_repo_dir.
-    success_msg: "Repository checkout found at {{ nas_repo_dir }}"
+      {{ playbook_dir }}/services not found on the controller. Run Ansible from
+      the nas-platform checkout that owns the deployment definitions.
+    success_msg: "Controller bundle source found at {{ playbook_dir }}/services"
+  delegate_to: localhost
+  run_once: true
 
 # A probe, not a state change, so it reports unchanged. Otherwise every run looks
 # changed and the idempotence check could never be clean.
 - name: Confirm the service state root is writable
   ansible.builtin.file:
-    path: "{{ nas_docker_root }}/.preflight-probe"
+    path: "{{ platform_deploy_root }}/.preflight-probe"
     state: directory
     mode: "0755"
   changed_when: false
 
 - name: Remove the write probe
   ansible.builtin.file:
-    path: "{{ nas_docker_root }}/.preflight-probe"
+    path: "{{ platform_deploy_root }}/.preflight-probe"
     state: absent
   changed_when: false

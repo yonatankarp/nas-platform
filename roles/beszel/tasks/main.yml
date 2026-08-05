@@ -10,6 +10,18 @@
 # Read-only lookups below carry check_mode: false. uri is skipped under --check,
 # which would leave their registers without a status or json key and break every
 # conditional that follows. They change nothing, so running them is safe.
+- name: Check for a Beszel platform override
+  ansible.builtin.stat:
+    path: "{{ platform_current_dir }}/services/beszel/compose.{{ platform_kind }}.yml"
+  register: beszel_platform_compose
+
+- name: Select the Beszel Compose definitions
+  ansible.builtin.set_fact:
+    beszel_compose_files: >-
+      {{ ['compose.yml'] +
+         (beszel_platform_compose.stat.exists
+          | ternary(['compose.' ~ platform_kind ~ '.yml'], [])) }}
+
 - name: Install the hub keypair before the hub can generate its own
   ansible.builtin.copy:
     content: "{{ vault_beszel_hub_private_key }}"
@@ -20,7 +32,7 @@
 - name: Render the Beszel environment
   ansible.builtin.template:
     src: env.j2
-    dest: "{{ nas_repo_dir }}/services/beszel/.env"
+    dest: "{{ platform_runtime_dir }}/services/beszel/.env"
     mode: "0600"
   no_log: "{{ beszel_no_log | default(true) }}"
 
@@ -29,8 +41,9 @@
 # difference rather than a testing accommodation.
 - name: Deploy Beszel
   community.docker.docker_compose_v2:
-    project_src: "{{ nas_repo_dir }}/services/beszel"
-    env_files: ["{{ nas_repo_dir }}/services/beszel/.env"]
+    project_src: "{{ platform_current_dir }}/services/beszel"
+    files: "{{ beszel_compose_files }}"
+    env_files: ["{{ platform_runtime_dir }}/services/beszel/.env"]
     services: "{{ beszel_services }}"
     state: present
     wait: true
@@ -70,8 +83,9 @@
 # cannot be assumed on ADM. This drives the Compose CLI like the deploy task.
 - name: Create the superuser
   community.docker.docker_compose_v2_exec:
-    project_src: "{{ nas_repo_dir }}/services/beszel"
-    env_files: ["{{ nas_repo_dir }}/services/beszel/.env"]
+    project_src: "{{ platform_current_dir }}/services/beszel"
+    files: "{{ beszel_compose_files }}"
+    env_files: ["{{ platform_runtime_dir }}/services/beszel/.env"]
     service: hub
     argv:
       - /beszel
@@ -167,8 +181,9 @@
 # from seeing a stale snapshot when the token and settings records are created.
 - name: Refresh Beszel database connections after creating the application user
   community.docker.docker_compose_v2:
-    project_src: "{{ nas_repo_dir }}/services/beszel"
-    env_files: ["{{ nas_repo_dir }}/services/beszel/.env"]
+    project_src: "{{ platform_current_dir }}/services/beszel"
+    files: "{{ beszel_compose_files }}"
+    env_files: ["{{ platform_runtime_dir }}/services/beszel/.env"]
     services: [hub]
     state: restarted
     wait: true
