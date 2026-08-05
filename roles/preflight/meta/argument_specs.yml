@@ -5,8 +5,8 @@ argument_specs:
     description:
       - Fails early and specifically rather than letting a later role fail
         obscurely. Checks the interpreter, Docker, the Compose floor, that the
-        NAS volumes are mounted, that the repository is present, and that the
-        service state root is writable.
+        NAS volumes are mounted, that the controller bundle source is present,
+        and that the deployment root is writable.
     options:
       nas_python_minimum:
         type: str
@@ -24,7 +24,7 @@ argument_specs:
         type: str
         required: true
         description: Directory holding NAS-managed user files.
-      nas_repo_dir:
+      platform_deploy_root:
         type: str
         required: true
-        description: Where this repository is checked out on the target.
+        description: Root containing versioned controller deployment bundles.

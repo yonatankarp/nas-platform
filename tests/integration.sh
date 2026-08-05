@@ -40,6 +40,23 @@ mkdir -p "$sandbox/volume1/Docker" "$sandbox/volume2" "$sandbox/repo" \
   "$sandbox/fixtures" "$sandbox/reports"
 chmod 0777 "$sandbox/fixtures" "$sandbox/reports"
 
+# Prove that deployment definitions are owned by the controller revision, not
+# trusted from whatever happens to exist on the target. The bundle role must
+# replace this deliberately stale definition and identify its controller commit.
+expected_release_id=$(git -C "$repo_dir" rev-parse HEAD)
+stale_service_dir="$sandbox/volume1/Docker/nas-platform/current/services/ntfy"
+stale_release_dir="$sandbox/volume1/Docker/nas-platform/releases/$expected_release_id"
+mkdir -p "$stale_service_dir" \
+  "$stale_release_dir/services/ntfy" \
+  "$stale_release_dir/services/undeclared"
+printf '%s\n' 'stale target compose definition' > "$stale_service_dir/compose.yml"
+printf '%s\n' 'stale release compose definition' \
+  > "$stale_release_dir/services/ntfy/compose.yml"
+printf '%s\n' 'stale target-only override' \
+  > "$stale_release_dir/services/ntfy/compose.nas.yml"
+printf '%s\n' 'undeclared target service' \
+  > "$stale_release_dir/services/undeclared/compose.yml"
+
 # A copy of the repository, so a play cannot modify the working tree.
 tar -C "$repo_dir" -cf - --exclude .git . | tar -C "$sandbox/repo" -xf -
 
@@ -92,7 +109,7 @@ docker run --rm \
   -w /repo \
   "$runner_image" \
   sh -eu -c "
-    apk add --no-cache --quiet docker-cli docker-cli-compose tar '$ruby_package' '$curl_package' >/dev/null
+    apk add --no-cache --quiet docker-cli docker-cli-compose git tar '$ruby_package' '$curl_package' >/dev/null
     pip install --quiet --no-input 'ansible-core==$ansible_core_version'
     ansible-galaxy collection install -r /repo/requirements.yml >/dev/null
 
@@ -100,25 +117,64 @@ docker run --rm \
       ansible-playbook \
         -i inventory/local.yml \
         -e @$sandbox/sandbox-vault.yml \
-        -e nas_repo_dir=$sandbox/repo \
         -e nas_docker_root=$sandbox/volume1/Docker \
         -e nas_media_root=$sandbox/volume2 \
         '$playbook' \"\$@\"
     }
 
+    if [ "\$#" -eq 0 ]; then
     run_play
+    else
+      run_play "\$@"
+    fi
 
-    env \
-      PLATFORM_KIND=integration \
-      PLATFORM_CONTRACT_VAULT_FILE='$sandbox/sandbox-vault.yml' \
-      PLATFORM_DOCKER_ROOT='$sandbox/volume1/Docker' \
-      PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
-      PLATFORM_FIXTURE_ROOT='$sandbox/fixtures' \
-      PLATFORM_REPORT_ROOT='$sandbox/reports' \
-      ruby /repo/tests/run_contracts.rb --execute
+    if cmp -s \
+      /repo/services/ntfy/compose.yml \
+      '$sandbox/volume1/Docker/nas-platform/current/services/ntfy/compose.yml'; then
+      printf 'BUNDLE OWNED: target compose matches controller source\n'
+    else
+      printf 'BUNDLE STALE: target compose does not match controller source\n' >&2
+      exit 1
+    fi
+
+    if grep -qF 'git_sha: $expected_release_id' \
+      '$sandbox/volume1/Docker/nas-platform/current/manifest.yml'; then
+      printf 'BUNDLE IDENTIFIED: deployment manifest records controller Git SHA\n'
+    else
+      printf 'BUNDLE UNIDENTIFIED: deployment manifest lacks controller Git SHA\n' >&2
+      exit 1
+    fi
+
+    expected_ntfy_checksum=\$(sha256sum /repo/services/ntfy/compose.yml | cut -d' ' -f1)
+    if grep -qF "\$expected_ntfy_checksum" \
+      '$sandbox/volume1/Docker/nas-platform/current/manifest.yml'; then
+      printf 'BUNDLE CHECKSUMMED: manifest binds controller content\n'
+    else
+      printf 'BUNDLE UNCHECKSUMMED: manifest lacks controller checksum\n' >&2
+      exit 1
+    fi
+
+    if [ ! -e '$stale_release_dir/services/ntfy/compose.nas.yml' ] && \
+       [ ! -e '$stale_release_dir/services/undeclared' ]; then
+      printf 'BUNDLE CLEAN: target-only release content was removed\n'
+    else
+      printf 'BUNDLE DIRTY: target-only release content survived assembly\n' >&2
+      exit 1
+    fi
+
+    if [ "\$#" -eq 0 ]; then
+      env \
+        PLATFORM_KIND=integration \
+        PLATFORM_CONTRACT_VAULT_FILE='$sandbox/sandbox-vault.yml' \
+        PLATFORM_DOCKER_ROOT='$sandbox/volume1/Docker' \
+        PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
+        PLATFORM_FIXTURE_ROOT='$sandbox/fixtures' \
+        PLATFORM_REPORT_ROOT='$sandbox/reports' \
+        ruby /repo/tests/run_contracts.rb --execute
+    fi
 
     printf '\n=== phase 2: asserting idempotence ===\n'
-    run_play | tee /tmp/second.txt
+    run_play "\$@" | tee /tmp/second.txt
     # Must also require failed=0: a run that changed nothing because it died
     # early is not idempotent, and an earlier version of this check passed on it.
     if grep -qE 'changed=0 ' /tmp/second.txt && grep -qE 'failed=0 ' /tmp/second.txt; then
@@ -129,10 +185,10 @@ docker run --rm \
     fi
 
     printf '\n=== phase 3: asserting --check --diff works ===\n'
-    if run_play --check --diff; then
+    if run_play "\$@" --check --diff; then
       printf 'CHECK MODE OK: dry run completed\n'
     else
       printf 'CHECK MODE BROKEN: dry run failed\n' >&2
       exit 1
     fi
-  "
+  " integration-run "$@"

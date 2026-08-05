@@ -14,6 +14,9 @@
     - role: host_prep
       tags: [host_prep, storage]
 
+    - role: deployment_bundle
+      tags: [deployment_bundle]
+
     # ntfy first: it is the sink every monitor publishes to, and its tokens are
     # the values the other services are configured with.
     - role: ntfy

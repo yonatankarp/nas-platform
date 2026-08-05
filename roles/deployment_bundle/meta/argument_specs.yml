@@ -1,0 +1,36 @@
+---
+argument_specs:
+  main:
+    short_description: Install an immutable bundle owned by the controller revision
+    description:
+      - Copies implemented service definitions from the controller checkout into
+        a versioned release and atomically switches the current release symlink.
+    options:
+      nas_docker_root:
+        type: path
+        required: true
+        description: Storage root beneath which deployment bundles must live.
+      platform_kind:
+        type: str
+        required: true
+        description: Platform-specific Compose override suffix.
+      platform_release_id:
+        type: str
+        required: true
+        description: Git revision identifying the controller release.
+      platform_deploy_root:
+        type: path
+        required: true
+        description: Root containing all versioned releases.
+      platform_release_dir:
+        type: path
+        required: true
+        description: Directory for this controller revision.
+      platform_current_dir:
+        type: path
+        required: true
+        description: Symlink naming the active controller revision.
+      platform_runtime_dir:
+        type: path
+        required: true
+        description: Mutable runtime configuration outside immutable releases.
