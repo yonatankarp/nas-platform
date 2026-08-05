@@ -1,6 +1,7 @@
 ---
 git_sha: {{ platform_release_id | to_json }}
 platform_kind: {{ platform_kind | to_json }}
+platform_compose_kind: {{ platform_compose_kind | to_json }}
 services:
 {% for service in deployment_bundle_services %}
   - name: {{ service.name | to_json }}
@@ -9,7 +10,7 @@ services:
         checksum_sha256: {{ (lookup('file', playbook_dir ~ '/services/' ~ service.name ~ '/compose.yml', rstrip=false) | hash('sha256')) | to_json }}
 {% set platform_source = deployment_bundle_platform_sources.results[loop.index0] %}
 {% if platform_source.stat.exists %}
-      - path: compose.{{ platform_kind }}.yml
+      - path: compose.{{ platform_compose_kind }}.yml
         checksum_sha256: {{ (lookup('file', platform_source.stat.path, rstrip=false) | hash('sha256')) | to_json }}
 {% endif %}
     images:

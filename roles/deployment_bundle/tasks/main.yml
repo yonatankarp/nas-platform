@@ -16,7 +16,10 @@
   ansible.builtin.assert:
     that:
       - platform_release_id is match('^[0-9a-f]{40}$')
-      - platform_kind is match('^[a-z][a-z0-9_-]*$')
+      - platform_kind in ['nas', 'mac']
+      - platform_compose_kind is match('^[a-z][a-z0-9_-]*$')
+      - platform_compose_kind == platform_kind or
+        (deployment_bundle_test_mode | bool)
       - platform_deploy_root == deployment_bundle_expected_root
       - platform_release_dir == deployment_bundle_expected_release_dir
       - platform_current_dir == platform_deploy_root ~ '/current'
@@ -54,7 +57,7 @@
 
 - name: Inspect platform-specific controller Compose definitions
   ansible.builtin.stat:
-    path: "{{ playbook_dir }}/services/{{ item.name }}/compose.{{ platform_kind }}.yml"
+    path: "{{ playbook_dir }}/services/{{ item.name }}/compose.{{ platform_compose_kind }}.yml"
   loop: "{{ deployment_bundle_services }}"
   loop_control:
     label: "{{ item.name }}"
@@ -137,7 +140,7 @@
   ansible.builtin.copy:
     src: "{{ item.stat.path }}"
     dest: >-
-      {{ deployment_bundle_staging_dir }}/services/{{ item.item.name }}/compose.{{ platform_kind }}.yml
+      {{ deployment_bundle_staging_dir }}/services/{{ item.item.name }}/compose.{{ platform_compose_kind }}.yml
     mode: "0644"
   loop: "{{ deployment_bundle_platform_sources.results }}"
   loop_control:

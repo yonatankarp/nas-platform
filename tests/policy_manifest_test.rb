@@ -17,6 +17,11 @@ BASE_FIXTURE_PATHS = %w[
   ansible.cfg
   inventory/group_vars/all/main.yml
   inventory/group_vars/all/vault.yml.example
+  inventory/group_vars/mac_hosts/main.yml
+  inventory/group_vars/nas_hosts/main.yml
+  inventory/local.yml
+  inventory/mac.yml
+  inventory/remote.yml
   requirements.yml
   site.yml
   roles/host_prep/meta/argument_specs.yml

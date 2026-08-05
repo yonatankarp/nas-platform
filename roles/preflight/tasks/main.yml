@@ -50,6 +50,7 @@
   ansible.builtin.slurp:
     src: /proc/mounts
   register: preflight_mounts
+  when: platform_kind == 'nas'
 
 # Checked through /proc/mounts rather than the mounts fact, which is not
 # populated on every platform and raises instead of failing cleanly when absent.
@@ -66,28 +67,32 @@
   loop:
     - "{{ nas_docker_root }}"
     - "{{ nas_media_root }}"
-  when: item is match('^/volume')
+  when:
+    - platform_kind == 'nas'
+    - item is match('^/volume')
   vars:
     preflight_mount_targets: >-
       {{ (preflight_mounts.content | b64decode).splitlines()
          | map('regex_replace', '^(\S+)\s+(\S+).*$', '\2') | list }}
 
-# Detected rather than configured. A host without a render device genuinely
-# cannot run hardware transcoding or the Intel GPU agent, so roles select their
-# services from this instead of from a flag that a test could lie about.
+# A capable host must also expose the declared path. This keeps the inventory
+# contract explicit without pretending that a missing device is usable.
 - name: Look for a render device
   ansible.builtin.stat:
-    path: "{{ nas_render_device }}"
+    path: "{{ platform_render_device_path }}"
   register: preflight_render_device
+  when: platform_render_device_available | bool
 
 - name: Record whether hardware acceleration is available
   ansible.builtin.set_fact:
-    preflight_gpu_available: "{{ preflight_render_device.stat.exists | default(false) }}"
+    preflight_gpu_available: >-
+      {{ (platform_render_device_available | bool) and
+         (preflight_render_device.stat.exists | default(false)) }}
 
 - name: Report the hardware acceleration decision
   ansible.builtin.debug:
     msg: >-
-      {{ nas_render_device }}
+      {{ platform_render_device_path }}
       {{ preflight_gpu_available | ternary('present, GPU services enabled',
                                      'absent, GPU services skipped') }}
 

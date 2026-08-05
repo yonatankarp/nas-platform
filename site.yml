@@ -5,7 +5,7 @@
 # in both modes. Read-only source and Git checks are explicitly delegated to the
 # controller checkout.
 - name: Install and configure the NAS platform
-  hosts: nas_hosts
+  hosts: platform_hosts
   gather_facts: true
 
   pre_tasks:

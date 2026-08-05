@@ -10,8 +10,12 @@ argument_specs:
         type: bool
         default: false
         description: >-
-          Integration-only bypass for pre-commit validation of a dirty
-          controller checkout. Refused for every non-integration platform.
+          Test-only bypass for pre-commit validation of a dirty controller
+          checkout. Requires explicit deployment bundle test mode.
+      deployment_bundle_test_mode:
+        type: bool
+        default: false
+        description: Enables an explicit non-production Compose selector for tests.
       nas_docker_root:
         type: path
         required: true
@@ -19,7 +23,12 @@ argument_specs:
       platform_kind:
         type: str
         required: true
-        description: Platform-specific Compose override suffix.
+        choices: [nas, mac]
+        description: Production host platform discriminator.
+      platform_compose_kind:
+        type: str
+        required: true
+        description: Compose override suffix; equals platform_kind outside tests.
       platform_release_id:
         type: str
         required: true

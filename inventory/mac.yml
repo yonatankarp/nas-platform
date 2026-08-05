@@ -1,0 +1,9 @@
+---
+# Docker Desktop proof runs locally. The lifecycle harness supplies unique,
+# disposable storage roots through the environment for each run.
+platform_hosts:
+  children:
+    mac_hosts:
+      hosts:
+        mac:
+          ansible_connection: local

@@ -1,13 +1,24 @@
 ---
+- name: Restrict Compose override selection to explicit test mode
+  ansible.builtin.assert:
+    that:
+      - platform_kind in ['nas', 'mac']
+      - platform_compose_kind == platform_kind or
+        (deployment_bundle_test_mode | bool)
+    fail_msg: >-
+      platform_kind must remain nas or mac. A different platform_compose_kind
+      requires explicit deployment_bundle_test_mode.
+
 - name: Restrict dirty controller bypass to integration
   ansible.builtin.assert:
     that:
       - not (deployment_bundle_allow_dirty_controller | bool) or
-        platform_kind == 'integration'
+        ((deployment_bundle_test_mode | bool) and
+         platform_compose_kind == 'integration')
     fail_msg: >-
       deployment_bundle_allow_dirty_controller is permitted only when
-      platform_kind is integration. Production releases must use committed
-      controller bundle sources.
+      platform_compose_kind is integration and deployment_bundle_test_mode is
+      enabled. Production releases must use committed controller bundle sources.
 
 - name: Inspect controller bundle source cleanliness
   ansible.builtin.command:

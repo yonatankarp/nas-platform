@@ -1,8 +1,10 @@
 # Run from a workstation over the LAN or Tailscale. The address and login come
 # from vault so no committed file carries them.
-nas_hosts:
-  hosts:
-    nas:
-      ansible_connection: ssh
-      ansible_host: "{{ vault_nas_address }}"
-      ansible_user: "{{ vault_nas_user }}"
+platform_hosts:
+  children:
+    nas_hosts:
+      hosts:
+        nas:
+          ansible_connection: ssh
+          ansible_host: "{{ vault_nas_address }}"
+          ansible_user: "{{ vault_nas_user }}"
