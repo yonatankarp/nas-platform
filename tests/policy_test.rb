@@ -42,7 +42,6 @@ EXPECTED_SERVICE_MAPPINGS = {
   "paperless-ngx" => { "role" => "paperless_ngx", "legacy_path" => "compose/paperless-ngx/compose.yml", "tranche" => 6 },
   "tinymediamanager" => { "role" => "tinymediamanager", "legacy_path" => "compose/tinymediamanager/compose.yml", "tranche" => 3 }
 }.freeze
-SERVICE_CONTRACT_BASENAME_EXCEPTIONS = { "paperless-ngx" => "paperless" }.freeze
 REQUIRED_MANIFEST_FIELDS = %w[name legacy_path role tranche status].freeze
 ALLOWED_SERVICE_STATUSES = %w[planned implemented accepted].freeze
 IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
@@ -57,6 +56,9 @@ def flatten_tasks(tasks, flattened = [])
   flattened
 end
 
+# These checks prove that verification is structurally wired to an observable,
+# service-specific result. The integration run supplies runtime semantic proof;
+# static policy intentionally does not interpret arbitrary Jinja expressions.
 def service_specific_uri?(task, prefixes, service_names)
   uri = task["ansible.builtin.uri"]
   return false unless uri.is_a?(Hash) && uri["url"].is_a?(String)
@@ -274,8 +276,7 @@ manifest_entries.each do |service|
   check(failures, declared_paths.any? { |path| path.include?("/#{name}/") || path.end_with?("/#{name}") },
         "#{name}: implemented service has no storage declaration")
 
-  contract_basename = SERVICE_CONTRACT_BASENAME_EXCEPTIONS.fetch(name, name)
-  relative_contract_path = "tests/contracts/#{contract_basename}.sh"
+  relative_contract_path = "tests/contracts/#{contract_basename(name)}.sh"
   contract_root = File.join(ROOT, "tests", "contracts")
   contract_path = File.join(ROOT, relative_contract_path)
   role_verification = tasks_owned && role_has_verification?(tasks_path, name, role)
@@ -461,6 +462,14 @@ idempotence_phase = harness.index("=== phase 2: asserting idempotence ===")
 check(failures, first_converge && contract_execution && idempotence_phase &&
                 first_converge < contract_execution && contract_execution < idempotence_phase,
       "integration must execute registered contracts after converge and before idempotence")
+contract_abi_names = %w[
+  PLATFORM_KIND PLATFORM_CONTRACT_VAULT_FILE PLATFORM_DOCKER_ROOT
+  PLATFORM_MEDIA_ROOT PLATFORM_FIXTURE_ROOT PLATFORM_REPORT_ROOT
+]
+check(failures, contract_execution && contract_abi_names.all? do |name|
+  assignment = harness.rindex("#{name}=", contract_execution)
+  assignment && assignment < contract_execution
+end, "integration must set the contract environment ABI before execution")
 check(failures, harness.match?(/^ruby_package='ruby=\d+\.\d+\.\d+-r\d+'$/) &&
                 harness.match?(/^curl_package='curl=\d+\.\d+\.\d+-r\d+'$/),
       "integration must pin distro ruby and curl packages")

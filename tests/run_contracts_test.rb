@@ -10,7 +10,8 @@ require "yaml"
 ROOT = File.expand_path("..", __dir__)
 failures = []
 
-def run_registry(registry:, contracts: {}, mode: "--validate-only", env: {}, manifest: nil, setup: nil)
+def run_registry(registry:, contracts: {}, mode: "--validate-only", env: {}, manifest: nil, setup: nil,
+                 contract_abi: true)
   Dir.mktmpdir("nas-platform-contracts-") do |root|
     services_root = File.join(root, "services")
     FileUtils.mkdir_p(services_root)
@@ -37,6 +38,20 @@ def run_registry(registry:, contracts: {}, mode: "--validate-only", env: {}, man
     command = [RbConfig.ruby, File.join(ROOT, "tests", "run_contracts.rb")]
     command << mode if mode
     command << root
+    if mode == "--execute" && contract_abi
+      env = env.merge(
+        "PLATFORM_KIND" => "integration",
+        "PLATFORM_CONTRACT_VAULT_FILE" => File.join(root, "sandbox-vault.yml"),
+        "PLATFORM_DOCKER_ROOT" => File.join(root, "volume1", "Docker"),
+        "PLATFORM_MEDIA_ROOT" => File.join(root, "volume2"),
+        "PLATFORM_FIXTURE_ROOT" => File.join(root, "fixtures"),
+        "PLATFORM_REPORT_ROOT" => File.join(root, "reports")
+      )
+      %w[volume1/Docker volume2 fixtures reports].each do |directory|
+        FileUtils.mkdir_p(File.join(root, directory))
+      end
+      File.write(File.join(root, "sandbox-vault.yml"), "placeholder")
+    end
     stdout, stderr, status = Open3.capture3(env, *command)
     observation = block_given? ? yield(root) : nil
     [stdout + stderr, status, observation]
@@ -86,6 +101,39 @@ output, status, marker = run_registry(
   File.file?(marker) && File.read(marker).strip == File.realpath(root)
 end
 check(failures, status.success? && marker, "execute mode did not run contract from repository root")
+
+abi_contract = <<~'SH'
+  #!/bin/sh
+  {
+    for name in PLATFORM_KIND PLATFORM_CONTRACT_VAULT_FILE PLATFORM_DOCKER_ROOT \
+      PLATFORM_MEDIA_ROOT PLATFORM_FIXTURE_ROOT PLATFORM_REPORT_ROOT; do
+      eval "value=\${$name-}"
+      test -n "$value"
+      printf '%s=present\n' "$name"
+    done
+  } > "$PLATFORM_REPORT_ROOT/abi-markers.txt"
+SH
+output, status, markers = run_registry(
+  registry: registry,
+  contracts: { "ntfy.sh" => abi_contract },
+  mode: "--execute"
+) do |root|
+  File.read(File.join(root, "reports", "abi-markers.txt"))
+end
+check(failures, status.success? && markers.lines.length == 6 && markers.lines.all? { |line| line.end_with?("=present\n") },
+      "execute mode did not propagate the contract environment ABI")
+
+secret_abi_value = "/tmp/ABI_SECRET_VALUE"
+output, status = run_registry(
+  registry: registry,
+  contracts: { "ntfy.sh" => "#!/bin/sh\ntrue\n" },
+  mode: "--execute",
+  contract_abi: false,
+  env: { "PLATFORM_DOCKER_ROOT" => secret_abi_value }
+)
+check(failures, !status.success? && output.include?("contract environment ABI") &&
+                !output.include?(secret_abi_value),
+      "missing contract ABI was accepted or leaked values")
 
 output, status = run_registry(
   registry: registry,

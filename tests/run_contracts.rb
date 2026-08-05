@@ -21,7 +21,10 @@ ROOT = File.expand_path(arguments.fetch(0, File.expand_path("..", __dir__)))
 CONTRACT_ROOT = File.join(ROOT, "tests", "contracts")
 REGISTRY_PATH = File.join(CONTRACT_ROOT, "registry.yml")
 MANIFEST_PATH = File.join(ROOT, "services", "manifest.yml")
-CONTRACT_BASENAME_EXCEPTIONS = { "paperless-ngx" => "paperless" }.freeze
+CONTRACT_ENV_NAMES = %w[
+  PLATFORM_KIND PLATFORM_CONTRACT_VAULT_FILE PLATFORM_DOCKER_ROOT
+  PLATFORM_MEDIA_ROOT PLATFORM_FIXTURE_ROOT PLATFORM_REPORT_ROOT
+].freeze
 failures = []
 
 def check(failures, condition, message)
@@ -94,7 +97,7 @@ entries.each do |entry|
   check(failures, service_statuses.key?(service), "#{service}: contract service is not declared in manifest")
   check(failures, %w[implemented accepted].include?(service_statuses[service]),
         "#{service}: contract service must be implemented or accepted")
-  basename = CONTRACT_BASENAME_EXCEPTIONS.fetch(service, service)
+  basename = contract_basename(service)
   canonical_path = "tests/contracts/#{basename}.sh"
   check(failures, entry["path"] == canonical_path,
         "#{service}: contract must use canonical path #{canonical_path}")
@@ -146,9 +149,20 @@ unless timeout_text.match?(/\A(?:\d+(?:\.\d+)?|\.\d+)\z/) && timeout_text.to_f.p
 end
 contract_timeout = timeout_text.to_f
 
+missing_contract_env = CONTRACT_ENV_NAMES.reject { |name| ENV[name].is_a?(String) && !ENV[name].empty? }
+unless missing_contract_env.empty?
+  abort "contract environment ABI is missing required names: #{missing_contract_env.join(', ')}"
+end
+unless ENV["PLATFORM_KIND"] == "integration" &&
+       (CONTRACT_ENV_NAMES - ["PLATFORM_KIND"]).all? { |name| Pathname.new(ENV.fetch(name)).absolute? }
+  abort "contract environment ABI has invalid kind or non-absolute paths"
+end
+contract_environment = CONTRACT_ENV_NAMES.to_h { |name| [name, ENV.fetch(name)] }
+
 entries.each do |entry|
   path = File.expand_path(entry.fetch("path"), ROOT)
-  pid = Process.spawn(path, chdir: ROOT, pgroup: true, out: File::NULL, err: File::NULL)
+  pid = Process.spawn(contract_environment, path, chdir: ROOT, pgroup: true,
+                      out: File::NULL, err: File::NULL)
   execution = nil
   timed_out = false
   begin
