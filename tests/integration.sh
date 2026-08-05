@@ -124,6 +124,87 @@ git -C "$manifest_controller" add .
 git -C "$manifest_controller" commit -qm 'isolated manifest fixture'
 manifest_fixture_sha=$(git -C "$manifest_controller" rev-parse HEAD)
 
+create_controller_symlink_fixture() {
+  fixture_name=$1
+  symlink_kind=$2
+  fixture_root="$sandbox/controller-$fixture_name"
+  outside_root="$sandbox/controller-$fixture_name-outside"
+  mkdir -p "$fixture_root/roles" "$fixture_root/services/demo" "$outside_root"
+  cp -R "$repo_dir/roles/deployment_bundle" "$fixture_root/roles/"
+
+  if [ "$symlink_kind" = manifest ]; then
+    cat > "$outside_root/manifest.yml" <<'EOF'
+---
+services:
+  - name: demo
+    role: demo
+    legacy_path: compose/demo/compose.yml
+    status: implemented
+EOF
+    ln -s "$outside_root/manifest.yml" "$fixture_root/services/manifest.yml"
+  else
+    cat > "$fixture_root/services/manifest.yml" <<'EOF'
+---
+services:
+  - name: demo
+    role: demo
+    legacy_path: compose/demo/compose.yml
+    status: implemented
+EOF
+  fi
+
+  cat > "$fixture_root/services/demo/compose.yml" <<'EOF'
+---
+services:
+  demo:
+    image: example.invalid/demo:1@sha256:5555555555555555555555555555555555555555555555555555555555555555
+EOF
+  if [ "$symlink_kind" = override ]; then
+    cat > "$outside_root/compose.fixture.yml" <<'EOF'
+---
+services:
+  demo:
+    devices: [/dev/null:/dev/null]
+EOF
+    ln -s "$outside_root/compose.fixture.yml" \
+      "$fixture_root/services/demo/compose.fixture.yml"
+  fi
+
+  cat > "$fixture_root/controller-input-test.yml" <<EOF
+---
+- name: Refuse unsafe controller inputs before target mutation
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  pre_tasks:
+    - name: Validate controller checkout cleanliness
+      ansible.builtin.include_role:
+        name: deployment_bundle
+        tasks_from: controller
+    - name: Validate controller input identity
+      ansible.builtin.include_role:
+        name: deployment_bundle
+        tasks_from: inputs
+  tasks:
+    - name: Mutate target after validation
+      ansible.builtin.copy:
+        content: mutated
+        dest: $sandbox/controller-$fixture_name-target
+        mode: "0600"
+  vars:
+    platform_kind: fixture
+EOF
+  git -C "$fixture_root" init -q
+  git -C "$fixture_root" config user.name 'NAS platform integration'
+  git -C "$fixture_root" config user.email 'integration@example.invalid'
+  git -C "$fixture_root" add .
+  git -C "$fixture_root" commit -qm "committed $symlink_kind symlink fixture"
+  printf '%s\n' mutated-after-commit >> "$outside_root"/*
+}
+
+create_controller_symlink_fixture manifest manifest
+create_controller_symlink_fixture override override
+
 # A copy of the repository, so a play cannot modify the working tree.
 tar -C "$repo_dir" -cf - --exclude .git . | tar -C "$sandbox/repo" -xf -
 
@@ -295,6 +376,37 @@ docker run --rm \
         '$playbook' \"\$@\"
     }
 
+    assert_controller_symlink_refused() {
+      evidence=\$1
+      fixture_name=\$2
+      fixture_root='$sandbox/controller-'\$fixture_name
+      outside_root='$sandbox/controller-'\$fixture_name'-outside'
+      target='$sandbox/controller-'\$fixture_name'-target'
+      before_outside=\$(tar -C \"\$outside_root\" -cf - . | sha256sum | cut -d' ' -f1)
+      rm -f \"\$target\"
+
+      if ansible-playbook -i localhost, \
+          \"\$fixture_root/controller-input-test.yml\" \
+          >/tmp/controller-input-refusal.txt 2>&1; then
+        cat /tmp/controller-input-refusal.txt >&2
+        printf 'UNSAFE CONTROLLER INPUT ACCEPTED: %s\n' \"\$evidence\" >&2
+        exit 1
+      fi
+      if ! grep -qF 'Unsafe controller bundle input' /tmp/controller-input-refusal.txt || \
+         [ -e \"\$target\" ] || \
+         [ \"\$(tar -C \"\$outside_root\" -cf - . | sha256sum | cut -d' ' -f1)\" != \
+           \"\$before_outside\" ]; then
+        cat /tmp/controller-input-refusal.txt >&2
+        printf 'CONTROLLER INPUT REFUSAL MUTATED STATE: %s\n' \"\$evidence\" >&2
+        exit 1
+      fi
+      printf '%s\n' \"\$evidence\"
+      printf 'CONTROLLER_SYMLINK_TARGET_UNCHANGED\n'
+    }
+
+    assert_controller_symlink_refused CONTROLLER_MANIFEST_SYMLINK_REFUSED manifest
+    assert_controller_symlink_refused CONTROLLER_OVERRIDE_SYMLINK_REFUSED override
+
     assert_symlink_refused() {
       evidence=\$1
       docker_root=\$2
@@ -377,6 +489,40 @@ docker run --rm \
       \"\$runtime_root/nas-platform/current\"
     assert_symlink_refused SYMLINK_RUNTIME_REFUSED \
       \"\$runtime_root\" \"\$runtime_root/nas-platform/runtime\" \"\$runtime_outside\"
+
+    runtime_service_root='$sandbox/symlink-runtime-service/Docker'
+    runtime_service_outside='$sandbox/symlink-outside/runtime-service'
+    runtime_service_link=\"\$runtime_service_root/nas-platform/runtime/services/ntfy\"
+    runtime_service_pointer=\"\$runtime_service_root/nas-platform/current\"
+    mkdir -p \"\$runtime_service_root/nas-platform/runtime/services\" \
+      \"\$runtime_service_root/nas-platform/releases/\$old_release\" \
+      \"\$runtime_service_outside\"
+    chmod 0700 \"\$runtime_service_outside\"
+    printf sentinel > \"\$runtime_service_outside/user-data\"
+    ln -s \"\$runtime_service_outside\" \"\$runtime_service_link\"
+    ln -s \"\$runtime_service_root/nas-platform/releases/\$old_release\" \
+      \"\$runtime_service_pointer\"
+    runtime_service_checksum=\$(sha256sum \"\$runtime_service_outside/user-data\" | cut -d' ' -f1)
+    runtime_service_pointer_before=\$(readlink \"\$runtime_service_pointer\")
+    if run_play -e nas_docker_root=\"\$runtime_service_root\" --tags deployment_bundle \
+        >/tmp/runtime-service-symlink.txt 2>&1; then
+      cat /tmp/runtime-service-symlink.txt >&2
+      printf 'RUNTIME SERVICE SYMLINK ACCEPTED\n' >&2
+      exit 1
+    fi
+    if ! grep -qF 'Unsafe deployment target' /tmp/runtime-service-symlink.txt || \
+       [ \"\$(readlink \"\$runtime_service_link\")\" != \"\$runtime_service_outside\" ] || \
+       [ \"\$(stat -c %a \"\$runtime_service_outside\")\" != 700 ] || \
+       [ \"\$(sha256sum \"\$runtime_service_outside/user-data\" | cut -d' ' -f1)\" != \
+         \"\$runtime_service_checksum\" ] || \
+       [ \"\$(readlink \"\$runtime_service_pointer\")\" != \
+         \"\$runtime_service_pointer_before\" ]; then
+      cat /tmp/runtime-service-symlink.txt >&2
+      printf 'RUNTIME SERVICE SYMLINK MUTATED STATE\n' >&2
+      exit 1
+    fi
+    printf 'RUNTIME_SERVICE_SYMLINK_REFUSED\n'
+    printf 'RUNTIME_SERVICE_SYMLINK_PRESERVED\n'
 
     ancestor_parent='$sandbox/symlink-ancestor'
     ancestor_outside='$sandbox/symlink-outside/root-ancestor'
@@ -487,33 +633,41 @@ docker run --rm \
       '$sandbox/volume1/Docker/nas-platform/current/manifest.yml' \
       /repo /repo/services/manifest.yml integration '$expected_release_id'
 
-    selective_compose='$active_release_dir/services/ntfy/compose.yml'
-    selective_outside='$sandbox/symlink-outside/selective-compose'
-    selective_pointer='$sandbox/volume1/Docker/nas-platform/current'
-    mkdir -p \"\$selective_outside\"
-    printf '%s\n' outside-safe > \"\$selective_outside/compose.yml\"
-    outside_checksum=\$(sha256sum \"\$selective_outside/compose.yml\" | cut -d' ' -f1)
-    pointer_before=\$(readlink \"\$selective_pointer\")
-    rm \"\$selective_compose\"
-    ln -s \"\$selective_outside/compose.yml\" \"\$selective_compose\"
-    if run_play --tags ntfy >/tmp/selective-compose.txt 2>&1; then
-      cat /tmp/selective-compose.txt >&2
-      printf 'SELECTIVE COMPOSE SYMLINK ACCEPTED\n' >&2
-      exit 1
-    fi
-    if ! grep -qF 'Unsafe deployment target' /tmp/selective-compose.txt || \
-       [ \"\$(readlink \"\$selective_compose\")\" != \"\$selective_outside/compose.yml\" ] || \
-       [ \"\$(sha256sum \"\$selective_outside/compose.yml\" | cut -d' ' -f1)\" != \"\$outside_checksum\" ] || \
-       [ \"\$(readlink \"\$selective_pointer\")\" != \"\$pointer_before\" ]; then
-      cat /tmp/selective-compose.txt >&2
-      printf 'SELECTIVE COMPOSE SYMLINK MUTATED STATE\n' >&2
-      exit 1
-    fi
-    printf 'SYMLINK_NTFY_COMPOSE_REFUSED\n'
-    printf 'SYMLINK_ESCAPE_STATE_UNCHANGED\n'
-    rm \"\$selective_compose\"
-    cp /repo/services/ntfy/compose.yml \"\$selective_compose\"
-    chmod 0644 \"\$selective_compose\"
+    assert_selective_compose_refused() {
+      service=\$1
+      evidence=\$2
+      selective_compose='$active_release_dir/services/'\$service'/compose.yml'
+      selective_outside='$sandbox/symlink-outside/selective-'\$service
+      selective_pointer='$sandbox/volume1/Docker/nas-platform/current'
+      mkdir -p \"\$selective_outside\"
+      printf '%s\n' outside-safe > \"\$selective_outside/compose.yml\"
+      outside_checksum=\$(sha256sum \"\$selective_outside/compose.yml\" | cut -d' ' -f1)
+      pointer_before=\$(readlink \"\$selective_pointer\")
+      rm \"\$selective_compose\"
+      ln -s \"\$selective_outside/compose.yml\" \"\$selective_compose\"
+      if run_play --tags \"\$service\" >/tmp/selective-compose.txt 2>&1; then
+        cat /tmp/selective-compose.txt >&2
+        printf 'SELECTIVE COMPOSE SYMLINK ACCEPTED: %s\n' \"\$service\" >&2
+        exit 1
+      fi
+      if ! grep -qF 'Unsafe deployment target' /tmp/selective-compose.txt || \
+         [ \"\$(readlink \"\$selective_compose\")\" != \"\$selective_outside/compose.yml\" ] || \
+         [ \"\$(sha256sum \"\$selective_outside/compose.yml\" | cut -d' ' -f1)\" != \
+           \"\$outside_checksum\" ] || \
+         [ \"\$(readlink \"\$selective_pointer\")\" != \"\$pointer_before\" ]; then
+        cat /tmp/selective-compose.txt >&2
+        printf 'SELECTIVE COMPOSE SYMLINK MUTATED STATE: %s\n' \"\$service\" >&2
+        exit 1
+      fi
+      printf '%s\n' \"\$evidence\"
+      printf 'SYMLINK_ESCAPE_STATE_UNCHANGED\n'
+      rm \"\$selective_compose\"
+      cp /repo/services/\"\$service\"/compose.yml \"\$selective_compose\"
+      chmod 0644 \"\$selective_compose\"
+    }
+
+    assert_selective_compose_refused ntfy SYMLINK_NTFY_COMPOSE_REFUSED
+    assert_selective_compose_refused beszel SYMLINK_BESZEL_COMPOSE_REFUSED
 
     assert_active_drift_refused() {
       evidence=\$1
@@ -521,6 +675,7 @@ docker run --rm \
       current_pointer='$sandbox/volume1/Docker/nas-platform/current'
       before_checksum=\$(sha256sum \"\$active_compose\" | cut -d' ' -f1)
       before_mode=\$(stat -c %a \"\$active_compose\")
+      before_owner=\$(stat -c %u:%g \"\$active_compose\")
       before_pointer=\$(readlink \"\$current_pointer\")
 
       if run_play --tags deployment_bundle >/tmp/active-drift.txt 2>&1; then
@@ -531,6 +686,7 @@ docker run --rm \
       if ! grep -qF 'differs from the controller bundle' /tmp/active-drift.txt || \
          [ \"\$(sha256sum \"\$active_compose\" | cut -d' ' -f1)\" != \"\$before_checksum\" ] || \
          [ \"\$(stat -c %a \"\$active_compose\")\" != \"\$before_mode\" ] || \
+         [ \"\$(stat -c %u:%g \"\$active_compose\")\" != \"\$before_owner\" ] || \
          [ \"\$(readlink \"\$current_pointer\")\" != \"\$before_pointer\" ]; then
         cat /tmp/active-drift.txt >&2
         printf 'ACTIVE DRIFT WAS NOT PRESERVED: %s\n' \"\$evidence\" >&2
@@ -545,9 +701,13 @@ docker run --rm \
     cp /repo/services/ntfy/compose.yml '$active_release_dir/services/ntfy/compose.yml'
     chmod 0644 '$active_release_dir/services/ntfy/compose.yml'
 
-    chmod 0600 '$active_release_dir/services/ntfy/compose.yml'
+    chmod 0755 '$active_release_dir/services/ntfy/compose.yml'
     assert_active_drift_refused ACTIVE_MODE_DRIFT_REFUSED
     chmod 0644 '$active_release_dir/services/ntfy/compose.yml'
+
+    chown 123:456 '$active_release_dir/services/ntfy/compose.yml'
+    assert_active_drift_refused ACTIVE_OWNERSHIP_DRIFT_REFUSED
+    chown 0:0 '$active_release_dir/services/ntfy/compose.yml'
 
     if [ "\$#" -eq 0 ]; then
       env \

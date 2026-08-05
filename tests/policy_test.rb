@@ -562,8 +562,25 @@ check(failures, target_tasks_body.include?("concurrent privileged filesystem mut
 check(failures, target_tasks_body.include?("os.path.abspath(os.sep)") &&
                 target_tasks_body.include?("root_relative_parts"),
       "target validator must lstat every existing ancestor from filesystem root to nas_docker_root")
-check(failures, target_tasks_body.include?("{{ nas_docker_root }}/.nas-platform-preflight-probe"),
+check(failures, target_tasks_body.include?("nas_docker_root ~ '/.nas-platform-preflight-probe'") ||
+                target_tasks_body.include?("{{ nas_docker_root }}/.nas-platform-preflight-probe"),
       "target validator must guard the exact preflight probe leaf")
+check(failures, target_tasks_body.include?("deployment_bundle_services") &&
+                target_tasks_body.include?("platform_runtime_dir ~ '/services/'"),
+      "target validator must guard every implemented runtime service leaf")
+
+controller_input_path = File.join(ROOT, "roles", "deployment_bundle", "tasks", "controller_input.yml")
+controller_input_body = File.file?(controller_input_path) ? File.read(controller_input_path) : ""
+%w[os.lstat os.path.realpath os.path.commonpath stat.S_ISREG].each do |primitive|
+  check(failures, controller_input_body.include?(primitive),
+        "controller input validator must use #{primitive}")
+end
+inputs_path = File.join(ROOT, "roles", "deployment_bundle", "tasks", "inputs.yml")
+inputs_body = File.file?(inputs_path) ? File.read(inputs_path) : ""
+check(failures, inputs_body.include?("services/manifest.yml") &&
+                inputs_body.include?("compose.yml") &&
+                inputs_body.include?("compose.{{ platform_kind }}.yml"),
+      "controller inputs must validate manifest, canonical Compose, and platform overrides")
 
 target_preflight_index = Array(site_play["pre_tasks"]).index do |task|
   include_role = task["ansible.builtin.include_role"]
@@ -586,8 +603,9 @@ check(failures, probe_inspection && probe_creation && probe_inspection < probe_c
 
 deployment_body = File.read(File.join(ROOT, "roles", "deployment_bundle", "tasks", "main.yml"))
 deployment_tasks = flatten_tasks(YAML.safe_load(deployment_body))
-manifest_path_validation = deployment_tasks.find do |task|
-  task["name"] == "Validate manifest service path components"
+input_tasks = flatten_tasks(YAML.safe_load(inputs_body))
+manifest_path_validation = input_tasks.find do |task|
+  task["name"] == "Validate manifest service path components before interpolation"
 end
 manifest_path_conditions = Array(
   manifest_path_validation&.dig("ansible.builtin.assert", "that")
@@ -596,8 +614,13 @@ check(failures, manifest_path_conditions.include?("item.name is match") &&
                 manifest_path_conditions.include?("item.role is match") &&
                 manifest_path_conditions.include?("item.legacy_path =="),
       "deployment bundle must validate manifest service path components")
+canonical_requirement = deployment_tasks.find do |task|
+  task["name"] == "Require canonical Compose for each implemented service"
+end
+canonical_conditions = Array(canonical_requirement&.dig("ansible.builtin.assert", "that")).join(" ")
+check(failures, canonical_conditions.include?("not item.stat.islnk"),
+      "canonical Compose validation must explicitly reject symlinks")
 %w[
-  Validate_manifest_service_path_components
   Revalidate_before_removing_the_staging_release
   Revalidate_before_replacing_an_inactive_release
   Revalidate_before_installing_the_immutable_release
@@ -643,12 +666,16 @@ integration_evidence = harness + File.read(File.join(ROOT, "tests", "verify_depl
 %w[
   STALE_ROOT_SEEDED STALE_BUNDLE_REPLACED STALE_BUNDLE_CLEAN STALE_MANIFEST_EXACT
   ISOLATED_IMAGE_MERGE_EXACT
+  RUNTIME_SERVICE_SYMLINK_REFUSED RUNTIME_SERVICE_SYMLINK_PRESERVED
+  CONTROLLER_MANIFEST_SYMLINK_REFUSED CONTROLLER_OVERRIDE_SYMLINK_REFUSED
+  CONTROLLER_SYMLINK_TARGET_UNCHANGED SYMLINK_BESZEL_COMPOSE_REFUSED
   FRESH_ROOT_OK SYMLINK_DOCKER_ROOT_REFUSED SYMLINK_DEPLOY_ROOT_REFUSED SYMLINK_RELEASES_REFUSED
   SYMLINK_RUNTIME_REFUSED SYMLINK_ROOT_ANCESTOR_REFUSED
   SYMLINK_PREFLIGHT_PROBE_REFUSED SYMLINK_NTFY_COMPOSE_REFUSED
   EXISTING_PREFLIGHT_PROBE_REFUSED EXISTING_PREFLIGHT_PROBE_PRESERVED
   SYMLINK_ESCAPE_STATE_UNCHANGED
-  ACTIVE_BYTE_DRIFT_REFUSED ACTIVE_MODE_DRIFT_REFUSED ACTIVE_DRIFT_PRESERVED
+  ACTIVE_BYTE_DRIFT_REFUSED ACTIVE_MODE_DRIFT_REFUSED ACTIVE_OWNERSHIP_DRIFT_REFUSED
+  ACTIVE_DRIFT_PRESERVED
   MANIFEST_EXACT MANIFEST_EFFECTIVE_IMAGES
 ].each do |evidence|
   check(failures, integration_evidence.include?(evidence),

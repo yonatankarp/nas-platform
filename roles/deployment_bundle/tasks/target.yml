@@ -115,14 +115,18 @@
   changed_when: false
   check_mode: false
   vars:
-    deployment_target_paths:
-      - "{{ nas_docker_root }}"
-      - "{{ nas_docker_root }}/.nas-platform-preflight-probe"
-      - "{{ platform_deploy_root }}"
-      - "{{ platform_deploy_root }}/releases"
-      - "{{ platform_release_dir }}"
-      - "{{ platform_runtime_dir }}"
-      - "{{ platform_runtime_dir }}/services"
-      - "{{ platform_current_dir }}"
-      - "{{ platform_deploy_root }}/.release-{{ platform_release_id }}"
-      - "{{ platform_deploy_root }}/.current-{{ platform_release_id }}"
+    deployment_target_paths: >-
+      {{ [nas_docker_root,
+          nas_docker_root ~ '/.nas-platform-preflight-probe',
+          platform_deploy_root,
+          platform_deploy_root ~ '/releases',
+          platform_release_dir,
+          platform_runtime_dir,
+          platform_runtime_dir ~ '/services',
+          platform_current_dir,
+          platform_deploy_root ~ '/.release-' ~ platform_release_id,
+          platform_deploy_root ~ '/.current-' ~ platform_release_id]
+         + (deployment_bundle_services | default([])
+            | map(attribute='name')
+            | map('regex_replace', '^', platform_runtime_dir ~ '/services/')
+            | list) }}

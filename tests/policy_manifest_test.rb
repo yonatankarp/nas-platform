@@ -24,6 +24,8 @@ BASE_FIXTURE_PATHS = %w[
   roles/deployment_bundle/defaults/main.yml
   roles/deployment_bundle/meta/argument_specs.yml
   roles/deployment_bundle/tasks/controller.yml
+  roles/deployment_bundle/tasks/controller_input.yml
+  roles/deployment_bundle/tasks/inputs.yml
   roles/deployment_bundle/tasks/main.yml
   roles/deployment_bundle/tasks/target.yml
   roles/deployment_bundle/templates/manifest.yml.j2
@@ -605,7 +607,9 @@ end
 expect_failure(failures, "preflight probe leaf unguarded",
                "target validator must guard the exact preflight probe leaf") do |root|
   path = File.join(root, "roles", "deployment_bundle", "tasks", "target.yml")
-  body = File.read(path).gsub("      - \"{{ nas_docker_root }}/.nas-platform-preflight-probe\"\n", "")
+  body = File.read(path)
+                  .gsub("      - \"{{ nas_docker_root }}/.nas-platform-preflight-probe\"\n", "")
+                  .gsub("          nas_docker_root ~ '/.nas-platform-preflight-probe',\n", "")
   File.write(path, body)
 end
 
@@ -621,9 +625,11 @@ end
 
 expect_failure(failures, "manifest component validation removed",
                "deployment bundle must validate manifest service path components") do |root|
-  path = File.join(root, "roles", "deployment_bundle", "tasks", "main.yml")
+  path = File.join(root, "roles", "deployment_bundle", "tasks", "inputs.yml")
   tasks = YAML.safe_load_file(path)
-  tasks.reject! { |task| task["name"] == "Validate manifest service path components" }
+  tasks.reject! do |task|
+    task["name"] == "Validate manifest service path components before interpolation"
+  end
   File.write(path, YAML.dump(tasks))
 end
 
@@ -642,6 +648,18 @@ expect_failure(failures, "platform override redefines image",
       agent:
         image: example.invalid/beszel-agent:1@sha256:#{'0' * 64}
   YAML
+end
+
+expect_failure(failures, "controller input lstat removed",
+               "controller input validator must use os.lstat") do |root|
+  path = File.join(root, "roles", "deployment_bundle", "tasks", "controller_input.yml")
+  File.write(path, File.read(path).gsub("os.lstat", "os.stat"))
+end
+
+expect_failure(failures, "runtime service leaves omitted",
+               "target validator must guard every implemented runtime service leaf") do |root|
+  path = File.join(root, "roles", "deployment_bundle", "tasks", "target.yml")
+  File.write(path, File.read(path).gsub("deployment_bundle_services", "unchecked_services"))
 end
 
 if failures.empty?
