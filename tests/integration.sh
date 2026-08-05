@@ -40,22 +40,11 @@ mkdir -p "$sandbox/volume1/Docker" "$sandbox/volume2" "$sandbox/repo" \
   "$sandbox/fixtures" "$sandbox/reports"
 chmod 0777 "$sandbox/fixtures" "$sandbox/reports"
 
-# Prove that deployment definitions are owned by the controller revision, not
-# trusted from whatever happens to exist on the target. The bundle role must
-# replace this deliberately stale definition and identify its controller commit.
+# Start from a genuinely fresh deployment root. This keeps the first-install
+# preflight path honest instead of letting a stale fixture create nas-platform.
 expected_release_id=$(git -C "$repo_dir" rev-parse HEAD)
-stale_service_dir="$sandbox/volume1/Docker/nas-platform/current/services/ntfy"
 stale_release_dir="$sandbox/volume1/Docker/nas-platform/releases/$expected_release_id"
-mkdir -p "$stale_service_dir" \
-  "$stale_release_dir/services/ntfy" \
-  "$stale_release_dir/services/undeclared"
-printf '%s\n' 'stale target compose definition' > "$stale_service_dir/compose.yml"
-printf '%s\n' 'stale release compose definition' \
-  > "$stale_release_dir/services/ntfy/compose.yml"
-printf '%s\n' 'stale target-only override' \
-  > "$stale_release_dir/services/ntfy/compose.nas.yml"
-printf '%s\n' 'undeclared target service' \
-  > "$stale_release_dir/services/undeclared/compose.yml"
+test ! -e "$sandbox/volume1/Docker/nas-platform"
 
 # A copy of the repository, so a play cannot modify the working tree.
 tar -C "$repo_dir" -cf - --exclude .git . | tar -C "$sandbox/repo" -xf -
@@ -228,11 +217,136 @@ docker run --rm \
         '$playbook' \"\$@\"
     }
 
+    assert_symlink_refused() {
+      evidence=\$1
+      docker_root=\$2
+      guarded_link=\$3
+      outside_root=\$4
+      pointer_path=\$docker_root/nas-platform/current
+      target_marker=\$docker_root/nas-platform/target-mutated
+      before_outside=\$(tar -C \"\$outside_root\" -cf - . | sha256sum | cut -d' ' -f1)
+      before_guard=\$(readlink \"\$guarded_link\")
+      before_pointer=absent
+      if [ -L \"\$pointer_path\" ]; then
+        before_pointer=\$(readlink \"\$pointer_path\")
+      fi
+
+      if run_play -e nas_docker_root=\"\$docker_root\" --tags preflight \
+          >/tmp/symlink-refusal.txt 2>&1; then
+        cat /tmp/symlink-refusal.txt >&2
+        printf 'SYMLINK ESCAPE ACCEPTED: %s\n' \"\$evidence\" >&2
+        exit 1
+      fi
+      if ! grep -qF 'Unsafe deployment target' /tmp/symlink-refusal.txt; then
+        cat /tmp/symlink-refusal.txt >&2
+        printf 'SYMLINK ESCAPE FAILED FOR WRONG REASON: %s\n' \"\$evidence\" >&2
+        exit 1
+      fi
+
+      after_outside=\$(tar -C \"\$outside_root\" -cf - . | sha256sum | cut -d' ' -f1)
+      after_pointer=absent
+      if [ -L \"\$pointer_path\" ]; then
+        after_pointer=\$(readlink \"\$pointer_path\")
+      fi
+      if [ \"\$before_outside\" != \"\$after_outside\" ] || \
+         [ \"\$(readlink \"\$guarded_link\")\" != \"\$before_guard\" ] || \
+         [ \"\$before_pointer\" != \"\$after_pointer\" ] || \
+         [ -e \"\$target_marker\" ]; then
+        printf 'SYMLINK ESCAPE MUTATED STATE: %s\n' \"\$evidence\" >&2
+        exit 1
+      fi
+      printf '%s\n' \"\$evidence\"
+      printf 'SYMLINK_ESCAPE_STATE_UNCHANGED\n'
+    }
+
+    old_release=0000000000000000000000000000000000000001
+
+    docker_link='$sandbox/symlink-docker-root'
+    docker_outside='$sandbox/symlink-outside/docker-root'
+    mkdir -p \"\$docker_outside/nas-platform/releases/\$old_release\"
+    ln -s \"\$docker_outside/nas-platform/releases/\$old_release\" \
+      \"\$docker_outside/nas-platform/current\"
+    printf sentinel > \"\$docker_outside/sentinel\"
+    ln -s \"\$docker_outside\" \"\$docker_link\"
+    assert_symlink_refused SYMLINK_DOCKER_ROOT_REFUSED \
+      \"\$docker_link\" \"\$docker_link\" \"\$docker_outside\"
+
+    deploy_root='$sandbox/symlink-deploy/Docker'
+    deploy_outside='$sandbox/symlink-outside/deploy-root'
+    mkdir -p \"\$deploy_root\" \"\$deploy_outside/releases/\$old_release\"
+    ln -s \"\$deploy_outside/releases/\$old_release\" \"\$deploy_outside/current\"
+    printf sentinel > \"\$deploy_outside/sentinel\"
+    ln -s \"\$deploy_outside\" \"\$deploy_root/nas-platform\"
+    assert_symlink_refused SYMLINK_DEPLOY_ROOT_REFUSED \
+      \"\$deploy_root\" \"\$deploy_root/nas-platform\" \"\$deploy_outside\"
+
+    releases_root='$sandbox/symlink-releases/Docker'
+    releases_outside='$sandbox/symlink-outside/releases-root'
+    mkdir -p \"\$releases_root/nas-platform\" \"\$releases_outside/\$old_release\"
+    printf sentinel > \"\$releases_outside/sentinel\"
+    ln -s \"\$releases_outside\" \"\$releases_root/nas-platform/releases\"
+    ln -s \"\$releases_root/nas-platform/releases/\$old_release\" \
+      \"\$releases_root/nas-platform/current\"
+    assert_symlink_refused SYMLINK_RELEASES_REFUSED \
+      \"\$releases_root\" \"\$releases_root/nas-platform/releases\" \"\$releases_outside\"
+
+    runtime_root='$sandbox/symlink-runtime/Docker'
+    runtime_outside='$sandbox/symlink-outside/runtime-root'
+    mkdir -p \"\$runtime_root/nas-platform/releases/\$old_release\" \"\$runtime_outside\"
+    printf sentinel > \"\$runtime_outside/sentinel\"
+    ln -s \"\$runtime_outside\" \"\$runtime_root/nas-platform/runtime\"
+    ln -s \"\$runtime_root/nas-platform/releases/\$old_release\" \
+      \"\$runtime_root/nas-platform/current\"
+    assert_symlink_refused SYMLINK_RUNTIME_REFUSED \
+      \"\$runtime_root\" \"\$runtime_root/nas-platform/runtime\" \"\$runtime_outside\"
+
+    ancestor_parent='$sandbox/symlink-ancestor'
+    ancestor_outside='$sandbox/symlink-outside/root-ancestor'
+    mkdir -p \"\$ancestor_parent\" \
+      \"\$ancestor_outside/Docker/nas-platform/releases/\$old_release\"
+    printf sentinel > \"\$ancestor_outside/sentinel\"
+    ln -s \"\$ancestor_outside/Docker/nas-platform/releases/\$old_release\" \
+      \"\$ancestor_outside/Docker/nas-platform/current\"
+    ln -s \"\$ancestor_outside\" \"\$ancestor_parent/link\"
+    assert_symlink_refused SYMLINK_ROOT_ANCESTOR_REFUSED \
+      \"\$ancestor_parent/link/Docker\" \"\$ancestor_parent/link\" \"\$ancestor_outside\"
+
+    probe_root='$sandbox/symlink-probe/Docker'
+    probe_outside='$sandbox/symlink-outside/probe-root'
+    mkdir -p \"\$probe_root\" \"\$probe_outside/target\"
+    printf sentinel > \"\$probe_outside/target/sentinel\"
+    ln -s \"\$probe_outside/target\" \
+      \"\$probe_root/.nas-platform-preflight-probe\"
+    assert_symlink_refused SYMLINK_PREFLIGHT_PROBE_REFUSED \
+      \"\$probe_root\" \"\$probe_root/.nas-platform-preflight-probe\" \"\$probe_outside\"
+
+    existing_probe='$sandbox/volume1/Docker/.nas-platform-preflight-probe'
+    mkdir -p \"\$existing_probe\"
+    printf sentinel > \"\$existing_probe/user-data\"
+    if run_play --tags preflight >/tmp/existing-probe-refusal.txt 2>&1; then
+      cat /tmp/existing-probe-refusal.txt >&2
+      printf 'EXISTING PREFLIGHT PROBE ACCEPTED\n' >&2
+      exit 1
+    fi
+    if ! grep -qF 'must not already exist' /tmp/existing-probe-refusal.txt; then
+      cat /tmp/existing-probe-refusal.txt >&2
+      printf 'EXISTING PREFLIGHT PROBE FAILED FOR WRONG REASON\n' >&2
+      exit 1
+    fi
+    printf 'EXISTING_PREFLIGHT_PROBE_REFUSED\n'
+    if [ \"\$(cat \"\$existing_probe/user-data\")\" != sentinel ]; then
+      printf 'EXISTING PREFLIGHT PROBE CONTENT MUTATED\n' >&2
+      exit 1
+    fi
+    printf 'EXISTING_PREFLIGHT_PROBE_PRESERVED\n'
+    rm -rf \"\$existing_probe\"
+
     if [ "\$#" -eq 0 ]; then
     run_play
     else
       run_play "\$@"
     fi
+    printf 'FRESH_ROOT_OK: clean deployment root converged\n'
 
     if cmp -s \
       /repo/services/ntfy/compose.yml \
@@ -243,23 +357,6 @@ docker run --rm \
       exit 1
     fi
 
-    if grep -qF 'git_sha: $expected_release_id' \
-      '$sandbox/volume1/Docker/nas-platform/current/manifest.yml'; then
-      printf 'BUNDLE IDENTIFIED: deployment manifest records controller Git SHA\n'
-    else
-      printf 'BUNDLE UNIDENTIFIED: deployment manifest lacks controller Git SHA\n' >&2
-      exit 1
-    fi
-
-    expected_ntfy_checksum=\$(sha256sum /repo/services/ntfy/compose.yml | cut -d' ' -f1)
-    if grep -qF "\$expected_ntfy_checksum" \
-      '$sandbox/volume1/Docker/nas-platform/current/manifest.yml'; then
-      printf 'BUNDLE CHECKSUMMED: manifest binds controller content\n'
-    else
-      printf 'BUNDLE UNCHECKSUMMED: manifest lacks controller checksum\n' >&2
-      exit 1
-    fi
-
     if [ ! -e '$stale_release_dir/services/ntfy/compose.nas.yml' ] && \
        [ ! -e '$stale_release_dir/services/undeclared' ]; then
       printf 'BUNDLE CLEAN: target-only release content was removed\n'
@@ -267,6 +364,72 @@ docker run --rm \
       printf 'BUNDLE DIRTY: target-only release content survived assembly\n' >&2
       exit 1
     fi
+
+    ruby /repo/tests/verify_deployment_manifest.rb \
+      '$sandbox/volume1/Docker/nas-platform/current/manifest.yml' \
+      /repo /repo/services/manifest.yml integration '$expected_release_id'
+
+    selective_compose='$stale_release_dir/services/ntfy/compose.yml'
+    selective_outside='$sandbox/symlink-outside/selective-compose'
+    selective_pointer='$sandbox/volume1/Docker/nas-platform/current'
+    mkdir -p \"\$selective_outside\"
+    printf '%s\n' outside-safe > \"\$selective_outside/compose.yml\"
+    outside_checksum=\$(sha256sum \"\$selective_outside/compose.yml\" | cut -d' ' -f1)
+    pointer_before=\$(readlink \"\$selective_pointer\")
+    rm \"\$selective_compose\"
+    ln -s \"\$selective_outside/compose.yml\" \"\$selective_compose\"
+    if run_play --tags ntfy >/tmp/selective-compose.txt 2>&1; then
+      cat /tmp/selective-compose.txt >&2
+      printf 'SELECTIVE COMPOSE SYMLINK ACCEPTED\n' >&2
+      exit 1
+    fi
+    if ! grep -qF 'Unsafe deployment target' /tmp/selective-compose.txt || \
+       [ \"\$(readlink \"\$selective_compose\")\" != \"\$selective_outside/compose.yml\" ] || \
+       [ \"\$(sha256sum \"\$selective_outside/compose.yml\" | cut -d' ' -f1)\" != \"\$outside_checksum\" ] || \
+       [ \"\$(readlink \"\$selective_pointer\")\" != \"\$pointer_before\" ]; then
+      cat /tmp/selective-compose.txt >&2
+      printf 'SELECTIVE COMPOSE SYMLINK MUTATED STATE\n' >&2
+      exit 1
+    fi
+    printf 'SYMLINK_NTFY_COMPOSE_REFUSED\n'
+    printf 'SYMLINK_ESCAPE_STATE_UNCHANGED\n'
+    rm \"\$selective_compose\"
+    cp /repo/services/ntfy/compose.yml \"\$selective_compose\"
+    chmod 0644 \"\$selective_compose\"
+
+    assert_active_drift_refused() {
+      evidence=\$1
+      active_compose='$stale_release_dir/services/ntfy/compose.yml'
+      current_pointer='$sandbox/volume1/Docker/nas-platform/current'
+      before_checksum=\$(sha256sum \"\$active_compose\" | cut -d' ' -f1)
+      before_mode=\$(stat -c %a \"\$active_compose\")
+      before_pointer=\$(readlink \"\$current_pointer\")
+
+      if run_play --tags deployment_bundle >/tmp/active-drift.txt 2>&1; then
+        cat /tmp/active-drift.txt >&2
+        printf 'ACTIVE DRIFT ACCEPTED: %s\n' \"\$evidence\" >&2
+        exit 1
+      fi
+      if ! grep -qF 'differs from the controller bundle' /tmp/active-drift.txt || \
+         [ \"\$(sha256sum \"\$active_compose\" | cut -d' ' -f1)\" != \"\$before_checksum\" ] || \
+         [ \"\$(stat -c %a \"\$active_compose\")\" != \"\$before_mode\" ] || \
+         [ \"\$(readlink \"\$current_pointer\")\" != \"\$before_pointer\" ]; then
+        cat /tmp/active-drift.txt >&2
+        printf 'ACTIVE DRIFT WAS NOT PRESERVED: %s\n' \"\$evidence\" >&2
+        exit 1
+      fi
+      printf '%s\n' \"\$evidence\"
+      printf 'ACTIVE_DRIFT_PRESERVED\n'
+    }
+
+    printf '%s\n' drift >> '$stale_release_dir/services/ntfy/compose.yml'
+    assert_active_drift_refused ACTIVE_BYTE_DRIFT_REFUSED
+    cp /repo/services/ntfy/compose.yml '$stale_release_dir/services/ntfy/compose.yml'
+    chmod 0644 '$stale_release_dir/services/ntfy/compose.yml'
+
+    chmod 0600 '$stale_release_dir/services/ntfy/compose.yml'
+    assert_active_drift_refused ACTIVE_MODE_DRIFT_REFUSED
+    chmod 0644 '$stale_release_dir/services/ntfy/compose.yml'
 
     if [ "\$#" -eq 0 ]; then
       env \

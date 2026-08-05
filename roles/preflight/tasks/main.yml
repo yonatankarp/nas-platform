@@ -112,15 +112,29 @@
 
 # A probe, not a state change, so it reports unchanged. Otherwise every run looks
 # changed and the idempotence check could never be clean.
+- name: Inspect the deterministic write probe path
+  ansible.builtin.stat:
+    path: "{{ nas_docker_root }}/.nas-platform-preflight-probe"
+    follow: false
+  register: preflight_write_probe
+
+- name: Refuse to remove a pre-existing write probe path
+  ansible.builtin.assert:
+    that:
+      - not preflight_write_probe.stat.exists
+    fail_msg: >-
+      {{ nas_docker_root }}/.nas-platform-preflight-probe must not already exist;
+      refusing to remove pre-existing data.
+
 - name: Confirm the service state root is writable
   ansible.builtin.file:
-    path: "{{ platform_deploy_root }}/.preflight-probe"
+    path: "{{ nas_docker_root }}/.nas-platform-preflight-probe"
     state: directory
     mode: "0755"
   changed_when: false
 
 - name: Remove the write probe
   ansible.builtin.file:
-    path: "{{ platform_deploy_root }}/.preflight-probe"
+    path: "{{ nas_docker_root }}/.nas-platform-preflight-probe"
     state: absent
   changed_when: false

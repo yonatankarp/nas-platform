@@ -1,8 +1,9 @@
 ---
 # Full first-installation run. Identical whether Ansible executes on the NAS
 # (inventory/local.yml) or reaches it from a workstation (inventory/remote.yml):
-# every task, including HTTP calls, runs on the nas host, so loopback addresses
-# are correct in both modes and nothing is delegated to the controller.
+# service and HTTP tasks run on the NAS host, so loopback addresses are correct
+# in both modes. Read-only source and Git checks are explicitly delegated to the
+# controller checkout.
 - name: Install and configure the NAS platform
   hosts: nas_hosts
   gather_facts: true
@@ -12,6 +13,14 @@
       ansible.builtin.include_role:
         name: deployment_bundle
         tasks_from: controller
+        apply:
+          tags: [always]
+      tags: [always]
+
+    - name: Validate target containment before preflight mutation
+      ansible.builtin.include_role:
+        name: deployment_bundle
+        tasks_from: target
         apply:
           tags: [always]
       tags: [always]

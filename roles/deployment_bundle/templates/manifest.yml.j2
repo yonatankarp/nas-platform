@@ -1,5 +1,5 @@
 ---
-git_sha: {{ platform_release_id }}
+git_sha: {{ platform_release_id | to_json }}
 platform_kind: {{ platform_kind | to_json }}
 services:
 {% for service in deployment_bundle_services %}
@@ -13,10 +13,18 @@ services:
         checksum_sha256: {{ (lookup('file', platform_source.stat.path, rstrip=false) | hash('sha256')) | to_json }}
 {% endif %}
     images:
-{% set compose = lookup('file', playbook_dir ~ '/services/' ~ service.name ~ '/compose.yml') | from_yaml %}
-{% for definition in compose.services.values() %}
-{% if definition.image is defined %}
-      - {{ definition.image | to_json }}
+{% set canonical_compose = lookup('file', playbook_dir ~ '/services/' ~ service.name ~ '/compose.yml') | from_yaml %}
+{% set platform_compose = (lookup('file', platform_source.stat.path) | from_yaml) if platform_source.stat.exists else {'services': {}} %}
+{% set canonical_services = canonical_compose.services | default({}) %}
+{% set platform_services = platform_compose.services | default({}) %}
+{% set compose_service_names = ((canonical_services.keys() | list) + (platform_services.keys() | list)) | unique | sort %}
+{% for compose_service_name in compose_service_names %}
+{% set canonical_definition = canonical_services.get(compose_service_name, {}) %}
+{% set platform_definition = platform_services.get(compose_service_name, {}) %}
+{% if platform_definition.image is defined %}
+      {{ compose_service_name | to_json }}: {{ platform_definition.image | to_json }}
+{% elif canonical_definition.image is defined %}
+      {{ compose_service_name | to_json }}: {{ canonical_definition.image | to_json }}
 {% endif %}
 {% endfor %}
 {% endfor %}

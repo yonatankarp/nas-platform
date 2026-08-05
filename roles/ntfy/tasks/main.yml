@@ -5,6 +5,19 @@
 # it previously provisioned once they leave the configuration, and refuses to
 # change a provisioned token through its own API, which enforces the sole-owner
 # model at the server rather than only in Ansible.
+- name: Revalidate deployment paths before ntfy runtime use
+  ansible.builtin.include_role:
+    name: deployment_bundle
+    tasks_from: target
+  vars:
+    deployment_target_require_current_release: true
+    deployment_target_extra_paths:
+      - "{{ platform_current_dir }}/services/ntfy"
+      - "{{ platform_current_dir }}/services/ntfy/compose.yml"
+      - "{{ platform_current_dir }}/services/ntfy/compose.{{ platform_kind }}.yml"
+      - "{{ platform_runtime_dir }}/services/ntfy"
+      - "{{ platform_runtime_dir }}/services/ntfy/.env"
+
 - name: Check for an ntfy platform override
   ansible.builtin.stat:
     path: "{{ platform_current_dir }}/services/ntfy/compose.{{ platform_kind }}.yml"

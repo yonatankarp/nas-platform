@@ -10,6 +10,19 @@
 # Read-only lookups below carry check_mode: false. uri is skipped under --check,
 # which would leave their registers without a status or json key and break every
 # conditional that follows. They change nothing, so running them is safe.
+- name: Revalidate deployment paths before Beszel runtime use
+  ansible.builtin.include_role:
+    name: deployment_bundle
+    tasks_from: target
+  vars:
+    deployment_target_require_current_release: true
+    deployment_target_extra_paths:
+      - "{{ platform_current_dir }}/services/beszel"
+      - "{{ platform_current_dir }}/services/beszel/compose.yml"
+      - "{{ platform_current_dir }}/services/beszel/compose.{{ platform_kind }}.yml"
+      - "{{ platform_runtime_dir }}/services/beszel"
+      - "{{ platform_runtime_dir }}/services/beszel/.env"
+
 - name: Check for a Beszel platform override
   ansible.builtin.stat:
     path: "{{ platform_current_dir }}/services/beszel/compose.{{ platform_kind }}.yml"

@@ -25,6 +25,8 @@ BASE_FIXTURE_PATHS = %w[
   roles/deployment_bundle/meta/argument_specs.yml
   roles/deployment_bundle/tasks/controller.yml
   roles/deployment_bundle/tasks/main.yml
+  roles/deployment_bundle/tasks/target.yml
+  roles/deployment_bundle/templates/manifest.yml.j2
   roles/preflight/meta/argument_specs.yml
   roles/preflight/tasks/main.yml
   services/manifest.yml
@@ -34,6 +36,7 @@ BASE_FIXTURE_PATHS = %w[
   tests/policy_test.rb
   tests/policy_support.rb
   tests/run_contracts.rb
+  tests/verify_deployment_manifest.rb
   tests/validate-policy.sh
 ].freeze
 EXPECTED_FIXTURE_ROLES = {
@@ -563,6 +566,71 @@ expect_failure(failures, "dirty refusal made run once",
     "- name: Require committed controller bundle sources\n  run_once: true\n"
   )
   File.write(path, tasks)
+end
+
+expect_failure(failures, "fresh-root probe regressed to deployment root",
+               "fresh-install preflight must probe the existing validated nas_docker_root") do |root|
+  path = File.join(root, "roles", "preflight", "tasks", "main.yml")
+  tasks = File.read(path).gsub(
+    "{{ nas_docker_root }}/.nas-platform-preflight-probe",
+    "{{ platform_deploy_root }}/.preflight-probe"
+  )
+  File.write(path, tasks)
+end
+
+expect_failure(failures, "release mode comparison removed",
+               "immutable release comparison must include stat.S_IMODE") do |root|
+  path = File.join(root, "roles", "deployment_bundle", "tasks", "main.yml")
+  File.write(path, File.read(path).gsub("stat.S_IMODE", "stat.filemode"))
+end
+
+expect_failure(failures, "deployment sha unquoted",
+               "deployment manifest must quote git_sha as a YAML string") do |root|
+  path = File.join(root, "roles", "deployment_bundle", "templates", "manifest.yml.j2")
+  File.write(path, File.read(path).gsub("platform_release_id | to_json", "platform_release_id"))
+end
+
+expect_failure(failures, "target lstat replaced by following stat",
+               "target validator must use os.lstat for symlink-safe canonical containment") do |root|
+  path = File.join(root, "roles", "deployment_bundle", "tasks", "target.yml")
+  File.write(path, File.read(path).gsub("os.lstat", "os.stat"))
+end
+
+expect_failure(failures, "root ancestor walk removed",
+               "target validator must lstat every existing ancestor from filesystem root to nas_docker_root") do |root|
+  path = File.join(root, "roles", "deployment_bundle", "tasks", "target.yml")
+  File.write(path, File.read(path).gsub("root_relative_parts", "unchecked_root_parts"))
+end
+
+expect_failure(failures, "preflight probe leaf unguarded",
+               "target validator must guard the exact preflight probe leaf") do |root|
+  path = File.join(root, "roles", "deployment_bundle", "tasks", "target.yml")
+  body = File.read(path).gsub("      - \"{{ nas_docker_root }}/.nas-platform-preflight-probe\"\n", "")
+  File.write(path, body)
+end
+
+expect_failure(failures, "preflight target validation removed",
+               "target containment must be validated before preflight can mutate the target") do |root|
+  path = File.join(root, "site.yml")
+  site = YAML.safe_load_file(path)
+  site.first["pre_tasks"].reject! do |task|
+    task.dig("ansible.builtin.include_role", "tasks_from") == "target"
+  end
+  File.write(path, YAML.dump(site))
+end
+
+expect_failure(failures, "manifest component validation removed",
+               "deployment bundle must validate manifest service path components") do |root|
+  path = File.join(root, "roles", "deployment_bundle", "tasks", "main.yml")
+  tasks = YAML.safe_load_file(path)
+  tasks.reject! { |task| task["name"] == "Validate manifest service path components" }
+  File.write(path, YAML.dump(tasks))
+end
+
+expect_failure(failures, "platform image merge removed",
+               "deployment manifest images must merge canonical and platform Compose services") do |root|
+  path = File.join(root, "roles", "deployment_bundle", "templates", "manifest.yml.j2")
+  File.write(path, File.read(path).gsub("platform_compose", "override_compose"))
 end
 
 if failures.empty?
