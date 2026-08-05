@@ -1,0 +1,95 @@
+---
+- name: Prove Compose metadata parsing handles only exact loader tags
+  hosts: localhost
+  gather_facts: false
+  vars:
+    tagged_source: |
+      ---
+      services:
+        app:
+          ports: !override
+            - "127.0.0.1:8080:80"
+          volumes: !reset []
+    literal_source: |
+      ---
+      # Keep the literal markers !override and !reset in this comment.
+      services:
+        app:
+          command: "print !override and !reset literally"
+          environment:
+            BLOCK: |
+              literal !override
+              literal !reset
+    unknown_source: |
+      ---
+      services: !unexpected-tag
+        app:
+          token: compose-filter-secret-sentinel
+    non_mapping_source: |
+      ---
+      - services
+      - must
+      - be
+      - a mapping
+  tasks:
+    - name: Parse actual Docker Compose loader tags
+      ansible.builtin.set_fact:
+        tagged_metadata: "{{ tagged_source | platform_compose_metadata }}"
+
+    - name: Parse quoted, block, and commented literal markers
+      ansible.builtin.set_fact:
+        literal_metadata: "{{ literal_source | platform_compose_metadata }}"
+
+    - name: Verify actual tags parse without altering literal source content
+      ansible.builtin.assert:
+        that:
+          - tagged_metadata.services.app.ports == ['127.0.0.1:8080:80']
+          - tagged_metadata.services.app.volumes == []
+          - literal_metadata.services.app.command == 'print !override and !reset literally'
+          - "'literal !override' in literal_metadata.services.app.environment.BLOCK"
+          - "'literal !reset' in literal_metadata.services.app.environment.BLOCK"
+          - "'# Keep the literal markers !override and !reset in this comment.' in literal_source"
+          - "'command: \"print !override and !reset literally\"' in literal_source"
+
+    - name: Require unknown YAML tags to fail closed
+      block:
+        - name: Attempt to parse an unknown YAML tag
+          ansible.builtin.set_fact:
+            unexpected_metadata: "{{ unknown_source | platform_compose_metadata }}"
+      rescue:
+        - name: Record rejection of the unknown YAML tag
+          ansible.builtin.set_fact:
+            unknown_tag_rejected: true
+            unknown_tag_error: "{{ ansible_failed_result.msg }}"
+
+    - name: Verify only parser rejection satisfied the unknown-tag proof
+      ansible.builtin.assert:
+        that:
+          - unknown_tag_rejected | default(false) | bool
+          - unexpected_metadata is not defined
+          - "'Compose metadata contains invalid or unsupported YAML' in unknown_tag_error"
+          - "'compose-filter-secret-sentinel' not in unknown_tag_error"
+
+    - name: Require a mapping at the Compose metadata root
+      block:
+        - name: Attempt to parse a non-mapping Compose document
+          ansible.builtin.set_fact:
+            non_mapping_metadata: "{{ non_mapping_source | platform_compose_metadata }}"
+      rescue:
+        - name: Record rejection of the non-mapping Compose document
+          ansible.builtin.set_fact:
+            mapping_root_rejected: true
+            mapping_root_error: "{{ ansible_failed_result.msg }}"
+
+    - name: Verify the non-mapping Compose document was rejected
+      ansible.builtin.assert:
+        that:
+          - mapping_root_rejected | default(false) | bool
+          - non_mapping_metadata is not defined
+          - "'Compose metadata root must be a mapping' in mapping_root_error"
+
+    - name: Report Compose metadata filter behavior
+      ansible.builtin.debug:
+        msg: >-
+          Compose metadata filter: exact tags parsed, literals preserved,
+          unknown tags and non-mapping roots rejected without source disclosure

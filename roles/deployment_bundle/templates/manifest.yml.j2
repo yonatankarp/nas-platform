@@ -15,7 +15,7 @@ services:
 {% endif %}
     images:
 {% set canonical_compose = lookup('file', playbook_dir ~ '/services/' ~ service.name ~ '/compose.yml') | from_yaml %}
-{% set platform_compose = (lookup('file', platform_source.stat.path) | from_yaml) if platform_source.stat.exists else {'services': {}} %}
+{% set platform_compose = (lookup('file', platform_source.stat.path) | platform_compose_metadata) if platform_source.stat.exists else {'services': {}} %}
 {% set canonical_services = canonical_compose.services | default({}) %}
 {% set platform_services = platform_compose.services | default({}) %}
 {% set compose_service_names = ((canonical_services.keys() | list) + (platform_services.keys() | list)) | unique | sort %}

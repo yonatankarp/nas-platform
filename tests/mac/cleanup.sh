@@ -13,18 +13,21 @@ cleanup_mac_sandbox() {
   mac_marker=$mac_cleanup_target/.nas-platform-mac-owned
   mac_project=$(sed -n 's/^project=//p' "$mac_marker")
 
-  mac_container_ids=$(docker ps -aq \
-    --filter "label=com.docker.compose.project=$mac_project") || return 1
+  mac_container_ids=$(for mac_service_project in "$mac_project-beszel" "$mac_project-ntfy"; do
+    docker ps -aq --filter "label=com.docker.compose.project=$mac_service_project" || exit 1
+  done) || return 1
   for mac_container_id in $mac_container_ids; do
     docker rm -f "$mac_container_id" >/dev/null || return 1
   done
-  mac_network_ids=$(docker network ls -q \
-    --filter "label=com.docker.compose.project=$mac_project") || return 1
+  mac_network_ids=$(for mac_service_project in "$mac_project-beszel" "$mac_project-ntfy"; do
+    docker network ls -q --filter "label=com.docker.compose.project=$mac_service_project" || exit 1
+  done) || return 1
   for mac_network_id in $mac_network_ids; do
     docker network rm "$mac_network_id" >/dev/null || return 1
   done
-  mac_volume_ids=$(docker volume ls -q \
-    --filter "label=com.docker.compose.project=$mac_project") || return 1
+  mac_volume_ids=$(for mac_service_project in "$mac_project-beszel" "$mac_project-ntfy"; do
+    docker volume ls -q --filter "label=com.docker.compose.project=$mac_service_project" || exit 1
+  done) || return 1
   for mac_volume_id in $mac_volume_ids; do
     docker volume rm "$mac_volume_id" >/dev/null || return 1
   done
@@ -108,7 +111,8 @@ cleanup_self_test() {
   mac_owned=$(mktemp -d "$mac_test_parent/nas-platform-mac.XXXXXX")
   chmod 0700 "$mac_owned"
   mac_suffix=${mac_owned##*.}
-  printf 'schema=1\nproject=nas-platform-mac-%s\n' "$mac_suffix" \
+  mac_project_suffix=$(printf '%s' "$mac_suffix" | tr '[:upper:]' '[:lower:]')
+  printf 'schema=1\nproject=nas-platform-mac-%s\n' "$mac_project_suffix" \
     > "$mac_owned/.nas-platform-mac-owned"
   chmod 0600 "$mac_owned/.nas-platform-mac-owned"
   mac_alias="$mac_test_parent/nas-platform-mac.alias.$$"

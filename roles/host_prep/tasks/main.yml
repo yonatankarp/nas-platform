@@ -21,8 +21,9 @@
   ansible.builtin.file:
     path: "{{ item.path }}"
     state: directory
-    owner: "{{ item.owner | default(omit) }}"
-    group: "{{ item.group | default(omit) }}"
+    # Linux container UID/GID declarations do not map to macOS host ownership.
+    owner: "{{ item.owner if platform_kind == 'nas' and item.owner is defined else omit }}"
+    group: "{{ item.group if platform_kind == 'nas' and item.group is defined else omit }}"
     mode: "{{ item.mode }}"
   loop: "{{ nas_storage }}"
   loop_control:

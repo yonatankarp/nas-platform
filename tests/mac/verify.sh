@@ -11,9 +11,11 @@ mac_repo_dir=$(CDPATH= cd -- "$mac_script_dir/../.." && pwd -P)
 
 # This wrapper deliberately names only verify.yml. Calling site.yml here would
 # reconverge state and could turn a verification defect into a false pass.
-exec ansible-playbook -i "$mac_repo_dir/inventory/mac.yml" \
+ansible-playbook -i "$mac_repo_dir/inventory/mac.yml" \
   "$mac_repo_dir/verify.yml" \
   --vault-password-file "$PLATFORM_MAC_VAULT_PASSWORD_FILE" \
   -e @"$PLATFORM_MAC_VAULT_FILE" \
   -e "platform_vault_file=$PLATFORM_MAC_VAULT_FILE" \
   --tags platform_verify_ntfy,platform_verify_beszel
+
+mac_run_hooks verify

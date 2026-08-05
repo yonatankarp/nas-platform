@@ -31,6 +31,15 @@ argument_specs:
         type: path
         required: true
         description: Host render-device path to validate when available.
+      platform_beszel_agent_available:
+        type: bool
+        required: true
+        description: Whether this host class runs a managed Beszel agent.
+      platform_beszel_agent_kind:
+        type: str
+        required: true
+        choices: [intel, portable]
+        description: Agent artifact and host wiring supported by this host class.
       platform_host_network_available:
         type: bool
         required: true

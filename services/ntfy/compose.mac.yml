@@ -1,0 +1,9 @@
+---
+services:
+  ntfy:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-ntfy
+    ports: !override
+      - "${NTFY_HOST_PORT:?}:80"
+    environment:
+      # The disposable proof has no mobile-push lane.
+      NTFY_UPSTREAM_BASE_URL: ""

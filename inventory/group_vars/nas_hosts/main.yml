@@ -7,6 +7,8 @@ nas_media_root: /volume2
 
 platform_render_device_available: true
 platform_render_device_path: /dev/dri/card0
+platform_beszel_agent_available: true
+platform_beszel_agent_kind: intel
 
 platform_host_network_available: true
 platform_host_network_adapter: host
