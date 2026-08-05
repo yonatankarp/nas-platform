@@ -15,6 +15,7 @@ failures = []
 BASE_FIXTURE_PATHS = %w[
   .github/workflows/ci.yml
   ansible.cfg
+  filter_plugins/platform_paths.py
   inventory/group_vars/all/main.yml
   inventory/group_vars/all/vault.yml.example
   inventory/group_vars/mac_hosts/main.yml
@@ -40,6 +41,7 @@ BASE_FIXTURE_PATHS = %w[
   templates/vault-plain.yml.j2
   tests/contracts/registry.yml
   tests/integration.sh
+  tests/mac_inventory_path_test.yml
   tests/policy_test.rb
   tests/policy_support.rb
   tests/run_contracts.rb
@@ -118,6 +120,13 @@ def mutate_manifest(root)
   manifest = YAML.safe_load_file(path)
   yield manifest
   File.write(path, YAML.dump(manifest))
+end
+
+def mutate_yaml_file(root, relative_path)
+  path = File.join(root, relative_path)
+  document = YAML.safe_load_file(path)
+  yield document
+  File.write(path, YAML.dump(document))
 end
 
 def service(manifest, name)
@@ -268,6 +277,165 @@ end
 
 expect_failure(failures, "malformed YAML", "service manifest is malformed") do |root|
   File.write(File.join(root, "services", "manifest.yml"), "services: [unterminated")
+end
+
+expect_failure(failures, "missing platform hierarchy",
+               "inventory/local.yml must expose nas_hosts as a child of platform_hosts") do |root|
+  mutate_yaml_file(root, "inventory/local.yml") { |inventory| inventory.delete("platform_hosts") }
+end
+
+expect_failure(failures, "wrong platform child",
+               "inventory/local.yml must expose nas_hosts as a child of platform_hosts") do |root|
+  mutate_yaml_file(root, "inventory/local.yml") do |inventory|
+    inventory.fetch("platform_hosts").fetch("children")["wrong_hosts"] =
+      inventory.fetch("platform_hosts").fetch("children").delete("nas_hosts")
+  end
+end
+
+expect_failure(failures, "missing Mac inventory", "inventory/mac.yml is missing") do |root|
+  FileUtils.rm(File.join(root, "inventory", "mac.yml"))
+end
+
+expect_failure(failures, "machine fact leaked into shared vars",
+               "machine facts must not be all-group variables") do |root|
+  mutate_yaml_file(root, "inventory/group_vars/all/main.yml") do |vars|
+    vars["nas_docker_root"] = "/leaked"
+  end
+end
+
+expect_failure(failures, "raw Mac storage root",
+               "Mac nas_docker_root must canonicalize PLATFORM_DOCKER_ROOT before export") do |root|
+  mutate_yaml_file(root, "inventory/group_vars/mac_hosts/main.yml") do |vars|
+    vars["nas_docker_root"] = "{{ lookup('env', 'PLATFORM_DOCKER_ROOT') }}"
+  end
+end
+
+expect_failure(failures, "missing filter registration",
+               "Mac path canonicalization must use the configured physical-path filter") do |root|
+  path = File.join(root, "ansible.cfg")
+  File.write(path, File.read(path).sub(/^filter_plugins\s*=.*\n/, ""))
+end
+
+expect_failure(failures, "nonfunctional physical-path filter",
+               "Mac physical-path filter must reject ambiguous or relative paths") do |root|
+  path = File.join(root, "filter_plugins", "platform_paths.py")
+  source = File.read(path).sub("return os.path.realpath(value)",
+                               "return value  # os.path.realpath(value)")
+  File.write(path, source)
+end
+
+expect_failure(failures, "leading double separator accepted",
+               "Mac physical-path filter must reject ambiguous or relative paths") do |root|
+  path = File.join(root, "filter_plugins", "platform_paths.py")
+  source = File.read(path).sub(" or value.startswith(os.sep * 2)", "")
+  File.write(path, source)
+end
+
+expect_failure(failures, "missing Mac path fixture wiring",
+               "integration must prove canonical Mac paths pass target validation") do |root|
+  path = File.join(root, "tests", "integration.sh")
+  source = File.read(path)
+    .gsub(/^.*mac_inventory_path_test\.yml.*\n/, "")
+    .gsub(/^.*MAC_PATH_(?:CANONICAL|LEXICAL_REFUSED).*\n/, "")
+  File.write(path, source)
+end
+
+expect_failure(failures, "missing host capability", "must define platform_external_integration_checks") do |root|
+  mutate_yaml_file(root, "inventory/group_vars/mac_hosts/main.yml") do |vars|
+    vars.delete("platform_external_integration_checks")
+  end
+end
+
+expect_failure(failures, "wrong capability type",
+               "platform_render_device_available must be boolean") do |root|
+  mutate_yaml_file(root, "inventory/group_vars/mac_hosts/main.yml") do |vars|
+    vars["platform_render_device_available"] = "false"
+  end
+end
+
+expect_failure(failures, "inconsistent host network capability",
+               "host-network capability and adapter must agree") do |root|
+  mutate_yaml_file(root, "inventory/group_vars/mac_hosts/main.yml") do |vars|
+    vars["platform_host_network_adapter"] = "host"
+  end
+end
+
+expect_failure(failures, "invalid production platform kind", "platform_kind must be mac") do |root|
+  mutate_yaml_file(root, "inventory/group_vars/mac_hosts/main.yml") do |vars|
+    vars["platform_kind"] = "integration"
+  end
+end
+
+expect_failure(failures, "removed Mac mount guard",
+               "preflight must read the Linux mount table only on NAS hosts") do |root|
+  mutate_yaml_file(root, "roles/preflight/tasks/main.yml") do |tasks|
+    tasks.find { |task| task["name"] == "Read the kernel mount table" }.delete("when")
+  end
+end
+
+expect_failure(failures, "weakened GPU device proof",
+               "GPU availability must require declared capability and an existing character device") do |root|
+  mutate_yaml_file(root, "roles/preflight/tasks/main.yml") do |tasks|
+    task = tasks.find { |entry| entry["name"] == "Record whether hardware acceleration is available" }
+    task.fetch("ansible.builtin.set_fact")["preflight_gpu_available"] =
+      "{{ platform_render_device_available and preflight_render_device.stat.exists }}"
+  end
+end
+
+expect_failure(failures, "weakened platform kind choices",
+               "deployment bundle platform_kind must allow only nas or mac") do |root|
+  mutate_yaml_file(root, "roles/deployment_bundle/meta/argument_specs.yml") do |spec|
+    spec.dig("argument_specs", "main", "options", "platform_kind").delete("choices")
+  end
+end
+
+expect_failure(failures, "test mode defaults enabled",
+               "deployment bundle test mode must be an explicit false boolean option") do |root|
+  mutate_yaml_file(root, "roles/deployment_bundle/meta/argument_specs.yml") do |spec|
+    spec.dig("argument_specs", "main", "options", "deployment_bundle_test_mode")["default"] = true
+  end
+end
+
+expect_failure(failures, "weakened dirty bypass guard",
+               "dirty controller bypass must require explicit integration Compose test mode") do |root|
+  mutate_yaml_file(root, "roles/deployment_bundle/tasks/controller.yml") do |tasks|
+    task = tasks.find { |entry| entry["name"] == "Restrict dirty controller bypass to integration" }
+    task.fetch("ansible.builtin.assert")["that"] = [
+      "not deployment_bundle_allow_dirty_controller or platform_compose_kind == 'integration'"
+    ]
+  end
+end
+
+expect_failure(failures, "weakened Compose override guard",
+               "Compose override selection must require explicit test mode") do |root|
+  mutate_yaml_file(root, "roles/deployment_bundle/tasks/controller.yml") do |tasks|
+    task = tasks.find do |entry|
+      entry["name"] == "Restrict Compose override selection to explicit test mode"
+    end
+    task.fetch("ansible.builtin.assert")["that"] = ["platform_kind in ['nas', 'mac']"]
+  end
+end
+
+expect_failure(failures, "missing ntfy Compose interface",
+               "ntfy argument specs must require platform_compose_kind") do |root|
+  mutate_yaml_file(root, "roles/ntfy/meta/argument_specs.yml") do |spec|
+    spec.dig("argument_specs", "main", "options").delete("platform_compose_kind")
+  end
+end
+
+expect_failure(failures, "missing Beszel render interface",
+               "Beszel argument specs must require platform_render_device_path") do |root|
+  mutate_yaml_file(root, "roles/beszel/meta/argument_specs.yml") do |spec|
+    spec.dig("argument_specs", "main", "options").delete("platform_render_device_path")
+  end
+end
+
+
+expect_failure(failures, "missing Beszel Compose interface",
+               "beszel argument specs must require platform_compose_kind") do |root|
+  mutate_yaml_file(root, "roles/beszel/meta/argument_specs.yml") do |spec|
+    spec.dig("argument_specs", "main", "options").delete("platform_compose_kind")
+  end
 end
 
 {

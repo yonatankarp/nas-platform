@@ -8,6 +8,10 @@ argument_specs:
       - Renders the environment from vault, deploys the stack, then verifies that
         provisioning took effect rather than only that a file was written.
     options:
+      platform_compose_kind:
+        type: str
+        required: true
+        description: Platform-specific Compose override suffix selected by the bundle.
       ntfy_port:
         type: int
         required: false

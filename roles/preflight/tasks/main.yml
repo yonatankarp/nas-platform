@@ -87,7 +87,8 @@
   ansible.builtin.set_fact:
     preflight_gpu_available: >-
       {{ (platform_render_device_available | bool) and
-         (preflight_render_device.stat.exists | default(false)) }}
+         (preflight_render_device.stat.exists | default(false)) and
+         (preflight_render_device.stat.ischr | default(false)) }}
 
 - name: Report the hardware acceleration decision
   ansible.builtin.debug:
