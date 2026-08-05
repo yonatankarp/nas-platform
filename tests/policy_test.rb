@@ -474,6 +474,64 @@ check(failures, harness.match?(/^ruby_package='ruby=\d+\.\d+\.\d+-r\d+'$/) &&
                 harness.match?(/^curl_package='curl=\d+\.\d+\.\d+-r\d+'$/),
       "integration must pin distro ruby and curl packages")
 
+# A release ID names committed controller content. Production must reject
+# modified or untracked bundle inputs; only the disposable integration platform
+# may opt into copying the deliberately dirty pre-commit working tree.
+deployment_defaults_path = File.join(ROOT, "roles", "deployment_bundle", "defaults", "main.yml")
+deployment_defaults = File.file?(deployment_defaults_path) ? YAML.safe_load_file(deployment_defaults_path) : {}
+check(failures, deployment_defaults["deployment_bundle_allow_dirty_controller"] == false,
+      "deployment bundle must refuse dirty controller sources by default")
+
+deployment_spec = YAML.safe_load_file(
+  File.join(ROOT, "roles", "deployment_bundle", "meta", "argument_specs.yml")
+)
+dirty_option = deployment_spec.dig(
+  "argument_specs", "main", "options", "deployment_bundle_allow_dirty_controller"
+)
+check(failures, dirty_option.is_a?(Hash) && dirty_option["type"] == "bool" &&
+                dirty_option["default"] == false,
+      "deployment bundle dirty-source bypass must be an explicit false boolean option")
+
+deployment_tasks = flatten_tasks(YAML.safe_load_file(
+  File.join(ROOT, "roles", "deployment_bundle", "tasks", "controller.yml")
+))
+dirty_guard = deployment_tasks.find { |task| task["name"] == "Restrict dirty controller bypass to integration" }
+cleanliness_check = deployment_tasks.find { |task| task["name"] == "Inspect controller bundle source cleanliness" }
+cleanliness_assert = deployment_tasks.find { |task| task["name"] == "Require committed controller bundle sources" }
+check(failures, dirty_guard&.dig("ansible.builtin.assert", "that").to_s.include?("platform_kind == 'integration'"),
+      "dirty controller bypass must be accepted only for platform_kind integration")
+cleanliness_argv = cleanliness_check&.dig("ansible.builtin.command", "argv")
+check(failures, cleanliness_argv.is_a?(Array) && cleanliness_argv.include?("status") &&
+                cleanliness_argv.include?("--untracked-files=all") &&
+                cleanliness_argv.include?("services/manifest.yml") &&
+                cleanliness_argv.include?("services"),
+      "deployment bundle must inspect tracked and untracked manifest/service sources")
+check(failures, cleanliness_assert&.dig("ansible.builtin.assert", "that").to_s
+                .include?("deployment_bundle_allow_dirty_controller"),
+      "deployment bundle must refuse dirty sources unless the guarded bypass is enabled")
+check(failures, cleanliness_assert && !cleanliness_assert.key?("run_once"),
+      "dirty controller refusal must be evaluated independently for every target host")
+check(failures, harness.include?("-e platform_kind=integration") &&
+                harness.include?("-e deployment_bundle_allow_dirty_controller=true"),
+      "integration must explicitly enable its integration-only dirty controller bypass")
+%w[
+  DIRTY_TRACKED_REFUSED DIRTY_UNTRACKED_REFUSED
+  DIRTY_PRODUCTION_BYPASS_REFUSED DIRTY_INTEGRATION_ACCEPTED
+  DIRTY_REFUSAL_TARGET_UNCHANGED
+].each do |evidence|
+  check(failures, harness.include?(evidence),
+        "integration must execute and report #{evidence.downcase.tr('_', ' ')}")
+end
+site_play = YAML.safe_load_file(File.join(ROOT, "site.yml")).first
+controller_preflight = Array(site_play["pre_tasks"]).find do |task|
+  include_role = task["ansible.builtin.include_role"]
+  include_role.is_a?(Hash) && include_role["name"] == "deployment_bundle" &&
+    include_role["tasks_from"] == "controller" &&
+    Array(include_role.dig("apply", "tags")).include?("always")
+end
+check(failures, !controller_preflight.nil?,
+      "controller bundle cleanliness must be validated before target-mutating roles")
+
 # PocketBase runs the records query and its total-count query concurrently.
 # On a bind-mounted SQLite database the count path can race immediately after
 # creating the first user, while this role never consumes pagination totals.

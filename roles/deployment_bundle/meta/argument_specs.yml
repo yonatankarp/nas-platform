@@ -6,6 +6,12 @@ argument_specs:
       - Copies implemented service definitions from the controller checkout into
         a versioned release and atomically switches the current release symlink.
     options:
+      deployment_bundle_allow_dirty_controller:
+        type: bool
+        default: false
+        description: >-
+          Integration-only bypass for pre-commit validation of a dirty
+          controller checkout. Refused for every non-integration platform.
       nas_docker_root:
         type: path
         required: true

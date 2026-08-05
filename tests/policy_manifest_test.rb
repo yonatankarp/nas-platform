@@ -18,8 +18,13 @@ BASE_FIXTURE_PATHS = %w[
   inventory/group_vars/all/main.yml
   inventory/group_vars/all/vault.yml.example
   requirements.yml
+  site.yml
   roles/host_prep/meta/argument_specs.yml
   roles/host_prep/tasks/main.yml
+  roles/deployment_bundle/defaults/main.yml
+  roles/deployment_bundle/meta/argument_specs.yml
+  roles/deployment_bundle/tasks/controller.yml
+  roles/deployment_bundle/tasks/main.yml
   roles/preflight/meta/argument_specs.yml
   roles/preflight/tasks/main.yml
   services/manifest.yml
@@ -523,6 +528,31 @@ expect_failure(failures, "symlink role tasks", "ntfy: tasks/main.yml must be a r
   path = File.join(root, "roles", "ntfy", "tasks", "main.yml")
   File.unlink(path)
   File.symlink("../../beszel/tasks/main.yml", path)
+end
+
+expect_failure(failures, "dirty controller enabled by default",
+               "deployment bundle must refuse dirty controller sources by default") do |root|
+  path = File.join(root, "roles", "deployment_bundle", "defaults", "main.yml")
+  defaults = YAML.safe_load_file(path)
+  defaults["deployment_bundle_allow_dirty_controller"] = true
+  File.write(path, YAML.dump(defaults))
+end
+
+expect_failure(failures, "untracked controller inspection removed",
+               "deployment bundle must inspect tracked and untracked manifest/service sources") do |root|
+  path = File.join(root, "roles", "deployment_bundle", "tasks", "controller.yml")
+  tasks = File.read(path).sub("      - --untracked-files=all\n", "")
+  File.write(path, tasks)
+end
+
+expect_failure(failures, "dirty refusal made run once",
+               "dirty controller refusal must be evaluated independently for every target host") do |root|
+  path = File.join(root, "roles", "deployment_bundle", "tasks", "controller.yml")
+  tasks = File.read(path).sub(
+    "- name: Require committed controller bundle sources\n",
+    "- name: Require committed controller bundle sources\n  run_once: true\n"
+  )
+  File.write(path, tasks)
 end
 
 if failures.empty?
