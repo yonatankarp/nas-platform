@@ -5,6 +5,8 @@
 # The source-platform inventory is the exception: pinning that finite set keeps
 # an omitted legacy service from silently disappearing from the migration scope.
 
+require "open3"
+require "pathname"
 require "yaml"
 
 ROOT = File.expand_path("..", __dir__)
@@ -37,87 +39,131 @@ EXPECTED_SERVICE_MAPPINGS = {
   "paperless-ngx" => { "role" => "paperless_ngx", "legacy_path" => "compose/paperless-ngx/compose.yml", "tranche" => 6 },
   "tinymediamanager" => { "role" => "tinymediamanager", "legacy_path" => "compose/tinymediamanager/compose.yml", "tranche" => 3 }
 }.freeze
-SERVICE_CONTRACT_BASENAMES = {
-  "audiobookshelf" => "audiobookshelf",
-  "beszel" => "beszel",
-  "dozzle" => "dozzle",
-  "immich" => "immich",
-  "jellyfin" => "jellyfin",
-  "komga" => "komga",
-  "ntfy" => "ntfy",
-  "paperless-ngx" => "paperless",
-  "tinymediamanager" => "tinymediamanager"
-}.freeze
+SERVICE_CONTRACT_BASENAME_EXCEPTIONS = { "paperless-ngx" => "paperless" }.freeze
 REQUIRED_MANIFEST_FIELDS = %w[name legacy_path role tranche status].freeze
 ALLOWED_SERVICE_STATUSES = %w[planned implemented accepted].freeze
 IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
 
-def verification_task?(tasks)
+def symlink_free_below?(root, path)
+  relative = Pathname.new(path).relative_path_from(Pathname.new(root))
+  return false if relative.each_filename.include?("..")
+
+  current = root
+  relative.each_filename do |component|
+    current = File.join(current, component)
+    return false if File.symlink?(current)
+  end
+  true
+rescue ArgumentError
+  false
+end
+
+def owned_directory?(path, parent)
+  return false if File.symlink?(parent)
+  return false unless File.directory?(path) && !File.symlink?(path)
+  return false unless symlink_free_below?(parent, path)
+
+  File.realpath(path) == File.join(File.realpath(parent), File.basename(path))
+rescue SystemCallError
+  false
+end
+
+def owned_file?(path, root)
+  return false unless File.file?(path) && !File.symlink?(path)
+  return false unless owned_directory?(root, File.dirname(root)) && symlink_free_below?(root, path)
+
+  File.realpath(path).start_with?(File.realpath(root) + File::SEPARATOR)
+rescue SystemCallError
+  false
+end
+
+def meaningful_probe?(task, module_name, service_names)
+  module_data = task[module_name]
+  case module_name
+  when "ansible.builtin.uri"
+    service_names.any? { |name| YAML.dump(module_data).include?(name) }
+  when "ansible.builtin.assert"
+    conditions = module_data.is_a?(Hash) ? Array(module_data["that"]) : []
+    conditions.any? do |condition|
+      condition != true && condition.to_s.strip.downcase != "true" &&
+        service_names.any? { |name| condition.to_s.include?(name) }
+    end
+  when "ansible.builtin.command"
+    command = module_data.is_a?(Hash) ? module_data["argv"] || module_data["cmd"] : module_data
+    executable = Array(command).first.to_s.split.first
+    !%w[true /bin/true].include?(executable) &&
+      service_names.any? { |name| YAML.dump(module_data).include?(name) }
+  else
+    false
+  end
+end
+
+def verification_task?(tasks, service_name, role_name)
   Array(tasks).any? do |task|
     next false unless task.is_a?(Hash)
 
     named_verification = task["name"].is_a?(String) &&
                          task["name"].match?(/\b(?:verify|verification)\b/i)
-    active_probe = %w[ansible.builtin.uri ansible.builtin.assert ansible.builtin.command]
-                   .any? { |module_name| task.key?(module_name) }
-    nested_verification = %w[block rescue always].any? do |section|
-      verification_task?(task[section])
+    expected_tag = "platform_verify_#{service_name}"
+    tagged = Array(task["tags"]).include?(expected_tag)
+    active_probe = %w[ansible.builtin.uri ansible.builtin.assert ansible.builtin.command].any? do |module_name|
+      task.key?(module_name) && meaningful_probe?(task, module_name, [service_name, role_name].uniq)
     end
-    (named_verification && active_probe) || nested_verification
+    nested_verification = %w[block rescue always].any? do |section|
+      verification_task?(task[section], service_name, role_name)
+    end
+    (named_verification && tagged && active_probe) || nested_verification
   end
 end
 
-def role_has_verification?(tasks_path)
-  File.file?(tasks_path) && verification_task?(YAML.safe_load_file(tasks_path))
+def role_has_verification?(tasks_path, service_name, role_name)
+  verification_task?(YAML.safe_load_file(tasks_path), service_name, role_name)
 rescue Psych::Exception
   false
 end
 
-def contract_has_verification?(contract_path, service_names)
-  return false unless File.file?(contract_path) && File.executable?(contract_path)
+def contract_has_verification?(contract_path, contract_root, relative_contract_path)
+  return false unless owned_file?(contract_path, contract_root)
+  return false unless File.executable?(contract_path) && File.size?(contract_path)
 
-  active_lines = File.readlines(contract_path).filter_map do |line|
-    line = line.sub(/\s+#.*\z/, "").strip
-    line unless line.empty? || line.start_with?("#")
-  end
-  service_names_pattern = Regexp.union(service_names)
-  service_pattern = /(?<![A-Za-z0-9_-])(?:#{service_names_pattern})(?![A-Za-z0-9_-])/
-  probe_lines = active_lines.select do |line|
-    line.match?(/\b(?:curl|wget)\b/) && line.match?(service_pattern)
-  end
-  return false if probe_lines.empty?
+  _stdout, _stderr, status = Open3.capture3("sh", "-n", contract_path)
+  return false unless status.success?
 
-  captured_results = probe_lines.filter_map do |line|
-    line[/\A([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"?\$\([^)]*\b(?:curl|wget)\b/, 1]
-  end
-  captured_assertion = captured_results.any? do |variable|
-    reference = /\$(?:#{Regexp.escape(variable)}\b|\{#{Regexp.escape(variable)}\})/
-    active_lines.any? do |line|
-      uses_test = line.match?(/\btest\b/)
-      uses_brackets = line.match?(/(?:\A|[;&]\s*)\[\s/)
-      (uses_test || uses_brackets) && line.match?(reference)
+  harnesses = [
+    File.join(ROOT, "tests", "integration.sh"),
+    File.join(ROOT, "tests", "mac", "run.sh"),
+    File.join(ROOT, ".github", "workflows", "ci.yml")
+  ]
+  harnesses.any? do |harness|
+    owned_file?(harness, ROOT) && File.readlines(harness).any? do |line|
+      !line.lstrip.start_with?("#") && line.include?(relative_contract_path)
     end
   end
+end
 
-  piped_assertion = probe_lines.any? do |line|
-    line.match?(/\|\s*grep\s+-(?:[A-Za-z]*q[A-Za-z]*|[A-Za-z]*E[A-Za-z]*)\b/)
+def duplicate_yaml_keys(node, duplicates = [])
+  if node.is_a?(Psych::Nodes::Mapping)
+    seen = {}
+    node.children.each_slice(2) do |key_node, value_node|
+      if key_node.is_a?(Psych::Nodes::Scalar)
+        key = key_node.value
+        duplicates << key if seen[key]
+        seen[key] = true
+      end
+      duplicate_yaml_keys(value_node, duplicates)
+    end
+  elsif node.respond_to?(:children) && node.children
+    node.children.each { |child| duplicate_yaml_keys(child, duplicates) }
   end
-
-  exits_on_error = active_lines.any? { |line| line.match?(/\Aset\s+-[A-Za-z]*e/) }
-  propagated_probe = probe_lines.any? do |line|
-    reports_failure = line.match?(/\bwget\b/) ||
-                      line.match?(/\bcurl\b.*(?:--fail\b|(?<!-)-[A-Za-z]*f[A-Za-z]*\b)/)
-    propagates = exits_on_error || line == active_lines.last ||
-                 line.match?(/\|\|\s*(?:exit|return)\b/) || line.match?(/\Aif\s+!\s*/)
-    reports_failure && propagates
-  end
-
-  captured_assertion || piped_assertion || propagated_probe
+  duplicates
 end
 
 manifest_path = File.join(ROOT, "services", "manifest.yml")
 manifest_loaded = true
 manifest = begin
+  duplicate_yaml_keys(Psych.parse_stream(File.read(manifest_path))).uniq.each do |key|
+    check(failures, false, "service manifest contains duplicate mapping key #{key}")
+  end
   YAML.safe_load_file(manifest_path)
 rescue Errno::ENOENT
   check(failures, false, "service manifest is missing: services/manifest.yml")
@@ -208,20 +254,33 @@ manifest_entries.each do |service|
   role = service["role"]
   next unless name.is_a?(String) && role.is_a?(String)
 
-  compose_path = File.join(ROOT, "services", name, "compose.yml")
+  services_root = File.join(ROOT, "services")
+  service_root = File.join(services_root, name)
+  compose_path = File.join(service_root, "compose.yml")
+  roles_root = File.join(ROOT, "roles")
   role_root = File.join(ROOT, "roles", role)
   spec_path = File.join(role_root, "meta", "argument_specs.yml")
   tasks_path = File.join(role_root, "tasks", "main.yml")
-  check(failures, File.file?(compose_path), "#{name}: implemented service is missing compose.yml")
-  check(failures, File.file?(spec_path), "#{name}: implemented service role is missing meta/argument_specs.yml")
-  check(failures, File.file?(tasks_path), "#{name}: implemented service role is missing tasks/main.yml")
+  service_root_owned = owned_directory?(service_root, services_root)
+  role_root_owned = owned_directory?(role_root, roles_root)
+  compose_owned = service_root_owned && owned_file?(compose_path, service_root)
+  spec_owned = role_root_owned && owned_file?(spec_path, role_root)
+  tasks_owned = role_root_owned && owned_file?(tasks_path, role_root)
+  check(failures, service_root_owned, "#{name}: service must be a real directory within services")
+  check(failures, compose_owned, "#{name}: compose.yml must be a regular file within its service root")
+  check(failures, role_root_owned, "#{name}: role must be a real directory within roles")
+  check(failures, spec_owned, "#{name}: argument_specs.yml must be a regular file within its role root")
+  check(failures, tasks_owned, "#{name}: tasks/main.yml must be a regular file within its role root")
   check(failures, declared_paths.any? { |path| path.include?("/#{name}/") || path.end_with?("/#{name}") },
         "#{name}: implemented service has no storage declaration")
 
-  contract_basename = SERVICE_CONTRACT_BASENAMES.fetch(name, name)
-  contract_path = File.join(ROOT, "tests", "contracts", "#{contract_basename}.sh")
-  verifies_service = role_has_verification?(tasks_path) ||
-                     contract_has_verification?(contract_path, [name, contract_basename].uniq)
+  contract_basename = SERVICE_CONTRACT_BASENAME_EXCEPTIONS.fetch(name, name)
+  relative_contract_path = "tests/contracts/#{contract_basename}.sh"
+  contract_root = File.join(ROOT, "tests", "contracts")
+  contract_path = File.join(ROOT, relative_contract_path)
+  role_verification = tasks_owned && role_has_verification?(tasks_path, name, role)
+  contract_verification = contract_has_verification?(contract_path, contract_root, relative_contract_path)
+  verifies_service = role_verification || contract_verification
   check(failures, verifies_service,
         "#{name}: implemented service has no automated verification or service contract")
 end
@@ -320,6 +379,11 @@ end
 config = File.read(File.join(ROOT, "ansible.cfg"))
 check(failures, config.match?(/^inject_facts_as_vars\s*=\s*False/i),
       "ansible.cfg must disable fact injection, removed in ansible-core 2.24")
+
+ci = File.read(File.join(ROOT, ".github", "workflows", "ci.yml"))
+check(failures, ci.include?("ruby tests/policy_test.rb"), "CI must run tests/policy_test.rb")
+check(failures, ci.include?("ruby tests/policy_manifest_test.rb"),
+      "CI must run tests/policy_manifest_test.rb")
 
 # Compose interpolates $ in env files and silently truncates an unescaped bcrypt
 # hash rather than rejecting it, so escaping is mandatory wherever hashes flow.

@@ -21,7 +21,9 @@ jobs:
         run: find tests -type f -name '*.sh' -exec sh -n {} +
 
       - name: Check policy properties
-        run: ruby tests/policy_test.rb
+        run: |
+          ruby tests/policy_test.rb
+          ruby tests/policy_manifest_test.rb
 
       - name: Check integration sandbox cleanup
         run: tests/integration_cleanup_test.sh

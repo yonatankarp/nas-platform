@@ -33,11 +33,13 @@
 # an unescaped or malformed hash leaves the server running with the alerting
 # chain silently dead.
 - name: Verify anonymous reads are refused
+  tags: [platform_verify_ntfy]
   ansible.builtin.uri:
     url: "http://127.0.0.1:{{ ntfy_port }}/{{ ntfy_topic }}/json?poll=1"
     status_code: [403]
 
 - name: Verify each provisioned token can publish
+  tags: [platform_verify_ntfy]
   ansible.builtin.uri:
     url: "http://127.0.0.1:{{ ntfy_port }}/{{ ntfy_topic }}"
     method: POST
@@ -52,6 +54,7 @@
   no_log: true
 
 - name: Verify publisher tokens cannot read, proving the write-only ACL applied
+  tags: [platform_verify_ntfy]
   ansible.builtin.uri:
     url: "http://127.0.0.1:{{ ntfy_port }}/{{ ntfy_topic }}/json?poll=1"
     headers:
