@@ -67,9 +67,10 @@ controller_test_dir="$sandbox/controller-checkout"
 controller_test_playbook="$controller_test_dir/dirty-controller-test.yml"
 controller_test_target="$sandbox/dirty-controller-target"
 controller_test_sentinel="$sandbox/dirty-controller-sentinel"
-mkdir -p "$controller_test_dir/services/ntfy"
+mkdir -p "$controller_test_dir/services/ntfy" "$controller_test_dir/roles"
 cp "$repo_dir/services/manifest.yml" "$controller_test_dir/services/manifest.yml"
 cp "$repo_dir/services/ntfy/compose.yml" "$controller_test_dir/services/ntfy/compose.yml"
+cp -R "$repo_dir/roles/deployment_bundle" "$controller_test_dir/roles/"
 cat > "$controller_test_playbook" <<EOF
 ---
 - name: Prove dirty controller validation precedes target mutation
@@ -175,15 +176,28 @@ docker run --rm \
 
     printf '%s\n' dirty >> '$controller_test_dir/services/ntfy/compose.yml'
     assert_dirty_refused DIRTY_TRACKED_REFUSED \
-      'Controller bundle sources differ from Git HEAD' \
+      'Controller checkout differs from Git HEAD' \
       -e platform_kind=production
-    git -C '$controller_test_dir' checkout -q -- services
+    git -C '$controller_test_dir' checkout -q -- .
 
     printf '%s\n' untracked > '$controller_test_dir/services/untracked.yml'
     assert_dirty_refused DIRTY_UNTRACKED_REFUSED \
-      'Controller bundle sources differ from Git HEAD' \
+      'Controller checkout differs from Git HEAD' \
       -e platform_kind=production
     rm '$controller_test_dir/services/untracked.yml'
+
+    printf '%s\n' dirty >> \
+      '$controller_test_dir/roles/deployment_bundle/templates/manifest.yml.j2'
+    assert_dirty_refused DIRTY_MANIFEST_TEMPLATE_REFUSED \
+      'Controller checkout differs from Git HEAD' \
+      -e platform_kind=production
+    git -C '$controller_test_dir' checkout -q -- .
+
+    printf '%s\n' '# dirty arbitrary controller file' >> '$controller_test_playbook'
+    assert_dirty_refused DIRTY_ARBITRARY_CONTROLLER_FILE_REFUSED \
+      'Controller checkout differs from Git HEAD' \
+      -e platform_kind=production
+    git -C '$controller_test_dir' checkout -q -- .
 
     printf '%s\n' dirty >> '$controller_test_dir/services/ntfy/compose.yml'
     assert_dirty_refused DIRTY_PRODUCTION_BYPASS_REFUSED \
@@ -201,7 +215,7 @@ docker run --rm \
     fi
     test -f '$controller_test_target'
     printf 'DIRTY_INTEGRATION_ACCEPTED\n'
-    git -C '$controller_test_dir' checkout -q -- services
+    git -C '$controller_test_dir' checkout -q -- .
 
     run_play() {
       ansible-playbook \
