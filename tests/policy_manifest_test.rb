@@ -9,29 +9,43 @@ require "yaml"
 
 ROOT = File.expand_path("..", __dir__)
 failures = []
-FIXTURE_PATHS = %w[
+BASE_FIXTURE_PATHS = %w[
   .github/workflows/ci.yml
   ansible.cfg
   inventory/group_vars/all/main.yml
   inventory/group_vars/all/vault.yml.example
   requirements.yml
-  roles/beszel/meta/argument_specs.yml
-  roles/beszel/tasks/main.yml
-  roles/beszel/templates/env.j2
   roles/host_prep/meta/argument_specs.yml
   roles/host_prep/tasks/main.yml
-  roles/ntfy/meta/argument_specs.yml
-  roles/ntfy/tasks/main.yml
-  roles/ntfy/templates/env.j2
   roles/preflight/meta/argument_specs.yml
   roles/preflight/tasks/main.yml
-  services/beszel/compose.yml
   services/manifest.yml
-  services/ntfy/compose.yml
   templates/vault-plain.yml.j2
+  tests/contracts/registry.yml
   tests/integration.sh
   tests/policy_test.rb
+  tests/run_contracts.rb
+  tests/validate-policy.sh
 ].freeze
+
+def fixture_paths
+  paths = BASE_FIXTURE_PATHS.dup
+  manifest = YAML.safe_load_file(File.join(ROOT, "services", "manifest.yml"))
+  manifest.fetch("services").each do |entry|
+    next unless %w[implemented accepted].include?(entry.fetch("status"))
+
+    paths << File.join("services", entry.fetch("name"), "compose.yml")
+    role_root = File.join("roles", entry.fetch("role"))
+    paths << File.join(role_root, "meta", "argument_specs.yml")
+    paths << File.join(role_root, "tasks", "main.yml")
+    env_template = File.join(role_root, "templates", "env.j2")
+    paths << env_template if File.file?(File.join(ROOT, env_template))
+  end
+
+  registry = YAML.safe_load_file(File.join(ROOT, "tests", "contracts", "registry.yml"))
+  registry.fetch("contracts").each { |entry| paths << entry.fetch("path") }
+  paths.uniq
+end
 
 def mutate_manifest(root)
   path = File.join(root, "services", "manifest.yml")
@@ -46,7 +60,7 @@ end
 
 def run_policy
   Dir.mktmpdir("nas-platform-policy-") do |sandbox|
-    FIXTURE_PATHS.each do |relative_path|
+    fixture_paths.each do |relative_path|
       source = File.join(ROOT, relative_path)
       destination = File.join(sandbox, relative_path)
       FileUtils.mkdir_p(File.dirname(destination))
@@ -80,8 +94,12 @@ def write_contract(root, basename, body)
 end
 
 def register_contract(root, basename)
-  harness = File.join(root, "tests", "integration.sh")
-  File.open(harness, "a") { |file| file.puts "tests/contracts/#{basename}.sh" }
+  registry = File.join(root, "tests", "contracts", "registry.yml")
+  FileUtils.mkdir_p(File.dirname(registry))
+  File.write(registry, YAML.dump(
+    "contracts" => [{ "service" => basename == "paperless" ? "paperless-ngx" : basename,
+                       "path" => "tests/contracts/#{basename}.sh" }]
+  ))
 end
 
 def implement_paperless(root)
@@ -177,9 +195,9 @@ end
   end
 end
 
-expect_failure(failures, "CI omits manifest mutations", "CI must run tests/policy_manifest_test.rb") do |root|
+expect_failure(failures, "CI bypasses policy entrypoint", "CI must run tests/validate-policy.sh") do |root|
   path = File.join(root, ".github", "workflows", "ci.yml")
-  File.write(path, File.read(path).sub(/^\s*ruby tests\/policy_manifest_test\.rb\n/, ""))
+  File.write(path, File.read(path).sub("tests/validate-policy.sh", "ruby tests/policy_test.rb"))
 end
 
 provisioning_task = <<~YAML
@@ -201,6 +219,15 @@ end
       ansible.builtin.uri:
         url: http://127.0.0.1/unrelated/
   YAML
+  "tagged uri body mention" => <<~YAML,
+    ---
+    - name: Verify an unrelated endpoint with service text
+      tags: [platform_verify_ntfy]
+      ansible.builtin.uri:
+        url: http://127.0.0.1/unrelated/
+        body: ntfy
+        status_code: [200]
+  YAML
   "tagged literal assertion" => <<~YAML,
     ---
     - name: Verify a literal
@@ -208,11 +235,31 @@ end
       ansible.builtin.assert:
         that: [true]
   YAML
-  "tagged true command" => <<~YAML
+  "tagged constant service assertion" => <<~YAML,
+    ---
+    - name: Verify a constant expression
+      tags: [platform_verify_ntfy]
+      ansible.builtin.assert:
+        that: ["'ntfy' == 'ntfy'"]
+  YAML
+  "tagged undefined service assertion" => <<~YAML,
+    ---
+    - name: Verify an undefined result
+      tags: [platform_verify_ntfy]
+      ansible.builtin.assert:
+        that: ["ntfy_missing_result.status == 200"]
+  YAML
+  "tagged true command" => <<~YAML,
     ---
     - name: Verify a no-op command
       tags: [platform_verify_ntfy]
       ansible.builtin.command: /bin/true
+  YAML
+  "tagged service command" => <<~YAML
+    ---
+    - name: Verify command output
+      tags: [platform_verify_ntfy]
+      ansible.builtin.command: echo ntfy
   YAML
 }.each do |label, tasks|
   expect_failure(failures, label, "ntfy: implemented service has no automated verification") do |root|
@@ -255,6 +302,7 @@ expect_success(failures, "nested verification task") do |root|
           tags: [platform_verify_ntfy]
           ansible.builtin.uri:
             url: http://127.0.0.1/{{ ntfy_port }}/v1/health
+            status_code: [200]
   YAML
 end
 
@@ -274,6 +322,19 @@ end
 expect_failure(failures, "unregistered contract", "ntfy: implemented service has no automated verification") do |root|
   File.write(File.join(root, "roles", "ntfy", "tasks", "main.yml"), provisioning_task)
   write_contract(root, "ntfy", "#!/bin/sh\nendpoint=/ntfy/health\ncurl --fail \"$endpoint\"\n")
+end
+
+{
+  "assignment registration spoof" => ["tests/integration.sh", "contract=tests/contracts/ntfy.sh\n"],
+  "echo registration spoof" => ["tests/integration.sh", "echo tests/contracts/ntfy.sh\n"],
+  "YAML name registration spoof" => [".github/workflows/ci.yml", "\nname: tests/contracts/ntfy.sh\n"]
+}.each do |label, (relative_harness, registration)|
+  expect_failure(failures, label, "ntfy: implemented service has no automated verification") do |root|
+    File.write(File.join(root, "roles", "ntfy", "tasks", "main.yml"), provisioning_task)
+    write_contract(root, "ntfy", "#!/bin/sh\ntrue\n")
+    harness = File.join(root, relative_harness)
+    File.open(harness, "a") { |file| file.write(registration) }
+  end
 end
 
 expect_failure(failures, "contract syntax error", "ntfy: implemented service has no automated verification") do |root|
