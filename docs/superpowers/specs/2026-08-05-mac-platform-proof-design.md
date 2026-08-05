@@ -29,8 +29,9 @@ The proof covers:
 - Paperless-ngx, PostgreSQL, Valkey, Tika, and Gotenberg
 - tinyMediaManager
 
-It uses generated credentials and small disposable fixtures. It does not copy
-photos, documents, media, databases, secrets, or credentials from the NAS.
+It uses the same encrypted deployment credentials and managed configuration as
+the NAS, together with small disposable fixtures. It does not copy production
+photos, documents, media, databases, or application state from the NAS.
 
 ## Architecture
 
@@ -57,8 +58,35 @@ manifest records the Git commit, included services, pinned images, and rendered
 file checksums. Test reports reference this manifest.
 
 Each Mac run receives a unique Compose project namespace and a generated sandbox
-under a disposable root. It cannot reuse production paths, project names,
-credentials, ports, or data.
+under a disposable root. It reuses the deployment credentials by design, but it
+cannot reuse production paths, project names, published ports, or application
+data.
+
+## Credential and Configuration Parity
+
+The encrypted Ansible vault is portable platform configuration and supplies both
+NAS and Mac deployments. The Mac proof must reuse application usernames and
+passwords, database credentials, application secret keys, ntfy identities and
+tokens, Beszel keys and tokens, and configured third-party integration
+credentials. A fresh Mac deployment must accept the same user logins without
+regeneration or manual re-entry.
+
+Environment-specific variables are limited to unavoidable machine facts such as
+host address, published test ports, storage roots, Docker Desktop networking
+adaptation, and hardware capabilities. These variables must not silently change
+application identities or managed behavior.
+
+The vault remains encrypted at rest. Ansible renders secrets only into
+mode-`0600` runtime files. Test reports, diagnostics, and captured logs redact
+secrets, authorization headers, private keys, password hashes, and rendered
+environment values. Cleanup removes all rendered Mac-side secret material but
+never modifies the shared encrypted vault.
+
+Paperless receives the same Gmail credential, mail account, and mail-rule
+configuration as the NAS. Automated verification proves that the account and
+rule are present and that Gmail authentication and connectivity succeed. It does
+not initiate inbox consumption or import real messages. A real fetch is an
+explicit optional manual test.
 
 ## Components
 
@@ -120,8 +148,9 @@ environment values must not appear in reports or captured logs.
 ### Fresh-install lane
 
 The fresh-install lane starts with an empty sandbox. Ansible must prepare all
-storage, deploy every stack, create required identities, configure integrations,
-and leave every application ready for the manual acceptance review.
+storage, deploy every stack, install the vault-authored identities, configure
+integrations, and leave every application ready for the manual acceptance
+review. No login or integration credential may be regenerated for the Mac.
 
 ### State-adoption lane
 
@@ -180,14 +209,17 @@ The Mac proof passes only when all of the following hold:
 - Representative application data survives container recreation.
 - Immich and Paperless database state survives Ansible redeployment.
 - Paperless ingestion, German/English/Hebrew OCR, preview, search, Tika,
-  Gotenberg, export, and optional Ollama configuration work without Gmail.
+  Gotenberg, export, and optional Ollama configuration work.
+- Paperless provisions the NAS-equivalent Gmail account and mail rule, and a
+  non-consuming authentication/connectivity check succeeds.
+- Every managed application accepts the same operator credentials as the NAS.
 - Authenticated alert delivery works entirely within the disposable platform.
 - A second Ansible run reports zero changes.
 - Supported deliberate configuration drift is repaired on the next run.
 - Check mode reports intended changes without mutation.
 - Both the fresh-install and state-adoption lanes pass.
-- Cleanup removes containers, networks, credentials, and disposable data without
-  leaving privileged or root-owned residue.
+- Cleanup removes containers, networks, rendered credentials, and disposable
+  data without leaving privileged or root-owned residue.
 - Local validation and CI pass.
 
 ## Manual Acceptance Gate
@@ -210,7 +242,8 @@ The review covers:
   retain assets after recreation.
 - **Paperless:** create or use the managed administrator, consume documents,
   verify German/English/Hebrew OCR, preview and search, process an Office document
-  through Tika and Gotenberg, and create an export.
+  through Tika and Gotenberg, create an export, and inspect the provisioned Gmail
+  account and mail rule without consuming the real inbox.
 - **ntfy:** sign in, confirm anonymous denial, subscribe to `nas-critical`, and
   read authenticated test messages.
 - **Beszel:** sign in, view Mac and container metrics, inspect thresholds, and
@@ -231,8 +264,8 @@ Docker Desktop cannot prove:
 - Native `/volume1` and `/volume2` mount and permission behavior.
 - Tailscale reachability.
 - Behavior with production-scale data.
-- Gmail credentials, external Ollama availability, mobile push, or complete NAS
-  outage detection.
+- Real Gmail inbox consumption, external Ollama availability, mobile push, or
+  complete NAS outage detection.
 
 These become mandatory gates in the later NAS migration design. They are listed
 explicitly in Mac reports and are never represented as passing or silently
@@ -258,7 +291,7 @@ The NAS migration design starts only after tranche seven is accepted.
 
 ## Out of Scope
 
-- Copying production NAS data or credentials to the Mac.
+- Copying production NAS application data or databases to the Mac.
 - Deploying to or changing the physical NAS during this proof.
 - Public ingress, reverse proxying, or router configuration.
 - Mobile notification delivery.
