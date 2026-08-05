@@ -7,6 +7,7 @@
 
 require "open3"
 require "pathname"
+require "set"
 require "yaml"
 
 ROOT = File.expand_path("..", __dir__)
@@ -77,68 +78,81 @@ rescue SystemCallError
   false
 end
 
-def meaningful_probe?(task, module_name, service_names)
-  module_data = task[module_name]
-  case module_name
-  when "ansible.builtin.uri"
-    service_names.any? { |name| YAML.dump(module_data).include?(name) }
-  when "ansible.builtin.assert"
-    conditions = module_data.is_a?(Hash) ? Array(module_data["that"]) : []
-    conditions.any? do |condition|
-      condition != true && condition.to_s.strip.downcase != "true" &&
-        service_names.any? { |name| condition.to_s.include?(name) }
-    end
-  when "ansible.builtin.command"
-    command = module_data.is_a?(Hash) ? module_data["argv"] || module_data["cmd"] : module_data
-    executable = Array(command).first.to_s.split.first
-    !%w[true /bin/true].include?(executable) &&
-      service_names.any? { |name| YAML.dump(module_data).include?(name) }
-  else
-    false
+def flatten_tasks(tasks, flattened = [])
+  Array(tasks).each do |task|
+    next unless task.is_a?(Hash)
+
+    flattened << task
+    %w[block rescue always].each { |section| flatten_tasks(task[section], flattened) }
+  end
+  flattened
+end
+
+def uri_verifies_service?(task, prefixes, service_names)
+  uri = task["ansible.builtin.uri"]
+  return false unless uri.is_a?(Hash) && uri["url"].is_a?(String)
+
+  url = uri.fetch("url")
+  variable_reference = prefixes.any? { |prefix| url.match?(/\b#{Regexp.escape(prefix)}_[A-Za-z0-9_]+\b/) }
+  literal_endpoint = service_names.any? do |name|
+    url.match?(/(?<![A-Za-z0-9_-])#{Regexp.escape(name)}(?![A-Za-z0-9_-])/)
+  end
+  return false unless variable_reference || literal_endpoint
+
+  return true if uri.key?("status_code")
+
+  register = task["register"]
+  register.is_a?(String) && %w[until failed_when].any? do |condition|
+    task[condition].to_s.match?(/\b#{Regexp.escape(register)}\b/)
   end
 end
 
-def verification_task?(tasks, service_name, role_name)
-  Array(tasks).any? do |task|
-    next false unless task.is_a?(Hash)
+def assert_verifies_service?(task, prefixes, preceding_registers)
+  assertion = task["ansible.builtin.assert"]
+  conditions = assertion.is_a?(Hash) ? Array(assertion["that"]) : []
+  return false if conditions.empty?
 
-    named_verification = task["name"].is_a?(String) &&
-                         task["name"].match?(/\b(?:verify|verification)\b/i)
-    expected_tag = "platform_verify_#{service_name}"
-    tagged = Array(task["tags"]).include?(expected_tag)
-    active_probe = %w[ansible.builtin.uri ansible.builtin.assert ansible.builtin.command].any? do |module_name|
-      task.key?(module_name) && meaningful_probe?(task, module_name, [service_name, role_name].uniq)
+  service_registers = preceding_registers.select do |register|
+    prefixes.any? { |prefix| register.match?(/\A#{Regexp.escape(prefix)}_[A-Za-z0-9_]+\z/) }
+  end
+  return false if service_registers.empty?
+
+  conditions.all? do |condition|
+    condition.is_a?(String) && service_registers.any? do |register|
+      condition.match?(/\b#{Regexp.escape(register)}\b/)
     end
-    nested_verification = %w[block rescue always].any? do |section|
-      verification_task?(task[section], service_name, role_name)
-    end
-    (named_verification && tagged && active_probe) || nested_verification
   end
 end
 
 def role_has_verification?(tasks_path, service_name, role_name)
-  verification_task?(YAML.safe_load_file(tasks_path), service_name, role_name)
+  tasks = flatten_tasks(YAML.safe_load_file(tasks_path))
+  prefixes = [service_name.tr("-", "_"), role_name].uniq
+  service_names = [service_name, role_name].uniq
+  expected_tag = "platform_verify_#{service_name}"
+  preceding_registers = Set.new
+  verified = false
+
+  tasks.each do |task|
+    named = task["name"].is_a?(String) && task["name"].match?(/\b(?:verify|verification)\b/i)
+    tagged = Array(task["tags"]).include?(expected_tag)
+    evidence = uri_verifies_service?(task, prefixes, service_names) ||
+               assert_verifies_service?(task, prefixes, preceding_registers)
+    verified ||= named && tagged && evidence
+    preceding_registers << task["register"] if task["register"].is_a?(String)
+  end
+  verified
 rescue Psych::Exception
   false
 end
 
-def contract_has_verification?(contract_path, contract_root, relative_contract_path)
+def contract_has_verification?(contract_path, contract_root, service_name, relative_contract_path, registry_entries)
+  expected_entry = { "service" => service_name, "path" => relative_contract_path }
+  return false unless registry_entries.include?(expected_entry)
   return false unless owned_file?(contract_path, contract_root)
   return false unless File.executable?(contract_path) && File.size?(contract_path)
 
   _stdout, _stderr, status = Open3.capture3("sh", "-n", contract_path)
-  return false unless status.success?
-
-  harnesses = [
-    File.join(ROOT, "tests", "integration.sh"),
-    File.join(ROOT, "tests", "mac", "run.sh"),
-    File.join(ROOT, ".github", "workflows", "ci.yml")
-  ]
-  harnesses.any? do |harness|
-    owned_file?(harness, ROOT) && File.readlines(harness).any? do |line|
-      !line.lstrip.start_with?("#") && line.include?(relative_contract_path)
-    end
-  end
+  status.success?
 end
 
 def duplicate_yaml_keys(node, duplicates = [])
@@ -156,6 +170,32 @@ def duplicate_yaml_keys(node, duplicates = [])
     node.children.each { |child| duplicate_yaml_keys(child, duplicates) }
   end
   duplicates
+end
+
+registry_path = File.join(ROOT, "tests", "contracts", "registry.yml")
+registry = begin
+  duplicate_yaml_keys(Psych.parse_stream(File.read(registry_path))).uniq.each do |key|
+    check(failures, false, "contract registry contains duplicate mapping key #{key}")
+  end
+  YAML.safe_load_file(registry_path)
+rescue Errno::ENOENT
+  check(failures, false, "contract registry is missing")
+  nil
+rescue Psych::Exception => e
+  check(failures, false, "contract registry is malformed: #{e.message.lines.first.strip}")
+  nil
+end
+check(failures, registry.is_a?(Hash), "contract registry top level must be a mapping")
+check(failures, registry.is_a?(Hash) && registry.keys == ["contracts"],
+      "contract registry must contain exactly a contracts list")
+contract_registry_entries = registry.is_a?(Hash) ? registry["contracts"] : nil
+check(failures, contract_registry_entries.is_a?(Array),
+      "contract registry must contain a contracts list")
+contract_registry_entries = [] unless contract_registry_entries.is_a?(Array)
+contract_registry_entries.each do |entry|
+  check(failures, entry.is_a?(Hash) && entry.keys.sort == %w[path service] &&
+                  entry.values.all? { |value| value.is_a?(String) && !value.empty? },
+        "contract registry entries require nonempty service and path strings")
 end
 
 manifest_path = File.join(ROOT, "services", "manifest.yml")
@@ -279,7 +319,9 @@ manifest_entries.each do |service|
   contract_root = File.join(ROOT, "tests", "contracts")
   contract_path = File.join(ROOT, relative_contract_path)
   role_verification = tasks_owned && role_has_verification?(tasks_path, name, role)
-  contract_verification = contract_has_verification?(contract_path, contract_root, relative_contract_path)
+  contract_verification = contract_has_verification?(
+    contract_path, contract_root, name, relative_contract_path, contract_registry_entries
+  )
   verifies_service = role_verification || contract_verification
   check(failures, verifies_service,
         "#{name}: implemented service has no automated verification or service contract")
@@ -380,10 +422,28 @@ config = File.read(File.join(ROOT, "ansible.cfg"))
 check(failures, config.match?(/^inject_facts_as_vars\s*=\s*False/i),
       "ansible.cfg must disable fact injection, removed in ansible-core 2.24")
 
-ci = File.read(File.join(ROOT, ".github", "workflows", "ci.yml"))
-check(failures, ci.include?("ruby tests/policy_test.rb"), "CI must run tests/policy_test.rb")
-check(failures, ci.include?("ruby tests/policy_manifest_test.rb"),
-      "CI must run tests/policy_manifest_test.rb")
+ci = YAML.safe_load_file(File.join(ROOT, ".github", "workflows", "ci.yml"))
+ci_commands = ci.fetch("jobs", {}).values.flat_map do |job|
+  Array(job["steps"]).filter_map { |step| step["run"] if step.is_a?(Hash) }
+end.flat_map { |run| run.to_s.lines.map(&:strip) }
+check(failures, ci_commands.include?("tests/validate-policy.sh"),
+      "CI must run tests/validate-policy.sh")
+
+validation_script_path = File.join(ROOT, "tests", "validate-policy.sh")
+validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "tests"))
+                        File.readlines(validation_script_path).map(&:strip)
+                      else
+                        []
+                      end
+%w[
+  ruby\ tests/policy_test.rb
+  ruby\ tests/policy_manifest_test.rb
+  ruby\ tests/run_contracts_test.rb
+  ruby\ tests/run_contracts.rb
+].each do |command|
+  check(failures, validation_commands.include?(command),
+        "validate-policy.sh must run #{command}")
+end
 
 # Compose interpolates $ in env files and silently truncates an unescaped bcrypt
 # hash rather than rejecting it, so escaping is mandatory wherever hashes flow.
