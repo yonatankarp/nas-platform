@@ -15,6 +15,14 @@ argument_specs:
         description: >-
           Production platform identifier. Test-only Compose selection uses a
           separate deployment bundle override.
+      platform_public_host:
+        type: str
+        required: true
+        description: Hostname operators use to reach published services.
+      platform_callback_host:
+        type: str
+        required: true
+        description: Hostname containers use to reach host-published callbacks.
       platform_render_device_available:
         type: bool
         required: true

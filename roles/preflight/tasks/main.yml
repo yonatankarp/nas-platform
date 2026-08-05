@@ -1,4 +1,14 @@
 ---
+- name: Require explicit nonempty application endpoint coordinates
+  ansible.builtin.assert:
+    that:
+      - platform_public_host | length > 0
+      - platform_callback_host | length > 0
+    fail_msg: >-
+      Inventory must define nonempty public and container-callback host
+      coordinates before target mutation.
+    success_msg: Application endpoint coordinates are explicit.
+
 - name: Report how this run reaches the NAS
   ansible.builtin.debug:
     msg: >-

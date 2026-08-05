@@ -10,6 +10,12 @@ argument_specs:
         type: str
         required: true
         description: Platform-specific Compose override suffix selected by the bundle.
+      platform_public_host:
+        type: str
+        required: true
+      platform_callback_host:
+        type: str
+        required: true
       platform_render_device_path:
         type: path
         required: true
@@ -41,9 +47,6 @@ argument_specs:
         type: str
         required: false
         description: Shoutrrr URL, built from the ntfy token in vault.
-      vault_nas_address:
-        type: str
-        required: true
       vault_beszel_hub_private_key:
         type: str
         required: true

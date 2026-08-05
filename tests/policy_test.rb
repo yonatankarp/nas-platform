@@ -42,6 +42,48 @@ EXPECTED_SERVICE_MAPPINGS = {
   "paperless-ngx" => { "role" => "paperless_ngx", "legacy_path" => "compose/paperless-ngx/compose.yml", "tranche" => 6 },
   "tinymediamanager" => { "role" => "tinymediamanager", "legacy_path" => "compose/tinymediamanager/compose.yml", "tranche" => 3 }
 }.freeze
+EXPECTED_VAULT_KEYS = %w[
+  vault_audiobookshelf_admin_username
+  vault_audiobookshelf_admin_password
+  vault_beszel_superuser_email
+  vault_beszel_superuser_password
+  vault_beszel_app_user_email
+  vault_beszel_app_user_password
+  vault_beszel_agent_key
+  vault_beszel_universal_token
+  vault_beszel_hub_private_key
+  vault_dozzle_admin_username
+  vault_dozzle_admin_password
+  vault_dozzle_admin_password_hash
+  vault_immich_admin_email
+  vault_immich_admin_password
+  vault_immich_db_name
+  vault_immich_db_username
+  vault_immich_db_password
+  vault_jellyfin_admin_username
+  vault_jellyfin_admin_password
+  vault_komga_admin_email
+  vault_komga_admin_password
+  vault_ntfy_admin_user
+  vault_ntfy_admin_password
+  vault_ntfy_admin_password_hash
+  vault_ntfy_dozzle_password_hash
+  vault_ntfy_dozzle_token
+  vault_ntfy_beszel_password_hash
+  vault_ntfy_beszel_token
+  vault_paperless_admin_username
+  vault_paperless_admin_password
+  vault_paperless_admin_email
+  vault_paperless_db_name
+  vault_paperless_db_username
+  vault_paperless_db_password
+  vault_paperless_django_secret_key
+  vault_paperless_gmail_account
+  vault_paperless_gmail_app_password
+  vault_paperless_mail_account_name
+  vault_paperless_mail_rule_name
+  vault_tinymediamanager_password
+].sort.freeze
 REQUIRED_MANIFEST_FIELDS = %w[name legacy_path role tranche status].freeze
 ALLOWED_SERVICE_STATUSES = %w[planned implemented accepted].freeze
 IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
@@ -80,6 +122,11 @@ PLATFORM_INVENTORIES.each do |inventory_name, (host_group, host_name, connection
         "inventory/#{inventory_name} must place #{host_name} under #{host_group}")
   check(failures, host.is_a?(Hash) && host["ansible_connection"] == connection,
         "inventory/#{inventory_name} #{host_name} must use #{connection} connection")
+  %w[platform_public_host platform_callback_host].each do |coordinate|
+    check(failures, host.is_a?(Hash) && host[coordinate].is_a?(String) &&
+                    !host[coordinate].empty?,
+          "inventory/#{inventory_name} must define #{coordinate}")
+  end
 end
 
 shared_vars = YAML.safe_load_file(File.join(ROOT, "inventory", "group_vars", "all", "main.yml"))
@@ -129,11 +176,14 @@ end
 site_play = YAML.safe_load_file(File.join(ROOT, "site.yml")).first
 check(failures, site_play["hosts"] == "platform_hosts",
       "site.yml must target platform_hosts")
+check(failures, site_play.dig("vars", "platform_vault_file").to_s.include?(
+  "inventory/group_vars/all/vault.yml"
+), "site.yml must identify the encrypted deployment vault for SHA-256 reporting")
 
 preflight_options = YAML.safe_load_file(
   File.join(ROOT, "roles", "preflight", "meta", "argument_specs.yml")
 ).dig("argument_specs", "main", "options")
-(PLATFORM_CAPABILITIES + ["platform_kind"]).each do |option|
+(PLATFORM_CAPABILITIES + %w[platform_kind platform_public_host platform_callback_host]).each do |option|
   check(failures, preflight_options.is_a?(Hash) && preflight_options[option].is_a?(Hash) &&
                   preflight_options[option]["required"] == true,
         "preflight argument specs must require #{option}")
@@ -144,6 +194,13 @@ check(failures, preflight_options.dig("platform_kind", "choices") == %w[nas mac]
 preflight_tasks = YAML.safe_load_file(
   File.join(ROOT, "roles", "preflight", "tasks", "main.yml")
 )
+endpoint_guard = preflight_tasks.first
+endpoint_conditions = Array(endpoint_guard&.dig("ansible.builtin.assert", "that")).join(" ")
+check(failures, endpoint_guard&.dig("name") ==
+                "Require explicit nonempty application endpoint coordinates" &&
+                endpoint_conditions.include?("platform_public_host | length > 0") &&
+                endpoint_conditions.include?("platform_callback_host | length > 0"),
+      "preflight must reject empty public and callback host coordinates first")
 mount_table_task = preflight_tasks.find { |task| task["name"] == "Read the kernel mount table" }
 check(failures, mount_table_task && mount_table_task["when"].to_s.include?("platform_kind == 'nas'"),
       "preflight must read the Linux mount table only on NAS hosts")
@@ -620,7 +677,12 @@ example_path = File.join(ROOT, "inventory", "group_vars", "all", "vault.yml.exam
 example = YAML.safe_load_file(example_path)
 example.each do |key, value|
   next unless value.is_a?(String)
-  next if value.start_with?("replace-") || value == "192.0.2.1"
+  next if value.match?(/^example[-_]/) || value.end_with?("@example.invalid")
+  next if value.match?(/^\$2b\$12\$0{53}$/)
+  next if value.match?(/^tk_[01]{29}$/)
+  next if value == "ssh-ed25519 AAAA"
+  next if value == "00000000-0000-4000-a000-000000000000"
+  next if value.include?("example-only-not-a-real-private-key")
 
   check(failures, false, "#{example_path}: #{key} looks like a real value, not a placeholder")
 end
@@ -629,17 +691,111 @@ end
 # actually gets written. Drift means an operator follows the example and ends up
 # with a vault missing keys the roles require, failing late and confusingly.
 def vault_keys(path)
-  File.readlines(path).grep(/^vault_[a-z_]+:/).map { |line| line[/^vault_[a-z_]+/] }.sort
+  return [] unless File.file?(path)
+
+  File.readlines(path).filter_map { |line| line[/^\s*(vault_[a-z_]+):/, 1] }.sort
 end
 
-template_keys = vault_keys(File.join(ROOT, "templates", "vault-plain.yml.j2"))
-example_keys = vault_keys(example_path)
-(template_keys - example_keys).each do |key|
-  check(failures, false, "vault.yml.example is missing #{key}, which the generator writes")
+vault_contract_sources = {
+  "vault.yml.example" => example_path,
+  "vault-plain.yml.j2" => File.join(ROOT, "templates", "vault-plain.yml.j2"),
+  "vault_contract argument specs" =>
+    File.join(ROOT, "roles", "vault_contract", "meta", "argument_specs.yml"),
+  "ephemeral vault generator" => File.join(ROOT, "tests", "generate-ephemeral-vault.sh")
+}
+vault_contract_sources.each do |label, path|
+  keys = vault_keys(path)
+  duplicate_keys = keys.tally.select { |_key, count| count > 1 }.keys
+  check(failures, duplicate_keys.empty?,
+        "#{label} contains duplicate vault keys: #{duplicate_keys.join(', ')}")
+  (EXPECTED_VAULT_KEYS - keys.uniq).each do |key|
+    check(failures, false, "#{label} is missing required portable credential #{key}")
+  end
+  (keys.uniq - EXPECTED_VAULT_KEYS).each do |key|
+    check(failures, false, "#{label} has unexpected or non-portable vault key #{key}")
+  end
 end
-(example_keys - template_keys).each do |key|
-  check(failures, false, "generate-secrets.yml does not produce documented key #{key}")
+
+check(failures, vault_contract_sources.values.map { |path| vault_keys(path) }.uniq.length == 1,
+      "vault example, template, validation role, and ephemeral generator must have exact schema parity")
+
+vault_contract_spec_path = vault_contract_sources.fetch("vault_contract argument specs")
+vault_contract_options = if File.file?(vault_contract_spec_path)
+                           YAML.safe_load_file(vault_contract_spec_path)
+                               .dig("argument_specs", "main", "options") || {}
+                         else
+                           {}
+                         end
+EXPECTED_VAULT_KEYS.each do |key|
+  option = vault_contract_options[key]
+  check(failures, option.is_a?(Hash) && option["required"] == true,
+        "vault contract must require #{key}")
 end
+
+vault_contract_tasks_path = File.join(ROOT, "roles", "vault_contract", "tasks", "main.yml")
+vault_contract_tasks = File.file?(vault_contract_tasks_path) ?
+  YAML.safe_load_file(vault_contract_tasks_path) : []
+check(failures, !vault_contract_tasks.empty? && vault_contract_tasks.all? { |task| task["no_log"] == true },
+      "every vault contract task must use no_log")
+shape_task = vault_contract_tasks.find do |task|
+  task["name"] == "Validate credential shapes without disclosing credential material"
+end
+shape_conditions = Array(shape_task&.dig("ansible.builtin.assert", "that")).join(" ")
+EXPECTED_VAULT_KEYS.each do |key|
+  check(failures, shape_conditions.match?(/\b#{Regexp.escape(key)}\b/),
+        "vault contract shape validation must inspect #{key}")
+end
+check(failures, vault_contract_tasks.none? { |task| task.to_s.match?(/vault_[a-z_]+\s*\|\s*hash/) },
+      "vault contract must never hash an individual plaintext credential")
+
+site_pre_tasks = Array(site_play["pre_tasks"])
+vault_contract_index = site_pre_tasks.index do |task|
+  task.dig("ansible.builtin.include_role", "name") == "vault_contract"
+end
+first_mutation_guard = site_pre_tasks.index do |task|
+  task.dig("ansible.builtin.include_role", "name") == "deployment_bundle"
+end
+check(failures, vault_contract_index == 0 && first_mutation_guard && vault_contract_index < first_mutation_guard,
+      "site.yml must validate the vault contract before every target pre-task")
+site_vault_contract = vault_contract_index && site_pre_tasks[vault_contract_index]
+check(failures, site_vault_contract&.dig("ansible.builtin.include_role", "apply", "no_log") == true,
+      "site.yml must redact vault role argument validation")
+
+validate_vault_play = if File.file?(File.join(ROOT, "validate-vault.yml"))
+                        YAML.safe_load_file(File.join(ROOT, "validate-vault.yml")).first
+                      else
+                        {}
+                      end
+validate_vault_role = Array(validate_vault_play["roles"]).find do |role|
+  role.is_a?(Hash) && role["role"] == "vault_contract"
+end
+check(failures, validate_vault_role && validate_vault_role["no_log"] == true,
+      "validate-vault.yml must redact vault role argument validation")
+
+secret_generator_path = File.join(ROOT, "generate-secrets.yml")
+secret_generator = YAML.safe_load_file(secret_generator_path).first
+check(failures, secret_generator.dig("vars", "generate_brand_new_platform") == false,
+      "generate-secrets.yml must default brand-new-platform confirmation to false")
+brand_new_guard = Array(secret_generator["tasks"]).find do |task|
+  task["name"] == "Require explicit confirmation of a brand-new platform"
+end
+guard_conditions = Array(brand_new_guard&.dig("ansible.builtin.assert", "that")).join(" ")
+guard_message = brand_new_guard&.dig("ansible.builtin.assert", "fail_msg").to_s
+check(failures, guard_conditions.include?("generate_brand_new_platform | bool") &&
+                guard_message.include?("password manager") && guard_message.include?("Portainer"),
+      "generate-secrets.yml must refuse migration credential generation explicitly")
+
+repository_vault_nas_references = Dir[File.join(ROOT, "{inventory,roles,templates,tests}", "**", "*")]
+                                  .select { |path| File.file?(path) }
+                                  .filter_map do |path|
+  relative = path.delete_prefix("#{ROOT}/")
+  next if %w[tests/policy_test.rb tests/policy_manifest_test.rb].include?(relative)
+
+  relative if File.read(path).match?(/\bvault_nas_[a-z_]+\b/)
+end
+check(failures, repository_vault_nas_references.empty?,
+      "NAS connection coordinates must stay in inventory, not shared vault: " \
+      "#{repository_vault_nas_references.join(', ')}")
 
 vault_path = File.join(ROOT, "inventory", "group_vars", "all", "vault.yml")
 if File.file?(vault_path)

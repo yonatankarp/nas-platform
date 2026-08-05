@@ -7,3 +7,5 @@ platform_hosts:
       hosts:
         mac:
           ansible_connection: local
+          platform_public_host: 127.0.0.1
+          platform_callback_host: host.docker.internal

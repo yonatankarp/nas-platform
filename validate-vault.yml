@@ -1,0 +1,8 @@
+---
+- name: Validate the portable vault contract without exposing values
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - role: vault_contract
+      no_log: true

@@ -105,13 +105,22 @@ password can be fetched from a password manager at run time with no plaintext
 copy on disk:
 
 ```sh
-ansible-playbook -i inventory/remote.yml site.yml --vault-password-file ~/.nas-vault-pass
+PLATFORM_NAS_ADDRESS=nas.example.internal \
+PLATFORM_NAS_USER=nasadmin \
+ansible-playbook -i inventory/remote.yml site.yml \
+  --vault-password-file ~/.nas-vault-pass
 ```
 
 where that file is a script that prints the password, for example via the
 1Password CLI. Keep it outside this repository. `.gitignore` covers
 `.vault-password` and `vault-password*` so an in-repo copy cannot be committed by
 accident.
+
+For a run executed directly on the NAS, set `PLATFORM_NAS_ADDRESS` to the NAS
+address that operators and application containers use to reach published
+services. Override `PLATFORM_PUBLIC_HOST` or `PLATFORM_CALLBACK_HOST` only when
+those audiences require different coordinates. Connection coordinates stay in
+inventory inputs and are not portable vault credentials.
 
 ## Testing
 

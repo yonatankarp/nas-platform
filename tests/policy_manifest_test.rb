@@ -16,6 +16,7 @@ BASE_FIXTURE_PATHS = %w[
   .github/workflows/ci.yml
   ansible.cfg
   filter_plugins/platform_paths.py
+  generate-secrets.yml
   inventory/group_vars/all/main.yml
   inventory/group_vars/all/vault.yml.example
   inventory/group_vars/mac_hosts/main.yml
@@ -25,6 +26,7 @@ BASE_FIXTURE_PATHS = %w[
   inventory/remote.yml
   requirements.yml
   site.yml
+  validate-vault.yml
   roles/host_prep/meta/argument_specs.yml
   roles/host_prep/tasks/main.yml
   roles/deployment_bundle/defaults/main.yml
@@ -37,10 +39,13 @@ BASE_FIXTURE_PATHS = %w[
   roles/deployment_bundle/templates/manifest.yml.j2
   roles/preflight/meta/argument_specs.yml
   roles/preflight/tasks/main.yml
+  roles/vault_contract/meta/argument_specs.yml
+  roles/vault_contract/tasks/main.yml
   services/manifest.yml
   templates/vault-plain.yml.j2
   tests/contracts/registry.yml
   tests/integration.sh
+  tests/generate-ephemeral-vault.sh
   tests/mac_inventory_path_test.yml
   tests/policy_test.rb
   tests/policy_support.rb
@@ -833,6 +838,39 @@ expect_failure(failures, "runtime service leaves omitted",
                "target validator must guard every implemented runtime service leaf") do |root|
   path = File.join(root, "roles", "deployment_bundle", "tasks", "target.yml")
   File.write(path, File.read(path).gsub("deployment_bundle_services", "unchecked_services"))
+end
+
+expect_failure(failures, "portable vault key omitted",
+               "vault-plain.yml.j2 is missing required portable credential vault_immich_db_password") do |root|
+  path = File.join(root, "templates", "vault-plain.yml.j2")
+  File.write(path, File.read(path).gsub(/^vault_immich_db_password:.*\n/, ""))
+end
+
+expect_failure(failures, "NAS coordinate leaked into vault",
+               "vault.yml.example has unexpected or non-portable vault key vault_nas_address") do |root|
+  path = File.join(root, "inventory", "group_vars", "all", "vault.yml.example")
+  File.write(path, File.read(path) + "vault_nas_address: 192.0.2.1\n")
+end
+
+expect_failure(failures, "vault validation disclosure",
+               "every vault contract task must use no_log") do |root|
+  path = File.join(root, "roles", "vault_contract", "tasks", "main.yml")
+  tasks = YAML.safe_load_file(path)
+  tasks.first.delete("no_log")
+  File.write(path, YAML.dump(tasks))
+end
+
+expect_failure(failures, "vault shape validation omitted",
+               "vault contract shape validation must inspect vault_immich_db_password") do |root|
+  path = File.join(root, "roles", "vault_contract", "tasks", "main.yml")
+  tasks = YAML.safe_load_file(path)
+  shape_task = tasks.find do |task|
+    task["name"] == "Validate credential shapes without disclosing credential material"
+  end
+  shape_task.fetch("ansible.builtin.assert").fetch("that").reject! do |condition|
+    condition.include?("vault_immich_db_password")
+  end
+  File.write(path, YAML.dump(tasks))
 end
 
 if failures.empty?

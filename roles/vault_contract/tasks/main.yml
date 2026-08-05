@@ -1,0 +1,90 @@
+---
+- name: Validate credential shapes without disclosing credential material
+  ansible.builtin.assert:
+    that:
+      - vault_audiobookshelf_admin_username | length > 0
+      - vault_audiobookshelf_admin_password | length > 0
+      - vault_dozzle_admin_username | length > 0
+      - vault_dozzle_admin_password | length > 0
+      - vault_dozzle_admin_password_hash is match('^\\$2[aby]\\$[0-9]{2}\\$[./A-Za-z0-9]{53}$')
+      - vault_immich_admin_email is match('^[^@ ]+@[^@ ]+$')
+      - vault_immich_admin_password | length > 0
+      - vault_immich_db_name is match('^[A-Za-z_][A-Za-z0-9_-]*$')
+      - vault_immich_db_username is match('^[A-Za-z_][A-Za-z0-9_-]*$')
+      - vault_immich_db_password | length > 0
+      - vault_jellyfin_admin_username | length > 0
+      - vault_jellyfin_admin_password | length > 0
+      - vault_komga_admin_email is match('^[^@ ]+@[^@ ]+$')
+      - vault_komga_admin_password | length > 0
+      - vault_ntfy_admin_user | length > 0
+      - vault_ntfy_admin_password | length > 0
+      - vault_ntfy_admin_password_hash is match('^\\$2[aby]\\$[0-9]{2}\\$[./A-Za-z0-9]{53}$')
+      - vault_ntfy_dozzle_password_hash is match('^\\$2[aby]\\$[0-9]{2}\\$[./A-Za-z0-9]{53}$')
+      - vault_ntfy_beszel_password_hash is match('^\\$2[aby]\\$[0-9]{2}\\$[./A-Za-z0-9]{53}$')
+      - vault_ntfy_dozzle_token is match('^tk_[a-z0-9]{29}$')
+      - vault_ntfy_beszel_token is match('^tk_[a-z0-9]{29}$')
+      - vault_ntfy_dozzle_token != vault_ntfy_beszel_token
+      - vault_beszel_superuser_email is match('^[^@ ]+@[^@ ]+$')
+      - vault_beszel_superuser_password | length > 0
+      - vault_beszel_app_user_email is match('^[^@ ]+@[^@ ]+$')
+      - vault_beszel_app_user_password | length > 0
+      - vault_beszel_agent_key is match('^ssh-ed25519 [A-Za-z0-9+/]+={0,3}$')
+      - vault_beszel_universal_token is match('^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$')
+      - vault_beszel_hub_private_key is search('BEGIN OPENSSH PRIVATE KEY')
+      - vault_paperless_admin_username | length > 0
+      - vault_paperless_admin_password | length > 0
+      - vault_paperless_admin_email is match('^[^@ ]+@[^@ ]+$')
+      - vault_paperless_db_name is match('^[A-Za-z_][A-Za-z0-9_-]*$')
+      - vault_paperless_db_username is match('^[A-Za-z_][A-Za-z0-9_-]*$')
+      - vault_paperless_db_password | length > 0
+      - vault_paperless_django_secret_key | length > 0
+      - vault_paperless_gmail_account is match('^[^@ ]+@[^@ ]+$')
+      - vault_paperless_gmail_app_password | length > 0
+      - vault_paperless_mail_account_name | length > 0
+      - vault_paperless_mail_rule_name | length > 0
+      - vault_tinymediamanager_password | length > 0
+    fail_msg: Portable vault credentials are missing or malformed; values are redacted.
+    success_msg: Portable vault credential shapes are valid; values are redacted.
+  no_log: true
+
+- name: Inspect the encrypted vault file without reading plaintext
+  ansible.builtin.stat:
+    path: "{{ platform_vault_file }}"
+    checksum_algorithm: sha256
+  delegate_to: localhost
+  become: false
+  register: vault_contract_encrypted_file
+  when: platform_vault_file is defined
+  no_log: true
+
+- name: Read only the encrypted vault format header
+  ansible.builtin.command:
+    argv:
+      - head
+      - -c
+      - "15"
+      - "{{ platform_vault_file }}"
+  delegate_to: localhost
+  become: false
+  register: vault_contract_encrypted_header
+  changed_when: false
+  check_mode: false
+  when: platform_vault_file is defined
+  no_log: true
+
+- name: Require the reported vault artifact to be encrypted
+  ansible.builtin.assert:
+    that:
+      - vault_contract_encrypted_file.stat.isreg | default(false)
+      - vault_contract_encrypted_file.stat.checksum | default('') | length == 64
+      - vault_contract_encrypted_header.stdout | default('') is match('^\\$ANSIBLE_VAULT;')
+    fail_msg: The encrypted vault file is unavailable; no credential values were read.
+    success_msg: The encrypted vault artifact is available for SHA-256 identification.
+  when: platform_vault_file is defined
+  no_log: true
+
+- name: Record only the encrypted vault artifact SHA-256
+  ansible.builtin.set_fact:
+    platform_encrypted_vault_sha256: "{{ vault_contract_encrypted_file.stat.checksum }}"  # noqa var-naming[no-role-prefix]
+  when: platform_vault_file is defined
+  no_log: true

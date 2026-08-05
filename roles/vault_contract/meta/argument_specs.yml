@@ -1,0 +1,49 @@
+---
+argument_specs:
+  main:
+    short_description: Validate the portable credential contract without disclosure
+    options:
+      vault_audiobookshelf_admin_username: {type: str, required: true}
+      vault_audiobookshelf_admin_password: {type: str, required: true}
+      vault_beszel_superuser_email: {type: str, required: true}
+      vault_beszel_superuser_password: {type: str, required: true}
+      vault_beszel_app_user_email: {type: str, required: true}
+      vault_beszel_app_user_password: {type: str, required: true}
+      vault_beszel_agent_key: {type: str, required: true}
+      vault_beszel_universal_token: {type: str, required: true}
+      vault_beszel_hub_private_key: {type: str, required: true}
+      vault_dozzle_admin_username: {type: str, required: true}
+      vault_dozzle_admin_password: {type: str, required: true}
+      vault_dozzle_admin_password_hash: {type: str, required: true}
+      vault_immich_admin_email: {type: str, required: true}
+      vault_immich_admin_password: {type: str, required: true}
+      vault_immich_db_name: {type: str, required: true}
+      vault_immich_db_username: {type: str, required: true}
+      vault_immich_db_password: {type: str, required: true}
+      vault_jellyfin_admin_username: {type: str, required: true}
+      vault_jellyfin_admin_password: {type: str, required: true}
+      vault_komga_admin_email: {type: str, required: true}
+      vault_komga_admin_password: {type: str, required: true}
+      vault_ntfy_admin_user: {type: str, required: true}
+      vault_ntfy_admin_password: {type: str, required: true}
+      vault_ntfy_admin_password_hash: {type: str, required: true}
+      vault_ntfy_dozzle_password_hash: {type: str, required: true}
+      vault_ntfy_dozzle_token: {type: str, required: true}
+      vault_ntfy_beszel_password_hash: {type: str, required: true}
+      vault_ntfy_beszel_token: {type: str, required: true}
+      vault_paperless_admin_username: {type: str, required: true}
+      vault_paperless_admin_password: {type: str, required: true}
+      vault_paperless_admin_email: {type: str, required: true}
+      vault_paperless_db_name: {type: str, required: true}
+      vault_paperless_db_username: {type: str, required: true}
+      vault_paperless_db_password: {type: str, required: true}
+      vault_paperless_django_secret_key: {type: str, required: true}
+      vault_paperless_gmail_account: {type: str, required: true}
+      vault_paperless_gmail_app_password: {type: str, required: true}
+      vault_paperless_mail_account_name: {type: str, required: true}
+      vault_paperless_mail_rule_name: {type: str, required: true}
+      vault_tinymediamanager_password: {type: str, required: true}
+      platform_vault_file:
+        type: path
+        required: false
+        description: Optional encrypted vault file whose SHA-256 identifies a run.

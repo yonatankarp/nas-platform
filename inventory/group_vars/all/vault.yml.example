@@ -1,38 +1,61 @@
 ---
-# Sanitized template for inventory/group_vars/all/vault.yml.
-#
-# Generate real values with generate-secrets.yml, then:
-#
-#   mv vault-plain.yml vault.yml && ansible-vault encrypt vault.yml
-#
-# The encrypted vault.yml is committed; its password never is. Keep that in a
-# password manager. This is the root of trust and the one irreducibly manual step.
+# Sanitized contract for the portable deployment vault. During migration, copy
+# these exact values from the current password manager and Portainer definitions;
+# do not regenerate credentials already used by application or database state.
+# generate-secrets.yml is only for a brand-new platform with no state to adopt.
 
-# Connection details, kept out of committed files.
-vault_nas_address: 192.0.2.1
-vault_nas_user: replace-with-nas-login
+vault_audiobookshelf_admin_username: example-admin
+vault_audiobookshelf_admin_password: example-password
 
-# ntfy. Tokens are authored here rather than minted by the server, which is what
-# makes the alerting chain declarative: one value reaches ntfy and every
-# publisher from a single source. Format is tk_ plus 29 lowercase alphanumeric
-# characters, 32 in total. Hashes are bcrypt from the pinned image's own hasher.
-vault_ntfy_admin_user: replace-with-admin-name
-vault_ntfy_admin_password: replace-with-password
-vault_ntfy_admin_password_hash: replace-with-bcrypt-hash
-vault_ntfy_dozzle_password_hash: replace-with-bcrypt-hash
-vault_ntfy_dozzle_token: replace-with-tk-token
-vault_ntfy_beszel_password_hash: replace-with-bcrypt-hash
-vault_ntfy_beszel_token: replace-with-tk-token
+vault_dozzle_admin_username: example-admin
+vault_dozzle_admin_password: example-password
+vault_dozzle_admin_password_hash: $2b$12$00000000000000000000000000000000000000000000000000000
 
-# Beszel. Nothing is read back from a running hub: the keypair below is written to
-# /beszel_data/id_ed25519 before first start, so the agent's KEY is the public
-# half and its TOKEN is the authored universal token. Alerts and settings relate
-# to the users collection, so an application user is needed alongside the
-# superuser, and its role must be set to admin explicitly.
-vault_beszel_superuser_email: replace-with-email
-vault_beszel_superuser_password: replace-with-password
-vault_beszel_app_user_email: replace-with-email
-vault_beszel_app_user_password: replace-with-password
-vault_beszel_agent_key: replace-with-ssh-ed25519-public-key
-vault_beszel_universal_token: replace-with-uuid
-vault_beszel_hub_private_key: replace-with-openssh-ed25519-private-key
+vault_immich_admin_email: admin@example.invalid
+vault_immich_admin_password: example-password
+vault_immich_db_name: example_immich
+vault_immich_db_username: example_immich
+vault_immich_db_password: example-password
+
+vault_jellyfin_admin_username: example-admin
+vault_jellyfin_admin_password: example-password
+
+vault_komga_admin_email: admin@example.invalid
+vault_komga_admin_password: example-password
+
+# ntfy tokens are tk_ plus 29 lowercase alphanumeric characters. Password
+# hashes are bcrypt values produced by the pinned ntfy image.
+vault_ntfy_admin_user: example-admin
+vault_ntfy_admin_password: example-password
+vault_ntfy_admin_password_hash: $2b$12$00000000000000000000000000000000000000000000000000000
+vault_ntfy_dozzle_password_hash: $2b$12$00000000000000000000000000000000000000000000000000000
+vault_ntfy_dozzle_token: tk_00000000000000000000000000000
+vault_ntfy_beszel_password_hash: $2b$12$00000000000000000000000000000000000000000000000000000
+vault_ntfy_beszel_token: tk_11111111111111111111111111111
+
+# The Beszel hub keypair is authored before first start. The agent key contains
+# only the key type and public key, without a trailing comment.
+vault_beszel_superuser_email: admin@example.invalid
+vault_beszel_superuser_password: example-password
+vault_beszel_app_user_email: user@example.invalid
+vault_beszel_app_user_password: example-password
+vault_beszel_agent_key: ssh-ed25519 AAAA
+vault_beszel_universal_token: 00000000-0000-4000-a000-000000000000
+vault_beszel_hub_private_key: |
+  -----BEGIN OPENSSH PRIVATE KEY-----
+  example-only-not-a-real-private-key
+  -----END OPENSSH PRIVATE KEY-----
+
+vault_paperless_admin_username: example-admin
+vault_paperless_admin_password: example-password
+vault_paperless_admin_email: admin@example.invalid
+vault_paperless_db_name: example_paperless
+vault_paperless_db_username: example_paperless
+vault_paperless_db_password: example-password
+vault_paperless_django_secret_key: example-django-secret-000000000000
+vault_paperless_gmail_account: gmail@example.invalid
+vault_paperless_gmail_app_password: example-app-password
+vault_paperless_mail_account_name: example-mail-account
+vault_paperless_mail_rule_name: example-mail-rule
+
+vault_tinymediamanager_password: example-password
