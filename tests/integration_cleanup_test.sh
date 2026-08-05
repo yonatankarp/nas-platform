@@ -17,6 +17,9 @@ invalid_suffix_sandbox=
 failure_sandbox=
 swap_sandbox=
 swap_victim=
+python_sandbox=
+python_root_symlink=
+python_victim=
 runner_image=docker.io/library/python:3.13-alpine@sha256:399babc8b49529dabfd9c922f2b5eea81d611e4512e3ed250d75bd2e7683f4b0
 
 assert_cleanup_rejected() {
@@ -49,6 +52,16 @@ emergency_cleanup() {
     [ ! -f "$swap_victim/marker" ] || rm "$swap_victim/marker"
     rmdir "$swap_victim"
   fi
+  [ -z "$python_root_symlink" ] || [ ! -L "$python_root_symlink" ] || unlink "$python_root_symlink"
+  if [ -n "$python_sandbox" ] && [ -d "$python_sandbox" ]; then
+    docker run --rm -v "$python_sandbox:/sandbox" "$runner_image" \
+      sh -c 'find /sandbox -depth -mindepth 1 -delete' >/dev/null
+    rmdir "$python_sandbox"
+  fi
+  if [ -n "$python_victim" ] && [ -d "$python_victim" ]; then
+    [ ! -f "$python_victim/marker" ] || rm "$python_victim/marker"
+    rmdir "$python_victim"
+  fi
   exit "$exit_status"
 }
 trap emergency_cleanup EXIT
@@ -63,8 +76,9 @@ test_unsupported_stem() {
 }
 
 test_invalid_suffix_alphabet() {
-  invalid_suffix_sandbox=${TMPDIR:-/tmp}/nas-platform-cleanup.abc-de
-  mkdir "$invalid_suffix_sandbox"
+  invalid_suffix_seed=$(mktemp -d "${TMPDIR:-/tmp}/nas-platform-cleanup.XXXXXX")
+  invalid_suffix_sandbox=${invalid_suffix_seed%?}-
+  mv "$invalid_suffix_seed" "$invalid_suffix_sandbox"
   assert_cleanup_rejected "$invalid_suffix_sandbox"
   [ -d "$invalid_suffix_sandbox" ]
   rmdir "$invalid_suffix_sandbox"
@@ -135,7 +149,7 @@ test_symlink_swap() {
 
 test_trap_statuses() {
   trap_status=0
-  sh -c '. "$1"; cleanup_sandbox() { return 0; }; cleanup_sandbox_on_exit ignored 23' \
+  sh -c '. "$1"; cleanup_sandbox() { return 0; }; sandbox=ignored; trap '\''cleanup_sandbox_on_exit "$sandbox" "$?"'\'' EXIT; exit 23' \
     sh "$script_dir/sandbox_cleanup.sh" || trap_status=$?
   [ "$trap_status" -eq 23 ] || {
     printf 'successful cleanup changed original exit status 23 to %s\n' "$trap_status" >&2
@@ -143,12 +157,51 @@ test_trap_statuses() {
   }
 
   trap_status=0
-  sh -c '. "$1"; cleanup_sandbox() { return 1; }; cleanup_sandbox_on_exit ignored 0' \
+  sh -c '. "$1"; cleanup_sandbox() { return 1; }; sandbox=ignored; trap '\''cleanup_sandbox_on_exit "$sandbox" "$?"'\'' EXIT; exit 0' \
     sh "$script_dir/sandbox_cleanup.sh" || trap_status=$?
   [ "$trap_status" -ne 0 ] || {
     printf 'failed cleanup preserved successful exit status\n' >&2
     exit 1
   }
+}
+
+test_python_rejects_root_symlink() {
+  command -v cleanup_sandbox_contents >/dev/null
+  python_victim=$(mktemp -d "${TMPDIR:-/tmp}/nas-platform-cleanup-target.XXXXXX")
+  : > "$python_victim/marker"
+  python_suffix=$(basename "$python_victim" | sed 's/^nas-platform-cleanup-target\.//')
+  python_root_symlink=${TMPDIR:-/tmp}/nas-platform-cleanup.$python_suffix
+  ln -s "$python_victim" "$python_root_symlink"
+  python_parent=$(CDPATH= cd -P "${TMPDIR:-/tmp}" && pwd -P)
+  if cleanup_sandbox_contents "$python_parent" "$(basename "$python_root_symlink")" 2>/dev/null; then
+    printf 'descriptor-relative cleanup accepted a root symlink\n' >&2
+    exit 1
+  fi
+  [ -f "$python_victim/marker" ]
+  unlink "$python_root_symlink"
+  python_root_symlink=
+  rm "$python_victim/marker"
+  rmdir "$python_victim"
+  python_victim=
+}
+
+test_python_deletes_nested_entries() {
+  command -v cleanup_sandbox_contents >/dev/null
+  python_sandbox=$(mktemp -d "${TMPDIR:-/tmp}/nas-platform-cleanup.XXXXXX")
+  python_victim=$(mktemp -d "${TMPDIR:-/tmp}/nas-platform-cleanup-target.XXXXXX")
+  : > "$python_victim/marker"
+  mkdir -p "$python_sandbox/one/two"
+  : > "$python_sandbox/one/two/file"
+  ln -s "../../../$(basename "$python_victim")" "$python_sandbox/one/two/external"
+  python_parent=$(CDPATH= cd -P "${TMPDIR:-/tmp}" && pwd -P)
+  cleanup_sandbox_contents "$python_parent" "$(basename "$python_sandbox")"
+  [ -f "$python_victim/marker" ]
+  [ -z "$(find "$python_sandbox" -mindepth 1 -print)" ]
+  rmdir "$python_sandbox"
+  python_sandbox=
+  rm "$python_victim/marker"
+  rmdir "$python_victim"
+  python_victim=
 }
 
 case "$test_case" in
@@ -158,6 +211,8 @@ case "$test_case" in
   docker-rm) test_docker_failure rm; exit 0 ;;
   symlink-swap) test_symlink_swap; exit 0 ;;
   trap-statuses) test_trap_statuses; exit 0 ;;
+  python-root-symlink) test_python_rejects_root_symlink; exit 0 ;;
+  python-nested) test_python_deletes_nested_entries; exit 0 ;;
   all) ;;
   *) printf 'unknown test case: %s\n' "$test_case" >&2; exit 2 ;;
 esac
@@ -168,6 +223,8 @@ test_docker_failure list
 test_docker_failure rm
 test_symlink_swap
 test_trap_statuses
+test_python_rejects_root_symlink
+test_python_deletes_nested_entries
 
 docker run --rm -v "$sandbox:/sandbox" "$runner_image" \
   sh -c 'mkdir -p /sandbox/state && touch /sandbox/state/root-owned'

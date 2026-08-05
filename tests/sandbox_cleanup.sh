@@ -1,5 +1,57 @@
 #!/bin/sh
 
+cleanup_sandbox_contents() {
+  cleanup_contents_parent=$1
+  cleanup_contents_name=$2
+  cleanup_image=docker.io/library/python:3.13-alpine@sha256:399babc8b49529dabfd9c922f2b5eea81d611e4512e3ed250d75bd2e7683f4b0
+
+  docker run --rm -i -v "$cleanup_contents_parent:/sandbox-parent" "$cleanup_image" \
+    python - "$cleanup_contents_name" <<'PY'
+import os
+import re
+import stat
+import sys
+
+
+name = sys.argv[1]
+supported_names = (
+    r"nas-platform-integration\.[A-Za-z0-9]{6}",
+    r"nas-platform-cleanup\.[A-Za-z0-9]{6}",
+)
+if not any(re.fullmatch(pattern, name) for pattern in supported_names):
+    raise ValueError("invalid sandbox basename")
+
+open_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+
+
+def clear_directory(directory_fd):
+    for entry in os.listdir(directory_fd):
+        entry_stat = os.stat(
+            entry, dir_fd=directory_fd, follow_symlinks=False
+        )
+        if stat.S_ISDIR(entry_stat.st_mode):
+            child_fd = os.open(entry, open_flags, dir_fd=directory_fd)
+            try:
+                clear_directory(child_fd)
+            finally:
+                os.close(child_fd)
+            os.rmdir(entry, dir_fd=directory_fd)
+        else:
+            os.unlink(entry, dir_fd=directory_fd)
+
+
+parent_fd = os.open("/sandbox-parent", open_flags)
+try:
+    sandbox_fd = os.open(name, open_flags, dir_fd=parent_fd)
+    try:
+        clear_directory(sandbox_fd)
+    finally:
+        os.close(sandbox_fd)
+finally:
+    os.close(parent_fd)
+PY
+}
+
 cleanup_sandbox() {
   cleanup_sandbox_path=${1-}
   cleanup_temporary_parent=${TMPDIR:-/tmp}
@@ -44,20 +96,12 @@ cleanup_sandbox() {
     done
   done
 
-  cleanup_image=docker.io/library/python:3.13-alpine@sha256:399babc8b49529dabfd9c922f2b5eea81d611e4512e3ed250d75bd2e7683f4b0
   if [ ! -d "$cleanup_sandbox_target" ] || [ -L "$cleanup_sandbox_target" ]; then
     printf 'refusing to remove unexpected sandbox path: %s\n' "$cleanup_sandbox_path" >&2
     return 1
   fi
 
-  # Bind the stable parent, then check the child without following symlinks in
-  # the container. A child swapped after the host check cannot redirect the bind.
-  docker run --rm -v "$cleanup_expected_parent:/sandbox-parent" "$cleanup_image" \
-    sh -c '
-      cleanup_target=/sandbox-parent/$1
-      [ -d "$cleanup_target" ] && [ ! -L "$cleanup_target" ] || exit 1
-      find "$cleanup_target" -depth -mindepth 1 -delete
-    ' sh "$cleanup_sandbox_name" >/dev/null || return 1
+  cleanup_sandbox_contents "$cleanup_expected_parent" "$cleanup_sandbox_name" || return 1
   rmdir "$cleanup_sandbox_target"
 }
 
