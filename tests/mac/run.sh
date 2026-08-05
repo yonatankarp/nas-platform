@@ -200,7 +200,23 @@ capture_diagnostics() {
       return 1
     }
     "$mac_script_dir/report.rb" --diagnostic "$state_input" \
-      --location "$diagnostic_name"
+      --location "$diagnostic_name" || return 1
+
+    diagnostic_container_ids=$(docker ps -aq \
+      --filter "label=com.docker.compose.project=$project_name") || return 1
+    for diagnostic_container_id in $diagnostic_container_ids; do
+      diagnostic_container_name=$(docker inspect --format '{{.Name}}' \
+        "$diagnostic_container_id" 2>/dev/null) || diagnostic_container_name=$diagnostic_container_id
+      diagnostic_container_name=${diagnostic_container_name#/}
+      diagnostic_log_name=container-log-$diagnostic_container_id.json
+      if "$mac_script_dir/sanitize-logs.rb" \
+          --container-id "$diagnostic_container_id" \
+          --container-name "$diagnostic_container_name" \
+          --output "$report_root/$diagnostic_log_name" --tail 200; then
+        "$mac_script_dir/report.rb" --diagnostic "$state_input" \
+          --location "$diagnostic_log_name" || return 1
+      fi
+    done
   else
     unlink "$diagnostic_temporary" >/dev/null 2>&1 || true
     return 1

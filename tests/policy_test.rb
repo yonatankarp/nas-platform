@@ -6,6 +6,7 @@
 # an omitted legacy service from silently disappearing from the migration scope.
 
 require "open3"
+require "rbconfig"
 require "set"
 require "yaml"
 require_relative "policy_support"
@@ -657,6 +658,7 @@ validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "te
   ruby\ tests/run_contracts_test.rb
   ruby\ tests/run_contracts.rb\ --validate-only
   tests/integration_lock_test.sh
+  ruby\ tests/mac/sanitize-logs.rb\ --self-test
 ].each do |command|
   check(failures, validation_commands.include?(command),
         "validate-policy.sh must run #{command}")
@@ -1234,7 +1236,7 @@ end
 # plug their fixture, drift, and verification behavior into these stable phases.
 mac_harness_files = %w[
   lib.sh run.sh cleanup.sh fixtures.sh verify.sh drift.sh report.rb
-  manual-review.md
+  sanitize-logs.rb manual-review.md
 ]
 mac_harness_files.each do |name|
   check(failures, File.file?(File.join(ROOT, "tests", "mac", name)),
@@ -1326,6 +1328,24 @@ check(failures, mac_run.include?('diagnostic_temporary=$(mktemp') &&
                 mac_run.include?('mv -f -- "$diagnostic_temporary" "$report_root/$diagnostic_name" || {') &&
                 mac_run.include?('unlink "$diagnostic_temporary" >/dev/null 2>&1 || true'),
       "Mac diagnostics must replace prior evidence only after successful capture")
+mac_log_sanitizer_path = File.join(ROOT, "tests", "mac", "sanitize-logs.rb")
+mac_log_sanitizer = if File.file?(mac_log_sanitizer_path)
+                      File.read(mac_log_sanitizer_path)
+                    else
+                      ""
+                    end
+check(failures, mac_run.include?('"$mac_script_dir/sanitize-logs.rb"') &&
+                mac_log_sanitizer.include?("[REDACTED]") &&
+                mac_log_sanitizer.include?("--timestamps") &&
+                mac_log_sanitizer.include?("docker_error"),
+      "Mac failure diagnostics must capture only structurally redacted container logs")
+mac_sanitizer_result = if File.file?(mac_log_sanitizer_path)
+                         Open3.capture3(RbConfig.ruby, mac_log_sanitizer_path, "--self-test")
+                       end
+check(failures, mac_sanitizer_result && mac_sanitizer_result[2].success? &&
+                mac_sanitizer_result[0] == "log sanitizer: all secrecy properties hold\n" &&
+                mac_sanitizer_result[1].empty?,
+      "Mac log sanitizer self-test must pass without raw values")
 check(failures, mac_run.include?('IFS= read -r vault_header < "$vault_file"') &&
                 !mac_run.include?("grep -q '^\\$ANSIBLE_VAULT;'"),
       "Mac lifecycle must require the Ansible Vault header on the first line")
