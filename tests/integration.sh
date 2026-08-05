@@ -414,6 +414,18 @@ docker run --rm \
         /repo/tests/contracts/beszel.sh \"\$1\"
     }
 
+    run_dozzle_contract() {
+      env \
+        PLATFORM_KIND=integration \
+        PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\" \
+        PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=\"\$vault_password_file\" \
+        PLATFORM_DOCKER_ROOT='$sandbox/volume1/Docker' \
+        PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
+        PLATFORM_FIXTURE_ROOT='$sandbox/fixtures' \
+        PLATFORM_REPORT_ROOT='$sandbox/reports' \
+        /repo/tests/contracts/dozzle.sh \"\$@\"
+    }
+
     run_verify_only() {
       PLATFORM_VAULT_FILE=\"\$vault_file\" ansible-playbook \
         -i inventory/local.yml \
@@ -428,6 +440,22 @@ docker run --rm \
         -e deployment_bundle_allow_dirty_controller=true \
         /repo/verify.yml \
         --tags platform_verify_beszel
+    }
+
+    run_dozzle_verify_only() {
+      PLATFORM_VAULT_FILE=\"\$vault_file\" ansible-playbook \
+        -i inventory/local.yml \
+        --vault-password-file \"\$vault_password_file\" \
+        -e @\"\$vault_file\" \
+        -e platform_vault_file=\"\$vault_file\" \
+        -e nas_docker_root=$sandbox/volume1/Docker \
+        -e nas_media_root=$sandbox/volume2 \
+        -e platform_compose_kind=integration \
+        -e platform_beszel_agent_kind=portable \
+        -e deployment_bundle_test_mode=true \
+        -e deployment_bundle_allow_dirty_controller=true \
+        /repo/verify.yml \
+        --tags platform_verify_dozzle
     }
 
     assert_controller_symlink_refused() {
@@ -865,6 +893,108 @@ docker run --rm \
       printf 'BESZEL_CAPABILITY_FALSE_REMOVED_AGENT\n'
       run_play --tags beszel
       run_beszel_contract verify
+
+      run_dozzle_contract verify
+      printf 'DOZZLE_INITIAL_CONTRACT_OK\n'
+      run_dozzle_contract duplicate-dispatcher-create
+      run_dozzle_contract duplicate-dispatcher-verify
+      if run_dozzle_verify_only >/tmp/dozzle-duplicate-dispatcher-verify.txt 2>&1; then
+        printf 'DOZZLE DUPLICATE DISPATCHER VERIFICATION ACCEPTED\n' >&2
+        exit 1
+      fi
+      if run_play --tags dozzle >/tmp/dozzle-duplicate-dispatcher.txt 2>&1; then
+        printf 'DOZZLE DUPLICATE DISPATCHER CONVERGENCE ACCEPTED\n' >&2
+        exit 1
+      fi
+      run_dozzle_contract duplicate-dispatcher-assert-output \
+        /tmp/dozzle-duplicate-dispatcher.txt
+      /repo/tests/assert-no-vault-secrets.rb \
+        \"\$vault_file\" \"\$vault_password_file\" \
+        /tmp/dozzle-duplicate-dispatcher-verify.txt \
+        /tmp/dozzle-duplicate-dispatcher.txt
+      run_dozzle_contract duplicate-dispatcher-cleanup
+      printf 'DOZZLE_DUPLICATE_DISPATCHER_REFUSED_WITH_SAFE_IDS\n'
+
+      run_dozzle_contract duplicate-rule-create
+      run_dozzle_contract duplicate-rule-verify
+      if run_dozzle_verify_only >/tmp/dozzle-duplicate-rule-verify.txt 2>&1; then
+        printf 'DOZZLE DUPLICATE RULE VERIFICATION ACCEPTED\n' >&2
+        exit 1
+      fi
+      if run_play --tags dozzle >/tmp/dozzle-duplicate-rule.txt 2>&1; then
+        printf 'DOZZLE DUPLICATE RULE CONVERGENCE ACCEPTED\n' >&2
+        exit 1
+      fi
+      run_dozzle_contract duplicate-rule-assert-output /tmp/dozzle-duplicate-rule.txt
+      /repo/tests/assert-no-vault-secrets.rb \
+        \"\$vault_file\" \"\$vault_password_file\" \
+        /tmp/dozzle-duplicate-rule-verify.txt /tmp/dozzle-duplicate-rule.txt
+      run_dozzle_contract duplicate-rule-cleanup
+      printf 'DOZZLE_DUPLICATE_RULE_REFUSED_WITH_SAFE_IDS\n'
+
+      run_dozzle_contract surplus-create
+      run_dozzle_contract surplus-verify
+      if ! run_play --tags dozzle; then
+        run_dozzle_contract surplus-cleanup
+        exit 1
+      fi
+      run_dozzle_contract surplus-removed
+      run_dozzle_contract verify
+      printf 'DOZZLE_SURPLUS_STATE_REMOVED\n'
+
+      run_dozzle_contract check-mixed-create
+      if ! run_play --tags dozzle --check --diff >/tmp/dozzle-check-mixed.txt 2>&1; then
+        /repo/tests/assert-no-vault-secrets.rb \
+          \"\$vault_file\" \"\$vault_password_file\" /tmp/dozzle-check-mixed.txt
+        cat /tmp/dozzle-check-mixed.txt >&2
+        run_dozzle_contract check-mixed-recover
+        exit 1
+      fi
+      /repo/tests/assert-no-vault-secrets.rb \
+        \"\$vault_file\" \"\$vault_password_file\" /tmp/dozzle-check-mixed.txt
+      grep -qE 'changed=[1-9][0-9]* .*failed=0 ' /tmp/dozzle-check-mixed.txt
+      run_dozzle_contract assert-check-mixed-output /tmp/dozzle-check-mixed.txt
+      run_dozzle_contract check-mixed-unchanged
+      if run_dozzle_verify_only >/tmp/dozzle-check-mixed-verify.txt 2>&1; then
+        printf 'DOZZLE VERIFY-ONLY ACCEPTED MIXED CHECK-MODE DRIFT\n' >&2
+        exit 1
+      fi
+      /repo/tests/assert-no-vault-secrets.rb \
+        \"\$vault_file\" \"\$vault_password_file\" /tmp/dozzle-check-mixed-verify.txt
+      run_play --tags dozzle
+      run_dozzle_contract verify
+      run_dozzle_contract check-mixed-cleanup
+      printf 'DOZZLE_CHECK_MIXED_PLANNED_IMMUTABLE_AND_REPAIRED\n'
+
+      run_dozzle_contract check-missing-create
+      if ! run_play --tags dozzle --check --diff >/tmp/dozzle-check-missing.txt 2>&1; then
+        /repo/tests/assert-no-vault-secrets.rb \
+          \"\$vault_file\" \"\$vault_password_file\" /tmp/dozzle-check-missing.txt
+        cat /tmp/dozzle-check-missing.txt >&2
+        exit 1
+      fi
+      /repo/tests/assert-no-vault-secrets.rb \
+        \"\$vault_file\" \"\$vault_password_file\" /tmp/dozzle-check-missing.txt
+      grep -qE 'changed=[1-9][0-9]* .*failed=0 ' /tmp/dozzle-check-missing.txt
+      run_dozzle_contract assert-check-missing-output /tmp/dozzle-check-missing.txt
+      run_dozzle_contract check-missing-unchanged
+      if run_dozzle_verify_only >/tmp/dozzle-check-missing-verify.txt 2>&1; then
+        printf 'DOZZLE VERIFY-ONLY ACCEPTED MISSING CHECK-MODE STATE\n' >&2
+        exit 1
+      fi
+      /repo/tests/assert-no-vault-secrets.rb \
+        \"\$vault_file\" \"\$vault_password_file\" /tmp/dozzle-check-missing-verify.txt
+      run_play --tags dozzle
+      run_dozzle_contract verify
+      run_dozzle_contract check-missing-cleanup
+      printf 'DOZZLE_CHECK_MISSING_PLANNED_IMMUTABLE_AND_REPAIRED\n'
+
+      run_dozzle_contract drift
+      run_dozzle_contract drift-verify
+      run_play --tags dozzle
+      run_dozzle_contract verify
+      run_dozzle_contract notify
+      printf 'DOZZLE_DRIFT_RECONCILED_AND_NOTIFIED\n'
 
       env \
         PLATFORM_KIND=integration \

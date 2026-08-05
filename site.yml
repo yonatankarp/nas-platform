@@ -64,3 +64,6 @@
 
     - role: beszel
       tags: [beszel, monitoring]
+
+    - role: dozzle
+      tags: [dozzle, monitoring]

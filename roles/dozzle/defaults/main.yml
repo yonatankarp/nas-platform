@@ -1,0 +1,44 @@
+---
+dozzle_port: 8080
+dozzle_api: "http://127.0.0.1:{{ dozzle_port }}/api"
+dozzle_compose_project_name: >-
+  {{ (platform_project_name ~ '-dozzle')
+     if platform_project_name | default('') | length > 0 else 'dozzle' }}
+
+dozzle_dispatcher:
+  name: ntfy nas-critical
+  type: webhook
+  url: >-
+    http://{{ platform_callback_host }}:{{ ntfy_port | default(2586) }}
+  template: >-
+    {{ {'topic': ntfy_topic | default('nas-critical'),
+        'title': '{{ .Container.Name }}',
+        'message': '{{ .Detail }}'} | to_json(separators=(',', ':')) }}
+  headers:
+    Authorization: "Bearer {{ vault_ntfy_dozzle_token }}"
+
+dozzle_alerts:
+  - name: OOM
+    enabled: true
+    containerExpression: "true"
+    logExpression: ""
+    eventExpression: 'name == "oom"'
+    cooldown: 300
+  - name: Unexpected exit
+    enabled: true
+    containerExpression: "true"
+    logExpression: ""
+    eventExpression: 'name == "die" && !(attributes["exitCode"] in ["0", "130", "143", "137"])'
+    cooldown: 300
+  - name: Unhealthy
+    enabled: true
+    containerExpression: "true"
+    logExpression: ""
+    eventExpression: 'name == "health_status" && attributes["healthStatus"] == "unhealthy"'
+    cooldown: 0
+  - name: Recovery
+    enabled: true
+    containerExpression: "true"
+    logExpression: ""
+    eventExpression: 'name == "health_status" && attributes["healthStatus"] == "healthy"'
+    cooldown: 0

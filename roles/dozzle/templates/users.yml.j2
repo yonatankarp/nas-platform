@@ -1,0 +1,8 @@
+---
+users:
+  {{ vault_dozzle_admin_username | to_json }}:
+    email: ""
+    name: Administrator
+    password: {{ vault_dozzle_admin_password_hash | to_json }}
+    filter: ""
+    roles: none

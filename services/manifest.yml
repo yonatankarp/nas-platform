@@ -19,7 +19,7 @@ services:
     legacy_path: compose/dozzle/compose.yml
     role: dozzle
     tranche: 2
-    status: planned
+    status: implemented
   - name: immich
     legacy_path: compose/immich/compose.yml
     role: immich

@@ -1,0 +1,504 @@
+---
+- name: Revalidate deployment paths before Dozzle runtime use
+  ansible.builtin.include_role:
+    name: deployment_bundle
+    tasks_from: target
+  vars:
+    deployment_target_require_current_release: true
+    deployment_target_extra_paths:
+      - "{{ platform_current_dir }}/services/dozzle"
+      - "{{ platform_current_dir }}/services/dozzle/compose.yml"
+      - "{{ platform_current_dir }}/services/dozzle/compose.{{ platform_compose_kind }}.yml"
+      - "{{ platform_runtime_dir }}/services/dozzle"
+      - "{{ platform_runtime_dir }}/services/dozzle/.env"
+
+- name: Check for a Dozzle platform override
+  ansible.builtin.stat:
+    path: "{{ platform_current_dir }}/services/dozzle/compose.{{ platform_compose_kind }}.yml"
+  register: dozzle_platform_compose
+
+- name: Select the Dozzle Compose definitions
+  ansible.builtin.set_fact:
+    dozzle_compose_files: >-
+      {{ ['compose.yml'] +
+         (dozzle_platform_compose.stat.exists
+          | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) }}
+
+- name: Render the Dozzle administrator
+  ansible.builtin.template:
+    src: users.yml.j2
+    dest: "{{ nas_docker_root }}/dozzle/data/users.yml"
+    mode: "0600"
+  register: dozzle_users_file
+  no_log: true
+
+- name: Render the Dozzle environment
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ platform_runtime_dir }}/services/dozzle/.env"
+    mode: "0600"
+  no_log: true
+
+- name: Deploy Dozzle
+  community.docker.docker_compose_v2:
+    project_src: "{{ platform_current_dir }}/services/dozzle"
+    project_name: "{{ dozzle_compose_project_name }}"
+    files: "{{ dozzle_compose_files }}"
+    env_files: ["{{ platform_runtime_dir }}/services/dozzle/.env"]
+    state: present
+    wait: true
+    wait_timeout: 180
+
+- name: Restart Dozzle after changing its administrator file
+  community.docker.docker_compose_v2:
+    project_src: "{{ platform_current_dir }}/services/dozzle"
+    project_name: "{{ dozzle_compose_project_name }}"
+    files: "{{ dozzle_compose_files }}"
+    env_files: ["{{ platform_runtime_dir }}/services/dozzle/.env"]
+    services: [dozzle]
+    state: restarted
+    wait: true
+    wait_timeout: 180
+  when: dozzle_users_file.changed
+
+- name: Wait for Dozzle to report healthy
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ dozzle_port }}/healthcheck"
+  register: dozzle_health
+  until: dozzle_health.status | default(0) == 200
+  retries: 20
+  delay: 3
+  changed_when: false
+  check_mode: false
+
+- name: Authenticate to the pinned Dozzle API for reconciliation
+  ansible.builtin.uri:
+    url: "{{ dozzle_api }}/token"
+    method: POST
+    body_format: form-urlencoded
+    body:
+      username: "{{ vault_dozzle_admin_username }}"
+      password: "{{ vault_dozzle_admin_password }}"
+    status_code: [200]
+  register: dozzle_reconcile_auth
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: List Dozzle dispatchers for reconciliation
+  ansible.builtin.uri:
+    url: "{{ dozzle_api }}/notifications/dispatchers"
+    headers:
+      Cookie: "{{ dozzle_reconcile_auth.cookies_string }}"
+    return_content: true
+  register: dozzle_dispatchers_before
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Resolve safe managed Dozzle dispatcher IDs
+  ansible.builtin.set_fact:
+    dozzle_managed_dispatcher_ids: >-
+      {{ dozzle_dispatchers_before.json
+         | selectattr('name', 'equalto', dozzle_dispatcher.name)
+         | map(attribute='id') | map('string') | sort }}
+  no_log: true
+
+- name: Require safe managed Dozzle dispatcher IDs
+  ansible.builtin.assert:
+    that:
+      - dozzle_managed_dispatcher_ids
+        | reject('match', '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$')
+        | list | length == 0
+    fail_msg: Managed Dozzle dispatcher identity contains an unsafe API identifier.
+
+- name: Refuse duplicate managed Dozzle dispatchers
+  ansible.builtin.assert:
+    that:
+      - dozzle_managed_dispatcher_ids | length <= 1
+    fail_msg: >-
+      Managed Dozzle dispatcher identity is duplicated at safe IDs:
+      {{ dozzle_managed_dispatcher_ids | join(', ') }}
+
+- name: Resolve managed Dozzle dispatcher reconciliation state
+  ansible.builtin.set_fact:
+    dozzle_existing_dispatcher: >-
+      {{ dozzle_dispatchers_before.json
+         | selectattr('name', 'equalto', dozzle_dispatcher.name)
+         | list | first | default({}) }}
+    dozzle_dispatcher_create_required: "{{ dozzle_managed_dispatcher_ids | length == 0 }}"
+  no_log: true
+
+- name: Resolve managed Dozzle dispatcher repair requirement
+  ansible.builtin.set_fact:
+    dozzle_dispatcher_repair_required: >-
+      {{ dozzle_existing_dispatcher | length > 0 and
+         (dozzle_existing_dispatcher.type != dozzle_dispatcher.type or
+          dozzle_existing_dispatcher.url | default('') != dozzle_dispatcher.url or
+          dozzle_existing_dispatcher.template | default('') != dozzle_dispatcher.template or
+          dozzle_existing_dispatcher.headers | default({}) != dozzle_dispatcher.headers) }}
+  no_log: true
+
+- name: Report planned managed Dozzle dispatcher creation
+  ansible.builtin.debug:
+    msg: DOZZLE_PLAN_DISPATCHER_CREATE
+  when:
+    - ansible_check_mode
+    - dozzle_dispatcher_create_required | bool
+  changed_when: true
+
+- name: Create the managed Dozzle ntfy dispatcher
+  ansible.builtin.uri:
+    url: "{{ dozzle_api }}/notifications/dispatchers"
+    method: POST
+    headers:
+      Cookie: "{{ dozzle_reconcile_auth.cookies_string }}"
+    body_format: json
+    body: "{{ dozzle_dispatcher }}"
+    status_code: [201]
+  register: dozzle_dispatcher_created
+  when:
+    - not ansible_check_mode
+    - dozzle_dispatcher_create_required | bool
+  changed_when: true
+  no_log: true
+
+- name: Resolve the managed Dozzle dispatcher
+  ansible.builtin.set_fact:
+    dozzle_current_dispatcher: >-
+      {{ (dozzle_dispatchers_before.json
+          | selectattr('name', 'equalto', dozzle_dispatcher.name) | list | first)
+         if dozzle_managed_dispatcher_ids | length == 1
+         else (dozzle_dispatcher_created.json if not ansible_check_mode else {}) }}
+  no_log: true
+
+- name: Report planned managed Dozzle dispatcher repair
+  ansible.builtin.debug:
+    msg: DOZZLE_PLAN_DISPATCHER_REPAIR
+  when:
+    - ansible_check_mode
+    - dozzle_dispatcher_repair_required | bool
+  changed_when: true
+
+- name: Repair managed Dozzle dispatcher drift
+  ansible.builtin.uri:
+    url: "{{ dozzle_api }}/notifications/dispatchers/{{ dozzle_current_dispatcher.id }}"
+    method: PUT
+    headers:
+      Cookie: "{{ dozzle_reconcile_auth.cookies_string }}"
+    body_format: json
+    body: "{{ dozzle_dispatcher }}"
+    status_code: [200]
+  when:
+    - not ansible_check_mode
+    - dozzle_dispatcher_repair_required | bool
+  changed_when: true
+  no_log: true
+
+- name: List Dozzle alert rules for reconciliation
+  ansible.builtin.uri:
+    url: "{{ dozzle_api }}/notifications/rules"
+    headers:
+      Cookie: "{{ dozzle_reconcile_auth.cookies_string }}"
+    return_content: true
+  register: dozzle_rules_before
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Resolve safe managed Dozzle alert rule IDs
+  ansible.builtin.set_fact:
+    dozzle_managed_rule_ids: >-
+      {{ dozzle_managed_rule_ids | default({})
+         | combine({item.name: (dozzle_rules_before.json
+           | selectattr('name', 'equalto', item.name)
+           | map(attribute='id') | map('string') | sort)}) }}
+  loop: "{{ dozzle_alerts }}"
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+
+- name: Require safe managed Dozzle alert rule IDs
+  ansible.builtin.assert:
+    that:
+      - dozzle_managed_rule_ids[item.name]
+        | reject('match', '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$')
+        | list | length == 0
+    fail_msg: Managed Dozzle alert rule identity contains an unsafe API identifier.
+  loop: "{{ dozzle_alerts }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Refuse duplicate managed Dozzle alert rules
+  ansible.builtin.assert:
+    that:
+      - dozzle_managed_rule_ids[item.name] | length <= 1
+    fail_msg: >-
+      Managed Dozzle alert rule identity {{ item.name }} is duplicated at safe IDs:
+      {{ dozzle_managed_rule_ids[item.name] | join(', ') }}
+  loop: "{{ dozzle_alerts }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Report planned managed Dozzle alert rule creation
+  ansible.builtin.debug:
+    msg: DOZZLE_PLAN_RULE_CREATE
+  vars:
+    dozzle_existing_rule: >-
+      {{ dozzle_rules_before.json
+         | selectattr('name', 'equalto', item.name) | list | first | default({}) }}
+  when:
+    - ansible_check_mode
+    - dozzle_existing_rule | length == 0
+  loop: "{{ dozzle_alerts }}"
+  loop_control:
+    label: Managed Dozzle alert rule
+  changed_when: true
+
+- name: Create absent managed Dozzle alert rules
+  ansible.builtin.uri:
+    url: "{{ dozzle_api }}/notifications/rules"
+    method: POST
+    headers:
+      Cookie: "{{ dozzle_reconcile_auth.cookies_string }}"
+    body_format: json
+    body: "{{ item | combine({'dispatcherId': dozzle_current_dispatcher.id}) }}"
+    status_code: [201]
+  when:
+    - not ansible_check_mode
+    - (dozzle_rules_before.json
+       | selectattr('name', 'equalto', item.name) | list | length) == 0
+  loop: "{{ dozzle_alerts }}"
+  loop_control:
+    label: "{{ item.name }}"
+  changed_when: true
+  no_log: true
+
+- name: Report planned managed Dozzle alert rule repair
+  ansible.builtin.debug:
+    msg: DOZZLE_PLAN_RULE_REPAIR
+  vars:
+    dozzle_existing_rule: >-
+      {{ dozzle_rules_before.json
+         | selectattr('name', 'equalto', item.name) | list | first | default({}) }}
+  when:
+    - ansible_check_mode
+    - dozzle_existing_rule | length > 0
+    - not (dozzle_existing_rule.containerExpression == item.containerExpression and
+           dozzle_existing_rule.logExpression == item.logExpression and
+           dozzle_existing_rule.eventExpression | default('') == item.eventExpression and
+           dozzle_existing_rule.cooldown | default(0) | int == item.cooldown and
+           dozzle_existing_rule.dispatcher.id | default('') | string ==
+             dozzle_current_dispatcher.id | default('') | string)
+  loop: "{{ dozzle_alerts }}"
+  loop_control:
+    label: Managed Dozzle alert rule
+  changed_when: true
+
+- name: Repair managed Dozzle alert rule drift
+  ansible.builtin.uri:
+    url: >-
+      {{ dozzle_api }}/notifications/rules/{{
+         (dozzle_rules_before.json
+          | selectattr('name', 'equalto', item.name) | list | first).id }}
+    method: PUT
+    headers:
+      Cookie: "{{ dozzle_reconcile_auth.cookies_string }}"
+    body_format: json
+    body: "{{ item | combine({'dispatcherId': dozzle_current_dispatcher.id}) }}"
+    status_code: [200]
+  vars:
+    dozzle_existing_rule: >-
+      {{ dozzle_rules_before.json
+         | selectattr('name', 'equalto', item.name) | list | first | default({}) }}
+  when:
+    - not ansible_check_mode
+    - dozzle_existing_rule | length > 0
+    - not (dozzle_existing_rule.containerExpression == item.containerExpression and
+           dozzle_existing_rule.logExpression == item.logExpression and
+           dozzle_existing_rule.eventExpression | default('') == item.eventExpression and
+           dozzle_existing_rule.cooldown | default(0) | int == item.cooldown and
+           dozzle_existing_rule.dispatcher.id | default('') | string ==
+             dozzle_current_dispatcher.id | default('') | string)
+  loop: "{{ dozzle_alerts }}"
+  loop_control:
+    label: "{{ item.name }}"
+  changed_when: true
+  no_log: true
+
+- name: Report planned managed Dozzle alert rule enabled-state repair
+  ansible.builtin.debug:
+    msg: DOZZLE_PLAN_RULE_ENABLE_REPAIR
+  vars:
+    dozzle_existing_rule: >-
+      {{ dozzle_rules_before.json
+         | selectattr('name', 'equalto', item.name) | list | first | default({}) }}
+  when:
+    - ansible_check_mode
+    - dozzle_existing_rule | length > 0
+    - dozzle_existing_rule.enabled != item.enabled
+  loop: "{{ dozzle_alerts }}"
+  loop_control:
+    label: Managed Dozzle alert rule
+  changed_when: true
+
+- name: Repair managed Dozzle alert rule enabled state
+  ansible.builtin.uri:
+    url: >-
+      {{ dozzle_api }}/notifications/rules/{{
+         (dozzle_rules_before.json
+          | selectattr('name', 'equalto', item.name) | list | first).id }}
+    method: PATCH
+    headers:
+      Cookie: "{{ dozzle_reconcile_auth.cookies_string }}"
+    body_format: json
+    body:
+      enabled: "{{ item.enabled }}"
+    status_code: [200]
+  vars:
+    dozzle_existing_rule: >-
+      {{ dozzle_rules_before.json
+         | selectattr('name', 'equalto', item.name) | list | first | default({}) }}
+  when:
+    - not ansible_check_mode
+    - dozzle_existing_rule | length > 0
+    - dozzle_existing_rule.enabled != item.enabled
+  loop: "{{ dozzle_alerts }}"
+  loop_control:
+    label: "{{ item.name }}"
+  changed_when: true
+  no_log: true
+
+- name: Report planned unmanaged Dozzle alert rule removal
+  ansible.builtin.debug:
+    msg: DOZZLE_PLAN_RULE_REMOVE
+  when:
+    - ansible_check_mode
+    - item.name not in (dozzle_alerts | map(attribute='name') | list)
+  loop: "{{ dozzle_rules_before.json }}"
+  loop_control:
+    label: Unmanaged Dozzle alert rule
+  changed_when: true
+
+- name: Remove unmanaged Dozzle alert rules
+  ansible.builtin.uri:
+    url: "{{ dozzle_api }}/notifications/rules/{{ item.id }}"
+    method: DELETE
+    headers:
+      Cookie: "{{ dozzle_reconcile_auth.cookies_string }}"
+    status_code: [204]
+  when:
+    - not ansible_check_mode
+    - item.name not in (dozzle_alerts | map(attribute='name') | list)
+  loop: "{{ dozzle_rules_before.json }}"
+  loop_control:
+    label: "{{ item.name }}"
+  changed_when: true
+  no_log: true
+
+- name: Report planned unmanaged Dozzle dispatcher removal
+  ansible.builtin.debug:
+    msg: DOZZLE_PLAN_DISPATCHER_REMOVE
+  when:
+    - ansible_check_mode
+    - item.name != dozzle_dispatcher.name
+  loop: "{{ dozzle_dispatchers_before.json }}"
+  loop_control:
+    label: Unmanaged Dozzle dispatcher
+  changed_when: true
+
+- name: Remove unmanaged Dozzle dispatchers
+  ansible.builtin.uri:
+    url: "{{ dozzle_api }}/notifications/dispatchers/{{ item.id }}"
+    method: DELETE
+    headers:
+      Cookie: "{{ dozzle_reconcile_auth.cookies_string }}"
+    status_code: [204]
+  when:
+    - not ansible_check_mode
+    - item.name != dozzle_dispatcher.name
+  loop: "{{ dozzle_dispatchers_before.json }}"
+  loop_control:
+    label: "{{ item.name }}"
+  changed_when: true
+  no_log: true
+
+- name: Authenticate to Dozzle for verification
+  tags: [platform_verify_dozzle]
+  ansible.builtin.uri:
+    url: "{{ dozzle_api }}/token"
+    method: POST
+    body_format: form-urlencoded
+    body:
+      username: "{{ vault_dozzle_admin_username }}"
+      password: "{{ vault_dozzle_admin_password }}"
+    status_code: [200]
+  register: dozzle_verify_auth
+  when: not ansible_check_mode
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Read exact Dozzle notification state
+  tags: [platform_verify_dozzle]
+  ansible.builtin.uri:
+    url: "{{ dozzle_api }}/notifications/{{ item }}"
+    headers:
+      Cookie: "{{ dozzle_verify_auth.cookies_string }}"
+    return_content: true
+  loop: [dispatchers, rules]
+  register: dozzle_verify_state
+  when: not ansible_check_mode
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Resolve exact Dozzle notification state
+  tags: [platform_verify_dozzle]
+  ansible.builtin.set_fact:
+    dozzle_verified_dispatchers: "{{ dozzle_verify_state.results[0].json }}"
+    dozzle_verified_rules: "{{ dozzle_verify_state.results[1].json }}"
+  when: not ansible_check_mode
+  no_log: true
+
+- name: Resolve exact managed Dozzle dispatcher verification
+  tags: [platform_verify_dozzle]
+  ansible.builtin.set_fact:
+    dozzle_verified_dispatcher_exact: >-
+      {{ dozzle_verified_dispatchers | length == 1 and
+         dozzle_verified_dispatchers[0].name == dozzle_dispatcher.name and
+         dozzle_verified_dispatchers[0].type == dozzle_dispatcher.type and
+         dozzle_verified_dispatchers[0].url == dozzle_dispatcher.url and
+         dozzle_verified_dispatchers[0].template == dozzle_dispatcher.template and
+         dozzle_verified_dispatchers[0].headers == dozzle_dispatcher.headers }}
+  when: not ansible_check_mode
+  no_log: true
+
+- name: Require exactly the managed Dozzle ntfy dispatcher
+  tags: [platform_verify_dozzle]
+  ansible.builtin.assert:
+    that:
+      - dozzle_verified_dispatcher_exact | bool
+    fail_msg: Dozzle ntfy dispatcher is absent or drifted.
+  when: not ansible_check_mode
+
+- name: Require exactly the four managed enabled Dozzle event alerts
+  tags: [platform_verify_dozzle]
+  ansible.builtin.assert:
+    that:
+      - dozzle_verified_rules | length == dozzle_alerts | length
+      - dozzle_verified_rule | length == 1
+      - dozzle_verified_rule[0].enabled == item.enabled
+      - dozzle_verified_rule[0].containerExpression == item.containerExpression
+      - dozzle_verified_rule[0].logExpression == item.logExpression
+      - dozzle_verified_rule[0].eventExpression == item.eventExpression
+      - dozzle_verified_rule[0].cooldown | default(0) | int == item.cooldown
+      - dozzle_verified_rule[0].dispatcher.id | string == dozzle_verified_dispatchers[0].id | string
+  vars:
+    dozzle_verified_rule: >-
+      {{ dozzle_verified_rules | selectattr('name', 'equalto', item.name) | list }}
+  loop: "{{ dozzle_alerts }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: not ansible_check_mode
+  no_log: true
