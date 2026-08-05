@@ -1,0 +1,53 @@
+---
+- name: Validate the controller service manifest before parsing it
+  ansible.builtin.include_tasks: controller_input.yml
+  vars:
+    deployment_controller_input_path: "{{ playbook_dir }}/services/manifest.yml"
+    deployment_controller_input_allow_missing: false
+
+- name: Resolve implemented services from the validated controller manifest
+  ansible.builtin.set_fact:
+    deployment_bundle_services: >-
+      {{ (lookup('file', playbook_dir ~ '/services/manifest.yml') | from_yaml).services
+         | selectattr('status', 'in', ['implemented', 'accepted']) | list }}
+
+- name: Validate manifest service path components before interpolation
+  ansible.builtin.assert:
+    that:
+      - item.name is string
+      - item.name is match('^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$')
+      - item.role is string
+      - item.role is match('^[a-z][a-z0-9_]*$')
+      - item.legacy_path == 'compose/' ~ item.name ~ '/compose.yml'
+    fail_msg: >-
+      Manifest service names, roles, and legacy paths must be safe single-path
+      components before they are interpolated into controller or target paths.
+  loop: "{{ deployment_bundle_services }}"
+  loop_control:
+    label: "{{ item.name | default('<invalid>') }}"
+
+- name: Validate canonical controller Compose inputs
+  ansible.builtin.include_tasks: controller_input.yml
+  vars:
+    deployment_controller_input_path: >-
+      {{ playbook_dir }}/services/{{ deployment_controller_service.name }}/compose.yml
+    deployment_controller_input_allow_missing: false
+  loop: "{{ deployment_bundle_services }}"
+  loop_control:
+    loop_var: deployment_controller_service
+    label: "{{ deployment_controller_service.name }}"
+
+- name: Validate optional platform controller Compose inputs
+  ansible.builtin.include_tasks: controller_input.yml
+  vars:
+    deployment_controller_input_path: >-
+      {{ playbook_dir }}/services/{{ deployment_controller_service.name }}/compose.{{ platform_kind }}.yml
+    deployment_controller_input_allow_missing: true
+  loop: "{{ deployment_bundle_services }}"
+  loop_control:
+    loop_var: deployment_controller_service
+    label: "{{ deployment_controller_service.name }}"
+
+- name: Record controller input validation
+  ansible.builtin.set_fact:
+    deployment_bundle_controller_inputs_validated: true

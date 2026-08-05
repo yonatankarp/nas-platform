@@ -17,6 +17,14 @@
           tags: [always]
       tags: [always]
 
+    - name: Validate controller bundle inputs before target mutation
+      ansible.builtin.include_role:
+        name: deployment_bundle
+        tasks_from: inputs
+        apply:
+          tags: [always]
+      tags: [always]
+
     - name: Validate target containment before preflight mutation
       ansible.builtin.include_role:
         name: deployment_bundle

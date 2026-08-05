@@ -3,28 +3,14 @@
   ansible.builtin.include_tasks: controller.yml
   when: not (deployment_bundle_controller_validated | default(false))
 
-- name: Resolve implemented services from the controller manifest
+- name: Validate controller inputs when not already checked by the play
+  ansible.builtin.include_tasks: inputs.yml
+  when: not (deployment_bundle_controller_inputs_validated | default(false) | bool)
+
+- name: Resolve the deployment staging directory
   ansible.builtin.set_fact:
-    deployment_bundle_services: >-
-      {{ (lookup('file', playbook_dir ~ '/services/manifest.yml') | from_yaml).services
-         | selectattr('status', 'in', ['implemented', 'accepted']) | list }}
     deployment_bundle_staging_dir: >-
       {{ platform_deploy_root }}/.release-{{ platform_release_id }}
-
-- name: Validate manifest service path components
-  ansible.builtin.assert:
-    that:
-      - item.name is string
-      - item.name is match('^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$')
-      - item.role is string
-      - item.role is match('^[a-z][a-z0-9_]*$')
-      - item.legacy_path == 'compose/' ~ item.name ~ '/compose.yml'
-    fail_msg: >-
-      Manifest service names, roles, and legacy paths must be safe single-path
-      components before they are interpolated into controller or target paths.
-  loop: "{{ deployment_bundle_services }}"
-  loop_control:
-    label: "{{ item.name | default('<invalid>') }}"
 
 - name: Validate deployment paths before destructive operations
   ansible.builtin.assert:
@@ -58,6 +44,7 @@
     that:
       - item.stat.exists
       - item.stat.isreg
+      - not item.stat.islnk
     fail_msg: >-
       Implemented service {{ item.item.name }} has no canonical controller
       Compose definition at {{ item.stat.path }}.
