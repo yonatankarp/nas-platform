@@ -1,0 +1,32 @@
+---
+audiobookshelf_port: 13378
+audiobookshelf_api: "http://127.0.0.1:{{ audiobookshelf_port }}"
+audiobookshelf_compose_project_name: >-
+  {{ (platform_project_name ~ '-audiobookshelf')
+     if platform_project_name | default('') | length > 0 else 'audiobookshelf' }}
+
+audiobookshelf_library_name: Audiobooks
+audiobookshelf_library_folders:
+  - path: /audiobooks
+audiobookshelf_library_media_type: book
+audiobookshelf_library_provider: google
+audiobookshelf_library_icon: database
+audiobookshelf_library_settings:
+  coverAspectRatio: 1
+  disableWatcher: false
+  autoScanCronExpression: null
+  skipMatchingMediaWithAsin: false
+  skipMatchingMediaWithIsbn: false
+  audiobooksOnly: false
+  epubsAllowScriptedContent: false
+  hideSingleBookSeries: false
+  onlyShowLaterBooksInContinueSeries: false
+  metadataPrecedence:
+    - folderStructure
+    - audioMetatags
+    - nfoFile
+    - txtFiles
+    - opfFile
+    - absMetadata
+  markAsFinishedPercentComplete: null
+  markAsFinishedTimeRemaining: 10

@@ -67,3 +67,6 @@
 
     - role: dozzle
       tags: [dozzle, monitoring]
+
+    - role: audiobookshelf
+      tags: [audiobookshelf, media]

@@ -47,9 +47,14 @@ dozzle_planned_tasks = [
 check(failures, dozzle_planned_tasks.all? { |name| dozzle_tasks.include?("- name: #{name}") },
       "Dozzle must expose every REST mutation category as a check-mode planned change")
 check(failures,
-      %w[PLATFORM_PROJECT_NAME PLATFORM_BESZEL_PORT PLATFORM_NTFY_PORT PLATFORM_DOZZLE_PORT].all? do |value|
+      %w[
+        PLATFORM_PROJECT_NAME PLATFORM_BESZEL_PORT PLATFORM_NTFY_PORT PLATFORM_DOZZLE_PORT
+        PLATFORM_AUDIOBOOKSHELF_PORT
+      ].all? do |value|
         mac_run.include?("export #{value}=")
-      end && %w[beszel ntfy dozzle].all? { |name| mac_run.include?(%Q{"$project_name-#{name}"}) },
+      end && %w[beszel ntfy dozzle audiobookshelf].all? do |name|
+        mac_run.include?(%Q{"$project_name-#{name}"})
+      end,
       "Mac runner must export dynamic project/port facts and isolate every Compose project")
 
 EXPECTED_SERVICES = %w[
@@ -199,7 +204,14 @@ PLATFORM_INVENTORIES.values.map { |values| [values[0], values[3]] }.uniq.each do
   expected_network_adapter = host_vars["platform_host_network_available"] ? "host" : "published_ports"
   check(failures, host_vars["platform_host_network_adapter"] == expected_network_adapter,
         "#{relative_path} host-network capability and adapter must agree")
-  mac_runtime_facts = platform_kind == "mac" ? %w[platform_project_name beszel_port ntfy_port dozzle_port] : []
+  mac_runtime_facts = if platform_kind == "mac"
+                        %w[
+                          platform_project_name beszel_port ntfy_port dozzle_port
+                          audiobookshelf_port
+                        ]
+                      else
+                        []
+                      end
   unexpected_vars = host_vars.keys - MACHINE_FACTS - mac_runtime_facts
   check(failures, unexpected_vars.empty?,
         "#{relative_path} contains portable configuration: #{unexpected_vars.join(', ')}")
@@ -689,6 +701,8 @@ validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "te
   ruby\ tests/run_contracts_test.rb
   ruby\ tests/run_contracts.rb\ --validate-only
   tests/integration_lock_test.sh
+  tests/mac/audiobookshelf-drift-hook-test.sh
+  tests/contracts/audiobookshelf-audio-test.sh
   ruby\ tests/mac/report.rb\ --self-test
   tests/mac/cleanup.sh\ --self-test
   ruby\ tests/mac/sanitize-logs.rb\ --self-test
@@ -1427,6 +1441,7 @@ check(failures, mac_run.include?('mktemp -d "$temporary_parent/nas-platform-mac.
   PLATFORM_MAC_SANDBOX PLATFORM_DOCKER_ROOT PLATFORM_MEDIA_ROOT
   PLATFORM_FIXTURE_ROOT PLATFORM_REPORT_ROOT PLATFORM_PROOF_LANE
   PLATFORM_PROJECT_NAME PLATFORM_BESZEL_PORT PLATFORM_NTFY_PORT PLATFORM_DOZZLE_PORT
+  PLATFORM_AUDIOBOOKSHELF_PORT
   COMPOSE_PROJECT_NAME
 ].each do |variable|
   check(failures, mac_run.include?("export #{variable}="),
@@ -1443,6 +1458,8 @@ check(failures, mac_cleanup.include?('. "$mac_repo_dir/tests/sandbox_cleanup.sh"
 integration_cleanup = File.read(File.join(ROOT, "tests", "sandbox_cleanup.sh"))
 check(failures, integration_cleanup.include?("beszel_agent_portable"),
       "integration cleanup must remove the portable Beszel agent")
+check(failures, integration_cleanup.include?("audiobookshelf"),
+      "integration cleanup must remove Audiobookshelf")
 check(failures, mac_run.include?('cleanup) release_run_lock && "$mac_script_dir/cleanup.sh" "$sandbox"') &&
                 mac_run.scan("Cleanup command:").length == 1,
       "Mac runner must transfer the shared lock and emit cleanup commands once")

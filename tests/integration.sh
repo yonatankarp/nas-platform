@@ -426,6 +426,19 @@ docker run --rm \
         /repo/tests/contracts/dozzle.sh \"\$@\"
     }
 
+    run_audiobookshelf_contract() {
+      env \
+        PLATFORM_KIND=integration \
+        PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\" \
+        PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=\"\$vault_password_file\" \
+        PLATFORM_DOCKER_ROOT='$sandbox/volume1/Docker' \
+        PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
+        PLATFORM_FIXTURE_ROOT='$sandbox/fixtures' \
+        PLATFORM_REPORT_ROOT='$sandbox/reports' \
+        PLATFORM_AUDIOBOOKSHELF_PORT=13378 \
+        /repo/tests/contracts/audiobookshelf.sh \"\$@\"
+    }
+
     run_verify_only() {
       PLATFORM_VAULT_FILE=\"\$vault_file\" ansible-playbook \
         -i inventory/local.yml \
@@ -456,6 +469,22 @@ docker run --rm \
         -e deployment_bundle_allow_dirty_controller=true \
         /repo/verify.yml \
         --tags platform_verify_dozzle
+    }
+
+    run_audiobookshelf_verify_only() {
+      PLATFORM_VAULT_FILE=\"\$vault_file\" ansible-playbook \
+        -i inventory/local.yml \
+        --vault-password-file \"\$vault_password_file\" \
+        -e @\"\$vault_file\" \
+        -e platform_vault_file=\"\$vault_file\" \
+        -e nas_docker_root=$sandbox/volume1/Docker \
+        -e nas_media_root=$sandbox/volume2 \
+        -e platform_compose_kind=integration \
+        -e platform_beszel_agent_kind=portable \
+        -e deployment_bundle_test_mode=true \
+        -e deployment_bundle_allow_dirty_controller=true \
+        /repo/verify.yml \
+        --tags platform_verify_audiobookshelf
     }
 
     assert_controller_symlink_refused() {
@@ -750,6 +779,7 @@ docker run --rm \
 
     assert_selective_compose_refused ntfy SYMLINK_NTFY_COMPOSE_REFUSED
     assert_selective_compose_refused beszel SYMLINK_BESZEL_COMPOSE_REFUSED
+    assert_selective_compose_refused audiobookshelf SYMLINK_AUDIOBOOKSHELF_COMPOSE_REFUSED
 
     assert_active_drift_refused() {
       evidence=\$1
@@ -995,6 +1025,115 @@ docker run --rm \
       run_dozzle_contract verify
       run_dozzle_contract notify
       printf 'DOZZLE_DRIFT_RECONCILED_AND_NOTIFIED\n'
+
+      run_audiobookshelf_contract run
+      printf 'AUDIOBOOKSHELF_INITIAL_CONTRACT_OK\n'
+
+      run_audiobookshelf_contract inactive-admin-refusal
+      printf 'AUDIOBOOKSHELF_INACTIVE_ADMIN_REFUSED_AND_RECOVERED\n'
+
+      run_audiobookshelf_contract duplicate-admin-api-refusal
+      printf 'AUDIOBOOKSHELF_DUPLICATE_ADMIN_REFUSED\n'
+
+      run_audiobookshelf_contract duplicate-library-create
+      run_audiobookshelf_contract duplicate-library-verify
+      if run_audiobookshelf_verify_only >/tmp/audiobookshelf-duplicate-verify.txt 2>&1; then
+        printf 'AUDIOBOOKSHELF DUPLICATE LIBRARY VERIFICATION ACCEPTED\n' >&2
+        exit 1
+      fi
+      if run_play --tags audiobookshelf >/tmp/audiobookshelf-duplicate.txt 2>&1; then
+        printf 'AUDIOBOOKSHELF DUPLICATE LIBRARY CONVERGENCE ACCEPTED\n' >&2
+        exit 1
+      fi
+      run_audiobookshelf_contract duplicate-library-assert-output \
+        /tmp/audiobookshelf-duplicate.txt
+      /repo/tests/assert-no-vault-secrets.rb \
+        \"\$vault_file\" \"\$vault_password_file\" \
+        /tmp/audiobookshelf-duplicate-verify.txt \
+        /tmp/audiobookshelf-duplicate.txt
+      run_audiobookshelf_contract duplicate-library-cleanup
+      run_play --tags audiobookshelf
+      run_audiobookshelf_contract run
+      printf 'AUDIOBOOKSHELF_DUPLICATE_LIBRARY_REFUSED_WITH_SAFE_IDS\n'
+
+      run_audiobookshelf_contract check-repair-seed
+      if ! run_play --tags audiobookshelf --check --diff \
+          >/tmp/audiobookshelf-check-repair.txt 2>&1; then
+        /repo/tests/assert-no-vault-secrets.rb \
+          \"\$vault_file\" \"\$vault_password_file\" \
+          /tmp/audiobookshelf-check-repair.txt
+        cat /tmp/audiobookshelf-check-repair.txt >&2
+        exit 1
+      fi
+      /repo/tests/assert-no-vault-secrets.rb \
+        \"\$vault_file\" \"\$vault_password_file\" \
+        /tmp/audiobookshelf-check-repair.txt
+      grep -qE 'changed=[1-9][0-9]* .*failed=0 ' \
+        /tmp/audiobookshelf-check-repair.txt
+      run_audiobookshelf_contract assert-check-output \
+        /tmp/audiobookshelf-check-repair.txt repair
+      run_audiobookshelf_contract check-repair-unchanged
+      if run_audiobookshelf_verify_only >/tmp/audiobookshelf-check-repair-verify.txt 2>&1; then
+        printf 'AUDIOBOOKSHELF VERIFY-ONLY ACCEPTED REPAIR CHECK-MODE DRIFT\n' >&2
+        exit 1
+      fi
+      /repo/tests/assert-no-vault-secrets.rb \
+        \"\$vault_file\" \"\$vault_password_file\" \
+        /tmp/audiobookshelf-check-repair-verify.txt
+      run_play --tags audiobookshelf
+      run_audiobookshelf_contract run
+      run_audiobookshelf_contract check-repair-cleanup
+      printf 'AUDIOBOOKSHELF_CHECK_REPAIR_PLANNED_IMMUTABLE\n'
+
+      run_audiobookshelf_contract drift
+      run_audiobookshelf_contract drift-verify
+      if run_audiobookshelf_verify_only >/tmp/audiobookshelf-verify-drift.txt 2>&1; then
+        printf 'AUDIOBOOKSHELF VERIFY-ONLY ACCEPTED DRIFT\n' >&2
+        exit 1
+      fi
+      /repo/tests/assert-no-vault-secrets.rb \
+        \"\$vault_file\" \"\$vault_password_file\" \
+        /tmp/audiobookshelf-verify-drift.txt
+      run_play --tags audiobookshelf
+      run_audiobookshelf_contract run
+      printf 'AUDIOBOOKSHELF_DRIFT_REPAIRED\n'
+
+      run_audiobookshelf_contract check-missing-seed
+      if ! run_play --tags audiobookshelf --check --diff \
+          >/tmp/audiobookshelf-check-missing.txt 2>&1; then
+        /repo/tests/assert-no-vault-secrets.rb \
+          \"\$vault_file\" \"\$vault_password_file\" \
+          /tmp/audiobookshelf-check-missing.txt
+        cat /tmp/audiobookshelf-check-missing.txt >&2
+        exit 1
+      fi
+      /repo/tests/assert-no-vault-secrets.rb \
+        \"\$vault_file\" \"\$vault_password_file\" \
+        /tmp/audiobookshelf-check-missing.txt
+      grep -qE 'changed=[1-9][0-9]* .*failed=0 ' \
+        /tmp/audiobookshelf-check-missing.txt
+      run_audiobookshelf_contract assert-check-output \
+        /tmp/audiobookshelf-check-missing.txt missing
+      run_audiobookshelf_contract check-missing-unchanged
+      if run_audiobookshelf_verify_only >/tmp/audiobookshelf-check-missing-verify.txt 2>&1; then
+        printf 'AUDIOBOOKSHELF VERIFY-ONLY ACCEPTED MISSING CHECK-MODE STATE\n' >&2
+        exit 1
+      fi
+      /repo/tests/assert-no-vault-secrets.rb \
+        \"\$vault_file\" \"\$vault_password_file\" \
+        /tmp/audiobookshelf-check-missing-verify.txt
+      run_play --tags audiobookshelf
+      run_audiobookshelf_contract check-missing-cleanup
+      run_audiobookshelf_contract run
+      printf 'AUDIOBOOKSHELF_CHECK_CREATE_PLANNED_IMMUTABLE\n'
+
+      run_audiobookshelf_contract seed-progress
+      docker compose --project-name audiobookshelf \
+        --env-file '$sandbox/volume1/Docker/nas-platform/runtime/services/audiobookshelf/.env' \
+        -f '$sandbox/volume1/Docker/nas-platform/current/services/audiobookshelf/compose.yml' \
+        up -d --force-recreate --wait
+      run_audiobookshelf_contract assert-persistence
+      printf 'AUDIOBOOKSHELF_RECREATE_PERSISTENCE_OK\n'
 
       env \
         PLATFORM_KIND=integration \

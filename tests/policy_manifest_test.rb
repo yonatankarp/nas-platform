@@ -65,7 +65,10 @@ BASE_FIXTURE_PATHS = %w[
   tests/mac/report.rb
   tests/mac/run.sh
   tests/mac/run-phase-status-test.sh
+  tests/mac/audiobookshelf-drift-hook-test.sh
+  tests/mac/hooks/drift/30-audiobookshelf.sh
   tests/mac/sanitize-logs.rb
+  tests/contracts/audiobookshelf-audio-test.sh
   tests/mac/verify.sh
   tests/policy_test.rb
   tests/policy_support.rb

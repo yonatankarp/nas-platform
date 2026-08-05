@@ -139,10 +139,17 @@ if [ ! -f "$state_input" ]; then
   while [ "$dozzle_port" = "$beszel_port" ] || [ "$dozzle_port" = "$ntfy_port" ]; do
     dozzle_port=$(ruby -rsocket -e 'server = TCPServer.new("127.0.0.1", 0); print server.addr[1]; server.close')
   done
+  audiobookshelf_port=$(ruby -rsocket -e 'server = TCPServer.new("127.0.0.1", 0); print server.addr[1]; server.close')
+  while [ "$audiobookshelf_port" = "$beszel_port" ] || \
+        [ "$audiobookshelf_port" = "$ntfy_port" ] || \
+        [ "$audiobookshelf_port" = "$dozzle_port" ]; do
+    audiobookshelf_port=$(ruby -rsocket -e 'server = TCPServer.new("127.0.0.1", 0); print server.addr[1]; server.close')
+  done
   "$mac_script_dir/report.rb" --init "$state_input" --lane "$lane" \
     --sandbox-id "$(basename -- "$sandbox")" --git-revision "$git_revision" \
     --vault-checksum "$vault_checksum" --project-name "$project_name" \
-    --beszel-port "$beszel_port" --ntfy-port "$ntfy_port" --dozzle-port "$dozzle_port"
+    --beszel-port "$beszel_port" --ntfy-port "$ntfy_port" --dozzle-port "$dozzle_port" \
+    --audiobookshelf-port "$audiobookshelf_port"
 else
   state_lane=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("lane")' "$state_input")
   state_git_revision=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("git_revision")' "$state_input")
@@ -151,6 +158,7 @@ else
   beszel_port=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("beszel_port")' "$state_input")
   ntfy_port=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("ntfy_port")' "$state_input")
   dozzle_port=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("dozzle_port")' "$state_input")
+  audiobookshelf_port=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("audiobookshelf_port")' "$state_input")
   [ "$state_lane" = "$lane" ] || mac_die 'resume lane does not match the recorded lane'
   [ "$state_project_name" = "$project_name" ] ||
     mac_die 'resume project namespace does not match the recorded run'
@@ -170,6 +178,7 @@ export PLATFORM_PROJECT_NAME=$project_name
 export PLATFORM_BESZEL_PORT=$beszel_port
 export PLATFORM_NTFY_PORT=$ntfy_port
 export PLATFORM_DOZZLE_PORT=$dozzle_port
+export PLATFORM_AUDIOBOOKSHELF_PORT=$audiobookshelf_port
 export COMPOSE_PROJECT_NAME=$project_name
 export PLATFORM_MAC_VAULT_FILE=$vault_file
 export PLATFORM_MAC_VAULT_PASSWORD_FILE=$vault_password_file
@@ -213,7 +222,7 @@ capture_diagnostics() {
   diagnostic_name=container-state.jsonl
   diagnostic_temporary=$(mktemp "$report_root/container-state.XXXXXX") || return 1
   : > "$diagnostic_temporary"
-  if for diagnostic_project in "$project_name-beszel" "$project_name-ntfy" "$project_name-dozzle"; do
+  if for diagnostic_project in "$project_name-beszel" "$project_name-ntfy" "$project_name-dozzle" "$project_name-audiobookshelf"; do
       docker ps -a --filter "label=com.docker.compose.project=$diagnostic_project" \
         --format '{"id":"{{.ID}}","image":"{{.Image}}","name":"{{.Names}}","status":"{{.Status}}"}' \
         >> "$diagnostic_temporary" || exit 1
@@ -225,7 +234,7 @@ capture_diagnostics() {
     "$mac_script_dir/report.rb" --diagnostic "$state_input" \
       --location "$diagnostic_name" || return 1
 
-    diagnostic_container_ids=$(for diagnostic_project in "$project_name-beszel" "$project_name-ntfy" "$project_name-dozzle"; do
+    diagnostic_container_ids=$(for diagnostic_project in "$project_name-beszel" "$project_name-ntfy" "$project_name-dozzle" "$project_name-audiobookshelf"; do
       docker ps -aq --filter "label=com.docker.compose.project=$diagnostic_project" || exit 1
     done) || return 1
     for diagnostic_container_id in $diagnostic_container_ids; do
@@ -269,7 +278,8 @@ execute_phase() {
       for reserved_name in \
         "$project_name-beszel" "$project_name-beszel-agent-intel" \
         "$project_name-beszel-agent-portable" "$project_name-beszel-socket-proxy" \
-        "$project_name-ntfy" "$project_name-dozzle" "$project_name-dozzle-socket-proxy"; do
+        "$project_name-ntfy" "$project_name-dozzle" "$project_name-dozzle-socket-proxy" \
+        "$project_name-audiobookshelf"; do
         reserved_container_ids=$(docker ps -aq --filter "name=^/$reserved_name$") || {
           mac_die "could not inspect reserved container name: $reserved_name"
           return 1
@@ -279,7 +289,7 @@ execute_phase() {
           return 1
         }
       done
-      for reserved_port in "$beszel_port" "$ntfy_port" "$dozzle_port"; do
+      for reserved_port in "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port"; do
         reserved_port_container_ids=$(docker ps -q --filter "publish=$reserved_port") || {
           mac_die "could not inspect reserved host port: $reserved_port"
           return 1
@@ -297,7 +307,7 @@ execute_phase() {
           warn "reserved host port is already in use: #{value}"
           exit 1
         end
-      ' "$beszel_port" "$ntfy_port" "$dozzle_port" || return 1
+      ' "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port" || return 1
       ansible-playbook "$mac_repo_dir/validate-vault.yml" \
         --vault-password-file "$vault_password_file" -e @"$vault_file" \
         -e "platform_vault_file=$vault_file"

@@ -1,0 +1,44 @@
+---
+argument_specs:
+  main:
+    short_description: Deploy Audiobookshelf and converge its administrator and audiobook library
+    options:
+      platform_compose_kind:
+        type: str
+        required: true
+      platform_project_name:
+        type: str
+        required: false
+      audiobookshelf_port:
+        type: int
+        required: false
+      audiobookshelf_library_name:
+        type: str
+        required: false
+      audiobookshelf_library_folders:
+        type: list
+        elements: dict
+        required: false
+        options:
+          path:
+            type: str
+            required: true
+      audiobookshelf_library_media_type:
+        type: str
+        required: false
+        choices: [book]
+      audiobookshelf_library_provider:
+        type: str
+        required: false
+      audiobookshelf_library_icon:
+        type: str
+        required: false
+      audiobookshelf_library_settings:
+        type: dict
+        required: false
+      vault_audiobookshelf_admin_username:
+        type: str
+        required: true
+      vault_audiobookshelf_admin_password:
+        type: str
+        required: true
