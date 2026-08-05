@@ -44,6 +44,56 @@ def expect_success(failures, label)
   failures << "#{label}: #{output.lines.first&.strip || 'policy failed'}" unless status.success?
 end
 
+def write_contract(root, basename, body)
+  contract = File.join(root, "tests", "contracts", "#{basename}.sh")
+  FileUtils.mkdir_p(File.dirname(contract))
+  File.write(contract, body)
+  File.chmod(0o755, contract)
+end
+
+def implement_paperless(root)
+  mutate_manifest(root) { |manifest| service(manifest, "paperless-ngx")["status"] = "implemented" }
+  compose_dir = File.join(root, "services", "paperless-ngx")
+  FileUtils.mkdir_p(compose_dir)
+  File.write(File.join(compose_dir, "compose.yml"), <<~YAML)
+    ---
+    services:
+      paperless:
+        image: ghcr.io/paperless-ngx/paperless-ngx:2.0@sha256:#{'0' * 64}
+        restart: unless-stopped
+        logging:
+          driver: json-file
+          options:
+            max-size: 10m
+            max-file: "3"
+  YAML
+
+  role_dir = File.join(root, "roles", "paperless_ngx")
+  FileUtils.mkdir_p(File.join(role_dir, "meta"))
+  FileUtils.mkdir_p(File.join(role_dir, "tasks"))
+  File.write(File.join(role_dir, "meta", "argument_specs.yml"), <<~YAML)
+    ---
+    argument_specs:
+      main:
+        options: {}
+  YAML
+  File.write(File.join(role_dir, "tasks", "main.yml"), <<~YAML)
+    ---
+    - name: Provision Paperless
+      ansible.builtin.uri:
+        url: http://127.0.0.1/paperless/
+  YAML
+
+  storage_path = File.join(root, "inventory", "group_vars", "all", "main.yml")
+  storage = YAML.safe_load_file(storage_path)
+  storage.fetch("nas_storage") << {
+    "path" => "{{ nas_docker_root }}/paperless-ngx/data",
+    "mode" => "0755",
+    "recovery" => "critical"
+  }
+  File.write(storage_path, YAML.dump(storage))
+end
+
 expect_failure(failures, "legacy commit", "legacy_source commit must equal") do |root|
   mutate_manifest(root) { |manifest| manifest.fetch("legacy_source")["commit"] = "deadbeef" }
 end
@@ -100,6 +150,17 @@ expect_failure(failures, "empty contract", "ntfy: implemented service has no aut
   File.chmod(0o755, contract)
 end
 
+{
+  "echo test" => "#!/bin/sh\necho test\n",
+  "exit one" => "#!/bin/sh\nexit 1\n",
+  "standalone false" => "#!/bin/sh\nfalse\n"
+}.each do |label, body|
+  expect_failure(failures, label, "ntfy: implemented service has no automated verification") do |root|
+    File.write(File.join(root, "roles", "ntfy", "tasks", "main.yml"), provisioning_task)
+    write_contract(root, "ntfy", body)
+  end
+end
+
 expect_success(failures, "nested verification task") do |root|
   File.write(File.join(root, "roles", "ntfy", "tasks", "main.yml"), <<~YAML)
     ---
@@ -113,10 +174,29 @@ end
 
 expect_success(failures, "executable assertion contract") do |root|
   File.write(File.join(root, "roles", "ntfy", "tasks", "main.yml"), provisioning_task)
-  contract = File.join(root, "tests", "contracts", "ntfy.sh")
-  FileUtils.mkdir_p(File.dirname(contract))
-  File.write(contract, "#!/bin/sh\nset -eu\ncurl --fail http://127.0.0.1/health\n")
-  File.chmod(0o755, contract)
+  write_contract(root, "ntfy", <<~'SH')
+    #!/bin/sh
+    response=$(curl --silent http://127.0.0.1/ntfy/health)
+    test "$response" = healthy
+  SH
+end
+
+expect_success(failures, "paperless contract alias") do |root|
+  implement_paperless(root)
+  write_contract(root, "paperless", <<~'SH')
+    #!/bin/sh
+    response=$(curl --silent http://127.0.0.1/paperless/api/)
+    test -n "$response"
+  SH
+end
+
+expect_failure(failures, "paperless service-name contract", "paperless-ngx: implemented service has no automated verification") do |root|
+  implement_paperless(root)
+  write_contract(root, "paperless-ngx", <<~'SH')
+    #!/bin/sh
+    response=$(curl --silent http://127.0.0.1/paperless/api/)
+    test -n "$response"
+  SH
 end
 
 if failures.empty?
