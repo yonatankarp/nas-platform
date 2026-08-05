@@ -1,0 +1,28 @@
+---
+- name: Verify Mac inventory exports canonical storage paths
+  hosts: platform_hosts
+  gather_facts: true
+  tasks:
+    - name: Require physical storage roots from the Mac inventory
+      ansible.builtin.assert:
+        that:
+          - nas_docker_root == lookup('env', 'EXPECTED_PLATFORM_DOCKER_ROOT')
+          - nas_media_root == lookup('env', 'EXPECTED_PLATFORM_MEDIA_ROOT')
+          - nas_docker_root != lookup('env', 'PLATFORM_DOCKER_ROOT')
+          - nas_media_root != lookup('env', 'PLATFORM_MEDIA_ROOT')
+
+    - name: Create disposable physical storage roots for target validation
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - "{{ nas_docker_root }}"
+        - "{{ nas_media_root }}"
+
+    - name: Validate canonical Mac deployment paths
+      ansible.builtin.include_role:
+        name: deployment_bundle
+        tasks_from: target
+  vars:
+    platform_release_id: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa

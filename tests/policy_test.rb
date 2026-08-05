@@ -118,6 +118,9 @@ PLATFORM_INVENTORIES.values.map { |values| [values[0], values[3]] }.uniq.each do
         "#{relative_path} platform_render_device_path must be a nonempty path")
   check(failures, %w[host published_ports].include?(host_vars["platform_host_network_adapter"]),
         "#{relative_path} platform_host_network_adapter must be host or published_ports")
+  expected_network_adapter = host_vars["platform_host_network_available"] ? "host" : "published_ports"
+  check(failures, host_vars["platform_host_network_adapter"] == expected_network_adapter,
+        "#{relative_path} host-network capability and adapter must agree")
   unexpected_vars = host_vars.keys - MACHINE_FACTS
   check(failures, unexpected_vars.empty?,
         "#{relative_path} contains portable configuration: #{unexpected_vars.join(', ')}")
@@ -144,6 +147,88 @@ preflight_tasks = YAML.safe_load_file(
 mount_table_task = preflight_tasks.find { |task| task["name"] == "Read the kernel mount table" }
 check(failures, mount_table_task && mount_table_task["when"].to_s.include?("platform_kind == 'nas'"),
       "preflight must read the Linux mount table only on NAS hosts")
+gpu_fact_task = preflight_tasks.find do |task|
+  task["name"] == "Record whether hardware acceleration is available"
+end
+gpu_expression = gpu_fact_task&.dig("ansible.builtin.set_fact", "preflight_gpu_available").to_s
+check(failures, gpu_expression.include?("platform_render_device_available") &&
+                gpu_expression.include?("preflight_render_device.stat.exists") &&
+                gpu_expression.include?("preflight_render_device.stat.ischr"),
+      "GPU availability must require declared capability and an existing character device")
+
+mac_vars = YAML.safe_load_file(
+  File.join(ROOT, "inventory", "group_vars", "mac_hosts", "main.yml")
+)
+{
+  "nas_docker_root" => "PLATFORM_DOCKER_ROOT",
+  "nas_media_root" => "PLATFORM_MEDIA_ROOT"
+}.each do |variable, environment_variable|
+  expression = mac_vars[variable].to_s
+  check(failures, expression.include?("lookup('env', '#{environment_variable}')") &&
+                  expression.include?("| platform_physical_path"),
+        "Mac #{variable} must canonicalize #{environment_variable} before export")
+end
+ansible_config_source = File.read(File.join(ROOT, "ansible.cfg"))
+filter_probe = <<~'PYTHON'
+  import sys
+  import os
+  import tempfile
+  import types
+
+  ansible = types.ModuleType("ansible")
+  errors = types.ModuleType("ansible.errors")
+  class AnsibleFilterError(Exception):
+      pass
+  errors.AnsibleFilterError = AnsibleFilterError
+  sys.modules["ansible"] = ansible
+  sys.modules["ansible.errors"] = errors
+
+  namespace = {}
+  with open(sys.argv[1], encoding="utf-8") as source:
+      exec(compile(source.read(), sys.argv[1], "exec"), namespace)
+  physical_path = namespace["platform_physical_path"]
+
+  for unsafe in ("relative", "//safe/root", "/safe/root/../outside", "/safe//root", "/safe/root/"):
+      try:
+          physical_path(unsafe)
+      except AnsibleFilterError:
+          continue
+      raise SystemExit(f"accepted unsafe path: {unsafe}")
+
+  if physical_path("/safe/root") != "/safe/root":
+      raise SystemExit("changed a normalized path without symlinked ancestors")
+
+  with tempfile.TemporaryDirectory() as sandbox:
+      physical_root = os.path.join(sandbox, "physical")
+      linked_root = os.path.join(sandbox, "linked")
+      os.mkdir(physical_root)
+      os.symlink(physical_root, linked_root)
+      unresolved_leaf = os.path.join(linked_root, "missing", "leaf")
+      expected = os.path.join(os.path.realpath(physical_root), "missing", "leaf")
+      if physical_path(unresolved_leaf) != expected:
+          raise SystemExit("did not resolve a symlinked ancestor before a missing leaf")
+PYTHON
+_filter_stdout, filter_stderr, filter_status = Open3.capture3(
+  "python3", "-c", filter_probe, File.join(ROOT, "filter_plugins", "platform_paths.py")
+)
+check(failures, ansible_config_source.match?(/^filter_plugins\s*=\s*filter_plugins$/),
+      "Mac path canonicalization must use the configured physical-path filter")
+check(failures, filter_status.success?,
+      "Mac physical-path filter must reject ambiguous or relative paths: #{filter_stderr.strip}")
+
+%w[ntfy beszel].each do |role_name|
+  role_options = YAML.safe_load_file(
+    File.join(ROOT, "roles", role_name, "meta", "argument_specs.yml")
+  ).dig("argument_specs", "main", "options")
+  check(failures, role_options.dig("platform_compose_kind", "type") == "str" &&
+                  role_options.dig("platform_compose_kind", "required") == true,
+        "#{role_name} argument specs must require platform_compose_kind")
+  next unless role_name == "beszel"
+
+  check(failures, role_options.dig("platform_render_device_path", "type") == "path" &&
+                  role_options.dig("platform_render_device_path", "required") == true,
+        "Beszel argument specs must require platform_render_device_path")
+end
 
 def flatten_tasks(tasks, flattened = [])
   Array(tasks).each do |task|
@@ -566,6 +651,13 @@ end
 # Darwin-only fact and command being skipped under --check, both survived syntax
 # checking and were caught by running.
 harness = File.read(File.join(ROOT, "tests", "integration.sh"))
+mac_path_fixture = File.read(File.join(ROOT, "tests", "mac_inventory_path_test.yml"))
+check(failures, harness.include?("MAC_PATH_CANONICAL") &&
+                harness.include?("MAC_PATH_LEXICAL_REFUSED") &&
+                harness.include?("mac_inventory_path_test.yml") &&
+                mac_path_fixture.include?("tasks_from: target") &&
+                mac_path_fixture.include?("EXPECTED_PLATFORM_DOCKER_ROOT"),
+      "integration must prove canonical Mac paths pass target validation")
 ["IDEMPOTENT", "CHECK MODE"].each do |property|
   check(failures, harness.include?(property), "integration harness must assert #{property}")
 end
@@ -624,9 +716,17 @@ deployment_tasks = flatten_tasks(YAML.safe_load_file(
   File.join(ROOT, "roles", "deployment_bundle", "tasks", "controller.yml")
 ))
 dirty_guard = deployment_tasks.find { |task| task["name"] == "Restrict dirty controller bypass to integration" }
+compose_override_guard = deployment_tasks.find do |task|
+  task["name"] == "Restrict Compose override selection to explicit test mode"
+end
 cleanliness_check = deployment_tasks.find { |task| task["name"] == "Inspect controller bundle source cleanliness" }
 cleanliness_assert = deployment_tasks.find { |task| task["name"] == "Require committed controller bundle sources" }
 dirty_guard_conditions = dirty_guard&.dig("ansible.builtin.assert", "that").to_s
+compose_override_conditions = compose_override_guard&.dig("ansible.builtin.assert", "that").to_s
+check(failures, compose_override_conditions.include?("platform_kind in ['nas', 'mac']") &&
+                compose_override_conditions.include?("platform_compose_kind == platform_kind") &&
+                compose_override_conditions.include?("deployment_bundle_test_mode"),
+      "Compose override selection must require explicit test mode")
 check(failures, dirty_guard_conditions.include?("platform_compose_kind == 'integration'") &&
                 dirty_guard_conditions.include?("deployment_bundle_test_mode"),
       "dirty controller bypass must require explicit integration Compose test mode")

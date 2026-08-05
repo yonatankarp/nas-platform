@@ -37,8 +37,10 @@ trap 'exit 130' HUP INT TERM
 chmod 0777 "$sandbox"
 
 mkdir -p "$sandbox/volume1/Docker" "$sandbox/volume2" "$sandbox/repo" \
-  "$sandbox/fixtures" "$sandbox/reports"
+  "$sandbox/fixtures" "$sandbox/reports" \
+  "$sandbox/private/var/folders/path fixture"
 chmod 0777 "$sandbox/fixtures" "$sandbox/reports"
+ln -s "$sandbox/private/var" "$sandbox/var"
 
 # Keep the real-service root genuinely fresh. Stale replacement and manifest
 # merge behavior use separate roots below so neither scenario masks the other.
@@ -300,6 +302,27 @@ docker run --rm \
     apk add --no-cache --quiet docker-cli docker-cli-compose git tar '$ruby_package' '$curl_package' >/dev/null
     pip install --quiet --no-input 'ansible-core==$ansible_core_version'
     ansible-galaxy collection install -r /repo/requirements.yml >/dev/null
+
+    PLATFORM_DOCKER_ROOT='$sandbox/var/folders/path fixture/missing/Docker' \
+    PLATFORM_MEDIA_ROOT='$sandbox/var/folders/path fixture/missing/media' \
+    EXPECTED_PLATFORM_DOCKER_ROOT='$sandbox/private/var/folders/path fixture/missing/Docker' \
+    EXPECTED_PLATFORM_MEDIA_ROOT='$sandbox/private/var/folders/path fixture/missing/media' \
+      ansible-playbook -i inventory/mac.yml tests/mac_inventory_path_test.yml
+    printf 'MAC_PATH_CANONICAL\n'
+
+    if PLATFORM_DOCKER_ROOT='$sandbox/var/folders/path fixture/../escape/Docker' \
+       PLATFORM_MEDIA_ROOT='$sandbox/var/folders/path fixture/missing/media' \
+       EXPECTED_PLATFORM_DOCKER_ROOT='$sandbox/private/var/folders/escape/Docker' \
+       EXPECTED_PLATFORM_MEDIA_ROOT='$sandbox/private/var/folders/path fixture/missing/media' \
+         ansible-playbook -i inventory/mac.yml tests/mac_inventory_path_test.yml \
+         >/tmp/mac-path-lexical.txt 2>&1; then
+      cat /tmp/mac-path-lexical.txt >&2
+      printf 'LEXICALLY AMBIGUOUS MAC PATH ACCEPTED\n' >&2
+      exit 1
+    fi
+    grep -qF 'platform storage paths must be lexically normalized' \
+      /tmp/mac-path-lexical.txt
+    printf 'MAC_PATH_LEXICAL_REFUSED\n'
 
     assert_dirty_refused() {
       evidence=\$1
