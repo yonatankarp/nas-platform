@@ -38,6 +38,53 @@ cleanup_mac_sandbox() {
   [ ! -e "$mac_cleanup_target" ] && [ ! -L "$mac_cleanup_target" ]
 }
 
+force_final_rmdir_failure() {
+  mac_failure_parent=$1
+  mac_failure_name=$2
+  mac_failure_preserve=$3
+  mac_failure_program=$(mktemp "$mac_failure_parent/mac-cleanup-program.XXXXXX") || return 1
+  cleanup_sandbox_program > "$mac_failure_program"
+  mac_failure_program_name=$(basename -- "$mac_failure_program")
+
+  docker run --rm -i -v "$mac_failure_parent:/sandbox-parent" \
+    "$cleanup_sandbox_image" python - "$mac_failure_name" \
+    "$mac_failure_preserve" "$mac_failure_program_name" <<'PY'
+import errno
+import os
+import sys
+
+
+name = sys.argv[1]
+preserve = sys.argv[2]
+program = sys.argv[3]
+real_rmdir = os.rmdir
+forced = False
+
+
+def fail_final_rmdir(path, *args, **kwargs):
+    global forced
+    if not forced and path == name and kwargs.get("dir_fd") is not None:
+        forced = True
+        raise OSError(errno.ENOTEMPTY, "forced final rmdir failure", path)
+    return real_rmdir(path, *args, **kwargs)
+
+
+os.rmdir = fail_final_rmdir
+sys.argv = [program, name, preserve]
+try:
+    with open(f"/sandbox-parent/{program}", encoding="utf-8") as source:
+        exec(compile(source.read(), program, "exec"))
+except OSError as error:
+    if not forced or error.errno != errno.ENOTEMPTY:
+        raise
+    sys.exit(42)
+raise RuntimeError("forced final rmdir was not reached")
+PY
+  mac_failure_status=$?
+  rm -f -- "$mac_failure_program"
+  return "$mac_failure_status"
+}
+
 cleanup_self_test() {
   mac_test_parent=$(mac_temporary_parent)
   mac_repo_root=$(CDPATH= cd -- "$mac_repo_dir" && pwd -P)
@@ -87,8 +134,57 @@ cleanup_self_test() {
     exit 1
   }
   chmod 0600 "$mac_owned/.nas-platform-mac-owned"
-  rm -f -- "$mac_alias" "$mac_owned/.nas-platform-mac-owned"
-  rmdir -- "$mac_owned" "$mac_arbitrary"
+  mac_marker_copy=$(mktemp "$mac_test_parent/mac-cleanup-marker.XXXXXX")
+  cp -p "$mac_owned/.nas-platform-mac-owned" "$mac_marker_copy"
+  mac_marker_mode=$(mac_file_mode "$mac_owned/.nas-platform-mac-owned")
+  mac_marker_uid=$(mac_owner_id "$mac_owned/.nas-platform-mac-owned")
+  case $(uname -s) in
+    Darwin) mac_marker_gid=$(stat -f '%g' "$mac_owned/.nas-platform-mac-owned") ;;
+    *) mac_marker_gid=$(stat -c '%g' "$mac_owned/.nas-platform-mac-owned") ;;
+  esac
+  printf 'payload removed before final rmdir\n' > "$mac_owned/payload"
+  if force_final_rmdir_failure "$mac_test_parent" "$(basename -- "$mac_owned")" \
+      ".nas-platform-mac-owned" >/dev/null 2>&1; then
+    mac_forced_status=0
+  else
+    mac_forced_status=$?
+  fi
+  [ "$mac_forced_status" -eq 42 ] || {
+    printf 'cleanup self-test did not authenticate final rmdir failure\n' >&2
+    exit 1
+  }
+  [ ! -e "$mac_owned/payload" ] && [ ! -L "$mac_owned/payload" ] || {
+    printf 'cleanup self-test failed before clearing sandbox payload\n' >&2
+    exit 1
+  }
+  [ -d "$mac_owned" ] && [ ! -L "$mac_owned" ] || {
+    printf 'cleanup self-test did not preserve sandbox after final rmdir failure\n' >&2
+    exit 1
+  }
+  cmp -s "$mac_marker_copy" "$mac_owned/.nas-platform-mac-owned" || {
+    printf 'cleanup self-test did not restore exact marker bytes\n' >&2
+    exit 1
+  }
+  [ "$(mac_file_mode "$mac_owned/.nas-platform-mac-owned")" = "$mac_marker_mode" ] &&
+    [ "$(mac_owner_id "$mac_owned/.nas-platform-mac-owned")" = "$mac_marker_uid" ] || {
+      printf 'cleanup self-test did not restore marker mode and uid\n' >&2
+      exit 1
+    }
+  case $(uname -s) in
+    Darwin) mac_restored_gid=$(stat -f '%g' "$mac_owned/.nas-platform-mac-owned") ;;
+    *) mac_restored_gid=$(stat -c '%g' "$mac_owned/.nas-platform-mac-owned") ;;
+  esac
+  [ "$mac_restored_gid" = "$mac_marker_gid" ] || {
+    printf 'cleanup self-test did not restore marker gid\n' >&2
+    exit 1
+  }
+  "$0" "$mac_owned"
+  [ ! -e "$mac_owned" ] && [ ! -L "$mac_owned" ] || {
+    printf 'cleanup self-test could not clean recovered sandbox\n' >&2
+    exit 1
+  }
+  rm -f -- "$mac_alias" "$mac_marker_copy"
+  rmdir -- "$mac_arbitrary"
   printf 'cleanup: all safety properties hold\n'
 }
 
