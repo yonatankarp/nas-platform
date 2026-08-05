@@ -2,7 +2,9 @@
 # frozen_string_literal: true
 
 require "json"
+require "open3"
 require "optparse"
+require "rbconfig"
 require "tempfile"
 require "tmpdir"
 require "time"
@@ -15,6 +17,11 @@ PHASES = %w[
 ].freeze
 STATUSES = %w[running passed failed].freeze
 REDACTION = "[REDACTED]"
+SAFE_DIAGNOSTIC = /\A[A-Za-z0-9][A-Za-z0-9_.-]*\z/
+ROOT_KEYS = %w[
+  schema lane sandbox_id git_revision vault_checksum diagnostic_locations phases
+].freeze
+IDENTITY_KEYS = %w[git_sha platform_kind platform_compose_kind].freeze
 
 def sanitize(value, redacted = [])
   case value
@@ -34,41 +41,127 @@ def sanitize(value, redacted = [])
   end
 end
 
+def exact_keys?(value, required, optional = [])
+  value.keys.sort == (required + optional.select { |key| value.key?(key) }).sort
+end
+
+def validate_deployment_manifest(manifest)
+  return if manifest.nil?
+  raise "deployment_manifest must be an object or null" unless manifest.is_a?(Hash)
+  raise "deployment_manifest fields are invalid" unless exact_keys?(manifest, %w[identity services])
+  identity = manifest["identity"]
+  raise "deployment_manifest identity must be an object" unless identity.is_a?(Hash)
+  raise "deployment_manifest identity fields are invalid" unless exact_keys?(identity, IDENTITY_KEYS)
+  raise "deployment_manifest identity values must be strings" unless identity.values.all? { |value| value.is_a?(String) }
+  services = manifest["services"]
+  raise "deployment_manifest services must be an array" unless services.is_a?(Array)
+  services.each do |service|
+    raise "deployment_manifest services must be objects" unless service.is_a?(Hash)
+    raise "deployment_manifest service fields are invalid" unless exact_keys?(service, %w[name images])
+    raise "deployment_manifest service name must be a string" unless service["name"].is_a?(String)
+    images = service["images"]
+    raise "deployment_manifest images must be objects" unless images.is_a?(Hash)
+    raise "deployment_manifest image entries must be strings" unless images.all? do |name, image|
+      name.is_a?(String) && image.is_a?(String)
+    end
+  end
+end
+
+def validate_input(input)
+  raise "input must be a JSON object" unless input.is_a?(Hash)
+  raise "input contains unknown or missing root fields" unless exact_keys?(input, ROOT_KEYS, ["deployment_manifest"])
+  raise "input schema must be 1" unless input["schema"] == 1
+  raise "input lane must be fresh or adoption" unless %w[fresh adoption].include?(input["lane"])
+  %w[sandbox_id git_revision vault_checksum].each do |field|
+    raise "input #{field} must be a non-empty string" unless input[field].is_a?(String) && !input[field].empty?
+  end
+  diagnostics = input["diagnostic_locations"]
+  raise "diagnostic_locations must be an array" unless diagnostics.is_a?(Array)
+  raise "diagnostic_locations must contain safe basenames" unless diagnostics.all? do |location|
+    location.is_a?(String) && location.match?(SAFE_DIAGNOSTIC)
+  end
+  phases = input["phases"]
+  raise "input phases must be an array" unless phases.is_a?(Array)
+  raise "input phase entries must be JSON objects" unless phases.all?(Hash)
+  phases.each do |phase|
+    raise "input phase fields are invalid" unless exact_keys?(phase, %w[name status], %w[started_at finished_at])
+    raise "input contains an unknown phase" unless PHASES.include?(phase["name"])
+    raise "input contains an unknown phase status" unless STATUSES.include?(phase["status"])
+    %w[started_at finished_at].each do |field|
+      raise "input phase timestamps must be strings" if phase.key?(field) && !phase[field].is_a?(String)
+    end
+    if phase["status"] == "running"
+      raise "running phase must have only a start time" unless phase.key?("started_at") && !phase.key?("finished_at")
+    else
+      raise "completed phase must have a finish time" unless phase.key?("finished_at")
+    end
+  end
+  raise "input contains duplicate phases" unless phases.map { |phase| phase["name"] }.uniq.length == phases.length
+  validate_deployment_manifest(input["deployment_manifest"]) if input.key?("deployment_manifest")
+  input
+end
+
+def validate_report(report)
+  report_keys = ROOT_KEYS + %w[deployment_manifest generated_at redacted_field_count]
+  raise "report contains unknown or missing root fields" unless exact_keys?(report, report_keys)
+  validate_input(report.reject { |key, _value| %w[generated_at redacted_field_count].include?(key) })
+  raise "report generated_at must be a string" unless report["generated_at"].is_a?(String)
+  redacted_count = report["redacted_field_count"]
+  raise "report redacted_field_count must be a non-negative integer" unless redacted_count.is_a?(Integer) && redacted_count >= 0
+
+  report
+end
+
 def read_input(path)
   raise "input must be a regular file" unless File.file?(path) && !File.symlink?(path)
 
-  input = JSON.parse(File.read(path))
-  raise "input must be a JSON object" unless input.is_a?(Hash)
-  phases = input.fetch("phases", [])
-  raise "input phases must be an array" unless phases.is_a?(Array)
-  raise "input phase entries must be JSON objects" unless phases.all?(Hash)
-  raise "input contains an unknown phase" unless phases.all? { |phase| PHASES.include?(phase["name"]) }
-  raise "input contains an unknown phase status" unless phases.all? { |phase| STATUSES.include?(phase["status"]) }
-  raise "input contains duplicate phases" unless phases.map { |phase| phase["name"] }.uniq.length == phases.length
-
-  input
+  validate_input(JSON.parse(File.read(path)))
 rescue JSON::ParserError
   raise "input must contain valid JSON"
 end
 
-def atomic_write(path)
+def prepare_atomic_write(path, content)
   parent = File.dirname(File.expand_path(path))
   raise "output parent must be a directory" unless File.directory?(parent) && !File.symlink?(parent)
   raise "refusing symlink output" if File.symlink?(path)
+  raise "output must be a regular file or absent" if File.exist?(path) && !File.file?(path)
 
-  Tempfile.create([".#{File.basename(path)}.", ".tmp"], parent) do |file|
+  file = Tempfile.new([".#{File.basename(path)}.", ".tmp"], parent)
+  begin
     file.chmod(0o600)
-    yield file
+    file.write(content)
     file.flush
     file.fsync
-    File.rename(file.path, path)
+    file.close
+    file
+  rescue StandardError
+    file.close!
+    raise
   end
 end
 
+def atomic_write(path, content)
+  file = prepare_atomic_write(path, content)
+  File.rename(file.path, path)
+ensure
+  file&.close!
+end
+
 def atomic_json(path, content)
-  atomic_write(path) do |file|
-    file.write(JSON.pretty_generate(content))
-    file.write("\n")
+  atomic_write(path, JSON.pretty_generate(content) + "\n")
+end
+
+def require_distinct_paths(*paths)
+  expanded = paths.map { |path| File.expand_path(path) }
+  canonical = expanded.map do |path|
+    [File.realpath(File.dirname(path)), File.basename(path)]
+  end
+  raise "input and report paths must be distinct" unless canonical.uniq.length == canonical.length
+  case_folded = canonical.map { |parent, basename| [parent, basename.downcase] }
+  raise "input and report paths must be distinct" unless case_folded.uniq.length == case_folded.length
+  existing = expanded.select { |path| File.exist?(path) }
+  existing.combination(2) do |left, right|
+    raise "input and report paths must be distinct" if File.identical?(left, right)
   end
 end
 
@@ -81,11 +174,11 @@ def markdown_report(report)
   %w[lane sandbox_id git_revision vault_checksum generated_at].each do |key|
     lines << "- #{key.tr('_', ' ').capitalize}: #{markdown_cell(report[key])}" if report.key?(key)
   end
-  manifest = report.fetch("deployment_manifest", {})
-  identity = manifest.fetch("identity", {})
-  lines << "- Deployment manifest: #{markdown_cell(manifest['status'])}"
+  manifest = report["deployment_manifest"]
+  identity = manifest ? manifest.fetch("identity") : {}
+  lines << "- Deployment manifest: #{manifest ? 'recorded' : 'unavailable'}"
   lines << "- Manifest Git SHA: #{markdown_cell(identity['git_sha'])}" if identity["git_sha"]
-  images = Array(manifest["services"]).sum { |service| service.fetch("images", {}).length }
+  images = manifest ? manifest.fetch("services").sum { |service| service.fetch("images").length } : 0
   lines << "- Recorded images: #{images}"
   lines.concat(["", "## Phases", "", "| Phase | Status | Started | Finished |", "| --- | --- | --- | --- |"])
   report.fetch("phases", []).each do |phase|
@@ -109,7 +202,7 @@ def markdown_report(report)
 end
 
 def deployment_evidence(manifest_path)
-  return { "status" => "unavailable" } unless manifest_path
+  return nil unless manifest_path
   raise "deployment manifest must be a regular file" unless File.file?(manifest_path) && !File.symlink?(manifest_path)
 
   manifest = YAML.safe_load_file(manifest_path)
@@ -122,7 +215,6 @@ def deployment_evidence(manifest_path)
   end
 
   {
-    "status" => "recorded",
     "identity" => {
       "git_sha" => manifest["git_sha"],
       "platform_kind" => manifest["platform_kind"],
@@ -135,25 +227,45 @@ def deployment_evidence(manifest_path)
 end
 
 def write_report(input_path, json_path, markdown_path, manifest_path = nil)
+  require_distinct_paths(input_path, json_path, markdown_path)
   redacted = []
   input = read_input(input_path)
   if manifest_path
     input["deployment_manifest"] = deployment_evidence(manifest_path)
-    atomic_json(input_path, input)
   else
-    input["deployment_manifest"] ||= deployment_evidence(nil)
+    input["deployment_manifest"] = nil unless input.key?("deployment_manifest")
   end
+  validate_input(input)
+  atomic_json(input_path, input) if manifest_path
   report = sanitize(input, redacted)
   report["generated_at"] = Time.now.utc.iso8601
   report["redacted_field_count"] = redacted.length
-  atomic_json(json_path, report)
-  atomic_write(markdown_path) do |file|
-    file.write(markdown_report(report))
+  validate_report(report)
+  json_body = JSON.pretty_generate(report) + "\n"
+  markdown_body = markdown_report(report)
+  original_json = File.file?(json_path) ? File.binread(json_path) : nil
+  json_file = nil
+  markdown_file = nil
+  json_published = false
+  begin
+    json_file = prepare_atomic_write(json_path, json_body)
+    markdown_file = prepare_atomic_write(markdown_path, markdown_body)
+    File.rename(json_file.path, json_path)
+    json_published = true
+    File.rename(markdown_file.path, markdown_path)
+  rescue StandardError
+    if json_published
+      original_json ? atomic_write(json_path, original_json) : File.unlink(json_path)
+    end
+    raise
+  ensure
+    json_file&.close!
+    markdown_file&.close!
   end
 end
 
 def initialize_input(path, options)
-  atomic_json(path, {
+  input = {
     "schema" => 1,
     "lane" => options.fetch(:lane),
     "sandbox_id" => options.fetch(:sandbox_id),
@@ -161,11 +273,12 @@ def initialize_input(path, options)
     "vault_checksum" => options.fetch(:vault_checksum),
     "diagnostic_locations" => [],
     "phases" => []
-  })
+  }
+  atomic_json(path, validate_input(input))
 end
 
 def record_diagnostic(path, location)
-  raise "diagnostic location must be a safe report basename" unless location.match?(/\A[A-Za-z0-9][A-Za-z0-9_.-]*\z/)
+  raise "diagnostic location must be a safe report basename" unless location.match?(SAFE_DIAGNOSTIC)
 
   input = read_input(path)
   locations = input.fetch("diagnostic_locations", [])
@@ -173,7 +286,7 @@ def record_diagnostic(path, location)
 
   locations << location unless locations.include?(location)
   input["diagnostic_locations"] = locations
-  atomic_json(path, input)
+  atomic_json(path, validate_input(input))
 end
 
 def record_phase(path, phase, status)
@@ -195,7 +308,7 @@ def record_phase(path, phase, status)
   else
     entry["finished_at"] = now
   end
-  atomic_json(path, input)
+  atomic_json(path, validate_input(input))
 end
 
 def self_test
@@ -211,7 +324,25 @@ def self_test
       "private_key_data" => "value-private",
       "passwordHash" => "value-hash"
     }
-    File.write(input, JSON.generate({ "lane" => "fresh", "phases" => [], "details" => forbidden }))
+    redacted = []
+    sanitized = sanitize(forbidden, redacted)
+    raise "forbidden keys were not redacted" unless sanitized["password"] == REDACTION
+    raise "redaction count is incomplete" unless redacted.length == 6
+    sanitized_body = JSON.generate(sanitized)
+    %w[value-password value-secret value-token value-auth value-private value-hash].each do |value|
+      raise "forbidden value reached sanitized data" if sanitized_body.include?(value)
+    end
+
+    valid_input = {
+      "schema" => 1,
+      "lane" => "fresh",
+      "sandbox_id" => "nas-platform-mac.Abc123",
+      "git_revision" => "abc123",
+      "vault_checksum" => "0" * 64,
+      "diagnostic_locations" => [],
+      "phases" => []
+    }
+    File.write(input, JSON.generate(valid_input))
     File.write(manifest, <<~YAML)
       ---
       git_sha: abc123
@@ -223,16 +354,7 @@ def self_test
             app: example.invalid/app@sha256:1234
     YAML
     write_report(input, json, markdown, manifest)
-    outputs = File.read(json) + File.read(markdown)
-    forbidden.values.grep(String).each do |value|
-      raise "forbidden value reached report" if outputs.include?(value)
-    end
-    %w[value-token value-auth].each do |value|
-      raise "nested forbidden value reached report" if outputs.include?(value)
-    end
     parsed = JSON.parse(File.read(json))
-    raise "forbidden keys were not redacted" unless parsed.dig("details", "password") == REDACTION
-    raise "redaction count is incomplete" unless parsed.fetch("redacted_field_count") == 6
     raise "manifest identity is missing" unless parsed.dig("deployment_manifest", "identity", "git_sha") == "abc123"
     raise "image evidence is missing" unless parsed.dig("deployment_manifest", "services", 0, "images", "app")
 
@@ -243,13 +365,25 @@ def self_test
       raise "manifest evidence was lost after service-data cleanup"
     end
 
+    nil_input = File.join(directory, "nil-input.json")
+    nil_json = File.join(directory, "nil-report.json")
+    nil_markdown = File.join(directory, "nil-report.md")
+    File.write(nil_input, JSON.generate(valid_input.merge("deployment_manifest" => nil)))
+    write_report(nil_input, nil_json, nil_markdown)
+    nil_report = JSON.parse(File.read(nil_json))
+    expected_report_keys = (ROOT_KEYS + %w[deployment_manifest generated_at redacted_field_count]).sort
+    raise "final report root schema is not exact" unless nil_report.keys.sort == expected_report_keys
+    raise "missing deployment evidence was not persisted as null" unless nil_report["deployment_manifest"].nil?
+    raise "generated_at has the wrong type" unless nil_report["generated_at"].is_a?(String)
+    raise "redacted_field_count has the wrong type" unless nil_report["redacted_field_count"].is_a?(Integer)
+
     record_phase(input, "preflight", "failed")
     record_phase(input, "preflight", "running")
     restarted = read_input(input).fetch("phases").find { |phase| phase["name"] == "preflight" }
     raise "restarted phase retained a stale finish time" if restarted.key?("finished_at")
 
     malformed_input = File.join(directory, "malformed.json")
-    File.write(malformed_input, JSON.generate({ "phases" => ["not-an-object"] }))
+    File.write(malformed_input, JSON.generate(valid_input.merge("phases" => ["not-an-object"])))
     begin
       read_input(malformed_input)
       raise "malformed phase entry was accepted"
@@ -265,6 +399,127 @@ def self_test
     rescue RuntimeError => error
       raise unless error.message == "deployment manifest services must be objects"
     end
+
+    original_json = "ORIGINAL JSON\n"
+    original_markdown = "ORIGINAL MARKDOWN\n"
+    recorded_manifest = {
+      "identity" => {
+        "git_sha" => "abc123",
+        "platform_kind" => "mac",
+        "platform_compose_kind" => "mac"
+      },
+      "services" => [{ "name" => "example", "images" => { "app" => "example.invalid/app@sha256:1234" } }]
+    }
+    malformed_inputs = {
+      "diagnostic_locations string" => valid_input.merge("diagnostic_locations" => "container-state.jsonl"),
+      "diagnostic_locations object" => valid_input.merge("diagnostic_locations" => [{}]),
+      "diagnostic_locations path" => valid_input.merge("diagnostic_locations" => ["../raw.log"]),
+      "deployment_manifest string" => valid_input.merge("deployment_manifest" => "recorded"),
+      "deployment_manifest identity" => valid_input.merge("deployment_manifest" => recorded_manifest.merge("identity" => "mac")),
+      "deployment_manifest services" => valid_input.merge(
+        "deployment_manifest" => recorded_manifest.merge("services" => "not-an-array")
+      ),
+      "deployment_manifest service" => valid_input.merge(
+        "deployment_manifest" => recorded_manifest.merge("services" => ["not-an-object"])
+      ),
+      "deployment_manifest images" => valid_input.merge(
+        "deployment_manifest" => recorded_manifest.merge(
+          "services" => [{ "name" => "example", "images" => "not-an-object" }]
+        )
+      ),
+      "deployment_manifest image entry" => valid_input.merge(
+        "deployment_manifest" => recorded_manifest.merge(
+          "services" => [{ "name" => "example", "images" => { "app" => 123 } }]
+        )
+      ),
+      "malformed root" => [],
+      "unknown root field" => valid_input.merge("unexpected" => true),
+      "root field type" => valid_input.merge("vault_checksum" => []),
+      "phase status" => valid_input.merge("phases" => [{ "name" => "preflight", "status" => "unknown" }]),
+      "phase timestamp" => valid_input.merge(
+        "phases" => [{ "name" => "preflight", "status" => "failed", "finished_at" => 123 }]
+      )
+    }
+    malformed_inputs.each do |label, malformed|
+      File.write(input, JSON.generate(malformed))
+      File.write(json, original_json)
+      File.write(markdown, original_markdown)
+      _stdout, stderr, status = Open3.capture3(
+        RbConfig.ruby, File.expand_path(__FILE__), "--input", input,
+        "--json", json, "--markdown", markdown
+      )
+      raise "#{label} was accepted" if status.success?
+      raise "#{label} emitted an uncontrolled error" unless stderr.match?(/\Areport error: [^\n]+\n\z/) &&
+                                                           !stderr.match?(/\.rb:\d+:in [`']/)
+      raise "#{label} replaced the existing JSON report" unless File.binread(json) == original_json
+      raise "#{label} replaced the existing Markdown report" unless File.binread(markdown) == original_markdown
+    end
+
+    shared_output = File.join(directory, "shared-report")
+    File.write(input, JSON.generate(valid_input))
+    File.write(shared_output, original_json)
+    _stdout, stderr, status = Open3.capture3(
+      RbConfig.ruby, File.expand_path(__FILE__), "--input", input,
+      "--json", shared_output, "--markdown", File.join(directory, ".", "shared-report")
+    )
+    raise "aliased report destinations were accepted" if status.success?
+    raise "aliased report destinations emitted an uncontrolled error" unless stderr.match?(/\Areport error: [^\n]+\n\z/)
+    raise "aliased report destinations replaced the existing output" unless File.binread(shared_output) == original_json
+
+    real_output_root = File.join(directory, "real-output")
+    nested_output_root = File.join(real_output_root, "nested")
+    aliased_output_root = File.join(directory, "aliased-output")
+    Dir.mkdir(real_output_root)
+    Dir.mkdir(nested_output_root)
+    File.symlink(real_output_root, aliased_output_root)
+    nested_json = File.join(nested_output_root, "report")
+    nested_markdown = File.join(aliased_output_root, "nested", "report")
+    _stdout, stderr, status = Open3.capture3(
+      RbConfig.ruby, File.expand_path(__FILE__), "--input", input,
+      "--json", nested_json, "--markdown", nested_markdown
+    )
+    raise "nested ancestor aliases were accepted" if status.success?
+    raise "nested ancestor aliases emitted an uncontrolled error" unless stderr.match?(/\Areport error: [^\n]+\n\z/)
+    raise "nested ancestor aliases created an output" if File.exist?(nested_json)
+
+    case_json = File.join(directory, "case-report")
+    case_markdown = File.join(directory, "CASE-REPORT")
+    _stdout, stderr, status = Open3.capture3(
+      RbConfig.ruby, File.expand_path(__FILE__), "--input", input,
+      "--json", case_json, "--markdown", case_markdown
+    )
+    raise "case-folded report destinations were accepted" if status.success?
+    raise "case-folded report destinations emitted an uncontrolled error" unless stderr.match?(/\Areport error: [^\n]+\n\z/)
+    raise "case-folded report destinations created an output" if File.exist?(case_json) || File.exist?(case_markdown)
+
+    File.write(input, JSON.generate(valid_input))
+    File.write(json, original_json)
+    File.write(markdown, original_markdown)
+    original_rename = File.method(:rename)
+    rename_count = 0
+    forced_second_rename = false
+    File.define_singleton_method(:rename) do |source, destination|
+      rename_count += 1
+      if rename_count == 2
+        forced_second_rename = true
+        raise Errno::EACCES, destination
+      end
+
+      original_rename.call(source, destination)
+    end
+    begin
+      write_report(input, json, markdown)
+      raise "second publication failure was accepted"
+    rescue Errno::EACCES
+      nil
+    ensure
+      File.define_singleton_method(:rename) do |source, destination|
+        original_rename.call(source, destination)
+      end
+    end
+    raise "second publication failure did not reach the second rename" unless forced_second_rename
+    raise "second publication failure replaced the existing JSON report" unless File.binread(json) == original_json
+    raise "second publication failure replaced the existing Markdown report" unless File.binread(markdown) == original_markdown
   end
   puts "report: all redaction properties hold"
 end

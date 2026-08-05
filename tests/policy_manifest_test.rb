@@ -1043,6 +1043,18 @@ expect_failure(failures, "Mac log sanitizer self-test removed",
   File.write(path, File.read(path).gsub("ruby tests/mac/sanitize-logs.rb --self-test", "true"))
 end
 
+expect_failure(failures, "Mac report self-test removed",
+               "validate-policy.sh must run ruby tests/mac/report.rb --self-test") do |root|
+  path = File.join(root, "tests", "validate-policy.sh")
+  File.write(path, File.read(path).gsub("ruby tests/mac/report.rb --self-test", "true"))
+end
+
+expect_failure(failures, "Mac cleanup self-test removed",
+               "validate-policy.sh must run tests/mac/cleanup.sh --self-test") do |root|
+  path = File.join(root, "tests", "validate-policy.sh")
+  File.write(path, File.read(path).gsub("tests/mac/cleanup.sh --self-test", "true"))
+end
+
 expect_failure(failures, "Mac raw log body retained",
                "Mac log sanitizer self-test must pass without raw values") do |root|
   path = File.join(root, "tests", "mac", "sanitize-logs.rb")

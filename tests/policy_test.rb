@@ -658,6 +658,8 @@ validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "te
   ruby\ tests/run_contracts_test.rb
   ruby\ tests/run_contracts.rb\ --validate-only
   tests/integration_lock_test.sh
+  ruby\ tests/mac/report.rb\ --self-test
+  tests/mac/cleanup.sh\ --self-test
   ruby\ tests/mac/sanitize-logs.rb\ --self-test
 ].each do |command|
   check(failures, validation_commands.include?(command),

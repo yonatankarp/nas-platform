@@ -1,13 +1,9 @@
 #!/bin/sh
 
-cleanup_sandbox_contents() {
-  cleanup_contents_parent=$1
-  cleanup_contents_name=$2
-  cleanup_contents_preserve=${3-}
-  cleanup_image=docker.io/library/python:3.13-alpine@sha256:399babc8b49529dabfd9c922f2b5eea81d611e4512e3ed250d75bd2e7683f4b0
+cleanup_sandbox_image=docker.io/library/python:3.13-alpine@sha256:399babc8b49529dabfd9c922f2b5eea81d611e4512e3ed250d75bd2e7683f4b0
 
-  docker run --rm -i -v "$cleanup_contents_parent:/sandbox-parent" "$cleanup_image" \
-    python - "$cleanup_contents_name" "$cleanup_contents_preserve" <<'PY'
+cleanup_sandbox_program() {
+  cat <<'PY'
 import os
 import re
 import stat
@@ -92,6 +88,16 @@ try:
 finally:
     os.close(parent_fd)
 PY
+}
+
+cleanup_sandbox_contents() {
+  cleanup_contents_parent=$1
+  cleanup_contents_name=$2
+  cleanup_contents_preserve=${3-}
+
+  cleanup_sandbox_program | docker run --rm -i \
+    -v "$cleanup_contents_parent:/sandbox-parent" "$cleanup_sandbox_image" \
+    python - "$cleanup_contents_name" "$cleanup_contents_preserve"
 }
 
 cleanup_sandbox() {
