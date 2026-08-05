@@ -31,11 +31,16 @@ BASE_FIXTURE_PATHS = %w[
   tests/run_contracts.rb
   tests/validate-policy.sh
 ].freeze
+EXPECTED_FIXTURE_ROLES = {
+  "audiobookshelf" => "audiobookshelf", "beszel" => "beszel", "dozzle" => "dozzle",
+  "immich" => "immich", "jellyfin" => "jellyfin", "komga" => "komga", "ntfy" => "ntfy",
+  "paperless-ngx" => "paperless_ngx", "tinymediamanager" => "tinymediamanager"
+}.freeze
 
-def fixture_paths
+def fixture_paths(root = ROOT)
   paths = BASE_FIXTURE_PATHS.dup
-  manifest_path = File.join(ROOT, "services", "manifest.yml")
-  registry_path = File.join(ROOT, "tests", "contracts", "registry.yml")
+  manifest_path = File.join(root, "services", "manifest.yml")
+  registry_path = File.join(root, "tests", "contracts", "registry.yml")
   raise "duplicate manifest fixture key" unless duplicate_yaml_keys(Psych.parse_stream(File.read(manifest_path))).empty?
   raise "duplicate registry fixture key" unless duplicate_yaml_keys(Psych.parse_stream(File.read(registry_path))).empty?
 
@@ -43,12 +48,16 @@ def fixture_paths
   manifest.fetch("services").each do |entry|
     next unless %w[implemented accepted].include?(entry.fetch("status"))
 
-    paths << File.join("services", entry.fetch("name"), "compose.yml")
-    role_root = File.join("roles", entry.fetch("role"))
+    name = entry.fetch("name")
+    role = entry.fetch("role")
+    raise "unsafe manifest fixture identity" unless EXPECTED_FIXTURE_ROLES[name] == role
+
+    paths << File.join("services", name, "compose.yml")
+    role_root = File.join("roles", role)
     paths << File.join(role_root, "meta", "argument_specs.yml")
     paths << File.join(role_root, "tasks", "main.yml")
     env_template = File.join(role_root, "templates", "env.j2")
-    paths << env_template if File.file?(File.join(ROOT, env_template))
+    paths << env_template if File.file?(File.join(root, env_template))
   end
 
   statuses = manifest.fetch("services").to_h { |entry| [entry.fetch("name"), entry.fetch("status")] }
@@ -57,7 +66,7 @@ def fixture_paths
     raise "invalid registry fixture entry" unless entry.is_a?(Hash) && entry.keys.sort == %w[path service]
 
     service_name = entry.fetch("service")
-    basename = service_name == "paperless-ngx" ? "paperless" : service_name
+    basename = contract_basename(service_name)
     expected_path = "tests/contracts/#{basename}.sh"
     raise "unsafe registry fixture path" unless %w[implemented accepted].include?(statuses[service_name]) &&
                                                 entry.fetch("path") == expected_path
@@ -65,6 +74,28 @@ def fixture_paths
     paths << expected_path
   end
   paths.uniq
+end
+
+def copy_fixture(source_root, sandbox)
+  planned = fixture_paths(source_root).map do |relative_path|
+    clean = Pathname.new(relative_path).cleanpath.to_s
+    raise "unsafe fixture path" unless clean == relative_path && !Pathname.new(clean).absolute? &&
+                                       !Pathname.new(clean).each_filename.include?("..")
+
+    source = File.expand_path(clean, source_root)
+    destination = File.expand_path(clean, sandbox)
+    source_prefix = File.expand_path(source_root) + File::SEPARATOR
+    sandbox_prefix = File.expand_path(sandbox) + File::SEPARATOR
+    raise "unsafe fixture source" unless source.start_with?(source_prefix) && owned_file?(source, source_root)
+    raise "unsafe fixture destination" unless destination.start_with?(sandbox_prefix)
+
+    [source, destination]
+  end
+
+  planned.each do |source, destination|
+    FileUtils.mkdir_p(File.dirname(destination))
+    FileUtils.cp(source, destination)
+  end
 end
 
 def mutate_manifest(root)
@@ -80,12 +111,7 @@ end
 
 def run_policy
   Dir.mktmpdir("nas-platform-policy-") do |sandbox|
-    fixture_paths.each do |relative_path|
-      source = File.join(ROOT, relative_path)
-      destination = File.join(sandbox, relative_path)
-      FileUtils.mkdir_p(File.dirname(destination))
-      FileUtils.cp(source, destination)
-    end
+    copy_fixture(ROOT, sandbox)
     yield sandbox
     stdout, stderr, status = Open3.capture3(
       RbConfig.ruby, "tests/policy_test.rb", chdir: sandbox
@@ -105,6 +131,40 @@ def expect_success(failures, label)
   output, status = run_policy { |root| yield root }
   failures << "#{label}: #{output.lines.first&.strip || 'policy failed'}" unless status.success?
 end
+
+def expect_fixture_identity_rejection(failures, label, service_entry)
+  Dir.mktmpdir("nas-platform-fixture-source-") do |parent|
+    source = File.join(parent, "source")
+    sandbox = File.join(parent, "sandbox")
+    FileUtils.mkdir_p(File.join(source, "services"))
+    FileUtils.mkdir_p(File.join(source, "tests", "contracts"))
+    File.write(File.join(source, "services", "manifest.yml"), YAML.dump("services" => [service_entry]))
+    File.write(File.join(source, "tests", "contracts", "registry.yml"), YAML.dump("contracts" => []))
+    source_sentinel = File.join(parent, "source-sentinel")
+    sandbox_sentinel = File.join(parent, "sandbox-sentinel")
+    File.write(source_sentinel, "SOURCE_SAFE")
+    File.write(sandbox_sentinel, "SANDBOX_SAFE")
+
+    error = begin
+      copy_fixture(source, sandbox)
+      nil
+    rescue StandardError => e
+      e
+    end
+    failures << "#{label}: fixture identity was not rejected clearly" unless error&.message&.include?("unsafe manifest fixture identity")
+    failures << "#{label}: source sentinel changed" unless File.read(source_sentinel) == "SOURCE_SAFE"
+    failures << "#{label}: sandbox sentinel changed" unless File.read(sandbox_sentinel) == "SANDBOX_SAFE"
+  end
+end
+
+expect_fixture_identity_rejection(
+  failures, "traversal service name",
+  { "name" => "../../source-sentinel", "role" => "ntfy", "status" => "implemented" }
+)
+expect_fixture_identity_rejection(
+  failures, "traversal role",
+  { "name" => "ntfy", "role" => "../../sandbox-sentinel", "status" => "implemented" }
+)
 
 def write_contract(root, basename, body)
   contract = File.join(root, "tests", "contracts", "#{basename}.sh")
@@ -223,6 +283,11 @@ end
 expect_failure(failures, "integration omits contract execution", "integration must execute registered contracts") do |root|
   path = File.join(root, "tests", "integration.sh")
   File.write(path, File.read(path).sub(/^\s*ruby \/repo\/tests\/run_contracts\.rb --execute\n/, ""))
+end
+
+expect_failure(failures, "integration omits contract ABI", "integration must set the contract environment ABI") do |root|
+  path = File.join(root, "tests", "integration.sh")
+  File.write(path, File.read(path).sub(/^\s*PLATFORM_REPORT_ROOT=.*\n/, ""))
 end
 
 provisioning_task = <<~YAML

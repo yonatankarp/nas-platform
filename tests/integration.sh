@@ -16,7 +16,7 @@
 set -eu
 
 ansible_core_version=2.21.2
-runner_image=docker.io/library/python:3.13-alpine
+runner_image=docker.io/library/python:3.13-alpine@sha256:399babc8b49529dabfd9c922f2b5eea81d611e4512e3ed250d75bd2e7683f4b0
 ruby_package='ruby=3.4.9-r0'
 curl_package='curl=8.21.0-r0'
 
@@ -36,7 +36,9 @@ trap 'cleanup_sandbox_on_exit "$sandbox" "$?"' EXIT
 trap 'exit 130' HUP INT TERM
 chmod 0777 "$sandbox"
 
-mkdir -p "$sandbox/volume1/Docker" "$sandbox/volume2" "$sandbox/repo"
+mkdir -p "$sandbox/volume1/Docker" "$sandbox/volume2" "$sandbox/repo" \
+  "$sandbox/fixtures" "$sandbox/reports"
+chmod 0777 "$sandbox/fixtures" "$sandbox/reports"
 
 # A copy of the repository, so a play cannot modify the working tree.
 tar -C "$repo_dir" -cf - --exclude .git . | tar -C "$sandbox/repo" -xf -
@@ -106,7 +108,14 @@ docker run --rm \
 
     run_play
 
-    ruby /repo/tests/run_contracts.rb --execute
+    env \
+      PLATFORM_KIND=integration \
+      PLATFORM_CONTRACT_VAULT_FILE='$sandbox/sandbox-vault.yml' \
+      PLATFORM_DOCKER_ROOT='$sandbox/volume1/Docker' \
+      PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
+      PLATFORM_FIXTURE_ROOT='$sandbox/fixtures' \
+      PLATFORM_REPORT_ROOT='$sandbox/reports' \
+      ruby /repo/tests/run_contracts.rb --execute
 
     printf '\n=== phase 2: asserting idempotence ===\n'
     run_play | tee /tmp/second.txt

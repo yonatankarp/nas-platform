@@ -4,7 +4,13 @@ require "pathname"
 require "yaml"
 
 module PolicySupport
+  CONTRACT_BASENAME_EXCEPTIONS = { "paperless-ngx" => "paperless" }.freeze
+
   module_function
+
+  def contract_basename(service_name)
+    CONTRACT_BASENAME_EXCEPTIONS.fetch(service_name, service_name)
+  end
 
   def duplicate_yaml_keys(node, duplicates = [])
     if node.is_a?(Psych::Nodes::Mapping)
