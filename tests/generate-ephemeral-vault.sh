@@ -2,16 +2,32 @@
 set -eu
 set +x
 
-script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
-repo_dir=$(CDPATH= cd -- "$script_dir/.." && pwd -P)
-temporary_parent_input=${TMPDIR:-/tmp}
-temporary_parent=$(CDPATH= cd -- "$temporary_parent_input" && pwd -P)
-kernel_name=$(uname -s)
-
 die() {
   printf '%s\n' "$1" >&2
   exit 1
 }
+
+validate_lexical_path() {
+  path=$1
+  label=$2
+  case $path in
+    /*) ;;
+    *) die "$label must be absolute" ;;
+  esac
+  case $path in
+    /) ;;
+    */|*//*|*/./*|*/../*|*/.|*/..) die "$label must be lexically normalized" ;;
+  esac
+}
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+repo_dir=$(CDPATH= cd -- "$script_dir/.." && pwd -P)
+temporary_parent_input=${TMPDIR:-/tmp}
+validate_lexical_path "$temporary_parent_input" 'temporary parent'
+[ -d "$temporary_parent_input" ] || die 'temporary parent is unavailable'
+[ ! -L "$temporary_parent_input" ] || die 'refusing symlink temporary parent'
+temporary_parent=$(CDPATH= cd -- "$temporary_parent_input" && pwd -P)
+kernel_name=$(uname -s)
 
 owner_id() {
   if [ "$kernel_name" = Darwin ]; then
@@ -31,6 +47,7 @@ file_mode() {
 
 validate_owned_directory() {
   requested=$1
+  validate_lexical_path "$requested" 'vault directory'
   [ -d "$requested" ] || die 'refusing unsafe vault directory'
   [ ! -L "$requested" ] || die 'refusing symlink vault directory'
   physical=$(CDPATH= cd -- "$requested" 2>/dev/null && pwd -P) ||
@@ -89,7 +106,7 @@ random_uuid() {
     "$(printf '%s' "$hex" | cut -c21-32)"
 }
 
-generate_vault() {
+generate_vault() (
   output=$1
   password_file=$2
   directory=$(validate_owned_directory "$(dirname -- "$output")")
@@ -173,7 +190,7 @@ EOF
   chmod 0600 "$output"
   rm -f -- "$plain" "$private_key" "$private_key.pub"
   trap - EXIT HUP INT TERM
-}
+)
 
 cleanup_vault() {
   directory=$(validate_owned_directory "$1")
@@ -187,23 +204,128 @@ cleanup_vault() {
   rmdir -- "$directory" >/dev/null 2>&1 || die 'failed to remove the empty vault directory'
 }
 
+self_test_fixture_directory=
+self_test_trap_marker=
+self_test_cleanup_on_exit() {
+  self_test_exit_status=$?
+  trap - EXIT HUP INT TERM
+  if [ -n "$self_test_fixture_directory" ] &&
+     [ -d "$self_test_fixture_directory" ] &&
+     ! cleanup_vault "$self_test_fixture_directory" >/dev/null 2>&1; then
+    [ "$self_test_exit_status" -ne 0 ] || self_test_exit_status=1
+  fi
+  if [ -n "$self_test_trap_marker" ] && [ -f "$self_test_trap_marker" ] &&
+     [ ! -L "$self_test_trap_marker" ]; then
+    rm -f -- "$self_test_trap_marker"
+  fi
+  exit "$self_test_exit_status"
+}
+
 self_test() {
   directory=$(mktemp -d "$temporary_parent_input/nas-platform-vault.XXXXXX")
-  generate_vault "$directory/vault.yml" "$directory/password"
-  [ "$(file_mode "$directory/vault.yml")" = 600 ] ||
-    die 'self-test found an unsafe vault mode'
-  [ "$(file_mode "$directory/password")" = 600 ] ||
-    die 'self-test found an unsafe password mode'
-  grep -q '^\$ANSIBLE_VAULT;' "$directory/vault.yml" ||
-    die 'self-test did not produce an encrypted vault'
-  ansible-vault view --vault-password-file "$directory/password" "$directory/vault.yml" \
-    >/dev/null 2>&1 || die 'self-test could not decrypt the generated vault'
-  ansible-playbook "$repo_dir/validate-vault.yml" \
-    --vault-password-file "$directory/password" \
-    -e @"$directory/vault.yml" \
-    -e platform_vault_file="$directory/vault.yml" \
-    >/dev/null 2>&1 || die 'self-test generated a vault outside the shared contract'
-  cleanup_vault "$directory"
+  self_test_fixture_directory=$directory
+  trap self_test_cleanup_on_exit EXIT
+  trap 'exit 130' HUP INT TERM
+  trap_marker="$temporary_parent_input/nas-platform-vault.trap.$$"
+  self_test_trap_marker=$trap_marker
+  (
+    trap ': > "$trap_marker"' EXIT
+    generate_vault "$directory/vault.yml" "$directory/password"
+    [ "$(file_mode "$directory/vault.yml")" = 600 ] ||
+      die 'self-test found an unsafe vault mode'
+    [ "$(file_mode "$directory/password")" = 600 ] ||
+      die 'self-test found an unsafe password mode'
+    grep -q '^\$ANSIBLE_VAULT;' "$directory/vault.yml" ||
+      die 'self-test did not produce an encrypted vault'
+    ansible-vault view --vault-password-file "$directory/password" "$directory/vault.yml" \
+      >/dev/null 2>&1 || die 'self-test could not decrypt the generated vault'
+    ansible-playbook "$repo_dir/validate-vault.yml" \
+      --vault-password-file "$directory/password" \
+      -e @"$directory/vault.yml" \
+      -e platform_vault_file="$directory/vault.yml" \
+      >/dev/null 2>&1 || die 'self-test generated a vault outside the shared contract'
+    cleanup_vault "$directory"
+  )
+  self_test_fixture_directory=
+  trap - EXIT HUP INT TERM
+  [ -f "$trap_marker" ] || die 'self-test generation did not preserve its caller trap'
+  rm -f -- "$trap_marker"
+  self_test_trap_marker=
+
+  validation_parent=$(mktemp -d "$temporary_parent/nas-platform-vault-validation.XXXXXX")
+  validation_tools=$(mktemp -d "$temporary_parent/nas-platform-vault-validation-tools.XXXXXX")
+  printf '%s\n' '#!/bin/sh' 'exit 1' > "$validation_tools/ansible-playbook"
+  chmod 0755 "$validation_tools/ansible-playbook"
+  if TMPDIR="$validation_parent" PATH="$validation_tools:$PATH" \
+      "$0" --self-test >/dev/null 2>&1; then
+    die 'self-test mid-validation fixture unexpectedly succeeded'
+  fi
+  [ -z "$(find "$validation_parent" -mindepth 1 -maxdepth 1 -print -quit)" ] ||
+    die 'self-test mid-validation failure left credential material'
+  rmdir -- "$validation_parent"
+  rm -f -- "$validation_tools/ansible-playbook"
+  rmdir -- "$validation_tools"
+
+  existing_vault_directory=$(mktemp -d "$temporary_parent/nas-platform-vault.XXXXXX")
+  : > "$existing_vault_directory/vault.yml"
+  if "$0" --output "$existing_vault_directory/vault.yml" \
+      --password-file "$existing_vault_directory/password" >/dev/null 2>&1; then
+    die 'self-test generation accepted a pre-existing output'
+  fi
+  [ -f "$existing_vault_directory/vault.yml" ] &&
+    [ ! -e "$existing_vault_directory/password" ] ||
+    die 'self-test pre-existing output refusal mutated credential material'
+  rm -f -- "$existing_vault_directory/vault.yml"
+  cleanup_vault "$existing_vault_directory"
+
+  existing_password_directory=$(mktemp -d "$temporary_parent/nas-platform-vault.XXXXXX")
+  : > "$existing_password_directory/password"
+  if "$0" --output "$existing_password_directory/vault.yml" \
+      --password-file "$existing_password_directory/password" >/dev/null 2>&1; then
+    die 'self-test generation accepted a pre-existing password output'
+  fi
+  [ -f "$existing_password_directory/password" ] &&
+    [ ! -e "$existing_password_directory/vault.yml" ] ||
+    die 'self-test pre-existing password refusal mutated credential material'
+  rm -f -- "$existing_password_directory/password"
+  cleanup_vault "$existing_password_directory"
+
+  vault_symlink_directory=$(mktemp -d "$temporary_parent/nas-platform-vault.XXXXXX")
+  ln -s /dev/null "$vault_symlink_directory/vault.yml"
+  if "$0" --output "$vault_symlink_directory/vault.yml" \
+      --password-file "$vault_symlink_directory/password" >/dev/null 2>&1; then
+    die 'self-test generation accepted a vault output symlink'
+  fi
+  [ -L "$vault_symlink_directory/vault.yml" ] &&
+    [ ! -e "$vault_symlink_directory/password" ] ||
+    die 'self-test vault symlink refusal mutated credential material'
+  rm -f -- "$vault_symlink_directory/vault.yml"
+  cleanup_vault "$vault_symlink_directory"
+
+  password_symlink_directory=$(mktemp -d "$temporary_parent/nas-platform-vault.XXXXXX")
+  ln -s /dev/null "$password_symlink_directory/password"
+  if "$0" --output "$password_symlink_directory/vault.yml" \
+      --password-file "$password_symlink_directory/password" >/dev/null 2>&1; then
+    die 'self-test generation accepted a password output symlink'
+  fi
+  [ -L "$password_symlink_directory/password" ] &&
+    [ ! -e "$password_symlink_directory/vault.yml" ] ||
+    die 'self-test password symlink refusal mutated credential material'
+  rm -f -- "$password_symlink_directory/password"
+  cleanup_vault "$password_symlink_directory"
+
+  unexpected_directory=$(mktemp -d "$temporary_parent/nas-platform-vault.XXXXXX")
+  : > "$unexpected_directory/unexpected"
+  if "$0" --output "$unexpected_directory/vault.yml" \
+      --password-file "$unexpected_directory/password" >/dev/null 2>&1; then
+    die 'self-test generation accepted an unexpected entry'
+  fi
+  [ -f "$unexpected_directory/unexpected" ] &&
+    [ ! -e "$unexpected_directory/vault.yml" ] &&
+    [ ! -e "$unexpected_directory/password" ] ||
+    die 'self-test unexpected-entry refusal mutated credential material'
+  rm -f -- "$unexpected_directory/unexpected"
+  cleanup_vault "$unexpected_directory"
 
   preservation_directory=$(mktemp -d "$temporary_parent/nas-platform-vault.XXXXXX")
   preservation_directory=$(CDPATH= cd -- "$preservation_directory" && pwd -P)
@@ -224,8 +346,47 @@ self_test() {
     die 'self-test cleanup accepted a symlink directory'
   fi
   [ -d "$canonical_directory" ] || die 'self-test symlink refusal did not preserve its target'
+  if "$0" --cleanup "$alias_path/" >/dev/null 2>&1; then
+    die 'self-test cleanup accepted a trailing-slash symlink alias'
+  fi
+  [ -d "$canonical_directory" ] ||
+    die 'self-test trailing-slash symlink refusal did not preserve its target'
   rm -f -- "$alias_path"
+
+  lexical_component="$temporary_parent/nas-platform-vault.lexical.$$"
+  mkdir "$lexical_component"
+  for lexical_alias in \
+    "$canonical_directory/." \
+    "$temporary_parent//$(basename -- "$canonical_directory")" \
+    "$lexical_component/../$(basename -- "$canonical_directory")"
+  do
+    if "$0" --cleanup "$lexical_alias" >/dev/null 2>&1; then
+      die 'self-test cleanup accepted a non-normalized lexical alias'
+    fi
+    [ -d "$canonical_directory" ] ||
+      die 'self-test lexical-alias refusal did not preserve its target'
+  done
+  rmdir -- "$lexical_component"
   cleanup_vault "$canonical_directory"
+
+  tmpdir_alias="$temporary_parent/nas-platform-vault.tmpalias.$$"
+  ln -s "$temporary_parent" "$tmpdir_alias"
+  if TMPDIR="$tmpdir_alias" "$0" --self-test >/dev/null 2>&1; then
+    die 'self-test accepted a symlink temporary parent'
+  fi
+  if TMPDIR="$tmpdir_alias/" "$0" --self-test >/dev/null 2>&1; then
+    die 'self-test accepted a trailing-slash symlink temporary parent'
+  fi
+  rm -f -- "$tmpdir_alias"
+
+  in_repo_directory=$(mktemp -d "$repo_dir/nas-platform-vault.XXXXXX")
+  if TMPDIR="$repo_dir" "$0" --output "$in_repo_directory/vault.yml" \
+      --password-file "$in_repo_directory/password" >/dev/null 2>&1; then
+    die 'self-test generation accepted an in-repository directory'
+  fi
+  [ -z "$(find "$in_repo_directory" -mindepth 1 -maxdepth 1 -print -quit)" ] ||
+    die 'self-test in-repository refusal left credential material'
+  rmdir -- "$in_repo_directory"
 
   open_directory=$(mktemp -d "$temporary_parent/nas-platform-vault.XXXXXX")
   open_directory=$(CDPATH= cd -- "$open_directory" && pwd -P)
@@ -238,6 +399,32 @@ self_test() {
     die 'self-test unsafe-directory refusal left credential material'
   chmod 0700 "$open_directory"
   cleanup_vault "$open_directory"
+
+  if [ "$(id -u)" -eq 0 ]; then
+    foreign_directory=$(mktemp -d "$temporary_parent/nas-platform-vault.XXXXXX")
+    chown 65534 "$foreign_directory"
+    if "$0" --output "$foreign_directory/vault.yml" \
+        --password-file "$foreign_directory/password" >/dev/null 2>&1; then
+      die 'self-test generation accepted a foreign-owned directory'
+    fi
+    [ -z "$(find "$foreign_directory" -mindepth 1 -maxdepth 1 -print -quit)" ] ||
+      die 'self-test foreign-ownership refusal left credential material'
+    chown 0 "$foreign_directory"
+    cleanup_vault "$foreign_directory"
+  fi
+
+  failure_directory=$(mktemp -d "$temporary_parent/nas-platform-vault.XXXXXX")
+  fake_bin=$(mktemp -d "$temporary_parent/nas-platform-vault-tools.XXXXXX")
+  printf '%s\n' '#!/bin/sh' 'exit 1' > "$fake_bin/ansible-vault"
+  chmod 0755 "$fake_bin/ansible-vault"
+  if PATH="$fake_bin:$PATH" "$0" --output "$failure_directory/vault.yml" \
+      --password-file "$failure_directory/password" >/dev/null 2>&1; then
+    die 'self-test failure fixture unexpectedly generated credentials'
+  fi
+  [ -z "$(find "$failure_directory" -mindepth 1 -maxdepth 1 -print -quit)" ] ||
+    die 'self-test failed generation left credential material'
+  cleanup_vault "$failure_directory"
+  rm -rf -- "$fake_bin"
 }
 
 case ${1:-} in

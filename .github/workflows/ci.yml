@@ -28,9 +28,24 @@ jobs:
 
       - name: Install Ansible tooling
         run: |
+          sudo apt-get update
+          sudo apt-get install --yes apache2-utils openssh-client openssl
           pipx install 'ansible-core==2.21.2'
           pipx install 'ansible-lint==26.6.0'
           ansible-galaxy collection install -r requirements.yml
+
+      - name: Check generated credential redaction
+        run: tests/generate-secrets-redaction-test.sh
+
+      - name: Check silent ephemeral vault generation
+        run: |
+          self_test_log=$(mktemp)
+          trap 'rm -f "$self_test_log"' EXIT
+          if ! tests/generate-ephemeral-vault.sh --self-test >"$self_test_log" 2>&1; then
+            cat "$self_test_log" >&2
+            exit 1
+          fi
+          test ! -s "$self_test_log"
 
       - name: Lint Ansible
         run: ansible-lint --strict

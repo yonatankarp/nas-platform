@@ -45,7 +45,10 @@ BASE_FIXTURE_PATHS = %w[
   templates/vault-plain.yml.j2
   tests/contracts/registry.yml
   tests/integration.sh
+  tests/integration_lock.sh
+  tests/integration_lock_test.sh
   tests/generate-ephemeral-vault.sh
+  tests/generate-secrets-redaction-test.sh
   tests/mac_inventory_path_test.yml
   tests/policy_test.rb
   tests/policy_support.rb
@@ -886,6 +889,133 @@ expect_failure(failures, "vault checksum moved before encryption guard",
   checksum_task = tasks.delete_at(checksum_index)
   tasks.insert(guard_index, checksum_task)
   File.write(path, YAML.dump(tasks))
+end
+
+[
+  "Generate passwords",
+  "Read the Beszel hub keypair",
+  "Hash the ntfy passwords with ntfy's own hasher",
+  "Generate the ntfy access tokens with ntfy's own generator",
+  "Collect the generated material",
+  "Fail loudly if any value did not parse",
+  "Write the plaintext vars file for encryption"
+].each do |task_name|
+  expect_failure(failures, "generator redaction removed from #{task_name}",
+                 "generate-secrets.yml must redact secret-bearing task #{task_name}") do |root|
+    path = File.join(root, "generate-secrets.yml")
+    play = YAML.safe_load_file(path).first
+    task = play.fetch("tasks").find { |entry| entry["name"] == task_name }
+    task.delete("no_log")
+    File.write(path, YAML.dump([play]))
+  end
+end
+
+expect_failure(failures, "ephemeral self-test silence check removed from CI",
+               "CI must run the silent ephemeral vault self-test with explicit dependencies") do |root|
+  path = File.join(root, ".github", "workflows", "ci.yml")
+  File.write(path, File.read(path).gsub("test ! -s", "true"))
+end
+
+expect_failure(failures, "ephemeral dependency removed from CI",
+               "CI must run the silent ephemeral vault self-test with explicit dependencies") do |root|
+  path = File.join(root, ".github", "workflows", "ci.yml")
+  File.write(path, File.read(path).gsub("apache2-utils", "removed-dependency"))
+end
+
+expect_failure(failures, "ephemeral self-test removed from CI",
+               "CI must run the silent ephemeral vault self-test with explicit dependencies") do |root|
+  path = File.join(root, ".github", "workflows", "ci.yml")
+  File.write(path, File.read(path).gsub("tests/generate-ephemeral-vault.sh --self-test", "true"))
+end
+
+expect_failure(failures, "generator redaction test removed from CI",
+               "CI must execute the generated-secret redaction test") do |root|
+  path = File.join(root, ".github", "workflows", "ci.yml")
+  File.write(path, File.read(path).gsub("tests/generate-secrets-redaction-test.sh", "true"))
+end
+
+expect_failure(failures, "integration ephemeral helper bypassed",
+               "integration must consume the ephemeral encrypted vault without duplicate secret authoring") do |root|
+  path = File.join(root, "tests", "integration.sh")
+  File.write(path, File.read(path).sub('--output \"\$vault_file\"', "--output-bypassed"))
+end
+
+expect_failure(failures, "integration ephemeral cleanup context removed",
+               "integration must consume the ephemeral encrypted vault without duplicate secret authoring") do |root|
+  path = File.join(root, "tests", "integration.sh")
+  File.write(path, File.read(path).sub("TMPDIR='$sandbox' /repo/tests/generate-ephemeral-vault.sh --cleanup",
+                                      "/repo/tests/generate-ephemeral-vault.sh --cleanup"))
+end
+
+expect_failure(failures, "integration lock acquisition removed",
+               "integration must serialize fixed-name containers with an atomic empty-directory lock") do |root|
+  path = File.join(root, "tests", "integration.sh")
+  File.write(path, File.read(path).sub("acquire_integration_lock", "bypass_integration_lock"))
+end
+
+expect_failure(failures, "integration lock made non-atomic",
+               "integration must serialize fixed-name containers with an atomic empty-directory lock") do |root|
+  path = File.join(root, "tests", "integration_lock.sh")
+  File.write(path, File.read(path).sub('mkdir "$lock_candidate"', "true"))
+end
+
+{
+  "vault password file" => '--vault-password-file \"\$vault_password_file\"',
+  "encrypted vars input" => '-e @\"\$vault_file\"',
+  "encrypted artifact path" => '-e platform_vault_file=\"\$vault_file\"',
+  "contract vault ABI" => 'PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\"'
+}.each do |property, source|
+  expect_failure(failures, "integration #{property} removed",
+                 "integration must consume the ephemeral encrypted vault without duplicate secret authoring") do |root|
+    path = File.join(root, "tests", "integration.sh")
+    File.write(path, File.read(path).sub(source, "removed-integration-vault-binding"))
+  end
+end
+
+{
+  "pre-existing output refusal" => "self-test generation accepted a pre-existing output",
+  "vault leaf symlink refusal" => "self-test generation accepted a vault output symlink",
+  "password leaf symlink refusal" => "self-test generation accepted a password output symlink",
+  "unexpected entry refusal" => "self-test generation accepted an unexpected entry",
+  "in-repository refusal" => "self-test generation accepted an in-repository directory",
+  "TMPDIR symlink refusal" => "self-test accepted a symlink temporary parent",
+  "trailing-slash symlink refusal" => "self-test cleanup accepted a trailing-slash symlink alias",
+  "lexical alias refusal" => "self-test cleanup accepted a non-normalized lexical alias",
+  "trailing-slash TMPDIR refusal" => "self-test accepted a trailing-slash symlink temporary parent",
+  "unsafe mode refusal" => "self-test generation accepted a world-writable directory",
+  "ownership refusal" => "self-test generation accepted a foreign-owned directory",
+  "failure cleanup" => "self-test failed generation left credential material",
+  "mid-validation cleanup" => "self-test mid-validation failure left credential material"
+}.each do |property, evidence|
+  expect_failure(failures, "ephemeral #{property} removed",
+                 "ephemeral vault self-test must cover #{property}") do |root|
+    path = File.join(root, "tests", "generate-ephemeral-vault.sh")
+    File.write(path, File.read(path).gsub(evidence, "removed self-test evidence"))
+  end
+end
+
+
+{
+  "requested-path lexical guard" => 'validate_lexical_path "$requested"',
+  "temporary-parent lexical guard" => 'validate_lexical_path "$temporary_parent_input"',
+  "temporary-parent symlink guard" => '[ ! -L "$temporary_parent_input" ]',
+  "directory symlink guard" => '[ ! -L "$requested" ]',
+  "directory ownership guard" => '[ "$(owner_id "$physical")" = "$(id -u)" ]',
+  "directory mode guard" => '[ "$(file_mode "$physical")" = 700 ]',
+  "repository containment guard" => '"$repo_dir/"*) die',
+  "output overwrite and symlink guard" => '[ ! -e "$candidate" ] && [ ! -L "$candidate" ]',
+  "empty-directory guard" => '[ -z "$(find "$directory" -mindepth 1 -maxdepth 1 -print -quit)" ]',
+  "cleanup unexpected-entry guard" => '! -name vault.yml ! -name password -print -quit',
+  "cleanup leaf-symlink guard" => '[ ! -L "$directory/vault.yml" ] && [ ! -L "$directory/password" ]',
+  "failure trap isolation" => "generate_vault() (",
+  "failure cleanup trap" => 'trap \'rm -f -- "$plain" "$private_key" "$private_key.pub" "$password_file" "$output"\' EXIT',
+  "self-test cleanup trap" => "trap self_test_cleanup_on_exit EXIT"
+}.each do |property, source|
+  expect_failure(failures, "ephemeral #{property} removed",
+                 "ephemeral vault helper must preserve #{property}") do |root|
+    path = File.join(root, "tests", "generate-ephemeral-vault.sh")
+    File.write(path, File.read(path).sub(source, "removed-helper-guard"))
+  end
 end
 
 if failures.empty?
