@@ -127,10 +127,12 @@
 # Collections are listed and filtered in Jinja rather than through PocketBase's
 # filter parameter, whose quotes and parentheses need URL encoding that uri does
 # not apply and which returns 400 without it. These collections hold a handful of
-# records, so listing is cheap.
+# records, so listing is cheap. Pagination totals are unused, and skipping them
+# avoids PocketBase concurrently counting and reading the bind-mounted SQLite
+# database immediately after the first user is created.
 - name: List application users
   ansible.builtin.uri:
-    url: "{{ beszel_api }}/api/collections/users/records"
+    url: "{{ beszel_api }}/api/collections/users/records?skipTotal=1"
     headers:
       Authorization: "{{ beszel_auth.json.token }}"
   register: beszel_users
@@ -160,12 +162,25 @@
   when: beszel_matching_users | length == 0
   no_log: "{{ beszel_no_log | default(true) }}"
 
+# PocketBase writes through one SQLite connection and validates relations through
+# another. Refreshing the pool after this one-time insert prevents the validator
+# from seeing a stale snapshot when the token and settings records are created.
+- name: Refresh Beszel database connections after creating the application user
+  community.docker.docker_compose_v2:
+    project_src: "{{ nas_repo_dir }}/services/beszel"
+    env_files: ["{{ nas_repo_dir }}/services/beszel/.env"]
+    services: [hub]
+    state: restarted
+    wait: true
+    wait_timeout: 180
+  when: beszel_matching_users | length == 0
+
 # Read the id back from the collection rather than trusting the create response.
 # The id returned by the POST was rejected as a missing relation when used
 # immediately, while an id read from the collection is accepted.
 - name: List application users again to resolve the id
   ansible.builtin.uri:
-    url: "{{ beszel_api }}/api/collections/users/records"
+    url: "{{ beszel_api }}/api/collections/users/records?skipTotal=1"
     headers:
       Authorization: "{{ beszel_auth.json.token }}"
   register: beszel_users_after
