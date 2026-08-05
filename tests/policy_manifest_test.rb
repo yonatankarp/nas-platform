@@ -64,6 +64,7 @@ BASE_FIXTURE_PATHS = %w[
   tests/mac/manual-review.md
   tests/mac/report.rb
   tests/mac/run.sh
+  tests/mac/run-phase-status-test.sh
   tests/mac/sanitize-logs.rb
   tests/mac/verify.sh
   tests/policy_test.rb

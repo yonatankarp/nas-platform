@@ -23,3 +23,5 @@
       tags: [never]
     - role: beszel
       tags: [never]
+    - role: dozzle
+      tags: [never]

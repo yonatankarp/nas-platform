@@ -137,7 +137,8 @@ cleanup_sandbox() {
     return 1
   fi
 
-  for cleanup_container in ntfy beszel beszel_agent beszel_agent_portable beszel_socket_proxy; do
+  for cleanup_container in ntfy beszel beszel_agent beszel_agent_portable beszel_socket_proxy \
+      dozzle dozzle_socket_proxy; do
     cleanup_container_ids=$(docker ps -aq --filter "name=^${cleanup_container}$") || return 1
     for cleanup_container_id in $cleanup_container_ids; do
       docker rm -f "$cleanup_container_id" >/dev/null || return 1

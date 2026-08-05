@@ -1,0 +1,36 @@
+---
+argument_specs:
+  main:
+    short_description: Deploy Dozzle and converge its ntfy event alerts through the pinned REST API
+    options:
+      platform_compose_kind:
+        type: str
+        required: true
+      platform_project_name:
+        type: str
+        required: false
+      platform_callback_host:
+        type: str
+        required: true
+      dozzle_port:
+        type: int
+        required: false
+      dozzle_alerts:
+        type: list
+        elements: dict
+        required: false
+      dozzle_dispatcher:
+        type: dict
+        required: false
+      vault_dozzle_admin_username:
+        type: str
+        required: true
+      vault_dozzle_admin_password:
+        type: str
+        required: true
+      vault_dozzle_admin_password_hash:
+        type: str
+        required: true
+      vault_ntfy_dozzle_token:
+        type: str
+        required: true

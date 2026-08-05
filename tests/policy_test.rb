@@ -33,11 +33,24 @@ check(failures,
 
 mac_run_path = File.join(ROOT, "tests", "mac", "run.sh")
 mac_run = File.file?(mac_run_path) ? File.read(mac_run_path) : ""
+dozzle_tasks_path = File.join(ROOT, "roles", "dozzle", "tasks", "main.yml")
+dozzle_tasks = File.file?(dozzle_tasks_path) ? File.read(dozzle_tasks_path) : ""
+dozzle_planned_tasks = [
+  "Report planned managed Dozzle dispatcher creation",
+  "Report planned managed Dozzle dispatcher repair",
+  "Report planned managed Dozzle alert rule creation",
+  "Report planned managed Dozzle alert rule repair",
+  "Report planned managed Dozzle alert rule enabled-state repair",
+  "Report planned unmanaged Dozzle alert rule removal",
+  "Report planned unmanaged Dozzle dispatcher removal"
+]
+check(failures, dozzle_planned_tasks.all? { |name| dozzle_tasks.include?("- name: #{name}") },
+      "Dozzle must expose every REST mutation category as a check-mode planned change")
 check(failures,
-      %w[PLATFORM_PROJECT_NAME PLATFORM_BESZEL_PORT PLATFORM_NTFY_PORT].all? do |value|
+      %w[PLATFORM_PROJECT_NAME PLATFORM_BESZEL_PORT PLATFORM_NTFY_PORT PLATFORM_DOZZLE_PORT].all? do |value|
         mac_run.include?("export #{value}=")
-      end && mac_run.include?('"$project_name-beszel"') && mac_run.include?('"$project_name-ntfy"'),
-      "Mac runner must export dynamic project/port facts and isolate both Compose projects")
+      end && %w[beszel ntfy dozzle].all? { |name| mac_run.include?(%Q{"$project_name-#{name}"}) },
+      "Mac runner must export dynamic project/port facts and isolate every Compose project")
 
 EXPECTED_SERVICES = %w[
   audiobookshelf beszel dozzle immich jellyfin komga ntfy paperless-ngx
@@ -186,7 +199,7 @@ PLATFORM_INVENTORIES.values.map { |values| [values[0], values[3]] }.uniq.each do
   expected_network_adapter = host_vars["platform_host_network_available"] ? "host" : "published_ports"
   check(failures, host_vars["platform_host_network_adapter"] == expected_network_adapter,
         "#{relative_path} host-network capability and adapter must agree")
-  mac_runtime_facts = platform_kind == "mac" ? %w[platform_project_name beszel_port ntfy_port] : []
+  mac_runtime_facts = platform_kind == "mac" ? %w[platform_project_name beszel_port ntfy_port dozzle_port] : []
   unexpected_vars = host_vars.keys - MACHINE_FACTS - mac_runtime_facts
   check(failures, unexpected_vars.empty?,
         "#{relative_path} contains portable configuration: #{unexpected_vars.join(', ')}")
@@ -925,6 +938,9 @@ end
 # Darwin-only fact and command being skipped under --check, both survived syntax
 # checking and were caught by running.
 harness = File.read(File.join(ROOT, "tests", "integration.sh"))
+dozzle_contract = File.read(File.join(ROOT, "tests", "contracts", "dozzle.sh"))
+check(failures, dozzle_contract.include?('exec ruby - "$mode" "$@"'),
+      "Dozzle contract must pass its default verify mode to the dynamic probe")
 integration_lock_path = File.join(ROOT, "tests", "integration_lock.sh")
 integration_lock = File.file?(integration_lock_path) ? File.read(integration_lock_path) : ""
 mac_path_fixture = File.read(File.join(ROOT, "tests", "mac_inventory_path_test.yml"))
@@ -1388,7 +1404,7 @@ check(failures, verification_roles.any? && verification_roles.all? do |role|
                 end,
       "verify.yml roles must be inert unless an explicit verification tag is selected")
 check(failures, mac_run.scan('"$mac_script_dir/verify.sh"').length >= 3 &&
-                mac_run.include?('[ "$lane" = fresh ] || "$mac_script_dir/verify.sh"'),
+                mac_run.include?('mac_run_hooks adoption-deploy && run_site && "$mac_script_dir/verify.sh"'),
       "Mac lifecycle must verify after seed, drift reconciliation, recreation, and adoption")
 check(failures, mac_run.include?("resume vault checksum does not match") &&
                 mac_run.include?("resume Git revision does not match"),
@@ -1410,7 +1426,7 @@ check(failures, mac_run.include?('mktemp -d "$temporary_parent/nas-platform-mac.
 %w[
   PLATFORM_MAC_SANDBOX PLATFORM_DOCKER_ROOT PLATFORM_MEDIA_ROOT
   PLATFORM_FIXTURE_ROOT PLATFORM_REPORT_ROOT PLATFORM_PROOF_LANE
-  PLATFORM_PROJECT_NAME PLATFORM_BESZEL_PORT PLATFORM_NTFY_PORT
+  PLATFORM_PROJECT_NAME PLATFORM_BESZEL_PORT PLATFORM_NTFY_PORT PLATFORM_DOZZLE_PORT
   COMPOSE_PROJECT_NAME
 ].each do |variable|
   check(failures, mac_run.include?("export #{variable}="),
