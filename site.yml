@@ -7,6 +7,15 @@
   hosts: nas_hosts
   gather_facts: true
 
+  pre_tasks:
+    - name: Validate controller bundle sources before target mutation
+      ansible.builtin.include_role:
+        name: deployment_bundle
+        tasks_from: controller
+        apply:
+          tags: [always]
+      tags: [always]
+
   roles:
     - role: preflight
       tags: [preflight, always]

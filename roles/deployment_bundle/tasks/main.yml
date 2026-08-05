@@ -1,4 +1,8 @@
 ---
+- name: Validate controller bundle sources when not already checked by the play
+  ansible.builtin.include_tasks: controller.yml
+  when: not (deployment_bundle_controller_validated | default(false))
+
 - name: Resolve implemented services from the controller manifest
   ansible.builtin.set_fact:
     deployment_bundle_services: >-

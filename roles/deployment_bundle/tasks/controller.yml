@@ -1,0 +1,43 @@
+---
+- name: Restrict dirty controller bypass to integration
+  ansible.builtin.assert:
+    that:
+      - not (deployment_bundle_allow_dirty_controller | bool) or
+        platform_kind == 'integration'
+    fail_msg: >-
+      deployment_bundle_allow_dirty_controller is permitted only when
+      platform_kind is integration. Production releases must use committed
+      controller bundle sources.
+
+- name: Inspect controller bundle source cleanliness
+  ansible.builtin.command:
+    argv:
+      - git
+      - -C
+      - "{{ playbook_dir }}"
+      - status
+      - --porcelain=v1
+      - --untracked-files=all
+      - --
+      - services/manifest.yml
+      - services
+  register: deployment_bundle_controller_status
+  changed_when: false
+  check_mode: false
+  delegate_to: localhost
+  run_once: true
+
+- name: Require committed controller bundle sources
+  ansible.builtin.assert:
+    that:
+      - deployment_bundle_controller_status.stdout | trim | length == 0 or
+        (deployment_bundle_allow_dirty_controller | bool)
+    fail_msg: >-
+      Controller bundle sources differ from Git HEAD. Commit or remove these
+      tracked/untracked files before production deployment:
+      {{ deployment_bundle_controller_status.stdout_lines | join(', ') }}
+  delegate_to: localhost
+
+- name: Record controller bundle validation
+  ansible.builtin.set_fact:
+    deployment_bundle_controller_validated: true

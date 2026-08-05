@@ -60,6 +60,41 @@ printf '%s\n' 'undeclared target service' \
 # A copy of the repository, so a play cannot modify the working tree.
 tar -C "$repo_dir" -cf - --exclude .git . | tar -C "$sandbox/repo" -xf -
 
+# Exercise the controller guard in an isolated Git checkout. Its play has a
+# target-mutating task immediately after validation, so each refusal also proves
+# the guard runs before target state can change.
+controller_test_dir="$sandbox/controller-checkout"
+controller_test_playbook="$controller_test_dir/dirty-controller-test.yml"
+controller_test_target="$sandbox/dirty-controller-target"
+controller_test_sentinel="$sandbox/dirty-controller-sentinel"
+mkdir -p "$controller_test_dir/services/ntfy"
+cp "$repo_dir/services/manifest.yml" "$controller_test_dir/services/manifest.yml"
+cp "$repo_dir/services/ntfy/compose.yml" "$controller_test_dir/services/ntfy/compose.yml"
+cat > "$controller_test_playbook" <<EOF
+---
+- name: Prove dirty controller validation precedes target mutation
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  pre_tasks:
+    - name: Validate isolated controller sources
+      ansible.builtin.include_role:
+        name: deployment_bundle
+        tasks_from: controller
+  tasks:
+    - name: Mutate the target only after validation
+      ansible.builtin.copy:
+        content: mutated
+        dest: $controller_test_target
+        mode: "0600"
+EOF
+git -C "$controller_test_dir" init -q
+git -C "$controller_test_dir" config user.name 'NAS platform integration'
+git -C "$controller_test_dir" config user.email 'integration@example.invalid'
+git -C "$controller_test_dir" add .
+git -C "$controller_test_dir" commit -qm 'fixture baseline'
+printf '%s\n' pristine > "$controller_test_sentinel"
+
 # Sandbox stand-ins for vault. Hashes and tokens are generated at run time by the
 # service's own pinned image, so no credential is committed and every value is in
 # exactly the format the service accepts.
@@ -113,12 +148,69 @@ docker run --rm \
     pip install --quiet --no-input 'ansible-core==$ansible_core_version'
     ansible-galaxy collection install -r /repo/requirements.yml >/dev/null
 
+    assert_dirty_refused() {
+      evidence=\$1
+      expected=\$2
+      shift 2
+      rm -f '$controller_test_target'
+      if ansible-playbook -i localhost, '$controller_test_playbook' \"\$@\" \
+          >/tmp/dirty-controller.txt 2>&1; then
+        cat /tmp/dirty-controller.txt >&2
+        printf 'DIRTY CONTROLLER ACCEPTED UNEXPECTEDLY: %s\n' \"\$evidence\" >&2
+        exit 1
+      fi
+      if ! grep -qF \"\$expected\" /tmp/dirty-controller.txt; then
+        cat /tmp/dirty-controller.txt >&2
+        printf 'DIRTY CONTROLLER FAILED FOR WRONG REASON: %s\n' \"\$evidence\" >&2
+        exit 1
+      fi
+      if [ -e '$controller_test_target' ] || \
+         [ \"\$(cat '$controller_test_sentinel')\" != pristine ]; then
+        printf 'DIRTY REFUSAL MUTATED TARGET: %s\n' \"\$evidence\" >&2
+        exit 1
+      fi
+      printf '%s\n' \"\$evidence\"
+      printf 'DIRTY_REFUSAL_TARGET_UNCHANGED\n'
+    }
+
+    printf '%s\n' dirty >> '$controller_test_dir/services/ntfy/compose.yml'
+    assert_dirty_refused DIRTY_TRACKED_REFUSED \
+      'Controller bundle sources differ from Git HEAD' \
+      -e platform_kind=production
+    git -C '$controller_test_dir' checkout -q -- services
+
+    printf '%s\n' untracked > '$controller_test_dir/services/untracked.yml'
+    assert_dirty_refused DIRTY_UNTRACKED_REFUSED \
+      'Controller bundle sources differ from Git HEAD' \
+      -e platform_kind=production
+    rm '$controller_test_dir/services/untracked.yml'
+
+    printf '%s\n' dirty >> '$controller_test_dir/services/ntfy/compose.yml'
+    assert_dirty_refused DIRTY_PRODUCTION_BYPASS_REFUSED \
+      'permitted only when platform_kind is integration' \
+      -e platform_kind=production \
+      -e deployment_bundle_allow_dirty_controller=true
+
+    rm -f '$controller_test_target'
+    if ! ansible-playbook -i localhost, '$controller_test_playbook' \
+        -e platform_kind=integration \
+        -e deployment_bundle_allow_dirty_controller=true \
+        >/tmp/dirty-controller-integration.txt 2>&1; then
+      cat /tmp/dirty-controller-integration.txt >&2
+      exit 1
+    fi
+    test -f '$controller_test_target'
+    printf 'DIRTY_INTEGRATION_ACCEPTED\n'
+    git -C '$controller_test_dir' checkout -q -- services
+
     run_play() {
       ansible-playbook \
         -i inventory/local.yml \
         -e @$sandbox/sandbox-vault.yml \
         -e nas_docker_root=$sandbox/volume1/Docker \
         -e nas_media_root=$sandbox/volume2 \
+        -e platform_kind=integration \
+        -e deployment_bundle_allow_dirty_controller=true \
         '$playbook' \"\$@\"
     }
 
