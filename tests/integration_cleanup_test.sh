@@ -1,15 +1,22 @@
 #!/bin/sh
 set -eu
 
-script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+script_dir=$(CDPATH= cd -P "$(dirname "$0")" && pwd -P)
 . "$script_dir/sandbox_cleanup.sh"
 
+test_case=${1:-all}
 sandbox=$(mktemp -d "${TMPDIR:-/tmp}/nas-platform-cleanup.XXXXXX")
 unsafe_sandbox=${TMPDIR:-/tmp}/nas-platform-cleanup.not-six-$$
 other_parent=$(mktemp -d "${TMPDIR:-/tmp}/nas-platform-cleanup-parent.XXXXXX")
 wrong_parent_sandbox=$other_parent/nas-platform-cleanup.ABCDEF
 symlink_target=$(mktemp -d "${TMPDIR:-/tmp}/nas-platform-cleanup-target.XXXXXX")
-symlink_sandbox=${TMPDIR:-/tmp}/nas-platform-cleanup-link.ABCDEF
+symlink_suffix=$(basename "$symlink_target" | sed 's/^nas-platform-cleanup-target\.//')
+symlink_sandbox=${TMPDIR:-/tmp}/nas-platform-cleanup.$symlink_suffix
+unsupported_sandbox=
+invalid_suffix_sandbox=
+failure_sandbox=
+swap_sandbox=
+swap_victim=
 runner_image=docker.io/library/python:3.13-alpine@sha256:399babc8b49529dabfd9c922f2b5eea81d611e4512e3ed250d75bd2e7683f4b0
 
 assert_cleanup_rejected() {
@@ -33,10 +40,134 @@ emergency_cleanup() {
   [ ! -d "$other_parent" ] || rmdir "$other_parent"
   [ ! -L "$symlink_sandbox" ] || unlink "$symlink_sandbox"
   [ ! -d "$symlink_target" ] || rmdir "$symlink_target"
+  [ -z "$unsupported_sandbox" ] || [ ! -d "$unsupported_sandbox" ] || rmdir "$unsupported_sandbox"
+  [ -z "$invalid_suffix_sandbox" ] || [ ! -d "$invalid_suffix_sandbox" ] || rmdir "$invalid_suffix_sandbox"
+  [ -z "$failure_sandbox" ] || [ ! -d "$failure_sandbox" ] || rmdir "$failure_sandbox"
+  [ -z "$swap_sandbox" ] || [ ! -L "$swap_sandbox" ] || unlink "$swap_sandbox"
+  [ -z "$swap_sandbox" ] || [ ! -d "$swap_sandbox" ] || rmdir "$swap_sandbox"
+  if [ -n "$swap_victim" ] && [ -d "$swap_victim" ]; then
+    [ ! -f "$swap_victim/marker" ] || rm "$swap_victim/marker"
+    rmdir "$swap_victim"
+  fi
   exit "$exit_status"
 }
 trap emergency_cleanup EXIT
 trap 'exit 130' HUP INT TERM
+
+test_unsupported_stem() {
+  unsupported_sandbox=$(mktemp -d "${TMPDIR:-/tmp}/nas-platform-unsupported.XXXXXX")
+  assert_cleanup_rejected "$unsupported_sandbox"
+  [ -d "$unsupported_sandbox" ]
+  rmdir "$unsupported_sandbox"
+  unsupported_sandbox=
+}
+
+test_invalid_suffix_alphabet() {
+  invalid_suffix_sandbox=${TMPDIR:-/tmp}/nas-platform-cleanup.abc-de
+  mkdir "$invalid_suffix_sandbox"
+  assert_cleanup_rejected "$invalid_suffix_sandbox"
+  [ -d "$invalid_suffix_sandbox" ]
+  rmdir "$invalid_suffix_sandbox"
+  invalid_suffix_sandbox=
+}
+
+test_docker_failure() {
+  failure_mode=$1
+  failure_sandbox=$(mktemp -d "${TMPDIR:-/tmp}/nas-platform-cleanup.XXXXXX")
+  if (
+    docker() {
+      case "$1:$failure_mode" in
+        ps:list) return 41 ;;
+        ps:rm) printf '%s\n' fake-container-id ;;
+        rm:rm) return 42 ;;
+      esac
+      return 0
+    }
+    cleanup_sandbox "$failure_sandbox"
+  ); then
+    printf 'cleanup ignored docker %s failure\n' "$failure_mode" >&2
+    exit 1
+  fi
+  [ -d "$failure_sandbox" ]
+  rmdir "$failure_sandbox"
+  failure_sandbox=
+}
+
+test_symlink_swap() {
+  swap_sandbox=$(mktemp -d "${TMPDIR:-/tmp}/nas-platform-cleanup.XXXXXX")
+  swap_victim=$(mktemp -d "${TMPDIR:-/tmp}/nas-platform-cleanup-target.XXXXXX")
+  : > "$swap_victim/marker"
+  if (
+    docker() {
+      if [ "$1" = ps ]; then
+        return 0
+      fi
+      if [ "$1" = run ]; then
+        rmdir "$swap_sandbox"
+        ln -s "$swap_victim" "$swap_sandbox"
+        while [ "$#" -gt 0 ]; do
+          if [ "$1" = -v ]; then
+            mount_source=${2%%:*}
+            break
+          fi
+          shift
+        done
+        if [ "$mount_source" = "$swap_sandbox" ]; then
+          rm "$swap_victim/marker"
+          return 0
+        fi
+        return 43
+      fi
+      return 0
+    }
+    cleanup_sandbox "$swap_sandbox"
+  ); then
+    printf 'cleanup accepted a sandbox swapped for a symlink\n' >&2
+    exit 1
+  fi
+  [ -f "$swap_victim/marker" ]
+  unlink "$swap_sandbox"
+  swap_sandbox=
+  rm "$swap_victim/marker"
+  rmdir "$swap_victim"
+  swap_victim=
+}
+
+test_trap_statuses() {
+  trap_status=0
+  sh -c '. "$1"; cleanup_sandbox() { return 0; }; cleanup_sandbox_on_exit ignored 23' \
+    sh "$script_dir/sandbox_cleanup.sh" || trap_status=$?
+  [ "$trap_status" -eq 23 ] || {
+    printf 'successful cleanup changed original exit status 23 to %s\n' "$trap_status" >&2
+    exit 1
+  }
+
+  trap_status=0
+  sh -c '. "$1"; cleanup_sandbox() { return 1; }; cleanup_sandbox_on_exit ignored 0' \
+    sh "$script_dir/sandbox_cleanup.sh" || trap_status=$?
+  [ "$trap_status" -ne 0 ] || {
+    printf 'failed cleanup preserved successful exit status\n' >&2
+    exit 1
+  }
+}
+
+case "$test_case" in
+  unsupported-stem) test_unsupported_stem; exit 0 ;;
+  invalid-suffix) test_invalid_suffix_alphabet; exit 0 ;;
+  docker-list) test_docker_failure list; exit 0 ;;
+  docker-rm) test_docker_failure rm; exit 0 ;;
+  symlink-swap) test_symlink_swap; exit 0 ;;
+  trap-statuses) test_trap_statuses; exit 0 ;;
+  all) ;;
+  *) printf 'unknown test case: %s\n' "$test_case" >&2; exit 2 ;;
+esac
+
+test_unsupported_stem
+test_invalid_suffix_alphabet
+test_docker_failure list
+test_docker_failure rm
+test_symlink_swap
+test_trap_statuses
 
 docker run --rm -v "$sandbox:/sandbox" "$runner_image" \
   sh -c 'mkdir -p /sandbox/state && touch /sandbox/state/root-owned'

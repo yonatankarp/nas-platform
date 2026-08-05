@@ -21,7 +21,7 @@ runner_image=docker.io/library/python:3.13-alpine
 playbook=${1:-site.yml}
 [ "$#" -gt 0 ] && shift || true
 
-repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+repo_dir=$(CDPATH= cd -P "$(dirname "$0")/.." && pwd -P)
 . "$repo_dir/tests/sandbox_cleanup.sh"
 
 # Bind sources must be valid for the Docker daemon as well as this container. On
@@ -30,18 +30,9 @@ repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 temporary_parent=${TMPDIR:-/tmp}
 temporary_parent=${temporary_parent%/}
 sandbox=$(mktemp -d "$temporary_parent/nas-platform-integration.XXXXXX")
-chmod 0777 "$sandbox"
-
-cleanup() {
-  exit_status=$?
-  trap - EXIT HUP INT TERM
-  if ! cleanup_sandbox "$sandbox"; then
-    [ "$exit_status" -ne 0 ] || exit_status=1
-  fi
-  exit "$exit_status"
-}
-trap cleanup EXIT
+trap 'cleanup_sandbox_on_exit "$sandbox" "$?"' EXIT
 trap 'exit 130' HUP INT TERM
+chmod 0777 "$sandbox"
 
 mkdir -p "$sandbox/volume1/Docker" "$sandbox/volume2" "$sandbox/repo"
 
