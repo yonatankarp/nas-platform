@@ -37,6 +37,17 @@ EXPECTED_SERVICE_MAPPINGS = {
   "paperless-ngx" => { "role" => "paperless_ngx", "legacy_path" => "compose/paperless-ngx/compose.yml", "tranche" => 6 },
   "tinymediamanager" => { "role" => "tinymediamanager", "legacy_path" => "compose/tinymediamanager/compose.yml", "tranche" => 3 }
 }.freeze
+SERVICE_CONTRACT_BASENAMES = {
+  "audiobookshelf" => "audiobookshelf",
+  "beszel" => "beszel",
+  "dozzle" => "dozzle",
+  "immich" => "immich",
+  "jellyfin" => "jellyfin",
+  "komga" => "komga",
+  "ntfy" => "ntfy",
+  "paperless-ngx" => "paperless",
+  "tinymediamanager" => "tinymediamanager"
+}.freeze
 REQUIRED_MANIFEST_FIELDS = %w[name legacy_path role tranche status].freeze
 ALLOWED_SERVICE_STATUSES = %w[planned implemented accepted].freeze
 IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
@@ -62,15 +73,46 @@ rescue Psych::Exception
   false
 end
 
-def contract_has_verification?(contract_path)
+def contract_has_verification?(contract_path, service_names)
   return false unless File.file?(contract_path) && File.executable?(contract_path)
 
-  active_lines = File.readlines(contract_path).reject do |line|
-    line.strip.empty? || line.lstrip.start_with?("#")
-  end.join
-  active_lines.match?(
-    /\b(?:test|grep|diff|cmp)\b|(?:^|\s)\[\s|curl[^\n]*(?:--fail|-\w*f\w*)|exit\s+[1-9]\d*|\bfalse\b/
-  )
+  active_lines = File.readlines(contract_path).filter_map do |line|
+    line = line.sub(/\s+#.*\z/, "").strip
+    line unless line.empty? || line.start_with?("#")
+  end
+  service_names_pattern = Regexp.union(service_names)
+  service_pattern = /(?<![A-Za-z0-9_-])(?:#{service_names_pattern})(?![A-Za-z0-9_-])/
+  probe_lines = active_lines.select do |line|
+    line.match?(/\b(?:curl|wget)\b/) && line.match?(service_pattern)
+  end
+  return false if probe_lines.empty?
+
+  captured_results = probe_lines.filter_map do |line|
+    line[/\A([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"?\$\([^)]*\b(?:curl|wget)\b/, 1]
+  end
+  captured_assertion = captured_results.any? do |variable|
+    reference = /\$(?:#{Regexp.escape(variable)}\b|\{#{Regexp.escape(variable)}\})/
+    active_lines.any? do |line|
+      uses_test = line.match?(/\btest\b/)
+      uses_brackets = line.match?(/(?:\A|[;&]\s*)\[\s/)
+      (uses_test || uses_brackets) && line.match?(reference)
+    end
+  end
+
+  piped_assertion = probe_lines.any? do |line|
+    line.match?(/\|\s*grep\s+-(?:[A-Za-z]*q[A-Za-z]*|[A-Za-z]*E[A-Za-z]*)\b/)
+  end
+
+  exits_on_error = active_lines.any? { |line| line.match?(/\Aset\s+-[A-Za-z]*e/) }
+  propagated_probe = probe_lines.any? do |line|
+    reports_failure = line.match?(/\bwget\b/) ||
+                      line.match?(/\bcurl\b.*(?:--fail\b|(?<!-)-[A-Za-z]*f[A-Za-z]*\b)/)
+    propagates = exits_on_error || line == active_lines.last ||
+                 line.match?(/\|\|\s*(?:exit|return)\b/) || line.match?(/\Aif\s+!\s*/)
+    reports_failure && propagates
+  end
+
+  captured_assertion || piped_assertion || propagated_probe
 end
 
 manifest_path = File.join(ROOT, "services", "manifest.yml")
@@ -176,8 +218,10 @@ manifest_entries.each do |service|
   check(failures, declared_paths.any? { |path| path.include?("/#{name}/") || path.end_with?("/#{name}") },
         "#{name}: implemented service has no storage declaration")
 
-  contract_path = File.join(ROOT, "tests", "contracts", "#{name}.sh")
-  verifies_service = role_has_verification?(tasks_path) || contract_has_verification?(contract_path)
+  contract_basename = SERVICE_CONTRACT_BASENAMES.fetch(name, name)
+  contract_path = File.join(ROOT, "tests", "contracts", "#{contract_basename}.sh")
+  verifies_service = role_has_verification?(tasks_path) ||
+                     contract_has_verification?(contract_path, [name, contract_basename].uniq)
   check(failures, verifies_service,
         "#{name}: implemented service has no automated verification or service contract")
 end
