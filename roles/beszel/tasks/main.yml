@@ -108,6 +108,7 @@
   check_mode: false
 
 - name: Verify the advertised key matches vault, proving no read-back is needed
+  tags: [platform_verify_beszel]
   ansible.builtin.assert:
     that:
       # Type and key material only: SSH public keys carry an optional trailing
