@@ -873,6 +873,21 @@ expect_failure(failures, "vault shape validation omitted",
   File.write(path, YAML.dump(tasks))
 end
 
+expect_failure(failures, "vault checksum moved before encryption guard",
+               "vault contract must verify encryption header before computing SHA-256") do |root|
+  path = File.join(root, "roles", "vault_contract", "tasks", "main.yml")
+  tasks = YAML.safe_load_file(path)
+  checksum_index = tasks.index do |task|
+    task["name"] == "Compute the encrypted vault artifact SHA-256"
+  end
+  guard_index = tasks.index do |task|
+    task["name"] == "Require the reported vault artifact to be encrypted"
+  end
+  checksum_task = tasks.delete_at(checksum_index)
+  tasks.insert(guard_index, checksum_task)
+  File.write(path, YAML.dump(tasks))
+end
+
 if failures.empty?
   puts "policy manifest: all mutation checks hold"
 else
