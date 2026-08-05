@@ -110,6 +110,7 @@
   no_log: "{{ beszel_no_log | default(true) }}"
 
 - name: Authenticate as the superuser
+  tags: [platform_verify_beszel]
   ansible.builtin.uri:
     url: "{{ beszel_api }}/api/collections/_superusers/auth-with-password"
     method: POST
@@ -126,6 +127,7 @@
 # The point of authoring the keypair is that the hub adopts it, so assert rather
 # than assume. getkey needs superuser authentication, hence its position here.
 - name: Read the public key the hub advertises
+  tags: [platform_verify_beszel]
   ansible.builtin.uri:
     url: "{{ beszel_api }}/api/beszel/getkey"
     headers:
@@ -133,6 +135,7 @@
   register: beszel_advertised_key
   changed_when: false
   check_mode: false
+  no_log: "{{ beszel_no_log | default(true) }}"
 
 - name: Verify the advertised key matches vault, proving no read-back is needed
   tags: [platform_verify_beszel]

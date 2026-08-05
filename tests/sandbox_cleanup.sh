@@ -3,10 +3,11 @@
 cleanup_sandbox_contents() {
   cleanup_contents_parent=$1
   cleanup_contents_name=$2
+  cleanup_contents_preserve=${3-}
   cleanup_image=docker.io/library/python:3.13-alpine@sha256:399babc8b49529dabfd9c922f2b5eea81d611e4512e3ed250d75bd2e7683f4b0
 
   docker run --rm -i -v "$cleanup_contents_parent:/sandbox-parent" "$cleanup_image" \
-    python - "$cleanup_contents_name" <<'PY'
+    python - "$cleanup_contents_name" "$cleanup_contents_preserve" <<'PY'
 import os
 import re
 import stat
@@ -14,18 +15,27 @@ import sys
 
 
 name = sys.argv[1]
+preserve = sys.argv[2]
 supported_names = (
     r"nas-platform-integration\.[A-Za-z0-9]{6}",
     r"nas-platform-cleanup\.[A-Za-z0-9]{6}",
+    r"nas-platform-mac\.[A-Za-z0-9]{6}",
 )
 if not any(re.fullmatch(pattern, name) for pattern in supported_names):
     raise ValueError("invalid sandbox basename")
+if preserve and not (
+    re.fullmatch(r"nas-platform-mac\.[A-Za-z0-9]{6}", name)
+    and preserve == ".nas-platform-mac-owned"
+):
+    raise ValueError("invalid preserved marker")
 
 open_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 
 
-def clear_directory(directory_fd):
+def clear_directory(directory_fd, preserved_entry=""):
     for entry in os.listdir(directory_fd):
+        if entry == preserved_entry:
+            continue
         entry_stat = os.stat(
             entry, dir_fd=directory_fd, follow_symlinks=False
         )
@@ -44,7 +54,39 @@ parent_fd = os.open("/sandbox-parent", open_flags)
 try:
     sandbox_fd = os.open(name, open_flags, dir_fd=parent_fd)
     try:
-        clear_directory(sandbox_fd)
+        if preserve:
+            marker_fd = os.open(preserve, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=sandbox_fd)
+            try:
+                marker_stat = os.fstat(marker_fd)
+                if not stat.S_ISREG(marker_stat.st_mode):
+                    raise ValueError("preserved marker is not regular")
+                marker_data = os.read(marker_fd, 4097)
+                if len(marker_data) > 4096:
+                    raise ValueError("preserved marker is unexpectedly large")
+            finally:
+                os.close(marker_fd)
+
+            clear_directory(sandbox_fd, preserve)
+            os.unlink(preserve, dir_fd=sandbox_fd)
+            try:
+                os.rmdir(name, dir_fd=parent_fd)
+            except OSError:
+                recovery_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+                recovery_fd = os.open(
+                    preserve,
+                    recovery_flags,
+                    stat.S_IMODE(marker_stat.st_mode),
+                    dir_fd=sandbox_fd,
+                )
+                try:
+                    os.write(recovery_fd, marker_data)
+                    os.fchmod(recovery_fd, stat.S_IMODE(marker_stat.st_mode))
+                    os.fchown(recovery_fd, marker_stat.st_uid, marker_stat.st_gid)
+                finally:
+                    os.close(recovery_fd)
+                raise
+        else:
+            clear_directory(sandbox_fd)
     finally:
         os.close(sandbox_fd)
 finally:

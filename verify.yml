@@ -1,0 +1,25 @@
+---
+# Verification is intentionally separate from site.yml. Explicit verification
+# tags select only read/assert tasks already carried by application roles; no
+# host preparation, bundle installation, Compose deployment, or reconciliation
+# task can run from this playbook.
+- name: Verify the deployed platform without converging it
+  hosts: platform_hosts
+  gather_facts: false
+  vars:
+    platform_vault_file: >-
+      {{ lookup('env', 'PLATFORM_VAULT_FILE') |
+         default(playbook_dir ~ '/inventory/group_vars/all/vault.yml', true) }}
+  pre_tasks:
+    - name: Validate portable credentials for verification
+      ansible.builtin.include_role:
+        name: vault_contract
+        apply:
+          tags: [always]
+          no_log: true
+      tags: [always]
+  roles:
+    - role: ntfy
+      tags: [never]
+    - role: beszel
+      tags: [never]

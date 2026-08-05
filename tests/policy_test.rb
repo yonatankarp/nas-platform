@@ -1230,6 +1230,141 @@ unless beszel_refresh_indexes.empty?
         "Beszel database refresh must run only when the application user is created")
 end
 
+# The Mac proof harness is an orchestration contract: later service tranches
+# plug their fixture, drift, and verification behavior into these stable phases.
+mac_harness_files = %w[
+  lib.sh run.sh cleanup.sh fixtures.sh verify.sh drift.sh report.rb
+  manual-review.md
+]
+mac_harness_files.each do |name|
+  check(failures, File.file?(File.join(ROOT, "tests", "mac", name)),
+        "Mac proof harness must provide tests/mac/#{name}")
+end
+
+mac_run_path = File.join(ROOT, "tests", "mac", "run.sh")
+mac_run = File.file?(mac_run_path) ? File.read(mac_run_path) : ""
+mac_phases = %w[
+  preflight deploy seed verify idempotence drift reconcile recreate persistence
+  report cleanup
+]
+mac_phases.each do |phase|
+  check(failures, mac_run.match?(/(?:^|[[:space:]])#{Regexp.escape(phase)}(?:$|[[:space:]])/),
+        "Mac proof harness must support the #{phase} phase")
+end
+%w[--lane --vault-file --vault-password-file --keep-on-failure --phase].each do |option|
+  check(failures, mac_run.include?(option), "Mac proof harness must accept #{option}")
+end
+
+mac_cleanup_path = File.join(ROOT, "tests", "mac", "cleanup.sh")
+mac_cleanup = File.file?(mac_cleanup_path) ? File.read(mac_cleanup_path) : ""
+mac_lib_path = File.join(ROOT, "tests", "mac", "lib.sh")
+mac_lib = File.file?(mac_lib_path) ? File.read(mac_lib_path) : ""
+check(failures, (mac_cleanup + mac_lib).include?("refusing to remove unowned Mac sandbox"),
+      "Mac cleanup must refuse a sandbox outside its validated prefix")
+
+verify_play_path = File.join(ROOT, "verify.yml")
+check(failures, File.file?(verify_play_path), "Mac proof harness must provide verify.yml")
+verify_play = File.file?(verify_play_path) ? File.read(verify_play_path) : ""
+verify_play_data = File.file?(verify_play_path) ? YAML.safe_load_file(verify_play_path).first : {}
+verification_roles = Array(verify_play_data["roles"])
+mac_verify_path = File.join(ROOT, "tests", "mac", "verify.sh")
+mac_verify = File.file?(mac_verify_path) ? File.read(mac_verify_path) : ""
+check(failures, mac_verify.include?('"$mac_repo_dir/verify.yml"') &&
+                !mac_verify.include?('"$mac_repo_dir/site.yml"') &&
+                !verify_play.include?("community.docker.docker_compose_v2") &&
+                !verify_play.include?("role: deployment_bundle") &&
+                !verify_play.include?("role: host_prep"),
+      "Mac verification must not deploy or converge services")
+check(failures, verification_roles.any? && verification_roles.all? do |role|
+                  role.is_a?(Hash) && Array(role["tags"]).include?("never")
+                end,
+      "verify.yml roles must be inert unless an explicit verification tag is selected")
+check(failures, mac_run.scan('"$mac_script_dir/verify.sh"').length >= 3 &&
+                mac_run.include?('[ "$lane" = fresh ] || "$mac_script_dir/verify.sh"'),
+      "Mac lifecycle must verify after seed, drift reconciliation, recreation, and adoption")
+check(failures, mac_run.include?("resume vault checksum does not match") &&
+                mac_run.include?("resume Git revision does not match"),
+      "Mac lifecycle must refuse mixed vault or Git evidence when resuming")
+run_exit_handler = mac_run[/on_run_exit\(\) \{.*?^\}/m].to_s
+check(failures, run_exit_handler.index("release_run_lock") &&
+                run_exit_handler.index("Cleanup command:") &&
+                run_exit_handler.index("release_run_lock") <
+                  run_exit_handler.index("Cleanup command:"),
+      "Mac lifecycle must include lock-release failures in cleanup-command reporting")
+check(failures, mac_lib.include?("No Mac hooks registered for") &&
+                !mac_lib.include?("No %s hooks are registered yet."),
+      "Mac lifecycle must fail rather than pass a phase with no registered hooks")
+check(failures, mac_run.include?('mktemp -d "$temporary_parent/nas-platform-mac.XXXXXX"') &&
+                mac_run.include?('acquire_integration_lock "$temporary_parent"') &&
+                mac_run.include?('report_root=$sandbox.reports') &&
+                mac_run.include?(".nas-platform-mac-report-owned"),
+      "Mac lifecycle must use a locked unique sandbox with reports outside service data")
+%w[
+  PLATFORM_MAC_SANDBOX PLATFORM_DOCKER_ROOT PLATFORM_MEDIA_ROOT
+  PLATFORM_FIXTURE_ROOT PLATFORM_REPORT_ROOT PLATFORM_PROOF_LANE
+  COMPOSE_PROJECT_NAME
+].each do |variable|
+  check(failures, mac_run.include?("export #{variable}="),
+        "Mac lifecycle must export #{variable}")
+end
+check(failures, mac_cleanup.include?('. "$mac_repo_dir/tests/sandbox_cleanup.sh"') &&
+                mac_cleanup.include?('. "$mac_repo_dir/tests/integration_lock.sh"') &&
+                mac_cleanup.include?('acquire_integration_lock "$mac_cleanup_parent"') &&
+                mac_cleanup.include?("release_integration_lock") &&
+                mac_cleanup.include?("cleanup_sandbox_contents") &&
+                (mac_cleanup + mac_lib).include?(".nas-platform-mac-owned") &&
+                !(mac_cleanup + mac_lib).match?(/rm\s+-rf/),
+      "Mac cleanup must reuse descriptor-safe cleanup with an owned marker")
+check(failures, mac_run.include?('cleanup) release_run_lock && "$mac_script_dir/cleanup.sh" "$sandbox"') &&
+                mac_run.scan("Cleanup command:").length == 1,
+      "Mac runner must transfer the shared lock and emit cleanup commands once")
+check(failures, mac_cleanup.include?('cleanup_sandbox_contents "$(dirname -- "$mac_cleanup_target")"') &&
+                mac_cleanup.include?('".nas-platform-mac-owned"') &&
+                !mac_cleanup.include?('rmdir -- "$mac_cleanup_target"'),
+      "Mac cleanup must preserve its marker through descriptor-safe final removal")
+check(failures, mac_run.include?('diagnostic_temporary=$(mktemp') &&
+                mac_run.include?('mv -f -- "$diagnostic_temporary" "$report_root/$diagnostic_name" || {') &&
+                mac_run.include?('unlink "$diagnostic_temporary" >/dev/null 2>&1 || true'),
+      "Mac diagnostics must replace prior evidence only after successful capture")
+check(failures, mac_run.include?('IFS= read -r vault_header < "$vault_file"') &&
+                !mac_run.include?("grep -q '^\\$ANSIBLE_VAULT;'"),
+      "Mac lifecycle must require the Ansible Vault header on the first line")
+
+mac_report_path = File.join(ROOT, "tests", "mac", "report.rb")
+mac_report = File.file?(mac_report_path) ? File.read(mac_report_path) : ""
+%w[password secret token authorization private_key hash].each do |forbidden_key|
+  check(failures, mac_report.downcase.include?(forbidden_key),
+        "Mac report must redact #{forbidden_key} keys")
+end
+check(failures, mac_report.include?("when Hash") && mac_report.include?("when Array") &&
+                mac_report.include?("JSON.pretty_generate") &&
+                mac_report.include?("markdown_report") &&
+                mac_report.include?("deployment_manifest") &&
+                mac_report.include?("diagnostic_locations"),
+      "Mac reporter must recursively sanitize structured input into JSON and Markdown")
+
+readme = File.read(File.join(ROOT, "README.md"))
+gitignore = File.read(File.join(ROOT, ".gitignore"))
+check(failures, readme.include?("tests/mac/run.sh") &&
+                readme.include?("--lane fresh") && readme.include?("--lane adoption") &&
+                readme.include?("--keep-on-failure"),
+      "README must document both Mac proof lanes and failure preservation")
+check(failures, gitignore.include?("mac-proof-reports"),
+      "gitignore must exclude local Mac proof report copies")
+
+beszel_verification_prerequisites = {
+  "Authenticate as the superuser" => "ansible.builtin.uri",
+  "Read the public key the hub advertises" => "ansible.builtin.uri",
+  "Verify the advertised key matches vault, proving no read-back is needed" =>
+    "ansible.builtin.assert"
+}
+beszel_verification_prerequisites.each do |name, module_name|
+  task = beszel_tasks.find { |candidate| candidate["name"] == name }
+  check(failures, task && task.key?(module_name) &&
+                  Array(task["tags"]).include?("platform_verify_beszel"),
+        "Beszel verification-only run must include #{name.downcase}")
+end
+
 if failures.empty?
   puts "policy: all properties hold"
 else
