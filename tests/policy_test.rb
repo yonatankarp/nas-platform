@@ -1,10 +1,9 @@
 #!/usr/bin/env ruby
 # Property-based policy checks.
 #
-# Deliberately asserts *properties* rather than per-service expected values.
-# Literal assertions grow linearly with services, must be edited for every
-# change, and tempt you into pinning documentation prose, which couples wording
-# to CI while validating no behaviour. Adding a service here requires no edits.
+# Most checks deliberately assert properties rather than per-service values.
+# The source-platform inventory is the exception: pinning that finite set keeps
+# an omitted legacy service from silently disappearing from the migration scope.
 
 require "yaml"
 
@@ -18,8 +17,91 @@ end
 service_dirs = Dir[File.join(ROOT, "services", "*")].select { |p| File.directory?(p) }
 check(failures, service_dirs.any?, "no services defined")
 
+EXPECTED_SERVICES = %w[
+  audiobookshelf beszel dozzle immich jellyfin komga ntfy paperless-ngx
+  tinymediamanager
+].freeze
+REQUIRED_MANIFEST_FIELDS = %w[name legacy_path role tranche status].freeze
+ALLOWED_SERVICE_STATUSES = %w[planned implemented accepted].freeze
+
+manifest_path = File.join(ROOT, "services", "manifest.yml")
+manifest = begin
+  YAML.safe_load_file(manifest_path)
+rescue Errno::ENOENT
+  check(failures, false, "service manifest is missing: services/manifest.yml")
+  nil
+rescue Psych::Exception => e
+  check(failures, false, "service manifest is malformed: #{e.message.lines.first.strip}")
+  nil
+end
+
+manifest_entries = if manifest.is_a?(Hash) && manifest["services"].is_a?(Array)
+                     manifest["services"]
+                   else
+                     check(failures, false, "service manifest must contain a services list") if manifest
+                     []
+                   end
+
+manifest_names = manifest_entries.filter_map do |service|
+  unless service.is_a?(Hash)
+    check(failures, false, "each service manifest entry must be a mapping")
+    next
+  end
+
+  missing_fields = REQUIRED_MANIFEST_FIELDS.reject { |field| service.key?(field) }
+  check(failures, missing_fields.empty?,
+        "service manifest entry is missing required fields: #{missing_fields.join(', ')}")
+  check(failures, ALLOWED_SERVICE_STATUSES.include?(service["status"]),
+        "#{service['name'] || '<unnamed>'}: status must be planned, implemented, or accepted")
+  check(failures, service["tranche"].is_a?(Integer) && service["tranche"].positive?,
+        "#{service['name'] || '<unnamed>'}: tranche must be a positive integer")
+  service["name"]
+end.compact
+
+check(failures, manifest_names.sort == EXPECTED_SERVICES.sort,
+      "service manifest must list the complete source platform")
+check(failures, (manifest_names - EXPECTED_SERVICES).empty?,
+      "service manifest contains unknown services: #{(manifest_names - EXPECTED_SERVICES).uniq.join(', ')}")
+
+%w[name role legacy_path].each do |field|
+  values = manifest_entries.filter_map { |service| service[field] if service.is_a?(Hash) }
+  duplicates = values.tally.select { |_value, count| count > 1 }.keys
+  check(failures, duplicates.empty?,
+        "service manifest #{field} values must be unique: #{duplicates.join(', ')}")
+end
+
+service_dir_names = service_dirs.map { |dir| File.basename(dir) }
+undeclared_dirs = service_dir_names - manifest_names
+check(failures, undeclared_dirs.empty?,
+      "service directories must be declared in the manifest: #{undeclared_dirs.join(', ')}")
+
 storage = YAML.safe_load_file(File.join(ROOT, "inventory", "group_vars", "all", "main.yml"))
 declared_paths = storage.fetch("nas_storage").map { |entry| entry.fetch("path") }
+
+manifest_entries.each do |service|
+  next unless service.is_a?(Hash)
+  next unless %w[implemented accepted].include?(service["status"])
+
+  name = service["name"]
+  role = service["role"]
+  next unless name.is_a?(String) && role.is_a?(String)
+
+  compose_path = File.join(ROOT, "services", name, "compose.yml")
+  role_root = File.join(ROOT, "roles", role)
+  spec_path = File.join(role_root, "meta", "argument_specs.yml")
+  tasks_path = File.join(role_root, "tasks", "main.yml")
+  check(failures, File.file?(compose_path), "#{name}: implemented service is missing compose.yml")
+  check(failures, File.file?(spec_path), "#{name}: implemented service role is missing meta/argument_specs.yml")
+  check(failures, File.file?(tasks_path), "#{name}: implemented service role is missing tasks/main.yml")
+  check(failures, declared_paths.any? { |path| path.include?("/#{name}/") || path.end_with?("/#{name}") },
+        "#{name}: implemented service has no storage declaration")
+
+  tasks = File.file?(tasks_path) ? File.read(tasks_path) : ""
+  contract_path = File.join(ROOT, "services", name, "contract.yml")
+  verifies_service = tasks.match?(/ansible\.builtin\.(?:uri|command|assert):/) || File.file?(contract_path)
+  check(failures, verifies_service,
+        "#{name}: implemented service has no automated verification or service contract")
+end
 
 # Digest pinning with a human-readable version tag, so Renovate can propose
 # updates and a reader can tell what is deployed.
