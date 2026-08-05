@@ -25,15 +25,32 @@ playbook=${1:-site.yml}
 
 repo_dir=$(CDPATH= cd -P "$(dirname "$0")/.." && pwd -P)
 . "$repo_dir/tests/sandbox_cleanup.sh"
+. "$repo_dir/tests/integration_lock.sh"
 
 # Bind sources must be valid for the Docker daemon as well as this container. On
 # macOS TMPDIR lives under /private, which Docker Desktop shares by default; on
 # Linux the daemon shares the host filesystem, so /tmp is correct.
 temporary_parent=${TMPDIR:-/tmp}
 temporary_parent=${temporary_parent%/}
-sandbox=$(mktemp -d "$temporary_parent/nas-platform-integration.XXXXXX")
-trap 'cleanup_sandbox_on_exit "$sandbox" "$?"' EXIT
+temporary_parent=$(CDPATH= cd -P "$temporary_parent" && pwd -P)
+sandbox=
+acquire_integration_lock "$temporary_parent"
+
+cleanup_integration_on_exit() {
+  integration_exit_status=$?
+  trap - EXIT HUP INT TERM
+  if [ -n "$sandbox" ] && ! cleanup_sandbox "$sandbox"; then
+    [ "$integration_exit_status" -ne 0 ] || integration_exit_status=1
+  fi
+  if ! release_integration_lock; then
+    [ "$integration_exit_status" -ne 0 ] || integration_exit_status=1
+  fi
+  exit "$integration_exit_status"
+}
+
+trap cleanup_integration_on_exit EXIT
 trap 'exit 130' HUP INT TERM
+sandbox=$(mktemp -d "$temporary_parent/nas-platform-integration.XXXXXX")
 chmod 0777 "$sandbox"
 
 mkdir -p "$sandbox/volume1/Docker" "$sandbox/volume2" "$sandbox/repo" \
@@ -250,69 +267,6 @@ git -C "$controller_test_dir" add .
 git -C "$controller_test_dir" commit -qm 'fixture baseline'
 printf '%s\n' pristine > "$controller_test_sentinel"
 
-# Sandbox stand-ins for vault. Hashes and tokens are generated at run time by the
-# service's own pinned image, so no credential is committed and every value is in
-# exactly the format the service accepts.
-ntfy_image=$(grep -oE 'image: [^ ]+' "$repo_dir/services/ntfy/compose.yml" | head -1 | cut -d' ' -f2)
-random_password() { LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24; }
-bcrypt_of() {
-  printf '%s\n%s\n' "$1" "$1" \
-    | docker run --rm -i "$ntfy_image" user hash 2>/dev/null \
-    | grep -oE '\$2[aby]\$[0-9]{2}\$[./A-Za-z0-9]{53}'
-}
-ntfy_token() { docker run --rm "$ntfy_image" token generate 2>/dev/null | grep -oE 'tk_[a-z0-9]{29}'; }
-
-# Beszel's hub keypair is authored, not read back, so the sandbox authors one too.
-ssh-keygen -q -t ed25519 -N '' -C 'sandbox beszel hub' -f "$sandbox/beszel_hub_key"
-
-umask 077
-ntfy_admin_password=$(random_password)
-dozzle_admin_password=$(random_password)
-cat > "$sandbox/sandbox-vault.yml" <<EOF
-vault_audiobookshelf_admin_username: sandboxadmin
-vault_audiobookshelf_admin_password: $(random_password)
-vault_dozzle_admin_username: sandboxadmin
-vault_dozzle_admin_password: $dozzle_admin_password
-vault_dozzle_admin_password_hash: "$(bcrypt_of "$dozzle_admin_password")"
-vault_immich_admin_email: sandboxadmin@example.invalid
-vault_immich_admin_password: $(random_password)
-vault_immich_db_name: immich
-vault_immich_db_username: immich
-vault_immich_db_password: $(random_password)
-vault_jellyfin_admin_username: sandboxadmin
-vault_jellyfin_admin_password: $(random_password)
-vault_komga_admin_email: sandboxadmin@example.invalid
-vault_komga_admin_password: $(random_password)
-vault_ntfy_admin_user: sandboxadmin
-vault_ntfy_admin_password: $ntfy_admin_password
-vault_ntfy_admin_password_hash: "$(bcrypt_of "$ntfy_admin_password")"
-vault_ntfy_dozzle_password_hash: "$(bcrypt_of "$(random_password)")"
-vault_ntfy_dozzle_token: $(ntfy_token)
-vault_ntfy_beszel_password_hash: "$(bcrypt_of "$(random_password)")"
-vault_ntfy_beszel_token: $(ntfy_token)
-vault_beszel_superuser_email: sandbox@example.invalid
-vault_beszel_superuser_password: $(random_password)
-vault_beszel_app_user_email: sandboxuser@example.invalid
-vault_beszel_app_user_password: $(random_password)
-vault_beszel_agent_key: "$(awk '{print $1, $2}' "$sandbox/beszel_hub_key.pub")"
-vault_beszel_universal_token: $(uuidgen | tr 'A-Z' 'a-z')
-vault_beszel_hub_private_key: |
-$(sed 's/^/  /' "$sandbox/beszel_hub_key")
-vault_paperless_admin_username: sandboxadmin
-vault_paperless_admin_password: $(random_password)
-vault_paperless_admin_email: sandboxadmin@example.invalid
-vault_paperless_db_name: paperless
-vault_paperless_db_username: paperless
-vault_paperless_db_password: $(random_password)
-vault_paperless_django_secret_key: $(random_password)$(random_password)
-vault_paperless_gmail_account: sandbox@example.invalid
-vault_paperless_gmail_app_password: $(random_password)
-vault_paperless_mail_account_name: sandbox-gmail
-vault_paperless_mail_rule_name: sandbox-inbox
-vault_tinymediamanager_password: $(random_password)
-EOF
-umask 022
-
 printf 'sandbox: %s\n' "$sandbox"
 
 docker run --rm \
@@ -327,9 +281,18 @@ docker run --rm \
   -w /repo \
   "$runner_image" \
   sh -eu -c "
-    apk add --no-cache --quiet docker-cli docker-cli-compose git tar '$ruby_package' '$curl_package' >/dev/null
+    apk add --no-cache --quiet docker-cli docker-cli-compose git tar openssl \
+      apache2-utils openssh-client '$ruby_package' '$curl_package' >/dev/null
     pip install --quiet --no-input 'ansible-core==$ansible_core_version'
     ansible-galaxy collection install -r /repo/requirements.yml >/dev/null
+
+    vault_directory='$sandbox/nas-platform-vault.000000'
+    vault_file=\"\$vault_directory/vault.yml\"
+    vault_password_file=\"\$vault_directory/password\"
+    mkdir \"\$vault_directory\"
+    chmod 0700 \"\$vault_directory\"
+    TMPDIR='$sandbox' /repo/tests/generate-ephemeral-vault.sh \
+      --output \"\$vault_file\" --password-file \"\$vault_password_file\"
 
     PLATFORM_DOCKER_ROOT='$sandbox/var/folders/path fixture/missing/Docker' \
     PLATFORM_MEDIA_ROOT='$sandbox/var/folders/path fixture/missing/media' \
@@ -423,20 +386,12 @@ docker run --rm \
     printf 'DIRTY_INTEGRATION_ACCEPTED\n'
     git -C '$controller_test_dir' checkout -q -- .
 
-    umask 077
-    python -c 'import secrets; print(secrets.token_urlsafe(32))' \
-      > '$sandbox/vault-password'
-    ansible-vault encrypt \
-      --vault-password-file '$sandbox/vault-password' \
-      '$sandbox/sandbox-vault.yml' >/dev/null
-    umask 022
-
     run_play() {
       ansible-playbook \
         -i inventory/local.yml \
-        --vault-password-file $sandbox/vault-password \
-        -e @$sandbox/sandbox-vault.yml \
-        -e platform_vault_file=$sandbox/sandbox-vault.yml \
+        --vault-password-file \"\$vault_password_file\" \
+        -e @\"\$vault_file\" \
+        -e platform_vault_file=\"\$vault_file\" \
         -e nas_docker_root=$sandbox/volume1/Docker \
         -e nas_media_root=$sandbox/volume2 \
         -e platform_compose_kind=integration \
@@ -781,7 +736,7 @@ docker run --rm \
     if [ "\$#" -eq 0 ]; then
       env \
         PLATFORM_KIND=integration \
-        PLATFORM_CONTRACT_VAULT_FILE='$sandbox/sandbox-vault.yml' \
+        PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\" \
         PLATFORM_DOCKER_ROOT='$sandbox/volume1/Docker' \
         PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
         PLATFORM_FIXTURE_ROOT='$sandbox/fixtures' \
@@ -807,4 +762,6 @@ docker run --rm \
       printf 'CHECK MODE BROKEN: dry run failed\n' >&2
       exit 1
     fi
+    TMPDIR='$sandbox' /repo/tests/generate-ephemeral-vault.sh --cleanup \
+      \"\$vault_directory\"
   " integration-run "$@"

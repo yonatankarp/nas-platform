@@ -656,6 +656,7 @@ validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "te
   ruby\ tests/policy_manifest_test.rb
   ruby\ tests/run_contracts_test.rb
   ruby\ tests/run_contracts.rb\ --validate-only
+  tests/integration_lock_test.sh
 ].each do |command|
   check(failures, validation_commands.include?(command),
         "validate-policy.sh must run #{command}")
@@ -810,6 +811,76 @@ check(failures, guard_conditions.include?("generate_brand_new_platform | bool") 
                 guard_message.include?("password manager") && guard_message.include?("Portainer"),
       "generate-secrets.yml must refuse migration credential generation explicitly")
 
+secret_generator_tasks = Array(secret_generator["tasks"]).to_h { |task| [task["name"], task] }
+secret_bearing_generator_tasks = [
+  "Generate passwords",
+  "Read the Beszel hub keypair",
+  "Hash the ntfy passwords with ntfy's own hasher",
+  "Generate the ntfy access tokens with ntfy's own generator",
+  "Collect the generated material",
+  "Fail loudly if any value did not parse",
+  "Write the plaintext vars file for encryption"
+]
+secret_bearing_generator_tasks.each do |task_name|
+  check(failures, secret_generator_tasks.dig(task_name, "no_log") == true,
+        "generate-secrets.yml must redact secret-bearing task #{task_name}")
+end
+
+ci_body = File.read(File.join(ROOT, ".github", "workflows", "ci.yml"))
+check(failures,
+      ci_body.include?("tests/generate-ephemeral-vault.sh --self-test") &&
+        ci_body.include?("test ! -s") &&
+        %w[apache2-utils openssh-client openssl].all? { |dependency| ci_body.include?(dependency) },
+      "CI must run the silent ephemeral vault self-test with explicit dependencies")
+check(failures, ci_body.include?("tests/generate-secrets-redaction-test.sh"),
+      "CI must execute the generated-secret redaction test")
+
+ephemeral_helper = File.read(File.join(ROOT, "tests", "generate-ephemeral-vault.sh"))
+helper_safety_evidence = {
+  "pre-existing output refusal" => "self-test generation accepted a pre-existing output",
+  "vault leaf symlink refusal" => "self-test generation accepted a vault output symlink",
+  "password leaf symlink refusal" => "self-test generation accepted a password output symlink",
+  "unexpected entry refusal" => "self-test generation accepted an unexpected entry",
+  "in-repository refusal" => "self-test generation accepted an in-repository directory",
+  "TMPDIR symlink refusal" => "self-test accepted a symlink temporary parent",
+  "trailing-slash symlink refusal" => "self-test cleanup accepted a trailing-slash symlink alias",
+  "lexical alias refusal" => "self-test cleanup accepted a non-normalized lexical alias",
+  "trailing-slash TMPDIR refusal" => "self-test accepted a trailing-slash symlink temporary parent",
+  "unsafe mode refusal" => "self-test generation accepted a world-writable directory",
+  "ownership refusal" => "self-test generation accepted a foreign-owned directory",
+  "failure cleanup" => "self-test failed generation left credential material",
+  "mid-validation cleanup" => "self-test mid-validation failure left credential material"
+}
+helper_safety_evidence.each do |property, evidence|
+  check(failures, ephemeral_helper.include?(evidence),
+        "ephemeral vault self-test must cover #{property}")
+end
+helper_guard_sources = {
+  "requested-path lexical guard" => 'validate_lexical_path "$requested"',
+  "temporary-parent lexical guard" => 'validate_lexical_path "$temporary_parent_input"',
+  "temporary-parent symlink guard" => '[ ! -L "$temporary_parent_input" ]',
+  "directory symlink guard" => '[ ! -L "$requested" ]',
+  "directory ownership guard" => '[ "$(owner_id "$physical")" = "$(id -u)" ]',
+  "directory mode guard" => '[ "$(file_mode "$physical")" = 700 ]',
+  "repository containment guard" => '"$repo_dir/"*) die',
+  "output overwrite and symlink guard" => '[ ! -e "$candidate" ] && [ ! -L "$candidate" ]',
+  "empty-directory guard" => '[ -z "$(find "$directory" -mindepth 1 -maxdepth 1 -print -quit)" ]',
+  "cleanup unexpected-entry guard" => '! -name vault.yml ! -name password -print -quit',
+  "cleanup leaf-symlink guard" => '[ ! -L "$directory/vault.yml" ] && [ ! -L "$directory/password" ]',
+  "failure trap isolation" => "generate_vault() (",
+  "failure cleanup trap" => 'trap \'rm -f -- "$plain" "$private_key" "$private_key.pub" "$password_file" "$output"\' EXIT',
+  "self-test cleanup trap" => "trap self_test_cleanup_on_exit EXIT"
+}
+helper_guard_sources.each do |property, source|
+  check(failures, ephemeral_helper.include?(source),
+        "ephemeral vault helper must preserve #{property}")
+end
+check(failures,
+      ephemeral_helper.include?('kernel_name=$(uname -s)') &&
+        ephemeral_helper.include?('stat -f') && ephemeral_helper.include?('stat -c') &&
+        ephemeral_helper.include?("refusing symlink temporary parent"),
+      "ephemeral vault helper must preserve GNU/BSD checks and refuse TMPDIR symlinks")
+
 repository_vault_nas_references = Dir[File.join(ROOT, "{inventory,roles,templates,tests}", "**", "*")]
                                   .select { |path| File.file?(path) }
                                   .filter_map do |path|
@@ -832,6 +903,8 @@ end
 # Darwin-only fact and command being skipped under --check, both survived syntax
 # checking and were caught by running.
 harness = File.read(File.join(ROOT, "tests", "integration.sh"))
+integration_lock_path = File.join(ROOT, "tests", "integration_lock.sh")
+integration_lock = File.file?(integration_lock_path) ? File.read(integration_lock_path) : ""
 mac_path_fixture = File.read(File.join(ROOT, "tests", "mac_inventory_path_test.yml"))
 check(failures, harness.include?("MAC_PATH_CANONICAL") &&
                 harness.include?("MAC_PATH_LEXICAL_REFUSED") &&
@@ -859,6 +932,29 @@ end, "integration must set the contract environment ABI before execution")
 check(failures, harness.match?(/^ruby_package='ruby=\d+\.\d+\.\d+-r\d+'$/) &&
                 harness.match?(/^curl_package='curl=\d+\.\d+\.\d+-r\d+'$/),
       "integration must pin distro ruby and curl packages")
+check(failures,
+      harness.include?("/repo/tests/generate-ephemeral-vault.sh") &&
+      harness.include?("--output \\\"\\$vault_file\\\"") &&
+        harness.include?("--password-file") &&
+        harness.include?("--vault-password-file \\\"\\$vault_password_file\\\"") &&
+        harness.include?("-e @\\\"\\$vault_file\\\"") &&
+        harness.include?("-e platform_vault_file=\\\"\\$vault_file\\\"") &&
+        harness.include?("TMPDIR='$sandbox' /repo/tests/generate-ephemeral-vault.sh --cleanup") &&
+        harness.include?("PLATFORM_CONTRACT_VAULT_FILE=\\\"\\$vault_file\\\"") &&
+        !harness.include?("sandbox-vault.yml") &&
+        !harness.include?("random_password()") &&
+        !harness.include?("ntfy_token()"),
+      "integration must consume the ephemeral encrypted vault without duplicate secret authoring")
+lock_acquire_index = harness.index("acquire_integration_lock")
+sandbox_create_index = harness.index('sandbox=$(mktemp -d')
+check(failures,
+      harness.include?('. "$repo_dir/tests/integration_lock.sh"') &&
+        lock_acquire_index && sandbox_create_index && lock_acquire_index < sandbox_create_index &&
+        harness.include?("cleanup_sandbox") && harness.include?("release_integration_lock") &&
+        integration_lock.include?('mkdir "$lock_candidate"') &&
+        integration_lock.include?('rmdir "$integration_lock_path"') &&
+        !integration_lock.match?(/rm\s+-rf/),
+      "integration must serialize fixed-name containers with an atomic empty-directory lock")
 
 # A release ID names committed controller content. Production must reject any
 # modified or untracked file in the controller checkout; only the disposable
