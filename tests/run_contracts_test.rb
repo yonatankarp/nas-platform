@@ -42,6 +42,7 @@ def run_registry(registry:, contracts: {}, mode: "--validate-only", env: {}, man
       env = env.merge(
         "PLATFORM_KIND" => "integration",
         "PLATFORM_CONTRACT_VAULT_FILE" => File.join(root, "sandbox-vault.yml"),
+        "PLATFORM_CONTRACT_VAULT_PASSWORD_FILE" => File.join(root, "sandbox-vault-password"),
         "PLATFORM_DOCKER_ROOT" => File.join(root, "volume1", "Docker"),
         "PLATFORM_MEDIA_ROOT" => File.join(root, "volume2"),
         "PLATFORM_FIXTURE_ROOT" => File.join(root, "fixtures"),
@@ -51,6 +52,7 @@ def run_registry(registry:, contracts: {}, mode: "--validate-only", env: {}, man
         FileUtils.mkdir_p(File.join(root, directory))
       end
       File.write(File.join(root, "sandbox-vault.yml"), "placeholder")
+      File.write(File.join(root, "sandbox-vault-password"), "placeholder")
     end
     stdout, stderr, status = Open3.capture3(env, *command)
     observation = block_given? ? yield(root) : nil
@@ -105,7 +107,8 @@ check(failures, status.success? && marker, "execute mode did not run contract fr
 abi_contract = <<~'SH'
   #!/bin/sh
   {
-    for name in PLATFORM_KIND PLATFORM_CONTRACT_VAULT_FILE PLATFORM_DOCKER_ROOT \
+    for name in PLATFORM_KIND PLATFORM_CONTRACT_VAULT_FILE PLATFORM_CONTRACT_VAULT_PASSWORD_FILE \
+      PLATFORM_DOCKER_ROOT \
       PLATFORM_MEDIA_ROOT PLATFORM_FIXTURE_ROOT PLATFORM_REPORT_ROOT; do
       eval "value=\${$name-}"
       test -n "$value"
@@ -120,7 +123,7 @@ output, status, markers = run_registry(
 ) do |root|
   File.read(File.join(root, "reports", "abi-markers.txt"))
 end
-check(failures, status.success? && markers.lines.length == 6 && markers.lines.all? { |line| line.end_with?("=present\n") },
+check(failures, status.success? && markers.lines.length == 7 && markers.lines.all? { |line| line.end_with?("=present\n") },
       "execute mode did not propagate the contract environment ABI")
 
 secret_abi_value = "/tmp/ABI_SECRET_VALUE"

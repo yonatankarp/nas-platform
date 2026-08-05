@@ -12,6 +12,10 @@ argument_specs:
         type: str
         required: true
         description: Platform-specific Compose override suffix selected by the bundle.
+      platform_project_name:
+        type: str
+        required: false
+        description: Disposable Mac proof namespace; empty preserves canonical NAS naming.
       platform_public_host:
         type: str
         required: true

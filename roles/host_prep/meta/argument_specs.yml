@@ -4,8 +4,13 @@ argument_specs:
     short_description: Create service state directories from the storage inventory
     description:
       - Consumes nas_storage as the single declaration of path, ownership, mode
-        and recovery class, and refuses to take ownership of NAS-managed files.
+        and recovery class, refuses to take ownership of NAS-managed files, and
+        omits Linux-only ownership declarations on macOS.
     options:
+      platform_kind:
+        type: str
+        required: true
+        choices: [nas, mac]
       nas_storage:
         type: list
         elements: dict

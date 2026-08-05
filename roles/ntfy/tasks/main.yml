@@ -40,6 +40,7 @@
 - name: Deploy ntfy
   community.docker.docker_compose_v2:
     project_src: "{{ platform_current_dir }}/services/ntfy"
+    project_name: "{{ ntfy_compose_project_name }}"
     files: "{{ ntfy_compose_files }}"
     env_files: ["{{ platform_runtime_dir }}/services/ntfy/.env"]
     state: present

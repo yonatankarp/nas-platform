@@ -85,10 +85,11 @@ mac_validate_sandbox() {
     mac_die "refusing to remove unowned Mac sandbox: $mac_requested"
   mac_project=$(sed -n 's/^project=//p' "$mac_marker")
   case $mac_project in
-    nas-platform-mac-[ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789]*) ;;
+    nas-platform-mac-[abcdefghijklmnopqrstuvwxyz0123456789]*) ;;
     *) mac_die "refusing to remove unowned Mac sandbox: $mac_requested" ;;
   esac
-  [ "$mac_project" = "nas-platform-mac-$mac_suffix" ] ||
+  mac_project_suffix=$(printf '%s' "$mac_suffix" | tr '[:upper:]' '[:lower:]')
+  [ "$mac_project" = "nas-platform-mac-$mac_project_suffix" ] ||
     mac_die "refusing to remove unowned Mac sandbox: $mac_requested"
   printf '%s\n' "$mac_physical"
 }

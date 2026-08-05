@@ -1,14 +1,53 @@
 ---
 # Derived values, evaluated lazily where used rather than stored as host facts.
 beszel_api: "http://127.0.0.1:{{ beszel_port }}"
+beszel_compose_project_name: >-
+  {{ (platform_project_name ~ '-beszel')
+     if platform_project_name | default('') | length > 0 else 'beszel' }}
 
-# Records matching the vault identity. Filtered in Jinja because PocketBase's
-# filter parameter needs URL encoding that the uri module does not apply, and
-# returns 400 without it.
+# Records returned by URL-encoded PocketBase identity filters. Jinja repeats the
+# exact match defensively after each read; task assertions verify the filtered
+# result fits in the complete response page before reconciliation proceeds.
 beszel_matching_users: >-
   {{ beszel_users.json.get('items', [])
      | selectattr('email', 'equalto', vault_beszel_app_user_email) | list }}
 
+beszel_user_filter: "email = {{ vault_beszel_app_user_email | to_json }}"
+beszel_token_filter: "user = {{ beszel_user_id | default('') | to_json }}"
+beszel_settings_filter: "user = {{ beszel_user_id | default('') | to_json }}"
+beszel_system_filter: "name = {{ beszel_system_name | to_json }}"
+
 beszel_matching_settings: >-
   {{ beszel_settings.json.get('items', [])
      | selectattr('user', 'equalto', beszel_user_id | default('')) | list }}
+
+beszel_current_notification_settings: "{{ (beszel_matching_settings | first | default({})).settings | default({}) }}"
+
+beszel_matching_systems: >-
+  {{ beszel_systems.json.get('items', [])
+     | selectattr('name', 'equalto', beszel_system_name)
+     | selectattr('users', 'contains', beszel_user_id | default('')) | list }}
+
+beszel_wrong_owner_systems: >-
+  {{ beszel_systems.json.get('items', [])
+     | selectattr('name', 'equalto', beszel_system_name)
+     | rejectattr('users', 'contains', beszel_user_id | default('')) | list }}
+
+beszel_agent_enabled: >-
+  {{ (platform_beszel_agent_available | bool) and
+     (platform_beszel_agent_kind == 'portable' or preflight_gpu_available | bool) }}
+
+beszel_agent_service: >-
+  {{ ('agent-' ~ platform_beszel_agent_kind) if beszel_agent_enabled else '' }}
+
+beszel_inactive_agent_services: >-
+  {{ ['agent-portable', 'agent-intel'] | reject('equalto', beszel_agent_service) | list }}
+
+beszel_compose_cli_argv: >-
+  {{ ['docker', 'compose', '--project-directory',
+     platform_current_dir ~ '/services/beszel', '--project-name',
+     beszel_compose_project_name]
+     + (beszel_compose_files
+        | map('regex_replace', '^',
+              '--file=' ~ platform_current_dir ~ '/services/beszel/') | list)
+     + ['--env-file', platform_runtime_dir ~ '/services/beszel/.env'] }}

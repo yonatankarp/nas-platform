@@ -1,0 +1,121 @@
+---
+- name: Query {{ beszel_alert.name }} alerts for the managed identity
+  tags: [platform_verify_beszel]
+  ansible.builtin.uri:
+    url: >-
+      {{ beszel_api }}/api/collections/alerts/records?perPage=500&filter={{
+         beszel_alert_filter | urlencode }}
+    headers:
+      Authorization: "{{ beszel_auth.json.token }}"
+  register: beszel_alert_records
+  changed_when: false
+  check_mode: false
+  no_log: "{{ beszel_no_log | default(true) }}"
+  vars:
+    beszel_alert_filter: >-
+      user = {{ beszel_user_id | to_json }} &&
+      system = {{ (beszel_matching_systems | first).id | to_json }} &&
+      name = {{ beszel_alert.name | to_json }}
+
+- name: Require the complete {{ beszel_alert.name }} alert result set
+  ansible.builtin.assert:
+    that: beszel_alert_records.json.get('totalPages', 0) | int <= 1
+    fail_msg: Managed {{ beszel_alert.name }} alert identity returned more than 500 records; refusing incomplete reconciliation.
+
+- name: Resolve existing {{ beszel_alert.name }} alerts for the managed system
+  tags: [platform_verify_beszel]
+  ansible.builtin.set_fact:
+    beszel_current_alerts: >-
+      {{ beszel_alert_records.json.get('items', []) }}
+
+- name: Refuse duplicate {{ beszel_alert.name }} alerts for the managed system
+  tags: [platform_verify_beszel]
+  ansible.builtin.assert:
+    that: beszel_current_alerts | length <= 1
+    fail_msg: >-
+      Duplicate managed {{ beszel_alert.name }} alert record IDs:
+      {{ beszel_current_alerts | map(attribute='id') | join(',') }}
+  no_log: false
+
+- name: Create absent {{ beszel_alert.name }} alert for the managed system
+  ansible.builtin.uri:
+    url: "{{ beszel_api }}/api/collections/alerts/records"
+    method: POST
+    headers:
+      Authorization: "{{ beszel_auth.json.token }}"
+    body_format: json
+    body:
+      user: "{{ beszel_user_id }}"
+      system: "{{ (beszel_matching_systems | first).id }}"
+      name: "{{ beszel_alert.name }}"
+      value: "{{ beszel_alert.value }}"
+      min: "{{ beszel_alert.min }}"
+    status_code: [200]
+  when: beszel_current_alerts | length == 0
+  changed_when: true
+  no_log: "{{ beszel_no_log | default(true) }}"
+
+- name: Patch mismatched {{ beszel_alert.name }} alert for the managed system
+  ansible.builtin.uri:
+    url: "{{ beszel_api }}/api/collections/alerts/records/{{ (beszel_current_alerts | first).id }}"
+    method: PATCH
+    headers:
+      Authorization: "{{ beszel_auth.json.token }}"
+    body_format: json
+    body:
+      value: "{{ beszel_alert.value }}"
+      min: "{{ beszel_alert.min }}"
+    status_code: [200]
+  when:
+    - beszel_current_alerts | length == 1
+    - (beszel_current_alerts | first).value != beszel_alert.value
+      or (beszel_current_alerts | first).min != beszel_alert.min
+  changed_when: true
+  no_log: "{{ beszel_no_log | default(true) }}"
+
+- name: Report planned {{ beszel_alert.name }} alert reconciliation
+  ansible.builtin.debug:
+    msg: Managed {{ beszel_alert.name }} alert would be created or reconciled.
+  when:
+    - ansible_check_mode
+    - beszel_current_alerts | length == 0
+      or (beszel_current_alerts | length == 1
+          and ((beszel_current_alerts | first).value != beszel_alert.value
+               or (beszel_current_alerts | first).min != beszel_alert.min))
+  changed_when: true
+
+- name: Refresh alerts after reconciling {{ beszel_alert.name }}
+  tags: [platform_verify_beszel]
+  ansible.builtin.uri:
+    url: >-
+      {{ beszel_api }}/api/collections/alerts/records?perPage=500&filter={{
+         beszel_alert_filter | urlencode }}
+    headers:
+      Authorization: "{{ beszel_auth.json.token }}"
+  register: beszel_refreshed_alerts
+  changed_when: false
+  check_mode: false
+  no_log: "{{ beszel_no_log | default(true) }}"
+  vars:
+    beszel_alert_filter: >-
+      user = {{ beszel_user_id | to_json }} &&
+      system = {{ (beszel_matching_systems | first).id | to_json }} &&
+      name = {{ beszel_alert.name | to_json }}
+
+- name: Resolve reconciled {{ beszel_alert.name }} alerts for the managed system
+  tags: [platform_verify_beszel]
+  ansible.builtin.set_fact:
+    beszel_current_alerts: >-
+      {{ beszel_refreshed_alerts.json.get('items', []) }}
+
+- name: Verify exact {{ beszel_alert.name }} alert configuration
+  tags: [platform_verify_beszel]
+  ansible.builtin.assert:
+    that:
+      - beszel_current_alerts | length == 1
+      - (beszel_current_alerts | first).value == beszel_alert.value
+      - (beszel_current_alerts | first).min == beszel_alert.min
+    fail_msg: >-
+      Managed {{ beszel_alert.name }} alert is absent, duplicated, or differs
+      from threshold and duration configuration.
+  when: not ansible_check_mode

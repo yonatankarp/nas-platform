@@ -2,6 +2,9 @@
 # Non-secret policy. Credentials come from vault.
 ntfy_port: 2586
 ntfy_base_url: "http://{{ platform_public_host }}:{{ ntfy_port }}"
+ntfy_compose_project_name: >-
+  {{ (platform_project_name ~ '-ntfy')
+     if platform_project_name | default('') | length > 0 else 'ntfy' }}
 
 # The single topic every monitor publishes to.
 ntfy_topic: nas-critical

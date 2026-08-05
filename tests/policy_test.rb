@@ -23,6 +23,22 @@ end
 service_dirs = Dir[File.join(ROOT, "services", "*")].select { |p| File.directory?(p) }
 check(failures, service_dirs.any?, "no services defined")
 
+beszel_contract_path = File.join(ROOT, "tests", "contracts", "beszel.sh")
+beszel_contract = File.file?(beszel_contract_path) ? File.read(beszel_contract_path) : ""
+check(failures,
+      beszel_contract.include?('since: baseline_id') &&
+        beszel_contract.include?('message["id"] != baseline_id') &&
+        !beszel_contract.include?("iso8601"),
+      "Beszel notification proof must poll after a captured ntfy message ID")
+
+mac_run_path = File.join(ROOT, "tests", "mac", "run.sh")
+mac_run = File.file?(mac_run_path) ? File.read(mac_run_path) : ""
+check(failures,
+      %w[PLATFORM_PROJECT_NAME PLATFORM_BESZEL_PORT PLATFORM_NTFY_PORT].all? do |value|
+        mac_run.include?("export #{value}=")
+      end && mac_run.include?('"$project_name-beszel"') && mac_run.include?('"$project_name-ntfy"'),
+      "Mac runner must export dynamic project/port facts and isolate both Compose projects")
+
 EXPECTED_SERVICES = %w[
   audiobookshelf beszel dozzle immich jellyfin komga ntfy paperless-ngx
   tinymediamanager
@@ -95,6 +111,7 @@ PLATFORM_INVENTORIES = {
 }.freeze
 PLATFORM_CAPABILITIES = %w[
   platform_render_device_available platform_render_device_path
+  platform_beszel_agent_available platform_beszel_agent_kind
   platform_host_network_available platform_host_network_adapter
   platform_external_integration_checks
 ].freeze
@@ -169,7 +186,8 @@ PLATFORM_INVENTORIES.values.map { |values| [values[0], values[3]] }.uniq.each do
   expected_network_adapter = host_vars["platform_host_network_available"] ? "host" : "published_ports"
   check(failures, host_vars["platform_host_network_adapter"] == expected_network_adapter,
         "#{relative_path} host-network capability and adapter must agree")
-  unexpected_vars = host_vars.keys - MACHINE_FACTS
+  mac_runtime_facts = platform_kind == "mac" ? %w[platform_project_name beszel_port ntfy_port] : []
+  unexpected_vars = host_vars.keys - MACHINE_FACTS - mac_runtime_facts
   check(failures, unexpected_vars.empty?,
         "#{relative_path} contains portable configuration: #{unexpected_vars.join(', ')}")
 end
@@ -929,10 +947,16 @@ contract_abi_names = %w[
   PLATFORM_KIND PLATFORM_CONTRACT_VAULT_FILE PLATFORM_DOCKER_ROOT
   PLATFORM_MEDIA_ROOT PLATFORM_FIXTURE_ROOT PLATFORM_REPORT_ROOT
 ]
+contract_environment_start = contract_execution && harness.rindex("\n      env \\", contract_execution)
+contract_environment = if contract_environment_start && contract_execution
+                         harness[contract_environment_start..contract_execution]
+                       else
+                         ""
+                       end
 check(failures, contract_execution && contract_abi_names.all? do |name|
-  assignment = harness.rindex("#{name}=", contract_execution)
-  assignment && assignment < contract_execution
+  contract_environment.include?("#{name}=")
 end, "integration must set the contract environment ABI before execution")
+run_play_body = harness[/^    run_play\(\) \{.*?^    \}/m].to_s
 check(failures, harness.match?(/^ruby_package='ruby=\d+\.\d+\.\d+-r\d+'$/) &&
                 harness.match?(/^curl_package='curl=\d+\.\d+\.\d+-r\d+'$/),
       "integration must pin distro ruby and curl packages")
@@ -940,11 +964,11 @@ check(failures,
       harness.include?("/repo/tests/generate-ephemeral-vault.sh") &&
       harness.include?("--output \\\"\\$vault_file\\\"") &&
         harness.include?("--password-file") &&
-        harness.include?("--vault-password-file \\\"\\$vault_password_file\\\"") &&
-        harness.include?("-e @\\\"\\$vault_file\\\"") &&
-        harness.include?("-e platform_vault_file=\\\"\\$vault_file\\\"") &&
+        run_play_body.include?("--vault-password-file \\\"\\$vault_password_file\\\"") &&
+        run_play_body.include?("-e @\\\"\\$vault_file\\\"") &&
+        run_play_body.include?("-e platform_vault_file=\\\"\\$vault_file\\\"") &&
         harness.include?("TMPDIR='$sandbox' /repo/tests/generate-ephemeral-vault.sh --cleanup") &&
-        harness.include?("PLATFORM_CONTRACT_VAULT_FILE=\\\"\\$vault_file\\\"") &&
+        contract_environment.include?("PLATFORM_CONTRACT_VAULT_FILE=\\\"\\$vault_file\\\"") &&
         !harness.include?("sandbox-vault.yml") &&
         !harness.include?("random_password()") &&
         !harness.include?("ntfy_token()"),
@@ -1156,6 +1180,26 @@ check(failures, deployment_manifest_template.include?("platform_compose") &&
                 deployment_manifest_template.include?("canonical_compose") &&
                 deployment_manifest_template.include?("compose_service_name"),
       "deployment manifest images must merge canonical and platform Compose services")
+compose_metadata_filter = File.read(
+  File.join(ROOT, "filter_plugins", "compose_metadata.py")
+)
+compose_metadata_behavior = File.read(
+  File.join(ROOT, "tests", "compose_metadata_filter_test.yml")
+)
+check(failures, deployment_manifest_template.include?("| platform_compose_metadata") &&
+                !deployment_manifest_template.match?(/regex_replace\(['\"]!override|regex_replace\(['\"]!reset/),
+      "deployment manifest must parse Compose tags without rewriting source text")
+check(failures, compose_metadata_filter.include?("yaml.SafeLoader") &&
+                compose_metadata_filter.include?("(\"!override\", \"!reset\")") &&
+                compose_metadata_filter.include?("except yaml.YAMLError") &&
+                compose_metadata_filter.include?("unsupported YAML") &&
+                !compose_metadata_filter.include?("add_multi_constructor"),
+      "Compose metadata loader must allow only exact known tags and fail closed")
+check(failures, compose_metadata_behavior.include?("quoted, block, and commented literal markers") &&
+                compose_metadata_behavior.include?("Require unknown YAML tags to fail closed") &&
+                File.read(File.join(ROOT, "tests", "validate-policy.sh"))
+                    .include?("tests/compose_metadata_filter_test.yml"),
+      "policy validation must execute Compose metadata parser behavior tests")
 
 site_source = File.read(File.join(ROOT, "site.yml"))
 check(failures, !site_source.include?("nothing is delegated to the controller"),
@@ -1188,12 +1232,23 @@ check(failures, manifest_verifier.include?("require-image-merge") &&
                 manifest_verifier.include?("if require_image_merge"),
       "effective-image replacement proof must be opt-in for an isolated fixture")
 
-# PocketBase runs the records query and its total-count query concurrently.
-# On a bind-mounted SQLite database the count path can race immediately after
-# creating the first user, while this role never consumes pagination totals.
+# Identity reads must be server-filtered and retain totals so the role can refuse
+# an identity result that exceeds the complete 500-record response page.
 beszel_tasks = flatten_tasks(
   YAML.safe_load_file(File.join(ROOT, "roles", "beszel", "tasks", "main.yml"))
 )
+
+host_prep_tasks = YAML.safe_load_file(File.join(ROOT, "roles", "host_prep", "tasks", "main.yml"))
+host_prep_create = host_prep_tasks.find do |task|
+  task["name"] == "Create service state directories"
+end
+host_prep_file = host_prep_create&.fetch("ansible.builtin.file", {})
+check(failures, host_prep_file["owner"].to_s.include?("platform_kind == 'nas'") &&
+                host_prep_file["group"].to_s.include?("platform_kind == 'nas'") &&
+                host_prep_file["owner"].to_s.include?("else omit") &&
+                host_prep_file["group"].to_s.include?("else omit"),
+      "Mac host preparation must omit Linux-only storage ownership")
+
 beszel_user_lists = beszel_tasks.select do |task|
   task["name"].to_s.start_with?("List application users") &&
     task["ansible.builtin.uri"].is_a?(Hash)
@@ -1202,8 +1257,57 @@ check(failures, beszel_user_lists.length == 2,
       "Beszel role must contain both application-user list operations")
 beszel_user_lists.each do |task|
   url = task.dig("ansible.builtin.uri", "url")
-  check(failures, url.is_a?(String) && url.include?("skipTotal=1"),
-        "#{task['name']}: must skip PocketBase's unused concurrent total-count query")
+  check(failures, url.is_a?(String) && url.include?("filter={{") && url.include?("urlencode") &&
+                  !url.include?("skipTotal=1"),
+        "#{task['name']}: must use a complete URL-encoded server identity filter")
+end
+
+beszel_alert_tasks = flatten_tasks(
+  YAML.safe_load_file(File.join(ROOT, "roles", "beszel", "tasks", "alert.yml"))
+)
+identity_reads = (beszel_tasks + beszel_alert_tasks).select do |task|
+  uri = task["ansible.builtin.uri"]
+  uri.is_a?(Hash) && uri["method"].nil? && uri["url"].to_s.match?(%r{/collections/(users|universal_tokens|user_settings|systems|alerts)/records\?})
+end
+check(failures, identity_reads.length >= 11,
+      "Beszel reconciliation must retain all filtered collection readbacks")
+identity_reads.each do |task|
+  url = task.dig("ansible.builtin.uri", "url").to_s
+  check(failures, url.include?("filter={{") && url.include?("urlencode") && !url.include?("skipTotal=1"),
+        "#{task['name']}: collection readback must use a URL-encoded identity filter with totals")
+end
+
+beszel_create_user = beszel_tasks.find { |task| task["name"] == "Create the application user" }
+beszel_plan_user = beszel_tasks.find { |task| task["name"] == "Report planned application user creation" }
+check(failures, beszel_create_user && beszel_create_user["changed_when"] == true &&
+                beszel_plan_user && beszel_plan_user["changed_when"] == true &&
+                Array(beszel_plan_user["when"]).include?("ansible_check_mode"),
+      "Beszel user creation must report real and check-mode predicted changes")
+
+webhook_assert = beszel_tasks.find { |task| task["name"] == "Verify the managed ntfy webhook" }
+webhook_failure = webhook_assert&.dig("ansible.builtin.assert", "fail_msg").to_s
+webhook_summary = beszel_tasks.find do |task|
+  task["name"] == "Summarize the managed ntfy webhook without URL bodies"
+end
+check(failures, webhook_failure.include?("scheme=") && webhook_failure.include?("[REDACTED]") &&
+                !webhook_failure.match?(/actual=|expected=|webhooks/) &&
+                webhook_summary && webhook_summary["no_log"] == true &&
+                Array(webhook_assert&.dig("ansible.builtin.assert", "that")).all? do |condition|
+                  !condition.match?(/notification|webhook.*url|webhooks/)
+                end,
+      "Beszel webhook mismatch diagnostics must never include URL bodies")
+wrong_owner_assert = beszel_tasks.find do |task|
+  task["name"] == "Refuse same-name systems outside the managed user relation"
+end
+check(failures, wrong_owner_assert && wrong_owner_assert.dig("ansible.builtin.assert", "that").to_s.include?("beszel_wrong_owner_systems"),
+      "Beszel must reject same-name systems outside the managed user relation")
+check(failures, beszel_contract.include?("URI.encode_www_form") &&
+                beszel_contract.include?("same-name wrong-owner system IDs") &&
+                !beszel_contract.include?("skipTotal=1"),
+      "Beszel contract must use complete encoded identity filters and enforce system ownership")
+%w[sentinel-user sentinel-password sentinel-query-key].each do |sentinel|
+  check(failures, harness.include?(sentinel),
+        "integration must test redaction of arbitrary webhook sentinel #{sentinel}")
 end
 
 # PocketBase validates relations through a separate SQLite connection. Refresh
@@ -1306,6 +1410,7 @@ check(failures, mac_run.include?('mktemp -d "$temporary_parent/nas-platform-mac.
 %w[
   PLATFORM_MAC_SANDBOX PLATFORM_DOCKER_ROOT PLATFORM_MEDIA_ROOT
   PLATFORM_FIXTURE_ROOT PLATFORM_REPORT_ROOT PLATFORM_PROOF_LANE
+  PLATFORM_PROJECT_NAME PLATFORM_BESZEL_PORT PLATFORM_NTFY_PORT
   COMPOSE_PROJECT_NAME
 ].each do |variable|
   check(failures, mac_run.include?("export #{variable}="),
@@ -1319,6 +1424,9 @@ check(failures, mac_cleanup.include?('. "$mac_repo_dir/tests/sandbox_cleanup.sh"
                 (mac_cleanup + mac_lib).include?(".nas-platform-mac-owned") &&
                 !(mac_cleanup + mac_lib).match?(/rm\s+-rf/),
       "Mac cleanup must reuse descriptor-safe cleanup with an owned marker")
+integration_cleanup = File.read(File.join(ROOT, "tests", "sandbox_cleanup.sh"))
+check(failures, integration_cleanup.include?("beszel_agent_portable"),
+      "integration cleanup must remove the portable Beszel agent")
 check(failures, mac_run.include?('cleanup) release_run_lock && "$mac_script_dir/cleanup.sh" "$sandbox"') &&
                 mac_run.scan("Cleanup command:").length == 1,
       "Mac runner must transfer the shared lock and emit cleanup commands once")

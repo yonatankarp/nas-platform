@@ -1,0 +1,15 @@
+---
+services:
+  hub:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-beszel
+    ports: !override
+      - "${BESZEL_HOST_PORT:?}:8090"
+  agent-portable:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-beszel-agent-portable
+  agent-intel:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-beszel-agent-intel
+  socket-proxy:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-beszel-socket-proxy
+    # Docker Desktop services share the Compose network. The socket proxy stays
+    # private to that network instead of publishing a host loopback port.
+    ports: !reset []

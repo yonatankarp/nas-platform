@@ -376,6 +376,7 @@ docker run --rm \
     if ! ansible-playbook -i localhost, '$controller_test_playbook' \
         -e platform_kind=nas \
         -e platform_compose_kind=integration \
+        -e platform_beszel_agent_kind=portable \
         -e deployment_bundle_test_mode=true \
         -e deployment_bundle_allow_dirty_controller=true \
         >/tmp/dirty-controller-integration.txt 2>&1; then
@@ -395,9 +396,38 @@ docker run --rm \
         -e nas_docker_root=$sandbox/volume1/Docker \
         -e nas_media_root=$sandbox/volume2 \
         -e platform_compose_kind=integration \
+        -e platform_beszel_agent_kind=portable \
         -e deployment_bundle_test_mode=true \
         -e deployment_bundle_allow_dirty_controller=true \
         '$playbook' \"\$@\"
+    }
+
+    run_beszel_contract() {
+      env \
+        PLATFORM_KIND=integration \
+        PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\" \
+        PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=\"\$vault_password_file\" \
+        PLATFORM_DOCKER_ROOT='$sandbox/volume1/Docker' \
+        PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
+        PLATFORM_FIXTURE_ROOT='$sandbox/fixtures' \
+        PLATFORM_REPORT_ROOT='$sandbox/reports' \
+        /repo/tests/contracts/beszel.sh \"\$1\"
+    }
+
+    run_verify_only() {
+      PLATFORM_VAULT_FILE=\"\$vault_file\" ansible-playbook \
+        -i inventory/local.yml \
+        --vault-password-file \"\$vault_password_file\" \
+        -e @\"\$vault_file\" \
+        -e platform_vault_file=\"\$vault_file\" \
+        -e nas_docker_root=$sandbox/volume1/Docker \
+        -e nas_media_root=$sandbox/volume2 \
+        -e platform_compose_kind=integration \
+        -e platform_beszel_agent_kind=portable \
+        -e deployment_bundle_test_mode=true \
+        -e deployment_bundle_allow_dirty_controller=true \
+        /repo/verify.yml \
+        --tags platform_verify_beszel
     }
 
     assert_controller_symlink_refused() {
@@ -734,9 +764,112 @@ docker run --rm \
     chown 0:0 '$active_release_dir/services/ntfy/compose.yml'
 
     if [ "\$#" -eq 0 ]; then
+      run_beszel_contract verify
+      printf 'BESZEL_INITIAL_CONTRACT_OK\n'
+
+      run_beszel_contract drift
+      run_beszel_contract drift-verify
+      beszel_env_checksum_before_check=\$(sha256sum \
+        '$sandbox/volume1/Docker/nas-platform/runtime/services/beszel/.env' | cut -d' ' -f1)
+      if ! run_play --tags beszel --check --diff \
+          >/tmp/beszel-drifted-check.txt 2>&1; then
+        cat /tmp/beszel-drifted-check.txt >&2
+        exit 1
+      fi
+      cat /tmp/beszel-drifted-check.txt
+      for webhook_sentinel in sentinel-user sentinel-password sentinel-query-key example.invalid; do
+        if grep -qF "\$webhook_sentinel" /tmp/beszel-drifted-check.txt; then
+          printf 'BESZEL DRIFTED CHECK LEAKED WEBHOOK SENTINEL\n' >&2
+          exit 1
+        fi
+      done
+      if ! grep -qE 'changed=[1-9][0-9]* .*failed=0 ' \
+          /tmp/beszel-drifted-check.txt; then
+        printf 'BESZEL DRIFTED CHECK DID NOT REPORT PLANNED CHANGES\n' >&2
+        exit 1
+      fi
+      run_beszel_contract drift-verify
+      beszel_env_checksum_after_check=\$(sha256sum \
+        '$sandbox/volume1/Docker/nas-platform/runtime/services/beszel/.env' | cut -d' ' -f1)
+      if [ "\$beszel_env_checksum_before_check" != "\$beszel_env_checksum_after_check" ]; then
+        printf 'BESZEL DRIFTED CHECK MUTATED RUNTIME BYTES\n' >&2
+        exit 1
+      fi
+      printf 'BESZEL_DRIFTED_CHECK_PRESERVED_STATE\n'
+
+      if run_verify_only >/tmp/beszel-verify-drift.txt 2>&1; then
+        printf 'BESZEL VERIFY-ONLY ACCEPTED DRIFT\n' >&2
+        exit 1
+      fi
+      if run_beszel_contract verify >/tmp/beszel-contract-drift.txt 2>&1; then
+        printf 'BESZEL VERIFY-ONLY CONVERGED DRIFT\n' >&2
+        exit 1
+      fi
+      /repo/tests/assert-no-vault-secrets.rb \
+        "\$vault_file" "\$vault_password_file" /tmp/beszel-verify-drift.txt
+      for webhook_sentinel in sentinel-user sentinel-password sentinel-query-key example.invalid; do
+        if grep -qF "\$webhook_sentinel" /tmp/beszel-verify-drift.txt; then
+          printf 'BESZEL VERIFY LEAKED WEBHOOK SENTINEL\n' >&2
+          exit 1
+        fi
+      done
+      printf 'BESZEL_VERIFY_ONLY_REFUSED_DRIFT\n'
+
+      run_play --tags beszel
+      run_beszel_contract verify
+      run_beszel_contract notify
+      printf 'BESZEL_DRIFT_RECONCILED_AND_NOTIFIED\n'
+
+      run_beszel_contract duplicate
+      if run_play --tags beszel >/tmp/beszel-duplicate.txt 2>&1; then
+        printf 'BESZEL DUPLICATE IDENTITY ACCEPTED\n' >&2
+        exit 1
+      fi
+      while IFS= read -r duplicate_id; do
+        grep -qF "\$duplicate_id" /tmp/beszel-duplicate.txt || {
+          printf 'BESZEL DUPLICATE FAILURE OMITTED RECORD ID\n' >&2
+          exit 1
+        }
+      done < '$sandbox/reports/beszel-duplicate-ids.txt'
+      /repo/tests/assert-no-vault-secrets.rb \
+        "\$vault_file" "\$vault_password_file" /tmp/beszel-duplicate.txt
+      printf 'BESZEL_DUPLICATE_REFUSED_WITH_IDS\n'
+      run_beszel_contract remove-duplicate
+      run_play --tags beszel
+      run_beszel_contract verify
+
+      run_beszel_contract wrong-owner
+      if run_play --tags beszel >/tmp/beszel-wrong-owner.txt 2>&1; then
+        printf 'BESZEL WRONG-OWNER IDENTITY ACCEPTED\n' >&2
+        exit 1
+      fi
+      tail -n +2 '$sandbox/reports/beszel-duplicate-ids.txt' | while IFS= read -r wrong_owner_id; do
+        grep -qF "\$wrong_owner_id" /tmp/beszel-wrong-owner.txt || {
+          printf 'BESZEL WRONG-OWNER FAILURE OMITTED RECORD ID\n' >&2
+          exit 1
+        }
+      done
+      /repo/tests/assert-no-vault-secrets.rb \
+        "\$vault_file" "\$vault_password_file" /tmp/beszel-wrong-owner.txt
+      printf 'BESZEL_WRONG_OWNER_REFUSED_WITH_IDS\n'
+      run_beszel_contract remove-duplicate
+      run_play --tags beszel
+      run_beszel_contract verify
+
+      run_play -e platform_beszel_agent_available=false --tags beszel
+      if docker ps -a --format '{{.Names}}' | \
+          grep -Eq '^(beszel_agent|beszel_agent_portable)$'; then
+        printf 'BESZEL CAPABILITY-FALSE LEFT A MANAGED AGENT\n' >&2
+        exit 1
+      fi
+      printf 'BESZEL_CAPABILITY_FALSE_REMOVED_AGENT\n'
+      run_play --tags beszel
+      run_beszel_contract verify
+
       env \
         PLATFORM_KIND=integration \
         PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\" \
+        PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=\"\$vault_password_file\" \
         PLATFORM_DOCKER_ROOT='$sandbox/volume1/Docker' \
         PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
         PLATFORM_FIXTURE_ROOT='$sandbox/fixtures' \

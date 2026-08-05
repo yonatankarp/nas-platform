@@ -19,7 +19,8 @@ STATUSES = %w[running passed failed].freeze
 REDACTION = "[REDACTED]"
 SAFE_DIAGNOSTIC = /\A[A-Za-z0-9][A-Za-z0-9_.-]*\z/
 ROOT_KEYS = %w[
-  schema lane sandbox_id git_revision vault_checksum diagnostic_locations phases
+  schema lane sandbox_id project_name beszel_port ntfy_port git_revision
+  vault_checksum diagnostic_locations phases
 ].freeze
 IDENTITY_KEYS = %w[git_sha platform_kind platform_compose_kind].freeze
 
@@ -72,9 +73,15 @@ def validate_input(input)
   raise "input contains unknown or missing root fields" unless exact_keys?(input, ROOT_KEYS, ["deployment_manifest"])
   raise "input schema must be 1" unless input["schema"] == 1
   raise "input lane must be fresh or adoption" unless %w[fresh adoption].include?(input["lane"])
-  %w[sandbox_id git_revision vault_checksum].each do |field|
+  %w[sandbox_id project_name git_revision vault_checksum].each do |field|
     raise "input #{field} must be a non-empty string" unless input[field].is_a?(String) && !input[field].empty?
   end
+  raise "input project_name is unsafe" unless input["project_name"].match?(/\Anas-platform-mac-[a-z0-9.-]+\z/)
+  %w[beszel_port ntfy_port].each do |field|
+    port = input[field]
+    raise "input #{field} must be an unprivileged TCP port" unless port.is_a?(Integer) && port.between?(1024, 65_535)
+  end
+  raise "input service ports must be distinct" if input["beszel_port"] == input["ntfy_port"]
   diagnostics = input["diagnostic_locations"]
   raise "diagnostic_locations must be an array" unless diagnostics.is_a?(Array)
   raise "diagnostic_locations must contain safe basenames" unless diagnostics.all? do |location|
@@ -171,7 +178,7 @@ end
 
 def markdown_report(report)
   lines = ["# Mac platform proof report", ""]
-  %w[lane sandbox_id git_revision vault_checksum generated_at].each do |key|
+  %w[lane sandbox_id project_name beszel_port ntfy_port git_revision vault_checksum generated_at].each do |key|
     lines << "- #{key.tr('_', ' ').capitalize}: #{markdown_cell(report[key])}" if report.key?(key)
   end
   manifest = report["deployment_manifest"]
@@ -269,6 +276,9 @@ def initialize_input(path, options)
     "schema" => 1,
     "lane" => options.fetch(:lane),
     "sandbox_id" => options.fetch(:sandbox_id),
+    "project_name" => options.fetch(:project_name),
+    "beszel_port" => options.fetch(:beszel_port),
+    "ntfy_port" => options.fetch(:ntfy_port),
     "git_revision" => options.fetch(:git_revision),
     "vault_checksum" => options.fetch(:vault_checksum),
     "diagnostic_locations" => [],
@@ -337,6 +347,9 @@ def self_test
       "schema" => 1,
       "lane" => "fresh",
       "sandbox_id" => "nas-platform-mac.Abc123",
+      "project_name" => "nas-platform-mac-abc123",
+      "beszel_port" => 38_090,
+      "ntfy_port" => 32_586,
       "git_revision" => "abc123",
       "vault_checksum" => "0" * 64,
       "diagnostic_locations" => [],
@@ -536,6 +549,9 @@ parser = OptionParser.new do |opts|
   opts.on("--manifest PATH") { |value| options[:manifest] = value }
   opts.on("--lane LANE") { |value| options[:lane] = value }
   opts.on("--sandbox-id ID") { |value| options[:sandbox_id] = value }
+  opts.on("--project-name NAME") { |value| options[:project_name] = value }
+  opts.on("--beszel-port PORT", Integer) { |value| options[:beszel_port] = value }
+  opts.on("--ntfy-port PORT", Integer) { |value| options[:ntfy_port] = value }
   opts.on("--git-revision SHA") { |value| options[:git_revision] = value }
   opts.on("--vault-checksum SHA256") { |value| options[:vault_checksum] = value }
   opts.on("--phase NAME") { |value| options[:phase] = value }

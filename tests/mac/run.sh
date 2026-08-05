@@ -96,7 +96,7 @@ else
   sandbox=$(mktemp -d "$temporary_parent/nas-platform-mac.XXXXXX")
   chmod 0700 "$sandbox"
   sandbox=$(CDPATH= cd -- "$sandbox" && pwd -P)
-  suffix=${sandbox##*.}
+  suffix=$(printf '%s' "${sandbox##*.}" | tr '[:upper:]' '[:lower:]')
   project_name=nas-platform-mac-$suffix
   printf 'schema=1\nproject=%s\n' "$project_name" > "$sandbox/.nas-platform-mac-owned"
   chmod 0600 "$sandbox/.nas-platform-mac-owned"
@@ -104,7 +104,7 @@ else
     "$sandbox/fixtures"
 fi
 
-suffix=${sandbox##*.}
+suffix=$(printf '%s' "${sandbox##*.}" | tr '[:upper:]' '[:lower:]')
 project_name=nas-platform-mac-$suffix
 report_root=$sandbox.reports
 if [ ! -e "$report_root" ]; then
@@ -127,33 +127,47 @@ report_marker=$report_root/.nas-platform-mac-report-owned
   mac_die 'report root ownership marker is missing or invalid'
 state_input=$report_root/phase-input.json
 
+git_revision=$(git -C "$mac_repo_dir" rev-parse HEAD)
+vault_checksum=$(shasum -a 256 "$vault_file" | awk '{print $1}')
+if [ ! -f "$state_input" ]; then
+  beszel_port=$(ruby -rsocket -e 'server = TCPServer.new("127.0.0.1", 0); print server.addr[1]; server.close')
+  ntfy_port=$(ruby -rsocket -e 'server = TCPServer.new("127.0.0.1", 0); print server.addr[1]; server.close')
+  while [ "$ntfy_port" = "$beszel_port" ]; do
+    ntfy_port=$(ruby -rsocket -e 'server = TCPServer.new("127.0.0.1", 0); print server.addr[1]; server.close')
+  done
+  "$mac_script_dir/report.rb" --init "$state_input" --lane "$lane" \
+    --sandbox-id "$(basename -- "$sandbox")" --git-revision "$git_revision" \
+    --vault-checksum "$vault_checksum" --project-name "$project_name" \
+    --beszel-port "$beszel_port" --ntfy-port "$ntfy_port"
+else
+  state_lane=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("lane")' "$state_input")
+  state_git_revision=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("git_revision")' "$state_input")
+  state_vault_checksum=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("vault_checksum")' "$state_input")
+  state_project_name=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("project_name")' "$state_input")
+  beszel_port=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("beszel_port")' "$state_input")
+  ntfy_port=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("ntfy_port")' "$state_input")
+  [ "$state_lane" = "$lane" ] || mac_die 'resume lane does not match the recorded lane'
+  [ "$state_project_name" = "$project_name" ] ||
+    mac_die 'resume project namespace does not match the recorded run'
+  [ "$state_git_revision" = "$git_revision" ] ||
+    mac_die 'resume Git revision does not match the recorded run'
+  [ "$state_vault_checksum" = "$vault_checksum" ] ||
+    mac_die 'resume vault checksum does not match the recorded run'
+fi
+
 export PLATFORM_MAC_SANDBOX=$sandbox
 export PLATFORM_DOCKER_ROOT=$sandbox/service-data/docker
 export PLATFORM_MEDIA_ROOT=$sandbox/service-data/media
 export PLATFORM_FIXTURE_ROOT=$sandbox/fixtures
 export PLATFORM_REPORT_ROOT=$report_root
 export PLATFORM_PROOF_LANE=$lane
+export PLATFORM_PROJECT_NAME=$project_name
+export PLATFORM_BESZEL_PORT=$beszel_port
+export PLATFORM_NTFY_PORT=$ntfy_port
 export COMPOSE_PROJECT_NAME=$project_name
 export PLATFORM_MAC_VAULT_FILE=$vault_file
 export PLATFORM_MAC_VAULT_PASSWORD_FILE=$vault_password_file
 export PLATFORM_VAULT_FILE=$vault_file
-
-git_revision=$(git -C "$mac_repo_dir" rev-parse HEAD)
-vault_checksum=$(shasum -a 256 "$vault_file" | awk '{print $1}')
-if [ ! -f "$state_input" ]; then
-  "$mac_script_dir/report.rb" --init "$state_input" --lane "$lane" \
-    --sandbox-id "$(basename -- "$sandbox")" --git-revision "$git_revision" \
-    --vault-checksum "$vault_checksum"
-else
-  state_lane=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("lane")' "$state_input")
-  state_git_revision=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("git_revision")' "$state_input")
-  state_vault_checksum=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("vault_checksum")' "$state_input")
-  [ "$state_lane" = "$lane" ] || mac_die 'resume lane does not match the recorded lane'
-  [ "$state_git_revision" = "$git_revision" ] ||
-    mac_die 'resume Git revision does not match the recorded run'
-  [ "$state_vault_checksum" = "$vault_checksum" ] ||
-    mac_die 'resume vault checksum does not match the recorded run'
-fi
 
 run_site() {
   ansible-playbook -i "$mac_repo_dir/inventory/mac.yml" "$mac_repo_dir/site.yml" \
@@ -192,9 +206,12 @@ render_report() {
 capture_diagnostics() {
   diagnostic_name=container-state.jsonl
   diagnostic_temporary=$(mktemp "$report_root/container-state.XXXXXX") || return 1
-  if docker ps -a --filter "label=com.docker.compose.project=$project_name" \
-      --format '{"id":"{{.ID}}","image":"{{.Image}}","name":"{{.Names}}","status":"{{.Status}}"}' \
-      > "$diagnostic_temporary"; then
+  : > "$diagnostic_temporary"
+  if for diagnostic_project in "$project_name-beszel" "$project_name-ntfy"; do
+      docker ps -a --filter "label=com.docker.compose.project=$diagnostic_project" \
+        --format '{"id":"{{.ID}}","image":"{{.Image}}","name":"{{.Names}}","status":"{{.Status}}"}' \
+        >> "$diagnostic_temporary" || exit 1
+    done; then
     mv -f -- "$diagnostic_temporary" "$report_root/$diagnostic_name" || {
       unlink "$diagnostic_temporary" >/dev/null 2>&1 || true
       return 1
@@ -202,8 +219,9 @@ capture_diagnostics() {
     "$mac_script_dir/report.rb" --diagnostic "$state_input" \
       --location "$diagnostic_name" || return 1
 
-    diagnostic_container_ids=$(docker ps -aq \
-      --filter "label=com.docker.compose.project=$project_name") || return 1
+    diagnostic_container_ids=$(for diagnostic_project in "$project_name-beszel" "$project_name-ntfy"; do
+      docker ps -aq --filter "label=com.docker.compose.project=$diagnostic_project" || exit 1
+    done) || return 1
     for diagnostic_container_id in $diagnostic_container_ids; do
       diagnostic_container_name=$(docker inspect --format '{{.Name}}' \
         "$diagnostic_container_id" 2>/dev/null) || diagnostic_container_name=$diagnostic_container_id
@@ -230,6 +248,26 @@ execute_phase() {
       command -v docker >/dev/null 2>&1 || mac_die 'Docker is required'
       command -v ansible-playbook >/dev/null 2>&1 || mac_die 'ansible-playbook is required'
       docker info >/dev/null 2>&1 || mac_die 'Docker Desktop is unavailable'
+      for reserved_name in \
+        "$project_name-beszel" "$project_name-beszel-agent-intel" \
+        "$project_name-beszel-agent-portable" "$project_name-beszel-socket-proxy" \
+        "$project_name-ntfy"; do
+        [ -z "$(docker ps -aq --filter "name=^/$reserved_name$")" ] ||
+          mac_die "reserved container name is already in use: $reserved_name"
+      done
+      for reserved_port in "$beszel_port" "$ntfy_port"; do
+        [ -z "$(docker ps -q --filter "publish=$reserved_port")" ] ||
+          mac_die "reserved host port is already in use: $reserved_port"
+      done
+      ruby -rsocket -e '
+        ARGV.each do |value|
+          server = TCPServer.new("127.0.0.1", Integer(value, 10))
+          server.close
+        rescue SystemCallError
+          warn "reserved host port is already in use: #{value}"
+          exit 1
+        end
+      ' "$beszel_port" "$ntfy_port"
       ansible-playbook "$mac_repo_dir/validate-vault.yml" \
         --vault-password-file "$vault_password_file" -e @"$vault_file" \
         -e "platform_vault_file=$vault_file"

@@ -2,11 +2,16 @@
 # Docker Desktop capabilities. The lifecycle harness exports isolated roots;
 # no production data path or published port is inherited from the NAS.
 platform_kind: mac
+platform_project_name: "{{ lookup('env', 'PLATFORM_PROJECT_NAME') }}"
+beszel_port: "{{ lookup('env', 'PLATFORM_BESZEL_PORT') | int }}"
+ntfy_port: "{{ lookup('env', 'PLATFORM_NTFY_PORT') | int }}"
 nas_docker_root: "{{ lookup('env', 'PLATFORM_DOCKER_ROOT') | platform_physical_path }}"
 nas_media_root: "{{ lookup('env', 'PLATFORM_MEDIA_ROOT') | platform_physical_path }}"
 
 platform_render_device_available: false
 platform_render_device_path: /dev/dri/card0
+platform_beszel_agent_available: true
+platform_beszel_agent_kind: portable
 
 platform_host_network_available: false
 platform_host_network_adapter: published_ports

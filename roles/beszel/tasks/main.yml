@@ -49,21 +49,37 @@
     mode: "0600"
   no_log: "{{ beszel_no_log | default(true) }}"
 
-# The Intel agent needs a render device and CAP_PERFMON. Where no render device
-# exists the hub and its socket proxy still run, which is a real capability
-# difference rather than a testing accommodation.
+- name: List deployed Beszel Compose services
+  ansible.builtin.command:
+    argv: "{{ beszel_compose_cli_argv + ['ps', '--services', '--all'] }}"
+  register: beszel_deployed_compose_services
+  changed_when: false
+  check_mode: false
+
+- name: Remove managed Beszel agents not selected by host capabilities
+  community.docker.docker_compose_v2:
+    project_src: "{{ platform_current_dir }}/services/beszel"
+    project_name: "{{ beszel_compose_project_name }}"
+    files: "{{ beszel_compose_files }}"
+    env_files: ["{{ platform_runtime_dir }}/services/beszel/.env"]
+    services: >-
+      {{ beszel_inactive_agent_services
+         | intersect(beszel_deployed_compose_services.stdout_lines) }}
+    state: absent
+  when: >-
+    beszel_inactive_agent_services
+    | intersect(beszel_deployed_compose_services.stdout_lines) | length > 0
+
 - name: Deploy Beszel
   community.docker.docker_compose_v2:
     project_src: "{{ platform_current_dir }}/services/beszel"
+    project_name: "{{ beszel_compose_project_name }}"
     files: "{{ beszel_compose_files }}"
     env_files: ["{{ platform_runtime_dir }}/services/beszel/.env"]
-    services: "{{ beszel_services }}"
+    services: "{{ ['hub', 'socket-proxy'] + ([beszel_agent_service] if beszel_agent_enabled else []) }}"
     state: present
     wait: true
     wait_timeout: 180
-  vars:
-    beszel_services: >-
-      {{ ['hub', 'socket-proxy'] + (preflight_gpu_available | bool) | ternary(['agent'], []) }}
 
 - name: Wait for the hub to report healthy
   ansible.builtin.uri:
@@ -97,6 +113,7 @@
 - name: Create the superuser
   community.docker.docker_compose_v2_exec:
     project_src: "{{ platform_current_dir }}/services/beszel"
+    project_name: "{{ beszel_compose_project_name }}"
     files: "{{ beszel_compose_files }}"
     env_files: ["{{ platform_runtime_dir }}/services/beszel/.env"]
     service: hub
@@ -154,21 +171,35 @@
       vault holds '{{ vault_beszel_agent_key }}'.
     success_msg: "Hub advertises the keypair from vault, no read-back needed"
 
-# Collections are listed and filtered in Jinja rather than through PocketBase's
-# filter parameter, whose quotes and parentheses need URL encoding that uri does
-# not apply and which returns 400 without it. These collections hold a handful of
-# records, so listing is cheap. Pagination totals are unused, and skipping them
-# avoids PocketBase concurrently counting and reading the bind-mounted SQLite
-# database immediately after the first user is created.
+# Collections use URL-encoded PocketBase identity filters, then repeat the exact
+# identity selection in Jinja before resolving a record. Totals remain enabled so
+# each read can refuse a result spanning more than the complete 500-record page.
 - name: List application users
+  tags: [platform_verify_beszel]
   ansible.builtin.uri:
-    url: "{{ beszel_api }}/api/collections/users/records?skipTotal=1"
+    url: >-
+      {{ beszel_api }}/api/collections/users/records?perPage=500&filter={{
+         beszel_user_filter | urlencode }}
     headers:
       Authorization: "{{ beszel_auth.json.token }}"
   register: beszel_users
   changed_when: false
   check_mode: false
   no_log: "{{ beszel_no_log | default(true) }}"
+
+- name: Require the complete managed application user result set
+  ansible.builtin.assert:
+    that: beszel_users.json.get('totalPages', 0) | int <= 1
+    fail_msg: Managed application user identity returned more than 500 records; refusing incomplete reconciliation.
+
+- name: Refuse duplicate managed application users
+  tags: [platform_verify_beszel]
+  ansible.builtin.assert:
+    that: beszel_matching_users | length <= 1
+    fail_msg: >-
+      Duplicate managed application user record IDs:
+      {{ beszel_matching_users | map(attribute='id') | join(',') }}
+  no_log: false
 
 # Alerts, tokens and settings all relate to the users collection, not to
 # _superusers, so an application user is required alongside the superuser.
@@ -190,7 +221,16 @@
     status_code: [200]
   register: beszel_created_user
   when: beszel_matching_users | length == 0
+  changed_when: true
   no_log: "{{ beszel_no_log | default(true) }}"
+
+- name: Report planned application user creation
+  ansible.builtin.debug:
+    msg: Managed application user would be created.
+  when:
+    - ansible_check_mode
+    - beszel_matching_users | length == 0
+  changed_when: true
 
 # PocketBase writes through one SQLite connection and validates relations through
 # another. Refreshing the pool after this one-time insert prevents the validator
@@ -198,6 +238,7 @@
 - name: Refresh Beszel database connections after creating the application user
   community.docker.docker_compose_v2:
     project_src: "{{ platform_current_dir }}/services/beszel"
+    project_name: "{{ beszel_compose_project_name }}"
     files: "{{ beszel_compose_files }}"
     env_files: ["{{ platform_runtime_dir }}/services/beszel/.env"]
     services: [hub]
@@ -210,8 +251,11 @@
 # The id returned by the POST was rejected as a missing relation when used
 # immediately, while an id read from the collection is accepted.
 - name: List application users again to resolve the id
+  tags: [platform_verify_beszel]
   ansible.builtin.uri:
-    url: "{{ beszel_api }}/api/collections/users/records?skipTotal=1"
+    url: >-
+      {{ beszel_api }}/api/collections/users/records?perPage=500&filter={{
+         beszel_user_filter | urlencode }}
     headers:
       Authorization: "{{ beszel_auth.json.token }}"
   register: beszel_users_after
@@ -219,13 +263,128 @@
   check_mode: false
   no_log: "{{ beszel_no_log | default(true) }}"
 
+- name: Refuse duplicate managed application users after reconciliation
+  tags: [platform_verify_beszel]
+  ansible.builtin.assert:
+    that:
+      - (beszel_users_after.json.get('items', [])
+         | selectattr('email', 'equalto', vault_beszel_app_user_email)
+         | list | length) <= 1
+    fail_msg: >-
+      Duplicate managed application user record IDs:
+      {{ beszel_users_after.json.get('items', [])
+         | selectattr('email', 'equalto', vault_beszel_app_user_email)
+         | map(attribute='id') | join(',') }}
+  no_log: false
+
 - name: Resolve the application user id
+  tags: [platform_verify_beszel]
   ansible.builtin.set_fact:
     beszel_user_id: >-
       {{ (beszel_users_after.json.get('items', [])
           | selectattr('email', 'equalto', vault_beszel_app_user_email)
           | list | first | default({})).id | default('') }}
   no_log: "{{ beszel_no_log | default(true) }}"
+
+- name: Check whether the managed application user accepts vault credentials
+  tags: [platform_verify_beszel]
+  ansible.builtin.uri:
+    url: "{{ beszel_api }}/api/collections/users/auth-with-password"
+    method: POST
+    body_format: json
+    body:
+      identity: "{{ vault_beszel_app_user_email }}"
+      password: "{{ vault_beszel_app_user_password }}"
+    status_code: [200, 400, 403]
+  register: beszel_app_user_auth
+  changed_when: false
+  check_mode: false
+  no_log: "{{ beszel_no_log | default(true) }}"
+
+- name: Reconcile managed application user credentials, role, and verification
+  ansible.builtin.uri:
+    url: "{{ beszel_api }}/api/collections/users/records/{{ beszel_user_id }}"
+    method: PATCH
+    headers:
+      Authorization: "{{ beszel_auth.json.token }}"
+    body_format: json
+    body:
+      password: "{{ vault_beszel_app_user_password }}"
+      passwordConfirm: "{{ vault_beszel_app_user_password }}"
+      verified: true
+      role: admin
+    status_code: [200]
+  when:
+    - beszel_user_id | length > 0
+    - beszel_app_user_auth.status | default(0) != 200
+      or (beszel_users_after.json.get('items', [])
+          | selectattr('id', 'equalto', beszel_user_id) | first).verified != true
+      or (beszel_users_after.json.get('items', [])
+          | selectattr('id', 'equalto', beszel_user_id) | first).role != 'admin'
+  changed_when: true
+  no_log: "{{ beszel_no_log | default(true) }}"
+
+- name: Report planned managed application user reconciliation
+  ansible.builtin.debug:
+    msg: Managed application user credentials, role, or verification would be reconciled.
+  when:
+    - ansible_check_mode
+    - beszel_user_id | length > 0
+    - beszel_app_user_auth.status | default(0) != 200
+      or (beszel_users_after.json.get('items', [])
+          | selectattr('id', 'equalto', beszel_user_id) | first).verified != true
+      or (beszel_users_after.json.get('items', [])
+          | selectattr('id', 'equalto', beszel_user_id) | first).role != 'admin'
+  changed_when: true
+
+- name: Refresh application users after reconciliation
+  tags: [platform_verify_beszel]
+  ansible.builtin.uri:
+    url: >-
+      {{ beszel_api }}/api/collections/users/records?perPage=500&filter={{
+         beszel_user_filter | urlencode }}
+    headers:
+      Authorization: "{{ beszel_auth.json.token }}"
+  register: beszel_users_after
+  changed_when: false
+  check_mode: false
+  no_log: "{{ beszel_no_log | default(true) }}"
+
+- name: Resolve the reconciled application user id
+  tags: [platform_verify_beszel]
+  ansible.builtin.set_fact:
+    beszel_user_id: >-
+      {{ (beszel_users_after.json.get('items', [])
+          | selectattr('email', 'equalto', vault_beszel_app_user_email)
+          | list | first | default({})).id | default('') }}
+  no_log: "{{ beszel_no_log | default(true) }}"
+
+- name: Verify the managed application user contract
+  tags: [platform_verify_beszel]
+  ansible.builtin.assert:
+    that:
+      - beszel_user_id | length > 0
+      - (beszel_users_after.json.get('items', [])
+         | selectattr('id', 'equalto', beszel_user_id) | first).verified == true
+      - (beszel_users_after.json.get('items', [])
+         | selectattr('id', 'equalto', beszel_user_id) | first).role == 'admin'
+    fail_msg: Managed application user is absent or differs from the verified admin contract.
+  when: not ansible_check_mode
+
+- name: Verify the managed application user accepts vault credentials
+  tags: [platform_verify_beszel]
+  ansible.builtin.uri:
+    url: "{{ beszel_api }}/api/collections/users/auth-with-password"
+    method: POST
+    body_format: json
+    body:
+      identity: "{{ vault_beszel_app_user_email }}"
+      password: "{{ vault_beszel_app_user_password }}"
+    status_code: [200]
+  changed_when: false
+  check_mode: false
+  no_log: "{{ beszel_no_log | default(true) }}"
+  when: not ansible_check_mode
 
 - name: Report when Beszel configuration cannot continue
   ansible.builtin.debug:
@@ -241,14 +400,35 @@
     # Authored verbatim, which Beszel accepts, so the agent's TOKEN comes from
     # vault rather than a value revealed in the hub's settings page.
     - name: List universal tokens
+      tags: [platform_verify_beszel]
       ansible.builtin.uri:
-        url: "{{ beszel_api }}/api/collections/universal_tokens/records"
+        url: >-
+          {{ beszel_api }}/api/collections/universal_tokens/records?perPage=500&filter={{
+             beszel_token_filter | urlencode }}
         headers:
           Authorization: "{{ beszel_auth.json.token }}"
       register: beszel_tokens
       changed_when: false
       check_mode: false
       no_log: "{{ beszel_no_log | default(true) }}"
+
+    - name: Require the complete managed universal token result set
+      ansible.builtin.assert:
+        that: beszel_tokens.json.get('totalPages', 0) | int <= 1
+        fail_msg: Managed universal token identity returned more than 500 records; refusing incomplete reconciliation.
+
+    - name: Refuse duplicate managed universal tokens
+      tags: [platform_verify_beszel]
+      ansible.builtin.assert:
+        that:
+          - (beszel_tokens.json.get('items', [])
+             | selectattr('user', 'equalto', beszel_user_id) | list | length) <= 1
+        fail_msg: >-
+          Duplicate managed universal token record IDs:
+          {{ beszel_tokens.json.get('items', [])
+             | selectattr('user', 'equalto', beszel_user_id)
+             | map(attribute='id') | join(',') }}
+      no_log: false
 
     - name: Create the universal token from vault
       ansible.builtin.uri:
@@ -264,11 +444,124 @@
       when: >-
         beszel_tokens.json.get('items', [])
         | selectattr('user', 'equalto', beszel_user_id) | list | length == 0
+      changed_when: true
       no_log: "{{ beszel_no_log | default(true) }}"
 
+    - name: Reconcile the universal token from vault
+      ansible.builtin.uri:
+        url: "{{ beszel_api }}/api/collections/universal_tokens/records/{{ beszel_managed_token.id }}"
+        method: PATCH
+        headers:
+          Authorization: "{{ beszel_auth.json.token }}"
+        body_format: json
+        body:
+          token: "{{ vault_beszel_universal_token }}"
+        status_code: [200]
+      when:
+        - (beszel_tokens.json.get('items', [])
+           | selectattr('user', 'equalto', beszel_user_id) | list | length) == 1
+        - (beszel_tokens.json.get('items', [])
+           | selectattr('user', 'equalto', beszel_user_id) | first).token
+          != vault_beszel_universal_token
+      changed_when: true
+      no_log: "{{ beszel_no_log | default(true) }}"
+      vars:
+        beszel_managed_token: >-
+          {{ beszel_tokens.json.get('items', [])
+             | selectattr('user', 'equalto', beszel_user_id) | first }}
+
+    - name: Report planned universal token reconciliation
+      ansible.builtin.debug:
+        msg: Managed universal token would be created or reconciled from vault.
+      when:
+        - ansible_check_mode
+        - >-
+          (beszel_tokens.json.get('items', [])
+           | selectattr('user', 'equalto', beszel_user_id) | list | length) == 0
+          or ((beszel_tokens.json.get('items', [])
+               | selectattr('user', 'equalto', beszel_user_id) | list | length) == 1
+              and (beszel_tokens.json.get('items', [])
+                   | selectattr('user', 'equalto', beszel_user_id) | first).token
+                  != vault_beszel_universal_token)
+      changed_when: true
+      no_log: "{{ beszel_no_log | default(true) }}"
+
+    - name: Refresh universal tokens after reconciliation
+      tags: [platform_verify_beszel]
+      ansible.builtin.uri:
+        url: >-
+          {{ beszel_api }}/api/collections/universal_tokens/records?perPage=500&filter={{
+             beszel_token_filter | urlencode }}
+        headers:
+          Authorization: "{{ beszel_auth.json.token }}"
+      register: beszel_tokens
+      changed_when: false
+      check_mode: false
+      no_log: "{{ beszel_no_log | default(true) }}"
+
+    - name: Verify the exact managed universal token
+      tags: [platform_verify_beszel]
+      ansible.builtin.assert:
+        that:
+          - (beszel_tokens.json.get('items', [])
+             | selectattr('user', 'equalto', beszel_user_id) | list | length) == 1
+          - (beszel_tokens.json.get('items', [])
+             | selectattr('user', 'equalto', beszel_user_id) | first).token
+            == vault_beszel_universal_token
+        fail_msg: Managed universal token is absent, duplicated, or differs from vault.
+      no_log: "{{ beszel_no_log | default(true) }}"
+      when: not ansible_check_mode
+
     - name: List notification settings
+      tags: [platform_verify_beszel]
+      ansible.builtin.uri:
+        url: >-
+          {{ beszel_api }}/api/collections/user_settings/records?perPage=500&filter={{
+             beszel_settings_filter | urlencode }}
+        headers:
+          Authorization: "{{ beszel_auth.json.token }}"
+      register: beszel_settings
+      changed_when: false
+      check_mode: false
+      no_log: "{{ beszel_no_log | default(true) }}"
+
+    - name: Require the complete managed notification settings result set
+      ansible.builtin.assert:
+        that: beszel_settings.json.get('totalPages', 0) | int <= 1
+        fail_msg: Managed notification settings identity returned more than 500 records; refusing incomplete reconciliation.
+
+    - name: Refuse duplicate managed notification settings
+      tags: [platform_verify_beszel]
+      ansible.builtin.assert:
+        that: beszel_matching_settings | length <= 1
+        fail_msg: >-
+          Duplicate managed notification setting record IDs:
+          {{ beszel_matching_settings | map(attribute='id') | join(',') }}
+      no_log: false
+
+    - name: Create absent notification settings
       ansible.builtin.uri:
         url: "{{ beszel_api }}/api/collections/user_settings/records"
+        method: POST
+        headers:
+          Authorization: "{{ beszel_auth.json.token }}"
+        body_format: json
+        body:
+          user: "{{ beszel_user_id }}"
+        status_code: [200]
+      when: beszel_matching_settings | length == 0
+      changed_when: true
+      no_log: "{{ beszel_no_log | default(true) }}"
+
+    # Beszel's create hook authors email/chart defaults and intentionally
+    # replaces a settings payload supplied on POST. Read that created record,
+    # then PATCH the managed webhook while preserving its defaults.
+    - name: Refresh notification settings after creation
+      tags: [platform_verify_beszel]
+      ansible.builtin.uri:
+        url: >-
+          {{ beszel_api }}/api/collections/user_settings/records?perPage=500&filter={{
+             beszel_settings_filter | urlencode }}
         headers:
           Authorization: "{{ beszel_auth.json.token }}"
       register: beszel_settings
@@ -278,66 +571,130 @@
 
     - name: Point Beszel notifications at ntfy
       ansible.builtin.uri:
-        url: >-
-          {{ beszel_api }}/api/collections/user_settings/records{{
-             ('/' ~ (beszel_matching_settings | first).id)
-             if beszel_matching_settings | length > 0 else '' }}
-        method: "{{ 'PATCH' if beszel_matching_settings | length > 0 else 'POST' }}"
+        url: "{{ beszel_api }}/api/collections/user_settings/records/{{ (beszel_matching_settings | first).id }}"
+        method: PATCH
         headers:
           Authorization: "{{ beszel_auth.json.token }}"
         body_format: json
         body:
-          user: "{{ beszel_user_id }}"
-          settings:
-            webhooks: ["{{ beszel_notification_url | trim }}"]
+          settings: >-
+            {{ beszel_current_notification_settings
+               | combine({'webhooks': [beszel_notification_url | trim]}) }}
         status_code: [200]
-      when: >-
-        beszel_matching_settings | length == 0
-        or ((beszel_matching_settings | first).settings.webhooks | default([]))
-           != [beszel_notification_url | trim]
+      when:
+        - beszel_matching_settings | length == 1
+        - (beszel_current_notification_settings.webhooks | default([]))
+          != [beszel_notification_url | trim]
+      changed_when: true
       no_log: "{{ beszel_no_log | default(true) }}"
 
-    # Alerts relate to a system, which exists once the agent has registered. Where
-    # no agent runs this reports what it skipped rather than pretending the
-    # alerting chain is complete.
-    - name: Wait for the agent to register its system
+    - name: Report planned notification webhook reconciliation
+      ansible.builtin.debug:
+        msg: Managed ntfy notification webhook would be created or reconciled.
+      when:
+        - ansible_check_mode
+        - beszel_matching_settings | length == 0
+          or (beszel_matching_settings | length == 1
+              and (beszel_current_notification_settings.webhooks | default([]))
+                  != [beszel_notification_url | trim])
+      changed_when: true
+
+    - name: Refresh notification settings after reconciliation
+      tags: [platform_verify_beszel]
       ansible.builtin.uri:
-        url: "{{ beszel_api }}/api/collections/systems/records"
+        url: >-
+          {{ beszel_api }}/api/collections/user_settings/records?perPage=500&filter={{
+             beszel_settings_filter | urlencode }}
+        headers:
+          Authorization: "{{ beszel_auth.json.token }}"
+      register: beszel_settings
+      changed_when: false
+      check_mode: false
+      no_log: "{{ beszel_no_log | default(true) }}"
+
+    - name: Summarize the managed ntfy webhook without URL bodies
+      tags: [platform_verify_beszel]
+      ansible.builtin.set_fact:
+        beszel_webhook_record_count: "{{ beszel_matching_settings | length }}"
+        beszel_webhook_exact: >-
+          {{ beszel_matching_settings | length == 1 and
+             (beszel_current_notification_settings.webhooks | default([]))
+             == [beszel_notification_url | trim] }}
+        beszel_webhook_scheme: >-
+          {{ 'ntfy'
+             if (beszel_current_notification_settings.webhooks | default([])
+                 | select('match', '^ntfy://') | list | length)
+                == (beszel_current_notification_settings.webhooks | default([]) | length)
+                and (beszel_current_notification_settings.webhooks | default([]) | length) > 0
+             else '[REDACTED]' }}
+      no_log: true
+
+    - name: Verify the managed ntfy webhook
+      tags: [platform_verify_beszel]
+      ansible.builtin.assert:
+        that:
+          - beszel_webhook_record_count | int == 1
+          - beszel_webhook_exact | bool
+        fail_msg: >-
+          Managed ntfy webhook differs (records={{ beszel_webhook_record_count }},
+          exact={{ beszel_webhook_exact }},
+          scheme={{ beszel_webhook_scheme | default('[REDACTED]') }}).
+      no_log: false
+      when: not ansible_check_mode
+
+    # Alerts relate to a system, which exists once the agent has registered.
+    - name: Wait for the agent to register its system
+      tags: [platform_verify_beszel]
+      ansible.builtin.uri:
+        url: >-
+          {{ beszel_api }}/api/collections/systems/records?perPage=500&filter={{
+             beszel_system_filter | urlencode }}
         headers:
           Authorization: "{{ beszel_auth.json.token }}"
       register: beszel_systems
-      until: beszel_systems.json.get('items', []) | length > 0
-      retries: "{{ (preflight_gpu_available | bool) | ternary(20, 1) }}"
+      until: beszel_matching_systems | length > 0
+      retries: "{{ beszel_agent_enabled | ternary(20, 1) }}"
       delay: 3
       failed_when: false
       changed_when: false
       check_mode: false
       no_log: "{{ beszel_no_log | default(true) }}"
 
+    - name: Require the complete same-name system result set
+      ansible.builtin.assert:
+        that: beszel_systems.json.get('totalPages', 0) | int <= 1
+        fail_msg: Managed system name returned more than 500 records; refusing incomplete reconciliation.
+
+    - name: Refuse same-name systems outside the managed user relation
+      tags: [platform_verify_beszel]
+      ansible.builtin.assert:
+        that: beszel_wrong_owner_systems | length == 0
+        fail_msg: >-
+          Same-name wrong-owner system record IDs:
+          {{ beszel_wrong_owner_systems | map(attribute='id') | join(',') }}
+      no_log: false
+
+    - name: Refuse duplicate managed systems
+      tags: [platform_verify_beszel]
+      ansible.builtin.assert:
+        that: beszel_matching_systems | length <= 1
+        fail_msg: >-
+          Duplicate managed system record IDs:
+          {{ beszel_matching_systems | map(attribute='id') | join(',') }}
+      no_log: false
+
     - name: Report that alerts need a registered system
       ansible.builtin.debug:
         msg: >-
-          No Beszel system is registered, so alerts were skipped. Expected where
-          no render device exists and the agent therefore does not run.
-      when: beszel_systems.json.get('items', []) | length == 0
+          No managed Beszel system is registered, so alerts were skipped. This is
+          expected when the host capability explicitly disables the agent.
+      when: beszel_matching_systems | length == 0
 
-    - name: Maintain alerts for the registered system
-      ansible.builtin.uri:
-        url: "{{ beszel_api }}/api/collections/alerts/records"
-        method: POST
-        headers:
-          Authorization: "{{ beszel_auth.json.token }}"
-        body_format: json
-        body:
-          user: "{{ beszel_user_id }}"
-          system: "{{ (beszel_systems.json.get('items', []) | first).id }}"
-          name: "{{ item.name }}"
-          value: "{{ item.value }}"
-          min: "{{ item.min }}"
-        # 400 also covers an alert of this type already existing for the system.
-        status_code: [200, 400]
+    - name: Reconcile each managed alert
+      tags: [platform_verify_beszel]
+      ansible.builtin.include_tasks: alert.yml
       loop: "{{ beszel_alerts }}"
       loop_control:
-        label: "{{ item.name }}"
-      when: beszel_systems.json.get('items', []) | length > 0
-      changed_when: false
+        loop_var: beszel_alert
+        label: "{{ beszel_alert.name }}"
+      when: beszel_matching_systems | length == 1

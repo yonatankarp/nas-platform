@@ -29,7 +29,39 @@ services:
     restart: unless-stopped
     logging: *default-logging
 
-  agent:
+  agent-portable:
+    container_name: beszel_agent_portable
+    image: ghcr.io/henrygd/beszel/beszel-agent:0.18.7@sha256:41252f7c7adf0b53ee1d72cbe2e3ea7adc7fffd357ff54bf2bd0c59d166e30c9
+    depends_on:
+      hub:
+        condition: service_healthy
+      socket-proxy:
+        condition: service_healthy
+    volumes:
+      - ${NAS_DOCKER_ROOT:?}/beszel/agent:/var/lib/beszel-agent
+      - ${NAS_DOCKER_ROOT:?}/beszel/volume1:/extra-filesystems/volume1:ro
+      - ${NAS_MEDIA_ROOT:?}/.beszel:/extra-filesystems/volume2:ro
+    environment:
+      DISABLE_SSH: "true"
+      DOCKER_HOST: tcp://socket-proxy:2375
+      FILESYSTEM: /extra-filesystems/volume1
+      HUB_URL: http://hub:8090
+      KEY: ${BESZEL_AGENT_KEY:?}
+      SYSTEM_NAME: ${BESZEL_SYSTEM_NAME:?}
+      TOKEN: ${BESZEL_AGENT_TOKEN:?}
+      TZ: ${TZ:?}
+    healthcheck:
+      test: [CMD, /agent, health]
+      interval: 30s
+      timeout: 10s
+      retries: 4
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    logging: *default-logging
+
+  agent-intel:
     container_name: beszel_agent
     image: ghcr.io/henrygd/beszel/beszel-agent-intel:0.18.7@sha256:7a5ee1cfbd8faf95d10a965bd1cb9e2208b2ce731bb3ef5b00020e1985ffd824
     # Host networking is a monitoring compatibility exception: the agent must

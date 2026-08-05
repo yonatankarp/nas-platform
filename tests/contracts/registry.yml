@@ -1,2 +1,4 @@
 ---
-contracts: []
+contracts:
+  - service: beszel
+    path: tests/contracts/beszel.sh

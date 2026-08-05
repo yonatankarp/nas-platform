@@ -18,6 +18,7 @@ BASE_FIXTURE_PATHS = %w[
   README.md
   ansible.cfg
   filter_plugins/platform_paths.py
+  filter_plugins/compose_metadata.py
   generate-secrets.yml
   inventory/group_vars/all/main.yml
   inventory/group_vars/all/vault.yml.example
@@ -42,11 +43,13 @@ BASE_FIXTURE_PATHS = %w[
   roles/deployment_bundle/templates/manifest.yml.j2
   roles/preflight/meta/argument_specs.yml
   roles/preflight/tasks/main.yml
+  roles/beszel/tasks/alert.yml
   roles/vault_contract/meta/argument_specs.yml
   roles/vault_contract/tasks/main.yml
   services/manifest.yml
   templates/vault-plain.yml.j2
   tests/contracts/registry.yml
+  tests/compose_metadata_filter_test.yml
   tests/integration.sh
   tests/integration_lock.sh
   tests/integration_lock_test.sh
@@ -150,6 +153,18 @@ def mutate_yaml_file(root, relative_path)
   File.write(path, YAML.dump(document))
 end
 
+def flatten_fixture_tasks(tasks, flattened = [])
+  Array(tasks).each do |task|
+    next unless task.is_a?(Hash)
+
+    flattened << task
+    %w[block rescue always].each do |section|
+      flatten_fixture_tasks(task[section], flattened)
+    end
+  end
+  flattened
+end
+
 def service(manifest, name)
   manifest.fetch("services").find { |entry| entry["name"] == name }
 end
@@ -165,6 +180,18 @@ def run_policy
   end
 end
 
+def run_compose_metadata_behavior
+  Dir.mktmpdir("nas-platform-compose-metadata-") do |sandbox|
+    copy_fixture(ROOT, sandbox)
+    yield sandbox
+    stdout, stderr, status = Open3.capture3(
+      "ansible-playbook", "-i", "localhost,", "-c", "local",
+      "tests/compose_metadata_filter_test.yml", chdir: sandbox
+    )
+    [stdout + stderr, status]
+  end
+end
+
 def expect_failure(failures, label, message)
   output, status = run_policy { |root| yield root }
   failures << "#{label}: policy unexpectedly passed" if status.success?
@@ -175,6 +202,13 @@ end
 def expect_success(failures, label)
   output, status = run_policy { |root| yield root }
   failures << "#{label}: #{output.lines.first&.strip || 'policy failed'}" unless status.success?
+end
+
+def replace_last(body, source, replacement)
+  index = body.rindex(source)
+  raise "mutation source is absent" unless index
+
+  body[0...index] + replacement + body[(index + source.length)..]
 end
 
 def expect_fixture_identity_rejection(failures, label, service_entry)
@@ -459,6 +493,61 @@ expect_failure(failures, "missing Beszel Compose interface",
   end
 end
 
+expect_failure(failures, "Mac storage claims Linux ownership",
+               "Mac host preparation must omit Linux-only storage ownership") do |root|
+  mutate_yaml_file(root, "roles/host_prep/tasks/main.yml") do |tasks|
+    task = tasks.find { |entry| entry["name"] == "Create service state directories" }
+    task.fetch("ansible.builtin.file")["owner"] = "{{ item.owner | default(omit) }}"
+  end
+end
+
+expect_failure(failures, "unfiltered Beszel settings readback",
+               "collection readback must use a URL-encoded identity filter with totals") do |root|
+  mutate_yaml_file(root, "roles/beszel/tasks/main.yml") do |tasks|
+    task = flatten_fixture_tasks(tasks).find do |entry|
+      entry["name"] == "Refresh notification settings after reconciliation"
+    end
+    uri = task.fetch("ansible.builtin.uri")
+    uri["url"] = uri.fetch("url").sub(" | urlencode", "")
+  end
+end
+
+expect_failure(failures, "silent Beszel user creation",
+               "Beszel user creation must report real and check-mode predicted changes") do |root|
+  mutate_yaml_file(root, "roles/beszel/tasks/main.yml") do |tasks|
+    task = flatten_fixture_tasks(tasks).find do |entry|
+      entry["name"] == "Create the application user"
+    end
+    task["changed_when"] = false
+  end
+end
+
+expect_failure(failures, "unredacted Beszel webhook summary",
+               "Beszel webhook mismatch diagnostics must never include URL bodies") do |root|
+  mutate_yaml_file(root, "roles/beszel/tasks/main.yml") do |tasks|
+    task = flatten_fixture_tasks(tasks).find do |entry|
+      entry["name"] == "Summarize the managed ntfy webhook without URL bodies"
+    end
+    task["no_log"] = false
+  end
+end
+
+expect_failure(failures, "missing Beszel system ownership guard",
+               "Beszel must reject same-name systems outside the managed user relation") do |root|
+  path = File.join(root, "roles", "beszel", "tasks", "main.yml")
+  body = File.read(path).sub(
+    "Refuse same-name systems outside the managed user relation",
+    "Bypass same-name systems outside the managed user relation"
+  )
+  File.write(path, body)
+end
+
+expect_failure(failures, "unencoded Beszel contract filters",
+               "Beszel contract must use complete encoded identity filters and enforce system ownership") do |root|
+  path = File.join(root, "tests", "contracts", "beszel.sh")
+  File.write(path, File.read(path).gsub("URI.encode_www_form", "removed_form_encoding"))
+end
+
 {
   "duplicate top-level key" => ["\nservices: []\n", "services"],
   "duplicate legacy key" => ["  commit: duplicate\n", "commit"],
@@ -491,7 +580,9 @@ end
 
 expect_failure(failures, "integration omits contract ABI", "integration must set the contract environment ABI") do |root|
   path = File.join(root, "tests", "integration.sh")
-  File.write(path, File.read(path).sub(/^\s*PLATFORM_REPORT_ROOT=.*\n/, ""))
+  body = File.read(path)
+  source = body.scan(/^\s*PLATFORM_REPORT_ROOT=.*\n/).last
+  File.write(path, replace_last(body, source, ""))
 end
 
 provisioning_task = <<~YAML
@@ -833,6 +924,54 @@ expect_failure(failures, "platform image merge removed",
   File.write(path, File.read(path).gsub("platform_compose", "override_compose"))
 end
 
+expect_failure(failures, "Compose override tag normalization removed",
+               "deployment manifest must parse Compose tags without rewriting source text") do |root|
+  path = File.join(root, "roles", "deployment_bundle", "templates", "manifest.yml.j2")
+  File.write(path, File.read(path).gsub("platform_compose_metadata", "from_yaml"))
+end
+
+expect_failure(failures, "Compose metadata unknown-tag rejection removed",
+               "Compose metadata loader must allow only exact known tags and fail closed") do |root|
+  path = File.join(root, "filter_plugins", "compose_metadata.py")
+  File.write(path, File.read(path).gsub("except yaml.YAMLError", "except TypeError"))
+end
+
+expect_failure(failures, "Compose metadata behavior tests bypassed",
+               "policy validation must execute Compose metadata parser behavior tests") do |root|
+  path = File.join(root, "tests", "validate-policy.sh")
+  File.write(path, File.read(path).gsub(
+    "ansible-playbook -i localhost, -c local tests/compose_metadata_filter_test.yml",
+    "true"
+  ))
+end
+
+permissive_output, permissive_status = run_compose_metadata_behavior do |root|
+  path = File.join(root, "filter_plugins", "compose_metadata.py")
+  source = File.read(path)
+  constructor_loop = <<~PYTHON.chomp
+    for _compose_tag in ("!override", "!reset"):
+        _ComposeMetadataLoader.add_constructor(_compose_tag, _construct_compose_value)
+  PYTHON
+  permissive_constructor = <<~PYTHON.chomp
+    _ComposeMetadataLoader.add_multi_constructor(
+        "!", lambda loader, _suffix, node: _construct_compose_value(loader, node)
+    )
+  PYTHON
+  raise "mutation source is absent" unless source.include?(constructor_loop)
+
+  File.write(path, source.sub(constructor_loop, "#{constructor_loop}\n#{permissive_constructor}"))
+end
+if permissive_status.success?
+  failures << "permissive Compose unknown-tag constructor: behavioral suite unexpectedly passed"
+end
+unless permissive_output.include?("Verify only parser rejection satisfied the unknown-tag proof") &&
+       permissive_output.include?("unknown_tag_rejected | default(false) | bool")
+  failures << "permissive Compose unknown-tag constructor: missing strict behavioral failure"
+end
+if permissive_output.include?("compose-filter-secret-sentinel")
+  failures << "permissive Compose unknown-tag constructor: secret sentinel reached diagnostics"
+end
+
 expect_failure(failures, "platform override redefines image",
                "platform overrides must not redefine image keys") do |root|
   path = File.join(root, "services", "beszel", "compose.integration.yml")
@@ -981,7 +1120,13 @@ end
   expect_failure(failures, "integration #{property} removed",
                  "integration must consume the ephemeral encrypted vault without duplicate secret authoring") do |root|
     path = File.join(root, "tests", "integration.sh")
-    File.write(path, File.read(path).sub(source, "removed-integration-vault-binding"))
+    body = File.read(path)
+    mutated = if property == "contract vault ABI"
+                replace_last(body, source, "removed-integration-vault-binding")
+              else
+                body.sub(source, "removed-integration-vault-binding")
+              end
+    File.write(path, mutated)
   end
 end
 
