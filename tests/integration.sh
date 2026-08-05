@@ -40,11 +40,89 @@ mkdir -p "$sandbox/volume1/Docker" "$sandbox/volume2" "$sandbox/repo" \
   "$sandbox/fixtures" "$sandbox/reports"
 chmod 0777 "$sandbox/fixtures" "$sandbox/reports"
 
-# Start from a genuinely fresh deployment root. This keeps the first-install
-# preflight path honest instead of letting a stale fixture create nas-platform.
+# Keep the real-service root genuinely fresh. Stale replacement and manifest
+# merge behavior use separate roots below so neither scenario masks the other.
 expected_release_id=$(git -C "$repo_dir" rev-parse HEAD)
-stale_release_dir="$sandbox/volume1/Docker/nas-platform/releases/$expected_release_id"
+active_release_dir="$sandbox/volume1/Docker/nas-platform/releases/$expected_release_id"
 test ! -e "$sandbox/volume1/Docker/nas-platform"
+
+# Deliberately stale deployment state, including both legacy `current` content
+# and an inactive same-SHA release. Convergence must replace all of it without
+# giving the full service lane a pre-existing deployment root.
+stale_docker_root="$sandbox/stale-root/Docker"
+stale_deploy_root="$stale_docker_root/nas-platform"
+stale_release_dir="$stale_deploy_root/releases/$expected_release_id"
+mkdir -p "$stale_deploy_root/current/services/ntfy" \
+  "$stale_release_dir/services/ntfy" \
+  "$stale_release_dir/services/undeclared"
+printf '%s\n' legacy-current-compose > \
+  "$stale_deploy_root/current/services/ntfy/compose.yml"
+printf '%s\n' stale-same-sha-compose > \
+  "$stale_release_dir/services/ntfy/compose.yml"
+printf '%s\n' target-only-override > \
+  "$stale_release_dir/services/ntfy/compose.integration.yml"
+printf '%s\n' undeclared-service > \
+  "$stale_release_dir/services/undeclared/compose.yml"
+
+# A minimal committed controller checkout proves canonical+platform image merge
+# behavior through the actual deployment role and manifest template. It is not
+# part of the production service inventory and its override cannot be consumed
+# by the real service deployment.
+manifest_controller="$sandbox/manifest-controller"
+manifest_docker_root="$sandbox/manifest-root/Docker"
+mkdir -p "$manifest_controller/roles" "$manifest_controller/services/demo" \
+  "$manifest_docker_root"
+cp -R "$repo_dir/roles/deployment_bundle" "$manifest_controller/roles/"
+cat > "$manifest_controller/services/manifest.yml" <<'EOF'
+---
+services:
+  - name: demo
+    role: demo
+    legacy_path: compose/demo/compose.yml
+    status: implemented
+EOF
+cat > "$manifest_controller/services/demo/compose.yml" <<'EOF'
+---
+services:
+  app:
+    image: example.invalid/app:1@sha256:1111111111111111111111111111111111111111111111111111111111111111
+  retained:
+    image: example.invalid/retained:1@sha256:2222222222222222222222222222222222222222222222222222222222222222
+EOF
+cat > "$manifest_controller/services/demo/compose.fixture.yml" <<'EOF'
+---
+services:
+  app:
+    image: example.invalid/app:2@sha256:3333333333333333333333333333333333333333333333333333333333333333
+  added:
+    image: example.invalid/added:1@sha256:4444444444444444444444444444444444444444444444444444444444444444
+EOF
+cat > "$manifest_controller/manifest-fixture.yml" <<'EOF'
+---
+- name: Deploy an isolated manifest merge fixture
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  pre_tasks:
+    - name: Validate isolated controller checkout
+      ansible.builtin.include_role:
+        name: deployment_bundle
+        tasks_from: controller
+  roles:
+    - role: deployment_bundle
+  vars:
+    platform_kind: fixture
+    platform_deploy_root: "{{ nas_docker_root }}/nas-platform"
+    platform_release_dir: "{{ platform_deploy_root }}/releases/{{ platform_release_id }}"
+    platform_current_dir: "{{ platform_deploy_root }}/current"
+    platform_runtime_dir: "{{ platform_deploy_root }}/runtime"
+EOF
+git -C "$manifest_controller" init -q
+git -C "$manifest_controller" config user.name 'NAS platform integration'
+git -C "$manifest_controller" config user.email 'integration@example.invalid'
+git -C "$manifest_controller" add .
+git -C "$manifest_controller" commit -qm 'isolated manifest fixture'
+manifest_fixture_sha=$(git -C "$manifest_controller" rev-parse HEAD)
 
 # A copy of the repository, so a play cannot modify the working tree.
 tar -C "$repo_dir" -cf - --exclude .git . | tar -C "$sandbox/repo" -xf -
@@ -341,6 +419,54 @@ docker run --rm \
     printf 'EXISTING_PREFLIGHT_PROBE_PRESERVED\n'
     rm -rf \"\$existing_probe\"
 
+    if [ \"\$(cat '$stale_deploy_root/current/services/ntfy/compose.yml')\" = \
+         legacy-current-compose ] && \
+       [ \"\$(cat '$stale_release_dir/services/ntfy/compose.yml')\" = \
+         stale-same-sha-compose ] && \
+       [ -f '$stale_release_dir/services/ntfy/compose.integration.yml' ] && \
+       [ -f '$stale_release_dir/services/undeclared/compose.yml' ]; then
+      printf 'STALE_ROOT_SEEDED\n'
+    else
+      printf 'STALE ROOT FIXTURE INCOMPLETE\n' >&2
+      exit 1
+    fi
+
+    run_play -e nas_docker_root='$stale_docker_root' --tags deployment_bundle
+    stale_current='$stale_deploy_root/current'
+    if [ ! -L \"\$stale_current\" ] || \
+       [ \"\$(readlink \"\$stale_current\")\" != '$stale_release_dir' ] || \
+       ! cmp -s /repo/services/ntfy/compose.yml \
+         '$stale_release_dir/services/ntfy/compose.yml' || \
+       [ \"\$(sha256sum /repo/services/ntfy/compose.yml | cut -d' ' -f1)\" != \
+         \"\$(sha256sum '$stale_release_dir/services/ntfy/compose.yml' | cut -d' ' -f1)\" ]; then
+      printf 'STALE BUNDLE WAS NOT REPLACED EXACTLY\n' >&2
+      exit 1
+    fi
+    printf 'STALE_BUNDLE_REPLACED\n'
+    if [ -e '$stale_release_dir/services/ntfy/compose.integration.yml' ] || \
+       [ -e '$stale_release_dir/services/undeclared' ]; then
+      printf 'STALE TARGET-ONLY CONTENT SURVIVED\n' >&2
+      exit 1
+    fi
+    printf 'STALE_BUNDLE_CLEAN\n'
+    ruby /repo/tests/verify_deployment_manifest.rb \
+      '$stale_release_dir/manifest.yml' \
+      /repo /repo/services/manifest.yml integration '$expected_release_id'
+    printf 'STALE_MANIFEST_EXACT\n'
+
+    ansible-playbook -i localhost, \
+      '$manifest_controller/manifest-fixture.yml' \
+      -e nas_docker_root='$manifest_docker_root' \
+      -e platform_release_id='$manifest_fixture_sha'
+    ruby /repo/tests/verify_deployment_manifest.rb \
+      '$manifest_docker_root/nas-platform/current/manifest.yml' \
+      '$manifest_controller' '$manifest_controller/services/manifest.yml' \
+      fixture '$manifest_fixture_sha' require-image-merge
+    printf 'ISOLATED_IMAGE_MERGE_EXACT\n'
+
+    # The preceding scenarios must not create or seed the real-service target.
+    test ! -e '$sandbox/volume1/Docker/nas-platform'
+
     if [ "\$#" -eq 0 ]; then
     run_play
     else
@@ -357,19 +483,11 @@ docker run --rm \
       exit 1
     fi
 
-    if [ ! -e '$stale_release_dir/services/ntfy/compose.nas.yml' ] && \
-       [ ! -e '$stale_release_dir/services/undeclared' ]; then
-      printf 'BUNDLE CLEAN: target-only release content was removed\n'
-    else
-      printf 'BUNDLE DIRTY: target-only release content survived assembly\n' >&2
-      exit 1
-    fi
-
     ruby /repo/tests/verify_deployment_manifest.rb \
       '$sandbox/volume1/Docker/nas-platform/current/manifest.yml' \
       /repo /repo/services/manifest.yml integration '$expected_release_id'
 
-    selective_compose='$stale_release_dir/services/ntfy/compose.yml'
+    selective_compose='$active_release_dir/services/ntfy/compose.yml'
     selective_outside='$sandbox/symlink-outside/selective-compose'
     selective_pointer='$sandbox/volume1/Docker/nas-platform/current'
     mkdir -p \"\$selective_outside\"
@@ -399,7 +517,7 @@ docker run --rm \
 
     assert_active_drift_refused() {
       evidence=\$1
-      active_compose='$stale_release_dir/services/ntfy/compose.yml'
+      active_compose='$active_release_dir/services/ntfy/compose.yml'
       current_pointer='$sandbox/volume1/Docker/nas-platform/current'
       before_checksum=\$(sha256sum \"\$active_compose\" | cut -d' ' -f1)
       before_mode=\$(stat -c %a \"\$active_compose\")
@@ -422,14 +540,14 @@ docker run --rm \
       printf 'ACTIVE_DRIFT_PRESERVED\n'
     }
 
-    printf '%s\n' drift >> '$stale_release_dir/services/ntfy/compose.yml'
+    printf '%s\n' drift >> '$active_release_dir/services/ntfy/compose.yml'
     assert_active_drift_refused ACTIVE_BYTE_DRIFT_REFUSED
-    cp /repo/services/ntfy/compose.yml '$stale_release_dir/services/ntfy/compose.yml'
-    chmod 0644 '$stale_release_dir/services/ntfy/compose.yml'
+    cp /repo/services/ntfy/compose.yml '$active_release_dir/services/ntfy/compose.yml'
+    chmod 0644 '$active_release_dir/services/ntfy/compose.yml'
 
-    chmod 0600 '$stale_release_dir/services/ntfy/compose.yml'
+    chmod 0600 '$active_release_dir/services/ntfy/compose.yml'
     assert_active_drift_refused ACTIVE_MODE_DRIFT_REFUSED
-    chmod 0644 '$stale_release_dir/services/ntfy/compose.yml'
+    chmod 0644 '$active_release_dir/services/ntfy/compose.yml'
 
     if [ "\$#" -eq 0 ]; then
       env \

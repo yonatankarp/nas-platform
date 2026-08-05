@@ -347,6 +347,20 @@ service_dirs.each do |dir|
   end
 end
 
+# Platform Compose files may add capabilities (devices, mounts, profiles, and
+# similar host-specific wiring), but image ownership stays canonical so an
+# environment suffix cannot silently select a different artifact version.
+Dir[File.join(ROOT, "services", "*", "compose.*.yml")].sort.each do |override_path|
+  override = YAML.safe_load_file(override_path, aliases: true)
+  image_services = override.fetch("services", {}).filter_map do |container, spec|
+    container if spec.is_a?(Hash) && spec.key?("image")
+  end
+  relative_override = override_path.delete_prefix("#{ROOT}/")
+  message = "#{relative_override}: platform overrides must not redefine image keys: " \
+            "#{image_services.join(', ')}"
+  check(failures, image_services.empty?, message)
+end
+
 # Every role declares its interface, so a missing variable fails before the first
 # task naming the variable rather than midway with a trace.
 Dir[File.join(ROOT, "roles", "*")].select { |p| File.directory?(p) }.each do |role|
@@ -627,6 +641,8 @@ check(failures, !site_source.include?("nothing is delegated to the controller"),
 
 integration_evidence = harness + File.read(File.join(ROOT, "tests", "verify_deployment_manifest.rb"))
 %w[
+  STALE_ROOT_SEEDED STALE_BUNDLE_REPLACED STALE_BUNDLE_CLEAN STALE_MANIFEST_EXACT
+  ISOLATED_IMAGE_MERGE_EXACT
   FRESH_ROOT_OK SYMLINK_DOCKER_ROOT_REFUSED SYMLINK_DEPLOY_ROOT_REFUSED SYMLINK_RELEASES_REFUSED
   SYMLINK_RUNTIME_REFUSED SYMLINK_ROOT_ANCESTOR_REFUSED
   SYMLINK_PREFLIGHT_PROBE_REFUSED SYMLINK_NTFY_COMPOSE_REFUSED
@@ -638,6 +654,13 @@ integration_evidence = harness + File.read(File.join(ROOT, "tests", "verify_depl
   check(failures, integration_evidence.include?(evidence),
         "integration must execute and report #{evidence.downcase.tr('_', ' ')}")
 end
+check(failures, harness.include?('stale_docker_root="$sandbox/stale-root/Docker"') &&
+                harness.include?("test ! -e '$sandbox/volume1/Docker/nas-platform'"),
+      "integration must isolate stale replacement from the genuinely fresh service root")
+manifest_verifier = File.read(File.join(ROOT, "tests", "verify_deployment_manifest.rb"))
+check(failures, manifest_verifier.include?("require-image-merge") &&
+                manifest_verifier.include?("if require_image_merge"),
+      "effective-image replacement proof must be opt-in for an isolated fixture")
 
 # PocketBase runs the records query and its total-count query concurrently.
 # On a bind-mounted SQLite database the count path can race immediately after

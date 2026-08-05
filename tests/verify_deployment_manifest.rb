@@ -2,8 +2,12 @@
 require "digest"
 require "yaml"
 
-manifest_path, repository_root, source_manifest_path, platform_kind, git_sha = ARGV
-abort "usage: verify_deployment_manifest.rb MANIFEST REPO SOURCE_MANIFEST PLATFORM SHA" unless git_sha
+manifest_path, repository_root, source_manifest_path, platform_kind, git_sha, merge_mode = ARGV
+unless git_sha
+  abort "usage: verify_deployment_manifest.rb MANIFEST REPO SOURCE_MANIFEST PLATFORM SHA [require-image-merge]"
+end
+abort "unknown manifest verification mode #{merge_mode}" if merge_mode && merge_mode != "require-image-merge"
+require_image_merge = merge_mode == "require-image-merge"
 
 load_yaml = ->(path) { YAML.safe_load_file(path, aliases: true) }
 source_manifest = load_yaml.call(source_manifest_path)
@@ -51,8 +55,10 @@ expected = {
 }
 actual = load_yaml.call(manifest_path)
 abort "deployment manifest differs from exact controller inputs" unless actual == expected
-abort "platform fixture did not replace an image" unless override_changed_image
-abort "platform fixture did not add an image" unless override_added_image
+if require_image_merge
+  abort "platform fixture did not replace an image" unless override_changed_image
+  abort "platform fixture did not add an image" unless override_added_image
+end
 
 puts "MANIFEST_EXACT: services, files, checksums, and images match"
-puts "MANIFEST_EFFECTIVE_IMAGES: platform replacements and additions recorded"
+puts "MANIFEST_EFFECTIVE_IMAGES: platform replacements and additions recorded" if require_image_merge
