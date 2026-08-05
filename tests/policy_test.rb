@@ -474,6 +474,52 @@ check(failures, harness.match?(/^ruby_package='ruby=\d+\.\d+\.\d+-r\d+'$/) &&
                 harness.match?(/^curl_package='curl=\d+\.\d+\.\d+-r\d+'$/),
       "integration must pin distro ruby and curl packages")
 
+# PocketBase runs the records query and its total-count query concurrently.
+# On a bind-mounted SQLite database the count path can race immediately after
+# creating the first user, while this role never consumes pagination totals.
+beszel_tasks = flatten_tasks(
+  YAML.safe_load_file(File.join(ROOT, "roles", "beszel", "tasks", "main.yml"))
+)
+beszel_user_lists = beszel_tasks.select do |task|
+  task["name"].to_s.start_with?("List application users") &&
+    task["ansible.builtin.uri"].is_a?(Hash)
+end
+check(failures, beszel_user_lists.length == 2,
+      "Beszel role must contain both application-user list operations")
+beszel_user_lists.each do |task|
+  url = task.dig("ansible.builtin.uri", "url")
+  check(failures, url.is_a?(String) && url.include?("skipTotal=1"),
+        "#{task['name']}: must skip PocketBase's unused concurrent total-count query")
+end
+
+# PocketBase validates relations through a separate SQLite connection. Refresh
+# that pool exactly once after the one-time user insert and before relation writes.
+beszel_create_index = beszel_tasks.index do |task|
+  task["name"] == "Create the application user"
+end
+beszel_refresh_indexes = beszel_tasks.each_index.select do |index|
+  beszel_tasks[index]["name"] ==
+    "Refresh Beszel database connections after creating the application user"
+end
+beszel_second_list_index = beszel_tasks.index do |task|
+  task["name"] == "List application users again to resolve the id"
+end
+check(failures, beszel_refresh_indexes.length == 1,
+      "Beszel must refresh database connections exactly once after creating its user")
+unless beszel_refresh_indexes.empty?
+  refresh_index = beszel_refresh_indexes.first
+  refresh = beszel_tasks[refresh_index]
+  compose = refresh["community.docker.docker_compose_v2"]
+  check(failures, beszel_create_index && beszel_second_list_index &&
+                  beszel_create_index < refresh_index && refresh_index < beszel_second_list_index,
+        "Beszel database refresh must follow user creation and precede relation setup")
+  check(failures, compose.is_a?(Hash) && compose["services"] == ["hub"] &&
+                  compose["state"] == "restarted" && compose["wait"] == true,
+        "Beszel database refresh must restart and wait for only the hub")
+  check(failures, refresh["when"] == "beszel_matching_users | length == 0",
+        "Beszel database refresh must run only when the application user is created")
+end
+
 if failures.empty?
   puts "policy: all properties hold"
 else
