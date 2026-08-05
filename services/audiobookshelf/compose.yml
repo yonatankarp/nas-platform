@@ -1,0 +1,28 @@
+---
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
+services:
+  audiobookshelf:
+    container_name: audiobookshelf
+    image: ghcr.io/advplyr/audiobookshelf:2.36.0@sha256:180acad33d69c99ed208676465d8edcb268fa46967735579a7810859885b1a8e
+    user: "1000:100"
+    ports:
+      - "13378:80"
+    volumes:
+      - ${AUDIOBOOKSHELF_CONFIG_PATH:?}:/config
+      - ${AUDIOBOOKSHELF_METADATA_PATH:?}:/metadata
+      - ${AUDIOBOOKSHELF_MEDIA_PATH:?}:/audiobooks:ro
+    environment:
+      TZ: ${TZ:?}
+    healthcheck:
+      test: [CMD, wget, --no-verbose, --tries=1, --spider, http://localhost:80/healthcheck]
+      interval: 30s
+      timeout: 10s
+      retries: 4
+      start_period: 30s
+    restart: unless-stopped
+    logging: *default-logging

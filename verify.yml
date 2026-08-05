@@ -25,3 +25,5 @@
       tags: [never]
     - role: dozzle
       tags: [never]
+    - role: audiobookshelf
+      tags: [never]

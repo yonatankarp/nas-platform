@@ -9,7 +9,7 @@ services:
     legacy_path: compose/audiobookshelf/compose.yml
     role: audiobookshelf
     tranche: 3
-    status: planned
+    status: implemented
   - name: beszel
     legacy_path: compose/beszel/compose.yml
     role: beszel

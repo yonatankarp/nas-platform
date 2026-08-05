@@ -1,5 +1,7 @@
 ---
 contracts:
+  - service: audiobookshelf
+    path: tests/contracts/audiobookshelf.sh
   - service: beszel
     path: tests/contracts/beszel.sh
   - service: dozzle

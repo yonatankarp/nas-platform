@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+test_root=$(mktemp -d "${TMPDIR:-/tmp}/audiobookshelf-audio-test.XXXXXX")
+
+cleanup() {
+  local status=$?
+  trap - EXIT HUP INT TERM
+  case "$test_root" in
+    "${TMPDIR:-/tmp}"/audiobookshelf-audio-test.??????)
+      find "$test_root" -depth -delete
+      ;;
+  esac
+  exit "$status"
+}
+
+trap cleanup EXIT HUP INT TERM
+
+mkdir -p "$test_root/media" "$test_root/reports"
+
+test_status=0
+output=$(
+  PLATFORM_MEDIA_ROOT="$test_root/media" \
+  PLATFORM_REPORT_ROOT="$test_root/reports" \
+  PLATFORM_AUDIOBOOKSHELF_PORT=13378 \
+    "$repo_dir/tests/contracts/audiobookshelf.sh" audio-self-test 2>&1
+) || test_status=$?
+
+if [ "$test_status" -ne 0 ]; then
+  printf '%s\n' "$output" >&2
+  exit "$test_status"
+fi
+
+grep -Fqx 'Audiobookshelf audio and diagnostic self-test passed' <<<"$output" || {
+  printf '%s\n' "$output" >&2
+  printf '%s\n' 'Audiobookshelf audio test failed: self-test marker is absent' >&2
+  exit 1
+}
+
+printf '%s\n' 'Audiobookshelf audio contract test passed'

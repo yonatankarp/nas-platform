@@ -1,0 +1,6 @@
+---
+services:
+  audiobookshelf:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-audiobookshelf
+    ports: !override
+      - "${AUDIOBOOKSHELF_HOST_PORT:?}:80"
