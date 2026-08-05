@@ -22,6 +22,7 @@ playbook=${1:-site.yml}
 [ "$#" -gt 0 ] && shift || true
 
 repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+. "$repo_dir/tests/sandbox_cleanup.sh"
 
 # Bind sources must be valid for the Docker daemon as well as this container. On
 # macOS TMPDIR lives under /private, which Docker Desktop shares by default; on
@@ -33,21 +34,10 @@ chmod 0777 "$sandbox"
 
 cleanup() {
   exit_status=$?
-  case "$sandbox" in
-    "$temporary_parent"/nas-platform-integration.*)
-      for name in ntfy beszel beszel_agent beszel_socket_proxy; do
-        docker rm -f "$name" >/dev/null 2>&1 || true
-      done
-      docker ps -aq --filter 'name=^ntfy$' | while IFS= read -r id; do
-        [ -n "$id" ] && docker rm -f "$id" >/dev/null 2>&1 || true
-      done
-      rm -rf -- "$sandbox"
-      ;;
-    *)
-      printf 'refusing to remove unexpected sandbox path: %s\n' "$sandbox" >&2
-      exit_status=1
-      ;;
-  esac
+  trap - EXIT HUP INT TERM
+  if ! cleanup_sandbox "$sandbox"; then
+    [ "$exit_status" -ne 0 ] || exit_status=1
+  fi
   exit "$exit_status"
 }
 trap cleanup EXIT
