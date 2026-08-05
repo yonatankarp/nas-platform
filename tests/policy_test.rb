@@ -6,9 +6,11 @@
 # an omitted legacy service from silently disappearing from the migration scope.
 
 require "open3"
-require "pathname"
 require "set"
 require "yaml"
+require_relative "policy_support"
+
+include PolicySupport
 
 ROOT = File.expand_path("..", __dir__)
 failures = []
@@ -45,39 +47,6 @@ REQUIRED_MANIFEST_FIELDS = %w[name legacy_path role tranche status].freeze
 ALLOWED_SERVICE_STATUSES = %w[planned implemented accepted].freeze
 IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
 
-def symlink_free_below?(root, path)
-  relative = Pathname.new(path).relative_path_from(Pathname.new(root))
-  return false if relative.each_filename.include?("..")
-
-  current = root
-  relative.each_filename do |component|
-    current = File.join(current, component)
-    return false if File.symlink?(current)
-  end
-  true
-rescue ArgumentError
-  false
-end
-
-def owned_directory?(path, parent)
-  return false if File.symlink?(parent)
-  return false unless File.directory?(path) && !File.symlink?(path)
-  return false unless symlink_free_below?(parent, path)
-
-  File.realpath(path) == File.join(File.realpath(parent), File.basename(path))
-rescue SystemCallError
-  false
-end
-
-def owned_file?(path, root)
-  return false unless File.file?(path) && !File.symlink?(path)
-  return false unless owned_directory?(root, File.dirname(root)) && symlink_free_below?(root, path)
-
-  File.realpath(path).start_with?(File.realpath(root) + File::SEPARATOR)
-rescue SystemCallError
-  false
-end
-
 def flatten_tasks(tasks, flattened = [])
   Array(tasks).each do |task|
     next unless task.is_a?(Hash)
@@ -88,7 +57,7 @@ def flatten_tasks(tasks, flattened = [])
   flattened
 end
 
-def uri_verifies_service?(task, prefixes, service_names)
+def service_specific_uri?(task, prefixes, service_names)
   uri = task["ansible.builtin.uri"]
   return false unless uri.is_a?(Hash) && uri["url"].is_a?(String)
 
@@ -97,7 +66,12 @@ def uri_verifies_service?(task, prefixes, service_names)
   literal_endpoint = service_names.any? do |name|
     url.match?(/(?<![A-Za-z0-9_-])#{Regexp.escape(name)}(?![A-Za-z0-9_-])/)
   end
-  return false unless variable_reference || literal_endpoint
+  variable_reference || literal_endpoint
+end
+
+def uri_verifies_service?(task, prefixes, service_names)
+  uri = task["ansible.builtin.uri"]
+  return false unless service_specific_uri?(task, prefixes, service_names)
 
   return true if uri.key?("status_code")
 
@@ -107,20 +81,19 @@ def uri_verifies_service?(task, prefixes, service_names)
   end
 end
 
-def assert_verifies_service?(task, prefixes, preceding_registers)
+def assert_verifies_service?(task, validated_registers)
   assertion = task["ansible.builtin.assert"]
   conditions = assertion.is_a?(Hash) ? Array(assertion["that"]) : []
   return false if conditions.empty?
 
-  service_registers = preceding_registers.select do |register|
-    prefixes.any? { |prefix| register.match?(/\A#{Regexp.escape(prefix)}_[A-Za-z0-9_]+\z/) }
-  end
-  return false if service_registers.empty?
-
   conditions.all? do |condition|
-    condition.is_a?(String) && service_registers.any? do |register|
-      condition.match?(/\b#{Regexp.escape(register)}\b/)
+    next false unless condition.is_a?(String)
+
+    producer = validated_registers.find do |register|
+      condition.match?(/\b#{Regexp.escape(register)}(?:\.[A-Za-z_][A-Za-z0-9_]*|\[['"][^'"]+['"]\])/)
     end
+    comparison = condition.match(/\A\s*(.+?)\s*(==|!=|>=|<=|>|<|\bin\b|\bis\b)\s*(.+?)\s*\z/m)
+    producer && comparison && comparison[1].strip != comparison[3].strip
   end
 end
 
@@ -129,16 +102,20 @@ def role_has_verification?(tasks_path, service_name, role_name)
   prefixes = [service_name.tr("-", "_"), role_name].uniq
   service_names = [service_name, role_name].uniq
   expected_tag = "platform_verify_#{service_name}"
-  preceding_registers = Set.new
+  validated_registers = Set.new
   verified = false
 
   tasks.each do |task|
     named = task["name"].is_a?(String) && task["name"].match?(/\b(?:verify|verification)\b/i)
     tagged = Array(task["tags"]).include?(expected_tag)
     evidence = uri_verifies_service?(task, prefixes, service_names) ||
-               assert_verifies_service?(task, prefixes, preceding_registers)
+               assert_verifies_service?(task, validated_registers)
     verified ||= named && tagged && evidence
-    preceding_registers << task["register"] if task["register"].is_a?(String)
+    register = task["register"]
+    if register.is_a?(String) && prefixes.any? { |prefix| register.start_with?("#{prefix}_") } &&
+       service_specific_uri?(task, prefixes, service_names)
+      validated_registers << register
+    end
   end
   verified
 rescue Psych::Exception
@@ -153,23 +130,6 @@ def contract_has_verification?(contract_path, contract_root, service_name, relat
 
   _stdout, _stderr, status = Open3.capture3("sh", "-n", contract_path)
   status.success?
-end
-
-def duplicate_yaml_keys(node, duplicates = [])
-  if node.is_a?(Psych::Nodes::Mapping)
-    seen = {}
-    node.children.each_slice(2) do |key_node, value_node|
-      if key_node.is_a?(Psych::Nodes::Scalar)
-        key = key_node.value
-        duplicates << key if seen[key]
-        seen[key] = true
-      end
-      duplicate_yaml_keys(value_node, duplicates)
-    end
-  elsif node.respond_to?(:children) && node.children
-    node.children.each { |child| duplicate_yaml_keys(child, duplicates) }
-  end
-  duplicates
 end
 
 registry_path = File.join(ROOT, "tests", "contracts", "registry.yml")
@@ -439,7 +399,7 @@ validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "te
   ruby\ tests/policy_test.rb
   ruby\ tests/policy_manifest_test.rb
   ruby\ tests/run_contracts_test.rb
-  ruby\ tests/run_contracts.rb
+  ruby\ tests/run_contracts.rb\ --validate-only
 ].each do |command|
   check(failures, validation_commands.include?(command),
         "validate-policy.sh must run #{command}")
@@ -495,6 +455,15 @@ harness = File.read(File.join(ROOT, "tests", "integration.sh"))
 ["IDEMPOTENT", "CHECK MODE"].each do |property|
   check(failures, harness.include?(property), "integration harness must assert #{property}")
 end
+first_converge = harness.index("\n    run_play\n")
+contract_execution = harness.index("ruby /repo/tests/run_contracts.rb --execute")
+idempotence_phase = harness.index("=== phase 2: asserting idempotence ===")
+check(failures, first_converge && contract_execution && idempotence_phase &&
+                first_converge < contract_execution && contract_execution < idempotence_phase,
+      "integration must execute registered contracts after converge and before idempotence")
+check(failures, harness.match?(/^ruby_package='ruby=\d+\.\d+\.\d+-r\d+'$/) &&
+                harness.match?(/^curl_package='curl=\d+\.\d+\.\d+-r\d+'$/),
+      "integration must pin distro ruby and curl packages")
 
 if failures.empty?
   puts "policy: all properties hold"

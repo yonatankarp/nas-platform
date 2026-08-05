@@ -17,6 +17,8 @@ set -eu
 
 ansible_core_version=2.21.2
 runner_image=docker.io/library/python:3.13-alpine
+ruby_package='ruby=3.4.9-r0'
+curl_package='curl=8.21.0-r0'
 
 playbook=${1:-site.yml}
 [ "$#" -gt 0 ] && shift || true
@@ -88,7 +90,7 @@ docker run --rm \
   -w /repo \
   "$runner_image" \
   sh -eu -c "
-    apk add --no-cache --quiet docker-cli docker-cli-compose tar >/dev/null
+    apk add --no-cache --quiet docker-cli docker-cli-compose tar '$ruby_package' '$curl_package' >/dev/null
     pip install --quiet --no-input 'ansible-core==$ansible_core_version'
     ansible-galaxy collection install -r /repo/requirements.yml >/dev/null
 
@@ -103,6 +105,8 @@ docker run --rm \
     }
 
     run_play
+
+    ruby /repo/tests/run_contracts.rb --execute
 
     printf '\n=== phase 2: asserting idempotence ===\n'
     run_play | tee /tmp/second.txt

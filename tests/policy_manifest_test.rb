@@ -6,6 +6,9 @@ require "open3"
 require "rbconfig"
 require "tmpdir"
 require "yaml"
+require_relative "policy_support"
+
+include PolicySupport
 
 ROOT = File.expand_path("..", __dir__)
 failures = []
@@ -24,13 +27,19 @@ BASE_FIXTURE_PATHS = %w[
   tests/contracts/registry.yml
   tests/integration.sh
   tests/policy_test.rb
+  tests/policy_support.rb
   tests/run_contracts.rb
   tests/validate-policy.sh
 ].freeze
 
 def fixture_paths
   paths = BASE_FIXTURE_PATHS.dup
-  manifest = YAML.safe_load_file(File.join(ROOT, "services", "manifest.yml"))
+  manifest_path = File.join(ROOT, "services", "manifest.yml")
+  registry_path = File.join(ROOT, "tests", "contracts", "registry.yml")
+  raise "duplicate manifest fixture key" unless duplicate_yaml_keys(Psych.parse_stream(File.read(manifest_path))).empty?
+  raise "duplicate registry fixture key" unless duplicate_yaml_keys(Psych.parse_stream(File.read(registry_path))).empty?
+
+  manifest = YAML.safe_load_file(manifest_path)
   manifest.fetch("services").each do |entry|
     next unless %w[implemented accepted].include?(entry.fetch("status"))
 
@@ -42,8 +51,19 @@ def fixture_paths
     paths << env_template if File.file?(File.join(ROOT, env_template))
   end
 
-  registry = YAML.safe_load_file(File.join(ROOT, "tests", "contracts", "registry.yml"))
-  registry.fetch("contracts").each { |entry| paths << entry.fetch("path") }
+  statuses = manifest.fetch("services").to_h { |entry| [entry.fetch("name"), entry.fetch("status")] }
+  registry = YAML.safe_load_file(registry_path)
+  registry.fetch("contracts").each do |entry|
+    raise "invalid registry fixture entry" unless entry.is_a?(Hash) && entry.keys.sort == %w[path service]
+
+    service_name = entry.fetch("service")
+    basename = service_name == "paperless-ngx" ? "paperless" : service_name
+    expected_path = "tests/contracts/#{basename}.sh"
+    raise "unsafe registry fixture path" unless %w[implemented accepted].include?(statuses[service_name]) &&
+                                                entry.fetch("path") == expected_path
+
+    paths << expected_path
+  end
   paths.uniq
 end
 
@@ -200,6 +220,11 @@ expect_failure(failures, "CI bypasses policy entrypoint", "CI must run tests/val
   File.write(path, File.read(path).sub("tests/validate-policy.sh", "ruby tests/policy_test.rb"))
 end
 
+expect_failure(failures, "integration omits contract execution", "integration must execute registered contracts") do |root|
+  path = File.join(root, "tests", "integration.sh")
+  File.write(path, File.read(path).sub(/^\s*ruby \/repo\/tests\/run_contracts\.rb --execute\n/, ""))
+end
+
 provisioning_task = <<~YAML
   ---
   - name: Provision an endpoint
@@ -255,16 +280,53 @@ end
       tags: [platform_verify_ntfy]
       ansible.builtin.command: /bin/true
   YAML
-  "tagged service command" => <<~YAML
+  "tagged service command" => <<~YAML,
     ---
     - name: Verify command output
       tags: [platform_verify_ntfy]
       ansible.builtin.command: echo ntfy
   YAML
+  "assert from command register" => <<~YAML,
+    ---
+    - name: Produce a fake result
+      ansible.builtin.command: echo ntfy
+      register: ntfy_result
+    - name: Verify fake result
+      tags: [platform_verify_ntfy]
+      ansible.builtin.assert:
+        that: ["ntfy_result.stdout == 'ntfy'"]
+  YAML
+  "assert self comparison" => <<~YAML
+    ---
+    - name: Probe ntfy
+      ansible.builtin.uri:
+        url: http://127.0.0.1/{{ ntfy_port }}/health
+        status_code: [200]
+      register: ntfy_result
+    - name: Verify a tautology
+      tags: [platform_verify_ntfy]
+      ansible.builtin.assert:
+        that: ["ntfy_result.status == ntfy_result.status"]
+  YAML
 }.each do |label, tasks|
   expect_failure(failures, label, "ntfy: implemented service has no automated verification") do |root|
     File.write(File.join(root, "roles", "ntfy", "tasks", "main.yml"), tasks)
   end
+end
+
+expect_success(failures, "assert from registered URI result") do |root|
+  File.write(File.join(root, "roles", "ntfy", "tasks", "main.yml"), <<~YAML)
+    ---
+    - name: Probe ntfy
+      ansible.builtin.uri:
+        url: http://127.0.0.1/{{ ntfy_port }}/health
+        status_code: [200]
+      register: ntfy_result
+    - name: Verify the observed status
+      tags: [platform_verify_ntfy]
+      ansible.builtin.assert:
+        that: ["ntfy_result.status == 200"]
+  YAML
 end
 
 expect_failure(failures, "wrong contract path", "ntfy: implemented service has no automated verification") do |root|
