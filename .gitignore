@@ -24,3 +24,6 @@ inventory/group_vars/all/vault-plain.yml
 .vscode/
 __pycache__/
 *.pyc
+
+# Optional copies of sanitized Mac proof evidence.
+/mac-proof-reports/

@@ -137,9 +137,40 @@ changes nothing, and a dry run works. Two of the worst bugs found so far, a fact
 that exists only on Linux and `command` being skipped under `--check`, both passed
 syntax checking and were caught only by running.
 
-Jellyfin and Immich cannot be exercised anywhere but the NAS, because both map
-`/dev/dri` and Compose merges `devices` by appending, so no override can remove
-them.
+The current Jellyfin and Immich definitions still map `/dev/dri`. Their service
+tranches add explicit Docker Desktop CPU overrides while preserving the NAS GPU
+contract; until then, the full Mac proof is expected to remain incomplete.
+
+### Disposable Mac platform proof
+
+The Mac lifecycle harness creates a unique Docker Desktop sandbox, reuses an
+encrypted portable vault without decrypting it on disk, and records sanitized
+JSON and Markdown evidence outside the service-data tree. Run a fresh proof with:
+
+```sh
+tests/mac/run.sh \
+  --lane fresh \
+  --vault-file /absolute/path/to/vault.yml \
+  --vault-password-file /absolute/path/to/password-command
+```
+
+Use `--lane adoption` to exercise the generic legacy-state adoption lane. Later
+service tranches supply its adoption hooks; the lifecycle itself never reads
+production NAS data. The physical NAS is not contacted by either lane.
+
+The ordered phases are `preflight`, `deploy`, `seed`, `verify`, `idempotence`,
+`drift`, `reconcile`, `recreate`, `persistence`, `report`, and `cleanup`. Select
+one with `--phase NAME`. Resume a preserved run with `--sandbox ABSOLUTE_PATH`;
+completed phases remain recorded and are not repeated. A later phase is refused
+until its predecessors have passed, except that `report` and `cleanup` remain
+available after a failure.
+
+Failed sandboxes are preserved by default, and `--keep-on-failure` is accepted
+for automation that wants to state that policy explicitly. A failed run prints
+exactly one validated cleanup command. Cleanup removes only the marked sandbox;
+the sibling `.reports` directory remains as sanitized evidence. Optional report
+copies under `mac-proof-reports/` are ignored by Git. Complete
+`tests/mac/manual-review.md` against the generated manifest and report.
 
 ## Manual escape hatch
 
