@@ -5,16 +5,9 @@ nas_timezone: Europe/Berlin
 nas_uid: 1000
 nas_gid: 100
 
-# Storage roots. Compose definitions reference these through NAS_DOCKER_ROOT and
-# NAS_MEDIA_ROOT with required-variable syntax, so an unset value fails loudly
-# instead of silently creating a relative bind mount. The integration harness
-# points them at a sandbox, which is why nothing in the definitions is absolute.
-nas_docker_root: /volume1/Docker
-nas_media_root: /volume2
-
 # Immutable deployments assembled from the controller checkout. Service roles
 # consume only the current release, never a repository checkout on the target.
-platform_kind: nas
+platform_compose_kind: "{{ platform_kind }}"
 platform_release_id: >-
   {{ lookup('pipe', 'git -C ' ~ (playbook_dir | quote) ~ ' rev-parse HEAD') | trim }}
 platform_deploy_root: "{{ nas_docker_root }}/nas-platform"
@@ -27,11 +20,6 @@ nas_python_minimum: "3.8"
 
 # community.docker.docker_compose_v2 documents this floor.
 nas_compose_minimum: "2.18.0"
-
-# Presence of this device decides whether GPU-dependent services run. Detected by
-# preflight, never assumed: no workstation or CI runner provides it, and Compose
-# merges devices by appending so an override cannot remove the requirement.
-nas_render_device: /dev/dri/card0
 
 # Single declarative storage inventory. host_prep creates these, the policy test
 # cross-checks them against the Compose volume sources, and the recovery class

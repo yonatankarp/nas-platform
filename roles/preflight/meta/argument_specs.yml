@@ -8,6 +8,34 @@ argument_specs:
         NAS volumes are mounted, that the controller bundle source is present,
         and that the deployment root is writable.
     options:
+      platform_kind:
+        type: str
+        required: true
+        choices: [nas, mac]
+        description: >-
+          Production platform identifier. Test-only Compose selection uses a
+          separate deployment bundle override.
+      platform_render_device_available:
+        type: bool
+        required: true
+        description: Whether this host class can expose a render device.
+      platform_render_device_path:
+        type: path
+        required: true
+        description: Host render-device path to validate when available.
+      platform_host_network_available:
+        type: bool
+        required: true
+        description: Whether containers can use native host networking.
+      platform_host_network_adapter:
+        type: str
+        required: true
+        choices: [host, published_ports]
+        description: Host-specific networking adaptation for service roles.
+      platform_external_integration_checks:
+        type: bool
+        required: true
+        description: Whether non-mutating external integration checks may run.
       nas_python_minimum:
         type: str
         required: true

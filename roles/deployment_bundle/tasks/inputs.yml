@@ -41,7 +41,7 @@
   ansible.builtin.include_tasks: controller_input.yml
   vars:
     deployment_controller_input_path: >-
-      {{ playbook_dir }}/services/{{ deployment_controller_service.name }}/compose.{{ platform_kind }}.yml
+      {{ playbook_dir }}/services/{{ deployment_controller_service.name }}/compose.{{ platform_compose_kind }}.yml
     deployment_controller_input_allow_missing: true
   loop: "{{ deployment_bundle_services }}"
   loop_control:

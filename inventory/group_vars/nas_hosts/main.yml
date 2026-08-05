@@ -1,0 +1,14 @@
+---
+# Unavoidable NAS machine facts and capabilities. Portable identities,
+# thresholds, and application behavior belong in group_vars/all.
+platform_kind: nas
+nas_docker_root: /volume1/Docker
+nas_media_root: /volume2
+
+platform_render_device_available: true
+platform_render_device_path: /dev/dri/card0
+
+platform_host_network_available: true
+platform_host_network_adapter: host
+
+platform_external_integration_checks: true

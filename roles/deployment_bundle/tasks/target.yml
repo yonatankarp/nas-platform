@@ -3,7 +3,10 @@
   ansible.builtin.assert:
     that:
       - platform_release_id is match('^[0-9a-f]{40}$')
-      - platform_kind is match('^[a-z][a-z0-9_-]*$')
+      - platform_kind in ['nas', 'mac']
+      - platform_compose_kind is match('^[a-z][a-z0-9_-]*$')
+      - platform_compose_kind == platform_kind or
+        (deployment_bundle_test_mode | bool)
       - platform_deploy_root == deployment_target_expected_root
       - platform_release_dir == platform_deploy_root ~ '/releases/' ~ platform_release_id
       - platform_current_dir == platform_deploy_root ~ '/current'

@@ -19,13 +19,13 @@
     deployment_target_extra_paths:
       - "{{ platform_current_dir }}/services/beszel"
       - "{{ platform_current_dir }}/services/beszel/compose.yml"
-      - "{{ platform_current_dir }}/services/beszel/compose.{{ platform_kind }}.yml"
+      - "{{ platform_current_dir }}/services/beszel/compose.{{ platform_compose_kind }}.yml"
       - "{{ platform_runtime_dir }}/services/beszel"
       - "{{ platform_runtime_dir }}/services/beszel/.env"
 
 - name: Check for a Beszel platform override
   ansible.builtin.stat:
-    path: "{{ platform_current_dir }}/services/beszel/compose.{{ platform_kind }}.yml"
+    path: "{{ platform_current_dir }}/services/beszel/compose.{{ platform_compose_kind }}.yml"
   register: beszel_platform_compose
 
 - name: Select the Beszel Compose definitions
@@ -33,7 +33,7 @@
     beszel_compose_files: >-
       {{ ['compose.yml'] +
          (beszel_platform_compose.stat.exists
-          | ternary(['compose.' ~ platform_kind ~ '.yml'], [])) }}
+          | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) }}
 
 - name: Install the hub keypair before the hub can generate its own
   ansible.builtin.copy:

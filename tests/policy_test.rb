@@ -45,6 +45,105 @@ EXPECTED_SERVICE_MAPPINGS = {
 REQUIRED_MANIFEST_FIELDS = %w[name legacy_path role tranche status].freeze
 ALLOWED_SERVICE_STATUSES = %w[planned implemented accepted].freeze
 IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
+PLATFORM_INVENTORIES = {
+  "local.yml" => ["nas_hosts", "nas", "local", "nas"],
+  "remote.yml" => ["nas_hosts", "nas", "ssh", "nas"],
+  "mac.yml" => ["mac_hosts", "mac", "local", "mac"]
+}.freeze
+PLATFORM_CAPABILITIES = %w[
+  platform_render_device_available platform_render_device_path
+  platform_host_network_available platform_host_network_adapter
+  platform_external_integration_checks
+].freeze
+MACHINE_FACTS = (
+  %w[platform_kind nas_docker_root nas_media_root] + PLATFORM_CAPABILITIES
+).freeze
+
+PLATFORM_INVENTORIES.each do |inventory_name, (host_group, host_name, connection, _platform_kind)|
+  inventory_path = File.join(ROOT, "inventory", inventory_name)
+  inventory = begin
+    YAML.safe_load_file(inventory_path)
+  rescue Errno::ENOENT
+    check(failures, false, "inventory/#{inventory_name} is missing")
+    {}
+  rescue Psych::Exception => e
+    check(failures, false,
+          "inventory/#{inventory_name} is malformed: #{e.message.lines.first.strip}")
+    {}
+  end
+
+  platform_children = inventory.dig("platform_hosts", "children")
+  check(failures, platform_children.is_a?(Hash) && platform_children.key?(host_group),
+        "inventory/#{inventory_name} must expose #{host_group} as a child of platform_hosts")
+  host = platform_children&.dig(host_group, "hosts", host_name)
+  check(failures, host.is_a?(Hash),
+        "inventory/#{inventory_name} must place #{host_name} under #{host_group}")
+  check(failures, host.is_a?(Hash) && host["ansible_connection"] == connection,
+        "inventory/#{inventory_name} #{host_name} must use #{connection} connection")
+end
+
+shared_vars = YAML.safe_load_file(File.join(ROOT, "inventory", "group_vars", "all", "main.yml"))
+shared_machine_facts = shared_vars.keys & MACHINE_FACTS
+check(failures, shared_machine_facts.empty?,
+      "machine facts must not be all-group variables: #{shared_machine_facts.join(', ')}")
+
+PLATFORM_INVENTORIES.values.map { |values| [values[0], values[3]] }.uniq.each do |host_group, platform_kind|
+  relative_path = File.join("inventory", "group_vars", host_group, "main.yml")
+  path = File.join(ROOT, relative_path)
+  host_vars = begin
+    YAML.safe_load_file(path)
+  rescue Errno::ENOENT
+    check(failures, false, "#{relative_path} is missing")
+    {}
+  rescue Psych::Exception => e
+    check(failures, false, "#{relative_path} is malformed: #{e.message.lines.first.strip}")
+    {}
+  end
+
+  check(failures, host_vars["platform_kind"] == platform_kind,
+        "#{relative_path} platform_kind must be #{platform_kind}")
+  PLATFORM_CAPABILITIES.each do |capability|
+    check(failures, host_vars.key?(capability),
+          "#{relative_path} must define #{capability}")
+  end
+  %w[
+    platform_render_device_available platform_host_network_available
+    platform_external_integration_checks
+  ].each do |capability|
+    check(failures, [true, false].include?(host_vars[capability]),
+          "#{relative_path} #{capability} must be boolean")
+  end
+  check(failures, host_vars["platform_render_device_path"].is_a?(String) &&
+                  !host_vars["platform_render_device_path"].empty?,
+        "#{relative_path} platform_render_device_path must be a nonempty path")
+  check(failures, %w[host published_ports].include?(host_vars["platform_host_network_adapter"]),
+        "#{relative_path} platform_host_network_adapter must be host or published_ports")
+  unexpected_vars = host_vars.keys - MACHINE_FACTS
+  check(failures, unexpected_vars.empty?,
+        "#{relative_path} contains portable configuration: #{unexpected_vars.join(', ')}")
+end
+
+site_play = YAML.safe_load_file(File.join(ROOT, "site.yml")).first
+check(failures, site_play["hosts"] == "platform_hosts",
+      "site.yml must target platform_hosts")
+
+preflight_options = YAML.safe_load_file(
+  File.join(ROOT, "roles", "preflight", "meta", "argument_specs.yml")
+).dig("argument_specs", "main", "options")
+(PLATFORM_CAPABILITIES + ["platform_kind"]).each do |option|
+  check(failures, preflight_options.is_a?(Hash) && preflight_options[option].is_a?(Hash) &&
+                  preflight_options[option]["required"] == true,
+        "preflight argument specs must require #{option}")
+end
+
+check(failures, preflight_options.dig("platform_kind", "choices") == %w[nas mac],
+      "preflight platform_kind must allow only nas or mac")
+preflight_tasks = YAML.safe_load_file(
+  File.join(ROOT, "roles", "preflight", "tasks", "main.yml")
+)
+mount_table_task = preflight_tasks.find { |task| task["name"] == "Read the kernel mount table" }
+check(failures, mount_table_task && mount_table_task["when"].to_s.include?("platform_kind == 'nas'"),
+      "preflight must read the Linux mount table only on NAS hosts")
 
 def flatten_tasks(tasks, flattened = [])
   Array(tasks).each do |task|
@@ -505,6 +604,21 @@ dirty_option = deployment_spec.dig(
 check(failures, dirty_option.is_a?(Hash) && dirty_option["type"] == "bool" &&
                 dirty_option["default"] == false,
       "deployment bundle dirty-source bypass must be an explicit false boolean option")
+test_mode_option = deployment_spec.dig(
+  "argument_specs", "main", "options", "deployment_bundle_test_mode"
+)
+check(failures, test_mode_option.is_a?(Hash) && test_mode_option["type"] == "bool" &&
+                test_mode_option["default"] == false,
+      "deployment bundle test mode must be an explicit false boolean option")
+platform_kind_option = deployment_spec.dig("argument_specs", "main", "options", "platform_kind")
+check(failures, platform_kind_option.is_a?(Hash) && platform_kind_option["choices"] == %w[nas mac],
+      "deployment bundle platform_kind must allow only nas or mac")
+compose_kind_option = deployment_spec.dig(
+  "argument_specs", "main", "options", "platform_compose_kind"
+)
+check(failures, compose_kind_option.is_a?(Hash) && compose_kind_option["type"] == "str" &&
+                compose_kind_option["required"] == true,
+      "deployment bundle must require a separate platform_compose_kind")
 
 deployment_tasks = flatten_tasks(YAML.safe_load_file(
   File.join(ROOT, "roles", "deployment_bundle", "tasks", "controller.yml")
@@ -512,8 +626,10 @@ deployment_tasks = flatten_tasks(YAML.safe_load_file(
 dirty_guard = deployment_tasks.find { |task| task["name"] == "Restrict dirty controller bypass to integration" }
 cleanliness_check = deployment_tasks.find { |task| task["name"] == "Inspect controller bundle source cleanliness" }
 cleanliness_assert = deployment_tasks.find { |task| task["name"] == "Require committed controller bundle sources" }
-check(failures, dirty_guard&.dig("ansible.builtin.assert", "that").to_s.include?("platform_kind == 'integration'"),
-      "dirty controller bypass must be accepted only for platform_kind integration")
+dirty_guard_conditions = dirty_guard&.dig("ansible.builtin.assert", "that").to_s
+check(failures, dirty_guard_conditions.include?("platform_compose_kind == 'integration'") &&
+                dirty_guard_conditions.include?("deployment_bundle_test_mode"),
+      "dirty controller bypass must require explicit integration Compose test mode")
 cleanliness_argv = cleanliness_check&.dig("ansible.builtin.command", "argv")
 expected_cleanliness_argv = [
   "git", "-C", "{{ playbook_dir }}", "status", "--porcelain=v1", "--untracked-files=all"
@@ -525,9 +641,11 @@ check(failures, cleanliness_assert&.dig("ansible.builtin.assert", "that").to_s
       "deployment bundle must refuse dirty sources unless the guarded bypass is enabled")
 check(failures, cleanliness_assert && !cleanliness_assert.key?("run_once"),
       "dirty controller refusal must be evaluated independently for every target host")
-check(failures, harness.include?("-e platform_kind=integration") &&
+check(failures, !harness.include?("-e platform_kind=integration") &&
+                harness.include?("-e platform_compose_kind=integration") &&
+                harness.include?("-e deployment_bundle_test_mode=true") &&
                 harness.include?("-e deployment_bundle_allow_dirty_controller=true"),
-      "integration must explicitly enable its integration-only dirty controller bypass")
+      "integration must preserve platform_kind and explicitly enable its Compose test override")
 %w[
   DIRTY_TRACKED_REFUSED DIRTY_UNTRACKED_REFUSED
   DIRTY_MANIFEST_TEMPLATE_REFUSED DIRTY_ARBITRARY_CONTROLLER_FILE_REFUSED
@@ -579,7 +697,7 @@ inputs_path = File.join(ROOT, "roles", "deployment_bundle", "tasks", "inputs.yml
 inputs_body = File.file?(inputs_path) ? File.read(inputs_path) : ""
 check(failures, inputs_body.include?("services/manifest.yml") &&
                 inputs_body.include?("compose.yml") &&
-                inputs_body.include?("compose.{{ platform_kind }}.yml"),
+                inputs_body.include?("compose.{{ platform_compose_kind }}.yml"),
       "controller inputs must validate manifest, canonical Compose, and platform overrides")
 
 target_preflight_index = Array(site_play["pre_tasks"]).index do |task|
@@ -643,7 +761,7 @@ end
         "#{service_name} must revalidate target paths before runtime/current use")
   if target_validation
     check(failures, service_body.include?("/compose.yml") &&
-                    service_body.include?("/compose.{{ platform_kind }}.yml"),
+                    service_body.include?("/compose.{{ platform_compose_kind }}.yml"),
           "#{service_name} must guard every Compose file consumed by selective runs")
   end
 end

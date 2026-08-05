@@ -111,7 +111,9 @@ cat > "$manifest_controller/manifest-fixture.yml" <<'EOF'
   roles:
     - role: deployment_bundle
   vars:
-    platform_kind: fixture
+    platform_kind: nas
+    platform_compose_kind: fixture
+    deployment_bundle_test_mode: true
     platform_deploy_root: "{{ nas_docker_root }}/nas-platform"
     platform_release_dir: "{{ platform_deploy_root }}/releases/{{ platform_release_id }}"
     platform_current_dir: "{{ platform_deploy_root }}/current"
@@ -192,7 +194,9 @@ EOF
         dest: $sandbox/controller-$fixture_name-target
         mode: "0600"
   vars:
-    platform_kind: fixture
+    platform_kind: nas
+    platform_compose_kind: fixture
+    deployment_bundle_test_mode: true
 EOF
   git -C "$fixture_root" init -q
   git -C "$fixture_root" config user.name 'NAS platform integration'
@@ -325,37 +329,40 @@ docker run --rm \
     printf '%s\n' dirty >> '$controller_test_dir/services/ntfy/compose.yml'
     assert_dirty_refused DIRTY_TRACKED_REFUSED \
       'Controller checkout differs from Git HEAD' \
-      -e platform_kind=production
+      -e platform_kind=nas -e platform_compose_kind=nas
     git -C '$controller_test_dir' checkout -q -- .
 
     printf '%s\n' untracked > '$controller_test_dir/services/untracked.yml'
     assert_dirty_refused DIRTY_UNTRACKED_REFUSED \
       'Controller checkout differs from Git HEAD' \
-      -e platform_kind=production
+      -e platform_kind=nas -e platform_compose_kind=nas
     rm '$controller_test_dir/services/untracked.yml'
 
     printf '%s\n' dirty >> \
       '$controller_test_dir/roles/deployment_bundle/templates/manifest.yml.j2'
     assert_dirty_refused DIRTY_MANIFEST_TEMPLATE_REFUSED \
       'Controller checkout differs from Git HEAD' \
-      -e platform_kind=production
+      -e platform_kind=nas -e platform_compose_kind=nas
     git -C '$controller_test_dir' checkout -q -- .
 
     printf '%s\n' '# dirty arbitrary controller file' >> '$controller_test_playbook'
     assert_dirty_refused DIRTY_ARBITRARY_CONTROLLER_FILE_REFUSED \
       'Controller checkout differs from Git HEAD' \
-      -e platform_kind=production
+      -e platform_kind=nas -e platform_compose_kind=nas
     git -C '$controller_test_dir' checkout -q -- .
 
     printf '%s\n' dirty >> '$controller_test_dir/services/ntfy/compose.yml'
     assert_dirty_refused DIRTY_PRODUCTION_BYPASS_REFUSED \
-      'permitted only when platform_kind is integration' \
-      -e platform_kind=production \
+      'requires explicit deployment_bundle_test_mode' \
+      -e platform_kind=nas \
+      -e platform_compose_kind=integration \
       -e deployment_bundle_allow_dirty_controller=true
 
     rm -f '$controller_test_target'
     if ! ansible-playbook -i localhost, '$controller_test_playbook' \
-        -e platform_kind=integration \
+        -e platform_kind=nas \
+        -e platform_compose_kind=integration \
+        -e deployment_bundle_test_mode=true \
         -e deployment_bundle_allow_dirty_controller=true \
         >/tmp/dirty-controller-integration.txt 2>&1; then
       cat /tmp/dirty-controller-integration.txt >&2
@@ -371,7 +378,8 @@ docker run --rm \
         -e @$sandbox/sandbox-vault.yml \
         -e nas_docker_root=$sandbox/volume1/Docker \
         -e nas_media_root=$sandbox/volume2 \
-        -e platform_kind=integration \
+        -e platform_compose_kind=integration \
+        -e deployment_bundle_test_mode=true \
         -e deployment_bundle_allow_dirty_controller=true \
         '$playbook' \"\$@\"
     }
@@ -597,7 +605,7 @@ docker run --rm \
     printf 'STALE_BUNDLE_CLEAN\n'
     ruby /repo/tests/verify_deployment_manifest.rb \
       '$stale_release_dir/manifest.yml' \
-      /repo /repo/services/manifest.yml integration '$expected_release_id'
+      /repo /repo/services/manifest.yml nas integration '$expected_release_id'
     printf 'STALE_MANIFEST_EXACT\n'
 
     ansible-playbook -i localhost, \
@@ -607,7 +615,7 @@ docker run --rm \
     ruby /repo/tests/verify_deployment_manifest.rb \
       '$manifest_docker_root/nas-platform/current/manifest.yml' \
       '$manifest_controller' '$manifest_controller/services/manifest.yml' \
-      fixture '$manifest_fixture_sha' require-image-merge
+      nas fixture '$manifest_fixture_sha' require-image-merge
     printf 'ISOLATED_IMAGE_MERGE_EXACT\n'
 
     # The preceding scenarios must not create or seed the real-service target.
@@ -631,7 +639,7 @@ docker run --rm \
 
     ruby /repo/tests/verify_deployment_manifest.rb \
       '$sandbox/volume1/Docker/nas-platform/current/manifest.yml' \
-      /repo /repo/services/manifest.yml integration '$expected_release_id'
+      /repo /repo/services/manifest.yml nas integration '$expected_release_id'
 
     assert_selective_compose_refused() {
       service=\$1

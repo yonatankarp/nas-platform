@@ -2,9 +2,9 @@
 require "digest"
 require "yaml"
 
-manifest_path, repository_root, source_manifest_path, platform_kind, git_sha, merge_mode = ARGV
+manifest_path, repository_root, source_manifest_path, platform_kind, compose_kind, git_sha, merge_mode = ARGV
 unless git_sha
-  abort "usage: verify_deployment_manifest.rb MANIFEST REPO SOURCE_MANIFEST PLATFORM SHA [require-image-merge]"
+  abort "usage: verify_deployment_manifest.rb MANIFEST REPO SOURCE_MANIFEST PLATFORM COMPOSE_KIND SHA [require-image-merge]"
 end
 abort "unknown manifest verification mode #{merge_mode}" if merge_mode && merge_mode != "require-image-merge"
 require_image_merge = merge_mode == "require-image-merge"
@@ -21,7 +21,7 @@ expected_services = implemented.map do |service|
   name = service.fetch("name")
   service_root = File.join(repository_root, "services", name)
   canonical_path = File.join(service_root, "compose.yml")
-  override_path = File.join(service_root, "compose.#{platform_kind}.yml")
+  override_path = File.join(service_root, "compose.#{compose_kind}.yml")
   compose_paths = [canonical_path]
   compose_paths << override_path if File.file?(override_path)
 
@@ -51,6 +51,7 @@ end
 expected = {
   "git_sha" => git_sha,
   "platform_kind" => platform_kind,
+  "platform_compose_kind" => compose_kind,
   "services" => expected_services
 }
 actual = load_yaml.call(manifest_path)
