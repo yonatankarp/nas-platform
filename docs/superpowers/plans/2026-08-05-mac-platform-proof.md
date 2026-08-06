@@ -884,6 +884,13 @@ administrator login; document consumption; German/English/Hebrew OCR; preview;
 search; Office conversion; export; and persistence. Require the configured Gmail
 account and mail rule to match vault/shared configuration.
 
+Require Paperless's actual document-bearing paths to use writable storage under
+`nas_media_root` (`/volume2` on the NAS), never `nas_docker_root` (`/volume1`):
+the media/document archive, consume inbox, and exports all belong on volume 2.
+Only service-owned PostgreSQL, Valkey, configuration, search-index, and cache
+state belongs under `/volume1/Docker/paperless-ngx`. Add policy assertions for
+this split so a later refactor cannot silently move documents onto volume 1.
+
 - [ ] **Step 2: Add a non-consuming Gmail contract**
 
 The test authenticates to Paperless, inspects the managed mail account/rule,
@@ -900,6 +907,12 @@ Preserve the NAS host-network exception and loopback-only dependencies in the
 production definition. The Mac override uses a Docker Desktop-compatible network
 while keeping database, Valkey, Tika, and Gotenberg unpublished externally.
 Install and checksum the pinned Hebrew Tesseract model declaratively.
+
+Mount Paperless media/archive, consume, and export directories read-write from
+`nas_media_root`; those are user-document storage and must resolve under
+`/volume2` on the physical NAS. Mount database, Valkey, configuration,
+search-index, and regenerable cache paths from `nas_docker_root` under
+`/volume1/Docker/paperless-ngx`, with their appropriate recovery classes.
 
 - [ ] **Step 5: Provision administrator, mail account, and mail rule**
 
