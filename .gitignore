@@ -19,6 +19,7 @@ inventory/group_vars/all/vault-plain.yml
 *.dump
 
 # Local tooling
+.venv/
 .DS_Store
 .idea/
 .vscode/

@@ -20,6 +20,41 @@ def check(failures, condition, message)
   failures << message unless condition
 end
 
+beginner_guides = %w[
+  docs/getting-started.md
+  docs/getting-started-mac.md
+  docs/getting-started-nas.md
+  docs/ansible-basics.md
+]
+beginner_guides.each do |relative_path|
+  check(failures, File.file?(File.join(ROOT, relative_path)),
+        "beginner guide is missing: #{relative_path}")
+end
+
+readme_source = File.read(File.join(ROOT, "README.md"))
+beginner_guides.each do |relative_path|
+  check(failures, readme_source.include?("](#{relative_path})"),
+        "README must link to #{relative_path}")
+end
+
+getting_started_path = File.join(ROOT, "docs", "getting-started.md")
+getting_started_source = File.file?(getting_started_path) ? File.read(getting_started_path) : ""
+check(failures,
+      %w[inventory/mac.yml inventory/remote.yml].all? do |inventory|
+        getting_started_source.include?(inventory)
+      end,
+      "beginner starting point must distinguish Mac and remote NAS inventories")
+check(failures,
+      getting_started_source.match?(/Never commit a plaintext vault/i) &&
+        getting_started_source.include?("vault password"),
+      "beginner starting point must forbid plaintext vault and password commits")
+
+ansible_basics_path = File.join(ROOT, "docs", "ansible-basics.md")
+ansible_basics_source = File.file?(ansible_basics_path) ? File.read(ansible_basics_path) : ""
+check(failures,
+      ansible_basics_source.scan(%r{https://docs\.ansible\.com/}).length >= 10,
+      "Ansible concepts guide must link concepts to official Ansible documentation")
+
 service_dirs = Dir[File.join(ROOT, "services", "*")].select { |p| File.directory?(p) }
 check(failures, service_dirs.any?, "no services defined")
 
