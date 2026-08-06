@@ -77,7 +77,7 @@ verify.yml
 - Modify: `tests/integration.sh:18-52`
 - Modify: `.github/workflows/ci.yml:20-24`
 
-- [ ] **Step 1: Write a failing cleanup regression test**
+- [x] **Step 1: Write a failing cleanup regression test**
 
 Create a sandbox, use the pinned runner image to create a root-owned file inside
 it, invoke the shared cleanup command, and assert the directory no longer exists:
@@ -91,13 +91,13 @@ cleanup_sandbox "$sandbox"
 [ ! -e "$sandbox" ]
 ```
 
-- [ ] **Step 2: Run the regression test and verify the current cleanup fails**
+- [x] **Step 2: Run the regression test and verify the current cleanup fails**
 
 Run: `tests/integration_cleanup_test.sh`
 
 Expected: non-zero exit with `Permission denied` from host-side `rm`.
 
-- [ ] **Step 3: Extract safe cleanup into a sourced function**
+- [x] **Step 3: Extract safe cleanup into a sourced function**
 
 Define `cleanup_sandbox` in `tests/sandbox_cleanup.sh` and source that file from
 both the integration harness and its regression test. The function must:
@@ -112,7 +112,7 @@ both the integration harness and its regression test. The function must:
 
 Do not use `sudo`, an unvalidated glob, or a broad recursive host deletion.
 
-- [ ] **Step 4: Run cleanup and policy checks**
+- [x] **Step 4: Run cleanup and policy checks**
 
 Run:
 
@@ -124,7 +124,7 @@ ruby tests/policy_test.rb
 
 Expected: all commands exit zero and the temporary directory is absent.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```sh
 git add tests/integration.sh tests/integration_cleanup_test.sh tests/sandbox_cleanup.sh .github/workflows/ci.yml
@@ -138,7 +138,7 @@ git commit -m "fix: clean integration sandboxes safely"
 - Modify: `tests/policy_test.rb:18-81`
 - Test: `tests/policy_test.rb`
 
-- [ ] **Step 1: Add failing manifest assertions**
+- [x] **Step 1: Add failing manifest assertions**
 
 Extend the policy test to require the exact service names and reject undeclared
 service directories:
@@ -159,26 +159,26 @@ The only allowed statuses are `planned`, `implemented`, and `accepted`. A servic
 marked `implemented` or `accepted` must have Compose, role, storage declarations,
 and automated verification.
 
-- [ ] **Step 2: Run the policy test and verify it fails**
+- [x] **Step 2: Run the policy test and verify it fails**
 
 Run: `ruby tests/policy_test.rb`
 
 Expected: failure because `services/manifest.yml` is absent.
 
-- [ ] **Step 3: Create the complete manifest**
+- [x] **Step 3: Create the complete manifest**
 
 Mark `ntfy` and `beszel` as `implemented`; mark the remaining seven services as
 `planned`. Record
 `400f03f276ae1bb69f5460c175b9fb923d620f1a` as `legacy_source.commit` and
 `../nas-infrastructure` as the local default source.
 
-- [ ] **Step 4: Run the policy test**
+- [x] **Step 4: Run the policy test**
 
 Run: `ruby tests/policy_test.rb`
 
 Expected: `policy: all properties hold`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```sh
 git add services/manifest.yml tests/policy_test.rb
@@ -197,20 +197,20 @@ git commit -m "test: track complete platform migration scope"
 - Modify: `roles/beszel/tasks/main.yml:13-37`
 - Modify: `tests/integration.sh:114-122`
 
-- [ ] **Step 1: Add a failing bundle-ownership integration assertion**
+- [x] **Step 1: Add a failing bundle-ownership integration assertion**
 
 Before running Ansible, place a deliberately stale Compose file in the target
 deployment directory. After the run, assert its checksum equals the controller
 source and assert the generated deployment manifest contains the expected Git
 SHA.
 
-- [ ] **Step 2: Run the focused integration test and verify it fails**
+- [x] **Step 2: Run the focused integration test and verify it fails**
 
 Run: `tests/integration.sh site.yml --tags deployment_bundle`
 
 Expected: failure because no role replaces the stale target definition.
 
-- [ ] **Step 3: Implement immutable release bundles**
+- [x] **Step 3: Implement immutable release bundles**
 
 Add variables:
 
@@ -229,20 +229,20 @@ arbitrary target Git checkout. Each role passes canonical `compose.yml` plus
 `compose.{{ platform_kind }}.yml` when that override exists; production behavior
 therefore remains canonical and overrides stay capability-scoped.
 
-- [ ] **Step 4: Remove the target-checkout preflight requirement**
+- [x] **Step 4: Remove the target-checkout preflight requirement**
 
 Replace the `nas_repo_dir/services` assertion with checks that the controller
 bundle source exists and that `platform_deploy_root` is writable. Keep mount and
 Docker checks unchanged.
 
-- [ ] **Step 5: Run integration, idempotence, and check mode**
+- [x] **Step 5: Run integration, idempotence, and check mode**
 
 Run: `tests/integration.sh site.yml`
 
 Expected: converge succeeds, second run reports `changed=0`, check mode succeeds,
 and the stale file has been replaced by the controller version.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```sh
 git add roles/deployment_bundle roles/preflight site.yml inventory/group_vars/all/main.yml roles/ntfy roles/beszel tests/integration.sh
@@ -262,19 +262,19 @@ git commit -m "feat: deploy versioned controller bundles"
 - Modify: `roles/preflight/meta/argument_specs.yml`
 - Modify: `tests/policy_test.rb`
 
-- [ ] **Step 1: Add failing inventory-contract tests**
+- [x] **Step 1: Add failing inventory-contract tests**
 
 Require every inventory to expose a child of `platform_hosts`, require
 `platform_kind` to be either `nas` or `mac`, and require explicit capability
 variables for render devices, host networking, and external integration checks.
 
-- [ ] **Step 2: Run the policy test and verify it fails**
+- [x] **Step 2: Run the policy test and verify it fails**
 
 Run: `ruby tests/policy_test.rb`
 
 Expected: failure naming the missing `platform_hosts` and Mac inventory.
 
-- [ ] **Step 3: Implement the inventory hierarchy**
+- [x] **Step 3: Implement the inventory hierarchy**
 
 Use this shape:
 
@@ -292,7 +292,7 @@ NAS inventories place `nas` under `nas_hosts`. Change `site.yml` to target
 UID/GID policy, alert thresholds, service identities, and application behavior in
 shared variables.
 
-- [ ] **Step 4: Validate all inventories**
+- [x] **Step 4: Validate all inventories**
 
 Run:
 
@@ -305,7 +305,7 @@ ruby tests/policy_test.rb
 
 Expected: all inventories contain `platform_hosts`; policy passes.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```sh
 git add inventory site.yml roles/preflight tests/policy_test.rb
@@ -325,7 +325,7 @@ git commit -m "refactor: model platform host capabilities"
 - Modify: `site.yml`
 - Modify: `tests/policy_test.rb:129-160`
 
-- [ ] **Step 1: Add failing vault-schema tests**
+- [x] **Step 1: Add failing vault-schema tests**
 
 Require the example, generated template, validation role, and CI generator to
 share the same keys. Add keys for:
@@ -343,13 +343,13 @@ share the same keys. Add keys for:
 The test must reject `vault_nas_*` values used as portable application settings;
 connection coordinates remain NAS inventory values, not shared credentials.
 
-- [ ] **Step 2: Run the policy test and verify missing keys fail**
+- [x] **Step 2: Run the policy test and verify missing keys fail**
 
 Run: `ruby tests/policy_test.rb`
 
 Expected: failures listing the absent portable credential keys.
 
-- [ ] **Step 3: Expand and validate the vault contract**
+- [x] **Step 3: Expand and validate the vault contract**
 
 `validate-vault.yml` must validate presence and shape without printing values.
 It records only the SHA-256 of the encrypted vault file in the deployment report.
@@ -366,7 +366,7 @@ must refuse output paths inside the repository. Its `--cleanup <directory>` mode
 must apply the same validated-prefix rule and remove the temporary vault and
 password file without printing either.
 
-- [ ] **Step 4: Prove example/template/schema parity**
+- [x] **Step 4: Prove example/template/schema parity**
 
 Run:
 
@@ -378,7 +378,7 @@ tests/generate-ephemeral-vault.sh --self-test
 
 Expected: both pass with no secret values in output.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```sh
 git add inventory/group_vars/all/vault.yml.example templates/vault-plain.yml.j2 generate-secrets.yml validate-vault.yml roles/vault_contract site.yml tests/policy_test.rb tests/generate-ephemeral-vault.sh
@@ -401,7 +401,7 @@ git commit -m "feat: define portable credential contract"
 - Modify: `README.md`
 - Modify: `tests/policy_test.rb`
 
-- [ ] **Step 1: Write failing lifecycle tests**
+- [x] **Step 1: Write failing lifecycle tests**
 
 Add policy assertions that the harness supports these named phases and refuses a
 sandbox outside its validated prefix:
@@ -414,7 +414,7 @@ report cleanup
 Add a shell test proving cleanup refuses `/`, the repository root, an empty path,
 and an arbitrary existing directory.
 
-- [ ] **Step 2: Run the tests and verify they fail**
+- [x] **Step 2: Run the tests and verify they fail**
 
 Run:
 
@@ -425,7 +425,7 @@ tests/mac/cleanup.sh --self-test
 
 Expected: missing-harness failures.
 
-- [ ] **Step 3: Implement the phase runner**
+- [x] **Step 3: Implement the phase runner**
 
 `run.sh` accepts:
 
@@ -447,14 +447,14 @@ The harness uses it for post-seed, post-drift, post-recreation, and
 post-adoption checks so verification cannot accidentally hide a defect by
 reconverging first.
 
-- [ ] **Step 4: Implement redacted reports**
+- [x] **Step 4: Implement redacted reports**
 
 The Ruby reporter accepts structured phase input, rejects keys matching
 `password|secret|token|authorization|private_key|hash`, and emits JSON plus a
 human-readable Markdown summary. Add unit cases proving each forbidden key is
 redacted.
 
-- [ ] **Step 5: Verify shell safety and report redaction**
+- [x] **Step 5: Verify shell safety and report redaction**
 
 Run:
 
@@ -467,7 +467,7 @@ ruby tests/policy_test.rb
 
 Expected: all pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```sh
 git add tests/mac verify.yml .gitignore README.md tests/policy_test.rb
@@ -489,7 +489,7 @@ git commit -m "feat: add disposable Mac proof harness"
 - Modify: `tests/mac/drift.sh`
 - Modify: `tests/mac/verify.sh`
 
-- [ ] **Step 1: Write failing Beszel drift tests**
+- [x] **Step 1: Write failing Beszel drift tests**
 
 After initial deployment, mutate the application-user role, replace the managed
 universal token, change the ntfy webhook, change an alert threshold, and add a
@@ -501,27 +501,27 @@ second system record. Re-run Ansible and assert:
 - Each managed alert matches its configured value and duration.
 - Alerts attach to the system matching `beszel_system_name`, not the first record.
 
-- [ ] **Step 2: Run the contract test and verify current behavior fails**
+- [x] **Step 2: Run the contract test and verify current behavior fails**
 
 Run: `tests/contracts/beszel.sh`
 
 Expected: token, role, alert-update, and system-selection assertions fail.
 
-- [ ] **Step 3: Implement record-specific reconciliation**
+- [x] **Step 3: Implement record-specific reconciliation**
 
 List and select records by managed identity. Use `PATCH` for existing mismatched
 users, tokens, settings, and alerts; use `POST` only when absent. Never treat a
 generic HTTP 400 as successful convergence. Refuse duplicate managed identities
 with a diagnostic that contains IDs but no secrets.
 
-- [ ] **Step 4: Add explicit agent lifecycle handling**
+- [x] **Step 4: Add explicit agent lifecycle handling**
 
 When the host lacks the agent capability, ensure a previously managed agent is
 stopped and absent. On Mac, run the non-Intel agent with CPU/container monitoring
 through the socket proxy. On NAS, retain the Intel image, render device, host
 network, and `CAP_PERFMON` requirements.
 
-- [ ] **Step 5: Run monitoring integration tests**
+- [x] **Step 5: Run monitoring integration tests**
 
 Run:
 
@@ -534,7 +534,7 @@ tests/mac/run.sh --lane fresh --phase drift
 Expected: all managed records converge and a test Beszel notification appears in
 the disposable ntfy topic.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```sh
 git add services/ntfy/compose.mac.yml services/beszel/compose.mac.yml roles/beszel tests/contracts/beszel.sh tests/integration.sh tests/mac
@@ -556,7 +556,7 @@ git commit -m "fix: reconcile Beszel configuration drift"
 - Modify: `site.yml`
 - Modify: `services/manifest.yml`
 
-- [ ] **Step 1: Write a failing Dozzle contract test**
+- [x] **Step 1: Write a failing Dozzle contract test**
 
 The test requires simple authentication with the vault credential, disabled
 actions/shell/MCP, read-only Docker access through the socket proxy, an ntfy
@@ -575,19 +575,19 @@ destination, and exactly these enabled event alerts:
   event: 'name == "health_status" && attributes["healthStatus"] == "healthy"'
 ```
 
-- [ ] **Step 2: Run the contract test and verify the service is absent**
+- [x] **Step 2: Run the contract test and verify the service is absent**
 
 Run: `tests/contracts/dozzle.sh`
 
 Expected: failure because Dozzle is not deployed.
 
-- [ ] **Step 3: Port and parameterize the Compose definition**
+- [x] **Step 3: Port and parameterize the Compose definition**
 
 Preserve the pinned images and socket-proxy restrictions from
 `nas-infrastructure`. Declare `/data` as critical state. The Mac override changes
 only published host port and socket access mechanics required by Docker Desktop.
 
-- [ ] **Step 4: Implement deterministic provisioning**
+- [x] **Step 4: Implement deterministic provisioning**
 
 Render `users.yml` from the shared vault. Characterize the pinned image's
 notification API in `tests/contracts/dozzle.sh`; provision destination and alert
@@ -595,13 +595,13 @@ records through that API. If the pinned image exposes no stable write API, fail
 the task rather than copying an opaque database, and record the explicit product
 limitation for design review.
 
-- [ ] **Step 5: Verify an actual event reaches ntfy**
+- [x] **Step 5: Verify an actual event reaches ntfy**
 
 Start a disposable container that exits with code 1, wait through the event
 pipeline, and assert an authenticated message appears on `nas-critical`. Confirm
 the publisher token cannot read the topic.
 
-- [ ] **Step 6: Run idempotence and drift repair**
+- [x] **Step 6: Run idempotence and drift repair**
 
 Run:
 
@@ -614,7 +614,7 @@ tests/mac/run.sh --lane fresh --phase drift
 Expected: four alerts and one destination remain exact; second Ansible run has
 zero changes.
 
-- [ ] **Step 7: Mark Dozzle implemented and commit**
+- [x] **Step 7: Mark Dozzle implemented and commit**
 
 ```sh
 git add services/dozzle roles/dozzle tests/contracts/dozzle.sh inventory/group_vars/all/main.yml site.yml services/manifest.yml tests/mac
@@ -639,33 +639,33 @@ git commit -m "feat: manage Dozzle alerting"
 - Modify: `tests/mac/fixtures.sh`
 - Modify: `tests/mac/verify.sh`
 
-- [ ] **Step 1: Write a failing application contract**
+- [x] **Step 1: Write a failing application contract**
 
 Require vault administrator login, one managed audiobook library rooted at
 `/audiobooks`, successful fixture scan, playable audio response, and retained
 progress after recreation.
 
-- [ ] **Step 2: Run the contract and verify it fails because the role is absent**
+- [x] **Step 2: Run the contract and verify it fails because the role is absent**
 
 Run: `tests/contracts/audiobookshelf.sh`
 
-- [ ] **Step 3: Port Compose and storage policy**
+- [x] **Step 3: Port Compose and storage policy**
 
 Parameterize config, metadata, and read-only audiobook sources. Preserve pinned
 image, UID/GID, port, health check, restart, and logging policy. Declare config
 and metadata critical and the media library user-owned.
 
-- [ ] **Step 4: Provision administrator and library through the pinned API**
+- [x] **Step 4: Provision administrator and library through the pinned API**
 
 Use create-if-absent and patch-if-drift semantics keyed by vault username and
 library name. Refuse duplicate managed identities.
 
-- [ ] **Step 5: Seed and verify the audiobook fixture**
+- [x] **Step 5: Seed and verify the audiobook fixture**
 
 Generate a short tagged audio file, scan it, set playback progress, recreate the
 container, and assert both item and progress remain.
 
-- [ ] **Step 6: Run tests and commit**
+- [x] **Step 6: Run tests and commit**
 
 ```sh
 tests/contracts/audiobookshelf.sh
