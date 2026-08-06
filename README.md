@@ -9,6 +9,18 @@ This repository recreates service *configuration*. It is not a backup of photos,
 media, databases or application state. Keep those in a separate encrypted,
 off-site backup. RAID is not a backup.
 
+## New to Ansible?
+
+- [Beginner starting point](docs/getting-started.md)
+- [Disposable Mac walkthrough](docs/getting-started-mac.md)
+- [Physical NAS walkthrough](docs/getting-started-nas.md)
+- [Ansible concepts used here](docs/ansible-basics.md)
+
+The migration is in progress. ntfy, Beszel, Dozzle, and Audiobookshelf are
+implemented today; the remaining services are tracked in
+[`services/manifest.yml`](services/manifest.yml). Prove the implemented platform
+on the Mac before preparing a production NAS cutover.
+
 ## Design
 
 **Nothing is manual after the first run.** Two residues are irreducible and are
@@ -53,8 +65,9 @@ python3, which Ansible needs in both run modes.
 ```sh
 ansible-galaxy collection install -r requirements.yml
 
-# Author credentials once, review the identity fields, then encrypt.
-ansible-playbook generate-secrets.yml
+# Brand-new platforms only: author credentials, then encrypt.
+# Migrations must reuse the current values; follow the beginner guides above.
+ansible-playbook generate-secrets.yml -e generate_brand_new_platform=true
 mv inventory/group_vars/all/vault-plain.yml inventory/group_vars/all/vault.yml
 ansible-vault encrypt inventory/group_vars/all/vault.yml
 
@@ -137,9 +150,10 @@ changes nothing, and a dry run works. Two of the worst bugs found so far, a fact
 that exists only on Linux and `command` being skipped under `--check`, both passed
 syntax checking and were caught only by running.
 
-The current Jellyfin and Immich definitions still map `/dev/dri`. Their service
-tranches add explicit Docker Desktop CPU overrides while preserving the NAS GPU
-contract; until then, the full Mac proof is expected to remain incomplete.
+The current Mac proof covers ntfy, Beszel, Dozzle, and Audiobookshelf. Komga,
+Jellyfin, tinyMediaManager, Immich, and Paperless-ngx remain planned; their
+manual-review checks cannot yet be accepted. NAS-only GPU, host-networking,
+native-mount and production-scale behavior also remain outside the Mac proof.
 
 ### Disposable Mac platform proof
 
