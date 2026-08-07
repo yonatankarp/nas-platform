@@ -12,6 +12,9 @@ argument_specs:
       tinymediamanager_web_port:
         type: int
         required: false
+      tinymediamanager_api_container_port:
+        type: int
+        required: false
       tinymediamanager_api_port:
         type: int
         required: false
