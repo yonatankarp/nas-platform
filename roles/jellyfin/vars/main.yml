@@ -3,3 +3,10 @@
 # LibraryOptions.PathInfos. Both are compared against this one derived list, so
 # the managed paths cannot drift apart between the two representations.
 jellyfin_library_paths: "{{ jellyfin_library_path_infos | map(attribute='Path') | list }}"
+
+# Assembled here so the request line stays within the enforced line length
+# without folding a scalar, which would insert a space inside the query.
+jellyfin_library_create_query: >-
+  {{ 'name=' ~ (jellyfin_library_name | urlencode) ~
+     '&collectionType=' ~ (jellyfin_library_collection_type | urlencode) ~
+     '&refreshLibrary=true' }}

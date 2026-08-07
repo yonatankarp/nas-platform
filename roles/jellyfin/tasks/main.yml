@@ -257,8 +257,10 @@
 
 - name: Create the managed Jellyfin library
   ansible.builtin.uri:
-    # Deliberately one line: a folded scalar would put a space inside the query.
-    url: "{{ jellyfin_api }}/Library/VirtualFolders?name={{ jellyfin_library_name | urlencode }}&collectionType={{ jellyfin_library_collection_type | urlencode }}&refreshLibrary=true"
+    # The query is assembled in vars rather than folded into the url. A folded
+    # scalar would put a space inside the query, and writing it on one line
+    # exceeds the line length the linter enforces.
+    url: "{{ jellyfin_api }}/Library/VirtualFolders?{{ jellyfin_library_create_query }}"
     method: POST
     headers:
       Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_reconcile_token }}"'
