@@ -61,6 +61,13 @@ integration_service = integration.fetch("services").fetch("tinymediamanager")
 abort "tinyMediaManager contract failed: integration must select the canonical amd64 child" unless
   integration_service.fetch("image") == expected_amd64_image &&
     integration_service.fetch("platform") == "linux/amd64"
+# The application binds the container side of the published mapping. If the role
+# instead wrote the host port into httpServerPort, the mapping would forward to a
+# port nothing listens on and every API call would be reset.
+mac_api_container_port = mac_service.fetch("ports")
+  .find { |port| port.start_with?("${TINYMEDIAMANAGER_API_HOST_PORT:?}:") }.to_s.split(":").last
+abort "tinyMediaManager contract failed: bound API port must be the published container port" unless
+  defaults.fetch("tinymediamanager_api_container_port").to_s == mac_api_container_port
 abort "tinyMediaManager contract failed: movie source differs" unless
   defaults.fetch("tinymediamanager_movie_source") == "/media/Movies"
 abort "tinyMediaManager contract failed: series source differs" unless

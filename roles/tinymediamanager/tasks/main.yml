@@ -77,7 +77,7 @@
       tmm: >-
         {{ tinymediamanager_existing_settings.get('tmm', {}) | combine({
           'enableHttpServer': true,
-          'httpServerPort': tinymediamanager_api_port,
+          'httpServerPort': tinymediamanager_api_container_port,
           'httpApiKey': vault_tinymediamanager_password,
           'videoFileType': tinymediamanager_existing_settings.get('tmm', {})
             .get('videoFileType', []) + (tinymediamanager_video_file_types
@@ -221,7 +221,7 @@
       - tinymediamanager_verified_settings.movies.movieDataSource == [tinymediamanager_movie_source]
       - tinymediamanager_verified_settings.tvShows.tvShowDataSource == [tinymediamanager_series_source]
       - tinymediamanager_verified_settings.tmm.enableHttpServer
-      - tinymediamanager_verified_settings.tmm.httpServerPort | int == tinymediamanager_api_port
+      - tinymediamanager_verified_settings.tmm.httpServerPort | int == tinymediamanager_api_container_port
       - tinymediamanager_verified_settings.tmm.httpApiKey == vault_tinymediamanager_password
       - tinymediamanager_video_file_types | difference(tinymediamanager_verified_settings.tmm.videoFileType) | length == 0
     fail_msg: tinyMediaManager sources or its vault-protected HTTP API settings drifted.
