@@ -23,6 +23,14 @@ require "yaml"
 MODE = ARGV.fetch(0)
 HUB = URI("http://127.0.0.1:#{Integer(ENV.fetch('PLATFORM_BESZEL_PORT'), 10)}")
 NTFY = URI("http://127.0.0.1:#{Integer(ENV.fetch('PLATFORM_NTFY_PORT'), 10)}")
+# The address Beszel reaches ntfy on is whatever the deployment was told to use,
+# not the loopback address this contract connects to, and it is not a fixed name:
+# only Docker Desktop supplies host.docker.internal, so a Linux daemon gets an
+# address instead. Follow the precedence inventory/local.yml uses, and fall back
+# to the name inventory/mac.yml hardcodes, which the Mac lane relies on because it
+# exports neither variable.
+CALLBACK_HOST = [ENV["PLATFORM_CALLBACK_HOST"], ENV["PLATFORM_NAS_ADDRESS"]]
+                .compact.reject(&:empty?).first || "host.docker.internal"
 MANAGED_ALERTS = {
   "Status" => [0, 0],
   "CPU" => [90, 10],
@@ -219,7 +227,7 @@ when "notify"
     body: { identity: vault.fetch("vault_beszel_app_user_email"),
             password: vault.fetch("vault_beszel_app_user_password") }
   )
-  expected_url = "ntfy://:#{vault.fetch('vault_ntfy_beszel_token')}@host.docker.internal:#{NTFY.port}/nas-critical?scheme=http"
+  expected_url = "ntfy://:#{vault.fetch('vault_ntfy_beszel_token')}@#{CALLBACK_HOST}:#{NTFY.port}/nas-critical?scheme=http"
   ntfy_auth = [vault.fetch("vault_ntfy_admin_user"), vault.fetch("vault_ntfy_admin_password")]
   latest = request_text("get", endpoint(NTFY, "/nas-critical/json?poll=1&since=latest"), basic: ntfy_auth)
   latest_messages = latest.lines.filter_map do |line|
@@ -263,7 +271,7 @@ else
 
   settings = exact_record(records("user_settings", admin_token, equality("user", user_id)),
                           "managed user settings")
-  expected_url = "ntfy://:#{vault.fetch('vault_ntfy_beszel_token')}@host.docker.internal:#{NTFY.port}/nas-critical?scheme=http"
+  expected_url = "ntfy://:#{vault.fetch('vault_ntfy_beszel_token')}@#{CALLBACK_HOST}:#{NTFY.port}/nas-critical?scheme=http"
   notification_settings = settings.fetch("settings")
   notification_settings = JSON.parse(notification_settings) if notification_settings.is_a?(String)
   fail_contract("managed ntfy webhook differs") unless notification_settings["webhooks"] == [expected_url]
