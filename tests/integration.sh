@@ -269,6 +269,23 @@ printf '%s\n' pristine > "$controller_test_sentinel"
 
 printf 'sandbox: %s\n' "$sandbox"
 
+# Services reach one another across published host ports, so they need an address
+# for the daemon's host that resolves inside a container. Docker Desktop supplies
+# host.docker.internal; a Linux daemon does not, and the service containers are
+# started by Compose rather than by this script, so they cannot be given the name
+# through --add-host. Use the default bridge gateway there, which every container
+# can route to and which the published ports listen on.
+if docker info --format '{{.OperatingSystem}}' 2>/dev/null | grep -qi 'docker desktop'; then
+  nas_address=host.docker.internal
+else
+  nas_address=$(docker network inspect bridge \
+    --format '{{ (index .IPAM.Config 0).Gateway }}') ||
+    { printf 'could not resolve the Docker host address\n' >&2; exit 1; }
+  [ -n "$nas_address" ] ||
+    { printf 'Docker host address resolved empty\n' >&2; exit 1; }
+fi
+printf 'host address: %s\n' "$nas_address"
+
 docker run --rm \
   --network host \
   -v /var/run/docker.sock:/var/run/docker.sock \
@@ -277,7 +294,7 @@ docker run --rm \
   `# this container and on the Docker daemon's host.` \
   -v "$sandbox":"$sandbox" \
   -e ANSIBLE_CONFIG=/repo/ansible.cfg \
-  -e PLATFORM_NAS_ADDRESS=host.docker.internal \
+  -e PLATFORM_NAS_ADDRESS="$nas_address" \
   -w /repo \
   "$runner_image" \
   sh -eu -c "
