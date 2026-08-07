@@ -727,21 +727,31 @@ does not expose first-run automation, the contract must identify the exact
 manual exception and the role must stop with instructions instead of reporting
 success. Do not edit opaque databases.
 
-- [ ] **Step 5: Run persistence tests and commit**
+- [x] **Step 5: Run persistence tests and commit**
 
-Handoff checkpoint (2026-08-07): focused Komga and tinyMediaManager seed,
-recreation, metadata-write, and persistence proofs pass. The last full
-integration run exposed byte-level churn after tinyMediaManager normalized
-semantically identical JSON; a test-first semantic-equality guard is implemented
-and its focused regression passes. Task 10 remains incomplete until a fresh run
-from unchanged bytes passes live contracts, second-run `changed=0 failed=0`,
-`--check --diff`, cleanup, final policy/static review, and the complete Mac
-fresh lane. Do not mark this step or Task 10 complete before those gates pass.
+Completed 2026-08-07. Every gate in the handoff checkpoint passed from a fresh
+run: live contracts, second-run `changed=0 failed=0`, `--check --diff`, cleanup,
+the full static review, and the complete Mac fresh lane across all eleven phases.
+
+The checkpoint's byte-churn was only half fixed. The role compared settings
+semantically, but the contract still fingerprinted them byte for byte, and two
+writers touch those documents: the application in its own format, and the role
+with `to_nice_json` when it repairs drift. The fingerprint was captured in one
+format and recompared in the other. Only the complete Mac lane crosses both
+writers, which is why `--phase recreate` could never have been the gate.
+
+The lane also exposed three defects that the role's own verification could not
+see, each because it asserted what it had configured rather than what a caller
+would experience: `httpServerPort` compared against the variable that set it
+while the API bound a port nothing forwarded to, readiness polled the image's
+nginx rather than the application, and `compose up --wait` waited on a
+healthcheck that did not exist. Komga has no healthcheck either, so `--wait` is
+equally vacuous there; it passes only because Komga starts quickly.
 
 ```sh
 tests/contracts/komga.sh
 tests/contracts/tinymediamanager.sh
-tests/mac/run.sh --lane fresh --phase recreate
+tests/mac/run.sh --lane fresh
 git add services/komga services/tinymediamanager roles/komga roles/tinymediamanager tests inventory/group_vars/all/main.yml site.yml services/manifest.yml
 git commit -m "feat: migrate book and media management services"
 ```
