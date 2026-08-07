@@ -243,7 +243,7 @@ PLATFORM_INVENTORIES.values.map { |values| [values[0], values[3]] }.uniq.each do
                         %w[
                           platform_project_name beszel_port ntfy_port dozzle_port
                           audiobookshelf_port komga_port tinymediamanager_web_port
-                          tinymediamanager_api_port jellyfin_port
+                          tinymediamanager_api_port jellyfin_port immich_port
                         ]
                       else
                         []

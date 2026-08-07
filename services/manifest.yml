@@ -24,7 +24,7 @@ services:
     legacy_path: compose/immich/compose.yml
     role: immich
     tranche: 5
-    status: planned
+    status: implemented
   - name: jellyfin
     legacy_path: compose/jellyfin/compose.yml
     role: jellyfin

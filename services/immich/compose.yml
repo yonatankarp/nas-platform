@@ -1,0 +1,87 @@
+---
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
+services:
+  immich-server:
+    container_name: immich_server
+    image: ghcr.io/immich-app/immich-server:v3.1.0@sha256:b434cb9287eea1471c9974845914d4dd328c9c2d652e446ed4930f99944f0ceb
+    ports:
+      - "2283:2283"
+    # The nested bind layout of the source deployment. /data holds the
+    # originals on the media volume; the regenerable derivatives and the
+    # profile tree are redirected onto the Docker root so the media volume
+    # carries only irreplaceable photographs.
+    volumes:
+      - ${NAS_MEDIA_ROOT:?}/Immich:/data
+      - ${NAS_DOCKER_ROOT:?}/immich/data/thumbs:/data/thumbs
+      - ${NAS_DOCKER_ROOT:?}/immich/data/encoded-video:/data/encoded-video
+      - ${NAS_DOCKER_ROOT:?}/immich/data/profile:/data/profile
+      - ${NAS_MEDIA_ROOT:?}/Immich-backups/database:/data/backups
+    environment:
+      TZ: ${TZ:?}
+      DB_DATABASE_NAME: ${IMMICH_DB_NAME:?}
+      DB_USERNAME: ${IMMICH_DB_USERNAME:?}
+      DB_PASSWORD: ${IMMICH_DB_PASSWORD:?}
+    # Immich runs its own schema migrations at startup and will corrupt neither
+    # an empty nor a half-initialized database, so both dependencies are gated
+    # on health rather than on start.
+    depends_on:
+      redis:
+        condition: service_healthy
+      database:
+        condition: service_healthy
+    # Intel Quick Sync on the NAS. This is the production capability; platforms
+    # without a render node remove it in their override and transcode on CPU.
+    devices:
+      - /dev/dri:/dev/dri
+    # The image ships its own health check. Enabling it explicitly is what makes
+    # `compose up --wait` mean anything: Compose treats a container with no
+    # health check as ready the moment it is running.
+    healthcheck:
+      disable: false
+    restart: unless-stopped
+    logging: *default-logging
+
+  immich-machine-learning:
+    container_name: immich_machine_learning
+    image: ghcr.io/immich-app/immich-machine-learning:v3.1.0@sha256:5a0839dc5303cd7215bcd2180a26aed3af41675aefb3e75e5157e9f10ad16e6e
+    # Models are downloaded on first use and are regenerable, so this volume is
+    # a cache in the storage inventory rather than service state.
+    volumes:
+      - ${NAS_DOCKER_ROOT:?}/immich/data/model-cache:/cache
+    environment:
+      TZ: ${TZ:?}
+    healthcheck:
+      disable: false
+    restart: unless-stopped
+    logging: *default-logging
+
+  # Deliberately still named redis: Immich resolves its cache by this Compose
+  # service name, and the image behind it is Valkey.
+  redis:
+    container_name: immich_redis
+    image: docker.io/valkey/valkey:9@sha256:3acc0687f2a2e1091fae6450d7842dd658c941338cf0a873ddd9e14b9e4ea4dd
+    healthcheck:
+      test: redis-cli ping || exit 1
+    restart: unless-stopped
+    logging: *default-logging
+
+  database:
+    container_name: immich_postgres
+    image: ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0@sha256:bcf63357191b76a916ae5eb93464d65c07511da41e3bf7a8416db519b40b1c23
+    environment:
+      POSTGRES_DB: ${IMMICH_DB_NAME:?}
+      POSTGRES_USER: ${IMMICH_DB_USERNAME:?}
+      POSTGRES_PASSWORD: ${IMMICH_DB_PASSWORD:?}
+      POSTGRES_INITDB_ARGS: --data-checksums
+    volumes:
+      - ${NAS_DOCKER_ROOT:?}/immich/postgres:/var/lib/postgresql/data
+    shm_size: 128mb
+    healthcheck:
+      disable: false
+    restart: unless-stopped
+    logging: *default-logging

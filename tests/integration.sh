@@ -497,6 +497,17 @@ docker run --rm \
         /repo/tests/contracts/jellyfin.sh \"\$@\"
     }
 
+    run_immich_contract() {
+      env \
+        PLATFORM_KIND=integration \
+        PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\" \
+        PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=\"\$vault_password_file\" \
+        PLATFORM_DOCKER_ROOT='$sandbox/volume1/Docker' \
+        PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
+        PLATFORM_REPORT_ROOT='$sandbox/reports' \
+        /repo/tests/contracts/immich.sh \"\$@\"
+    }
+
     run_verify_only() {
       PLATFORM_VAULT_FILE=\"\$vault_file\" ansible-playbook \
         -i inventory/local.yml \
@@ -1198,6 +1209,9 @@ docker run --rm \
       # After tinyMediaManager, because both services read the same Movies tree
       # and only a scan that already finished can be asserted independently.
       run_jellyfin_contract seed
+      # Immich uploads its own fixtures rather than reading the media tree, so
+      # it is independent of the movie seeding order above.
+      run_immich_contract seed
 
       env \
         PLATFORM_KIND=integration \

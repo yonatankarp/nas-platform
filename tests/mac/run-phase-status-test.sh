@@ -78,7 +78,8 @@ vault_checksum=$(shasum -a 256 "$vault_file" | awk '{print $1}')
   --beszel-port 38090 --ntfy-port 32586 --dozzle-port 38080 \
   --audiobookshelf-port 33378 --komga-port 35600 \
   --tinymediamanager-web-port 34000 --tinymediamanager-api-port 37878 \
-  --jellyfin-port 38096
+  --jellyfin-port 38096 \
+  --immich-port 32283
 "$mac_test_dir/report.rb" --record "$state_input" --phase preflight --status running
 "$mac_test_dir/report.rb" --record "$state_input" --phase preflight --status passed
 

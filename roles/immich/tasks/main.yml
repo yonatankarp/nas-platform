@@ -1,0 +1,341 @@
+---
+- name: Revalidate deployment paths before Immich runtime use
+  ansible.builtin.include_role:
+    name: deployment_bundle
+    tasks_from: target
+  vars:
+    deployment_target_require_current_release: true
+    deployment_target_extra_paths:
+      - "{{ platform_current_dir }}/services/immich"
+      - "{{ platform_current_dir }}/services/immich/compose.yml"
+      - "{{ platform_current_dir }}/services/immich/compose.{{ platform_compose_kind }}.yml"
+      - "{{ platform_runtime_dir }}/services/immich"
+      - "{{ platform_runtime_dir }}/services/immich/.env"
+
+- name: Check for an Immich platform override
+  ansible.builtin.stat:
+    path: "{{ platform_current_dir }}/services/immich/compose.{{ platform_compose_kind }}.yml"
+  register: immich_platform_compose
+
+- name: Select the Immich Compose definitions
+  ansible.builtin.set_fact:
+    immich_compose_files: >-
+      {{ ['compose.yml'] +
+         (immich_platform_compose.stat.exists
+          | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) }}
+    immich_postgres_container: >-
+      {{ (platform_project_name ~ '-immich-postgres')
+         if platform_project_name | default('') | length > 0 else 'immich_postgres' }}
+
+- name: Render the Immich environment
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ platform_runtime_dir }}/services/immich/.env"
+    mode: "0600"
+
+# The database and the cache come up first and alone. PostgreSQL honors
+# POSTGRES_USER, POSTGRES_DB and POSTGRES_PASSWORD only when it initializes an
+# empty data directory; against an existing cluster it ignores them silently.
+# Bringing the data services up before the application is what lets the next
+# task refuse a rotated credential with a clear message instead of letting the
+# whole stack fail later as an opaque application startup timeout.
+- name: Deploy the Immich data services
+  community.docker.docker_compose_v2:
+    project_src: "{{ platform_current_dir }}/services/immich"
+    project_name: "{{ immich_compose_project_name }}"
+    files: "{{ immich_compose_files }}"
+    env_files: ["{{ platform_runtime_dir }}/services/immich/.env"]
+    services: [database, redis]
+    state: present
+    wait: true
+    wait_timeout: 300
+
+# Loopback inside the PostgreSQL container is trust-authenticated, so this
+# deliberately connects to the Compose service name instead: that leaves the
+# loopback interface, matches the final scram-sha-256 rule in the image's
+# pg_hba.conf, and so verifies the database name, the role and the password
+# together rather than only the first two.
+- name: Refuse a rotated Immich database credential
+  community.docker.docker_container_exec:
+    container: "{{ immich_postgres_container }}"
+    argv:
+      - psql
+      - --host=database
+      - "--username={{ vault_immich_db_username }}"
+      - "--dbname={{ vault_immich_db_name }}"
+      - --no-align
+      - --tuples-only
+      - --command=select current_user || '/' || current_database()
+    env:
+      PGPASSWORD: "{{ vault_immich_db_password }}"
+      PGCONNECT_TIMEOUT: "15"
+  register: immich_database_identity
+  when: not ansible_check_mode
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require the managed Immich database credential
+  ansible.builtin.assert:
+    that:
+      - immich_database_identity.rc | default(1) | int == 0
+      - immich_database_identity.stdout | default('') | trim ==
+        vault_immich_db_username ~ '/' ~ vault_immich_db_name
+    fail_msg: >-
+      The Immich database does not accept the vault credential. PostgreSQL applies
+      POSTGRES_USER, POSTGRES_DB and POSTGRES_PASSWORD only when it initializes an empty data
+      directory, so a rotated credential needs an explicit database migration. Restore the
+      previous values or migrate the database, then rerun.
+  when: not ansible_check_mode
+  no_log: true
+
+- name: Deploy Immich
+  community.docker.docker_compose_v2:
+    project_src: "{{ platform_current_dir }}/services/immich"
+    project_name: "{{ immich_compose_project_name }}"
+    files: "{{ immich_compose_files }}"
+    env_files: ["{{ platform_runtime_dir }}/services/immich/.env"]
+    state: present
+    wait: true
+    wait_timeout: 600
+
+# Unlike some other services in this platform, the API answers before the
+# container health check reports healthy, so this waits on the application's own
+# statement about whether it has an administrator yet.
+- name: Read Immich initialization state
+  ansible.builtin.uri:
+    url: "{{ immich_api }}/server/config"
+    status_code: [200]
+    return_content: true
+  register: immich_public_config
+  until: immich_public_config.json.isInitialized is defined
+  retries: 60
+  delay: 3
+  changed_when: false
+  check_mode: false
+
+- name: Resolve Immich initialization state
+  ansible.builtin.set_fact:
+    immich_initialized: "{{ immich_public_config.json.isInitialized | bool }}"
+
+- name: Report planned Immich administrator creation
+  ansible.builtin.debug:
+    msg: IMMICH_PLAN_ADMINISTRATOR
+  when:
+    - ansible_check_mode
+    - not immich_initialized | bool
+  changed_when: true
+
+# Immich accepts this exactly once: with an administrator present the server
+# answers 400 regardless of the address offered, which is what makes creating
+# the account and reconciling it afterwards two different code paths.
+- name: Create the vault Immich administrator
+  ansible.builtin.uri:
+    url: "{{ immich_api }}/auth/admin-sign-up"
+    method: POST
+    body_format: json
+    body:
+      email: "{{ vault_immich_admin_email }}"
+      password: "{{ vault_immich_admin_password }}"
+      name: "{{ immich_admin_name }}"
+    status_code: [201]
+  when:
+    - not ansible_check_mode
+    - not immich_initialized | bool
+  changed_when: true
+  no_log: true
+
+- name: Authenticate the vault Immich administrator
+  ansible.builtin.uri:
+    url: "{{ immich_api }}/auth/login"
+    method: POST
+    body_format: json
+    body:
+      email: "{{ vault_immich_admin_email }}"
+      password: "{{ vault_immich_admin_password }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: immich_reconcile_login
+  when: not ansible_check_mode or immich_initialized | bool
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Resolve sanitized Immich authentication status
+  ansible.builtin.set_fact:
+    immich_reconcile_login_status: "{{ immich_reconcile_login.status | default(0) | int }}"
+  when: not ansible_check_mode or immich_initialized | bool
+  no_log: true
+
+# A successful login answers 201, not 200.
+- name: Require the vault Immich administrator
+  ansible.builtin.assert:
+    that:
+      - immich_reconcile_login_status | int == 201
+      - immich_reconcile_login.json.userEmail == vault_immich_admin_email
+      - immich_reconcile_login.json.isAdmin | bool
+    fail_msg: >-
+      The Immich server does not accept the vault administrator or that account is not an
+      administrator. Verify the preserved vault credentials in the Immich UI and rerun.
+  when: not ansible_check_mode or immich_initialized | bool
+  no_log: true
+
+- name: Resolve the Immich reconciliation token
+  ansible.builtin.set_fact:
+    immich_reconcile_token: "{{ immich_reconcile_login.json.accessToken }}"
+  when: not ansible_check_mode or immich_initialized | bool
+  no_log: true
+
+- name: Read the Immich system configuration
+  ansible.builtin.uri:
+    url: "{{ immich_api }}/system-config"
+    headers:
+      Authorization: "Bearer {{ immich_reconcile_token }}"
+    status_code: [200]
+    return_content: true
+  register: immich_system_config
+  when: not ansible_check_mode or immich_initialized | bool
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+# The whole document goes back, so the desired state is the server's own
+# configuration with only the managed leaves overlaid. Anything an operator
+# changed outside that set survives the converge untouched.
+- name: Resolve the desired Immich system configuration
+  ansible.builtin.set_fact:
+    immich_desired_config: >-
+      {{ immich_system_config.json | combine(immich_managed_settings, recursive=True) }}
+  when: not ansible_check_mode or immich_initialized | bool
+  no_log: true
+
+- name: Resolve Immich settings repair requirement
+  ansible.builtin.set_fact:
+    immich_settings_repair_required: >-
+      {{ (ansible_check_mode and not immich_initialized | bool) or
+         (immich_desired_config | default({})) != (immich_system_config.json | default({})) }}
+  no_log: true
+
+- name: Report planned Immich settings repair
+  ansible.builtin.debug:
+    msg: IMMICH_PLAN_SETTINGS_REPAIR
+  when:
+    - ansible_check_mode
+    - immich_settings_repair_required | bool
+  changed_when: true
+
+- name: Repair the Immich system configuration
+  ansible.builtin.uri:
+    url: "{{ immich_api }}/system-config"
+    method: PUT
+    headers:
+      Authorization: "Bearer {{ immich_reconcile_token }}"
+    body_format: json
+    body: "{{ immich_desired_config }}"
+    status_code: [200]
+  when:
+    - not ansible_check_mode
+    - immich_settings_repair_required | bool
+  changed_when: true
+  no_log: true
+
+- name: Read Immich administrator onboarding state
+  ansible.builtin.uri:
+    url: "{{ immich_api }}/system-metadata/admin-onboarding"
+    headers:
+      Authorization: "Bearer {{ immich_reconcile_token }}"
+    status_code: [200]
+    return_content: true
+  register: immich_onboarding
+  when: not ansible_check_mode or immich_initialized | bool
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+# Without this the UI greets every operator with the first-run wizard and
+# invites them to redo the decisions this role already made.
+- name: Complete Immich administrator onboarding
+  ansible.builtin.uri:
+    url: "{{ immich_api }}/system-metadata/admin-onboarding"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ immich_reconcile_token }}"
+    body_format: json
+    body:
+      isOnboarded: true
+    status_code: [204]
+  when:
+    - not ansible_check_mode
+    - not immich_onboarding.json.isOnboarded | bool
+  changed_when: true
+  no_log: true
+
+- name: Authenticate to Immich for exact verification
+  tags: [platform_verify_immich]
+  ansible.builtin.uri:
+    url: "{{ immich_api }}/auth/login"
+    method: POST
+    body_format: json
+    body:
+      email: "{{ vault_immich_admin_email }}"
+      password: "{{ vault_immich_admin_password }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: immich_verify_login
+  when:
+    - not ansible_check_mode
+    - immich_reconcile_token is not defined
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require the vault Immich administrator during exact verification
+  tags: [platform_verify_immich]
+  ansible.builtin.assert:
+    that:
+      - immich_verify_login.status | default(0) | int == 201
+      - immich_verify_login.json.userEmail == vault_immich_admin_email
+      - immich_verify_login.json.isAdmin | bool
+    fail_msg: The vault Immich administrator is absent or drifted.
+  when:
+    - not ansible_check_mode
+    - immich_reconcile_token is not defined
+  no_log: true
+
+- name: Resolve the Immich verification token
+  tags: [platform_verify_immich]
+  ansible.builtin.set_fact:
+    immich_verification_token: >-
+      {{ immich_reconcile_token
+         if immich_reconcile_token is defined
+         else immich_verify_login.json.accessToken }}
+  when: not ansible_check_mode
+  no_log: true
+
+- name: Read the exact Immich system configuration
+  tags: [platform_verify_immich]
+  ansible.builtin.uri:
+    url: "{{ immich_api }}/system-config"
+    headers:
+      Authorization: "Bearer {{ immich_verification_token }}"
+    status_code: [200]
+    return_content: true
+  register: immich_verify_config
+  when: not ansible_check_mode
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+# Overlaying the managed settings onto what the server reports must be a no-op.
+# Any managed leaf that drifted makes the combined document differ.
+- name: Require the managed Immich settings
+  tags: [platform_verify_immich]
+  ansible.builtin.assert:
+    that:
+      - (immich_verify_config.json | combine(immich_managed_settings, recursive=True)) ==
+        immich_verify_config.json
+    fail_msg: The managed Immich settings are absent or drifted.
+  when: not ansible_check_mode

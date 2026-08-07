@@ -159,6 +159,9 @@ if [ ! -f "$state_input" ]; then
   jellyfin_port=$(allocate_service_port \
     "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port" "$komga_port" \
     "$tinymediamanager_web_port" "$tinymediamanager_api_port")
+  immich_port=$(allocate_service_port \
+    "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port" "$komga_port" \
+    "$tinymediamanager_web_port" "$tinymediamanager_api_port" "$jellyfin_port")
   "$mac_script_dir/report.rb" --init "$state_input" --lane "$lane" \
     --sandbox-id "$(basename -- "$sandbox")" --git-revision "$git_revision" \
     --vault-checksum "$vault_checksum" --project-name "$project_name" \
@@ -166,7 +169,7 @@ if [ ! -f "$state_input" ]; then
     --audiobookshelf-port "$audiobookshelf_port" --komga-port "$komga_port" \
     --tinymediamanager-web-port "$tinymediamanager_web_port" \
     --tinymediamanager-api-port "$tinymediamanager_api_port" \
-    --jellyfin-port "$jellyfin_port"
+    --jellyfin-port "$jellyfin_port" --immich-port "$immich_port"
 else
   state_lane=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("lane")' "$state_input")
   state_git_revision=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("git_revision")' "$state_input")
@@ -180,6 +183,7 @@ else
   tinymediamanager_web_port=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("tinymediamanager_web_port")' "$state_input")
   tinymediamanager_api_port=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("tinymediamanager_api_port")' "$state_input")
   jellyfin_port=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("jellyfin_port")' "$state_input")
+  immich_port=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("immich_port")' "$state_input")
   [ "$state_lane" = "$lane" ] || mac_die 'resume lane does not match the recorded lane'
   [ "$state_project_name" = "$project_name" ] ||
     mac_die 'resume project namespace does not match the recorded run'
@@ -204,6 +208,7 @@ export PLATFORM_KOMGA_PORT=$komga_port
 export PLATFORM_TINYMEDIAMANAGER_WEB_PORT=$tinymediamanager_web_port
 export PLATFORM_TINYMEDIAMANAGER_API_PORT=$tinymediamanager_api_port
 export PLATFORM_JELLYFIN_PORT=$jellyfin_port
+export PLATFORM_IMMICH_PORT=$immich_port
 export COMPOSE_PROJECT_NAME=$project_name
 export PLATFORM_MAC_VAULT_FILE=$vault_file
 export PLATFORM_MAC_VAULT_PASSWORD_FILE=$vault_password_file
@@ -250,7 +255,7 @@ capture_diagnostics() {
   if for diagnostic_project in \
       "$project_name-beszel" "$project_name-ntfy" "$project_name-dozzle" \
       "$project_name-audiobookshelf" "$project_name-komga" "$project_name-tinymediamanager" \
-      "$project_name-jellyfin"; do
+      "$project_name-jellyfin" "$project_name-immich"; do
       docker ps -a --filter "label=com.docker.compose.project=$diagnostic_project" \
         --format '{"id":"{{.ID}}","image":"{{.Image}}","name":"{{.Names}}","status":"{{.Status}}"}' \
         >> "$diagnostic_temporary" || exit 1
@@ -265,7 +270,7 @@ capture_diagnostics() {
     diagnostic_container_ids=$(for diagnostic_project in \
         "$project_name-beszel" "$project_name-ntfy" "$project_name-dozzle" \
         "$project_name-audiobookshelf" "$project_name-komga" "$project_name-tinymediamanager" \
-        "$project_name-jellyfin"; do
+        "$project_name-jellyfin" "$project_name-immich"; do
       docker ps -aq --filter "label=com.docker.compose.project=$diagnostic_project" || exit 1
     done) || return 1
     for diagnostic_container_id in $diagnostic_container_ids; do
@@ -311,7 +316,9 @@ execute_phase() {
         "$project_name-beszel-agent-portable" "$project_name-beszel-socket-proxy" \
         "$project_name-ntfy" "$project_name-dozzle" "$project_name-dozzle-socket-proxy" \
         "$project_name-audiobookshelf" "$project_name-komga" \
-        "$project_name-tinymediamanager" "$project_name-jellyfin"; do
+        "$project_name-tinymediamanager" "$project_name-jellyfin" \
+        "$project_name-immich-server" "$project_name-immich-machine-learning" \
+        "$project_name-immich-redis" "$project_name-immich-postgres"; do
         reserved_container_ids=$(docker ps -aq --filter "name=^/$reserved_name$") || {
           mac_die "could not inspect reserved container name: $reserved_name"
           return 1
@@ -323,7 +330,8 @@ execute_phase() {
       done
       for reserved_port in \
         "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port" "$komga_port" \
-        "$tinymediamanager_web_port" "$tinymediamanager_api_port" "$jellyfin_port"; do
+        "$tinymediamanager_web_port" "$tinymediamanager_api_port" "$jellyfin_port" \
+        "$immich_port"; do
         reserved_port_container_ids=$(docker ps -q --filter "publish=$reserved_port") || {
           mac_die "could not inspect reserved host port: $reserved_port"
           return 1
@@ -342,7 +350,8 @@ execute_phase() {
           exit 1
         end
       ' "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port" "$komga_port" \
-        "$tinymediamanager_web_port" "$tinymediamanager_api_port" "$jellyfin_port" || return 1
+        "$tinymediamanager_web_port" "$tinymediamanager_api_port" "$jellyfin_port" \
+        "$immich_port" || return 1
       ansible-playbook "$mac_repo_dir/validate-vault.yml" \
         --vault-password-file "$vault_password_file" -e @"$vault_file" \
         -e "platform_vault_file=$vault_file"
