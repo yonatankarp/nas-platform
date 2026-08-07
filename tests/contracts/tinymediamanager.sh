@@ -315,9 +315,18 @@ if MODE == "seed"
   post_api("/api/tvshow", password, commands)
 end
 
-deadline = Time.now + 180
+# How long the scan takes is a property of the machine, not of the deployment: a
+# two-core CI runner already hosting the rest of the platform is far slower than a
+# developer workstation. Allow generous time, and name the documents still missing
+# so a genuine stall is distinguishable from slowness without a second run.
+metadata_timeout = Integer(ENV.fetch("PLATFORM_TINYMEDIAMANAGER_METADATA_TIMEOUT", "600"), 10)
+deadline = Time.now + metadata_timeout
 until metadata_paths.all? { |path| path.file? && path.size.positive? }
-  fail_contract("tinyMediaManager did not write all fixture metadata") if Time.now >= deadline
+  if Time.now >= deadline
+    missing = metadata_paths.reject { |path| path.file? && path.size.positive? }
+    fail_contract("tinyMediaManager did not write all fixture metadata within " \
+                  "#{metadata_timeout}s; still missing: #{missing.map(&:basename).join(', ')}")
+  end
   sleep 2
 end
 metadata = metadata_paths.map { |path| [path.to_s, Digest::SHA256.file(path).hexdigest] }
