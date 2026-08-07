@@ -940,6 +940,7 @@ git commit -m "feat: migrate Immich with recovery proof"
 - Create: `roles/paperless_ngx/templates/env.j2`
 - Create: `tests/contracts/paperless.sh`
 - Create: `tests/mac/snapshot-paperless.sh`
+- Modify: `generate-secrets.yml`
 - Modify: `inventory/group_vars/all/main.yml`
 - Modify: `inventory/group_vars/all/vault.yml.example`
 - Modify: `roles/vault_contract/meta/argument_specs.yml`
@@ -947,6 +948,25 @@ git commit -m "feat: migrate Immich with recovery proof"
 - Modify: `site.yml`
 - Modify: `tests/mac/fixtures.sh`
 - Modify: `tests/mac/verify.sh`
+
+**Carried in from Task 11.** `generate-secrets.yml` generates
+`paperless_gmail_app_password` from the shared 32-character alphanumeric
+`password_spec` (line 111). A Google app password cannot be generated: Google
+issues it, it is 16 characters, and the console shows it in four space-separated
+groups. So that line always produces a value that cannot authenticate, and
+unlike its neighbour `paperless_gmail_account: replace-with-gmail-address` it
+does not look like a placeholder, which makes it easy to encrypt the generated
+string and only discover it is wrong when a real fetch fails. That failure is
+exactly the check this task defers to a manual action, so nothing else catches
+it. Replace the generated value with a matching sentinel, and decide explicitly
+whether the role accepts the value as the console displays it or requires the
+spaces stripped.
+
+This is the one credential neither the real generator nor the ephemeral vault
+predicts the shape of. Every other secret is alphanumeric, and the ephemeral
+vault's base64 values are a strictly harder character space, so the Mac lane
+already proves `.env` rendering and JSON bodies against nastier input than
+production will contain.
 
 - [ ] **Step 1: Write failing Paperless contracts**
 
