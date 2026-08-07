@@ -204,6 +204,14 @@ rescue SystemCallError, Timeout::Error => error
   fail_contract("tinyMediaManager API #{path} failed: #{error.class}")
 end
 
+def deep_sorted(value)
+  case value
+  when Hash then value.keys.sort.to_h { |key| [key, deep_sorted(value.fetch(key))] }
+  when Array then value.map { |element| deep_sorted(element) }
+  else value
+  end
+end
+
 def metadata_paths
   # Pinned 5.3.0 reloadMediaInfo writes NFOs for entities that own video files,
   # and its HTTP API exposes no action that writes a series-root tvshow.nfo.
@@ -313,8 +321,20 @@ until metadata_paths.all? { |path| path.file? && path.size.positive? }
   sleep 2
 end
 metadata = metadata_paths.map { |path| [path.to_s, Digest::SHA256.file(path).hexdigest] }
-settings = docker_exec("sh", "-c", "find /data -maxdepth 2 -type f -name '*.json' -print -exec sha256sum {} \\;").first
-fail_contract("stable tinyMediaManager settings were not found") if settings.empty?
+# Metadata stays byte-exact because only the application writes it. Settings do
+# not: the application writes them in its own format, and the role rewrites them
+# with to_nice_json when it repairs drift, so between seeding and this assertion
+# the same values legitimately change indentation. Compare the parsed documents
+# instead, which still fails if a value is lost across recreation. Array order is
+# preserved because it carries meaning for the data sources and video types.
+settings_paths = docker_exec(
+  "sh", "-c", "find /data -maxdepth 2 -type f -name '*.json' -print"
+).first.split("\n").reject(&:empty?).sort
+fail_contract("stable tinyMediaManager settings were not found") if settings_paths.empty?
+settings = settings_paths.map do |path|
+  document = JSON.parse(docker_exec("cat", path).first)
+  [path, JSON.generate(deep_sorted(document))]
+end
 fingerprint = Digest::SHA256.hexdigest(Marshal.dump([metadata, settings]))
 
 case MODE
