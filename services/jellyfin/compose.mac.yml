@@ -1,0 +1,12 @@
+---
+services:
+  jellyfin:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-jellyfin
+    # Docker Desktop exposes no /dev/dri, so the NAS render node and the root
+    # group that opens it are both removed and transcoding falls back to CPU.
+    # The tag is what does the work: Compose appends sequences, so a bare empty
+    # list would leave the production device and group in place.
+    devices: !override []
+    group_add: !override []
+    ports: !override
+      - "${JELLYFIN_HOST_PORT:?}:8096"

@@ -1,0 +1,5 @@
+---
+# Jellyfin reports library roots as plain strings in Locations and as objects in
+# LibraryOptions.PathInfos. Both are compared against this one derived list, so
+# the managed paths cannot drift apart between the two representations.
+jellyfin_library_paths: "{{ jellyfin_library_path_infos | map(attribute='Path') | list }}"

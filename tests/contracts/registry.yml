@@ -6,6 +6,8 @@ contracts:
     path: tests/contracts/beszel.sh
   - service: dozzle
     path: tests/contracts/dozzle.sh
+  - service: jellyfin
+    path: tests/contracts/jellyfin.sh
   - service: komga
     path: tests/contracts/komga.sh
   - service: tinymediamanager

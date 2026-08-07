@@ -76,3 +76,6 @@
 
     - role: tinymediamanager
       tags: [tinymediamanager, media]
+
+    - role: jellyfin
+      tags: [jellyfin, media]

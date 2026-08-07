@@ -20,7 +20,8 @@ REDACTION = "[REDACTED]"
 SAFE_DIAGNOSTIC = /\A[A-Za-z0-9][A-Za-z0-9_.-]*\z/
 ROOT_KEYS = %w[
   schema lane sandbox_id project_name beszel_port ntfy_port dozzle_port audiobookshelf_port komga_port
-  tinymediamanager_web_port tinymediamanager_api_port git_revision vault_checksum diagnostic_locations phases
+  tinymediamanager_web_port tinymediamanager_api_port jellyfin_port
+  git_revision vault_checksum diagnostic_locations phases
 ].freeze
 IDENTITY_KEYS = %w[git_sha platform_kind platform_compose_kind].freeze
 
@@ -79,7 +80,7 @@ def validate_input(input)
   raise "input project_name is unsafe" unless input["project_name"].match?(/\Anas-platform-mac-[a-z0-9.-]+\z/)
   service_port_fields = %w[
     beszel_port ntfy_port dozzle_port audiobookshelf_port komga_port
-    tinymediamanager_web_port tinymediamanager_api_port
+    tinymediamanager_web_port tinymediamanager_api_port jellyfin_port
   ]
   service_port_fields.each do |field|
     port = input[field]
@@ -184,7 +185,8 @@ def markdown_report(report)
   lines = ["# Mac platform proof report", ""]
   %w[
     lane sandbox_id project_name beszel_port ntfy_port dozzle_port audiobookshelf_port komga_port
-    tinymediamanager_web_port tinymediamanager_api_port git_revision vault_checksum generated_at
+    tinymediamanager_web_port tinymediamanager_api_port jellyfin_port
+    git_revision vault_checksum generated_at
   ].each do |key|
     lines << "- #{key.tr('_', ' ').capitalize}: #{markdown_cell(report[key])}" if report.key?(key)
   end
@@ -291,6 +293,7 @@ def initialize_input(path, options)
     "komga_port" => options.fetch(:komga_port),
     "tinymediamanager_web_port" => options.fetch(:tinymediamanager_web_port),
     "tinymediamanager_api_port" => options.fetch(:tinymediamanager_api_port),
+    "jellyfin_port" => options.fetch(:jellyfin_port),
     "git_revision" => options.fetch(:git_revision),
     "vault_checksum" => options.fetch(:vault_checksum),
     "diagnostic_locations" => [],
@@ -367,6 +370,7 @@ def self_test
       "komga_port" => 35_600,
       "tinymediamanager_web_port" => 34_000,
       "tinymediamanager_api_port" => 37_878,
+      "jellyfin_port" => 38_096,
       "git_revision" => "abc123",
       "vault_checksum" => "0" * 64,
       "diagnostic_locations" => [],
@@ -574,6 +578,7 @@ parser = OptionParser.new do |opts|
   opts.on("--komga-port PORT", Integer) { |value| options[:komga_port] = value }
   opts.on("--tinymediamanager-web-port PORT", Integer) { |value| options[:tinymediamanager_web_port] = value }
   opts.on("--tinymediamanager-api-port PORT", Integer) { |value| options[:tinymediamanager_api_port] = value }
+  opts.on("--jellyfin-port PORT", Integer) { |value| options[:jellyfin_port] = value }
   opts.on("--git-revision SHA") { |value| options[:git_revision] = value }
   opts.on("--vault-checksum SHA256") { |value| options[:vault_checksum] = value }
   opts.on("--phase NAME") { |value| options[:phase] = value }

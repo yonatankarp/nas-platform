@@ -1,0 +1,36 @@
+---
+jellyfin_port: 8096
+jellyfin_api: "http://127.0.0.1:{{ jellyfin_port }}"
+jellyfin_compose_project_name: >-
+  {{ (platform_project_name ~ '-jellyfin')
+     if platform_project_name | default('') | length > 0 else 'jellyfin' }}
+
+# Jellyfin authenticates every call with this header rather than a bearer token,
+# and it registers the caller as a device, so the identity stays stable across
+# runs instead of accumulating one session per converge.
+jellyfin_client_header: >-
+  MediaBrowser Client="nas-platform", Device="ansible",
+  DeviceId="nas-platform-jellyfin-role", Version="1.0.0"
+
+jellyfin_library_name: Movies
+jellyfin_library_collection_type: movies
+# Declared in the shape Jellyfin's API accepts. vars/main.yml derives the plain
+# path list used for comparison from this single source of truth.
+jellyfin_library_path_infos:
+  - Path: /media/Movies
+
+# Deliberately small and explicit. Everything here is either forced by the
+# read-only media mount or by tinyMediaManager owning metadata for this tree.
+jellyfin_library_options:
+  # /media is mounted read-only, so writing NFOs beside the media would fail.
+  SaveLocalMetadata: false
+  # tinyMediaManager fetches and writes the metadata this library reads.
+  EnableInternetProviders: false
+  # Watching a large NAS share for changes costs inotify handles for no gain;
+  # the library is refreshed explicitly instead.
+  EnableRealtimeMonitor: false
+  EnableChapterImageExtraction: false
+  EnableTrickplayImageExtraction: false
+  AutomaticRefreshIntervalDays: 0
+  PreferredMetadataLanguage: en
+  MetadataCountryCode: DE

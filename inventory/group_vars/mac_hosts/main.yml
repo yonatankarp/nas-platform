@@ -10,6 +10,7 @@ audiobookshelf_port: "{{ lookup('env', 'PLATFORM_AUDIOBOOKSHELF_PORT') | int }}"
 komga_port: "{{ lookup('env', 'PLATFORM_KOMGA_PORT') | int }}"
 tinymediamanager_web_port: "{{ lookup('env', 'PLATFORM_TINYMEDIAMANAGER_WEB_PORT') | int }}"
 tinymediamanager_api_port: "{{ lookup('env', 'PLATFORM_TINYMEDIAMANAGER_API_PORT') | int }}"
+jellyfin_port: "{{ lookup('env', 'PLATFORM_JELLYFIN_PORT') | int }}"
 nas_docker_root: "{{ lookup('env', 'PLATFORM_DOCKER_ROOT') | platform_physical_path }}"
 nas_media_root: "{{ lookup('env', 'PLATFORM_MEDIA_ROOT') | platform_physical_path }}"
 

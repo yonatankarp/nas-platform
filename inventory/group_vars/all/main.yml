@@ -76,6 +76,21 @@ nas_storage:
     mode: "0755"
     recovery: user
 
+  # Jellyfin. Its configuration holds users, libraries and playback state and is
+  # critical; the transcode cache is regenerable working space. The media tree
+  # itself is the same NAS-owned user media tinyMediaManager curates, mounted
+  # read-only here.
+  - path: "{{ nas_docker_root }}/jellyfin/config"
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0755"
+    recovery: critical
+  - path: "{{ nas_docker_root }}/jellyfin/cache"
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0755"
+    recovery: cache
+
   # Dozzle authentication and notification configuration.
   - path: "{{ nas_docker_root }}/dozzle/data"
     owner: "{{ nas_uid }}"

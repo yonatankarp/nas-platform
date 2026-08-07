@@ -1,0 +1,33 @@
+---
+argument_specs:
+  main:
+    short_description: Deploy Jellyfin and converge its administrator and media library
+    options:
+      platform_compose_kind:
+        type: str
+        required: true
+      platform_project_name:
+        type: str
+        required: false
+      jellyfin_port:
+        type: int
+        required: false
+      jellyfin_library_name:
+        type: str
+        required: false
+      jellyfin_library_collection_type:
+        type: str
+        required: false
+      jellyfin_library_path_infos:
+        type: list
+        elements: dict
+        required: false
+      jellyfin_library_options:
+        type: dict
+        required: false
+      vault_jellyfin_admin_username:
+        type: str
+        required: true
+      vault_jellyfin_admin_password:
+        type: str
+        required: true

@@ -16,6 +16,7 @@ render() {
   komga_port=$7
   tinymediamanager_web_port=$8
   tinymediamanager_api_port=$9
+  jellyfin_port=${10}
 
   env PLATFORM_PROJECT_NAME="$base_name" BESZEL_HOST_PORT="$beszel_port" \
     NAS_DOCKER_ROOT="$temporary_dir/$label" NAS_MEDIA_ROOT="$temporary_dir/$label-media" \
@@ -70,10 +71,19 @@ render() {
       -f "$repo_dir/services/tinymediamanager/compose.yml" \
       -f "$repo_dir/services/tinymediamanager/compose.mac.yml" config --format json \
       > "$temporary_dir/$label-tinymediamanager.json"
+
+  env PLATFORM_PROJECT_NAME="$base_name" JELLYFIN_HOST_PORT="$jellyfin_port" \
+    JELLYFIN_CONFIG_PATH="$temporary_dir/$label-jellyfin-config" \
+    JELLYFIN_CACHE_PATH="$temporary_dir/$label-jellyfin-cache" \
+    JELLYFIN_MEDIA_PATH="$temporary_dir/$label-media" TZ=UTC \
+    docker compose --project-name "$base_name-jellyfin" \
+      -f "$repo_dir/services/jellyfin/compose.yml" \
+      -f "$repo_dir/services/jellyfin/compose.mac.yml" config --format json \
+      > "$temporary_dir/$label-jellyfin.json"
 }
 
-render first nas-platform-mac-first 38090 32586 38080 33378 35600 34000 37878
-render second nas-platform-mac-second 38091 32587 38081 33379 35601 34001 37879
+render first nas-platform-mac-first 38090 32586 38080 33378 35600 34000 37878 38096
+render second nas-platform-mac-second 38091 32587 38081 33379 35601 34001 37879 38097
 
 ruby -rjson - "$temporary_dir" <<'RUBY'
 directory = ARGV.fetch(0)
@@ -89,6 +99,8 @@ first_komga = JSON.parse(File.read(File.join(directory, "first-komga.json")))
 second_komga = JSON.parse(File.read(File.join(directory, "second-komga.json")))
 first_tinymediamanager = JSON.parse(File.read(File.join(directory, "first-tinymediamanager.json")))
 second_tinymediamanager = JSON.parse(File.read(File.join(directory, "second-tinymediamanager.json")))
+first_jellyfin = JSON.parse(File.read(File.join(directory, "first-jellyfin.json")))
+second_jellyfin = JSON.parse(File.read(File.join(directory, "second-jellyfin.json")))
 
 def published(config, service)
   config.dig("services", service, "ports", 0, "published").to_s
@@ -101,6 +113,7 @@ raise "Audiobookshelf project namespaces collide" if first_audiobookshelf["name"
 raise "Komga project namespaces collide" if first_komga["name"] == second_komga["name"]
 raise "tinyMediaManager project namespaces collide" if
   first_tinymediamanager["name"] == second_tinymediamanager["name"]
+raise "Jellyfin project namespaces collide" if first_jellyfin["name"] == second_jellyfin["name"]
 first_beszel.fetch("services").each_key do |service|
   first_name = first_beszel.dig("services", service, "container_name")
   second_name = second_beszel.dig("services", service, "container_name")
@@ -134,6 +147,17 @@ tmm_second_ports = second_tinymediamanager.dig("services", "tinymediamanager", "
 raise "tinyMediaManager published ports collide" unless (tmm_first_ports & tmm_second_ports).empty?
 raise "tinyMediaManager Mac runtime did not replace host networking" unless
   first_tinymediamanager.dig("services", "tinymediamanager", "network_mode") == "bridge"
+raise "Jellyfin container names collide" if
+  first_jellyfin.dig("services", "jellyfin", "container_name") ==
+    second_jellyfin.dig("services", "jellyfin", "container_name")
+raise "Jellyfin published ports collide" if
+  published(first_jellyfin, "jellyfin") == published(second_jellyfin, "jellyfin")
+# The Mac override must drop the NAS render node and the root group that opens
+# it, or a Docker Desktop run would fail on a device that does not exist.
+raise "Jellyfin Mac runtime kept the NAS render device" unless
+  first_jellyfin.dig("services", "jellyfin", "devices").to_a.empty?
+raise "Jellyfin Mac runtime kept the NAS root group" unless
+  first_jellyfin.dig("services", "jellyfin", "group_add").to_a.empty?
 raise "Mac socket proxy publishes a host port" if first_beszel.dig("services", "socket-proxy").key?("ports")
 raise "Dozzle socket proxy publishes a host port" if first_dozzle.dig("services", "socket-proxy").key?("ports")
 

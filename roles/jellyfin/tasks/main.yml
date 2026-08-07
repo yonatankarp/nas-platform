@@ -1,0 +1,379 @@
+---
+- name: Revalidate deployment paths before Jellyfin runtime use
+  ansible.builtin.include_role:
+    name: deployment_bundle
+    tasks_from: target
+  vars:
+    deployment_target_require_current_release: true
+    deployment_target_extra_paths:
+      - "{{ platform_current_dir }}/services/jellyfin"
+      - "{{ platform_current_dir }}/services/jellyfin/compose.yml"
+      - "{{ platform_current_dir }}/services/jellyfin/compose.{{ platform_compose_kind }}.yml"
+      - "{{ platform_runtime_dir }}/services/jellyfin"
+      - "{{ platform_runtime_dir }}/services/jellyfin/.env"
+
+- name: Check for a Jellyfin platform override
+  ansible.builtin.stat:
+    path: "{{ platform_current_dir }}/services/jellyfin/compose.{{ platform_compose_kind }}.yml"
+  register: jellyfin_platform_compose
+
+- name: Select the Jellyfin Compose definitions
+  ansible.builtin.set_fact:
+    jellyfin_compose_files: >-
+      {{ ['compose.yml'] +
+         (jellyfin_platform_compose.stat.exists
+          | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) }}
+
+- name: Render the Jellyfin environment
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ platform_runtime_dir }}/services/jellyfin/.env"
+    mode: "0600"
+
+- name: Deploy Jellyfin
+  community.docker.docker_compose_v2:
+    project_src: "{{ platform_current_dir }}/services/jellyfin"
+    project_name: "{{ jellyfin_compose_project_name }}"
+    files: "{{ jellyfin_compose_files }}"
+    env_files: ["{{ platform_runtime_dir }}/services/jellyfin/.env"]
+    state: present
+    wait: true
+    wait_timeout: 300
+
+# The container health check passes as soon as /health answers, which happens
+# well before the application can serve its own startup API: that endpoint
+# returns 503 until the server has finished initializing. Waiting on the
+# endpoint this role actually calls is what makes the next tasks meaningful.
+- name: Wait for the Jellyfin startup API
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Startup/Configuration"
+    headers:
+      Authorization: "{{ jellyfin_client_header }}"
+    status_code: "{{ range(100, 600) | list }}"
+  register: jellyfin_startup_api
+  until: jellyfin_startup_api.status | default(0) | int in [200, 401, 403]
+  retries: 60
+  delay: 3
+  changed_when: false
+  check_mode: false
+
+- name: Read Jellyfin startup state
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/System/Info/Public"
+    return_content: true
+  register: jellyfin_public_info
+  changed_when: false
+  check_mode: false
+
+- name: Resolve Jellyfin startup state
+  ansible.builtin.set_fact:
+    jellyfin_wizard_completed: "{{ jellyfin_public_info.json.StartupWizardCompleted | bool }}"
+
+- name: Report planned Jellyfin administrator creation
+  ansible.builtin.debug:
+    msg: JELLYFIN_PLAN_WIZARD
+  when:
+    - ansible_check_mode
+    - not jellyfin_wizard_completed | bool
+  changed_when: true
+
+# Pinned 10.11.11 creates the default first user lazily. POST /Startup/User
+# updates that user and answers 404 when it does not exist yet, so this read is
+# a required part of the wizard rather than a diagnostic.
+- name: Materialize the Jellyfin first user
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Startup/User"
+    headers:
+      Authorization: "{{ jellyfin_client_header }}"
+    status_code: [200]
+  when:
+    - not ansible_check_mode
+    - not jellyfin_wizard_completed | bool
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Set the Jellyfin startup configuration
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Startup/Configuration"
+    method: POST
+    headers:
+      Authorization: "{{ jellyfin_client_header }}"
+    body_format: json
+    body:
+      UICulture: en-US
+      PreferredMetadataLanguage: "{{ jellyfin_library_options.PreferredMetadataLanguage }}"
+      MetadataCountryCode: "{{ jellyfin_library_options.MetadataCountryCode }}"
+    status_code: [204]
+  when:
+    - not ansible_check_mode
+    - not jellyfin_wizard_completed | bool
+  changed_when: true
+
+- name: Create the vault Jellyfin administrator
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Startup/User"
+    method: POST
+    headers:
+      Authorization: "{{ jellyfin_client_header }}"
+    body_format: json
+    body:
+      Name: "{{ vault_jellyfin_admin_username }}"
+      Password: "{{ vault_jellyfin_admin_password }}"
+    status_code: [204]
+  when:
+    - not ansible_check_mode
+    - not jellyfin_wizard_completed | bool
+  changed_when: true
+  no_log: true
+
+- name: Complete the Jellyfin startup wizard
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Startup/Complete"
+    method: POST
+    headers:
+      Authorization: "{{ jellyfin_client_header }}"
+    status_code: [204]
+  when:
+    - not ansible_check_mode
+    - not jellyfin_wizard_completed | bool
+  changed_when: true
+
+- name: Authenticate the vault Jellyfin administrator
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Users/AuthenticateByName"
+    method: POST
+    headers:
+      Authorization: "{{ jellyfin_client_header }}"
+    body_format: json
+    body:
+      Username: "{{ vault_jellyfin_admin_username }}"
+      Pw: "{{ vault_jellyfin_admin_password }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: jellyfin_reconcile_login
+  when: not ansible_check_mode or jellyfin_wizard_completed | bool
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Resolve sanitized Jellyfin authentication status
+  ansible.builtin.set_fact:
+    jellyfin_reconcile_login_status: "{{ jellyfin_reconcile_login.status | default(0) | int }}"
+  when: not ansible_check_mode or jellyfin_wizard_completed | bool
+  no_log: true
+
+- name: Require the vault Jellyfin administrator
+  ansible.builtin.assert:
+    that:
+      - jellyfin_reconcile_login_status | int == 200
+      - jellyfin_reconcile_login.json.User.Name == vault_jellyfin_admin_username
+      - jellyfin_reconcile_login.json.User.Policy.IsAdministrator | bool
+    fail_msg: >-
+      The Jellyfin server does not accept the vault administrator or that account is not an
+      administrator. Verify the preserved vault credentials in the Jellyfin UI and rerun.
+  when: not ansible_check_mode or jellyfin_wizard_completed | bool
+  no_log: true
+
+- name: Resolve the Jellyfin reconciliation token
+  ansible.builtin.set_fact:
+    jellyfin_reconcile_token: "{{ jellyfin_reconcile_login.json.AccessToken }}"
+  when: not ansible_check_mode or jellyfin_wizard_completed | bool
+  no_log: true
+
+- name: List Jellyfin libraries for reconciliation
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Library/VirtualFolders"
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_reconcile_token }}"'
+    status_code: [200]
+    return_content: true
+  register: jellyfin_libraries_before
+  when: not ansible_check_mode or jellyfin_wizard_completed | bool
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Resolve managed Jellyfin libraries
+  ansible.builtin.set_fact:
+    jellyfin_managed_libraries: >-
+      {{ (jellyfin_libraries_before.json
+          | selectattr('Name', 'equalto', jellyfin_library_name) | list)
+         if (not ansible_check_mode or jellyfin_wizard_completed | bool) else [] }}
+  no_log: true
+
+- name: Refuse duplicate managed Jellyfin libraries
+  ansible.builtin.assert:
+    that:
+      - jellyfin_managed_libraries | length <= 1
+    fail_msg: The managed Jellyfin library name is duplicated; resolve the duplicate through Jellyfin.
+
+- name: Resolve the existing managed Jellyfin library
+  ansible.builtin.set_fact:
+    jellyfin_existing_library: "{{ jellyfin_managed_libraries | first | default({}) }}"
+    jellyfin_library_create_required: >-
+      {{ (ansible_check_mode and not jellyfin_wizard_completed | bool) or
+         jellyfin_managed_libraries | length == 0 }}
+  no_log: true
+
+- name: Require a safe managed Jellyfin library ID
+  ansible.builtin.assert:
+    that:
+      - jellyfin_existing_library.ItemId | default('safe-placeholder') is
+        match('^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$')
+    fail_msg: The managed Jellyfin library contains an unsafe API identifier.
+
+# The collection type is fixed when a library is created and no supported call
+# changes it, so this refuses rather than pretending to repair it.
+- name: Require the managed Jellyfin collection type
+  ansible.builtin.assert:
+    that:
+      - jellyfin_existing_library.CollectionType | default(jellyfin_library_collection_type) ==
+        jellyfin_library_collection_type
+    fail_msg: >-
+      The managed Jellyfin library exists with a different collection type. Jellyfin cannot change
+      it in place; remove the library through the Jellyfin UI and rerun.
+
+- name: Resolve Jellyfin library repair requirement
+  ansible.builtin.set_fact:
+    jellyfin_library_repair_required: >-
+      {{ jellyfin_existing_library | length > 0 and
+         ((jellyfin_existing_library.Locations | sort) != (jellyfin_library_paths | sort) or
+          (jellyfin_existing_library.LibraryOptions.PathInfos
+           | map(attribute='Path') | sort) != (jellyfin_library_paths | sort) or
+          (jellyfin_existing_library.LibraryOptions | dict2items
+           | selectattr('key', 'in', jellyfin_library_options.keys())
+           | items2dict) != jellyfin_library_options) }}
+  no_log: true
+
+- name: Report planned Jellyfin library creation
+  ansible.builtin.debug:
+    msg: JELLYFIN_PLAN_LIBRARY_CREATE
+  when:
+    - ansible_check_mode
+    - jellyfin_library_create_required | bool
+  changed_when: true
+
+- name: Create the managed Jellyfin library
+  ansible.builtin.uri:
+    # Deliberately one line: a folded scalar would put a space inside the query.
+    url: "{{ jellyfin_api }}/Library/VirtualFolders?name={{ jellyfin_library_name | urlencode }}&collectionType={{ jellyfin_library_collection_type | urlencode }}&refreshLibrary=true"
+    method: POST
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_reconcile_token }}"'
+    body_format: json
+    body:
+      LibraryOptions: >-
+        {{ jellyfin_library_options | combine({'PathInfos': jellyfin_library_path_infos}) }}
+    status_code: [204]
+  when:
+    - not ansible_check_mode
+    - jellyfin_library_create_required | bool
+  changed_when: true
+
+- name: Report planned Jellyfin library repair
+  ansible.builtin.debug:
+    msg: JELLYFIN_PLAN_LIBRARY_REPAIR
+  when:
+    - ansible_check_mode
+    - jellyfin_library_repair_required | bool
+  changed_when: true
+
+- name: Repair the managed Jellyfin library
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Library/VirtualFolders/LibraryOptions"
+    method: POST
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_reconcile_token }}"'
+    body_format: json
+    body:
+      Id: "{{ jellyfin_existing_library.ItemId }}"
+      LibraryOptions: >-
+        {{ jellyfin_existing_library.LibraryOptions
+           | combine(jellyfin_library_options)
+           | combine({'PathInfos': jellyfin_library_path_infos}) }}
+    status_code: [204]
+  when:
+    - not ansible_check_mode
+    - jellyfin_library_repair_required | bool
+  changed_when: true
+
+- name: Authenticate to Jellyfin for exact verification
+  tags: [platform_verify_jellyfin]
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Users/AuthenticateByName"
+    method: POST
+    headers:
+      Authorization: "{{ jellyfin_client_header }}"
+    body_format: json
+    body:
+      Username: "{{ vault_jellyfin_admin_username }}"
+      Pw: "{{ vault_jellyfin_admin_password }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: jellyfin_verify_login
+  when:
+    - not ansible_check_mode
+    - jellyfin_reconcile_token is not defined
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require the vault Jellyfin administrator during exact verification
+  tags: [platform_verify_jellyfin]
+  ansible.builtin.assert:
+    that:
+      - jellyfin_verify_login.status | default(0) | int == 200
+      - jellyfin_verify_login.json.User.Name == vault_jellyfin_admin_username
+      - jellyfin_verify_login.json.User.Policy.IsAdministrator | bool
+    fail_msg: The vault Jellyfin administrator is absent or drifted.
+  when:
+    - not ansible_check_mode
+    - jellyfin_reconcile_token is not defined
+  no_log: true
+
+- name: Resolve the Jellyfin verification token
+  tags: [platform_verify_jellyfin]
+  ansible.builtin.set_fact:
+    jellyfin_verification_token: >-
+      {{ jellyfin_reconcile_token
+         if jellyfin_reconcile_token is defined
+         else jellyfin_verify_login.json.AccessToken }}
+  when: not ansible_check_mode
+  no_log: true
+
+- name: Read exact Jellyfin libraries
+  tags: [platform_verify_jellyfin]
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Library/VirtualFolders"
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_verification_token }}"'
+    status_code: [200]
+    return_content: true
+  register: jellyfin_verify_state
+  when: not ansible_check_mode
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require exactly the managed Jellyfin library
+  tags: [platform_verify_jellyfin]
+  ansible.builtin.assert:
+    that:
+      - jellyfin_verified_library | length == 1
+      - jellyfin_verified_library[0].CollectionType == jellyfin_library_collection_type
+      - (jellyfin_verified_library[0].Locations | sort) == (jellyfin_library_paths | sort)
+      - (jellyfin_verified_library[0].LibraryOptions.PathInfos
+         | map(attribute='Path') | sort) == (jellyfin_library_paths | sort)
+      - >-
+        (jellyfin_verified_library[0].LibraryOptions | dict2items
+         | selectattr('key', 'in', jellyfin_library_options.keys())
+         | items2dict) == jellyfin_library_options
+    fail_msg: The managed Jellyfin library is absent, duplicated, or drifted.
+  vars:
+    jellyfin_verified_library: >-
+      {{ jellyfin_verify_state.json
+         | selectattr('Name', 'equalto', jellyfin_library_name) | list }}
+  when: not ansible_check_mode

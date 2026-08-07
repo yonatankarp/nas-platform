@@ -1,0 +1,8 @@
+---
+services:
+  jellyfin:
+    # The integration sandbox is a Linux container host without /dev/dri. It
+    # keeps the production port and container name; only the render node and
+    # the root group that opens it are removed, exactly as on the Mac.
+    devices: !override []
+    group_add: !override []

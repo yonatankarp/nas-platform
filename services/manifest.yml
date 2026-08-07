@@ -29,7 +29,7 @@ services:
     legacy_path: compose/jellyfin/compose.yml
     role: jellyfin
     tranche: 4
-    status: planned
+    status: implemented
   - name: komga
     legacy_path: compose/komga/compose.yml
     role: komga

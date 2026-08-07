@@ -15,7 +15,8 @@ cleanup_mac_sandbox() {
 
   mac_container_ids=$(for mac_service_project in \
       "$mac_project-beszel" "$mac_project-ntfy" "$mac_project-dozzle" \
-      "$mac_project-audiobookshelf" "$mac_project-komga" "$mac_project-tinymediamanager"; do
+      "$mac_project-audiobookshelf" "$mac_project-komga" "$mac_project-tinymediamanager" \
+      "$mac_project-jellyfin"; do
     docker ps -aq --filter "label=com.docker.compose.project=$mac_service_project" || exit 1
   done) || return 1
   for mac_container_id in $mac_container_ids; do
@@ -23,7 +24,8 @@ cleanup_mac_sandbox() {
   done
   mac_network_ids=$(for mac_service_project in \
       "$mac_project-beszel" "$mac_project-ntfy" "$mac_project-dozzle" \
-      "$mac_project-audiobookshelf" "$mac_project-komga" "$mac_project-tinymediamanager"; do
+      "$mac_project-audiobookshelf" "$mac_project-komga" "$mac_project-tinymediamanager" \
+      "$mac_project-jellyfin"; do
     docker network ls -q --filter "label=com.docker.compose.project=$mac_service_project" || exit 1
   done) || return 1
   for mac_network_id in $mac_network_ids; do
@@ -31,7 +33,8 @@ cleanup_mac_sandbox() {
   done
   mac_volume_ids=$(for mac_service_project in \
       "$mac_project-beszel" "$mac_project-ntfy" "$mac_project-dozzle" \
-      "$mac_project-audiobookshelf" "$mac_project-komga" "$mac_project-tinymediamanager"; do
+      "$mac_project-audiobookshelf" "$mac_project-komga" "$mac_project-tinymediamanager" \
+      "$mac_project-jellyfin"; do
     docker volume ls -q --filter "label=com.docker.compose.project=$mac_service_project" || exit 1
   done) || return 1
   for mac_volume_id in $mac_volume_ids; do
