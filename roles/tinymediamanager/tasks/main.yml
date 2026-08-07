@@ -144,6 +144,25 @@
   changed_when: false
   check_mode: false
 
+# The web endpoint is served by the image's nginx, which accepts requests long
+# before the application binds its own HTTP API. Without this gate the role
+# reports success while the API still resets connections. An unauthenticated
+# request is the readiness signal: the API rejects it with 403 before routing,
+# so a 403 proves the server is serving and enforcing its key without sending
+# the key itself.
+- name: Wait for the tinyMediaManager HTTP API to accept requests
+  tags: [platform_verify_tinymediamanager]
+  ansible.builtin.uri:
+    url: "{{ tinymediamanager_api }}/api/movie"
+    method: GET
+    status_code: [403]
+  register: tinymediamanager_api_ready
+  until: tinymediamanager_api_ready.status | default(0) == 403
+  retries: 60
+  delay: 3
+  changed_when: false
+  check_mode: false
+
 - name: Read the installed tinyMediaManager VNC password environment
   tags: [platform_verify_tinymediamanager]
   community.docker.docker_compose_v2_exec:
