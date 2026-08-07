@@ -763,53 +763,105 @@ git commit -m "feat: migrate book and media management services"
 **Files:**
 - Create: `services/jellyfin/compose.yml`
 - Create: `services/jellyfin/compose.mac.yml`
+- Create: `services/jellyfin/compose.integration.yml`
 - Create: `roles/jellyfin/defaults/main.yml`
+- Create: `roles/jellyfin/vars/main.yml`
 - Create: `roles/jellyfin/meta/argument_specs.yml`
 - Create: `roles/jellyfin/tasks/main.yml`
 - Create: `roles/jellyfin/templates/env.j2`
 - Create: `tests/contracts/jellyfin.sh`
+- Create: `tests/mac/run-jellyfin-contract.sh`
+- Create: `tests/mac/hooks/{verify,drift,fixtures-seed,fixtures-recreate,fixtures-persistence}/60-jellyfin.sh`
 - Modify: `inventory/group_vars/all/main.yml`
 - Modify: `inventory/group_vars/mac_hosts/main.yml`
-- Modify: `inventory/group_vars/nas_hosts/main.yml`
 - Modify: `services/manifest.yml`
 - Modify: `site.yml`
-- Modify: `tests/mac/fixtures.sh`
-- Modify: `tests/mac/verify.sh`
+- Modify: `verify.yml`
+- Modify: `tests/contracts/registry.yml`
+- Modify: `tests/integration.sh`
+- Modify: `tests/sandbox_cleanup.sh`
+- Modify: `tests/policy_test.rb`
+- Modify: `tests/mac/{run.sh,verify.sh,report.rb,cleanup.sh,config-isolation.sh,run-phase-status-test.sh}`
 
-- [ ] **Step 1: Write failing Jellyfin contracts**
+Two file-list corrections found during implementation. `inventory/group_vars/nas_hosts/main.yml`
+needs no change: Step 3 keeps the render node in the production Compose file, so
+no new machine fact is introduced, and adding one would have cascaded into
+`PLATFORM_CAPABILITIES`, the preflight argument specs, and the manifest mutation
+tests for no gain. `tests/mac/fixtures.sh` needs no change either; it dispatches
+to the hook directories, so a service is added by dropping in hooks.
+
+`services/jellyfin/compose.integration.yml` is required and was not planned. The
+integration lane deploys everything in `site.yml` inside a Linux container that
+has no `/dev/dri`, so without it CI would fail on a device that cannot exist there.
+
+- [x] **Step 1: Write failing Jellyfin contracts**
 
 The shared contract requires vault login, a managed `/media` library, fixture
 discovery, direct play, CPU transcoding on Mac, preserved user/library state, and
 read-only media. The NAS-only contract requires render device mapping, group
 access, and the one-minute stop grace period.
 
-- [ ] **Step 2: Verify the service is absent**
+- [x] **Step 2: Verify the service is absent**
 
 Run: `tests/contracts/jellyfin.sh --platform mac`
 
-- [ ] **Step 3: Port canonical Compose and create a Mac override**
+- [x] **Step 3: Port canonical Compose and create a Mac override**
 
 Keep `/dev/dri/renderD128` only in the production definition. The Mac override
 selects CPU behavior without redefining image, container data paths, or security
 policy.
 
-- [ ] **Step 4: Automate the startup wizard idempotently**
+Compose appends sequences when it merges, so an empty `devices` list would have
+left the production render node in place. The override resets `devices` and
+`group_add` with an explicit `!override` tag, and the contract asserts the tag
+itself rather than only the parsed empty list, because the parsed result is
+identical either way and only the tag actually removes anything.
+
+- [x] **Step 4: Automate the startup wizard idempotently**
 
 Use Jellyfin's startup/configuration API to set the vault administrator and
 managed library only when the wizard is incomplete; on later runs authenticate
 and reconcile the managed library without resetting unrelated user settings.
 
-- [ ] **Step 5: Verify CPU transcode and state persistence**
+Two behaviors of pinned 10.11.11 that no documentation states and only a live
+server reveals. The startup endpoints answer 503 until the server finishes
+initializing, which happens well after the container health check passes, so the
+role waits on the endpoint it actually calls rather than on `/health`. And
+`POST /Startup/User` answers 404 until `GET /Startup/User` has materialized the
+default first user, so that read is a required step of the wizard, not a probe.
+
+- [x] **Step 5: Verify CPU transcode and state persistence**
 
 Request a transcoded segment from the fixture, assert a successful media
 response and active transcode session, recreate Jellyfin, and authenticate with
 the same vault login.
 
-- [ ] **Step 6: Run tests and commit**
+Forcing a smaller frame size makes the source unusable as-is, so the server must
+re-encode rather than remux. The contract asserts the returned segment is real
+MPEG-TS, that the reported session is not direct video and reports no hardware
+acceleration, and that re-encoded output reached the cache volume, which is
+durable evidence independent of how long the session stays visible.
+
+- [x] **Step 6: Run tests and commit**
+
+Completed 2026-08-07. The complete Mac fresh lane passed all eleven phases from
+a clean sandbox, including `changed=0 failed=0` on the second run, Jellyfin drift
+refused by the verification-only playbook and repaired by the next converge, and
+user, library, and scanned media surviving container recreation.
+
+The command block below is superseded. `--phase recreate` cannot be the gate: it
+is unreachable on its own because `require_predecessors` demands every earlier
+phase, and Task 10 already recorded that three of its four defects lived in
+phases that `--phase recreate` never reaches. Run the complete lane.
+
+Two defects that only the live lane could find, both the contract asserting its
+own expectations instead of what the server sends: a rejected login returns plain
+text, not JSON, and a ranged direct-play request returns 206, not 200. Each
+raised before the response it was meant to check could be compared.
 
 ```sh
 tests/contracts/jellyfin.sh --platform mac
-tests/mac/run.sh --lane fresh --phase recreate
+tests/mac/run.sh --lane fresh
 git add services/jellyfin roles/jellyfin tests inventory site.yml services/manifest.yml
 git commit -m "feat: migrate Jellyfin with platform capabilities"
 ```

@@ -149,7 +149,6 @@ export PLATFORM_MEDIA_ROOT PLATFORM_DOCKER_ROOT PLATFORM_REPORT_ROOT
 export PLATFORM_JELLYFIN_PORT PLATFORM_JELLYFIN_CONTAINER PLATFORM_JELLYFIN_PLATFORM
 
 exec ruby - "$mode" "$@" <<'RUBY'
-require "base64"
 require "json"
 require "net/http"
 require "open3"
@@ -191,7 +190,7 @@ FIXTURE_RUNTIME_TICKS = 40_000_000
 # Four seconds of 64x48 H.264 produced by the pinned image's own ffmpeg with
 # bitexact flags, so regenerating it yields these exact bytes. Small enough to
 # transcode instantly and long enough to split into two HLS segments.
-VIDEO_FIXTURE = Base64.decode64(
+VIDEO_FIXTURE = (
   "AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAANLbW9vdgAAAGxtdmhkAAAAAAAAAAAA" \
   "AAAAAAAD6AAAD6AAAQAAAQAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAA" \
   "AABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAApp0cmFrAAAAXHRraGQAAAADAAAA" \
@@ -223,7 +222,9 @@ VIDEO_FIXTURE = Base64.decode64(
   "imBLHABVtW0AAAAIQZoS2IJfGbAAAAAYZYiBAAt//RjvApNvTEcdMPOJ0hWoR9GBAAAACEGaEtiC" \
   "XxmwAAAAGGWIggAt//0Y7wKTb0xHHTDzidIVqEfRgQAAAAhBmhLYgl8ZsQAAABhliIEAC3/9GO8C" \
   "k29MRx0w84nSFahH0YEAAAAIQZoS2IJfGbE="
-).freeze
+# unpack1 rather than the base64 library, which is not a default gem on the
+# Ruby 3.4 the integration lane runs.
+).unpack1("m0").freeze
 
 CLIENT = 'MediaBrowser Client="nas-platform-contract", Device="contract", ' \
          'DeviceId="nas-platform-jellyfin-contract", Version="1.0.0"'
