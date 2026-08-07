@@ -8,6 +8,7 @@ tinymediamanager_api_container_port: 7878
 # container port; the Mac override publishes it to an isolated port instead.
 tinymediamanager_api_port: 7878
 tinymediamanager_web: "http://127.0.0.1:{{ tinymediamanager_web_port }}"
+tinymediamanager_api: "http://127.0.0.1:{{ tinymediamanager_api_port }}"
 tinymediamanager_compose_project_name: >-
   {{ (platform_project_name ~ '-tinymediamanager')
      if platform_project_name | default('') | length > 0 else 'tinymediamanager' }}
