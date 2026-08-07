@@ -381,7 +381,8 @@ def assert_direct_play(token, item_id, source_id)
   fail_contract("direct play did not return the exact source bytes") unless
     response.body == VIDEO_FIXTURE
   ranged = request(
-    "get", path, token: token, raw: true, headers: { "Range" => "bytes=0-127" }
+    "get", path, token: token, raw: true, expected: [206],
+    headers: { "Range" => "bytes=0-127" }
   )
   fail_contract("direct play ignored the byte range") unless
     ranged.code.to_i == 206 &&
@@ -454,8 +455,10 @@ username = vault.fetch("vault_jellyfin_admin_username")
 password = vault.fetch("vault_jellyfin_admin_password")
 
 wait_for_application
+# Rejected credentials come back as plain text, not JSON, so this asks for the
+# raw response instead of a parsed body.
 request(
-  "post", "/Users/AuthenticateByName",
+  "post", "/Users/AuthenticateByName", raw: true,
   body: { "Username" => username, "Pw" => "contract-wrong-password" }, expected: [401]
 )
 session = authenticate(username, password)
