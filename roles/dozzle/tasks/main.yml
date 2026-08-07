@@ -24,10 +24,17 @@
          (dozzle_platform_compose.stat.exists
           | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) }}
 
+# Dozzle runs as NAS_UID:NAS_GID, so a 0600 file owned by whoever ran the play
+# is unreadable to it and the container exits before serving. Docker Desktop
+# remaps bind-mount ownership and hides this; a Linux host does not. The Mac
+# lane omits the owner because it converges as an unprivileged user and relies
+# on that remapping.
 - name: Render the Dozzle administrator
   ansible.builtin.template:
     src: users.yml.j2
     dest: "{{ nas_docker_root }}/dozzle/data/users.yml"
+    owner: "{{ nas_uid if platform_kind == 'nas' else omit }}"
+    group: "{{ nas_gid if platform_kind == 'nas' else omit }}"
     mode: "0600"
   register: dozzle_users_file
   no_log: true
@@ -49,7 +56,10 @@
     wait: true
     wait_timeout: 180
 
-- name: Restart Dozzle after changing its administrator file
+# Not a handler: handlers run at the end of the play, but the health check and
+# API reconciliation immediately below require the restarted container. Deferring
+# the restart would run them against the old process.
+- name: Restart Dozzle after changing its administrator file # noqa: no-handler
   community.docker.docker_compose_v2:
     project_src: "{{ platform_current_dir }}/services/dozzle"
     project_name: "{{ dozzle_compose_project_name }}"

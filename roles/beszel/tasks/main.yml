@@ -317,8 +317,8 @@
   when:
     - beszel_user_id | length > 0
     - beszel_app_user_auth.status | default(0) != 200
-      or (beszel_users_after.json.get('items', [])
-          | selectattr('id', 'equalto', beszel_user_id) | first).verified != true
+      or not (beszel_users_after.json.get('items', [])
+              | selectattr('id', 'equalto', beszel_user_id) | first).verified
       or (beszel_users_after.json.get('items', [])
           | selectattr('id', 'equalto', beszel_user_id) | first).role != 'admin'
   changed_when: true
@@ -331,8 +331,8 @@
     - ansible_check_mode
     - beszel_user_id | length > 0
     - beszel_app_user_auth.status | default(0) != 200
-      or (beszel_users_after.json.get('items', [])
-          | selectattr('id', 'equalto', beszel_user_id) | first).verified != true
+      or not (beszel_users_after.json.get('items', [])
+              | selectattr('id', 'equalto', beszel_user_id) | first).verified
       or (beszel_users_after.json.get('items', [])
           | selectattr('id', 'equalto', beszel_user_id) | first).role != 'admin'
   changed_when: true

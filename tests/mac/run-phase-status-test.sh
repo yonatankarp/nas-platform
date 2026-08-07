@@ -4,6 +4,17 @@ set +x
 
 mac_test_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 repo_dir=$(CDPATH= cd -- "$mac_test_dir/../.." && pwd -P)
+
+# This test drives run.sh, which refuses to run anywhere but Darwin, so on any
+# other platform it can only ever fail at its first phase. It is the one entry in
+# validate-policy.sh with that property; the other Mac tests exercise their hooks
+# directly and are portable. Skipping keeps the Linux policy run honest instead of
+# reporting a failure that says nothing about the code under test.
+if [ "$(uname -s)" != Darwin ]; then
+  printf '%s\n' 'Mac phase status: skipped, run.sh requires Darwin'
+  exit 0
+fi
+
 temporary_input=$(mktemp -d "${TMPDIR:-/tmp}/nas-platform-phase-status.XXXXXX")
 temporary_parent=$(CDPATH= cd -- "$temporary_input" && pwd -P)
 

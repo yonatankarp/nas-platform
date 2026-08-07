@@ -1,0 +1,13 @@
+---
+# Docker Compose definitions are not Ansible content. ansible-lint discovers them
+# anyway and fails to parse Compose's own `!override` tag, which the Mac and
+# integration overrides depend on to replace list values rather than merge them.
+exclude_paths:
+  - services/
+
+skip_list:
+  # Variables passed to include_role carry the prefix of the role that consumes
+  # them, not the role that sets them. Every deployment_target_* variable is read
+  # by roles/deployment_bundle, so the prefix is already correct and the rule has
+  # no way to see that across the call.
+  - var-naming[no-role-prefix]
