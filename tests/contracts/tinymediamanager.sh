@@ -315,15 +315,31 @@ if MODE == "seed"
   post_api("/api/tvshow", password, commands)
 end
 
-# How long the scan takes is a property of the machine, not of the deployment: a
-# two-core CI runner already hosting the rest of the platform is far slower than a
-# developer workstation. Allow generous time, and name the documents still missing
-# so a genuine stall is distinguishable from slowness without a second run.
+# How long the scan takes is a property of the machine, not of the deployment, so
+# allow generous time and make it tunable. Both documents are written at the end of
+# the scan, so their absence alone cannot separate a slow scan from one that never
+# saw the fixtures. On timeout, report what the application actually sees: whether
+# the media is readable to the user it runs as, and whether the scan produced any
+# entities at all. Diagnostics must never fail the run themselves.
 metadata_timeout = Integer(ENV.fetch("PLATFORM_TINYMEDIAMANAGER_METADATA_TIMEOUT", "600"), 10)
+
+def scan_diagnostics
+  report, = Open3.capture3(
+    "docker", "exec", CONTAINER, "sh", "-c",
+    "echo '# application processes'; ps -eo user,args | grep -i '[t]inyMediaManager' | head -3; " \
+    "echo '# mount ownership and modes'; ls -lnd /media /media/Movies /media/Series; " \
+    "echo '# fixtures the container can see'; find /media -maxdepth 3 -type f -exec ls -ln {} + 2>&1 | head"
+  )
+  warn "tinyMediaManager scan diagnostics:\n#{report.gsub(/^/, '  ')}"
+rescue StandardError => error
+  warn "tinyMediaManager scan diagnostics unavailable: #{error.class}"
+end
+
 deadline = Time.now + metadata_timeout
 until metadata_paths.all? { |path| path.file? && path.size.positive? }
   if Time.now >= deadline
     missing = metadata_paths.reject { |path| path.file? && path.size.positive? }
+    scan_diagnostics
     fail_contract("tinyMediaManager did not write all fixture metadata within " \
                   "#{metadata_timeout}s; still missing: #{missing.map(&:basename).join(', ')}")
   end
