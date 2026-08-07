@@ -23,5 +23,17 @@ services:
       LANG: en_US.UTF-8
       LC_ALL: en_US.UTF-8
       JAVA_TOOL_OPTIONS: -Djava.net.preferIPv4Stack=true
+    # Without this, the container has no healthcheck, so `compose up --wait`
+    # returns as soon as it is running and callers race the application. The
+    # bound API port is the readiness signal: the application binds it only
+    # after its X session is up, and the image ships no HTTP client that
+    # treats the API's unauthenticated 403 as success. The port is the
+    # container side of the mapping and so is the same on every platform.
+    healthcheck:
+      test: [CMD-SHELL, "ss -ltn | grep -q ':7878 '"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 90s
     restart: unless-stopped
     logging: *default-logging
