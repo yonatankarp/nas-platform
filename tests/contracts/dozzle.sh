@@ -162,6 +162,13 @@ require "yaml"
 MODE = ARGV.fetch(0)
 DOZZLE = URI("http://127.0.0.1:#{Integer(ENV.fetch('PLATFORM_DOZZLE_PORT'), 10)}")
 NTFY = URI("http://127.0.0.1:#{Integer(ENV.fetch('PLATFORM_NTFY_PORT'), 10)}")
+# The address Dozzle dispatches to is whatever the deployment was told to use,
+# not the loopback address this contract connects to, and it is not a fixed name:
+# only Docker Desktop supplies host.docker.internal. Follow the precedence
+# inventory/local.yml uses, and fall back to the name inventory/mac.yml hardcodes,
+# which the Mac lane relies on because it exports neither variable.
+CALLBACK_HOST = [ENV["PLATFORM_CALLBACK_HOST"], ENV["PLATFORM_NAS_ADDRESS"]]
+                .compact.reject(&:empty?).first || "host.docker.internal"
 REPORT_ROOT = ENV.fetch("PLATFORM_REPORT_ROOT")
 SAFE_ID = /\A[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\z/
 ALERTS = {
@@ -617,7 +624,7 @@ end
 
 fail_contract("expected exactly one dispatcher") unless dispatchers.length == 1
 dispatcher = dispatchers.first
-expected_url = "http://host.docker.internal:#{NTFY.port}"
+expected_url = "http://#{CALLBACK_HOST}:#{NTFY.port}"
 expected_template = JSON.generate(
   topic: "nas-critical", title: "{{ .Container.Name }}", message: "{{ .Detail }}"
 )
