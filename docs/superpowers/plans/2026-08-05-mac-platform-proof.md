@@ -1250,12 +1250,78 @@ Expected: every claim has a matching report result and no secret-like material.
 Review the Ansible limit/host logs and assert no run targeted `nas_hosts`. Record
 this as a proof precondition.
 
-- [ ] **Step 4: Commit and stop**
+- [ ] **Step 4: Commit the evidence packet**
 
 ```sh
 git add docs/migration/mac-proof-summary.md README.md
 git commit -m "docs: record Mac platform proof evidence"
 ```
+
+### Task 18: Drop the legacy migration provenance
+
+**Files:**
+- Modify: `services/manifest.yml`
+- Modify: `roles/deployment_bundle/tasks/inputs.yml`
+- Modify: `tests/policy_test.rb`
+- Modify: `tests/policy_manifest_test.rb`
+- Modify: `tests/integration.sh`
+
+The manifest carries a `legacy_source` block naming the pre-migration repository,
+its commit, and a controller-local checkout path, plus a `legacy_path` on every
+service. These exist to audit the transcription of each Compose file against its
+origin. Once every service is `accepted` that audit is closed and the fields only
+name a foreign repository from inside this one.
+
+Neither field is load-bearing. `legacy_source` has no runtime reader at all; its
+only consumers are two policy tests asserting it still equals the literal it was
+written as. `legacy_path` is read once, by the assertion in
+`roles/deployment_bundle/tasks/inputs.yml`, which compares it against a string
+derived entirely from `item.name` and so cannot fail unless the manifest is
+edited to contradict itself. The accompanying `fail_msg` claims it guards a value
+before path interpolation, but `legacy_path` never reaches a path; the Compose
+read uses `services/{{ name }}/compose.yml`.
+
+- [ ] **Step 1: Confirm the audit is closed**
+
+Do not start this task until every entry in `services/manifest.yml` has status
+`accepted`. While any service is `implemented` or `planned` the provenance still
+has a subject.
+
+- [ ] **Step 2: Remove the fields and their vacuous guard**
+
+Delete the `legacy_source` block and every `legacy_path` key from
+`services/manifest.yml`. Delete the `item.legacy_path` line from the assertion in
+`roles/deployment_bundle/tasks/inputs.yml` and reword its `fail_msg` to describe
+only the name and role checks it still performs. Leave the `item.name` and
+`item.role` pattern checks in place; those do guard interpolated paths.
+
+- [ ] **Step 3: Remove the assertions that pinned them**
+
+Drop `EXPECTED_LEGACY_SOURCE` and its check from `tests/policy_test.rb`, and the
+`legacy_path` entries from `EXPECTED_SERVICE_MAPPINGS`. Drop the legacy-commit
+and legacy-path mutation cases from `tests/policy_manifest_test.rb`. Remove
+`legacy_path` from the three fixture manifests in `tests/integration.sh`. Confirm
+no mutation case is left asserting a field that no longer exists.
+
+- [ ] **Step 4: Prove nothing depended on them**
+
+Run: `grep -rn 'legacy_source\|legacy_path' . --exclude-dir=.git --exclude-dir=docs`
+
+Expected: no matches. Then run the complete Mac lane and
+`tests/validate-policy.sh`, and confirm the deployment bundle still renders for
+every accepted service.
+
+- [ ] **Step 5: Commit**
+
+```sh
+git add services/manifest.yml roles/deployment_bundle/tasks/inputs.yml tests
+git commit -m "refactor: drop the closed legacy migration provenance"
+```
+
+Removing these fields from the working tree does not remove the repository name
+from this repository's history, where it appears in every commit that carried the
+manifest. If the name must not appear at all, that is a separate history rewrite
+and belongs with any other identity rewrite rather than here.
 
 Stop here. Use the evidence packet to brainstorm and write the separate physical
 NAS migration design. Do not infer authorization to deploy to the NAS from
@@ -1278,3 +1344,5 @@ This implementation plan is complete only when:
 8. No command in this plan has changed the physical NAS.
 9. The Mac proof summary is committed and ready to drive the NAS migration
    design.
+10. The closed legacy migration provenance is removed from the manifest, the
+    deployment bundle inputs, and the policy tests.
