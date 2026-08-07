@@ -255,6 +255,7 @@
       - import os, sys; os.replace(sys.argv[1], sys.argv[2])
       - "{{ deployment_bundle_staging_dir }}"
       - "{{ platform_release_dir }}"
+  changed_when: true
   when:
     - not ansible_check_mode
     - deployment_bundle_release_install_required
@@ -318,4 +319,5 @@
       - import os, sys; os.replace(sys.argv[1], sys.argv[2])
       - "{{ platform_deploy_root }}/.current-{{ platform_release_id }}"
       - "{{ platform_current_dir }}"
+  changed_when: true
   when: deployment_bundle_switch_required
