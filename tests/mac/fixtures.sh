@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+set +x
 
 mac_script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 . "$mac_script_dir/lib.sh"

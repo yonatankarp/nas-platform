@@ -1,0 +1,61 @@
+---
+tinymediamanager_web_port: 4000
+tinymediamanager_api_port: 7878
+tinymediamanager_web: "http://127.0.0.1:{{ tinymediamanager_web_port }}"
+tinymediamanager_compose_project_name: >-
+  {{ (platform_project_name ~ '-tinymediamanager')
+     if platform_project_name | default('') | length > 0 else 'tinymediamanager' }}
+tinymediamanager_movie_source: /media/Movies
+tinymediamanager_series_source: /media/Series
+tinymediamanager_nfo_connector: KODI
+tinymediamanager_video_file_types:
+  - .3gp
+  - .asf
+  - .asx
+  - .avc
+  - .avi
+  - .bdmv
+  - .bin
+  - .bivx
+  - .braw
+  - .dat
+  - .divx
+  - .dv
+  - .dvr-ms
+  - .disc
+  - .evo
+  - .fli
+  - .flv
+  - .h264
+  - .ifo
+  - .img
+  - .iso
+  - .mts
+  - .mt2s
+  - .m2ts
+  - .m2v
+  - .m4v
+  - .mkv
+  - .mk3d
+  - .mov
+  - .mp4
+  - .mpeg
+  - .mpg
+  - .nrg
+  - .nsv
+  - .nuv
+  - .ogm
+  - .pva
+  - .qt
+  - .rm
+  - .rmvb
+  - .strm
+  - .svq3
+  - .ts
+  - .ty
+  - .viv
+  - .vob
+  - .vp3
+  - .wmv
+  - .webm
+  - .xvid

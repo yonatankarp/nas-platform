@@ -697,14 +697,14 @@ git commit -m "feat: migrate Audiobookshelf"
 - Modify: `tests/mac/fixtures.sh`
 - Modify: `tests/mac/verify.sh`
 
-- [ ] **Step 1: Write failing contracts for both applications**
+- [x] **Step 1: Write failing contracts for both applications**
 
 Komga must accept the vault login, expose a managed read-only `/data` library,
 scan a small comic archive, and preserve library settings. tinyMediaManager must
 accept the vault password, expose writable Movies and Series fixture trees, scan
 both sources, write metadata, keep direct VNC disabled, and preserve settings.
 
-- [ ] **Step 2: Run both contracts and verify absence failures**
+- [x] **Step 2: Run both contracts and verify absence failures**
 
 Run:
 
@@ -713,14 +713,14 @@ tests/contracts/komga.sh
 tests/contracts/tinymediamanager.sh
 ```
 
-- [ ] **Step 3: Port canonical definitions and Mac overrides**
+- [x] **Step 3: Port canonical definitions and Mac overrides**
 
 Preserve Komga's read-only library. Preserve tinyMediaManager's intentional
 writes and NAS host-network exception; the Mac override replaces host networking
 with explicit web/API port publications because Docker Desktop host networking
 is not equivalent.
 
-- [ ] **Step 4: Add provisioning and fixture verification**
+- [x] **Step 4: Add provisioning and fixture verification**
 
 Use supported application APIs or stable configuration files. If an application
 does not expose first-run automation, the contract must identify the exact
@@ -728,6 +728,15 @@ manual exception and the role must stop with instructions instead of reporting
 success. Do not edit opaque databases.
 
 - [ ] **Step 5: Run persistence tests and commit**
+
+Handoff checkpoint (2026-08-07): focused Komga and tinyMediaManager seed,
+recreation, metadata-write, and persistence proofs pass. The last full
+integration run exposed byte-level churn after tinyMediaManager normalized
+semantically identical JSON; a test-first semantic-equality guard is implemented
+and its focused regression passes. Task 10 remains incomplete until a fresh run
+from unchanged bytes passes live contracts, second-run `changed=0 failed=0`,
+`--check --diff`, cleanup, final policy/static review, and the complete Mac
+fresh lane. Do not mark this step or Task 10 complete before those gates pass.
 
 ```sh
 tests/contracts/komga.sh

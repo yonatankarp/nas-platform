@@ -50,6 +50,32 @@ nas_storage:
     mode: "0755"
     recovery: user
 
+  # Komga. Application configuration is critical state; books remain NAS-owned
+  # user media and are mounted read-only by the service.
+  - path: "{{ nas_docker_root }}/komga/config"
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0755"
+    recovery: critical
+  - path: "{{ nas_media_root }}/Books"
+    mode: "0755"
+    recovery: user
+
+  # tinyMediaManager. Its stable settings and indexes are critical state. The
+  # media directories are intentionally writable because metadata writing is a
+  # core service function, while ownership remains under NAS control.
+  - path: "{{ nas_docker_root }}/tinymediamanager/data"
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0755"
+    recovery: critical
+  - path: "{{ nas_media_root }}/Media/Movies"
+    mode: "0755"
+    recovery: user
+  - path: "{{ nas_media_root }}/Media/Series"
+    mode: "0755"
+    recovery: user
+
   # Dozzle authentication and notification configuration.
   - path: "{{ nas_docker_root }}/dozzle/data"
     owner: "{{ nas_uid }}"

@@ -1,0 +1,240 @@
+---
+- name: Revalidate deployment paths before tinyMediaManager runtime use
+  ansible.builtin.include_role:
+    name: deployment_bundle
+    tasks_from: target
+  vars:
+    deployment_target_require_current_release: true
+    deployment_target_extra_paths:
+      - "{{ platform_current_dir }}/services/tinymediamanager"
+      - "{{ platform_current_dir }}/services/tinymediamanager/compose.yml"
+      - "{{ platform_current_dir }}/services/tinymediamanager/compose.{{ platform_compose_kind }}.yml"
+      - "{{ platform_runtime_dir }}/services/tinymediamanager"
+      - "{{ platform_runtime_dir }}/services/tinymediamanager/.env"
+      - "{{ nas_docker_root }}/tinymediamanager/data/data"
+
+- name: Check for a tinyMediaManager platform override
+  tags: [platform_verify_tinymediamanager]
+  ansible.builtin.stat:
+    path: "{{ platform_current_dir }}/services/tinymediamanager/compose.{{ platform_compose_kind }}.yml"
+  register: tinymediamanager_platform_compose
+
+- name: Select the tinyMediaManager Compose definitions
+  tags: [platform_verify_tinymediamanager]
+  ansible.builtin.set_fact:
+    tinymediamanager_compose_files: >-
+      {{ ['compose.yml'] +
+         (tinymediamanager_platform_compose.stat.exists
+          | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) }}
+
+- name: Create the stable tinyMediaManager settings directory
+  ansible.builtin.file:
+    path: "{{ nas_docker_root }}/tinymediamanager/data/data"
+    state: directory
+    owner: "{{ nas_uid if platform_kind == 'nas' else omit }}"
+    group: "{{ nas_gid if platform_kind == 'nas' else omit }}"
+    mode: "0755"
+
+- name: Inspect stable tinyMediaManager settings
+  ansible.builtin.stat:
+    path: "{{ nas_docker_root }}/tinymediamanager/data/data/{{ item }}.json"
+  loop: [tmm, movies, tvShows]
+  register: tinymediamanager_settings_files
+
+- name: Read existing stable tinyMediaManager settings
+  ansible.builtin.slurp:
+    path: "{{ nas_docker_root }}/tinymediamanager/data/data/{{ item.item }}.json"
+  loop: "{{ tinymediamanager_settings_files.results }}"
+  when: item.stat.exists
+  register: tinymediamanager_settings_contents
+  no_log: true
+
+- name: Initialize existing stable tinyMediaManager settings
+  ansible.builtin.set_fact:
+    tinymediamanager_existing_settings: {}
+  no_log: true
+
+- name: Resolve existing stable tinyMediaManager settings
+  ansible.builtin.set_fact:
+    tinymediamanager_existing_settings: >-
+      {{ tinymediamanager_existing_settings | combine({
+        item.item.item: item.content | b64decode | from_json
+      }) }}
+  loop: "{{ tinymediamanager_settings_contents.results }}"
+  when: not item.skipped | default(false)
+  no_log: true
+
+- name: Require stable tinyMediaManager settings documents
+  ansible.builtin.assert:
+    that:
+      - tinymediamanager_existing_settings.get(item, {}) is mapping
+    fail_msg: "tinyMediaManager {{ item }}.json must be a JSON object."
+  loop: [tmm, movies, tvShows]
+
+- name: Resolve managed tinyMediaManager settings
+  ansible.builtin.set_fact:
+    tinymediamanager_managed_settings:
+      tmm: >-
+        {{ tinymediamanager_existing_settings.get('tmm', {}) | combine({
+          'enableHttpServer': true,
+          'httpServerPort': tinymediamanager_api_port,
+          'httpApiKey': vault_tinymediamanager_password,
+          'videoFileType': tinymediamanager_existing_settings.get('tmm', {})
+            .get('videoFileType', []) + (tinymediamanager_video_file_types
+              | reject('in', tinymediamanager_existing_settings.get('tmm', {})
+                .get('videoFileType', [])) | list)
+        }) }}
+      movies: >-
+        {{ tinymediamanager_existing_settings.get('movies', {}) | combine({
+          'movieDataSource': [tinymediamanager_movie_source],
+          'movieConnector': tinymediamanager_nfo_connector,
+          'nfoWriteFileinfo': true,
+          'writeCleanNfo': false
+        }) }}
+      tvShows: >-
+        {{ tinymediamanager_existing_settings.get('tvShows', {}) | combine({
+          'tvShowDataSource': [tinymediamanager_series_source],
+          'tvShowConnector': tinymediamanager_nfo_connector,
+          'nfoWriteFileinfo': true,
+          'writeCleanNfo': false
+        }) }}
+  no_log: true
+
+- name: Provision stable tinyMediaManager first-run settings
+  ansible.builtin.copy:
+    dest: "{{ nas_docker_root }}/tinymediamanager/data/data/{{ item.key }}.json"
+    content: "{{ item.value | to_nice_json }}\n"
+    owner: "{{ nas_uid if platform_kind == 'nas' else omit }}"
+    group: "{{ nas_gid if platform_kind == 'nas' else omit }}"
+    mode: "0600"
+  loop: "{{ tinymediamanager_managed_settings | dict2items }}"
+  when: tinymediamanager_existing_settings.get(item.key, {}) != item.value
+  register: tinymediamanager_settings_written
+  no_log: true
+
+- name: Render the tinyMediaManager environment
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ platform_runtime_dir }}/services/tinymediamanager/.env"
+    mode: "0600"
+  no_log: true
+
+- name: Deploy tinyMediaManager
+  community.docker.docker_compose_v2:
+    project_src: "{{ platform_current_dir }}/services/tinymediamanager"
+    project_name: "{{ tinymediamanager_compose_project_name }}"
+    files: "{{ tinymediamanager_compose_files }}"
+    env_files: ["{{ platform_runtime_dir }}/services/tinymediamanager/.env"]
+    state: present
+    recreate: >-
+      {{ 'always' if tinymediamanager_settings_written.results
+         | selectattr('changed') | list | length > 0 else 'auto' }}
+    wait: true
+    wait_timeout: 240
+
+- name: Verify tinyMediaManager web access
+  tags: [platform_verify_tinymediamanager]
+  ansible.builtin.uri:
+    url: "{{ tinymediamanager_web }}"
+    status_code: [200]
+  register: tinymediamanager_web_status
+  until: tinymediamanager_web_status.status | default(0) == 200
+  retries: 60
+  delay: 3
+  changed_when: false
+  check_mode: false
+
+- name: Read the installed tinyMediaManager VNC password environment
+  tags: [platform_verify_tinymediamanager]
+  community.docker.docker_compose_v2_exec:
+    project_src: "{{ platform_current_dir }}/services/tinymediamanager"
+    project_name: "{{ tinymediamanager_compose_project_name }}"
+    files: "{{ tinymediamanager_compose_files }}"
+    env_files: ["{{ platform_runtime_dir }}/services/tinymediamanager/.env"]
+    service: tinymediamanager
+    argv: [printenv, PASSWORD]
+  register: tinymediamanager_installed_password
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Inspect the installed tinyMediaManager VNC password file
+  tags: [platform_verify_tinymediamanager]
+  community.docker.docker_compose_v2_exec:
+    project_src: "{{ platform_current_dir }}/services/tinymediamanager"
+    project_name: "{{ tinymediamanager_compose_project_name }}"
+    files: "{{ tinymediamanager_compose_files }}"
+    env_files: ["{{ platform_runtime_dir }}/services/tinymediamanager/.env"]
+    service: tinymediamanager
+    argv: [test, -s, /app/.vnc/passwd]
+  register: tinymediamanager_installed_password_file
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require the installed tinyMediaManager VNC password
+  tags: [platform_verify_tinymediamanager]
+  ansible.builtin.assert:
+    that:
+      - tinymediamanager_installed_password.stdout | trim == vault_tinymediamanager_password
+      - tinymediamanager_installed_password_file.rc == 0
+    fail_msg: tinyMediaManager did not install the vault password for its local-only VNC session.
+  no_log: true
+
+- name: Read exact stable tinyMediaManager settings
+  tags: [platform_verify_tinymediamanager]
+  ansible.builtin.slurp:
+    path: "{{ nas_docker_root }}/tinymediamanager/data/data/{{ item }}.json"
+  loop: [tmm, movies, tvShows]
+  register: tinymediamanager_verify_settings_files
+  no_log: true
+
+- name: Initialize exact stable tinyMediaManager verification state
+  tags: [platform_verify_tinymediamanager]
+  ansible.builtin.set_fact:
+    tinymediamanager_verified_settings: {}
+  no_log: true
+
+- name: Resolve exact stable tinyMediaManager verification state
+  tags: [platform_verify_tinymediamanager]
+  ansible.builtin.set_fact:
+    tinymediamanager_verified_settings: >-
+      {{ tinymediamanager_verified_settings | combine({
+        item.item: item.content | b64decode | from_json
+      }) }}
+  loop: "{{ tinymediamanager_verify_settings_files.results }}"
+  no_log: true
+
+- name: Require exact stable tinyMediaManager settings documents
+  tags: [platform_verify_tinymediamanager]
+  ansible.builtin.assert:
+    that:
+      - tinymediamanager_verified_settings.get(item, {}) is mapping
+    fail_msg: "tinyMediaManager {{ item }}.json must remain a JSON object."
+  loop: [tmm, movies, tvShows]
+  no_log: true
+
+- name: Require tinyMediaManager movie and series data sources
+  tags: [platform_verify_tinymediamanager]
+  ansible.builtin.assert:
+    that:
+      - tinymediamanager_verified_settings.movies.movieDataSource == [tinymediamanager_movie_source]
+      - tinymediamanager_verified_settings.tvShows.tvShowDataSource == [tinymediamanager_series_source]
+      - tinymediamanager_verified_settings.tmm.enableHttpServer
+      - tinymediamanager_verified_settings.tmm.httpServerPort | int == tinymediamanager_api_port
+      - tinymediamanager_verified_settings.tmm.httpApiKey == vault_tinymediamanager_password
+      - tinymediamanager_video_file_types | difference(tinymediamanager_verified_settings.tmm.videoFileType) | length == 0
+    fail_msg: tinyMediaManager sources or its vault-protected HTTP API settings drifted.
+  no_log: true
+
+- name: Require tinyMediaManager metadata writing settings
+  tags: [platform_verify_tinymediamanager]
+  ansible.builtin.assert:
+    that:
+      - tinymediamanager_verified_settings.movies.movieConnector == tinymediamanager_nfo_connector
+      - tinymediamanager_verified_settings.tvShows.tvShowConnector == tinymediamanager_nfo_connector
+      - tinymediamanager_verified_settings.movies.nfoWriteFileinfo
+      - tinymediamanager_verified_settings.tvShows.nfoWriteFileinfo
+      - not tinymediamanager_verified_settings.movies.writeCleanNfo
+      - not tinymediamanager_verified_settings.tvShows.writeCleanNfo
+    fail_msg: tinyMediaManager NFO metadata writing settings drifted.

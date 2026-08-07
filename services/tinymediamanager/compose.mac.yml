@@ -1,0 +1,11 @@
+---
+services:
+  tinymediamanager:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-tinymediamanager
+    # This child is the amd64 member of the canonical e33769b... manifest list.
+    image: docker.io/tinymediamanager/tinymediamanager:5.3.0@sha256:ef2b7c248ff2b6b8d30f509f5fa8aaae63508899403f2441da2fd6e2b0a216f6
+    platform: linux/amd64
+    network_mode: bridge
+    ports: !override
+      - "${TINYMEDIAMANAGER_WEB_HOST_PORT:?}:4000"
+      - "${TINYMEDIAMANAGER_API_HOST_PORT:?}:7878"

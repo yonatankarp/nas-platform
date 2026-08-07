@@ -70,3 +70,9 @@
 
     - role: audiobookshelf
       tags: [audiobookshelf, media]
+
+    - role: komga
+      tags: [komga, media]
+
+    - role: tinymediamanager
+      tags: [tinymediamanager, media]

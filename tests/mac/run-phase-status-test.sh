@@ -65,7 +65,8 @@ vault_checksum=$(shasum -a 256 "$vault_file" | awk '{print $1}')
   --sandbox-id "$(basename -- "$sandbox")" --git-revision "$git_revision" \
   --vault-checksum "$vault_checksum" --project-name "$project_name" \
   --beszel-port 38090 --ntfy-port 32586 --dozzle-port 38080 \
-  --audiobookshelf-port 33378
+  --audiobookshelf-port 33378 --komga-port 35600 \
+  --tinymediamanager-web-port 34000 --tinymediamanager-api-port 37878
 "$mac_test_dir/report.rb" --record "$state_input" --phase preflight --status running
 "$mac_test_dir/report.rb" --record "$state_input" --phase preflight --status passed
 

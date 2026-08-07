@@ -1,0 +1,36 @@
+---
+komga_port: 25600
+komga_api: "http://127.0.0.1:{{ komga_port }}"
+komga_compose_project_name: >-
+  {{ (platform_project_name ~ '-komga')
+     if platform_project_name | default('') | length > 0 else 'komga' }}
+
+komga_library_name: Books
+komga_library_root: /data
+komga_library_settings:
+  importComicInfoBook: true
+  importComicInfoSeries: true
+  importComicInfoCollection: true
+  importComicInfoReadList: true
+  importComicInfoSeriesAppendVolume: true
+  importEpubBook: true
+  importEpubSeries: true
+  importMylarSeries: true
+  importLocalArtwork: true
+  importBarcodeIsbn: true
+  scanForceModifiedTime: false
+  scanInterval: DISABLED
+  scanOnStartup: false
+  scanCbx: true
+  scanPdf: true
+  scanEpub: true
+  scanDirectoryExclusions: []
+  repairExtensions: false
+  convertToCbz: false
+  emptyTrashAfterScan: false
+  seriesCover: FIRST
+  hashFiles: true
+  hashPages: false
+  hashKoreader: false
+  analyzeDimensions: true
+  oneshotsDirectory: null

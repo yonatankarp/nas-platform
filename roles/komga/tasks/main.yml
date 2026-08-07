@@ -1,0 +1,257 @@
+---
+- name: Revalidate deployment paths before Komga runtime use
+  ansible.builtin.include_role:
+    name: deployment_bundle
+    tasks_from: target
+  vars:
+    deployment_target_require_current_release: true
+    deployment_target_extra_paths:
+      - "{{ platform_current_dir }}/services/komga"
+      - "{{ platform_current_dir }}/services/komga/compose.yml"
+      - "{{ platform_current_dir }}/services/komga/compose.{{ platform_compose_kind }}.yml"
+      - "{{ platform_runtime_dir }}/services/komga"
+      - "{{ platform_runtime_dir }}/services/komga/.env"
+
+- name: Check for a Komga platform override
+  ansible.builtin.stat:
+    path: "{{ platform_current_dir }}/services/komga/compose.{{ platform_compose_kind }}.yml"
+  register: komga_platform_compose
+
+- name: Select the Komga Compose definitions
+  ansible.builtin.set_fact:
+    komga_compose_files: >-
+      {{ ['compose.yml'] +
+         (komga_platform_compose.stat.exists
+          | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) }}
+
+- name: Render the Komga environment
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ platform_runtime_dir }}/services/komga/.env"
+    mode: "0600"
+
+- name: Deploy Komga
+  community.docker.docker_compose_v2:
+    project_src: "{{ platform_current_dir }}/services/komga"
+    project_name: "{{ komga_compose_project_name }}"
+    files: "{{ komga_compose_files }}"
+    env_files: ["{{ platform_runtime_dir }}/services/komga/.env"]
+    state: present
+    wait: true
+    wait_timeout: 180
+
+- name: Read Komga claim status
+  ansible.builtin.uri:
+    url: "{{ komga_api }}/api/v1/claim"
+    return_content: true
+  register: komga_claim_status
+  until: komga_claim_status.status | default(0) == 200
+  retries: 40
+  delay: 3
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Report planned Komga claim
+  ansible.builtin.debug:
+    msg: KOMGA_PLAN_CLAIM
+  when:
+    - ansible_check_mode
+    - not komga_claim_status.json.isClaimed | bool
+  changed_when: true
+
+- name: Claim Komga with the vault administrator
+  ansible.builtin.uri:
+    url: "{{ komga_api }}/api/v1/claim"
+    method: POST
+    headers:
+      X-Komga-Email: "{{ vault_komga_admin_email }}"
+      X-Komga-Password: "{{ vault_komga_admin_password }}"
+    status_code: [200]
+  when:
+    - not ansible_check_mode
+    - not komga_claim_status.json.isClaimed | bool
+  changed_when: true
+  no_log: true
+
+- name: Authenticate the vault Komga administrator
+  ansible.builtin.uri:
+    url: "{{ komga_api }}/api/v2/users/me"
+    url_username: "{{ vault_komga_admin_email }}"
+    url_password: "{{ vault_komga_admin_password }}"
+    force_basic_auth: true
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: komga_reconcile_admin
+  when: not ansible_check_mode or komga_claim_status.json.isClaimed | bool
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Resolve sanitized Komga administrator authentication status
+  ansible.builtin.set_fact:
+    komga_reconcile_admin_status: "{{ komga_reconcile_admin.status | default(0) | int }}"
+  when: not ansible_check_mode or komga_claim_status.json.isClaimed | bool
+  no_log: true
+
+- name: Require the vault Komga administrator
+  ansible.builtin.assert:
+    that:
+      - komga_reconcile_admin_status | int == 200
+      - komga_reconcile_admin.json.email == vault_komga_admin_email
+      - "'ADMIN' in komga_reconcile_admin.json.roles"
+    fail_msg: >-
+      The claimed Komga server does not accept the vault administrator or that account is not an
+      administrator. Verify the preserved vault credentials in the Komga UI and rerun.
+  when: not ansible_check_mode or komga_claim_status.json.isClaimed | bool
+  no_log: true
+
+- name: List Komga libraries for reconciliation
+  ansible.builtin.uri:
+    url: "{{ komga_api }}/api/v1/libraries"
+    url_username: "{{ vault_komga_admin_email }}"
+    url_password: "{{ vault_komga_admin_password }}"
+    force_basic_auth: true
+    status_code: [200]
+    return_content: true
+  register: komga_libraries_before
+  when: not ansible_check_mode or komga_claim_status.json.isClaimed | bool
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Resolve managed Komga libraries
+  ansible.builtin.set_fact:
+    komga_managed_libraries: >-
+      {{ (komga_libraries_before.json
+          | selectattr('name', 'equalto', komga_library_name) | list)
+         if (not ansible_check_mode or komga_claim_status.json.isClaimed | bool) else [] }}
+  no_log: true
+
+- name: Refuse duplicate managed Komga libraries
+  ansible.builtin.assert:
+    that:
+      - komga_managed_libraries | length <= 1
+    fail_msg: The managed Komga library name is duplicated; resolve the duplicate through Komga.
+
+- name: Resolve the existing managed Komga library
+  ansible.builtin.set_fact:
+    komga_existing_library: "{{ komga_managed_libraries | first | default({}) }}"
+    komga_library_create_required: >-
+      {{ (ansible_check_mode and not komga_claim_status.json.isClaimed | bool) or
+         komga_managed_libraries | length == 0 }}
+  no_log: true
+
+- name: Require a safe managed Komga library ID
+  ansible.builtin.assert:
+    that:
+      - komga_existing_library.id | default('safe-placeholder') is
+        match('^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$')
+    fail_msg: The managed Komga library contains an unsafe API identifier.
+
+- name: Resolve Komga library repair requirement
+  ansible.builtin.set_fact:
+    komga_library_repair_required: >-
+      {{ komga_existing_library | length > 0 and
+         (komga_existing_library.root != komga_library_root or
+          (komga_existing_library | dict2items
+           | selectattr('key', 'in', komga_library_settings.keys())
+           | items2dict) != komga_library_settings) }}
+  no_log: true
+
+- name: Report planned Komga library creation
+  ansible.builtin.debug:
+    msg: KOMGA_PLAN_LIBRARY_CREATE
+  when:
+    - ansible_check_mode
+    - komga_library_create_required | bool
+  changed_when: true
+
+- name: Create the managed Komga library
+  ansible.builtin.uri:
+    url: "{{ komga_api }}/api/v1/libraries"
+    method: POST
+    url_username: "{{ vault_komga_admin_email }}"
+    url_password: "{{ vault_komga_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body: "{{ {'name': komga_library_name, 'root': komga_library_root} | combine(komga_library_settings) }}"
+    status_code: [200]
+  when:
+    - not ansible_check_mode
+    - komga_library_create_required | bool
+  changed_when: true
+  no_log: true
+
+- name: Report planned Komga library repair
+  ansible.builtin.debug:
+    msg: KOMGA_PLAN_LIBRARY_REPAIR
+  when:
+    - ansible_check_mode
+    - komga_library_repair_required | bool
+  changed_when: true
+
+- name: Repair the managed Komga library
+  ansible.builtin.uri:
+    url: "{{ komga_api }}/api/v1/libraries/{{ komga_existing_library.id }}"
+    method: PATCH
+    url_username: "{{ vault_komga_admin_email }}"
+    url_password: "{{ vault_komga_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body: "{{ {'name': komga_library_name, 'root': komga_library_root} | combine(komga_library_settings) }}"
+    status_code: [204]
+  when:
+    - not ansible_check_mode
+    - komga_library_repair_required | bool
+  changed_when: true
+  no_log: true
+
+- name: Verify exact Komga administrator and libraries
+  tags: [platform_verify_komga]
+  ansible.builtin.uri:
+    url: "{{ komga_api }}/{{ item }}"
+    url_username: "{{ vault_komga_admin_email }}"
+    url_password: "{{ vault_komga_admin_password }}"
+    force_basic_auth: true
+    status_code: [200]
+    return_content: true
+  loop: [api/v2/users/me, api/v1/libraries]
+  register: komga_verify_state
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Resolve exact Komga verification state
+  tags: [platform_verify_komga]
+  ansible.builtin.set_fact:
+    komga_verified_admin: "{{ komga_verify_state.results[0].json }}"
+    komga_verified_libraries: "{{ komga_verify_state.results[1].json }}"
+  no_log: true
+
+- name: Require the vault Komga administrator during exact verification
+  tags: [platform_verify_komga]
+  ansible.builtin.assert:
+    that:
+      - komga_verified_admin.email == vault_komga_admin_email
+      - "'ADMIN' in komga_verified_admin.roles"
+    fail_msg: The vault Komga administrator is absent or drifted.
+  no_log: true
+
+- name: Require exactly the managed Komga library
+  tags: [platform_verify_komga]
+  ansible.builtin.assert:
+    that:
+      - komga_verified_libraries | length == 1
+      - komga_verified_library | length == 1
+      - komga_verified_library[0].root == komga_library_root
+      - >-
+        (komga_verified_library[0] | dict2items
+         | selectattr('key', 'in', komga_library_settings.keys())
+         | items2dict) == komga_library_settings
+    fail_msg: The managed Komga library is absent, duplicated, surplus, or drifted.
+  vars:
+    komga_verified_library: >-
+      {{ komga_verified_libraries
+         | selectattr('name', 'equalto', komga_library_name) | list }}

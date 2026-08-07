@@ -34,7 +34,7 @@ services:
     legacy_path: compose/komga/compose.yml
     role: komga
     tranche: 3
-    status: planned
+    status: implemented
   - name: ntfy
     legacy_path: compose/ntfy/compose.yml
     role: ntfy
@@ -49,4 +49,4 @@ services:
     legacy_path: compose/tinymediamanager/compose.yml
     role: tinymediamanager
     tranche: 3
-    status: planned
+    status: implemented

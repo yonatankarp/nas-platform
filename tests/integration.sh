@@ -439,6 +439,28 @@ docker run --rm \
         /repo/tests/contracts/audiobookshelf.sh \"\$@\"
     }
 
+    run_komga_contract() {
+      env \
+        PLATFORM_KIND=integration \
+        PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\" \
+        PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=\"\$vault_password_file\" \
+        PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
+        PLATFORM_REPORT_ROOT='$sandbox/reports' \
+        /repo/tests/contracts/komga.sh \"\$@\"
+    }
+
+    run_tinymediamanager_contract() {
+      env \
+        PLATFORM_KIND=integration \
+        PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\" \
+        PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=\"\$vault_password_file\" \
+        PLATFORM_DOCKER_ROOT='$sandbox/volume1/Docker' \
+        PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
+        PLATFORM_REPORT_ROOT='$sandbox/reports' \
+        PLATFORM_TINYMEDIAMANAGER_CONTAINER=tinymediamanager \
+        /repo/tests/contracts/tinymediamanager.sh \"\$@\"
+    }
+
     run_verify_only() {
       PLATFORM_VAULT_FILE=\"\$vault_file\" ansible-playbook \
         -i inventory/local.yml \
@@ -1135,6 +1157,9 @@ docker run --rm \
       run_audiobookshelf_contract assert-persistence
       printf 'AUDIOBOOKSHELF_RECREATE_PERSISTENCE_OK\n'
 
+      run_komga_contract seed
+      run_tinymediamanager_contract seed
+
       env \
         PLATFORM_KIND=integration \
         PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\" \
@@ -1143,6 +1168,7 @@ docker run --rm \
         PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
         PLATFORM_FIXTURE_ROOT='$sandbox/fixtures' \
         PLATFORM_REPORT_ROOT='$sandbox/reports' \
+        PLATFORM_TINYMEDIAMANAGER_CONTAINER=tinymediamanager \
         ruby /repo/tests/run_contracts.rb --execute
     fi
 

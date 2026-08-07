@@ -17,6 +17,10 @@ BASE_FIXTURE_PATHS = %w[
   .github/workflows/ci.yml
   README.md
   ansible.cfg
+  docs/ansible-basics.md
+  docs/getting-started.md
+  docs/getting-started-mac.md
+  docs/getting-started-nas.md
   filter_plugins/platform_paths.py
   filter_plugins/compose_metadata.py
   generate-secrets.yml
@@ -977,7 +981,7 @@ if permissive_output.include?("compose-filter-secret-sentinel")
 end
 
 expect_failure(failures, "platform override redefines image",
-               "platform overrides must not redefine image keys") do |root|
+               "platform image overrides differ from the exact allowlist") do |root|
   path = File.join(root, "services", "beszel", "compose.integration.yml")
   File.write(path, <<~YAML)
     ---
