@@ -112,7 +112,7 @@
       - "{{ platform_deploy_root }}/.current-{{ platform_release_id }}"
       - "{{ (deployment_target_require_current_release | default(false) | bool) | ternary('1', '0') }}"
       - "{{ item }}"
-  loop: "{{ deployment_target_paths + (deployment_target_extra_paths | default([])) }}"
+  loop: "{{ (deployment_target_paths | list) + (deployment_target_extra_paths | default([]) | list) }}"
   loop_control:
     label: "{{ item }}"
   changed_when: false

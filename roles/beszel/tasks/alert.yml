@@ -1,5 +1,5 @@
 ---
-- name: Query {{ beszel_alert.name }} alerts for the managed identity
+- name: Query managed-identity alerts for {{ beszel_alert.name }}
   tags: [platform_verify_beszel]
   ansible.builtin.uri:
     url: >-
@@ -17,18 +17,18 @@
       system = {{ (beszel_matching_systems | first).id | to_json }} &&
       name = {{ beszel_alert.name | to_json }}
 
-- name: Require the complete {{ beszel_alert.name }} alert result set
+- name: Require the complete alert result set for {{ beszel_alert.name }}
   ansible.builtin.assert:
     that: beszel_alert_records.json.get('totalPages', 0) | int <= 1
     fail_msg: Managed {{ beszel_alert.name }} alert identity returned more than 500 records; refusing incomplete reconciliation.
 
-- name: Resolve existing {{ beszel_alert.name }} alerts for the managed system
+- name: Resolve existing managed-system alerts for {{ beszel_alert.name }}
   tags: [platform_verify_beszel]
   ansible.builtin.set_fact:
     beszel_current_alerts: >-
       {{ beszel_alert_records.json.get('items', []) }}
 
-- name: Refuse duplicate {{ beszel_alert.name }} alerts for the managed system
+- name: Refuse duplicate managed-system alerts for {{ beszel_alert.name }}
   tags: [platform_verify_beszel]
   ansible.builtin.assert:
     that: beszel_current_alerts | length <= 1
@@ -37,7 +37,7 @@
       {{ beszel_current_alerts | map(attribute='id') | join(',') }}
   no_log: false
 
-- name: Create absent {{ beszel_alert.name }} alert for the managed system
+- name: Create the absent managed-system alert for {{ beszel_alert.name }}
   ansible.builtin.uri:
     url: "{{ beszel_api }}/api/collections/alerts/records"
     method: POST
@@ -55,7 +55,7 @@
   changed_when: true
   no_log: "{{ beszel_no_log | default(true) }}"
 
-- name: Patch mismatched {{ beszel_alert.name }} alert for the managed system
+- name: Patch the mismatched managed-system alert for {{ beszel_alert.name }}
   ansible.builtin.uri:
     url: "{{ beszel_api }}/api/collections/alerts/records/{{ (beszel_current_alerts | first).id }}"
     method: PATCH
@@ -73,7 +73,7 @@
   changed_when: true
   no_log: "{{ beszel_no_log | default(true) }}"
 
-- name: Report planned {{ beszel_alert.name }} alert reconciliation
+- name: Report planned alert reconciliation for {{ beszel_alert.name }}
   ansible.builtin.debug:
     msg: Managed {{ beszel_alert.name }} alert would be created or reconciled.
   when:
@@ -102,13 +102,13 @@
       system = {{ (beszel_matching_systems | first).id | to_json }} &&
       name = {{ beszel_alert.name | to_json }}
 
-- name: Resolve reconciled {{ beszel_alert.name }} alerts for the managed system
+- name: Resolve reconciled managed-system alerts for {{ beszel_alert.name }}
   tags: [platform_verify_beszel]
   ansible.builtin.set_fact:
     beszel_current_alerts: >-
       {{ beszel_refreshed_alerts.json.get('items', []) }}
 
-- name: Verify exact {{ beszel_alert.name }} alert configuration
+- name: Verify exact alert configuration for {{ beszel_alert.name }}
   tags: [platform_verify_beszel]
   ansible.builtin.assert:
     that:
