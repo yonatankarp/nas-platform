@@ -105,8 +105,14 @@ nas_storage:
   - path: "{{ nas_media_root }}/Immich-backups/database"
     mode: "0755"
     recovery: critical
+  # 0700 because initdb sets exactly that and PostgreSQL refuses to start on a
+  # data directory that is group- or world-readable. Declaring 0755 here made
+  # host_prep reset it on every converge, which broke idempotence outright and,
+  # on the NAS, would leave a cluster that refuses to start after its next
+  # restart. Docker Desktop does not propagate the host mode into the container,
+  # so only the NAS would have suffered the second half of that.
   - path: "{{ nas_docker_root }}/immich/postgres"
-    mode: "0755"
+    mode: "0700"
     recovery: critical
   - path: "{{ nas_docker_root }}/immich/data/profile"
     mode: "0755"
