@@ -51,7 +51,12 @@ STATE
     ;;
   drift-recover)
     [ -f "${PLATFORM_HOOK_SNAPSHOT:?}" ] && [ ! -L "${PLATFORM_HOOK_SNAPSHOT:?}" ]
-    [ "$(stat -f '%Lp' "${PLATFORM_HOOK_SNAPSHOT:?}" 2>/dev/null || stat -c '%a' "${PLATFORM_HOOK_SNAPSHOT:?}")" = 600 ]
+    if [ "$(uname -s)" = Darwin ]; then
+      snapshot_mode=$(stat -f '%Lp' "${PLATFORM_HOOK_SNAPSHOT:?}")
+    else
+      snapshot_mode=$(stat -c '%a' "${PLATFORM_HOOK_SNAPSHOT:?}")
+    fi
+    [ "$snapshot_mode" = 600 ]
     cp "${PLATFORM_HOOK_SNAPSHOT:?}" "${PLATFORM_HOOK_STATE:?}"
     cmp -s "${PLATFORM_HOOK_STATE:?}" "${PLATFORM_HOOK_EXPECTED_STATE:?}"
     unlink "${PLATFORM_HOOK_SNAPSHOT:?}"
