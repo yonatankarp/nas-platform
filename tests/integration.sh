@@ -497,17 +497,6 @@ docker run --rm \
         /repo/tests/contracts/jellyfin.sh \"\$@\"
     }
 
-    run_immich_contract() {
-      env \
-        PLATFORM_KIND=integration \
-        PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\" \
-        PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=\"\$vault_password_file\" \
-        PLATFORM_DOCKER_ROOT='$sandbox/volume1/Docker' \
-        PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
-        PLATFORM_REPORT_ROOT='$sandbox/reports' \
-        /repo/tests/contracts/immich.sh \"\$@\"
-    }
-
     run_verify_only() {
       PLATFORM_VAULT_FILE=\"\$vault_file\" ansible-playbook \
         -i inventory/local.yml \
@@ -1209,9 +1198,14 @@ docker run --rm \
       # After tinyMediaManager, because both services read the same Movies tree
       # and only a scan that already finished can be asserted independently.
       run_jellyfin_contract seed
-      # Immich uploads its own fixtures rather than reading the media tree, so
-      # it is independent of the movie seeding order above.
-      run_immich_contract seed
+      # Immich is deliberately not seeded here. Its seed contract asserts CPU
+      # machine learning, and the first inference makes the pinned image pull
+      # roughly 800 MB of CLIP, face and OCR models from external CDNs. That is
+      # a new outbound dependency on every CI run for coverage the Mac lane
+      # already provides. Immich still deploys with the rest of site.yml, and
+      # run_contracts.rb below executes its registered run-mode contract, which
+      # covers login, containment and managed settings and needs no extra
+      # environment beyond the shared contract ABI.
 
       env \
         PLATFORM_KIND=integration \

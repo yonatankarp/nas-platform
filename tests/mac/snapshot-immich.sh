@@ -4,11 +4,15 @@ set +x
 umask 077
 
 # Coordinated snapshot and rollback for Immich. Immich keeps one application
-# state in three places that must move together: PostgreSQL rows, the original
-# files under the media root, and the generated derivatives under the Docker
-# root. Backing up any one of them alone produces a restore that starts and
-# then serves broken thumbnails or missing originals, so every operation here
-# takes all three or none.
+# state in several places that must move together: PostgreSQL rows, the original
+# files under the media root, and the profile and thumbnail trees under the
+# Docker root. Backing up any one of them alone produces a restore that starts
+# and then serves broken thumbnails or missing originals, so every operation
+# here takes all of them or none.
+#
+# The Valkey job queue is the fourth participant and is handled differently: it
+# is discarded on restore rather than captured, because it holds work queued
+# against a database state the restore has just replaced.
 
 usage() {
   printf '%s\n' \
@@ -68,8 +72,9 @@ Dir.mktmpdir("nas-platform-snapshot-selftest") do |raw|
   directory = Pathname.new(raw)
   directory.join("database.sql").write("-- dump\n")
   directory.join("originals.tar").write("originals")
+  directory.join("profile.tar").write("profile")
   directory.join("generated.tar").write("generated")
-  members = %w[database.sql generated.tar originals.tar]
+  members = %w[database.sql generated.tar originals.tar profile.tar]
   manifest = manifest_for(directory, members)
 
   check(failures, manifest.fetch("members").map { |m| m.fetch("name") } == members,
@@ -115,6 +120,21 @@ esac
 [ "$#" -eq 1 ] || usage
 snapshot_dir=$1
 
+# The drill deletes every asset in the deployment and recovers only if the
+# restore works. That is an acceptable thing to do to a disposable lane sandbox
+# and an unacceptable thing to do to a NAS, so it refuses up front, before it
+# reads a credential or touches a container, anywhere that is not one of the
+# harness's own throwaway projects.
+if [ "$mode" = drill ]; then
+  case ${PLATFORM_PROJECT_NAME:-} in
+    nas-platform-mac-[abcdefghijklmnopqrstuvwxyz0123456789]*) ;;
+    *)
+      printf '%s\n' 'drill refuses to run outside a disposable Mac sandbox project' >&2
+      exit 1
+      ;;
+  esac
+fi
+
 : "${PLATFORM_CONTRACT_VAULT_FILE:=${PLATFORM_MAC_VAULT_FILE:-}}"
 : "${PLATFORM_CONTRACT_VAULT_PASSWORD_FILE:=${PLATFORM_MAC_VAULT_PASSWORD_FILE:-}}"
 : "${PLATFORM_CONTRACT_VAULT_FILE:?PLATFORM_MAC_VAULT_FILE is required}"
@@ -126,15 +146,17 @@ if [ -n "${PLATFORM_PROJECT_NAME:-}" ]; then
   : "${PLATFORM_IMMICH_SERVER_CONTAINER:=$PLATFORM_PROJECT_NAME-immich-server}"
   : "${PLATFORM_IMMICH_MACHINE_LEARNING_CONTAINER:=$PLATFORM_PROJECT_NAME-immich-machine-learning}"
   : "${PLATFORM_IMMICH_POSTGRES_CONTAINER:=$PLATFORM_PROJECT_NAME-immich-postgres}"
+  : "${PLATFORM_IMMICH_REDIS_CONTAINER:=$PLATFORM_PROJECT_NAME-immich-redis}"
 else
   : "${PLATFORM_IMMICH_SERVER_CONTAINER:=immich_server}"
   : "${PLATFORM_IMMICH_MACHINE_LEARNING_CONTAINER:=immich_machine_learning}"
   : "${PLATFORM_IMMICH_POSTGRES_CONTAINER:=immich_postgres}"
+  : "${PLATFORM_IMMICH_REDIS_CONTAINER:=immich_redis}"
 fi
 export PLATFORM_CONTRACT_VAULT_FILE PLATFORM_CONTRACT_VAULT_PASSWORD_FILE
 export PLATFORM_DOCKER_ROOT PLATFORM_MEDIA_ROOT PLATFORM_IMMICH_PORT
 export PLATFORM_IMMICH_SERVER_CONTAINER PLATFORM_IMMICH_MACHINE_LEARNING_CONTAINER
-export PLATFORM_IMMICH_POSTGRES_CONTAINER
+export PLATFORM_IMMICH_POSTGRES_CONTAINER PLATFORM_IMMICH_REDIS_CONTAINER
 
 exec ruby - "$mode" "$snapshot_dir" <<'RUBY'
 require "digest"
@@ -155,13 +177,24 @@ MEDIA_ROOT = Pathname.new(ENV.fetch("PLATFORM_MEDIA_ROOT")).expand_path
 SERVER = ENV.fetch("PLATFORM_IMMICH_SERVER_CONTAINER")
 MACHINE_LEARNING = ENV.fetch("PLATFORM_IMMICH_MACHINE_LEARNING_CONTAINER")
 POSTGRES = ENV.fetch("PLATFORM_IMMICH_POSTGRES_CONTAINER")
+REDIS = ENV.fetch("PLATFORM_IMMICH_REDIS_CONTAINER")
 
-ORIGINALS_ROOT = MEDIA_ROOT.join("Immich")
-GENERATED_ROOT = DOCKER_ROOT.join("immich", "data", "thumbs")
 DUMP_NAME = "database.sql"
-ORIGINALS_NAME = "originals.tar"
-GENERATED_NAME = "generated.tar"
-MEMBERS = [DUMP_NAME, GENERATED_NAME, ORIGINALS_NAME].freeze
+# The trees that must move with the database. The originals tree carries the
+# irreplaceable uploads; the profile tree is classified critical in nas_storage
+# and is regenerable from nothing; the thumbnail tree is the generated state a
+# restored database expects to find already present.
+#
+# encoded-video and model-cache are deliberately absent because both are
+# regenerable caches, and /data/backups is excluded because it holds Immich's
+# own dumps: snapshotting a backup into a backup only doubles what a restore
+# has to sift through.
+TREES = [
+  ["originals.tar", MEDIA_ROOT.join("Immich")],
+  ["profile.tar", DOCKER_ROOT.join("immich", "data", "profile")],
+  ["generated.tar", DOCKER_ROOT.join("immich", "data", "thumbs")]
+].freeze
+MEMBERS = ([DUMP_NAME] + TREES.map(&:first)).freeze
 MANIFEST_NAME = "manifest.json"
 
 def die(message)
@@ -212,7 +245,7 @@ def verify_manifest(directory)
   manifest = JSON.parse(manifest_path.read)
   die("unknown snapshot manifest schema") unless manifest["schema"] == 1
   recorded = Array(manifest["members"]).map { |member| member.fetch("name") }.sort
-  die("the snapshot does not carry all three coordinated members") unless recorded == MEMBERS.sort
+  die("the snapshot does not carry every coordinated member") unless recorded == MEMBERS.sort
   Array(manifest["members"]).each do |member|
     path = directory.join(member.fetch("name"))
     die("#{member.fetch('name')} is missing from the snapshot") unless
@@ -253,6 +286,15 @@ end
 
 def start_writes
   run("docker", "start", MACHINE_LEARNING, SERVER)
+end
+
+# Immich deletes assets asynchronously through a job queue held in Valkey, so a
+# restore that puts the rows and files back while the queue still holds the jobs
+# that removed them gets quietly undone the moment the server starts draining
+# it. The queue describes work against a database state that no longer exists,
+# so discarding it is both safe and necessary.
+def discard_queued_work
+  run("docker", "exec", REDIS, "redis-cli", "flushall")
 end
 
 def dump_database(target)
@@ -348,8 +390,7 @@ def take_snapshot(directory)
   stop_writes
   begin
     dump_database(directory.join(DUMP_NAME))
-    archive_tree(ORIGINALS_ROOT, directory.join(ORIGINALS_NAME))
-    archive_tree(GENERATED_ROOT, directory.join(GENERATED_NAME))
+    TREES.each { |name, root| archive_tree(root, directory.join(name)) }
     manifest = manifest_for(directory)
     directory.join(MANIFEST_NAME).open(File::WRONLY | File::CREAT | File::EXCL, 0o600) do |file|
       file.write(JSON.generate(manifest))
@@ -365,8 +406,8 @@ def restore_snapshot(directory)
   stop_writes
   begin
     restore_database(directory.join(DUMP_NAME))
-    restore_tree(ORIGINALS_ROOT, directory.join(ORIGINALS_NAME))
-    restore_tree(GENERATED_ROOT, directory.join(GENERATED_NAME))
+    TREES.each { |name, root| restore_tree(root, directory.join(name)) }
+    discard_queued_work
   ensure
     start_writes
   end
@@ -384,6 +425,8 @@ when "restore"
   restore_snapshot(directory)
   puts "Immich database, originals, and generated assets restored together"
 when "drill"
+  # The shell preamble has already refused any project that is not a disposable
+  # Mac sandbox; this is the destructive path it was guarding.
   directory = validate_directory(SNAPSHOT_DIR, require_empty: true)
   wait_for_application
   token = authenticate
