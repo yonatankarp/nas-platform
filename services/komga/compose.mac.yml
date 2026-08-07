@@ -1,0 +1,6 @@
+---
+services:
+  komga:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-komga
+    ports: !override
+      - "${KOMGA_HOST_PORT:?}:25600"

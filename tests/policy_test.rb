@@ -242,7 +242,8 @@ PLATFORM_INVENTORIES.values.map { |values| [values[0], values[3]] }.uniq.each do
   mac_runtime_facts = if platform_kind == "mac"
                         %w[
                           platform_project_name beszel_port ntfy_port dozzle_port
-                          audiobookshelf_port
+                          audiobookshelf_port komga_port tinymediamanager_web_port
+                          tinymediamanager_api_port
                         ]
                       else
                         []
@@ -668,18 +669,34 @@ service_dirs.each do |dir|
 end
 
 # Platform Compose files may add capabilities (devices, mounts, profiles, and
-# similar host-specific wiring), but image ownership stays canonical so an
-# environment suffix cannot silently select a different artifact version.
+# similar host-specific wiring). The sole image exception selects the immutable
+# amd64 child of tinyMediaManager's canonical multi-platform manifest because
+# that release's arm64 child does not contain its launcher.
+TINYMEDIAMANAGER_CANONICAL_IMAGE = "docker.io/tinymediamanager/tinymediamanager:5.3.0@sha256:e33769b278eefbec646b659342a86a7831869c5a3fa3cca97e7c47f518da4d89"
+TINYMEDIAMANAGER_AMD64_IMAGE = "docker.io/tinymediamanager/tinymediamanager:5.3.0@sha256:ef2b7c248ff2b6b8d30f509f5fa8aaae63508899403f2441da2fd6e2b0a216f6"
+platform_image_overrides = {
+  "services/tinymediamanager/compose.integration.yml" => {
+    "tinymediamanager" => TINYMEDIAMANAGER_AMD64_IMAGE
+  },
+  "services/tinymediamanager/compose.mac.yml" => {
+    "tinymediamanager" => TINYMEDIAMANAGER_AMD64_IMAGE
+  }
+}
 Dir[File.join(ROOT, "services", "*", "compose.*.yml")].sort.each do |override_path|
   override = YAML.safe_load_file(override_path, aliases: true)
   image_services = override.fetch("services", {}).filter_map do |container, spec|
-    container if spec.is_a?(Hash) && spec.key?("image")
+    [container, spec.fetch("image")] if spec.is_a?(Hash) && spec.key?("image")
   end
   relative_override = override_path.delete_prefix("#{ROOT}/")
-  message = "#{relative_override}: platform overrides must not redefine image keys: " \
-            "#{image_services.join(', ')}"
-  check(failures, image_services.empty?, message)
+  expected_images = platform_image_overrides.fetch(relative_override, {}).to_a
+  check(failures, image_services.sort == expected_images.sort,
+        "#{relative_override}: platform image overrides differ from the exact allowlist")
 end
+canonical_tmm_image = YAML.safe_load_file(
+  File.join(ROOT, "services", "tinymediamanager", "compose.yml"), aliases: true
+).dig("services", "tinymediamanager", "image")
+check(failures, canonical_tmm_image == TINYMEDIAMANAGER_CANONICAL_IMAGE,
+      "tinyMediaManager canonical image must remain the parent manifest for the allowed amd64 child")
 
 # Every role declares its interface, so a missing variable fails before the first
 # task naming the variable rather than midway with a trace.

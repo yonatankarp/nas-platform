@@ -13,19 +13,25 @@ cleanup_mac_sandbox() {
   mac_marker=$mac_cleanup_target/.nas-platform-mac-owned
   mac_project=$(sed -n 's/^project=//p' "$mac_marker")
 
-  mac_container_ids=$(for mac_service_project in "$mac_project-beszel" "$mac_project-ntfy" "$mac_project-dozzle" "$mac_project-audiobookshelf"; do
+  mac_container_ids=$(for mac_service_project in \
+      "$mac_project-beszel" "$mac_project-ntfy" "$mac_project-dozzle" \
+      "$mac_project-audiobookshelf" "$mac_project-komga" "$mac_project-tinymediamanager"; do
     docker ps -aq --filter "label=com.docker.compose.project=$mac_service_project" || exit 1
   done) || return 1
   for mac_container_id in $mac_container_ids; do
     docker rm -f "$mac_container_id" >/dev/null || return 1
   done
-  mac_network_ids=$(for mac_service_project in "$mac_project-beszel" "$mac_project-ntfy" "$mac_project-dozzle" "$mac_project-audiobookshelf"; do
+  mac_network_ids=$(for mac_service_project in \
+      "$mac_project-beszel" "$mac_project-ntfy" "$mac_project-dozzle" \
+      "$mac_project-audiobookshelf" "$mac_project-komga" "$mac_project-tinymediamanager"; do
     docker network ls -q --filter "label=com.docker.compose.project=$mac_service_project" || exit 1
   done) || return 1
   for mac_network_id in $mac_network_ids; do
     docker network rm "$mac_network_id" >/dev/null || return 1
   done
-  mac_volume_ids=$(for mac_service_project in "$mac_project-beszel" "$mac_project-ntfy" "$mac_project-dozzle" "$mac_project-audiobookshelf"; do
+  mac_volume_ids=$(for mac_service_project in \
+      "$mac_project-beszel" "$mac_project-ntfy" "$mac_project-dozzle" \
+      "$mac_project-audiobookshelf" "$mac_project-komga" "$mac_project-tinymediamanager"; do
     docker volume ls -q --filter "label=com.docker.compose.project=$mac_service_project" || exit 1
   done) || return 1
   for mac_volume_id in $mac_volume_ids; do

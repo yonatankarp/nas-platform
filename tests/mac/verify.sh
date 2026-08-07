@@ -16,6 +16,6 @@ ansible-playbook -i "$mac_repo_dir/inventory/mac.yml" \
   --vault-password-file "$PLATFORM_MAC_VAULT_PASSWORD_FILE" \
   -e @"$PLATFORM_MAC_VAULT_FILE" \
   -e "platform_vault_file=$PLATFORM_MAC_VAULT_FILE" \
-  --tags platform_verify_ntfy,platform_verify_beszel,platform_verify_dozzle,platform_verify_audiobookshelf
+  --tags platform_verify_ntfy,platform_verify_beszel,platform_verify_dozzle,platform_verify_audiobookshelf,platform_verify_komga,platform_verify_tinymediamanager
 
 mac_run_hooks verify

@@ -1,0 +1,21 @@
+---
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
+services:
+  komga:
+    container_name: komga
+    image: docker.io/gotson/komga:1.25.0@sha256:c4f9885fc077e2e9cd684dc95e8f6cfa5e33b100b46712b2de7f5cc2ff59e6fb
+    user: "1000:100"
+    ports:
+      - "25600:25600"
+    volumes:
+      - ${KOMGA_CONFIG_PATH:?}:/config
+      - ${KOMGA_LIBRARY_PATH:?}:/data:ro
+    environment:
+      TZ: ${TZ:?}
+    restart: unless-stopped
+    logging: *default-logging

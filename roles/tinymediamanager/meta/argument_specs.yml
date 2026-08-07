@@ -1,0 +1,33 @@
+---
+argument_specs:
+  main:
+    short_description: Deploy tinyMediaManager with stable sources, metadata, API, and VNC settings
+    options:
+      platform_compose_kind:
+        type: str
+        required: true
+      platform_project_name:
+        type: str
+        required: false
+      tinymediamanager_web_port:
+        type: int
+        required: false
+      tinymediamanager_api_port:
+        type: int
+        required: false
+      tinymediamanager_movie_source:
+        type: str
+        required: false
+      tinymediamanager_series_source:
+        type: str
+        required: false
+      tinymediamanager_nfo_connector:
+        type: str
+        required: false
+      tinymediamanager_video_file_types:
+        type: list
+        elements: str
+        required: false
+      vault_tinymediamanager_password:
+        type: str
+        required: true

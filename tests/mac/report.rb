@@ -19,8 +19,8 @@ STATUSES = %w[running passed failed].freeze
 REDACTION = "[REDACTED]"
 SAFE_DIAGNOSTIC = /\A[A-Za-z0-9][A-Za-z0-9_.-]*\z/
 ROOT_KEYS = %w[
-  schema lane sandbox_id project_name beszel_port ntfy_port dozzle_port audiobookshelf_port git_revision
-  vault_checksum diagnostic_locations phases
+  schema lane sandbox_id project_name beszel_port ntfy_port dozzle_port audiobookshelf_port komga_port
+  tinymediamanager_web_port tinymediamanager_api_port git_revision vault_checksum diagnostic_locations phases
 ].freeze
 IDENTITY_KEYS = %w[git_sha platform_kind platform_compose_kind].freeze
 
@@ -77,12 +77,15 @@ def validate_input(input)
     raise "input #{field} must be a non-empty string" unless input[field].is_a?(String) && !input[field].empty?
   end
   raise "input project_name is unsafe" unless input["project_name"].match?(/\Anas-platform-mac-[a-z0-9.-]+\z/)
-  %w[beszel_port ntfy_port dozzle_port audiobookshelf_port].each do |field|
+  service_port_fields = %w[
+    beszel_port ntfy_port dozzle_port audiobookshelf_port komga_port
+    tinymediamanager_web_port tinymediamanager_api_port
+  ]
+  service_port_fields.each do |field|
     port = input[field]
     raise "input #{field} must be an unprivileged TCP port" unless port.is_a?(Integer) && port.between?(1024, 65_535)
   end
-  raise "input service ports must be distinct" unless
-    input.values_at("beszel_port", "ntfy_port", "dozzle_port", "audiobookshelf_port").uniq.length == 4
+  raise "input service ports must be distinct" unless input.values_at(*service_port_fields).uniq.length == service_port_fields.length
   diagnostics = input["diagnostic_locations"]
   raise "diagnostic_locations must be an array" unless diagnostics.is_a?(Array)
   raise "diagnostic_locations must contain safe basenames" unless diagnostics.all? do |location|
@@ -179,7 +182,10 @@ end
 
 def markdown_report(report)
   lines = ["# Mac platform proof report", ""]
-  %w[lane sandbox_id project_name beszel_port ntfy_port dozzle_port audiobookshelf_port git_revision vault_checksum generated_at].each do |key|
+  %w[
+    lane sandbox_id project_name beszel_port ntfy_port dozzle_port audiobookshelf_port komga_port
+    tinymediamanager_web_port tinymediamanager_api_port git_revision vault_checksum generated_at
+  ].each do |key|
     lines << "- #{key.tr('_', ' ').capitalize}: #{markdown_cell(report[key])}" if report.key?(key)
   end
   manifest = report["deployment_manifest"]
@@ -282,6 +288,9 @@ def initialize_input(path, options)
     "ntfy_port" => options.fetch(:ntfy_port),
     "dozzle_port" => options.fetch(:dozzle_port),
     "audiobookshelf_port" => options.fetch(:audiobookshelf_port),
+    "komga_port" => options.fetch(:komga_port),
+    "tinymediamanager_web_port" => options.fetch(:tinymediamanager_web_port),
+    "tinymediamanager_api_port" => options.fetch(:tinymediamanager_api_port),
     "git_revision" => options.fetch(:git_revision),
     "vault_checksum" => options.fetch(:vault_checksum),
     "diagnostic_locations" => [],
@@ -355,6 +364,9 @@ def self_test
       "ntfy_port" => 32_586,
       "dozzle_port" => 38_080,
       "audiobookshelf_port" => 33_378,
+      "komga_port" => 35_600,
+      "tinymediamanager_web_port" => 34_000,
+      "tinymediamanager_api_port" => 37_878,
       "git_revision" => "abc123",
       "vault_checksum" => "0" * 64,
       "diagnostic_locations" => [],
@@ -559,6 +571,9 @@ parser = OptionParser.new do |opts|
   opts.on("--ntfy-port PORT", Integer) { |value| options[:ntfy_port] = value }
   opts.on("--dozzle-port PORT", Integer) { |value| options[:dozzle_port] = value }
   opts.on("--audiobookshelf-port PORT", Integer) { |value| options[:audiobookshelf_port] = value }
+  opts.on("--komga-port PORT", Integer) { |value| options[:komga_port] = value }
+  opts.on("--tinymediamanager-web-port PORT", Integer) { |value| options[:tinymediamanager_web_port] = value }
+  opts.on("--tinymediamanager-api-port PORT", Integer) { |value| options[:tinymediamanager_api_port] = value }
   opts.on("--git-revision SHA") { |value| options[:git_revision] = value }
   opts.on("--vault-checksum SHA256") { |value| options[:vault_checksum] = value }
   opts.on("--phase NAME") { |value| options[:phase] = value }

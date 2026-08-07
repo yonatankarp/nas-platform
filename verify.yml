@@ -27,3 +27,7 @@
       tags: [never]
     - role: audiobookshelf
       tags: [never]
+    - role: komga
+      tags: [never]
+    - role: tinymediamanager
+      tags: [never]

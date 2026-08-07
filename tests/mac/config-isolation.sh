@@ -13,6 +13,9 @@ render() {
   ntfy_port=$4
   dozzle_port=$5
   audiobookshelf_port=$6
+  komga_port=$7
+  tinymediamanager_web_port=$8
+  tinymediamanager_api_port=$9
 
   env PLATFORM_PROJECT_NAME="$base_name" BESZEL_HOST_PORT="$beszel_port" \
     NAS_DOCKER_ROOT="$temporary_dir/$label" NAS_MEDIA_ROOT="$temporary_dir/$label-media" \
@@ -47,10 +50,30 @@ render() {
       -f "$repo_dir/services/audiobookshelf/compose.yml" \
       -f "$repo_dir/services/audiobookshelf/compose.mac.yml" config --format json \
       > "$temporary_dir/$label-audiobookshelf.json"
+
+  env PLATFORM_PROJECT_NAME="$base_name" KOMGA_HOST_PORT="$komga_port" \
+    KOMGA_CONFIG_PATH="$temporary_dir/$label-komga-config" \
+    KOMGA_LIBRARY_PATH="$temporary_dir/$label-books" TZ=UTC \
+    docker compose --project-name "$base_name-komga" \
+      -f "$repo_dir/services/komga/compose.yml" \
+      -f "$repo_dir/services/komga/compose.mac.yml" config --format json \
+      > "$temporary_dir/$label-komga.json"
+
+  env PLATFORM_PROJECT_NAME="$base_name" \
+    TINYMEDIAMANAGER_WEB_HOST_PORT="$tinymediamanager_web_port" \
+    TINYMEDIAMANAGER_API_HOST_PORT="$tinymediamanager_api_port" \
+    TINYMEDIAMANAGER_DATA_PATH="$temporary_dir/$label-tinymediamanager-data" \
+    TINYMEDIAMANAGER_MOVIES_PATH="$temporary_dir/$label-movies" \
+    TINYMEDIAMANAGER_SERIES_PATH="$temporary_dir/$label-series" \
+    TINYMEDIAMANAGER_PASSWORD=test USER_ID=1000 GROUP_ID=100 TZ=UTC \
+    docker compose --project-name "$base_name-tinymediamanager" \
+      -f "$repo_dir/services/tinymediamanager/compose.yml" \
+      -f "$repo_dir/services/tinymediamanager/compose.mac.yml" config --format json \
+      > "$temporary_dir/$label-tinymediamanager.json"
 }
 
-render first nas-platform-mac-first 38090 32586 38080 33378
-render second nas-platform-mac-second 38091 32587 38081 33379
+render first nas-platform-mac-first 38090 32586 38080 33378 35600 34000 37878
+render second nas-platform-mac-second 38091 32587 38081 33379 35601 34001 37879
 
 ruby -rjson - "$temporary_dir" <<'RUBY'
 directory = ARGV.fetch(0)
@@ -62,6 +85,10 @@ first_dozzle = JSON.parse(File.read(File.join(directory, "first-dozzle.json")))
 second_dozzle = JSON.parse(File.read(File.join(directory, "second-dozzle.json")))
 first_audiobookshelf = JSON.parse(File.read(File.join(directory, "first-audiobookshelf.json")))
 second_audiobookshelf = JSON.parse(File.read(File.join(directory, "second-audiobookshelf.json")))
+first_komga = JSON.parse(File.read(File.join(directory, "first-komga.json")))
+second_komga = JSON.parse(File.read(File.join(directory, "second-komga.json")))
+first_tinymediamanager = JSON.parse(File.read(File.join(directory, "first-tinymediamanager.json")))
+second_tinymediamanager = JSON.parse(File.read(File.join(directory, "second-tinymediamanager.json")))
 
 def published(config, service)
   config.dig("services", service, "ports", 0, "published").to_s
@@ -71,6 +98,9 @@ raise "Beszel project namespaces collide" if first_beszel["name"] == second_besz
 raise "ntfy project namespaces collide" if first_ntfy["name"] == second_ntfy["name"]
 raise "Dozzle project namespaces collide" if first_dozzle["name"] == second_dozzle["name"]
 raise "Audiobookshelf project namespaces collide" if first_audiobookshelf["name"] == second_audiobookshelf["name"]
+raise "Komga project namespaces collide" if first_komga["name"] == second_komga["name"]
+raise "tinyMediaManager project namespaces collide" if
+  first_tinymediamanager["name"] == second_tinymediamanager["name"]
 first_beszel.fetch("services").each_key do |service|
   first_name = first_beszel.dig("services", service, "container_name")
   second_name = second_beszel.dig("services", service, "container_name")
@@ -93,6 +123,17 @@ raise "Audiobookshelf container names collide" if
     second_audiobookshelf.dig("services", "audiobookshelf", "container_name")
 raise "Audiobookshelf published ports collide" if
   published(first_audiobookshelf, "audiobookshelf") == published(second_audiobookshelf, "audiobookshelf")
+raise "Komga container names collide" if first_komga.dig("services", "komga", "container_name") ==
+                                         second_komga.dig("services", "komga", "container_name")
+raise "Komga published ports collide" if published(first_komga, "komga") == published(second_komga, "komga")
+raise "tinyMediaManager container names collide" if
+  first_tinymediamanager.dig("services", "tinymediamanager", "container_name") ==
+    second_tinymediamanager.dig("services", "tinymediamanager", "container_name")
+tmm_first_ports = first_tinymediamanager.dig("services", "tinymediamanager", "ports").map { |port| port["published"].to_s }.sort
+tmm_second_ports = second_tinymediamanager.dig("services", "tinymediamanager", "ports").map { |port| port["published"].to_s }.sort
+raise "tinyMediaManager published ports collide" unless (tmm_first_ports & tmm_second_ports).empty?
+raise "tinyMediaManager Mac runtime did not replace host networking" unless
+  first_tinymediamanager.dig("services", "tinymediamanager", "network_mode") == "bridge"
 raise "Mac socket proxy publishes a host port" if first_beszel.dig("services", "socket-proxy").key?("ports")
 raise "Dozzle socket proxy publishes a host port" if first_dozzle.dig("services", "socket-proxy").key?("ports")
 
