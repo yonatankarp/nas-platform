@@ -178,6 +178,15 @@ end
 
 def seed_file(path, contents)
   path.dirname.mkpath
+  # tinyMediaManager writes its metadata next to the media, as an unprivileged
+  # user. On the NAS that is permitted by the NAS's own permission controls: the
+  # play is explicitly forbidden from declaring ownership under the media root,
+  # so nothing in the deployment grants it. A sandbox created by whoever ran the
+  # harness has no such controls and the directory ends up unwritable, which
+  # Docker Desktop hides by remapping bind-mount ownership. Grant it here, where
+  # the fixture is made, rather than teaching the play to claim media it does not
+  # own.
+  path.dirname.chmod(0o777)
   if path.exist?
     fail_contract("fixture file drifted: #{path.basename}") unless path.file? && path.binread == contents
   else
@@ -328,7 +337,7 @@ def scan_diagnostics
     "docker", "exec", CONTAINER, "sh", "-c",
     "echo '# application processes'; ps -eo user,args | grep -i '[t]inyMediaManager' | head -3; " \
     "echo '# mount ownership and modes'; ls -lnd /media /media/Movies /media/Series; " \
-    "echo '# fixtures the container can see'; find /media -maxdepth 3 -type f -exec ls -ln {} + 2>&1 | head"
+    "echo '# fixtures the container can see'; find /media -maxdepth 5 -type f -exec ls -ln {} + 2>&1 | head"
   )
   warn "tinyMediaManager scan diagnostics:\n#{report.gsub(/^/, '  ')}"
 rescue StandardError => error
