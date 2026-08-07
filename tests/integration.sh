@@ -286,6 +286,13 @@ docker run --rm \
     pip install --quiet --no-input 'ansible-core==$ansible_core_version'
     ansible-galaxy collection install -r /repo/requirements.yml >/dev/null
 
+    # This container runs as root while the sandbox belongs to whoever started
+    # the harness, so git refuses to read the controller checkout as a dubious
+    # ownership. Docker Desktop hides this by remapping ownership; a Linux CI
+    # runner does not. The exception is scoped to this throwaway container and
+    # never reaches the caller's git configuration.
+    git config --global --add safe.directory '*'
+
     vault_directory='$sandbox/nas-platform-vault.000000'
     vault_file=\"\$vault_directory/vault.yml\"
     vault_password_file=\"\$vault_directory/password\"
