@@ -16,10 +16,9 @@ off-site backup. RAID is not a backup.
 - [Physical NAS walkthrough](docs/getting-started-nas.md)
 - [Ansible concepts used here](docs/ansible-basics.md)
 
-The migration is in progress. ntfy, Beszel, Dozzle, and Audiobookshelf are
-implemented today; the remaining services are tracked in
-[`services/manifest.yml`](services/manifest.yml). Prove the implemented platform
-on the Mac before preparing a production NAS cutover.
+All nine service stacks in [`services/manifest.yml`](services/manifest.yml) are
+implemented. Prove the complete platform on the Mac before preparing a
+production NAS cutover.
 
 ## Design
 
@@ -150,10 +149,10 @@ changes nothing, and a dry run works. Two of the worst bugs found so far, a fact
 that exists only on Linux and `command` being skipped under `--check`, both passed
 syntax checking and were caught only by running.
 
-The current Mac proof covers ntfy, Beszel, Dozzle, and Audiobookshelf. Komga,
-Jellyfin, tinyMediaManager, Immich, and Paperless-ngx remain planned; their
-manual-review checks cannot yet be accepted. NAS-only GPU, host-networking,
-native-mount and production-scale behavior also remain outside the Mac proof.
+The current Mac proof covers ntfy, Beszel, Dozzle, Audiobookshelf, Komga,
+Jellyfin, tinyMediaManager, Immich, and Paperless-ngx. NAS-only GPU,
+host-networking, native-mount and production-scale behavior remain outside the
+Mac proof.
 
 ### Disposable Mac platform proof
 

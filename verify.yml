@@ -35,3 +35,5 @@
       tags: [never]
     - role: immich
       tags: [never]
+    - role: paperless_ngx
+      tags: [never]

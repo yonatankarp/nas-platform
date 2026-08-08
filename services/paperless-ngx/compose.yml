@@ -1,0 +1,139 @@
+---
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
+services:
+  broker:
+    container_name: paperless_redis
+    image: docker.io/valkey/valkey:9.1.1-alpine@sha256:ee91f7a174ac4d6a6b0685b3a60e321f0a9dbbb691f9b0e285be2ba1d1be8328
+    volumes:
+      - ${PAPERLESS_REDIS_PATH:?}:/data
+    ports:
+      - "127.0.0.1:6379:6379"
+    environment:
+      TZ: ${TZ:?}
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, valkey-cli, ping]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    logging: *default-logging
+
+  db:
+    container_name: paperless_postgres
+    image: docker.io/library/postgres:18.4-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
+    volumes:
+      - ${PAPERLESS_POSTGRES_PATH:?}:/var/lib/postgresql
+    ports:
+      - "127.0.0.1:5432:5432"
+    environment:
+      TZ: ${TZ:?}
+      POSTGRES_DB: ${DB_NAME:?}
+      POSTGRES_USER: ${DB_USER:?}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?}
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    logging: *default-logging
+
+  webserver:
+    container_name: paperless_webserver
+    image: ghcr.io/paperless-ngx/paperless-ngx:3.0.5@sha256:65a4cabf0169ea7fbd90ab7bb28ba3f8b5909613635acda1a03ad606f34b456b
+    depends_on:
+      broker:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+      gotenberg:
+        condition: service_healthy
+      tika:
+        condition: service_healthy
+    network_mode: host
+    volumes:
+      - ${PAPERLESS_DATA_PATH:?}:/usr/src/paperless/data
+      - ${PAPERLESS_CACHE_PATH:?}:/usr/src/paperless/cache
+      - ${PAPERLESS_EXPORT_PATH:?}:/usr/src/paperless/export
+      - ${PAPERLESS_TESSDATA_PATH:?}/heb.traineddata:/usr/share/tesseract-ocr/5/tessdata/heb.traineddata:ro
+      - ${PAPERLESS_MEDIA_PATH:?}:/usr/src/paperless/media
+      - ${PAPERLESS_CONSUME_PATH:?}:/usr/src/paperless/consume
+    environment:
+      PAPERLESS_AI_ENABLED: ${PAPERLESS_AI_ENABLED:?}
+      PAPERLESS_AI_LLM_BACKEND: ollama
+      PAPERLESS_AI_LLM_CONTEXT_SIZE: 4096
+      PAPERLESS_AI_LLM_ENDPOINT: ${PAPERLESS_AI_LLM_ENDPOINT:?}
+      PAPERLESS_AI_LLM_MODEL: ${PAPERLESS_AI_LLM_MODEL:?}
+      PAPERLESS_AI_LLM_REQUEST_TIMEOUT: 300
+      PAPERLESS_ADMIN_USER: ${PAPERLESS_ADMIN_USER:?}
+      PAPERLESS_ADMIN_PASSWORD: ${PAPERLESS_ADMIN_PASSWORD:?}
+      PAPERLESS_ADMIN_MAIL: ${PAPERLESS_ADMIN_MAIL:?}
+      PAPERLESS_BIND_ADDR: 0.0.0.0
+      PAPERLESS_CONSUMER_DELETE_DUPLICATES: "true"
+      PAPERLESS_DBENGINE: postgresql
+      PAPERLESS_DBHOST: ${PAPERLESS_DBHOST:?}
+      PAPERLESS_DBNAME: ${DB_NAME:?}
+      PAPERLESS_DBPASS: ${DB_PASSWORD:?}
+      PAPERLESS_DBUSER: ${DB_USER:?}
+      PAPERLESS_OCR_LANGUAGE: deu+eng+heb
+      PAPERLESS_REDIS: ${PAPERLESS_REDIS:?}
+      PAPERLESS_SCRATCH_DIR: /usr/src/paperless/cache
+      PAPERLESS_SECRET_KEY: ${PAPERLESS_SECRET_KEY:?}
+      PAPERLESS_TASK_WORKERS: ${PAPERLESS_TASK_WORKERS:-2}
+      PAPERLESS_TIKA_ENABLED: 1
+      PAPERLESS_TIKA_ENDPOINT: ${PAPERLESS_TIKA_ENDPOINT:?}
+      PAPERLESS_TIKA_GOTENBERG_ENDPOINT: ${PAPERLESS_GOTENBERG_ENDPOINT:?}
+      PAPERLESS_THREADS_PER_WORKER: ${PAPERLESS_THREADS_PER_WORKER:-1}
+      PAPERLESS_TIME_ZONE: ${TZ:?}
+      TZ: ${TZ:?}
+      USERMAP_GID: ${GROUP_ID:?}
+      USERMAP_UID: ${USER_ID:?}
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, --show-error, http://localhost:8000]
+      interval: 30s
+      timeout: 10s
+      retries: 4
+      start_period: 60s
+    restart: unless-stopped
+    logging: *default-logging
+
+  gotenberg:
+    container_name: paperless_gotenberg
+    image: docker.io/gotenberg/gotenberg:8.34@sha256:67097317623a503ba2a6a7e9ae8db6929a1f7e1bbd88077bacf2d325fbdab923
+    command:
+      - gotenberg
+      - --chromium-disable-javascript=true
+      - --chromium-allow-list=file:///tmp/.*
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      TZ: ${TZ:?}
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, --show-error, http://localhost:3000/health]
+      interval: 30s
+      timeout: 10s
+      retries: 4
+      start_period: 30s
+    restart: unless-stopped
+    logging: *default-logging
+
+  tika:
+    container_name: paperless_tika
+    image: docker.io/apache/tika:3.3.1.0@sha256:90b7fa1dc018434075fce9e1d9b88b1e3d0ea6979d0cf86e116c79a8073ae973
+    environment:
+      TZ: ${TZ:?}
+    ports:
+      - "127.0.0.1:9998:9998"
+    healthcheck:
+      test: [CMD, bash, -ec, "exec 3<>/dev/tcp/127.0.0.1/9998"]
+      interval: 30s
+      timeout: 10s
+      retries: 4
+      start_period: 30s
+    restart: unless-stopped
+    logging: *default-logging

@@ -18,6 +18,7 @@ render() {
   tinymediamanager_api_port=$9
   jellyfin_port=${10}
   immich_port=${11}
+  paperless_port=${12}
 
   env PLATFORM_PROJECT_NAME="$base_name" BESZEL_HOST_PORT="$beszel_port" \
     NAS_DOCKER_ROOT="$temporary_dir/$label" NAS_MEDIA_ROOT="$temporary_dir/$label-media" \
@@ -89,10 +90,31 @@ render() {
       -f "$repo_dir/services/immich/compose.yml" \
       -f "$repo_dir/services/immich/compose.mac.yml" config --format json \
       > "$temporary_dir/$label-immich.json"
+
+  env PLATFORM_PROJECT_NAME="$base_name" PAPERLESS_HOST_PORT="$paperless_port" \
+    PAPERLESS_POSTGRES_PATH="$temporary_dir/$label-paperless-postgres" \
+    PAPERLESS_REDIS_PATH="$temporary_dir/$label-paperless-redis" \
+    PAPERLESS_DATA_PATH="$temporary_dir/$label-paperless-data" \
+    PAPERLESS_CACHE_PATH="$temporary_dir/$label-paperless-cache" \
+    PAPERLESS_TESSDATA_PATH="$temporary_dir/$label-paperless-tessdata" \
+    PAPERLESS_MEDIA_PATH="$temporary_dir/$label-paperless-media" \
+    PAPERLESS_CONSUME_PATH="$temporary_dir/$label-paperless-consume" \
+    PAPERLESS_EXPORT_PATH="$temporary_dir/$label-paperless-export" \
+    PAPERLESS_ADMIN_USER=test PAPERLESS_ADMIN_PASSWORD=test PAPERLESS_ADMIN_MAIL=test@example.invalid \
+    PAPERLESS_DBHOST=db PAPERLESS_REDIS=redis://broker:6379 \
+    PAPERLESS_TIKA_ENDPOINT=http://tika:9998 PAPERLESS_GOTENBERG_ENDPOINT=http://gotenberg:3000 \
+    PAPERLESS_AI_ENABLED=false PAPERLESS_AI_LLM_ENDPOINT=http://example.invalid:11434 \
+    PAPERLESS_AI_LLM_MODEL=test-model \
+    PAPERLESS_SECRET_KEY=test DB_NAME=test DB_USER=test DB_PASSWORD=test \
+    USER_ID=1000 GROUP_ID=100 TZ=UTC \
+    docker compose --project-name "$base_name-paperless" \
+      -f "$repo_dir/services/paperless-ngx/compose.yml" \
+      -f "$repo_dir/services/paperless-ngx/compose.mac.yml" config --format json \
+      > "$temporary_dir/$label-paperless.json"
 }
 
-render first nas-platform-mac-first 38090 32586 38080 33378 35600 34000 37878 38096 32283
-render second nas-platform-mac-second 38091 32587 38081 33379 35601 34001 37879 38097 32284
+render first nas-platform-mac-first 38090 32586 38080 33378 35600 34000 37878 38096 32283 38000
+render second nas-platform-mac-second 38091 32587 38081 33379 35601 34001 37879 38097 32284 38001
 
 ruby -rjson - "$temporary_dir" <<'RUBY'
 directory = ARGV.fetch(0)
@@ -112,6 +134,8 @@ first_jellyfin = JSON.parse(File.read(File.join(directory, "first-jellyfin.json"
 second_jellyfin = JSON.parse(File.read(File.join(directory, "second-jellyfin.json")))
 first_immich = JSON.parse(File.read(File.join(directory, "first-immich.json")))
 second_immich = JSON.parse(File.read(File.join(directory, "second-immich.json")))
+first_paperless = JSON.parse(File.read(File.join(directory, "first-paperless.json")))
+second_paperless = JSON.parse(File.read(File.join(directory, "second-paperless.json")))
 
 def published(config, service)
   config.dig("services", service, "ports", 0, "published").to_s
@@ -185,6 +209,22 @@ raise "Immich Mac runtime kept the NAS render device" unless
 %w[immich-machine-learning redis database].each do |service|
   raise "Immich #{service} publishes a host port" if
     first_immich.dig("services", service).key?("ports")
+end
+
+raise "Paperless project namespaces collide" if first_paperless["name"] == second_paperless["name"]
+first_paperless.fetch("services").each_key do |service|
+  first_name = first_paperless.dig("services", service, "container_name")
+  second_name = second_paperless.dig("services", service, "container_name")
+  raise "Paperless #{service} container name is absent" unless first_name && second_name
+  raise "Paperless #{service} container names collide" if first_name == second_name
+end
+raise "Paperless published ports collide" if
+  published(first_paperless, "webserver") == published(second_paperless, "webserver")
+raise "Paperless Mac runtime kept host networking" unless
+  first_paperless.dig("services", "webserver", "network_mode") == "bridge"
+%w[broker db gotenberg tika].each do |service|
+  raise "Paperless #{service} publishes a host port" if
+    first_paperless.dig("services", service).key?("ports")
 end
 
 raise "Mac socket proxy publishes a host port" if first_beszel.dig("services", "socket-proxy").key?("ports")

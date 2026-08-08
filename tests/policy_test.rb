@@ -243,7 +243,7 @@ PLATFORM_INVENTORIES.values.map { |values| [values[0], values[3]] }.uniq.each do
                         %w[
                           platform_project_name beszel_port ntfy_port dozzle_port
                           audiobookshelf_port komga_port tinymediamanager_web_port
-                          tinymediamanager_api_port jellyfin_port immich_port
+                          tinymediamanager_api_port jellyfin_port immich_port paperless_port
                         ]
                       else
                         []
@@ -422,9 +422,10 @@ end
 
 def role_has_verification?(tasks_path, service_name, role_name)
   tasks = flatten_tasks(YAML.safe_load_file(tasks_path))
-  prefixes = [service_name.tr("-", "_"), role_name].uniq
-  service_names = [service_name, role_name].uniq
-  expected_tag = "platform_verify_#{service_name}"
+  canonical_name = contract_basename(service_name)
+  prefixes = [service_name.tr("-", "_"), role_name, canonical_name.tr("-", "_")].uniq
+  service_names = [service_name, role_name, canonical_name].uniq
+  expected_tag = "platform_verify_#{canonical_name}"
   validated_registers = Set.new
   verified = false
 
@@ -1055,6 +1056,12 @@ check(failures,
         !harness.include?("random_password()") &&
         !harness.include?("ntfy_token()"),
       "integration must consume the ephemeral encrypted vault without duplicate secret authoring")
+check(failures,
+      harness.include?('if [ -f "$repo_dir/.git" ]') &&
+        harness.include?('git clone --quiet --no-local --no-checkout "$repo_dir" "$sandbox/repo"') &&
+        harness.include?('git -C "$sandbox/repo" checkout -q --detach "$expected_release_id"') &&
+        harness.include?('-v "$controller_mount":/repo:ro'),
+      "integration must make linked worktree Git metadata available inside its controller mount")
 lock_acquire_index = harness.index("acquire_integration_lock")
 sandbox_create_index = harness.index('sandbox=$(mktemp -d')
 check(failures,
@@ -1494,6 +1501,7 @@ check(failures, mac_run.include?('mktemp -d "$temporary_parent/nas-platform-mac.
   PLATFORM_FIXTURE_ROOT PLATFORM_REPORT_ROOT PLATFORM_PROOF_LANE
   PLATFORM_PROJECT_NAME PLATFORM_BESZEL_PORT PLATFORM_NTFY_PORT PLATFORM_DOZZLE_PORT
   PLATFORM_AUDIOBOOKSHELF_PORT
+  PLATFORM_PAPERLESS_PORT
   COMPOSE_PROJECT_NAME
 ].each do |variable|
   check(failures, mac_run.include?("export #{variable}="),

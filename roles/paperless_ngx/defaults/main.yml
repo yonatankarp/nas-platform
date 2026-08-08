@@ -1,0 +1,46 @@
+---
+paperless_port: 8000
+paperless_api: "http://127.0.0.1:{{ paperless_port }}"
+paperless_compose_project_name: >-
+  {{ (platform_project_name ~ '-paperless')
+     if platform_project_name | default('') | length > 0 else 'paperless' }}
+paperless_ai_enabled: false
+paperless_ai_llm_endpoint: http://192.0.2.1:11434
+paperless_ai_llm_model: gemma3:4b
+
+paperless_hebrew_model_url: >-
+  https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/4.1.0/heb.traineddata
+paperless_hebrew_model_checksum: >-
+  sha256:11f9e43ab227f786352a50f75c94c2e9906f1baba86d93276da19da7ce0904db
+
+paperless_mail_account:
+  imap_server: imap.gmail.com
+  imap_port: 993
+  imap_security: 2
+  is_token: false
+  account_type: 1
+  character_set: UTF-8
+
+paperless_mail_rule:
+  enabled: true
+  folder: INBOX
+  filter_from: null
+  filter_to: null
+  filter_subject: null
+  filter_body: null
+  filter_attachment_filename_include: null
+  filter_attachment_filename_exclude: null
+  maximum_age: 30
+  action: 3
+  action_parameter: null
+  assign_title_from: 1
+  assign_tags: []
+  assign_correspondent_from: 1
+  assign_correspondent: null
+  assign_document_type: null
+  assign_owner_from_rule: true
+  order: 0
+  attachment_type: 1
+  consumption_scope: 1
+  pdf_layout: 0
+  stop_processing: false

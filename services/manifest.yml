@@ -44,7 +44,7 @@ services:
     legacy_path: compose/paperless-ngx/compose.yml
     role: paperless_ngx
     tranche: 6
-    status: planned
+    status: implemented
   - name: tinymediamanager
     legacy_path: compose/tinymediamanager/compose.yml
     role: tinymediamanager

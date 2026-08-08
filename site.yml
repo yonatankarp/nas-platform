@@ -82,3 +82,6 @@
 
     - role: immich
       tags: [immich, media]
+
+    - role: paperless_ngx
+      tags: [paperless, documents]

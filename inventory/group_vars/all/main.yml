@@ -5,6 +5,12 @@ nas_timezone: Europe/Berlin
 nas_uid: 1000
 nas_gid: 100
 
+# Optional Paperless AI integration. Enable only after replacing the documentation
+# address with the reachable Ollama endpoint used by the NAS.
+paperless_ai_enabled: false
+paperless_ai_llm_endpoint: http://192.0.2.1:11434
+paperless_ai_llm_model: gemma3:4b
+
 # Immutable deployments assembled from the controller checkout. Service roles
 # consume only the current release, never a repository checkout on the target.
 platform_compose_kind: "{{ platform_kind }}"
@@ -126,6 +132,40 @@ nas_storage:
   - path: "{{ nas_docker_root }}/immich/data/model-cache"
     mode: "0755"
     recovery: cache
+
+  # Paperless keeps databases, indexes and working state on the Docker volume.
+  # The archive, consume inbox and exports are user documents and therefore
+  # remain writable on the media volume.
+  - path: "{{ nas_docker_root }}/paperless-ngx/postgres"
+    mode: "0700"
+    recovery: critical
+  - path: "{{ nas_docker_root }}/paperless-ngx/redis"
+    mode: "0755"
+    recovery: cache
+  - path: "{{ nas_docker_root }}/paperless-ngx/data"
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0755"
+    recovery: critical
+  - path: "{{ nas_docker_root }}/paperless-ngx/cache"
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0755"
+    recovery: cache
+  - path: "{{ nas_docker_root }}/paperless-ngx/tessdata"
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0755"
+    recovery: cache
+  - path: "{{ nas_media_root }}/Documents/archive"
+    mode: "0755"
+    recovery: user
+  - path: "{{ nas_media_root }}/Documents/inbox"
+    mode: "0755"
+    recovery: user
+  - path: "{{ nas_media_root }}/Documents/export"
+    mode: "0755"
+    recovery: user
 
   # Dozzle authentication and notification configuration.
   - path: "{{ nas_docker_root }}/dozzle/data"
