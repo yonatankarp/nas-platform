@@ -388,10 +388,17 @@ def canonical_documents(pdf_document, image_document, office_document)
   JSON.generate({
     "pdf_id" => pdf_document.fetch("id"), "image_id" => image_document.fetch("id"),
     "office_id" => office_document.fetch("id"),
-    "pdf_checksum" => pdf_document.fetch("checksum"),
-    "image_checksum" => image_document.fetch("checksum"),
-    "office_checksum" => office_document.fetch("checksum")
+    "pdf_checksum" => document_checksum(pdf_document),
+    "image_checksum" => document_checksum(image_document),
+    "office_checksum" => document_checksum(office_document)
   }.sort.to_h)
+end
+
+def document_checksum(document)
+  root_version = document.fetch("versions").find { |version| version.fetch("is_root") }
+  checksum = root_version&.fetch("checksum")
+  fail_contract("document root-version checksum is absent") if checksum.to_s.empty?
+  checksum
 end
 
 vault_yaml, vault_error, vault_status = Open3.capture3(

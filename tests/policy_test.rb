@@ -581,6 +581,9 @@ if paperless_contract.include?("PDF_MARKER = \"paperlesscontractenglish\"")
         paperless_contract.include?("def request(method, path, token: nil, body: nil, expected: [200], parse_json: true)") &&
         paperless_contract.match?(%r{/preview/.*, token: token, parse_json: false}),
         "Paperless binary preview responses must bypass JSON parsing")
+  check(failures,
+        paperless_contract.include?('document.fetch("versions").find'),
+        "Paperless checksum verification must use the version metadata returned by API v3")
 end
 
 manifest_entries.each do |service|
