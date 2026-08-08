@@ -193,6 +193,34 @@ required_tasks = [
 required_tasks.each do |name|
   refuse("missing #{name}") unless role.include?("- name: #{name}")
 end
+
+role_tasks = YAML.safe_load_file(
+  File.join(root, "roles", "immich", "tasks", "main.yml"),
+  aliases: true
+)
+classifier = role_tasks.find do |task|
+  task["name"] == "Classify the Immich database credential probe"
+end
+refuse("missing secret-safe database probe classifier") unless classifier
+classifier_text = classifier.to_s
+%w[execution-failed connection-rejected identity-mismatch verified].each do |status|
+  refuse("database probe classifier omits #{status}") unless classifier_text.include?(status)
+end
+refuse("database probe classifier must remain redacted") unless classifier["no_log"] == true
+
+assertion = role_tasks.find do |task|
+  task["name"] == "Require the managed Immich database credential"
+end
+refuse("database credential assertion is absent") unless assertion
+refuse("database credential assertion still censors its safe category") if assertion["no_log"] == true
+assertion_text = assertion.to_s
+refuse("database credential assertion omits the safe status") unless
+  assertion_text.include?("immich_database_probe_status")
+%w[vault_immich_db_password immich_database_identity stderr stdout].each do |secret_source|
+  refuse("database credential assertion exposes #{secret_source}") if
+    assertion_text.include?(secret_source)
+end
+
 # Immich owns its schema through its own migrations. A role that reaches into
 # PostgreSQL to fix application state is editing an opaque database.
 refuse("role must not mutate the application schema") if
