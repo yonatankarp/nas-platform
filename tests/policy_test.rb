@@ -596,6 +596,14 @@ if paperless_contract.include?("PDF_MARKER = \"paperlesscontractenglish\"")
           document_importer
         }mx),
         "Paperless portable import must empty its exported fixtures from trash first")
+  check(failures,
+        paperless_contract.match?(%r{
+          document_importer.*?
+          "docker",\s*"restart",\s*WEBSERVER.*?
+          wait_healthy\(WEBSERVER.*?
+          document_for
+        }mx),
+        "Paperless portable import must reload and health-check the webserver search index")
 end
 
 manifest_entries.each do |service|

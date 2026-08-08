@@ -383,6 +383,17 @@ def run_bounded(seconds, *argv, input: nil, label:)
   end
 end
 
+def wait_healthy(container, deadline:)
+  loop do
+    stdout, _stderr, status = Open3.capture3(
+      "docker", "inspect", "--format", "{{.State.Health.Status}}", container
+    )
+    return if status.success? && stdout.strip == "healthy"
+    fail_contract("#{container} did not become healthy") if Time.now >= deadline
+    sleep 2
+  end
+end
+
 def document_for(token, marker, deadline:)
   loop do
     _response, payload = request(
@@ -581,6 +592,8 @@ when "seed"
     "paperless-importer", "/usr/src/paperless/export/task-13-contract-export",
     input: "#{export_passphrase}\n", label: "document importer"
   )
+  run_bounded(120, "docker", "restart", WEBSERVER, label: "webserver restart")
+  wait_healthy(WEBSERVER, deadline: Time.now + 120)
   puts "Paperless encrypted portable export imported"
   import_deadline = Time.now + 240
   imported_pdf = document_for(token, PDF_MARKER, deadline: import_deadline)

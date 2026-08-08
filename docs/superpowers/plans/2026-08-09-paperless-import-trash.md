@@ -66,3 +66,31 @@ Run the workflow's local syntax, policy, lint, and playbook-syntax checks availa
 - [ ] **Step 6: Commit and push**
 
 Commit the focused regression and fix without a `Co-Authored-By` trailer, push `agent/task-13-paperless`, and monitor the resulting PR #3 CI run to completion.
+
+### Task 2: Reload the webserver after the importer rebuilds Tantivy
+
+**Files:**
+- Modify: `tests/policy_test.rb`
+- Modify: `tests/contracts/paperless.sh`
+
+- [ ] **Step 1: Write the failing sequencing assertion**
+
+Require the contract to restart the Paperless webserver after `document_importer`, wait for the container healthcheck, and only then query the restored fixtures through search.
+
+- [ ] **Step 2: Run the policy test and verify RED**
+
+Run: `ruby tests/policy_test.rb`
+
+Expected: exit 1 with `Paperless portable import must reload and health-check the webserver search index`.
+
+- [ ] **Step 3: Restart and health-check the webserver**
+
+Add a bounded Docker health polling helper. After the importer succeeds, restart only `WEBSERVER`, wait until its Docker health status is `healthy`, and then continue with the existing search and checksum assertions.
+
+- [ ] **Step 4: Run focused and repository verification**
+
+Run: `ruby tests/policy_test.rb && tests/contracts/paperless.sh static`, followed by the workflow's shell syntax, lint, and playbook syntax checks.
+
+- [ ] **Step 5: Commit, push, and monitor**
+
+Commit without a `Co-Authored-By` trailer, push `agent/task-13-paperless`, and monitor PR #3 CI to completion.
