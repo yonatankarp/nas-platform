@@ -225,8 +225,8 @@ probe = role_tasks.find do |task|
   task["name"] == "Refuse a rotated Immich database credential"
 end
 refuse("database credential probe is absent") unless probe
-refuse("database credential probe must not use the Docker API") if
-  probe.key?("community.docker.docker_container_exec")
+refuse("role must not use the Docker API exec module") if
+  role.include?("community.docker.docker_container_exec")
 compose_probe = probe["community.docker.docker_compose_v2_exec"]
 refuse("database credential probe must use Compose exec") unless compose_probe
 {
@@ -240,20 +240,36 @@ refuse("database credential probe must use Compose exec") unless compose_probe
   refuse("database credential Compose probe #{field} differs") unless
     compose_probe[field] == expected
 end
+refuse("database credential Compose probe must not supply host environment") if
+  compose_probe.key?("env")
 refuse("database credential Compose probe command differs") unless
   compose_probe["argv"] == [
-    "psql",
-    "--host=database",
-    "--username={{ vault_immich_db_username }}",
-    "--dbname={{ vault_immich_db_name }}",
-    "--no-align",
-    "--tuples-only",
-    "--command=select current_user || '/' || current_database()"
+    "sh",
+    "-ec",
+    "exec env PGPASSWORD=\"$POSTGRES_PASSWORD\" PGCONNECT_TIMEOUT=15 " \
+      "psql --host=database --username=\"$1\" --dbname=\"$2\" " \
+      "--no-align --tuples-only " \
+      "--command=\"select current_user || '/' || current_database()\"",
+    "immich-database-probe",
+    "{{ vault_immich_db_username }}",
+    "{{ vault_immich_db_name }}"
   ]
-refuse("database credential Compose probe password differs") unless
-  compose_probe.dig("env", "PGPASSWORD") == "{{ vault_immich_db_password }}"
-refuse("database credential Compose probe must remain redacted") unless
-  probe["no_log"] == true
+{
+  "register" => "immich_database_identity",
+  "when" => "not ansible_check_mode",
+  "failed_when" => false,
+  "changed_when" => false,
+  "check_mode" => false,
+  "no_log" => true
+}.each do |field, expected|
+  refuse("database credential Compose probe #{field} differs") unless
+    probe[field] == expected
+end
+probe_text = probe.to_s
+refuse("database credential Compose probe exposes the vault password") if
+  probe_text.include?("vault_immich_db_password")
+refuse("database credential Compose probe uses a host --env path") if
+  probe_text.include?("--env")
 refuse("database credential assertion must identify the Compose service") unless
   assertion_text.include?("Compose service database")
 refuse("database credential assertion still identifies a container variable") if

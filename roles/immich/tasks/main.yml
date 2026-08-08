@@ -60,16 +60,16 @@
     env_files: ["{{ platform_runtime_dir }}/services/immich/.env"]
     service: database
     argv:
-      - psql
-      - --host=database
-      - "--username={{ vault_immich_db_username }}"
-      - "--dbname={{ vault_immich_db_name }}"
-      - --no-align
-      - --tuples-only
-      - --command=select current_user || '/' || current_database()
-    env:
-      PGPASSWORD: "{{ vault_immich_db_password }}"
-      PGCONNECT_TIMEOUT: "15"
+      - sh
+      - -ec
+      - >-
+        exec env PGPASSWORD="$POSTGRES_PASSWORD" PGCONNECT_TIMEOUT=15
+        psql --host=database --username="$1" --dbname="$2"
+        --no-align --tuples-only
+        --command="select current_user || '/' || current_database()"
+      - immich-database-probe
+      - "{{ vault_immich_db_username }}"
+      - "{{ vault_immich_db_name }}"
     tty: false
   register: immich_database_identity
   when: not ansible_check_mode
