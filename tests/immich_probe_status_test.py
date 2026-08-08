@@ -37,9 +37,16 @@ def expect_exact(label, rendered, expected):
         )
 
 
+def expect_not_exact(label, rendered, unexpected):
+    if rendered == unexpected:
+        raise AssertionError(
+            f"{label}: unexpectedly matched {unexpected!r}"
+        )
+
+
 def main():
     template = load_classifier_template()
-    environment = Environment(undefined=StrictUndefined)
+    environment = Environment(undefined=StrictUndefined, trim_blocks=True)
 
     cases = [
         ("missing rc", {}, "execution-failed"),
@@ -60,12 +67,7 @@ def main():
         " " + template,
         {"rc": 0, "stdout": "immich/immich\n"},
     )
-    try:
-        expect_exact("leading-space counterexample", padded_rendered, "verified")
-    except AssertionError:
-        pass
-    else:
-        raise AssertionError("leading-space counterexample passed exact comparison")
+    expect_not_exact("leading-space counterexample", padded_rendered, "verified")
 
     print(f"Immich probe semantic test passed (ansible-core {ansible.__version__})")
 
