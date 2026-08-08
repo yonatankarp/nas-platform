@@ -146,20 +146,135 @@ git commit -m "fix: expose safe Immich database probe failures"
 
 Do not add a `Co-Authored-By` trailer.
 
-### Task 3: Obtain the native-Linux diagnosis
+### Task 3: Remove the hidden target-side Docker API dependency
 
 **Files:**
-- No source changes unless the new CI evidence identifies the underlying defect.
+- Modify: `tests/contracts/immich.sh`
+- Modify: `roles/immich/tasks/main.yml`
+- Test: `tests/contracts/immich.sh`
 
-- [ ] **Step 1: Push the diagnostic commits**
+- [ ] **Step 1: Write the failing Compose-exec contract**
+
+After locating the database credential assertion in the embedded Ruby contract,
+locate the probe and require the ADM-safe module and exact Compose inputs:
+
+```ruby
+probe = role_tasks.find do |task|
+  task["name"] == "Refuse a rotated Immich database credential"
+end
+refuse("database credential probe is absent") unless probe
+refuse("database credential probe still uses the target-side Docker API") if
+  probe.key?("community.docker.docker_container_exec")
+compose_exec = probe["community.docker.docker_compose_v2_exec"]
+refuse("database credential probe does not use Compose exec") unless compose_exec
+expected_compose_inputs = {
+  "project_src" => "{{ platform_current_dir }}/services/immich",
+  "project_name" => "{{ immich_compose_project_name }}",
+  "files" => "{{ immich_compose_files }}",
+  "env_files" => ["{{ platform_runtime_dir }}/services/immich/.env"],
+  "service" => "database",
+  "tty" => false
+}
+expected_compose_inputs.each do |key, value|
+  refuse("database credential probe #{key} differs") unless compose_exec[key] == value
+end
+refuse("database credential probe omits PGPASSWORD") unless
+  compose_exec.dig("env", "PGPASSWORD") == "{{ vault_immich_db_password }}"
+```
+
+Also require the public assertion to identify `Compose service database` and
+reject the obsolete `immich_postgres_container` fact anywhere in the role.
+
+- [ ] **Step 2: Verify the contract is RED**
 
 Run:
 
 ```bash
-git push origin agent/task-12-immich
+tests/contracts/immich.sh --platform nas static
 ```
 
-Expected: the remote branch advances without rewriting history.
+Expected: exit 1 because the probe still uses
+`community.docker.docker_container_exec`.
+
+- [ ] **Step 3: Replace Docker API exec with Compose CLI exec**
+
+In `roles/immich/tasks/main.yml`, remove `immich_postgres_container` from the
+Compose-selection fact and replace the raw probe module with:
+
+```yaml
+- name: Refuse a rotated Immich database credential
+  community.docker.docker_compose_v2_exec:
+    project_src: "{{ platform_current_dir }}/services/immich"
+    project_name: "{{ immich_compose_project_name }}"
+    files: "{{ immich_compose_files }}"
+    env_files: ["{{ platform_runtime_dir }}/services/immich/.env"]
+    service: database
+    argv:
+      - psql
+      - --host=database
+      - "--username={{ vault_immich_db_username }}"
+      - "--dbname={{ vault_immich_db_name }}"
+      - --no-align
+      - --tuples-only
+      - --command=select current_user || '/' || current_database()
+    env:
+      PGPASSWORD: "{{ vault_immich_db_password }}"
+      PGCONNECT_TIMEOUT: "15"
+    tty: false
+  register: immich_database_identity
+  when: not ansible_check_mode
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+```
+
+Update the safe assertion message to identify `Compose service database` rather
+than a platform-specific container name. Preserve the classifier and all
+redaction boundaries.
+
+- [ ] **Step 4: Verify focused and repository tests are GREEN**
+
+Run:
+
+```bash
+tests/contracts/immich.sh --platform nas static
+python tests/immich_probe_status_test.py
+ansible-lint --strict
+tests/validate-policy.sh
+git diff --check
+```
+
+Use the repository `.venv/bin` at the front of `PATH`. Expected: every command
+exits 0.
+
+- [ ] **Step 5: Commit the transport fix**
+
+```bash
+git add roles/immich/tasks/main.yml tests/contracts/immich.sh
+git commit -m "fix: probe Immich database through Compose"
+```
+
+Do not add a `Co-Authored-By` trailer.
+
+### Task 4: Verify native Linux and merge
+
+**Files:**
+- No source changes unless native-Linux evidence identifies another defect.
+
+- [ ] **Step 1: Integrate and push the reviewed fix**
+
+Run:
+
+```bash
+git -C /Users/yonatankarp-rudin/Projects/nas-platform merge --ff-only \
+  agent/task-12-immich-diagnostics
+git -C /Users/yonatankarp-rudin/Projects/nas-platform push origin \
+  agent/task-12-immich
+```
+
+Expected: the PR branch fast-forwards to the reviewed diagnostics head and the
+remote branch advances without rewriting history.
 
 - [ ] **Step 2: Poll PR checks at 15-minute intervals**
 
@@ -169,7 +284,9 @@ Run:
 gh pr checks 2 --watch --interval 900
 ```
 
-Expected: either every required check passes, or `CI / validate` reports one of `execution-failed`, `connection-rejected`, or `identity-mismatch` without exposing a credential.
+Expected: either every required check passes, or `CI / validate` reports one of
+`execution-failed`, `connection-rejected`, or `identity-mismatch` without
+exposing a credential.
 
 - [ ] **Step 3: Continue systematic debugging from the category**
 
@@ -179,7 +296,9 @@ If CI fails, inspect the new job logs with:
 python3 /Users/yonatankarp-rudin/.codex/plugins/cache/openai-curated-remote/github/0.1.8-2841cf9749ae/skills/gh-fix-ci/scripts/inspect_pr_checks.py --repo . --pr 2 --json
 ```
 
-Use the reported category to form one hypothesis and add a failing regression test before changing production behavior. Do not merge while native-Linux CI is red.
+Use the reported category to form one hypothesis and add a failing regression
+test before changing production behavior. Do not merge while native-Linux CI
+is red.
 
 - [ ] **Step 4: Merge only after fresh green verification**
 
