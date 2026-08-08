@@ -226,7 +226,7 @@ def endpoint(path)
   URI.join(BASE.to_s, path)
 end
 
-def request(method, path, token: nil, body: nil, expected: [200])
+def request(method, path, token: nil, body: nil, expected: [200], parse_json: true)
   uri = endpoint(path)
   request = Net::HTTP.const_get(method.capitalize).new(uri)
   request["Authorization"] = "Token #{token}" if token
@@ -239,8 +239,12 @@ def request(method, path, token: nil, body: nil, expected: [200])
   end
   fail_contract("#{method.upcase} #{uri.path} returned HTTP #{response.code}") unless
     expected.include?(response.code.to_i)
-  parsed = response.body.to_s.empty? ? nil : JSON.parse(response.body)
-  [response, parsed]
+  payload = if parse_json
+              response.body.to_s.empty? ? nil : JSON.parse(response.body)
+            else
+              response.body.to_s
+            end
+  [response, payload]
 rescue JSON::ParserError
   fail_contract("#{method.upcase} #{uri.path} returned malformed JSON")
 rescue SystemCallError, Timeout::Error => error
@@ -496,7 +500,12 @@ pdf_document = document_for(token, PDF_MARKER, deadline: processing_deadline)
 image_document = document_for(token, IMAGE_MARKER, deadline: processing_deadline)
 office_document = document_for(token, OFFICE_MARKER, deadline: processing_deadline)
 [pdf_document, image_document, office_document].each do |document|
-  request("get", "/api/documents/#{document.fetch('id')}/preview/", token: token)
+  preview_response, preview_body = request(
+    "get", "/api/documents/#{document.fetch('id')}/preview/", token: token, parse_json: false
+  )
+  fail_contract("document preview was not a PDF") unless
+    preview_response["Content-Type"].to_s.split(";", 2).first == "application/pdf" &&
+    preview_body.start_with?("%PDF")
 end
 fail_contract("image OCR did not preserve German text") unless
   image_document.fetch("content", "").downcase.include?("überprüfung")
