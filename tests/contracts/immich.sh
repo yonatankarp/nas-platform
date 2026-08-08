@@ -198,6 +198,13 @@ role_tasks = YAML.safe_load_file(
   File.join(root, "roles", "immich", "tasks", "main.yml"),
   aliases: true
 )
+environment_render = role_tasks.find do |task|
+  task["name"] == "Render the Immich environment"
+end
+refuse("Immich environment render is absent") unless environment_render
+refuse("Immich environment render must remain redacted") unless
+  environment_render["no_log"] == true
+
 classifier = role_tasks.find do |task|
   task["name"] == "Classify the Immich database credential probe"
 end

@@ -29,6 +29,7 @@
     src: env.j2
     dest: "{{ platform_runtime_dir }}/services/immich/.env"
     mode: "0600"
+  no_log: true
 
 # The database and the cache come up first and alone. PostgreSQL honors
 # POSTGRES_USER, POSTGRES_DB and POSTGRES_PASSWORD only when it initializes an
