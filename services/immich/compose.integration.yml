@@ -1,0 +1,7 @@
+---
+services:
+  immich-server:
+    # The integration sandbox is a Linux container host without /dev/dri. It
+    # keeps the production port and container names; only the render node is
+    # removed, exactly as on the Mac.
+    devices: !override []

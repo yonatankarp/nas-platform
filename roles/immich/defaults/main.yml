@@ -1,0 +1,28 @@
+---
+immich_port: 2283
+immich_api: "http://127.0.0.1:{{ immich_port }}/api"
+immich_compose_project_name: >-
+  {{ (platform_project_name ~ '-immich')
+     if platform_project_name | default('') | length > 0 else 'immich' }}
+
+# Deliberately small and explicit, and every entry is grounded in the deployed
+# stack rather than in taste. Immich stores hundreds of settings; this role owns
+# only the ones the Compose definition already commits to, so an operator can
+# change anything else through the UI without the next converge undoing it.
+immich_managed_settings:
+  # The NAS is not permitted to phone home for release announcements.
+  newVersionCheck:
+    enabled: false
+  # The stack runs a machine learning container; leaving inference disabled
+  # would mean paying for it and getting no search.
+  machineLearning:
+    enabled: true
+  # The Compose definition mounts a dedicated backups volume for exactly this.
+  backup:
+    database:
+      enabled: true
+
+# The identity the contract and the role both authenticate as. Immich records
+# the creating account as the sole administrator, so this is created once and
+# only ever reconciled afterwards.
+immich_admin_name: NAS Platform Administrator

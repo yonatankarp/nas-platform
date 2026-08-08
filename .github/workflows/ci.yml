@@ -34,6 +34,12 @@ jobs:
           pipx install 'ansible-lint==26.6.0'
           ansible-galaxy collection install -r requirements.yml
 
+      - name: Check Immich probe status rendering
+        run: |
+          ansible_python="$(dirname "$(readlink -f "$(command -v ansible-playbook)")")/python"
+          test -x "$ansible_python"
+          PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/immich_probe_status_test.py
+
       - name: Check generated credential redaction
         run: tests/generate-secrets-redaction-test.sh
 

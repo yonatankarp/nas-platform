@@ -1,0 +1,35 @@
+---
+argument_specs:
+  main:
+    short_description: Deploy Immich and converge its administrator and managed settings
+    options:
+      platform_compose_kind:
+        type: str
+        required: true
+      platform_project_name:
+        type: str
+        required: false
+      immich_port:
+        type: int
+        required: false
+      immich_managed_settings:
+        type: dict
+        required: false
+      immich_admin_name:
+        type: str
+        required: false
+      vault_immich_admin_email:
+        type: str
+        required: true
+      vault_immich_admin_password:
+        type: str
+        required: true
+      vault_immich_db_name:
+        type: str
+        required: true
+      vault_immich_db_username:
+        type: str
+        required: true
+      vault_immich_db_password:
+        type: str
+        required: true

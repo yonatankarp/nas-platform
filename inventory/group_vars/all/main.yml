@@ -91,6 +91,42 @@ nas_storage:
     mode: "0755"
     recovery: cache
 
+  # Immich. Ownership is deliberately unclaimed: the pinned images run as root
+  # and rewrite ownership of everything they touch, so declaring 1000:100 here
+  # would be a claim the first upload falsifies.
+  #
+  # The originals are irreplaceable photographs that Immich itself writes, which
+  # makes them critical service state rather than NAS-managed user media. The
+  # derivative trees are redirected off the media volume precisely because they
+  # are regenerable and must not be carried by photograph backups.
+  - path: "{{ nas_media_root }}/Immich"
+    mode: "0755"
+    recovery: critical
+  - path: "{{ nas_media_root }}/Immich-backups/database"
+    mode: "0755"
+    recovery: critical
+  # 0700 because initdb sets exactly that and PostgreSQL refuses to start on a
+  # data directory that is group- or world-readable. Declaring 0755 here made
+  # host_prep reset it on every converge, which broke idempotence outright and,
+  # on the NAS, would leave a cluster that refuses to start after its next
+  # restart. Docker Desktop does not propagate the host mode into the container,
+  # so only the NAS would have suffered the second half of that.
+  - path: "{{ nas_docker_root }}/immich/postgres"
+    mode: "0700"
+    recovery: critical
+  - path: "{{ nas_docker_root }}/immich/data/profile"
+    mode: "0755"
+    recovery: critical
+  - path: "{{ nas_docker_root }}/immich/data/thumbs"
+    mode: "0755"
+    recovery: cache
+  - path: "{{ nas_docker_root }}/immich/data/encoded-video"
+    mode: "0755"
+    recovery: cache
+  - path: "{{ nas_docker_root }}/immich/data/model-cache"
+    mode: "0755"
+    recovery: cache
+
   # Dozzle authentication and notification configuration.
   - path: "{{ nas_docker_root }}/dozzle/data"
     owner: "{{ nas_uid }}"

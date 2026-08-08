@@ -23,6 +23,7 @@ inventory/group_vars/all/vault-plain.yml
 .DS_Store
 .idea/
 .vscode/
+.worktrees/
 __pycache__/
 *.pyc
 

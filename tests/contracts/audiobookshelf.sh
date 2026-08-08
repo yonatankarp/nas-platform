@@ -136,6 +136,7 @@ DRIFT_SETTINGS = DESIRED_SETTINGS.merge("disableWatcher" => true).freeze
 LIBRARY_STATE_KEYS = %w[folders icon mediaType name provider settings].freeze
 LIBRARY_FOLDER_STATE_KEYS = %w[addedAt fullPath id libraryId].freeze
 DRIFT_SNAPSHOT_KIND = "audiobookshelf-library-drift-snapshot"
+VAULT_CREDENTIAL_KEY = /_(?:password|hash|token|key)\z/
 
 def fail_contract(message)
   warn "Audiobookshelf contract failed: #{message}"
@@ -493,7 +494,17 @@ def audiobookshelf_playbook_command(playbook, tags)
   )
 end
 
-def inactive_admin_refusal!(username, password, retained_token, vault_secrets)
+def inactive_admin_diagnostic_leaked?(output, vault, username, password, retained_token)
+  vault_credentials = vault.each_with_object([]) do |(key, value), credentials|
+    credentials << value if
+      key.to_s.match?(VAULT_CREDENTIAL_KEY) && value.is_a?(String) && !value.empty?
+  end
+  (vault_credentials + [username, password, retained_token]).uniq.any? do |secret|
+    !secret.to_s.empty? && output.include?(secret)
+  end
+end
+
+def inactive_admin_refusal!(username, password, retained_token, vault)
   limitation = "Managed Audiobookshelf administrator cannot authenticate. Pinned Audiobookshelf 2.36.0"
   recovery_username = "task9-contract-recovery-root"
   users = request("get", "/api/users", token: retained_token).last.fetch("users")
@@ -530,10 +541,8 @@ def inactive_admin_refusal!(username, password, retained_token, vault_secrets)
       fail_contract("inactive administrator #{playbook} unexpectedly succeeded") if status.success?
       fail_contract("inactive administrator #{playbook} omitted the fixed product limitation") unless
         combined.include?(limitation)
-      (vault_secrets + [username, password, retained_token]).uniq.each do |secret|
-        fail_contract("inactive administrator diagnostic leaked vault or bearer data") if
-          !secret.to_s.empty? && combined.include?(secret)
-      end
+      fail_contract("inactive administrator diagnostic leaked vault or bearer data") if
+        inactive_admin_diagnostic_leaked?(combined, vault, username, password, retained_token)
       stdout.replace("\0" * stdout.bytesize)
       stderr.replace("\0" * stderr.bytesize)
       combined.replace("\0" * combined.bytesize)
@@ -555,6 +564,42 @@ def inactive_admin_refusal!(username, password, retained_token, vault_secrets)
 end
 
 case MODE
+when "secret-redaction-self-test"
+  vault = {
+    "vault_immich_db_name" => "immich",
+    "vault_immich_db_username" => "immich",
+    "vault_password_policy" => "password-policy",
+    "vault_monkey" => "ordinary-simian-value",
+    "vault_service_password" => "credential-password-sentinel",
+    "vault_service_password_hash" => "credential-hash-sentinel",
+    "vault_service_token" => "credential-token-sentinel",
+    "vault_service_private_key" => "credential-key-sentinel"
+  }
+  username = "explicit-audiobookshelf-username"
+  password = "explicit-audiobookshelf-password"
+  token = "runtime-bearer-token"
+  begin
+    classifier = method(:inactive_admin_diagnostic_leaked?)
+  rescue NameError
+    fail_contract("inactive administrator diagnostic secret classifier is absent")
+  end
+  ordinary_output = "TASK [immich : verify topology for ordinary-simian-value and password-policy]"
+  fail_contract("ordinary topology or service data was classified as secret") if
+    classifier.call(ordinary_output, vault, username, password, token)
+  {
+    "credential-password-sentinel" => "vault password",
+    "credential-hash-sentinel" => "vault hash",
+    "credential-token-sentinel" => "vault token",
+    "credential-key-sentinel" => "vault key",
+    username => "explicit Audiobookshelf username",
+    password => "explicit Audiobookshelf password",
+    token => "runtime bearer token"
+  }.each do |secret, label|
+    fail_contract("#{label} was not classified as secret") unless
+      classifier.call("diagnostic contains #{secret}", vault, username, password, token)
+  end
+  puts "Audiobookshelf diagnostic secret redaction self-test passed"
+  exit 0
 when "drift-recovery-self-test"
   original = {
     "id" => "contract-library",
@@ -726,8 +771,7 @@ if MODE == "run"
 end
 
 if MODE == "inactive-admin-refusal"
-  vault_secrets = vault.values.select { |value| value.is_a?(String) && !value.empty? }
-  inactive_admin_refusal!(username, password, token, vault_secrets)
+  inactive_admin_refusal!(username, password, token, vault)
   puts "Audiobookshelf inactive administrator refusal and recovery passed"
   exit 0
 end

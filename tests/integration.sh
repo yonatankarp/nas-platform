@@ -1198,6 +1198,14 @@ docker run --rm \
       # After tinyMediaManager, because both services read the same Movies tree
       # and only a scan that already finished can be asserted independently.
       run_jellyfin_contract seed
+      # Immich is deliberately not seeded here. Its seed contract asserts CPU
+      # machine learning, and the first inference makes the pinned image pull
+      # roughly 800 MB of CLIP, face and OCR models from external CDNs. That is
+      # a new outbound dependency on every CI run for coverage the Mac lane
+      # already provides. Immich still deploys with the rest of site.yml, and
+      # run_contracts.rb below executes its registered run-mode contract, which
+      # covers login, containment and managed settings and needs no extra
+      # environment beyond the shared contract ABI.
 
       env \
         PLATFORM_KIND=integration \

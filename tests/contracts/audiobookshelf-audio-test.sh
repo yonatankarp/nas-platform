@@ -38,4 +38,23 @@ grep -Fqx 'Audiobookshelf audio and diagnostic self-test passed' <<<"$output" ||
   exit 1
 }
 
+redaction_status=0
+redaction_output=$(
+  PLATFORM_MEDIA_ROOT="$test_root/media" \
+  PLATFORM_REPORT_ROOT="$test_root/reports" \
+  PLATFORM_AUDIOBOOKSHELF_PORT=13378 \
+    "$repo_dir/tests/contracts/audiobookshelf.sh" secret-redaction-self-test 2>&1
+) || redaction_status=$?
+
+if [ "$redaction_status" -ne 0 ]; then
+  printf '%s\n' "$redaction_output" >&2
+  exit "$redaction_status"
+fi
+
+grep -Fqx 'Audiobookshelf diagnostic secret redaction self-test passed' <<<"$redaction_output" || {
+  printf '%s\n' "$redaction_output" >&2
+  printf '%s\n' 'Audiobookshelf audio test failed: secret redaction marker is absent' >&2
+  exit 1
+}
+
 printf '%s\n' 'Audiobookshelf audio contract test passed'
