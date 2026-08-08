@@ -553,9 +553,14 @@ when "seed"
   )
   puts "Paperless encrypted portable export created"
   fail_contract("portable export was not created") unless EXPORT_PATH.directory? && EXPORT_PATH.children.any?
-  [pdf_document, image_document, office_document].each do |document|
-    request("delete", "/api/documents/#{document.fetch('id')}/", token: token, expected: [204])
+  document_ids = [pdf_document, image_document, office_document].map { |document| document.fetch("id") }
+  document_ids.each do |document_id|
+    request("delete", "/api/documents/#{document_id}/", token: token, expected: [204])
   end
+  request(
+    "post", "/api/trash/", token: token,
+    body: { "action" => "empty", "documents" => document_ids }, expected: [200]
+  )
   deletion_deadline = Time.now + 120
   loop do
     remaining = [PDF_MARKER, IMAGE_MARKER, OFFICE_MARKER].sum do |marker|

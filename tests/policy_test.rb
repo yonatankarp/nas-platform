@@ -587,6 +587,15 @@ if paperless_contract.include?("PDF_MARKER = \"paperlesscontractenglish\"")
   check(failures,
         paperless_contract.match?(/EXPORT_PATH\.mkdir\(0o700\).*?document_exporter/m),
         "Paperless portable export must create the required empty target directory")
+  check(failures,
+        paperless_contract.match?(%r{
+          document_ids\s*=\s*\[.*?
+          request\(\s*"post",\s*"/api/trash/".*?
+          "action"\s*=>\s*"empty".*?
+          "documents"\s*=>\s*document_ids.*?
+          document_importer
+        }mx),
+        "Paperless portable import must empty its exported fixtures from trash first")
 end
 
 manifest_entries.each do |service|

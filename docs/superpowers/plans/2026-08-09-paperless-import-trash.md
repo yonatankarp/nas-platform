@@ -1,0 +1,68 @@
+# Paperless Portable Import Trash Cleanup Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Make the Paperless portable-export contract hard-delete its exported fixtures before importing them back, so Paperless 3.0.5 does not encounter occupied media paths.
+
+**Architecture:** Keep the existing API-driven mutation, then use Paperless's authenticated trash API to hard-delete exactly the three exported document IDs before invoking `document_importer`. Protect the sequencing with the repository policy test and retain the existing post-deletion API polling.
+
+**Tech Stack:** Ruby contract harness, Paperless-ngx REST API, repository policy tests
+
+---
+
+### Task 1: Require hard deletion before portable import
+
+**Files:**
+- Modify: `tests/policy_test.rb`
+- Modify: `tests/contracts/paperless.sh`
+
+- [ ] **Step 1: Write the failing policy assertion**
+
+Add a policy check requiring `tests/contracts/paperless.sh` to collect the exported document IDs, soft-delete them, call `POST /api/trash/` with `action: empty` for those IDs, and only then invoke `document_importer`.
+
+```ruby
+check(failures,
+      paperless_contract.match?(%r{
+        document_ids\s*=\s*\[.*?
+        request\(\s*"post",\s*"/api/trash/".*?
+        "action"\s*=>\s*"empty".*?
+        "documents"\s*=>\s*document_ids.*?
+        document_importer
+      }mx),
+      "Paperless portable import must empty its exported fixtures from trash first")
+```
+
+- [ ] **Step 2: Run the policy test and verify RED**
+
+Run: `ruby tests/policy_test.rb`
+
+Expected: exit 1 with `Paperless portable import must empty its exported fixtures from trash first`.
+
+- [ ] **Step 3: Hard-delete only the exported fixtures**
+
+Replace the inline deletion iteration with an ID list, preserve the existing per-document `DELETE` calls, and synchronously empty those IDs from trash before the importer runs.
+
+```ruby
+document_ids = [pdf_document, image_document, office_document].map { |document| document.fetch("id") }
+document_ids.each do |document_id|
+  request("delete", "/api/documents/#{document_id}/", token: token, expected: [204])
+end
+request(
+  "post", "/api/trash/", token: token,
+  body: { "action" => "empty", "documents" => document_ids }, expected: [200]
+)
+```
+
+- [ ] **Step 4: Run focused verification and verify GREEN**
+
+Run: `ruby tests/policy_test.rb && tests/contracts/paperless.sh static`
+
+Expected: exit 0 with `policy: all properties hold` and `Paperless static contract passed`.
+
+- [ ] **Step 5: Run repository verification**
+
+Run the workflow's local syntax, policy, lint, and playbook-syntax checks available from the repository, then inspect `git diff --check` and the final diff.
+
+- [ ] **Step 6: Commit and push**
+
+Commit the focused regression and fix without a `Co-Authored-By` trailer, push `agent/task-13-paperless`, and monitor the resulting PR #3 CI run to completion.
