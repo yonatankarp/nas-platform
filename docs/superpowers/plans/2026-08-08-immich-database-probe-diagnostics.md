@@ -4,13 +4,20 @@
 
 **Goal:** Expose a bounded, secret-safe reason when Immich's PostgreSQL credential probe fails on native Linux or ADM.
 
-**Architecture:** Keep the raw `docker_container_exec` result under `no_log`, derive one of four non-sensitive statuses in a separate fact, and make the public assertion report only that status and the selected container name. Extend the existing Immich static contract before changing the role so the red/green cycle proves both diagnostic presence and redaction.
+**Architecture:** Run the bounded credential probe through Compose service
+`database`, using `sh -ec` to source `PGPASSWORD` from the container's existing
+`POSTGRES_PASSWORD` and pass only the managed username and database as positional
+arguments. Keep the raw result under `no_log`, derive one of four non-sensitive
+statuses in a separate fact, and make the public assertion report only that
+status and the Compose service name. Extend the existing Immich static contract
+before changing the role so the red/green cycle proves the exact probe controls,
+diagnostic presence, and redaction.
 
 **Tech Stack:** Ansible, Ruby contract assertions embedded in POSIX shell, Docker Compose, GitHub Actions
 
 ---
 
-### Task 1: Contract the safe diagnostic boundary
+## Task 1: Contract the safe diagnostic boundary
 
 **Files:**
 - Modify: `tests/contracts/immich.sh`
@@ -59,7 +66,7 @@ tests/contracts/immich.sh --platform nas static
 
 Expected: exit 1 with `Immich contract failed: missing secret-safe database probe classifier`.
 
-### Task 2: Derive and report a bounded probe status
+## Task 2: Derive and report a bounded probe status
 
 **Files:**
 - Modify: `roles/immich/tasks/main.yml`
@@ -146,7 +153,7 @@ git commit -m "fix: expose safe Immich database probe failures"
 
 Do not add a `Co-Authored-By` trailer.
 
-### Task 3: Remove the hidden target-side Docker API dependency
+## Task 3: Remove the hidden target-side Docker API dependency
 
 **Files:**
 - Modify: `tests/contracts/immich.sh`
@@ -163,23 +170,51 @@ probe = role_tasks.find do |task|
   task["name"] == "Refuse a rotated Immich database credential"
 end
 refuse("database credential probe is absent") unless probe
-refuse("database credential probe still uses the target-side Docker API") if
-  probe.key?("community.docker.docker_container_exec")
-compose_exec = probe["community.docker.docker_compose_v2_exec"]
-refuse("database credential probe does not use Compose exec") unless compose_exec
-expected_compose_inputs = {
+refuse("role must not use the Docker API exec module") if
+  role.include?("community.docker.docker_container_exec")
+compose_probe = probe["community.docker.docker_compose_v2_exec"]
+refuse("database credential probe must use Compose exec") unless compose_probe
+{
   "project_src" => "{{ platform_current_dir }}/services/immich",
   "project_name" => "{{ immich_compose_project_name }}",
   "files" => "{{ immich_compose_files }}",
   "env_files" => ["{{ platform_runtime_dir }}/services/immich/.env"],
   "service" => "database",
   "tty" => false
-}
-expected_compose_inputs.each do |key, value|
-  refuse("database credential probe #{key} differs") unless compose_exec[key] == value
+}.each do |field, expected|
+  refuse("database credential Compose probe #{field} differs") unless
+    compose_probe[field] == expected
 end
-refuse("database credential probe omits PGPASSWORD") unless
-  compose_exec.dig("env", "PGPASSWORD") == "{{ vault_immich_db_password }}"
+refuse("database credential Compose probe must not supply host environment") if
+  compose_probe.key?("env")
+refuse("database credential Compose probe command differs") unless
+  compose_probe["argv"] == [
+    "sh",
+    "-ec",
+    "exec env PGPASSWORD=\"$POSTGRES_PASSWORD\" PGCONNECT_TIMEOUT=15 " \
+      "psql --host=database --username=\"$1\" --dbname=\"$2\" " \
+      "--no-align --tuples-only " \
+      "--command=\"select current_user || '/' || current_database()\"",
+    "immich-database-probe",
+    "{{ vault_immich_db_username }}",
+    "{{ vault_immich_db_name }}"
+  ]
+{
+  "register" => "immich_database_identity",
+  "when" => "not ansible_check_mode",
+  "failed_when" => false,
+  "changed_when" => false,
+  "check_mode" => false,
+  "no_log" => true
+}.each do |field, expected|
+  refuse("database credential Compose probe #{field} differs") unless
+    probe[field] == expected
+end
+probe_text = probe.to_s
+refuse("database credential Compose probe exposes the vault password") if
+  probe_text.include?("vault_immich_db_password")
+refuse("database credential Compose probe uses a host --env path") if
+  probe_text.include?("--env")
 ```
 
 Also require the public assertion to identify `Compose service database` and
@@ -210,16 +245,16 @@ Compose-selection fact and replace the raw probe module with:
     env_files: ["{{ platform_runtime_dir }}/services/immich/.env"]
     service: database
     argv:
-      - psql
-      - --host=database
-      - "--username={{ vault_immich_db_username }}"
-      - "--dbname={{ vault_immich_db_name }}"
-      - --no-align
-      - --tuples-only
-      - --command=select current_user || '/' || current_database()
-    env:
-      PGPASSWORD: "{{ vault_immich_db_password }}"
-      PGCONNECT_TIMEOUT: "15"
+      - sh
+      - -ec
+      - >-
+        exec env PGPASSWORD="$POSTGRES_PASSWORD" PGCONNECT_TIMEOUT=15
+        psql --host=database --username="$1" --dbname="$2"
+        --no-align --tuples-only
+        --command="select current_user || '/' || current_database()"
+      - immich-database-probe
+      - "{{ vault_immich_db_username }}"
+      - "{{ vault_immich_db_name }}"
     tty: false
   register: immich_database_identity
   when: not ansible_check_mode
@@ -257,7 +292,7 @@ git commit -m "fix: probe Immich database through Compose"
 
 Do not add a `Co-Authored-By` trailer.
 
-### Task 4: Verify native Linux and merge
+## Task 4: Verify native Linux and merge
 
 **Files:**
 - No source changes unless native-Linux evidence identifies another defect.
@@ -290,15 +325,17 @@ exposing a credential.
 
 - [ ] **Step 3: Continue systematic debugging from the category**
 
-If CI fails, inspect the new job logs with:
+If CI fails, list the PR checks, copy the failed GitHub Actions run ID from its
+details URL, and inspect only that run's failed logs:
 
 ```bash
-python3 /Users/yonatankarp-rudin/.codex/plugins/cache/openai-curated-remote/github/0.1.8-2841cf9749ae/skills/gh-fix-ci/scripts/inspect_pr_checks.py --repo . --pr 2 --json
+gh pr checks 2
+gh run view <failed-run-id> --log-failed
 ```
 
-Use the reported category to form one hypothesis and add a failing regression
-test before changing production behavior. Do not merge while native-Linux CI
-is red.
+Replace `<failed-run-id>` with the numeric run ID from the failed check. Use the
+reported category to form one hypothesis and add a failing regression test
+before changing production behavior. Do not merge while native-Linux CI is red.
 
 - [ ] **Step 4: Merge only after fresh green verification**
 
