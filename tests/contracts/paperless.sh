@@ -199,6 +199,7 @@ require "json"
 require "net/http"
 require "open3"
 require "pathname"
+require "tempfile"
 require "timeout"
 require "uri"
 require "yaml"
@@ -328,47 +329,58 @@ def write_fixture(path, bytes)
   end
 end
 
-def run_bounded(seconds, *argv, input: nil)
+def run_bounded(seconds, *argv, input: nil, label:)
   reader, writer = IO.pipe if input
-  spawn_options = { pgroup: true, out: File::NULL, err: File::NULL }
-  spawn_options[:in] = reader if input
-  pid = Process.spawn(*argv, **spawn_options)
-  reader&.close
-  if input
-    writer.write(input)
-    writer.close
-  end
-  status = nil
-  begin
-    Timeout.timeout(seconds) { _waited, status = Process.wait2(pid) }
-  rescue Timeout::Error
-    begin
-      Process.kill("TERM", -pid)
-    rescue Errno::ESRCH
-      nil
+  Tempfile.create("paperless-contract-command") do |stderr|
+    spawn_options = { pgroup: true, out: File::NULL, err: stderr }
+    spawn_options[:in] = reader if input
+    pid = Process.spawn(*argv, **spawn_options)
+    reader&.close
+    if input
+      writer.write(input)
+      writer.close
     end
+    status = nil
     begin
-      Timeout.timeout(5) { Process.wait(pid) }
+      Timeout.timeout(seconds) { _waited, status = Process.wait2(pid) }
     rescue Timeout::Error
       begin
-        Process.kill("KILL", -pid)
+        Process.kill("TERM", -pid)
       rescue Errno::ESRCH
         nil
       end
       begin
-        Process.wait(pid)
-      rescue Errno::ECHILD
+        Timeout.timeout(5) { Process.wait(pid) }
+      rescue Timeout::Error
+        begin
+          Process.kill("KILL", -pid)
+        rescue Errno::ESRCH
+          nil
+        end
+        begin
+          Process.wait(pid)
+        rescue Errno::ECHILD
+          nil
+        end
+      rescue Errno::ECHILD, Errno::ESRCH
         nil
       end
-    rescue Errno::ECHILD, Errno::ESRCH
-      nil
+      fail_contract("#{label} timed out")
+    ensure
+      reader&.close unless reader&.closed?
+      writer&.close unless writer&.closed?
     end
-    fail_contract("#{argv.first} timed out")
-  ensure
-    reader&.close unless reader&.closed?
-    writer&.close unless writer&.closed?
+    unless status.success?
+      stderr.flush
+      stderr.rewind
+      diagnostic = stderr.read.byteslice(-4096, 4096).to_s
+      diagnostic = diagnostic.encode("UTF-8", invalid: :replace, undef: :replace)
+      secret = input.to_s.strip
+      diagnostic.gsub!(secret, "[REDACTED]") unless secret.empty?
+      warn "Paperless #{label} diagnostic: #{diagnostic.strip}" unless diagnostic.strip.empty?
+      fail_contract("#{label} failed")
+    end
   end
-  fail_contract("#{argv.first} failed") unless status.success?
 end
 
 def document_for(token, marker, deadline:)
@@ -535,10 +547,11 @@ when "seed"
   run_bounded(
     120,
     "docker", "exec", "-i", WEBSERVER, "sh", "-ec",
-    'IFS= read -r passphrase; exec python manage.py document_exporter --passphrase "$passphrase" "$1"',
+    'IFS= read -r passphrase; exec python manage.py document_exporter --passphrase "$passphrase" --no-progress-bar "$1"',
     "paperless-exporter", "/usr/src/paperless/export/task-13-contract-export",
-    input: "#{export_passphrase}\n"
+    input: "#{export_passphrase}\n", label: "document exporter"
   )
+  puts "Paperless encrypted portable export created"
   fail_contract("portable export was not created") unless EXPORT_PATH.directory? && EXPORT_PATH.children.any?
   [pdf_document, image_document, office_document].each do |document|
     request("delete", "/api/documents/#{document.fetch('id')}/", token: token, expected: [204])
@@ -559,10 +572,11 @@ when "seed"
   run_bounded(
     120,
     "docker", "exec", "-i", WEBSERVER, "sh", "-ec",
-    'IFS= read -r passphrase; exec python manage.py document_importer --passphrase "$passphrase" "$1"',
+    'IFS= read -r passphrase; exec python manage.py document_importer --passphrase "$passphrase" --no-progress-bar "$1"',
     "paperless-importer", "/usr/src/paperless/export/task-13-contract-export",
-    input: "#{export_passphrase}\n"
+    input: "#{export_passphrase}\n", label: "document importer"
   )
+  puts "Paperless encrypted portable export imported"
   import_deadline = Time.now + 240
   imported_pdf = document_for(token, PDF_MARKER, deadline: import_deadline)
   imported_image = document_for(token, IMAGE_MARKER, deadline: import_deadline)
