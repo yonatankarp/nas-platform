@@ -76,19 +76,32 @@
   check_mode: false
   no_log: true
 
+- name: Classify the Immich database credential probe
+  ansible.builtin.set_fact:
+    immich_database_probe_status: >-
+      {% if immich_database_identity.rc is not defined %}
+      execution-failed
+      {% elif immich_database_identity.rc | int != 0 %}
+      connection-rejected
+      {% elif immich_database_identity.stdout | default('') | trim !=
+              vault_immich_db_username ~ '/' ~ vault_immich_db_name %}
+      identity-mismatch
+      {% else %}
+      verified
+      {% endif %}
+  when: not ansible_check_mode
+  no_log: true
+
 - name: Require the managed Immich database credential
   ansible.builtin.assert:
     that:
-      - immich_database_identity.rc | default(1) | int == 0
-      - immich_database_identity.stdout | default('') | trim ==
-        vault_immich_db_username ~ '/' ~ vault_immich_db_name
+      - immich_database_probe_status == 'verified'
     fail_msg: >-
-      The Immich database does not accept the vault credential. PostgreSQL applies
-      POSTGRES_USER, POSTGRES_DB and POSTGRES_PASSWORD only when it initializes an empty data
-      directory, so a rotated credential needs an explicit database migration. Restore the
-      previous values or migrate the database, then rerun.
+      Immich database credential verification failed
+      ({{ immich_database_probe_status }}) in container
+      {{ immich_postgres_container }}. Restore the previous vault values or
+      migrate the database credential explicitly, then rerun.
   when: not ansible_check_mode
-  no_log: true
 
 - name: Deploy Immich
   community.docker.docker_compose_v2:
