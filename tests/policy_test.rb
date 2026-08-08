@@ -569,6 +569,12 @@ check(failures, undeclared_dirs.empty?,
 
 storage = YAML.safe_load_file(File.join(ROOT, "inventory", "group_vars", "all", "main.yml"))
 declared_paths = storage.fetch("nas_storage").map { |entry| entry.fetch("path") }
+paperless_postgres_storage = storage.fetch("nas_storage").find do |entry|
+  entry["path"] == "{{ nas_docker_root }}/paperless-ngx/postgres"
+end
+check(failures,
+      paperless_postgres_storage && paperless_postgres_storage["mode"] == "0755",
+      "Paperless PostgreSQL 18 mount parent must be traversable by the postgres user")
 
 manifest_entries.each do |service|
   next unless service.is_a?(Hash)

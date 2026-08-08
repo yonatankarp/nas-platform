@@ -136,8 +136,11 @@ nas_storage:
   # Paperless keeps databases, indexes and working state on the Docker volume.
   # The archive, consume inbox and exports are user documents and therefore
   # remain writable on the media volume.
+  # PostgreSQL 18 creates its versioned PGDATA directory beneath this mount and
+  # protects that directory with mode 0700. Its parent must remain traversable
+  # after the entrypoint switches from root to the postgres user.
   - path: "{{ nas_docker_root }}/paperless-ngx/postgres"
-    mode: "0700"
+    mode: "0755"
     recovery: critical
   - path: "{{ nas_docker_root }}/paperless-ngx/redis"
     mode: "0755"
