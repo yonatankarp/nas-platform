@@ -584,6 +584,9 @@ if paperless_contract.include?("PDF_MARKER = \"paperlesscontractenglish\"")
   check(failures,
         paperless_contract.include?('document.fetch("versions").find'),
         "Paperless checksum verification must use the version metadata returned by API v3")
+  check(failures,
+        paperless_contract.match?(/EXPORT_PATH\.mkdir\(0o700\).*?document_exporter/m),
+        "Paperless portable export must create the required empty target directory")
 end
 
 manifest_entries.each do |service|

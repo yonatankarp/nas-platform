@@ -531,6 +531,7 @@ when "seed"
   fail_contract("refusing to replace Paperless persistence artifact") if STATE_PATH.exist? || STATE_PATH.symlink?
   STATE_PATH.open(File::WRONLY | File::CREAT | File::EXCL, 0o600) { |file| file.write(canonical) }
   fail_contract("refusing to replace Paperless export fixture") if EXPORT_PATH.exist? || EXPORT_PATH.symlink?
+  EXPORT_PATH.mkdir(0o700)
   run_bounded(
     120,
     "docker", "exec", "-i", WEBSERVER, "sh", "-ec",
