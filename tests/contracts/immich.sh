@@ -221,6 +221,46 @@ refuse("database credential assertion omits the safe status") unless
     assertion_text.include?(secret_source)
 end
 
+probe = role_tasks.find do |task|
+  task["name"] == "Refuse a rotated Immich database credential"
+end
+refuse("database credential probe is absent") unless probe
+refuse("database credential probe must not use the Docker API") if
+  probe.key?("community.docker.docker_container_exec")
+compose_probe = probe["community.docker.docker_compose_v2_exec"]
+refuse("database credential probe must use Compose exec") unless compose_probe
+{
+  "project_src" => "{{ platform_current_dir }}/services/immich",
+  "project_name" => "{{ immich_compose_project_name }}",
+  "files" => "{{ immich_compose_files }}",
+  "env_files" => ["{{ platform_runtime_dir }}/services/immich/.env"],
+  "service" => "database",
+  "tty" => false
+}.each do |field, expected|
+  refuse("database credential Compose probe #{field} differs") unless
+    compose_probe[field] == expected
+end
+refuse("database credential Compose probe command differs") unless
+  compose_probe["argv"] == [
+    "psql",
+    "--host=database",
+    "--username={{ vault_immich_db_username }}",
+    "--dbname={{ vault_immich_db_name }}",
+    "--no-align",
+    "--tuples-only",
+    "--command=select current_user || '/' || current_database()"
+  ]
+refuse("database credential Compose probe password differs") unless
+  compose_probe.dig("env", "PGPASSWORD") == "{{ vault_immich_db_password }}"
+refuse("database credential Compose probe must remain redacted") unless
+  probe["no_log"] == true
+refuse("database credential assertion must identify the Compose service") unless
+  assertion_text.include?("Compose service database")
+refuse("database credential assertion still identifies a container variable") if
+  assertion_text.include?("immich_postgres_container")
+refuse("role still references immich_postgres_container") if
+  role.include?("immich_postgres_container")
+
 # Immich owns its schema through its own migrations. A role that reaches into
 # PostgreSQL to fix application state is editing an opaque database.
 refuse("role must not mutate the application schema") if

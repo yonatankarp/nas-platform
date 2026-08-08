@@ -23,9 +23,6 @@
       {{ ['compose.yml'] +
          (immich_platform_compose.stat.exists
           | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) }}
-    immich_postgres_container: >-
-      {{ (platform_project_name ~ '-immich-postgres')
-         if platform_project_name | default('') | length > 0 else 'immich_postgres' }}
 
 - name: Render the Immich environment
   ansible.builtin.template:
@@ -56,8 +53,12 @@
 # pg_hba.conf, and so verifies the database name, the role and the password
 # together rather than only the first two.
 - name: Refuse a rotated Immich database credential
-  community.docker.docker_container_exec:
-    container: "{{ immich_postgres_container }}"
+  community.docker.docker_compose_v2_exec:
+    project_src: "{{ platform_current_dir }}/services/immich"
+    project_name: "{{ immich_compose_project_name }}"
+    files: "{{ immich_compose_files }}"
+    env_files: ["{{ platform_runtime_dir }}/services/immich/.env"]
+    service: database
     argv:
       - psql
       - --host=database
@@ -69,6 +70,7 @@
     env:
       PGPASSWORD: "{{ vault_immich_db_password }}"
       PGCONNECT_TIMEOUT: "15"
+    tty: false
   register: immich_database_identity
   when: not ansible_check_mode
   failed_when: false
@@ -93,8 +95,8 @@
       - immich_database_probe_status == 'verified'
     fail_msg: >-
       Immich database credential verification failed
-      ({{ immich_database_probe_status }}) in container
-      {{ immich_postgres_container }}. Restore the previous vault values or
+      ({{ immich_database_probe_status }}) in Compose service database.
+      Restore the previous vault values or
       migrate the database credential explicitly, then rerun.
   when: not ansible_check_mode
 
