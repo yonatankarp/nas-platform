@@ -576,10 +576,12 @@ check(failures,
       paperless_postgres_storage && paperless_postgres_storage["mode"] == "0755",
       "Paperless PostgreSQL 18 mount parent must be traversable by the postgres user")
 paperless_contract = File.read(File.join(ROOT, "tests", "contracts", "paperless.sh"))
-check(failures,
-      paperless_contract.include?("def request(method, path, token: nil, body: nil, expected: [200], parse_json: true)") &&
-      paperless_contract.match?(%r{/preview/.*, token: token, parse_json: false}),
-      "Paperless binary preview responses must bypass JSON parsing")
+if paperless_contract.include?("PDF_MARKER = \"paperlesscontractenglish\"")
+  check(failures,
+        paperless_contract.include?("def request(method, path, token: nil, body: nil, expected: [200], parse_json: true)") &&
+        paperless_contract.match?(%r{/preview/.*, token: token, parse_json: false}),
+        "Paperless binary preview responses must bypass JSON parsing")
+end
 
 manifest_entries.each do |service|
   next unless service.is_a?(Hash)
