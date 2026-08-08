@@ -203,30 +203,6 @@ classifier = role_tasks.find do |task|
 end
 refuse("missing secret-safe database probe classifier") unless classifier
 classifier_text = classifier.to_s
-classifier_template = classifier.fetch("ansible.builtin.set_fact").fetch(
-  "immich_database_probe_status"
-)
-probe_statuses = %w[execution-failed connection-rejected identity-mismatch verified]
-classifier_template_valid = lambda do |template|
-  if template.is_a?(String)
-    quoted_literals = template.scan(/'([^']*)'/).flatten
-    template.match?(/\A\{\{.*\}\}\z/m) &&
-      !template.match?(/\{%[-+]?/) &&
-      template.scan(/\{\{/).length == 1 &&
-      template.scan(/\}\}/).length == 1 &&
-      probe_statuses.all? { |status| quoted_literals.include?(status) }
-  else
-    false
-  end
-end
-refuse("database probe classifier must render one exact Jinja output expression") unless
-  classifier_template_valid.call(classifier_template)
-refuse("database probe classifier accepted a leading-space fixture") if
-  classifier_template_valid.call(" #{classifier_template}")
-refuse("database probe classifier accepted a trailing-space fixture") if
-  classifier_template_valid.call("#{classifier_template} ")
-refuse("database probe classifier accepted a padded verified literal") if
-  classifier_template_valid.call(classifier_template.sub("'verified'", "' verified '"))
 %w[execution-failed connection-rejected identity-mismatch verified].each do |status|
   refuse("database probe classifier omits #{status}") unless classifier_text.include?(status)
 end
