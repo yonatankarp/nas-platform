@@ -203,6 +203,15 @@ classifier = role_tasks.find do |task|
 end
 refuse("missing secret-safe database probe classifier") unless classifier
 classifier_text = classifier.to_s
+classifier_template = classifier.fetch("ansible.builtin.set_fact").fetch(
+  "immich_database_probe_status"
+)
+refuse("database probe classifier must not use Jinja statement blocks") if
+  classifier_template.match?(/\{%[-+]?/)
+refuse("database probe classifier must render one Jinja output expression") unless
+  classifier_template.match?(/\A\s*\{\{.*\}\}\s*\z/m) &&
+  classifier_template.scan(/\{\{/).length == 1 &&
+  classifier_template.scan(/\}\}/).length == 1
 %w[execution-failed connection-rejected identity-mismatch verified].each do |status|
   refuse("database probe classifier omits #{status}") unless classifier_text.include?(status)
 end

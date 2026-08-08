@@ -79,16 +79,11 @@
 - name: Classify the Immich database credential probe
   ansible.builtin.set_fact:
     immich_database_probe_status: >-
-      {% if immich_database_identity.rc is not defined %}
-      execution-failed
-      {% elif immich_database_identity.rc | int != 0 %}
-      connection-rejected
-      {% elif immich_database_identity.stdout | default('') | trim !=
-              vault_immich_db_username ~ '/' ~ vault_immich_db_name %}
-      identity-mismatch
-      {% else %}
-      verified
-      {% endif %}
+      {{ 'execution-failed' if immich_database_identity.rc is not defined
+         else 'connection-rejected' if immich_database_identity.rc | int != 0
+         else 'identity-mismatch' if immich_database_identity.stdout | default('') | trim !=
+              vault_immich_db_username ~ '/' ~ vault_immich_db_name
+         else 'verified' }}
   when: not ansible_check_mode
   no_log: true
 
