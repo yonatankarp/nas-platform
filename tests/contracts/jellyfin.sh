@@ -112,6 +112,9 @@ refuse("managed library must not write metadata into read-only media") unless
   defaults.fetch("jellyfin_library_options").fetch("SaveLocalMetadata") == false
 
 role = File.read(File.join(root, "roles", "jellyfin", "tasks", "main.yml"))
+contract = File.read(File.join(root, "tests", "contracts", "jellyfin.sh"))
+runtime_query = ["fields=Path,MediaSources", "RunTimeTicks"].join(",")
+refuse("fixture query does not request its runtime field") unless contract.include?(runtime_query)
 required_tasks = [
   "Wait for the Jellyfin startup API",
   "Read Jellyfin startup state",
@@ -360,7 +363,8 @@ end
 
 def find_fixture_item(token, user_id, timeout:)
   deadline = Time.now + timeout
-  query = "userId=#{user_id}&recursive=true&includeItemTypes=Movie&fields=Path,MediaSources"
+  query = "userId=#{user_id}&recursive=true&includeItemTypes=Movie&" \
+          "fields=Path,MediaSources,RunTimeTicks"
   loop do
     _response, payload = request("get", "/Items?#{query}", token: token)
     items = payload.fetch("Items")
