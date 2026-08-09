@@ -94,3 +94,31 @@ Run: `ruby tests/policy_test.rb && tests/contracts/paperless.sh static`, followe
 - [ ] **Step 5: Commit, push, and monitor**
 
 Commit without a `Co-Authored-By` trailer, push `agent/task-13-paperless`, and monitor PR #3 CI to completion.
+
+### Task 3: Read recovery catalogue checksums from API v3 versions
+
+**Files:**
+- Modify: `tests/policy_test.rb`
+- Modify: `tests/mac/snapshot-paperless.sh`
+
+- [x] **Step 1: Write the failing snapshot policy assertion**
+
+Require the snapshot catalogue to derive checksums from the root entry in each document's `versions` array.
+
+- [x] **Step 2: Run the policy test and verify RED**
+
+Run: `ruby tests/policy_test.rb`
+
+Expected: exit 1 with `Paperless snapshot catalogue must use API v3 root-version checksums`.
+
+- [x] **Step 3: Add root-version checksum extraction**
+
+Add `document_checksum(document)` to the snapshot Ruby program, fail closed when the root checksum is absent, and use it from `catalogue`.
+
+- [x] **Step 4: Run focused and repository verification**
+
+Run the Paperless static contract, snapshot self-test, shell syntax, policy, Ansible lint, and playbook syntax checks.
+
+- [ ] **Step 5: Commit, push, and monitor**
+
+Commit without a `Co-Authored-By` trailer, push `agent/task-13-paperless`, and monitor PR #3 CI to completion.

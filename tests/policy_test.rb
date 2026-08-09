@@ -576,6 +576,7 @@ check(failures,
       paperless_postgres_storage && paperless_postgres_storage["mode"] == "0755",
       "Paperless PostgreSQL 18 mount parent must be traversable by the postgres user")
 paperless_contract = File.read(File.join(ROOT, "tests", "contracts", "paperless.sh"))
+paperless_snapshot = File.read(File.join(ROOT, "tests", "mac", "snapshot-paperless.sh"))
 if paperless_contract.include?("PDF_MARKER = \"paperlesscontractenglish\"")
   check(failures,
         paperless_contract.include?("def request(method, path, token: nil, body: nil, expected: [200], parse_json: true)") &&
@@ -604,6 +605,10 @@ if paperless_contract.include?("PDF_MARKER = \"paperlesscontractenglish\"")
           document_for
         }mx),
         "Paperless portable import must reload and health-check the webserver search index")
+  check(failures,
+        paperless_snapshot.include?('document.fetch("versions").find') &&
+        paperless_snapshot.match?(/def catalogue.*?"checksum" => document_checksum\(document\)/m),
+        "Paperless snapshot catalogue must use API v3 root-version checksums")
 end
 
 manifest_entries.each do |service|

@@ -258,9 +258,16 @@ def authenticate(username, password)
   request("post", "/api/token/", body: { "username" => username, "password" => password }).fetch("token")
 end
 
+def document_checksum(document)
+  root_version = document.fetch("versions").find { |version| version.fetch("is_root") }
+  checksum = root_version&.fetch("checksum")
+  die("document root-version checksum is absent") if checksum.to_s.empty?
+  checksum
+end
+
 def catalogue(token)
   request("get", "/api/documents/?page_size=1000", token: token).fetch("results").map do |document|
-    { "id" => document.fetch("id"), "checksum" => document.fetch("checksum") }
+    { "id" => document.fetch("id"), "checksum" => document_checksum(document) }
   end.sort_by { |document| document.fetch("id") }
 end
 
