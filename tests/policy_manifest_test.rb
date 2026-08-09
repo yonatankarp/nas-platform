@@ -107,6 +107,8 @@ def fixture_paths(root = ROOT)
     role_root = File.join("roles", role)
     paths << File.join(role_root, "meta", "argument_specs.yml")
     paths << File.join(role_root, "tasks", "main.yml")
+    defaults = File.join(role_root, "defaults", "main.yml")
+    paths << defaults if File.file?(File.join(root, defaults))
     env_template = File.join(role_root, "templates", "env.j2")
     paths << env_template if File.file?(File.join(root, env_template))
   end
@@ -289,14 +291,7 @@ def implement_paperless(root)
   YAML
 
   role_dir = File.join(root, "roles", "paperless_ngx")
-  FileUtils.mkdir_p(File.join(role_dir, "meta"))
   FileUtils.mkdir_p(File.join(role_dir, "tasks"))
-  File.write(File.join(role_dir, "meta", "argument_specs.yml"), <<~YAML)
-    ---
-    argument_specs:
-      main:
-        options: {}
-  YAML
   File.write(File.join(role_dir, "tasks", "main.yml"), <<~YAML)
     ---
     - name: Provision Paperless
