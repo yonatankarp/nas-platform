@@ -26,7 +26,7 @@ def markdown_link_bodies(text)
   links = []
   index = 0
   while index < text.length
-    unless text[index] == "[" && (index.zero? || text[index - 1] != "\\")
+    unless text[index] == "[" && !escaped?(text, index)
       index += 1
       next
     end
@@ -46,6 +46,16 @@ def markdown_link_bodies(text)
     end
   end
   links
+end
+
+def escaped?(text, index)
+  slashes = 0
+  index -= 1
+  while index >= 0 && text[index] == "\\"
+    slashes += 1
+    index -= 1
+  end
+  slashes.odd?
 end
 
 def matching_delimiter(text, start, opening, closing)
@@ -73,9 +83,9 @@ def mask_code(text)
   lines = text.lines
   fence = nil
   lines.each_with_index do |line, index|
-    if (match = line.match(/^( {0,3})(`{3,}|~{3,})/))
-      marker = match[2]
-      if fence && marker.start_with?(fence[0]) && marker.length >= fence[1]
+    prefix, marker, suffix = fence_parts(line)
+    if marker
+      if fence && marker[0] == fence[0] && marker.length >= fence[1] && suffix.match?(/\A[ \t]*(?:\r?\n)?\z/)
         fence = nil
       elsif fence.nil?
         fence = [marker[0], marker.length]
@@ -88,6 +98,47 @@ def mask_code(text)
   [lines.join, fence]
 end
 
+def fence_parts(line)
+  value = line
+  value = value.sub(/\A {0,3}(?:(?:> ?)|(?:[-+*] |\d+[.)] ))*/, "")
+  match = value.match(/\A(`{3,}|~{3,})(.*?)(?:\r?\n)?\z/)
+  match ? [value, match[1], match[2]] : [nil, nil, nil]
+end
+
+def mask_inline_code(text)
+  chars = text.chars
+  index = 0
+  while index < chars.length
+    unless chars[index] == "`"
+      index += 1
+      next
+    end
+    run_end = index
+    run_end += 1 while run_end < chars.length && chars[run_end] == "`"
+    length = run_end - index
+    line_start = text.rindex("\n", index - 1).to_i + 1
+    if text[line_start...index].match?(/\A {4,}\z/) && length >= 3
+      index = run_end
+      next
+    end
+    close = run_end
+    close += 1 until close >= chars.length || (chars[close] == "`" && chars[close, length]&.length == length && chars[close, length].all? { |char| char == "`" } && (close.zero? || chars[close - 1] != "`"))
+    break if close >= chars.length
+    (index...close + length).each { |position| chars[position] = " " unless chars[position] == "\n" }
+    index = close + length
+  end
+  chars.join
+end
+
+def sanitize(value)
+  value.gsub(/[[:cntrl:]]/, "?")
+end
+
+def unescape_destination(value)
+  punctuation = %q{!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~}
+  value.gsub(/\\(.)/) { |match| punctuation.include?(match[1]) ? match[1] : match }
+end
+
 def check_sources(root, sources)
   root = root.realpath
   failures = []
@@ -95,11 +146,8 @@ def check_sources(root, sources)
     source = source.realpath
     text, unclosed_fence = mask_code(source.read)
     failures << "#{source.relative_path_from(root)}: malformed documentation (unclosed code fence)" if unclosed_fence
-    text = text.lines.map do |line|
-      next line if line.match?(/^ {4,}`{3,}/)
-
-      line.gsub(/(?<!\\)(`+)(.*?)\1/) { |match| match.gsub(/[^\n]/, " ") }
-    end.join
+    text = mask_inline_code(text)
+    source_name = sanitize(source.relative_path_from(root).to_s)
     markdown_link_bodies(text).each do |body|
       raw_target = body.strip
       target = markdown_target(body)
@@ -109,7 +157,7 @@ def check_sources(root, sources)
       encoded_path = target.split("#", 2).first
       raise ArgumentError if encoded_path.match?(/%(?![0-9A-Fa-f]{2})/)
 
-      path_text = URI::DEFAULT_PARSER.unescape(encoded_path)
+      path_text = unescape_destination(URI::DEFAULT_PARSER.unescape(encoded_path))
       resolved = source.dirname.join(path_text).cleanpath
       lexical_inside = resolved.to_s.start_with?("#{root}/")
       valid = lexical_inside && resolved != root && (resolved.file? || resolved.directory?)
@@ -121,12 +169,12 @@ def check_sources(root, sources)
         end
       end
       unless valid
-        shown = raw_target.gsub(/[[:cntrl:]]/, " ")
-        failures << "#{source.relative_path_from(root)}: broken local link #{shown}"
+        shown = sanitize(raw_target)
+        failures << "#{source_name}: broken local link #{shown}"
       end
     rescue ArgumentError
-      shown = raw_target.gsub(/[[:cntrl:]]/, " ")
-      failures << "#{source.relative_path_from(root)}: malformed local link #{shown}"
+      shown = sanitize(raw_target)
+      failures << "#{source_name}: malformed local link #{shown}"
     end
   end
   failures
@@ -140,6 +188,7 @@ def self_test
     docs.join("valid file.md").write("ok\n")
     docs.join("plus+file.md").write("ok\n")
     docs.join("balanced(name).md").write("ok\n")
+    docs.join("a(b).md").write("ok\n")
     docs.join("subdir").mkpath
     outside = root.parent.join("docs-links-outside-#{Process.pid}")
     outside.write("outside\n")
@@ -149,6 +198,7 @@ def self_test
       [file](valid%20file.md)
       [plus](plus+file.md)
       [balanced](balanced(name).md)
+      [escaped destination](a\(b\).md)
       [titled](<valid%20file.md> "title")
       [directory](subdir/)
       [fragment](valid%20file.md#section)
@@ -168,6 +218,12 @@ def self_test
           [indented](indented-missing.md)
           ```
       \\`[escaped](escaped-missing.md)\\`
+      \\[one-slash](one-slash-missing.md)
+      \\\\[two-slash](two-slash-missing.md)
+      ``
+      [multiline](multiline-missing.md)
+      ``
+      `` [unequal](unequal-missing.md) `
       [traversal](../../etc/passwd)
       [malformed](bad%ZZ.md)
       [symlink](escape.md)
@@ -175,8 +231,10 @@ def self_test
     source.open("a") { |file| file.write("[control](bad\e[31m\x01.md)\n") }
     unclosed = docs.join("unclosed.md")
     unclosed.write("```markdown\n[hidden](hidden-missing.md)\n")
+    bad_source = docs.join("bad\e-source.md")
+    bad_source.write("[source-control](missing-source.md)\n")
     failures = check_sources(root, [source])
-    expected = ["missing.md", "ordinary-missing.md", "nested-missing.md", "<missing).md>", "indented-missing.md", "escaped-missing.md", "../../etc/passwd", "bad%ZZ.md", "escape.md"]
+    expected = ["missing.md", "ordinary-missing.md", "nested-missing.md", "<missing).md>", "indented-missing.md", "two-slash-missing.md", "unequal-missing.md", "../../etc/passwd", "bad%ZZ.md", "escape.md"]
     unless expected.all? { |target| failures.any? { |failure| failure.end_with?(target) } } && failures.length == expected.length + 1 && failures.none? { |failure| failure.match?(/[[:cntrl:]]/) }
       warn "docs links self-test failed: #{failures.inspect}"
       exit 1
@@ -184,6 +242,11 @@ def self_test
     unclosed_failures = check_sources(root, [unclosed])
     unless unclosed_failures == ["docs/unclosed.md: malformed documentation (unclosed code fence)"]
       warn "docs links unclosed-fence self-test failed: #{unclosed_failures.inspect}"
+      exit 1
+    end
+    source_failures = check_sources(root, [bad_source])
+    unless source_failures.length == 1 && source_failures.none? { |failure| failure.match?(/[[:cntrl:]]/) }
+      warn "docs links source-name self-test failed: #{source_failures.inspect}"
       exit 1
     end
   ensure
