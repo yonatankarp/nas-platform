@@ -146,6 +146,32 @@ module PortainerParity
     end
   end
 
+  def validate_decrypted_document(source, mapping_path, commit)
+    inspect_yaml_tree!(source)
+    document = YAML.safe_load(source, aliases: false, filename: sanitized(mapping_path))
+    document = mapping!(document, "decrypted document")
+    exact_fields!(document, ROOT_FIELDS, "decrypted document root")
+    fail!("decrypted schema is invalid") unless document["schema"] == 1
+    validate_commit!(document["legacy_commit"])
+    validate_commit!(commit, "requested legacy commit")
+    fail!("legacy commit mismatch") unless document["legacy_commit"] == commit
+
+    mapping = validate_mapping(load_mapping(mapping_path), commit)
+    stacks = mapping!(document["stacks"], "decrypted stacks")
+    fail!("decrypted stack set differs") unless stacks.keys.all? { |key| key.is_a?(String) } &&
+                                                   stacks.keys.sort == REQUIRED_STACKS
+    stacks.each do |stack, values|
+      rules = mapping.fetch("stacks").fetch(stack)
+      values = mapping!(values, "decrypted stack")
+      fail!("decrypted variable set differs") unless values.keys.all? { |key| key.is_a?(String) } &&
+                                                        values.keys.sort == rules.keys.sort
+      fail!("decrypted value is invalid") unless values.values.all? { |value| value.is_a?(String) }
+    end
+    true
+  rescue Psych::Exception
+    fail!("decrypted YAML is malformed")
+  end
+
   def validate_rule!(rule)
     rule = mapping!(rule, "mapping rule")
     classification = rule["classification"]
@@ -218,17 +244,33 @@ module PortainerParity
   end
 
   def parse_options(arguments)
-    options = { format: "yaml" }
+    options = { validate_stdin: false }
+    set = lambda do |key, value|
+      fail!("command line is invalid") if options.key?(key)
+
+      options[key] = value
+    end
     parser = OptionParser.new do |opts|
-      opts.on("--input-dir DIR") { |value| options[:input_dir] = value }
-      opts.on("--mapping FILE") { |value| options[:mapping] = value }
-      opts.on("--legacy-commit COMMIT") { |value| options[:legacy_commit] = value }
-      opts.on("--format FORMAT") { |value| options[:format] = value }
+      opts.on("--input-dir DIR") { |value| set.call(:input_dir, value) }
+      opts.on("--mapping FILE") { |value| set.call(:mapping, value) }
+      opts.on("--legacy-commit COMMIT") { |value| set.call(:legacy_commit, value) }
+      opts.on("--format FORMAT") { |value| set.call(:format, value) }
+      opts.on("--validate-stdin") do
+        fail!("command line is invalid") if options[:validate_stdin]
+
+        options[:validate_stdin] = true
+      end
     end
     parser.parse!(arguments)
     fail!("unexpected positional argument") unless arguments.empty?
-    %i[input_dir mapping legacy_commit].each { |key| fail!("#{key.to_s.tr('_', ' ')} is required") unless options[key] }
-    fail!("format is invalid") unless %w[yaml json].include?(options[:format])
+    %i[mapping legacy_commit].each { |key| fail!("#{key.to_s.tr('_', ' ')} is required") unless options[key] }
+    if options[:validate_stdin]
+      fail!("command line is invalid") if options[:input_dir] || options[:format]
+    else
+      fail!("input dir is required") unless options[:input_dir]
+      options[:format] ||= "yaml"
+      fail!("format is invalid") unless %w[yaml json].include?(options[:format])
+    end
     options
   rescue OptionParser::ParseError
     fail!("command line is invalid")
@@ -236,6 +278,12 @@ module PortainerParity
 
   def run(arguments)
     options = parse_options(arguments)
+    if options[:validate_stdin]
+      validate_decrypted_document(STDIN.read, options.fetch(:mapping), options.fetch(:legacy_commit))
+      puts "Portainer parity: decrypted schema is valid"
+      return
+    end
+
     mapping = load_mapping(options.fetch(:mapping))
     document = build_parity(options.fetch(:input_dir), mapping, options.fetch(:legacy_commit))
     STDOUT.write(serialize(document, options.fetch(:format)))
