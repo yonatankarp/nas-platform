@@ -10,6 +10,9 @@ class PortainerParityError < StandardError; end
 module PortainerParity
   ROOT_FIELDS = %w[legacy_commit schema stacks].freeze
   CLASSIFICATIONS = %w[excluded inventory role vault].freeze
+  REQUIRED_STACKS = %w[
+    audiobookshelf beszel dozzle immich jellyfin komga ntfy paperless-ngx tinymediamanager
+  ].freeze
   ENVIRONMENT_NAME = /\A[A-Za-z_][A-Za-z0-9_]*\z/
   STACK_NAME = /\A[a-z0-9][a-z0-9-]*\z/
   COMMIT = /\A[0-9a-f]{40}\z/
@@ -44,6 +47,8 @@ module PortainerParity
 
   def inspect_yaml_tree!(source)
     tree = Psych.parse_stream(source)
+    fail!("mapping must contain exactly one YAML document") unless tree.children.length == 1
+
     traverse_yaml!(tree)
   rescue Psych::Exception
     fail!("mapping YAML is malformed")
@@ -70,7 +75,10 @@ module PortainerParity
 
     source = File.binread(path)
     inspect_yaml_tree!(source)
-    YAML.safe_load_file(path, aliases: false)
+    document = YAML.safe_load_file(path, aliases: false)
+    fail!("mapping document is empty") if document.nil?
+
+    document
   rescue SystemCallError
     fail!("mapping is unavailable")
   rescue Psych::Exception
@@ -88,7 +96,8 @@ module PortainerParity
     fail!("legacy commit mismatch") if commit && legacy_commit != commit
 
     stacks = mapping!(document["stacks"], "mapping stacks")
-    fail!("mapping stacks are empty") if stacks.empty?
+    fail!("mapping stack set differs") unless stacks.keys.all? { |key| key.is_a?(String) } &&
+                                                 stacks.keys.sort == REQUIRED_STACKS
     stacks.each do |stack, rules|
       string_identifier!(stack, "stack name", STACK_NAME)
       validate_rules!(rules, stack)
