@@ -98,10 +98,7 @@ assert_signal_case() {
   importer_pid=$!
   IFS= read -r marker < "$ready"
   [ "$marker" = ready ] || fail "$signal: fake vault did not synchronize"
-  printf release > "$gate" &
-  release_pid=$!
   if wait "$importer_pid"; then status=0; else status=$?; fi
-  wait "$release_pid" || true
   [ "$status" -eq "$expected" ] || fail "$signal: expected $expected, got $status"
   [ ! -e "$target" ] && [ ! -L "$target" ] || fail "$signal: output exists"
   [ ! -s "$stdout" ] || fail "$signal: stdout is not empty"
