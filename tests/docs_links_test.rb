@@ -215,12 +215,17 @@ end
 
 def mask_html_comments(text)
   result = text.dup
-  code_ranges = same_line_inline_ranges(text)
+  fence_masked, = mask_code(text)
+  code_ranges = inline_partners(fence_masked).filter_map do |opening, closing|
+    (opening...closing) if opening < closing
+  end.sort_by(&:begin)
   range_index = 0
   index = 0
   while (start = result.index("<!--", index))
     range_index += 1 while code_ranges[range_index] && code_ranges[range_index].end <= start
-    inside_code = code_ranges[range_index]&.cover?(start)
+    line_start = result.rindex("\n", start - 1).to_i + 1
+    block_comment = result[line_start...start].strip.empty?
+    inside_code = !block_comment && code_ranges[range_index]&.cover?(start)
     if escaped?(result, start) || inside_code
       index = start + 4
       next
@@ -234,7 +239,10 @@ def mask_html_comments(text)
 end
 
 def mask_block_contexts(text)
-  protected_ranges = same_line_inline_ranges(text)
+  fence_masked, = mask_code(text)
+  protected_ranges = inline_partners(fence_masked).filter_map do |opening, closing|
+    (opening...closing) if opening < closing
+  end.sort_by(&:begin)
   range_index = 0
   comment = false
   fence = nil
@@ -275,7 +283,9 @@ def mask_block_contexts(text)
 
       absolute = offset + start
       range_index += 1 while protected_ranges[range_index] && protected_ranges[range_index].end <= absolute
-      if escaped?(line, start) || protected_ranges[range_index]&.cover?(absolute)
+      block_comment = line[0...start].strip.empty?
+      protected = !block_comment && protected_ranges[range_index]&.cover?(absolute)
+      if escaped?(line, start) || protected
         index = start + 4
       else
         comment = true
@@ -285,17 +295,6 @@ def mask_block_contexts(text)
     offset += line.length
     chars.join
   end.join
-end
-
-def same_line_inline_ranges(text)
-  offset = 0
-  text.lines.flat_map do |line|
-    ranges = inline_partners(line).filter_map do |opening, closing|
-      ((offset + opening)...(offset + closing)) if opening < closing
-    end
-    offset += line.length
-    ranges
-  end.sort_by(&:begin)
 end
 
 def mask_contexts(text)
@@ -328,6 +327,7 @@ def mask_contexts(text)
       end
     end
     chars = line.chars
+    first_non_space = line.index(/[^ ]/) || line.length
     index = 0
     while index < chars.length
       if comment
@@ -370,8 +370,7 @@ def mask_contexts(text)
           index = finish
           next
         end
-        line_prefix = chars[0...index].join
-        if run_length >= 3 && line_prefix.match?(/\A {4,}\z/)
+        if run_length >= 3 && index == first_non_space && index >= 4
           index = finish
           inline = nil
           next
@@ -400,6 +399,7 @@ def inline_partners(text)
   partners = {}
   tokens = []
   offset = 0
+  paragraph = 0
   text.lines.each do |line|
     index = 0
     leading_space = true
@@ -424,20 +424,22 @@ def inline_partners(text)
       length = finish - index
       position = offset + index
       indented_block = leading_space && leading_space_count >= 4 && length >= 3
-      tokens << [position, length] unless slash_count.odd? || indented_block
+      tokens << [position, length, paragraph] unless slash_count.odd? || indented_block
       leading_space = false
       slash_count = 0
       index = finish
     end
     offset += line.length
+    paragraph += 1 if line.strip.empty?
   end
 
   next_matching = {}
   previous_by_length = {}
   tokens.each_index do |token_index|
     length = tokens[token_index][1]
-    next_matching[previous_by_length[length]] = token_index if previous_by_length.key?(length)
-    previous_by_length[length] = token_index
+    key = [tokens[token_index][2], length]
+    next_matching[previous_by_length[key]] = token_index if previous_by_length.key?(key)
+    previous_by_length[key] = token_index
   end
   token_index = 0
   while token_index < tokens.length
@@ -614,7 +616,7 @@ def self_test
     unclosed_four = docs.join("unclosed-four.md")
     unclosed_four.write(">    ```markdown\n>    [hidden](hidden-four-missing.md)\n")
     failures = check_sources(root, [source])
-    expected = ["after-prose-missing.md", "title-paren-missing.md", "single-title-missing.md", "escaped-comment-missing.md", "missing.md", "ordinary-missing.md", "nested-missing.md", "<missing).md>", "indented-missing.md", "escaped-missing.md", "two-slash-missing.md", "unmatched-missing.md", "ten-digit-missing.md", "after-inline-comment-missing.md", "after-unmatched-missing.md", "post-unmatched-missing.md", "unequal-missing.md"]
+    expected = ["after-prose-missing.md", "title-paren-missing.md", "single-title-missing.md", "escaped-comment-missing.md", "missing.md", "ordinary-missing.md", "nested-missing.md", "<missing).md>", "indented-missing.md", "escaped-missing.md", "two-slash-missing.md", "invalid-info-missing.md", "ten-digit-missing.md", "after-inline-comment-missing.md", "after-unmatched-missing.md", "post-unmatched-missing.md", "unequal-missing.md"]
     categories = [
       "malformed local link post%ZZ.md",
       "broken local link ../../etc/passwd",
@@ -666,6 +668,20 @@ def self_test
     cross_line_close_failures = check_sources(root, [cross_line_close])
     unless cross_line_close_failures == ["docs/cross-line-close.md: broken local link cross-line-must-check.md"]
       warn "docs links cross-line-close self-test failed: #{cross_line_close_failures.inspect}"
+      exit 1
+    end
+    paragraph_boundary = docs.join("paragraph-boundary.md")
+    paragraph_boundary.write("prefix `unclosed\n\n[ordinary](paragraph-boundary-missing.md) `\n")
+    paragraph_boundary_failures = check_sources(root, [paragraph_boundary])
+    unless paragraph_boundary_failures == ["docs/paragraph-boundary.md: broken local link paragraph-boundary-missing.md"]
+      warn "docs links paragraph-boundary self-test failed: #{paragraph_boundary_failures.inspect}"
+      exit 1
+    end
+    multiline_comment_code = docs.join("multiline-comment-code.md")
+    multiline_comment_code.write("`start\ninside <!-- [hidden](multiline-comment-code-hidden.md)\nend`\n[after](multiline-comment-code-after.md)\n")
+    multiline_comment_code_failures = check_sources(root, [multiline_comment_code])
+    unless multiline_comment_code_failures == ["docs/multiline-comment-code.md: broken local link multiline-comment-code-after.md"]
+      warn "docs links multiline-comment-code self-test failed: #{multiline_comment_code_failures.inspect}"
       exit 1
     end
     nested_delimiters = docs.join("nested-delimiters.md")
