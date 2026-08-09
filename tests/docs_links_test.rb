@@ -49,6 +49,9 @@ def markdown_link_bodies(text)
     open = index + 1
     if text[open] == "("
       close = parentheses[open]
+      if text[open + 1] == "<"
+        close = angle_destination_close(text, open)
+      end
       links << text[(open + 1)...close] if close
       index = close ? close + 1 : open + 1
     else
@@ -58,29 +61,39 @@ def markdown_link_bodies(text)
   links
 end
 
+def angle_destination_close(text, open)
+  start = open + 1
+  start += 1 while start < text.length && text[start].match?(/\s/)
+  return unless text[start] == "<"
+
+  closing_angle = text.index(">", start + 1)
+  return unless closing_angle
+
+  text.index(")", closing_angle + 1)
+end
+
 def matching_parentheses(text)
   stack = []
   matches = {}
+  candidates = {}
+  cursor = 0
+  while (position = text.index("](", cursor))
+    candidates[position + 1] = true unless escaped?(text, position)
+    cursor = position + 2
+  end
   index = 0
   while index < text.length
     if text[index] == "\\"
       index += 2
       next
     end
-    if text[index] == "(" && !stack.empty? && stack[-1][2]
-      # Parentheses inside a quoted link title are literal.
-    elsif text[index] == "("
-      stack << [index, false, false]
+    if text[index] == "(" && (stack.any? || candidates[index]) && !(stack.any? && stack[-1][1])
+      stack << [index, false]
     elsif text[index].match?(/[\"']/) && !stack.empty? && !stack[-1][1] && index.positive? && text[index - 1].match?(/\s/)
-      stack[-1][2] = true
-    elsif text[index].match?(/[\"']/) && !stack.empty? && stack[-1][2]
-      stack[-1][2] = false
-    elsif text[index] == "<" && !stack.empty? && !stack[-1][2]
       stack[-1][1] = true
-    elsif text[index] == ">" && !stack.empty? && !stack[-1][2]
+    elsif text[index].match?(/[\"']/) && !stack.empty? && stack[-1][1]
       stack[-1][1] = false
-    elsif text[index] == ")" && !stack.empty? && !stack[-1][1] && !stack[-1][2]
-      open, = stack.pop
+    elsif text[index] == ")" && !stack.empty? && !stack[-1][1] && (open = stack.pop[0])
       matches[open] = index
     end
     index += 1
