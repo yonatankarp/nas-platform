@@ -6,6 +6,7 @@ ruby tests/secrets_docs_test.rb
 ruby tests/ci_workflow_test.rb
 ruby tests/policy_manifest_test.rb
 ruby tests/portainer_parity_mapping_test.rb
+ruby tests/managed_user_capabilities_test.rb --self-test
 tests/portainer_parity_import_test.sh
 ansible-playbook -i localhost, -c local tests/compose_metadata_filter_test.yml
 ruby tests/run_contracts_test.rb

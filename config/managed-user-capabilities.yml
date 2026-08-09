@@ -1,0 +1,87 @@
+---
+schema: 1
+services:
+  audiobookshelf:
+    preserves_unmanaged_users: true
+    password_rotation: refuse
+    existing_identity_password_update: forbidden
+    mode: api
+    interfaces:
+      list: api/users
+      create: api/users
+      authenticate: login
+      reconcile: api/users/{id}
+  beszel:
+    preserves_unmanaged_users: true
+    password_rotation: refuse
+    existing_identity_password_update: forbidden
+    mode: api
+    interfaces:
+      list: PocketBase users collection
+      create: PocketBase users collection
+      authenticate: PocketBase users collection
+      reconcile: PocketBase users collection
+  dozzle:
+    preserves_unmanaged_users: true
+    password_rotation: refuse
+    existing_identity_password_update: forbidden
+    mode: declarative_file
+    interfaces:
+      list: data/users.yml
+      create: data/users.yml
+      authenticate: api/token
+      reconcile: data/users.yml
+  immich:
+    preserves_unmanaged_users: true
+    password_rotation: refuse
+    existing_identity_password_update: forbidden
+    mode: api
+    interfaces:
+      list: admin/users
+      create: admin/users
+      authenticate: auth/login
+      reconcile: admin/users
+  jellyfin:
+    preserves_unmanaged_users: true
+    password_rotation: refuse
+    existing_identity_password_update: forbidden
+    mode: api
+    interfaces:
+      list: Users
+      create: Users/New
+      authenticate: Users/AuthenticateByName
+      reconcile: Users/{id}/Policy
+  komga:
+    preserves_unmanaged_users: true
+    password_rotation: refuse
+    existing_identity_password_update: forbidden
+    mode: api
+    interfaces:
+      list: api/v2/users
+      create: api/v2/users
+      authenticate: api/v2/users/me
+      reconcile: api/v2/users/{id}
+  ntfy:
+    preserves_unmanaged_users: true
+    password_rotation: refuse
+    existing_identity_password_update: forbidden
+    mode: declarative_environment
+    interfaces:
+      list: NTFY_AUTH_USERS/NTFY_AUTH_ACCESS/NTFY_AUTH_TOKENS
+      create: NTFY_AUTH_USERS/NTFY_AUTH_ACCESS/NTFY_AUTH_TOKENS
+      authenticate: Basic authentication
+      reconcile: NTFY_AUTH_USERS/NTFY_AUTH_ACCESS/NTFY_AUTH_TOKENS
+  paperless-ngx:
+    preserves_unmanaged_users: true
+    password_rotation: refuse
+    existing_identity_password_update: forbidden
+    mode: django_cli
+    interfaces:
+      list: get_user_model
+      create: get_user_model
+      authenticate: api/token
+      reconcile: get_user_model
+  tinymediamanager:
+    mode: single_shared_login
+    shared_credential_contract: vault_tinymediamanager_password
+    allowlist: false
