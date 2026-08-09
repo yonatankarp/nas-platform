@@ -49,6 +49,15 @@ check(failures, superuser_create&.fetch("failed_when", nil) == false,
 check(failures, superuser_create&.fetch("changed_when", nil).to_s.include?("beszel_superuser_create.rc") &&
                 superuser_create&.fetch("changed_when", nil).to_s.match?(/==\s*0/),
       "Beszel must report superuser creation only when create exits successfully")
+check(failures, superuser_create && !superuser_create.key?("when"),
+      "Beszel atomic superuser creation must be unconditional")
+check(failures,
+      superuser_create&.fetch("no_log", nil) == "{{ beszel_no_log | default(true) }}",
+      "Beszel atomic superuser creation must use the repository redaction contract")
+check(failures, superuser_create && !superuser_create.key?("tags"),
+      "Beszel atomic superuser creation must not run during verify-only execution")
+check(failures, superuser_create && !superuser_create.key?("check_mode"),
+      "Beszel atomic superuser creation must obey Ansible check mode")
 
 superuser_auth = tasks.find { |task| task["name"] == "Authenticate as the superuser" }
 expected_superuser_auth = {
@@ -213,6 +222,42 @@ if ARGV == ["--self-test"] && failures.empty?
       lambda do |fixture|
         create = fixture.find { |task| task["name"] == "Create the application user" }
         create.dig("ansible.builtin.uri", "body")["passwordConfirm"] = "wrong"
+      end
+    ],
+    "conditional atomic superuser creation" => [
+      "Beszel atomic superuser creation must be unconditional",
+      lambda do |fixture|
+        create = fixture.find do |task|
+          task["name"] == "Create the superuser without updating an existing identity"
+        end
+        create["when"] = false
+      end
+    ],
+    "unredacted atomic superuser creation" => [
+      "Beszel atomic superuser creation must use the repository redaction contract",
+      lambda do |fixture|
+        create = fixture.find do |task|
+          task["name"] == "Create the superuser without updating an existing identity"
+        end
+        create["no_log"] = false
+      end
+    ],
+    "verify-tagged atomic superuser creation" => [
+      "Beszel atomic superuser creation must not run during verify-only execution",
+      lambda do |fixture|
+        create = fixture.find do |task|
+          task["name"] == "Create the superuser without updating an existing identity"
+        end
+        create["tags"] = ["platform_verify_beszel"]
+      end
+    ],
+    "check-mode-forced atomic superuser creation" => [
+      "Beszel atomic superuser creation must obey Ansible check mode",
+      lambda do |fixture|
+        create = fixture.find do |task|
+          task["name"] == "Create the superuser without updating an existing identity"
+        end
+        create["check_mode"] = false
       end
     ]
   }
