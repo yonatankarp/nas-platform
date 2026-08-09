@@ -176,6 +176,52 @@ if defined?(ClassifyChanges)
     check(failures, selected_lanes(paths).include?("paperless"),
           "renaming a Paperless-owned path to docs must retain Paperless selection")
   end
+
+  Dir.mktmpdir("classify-changes-copy-delete-") do |root|
+    system("git", "init", "-q", root, exception: true)
+    system("git", "-C", root, "config", "user.email", "ci@example.invalid", exception: true)
+    system("git", "-C", root, "config", "user.name", "CI Test", exception: true)
+    beszel_source = File.join(root, "roles", "beszel", "tasks", "main.yml")
+    dozzle_source = File.join(root, "roles", "dozzle", "tasks", "main.yml")
+    FileUtils.mkdir_p(File.dirname(beszel_source))
+    FileUtils.mkdir_p(File.dirname(dozzle_source))
+    File.write(beszel_source, "beszel owned content\n" * 20)
+    File.write(dozzle_source, "dozzle owned content\n" * 20)
+    system("git", "-C", root, "add", ".", exception: true)
+    system("git", "-C", root, "commit", "-qm", "base", exception: true)
+    base, status = Open3.capture2("git", "-C", root, "rev-parse", "HEAD")
+    check(failures, status.success?, "failed to resolve temporary copy base commit")
+    base = base.strip
+
+    copy = File.join(root, "docs", "copied.md")
+    FileUtils.mkdir_p(File.dirname(copy))
+    FileUtils.cp(beszel_source, copy)
+    system("git", "-C", root, "add", ".", exception: true)
+    system("git", "-C", root, "commit", "-qm", "copy", exception: true)
+    copy_head, status = Open3.capture2("git", "-C", root, "rev-parse", "HEAD")
+    check(failures, status.success?, "failed to resolve temporary copy commit")
+    copy_head = copy_head.strip
+
+    copied_paths = Dir.chdir(root) { ClassifyChanges.changed_paths(base, copy_head) }
+    check(failures,
+          copied_paths == ["roles/beszel/tasks/main.yml", "docs/copied.md"],
+          "copy parsing must return source and destination paths, got #{copied_paths.inspect}")
+    check(failures, selected_lanes(copied_paths).include?("beszel"),
+          "copying a Beszel-owned path to docs must retain Beszel selection")
+
+    FileUtils.rm(dozzle_source)
+    system("git", "-C", root, "add", "-u", exception: true)
+    system("git", "-C", root, "commit", "-qm", "delete", exception: true)
+    delete_head, status = Open3.capture2("git", "-C", root, "rev-parse", "HEAD")
+    check(failures, status.success?, "failed to resolve temporary deletion commit")
+    delete_head = delete_head.strip
+
+    deleted_paths = Dir.chdir(root) { ClassifyChanges.changed_paths(copy_head, delete_head) }
+    check(failures, deleted_paths == ["roles/dozzle/tasks/main.yml"],
+          "deletion parsing must retain the deleted path, got #{deleted_paths.inspect}")
+    check(failures, selected_lanes(deleted_paths).include?("dozzle"),
+          "deleting a Dozzle-owned path must retain Dozzle selection")
+  end
 end
 
 # Invalid mode combinations must fail with usage status before touching output.

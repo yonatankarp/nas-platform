@@ -48,7 +48,8 @@ module ClassifyChanges
 
   def changed_paths(base, head)
     output, error, status = Open3.capture3(
-      "git", "diff", "--name-status", "-z", "--find-renames", "#{base}...#{head}"
+      "git", "diff", "--name-status", "-z", "--find-renames", "--find-copies-harder",
+      "#{base}...#{head}"
     )
     raise "git diff failed: #{error.strip}" unless status.success?
 
