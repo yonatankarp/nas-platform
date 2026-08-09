@@ -59,3 +59,60 @@ vault_paperless_mail_account_name: example-mail-account
 vault_paperless_mail_rule_name: example-mail-rule
 
 vault_tinymediamanager_password: example-password
+
+# Synthetic examples only. Recover deployed identities and their matching
+# credentials during migration; do not use these placeholders in production.
+vault_managed_users:
+  audiobookshelf:
+    - username: reader-example-invalid
+      password: example-reader-password
+      type: user
+      is_active: true
+      permissions:
+        accessAllLibraries: false
+        libraries: []
+  beszel:
+    - email: reader@beszel.example.invalid
+      password: example-reader-password
+      role: user
+      verified: true
+  dozzle:
+    - username: reader-example-invalid
+      password: example-reader-password
+      password_hash: $2b$12$11111111111111111111111111111111111111111111111111111
+      email: reader@dozzle.example.invalid
+      name: Synthetic Reader
+      filter: ""
+      roles: none
+  immich:
+    - email: reader@immich.example.invalid
+      password: example-reader-password
+      name: Synthetic Reader
+      quota_size: 0
+  jellyfin:
+    - username: reader-example-invalid
+      password: example-reader-password
+      policy:
+        IsAdministrator: false
+        EnableAllFolders: false
+  komga:
+    - email: reader@komga.example.invalid
+      password: example-reader-password
+      roles: [PAGE_STREAMING]
+  ntfy:
+    - username: reader-example-invalid
+      password: example-reader-password
+      password_hash: $2b$12$22222222222222222222222222222222222222222222222222222
+      role: user
+      access:
+        - topic: nas-critical
+          permission: read-only
+      tokens: []
+  paperless_ngx:
+    - username: reader-example-invalid
+      password: example-reader-password
+      email: reader@paperless.example.invalid
+      is_active: true
+      is_staff: false
+      is_superuser: false
+      groups: []

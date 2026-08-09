@@ -1,4 +1,200 @@
 ---
+- name: Validate managed-user service keys
+  ansible.builtin.assert:
+    that:
+      - vault_managed_users is mapping
+      - >-
+        vault_managed_users.keys() | list | sort ==
+        ['audiobookshelf', 'beszel', 'dozzle', 'immich', 'jellyfin',
+         'komga', 'ntfy', 'paperless_ngx'] | sort
+      - vault_managed_users.audiobookshelf | type_debug == 'list'
+      - vault_managed_users.beszel | type_debug == 'list'
+      - vault_managed_users.dozzle | type_debug == 'list'
+      - vault_managed_users.immich | type_debug == 'list'
+      - vault_managed_users.jellyfin | type_debug == 'list'
+      - vault_managed_users.komga | type_debug == 'list'
+      - vault_managed_users.ntfy | type_debug == 'list'
+      - vault_managed_users.paperless_ngx | type_debug == 'list'
+    fail_msg: Managed-user service keys are invalid; values are redacted.
+  no_log: true
+
+- name: Validate audiobookshelf managed-user entries
+  ansible.builtin.assert:
+    that:
+      - item.keys() | list | sort == ['username', 'password', 'type', 'is_active', 'permissions'] | sort
+      - item.username | trim | length > 0
+      - item.password | length > 0
+      - item.type in ['admin', 'user', 'guest']
+      - item.is_active is boolean
+      - item.permissions is mapping
+    fail_msg: audiobookshelf managed user has invalid field; values are redacted.
+  loop: "{{ vault_managed_users.audiobookshelf }}"
+  loop_control:
+    label: audiobookshelf
+  no_log: true
+
+- name: Validate beszel managed-user entries
+  ansible.builtin.assert:
+    that:
+      - item.keys() | list | sort == ['email', 'password', 'role', 'verified'] | sort
+      - item.email is match('^[^@ ]+@[^@ ]+$')
+      - item.password | length > 0
+      - item.role in ['user', 'admin']
+      - item.verified is boolean
+    fail_msg: beszel managed user has invalid field; values are redacted.
+  loop: "{{ vault_managed_users.beszel }}"
+  loop_control:
+    label: beszel
+  no_log: true
+
+- name: Validate dozzle managed-user entries
+  ansible.builtin.assert:
+    that:
+      - item.keys() | list | sort == ['username', 'password', 'password_hash', 'email', 'name', 'filter', 'roles'] | sort
+      - item.username | trim | length > 0
+      - item.password | length > 0
+      - item.password_hash is match('^\\$2[aby]\\$[0-9]{2}\\$[./A-Za-z0-9]{53}$')
+      - item.email | length == 0 or item.email is match('^[^@ ]+@[^@ ]+$')
+      - item.name | length > 0
+      - item.filter is string
+      - item.roles in ['none', 'user', 'admin']
+    fail_msg: dozzle managed user has invalid field; values are redacted.
+  loop: "{{ vault_managed_users.dozzle }}"
+  loop_control:
+    label: dozzle
+  no_log: true
+
+- name: Validate immich managed-user entries
+  ansible.builtin.assert:
+    that:
+      - item.keys() | list | sort == ['email', 'password', 'name', 'quota_size'] | sort
+      - item.email is match('^[^@ ]+@[^@ ]+$')
+      - item.password | length > 0
+      - item.name | length > 0
+      - item.quota_size is integer
+      - item.quota_size | int >= 0
+    fail_msg: immich managed user has invalid field; values are redacted.
+  loop: "{{ vault_managed_users.immich }}"
+  loop_control:
+    label: immich
+  no_log: true
+
+- name: Validate jellyfin managed-user entries
+  ansible.builtin.assert:
+    that:
+      - item.keys() | list | sort == ['username', 'password', 'policy'] | sort
+      - item.username | trim | length > 0
+      - item.password | length > 0
+      - item.policy is mapping
+    fail_msg: jellyfin managed user has invalid field; values are redacted.
+  loop: "{{ vault_managed_users.jellyfin }}"
+  loop_control:
+    label: jellyfin
+  no_log: true
+
+- name: Validate komga managed-user entries
+  ansible.builtin.assert:
+    that:
+      - item.keys() | list | sort == ['email', 'password', 'roles'] | sort
+      - item.email is match('^[^@ ]+@[^@ ]+$')
+      - item.password | length > 0
+      - item.roles | type_debug == 'list'
+      - item.roles | length > 0
+      - item.roles | difference(['ADMIN', 'FILE_DOWNLOAD', 'PAGE_STREAMING', 'KOBO_SYNC', 'OPDS']) | length == 0
+      - item.roles | unique | length == item.roles | length
+    fail_msg: komga managed user has invalid field; values are redacted.
+  loop: "{{ vault_managed_users.komga }}"
+  loop_control:
+    label: komga
+  no_log: true
+
+- name: Validate ntfy managed-user entries
+  ansible.builtin.assert:
+    that:
+      - item.keys() | list | sort == ['username', 'password', 'password_hash', 'role', 'access', 'tokens'] | sort
+      - item.username | trim | length > 0
+      - item.password | length > 0
+      - item.password_hash is match('^\\$2[aby]\\$[0-9]{2}\\$[./A-Za-z0-9]{53}$')
+      - item.role in ['user', 'admin']
+      - item.access | type_debug == 'list'
+      - item.tokens | type_debug == 'list'
+      - item.tokens | select('match', '^tk_[a-z0-9]{29}$') | list | length == item.tokens | length
+      - item.tokens | unique | length == item.tokens | length
+    fail_msg: ntfy managed user has invalid field; values are redacted.
+  loop: "{{ vault_managed_users.ntfy }}"
+  loop_control:
+    label: ntfy
+  no_log: true
+
+- name: Validate ntfy managed-user access entries
+  ansible.builtin.assert:
+    that:
+      - item.1.keys() | list | sort == ['topic', 'permission'] | sort
+      - item.1.topic | length > 0
+      - item.1.permission in ['read-only', 'write-only', 'read-write', 'deny']
+    fail_msg: ntfy managed user has invalid access field; values are redacted.
+  loop: "{{ vault_managed_users.ntfy | subelements('access') }}"
+  loop_control:
+    label: ntfy
+  no_log: true
+
+- name: Validate paperless_ngx managed-user entries
+  ansible.builtin.assert:
+    that:
+      - item.keys() | list | sort == ['username', 'password', 'email', 'is_active', 'is_staff', 'is_superuser', 'groups'] | sort
+      - item.username | trim | length > 0
+      - item.password | length > 0
+      - item.email is match('^[^@ ]+@[^@ ]+$')
+      - item.is_active is boolean
+      - item.is_staff is boolean
+      - item.is_superuser is boolean
+      - item.groups | type_debug == 'list'
+      - item.groups | reject('string') | list | length == 0
+      - item.groups | reject('match', '.+') | list | length == 0
+      - item.groups | unique | length == item.groups | length
+    fail_msg: paperless_ngx managed user has invalid field; values are redacted.
+  loop: "{{ vault_managed_users.paperless_ngx }}"
+  loop_control:
+    label: paperless_ngx
+  no_log: true
+
+- name: Validate managed-user identity uniqueness and separation
+  ansible.builtin.assert:
+    that:
+      - vault_managed_users.audiobookshelf | map(attribute='username') | map('trim') | map('lower') | list | unique | length == vault_managed_users.audiobookshelf | length
+      - vault_managed_users.beszel | map(attribute='email') | map('trim') | map('lower') | list | unique | length == vault_managed_users.beszel | length
+      - vault_managed_users.dozzle | map(attribute='username') | map('trim') | map('lower') | list | unique | length == vault_managed_users.dozzle | length
+      - vault_managed_users.immich | map(attribute='email') | map('trim') | map('lower') | list | unique | length == vault_managed_users.immich | length
+      - vault_managed_users.jellyfin | map(attribute='username') | map('trim') | map('lower') | list | unique | length == vault_managed_users.jellyfin | length
+      - vault_managed_users.komga | map(attribute='email') | map('trim') | map('lower') | list | unique | length == vault_managed_users.komga | length
+      - vault_managed_users.ntfy | map(attribute='username') | map('trim') | map('lower') | list | unique | length == vault_managed_users.ntfy | length
+      - vault_managed_users.paperless_ngx | map(attribute='username') | map('trim') | map('lower') | list | unique | length == vault_managed_users.paperless_ngx | length
+      - vault_audiobookshelf_admin_username | trim | lower not in vault_managed_users.audiobookshelf | map(attribute='username') | map('trim') | map('lower') | list
+      - vault_beszel_superuser_email | trim | lower not in vault_managed_users.beszel | map(attribute='email') | map('trim') | map('lower') | list
+      - vault_beszel_app_user_email | trim | lower not in vault_managed_users.beszel | map(attribute='email') | map('trim') | map('lower') | list
+      - vault_dozzle_admin_username | trim | lower not in vault_managed_users.dozzle | map(attribute='username') | map('trim') | map('lower') | list
+      - vault_immich_admin_email | trim | lower not in vault_managed_users.immich | map(attribute='email') | map('trim') | map('lower') | list
+      - vault_jellyfin_admin_username | trim | lower not in vault_managed_users.jellyfin | map(attribute='username') | map('trim') | map('lower') | list
+      - vault_komga_admin_email | trim | lower not in vault_managed_users.komga | map(attribute='email') | map('trim') | map('lower') | list
+      - vault_ntfy_admin_user | trim | lower not in vault_managed_users.ntfy | map(attribute='username') | map('trim') | map('lower') | list
+      - "'dozzle' not in vault_managed_users.ntfy | map(attribute='username') | map('trim') | map('lower') | list"
+      - "'beszel' not in vault_managed_users.ntfy | map(attribute='username') | map('trim') | map('lower') | list"
+      - vault_paperless_admin_username | trim | lower not in vault_managed_users.paperless_ngx | map(attribute='username') | map('trim') | map('lower') | list
+    fail_msg: Managed-user identity separation is invalid; values are redacted.
+  no_log: true
+
+- name: Resolve validated managed-user service lists
+  ansible.builtin.set_fact:
+    vault_managed_audiobookshelf_users: "{{ vault_managed_users.audiobookshelf }}"
+    vault_managed_beszel_users: "{{ vault_managed_users.beszel }}"
+    vault_managed_dozzle_users: "{{ vault_managed_users.dozzle }}"
+    vault_managed_immich_users: "{{ vault_managed_users.immich }}"
+    vault_managed_jellyfin_users: "{{ vault_managed_users.jellyfin }}"
+    vault_managed_komga_users: "{{ vault_managed_users.komga }}"
+    vault_managed_ntfy_users: "{{ vault_managed_users.ntfy }}"
+    vault_managed_paperless_ngx_users: "{{ vault_managed_users.paperless_ngx }}"
+  no_log: true
+
 - name: Validate credential shapes without disclosing credential material
   ansible.builtin.assert:
     that:

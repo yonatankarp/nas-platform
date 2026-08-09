@@ -43,6 +43,10 @@ argument_specs:
       vault_paperless_mail_account_name: {type: str, required: true}
       vault_paperless_mail_rule_name: {type: str, required: true}
       vault_tinymediamanager_password: {type: str, required: true}
+      vault_managed_users:
+        type: dict
+        required: true
+        description: Service-specific managed application-user allowlists.
       platform_vault_file:
         type: path
         required: false

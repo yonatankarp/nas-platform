@@ -51,6 +51,77 @@ source of values. Every key below is required.
 - Beszel: `vault_beszel_superuser_email`, `vault_beszel_superuser_password`, `vault_beszel_app_user_email`, `vault_beszel_app_user_password`, `vault_beszel_agent_key`, `vault_beszel_universal_token`, `vault_beszel_hub_private_key`. Recover both deployed hub identities from the current Beszel hub and their matching passwords from the password manager. Recover the universal token and public agent key from the deployed agent configuration, and recover the matching OpenSSH Ed25519 private key from the hub's protected key file. Never derive or regenerate either half of the keypair. Both emails need nonempty local and domain parts. The universal token must be a lowercase RFC 4122 UUID. The agent key contains exactly two whitespace-separated fields, the `ssh-ed25519` type and its base64 public key, with no comment.
 - Paperless: `vault_paperless_admin_username`, `vault_paperless_admin_password`, `vault_paperless_admin_email`, `vault_paperless_db_name`, `vault_paperless_db_username`, `vault_paperless_db_password`, `vault_paperless_django_secret_key`, `vault_paperless_gmail_account`, `vault_paperless_gmail_app_password`, `vault_paperless_mail_account_name`, `vault_paperless_mail_rule_name`. Recover the administrator identity from the current Paperless application and its password from the password manager. Recover the database name, user, and password together from the current Portainer/Compose environment and database stack; recover the Django signing key from the deployed application/Compose environment. Recover the mail account and rule names plus Gmail account from current Paperless mail configuration, and recover the matching Gmail app password from the password manager or protected deployed mail configuration. Use the Google account only to confirm the named account and existing app-password registration; do not create a replacement. Preserve these as one deployed identity set. The email fields need nonempty local and domain parts; database identifiers follow the Immich rules. The Gmail credential must be an app password for the named account, handled according to [Google's app-password guidance](https://support.google.com/accounts/answer/185833), not the normal account password.
 - tinyMediaManager: `vault_tinymediamanager_password`. Recover the deployed API password from the current tinyMediaManager configuration and confirm it against an existing client; changing it breaks those clients.
+- Managed application users: `vault_managed_users`. This mapping has exactly the eight service lists documented below. Identity comparisons trim surrounding whitespace and ignore case. Every list entry needs a non-empty preserved password, must be unique within its service, and must not duplicate that service's primary administrator. Beszel entries also differ from the primary Beszel application user; ntfy entries differ from the Dozzle and Beszel publishers. Do not add tinyMediaManager here because it retains its single shared-login contract.
+
+### Managed application-user fields
+
+These lists declare only identities the platform owns. They do not authorize
+deleting users outside the lists, and they do not authorize replacing the
+password of an existing identity. During migration, recover each existing
+identity and matching password from its authoritative source. The examples are
+synthetic schema illustrations, not deployable credentials.
+
+#### audiobookshelf managed users
+
+`username` is the login identity; `password` is its preserved clear credential;
+`type` is `admin`, `user`, or `guest`; `is_active` is a boolean; and `permissions`
+is the native Audiobookshelf permissions mapping, including explicit library
+access. Managed identities cannot duplicate the root administrator.
+
+#### beszel managed users
+
+`email` is the normalized login identity; `password` is its preserved clear
+credential; `role` is `user` or `admin`; and `verified` is a boolean. A managed
+identity cannot duplicate either the Beszel superuser or the existing primary
+application user.
+
+#### dozzle managed users
+
+`username` is the login identity; `password` is its preserved clear credential;
+`password_hash` is the matching 60-character bcrypt value; `email` is either
+empty or a syntactically valid address; `name` is the displayed name; `filter`
+is the native container filter string; and `roles` is one supported Dozzle role:
+`none`, `user`, or `admin`. Never replace one half of the clear-password/hash
+pair independently.
+
+#### immich managed users
+
+`email` is the normalized login identity; `password` is its preserved clear
+credential; `name` is the displayed name; and `quota_size` is a non-negative
+integer in the units expected by the pinned Immich API. Administrator status is
+not part of this allowlist contract.
+
+#### jellyfin managed users
+
+`username` is the login identity; `password` is its preserved clear credential;
+and `policy` is the exact native Jellyfin policy mapping to reconcile without a
+password field. Keep administrative access disabled unless a separately
+reviewed policy explicitly requires it.
+
+#### komga managed users
+
+`email` is the normalized login identity; `password` is its preserved clear
+credential; and `roles` is a non-empty unique list drawn from `ADMIN`,
+`FILE_DOWNLOAD`, `PAGE_STREAMING`, `KOBO_SYNC`, and `OPDS`. The administrator
+identity remains under the separate primary credential contract.
+
+#### ntfy managed users
+
+`username` is the login identity; `password` is its preserved clear credential;
+`password_hash` is the matching bcrypt value; `role` is `user` or `admin`
+(`user` is the least-privilege default); `access` is a list of exact `topic` and `permission` mappings; and
+`tokens` is a unique list of owned `tk_` tokens, which may be empty. Supported
+permissions are `read-only`, `write-only`, `read-write`, and `deny`. Managed
+identities cannot duplicate the administrator or the Dozzle and Beszel
+publishers.
+
+#### paperless_ngx managed users
+
+`username` is the normalized login identity; `password` is its preserved clear
+credential; `email` is the account address; `is_active`, `is_staff`, and
+`is_superuser` are booleans; and `groups` is a unique list of exact Django group
+names, which may be empty. The separately managed Paperless administrator may
+not appear in this list.
 
 These requirements describe relationships as well as syntax. Do not fabricate
 values merely to satisfy the contract.

@@ -65,6 +65,18 @@ end
 check(failures, missing_keys.empty? && duplicate_keys.empty? && unexpected_keys.empty?,
       "canonical secrets guide vault keys differ (#{schema_diagnostic.join('; ')})")
 
+managed_user_services = %w[
+  audiobookshelf beszel dozzle immich jellyfin komga ntfy paperless_ngx
+]
+managed_users = vault_example["vault_managed_users"]
+check(failures,
+      managed_users.is_a?(Hash) && managed_users.keys.sort == managed_user_services.sort,
+      "vault example managed-user services differ")
+managed_user_services.each do |service|
+  check(failures, secrets_guide.include?("#### #{service} managed users"),
+        "canonical secrets guide must document #{service} managed users")
+end
+
 readme = File.read(File.join(ROOT, "README.md"))
 check(failures, readme.include?("](docs/secrets.md)"),
       "README must link to docs/secrets.md")
