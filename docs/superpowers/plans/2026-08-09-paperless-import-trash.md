@@ -122,3 +122,20 @@ Run the Paperless static contract, snapshot self-test, shell syntax, policy, Ans
 - [ ] **Step 5: Commit, push, and monitor**
 
 Commit without a `Co-Authored-By` trailer, push `agent/task-13-paperless`, and monitor PR #3 CI to completion.
+
+### Task 4: Include the Paperless snapshot in policy mutation fixtures
+
+**Files:**
+- Modify: `tests/policy_manifest_test.rb`
+
+- [x] **Step 1: Reproduce the isolated-fixture failure**
+
+Run `ruby tests/policy_manifest_test.rb` and confirm its mutation sandboxes fail because `tests/mac/snapshot-paperless.sh` is absent.
+
+- [x] **Step 2: Copy the snapshot into every mutation fixture**
+
+Add the snapshot script to `BASE_FIXTURE_PATHS` so the policy can inspect it in isolated test repositories.
+
+- [ ] **Step 3: Validate, commit, push, and monitor**
+
+Run the full policy entrypoint and portable validation suite, commit without a `Co-Authored-By` trailer, push, and monitor PR #3 CI.
