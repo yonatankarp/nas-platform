@@ -100,7 +100,7 @@ end
 
 def fence_parts(line)
   value = line
-  value = value.sub(/\A {0,3}(?:(?:> {0,3})|(?:[-+*] {1,4}|\d{1,9}[.)] {1,4}))*/, "")
+  value = value.sub(/\A {0,3}(?:(?:> ? {0,3})|(?:[-+*] {1,4}|\d{1,9}[.)] {1,4}))*/, "")
   match = value.match(/\A(`{3,}|~{3,})(.*?)(?:\r?\n)?\z/)
   return [nil, nil, nil] if match && match[1].start_with?("`") && match[2].include?("`")
 
@@ -260,6 +260,9 @@ def self_test
       >  ```markdown
       >  [blockquote-indented](blockquote-indented-missing.md)
       >  ```
+      >    ```markdown
+      >    [blockquote-four](blockquote-four-missing.md)
+      >    ```
       -  ```markdown
          [list-fence](list-fence-missing.md)
          ```
@@ -285,6 +288,8 @@ def self_test
     bad_unclosed.write("```markdown\n[hidden](hidden-missing.md)\n")
     unclosed_container = docs.join("unclosed-container.md")
     unclosed_container.write(">  ```markdown\n>  [hidden](hidden-container-missing.md)\n")
+    unclosed_four = docs.join("unclosed-four.md")
+    unclosed_four.write(">    ```markdown\n>    [hidden](hidden-four-missing.md)\n")
     failures = check_sources(root, [source])
     expected = ["missing.md", "ordinary-missing.md", "nested-missing.md", "<missing).md>", "indented-missing.md", "escaped-missing.md", "two-slash-missing.md", "unmatched-missing.md", "after-unmatched-missing.md", "ten-digit-missing.md", "unequal-missing.md", "../../etc/passwd", "bad%ZZ.md", "escape.md"]
     unless expected.all? { |target| failures.any? { |failure| failure.end_with?(target) } } && failures.length == expected.length + 1 && failures.none? { |failure| failure.match?(/[[:cntrl:]]/) }
@@ -309,6 +314,11 @@ def self_test
     container_failures = check_sources(root, [unclosed_container])
     unless container_failures == ["docs/unclosed-container.md: malformed documentation (unclosed code fence)"]
       warn "docs links container-fence self-test failed: #{container_failures.inspect}"
+      exit 1
+    end
+    four_failures = check_sources(root, [unclosed_four])
+    unless four_failures == ["docs/unclosed-four.md: malformed documentation (unclosed code fence)"]
+      warn "docs links four-space blockquote self-test failed: #{four_failures.inspect}"
       exit 1
     end
   ensure
