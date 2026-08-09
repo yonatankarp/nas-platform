@@ -22,12 +22,34 @@ def markdown_target(body)
   end
 end
 
+def mask_code(text)
+  lines = text.lines
+  fence = nil
+  lines.each_with_index do |line, index|
+    if (match = line.match(/^(\s*)(`{3,}|~{3,})/))
+      marker = match[2]
+      if fence && marker.start_with?(fence[0]) && marker.length >= fence[1]
+        fence = nil
+      elsif fence.nil?
+        fence = [marker[0], marker.length]
+      end
+      lines[index] = line.gsub(/[^\n]/, " ")
+    elsif fence
+      lines[index] = line.gsub(/[^\n]/, " ")
+    end
+  end
+  [lines.join, fence]
+end
+
 def check_sources(root, sources)
   root = root.realpath
   failures = []
   sources.each do |source|
     source = source.realpath
-    source.read.scan(/\[[^\]]*\]\(([^)]*)\)/).flatten.each do |body|
+    text, unclosed_fence = mask_code(source.read)
+    failures << "#{source.relative_path_from(root)}: malformed documentation (unclosed code fence)" if unclosed_fence
+    text = text.gsub(/(`+)(.*?)\1/m) { |match| match.gsub(/[^\n]/, " ") }
+    text.scan(/\[[^\]]*\]\(([^)]*)\)/).flatten.each do |body|
       raw_target = body.strip
       target = markdown_target(body)
       next if target.nil? || target.empty? || target.start_with?("#")
@@ -74,14 +96,29 @@ def self_test
       [fragment](valid%20file.md#section)
       [external](https://example.test/missing)
       [missing](missing.md)
+      [ordinary](ordinary-missing.md)
+      ` [inline](inline-missing.md) `
+      ```markdown
+      [backtick](backtick-missing.md)
+      ```
+      ~~~markdown
+      [tilde](tilde-missing.md)
+      ~~~
       [traversal](../../etc/passwd)
       [malformed](bad%ZZ.md)
       [symlink](escape.md)
     MARKDOWN
+    unclosed = docs.join("unclosed.md")
+    unclosed.write("```markdown\n[hidden](hidden-missing.md)\n")
     failures = check_sources(root, [source])
-    expected = %w[missing.md ../../etc/passwd bad%ZZ.md escape.md]
+    expected = %w[missing.md ordinary-missing.md ../../etc/passwd bad%ZZ.md escape.md]
     unless expected.all? { |target| failures.any? { |failure| failure.end_with?(target) } } && failures.length == expected.length
       warn "docs links self-test failed: #{failures.inspect}"
+      exit 1
+    end
+    unclosed_failures = check_sources(root, [unclosed])
+    unless unclosed_failures == ["docs/unclosed.md: malformed documentation (unclosed code fence)"]
+      warn "docs links unclosed-fence self-test failed: #{unclosed_failures.inspect}"
       exit 1
     end
   ensure
