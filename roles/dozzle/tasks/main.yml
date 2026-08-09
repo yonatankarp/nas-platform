@@ -24,6 +24,11 @@
          (dozzle_platform_compose.stat.exists
           | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) }}
 
+- name: Reconcile preserved and managed Dozzle users
+  ansible.builtin.include_tasks: managed_users.yml
+  vars:
+    dozzle_users_path: "{{ nas_docker_root }}/dozzle/data/users.yml"
+
 # Dozzle runs as NAS_UID:NAS_GID, so a 0600 file owned by whoever ran the play
 # is unreadable to it and the container exits before serving. Docker Desktop
 # remaps bind-mount ownership and hides this; a Linux host does not. The Mac
@@ -80,6 +85,22 @@
   delay: 3
   changed_when: false
   check_mode: false
+
+- name: Authenticate each managed Dozzle user
+  ansible.builtin.uri:
+    url: "{{ dozzle_api }}/token"
+    method: POST
+    body_format: form-urlencoded
+    body:
+      username: "{{ item.username }}"
+      password: "{{ item.password }}"
+    status_code: [200]
+  loop: "{{ vault_managed_dozzle_users }}"
+  loop_control:
+    label: dozzle-managed-user
+  changed_when: false
+  check_mode: false
+  no_log: true
 
 - name: Authenticate to the pinned Dozzle API for reconciliation
   ansible.builtin.uri:

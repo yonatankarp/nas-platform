@@ -1,0 +1,156 @@
+---
+- name: Inspect the existing Dozzle users file
+  ansible.builtin.stat:
+    path: "{{ dozzle_users_path }}"
+    follow: false
+  register: dozzle_existing_users_stat
+
+- name: Require a safe existing Dozzle users file
+  ansible.builtin.assert:
+    that:
+      - >-
+        not dozzle_existing_users_stat.stat.exists or
+        (dozzle_existing_users_stat.stat.isreg | default(false) and
+         not (dozzle_existing_users_stat.stat.islnk | default(false)))
+    fail_msg: Existing Dozzle users file must be a regular, non-symlink file.
+
+- name: Safely load the existing Dozzle users document
+  block:
+    - name: Read the existing Dozzle users document
+      ansible.builtin.slurp:
+        src: "{{ dozzle_users_path }}"
+      register: dozzle_existing_users_source
+      when: dozzle_existing_users_stat.stat.exists
+      no_log: true
+
+    - name: Parse the existing Dozzle users document
+      ansible.builtin.set_fact:
+        dozzle_existing_document: >-
+          {{ (dozzle_existing_users_source.content | b64decode | from_yaml)
+             if dozzle_existing_users_stat.stat.exists else {} }}
+      no_log: true
+
+    - name: Require a valid Dozzle users mapping
+      ansible.builtin.assert:
+        that:
+          - dozzle_existing_document is mapping
+          - dozzle_existing_document.users | default({}) is mapping
+          - >-
+            dozzle_existing_document.users | default({}) | dict2items |
+            map(attribute='key') | reject('string') | list | length == 0
+        fail_msg: Existing Dozzle users YAML must contain a users mapping with string identities.
+      no_log: true
+  rescue:
+    - name: Refuse malformed Dozzle users YAML
+      ansible.builtin.fail:
+        msg: Existing Dozzle users YAML is malformed; no users were changed.
+
+- name: Resolve the existing Dozzle users mapping
+  ansible.builtin.set_fact:
+    dozzle_existing_users: "{{ dozzle_existing_document.users | default({}) }}"
+    dozzle_desired_users: {}
+  no_log: true
+
+- name: Add the Dozzle administrator to the owned allowlist
+  ansible.builtin.set_fact:
+    dozzle_desired_users: >-
+      {{ dozzle_desired_users | combine({vault_dozzle_admin_username: {
+           'email': '',
+           'name': 'Administrator',
+           'password': vault_dozzle_admin_password_hash,
+           'filter': '',
+           'roles': 'none'
+         }}) }}
+  no_log: true
+
+- name: Add managed Dozzle users to the owned allowlist
+  ansible.builtin.set_fact:
+    dozzle_desired_users: >-
+      {{ dozzle_desired_users | combine({item.username: {
+           'email': item.email,
+           'name': item.name,
+           'password': item.password_hash,
+           'filter': item.filter,
+           'roles': item.roles
+         }}) }}
+  loop: "{{ vault_managed_dozzle_users }}"
+  loop_control:
+    label: dozzle-managed-user
+  no_log: true
+
+- name: Resolve normalized Dozzle identity sets
+  ansible.builtin.set_fact:
+    dozzle_existing_normalized_names: >-
+      {{ dozzle_existing_users.keys() | map('trim') | map('lower') | list }}
+    dozzle_desired_normalized_names: >-
+      {{ dozzle_desired_users.keys() | map('trim') | map('lower') | list }}
+  no_log: true
+
+- name: Refuse duplicate normalized Dozzle identities
+  ansible.builtin.assert:
+    that:
+      - >-
+        dozzle_existing_normalized_names | unique | length ==
+        dozzle_existing_normalized_names | length
+      - >-
+        dozzle_desired_normalized_names | unique | length ==
+        dozzle_desired_normalized_names | length
+    fail_msg: Dozzle users contain duplicate normalized identities; no users were changed.
+  no_log: true
+
+- name: Index existing Dozzle identities by normalized name
+  ansible.builtin.set_fact:
+    dozzle_existing_key_by_normalized: >-
+      {{ dozzle_existing_key_by_normalized | default({}) |
+         combine({(item.key | trim | lower): item.key}) }}
+  loop: "{{ dozzle_existing_users | dict2items }}"
+  loop_control:
+    label: dozzle-existing-user
+  no_log: true
+
+- name: Refuse password hash replacement for existing Dozzle identities
+  ansible.builtin.assert:
+    that:
+      - dozzle_existing_entry | length == 0 or dozzle_existing_entry is mapping
+      - >-
+        dozzle_existing_entry | length == 0 or
+        dozzle_existing_entry.password | default('') == item.value.password
+    fail_msg: >-
+      Existing Dozzle user does not have its preserved vault password hash;
+      Ansible will not replace it. Run the reviewed credential-migration procedure.
+  vars:
+    dozzle_existing_key: >-
+      {{ dozzle_existing_key_by_normalized | default({}) |
+         dict2items | selectattr('key', 'equalto', item.key | trim | lower) |
+         map(attribute='value') | first | default('') }}
+    dozzle_existing_entry: >-
+      {{ dozzle_existing_users[dozzle_existing_key]
+         if dozzle_existing_key | length > 0 else {} }}
+  loop: "{{ dozzle_desired_users | dict2items }}"
+  loop_control:
+    label: dozzle-allowlisted-user
+  no_log: true
+
+- name: Initialize preserved unmanaged Dozzle users
+  ansible.builtin.set_fact:
+    dozzle_unmanaged_users: {}
+  no_log: true
+
+- name: Preserve unmanaged Dozzle users verbatim
+  ansible.builtin.set_fact:
+    dozzle_unmanaged_users: >-
+      {{ dozzle_unmanaged_users | combine({item.key: item.value}) }}
+  loop: "{{ dozzle_existing_users | dict2items }}"
+  loop_control:
+    label: dozzle-unmanaged-user
+  when: item.key | trim | lower not in dozzle_desired_normalized_names
+  no_log: true
+
+- name: Resolve the reconciled Dozzle users document
+  ansible.builtin.set_fact:
+    dozzle_reconciled_users: >-
+      {{ dozzle_unmanaged_users | combine(dozzle_desired_users) }}
+    dozzle_reconciled_document: >-
+      {{ dozzle_existing_document |
+         combine({'users': dozzle_unmanaged_users | combine(dozzle_desired_users)}) }}
+  no_log: true

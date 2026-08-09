@@ -30,6 +30,11 @@
          (ntfy_platform_compose.stat.exists
           | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) }}
 
+- name: Resolve declarative ntfy managed-user provisioning
+  ansible.builtin.include_tasks: managed_users.yml
+  vars:
+    ntfy_managed_users_phase: provision
+
 - name: Render the ntfy environment
   ansible.builtin.template:
     src: env.j2
@@ -55,6 +60,11 @@
   until: ntfy_health.json.healthy | default(false)
   retries: 20
   delay: 3
+
+- name: Verify managed ntfy users and declared access
+  ansible.builtin.include_tasks: managed_users.yml
+  vars:
+    ntfy_managed_users_phase: verify
 
 # Proving provisioning took effect matters more than proving a file was written:
 # an unescaped or malformed hash leaves the server running with the alerting

@@ -1,0 +1,159 @@
+---
+- name: Resolve ntfy provisioning ownership sets
+  ansible.builtin.set_fact:
+    ntfy_provisioned_identities: >-
+      {{ ([vault_ntfy_admin_user] +
+          (ntfy_publishers | map(attribute='name') | list) +
+          (vault_managed_ntfy_users | map(attribute='username') | list)) |
+         map('trim') | map('lower') | list }}
+    ntfy_provisioned_tokens: >-
+      {{ (ntfy_publishers | map(attribute='token') | list) +
+         (vault_managed_ntfy_users | map(attribute='tokens') | list | flatten) }}
+  when: ntfy_managed_users_phase == 'provision'
+  no_log: true
+
+- name: Refuse duplicate ntfy identities
+  ansible.builtin.assert:
+    that:
+      - ntfy_provisioned_identities | reject('equalto', '') | list | length == ntfy_provisioned_identities | length
+      - ntfy_provisioned_identities | unique | length == ntfy_provisioned_identities | length
+    fail_msg: ntfy administrator, publisher, and managed identities must be separate.
+  when: ntfy_managed_users_phase == 'provision'
+  no_log: true
+
+- name: Refuse duplicate ntfy token ownership
+  ansible.builtin.assert:
+    that:
+      - ntfy_provisioned_tokens | unique | length == ntfy_provisioned_tokens | length
+    fail_msg: ntfy provisioning tokens must each have exactly one owner.
+  when: ntfy_managed_users_phase == 'provision'
+  no_log: true
+
+- name: Refuse duplicate managed ntfy topic declarations
+  ansible.builtin.assert:
+    that:
+      - >-
+        item.access | map(attribute='topic') | list | unique | length ==
+        item.access | length
+    fail_msg: Managed ntfy topic access declarations must be unique per user.
+  loop: "{{ vault_managed_ntfy_users }}"
+  loop_control:
+    label: ntfy-managed-user
+  when: ntfy_managed_users_phase == 'provision'
+  no_log: true
+
+- name: Initialize ntfy declarative provisioning entries
+  ansible.builtin.set_fact:
+    ntfy_auth_user_entries:
+      - "{{ vault_ntfy_admin_user }}:{{ vault_ntfy_admin_password_hash }}:admin"
+    ntfy_auth_access_entries: []
+    ntfy_auth_token_entries: []
+  when: ntfy_managed_users_phase == 'provision'
+  no_log: true
+
+- name: Add ntfy publisher user provisioning entries
+  ansible.builtin.set_fact:
+    ntfy_auth_user_entries: >-
+      {{ ntfy_auth_user_entries + [item.name ~ ':' ~ item.password_hash ~ ':user'] }}
+    ntfy_auth_access_entries: >-
+      {{ ntfy_auth_access_entries + [item.name ~ ':' ~ ntfy_topic ~ ':write-only'] }}
+    ntfy_auth_token_entries: >-
+      {{ ntfy_auth_token_entries + [item.name ~ ':' ~ item.token] }}
+  loop: "{{ ntfy_publishers }}"
+  loop_control:
+    label: ntfy-publisher
+  when: ntfy_managed_users_phase == 'provision'
+  no_log: true
+
+- name: Add managed ntfy user provisioning entries
+  ansible.builtin.set_fact:
+    ntfy_auth_user_entries: >-
+      {{ ntfy_auth_user_entries +
+         [item.username ~ ':' ~ item.password_hash ~ ':' ~ item.role] }}
+  loop: "{{ vault_managed_ntfy_users }}"
+  loop_control:
+    label: ntfy-managed-user
+  when: ntfy_managed_users_phase == 'provision'
+  no_log: true
+
+- name: Add managed ntfy access provisioning entries
+  ansible.builtin.set_fact:
+    ntfy_auth_access_entries: >-
+      {{ ntfy_auth_access_entries +
+         [item.0.username ~ ':' ~ item.1.topic ~ ':' ~ item.1.permission] }}
+  loop: "{{ vault_managed_ntfy_users | subelements('access') }}"
+  loop_control:
+    label: ntfy-managed-access
+  when: ntfy_managed_users_phase == 'provision'
+  no_log: true
+
+- name: Add managed ntfy token provisioning entries
+  ansible.builtin.set_fact:
+    ntfy_auth_token_entries: >-
+      {{ ntfy_auth_token_entries + [item.0.username ~ ':' ~ item.1] }}
+  loop: "{{ vault_managed_ntfy_users | subelements('tokens', skip_missing=True) }}"
+  loop_control:
+    label: ntfy-managed-token
+  when: ntfy_managed_users_phase == 'provision'
+  no_log: true
+
+- name: Resolve ntfy declarative provisioning environment
+  ansible.builtin.set_fact:
+    ntfy_auth_users: "{{ ntfy_auth_user_entries | join(',') }}"
+    ntfy_auth_access: "{{ ntfy_auth_access_entries | join(',') }}"
+    ntfy_auth_tokens: "{{ ntfy_auth_token_entries | join(',') }}"
+  when: ntfy_managed_users_phase == 'provision'
+  no_log: true
+
+- name: Basic-authenticate each managed ntfy user
+  ansible.builtin.uri:
+    url: "{{ ntfy_account_api }}"
+    url_username: "{{ item.username }}"
+    url_password: "{{ item.password }}"
+    force_basic_auth: true
+    status_code: [200]
+  loop: "{{ vault_managed_ntfy_users }}"
+  loop_control:
+    label: ntfy-managed-user
+  when: ntfy_managed_users_phase == 'verify'
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Verify managed ntfy declared read access
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ ntfy_port }}/{{ item.1.topic }}/json?poll=1"
+    url_username: "{{ item.0.username }}"
+    url_password: "{{ item.0.password }}"
+    force_basic_auth: true
+    status_code: >-
+      {{ [200] if item.0.role == 'admin' or
+         item.1.permission in ['read-only', 'read-write'] else [403] }}
+  loop: "{{ vault_managed_ntfy_users | subelements('access') }}"
+  loop_control:
+    label: ntfy-managed-read-access
+  when:
+    - ntfy_managed_users_phase == 'verify'
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Verify managed ntfy declared write access
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ ntfy_port }}/{{ item.1.topic }}"
+    method: POST
+    url_username: "{{ item.0.username }}"
+    url_password: "{{ item.0.password }}"
+    force_basic_auth: true
+    body: Managed-user provisioning verification
+    status_code: >-
+      {{ [200] if item.0.role == 'admin' or
+         item.1.permission in ['write-only', 'read-write'] else [403] }}
+  loop: "{{ vault_managed_ntfy_users | subelements('access') }}"
+  loop_control:
+    label: ntfy-managed-write-access
+  when:
+    - ntfy_managed_users_phase == 'verify'
+  changed_when: false
+  check_mode: false
+  no_log: true
