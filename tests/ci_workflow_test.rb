@@ -19,6 +19,20 @@ FULL_STEPS = [
   ["Check playbook syntax", "ansible-playbook -i inventory/local.yml site.yml --syntax-check"],
   ["Converge against a disposable sandbox", "tests/integration.sh site.yml"]
 ].freeze
+CLASSIFIER_RUN = <<~'SH'.chomp
+  case "$EVENT_NAME" in
+    pull_request) base_sha=$PR_BASE_SHA ;;
+    push) base_sha=$PUSH_BEFORE_SHA ;;
+    *) base_sha= ;;
+  esac
+  if ! printf '%s' "$base_sha" | grep -Eq '^[0-9a-f]{40}$' ||
+     printf '%s' "$base_sha" | grep -Eq '^0{40}$'; then
+    printf 'docs_only=false\nchanged_count=0\n' >> "$GITHUB_OUTPUT"
+  else
+    git diff --name-only -z "$base_sha" "$GITHUB_SHA" |
+      ruby tests/ci_change_scope.rb >> "$GITHUB_OUTPUT"
+  fi
+SH
 
 def fail_contract(message)
   raise "workflow: #{message}"
@@ -76,6 +90,19 @@ def assert_no_path_filters(source, document)
   fail_contract("contains forbidden path filter") if contains_path_filter?(workflow_triggers(document))
 end
 
+def assert_triggers(document)
+  triggers = mapping(workflow_triggers(document), "workflow triggers")
+  pull_request = value_for(triggers, "pull_request")
+  unless key?(triggers, "pull_request") && (pull_request.nil? || (pull_request.is_a?(Hash) && pull_request.empty?))
+    fail_contract("requires an unfiltered pull_request trigger")
+  end
+
+  push = value_for(triggers, "push")
+  unless key?(triggers, "push") && push.is_a?(Hash) && push.keys.map(&:to_s) == ["branches"] && value_for(push, "branches") == ["main"]
+    fail_contract("push must be restricted to main")
+  end
+end
+
 def named_steps(steps, name)
   steps.select { |step| step.is_a?(Hash) && value_for(step, "name") == name }
 end
@@ -117,19 +144,8 @@ def assert_classifier(steps)
   fail_contract("scope classifier environment changed") unless env == expected_env
   run = value_for(classifier, "run")
   fail_contract("scope classifier must run a shell script") unless run.is_a?(String)
-
-  required = [
-    'case "$EVENT_NAME" in',
-    'pull_request) base_sha=$PR_BASE_SHA ;;',
-    'push) base_sha=$PUSH_BEFORE_SHA ;;',
-    '*) base_sha= ;;',
-    "'^[0-9a-f]{40}$'",
-    "'^0{40}$'",
-    "printf 'docs_only=false\\nchanged_count=0\\n' >> \"$GITHUB_OUTPUT\""
-  ]
-  required.each { |fragment| fail_contract("scope classifier is not fail-closed") unless run.include?(fragment) }
-  pipeline = /git diff --name-only -z "\$base_sha" "\$GITHUB_SHA"\s*\|\s*ruby tests\/ci_change_scope\.rb >> "\$GITHUB_OUTPUT"/
-  fail_contract("scope classifier must send NUL paths to ci_change_scope") unless run.match?(pipeline)
+  normalized_run = run.end_with?("\n") ? run.delete_suffix("\n") : run
+  fail_contract("scope classifier script changed") unless normalized_run == CLASSIFIER_RUN
 
   classifier
 end
@@ -178,6 +194,7 @@ end
 def validate_workflow(source)
   document = mapping(load_workflow(source), "document")
   assert_no_path_filters(source, document)
+  assert_triggers(document)
   jobs = mapping(value_for(document, "jobs"), "jobs")
   fail_contract("must contain only the validate job") unless jobs.keys.map(&:to_s) == ["validate"]
   job = mapping(value_for(jobs, "validate"), "validate job")
@@ -209,18 +226,25 @@ end
 
 def self_test
   source = File.binread(WORKFLOW)
+  triggers = "on:\n  pull_request:\n  push:\n    branches:\n      - main\n"
   validate_workflow(source)
   assert_failure("renamed job", replace_once(source, "  validate:\n", "  verify:\n"), "only the validate job")
   assert_failure("removed job", replace_once(source, "  validate:\n", "  inspect:\n"), "only the validate job")
+  assert_failure("missing pull request", replace_once(source, "  pull_request:\n", "  schedule:\n"), "unfiltered pull_request")
+  assert_failure("pull request branches", replace_once(source, "  pull_request:\n", "  pull_request:\n    branches:\n      - main\n"), "unfiltered pull_request")
   assert_failure("paths filter", replace_once(source, "  pull_request:\n", "  pull_request:\n    paths:\n      - docs/**\n"), "forbidden path filter")
+  assert_failure("paths ignore filter", replace_once(source, "  pull_request:\n", "  pull_request:\n    paths-ignore:\n      - docs/**\n"), "forbidden path filter")
+  assert_failure("missing push", replace_once(source, "  push:\n    branches:\n      - main\n", ""), "push must be restricted to main")
+  assert_failure("push branch", replace_once(source, "      - main\n", "      - release\n"), "push must be restricted to main")
   assert_failure("fetch depth", replace_once(source, "fetch-depth: 0", "fetch-depth: 1"), "complete history")
   assert_failure("unconditional docs", replace_once(source, "        if: steps.scope.outputs.docs_only == 'true'\n", ""), "docs-only guard")
   assert_failure("unguarded full step", replace_once(source, "      - name: Validate shell syntax\n        if: steps.scope.outputs.docs_only != 'true'\n", "      - name: Validate shell syntax\n"), "full-validation guard")
   assert_failure("extra job", replace_once(source, "jobs:\n", "jobs:\n  extra:\n    runs-on: ubuntu-latest\n    steps: []\n"), "only the validate job")
   assert_failure("malformed YAML", "jobs: [", "YAML is malformed")
-  assert_failure("jobs shape", "jobs: []\n", "jobs must be a mapping")
-  assert_failure("steps shape", "jobs:\n  validate:\n    steps: {}\n", "validate steps must be a list")
+  assert_failure("jobs shape", "#{triggers}jobs: []\n", "jobs must be a mapping")
+  assert_failure("steps shape", "#{triggers}jobs:\n  validate:\n    steps: {}\n", "validate steps must be a list")
   assert_failure("scalar step", replace_once(source, "    steps:\n      - name: Check out repository", "    steps:\n      - 7\n      - name: Check out repository"), "validate steps must contain only mappings")
+  assert_failure("classifier override", replace_once(source, "          fi\n\n      - name: Validate documentation", "          fi\n          printf 'docs_only=true\\n' >> \"$GITHUB_OUTPUT\"\n\n      - name: Validate documentation"), "scope classifier script changed")
 end
 
 if ARGV == ["--self-test"]
