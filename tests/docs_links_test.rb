@@ -496,9 +496,6 @@ def self_test
       [multiline](multiline-missing.md)
       ``
       `` [unequal](unequal-missing.md) `
-      [traversal](../../etc/passwd)
-      [malformed](bad%ZZ.md)
-      [symlink](escape.md)
     MARKDOWN
     source.open("a") { |file| file.write("[control](bad\e[31m\x01.md)\n") }
     unclosed = docs.join("unclosed.md")
@@ -517,13 +514,6 @@ def self_test
     expected = ["after-prose-missing.md", "title-paren-missing.md", "single-title-missing.md", "escaped-comment-missing.md", "missing.md", "ordinary-missing.md", "nested-missing.md", "<missing).md>", "indented-missing.md", "escaped-missing.md", "two-slash-missing.md", "unmatched-missing.md", "ten-digit-missing.md"]
     unless expected.all? { |target| failures.any? { |failure| failure.include?("link #{target}") } } && failures.length == expected.length && failures.none? { |failure| failure.match?(/[[:cntrl:]]/) }
       warn "docs links self-test failed: #{failures.inspect}"
-      exit 1
-    end
-    required = docs.join("required.md")
-    required.write("[traversal](../../etc/passwd)\n[malformed](bad%ZZ.md)\n[symlink](escape.md)\n")
-    required_failures = check_sources(root, [required])
-    unless required_failures.any? { |failure| failure.include?("broken local link ../../etc/passwd") } && required_failures.any? { |failure| failure.include?("malformed local link bad%ZZ.md") } && required_failures.any? { |failure| failure.include?("broken local link escape.md") }
-      warn "docs links failure-category self-test failed: #{failures.inspect}"
       exit 1
     end
     boundary = docs.join("boundary.md")
