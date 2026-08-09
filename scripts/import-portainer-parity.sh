@@ -37,10 +37,14 @@ sanitize() {
   ruby -e 'print ARGV.fetch(0).encode("UTF-8", invalid: :replace, undef: :replace, replace: "?").gsub(/[[:cntrl:]]/, "?")' "$1"
 }
 
+identity() {
+  stat -f '%d:%i' "$1" 2>/dev/null
+}
+
 cleanup() {
-  [ -n "${PLAIN:-}" ] && rm -f -- "$PLAIN"
-  [ -n "${CIPHER:-}" ] && rm -f -- "$CIPHER"
-  [ -n "${VIEW:-}" ] && rm -f -- "$VIEW"
+  [ -n "${PLAIN:-}" ] && /bin/rm -f -- "$PLAIN"
+  [ -n "${CIPHER:-}" ] && /bin/rm -f -- "$CIPHER"
+  [ -n "${VIEW:-}" ] && /bin/rm -f -- "$VIEW"
 }
 trap cleanup EXIT HUP INT TERM
 
@@ -142,7 +146,15 @@ checksum=${checksum_line%%[!0-9a-f]*}
 [ "${#checksum}" -eq 64 ] || die "checksum is invalid"
 [ "$checksum_line" = "$checksum  $CIPHER" ] || die "checksum is invalid"
 ln "$CIPHER" "$OUTPUT" 2>/dev/null || die "output publication failed"
-if rm -f -- "$CIPHER"; then
-  CIPHER=
+if ! rm -f -- "$CIPHER"; then
+  if output_identity=$(identity "$OUTPUT") && cipher_identity=$(identity "$CIPHER") &&
+     [ "$output_identity" = "$cipher_identity" ]; then
+    /bin/rm -f -- "$OUTPUT" || die "output rollback failed"
+  fi
+  die "ciphertext cleanup failed"
 fi
-printf 'Portainer parity encrypted: sha256=%s output=%s\n' "$checksum" "$(sanitize "$OUTPUT")"
+CIPHER=
+if ! safe_output=$(sanitize "$OUTPUT"); then
+  die "output path formatting failed"
+fi
+printf 'Portainer parity encrypted: sha256=%s output=%s\n' "$checksum" "$safe_output"

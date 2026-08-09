@@ -51,6 +51,22 @@ assert_failure() {
   [ -z "$(find "$OUTDIR" -name '.portainer-parity-*' -print)" ] || fail "$label: temporary files remain"
 }
 
+assert_race_failure() {
+  label=$1
+  target=$2
+  record=$3
+  shift 3
+  state_before=$(for file in "$INPUT"/*.env; do sum "$file"; mode "$file"; done)
+  "$@" >"$stdout" 2>"$stderr" && fail "$label: unexpectedly succeeded"
+  [ -f "$target" ] || fail "$label: racer output was deleted"
+  assert "$(cat "$record")" "$(stat -f '%d:%i:%Lp' "$target")" "$label: racer output changed"
+  [ ! -s "$stdout" ] || fail "$label: stdout is not empty"
+  [ "$(wc -l < "$stderr" | tr -d ' ')" -eq 1 ] || fail "$label: stderr is not one line"
+  if grep -F "$CANARY" "$stdout" "$stderr" >/dev/null; then fail "$label: canary leaked"; fi
+  assert "$state_before" "$(for file in "$INPUT"/*.env; do sum "$file"; mode "$file"; done)" "$label: source inputs changed"
+  [ -z "$(find "$OUTDIR" -name '.portainer-parity-*' -print)" ] || fail "$label: temporary files remain"
+}
+
 assert_validate_failure() {
   label=$1
   source=$2
@@ -85,6 +101,14 @@ assert "$before" "$after" "source inputs changed"
 
 "$IMPORTER" --input-dir "$INPUT" --output "$output" --vault-password-file "$PASSWORD" >"$stdout" 2>"$stderr" && fail "existing output was overwritten"
 grep -F "$CANARY" "$stdout" "$stderr" >/dev/null && fail "failure leaked canary"
+existing_sum=$(sum "$output")
+existing_mode=$(mode "$output")
+existing_inode=$(stat -f '%d:%i' "$output")
+assert "$before" "$(for file in "$INPUT"/*.env; do sum "$file"; mode "$file"; done)" "existing output changed sources"
+assert "$existing_sum" "$(sum "$output")" "existing output bytes changed"
+assert "$existing_mode" "$(mode "$output")" "existing output mode changed"
+assert "$existing_inode" "$(stat -f '%d:%i' "$output")" "existing output inode changed"
+[ -z "$(find "$OUTDIR" -name '.portainer-parity-*' -print)" ] || fail "existing output left temporary files"
 
 bad="$TMP/bad-mode"
 cp -R "$INPUT" "$bad"
@@ -132,11 +156,11 @@ assert_failure encryption-failure "$OUTDIR/encrypt-failure.vault" env PATH="$fak
 
 real_vault=$(command -v ansible-vault)
 race_output="$OUTDIR/race.vault"
-printf '%s\n' '#!/bin/sh' 'touch "$RACE_OUTPUT"' 'exec "$REAL_VAULT" "$@"' > "$fake/ansible-vault"
+race_record="$TMP/race-record"
+printf '%s\n' '#!/bin/sh' 'printf racer > "$RACE_OUTPUT"' 'stat -f "%d:%i:%Lp" "$RACE_OUTPUT" > "$RACE_RECORD"' 'exec "$REAL_VAULT" "$@"' > "$fake/ansible-vault"
 chmod 700 "$fake/ansible-vault"
-RACE_OUTPUT="$race_output" REAL_VAULT="$real_vault" PATH="$fake:$PATH" "$IMPORTER" --input-dir "$INPUT" --output "$race_output" --vault-password-file "$PASSWORD" >"$stdout" 2>"$stderr" && fail "publication race overwrote output"
-[ -f "$race_output" ] || fail "race fixture did not create output"
-[ "$(wc -c < "$race_output" | tr -d ' ')" -eq 0 ] || fail "publication race clobbered competitor"
+assert_race_failure publication-race "$race_output" "$race_record" env RACE_OUTPUT="$race_output" RACE_RECORD="$race_record" REAL_VAULT="$real_vault" PATH="$fake:$PATH" "$IMPORTER" --input-dir "$INPUT" --output "$race_output" --vault-password-file "$PASSWORD"
+[ "$(cat "$race_output")" = racer ] || fail "publication race content changed"
 
 assert_failure duplicate-arguments "$OUTDIR/duplicate.vault" "$IMPORTER" --input-dir "$INPUT" --output "$OUTDIR/duplicate.vault" --vault-password-file "$PASSWORD" --mapping "$MAPPING" --mapping "$MAPPING"
 assert_failure unknown-argument "$OUTDIR/unknown.vault" "$IMPORTER" --unknown
@@ -193,6 +217,23 @@ checksum_fake="$TMP/checksum-fake"
 mkdir -m 700 "$checksum_fake"
 printf '%s\n' '#!/bin/sh' 'exit 1' > "$checksum_fake/shasum"
 chmod 700 "$checksum_fake/shasum"
-assert_failure checksum-failure "$OUTDIR/checksum-failure.vault" env PATH="$checksum_fake:$PATH" "$IMPORTER" --input-dir "$INPUT" --output "$OUTDIR/checksum-failure.vault" --vault-password-file "$PASSWORD"
+vault_clean="$TMP/vault-clean"
+mkdir -m 700 "$vault_clean"
+printf '%s\n' '#!/bin/sh' 'PATH=$CLEAN_PATH' 'export PATH' 'exec "$REAL_VAULT" "$@"' > "$vault_clean/ansible-vault"
+chmod 700 "$vault_clean/ansible-vault"
+real_vault=$(command -v ansible-vault)
+assert_failure checksum-failure "$OUTDIR/checksum-failure.vault" env PATH="$checksum_fake:$vault_clean:$PATH" CLEAN_PATH="$PATH" REAL_VAULT="$real_vault" "$IMPORTER" --input-dir "$INPUT" --output "$OUTDIR/checksum-failure.vault" --vault-password-file "$PASSWORD"
+printf '%s\n' '#!/bin/sh' 'printf "%s\\n" "${SHA_OUTPUT-}"' > "$checksum_fake/shasum"
+chmod 700 "$checksum_fake/shasum"
+for malformed in '' 'xyz  file' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  file' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa extra field' "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  x\nsecond"; do
+  assert_failure malformed-checksum "$OUTDIR/malformed-checksum.vault" env PATH="$checksum_fake:$vault_clean:$PATH" CLEAN_PATH="$PATH" REAL_VAULT="$real_vault" SHA_OUTPUT="$malformed" "$IMPORTER" --input-dir "$INPUT" --output "$OUTDIR/malformed-checksum.vault" --vault-password-file "$PASSWORD"
+done
+
+# A failed unlink after link(2) must roll back only the importer-owned output.
+cleanup_fake="$TMP/cleanup-fake"
+mkdir -m 700 "$cleanup_fake"
+printf '%s\n' '#!/bin/sh' 'case "$*" in *portainer-parity-cipher*) exit 1 ;; *) exec /bin/rm "$@" ;; esac' > "$cleanup_fake/rm"
+chmod 700 "$cleanup_fake/rm"
+assert_failure ciphertext-unlink-failure "$OUTDIR/unlink-failure.vault" env PATH="$cleanup_fake:$vault_clean:$PATH" CLEAN_PATH="$PATH" REAL_VAULT="$real_vault" "$IMPORTER" --input-dir "$INPUT" --output "$OUTDIR/unlink-failure.vault" --vault-password-file "$PASSWORD"
 
 printf '%s\n' 'Portainer parity importer: encrypted external input is safe'
