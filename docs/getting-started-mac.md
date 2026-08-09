@@ -95,17 +95,28 @@ next command, then run through `persistence`:
 
 ```sh
 export PLATFORM_MAC_SANDBOX=/absolute/path/printed-by-preflight
+proof_status=0
 for phase in deploy seed verify idempotence drift reconcile recreate persistence; do
-  tests/mac/run.sh \
+  if ! tests/mac/run.sh \
     --lane fresh \
     --vault-file "$HOME/.config/nas-platform/vault.yml" \
     --vault-password-file "$HOME/.config/nas-platform/vault-password" \
     --sandbox "$PLATFORM_MAC_SANDBOX" \
-    --phase "$phase" || break
+    --phase "$phase"; then
+    proof_status=1
+    break
+  fi
 done
+if [ "$proof_status" -ne 0 ]; then
+  printf 'STOP: a Mac proof phase failed; do not begin manual review\n' >&2
+else
+  printf 'All automated phases passed; begin manual review\n'
+fi
+unset proof_status
 ```
 
-Use [`tests/mac/manual-review.md`](../tests/mac/manual-review.md) while all nine
+Proceed only when the block prints `All automated phases passed`. Use
+[`tests/mac/manual-review.md`](../tests/mac/manual-review.md) while all nine
 services are running. Record the reviewer, manifest commit, decision, and
 non-secret notes. Credential continuity requires a private check for every
 service:

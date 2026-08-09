@@ -10,7 +10,7 @@
 
 ---
 
-### Task 1: Require hard deletion before portable import
+## Task 1: Require hard deletion before portable import
 
 **Files:**
 - Modify: `tests/policy_test.rb`
@@ -67,7 +67,7 @@ Run the workflow's local syntax, policy, lint, and playbook-syntax checks availa
 
 Commit the focused regression and fix without a `Co-Authored-By` trailer, push `agent/task-13-paperless`, and monitor the resulting PR #3 CI run to completion.
 
-### Task 2: Reload the webserver after the importer rebuilds Tantivy
+## Task 2: Reload the webserver after the importer rebuilds Tantivy
 
 **Files:**
 - Modify: `tests/policy_test.rb`
@@ -95,7 +95,7 @@ Run: `ruby tests/policy_test.rb && tests/contracts/paperless.sh static`, followe
 
 Commit without a `Co-Authored-By` trailer, push `agent/task-13-paperless`, and monitor PR #3 CI to completion.
 
-### Task 3: Read recovery catalogue checksums from API v3 versions
+## Task 3: Read recovery catalogue checksums from API v3 versions
 
 **Files:**
 - Modify: `tests/policy_test.rb`
@@ -123,7 +123,7 @@ Run the Paperless static contract, snapshot self-test, shell syntax, policy, Ans
 
 Commit without a `Co-Authored-By` trailer, push `agent/task-13-paperless`, and monitor PR #3 CI to completion.
 
-### Task 4: Include the Paperless snapshot in policy mutation fixtures
+## Task 4: Include the Paperless snapshot in policy mutation fixtures
 
 **Files:**
 - Modify: `tests/policy_manifest_test.rb`

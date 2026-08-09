@@ -8,7 +8,7 @@ services:
     ports: !override []
   webserver:
     container_name: ${PLATFORM_PROJECT_NAME:?}-paperless-webserver
-    network_mode: bridge
+    network_mode: !reset null
     ports: !override
       - "${PAPERLESS_HOST_PORT:?}:8000"
   gotenberg:

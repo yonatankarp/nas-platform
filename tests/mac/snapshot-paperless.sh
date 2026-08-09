@@ -332,17 +332,36 @@ if MODE == "restore" || MODE == "drill"
   directory = safe_directory(SNAPSHOT_DIR)
   verify_manifest(directory)
   run("docker", "stop", WEBSERVER, REDIS)
-  clear_and_restore(archive_root, directory.join("archive.tar"))
-  clear_and_restore(application_root, directory.join("application.tar"))
-  clear_and_restore(inbox_root, directory.join("inbox.tar"))
-  database_sql = directory.join("database.sql").binread
-  run("docker", "exec", "-i", POSTGRES, "psql", "--username", db_user,
-      "--dbname", db_name, input: database_sql)
-  database_sql.replace("\0" * database_sql.bytesize)
-  run("docker", "start", REDIS)
-  run("docker", "exec", REDIS, "valkey-cli", "flushall")
-  run("docker", "start", WEBSERVER)
-  wait_healthy(REDIS, WEBSERVER)
+  begin
+    clear_and_restore(archive_root, directory.join("archive.tar"))
+    clear_and_restore(application_root, directory.join("application.tar"))
+    clear_and_restore(inbox_root, directory.join("inbox.tar"))
+    database_sql = directory.join("database.sql").binread
+    run("docker", "exec", "-i", POSTGRES, "psql", "--username", db_user,
+        "--dbname", db_name, input: database_sql)
+    database_sql.replace("\0" * database_sql.bytesize)
+  ensure
+    restore_failure = $!
+    recovery_failures = []
+    [
+      ["docker", "start", REDIS],
+      ["docker", "exec", REDIS, "valkey-cli", "flushall"],
+      ["docker", "start", WEBSERVER]
+    ].each do |argv|
+      _stdout, stderr, status = Open3.capture3(*argv)
+      recovery_failures << "#{argv[1..].join(' ')}: #{stderr.lines.last.to_s.strip}" unless status.success?
+    end
+    begin
+      wait_healthy(REDIS, WEBSERVER)
+    rescue SystemExit => error
+      recovery_failures << "health check exited #{error.status}"
+    end
+    unless recovery_failures.empty?
+      warn "Paperless snapshot recovery failed: #{recovery_failures.join('; ')}"
+    end
+    raise restore_failure if restore_failure
+    die("application recovery failed") unless recovery_failures.empty?
+  end
   if MODE == "drill"
     restored = catalogue(authenticate(admin_username, admin_password))
     die("restored Paperless records differ from the snapshot") unless restored == drill_before

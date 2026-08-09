@@ -10,7 +10,7 @@
 
 ---
 
-### Task 1: Add the documentation contract
+## Task 1: Add the documentation contract
 
 **Files:**
 - Create: `tests/secrets_docs_test.rb`
@@ -58,7 +58,7 @@ git add tests/secrets_docs_test.rb tests/validate-policy.sh
 git commit -m "test: define canonical secrets documentation contract"
 ```
 
-### Task 2: Write the canonical secrets guide
+## Task 2: Write the canonical secrets guide
 
 **Files:**
 - Create: `docs/secrets.md`
@@ -149,7 +149,7 @@ git add docs/secrets.md
 git commit -m "docs: add canonical encrypted-vault guide"
 ```
 
-### Task 3: Link the operator entry points
+## Task 3: Link the operator entry points
 
 **Files:**
 - Modify: `README.md:67-129`
@@ -189,7 +189,7 @@ git add README.md docs/getting-started-mac.md docs/getting-started-nas.md
 git commit -m "docs: link platform guides to secrets workflow"
 ```
 
-### Task 4: Verify the complete documentation change
+## Task 4: Verify the complete documentation change
 
 **Files:**
 - Verify: `docs/secrets.md`

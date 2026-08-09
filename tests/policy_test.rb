@@ -577,39 +577,43 @@ check(failures,
       "Paperless PostgreSQL 18 mount parent must be traversable by the postgres user")
 paperless_contract = File.read(File.join(ROOT, "tests", "contracts", "paperless.sh"))
 paperless_snapshot = File.read(File.join(ROOT, "tests", "mac", "snapshot-paperless.sh"))
-if paperless_contract.include?("PDF_MARKER = \"paperlesscontractenglish\"")
-  check(failures,
-        paperless_contract.include?("def request(method, path, token: nil, body: nil, expected: [200], parse_json: true)") &&
-        paperless_contract.match?(%r{/preview/.*, token: token, parse_json: false}),
-        "Paperless binary preview responses must bypass JSON parsing")
-  check(failures,
-        paperless_contract.include?('document.fetch("versions").find'),
-        "Paperless checksum verification must use the version metadata returned by API v3")
-  check(failures,
-        paperless_contract.match?(/EXPORT_PATH\.mkdir\(0o700\).*?document_exporter/m),
-        "Paperless portable export must create the required empty target directory")
-  check(failures,
-        paperless_contract.match?(%r{
-          document_ids\s*=\s*\[.*?
-          request\(\s*"post",\s*"/api/trash/".*?
-          "action"\s*=>\s*"empty".*?
-          "documents"\s*=>\s*document_ids.*?
-          document_importer
-        }mx),
-        "Paperless portable import must empty its exported fixtures from trash first")
-  check(failures,
-        paperless_contract.match?(%r{
-          document_importer.*?
-          "docker",\s*"restart",\s*WEBSERVER.*?
-          wait_healthy\(WEBSERVER.*?
-          document_for
-        }mx),
-        "Paperless portable import must reload and health-check the webserver search index")
-  check(failures,
-        paperless_snapshot.include?('document.fetch("versions").find') &&
-        paperless_snapshot.match?(/def catalogue.*?"checksum" => document_checksum\(document\)/m),
-        "Paperless snapshot catalogue must use API v3 root-version checksums")
-end
+check(failures,
+      paperless_contract.include?("PDF_MARKER = \"paperlesscontractenglish\""),
+      "Paperless contract must define the PDF fixture marker")
+check(failures,
+      paperless_contract.include?("def request(method, path, token: nil, body: nil, expected: [200], parse_json: true)") &&
+      paperless_contract.match?(%r{/preview/.*, token: token, parse_json: false}),
+      "Paperless binary preview responses must bypass JSON parsing")
+check(failures,
+      paperless_contract.include?('document.fetch("versions").find'),
+      "Paperless checksum verification must use the version metadata returned by API v3")
+check(failures,
+      paperless_contract.match?(/EXPORT_PATH\.mkdir\(0o700\).*?document_exporter/m),
+      "Paperless portable export must create the required empty target directory")
+check(failures,
+      paperless_contract.match?(%r{
+        document_ids\s*=\s*\[.*?
+        request\(\s*"post",\s*"/api/trash/".*?
+        "action"\s*=>\s*"empty".*?
+        "documents"\s*=>\s*document_ids.*?
+        document_importer
+      }mx),
+      "Paperless portable import must empty its exported fixtures from trash first")
+check(failures,
+      paperless_contract.match?(%r{
+        document_importer.*?
+        "docker",\s*"restart",\s*WEBSERVER.*?
+        wait_healthy\(WEBSERVER.*?
+        document_for
+      }mx),
+      "Paperless portable import must reload and health-check the webserver search index")
+check(failures,
+      paperless_snapshot.include?('document.fetch("versions").find') &&
+      paperless_snapshot.match?(/def catalogue.*?"checksum" => document_checksum\(document\)/m),
+      "Paperless snapshot catalogue must use API v3 root-version checksums")
+check(failures,
+      paperless_contract.match?(/diagnostic_bytes = stderr\.read.*?bytesize > 4096.*?else\s+diagnostic_bytes/m),
+      "Paperless exporter diagnostics must preserve short stderr output")
 
 manifest_entries.each do |service|
   next unless service.is_a?(Hash)

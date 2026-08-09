@@ -99,6 +99,15 @@ else
   fi
   if "$vault_editor" "$PLATFORM_VAULT_PASSWORD_FILE"; then
     chmod 600 "$PLATFORM_VAULT_PASSWORD_FILE"
+    password_lines=$(awk 'END { print NR }' "$PLATFORM_VAULT_PASSWORD_FILE")
+    if [ "$password_lines" -ne 1 ] || [ ! -s "$PLATFORM_VAULT_PASSWORD_FILE" ] || \
+       ! awk 'NR == 1 && length($0) > 0 { valid=1 } END { exit !valid }' \
+         "$PLATFORM_VAULT_PASSWORD_FILE"; then
+      printf 'STOP: password must be one non-empty line; inspect the protected file\n' >&2
+    else
+      printf 'Vault password file is ready\n'
+    fi
+    unset password_lines
   else
     printf 'STOP: editor failed; password file is not ready\n' >&2
   fi
@@ -113,6 +122,11 @@ branch and cannot run when either precondition fails:
 ```sh
 if [ ! -f "$PLATFORM_VAULT_PASSWORD_FILE" ]; then
   printf 'STOP: vault password file is unavailable\n' >&2
+elif [ "$(awk 'END { print NR }' "$PLATFORM_VAULT_PASSWORD_FILE")" -ne 1 ] || \
+     [ ! -s "$PLATFORM_VAULT_PASSWORD_FILE" ] || \
+     ! awk 'NR == 1 && length($0) > 0 { valid=1 } END { exit !valid }' \
+       "$PLATFORM_VAULT_PASSWORD_FILE"; then
+  printf 'STOP: vault password must be one non-empty line\n' >&2
 elif [ -e "$PLATFORM_VAULT_FILE" ]; then
   printf 'STOP: encrypted vault already exists: %s\n' "$PLATFORM_VAULT_FILE" >&2
 else
@@ -294,7 +308,11 @@ if [ -e "$PLATFORM_VAULT_FILE" ] || \
     printf 'Existing repository vault: %s\n' inventory/group_vars/all/vault.yml >&2
   printf 'STOP: inspect existing material; generation did not run\n' >&2
 else
-  ansible-playbook generate-secrets.yml -e generate_brand_new_platform=true
+  if ansible-playbook generate-secrets.yml -e generate_brand_new_platform=true; then
+    printf 'Plaintext generation completed; encrypt it immediately\n'
+  else
+    printf 'STOP: secret generation failed; do not continue\n' >&2
+  fi
 fi
 ```
 
@@ -310,11 +328,26 @@ if [ -e "$PLATFORM_VAULT_FILE" ]; then
 elif [ ! -f inventory/group_vars/all/vault-plain.yml ]; then
   printf 'STOP: generated plaintext file is unavailable; do not continue\n' >&2
 else
-  mv inventory/group_vars/all/vault-plain.yml "$PLATFORM_VAULT_FILE"
-  chmod 600 "$PLATFORM_VAULT_FILE"
-  ansible-vault encrypt \
-    --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE" \
-    "$PLATFORM_VAULT_FILE"
+  if ! vault_encryption_input=$(mktemp "$PLATFORM_VAULT_DIR/.vault-encryption.XXXXXX"); then
+    printf 'STOP: could not create the protected temporary encryption file\n' >&2
+  elif ! chmod 600 "$vault_encryption_input"; then
+    printf 'STOP: could not protect temporary input at %s\n' "$vault_encryption_input" >&2
+  elif mv inventory/group_vars/all/vault-plain.yml "$vault_encryption_input"; then
+    if ansible-vault encrypt \
+         --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE" \
+         "$vault_encryption_input"; then
+      mv "$vault_encryption_input" "$PLATFORM_VAULT_FILE"
+      chmod 600 "$PLATFORM_VAULT_FILE"
+      printf 'Encrypted vault published at %s\n' "$PLATFORM_VAULT_FILE"
+    else
+      printf 'STOP: encryption failed; protected temporary input remains at %s\n' \
+        "$vault_encryption_input" >&2
+    fi
+  else
+    rm -f "$vault_encryption_input"
+    printf 'STOP: could not move plaintext into the protected temporary file\n' >&2
+  fi
+  unset vault_encryption_input
 fi
 ```
 

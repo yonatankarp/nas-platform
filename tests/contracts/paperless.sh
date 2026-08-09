@@ -25,8 +25,9 @@ fail_contract() {
 [ -x "$snapshot" ] || fail_contract 'tests/mac/snapshot-paperless.sh is absent or not executable'
 [ -f "$ocr_fixture" ] || fail_contract 'tests/fixtures/paperless-ocr.png.base64 is absent'
 
-ruby -ryaml - "$compose" "$mac_compose" "$role" "$defaults" "$generator" "$environment_template" <<'RUBY'
-compose_path, mac_path, role_path, defaults_path, generator_path, environment_template_path = ARGV
+ruby -ryaml - "$compose" "$mac_compose" "$role" "$defaults" "$generator" "$environment_template" "$snapshot" <<'RUBY'
+compose_path, mac_path, role_path, defaults_path, generator_path, environment_template_path,
+  snapshot_path = ARGV
 compose = YAML.safe_load_file(compose_path, aliases: true)
 mac = YAML.safe_load_file(mac_path, aliases: true)
 role = YAML.safe_load_file(role_path, aliases: true)
@@ -34,6 +35,7 @@ role_text = File.read(role_path)
 defaults = YAML.safe_load_file(defaults_path)
 generator = File.read(generator_path)
 environment_template = File.read(environment_template_path)
+snapshot_text = File.read(snapshot_path)
 
 def refuse(message)
   abort "Paperless contract failed: #{message}"
@@ -97,8 +99,10 @@ refuse("optional Ollama configuration differs from the canonical stack") unless
 
 override_services = mac.fetch("services")
 refuse("Mac override must provide all services") unless override_services.keys.sort == services.keys.sort
-refuse("Mac webserver must replace host networking") unless
-  override_services.fetch("webserver").fetch("network_mode") == "bridge"
+refuse("Mac webserver must reset NAS host networking") unless
+  override_services.fetch("webserver").key?("network_mode") &&
+  override_services.fetch("webserver")["network_mode"].nil? &&
+  File.read(mac_path).match?(/^\s+network_mode: !reset null$/)
 refuse("Mac webserver must publish only its configured port") unless
   override_services.fetch("webserver").fetch("ports") == ["${PAPERLESS_HOST_PORT:?}:8000"]
 %w[broker db gotenberg tika].each do |name|
@@ -129,11 +133,41 @@ required_tasks = [
 required_tasks.each { |name| refuse("missing #{name}") unless role_text.include?("- name: #{name}") }
 refuse("role must never invoke the consuming mail endpoint") if role_text.match?(%r{/mail_accounts/.+/process/})
 
-secret_tasks = role.select do |task|
+secret_tasks = role.reject { |task| task.key?("ansible.builtin.assert") }.select do |task|
   task.to_s.match?(/vault_paperless_|paperless_api_token|paperless_mail_account_payload/)
 end
 secret_tasks.each do |task|
   refuse("secret-bearing task #{task['name']} is not redacted") unless task["no_log"] == true
+end
+[
+  "Require the vault Paperless administrator",
+  "Require one vault Paperless administrator identity",
+  "Require exact Paperless administrator identity",
+  "Require a valid non-consuming Paperless Gmail credential before persistence",
+  "Require the non-consuming Paperless mail connection test",
+  "Require exact Paperless administrator, mail account, and mail rule"
+].each do |name|
+  task = role.find { |candidate| candidate["name"] == name }
+  refuse("missing visible Paperless assertion #{name}") unless task
+  refuse("Paperless assertion #{name} must keep static failures visible") if task["no_log"] == true
+end
+refuse("Paperless restore must recover both services from an ensure block") unless
+  snapshot_text.match?(/if MODE == "restore".*?begin.*?ensure.*?\["docker", "start", REDIS\].*?\["docker", "start", WEBSERVER\].*?wait_healthy\(REDIS, WEBSERVER\)/m)
+admin_create = role.find { |task| task["name"] == "Create the absent vault Paperless administrator" }
+admin_argv = admin_create.dig("community.docker.docker_compose_v2_exec", "argv")
+refuse("Paperless administrator creation must use the container password environment") unless
+  admin_argv.join(" ").include?('DJANGO_SUPERUSER_PASSWORD="$PAPERLESS_ADMIN_PASSWORD"')
+refuse("Paperless administrator password must not be copied into docker exec argv") if
+  admin_argv.any? { |argument| argument.to_s.include?("vault_paperless_admin_password") }
+[
+  "Resolve Paperless mail account reconciliation",
+  "Resolve Paperless mail account repair requirement",
+  "Resolve Paperless mail rule reconciliation",
+  "Resolve Paperless mail rule repair requirement"
+].each do |name|
+  task = role.find { |candidate| candidate["name"] == name }
+  refuse("#{name} must run during tagged Paperless verification") unless
+    Array(task && task["tags"]).include?("platform_verify_paperless")
 end
 refuse("Gmail app password must be a visible sentinel in the new-platform generator") unless
   generator.include?("paperless_gmail_app_password: replace-with-google-app-password")
@@ -172,13 +206,6 @@ grep -qF 'wait_healthy(REDIS, WEBSERVER)' "$snapshot" ||
   fail_contract 'Paperless restore does not wait for application health'
 grep -qF 'request("delete", "/api/documents/' "$snapshot" ||
   fail_contract 'Paperless rollback drill does not destructively test restoration'
-grep -qF '"document_importer"' "$repo_dir/tests/contracts/paperless.sh" ||
-  fail_contract 'Paperless portable export is never restored'
-grep -qF 'document_exporter --passphrase "$passphrase"' "$repo_dir/tests/contracts/paperless.sh" ||
-  fail_contract 'Paperless portable export does not encrypt sensitive fields'
-grep -qF 'document_importer --passphrase "$passphrase"' "$repo_dir/tests/contracts/paperless.sh" ||
-  fail_contract 'Paperless portable import does not decrypt sensitive fields'
-
 [ "$mode" = static ] && { printf '%s\n' 'Paperless static contract passed'; exit 0; }
 
 : "${PLATFORM_CONTRACT_VAULT_FILE:=${PLATFORM_MAC_VAULT_FILE:-}}"
@@ -373,7 +400,12 @@ def run_bounded(seconds, *argv, input: nil, label:)
     unless status.success?
       stderr.flush
       stderr.rewind
-      diagnostic = stderr.read.byteslice(-4096, 4096).to_s
+      diagnostic_bytes = stderr.read
+      diagnostic = if diagnostic_bytes.bytesize > 4096
+                     diagnostic_bytes.byteslice(diagnostic_bytes.bytesize - 4096, 4096)
+                   else
+                     diagnostic_bytes
+                   end
       diagnostic = diagnostic.encode("UTF-8", invalid: :replace, undef: :replace)
       secret = input.to_s.strip
       diagnostic.gsub!(secret, "[REDACTED]") unless secret.empty?

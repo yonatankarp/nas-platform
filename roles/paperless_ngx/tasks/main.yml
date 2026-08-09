@@ -193,10 +193,9 @@
       - sh
       - -ec
       - >-
-        exec env DJANGO_SUPERUSER_PASSWORD="$1" python manage.py createsuperuser
-        --noinput --username "$2" --email "$3"
+        exec env DJANGO_SUPERUSER_PASSWORD="$PAPERLESS_ADMIN_PASSWORD"
+        python manage.py createsuperuser --noinput --username "$1" --email "$2"
       - paperless-admin-create
-      - "{{ vault_paperless_admin_password }}"
       - "{{ vault_paperless_admin_username }}"
       - "{{ vault_paperless_admin_email }}"
     tty: false
@@ -265,7 +264,6 @@
     fail_msg: >-
       Paperless does not accept the preserved vault administrator. Restore the deployed identity
       from the password manager or migrate it explicitly before rerunning.
-  no_log: true
 
 - name: Verify Paperless users for exact administrator identity
   tags: [platform_verify_paperless]
@@ -294,7 +292,6 @@
     that:
       - paperless_managed_administrators | length == 1
     fail_msg: The Paperless vault administrator is absent or duplicated.
-  no_log: true
 
 - name: Read the reconciled Paperless administrator
   tags: [platform_verify_paperless]
@@ -327,7 +324,6 @@
       - paperless_reconciled_administrators[0].is_staff | bool
       - paperless_reconciled_administrators[0].is_active | bool
     fail_msg: The Paperless vault administrator has identity drift.
-  no_log: true
 
 - name: Resolve the desired Paperless mail account payload
   tags: [platform_verify_paperless]
@@ -394,12 +390,14 @@
     fail_msg: The managed Paperless mail account name is duplicated; resolve it in Paperless.
 
 - name: Resolve Paperless mail account reconciliation
+  tags: [platform_verify_paperless]
   ansible.builtin.set_fact:
     paperless_existing_mail_account: "{{ paperless_managed_mail_accounts | first | default({}) }}"
     paperless_mail_account_create_required: "{{ paperless_managed_mail_accounts | length == 0 }}"
   no_log: true
 
 - name: Resolve Paperless mail account repair requirement
+  tags: [platform_verify_paperless]
   ansible.builtin.set_fact:
     paperless_mail_account_repair_required: >-
       {{ paperless_managed_mail_accounts | length == 1 and
@@ -473,7 +471,6 @@
         paperless_candidate_non_consuming_before.results[1].json.count ==
         paperless_candidate_non_consuming_after.results[1].json.count
     fail_msg: The candidate Paperless Gmail credential failed without replacing the stored credential.
-  no_log: true
   when:
     - platform_compose_kind != 'integration'
     - paperless_mail_account_create_required | bool or paperless_mail_account_repair_required | bool
@@ -591,12 +588,14 @@
     fail_msg: The managed Paperless mail rule name is duplicated; resolve it in Paperless.
 
 - name: Resolve Paperless mail rule reconciliation
+  tags: [platform_verify_paperless]
   ansible.builtin.set_fact:
     paperless_existing_mail_rule: "{{ paperless_managed_mail_rules | first | default({}) }}"
     paperless_mail_rule_create_required: "{{ paperless_managed_mail_rules | length == 0 }}"
   no_log: true
 
 - name: Resolve Paperless mail rule repair requirement
+  tags: [platform_verify_paperless]
   ansible.builtin.set_fact:
     paperless_mail_rule_repair_required: >-
       {{ paperless_managed_mail_rules | length == 1 and
@@ -726,7 +725,6 @@
       - paperless_non_consuming_before.results[0].json.count == paperless_non_consuming_after.results[0].json.count
       - paperless_non_consuming_before.results[1].json.count == paperless_non_consuming_after.results[1].json.count
     fail_msg: The Paperless Gmail authentication failed or the connection test consumed mail.
-  no_log: true
   when:
     - platform_compose_kind != 'integration'
     - paperless_reconciled_mail_accounts | length == 1
@@ -769,7 +767,6 @@
     paperless_verified_mail_rules: >-
       {{ paperless_mail_rules_after.json.results
          | selectattr('name', 'equalto', vault_paperless_mail_rule_name) | list }}
-  no_log: true
   when:
     - >-
       not ansible_check_mode or

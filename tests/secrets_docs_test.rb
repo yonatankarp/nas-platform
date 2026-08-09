@@ -60,11 +60,26 @@ check(failures, readme.include?("](docs/secrets.md)"),
         "docs/#{guide_name} must link to secrets.md")
 end
 
-migration_workflow = secrets_guide.index("Migration workflow")
-brand_new_platform = secrets_guide.index("Brand-new platform")
+migration_workflow = secrets_guide.match(/^## Migration workflow$/)&.begin(0)
+brand_new_platform = secrets_guide.match(/^## Brand-new platform$/)&.begin(0)
 check(failures,
       migration_workflow && brand_new_platform && migration_workflow < brand_new_platform,
       "canonical secrets guide must place Migration workflow before Brand-new platform")
+
+mac_guide = File.read(File.join(ROOT, "docs", "getting-started-mac.md"))
+check(failures, !mac_guide.include?('--phase "$phase" || break'),
+      "Mac proof loop must not continue to manual review after a failed phase")
+check(failures,
+      secrets_guide.include?('password_lines=$(awk \'END { print NR }\' "$PLATFORM_VAULT_PASSWORD_FILE")') &&
+      secrets_guide.include?('if [ "$password_lines" -ne 1 ] || [ ! -s "$PLATFORM_VAULT_PASSWORD_FILE" ]'),
+      "canonical secrets guide must reject empty or multiline vault passwords")
+check(failures,
+      secrets_guide.include?('vault_encryption_input=$(mktemp "$PLATFORM_VAULT_DIR/.vault-encryption.XXXXXX")') &&
+      secrets_guide.include?('mv "$vault_encryption_input" "$PLATFORM_VAULT_FILE"'),
+      "brand-new workflow must publish the external vault only after encryption")
+check(failures,
+      secrets_guide.include?('if ansible-playbook generate-secrets.yml -e generate_brand_new_platform=true; then'),
+      "brand-new workflow must stop after generator failure")
 
 if failures.empty?
   puts "secrets docs: canonical guide and vault schema agree"

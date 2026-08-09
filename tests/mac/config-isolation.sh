@@ -220,8 +220,8 @@ first_paperless.fetch("services").each_key do |service|
 end
 raise "Paperless published ports collide" if
   published(first_paperless, "webserver") == published(second_paperless, "webserver")
-raise "Paperless Mac runtime kept host networking" unless
-  first_paperless.dig("services", "webserver", "network_mode") == "bridge"
+raise "Paperless Mac runtime left the Compose network" if
+  first_paperless.dig("services", "webserver").key?("network_mode")
 %w[broker db gotenberg tika].each do |service|
   raise "Paperless #{service} publishes a host port" if
     first_paperless.dig("services", service).key?("ports")
