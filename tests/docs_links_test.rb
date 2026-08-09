@@ -25,6 +25,7 @@ end
 def markdown_link_bodies(text)
   links = []
   brackets = []
+  parentheses = matching_parentheses(text)
   index = 0
   while index < text.length
     if text[index] == "\\"
@@ -46,9 +47,8 @@ def markdown_link_bodies(text)
       next
     end
     open = index + 1
-    open += 1 while open < text.length && text[open].match?(/\s/)
     if text[open] == "("
-      close = matching_delimiter(text, open, "(", ")")
+      close = parentheses[open]
       links << text[(open + 1)...close] if close
       index = close ? close + 1 : open + 1
     else
@@ -56,6 +56,29 @@ def markdown_link_bodies(text)
     end
   end
   links
+end
+
+def matching_parentheses(text)
+  stack = []
+  matches = {}
+  angle = false
+  index = 0
+  while index < text.length
+    if text[index] == "\\"
+      index += 2
+      next
+    end
+    angle = true if text[index] == "<"
+    angle = false if text[index] == ">"
+    unless angle
+      stack << index if text[index] == "("
+      if text[index] == ")" && (open = stack.pop)
+        matches[open] = index
+      end
+    end
+    index += 1
+  end
+  matches
 end
 
 def escaped?(text, index)
@@ -174,6 +197,10 @@ def mask_html_comments(text)
   result = text.dup
   index = 0
   while (start = result.index("<!--", index))
+    if escaped?(result, start)
+      index = start + 4
+      next
+    end
     finish = result.index("-->", start + 4)
     finish = finish ? finish + 3 : result.length
     result[start...finish] = result[start...finish].gsub(/[^\n]/, " ")
@@ -229,7 +256,7 @@ def check_sources(root, sources)
 end
 
 def self_test
-  unless markdown_link_bodies("[" * 50_000).empty?
+  unless markdown_link_bodies("[" * 50_000).empty? && markdown_link_bodies("[](" * 50_000).empty?
     warn "docs links hostile-unmatched self-test failed"
     exit 1
   end
@@ -249,10 +276,12 @@ def self_test
     source = docs.join("sample.md")
     source.write(<<~MARKDOWN)
       [file](valid%20file.md)
+      [not-a-link] (not-a-link-missing.md)
       <!-- [comment](comment-missing.md) -->
       <!-- multiline
       [multiline-comment](multiline-comment-missing.md)
       -->
+      \\<!-- [escaped-comment](escaped-comment-missing.md) -->
       [plus](plus+file.md)
       [balanced](balanced(name).md)
       [escaped destination](a\(b\).md)
@@ -323,7 +352,7 @@ def self_test
     unclosed_four = docs.join("unclosed-four.md")
     unclosed_four.write(">    ```markdown\n>    [hidden](hidden-four-missing.md)\n")
     failures = check_sources(root, [source])
-    expected = ["missing.md", "ordinary-missing.md", "nested-missing.md", "<missing).md>", "indented-missing.md", "escaped-missing.md", "two-slash-missing.md", "unmatched-missing.md", "after-unmatched-missing.md", "ten-digit-missing.md", "unequal-missing.md", "../../etc/passwd", "bad%ZZ.md", "escape.md"]
+    expected = ["missing.md", "ordinary-missing.md", "nested-missing.md", "<missing).md>", "indented-missing.md", "escaped-missing.md", "two-slash-missing.md", "unmatched-missing.md", "after-unmatched-missing.md", "ten-digit-missing.md", "unequal-missing.md", "escaped-comment-missing.md", "../../etc/passwd", "bad%ZZ.md", "escape.md"]
     unless expected.all? { |target| failures.any? { |failure| failure.end_with?(target) } } && failures.length == expected.length + 1 && failures.none? { |failure| failure.match?(/[[:cntrl:]]/) }
       warn "docs links self-test failed: #{failures.inspect}"
       exit 1
