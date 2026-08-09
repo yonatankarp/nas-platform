@@ -111,27 +111,6 @@ def escaped?(text, index)
   slashes.odd?
 end
 
-def matching_delimiter(text, start, opening, closing)
-  depth = 0
-  angle = false
-  index = start
-  while index < text.length
-    if text[index] == "\\"
-      index += 2
-      next
-    end
-    angle = true if text[index] == "<" && opening == "("
-    angle = false if text[index] == ">" && opening == "("
-    depth += 1 if text[index] == opening && !angle
-    if text[index] == closing && !angle
-      depth -= 1
-      return index if depth.zero?
-    end
-    index += 1
-  end
-  nil
-end
-
 def mask_code(text)
   lines = text.lines
   fence = nil
@@ -191,86 +170,8 @@ def standalone_block_line?(line, content_start)
     content.match?(/\A {0,3}(?:(?:\*\s*){3,}|(?:-\s*){3,}|(?:_\s*){3,}|(?:=+|-+)[ \t]*)\z/)
 end
 
-def mask_inline_code(text)
-  chars = text.chars
-  index = 0
-  while index < chars.length
-    unless chars[index] == "`"
-      index += 1
-      next
-    end
-    run_end = index
-    run_end += 1 while run_end < chars.length && chars[run_end] == "`"
-    length = run_end - index
-    slash_count = 0
-    before = index - 1
-    while before >= 0 && chars[before] == "\\"
-      slash_count += 1
-      before -= 1
-    end
-    if slash_count.odd?
-      index = run_end
-      next
-    end
-    line_start = text.rindex("\n", index - 1).to_i + 1
-    if text[line_start...index].match?(/\A {4,}\z/) && length >= 3
-      index = run_end
-      next
-    end
-    close = run_end
-    loop do
-      break if close >= chars.length
-      if chars[close] == "`"
-        candidate_end = close
-        candidate_end += 1 while candidate_end < chars.length && chars[candidate_end] == "`"
-        break if candidate_end - close == length
-
-        close = candidate_end
-      else
-        close += 1
-      end
-    end
-    if close >= chars.length
-      index = run_end
-      next
-    end
-    (index...close + length).each { |position| chars[position] = " " unless chars[position] == "\n" }
-    index = close + length
-  end
-  chars.join
-end
-
 def sanitize(value)
   value.gsub(/[[:cntrl:]]/, "?")
-end
-
-def mask_html_comments(text)
-  result = text.dup
-  fence_masked, = mask_code(text)
-  code_ranges = inline_partners(fence_masked).filter_map do |opening, closing|
-    (opening...closing) if opening < closing
-  end.sort_by(&:begin)
-  range_index = 0
-  index = 0
-  while (start = result.index("<!--", index))
-    range_index += 1 while code_ranges[range_index] && code_ranges[range_index].end <= start
-    line_start = result.rindex("\n", start - 1).to_i + 1
-    line_end = result.index("\n", start) || result.length
-    current_line = result[line_start...line_end]
-    _, content_start, = markdown_container(current_line)
-    comment_prefix = result[(line_start + content_start)...start]
-    block_comment = comment_prefix.length <= 3 && comment_prefix.strip.empty?
-    inside_code = !block_comment && code_ranges[range_index]&.cover?(start)
-    if escaped?(result, start) || inside_code
-      index = start + 4
-      next
-    end
-    finish = result.index("-->", start + 4)
-    finish = finish ? finish + 3 : result.length
-    result[start...finish] = result[start...finish].gsub(/[^\n]/, " ")
-    index = finish
-  end
-  result
 end
 
 def mask_block_contexts(text)
