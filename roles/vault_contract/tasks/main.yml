@@ -86,10 +86,26 @@
       - item.username | trim | length > 0
       - item.password | length > 0
       - item.policy is mapping
+      - >-
+        item.policy.keys() | map('lower') |
+        intersect(forbidden_jellyfin_policy_fields) | length == 0
     fail_msg: jellyfin managed user has invalid field; values are redacted.
   loop: "{{ vault_managed_users.jellyfin }}"
   loop_control:
     label: jellyfin
+  vars:
+    forbidden_jellyfin_policy_fields:
+      - password
+      - passwordhash
+      - password_hash
+      - passwordconfirm
+      - password_confirmation
+      - token
+      - access_token
+      - secret
+      - credential
+      - api_key
+      - apikey
   no_log: true
 
 - name: Validate komga managed-user entries
@@ -136,6 +152,21 @@
   loop: "{{ vault_managed_users.ntfy | subelements('access') }}"
   loop_control:
     label: ntfy
+  no_log: true
+
+- name: Validate global ntfy managed-user token ownership
+  ansible.builtin.assert:
+    that:
+      - >-
+        vault_contract_managed_ntfy_tokens | unique | length ==
+        vault_contract_managed_ntfy_tokens | length
+      - >-
+        vault_contract_managed_ntfy_tokens |
+        intersect([vault_ntfy_dozzle_token, vault_ntfy_beszel_token]) | length == 0
+    fail_msg: ntfy managed user has invalid token ownership; values are redacted.
+  vars:
+    vault_contract_managed_ntfy_tokens: >-
+      {{ vault_managed_users.ntfy | map(attribute='tokens') | list | flatten }}
   no_log: true
 
 - name: Validate paperless_ngx managed-user entries

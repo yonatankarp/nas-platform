@@ -1,6 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require "open3"
+require "tmpdir"
 require "yaml"
 
 ROOT = File.expand_path("..", __dir__)
@@ -9,6 +11,9 @@ SPEC_PATH = File.join(ROOT, "roles", "vault_contract", "meta", "argument_specs.y
 TASKS_PATH = File.join(ROOT, "roles", "vault_contract", "tasks", "main.yml")
 GENERATOR_PATH = File.join(ROOT, "tests", "generate-ephemeral-vault.sh")
 DOCS_PATH = File.join(ROOT, "docs", "secrets.md")
+POLICY_PATH = File.join(ROOT, "tests", "policy_test.rb")
+VALIDATE_POLICY_PATH = File.join(ROOT, "tests", "validate-policy.sh")
+PLAIN_TEMPLATE_PATH = File.join(ROOT, "templates", "vault-plain.yml.j2")
 
 ENTRY_FIELDS = {
   "audiobookshelf" => %w[username password type is_active permissions],
@@ -35,6 +40,46 @@ IDENTITY_FIELDS = {
 BCRYPT = /^\$2[aby]\$\d{2}\$[.\/A-Za-z0-9]{53}$/
 TOKEN = /^tk_[a-z0-9]{29}$/
 
+ARGUMENT_FIELDS = {
+  "audiobookshelf" => {
+    "username" => ["str", nil], "password" => ["str", nil],
+    "type" => ["str", nil], "is_active" => ["bool", nil],
+    "permissions" => ["dict", nil]
+  },
+  "beszel" => {
+    "email" => ["str", nil], "password" => ["str", nil],
+    "role" => ["str", nil], "verified" => ["bool", nil]
+  },
+  "dozzle" => {
+    "username" => ["str", nil], "password" => ["str", nil],
+    "password_hash" => ["str", nil], "email" => ["str", nil],
+    "name" => ["str", nil], "filter" => ["str", nil], "roles" => ["str", nil]
+  },
+  "immich" => {
+    "email" => ["str", nil], "password" => ["str", nil],
+    "name" => ["str", nil], "quota_size" => ["int", nil]
+  },
+  "jellyfin" => {
+    "username" => ["str", nil], "password" => ["str", nil],
+    "policy" => ["dict", nil]
+  },
+  "komga" => {
+    "email" => ["str", nil], "password" => ["str", nil],
+    "roles" => ["list", "str"]
+  },
+  "ntfy" => {
+    "username" => ["str", nil], "password" => ["str", nil],
+    "password_hash" => ["str", nil], "role" => ["str", nil],
+    "access" => ["list", "dict"], "tokens" => ["list", "str"]
+  },
+  "paperless_ngx" => {
+    "username" => ["str", nil], "password" => ["str", nil],
+    "email" => ["str", nil], "is_active" => ["bool", nil],
+    "is_staff" => ["bool", nil], "is_superuser" => ["bool", nil],
+    "groups" => ["list", "str"]
+  }
+}.freeze
+
 def check(failures, condition, message)
   failures << message unless condition
 end
@@ -55,6 +100,29 @@ end
 
 def normalized(value)
   value.to_s.strip.downcase
+end
+
+def duplicate(document)
+  Marshal.load(Marshal.dump(document))
+end
+
+def validate_with_role(document)
+  Dir.mktmpdir("nas-platform-managed-users-vault-") do |directory|
+    path = File.join(directory, "vault.yml")
+    File.write(path, YAML.dump(document), mode: "w", perm: 0o600)
+    Open3.capture3(
+      { "ANSIBLE_NOCOLOR" => "1" },
+      "ansible-playbook", File.join(ROOT, "validate-vault.yml"), "-e", "@#{path}",
+      chdir: ROOT
+    )
+  end
+end
+
+def expect_role_rejection(failures, label, document, forbidden_value)
+  stdout, stderr, status = validate_with_role(document)
+  check(failures, !status.success?, "#{label} must be rejected by vault role evaluation")
+  output = stdout + stderr
+  check(failures, !output.include?(forbidden_value), "#{label} diagnostic disclosed a managed-user value")
 end
 
 failures = []
@@ -190,6 +258,31 @@ spec = load_mapping(SPEC_PATH, failures, "vault argument spec")
 managed_spec = spec.dig("argument_specs", "main", "options", "vault_managed_users")
 check(failures, managed_spec.is_a?(Hash) && managed_spec["type"] == "dict" && managed_spec["required"] == true,
       "vault_managed_users argument must be a required dict")
+managed_options = managed_spec.is_a?(Hash) ? managed_spec["options"] : nil
+check(failures, managed_options.is_a?(Hash) && managed_options.keys.sort == ARGUMENT_FIELDS.keys.sort,
+      "vault_managed_users argument service options differ")
+ARGUMENT_FIELDS.each do |service, expected_fields|
+  service_spec = managed_options.is_a?(Hash) ? managed_options[service] : nil
+  check(failures,
+        service_spec.is_a?(Hash) && service_spec["type"] == "list" &&
+          service_spec["elements"] == "dict" && service_spec["required"] == true,
+        "#{service} argument must be a required list of dictionaries")
+  field_specs = service_spec.is_a?(Hash) ? service_spec["options"] : nil
+  check(failures, field_specs.is_a?(Hash) && field_specs.keys.sort == expected_fields.keys.sort,
+        "#{service} argument fields differ")
+  expected_fields.each do |field, (type, elements)|
+    field_spec = field_specs.is_a?(Hash) ? field_specs[field] : nil
+    valid = field_spec.is_a?(Hash) && field_spec["type"] == type && field_spec["required"] == true
+    valid &&= field_spec["elements"] == elements if elements
+    check(failures, valid, "#{service}.#{field} argument type differs")
+  end
+end
+access_spec = managed_options.is_a?(Hash) ? managed_options.dig("ntfy", "options", "access") : nil
+access_options = access_spec.is_a?(Hash) ? access_spec["options"] : nil
+check(failures,
+      access_options.is_a?(Hash) && access_options.keys.sort == %w[permission topic] &&
+        access_options.values.all? { |option| option == { "type" => "str", "required" => true } },
+      "ntfy access argument fields must be required strings")
 
 tasks = File.file?(TASKS_PATH) ? File.read(TASKS_PATH) : ""
 facts = ENTRY_FIELDS.keys.map { |service| "vault_managed_#{service}_users" }
@@ -231,6 +324,11 @@ required_validation_fragments.each do |fragment|
   check(failures, tasks.include?(fragment),
         "vault contract validation is missing #{fragment}")
 end
+check(failures, tasks.include?("forbidden_jellyfin_policy_fields"),
+      "vault contract must reject secret-bearing Jellyfin policy keys")
+check(failures, tasks.include?("vault_contract_managed_ntfy_tokens") &&
+                tasks.include?("vault_ntfy_dozzle_token") && tasks.include?("vault_ntfy_beszel_token"),
+      "vault contract must enforce global ntfy token uniqueness and publisher separation")
 
 generator = File.file?(GENERATOR_PATH) ? File.read(GENERATOR_PATH) : ""
 check(failures, generator.include?("vault_managed_users:"),
@@ -239,6 +337,17 @@ ENTRY_FIELDS.each_key do |service|
   check(failures, generator.match?(/^  #{Regexp.escape(service)}:\n    - /),
         "ephemeral generator must include a synthetic #{service} entry")
 end
+
+policy = File.file?(POLICY_PATH) ? File.read(POLICY_PATH) : ""
+check(failures, policy.match?(/EXPECTED_VAULT_KEYS = %w\[.*?vault_managed_users.*?\]\.sort\.freeze/m),
+      "policy expected vault keys must include vault_managed_users")
+plain_template = File.file?(PLAIN_TEMPLATE_PATH) ? File.read(PLAIN_TEMPLATE_PATH) : ""
+empty_lists = ENTRY_FIELDS.keys.map { |service| "  #{service}: []" }.join("\n")
+check(failures, plain_template.include?("vault_managed_users:\n#{empty_lists}"),
+      "brand-new vault template must render eight empty managed-user lists")
+validate_policy = File.file?(VALIDATE_POLICY_PATH) ? File.read(VALIDATE_POLICY_PATH) : ""
+check(failures, validate_policy.lines.include?("ruby tests/managed_users_vault_test.rb\n"),
+      "policy validation must run the managed-user vault test")
 
 docs = File.file?(DOCS_PATH) ? File.read(DOCS_PATH) : ""
 check(failures, docs.scan(/`vault_managed_users`/).length == 1,
@@ -251,6 +360,37 @@ ENTRY_FIELDS.each do |service, fields|
           "secrets guide must document #{service}.#{field}")
   end
 end
+check(failures,
+      docs.include?("validates bcrypt shape only") &&
+        docs.include?("authenticates the plaintext password") &&
+        docs.include?("compares the stored hash before mutation"),
+      "secrets guide must state the deferred bcrypt pair verification boundary")
+
+_stdout, _stderr, valid_status = validate_with_role(vault)
+check(failures, valid_status.success?, "vault example must pass actual role evaluation")
+
+wrong_type = duplicate(vault)
+wrong_type.dig("vault_managed_users", "audiobookshelf", 0)["permissions"] = ["wrong-type-sentinel"]
+expect_role_rejection(failures, "wrong nested field type", wrong_type, "wrong-type-sentinel")
+
+jellyfin_secret = duplicate(vault)
+jellyfin_secret.dig("vault_managed_users", "jellyfin", 0, "policy")["Password"] =
+  "jellyfin-secret-sentinel"
+expect_role_rejection(failures, "secret-bearing Jellyfin policy", jellyfin_secret,
+                      "jellyfin-secret-sentinel")
+
+duplicate_token = duplicate(vault)
+shared_token = "tk_33333333333333333333333333333"
+duplicate_token.dig("vault_managed_users", "ntfy", 0, "tokens") << shared_token
+second_ntfy = duplicate(duplicate_token.dig("vault_managed_users", "ntfy", 0))
+second_ntfy["username"] = "second-reader-example-invalid"
+duplicate_token.dig("vault_managed_users", "ntfy") << second_ntfy
+expect_role_rejection(failures, "cross-user duplicate ntfy token", duplicate_token, shared_token)
+
+publisher_collision = duplicate(vault)
+publisher_token = publisher_collision.fetch("vault_ntfy_dozzle_token")
+publisher_collision.dig("vault_managed_users", "ntfy", 0, "tokens") << publisher_token
+expect_role_rejection(failures, "ntfy publisher token collision", publisher_collision, publisher_token)
 
 if failures.empty?
   puts "Managed-user vault: all eight service schemas are valid"

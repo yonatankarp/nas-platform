@@ -61,6 +61,12 @@ password of an existing identity. During migration, recover each existing
 identity and matching password from its authoritative source. The examples are
 synthetic schema illustrations, not deployable credentials.
 
+The portable vault contract validates bcrypt shape only; it does not attempt a
+portable cryptographic password/hash comparison on the Ansible controller. The
+service-specific reconciliation authenticates the plaintext password and
+compares the stored hash before mutation through the pinned application
+interface. A mismatch stops reconciliation rather than rotating credentials.
+
 #### audiobookshelf managed users
 
 `username` is the login identity; `password` is its preserved clear credential;

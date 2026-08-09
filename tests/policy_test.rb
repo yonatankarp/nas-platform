@@ -152,6 +152,7 @@ EXPECTED_VAULT_KEYS = %w[
   vault_paperless_gmail_app_password
   vault_paperless_mail_account_name
   vault_paperless_mail_rule_name
+  vault_managed_users
   vault_tinymediamanager_password
 ].sort.freeze
 REQUIRED_MANIFEST_FIELDS = %w[name legacy_path role tranche status].freeze
@@ -923,10 +924,9 @@ vault_contract_tasks = File.file?(vault_contract_tasks_path) ?
   YAML.safe_load_file(vault_contract_tasks_path) : []
 check(failures, !vault_contract_tasks.empty? && vault_contract_tasks.all? { |task| task["no_log"] == true },
       "every vault contract task must use no_log")
-shape_task = vault_contract_tasks.find do |task|
-  task["name"] == "Validate credential shapes without disclosing credential material"
-end
-shape_conditions = Array(shape_task&.dig("ansible.builtin.assert", "that")).join(" ")
+shape_conditions = vault_contract_tasks.flat_map do |task|
+  Array(task.dig("ansible.builtin.assert", "that"))
+end.join(" ")
 EXPECTED_VAULT_KEYS.each do |key|
   check(failures, shape_conditions.match?(/\b#{Regexp.escape(key)}\b/),
         "vault contract shape validation must inspect #{key}")
