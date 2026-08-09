@@ -1,0 +1,68 @@
+---
+- name: Exercise the atomic safe-slurp Ansible module
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Read a regular file atomically
+      atomic_safe_slurp:
+        path: "{{ safe_slurp_regular_path }}"
+        max_bytes: 64
+      register: safe_slurp_regular
+      no_log: true
+
+    - name: Verify regular-file content
+      ansible.builtin.assert:
+        that:
+          - safe_slurp_regular.exists
+          - safe_slurp_regular.content | b64decode == 'regular-content'
+
+    - name: Read an absent file atomically
+      atomic_safe_slurp:
+        path: "{{ safe_slurp_absent_path }}"
+        max_bytes: 64
+      register: safe_slurp_absent
+      no_log: true
+
+    - name: Verify absent-file semantics
+      ansible.builtin.assert:
+        that:
+          - not safe_slurp_absent.exists
+          - safe_slurp_absent.content == ''
+
+    - name: Require symlink refusal
+      block:
+        - name: Attempt an atomic symlink read
+          atomic_safe_slurp:
+            path: "{{ safe_slurp_symlink_path }}"
+            max_bytes: 64
+          no_log: true
+
+        - name: Record unexpected symlink acceptance
+          ansible.builtin.fail:
+            msg: Atomic safe-slurp accepted a symlink.
+      rescue:
+        - name: Record expected symlink refusal
+          ansible.builtin.set_fact:
+            safe_slurp_symlink_refused: true
+
+    - name: Require bounded-read refusal
+      block:
+        - name: Attempt an oversized atomic read
+          atomic_safe_slurp:
+            path: "{{ safe_slurp_oversized_path }}"
+            max_bytes: 64
+          no_log: true
+
+        - name: Record unexpected oversized-file acceptance
+          ansible.builtin.fail:
+            msg: Atomic safe-slurp accepted an oversized file.
+      rescue:
+        - name: Record expected oversized-file refusal
+          ansible.builtin.set_fact:
+            safe_slurp_oversized_refused: true
+
+    - name: Verify unsafe files were refused
+      ansible.builtin.assert:
+        that:
+          - safe_slurp_symlink_refused | default(false)
+          - safe_slurp_oversized_refused | default(false)

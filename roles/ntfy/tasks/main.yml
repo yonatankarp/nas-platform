@@ -112,17 +112,18 @@
     interactive: false
     tty: false
   register: ntfy_existing_user_list
-  when: ntfy_auth_database_stat.stat.exists
+  when:
+    - ntfy_auth_database_stat.stat.exists
+    - not ansible_check_mode
   failed_when: false
   changed_when: false
-  check_mode: false
   no_log: true
 
 - name: Require authoritative ntfy user listing
   ansible.builtin.assert:
     that:
       - >-
-        not ntfy_auth_database_stat.stat.exists or
+        not ntfy_auth_database_stat.stat.exists or ansible_check_mode or
         ntfy_existing_user_list.rc | default(1) | int == 0
     fail_msg: >-
       Existing ntfy users could not be listed authoritatively; no configuration
@@ -133,11 +134,22 @@
   ansible.builtin.set_fact:
     ntfy_existing_user_records: >-
       {{ (ntfy_existing_user_list.stdout | ntfy_user_list)
-         if ntfy_auth_database_stat.stat.exists else {} }}
+         if ntfy_auth_database_stat.stat.exists and not ansible_check_mode else {} }}
     ntfy_authoritative_absence_established: >-
       {{ not ntfy_auth_database_stat.stat.exists or
-         ntfy_existing_user_list.rc | default(1) | int == 0 }}
+         (not ansible_check_mode and
+          ntfy_existing_user_list.rc | default(1) | int == 0) }}
   no_log: true
+
+- name: Report deferred authoritative ntfy inspection in check mode
+  ansible.builtin.debug:
+    msg: >-
+      Existing ntfy identities require authoritative inspection during a normal
+      convergence; check mode will not create a one-off probe container.
+  when:
+    - ansible_check_mode
+    - ntfy_auth_database_stat.stat.exists
+  changed_when: false
 
 - name: Resolve declarative ntfy managed-user provisioning
   ansible.builtin.include_tasks: managed_users.yml
@@ -171,9 +183,14 @@
   delay: 3
 
 - name: Verify managed ntfy users and declared access
-  ansible.builtin.include_tasks: managed_users.yml
+  ansible.builtin.include_tasks:
+    file: managed_users.yml
+    apply:
+      tags: [platform_verify_ntfy]
   vars:
     ntfy_managed_users_phase: verify
+  tags: [platform_verify_ntfy]
+  when: not ansible_check_mode
 
 # Proving provisioning took effect matters more than proving a file was written:
 # an unescaped or malformed hash leaves the server running with the alerting

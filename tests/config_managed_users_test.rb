@@ -17,6 +17,7 @@ DOZZLE_TEMPLATE = File.join(ROOT, "roles", "dozzle", "templates", "users.yml.j2"
 NTFY_TASKS = File.join(ROOT, "roles", "ntfy", "tasks", "managed_users.yml")
 NTFY_MAIN = File.join(ROOT, "roles", "ntfy", "tasks", "main.yml")
 STATE_FILTER = File.join(ROOT, "filter_plugins", "managed_user_state.py")
+SAFE_SLURP = File.join(ROOT, "library", "atomic_safe_slurp.py")
 VALIDATE_POLICY = File.join(ROOT, "tests", "validate-policy.sh")
 
 BCRYPT_A = "$2b$12$aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -26,6 +27,7 @@ TOKEN_B = "tk_bbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
 SOURCE_REQUIREMENTS = {
   "Dozzle safe load" => ["dozzle_tasks", "managed_users_yaml"],
+  "Dozzle atomic read" => ["dozzle_tasks", "atomic_safe_slurp"],
   "Dozzle explicit presence" => ["dozzle_tasks", "dozzle_existing_key_present"],
   "Dozzle hash refusal" => ["dozzle_tasks", "will not replace"],
   "Dozzle unmanaged preservation" => ["dozzle_tasks", "dozzle_unmanaged_users"],
@@ -164,7 +166,7 @@ def ntfy_verify_contract_valid?(tasks)
   common_safe = [auth, read_access, write_access].all? do |task|
     request = task["ansible.builtin.uri"]
     request["force_basic_auth"] == true && task["changed_when"] == false &&
-      task["check_mode"] == false && task["no_log"] == true
+      task["check_mode"] != false && task["no_log"] == true
   end
   common_safe &&
     auth_request == {
@@ -179,7 +181,8 @@ def ntfy_verify_contract_valid?(tasks)
     write_request["method"] == "POST" &&
     write_request["body"] == "Managed-user provisioning verification" &&
     write_request["url_username"] == "{{ item.0.username }}" &&
-    write_request["url_password"] == "{{ item.0.password }}"
+    write_request["url_password"] == "{{ item.0.password }}" &&
+    Array(write_access["when"]).include?("not ansible_check_mode")
 end
 
 def with_ntfy_task_removed(task_name)
@@ -305,13 +308,18 @@ dozzle_template = read(DOZZLE_TEMPLATE)
 ntfy_tasks = read(NTFY_TASKS)
 ntfy_main = read(NTFY_MAIN)
 state_filter = read(STATE_FILTER)
+safe_slurp = read(SAFE_SLURP)
 
 check(failures, !dozzle_tasks.empty?, "Dozzle managed-user tasks are missing")
 check(failures, dozzle_main.include?("managed_users.yml"), "Dozzle main tasks do not include managed-user reconciliation")
 check(failures, dozzle_tasks.include?("managed_users_yaml"),
       "Dozzle does not strictly safe-load the existing users file")
-check(failures, dozzle_tasks.include?("stat.isreg") && dozzle_tasks.include?("stat.islnk"),
-      "Dozzle does not require an existing regular, non-symlink users file")
+check(failures,
+      dozzle_tasks.include?("atomic_safe_slurp:") &&
+        dozzle_tasks.include?("max_bytes: 1048576") &&
+        !dozzle_tasks.include?("ansible.builtin.slurp") &&
+        !dozzle_tasks.include?("dozzle_existing_users_stat"),
+      "Dozzle does not atomically read a bounded regular users file")
 check(failures, dozzle_tasks.include?("rescue:"), "Dozzle does not reject malformed YAML explicitly")
 check(failures, dozzle_tasks.include?("dozzle_existing_normalized_names") &&
                 dozzle_tasks.include?("unique | length"),
@@ -457,7 +465,8 @@ check(failures,
         ntfy_cli_run["no_deps"] == true && ntfy_cli_run["tty"] == false &&
         ntfy_cli_run["interactive"] == false &&
         ntfy_cli_probe["changed_when"] == false && ntfy_cli_probe["failed_when"] == false &&
-        ntfy_cli_probe["check_mode"] == false && ntfy_cli_probe["no_log"] == true &&
+        ntfy_cli_probe["check_mode"] != false && ntfy_cli_probe["no_log"] == true &&
+        Array(ntfy_cli_probe["when"]).include?("not ansible_check_mode") &&
         ntfy_cli_run["argv"] == [
           "user", "--auth-file=/var/lib/ntfy/auth.db",
           "--auth-default-access=deny-all", "list"
@@ -705,6 +714,7 @@ if ARGV == ["--self-test"]
     "ntfy_tasks" => ntfy_tasks,
     "ntfy_main" => ntfy_main,
     "state_filter" => state_filter,
+    "safe_slurp" => safe_slurp,
     "validate_policy" => validate_policy
   }
   source_fragment_failures(sources).each do |label|
@@ -736,8 +746,8 @@ if ARGV == ["--self-test"]
     "missing auth redaction" => proc do |tasks|
       tasks.find { |task| task["name"] == "Basic-authenticate each managed ntfy user" }["no_log"] = false
     end,
-    "auth check-mode mutation" => proc do |tasks|
-      tasks.find { |task| task["name"] == "Basic-authenticate each managed ntfy user" }["check_mode"] = true
+    "auth check-mode forcing" => proc do |tasks|
+      tasks.find { |task| task["name"] == "Basic-authenticate each managed ntfy user" }["check_mode"] = false
     end,
     "wrong write method" => proc do |tasks|
       tasks.find { |task| task["name"] == "Verify managed ntfy declared write access" }
@@ -835,6 +845,21 @@ if ARGV == ["--self-test"]
       check(failures, mutated_source != state_filter && !status.success?,
             "behavioral self-test did not reject #{label} mutation")
     end
+  end
+
+  Dir.mktmpdir("nas-platform-safe-slurp-mutant-") do |directory|
+    mutant = File.join(directory, "atomic_safe_slurp.py")
+    mutated_source = safe_slurp.sub("os.O_RDONLY | os.O_NOFOLLOW", "os.O_RDONLY | 0")
+    File.write(mutant, mutated_source, mode: "w", perm: 0o600)
+    _stdout, _stderr, status = Open3.capture3(
+      {
+        "ATOMIC_SAFE_SLURP_MODULE" => mutant,
+        "PYTHONDONTWRITEBYTECODE" => "1"
+      },
+      ansible_python, File.join(ROOT, "tests", "safe_slurp_test.py"), chdir: ROOT
+    )
+    check(failures, mutated_source != safe_slurp && !status.success?,
+          "behavioral self-test did not reject the no-follow reader mutation")
   end
 end
 

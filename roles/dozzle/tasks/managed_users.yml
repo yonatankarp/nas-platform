@@ -1,33 +1,18 @@
 ---
-- name: Inspect the existing Dozzle users file
-  ansible.builtin.stat:
-    path: "{{ dozzle_users_path }}"
-    follow: false
-  register: dozzle_existing_users_stat
-
-- name: Require a safe existing Dozzle users file
-  ansible.builtin.assert:
-    that:
-      - >-
-        not dozzle_existing_users_stat.stat.exists or
-        (dozzle_existing_users_stat.stat.isreg | default(false) and
-         not (dozzle_existing_users_stat.stat.islnk | default(false)))
-    fail_msg: Existing Dozzle users file must be a regular, non-symlink file.
-
 - name: Safely load the existing Dozzle users document
   block:
-    - name: Read the existing Dozzle users document
-      ansible.builtin.slurp:
-        src: "{{ dozzle_users_path }}"
+    - name: Atomically read the existing Dozzle users document
+      atomic_safe_slurp:
+        path: "{{ dozzle_users_path }}"
+        max_bytes: 1048576
       register: dozzle_existing_users_source
-      when: dozzle_existing_users_stat.stat.exists
       no_log: true
 
     - name: Parse the existing Dozzle users document
       ansible.builtin.set_fact:
         dozzle_existing_document: >-
           {{ (dozzle_existing_users_source.content | b64decode | managed_users_yaml)
-             if dozzle_existing_users_stat.stat.exists else {} }}
+             if dozzle_existing_users_source.exists else {} }}
       no_log: true
 
     - name: Require a valid Dozzle users mapping

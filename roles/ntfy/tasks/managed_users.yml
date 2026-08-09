@@ -166,7 +166,9 @@
   loop: "{{ ntfy_existing_user_records | dict2items }}"
   loop_control:
     label: ntfy-existing-user
-  when: ntfy_managed_users_phase == 'provision'
+  when:
+    - ntfy_managed_users_phase == 'provision'
+    - not ansible_check_mode
   no_log: true
 
 - name: Refuse automatic adoption of unmanaged ntfy identities
@@ -182,7 +184,9 @@
   loop: "{{ ntfy_desired_owned_users | dict2items }}"
   loop_control:
     label: ntfy-owned-user
-  when: ntfy_managed_users_phase == 'provision'
+  when:
+    - ntfy_managed_users_phase == 'provision'
+    - not ansible_check_mode
   no_log: true
 
 - name: Require authoritative absence before provisioning new ntfy identities
@@ -197,7 +201,9 @@
   loop: "{{ ntfy_desired_owned_users | dict2items }}"
   loop_control:
     label: ntfy-owned-user
-  when: ntfy_managed_users_phase == 'provision'
+  when:
+    - ntfy_managed_users_phase == 'provision'
+    - not ansible_check_mode
   no_log: true
 
 - name: Initialize ntfy declarative provisioning entries
@@ -277,7 +283,6 @@
     label: ntfy-managed-user
   when: ntfy_managed_users_phase == 'verify'
   changed_when: false
-  check_mode: false
   no_log: true
 
 - name: Verify managed ntfy declared read access
@@ -295,7 +300,6 @@
   when:
     - ntfy_managed_users_phase == 'verify'
   changed_when: false
-  check_mode: false
   no_log: true
 
 - name: Verify managed ntfy declared write access
@@ -314,6 +318,6 @@
     label: ntfy-managed-write-access
   when:
     - ntfy_managed_users_phase == 'verify'
+    - not ansible_check_mode
   changed_when: false
-  check_mode: false
   no_log: true

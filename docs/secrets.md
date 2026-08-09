@@ -88,7 +88,10 @@ application user.
 empty or a syntactically valid address; `name` is the displayed name; `filter`
 is the native container filter string; and `roles` is one supported Dozzle role:
 `none`, `user`, or `admin`. Never replace one half of the clear-password/hash
-pair independently.
+pair independently. Before reconciliation, the role opens the existing users
+file once with no symlink following, validates that opened descriptor as a
+regular file, and enforces a 1 MiB read limit. The subsequent template update
+uses Ansible's atomic writer with unsafe writes disabled.
 
 #### immich managed users
 

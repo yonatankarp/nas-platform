@@ -41,6 +41,7 @@
     owner: "{{ nas_uid if platform_kind == 'nas' else omit }}"
     group: "{{ nas_gid if platform_kind == 'nas' else omit }}"
     mode: "0600"
+    unsafe_writes: false
   register: dozzle_users_file
   no_log: true
 

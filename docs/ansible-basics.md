@@ -71,7 +71,10 @@ and [Ansible concepts](https://docs.ansible.com/ansible/latest/getting_started/b
 
 `--check` asks modules to predict changes without applying them. `--diff` shows
 safe before/after detail for supported files. Check mode is a required review,
-not a guarantee that every external system can simulate perfectly.
+not a guarantee that every external system can simulate perfectly. In
+particular, ntfy check mode does not start a one-off container to inspect its
+authentication database and does not publish verification messages; a normal
+convergence or the tagged verification play performs those runtime checks.
 
 **Tags** select part of a playbook. For example, `site.yml` tags the preflight
 role `preflight`, but its `always` safety tasks still run when other tags are
