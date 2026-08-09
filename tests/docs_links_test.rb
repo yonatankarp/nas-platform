@@ -24,25 +24,35 @@ end
 
 def markdown_link_bodies(text)
   links = []
+  brackets = []
   index = 0
   while index < text.length
-    unless text[index] == "[" && !escaped?(text, index)
+    if text[index] == "\\"
+      index += 2
+      next
+    end
+    if text[index] == "["
+      brackets << index
       index += 1
       next
     end
-    label_end = matching_delimiter(text, index, "[", "]")
+    unless text[index] == "]"
+      index += 1
+      next
+    end
+    label_end = brackets.pop
     unless label_end
       index += 1
       next
     end
-    open = label_end + 1
+    open = index + 1
     open += 1 while open < text.length && text[open].match?(/\s/)
     if text[open] == "("
       close = matching_delimiter(text, open, "(", ")")
       links << text[(open + 1)...close] if close
       index = close ? close + 1 : open + 1
     else
-      index = label_end + 1
+      index += 1
     end
   end
   links
@@ -160,6 +170,18 @@ def sanitize(value)
   value.gsub(/[[:cntrl:]]/, "?")
 end
 
+def mask_html_comments(text)
+  result = text.dup
+  index = 0
+  while (start = result.index("<!--", index))
+    finish = result.index("-->", start + 4)
+    finish = finish ? finish + 3 : result.length
+    result[start...finish] = result[start...finish].gsub(/[^\n]/, " ")
+    index = finish
+  end
+  result
+end
+
 def unescape_destination(value)
   punctuation = %q{!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~}
   value.gsub(/\\(.)/) { |match| punctuation.include?(match[1]) ? match[1] : match }
@@ -173,7 +195,7 @@ def check_sources(root, sources)
     source_name = sanitize(source.relative_path_from(root).to_s)
     text, unclosed_fence = mask_code(source.read)
     failures << "#{source_name}: malformed documentation (unclosed code fence)" if unclosed_fence
-    text = mask_inline_code(text)
+    text = mask_html_comments(mask_inline_code(text))
     markdown_link_bodies(text).each do |body|
       raw_target = body.strip
       target = markdown_target(body)
@@ -207,6 +229,10 @@ def check_sources(root, sources)
 end
 
 def self_test
+  unless markdown_link_bodies("[" * 50_000).empty?
+    warn "docs links hostile-unmatched self-test failed"
+    exit 1
+  end
   Dir.mktmpdir("docs-links-test") do |directory|
     root = Pathname.new(directory)
     docs = root.join("docs")
@@ -223,6 +249,10 @@ def self_test
     source = docs.join("sample.md")
     source.write(<<~MARKDOWN)
       [file](valid%20file.md)
+      <!-- [comment](comment-missing.md) -->
+      <!-- multiline
+      [multiline-comment](multiline-comment-missing.md)
+      -->
       [plus](plus+file.md)
       [balanced](balanced(name).md)
       [escaped destination](a\(b\).md)
@@ -286,6 +316,8 @@ def self_test
     bad_source.write("[source-control](missing-source.md)\n")
     bad_unclosed = docs.join("bad\e-unclosed.md")
     bad_unclosed.write("```markdown\n[hidden](hidden-missing.md)\n")
+    unclosed_comment = docs.join("unclosed-comment.md")
+    unclosed_comment.write("<!-- [unclosed-comment](unclosed-comment-missing.md)\n")
     unclosed_container = docs.join("unclosed-container.md")
     unclosed_container.write(">  ```markdown\n>  [hidden](hidden-container-missing.md)\n")
     unclosed_four = docs.join("unclosed-four.md")
@@ -309,6 +341,11 @@ def self_test
     bad_unclosed_failures = check_sources(root, [bad_unclosed])
     unless bad_unclosed_failures == ["docs/bad?-unclosed.md: malformed documentation (unclosed code fence)"]
       warn "docs links sanitized-unclosed self-test failed: #{bad_unclosed_failures.inspect}"
+      exit 1
+    end
+    comment_failures = check_sources(root, [unclosed_comment])
+    unless comment_failures.empty?
+      warn "docs links unclosed-comment self-test failed: #{comment_failures.inspect}"
       exit 1
     end
     container_failures = check_sources(root, [unclosed_container])
