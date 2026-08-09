@@ -48,13 +48,13 @@ cleanup() {
 }
 ACTIVE_PID=
 run_child() {
-  "$@" &
+  "$@" <&0 &
   ACTIVE_PID=$!
   if wait "$ACTIVE_PID"; then
-    ACTIVE_PID=
-    return 0
+    status=0
+  else
+    status=$?
   fi
-  status=$?
   ACTIVE_PID=
   return "$status"
 }

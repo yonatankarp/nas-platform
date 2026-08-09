@@ -14,8 +14,9 @@ export PATH
 
 fail() { printf '%s\n' "portainer import test: $1" >&2; exit 1; }
 assert() { [ "$1" = "$2" ] || fail "$3"; }
-mode() { stat -f '%Lp' "$1"; }
-sum() { shasum -a 256 "$1" | awk '{print $1}'; }
+mode() { ruby -e 'puts((File.lstat(ARGV.fetch(0)).mode & 0o777).to_s(8))' "$1"; }
+sum() { ruby -rdigest -e 'puts Digest::SHA256.file(ARGV.fetch(0)).hexdigest' "$1"; }
+identity() { ruby -e 's = File.lstat(ARGV.fetch(0)); puts "#{s.dev}:#{s.ino}:#{(s.mode & 0o777).to_s(8)}"' "$1"; }
 
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/nas-platform-parity-import.XXXXXX")
 cleanup() { rm -rf "$TMP"; }
@@ -66,7 +67,7 @@ assert_race_failure() {
   state_before=$(for file in "$INPUT"/*.env; do sum "$file"; mode "$file"; done)
   "$@" >"$stdout" 2>"$stderr" && fail "$label: unexpectedly succeeded"
   [ -f "$target" ] || fail "$label: racer output was deleted"
-  assert "$(cat "$record")" "$(stat -f '%d:%i:%Lp' "$target")" "$label: racer output changed"
+  assert "$(cat "$record")" "$(identity "$target")" "$label: racer output changed"
   [ ! -s "$stdout" ] || fail "$label: stdout is not empty"
   [ "$(wc -l < "$stderr" | tr -d ' ')" -eq 1 ] || fail "$label: stderr is not one line"
   if grep -F "$CANARY" "$stdout" "$stderr" >/dev/null; then fail "$label: canary leaked"; fi
@@ -150,14 +151,14 @@ printf '%s\n' 'distinct preexisting parity output sentinel' > "$existing_output"
 chmod 600 "$existing_output"
 existing_sum=$(sum "$existing_output")
 existing_mode=$(mode "$existing_output")
-existing_inode=$(stat -f '%d:%i' "$existing_output")
+existing_inode=$(identity "$existing_output")
 existing_sources=$(for file in "$INPUT"/*.env; do sum "$file"; mode "$file"; done)
 "$IMPORTER" --input-dir "$INPUT" --output "$existing_output" --vault-password-file "$PASSWORD" >"$stdout" 2>"$stderr" && fail "existing output was overwritten"
 grep -F "$CANARY" "$stdout" "$stderr" >/dev/null && fail "failure leaked canary"
 assert "$existing_sources" "$(for file in "$INPUT"/*.env; do sum "$file"; mode "$file"; done)" "existing output changed sources"
 assert "$existing_sum" "$(sum "$existing_output")" "existing output bytes changed"
 assert "$existing_mode" "$(mode "$existing_output")" "existing output mode changed"
-assert "$existing_inode" "$(stat -f '%d:%i' "$existing_output")" "existing output inode changed"
+assert "$existing_inode" "$(identity "$existing_output")" "existing output inode changed"
 [ -z "$(find "$OUTDIR" -name '.portainer-parity-*' -print)" ] || fail "existing output left temporary files"
 
 bad="$TMP/bad-mode"
@@ -198,13 +199,20 @@ chmod 700 "$password_exec"
 "$IMPORTER" --input-dir "$INPUT" --output "$OUTDIR/executable-password.vault" --vault-password-file "$password_exec" >"$stdout" 2>"$stderr" || fail "executable password source failed"
 [ -f "$OUTDIR/executable-password.vault" ] || fail "executable password output missing"
 
-race_ruby="$TMP/race-ruby"
-mkdir -m 700 "$race_ruby"
-real_ruby=$(command -v ruby)
-printf '%s\n' '#!/bin/sh' 'case "$*" in *portainer-parity.rb*) if [ ! -e "$MUTATED" ]; then chmod 644 "$ENV_TO_MUTATE"; : > "$MUTATED"; fi ;; esac' 'exec "$REAL_RUBY" "$@"' > "$race_ruby/ruby"
-chmod 700 "$race_ruby/ruby"
+env_mode_hook="$TMP/env-mode-hook.rb"
+env_mode_marker="$TMP/env-mode-mutated"
+printf '%s\n' \
+  'if ARGV.include?("--input-dir") && !File.exist?(ENV.fetch("ENV_MODE_MARKER"))' \
+  '  File.chmod(0o644, ENV.fetch("ENV_TO_MUTATE"))' \
+  '  File.write(ENV.fetch("ENV_MODE_MARKER"), "")' \
+  'end' > "$env_mode_hook"
+chmod 600 "$env_mode_hook"
 race_state=$(for file in "$INPUT"/*.env; do sum "$file"; mode "$file"; done)
-env PATH="$race_ruby:$PATH" REAL_RUBY="$real_ruby" ENV_TO_MUTATE="$INPUT/dozzle.env" MUTATED="$TMP/env-mutated" "$IMPORTER" --input-dir "$INPUT" --output "$OUTDIR/env-mode-race.vault" --vault-password-file "$PASSWORD" >"$stdout" 2>"$stderr" && fail "env-mode-race: unexpectedly succeeded"
+if env RUBYOPT="-r$env_mode_hook" ENV_TO_MUTATE="$INPUT/dozzle.env" ENV_MODE_MARKER="$env_mode_marker" "$IMPORTER" --input-dir "$INPUT" --output "$OUTDIR/env-mode-race.vault" --vault-password-file "$PASSWORD" >"$stdout" 2>"$stderr"; then
+  [ -f "$env_mode_marker" ] || fail "env-mode-race: injection was not reached"
+  fail "env-mode-race: importer accepted mode $(mode "$INPUT/dozzle.env")"
+fi
+[ -f "$env_mode_marker" ] || fail "env-mode-race: injection was not reached"
 chmod 600 "$INPUT/dozzle.env"
 assert_failure_state env-mode-race "$OUTDIR/env-mode-race.vault" "$race_state"
 
@@ -234,7 +242,7 @@ assert_failure encryption-failure "$OUTDIR/encrypt-failure.vault" env PATH="$fak
 real_vault=$(command -v ansible-vault)
 race_output="$OUTDIR/race.vault"
 race_record="$TMP/race-record"
-printf '%s\n' '#!/bin/sh' 'printf racer > "$RACE_OUTPUT"' 'stat -f "%d:%i:%Lp" "$RACE_OUTPUT" > "$RACE_RECORD"' 'exec "$REAL_VAULT" "$@"' > "$fake/ansible-vault"
+printf '%s\n' '#!/bin/sh' 'printf racer > "$RACE_OUTPUT"' 'ruby -e '\''s = File.lstat(ARGV.fetch(0)); puts "#{s.dev}:#{s.ino}:#{(s.mode & 0o777).to_s(8)}"'\'' "$RACE_OUTPUT" > "$RACE_RECORD"' 'exec "$REAL_VAULT" "$@"' > "$fake/ansible-vault"
 chmod 700 "$fake/ansible-vault"
 assert_race_failure publication-race "$race_output" "$race_record" env RACE_OUTPUT="$race_output" RACE_RECORD="$race_record" REAL_VAULT="$real_vault" PATH="$fake:$PATH" "$IMPORTER" --input-dir "$INPUT" --output "$race_output" --vault-password-file "$PASSWORD"
 [ "$(cat "$race_output")" = racer ] || fail "publication race content changed"
@@ -319,17 +327,41 @@ for malformed in '' 'xyz  file' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 done
 
 # A failed unlink after link(2) must roll back only the importer-owned output.
-cleanup_fake="$TMP/cleanup-fake"
-mkdir -m 700 "$cleanup_fake"
-printf '%s\n' '#!/bin/sh' 'case "$*" in *portainer-parity-cipher*) exit 1 ;; *) exec /bin/rm "$@" ;; esac' > "$cleanup_fake/rm"
-chmod 700 "$cleanup_fake/rm"
-assert_failure ciphertext-unlink-failure "$OUTDIR/unlink-failure.vault" env PATH="$cleanup_fake:$vault_clean:$PATH" CLEAN_PATH="$PATH" REAL_VAULT="$real_vault" "$IMPORTER" --input-dir "$INPUT" --output "$OUTDIR/unlink-failure.vault" --vault-password-file "$PASSWORD"
+unlink_failure_hook="$TMP/unlink-failure-hook.rb"
+unlink_failure_marker="$TMP/unlink-failure-reached"
+printf '%s\n' \
+  'class << File' \
+  '  alias parity_import_unlink unlink' \
+  '  def unlink(*paths)' \
+  '    target = paths.fetch(0)' \
+  '    if File.basename(target).start_with?(".portainer-parity-cipher.") && !File.exist?(ENV.fetch("UNLINK_FAILURE_MARKER"))' \
+  '      File.write(ENV.fetch("UNLINK_FAILURE_MARKER"), "")' \
+  '      raise Errno::EACCES, target' \
+  '    end' \
+  '    parity_import_unlink(*paths)' \
+  '  end' \
+  'end' > "$unlink_failure_hook"
+chmod 600 "$unlink_failure_hook"
+assert_failure ciphertext-unlink-failure "$OUTDIR/unlink-failure.vault" env RUBYOPT="-r$unlink_failure_hook" UNLINK_FAILURE_MARKER="$unlink_failure_marker" PATH="$vault_clean:$PATH" CLEAN_PATH="$PATH" REAL_VAULT="$real_vault" "$IMPORTER" --input-dir "$INPUT" --output "$OUTDIR/unlink-failure.vault" --vault-password-file "$PASSWORD"
+[ -f "$unlink_failure_marker" ] || fail "ciphertext-unlink-failure: injection was not reached"
 
-sanitize_fake="$TMP/sanitize-fake"
-mkdir -m 700 "$sanitize_fake"
-real_ruby=$(command -v ruby)
-printf '%s\n' '#!/bin/sh' 'case "${1-}" in -e) exit 1 ;; *) exec "$REAL_RUBY" "$@" ;; esac' > "$sanitize_fake/ruby"
-chmod 700 "$sanitize_fake/ruby"
-assert_failure sanitize-failure "$OUTDIR/sanitize-failure.vault" env PATH="$sanitize_fake:$PATH" REAL_RUBY="$real_ruby" "$IMPORTER" --input-dir "$INPUT" --output "$OUTDIR/sanitize-failure.vault" --vault-password-file "$PASSWORD"
+sanitize_failure_hook="$TMP/sanitize-failure-hook.rb"
+sanitize_failure_marker="$TMP/sanitize-failure-reached"
+sanitize_failure_output="$OUTDIR/sanitize-failure.vault"
+sanitize_failure_target=$(CDPATH= cd -- "$OUTDIR" && pwd -P)/sanitize-failure.vault
+printf '%s\n' \
+  'class String' \
+  '  alias parity_import_encode encode' \
+  '  def encode(*args, **keywords)' \
+  '    if self == ENV.fetch("SANITIZE_FAILURE_TARGET")' \
+  '      File.write(ENV.fetch("SANITIZE_FAILURE_MARKER"), "")' \
+  '      exit 1' \
+  '    end' \
+  '    parity_import_encode(*args, **keywords)' \
+  '  end' \
+  'end' > "$sanitize_failure_hook"
+chmod 600 "$sanitize_failure_hook"
+assert_failure sanitize-failure "$sanitize_failure_output" env RUBYOPT="-r$sanitize_failure_hook" SANITIZE_FAILURE_TARGET="$sanitize_failure_target" SANITIZE_FAILURE_MARKER="$sanitize_failure_marker" "$IMPORTER" --input-dir "$INPUT" --output "$sanitize_failure_output" --vault-password-file "$PASSWORD"
+[ -f "$sanitize_failure_marker" ] || fail "sanitize-failure: injection was not reached"
 
 printf '%s\n' 'Portainer parity importer: encrypted external input is safe'
