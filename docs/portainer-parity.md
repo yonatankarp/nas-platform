@@ -127,6 +127,15 @@ permissions, Ansible Vault header, and checksum on the operator workstation:
 ```sh
 (
   set -eu
+  umask 077
+  parity_view=
+  parity_view_cleanup() {
+    [ -z "$parity_view" ] || /bin/rm -f -- "$parity_view"
+    parity_view=
+  }
+  trap parity_view_cleanup EXIT
+  trap 'parity_view_cleanup; exit 1' HUP INT TERM
+
   ls -ld "$PORTAINER_ENV_DIR" "$(dirname "$PORTAINER_PARITY_FILE")"
   ls -l "$PORTAINER_ENV_DIR"/*.env \
     "$PORTAINER_PARITY_FILE" "$PORTAINER_PARITY_PASSWORD_FILE"
@@ -136,13 +145,30 @@ permissions, Ansible Vault header, and checksum on the operator workstation:
     *) printf 'STOP: parity artifact is not encrypted\n' >&2; exit 1 ;;
   esac
   shasum -a 256 "$PORTAINER_PARITY_FILE"
-  ansible-vault view \
-    --vault-password-file "$PORTAINER_PARITY_PASSWORD_FILE" \
-    "$PORTAINER_PARITY_FILE" | \
-    ruby scripts/portainer-parity.rb --validate-stdin \
-      --mapping config/portainer-parity.yml \
-      --legacy-commit 400f03f276ae1bb69f5460c175b9fb923d620f1a
-  unset parity_header
+  if ! parity_view=$(mktemp "$(dirname "$PORTAINER_PARITY_FILE")/.portainer-parity-view.XXXXXX"); then
+    printf 'STOP: protected parity verification file could not be created\n' >&2
+    exit 1
+  fi
+  if ! chmod 600 "$parity_view"; then
+    printf 'STOP: protected parity verification file mode could not be set\n' >&2
+    exit 1
+  fi
+  if ! ansible-vault view \
+       --vault-password-file "$PORTAINER_PARITY_PASSWORD_FILE" \
+       "$PORTAINER_PARITY_FILE" >"$parity_view" 2>/dev/null; then
+    printf 'STOP: encrypted parity verification failed\n' >&2
+    exit 1
+  fi
+  if ! ruby scripts/portainer-parity.rb --validate-stdin \
+       --mapping config/portainer-parity.yml \
+       --legacy-commit 400f03f276ae1bb69f5460c175b9fb923d620f1a \
+       <"$parity_view" 2>/dev/null; then
+    printf 'STOP: decrypted parity schema validation failed\n' >&2
+    exit 1
+  fi
+  parity_view_cleanup
+  trap - EXIT HUP INT TERM
+  unset parity_header parity_view
 )
 ```
 
@@ -154,6 +180,9 @@ Do not delete any plaintext export unless the importer succeeded, the header
 check printed `Encrypted parity header confirmed`, the independent checksum
 matched, and the final command printed
 `Portainer parity: decrypted schema is valid`.
+The owned temporary view exists only during these two separately checked
+commands. Normal completion, either command failure, shell exit, and handled
+signals remove it; do not retain or copy the decrypted view.
 
 ## Remove plaintext and retire the vault
 

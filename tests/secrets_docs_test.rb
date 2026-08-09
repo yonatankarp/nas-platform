@@ -143,6 +143,18 @@ check(failures,
       verification_block.include?("scripts/portainer-parity.rb --validate-stdin") &&
       parity_import.include?("Portainer parity: decrypted schema is valid"),
       "Portainer guide must require a concrete successful schema validation before deletion")
+check(failures,
+      !verification_block.match?(/ansible-vault view.*?\|\s*ruby scripts\/portainer-parity\.rb/m) &&
+      verification_block.include?('parity_view=$(mktemp "$(dirname "$PORTAINER_PARITY_FILE")/.portainer-parity-view.XXXXXX")') &&
+      verification_block.include?('chmod 600 "$parity_view"') &&
+      verification_block.include?('/bin/rm -f -- "$parity_view"') &&
+      verification_block.include?("trap parity_view_cleanup EXIT") &&
+      verification_block.match?(/trap .*parity_view_cleanup.* HUP.*INT.*TERM/),
+      "Portainer verification must use and clean an owned protected temporary view")
+check(failures,
+      verification_block.match?(/if ! ansible-vault view.*?>"\$parity_view".*?then.*?STOP:.*?exit 1.*?fi/m) &&
+      verification_block.match?(/if ! ruby scripts\/portainer-parity\.rb --validate-stdin.*?<"\$parity_view".*?then.*?STOP:.*?exit 1.*?fi/m),
+      "Portainer decrypt and parser commands must be separately checked and fail closed")
 
 import_position = parity_prose.index("scripts/import-portainer-parity.sh")
 verification_position = parity_prose.index("Portainer parity: decrypted schema is valid")
