@@ -518,6 +518,13 @@ def self_test
       warn "docs links self-test failed: #{failures.inspect}"
       exit 1
     end
+    required = docs.join("required.md")
+    required.write("[traversal](../../etc/passwd)\n[malformed](bad%ZZ.md)\n[symlink](escape.md)\n")
+    required_failures = check_sources(root, [required])
+    unless required_failures.any? { |failure| failure.include?("broken local link ../../etc/passwd") } && required_failures.any? { |failure| failure.include?("malformed local link bad%ZZ.md") } && required_failures.any? { |failure| failure.include?("broken local link escape.md") }
+      warn "docs links failure-category self-test failed: #{failures.inspect}"
+      exit 1
+    end
     unclosed_failures = check_sources(root, [unclosed])
     unless unclosed_failures == ["docs/unclosed.md: malformed documentation (unclosed code fence)"]
       warn "docs links unclosed-fence self-test failed: #{unclosed_failures.inspect}"
