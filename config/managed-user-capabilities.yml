@@ -67,7 +67,7 @@ services:
     existing_identity_password_update: forbidden
     mode: declarative_environment
     interfaces:
-      list: NTFY_AUTH_USERS/NTFY_AUTH_ACCESS/NTFY_AUTH_TOKENS
+      list: NTFY_AUTH_USERS and ntfy user list
       create: NTFY_AUTH_USERS/NTFY_AUTH_ACCESS/NTFY_AUTH_TOKENS
       authenticate: Basic authentication
       reconcile: NTFY_AUTH_USERS/NTFY_AUTH_ACCESS/NTFY_AUTH_TOKENS
