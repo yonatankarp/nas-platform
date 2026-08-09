@@ -166,12 +166,12 @@ def markdown_container(line)
   list_item = false
   ordered_number = nil
   loop do
-    if rest.sub!(/\A> ?/, "")
+    if rest.sub!(/\A {0,3}> ?/, "")
       signature << :quote
-    elsif rest.sub!(/\A[-+*] {1,4}/, "")
+    elsif rest.sub!(/\A {0,3}[-+*] {1,4}/, "")
       signature << :list
       list_item = true
-    elsif (match = rest.match(/\A(\d{1,9})[.)] {1,4}/))
+    elsif (match = rest.match(/\A {0,3}(\d{1,9})[.)] {1,4}/))
       rest = rest[match[0].length..]
       signature << :list
       list_item = true
@@ -186,7 +186,7 @@ end
 def standalone_block_line?(line, content_start)
   content = line[content_start..].to_s.sub(/\r?\n\z/, "")
   content.match?(/\A {0,3}\#{1,6}(?:[ \t]+|$)/) ||
-    content.match?(/\A {0,3}(?:(?:\*\s*){3,}|(?:-\s*){3,}|(?:_\s*){3,}|={3,})\z/)
+    content.match?(/\A {0,3}(?:(?:\*\s*){3,}|(?:-\s*){3,}|(?:_\s*){3,}|[=-]+)\z/)
 end
 
 def mask_inline_code(text)
@@ -727,6 +727,8 @@ def self_test
     {
       "heading-boundary.md" => "prefix `unclosed\n# [ordinary](heading-boundary-missing.md) `\n",
       "setext-boundary.md" => "prefix `unclosed\n===\n[ordinary](setext-boundary-missing.md) `\n",
+      "setext-single-boundary.md" => "prefix `unclosed\n=\n[ordinary](setext-single-boundary-missing.md) `\n",
+      "setext-dash-boundary.md" => "prefix `unclosed\n-\n[ordinary](setext-dash-boundary-missing.md) `\n",
       "thematic-boundary.md" => "prefix `unclosed\n---\n[ordinary](thematic-boundary-missing.md) `\n",
       "quote-boundary.md" => "prefix `unclosed\n> [ordinary](quote-boundary-missing.md) `\n",
       "list-boundary.md" => "prefix `unclosed\n- [ordinary](list-boundary-missing.md) `\n"
@@ -746,6 +748,20 @@ def self_test
     quoted_comment_failures = check_sources(root, [quoted_comment])
     unless quoted_comment_failures == ["docs/quoted-comment.md: broken local link quoted-comment-after.md"]
       warn "docs links quoted-comment self-test failed: #{quoted_comment_failures.inspect}"
+      exit 1
+    end
+    nested_quote = docs.join("nested-quote.md")
+    nested_quote.write("> prefix `unclosed\n>  > [ordinary](nested-quote-missing.md) `\n")
+    nested_quote_failures = check_sources(root, [nested_quote])
+    unless nested_quote_failures == ["docs/nested-quote.md: broken local link nested-quote-missing.md"]
+      warn "docs links nested-quote self-test failed: #{nested_quote_failures.inspect}"
+      exit 1
+    end
+    nested_quote_comment = docs.join("nested-quote-comment.md")
+    nested_quote_comment.write("> > prefix `unclosed\n>  > <!--\n>  > [hidden](nested-quote-comment-hidden.md)\n>  > -->\n>  > [ordinary](nested-quote-comment-after.md) `\n")
+    nested_quote_comment_failures = check_sources(root, [nested_quote_comment])
+    unless nested_quote_comment_failures == ["docs/nested-quote-comment.md: broken local link nested-quote-comment-after.md"]
+      warn "docs links nested-quote-comment self-test failed: #{nested_quote_comment_failures.inspect}"
       exit 1
     end
     list_continuation = docs.join("list-continuation.md")
