@@ -235,9 +235,65 @@ def mask_html_comments(text)
   result
 end
 
+def mask_block_contexts(text)
+  protected_ranges = inline_partners(text).filter_map do |opening, closing|
+    (opening...closing) if opening < closing
+  end.sort_by(&:begin)
+  range_index = 0
+  comment = false
+  fence = nil
+  offset = 0
+  text.lines.map do |line|
+    if fence
+      _, marker, suffix = fence_parts(line)
+      fence = nil if marker && marker[0] == fence[0] && marker.length >= fence[1] && suffix.match?(/\A[ \t]*(?:\r?\n)?\z/)
+      masked = line.gsub(/[^\n]/, " ")
+      offset += line.length
+      next masked
+    end
+
+    unless comment
+      _, marker, = fence_parts(line)
+      if marker
+        fence = [marker[0], marker.length]
+        masked = line.gsub(/[^\n]/, " ")
+        offset += line.length
+        next masked
+      end
+    end
+
+    chars = line.chars
+    index = 0
+    while index < chars.length
+      if comment
+        close_at = line.index("-->", index)
+        finish = close_at ? close_at + 3 : line.length
+        chars[index...finish] = chars[index...finish].map { |char| char == "\n" ? char : " " }
+        index = finish
+        comment = false if close_at
+        next
+      end
+
+      start = line.index("<!--", index)
+      break unless start
+
+      absolute = offset + start
+      range_index += 1 while protected_ranges[range_index] && protected_ranges[range_index].end <= absolute
+      if escaped?(line, start) || protected_ranges[range_index]&.cover?(absolute)
+        index = start + 4
+      else
+        comment = true
+        index = start
+      end
+    end
+    offset += line.length
+    chars.join
+  end.join
+end
+
 def mask_contexts(text)
   lines = text.lines
-  partner_text, = mask_code(mask_html_comments(text))
+  partner_text = mask_block_contexts(text)
   partners = inline_partners(partner_text)
   output = []
   comment = false
@@ -334,7 +390,7 @@ end
 
 def inline_partners(text)
   partners = {}
-  block_openings = {}
+  cross_line_openings = {}
   offset = 0
   text.lines.each do |line|
     runs = []
@@ -360,14 +416,16 @@ def inline_partners(text)
       end
     end
 
-    stripped = line.strip
-    if runs.length == 1 && stripped == "`" * runs[0][1] && !partners.key?(runs[0][0])
-      position, length = runs[0]
-      if (opening = block_openings.delete(length))
+    runs.reject { |position,| partners.key?(position) }.each do |position, length|
+      before = line[0...(position - offset)]
+      if (opening = cross_line_openings[length])
+        next unless before.strip.empty?
+
+        cross_line_openings.delete(length)
         partners[opening] = position
         partners[position] = opening
       else
-        block_openings[length] = position
+        cross_line_openings[length] = position
       end
     end
     offset += line.length
@@ -558,6 +616,20 @@ def self_test
     comment_boundary_failures = check_sources(root, [comment_boundary])
     unless comment_boundary_failures == ["docs/comment-boundary.md: broken local link after-comment-boundary-missing.md"]
       warn "docs links comment-boundary self-test failed: #{comment_boundary_failures.inspect}"
+      exit 1
+    end
+    multiline_inline = docs.join("multiline-inline.md")
+    multiline_inline.write("`code\n[hidden](multiline-inline-hidden.md)\n`\n[after](multiline-inline-after.md)\n")
+    multiline_inline_failures = check_sources(root, [multiline_inline])
+    unless multiline_inline_failures == ["docs/multiline-inline.md: broken local link multiline-inline-after.md"]
+      warn "docs links multiline-inline self-test failed: #{multiline_inline_failures.inspect}"
+      exit 1
+    end
+    fence_comment = docs.join("fence-comment.md")
+    fence_comment.write("```markdown\n<!--\n[fenced](fence-comment-hidden.md)\n```\n` [inline](post-fence-inline-hidden.md) `\n[after](post-fence-comment.md)\n")
+    fence_comment_failures = check_sources(root, [fence_comment])
+    unless fence_comment_failures == ["docs/fence-comment.md: broken local link post-fence-comment.md"]
+      warn "docs links fence-comment self-test failed: #{fence_comment_failures.inspect}"
       exit 1
     end
     unclosed_failures = check_sources(root, [unclosed])
