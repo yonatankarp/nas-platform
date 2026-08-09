@@ -112,6 +112,7 @@ end
 def load_document(path)
   source = File.binread(path)
   tree = Psych.parse_stream(source)
+  fail_contract("matrix must contain exactly one YAML document") unless tree.children.length == 1
   fail_contract("matrix contains duplicate YAML keys") unless PolicySupport.duplicate_yaml_keys(tree).empty?
 
   tree.each do |node|
@@ -183,6 +184,7 @@ def self_test
   assert_failure("malformed root", "[]\n", "matrix must be a mapping")
   assert_failure("duplicate key", "schema: 1\nschema: 1\nservices: {}\n", "duplicate YAML keys")
   assert_failure("alias", "schema: &schema 1\nservices: *schema\n", "YAML aliases")
+  assert_failure("multiple documents", "#{matrix_source}\n---\nignored: true\n", "exactly one YAML document")
 end
 
 if ARGV == ["--self-test"]
