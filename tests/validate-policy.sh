@@ -3,6 +3,7 @@ set -eu
 
 ruby tests/policy_test.rb
 ruby tests/secrets_docs_test.rb
+ruby tests/ci_workflow_test.rb
 ruby tests/policy_manifest_test.rb
 ansible-playbook -i localhost, -c local tests/compose_metadata_filter_test.yml
 ruby tests/run_contracts_test.rb
