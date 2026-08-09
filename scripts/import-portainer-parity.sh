@@ -90,6 +90,7 @@ MAPPING_REL=${MAPPING#"$ROOT/"}
 git -C "$ROOT" ls-files --error-unmatch -- "$MAPPING_REL" >/dev/null 2>&1 || die "mapping is not tracked"
 git -C "$ROOT" diff --quiet -- "$MAPPING_REL" || die "mapping has unstaged changes"
 git -C "$ROOT" diff --cached --quiet -- "$MAPPING_REL" || die "mapping has staged changes"
+MAPPING_ID=$(identity "$MAPPING") || die "mapping metadata is unavailable"
 
 PASSWORD=$(physical_file "$PASSWORD")
 outside_repo "$PASSWORD"
@@ -131,7 +132,7 @@ CIPHER=$(mktemp "$OUTPUT_PARENT/.portainer-parity-cipher.XXXXXX") || die "tempor
 VIEW=$(mktemp "$OUTPUT_PARENT/.portainer-parity-view.XXXXXX") || die "temporary file creation failed"
 chmod 600 "$PLAIN" "$CIPHER" "$VIEW" || die "temporary file setup failed"
 
-git -C "$ROOT" diff --quiet -- "$MAPPING_REL" && git -C "$ROOT" diff --cached --quiet -- "$MAPPING_REL" || die "mapping changed during import"
+[ "$(identity "$MAPPING")" = "$MAPPING_ID" ] && git -C "$ROOT" diff --quiet -- "$MAPPING_REL" && git -C "$ROOT" diff --cached --quiet -- "$MAPPING_REL" || die "mapping changed during import"
 ruby "$ROOT/scripts/portainer-parity.rb" --input-dir "$INPUT" --mapping "$MAPPING" --legacy-commit 400f03f276ae1bb69f5460c175b9fb923d620f1a >"$PLAIN" 2>/dev/null || die "parity rendering failed"
 PASSWORD_ID=$(identity "$PASSWORD") || die "password metadata is unavailable"
 ansible-vault encrypt --vault-password-file "$PASSWORD" --output "$CIPHER" "$PLAIN" >/dev/null 2>/dev/null || die "vault encryption failed"
@@ -144,7 +145,7 @@ case "$header" in '$ANSIBLE_VAULT;'*) ;; *) die "ciphertext is invalid" ;; esac
 PASSWORD_ID=$(identity "$PASSWORD") || die "password metadata is unavailable"
 ansible-vault view --vault-password-file "$PASSWORD" "$CIPHER" >"$VIEW" 2>/dev/null || die "vault verification failed"
 [ "$(identity "$PASSWORD")" = "$PASSWORD_ID" ] && [ "$(mode "$PASSWORD")" = "$password_mode" ] || die "password changed during import"
-git -C "$ROOT" diff --quiet -- "$MAPPING_REL" && git -C "$ROOT" diff --cached --quiet -- "$MAPPING_REL" || die "mapping changed during import"
+[ "$(identity "$MAPPING")" = "$MAPPING_ID" ] && git -C "$ROOT" diff --quiet -- "$MAPPING_REL" && git -C "$ROOT" diff --cached --quiet -- "$MAPPING_REL" || die "mapping changed during import"
 ruby "$ROOT/scripts/portainer-parity.rb" --validate-stdin --mapping "$MAPPING" --legacy-commit 400f03f276ae1bb69f5460c175b9fb923d620f1a <"$VIEW" >/dev/null 2>/dev/null || die "decrypted schema is invalid"
 
 # link(2) publishes only if OUTPUT is still absent; unlike mv it never replaces.
