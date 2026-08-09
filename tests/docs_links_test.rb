@@ -180,7 +180,8 @@ def markdown_container(line)
       break
     end
   end
-  [signature, line.length - rest.length, list_item, ordered_number]
+  empty_list_item = list_item && rest.strip.empty?
+  [signature, line.length - rest.length, list_item, ordered_number, empty_list_item]
 end
 
 def standalone_block_line?(line, content_start)
@@ -438,12 +439,12 @@ def inline_partners(text)
   previous_container = []
   paragraph_active = false
   text.lines.each do |line|
-    container, content_start, list_item, ordered_number = markdown_container(line)
+    container, content_start, list_item, ordered_number, empty_list_item = markdown_container(line)
     standalone_block = standalone_block_line?(line, content_start)
     blank = line.strip.empty?
     if !blank && container.empty? && !previous_container.empty? && !standalone_block
       container = previous_container
-    elsif paragraph_active && ordered_number && ordered_number != 1 && previous_container.empty?
+    elsif paragraph_active && (empty_list_item || (ordered_number && ordered_number != 1)) && container[0...-1] == previous_container
       container = previous_container
       list_item = false
     end
@@ -808,6 +809,23 @@ def self_test
     unless ordered_noninterrupt_failures == ["docs/ordered-noninterrupt.md: broken local link ordered-noninterrupt-after.md"]
       warn "docs links ordered-noninterrupt self-test failed: #{ordered_noninterrupt_failures.inspect}"
       exit 1
+    end
+    quoted_ordered_noninterrupt = docs.join("quoted-ordered-noninterrupt.md")
+    quoted_ordered_noninterrupt.write("> prefix `code\n> 2. [hidden](quoted-ordered-hidden.md) `\n[after](quoted-ordered-after.md)\n")
+    quoted_ordered_failures = check_sources(root, [quoted_ordered_noninterrupt])
+    unless quoted_ordered_failures == ["docs/quoted-ordered-noninterrupt.md: broken local link quoted-ordered-after.md"]
+      warn "docs links quoted-ordered self-test failed: #{quoted_ordered_failures.inspect}"
+      exit 1
+    end
+    {"star" => "* ", "plus" => "+ ", "ordered" => "1. "}.each do |label, marker|
+      empty_item = docs.join("empty-#{label}-item.md")
+      empty_item.write("prefix `code\n#{marker}\n[hidden](empty-#{label}-hidden.md) `\n[after](empty-#{label}-after.md)\n")
+      empty_item_failures = check_sources(root, [empty_item])
+      expected_empty_failure = "docs/empty-#{label}-item.md: broken local link empty-#{label}-after.md"
+      unless empty_item_failures == [expected_empty_failure]
+        warn "docs links empty-list-item self-test failed: #{label}: #{empty_item_failures.inspect}"
+        exit 1
+      end
     end
     multiline_comment_code = docs.join("multiline-comment-code.md")
     multiline_comment_code.write("`start\ninside <!-- [hidden](multiline-comment-code-hidden.md)\nend`\n[after](multiline-comment-code-after.md)\n")
