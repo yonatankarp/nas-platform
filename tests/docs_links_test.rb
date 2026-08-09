@@ -161,7 +161,7 @@ def fence_parts(line)
 end
 
 def markdown_container(line)
-  rest = line.sub(/\A {0,3}/, "")
+  rest = line.dup
   signature = []
   list_item = false
   ordered_number = nil
@@ -186,7 +186,7 @@ end
 def standalone_block_line?(line, content_start)
   content = line[content_start..].to_s.sub(/\r?\n\z/, "")
   content.match?(/\A {0,3}\#{1,6}(?:[ \t]+|$)/) ||
-    content.match?(/\A {0,3}(?:(?:\*\s*){3,}|(?:-\s*){3,}|(?:_\s*){3,}|[=-]+)\z/)
+    content.match?(/\A {0,3}(?:(?:\*\s*){3,}|(?:-\s*){3,}|(?:_\s*){3,}|(?:=+|-+)[ \t]*)\z/)
 end
 
 def mask_inline_code(text)
@@ -256,7 +256,8 @@ def mask_html_comments(text)
     line_end = result.index("\n", start) || result.length
     current_line = result[line_start...line_end]
     _, content_start, = markdown_container(current_line)
-    block_comment = result[(line_start + content_start)...start].strip.empty?
+    comment_prefix = result[(line_start + content_start)...start]
+    block_comment = comment_prefix.length <= 3 && comment_prefix.strip.empty?
     inside_code = !block_comment && code_ranges[range_index]&.cover?(start)
     if escaped?(result, start) || inside_code
       index = start + 4
@@ -316,7 +317,8 @@ def mask_block_contexts(text)
       absolute = offset + start
       range_index += 1 while protected_ranges[range_index] && protected_ranges[range_index].end <= absolute
       _, content_start, = markdown_container(line)
-      block_comment = line[content_start...start].strip.empty?
+      comment_prefix = line[content_start...start]
+      block_comment = comment_prefix.length <= 3 && comment_prefix.strip.empty?
       protected = !block_comment && protected_ranges[range_index]&.cover?(absolute)
       if escaped?(line, start) || protected
         index = start + 4
@@ -728,6 +730,7 @@ def self_test
       "heading-boundary.md" => "prefix `unclosed\n# [ordinary](heading-boundary-missing.md) `\n",
       "setext-boundary.md" => "prefix `unclosed\n===\n[ordinary](setext-boundary-missing.md) `\n",
       "setext-single-boundary.md" => "prefix `unclosed\n=\n[ordinary](setext-single-boundary-missing.md) `\n",
+      "setext-space-boundary.md" => "prefix `unclosed\n=   \n[ordinary](setext-space-boundary-missing.md) `\n",
       "setext-dash-boundary.md" => "prefix `unclosed\n-\n[ordinary](setext-dash-boundary-missing.md) `\n",
       "thematic-boundary.md" => "prefix `unclosed\n---\n[ordinary](thematic-boundary-missing.md) `\n",
       "quote-boundary.md" => "prefix `unclosed\n> [ordinary](quote-boundary-missing.md) `\n",
@@ -762,6 +765,27 @@ def self_test
     nested_quote_comment_failures = check_sources(root, [nested_quote_comment])
     unless nested_quote_comment_failures == ["docs/nested-quote-comment.md: broken local link nested-quote-comment-after.md"]
       warn "docs links nested-quote-comment self-test failed: #{nested_quote_comment_failures.inspect}"
+      exit 1
+    end
+    mixed_setext = docs.join("mixed-setext.md")
+    mixed_setext.write("prefix `code\n=-\n[hidden](mixed-setext-hidden.md) `\n[after](mixed-setext-after.md)\n")
+    mixed_setext_failures = check_sources(root, [mixed_setext])
+    unless mixed_setext_failures == ["docs/mixed-setext.md: broken local link mixed-setext-after.md"]
+      warn "docs links mixed-setext self-test failed: #{mixed_setext_failures.inspect}"
+      exit 1
+    end
+    indented_quote = docs.join("indented-quote.md")
+    indented_quote.write("prefix `code\n    > [hidden](indented-quote-hidden.md) `\n[after](indented-quote-after.md)\n")
+    indented_quote_failures = check_sources(root, [indented_quote])
+    unless indented_quote_failures == ["docs/indented-quote.md: broken local link indented-quote-after.md"]
+      warn "docs links indented-quote self-test failed: #{indented_quote_failures.inspect}"
+      exit 1
+    end
+    indented_comment = docs.join("indented-comment.md")
+    indented_comment.write("prefix `code\n    <!-- [hidden](indented-comment-hidden.md)\nend`\n[after](indented-comment-after.md)\n")
+    indented_comment_failures = check_sources(root, [indented_comment])
+    unless indented_comment_failures == ["docs/indented-comment.md: broken local link indented-comment-after.md"]
+      warn "docs links indented-comment self-test failed: #{indented_comment_failures.inspect}"
       exit 1
     end
     list_continuation = docs.join("list-continuation.md")
