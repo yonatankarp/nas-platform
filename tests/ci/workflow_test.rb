@@ -36,6 +36,33 @@ def run_steps(job)
   Array(job["steps"]).filter_map { |step| step["run"] }.join("\n")
 end
 
+def normalize_shell(source)
+  source.to_s.lines.map(&:strip).reject(&:empty?).join("\n")
+end
+
+def integration_commands(source)
+  normalize_shell(source).lines(chomp: true).grep(%r{\Atests/integration\.sh(?:\s|\z)})
+end
+
+def exact_fixed_integration_command?(source, suite)
+  expected = "tests/integration.sh --suite #{suite} site.yml"
+  normalize_shell(source) == expected && integration_commands(source) == [expected]
+end
+
+def exact_selectable_integration_branches?(source, suite)
+  tagged = %(tests/integration.sh --suite #{suite} --tags "$SELECTED_TAGS" site.yml)
+  untagged = "tests/integration.sh --suite #{suite} site.yml"
+  expected = <<~SHELL
+    if [ -n "$SELECTED_TAGS" ]; then
+      #{tagged}
+    else
+      #{untagged}
+    fi
+  SHELL
+  normalize_shell(source) == normalize_shell(expected) &&
+    integration_commands(source) == [tagged, untagged]
+end
+
 workflow = YAML.safe_load_file(WORKFLOW_PATH, aliases: false)
 # Psych follows YAML 1.1 here and may deserialize the plain `on` key as true.
 triggers = workflow["on"] || workflow[true]
@@ -113,10 +140,15 @@ INTEGRATION_SUITES.each do |job_id, suite|
   checkout = Array(job["steps"]).find { |step| step["uses"]&.start_with?("actions/checkout@") }
   check(failures, checkout&.fetch("uses", nil) == CHECKOUT_ACTION,
         "#{job_id} must check out the repository with the pinned action")
-  commands = run_steps(job)
-  check(failures, commands.include?("tests/integration.sh --suite #{suite}"),
-        "#{job_id} must invoke its matching integration suite")
-  check(failures, commands.include?("site.yml"), "#{job_id} must pass site.yml to the harness")
+  integration_steps = Array(job["steps"]).select do |step|
+    step["run"]&.include?("tests/integration.sh")
+  end
+  check(failures, integration_steps.length == 1,
+        "#{job_id} must have exactly one integration harness step")
+  next if %w[smoke idempotence_check].include?(job_id)
+
+  check(failures, exact_fixed_integration_command?(integration_steps.first&.fetch("run", nil), suite),
+        "#{job_id} must invoke exactly tests/integration.sh --suite #{suite} site.yml")
 end
 
 %w[smoke idempotence_check].each do |job_id|
@@ -125,13 +157,32 @@ end
   check(failures, integration_step.dig("env", "SELECTED_TAGS") ==
                   "${{ needs.changes.outputs.selected_tags }}",
         "#{job_id} must pass selected tags through the environment")
-  commands = integration_step["run"].to_s
-  check(failures, commands.include?('[ -n "$SELECTED_TAGS" ]'),
-        "#{job_id} must handle an empty tag selection")
-  check(failures, commands.include?('--tags "$SELECTED_TAGS"'),
-        "#{job_id} must quote selected tags")
-  check(failures, !commands.match?(/\beval\b/), "#{job_id} must not use eval")
+  suite = INTEGRATION_SUITES.fetch(job_id)
+  check(failures, exact_selectable_integration_branches?(integration_step["run"], suite),
+        "#{job_id} must use exact tagged and untagged integration branches")
+  check(failures, !integration_step["run"].to_s.match?(/\beval\b/), "#{job_id} must not use eval")
 end
+
+# Mutation counterexamples keep the exact-match helpers from regressing to
+# fragment checks that accept additional invocations or tags in the empty path.
+check(failures,
+      !exact_fixed_integration_command?(<<~SHELL, "foundation"),
+        tests/integration.sh --suite foundation site.yml
+        tests/integration.sh --suite smoke site.yml
+      SHELL
+      "fixed-suite matcher must reject an extra integration invocation")
+check(failures,
+      !exact_fixed_integration_command?("tests/integration.sh --suite smoke site.yml", "foundation"),
+      "fixed-suite matcher must reject the wrong suite")
+check(failures,
+      !exact_selectable_integration_branches?(<<~SHELL, "smoke"),
+        if [ -n "$SELECTED_TAGS" ]; then
+          tests/integration.sh --suite smoke --tags "$SELECTED_TAGS" site.yml
+        else
+          tests/integration.sh --suite smoke --tags "$SELECTED_TAGS" site.yml
+        fi
+      SHELL
+      "selectable-suite matcher must reject --tags in the empty branch")
 
 static_commands = run_steps(jobs.fetch("static", {}))
 [
