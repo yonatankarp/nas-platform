@@ -79,6 +79,10 @@ outside_repo "$INPUT"
 
 MAPPING=$(physical_file "$MAPPING")
 case "$MAPPING" in "$ROOT"/*) ;; *) die "mapping must be inside the repository" ;; esac
+MAPPING_REL=${MAPPING#"$ROOT/"}
+git -C "$ROOT" ls-files --error-unmatch -- "$MAPPING_REL" >/dev/null 2>&1 || die "mapping is not tracked"
+git -C "$ROOT" diff --quiet -- "$MAPPING_REL" || die "mapping has unstaged changes"
+git -C "$ROOT" diff --cached --quiet -- "$MAPPING_REL" || die "mapping has staged changes"
 
 PASSWORD=$(physical_file "$PASSWORD")
 outside_repo "$PASSWORD"
@@ -100,8 +104,8 @@ OUTPUT="$OUTPUT_PARENT/$OUTPUT_BASE"
 
 expected_files='audiobookshelf.env beszel.env dozzle.env immich.env jellyfin.env komga.env ntfy.env paperless-ngx.env tinymediamanager.env'
 count=0
-for entry in "$INPUT"/*; do
-  [ -e "$entry" ] || die "input directory is empty"
+for entry in "$INPUT"/.[!.]* "$INPUT"/..?* "$INPUT"/*; do
+  [ -e "$entry" ] || continue
   [ ! -L "$entry" ] && [ -f "$entry" ] || die "unsafe environment file"
   case "$(basename -- "$entry")" in
     audiobookshelf.env|beszel.env|dozzle.env|immich.env|jellyfin.env|komga.env|ntfy.env|paperless-ngx.env|tinymediamanager.env) ;;
@@ -111,8 +115,6 @@ for entry in "$INPUT"/*; do
   count=$((count + 1))
 done
 [ "$count" -eq 9 ] || die "input file set differs"
-entry_count=$(find "$INPUT" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d ' ')
-[ "$entry_count" -eq 9 ] || die "input file set differs"
 for name in $expected_files; do
   [ -f "$INPUT/$name" ] && [ ! -L "$INPUT/$name" ] || die "input file set differs"
 done
@@ -133,7 +135,12 @@ ansible-vault view --vault-password-file "$PASSWORD" "$CIPHER" >"$VIEW" 2>/dev/n
 ruby "$ROOT/scripts/portainer-parity.rb" --validate-stdin --mapping "$MAPPING" --legacy-commit 400f03f276ae1bb69f5460c175b9fb923d620f1a <"$VIEW" >/dev/null 2>/dev/null || die "decrypted schema is invalid"
 
 # link(2) publishes only if OUTPUT is still absent; unlike mv it never replaces.
-checksum=$(shasum -a 256 "$CIPHER" | awk '{print $1}') || die "checksum failed"
+if ! checksum_line=$(shasum -a 256 -- "$CIPHER"); then
+  die "checksum failed"
+fi
+checksum=${checksum_line%%[!0-9a-f]*}
+[ "${#checksum}" -eq 64 ] || die "checksum is invalid"
+[ "$checksum_line" = "$checksum  $CIPHER" ] || die "checksum is invalid"
 ln "$CIPHER" "$OUTPUT" 2>/dev/null || die "output publication failed"
 if rm -f -- "$CIPHER"; then
   CIPHER=
