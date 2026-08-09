@@ -370,7 +370,8 @@ def mask_contexts(text)
           next
         end
         absolute = offset + index
-        unless partners[absolute]
+        closing = partners[absolute]
+        unless closing && closing > absolute
           index = finish
           next
         end
@@ -419,12 +420,10 @@ def inline_partners(text)
     runs.reject { |position,| partners.key?(position) }.each do |position, length|
       before = line[0...(position - offset)]
       if (opening = cross_line_openings[length])
-        next unless before.strip.empty?
-
         cross_line_openings.delete(length)
         partners[opening] = position
         partners[position] = opening
-      else
+      elsif before.strip.empty?
         cross_line_openings[length] = position
       end
     end
@@ -592,7 +591,7 @@ def self_test
     unclosed_four = docs.join("unclosed-four.md")
     unclosed_four.write(">    ```markdown\n>    [hidden](hidden-four-missing.md)\n")
     failures = check_sources(root, [source])
-    expected = ["after-prose-missing.md", "title-paren-missing.md", "single-title-missing.md", "escaped-comment-missing.md", "missing.md", "ordinary-missing.md", "nested-missing.md", "<missing).md>", "indented-missing.md", "escaped-missing.md", "two-slash-missing.md", "invalid-info-missing.md", "unmatched-missing.md", "ten-digit-missing.md", "after-inline-comment-missing.md", "after-unmatched-missing.md", "post-unmatched-missing.md", "unequal-missing.md"]
+    expected = ["after-prose-missing.md", "title-paren-missing.md", "single-title-missing.md", "escaped-comment-missing.md", "missing.md", "ordinary-missing.md", "nested-missing.md", "<missing).md>", "indented-missing.md", "escaped-missing.md", "two-slash-missing.md", "unmatched-missing.md", "ten-digit-missing.md", "after-inline-comment-missing.md", "after-unmatched-missing.md", "post-unmatched-missing.md", "unequal-missing.md"]
     categories = [
       "malformed local link post%ZZ.md",
       "broken local link ../../etc/passwd",
@@ -623,6 +622,20 @@ def self_test
     multiline_inline_failures = check_sources(root, [multiline_inline])
     unless multiline_inline_failures == ["docs/multiline-inline.md: broken local link multiline-inline-after.md"]
       warn "docs links multiline-inline self-test failed: #{multiline_inline_failures.inspect}"
+      exit 1
+    end
+    multiline_suffix = docs.join("multiline-suffix.md")
+    multiline_suffix.write("`\n[hidden](multiline-suffix-hidden.md)\ncode`\n[after](multiline-suffix-after.md)\n")
+    multiline_suffix_failures = check_sources(root, [multiline_suffix])
+    unless multiline_suffix_failures == ["docs/multiline-suffix.md: broken local link multiline-suffix-after.md"]
+      warn "docs links multiline-suffix self-test failed: #{multiline_suffix_failures.inspect}"
+      exit 1
+    end
+    nested_delimiters = docs.join("nested-delimiters.md")
+    nested_delimiters.write("` x `` y ` `` [ordinary](nested-delimiters-missing.md)\n")
+    nested_delimiter_failures = check_sources(root, [nested_delimiters])
+    unless nested_delimiter_failures == ["docs/nested-delimiters.md: broken local link nested-delimiters-missing.md"]
+      warn "docs links nested-delimiters self-test failed: #{nested_delimiter_failures.inspect}"
       exit 1
     end
     fence_comment = docs.join("fence-comment.md")
