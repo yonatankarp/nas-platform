@@ -162,6 +162,7 @@ end
 
 def markdown_container(line)
   rest = line.dup
+  indented_first_marker = rest.match?(/\A {1,3}(?:>|[-+*](?: |$)|\d{1,9}[.)](?: |$))/)
   signature = []
   list_item = false
   ordered_number = nil
@@ -181,7 +182,7 @@ def markdown_container(line)
     end
   end
   empty_list_item = list_item && rest.strip.empty?
-  [signature, line.length - rest.length, list_item, ordered_number, empty_list_item]
+  [signature, line.length - rest.length, list_item, ordered_number, empty_list_item, indented_first_marker]
 end
 
 def standalone_block_line?(line, content_start)
@@ -439,12 +440,13 @@ def inline_partners(text)
   previous_container = []
   paragraph_active = false
   text.lines.each do |line|
-    container, content_start, list_item, ordered_number, empty_list_item = markdown_container(line)
+    container, content_start, list_item, ordered_number, empty_list_item, indented_first_marker = markdown_container(line)
     standalone_block = standalone_block_line?(line, content_start)
     blank = line.strip.empty?
     if !blank && container.empty? && !previous_container.empty? && !standalone_block
       container = previous_container
-    elsif paragraph_active && (empty_list_item || (ordered_number && ordered_number != 1)) && container[0...-1] == previous_container
+    elsif paragraph_active && (empty_list_item || (ordered_number && ordered_number != 1)) &&
+          (container[0...-1] == previous_container || (indented_first_marker && container == previous_container))
       container = previous_container
       list_item = false
     end
@@ -816,6 +818,19 @@ def self_test
     unless quoted_ordered_failures == ["docs/quoted-ordered-noninterrupt.md: broken local link quoted-ordered-after.md"]
       warn "docs links quoted-ordered self-test failed: #{quoted_ordered_failures.inspect}"
       exit 1
+    end
+    {
+      "ordered" => "  2. [hidden](list-nested-ordered-hidden.md) `\n",
+      "empty-star" => "  * \n  [hidden](list-nested-empty-star-hidden.md) `\n"
+    }.each do |label, continuation|
+      list_nested_marker = docs.join("list-nested-#{label}.md")
+      list_nested_marker.write("- prefix `code\n#{continuation}[after](list-nested-#{label}-after.md)\n")
+      list_nested_failures = check_sources(root, [list_nested_marker])
+      expected_nested_failure = "docs/list-nested-#{label}.md: broken local link list-nested-#{label}-after.md"
+      unless list_nested_failures == [expected_nested_failure]
+        warn "docs links list-nested-marker self-test failed: #{label}: #{list_nested_failures.inspect}"
+        exit 1
+      end
     end
     {"star" => "* ", "plus" => "+ ", "ordered" => "1. "}.each do |label, marker|
       empty_item = docs.join("empty-#{label}-item.md")
