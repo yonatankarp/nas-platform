@@ -1,0 +1,184 @@
+#!/usr/bin/env ruby
+
+require "yaml"
+
+WORKFLOW_PATH = File.expand_path("../../.github/workflows/ci.yml", __dir__)
+CHECKOUT_ACTION = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
+SELECTABLE_JOBS = %w[
+  static foundation smoke beszel dozzle audiobookshelf media paperless idempotence_check
+].freeze
+INTEGRATION_SUITES = {
+  "foundation" => "foundation",
+  "smoke" => "smoke",
+  "beszel" => "beszel",
+  "dozzle" => "dozzle",
+  "audiobookshelf" => "audiobookshelf",
+  "media" => "media",
+  "paperless" => "paperless",
+  "idempotence_check" => "idempotence-check"
+}.freeze
+CLASSIFIER_OUTPUTS = %w[
+  run_ci static foundation smoke beszel dozzle audiobookshelf media paperless
+  idempotence_check selected_tags
+].freeze
+
+failures = []
+
+def check(failures, condition, message)
+  failures << message unless condition
+end
+
+def expression(value)
+  value.to_s.gsub(/\s+/, " ").strip
+end
+
+def run_steps(job)
+  Array(job["steps"]).filter_map { |step| step["run"] }.join("\n")
+end
+
+workflow = YAML.safe_load_file(WORKFLOW_PATH, aliases: false)
+# Psych follows YAML 1.1 here and may deserialize the plain `on` key as true.
+triggers = workflow["on"] || workflow[true]
+jobs = workflow.fetch("jobs", {})
+
+check(failures, triggers.is_a?(Hash), "workflow triggers are missing")
+if triggers.is_a?(Hash)
+  check(failures, triggers.key?("pull_request"), "pull_request trigger is missing")
+  check(failures, triggers.dig("push", "branches") == ["main"], "push must target only main")
+  check(failures, triggers.dig("schedule", 0, "cron") == "23 3 * * *", "nightly schedule is incorrect")
+  check(failures, triggers.key?("workflow_dispatch"), "workflow_dispatch trigger is missing")
+end
+
+concurrency = workflow.fetch("concurrency", {})
+check(
+  failures,
+  expression(concurrency["group"]) ==
+    'ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}',
+  "concurrency group must use PR number with a ref fallback"
+)
+check(failures, concurrency["cancel-in-progress"] == true, "concurrency cancellation must be enabled")
+check(failures, workflow.dig("permissions", "contents") == "read", "contents permission must be read-only")
+
+expected_jobs = ["changes", *SELECTABLE_JOBS, "validate"]
+check(failures, jobs.keys.sort == expected_jobs.sort,
+      "workflow jobs differ: got #{jobs.keys.sort.inspect}, expected #{expected_jobs.sort.inspect}")
+
+changes = jobs.fetch("changes", {})
+check(failures, changes["runs-on"] == "ubuntu-latest", "changes must run on ubuntu-latest")
+check(failures, changes.fetch("outputs", {}).keys.sort == CLASSIFIER_OUTPUTS.sort,
+      "changes must expose every classifier output")
+CLASSIFIER_OUTPUTS.each do |output|
+  check(failures,
+        expression(changes.dig("outputs", output)) == "${{ steps.classify.outputs.#{output} }}",
+        "changes output #{output} must come from the classify step")
+end
+
+changes_steps = Array(changes["steps"])
+changes_checkout = changes_steps.find { |step| step["uses"]&.start_with?("actions/checkout@") }
+check(failures, changes_checkout&.fetch("uses", nil) == CHECKOUT_ACTION,
+      "changes checkout must use the repository's pinned action")
+check(failures, changes_checkout&.dig("with", "fetch-depth") == 0,
+      "changes checkout must fetch full history")
+classify = changes_steps.find { |step| step["id"] == "classify" } || {}
+check(failures, classify.dig("env", "EVENT_NAME") == "${{ github.event_name }}",
+      "classifier must receive the event name through env")
+check(failures, classify.dig("env", "PR_BASE") == "${{ github.event.pull_request.base.sha }}",
+      "classifier must receive the PR base SHA through env")
+check(failures, classify.dig("env", "PR_HEAD") == "${{ github.event.pull_request.head.sha }}",
+      "classifier must receive the PR head SHA through env")
+classifier_run = classify["run"].to_s
+check(failures, classifier_run.include?('[ "$EVENT_NAME" = pull_request ]'),
+      "classifier must branch only for pull_request")
+check(failures, classifier_run.include?('BASE=$PR_BASE') && classifier_run.include?('HEAD=$PR_HEAD'),
+      "classifier must set BASE and HEAD only inside the pull_request branch")
+check(failures,
+      classifier_run.include?('ruby tests/ci/classify_changes.rb --diff "$BASE" "$HEAD" --github-output "$GITHUB_OUTPUT"'),
+      "pull requests must classify the base/head diff safely")
+check(failures,
+      classifier_run.include?('ruby tests/ci/classify_changes.rb --full --github-output "$GITHUB_OUTPUT"'),
+      "non-PR events must request a full run")
+check(failures, !classifier_run.include?("github.event.pull_request"),
+      "event payload expressions must not be interpolated into shell source")
+
+SELECTABLE_JOBS.each do |job_id|
+  job = jobs.fetch(job_id, {})
+  check(failures, job["needs"] == "changes", "#{job_id} must depend only on changes")
+  expected_if = "${{ needs.changes.outputs.#{job_id} == 'true' }}"
+  check(failures, expression(job["if"]) == expected_if,
+        "#{job_id} condition must match its classifier output")
+end
+
+INTEGRATION_SUITES.each do |job_id, suite|
+  job = jobs.fetch(job_id, {})
+  checkout = Array(job["steps"]).find { |step| step["uses"]&.start_with?("actions/checkout@") }
+  check(failures, checkout&.fetch("uses", nil) == CHECKOUT_ACTION,
+        "#{job_id} must check out the repository with the pinned action")
+  commands = run_steps(job)
+  check(failures, commands.include?("tests/integration.sh --suite #{suite}"),
+        "#{job_id} must invoke its matching integration suite")
+  check(failures, commands.include?("site.yml"), "#{job_id} must pass site.yml to the harness")
+end
+
+%w[smoke idempotence_check].each do |job_id|
+  job = jobs.fetch(job_id, {})
+  integration_step = Array(job["steps"]).find { |step| step["run"]&.include?("tests/integration.sh") } || {}
+  check(failures, integration_step.dig("env", "SELECTED_TAGS") ==
+                  "${{ needs.changes.outputs.selected_tags }}",
+        "#{job_id} must pass selected tags through the environment")
+  commands = integration_step["run"].to_s
+  check(failures, commands.include?('[ -n "$SELECTED_TAGS" ]'),
+        "#{job_id} must handle an empty tag selection")
+  check(failures, commands.include?('--tags "$SELECTED_TAGS"'),
+        "#{job_id} must quote selected tags")
+  check(failures, !commands.match?(/\beval\b/), "#{job_id} must not use eval")
+end
+
+static_commands = run_steps(jobs.fetch("static", {}))
+[
+  "find tests -type f -name '*.sh' -exec sh -n {} +",
+  "tests/validate-policy.sh",
+  "tests/integration_cleanup_test.sh",
+  "python3 tests/deployment_target_validator_test.py",
+  "tests/immich_probe_status_test.py",
+  "tests/generate-secrets-redaction-test.sh",
+  "tests/generate-ephemeral-vault.sh --self-test",
+  "ansible-lint --strict",
+  "ansible-playbook -i inventory/local.yml site.yml --syntax-check",
+  "ansible-playbook generate-secrets.yml --syntax-check"
+].each do |command|
+  check(failures, static_commands.include?(command), "static checks must retain #{command.inspect}")
+end
+check(failures, static_commands.include?("apt-get install"), "static checks must install system tools")
+check(failures, static_commands.include?("pipx install 'ansible-core==2.21.2'"),
+      "static checks must install pinned ansible-core")
+check(failures, static_commands.include?("pipx install 'ansible-lint==26.6.0'"),
+      "static checks must install pinned ansible-lint")
+
+validate = jobs.fetch("validate", {})
+check(failures, validate["name"] == "validate", "aggregate check name must remain validate")
+check(failures, expression(validate["if"]) == "${{ always() }}", "validate must always run")
+expected_needs = ["changes", *SELECTABLE_JOBS]
+check(failures, Array(validate["needs"]) == expected_needs,
+      "validate must need changes and every selectable job in canonical order")
+validate_checkout = Array(validate["steps"]).find { |step| step["uses"]&.start_with?("actions/checkout@") }
+check(failures, validate_checkout&.fetch("uses", nil) == CHECKOUT_ACTION,
+      "validate must check out the repository with the pinned action")
+validate_commands = run_steps(validate)
+expected_needs.each do |job_id|
+  check(failures,
+        validate_commands.include?(%(#{job_id}="${{ needs.#{job_id}.result }}")),
+        "validate must pass the #{job_id} result to validate_results.rb")
+end
+check(failures, validate_commands.include?("ruby tests/ci/validate_results.rb"),
+      "validate must invoke the aggregate result validator")
+
+workflow_source = File.read(WORKFLOW_PATH)
+check(failures, !workflow_source.match?(/dorny\/paths-filter|paths-filter@/i),
+      "workflow must not use a third-party path filter action")
+
+unless failures.empty?
+  failures.each { |failure| warn "FAIL #{failure}" }
+  abort "#{failures.length} workflow contract failure(s)"
+end
+
+puts "CI workflow contract: all checks passed"

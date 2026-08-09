@@ -5,12 +5,57 @@ on:
   push:
     branches:
       - main
+  schedule:
+    - cron: '23 3 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  validate:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      run_ci: ${{ steps.classify.outputs.run_ci }}
+      static: ${{ steps.classify.outputs.static }}
+      foundation: ${{ steps.classify.outputs.foundation }}
+      smoke: ${{ steps.classify.outputs.smoke }}
+      beszel: ${{ steps.classify.outputs.beszel }}
+      dozzle: ${{ steps.classify.outputs.dozzle }}
+      audiobookshelf: ${{ steps.classify.outputs.audiobookshelf }}
+      media: ${{ steps.classify.outputs.media }}
+      paperless: ${{ steps.classify.outputs.paperless }}
+      idempotence_check: ${{ steps.classify.outputs.idempotence_check }}
+      selected_tags: ${{ steps.classify.outputs.selected_tags }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Classify changes
+        id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$EVENT_NAME" = pull_request ]; then
+            BASE=$PR_BASE
+            HEAD=$PR_HEAD
+            ruby tests/ci/classify_changes.rb --diff "$BASE" "$HEAD" --github-output "$GITHUB_OUTPUT"
+          else
+            ruby tests/ci/classify_changes.rb --full --github-output "$GITHUB_OUTPUT"
+          fi
+
+  static:
+    needs: changes
+    if: ${{ needs.changes.outputs.static == 'true' }}
     runs-on: ubuntu-latest
 
     steps:
@@ -25,6 +70,9 @@ jobs:
 
       - name: Check integration sandbox cleanup
         run: tests/integration_cleanup_test.sh
+
+      - name: Check deployment target validator
+        run: python3 tests/deployment_target_validator_test.py
 
       - name: Install Ansible tooling
         run: |
@@ -61,8 +109,130 @@ jobs:
           ansible-playbook -i inventory/local.yml site.yml --syntax-check
           ansible-playbook generate-secrets.yml --syntax-check
 
-      # Exercises the plays rather than parsing them. The two worst bugs so far,
-      # a Darwin-only fact and command being skipped under --check, both passed
-      # syntax checking and were caught here.
-      - name: Converge against a disposable sandbox
-        run: tests/integration.sh site.yml
+  foundation:
+    needs: changes
+    if: ${{ needs.changes.outputs.foundation == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Run foundation integration suite
+        run: tests/integration.sh --suite foundation site.yml
+
+  smoke:
+    needs: changes
+    if: ${{ needs.changes.outputs.smoke == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Run smoke integration suite
+        env:
+          SELECTED_TAGS: ${{ needs.changes.outputs.selected_tags }}
+        run: |
+          if [ -n "$SELECTED_TAGS" ]; then
+            tests/integration.sh --suite smoke --tags "$SELECTED_TAGS" site.yml
+          else
+            tests/integration.sh --suite smoke site.yml
+          fi
+
+  beszel:
+    needs: changes
+    if: ${{ needs.changes.outputs.beszel == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Run Beszel integration suite
+        run: tests/integration.sh --suite beszel site.yml
+
+  dozzle:
+    needs: changes
+    if: ${{ needs.changes.outputs.dozzle == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Run Dozzle integration suite
+        run: tests/integration.sh --suite dozzle site.yml
+
+  audiobookshelf:
+    needs: changes
+    if: ${{ needs.changes.outputs.audiobookshelf == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Run Audiobookshelf integration suite
+        run: tests/integration.sh --suite audiobookshelf site.yml
+
+  media:
+    needs: changes
+    if: ${{ needs.changes.outputs.media == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Run media integration suite
+        run: tests/integration.sh --suite media site.yml
+
+  paperless:
+    needs: changes
+    if: ${{ needs.changes.outputs.paperless == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Run Paperless integration suite
+        run: tests/integration.sh --suite paperless site.yml
+
+  idempotence_check:
+    needs: changes
+    if: ${{ needs.changes.outputs.idempotence_check == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Run idempotence integration suite
+        env:
+          SELECTED_TAGS: ${{ needs.changes.outputs.selected_tags }}
+        run: |
+          if [ -n "$SELECTED_TAGS" ]; then
+            tests/integration.sh --suite idempotence-check --tags "$SELECTED_TAGS" site.yml
+          else
+            tests/integration.sh --suite idempotence-check site.yml
+          fi
+
+  validate:
+    name: validate
+    if: ${{ always() }}
+    needs:
+      - changes
+      - static
+      - foundation
+      - smoke
+      - beszel
+      - dozzle
+      - audiobookshelf
+      - media
+      - paperless
+      - idempotence_check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Validate job results
+        run: |
+          ruby tests/ci/validate_results.rb \
+            changes="${{ needs.changes.result }}" \
+            static="${{ needs.static.result }}" \
+            foundation="${{ needs.foundation.result }}" \
+            smoke="${{ needs.smoke.result }}" \
+            beszel="${{ needs.beszel.result }}" \
+            dozzle="${{ needs.dozzle.result }}" \
+            audiobookshelf="${{ needs.audiobookshelf.result }}" \
+            media="${{ needs.media.result }}" \
+            paperless="${{ needs.paperless.result }}" \
+            idempotence_check="${{ needs.idempotence_check.result }}"

@@ -4,6 +4,7 @@ set -eu
 ruby tests/policy_test.rb
 ruby tests/ci/classify_changes_test.rb
 ruby tests/ci/validate_results_test.rb
+ruby tests/ci/workflow_test.rb
 ruby tests/secrets_docs_test.rb
 ruby tests/policy_manifest_test.rb
 python3 tests/deployment_target_validator_test.py
