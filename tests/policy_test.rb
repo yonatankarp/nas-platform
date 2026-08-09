@@ -1215,14 +1215,16 @@ check(failures, !controller_preflight.nil?,
 # again before service roles write runtime configuration or consume `current`.
 target_tasks_path = File.join(ROOT, "roles", "deployment_bundle", "tasks", "target.yml")
 target_tasks_body = File.file?(target_tasks_path) ? File.read(target_tasks_path) : ""
+target_validator_path = File.join(ROOT, "roles", "deployment_bundle", "files", "validate_target.py")
+target_validator_body = File.file?(target_validator_path) ? File.read(target_validator_path) : ""
 %w[os.lstat os.path.realpath os.path.commonpath os.path.lexists].each do |primitive|
-  check(failures, target_tasks_body.include?(primitive),
+  check(failures, target_validator_body.include?(primitive),
         "target validator must use #{primitive} for symlink-safe canonical containment")
 end
 check(failures, target_tasks_body.include?("concurrent privileged filesystem mutation"),
       "target validator must document its adjacent-revalidation threat boundary")
-check(failures, target_tasks_body.include?("os.path.abspath(os.sep)") &&
-                target_tasks_body.include?("root_relative_parts"),
+check(failures, target_validator_body.include?("os.path.abspath(os.sep)") &&
+                target_validator_body.include?("root_relative_parts"),
       "target validator must lstat every existing ancestor from filesystem root to nas_docker_root")
 check(failures, target_tasks_body.include?("nas_docker_root ~ '/.nas-platform-preflight-probe'") ||
                 target_tasks_body.include?("{{ nas_docker_root }}/.nas-platform-preflight-probe"),

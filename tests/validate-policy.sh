@@ -6,6 +6,7 @@ ruby tests/ci/classify_changes_test.rb
 ruby tests/ci/validate_results_test.rb
 ruby tests/secrets_docs_test.rb
 ruby tests/policy_manifest_test.rb
+python3 tests/deployment_target_validator_test.py
 ansible-playbook -i localhost, -c local tests/compose_metadata_filter_test.yml
 ruby tests/run_contracts_test.rb
 ruby tests/run_contracts.rb --validate-only
