@@ -7,12 +7,11 @@
 # absolute paths, the sandbox needs only to point those at a temporary directory:
 # no override files, and the definitions run byte-identical to production.
 #
-# Three phases, all of which must pass:
-#   1. converge
-#   2. converge again, asserting nothing changes
-#   3. --check --diff, asserting a dry run works
+# Full and idempotence-check run three phases: converge, an unchanged second
+# converge, and --check --diff. Selective suites stop after their owned scenario
+# block, while smoke stops after the first converge and manifest verification.
 #
-# Usage: tests/integration.sh [playbook]
+# Usage: tests/integration.sh [--suite NAME [--tags TAGS]] [playbook] [ansible arguments]
 set -eu
 
 ansible_core_version=2.21.2
@@ -20,8 +19,149 @@ runner_image=docker.io/library/python:3.13-alpine@sha256:399babc8b49529dabfd9c92
 ruby_package='ruby=3.4.9-r0'
 curl_package='curl=8.21.0-r0'
 
+suite=full
+suite_tags=
+tags_explicit=false
+describe_suite=false
+explicit_suite=false
+
+if [ "${1:-}" = --list-suites ]; then
+  printf '%s\n' 'foundation smoke beszel dozzle audiobookshelf media paperless idempotence-check full'
+  exit 0
+fi
+
+case "${1:-}" in
+  --suite)
+    explicit_suite=true
+    shift
+    case "${1:-}" in
+      ''|--*)
+        printf 'unknown integration suite: <missing>\n' >&2
+        exit 2
+        ;;
+    esac
+    suite=$1
+    shift
+    ;;
+  --describe-suite)
+    explicit_suite=true
+    describe_suite=true
+    shift
+    case "${1:-}" in
+      ''|--*)
+        printf 'unknown integration suite: <missing>\n' >&2
+        exit 2
+        ;;
+    esac
+    suite=$1
+    shift
+    ;;
+esac
+
+if [ "${1:-}" = --tags ]; then
+  tags_explicit=true
+  shift
+  [ "$#" -gt 0 ] || {
+    printf 'missing value for --tags\n' >&2
+    exit 2
+  }
+  suite_tags=$1
+  shift
+fi
+
+case "$suite" in
+  foundation) fixed_tags=deployment_bundle ;;
+  smoke) fixed_tags= ;;
+  beszel) fixed_tags=deployment_bundle,ntfy,beszel ;;
+  dozzle) fixed_tags=deployment_bundle,ntfy,dozzle ;;
+  audiobookshelf) fixed_tags=deployment_bundle,audiobookshelf ;;
+  media) fixed_tags=deployment_bundle,komga,tinymediamanager,jellyfin,immich ;;
+  paperless) fixed_tags=deployment_bundle,paperless ;;
+  idempotence-check) fixed_tags= ;;
+  full) fixed_tags= ;;
+  *)
+    printf 'unknown integration suite: %s\n' "$suite" >&2
+    exit 2
+    ;;
+esac
+
+if [ "$tags_explicit" = true ]; then
+  case "$suite" in
+    smoke|idempotence-check) ;;
+    *)
+      printf 'integration suite %s does not accept --tags\n' "$suite" >&2
+      exit 2
+      ;;
+  esac
+  if [ -n "$suite_tags" ]; then
+    old_ifs=$IFS
+    IFS=,
+    set -f
+    for tag in $suite_tags; do
+      case "$tag" in
+        ''|*[!abcdefghijklmnopqrstuvwxyz0123456789_-]*)
+          printf 'invalid integration tags: %s\n' "$suite_tags" >&2
+          exit 2
+          ;;
+      esac
+    done
+    set +f
+    IFS=$old_ifs
+    case "$suite_tags" in
+      ,*|*,|*,,*)
+        printf 'invalid integration tags: %s\n' "$suite_tags" >&2
+        exit 2
+        ;;
+    esac
+  fi
+else
+  suite_tags=$fixed_tags
+fi
+
+if [ "$explicit_suite" = true ]; then
+  case "${1:-}" in
+    -*)
+      printf 'unexpected integration suite argument: %s\n' "$1" >&2
+      exit 2
+      ;;
+  esac
+fi
+
 playbook=${1:-site.yml}
 [ "$#" -gt 0 ] && shift || true
+
+run_service_scenarios=true
+if [ "$explicit_suite" = false ] && [ "$#" -gt 0 ]; then
+  run_service_scenarios=false
+fi
+
+if [ "$explicit_suite" = true ]; then
+  for argument in "$@"; do
+    case "$argument" in
+      --tags|--tags=*)
+        case "$suite" in
+          smoke|idempotence-check)
+            printf 'integration suite options must precede the playbook\n' >&2
+            ;;
+          *)
+            printf 'integration suite %s does not accept --tags\n' "$suite" >&2
+            ;;
+        esac
+        exit 2
+        ;;
+      *)
+        printf 'unexpected integration suite argument: %s\n' "$argument" >&2
+        exit 2
+        ;;
+    esac
+  done
+fi
+
+if [ "$describe_suite" = true ] || [ "${INTEGRATION_DESCRIBE_ONLY:-0}" = 1 ]; then
+  printf 'suite=%s tags=%s playbook=%s scenarios=%s\n' \
+    "$suite" "$suite_tags" "$playbook" "$run_service_scenarios"
+  exit 0
+fi
 
 repo_dir=$(CDPATH= cd -P "$(dirname "$0")/.." && pwd -P)
 . "$repo_dir/tests/sandbox_cleanup.sh"
@@ -304,6 +444,9 @@ docker run --rm \
   -v "$sandbox":"$sandbox" \
   -e ANSIBLE_CONFIG=/repo/ansible.cfg \
   -e PLATFORM_NAS_ADDRESS="$nas_address" \
+  -e INTEGRATION_SUITE="$suite" \
+  -e INTEGRATION_TAGS="$suite_tags" \
+  -e INTEGRATION_RUN_SERVICE_SCENARIOS="$run_service_scenarios" \
   -w /repo \
   "$runner_image" \
   sh -eu -c "
@@ -319,6 +462,13 @@ docker run --rm \
     # never reaches the caller's git configuration.
     git config --global --add safe.directory '*'
 
+    suite_is() {
+      [ "\$INTEGRATION_SUITE" = full ] || [ "\$INTEGRATION_SUITE" = "\$1" ]
+    }
+
+    playbook=\$1
+    shift
+
     vault_directory='$sandbox/nas-platform-vault.000000'
     vault_file=\"\$vault_directory/vault.yml\"
     vault_password_file=\"\$vault_directory/password\"
@@ -327,6 +477,12 @@ docker run --rm \
     TMPDIR='$sandbox' /repo/tests/generate-ephemeral-vault.sh \
       --output \"\$vault_file\" --password-file \"\$vault_password_file\"
 
+    cleanup_vault() {
+      TMPDIR='$sandbox' /repo/tests/generate-ephemeral-vault.sh --cleanup \
+        \"\$vault_directory\"
+    }
+
+    if suite_is foundation; then
     PLATFORM_DOCKER_ROOT='$sandbox/var/folders/path fixture/missing/Docker' \
     PLATFORM_MEDIA_ROOT='$sandbox/var/folders/path fixture/missing/media' \
     EXPECTED_PLATFORM_DOCKER_ROOT='$sandbox/private/var/folders/path fixture/missing/Docker' \
@@ -419,6 +575,7 @@ docker run --rm \
     test -f '$controller_test_target'
     printf 'DIRTY_INTEGRATION_ACCEPTED\n'
     git -C '$controller_test_dir' checkout -q -- .
+    fi
 
     run_play() {
       ansible-playbook \
@@ -432,7 +589,7 @@ docker run --rm \
         -e platform_beszel_agent_kind=portable \
         -e deployment_bundle_test_mode=true \
         -e deployment_bundle_allow_dirty_controller=true \
-        '$playbook' \"\$@\"
+        \"\$playbook\" \"\$@\"
     }
 
     run_beszel_contract() {
@@ -504,6 +661,18 @@ docker run --rm \
         PLATFORM_REPORT_ROOT='$sandbox/reports' \
         PLATFORM_JELLYFIN_CONTAINER=jellyfin \
         /repo/tests/contracts/jellyfin.sh \"\$@\"
+    }
+
+    run_immich_contract() {
+      env \
+        PLATFORM_KIND=integration \
+        PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\" \
+        PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=\"\$vault_password_file\" \
+        PLATFORM_DOCKER_ROOT='$sandbox/volume1/Docker' \
+        PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
+        PLATFORM_FIXTURE_ROOT='$sandbox/fixtures' \
+        PLATFORM_REPORT_ROOT='$sandbox/reports' \
+        /repo/tests/contracts/immich.sh \"\$@\"
     }
 
     run_paperless_contract() {
@@ -607,6 +776,7 @@ docker run --rm \
       printf 'CONTROLLER_SYMLINK_TARGET_UNCHANGED\n'
     }
 
+    if suite_is foundation; then
     assert_controller_symlink_refused CONTROLLER_MANIFEST_SYMLINK_REFUSED manifest
     assert_controller_symlink_refused CONTROLLER_OVERRIDE_SYMLINK_REFUSED override
 
@@ -816,10 +986,26 @@ docker run --rm \
     # The preceding scenarios must not create or seed the real-service target.
     test ! -e '$sandbox/volume1/Docker/nas-platform'
 
-    if [ "\$#" -eq 0 ]; then
+    if [ "\$INTEGRATION_SUITE" = foundation ]; then
+      cleanup_vault
+      exit 0
+    fi
+    fi
+
+    run_selected_play() {
+      if [ -n "\$INTEGRATION_TAGS" ]; then
+        run_play --tags "\$INTEGRATION_TAGS" "\$@"
+      elif [ "\$#" -eq 0 ]; then
+        run_play
+      else
+        run_play "\$@"
+      fi
+    }
+
+    if [ -z "\$INTEGRATION_TAGS" ] && [ "\$#" -eq 0 ]; then
     run_play
     else
-      run_play "\$@"
+      run_selected_play "\$@"
     fi
     printf 'FRESH_ROOT_OK: clean deployment root converged\n'
 
@@ -836,6 +1022,12 @@ docker run --rm \
       '$sandbox/volume1/Docker/nas-platform/current/manifest.yml' \
       /repo /repo/services/manifest.yml nas integration '$expected_release_id'
 
+    if [ "\$INTEGRATION_SUITE" = smoke ]; then
+      cleanup_vault
+      exit 0
+    fi
+
+    if [ "\$INTEGRATION_SUITE" != idempotence-check ]; then
     assert_selective_compose_refused() {
       service=\$1
       evidence=\$2
@@ -912,8 +1104,9 @@ docker run --rm \
     chown 123:456 '$active_release_dir/services/ntfy/compose.yml'
     assert_active_drift_refused ACTIVE_OWNERSHIP_DRIFT_REFUSED
     chown 0:0 '$active_release_dir/services/ntfy/compose.yml'
+    fi
 
-    if [ "\$#" -eq 0 ]; then
+    if [ "\$INTEGRATION_RUN_SERVICE_SCENARIOS" = true ] && suite_is beszel; then
       run_beszel_contract verify
       printf 'BESZEL_INITIAL_CONTRACT_OK\n'
 
@@ -1016,6 +1209,10 @@ docker run --rm \
       run_play --tags beszel
       run_beszel_contract verify
 
+    fi
+
+    if [ "\$INTEGRATION_RUN_SERVICE_SCENARIOS" = true ] && suite_is dozzle; then
+
       run_dozzle_contract verify
       printf 'DOZZLE_INITIAL_CONTRACT_OK\n'
       run_dozzle_contract duplicate-dispatcher-create
@@ -1117,6 +1314,10 @@ docker run --rm \
       run_dozzle_contract verify
       run_dozzle_contract notify
       printf 'DOZZLE_DRIFT_RECONCILED_AND_NOTIFIED\n'
+
+    fi
+
+    if [ "\$INTEGRATION_RUN_SERVICE_SCENARIOS" = true ] && suite_is audiobookshelf; then
 
       run_audiobookshelf_contract run
       printf 'AUDIOBOOKSHELF_INITIAL_CONTRACT_OK\n'
@@ -1227,11 +1428,25 @@ docker run --rm \
       run_audiobookshelf_contract assert-persistence
       printf 'AUDIOBOOKSHELF_RECREATE_PERSISTENCE_OK\n'
 
+    fi
+
+    if [ "\$INTEGRATION_RUN_SERVICE_SCENARIOS" = true ] && suite_is media; then
+
       run_komga_contract seed
       run_tinymediamanager_contract seed
       # After tinyMediaManager, because both services read the same Movies tree
       # and only a scan that already finished can be asserted independently.
       run_jellyfin_contract seed
+
+      if [ "\$INTEGRATION_SUITE" = media ]; then
+        run_komga_contract run
+        run_tinymediamanager_contract run
+        run_jellyfin_contract run
+        run_immich_contract run
+      fi
+    fi
+
+    if [ "\$INTEGRATION_RUN_SERVICE_SCENARIOS" = true ] && suite_is paperless; then
       run_paperless_contract seed
       mkdir -m 0700 '$sandbox/reports/paperless-coordinated-snapshot'
       run_paperless_snapshot drill '$sandbox/reports/paperless-coordinated-snapshot'
@@ -1241,6 +1456,7 @@ docker run --rm \
         -f '$sandbox/volume1/Docker/nas-platform/current/services/paperless-ngx/compose.yml' \
         up -d --force-recreate --wait
       run_paperless_contract assert-persistence
+    fi
       # Immich is deliberately not seeded here. Its seed contract asserts CPU
       # machine learning, and the first inference makes the pinned image pull
       # roughly 800 MB of CLIP, face and OCR models from external CDNs. That is
@@ -1250,6 +1466,8 @@ docker run --rm \
       # covers login, containment and managed settings and needs no extra
       # environment beyond the shared contract ABI.
 
+    if [ "\$INTEGRATION_SUITE" = full ] && \
+       [ "\$INTEGRATION_RUN_SERVICE_SCENARIOS" = true ]; then
       env \
         PLATFORM_KIND=integration \
         PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\" \
@@ -1263,8 +1481,9 @@ docker run --rm \
         ruby /repo/tests/run_contracts.rb --execute
     fi
 
+    if suite_is idempotence-check; then
     printf '\n=== phase 2: asserting idempotence ===\n'
-    run_play "\$@" | tee /tmp/second.txt
+    run_selected_play "\$@" | tee /tmp/second.txt
     # Must also require failed=0: a run that changed nothing because it died
     # early is not idempotent, and an earlier version of this check passed on it.
     if grep -qE 'changed=0 ' /tmp/second.txt && grep -qE 'failed=0 ' /tmp/second.txt; then
@@ -1275,12 +1494,12 @@ docker run --rm \
     fi
 
     printf '\n=== phase 3: asserting --check --diff works ===\n'
-    if run_play "\$@" --check --diff; then
+    if run_selected_play "\$@" --check --diff; then
       printf 'CHECK MODE OK: dry run completed\n'
     else
       printf 'CHECK MODE BROKEN: dry run failed\n' >&2
       exit 1
     fi
-    TMPDIR='$sandbox' /repo/tests/generate-ephemeral-vault.sh --cleanup \
-      \"\$vault_directory\"
-  " integration-run "$@"
+    fi
+    cleanup_vault
+  " integration-run "$playbook" "$@"
