@@ -26,7 +26,7 @@
     - name: Parse the existing Dozzle users document
       ansible.builtin.set_fact:
         dozzle_existing_document: >-
-          {{ (dozzle_existing_users_source.content | b64decode | from_yaml)
+          {{ (dozzle_existing_users_source.content | b64decode | managed_users_yaml)
              if dozzle_existing_users_stat.stat.exists else {} }}
       no_log: true
 
@@ -111,9 +111,10 @@
 - name: Refuse password hash replacement for existing Dozzle identities
   ansible.builtin.assert:
     that:
-      - dozzle_existing_entry | length == 0 or dozzle_existing_entry is mapping
+      - not dozzle_existing_key_present or dozzle_existing_entry is mapping
+      - not dozzle_existing_key_present or 'password' in dozzle_existing_entry
       - >-
-        dozzle_existing_entry | length == 0 or
+        not dozzle_existing_key_present or
         dozzle_existing_entry.password | default('') == item.value.password
     fail_msg: >-
       Existing Dozzle user does not have its preserved vault password hash;
@@ -123,9 +124,12 @@
       {{ dozzle_existing_key_by_normalized | default({}) |
          dict2items | selectattr('key', 'equalto', item.key | trim | lower) |
          map(attribute='value') | first | default('') }}
+    dozzle_existing_key_present: >-
+      {{ item.key | trim | lower in
+         (dozzle_existing_key_by_normalized | default({})).keys() }}
     dozzle_existing_entry: >-
       {{ dozzle_existing_users[dozzle_existing_key]
-         if dozzle_existing_key | length > 0 else {} }}
+         if dozzle_existing_key_present else {} }}
   loop: "{{ dozzle_desired_users | dict2items }}"
   loop_control:
     label: dozzle-allowlisted-user

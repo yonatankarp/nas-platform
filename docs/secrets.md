@@ -119,7 +119,13 @@ identity remains under the separate primary credential contract.
 `tokens` is a unique list of owned `tk_` tokens, which may be empty. Supported
 permissions are `read-only`, `write-only`, `read-write`, and `deny`. Managed
 identities cannot duplicate the administrator or the Dozzle and Beszel
-publishers.
+publishers. The role treats the prior rendered ntfy `.env` as the declarative
+ownership record and confirms database identities with the pinned `ntfy user
+list` command before rendering a replacement. An owned identity must retain its
+exact prior hash; a same-name database identity outside that record is refused
+for automatic adoption. If an existing authentication database has no prior
+ownership record, restore reviewed migration evidence instead of regenerating
+credentials.
 
 #### paperless_ngx managed users
 

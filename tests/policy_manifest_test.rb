@@ -23,6 +23,7 @@ BASE_FIXTURE_PATHS = %w[
   docs/getting-started-nas.md
   filter_plugins/platform_paths.py
   filter_plugins/compose_metadata.py
+  filter_plugins/managed_user_state.py
   generate-secrets.yml
   inventory/group_vars/all/main.yml
   inventory/group_vars/all/vault.yml.example
@@ -61,6 +62,7 @@ BASE_FIXTURE_PATHS = %w[
   tests/generate-ephemeral-vault.sh
   tests/generate-secrets-redaction-test.sh
   tests/mac_inventory_path_test.yml
+  tests/managed_user_state_filter_test.py
   tests/mac/cleanup.sh
   tests/mac/drift.sh
   tests/mac/fixtures.sh

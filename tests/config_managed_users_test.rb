@@ -1,9 +1,13 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require "base64"
 require "json"
 require "open3"
+require "socket"
 require "tmpdir"
+require "timeout"
+require "uri"
 require "yaml"
 
 ROOT = File.expand_path("..", __dir__)
@@ -12,12 +16,34 @@ DOZZLE_MAIN = File.join(ROOT, "roles", "dozzle", "tasks", "main.yml")
 DOZZLE_TEMPLATE = File.join(ROOT, "roles", "dozzle", "templates", "users.yml.j2")
 NTFY_TASKS = File.join(ROOT, "roles", "ntfy", "tasks", "managed_users.yml")
 NTFY_MAIN = File.join(ROOT, "roles", "ntfy", "tasks", "main.yml")
+STATE_FILTER = File.join(ROOT, "filter_plugins", "managed_user_state.py")
 VALIDATE_POLICY = File.join(ROOT, "tests", "validate-policy.sh")
 
 BCRYPT_A = "$2b$12$aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 BCRYPT_B = "$2b$12$bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 TOKEN_A = "tk_aaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 TOKEN_B = "tk_bbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+SOURCE_REQUIREMENTS = {
+  "Dozzle safe load" => ["dozzle_tasks", "managed_users_yaml"],
+  "Dozzle explicit presence" => ["dozzle_tasks", "dozzle_existing_key_present"],
+  "Dozzle hash refusal" => ["dozzle_tasks", "will not replace"],
+  "Dozzle unmanaged preservation" => ["dozzle_tasks", "dozzle_unmanaged_users"],
+  "Dozzle rendered loop" => ["dozzle_template", "{% for"],
+  "Dozzle managed authentication" => ["dozzle_main", "vault_managed_dozzle_users"],
+  "strict YAML alias refusal" => ["state_filter", "yaml.tokens.AnchorToken"],
+  "strict YAML duplicate refusal" => ["state_filter", "duplicate normalized user identities"],
+  "ntfy prior ownership preflight" => ["ntfy_main", "Inspect existing ntfy declarative ownership and users"],
+  "ntfy authoritative CLI" => ["ntfy_main", "community.docker.docker_compose_v2_run"],
+  "ntfy user provisioning" => ["ntfy_tasks", "ntfy_auth_users"],
+  "ntfy owned hash refusal" => ["ntfy_tasks", "Refuse password hash replacement for owned ntfy identities"],
+  "ntfy unmanaged adoption refusal" => ["ntfy_tasks", "Refuse automatic adoption of unmanaged ntfy identities"],
+  "ntfy token ownership" => ["ntfy_tasks", "Refuse duplicate ntfy token ownership"],
+  "ntfy Basic authentication" => ["ntfy_tasks", "force_basic_auth: true"],
+  "ntfy declared access verification" => ["ntfy_tasks", "Verify managed ntfy declared write access"],
+  "policy registration" => ["validate_policy", "config_managed_users_test.rb --self-test"],
+  "filter behavior registration" => ["validate_policy", "managed_user_state_filter_test.py"]
+}.freeze
 
 def check(failures, condition, message)
   failures << message unless condition
@@ -36,19 +62,7 @@ def command_available?(name)
 end
 
 def source_fragment_failures(sources)
-  required = {
-    "Dozzle safe load" => ["dozzle_tasks", "from_yaml"],
-    "Dozzle hash refusal" => ["dozzle_tasks", "will not replace"],
-    "Dozzle unmanaged preservation" => ["dozzle_tasks", "dozzle_unmanaged_users"],
-    "Dozzle rendered loop" => ["dozzle_template", "{% for"],
-    "Dozzle managed authentication" => ["dozzle_main", "vault_managed_dozzle_users"],
-    "ntfy user provisioning" => ["ntfy_tasks", "ntfy_auth_users"],
-    "ntfy token ownership" => ["ntfy_tasks", "Refuse duplicate ntfy token ownership"],
-    "ntfy Basic authentication" => ["ntfy_tasks", "force_basic_auth: true"],
-    "ntfy declared access verification" => ["ntfy_tasks", "Verify managed ntfy declared write access"],
-    "policy registration" => ["validate_policy", "config_managed_users_test.rb --self-test"]
-  }
-  required.filter_map do |label, (source_name, fragment)|
+  SOURCE_REQUIREMENTS.filter_map do |label, (source_name, fragment)|
     label unless sources.fetch(source_name).include?(fragment)
   end
 end
@@ -64,6 +78,55 @@ def run_playbook(source, extra_vars = {})
     )
     yield directory, stdout + stderr, status
   end
+end
+
+def with_http_probe(expected_count, responder)
+  server = TCPServer.new("127.0.0.1", 0)
+  requests = []
+  error = nil
+  thread = Thread.new do
+    expected_count.times do
+      client = server.accept
+      request_line = client.gets&.strip
+      raise "HTTP probe received an empty request" unless request_line
+
+      method, target, _protocol = request_line.split(" ", 3)
+      headers = {}
+      while (line = client.gets)
+        line = line.chomp
+        break if line == "\r" || line.empty?
+        key, value = line.split(":", 2)
+        headers[key.downcase] = value.to_s.strip
+      end
+      body = client.read(headers.fetch("content-length", "0").to_i)
+      request = { "method" => method, "target" => target, "headers" => headers, "body" => body }
+      requests << request
+      status = responder.call(request)
+      reason = status == 200 ? "OK" : "Forbidden"
+      client.write("HTTP/1.1 #{status} #{reason}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+      client.close
+    end
+  rescue StandardError => caught
+    error = caught
+  ensure
+    server.close
+  end
+  yield server.addr.fetch(1), requests
+  Timeout.timeout(10) { thread.join }
+  raise error if error
+ensure
+  server&.close unless server&.closed?
+end
+
+def task_playbook(tasks, variables)
+  YAML.dump([
+    {
+      "hosts" => "localhost",
+      "gather_facts" => false,
+      "vars" => variables,
+      "tasks" => tasks
+    }
+  ])
 end
 
 def dozzle_playbook(users_path, output_path)
@@ -133,6 +196,16 @@ def ntfy_playbook(output_path)
               - topic: private
                 permission: deny
             tokens: [#{TOKEN_B}]
+        ntfy_prior_provisioned_users:
+          admin: {username: admin, password_hash: #{BCRYPT_A.to_json}, role: admin}
+          dozzle: {username: dozzle, password_hash: #{BCRYPT_A.to_json}, role: user}
+          reader: {username: reader, password_hash: #{BCRYPT_B.to_json}, role: user}
+        ntfy_existing_user_records:
+          '*': {username: '*', role: anonymous, provisioned: false}
+          admin: {username: admin, role: admin, provisioned: true}
+          dozzle: {username: dozzle, role: user, provisioned: true}
+          reader: {username: reader, role: user, provisioned: true}
+        ntfy_authoritative_absence_established: true
         ntfy_managed_users_phase: provision
       tasks:
         - ansible.builtin.include_tasks: #{NTFY_TASKS.to_json}
@@ -158,15 +231,20 @@ def run_ntfy_fixture(extra_vars = {})
 end
 
 failures = []
+abort "Config managed users: ansible-playbook is required for behavior coverage" unless
+  command_available?("ansible-playbook")
+
 dozzle_tasks = read(DOZZLE_TASKS)
 dozzle_main = read(DOZZLE_MAIN)
 dozzle_template = read(DOZZLE_TEMPLATE)
 ntfy_tasks = read(NTFY_TASKS)
 ntfy_main = read(NTFY_MAIN)
+state_filter = read(STATE_FILTER)
 
 check(failures, !dozzle_tasks.empty?, "Dozzle managed-user tasks are missing")
 check(failures, dozzle_main.include?("managed_users.yml"), "Dozzle main tasks do not include managed-user reconciliation")
-check(failures, dozzle_tasks.include?("from_yaml"), "Dozzle does not safe-load the existing users file")
+check(failures, dozzle_tasks.include?("managed_users_yaml"),
+      "Dozzle does not strictly safe-load the existing users file")
 check(failures, dozzle_tasks.include?("stat.isreg") && dozzle_tasks.include?("stat.islnk"),
       "Dozzle does not require an existing regular, non-symlink users file")
 check(failures, dozzle_tasks.include?("rescue:"), "Dozzle does not reject malformed YAML explicitly")
@@ -186,8 +264,46 @@ check(failures, dozzle_main.include?("when: dozzle_users_file.changed"),
 check(failures, dozzle_main.include?("{{ dozzle_api }}/token") &&
                 dozzle_main.include?("vault_managed_dozzle_users"),
       "Dozzle does not authenticate every managed plaintext password at api/token")
+dozzle_main_tasks = YAML.safe_load(dozzle_main, aliases: false) || []
+dozzle_health_index = dozzle_main_tasks.index { |task| task["name"] == "Wait for Dozzle to report healthy" }
+dozzle_auth_index = dozzle_main_tasks.index { |task| task["name"] == "Authenticate each managed Dozzle user" }
+dozzle_auth_task = dozzle_main_tasks[dozzle_auth_index] if dozzle_auth_index
+dozzle_auth_request = dozzle_auth_task&.fetch("ansible.builtin.uri", nil)
+check(failures,
+      dozzle_health_index && dozzle_auth_index && dozzle_health_index < dozzle_auth_index &&
+        dozzle_auth_request == {
+          "url" => "{{ dozzle_api }}/token", "method" => "POST",
+          "body_format" => "form-urlencoded",
+          "body" => { "username" => "{{ item.username }}", "password" => "{{ item.password }}" },
+          "status_code" => [200]
+        } && dozzle_auth_task["loop"] == "{{ vault_managed_dozzle_users }}" &&
+        dozzle_auth_task["changed_when"] == false && dozzle_auth_task["check_mode"] == false &&
+        dozzle_auth_task["no_log"] == true,
+      "Dozzle managed authentication request or health ordering differs")
 
-if command_available?("ansible-playbook") && !dozzle_tasks.empty?
+if dozzle_auth_task
+  responder = proc { |_request| 200 }
+  with_http_probe(1, responder) do |port, requests|
+    variables = {
+      "dozzle_api" => "http://127.0.0.1:#{port}/api",
+      "vault_managed_dozzle_users" => [
+        { "username" => "reader", "password" => "managed-plaintext" }
+      ]
+    }
+    run_playbook(task_playbook([dozzle_auth_task], variables)) do |_tmp, output, status|
+      check(failures, status.success?, "Dozzle authentication fixture failed: #{output.lines.last&.strip}")
+    end
+    request = requests.first || {}
+    check(failures,
+          request["method"] == "POST" && request["target"] == "/api/token" &&
+            request["body"] == URI.encode_www_form(
+              "username" => "reader", "password" => "managed-plaintext"
+            ),
+          "Dozzle authentication fixture sent a different method, endpoint, or body")
+  end
+end
+
+if !dozzle_tasks.empty?
   existing = {
     "users" => {
       "admin" => { "email" => "old", "name" => "Wrong", "password" => BCRYPT_A,
@@ -221,6 +337,33 @@ if command_available?("ansible-playbook") && !dozzle_tasks.empty?
   duplicate_names["users"][" Reader "] = duplicate_names["users"]["reader"]
   _rendered, _output, status = run_dozzle_fixture(YAML.dump(duplicate_names))
   check(failures, !status.success?, "Dozzle accepted duplicate normalized existing identities")
+
+  {
+    "empty scalar" => "",
+    "empty list" => [],
+    "null" => nil,
+    "missing password" => {}
+  }.each do |label, unsafe_entry|
+    unsafe_existing = Marshal.load(Marshal.dump(existing))
+    unsafe_existing["users"]["reader"] = unsafe_entry
+    _rendered, unsafe_output, unsafe_status = run_dozzle_fixture(YAML.dump(unsafe_existing))
+    check(failures, !unsafe_status.success? && unsafe_output.include?("will not replace"),
+          "Dozzle treated an existing #{label} allowlisted entry as absent")
+  end
+
+  unsafe_yaml_documents = {
+    "malformed syntax" => "users: [unterminated\n",
+    "alias" => "shared: &shared {password: #{BCRYPT_B}}\nusers: {reader: *shared}\n",
+    "exact duplicate" => (
+      "users:\n  reader: {password: wrong}\n" \
+      "  reader: {password: #{BCRYPT_B}}\n"
+    ),
+    "multiple documents" => "users: {}\n---\nusers: {}\n"
+  }
+  unsafe_yaml_documents.each do |label, unsafe_source|
+    _rendered, _unsafe_output, unsafe_status = run_dozzle_fixture(unsafe_source)
+    check(failures, !unsafe_status.success?, "Dozzle accepted #{label} YAML")
+  end
 end
 
 check(failures, !ntfy_tasks.empty?, "ntfy managed-user tasks are missing")
@@ -239,8 +382,106 @@ check(failures, ntfy_tasks.include?("url_username") && ntfy_tasks.include?("forc
 check(failures, ntfy_tasks.include?("Verify managed ntfy declared read access") &&
                 ntfy_tasks.include?("Verify managed ntfy declared write access"),
       "ntfy does not verify each declared topic permission")
+ntfy_main_tasks = YAML.safe_load(ntfy_main, aliases: false) || []
+ntfy_preflight_index = ntfy_main_tasks.index do |task|
+  task["name"] == "Inspect existing ntfy declarative ownership and users"
+end
+ntfy_render_index = ntfy_main_tasks.index { |task| task["name"] == "Render the ntfy environment" }
+ntfy_deploy_index = ntfy_main_tasks.index { |task| task["name"] == "Deploy ntfy" }
+ntfy_provision_index = ntfy_main_tasks.index do |task|
+  task["name"] == "Resolve declarative ntfy managed-user provisioning"
+end
+check(failures,
+      ntfy_preflight_index && ntfy_provision_index && ntfy_render_index && ntfy_deploy_index &&
+        ntfy_preflight_index < ntfy_provision_index && ntfy_provision_index < ntfy_render_index &&
+        ntfy_provision_index < ntfy_deploy_index,
+      "ntfy ownership preflight does not precede environment rendering and deployment")
+ntfy_cli_probe = ntfy_main_tasks.find { |task| task["name"] == "List authoritative existing ntfy users" }
+ntfy_cli_run = ntfy_cli_probe&.fetch("community.docker.docker_compose_v2_run", nil)
+check(failures,
+      ntfy_cli_run && ntfy_cli_run["service"] == "ntfy" && ntfy_cli_run["cleanup"] == true &&
+        ntfy_cli_run["no_deps"] == true && ntfy_cli_run["tty"] == false &&
+        ntfy_cli_run["interactive"] == false &&
+        ntfy_cli_probe["changed_when"] == false && ntfy_cli_probe["failed_when"] == false &&
+        ntfy_cli_probe["check_mode"] == false && ntfy_cli_probe["no_log"] == true &&
+        ntfy_cli_run["argv"] == [
+          "user", "--auth-file=/var/lib/ntfy/auth.db",
+          "--auth-default-access=deny-all", "list"
+        ],
+      "ntfy authoritative CLI probe differs from the pinned v2.27 user-list contract")
+check(failures, !ntfy_main.include?("change-pass") && !ntfy_main.include?("change-role") &&
+                !ntfy_tasks.include?("change-pass"),
+      "ntfy reconciliation invokes a forbidden credential or identity mutation command")
+check(failures,
+      ntfy_tasks.include?("ntfy_prior_provisioned_users") &&
+        ntfy_tasks.include?("ntfy_existing_user_records") &&
+        ntfy_tasks.include?("reviewed credential-migration procedure"),
+      "ntfy does not enforce prior ownership, existing-user refusal, and hash preservation")
+ntfy_managed_tasks = YAML.safe_load(ntfy_tasks, aliases: false) || []
+ntfy_auth_index = ntfy_managed_tasks.index { |task| task["name"] == "Basic-authenticate each managed ntfy user" }
+ntfy_read_index = ntfy_managed_tasks.index { |task| task["name"] == "Verify managed ntfy declared read access" }
+ntfy_write_index = ntfy_managed_tasks.index { |task| task["name"] == "Verify managed ntfy declared write access" }
+ntfy_verify_tasks = [ntfy_auth_index, ntfy_read_index, ntfy_write_index].compact.map do |index|
+  ntfy_managed_tasks.fetch(index)
+end
+check(failures,
+      ntfy_verify_tasks.length == 3 && ntfy_auth_index < ntfy_read_index && ntfy_read_index < ntfy_write_index &&
+        ntfy_verify_tasks.all? do |task|
+          request = task["ansible.builtin.uri"]
+          request["url_username"] == "{{ item.username }}" ||
+            request["url_username"] == "{{ item.0.username }}"
+        end && ntfy_verify_tasks.all? do |task|
+          request = task["ansible.builtin.uri"]
+          request["force_basic_auth"] == true && task["changed_when"] == false &&
+            task["check_mode"] == false && task["no_log"] == true
+        end,
+      "ntfy verification tasks do not pin Basic credentials, safety flags, and ordering")
 
-if command_available?("ansible-playbook") && !ntfy_tasks.empty?
+if ntfy_verify_tasks.length == 3
+  responder = proc do |request|
+    if request["target"] == "/v1/account"
+      200
+    elsif request["method"] == "GET" && request["target"].start_with?("/nas-critical/")
+      200
+    else
+      403
+    end
+  end
+  with_http_probe(5, responder) do |port, requests|
+    variables = {
+      "ntfy_account_api" => "http://127.0.0.1:#{port}/v1/account",
+      "ntfy_port" => port,
+      "ntfy_managed_users_phase" => "verify",
+      "vault_managed_ntfy_users" => [
+        {
+          "username" => "reader", "password" => "managed-plaintext", "role" => "user",
+          "access" => [
+            { "topic" => "nas-critical", "permission" => "read-only" },
+            { "topic" => "private", "permission" => "deny" }
+          ]
+        }
+      ]
+    }
+    run_playbook(task_playbook(ntfy_verify_tasks, variables)) do |_tmp, output, status|
+      check(failures, status.success?, "ntfy verification fixture failed: #{output.lines.last&.strip}")
+    end
+    expected_basic = "Basic #{Base64.strict_encode64('reader:managed-plaintext')}"
+    check(failures, requests.length == 5 && requests.all? do |request|
+      request.dig("headers", "authorization") == expected_basic
+    end, "ntfy verification did not use the managed user's Basic credentials on every request")
+    check(failures,
+          requests.map { |request| [request["method"], request["target"], request["body"]] } == [
+            ["GET", "/v1/account", ""],
+            ["GET", "/nas-critical/json?poll=1", ""],
+            ["GET", "/private/json?poll=1", ""],
+            ["POST", "/nas-critical", "Managed-user provisioning verification"],
+            ["POST", "/private", "Managed-user provisioning verification"]
+          ],
+          "ntfy verification endpoints, methods, or bodies differ")
+  end
+end
+
+if !ntfy_tasks.empty?
   provisioned, output, status = run_ntfy_fixture
   check(failures, status.success?, "ntfy provisioning fixture failed: #{output.lines.last&.strip}")
   if provisioned
@@ -263,11 +504,46 @@ if command_available?("ansible-playbook") && !ntfy_tasks.empty?
     ]
   )
   check(failures, !status.success?, "ntfy accepted duplicate token ownership")
+
+  mismatched_owned = {
+    "admin" => { "username" => "admin", "password_hash" => BCRYPT_A, "role" => "admin" },
+    "dozzle" => { "username" => "dozzle", "password_hash" => BCRYPT_A, "role" => "user" },
+    "reader" => { "username" => "reader", "password_hash" => BCRYPT_A, "role" => "user" }
+  }
+  _provisioned, mismatch_output, status = run_ntfy_fixture(
+    "ntfy_prior_provisioned_users" => mismatched_owned
+  )
+  check(failures, !status.success? && mismatch_output.include?("credential-migration"),
+        "ntfy accepted a hash change for an owned declarative identity")
+
+  unmanaged_records = {
+    "*" => { "username" => "*", "role" => "anonymous", "provisioned" => false },
+    "admin" => { "username" => "admin", "role" => "admin", "provisioned" => true },
+    "dozzle" => { "username" => "dozzle", "role" => "user", "provisioned" => true },
+    "reader" => { "username" => "reader", "role" => "user", "provisioned" => false }
+  }
+  prior_without_reader = mismatched_owned.reject { |identity, _entry| identity == "reader" }
+  _provisioned, adoption_output, status = run_ntfy_fixture(
+    "ntfy_prior_provisioned_users" => prior_without_reader,
+    "ntfy_existing_user_records" => unmanaged_records
+  )
+  check(failures, !status.success? && adoption_output.include?("will not adopt"),
+        "ntfy accepted automatic adoption of an unmanaged same-name identity")
+
+  absent_records = unmanaged_records.reject { |identity, _entry| identity == "reader" }
+  _provisioned, _absence_output, status = run_ntfy_fixture(
+    "ntfy_prior_provisioned_users" => prior_without_reader,
+    "ntfy_existing_user_records" => absent_records,
+    "ntfy_authoritative_absence_established" => false
+  )
+  check(failures, !status.success?, "ntfy provisioned an identity without authoritative absence")
 end
 
 validate_policy = read(VALIDATE_POLICY)
 check(failures, validate_policy.lines.include?("ruby tests/config_managed_users_test.rb --self-test\n"),
       "policy validation does not run the config managed-user self-test")
+check(failures, validate_policy.include?("tests/managed_user_state_filter_test.py"),
+      "policy validation does not run the managed-user state filter behavior test")
 
 unless [[], ["--self-test"]].include?(ARGV)
   abort "usage: config_managed_users_test.rb [--self-test]"
@@ -279,22 +555,18 @@ if ARGV == ["--self-test"] && failures.empty?
     "dozzle_main" => dozzle_main,
     "dozzle_template" => dozzle_template,
     "ntfy_tasks" => ntfy_tasks,
+    "ntfy_main" => ntfy_main,
+    "state_filter" => state_filter,
     "validate_policy" => validate_policy
   }
   source_fragment_failures(sources).each do |label|
     failures << "self-test baseline rejected #{label}"
   end
-  sources.each_key do |source_name|
-    relevant = {
-      "dozzle_tasks" => "from_yaml",
-      "dozzle_main" => "vault_managed_dozzle_users",
-      "dozzle_template" => "{% for",
-      "ntfy_tasks" => "ntfy_auth_users",
-      "validate_policy" => "config_managed_users_test.rb --self-test"
-    }.fetch(source_name)
-    mutated = sources.merge(source_name => sources.fetch(source_name).sub(relevant, "removed-by-self-test"))
-    check(failures, !source_fragment_failures(mutated).empty?,
-          "self-test did not reject a #{source_name} contract mutation")
+  SOURCE_REQUIREMENTS.each do |label, (source_name, fragment)|
+    mutated_source = sources.fetch(source_name).gsub(fragment, "removed-by-self-test")
+    mutated = sources.merge(source_name => mutated_source)
+    check(failures, source_fragment_failures(mutated).include?(label),
+          "self-test did not reject the #{label} mutation")
   end
 end
 

@@ -42,6 +42,91 @@
   when: ntfy_managed_users_phase == 'provision'
   no_log: true
 
+- name: Initialize desired ntfy user ownership
+  ansible.builtin.set_fact:
+    ntfy_desired_owned_users:
+      "{{ vault_ntfy_admin_user | trim | lower }}":
+        username: "{{ vault_ntfy_admin_user }}"
+        password_hash: "{{ vault_ntfy_admin_password_hash }}"
+        role: admin
+  when: ntfy_managed_users_phase == 'provision'
+  no_log: true
+
+- name: Add ntfy publishers to desired ownership
+  ansible.builtin.set_fact:
+    ntfy_desired_owned_users: >-
+      {{ ntfy_desired_owned_users | combine({(item.name | trim | lower): {
+           'username': item.name,
+           'password_hash': item.password_hash,
+           'role': 'user'
+         }}) }}
+  loop: "{{ ntfy_publishers }}"
+  loop_control:
+    label: ntfy-publisher
+  when: ntfy_managed_users_phase == 'provision'
+  no_log: true
+
+- name: Add managed ntfy users to desired ownership
+  ansible.builtin.set_fact:
+    ntfy_desired_owned_users: >-
+      {{ ntfy_desired_owned_users | combine({(item.username | trim | lower): {
+           'username': item.username,
+           'password_hash': item.password_hash,
+           'role': item.role
+         }}) }}
+  loop: "{{ vault_managed_ntfy_users }}"
+  loop_control:
+    label: ntfy-managed-user
+  when: ntfy_managed_users_phase == 'provision'
+  no_log: true
+
+- name: Refuse password hash replacement for owned ntfy identities
+  ansible.builtin.assert:
+    that:
+      - >-
+        item.key not in ntfy_prior_provisioned_users or
+        ntfy_prior_provisioned_users[item.key].password_hash == item.value.password_hash
+    fail_msg: >-
+      Existing declaratively owned ntfy user does not have its preserved vault
+      password hash. Run the reviewed credential-migration procedure; Ansible
+      will not replace it automatically.
+  loop: "{{ ntfy_desired_owned_users | dict2items }}"
+  loop_control:
+    label: ntfy-owned-user
+  when: ntfy_managed_users_phase == 'provision'
+  no_log: true
+
+- name: Refuse automatic adoption of unmanaged ntfy identities
+  ansible.builtin.assert:
+    that:
+      - >-
+        item.key in ntfy_prior_provisioned_users or
+        item.key not in ntfy_existing_user_records
+    fail_msg: >-
+      An existing ntfy identity is outside declarative ownership. Ansible will
+      not adopt it or replace its password; run the reviewed credential-migration
+      procedure first.
+  loop: "{{ ntfy_desired_owned_users | dict2items }}"
+  loop_control:
+    label: ntfy-owned-user
+  when: ntfy_managed_users_phase == 'provision'
+  no_log: true
+
+- name: Require authoritative absence before provisioning new ntfy identities
+  ansible.builtin.assert:
+    that:
+      - >-
+        item.key in ntfy_prior_provisioned_users or
+        ntfy_authoritative_absence_established | bool
+    fail_msg: >-
+      Absence of a new ntfy identity was not established authoritatively; no
+      configuration was changed. Restore the prior state and retry.
+  loop: "{{ ntfy_desired_owned_users | dict2items }}"
+  loop_control:
+    label: ntfy-owned-user
+  when: ntfy_managed_users_phase == 'provision'
+  no_log: true
+
 - name: Initialize ntfy declarative provisioning entries
   ansible.builtin.set_fact:
     ntfy_auth_user_entries:
