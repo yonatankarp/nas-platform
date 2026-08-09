@@ -19,8 +19,20 @@ sum() { ruby -rdigest -e 'puts Digest::SHA256.file(ARGV.fetch(0)).hexdigest' "$1
 identity() { ruby -e 's = File.lstat(ARGV.fetch(0)); puts "#{s.dev}:#{s.ino}:#{(s.mode & 0o777).to_s(8)}"' "$1"; }
 
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/nas-platform-parity-import.XXXXXX")
-cleanup() { rm -rf "$TMP"; }
-trap cleanup EXIT HUP INT TERM
+cleanup() {
+  [ -z "${repo_password:-}" ] || rm -f "$repo_password" "$repo_output"
+  rm -rf "$TMP"
+}
+handle_signal() {
+  status=$1
+  trap - EXIT HUP INT TERM
+  cleanup
+  exit "$status"
+}
+trap cleanup EXIT
+trap 'handle_signal 129' HUP
+trap 'handle_signal 130' INT
+trap 'handle_signal 143' TERM
 INPUT="$TMP/input"
 OUTDIR="$TMP/output"
 PASSWORD="$TMP/password"
@@ -174,7 +186,6 @@ repo_password="$ROOT/.parity-test-password"
 repo_output="$ROOT/.parity-test-output"
 rm -f "$repo_password" "$repo_output"
 printf x > "$repo_password"; chmod 600 "$repo_password"
-trap 'rm -f "$repo_password" "$repo_output"; cleanup' EXIT HUP INT TERM
 assert_failure repository-password "$OUTDIR/repo-password.vault" "$IMPORTER" --input-dir "$INPUT" --output "$OUTDIR/repo-password.vault" --vault-password-file "$repo_password"
 assert_failure repository-output "$repo_output" "$IMPORTER" --input-dir "$INPUT" --output "$repo_output" --vault-password-file "$PASSWORD"
 
