@@ -93,6 +93,57 @@ if defined?(ClassifyChanges)
   check(failures, io.string == expected_output,
         "GitHub output or prerequisite tag ordering was incorrect: #{io.string.inspect}")
 
+  full_output = StringIO.new
+  ClassifyChanges.write_github_outputs(ClassifyChanges.classify([], full: true), full_output)
+  expected_full_output = <<~OUTPUT
+    static=true
+    foundation=true
+    smoke=true
+    beszel=true
+    dozzle=true
+    audiobookshelf=true
+    media=true
+    paperless=true
+    idempotence_check=true
+    run_ci=true
+    selected_tags=
+  OUTPUT
+  check(failures, full_output.string == expected_full_output,
+        "--full output must leave selected_tags empty: #{full_output.string.inspect}")
+
+  shared_output = StringIO.new
+  ClassifyChanges.write_github_outputs(
+    ClassifyChanges.classify(["roles/deployment_bundle/tasks/main.yml"]), shared_output
+  )
+  check(failures, shared_output.string == expected_full_output,
+        "shared-scope output must select the full untagged site: #{shared_output.string.inspect}")
+
+  unknown_output = StringIO.new
+  ClassifyChanges.write_github_outputs(
+    ClassifyChanges.classify(["unexpected/new-runtime-file"]), unknown_output
+  )
+  check(failures, unknown_output.string == expected_full_output,
+        "unknown-path output must select the full untagged site: #{unknown_output.string.inspect}")
+
+  paperless_output = StringIO.new
+  ClassifyChanges.write_github_outputs(
+    ClassifyChanges.classify(["roles/paperless_ngx/tasks/main.yml"]), paperless_output
+  )
+  check(failures, paperless_output.string == <<~OUTPUT,
+    static=true
+    foundation=false
+    smoke=true
+    beszel=false
+    dozzle=false
+    audiobookshelf=false
+    media=false
+    paperless=true
+    idempotence_check=true
+    run_ci=true
+    selected_tags=deployment_bundle,paperless
+  OUTPUT
+        "Paperless-only output must retain its exact tag plan: #{paperless_output.string.inspect}")
+
   io = StringIO.new
   ClassifyChanges.write_github_outputs(ClassifyChanges.classify(["README.md"]), io)
   check(failures, io.string.end_with?("run_ci=false\nselected_tags=\n"),
@@ -141,6 +192,10 @@ Dir.mktmpdir("classify-changes-cli-") do |root|
   stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCRIPT, "--files", "README.md")
   check(failures, status.success? && stderr.empty? && stdout.include?("run_ci=false\n"),
         "--files CLI mode did not emit an inert selection")
+
+  stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCRIPT, "--full")
+  check(failures, status.success? && stderr.empty? && stdout == expected_full_output,
+        "--full CLI mode must emit an untagged full-site selection: #{stdout.inspect}")
 end
 
 unless failures.empty?

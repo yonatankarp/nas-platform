@@ -73,9 +73,13 @@ module ClassifyChanges
   def write_github_outputs(selection, io)
     LANES.each { |lane| io.puts "#{lane}=#{selection.fetch(lane)}" }
     io.puts "run_ci=#{selection.values.any?}"
-    tags = SERVICE_LANES.filter { |lane| selection.fetch(lane) }
-                        .flat_map { |lane| SERVICE_TAGS.fetch(lane) }
-                        .uniq
+    tags = if selection.fetch("foundation")
+             []
+           else
+             SERVICE_LANES.filter { |lane| selection.fetch(lane) }
+                          .flat_map { |lane| SERVICE_TAGS.fetch(lane) }
+                          .uniq
+           end
     io.puts "selected_tags=#{tags.join(',')}"
   end
 

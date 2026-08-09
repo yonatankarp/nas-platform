@@ -71,9 +71,6 @@ jobs:
       - name: Check integration sandbox cleanup
         run: tests/integration_cleanup_test.sh
 
-      - name: Check deployment target validator
-        run: python3 tests/deployment_target_validator_test.py
-
       - name: Install Ansible tooling
         run: |
           sudo apt-get update

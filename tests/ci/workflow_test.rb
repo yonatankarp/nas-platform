@@ -189,7 +189,6 @@ static_commands = run_steps(jobs.fetch("static", {}))
   "find tests -type f -name '*.sh' -exec sh -n {} +",
   "tests/validate-policy.sh",
   "tests/integration_cleanup_test.sh",
-  "python3 tests/deployment_target_validator_test.py",
   "tests/immich_probe_status_test.py",
   "tests/generate-secrets-redaction-test.sh",
   "tests/generate-ephemeral-vault.sh --self-test",
@@ -204,6 +203,8 @@ check(failures, static_commands.include?("pipx install 'ansible-core==2.21.2'"),
       "static checks must install pinned ansible-core")
 check(failures, static_commands.include?("pipx install 'ansible-lint==26.6.0'"),
       "static checks must install pinned ansible-lint")
+check(failures, !static_commands.include?("python3 tests/deployment_target_validator_test.py"),
+      "static must not duplicate the deployment validator already run by validate-policy.sh")
 
 validate = jobs.fetch("validate", {})
 check(failures, validate["name"] == "validate", "aggregate check name must remain validate")
@@ -226,6 +227,11 @@ check(failures, validate_commands.include?("ruby tests/ci/validate_results.rb"),
 workflow_source = File.read(WORKFLOW_PATH)
 check(failures, !workflow_source.match?(/dorny\/paths-filter|paths-filter@/i),
       "workflow must not use a third-party path filter action")
+all_uses = jobs.values.flat_map do |job|
+  Array(job["steps"]).filter_map { |step| step["uses"] }
+end
+check(failures, all_uses.all? { |uses| uses == CHECKOUT_ACTION },
+      "every action use must be the repository's pinned checkout action: #{all_uses.inspect}")
 
 unless failures.empty?
   failures.each { |failure| warn "FAIL #{failure}" }
