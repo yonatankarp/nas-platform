@@ -7,7 +7,7 @@ rotation mechanism.
 
 ## Migration workflow
 
-Run every repository command from the Task 13 worktree root. Prepare the pinned
+Run every repository command from the repository root. Prepare the pinned
 Ansible environment before handling any private material:
 
 ```sh
@@ -65,35 +65,65 @@ mkdir -p "$PLATFORM_VAULT_DIR"
 chmod 700 "$PLATFORM_VAULT_DIR"
 ```
 
-Refuse to overwrite either artifact. If either check stops, identify and back
-up the existing file; do not bypass the refusal.
+Refuse to overwrite either artifact. This block reports every conflicting path
+without terminating an interactive shell. If it prints `STOP`, inspect and back
+up the existing files, then stop this procedure; do not run the creation blocks.
 
 ```sh
-if [ -e "$PLATFORM_VAULT_PASSWORD_FILE" ]; then
-  echo "Refusing to overwrite existing vault password file" >&2
-  exit 1
-fi
-if [ -e "$PLATFORM_VAULT_FILE" ]; then
-  echo "Refusing to overwrite existing encrypted vault" >&2
-  exit 1
+if [ -e "$PLATFORM_VAULT_PASSWORD_FILE" ] || [ -e "$PLATFORM_VAULT_FILE" ]; then
+  [ ! -e "$PLATFORM_VAULT_PASSWORD_FILE" ] || \
+    printf 'Existing vault password file: %s\n' "$PLATFORM_VAULT_PASSWORD_FILE" >&2
+  [ ! -e "$PLATFORM_VAULT_FILE" ] || \
+    printf 'Existing encrypted vault: %s\n' "$PLATFORM_VAULT_FILE" >&2
+  printf 'STOP: refusing to overwrite protected files\n' >&2
+else
+  printf 'Protected paths are available for new files\n'
 fi
 ```
 
 Generate a strong, unique password in the password manager, then enter that
-password as one line through an editor. Do not supply it on a command line.
+password as one line through an editor. Do not supply it on a command line. If
+set, `EDITOR` must be a single executable name or path with no arguments; a
+multiword value such as `code --wait` is not supported. Use an executable
+wrapper when an editor needs arguments. The same rule applies when Ansible Vault
+opens the vault editor.
 
 ```sh
-${EDITOR:-vi} "$PLATFORM_VAULT_PASSWORD_FILE"
-chmod 600 "$PLATFORM_VAULT_PASSWORD_FILE"
+if [ -e "$PLATFORM_VAULT_PASSWORD_FILE" ] || [ -e "$PLATFORM_VAULT_FILE" ]; then
+  printf 'STOP: protected path appeared; inspect it before continuing\n' >&2
+else
+  if [ -n "${EDITOR:-}" ]; then
+    vault_editor=$EDITOR
+  else
+    vault_editor=vi
+  fi
+  if "$vault_editor" "$PLATFORM_VAULT_PASSWORD_FILE"; then
+    chmod 600 "$PLATFORM_VAULT_PASSWORD_FILE"
+  else
+    printf 'STOP: editor failed; password file is not ready\n' >&2
+  fi
+  unset vault_editor
+fi
 ```
 
-Create the external vault directly in encrypted form:
+Confirm the password file now exists and the vault still does not. Then create
+the external vault directly in encrypted form; the mutation is inside the safe
+branch and cannot run when either precondition fails:
 
 ```sh
-ansible-vault create \
-  --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE" \
-  "$PLATFORM_VAULT_FILE"
-chmod 600 "$PLATFORM_VAULT_FILE"
+if [ ! -f "$PLATFORM_VAULT_PASSWORD_FILE" ]; then
+  printf 'STOP: vault password file is unavailable\n' >&2
+elif [ -e "$PLATFORM_VAULT_FILE" ]; then
+  printf 'STOP: encrypted vault already exists: %s\n' "$PLATFORM_VAULT_FILE" >&2
+else
+  if ansible-vault create \
+       --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE" \
+       "$PLATFORM_VAULT_FILE"; then
+    chmod 600 "$PLATFORM_VAULT_FILE"
+  else
+    printf 'STOP: encrypted vault creation failed\n' >&2
+  fi
+fi
 ```
 
 Both protected files must remain mode 0600.
@@ -111,20 +141,23 @@ PEM bodies. None is deployed credential material.
 
 ### Validate without disclosure
 
-Check only metadata and the encryption header:
+Check only metadata and the encryption header. `ls` is portable across macOS
+and GNU/Linux; both files must display as `-rw-------` and the directory as
+`drwx------`.
 
 ```sh
-test "$(stat -f '%Lp' "$PLATFORM_VAULT_PASSWORD_FILE")" = 600
-test "$(stat -f '%Lp' "$PLATFORM_VAULT_FILE")" = 600
+ls -ld "$PLATFORM_VAULT_DIR"
+ls -l "$PLATFORM_VAULT_PASSWORD_FILE" "$PLATFORM_VAULT_FILE"
 IFS= read -r vault_header < "$PLATFORM_VAULT_FILE"
 case "$vault_header" in
-  '$ANSIBLE_VAULT;'*) ;;
-  *) echo "Vault is not encrypted" >&2; exit 1 ;;
+  '$ANSIBLE_VAULT;'*) printf 'Encrypted vault header confirmed\n' ;;
+  *) printf 'STOP: vault is not encrypted: %s\n' "$PLATFORM_VAULT_FILE" >&2 ;;
 esac
 unset vault_header
 ```
 
-Run the redacted contract validation from the worktree root:
+If the header check prints `STOP`, do not continue. Otherwise run the redacted
+contract validation from the repository root:
 
 ```sh
 ansible-playbook validate-vault.yml \
@@ -149,10 +182,19 @@ Never decrypt a vault onto disk.
 ### Identify, back up, and prove
 
 A SHA-256 of ciphertext is safe to record as the identity of the encrypted
-artifact; it is not a checksum of plaintext values:
+artifact; it is not a checksum of plaintext values. Use the command for the
+operator workstation:
+
+macOS:
 
 ```sh
 shasum -a 256 "$PLATFORM_VAULT_FILE"
+```
+
+GNU/Linux:
+
+```sh
+sha256sum "$PLATFORM_VAULT_FILE"
 ```
 
 Back up the encrypted artifact and the vault password separately, with access
@@ -178,14 +220,28 @@ tests/mac/run.sh \
 ```
 
 Only after validation, private review, and the complete proof pass, copy the
-ciphertext into the repository location for NAS deployment:
+ciphertext into the repository location for NAS deployment. The destination
+gate prevents `install` from overwriting an existing repository vault. If one
+exists, stop and inspect it; decide explicitly whether to reuse it or back it up
+before beginning a separate replacement procedure.
 
 ```sh
-install -m 600 "$PLATFORM_VAULT_FILE" inventory/group_vars/all/vault.yml
+if [ -e inventory/group_vars/all/vault.yml ]; then
+  printf 'STOP: repository vault already exists; inspect or reuse it: %s\n' \
+    inventory/group_vars/all/vault.yml >&2
+else
+  install -m 600 "$PLATFORM_VAULT_FILE" inventory/group_vars/all/vault.yml
+fi
+```
+
+Only when the preceding block installs a new file, check its header and status:
+
+```sh
 IFS= read -r vault_header < inventory/group_vars/all/vault.yml
 case "$vault_header" in
-  '$ANSIBLE_VAULT;'*) ;;
-  *) echo "Repository vault is not encrypted" >&2; exit 1 ;;
+  '$ANSIBLE_VAULT;'*) printf 'Encrypted repository vault header confirmed\n' ;;
+  *) printf 'STOP: repository vault is not encrypted: %s\n' \
+       inventory/group_vars/all/vault.yml >&2 ;;
 esac
 unset vault_header
 git status --short inventory/group_vars/all/vault.yml
@@ -205,11 +261,23 @@ material exists—or its status is uncertain—stop and follow the migration
 workflow. Never use this generator for migration or credential rotation.
 
 After exporting the protected paths and creating only the password file as
-described above, confirm that neither the external vault nor either repository
-output exists. Then explicitly opt in:
+described above, use this gate to confirm that neither the external vault nor
+either repository output exists. The generator runs only in the safe branch:
 
 ```sh
-ansible-playbook generate-secrets.yml -e generate_brand_new_platform=true
+if [ -e "$PLATFORM_VAULT_FILE" ] || \
+   [ -e inventory/group_vars/all/vault-plain.yml ] || \
+   [ -e inventory/group_vars/all/vault.yml ]; then
+  [ ! -e "$PLATFORM_VAULT_FILE" ] || \
+    printf 'Existing encrypted vault: %s\n' "$PLATFORM_VAULT_FILE" >&2
+  [ ! -e inventory/group_vars/all/vault-plain.yml ] || \
+    printf 'Existing plaintext output: %s\n' inventory/group_vars/all/vault-plain.yml >&2
+  [ ! -e inventory/group_vars/all/vault.yml ] || \
+    printf 'Existing repository vault: %s\n' inventory/group_vars/all/vault.yml >&2
+  printf 'STOP: inspect existing material; generation did not run\n' >&2
+else
+  ansible-playbook generate-secrets.yml -e generate_brand_new_platform=true
+fi
 ```
 
 The generator writes `inventory/group_vars/all/vault-plain.yml` as mode 0600.
@@ -219,14 +287,17 @@ password file:
 
 ```sh
 if [ -e "$PLATFORM_VAULT_FILE" ]; then
-  echo "Refusing to overwrite existing encrypted vault" >&2
-  exit 1
+  printf 'STOP: encrypted vault appeared; plaintext remains in the checkout\n' >&2
+  printf 'Inspect both paths and resolve them without overwriting either one\n' >&2
+elif [ ! -f inventory/group_vars/all/vault-plain.yml ]; then
+  printf 'STOP: generated plaintext file is unavailable; do not continue\n' >&2
+else
+  mv inventory/group_vars/all/vault-plain.yml "$PLATFORM_VAULT_FILE"
+  chmod 600 "$PLATFORM_VAULT_FILE"
+  ansible-vault encrypt \
+    --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE" \
+    "$PLATFORM_VAULT_FILE"
 fi
-mv inventory/group_vars/all/vault-plain.yml "$PLATFORM_VAULT_FILE"
-chmod 600 "$PLATFORM_VAULT_FILE"
-ansible-vault encrypt \
-  --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE" \
-  "$PLATFORM_VAULT_FILE"
 ```
 
 Use `ansible-vault edit` for the private manual review. Replace the generated
