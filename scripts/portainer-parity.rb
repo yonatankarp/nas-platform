@@ -58,7 +58,7 @@ module PortainerParity
     left.dev == right.dev && left.ino == right.ino
   end
 
-  def read_regular_file(path, label)
+  def read_regular_file(path, label, expected_mode = nil)
     initial = File.lstat(path)
     fail!("unsafe #{label}") unless initial.file? && !initial.symlink?
 
@@ -67,6 +67,7 @@ module PortainerParity
     file = File.open(path, flags)
     opened = file.stat
     fail!("unsafe #{label}") unless opened.file? && same_file?(initial, opened)
+    fail!("unsafe #{label} mode") if expected_mode && (opened.mode & 0o777) != expected_mode
 
     file.binmode
     file.read
@@ -189,7 +190,7 @@ module PortainerParity
   end
 
   def parse_env(path)
-    bytes = read_regular_file(path, "environment file")
+    bytes = read_regular_file(path, "environment file", 0o600)
     fail!("environment file contains NUL") if bytes.include?("\0")
     fail!("environment file contains CR") if bytes.include?("\r")
     fail!("environment file has invalid encoding") unless bytes.dup.force_encoding(Encoding::UTF_8).valid_encoding?

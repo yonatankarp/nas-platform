@@ -10,7 +10,7 @@ die() {
 }
 
 mode() {
-  stat -f '%Lp' "$1" 2>/dev/null || die "path metadata is unavailable"
+  ruby -e 's = File.lstat(ARGV.fetch(0)); abort unless s; puts((s.mode & 0o777).to_s(8))' "$1" 2>/dev/null || die "path metadata is unavailable"
 }
 
 physical_dir() {
@@ -38,7 +38,7 @@ sanitize() {
 }
 
 identity() {
-  stat -f '%d:%i' "$1" 2>/dev/null
+  ruby -e 's = File.lstat(ARGV.fetch(0)); puts "#{s.dev}:#{s.ino}"' "$1" 2>/dev/null
 }
 
 cleanup() {
@@ -46,7 +46,10 @@ cleanup() {
   [ -n "${CIPHER:-}" ] && /bin/rm -f -- "$CIPHER"
   [ -n "${VIEW:-}" ] && /bin/rm -f -- "$VIEW"
 }
-trap cleanup EXIT HUP INT TERM
+trap cleanup EXIT
+trap 'trap - HUP; exit 129' HUP
+trap 'trap - INT; exit 130' INT
+trap 'trap - TERM; exit 143' TERM
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P) || die "repository is unavailable"
 ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd -P) || die "repository is unavailable"
@@ -128,14 +131,20 @@ CIPHER=$(mktemp "$OUTPUT_PARENT/.portainer-parity-cipher.XXXXXX") || die "tempor
 VIEW=$(mktemp "$OUTPUT_PARENT/.portainer-parity-view.XXXXXX") || die "temporary file creation failed"
 chmod 600 "$PLAIN" "$CIPHER" "$VIEW" || die "temporary file setup failed"
 
+git -C "$ROOT" diff --quiet -- "$MAPPING_REL" && git -C "$ROOT" diff --cached --quiet -- "$MAPPING_REL" || die "mapping changed during import"
 ruby "$ROOT/scripts/portainer-parity.rb" --input-dir "$INPUT" --mapping "$MAPPING" --legacy-commit 400f03f276ae1bb69f5460c175b9fb923d620f1a >"$PLAIN" 2>/dev/null || die "parity rendering failed"
+PASSWORD_ID=$(identity "$PASSWORD") || die "password metadata is unavailable"
 ansible-vault encrypt --vault-password-file "$PASSWORD" --output "$CIPHER" "$PLAIN" >/dev/null 2>/dev/null || die "vault encryption failed"
+[ "$(identity "$PASSWORD")" = "$PASSWORD_ID" ] && [ "$(mode "$PASSWORD")" = "$password_mode" ] || die "password changed during import"
 [ -f "$CIPHER" ] && [ ! -L "$CIPHER" ] && [ "$(mode "$CIPHER")" = 600 ] || die "ciphertext is unsafe"
 IFS= read -r header < "$CIPHER" || die "ciphertext is invalid"
 case "$header" in '$ANSIBLE_VAULT;'*) ;; *) die "ciphertext is invalid" ;; esac
 
 # A separate owned file lets each command's status be checked without pipefail.
+PASSWORD_ID=$(identity "$PASSWORD") || die "password metadata is unavailable"
 ansible-vault view --vault-password-file "$PASSWORD" "$CIPHER" >"$VIEW" 2>/dev/null || die "vault verification failed"
+[ "$(identity "$PASSWORD")" = "$PASSWORD_ID" ] && [ "$(mode "$PASSWORD")" = "$password_mode" ] || die "password changed during import"
+git -C "$ROOT" diff --quiet -- "$MAPPING_REL" && git -C "$ROOT" diff --cached --quiet -- "$MAPPING_REL" || die "mapping changed during import"
 ruby "$ROOT/scripts/portainer-parity.rb" --validate-stdin --mapping "$MAPPING" --legacy-commit 400f03f276ae1bb69f5460c175b9fb923d620f1a <"$VIEW" >/dev/null 2>/dev/null || die "decrypted schema is invalid"
 
 # link(2) publishes only if OUTPUT is still absent; unlike mv it never replaces.
@@ -148,13 +157,19 @@ checksum=${checksum_line%%[!0-9a-f]*}
 if ! safe_output=$(sanitize "$OUTPUT"); then
   die "output path formatting failed"
 fi
-ln "$CIPHER" "$OUTPUT" 2>/dev/null || die "output publication failed"
-if ! rm -f -- "$CIPHER"; then
-  if output_identity=$(identity "$OUTPUT") && cipher_identity=$(identity "$CIPHER") &&
-     [ "$output_identity" = "$cipher_identity" ]; then
-    /bin/rm -f -- "$OUTPUT" || die "output rollback failed"
-  fi
-  die "ciphertext cleanup failed"
-fi
+ruby -e '
+  source, destination = ARGV
+  before = File.lstat(source)
+  File.link(source, destination)
+  begin
+    File.unlink(source)
+  rescue SystemCallError
+    after = File.lstat(destination)
+    if before.dev == after.dev && before.ino == after.ino
+      begin File.unlink(destination); rescue SystemCallError; abort "catastrophic cleanup failure"; end
+    end
+    abort "ciphertext cleanup failed"
+  end
+' "$CIPHER" "$OUTPUT" >/dev/null 2>&1 || die "output publication or cleanup failed"
 CIPHER=
 printf 'Portainer parity encrypted: sha256=%s output=%s\n' "$checksum" "$safe_output"

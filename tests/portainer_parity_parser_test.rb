@@ -42,7 +42,9 @@ end
 
 def write_fixture(directory, mapping, values = fixture_values(mapping))
   values.each do |stack, entries|
-    File.binwrite(File.join(directory, "#{stack}.env"), entries.map { |key, value| "#{key}=#{value}" }.join("\n") + "\n")
+    path = File.join(directory, "#{stack}.env")
+    File.binwrite(path, entries.map { |key, value| "#{key}=#{value}" }.join("\n") + "\n")
+    File.chmod(0o600, path)
   end
   values
 end
@@ -124,6 +126,7 @@ def test_direct_parser_rejects_bad_env_bytes_and_lines
       "invalid encoding" => "A=\xFF\n"
     }.each do |label, source|
       File.binwrite(path, source)
+      File.chmod(0o600, path)
       assert_raises(label) { parse_env(path) }
     end
   end
