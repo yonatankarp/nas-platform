@@ -99,15 +99,19 @@ grep -F "$CANARY" "$stdout" "$stderr" >/dev/null && fail "parser failure leaked 
 after=$(for file in "$INPUT"/*.env; do sum "$file"; mode "$file"; done)
 assert "$before" "$after" "source inputs changed"
 
-"$IMPORTER" --input-dir "$INPUT" --output "$output" --vault-password-file "$PASSWORD" >"$stdout" 2>"$stderr" && fail "existing output was overwritten"
+existing_output="$OUTDIR/preexisting.vault"
+printf '%s\n' 'distinct preexisting parity output sentinel' > "$existing_output"
+chmod 600 "$existing_output"
+existing_sum=$(sum "$existing_output")
+existing_mode=$(mode "$existing_output")
+existing_inode=$(stat -f '%d:%i' "$existing_output")
+existing_sources=$(for file in "$INPUT"/*.env; do sum "$file"; mode "$file"; done)
+"$IMPORTER" --input-dir "$INPUT" --output "$existing_output" --vault-password-file "$PASSWORD" >"$stdout" 2>"$stderr" && fail "existing output was overwritten"
 grep -F "$CANARY" "$stdout" "$stderr" >/dev/null && fail "failure leaked canary"
-existing_sum=$(sum "$output")
-existing_mode=$(mode "$output")
-existing_inode=$(stat -f '%d:%i' "$output")
-assert "$before" "$(for file in "$INPUT"/*.env; do sum "$file"; mode "$file"; done)" "existing output changed sources"
-assert "$existing_sum" "$(sum "$output")" "existing output bytes changed"
-assert "$existing_mode" "$(mode "$output")" "existing output mode changed"
-assert "$existing_inode" "$(stat -f '%d:%i' "$output")" "existing output inode changed"
+assert "$existing_sources" "$(for file in "$INPUT"/*.env; do sum "$file"; mode "$file"; done)" "existing output changed sources"
+assert "$existing_sum" "$(sum "$existing_output")" "existing output bytes changed"
+assert "$existing_mode" "$(mode "$existing_output")" "existing output mode changed"
+assert "$existing_inode" "$(stat -f '%d:%i' "$existing_output")" "existing output inode changed"
 [ -z "$(find "$OUTDIR" -name '.portainer-parity-*' -print)" ] || fail "existing output left temporary files"
 
 bad="$TMP/bad-mode"
@@ -235,5 +239,12 @@ mkdir -m 700 "$cleanup_fake"
 printf '%s\n' '#!/bin/sh' 'case "$*" in *portainer-parity-cipher*) exit 1 ;; *) exec /bin/rm "$@" ;; esac' > "$cleanup_fake/rm"
 chmod 700 "$cleanup_fake/rm"
 assert_failure ciphertext-unlink-failure "$OUTDIR/unlink-failure.vault" env PATH="$cleanup_fake:$vault_clean:$PATH" CLEAN_PATH="$PATH" REAL_VAULT="$real_vault" "$IMPORTER" --input-dir "$INPUT" --output "$OUTDIR/unlink-failure.vault" --vault-password-file "$PASSWORD"
+
+sanitize_fake="$TMP/sanitize-fake"
+mkdir -m 700 "$sanitize_fake"
+real_ruby=$(command -v ruby)
+printf '%s\n' '#!/bin/sh' 'case "${1-}" in -e) exit 1 ;; *) exec "$REAL_RUBY" "$@" ;; esac' > "$sanitize_fake/ruby"
+chmod 700 "$sanitize_fake/ruby"
+assert_failure sanitize-failure "$OUTDIR/sanitize-failure.vault" env PATH="$sanitize_fake:$PATH" REAL_RUBY="$real_ruby" "$IMPORTER" --input-dir "$INPUT" --output "$OUTDIR/sanitize-failure.vault" --vault-password-file "$PASSWORD"
 
 printf '%s\n' 'Portainer parity importer: encrypted external input is safe'

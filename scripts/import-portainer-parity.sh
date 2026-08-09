@@ -145,6 +145,9 @@ fi
 checksum=${checksum_line%%[!0-9a-f]*}
 [ "${#checksum}" -eq 64 ] || die "checksum is invalid"
 [ "$checksum_line" = "$checksum  $CIPHER" ] || die "checksum is invalid"
+if ! safe_output=$(sanitize "$OUTPUT"); then
+  die "output path formatting failed"
+fi
 ln "$CIPHER" "$OUTPUT" 2>/dev/null || die "output publication failed"
 if ! rm -f -- "$CIPHER"; then
   if output_identity=$(identity "$OUTPUT") && cipher_identity=$(identity "$CIPHER") &&
@@ -154,7 +157,4 @@ if ! rm -f -- "$CIPHER"; then
   die "ciphertext cleanup failed"
 fi
 CIPHER=
-if ! safe_output=$(sanitize "$OUTPUT"); then
-  die "output path formatting failed"
-fi
 printf 'Portainer parity encrypted: sha256=%s output=%s\n' "$checksum" "$safe_output"
