@@ -3,6 +3,7 @@
 require "yaml"
 
 WORKFLOW_PATH = File.expand_path("../../.github/workflows/ci.yml", __dir__)
+POLICY_PATH = File.expand_path("../validate-policy.sh", __dir__)
 CHECKOUT_ACTION = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
 SELECTABLE_JOBS = %w[
   static foundation smoke beszel dozzle audiobookshelf media paperless idempotence_check
@@ -42,6 +43,10 @@ end
 
 def integration_commands(source)
   normalize_shell(source).lines(chomp: true).grep(%r{\Atests/integration\.sh(?:\s|\z)})
+end
+
+def registers_command_once?(source, command)
+  normalize_shell(source).lines(chomp: true).count(command) == 1
 end
 
 def exact_fixed_integration_command?(source, suite)
@@ -205,6 +210,14 @@ check(failures, static_commands.include?("pipx install 'ansible-lint==26.6.0'"),
       "static checks must install pinned ansible-lint")
 check(failures, !static_commands.include?("python3 tests/deployment_target_validator_test.py"),
       "static must not duplicate the deployment validator already run by validate-policy.sh")
+validator_command = "python3 tests/deployment_target_validator_test.py"
+policy_source = File.read(POLICY_PATH)
+check(failures, registers_command_once?(policy_source, validator_command),
+      "validate-policy.sh must register the deployment validator exactly once")
+check(failures, !registers_command_once?("#{validator_command}\n#{validator_command}\n", validator_command),
+      "policy registration matcher must reject duplicate validator commands")
+check(failures, !registers_command_once?("ruby tests/policy_test.rb\n", validator_command),
+      "policy registration matcher must reject a missing validator command")
 
 validate = jobs.fetch("validate", {})
 check(failures, validate["name"] == "validate", "aggregate check name must remain validate")
