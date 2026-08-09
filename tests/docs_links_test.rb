@@ -61,20 +61,27 @@ end
 def matching_parentheses(text)
   stack = []
   matches = {}
-  angle = false
   index = 0
   while index < text.length
     if text[index] == "\\"
       index += 2
       next
     end
-    angle = true if text[index] == "<"
-    angle = false if text[index] == ">"
-    unless angle
-      stack << index if text[index] == "("
-      if text[index] == ")" && (open = stack.pop)
-        matches[open] = index
-      end
+    if text[index] == "(" && !stack.empty? && stack[-1][2]
+      # Parentheses inside a quoted link title are literal.
+    elsif text[index] == "("
+      stack << [index, false, false]
+    elsif text[index].match?(/[\"']/) && !stack.empty? && !stack[-1][1] && index.positive? && text[index - 1].match?(/\s/)
+      stack[-1][2] = true
+    elsif text[index].match?(/[\"']/) && !stack.empty? && stack[-1][2]
+      stack[-1][2] = false
+    elsif text[index] == "<" && !stack.empty? && !stack[-1][2]
+      stack[-1][1] = true
+    elsif text[index] == ">" && !stack.empty? && !stack[-1][2]
+      stack[-1][1] = false
+    elsif text[index] == ")" && !stack.empty? && !stack[-1][1] && !stack[-1][2]
+      open, = stack.pop
+      matches[open] = index
     end
     index += 1
   end
@@ -220,9 +227,9 @@ def check_sources(root, sources)
   sources.each do |source|
     source = source.realpath
     source_name = sanitize(source.relative_path_from(root).to_s)
-    text, unclosed_fence = mask_code(source.read)
+    text, unclosed_fence = mask_code(mask_html_comments(source.read))
     failures << "#{source_name}: malformed documentation (unclosed code fence)" if unclosed_fence
-    text = mask_html_comments(mask_inline_code(text))
+    text = mask_inline_code(text)
     markdown_link_bodies(text).each do |body|
       raw_target = body.strip
       target = markdown_target(body)
@@ -276,8 +283,14 @@ def self_test
     source = docs.join("sample.md")
     source.write(<<~MARKDOWN)
       [file](valid%20file.md)
+      prose < unmatched [after-prose](after-prose-missing.md)
+      [title-paren](title-paren-missing.md "title (")
       [not-a-link] (not-a-link-missing.md)
       <!-- [comment](comment-missing.md) -->
+      <!-- ` [comment-inline](comment-inline-missing.md) `
+      ```
+      [comment-fence](comment-fence-missing.md)
+      ``` -->
       <!-- multiline
       [multiline-comment](multiline-comment-missing.md)
       -->
@@ -346,14 +359,14 @@ def self_test
     bad_unclosed = docs.join("bad\e-unclosed.md")
     bad_unclosed.write("```markdown\n[hidden](hidden-missing.md)\n")
     unclosed_comment = docs.join("unclosed-comment.md")
-    unclosed_comment.write("<!-- [unclosed-comment](unclosed-comment-missing.md)\n")
+    unclosed_comment.write("<!-- `\n[unclosed-comment](unclosed-comment-missing.md)\n```\n")
     unclosed_container = docs.join("unclosed-container.md")
     unclosed_container.write(">  ```markdown\n>  [hidden](hidden-container-missing.md)\n")
     unclosed_four = docs.join("unclosed-four.md")
     unclosed_four.write(">    ```markdown\n>    [hidden](hidden-four-missing.md)\n")
     failures = check_sources(root, [source])
-    expected = ["missing.md", "ordinary-missing.md", "nested-missing.md", "<missing).md>", "indented-missing.md", "escaped-missing.md", "two-slash-missing.md", "unmatched-missing.md", "after-unmatched-missing.md", "ten-digit-missing.md", "unequal-missing.md", "escaped-comment-missing.md", "../../etc/passwd", "bad%ZZ.md", "escape.md"]
-    unless expected.all? { |target| failures.any? { |failure| failure.end_with?(target) } } && failures.length == expected.length + 1 && failures.none? { |failure| failure.match?(/[[:cntrl:]]/) }
+    expected = ["missing.md", "ordinary-missing.md", "nested-missing.md", "<missing).md>", "indented-missing.md", "escaped-missing.md", "two-slash-missing.md", "unmatched-missing.md", "after-unmatched-missing.md", "ten-digit-missing.md", "unequal-missing.md", "escaped-comment-missing.md", "after-prose-missing.md", "title-paren-missing.md", "../../etc/passwd", "bad%ZZ.md", "escape.md"]
+    unless expected.all? { |target| failures.any? { |failure| failure.include?("link #{target}") } } && failures.length == expected.length + 1 && failures.none? { |failure| failure.match?(/[[:cntrl:]]/) }
       warn "docs links self-test failed: #{failures.inspect}"
       exit 1
     end
