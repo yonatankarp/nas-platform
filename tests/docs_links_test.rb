@@ -100,8 +100,10 @@ end
 
 def fence_parts(line)
   value = line
-  value = value.sub(/\A {0,3}(?:(?:> ?)|(?:[-+*] |\d+[.)] ))*/, "")
+  value = value.sub(/\A {0,3}(?:(?:> ?)|(?:[-+*] {1,4}|\d+[.)] {1,4}))*/, "")
   match = value.match(/\A(`{3,}|~{3,})(.*?)(?:\r?\n)?\z/)
+  return [nil, nil, nil] if match && match[1].start_with?("`") && match[2].include?("`")
+
   match ? [value, match[1], match[2]] : [nil, nil, nil]
 end
 
@@ -122,8 +124,22 @@ def mask_inline_code(text)
       next
     end
     close = run_end
-    close += 1 until close >= chars.length || (chars[close] == "`" && chars[close, length]&.length == length && chars[close, length].all? { |char| char == "`" } && (close.zero? || chars[close - 1] != "`"))
-    break if close >= chars.length
+    loop do
+      break if close >= chars.length
+      if chars[close] == "`"
+        candidate_end = close
+        candidate_end += 1 while candidate_end < chars.length && chars[candidate_end] == "`"
+        break if candidate_end - close == length
+
+        close = candidate_end
+      else
+        close += 1
+      end
+    end
+    if close >= chars.length
+      index = run_end
+      next
+    end
     (index...close + length).each { |position| chars[position] = " " unless chars[position] == "\n" }
     index = close + length
   end
@@ -144,10 +160,10 @@ def check_sources(root, sources)
   failures = []
   sources.each do |source|
     source = source.realpath
-    text, unclosed_fence = mask_code(source.read)
-    failures << "#{source.relative_path_from(root)}: malformed documentation (unclosed code fence)" if unclosed_fence
-    text = mask_inline_code(text)
     source_name = sanitize(source.relative_path_from(root).to_s)
+    text, unclosed_fence = mask_code(source.read)
+    failures << "#{source_name}: malformed documentation (unclosed code fence)" if unclosed_fence
+    text = mask_inline_code(text)
     markdown_link_bodies(text).each do |body|
       raw_target = body.strip
       target = markdown_target(body)
@@ -157,7 +173,7 @@ def check_sources(root, sources)
       encoded_path = target.split("#", 2).first
       raise ArgumentError if encoded_path.match?(/%(?![0-9A-Fa-f]{2})/)
 
-      path_text = unescape_destination(URI::DEFAULT_PARSER.unescape(encoded_path))
+      path_text = URI::DEFAULT_PARSER.unescape(unescape_destination(encoded_path))
       resolved = source.dirname.join(path_text).cleanpath
       lexical_inside = resolved.to_s.start_with?("#{root}/")
       valid = lexical_inside && resolved != root && (resolved.file? || resolved.directory?)
@@ -189,6 +205,7 @@ def self_test
     docs.join("plus+file.md").write("ok\n")
     docs.join("balanced(name).md").write("ok\n")
     docs.join("a(b).md").write("ok\n")
+    docs.join("a\\(b\\).md").write("ok\n")
     docs.join("subdir").mkpath
     outside = root.parent.join("docs-links-outside-#{Process.pid}")
     outside.write("outside\n")
@@ -199,6 +216,7 @@ def self_test
       [plus](plus+file.md)
       [balanced](balanced(name).md)
       [escaped destination](a\(b\).md)
+      [percent backslash](a%5C(b%5C).md)
       [titled](<valid%20file.md> "title")
       [directory](subdir/)
       [fragment](valid%20file.md#section)
@@ -210,6 +228,8 @@ def self_test
       ` [inline](inline-missing.md) `
       ```markdown
       [backtick](backtick-missing.md)
+      ```not-a-close
+      [inside](inside-missing.md)
       ```
       ~~~markdown
       [tilde](tilde-missing.md)
@@ -220,6 +240,18 @@ def self_test
       \\`[escaped](escaped-missing.md)\\`
       \\[one-slash](one-slash-missing.md)
       \\\\[two-slash](two-slash-missing.md)
+      ```bad`info
+      [invalid-info](invalid-info-missing.md)
+      ```not-a-close
+      > ```markdown
+      > [blockquote](blockquote-missing.md)
+      > ```
+      -  ```markdown
+         [list-fence](list-fence-missing.md)
+         ```
+      prefix ``` [unmatched](unmatched-missing.md)
+      ` [later masked](later-masked-missing.md) `
+      [after unmatched](after-unmatched-missing.md)
       ``
       [multiline](multiline-missing.md)
       ``
@@ -233,8 +265,10 @@ def self_test
     unclosed.write("```markdown\n[hidden](hidden-missing.md)\n")
     bad_source = docs.join("bad\e-source.md")
     bad_source.write("[source-control](missing-source.md)\n")
+    bad_unclosed = docs.join("bad\e-unclosed.md")
+    bad_unclosed.write("```markdown\n[hidden](hidden-missing.md)\n")
     failures = check_sources(root, [source])
-    expected = ["missing.md", "ordinary-missing.md", "nested-missing.md", "<missing).md>", "indented-missing.md", "two-slash-missing.md", "unequal-missing.md", "../../etc/passwd", "bad%ZZ.md", "escape.md"]
+    expected = ["missing.md", "ordinary-missing.md", "nested-missing.md", "<missing).md>", "indented-missing.md", "two-slash-missing.md", "unmatched-missing.md", "after-unmatched-missing.md", "unequal-missing.md", "../../etc/passwd", "bad%ZZ.md", "escape.md"]
     unless expected.all? { |target| failures.any? { |failure| failure.end_with?(target) } } && failures.length == expected.length + 1 && failures.none? { |failure| failure.match?(/[[:cntrl:]]/) }
       warn "docs links self-test failed: #{failures.inspect}"
       exit 1
@@ -247,6 +281,11 @@ def self_test
     source_failures = check_sources(root, [bad_source])
     unless source_failures.length == 1 && source_failures.none? { |failure| failure.match?(/[[:cntrl:]]/) }
       warn "docs links source-name self-test failed: #{source_failures.inspect}"
+      exit 1
+    end
+    bad_unclosed_failures = check_sources(root, [bad_unclosed])
+    unless bad_unclosed_failures == ["docs/bad?-unclosed.md: malformed documentation (unclosed code fence)"]
+      warn "docs links sanitized-unclosed self-test failed: #{bad_unclosed_failures.inspect}"
       exit 1
     end
   ensure
