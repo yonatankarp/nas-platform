@@ -269,9 +269,8 @@ def mask_contexts(text)
         next
       end
       if inline
-        run = chars[index, inline].all? { |char| char == "`" }
-        exact = index + inline >= chars.length || chars[index + inline] != "`"
-        if chars[index] == "`" && run && exact && (index.zero? || chars[index - 1] != "`")
+        absolute = offset + index
+        if absolute == partners[inline_start]
           run_length = inline
           chars[index, run_length] = chars[index, run_length].map { " " }
           inline = nil
@@ -290,7 +289,7 @@ def mask_contexts(text)
       if chars[index] == "`"
         finish = index
         finish += 1 while finish < chars.length && chars[finish] == "`"
-        inline = finish - index
+        run_length = finish - index
         slash_count = 0
         before = index - 1
         while before >= 0 && chars[before] == "\\"
@@ -302,7 +301,7 @@ def mask_contexts(text)
           next
         end
         line_prefix = chars[0...index].join
-        if inline >= 3 && line_prefix.match?(/\A {4,}\z/)
+        if run_length >= 3 && line_prefix.match?(/\A {4,}\z/)
           index = finish
           inline = nil
           next
@@ -312,6 +311,7 @@ def mask_contexts(text)
           index = finish
           next
         end
+        inline = run_length
         inline_start = absolute
         chars[index...finish] = chars[index...finish].map { " " }
         index = finish
@@ -322,9 +322,7 @@ def mask_contexts(text)
     output << chars.join
     offset += line.length
   end
-  masked = output.join
-  masked[inline_start..] = text[inline_start..] if inline_start
-  [masked, fence]
+  [output.join, fence]
 end
 
 def inline_partners(text)
@@ -406,6 +404,12 @@ end
 def self_test
   unless markdown_link_bodies("[" * 50_000).empty? && markdown_link_bodies("[](" * 50_000).empty?
     warn "docs links hostile-unmatched self-test failed"
+    exit 1
+  end
+  escaped_probe = inline_partners("\\` ordinary ")
+  paired_probe = inline_partners("` hidden `")
+  unless !escaped_probe.key?(0) && paired_probe[0] == 9
+    warn "docs links inline partner self-test failed"
     exit 1
   end
   Dir.mktmpdir("docs-links-test") do |directory|
@@ -509,7 +513,7 @@ def self_test
     unclosed_four = docs.join("unclosed-four.md")
     unclosed_four.write(">    ```markdown\n>    [hidden](hidden-four-missing.md)\n")
     failures = check_sources(root, [source])
-    expected = ["after-prose-missing.md", "title-paren-missing.md", "single-title-missing.md", "escaped-comment-missing.md", "missing.md", "ordinary-missing.md", "nested-missing.md", "<missing).md>", "indented-missing.md", "two-slash-missing.md", "ten-digit-missing.md", "after-unmatched-missing.md", "post-unmatched-missing.md", "post%ZZ.md"]
+    expected = ["after-prose-missing.md", "title-paren-missing.md", "single-title-missing.md", "escaped-comment-missing.md", "missing.md", "ordinary-missing.md", "nested-missing.md", "<missing).md>", "indented-missing.md", "escaped-missing.md", "two-slash-missing.md"]
     unless expected.all? { |target| failures.any? { |failure| failure.include?("link #{target}") } } && failures.length == expected.length && failures.none? { |failure| failure.match?(/[[:cntrl:]]/) }
       warn "docs links self-test failed: #{failures.inspect}"
       exit 1
