@@ -174,8 +174,8 @@ vault_ntfy_beszel_token: '$(random_token)'
 vault_paperless_admin_username: ephemeral-admin
 vault_paperless_admin_password: '$(random_password)'
 vault_paperless_admin_email: ephemeral-admin@example.invalid
-vault_paperless_db_name: paperless
-vault_paperless_db_username: paperless
+vault_paperless_db_name: ephemeral-paperless-db
+vault_paperless_db_username: ephemeral-paperless-db-user
 vault_paperless_db_password: '$(random_password)'
 vault_paperless_django_secret_key: '$(openssl rand -hex 32 2>/dev/null)'
 vault_paperless_gmail_account: ephemeral@example.invalid

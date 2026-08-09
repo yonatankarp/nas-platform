@@ -69,10 +69,12 @@ BASE_FIXTURE_PATHS = %w[
   tests/mac/report.rb
   tests/mac/run.sh
   tests/mac/run-phase-status-test.sh
+  tests/mac/snapshot-paperless.sh
   tests/mac/audiobookshelf-drift-hook-test.sh
   tests/mac/hooks/drift/30-audiobookshelf.sh
   tests/mac/sanitize-logs.rb
   tests/contracts/audiobookshelf-audio-test.sh
+  tests/contracts/paperless.sh
   tests/mac/verify.sh
   tests/policy_test.rb
   tests/policy_support.rb
@@ -786,11 +788,6 @@ end
 
 expect_success(failures, "paperless contract alias") do |root|
   implement_paperless(root)
-  write_contract(root, "paperless", <<~'SH')
-    #!/bin/sh
-    response=$(curl --silent http://127.0.0.1/paperless/api/)
-    test -n "$response"
-  SH
   register_contract(root, "paperless")
 end
 

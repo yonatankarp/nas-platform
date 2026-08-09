@@ -12,6 +12,7 @@ tinymediamanager_web_port: "{{ lookup('env', 'PLATFORM_TINYMEDIAMANAGER_WEB_PORT
 tinymediamanager_api_port: "{{ lookup('env', 'PLATFORM_TINYMEDIAMANAGER_API_PORT') | int }}"
 jellyfin_port: "{{ lookup('env', 'PLATFORM_JELLYFIN_PORT') | int }}"
 immich_port: "{{ lookup('env', 'PLATFORM_IMMICH_PORT') | int }}"
+paperless_port: "{{ lookup('env', 'PLATFORM_PAPERLESS_PORT') | int }}"
 nas_docker_root: "{{ lookup('env', 'PLATFORM_DOCKER_ROOT') | platform_physical_path }}"
 nas_media_root: "{{ lookup('env', 'PLATFORM_MEDIA_ROOT') | platform_physical_path }}"
 

@@ -3,9 +3,10 @@
 This path targets production. Complete the
 [disposable Mac proof](getting-started-mac.md), back up application data, and
 confirm every required service is `implemented` or `accepted` in
-[`services/manifest.yml`](../services/manifest.yml) before cutover. Today only
-ntfy, Beszel, Dozzle, and Audiobookshelf are implemented; this is not yet a
-complete replacement for the legacy NAS platform.
+[`services/manifest.yml`](../services/manifest.yml) before cutover. All nine
+current services are implemented: Audiobookshelf, Beszel, Dozzle, Immich,
+Jellyfin, Komga, ntfy, Paperless-ngx, and tinyMediaManager. Implementation and
+the Mac proof do not replace the service-specific production cutover packets.
 
 Commands are labelled **read-only**, **check mode**, or **changes production**.
 
@@ -48,23 +49,25 @@ an application-data backup, and RAID is not a backup.
 Do not stop or remove the legacy stacks yet. The final service-specific cutover
 and rollback packet is a later migration deliverable.
 
-## 3. Build the migration vault from current credentials
+## 3. Reuse the reviewed migration vault
 
-The migration requirement is credential continuity. Use
-[`inventory/group_vars/all/vault.yml.example`](../inventory/group_vars/all/vault.yml.example)
-as the exact schema and copy the deployed values from the current password
-manager and Portainer definitions. Preserve every login, database password,
-hash, ntfy token, Beszel key, and Gmail setting exactly.
+The migration requirement is credential continuity: every login, database
+password, hash, ntfy token, Beszel key, Gmail setting, and other deployed value
+must remain exactly current. The preparation, validation, private-review, and
+Mac-proof portions of the
+[secrets and encrypted-vault guide](secrets.md) must be complete before
+continuing.
 
-Create the encrypted repository vault directly so no plaintext copy is written:
+Now resume the canonical workflow at
+[Install reviewed vault for NAS](secrets.md#install-reviewed-vault-for-nas)
+section exactly once. Its guarded mutation copies only the reviewed Mac
+ciphertext and refuses to overwrite an existing repository vault. If the
+repository vault already exists, stop and inspect it, then explicitly decide to
+reuse it or follow a separate backed-up replacement procedure.
 
-```sh
-ansible-vault create inventory/group_vars/all/vault.yml
-```
-
-Paste every key from the example into the editor, replace placeholders, save,
-and store the chosen vault password in your password manager. Confirm the file
-is encrypted without showing its contents:
+After that canonical step installs a new vault, or after you explicitly confirm
+that the existing vault is the reviewed artifact to reuse, verify its header and
+repository status without showing its contents:
 
 ```sh
 head -n 1 inventory/group_vars/all/vault.yml
@@ -72,30 +75,8 @@ git status --short inventory/group_vars/all/vault.yml
 ```
 
 The first line must start with `$ANSIBLE_VAULT;`. The encrypted vault may be
-committed. Never commit its password, a decrypted copy, rendered `.env` files,
-plaintext credentials, or private keys.
-
-If the Mac proof already used the reviewed final vault, reuse that encrypted
-artifact instead of authoring it again:
-
-```sh
-install -m 600 "$HOME/.config/nas-platform/vault.yml" \
-  inventory/group_vars/all/vault.yml
-```
-
-Only ciphertext is copied. Verify its first line again before continuing.
-
-For a truly new platform with no state or identities to preserve, the separate
-opt-in path is:
-
-```sh
-ansible-playbook generate-secrets.yml -e generate_brand_new_platform=true
-mv inventory/group_vars/all/vault-plain.yml inventory/group_vars/all/vault.yml
-ansible-vault encrypt inventory/group_vars/all/vault.yml
-```
-
-That command deliberately refuses existing vault material. Do not use it for
-this migration.
+committed. Never commit its password, a plaintext or decrypted vault, rendered
+`.env` files, plaintext credentials, or private keys.
 
 ## 4. Validate inventory and connectivity
 
@@ -157,7 +138,11 @@ ansible-playbook -i inventory/remote.yml site.yml --ask-vault-pass
 
 Record the Git commit, encrypted vault checksum, recap, application checks, and
 operator decision without recording secrets. Existing NAS credentials must work
-unchanged. Verify ntfy authentication plus alerts from Beszel and Dozzle.
+unchanged for all nine services. Repeat the service-specific credential checks
+from the [Mac manual review](getting-started-mac.md#4-perform-the-manual-review)
+against the production deployment without exercising external integrations; for
+ntfy, use only an agreed disposable topic when verifying alerts from Beszel and
+Dozzle.
 
 ## Recovery and rollback boundary
 
@@ -167,8 +152,8 @@ decrypting the vault into the repository, or broadly removing Docker data.
 
 Before each service cutover, its migration packet must name the old stack,
 new stack, data snapshot, acceptance checks, maximum outage, and exact rollback
-trigger. Until that packet and the remaining service roles exist, keep the
-legacy deployment recoverable and stop before production cutover. If a run
+trigger. Until that packet exists for a service, keep its legacy deployment
+recoverable and stop before its production cutover. If a run
 fails, capture the first failure, container state, and bounded logs; then use
 the tested service-specific backup/rollback procedure or fix forward with a
 reviewed Ansible change.

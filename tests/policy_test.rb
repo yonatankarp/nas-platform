@@ -243,7 +243,7 @@ PLATFORM_INVENTORIES.values.map { |values| [values[0], values[3]] }.uniq.each do
                         %w[
                           platform_project_name beszel_port ntfy_port dozzle_port
                           audiobookshelf_port komga_port tinymediamanager_web_port
-                          tinymediamanager_api_port jellyfin_port immich_port
+                          tinymediamanager_api_port jellyfin_port immich_port paperless_port
                         ]
                       else
                         []
@@ -422,9 +422,10 @@ end
 
 def role_has_verification?(tasks_path, service_name, role_name)
   tasks = flatten_tasks(YAML.safe_load_file(tasks_path))
-  prefixes = [service_name.tr("-", "_"), role_name].uniq
-  service_names = [service_name, role_name].uniq
-  expected_tag = "platform_verify_#{service_name}"
+  canonical_name = contract_basename(service_name)
+  prefixes = [service_name.tr("-", "_"), role_name, canonical_name.tr("-", "_")].uniq
+  service_names = [service_name, role_name, canonical_name].uniq
+  expected_tag = "platform_verify_#{canonical_name}"
   validated_registers = Set.new
   verified = false
 
@@ -568,6 +569,56 @@ check(failures, undeclared_dirs.empty?,
 
 storage = YAML.safe_load_file(File.join(ROOT, "inventory", "group_vars", "all", "main.yml"))
 declared_paths = storage.fetch("nas_storage").map { |entry| entry.fetch("path") }
+paperless_postgres_storage = storage.fetch("nas_storage").find do |entry|
+  entry["path"] == "{{ nas_docker_root }}/paperless-ngx/postgres"
+end
+check(failures,
+      paperless_postgres_storage && paperless_postgres_storage["mode"] == "0755",
+      "Paperless PostgreSQL 18 mount parent must be traversable by the postgres user")
+paperless_contract = File.read(File.join(ROOT, "tests", "contracts", "paperless.sh"))
+paperless_snapshot = File.read(File.join(ROOT, "tests", "mac", "snapshot-paperless.sh"))
+root_version_checksum = %r{
+  document\.fetch\("versions"\)\.find\s*\{\s*\|version\|\s*
+  version\.fetch\("is_root"\)\s*\}.*?
+  root_version&?\.fetch\("checksum"\)
+}mx
+check(failures,
+      paperless_contract.include?("PDF_MARKER = \"paperlesscontractenglish\""),
+      "Paperless contract must define the PDF fixture marker")
+check(failures,
+      paperless_contract.include?("def request(method, path, token: nil, body: nil, expected: [200], parse_json: true)") &&
+      paperless_contract.match?(%r{/preview/.*, token: token, parse_json: false}),
+      "Paperless binary preview responses must bypass JSON parsing")
+check(failures,
+      paperless_contract.match?(root_version_checksum),
+      "Paperless checksum verification must select the API v3 root-version checksum")
+check(failures,
+      paperless_contract.match?(/EXPORT_PATH\.mkdir\(0o700\).*?document_exporter/m),
+      "Paperless portable export must create the required empty target directory")
+check(failures,
+      paperless_contract.match?(%r{
+        document_ids\s*=\s*\[.*?
+        request\(\s*"post",\s*"/api/trash/".*?
+        "action"\s*=>\s*"empty".*?
+        "documents"\s*=>\s*document_ids.*?
+        document_importer
+      }mx),
+      "Paperless portable import must empty its exported fixtures from trash first")
+check(failures,
+      paperless_contract.match?(%r{
+        document_importer.*?
+        "docker",\s*"restart",\s*WEBSERVER.*?
+        wait_healthy\(WEBSERVER.*?
+        document_for
+      }mx),
+      "Paperless portable import must reload and health-check the webserver search index")
+check(failures,
+      paperless_snapshot.match?(root_version_checksum) &&
+      paperless_snapshot.match?(/def catalogue.*?"checksum" => document_checksum\(document\)/m),
+      "Paperless snapshot catalogue must use API v3 root-version checksums")
+check(failures,
+      paperless_contract.match?(/diagnostic_bytes = stderr\.read.*?bytesize > 4096.*?else\s+diagnostic_bytes/m),
+      "Paperless exporter diagnostics must preserve short stderr output")
 
 manifest_entries.each do |service|
   next unless service.is_a?(Hash)
@@ -1055,6 +1106,12 @@ check(failures,
         !harness.include?("random_password()") &&
         !harness.include?("ntfy_token()"),
       "integration must consume the ephemeral encrypted vault without duplicate secret authoring")
+check(failures,
+      harness.include?('if [ -f "$repo_dir/.git" ]') &&
+        harness.include?('git clone --quiet --no-local --no-checkout "$repo_dir" "$sandbox/repo"') &&
+        harness.include?('git -C "$sandbox/repo" checkout -q --detach "$expected_release_id"') &&
+        harness.include?('-v "$controller_mount":/repo:ro'),
+      "integration must make linked worktree Git metadata available inside its controller mount")
 lock_acquire_index = harness.index("acquire_integration_lock")
 sandbox_create_index = harness.index('sandbox=$(mktemp -d')
 check(failures,
@@ -1494,6 +1551,7 @@ check(failures, mac_run.include?('mktemp -d "$temporary_parent/nas-platform-mac.
   PLATFORM_FIXTURE_ROOT PLATFORM_REPORT_ROOT PLATFORM_PROOF_LANE
   PLATFORM_PROJECT_NAME PLATFORM_BESZEL_PORT PLATFORM_NTFY_PORT PLATFORM_DOZZLE_PORT
   PLATFORM_AUDIOBOOKSHELF_PORT
+  PLATFORM_PAPERLESS_PORT
   COMPOSE_PROJECT_NAME
 ].each do |variable|
   check(failures, mac_run.include?("export #{variable}="),

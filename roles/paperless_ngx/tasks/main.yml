@@ -1,0 +1,784 @@
+---
+- name: Revalidate deployment paths before Paperless runtime use
+  ansible.builtin.include_role:
+    name: deployment_bundle
+    tasks_from: target
+  vars:
+    deployment_target_require_current_release: true
+    deployment_target_extra_paths:
+      - "{{ platform_current_dir }}/services/paperless-ngx"
+      - "{{ platform_current_dir }}/services/paperless-ngx/compose.yml"
+      - "{{ platform_current_dir }}/services/paperless-ngx/compose.{{ platform_compose_kind }}.yml"
+      - "{{ platform_runtime_dir }}/services/paperless-ngx"
+      - "{{ platform_runtime_dir }}/services/paperless-ngx/.env"
+      - "{{ platform_runtime_dir }}/services/paperless-ngx/.gmail-credential-fingerprint"
+
+- name: Check for a Paperless platform override
+  ansible.builtin.stat:
+    path: "{{ platform_current_dir }}/services/paperless-ngx/compose.{{ platform_compose_kind }}.yml"
+  register: paperless_platform_compose
+
+- name: Select the Paperless Compose definitions
+  ansible.builtin.set_fact:
+    paperless_compose_files: >-
+      {{ ['compose.yml'] +
+         (paperless_platform_compose.stat.exists
+          | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) }}
+
+- name: Install the pinned Hebrew OCR model
+  ansible.builtin.get_url:
+    url: "{{ paperless_hebrew_model_url }}"
+    dest: "{{ nas_docker_root }}/paperless-ngx/tessdata/heb.traineddata"
+    checksum: "{{ paperless_hebrew_model_checksum }}"
+    mode: "0644"
+
+- name: Render the Paperless environment
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ platform_runtime_dir }}/services/paperless-ngx/.env"
+    mode: "0600"
+  no_log: true
+
+- name: Deploy the Paperless data services
+  community.docker.docker_compose_v2:
+    project_src: "{{ platform_current_dir }}/services/paperless-ngx"
+    project_name: "{{ paperless_compose_project_name }}"
+    files: "{{ paperless_compose_files }}"
+    env_files: ["{{ platform_runtime_dir }}/services/paperless-ngx/.env"]
+    services: [broker, db]
+    state: present
+    wait: true
+    wait_timeout: 300
+
+- name: Refuse a rotated Paperless database credential
+  community.docker.docker_compose_v2_exec:
+    project_src: "{{ platform_current_dir }}/services/paperless-ngx"
+    project_name: "{{ paperless_compose_project_name }}"
+    files: "{{ paperless_compose_files }}"
+    env_files: ["{{ platform_runtime_dir }}/services/paperless-ngx/.env"]
+    service: db
+    argv:
+      - sh
+      - -ec
+      - >-
+        exec env PGPASSWORD="$POSTGRES_PASSWORD" PGCONNECT_TIMEOUT=15
+        psql --host=db --username="$1" --dbname="$2"
+        --no-align --tuples-only
+        --command="select current_user || '/' || current_database()"
+      - paperless-database-probe
+      - "{{ vault_paperless_db_username }}"
+      - "{{ vault_paperless_db_name }}"
+    tty: false
+  register: paperless_database_identity
+  when: not ansible_check_mode
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Classify the Paperless database credential probe
+  ansible.builtin.set_fact:
+    paperless_database_probe_status: >-
+      {{ 'execution-failed' if paperless_database_identity.rc is not defined
+         else 'connection-rejected' if paperless_database_identity.rc | int != 0
+         else 'identity-mismatch' if paperless_database_identity.stdout | default('') | trim !=
+              vault_paperless_db_username ~ '/' ~ vault_paperless_db_name
+         else 'verified' }}
+  when: not ansible_check_mode
+  no_log: true
+
+- name: Require the managed Paperless database credential
+  ansible.builtin.assert:
+    that:
+      - paperless_database_probe_status == 'verified'
+    fail_msg: >-
+      Paperless database credential verification failed
+      ({{ paperless_database_probe_status }}) in Compose service db.
+      Restore the previous vault values or migrate the database credential explicitly, then rerun.
+  when: not ansible_check_mode
+
+- name: Deploy Paperless
+  community.docker.docker_compose_v2:
+    project_src: "{{ platform_current_dir }}/services/paperless-ngx"
+    project_name: "{{ paperless_compose_project_name }}"
+    files: "{{ paperless_compose_files }}"
+    env_files: ["{{ platform_runtime_dir }}/services/paperless-ngx/.env"]
+    state: present
+    wait: true
+    wait_timeout: 600
+
+- name: Inspect the vault Paperless administrator identity
+  community.docker.docker_compose_v2_exec:
+    project_src: "{{ platform_current_dir }}/services/paperless-ngx"
+    project_name: "{{ paperless_compose_project_name }}"
+    files: "{{ paperless_compose_files }}"
+    env_files: ["{{ platform_runtime_dir }}/services/paperless-ngx/.env"]
+    service: webserver
+    argv:
+      - sh
+      - -ec
+      - >-
+        exec env MANAGED_USERNAME="$1" python manage.py shell -c
+        'import json, os; from django.contrib.auth import get_user_model;
+        users=get_user_model().objects.filter(username=os.environ["MANAGED_USERNAME"]);
+        user=users.first(); print(json.dumps({"count": users.count(), "email": user.email if user else "",
+        "is_active": user.is_active if user else False, "is_staff": user.is_staff if user else False,
+        "is_superuser": user.is_superuser if user else False}))'
+      - paperless-admin-inspect
+      - "{{ vault_paperless_admin_username }}"
+    tty: false
+  register: paperless_admin_identity_probe
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Resolve the vault Paperless administrator identity
+  ansible.builtin.set_fact:
+    paperless_admin_identity: "{{ paperless_admin_identity_probe.stdout_lines | last | from_json }}"
+  no_log: true
+
+- name: Resolve Paperless administrator reconciliation requirements
+  ansible.builtin.set_fact:
+    paperless_admin_identity_count: "{{ paperless_admin_identity.count | int }}"
+    paperless_admin_repair_required: >-
+      {{ paperless_admin_identity.count | int == 1 and
+         (paperless_admin_identity.email != vault_paperless_admin_email or
+          not paperless_admin_identity.is_superuser | bool or
+          not paperless_admin_identity.is_staff | bool or
+          not paperless_admin_identity.is_active | bool) }}
+  no_log: true
+
+- name: Refuse duplicate vault Paperless administrator identities
+  ansible.builtin.assert:
+    that:
+      - paperless_admin_identity_count | int <= 1
+    fail_msg: The vault Paperless administrator identity is duplicated.
+
+- name: Report planned vault Paperless administrator creation
+  ansible.builtin.debug:
+    msg: PAPERLESS_PLAN_ADMIN_CREATE
+  when:
+    - ansible_check_mode
+    - paperless_admin_identity_count | int == 0
+  changed_when: true
+
+- name: Stop Paperless check mode after planned administrator creation
+  ansible.builtin.meta: end_role
+  when:
+    - ansible_check_mode
+    - paperless_admin_identity_count | int == 0
+
+- name: Report planned Paperless administrator repair
+  ansible.builtin.debug:
+    msg: PAPERLESS_PLAN_ADMIN_REPAIR
+  when:
+    - ansible_check_mode
+    - paperless_admin_repair_required | bool
+  changed_when: true
+
+- name: Stop Paperless check mode after planned administrator repair
+  ansible.builtin.meta: end_role
+  when:
+    - ansible_check_mode
+    - paperless_admin_repair_required | bool
+
+- name: Create the absent vault Paperless administrator
+  community.docker.docker_compose_v2_exec:
+    project_src: "{{ platform_current_dir }}/services/paperless-ngx"
+    project_name: "{{ paperless_compose_project_name }}"
+    files: "{{ paperless_compose_files }}"
+    env_files: ["{{ platform_runtime_dir }}/services/paperless-ngx/.env"]
+    service: webserver
+    argv:
+      - sh
+      - -ec
+      - >-
+        exec env DJANGO_SUPERUSER_PASSWORD="$PAPERLESS_ADMIN_PASSWORD"
+        python manage.py createsuperuser --noinput --username "$1" --email "$2"
+      - paperless-admin-create
+      - "{{ vault_paperless_admin_username }}"
+      - "{{ vault_paperless_admin_email }}"
+    tty: false
+  when:
+    - not ansible_check_mode
+    - paperless_admin_identity_count | int == 0
+  changed_when: true
+  no_log: true
+
+- name: Repair the vault Paperless administrator
+  community.docker.docker_compose_v2_exec:
+    project_src: "{{ platform_current_dir }}/services/paperless-ngx"
+    project_name: "{{ paperless_compose_project_name }}"
+    files: "{{ paperless_compose_files }}"
+    env_files: ["{{ platform_runtime_dir }}/services/paperless-ngx/.env"]
+    service: webserver
+    argv:
+      - sh
+      - -ec
+      - >-
+        exec env MANAGED_USERNAME="$1" MANAGED_EMAIL="$2" python manage.py shell -c
+        'import os; from django.contrib.auth import get_user_model;
+        user=get_user_model().objects.get(username=os.environ["MANAGED_USERNAME"]);
+        user.email=os.environ["MANAGED_EMAIL"]; user.is_active=True; user.is_staff=True;
+        user.is_superuser=True; user.save(update_fields=["email", "is_active", "is_staff", "is_superuser"])'
+      - paperless-admin-repair
+      - "{{ vault_paperless_admin_username }}"
+      - "{{ vault_paperless_admin_email }}"
+    tty: false
+  when:
+    - not ansible_check_mode
+    - paperless_admin_repair_required | bool
+  changed_when: true
+  no_log: true
+
+- name: Authenticate the vault Paperless administrator
+  tags: [platform_verify_paperless]
+  ansible.builtin.uri:
+    url: "{{ paperless_api }}/api/token/"
+    method: POST
+    body_format: json
+    body:
+      username: "{{ vault_paperless_admin_username }}"
+      password: "{{ vault_paperless_admin_password }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: paperless_authentication
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Resolve sanitized Paperless administrator authentication status
+  tags: [platform_verify_paperless]
+  ansible.builtin.set_fact:
+    paperless_authentication_status: "{{ paperless_authentication.status | default(0) | int }}"
+    paperless_api_token: "{{ paperless_authentication.json.token | default('') }}"
+  no_log: true
+
+- name: Require the vault Paperless administrator
+  tags: [platform_verify_paperless]
+  ansible.builtin.assert:
+    that:
+      - paperless_authentication_status | int == 200
+      - paperless_api_token | length > 0
+    fail_msg: >-
+      Paperless does not accept the preserved vault administrator. Restore the deployed identity
+      from the password manager or migrate it explicitly before rerunning.
+
+- name: Verify Paperless users for exact administrator identity
+  tags: [platform_verify_paperless]
+  ansible.builtin.uri:
+    url: "{{ paperless_api }}/api/users/?page_size=1000"
+    headers:
+      Authorization: "Token {{ paperless_api_token }}"
+    status_code: [200]
+    return_content: true
+  register: paperless_users
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Resolve the exact Paperless administrator
+  tags: [platform_verify_paperless]
+  ansible.builtin.set_fact:
+    paperless_managed_administrators: >-
+      {{ paperless_users.json.results
+         | selectattr('username', 'equalto', vault_paperless_admin_username) | list }}
+  no_log: true
+
+- name: Require one vault Paperless administrator identity
+  tags: [platform_verify_paperless]
+  ansible.builtin.assert:
+    that:
+      - paperless_managed_administrators | length == 1
+    fail_msg: The Paperless vault administrator is absent or duplicated.
+
+- name: Read the reconciled Paperless administrator
+  tags: [platform_verify_paperless]
+  ansible.builtin.uri:
+    url: "{{ paperless_api }}/api/users/?page_size=1000"
+    headers:
+      Authorization: "Token {{ paperless_api_token }}"
+    status_code: [200]
+    return_content: true
+  register: paperless_users_after
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Resolve the reconciled Paperless administrator
+  tags: [platform_verify_paperless]
+  ansible.builtin.set_fact:
+    paperless_reconciled_administrators: >-
+      {{ paperless_users_after.json.results
+         | selectattr('username', 'equalto', vault_paperless_admin_username) | list }}
+  no_log: true
+
+- name: Require exact Paperless administrator identity
+  tags: [platform_verify_paperless]
+  ansible.builtin.assert:
+    that:
+      - paperless_reconciled_administrators | length == 1
+      - paperless_reconciled_administrators[0].email == vault_paperless_admin_email
+      - paperless_reconciled_administrators[0].is_superuser | bool
+      - paperless_reconciled_administrators[0].is_staff | bool
+      - paperless_reconciled_administrators[0].is_active | bool
+    fail_msg: The Paperless vault administrator has identity drift.
+
+- name: Resolve the desired Paperless mail account payload
+  tags: [platform_verify_paperless]
+  ansible.builtin.set_fact:
+    paperless_mail_account_payload: >-
+      {{ paperless_mail_account | combine({
+           'name': vault_paperless_mail_account_name,
+           'username': vault_paperless_gmail_account,
+           'password': vault_paperless_gmail_app_password | replace(' ', ''),
+           'owner': paperless_managed_administrators[0].id
+         }) }}
+    paperless_mail_account_credential_fingerprint: >-
+      {{ (vault_paperless_django_secret_key ~ ':' ~
+          (vault_paperless_gmail_app_password | replace(' ', ''))) | hash('sha256') }}
+  no_log: true
+
+- name: Inspect the installed Paperless Gmail credential fingerprint
+  ansible.builtin.stat:
+    path: "{{ platform_runtime_dir }}/services/paperless-ngx/.gmail-credential-fingerprint"
+    get_checksum: false
+  register: paperless_mail_account_fingerprint_file
+  no_log: true
+
+- name: Read the installed Paperless Gmail credential fingerprint
+  ansible.builtin.slurp:
+    path: "{{ platform_runtime_dir }}/services/paperless-ngx/.gmail-credential-fingerprint"
+  register: paperless_mail_account_fingerprint_content
+  when: paperless_mail_account_fingerprint_file.stat.exists
+  no_log: true
+
+- name: Resolve the installed Paperless Gmail credential fingerprint
+  ansible.builtin.set_fact:
+    paperless_installed_mail_account_credential_fingerprint: >-
+      {{ (paperless_mail_account_fingerprint_content.content | b64decode | trim)
+         if paperless_mail_account_fingerprint_file.stat.exists else '' }}
+  no_log: true
+
+- name: List Paperless mail accounts for reconciliation
+  tags: [platform_verify_paperless]
+  ansible.builtin.uri:
+    url: "{{ paperless_api }}/api/mail_accounts/?page_size=1000"
+    headers:
+      Authorization: "Token {{ paperless_api_token }}"
+    status_code: [200]
+    return_content: true
+  register: paperless_mail_accounts_before
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Resolve managed Paperless mail accounts
+  tags: [platform_verify_paperless]
+  ansible.builtin.set_fact:
+    paperless_managed_mail_accounts: >-
+      {{ paperless_mail_accounts_before.json.results
+         | selectattr('name', 'equalto', vault_paperless_mail_account_name) | list }}
+  no_log: true
+
+- name: Refuse duplicate managed Paperless mail accounts
+  tags: [platform_verify_paperless]
+  ansible.builtin.assert:
+    that:
+      - paperless_managed_mail_accounts | length <= 1
+    fail_msg: The managed Paperless mail account name is duplicated; resolve it in Paperless.
+
+- name: Resolve Paperless mail account reconciliation
+  tags: [platform_verify_paperless]
+  ansible.builtin.set_fact:
+    paperless_existing_mail_account: "{{ paperless_managed_mail_accounts | first | default({}) }}"
+    paperless_mail_account_create_required: "{{ paperless_managed_mail_accounts | length == 0 }}"
+  no_log: true
+
+- name: Resolve Paperless mail account repair requirement
+  tags: [platform_verify_paperless]
+  ansible.builtin.set_fact:
+    paperless_mail_account_repair_required: >-
+      {{ paperless_managed_mail_accounts | length == 1 and
+         ((paperless_existing_mail_account | dict2items
+           | selectattr('key', 'in', (paperless_mail_account.keys() | list) + ['name', 'username', 'owner'])
+           | items2dict) !=
+          (paperless_mail_account_payload | dict2items
+           | rejectattr('key', 'equalto', 'password') | items2dict) or
+          paperless_installed_mail_account_credential_fingerprint !=
+          paperless_mail_account_credential_fingerprint) }}
+  no_log: true
+
+- name: Snapshot Paperless mail and task counts before candidate credential testing
+  ansible.builtin.uri:
+    url: "{{ paperless_api }}/api/{{ item }}/?page_size=1"
+    headers:
+      Authorization: "Token {{ paperless_api_token }}"
+    status_code: [200]
+    return_content: true
+  loop: [processed_mail, tasks]
+  register: paperless_candidate_non_consuming_before
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when:
+    - platform_compose_kind != 'integration'
+    - paperless_mail_account_create_required | bool or paperless_mail_account_repair_required | bool
+
+- name: Test the candidate Paperless Gmail credential before persistence
+  ansible.builtin.uri:
+    url: "{{ paperless_api }}/api/mail_accounts/test/"
+    method: POST
+    headers:
+      Authorization: "Token {{ paperless_api_token }}"
+    body_format: json
+    body: "{{ paperless_mail_account_payload }}"
+    status_code: [200]
+    return_content: true
+  register: paperless_candidate_mail_test
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when:
+    - platform_compose_kind != 'integration'
+    - paperless_mail_account_create_required | bool or paperless_mail_account_repair_required | bool
+
+- name: Read Paperless mail and task counts after candidate credential testing
+  ansible.builtin.uri:
+    url: "{{ paperless_api }}/api/{{ item }}/?page_size=1"
+    headers:
+      Authorization: "Token {{ paperless_api_token }}"
+    status_code: [200]
+    return_content: true
+  loop: [processed_mail, tasks]
+  register: paperless_candidate_non_consuming_after
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when:
+    - platform_compose_kind != 'integration'
+    - paperless_mail_account_create_required | bool or paperless_mail_account_repair_required | bool
+
+- name: Require a valid non-consuming Paperless Gmail credential before persistence
+  ansible.builtin.assert:
+    that:
+      - paperless_candidate_mail_test.json.success | bool
+      - >-
+        paperless_candidate_non_consuming_before.results[0].json.count ==
+        paperless_candidate_non_consuming_after.results[0].json.count
+      - >-
+        paperless_candidate_non_consuming_before.results[1].json.count ==
+        paperless_candidate_non_consuming_after.results[1].json.count
+    fail_msg: The candidate Paperless Gmail credential failed without replacing the stored credential.
+  when:
+    - platform_compose_kind != 'integration'
+    - paperless_mail_account_create_required | bool or paperless_mail_account_repair_required | bool
+
+- name: Report planned Paperless mail account creation
+  ansible.builtin.debug:
+    msg: PAPERLESS_PLAN_MAIL_ACCOUNT_CREATE
+  when:
+    - ansible_check_mode
+    - paperless_mail_account_create_required | bool
+  changed_when: true
+
+- name: Create the managed Paperless mail account
+  ansible.builtin.uri:
+    url: "{{ paperless_api }}/api/mail_accounts/"
+    method: POST
+    headers:
+      Authorization: "Token {{ paperless_api_token }}"
+    body_format: json
+    body: "{{ paperless_mail_account_payload }}"
+    status_code: [201]
+  when:
+    - not ansible_check_mode
+    - paperless_mail_account_create_required | bool
+  register: paperless_mail_account_created
+  changed_when: true
+  no_log: true
+
+- name: Report planned Paperless mail account repair
+  ansible.builtin.debug:
+    msg: PAPERLESS_PLAN_MAIL_ACCOUNT_REPAIR
+  when:
+    - ansible_check_mode
+    - paperless_mail_account_repair_required | bool
+  changed_when: true
+
+- name: Repair the managed Paperless mail account
+  ansible.builtin.uri:
+    url: "{{ paperless_api }}/api/mail_accounts/{{ paperless_existing_mail_account.id }}/"
+    method: PATCH
+    headers:
+      Authorization: "Token {{ paperless_api_token }}"
+    body_format: json
+    body: "{{ paperless_mail_account_payload }}"
+    status_code: [200]
+  when:
+    - not ansible_check_mode
+    - paperless_mail_account_repair_required | bool
+  changed_when: true
+  no_log: true
+
+- name: Read the reconciled Paperless mail account
+  ansible.builtin.uri:
+    url: "{{ paperless_api }}/api/mail_accounts/?page_size=1000"
+    headers:
+      Authorization: "Token {{ paperless_api_token }}"
+    status_code: [200]
+    return_content: true
+  register: paperless_mail_accounts_after
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Resolve the reconciled Paperless mail account
+  tags: [platform_verify_paperless]
+  ansible.builtin.set_fact:
+    paperless_reconciled_mail_accounts: >-
+      {{ (paperless_mail_accounts_after.json.results
+          if paperless_mail_accounts_after is defined else paperless_managed_mail_accounts)
+         | selectattr('name', 'equalto', vault_paperless_mail_account_name) | list }}
+    paperless_reconciled_mail_account: >-
+      {{ ((paperless_mail_accounts_after.json.results
+           if paperless_mail_accounts_after is defined else paperless_managed_mail_accounts)
+          | selectattr('name', 'equalto', vault_paperless_mail_account_name) | list | first)
+         | default({}) }}
+  no_log: true
+
+- name: Resolve the desired Paperless mail rule payload
+  tags: [platform_verify_paperless]
+  ansible.builtin.set_fact:
+    paperless_mail_rule_payload: >-
+      {{ paperless_mail_rule | combine({
+           'name': vault_paperless_mail_rule_name,
+           'account': paperless_reconciled_mail_account.id | default(0),
+           'owner': paperless_managed_administrators[0].id
+         }) }}
+  no_log: true
+
+- name: List Paperless mail rules for reconciliation
+  tags: [platform_verify_paperless]
+  ansible.builtin.uri:
+    url: "{{ paperless_api }}/api/mail_rules/?page_size=1000"
+    headers:
+      Authorization: "Token {{ paperless_api_token }}"
+    status_code: [200]
+    return_content: true
+  register: paperless_mail_rules_before
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Resolve managed Paperless mail rules
+  tags: [platform_verify_paperless]
+  ansible.builtin.set_fact:
+    paperless_managed_mail_rules: >-
+      {{ paperless_mail_rules_before.json.results
+         | selectattr('name', 'equalto', vault_paperless_mail_rule_name) | list }}
+  no_log: true
+
+- name: Refuse duplicate managed Paperless mail rules
+  tags: [platform_verify_paperless]
+  ansible.builtin.assert:
+    that:
+      - paperless_managed_mail_rules | length <= 1
+    fail_msg: The managed Paperless mail rule name is duplicated; resolve it in Paperless.
+
+- name: Resolve Paperless mail rule reconciliation
+  tags: [platform_verify_paperless]
+  ansible.builtin.set_fact:
+    paperless_existing_mail_rule: "{{ paperless_managed_mail_rules | first | default({}) }}"
+    paperless_mail_rule_create_required: "{{ paperless_managed_mail_rules | length == 0 }}"
+  no_log: true
+
+- name: Resolve Paperless mail rule repair requirement
+  tags: [platform_verify_paperless]
+  ansible.builtin.set_fact:
+    paperless_mail_rule_repair_required: >-
+      {{ paperless_managed_mail_rules | length == 1 and
+         (paperless_existing_mail_rule | dict2items
+          | selectattr('key', 'in', paperless_mail_rule_payload.keys()) | items2dict) !=
+         paperless_mail_rule_payload }}
+  no_log: true
+
+- name: Report planned Paperless mail rule creation
+  ansible.builtin.debug:
+    msg: PAPERLESS_PLAN_MAIL_RULE_CREATE
+  when:
+    - ansible_check_mode
+    - paperless_mail_rule_create_required | bool
+  changed_when: true
+
+- name: Create the managed Paperless mail rule
+  ansible.builtin.uri:
+    url: "{{ paperless_api }}/api/mail_rules/"
+    method: POST
+    headers:
+      Authorization: "Token {{ paperless_api_token }}"
+    body_format: json
+    body: "{{ paperless_mail_rule_payload }}"
+    status_code: [201]
+  when:
+    - not ansible_check_mode
+    - paperless_mail_rule_create_required | bool
+  changed_when: true
+  no_log: true
+
+- name: Report planned Paperless mail rule repair
+  ansible.builtin.debug:
+    msg: PAPERLESS_PLAN_MAIL_RULE_REPAIR
+  when:
+    - ansible_check_mode
+    - paperless_mail_rule_repair_required | bool
+  changed_when: true
+
+- name: Repair the managed Paperless mail rule
+  ansible.builtin.uri:
+    url: "{{ paperless_api }}/api/mail_rules/{{ paperless_existing_mail_rule.id }}/"
+    method: PATCH
+    headers:
+      Authorization: "Token {{ paperless_api_token }}"
+    body_format: json
+    body: "{{ paperless_mail_rule_payload }}"
+    status_code: [200]
+  when:
+    - not ansible_check_mode
+    - paperless_mail_rule_repair_required | bool
+  changed_when: true
+  no_log: true
+
+- name: Snapshot Paperless mail and task counts before connection testing
+  tags: [platform_verify_paperless]
+  ansible.builtin.uri:
+    url: "{{ paperless_api }}/api/{{ item }}/?page_size=1"
+    headers:
+      Authorization: "Token {{ paperless_api_token }}"
+    status_code: [200]
+    return_content: true
+  loop: [processed_mail, tasks]
+  register: paperless_non_consuming_before
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when:
+    - platform_compose_kind != 'integration'
+    - paperless_reconciled_mail_accounts | length == 1
+    - >-
+      not ansible_check_mode or
+      not (paperless_mail_account_create_required | bool or
+           paperless_mail_account_repair_required | bool)
+
+- name: Test the managed Paperless mail account without consuming messages
+  tags: [platform_verify_paperless]
+  ansible.builtin.uri:
+    url: "{{ paperless_api }}/api/mail_accounts/test/"
+    method: POST
+    headers:
+      Authorization: "Token {{ paperless_api_token }}"
+    body_format: json
+    body: >-
+      {{ paperless_mail_account_payload
+         | combine({'id': paperless_reconciled_mail_account.id, 'password': '**********'}) }}
+    status_code: [200]
+    return_content: true
+  register: paperless_mail_test
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when:
+    - platform_compose_kind != 'integration'
+    - paperless_reconciled_mail_accounts | length == 1
+    - >-
+      not ansible_check_mode or
+      not (paperless_mail_account_create_required | bool or
+           paperless_mail_account_repair_required | bool)
+
+- name: Read Paperless mail and task counts after connection testing
+  tags: [platform_verify_paperless]
+  ansible.builtin.uri:
+    url: "{{ paperless_api }}/api/{{ item }}/?page_size=1"
+    headers:
+      Authorization: "Token {{ paperless_api_token }}"
+    status_code: [200]
+    return_content: true
+  loop: [processed_mail, tasks]
+  register: paperless_non_consuming_after
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when:
+    - platform_compose_kind != 'integration'
+    - paperless_reconciled_mail_accounts | length == 1
+    - >-
+      not ansible_check_mode or
+      not (paperless_mail_account_create_required | bool or
+           paperless_mail_account_repair_required | bool)
+
+- name: Require the non-consuming Paperless mail connection test
+  tags: [platform_verify_paperless]
+  ansible.builtin.assert:
+    that:
+      - paperless_mail_test.json.success | bool
+      - paperless_non_consuming_before.results[0].json.count == paperless_non_consuming_after.results[0].json.count
+      - paperless_non_consuming_before.results[1].json.count == paperless_non_consuming_after.results[1].json.count
+    fail_msg: The Paperless Gmail authentication failed or the connection test consumed mail.
+  when:
+    - platform_compose_kind != 'integration'
+    - paperless_reconciled_mail_accounts | length == 1
+    - >-
+      not ansible_check_mode or
+      not (paperless_mail_account_create_required | bool or
+           paperless_mail_account_repair_required | bool)
+
+- name: Read the exact reconciled Paperless mail rule
+  tags: [platform_verify_paperless]
+  ansible.builtin.uri:
+    url: "{{ paperless_api }}/api/mail_rules/?page_size=1000"
+    headers:
+      Authorization: "Token {{ paperless_api_token }}"
+    status_code: [200]
+    return_content: true
+  register: paperless_mail_rules_after
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require exact Paperless administrator, mail account, and mail rule
+  tags: [platform_verify_paperless]
+  ansible.builtin.assert:
+    that:
+      - paperless_reconciled_mail_accounts | length == 1
+      - >-
+        (paperless_reconciled_mail_account | dict2items
+         | selectattr('key', 'in', (paperless_mail_account.keys() | list) + ['name', 'username', 'owner'])
+         | items2dict) ==
+        (paperless_mail_account_payload | dict2items
+         | rejectattr('key', 'equalto', 'password') | items2dict)
+      - paperless_verified_mail_rules | length == 1
+      - >-
+        (paperless_verified_mail_rules[0] | dict2items
+         | selectattr('key', 'in', paperless_mail_rule_payload.keys()) | items2dict) ==
+        paperless_mail_rule_payload
+    fail_msg: The managed Paperless administrator, Gmail account, or mail rule is absent or drifted.
+  vars:
+    paperless_verified_mail_rules: >-
+      {{ paperless_mail_rules_after.json.results
+         | selectattr('name', 'equalto', vault_paperless_mail_rule_name) | list }}
+  when:
+    - >-
+      not ansible_check_mode or
+      not (paperless_mail_account_create_required | bool or
+           paperless_mail_account_repair_required | bool or
+           paperless_mail_rule_create_required | bool or
+           paperless_mail_rule_repair_required | bool)
+
+- name: Record the verified Paperless Gmail credential fingerprint
+  ansible.builtin.copy:
+    content: "{{ paperless_mail_account_credential_fingerprint }}\n"
+    dest: "{{ platform_runtime_dir }}/services/paperless-ngx/.gmail-credential-fingerprint"
+    mode: "0600"
+  when: not ansible_check_mode
+  no_log: true

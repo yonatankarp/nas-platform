@@ -228,8 +228,17 @@ EOF
 create_controller_symlink_fixture manifest manifest
 create_controller_symlink_fixture override override
 
-# A copy of the repository, so a play cannot modify the working tree.
-tar -C "$repo_dir" -cf - --exclude .git . | tar -C "$sandbox/repo" -xf -
+# A linked worktree's .git file points outside the directory Docker mounts. Give
+# the container an isolated checkout at the same HEAD, then overlay the working
+# files so the integration-only dirty-controller path retains its exact meaning.
+# A normal checkout keeps the direct read-only mount used by CI.
+controller_mount=$repo_dir
+if [ -f "$repo_dir/.git" ]; then
+  git clone --quiet --no-local --no-checkout "$repo_dir" "$sandbox/repo"
+  git -C "$sandbox/repo" checkout -q --detach "$expected_release_id"
+  tar -C "$repo_dir" -cf - --exclude .git . | tar -C "$sandbox/repo" -xf -
+  controller_mount=$sandbox/repo
+fi
 
 # Exercise the controller guard in an isolated Git checkout. Its play has a
 # target-mutating task immediately after validation, so each refusal also proves
@@ -289,7 +298,7 @@ printf 'host address: %s\n' "$nas_address"
 docker run --rm \
   --network host \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  -v "$repo_dir":/repo:ro \
+  -v "$controller_mount":/repo:ro \
   `# Mounted at its own path so the storage roots resolve identically inside` \
   `# this container and on the Docker daemon's host.` \
   -v "$sandbox":"$sandbox" \
@@ -495,6 +504,31 @@ docker run --rm \
         PLATFORM_REPORT_ROOT='$sandbox/reports' \
         PLATFORM_JELLYFIN_CONTAINER=jellyfin \
         /repo/tests/contracts/jellyfin.sh \"\$@\"
+    }
+
+    run_paperless_contract() {
+      env \
+        PLATFORM_KIND=integration \
+        PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\" \
+        PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=\"\$vault_password_file\" \
+        PLATFORM_DOCKER_ROOT='$sandbox/volume1/Docker' \
+        PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
+        PLATFORM_REPORT_ROOT='$sandbox/reports' \
+        PLATFORM_PAPERLESS_WEBSERVER_CONTAINER=paperless_webserver \
+        /repo/tests/contracts/paperless.sh \"\$@\"
+    }
+
+    run_paperless_snapshot() {
+      env \
+        PLATFORM_KIND=integration \
+        PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\" \
+        PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=\"\$vault_password_file\" \
+        PLATFORM_DOCKER_ROOT='$sandbox/volume1/Docker' \
+        PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
+        PLATFORM_PAPERLESS_WEBSERVER_CONTAINER=paperless_webserver \
+        PLATFORM_PAPERLESS_POSTGRES_CONTAINER=paperless_postgres \
+        PLATFORM_PAPERLESS_REDIS_CONTAINER=paperless_redis \
+        /repo/tests/mac/snapshot-paperless.sh \"\$@\"
     }
 
     run_verify_only() {
@@ -1198,6 +1232,15 @@ docker run --rm \
       # After tinyMediaManager, because both services read the same Movies tree
       # and only a scan that already finished can be asserted independently.
       run_jellyfin_contract seed
+      run_paperless_contract seed
+      mkdir -m 0700 '$sandbox/reports/paperless-coordinated-snapshot'
+      run_paperless_snapshot drill '$sandbox/reports/paperless-coordinated-snapshot'
+      run_paperless_contract assert-persistence
+      docker compose --project-name paperless \
+        --env-file '$sandbox/volume1/Docker/nas-platform/runtime/services/paperless-ngx/.env' \
+        -f '$sandbox/volume1/Docker/nas-platform/current/services/paperless-ngx/compose.yml' \
+        up -d --force-recreate --wait
+      run_paperless_contract assert-persistence
       # Immich is deliberately not seeded here. Its seed contract asserts CPU
       # machine learning, and the first inference makes the pinned image pull
       # roughly 800 MB of CLIP, face and OCR models from external CDNs. That is

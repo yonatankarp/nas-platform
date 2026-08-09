@@ -5,10 +5,11 @@ your Mac. It does not SSH to or otherwise contact the physical NAS. Service
 data is disposable; credentials may deliberately match the NAS so that reused
 logins, ntfy tokens, Beszel keys, and future integrations are proven portable.
 
-Today this proof covers ntfy, Beszel, Dozzle, and Audiobookshelf. It sends test
-alerts to the sandbox's own ntfy instance. Mobile delivery is outside scope.
-Services marked `planned` in [`services/manifest.yml`](../services/manifest.yml)
-cannot yet be manually accepted on the Mac.
+This proof covers all nine implemented services in
+[`services/manifest.yml`](../services/manifest.yml): Audiobookshelf, Beszel,
+Dozzle, Immich, Jellyfin, Komga, ntfy, Paperless-ngx, and tinyMediaManager. It
+sends test alerts to the sandbox's own ntfy instance. Mobile delivery is
+outside scope.
 
 ## 1. Install and verify prerequisites
 
@@ -29,54 +30,33 @@ ansible-playbook --version
 Stop if any command fails. Docker must be running, and `ansible-playbook` must
 report Core 2.21.2.
 
-## 2. Create the external password input
+## 2. Prepare the external vault
 
-Keep both proof inputs outside the checkout. The following uses a protected
-plaintext vault-password file for the first proof. A password-manager-backed
-executable is preferable for unattended long-term use.
+The proof commands below consume these two protected inputs outside the
+checkout:
 
-```sh
-mkdir -p "$HOME/.config/nas-platform"
-chmod 700 "$HOME/.config/nas-platform"
-umask 077
-${EDITOR:-vi} "$HOME/.config/nas-platform/vault-password"
-chmod 600 "$HOME/.config/nas-platform/vault-password"
-```
+- `$HOME/.config/nas-platform/vault-password`
+- `$HOME/.config/nas-platform/vault.yml`
 
-Enter one strong password on one line. Do not pass it as a command argument or
-paste it into shell history. Back it up in your password manager.
+The canonical guide is the sole owner of creating the protected directory,
+password input, and encrypted vault. Read the
+[secrets and encrypted-vault guide](secrets.md), following it from
+[Prepare protected external files](secrets.md#prepare-protected-external-files)
+through the
+[Preparation and validation handoff](secrets.md#preparation-and-validation-handoff),
+then return here for step 3.
 
-## 3. Author the portable vault
+Generate the vault password in your password manager and back it up there. Do
+not pass it as a command argument or paste it into shell history. A
+password-manager-backed executable is preferable to a plaintext password file
+for unattended long-term use.
 
-Open
-[`inventory/group_vars/all/vault.yml.example`](../inventory/group_vars/all/vault.yml.example)
-in a second window. Then create an encrypted file directly:
+Do **not** use `generate-secrets.yml` for migration: it is only for a brand-new
+platform and would break the requirement that current NAS credentials continue
+to work. After review, the external ciphertext may become the NAS vault; never
+commit its password or a plaintext vault.
 
-```sh
-ansible-vault create \
-  --vault-password-file "$HOME/.config/nas-platform/vault-password" \
-  "$HOME/.config/nas-platform/vault.yml"
-```
-
-Your editor opens inside `ansible-vault`. Copy every key from the example and
-replace every example value with its exact current NAS value from your password
-manager and Portainer definitions. Preserve hashes, tokens, database passwords,
-the Beszel keypair, application identities, and Gmail fields exactly. Saving and
-closing writes ciphertext, not plaintext.
-
-Do **not** use `generate-secrets.yml`: it is for a brand-new platform and would
-break the requirement that current NAS credentials continue to work. Confirm
-encryption without displaying secrets:
-
-```sh
-head -n 1 "$HOME/.config/nas-platform/vault.yml"
-```
-
-Success starts with `$ANSIBLE_VAULT;`. Never commit the vault password or any
-plaintext vault. The encrypted external file may later become the NAS vault
-after review.
-
-## 4. Run the complete fresh proof
+## 3. Run the complete fresh proof
 
 From the repository root:
 
@@ -96,7 +76,7 @@ cleanup removes the service-data sandbox. The sibling `.reports` directory is
 retained and contains `report.md` and `report.json`; the harness prints its
 absolute path. Reports are sanitized and contain no application log bodies.
 
-## 5. Perform the manual review
+## 4. Perform the manual review
 
 The complete run above proves the automated lifecycle and cleans its containers.
 For a manual review, start a second proof one phase at a time. Run `preflight`
@@ -115,24 +95,49 @@ next command, then run through `persistence`:
 
 ```sh
 export PLATFORM_MAC_SANDBOX=/absolute/path/printed-by-preflight
+proof_status=0
 for phase in deploy seed verify idempotence drift reconcile recreate persistence; do
-  tests/mac/run.sh \
+  if ! tests/mac/run.sh \
     --lane fresh \
     --vault-file "$HOME/.config/nas-platform/vault.yml" \
     --vault-password-file "$HOME/.config/nas-platform/vault-password" \
     --sandbox "$PLATFORM_MAC_SANDBOX" \
-    --phase "$phase" || break
+    --phase "$phase"; then
+    proof_status=1
+    break
+  fi
 done
+if [ "$proof_status" -ne 0 ]; then
+  printf 'STOP: a Mac proof phase failed; do not begin manual review\n' >&2
+else
+  printf 'All automated phases passed; begin manual review\n'
+fi
+unset proof_status
 ```
 
-Use [`tests/mac/manual-review.md`](../tests/mac/manual-review.md) while those
+Proceed only when the block prints `All automated phases passed`. Use
+[`tests/mac/manual-review.md`](../tests/mac/manual-review.md) while all nine
 services are running. Record the reviewer, manifest commit, decision, and
-non-secret notes. Only implemented services can pass today; leave planned
-services explicitly unproved rather than marking them successful.
+non-secret notes. Credential continuity requires a private check for every
+service:
 
-For the current services, confirm existing credentials log in, Audiobookshelf
-use works after recreation, Beszel and Dozzle are configured, authentication is
-enforced, and disposable alerts arrive in this deployment's ntfy client.
+- Audiobookshelf, Jellyfin, and Komga: sign in with each deployed administrator
+  identity and confirm the disposable libraries remain usable after recreation.
+- Beszel: sign in with both deployed hub identities, confirm the existing agent
+  key and token connect the disposable agent, and send only a disposable ntfy
+  event.
+- Dozzle: sign in with the deployed administrator password represented by the
+  installed hash, inspect its managed event rules, and send only a disposable
+  ntfy event.
+- Immich: sign in with the deployed administrator identity and confirm the
+  existing database identity retains the disposable assets after recreation.
+- ntfy: confirm the deployed administrator login, anonymous denial, and the
+  existing distinct Beszel and Dozzle tokens using disposable messages.
+- Paperless-ngx: sign in with the deployed administrator identity, confirm its
+  database-backed fixtures survive recreation, and inspect the existing Gmail
+  account and mail rule without fetching mail.
+- tinyMediaManager: confirm the deployed API password still authorizes the
+  client and that disposable settings persist after recreation.
 
 After the review, produce the report and clean only the validated sandbox:
 
@@ -151,7 +156,7 @@ tests/mac/run.sh \
   --phase cleanup
 ```
 
-## 6. Resume or clean a failed proof
+## 5. Resume or clean a failed proof
 
 Failures preserve the sandbox and print exactly one validated `Cleanup command`.
 Copy that exact command when you are finished inspecting it. Do not replace it

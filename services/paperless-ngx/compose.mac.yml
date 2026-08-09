@@ -1,0 +1,19 @@
+---
+services:
+  broker:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-paperless-redis
+    ports: !override []
+  db:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-paperless-postgres
+    ports: !override []
+  webserver:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-paperless-webserver
+    network_mode: !reset null
+    ports: !override
+      - "${PAPERLESS_HOST_PORT:?}:8000"
+  gotenberg:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-paperless-gotenberg
+    ports: !override []
+  tika:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-paperless-tika
+    ports: !override []

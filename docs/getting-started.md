@@ -10,9 +10,9 @@ This repository manages service configuration and containers. It does **not**
 back up photos, media, databases, or other application data. Back up the NAS
 and confirm that the backup can be restored before a production migration.
 
-The migration is still in progress. The currently implemented and automated
-services are ntfy, Beszel, Dozzle, and Audiobookshelf. Komga, Jellyfin,
-tinyMediaManager, Immich, and Paperless-ngx remain planned. The authoritative
+The migration is still in progress. Every service currently listed in the
+manifest is implemented and automated: ntfy, Beszel, Dozzle, Audiobookshelf,
+Komga, Jellyfin, tinyMediaManager, Immich, and Paperless-ngx. The authoritative
 status is [`services/manifest.yml`](../services/manifest.yml).
 
 The two supported routes are deliberately separate:
@@ -83,6 +83,10 @@ is the exact credential schema for both environments. During migration, use the
 current NAS values from your password manager and Portainer definitions. This
 is what preserves existing logins and integrations. Do not run the brand-new
 secret generator for a migration.
+
+For the Paperless Gmail app password, you may paste Google's four
+space-separated groups into the vault. Provisioning removes those display
+spaces before sending the credential to Paperless.
 
 Never commit a plaintext vault, vault password, rendered `.env` file, private
 key, token, or application data. An encrypted vault begins with
