@@ -325,30 +325,11 @@ generated internal relationships. Then rerun the exact redacted validation and
 the header, permission, backup, and Mac proof checks above. This path creates a
 new platform identity set and is forbidden for migration.
 
-## Rotate the vault password safely
+## Vault password rotation boundary
 
-Rekeying is a deliberate password rotation: it does not rotate the credentials
-inside the vault, but it does rewrite the ciphertext and therefore changes its
-SHA-256 checksum. Schedule it as a controlled change. Generate and back up the
-new password in the password manager first, retain the old password until the
-new ciphertext is validated and backed up, and never supply either password as
-a command-line value.
-
-With `PLATFORM_VAULT_PASSWORD_FILE` and `PLATFORM_VAULT_FILE` set to the
-protected external inputs described above, run the interactive form:
-
-```sh
-ansible-vault rekey \
-  --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE" \
-  "$PLATFORM_VAULT_FILE"
-```
-
-Ansible reads the current password from the protected input and prompts for the
-new password without placing it in shell history. Enter the password already
-stored in the password manager. After rekeying, update the canonical password
-file through an editor and keep it mode 0600; if the password input is an
-executable provider, update its backed password-manager entry instead. Then
-rerun the permission, header, redacted validation, private review, and Mac proof
-checks. Record the new ciphertext checksum and back up the new encrypted vault
-separately from its new password. Never decrypt the vault onto disk for password
-rotation.
+Do not rekey one vault artifact ad hoc. Password rotation requires a separately
+reviewed procedure that covers every operational encrypted-vault copy, the
+password-provider cutover, validation, backup, and rollback. Retain the old
+password until every copy and provider has completed that procedure
+successfully. A partial rotation can leave operators or automation unable to
+open the vault, so this guide intentionally provides no command recipe.
