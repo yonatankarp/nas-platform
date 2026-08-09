@@ -10,6 +10,19 @@ def check(failures, condition, message)
   failures << message unless condition
 end
 
+def markdown_section(document, heading)
+  document.match(/^## #{Regexp.escape(heading)}\n(.*?)(?=^## |\z)/m)&.[](1).to_s
+end
+
+def shell_syntax_valid?(source)
+  IO.popen(["sh", "-n"], "r+") do |shell|
+    shell.write(source)
+    shell.close_write
+    shell.read
+  end
+  $?.success?
+end
+
 vault_example_path = File.join(ROOT, "inventory", "group_vars", "all", "vault.yml.example")
 vault_example = begin
   YAML.safe_load_file(vault_example_path)
@@ -97,6 +110,54 @@ check(failures,
       secrets_guide.include?("deployment vault") &&
       secrets_guide.include?("temporary Portainer parity vault"),
       "canonical secrets guide must distinguish and link deployment and parity vaults")
+
+parity_setup = markdown_section(parity_guide, "Prepare protected external inputs")
+parity_import = markdown_section(parity_guide, "Import and validate")
+parity_retirement = markdown_section(parity_guide, "Remove plaintext and retire the vault")
+setup_block = parity_setup.scan(/```sh\n(.*?)```/m).flatten.find do |block|
+  block.include?('PORTAINER_ENV_DIR=')
+end.to_s
+verification_block = parity_import.scan(/```sh\n(.*?)```/m).flatten.find do |block|
+  block.include?('IFS= read -r parity_header')
+end.to_s
+
+check(failures,
+      !setup_block.empty? && shell_syntax_valid?(setup_block) &&
+      setup_block.include?("umask 077") &&
+      setup_block.match?(/if \[ -e "\$PORTAINER_ENV_DIR" \].*?\[ -e "\$PORTAINER_PARITY_FILE" \].*?\[ -e "\$PORTAINER_PARITY_PASSWORD_FILE" \]/m) &&
+      setup_block.include?('mkdir -p "$PORTAINER_PROTECTED_DIR"') &&
+      setup_block.include?('chmod 700 "$PORTAINER_PROTECTED_DIR" "$PORTAINER_ENV_DIR"') &&
+      setup_block.include?('chmod 600 "$PORTAINER_PARITY_PASSWORD_FILE"'),
+      "Portainer setup must be executable, private, and refuse existing protected paths")
+check(failures,
+      setup_block.include?('password_lines=$(awk \'END { print NR }\' "$PORTAINER_PARITY_PASSWORD_FILE")') &&
+      setup_block.include?('[ "$password_lines" -ne 1 ] || [ ! -s "$PORTAINER_PARITY_PASSWORD_FILE" ]') &&
+      setup_block.include?("exit 1"),
+      "Portainer setup must fail closed for an empty or multiline password")
+check(failures,
+      shell_syntax_valid?(verification_block) &&
+      verification_block.match?(/case "\$parity_header" in.*?'\$ANSIBLE_VAULT;'.*?\*\).*?STOP:.*?exit 1.*?esac/m),
+      "Portainer header verification must stop on an invalid header")
+check(failures,
+      verification_block.include?("ansible-vault view") &&
+      verification_block.include?("scripts/portainer-parity.rb --validate-stdin") &&
+      parity_import.include?("Portainer parity: decrypted schema is valid"),
+      "Portainer guide must require a concrete successful schema validation before deletion")
+
+import_position = parity_prose.index("scripts/import-portainer-parity.sh")
+verification_position = parity_prose.index("Portainer parity: decrypted schema is valid")
+plaintext_deletion_position = parity_prose.index("operator explicitly removes the protected plaintext exports")
+rollback_expiry_position = parity_prose.index("rollback window expires")
+destruction_position = parity_prose.index("operator explicitly destroys the parity vault and every backup")
+check(failures,
+      [import_position, verification_position, plaintext_deletion_position,
+       rollback_expiry_position, destruction_position].all? &&
+      import_position < verification_position &&
+      verification_position < plaintext_deletion_position &&
+      plaintext_deletion_position < rollback_expiry_position &&
+      rollback_expiry_position < destruction_position &&
+      parity_prose.include?("removes the parity password if no other vault uses it"),
+      "Portainer lifecycle must order import, verification, plaintext deletion, rollback expiry, and retirement")
 
 %w[getting-started-mac.md getting-started-nas.md].each do |guide_name|
   guide_path = File.join(ROOT, "docs", guide_name)

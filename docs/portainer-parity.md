@@ -29,13 +29,63 @@ mode `0600`. Symlinks, missing files, and extra files are rejected. Create a
 vault password file with mode `0600` and a protected output directory that is
 not writable by group or other users.
 
-Use external absolute paths throughout the procedure:
+Use external absolute paths throughout the procedure. The following guarded
+setup runs in a subshell, so a failure stops the setup without terminating the
+operator's interactive shell. If `EDITOR` is set, it must be one executable
+name or path without arguments.
 
 ```sh
-export PORTAINER_ENV_DIR="$HOME/.config/nas-platform/portainer-env"
-export PORTAINER_PARITY_FILE="$HOME/.config/nas-platform/parity/portainer-parity.yml"
-export PORTAINER_PARITY_PASSWORD_FILE="$HOME/.config/nas-platform/parity/vault-password"
+export PORTAINER_PROTECTED_DIR="$HOME/.config/nas-platform/portainer-adoption"
+export PORTAINER_ENV_DIR="$PORTAINER_PROTECTED_DIR/portainer-env"
+export PORTAINER_PARITY_FILE="$PORTAINER_PROTECTED_DIR/portainer-parity.yml"
+export PORTAINER_PARITY_PASSWORD_FILE="$PORTAINER_PROTECTED_DIR/vault-password"
+
+(
+  set -eu
+  umask 077
+
+  if [ -L "$PORTAINER_PROTECTED_DIR" ] || \
+     { [ -e "$PORTAINER_PROTECTED_DIR" ] && [ ! -d "$PORTAINER_PROTECTED_DIR" ]; }; then
+    printf 'STOP: protected parent is not a regular directory\n' >&2
+    exit 1
+  fi
+  if [ -e "$PORTAINER_ENV_DIR" ] || [ -L "$PORTAINER_ENV_DIR" ] || \
+     [ -e "$PORTAINER_PARITY_FILE" ] || [ -L "$PORTAINER_PARITY_FILE" ] || \
+     [ -e "$PORTAINER_PARITY_PASSWORD_FILE" ] || [ -L "$PORTAINER_PARITY_PASSWORD_FILE" ]; then
+    printf 'STOP: refusing to overwrite a protected path\n' >&2
+    exit 1
+  fi
+
+  mkdir -p "$PORTAINER_PROTECTED_DIR"
+  mkdir "$PORTAINER_ENV_DIR"
+  chmod 700 "$PORTAINER_PROTECTED_DIR" "$PORTAINER_ENV_DIR"
+
+  if [ -n "${EDITOR:-}" ]; then parity_editor=$EDITOR; else parity_editor=vi; fi
+  case "$parity_editor" in
+    *[![:graph:]]*) printf 'STOP: EDITOR must be one executable without arguments\n' >&2; exit 1 ;;
+  esac
+  if ! "$parity_editor" "$PORTAINER_PARITY_PASSWORD_FILE"; then
+    printf 'STOP: password editor failed; inspect the protected path\n' >&2
+    exit 1
+  fi
+  chmod 600 "$PORTAINER_PARITY_PASSWORD_FILE"
+  password_lines=$(awk 'END { print NR }' "$PORTAINER_PARITY_PASSWORD_FILE")
+  if [ "$password_lines" -ne 1 ] || [ ! -s "$PORTAINER_PARITY_PASSWORD_FILE" ] || \
+     ! awk 'NR == 1 && length($0) > 0 { valid=1 } END { exit !valid }' \
+       "$PORTAINER_PARITY_PASSWORD_FILE"; then
+    printf 'STOP: parity password must be one non-empty line\n' >&2
+    exit 1
+  fi
+  unset password_lines parity_editor
+  printf 'Protected Portainer paths are ready\n'
+)
 ```
+
+The four exported paths remain available to the shell that will run the
+importer. Stop if setup prints `STOP`. Populate only the nine named environment
+files through a protected editor, then set every file to mode `0600`. Do not
+reuse the setup block after a partial failure: inspect the paths it reports and
+resolve them explicitly.
 
 All three paths must remain outside the repository: `PORTAINER_ENV_DIR`,
 `PORTAINER_PARITY_FILE`, and `PORTAINER_PARITY_PASSWORD_FILE`. Do not copy the
@@ -59,6 +109,10 @@ scripts/import-portainer-parity.sh \
   --vault-password-file "$PORTAINER_PARITY_PASSWORD_FILE"
 ```
 
+The importer must exit successfully and print exactly one
+`Portainer parity encrypted: sha256=... output=...` result. Any other result is
+a stop condition.
+
 The importer validates the exact file set, permissions, mapping, encryption
 header, and decrypted schema without printing values. It publishes only a new
 mode-`0600` encrypted artifact and never overwrites an existing parity vault.
@@ -71,22 +125,35 @@ line as the identity of the encrypted artifact, then independently confirm the
 permissions, Ansible Vault header, and checksum on the operator workstation:
 
 ```sh
-ls -ld "$PORTAINER_ENV_DIR" "$(dirname "$PORTAINER_PARITY_FILE")"
-ls -l "$PORTAINER_ENV_DIR"/*.env \
-  "$PORTAINER_PARITY_FILE" "$PORTAINER_PARITY_PASSWORD_FILE"
-IFS= read -r parity_header < "$PORTAINER_PARITY_FILE"
-case "$parity_header" in
-  '$ANSIBLE_VAULT;'*) printf 'Encrypted parity header confirmed\n' ;;
-  *) printf 'STOP: parity artifact is not encrypted\n' >&2 ;;
-esac
-shasum -a 256 "$PORTAINER_PARITY_FILE"
-unset parity_header
+(
+  set -eu
+  ls -ld "$PORTAINER_ENV_DIR" "$(dirname "$PORTAINER_PARITY_FILE")"
+  ls -l "$PORTAINER_ENV_DIR"/*.env \
+    "$PORTAINER_PARITY_FILE" "$PORTAINER_PARITY_PASSWORD_FILE"
+  IFS= read -r parity_header < "$PORTAINER_PARITY_FILE"
+  case "$parity_header" in
+    '$ANSIBLE_VAULT;'*) printf 'Encrypted parity header confirmed\n' ;;
+    *) printf 'STOP: parity artifact is not encrypted\n' >&2; exit 1 ;;
+  esac
+  shasum -a 256 "$PORTAINER_PARITY_FILE"
+  ansible-vault view \
+    --vault-password-file "$PORTAINER_PARITY_PASSWORD_FILE" \
+    "$PORTAINER_PARITY_FILE" | \
+    ruby scripts/portainer-parity.rb --validate-stdin \
+      --mapping config/portainer-parity.yml \
+      --legacy-commit 400f03f276ae1bb69f5460c175b9fb923d620f1a
+  unset parity_header
+)
 ```
 
 On GNU/Linux, use `sha256sum` in place of `shasum -a 256`. Confirm that the
 fresh checksum equals the importer's recorded checksum. Back up the ciphertext
 and password separately with the same access controls used for production
 secrets. Do not retain decrypted parity content or plaintext-derived checksums.
+Do not delete any plaintext export unless the importer succeeded, the header
+check printed `Encrypted parity header confirmed`, the independent checksum
+matched, and the final command printed
+`Portainer parity: decrypted schema is valid`.
 
 ## Remove plaintext and retire the vault
 
