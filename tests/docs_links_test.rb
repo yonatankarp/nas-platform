@@ -164,23 +164,29 @@ def markdown_container(line)
   rest = line.sub(/\A {0,3}/, "")
   signature = []
   list_item = false
+  ordered_number = nil
   loop do
     if rest.sub!(/\A> ?/, "")
       signature << :quote
-    elsif rest.sub!(/\A(?:[-+*] {1,4}|\d{1,9}[.)] {1,4})/, "")
+    elsif rest.sub!(/\A[-+*] {1,4}/, "")
       signature << :list
       list_item = true
+    elsif (match = rest.match(/\A(\d{1,9})[.)] {1,4}/))
+      rest = rest[match[0].length..]
+      signature << :list
+      list_item = true
+      ordered_number = match[1].to_i
     else
       break
     end
   end
-  [signature, line.length - rest.length, list_item]
+  [signature, line.length - rest.length, list_item, ordered_number]
 end
 
 def standalone_block_line?(line, content_start)
   content = line[content_start..].to_s.sub(/\r?\n\z/, "")
   content.match?(/\A {0,3}\#{1,6}(?:[ \t]+|$)/) ||
-    content.match?(/\A {0,3}(?:(?:\*\s*){3,}|(?:-\s*){3,}|(?:_\s*){3,})\z/)
+    content.match?(/\A {0,3}(?:(?:\*\s*){3,}|(?:-\s*){3,}|(?:_\s*){3,}|={3,})\z/)
 end
 
 def mask_inline_code(text)
@@ -428,9 +434,17 @@ def inline_partners(text)
   offset = 0
   paragraph = 0
   previous_container = []
+  paragraph_active = false
   text.lines.each do |line|
-    container, content_start, list_item = markdown_container(line)
+    container, content_start, list_item, ordered_number = markdown_container(line)
     standalone_block = standalone_block_line?(line, content_start)
+    blank = line.strip.empty?
+    if !blank && container.empty? && !previous_container.empty? && !standalone_block
+      container = previous_container
+    elsif paragraph_active && ordered_number && ordered_number != 1 && previous_container.empty?
+      container = previous_container
+      list_item = false
+    end
     paragraph += 1 if container != previous_container || list_item || standalone_block
     index = 0
     leading_space = true
@@ -461,8 +475,9 @@ def inline_partners(text)
       index = finish
     end
     offset += line.length
-    paragraph += 1 if line.strip.empty? || standalone_block
-    previous_container = container
+    paragraph += 1 if blank || standalone_block
+    previous_container = blank || standalone_block ? [] : container
+    paragraph_active = !blank && !standalone_block
   end
 
   next_matching = {}
@@ -711,6 +726,7 @@ def self_test
     end
     {
       "heading-boundary.md" => "prefix `unclosed\n# [ordinary](heading-boundary-missing.md) `\n",
+      "setext-boundary.md" => "prefix `unclosed\n===\n[ordinary](setext-boundary-missing.md) `\n",
       "thematic-boundary.md" => "prefix `unclosed\n---\n[ordinary](thematic-boundary-missing.md) `\n",
       "quote-boundary.md" => "prefix `unclosed\n> [ordinary](quote-boundary-missing.md) `\n",
       "list-boundary.md" => "prefix `unclosed\n- [ordinary](list-boundary-missing.md) `\n"
@@ -730,6 +746,27 @@ def self_test
     quoted_comment_failures = check_sources(root, [quoted_comment])
     unless quoted_comment_failures == ["docs/quoted-comment.md: broken local link quoted-comment-after.md"]
       warn "docs links quoted-comment self-test failed: #{quoted_comment_failures.inspect}"
+      exit 1
+    end
+    list_continuation = docs.join("list-continuation.md")
+    list_continuation.write("- prefix `code\n  [hidden](list-continuation-hidden.md)\n  end`\n[after](list-continuation-after.md)\n")
+    list_continuation_failures = check_sources(root, [list_continuation])
+    unless list_continuation_failures == ["docs/list-continuation.md: broken local link list-continuation-after.md"]
+      warn "docs links list-continuation self-test failed: #{list_continuation_failures.inspect}"
+      exit 1
+    end
+    lazy_quote = docs.join("lazy-quote.md")
+    lazy_quote.write("> prefix `code\n[hidden](lazy-quote-hidden.md)\nend`\n[after](lazy-quote-after.md)\n")
+    lazy_quote_failures = check_sources(root, [lazy_quote])
+    unless lazy_quote_failures == ["docs/lazy-quote.md: broken local link lazy-quote-after.md"]
+      warn "docs links lazy-quote self-test failed: #{lazy_quote_failures.inspect}"
+      exit 1
+    end
+    ordered_noninterrupt = docs.join("ordered-noninterrupt.md")
+    ordered_noninterrupt.write("prefix `code\n2. [hidden](ordered-noninterrupt-hidden.md) `\n[after](ordered-noninterrupt-after.md)\n")
+    ordered_noninterrupt_failures = check_sources(root, [ordered_noninterrupt])
+    unless ordered_noninterrupt_failures == ["docs/ordered-noninterrupt.md: broken local link ordered-noninterrupt-after.md"]
+      warn "docs links ordered-noninterrupt self-test failed: #{ordered_noninterrupt_failures.inspect}"
       exit 1
     end
     multiline_comment_code = docs.join("multiline-comment-code.md")
