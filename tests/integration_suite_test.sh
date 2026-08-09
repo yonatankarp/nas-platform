@@ -65,24 +65,24 @@ assert_output \
 
 assert_output 'suite=foundation tags=deployment_bundle playbook=site.yml scenarios=true' \
   --describe-suite foundation
-assert_output 'suite=beszel tags=deployment_bundle,ntfy,beszel playbook=site.yml scenarios=true' \
+assert_output 'suite=beszel tags=host_prep,deployment_bundle,ntfy,beszel playbook=site.yml scenarios=true' \
   --describe-suite beszel
-assert_output 'suite=dozzle tags=deployment_bundle,ntfy,dozzle playbook=site.yml scenarios=true' \
+assert_output 'suite=dozzle tags=host_prep,deployment_bundle,ntfy,dozzle playbook=site.yml scenarios=true' \
   --describe-suite dozzle
-assert_output 'suite=audiobookshelf tags=deployment_bundle,audiobookshelf playbook=site.yml scenarios=true' \
+assert_output 'suite=audiobookshelf tags=host_prep,deployment_bundle,audiobookshelf playbook=site.yml scenarios=true' \
   --describe-suite audiobookshelf
-assert_output 'suite=media tags=deployment_bundle,komga,tinymediamanager,jellyfin,immich playbook=site.yml scenarios=true' \
+assert_output 'suite=media tags=host_prep,deployment_bundle,komga,tinymediamanager,jellyfin,immich playbook=site.yml scenarios=true' \
   --describe-suite media
-assert_output 'suite=paperless tags=deployment_bundle,paperless playbook=site.yml scenarios=true' \
+assert_output 'suite=paperless tags=host_prep,deployment_bundle,paperless playbook=site.yml scenarios=true' \
   --describe-suite paperless
 assert_output 'suite=full tags= playbook=site.yml scenarios=true' --describe-suite full
 
-assert_output 'suite=smoke tags=ntfy,beszel playbook=custom.yml scenarios=true' \
-  --describe-suite smoke --tags ntfy,beszel custom.yml
+assert_output 'suite=smoke tags=host_prep,deployment_bundle,ntfy,beszel playbook=custom.yml scenarios=true' \
+  --describe-suite smoke --tags host_prep,deployment_bundle,ntfy,beszel custom.yml
 assert_output 'suite=smoke tags= playbook=site.yml scenarios=true' \
   --describe-suite smoke --tags ''
-assert_output 'suite=idempotence-check tags=deployment_bundle,ntfy playbook=site.yml scenarios=true' \
-  --describe-suite idempotence-check --tags deployment_bundle,ntfy
+assert_output 'suite=idempotence-check tags=host_prep,deployment_bundle,ntfy playbook=site.yml scenarios=true' \
+  --describe-suite idempotence-check --tags host_prep,deployment_bundle,ntfy
 assert_output 'suite=idempotence-check tags= playbook=site.yml scenarios=true' \
   --describe-suite idempotence-check
 
@@ -96,7 +96,7 @@ actual=$(PATH="$fake_bin:$PATH" DOCKER_LOG=$docker_log \
 [ "$actual" = 'suite=full tags= playbook=custom.yml scenarios=false' ]
 actual=$(PATH="$fake_bin:$PATH" DOCKER_LOG=$docker_log \
   INTEGRATION_DESCRIBE_ONLY=1 "$integration" --suite dozzle)
-[ "$actual" = 'suite=dozzle tags=deployment_bundle,ntfy,dozzle playbook=site.yml scenarios=true' ]
+[ "$actual" = 'suite=dozzle tags=host_prep,deployment_bundle,ntfy,dozzle playbook=site.yml scenarios=true' ]
 
 # Dispatch crosses the Docker boundary as quoted argv/environment rather than
 # being interpolated into the runner program.

@@ -73,6 +73,20 @@ if defined?(ClassifyChanges)
   check(failures, selected_lanes(["tests/fixtures/operator-guide.md"]) == LANES,
         "test fixture Markdown must not be treated as inert")
 
+  {
+    "roles/beszel/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,beszel",
+    "roles/dozzle/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,dozzle",
+    "roles/audiobookshelf/tasks/main.yml" => "host_prep,deployment_bundle,audiobookshelf",
+    "roles/jellyfin/tasks/main.yml" =>
+      "host_prep,deployment_bundle,komga,tinymediamanager,jellyfin,immich",
+    "roles/paperless_ngx/tasks/main.yml" => "host_prep,deployment_bundle,paperless"
+  }.each do |path, expected_tags|
+    service_output = StringIO.new
+    ClassifyChanges.write_github_outputs(ClassifyChanges.classify([path]), service_output)
+    check(failures, service_output.string.end_with?("selected_tags=#{expected_tags}\n"),
+          "#{path} emitted the wrong prerequisite tag plan: #{service_output.string.inspect}")
+  end
+
   io = StringIO.new
   ClassifyChanges.write_github_outputs(
     ClassifyChanges.classify(%w[roles/beszel/tasks/main.yml services/dozzle/compose.yml]), io
@@ -88,7 +102,7 @@ if defined?(ClassifyChanges)
     paperless=false
     idempotence_check=true
     run_ci=true
-    selected_tags=deployment_bundle,ntfy,beszel,dozzle
+    selected_tags=host_prep,deployment_bundle,ntfy,beszel,dozzle
   OUTPUT
   check(failures, io.string == expected_output,
         "GitHub output or prerequisite tag ordering was incorrect: #{io.string.inspect}")
@@ -140,7 +154,7 @@ if defined?(ClassifyChanges)
     paperless=true
     idempotence_check=true
     run_ci=true
-    selected_tags=deployment_bundle,paperless
+    selected_tags=host_prep,deployment_bundle,paperless
   OUTPUT
         "Paperless-only output must retain its exact tag plan: #{paperless_output.string.inspect}")
 

@@ -72,11 +72,11 @@ fi
 case "$suite" in
   foundation) fixed_tags=deployment_bundle ;;
   smoke) fixed_tags= ;;
-  beszel) fixed_tags=deployment_bundle,ntfy,beszel ;;
-  dozzle) fixed_tags=deployment_bundle,ntfy,dozzle ;;
-  audiobookshelf) fixed_tags=deployment_bundle,audiobookshelf ;;
-  media) fixed_tags=deployment_bundle,komga,tinymediamanager,jellyfin,immich ;;
-  paperless) fixed_tags=deployment_bundle,paperless ;;
+  beszel) fixed_tags=host_prep,deployment_bundle,ntfy,beszel ;;
+  dozzle) fixed_tags=host_prep,deployment_bundle,ntfy,dozzle ;;
+  audiobookshelf) fixed_tags=host_prep,deployment_bundle,audiobookshelf ;;
+  media) fixed_tags=host_prep,deployment_bundle,komga,tinymediamanager,jellyfin,immich ;;
+  paperless) fixed_tags=host_prep,deployment_bundle,paperless ;;
   idempotence-check) fixed_tags= ;;
   full) fixed_tags= ;;
   *)

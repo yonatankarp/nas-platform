@@ -8,11 +8,11 @@ module ClassifyChanges
   ].freeze
   SERVICE_LANES = %w[beszel dozzle audiobookshelf media paperless].freeze
   SERVICE_TAGS = {
-    "beszel" => %w[deployment_bundle ntfy beszel],
-    "dozzle" => %w[deployment_bundle ntfy dozzle],
-    "audiobookshelf" => %w[deployment_bundle audiobookshelf],
-    "media" => %w[deployment_bundle komga tinymediamanager jellyfin immich],
-    "paperless" => %w[deployment_bundle paperless]
+    "beszel" => %w[host_prep deployment_bundle ntfy beszel],
+    "dozzle" => %w[host_prep deployment_bundle ntfy dozzle],
+    "audiobookshelf" => %w[host_prep deployment_bundle audiobookshelf],
+    "media" => %w[host_prep deployment_bundle komga tinymediamanager jellyfin immich],
+    "paperless" => %w[host_prep deployment_bundle paperless]
   }.freeze
   SERVICE_NAMES = {
     "beszel" => %w[beszel],
