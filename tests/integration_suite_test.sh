@@ -104,6 +104,8 @@ grep -qF -- '-e INTEGRATION_SUITE="$suite"' "$integration"
 grep -qF -- '-e INTEGRATION_TAGS="$suite_tags"' "$integration"
 grep -qF -- '" integration-run "$playbook" "$@"' "$integration"
 grep -qF -- '\"\$playbook\" \"\$@\"' "$integration"
+grep -qF -- 'run_play --tags \"\$INTEGRATION_TAGS\" \"\$@\"' "$integration"
+grep -qF -- 'run_play \"\$@\"' "$integration"
 
 assert_rejected 'unknown integration suite: unknown' --suite unknown
 assert_rejected 'unknown integration suite: <missing>' --suite

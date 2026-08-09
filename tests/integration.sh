@@ -994,11 +994,11 @@ docker run --rm \
 
     run_selected_play() {
       if [ -n "\$INTEGRATION_TAGS" ]; then
-        run_play --tags "\$INTEGRATION_TAGS" "\$@"
+        run_play --tags \"\$INTEGRATION_TAGS\" \"\$@\"
       elif [ "\$#" -eq 0 ]; then
         run_play
       else
-        run_play "\$@"
+        run_play \"\$@\"
       fi
     }
 
