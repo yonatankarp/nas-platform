@@ -183,6 +183,7 @@ def validate_workflow(source)
   job = mapping(value_for(jobs, "validate"), "validate job")
   fail_contract("validate job must not have a condition") if key?(job, "if")
   steps = array(value_for(job, "steps"), "validate steps")
+  fail_contract("validate steps must contain only mappings") unless steps.all? { |step| step.is_a?(Hash) }
   checkout = assert_checkout(steps)
   classifier = assert_classifier(steps)
   docs = assert_docs_step(steps)
@@ -218,6 +219,8 @@ def self_test
   assert_failure("extra job", replace_once(source, "jobs:\n", "jobs:\n  extra:\n    runs-on: ubuntu-latest\n    steps: []\n"), "only the validate job")
   assert_failure("malformed YAML", "jobs: [", "YAML is malformed")
   assert_failure("jobs shape", "jobs: []\n", "jobs must be a mapping")
+  assert_failure("steps shape", "jobs:\n  validate:\n    steps: {}\n", "validate steps must be a list")
+  assert_failure("scalar step", replace_once(source, "    steps:\n      - name: Check out repository", "    steps:\n      - 7\n      - name: Check out repository"), "validate steps must contain only mappings")
 end
 
 if ARGV == ["--self-test"]
