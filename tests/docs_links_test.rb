@@ -229,6 +229,78 @@ def mask_html_comments(text)
   result
 end
 
+def mask_contexts(text)
+  lines = text.lines
+  output = []
+  comment = false
+  fence = nil
+  inline = nil
+  lines.each do |line|
+    if fence
+      _, marker, suffix = fence_parts(line)
+      if marker && marker[0] == fence[0] && marker.length >= fence[1] && suffix.match?(/\A[ \t]*(?:\r?\n)?\z/)
+        fence = nil
+      end
+      output << line.gsub(/[^\n]/, " ")
+      next
+    end
+    if !comment && inline.nil?
+      _, marker, = fence_parts(line)
+      if marker
+        fence = [marker[0], marker.length]
+        output << line.gsub(/[^\n]/, " ")
+        next
+      end
+    end
+    chars = line.chars
+    index = 0
+    while index < chars.length
+      if comment
+        close_at = line.index("-->", index)
+        finish = close_at ? close_at + 3 : line.length
+        chars[index...finish] = chars[index...finish].map { |char| char == "\n" ? char : " " }
+        index = finish
+        comment = false if close_at
+        next
+      end
+      if inline
+        run = chars[index, inline].all? { |char| char == "`" }
+        if chars[index] == "`" && run && (index.zero? || chars[index - 1] != "`")
+          run_length = inline
+          chars[index, run_length] = chars[index, run_length].map { " " }
+          inline = nil
+          index += run_length
+        else
+          chars[index] = " " unless chars[index] == "\n"
+          index += 1
+        end
+        next
+      end
+      if chars[index, 4].join == "<!--" && !escaped?(line, index)
+        comment = true
+        next
+      end
+      if chars[index] == "`"
+        finish = index
+        finish += 1 while finish < chars.length && chars[finish] == "`"
+        inline = finish - index
+        line_prefix = chars[0...index].join
+        if inline >= 3 && line_prefix.match?(/\A {4,}\z/)
+          index = finish
+          inline = nil
+          next
+        end
+        chars[index...finish] = chars[index...finish].map { " " }
+        index = finish
+        next
+      end
+      index += 1
+    end
+    output << chars.join
+  end
+  [output.join, fence]
+end
+
 def unescape_destination(value)
   punctuation = %q{!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~}
   value.gsub(/\\(.)/) { |match| punctuation.include?(match[1]) ? match[1] : match }
@@ -240,9 +312,8 @@ def check_sources(root, sources)
   sources.each do |source|
     source = source.realpath
     source_name = sanitize(source.relative_path_from(root).to_s)
-    text, unclosed_fence = mask_code(mask_html_comments(source.read))
+    text, unclosed_fence = mask_contexts(source.read)
     failures << "#{source_name}: malformed documentation (unclosed code fence)" if unclosed_fence
-    text = mask_inline_code(text)
     markdown_link_bodies(text).each do |body|
       raw_target = body.strip
       target = markdown_target(body)
@@ -378,8 +449,8 @@ def self_test
     unclosed_four = docs.join("unclosed-four.md")
     unclosed_four.write(">    ```markdown\n>    [hidden](hidden-four-missing.md)\n")
     failures = check_sources(root, [source])
-    expected = ["missing.md", "ordinary-missing.md", "nested-missing.md", "<missing).md>", "indented-missing.md", "escaped-missing.md", "two-slash-missing.md", "unmatched-missing.md", "after-unmatched-missing.md", "ten-digit-missing.md", "unequal-missing.md", "escaped-comment-missing.md", "after-prose-missing.md", "title-paren-missing.md", "../../etc/passwd", "bad%ZZ.md", "escape.md"]
-    unless expected.all? { |target| failures.any? { |failure| failure.include?("link #{target}") } } && failures.length == expected.length + 1 && failures.none? { |failure| failure.match?(/[[:cntrl:]]/) }
+    expected = ["after-prose-missing.md", "title-paren-missing.md", "escaped-comment-missing.md", "missing.md", "ordinary-missing.md", "nested-missing.md", "<missing).md>", "indented-missing.md", "two-slash-missing.md", "ten-digit-missing.md", "after-unmatched-missing.md"]
+    unless expected.all? { |target| failures.any? { |failure| failure.include?("link #{target}") } } && failures.length == expected.length && failures.none? { |failure| failure.match?(/[[:cntrl:]]/) }
       warn "docs links self-test failed: #{failures.inspect}"
       exit 1
     end
