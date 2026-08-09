@@ -160,6 +160,29 @@ def fence_parts(line)
   match ? [value, match[1], match[2]] : [nil, nil, nil]
 end
 
+def markdown_container(line)
+  rest = line.sub(/\A {0,3}/, "")
+  signature = []
+  list_item = false
+  loop do
+    if rest.sub!(/\A> ?/, "")
+      signature << :quote
+    elsif rest.sub!(/\A(?:[-+*] {1,4}|\d{1,9}[.)] {1,4})/, "")
+      signature << :list
+      list_item = true
+    else
+      break
+    end
+  end
+  [signature, line.length - rest.length, list_item]
+end
+
+def standalone_block_line?(line, content_start)
+  content = line[content_start..].to_s.sub(/\r?\n\z/, "")
+  content.match?(/\A {0,3}\#{1,6}(?:[ \t]+|$)/) ||
+    content.match?(/\A {0,3}(?:(?:\*\s*){3,}|(?:-\s*){3,}|(?:_\s*){3,})\z/)
+end
+
 def mask_inline_code(text)
   chars = text.chars
   index = 0
@@ -224,7 +247,10 @@ def mask_html_comments(text)
   while (start = result.index("<!--", index))
     range_index += 1 while code_ranges[range_index] && code_ranges[range_index].end <= start
     line_start = result.rindex("\n", start - 1).to_i + 1
-    block_comment = result[line_start...start].strip.empty?
+    line_end = result.index("\n", start) || result.length
+    current_line = result[line_start...line_end]
+    _, content_start, = markdown_container(current_line)
+    block_comment = result[(line_start + content_start)...start].strip.empty?
     inside_code = !block_comment && code_ranges[range_index]&.cover?(start)
     if escaped?(result, start) || inside_code
       index = start + 4
@@ -283,7 +309,8 @@ def mask_block_contexts(text)
 
       absolute = offset + start
       range_index += 1 while protected_ranges[range_index] && protected_ranges[range_index].end <= absolute
-      block_comment = line[0...start].strip.empty?
+      _, content_start, = markdown_container(line)
+      block_comment = line[content_start...start].strip.empty?
       protected = !block_comment && protected_ranges[range_index]&.cover?(absolute)
       if escaped?(line, start) || protected
         index = start + 4
@@ -400,7 +427,11 @@ def inline_partners(text)
   tokens = []
   offset = 0
   paragraph = 0
+  previous_container = []
   text.lines.each do |line|
+    container, content_start, list_item = markdown_container(line)
+    standalone_block = standalone_block_line?(line, content_start)
+    paragraph += 1 if container != previous_container || list_item || standalone_block
     index = 0
     leading_space = true
     leading_space_count = 0
@@ -430,7 +461,8 @@ def inline_partners(text)
       index = finish
     end
     offset += line.length
-    paragraph += 1 if line.strip.empty?
+    paragraph += 1 if line.strip.empty? || standalone_block
+    previous_container = container
   end
 
   next_matching = {}
@@ -675,6 +707,29 @@ def self_test
     paragraph_boundary_failures = check_sources(root, [paragraph_boundary])
     unless paragraph_boundary_failures == ["docs/paragraph-boundary.md: broken local link paragraph-boundary-missing.md"]
       warn "docs links paragraph-boundary self-test failed: #{paragraph_boundary_failures.inspect}"
+      exit 1
+    end
+    {
+      "heading-boundary.md" => "prefix `unclosed\n# [ordinary](heading-boundary-missing.md) `\n",
+      "thematic-boundary.md" => "prefix `unclosed\n---\n[ordinary](thematic-boundary-missing.md) `\n",
+      "quote-boundary.md" => "prefix `unclosed\n> [ordinary](quote-boundary-missing.md) `\n",
+      "list-boundary.md" => "prefix `unclosed\n- [ordinary](list-boundary-missing.md) `\n"
+    }.each do |name, body|
+      boundary_source = docs.join(name)
+      boundary_source.write(body)
+      expected_target = name.sub(".md", "-missing.md")
+      boundary_result = check_sources(root, [boundary_source])
+      expected_failure = "docs/#{name}: broken local link #{expected_target}"
+      unless boundary_result == [expected_failure]
+        warn "docs links block-boundary self-test failed: #{name}: #{boundary_result.inspect}"
+        exit 1
+      end
+    end
+    quoted_comment = docs.join("quoted-comment.md")
+    quoted_comment.write("> prefix `unclosed\n> <!--\n> [hidden](quoted-comment-hidden.md)\n> -->\n> [ordinary](quoted-comment-after.md) `\n")
+    quoted_comment_failures = check_sources(root, [quoted_comment])
+    unless quoted_comment_failures == ["docs/quoted-comment.md: broken local link quoted-comment-after.md"]
+      warn "docs links quoted-comment self-test failed: #{quoted_comment_failures.inspect}"
       exit 1
     end
     multiline_comment_code = docs.join("multiline-comment-code.md")
