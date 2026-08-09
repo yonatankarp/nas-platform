@@ -22,8 +22,11 @@
   ansible.builtin.assert:
     that:
       - item.keys() | list | sort == ['username', 'password', 'type', 'is_active', 'permissions'] | sort
+      - item.username is string
       - item.username | trim | length > 0
+      - item.password is string
       - item.password | length > 0
+      - item.type is string
       - item.type in ['admin', 'user', 'guest']
       - item.is_active is boolean
       - item.permissions is mapping
@@ -37,8 +40,11 @@
   ansible.builtin.assert:
     that:
       - item.keys() | list | sort == ['email', 'password', 'role', 'verified'] | sort
+      - item.email is string
       - item.email is match('^[^@ ]+@[^@ ]+$')
+      - item.password is string
       - item.password | length > 0
+      - item.role is string
       - item.role in ['user', 'admin']
       - item.verified is boolean
     fail_msg: beszel managed user has invalid field; values are redacted.
@@ -51,12 +57,18 @@
   ansible.builtin.assert:
     that:
       - item.keys() | list | sort == ['username', 'password', 'password_hash', 'email', 'name', 'filter', 'roles'] | sort
+      - item.username is string
       - item.username | trim | length > 0
+      - item.password is string
       - item.password | length > 0
+      - item.password_hash is string
       - item.password_hash is match('^\\$2[aby]\\$[0-9]{2}\\$[./A-Za-z0-9]{53}$')
+      - item.email is string
       - item.email | length == 0 or item.email is match('^[^@ ]+@[^@ ]+$')
+      - item.name is string
       - item.name | length > 0
       - item.filter is string
+      - item.roles is string
       - item.roles in ['none', 'user', 'admin']
     fail_msg: dozzle managed user has invalid field; values are redacted.
   loop: "{{ vault_managed_users.dozzle }}"
@@ -68,8 +80,11 @@
   ansible.builtin.assert:
     that:
       - item.keys() | list | sort == ['email', 'password', 'name', 'quota_size'] | sort
+      - item.email is string
       - item.email is match('^[^@ ]+@[^@ ]+$')
+      - item.password is string
       - item.password | length > 0
+      - item.name is string
       - item.name | length > 0
       - item.quota_size is integer
       - item.quota_size | int >= 0
@@ -83,9 +98,12 @@
   ansible.builtin.assert:
     that:
       - item.keys() | list | sort == ['username', 'password', 'policy'] | sort
+      - item.username is string
       - item.username | trim | length > 0
+      - item.password is string
       - item.password | length > 0
       - item.policy is mapping
+      - item.policy.keys() | reject('string') | list | length == 0
       - >-
         item.policy.keys() | map('lower') |
         intersect(forbidden_jellyfin_policy_fields) | length == 0
@@ -112,9 +130,12 @@
   ansible.builtin.assert:
     that:
       - item.keys() | list | sort == ['email', 'password', 'roles'] | sort
+      - item.email is string
       - item.email is match('^[^@ ]+@[^@ ]+$')
+      - item.password is string
       - item.password | length > 0
       - item.roles | type_debug == 'list'
+      - item.roles | reject('string') | list | length == 0
       - item.roles | length > 0
       - item.roles | difference(['ADMIN', 'FILE_DOWNLOAD', 'PAGE_STREAMING', 'KOBO_SYNC', 'OPDS']) | length == 0
       - item.roles | unique | length == item.roles | length
@@ -128,12 +149,17 @@
   ansible.builtin.assert:
     that:
       - item.keys() | list | sort == ['username', 'password', 'password_hash', 'role', 'access', 'tokens'] | sort
+      - item.username is string
       - item.username | trim | length > 0
+      - item.password is string
       - item.password | length > 0
+      - item.password_hash is string
       - item.password_hash is match('^\\$2[aby]\\$[0-9]{2}\\$[./A-Za-z0-9]{53}$')
+      - item.role is string
       - item.role in ['user', 'admin']
       - item.access | type_debug == 'list'
       - item.tokens | type_debug == 'list'
+      - item.tokens | reject('string') | list | length == 0
       - item.tokens | select('match', '^tk_[a-z0-9]{29}$') | list | length == item.tokens | length
       - item.tokens | unique | length == item.tokens | length
     fail_msg: ntfy managed user has invalid field; values are redacted.
@@ -146,7 +172,9 @@
   ansible.builtin.assert:
     that:
       - item.1.keys() | list | sort == ['topic', 'permission'] | sort
+      - item.1.topic is string
       - item.1.topic | length > 0
+      - item.1.permission is string
       - item.1.permission in ['read-only', 'write-only', 'read-write', 'deny']
     fail_msg: ntfy managed user has invalid access field; values are redacted.
   loop: "{{ vault_managed_users.ntfy | subelements('access') }}"
@@ -173,8 +201,11 @@
   ansible.builtin.assert:
     that:
       - item.keys() | list | sort == ['username', 'password', 'email', 'is_active', 'is_staff', 'is_superuser', 'groups'] | sort
+      - item.username is string
       - item.username | trim | length > 0
+      - item.password is string
       - item.password | length > 0
+      - item.email is string
       - item.email is match('^[^@ ]+@[^@ ]+$')
       - item.is_active is boolean
       - item.is_staff is boolean

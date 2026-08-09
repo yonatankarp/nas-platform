@@ -37,6 +37,17 @@ IDENTITY_FIELDS = {
   "paperless_ngx" => "username"
 }.freeze
 
+TEXT_FIELDS = {
+  "audiobookshelf" => %w[username password type],
+  "beszel" => %w[email password role],
+  "dozzle" => %w[username password password_hash email name filter roles],
+  "immich" => %w[email password name],
+  "jellyfin" => %w[username password],
+  "komga" => %w[email password],
+  "ntfy" => %w[username password password_hash role],
+  "paperless_ngx" => %w[username password email]
+}.freeze
+
 BCRYPT = /^\$2[aby]\$\d{2}\$[.\/A-Za-z0-9]{53}$/
 TOKEN = /^tk_[a-z0-9]{29}$/
 
@@ -285,6 +296,7 @@ check(failures,
       "ntfy access argument fields must be required strings")
 
 tasks = File.file?(TASKS_PATH) ? File.read(TASKS_PATH) : ""
+parsed_tasks = File.file?(TASKS_PATH) ? YAML.safe_load_file(TASKS_PATH, aliases: false) : []
 facts = ENTRY_FIELDS.keys.map { |service| "vault_managed_#{service}_users" }
 facts.each do |fact|
   check(failures, tasks.include?("#{fact}:"), "vault contract must publish named fact #{fact}")
@@ -324,6 +336,26 @@ required_validation_fragments.each do |fragment|
   check(failures, tasks.include?(fragment),
         "vault contract validation is missing #{fragment}")
 end
+TEXT_FIELDS.each do |service, fields|
+  task = parsed_tasks.find { |entry| entry["name"] == "Validate #{service} managed-user entries" }
+  conditions = Array(task&.dig("ansible.builtin.assert", "that"))
+  fields.each do |field|
+    check(failures, conditions.include?("item.#{field} is string"),
+          "#{service}.#{field} must have an explicit runtime string guard")
+  end
+end
+{
+  "Komga roles" => "item.roles | reject('string') | list | length == 0",
+  "ntfy tokens" => "item.tokens | reject('string') | list | length == 0",
+  "Paperless groups" => "item.groups | reject('string') | list | length == 0"
+}.each do |label, condition|
+  check(failures, tasks.include?(condition), "#{label} elements must have runtime string guards")
+end
+check(failures, tasks.include?("item.policy.keys() | reject('string') | list | length == 0"),
+      "Jellyfin policy keys must have runtime string guards")
+check(failures,
+      tasks.include?("item.1.topic is string") && tasks.include?("item.1.permission is string"),
+      "ntfy access fields must have runtime string guards")
 check(failures, tasks.include?("forbidden_jellyfin_policy_fields"),
       "vault contract must reject secret-bearing Jellyfin policy keys")
 check(failures, tasks.include?("vault_contract_managed_ntfy_tokens") &&
@@ -372,6 +404,34 @@ check(failures, valid_status.success?, "vault example must pass actual role eval
 wrong_type = duplicate(vault)
 wrong_type.dig("vault_managed_users", "audiobookshelf", 0)["permissions"] = ["wrong-type-sentinel"]
 expect_role_rejection(failures, "wrong nested field type", wrong_type, "wrong-type-sentinel")
+
+integer_username = duplicate(vault)
+integer_username.dig("vault_managed_users", "audiobookshelf", 0)["username"] = 424_242
+expect_role_rejection(failures, "integer audiobookshelf username", integer_username, "424242")
+
+list_password = duplicate(vault)
+list_password.dig("vault_managed_users", "audiobookshelf", 0)["password"] =
+  ["list-password-sentinel"]
+expect_role_rejection(failures, "list audiobookshelf password", list_password,
+                      "list-password-sentinel")
+
+list_dozzle_email = duplicate(vault)
+list_dozzle_email.dig("vault_managed_users", "dozzle", 0)["email"] =
+  ["list-email-sentinel"]
+expect_role_rejection(failures, "list Dozzle email", list_dozzle_email,
+                      "list-email-sentinel")
+
+list_dozzle_name = duplicate(vault)
+list_dozzle_name.dig("vault_managed_users", "dozzle", 0)["name"] =
+  ["list-name-sentinel"]
+expect_role_rejection(failures, "list Dozzle name", list_dozzle_name,
+                      "list-name-sentinel")
+
+list_ntfy_topic = duplicate(vault)
+list_ntfy_topic.dig("vault_managed_users", "ntfy", 0, "access", 0)["topic"] =
+  ["list-topic-sentinel"]
+expect_role_rejection(failures, "list ntfy access topic", list_ntfy_topic,
+                      "list-topic-sentinel")
 
 jellyfin_secret = duplicate(vault)
 jellyfin_secret.dig("vault_managed_users", "jellyfin", 0, "policy")["Password"] =
