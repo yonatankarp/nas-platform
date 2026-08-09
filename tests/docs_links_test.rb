@@ -215,9 +215,7 @@ end
 
 def mask_html_comments(text)
   result = text.dup
-  code_ranges = inline_partners(text).filter_map do |opening, closing|
-    (opening...closing) if opening < closing
-  end.sort_by(&:begin)
+  code_ranges = same_line_inline_ranges(text)
   range_index = 0
   index = 0
   while (start = result.index("<!--", index))
@@ -236,9 +234,7 @@ def mask_html_comments(text)
 end
 
 def mask_block_contexts(text)
-  protected_ranges = inline_partners(text).filter_map do |opening, closing|
-    (opening...closing) if opening < closing
-  end.sort_by(&:begin)
+  protected_ranges = same_line_inline_ranges(text)
   range_index = 0
   comment = false
   fence = nil
@@ -289,6 +285,17 @@ def mask_block_contexts(text)
     offset += line.length
     chars.join
   end.join
+end
+
+def same_line_inline_ranges(text)
+  offset = 0
+  text.lines.flat_map do |line|
+    ranges = inline_partners(line).filter_map do |opening, closing|
+      ((offset + opening)...(offset + closing)) if opening < closing
+    end
+    offset += line.length
+    ranges
+  end.sort_by(&:begin)
 end
 
 def mask_contexts(text)
@@ -391,43 +398,59 @@ end
 
 def inline_partners(text)
   partners = {}
-  cross_line_openings = {}
+  tokens = []
   offset = 0
   text.lines.each do |line|
-    runs = []
     index = 0
+    leading_space = true
+    leading_space_count = 0
+    slash_count = 0
     while index < line.length
-      unless line[index] == "`"
+      char = line[index]
+      if char == "\\"
+        slash_count += 1
+        index += 1
+        next
+      end
+      unless char == "`"
+        leading_space_count += 1 if leading_space && char == " "
+        leading_space = false unless char == " "
+        slash_count = 0
         index += 1
         next
       end
       finish = index + 1
       finish += 1 while finish < line.length && line[finish] == "`"
-      runs << [offset + index, finish - index] unless escaped?(line, index)
+      length = finish - index
+      position = offset + index
+      indented_block = leading_space && leading_space_count >= 4 && length >= 3
+      tokens << [position, length] unless slash_count.odd? || indented_block
+      leading_space = false
+      slash_count = 0
       index = finish
     end
-
-    waiting = {}
-    runs.each do |position, length|
-      if (opening = waiting.delete(length))
-        partners[opening] = position
-        partners[position] = opening
-      else
-        waiting[length] = position
-      end
-    end
-
-    runs.reject { |position,| partners.key?(position) }.each do |position, length|
-      before = line[0...(position - offset)]
-      if (opening = cross_line_openings[length])
-        cross_line_openings.delete(length)
-        partners[opening] = position
-        partners[position] = opening
-      elsif before.strip.empty?
-        cross_line_openings[length] = position
-      end
-    end
     offset += line.length
+  end
+
+  next_matching = {}
+  previous_by_length = {}
+  tokens.each_index do |token_index|
+    length = tokens[token_index][1]
+    next_matching[previous_by_length[length]] = token_index if previous_by_length.key?(length)
+    previous_by_length[length] = token_index
+  end
+  token_index = 0
+  while token_index < tokens.length
+    closing_index = next_matching[token_index]
+    unless closing_index
+      token_index += 1
+      next
+    end
+    opening = tokens[token_index][0]
+    closing = tokens[closing_index][0]
+    partners[opening] = closing
+    partners[closing] = opening
+    token_index = closing_index + 1
   end
   partners
 end
@@ -629,6 +652,20 @@ def self_test
     multiline_suffix_failures = check_sources(root, [multiline_suffix])
     unless multiline_suffix_failures == ["docs/multiline-suffix.md: broken local link multiline-suffix-after.md"]
       warn "docs links multiline-suffix self-test failed: #{multiline_suffix_failures.inspect}"
+      exit 1
+    end
+    prefixed_multiline = docs.join("prefixed-multiline.md")
+    prefixed_multiline.write("prefix `code\n[hidden](prefixed-multiline-hidden.md)\nend`\n[after](prefixed-multiline-after.md)\n")
+    prefixed_multiline_failures = check_sources(root, [prefixed_multiline])
+    unless prefixed_multiline_failures == ["docs/prefixed-multiline.md: broken local link prefixed-multiline-after.md"]
+      warn "docs links prefixed-multiline self-test failed: #{prefixed_multiline_failures.inspect}"
+      exit 1
+    end
+    cross_line_close = docs.join("cross-line-close.md")
+    cross_line_close.write("`open\n` [must-check](cross-line-must-check.md) `\n")
+    cross_line_close_failures = check_sources(root, [cross_line_close])
+    unless cross_line_close_failures == ["docs/cross-line-close.md: broken local link cross-line-must-check.md"]
+      warn "docs links cross-line-close self-test failed: #{cross_line_close_failures.inspect}"
       exit 1
     end
     nested_delimiters = docs.join("nested-delimiters.md")
