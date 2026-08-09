@@ -92,13 +92,24 @@ assert_signal_case() {
   target="$OUTDIR/signal-$signal.vault"
   ready="$TMP/signal-$signal.ready"
   gate="$TMP/signal-$signal.gate"
-  mkfifo "$ready" "$gate"
+  rm -f "$ready"
+  mkfifo "$gate"
   state_before=$(for file in "$INPUT"/*.env; do sum "$file"; mode "$file"; done)
-  READY="$ready" GATE="$gate" SIGNAL="$signal" PATH="$signal_fake:$PATH" "$IMPORTER" --input-dir "$INPUT" --output "$target" --vault-password-file "$PASSWORD" >"$stdout" 2>"$stderr" &
-  importer_pid=$!
-  IFS= read -r marker < "$ready"
-  [ "$marker" = ready ] || fail "$signal: fake vault did not synchronize"
-  if wait "$importer_pid"; then status=0; else status=$?; fi
+  if SIGNAL_PATH="$signal_fake:$PATH" ruby -e '
+    ready, gate, signal, stdout, stderr, *command = ARGV
+    pid = Process.spawn({ "READY" => ready, "GATE" => gate, "PATH" => ENV.fetch("SIGNAL_PATH") }, *command, out: stdout, err: stderr, pgroup: true)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 5
+    sleep 0.01 until File.exist?(ready) || Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+    abort "signal driver timeout" unless File.exist?(ready)
+    Process.kill(signal, pid)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 5
+    loop do
+      result = Process.waitpid2(pid, Process::WNOHANG)
+      if result; status = result.last; exit(status.exitstatus || 128 + status.termsig); end
+      if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline; Process.kill("KILL", -pid) rescue nil; Process.wait(pid) rescue nil; abort "signal driver timeout"; end
+      sleep 0.01
+    end
+  ' "$ready" "$gate" "$signal" "$stdout" "$stderr" "$IMPORTER" --input-dir "$INPUT" --output "$target" --vault-password-file "$PASSWORD"; then status=0; else status=$?; fi
   [ "$status" -eq "$expected" ] || fail "$signal: expected $expected, got $status"
   [ ! -e "$target" ] && [ ! -L "$target" ] || fail "$signal: output exists"
   [ ! -s "$stdout" ] || fail "$signal: stdout is not empty"
@@ -110,7 +121,7 @@ assert_signal_case() {
 stdout="$TMP/stdout" stderr="$TMP/stderr" output="$OUTDIR/parity.vault"
 signal_fake="$TMP/signal-fake"
 mkdir -m 700 "$signal_fake"
-printf '%s\n' '#!/bin/sh' 'printf "ready\\n" > "$READY"' 'kill -"$SIGNAL" "$PPID"' 'IFS= read -r _ < "$GATE"' 'exit 1' > "$signal_fake/ansible-vault"
+printf '%s\n' '#!/bin/sh' ': > "$READY"' 'IFS= read -r _ < "$GATE"' 'exit 1' > "$signal_fake/ansible-vault"
 chmod 700 "$signal_fake/ansible-vault"
 assert_signal_case HUP 129
 assert_signal_case INT 130
