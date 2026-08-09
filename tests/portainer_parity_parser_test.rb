@@ -166,6 +166,39 @@ def test_mapping_requires_the_protected_stack_set
   end
 end
 
+def test_mapping_requires_each_protected_variable_set
+  Dir.mktmpdir("nas-platform-portainer-parity-variables-") do |directory|
+    mapping = mapping_document
+    missing = YAML.safe_load(YAML.dump(mapping), aliases: false)
+    missing.fetch("stacks").fetch("dozzle").delete("TZ")
+    replacement = YAML.safe_load(YAML.dump(mapping), aliases: false)
+    replacement.fetch("stacks").fetch("dozzle")["UNRELATED"] = replacement.fetch("stacks").fetch("dozzle").delete("TZ")
+    extra = YAML.safe_load(YAML.dump(mapping), aliases: false)
+    extra.fetch("stacks").fetch("dozzle")["UNRELATED"] = { "classification" => "inventory", "target" => "nas_timezone" }
+
+    { "missing variable" => missing, "replacement variable" => replacement, "extra variable" => extra }.each do |label, document|
+      path = write_mapping(directory, "#{label.tr(' ', '-')}.yml", document)
+      assert_raises(label) { validate_mapping(document, COMMIT) }
+      Dir.mktmpdir("nas-platform-portainer-parity-variable-input-") do |input|
+        write_fixture(input, document)
+        assert_failure(label, "--input-dir", input, "--mapping", path, "--legacy-commit", COMMIT)
+      end
+    end
+  end
+end
+
+def test_mapping_rejects_symlinks_and_nonregular_paths
+  Dir.mktmpdir("nas-platform-portainer-parity-mapping-path-") do |directory|
+    symlink = File.join(directory, "mapping-link.yml")
+    File.symlink(MAPPING, symlink)
+    assert_raises("mapping symlink") { PortainerParity.load_mapping(symlink) }
+    with_fixture do |input, _mapping, _values|
+      assert_failure("mapping symlink", "--input-dir", input, "--mapping", symlink, "--legacy-commit", COMMIT)
+      assert_failure("mapping directory", "--input-dir", input, "--mapping", directory, "--legacy-commit", COMMIT)
+    end
+  end
+end
+
 def test_mapping_rejects_empty_and_multiple_documents
   Dir.mktmpdir("nas-platform-portainer-parity-documents-") do |directory|
     valid = File.binread(MAPPING)
@@ -266,6 +299,8 @@ test_cli_output
 test_direct_parser_rejects_bad_env_bytes_and_lines
 test_cli_rejects_bad_env_bytes_and_lines_without_leaks
 test_mapping_requires_the_protected_stack_set
+test_mapping_requires_each_protected_variable_set
+test_mapping_rejects_symlinks_and_nonregular_paths
 test_mapping_rejects_empty_and_multiple_documents
 test_cli_rejects_input_and_mapping_mutations_without_leaks
 

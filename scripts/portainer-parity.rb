@@ -10,9 +10,22 @@ class PortainerParityError < StandardError; end
 module PortainerParity
   ROOT_FIELDS = %w[legacy_commit schema stacks].freeze
   CLASSIFICATIONS = %w[excluded inventory role vault].freeze
-  REQUIRED_STACKS = %w[
-    audiobookshelf beszel dozzle immich jellyfin komga ntfy paperless-ngx tinymediamanager
-  ].freeze
+  EXPECTED_VARIABLES = {
+    "audiobookshelf" => %w[TZ].freeze,
+    "beszel" => %w[BESZEL_AGENT_KEY BESZEL_AGENT_TOKEN BESZEL_APP_URL BESZEL_SYSTEM_NAME TZ].freeze,
+    "dozzle" => %w[TZ].freeze,
+    "immich" => %w[DB_DATABASE_NAME DB_PASSWORD DB_USERNAME TZ].freeze,
+    "jellyfin" => %w[TZ].freeze,
+    "komga" => %w[GROUP_ID TZ USER_ID].freeze,
+    "ntfy" => %w[GROUP_ID NTFY_BASE_URL TZ USER_ID].freeze,
+    "paperless-ngx" => %w[
+      DB_NAME DB_PASSWORD DB_USER GROUP_ID PAPERLESS_AI_ENABLED
+      PAPERLESS_AI_LLM_ENDPOINT PAPERLESS_AI_LLM_MODEL PAPERLESS_SECRET_KEY
+      PAPERLESS_TASK_WORKERS PAPERLESS_THREADS_PER_WORKER TZ USER_ID
+    ].freeze,
+    "tinymediamanager" => %w[GROUP_ID PASSWORD TZ USER_ID].freeze
+  }.freeze
+  REQUIRED_STACKS = EXPECTED_VARIABLES.keys.sort.freeze
   ENVIRONMENT_NAME = /\A[A-Za-z_][A-Za-z0-9_]*\z/
   STACK_NAME = /\A[a-z0-9][a-z0-9-]*\z/
   COMMIT = /\A[0-9a-f]{40}\z/
@@ -39,6 +52,28 @@ module PortainerParity
 
   def exact_fields!(value, expected, label)
     fail!("#{label} fields differ") unless value.keys.all? { |key| key.is_a?(String) } && value.keys.sort == expected
+  end
+
+  def same_file?(left, right)
+    left.dev == right.dev && left.ino == right.ino
+  end
+
+  def read_regular_file(path, label)
+    initial = File.lstat(path)
+    fail!("unsafe #{label}") unless initial.file? && !initial.symlink?
+
+    flags = File::RDONLY
+    flags |= File::NOFOLLOW if File.const_defined?(:NOFOLLOW)
+    file = File.open(path, flags)
+    opened = file.stat
+    fail!("unsafe #{label}") unless opened.file? && same_file?(initial, opened)
+
+    file.binmode
+    file.read
+  rescue SystemCallError, IOError
+    fail!("#{label} is unavailable")
+  ensure
+    file&.close
   end
 
   def string_identifier!(value, label, pattern)
@@ -71,16 +106,12 @@ module PortainerParity
   end
 
   def load_mapping(path)
-    fail!("mapping is unsafe") unless File.file?(path) && !File.symlink?(path)
-
-    source = File.binread(path)
+    source = read_regular_file(path, "mapping")
     inspect_yaml_tree!(source)
-    document = YAML.safe_load_file(path, aliases: false)
+    document = YAML.safe_load(source, aliases: false, filename: sanitized(path))
     fail!("mapping document is empty") if document.nil?
 
     document
-  rescue SystemCallError
-    fail!("mapping is unavailable")
   rescue Psych::Exception
     fail!("mapping YAML is malformed")
   end
@@ -107,7 +138,8 @@ module PortainerParity
 
   def validate_rules!(rules, stack)
     rules = mapping!(rules, "stack rules")
-    fail!("stack rules are empty") if rules.empty?
+    fail!("stack variable set differs") unless rules.keys.all? { |key| key.is_a?(String) } &&
+                                                   rules.keys.sort == EXPECTED_VARIABLES.fetch(stack)
     rules.each do |key, rule|
       string_identifier!(key, "variable name", ENVIRONMENT_NAME)
       validate_rule!(rule)
@@ -131,9 +163,7 @@ module PortainerParity
   end
 
   def parse_env(path)
-    fail!("unsafe environment file") unless File.file?(path) && !File.symlink?(path)
-
-    bytes = File.binread(path)
+    bytes = read_regular_file(path, "environment file")
     fail!("environment file contains NUL") if bytes.include?("\0")
     fail!("environment file contains CR") if bytes.include?("\r")
     fail!("environment file has invalid encoding") unless bytes.dup.force_encoding(Encoding::UTF_8).valid_encoding?
@@ -151,13 +181,12 @@ module PortainerParity
       values[key] = value
     end
     values
-  rescue SystemCallError
-    fail!("environment file is unavailable")
   end
 
   def build_parity(input_dir, mapping, commit)
     document = validate_mapping(mapping, commit)
-    fail!("unsafe input directory") unless File.directory?(input_dir) && !File.symlink?(input_dir)
+    initial_directory = File.lstat(input_dir)
+    fail!("unsafe input directory") unless initial_directory.directory? && !initial_directory.symlink?
 
     stacks = document.fetch("stacks")
     expected_files = stacks.keys.map { |name| "#{name}.env" }.sort
@@ -170,6 +199,9 @@ module PortainerParity
 
       [stack, parsed.keys.sort.to_h { |key| [key, parsed.fetch(key)] }]
     end
+    current_directory = File.lstat(input_dir)
+    fail!("unsafe input directory") unless current_directory.directory? && same_file?(initial_directory, current_directory)
+
     { "schema" => 1, "legacy_commit" => commit, "stacks" => values }
   rescue SystemCallError
     fail!("input directory is unavailable")
