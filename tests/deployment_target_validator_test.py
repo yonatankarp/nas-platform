@@ -174,6 +174,26 @@ class DeploymentTargetValidatorTest(unittest.TestCase):
             result, "Unsafe deployment target payload: target at index 1 must be a string"
         )
 
+    def test_rejects_wrong_argument_count_without_traceback(self):
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assert_refused(
+            result, "Unsafe deployment target invocation: expected 6 arguments"
+        )
+
+    def test_rejects_invalid_require_current_without_traceback(self):
+        result = self.run_validator([str(self.root)], require_current="invalid")
+
+        self.assert_refused(
+            result,
+            "Unsafe deployment target invocation: require_current must be 0 or 1",
+        )
+
     def test_next_pointer_only_accepts_expected_canonical_release(self):
         self.next_pointer.symlink_to(self.expected_release, target_is_directory=True)
         accepted = self.run_validator([str(self.next_pointer)])

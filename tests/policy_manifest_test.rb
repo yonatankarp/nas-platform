@@ -895,6 +895,13 @@ expect_failure(failures, "root ancestor walk removed",
   File.write(path, File.read(path).gsub("root_relative_parts", "unchecked_root_parts"))
 end
 
+expect_failure(failures, "target validator lookup replaced",
+               "target containment task must execute the exact extracted validator source") do |root|
+  path = File.join(root, "roles", "deployment_bundle", "tasks", "target.yml")
+  lookup = "{{ lookup('ansible.builtin.file', role_path ~ '/files/validate_target.py') }}"
+  File.write(path, File.read(path).gsub(lookup, "{{ 'pass' }}"))
+end
+
 expect_failure(failures, "preflight probe leaf unguarded",
                "target validator must guard the exact preflight probe leaf") do |root|
   path = File.join(root, "roles", "deployment_bundle", "tasks", "target.yml")

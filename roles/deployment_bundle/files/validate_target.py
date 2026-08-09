@@ -9,6 +9,10 @@ def refuse_payload(message):
     raise SystemExit(f"Unsafe deployment target payload: {message}")
 
 
+def refuse_invocation(message):
+    raise SystemExit(f"Unsafe deployment target invocation: {message}")
+
+
 def validate_target(root, expected_release, current, next_pointer, require_current, target):
     raw_root, raw_target = root, target
     root = os.path.normpath(root)
@@ -96,7 +100,11 @@ def validate_target(root, expected_release, current, next_pointer, require_curre
 
 
 def main(argv):
+    if len(argv) != 6:
+        refuse_invocation("expected 6 arguments")
     root, expected_release, current, next_pointer, require_current, paths_json = argv
+    if require_current not in {"0", "1"}:
+        refuse_invocation("require_current must be 0 or 1")
     try:
         paths = json.loads(paths_json)
     except json.JSONDecodeError:
