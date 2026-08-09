@@ -86,7 +86,38 @@ assert_validate_file_failure() {
   if grep -F "$CANARY" "$stdout" "$stderr" >/dev/null; then fail "$label: validation leaked canary"; fi
 }
 
+assert_signal_case() {
+  signal=$1
+  expected=$2
+  target="$OUTDIR/signal-$signal.vault"
+  ready="$TMP/signal-$signal.ready"
+  gate="$TMP/signal-$signal.gate"
+  mkfifo "$ready" "$gate"
+  state_before=$(for file in "$INPUT"/*.env; do sum "$file"; mode "$file"; done)
+  READY="$ready" GATE="$gate" SIGNAL="$signal" PATH="$signal_fake:$PATH" "$IMPORTER" --input-dir "$INPUT" --output "$target" --vault-password-file "$PASSWORD" >"$stdout" 2>"$stderr" &
+  importer_pid=$!
+  IFS= read -r marker < "$ready"
+  [ "$marker" = ready ] || fail "$signal: fake vault did not synchronize"
+  printf release > "$gate" &
+  release_pid=$!
+  if wait "$importer_pid"; then status=0; else status=$?; fi
+  wait "$release_pid" || true
+  [ "$status" -eq "$expected" ] || fail "$signal: expected $expected, got $status"
+  [ ! -e "$target" ] && [ ! -L "$target" ] || fail "$signal: output exists"
+  [ ! -s "$stdout" ] || fail "$signal: stdout is not empty"
+  if grep -F "$CANARY" "$stdout" "$stderr" >/dev/null; then fail "$signal: canary leaked"; fi
+  assert "$state_before" "$(for file in "$INPUT"/*.env; do sum "$file"; mode "$file"; done)" "$signal: source inputs changed"
+  [ -z "$(find "$OUTDIR" -name '.portainer-parity-*' -print)" ] || fail "$signal: temporary files remain"
+}
+
 stdout="$TMP/stdout" stderr="$TMP/stderr" output="$OUTDIR/parity.vault"
+signal_fake="$TMP/signal-fake"
+mkdir -m 700 "$signal_fake"
+printf '%s\n' '#!/bin/sh' 'printf "ready\\n" > "$READY"' 'kill -"$SIGNAL" "$PPID"' 'IFS= read -r _ < "$GATE"' 'exit 1' > "$signal_fake/ansible-vault"
+chmod 700 "$signal_fake/ansible-vault"
+assert_signal_case HUP 129
+assert_signal_case INT 130
+assert_signal_case TERM 143
 "$IMPORTER" --input-dir "$INPUT" --output "$output" --vault-password-file "$PASSWORD" >"$stdout" 2>"$stderr" || fail "valid import failed"
 [ -f "$output" ] || fail "output missing"
 assert "$(mode "$output")" 600 "output mode differs"

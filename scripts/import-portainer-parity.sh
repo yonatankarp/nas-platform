@@ -46,10 +46,34 @@ cleanup() {
   [ -n "${CIPHER:-}" ] && /bin/rm -f -- "$CIPHER"
   [ -n "${VIEW:-}" ] && /bin/rm -f -- "$VIEW"
 }
+ACTIVE_PID=
+run_child() {
+  "$@" &
+  ACTIVE_PID=$!
+  if wait "$ACTIVE_PID"; then
+    ACTIVE_PID=
+    return 0
+  fi
+  status=$?
+  ACTIVE_PID=
+  return "$status"
+}
+handle_signal() {
+  status=$1
+  trap - HUP INT TERM
+  if [ -n "$ACTIVE_PID" ]; then
+    kill -TERM "$ACTIVE_PID" 2>/dev/null || true
+    wait "$ACTIVE_PID" 2>/dev/null || true
+    ACTIVE_PID=
+  fi
+  cleanup
+  trap - EXIT
+  exit "$status"
+}
 trap cleanup EXIT
-trap 'trap - HUP; exit 129' HUP
-trap 'trap - INT; exit 130' INT
-trap 'trap - TERM; exit 143' TERM
+trap 'handle_signal 129' HUP
+trap 'handle_signal 130' INT
+trap 'handle_signal 143' TERM
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P) || die "repository is unavailable"
 ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd -P) || die "repository is unavailable"
@@ -133,9 +157,9 @@ VIEW=$(mktemp "$OUTPUT_PARENT/.portainer-parity-view.XXXXXX") || die "temporary 
 chmod 600 "$PLAIN" "$CIPHER" "$VIEW" || die "temporary file setup failed"
 
 [ "$(identity "$MAPPING")" = "$MAPPING_ID" ] && git -C "$ROOT" diff --quiet -- "$MAPPING_REL" && git -C "$ROOT" diff --cached --quiet -- "$MAPPING_REL" || die "mapping changed during import"
-ruby "$ROOT/scripts/portainer-parity.rb" --input-dir "$INPUT" --mapping "$MAPPING" --legacy-commit 400f03f276ae1bb69f5460c175b9fb923d620f1a >"$PLAIN" 2>/dev/null || die "parity rendering failed"
+run_child ruby "$ROOT/scripts/portainer-parity.rb" --input-dir "$INPUT" --mapping "$MAPPING" --legacy-commit 400f03f276ae1bb69f5460c175b9fb923d620f1a >"$PLAIN" 2>/dev/null || die "parity rendering failed"
 PASSWORD_ID=$(identity "$PASSWORD") || die "password metadata is unavailable"
-ansible-vault encrypt --vault-password-file "$PASSWORD" --output "$CIPHER" "$PLAIN" >/dev/null 2>/dev/null || die "vault encryption failed"
+run_child ansible-vault encrypt --vault-password-file "$PASSWORD" --output "$CIPHER" "$PLAIN" >/dev/null 2>/dev/null || die "vault encryption failed"
 [ "$(identity "$PASSWORD")" = "$PASSWORD_ID" ] && [ "$(mode "$PASSWORD")" = "$password_mode" ] || die "password changed during import"
 [ -f "$CIPHER" ] && [ ! -L "$CIPHER" ] && [ "$(mode "$CIPHER")" = 600 ] || die "ciphertext is unsafe"
 IFS= read -r header < "$CIPHER" || die "ciphertext is invalid"
@@ -143,10 +167,10 @@ case "$header" in '$ANSIBLE_VAULT;'*) ;; *) die "ciphertext is invalid" ;; esac
 
 # A separate owned file lets each command's status be checked without pipefail.
 PASSWORD_ID=$(identity "$PASSWORD") || die "password metadata is unavailable"
-ansible-vault view --vault-password-file "$PASSWORD" "$CIPHER" >"$VIEW" 2>/dev/null || die "vault verification failed"
+run_child ansible-vault view --vault-password-file "$PASSWORD" "$CIPHER" >"$VIEW" 2>/dev/null || die "vault verification failed"
 [ "$(identity "$PASSWORD")" = "$PASSWORD_ID" ] && [ "$(mode "$PASSWORD")" = "$password_mode" ] || die "password changed during import"
 [ "$(identity "$MAPPING")" = "$MAPPING_ID" ] && git -C "$ROOT" diff --quiet -- "$MAPPING_REL" && git -C "$ROOT" diff --cached --quiet -- "$MAPPING_REL" || die "mapping changed during import"
-ruby "$ROOT/scripts/portainer-parity.rb" --validate-stdin --mapping "$MAPPING" --legacy-commit 400f03f276ae1bb69f5460c175b9fb923d620f1a <"$VIEW" >/dev/null 2>/dev/null || die "decrypted schema is invalid"
+run_child ruby "$ROOT/scripts/portainer-parity.rb" --validate-stdin --mapping "$MAPPING" --legacy-commit 400f03f276ae1bb69f5460c175b9fb923d620f1a <"$VIEW" >/dev/null 2>/dev/null || die "decrypted schema is invalid"
 
 # link(2) publishes only if OUTPUT is still absent; unlike mv it never replaces.
 if ! checksum_line=$(shasum -a 256 -- "$CIPHER"); then
