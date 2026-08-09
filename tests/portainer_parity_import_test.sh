@@ -218,6 +218,13 @@ env PATH="$password_race:$PATH" REAL_VAULT="$real_vault" PASSWORD_TO_MUTATE="$PA
 chmod 600 "$PASSWORD"
 assert_failure_state password-mode-before-encrypt "$OUTDIR/password-encrypt-race.vault" "$race_state"
 
+printf '%s\n' '#!/bin/sh' 'if [ "${1-}" = view ]; then chmod 644 "$PASSWORD_TO_MUTATE"; fi' 'exec "$REAL_VAULT" "$@"' > "$password_race/ansible-vault"
+chmod 700 "$password_race/ansible-vault"
+race_state=$(for file in "$INPUT"/*.env; do sum "$file"; mode "$file"; done)
+env PATH="$password_race:$PATH" REAL_VAULT="$real_vault" PASSWORD_TO_MUTATE="$PASSWORD" "$IMPORTER" --input-dir "$INPUT" --output "$OUTDIR/password-view-race.vault" --vault-password-file "$PASSWORD" >"$stdout" 2>"$stderr" && fail "password-mode-before-view: unexpectedly succeeded"
+chmod 600 "$PASSWORD"
+assert_failure_state password-mode-before-view "$OUTDIR/password-view-race.vault" "$race_state"
+
 fake="$TMP/fake-bin"
 mkdir -m 700 "$fake"
 printf '%s\n' '#!/bin/sh' 'exit 1' > "$fake/ansible-vault"
