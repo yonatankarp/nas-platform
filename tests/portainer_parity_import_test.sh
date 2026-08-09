@@ -18,9 +18,12 @@ mode() { ruby -e 'puts((File.lstat(ARGV.fetch(0)).mode & 0o777).to_s(8))' "$1"; 
 sum() { ruby -rdigest -e 'puts Digest::SHA256.file(ARGV.fetch(0)).hexdigest' "$1"; }
 identity() { ruby -e 's = File.lstat(ARGV.fetch(0)); puts "#{s.dev}:#{s.ino}:#{(s.mode & 0o777).to_s(8)}"' "$1"; }
 
+repo_password=
+repo_output=
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/nas-platform-parity-import.XXXXXX")
 cleanup() {
-  [ -z "${repo_password:-}" ] || rm -f "$repo_password" "$repo_output"
+  [ -z "$repo_password" ] || rm -f "$repo_password"
+  [ -z "$repo_output" ] || rm -f "$repo_output"
   rm -rf "$TMP"
 }
 handle_signal() {
