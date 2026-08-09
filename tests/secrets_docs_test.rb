@@ -67,18 +67,27 @@ check(failures,
       "canonical secrets guide must place Migration workflow before Brand-new platform")
 
 mac_guide = File.read(File.join(ROOT, "docs", "getting-started-mac.md"))
-check(failures, !mac_guide.include?('--phase "$phase" || break'),
+mac_proof_block = mac_guide.scan(/```sh\n(.*?)```/m).flatten.find do |block|
+  block.include?("for phase in deploy seed verify")
+end.to_s
+check(failures,
+      mac_proof_block.match?(/if ! tests\/mac\/run\.sh.*?proof_status=1.*?break.*?if \[ "\$proof_status" -ne 0 \].*?STOP:.*?else.*?All automated phases passed/m),
       "Mac proof loop must not continue to manual review after a failed phase")
 check(failures,
       secrets_guide.include?('password_lines=$(awk \'END { print NR }\' "$PLATFORM_VAULT_PASSWORD_FILE")') &&
       secrets_guide.include?('if [ "$password_lines" -ne 1 ] || [ ! -s "$PLATFORM_VAULT_PASSWORD_FILE" ]'),
       "canonical secrets guide must reject empty or multiline vault passwords")
+encryption_block = secrets_guide.scan(/```sh\n(.*?)```/m).flatten.find do |block|
+  block.include?('vault_encryption_input=$(mktemp')
+end.to_s
+encrypt_position = encryption_block.index("ansible-vault encrypt")
+publish_position = encryption_block.index('mv "$vault_encryption_input" "$PLATFORM_VAULT_FILE"')
 check(failures,
-      secrets_guide.include?('vault_encryption_input=$(mktemp "$PLATFORM_VAULT_DIR/.vault-encryption.XXXXXX")') &&
-      secrets_guide.include?('mv "$vault_encryption_input" "$PLATFORM_VAULT_FILE"'),
+      encryption_block.include?('[ "${brand_new_generation_ready:-false}" != true ]') &&
+      encrypt_position && publish_position && encrypt_position < publish_position,
       "brand-new workflow must publish the external vault only after encryption")
 check(failures,
-      secrets_guide.include?('if ansible-playbook generate-secrets.yml -e generate_brand_new_platform=true; then'),
+      secrets_guide.match?(/brand_new_generation_ready=false.*?if ansible-playbook generate-secrets\.yml.*?then\s+brand_new_generation_ready=true/m),
       "brand-new workflow must stop after generator failure")
 
 if failures.empty?

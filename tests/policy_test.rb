@@ -577,6 +577,11 @@ check(failures,
       "Paperless PostgreSQL 18 mount parent must be traversable by the postgres user")
 paperless_contract = File.read(File.join(ROOT, "tests", "contracts", "paperless.sh"))
 paperless_snapshot = File.read(File.join(ROOT, "tests", "mac", "snapshot-paperless.sh"))
+root_version_checksum = %r{
+  document\.fetch\("versions"\)\.find\s*\{\s*\|version\|\s*
+  version\.fetch\("is_root"\)\s*\}.*?
+  root_version&?\.fetch\("checksum"\)
+}mx
 check(failures,
       paperless_contract.include?("PDF_MARKER = \"paperlesscontractenglish\""),
       "Paperless contract must define the PDF fixture marker")
@@ -585,8 +590,8 @@ check(failures,
       paperless_contract.match?(%r{/preview/.*, token: token, parse_json: false}),
       "Paperless binary preview responses must bypass JSON parsing")
 check(failures,
-      paperless_contract.include?('document.fetch("versions").find'),
-      "Paperless checksum verification must use the version metadata returned by API v3")
+      paperless_contract.match?(root_version_checksum),
+      "Paperless checksum verification must select the API v3 root-version checksum")
 check(failures,
       paperless_contract.match?(/EXPORT_PATH\.mkdir\(0o700\).*?document_exporter/m),
       "Paperless portable export must create the required empty target directory")
@@ -608,7 +613,7 @@ check(failures,
       }mx),
       "Paperless portable import must reload and health-check the webserver search index")
 check(failures,
-      paperless_snapshot.include?('document.fetch("versions").find') &&
+      paperless_snapshot.match?(root_version_checksum) &&
       paperless_snapshot.match?(/def catalogue.*?"checksum" => document_checksum\(document\)/m),
       "Paperless snapshot catalogue must use API v3 root-version checksums")
 check(failures,

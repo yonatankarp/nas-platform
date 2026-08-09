@@ -297,6 +297,7 @@ described above, use this gate to confirm that neither the external vault nor
 either repository output exists. The generator runs only in the safe branch:
 
 ```sh
+brand_new_generation_ready=false
 if [ -e "$PLATFORM_VAULT_FILE" ] || \
    [ -e inventory/group_vars/all/vault-plain.yml ] || \
    [ -e inventory/group_vars/all/vault.yml ]; then
@@ -309,6 +310,7 @@ if [ -e "$PLATFORM_VAULT_FILE" ] || \
   printf 'STOP: inspect existing material; generation did not run\n' >&2
 else
   if ansible-playbook generate-secrets.yml -e generate_brand_new_platform=true; then
+    brand_new_generation_ready=true
     printf 'Plaintext generation completed; encrypt it immediately\n'
   else
     printf 'STOP: secret generation failed; do not continue\n' >&2
@@ -322,7 +324,9 @@ or leave it in the checkout. Immediately move and encrypt it with the prepared
 password file:
 
 ```sh
-if [ -e "$PLATFORM_VAULT_FILE" ]; then
+if [ "${brand_new_generation_ready:-false}" != true ]; then
+  printf 'STOP: generation did not complete successfully in this shell\n' >&2
+elif [ -e "$PLATFORM_VAULT_FILE" ]; then
   printf 'STOP: encrypted vault appeared; plaintext remains in the checkout\n' >&2
   printf 'Inspect both paths and resolve them without overwriting either one\n' >&2
 elif [ ! -f inventory/group_vars/all/vault-plain.yml ]; then
@@ -349,6 +353,7 @@ else
   fi
   unset vault_encryption_input
 fi
+unset brand_new_generation_ready
 ```
 
 Use `ansible-vault edit` for the private manual review. Replace the generated
