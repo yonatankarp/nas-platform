@@ -4,6 +4,7 @@
 # Strict contract for the protected Portainer environment mapping. The mapping
 # describes identifiers only; it must never contain exported values.
 
+require "fileutils"
 require "tmpdir"
 require "yaml"
 require_relative "policy_support"
@@ -29,6 +30,11 @@ EXPECTED = {
   "tinymediamanager" => %w[GROUP_ID PASSWORD TZ USER_ID]
 }.transform_values(&:sort).freeze
 ALLOWED_CLASSIFICATIONS = %w[inventory vault role excluded].freeze
+# Task 4 moves these legacy Compose settings into Paperless role defaults. Keep
+# this temporary migration allowance narrow and remove it with that declaration.
+PLANNED_ROLE_TARGETS = {
+  "paperless-ngx" => %w[paperless_task_workers paperless_threads_per_worker].freeze
+}.freeze
 CANONICAL_RULES = {
   "audiobookshelf" => { "TZ" => ["inventory", "nas_timezone"] },
   "beszel" => {
@@ -134,14 +140,48 @@ def inventory_targets
 end
 
 def role_target_exists?(stack, target)
+  return true if PLANNED_ROLE_TARGETS.fetch(stack, []).include?(target)
+
   role = stack == "paperless-ngx" ? "paperless_ngx" : stack
-  paths = Dir.glob(File.join(ROOT, "roles", role, "{defaults,vars,meta,templates}", "**", "*")) +
-          Dir.glob(File.join(ROOT, "services", stack, "compose.yml"))
-  identifiers = [target, target.upcase]
-  paths.any? do |path|
-    File.file?(path) && identifiers.any? do |identifier|
-      File.binread(path).match?(/(?<![A-Za-z0-9_])#{Regexp.escape(identifier)}(?![A-Za-z0-9_])/)
-    end
+  role_root = File.join(ROOT, "roles", role)
+  return false unless File.directory?(role_root)
+
+  role_variable_keys(role_root).include?(target) ||
+    role_option_keys(role_root).include?(target) ||
+    role_template_references?(role_root, target)
+end
+
+def role_variable_keys(role_root)
+  %w[defaults vars].flat_map do |section|
+    path = File.join(role_root, section, "main.yml")
+    next [] unless File.file?(path) && !File.symlink?(path)
+
+    mapping(load_yaml(path, "#{section} variables"), "#{section} variables").keys
+  end
+end
+
+def role_option_keys(role_root)
+  path = File.join(role_root, "meta", "argument_specs.yml")
+  return [] unless File.file?(path) && !File.symlink?(path)
+
+  specifications = mapping(load_yaml(path, "role argument specs"), "role argument specs")["argument_specs"]
+  return [] unless specifications.is_a?(Hash)
+
+  specifications.values.flat_map do |specification|
+    next [] unless specification.is_a?(Hash)
+
+    options = specification["options"]
+    options.is_a?(Hash) ? options.keys : []
+  end
+end
+
+def role_template_references?(role_root, target)
+  expression = /\A\s*#{Regexp.escape(target)}(?:\s*(?:\||\z))/
+  Dir.glob(File.join(role_root, "templates", "**", "*.j2")).any? do |path|
+    next false if File.symlink?(path)
+
+    source = File.binread(path).gsub(/\{#.*?#\}/m, "")
+    source.scan(/\{\{(.*?)\}\}/m).any? { |content| content.first.match?(expression) }
   end
 end
 
@@ -221,6 +261,68 @@ def assert_failure(label, source, message)
   end
 end
 
+def with_fixture_root
+  Dir.mktmpdir("nas-platform-portainer-role-target-") do |directory|
+    original_root = Object.const_get(:ROOT)
+    Object.send(:remove_const, :ROOT)
+    Object.const_set(:ROOT, directory)
+    yield directory
+  ensure
+    Object.send(:remove_const, :ROOT)
+    Object.const_set(:ROOT, original_root)
+  end
+end
+
+def write_role_fixture(root)
+  role_root = File.join(root, "roles", "sample")
+  FileUtils.mkdir_p(File.join(role_root, "defaults"))
+  FileUtils.mkdir_p(File.join(role_root, "vars"))
+  FileUtils.mkdir_p(File.join(role_root, "meta"))
+  FileUtils.mkdir_p(File.join(role_root, "templates"))
+  FileUtils.mkdir_p(File.join(root, "services", "sample"))
+  File.write(File.join(role_root, "defaults", "main.yml"), <<~YAML)
+    # yaml_comment_target
+    literal_holder: yaml_literal_target
+    declared_default_target: value
+  YAML
+  File.write(File.join(role_root, "vars", "main.yml"), "declared_var_target: value\n")
+  File.write(File.join(role_root, "meta", "argument_specs.yml"), <<~YAML)
+    argument_specs:
+      main:
+        options:
+          declared_spec_target: {type: str}
+  YAML
+  File.write(File.join(role_root, "templates", "env.j2"), <<~JINJA)
+    {# {{ template_comment_target }} #}
+    DECLARED={{ declared_template_target | default('value') }}
+    LITERAL=template_literal_target
+  JINJA
+  File.write(File.join(root, "services", "sample", "compose.yml"), "COMPOSE_ONLY_TARGET=value\n")
+end
+
+def assert_role_target(target, expected)
+  actual = role_target_exists?("sample", target)
+  raise "#{target}: expected role declaration #{expected}, got #{actual}" unless actual == expected
+end
+
+def self_test_role_targets
+  with_fixture_root do |root|
+    write_role_fixture(root)
+    assert_role_target("yaml_comment_target", false)
+    assert_role_target("yaml_literal_target", false)
+    assert_role_target("template_comment_target", false)
+    assert_role_target("template_literal_target", false)
+    assert_role_target("compose_only_target", false)
+    assert_role_target("declared_default_target", true)
+    assert_role_target("declared_var_target", true)
+    assert_role_target("declared_spec_target", true)
+    assert_role_target("declared_template_target", true)
+    assert_role_target("stale_target", false)
+  end
+  raise "planned role target is absent" unless role_target_exists?("paperless-ngx", "paperless_task_workers")
+  raise "unlisted planned target passed" if role_target_exists?("paperless-ngx", "paperless_unlisted_target")
+end
+
 def self_test
   validate_mapping
   assert_failure("missing stack", mutate_mapping { |mapping| mapping["stacks"].delete("ntfy") }, "stacks differ")
@@ -238,6 +340,7 @@ def self_test
   assert_failure("malformed root", "[]\n", "mapping must be a mapping")
   assert_failure("duplicate key", "schema: 1\nschema: 1\n", "contains duplicate YAML keys")
   assert_failure("alias", "schema: &schema 1\nlegacy_commit: 400f03f276ae1bb69f5460c175b9fb923d620f1a\nstacks: *schema\n", "contains YAML aliases")
+  self_test_role_targets
 end
 
 if ARGV == ["--self-test"]
