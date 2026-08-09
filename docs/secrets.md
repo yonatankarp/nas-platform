@@ -5,6 +5,12 @@ normal path is migration or adoption: preserve every deployed identity and
 integration exactly. The encrypted vault is configuration, not a credential
 rotation mechanism.
 
+This permanent deployment vault is distinct from the
+[temporary Portainer parity vault](portainer-parity.md). The parity vault is
+migration evidence derived from legacy environment exports and is retired after
+the rollback window; production roles consume only the deployment vault
+described here.
+
 ## Migration workflow
 
 Run every repository command from the repository root. Prepare the pinned

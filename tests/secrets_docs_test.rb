@@ -30,6 +30,9 @@ vault_keys = if vault_example.is_a?(Hash)
 
 secrets_guide_path = File.join(ROOT, "docs", "secrets.md")
 secrets_guide = File.file?(secrets_guide_path) ? File.read(secrets_guide_path) : ""
+parity_guide_path = File.join(ROOT, "docs", "portainer-parity.md")
+parity_guide = File.file?(parity_guide_path) ? File.read(parity_guide_path) : ""
+parity_prose = parity_guide.gsub(/\s+/, " ")
 documented_key_counts = secrets_guide.scan(/`(vault_[^`]*)`/).flatten.tally
 
 missing_keys = vault_keys.reject { |key| documented_key_counts.key?(key) }
@@ -52,6 +55,48 @@ check(failures, missing_keys.empty? && duplicate_keys.empty? && unexpected_keys.
 readme = File.read(File.join(ROOT, "README.md"))
 check(failures, readme.include?("](docs/secrets.md)"),
       "README must link to docs/secrets.md")
+
+portainer_exports = %w[
+  audiobookshelf.env
+  beszel.env
+  dozzle.env
+  immich.env
+  jellyfin.env
+  komga.env
+  ntfy.env
+  paperless-ngx.env
+  tinymediamanager.env
+]
+check(failures, File.file?(parity_guide_path),
+      "Portainer parity guide is missing")
+portainer_exports.each do |filename|
+  check(failures, parity_guide.include?(filename),
+        "Portainer parity guide must name #{filename}")
+end
+check(failures,
+      parity_prose.include?("All three paths must remain outside the repository") &&
+      parity_guide.include?("PORTAINER_ENV_DIR") &&
+      parity_guide.include?("PORTAINER_PARITY_FILE") &&
+      parity_guide.include?("PORTAINER_PARITY_PASSWORD_FILE"),
+      "Portainer sources, output, and password must remain outside the repository")
+check(failures,
+      parity_prose.include?("does not source or evaluate") &&
+      parity_prose.include?("never overwrites an existing parity vault"),
+      "Portainer guide must promise literal parsing and no overwrite")
+check(failures,
+      parity_prose.include?("SHA-256 checksum of the ciphertext") &&
+      parity_prose.include?("Only after verification") &&
+      parity_prose.include?("operator explicitly removes the protected plaintext exports"),
+      "Portainer guide must verify ciphertext before operator-only plaintext deletion")
+check(failures,
+      parity_prose.include?("rollback window expires") &&
+      parity_prose.include?("operator explicitly destroys the parity vault and every backup"),
+      "Portainer guide must retire parity material after rollback expiry")
+check(failures,
+      secrets_guide.include?("](portainer-parity.md)") &&
+      secrets_guide.include?("deployment vault") &&
+      secrets_guide.include?("temporary Portainer parity vault"),
+      "canonical secrets guide must distinguish and link deployment and parity vaults")
 
 %w[getting-started-mac.md getting-started-nas.md].each do |guide_name|
   guide_path = File.join(ROOT, "docs", guide_name)
