@@ -5,10 +5,11 @@ your Mac. It does not SSH to or otherwise contact the physical NAS. Service
 data is disposable; credentials may deliberately match the NAS so that reused
 logins, ntfy tokens, Beszel keys, and future integrations are proven portable.
 
-Today this proof covers ntfy, Beszel, Dozzle, and Audiobookshelf. It sends test
-alerts to the sandbox's own ntfy instance. Mobile delivery is outside scope.
-Services marked `planned` in [`services/manifest.yml`](../services/manifest.yml)
-cannot yet be manually accepted on the Mac.
+This proof covers all nine implemented services in
+[`services/manifest.yml`](../services/manifest.yml): Audiobookshelf, Beszel,
+Dozzle, Immich, Jellyfin, Komga, ntfy, Paperless-ngx, and tinyMediaManager. It
+sends test alerts to the sandbox's own ntfy instance. Mobile delivery is
+outside scope.
 
 ## 1. Install and verify prerequisites
 
@@ -104,14 +105,28 @@ for phase in deploy seed verify idempotence drift reconcile recreate persistence
 done
 ```
 
-Use [`tests/mac/manual-review.md`](../tests/mac/manual-review.md) while those
+Use [`tests/mac/manual-review.md`](../tests/mac/manual-review.md) while all nine
 services are running. Record the reviewer, manifest commit, decision, and
-non-secret notes. Only implemented services can pass today; leave planned
-services explicitly unproved rather than marking them successful.
+non-secret notes. Credential continuity requires a private check for every
+service:
 
-For the current services, confirm existing credentials log in, Audiobookshelf
-use works after recreation, Beszel and Dozzle are configured, authentication is
-enforced, and disposable alerts arrive in this deployment's ntfy client.
+- Audiobookshelf, Jellyfin, and Komga: sign in with each deployed administrator
+  identity and confirm the disposable libraries remain usable after recreation.
+- Beszel: sign in with both deployed hub identities, confirm the existing agent
+  key and token connect the disposable agent, and send only a disposable ntfy
+  event.
+- Dozzle: sign in with the deployed administrator password represented by the
+  installed hash, inspect its managed event rules, and send only a disposable
+  ntfy event.
+- Immich: sign in with the deployed administrator identity and confirm the
+  existing database identity retains the disposable assets after recreation.
+- ntfy: confirm the deployed administrator login, anonymous denial, and the
+  existing distinct Beszel and Dozzle tokens using disposable messages.
+- Paperless-ngx: sign in with the deployed administrator identity, confirm its
+  database-backed fixtures survive recreation, and inspect the existing Gmail
+  account and mail rule without fetching mail.
+- tinyMediaManager: confirm the deployed API password still authorizes the
+  client and that disposable settings persist after recreation.
 
 After the review, produce the report and clean only the validated sandbox:
 

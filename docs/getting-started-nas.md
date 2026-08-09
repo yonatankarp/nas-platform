@@ -3,9 +3,10 @@
 This path targets production. Complete the
 [disposable Mac proof](getting-started-mac.md), back up application data, and
 confirm every required service is `implemented` or `accepted` in
-[`services/manifest.yml`](../services/manifest.yml) before cutover. Today only
-ntfy, Beszel, Dozzle, and Audiobookshelf are implemented; this is not yet a
-complete replacement for the legacy NAS platform.
+[`services/manifest.yml`](../services/manifest.yml) before cutover. All nine
+current services are implemented: Audiobookshelf, Beszel, Dozzle, Immich,
+Jellyfin, Komga, ntfy, Paperless-ngx, and tinyMediaManager. Implementation and
+the Mac proof do not replace the service-specific production cutover packets.
 
 Commands are labelled **read-only**, **check mode**, or **changes production**.
 
@@ -137,7 +138,11 @@ ansible-playbook -i inventory/remote.yml site.yml --ask-vault-pass
 
 Record the Git commit, encrypted vault checksum, recap, application checks, and
 operator decision without recording secrets. Existing NAS credentials must work
-unchanged. Verify ntfy authentication plus alerts from Beszel and Dozzle.
+unchanged for all nine services. Repeat the service-specific credential checks
+from the [Mac manual review](getting-started-mac.md#4-perform-the-manual-review)
+against the production deployment without exercising external integrations; for
+ntfy, use only an agreed disposable topic when verifying alerts from Beszel and
+Dozzle.
 
 ## Recovery and rollback boundary
 
@@ -147,8 +152,8 @@ decrypting the vault into the repository, or broadly removing Docker data.
 
 Before each service cutover, its migration packet must name the old stack,
 new stack, data snapshot, acceptance checks, maximum outage, and exact rollback
-trigger. Until that packet and the remaining service roles exist, keep the
-legacy deployment recoverable and stop before production cutover. If a run
+trigger. Until that packet exists for a service, keep its legacy deployment
+recoverable and stop before its production cutover. If a run
 fails, capture the first failure, container state, and bounded logs; then use
 the tested service-specific backup/rollback procedure or fix forward with a
 reviewed Ansible change.

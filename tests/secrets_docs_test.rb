@@ -2,9 +2,6 @@
 # Keep the canonical secrets guide aligned with the deployment vault contract.
 
 require "yaml"
-require_relative "policy_support"
-
-include PolicySupport
 
 ROOT = File.expand_path("..", __dir__)
 failures = []
@@ -25,7 +22,7 @@ rescue Psych::Exception
 end
 
 vault_keys = if vault_example.is_a?(Hash)
-               vault_example.keys.grep(String).select { |key| key.start_with?("vault_") }.uniq.sort
+               vault_example.keys.grep(String).select { |key| key.start_with?("vault_") }.sort
              else
                check(failures, false, "vault example must contain a mapping")
                []
@@ -33,14 +30,23 @@ vault_keys = if vault_example.is_a?(Hash)
 
 secrets_guide_path = File.join(ROOT, "docs", "secrets.md")
 secrets_guide = File.file?(secrets_guide_path) ? File.read(secrets_guide_path) : ""
-documented_keys = secrets_guide.scan(/`(vault_[a-z0-9_]+)`/).flatten.uniq.sort
+documented_key_counts = secrets_guide.scan(/`(vault_[^`]*)`/).flatten.tally
 
-missing_keys = vault_keys - documented_keys
-unexpected_keys = documented_keys - vault_keys
+missing_keys = vault_keys.reject { |key| documented_key_counts.key?(key) }
+duplicate_keys = vault_keys.filter_map do |key|
+  count = documented_key_counts.fetch(key, 0)
+  [key, count] if count > 1
+end
+unexpected_keys = documented_key_counts.keys.reject { |key| vault_keys.include?(key) }.sort
 schema_diagnostic = []
-schema_diagnostic << "missing: #{missing_keys.join(', ')}" unless missing_keys.empty?
-schema_diagnostic << "unexpected: #{unexpected_keys.join(', ')}" unless unexpected_keys.empty?
-check(failures, missing_keys.empty? && unexpected_keys.empty?,
+schema_diagnostic << "missing: #{missing_keys.map { |key| "#{key}=0" }.join(', ')}" unless missing_keys.empty?
+unless duplicate_keys.empty?
+  schema_diagnostic << "duplicate: #{duplicate_keys.map { |key, count| "#{key}=#{count}" }.join(', ')}"
+end
+unless unexpected_keys.empty?
+  schema_diagnostic << "unexpected: #{unexpected_keys.map { |key| "#{key}=#{documented_key_counts.fetch(key)}" }.join(', ')}"
+end
+check(failures, missing_keys.empty? && duplicate_keys.empty? && unexpected_keys.empty?,
       "canonical secrets guide vault keys differ (#{schema_diagnostic.join('; ')})")
 
 readme = File.read(File.join(ROOT, "README.md"))
