@@ -29,36 +29,33 @@ ansible-playbook --version
 Stop if any command fails. Docker must be running, and `ansible-playbook` must
 report Core 2.21.2.
 
-## 2. Create the external password input
+## 2. Prepare the external vault
 
-Keep both proof inputs outside the checkout. The following uses a protected
-plaintext vault-password file for the first proof. A password-manager-backed
-executable is preferable for unattended long-term use.
+The proof commands below consume these two protected inputs outside the
+checkout:
 
-```sh
-mkdir -p "$HOME/.config/nas-platform"
-chmod 700 "$HOME/.config/nas-platform"
-umask 077
-${EDITOR:-vi} "$HOME/.config/nas-platform/vault-password"
-chmod 600 "$HOME/.config/nas-platform/vault-password"
-```
+- `$HOME/.config/nas-platform/vault-password`
+- `$HOME/.config/nas-platform/vault.yml`
 
-Enter one strong password on one line. Do not pass it as a command argument or
-paste it into shell history. Back it up in your password manager.
+The canonical guide is the sole owner of creating the protected directory,
+password input, and encrypted vault. Read the
+[secrets and encrypted-vault guide](secrets.md), following it from
+[Prepare protected external files](secrets.md#prepare-protected-external-files)
+through the
+[Preparation and validation handoff](secrets.md#preparation-and-validation-handoff),
+then return here for step 3.
 
-## 3. Prepare the portable vault
-
-Complete the migration workflow in the
-[secrets and encrypted-vault guide](secrets.md) before running the complete fresh
-proof. It prepares, validates, and reviews the external encrypted vault used by
-the commands below.
+Generate the vault password in your password manager and back it up there. Do
+not pass it as a command argument or paste it into shell history. A
+password-manager-backed executable is preferable to a plaintext password file
+for unattended long-term use.
 
 Do **not** use `generate-secrets.yml` for migration: it is only for a brand-new
 platform and would break the requirement that current NAS credentials continue
 to work. After review, the external ciphertext may become the NAS vault; never
 commit its password or a plaintext vault.
 
-## 4. Run the complete fresh proof
+## 3. Run the complete fresh proof
 
 From the repository root:
 
@@ -78,7 +75,7 @@ cleanup removes the service-data sandbox. The sibling `.reports` directory is
 retained and contains `report.md` and `report.json`; the harness prints its
 absolute path. Reports are sanitized and contain no application log bodies.
 
-## 5. Perform the manual review
+## 4. Perform the manual review
 
 The complete run above proves the automated lifecycle and cleans its containers.
 For a manual review, start a second proof one phase at a time. Run `preflight`
@@ -133,7 +130,7 @@ tests/mac/run.sh \
   --phase cleanup
 ```
 
-## 6. Resume or clean a failed proof
+## 5. Resume or clean a failed proof
 
 Failures preserve the sandbox and print exactly one validated `Cleanup command`.
 Copy that exact command when you are finished inspecting it. Do not replace it

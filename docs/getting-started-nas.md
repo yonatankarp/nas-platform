@@ -52,19 +52,21 @@ and rollback packet is a later migration deliverable.
 
 The migration requirement is credential continuity: every login, database
 password, hash, ntfy token, Beszel key, Gmail setting, and other deployed value
-must remain exactly current. Complete the migration workflow in the
-[secrets and encrypted-vault guide](secrets.md), including its validation,
-private review, and Mac proof, before continuing.
+must remain exactly current. The preparation, validation, private-review, and
+Mac-proof portions of the
+[secrets and encrypted-vault guide](secrets.md) must be complete before
+continuing.
 
-Reuse the reviewed Mac vault as ciphertext instead of authoring it again:
+Now resume the canonical workflow at
+[Install reviewed vault for NAS](secrets.md#install-reviewed-vault-for-nas)
+section exactly once. Its guarded mutation copies only the reviewed Mac
+ciphertext and refuses to overwrite an existing repository vault. If the
+repository vault already exists, stop and inspect it, then explicitly decide to
+reuse it or follow a separate backed-up replacement procedure.
 
-```sh
-install -m 600 "$HOME/.config/nas-platform/vault.yml" \
-  inventory/group_vars/all/vault.yml
-```
-
-Only ciphertext is copied. Verify its header and repository status without
-showing its contents:
+After that canonical step installs a new vault, or after you explicitly confirm
+that the existing vault is the reviewed artifact to reuse, verify its header and
+repository status without showing its contents:
 
 ```sh
 head -n 1 inventory/group_vars/all/vault.yml

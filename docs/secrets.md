@@ -179,7 +179,7 @@ ansible-vault edit \
 
 Never decrypt a vault onto disk.
 
-### Identify, back up, and prove
+### Record and back up the encrypted vault
 
 A SHA-256 of ciphertext is safe to record as the identity of the encrypted
 artifact; it is not a checksum of plaintext values. Use the command for the
@@ -210,7 +210,20 @@ applications and databases retain credentials in their own data/configuration.
 Treat those runtime paths and all backups as secret-bearing even though the
 repository vault remains encrypted.
 
-Before production use, run the complete disposable Mac proof:
+### Preparation and validation handoff
+
+The external vault is ready for the disposable proof only after its permissions
+and header pass, the redacted contract validation succeeds, the private review
+confirms the deployed values, and both protected inputs are backed up as
+described above. Operators following the Mac walkthrough should now return to
+[step 3, Run the complete fresh proof](getting-started-mac.md#3-run-the-complete-fresh-proof).
+
+### Run the complete Mac proof
+
+Before production use, complete the disposable Mac proof and its manual review,
+starting at
+[step 3 of the Mac walkthrough](getting-started-mac.md#3-run-the-complete-fresh-proof).
+The complete fresh-proof command is:
 
 ```sh
 tests/mac/run.sh \
@@ -218,6 +231,11 @@ tests/mac/run.sh \
   --vault-file "$PLATFORM_VAULT_FILE" \
   --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE"
 ```
+
+Do not continue to NAS installation until the complete proof and its review
+pass.
+
+### Install reviewed vault for NAS
 
 Only after validation, private review, and the complete proof pass, copy the
 ciphertext into the repository location for NAS deployment. The destination
@@ -306,3 +324,31 @@ the Paperless Gmail account and its Google app password, and preserve the
 generated internal relationships. Then rerun the exact redacted validation and
 the header, permission, backup, and Mac proof checks above. This path creates a
 new platform identity set and is forbidden for migration.
+
+## Rotate the vault password safely
+
+Rekeying is a deliberate password rotation: it does not rotate the credentials
+inside the vault, but it does rewrite the ciphertext and therefore changes its
+SHA-256 checksum. Schedule it as a controlled change. Generate and back up the
+new password in the password manager first, retain the old password until the
+new ciphertext is validated and backed up, and never supply either password as
+a command-line value.
+
+With `PLATFORM_VAULT_PASSWORD_FILE` and `PLATFORM_VAULT_FILE` set to the
+protected external inputs described above, run the interactive form:
+
+```sh
+ansible-vault rekey \
+  --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE" \
+  "$PLATFORM_VAULT_FILE"
+```
+
+Ansible reads the current password from the protected input and prompts for the
+new password without placing it in shell history. Enter the password already
+stored in the password manager. After rekeying, update the canonical password
+file through an editor and keep it mode 0600; if the password input is an
+executable provider, update its backed password-manager entry instead. Then
+rerun the permission, header, redacted validation, private review, and Mac proof
+checks. Record the new ciphertext checksum and back up the new encrypted vault
+separately from its new password. Never decrypt the vault onto disk for password
+rotation.
