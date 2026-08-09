@@ -88,11 +88,11 @@ def matching_parentheses(text)
       next
     end
     if text[index] == "(" && (stack.any? || candidates[index]) && !(stack.any? && stack[-1][1])
-      stack << [index, false]
-    elsif text[index].match?(/[\"']/) && !stack.empty? && !stack[-1][1] && index.positive? && text[index - 1].match?(/\s/)
-      stack[-1][1] = true
-    elsif text[index].match?(/[\"']/) && !stack.empty? && stack[-1][1]
-      stack[-1][1] = false
+      stack << [index, nil]
+    elsif text[index].match?(/[\"']/) && !stack.empty? && stack[-1][1].nil? && index.positive? && text[index - 1].match?(/\s/)
+      stack[-1][1] = text[index]
+    elsif text[index].match?(/[\"']/) && !stack.empty? && stack[-1][1] == text[index]
+      stack[-1][1] = nil
     elsif text[index] == ")" && !stack.empty? && !stack[-1][1] && (open = stack.pop[0])
       matches[open] = index
     end
@@ -234,7 +234,9 @@ def mask_contexts(text)
   output = []
   comment = false
   fence = nil
-  inline = nil
+    inline = nil
+    inline_start = nil
+    offset = 0
   lines.each do |line|
     if fence
       _, marker, suffix = fence_parts(line)
@@ -242,6 +244,7 @@ def mask_contexts(text)
         fence = nil
       end
       output << line.gsub(/[^\n]/, " ")
+      offset += line.length
       next
     end
     if !comment && inline.nil?
@@ -249,6 +252,7 @@ def mask_contexts(text)
       if marker
         fence = [marker[0], marker.length]
         output << line.gsub(/[^\n]/, " ")
+        offset += line.length
         next
       end
     end
@@ -265,10 +269,12 @@ def mask_contexts(text)
       end
       if inline
         run = chars[index, inline].all? { |char| char == "`" }
-        if chars[index] == "`" && run && (index.zero? || chars[index - 1] != "`")
+        exact = index + inline >= chars.length || chars[index + inline] != "`"
+        if chars[index] == "`" && run && exact && (index.zero? || chars[index - 1] != "`")
           run_length = inline
           chars[index, run_length] = chars[index, run_length].map { " " }
           inline = nil
+          inline_start = nil
           index += run_length
         else
           chars[index] = " " unless chars[index] == "\n"
@@ -284,12 +290,23 @@ def mask_contexts(text)
         finish = index
         finish += 1 while finish < chars.length && chars[finish] == "`"
         inline = finish - index
+        slash_count = 0
+        before = index - 1
+        while before >= 0 && chars[before] == "\\"
+          slash_count += 1
+          before -= 1
+        end
+        if slash_count.odd?
+          index = finish
+          next
+        end
         line_prefix = chars[0...index].join
         if inline >= 3 && line_prefix.match?(/\A {4,}\z/)
           index = finish
           inline = nil
           next
         end
+        inline_start = offset + index
         chars[index...finish] = chars[index...finish].map { " " }
         index = finish
         next
@@ -297,8 +314,11 @@ def mask_contexts(text)
       index += 1
     end
     output << chars.join
+    offset += line.length
   end
-  [output.join, fence]
+  masked = output.join
+  masked[inline_start..] = text[inline_start..] if inline_start
+  [masked, fence]
 end
 
 def unescape_destination(value)
@@ -369,6 +389,7 @@ def self_test
       [file](valid%20file.md)
       prose < unmatched [after-prose](after-prose-missing.md)
       [title-paren](title-paren-missing.md "title (")
+      [single-title](single-title-missing.md 'author"s (title')
       [not-a-link] (not-a-link-missing.md)
       <!-- [comment](comment-missing.md) -->
       <!-- ` [comment-inline](comment-inline-missing.md) `
@@ -427,6 +448,8 @@ def self_test
       [ten-digit](ten-digit-missing.md)
       ` [later masked](later-masked-missing.md) `
       [after unmatched](after-unmatched-missing.md)
+      [post-unmatched](post-unmatched-missing.md)
+      [post-malformed](post%ZZ.md)
       ``
       [multiline](multiline-missing.md)
       ``
@@ -449,8 +472,8 @@ def self_test
     unclosed_four = docs.join("unclosed-four.md")
     unclosed_four.write(">    ```markdown\n>    [hidden](hidden-four-missing.md)\n")
     failures = check_sources(root, [source])
-    expected = ["after-prose-missing.md", "title-paren-missing.md", "escaped-comment-missing.md", "missing.md", "ordinary-missing.md", "nested-missing.md", "<missing).md>", "indented-missing.md", "two-slash-missing.md", "ten-digit-missing.md", "after-unmatched-missing.md"]
-    unless expected.all? { |target| failures.any? { |failure| failure.include?("link #{target}") } } && failures.length == expected.length && failures.none? { |failure| failure.match?(/[[:cntrl:]]/) }
+    expected = ["after-prose-missing.md", "title-paren-missing.md", "single-title-missing.md", "escaped-comment-missing.md", "missing.md", "ordinary-missing.md", "nested-missing.md", "<missing).md>", "indented-missing.md", "two-slash-missing.md", "ten-digit-missing.md", "after-unmatched-missing.md", "post-unmatched-missing.md", "post%ZZ.md", "unequal-missing.md", "../../etc/passwd", "bad%ZZ.md", "escape.md"]
+    unless expected.all? { |target| failures.any? { |failure| failure.include?("link #{target}") } } && failures.length == expected.length + 1 && failures.none? { |failure| failure.match?(/[[:cntrl:]]/) }
       warn "docs links self-test failed: #{failures.inspect}"
       exit 1
     end
