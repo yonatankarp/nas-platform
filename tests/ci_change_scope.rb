@@ -1,6 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require "open3"
+
 def check(actual, expected, label)
   raise "#{label}: expected #{expected.inspect}, got #{actual.inspect}" unless actual == expected
 end
@@ -18,6 +20,8 @@ if ARGV == ["--self-test"]
   check(classify([".github/workflows/ci.yml"]), false, "workflow")
   check(classify([]), false, "empty")
   check(classify(["docs"]), false, "docs directory literal")
+  _stdout, _stderr, status = Open3.capture3(RbConfig.ruby, __FILE__, stdin_data: "docs/\0")
+  check(status.success?, false, "trailing empty component")
   puts "CI change scope: fail-closed classification holds"
   exit
 end
@@ -30,7 +34,7 @@ abort "changed paths must be NUL-delimited" if paths.any?(&:empty?)
 abort "changed paths must be relative" if paths.any? { |path| path.start_with?("/") }
 abort "changed paths contain control bytes" if paths.any? { |path| path.match?(/[[:cntrl:]]/) }
 abort "changed paths contain an unsafe component" if paths.any? do |path|
-  path.split("/").any? { |component| [".", "..", ""].include?(component) }
+  path.split("/", -1).any? { |component| [".", "..", ""].include?(component) }
 end
 puts "docs_only=#{classify(paths)}"
 puts "changed_count=#{paths.length}"
