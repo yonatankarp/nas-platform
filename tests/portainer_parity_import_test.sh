@@ -166,6 +166,18 @@ chmod 700 "$fake/ansible-vault"
 assert_race_failure publication-race "$race_output" "$race_record" env RACE_OUTPUT="$race_output" RACE_RECORD="$race_record" REAL_VAULT="$real_vault" PATH="$fake:$PATH" "$IMPORTER" --input-dir "$INPUT" --output "$race_output" --vault-password-file "$PASSWORD"
 [ "$(cat "$race_output")" = racer ] || fail "publication race content changed"
 
+directory_race="$OUTDIR/race-directory"
+printf '%s\n' '#!/bin/sh' 'mkdir "$RACE_OUTPUT" 2>/dev/null || :' 'printf sentinel > "$RACE_OUTPUT/sentinel"' 'exec "$REAL_VAULT" "$@"' > "$fake/ansible-vault"
+chmod 700 "$fake/ansible-vault"
+state_before=$(for file in "$INPUT"/*.env; do sum "$file"; mode "$file"; done)
+RACE_OUTPUT="$directory_race" REAL_VAULT="$real_vault" PATH="$fake:$PATH" "$IMPORTER" --input-dir "$INPUT" --output "$directory_race" --vault-password-file "$PASSWORD" >"$stdout" 2>"$stderr" && fail "directory race unexpectedly succeeded"
+[ -d "$directory_race" ] && [ "$(cat "$directory_race/sentinel")" = sentinel ] || fail "directory racer changed"
+[ -z "$(find "$directory_race" -type f ! -name sentinel -print)" ] || fail "directory racer contains ciphertext"
+[ ! -s "$stdout" ] && [ "$(wc -l < "$stderr" | tr -d ' ')" -eq 1 ] || fail "directory race diagnostics differ"
+if grep -F "$CANARY" "$stdout" "$stderr" >/dev/null; then fail "directory race leaked canary"; fi
+assert "$state_before" "$(for file in "$INPUT"/*.env; do sum "$file"; mode "$file"; done)" "directory race changed sources"
+[ -z "$(find "$OUTDIR" -name '.portainer-parity-*' -print)" ] || fail "directory race left temporary files"
+
 assert_failure duplicate-arguments "$OUTDIR/duplicate.vault" "$IMPORTER" --input-dir "$INPUT" --output "$OUTDIR/duplicate.vault" --vault-password-file "$PASSWORD" --mapping "$MAPPING" --mapping "$MAPPING"
 assert_failure unknown-argument "$OUTDIR/unknown.vault" "$IMPORTER" --unknown
 
