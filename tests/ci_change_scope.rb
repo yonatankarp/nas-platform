@@ -1,9 +1,6 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-require "open3"
-require "rbconfig"
-
 def check(actual, expected, label)
   raise "#{label}: expected #{expected.inspect}, got #{actual.inspect}" unless actual == expected
 end
@@ -35,13 +32,21 @@ def run_cli(argv, input)
   "docs_only=#{classify(paths)}\nchanged_count=#{paths.length}\n"
 end
 
-def self_test_case(label, input, args, success, stdout, stderr)
-  env = { "CI_CHANGE_SCOPE_CHILD" => "1" }
-  actual_stdout, actual_stderr, status = Open3.capture3(env, RbConfig.ruby, __FILE__, *args, stdin_data: input)
-  check([status.success?, actual_stdout, actual_stderr], [success, stdout, stderr], label)
+def execute(argv, input)
+  [true, run_cli(argv, input), ""]
+rescue RuntimeError => e
+  [false, "", "#{e.message}\n"]
 end
 
-if ARGV == ["--self-test"] && ENV["CI_CHANGE_SCOPE_CHILD"] != "1"
+def self_test_case(label, input, args, success, stdout, stderr)
+  check(execute(args, input), [success, stdout, stderr], label)
+end
+
+if ARGV == ["--self-test"]
+  self_test_case("README", "README.md\0", [], true, "docs_only=true\nchanged_count=1\n", "")
+  self_test_case("docs", "docs/guide.md\0docs/nested/page.md\0", [], true, "docs_only=true\nchanged_count=2\n", "")
+  self_test_case("workflow", ".github/workflows/ci.yml\0", [], true, "docs_only=false\nchanged_count=1\n", "")
+  self_test_case("docs directory literal", "docs\0", [], true, "docs_only=false\nchanged_count=1\n", "")
   self_test_case("valid docs", "docs/page.md\0README.md\0", [], true, "docs_only=true\nchanged_count=2\n", "")
   self_test_case("empty", "", [], true, "docs_only=false\nchanged_count=0\n", "")
   self_test_case("mixed", "docs/page.md\0roles/app.yml\0", [], true, "docs_only=false\nchanged_count=2\n", "")
