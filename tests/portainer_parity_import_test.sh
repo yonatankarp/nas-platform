@@ -42,6 +42,13 @@ assert_failure() {
   shift 2
   state_before=$(for file in "$INPUT"/*.env; do sum "$file"; mode "$file"; done)
   "$@" >"$stdout" 2>"$stderr" && fail "$label: unexpectedly succeeded"
+  assert_failure_state "$label" "$target" "$state_before"
+}
+
+assert_failure_state() {
+  label=$1
+  target=$2
+  state_before=$3
   [ ! -e "$target" ] && [ ! -L "$target" ] || fail "$label: output exists"
   [ ! -s "$stdout" ] || fail "$label: stdout is not empty"
   [ "$(wc -l < "$stderr" | tr -d ' ')" -eq 1 ] || fail "$label: stderr is not one line"
@@ -190,6 +197,26 @@ printf '%s\n' '#!/bin/sh' 'printf "%s\\n" "correct horse battery staple"' > "$pa
 chmod 700 "$password_exec"
 "$IMPORTER" --input-dir "$INPUT" --output "$OUTDIR/executable-password.vault" --vault-password-file "$password_exec" >"$stdout" 2>"$stderr" || fail "executable password source failed"
 [ -f "$OUTDIR/executable-password.vault" ] || fail "executable password output missing"
+
+race_ruby="$TMP/race-ruby"
+mkdir -m 700 "$race_ruby"
+real_ruby=$(command -v ruby)
+printf '%s\n' '#!/bin/sh' 'case "$*" in *portainer-parity.rb*) if [ ! -e "$MUTATED" ]; then chmod 644 "$ENV_TO_MUTATE"; : > "$MUTATED"; fi ;; esac' 'exec "$REAL_RUBY" "$@"' > "$race_ruby/ruby"
+chmod 700 "$race_ruby/ruby"
+race_state=$(for file in "$INPUT"/*.env; do sum "$file"; mode "$file"; done)
+env PATH="$race_ruby:$PATH" REAL_RUBY="$real_ruby" ENV_TO_MUTATE="$INPUT/dozzle.env" MUTATED="$TMP/env-mutated" "$IMPORTER" --input-dir "$INPUT" --output "$OUTDIR/env-mode-race.vault" --vault-password-file "$PASSWORD" >"$stdout" 2>"$stderr" && fail "env-mode-race: unexpectedly succeeded"
+chmod 600 "$INPUT/dozzle.env"
+assert_failure_state env-mode-race "$OUTDIR/env-mode-race.vault" "$race_state"
+
+password_race="$TMP/password-race"
+mkdir -m 700 "$password_race"
+real_vault=$(command -v ansible-vault)
+printf '%s\n' '#!/bin/sh' 'chmod 644 "$PASSWORD_TO_MUTATE"' 'exec "$REAL_VAULT" "$@"' > "$password_race/ansible-vault"
+chmod 700 "$password_race/ansible-vault"
+race_state=$(for file in "$INPUT"/*.env; do sum "$file"; mode "$file"; done)
+env PATH="$password_race:$PATH" REAL_VAULT="$real_vault" PASSWORD_TO_MUTATE="$PASSWORD" "$IMPORTER" --input-dir "$INPUT" --output "$OUTDIR/password-encrypt-race.vault" --vault-password-file "$PASSWORD" >"$stdout" 2>"$stderr" && fail "password-mode-before-encrypt: unexpectedly succeeded"
+chmod 600 "$PASSWORD"
+assert_failure_state password-mode-before-encrypt "$OUTDIR/password-encrypt-race.vault" "$race_state"
 
 fake="$TMP/fake-bin"
 mkdir -m 700 "$fake"
