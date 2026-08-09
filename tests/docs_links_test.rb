@@ -231,7 +231,8 @@ end
 
 def mask_contexts(text)
   lines = text.lines
-  partners = inline_partners(text)
+  partner_text, = mask_code(mask_html_comments(text))
+  partners = inline_partners(partner_text)
   output = []
   comment = false
   fence = nil
@@ -513,7 +514,7 @@ def self_test
     unclosed_four = docs.join("unclosed-four.md")
     unclosed_four.write(">    ```markdown\n>    [hidden](hidden-four-missing.md)\n")
     failures = check_sources(root, [source])
-    expected = ["after-prose-missing.md", "title-paren-missing.md", "single-title-missing.md", "escaped-comment-missing.md", "missing.md", "ordinary-missing.md", "nested-missing.md", "<missing).md>", "indented-missing.md", "escaped-missing.md", "two-slash-missing.md"]
+    expected = ["after-prose-missing.md", "title-paren-missing.md", "single-title-missing.md", "escaped-comment-missing.md", "missing.md", "ordinary-missing.md", "nested-missing.md", "<missing).md>", "indented-missing.md", "escaped-missing.md", "two-slash-missing.md", "unmatched-missing.md", "ten-digit-missing.md"]
     unless expected.all? { |target| failures.any? { |failure| failure.include?("link #{target}") } } && failures.length == expected.length && failures.none? { |failure| failure.match?(/[[:cntrl:]]/) }
       warn "docs links self-test failed: #{failures.inspect}"
       exit 1
@@ -523,6 +524,20 @@ def self_test
     required_failures = check_sources(root, [required])
     unless required_failures.any? { |failure| failure.include?("broken local link ../../etc/passwd") } && required_failures.any? { |failure| failure.include?("malformed local link bad%ZZ.md") } && required_failures.any? { |failure| failure.include?("broken local link escape.md") }
       warn "docs links failure-category self-test failed: #{failures.inspect}"
+      exit 1
+    end
+    boundary = docs.join("boundary.md")
+    boundary.write("prefix `\n```markdown\n`[inside-fence](inside-fence-missing.md) `\n```\n[after-fence](after-fence-boundary-missing.md)\n")
+    boundary_failures = check_sources(root, [boundary])
+    unless boundary_failures == ["docs/boundary.md: broken local link after-fence-boundary-missing.md"]
+      warn "docs links fence-boundary self-test failed: #{boundary_failures.inspect}"
+      exit 1
+    end
+    comment_boundary = docs.join("comment-boundary.md")
+    comment_boundary.write("prefix `\n<!-- ` [inside-comment](inside-comment-missing.md) ` -->\n[after-comment](after-comment-boundary-missing.md)\n")
+    comment_boundary_failures = check_sources(root, [comment_boundary])
+    unless comment_boundary_failures == ["docs/comment-boundary.md: broken local link after-comment-boundary-missing.md"]
+      warn "docs links comment-boundary self-test failed: #{comment_boundary_failures.inspect}"
       exit 1
     end
     unclosed_failures = check_sources(root, [unclosed])
