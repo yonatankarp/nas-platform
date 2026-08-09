@@ -150,7 +150,7 @@
     that:
       - item.keys() | list | sort == ['username', 'password', 'password_hash', 'role', 'access', 'tokens'] | sort
       - item.username is string
-      - item.username | trim | length > 0
+      - item.username is match('^[-_.+@A-Za-z0-9]+$')
       - item.password is string
       - item.password | length > 0
       - item.password_hash is string
@@ -173,9 +173,10 @@
     that:
       - item.1.keys() | list | sort == ['topic', 'permission'] | sort
       - item.1.topic is string
-      - item.1.topic | length > 0
+      - item.1.topic is match('^[-_A-Za-z0-9]{1,64}$')
       - item.1.permission is string
       - item.1.permission in ['read-only', 'write-only', 'read-write', 'deny']
+      - item.0.role != 'admin' or item.1.permission == 'read-write'
     fail_msg: ntfy managed user has invalid access field; values are redacted.
   loop: "{{ vault_managed_users.ntfy | subelements('access') }}"
   loop_control:
@@ -223,15 +224,24 @@
 - name: Validate managed-user identity uniqueness and separation
   ansible.builtin.assert:
     that:
-      - vault_managed_users.audiobookshelf | map(attribute='username') | map('trim') | map('lower') | list | unique | length == vault_managed_users.audiobookshelf | length
+      - >-
+        vault_managed_users.audiobookshelf | map(attribute='username') |
+        map('trim') | map('lower') | list | unique | length ==
+        vault_managed_users.audiobookshelf | length
       - vault_managed_users.beszel | map(attribute='email') | map('trim') | map('lower') | list | unique | length == vault_managed_users.beszel | length
       - vault_managed_users.dozzle | map(attribute='username') | map('trim') | map('lower') | list | unique | length == vault_managed_users.dozzle | length
       - vault_managed_users.immich | map(attribute='email') | map('trim') | map('lower') | list | unique | length == vault_managed_users.immich | length
       - vault_managed_users.jellyfin | map(attribute='username') | map('trim') | map('lower') | list | unique | length == vault_managed_users.jellyfin | length
       - vault_managed_users.komga | map(attribute='email') | map('trim') | map('lower') | list | unique | length == vault_managed_users.komga | length
       - vault_managed_users.ntfy | map(attribute='username') | map('trim') | map('lower') | list | unique | length == vault_managed_users.ntfy | length
-      - vault_managed_users.paperless_ngx | map(attribute='username') | map('trim') | map('lower') | list | unique | length == vault_managed_users.paperless_ngx | length
-      - vault_audiobookshelf_admin_username | trim | lower not in vault_managed_users.audiobookshelf | map(attribute='username') | map('trim') | map('lower') | list
+      - >-
+        vault_managed_users.paperless_ngx | map(attribute='username') |
+        map('trim') | map('lower') | list | unique | length ==
+        vault_managed_users.paperless_ngx | length
+      - >-
+        vault_audiobookshelf_admin_username | trim | lower not in
+        vault_managed_users.audiobookshelf | map(attribute='username') |
+        map('trim') | map('lower') | list
       - vault_beszel_superuser_email | trim | lower not in vault_managed_users.beszel | map(attribute='email') | map('trim') | map('lower') | list
       - vault_beszel_app_user_email | trim | lower not in vault_managed_users.beszel | map(attribute='email') | map('trim') | map('lower') | list
       - vault_dozzle_admin_username | trim | lower not in vault_managed_users.dozzle | map(attribute='username') | map('trim') | map('lower') | list

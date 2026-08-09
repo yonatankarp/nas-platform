@@ -115,17 +115,28 @@ identity remains under the separate primary credential contract.
 
 `username` is the login identity; `password` is its preserved clear credential;
 `password_hash` is the matching bcrypt value; `role` is `user` or `admin`
-(`user` is the least-privilege default); `access` is a list of exact `topic` and `permission` mappings; and
+(`user` is the least-privilege default); `access` is a list of exact literal
+`topic` and `permission` mappings; and
 `tokens` is a unique list of owned `tk_` tokens, which may be empty. Supported
 permissions are `read-only`, `write-only`, `read-write`, and `deny`. Managed
-identities cannot duplicate the administrator or the Dozzle and Beszel
-publishers. The role treats the prior rendered ntfy `.env` as the declarative
-ownership record and confirms database identities with the pinned `ntfy user
-list` command before rendering a replacement. An owned identity must retain its
-exact prior hash; a same-name database identity outside that record is refused
-for automatic adoption. If an existing authentication database has no prior
-ownership record, restore reviewed migration evidence instead of regenerating
-credentials.
+topics use only letters, digits, `_`, and `-`, with a maximum of 64 characters;
+wildcards, URL separators, whitespace, commas, and colons are not supported by
+this exact verifier. Usernames follow ntfy's native letters, digits, `_`, `-`,
+`.`, `+`, and `@` contract. Because ntfy administrators always have read-write
+access to every topic and reject ACL provisioning, administrator declarations
+may contain only `read-write` topic entries; the role omits those redundant ACL
+rows and verifies both reads and writes. Managed identities cannot duplicate
+the administrator or the Dozzle and Beszel publishers. The role treats the
+prior rendered ntfy `.env` as the declarative ownership record and confirms
+database identities with the pinned `ntfy user list` command before rendering a
+replacement. An owned identity must retain its exact prior hash; a same-name
+database identity outside that record is refused for automatic adoption. A
+server-config identity absent from that record is also refused, preventing ntfy
+from deleting state outside reviewed ownership. Removing an identity already
+present in the prior ownership record remains an explicit declarative removal
+from the reviewed desired configuration. If an existing authentication database
+has no prior ownership record, restore reviewed migration evidence instead of
+regenerating credentials.
 
 #### paperless_ngx managed users
 

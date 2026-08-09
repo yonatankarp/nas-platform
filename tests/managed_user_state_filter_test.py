@@ -4,13 +4,16 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import pathlib
 
 from ansible.errors import AnsibleFilterError
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-PLUGIN_PATH = ROOT / "filter_plugins" / "managed_user_state.py"
+PLUGIN_PATH = pathlib.Path(
+    os.environ.get("MANAGED_USER_STATE_PLUGIN", ROOT / "filter_plugins" / "managed_user_state.py")
+)
 
 
 def load_plugin():

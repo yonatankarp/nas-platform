@@ -50,6 +50,8 @@ TEXT_FIELDS = {
 
 BCRYPT = /^\$2[aby]\$\d{2}\$[.\/A-Za-z0-9]{53}$/
 TOKEN = /^tk_[a-z0-9]{29}$/
+NTFY_USERNAME = /^[-_.+@A-Za-z0-9]+$/
+NTFY_LITERAL_TOPIC = /^[-_A-Za-z0-9]{1,64}$/
 
 ARGUMENT_FIELDS = {
   "audiobookshelf" => {
@@ -214,11 +216,15 @@ managed.fetch("ntfy", []).each do |entry|
   check(failures, BCRYPT.match?(entry["password_hash"].to_s),
         "ntfy password_hash must have bcrypt shape")
   check(failures, %w[user admin].include?(entry["role"]), "ntfy role must be supported")
+  check(failures, NTFY_USERNAME.match?(entry["username"].to_s),
+        "ntfy username must use native safe characters")
   access = entry["access"]
   check(failures,
         access.is_a?(Array) && access.all? do |rule|
           rule.is_a?(Hash) && rule.keys.sort == %w[permission topic] &&
-            %w[read-only write-only read-write deny].include?(rule["permission"])
+            NTFY_LITERAL_TOPIC.match?(rule["topic"].to_s) &&
+            %w[read-only write-only read-write deny].include?(rule["permission"]) &&
+            (entry["role"] != "admin" || rule["permission"] == "read-write")
         end,
         "ntfy access rules must have supported values")
   tokens = entry["tokens"]
@@ -432,6 +438,25 @@ list_ntfy_topic.dig("vault_managed_users", "ntfy", 0, "access", 0)["topic"] =
   ["list-topic-sentinel"]
 expect_role_rejection(failures, "list ntfy access topic", list_ntfy_topic,
                       "list-topic-sentinel")
+
+%w[bad,user bad:user bad/user].each do |username|
+  hostile_username = duplicate(vault)
+  hostile_username.dig("vault_managed_users", "ntfy", 0)["username"] = username
+  expect_role_rejection(failures, "unsafe ntfy username", hostile_username, username)
+end
+
+["bad topic", "bad/topic", "bad*topic", "bad:topic", "bad,topic"].each do |topic|
+  hostile_topic = duplicate(vault)
+  hostile_topic.dig("vault_managed_users", "ntfy", 0, "access", 0)["topic"] = topic
+  expect_role_rejection(failures, "unsafe ntfy literal topic", hostile_topic, topic)
+end
+
+restricted_admin = duplicate(vault)
+restricted_admin_entry = restricted_admin.dig("vault_managed_users", "ntfy", 0)
+restricted_admin_entry["role"] = "admin"
+restricted_admin_entry.dig("access", 0)["permission"] = "read-only"
+expect_role_rejection(failures, "restricted ntfy administrator ACL", restricted_admin,
+                      restricted_admin_entry.dig("access", 0, "topic"))
 
 jellyfin_secret = duplicate(vault)
 jellyfin_secret.dig("vault_managed_users", "jellyfin", 0, "policy")["Password"] =

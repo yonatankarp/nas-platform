@@ -61,6 +61,19 @@ def command_available?(name)
   end
 end
 
+def command_path(name)
+  ENV.fetch("PATH", "").split(File::PATH_SEPARATOR).map do |directory|
+    File.join(directory, name)
+  end.find { |path| File.executable?(path) }
+end
+
+def ansible_python
+  interpreter = File.open(command_path("ansible-playbook"), &:readline).delete_prefix("#!").strip
+  raise "ansible-playbook interpreter is unavailable" unless File.executable?(interpreter)
+
+  interpreter
+end
+
 def source_fragment_failures(sources)
   SOURCE_REQUIREMENTS.filter_map do |label, (source_name, fragment)|
     label unless sources.fetch(source_name).include?(fragment)
@@ -129,6 +142,58 @@ def task_playbook(tasks, variables)
   ])
 end
 
+def ntfy_main_order_valid?(tasks)
+  names = tasks.map { |task| task["name"] }
+  preflight = names.index("Inspect existing ntfy declarative ownership and users")
+  provision = names.index("Resolve declarative ntfy managed-user provisioning")
+  render = names.index("Render the ntfy environment")
+  deploy = names.index("Deploy ntfy")
+  preflight && provision && render && deploy &&
+    preflight < provision && provision < render && provision < deploy
+end
+
+def ntfy_verify_contract_valid?(tasks)
+  auth = tasks.find { |task| task["name"] == "Basic-authenticate each managed ntfy user" }
+  read_access = tasks.find { |task| task["name"] == "Verify managed ntfy declared read access" }
+  write_access = tasks.find { |task| task["name"] == "Verify managed ntfy declared write access" }
+  return false unless auth && read_access && write_access
+
+  auth_request = auth["ansible.builtin.uri"]
+  read_request = read_access["ansible.builtin.uri"]
+  write_request = write_access["ansible.builtin.uri"]
+  common_safe = [auth, read_access, write_access].all? do |task|
+    request = task["ansible.builtin.uri"]
+    request["force_basic_auth"] == true && task["changed_when"] == false &&
+      task["check_mode"] == false && task["no_log"] == true
+  end
+  common_safe &&
+    auth_request == {
+      "url" => "{{ ntfy_account_api }}", "url_username" => "{{ item.username }}",
+      "url_password" => "{{ item.password }}", "force_basic_auth" => true,
+      "status_code" => [200]
+    } &&
+    read_request["url"] == "http://127.0.0.1:{{ ntfy_port }}/{{ item.1.topic }}/json?poll=1" &&
+    read_request["url_username"] == "{{ item.0.username }}" &&
+    read_request["url_password"] == "{{ item.0.password }}" &&
+    write_request["url"] == "http://127.0.0.1:{{ ntfy_port }}/{{ item.1.topic }}" &&
+    write_request["method"] == "POST" &&
+    write_request["body"] == "Managed-user provisioning verification" &&
+    write_request["url_username"] == "{{ item.0.username }}" &&
+    write_request["url_password"] == "{{ item.0.password }}"
+end
+
+def with_ntfy_task_removed(task_name)
+  tasks = YAML.safe_load_file(NTFY_TASKS, aliases: false)
+  removed = tasks.reject { |task| task["name"] == task_name }
+  return yield(nil, false) if removed.length == tasks.length
+
+  Dir.mktmpdir("nas-platform-ntfy-mutant-") do |directory|
+    path = File.join(directory, "managed_users.yml")
+    File.write(path, YAML.dump(removed), mode: "w", perm: 0o600)
+    yield(path, true)
+  end
+end
+
 def dozzle_playbook(users_path, output_path)
   <<~YAML
     ---
@@ -172,7 +237,7 @@ def run_dozzle_fixture(source)
   result
 end
 
-def ntfy_playbook(output_path)
+def ntfy_playbook(output_path, tasks_path = NTFY_TASKS)
   <<~YAML
     ---
     - hosts: localhost
@@ -208,7 +273,7 @@ def ntfy_playbook(output_path)
         ntfy_authoritative_absence_established: true
         ntfy_managed_users_phase: provision
       tasks:
-        - ansible.builtin.include_tasks: #{NTFY_TASKS.to_json}
+        - ansible.builtin.include_tasks: #{tasks_path.to_json}
         - ansible.builtin.copy:
             dest: #{output_path.to_json}
             mode: "0600"
@@ -218,11 +283,11 @@ def ntfy_playbook(output_path)
   YAML
 end
 
-def run_ntfy_fixture(extra_vars = {})
+def run_ntfy_fixture(extra_vars = {}, tasks_path = NTFY_TASKS)
   result = nil
   Dir.mktmpdir("nas-platform-ntfy-users-") do |directory|
     output_path = File.join(directory, "provisioning.json")
-    run_playbook(ntfy_playbook(output_path), extra_vars) do |_tmp, output, status|
+    run_playbook(ntfy_playbook(output_path, tasks_path), extra_vars) do |_tmp, output, status|
       rendered = JSON.parse(File.read(output_path)) if status.success? && File.file?(output_path)
       result = [rendered, output, status]
     end
@@ -383,18 +448,7 @@ check(failures, ntfy_tasks.include?("Verify managed ntfy declared read access") 
                 ntfy_tasks.include?("Verify managed ntfy declared write access"),
       "ntfy does not verify each declared topic permission")
 ntfy_main_tasks = YAML.safe_load(ntfy_main, aliases: false) || []
-ntfy_preflight_index = ntfy_main_tasks.index do |task|
-  task["name"] == "Inspect existing ntfy declarative ownership and users"
-end
-ntfy_render_index = ntfy_main_tasks.index { |task| task["name"] == "Render the ntfy environment" }
-ntfy_deploy_index = ntfy_main_tasks.index { |task| task["name"] == "Deploy ntfy" }
-ntfy_provision_index = ntfy_main_tasks.index do |task|
-  task["name"] == "Resolve declarative ntfy managed-user provisioning"
-end
-check(failures,
-      ntfy_preflight_index && ntfy_provision_index && ntfy_render_index && ntfy_deploy_index &&
-        ntfy_preflight_index < ntfy_provision_index && ntfy_provision_index < ntfy_render_index &&
-        ntfy_provision_index < ntfy_deploy_index,
+check(failures, ntfy_main_order_valid?(ntfy_main_tasks),
       "ntfy ownership preflight does not precede environment rendering and deployment")
 ntfy_cli_probe = ntfy_main_tasks.find { |task| task["name"] == "List authoritative existing ntfy users" }
 ntfy_cli_run = ntfy_cli_probe&.fetch("community.docker.docker_compose_v2_run", nil)
@@ -426,15 +480,7 @@ ntfy_verify_tasks = [ntfy_auth_index, ntfy_read_index, ntfy_write_index].compact
 end
 check(failures,
       ntfy_verify_tasks.length == 3 && ntfy_auth_index < ntfy_read_index && ntfy_read_index < ntfy_write_index &&
-        ntfy_verify_tasks.all? do |task|
-          request = task["ansible.builtin.uri"]
-          request["url_username"] == "{{ item.username }}" ||
-            request["url_username"] == "{{ item.0.username }}"
-        end && ntfy_verify_tasks.all? do |task|
-          request = task["ansible.builtin.uri"]
-          request["force_basic_auth"] == true && task["changed_when"] == false &&
-            task["check_mode"] == false && task["no_log"] == true
-        end,
+        ntfy_verify_contract_valid?(ntfy_managed_tasks),
       "ntfy verification tasks do not pin Basic credentials, safety flags, and ordering")
 
 if ntfy_verify_tasks.length == 3
@@ -478,6 +524,31 @@ if ntfy_verify_tasks.length == 3
             ["POST", "/private", "Managed-user provisioning verification"]
           ],
           "ntfy verification endpoints, methods, or bodies differ")
+  end
+
+  with_http_probe(3, proc { |_request| 200 }) do |port, requests|
+    variables = {
+      "ntfy_account_api" => "http://127.0.0.1:#{port}/v1/account",
+      "ntfy_port" => port,
+      "ntfy_managed_users_phase" => "verify",
+      "vault_managed_ntfy_users" => [{
+        "username" => "auditor", "password" => "admin-plaintext", "role" => "admin",
+        "access" => [{ "topic" => "admin-topic", "permission" => "read-write" }]
+      }]
+    }
+    run_playbook(task_playbook(ntfy_verify_tasks, variables)) do |_tmp, output, status|
+      check(failures, status.success?,
+            "ntfy administrator verification fixture failed: #{output.lines.last&.strip}")
+    end
+    expected_basic = "Basic #{Base64.strict_encode64('auditor:admin-plaintext')}"
+    check(failures,
+          requests.all? { |request| request.dig("headers", "authorization") == expected_basic } &&
+            requests.map { |request| [request["method"], request["target"]] } == [
+              ["GET", "/v1/account"],
+              ["GET", "/admin-topic/json?poll=1"],
+              ["POST", "/admin-topic"]
+            ],
+          "ntfy administrator verification did not prove effective read-write access")
   end
 end
 
@@ -537,6 +608,83 @@ if !ntfy_tasks.empty?
     "ntfy_authoritative_absence_established" => false
   )
   check(failures, !status.success?, "ntfy provisioned an identity without authoritative absence")
+
+  orphaned_records = unmanaged_records.merge(
+    "orphan" => { "username" => "orphan", "role" => "user", "provisioned" => true }
+  )
+  _provisioned, orphan_output, status = run_ntfy_fixture(
+    "ntfy_existing_user_records" => orphaned_records
+  )
+  check(failures,
+        !status.success? && orphan_output.include?("outside the prior declarative ownership record") &&
+          !orphan_output.include?("orphan"),
+        "ntfy accepted or disclosed an out-of-ownership provisioned identity")
+
+  admin_user = {
+    "username" => "auditor", "password" => "admin-plaintext",
+    "password_hash" => BCRYPT_B, "role" => "admin",
+    "access" => [{ "topic" => "admin-topic", "permission" => "read-write" }],
+    "tokens" => [TOKEN_B]
+  }
+  admin_prior = mismatched_owned.reject { |identity, _entry| identity == "reader" }.merge(
+    "auditor" => { "username" => "auditor", "password_hash" => BCRYPT_B, "role" => "admin" }
+  )
+  admin_records = absent_records.merge(
+    "auditor" => { "username" => "auditor", "role" => "admin", "provisioned" => true }
+  )
+  provisioned, admin_output, status = run_ntfy_fixture(
+    "vault_managed_ntfy_users" => [admin_user],
+    "ntfy_prior_provisioned_users" => admin_prior,
+    "ntfy_existing_user_records" => admin_records
+  )
+  check(failures, status.success?, "ntfy rejected supported administrator semantics: #{admin_output.lines.last&.strip}")
+  check(failures,
+        provisioned && !provisioned["access"].split(",").any? { |entry| entry.start_with?("auditor:") },
+        "ntfy emitted an unsupported ACL provisioning entry for an administrator")
+
+  %w[read-only write-only deny].each do |permission|
+    restricted_admin = Marshal.load(Marshal.dump(admin_user))
+    restricted_admin["access"][0]["permission"] = permission
+    _provisioned, _restricted_output, restricted_status = run_ntfy_fixture(
+      "vault_managed_ntfy_users" => [restricted_admin],
+      "ntfy_prior_provisioned_users" => admin_prior,
+      "ntfy_existing_user_records" => admin_records
+    )
+    check(failures, !restricted_status.success?,
+          "ntfy accepted administrator #{permission} semantics it cannot enforce")
+  end
+
+  hostile_usernames = ["bad,user", "bad:user", "bad user", "bad/user", "bad\nuser"]
+  hostile_usernames.each do |username|
+    hostile_user = Marshal.load(Marshal.dump(admin_user))
+    hostile_user["username"] = username
+    _provisioned, hostile_output, hostile_status = run_ntfy_fixture(
+      "vault_managed_ntfy_users" => [hostile_user],
+      "ntfy_prior_provisioned_users" => prior_without_reader,
+      "ntfy_existing_user_records" => absent_records
+    )
+    check(failures, !hostile_status.success? && !hostile_output.include?(username),
+          "ntfy accepted or disclosed a delimiter-unsafe managed username")
+  end
+
+  ["bad,topic", "bad:topic", "bad topic", "bad/topic", "bad*topic", "bad\ntopic"].each do |topic|
+    hostile_topic_user = Marshal.load(Marshal.dump(admin_user))
+    hostile_topic_user["access"][0]["topic"] = topic
+    _provisioned, hostile_output, hostile_status = run_ntfy_fixture(
+      "vault_managed_ntfy_users" => [hostile_topic_user],
+      "ntfy_prior_provisioned_users" => admin_prior,
+      "ntfy_existing_user_records" => admin_records
+    )
+    check(failures, !hostile_status.success? && !hostile_output.include?(topic),
+          "ntfy accepted or disclosed a non-literal managed topic")
+  end
+
+  _provisioned, publisher_topic_output, publisher_topic_status = run_ntfy_fixture(
+    "ntfy_topic" => "bad/topic"
+  )
+  check(failures,
+        !publisher_topic_status.success? && !publisher_topic_output.include?("bad/topic"),
+        "ntfy accepted or disclosed a non-literal publisher topic")
 end
 
 validate_policy = read(VALIDATE_POLICY)
@@ -549,7 +697,7 @@ unless [[], ["--self-test"]].include?(ARGV)
   abort "usage: config_managed_users_test.rb [--self-test]"
 end
 
-if ARGV == ["--self-test"] && failures.empty?
+if ARGV == ["--self-test"]
   sources = {
     "dozzle_tasks" => dozzle_tasks,
     "dozzle_main" => dozzle_main,
@@ -567,6 +715,126 @@ if ARGV == ["--self-test"] && failures.empty?
     mutated = sources.merge(source_name => mutated_source)
     check(failures, source_fragment_failures(mutated).include?(label),
           "self-test did not reject the #{label} mutation")
+  end
+
+  reordered_main = YAML.safe_load(ntfy_main, aliases: false)
+  provision_task = reordered_main.delete_at(
+    reordered_main.index { |task| task["name"] == "Resolve declarative ntfy managed-user provisioning" }
+  )
+  preflight_index = reordered_main.index do |task|
+    task["name"] == "Inspect existing ntfy declarative ownership and users"
+  end
+  reordered_main.insert(preflight_index, provision_task)
+  check(failures, !ntfy_main_order_valid?(reordered_main),
+        "behavioral self-test did not reject ntfy preflight reordering")
+
+  {
+    "wrong auth status" => proc do |tasks|
+      tasks.find { |task| task["name"] == "Basic-authenticate each managed ntfy user" }
+        .fetch("ansible.builtin.uri")["status_code"] = [201]
+    end,
+    "missing auth redaction" => proc do |tasks|
+      tasks.find { |task| task["name"] == "Basic-authenticate each managed ntfy user" }["no_log"] = false
+    end,
+    "auth check-mode mutation" => proc do |tasks|
+      tasks.find { |task| task["name"] == "Basic-authenticate each managed ntfy user" }["check_mode"] = true
+    end,
+    "wrong write method" => proc do |tasks|
+      tasks.find { |task| task["name"] == "Verify managed ntfy declared write access" }
+        .fetch("ansible.builtin.uri")["method"] = "PUT"
+    end
+  }.each do |label, mutate|
+    mutant = Marshal.load(Marshal.dump(ntfy_managed_tasks))
+    mutate.call(mutant)
+    check(failures, !ntfy_verify_contract_valid?(mutant),
+          "behavioral self-test did not reject #{label}")
+  end
+
+  collision_vars = {
+    "vault_ntfy_admin_user" => "reader",
+    "vault_ntfy_admin_password_hash" => BCRYPT_B,
+    "ntfy_prior_provisioned_users" => {
+      "admin" => { "username" => "admin", "password_hash" => BCRYPT_A, "role" => "admin" },
+      "dozzle" => { "username" => "dozzle", "password_hash" => BCRYPT_A, "role" => "user" },
+      "reader" => { "username" => "reader", "password_hash" => BCRYPT_B, "role" => "admin" }
+    }
+  }
+  mismatched_vars = {
+    "ntfy_prior_provisioned_users" => {
+      "admin" => { "username" => "admin", "password_hash" => BCRYPT_A, "role" => "admin" },
+      "dozzle" => { "username" => "dozzle", "password_hash" => BCRYPT_A, "role" => "user" },
+      "reader" => { "username" => "reader", "password_hash" => BCRYPT_A, "role" => "user" }
+    }
+  }
+  prior_without_reader = mismatched_vars.fetch("ntfy_prior_provisioned_users").reject do |identity, _entry|
+    identity == "reader"
+  end
+  unmanaged_records = {
+    "*" => { "username" => "*", "role" => "anonymous", "provisioned" => false },
+    "admin" => { "username" => "admin", "role" => "admin", "provisioned" => true },
+    "dozzle" => { "username" => "dozzle", "role" => "user", "provisioned" => true },
+    "reader" => { "username" => "reader", "role" => "user", "provisioned" => false }
+  }
+  behavior_mutations = {
+    "identity collision guard" => ["Refuse duplicate ntfy identities", collision_vars],
+    "owned hash guard" => ["Refuse password hash replacement for owned ntfy identities", mismatched_vars],
+    "adoption guard" => ["Refuse automatic adoption of unmanaged ntfy identities", {
+      "ntfy_prior_provisioned_users" => prior_without_reader,
+      "ntfy_existing_user_records" => unmanaged_records
+    }],
+    "orphan provisioned guard" => ["Refuse out-of-ownership provisioned ntfy identities", {
+      "ntfy_existing_user_records" => unmanaged_records.merge(
+        "orphan" => { "username" => "orphan", "role" => "user", "provisioned" => true }
+      )
+    }],
+    "delimiter guard" => ["Validate ntfy provisioning encodings", {
+      "vault_managed_ntfy_users" => [{
+        "username" => "bad,user", "password" => "plain", "password_hash" => BCRYPT_B,
+        "role" => "user", "access" => [], "tokens" => []
+      }],
+      "ntfy_prior_provisioned_users" => prior_without_reader,
+      "ntfy_existing_user_records" => unmanaged_records.reject { |identity, _entry| identity == "reader" }
+    }],
+    "administrator semantics guard" => ["Require supported ntfy administrator access semantics", {
+      "vault_managed_ntfy_users" => [{
+        "username" => "auditor", "password" => "plain", "password_hash" => BCRYPT_B,
+        "role" => "admin", "access" => [{ "topic" => "admin-topic", "permission" => "deny" }],
+        "tokens" => []
+      }],
+      "ntfy_prior_provisioned_users" => prior_without_reader,
+      "ntfy_existing_user_records" => unmanaged_records.reject { |identity, _entry| identity == "reader" }
+    }]
+  }
+  behavior_mutations.each do |label, (task_name, variables)|
+    with_ntfy_task_removed(task_name) do |mutant_path, found|
+      unless found
+        failures << "behavioral self-test baseline is missing #{task_name}"
+        next
+      end
+      _rendered, _output, mutant_status = run_ntfy_fixture(variables, mutant_path)
+      check(failures, mutant_status.success?,
+            "behavioral self-test #{label} mutation did not escape its negative fixture")
+    end
+  end
+
+  {
+    "duplicate YAML parser" => ["if duplicate:", "if False:"],
+    "YAML alias parser" => [
+      "(yaml.tokens.AnchorToken, yaml.tokens.AliasToken)", "()"
+    ]
+  }.each do |label, (before, after)|
+    Dir.mktmpdir("nas-platform-filter-mutant-") do |directory|
+      mutant = File.join(directory, "managed_user_state.py")
+      mutated_source = state_filter.sub(before, after)
+      File.write(mutant, mutated_source, mode: "w", perm: 0o600)
+      _stdout, _stderr, status = Open3.capture3(
+        { "MANAGED_USER_STATE_PLUGIN" => mutant, "PYTHONDONTWRITEBYTECODE" => "1" },
+        ansible_python,
+        File.join(ROOT, "tests", "managed_user_state_filter_test.py"), chdir: ROOT
+      )
+      check(failures, mutated_source != state_filter && !status.success?,
+            "behavioral self-test did not reject #{label} mutation")
+    end
   end
 end
 
