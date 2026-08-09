@@ -215,9 +215,15 @@ end
 
 def mask_html_comments(text)
   result = text.dup
+  code_ranges = inline_partners(text).filter_map do |opening, closing|
+    (opening...closing) if opening < closing
+  end.sort_by(&:begin)
+  range_index = 0
   index = 0
   while (start = result.index("<!--", index))
-    if escaped?(result, start)
+    range_index += 1 while code_ranges[range_index] && code_ranges[range_index].end <= start
+    inside_code = code_ranges[range_index]&.cover?(start)
+    if escaped?(result, start) || inside_code
       index = start + 4
       next
     end
@@ -327,32 +333,44 @@ def mask_contexts(text)
 end
 
 def inline_partners(text)
-  waiting = Hash.new { |hash, key| hash[key] = [] }
   partners = {}
-  index = 0
-  while index < text.length
-    unless text[index] == "`"
-      index += 1
-      next
+  block_openings = {}
+  offset = 0
+  text.lines.each do |line|
+    runs = []
+    index = 0
+    while index < line.length
+      unless line[index] == "`"
+        index += 1
+        next
+      end
+      finish = index + 1
+      finish += 1 while finish < line.length && line[finish] == "`"
+      runs << [offset + index, finish - index] unless escaped?(line, index)
+      index = finish
     end
-    before = index - 1
-    slashes = 0
-    while before >= 0 && text[before] == "\\"
-      slashes += 1
-      before -= 1
-    end
-    finish = index
-    finish += 1 while finish < text.length && text[finish] == "`"
-    length = finish - index
-    unless slashes.odd?
-      if (opening = waiting[length].shift)
-        partners[opening] = index
-        partners[index] = opening
+
+    waiting = {}
+    runs.each do |position, length|
+      if (opening = waiting.delete(length))
+        partners[opening] = position
+        partners[position] = opening
       else
-        waiting[length] << index
+        waiting[length] = position
       end
     end
-    index = finish
+
+    stripped = line.strip
+    if runs.length == 1 && stripped == "`" * runs[0][1] && !partners.key?(runs[0][0])
+      position, length = runs[0]
+      if (opening = block_openings.delete(length))
+        partners[opening] = position
+        partners[position] = opening
+      else
+        block_openings[length] = position
+      end
+    end
+    offset += line.length
   end
   partners
 end
@@ -489,6 +507,8 @@ def self_test
       1234567890. ```ruby
       [ten-digit](ten-digit-missing.md)
       ` [later masked](later-masked-missing.md) `
+      ` <!-- [inline-comment](inline-comment-missing.md) `
+      [after-inline-comment](after-inline-comment-missing.md)
       [after unmatched](after-unmatched-missing.md)
       [post-unmatched](post-unmatched-missing.md)
       [post-malformed](post%ZZ.md)
@@ -496,6 +516,9 @@ def self_test
       [multiline](multiline-missing.md)
       ``
       `` [unequal](unequal-missing.md) `
+      [traversal](../../etc/passwd)
+      [malformed](bad%ZZ.md)
+      [symlink](escape.md)
     MARKDOWN
     source.open("a") { |file| file.write("[control](bad\e[31m\x01.md)\n") }
     unclosed = docs.join("unclosed.md")
@@ -511,8 +534,15 @@ def self_test
     unclosed_four = docs.join("unclosed-four.md")
     unclosed_four.write(">    ```markdown\n>    [hidden](hidden-four-missing.md)\n")
     failures = check_sources(root, [source])
-    expected = ["after-prose-missing.md", "title-paren-missing.md", "single-title-missing.md", "escaped-comment-missing.md", "missing.md", "ordinary-missing.md", "nested-missing.md", "<missing).md>", "indented-missing.md", "escaped-missing.md", "two-slash-missing.md", "unmatched-missing.md", "ten-digit-missing.md"]
-    unless expected.all? { |target| failures.any? { |failure| failure.include?("link #{target}") } } && failures.length == expected.length && failures.none? { |failure| failure.match?(/[[:cntrl:]]/) }
+    expected = ["after-prose-missing.md", "title-paren-missing.md", "single-title-missing.md", "escaped-comment-missing.md", "missing.md", "ordinary-missing.md", "nested-missing.md", "<missing).md>", "indented-missing.md", "escaped-missing.md", "two-slash-missing.md", "invalid-info-missing.md", "unmatched-missing.md", "ten-digit-missing.md", "after-inline-comment-missing.md", "after-unmatched-missing.md", "post-unmatched-missing.md", "unequal-missing.md"]
+    categories = [
+      "malformed local link post%ZZ.md",
+      "broken local link ../../etc/passwd",
+      "malformed local link bad%ZZ.md",
+      "broken local link escape.md",
+      "broken local link bad?[31m?.md"
+    ]
+    unless expected.all? { |target| failures.any? { |failure| failure.include?("link #{target}") } } && categories.all? { |message| failures.any? { |failure| failure.include?(message) } } && failures.length == expected.length + categories.length && failures.none? { |failure| failure.match?(/[[:cntrl:]]/) }
       warn "docs links self-test failed: #{failures.inspect}"
       exit 1
     end
