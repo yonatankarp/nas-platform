@@ -30,11 +30,6 @@ EXPECTED = {
   "tinymediamanager" => %w[GROUP_ID PASSWORD TZ USER_ID]
 }.transform_values(&:sort).freeze
 ALLOWED_CLASSIFICATIONS = %w[inventory vault role excluded].freeze
-# Task 4 moves these legacy Compose settings into Paperless role defaults. Keep
-# this temporary migration allowance narrow and remove it with that declaration.
-PLANNED_ROLE_TARGETS = {
-  "paperless-ngx" => %w[paperless_task_workers paperless_threads_per_worker].freeze
-}.freeze
 CANONICAL_RULES = {
   "audiobookshelf" => { "TZ" => ["inventory", "nas_timezone"] },
   "beszel" => {
@@ -140,8 +135,6 @@ def inventory_targets
 end
 
 def role_target_exists?(stack, target)
-  return true if PLANNED_ROLE_TARGETS.fetch(stack, []).include?(target)
-
   role = stack == "paperless-ngx" ? "paperless_ngx" : stack
   role_root = File.join(ROOT, "roles", role)
   return false unless File.directory?(role_root)
@@ -319,8 +312,8 @@ def self_test_role_targets
     assert_role_target("declared_template_target", true)
     assert_role_target("stale_target", false)
   end
-  raise "planned role target is absent" unless role_target_exists?("paperless-ngx", "paperless_task_workers")
-  raise "unlisted planned target passed" if role_target_exists?("paperless-ngx", "paperless_unlisted_target")
+  raise "Paperless role target is absent" unless role_target_exists?("paperless-ngx", "paperless_task_workers")
+  raise "undeclared Paperless target passed" if role_target_exists?("paperless-ngx", "paperless_unlisted_target")
 end
 
 def self_test

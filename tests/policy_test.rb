@@ -367,6 +367,39 @@ check(failures, filter_status.success?,
         "Beszel argument specs must require platform_render_device_path")
 end
 
+paperless_defaults = YAML.safe_load_file(
+  File.join(ROOT, "roles", "paperless_ngx", "defaults", "main.yml")
+)
+{
+  "paperless_task_workers" => 2,
+  "paperless_threads_per_worker" => 1
+}.each do |variable, expected|
+  actual = paperless_defaults[variable]
+  check(failures, actual.is_a?(Integer) && actual == expected,
+        "Paperless #{variable} default must be integer #{expected}")
+end
+
+paperless_options = YAML.safe_load_file(
+  File.join(ROOT, "roles", "paperless_ngx", "meta", "argument_specs.yml")
+).dig("argument_specs", "main", "options")
+%w[paperless_task_workers paperless_threads_per_worker].each do |variable|
+  check(failures, paperless_options.dig(variable, "type") == "int" &&
+                  paperless_options.dig(variable, "required") == false,
+        "Paperless argument specs must declare optional integer #{variable}")
+end
+
+paperless_env_lines = File.readlines(
+  File.join(ROOT, "roles", "paperless_ngx", "templates", "env.j2"),
+  chomp: true
+)
+[
+  "PAPERLESS_TASK_WORKERS={{ paperless_task_workers }}",
+  "PAPERLESS_THREADS_PER_WORKER={{ paperless_threads_per_worker }}"
+].each do |line|
+  check(failures, paperless_env_lines.include?(line),
+        "Paperless environment template must contain exact line: #{line}")
+end
+
 def flatten_tasks(tasks, flattened = [])
   Array(tasks).each do |task|
     next unless task.is_a?(Hash)
