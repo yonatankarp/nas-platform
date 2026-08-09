@@ -100,7 +100,7 @@ end
 
 def fence_parts(line)
   value = line
-  value = value.sub(/\A {0,3}(?:(?:> ?)|(?:[-+*] {1,4}|\d+[.)] {1,4}))*/, "")
+  value = value.sub(/\A {0,3}(?:(?:> {0,3})|(?:[-+*] {1,4}|\d{1,9}[.)] {1,4}))*/, "")
   match = value.match(/\A(`{3,}|~{3,})(.*?)(?:\r?\n)?\z/)
   return [nil, nil, nil] if match && match[1].start_with?("`") && match[2].include?("`")
 
@@ -118,6 +118,16 @@ def mask_inline_code(text)
     run_end = index
     run_end += 1 while run_end < chars.length && chars[run_end] == "`"
     length = run_end - index
+    slash_count = 0
+    before = index - 1
+    while before >= 0 && chars[before] == "\\"
+      slash_count += 1
+      before -= 1
+    end
+    if slash_count.odd?
+      index = run_end
+      next
+    end
     line_start = text.rindex("\n", index - 1).to_i + 1
     if text[line_start...index].match?(/\A {4,}\z/) && length >= 3
       index = run_end
@@ -238,6 +248,7 @@ def self_test
           [indented](indented-missing.md)
           ```
       \\`[escaped](escaped-missing.md)\\`
+      \`[ordinary escaped](ordinary-escaped-missing.md)\`
       \\[one-slash](one-slash-missing.md)
       \\\\[two-slash](two-slash-missing.md)
       ```bad`info
@@ -246,10 +257,15 @@ def self_test
       > ```markdown
       > [blockquote](blockquote-missing.md)
       > ```
+      >  ```markdown
+      >  [blockquote-indented](blockquote-indented-missing.md)
+      >  ```
       -  ```markdown
          [list-fence](list-fence-missing.md)
          ```
       prefix ``` [unmatched](unmatched-missing.md)
+      1234567890. ```ruby
+      [ten-digit](ten-digit-missing.md)
       ` [later masked](later-masked-missing.md) `
       [after unmatched](after-unmatched-missing.md)
       ``
@@ -267,8 +283,10 @@ def self_test
     bad_source.write("[source-control](missing-source.md)\n")
     bad_unclosed = docs.join("bad\e-unclosed.md")
     bad_unclosed.write("```markdown\n[hidden](hidden-missing.md)\n")
+    unclosed_container = docs.join("unclosed-container.md")
+    unclosed_container.write(">  ```markdown\n>  [hidden](hidden-container-missing.md)\n")
     failures = check_sources(root, [source])
-    expected = ["missing.md", "ordinary-missing.md", "nested-missing.md", "<missing).md>", "indented-missing.md", "two-slash-missing.md", "unmatched-missing.md", "after-unmatched-missing.md", "unequal-missing.md", "../../etc/passwd", "bad%ZZ.md", "escape.md"]
+    expected = ["missing.md", "ordinary-missing.md", "nested-missing.md", "<missing).md>", "indented-missing.md", "escaped-missing.md", "two-slash-missing.md", "unmatched-missing.md", "after-unmatched-missing.md", "ten-digit-missing.md", "unequal-missing.md", "../../etc/passwd", "bad%ZZ.md", "escape.md"]
     unless expected.all? { |target| failures.any? { |failure| failure.end_with?(target) } } && failures.length == expected.length + 1 && failures.none? { |failure| failure.match?(/[[:cntrl:]]/) }
       warn "docs links self-test failed: #{failures.inspect}"
       exit 1
@@ -286,6 +304,11 @@ def self_test
     bad_unclosed_failures = check_sources(root, [bad_unclosed])
     unless bad_unclosed_failures == ["docs/bad?-unclosed.md: malformed documentation (unclosed code fence)"]
       warn "docs links sanitized-unclosed self-test failed: #{bad_unclosed_failures.inspect}"
+      exit 1
+    end
+    container_failures = check_sources(root, [unclosed_container])
+    unless container_failures == ["docs/unclosed-container.md: malformed documentation (unclosed code fence)"]
+      warn "docs links container-fence self-test failed: #{container_failures.inspect}"
       exit 1
     end
   ensure
