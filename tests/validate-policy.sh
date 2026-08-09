@@ -8,6 +8,7 @@ ruby tests/policy_manifest_test.rb
 ruby tests/portainer_parity_mapping_test.rb
 ruby tests/managed_user_capabilities_test.rb --self-test
 ruby tests/managed_users_vault_test.rb
+ruby tests/beszel_password_preservation_test.rb
 tests/portainer_parity_import_test.sh
 ansible-playbook -i localhost, -c local tests/compose_metadata_filter_test.yml
 ruby tests/run_contracts_test.rb

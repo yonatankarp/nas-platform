@@ -91,26 +91,12 @@
   changed_when: false
   check_mode: false
 
-# Checked before creating, so a converging run never rewrites the password.
-- name: Check whether the superuser can already authenticate
-  ansible.builtin.uri:
-    url: "{{ beszel_api }}/api/collections/_superusers/auth-with-password"
-    method: POST
-    body_format: json
-    body:
-      identity: "{{ vault_beszel_superuser_email }}"
-      password: "{{ vault_beszel_superuser_password }}"
-    status_code: [200, 400]
-  register: beszel_superuser_auth
-  changed_when: false
-  check_mode: false
-  no_log: "{{ beszel_no_log | default(true) }}"
-
-# upsert is idempotent by the tool's own definition, "creates, or updates if email
-# exists". docker_compose_v2_exec rather than docker_container_exec: the latter
-# talks to the Docker API and needs the requests library on the target, which
-# cannot be assumed on ADM. This drives the Compose CLI like the deploy task.
-- name: Create the superuser
+# PocketBase has no supported non-secret list or existence command. Its atomic
+# create command is the reviewed exception: it creates an absent identity but
+# cannot update an existing password. A nonzero result is accepted only when the
+# following exact authentication proves the intended identity already exists.
+# This avoids brittle parsing of command output while failing closed otherwise.
+- name: Create the superuser without updating an existing identity
   community.docker.docker_compose_v2_exec:
     project_src: "{{ platform_current_dir }}/services/beszel"
     project_name: "{{ beszel_compose_project_name }}"
@@ -120,10 +106,12 @@
     argv:
       - /beszel
       - superuser
-      - upsert
+      - create
       - "{{ vault_beszel_superuser_email }}"
       - "{{ vault_beszel_superuser_password }}"
-  when: beszel_superuser_auth.status | default(0) != 200
+  register: beszel_superuser_create
+  failed_when: false
+  changed_when: beszel_superuser_create.rc | default(1) | int == 0
   no_log: "{{ beszel_no_log | default(true) }}"
 
 - name: Authenticate as the superuser
@@ -135,11 +123,24 @@
     body:
       identity: "{{ vault_beszel_superuser_email }}"
       password: "{{ vault_beszel_superuser_password }}"
-    status_code: [200]
+    status_code: [200, 400, 403]
   register: beszel_auth
   changed_when: false
   check_mode: false
   no_log: "{{ beszel_no_log | default(true) }}"
+
+- name: Require created or preserved Beszel superuser credentials
+  ansible.builtin.assert:
+    that:
+      - >-
+        beszel_superuser_create.rc | default(1) | int == 0
+        or beszel_auth.status | int == 200
+      - beszel_auth.status | int == 200
+    fail_msg: >-
+      Beszel superuser creation failed or the existing identity does not accept
+      its preserved vault password. Run the reviewed credential-migration
+      procedure; Ansible will not reset it automatically.
+  no_log: true
 
 # The point of authoring the keypair is that the hub adopts it, so assert rather
 # than assume. getkey needs superuser authentication, hence its position here.
@@ -300,8 +301,20 @@
   changed_when: false
   check_mode: false
   no_log: "{{ beszel_no_log | default(true) }}"
+  when: beszel_user_id | length > 0
 
-- name: Reconcile managed application user credentials, role, and verification
+- name: Require preserved Beszel application-user credentials
+  ansible.builtin.assert:
+    that:
+      - beszel_app_user_auth.status | int == 200
+    fail_msg: >-
+      Existing Beszel application user does not accept its preserved vault
+      password. Run the reviewed credential-migration procedure; Ansible will
+      not reset it automatically.
+  when: beszel_user_id | length > 0
+  no_log: true
+
+- name: Reconcile managed application user role and verification
   ansible.builtin.uri:
     url: "{{ beszel_api }}/api/collections/users/records/{{ beszel_user_id }}"
     method: PATCH
@@ -309,16 +322,14 @@
       Authorization: "{{ beszel_auth.json.token }}"
     body_format: json
     body:
-      password: "{{ vault_beszel_app_user_password }}"
-      passwordConfirm: "{{ vault_beszel_app_user_password }}"
       verified: true
       role: admin
     status_code: [200]
   when:
     - beszel_user_id | length > 0
-    - beszel_app_user_auth.status | default(0) != 200
-      or not (beszel_users_after.json.get('items', [])
-              | selectattr('id', 'equalto', beszel_user_id) | first).verified
+    - >-
+      not (beszel_users_after.json.get('items', [])
+           | selectattr('id', 'equalto', beszel_user_id) | first).verified
       or (beszel_users_after.json.get('items', [])
           | selectattr('id', 'equalto', beszel_user_id) | first).role != 'admin'
   changed_when: true
@@ -326,13 +337,13 @@
 
 - name: Report planned managed application user reconciliation
   ansible.builtin.debug:
-    msg: Managed application user credentials, role, or verification would be reconciled.
+    msg: Managed application user role or verification would be reconciled.
   when:
     - ansible_check_mode
     - beszel_user_id | length > 0
-    - beszel_app_user_auth.status | default(0) != 200
-      or not (beszel_users_after.json.get('items', [])
-              | selectattr('id', 'equalto', beszel_user_id) | first).verified
+    - >-
+      not (beszel_users_after.json.get('items', [])
+           | selectattr('id', 'equalto', beszel_user_id) | first).verified
       or (beszel_users_after.json.get('items', [])
           | selectattr('id', 'equalto', beszel_user_id) | first).role != 'admin'
   changed_when: true
