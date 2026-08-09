@@ -17,10 +17,10 @@ class SafeReadError(Exception):
 
 def read_regular_file(path: str, max_bytes: int) -> tuple[bool, bytes]:
     """Open once without symlink traversal, then validate and read that descriptor."""
-    if not hasattr(os, "O_NOFOLLOW"):
-        raise SafeReadError("atomic no-follow reads are unsupported on this target")
+    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_NONBLOCK"):
+        raise SafeReadError("atomic nonblocking no-follow reads are unsupported on this target")
 
-    flags = os.O_RDONLY | os.O_NOFOLLOW
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
     if hasattr(os, "O_CLOEXEC"):
         flags |= os.O_CLOEXEC
     try:

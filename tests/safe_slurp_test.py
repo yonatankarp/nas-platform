@@ -7,7 +7,9 @@ import importlib.util
 import json
 import os
 import pathlib
+import socket
 import subprocess
+import sys
 import tempfile
 
 
@@ -33,11 +35,36 @@ with tempfile.TemporaryDirectory(prefix="nas-platform-safe-slurp-") as directory
     replacement = root / "replacement"
     symlink = root / "symlink"
     oversized = root / "oversized"
+    fifo = root / "fifo"
+    unix_socket = root / "socket"
     absent = root / "absent"
     regular.write_bytes(b"original-content")
     replacement.write_bytes(b"replacement-content")
     symlink.symlink_to(regular)
     oversized.write_bytes(b"x" * 65)
+    os.mkfifo(fifo, 0o600)
+
+    fifo_code = f"""
+import importlib.util
+spec = importlib.util.spec_from_file_location('atomic_safe_slurp', {str(MODULE_PATH)!r})
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+try:
+    module.read_regular_file({str(fifo)!r}, 64)
+except module.SafeReadError as error:
+    assert {str(fifo)!r} not in str(error)
+    raise SystemExit(0)
+raise SystemExit(1)
+"""
+    try:
+        fifo_result = subprocess.run(
+            [sys.executable, "-c", fifo_code], check=False, timeout=2,
+            capture_output=True, text=True,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        )
+    except subprocess.TimeoutExpired:
+        raise AssertionError("atomic reader hung while opening a FIFO") from None
+    assert fifo_result.returncode == 0, "atomic reader accepted a FIFO"
 
     exists, content = module.read_regular_file(str(regular), 64)
     assert exists and content == b"original-content"
@@ -50,6 +77,26 @@ with tempfile.TemporaryDirectory(prefix="nas-platform-safe-slurp-") as directory
         pass
     else:
         raise AssertionError("atomic reader accepted a symlink")
+
+    for nonregular in (root, pathlib.Path("/dev/null")):
+        try:
+            module.read_regular_file(str(nonregular), 64)
+        except module.SafeReadError as error:
+            assert str(nonregular) not in str(error)
+        else:
+            raise AssertionError("atomic reader accepted a non-regular descriptor")
+
+    socket_handle = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    socket_handle.bind(str(unix_socket))
+    try:
+        try:
+            module.read_regular_file(str(unix_socket), 64)
+        except module.SafeReadError as error:
+            assert str(unix_socket) not in str(error)
+        else:
+            raise AssertionError("atomic reader accepted a Unix socket")
+    finally:
+        socket_handle.close()
 
     original_open = module.os.open
 
@@ -87,6 +134,7 @@ with tempfile.TemporaryDirectory(prefix="nas-platform-safe-slurp-") as directory
                 "safe_slurp_absent_path": str(root / "fixture-absent"),
                 "safe_slurp_symlink_path": str(fixture_symlink),
                 "safe_slurp_oversized_path": str(fixture_oversized),
+                "safe_slurp_fifo_path": str(fifo),
             }
         ),
         encoding="utf-8",
@@ -108,4 +156,4 @@ with tempfile.TemporaryDirectory(prefix="nas-platform-safe-slurp-") as directory
             "atomic safe-slurp Ansible fixture failed\n" + result.stdout + result.stderr
         ) from None
 
-print("atomic safe-slurp: no-follow, path-swap, absence, and bounds hold")
+print("atomic safe-slurp: no-follow, nonblocking types, path-swap, absence, and bounds hold")

@@ -847,19 +847,24 @@ if ARGV == ["--self-test"]
     end
   end
 
-  Dir.mktmpdir("nas-platform-safe-slurp-mutant-") do |directory|
-    mutant = File.join(directory, "atomic_safe_slurp.py")
-    mutated_source = safe_slurp.sub("os.O_RDONLY | os.O_NOFOLLOW", "os.O_RDONLY | 0")
-    File.write(mutant, mutated_source, mode: "w", perm: 0o600)
-    _stdout, _stderr, status = Open3.capture3(
-      {
-        "ATOMIC_SAFE_SLURP_MODULE" => mutant,
-        "PYTHONDONTWRITEBYTECODE" => "1"
-      },
-      ansible_python, File.join(ROOT, "tests", "safe_slurp_test.py"), chdir: ROOT
-    )
-    check(failures, mutated_source != safe_slurp && !status.success?,
-          "behavioral self-test did not reject the no-follow reader mutation")
+  {
+    "no-follow reader" => ["os.O_NOFOLLOW", "0"],
+    "nonblocking reader" => ["os.O_NONBLOCK", "0"]
+  }.each do |label, (before, after)|
+    Dir.mktmpdir("nas-platform-safe-slurp-mutant-") do |directory|
+      mutant = File.join(directory, "atomic_safe_slurp.py")
+      mutated_source = safe_slurp.sub(before, after)
+      File.write(mutant, mutated_source, mode: "w", perm: 0o600)
+      _stdout, _stderr, status = Open3.capture3(
+        {
+          "ATOMIC_SAFE_SLURP_MODULE" => mutant,
+          "PYTHONDONTWRITEBYTECODE" => "1"
+        },
+        ansible_python, File.join(ROOT, "tests", "safe_slurp_test.py"), chdir: ROOT
+      )
+      check(failures, mutated_source != safe_slurp && !status.success?,
+            "behavioral self-test did not reject the #{label} mutation")
+    end
   end
 end
 

@@ -61,8 +61,25 @@
           ansible.builtin.set_fact:
             safe_slurp_oversized_refused: true
 
+    - name: Require FIFO refusal without blocking
+      block:
+        - name: Attempt an atomic FIFO read
+          atomic_safe_slurp:
+            path: "{{ safe_slurp_fifo_path }}"
+            max_bytes: 64
+          no_log: true
+
+        - name: Record unexpected FIFO acceptance
+          ansible.builtin.fail:
+            msg: Atomic safe-slurp accepted a FIFO.
+      rescue:
+        - name: Record expected FIFO refusal
+          ansible.builtin.set_fact:
+            safe_slurp_fifo_refused: true
+
     - name: Verify unsafe files were refused
       ansible.builtin.assert:
         that:
           - safe_slurp_symlink_refused | default(false)
           - safe_slurp_oversized_refused | default(false)
+          - safe_slurp_fifo_refused | default(false)
