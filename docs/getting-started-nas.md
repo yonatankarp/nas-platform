@@ -48,23 +48,23 @@ an application-data backup, and RAID is not a backup.
 Do not stop or remove the legacy stacks yet. The final service-specific cutover
 and rollback packet is a later migration deliverable.
 
-## 3. Build the migration vault from current credentials
+## 3. Reuse the reviewed migration vault
 
-The migration requirement is credential continuity. Use
-[`inventory/group_vars/all/vault.yml.example`](../inventory/group_vars/all/vault.yml.example)
-as the exact schema and copy the deployed values from the current password
-manager and Portainer definitions. Preserve every login, database password,
-hash, ntfy token, Beszel key, and Gmail setting exactly.
+The migration requirement is credential continuity: every login, database
+password, hash, ntfy token, Beszel key, Gmail setting, and other deployed value
+must remain exactly current. Complete the migration workflow in the
+[secrets and encrypted-vault guide](secrets.md), including its validation,
+private review, and Mac proof, before continuing.
 
-Create the encrypted repository vault directly so no plaintext copy is written:
+Reuse the reviewed Mac vault as ciphertext instead of authoring it again:
 
 ```sh
-ansible-vault create inventory/group_vars/all/vault.yml
+install -m 600 "$HOME/.config/nas-platform/vault.yml" \
+  inventory/group_vars/all/vault.yml
 ```
 
-Paste every key from the example into the editor, replace placeholders, save,
-and store the chosen vault password in your password manager. Confirm the file
-is encrypted without showing its contents:
+Only ciphertext is copied. Verify its header and repository status without
+showing its contents:
 
 ```sh
 head -n 1 inventory/group_vars/all/vault.yml
@@ -72,30 +72,8 @@ git status --short inventory/group_vars/all/vault.yml
 ```
 
 The first line must start with `$ANSIBLE_VAULT;`. The encrypted vault may be
-committed. Never commit its password, a decrypted copy, rendered `.env` files,
-plaintext credentials, or private keys.
-
-If the Mac proof already used the reviewed final vault, reuse that encrypted
-artifact instead of authoring it again:
-
-```sh
-install -m 600 "$HOME/.config/nas-platform/vault.yml" \
-  inventory/group_vars/all/vault.yml
-```
-
-Only ciphertext is copied. Verify its first line again before continuing.
-
-For a truly new platform with no state or identities to preserve, the separate
-opt-in path is:
-
-```sh
-ansible-playbook generate-secrets.yml -e generate_brand_new_platform=true
-mv inventory/group_vars/all/vault-plain.yml inventory/group_vars/all/vault.yml
-ansible-vault encrypt inventory/group_vars/all/vault.yml
-```
-
-That command deliberately refuses existing vault material. Do not use it for
-this migration.
+committed. Never commit its password, a plaintext or decrypted vault, rendered
+`.env` files, plaintext credentials, or private keys.
 
 ## 4. Validate inventory and connectivity
 

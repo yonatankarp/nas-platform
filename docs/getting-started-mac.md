@@ -46,35 +46,17 @@ chmod 600 "$HOME/.config/nas-platform/vault-password"
 Enter one strong password on one line. Do not pass it as a command argument or
 paste it into shell history. Back it up in your password manager.
 
-## 3. Author the portable vault
+## 3. Prepare the portable vault
 
-Open
-[`inventory/group_vars/all/vault.yml.example`](../inventory/group_vars/all/vault.yml.example)
-in a second window. Then create an encrypted file directly:
+Complete the migration workflow in the
+[secrets and encrypted-vault guide](secrets.md) before running the complete fresh
+proof. It prepares, validates, and reviews the external encrypted vault used by
+the commands below.
 
-```sh
-ansible-vault create \
-  --vault-password-file "$HOME/.config/nas-platform/vault-password" \
-  "$HOME/.config/nas-platform/vault.yml"
-```
-
-Your editor opens inside `ansible-vault`. Copy every key from the example and
-replace every example value with its exact current NAS value from your password
-manager and Portainer definitions. Preserve hashes, tokens, database passwords,
-the Beszel keypair, application identities, and Gmail fields exactly. Saving and
-closing writes ciphertext, not plaintext.
-
-Do **not** use `generate-secrets.yml`: it is for a brand-new platform and would
-break the requirement that current NAS credentials continue to work. Confirm
-encryption without displaying secrets:
-
-```sh
-head -n 1 "$HOME/.config/nas-platform/vault.yml"
-```
-
-Success starts with `$ANSIBLE_VAULT;`. Never commit the vault password or any
-plaintext vault. The encrypted external file may later become the NAS vault
-after review.
+Do **not** use `generate-secrets.yml` for migration: it is only for a brand-new
+platform and would break the requirement that current NAS credentials continue
+to work. After review, the external ciphertext may become the NAS vault; never
+commit its password or a plaintext vault.
 
 ## 4. Run the complete fresh proof
 
