@@ -15,7 +15,8 @@ usage() {
   printf '%s\n' \
     'usage: run.sh --lane fresh|adoption --vault-file FILE --vault-password-file FILE_OR_EXECUTABLE' \
     '              [--parity-vault-file FILE --parity-vault-password-file FILE_OR_EXECUTABLE]' \
-    '              [--keep-on-failure] [--phase NAME] [--sandbox PATH]'
+    '              [--keep-on-failure] [--phase NAME] [--sandbox PATH]' \
+    'Executable password providers must use the exact #!/bin/sh shebang without options.'
 }
 
 lane=
@@ -218,25 +219,51 @@ rescue IOError
   { bytes: "", failed: true }
 end
 
-def execute_provider(directory, basename, maximum_size)
-  result = { output: "", success: false, timed_out: false, oversized: false, capture_failed: false }
-  descriptor = directory.fileno
+def execute_provider(directory, provider_source, basename, provider_bytes, maximum_size)
+  result = {
+    output: "", success: false, timed_out: false, oversized: false,
+    capture_failed: false, unsupported: false
+  }
+  unless provider_bytes.lines.first == "#!/bin/sh\n"
+    result[:unsupported] = true
+    return result
+  end
+  directory_descriptor = directory.fileno
+  provider_descriptor = provider_source.fileno
   directory.close_on_exec = false
-  # Darwin's fdescfs exposes /dev/fd/N but does not allow /dev/fd/N/child
-  # traversal. Inherit only the inspected directory descriptor, fchdir to that
-  # inode in a direct-argv launcher, and use ./basename so dirname($0) and
-  # sibling helpers resolve through the held directory on Darwin and Linux.
+  provider_source.close_on_exec = false
+  provider_source.rewind
+  provider_path = ["/proc/self/fd/#{provider_descriptor}", "/dev/fd/#{provider_descriptor}"].find do |path|
+    begin
+      candidate = File.stat(path)
+      inspected = provider_source.stat
+      candidate.file? && candidate.ino == inspected.ino && candidate.size == inspected.size
+    rescue SystemCallError
+      false
+    end
+  end
+  return result unless provider_path
+  # macOS has no fexecve/execveat and its fdescfs is mounted noexec. Source an
+  # exact inspected POSIX-shell descriptor. The launcher retains the inspected
+  # directory as cwd, closes that capability before /bin/sh sees it, and
+  # supplies the original relative $0 for sibling-helper wrappers.
   launcher = <<~'PROVIDER_LAUNCHER'
-    descriptor = Integer(ARGV.fetch(0), 10)
+    directory_descriptor = Integer(ARGV.fetch(0), 10)
     basename = ARGV.fetch(1)
-    directory = IO.for_fd(descriptor, autoclose: false)
+    provider_path = ARGV.fetch(2)
+    directory = IO.for_fd(directory_descriptor)
     Dir.fchdir(directory.fileno)
-    exec(["./#{basename}", "./#{basename}"])
+    directory.close
+    exec(["/bin/sh", "/bin/sh"], "-c", '. "$1"', "./#{basename}", provider_path)
   PROVIDER_LAUNCHER
-  spawn_options = { pgroup: true, descriptor => descriptor }
+  spawn_options = {
+    pgroup: true,
+    directory_descriptor => directory_descriptor,
+    provider_descriptor => provider_descriptor
+  }
   Open3.popen3(
     [RbConfig.ruby, RbConfig.ruby], "-e", launcher,
-    descriptor.to_s, basename, spawn_options
+    directory_descriptor.to_s, basename, provider_path, spawn_options
   ) do |stdin, stdout, stderr, wait_thread|
     stdin.close
     stdout_reader = Thread.new { bounded_read(stdout, maximum_size) }
@@ -285,6 +312,7 @@ end
 
 temporary_path = nil
 parent_directory = nil
+source = nil
 begin
   fail_pin(label, "cannot be pinned safely") unless
     File.const_defined?(:NOFOLLOW) && File.const_defined?(:NONBLOCK) && Dir.respond_to?(:fchdir)
@@ -308,11 +336,12 @@ begin
 
   flags = File::RDONLY | File::NOFOLLOW | File::NONBLOCK
   parent_path_before = File.lstat(parent_path)
-  parent_directory = File.open(parent_path, flags)
+  canonical_parent_before = File.lstat(parent_before)
+  parent_directory = File.open(parent_before, flags)
   parent_descriptor_before = parent_directory.stat
   fail_pin(label, "changed while being pinned") unless
     parent_descriptor_before.directory? &&
-      identity(parent_path_before) == identity(parent_descriptor_before)
+      identity(canonical_parent_before) == identity(parent_descriptor_before)
   path_before = File.lstat(source_path)
   held_path_before = Dir.fchdir(parent_directory.fileno) { File.lstat("./#{basename}") }
   fail_pin(label, "must be a regular non-symlink file") unless
@@ -322,50 +351,53 @@ begin
   bytes = nil
   executable = false
   source = Dir.fchdir(parent_directory.fileno) { File.open("./#{basename}", flags) }
-  source.tap do |opened_source|
-    descriptor_before = opened_source.stat
-    fail_pin(label, "changed while being pinned") unless
-      descriptor_before.file? && signature(path_before) == signature(descriptor_before)
-    fail_pin(label, "exceeds the size limit") if descriptor_before.size > maximum_size
-    executable = (descriptor_before.mode & 0o111).positive?
-    bytes = opened_source.read(maximum_size + 1)
-    fail_pin(label, "exceeds the size limit") if bytes.bytesize > maximum_size
-    descriptor_after = opened_source.stat
-    fail_pin(label, "changed while being pinned") unless
-      signature(descriptor_before) == signature(descriptor_after)
-  ensure
-    opened_source.close
-  end
+  descriptor_before = source.stat
+  fail_pin(label, "changed while being pinned") unless
+    descriptor_before.file? && signature(path_before) == signature(descriptor_before)
+  fail_pin(label, "exceeds the size limit") if descriptor_before.size > maximum_size
+  executable = (descriptor_before.mode & 0o111).positive?
+  bytes = source.read(maximum_size + 1)
+  fail_pin(label, "exceeds the size limit") if bytes.bytesize > maximum_size
+  descriptor_after = source.stat
+  fail_pin(label, "changed while being pinned") unless
+    signature(descriptor_before) == signature(descriptor_after)
 
   parent_after = File.realpath(parent_path)
   parent_path_after = File.lstat(parent_path)
+  canonical_parent_after = File.lstat(parent_before)
   parent_descriptor_after = parent_directory.stat
   path_after = File.lstat(source_path)
   held_path_after = Dir.fchdir(parent_directory.fileno) { File.lstat("./#{basename}") }
   fail_pin(label, "changed while being pinned") unless
     parent_before == parent_after &&
       identity(parent_path_before) == identity(parent_path_after) &&
+      identity(canonical_parent_before) == identity(canonical_parent_after) &&
       identity(parent_descriptor_before) == identity(parent_descriptor_after) &&
       signature(path_before) == signature(path_after) &&
       signature(path_before) == signature(held_path_after)
   if kind == "password" && executable
-    provider = execute_provider(parent_directory, basename, maximum_size)
+    provider = execute_provider(parent_directory, source, basename, bytes, maximum_size)
     provider_parent_after = File.realpath(parent_path)
     provider_parent_path_after = File.lstat(parent_path)
+    provider_canonical_parent_after = File.lstat(parent_before)
     provider_parent_descriptor_after = parent_directory.stat
     provider_path_after = File.lstat(source_path)
     provider_held_path_after = Dir.fchdir(parent_directory.fileno) { File.lstat("./#{basename}") }
     fail_pin(label, "changed while being pinned") unless
       parent_before == provider_parent_after &&
         identity(parent_path_before) == identity(provider_parent_path_after) &&
+        identity(canonical_parent_before) == identity(provider_canonical_parent_after) &&
         identity(parent_descriptor_before) == identity(provider_parent_descriptor_after) &&
         signature(path_before) == signature(provider_path_after) &&
         signature(path_before) == signature(provider_held_path_after)
     fail_pin(label, "provider timed out") if provider[:timed_out]
     fail_pin(label, "provider output exceeds the size limit") if provider[:oversized]
+    fail_pin(label, "provider must use the exact #!/bin/sh executable format") if provider[:unsupported]
     fail_pin(label, "provider failed") unless provider[:success] && !provider[:capture_failed]
     bytes = provider[:output]
   end
+  source.close
+  source = nil
   parent_directory.close
   parent_directory = nil
   if kind == "vault" && !bytes.start_with?("$ANSIBLE_VAULT;")
@@ -399,6 +431,7 @@ begin
 rescue SystemCallError, IOError, ArgumentError
   fail_pin(label, "changed while being pinned")
 ensure
+  source.close if source && !source.closed?
   parent_directory.close if parent_directory && !parent_directory.closed?
   File.unlink(temporary_path) if temporary_path && File.file?(temporary_path) && !File.symlink?(temporary_path)
 end

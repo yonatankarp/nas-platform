@@ -75,6 +75,8 @@ help_output=$temporary_parent/help
 grep -F -- '--parity-vault-file FILE' "$help_output" >/dev/null || fail 'usage omits parity vault option'
 grep -F -- '--parity-vault-password-file FILE_OR_EXECUTABLE' "$help_output" >/dev/null ||
   fail 'usage omits parity password option'
+grep -F -- 'exact #!/bin/sh shebang without options' "$help_output" >/dev/null ||
+  fail 'usage omits the executable password provider format'
 
 expect_failure 'adoption without parity vault' 'adoption requires --parity-vault-file' \
   "$runner" --lane adoption --vault-file "$vault_file" --vault-password-file "$password_file"
@@ -146,6 +148,32 @@ class << Open3
       target = ENV.fetch("PLATFORM_SWAP_PARENT_TARGET")
       holding = ENV.fetch("PLATFORM_SWAP_PARENT_HOLDING")
       replacement = ENV.fetch("PLATFORM_SWAP_PARENT_REPLACEMENT")
+      File.rename(target, holding)
+      File.rename(replacement, target)
+      begin
+        return adoption_input_original_popen3(*arguments, **keywords, &block)
+      ensure
+        File.rename(target, replacement)
+        File.rename(holding, target)
+      end
+    end
+    if ENV["PLATFORM_SWAP_STAGE"] == "child_spawn"
+      target = ENV.fetch("PLATFORM_SWAP_CHILD_TARGET")
+      holding = ENV.fetch("PLATFORM_SWAP_CHILD_HOLDING")
+      replacement = ENV.fetch("PLATFORM_SWAP_CHILD_REPLACEMENT")
+      File.rename(target, holding)
+      File.rename(replacement, target)
+      begin
+        return adoption_input_original_popen3(*arguments, **keywords, &block)
+      ensure
+        File.rename(target, replacement)
+        File.rename(holding, target)
+      end
+    end
+    if ENV["PLATFORM_SWAP_STAGE"] == "logical_parent_spawn"
+      target = ENV.fetch("PLATFORM_SWAP_LOGICAL_PARENT_TARGET")
+      holding = ENV.fetch("PLATFORM_SWAP_LOGICAL_PARENT_HOLDING")
+      replacement = ENV.fetch("PLATFORM_SWAP_LOGICAL_PARENT_REPLACEMENT")
       File.rename(target, holding)
       File.rename(replacement, target)
       begin
@@ -285,6 +313,146 @@ if grep -F transient-replacement-secret "$transient_output" >/dev/null; then
 fi
 [ -d "$transient_parent" ] && [ -d "$transient_replacement" ] && [ ! -e "$transient_holding" ] ||
   fail 'transient parent swap fixture did not restore the original pathname'
+
+child_swap_root=$temporary_parent/transient-child-provider
+mkdir "$child_swap_root"
+child_swap_provider=$child_swap_root/provider
+child_swap_holding=$child_swap_root/provider-held
+child_swap_replacement=$child_swap_root/provider-replacement
+child_swap_marker=$temporary_parent/child-swap-marker
+printf '%s\n' '#!/bin/sh' \
+  'printf "%s\\n" original >> "${PLATFORM_CHILD_SWAP_MARKER:?}"' \
+  'printf "%s\\n" held-provider-inode-output' > "$child_swap_provider"
+printf '%s\n' '#!/bin/sh' \
+  'printf "%s\\n" replacement >> "${PLATFORM_CHILD_SWAP_MARKER:?}"' \
+  'printf "%s\\n" transient-child-replacement-secret' \
+  > "$child_swap_replacement"
+chmod 0700 "$child_swap_provider" "$child_swap_replacement"
+child_swap_sandbox=$temporary_parent/nas-platform-mac.FdC123
+mkdir -m 0700 "$child_swap_sandbox"
+printf 'schema=1\nproject=%s\n' nas-platform-mac-fdc123 > "$child_swap_sandbox/.nas-platform-mac-owned"
+chmod 0600 "$child_swap_sandbox/.nas-platform-mac-owned"
+child_swap_output=$temporary_parent/child-swap-output
+if RUBYOPT="-r$swap_fixture" PLATFORM_SWAP_STAGE=child_spawn \
+  PLATFORM_SWAP_CHILD_TARGET="$child_swap_provider" \
+  PLATFORM_SWAP_CHILD_HOLDING="$child_swap_holding" \
+  PLATFORM_SWAP_CHILD_REPLACEMENT="$child_swap_replacement" \
+  PLATFORM_CHILD_SWAP_MARKER="$child_swap_marker" \
+  PLATFORM_MAC_TMPDIR="$temporary_parent" "$runner" --lane adoption \
+    --vault-file "$vault_file" --vault-password-file "$password_file" \
+    --parity-vault-file "$parity_vault_file" \
+    --parity-vault-password-file "$child_swap_provider" \
+    --phase report --sandbox "$child_swap_sandbox" > "$child_swap_output" 2>&1; then
+  fail 'transient provider entry swap was not rejected'
+fi
+grep -Fx original "$child_swap_marker" >/dev/null ||
+  fail 'transient child-entry swap did not execute the inspected provider bytes'
+if grep -Fx replacement "$child_swap_marker" >/dev/null; then
+  fail 'transient child-entry swap executed the replacement provider'
+fi
+if grep -F transient-child-replacement-secret "$child_swap_output" >/dev/null; then
+  fail 'transient child-entry replacement leaked output'
+fi
+[ -f "$child_swap_provider" ] && [ -f "$child_swap_replacement" ] && [ ! -e "$child_swap_holding" ] ||
+  fail 'transient child-entry swap fixture did not restore the original pathname'
+
+logical_parent_root=$temporary_parent/logical-provider-parent
+logical_parent_real=$logical_parent_root/real
+logical_parent_other=$logical_parent_root/other
+logical_parent_link=$logical_parent_root/current
+logical_parent_holding=$logical_parent_root/current-held
+logical_parent_replacement=$logical_parent_root/current-replacement
+mkdir -p "$logical_parent_real" "$logical_parent_other"
+printf '%s\n' '#!/bin/sh' '"$(dirname -- "$0")/helper"' > "$logical_parent_real/provider"
+printf '%s\n' '#!/bin/sh' 'printf "%s\\n" logical-parent-output' > "$logical_parent_real/helper"
+printf '%s\n' '#!/bin/sh' 'printf "%s\\n" logical-parent-replacement-secret' \
+  > "$logical_parent_other/provider"
+chmod 0700 "$logical_parent_real/provider" "$logical_parent_real/helper" \
+  "$logical_parent_other/provider"
+ln -s "$logical_parent_real" "$logical_parent_link"
+ln -s "$logical_parent_other" "$logical_parent_replacement"
+logical_parent_sandbox=$temporary_parent/nas-platform-mac.FdL123
+mkdir -m 0700 "$logical_parent_sandbox"
+printf 'schema=1\nproject=%s\n' nas-platform-mac-fdl123 > "$logical_parent_sandbox/.nas-platform-mac-owned"
+chmod 0600 "$logical_parent_sandbox/.nas-platform-mac-owned"
+logical_parent_output=$temporary_parent/logical-parent-output
+RUBYOPT="-r$swap_fixture" PLATFORM_SWAP_STAGE=logical_parent_spawn \
+  PLATFORM_SWAP_LOGICAL_PARENT_TARGET="$logical_parent_link" \
+  PLATFORM_SWAP_LOGICAL_PARENT_HOLDING="$logical_parent_holding" \
+  PLATFORM_SWAP_LOGICAL_PARENT_REPLACEMENT="$logical_parent_replacement" \
+  PLATFORM_MAC_TMPDIR="$temporary_parent" "$runner" --lane adoption \
+    --vault-file "$vault_file" --vault-password-file "$password_file" \
+    --parity-vault-file "$parity_vault_file" \
+    --parity-vault-password-file "$logical_parent_link/provider" \
+    --phase report --sandbox "$logical_parent_sandbox" > "$logical_parent_output" 2>&1 ||
+  fail 'logical symlink parent was not safely bound through its canonical directory'
+printf '%s\n' logical-parent-output > "$temporary_parent/logical-parent-expected"
+cmp -s "$temporary_parent/logical-parent-expected" \
+  "$logical_parent_sandbox/protected-inputs/parity-password" ||
+  fail 'logical parent swap changed provider execution'
+if grep -F logical-parent-replacement-secret "$logical_parent_output" >/dev/null; then
+  fail 'logical parent replacement leaked output'
+fi
+[ -L "$logical_parent_link" ] && [ -L "$logical_parent_replacement" ] && \
+  [ ! -e "$logical_parent_holding" ] || fail 'logical parent fixture was not restored'
+
+descriptor_provider=$temporary_parent/provider-descriptor-check
+cat > "$descriptor_provider" <<'SH'
+#!/bin/sh
+ruby -e '
+  cwd = File.stat(".")
+  (3..255).each do |descriptor|
+    begin
+      opened = IO.for_fd(descriptor, autoclose: false).stat
+      exit 9 if [opened.dev, opened.ino] == [cwd.dev, cwd.ino]
+    rescue SystemCallError, IOError, ArgumentError
+      next
+    end
+  end
+' || { printf '%s\n' inherited-directory-descriptor; exit 9; }
+printf '%s\n' descriptor-safe-output
+SH
+chmod 0700 "$descriptor_provider"
+descriptor_sandbox=$temporary_parent/nas-platform-mac.FdD123
+mkdir -m 0700 "$descriptor_sandbox"
+printf 'schema=1\nproject=%s\n' nas-platform-mac-fdd123 > "$descriptor_sandbox/.nas-platform-mac-owned"
+chmod 0600 "$descriptor_sandbox/.nas-platform-mac-owned"
+PLATFORM_MAC_TMPDIR="$temporary_parent" "$runner" --lane adoption \
+  --vault-file "$vault_file" --vault-password-file "$password_file" \
+  --parity-vault-file "$parity_vault_file" \
+  --parity-vault-password-file "$descriptor_provider" \
+  --phase report --sandbox "$descriptor_sandbox" >/dev/null 2>&1 ||
+  fail 'provider inherited an inspected directory descriptor'
+printf '%s\n' descriptor-safe-output > "$temporary_parent/descriptor-expected"
+cmp -s "$temporary_parent/descriptor-expected" \
+  "$descriptor_sandbox/protected-inputs/parity-password" ||
+  fail 'provider descriptor check produced unexpected output'
+
+unsupported_provider=$temporary_parent/provider-unsupported
+printf '%s\n' '#!/bin/bash' 'printf "%s\\n" unsupported-provider-secret' > "$unsupported_provider"
+chmod 0700 "$unsupported_provider"
+expect_failure 'unsupported executable parity provider' \
+  'protected parity password input provider must use the exact #!/bin/sh executable format' \
+  env PLATFORM_MAC_TMPDIR="$temporary_parent" "$runner" --lane adoption \
+    --vault-file "$vault_file" --vault-password-file "$password_file" \
+    --parity-vault-file "$parity_vault_file" \
+    --parity-vault-password-file "$unsupported_provider" --phase report
+if grep -F unsupported-provider-secret "$temporary_parent/output" >/dev/null; then
+  fail 'unsupported executable parity provider leaked output'
+fi
+
+option_provider=$temporary_parent/provider-option
+printf '%s\n' '#!/bin/sh -e' 'printf "%s\\n" option-provider-secret' > "$option_provider"
+chmod 0700 "$option_provider"
+expect_failure 'option-bearing executable parity provider' \
+  'protected parity password input provider must use the exact #!/bin/sh executable format' \
+  env PLATFORM_MAC_TMPDIR="$temporary_parent" "$runner" --lane adoption \
+    --vault-file "$vault_file" --vault-password-file "$password_file" \
+    --parity-vault-file "$parity_vault_file" \
+    --parity-vault-password-file "$option_provider" --phase report
+if grep -F option-provider-secret "$temporary_parent/output" >/dev/null; then
+  fail 'option-bearing executable parity provider leaked output'
+fi
 
 nonzero_provider=$temporary_parent/provider-nonzero
 printf '%s\n' '#!/bin/sh' 'printf "%s\\n" provider-nonzero-secret' \
