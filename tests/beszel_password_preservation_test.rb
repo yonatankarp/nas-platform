@@ -1,8 +1,10 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require "json"
 require "open3"
 require "rbconfig"
+require "socket"
 require "tmpdir"
 require "yaml"
 
@@ -18,6 +20,77 @@ end
 
 def normalized(value)
   value.to_s.split.join(" ")
+end
+
+def with_superuser_auth_service(state_path)
+  server = TCPServer.new("127.0.0.1", 0)
+  requests = []
+  stopped = false
+  thread = Thread.new do
+    until stopped
+      next unless IO.select([server], nil, nil, 0.05)
+
+      client = server.accept
+      request_line = client.gets.to_s
+      headers = {}
+      while (line = client.gets)
+        line = line.chomp
+        break if line == "\r" || line.empty?
+
+        key, value = line.split(":", 2)
+        headers[key.downcase] = value.to_s.strip
+      end
+      body = JSON.parse(client.read(headers.fetch("content-length", "0").to_i))
+      state = JSON.parse(File.read(state_path))
+      authenticated = state["identity"] == body["identity"] && state["password"] == body["password"]
+      requests << body
+      response = authenticated ? { "token" => "fixture-token" } : {}
+      payload = JSON.generate(response)
+      status = authenticated ? "200 OK" : "400 Bad Request"
+      client.write("HTTP/1.1 #{status}\r\nContent-Type: application/json\r\n" \
+                   "Content-Length: #{payload.bytesize}\r\nConnection: close\r\n\r\n#{payload}")
+      client.close
+    end
+  rescue IOError, Errno::EBADF
+    nil
+  end
+  yield server.addr.fetch(1), requests
+ensure
+  stopped = true
+  server&.close
+  thread&.join
+end
+
+def run_superuser_lifecycle(tasks, state_path, creator_path, port, *arguments)
+  fixture = Marshal.load(Marshal.dump(tasks))
+  create = fixture.find { |task| task["name"] == "Create the superuser without updating an existing identity" }
+  create.delete("community.docker.docker_compose_v2_exec")
+  create["ansible.builtin.command"] = {
+    "argv" => [RbConfig.ruby, creator_path, state_path,
+               "{{ vault_beszel_superuser_email }}", "{{ vault_beszel_superuser_password }}"]
+  }
+  playbook = [{
+    "hosts" => "localhost", "gather_facts" => false,
+    "vars" => {
+      "beszel_api" => "http://127.0.0.1:#{port}",
+      "beszel_no_log" => true,
+      "vault_beszel_superuser_email" => "admin@example.invalid",
+      "vault_beszel_superuser_password" => "vault-superuser-secret"
+    },
+    "tasks" => fixture
+  }]
+  Dir.mktmpdir("beszel-superuser-playbook-") do |directory|
+    path = File.join(directory, "playbook.yml")
+    File.write(path, YAML.dump(playbook), mode: "w", perm: 0o600)
+    Open3.capture3(
+      { "ANSIBLE_NOCOLOR" => "1" }, "ansible-playbook", "-i", "localhost,", "-c", "local",
+      path, *arguments, chdir: ROOT
+    )
+  end
+end
+
+def changed_count(output)
+  output.scan(/changed=(\d+)/).flatten.last.to_i
 end
 
 tasks = YAML.safe_load_file(TASKS_PATH, aliases: false)
@@ -46,11 +119,11 @@ check(failures, superuser_create&.fetch("register", nil) == "beszel_superuser_cr
       "Beszel must capture the atomic superuser create result")
 check(failures, superuser_create&.fetch("failed_when", nil) == false,
       "Beszel must defer create-result classification until exact authentication")
-check(failures, superuser_create&.fetch("changed_when", nil).to_s.include?("beszel_superuser_create.rc") &&
-                superuser_create&.fetch("changed_when", nil).to_s.match?(/==\s*0/),
-      "Beszel must report superuser creation only when create exits successfully")
-check(failures, superuser_create && !superuser_create.key?("when"),
-      "Beszel atomic superuser creation must be unconditional")
+check(failures, superuser_create&.fetch("changed_when", nil) == false,
+      "Beszel atomic command must defer truthful change classification until post-authentication")
+check(failures, Array(superuser_create&.fetch("when", nil)) == [
+        "not ansible_check_mode", "beszel_superuser_pre_auth.status | int != 200"
+      ], "Beszel atomic create must run only when exact credentials do not already authenticate")
 check(failures,
       superuser_create&.fetch("no_log", nil) == "{{ beszel_no_log | default(true) }}",
       "Beszel atomic superuser creation must use the repository redaction contract")
@@ -59,6 +132,7 @@ check(failures, superuser_create && !superuser_create.key?("tags"),
 check(failures, superuser_create && !superuser_create.key?("check_mode"),
       "Beszel atomic superuser creation must obey Ansible check mode")
 
+superuser_pre_auth = tasks.find { |task| task["name"] == "Check for an existing Beszel superuser with vault credentials" }
 superuser_auth = tasks.find { |task| task["name"] == "Authenticate as the superuser" }
 expected_superuser_auth = {
   "url" => "{{ beszel_api }}/api/collections/_superusers/auth-with-password",
@@ -77,32 +151,149 @@ check(failures, superuser_auth&.fetch("register", nil) == "beszel_auth" &&
                 superuser_auth&.fetch("check_mode", nil) == false &&
                 superuser_auth&.fetch("no_log", nil) == "{{ beszel_no_log | default(true) }}",
       "Beszel superuser authentication must preserve its exact result and redaction contract")
+check(failures,
+      superuser_pre_auth&.fetch("ansible.builtin.uri", nil) == expected_superuser_auth &&
+        superuser_pre_auth&.fetch("register", nil) == "beszel_superuser_pre_auth" &&
+        superuser_pre_auth&.fetch("changed_when", nil) == false &&
+        superuser_pre_auth&.fetch("check_mode", nil) == false &&
+        superuser_pre_auth&.fetch("no_log", nil) == "{{ beszel_no_log | default(true) }}",
+      "Beszel must capture exact pre-create authentication without exposing credentials")
 
 superuser_assert = tasks.find { |task| task["name"] == "Require created or preserved Beszel superuser credentials" }
 superuser_conditions = Array(superuser_assert&.dig("ansible.builtin.assert", "that"))
-classification = superuser_conditions.find { |condition| condition.include?("beszel_superuser_create.rc") }
-expected_classification = <<~CONDITION
-  beszel_superuser_create.rc | default(1) | int == 0
-  or beszel_auth.status | int == 200
-CONDITION
 check(failures,
-      normalized(classification) == normalized(expected_classification),
-      "only successful creation or exact preserved-credential authentication may satisfy superuser provisioning")
-check(failures, superuser_conditions.include?("beszel_auth.status | int == 200"),
-      "superuser preservation assertion must independently require exact post-create authentication")
-check(failures, superuser_conditions.length == 2,
-      "superuser preservation assertion must contain exact classification and authentication conditions")
+      superuser_conditions == ["ansible_check_mode or beszel_auth.status | int == 200"],
+      "superuser preservation must require exact post-create authentication outside check mode")
 check(failures, !superuser_conditions.join(" ").match?(/std(out|err)/),
       "superuser create-result classification must not parse brittle command output")
 check(failures, superuser_assert&.fetch("no_log", nil) == true,
       "the superuser preservation assertion must always redact credentials")
+check(failures, Array(superuser_assert&.fetch("tags", nil)).include?("platform_verify_beszel"),
+      "Beszel verify-only must enforce the superuser credential assertion")
 
+pre_auth_index = superuser_pre_auth && tasks.index(superuser_pre_auth)
 create_index = superuser_create && tasks.index(superuser_create)
 auth_index = superuser_auth && tasks.index(superuser_auth)
 assert_index = superuser_assert && tasks.index(superuser_assert)
 check(failures,
-      create_index && auth_index && assert_index && create_index < auth_index && auth_index < assert_index,
-      "Beszel must authenticate and classify the result immediately after atomic superuser creation")
+      pre_auth_index && create_index && auth_index && assert_index &&
+        pre_auth_index < create_index && create_index < auth_index && auth_index < assert_index,
+      "Beszel must pre-authenticate, atomically create if needed, and post-authenticate in order")
+
+superuser_created = tasks.find { |task| task["name"] == "Report newly created Beszel superuser" }
+check(failures,
+      superuser_created&.fetch("changed_when", nil) == true &&
+        Array(superuser_created&.fetch("when", nil)) == [
+          "not ansible_check_mode", "beszel_superuser_pre_auth.status | int != 200",
+          "beszel_auth.status | int == 200"
+        ],
+      "Beszel must report changed only when failed pre-authentication becomes successful post-authentication")
+superuser_planned = tasks.find { |task| task["name"] == "Report planned Beszel superuser creation" }
+check(failures,
+      superuser_planned&.fetch("changed_when", nil) == true &&
+        Array(superuser_planned&.fetch("when", nil)) == [
+          "ansible_check_mode", "beszel_superuser_pre_auth.status | int != 200"
+        ],
+      "Beszel check mode must plan absent superuser creation without invoking the CLI")
+
+lifecycle_names = [
+  "Check for an existing Beszel superuser with vault credentials",
+  "Create the superuser without updating an existing identity",
+  "Authenticate as the superuser",
+  "Require created or preserved Beszel superuser credentials",
+  "Report newly created Beszel superuser",
+  "Report planned Beszel superuser creation"
+]
+lifecycle_tasks = lifecycle_names.filter_map do |name|
+  tasks.find { |task| task["name"] == name }
+end
+check(failures, lifecycle_tasks.length == lifecycle_names.length,
+      "Beszel stateful superuser lifecycle task selection is incomplete")
+
+if lifecycle_tasks.length == lifecycle_names.length
+  Dir.mktmpdir("beszel-superuser-state-") do |directory|
+    state_path = File.join(directory, "state.json")
+    creator_path = File.join(directory, "create.rb")
+    File.write(creator_path, <<~RUBY, mode: "w", perm: 0o700)
+      #!/usr/bin/env ruby
+      require "json"
+      state_path, identity, password = ARGV
+      state = JSON.parse(File.read(state_path))
+      if state["identity"].nil?
+        state = { "identity" => identity, "password" => password }
+        File.write(state_path, JSON.generate(state), mode: "w", perm: 0o600)
+        puts "Successfully created new superuser"
+      else
+        puts "Error: failed to create new superuser account: email: Value must be unique."
+      end
+    RUBY
+    desired_state = {
+      "identity" => "admin@example.invalid", "password" => "vault-superuser-secret"
+    }
+    File.write(state_path, JSON.generate({ "identity" => nil, "password" => nil }), mode: "w", perm: 0o600)
+    with_superuser_auth_service(state_path) do |port, requests|
+      first_stdout, first_stderr, first_status = run_superuser_lifecycle(
+        lifecycle_tasks, state_path, creator_path, port
+      )
+      check(failures, first_status.success? && changed_count(first_stdout) == 1,
+            "Beszel first superuser creation was not the sole truthful change")
+      check(failures, JSON.parse(File.read(state_path)) == desired_state,
+            "Beszel first superuser creation did not persist exact credentials")
+
+      second_stdout, second_stderr, second_status = run_superuser_lifecycle(
+        lifecycle_tasks, state_path, creator_path, port
+      )
+      check(failures, second_status.success? && changed_count(second_stdout) == 0,
+            "Beszel existing exact superuser credentials were not idempotent")
+      check(failures, JSON.parse(File.read(state_path)) == desired_state,
+            "Beszel idempotent superuser run mutated persisted credentials")
+
+      wrong_state = desired_state.merge("password" => "deployed-other-secret")
+      File.write(state_path, JSON.generate(wrong_state), mode: "w", perm: 0o600)
+      wrong_stdout, wrong_stderr, wrong_status = run_superuser_lifecycle(
+        lifecycle_tasks, state_path, creator_path, port
+      )
+      wrong_output = wrong_stdout + wrong_stderr
+      check(failures, !wrong_status.success? && JSON.parse(File.read(state_path)) == wrong_state,
+            "Beszel wrong existing credentials did not fail without mutation")
+      check(failures,
+            !wrong_output.include?(desired_state.fetch("password")) &&
+              !wrong_output.include?(wrong_state.fetch("password")),
+            "Beszel wrong-credential diagnostics leaked a password")
+      wrong_verify_stdout, wrong_verify_stderr, wrong_verify_status = run_superuser_lifecycle(
+        lifecycle_tasks, state_path, creator_path, port, "--tags", "platform_verify_beszel"
+      )
+      check(failures,
+            !wrong_verify_status.success? && JSON.parse(File.read(state_path)) == wrong_state &&
+              !(wrong_verify_stdout + wrong_verify_stderr).include?(wrong_state.fetch("password")),
+            "Beszel verify-only accepted or exposed wrong superuser credentials")
+
+      File.write(state_path, JSON.generate({ "identity" => nil, "password" => nil }), mode: "w", perm: 0o600)
+      check_stdout, check_stderr, check_status = run_superuser_lifecycle(
+        lifecycle_tasks, state_path, creator_path, port, "--check"
+      )
+      check(failures,
+            check_status.success? && changed_count(check_stdout) == 1 &&
+              JSON.parse(File.read(state_path))["identity"].nil?,
+            "Beszel check mode did not plan creation without mutation")
+
+      File.write(state_path, JSON.generate(desired_state), mode: "w", perm: 0o600)
+      verify_stdout, verify_stderr, verify_status = run_superuser_lifecycle(
+        lifecycle_tasks, state_path, creator_path, port, "--tags", "platform_verify_beszel"
+      )
+      check(failures,
+            verify_status.success? && changed_count(verify_stdout) == 0 &&
+              JSON.parse(File.read(state_path)) == desired_state,
+            "Beszel verify-only superuser authentication was not non-mutating")
+      check(failures, requests.length == 10,
+            "Beszel superuser lifecycle did not execute the exact authentication sequence")
+      [first_stderr, second_stderr, check_stderr, verify_stderr].each do |output|
+        check(failures, !output.include?(desired_state.fetch("password")),
+              "Beszel lifecycle diagnostics leaked the vault password")
+      end
+    end
+  end
+end
 
 app_auth = tasks.find do |task|
   task["name"] == "Check whether the managed application user accepts vault credentials"
@@ -192,13 +383,31 @@ check(failures,
 
 if ARGV == ["--self-test"] && failures.empty?
   mutations = {
-    "missing unconditional superuser authentication" => [
-      "superuser preservation assertion must independently require exact post-create authentication",
+    "missing post-create superuser authentication requirement" => [
+      "superuser preservation must require exact post-create authentication outside check mode",
       lambda do |fixture|
         assertion = fixture.find do |task|
           task["name"] == "Require created or preserved Beszel superuser credentials"
         end
-        assertion.fetch("ansible.builtin.assert").fetch("that").delete("beszel_auth.status | int == 200")
+        assertion.fetch("ansible.builtin.assert")["that"] = ["ansible_check_mode"]
+      end
+    ],
+    "verify-only superuser assertion omission" => [
+      "Beszel verify-only must enforce the superuser credential assertion",
+      lambda do |fixture|
+        assertion = fixture.find do |task|
+          task["name"] == "Require created or preserved Beszel superuser credentials"
+        end
+        assertion.delete("tags")
+      end
+    ],
+    "wrong pre-create superuser authentication password" => [
+      "Beszel must capture exact pre-create authentication without exposing credentials",
+      lambda do |fixture|
+        auth = fixture.find do |task|
+          task["name"] == "Check for an existing Beszel superuser with vault credentials"
+        end
+        auth.dig("ansible.builtin.uri", "body")["password"] = "wrong"
       end
     ],
     "wrong superuser authentication endpoint" => [
@@ -224,13 +433,29 @@ if ARGV == ["--self-test"] && failures.empty?
         create.dig("ansible.builtin.uri", "body")["passwordConfirm"] = "wrong"
       end
     ],
-    "conditional atomic superuser creation" => [
-      "Beszel atomic superuser creation must be unconditional",
+    "unconditional atomic superuser creation" => [
+      "Beszel atomic create must run only when exact credentials do not already authenticate",
       lambda do |fixture|
         create = fixture.find do |task|
           task["name"] == "Create the superuser without updating an existing identity"
         end
-        create["when"] = false
+        create.delete("when")
+      end
+    ],
+    "rc-based superuser change classification" => [
+      "Beszel atomic command must defer truthful change classification until post-authentication",
+      lambda do |fixture|
+        create = fixture.find do |task|
+          task["name"] == "Create the superuser without updating an existing identity"
+        end
+        create["changed_when"] = "beszel_superuser_create.rc == 0"
+      end
+    ],
+    "missing post-authenticated change classification" => [
+      "Beszel must report changed only when failed pre-authentication becomes successful post-authentication",
+      lambda do |fixture|
+        report = fixture.find { |task| task["name"] == "Report newly created Beszel superuser" }
+        report["when"].delete("beszel_auth.status | int == 200")
       end
     ],
     "unredacted atomic superuser creation" => [

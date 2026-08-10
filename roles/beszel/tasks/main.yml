@@ -91,11 +91,26 @@
   changed_when: false
   check_mode: false
 
-# PocketBase has no supported non-secret list or existence command. Its atomic
-# create command is the reviewed exception: it creates an absent identity but
-# cannot update an existing password. A nonzero result is accepted only when the
-# following exact authentication proves the intended identity already exists.
-# This avoids brittle parsing of command output while failing closed otherwise.
+# PocketBase has no supported non-secret list or existence command. Exact
+# authentication safely proves the desired identity already exists; otherwise
+# its atomic create command is the reviewed exception. The command creates an
+# absent identity but cannot update an existing password. Post-authentication
+# distinguishes successful creation from an existing identity with another
+# password without parsing CLI output or treating its always-zero exit as change.
+- name: Check for an existing Beszel superuser with vault credentials
+  ansible.builtin.uri:
+    url: "{{ beszel_api }}/api/collections/_superusers/auth-with-password"
+    method: POST
+    body_format: json
+    body:
+      identity: "{{ vault_beszel_superuser_email }}"
+      password: "{{ vault_beszel_superuser_password }}"
+    status_code: [200, 400, 403]
+  register: beszel_superuser_pre_auth
+  changed_when: false
+  check_mode: false
+  no_log: "{{ beszel_no_log | default(true) }}"
+
 - name: Create the superuser without updating an existing identity
   community.docker.docker_compose_v2_exec:
     project_src: "{{ platform_current_dir }}/services/beszel"
@@ -110,8 +125,11 @@
       - "{{ vault_beszel_superuser_email }}"
       - "{{ vault_beszel_superuser_password }}"
   register: beszel_superuser_create
+  when:
+    - not ansible_check_mode
+    - beszel_superuser_pre_auth.status | int != 200
   failed_when: false
-  changed_when: beszel_superuser_create.rc | default(1) | int == 0
+  changed_when: false
   no_log: "{{ beszel_no_log | default(true) }}"
 
 - name: Authenticate as the superuser
@@ -130,17 +148,32 @@
   no_log: "{{ beszel_no_log | default(true) }}"
 
 - name: Require created or preserved Beszel superuser credentials
+  tags: [platform_verify_beszel]
   ansible.builtin.assert:
     that:
-      - >-
-        beszel_superuser_create.rc | default(1) | int == 0
-        or beszel_auth.status | int == 200
-      - beszel_auth.status | int == 200
+      - ansible_check_mode or beszel_auth.status | int == 200
     fail_msg: >-
       Beszel superuser creation failed or the existing identity does not accept
       its preserved vault password. Run the reviewed credential-migration
       procedure; Ansible will not reset it automatically.
   no_log: true
+
+- name: Report newly created Beszel superuser
+  ansible.builtin.debug:
+    msg: Beszel superuser was created and authenticated.
+  when:
+    - not ansible_check_mode
+    - beszel_superuser_pre_auth.status | int != 200
+    - beszel_auth.status | int == 200
+  changed_when: true
+
+- name: Report planned Beszel superuser creation
+  ansible.builtin.debug:
+    msg: Beszel superuser would be created and authenticated.
+  when:
+    - ansible_check_mode
+    - beszel_superuser_pre_auth.status | int != 200
+  changed_when: true
 
 # The point of authoring the keypair is that the hub adopts it, so assert rather
 # than assume. getkey needs superuser authentication, hence its position here.
