@@ -188,6 +188,7 @@ pin_protected_input() {
 source_path, destination_path, label, kind, external, repository, protected_root = ARGV
 require "open3"
 require "rbconfig"
+require "shellwords"
 require "timeout"
 
 maximum_size = kind == "vault" ? 16 * 1024 * 1024 : 1024 * 1024
@@ -219,7 +220,7 @@ rescue IOError
   { bytes: "", failed: true }
 end
 
-def execute_provider(directory, provider_source, basename, provider_bytes, maximum_size)
+def execute_provider(directory, basename, provider_bytes, protected_root, maximum_size)
   result = {
     output: "", success: false, timed_out: false, oversized: false,
     capture_failed: false, unsupported: false
@@ -228,42 +229,39 @@ def execute_provider(directory, provider_source, basename, provider_bytes, maxim
     result[:unsupported] = true
     return result
   end
-  directory_descriptor = directory.fileno
-  provider_descriptor = provider_source.fileno
-  directory.close_on_exec = false
-  provider_source.close_on_exec = false
-  provider_source.rewind
-  provider_path = ["/proc/self/fd/#{provider_descriptor}", "/dev/fd/#{provider_descriptor}"].find do |path|
-    begin
-      candidate = File.stat(path)
-      inspected = provider_source.stat
-      candidate.file? && candidate.ino == inspected.ino && candidate.size == inspected.size
-    rescue SystemCallError
-      false
-    end
+  snapshot_staging = File.join(protected_root, ".provider-#{Process.pid}-#{rand(1 << 32)}.tmp")
+  snapshot_path = snapshot_staging.delete_suffix(".tmp")
+  File.open(snapshot_staging, File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW, 0o600) do |snapshot|
+    snapshot.write(provider_bytes)
+    snapshot.flush
+    snapshot.fsync
   end
-  return result unless provider_path
-  # macOS has no fexecve/execveat and its fdescfs is mounted noexec. Source an
-  # exact inspected POSIX-shell descriptor. The launcher retains the inspected
-  # directory as cwd, closes that capability before /bin/sh sees it, and
-  # supplies the original relative $0 for sibling-helper wrappers.
+  File.chmod(0o700, snapshot_staging)
+  File.rename(snapshot_staging, snapshot_path)
+  snapshot_staging = nil
+  snapshot = File.lstat(snapshot_path)
+  return result unless
+    snapshot.file? && snapshot.uid == Process.uid && (snapshot.mode & 0o777) == 0o700 &&
+      snapshot.size == provider_bytes.bytesize
+  directory_descriptor = directory.fileno
+  directory.close_on_exec = false
+  provider_command = ". #{Shellwords.escape(snapshot_path)}"
+  # Run an immutable copy of the inspected bytes. The launcher retains the
+  # inspected directory as cwd, closes that capability before /bin/sh sees it,
+  # and supplies the original relative $0 with no positional arguments.
   launcher = <<~'PROVIDER_LAUNCHER'
     directory_descriptor = Integer(ARGV.fetch(0), 10)
     basename = ARGV.fetch(1)
-    provider_path = ARGV.fetch(2)
+    provider_command = ARGV.fetch(2)
     directory = IO.for_fd(directory_descriptor)
     Dir.fchdir(directory.fileno)
     directory.close
-    exec(["/bin/sh", "/bin/sh"], "-c", '. "$1"', "./#{basename}", provider_path)
+    exec(["/bin/sh", "/bin/sh"], "-c", provider_command, "./#{basename}")
   PROVIDER_LAUNCHER
-  spawn_options = {
-    pgroup: true,
-    directory_descriptor => directory_descriptor,
-    provider_descriptor => provider_descriptor
-  }
+  spawn_options = { pgroup: true, directory_descriptor => directory_descriptor }
   Open3.popen3(
     [RbConfig.ruby, RbConfig.ruby], "-e", launcher,
-    directory_descriptor.to_s, basename, provider_path, spawn_options
+    directory_descriptor.to_s, basename, provider_command, spawn_options
   ) do |stdin, stdout, stderr, wait_thread|
     stdin.close
     stdout_reader = Thread.new { bounded_read(stdout, maximum_size) }
@@ -308,6 +306,11 @@ def execute_provider(directory, provider_source, basename, provider_bytes, maxim
   result
 rescue SystemCallError, IOError
   result
+ensure
+  File.unlink(snapshot_staging) if snapshot_staging && File.file?(snapshot_staging) &&
+                                   !File.symlink?(snapshot_staging)
+  File.unlink(snapshot_path) if snapshot_path && File.file?(snapshot_path) &&
+                                !File.symlink?(snapshot_path)
 end
 
 temporary_path = nil
@@ -376,7 +379,9 @@ begin
       signature(path_before) == signature(path_after) &&
       signature(path_before) == signature(held_path_after)
   if kind == "password" && executable
-    provider = execute_provider(parent_directory, source, basename, bytes, maximum_size)
+    source.close
+    source = nil
+    provider = execute_provider(parent_directory, basename, bytes, protected_root, maximum_size)
     provider_parent_after = File.realpath(parent_path)
     provider_parent_path_after = File.lstat(parent_path)
     provider_canonical_parent_after = File.lstat(parent_before)
@@ -395,9 +400,16 @@ begin
     fail_pin(label, "provider must use the exact #!/bin/sh executable format") if provider[:unsupported]
     fail_pin(label, "provider failed") unless provider[:success] && !provider[:capture_failed]
     bytes = provider[:output]
+    protected_root_after_provider = File.lstat(protected_root)
+    fail_pin(label, "destination is unsafe") unless
+      identity(protected_root_before) == identity(protected_root_after_provider) &&
+        File.realpath(protected_root) == protected_root
+    protected_root_before = protected_root_after_provider
   end
-  source.close
-  source = nil
+  if source
+    source.close
+    source = nil
+  end
   parent_directory.close
   parent_directory = nil
   if kind == "vault" && !bytes.start_with?("$ANSIBLE_VAULT;")

@@ -183,6 +183,17 @@ class << Open3
         File.rename(holding, target)
       end
     end
+    if ENV["PLATFORM_SWAP_STAGE"] == "child_in_place_spawn"
+      target = ENV.fetch("PLATFORM_SWAP_CHILD_TARGET")
+      replacement = ENV.fetch("PLATFORM_SWAP_CHILD_REPLACEMENT")
+      original = File.binread(target)
+      File.binwrite(target, File.binread(replacement))
+      begin
+        return adoption_input_original_popen3(*arguments, **keywords, &block)
+      ensure
+        File.binwrite(target, original)
+      end
+    end
 
     if ENV["PLATFORM_SWAP_STAGE"] == "spawn"
       AdoptionInputSwapFixture.swap(ENV.fetch("PLATFORM_SWAP_TARGET"), :spawn)
@@ -397,36 +408,88 @@ fi
   [ ! -e "$logical_parent_holding" ] || fail 'logical parent fixture was not restored'
 
 descriptor_provider=$temporary_parent/provider-descriptor-check
-cat > "$descriptor_provider" <<'SH'
+descriptor_helper=$temporary_parent/provider-descriptor-helper
+cat > "$descriptor_helper" <<'SH'
 #!/bin/sh
 ruby -e '
   cwd = File.stat(".")
+  provider = File.stat(ENV.fetch("PLATFORM_DESCRIPTOR_PROVIDER"))
   (3..255).each do |descriptor|
     begin
       opened = IO.for_fd(descriptor, autoclose: false).stat
       exit 9 if [opened.dev, opened.ino] == [cwd.dev, cwd.ino]
+      exit 10 if [opened.dev, opened.ino] == [provider.dev, provider.ino]
     rescue SystemCallError, IOError, ArgumentError
       next
     end
   end
-' || { printf '%s\n' inherited-directory-descriptor; exit 9; }
+'
+SH
+cat > "$descriptor_provider" <<'SH'
+#!/bin/sh
+printf 'argc=%s first=%s\n' "$#" "${1+x}" > "${PLATFORM_DESCRIPTOR_MARKER:?}"
+[ "$#" -eq 0 ] && [ "${1+x}" != x ] || exit 8
+"$(dirname -- "$0")/provider-descriptor-helper" || exit 9
 printf '%s\n' descriptor-safe-output
 SH
-chmod 0700 "$descriptor_provider"
+chmod 0700 "$descriptor_provider" "$descriptor_helper"
 descriptor_sandbox=$temporary_parent/nas-platform-mac.FdD123
 mkdir -m 0700 "$descriptor_sandbox"
 printf 'schema=1\nproject=%s\n' nas-platform-mac-fdd123 > "$descriptor_sandbox/.nas-platform-mac-owned"
 chmod 0600 "$descriptor_sandbox/.nas-platform-mac-owned"
-PLATFORM_MAC_TMPDIR="$temporary_parent" "$runner" --lane adoption \
+descriptor_marker=$temporary_parent/provider-descriptor-marker
+PLATFORM_DESCRIPTOR_PROVIDER="$descriptor_provider" PLATFORM_DESCRIPTOR_MARKER="$descriptor_marker" \
+  PLATFORM_MAC_TMPDIR="$temporary_parent" \
+  "$runner" --lane adoption \
   --vault-file "$vault_file" --vault-password-file "$password_file" \
   --parity-vault-file "$parity_vault_file" \
   --parity-vault-password-file "$descriptor_provider" \
-  --phase report --sandbox "$descriptor_sandbox" >/dev/null 2>&1 ||
-  fail 'provider inherited an inspected directory descriptor'
+  --phase report --sandbox "$descriptor_sandbox" >/dev/null 2>&1 || {
+  grep -Fx 'argc=0 first=' "$descriptor_marker" >/dev/null ||
+    fail 'provider received positional arguments from the launcher'
+  fail 'provider or helper inherited an inspected descriptor'
+}
 printf '%s\n' descriptor-safe-output > "$temporary_parent/descriptor-expected"
 cmp -s "$temporary_parent/descriptor-expected" \
   "$descriptor_sandbox/protected-inputs/parity-password" ||
   fail 'provider descriptor check produced unexpected output'
+
+in_place_provider=$temporary_parent/provider-in-place
+in_place_replacement=$temporary_parent/provider-in-place-replacement
+in_place_marker=$temporary_parent/provider-in-place-marker
+printf '%s\n' '#!/bin/sh' \
+  'printf "%s\\n" original >> "${PLATFORM_IN_PLACE_MARKER:?}"' \
+  'printf "%s\\n" original-in-place-output' > "$in_place_provider"
+printf '%s\n' '#!/bin/sh' \
+  'printf "%s\\n" replacement >> "${PLATFORM_IN_PLACE_MARKER:?}"' \
+  'printf "%s\\n" replacement-in-place-secret' > "$in_place_replacement"
+chmod 0700 "$in_place_provider" "$in_place_replacement"
+in_place_sandbox=$temporary_parent/nas-platform-mac.FdI123
+mkdir -m 0700 "$in_place_sandbox"
+printf 'schema=1\nproject=%s\n' nas-platform-mac-fdi123 > "$in_place_sandbox/.nas-platform-mac-owned"
+chmod 0600 "$in_place_sandbox/.nas-platform-mac-owned"
+in_place_output=$temporary_parent/in-place-output
+if RUBYOPT="-r$swap_fixture" PLATFORM_SWAP_STAGE=child_in_place_spawn \
+  PLATFORM_SWAP_CHILD_TARGET="$in_place_provider" \
+  PLATFORM_SWAP_CHILD_REPLACEMENT="$in_place_replacement" \
+  PLATFORM_IN_PLACE_MARKER="$in_place_marker" PLATFORM_MAC_TMPDIR="$temporary_parent" \
+  "$runner" --lane adoption --vault-file "$vault_file" --vault-password-file "$password_file" \
+    --parity-vault-file "$parity_vault_file" \
+    --parity-vault-password-file "$in_place_provider" \
+    --phase report --sandbox "$in_place_sandbox" > "$in_place_output" 2>&1; then
+  fail 'in-place provider mutation was not rejected'
+fi
+grep -Fx original "$in_place_marker" >/dev/null ||
+  fail 'in-place mutation did not execute the inspected provider snapshot'
+if grep -Fx replacement "$in_place_marker" >/dev/null; then
+  fail 'in-place mutation executed changed provider bytes'
+fi
+if grep -F replacement-in-place-secret "$in_place_output" >/dev/null; then
+  fail 'in-place provider replacement leaked output'
+fi
+if /usr/bin/find "$temporary_parent" -name '.provider-*' -print | grep . >/dev/null; then
+  fail 'private provider snapshot remained after provider execution'
+fi
 
 unsupported_provider=$temporary_parent/provider-unsupported
 printf '%s\n' '#!/bin/bash' 'printf "%s\\n" unsupported-provider-secret' > "$unsupported_provider"
@@ -478,6 +541,9 @@ expect_failure 'timed out parity provider' 'protected parity password input prov
     --phase report
 if grep -F provider-timeout-secret "$temporary_parent/output" >/dev/null; then
   fail 'timed out parity provider leaked stderr'
+fi
+if /usr/bin/find "$temporary_parent" -name '.provider-*' -print | grep . >/dev/null; then
+  fail 'private provider snapshot remained after timeout cleanup'
 fi
 
 oversize_provider=$temporary_parent/provider-oversize
