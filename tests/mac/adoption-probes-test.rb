@@ -103,6 +103,7 @@ end
 
 failures = []
 Dir.mktmpdir("adoption-probes-test-") do |root|
+  root = File.realpath(root)
   mac = File.join(root, "mac")
   contracts = File.join(root, "contracts")
   bin = File.join(root, "bin")

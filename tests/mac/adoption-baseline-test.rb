@@ -69,7 +69,7 @@ def write_executable(path, body)
   File.chmod(0o700, path)
 end
 
-def recorder_invocation(root, output, extra_env = {}, extra_args = [])
+def recorder_invocation(root, output, extra_env = {}, extra_args = [], path_overrides = {})
   env = {
     "PATH" => "#{root}/bin:#{ENV.fetch("PATH")}",
     "PLATFORM_ADOPTION_BASELINE_CANARIES" => CANARY,
@@ -80,15 +80,17 @@ def recorder_invocation(root, output, extra_env = {}, extra_args = [])
   }.merge(extra_env)
   arguments = [
     RECORDER, "--output", output, "--legacy-commit", COMMIT,
-    "--manifest", "#{root}/manifest.json", "--legacy-root", "#{root}/legacy",
-    "--override-root", "#{root}/overrides", "--env-root", "#{root}/env",
-    "--probe-root", "#{root}/probes", *extra_args
+    "--manifest", path_overrides.fetch(:manifest, "#{root}/manifest.json"),
+    "--legacy-root", path_overrides.fetch(:legacy_root, "#{root}/legacy"),
+    "--override-root", path_overrides.fetch(:override_root, "#{root}/overrides"),
+    "--env-root", path_overrides.fetch(:env_root, "#{root}/env"),
+    "--probe-root", path_overrides.fetch(:probe_root, "#{root}/probes"), *extra_args
   ]
   [env, arguments]
 end
 
-def run_recorder(root, output, extra_env = {}, extra_args = [])
-  env, arguments = recorder_invocation(root, output, extra_env, extra_args)
+def run_recorder(root, output, extra_env = {}, extra_args = [], path_overrides = {})
+  env, arguments = recorder_invocation(root, output, extra_env, extra_args, path_overrides)
   Open3.capture3(env, *arguments)
 end
 
@@ -145,6 +147,7 @@ RUBY
 _fold_output, _fold_diagnostic, fold_status = Open3.capture3(RbConfig.ruby, "-e", casefold_contract)
 failures << "identity normalization does not use full case folding" unless fold_status.success?
 Dir.mktmpdir("beszel-probe-test-") do |probe_root|
+  probe_root = File.realpath(probe_root)
   FileUtils.mkdir_p("#{probe_root}/bin")
   File.write("#{probe_root}/vault.yml", "encrypted\n")
   File.write("#{probe_root}/vault-password", "internal\n")
@@ -199,6 +202,7 @@ Dir.mktmpdir("beszel-probe-test-") do |probe_root|
   end
 end
 Dir.mktmpdir("tmm-probe-test-") do |probe_root|
+  probe_root = File.realpath(probe_root)
   FileUtils.mkdir_p([
     "#{probe_root}/bin", "#{probe_root}/legacy/tinymediamanager/data/templates",
     "#{probe_root}/legacy/tinymediamanager/movies/Task 10 Contract Movie (2024)",
@@ -371,6 +375,104 @@ Dir.mktmpdir("adoption-baseline-test-") do |root|
 
   original = File.binread(output)
   original_mode = File.stat(output).mode & 0o777
+  parent_link_cases = {
+    "manifest" => [:manifest, "manifest-parent", "manifest.json"],
+    "override" => [:override_root, "overrides", nil],
+    "environment" => [:env_root, "env", nil],
+    "probe" => [:probe_root, "probes", nil]
+  }
+  FileUtils.mkdir_p("#{root}/manifest-parent")
+  FileUtils.cp("#{root}/manifest.json", "#{root}/manifest-parent/manifest.json")
+  parent_link_cases.each do |label, (option, directory, leaf)|
+    source = "#{root}/#{directory}"
+    saved = "#{root}/#{directory}.saved"
+    File.rename(source, saved)
+    File.symlink(saved, source)
+    override = { option => leaf ? File.join(source, leaf) : source }
+    _out, _diagnostic, rejected = run_recorder(root, output, {}, [], override)
+    failures << "symlinked #{label} parent was accepted" if rejected.success?
+    failures << "symlinked #{label} parent replaced baseline" unless File.binread(output) == original
+  ensure
+    File.unlink(source) if File.symlink?(source)
+    File.rename(saved, source) if File.directory?(saved)
+  end
+
+  FileUtils.mkdir_p("#{root}/vault-parent")
+  FileUtils.cp("#{root}/vault.yml", "#{root}/vault-parent/vault.yml")
+  FileUtils.cp("#{root}/vault-password", "#{root}/vault-parent/vault-password")
+  File.chmod(0o600, "#{root}/vault-parent/vault.yml")
+  File.chmod(0o600, "#{root}/vault-parent/vault-password")
+  File.rename("#{root}/vault-parent", "#{root}/vault-parent.saved")
+  File.symlink("#{root}/vault-parent.saved", "#{root}/vault-parent")
+  _out, _diagnostic, rejected = run_recorder(root, output, {
+    "PLATFORM_MAC_VAULT_FILE" => "#{root}/vault-parent/vault.yml",
+    "PLATFORM_MAC_VAULT_PASSWORD_FILE" => "#{root}/vault-parent/vault-password"
+  })
+  failures << "symlinked protected-input parent was accepted" if rejected.success?
+  failures << "symlinked protected-input parent replaced baseline" unless File.binread(output) == original
+  File.unlink("#{root}/vault-parent")
+  File.rename("#{root}/vault-parent.saved", "#{root}/vault-parent")
+
+  fsync_fault = "#{root}/fsync-fault.rb"
+  File.write(fsync_fault, <<~'RUBY')
+    class File
+      alias adoption_original_fsync fsync
+
+      def fsync
+        if stat.directory? && File.expand_path(path) == ENV["ADOPTION_FSYNC_PARENT"]
+          $adoption_directory_sync_count ||= 0
+          $adoption_directory_sync_count += 1
+          failures = ENV.fetch("ADOPTION_FAIL_DIRECTORY_SYNC_AT").split(",").map { |value| Integer(value) }
+          if failures.include?($adoption_directory_sync_count)
+            raise Errno::EIO, "injected directory sync failure"
+          end
+        end
+        adoption_original_fsync
+      end
+    end
+  RUBY
+  [1, 2, 3].each do |failure_index|
+    File.binwrite(output, original)
+    File.chmod(original_mode, output)
+    _out, diagnostic, rejected = run_recorder(root, output, {
+      "RUBYOPT" => "-r#{fsync_fault}",
+      "ADOPTION_FSYNC_PARENT" => root,
+      "ADOPTION_FAIL_DIRECTORY_SYNC_AT" => failure_index.to_s
+    })
+    failures << "directory fsync failure #{failure_index} was accepted" if rejected.success?
+    failures << "directory fsync failure #{failure_index} diagnostic was not fixed" unless
+      diagnostic == "adoption-baseline-error: capture refused\n"
+    failures << "directory fsync failure #{failure_index} replaced baseline" unless
+      File.binread(output) == original && (File.stat(output).mode & 0o777) == original_mode
+    failures << "directory fsync failure #{failure_index} left publication artifacts" unless
+      Dir.glob("#{root}/.adoption-{baseline,backup,recovery}-*").empty?
+  end
+  File.binwrite(output, original)
+  File.chmod(original_mode, output)
+  _out, diagnostic, rejected = run_recorder(root, output, {
+    "RUBYOPT" => "-r#{fsync_fault}",
+    "ADOPTION_FSYNC_PARENT" => root,
+    "ADOPTION_FAIL_DIRECTORY_SYNC_AT" => "2,3"
+  })
+  failures << "publication and rollback fsync failures were accepted" if rejected.success?
+  failures << "rollback fsync failure diagnostic was not fixed" unless
+    diagnostic == "adoption-baseline-error: capture refused\n"
+  failures << "rollback fsync failure lost the prior baseline" unless
+    File.binread(output) == original && (File.stat(output).mode & 0o777) == original_mode
+  failures << "rollback fsync failure left publication artifacts" unless
+    Dir.glob("#{root}/.adoption-{baseline,backup,recovery}-*").empty?
+  File.unlink(output)
+  _out, _diagnostic, rejected = run_recorder(root, output, {
+    "RUBYOPT" => "-r#{fsync_fault}",
+    "ADOPTION_FSYNC_PARENT" => root,
+    "ADOPTION_FAIL_DIRECTORY_SYNC_AT" => "1"
+  })
+  failures << "first-publication directory fsync failure was accepted" if rejected.success?
+  failures << "first-publication directory fsync failure left output" if File.exist?(output)
+  failures << "first-publication directory fsync failure left publication artifacts" unless
+    Dir.glob("#{root}/.adoption-{baseline,backup,recovery}-*").empty?
+  File.binwrite(output, original)
+  File.chmod(original_mode, output)
   lock_path = "#{root}/.baseline.json.lock"
   File.unlink(lock_path) if File.exist?(lock_path)
   File.symlink("#{root}/sentinel-lock", lock_path)
@@ -406,23 +508,27 @@ Dir.mktmpdir("adoption-baseline-test-") do |root|
     fi
   SH
   concurrent_env, concurrent_arguments = recorder_invocation(root, output)
-  first_pid = Process.spawn(concurrent_env, *concurrent_arguments, out: File::NULL, err: File::NULL)
+  first_log = "#{root}/concurrent-first.log"
+  second_log = "#{root}/concurrent-second.log"
+  first_pid = Process.spawn(concurrent_env, *concurrent_arguments, out: first_log, err: first_log)
   deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 10
   until File.exist?("#{root}/concurrent-started")
     raise "concurrent recorder did not reach probe" if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
     sleep 0.02
   end
-  second_pid = Process.spawn(concurrent_env, *concurrent_arguments, out: File::NULL, err: File::NULL)
+  second_pid = Process.spawn(concurrent_env, *concurrent_arguments, out: second_log, err: second_log)
   sleep 0.2
   File.write("#{root}/concurrent-release", "release\n")
   _, first_status = Process.wait2(first_pid)
   _, second_status = Process.wait2(second_pid)
-  failures << "concurrent recorders failed" unless first_status.success? && second_status.success?
+  unless first_status.success? && second_status.success?
+    failures << "concurrent recorders failed: #{File.binread(first_log)} #{File.binread(second_log)}"
+  end
   final_alerts = JSON.parse(File.binread(output)).dig("services", "beszel", "record_counts", "alerts")
   failures << "concurrent recorder lost the serialized update" unless final_alerts == 3
   File.binwrite(output, original)
   File.chmod(original_mode, output)
-  %w[concurrent-count concurrent-started concurrent-release].each do |name|
+  %w[concurrent-count concurrent-started concurrent-release concurrent-first.log concurrent-second.log].each do |name|
     File.unlink("#{root}/#{name}") if File.exist?("#{root}/#{name}")
   end
   write_executable("#{root}/probes/beszel.sh", <<~SH)
@@ -441,7 +547,11 @@ Dir.mktmpdir("adoption-baseline-test-") do |root|
     "tracked source replacement" => "printf '%s\\n' 'services: {changed: {}}' > '#{root}/legacy/beszel.yml'",
     "vault snapshot replacement" => "mv \"$PLATFORM_MAC_VAULT_FILE\" \"$PLATFORM_MAC_VAULT_FILE.saved\"; " \
                                     "printf '%s\\n' 'replacement' > \"$PLATFORM_MAC_VAULT_FILE\"; " \
-                                    "mv \"$PLATFORM_MAC_VAULT_FILE.saved\" \"$PLATFORM_MAC_VAULT_FILE\""
+                                    "mv \"$PLATFORM_MAC_VAULT_FILE.saved\" \"$PLATFORM_MAC_VAULT_FILE\"",
+    "vault snapshot parent swap" => "parent=${PLATFORM_MAC_VAULT_FILE%/*}; mv \"$parent\" \"$parent.saved\"; " \
+                                    "ln -s \"$parent.saved\" \"$parent\"; rm \"$parent\"; mv \"$parent.saved\" \"$parent\"",
+    "probe snapshot parent swap" => "parent=${0%/*}; mv \"$parent\" \"$parent.saved\"; " \
+                                    "ln -s \"$parent.saved\" \"$parent\"; rm \"$parent\"; mv \"$parent.saved\" \"$parent\""
   }
   race_mutations.each do |label, mutation|
     File.unlink("#{root}/git-origin-count") if File.exist?("#{root}/git-origin-count")
@@ -483,7 +593,7 @@ Dir.mktmpdir("adoption-baseline-test-") do |root|
     failures << "#{label} published unexpected bytes" unless File.binread(output) == expected_bytes
     failures << "#{label} left baseline staging files" unless
       Dir.glob("#{root}/.adoption-baseline-*.json").empty?
-    File.unlink("#{root}/#{marker}")
+    File.unlink("#{root}/#{marker}") if File.exist?("#{root}/#{marker}")
     File.binwrite(output, original)
     File.chmod(original_mode, output)
   end

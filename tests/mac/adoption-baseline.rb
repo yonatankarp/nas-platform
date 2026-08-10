@@ -3,11 +3,13 @@
 
 require "json"
 require "digest"
+require "fiddle/import"
 require "fileutils"
 require "net/http"
 require "open3"
 require "optparse"
 require "psych"
+require "securerandom"
 require "tempfile"
 require "timeout"
 require "uri"
@@ -271,20 +273,81 @@ def fixture_digest(path)
 end
 
 def file_signature(path)
-  file_signature_from_stat(File.lstat(path))
+  secure_file_handle(path, trusted_root: File.dirname(File.expand_path(path))) do |_file, bindings|
+    bindings.map { |binding| binding.fetch(2) }
+  end
+end
+
+module AdoptionFileSystem
+  extend Fiddle::Importer
+  dlload Fiddle.dlopen(nil)
+  extern "int openat(int, const char *, int, int)"
+end
+
+def open_component(parent, name)
+  unsafe = name.empty? || %w[. ..].include?(name) || name.include?(File::SEPARATOR) || name.include?("\0")
+  raise "capture input is unsafe" if unsafe
+  flags = File::RDONLY | File::NOFOLLOW
+  descriptor = AdoptionFileSystem.openat(parent.fileno, name, flags, 0)
+  raise SystemCallError.new("openat", Fiddle.last_error) if descriptor.negative?
+
+  IO.for_fd(descriptor, autoclose: true)
+end
+
+def component_binding(stat, exact:)
+  return file_signature_from_stat(stat) if exact
+
+  [stat.dev, stat.ino, stat.mode, stat.uid]
+end
+
+def secure_file_handle(path, trusted_root:)
+  absolute = File.expand_path(path)
+  root = File.expand_path(trusted_root)
+  raise "capture input is unsafe" unless absolute.start_with?("#{root}/")
+
+  components = absolute.split(File::SEPARATOR).reject(&:empty?)
+  root_components = root.split(File::SEPARATOR).reject(&:empty?)
+  current = File.open(File::SEPARATOR, File::RDONLY | File::NOFOLLOW)
+  opened = [current]
+  bindings = []
+  components[0...-1].each_with_index do |component, index|
+    child = open_component(current, component)
+    stat = child.stat
+    raise "capture input parent is unsafe" unless stat.directory? && [0, Process.uid].include?(stat.uid) &&
+                                                   (stat.mode & 0o022).zero?
+    if index + 1 == root_components.length
+      raise "capture input root is unsafe" unless stat.uid == Process.uid
+    end
+    exact = index + 1 >= root_components.length
+    bindings << [current, component, component_binding(stat, exact: exact), exact]
+    opened << child
+    current = child
+  end
+  leaf = components.fetch(-1)
+  file = open_component(current, leaf)
+  bindings << [current, leaf, component_binding(file.stat, exact: true), true]
+  opened << file
+  yield file, bindings.drop(root_components.length - 1)
+ensure
+  if bindings
+    bindings.each do |parent, component, signature, exact|
+      reopened = open_component(parent, component)
+      raise "capture input changed" unless component_binding(reopened.stat, exact: exact) == signature
+    ensure
+      reopened&.close
+    end
+  end
+  opened&.reverse_each { |entry| entry.close unless entry.closed? }
 end
 
 def secure_file_bytes(path, max_bytes:, executable: false, private: false)
-  before = File.lstat(path)
-  raise "capture input is unsafe" unless before.file? && !before.symlink? && before.uid == Process.uid &&
-                                           (before.mode & 0o022).zero? &&
-                                           (!executable || (before.mode & 0o100).positive?) &&
-                                           (!private || (before.mode & 0o077).zero?)
-  flags = File::RDONLY
-  flags |= File::NOFOLLOW if defined?(File::NOFOLLOW)
-  bytes = File.open(path, flags) do |file|
+  trusted_root = File.dirname(File.expand_path(path))
+  secure_file_handle(path, trusted_root: trusted_root) do |file|
     opened = file.stat
-    raise "capture input changed" unless [opened.dev, opened.ino] == [before.dev, before.ino]
+    raise "capture input is unsafe" unless opened.file? && opened.uid == Process.uid &&
+                                           (opened.mode & 0o022).zero? &&
+                                           (!executable || (opened.mode & 0o100).positive?) &&
+                                           (!private || (opened.mode & 0o077).zero?)
     raise "capture input is too large" if opened.size > max_bytes
     value = file.read(max_bytes + 1)
     raise "capture input is too large" if value.bytesize > max_bytes
@@ -292,9 +355,6 @@ def secure_file_bytes(path, max_bytes:, executable: false, private: false)
     raise "capture input changed" unless file_signature_from_stat(after) == file_signature_from_stat(opened)
     value
   end
-  final = File.lstat(path)
-  raise "capture input changed" unless file_signature_from_stat(final) == file_signature_from_stat(before)
-  bytes
 end
 
 def file_signature_from_stat(stat)
@@ -331,6 +391,7 @@ end
 
 def with_private_input_snapshots(paths)
   Dir.mktmpdir("adoption-private-") do |directory|
+    directory = File.realpath(directory)
     File.chmod(0o700, directory)
     snapshots = paths.each_with_index.map do |path, index|
       snapshot_input(path, directory, "input-#{index}", private: true).first
@@ -397,6 +458,101 @@ def publication_file_state(path, expected_mode:)
     raise "publication path changed" unless file_signature_from_stat(after) == file_signature_from_stat(stat) &&
                                             file_signature_from_stat(final) == file_signature_from_stat(stat)
     [file_signature_from_stat(stat), digest.hexdigest]
+  end
+end
+
+def sync_publication_directory(parent)
+  before = File.lstat(parent)
+  flags = File::RDONLY | File::NOFOLLOW
+  File.open(parent, flags) do |directory|
+    opened = directory.stat
+    raise "publication directory is unsafe" unless opened.directory? && opened.uid == Process.uid &&
+                                                   (opened.mode & 0o777) == 0o700 &&
+                                                   file_signature_from_stat(opened) == file_signature_from_stat(before)
+    directory.fsync
+    after = directory.stat
+    final = File.lstat(parent)
+    raise "publication directory changed" unless file_signature_from_stat(after) == file_signature_from_stat(opened) &&
+                                                 file_signature_from_stat(final) == file_signature_from_stat(opened)
+  end
+end
+
+def recovery_copy(backup, output, parent)
+  recovery = File.join(parent, ".adoption-recovery-#{SecureRandom.hex(16)}")
+  recovery_complete = false
+  File.open(recovery, File::WRONLY | File::CREAT | File::EXCL, 0o600) do |file|
+    backup.rewind
+    IO.copy_stream(backup, file)
+    file.flush
+    file.fsync
+    file.chmod(0o600)
+  end
+  recovery_complete = true
+  File.rename(recovery, output)
+  sync_publication_directory(parent)
+ensure
+  if recovery && !recovery_complete && File.exist?(recovery) && !File.symlink?(recovery)
+    File.unlink(recovery)
+  end
+end
+
+def rollback_publication(output, parent, initial, backup_path, backup_file)
+  if initial
+    if backup_path && File.exist?(backup_path) && !File.symlink?(backup_path)
+      File.rename(backup_path, output)
+      sync_publication_directory(parent)
+    elsif backup_file
+      recovery_copy(backup_file, output, parent)
+    else
+      raise "publication rollback is unavailable"
+    end
+  else
+    File.unlink(output) if File.exist?(output) && !File.symlink?(output)
+    sync_publication_directory(parent)
+  end
+end
+
+def publish_baseline(staging_path, output, parent, initial)
+  backup_path = nil
+  backup_file = nil
+  backup_owned = false
+  backup_valid = false
+  backup_cleanup_safe = false
+  begin
+    if initial
+      backup_path = File.join(parent, ".adoption-backup-#{SecureRandom.hex(16)}")
+      File.link(output, backup_path)
+      backup_owned = true
+      backup_state = publication_file_state(backup_path, expected_mode: 0o600)
+      output_state = publication_file_state(output, expected_mode: 0o600)
+      raise "baseline backup changed" unless backup_state == output_state && backup_state.last == initial.last
+      backup_valid = true
+      backup_file = File.open(backup_path, File::RDONLY | File::NOFOLLOW)
+      sync_publication_directory(parent)
+    end
+    File.rename(staging_path, output)
+    sync_publication_directory(parent)
+    if backup_path
+      File.unlink(backup_path)
+      sync_publication_directory(parent)
+    end
+    backup_cleanup_safe = true
+  rescue StandardError => publication_error
+    begin
+      rollback_publication(output, parent, initial, backup_valid ? backup_path : nil, backup_file)
+      backup_cleanup_safe = true
+    rescue StandardError
+      # Rollback restores the namespace before syncing it. If that second sync fails,
+      # the old bytes are visible but crash durability is unknowable. An earlier
+      # rollback failure retains any complete recovery entry instead of deleting it.
+    end
+    raise publication_error
+  ensure
+    backup_file&.close
+    safe_to_remove = backup_owned && (backup_cleanup_safe || !backup_valid)
+    if safe_to_remove && File.exist?(backup_path) && !File.symlink?(backup_path)
+      File.unlink(backup_path)
+    end
   end
 end
 
@@ -1148,8 +1304,7 @@ begin
     raise "protected capture input changed" unless snapshots_unchanged?(protected_input_states)
     raise "baseline staging changed" unless
       publication_file_state(staging.path, expected_mode: 0o600) == staged
-    File.rename(staging.path, output)
-    File.open(parent, File::RDONLY) { |directory| directory.fsync }
+    publish_baseline(staging.path, output, parent, initial)
   end
   puts "Legacy adoption baseline: captured"
 rescue StandardError
