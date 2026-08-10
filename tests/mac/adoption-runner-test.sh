@@ -91,6 +91,19 @@ ln -s "$parity_vault_file" "$parity_link"
 expect_failure 'symlink parity vault' 'parity vault file must be a readable, regular encrypted file' \
   "$runner" --lane adoption --vault-file "$vault_file" --vault-password-file "$password_file" \
     --parity-vault-file "$parity_link" --parity-vault-password-file "$parity_password_file"
+password_link=$temporary_parent/parity-password-link
+ln -s "$parity_password_file" "$password_link"
+expect_failure 'symlink parity password' 'parity vault password input must be a readable file or executable' \
+  "$runner" --lane adoption --vault-file "$vault_file" --vault-password-file "$password_file" \
+    --parity-vault-file "$parity_vault_file" --parity-vault-password-file "$password_link"
+nonregular_input=$temporary_parent/nonregular-input
+mkdir "$nonregular_input"
+expect_failure 'nonregular parity vault' 'parity vault file must be a readable, regular encrypted file' \
+  "$runner" --lane adoption --vault-file "$vault_file" --vault-password-file "$password_file" \
+    --parity-vault-file "$nonregular_input" --parity-vault-password-file "$parity_password_file"
+expect_failure 'nonregular parity password' 'parity vault password input must be a readable file or executable' \
+  "$runner" --lane adoption --vault-file "$vault_file" --vault-password-file "$password_file" \
+    --parity-vault-file "$parity_vault_file" --parity-vault-password-file "$nonregular_input"
 
 in_repo_input=$(mktemp "$mac_test_dir/.adoption-parity.XXXXXX")
 printf '%s\n' '$ANSIBLE_VAULT;1.1;AES256' > "$in_repo_input"
@@ -104,11 +117,149 @@ expect_failure 'repository parity password' 'parity vault password input must re
 rm -f -- "$in_repo_input"
 in_repo_input=
 
+swap_fixture=$temporary_parent/swap-input.rb
+cat > "$swap_fixture" <<'RUBY'
+module AdoptionInputSwapFixture
+  module_function
+
+  def swap(path, stage)
+    return unless ENV["PLATFORM_SWAP_STAGE"] == stage.to_s
+    return unless File.expand_path(path.to_s) == File.expand_path(ENV.fetch("PLATFORM_SWAP_TARGET"))
+    return if @swapped
+
+    @swapped = true
+    File.rename(ENV.fetch("PLATFORM_SWAP_REPLACEMENT"), ENV.fetch("PLATFORM_SWAP_TARGET"))
+  end
+end
+
+class << File
+  alias adoption_input_original_open open
+
+  def open(path, *arguments, **keywords, &block)
+    AdoptionInputSwapFixture.swap(path, :open)
+    adoption_input_original_open(path, *arguments, **keywords, &block)
+  end
+end
+
+class File
+  alias adoption_input_original_read read
+
+  def read(*arguments, **keywords)
+    AdoptionInputSwapFixture.swap(path, :read)
+    adoption_input_original_read(*arguments, **keywords)
+  end
+end
+RUBY
+
+swapped_vault=$temporary_parent/swapped-parity-vault.yml
+vault_replacement=$temporary_parent/parity-vault-replacement.yml
+cp "$parity_vault_file" "$swapped_vault"
+printf '%s\n%s\n' '$ANSIBLE_VAULT;1.1;AES256' replacement-ciphertext > "$vault_replacement"
+chmod 0600 "$swapped_vault" "$vault_replacement"
+expect_failure 'parity vault validation-to-open replacement' \
+  'protected parity vault input changed while being pinned' \
+  env RUBYOPT="-r$swap_fixture" PLATFORM_SWAP_STAGE=open \
+    PLATFORM_SWAP_TARGET="$swapped_vault" PLATFORM_SWAP_REPLACEMENT="$vault_replacement" \
+    PLATFORM_MAC_TMPDIR="$temporary_parent" "$runner" --lane adoption \
+    --vault-file "$vault_file" --vault-password-file "$password_file" \
+    --parity-vault-file "$swapped_vault" --parity-vault-password-file "$parity_password_file" \
+    --phase report
+if grep -F replacement-ciphertext "$temporary_parent/output" >/dev/null; then
+  fail 'parity vault replacement diagnostic leaked protected bytes'
+fi
+
+swapped_password=$temporary_parent/swapped-parity-password
+password_replacement=$temporary_parent/parity-password-replacement
+printf '%s\n' original-disposable > "$swapped_password"
+printf '%s\n' replacement-disposable > "$password_replacement"
+chmod 0600 "$swapped_password" "$password_replacement"
+expect_failure 'parity password opened-descriptor replacement' \
+  'protected parity password input changed while being pinned' \
+  env RUBYOPT="-r$swap_fixture" PLATFORM_SWAP_STAGE=read \
+    PLATFORM_SWAP_TARGET="$swapped_password" PLATFORM_SWAP_REPLACEMENT="$password_replacement" \
+    PLATFORM_MAC_TMPDIR="$temporary_parent" "$runner" --lane adoption \
+    --vault-file "$vault_file" --vault-password-file "$password_file" \
+    --parity-vault-file "$parity_vault_file" --parity-vault-password-file "$swapped_password" \
+    --phase report
+if grep -F replacement-disposable "$temporary_parent/output" >/dev/null; then
+  fail 'parity password replacement diagnostic leaked protected bytes'
+fi
+
 git_revision=$(git -C "$repo_dir" rev-parse HEAD)
 vault_checksum=$(shasum -a 256 "$vault_file" | awk '{print $1}')
 parity_checksum=$(shasum -a 256 "$parity_vault_file" | awk '{print $1}')
 legacy_commit=$(ruby -ryaml -e 'print YAML.safe_load_file(ARGV.fetch(0)).fetch("legacy_source").fetch("commit")' \
   "$repo_dir/services/manifest.yml")
+
+pinning_vault=$temporary_parent/pinning-parity-vault.yml
+pinning_vault_expected=$temporary_parent/pinning-parity-vault-expected.yml
+pinning_vault_replacement=$temporary_parent/pinning-parity-vault-replacement.yml
+pinning_password=$temporary_parent/pinning-parity-password
+pinning_password_expected=$temporary_parent/pinning-parity-password-expected
+pinning_password_replacement=$temporary_parent/pinning-parity-password-replacement
+printf '%s\n%s\n' '$ANSIBLE_VAULT;1.1;AES256' pinned-original-ciphertext > "$pinning_vault"
+cp "$pinning_vault" "$pinning_vault_expected"
+printf '%s\n%s\n' '$ANSIBLE_VAULT;1.1;AES256' post-pin-replacement > "$pinning_vault_replacement"
+printf '%s\n' '#!/bin/sh' 'printf "%s\\n" pinned-original-password' > "$pinning_password"
+cp "$pinning_password" "$pinning_password_expected"
+printf '%s\n' '#!/bin/sh' 'printf "%s\\n" post-pin-password' > "$pinning_password_replacement"
+chmod 0600 "$pinning_vault" "$pinning_vault_expected" "$pinning_vault_replacement"
+chmod 0700 "$pinning_password" "$pinning_password_expected" "$pinning_password_replacement"
+pinning_checksum=$(shasum -a 256 "$pinning_vault_expected" | awk '{print $1}')
+
+pinning_sandbox=$temporary_parent/nas-platform-mac.Pin123
+pinning_project=nas-platform-mac-pin123
+mkdir -m 0700 "$pinning_sandbox"
+printf 'schema=1\nproject=%s\n' "$pinning_project" > "$pinning_sandbox/.nas-platform-mac-owned"
+chmod 0600 "$pinning_sandbox/.nas-platform-mac-owned"
+pinning_fake_bin=$temporary_parent/pinning-tools
+mkdir -m 0700 "$pinning_fake_bin"
+real_shasum=$(command -v shasum)
+cat > "$pinning_fake_bin/shasum" <<'STUB'
+#!/bin/sh
+last=
+for argument in "$@"; do last=$argument; done
+if [ "$last" = "${PLATFORM_PINNED_PARITY_PATH:?}" ]; then
+  mv -f -- "${PLATFORM_PINNING_VAULT_REPLACEMENT:?}" "${PLATFORM_PINNING_VAULT_SOURCE:?}"
+  mv -f -- "${PLATFORM_PINNING_PASSWORD_REPLACEMENT:?}" "${PLATFORM_PINNING_PASSWORD_SOURCE:?}"
+fi
+exec "${PLATFORM_REAL_SHASUM:?}" "$@"
+STUB
+chmod 0755 "$pinning_fake_bin/shasum"
+PLATFORM_REAL_SHASUM=$real_shasum \
+  PLATFORM_PINNED_PARITY_PATH="$pinning_sandbox/protected-inputs/parity-vault.yml" \
+  PLATFORM_PINNING_VAULT_SOURCE="$pinning_vault" \
+  PLATFORM_PINNING_VAULT_REPLACEMENT="$pinning_vault_replacement" \
+  PLATFORM_PINNING_PASSWORD_SOURCE="$pinning_password" \
+  PLATFORM_PINNING_PASSWORD_REPLACEMENT="$pinning_password_replacement" \
+  PLATFORM_MAC_TMPDIR="$temporary_parent" PATH="$pinning_fake_bin:$PATH" \
+  "$runner" --lane adoption --vault-file "$vault_file" --vault-password-file "$password_file" \
+    --parity-vault-file "$pinning_vault" --parity-vault-password-file "$pinning_password" \
+    --phase report --sandbox "$pinning_sandbox" >/dev/null 2>&1 ||
+  fail 'post-pin source replacement changed the protected adoption inputs'
+cmp -s "$pinning_vault_expected" "$pinning_sandbox/protected-inputs/parity-vault.yml" ||
+  fail 'pinned parity ciphertext differs from the opened descriptor bytes'
+cmp -s "$pinning_password_expected" "$pinning_sandbox/protected-inputs/parity-password" ||
+  fail 'pinned executable parity password provider differs from the opened descriptor bytes'
+if [ "$(uname -s)" = Darwin ]; then
+  pinned_vault_mode=$(stat -f '%Lp' "$pinning_sandbox/protected-inputs/parity-vault.yml")
+  pinned_password_mode=$(stat -f '%Lp' "$pinning_sandbox/protected-inputs/parity-password")
+  pinned_deployment_password_mode=$(stat -f '%Lp' "$pinning_sandbox/protected-inputs/deployment-password")
+else
+  pinned_vault_mode=$(stat -c '%a' "$pinning_sandbox/protected-inputs/parity-vault.yml")
+  pinned_password_mode=$(stat -c '%a' "$pinning_sandbox/protected-inputs/parity-password")
+  pinned_deployment_password_mode=$(stat -c '%a' "$pinning_sandbox/protected-inputs/deployment-password")
+fi
+[ "$pinned_vault_mode" = 600 ] || fail 'pinned parity ciphertext mode is unsafe'
+[ "$pinned_password_mode" = 700 ] || fail 'pinned executable password provider lost executable semantics'
+[ "$pinned_deployment_password_mode" = 600 ] || fail 'pinned regular password input mode is unsafe'
+recorded_pinning_checksum=$(ruby -rjson -e '
+  print JSON.parse(File.read(ARGV.fetch(0))).fetch("parity_vault_checksum")
+' "$pinning_sandbox.reports/phase-input.json")
+[ "$recorded_pinning_checksum" = "$pinning_checksum" ] ||
+  fail 'reported parity checksum does not bind the pinned ciphertext bytes'
+[ ! -e "$pinning_vault_replacement" ] && [ ! -e "$pinning_password_replacement" ] ||
+  fail 'post-pin replacement fixture did not execute'
 
 initialize_adoption_state() {
   sandbox=$1
@@ -168,6 +319,11 @@ env PLATFORM_MAC_TMPDIR="$temporary_parent" "$runner" --lane adoption \
   --parity-vault-file "$parity_vault_file" --parity-vault-password-file "$parity_password_file" \
   --phase report --sandbox "$matching_sandbox" >/dev/null 2>&1 ||
   fail 'matching resumed adoption identity was rejected'
+env PLATFORM_MAC_TMPDIR="$temporary_parent" "$runner" --lane adoption \
+  --vault-file "$vault_file" --vault-password-file "$password_file" \
+  --parity-vault-file "$parity_vault_file" --parity-vault-password-file "$parity_password_file" \
+  --phase report --sandbox "$matching_sandbox" >/dev/null 2>&1 ||
+  fail 'repeated resumed adoption could not safely replace its pinned copies'
 
 report_input=$temporary_parent/report-input.json
 report_json=$temporary_parent/report.json
@@ -190,5 +346,8 @@ grep -F -- "- Parity vault checksum: $parity_checksum" "$report_markdown" >/dev/
   fail 'Markdown omits parity vault checksum'
 grep -F -- "- Legacy commit: $legacy_commit" "$report_markdown" >/dev/null ||
   fail 'Markdown omits legacy commit'
+if find "$temporary_parent" -name '*.tmp.*' -print -quit | grep . >/dev/null; then
+  fail 'protected input pinning left an unsafe temporary copy'
+fi
 
 printf '%s\n' 'Mac adoption runner: lane phases and protected resume identity hold'

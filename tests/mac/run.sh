@@ -166,6 +166,131 @@ report_marker=$report_root/.nas-platform-mac-report-owned
   grep -qx 'schema=1' "$report_marker" &&
   grep -qx "sandbox=$(basename -- "$sandbox")" "$report_marker" ||
   mac_die 'report root ownership marker is missing or invalid'
+
+protected_input_root=$sandbox/protected-inputs
+if [ ! -e "$protected_input_root" ]; then
+  mkdir -m 0700 "$protected_input_root"
+fi
+[ -d "$protected_input_root" ] && [ ! -L "$protected_input_root" ] &&
+  [ "$(mac_owner_id "$protected_input_root")" = "$(id -u)" ] &&
+  [ "$(mac_file_mode "$protected_input_root")" = 700 ] ||
+  mac_die 'protected input directory is unavailable or unsafe'
+
+pin_protected_input() {
+  pin_source=$1
+  pin_destination=$2
+  pin_label=$3
+  pin_kind=$4
+  pin_external=$5
+  ruby - "$pin_source" "$pin_destination" "$pin_label" "$pin_kind" \
+    "$pin_external" "$mac_repo_dir" "$protected_input_root" <<'RUBY'
+source_path, destination_path, label, kind, external, repository, protected_root = ARGV
+maximum_size = kind == "vault" ? 16 * 1024 * 1024 : 1024 * 1024
+
+def fail_pin(label, detail)
+  warn "protected #{label} input #{detail}"
+  exit 1
+end
+
+def signature(stat)
+  [stat.dev, stat.ino, stat.size, stat.mode, stat.mtime.to_r, stat.ctime.to_r]
+end
+
+temporary_path = nil
+begin
+  fail_pin(label, "cannot be pinned safely") unless
+    File.const_defined?(:NOFOLLOW) && File.const_defined?(:NONBLOCK)
+  source_path = File.expand_path(source_path)
+  repository = File.realpath(repository)
+  protected_root = File.expand_path(protected_root)
+  destination_parent = File.expand_path(File.dirname(destination_path))
+  protected_root_before = File.lstat(protected_root)
+  fail_pin(label, "destination is unsafe") unless
+    destination_parent == protected_root && protected_root_before.directory? &&
+      protected_root_before.uid == Process.uid && (protected_root_before.mode & 0o777) == 0o700 &&
+      File.realpath(protected_root) == protected_root
+  parent_before = File.realpath(File.dirname(source_path))
+  if external == "true" &&
+     (parent_before == repository || parent_before.start_with?(repository + File::SEPARATOR))
+    fail_pin(label, "must remain outside the repository")
+  end
+
+  path_before = File.lstat(source_path)
+  fail_pin(label, "must be a regular non-symlink file") unless path_before.file?
+  flags = File::RDONLY | File::NOFOLLOW | File::NONBLOCK
+  bytes = nil
+  executable = false
+  File.open(source_path, flags) do |source|
+    descriptor_before = source.stat
+    fail_pin(label, "changed while being pinned") unless
+      descriptor_before.file? && signature(path_before) == signature(descriptor_before)
+    fail_pin(label, "exceeds the size limit") if descriptor_before.size > maximum_size
+    executable = (descriptor_before.mode & 0o111).positive?
+    bytes = source.read(maximum_size + 1)
+    fail_pin(label, "exceeds the size limit") if bytes.bytesize > maximum_size
+    descriptor_after = source.stat
+    fail_pin(label, "changed while being pinned") unless
+      signature(descriptor_before) == signature(descriptor_after)
+  end
+
+  parent_after = File.realpath(File.dirname(source_path))
+  path_after = File.lstat(source_path)
+  fail_pin(label, "changed while being pinned") unless
+    parent_before == parent_after && signature(path_before) == signature(path_after)
+  if kind == "vault" && !bytes.start_with?("$ANSIBLE_VAULT;")
+    fail_pin(label, "is not Ansible Vault encrypted")
+  end
+
+  protected_root_after = File.lstat(protected_root)
+  fail_pin(label, "destination is unsafe") unless
+    signature(protected_root_before) == signature(protected_root_after) &&
+      File.realpath(protected_root) == protected_root
+  mode = kind == "password" && executable ? 0o700 : 0o600
+  temporary_path = "#{destination_path}.tmp.#{Process.pid}"
+  output_flags = File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW
+  File.open(temporary_path, output_flags, mode) do |output|
+    output.write(bytes)
+    output.flush
+    output.fsync
+  end
+  File.chmod(mode, temporary_path)
+  File.rename(temporary_path, destination_path)
+  temporary_path = nil
+  protected_root_final = File.lstat(protected_root)
+  destination_final = File.lstat(destination_path)
+  fail_pin(label, "destination is unsafe") unless
+    [protected_root_final.dev, protected_root_final.ino, protected_root_final.mode,
+     protected_root_final.uid] ==
+      [protected_root_before.dev, protected_root_before.ino, protected_root_before.mode,
+       protected_root_before.uid] &&
+      File.realpath(protected_root) == protected_root && destination_final.file? &&
+      (destination_final.mode & 0o777) == mode && destination_final.uid == Process.uid
+rescue SystemCallError, IOError, ArgumentError
+  fail_pin(label, "changed while being pinned")
+ensure
+  File.unlink(temporary_path) if temporary_path && File.file?(temporary_path) && !File.symlink?(temporary_path)
+end
+RUBY
+}
+
+deployment_vault_source=$vault_file
+deployment_password_source=$vault_password_file
+pin_protected_input "$deployment_vault_source" "$protected_input_root/deployment-vault.yml" \
+  'deployment vault' vault false || mac_die 'protected deployment vault input could not be pinned'
+pin_protected_input "$deployment_password_source" "$protected_input_root/deployment-password" \
+  'deployment password' password true || mac_die 'protected deployment password input could not be pinned'
+vault_file=$protected_input_root/deployment-vault.yml
+vault_password_file=$protected_input_root/deployment-password
+if [ "$lane" = adoption ]; then
+  parity_vault_source=$parity_vault_file
+  parity_password_source=$parity_vault_password_file
+  pin_protected_input "$parity_vault_source" "$protected_input_root/parity-vault.yml" \
+    'parity vault' vault true || mac_die 'protected parity vault input could not be pinned'
+  pin_protected_input "$parity_password_source" "$protected_input_root/parity-password" \
+    'parity password' password true || mac_die 'protected parity password input could not be pinned'
+  parity_vault_file=$protected_input_root/parity-vault.yml
+  parity_vault_password_file=$protected_input_root/parity-password
+fi
 state_input=$report_root/phase-input.json
 
 git_revision=$(git -C "$mac_repo_dir" rev-parse HEAD)
