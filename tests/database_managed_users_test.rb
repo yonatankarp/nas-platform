@@ -258,6 +258,19 @@ def managed_includes(service, extra_vars = {}, path: nil)
   ]
 end
 
+def primary_beszel_user_tasks
+  names = [
+    "Check whether the managed application user accepts vault credentials",
+    "Require preserved Beszel application-user credentials",
+    "Reconcile managed application user role and verification",
+    "Report planned managed application user reconciliation"
+  ]
+  tasks = YAML.safe_load_file(
+    File.join(ROOT, "roles", "beszel", "tasks", "main.yml"), aliases: false
+  )
+  tasks.select { |task| names.include?(task_name(task)) }
+end
+
 def failure_tail(output)
   output.lines.map(&:strip).reject(&:empty?).last(8).join(" | ")
 end
@@ -740,6 +753,71 @@ def exercise_fail_closed_and_check_mode(failures)
   end
 end
 
+def exercise_primary_beszel_drift(failures)
+  current_user = {
+    "id" => "primary12345678", "email" => "primary@example.invalid",
+    "role" => "user", "verified" => true
+  }
+  variables = {
+    "beszel_api" => nil,
+    "beszel_auth" => { "json" => { "token" => "admin" } },
+    "beszel_user_id" => current_user.fetch("id"),
+    "beszel_users_after" => { "json" => { "items" => [current_user] } },
+    "vault_beszel_app_user_email" => current_user.fetch("email"),
+    "vault_beszel_app_user_password" => "primary-secret",
+    "beszel_no_log" => false
+  }
+  tasks = primary_beszel_user_tasks
+
+  with_http_service(->(_request) { [400, {}] }) do |port, requests|
+    vars = variables.merge(
+      "beszel_api" => "http://127.0.0.1:#{port}",
+      "beszel_users_after" => {
+        "json" => { "items" => [current_user.merge("verified" => false)] }
+      }
+    )
+    stdout, stderr, status = run_playbook(tasks, vars)
+    failures << "Beszel primary unverified fixture unexpectedly succeeded" if status.success?
+    failures << "Beszel primary unverified failure missed credential-migration guidance" unless
+      (stdout + stderr).include?("Require preserved Beszel application-user credentials")
+    failures << "Beszel primary unverified failure reached PATCH" if
+      requests.any? { |request| request["method"] == "PATCH" }
+  end
+
+  responder = lambda do |request|
+    case [request["method"], request["target"]]
+    when ["POST", "/api/collections/users/auth-with-password"]
+      [200, { "record" => current_user, "token" => "user-token" }]
+    when ["PATCH", "/api/collections/users/records/#{current_user.fetch('id')}"]
+      [200, current_user.merge(request.fetch("json"))]
+    else
+      [500, {}]
+    end
+  end
+
+  with_http_service(responder) do |port, requests|
+    vars = variables.merge("beszel_api" => "http://127.0.0.1:#{port}")
+    stdout, stderr, status = run_playbook(tasks, vars, "--check", "--diff")
+    output = stdout + stderr
+    failures << "Beszel primary role-drift check-mode fixture failed: #{failure_tail(output)}" unless
+      status.success?
+    failures << "Beszel primary role drift was not reported in check mode" unless
+      output.include?("Report planned managed application user reconciliation")
+    failures << "Beszel primary role-drift check mode reached PATCH" if
+      requests.any? { |request| request["method"] == "PATCH" }
+  end
+
+  with_http_service(responder) do |port, requests|
+    vars = variables.merge("beszel_api" => "http://127.0.0.1:#{port}")
+    stdout, stderr, status = run_playbook(tasks, vars)
+    failures << "Beszel primary role-drift reconciliation failed: #{failure_tail(stdout + stderr)}" unless
+      status.success?
+    patch = requests.find { |request| request["method"] == "PATCH" }
+    failures << "Beszel primary role drift was not repaired after authentication" unless
+      patch && patch.fetch("json") == { "role" => "admin", "verified" => true }
+  end
+end
+
 def exercise_verify_tag_selection(failures)
   tags = %w[immich paperless beszel].map { |service| "platform_verify_#{service}" }.join(",")
   stdout, stderr, status = Open3.capture3(
@@ -1077,6 +1155,7 @@ elsif ARGV.empty?
     exercise_paperless(failures, scenario: :auth_failure)
     exercise_paperless(failures, scenario: :check)
     exercise_fail_closed_and_check_mode(failures)
+    exercise_primary_beszel_drift(failures)
     exercise_verify_tag_selection(failures)
     exercise_disabled_paperless_target_rejection(failures)
     exercise_mangled_created_credentials(failures)

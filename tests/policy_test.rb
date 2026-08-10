@@ -1435,6 +1435,11 @@ beszel_user_lists.each do |task|
                   !url.include?("skipTotal=1"),
         "#{task['name']}: must use a complete URL-encoded server identity filter")
 end
+check(failures,
+      beszel_contract.include?('body: { role: "user" })') &&
+        beszel_contract.include?('user["role"] == "user" && user["verified"] == true') &&
+        !beszel_contract.include?('body: { role: "user", verified: false }'),
+      "Beszel drift fixture must preserve the verified authentication prerequisite while drifting role")
 
 beszel_complete_user_read = beszel_tasks.find do |task|
   task["name"] == "Read the complete PocketBase users collection for managed users"
