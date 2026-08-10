@@ -48,7 +48,10 @@ expect_failure() {
   if "$@" >"$output" 2>&1; then
     fail "$label was accepted"
   fi
-  grep -F "$expected" "$output" >/dev/null || fail "$label emitted the wrong diagnostic"
+  if ! grep -F "$expected" "$output" >/dev/null; then
+    actual=$(sed -n '/protected .* input/p' "$output" | head -n 1)
+    fail "$label emitted the wrong diagnostic: ${actual:-none}"
+  fi
 }
 
 ruby - "$runner" <<'RUBY'
@@ -132,6 +135,18 @@ module AdoptionInputSwapFixture
   end
 end
 
+require "open3"
+class << Open3
+  alias adoption_input_original_popen3 popen3
+
+  def popen3(*arguments, **keywords, &block)
+    command_argument = arguments.find { |argument| argument.is_a?(String) || argument.is_a?(Array) }
+    command = command_argument.is_a?(Array) ? command_argument.first : command_argument
+    AdoptionInputSwapFixture.swap(command, :spawn) if command
+    adoption_input_original_popen3(*arguments, **keywords, &block)
+  end
+end
+
 class << File
   alias adoption_input_original_open open
 
@@ -185,6 +200,77 @@ if grep -F replacement-disposable "$temporary_parent/output" >/dev/null; then
   fail 'parity password replacement diagnostic leaked protected bytes'
 fi
 
+provider_swap=$temporary_parent/provider-swap
+provider_swap_replacement=$temporary_parent/provider-swap-replacement
+printf '%s\n' '#!/bin/sh' 'printf "%s\\n" original-provider-output' > "$provider_swap"
+printf '%s\n' '#!/bin/sh' 'printf "%s\\n" replacement-provider-output' > "$provider_swap_replacement"
+chmod 0700 "$provider_swap" "$provider_swap_replacement"
+expect_failure 'parity provider validation-to-exec replacement' \
+  'protected parity password input changed while being pinned' \
+  env RUBYOPT="-r$swap_fixture" PLATFORM_SWAP_STAGE=spawn \
+    PLATFORM_SWAP_TARGET="$provider_swap" PLATFORM_SWAP_REPLACEMENT="$provider_swap_replacement" \
+    PLATFORM_MAC_TMPDIR="$temporary_parent" "$runner" --lane adoption \
+    --vault-file "$vault_file" --vault-password-file "$password_file" \
+    --parity-vault-file "$parity_vault_file" --parity-vault-password-file "$provider_swap" \
+    --phase report
+if grep -F replacement-provider-output "$temporary_parent/output" >/dev/null; then
+  fail 'replaced parity provider leaked stdout'
+fi
+
+during_provider=$temporary_parent/provider-during-exec
+during_replacement=$temporary_parent/provider-during-exec-replacement
+printf '%s\n' '#!/bin/sh' 'mv -f -- "${PLATFORM_PROVIDER_DURING_REPLACEMENT:?}" "$0"' \
+  'printf "%s\\n" during-exec-output' > "$during_provider"
+printf '%s\n' '#!/bin/sh' 'printf "%s\\n" replaced-output' > "$during_replacement"
+chmod 0700 "$during_provider" "$during_replacement"
+expect_failure 'parity provider during-exec replacement' \
+  'protected parity password input changed while being pinned' \
+  env PLATFORM_PROVIDER_DURING_REPLACEMENT="$during_replacement" \
+    PLATFORM_MAC_TMPDIR="$temporary_parent" "$runner" --lane adoption \
+    --vault-file "$vault_file" --vault-password-file "$password_file" \
+    --parity-vault-file "$parity_vault_file" --parity-vault-password-file "$during_provider" \
+    --phase report
+if grep -F during-exec-output "$temporary_parent/output" >/dev/null; then
+  fail 'mutated parity provider leaked stdout'
+fi
+
+nonzero_provider=$temporary_parent/provider-nonzero
+printf '%s\n' '#!/bin/sh' 'printf "%s\\n" provider-nonzero-secret' \
+  'printf "%s\\n" provider-nonzero-secret >&2' 'exit 7' > "$nonzero_provider"
+chmod 0700 "$nonzero_provider"
+expect_failure 'nonzero parity provider' 'protected parity password input provider failed' \
+  env PLATFORM_MAC_TMPDIR="$temporary_parent" "$runner" --lane adoption \
+    --vault-file "$vault_file" --vault-password-file "$password_file" \
+    --parity-vault-file "$parity_vault_file" --parity-vault-password-file "$nonzero_provider" \
+    --phase report
+if grep -F provider-nonzero-secret "$temporary_parent/output" >/dev/null; then
+  fail 'nonzero parity provider leaked stderr'
+fi
+
+timeout_provider=$temporary_parent/provider-timeout
+printf '%s\n' '#!/bin/sh' 'printf "%s\\n" provider-timeout-secret' \
+  'printf "%s\\n" provider-timeout-secret >&2' 'sleep 10' > "$timeout_provider"
+chmod 0700 "$timeout_provider"
+expect_failure 'timed out parity provider' 'protected parity password input provider timed out' \
+  env PLATFORM_MAC_TMPDIR="$temporary_parent" "$runner" --lane adoption \
+    --vault-file "$vault_file" --vault-password-file "$password_file" \
+    --parity-vault-file "$parity_vault_file" --parity-vault-password-file "$timeout_provider" \
+    --phase report
+if grep -F provider-timeout-secret "$temporary_parent/output" >/dev/null; then
+  fail 'timed out parity provider leaked stderr'
+fi
+
+oversize_provider=$temporary_parent/provider-oversize
+printf '%s\n' '#!/bin/sh' "$(command -v ruby) -e 'STDOUT.write(%q{x} * (1024 * 1024 + 1))'" \
+  > "$oversize_provider"
+chmod 0700 "$oversize_provider"
+expect_failure 'oversized parity provider output' \
+  'protected parity password input provider output exceeds the size limit' \
+  env PLATFORM_MAC_TMPDIR="$temporary_parent" "$runner" --lane adoption \
+    --vault-file "$vault_file" --vault-password-file "$password_file" \
+    --parity-vault-file "$parity_vault_file" --parity-vault-password-file "$oversize_provider" \
+    --phase report
+
 git_revision=$(git -C "$repo_dir" rev-parse HEAD)
 vault_checksum=$(shasum -a 256 "$vault_file" | awk '{print $1}')
 parity_checksum=$(shasum -a 256 "$parity_vault_file" | awk '{print $1}')
@@ -197,14 +283,19 @@ pinning_vault_replacement=$temporary_parent/pinning-parity-vault-replacement.yml
 pinning_password=$temporary_parent/pinning-parity-password
 pinning_password_expected=$temporary_parent/pinning-parity-password-expected
 pinning_password_replacement=$temporary_parent/pinning-parity-password-replacement
+pinning_password_helper=$temporary_parent/pinning-password-helper
+pinning_password_log=$temporary_parent/pinning-password.log
 printf '%s\n%s\n' '$ANSIBLE_VAULT;1.1;AES256' pinned-original-ciphertext > "$pinning_vault"
 cp "$pinning_vault" "$pinning_vault_expected"
 printf '%s\n%s\n' '$ANSIBLE_VAULT;1.1;AES256' post-pin-replacement > "$pinning_vault_replacement"
-printf '%s\n' '#!/bin/sh' 'printf "%s\\n" pinned-original-password' > "$pinning_password"
-cp "$pinning_password" "$pinning_password_expected"
+printf '%s\n' '#!/bin/sh' 'printf "%s\\n" pinned-original-password' > "$pinning_password_helper"
+printf '%s\n' '#!/bin/sh' 'printf "%s\\n" invoked >> "${PLATFORM_PINNING_PASSWORD_LOG:?}"' \
+  '"$(dirname -- "$0")/pinning-password-helper"' > "$pinning_password"
+printf '%s\n' pinned-original-password > "$pinning_password_expected"
 printf '%s\n' '#!/bin/sh' 'printf "%s\\n" post-pin-password' > "$pinning_password_replacement"
 chmod 0600 "$pinning_vault" "$pinning_vault_expected" "$pinning_vault_replacement"
-chmod 0700 "$pinning_password" "$pinning_password_expected" "$pinning_password_replacement"
+chmod 0700 "$pinning_password" "$pinning_password_helper" "$pinning_password_replacement"
+chmod 0600 "$pinning_password_expected"
 pinning_checksum=$(shasum -a 256 "$pinning_vault_expected" | awk '{print $1}')
 
 pinning_sandbox=$temporary_parent/nas-platform-mac.Pin123
@@ -232,8 +323,9 @@ PLATFORM_REAL_SHASUM=$real_shasum \
   PLATFORM_PINNING_VAULT_REPLACEMENT="$pinning_vault_replacement" \
   PLATFORM_PINNING_PASSWORD_SOURCE="$pinning_password" \
   PLATFORM_PINNING_PASSWORD_REPLACEMENT="$pinning_password_replacement" \
+  PLATFORM_PINNING_PASSWORD_LOG="$pinning_password_log" \
   PLATFORM_MAC_TMPDIR="$temporary_parent" PATH="$pinning_fake_bin:$PATH" \
-  "$runner" --lane adoption --vault-file "$vault_file" --vault-password-file "$password_file" \
+  "$runner" --lane adoption --vault-file "$vault_file" --vault-password-file "$pinning_password" \
     --parity-vault-file "$pinning_vault" --parity-vault-password-file "$pinning_password" \
     --phase report --sandbox "$pinning_sandbox" >/dev/null 2>&1 ||
   fail 'post-pin source replacement changed the protected adoption inputs'
@@ -251,8 +343,10 @@ else
   pinned_deployment_password_mode=$(stat -c '%a' "$pinning_sandbox/protected-inputs/deployment-password")
 fi
 [ "$pinned_vault_mode" = 600 ] || fail 'pinned parity ciphertext mode is unsafe'
-[ "$pinned_password_mode" = 700 ] || fail 'pinned executable password provider lost executable semantics'
+[ "$pinned_password_mode" = 600 ] || fail 'pinned provider output mode is unsafe'
 [ "$pinned_deployment_password_mode" = 600 ] || fail 'pinned regular password input mode is unsafe'
+[ "$(wc -l < "$pinning_password_log" | tr -d ' ')" = 1 ] ||
+  fail 'executable parity password provider did not run exactly once'
 recorded_pinning_checksum=$(ruby -rjson -e '
   print JSON.parse(File.read(ARGV.fetch(0))).fetch("parity_vault_checksum")
 ' "$pinning_sandbox.reports/phase-input.json")

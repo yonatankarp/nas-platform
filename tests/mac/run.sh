@@ -185,6 +185,9 @@ pin_protected_input() {
   ruby - "$pin_source" "$pin_destination" "$pin_label" "$pin_kind" \
     "$pin_external" "$mac_repo_dir" "$protected_input_root" <<'RUBY'
 source_path, destination_path, label, kind, external, repository, protected_root = ARGV
+require "open3"
+require "timeout"
+
 maximum_size = kind == "vault" ? 16 * 1024 * 1024 : 1024 * 1024
 
 def fail_pin(label, detail)
@@ -194,6 +197,68 @@ end
 
 def signature(stat)
   [stat.dev, stat.ino, stat.size, stat.mode, stat.mtime.to_r, stat.ctime.to_r]
+end
+
+def terminate_group(pid, signal)
+  Process.kill(signal, -pid)
+rescue Errno::ESRCH
+  nil
+end
+
+def bounded_read(stream, maximum_size)
+  bytes = stream.read(maximum_size + 1) || ""
+  stream.close if bytes.bytesize > maximum_size
+  { bytes: bytes, failed: false }
+rescue IOError
+  { bytes: "", failed: true }
+end
+
+def execute_provider(path, maximum_size)
+  result = { output: "", success: false, timed_out: false, oversized: false, capture_failed: false }
+  Open3.popen3([path, path], pgroup: true) do |stdin, stdout, stderr, wait_thread|
+    stdin.close
+    stdout_reader = Thread.new { bounded_read(stdout, maximum_size) }
+    stderr_reader = Thread.new { bounded_read(stderr, 64 * 1024) }
+    stdout_reader.report_on_exception = false
+    stderr_reader.report_on_exception = false
+    reader_cleanup_failed = false
+    begin
+      status = Timeout.timeout(5) { wait_thread.value }
+      result[:success] = status.success?
+    rescue Timeout::Error
+      result[:timed_out] = true
+      terminate_group(wait_thread.pid, "TERM")
+      unless wait_thread.join(1)
+        terminate_group(wait_thread.pid, "KILL")
+        wait_thread.join
+      end
+    ensure
+      readers = [[stdout_reader, stdout], [stderr_reader, stderr]]
+      readers.each do |reader, _stream|
+        next if reader.join(1)
+
+        reader_cleanup_failed = true
+        terminate_group(wait_thread.pid, "TERM")
+        readers.each { |_capture, stream| stream.close unless stream.closed? }
+        terminate_group(wait_thread.pid, "KILL")
+        break
+      end
+      readers.each do |reader, stream|
+        stream.close unless stream.closed?
+        reader.kill unless reader.join(1)
+        reader.join
+      end
+    end
+    stdout_capture = stdout_reader.value || { bytes: "", failed: true }
+    stderr_capture = stderr_reader.value || { bytes: "", failed: true }
+    result[:output] = stdout_capture[:bytes]
+    result[:capture_failed] = reader_cleanup_failed || stdout_capture[:failed] || stderr_capture[:failed]
+    result[:oversized] = result[:output].bytesize > maximum_size ||
+                         stderr_capture[:bytes].bytesize > 64 * 1024
+  end
+  result
+rescue SystemCallError, IOError
+  result
 end
 
 temporary_path = nil
@@ -237,6 +302,17 @@ begin
   path_after = File.lstat(source_path)
   fail_pin(label, "changed while being pinned") unless
     parent_before == parent_after && signature(path_before) == signature(path_after)
+  if kind == "password" && executable
+    provider = execute_provider(source_path, maximum_size)
+    provider_parent_after = File.realpath(File.dirname(source_path))
+    provider_path_after = File.lstat(source_path)
+    fail_pin(label, "changed while being pinned") unless
+      parent_before == provider_parent_after && signature(path_before) == signature(provider_path_after)
+    fail_pin(label, "provider timed out") if provider[:timed_out]
+    fail_pin(label, "provider output exceeds the size limit") if provider[:oversized]
+    fail_pin(label, "provider failed") unless provider[:success] && !provider[:capture_failed]
+    bytes = provider[:output]
+  end
   if kind == "vault" && !bytes.start_with?("$ANSIBLE_VAULT;")
     fail_pin(label, "is not Ansible Vault encrypted")
   end
@@ -245,7 +321,7 @@ begin
   fail_pin(label, "destination is unsafe") unless
     signature(protected_root_before) == signature(protected_root_after) &&
       File.realpath(protected_root) == protected_root
-  mode = kind == "password" && executable ? 0o700 : 0o600
+  mode = 0o600
   temporary_path = "#{destination_path}.tmp.#{Process.pid}"
   output_flags = File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW
   File.open(temporary_path, output_flags, mode) do |output|
@@ -286,8 +362,13 @@ if [ "$lane" = adoption ]; then
   parity_password_source=$parity_vault_password_file
   pin_protected_input "$parity_vault_source" "$protected_input_root/parity-vault.yml" \
     'parity vault' vault true || mac_die 'protected parity vault input could not be pinned'
-  pin_protected_input "$parity_password_source" "$protected_input_root/parity-password" \
-    'parity password' password true || mac_die 'protected parity password input could not be pinned'
+  if [ "$parity_password_source" = "$deployment_password_source" ]; then
+    pin_protected_input "$vault_password_file" "$protected_input_root/parity-password" \
+      'parity password' password false || mac_die 'protected parity password input could not be pinned'
+  else
+    pin_protected_input "$parity_password_source" "$protected_input_root/parity-password" \
+      'parity password' password true || mac_die 'protected parity password input could not be pinned'
+  fi
   parity_vault_file=$protected_input_root/parity-vault.yml
   parity_vault_password_file=$protected_input_root/parity-password
 fi
