@@ -118,6 +118,24 @@ def yaml_key?(node, expected_key)
   end
 end
 
+def yaml_mapping_value(mapping, expected_key)
+  return unless mapping.is_a?(Psych::Nodes::Mapping)
+
+  mapping.children.each_slice(2) do |key, value|
+    return value if key.is_a?(Psych::Nodes::Scalar) && key.value == expected_key
+  end
+  nil
+end
+
+def yaml_mapping_keys(mapping)
+  return [] unless mapping.is_a?(Psych::Nodes::Mapping)
+
+  mapping.children.each_slice(2).map do |key, _value|
+    fail_contract("override contains a non-scalar YAML key") unless key.is_a?(Psych::Nodes::Scalar)
+    key.value
+  end
+end
+
 unless OVERRIDE_DIR.directory? && !OVERRIDE_DIR.symlink?
   fail_contract("#{OVERRIDE_DIR.relative_path_from(REPO_DIR)} must be a regular directory")
 end
@@ -149,7 +167,8 @@ Dir.mktmpdir("nas-platform-legacy-overrides.") do |temporary|
       override.file? && !override.symlink?
 
     override_text = override.read
-    fail_contract("#{override.basename} overrides an image") if yaml_key?(Psych.parse(override_text), "image")
+    override_document = Psych.parse(override_text)
+    fail_contract("#{override.basename} overrides an image") if yaml_key?(override_document, "image")
     active_override_text = override_text.lines.reject { |line| line.lstrip.start_with?("#") }.join
     fail_contract("#{override.basename} contains a production NAS path") if
       active_override_text.match?(%r{(?:^|\s)/(?:volume[0-9]+|dev/dri)(?:/|\b)})
@@ -268,6 +287,19 @@ Dir.mktmpdir("nas-platform-legacy-overrides.") do |temporary|
       "PAPERLESS_TIKA_ENDPOINT" => "http://tika:9998",
       "PAPERLESS_TIKA_GOTENBERG_ENDPOINT" => "http://gotenberg:3000"
     }
+    override_services = yaml_mapping_value(override_document.root, "services")
+    allowed_environment_overrides = first.fetch("services").keys.to_h { |service_name| [service_name, []] }
+    allowed_environment_overrides.fetch("webserver").concat(expected_addresses.keys).sort!
+    allowed_environment_overrides.each do |service_name, allowed_keys|
+      service_override = yaml_mapping_value(override_services, service_name)
+      environment_override = yaml_mapping_value(service_override, "environment")
+      actual_keys = yaml_mapping_keys(environment_override).sort
+      fail_contract("Paperless #{service_name} overrides non-address environment") unless actual_keys == allowed_keys
+    end
+    base_addresses = base.dig("services", "webserver", "environment").slice(*expected_addresses.keys)
+    fail_contract("Paperless override does not exclusively change network addresses") unless
+      base_addresses.keys.sort == expected_addresses.keys.sort &&
+      base_addresses.all? { |key, value| value != expected_addresses.fetch(key) }
     fail_contract("Paperless dependency DNS addresses changed") unless
       web.fetch("environment").slice(*expected_addresses.keys) == expected_addresses
     fail_contract("Paperless dependency contract changed") unless
