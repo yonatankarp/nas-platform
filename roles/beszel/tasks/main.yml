@@ -175,6 +175,29 @@
 # Collections use URL-encoded PocketBase identity filters, then repeat the exact
 # identity selection in Jinja before resolving a record. Totals remain enabled so
 # each read can refuse a result spanning more than the complete 500-record page.
+- name: Read the complete PocketBase users collection for managed users
+  ansible.builtin.uri:
+    url: "{{ beszel_api }}/api/collections/users/records?perPage=500"
+    headers:
+      Authorization: "{{ beszel_auth.json.token }}"
+    status_code: [200]
+    return_content: true
+  register: beszel_complete_users
+  changed_when: false
+  check_mode: false
+  no_log: "{{ beszel_no_log | default(true) }}"
+
+- name: Require a complete PocketBase users collection
+  ansible.builtin.assert:
+    that:
+      - beszel_complete_users.json.get('totalPages', 0) | int <= 1
+      - beszel_complete_users.json.get('items', []) | type_debug == 'list'
+      - >-
+        beszel_complete_users.json.get('totalItems',
+          beszel_complete_users.json.get('items', []) | length) | int ==
+        beszel_complete_users.json.get('items', []) | length
+    fail_msg: PocketBase users collection exceeds one complete page.
+
 - name: List application users
   tags: [platform_verify_beszel]
   ansible.builtin.uri:
@@ -396,6 +419,11 @@
   check_mode: false
   no_log: "{{ beszel_no_log | default(true) }}"
   when: not ansible_check_mode
+
+- name: Reconcile managed Beszel users
+  ansible.builtin.include_tasks: managed_users.yml
+  vars:
+    beszel_managed_users_phase: reconcile
 
 - name: Report when Beszel configuration cannot continue
   ansible.builtin.debug:
@@ -709,3 +737,13 @@
         loop_var: beszel_alert
         label: "{{ beszel_alert.name }}"
       when: beszel_matching_systems | length == 1
+
+- name: Verify managed Beszel users
+  tags: [platform_verify_beszel]
+  ansible.builtin.include_tasks:
+    file: managed_users.yml
+    apply:
+      tags: [platform_verify_beszel]
+  vars:
+    beszel_managed_users_phase: verify
+  when: not ansible_check_mode

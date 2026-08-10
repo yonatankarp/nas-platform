@@ -1,0 +1,273 @@
+---
+- name: List complete Immich users for managed-user reconciliation
+  ansible.builtin.uri:
+    url: "{{ immich_api }}/admin/users?withDeleted=true"
+    headers:
+      Authorization: "Bearer {{ immich_managed_users_token }}"
+    status_code: [200]
+    return_content: true
+  register: immich_managed_users_listing
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Refuse incomplete Immich managed-user listing
+  ansible.builtin.assert:
+    that:
+      - immich_managed_users_listing.json | type_debug == 'list'
+    fail_msg: Immich returned an unsupported users response; reconciliation refuses a partial identity view.
+
+- name: Resolve normalized Immich managed identities
+  ansible.builtin.set_fact:
+    immich_managed_user_matches: >-
+      {{ (immich_managed_user_matches | default({})) |
+         combine(dict([(item.email, immich_managed_users_listing.json |
+           selectattr('email', 'equalto', item.email) | list)])) }}
+  loop: "{{ vault_managed_immich_users }}"
+  loop_control:
+    label: immich-managed-user
+  no_log: true
+
+- name: Refuse ambiguous normalized Immich managed identities
+  ansible.builtin.assert:
+    that:
+      - immich_managed_user_matches[item.email] | length <= 1
+      - >-
+        immich_managed_users_listing.json | map(attribute='email') |
+        map('trim') | map('lower') | select('equalto', item.email | trim | lower) |
+        list | length == immich_managed_user_matches[item.email] | length
+      - >-
+        immich_managed_user_matches[item.email] | length == 0 or
+        immich_managed_user_matches[item.email][0].email == item.email
+    fail_msg: Immich contains a duplicate normalized managed email.
+  loop: "{{ vault_managed_immich_users }}"
+  loop_control:
+    label: immich-managed-user
+  no_log: true
+
+- name: Require safe Immich managed-user identifiers
+  ansible.builtin.assert:
+    that:
+      - >-
+        immich_managed_user_matches[item.email] | length == 0 or
+        immich_managed_user_matches[item.email][0].id | string is match('^[0-9A-Fa-f-]{36}$')
+    fail_msg: Immich returned an unsafe managed-user API identifier.
+  loop: "{{ vault_managed_immich_users }}"
+  loop_control:
+    label: immich-managed-user
+  no_log: true
+
+- name: Authenticate existing Immich managed users
+  ansible.builtin.uri:
+    url: "{{ immich_api }}/auth/login"
+    method: POST
+    body_format: json
+    body:
+      email: "{{ item.email }}"
+      password: "{{ item.password }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: immich_managed_user_authentication
+  when:
+    - immich_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+    - immich_managed_user_matches[item.email] | length == 1
+  loop: "{{ vault_managed_immich_users }}"
+  loop_control:
+    label: immich-managed-user
+  failed_when: false
+  changed_when: false
+  no_log: true
+
+- name: Require preserved Immich managed-user credentials
+  ansible.builtin.assert:
+    that:
+      - item.status | default(0) | int == 201
+      - item.json.userEmail | default('') | trim | lower == item.item.email | trim | lower
+    fail_msg: >-
+      Existing Immich managed user does not accept its preserved vault password.
+      Run the reviewed credential-migration procedure; Ansible will not reset it automatically.
+  loop: "{{ immich_managed_user_authentication.results | default([]) | rejectattr('skipped', 'defined') | list }}"
+  loop_control:
+    label: immich-managed-user
+  when:
+    - immich_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+  no_log: true
+
+- name: Report planned Immich managed-user creation
+  ansible.builtin.debug:
+    msg: IMMICH_PLAN_MANAGED_USER_CREATE
+  when:
+    - immich_managed_users_phase == 'reconcile'
+    - ansible_check_mode
+    - immich_managed_user_matches[item.email] | length == 0
+  loop: "{{ vault_managed_immich_users }}"
+  loop_control:
+    label: immich-managed-user
+  changed_when: true
+
+- name: Create absent Immich managed users
+  ansible.builtin.uri:
+    url: "{{ immich_api }}/admin/users"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ immich_managed_users_token }}"
+    body_format: json
+    body:
+      email: "{{ item.email }}"
+      password: "{{ item.password }}"
+      name: "{{ item.name }}"
+    status_code: [201]
+  register: immich_managed_user_creation
+  when:
+    - immich_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+    - immich_managed_user_matches[item.email] | length == 0
+  loop: "{{ vault_managed_immich_users }}"
+  loop_control:
+    label: immich-managed-user
+  changed_when: true
+  no_log: true
+
+- name: Re-list Immich users after managed-user creation
+  ansible.builtin.uri:
+    url: "{{ immich_api }}/admin/users?withDeleted=true"
+    headers:
+      Authorization: "Bearer {{ immich_managed_users_token }}"
+    status_code: [200]
+    return_content: true
+  register: immich_managed_users_refreshed_listing
+  when:
+    - immich_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require exact newly created Immich managed identities
+  ansible.builtin.assert:
+    that:
+      - immich_managed_users_refreshed_listing.json | type_debug == 'list'
+      - immich_managed_users_refreshed_listing.json | selectattr('email', 'equalto', item.item.email) | list | length == 1
+      - >-
+        immich_managed_users_refreshed_listing.json | map(attribute='email') |
+        map('trim') | map('lower') | select('equalto', item.item.email | trim | lower) | list | length == 1
+      - >-
+        (immich_managed_users_refreshed_listing.json |
+         selectattr('email', 'equalto', item.item.email) | first).id | string is match('^[0-9A-Fa-f-]{36}$')
+    fail_msg: Immich did not return one exact safe newly created managed identity.
+  loop: "{{ immich_managed_user_creation.results | default([]) | rejectattr('skipped', 'defined') | list }}"
+  loop_control:
+    label: immich-managed-user
+  when:
+    - immich_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+  no_log: true
+
+- name: Authenticate newly created Immich managed users
+  ansible.builtin.uri:
+    url: "{{ immich_api }}/auth/login"
+    method: POST
+    body_format: json
+    body:
+      email: "{{ item.item.email }}"
+      password: "{{ item.item.password }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: immich_new_managed_user_authentication
+  loop: "{{ immich_managed_user_creation.results | default([]) | rejectattr('skipped', 'defined') | list }}"
+  loop_control:
+    label: immich-managed-user
+  when:
+    - immich_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+  failed_when: false
+  changed_when: false
+  no_log: true
+
+- name: Require newly created Immich managed-user credentials
+  ansible.builtin.assert:
+    that:
+      - item.status | default(0) | int == 201
+      - item.json.userEmail | default('') | trim | lower == item.item.item.email | trim | lower
+    fail_msg: >-
+      Newly created Immich managed user does not accept its vault password. Run the reviewed
+      credential-migration procedure; Ansible will not reset it or continue reconciliation.
+  loop: "{{ immich_new_managed_user_authentication.results | default([]) | rejectattr('skipped', 'defined') | list }}"
+  loop_control:
+    label: immich-managed-user
+  when:
+    - immich_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+  no_log: true
+
+- name: Resolve effective Immich managed identities after creation
+  ansible.builtin.set_fact:
+    immich_effective_managed_user_matches: >-
+      {{ (immich_effective_managed_user_matches | default({})) |
+         combine(dict([(item.email,
+           (immich_managed_users_refreshed_listing.json
+            if immich_managed_users_refreshed_listing.json is defined
+            else immich_managed_users_listing.json) |
+           selectattr('email', 'equalto', item.email) | list)])) }}
+  loop: "{{ vault_managed_immich_users }}"
+  loop_control:
+    label: immich-managed-user
+  no_log: true
+
+- name: Report planned Immich managed-user non-secret repair
+  ansible.builtin.debug:
+    msg: IMMICH_PLAN_MANAGED_USER_REPAIR
+  when:
+    - immich_managed_users_phase == 'reconcile'
+    - ansible_check_mode
+    - immich_effective_managed_user_matches[item.email] | length == 1
+    - >-
+      immich_effective_managed_user_matches[item.email][0].name != item.name or
+      immich_effective_managed_user_matches[item.email][0].quotaSizeInBytes != item.quota_size
+  loop: "{{ vault_managed_immich_users }}"
+  loop_control:
+    label: immich-managed-user
+  changed_when: true
+
+- name: Repair Immich managed-user non-secret properties
+  ansible.builtin.uri:
+    url: >-
+      {{ immich_api }}/admin/users/{{
+         immich_effective_managed_user_matches[item.email][0].id | urlencode }}
+    method: PUT
+    headers:
+      Authorization: "Bearer {{ immich_managed_users_token }}"
+    body_format: json
+    body:
+      name: "{{ item.name }}"
+      quotaSizeInBytes: "{{ item.quota_size }}"
+    status_code: [200]
+  when:
+    - immich_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+    - immich_effective_managed_user_matches[item.email] | length == 1
+    - >-
+      immich_effective_managed_user_matches[item.email][0].name != item.name or
+      immich_effective_managed_user_matches[item.email][0].quotaSizeInBytes != item.quota_size
+  loop: "{{ vault_managed_immich_users }}"
+  loop_control:
+    label: immich-managed-user
+  changed_when: true
+  no_log: true
+
+- name: Verify exact Immich managed users
+  ansible.builtin.assert:
+    that:
+      - immich_managed_user_matches[item.email] | length == 1
+      - immich_managed_user_matches[item.email][0].email | trim | lower == item.email | trim | lower
+      - immich_managed_user_matches[item.email][0].name == item.name
+      - immich_managed_user_matches[item.email][0].quotaSizeInBytes == item.quota_size
+      - immich_managed_user_matches[item.email][0].status == 'active'
+    fail_msg: A managed Immich identity is absent, duplicated, inactive, or differs from its exact projection.
+  when: immich_managed_users_phase == 'verify'
+  loop: "{{ vault_managed_immich_users }}"
+  loop_control:
+    label: immich-managed-user
+  no_log: true

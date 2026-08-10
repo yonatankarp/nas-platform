@@ -1,0 +1,288 @@
+---
+- name: Read fresh Beszel users for exact managed-user verification
+  ansible.builtin.uri:
+    url: "{{ beszel_api }}/api/collections/users/records?perPage=500"
+    headers:
+      Authorization: "{{ beszel_auth.json.token }}"
+    status_code: [200]
+    return_content: true
+  register: beszel_managed_users_fresh_read
+  when: beszel_managed_users_phase == 'verify'
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: List complete Beszel users for managed-user reconciliation
+  ansible.builtin.set_fact:
+    beszel_managed_users_listing: >-
+      {{ beszel_managed_users_fresh_read
+         if beszel_managed_users_fresh_read.json is defined
+         else beszel_complete_users }}
+  no_log: true
+
+- name: Refuse incomplete Beszel managed-user listing
+  ansible.builtin.assert:
+    that:
+      - beszel_managed_users_listing.json is mapping
+      - beszel_managed_users_listing.json.get('items', []) | type_debug == 'list'
+      - beszel_managed_users_listing.json.get('totalPages', 0) | int <= 1
+      - >-
+        beszel_managed_users_listing.json.get('totalItems',
+          beszel_managed_users_listing.json.get('items', []) | length) | int ==
+        beszel_managed_users_listing.json.get('items', []) | length
+    fail_msg: Beszel returned an incomplete users collection.
+
+- name: Resolve normalized Beszel managed identities
+  ansible.builtin.set_fact:
+    beszel_managed_user_matches: >-
+      {{ (beszel_managed_user_matches | default({})) |
+         combine(dict([(item.email, beszel_managed_users_listing.json.get('items', []) |
+           selectattr('email', 'equalto', item.email) | list)])) }}
+  loop: "{{ vault_managed_beszel_users }}"
+  loop_control:
+    label: beszel-managed-user
+  no_log: true
+
+- name: Refuse ambiguous normalized Beszel managed identities
+  ansible.builtin.assert:
+    that:
+      - beszel_managed_user_matches[item.email] | length <= 1
+      - >-
+        beszel_managed_users_listing.json.get('items', []) | map(attribute='email') |
+        map('trim') | map('lower') | select('equalto', item.email | trim | lower) |
+        list | length == beszel_managed_user_matches[item.email] | length
+    fail_msg: Beszel contains duplicate normalized managed emails.
+  loop: "{{ vault_managed_beszel_users }}"
+  loop_control:
+    label: beszel-managed-user
+  no_log: true
+
+- name: Require safe Beszel managed-user identifiers
+  ansible.builtin.assert:
+    that:
+      - >-
+        beszel_managed_user_matches[item.email] | length == 0 or
+        beszel_managed_user_matches[item.email][0].id | string
+          is match('^[A-Za-z0-9_-]{1,64}$')
+    fail_msg: Beszel returned an unsafe managed-user API identifier.
+  loop: "{{ vault_managed_beszel_users }}"
+  loop_control:
+    label: beszel-managed-user
+  no_log: true
+
+- name: Authenticate existing Beszel managed users
+  ansible.builtin.uri:
+    url: "{{ beszel_api }}/api/collections/users/auth-with-password"
+    method: POST
+    body_format: json
+    body:
+      identity: "{{ item.email }}"
+      password: "{{ item.password }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: beszel_managed_user_authentication
+  when:
+    - beszel_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+    - beszel_managed_user_matches[item.email] | length == 1
+  loop: "{{ vault_managed_beszel_users }}"
+  loop_control:
+    label: beszel-managed-user
+  failed_when: false
+  changed_when: false
+  no_log: true
+
+- name: Require preserved Beszel managed-user credentials
+  ansible.builtin.assert:
+    that:
+      - item.status | default(0) | int == 200
+      - item.json.record.email | default('') | trim | lower == item.item.email | trim | lower
+    fail_msg: >-
+      Existing Beszel managed user does not accept its preserved vault password.
+      Run the reviewed credential-migration procedure; Ansible will not reset it automatically.
+  loop: "{{ beszel_managed_user_authentication.results | default([]) | rejectattr('skipped', 'defined') | list }}"
+  loop_control:
+    label: beszel-managed-user
+  when:
+    - beszel_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+  no_log: true
+
+- name: Report planned Beszel managed-user creation
+  ansible.builtin.debug:
+    msg: BESZEL_PLAN_MANAGED_USER_CREATE
+  when:
+    - beszel_managed_users_phase == 'reconcile'
+    - ansible_check_mode
+    - beszel_managed_user_matches[item.email] | length == 0
+  loop: "{{ vault_managed_beszel_users }}"
+  loop_control:
+    label: beszel-managed-user
+  changed_when: true
+
+- name: Create absent Beszel managed users
+  ansible.builtin.uri:
+    url: "{{ beszel_api }}/api/collections/users/records"
+    method: POST
+    headers:
+      Authorization: "{{ beszel_auth.json.token }}"
+    body_format: json
+    body:
+      email: "{{ item.email }}"
+      password: "{{ item.password }}"
+      passwordConfirm: "{{ item.password }}"
+    status_code: [200]
+  register: beszel_managed_user_creation
+  when:
+    - beszel_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+    - beszel_managed_user_matches[item.email] | length == 0
+  loop: "{{ vault_managed_beszel_users }}"
+  loop_control:
+    label: beszel-managed-user
+  changed_when: true
+  no_log: true
+
+- name: Re-list Beszel users after managed-user creation
+  ansible.builtin.uri:
+    url: "{{ beszel_api }}/api/collections/users/records?perPage=500"
+    headers:
+      Authorization: "{{ beszel_auth.json.token }}"
+    status_code: [200]
+    return_content: true
+  register: beszel_managed_users_refreshed_listing
+  when:
+    - beszel_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require exact newly created Beszel managed identities
+  ansible.builtin.assert:
+    that:
+      - beszel_managed_users_refreshed_listing.json.get('totalPages', 0) | int <= 1
+      - >-
+        beszel_managed_users_refreshed_listing.json.get('items', []) |
+        selectattr('email', 'equalto', item.item.email) | list | length == 1
+      - >-
+        beszel_managed_users_refreshed_listing.json.get('items', []) | map(attribute='email') |
+        map('trim') | map('lower') | select('equalto', item.item.email | trim | lower) | list | length == 1
+      - >-
+        (beszel_managed_users_refreshed_listing.json.get('items', []) |
+         selectattr('email', 'equalto', item.item.email) | first).id | string
+           is match('^[A-Za-z0-9_-]{1,64}$')
+    fail_msg: Beszel did not return one exact safe newly created managed identity.
+  loop: "{{ beszel_managed_user_creation.results | default([]) | rejectattr('skipped', 'defined') | list }}"
+  loop_control:
+    label: beszel-managed-user
+  when:
+    - beszel_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+  no_log: true
+
+- name: Authenticate newly created Beszel managed users
+  ansible.builtin.uri:
+    url: "{{ beszel_api }}/api/collections/users/auth-with-password"
+    method: POST
+    body_format: json
+    body:
+      identity: "{{ item.item.email }}"
+      password: "{{ item.item.password }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: beszel_new_managed_user_authentication
+  loop: "{{ beszel_managed_user_creation.results | default([]) | rejectattr('skipped', 'defined') | list }}"
+  loop_control:
+    label: beszel-managed-user
+  when:
+    - beszel_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+  failed_when: false
+  changed_when: false
+  no_log: true
+
+- name: Require newly created Beszel managed-user credentials
+  ansible.builtin.assert:
+    that:
+      - item.status | default(0) | int == 200
+      - item.json.record.email | default('') | trim | lower == item.item.item.email | trim | lower
+    fail_msg: >-
+      Newly created Beszel managed user does not accept its vault password. Run the reviewed
+      credential-migration procedure; Ansible will not reset it or continue privilege reconciliation.
+  loop: "{{ beszel_new_managed_user_authentication.results | default([]) | rejectattr('skipped', 'defined') | list }}"
+  loop_control:
+    label: beszel-managed-user
+  when:
+    - beszel_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+  no_log: true
+
+- name: Resolve effective Beszel managed identities after creation
+  ansible.builtin.set_fact:
+    beszel_effective_managed_user_matches: >-
+      {{ (beszel_effective_managed_user_matches | default({})) |
+         combine(dict([(item.email,
+           (beszel_managed_users_refreshed_listing.json.get('items', [])
+            if beszel_managed_users_refreshed_listing.json is defined
+            else beszel_managed_users_listing.json.get('items', [])) |
+           selectattr('email', 'equalto', item.email) | list)])) }}
+  loop: "{{ vault_managed_beszel_users }}"
+  loop_control:
+    label: beszel-managed-user
+  no_log: true
+
+- name: Report planned Beszel managed-user role and verification repair
+  ansible.builtin.debug:
+    msg: BESZEL_PLAN_MANAGED_USER_REPAIR
+  when:
+    - beszel_managed_users_phase == 'reconcile'
+    - ansible_check_mode
+    - beszel_effective_managed_user_matches[item.email] | length == 1
+    - >-
+      beszel_effective_managed_user_matches[item.email][0].role != item.role or
+      beszel_effective_managed_user_matches[item.email][0].verified | bool != item.verified | bool
+  loop: "{{ vault_managed_beszel_users }}"
+  loop_control:
+    label: beszel-managed-user
+  changed_when: true
+
+- name: Repair Beszel managed-user role and verification
+  ansible.builtin.uri:
+    url: >-
+      {{ beszel_api }}/api/collections/users/records/{{
+         beszel_effective_managed_user_matches[item.email][0].id | urlencode }}
+    method: PATCH
+    headers:
+      Authorization: "{{ beszel_auth.json.token }}"
+    body_format: json
+    body:
+      role: "{{ item.role }}"
+      verified: "{{ item.verified }}"
+    status_code: [200]
+  when:
+    - beszel_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+    - beszel_effective_managed_user_matches[item.email] | length == 1
+    - >-
+      beszel_effective_managed_user_matches[item.email][0].role != item.role or
+      beszel_effective_managed_user_matches[item.email][0].verified | bool != item.verified | bool
+  loop: "{{ vault_managed_beszel_users }}"
+  loop_control:
+    label: beszel-managed-user
+  changed_when: true
+  no_log: true
+
+- name: Verify exact Beszel managed users
+  ansible.builtin.assert:
+    that:
+      - beszel_managed_user_matches[item.email] | length == 1
+      - beszel_managed_user_matches[item.email][0].email | trim | lower == item.email | trim | lower
+      - beszel_managed_user_matches[item.email][0].role == item.role
+      - beszel_managed_user_matches[item.email][0].verified | bool == item.verified | bool
+    fail_msg: A managed Beszel identity is absent, duplicated, or differs from its exact projection.
+  when: beszel_managed_users_phase == 'verify'
+  loop: "{{ vault_managed_beszel_users }}"
+  loop_control:
+    label: beszel-managed-user
+  no_log: true

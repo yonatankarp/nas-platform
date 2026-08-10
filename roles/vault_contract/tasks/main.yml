@@ -263,6 +263,7 @@
       - item.email is string
       - item.email is match('^[^@ ]+@[^@ ]+$')
       - item.is_active is boolean
+      - item.is_active | bool
       - item.is_staff is boolean
       - item.is_superuser is boolean
       - item.groups | type_debug == 'list'

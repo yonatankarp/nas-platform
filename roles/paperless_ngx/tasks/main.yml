@@ -265,6 +265,11 @@
       Paperless does not accept the preserved vault administrator. Restore the deployed identity
       from the password manager or migrate it explicitly before rerunning.
 
+- name: Reconcile managed Paperless users
+  ansible.builtin.include_tasks: managed_users.yml
+  vars:
+    paperless_managed_users_phase: reconcile
+
 - name: Verify Paperless users for exact administrator identity
   tags: [platform_verify_paperless]
   ansible.builtin.uri:
@@ -774,6 +779,16 @@
            paperless_mail_account_repair_required | bool or
            paperless_mail_rule_create_required | bool or
            paperless_mail_rule_repair_required | bool)
+
+- name: Verify managed Paperless users
+  tags: [platform_verify_paperless]
+  ansible.builtin.include_tasks:
+    file: managed_users.yml
+    apply:
+      tags: [platform_verify_paperless]
+  vars:
+    paperless_managed_users_phase: verify
+  when: not ansible_check_mode
 
 - name: Record the verified Paperless Gmail credential fingerprint
   ansible.builtin.copy:

@@ -837,6 +837,8 @@ validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "te
   ruby\ tests/policy_manifest_test.rb
   ruby\ tests/run_contracts_test.rb
   ruby\ tests/run_contracts.rb\ --validate-only
+  ruby\ tests/database_managed_users_test.rb
+  ruby\ tests/database_managed_users_test.rb\ --self-test
   tests/integration_lock_test.sh
   tests/mac/audiobookshelf-drift-hook-test.sh
   tests/contracts/audiobookshelf-audio-test.sh
@@ -1434,6 +1436,23 @@ beszel_user_lists.each do |task|
         "#{task['name']}: must use a complete URL-encoded server identity filter")
 end
 
+beszel_complete_user_read = beszel_tasks.find do |task|
+  task["name"] == "Read the complete PocketBase users collection for managed users"
+end
+check(failures,
+      beszel_complete_user_read&.dig("ansible.builtin.uri", "url") ==
+        "{{ beszel_api }}/api/collections/users/records?perPage=500",
+      "Beszel managed users must reuse one explicitly bounded complete users collection")
+beszel_complete_user_assert = beszel_tasks.find do |task|
+  task["name"] == "Require a complete PocketBase users collection"
+end
+complete_user_conditions = Array(
+  beszel_complete_user_assert&.dig("ansible.builtin.assert", "that")
+).join(" ")
+check(failures, complete_user_conditions.include?("totalPages") &&
+                complete_user_conditions.include?("totalItems"),
+      "Beszel complete users collection must prove pagination and item-count completeness")
+
 beszel_alert_tasks = flatten_tasks(
   YAML.safe_load_file(File.join(ROOT, "roles", "beszel", "tasks", "alert.yml"))
 )
@@ -1444,6 +1463,8 @@ end
 check(failures, identity_reads.length >= 11,
       "Beszel reconciliation must retain all filtered collection readbacks")
 identity_reads.each do |task|
+  next if task["name"] == "Read the complete PocketBase users collection for managed users"
+
   url = task.dig("ansible.builtin.uri", "url").to_s
   check(failures, url.include?("filter={{") && url.include?("urlencode") && !url.include?("skipTotal=1"),
         "#{task['name']}: collection readback must use a URL-encoded identity filter with totals")

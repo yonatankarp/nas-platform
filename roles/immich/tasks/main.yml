@@ -199,6 +199,13 @@
   when: not ansible_check_mode or immich_initialized | bool
   no_log: true
 
+- name: Reconcile managed Immich users
+  ansible.builtin.include_tasks: managed_users.yml
+  vars:
+    immich_managed_users_phase: reconcile
+    immich_managed_users_token: "{{ immich_reconcile_token }}"
+  when: not ansible_check_mode or immich_initialized | bool
+
 - name: Read the Immich system configuration
   ansible.builtin.uri:
     url: "{{ immich_api }}/system-config"
@@ -325,6 +332,17 @@
          else immich_verify_login.json.accessToken }}
   when: not ansible_check_mode
   no_log: true
+
+- name: Verify managed Immich users
+  tags: [platform_verify_immich]
+  ansible.builtin.include_tasks:
+    file: managed_users.yml
+    apply:
+      tags: [platform_verify_immich]
+  vars:
+    immich_managed_users_phase: verify
+    immich_managed_users_token: "{{ immich_verification_token }}"
+  when: not ansible_check_mode
 
 - name: Read the exact Immich system configuration
   tags: [platform_verify_immich]

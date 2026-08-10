@@ -157,8 +157,10 @@ regenerating credentials.
 `username` is the normalized login identity; `password` is its preserved clear
 credential; `email` is the account address; `is_active`, `is_staff`, and
 `is_superuser` are booleans; and `groups` is a unique list of exact Django group
-names, which may be empty. The separately managed Paperless administrator may
-not appear in this list.
+names, which may be empty. `is_active` must be true because every managed user
+must prove its preserved password before reconciliation; disabling a user would
+make the next converge unable to perform that proof. The separately managed
+Paperless administrator may not appear in this list.
 
 These requirements describe relationships as well as syntax. Do not fabricate
 values merely to satisfy the contract.
