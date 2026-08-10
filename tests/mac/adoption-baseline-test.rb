@@ -79,7 +79,7 @@ def recorder_invocation(root, output, extra_env = {}, extra_args = [], path_over
     "PLATFORM_MAC_VAULT_PASSWORD_FILE" => "#{root}/vault-password"
   }.merge(extra_env)
   arguments = [
-    RECORDER, "--output", output, "--legacy-commit", COMMIT,
+    path_overrides.fetch(:recorder, RECORDER), "--output", output, "--legacy-commit", COMMIT,
     "--manifest", path_overrides.fetch(:manifest, "#{root}/manifest.json"),
     "--legacy-root", path_overrides.fetch(:legacy_root, "#{root}/legacy"),
     "--override-root", path_overrides.fetch(:override_root, "#{root}/overrides"),
@@ -158,12 +158,68 @@ ancestor_policy_contract = recorder_prefix + <<~'RUBY'
     [stat.new(0, directory | 0o1777), true, false],
     [stat.new(Process.uid, directory | 0o0755), true, true]
   ]
-  exit(cases.all? { |entry, trusted, expected| safe_capture_directory?(entry, trusted: trusted) == expected } ? 0 : 1)
+  descriptor_safe = Dir.mktmpdir do |root|
+    File.binwrite(File.join(root, "input"), "x")
+    parent = File.open(root, File::RDONLY)
+    opened = open_component(parent, "input")
+    opened.close_on_exec?
+  ensure
+    opened&.close
+    parent&.close
+  end
+  valid = cases.all? do |entry, trusted, expected|
+    safe_capture_directory?(entry, trusted: trusted) == expected
+  end
+  exit(valid && descriptor_safe ? 0 : 1)
 RUBY
 _policy_output, _policy_diagnostic, policy_status = Open3.capture3(
   RbConfig.ruby, "-e", ancestor_policy_contract
 )
 failures << "sticky temporary ancestor policy differs" unless policy_status.success?
+tmm_fixture_contract = recorder_prefix + <<~'RUBY'
+  root = ENV.fetch("TMM_MEDIA_ROOT")
+  relative = "Task 10 Contract Movie (2024)/Task 10 Contract Movie (2024).mp4"
+  expected = Digest::SHA256.hexdigest("fixture")
+  exit 2 unless tmm_fixture_digest(root, relative) == expected
+  class File
+    alias adoption_original_read read
+
+    def read(*arguments)
+      if ENV["TMM_MUTATE"] == "1" && stat.ino == Integer(ENV.fetch("TMM_FIXTURE_INODE"))
+        ENV["TMM_MUTATE"] = "done"
+        parent = ENV.fetch("TMM_FIXTURE_PARENT")
+        File.rename(parent, "#{parent}.saved")
+        File.symlink("#{parent}.saved", parent)
+        File.unlink(parent)
+        File.rename("#{parent}.saved", parent)
+      end
+      adoption_original_read(*arguments)
+    end
+  end
+  ENV["TMM_MUTATE"] = "1"
+  begin
+    tmm_fixture_digest(root, relative)
+  rescue StandardError
+    exit 0
+  end
+  exit 1
+RUBY
+Dir.mktmpdir("tmm-fixture-reader-") do |fixture_root|
+  fixture_root = File.realpath(fixture_root)
+  movie_root = File.join(fixture_root, "movies")
+  fixture_parent = File.join(movie_root, "Task 10 Contract Movie (2024)")
+  FileUtils.mkdir_p(fixture_parent)
+  File.chmod(0o700, movie_root)
+  File.chmod(0o777, fixture_parent)
+  fixture = File.join(fixture_parent, "Task 10 Contract Movie (2024).mp4")
+  File.binwrite(fixture, "fixture")
+  _output, _diagnostic, fixture_status = Open3.capture3({
+    "TMM_MEDIA_ROOT" => movie_root,
+    "TMM_FIXTURE_PARENT" => fixture_parent,
+    "TMM_FIXTURE_INODE" => File.stat(fixture).ino.to_s
+  }, RbConfig.ruby, "-e", tmm_fixture_contract)
+  failures << "tinyMediaManager writable fixture parent swap was accepted" unless fixture_status.success?
+end
 sticky_tmp = ["/private/tmp", "/tmp"].filter_map do |candidate|
   next unless File.exist?(candidate)
   canonical = File.realpath(candidate)
@@ -401,6 +457,39 @@ Dir.mktmpdir("adoption-baseline-test-") do |root|
 
   original = File.binread(output)
   original_mode = File.stat(output).mode & 0o777
+  dependency_repo = "#{root}/dependency-repo"
+  FileUtils.mkdir_p(dependency_repo)
+  %w[tests services roles].each do |name|
+    FileUtils.cp_r(File.join(ROOT, name), dependency_repo, preserve: true)
+  end
+  FileUtils.cp(File.join(ROOT, "generate-secrets.yml"), dependency_repo, preserve: true)
+  dependency_recorder = "#{dependency_repo}/tests/mac/adoption-baseline.rb"
+  dependency_mutations = {
+    "recorder" => dependency_recorder,
+    "contract" => "#{dependency_repo}/tests/contracts/beszel.sh",
+    "template" => "#{dependency_repo}/tests/mac/adoption-probes/tinymediamanager-templates/movie/list.jmte"
+  }
+  dependency_mutations.each do |label, dependency|
+    saved_dependency = File.binread(dependency)
+    write_executable("#{root}/probes/beszel.sh", <<~SH)
+      #!/bin/sh
+      printf '%s\\n' '#{JSON.generate(evidence("beszel"))}'
+      mv '#{dependency}' '#{dependency}.saved'
+      printf '%s\\n' '# schema-valid dependency replacement' > '#{dependency}'
+      mv '#{dependency}.saved' '#{dependency}'
+    SH
+    _out, _diagnostic, rejected = run_recorder(
+      root, output, {}, [], recorder: dependency_recorder
+    )
+    failures << "live #{label} dependency mutation was accepted" if rejected.success?
+    failures << "live #{label} dependency mutation replaced baseline" unless File.binread(output) == original
+    File.binwrite(dependency, saved_dependency)
+    File.chmod(0o700, dependency) if dependency.end_with?(".rb", ".sh")
+  end
+  write_executable("#{root}/probes/beszel.sh", <<~SH)
+    #!/bin/sh
+    printf '%s\\n' '#{JSON.generate(evidence("beszel"))}'
+  SH
   Dir.mktmpdir("adoption-sticky-manifest-", sticky_tmp) do |sticky_root|
     sticky_root = File.realpath(sticky_root)
     File.chmod(0o700, sticky_root)
@@ -474,9 +563,21 @@ Dir.mktmpdir("adoption-baseline-test-") do |root|
       alias adoption_original_fsync fsync
 
       def fsync
-        if stat.directory? && File.expand_path(path) == ENV["ADOPTION_FSYNC_PARENT"]
+        target_path = ENV["ADOPTION_FSYNC_PARENT"]
+        $adoption_target_directory ||= File.stat(target_path)
+        current = stat
+        target = $adoption_target_directory
+        if current.directory? && [current.dev, current.ino] == [target.dev, target.ino]
           $adoption_directory_sync_count ||= 0
           $adoption_directory_sync_count += 1
+          if $adoption_directory_sync_count == 1 && ENV["ADOPTION_REPLACE_PARENT"] == "1"
+            saved = "#{target_path}.publication-saved"
+            File.rename(target_path, saved)
+            Dir.mkdir(target_path, 0o700)
+            replacement = File.join(target_path, "baseline.json")
+            File.binwrite(replacement, "newer-external-baseline\n")
+            File.chmod(0o600, replacement)
+          end
           failures = ENV.fetch("ADOPTION_FAIL_DIRECTORY_SYNC_AT").split(",").map { |value| Integer(value) }
           if failures.include?($adoption_directory_sync_count)
             raise Errno::EIO, "injected directory sync failure"
@@ -516,6 +617,49 @@ Dir.mktmpdir("adoption-baseline-test-") do |root|
     File.binread(output) == original && (File.stat(output).mode & 0o777) == original_mode
   failures << "rollback fsync failure left publication artifacts" unless
     Dir.glob("#{root}/.adoption-{baseline,backup,recovery}-*").empty?
+  File.binwrite(output, original)
+  File.chmod(original_mode, output)
+  saved_parent = "#{root}.publication-saved"
+  _out, _diagnostic, _parent_race_status = run_recorder(root, output, {
+    "RUBYOPT" => "-r#{fsync_fault}",
+    "ADOPTION_FSYNC_PARENT" => root,
+    "ADOPTION_FAIL_DIRECTORY_SYNC_AT" => "999",
+    "ADOPTION_REPLACE_PARENT" => "1"
+  })
+  failures << "publication parent replacement overwrote newer output" unless
+    File.binread(output) == "newer-external-baseline\n"
+  original_output = File.join(saved_parent, "baseline.json")
+  failures << "publication parent replacement changed bound baseline" unless
+    File.binread(original_output) == original
+  FileUtils.remove_entry(root)
+  File.rename(saved_parent, root)
+  Dir.glob("#{root}/.adoption-private-*").each { |path| FileUtils.remove_entry_secure(path) }
+  publication_artifacts = Dir.glob("#{root}/.adoption-{baseline,backup,recovery}-*")
+  failures << "publication parent replacement left publication artifacts" unless publication_artifacts.empty?
+  publication_artifacts.each { |path| File.unlink(path) }
+  capture_saved_parent = "#{root}.capture-saved"
+  write_executable("#{root}/probes/beszel.sh", <<~SH)
+    #!/bin/sh
+    printf '%s\\n' '#{JSON.generate(evidence("beszel"))}'
+    mv '#{root}' '#{capture_saved_parent}'
+    mkdir -m 700 '#{root}'
+    printf '%s\\n' 'newer-capture-baseline' > '#{output}'
+    chmod 600 '#{output}'
+  SH
+  _out, _diagnostic, capture_parent_status = run_recorder(root, output)
+  failures << "capture parent replacement was accepted" if capture_parent_status.success?
+  failures << "capture parent replacement overwrote newer output" unless
+    File.binread(output) == "newer-capture-baseline\n"
+  failures << "capture parent replacement changed bound baseline" unless
+    File.binread(File.join(capture_saved_parent, "baseline.json")) == original
+  FileUtils.remove_entry(root)
+  File.rename(capture_saved_parent, root)
+  Dir.glob("#{root}/.adoption-private-*").each { |path| FileUtils.remove_entry_secure(path) }
+  Dir.glob("#{root}/.adoption-{baseline,backup,recovery}-*").each { |path| File.unlink(path) }
+  write_executable("#{root}/probes/beszel.sh", <<~SH)
+    #!/bin/sh
+    printf '%s\\n' '#{JSON.generate(evidence("beszel"))}'
+  SH
   File.unlink(output)
   _out, _diagnostic, rejected = run_recorder(root, output, {
     "RUBYOPT" => "-r#{fsync_fault}",

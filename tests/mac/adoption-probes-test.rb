@@ -104,18 +104,55 @@ end
 failures = []
 Dir.mktmpdir("adoption-probes-test-") do |root|
   root = File.realpath(root)
-  mac = File.join(root, "mac")
-  contracts = File.join(root, "contracts")
+  mac = File.join(root, "tests/mac")
+  contracts = File.join(root, "tests/contracts")
   bin = File.join(root, "bin")
   FileUtils.mkdir_p([mac, contracts, bin])
   FileUtils.cp(File.join(__dir__, "adoption-baseline.rb"), mac)
   FileUtils.mkdir_p(File.join(mac, "adoption-probes"))
   FileUtils.cp_r(File.join(PROBES, "tinymediamanager-templates"), File.join(mac, "adoption-probes"))
-  %w[audiobookshelf immich jellyfin komga paperless tinymediamanager].each do |name|
-    executable(File.join(contracts, "#{name}.sh"), "#!/bin/sh\nexit 0\n")
+  contract_arguments = {
+    "audiobookshelf" => "assert-persistence",
+    "immich" => "--platform mac assert-persistence",
+    "jellyfin" => "--platform mac assert-persistence",
+    "komga" => "assert-persistence",
+    "paperless" => "assert-persistence",
+    "tinymediamanager" => "assert-persistence"
+  }
+  contract_environment = {
+    "audiobookshelf" => "[ \"$PLATFORM_AUDIOBOOKSHELF_MEDIA_LIBRARY\" = '#{root}/legacy/audiobookshelf/media' ]",
+    "immich" => "[ \"$PLATFORM_IMMICH_UPLOAD_ROOT\" = '#{root}/legacy/immich/data/upload' ] && " \
+                "[ \"$PLATFORM_IMMICH_SERVER_CONTAINER\" = 'proof-legacy-immich-immich-server-1' ]",
+    "jellyfin" => "[ \"$PLATFORM_JELLYFIN_MEDIA_ROOT\" = '#{root}/legacy/jellyfin/media' ] && " \
+                  "[ \"$PLATFORM_JELLYFIN_CONTAINER\" = 'proof-legacy-jellyfin-jellyfin-1' ]",
+    "komga" => "[ \"$PLATFORM_KOMGA_LIBRARY_PATH\" = '#{root}/legacy/komga/library' ]",
+    "paperless" => "[ \"$PLATFORM_PAPERLESS_CONSUME_ROOT\" = '#{root}/legacy/paperless-ngx/consume' ] && " \
+                   "[ \"$PLATFORM_CONTRACT_REPO_DIR\" = '#{root}/tests/mac/../..' ]",
+    "tinymediamanager" => "[ \"$PLATFORM_TINYMEDIAMANAGER_MOVIES_ROOT\" = " \
+                           "'#{root}/legacy/tinymediamanager/movies' ] && " \
+                           "[ \"$PLATFORM_TINYMEDIAMANAGER_CONTAINER\" = " \
+                           "'proof-legacy-tinymediamanager-tinymediamanager-1' ]"
+  }
+  contract_arguments.each do |name, expected|
+    executable(File.join(contracts, "#{name}.sh"), <<~SH)
+      #!/bin/sh
+      set -eu
+      [ "$*" = '#{expected}' ] || exit 64
+      [ "$PLATFORM_CONTRACT_VAULT_FILE" = '#{root}/vault.yml' ] || exit 65
+      [ "$PLATFORM_CONTRACT_VAULT_PASSWORD_FILE" = '#{root}/vault-password' ] || exit 66
+      #{contract_environment.fetch(name)} || exit 67
+      exit 0
+    SH
   end
   %w[beszel dozzle].each do |name|
-    executable(File.join(mac, "run-#{name}-contract.sh"), "#!/bin/sh\nexit 0\n")
+    executable(File.join(mac, "run-#{name}-contract.sh"), <<~SH)
+      #!/bin/sh
+      set -eu
+      [ "$#" -eq 1 ] && [ "$1" = verify ] || exit 64
+      [ "$PLATFORM_MAC_VAULT_FILE" = '#{root}/vault.yml' ] || exit 65
+      [ "$PLATFORM_MAC_VAULT_PASSWORD_FILE" = '#{root}/vault-password' ] || exit 66
+      exit 0
+    SH
   end
   executable(File.join(bin, "ansible-vault"), <<~YAML)
     #!/bin/sh
@@ -173,6 +210,14 @@ Dir.mktmpdir("adoption-probes-test-") do |root|
     FileUtils.mkdir_p(File.dirname(path))
     File.binwrite(path, "fixture")
   end
+  File.chmod(
+    0o777,
+    File.join(root, "legacy/tinymediamanager/movies/Task 10 Contract Movie (2024)")
+  )
+  File.chmod(
+    0o777,
+    File.join(root, "legacy/tinymediamanager/series/Task 10 Contract Series/Season 01")
+  )
   FileUtils.mkdir_p(File.join(root, "legacy/tinymediamanager/data/templates"))
   dozzle = File.join(root, "legacy/dozzle/data/users.yml")
   FileUtils.mkdir_p(File.dirname(dozzle))

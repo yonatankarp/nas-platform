@@ -10,7 +10,7 @@ require "open3"
 require "optparse"
 require "psych"
 require "securerandom"
-require "tempfile"
+require "tmpdir"
 require "timeout"
 require "uri"
 require "yaml"
@@ -68,6 +68,37 @@ SETTING_FIELDS = {
   "jellyfin" => %w[library_name], "komga" => %w[library_name], "ntfy" => %w[topic],
   "paperless-ngx" => %w[mail_account_name], "tinymediamanager" => %w[api_enabled]
 }.freeze
+PROBE_DEPENDENCIES = %w[
+  generate-secrets.yml
+  services/audiobookshelf/compose.yml services/audiobookshelf/compose.mac.yml
+  services/dozzle/compose.yml services/immich/compose.yml services/immich/compose.mac.yml
+  services/jellyfin/compose.yml services/jellyfin/compose.mac.yml
+  services/komga/compose.yml services/komga/compose.mac.yml
+  services/paperless-ngx/compose.yml services/paperless-ngx/compose.mac.yml
+  services/tinymediamanager/compose.yml services/tinymediamanager/compose.mac.yml
+  services/tinymediamanager/compose.integration.yml
+  roles/audiobookshelf/tasks/main.yml roles/audiobookshelf/tasks/managed_users.yml
+  roles/audiobookshelf/defaults/main.yml
+  roles/dozzle/tasks/main.yml roles/dozzle/defaults/main.yml
+  roles/immich/tasks/main.yml roles/immich/defaults/main.yml
+  roles/jellyfin/tasks/main.yml roles/jellyfin/defaults/main.yml
+  roles/komga/tasks/main.yml roles/komga/defaults/main.yml
+  roles/paperless_ngx/tasks/main.yml roles/paperless_ngx/defaults/main.yml
+  roles/paperless_ngx/templates/env.j2
+  roles/tinymediamanager/tasks/main.yml roles/tinymediamanager/defaults/main.yml
+  tests/integration.sh tests/generate-ephemeral-vault.sh tests/fixtures/paperless-ocr.png.base64
+  tests/contracts/legacy-fixture-paths.sh tests/contracts/audiobookshelf.sh
+  tests/contracts/beszel.sh tests/contracts/dozzle.sh tests/contracts/immich.sh
+  tests/contracts/jellyfin.sh tests/contracts/komga.sh tests/contracts/paperless.sh
+  tests/contracts/tinymediamanager.sh
+  tests/mac/adoption-baseline.rb tests/mac/run-beszel-contract.sh
+  tests/mac/run-dozzle-contract.sh tests/mac/hooks/drift/20-dozzle.sh
+  tests/mac/snapshot-paperless.sh
+  tests/mac/adoption-probes/tinymediamanager-templates/movie/template.conf
+  tests/mac/adoption-probes/tinymediamanager-templates/movie/list.jmte
+  tests/mac/adoption-probes/tinymediamanager-templates/tvshow/template.conf
+  tests/mac/adoption-probes/tinymediamanager-templates/tvshow/list.jmte
+].freeze
 
 class StrictObject < Hash
   def []=(key, value)
@@ -272,6 +303,57 @@ def fixture_digest(path)
   Digest::SHA256.hexdigest(secure_file_bytes(path, max_bytes: 1024 * 1024 * 1024))
 end
 
+TMM_FIXTURE_RELATIVES = [
+  "Task 10 Contract Movie (2024)/Task 10 Contract Movie (2024).mp4",
+  "Task 10 Contract Series/Season 01/Task 10 Contract Series - S01E01.mp4"
+].freeze
+
+def tmm_fixture_digest(media_root, relative)
+  raise "tinyMediaManager fixture path is invalid" unless TMM_FIXTURE_RELATIVES.include?(relative)
+
+  opened = []
+  bindings = []
+  secure_file_handle(media_root, trusted_root: File.dirname(File.expand_path(media_root))) do |root|
+    root_stat = root.stat
+    raise "tinyMediaManager media root is unsafe" unless
+      safe_capture_directory?(root_stat, trusted: true)
+    current = root
+    components = relative.split("/")
+    components[0...-1].each_with_index do |component, index|
+      child = open_component(current, component)
+      stat = child.stat
+      final_parent = index == components.length - 2
+      writable_fixture_parent = final_parent && stat.uid == Process.uid &&
+                                (stat.mode & 0o7777) == 0o0777
+      raise "tinyMediaManager fixture parent is unsafe" unless
+        safe_capture_directory?(stat, trusted: true) || writable_fixture_parent
+      bindings << [current, component, file_signature_from_stat(stat)]
+      opened << child
+      current = child
+    end
+    file = open_component(current, components.fetch(-1))
+    stat = file.stat
+    raise "tinyMediaManager fixture is unsafe" unless stat.file? && stat.uid == Process.uid &&
+                                                       (stat.mode & 0o022).zero? &&
+                                                       stat.size <= 1024 * 1024 * 1024
+    bindings << [current, components.fetch(-1), file_signature_from_stat(stat)]
+    opened << file
+    digest = Digest::SHA256.new
+    digest << file.read(64 * 1024) until file.eof?
+    raise "tinyMediaManager fixture changed" unless file_signature_from_stat(file.stat) ==
+                                                     file_signature_from_stat(stat)
+    digest.hexdigest
+  ensure
+    bindings.each do |parent, component, signature|
+      reopened = open_component(parent, component)
+      raise "tinyMediaManager fixture changed" unless file_signature_from_stat(reopened.stat) == signature
+    ensure
+      reopened&.close
+    end
+    opened.reverse_each { |entry| entry.close unless entry.closed? }
+  end
+end
+
 def file_signature(path)
   secure_file_handle(path, trusted_root: File.dirname(File.expand_path(path))) do |_file, bindings|
     bindings.map { |binding| binding.fetch(2) }
@@ -282,16 +364,45 @@ module AdoptionFileSystem
   extend Fiddle::Importer
   dlload Fiddle.dlopen(nil)
   extern "int openat(int, const char *, int, int)"
+  extern "int renameat(int, const char *, int, const char *)"
+  extern "int linkat(int, const char *, int, const char *, int)"
+  extern "int unlinkat(int, const char *, int)"
+end
+
+def safe_basename!(name)
+  unsafe = name.empty? || %w[. ..].include?(name) || name.include?(File::SEPARATOR) || name.include?("\0")
+  raise "capture input is unsafe" if unsafe
+
+  name
+end
+
+def open_at(parent, name, flags, mode = 0)
+  safe_basename!(name)
+  descriptor = AdoptionFileSystem.openat(parent.fileno, name, flags, mode)
+  raise SystemCallError.new("openat", Fiddle.last_error) if descriptor.negative?
+
+  file = File.for_fd(descriptor, autoclose: true)
+  file.close_on_exec = true
+  file.chmod(mode) if (flags & File::CREAT).positive?
+  file
 end
 
 def open_component(parent, name)
-  unsafe = name.empty? || %w[. ..].include?(name) || name.include?(File::SEPARATOR) || name.include?("\0")
-  raise "capture input is unsafe" if unsafe
-  flags = File::RDONLY | File::NOFOLLOW
-  descriptor = AdoptionFileSystem.openat(parent.fileno, name, flags, 0)
-  raise SystemCallError.new("openat", Fiddle.last_error) if descriptor.negative?
+  open_at(parent, name, File::RDONLY | File::NOFOLLOW)
+end
 
-  IO.for_fd(descriptor, autoclose: true)
+def native_at!(operation, parent, source, destination = nil)
+  safe_basename!(source)
+  safe_basename!(destination) if destination
+  result = case operation
+           when :rename then AdoptionFileSystem.renameat(parent.fileno, source, parent.fileno, destination)
+           when :link then AdoptionFileSystem.linkat(parent.fileno, source, parent.fileno, destination, 0)
+           when :unlink then AdoptionFileSystem.unlinkat(parent.fileno, source, 0)
+           else raise "unknown directory operation"
+           end
+  raise SystemCallError.new("#{operation}at", Fiddle.last_error) if result.negative?
+
+  true
 end
 
 def component_binding(stat, exact:)
@@ -383,6 +494,39 @@ def snapshot_input(source, directory, name, executable: false, private: false)
   [destination, Digest::SHA256.hexdigest(bytes)]
 end
 
+def snapshot_probe_dependencies(source_root, private_root)
+  destination_root = File.join(private_root, "dependencies")
+  Dir.mkdir(destination_root, 0o700)
+  source_states = {}
+  snapshot_digests = {}
+  PROBE_DEPENDENCIES.each do |relative|
+    source = File.join(source_root, relative)
+    destination_parent = File.dirname(File.join(destination_root, relative))
+    current = destination_root
+    destination_parent.delete_prefix("#{destination_root}/").split("/").each do |component|
+      next if component.empty?
+      current = File.join(current, component)
+      Dir.mkdir(current, 0o700) unless File.exist?(current)
+      stat = File.lstat(current)
+      raise "dependency snapshot directory is unsafe" unless stat.directory? && !stat.symlink? &&
+                                                            stat.uid == Process.uid &&
+                                                            (stat.mode & 0o077).zero?
+    end
+    executable = (relative.end_with?(".sh") && relative != "tests/contracts/legacy-fixture-paths.sh") ||
+                 relative == "tests/mac/adoption-baseline.rb"
+    source_signature = file_signature(source)
+    snapshot, digest = snapshot_input(
+      source, destination_parent, File.basename(relative), executable: executable
+    )
+    source_states[source] = [source_signature, digest]
+    snapshot_digests[snapshot] = digest
+  end
+  snapshot_states = snapshot_digests.to_h do |snapshot, digest|
+    [snapshot, [file_signature(snapshot), digest]]
+  end
+  [destination_root, source_states, snapshot_states]
+end
+
 def snapshot_unchanged?(path, signature, digest)
   file_signature(path) == signature &&
     Digest::SHA256.hexdigest(secure_file_bytes(path, max_bytes: 16 * 1024 * 1024)) == digest
@@ -392,6 +536,10 @@ def snapshots_unchanged?(states)
   states.all? do |path, (signature, digest)|
     snapshot_unchanged?(path, signature, digest)
   end
+end
+
+def snapshot_signatures_unchanged?(states)
+  states.all? { |path, (signature, _digest)| file_signature(path) == signature }
 end
 
 def with_private_input_snapshots(paths)
@@ -446,117 +594,144 @@ def pinned_images(bytes, canaries)
   images.sort
 end
 
-def publication_file_state(path, expected_mode:)
-  path_stat = File.lstat(path)
-  flags = File::RDONLY
-  flags |= File::NOFOLLOW if defined?(File::NOFOLLOW)
-  File.open(path, flags) do |file|
-    stat = file.stat
-    raise "publication path is unsafe" unless stat.file? && !path_stat.symlink? &&
-                                                  stat.uid == Process.uid &&
-                                                  (stat.mode & 0o777) == expected_mode &&
-                                                  [stat.dev, stat.ino] == [path_stat.dev, path_stat.ino]
-    digest = Digest::SHA256.new
-    digest << file.read(64 * 1024) until file.eof?
-    after = file.stat
-    final = File.lstat(path)
-    raise "publication path changed" unless file_signature_from_stat(after) == file_signature_from_stat(stat) &&
-                                            file_signature_from_stat(final) == file_signature_from_stat(stat)
-    [file_signature_from_stat(stat), digest.hexdigest]
+def open_bound_directory(path)
+  secure_file_handle(path, trusted_root: File.dirname(File.expand_path(path))) do |directory|
+    stat = directory.stat
+    raise "publication directory is unsafe" unless stat.directory? && stat.uid == Process.uid &&
+                                                   (stat.mode & 0o777) == 0o700
+    directory.dup
   end
 end
 
-def sync_publication_directory(parent)
-  before = File.lstat(parent)
-  flags = File::RDONLY | File::NOFOLLOW
-  File.open(parent, flags) do |directory|
-    opened = directory.stat
-    raise "publication directory is unsafe" unless opened.directory? && opened.uid == Process.uid &&
-                                                   (opened.mode & 0o777) == 0o700 &&
-                                                   file_signature_from_stat(opened) == file_signature_from_stat(before)
-    directory.fsync
-    after = directory.stat
-    final = File.lstat(parent)
-    raise "publication directory changed" unless file_signature_from_stat(after) == file_signature_from_stat(opened) &&
-                                                 file_signature_from_stat(final) == file_signature_from_stat(opened)
-  end
-end
-
-def recovery_copy(backup, output, parent)
-  recovery = File.join(parent, ".adoption-recovery-#{SecureRandom.hex(16)}")
-  recovery_complete = false
-  File.open(recovery, File::WRONLY | File::CREAT | File::EXCL, 0o600) do |file|
-    backup.rewind
-    IO.copy_stream(backup, file)
-    file.flush
-    file.fsync
-    file.chmod(0o600)
-  end
-  recovery_complete = true
-  File.rename(recovery, output)
-  sync_publication_directory(parent)
+def publication_file_state_at(parent, name, expected_mode:)
+  file = open_at(parent, name, File::RDONLY | File::NOFOLLOW)
+  stat = file.stat
+  raise "publication path is unsafe" unless stat.file? && stat.uid == Process.uid &&
+                                                (stat.mode & 0o777) == expected_mode
+  digest = Digest::SHA256.new
+  digest << file.read(64 * 1024) until file.eof?
+  after = file.stat
+  reopened = open_at(parent, name, File::RDONLY | File::NOFOLLOW)
+  raise "publication path changed" unless file_signature_from_stat(after) == file_signature_from_stat(stat) &&
+                                          file_signature_from_stat(reopened.stat) == file_signature_from_stat(stat)
+  [file_signature_from_stat(stat), digest.hexdigest]
 ensure
-  if recovery && !recovery_complete && File.exist?(recovery) && !File.symlink?(recovery)
-    File.unlink(recovery)
+  reopened&.close
+  file&.close
+end
+
+def publication_state_or_nil(parent, name)
+  publication_file_state_at(parent, name, expected_mode: 0o600)
+rescue Errno::ENOENT
+  nil
+end
+
+def sync_bound_directory(parent)
+  before = parent.stat
+  raise "publication directory is unsafe" unless before.directory? && before.uid == Process.uid &&
+                                                 (before.mode & 0o777) == 0o700
+  parent.fsync
+  after = parent.stat
+  raise "publication directory changed" unless [after.dev, after.ino, after.mode, after.uid] ==
+                                                 [before.dev, before.ino, before.mode, before.uid]
+end
+
+def create_publication_file(parent, prefix, suffix = "")
+  32.times do
+    name = "#{prefix}#{SecureRandom.hex(16)}#{suffix}"
+    begin
+      file = open_at(
+        parent, name, File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW, 0o600
+      )
+      return [name, file]
+    rescue Errno::EEXIST
+      next
+    end
+  end
+  raise "publication temporary name is unavailable"
+end
+
+def recovery_copy_at(backup, output_name, parent)
+  recovery_name, recovery = create_publication_file(parent, ".adoption-recovery-")
+  recovery_complete = false
+  backup.rewind
+  IO.copy_stream(backup, recovery)
+  recovery.flush
+  recovery.fsync
+  recovery.chmod(0o600)
+  recovery.close
+  recovery_complete = true
+  native_at!(:rename, parent, recovery_name, output_name)
+  sync_bound_directory(parent)
+ensure
+  recovery&.close unless recovery&.closed?
+  if recovery_name && !recovery_complete
+    begin
+      native_at!(:unlink, parent, recovery_name)
+    rescue Errno::ENOENT
+      nil
+    end
   end
 end
 
-def rollback_publication(output, parent, initial, backup_path, backup_file)
+def rollback_publication_at(output_name, parent, initial, backup_name, backup_file)
   if initial
-    if backup_path && File.exist?(backup_path) && !File.symlink?(backup_path)
-      File.rename(backup_path, output)
-      sync_publication_directory(parent)
+    if backup_name && publication_state_or_nil(parent, backup_name)
+      native_at!(:rename, parent, backup_name, output_name)
+      sync_bound_directory(parent)
     elsif backup_file
-      recovery_copy(backup_file, output, parent)
+      recovery_copy_at(backup_file, output_name, parent)
     else
       raise "publication rollback is unavailable"
     end
   else
-    File.unlink(output) if File.exist?(output) && !File.symlink?(output)
-    sync_publication_directory(parent)
+    native_at!(:unlink, parent, output_name) if publication_state_or_nil(parent, output_name)
+    sync_bound_directory(parent)
   end
 end
 
-def publish_baseline(staging_path, output, parent, initial)
-  backup_path = nil
+def publish_baseline_at(staging_name, output_name, parent, initial)
+  backup_name = nil
   backup_file = nil
   backup_owned = false
   backup_valid = false
   backup_cleanup_safe = false
   begin
     if initial
-      backup_path = File.join(parent, ".adoption-backup-#{SecureRandom.hex(16)}")
-      File.link(output, backup_path)
+      backup_name = ".adoption-backup-#{SecureRandom.hex(16)}"
+      native_at!(:link, parent, output_name, backup_name)
       backup_owned = true
-      backup_state = publication_file_state(backup_path, expected_mode: 0o600)
-      output_state = publication_file_state(output, expected_mode: 0o600)
+      backup_state = publication_file_state_at(parent, backup_name, expected_mode: 0o600)
+      output_state = publication_file_state_at(parent, output_name, expected_mode: 0o600)
       raise "baseline backup changed" unless backup_state == output_state && backup_state.last == initial.last
       backup_valid = true
-      backup_file = File.open(backup_path, File::RDONLY | File::NOFOLLOW)
-      sync_publication_directory(parent)
+      backup_file = open_at(parent, backup_name, File::RDONLY | File::NOFOLLOW)
+      sync_bound_directory(parent)
     end
-    File.rename(staging_path, output)
-    sync_publication_directory(parent)
-    if backup_path
-      File.unlink(backup_path)
-      sync_publication_directory(parent)
+    native_at!(:rename, parent, staging_name, output_name)
+    sync_bound_directory(parent)
+    if backup_name
+      native_at!(:unlink, parent, backup_name)
+      sync_bound_directory(parent)
     end
     backup_cleanup_safe = true
   rescue StandardError => publication_error
     begin
-      rollback_publication(output, parent, initial, backup_valid ? backup_path : nil, backup_file)
+      rollback_publication_at(
+        output_name, parent, initial, backup_valid ? backup_name : nil, backup_file
+      )
       backup_cleanup_safe = true
     rescue StandardError
-      # Rollback restores the namespace before syncing it. If that second sync fails,
-      # the old bytes are visible but crash durability is unknowable. An earlier
-      # rollback failure retains any complete recovery entry instead of deleting it.
+      # Rollback changes the bound namespace before syncing it. If that second
+      # sync fails, old bytes are visible but crash durability is unknowable.
+      # Earlier failures retain a complete recovery entry when one was created.
     end
     raise publication_error
   ensure
     backup_file&.close
     safe_to_remove = backup_owned && (backup_cleanup_safe || !backup_valid)
-    if safe_to_remove && File.exist?(backup_path) && !File.symlink?(backup_path)
-      File.unlink(backup_path)
+    if safe_to_remove && publication_state_or_nil(parent, backup_name)
+      native_at!(:unlink, parent, backup_name)
     end
   end
 end
@@ -1082,8 +1257,8 @@ def emit_probe(service)
                  "fixture_sha256" => { "document" => document_checksum },
                  "managed_settings" => { "mail_account_name" => managed_account.fetch("name") } }
              when "tinymediamanager"
-               movie = File.join(sandbox, "legacy/tinymediamanager/movies/Task 10 Contract Movie (2024)/Task 10 Contract Movie (2024).mp4")
-               episode = File.join(sandbox, "legacy/tinymediamanager/series/Task 10 Contract Series/Season 01/Task 10 Contract Series - S01E01.mp4")
+               movie_root = File.join(sandbox, "legacy/tinymediamanager/movies")
+               series_root = File.join(sandbox, "legacy/tinymediamanager/series")
                data_root = File.join(sandbox, "legacy/tinymediamanager/data")
                template_root = File.join(__dir__, "adoption-probes/tinymediamanager-templates")
                base = "http://127.0.0.1:#{Integer(ENV.fetch('PLATFORM_TINYMEDIAMANAGER_API_PORT'), 10)}"
@@ -1095,7 +1270,15 @@ def emit_probe(service)
                raise "tinyMediaManager fixture is not indexed" unless movie_count.positive? && show_count.positive?
                { "identities" => [probe_identity("shared-login", "administrator")],
                  "record_counts" => { "movies" => movie_count, "shows" => show_count },
-                 "fixture_sha256" => { "episode" => fixture_digest(episode), "movie" => fixture_digest(movie) },
+                 "fixture_sha256" => {
+                   "episode" => tmm_fixture_digest(
+                     series_root,
+                     "Task 10 Contract Series/Season 01/Task 10 Contract Series - S01E01.mp4"
+                   ),
+                   "movie" => tmm_fixture_digest(
+                     movie_root, "Task 10 Contract Movie (2024)/Task 10 Contract Movie (2024).mp4"
+                   )
+                 },
                  "managed_settings" => { "api_enabled" => true } }
              end
   reject_forbidden_keys!(evidence)
@@ -1146,24 +1329,32 @@ begin
   raise "baseline path is unsafe" unless File.realpath(parent) == parent
   basename = File.basename(output)
   raise "baseline path is unsafe" unless basename.match?(/\A[A-Za-z0-9][A-Za-z0-9_.-]*\z/)
-  lock_path = File.join(parent, ".#{basename}.lock")
-  lock_flags = File::RDWR | File::CREAT
-  lock_flags |= File::NOFOLLOW if defined?(File::NOFOLLOW)
-  lock_file = File.open(lock_path, lock_flags, 0o600)
+  parent_directory = open_bound_directory(parent)
+  lock_name = ".#{basename}.lock"
+  lock_file = begin
+    open_at(
+      parent_directory, lock_name,
+      File::RDWR | File::CREAT | File::EXCL | File::NOFOLLOW, 0o600
+    )
+  rescue Errno::EEXIST
+    open_at(parent_directory, lock_name, File::RDWR | File::NOFOLLOW)
+  end
   lock_stat = lock_file.stat
-  lock_path_stat = File.lstat(lock_path)
+  lock_check = open_at(parent_directory, lock_name, File::RDWR | File::NOFOLLOW)
   raise "baseline lock is unsafe" unless lock_stat.file? && lock_stat.uid == Process.uid &&
                                           (lock_stat.mode & 0o777) == 0o600 &&
-                                          [lock_stat.dev, lock_stat.ino] == [lock_path_stat.dev, lock_path_stat.ino] &&
-                                          !lock_path_stat.symlink?
+                                          [lock_stat.dev, lock_stat.ino] ==
+                                            [lock_check.stat.dev, lock_check.stat.ino]
+  lock_check.close
   raise "baseline lock failed" unless lock_file.flock(File::LOCK_EX)
-  initial = begin
-    publication_file_state(output, expected_mode: 0o600)
-  rescue Errno::ENOENT
-    nil
-  end
+  initial = publication_state_or_nil(parent_directory, basename)
   private_root = Dir.mktmpdir(".adoption-private-", parent)
   File.chmod(0o700, private_root)
+  dependency_root, dependency_source_states, dependency_snapshot_states = snapshot_probe_dependencies(
+    File.expand_path("../..", __dir__), private_root
+  )
+  raise "probe dependency changed" unless snapshots_unchanged?(dependency_source_states) &&
+                                          snapshots_unchanged?(dependency_snapshot_states)
   vault_path = ENV["PLATFORM_MAC_VAULT_FILE"]
   vault_password_path = ENV["PLATFORM_MAC_VAULT_PASSWORD_FILE"]
   raise "vault inputs differ" unless [vault_path.nil?, vault_password_path.nil?].uniq.length == 1
@@ -1253,6 +1444,8 @@ begin
       reject_canaries!(image_stdout, canaries)
       reject_canaries!(image_stderr, canaries)
       raise "capture input changed" unless snapshots_unchanged?(input_states)
+      raise "probe dependency changed" unless snapshot_signatures_unchanged?(dependency_source_states) &&
+                                              snapshot_signatures_unchanged?(dependency_snapshot_states)
       raise "legacy compose file differs from pinned commit" unless
         secure_file_bytes(base, max_bytes: 16 * 1024 * 1024) == committed_base
       images = pinned_images(image_stdout, canaries)
@@ -1260,13 +1453,15 @@ begin
       legacy_images[service] = images
 
       probe_environment = {
-        "PLATFORM_ADOPTION_SCRIPT_DIR" => File.expand_path(__dir__)
+        "PLATFORM_ADOPTION_SCRIPT_DIR" => File.join(dependency_root, "tests/mac")
       }.merge(probe_vault_environment)
       probe_environment["PLATFORM_ADOPTION_NTFY_ENV_FILE"] = environment if service == "ntfy"
       probe_stdout, probe_stderr = capture(probe_environment, probe)
       reject_canaries!(probe_stdout, canaries)
       reject_canaries!(probe_stderr, canaries)
       raise "capture input changed" unless snapshots_unchanged?(input_states)
+      raise "probe dependency changed" unless snapshot_signatures_unchanged?(dependency_source_states) &&
+                                              snapshot_signatures_unchanged?(dependency_snapshot_states)
       evidence = parse_strict_json(probe_stdout)
       reject_forbidden_keys!(evidence)
       services[service] = validate_evidence!(service, evidence)
@@ -1280,36 +1475,43 @@ begin
   encoded = JSON.pretty_generate(document) << "\n"
   reject_canaries!(encoded, canaries)
   raise "protected capture input changed" unless snapshots_unchanged?(protected_input_states)
+  raise "probe dependency changed" unless snapshots_unchanged?(dependency_source_states) &&
+                                          snapshots_unchanged?(dependency_snapshot_states)
   raise "legacy checkout changed during capture" unless checkout_snapshot(
     legacy_root, repository, options[:commit], service_entries, canaries
   ) == pinned_checkout
 
-  Tempfile.create([".adoption-baseline-", ".json"], parent, mode: File::RDWR, perm: 0o600) do |staging|
+  staging_name, staging = create_publication_file(
+    parent_directory, ".adoption-baseline-", ".json"
+  )
+  begin
     staging.write(encoded)
     staging.flush
     staging.fsync
-    staged = publication_file_state(staging.path, expected_mode: 0o600)
+    staged = publication_file_state_at(parent_directory, staging_name, expected_mode: 0o600)
     raise "baseline staging changed" unless staged.last == Digest::SHA256.hexdigest(encoded)
-    current = begin
-      publication_file_state(output, expected_mode: 0o600)
-    rescue Errno::ENOENT
-      nil
-    end
+    current = publication_state_or_nil(parent_directory, basename)
     raise "baseline path changed" unless current == initial
     raise "protected capture input changed" unless snapshots_unchanged?(protected_input_states)
+    raise "probe dependency changed" unless snapshots_unchanged?(dependency_source_states) &&
+                                            snapshots_unchanged?(dependency_snapshot_states)
     raise "legacy checkout changed before publication" unless checkout_snapshot(
       legacy_root, repository, options[:commit], service_entries, canaries
     ) == pinned_checkout
-    current = begin
-      publication_file_state(output, expected_mode: 0o600)
-    rescue Errno::ENOENT
-      nil
-    end
+    current = publication_state_or_nil(parent_directory, basename)
     raise "baseline path changed" unless current == initial
     raise "protected capture input changed" unless snapshots_unchanged?(protected_input_states)
+    raise "probe dependency changed" unless snapshots_unchanged?(dependency_source_states) &&
+                                            snapshots_unchanged?(dependency_snapshot_states)
     raise "baseline staging changed" unless
-      publication_file_state(staging.path, expected_mode: 0o600) == staged
-    publish_baseline(staging.path, output, parent, initial)
+      publication_file_state_at(parent_directory, staging_name, expected_mode: 0o600) == staged
+    staging.close
+    publish_baseline_at(staging_name, basename, parent_directory, initial)
+  ensure
+    staging&.close unless staging&.closed?
+    if staging_name && publication_state_or_nil(parent_directory, staging_name)
+      native_at!(:unlink, parent_directory, staging_name)
+    end
   end
   puts "Legacy adoption baseline: captured"
 rescue StandardError
@@ -1317,4 +1519,5 @@ rescue StandardError
 ensure
   destroy_private_directory(private_root)
   lock_file&.close
+  parent_directory&.close
 end
