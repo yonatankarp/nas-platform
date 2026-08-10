@@ -34,6 +34,8 @@ ruby tests/dozzle_quality_test.rb
 tests/integration_lock_test.sh
 tests/mac/config-isolation.sh
 tests/mac/run-phase-status-test.sh
+tests/mac/adoption-self-test.sh
+tests/mac/adoption.sh --self-test
 tests/mac/dozzle-drift-hook-test.sh
 tests/mac/audiobookshelf-drift-hook-test.sh
 tests/contracts/audiobookshelf-audio-test.sh
