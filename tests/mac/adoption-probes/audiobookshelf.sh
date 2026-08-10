@@ -2,7 +2,7 @@
 set -eu
 set +x
 umask 077
-dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+dir=${PLATFORM_ADOPTION_SCRIPT_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)}
 sandbox=${PLATFORM_MAC_SANDBOX:?}
 export PLATFORM_CONTRACT_VAULT_FILE=${PLATFORM_MAC_VAULT_FILE:?}
 export PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=${PLATFORM_MAC_VAULT_PASSWORD_FILE:?}

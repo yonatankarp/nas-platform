@@ -12,6 +12,7 @@ FULL_STEPS = [
   ["Check policy properties", "tests/validate-policy.sh"],
   ["Check integration sandbox cleanup", "tests/integration_cleanup_test.sh"],
   ["Check legacy seed security", "tests/mac/legacy-seed-test.sh\ntests/mac/legacy-fixture-path-test.sh\nruby tests/mac/legacy-secure-copy-test.rb"],
+  ["Check legacy adoption baseline capture", "ruby tests/mac/adoption-baseline-test.rb\nruby tests/mac/adoption-probes-test.rb"],
   ["Install Ansible tooling", "ansible-core==2.21.2"],
   ["Check legacy role Compose compatibility", "tests/mac/legacy-role-compose-test.sh"],
   ["Check legacy seed playbook syntax", "ansible-playbook -i inventory/mac.yml tests/mac/legacy-role-seed.yml --syntax-check"],

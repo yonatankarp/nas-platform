@@ -62,6 +62,12 @@ jobs:
           tests/mac/legacy-fixture-path-test.sh
           ruby tests/mac/legacy-secure-copy-test.rb
 
+      - name: Check legacy adoption baseline capture
+        if: steps.scope.outputs.docs_only != 'true'
+        run: |
+          ruby tests/mac/adoption-baseline-test.rb
+          ruby tests/mac/adoption-probes-test.rb
+
       - name: Install Ansible tooling
         if: steps.scope.outputs.docs_only != 'true'
         run: |
