@@ -127,7 +127,9 @@ module AdoptionInputSwapFixture
 
   def swap(path, stage)
     return unless ENV["PLATFORM_SWAP_STAGE"] == stage.to_s
-    return unless File.expand_path(path.to_s) == File.expand_path(ENV.fetch("PLATFORM_SWAP_TARGET"))
+    target = ENV.fetch("PLATFORM_SWAP_TARGET")
+    return unless File.expand_path(path.to_s) == File.expand_path(target) ||
+                  File.basename(path.to_s) == File.basename(target)
     return if @swapped
 
     @swapped = true
@@ -140,9 +142,23 @@ class << Open3
   alias adoption_input_original_popen3 popen3
 
   def popen3(*arguments, **keywords, &block)
-    command_argument = arguments.find { |argument| argument.is_a?(String) || argument.is_a?(Array) }
-    command = command_argument.is_a?(Array) ? command_argument.first : command_argument
-    AdoptionInputSwapFixture.swap(command, :spawn) if command
+    if ENV["PLATFORM_SWAP_STAGE"] == "parent_spawn"
+      target = ENV.fetch("PLATFORM_SWAP_PARENT_TARGET")
+      holding = ENV.fetch("PLATFORM_SWAP_PARENT_HOLDING")
+      replacement = ENV.fetch("PLATFORM_SWAP_PARENT_REPLACEMENT")
+      File.rename(target, holding)
+      File.rename(replacement, target)
+      begin
+        return adoption_input_original_popen3(*arguments, **keywords, &block)
+      ensure
+        File.rename(target, replacement)
+        File.rename(holding, target)
+      end
+    end
+
+    if ENV["PLATFORM_SWAP_STAGE"] == "spawn"
+      AdoptionInputSwapFixture.swap(ENV.fetch("PLATFORM_SWAP_TARGET"), :spawn)
+    end
     adoption_input_original_popen3(*arguments, **keywords, &block)
   end
 end
@@ -233,6 +249,42 @@ expect_failure 'parity provider during-exec replacement' \
 if grep -F during-exec-output "$temporary_parent/output" >/dev/null; then
   fail 'mutated parity provider leaked stdout'
 fi
+
+transient_root=$temporary_parent/transient-provider
+transient_parent=$transient_root/current
+transient_holding=$transient_root/held
+transient_replacement=$transient_root/replacement
+mkdir -p "$transient_parent" "$transient_replacement"
+printf '%s\n' '#!/bin/sh' '"$(dirname -- "$0")/helper"' > "$transient_parent/provider"
+printf '%s\n' '#!/bin/sh' 'printf "%s\\n" held-directory-output' > "$transient_parent/helper"
+printf '%s\n' '#!/bin/sh' '"$(dirname -- "$0")/helper"' > "$transient_replacement/provider"
+printf '%s\n' '#!/bin/sh' 'printf "%s\\n" transient-replacement-secret' > "$transient_replacement/helper"
+chmod 0700 "$transient_parent/provider" "$transient_parent/helper" \
+  "$transient_replacement/provider" "$transient_replacement/helper"
+transient_sandbox=$temporary_parent/nas-platform-mac.FdA123
+mkdir -m 0700 "$transient_sandbox"
+printf 'schema=1\nproject=%s\n' nas-platform-mac-fda123 > "$transient_sandbox/.nas-platform-mac-owned"
+chmod 0600 "$transient_sandbox/.nas-platform-mac-owned"
+transient_output=$temporary_parent/transient-output
+RUBYOPT="-r$swap_fixture" PLATFORM_SWAP_STAGE=parent_spawn \
+  PLATFORM_SWAP_PARENT_TARGET="$transient_parent" \
+  PLATFORM_SWAP_PARENT_HOLDING="$transient_holding" \
+  PLATFORM_SWAP_PARENT_REPLACEMENT="$transient_replacement" \
+  PLATFORM_MAC_TMPDIR="$temporary_parent" "$runner" --lane adoption \
+    --vault-file "$vault_file" --vault-password-file "$password_file" \
+    --parity-vault-file "$parity_vault_file" \
+    --parity-vault-password-file "$transient_parent/provider" \
+    --phase report --sandbox "$transient_sandbox" > "$transient_output" 2>&1 ||
+  fail 'transient provider parent swap did not preserve held-directory execution'
+printf '%s\n' held-directory-output > "$temporary_parent/transient-expected"
+cmp -s "$temporary_parent/transient-expected" \
+  "$transient_sandbox/protected-inputs/parity-password" ||
+  fail 'transient parent swap executed the replacement provider'
+if grep -F transient-replacement-secret "$transient_output" >/dev/null; then
+  fail 'transient replacement provider leaked output'
+fi
+[ -d "$transient_parent" ] && [ -d "$transient_replacement" ] && [ ! -e "$transient_holding" ] ||
+  fail 'transient parent swap fixture did not restore the original pathname'
 
 nonzero_provider=$temporary_parent/provider-nonzero
 printf '%s\n' '#!/bin/sh' 'printf "%s\\n" provider-nonzero-secret' \
