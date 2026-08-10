@@ -4,6 +4,7 @@
 require "fileutils"
 require "json"
 require "open3"
+require "rbconfig"
 require "tmpdir"
 
 ROOT = File.expand_path("../..", __dir__)
@@ -84,10 +85,34 @@ adoption_source = File.read(File.join(__dir__, "adoption.sh"))
 failures << "adoption coordinator omits capture-baseline" unless adoption_source.include?("preflight|render|legacy-deploy|legacy-seed|capture-baseline)")
 failures << "adoption coordinator does not invoke recorder" unless adoption_source.include?('"$script_dir/adoption-baseline.rb"')
 failures << "adoption coordinator publishes outside the sandbox" unless adoption_source.include?('"$sandbox/baseline.json"')
+recorder_prefix = File.read(RECORDER).split(/^def emit_probe\b/, 2).first
+ntfy_collision_contract = recorder_prefix + <<~'RUBY'
+  input = <<~LIST
+    user * (role: anonymous, tier: none)
+    - no access to any (other) topics (server config)
+    user Reader (role: user, tier: none)
+    - no topic-specific permissions
+    user reader (role: user, tier: none)
+    - no topic-specific permissions
+  LIST
+  begin
+    ntfy_live_users(input)
+  rescue StandardError
+    exit 0
+  end
+  exit 1
+RUBY
+_parser_output, _parser_diagnostic, parser_status = Open3.capture3(
+  RbConfig.ruby, "-e", ntfy_collision_contract
+)
+failures << "ntfy parser collapsed mixed-case identities" unless parser_status.success?
 Dir.mktmpdir("adoption-baseline-test-") do |root|
   root = File.realpath(root)
   FileUtils.mkdir_p(["#{root}/bin", "#{root}/legacy", "#{root}/committed", "#{root}/overrides", "#{root}/env", "#{root}/probes"])
-  manifest = { "legacy_source" => { "commit" => COMMIT }, "services" => SERVICES.map { |name| { "name" => name, "legacy_path" => "#{name}.yml" } } }
+  manifest = {
+    "legacy_source" => { "repository" => "example/legacy", "commit" => COMMIT },
+    "services" => SERVICES.map { |name| { "name" => name, "legacy_path" => "#{name}.yml" } }
+  }
   File.write("#{root}/manifest.json", JSON.generate(manifest))
   SERVICES.each do |service|
     File.write("#{root}/legacy/#{service}.yml", "services: {}\n")
@@ -117,9 +142,31 @@ Dir.mktmpdir("adoption-baseline-test-") do |root|
     root=$2
     shift 2
     case "$1:$2" in
+      remote:get-url)
+        parent=${root%/legacy}
+        count=0
+        [ ! -f "$parent/git-origin-count" ] || count=$(cat "$parent/git-origin-count")
+        count=$((count + 1))
+        printf '%s\n' "$count" > "$parent/git-origin-count"
+        if [ "$count" -ge 3 ] && [ -f "$parent/race-output-final" ]; then
+          printf '%s\n' 'external-baseline' > "$parent/baseline.json"
+        fi
+        if [ "$count" -ge 3 ] && [ -f "$parent/race-staging-final" ]; then
+          for staging in "$parent"/.adoption-baseline-*.json; do
+            [ ! -f "$staging" ] || printf '%s\n' 'corrupted-staging' > "$staging"
+          done
+        fi
+        if [ -f "$parent/git-origin" ]; then cat "$parent/git-origin"; else printf '%s\n' 'https://github.com/example/legacy.git'; fi
+        ;;
       rev-parse:--show-toplevel) printf '%s\n' "$root" ;;
-      rev-parse:HEAD) printf '%s\n' '400f03f276ae1bb69f5460c175b9fb923d620f1a' ;;
-      status:--porcelain=v1) : ;;
+      rev-parse:HEAD)
+        parent=${root%/legacy}
+        if [ -f "$parent/git-head" ]; then cat "$parent/git-head"; else printf '%s\n' '400f03f276ae1bb69f5460c175b9fb923d620f1a'; fi
+        ;;
+      status:--porcelain=v1)
+        parent=${root%/legacy}
+        [ ! -f "$parent/git-dirty" ] || printf '%s\n' ' M beszel.yml'
+        ;;
       cat-file:blob)
         relative=${3#*:}
         parent=${root%/legacy}
@@ -155,6 +202,102 @@ Dir.mktmpdir("adoption-baseline-test-") do |root|
 
   original = File.binread(output)
   original_mode = File.stat(output).mode & 0o777
+  File.unlink("#{root}/git-origin-count") if File.exist?("#{root}/git-origin-count")
+  race_evidence = evidence("beszel").merge(
+    "record_counts" => { "alerts" => 2, "systems" => 1, "users" => 1 }
+  )
+  race_mutations = {
+    "origin swap" => "printf '%s\\n' 'https://github.com/example/other.git' > '#{root}/git-origin'",
+    "HEAD swap" => "printf '%s\\n' '#{'f' * 40}' > '#{root}/git-head'",
+    "dirty checkout" => ": > '#{root}/git-dirty'",
+    "pinned blob replacement" => "printf '%s\\n' 'services: {changed: {}}' > '#{root}/committed/beszel.yml'",
+    "tracked source replacement" => "printf '%s\\n' 'services: {changed: {}}' > '#{root}/legacy/beszel.yml'"
+  }
+  race_mutations.each do |label, mutation|
+    File.unlink("#{root}/git-origin-count") if File.exist?("#{root}/git-origin-count")
+    write_executable("#{root}/probes/beszel.sh", <<~SH)
+      #!/bin/sh
+      printf '%s\\n' '#{JSON.generate(race_evidence)}'
+      #{mutation}
+    SH
+    _out, _diagnostic, rejected = run_recorder(root, output)
+    failures << "#{label} during probe was accepted" if rejected.success?
+    failures << "#{label} during probe replaced baseline" unless File.binread(output) == original
+    failures << "#{label} during probe changed baseline mode" unless
+      (File.stat(output).mode & 0o777) == original_mode
+    failures << "#{label} left baseline staging files" unless
+      Dir.glob("#{root}/.adoption-baseline-*.json").empty?
+    File.unlink("#{root}/git-origin") if File.exist?("#{root}/git-origin")
+    File.unlink("#{root}/git-head") if File.exist?("#{root}/git-head")
+    File.unlink("#{root}/git-dirty") if File.exist?("#{root}/git-dirty")
+    File.write("#{root}/committed/beszel.yml", "services: {}\n")
+    File.write("#{root}/legacy/beszel.yml", "services: {}\n")
+    File.binwrite(output, original)
+    File.chmod(original_mode, output)
+  end
+
+  {
+    "existing baseline final-window mutation" => ["race-output-final", "external-baseline\n"],
+    "staging final-window mutation" => ["race-staging-final", original]
+  }.each do |label, (marker, expected_bytes)|
+    File.unlink("#{root}/git-origin-count") if File.exist?("#{root}/git-origin-count")
+    write_executable("#{root}/probes/beszel.sh", <<~SH)
+      #!/bin/sh
+      printf '%s\\n' '#{JSON.generate(race_evidence)}'
+      : > '#{root}/#{marker}'
+    SH
+    _out, _diagnostic, rejected = run_recorder(root, output)
+    failures << "#{label} was accepted" if rejected.success?
+    failures << "#{label} published unexpected bytes" unless File.binread(output) == expected_bytes
+    failures << "#{label} left baseline staging files" unless
+      Dir.glob("#{root}/.adoption-baseline-*.json").empty?
+    File.unlink("#{root}/#{marker}")
+    File.binwrite(output, original)
+    File.chmod(original_mode, output)
+  end
+  write_executable("#{root}/probes/beszel.sh", <<~SH)
+    #!/bin/sh
+    printf '%s\\n' '#{JSON.generate(evidence("beszel"))}'
+  SH
+
+  SERVICES.each do |service|
+    duplicate = evidence(service)
+    second = duplicate.fetch("identities").first.merge(
+      "name" => duplicate.fetch("identities").first.fetch("name").upcase
+    )
+    duplicate["identities"] = duplicate.fetch("identities") + [second]
+    write_executable("#{root}/probes/#{service}.sh", <<~SH)
+      #!/bin/sh
+      printf '%s\\n' '#{JSON.generate(duplicate)}'
+    SH
+    _out, _diagnostic, rejected = run_recorder(root, output)
+    failures << "#{service} mixed-case duplicate identity was accepted" if rejected.success?
+    failures << "#{service} mixed-case duplicate replaced baseline" unless File.binread(output) == original
+    File.binwrite(output, original)
+    File.chmod(original_mode, output)
+    write_executable("#{root}/probes/#{service}.sh", <<~SH)
+      #!/bin/sh
+      printf '%s\\n' '#{JSON.generate(evidence(service))}'
+    SH
+  end
+
+  unicode_duplicate = evidence("audiobookshelf")
+  unicode_duplicate.fetch("identities").first["name"] = "RÉADER"
+  unicode_duplicate["identities"] << unicode_duplicate.fetch("identities").first.merge(
+    "name" => "re\u0301ader"
+  )
+  write_executable("#{root}/probes/audiobookshelf.sh", <<~SH)
+    #!/bin/sh
+    printf '%s\\n' '#{JSON.generate(unicode_duplicate)}'
+  SH
+  _out, _diagnostic, rejected = run_recorder(root, output)
+  failures << "Unicode-normalized duplicate identity was accepted" if rejected.success?
+  failures << "Unicode-normalized duplicate replaced baseline" unless File.binread(output) == original
+  write_executable("#{root}/probes/audiobookshelf.sh", <<~SH)
+    #!/bin/sh
+    printf '%s\\n' '#{JSON.generate(evidence("audiobookshelf"))}'
+  SH
+
   File.open("#{root}/legacy/beszel.yml", "a") { |file| file.write("# changed\n") }
   _out, _diagnostic, rejected = run_recorder(root, output)
   failures << "changed pinned compose file was accepted" if rejected.success?

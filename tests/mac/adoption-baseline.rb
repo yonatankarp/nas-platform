@@ -82,6 +82,10 @@ def safe_string!(value, label)
                                           value.valid_encoding? && !value.match?(/[\x00-\x1f\x7f]/)
 end
 
+def canonical_identity_name(value)
+  value.unicode_normalize(:nfkc).strip.downcase
+end
+
 def reject_forbidden_keys!(value)
   case value
   when Hash
@@ -149,7 +153,9 @@ def validate_evidence!(service, evidence)
     permissions.each { |permission| safe_string!(permission, "#{service} permission") }
     identity["permissions"] = permissions.sort
   end
-  raise "#{service} identity names are duplicated" unless identities.map { |entry| entry.fetch("name") }.uniq.length == identities.length
+  normalized_names = identities.map { |entry| canonical_identity_name(entry.fetch("name")) }
+  raise "#{service} identity name is invalid" if normalized_names.any?(&:empty?)
+  raise "#{service} identity names are duplicated" unless normalized_names.uniq.length == normalized_names.length
   evidence["identities"] = identities.sort_by { |entry| [entry.fetch("name"), entry.fetch("role")] }
 
   counts = evidence.fetch("record_counts")
@@ -260,6 +266,57 @@ def file_signature(path)
   [stat.dev, stat.ino, stat.size, stat.mode, stat.uid, stat.mtime.to_r, stat.ctime.to_r]
 end
 
+def publication_file_state(path, expected_mode:)
+  stat = File.lstat(path)
+  raise "publication path is unsafe" unless stat.file? && !stat.symlink? &&
+                                                stat.uid == Process.uid &&
+                                                (stat.mode & 0o777) == expected_mode
+
+  [file_signature(path), Digest::SHA256.file(path).hexdigest]
+end
+
+def checkout_snapshot(legacy_root, repository, commit, service_entries, canaries)
+  origin, origin_diagnostic = capture("git", "-C", legacy_root, "remote", "get-url", "origin")
+  reject_canaries!(origin_diagnostic, canaries)
+  allowed_origins = [
+    "https://github.com/#{repository}", "https://github.com/#{repository}.git",
+    "git@github.com:#{repository}", "git@github.com:#{repository}.git",
+    "ssh://git@github.com/#{repository}", "ssh://git@github.com/#{repository}.git"
+  ]
+  raise "legacy checkout origin differs" unless allowed_origins.include?(origin.strip)
+
+  root_output, root_diagnostic = capture("git", "-C", legacy_root, "rev-parse", "--show-toplevel")
+  reject_canaries!(root_diagnostic, canaries)
+  raise "legacy checkout root differs" unless root_output.strip == legacy_root
+
+  head_output, head_diagnostic = capture("git", "-C", legacy_root, "rev-parse", "HEAD")
+  reject_canaries!(head_diagnostic, canaries)
+  raise "legacy checkout commit differs" unless head_output.strip == commit
+
+  status_output, status_diagnostic = capture(
+    "git", "-C", legacy_root, "status", "--porcelain=v1", "--untracked-files=all"
+  )
+  reject_canaries!(status_diagnostic, canaries)
+  raise "legacy checkout is dirty" unless status_output.empty?
+
+  sources = service_entries.sort.to_h do |service, relative|
+    source = File.join(legacy_root, relative)
+    blob, blob_diagnostic = capture("git", "-C", legacy_root, "cat-file", "blob", "#{commit}:#{relative}")
+    reject_canaries!(blob_diagnostic, canaries)
+    source_bytes = File.binread(source)
+    raise "legacy compose file differs from pinned commit" unless source_bytes == blob
+    [service, {
+      "path" => relative, "signature" => file_signature(source),
+      "blob_sha256" => Digest::SHA256.hexdigest(blob),
+      "source_sha256" => Digest::SHA256.hexdigest(source_bytes)
+    }]
+  end
+  {
+    "origin" => origin.strip, "root" => root_output.strip, "head" => head_output.strip,
+    "status" => status_output, "sources" => sources
+  }
+end
+
 def first_fixture(root, pattern)
   matches = Dir.glob(File.join(root, "**", pattern)).sort.select { |path| File.file?(path) && !File.symlink?(path) }
   raise "fixture is unavailable" unless matches.length == 1
@@ -341,6 +398,8 @@ def ntfy_live_users(bytes)
     end
   end
   raise "ntfy user listing is incomplete" if current || records.none? { |entry| entry["name"] == "*" }
+  normalized = records.map { |entry| canonical_identity_name(entry.fetch("name")) }
+  raise "ntfy user listing contains duplicate identities" unless normalized.uniq.length == normalized.length
   records.reject { |entry| entry["name"] == "*" }
 end
 
@@ -563,18 +622,25 @@ def emit_probe(service)
                end
                raise "ntfy authentication failed" unless ntfy_response.code.to_i == 200
                environment = read_private_env(File.join(sandbox, "legacy-env/ntfy.env"))
-               declared_users = environment.fetch("NTFY_AUTH_USERS").split(",").to_h do |record|
+               declared_entries = environment.fetch("NTFY_AUTH_USERS").split(",").map do |record|
                  name, _credential_digest, role = record.split(":", 3)
                  raise "ntfy user is malformed" unless name && role
-                 [name.downcase, role]
+                 [canonical_identity_name(name), role]
                end
+               declared_names = declared_entries.map(&:first)
+               raise "ntfy environment contains duplicate identities" unless declared_names.uniq.length == declared_names.length
+               declared_users = declared_entries.to_h
                container = "#{ENV.fetch('PLATFORM_PROJECT_NAME')}-legacy-ntfy-ntfy-1"
                live_output, = capture(
                  "docker", "exec", container, "ntfy", "user",
                  "--auth-file=/var/lib/ntfy/auth.db", "--auth-default-access=deny-all", "list"
                )
                live_users = ntfy_live_users(live_output)
-               live_by_name = live_users.to_h { |entry| [entry.fetch("name").downcase, entry] }
+               live_names = live_users.map { |entry| canonical_identity_name(entry.fetch("name")) }
+               raise "ntfy user listing contains duplicate identities" unless live_names.uniq.length == live_names.length
+               live_by_name = live_users.to_h do |entry|
+                 [canonical_identity_name(entry.fetch("name")), entry]
+               end
                declared_users.each do |name, role|
                  raise "declared ntfy user differs from live state" unless live_by_name.dig(name, "role") == role
                end
@@ -678,8 +744,12 @@ begin
                                       manifest_stat.uid == Process.uid &&
                                       (manifest_stat.mode & 0o022).zero?
   manifest = YAML.safe_load_file(options[:manifest], aliases: false)
-  manifest_commit = manifest.fetch("legacy_source").fetch("commit")
+  legacy_source = manifest.fetch("legacy_source")
+  manifest_commit = legacy_source.fetch("commit")
   raise "legacy commit differs from manifest" unless manifest_commit == options[:commit]
+  repository = legacy_source.fetch("repository")
+  raise "legacy repository is invalid" unless repository.is_a?(String) &&
+                                              repository.match?(/\A[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\z/)
   entries = manifest.fetch("services")
   raise "manifest service set differs" unless entries.is_a?(Array) && entries.map { |entry| entry.fetch("name") }.sort == SERVICES
 
@@ -692,19 +762,9 @@ begin
   end
 
   legacy_root = File.realpath(options[:legacy_root])
-  checkout_root, checkout_root_diagnostic = capture(
-    "git", "-C", legacy_root, "rev-parse", "--show-toplevel"
+  pinned_checkout = checkout_snapshot(
+    legacy_root, repository, options[:commit], service_entries, canaries
   )
-  reject_canaries!(checkout_root_diagnostic, canaries)
-  raise "legacy checkout root differs" unless checkout_root.strip == legacy_root
-  checkout_commit, checkout_commit_diagnostic = capture("git", "-C", legacy_root, "rev-parse", "HEAD")
-  reject_canaries!(checkout_commit_diagnostic, canaries)
-  raise "legacy checkout commit differs" unless checkout_commit.strip == options[:commit]
-  checkout_status, checkout_status_diagnostic = capture(
-    "git", "-C", legacy_root, "status", "--porcelain=v1", "--untracked-files=all"
-  )
-  reject_canaries!(checkout_status_diagnostic, canaries)
-  raise "legacy checkout is dirty" unless checkout_status.empty?
 
   project_name = ENV.fetch("PLATFORM_PROJECT_NAME")
   raise "project name is invalid" unless project_name.match?(/\A[a-z0-9][a-z0-9_-]{0,62}\z/)
@@ -768,6 +828,9 @@ begin
   }
   encoded = JSON.pretty_generate(document) << "\n"
   reject_canaries!(encoded, canaries)
+  raise "legacy checkout changed during capture" unless checkout_snapshot(
+    legacy_root, repository, options[:commit], service_entries, canaries
+  ) == pinned_checkout
 
   output = File.expand_path(options[:output])
   parent = File.dirname(output)
@@ -777,10 +840,7 @@ begin
                                              (parent_stat.mode & 0o777) == 0o700
   raise "baseline path is unsafe" unless File.realpath(parent) == parent
   initial = begin
-    stat = File.lstat(output)
-    raise "baseline path is unsafe" unless stat.file? && !stat.symlink? && stat.uid == Process.uid &&
-                                           (stat.mode & 0o777) == 0o600
-    [stat.dev, stat.ino, stat.size, stat.mode, stat.uid, stat.mtime.to_r, stat.ctime.to_r]
+    publication_file_state(output, expected_mode: 0o600)
   rescue Errno::ENOENT
     nil
   end
@@ -789,14 +849,25 @@ begin
     staging.write(encoded)
     staging.flush
     staging.fsync
+    staged = publication_file_state(staging.path, expected_mode: 0o600)
     current = begin
-      stat = File.lstat(output)
-      raise "baseline path changed" unless stat.file? && !stat.symlink?
-      [stat.dev, stat.ino, stat.size, stat.mode, stat.uid, stat.mtime.to_r, stat.ctime.to_r]
+      publication_file_state(output, expected_mode: 0o600)
     rescue Errno::ENOENT
       nil
     end
     raise "baseline path changed" unless current == initial
+    raise "legacy checkout changed before publication" unless checkout_snapshot(
+      legacy_root, repository, options[:commit], service_entries, canaries
+    ) == pinned_checkout
+    current = begin
+      publication_file_state(output, expected_mode: 0o600)
+    rescue Errno::ENOENT
+      nil
+    end
+    raise "baseline path changed" unless current == initial
+    raise "baseline staging changed" unless publication_file_state(
+      staging.path, expected_mode: 0o600
+    ) == staged && File.binread(staging.path) == encoded
     File.rename(staging.path, output)
     begin
       File.open(parent, File::RDONLY) { |directory| directory.fsync }
