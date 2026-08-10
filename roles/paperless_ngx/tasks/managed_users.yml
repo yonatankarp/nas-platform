@@ -40,6 +40,12 @@
     label: paperless-managed-user
   no_log: true
 
+- name: Initialize Paperless managed-user binding facts
+  ansible.builtin.set_fact:
+    paperless_initial_authenticated_managed_user_ids: >-
+      {{ paperless_initial_authenticated_managed_user_ids | default({}) }}
+  no_log: true
+
 - name: Refuse ambiguous normalized Paperless managed identities
   ansible.builtin.assert:
     that:

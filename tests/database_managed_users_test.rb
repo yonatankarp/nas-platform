@@ -58,6 +58,14 @@ end
 def contract_failures(service, tasks)
   failures = []
   names = tasks.map { |task| task_name(task) }
+  service_label = service == "paperless_ngx" ? "Paperless" : service.capitalize
+  fact_prefix = service == "paperless_ngx" ? "paperless" : service
+  initial_fact = "#{fact_prefix}_initial_authenticated_managed_user_ids"
+  initialization = tasks.find do |task|
+    task_name(task) == "Initialize #{service_label} managed-user binding facts"
+  end
+  failures << "#{service_label} initial authenticated-ID map is not initialized safely" unless
+    initialization&.dig("ansible.builtin.set_fact", initial_fact).to_s.include?("default({})")
   REQUIRED_TASKS.fetch(service).each do |name|
     failures << "#{service} omits #{name}" unless names.include?(name)
   end
@@ -522,6 +530,10 @@ def exercise_paperless(failures, scenario: :normal, task_path: nil)
   state["mangle_create"] = true if scenario == :mangled
   state["fail_after_identity_create"] = true if scenario == :create_failure
   state["users"][0]["password"] = "deployed-other-secret" if scenario == :auth_failure
+  if scenario == :empty
+    state["users"] = [state["users"].last]
+    state["next_id"] = 2
+  end
   if scenario == :swap
     state["swap_on_second_list"] = true
     state["swap_username"] = "reader"
@@ -534,6 +546,7 @@ def exercise_paperless(failures, scenario: :normal, task_path: nil)
       "is_active" => true, "is_staff" => false, "is_superuser" => false, "groups" => ["Readers"] }
   ]
   managed = [managed.first] if scenario == :swap
+  managed = [managed.last] if scenario == :empty
   with_paperless_executor(state) do |collection_path, state_path|
     responder = lambda do |request|
       current = read_fixture_state(state_path)
@@ -572,7 +585,20 @@ def exercise_paperless(failures, scenario: :normal, task_path: nil)
         includes, variables, *arguments, env: executor_env
       )
       final = read_fixture_state(state_path)
-      if scenario == :create_failure
+      if scenario == :empty
+        failures << "Paperless fresh-empty fixture failed: #{failure_tail(stdout + stderr)}" unless status.success?
+        created = final["users"].select { |user| user["username"] == "new" }
+        failures << "Paperless fresh-empty fixture did not create exactly one managed user" unless
+          created.length == 1 && created.first["password"] == "new-secret"
+        failures << "Paperless fresh-empty fixture did not preserve the unmanaged user" unless
+          final["users"].any? { |user| user["username"] == "friend" }
+        new_auth_index = final["events"].index("auth:new")
+        new_repair_index = final["events"].index("repair:new")
+        failures << "Paperless fresh-empty fixture did not authenticate before repair" unless
+          new_auth_index && new_repair_index && new_auth_index < new_repair_index
+        failures << "Paperless fresh-empty fixture did not reach final verification" unless
+          final["events"].count("list") >= 3
+      elsif scenario == :create_failure
         failures << "Paperless injected create failure unexpectedly succeeded" if status.success?
         failures << "Paperless failed create left a partial managed user" if
           final["users"].any? { |user| user["username"] == "new" }
@@ -1014,6 +1040,29 @@ if ARGV == ["--self-test"]
         unless partial_commit_detected && unsafe_retry_detected
           failures << "paperless non-atomic-create mutant survived behavior fixtures"
         end
+
+        paperless_initialization_mutant = YAML.safe_load_file(
+          File.join(ROOT, "roles", "paperless_ngx", "tasks", "managed_users.yml"), aliases: false
+        )
+        paperless_initialization_mutant.reject! do |task|
+          task_name(task) == "Initialize Paperless managed-user binding facts"
+        end
+        initialization_mutant_path = File.join(directory, "paperless_missing_initialization.yml")
+        File.write(
+          initialization_mutant_path,
+          YAML.dump(paperless_initialization_mutant),
+          mode: "w",
+          perm: 0o600
+        )
+        initialization_mutant_failures = []
+        exercise_paperless(
+          initialization_mutant_failures, scenario: :empty, task_path: initialization_mutant_path
+        )
+        missing_initialization_detected = initialization_mutant_failures.any? do |failure|
+          failure.start_with?("Paperless fresh-empty fixture failed:")
+        end
+        failures << "paperless missing binding-fact initialization mutant survived" unless
+          missing_initialization_detected
       end
     end
   end
@@ -1022,6 +1071,7 @@ elsif ARGV.empty?
     exercise_immich(failures)
     exercise_beszel(failures)
     exercise_paperless(failures)
+    exercise_paperless(failures, scenario: :empty)
     exercise_paperless(failures, scenario: :mangled)
     exercise_paperless(failures, scenario: :create_failure)
     exercise_paperless(failures, scenario: :auth_failure)

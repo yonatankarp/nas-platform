@@ -28,6 +28,12 @@
     label: immich-managed-user
   no_log: true
 
+- name: Initialize Immich managed-user binding facts
+  ansible.builtin.set_fact:
+    immich_initial_authenticated_managed_user_ids: >-
+      {{ immich_initial_authenticated_managed_user_ids | default({}) }}
+  no_log: true
+
 - name: Refuse ambiguous normalized Immich managed identities
   ansible.builtin.assert:
     that:

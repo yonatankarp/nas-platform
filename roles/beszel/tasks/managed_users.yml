@@ -43,6 +43,12 @@
     label: beszel-managed-user
   no_log: true
 
+- name: Initialize Beszel managed-user binding facts
+  ansible.builtin.set_fact:
+    beszel_initial_authenticated_managed_user_ids: >-
+      {{ beszel_initial_authenticated_managed_user_ids | default({}) }}
+  no_log: true
+
 - name: Refuse ambiguous normalized Beszel managed identities
   ansible.builtin.assert:
     that:
