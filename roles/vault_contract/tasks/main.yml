@@ -29,6 +29,7 @@
       - item.type is string
       - item.type in ['admin', 'user', 'guest']
       - item.is_active is boolean
+      - item.is_active
       - item.permissions is mapping
       - >-
         item.permissions.keys() | list | sort ==
@@ -130,6 +131,7 @@
       - item.policy | length > 0
       - item.policy.keys() | difference(supported_jellyfin_policy_fields) | length == 0
       - item.policy.values() | reject('boolean') | list | length == 0
+      - item.policy.IsDisabled | default(false) | bool == false
       - >-
         item.policy.keys() | map('lower') |
         intersect(forbidden_jellyfin_policy_fields) | length == 0

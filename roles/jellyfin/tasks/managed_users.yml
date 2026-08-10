@@ -75,13 +75,13 @@
   register: jellyfin_managed_user_authentication
   when:
     - jellyfin_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
     - jellyfin_managed_user_matches[item.username] | length == 1
   loop: "{{ vault_managed_jellyfin_users }}"
   loop_control:
     label: jellyfin-managed-user
   failed_when: false
   changed_when: false
-  check_mode: false
   no_log: true
 
 - name: Require preserved Jellyfin managed-user credentials
@@ -98,6 +98,9 @@
        rejectattr('skipped', 'defined') | list }}
   loop_control:
     label: jellyfin-managed-user
+  when:
+    - jellyfin_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
   no_log: true
 
 - name: Define forbidden Jellyfin complete-policy fields
@@ -265,6 +268,52 @@
   loop: "{{ vault_managed_jellyfin_users }}"
   loop_control:
     label: jellyfin-managed-user
+  no_log: true
+
+- name: Authenticate newly created Jellyfin managed users
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Users/AuthenticateByName"
+    method: POST
+    headers:
+      Authorization: "{{ jellyfin_client_header }}"
+    body_format: json
+    body:
+      Username: "{{ item.item.username }}"
+      Pw: "{{ item.item.password }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: jellyfin_new_managed_user_authentication
+  loop: >-
+    {{ jellyfin_managed_user_creation.results | default([]) |
+       rejectattr('skipped', 'defined') | list }}
+  loop_control:
+    label: jellyfin-managed-user
+  when:
+    - jellyfin_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+  failed_when: false
+  changed_when: false
+  no_log: true
+
+- name: Require newly created Jellyfin managed-user credentials
+  ansible.builtin.assert:
+    that:
+      - item.status | default(0) | int == 200
+      - >-
+        item.json.User.Name | default('') | trim | lower ==
+        item.item.item.username | trim | lower
+    fail_msg: >-
+      Newly created Jellyfin managed user does not accept its vault password.
+      Run the reviewed credential-migration procedure; Ansible will not reset
+      it automatically or continue privilege reconciliation.
+  loop: >-
+    {{ jellyfin_new_managed_user_authentication.results | default([]) |
+       rejectattr('skipped', 'defined') | list }}
+  loop_control:
+    label: jellyfin-managed-user
+  when:
+    - jellyfin_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
   no_log: true
 
 - name: Record complete expected Jellyfin managed-user policies

@@ -83,13 +83,13 @@
   register: audiobookshelf_managed_user_authentication
   when:
     - audiobookshelf_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
     - audiobookshelf_managed_user_matches[item.username] | length == 1
   loop: "{{ vault_managed_audiobookshelf_users }}"
   loop_control:
     label: audiobookshelf-managed-user
   failed_when: false
   changed_when: false
-  check_mode: false
   no_log: true
 
 - name: Require preserved Audiobookshelf managed-user credentials
@@ -106,6 +106,9 @@
        rejectattr('skipped', 'defined') | list }}
   loop_control:
     label: audiobookshelf-managed-user
+  when:
+    - audiobookshelf_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
   no_log: true
 
 - name: Report planned Audiobookshelf managed-user creation
@@ -136,6 +139,7 @@
       librariesAccessible: "{{ item.permissions.librariesAccessible }}"
       itemTagsSelected: "{{ item.permissions.itemTagsSelected }}"
     status_code: [200]
+  register: audiobookshelf_managed_user_creation
   when:
     - audiobookshelf_managed_users_phase == 'reconcile'
     - not ansible_check_mode
@@ -144,6 +148,98 @@
   loop_control:
     label: audiobookshelf-managed-user
   changed_when: true
+  no_log: true
+
+- name: Re-list Audiobookshelf users after managed-user creation
+  ansible.builtin.uri:
+    url: "{{ audiobookshelf_api }}/api/users"
+    headers:
+      Authorization: "Bearer {{ audiobookshelf_managed_users_token }}"
+    status_code: [200]
+    return_content: true
+  register: audiobookshelf_managed_users_refreshed_listing
+  when:
+    - audiobookshelf_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require exact newly created Audiobookshelf managed identities
+  ansible.builtin.assert:
+    that:
+      - audiobookshelf_managed_users_refreshed_listing.json is mapping
+      - audiobookshelf_managed_users_refreshed_listing.json.users | type_debug == 'list'
+      - audiobookshelf_managed_users_refreshed_listing.json.hasMore | default(false) | bool == false
+      - audiobookshelf_managed_users_refreshed_listing.json.nextPage | default(none) is none
+      - >-
+        audiobookshelf_managed_users_refreshed_listing.json.total is not defined or
+        audiobookshelf_managed_users_refreshed_listing.json.total | int ==
+          audiobookshelf_managed_users_refreshed_listing.json.users | length
+      - >-
+        audiobookshelf_managed_users_refreshed_listing.json.users |
+        selectattr('username', 'equalto', item.item.username) | list | length == 1
+      - >-
+        audiobookshelf_managed_users_refreshed_listing.json.users | map(attribute='username') |
+        map('trim') | map('lower') | select('equalto', item.item.username | trim | lower) |
+        list | length == 1
+      - >-
+        (audiobookshelf_managed_users_refreshed_listing.json.users |
+         selectattr('username', 'equalto', item.item.username) | first).id | string
+          is match('^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$')
+    fail_msg: >-
+      Audiobookshelf did not return one exact safe newly created managed identity;
+      reconciliation refuses any subsequent repair.
+  loop: >-
+    {{ audiobookshelf_managed_user_creation.results | default([]) |
+       rejectattr('skipped', 'defined') | list }}
+  loop_control:
+    label: audiobookshelf-managed-user
+  when:
+    - audiobookshelf_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+  no_log: true
+
+- name: Authenticate newly created Audiobookshelf managed users
+  ansible.builtin.uri:
+    url: "{{ audiobookshelf_api }}/login"
+    method: POST
+    body_format: json
+    body:
+      username: "{{ item.item.username }}"
+      password: "{{ item.item.password }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: audiobookshelf_new_managed_user_authentication
+  loop: >-
+    {{ audiobookshelf_managed_user_creation.results | default([]) |
+       rejectattr('skipped', 'defined') | list }}
+  loop_control:
+    label: audiobookshelf-managed-user
+  when:
+    - audiobookshelf_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+  failed_when: false
+  changed_when: false
+  no_log: true
+
+- name: Require newly created Audiobookshelf managed-user credentials
+  ansible.builtin.assert:
+    that:
+      - item.status | default(0) | int == 200
+      - item.json.user.username | default('') == item.item.item.username
+    fail_msg: >-
+      Newly created Audiobookshelf managed user does not accept its vault
+      password. Run the reviewed credential-migration procedure; Ansible will
+      not reset it automatically or continue privilege reconciliation.
+  loop: >-
+    {{ audiobookshelf_new_managed_user_authentication.results | default([]) |
+       rejectattr('skipped', 'defined') | list }}
+  loop_control:
+    label: audiobookshelf-managed-user
+  when:
+    - audiobookshelf_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
   no_log: true
 
 - name: Report planned Audiobookshelf managed-user repair

@@ -72,13 +72,13 @@
   register: komga_managed_user_authentication
   when:
     - komga_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
     - komga_managed_user_matches[item.email] | length == 1
   loop: "{{ vault_managed_komga_users }}"
   loop_control:
     label: komga-managed-user
   failed_when: false
   changed_when: false
-  check_mode: false
   no_log: true
 
 - name: Require preserved Komga managed-user credentials
@@ -95,6 +95,9 @@
        rejectattr('skipped', 'defined') | list }}
   loop_control:
     label: komga-managed-user
+  when:
+    - komga_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
   no_log: true
 
 - name: Report planned Komga managed-user creation
@@ -122,6 +125,7 @@
       password: "{{ item.password }}"
       roles: "{{ item.roles }}"
     status_code: [201]
+  register: komga_managed_user_creation
   when:
     - komga_managed_users_phase == 'reconcile'
     - not ansible_check_mode
@@ -130,6 +134,92 @@
   loop_control:
     label: komga-managed-user
   changed_when: true
+  no_log: true
+
+- name: Re-list Komga users after managed-user creation
+  ansible.builtin.uri:
+    url: "{{ komga_api }}/api/v2/users"
+    url_username: "{{ vault_komga_admin_email }}"
+    url_password: "{{ vault_komga_admin_password }}"
+    force_basic_auth: true
+    status_code: [200]
+    return_content: true
+  register: komga_managed_users_refreshed_listing
+  when:
+    - komga_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require exact newly created Komga managed identities
+  ansible.builtin.assert:
+    that:
+      - komga_managed_users_refreshed_listing.json | type_debug == 'list'
+      - >-
+        komga_managed_users_refreshed_listing.json |
+        selectattr('email', 'equalto', item.item.email) | list | length == 1
+      - >-
+        komga_managed_users_refreshed_listing.json | map(attribute='email') |
+        map('trim') | map('lower') | select('equalto', item.item.email | trim | lower) |
+        list | length == 1
+      - >-
+        (komga_managed_users_refreshed_listing.json |
+         selectattr('email', 'equalto', item.item.email) | first).id | string
+          is match('^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$')
+    fail_msg: >-
+      Komga did not return one exact safe newly created managed identity;
+      reconciliation refuses any subsequent repair.
+  loop: >-
+    {{ komga_managed_user_creation.results | default([]) |
+       rejectattr('skipped', 'defined') | list }}
+  loop_control:
+    label: komga-managed-user
+  when:
+    - komga_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+  no_log: true
+
+- name: Authenticate newly created Komga managed users
+  ansible.builtin.uri:
+    url: "{{ komga_api }}/api/v2/users/me"
+    url_username: "{{ item.item.email }}"
+    url_password: "{{ item.item.password }}"
+    force_basic_auth: true
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: komga_new_managed_user_authentication
+  loop: >-
+    {{ komga_managed_user_creation.results | default([]) |
+       rejectattr('skipped', 'defined') | list }}
+  loop_control:
+    label: komga-managed-user
+  when:
+    - komga_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+  failed_when: false
+  changed_when: false
+  no_log: true
+
+- name: Require newly created Komga managed-user credentials
+  ansible.builtin.assert:
+    that:
+      - item.status | default(0) | int == 200
+      - >-
+        item.json.email | default('') | trim | lower ==
+        item.item.item.email | trim | lower
+    fail_msg: >-
+      Newly created Komga managed user does not accept its vault password. Run
+      the reviewed credential-migration procedure; Ansible will not reset it
+      automatically or continue privilege reconciliation.
+  loop: >-
+    {{ komga_new_managed_user_authentication.results | default([]) |
+       rejectattr('skipped', 'defined') | list }}
+  loop_control:
+    label: komga-managed-user
+  when:
+    - komga_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
   no_log: true
 
 - name: Report planned Komga managed-user role repair

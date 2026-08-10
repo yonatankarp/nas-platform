@@ -172,8 +172,8 @@ managed.fetch("audiobookshelf", []).each do |entry|
   next unless entry.is_a?(Hash)
   check(failures, %w[admin user guest].include?(entry["type"]),
         "audiobookshelf type must be supported")
-  check(failures, [true, false].include?(entry["is_active"]),
-        "audiobookshelf is_active must be boolean")
+  check(failures, entry["is_active"] == true,
+        "audiobookshelf is_active must be true for password verification")
   permissions = entry["permissions"]
   check(failures,
         permissions.is_a?(Hash) && permissions.keys.sort ==
@@ -220,6 +220,8 @@ end
 managed.fetch("jellyfin", []).each do |entry|
   next unless entry.is_a?(Hash)
   check(failures, entry["policy"].is_a?(Hash), "jellyfin policy must be a mapping")
+  check(failures, entry.dig("policy", "IsDisabled") != true,
+        "jellyfin managed policy must not disable password verification")
 end
 
 managed.fetch("komga", []).each do |entry|
@@ -329,6 +331,9 @@ check(failures,
         abs_permissions_spec.dig("options", "itemTagsSelected") ==
           { "type" => "list", "elements" => "str", "required" => true },
       "audiobookshelf nested permissions argument contract differs")
+check(failures,
+      managed_options.dig("audiobookshelf", "options", "is_active", "choices") == [true],
+      "audiobookshelf is_active argument must only accept true")
 
 tasks = File.file?(TASKS_PATH) ? File.read(TASKS_PATH) : ""
 parsed_tasks = File.file?(TASKS_PATH) ? YAML.safe_load_file(TASKS_PATH, aliases: false) : []
@@ -439,6 +444,16 @@ check(failures, valid_status.success?, "vault example must pass actual role eval
 wrong_type = duplicate(vault)
 wrong_type.dig("vault_managed_users", "audiobookshelf", 0)["permissions"] = ["wrong-type-sentinel"]
 expect_role_rejection(failures, "wrong nested field type", wrong_type, "wrong-type-sentinel")
+
+disabled_audiobookshelf = duplicate(vault)
+disabled_audiobookshelf.dig("vault_managed_users", "audiobookshelf", 0)["is_active"] = false
+expect_role_rejection(failures, "disabled Audiobookshelf target", disabled_audiobookshelf,
+                      "example-reader-password")
+
+disabled_jellyfin = duplicate(vault)
+disabled_jellyfin.dig("vault_managed_users", "jellyfin", 0, "policy")["IsDisabled"] = true
+expect_role_rejection(failures, "disabled Jellyfin target", disabled_jellyfin,
+                      "example-reader-password")
 
 unsupported_abs_permission = duplicate(vault)
 unsupported_abs_permission.dig("vault_managed_users", "audiobookshelf", 0)["permissions"] = {

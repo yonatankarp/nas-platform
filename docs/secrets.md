@@ -65,12 +65,15 @@ The portable vault contract validates bcrypt shape only; it does not attempt a
 portable cryptographic password/hash comparison on the Ansible controller. The
 service-specific reconciliation authenticates the plaintext password and
 compares the stored hash before mutation through the pinned application
-interface. A mismatch stops reconciliation rather than rotating credentials.
+interface. A newly created identity immediately authenticates with its vault
+password before any later non-secret or privilege repair. A mismatch stops
+reconciliation rather than rotating credentials.
 
 #### audiobookshelf managed users
 
 `username` is the login identity; `password` is its preserved clear credential;
-`type` is `admin`, `user`, or `guest`; `is_active` is a boolean; and `permissions`
+`type` is `admin`, `user`, or `guest`; `is_active` must be `true` so every run
+can prove the preserved password before reconciliation; and `permissions`
 contains `flags`, `librariesAccessible`, and `itemTagsSelected`. `flags` is an
 exact subset of the pinned boolean permission fields; the two lists map to the
 top-level fields returned by Audiobookshelf 2.36.0. Undeclared expanded flags
@@ -109,8 +112,11 @@ and `policy` is an exact mapping of declared, supported boolean Jellyfin policy
 fields. Reconciliation merges those fields into the complete policy returned by
 Jellyfin so required provider IDs and every undeclared field remain unchanged.
 Password, provider, credential, token, and server-maintained fields are not part
-of the vault policy contract. Keep administrative access disabled unless a
-separately reviewed policy explicitly requires it.
+of the vault policy contract. `IsDisabled: true` is rejected because it would
+prevent mandatory password proof on later runs; an already-disabled account
+fails authentication with migration guidance and is never enabled before that
+proof. Keep administrative access disabled unless a separately reviewed policy
+explicitly requires it.
 
 #### komga managed users
 
