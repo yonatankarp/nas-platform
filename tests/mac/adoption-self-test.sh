@@ -56,6 +56,26 @@ case " $* " in
   *' rev-parse HEAD ')
     printf '%s\n' "${FAKE_GIT_COMMIT:-400f03f276ae1bb69f5460c175b9fb923d620f1a}"
     ;;
+  *' ls-files -v -- '*)
+    path=
+    for argument in "$@"; do path=$argument; done
+    printf '%s %s\n' "${FAKE_GIT_INDEX_TAG:-H}" "$path"
+    ;;
+  *' cat-file blob HEAD:'*)
+    object=
+    for argument in "$@"; do object=$argument; done
+    path=${object#HEAD:}
+    if [ "$path" = "${FAKE_GIT_CONTENT_MISMATCH:-}" ]; then
+      printf '%s\n' 'services: changed'
+    else
+      cat "${NAS_INFRASTRUCTURE_DIR:?}/$path"
+    fi
+    ;;
+  *' ls-tree HEAD -- '*)
+    path=
+    for argument in "$@"; do path=$argument; done
+    printf '%s blob %040d\t%s\n' "${FAKE_GIT_HEAD_MODE:-100644}" 0 "$path"
+    ;;
   *' ls-files --error-unmatch -- '*)
     path=
     for argument in "$@"; do path=$argument; done
@@ -75,7 +95,7 @@ cat > "$fake_bin/ansible-playbook" <<'SH'
 #!/bin/sh
 printf 'ansible-playbook %s\n' "$*" >> "${FAKE_COMMAND_LOG:?}"
 case " $* " in
-  *' --vault-password-file '*' -e @'*' -e legacy_env_root='*' -e legacy_expected_commit='*) ;;
+  *' -e @'*' -e legacy_env_root='*' -e legacy_expected_commit='*) ;;
   *) exit 2 ;;
 esac
 case ${FAKE_PARITY_MODE:-valid} in
@@ -83,14 +103,26 @@ case ${FAKE_PARITY_MODE:-valid} in
   schema|commit|services) exit 1 ;;
   *) exit 2 ;;
 esac
-root=${PLATFORM_MAC_SANDBOX:?}/legacy-env
+root=
+for argument in "$@"; do
+  case $argument in legacy_env_root=*) root=${argument#legacy_env_root=} ;; esac
+done
+[ -n "$root" ] || exit 2
 mkdir -m 0700 "$root"
 for service in audiobookshelf beszel dozzle immich jellyfin komga ntfy paperless-ngx tinymediamanager; do
   printf 'A=%s\nDOLLAR=$$safe\n' "${FAKE_RENDER_CANARY:?}" > "$root/$service.env"
   chmod 0600 "$root/$service.env"
 done
 SH
-chmod 0700 "$fake_bin/git" "$fake_bin/docker" "$fake_bin/ansible-playbook"
+cat > "$fake_bin/ansible-vault" <<'SH'
+#!/bin/sh
+[ "${1-}" = view ] || exit 2
+for argument in "$@"; do vault_path=$argument; done
+[ "$vault_path" = "${PLATFORM_MAC_PARITY_VAULT_FILE:?}" ] || exit 2
+cat "${FAKE_PARITY_FIXTURE_ROOT:?}/${FAKE_PARITY_MODE:-valid}.yml"
+SH
+chmod 0700 "$fake_bin/git" "$fake_bin/docker" "$fake_bin/ansible-playbook" \
+  "$fake_bin/ansible-vault"
 
 sandbox=$temporary_root/nas-platform-mac.AdT123
 mkdir -m 0700 "$sandbox"
@@ -101,9 +133,27 @@ parity_password=$temporary_root/parity-password
 printf '%s\n' '$ANSIBLE_VAULT;1.1;AES256' > "$parity_vault"
 printf '%s\n' disposable > "$parity_password"
 chmod 0600 "$parity_vault" "$parity_password"
+fake_parity_fixtures=$temporary_root/fake-parity
+mkdir -m 0700 "$fake_parity_fixtures"
+ruby -ryaml - "$repo_dir/config/portainer-parity.yml" "$fake_parity_fixtures" <<'RUBY'
+mapping = YAML.safe_load_file(ARGV.fetch(0))
+root = ARGV.fetch(1)
+stacks = mapping.fetch("stacks").to_h do |stack, rules|
+  [stack, rules.keys.to_h { |key| [key, "value-secret-canary"] }]
+end
+valid = {"schema" => 1, "legacy_commit" => mapping.fetch("legacy_commit"), "stacks" => stacks}
+fixtures = {
+  "valid" => valid,
+  "schema" => valid.merge("schema" => 2),
+  "commit" => valid.merge("legacy_commit" => "0" * 40),
+  "services" => valid.merge("stacks" => stacks.reject { |name, _values| name == "komga" }),
+}
+fixtures.each { |name, document| File.write(File.join(root, "#{name}.yml"), YAML.dump(document)) }
+RUBY
 
 run_coordinator() {
   env PATH="$fake_bin:$PATH" FAKE_COMMAND_LOG="$log" FAKE_RENDER_CANARY='value-secret-canary' \
+    FAKE_PARITY_FIXTURE_ROOT="$fake_parity_fixtures" \
     PLATFORM_MAC_TMPDIR="$temporary_root" \
     NAS_INFRASTRUCTURE_DIR="$legacy_root" PLATFORM_MAC_SANDBOX="$sandbox" \
     PLATFORM_MAC_PARITY_VAULT_FILE="$parity_vault" \
@@ -155,6 +205,18 @@ expect_failure 'untracked legacy compose' 'legacy compose file is not tracked' \
   env FAKE_GIT_UNTRACKED=compose/komga/compose.yml PATH="$fake_bin:$PATH" \
     FAKE_COMMAND_LOG="$log" NAS_INFRASTRUCTURE_DIR="$legacy_root" \
     PLATFORM_MAC_SANDBOX="$sandbox" "$coordinator" preflight
+expect_failure 'hidden modified legacy compose' 'legacy compose file has unsafe index flags' \
+  env FAKE_GIT_INDEX_TAG=h PATH="$fake_bin:$PATH" FAKE_COMMAND_LOG="$log" \
+    NAS_INFRASTRUCTURE_DIR="$legacy_root" PLATFORM_MAC_SANDBOX="$sandbox" \
+    "$coordinator" preflight
+expect_failure 'legacy compose bytes hidden from status' 'legacy compose file differs from HEAD' \
+  env FAKE_GIT_CONTENT_MISMATCH=compose/komga/compose.yml PATH="$fake_bin:$PATH" \
+    FAKE_COMMAND_LOG="$log" NAS_INFRASTRUCTURE_DIR="$legacy_root" \
+    PLATFORM_MAC_SANDBOX="$sandbox" "$coordinator" preflight
+expect_failure 'legacy compose mode hidden from status' 'legacy compose mode differs from HEAD' \
+  env FAKE_GIT_HEAD_MODE=100755 PATH="$fake_bin:$PATH" FAKE_COMMAND_LOG="$log" \
+    NAS_INFRASTRUCTURE_DIR="$legacy_root" PLATFORM_MAC_SANDBOX="$sandbox" \
+    "$coordinator" preflight
 expect_failure 'Docker readiness failure' 'Docker is unavailable' \
   env FAKE_DOCKER_FAIL=1 PATH="$fake_bin:$PATH" FAKE_COMMAND_LOG="$log" \
     NAS_INFRASTRUCTURE_DIR="$legacy_root" PLATFORM_MAC_SANDBOX="$sandbox" \
@@ -185,7 +247,8 @@ docker_line=$(grep -n '^docker version$' "$log" | cut -d: -f1)
 for mode in schema commit services; do
   expect_failure "parity $mode" 'legacy parity rendering failed' \
     env FAKE_PARITY_MODE="$mode" PATH="$fake_bin:$PATH" FAKE_COMMAND_LOG="$log" \
-      FAKE_RENDER_CANARY='value-secret-canary' NAS_INFRASTRUCTURE_DIR="$legacy_root" \
+      FAKE_RENDER_CANARY='value-secret-canary' FAKE_PARITY_FIXTURE_ROOT="$fake_parity_fixtures" \
+      NAS_INFRASTRUCTURE_DIR="$legacy_root" \
       PLATFORM_MAC_TMPDIR="$temporary_root" \
       PLATFORM_MAC_SANDBOX="$sandbox" PLATFORM_MAC_PARITY_VAULT_FILE="$parity_vault" \
       PLATFORM_MAC_PARITY_VAULT_PASSWORD_FILE="$parity_password" "$coordinator" render
@@ -210,32 +273,107 @@ for file in "$sandbox"/legacy-env/*.env; do
   grep -F 'DOLLAR=$$safe' "$file" >/dev/null || fail 'Compose dollar escaping differs'
 done
 
-ruby -ryaml - "$test_dir/legacy-render.yml" "$test_dir/templates/legacy-env.j2" \
-  "$repo_dir/services/manifest.yml" <<'RUBY'
+real_ansible_bin=/var/folders/z6/qvbh9dlx2_s98lt4__4fwg9m0000gn/T/nas-platform-task14-ansible.qp6qkn/bin
+[ -x "$real_ansible_bin/ansible-playbook" ] && [ -x "$real_ansible_bin/ansible-vault" ] ||
+  fail 'pinned Ansible is unavailable for parity behavior tests'
+real_parity_root=$temporary_root/real-parity
+real_parity_password=$real_parity_root/password
+mkdir -m 0700 "$real_parity_root"
+printf '%s\n' real-parity-disposable > "$real_parity_password"
+chmod 0600 "$real_parity_password"
+ruby -ryaml - "$repo_dir/config/portainer-parity.yml" "$real_parity_root" <<'RUBY'
+mapping = YAML.safe_load_file(ARGV.fetch(0))
+root = ARGV.fetch(1)
+stacks = mapping.fetch("stacks").to_h do |stack, rules|
+  [stack, rules.keys.to_h { |key| [key, "value-secret-canary"] }]
+end
+valid = {
+  "schema" => 1,
+  "legacy_commit" => mapping.fetch("legacy_commit"),
+  "stacks" => stacks,
+}
+fixtures = {
+  "valid" => valid,
+  "extra-root" => valid.merge("unexpected" => "value-secret-canary"),
+  "allowlist-escape" => {
+    "schema" => 1,
+    "legacy_commit" => mapping.fetch("legacy_commit"),
+    "stacks" => {"../escaped" => {"A" => "value-secret-canary"}},
+    "legacy_expected_services" => ["../escaped"],
+  },
+  "wrong-service-set" => valid.merge("stacks" => stacks.reject { |name, _values| name == "komga" }),
+  "malformed-stack" => valid.merge("stacks" => stacks.merge("komga" => ["value-secret-canary"])),
+}
+fixtures.each do |name, document|
+  File.write(File.join(root, "#{name}.yml"), YAML.dump(document), mode: "w", perm: 0o600)
+end
+RUBY
+for fixture in valid extra-root allowlist-escape wrong-service-set malformed-stack; do
+  "$real_ansible_bin/ansible-vault" encrypt --vault-password-file "$real_parity_password" \
+    --output "$real_parity_root/$fixture.vault" "$real_parity_root/$fixture.yml" >/dev/null
+  rm -f -- "$real_parity_root/$fixture.yml"
+done
+
+create_real_sandbox() {
+  real_sandbox=$temporary_root/nas-platform-mac.$1
+  real_project_suffix=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+  mkdir -m 0700 "$real_sandbox"
+  printf 'schema=1\nproject=nas-platform-mac-%s\n' "$real_project_suffix" \
+    > "$real_sandbox/.nas-platform-mac-owned"
+  chmod 0600 "$real_sandbox/.nas-platform-mac-owned"
+  printf '%s\n' "$real_sandbox"
+}
+
+run_real_render() {
+  real_vault=$1
+  real_sandbox=$2
+  env PATH="$real_ansible_bin:$fake_bin:$PATH" FAKE_COMMAND_LOG="$log" \
+    FAKE_PARITY_FIXTURE_ROOT="$fake_parity_fixtures" \
+    NAS_INFRASTRUCTURE_DIR="$legacy_root" PLATFORM_MAC_TMPDIR="$temporary_root" \
+    PLATFORM_MAC_SANDBOX="$real_sandbox" PLATFORM_MAC_PARITY_VAULT_FILE="$real_vault" \
+    PLATFORM_MAC_PARITY_VAULT_PASSWORD_FILE="$real_parity_password" "$coordinator" render
+}
+
+expect_real_validation_failure() {
+  real_label=$1
+  real_fixture=$2
+  real_suffix=$3
+  real_sandbox=$(create_real_sandbox "$real_suffix")
+  real_output=$temporary_root/real-output
+  if run_real_render "$real_parity_root/$real_fixture.vault" "$real_sandbox" \
+      > "$real_output" 2>&1; then
+    fail "$real_label was accepted"
+  fi
+  if grep -F value-secret-canary "$real_output" >/dev/null; then
+    fail "$real_label leaked a parity value"
+  fi
+  if [ -d "$real_sandbox/legacy-env" ] &&
+     /usr/bin/find "$real_sandbox/legacy-env" -type f -print -quit | grep . >/dev/null; then
+    fail "$real_label wrote a file inside publication"
+  fi
+  [ ! -e "$real_sandbox/escaped.env" ] || fail "$real_label escaped the publication root"
+}
+
+expect_real_validation_failure 'extra parity root field' extra-root ExRt01
+expect_real_validation_failure 'parity allowlist path traversal' allowlist-escape Escp01
+expect_real_validation_failure 'wrong parity service set' wrong-service-set Serv01
+expect_real_validation_failure 'malformed parity stack mapping' malformed-stack Stak01
+
+real_valid_sandbox=$(create_real_sandbox Vld001)
+real_valid_output=$temporary_root/real-valid-output
+if ! run_real_render "$real_parity_root/valid.vault" "$real_valid_sandbox" \
+    > "$real_valid_output" 2>&1; then
+  real_valid_diagnostic=$(sed -n '1p' "$real_valid_output")
+  fail "valid encrypted parity fixture was rejected by pinned Ansible: ${real_valid_diagnostic:-none}"
+fi
+[ "$(/usr/bin/find "$real_valid_sandbox/legacy-env" -type f -name '*.env' | wc -l | tr -d ' ')" = 9 ] ||
+  fail 'valid encrypted parity fixture did not render nine environments'
+
+ruby -ryaml - "$test_dir/legacy-render.yml" "$test_dir/templates/legacy-env.j2" <<'RUBY'
 play = YAML.safe_load_file(ARGV.fetch(0))
 render_play = play.fetch(0)
 tasks = render_play.fetch("tasks")
 raise "render tasks can expose values" unless tasks.all? { |task| task["no_log"] == true }
-
-manifest = YAML.safe_load_file(ARGV.fetch(2))
-manifest_services = manifest.fetch("services").map { |service| service.fetch("name") }.sort
-expected_services = render_play.fetch("vars").fetch("legacy_expected_services").sort
-raise "legacy expected service set differs from manifest" unless expected_services == manifest_services
-
-root_validation = tasks.find { |task| task["name"] == "Validate legacy parity root identity" }
-raise "legacy parity root validation is absent" unless root_validation
-required_root_assertions = [
-  "schema is integer",
-  "schema == 1",
-  "legacy_commit is string",
-  "legacy_commit == legacy_expected_commit",
-  "stacks is mapping",
-  "stacks.keys() | list | sort == legacy_expected_services | sort",
-]
-actual_root_assertions = root_validation.fetch("ansible.builtin.assert").fetch("that")
-unless actual_root_assertions.sort == required_root_assertions.sort
-  raise "legacy parity root assertions differ from contract"
-end
 
 source = File.read(ARGV.fetch(1))
 raise "template does not sort entries" unless source.include?("sort(attribute='key')")

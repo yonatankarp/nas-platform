@@ -748,6 +748,9 @@ execute_phase() {
       ansible-playbook "$mac_repo_dir/validate-vault.yml" \
         --vault-password-file "$vault_password_file" -e @"$vault_file" \
         -e "platform_vault_file=$vault_file"
+      if [ "$lane" = adoption ]; then
+        "$mac_script_dir/adoption.sh" render
+      fi
       ;;
     deploy)
       if [ "$lane" = fresh ]; then

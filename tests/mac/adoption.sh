@@ -82,6 +82,19 @@ preflight() {
     [ -f "$candidate" ] && [ ! -L "$candidate" ] || die 'legacy compose file is unavailable'
     git -C "$legacy_root" ls-files --error-unmatch -- "$path" >/dev/null 2>&1 ||
       die 'legacy compose file is not tracked'
+    index_entry=$(git -C "$legacy_root" ls-files -v -- "$path" 2>/dev/null) ||
+      die 'legacy compose index state is unavailable'
+    [ "$index_entry" = "H $path" ] || die 'legacy compose file has unsafe index flags'
+    git -C "$legacy_root" cat-file blob "HEAD:$path" 2>/dev/null |
+      cmp -s - "$candidate" || die 'legacy compose file differs from HEAD'
+    head_entry=$(git -C "$legacy_root" ls-tree HEAD -- "$path" 2>/dev/null) ||
+      die 'legacy compose mode is unavailable'
+    head_mode=${head_entry%% *}
+    case $head_mode in
+      100644) [ ! -x "$candidate" ] || die 'legacy compose mode differs from HEAD' ;;
+      100755) [ -x "$candidate" ] || die 'legacy compose mode differs from HEAD' ;;
+      *) die 'legacy compose mode differs from HEAD' ;;
+    esac
   done
   docker version >/dev/null 2>&1 || die 'Docker is unavailable'
   export PLATFORM_LEGACY_ROOT=$legacy_root
@@ -104,19 +117,47 @@ sandbox=$(mac_validate_sandbox "$PLATFORM_MAC_SANDBOX" 2>/dev/null) || die 'owne
 [ -f "$PLATFORM_MAC_PARITY_VAULT_PASSWORD_FILE" ] &&
   [ ! -L "$PLATFORM_MAC_PARITY_VAULT_PASSWORD_FILE" ] || die 'parity password path is unsafe'
 
-legacy_env_root=$sandbox/legacy-env
-if [ ! -e "$legacy_env_root" ]; then
-  mkdir -m 0700 "$legacy_env_root"
+published_env_root=$sandbox/legacy-env
+if [ -e "$published_env_root" ]; then
+  [ -d "$published_env_root" ] && [ ! -L "$published_env_root" ] &&
+    [ "$(mac_owner_id "$published_env_root")" = "$(id -u)" ] &&
+    [ "$(mac_file_mode "$published_env_root")" = 700 ] ||
+    die 'legacy environment directory is unsafe'
 fi
-[ -d "$legacy_env_root" ] && [ ! -L "$legacy_env_root" ] &&
-  [ "$(mac_owner_id "$legacy_env_root")" = "$(id -u)" ] &&
-  [ "$(mac_file_mode "$legacy_env_root")" = 700 ] || die 'legacy environment directory is unsafe'
 
+render_work=$(mktemp -d "$sandbox/.legacy-render.XXXXXX") || die 'legacy render staging failed'
+chmod 0700 "$render_work" || die 'legacy render staging failed'
+cleanup_render() {
+  render_status=$?
+  trap - EXIT HUP INT TERM
+  if [ -n "${previous_env_root:-}" ] && [ -d "$previous_env_root" ] &&
+     [ ! -e "$published_env_root" ]; then
+    mv "$previous_env_root" "$published_env_root" || render_status=1
+  fi
+  if [ -d "$render_work" ] && [ ! -L "$render_work" ]; then
+    /usr/bin/find "$render_work" -depth -delete
+  fi
+  exit "$render_status"
+}
+trap cleanup_render EXIT HUP INT TERM
+
+decrypted_parity=$render_work/parity.yml
+if ! ansible-vault view --vault-password-file "$PLATFORM_MAC_PARITY_VAULT_PASSWORD_FILE" \
+    "$PLATFORM_MAC_PARITY_VAULT_FILE" > "$decrypted_parity" 2>/dev/null; then
+  die 'legacy parity rendering failed'
+fi
+chmod 0600 "$decrypted_parity" || die 'legacy parity rendering failed'
+if ! ruby "$repo_dir/scripts/portainer-parity.rb" --validate-stdin \
+    --mapping "$repo_dir/config/portainer-parity.yml" --legacy-commit "$expected_commit" \
+    < "$decrypted_parity" >/dev/null 2>&1; then
+  die 'legacy parity rendering failed'
+fi
+
+legacy_env_root=$render_work/legacy-env
+mkdir -m 0700 "$legacy_env_root" || die 'legacy render staging failed'
 if ! ansible-playbook -i localhost, -c local "$script_dir/legacy-render.yml" \
-  --vault-password-file "$PLATFORM_MAC_PARITY_VAULT_PASSWORD_FILE" \
-  -e @"$PLATFORM_MAC_PARITY_VAULT_FILE" \
-  -e legacy_env_root="$legacy_env_root" -e legacy_expected_commit="$expected_commit" \
-  >/dev/null 2>&1; then
+  -e @"$decrypted_parity" -e legacy_env_root="$legacy_env_root" \
+  -e legacy_expected_commit="$expected_commit" >/dev/null 2>&1; then
   die 'legacy parity rendering failed'
 fi
 
@@ -129,4 +170,17 @@ for service in $expected_services; do
   [ -f "$rendered" ] && [ ! -L "$rendered" ] && [ "$(mac_owner_id "$rendered")" = "$(id -u)" ] &&
     [ "$(mac_file_mode "$rendered")" = 600 ] || die 'rendered legacy environment is unsafe'
 done
+previous_env_root=$render_work/previous-env
+if [ -e "$published_env_root" ]; then
+  mv "$published_env_root" "$previous_env_root" || die 'legacy environment publication failed'
+fi
+if ! mv "$legacy_env_root" "$published_env_root"; then
+  if [ -d "$previous_env_root" ] && [ ! -e "$published_env_root" ]; then
+    mv "$previous_env_root" "$published_env_root" || true
+  fi
+  die 'legacy environment publication failed'
+fi
+if [ -d "$previous_env_root" ] && [ ! -L "$previous_env_root" ]; then
+  /usr/bin/find "$previous_env_root" -depth -delete
+fi
 printf '%s\n' 'Legacy adoption render: nine protected environments ready'

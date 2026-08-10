@@ -848,4 +848,80 @@ if find "$temporary_parent" -name '*.tmp.*' -print -quit | grep . >/dev/null; th
   fail 'protected input pinning left an unsafe temporary copy'
 fi
 
+preflight_fake_bin=$temporary_parent/preflight-tools
+mkdir -m 0700 "$preflight_fake_bin"
+cat > "$preflight_fake_bin/docker" <<'STUB'
+#!/bin/sh
+case ${1-} in
+  info|version) exit 0 ;;
+  ps) exit 0 ;;
+  *) exit 2 ;;
+esac
+STUB
+cat > "$preflight_fake_bin/ansible-playbook" <<'STUB'
+#!/bin/sh
+exit 0
+STUB
+chmod 0700 "$preflight_fake_bin/docker" "$preflight_fake_bin/ansible-playbook"
+expect_failure 'adoption preflight without legacy checkout' 'NAS_INFRASTRUCTURE_DIR is required' \
+  env -u NAS_INFRASTRUCTURE_DIR PLATFORM_MAC_TMPDIR="$temporary_parent" \
+    PATH="$preflight_fake_bin:$PATH" "$runner" --lane adoption \
+    --vault-file "$vault_file" --vault-password-file "$password_file" \
+    --parity-vault-file "$parity_vault_file" --parity-vault-password-file "$parity_password_file" \
+    --phase preflight
+
+preflight_legacy_root=$temporary_parent/nas-infrastructure
+mkdir -p "$preflight_legacy_root/.git"
+ruby -ryaml -rfileutils - "$repo_dir/services/manifest.yml" "$preflight_legacy_root" <<'RUBY'
+manifest = YAML.safe_load_file(ARGV.fetch(0))
+manifest.fetch("services").each do |service|
+  path = File.join(ARGV.fetch(1), service.fetch("legacy_path"))
+  FileUtils.mkdir_p(File.dirname(path))
+  File.write(path, "services: {}\n")
+end
+RUBY
+cat > "$preflight_fake_bin/git" <<'STUB'
+#!/bin/sh
+case " $* " in
+  *' remote get-url origin ')
+    printf '%s\n' 'https://github.com/yonatankarp/nas-infrastructure.git'
+    ;;
+  *' rev-parse --show-toplevel ')
+    printf '%s\n' "${FAKE_LEGACY_ROOT:?}"
+    ;;
+  *' rev-parse HEAD ')
+    printf '%s\n' '400f03f276ae1bb69f5460c175b9fb923d620f1a'
+    ;;
+  *' status --porcelain=v1 --untracked-files=all ') ;;
+  *' ls-files --error-unmatch -- '*)
+    for argument in "$@"; do path=$argument; done
+    printf '%s\n' "$path"
+    ;;
+  *' ls-files -v -- '*)
+    for argument in "$@"; do path=$argument; done
+    printf 'H %s\n' "$path"
+    ;;
+  *' cat-file blob HEAD:'*)
+    for argument in "$@"; do object=$argument; done
+    cat "${FAKE_LEGACY_ROOT:?}/${object#HEAD:}"
+    ;;
+  *' ls-tree HEAD -- '*)
+    for argument in "$@"; do path=$argument; done
+    printf '100644 blob %040d\t%s\n' 0 "$path"
+    ;;
+  *) exit 2 ;;
+esac
+STUB
+cat > "$preflight_fake_bin/ansible-vault" <<'STUB'
+#!/bin/sh
+exit 1
+STUB
+chmod 0700 "$preflight_fake_bin/git" "$preflight_fake_bin/ansible-vault"
+expect_failure 'adoption preflight with invalid parity' 'legacy parity rendering failed' \
+  env NAS_INFRASTRUCTURE_DIR="$preflight_legacy_root" FAKE_LEGACY_ROOT="$preflight_legacy_root" \
+    PLATFORM_MAC_TMPDIR="$temporary_parent" PATH="$preflight_fake_bin:$PATH" \
+    "$runner" --lane adoption --vault-file "$vault_file" --vault-password-file "$password_file" \
+    --parity-vault-file "$parity_vault_file" --parity-vault-password-file "$parity_password_file" \
+    --phase preflight
+
 printf '%s\n' 'Mac adoption runner: lane phases and protected resume identity hold'
