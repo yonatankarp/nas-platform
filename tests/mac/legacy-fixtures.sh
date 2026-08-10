@@ -13,6 +13,8 @@ PLATFORM_MAC_SANDBOX=$(mac_validate_sandbox "$PLATFORM_MAC_SANDBOX") ||
   mac_die 'owned sandbox is invalid'
 owned_project=$(sed -n 's/^project=//p' "$PLATFORM_MAC_SANDBOX/.nas-platform-mac-owned")
 [ "$PLATFORM_PROJECT_NAME" = "$owned_project" ] || mac_die 'project name differs from owned sandbox'
+export PLATFORM_LEGACY_FIXTURE_MODE=nas-platform-owned-legacy-v1
+export PLATFORM_LEGACY_FIXTURE_SANDBOX=$PLATFORM_MAC_SANDBOX
 
 driver=${PLATFORM_LEGACY_FIXTURE_DRIVER:-$script_dir/legacy-fixture-service.sh}
 [ -x "$driver" ] && [ ! -L "$driver" ] || mac_die 'legacy fixture driver is unavailable'

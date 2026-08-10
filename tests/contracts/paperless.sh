@@ -207,6 +207,11 @@ grep -qF 'wait_healthy(REDIS, WEBSERVER)' "$snapshot" ||
 grep -qF 'request("delete", "/api/documents/' "$snapshot" ||
   fail_contract 'Paperless rollback drill does not destructively test restoration'
 [ "$mode" = static ] && { printf '%s\n' 'Paperless static contract passed'; exit 0; }
+. "$repo_dir/tests/contracts/legacy-fixture-paths.sh"
+legacy_fixture_validate PLATFORM_PAPERLESS_CONSUME_ROOT legacy/paperless-ngx/consume ||
+  fail_contract 'legacy consume root is unsafe'
+legacy_fixture_validate PLATFORM_PAPERLESS_EXPORT_ROOT legacy/paperless-ngx/export ||
+  fail_contract 'legacy export root is unsafe'
 
 : "${PLATFORM_CONTRACT_VAULT_FILE:=${PLATFORM_MAC_VAULT_FILE:-}}"
 : "${PLATFORM_CONTRACT_VAULT_PASSWORD_FILE:=${PLATFORM_MAC_VAULT_PASSWORD_FILE:-}}"

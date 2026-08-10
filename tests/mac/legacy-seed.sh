@@ -116,21 +116,13 @@ RUBY
 stage_legacy_files() {
   stage_service=$1
   stage_files=$2
-  ruby -rjson -rsecurerandom - "$seed_root/current/services/$stage_service" "$stage_files" >/dev/null 2>&1 <<'RUBY'
+  ruby -rjson -r"$script_dir/legacy_secure_copy.rb" - \
+    "$seed_root/current/services/$stage_service" "$stage_files" >/dev/null 2>&1 <<'RUBY'
 destination, encoded = ARGV
 files = JSON.parse(encoded)
 raise "unsafe" unless files.is_a?(Array) && files.length == 2
 %w[compose.yml compose.mac.yml].zip(files).each do |name, source|
-  source_stat = File.lstat(source)
-  raise "unsafe" unless source_stat.file? && !source_stat.symlink?
-  target = File.join(destination, name)
-  temporary = File.join(destination, ".#{name}.#{Process.pid}.#{SecureRandom.hex(8)}")
-  File.open(temporary, File::WRONLY | File::CREAT | File::EXCL, 0o600) do |output|
-    File.open(source, File::RDONLY) { |input| IO.copy_stream(input, output) }
-    output.flush
-    output.fsync
-  end
-  File.rename(temporary, target)
+  LegacySecureCopy.copy(source, File.join(destination, name))
 end
 RUBY
 }

@@ -55,6 +55,13 @@ jobs:
         if: steps.scope.outputs.docs_only != 'true'
         run: tests/integration_cleanup_test.sh
 
+      - name: Check legacy seed security
+        if: steps.scope.outputs.docs_only != 'true'
+        run: |
+          tests/mac/legacy-seed-test.sh
+          tests/mac/legacy-fixture-path-test.sh
+          ruby tests/mac/legacy-secure-copy-test.rb
+
       - name: Install Ansible tooling
         if: steps.scope.outputs.docs_only != 'true'
         run: |
@@ -76,7 +83,9 @@ jobs:
 
       - name: Check legacy seed playbook syntax
         if: steps.scope.outputs.docs_only != 'true'
-        run: ansible-playbook -i inventory/mac.yml tests/mac/legacy-role-seed.yml --syntax-check
+        run: |
+          ansible-playbook -i inventory/mac.yml tests/mac/legacy-role-seed.yml --syntax-check
+          ansible-playbook -i localhost, -c local tests/mac/legacy-beszel-key.yml --syntax-check
 
       - name: Check legacy parity rendering
         if: steps.scope.outputs.docs_only != 'true'

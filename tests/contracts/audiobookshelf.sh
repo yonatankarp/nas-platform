@@ -85,6 +85,9 @@ end
 RUBY
 
 [ "$mode" = static ] && { printf '%s\n' 'Audiobookshelf static contract passed'; exit 0; }
+. "$repo_dir/tests/contracts/legacy-fixture-paths.sh"
+legacy_fixture_validate PLATFORM_AUDIOBOOKSHELF_MEDIA_LIBRARY legacy/audiobookshelf/media ||
+  fail_contract 'legacy fixture root is unsafe'
 
 : "${PLATFORM_CONTRACT_VAULT_FILE:=${PLATFORM_MAC_VAULT_FILE:-}}"
 : "${PLATFORM_CONTRACT_VAULT_PASSWORD_FILE:=${PLATFORM_MAC_VAULT_PASSWORD_FILE:-}}"

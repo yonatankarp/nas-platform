@@ -155,6 +155,16 @@ case " $* " in
     done
     exit 0
     ;;
+  *legacy-beszel-key.yml*)
+    hub_root=
+    for argument in "$@"; do
+      case $argument in beszel_legacy_hub_root=*) hub_root=${argument#beszel_legacy_hub_root=} ;; esac
+    done
+    [ -n "$hub_root" ] || exit 33
+    printf '%s\n' 'disposable-beszel-private-key' > "$hub_root/id_ed25519"
+    chmod 0600 "$hub_root/id_ed25519"
+    exit 0
+    ;;
 esac
 case " $* " in
   *' --tags '*)
@@ -304,12 +314,14 @@ if env PATH="$fake_bin:$PATH" FAKE_COMMAND_LOG="$log" FAKE_PARITY_DOCUMENT="$par
     PLATFORM_MAC_SANDBOX="$unhealthy_sandbox" PLATFORM_PROJECT_NAME=nas-platform-mac-unhl42 \
     PLATFORM_MAC_PARITY_VAULT_FILE="$parity_vault" \
     PLATFORM_MAC_PARITY_VAULT_PASSWORD_FILE="$parity_password" \
+    PLATFORM_MAC_VAULT_FILE="$temporary_root/deployment-vault.yml" \
+    PLATFORM_MAC_VAULT_PASSWORD_FILE="$temporary_root/deployment-password" \
     "$test_dir/adoption.sh" legacy-deploy >/dev/null 2>&1; then
   fail 'unhealthy containers after Compose up passed legacy deployment'
 fi
 grep -q "${tab}up${tab}--detach${tab}--wait${tab}--wait-timeout${tab}600$" "$log" ||
   fail 'unhealthy-after-up test did not reach Compose deployment'
-if grep '^ansible-playbook' "$log" | grep -v 'legacy-render.yml' >/dev/null; then
+if grep '^ansible-playbook' "$log" | grep -Ev 'legacy-(render|beszel-key)\.yml' >/dev/null; then
   fail 'service seeding began after an unhealthy deployment'
 fi
 
@@ -320,6 +332,8 @@ env PATH="$fake_bin:$PATH" FAKE_COMMAND_LOG="$log" FAKE_PARITY_DOCUMENT="$parity
   PLATFORM_PROJECT_NAME=nas-platform-mac-lgcy42 \
   PLATFORM_MAC_PARITY_VAULT_FILE="$parity_vault" \
   PLATFORM_MAC_PARITY_VAULT_PASSWORD_FILE="$parity_password" \
+  PLATFORM_MAC_VAULT_FILE="$temporary_root/deployment-vault.yml" \
+  PLATFORM_MAC_VAULT_PASSWORD_FILE="$temporary_root/deployment-password" \
   "$test_dir/adoption.sh" legacy-deploy >/dev/null
 [ -f "$sandbox/legacy/paperless-ngx/tessdata/heb.traineddata" ] ||
   fail 'legacy deployment did not prepare the file-backed Paperless bind'
@@ -329,10 +343,16 @@ render_line=$(grep -n 'legacy-render.yml' "$log" | head -n 1 | cut -d: -f1)
 first_config=$(grep -n "${tab}config${tab}--quiet$" "$log" | head -n 1 | cut -d: -f1)
 last_config=$(grep -n "${tab}config${tab}--quiet$" "$log" | tail -n 1 | cut -d: -f1)
 first_up=$(grep -n "${tab}up${tab}--detach${tab}--wait${tab}--wait-timeout${tab}600$" "$log" | head -n 1 | cut -d: -f1)
+beszel_key_line=$(grep -n 'legacy-beszel-key.yml' "$log" | head -n 1 | cut -d: -f1)
 last_up=$(grep -n "${tab}up${tab}--detach${tab}--wait${tab}--wait-timeout${tab}600$" "$log" | tail -n 1 | cut -d: -f1)
 first_health=$(grep -n "${tab}ps${tab}--all${tab}--format${tab}json$" "$log" | head -n 1 | cut -d: -f1)
-[ "$render_line" -lt "$first_config" ] && [ "$last_config" -lt "$first_up" ] && \
+[ "$render_line" -lt "$first_config" ] && [ "$last_config" -lt "$beszel_key_line" ] && \
+  [ "$beszel_key_line" -lt "$first_up" ] && \
   [ "$last_up" -lt "$first_health" ] || fail 'runtime legacy deployment ordering differs'
+[ -f "$sandbox/legacy/beszel/hub/id_ed25519" ] &&
+  [ ! -L "$sandbox/legacy/beszel/hub/id_ed25519" ] &&
+  [ "$(ruby -e 'printf "%o", File.stat(ARGV.fetch(0)).mode & 0777' "$sandbox/legacy/beszel/hub/id_ed25519")" = 600 ] ||
+  fail 'Beszel deployment key was not safely installed before first start'
 [ "$(grep "${tab}config${tab}--quiet$" "$log" | wc -l | tr -d ' ')" -eq 9 ] ||
   fail 'runtime deployment did not validate nine Compose projects'
 [ "$(grep "${tab}up${tab}--detach${tab}--wait${tab}--wait-timeout${tab}600$" "$log" | wc -l | tr -d ' ')" -eq 9 ] ||
@@ -394,7 +414,7 @@ done
 fixture_line=$(grep -n '^legacy-fixture' "$log" | head -n 1 | cut -d: -f1)
 last_health_gate=$(grep -n "${tab}ps${tab}--all${tab}--format${tab}json$" "$log" |
   tail -n 1 | cut -d: -f1)
-first_service_seed=$(grep -n '^ansible-playbook' "$log" | grep -v 'legacy-render.yml' |
+first_service_seed=$(grep -n '^ansible-playbook' "$log" | grep -Ev 'legacy-(render|beszel-key)\.yml' |
   head -n 1 | cut -d: -f1)
 last_service_seed=$(grep -n '^ansible-playbook' "$log" | tail -n 1 | cut -d: -f1)
 [ "$last_health_gate" -lt "$first_service_seed" ] ||

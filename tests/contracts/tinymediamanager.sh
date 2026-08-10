@@ -96,6 +96,13 @@ abort "tinyMediaManager contract failed: role must not edit an opaque database" 
 RUBY
 
 [ "$mode" = static ] && { printf '%s\n' 'tinyMediaManager static contract passed'; exit 0; }
+. "$repo_dir/tests/contracts/legacy-fixture-paths.sh"
+legacy_fixture_validate PLATFORM_TINYMEDIAMANAGER_MOVIES_ROOT legacy/tinymediamanager/movies ||
+  fail_contract 'legacy movies root is unsafe'
+legacy_fixture_validate PLATFORM_TINYMEDIAMANAGER_SERIES_ROOT legacy/tinymediamanager/series ||
+  fail_contract 'legacy series root is unsafe'
+legacy_fixture_validate PLATFORM_TINYMEDIAMANAGER_SETTINGS_ROOT legacy/tinymediamanager/data/data ||
+  fail_contract 'legacy settings root is unsafe'
 
 : "${PLATFORM_CONTRACT_VAULT_FILE:=${PLATFORM_MAC_VAULT_FILE:-}}"
 : "${PLATFORM_CONTRACT_VAULT_PASSWORD_FILE:=${PLATFORM_MAC_VAULT_PASSWORD_FILE:-}}"

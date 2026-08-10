@@ -60,6 +60,9 @@ abort "Komga contract failed: role must not edit an opaque database" if
 RUBY
 
 [ "$mode" = static ] && { printf '%s\n' 'Komga static contract passed'; exit 0; }
+. "$repo_dir/tests/contracts/legacy-fixture-paths.sh"
+legacy_fixture_validate PLATFORM_KOMGA_LIBRARY_PATH legacy/komga/library ||
+  fail_contract 'legacy fixture root is unsafe'
 
 : "${PLATFORM_CONTRACT_VAULT_FILE:=${PLATFORM_MAC_VAULT_FILE:-}}"
 : "${PLATFORM_CONTRACT_VAULT_PASSWORD_FILE:=${PLATFORM_MAC_VAULT_PASSWORD_FILE:-}}"

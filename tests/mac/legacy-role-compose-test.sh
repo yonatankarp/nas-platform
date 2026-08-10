@@ -61,6 +61,7 @@ vault_test_ntfy_tokens: 'user:tk_disposable-token'
 vault_tinymediamanager_password: 'disposable-tmm-password'
 vault_beszel_agent_key: 'ssh-ed25519-disposable-public-key'
 vault_beszel_universal_token: 'disposable-beszel-token'
+vault_beszel_hub_private_key: 'disposable-beszel-private-key'
 vault_paperless_db_name: 'paperless'
 vault_paperless_db_username: 'paperless'
 vault_paperless_db_password: 'disposable-paperless-db-password'
@@ -77,6 +78,37 @@ chmod 0600 "$vault_password" "$vault_plain"
   --output "$vault_file" "$vault_plain" >/dev/null 2>&1 ||
   fail 'could not create the disposable encrypted deployment vault'
 rm -f -- "$vault_plain"
+
+beszel_hub_root=$temporary_root/sandbox/legacy/beszel/hub
+mkdir -m 0700 -p "$beszel_hub_root"
+beszel_key_log=$temporary_root/beszel-key.log
+if ! ANSIBLE_NOCOLOR=1 "$ansible_playbook" -i localhost, -c local \
+    "$test_dir/legacy-beszel-key.yml" --vault-password-file "$vault_password" \
+    -e @"$vault_file" -e "beszel_legacy_hub_root=$beszel_hub_root" \
+    >"$beszel_key_log" 2>&1; then
+  fail 'Beszel pre-deploy key installation failed'
+fi
+[ -f "$beszel_hub_root/id_ed25519" ] && [ ! -L "$beszel_hub_root/id_ed25519" ] ||
+  fail 'Beszel pre-deploy key is absent or unsafe'
+[ "$(ruby -e 'printf "%o", File.stat(ARGV.fetch(0)).mode & 0777' "$beszel_hub_root/id_ed25519")" = 600 ] ||
+  fail 'Beszel pre-deploy key mode differs'
+grep -qx 'disposable-beszel-private-key' "$beszel_hub_root/id_ed25519" ||
+  fail 'Beszel pre-deploy key differs from deployment vault'
+grep -F 'disposable-beszel-private-key' "$beszel_key_log" >/dev/null 2>&1 &&
+  fail 'Beszel pre-deploy key leaked into diagnostics'
+outside_key=$temporary_root/outside-key
+printf '%s\n' 'outside-sentinel' > "$outside_key"
+rm -f -- "$beszel_hub_root/id_ed25519"
+ln -s "$outside_key" "$beszel_hub_root/id_ed25519"
+if ANSIBLE_NOCOLOR=1 "$ansible_playbook" -i localhost, -c local \
+    "$test_dir/legacy-beszel-key.yml" --vault-password-file "$vault_password" \
+    -e @"$vault_file" -e "beszel_legacy_hub_root=$beszel_hub_root" \
+    >"$beszel_key_log" 2>&1; then
+  fail 'Beszel pre-deploy key accepted a symlinked destination'
+fi
+grep -qx 'outside-sentinel' "$outside_key" ||
+  fail 'Beszel pre-deploy key followed a symlink outside the owned bind'
+rm -f -- "$beszel_hub_root/id_ed25519"
 
 render_root=$temporary_root/rendered
 mkdir -m 0700 "$render_root"
@@ -434,8 +466,12 @@ for mutation_service in audiobookshelf beszel dozzle immich jellyfin komga ntfy 
   done
 done
 
-if grep -R -F 'disposable-tmm-password' "$temporary_root" \
-    --exclude='*.env' --exclude='*.enc' --exclude='*.json' --exclude='render.yml' >/dev/null 2>&1; then
-  fail 'a compatibility diagnostic exposed a protected value'
-fi
+for protected_value in disposable-tmm-password disposable-immich-db-password \
+    disposable-paperless-db-password disposable-paperless-admin-password \
+    disposable-paperless-secret-key; do
+  if grep -R -F "$protected_value" "$temporary_root" \
+      --exclude='*.env' --exclude='*.enc' --exclude='*.json' --exclude='render.yml' >/dev/null 2>&1; then
+    fail 'a compatibility diagnostic exposed a protected value'
+  fi
+done
 printf '%s\n' 'Legacy role Compose compatibility: production role environments fit pinned stacks'

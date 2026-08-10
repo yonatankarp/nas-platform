@@ -139,6 +139,11 @@ puts "Jellyfin static contract passed (#{platform})"
 RUBY
 
 [ "$mode" = static ] && exit 0
+. "$repo_dir/tests/contracts/legacy-fixture-paths.sh"
+legacy_fixture_validate PLATFORM_JELLYFIN_MEDIA_ROOT legacy/jellyfin/media ||
+  fail_contract 'legacy media root is unsafe'
+legacy_fixture_validate PLATFORM_JELLYFIN_TRANSCODE_ROOT legacy/jellyfin/cache/transcodes ||
+  fail_contract 'legacy transcode root is unsafe'
 
 : "${PLATFORM_CONTRACT_VAULT_FILE:=${PLATFORM_MAC_VAULT_FILE:-}}"
 : "${PLATFORM_CONTRACT_VAULT_PASSWORD_FILE:=${PLATFORM_MAC_VAULT_PASSWORD_FILE:-}}"

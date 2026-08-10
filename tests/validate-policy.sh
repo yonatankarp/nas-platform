@@ -36,6 +36,9 @@ tests/mac/config-isolation.sh
 tests/mac/run-phase-status-test.sh
 tests/mac/adoption-self-test.sh
 tests/mac/adoption.sh --self-test
+tests/mac/legacy-seed-test.sh
+tests/mac/legacy-fixture-path-test.sh
+ruby tests/mac/legacy-secure-copy-test.rb
 tests/mac/dozzle-drift-hook-test.sh
 tests/mac/audiobookshelf-drift-hook-test.sh
 tests/contracts/audiobookshelf-audio-test.sh

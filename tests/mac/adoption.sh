@@ -152,6 +152,16 @@ RUBY
     [ -n "$service" ] && [ -n "$path" ] || die 'service manifest is invalid'
     "$script_dir/legacy-compose.sh" "$service" config
   done
+  [ -f "${PLATFORM_MAC_VAULT_FILE:?deployment vault path is required}" ] &&
+    [ ! -L "$PLATFORM_MAC_VAULT_FILE" ] || die 'deployment vault path is unsafe'
+  [ -f "${PLATFORM_MAC_VAULT_PASSWORD_FILE:?deployment password path is required}" ] &&
+    [ ! -L "$PLATFORM_MAC_VAULT_PASSWORD_FILE" ] || die 'deployment password path is unsafe'
+  if ! ansible-playbook -i localhost, -c local "$script_dir/legacy-beszel-key.yml" \
+      --vault-password-file "$PLATFORM_MAC_VAULT_PASSWORD_FILE" \
+      -e @"$PLATFORM_MAC_VAULT_FILE" \
+      -e "beszel_legacy_hub_root=$sandbox/legacy/beszel/hub" >/dev/null 2>&1; then
+    die 'legacy Beszel identity preparation failed'
+  fi
   printf '%s\n' "$service_paths" | while IFS="$tab" read -r service path; do
     [ -n "$service" ] && [ -n "$path" ] || die 'service manifest is invalid'
     "$script_dir/legacy-compose.sh" "$service" up
