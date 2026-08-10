@@ -237,7 +237,7 @@ def execute_provider(directory, basename, provider_bytes, maximum_size)
   # Buffer the inspected bytes from an anonymous pipe before evaluating them.
   # The sentinel prevents command substitution from stripping trailing newlines.
   provider_command = <<~'PROVIDER_COMMAND'
-    provider_script=$(cat; printf '\036') || exit 70
+    provider_script=$(cat && printf '\036') || exit 70
     provider_script=${provider_script%?}
     exec </dev/null || exit 70
     eval "$provider_script"

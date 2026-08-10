@@ -411,8 +411,9 @@ descriptor_provider=$temporary_parent/provider-descriptor-check
 descriptor_helper=$temporary_parent/provider-descriptor-helper
 cat > "$descriptor_helper" <<'SH'
 #!/bin/sh
+# provider-source-argv-env-probe-9f4a21
 case $(ps -o command= -p "$PPID") in
-  *provider-process-inspection-secret*) exit 11 ;;
+  *provider-source-argv-env-probe-9f4a21*) exit 11 ;;
 esac
 if IFS= read -r unexpected_input; then
   exit 12
@@ -433,6 +434,7 @@ ruby -e '
 SH
 cat > "$descriptor_provider" <<'SH'
 #!/bin/sh
+# provider-source-argv-env-probe-9f4a21
 printf 'argc=%s first=%s\n' "$#" "${1+x}" > "${PLATFORM_DESCRIPTOR_MARKER:?}"
 [ "$#" -eq 0 ] && [ "${1+x}" != x ] || exit 8
 if /usr/bin/find "${PLATFORM_DESCRIPTOR_PROTECTED_ROOT:?}" -name '.provider-*' -print | grep . >/dev/null; then
@@ -440,7 +442,7 @@ if /usr/bin/find "${PLATFORM_DESCRIPTOR_PROTECTED_ROOT:?}" -name '.provider-*' -
   exit 11
 fi
 case $(ps -o command= -p $$)$(env) in
-  *provider-process-inspection-secret*)
+  *provider-source-argv-env-probe-9f4a21*)
     printf '%s\n' process-bytes >> "${PLATFORM_DESCRIPTOR_MARKER:?}"
     exit 12
     ;;
@@ -513,6 +515,42 @@ if grep -F replacement-in-place-secret "$in_place_output" >/dev/null; then
 fi
 if /usr/bin/find "$temporary_parent" -name '.provider-*' -print | grep . >/dev/null; then
   fail 'private provider snapshot remained after provider execution'
+fi
+
+reader_failure_provider=$temporary_parent/provider-reader-failure
+reader_failure_marker=$temporary_parent/provider-reader-failure-marker
+reader_failure_sandbox=$temporary_parent/nas-platform-mac.RdF123
+mkdir -m 0700 "$reader_failure_sandbox"
+printf 'schema=1\nproject=%s\n' nas-platform-mac-rdf123 \
+  > "$reader_failure_sandbox/.nas-platform-mac-owned"
+chmod 0600 "$reader_failure_sandbox/.nas-platform-mac-owned"
+cat > "$reader_failure_provider" <<'SH'
+#!/bin/sh
+printf '%s\n' partial-reader-executed > "${PLATFORM_READER_FAILURE_MARKER:?}"
+exit 0
+# provider-reader-failure-secret-tail
+SH
+chmod 0700 "$reader_failure_provider"
+reader_failure_tools=$temporary_parent/provider-reader-failure-tools
+mkdir -m 0700 "$reader_failure_tools"
+cat > "$reader_failure_tools/cat" <<'SH'
+#!/bin/sh
+/usr/bin/dd bs=1 count=100 2>/dev/null
+exit 7
+SH
+chmod 0700 "$reader_failure_tools/cat"
+expect_failure 'partial nonzero provider reader' 'protected parity password input provider failed' \
+  env PLATFORM_READER_FAILURE_MARKER="$reader_failure_marker" \
+    PLATFORM_MAC_TMPDIR="$temporary_parent" PATH="$reader_failure_tools:$PATH" \
+    "$runner" --lane adoption --vault-file "$vault_file" --vault-password-file "$password_file" \
+    --parity-vault-file "$parity_vault_file" \
+    --parity-vault-password-file "$reader_failure_provider" --phase report \
+    --sandbox "$reader_failure_sandbox"
+[ ! -e "$reader_failure_marker" ] || fail 'partial nonzero provider reader executed its prefix'
+[ ! -e "$reader_failure_sandbox/protected-inputs/parity-password" ] ||
+  fail 'partial nonzero provider reader pinned output'
+if grep -F provider-reader-failure-secret-tail "$temporary_parent/output" >/dev/null; then
+  fail 'partial nonzero provider reader leaked protected bytes'
 fi
 
 nul_provider=$temporary_parent/provider-nul
