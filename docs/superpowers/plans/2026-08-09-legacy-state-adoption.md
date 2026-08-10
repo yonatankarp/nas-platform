@@ -12,7 +12,7 @@
 
 - Branch: `agent/task-14-adoption`
 - Implementation baseline before this checkpoint:
-  `81b5c6a8606eb0ef30899480525a55d6be1ef9af`
+  `07da7aa9bd270f15e2b60e0ab101fd7a555e2c93`
 - Managed-user migration prerequisite: complete. Full synthetic integration passed at
   `a3195f49a00a1906fae7fd92811d08a329af9e19`, including all registered live
   contracts, second convergence with `changed=0`, and final check mode.
@@ -29,7 +29,13 @@
   `81b5c6a8606eb0ef30899480525a55d6be1ef9af`. The pinned Beszel Intel image is
   retained with a portable runtime posture. Read-only Docker socket binds are
   allowed only on the Beszel and Dozzle socket-proxy services.
-- Task 4 is the immediate next action. Tasks 5–9 are not started.
+- Task 4: complete and independently spec/security reviewed. Initial feature
+  commit `b562c8a61aea228d31ed8f910df2f8d02637430d`; exact role prerequisites,
+  fixture namespaces, structured health, all-nine legacy environment adapters,
+  pre-start Beszel identity, contained fixture controls, secure staging, and
+  default temporary-root corrections end at
+  `07da7aa9bd270f15e2b60e0ab101fd7a555e2c93`.
+- Task 5 is the immediate next action. Tasks 6–9 are not started.
 - Task 10: not started and remains gated on explicitly supplied/authorized
   protected deployment and parity inputs plus the clean pinned legacy checkout.
 - No protected production inputs have been accessed and no live migration has
