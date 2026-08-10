@@ -15,6 +15,7 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 
 fail() { printf '%s\n' "$1" >&2; exit 1; }
+tab=$(printf '\t')
 
 sandbox=$temporary_root/nas-platform-mac.Abc123
 mkdir -m 0700 "$sandbox" "$sandbox/legacy" "$sandbox/legacy/komga" \
@@ -54,15 +55,67 @@ fake_bin=$temporary_root/bin
 mkdir -m 0700 "$fake_bin"
 cat > "$fake_bin/ruby" <<'SH'
 #!/bin/sh
-env | grep -E '^PLATFORM_(LEGACY_FIXTURE_|AUDIOBOOKSHELF_MEDIA_LIBRARY|KOMGA_LIBRARY_PATH|TINYMEDIAMANAGER_.*_ROOT|JELLYFIN_.*_ROOT|IMMICH_.*_ROOT|PAPERLESS_.*_ROOT)=' && exit 91
+env | grep -E '^PLATFORM_(LEGACY_FIXTURE_|FIXTURE_COMPOSE_|AUDIOBOOKSHELF_MEDIA_LIBRARY|KOMGA_LIBRARY_PATH|TINYMEDIAMANAGER_.*_ROOT|JELLYFIN_.*_ROOT|IMMICH_.*_ROOT|PAPERLESS_.*_ROOT)=' && exit 91
+for variable in PLATFORM_TINYMEDIAMANAGER_CONTAINER PLATFORM_JELLYFIN_CONTAINER \
+    PLATFORM_IMMICH_SERVER_CONTAINER PLATFORM_IMMICH_MACHINE_LEARNING_CONTAINER \
+    PLATFORM_IMMICH_REDIS_CONTAINER PLATFORM_IMMICH_POSTGRES_CONTAINER \
+    PLATFORM_PAPERLESS_WEBSERVER_CONTAINER; do
+  container=$(printenv "$variable" 2>/dev/null || true)
+  [ -z "$container" ] || docker inspect "$container"
+done
 exit 0
 SH
-chmod 0700 "$fake_bin/ruby"
-common_env="PATH=$fake_bin:$PATH PLATFORM_MAC_VAULT_FILE=x PLATFORM_MAC_VAULT_PASSWORD_FILE=x PLATFORM_MEDIA_ROOT=/outside PLATFORM_DOCKER_ROOT=/outside PLATFORM_REPORT_ROOT=/outside PLATFORM_PROJECT_NAME=fresh PLATFORM_AUDIOBOOKSHELF_PORT=1 PLATFORM_KOMGA_PORT=1 PLATFORM_TINYMEDIAMANAGER_API_PORT=1 PLATFORM_JELLYFIN_PORT=1 PLATFORM_IMMICH_PORT=1 PLATFORM_PAPERLESS_PORT=1 PLATFORM_LEGACY_FIXTURE_MODE=nas-platform-owned-legacy-v1 PLATFORM_LEGACY_FIXTURE_SANDBOX=$sandbox PLATFORM_KOMGA_LIBRARY_PATH=$outside"
-for wrapper in audiobookshelf komga tinymediamanager jellyfin immich paperless; do
+cat > "$fake_bin/docker" <<'SH'
+#!/bin/sh
+printf 'docker' >> "${FAKE_DOCKER_LOG:?}"
+for argument in "$@"; do printf '\t%s' "$argument" >> "$FAKE_DOCKER_LOG"; done
+printf '\n' >> "$FAKE_DOCKER_LOG"
+SH
+chmod 0700 "$fake_bin/ruby" "$fake_bin/docker"
+docker_log=$temporary_root/docker.log
+run_fresh_wrapper() {
+  env PATH="$fake_bin:$PATH" FAKE_DOCKER_LOG="$docker_log" \
+    PLATFORM_MAC_VAULT_FILE=x PLATFORM_MAC_VAULT_PASSWORD_FILE=x \
+    PLATFORM_MEDIA_ROOT=/outside PLATFORM_DOCKER_ROOT=/outside \
+    PLATFORM_REPORT_ROOT=/outside PLATFORM_PROJECT_NAME=fresh \
+    PLATFORM_AUDIOBOOKSHELF_PORT=1 PLATFORM_KOMGA_PORT=1 \
+    PLATFORM_TINYMEDIAMANAGER_API_PORT=1 PLATFORM_JELLYFIN_PORT=1 \
+    PLATFORM_IMMICH_PORT=1 PLATFORM_PAPERLESS_PORT=1 \
+    PLATFORM_LEGACY_FIXTURE_MODE=nas-platform-owned-legacy-v1 \
+    PLATFORM_LEGACY_FIXTURE_SANDBOX="$sandbox" \
+    PLATFORM_FIXTURE_COMPOSE_PROJECT=hostile-project \
+    PLATFORM_FIXTURE_COMPOSE_SERVICE=hostile-service \
+    PLATFORM_KOMGA_LIBRARY_PATH="$outside" \
+    PLATFORM_TINYMEDIAMANAGER_CONTAINER=hostile-tmm \
+    PLATFORM_JELLYFIN_CONTAINER=hostile-jellyfin \
+    PLATFORM_IMMICH_SERVER_CONTAINER=hostile-immich-server \
+    PLATFORM_IMMICH_MACHINE_LEARNING_CONTAINER=hostile-immich-ml \
+    PLATFORM_IMMICH_REDIS_CONTAINER=hostile-immich-redis \
+    PLATFORM_IMMICH_POSTGRES_CONTAINER=hostile-immich-postgres \
+    PLATFORM_PAPERLESS_WEBSERVER_CONTAINER=hostile-paperless "$@"
+}
+for wrapper_mode in 'audiobookshelf seed-progress' 'komga seed' 'tinymediamanager seed' \
+    'jellyfin seed' 'immich seed' 'paperless seed'; do
+  set -- $wrapper_mode
+  wrapper=$1
+  fixture_mode=$2
   # The fake Ruby process observes the wrapper's final environment without executing fixtures.
-  env $common_env "$test_dir/run-$wrapper-contract.sh" static >/dev/null 2>&1 ||
+  : > "$docker_log"
+  run_fresh_wrapper "$test_dir/run-$wrapper-contract.sh" "$fixture_mode" >/dev/null 2>&1 ||
     fail "fresh $wrapper wrapper preserved ambient legacy fixture controls"
+  grep -F 'hostile-' "$docker_log" >/dev/null 2>&1 &&
+    fail "fresh $wrapper wrapper used a hostile container identifier"
+  case $wrapper in
+    tinymediamanager) expected='fresh-tinymediamanager' ;;
+    jellyfin) expected='fresh-jellyfin' ;;
+    immich) expected='fresh-immich-server fresh-immich-machine-learning fresh-immich-redis fresh-immich-postgres' ;;
+    paperless) expected='fresh-paperless-webserver' ;;
+    *) expected= ;;
+  esac
+  for container in $expected; do
+    grep -q "^docker${tab}inspect${tab}$container$" "$docker_log" ||
+      fail "fresh $wrapper wrapper omitted canonical container $container"
+  done
 done
 
 printf '%s\n' 'Legacy fixture paths: controlled owned roots resist ambient and symlink injection'
