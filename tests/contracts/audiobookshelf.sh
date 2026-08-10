@@ -192,6 +192,19 @@ def safe_id(value)
   id
 end
 
+def exact_vault_named_administrator(users, username, type:, active:)
+  fail_contract("administrator user listing is malformed") unless users.is_a?(Array)
+  matches = users.select { |user| user.is_a?(Hash) && user["username"] == username }
+  fail_contract("vault-named administrator identity is absent or duplicated") unless matches.length == 1
+  administrator = matches.fetch(0)
+  fail_contract("vault-named administrator privilege or active state differs") unless
+    administrator["type"] == type && administrator["isActive"] == active
+  safe_id(administrator.fetch("id"))
+  administrator
+rescue KeyError
+  fail_contract("vault-named administrator state is malformed")
+end
+
 def exact_library_folders(folders, library_id)
   fail_contract("library state must contain exactly one folder") unless folders.is_a?(Array) && folders.length == 1
   folder = folders.fetch(0)
@@ -321,7 +334,7 @@ def remove_drift_snapshot
   require_owned_drift_snapshot_directory!.rmdir
 end
 
-def expect_contract_failure
+def expect_contract_failure(message = "unsafe drift snapshot was accepted")
   pid = fork do
     $stdout.reopen(File::NULL, "w")
     $stderr.reopen(File::NULL, "w")
@@ -329,7 +342,7 @@ def expect_contract_failure
     exit! 0
   end
   _waited, status = Process.wait2(pid)
-  fail_contract("unsafe drift snapshot was accepted") if status.success?
+  fail_contract(message) if status.success?
 end
 
 def owned_directory!(path, parent)
@@ -508,11 +521,8 @@ def inactive_admin_refusal!(username, password, retained_token, vault)
   limitation = "Managed Audiobookshelf administrator cannot authenticate. Pinned Audiobookshelf 2.36.0"
   recovery_username = "task9-contract-recovery-root"
   users = request("get", "/api/users", token: retained_token).last.fetch("users")
-  original = users.select { |user| user["username"] == username }
-  fail_contract("inactive fixture requires exactly one active vault-named root") unless
-    users.length == 1 && original.length == 1 && original.fetch(0)["type"] == "root" &&
-      original.fetch(0)["isActive"] == true
-  original_id = safe_id(original.fetch(0).fetch("id"))
+  original = exact_vault_named_administrator(users, username, type: "root", active: true)
+  original_id = safe_id(original.fetch("id"))
   temporary_id = nil
 
   begin
@@ -526,13 +536,14 @@ def inactive_admin_refusal!(username, password, retained_token, vault)
       body: { username: username, password: password, type: "admin", isActive: true }
     )
     fixture_users = request("get", "/api/users", token: retained_token).last.fetch("users")
-    temporary = fixture_users.select { |user| user["username"] == username }
-    fail_contract("temporary inactive administrator fixture was not created exactly once") unless temporary.length == 1
-    temporary_id = safe_id(temporary.fetch(0).fetch("id"))
+    temporary = exact_vault_named_administrator(fixture_users, username, type: "admin", active: true)
+    temporary_id = safe_id(temporary.fetch("id"))
     request(
       "patch", "/api/users/#{temporary_id}", token: retained_token,
       body: { type: "admin", isActive: false }
     )
+    inactive_users = request("get", "/api/users", token: retained_token).last.fetch("users")
+    exact_vault_named_administrator(inactive_users, username, type: "admin", active: false)
     request("post", "/login", body: { username: username, password: password }, expected: [401])
 
     [["site.yml", "audiobookshelf"], ["verify.yml", "platform_verify_audiobookshelf"]].each do |playbook, tags|
@@ -556,14 +567,39 @@ def inactive_admin_refusal!(username, password, retained_token, vault)
     restored_login, restored = request("post", "/login", body: { username: username, password: password })
     restored_token = restored.dig("user", "accessToken")
     restored_users = request("get", "/api/users", token: restored_token).last.fetch("users")
+    restored_root = exact_vault_named_administrator(restored_users, username, type: "root", active: true)
     fail_contract("inactive administrator fixture did not recover exact user state") unless
-      restored_login.code.to_i == 200 && restored_users.length == 1 &&
-        restored_users.fetch(0)["username"] == username && restored_users.fetch(0)["type"] == "root" &&
-        restored_users.fetch(0)["isActive"] == true
+      restored_login.code.to_i == 200 && safe_id(restored_root.fetch("id")) == original_id
   end
 end
 
 case MODE
+when "administrator-selection-self-test"
+  username = "vault-root"
+  root = { "id" => "root-id", "username" => username, "type" => "root", "isActive" => true }
+  managed = { "id" => "reader-id", "username" => "managed-reader", "type" => "user", "isActive" => true }
+  unmanaged = { "id" => "friend-id", "username" => "unmanaged-friend", "type" => "admin", "isActive" => true }
+  users = [managed, root, unmanaged]
+  fail_contract("vault-named root was not selected independently of other users") unless
+    exact_vault_named_administrator(users, username, type: "root", active: true) == root
+
+  duplicate = root.merge("id" => "duplicate-root-id")
+  expect_contract_failure("duplicate vault-named root was accepted") do
+    exact_vault_named_administrator(users + [duplicate], username, type: "root", active: true)
+  end
+  expect_contract_failure("absent vault-named root was accepted") do
+    exact_vault_named_administrator([managed, unmanaged], username, type: "root", active: true)
+  end
+  expect_contract_failure("inactive vault-named root was accepted") do
+    exact_vault_named_administrator(users.map { |user| user.equal?(root) ? user.merge("isActive" => false) : user },
+                                    username, type: "root", active: true)
+  end
+  expect_contract_failure("non-root vault-named administrator was accepted") do
+    exact_vault_named_administrator(users.map { |user| user.equal?(root) ? user.merge("type" => "admin") : user },
+                                    username, type: "root", active: true)
+  end
+  puts "Audiobookshelf administrator selection self-test passed"
+  exit 0
 when "secret-redaction-self-test"
   vault = {
     "vault_immich_db_name" => "immich",

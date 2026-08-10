@@ -57,4 +57,23 @@ grep -Fqx 'Audiobookshelf diagnostic secret redaction self-test passed' <<<"$red
   exit 1
 }
 
+selection_status=0
+selection_output=$(
+  PLATFORM_MEDIA_ROOT="$test_root/media" \
+  PLATFORM_REPORT_ROOT="$test_root/reports" \
+  PLATFORM_AUDIOBOOKSHELF_PORT=13378 \
+    "$repo_dir/tests/contracts/audiobookshelf.sh" administrator-selection-self-test 2>&1
+) || selection_status=$?
+
+if [ "$selection_status" -ne 0 ]; then
+  printf '%s\n' "$selection_output" >&2
+  exit "$selection_status"
+fi
+
+grep -Fqx 'Audiobookshelf administrator selection self-test passed' <<<"$selection_output" || {
+  printf '%s\n' "$selection_output" >&2
+  printf '%s\n' 'Audiobookshelf audio test failed: administrator selection marker is absent' >&2
+  exit 1
+}
+
 printf '%s\n' 'Audiobookshelf audio contract test passed'
