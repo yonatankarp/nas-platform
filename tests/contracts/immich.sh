@@ -671,11 +671,13 @@ assert_cpu_machine_learning(token, records.map { |record| record.fetch("id") }) 
 # Generated derivatives must land on the redirected Docker-root volume rather
 # than beside the originals, which is the whole point of the nested bind layout.
 thumbnail_root = DOCKER_ROOT.join("immich", "data", "thumbs")
+thumbnail_root = Pathname.new(ENV.fetch("PLATFORM_IMMICH_THUMBNAIL_ROOT", thumbnail_root.to_s)).expand_path
 fail_contract("the generated asset volume is unavailable or unsafe") unless
   thumbnail_root.directory? && !thumbnail_root.symlink?
 fail_contract("no generated thumbnail reached the Docker-root volume") if
   Dir.glob(thumbnail_root.join("**", "*_thumbnail.webp").to_s).empty?
 originals_root = MEDIA_ROOT.join("Immich", "upload")
+originals_root = Pathname.new(ENV.fetch("PLATFORM_IMMICH_UPLOAD_ROOT", originals_root.to_s)).expand_path
 fail_contract("the originals volume is unavailable or unsafe") unless
   originals_root.directory? && !originals_root.symlink?
 

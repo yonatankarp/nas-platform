@@ -74,6 +74,10 @@ jobs:
           git -C "$legacy_root" fetch --depth=1 origin 400f03f276ae1bb69f5460c175b9fb923d620f1a
           NAS_INFRASTRUCTURE_DIR="$legacy_root" tests/mac/legacy-role-compose-test.sh
 
+      - name: Check legacy seed playbook syntax
+        if: steps.scope.outputs.docs_only != 'true'
+        run: ansible-playbook -i inventory/mac.yml tests/mac/legacy-role-seed.yml --syntax-check
+
       - name: Check legacy parity rendering
         if: steps.scope.outputs.docs_only != 'true'
         run: tests/mac/adoption-render-test.sh

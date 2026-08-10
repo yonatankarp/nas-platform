@@ -86,8 +86,11 @@ MEDIA_ROOT = Pathname.new(ENV.fetch("PLATFORM_MEDIA_ROOT")).expand_path
 REPORT_ROOT = Pathname.new(ENV.fetch("PLATFORM_REPORT_ROOT")).expand_path
 LIBRARY_NAME = "Books"
 LIBRARY_ROOT = "/data"
-FIXTURE_RELATIVE = Pathname.new("Books/task-10-contract-comic/Task 10 Contract Comic.cbz")
-FIXTURE_PATH = MEDIA_ROOT.join(FIXTURE_RELATIVE)
+LIBRARY_FILESYSTEM_ROOT = Pathname.new(
+  ENV.fetch("PLATFORM_KOMGA_LIBRARY_PATH", MEDIA_ROOT.join("Books").to_s)
+).expand_path
+FIXTURE_RELATIVE = Pathname.new("task-10-contract-comic/Task 10 Contract Comic.cbz")
+FIXTURE_PATH = LIBRARY_FILESYSTEM_ROOT.join(FIXTURE_RELATIVE)
 FIXTURE_LIBRARY_URL = "/data/task-10-contract-comic/Task 10 Contract Comic.cbz"
 STATE_PATH = REPORT_ROOT.join("komga-persistence.json")
 MANAGED_SETTINGS = {

@@ -42,6 +42,14 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
+for role_tag in ntfy beszel dozzle audiobookshelf komga jellyfin immich paperless tinymediamanager; do
+  task_list=$temporary_root/$role_tag.tasks
+  ANSIBLE_NOCOLOR=1 "$ansible_playbook" -i "$repo_dir/inventory/mac.yml" \
+    "$test_dir/legacy-role-seed.yml" --tags "$role_tag" --list-tasks > "$task_list" 2>&1 ||
+    fail 'a supported legacy role seed entrypoint is invalid'
+  [ -s "$task_list" ] || fail 'a supported legacy role seed entrypoint is empty'
+done
+
 vault_password=$temporary_root/password
 vault_plain=$temporary_root/vault.yml
 vault_file=$temporary_root/vault.enc
@@ -51,6 +59,15 @@ vault_test_ntfy_users: 'admin:$2y$05$disposablehash,user:$2y$05$disposablehash'
 vault_test_ntfy_access: 'admin:*:rw,user:nas-critical:w'
 vault_test_ntfy_tokens: 'user:tk_disposable-token'
 vault_tinymediamanager_password: 'disposable-tmm-password'
+vault_beszel_agent_key: 'ssh-ed25519-disposable-public-key'
+vault_beszel_universal_token: 'disposable-beszel-token'
+vault_paperless_db_name: 'paperless'
+vault_paperless_db_username: 'paperless'
+vault_paperless_db_password: 'disposable-paperless-db-password'
+vault_paperless_django_secret_key: 'disposable-paperless-secret-key'
+vault_paperless_admin_username: 'administrator'
+vault_paperless_admin_password: 'disposable-paperless-admin-password'
+vault_paperless_admin_email: 'administrator@example.invalid'
 YAML
 chmod 0600 "$vault_password" "$vault_plain"
 "$ansible_vault" encrypt --vault-password-file "$vault_password" \
@@ -77,11 +94,22 @@ cat > "$playbook" <<YAML
     ntfy_base_url: http://127.0.0.1:32586
     ntfy_port: 32586
     platform_project_name: disposable-adoption
+    platform_render_device_path: ''
+    beszel_app_url: http://127.0.0.1:38090
+    beszel_port: 38090
+    beszel_system_name: disposable-legacy
     ntfy_auth_users: "{{ vault_test_ntfy_users }}"
     ntfy_auth_access: "{{ vault_test_ntfy_access }}"
     ntfy_auth_tokens: "{{ vault_test_ntfy_tokens }}"
     tinymediamanager_web_port: 34000
     tinymediamanager_api_port: 37878
+    platform_compose_kind: mac
+    paperless_task_workers: 1
+    paperless_threads_per_worker: 1
+    paperless_port: 38000
+    paperless_ai_enabled: false
+    paperless_ai_llm_endpoint: http://example.invalid:11434
+    paperless_ai_llm_model: disposable
   tasks:
     - name: Render the production ntfy role environment
       ansible.builtin.template:
@@ -93,6 +121,18 @@ cat > "$playbook" <<YAML
       ansible.builtin.template:
         src: "$repo_dir/roles/tinymediamanager/templates/env.j2"
         dest: "$render_root/tinymediamanager.env"
+        mode: "0600"
+      no_log: true
+    - name: Render the production Beszel role environment
+      ansible.builtin.template:
+        src: "$repo_dir/roles/beszel/templates/env.j2"
+        dest: "$render_root/beszel.env"
+        mode: "0600"
+      no_log: true
+    - name: Render the production Paperless role environment
+      ansible.builtin.template:
+        src: "$repo_dir/roles/paperless_ngx/templates/env.j2"
+        dest: "$render_root/paperless-ngx.env"
         mode: "0600"
       no_log: true
 YAML
@@ -136,24 +176,40 @@ end.to_h do |line|
   key, value = line.split("=", 2)
   [key, value]
 end
-config = JSON.parse(File.read(config_path)).fetch("services").fetch(service == "ntfy" ? "ntfy" : "tinymediamanager")
-container_environment = config.fetch("environment")
+services = JSON.parse(File.read(config_path)).fetch("services")
 if service == "ntfy"
+  config = services.fetch("ntfy")
+  container_environment = config.fetch("environment")
   raise unless config.fetch("user") == "#{environment.fetch('NAS_UID')}:#{environment.fetch('NAS_GID')}"
   %w[NTFY_AUTH_USERS NTFY_AUTH_ACCESS NTFY_AUTH_TOKENS].each do |key|
     expected = environment.fetch(key)
     raise if expected.empty? || container_environment.fetch(key) != expected
   end
-else
+elsif service == "tinymediamanager"
+  container_environment = services.fetch("tinymediamanager").fetch("environment")
   expected = environment.fetch("TINYMEDIAMANAGER_PASSWORD")
   raise if expected.empty? || container_environment.fetch("PASSWORD") != expected
   raise unless environment.fetch("PASSWORD") == expected
+elsif service == "beszel"
+  agent = services.fetch("agent").fetch("environment")
+  raise unless agent.fetch("KEY") == environment.fetch("BESZEL_AGENT_KEY")
+  raise unless agent.fetch("TOKEN") == environment.fetch("BESZEL_AGENT_TOKEN")
+elsif service == "paperless-ngx"
+  database = services.fetch("db").fetch("environment")
+  webserver = services.fetch("webserver").fetch("environment")
+  raise unless database.fetch("POSTGRES_PASSWORD") == environment.fetch("DB_PASSWORD")
+  raise unless webserver.fetch("PAPERLESS_DBPASS") == environment.fetch("DB_PASSWORD")
+  raise unless webserver.fetch("PAPERLESS_SECRET_KEY") == environment.fetch("PAPERLESS_SECRET_KEY")
+else
+  raise
 end
 RUBY
 }
 
 ntfy_override=$test_dir/legacy-overrides/ntfy.yml
 tmm_override=$test_dir/legacy-overrides/tinymediamanager.yml
+beszel_override=$test_dir/legacy-overrides/beszel.yml
+paperless_override=$test_dir/legacy-overrides/paperless-ngx.yml
 adapter_failed=false
 if ! validate_config ntfy "$ntfy_override"; then
   printf '%s\n' 'ntfy legacy role adapter is incompatible' >&2
@@ -161,6 +217,14 @@ if ! validate_config ntfy "$ntfy_override"; then
 fi
 if ! validate_config tinymediamanager "$tmm_override"; then
   printf '%s\n' 'tinyMediaManager legacy role adapter is incompatible' >&2
+  adapter_failed=true
+fi
+if ! validate_config beszel "$beszel_override"; then
+  printf '%s\n' 'Beszel legacy role prerequisites are incompatible' >&2
+  adapter_failed=true
+fi
+if ! validate_config paperless-ngx "$paperless_override"; then
+  printf '%s\n' 'Paperless legacy role prerequisites are incompatible' >&2
   adapter_failed=true
 fi
 [ "$adapter_failed" = false ] || exit 1
@@ -186,6 +250,16 @@ sed 's/^PASSWORD=.*$/PASSWORD=mismatched-disposable-password/' \
   "$render_root/tinymediamanager.env" > "$tmm_mismatched_password"
 if validate_config tinymediamanager "$tmm_override" "$tmm_mismatched_password"; then
   fail 'tinyMediaManager adapter accepted a mismatched role-rendered password mapping'
+fi
+beszel_no_token=$temporary_root/beszel-no-token.env
+sed '/^BESZEL_AGENT_TOKEN=/d' "$render_root/beszel.env" > "$beszel_no_token"
+if validate_config beszel "$beszel_override" "$beszel_no_token"; then
+  fail 'Beszel prerequisites accepted a missing rendered role environment token'
+fi
+paperless_no_database_password=$temporary_root/paperless-no-database-password.env
+sed '/^DB_PASSWORD=/d' "$render_root/paperless-ngx.env" > "$paperless_no_database_password"
+if validate_config paperless-ngx "$paperless_override" "$paperless_no_database_password"; then
+  fail 'Paperless prerequisites accepted a missing rendered role database password'
 fi
 
 if grep -R -F 'disposable-tmm-password' "$temporary_root" \

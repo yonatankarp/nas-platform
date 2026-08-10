@@ -1,0 +1,23 @@
+---
+- name: Seed supported capabilities into prepared legacy Compose projects
+  hosts: platform_hosts
+  gather_facts: true
+  roles:
+    - role: ntfy
+      tags: [ntfy]
+    - role: beszel
+      tags: [beszel]
+    - role: dozzle
+      tags: [dozzle]
+    - role: audiobookshelf
+      tags: [audiobookshelf]
+    - role: komga
+      tags: [komga]
+    - role: jellyfin
+      tags: [jellyfin]
+    - role: immich
+      tags: [immich]
+    - role: paperless_ngx
+      tags: [paperless]
+    - role: tinymediamanager
+      tags: [tinymediamanager]

@@ -113,7 +113,9 @@ MEDIA_ROOT = Pathname.new(ENV.fetch("PLATFORM_MEDIA_ROOT")).expand_path
 REPORT_ROOT = Pathname.new(ENV.fetch("PLATFORM_REPORT_ROOT")).expand_path
 LIBRARY_NAME = "Audiobooks"
 FIXTURE_TITLE = "Task 9 Contract Book"
-MEDIA_LIBRARY = MEDIA_ROOT.join("Media", "Audiobooks")
+MEDIA_LIBRARY = Pathname.new(
+  ENV.fetch("PLATFORM_AUDIOBOOKSHELF_MEDIA_LIBRARY", MEDIA_ROOT.join("Media", "Audiobooks").to_s)
+).expand_path
 FIXTURE_DIRECTORY = MEDIA_LIBRARY.join("task-9-contract-book")
 FIXTURE_PATH = FIXTURE_DIRECTORY.join("task-9-contract-book.wav")
 PROGRESS_SECONDS = 1.25
@@ -511,9 +513,14 @@ def exact_playback?(source, full_body, range_body, content_range)
 end
 
 def seed_fixture
-  media_parent = MEDIA_ROOT.join("Media")
-  owned_directory!(media_parent, MEDIA_ROOT)
-  owned_directory!(MEDIA_LIBRARY, media_parent)
+  if ENV.key?("PLATFORM_AUDIOBOOKSHELF_MEDIA_LIBRARY")
+    fail_contract("legacy media library is unavailable or unsafe") unless
+      MEDIA_LIBRARY.directory? && !MEDIA_LIBRARY.symlink?
+  else
+    media_parent = MEDIA_ROOT.join("Media")
+    owned_directory!(media_parent, MEDIA_ROOT)
+    owned_directory!(MEDIA_LIBRARY, media_parent)
+  end
   owned_directory!(FIXTURE_DIRECTORY, MEDIA_LIBRARY)
   fail_contract("fixture path is a symlink") if FIXTURE_PATH.symlink?
   bytes = tagged_wave

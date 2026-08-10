@@ -13,6 +13,7 @@ FULL_STEPS = [
   ["Check integration sandbox cleanup", "tests/integration_cleanup_test.sh"],
   ["Install Ansible tooling", "ansible-core==2.21.2"],
   ["Check legacy role Compose compatibility", "tests/mac/legacy-role-compose-test.sh"],
+  ["Check legacy seed playbook syntax", "ansible-playbook -i inventory/mac.yml tests/mac/legacy-role-seed.yml --syntax-check"],
   ["Check legacy parity rendering", "tests/mac/adoption-render-test.sh"],
   ["Check Immich probe status rendering", "tests/immich_probe_status_test.py"],
   ["Check generated credential redaction", "tests/generate-secrets-redaction-test.sh"],

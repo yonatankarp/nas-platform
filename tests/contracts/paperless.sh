@@ -239,7 +239,13 @@ REPORT_ROOT = Pathname.new(ENV.fetch("PLATFORM_REPORT_ROOT")).expand_path
 REPO_ROOT = Pathname.new(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR", Dir.pwd)).expand_path
 WEBSERVER = ENV.fetch("PLATFORM_PAPERLESS_WEBSERVER_CONTAINER")
 STATE_PATH = REPORT_ROOT.join("paperless-persistence.json")
-EXPORT_PATH = MEDIA_ROOT.join("Documents/export/task-13-contract-export")
+EXPORT_ROOT = Pathname.new(
+  ENV.fetch("PLATFORM_PAPERLESS_EXPORT_ROOT", MEDIA_ROOT.join("Documents", "export").to_s)
+).expand_path
+CONSUME_ROOT = Pathname.new(
+  ENV.fetch("PLATFORM_PAPERLESS_CONSUME_ROOT", MEDIA_ROOT.join("Documents", "inbox").to_s)
+).expand_path
+EXPORT_PATH = EXPORT_ROOT.join("task-13-contract-export")
 PDF_MARKER = "paperlesscontractenglish"
 IMAGE_MARKER = "paperless contract image ocr"
 OFFICE_MARKER = "paperlesscontracthebrew"
@@ -547,7 +553,7 @@ if MODE == "run"
 end
 fail_contract("unknown mode: #{MODE}") unless %w[seed assert-persistence].include?(MODE)
 
-consume = MEDIA_ROOT.join("Documents/inbox")
+consume = CONSUME_ROOT
 if MODE == "seed"
   write_fixture(consume.join("task-13-contract.pdf"), pdf_bytes("Paperless PDF #{PDF_MARKER}"))
   write_fixture(

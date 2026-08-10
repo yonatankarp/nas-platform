@@ -28,6 +28,21 @@ tab=$(printf '\t')
 
 [ -x "$compose" ] || fail 'legacy Compose helper is absent or not executable'
 [ -x "$seed" ] || fail 'legacy seed helper is absent or not executable'
+ruby -ryaml - "$test_dir/legacy-role-seed.yml" <<'RUBY' || fail 'legacy role seed entrypoints differ'
+play = YAML.safe_load_file(ARGV.fetch(0), aliases: false).fetch(0)
+roles = play.fetch("roles")
+expected = {
+  "ntfy" => "ntfy", "beszel" => "beszel", "dozzle" => "dozzle",
+  "audiobookshelf" => "audiobookshelf", "komga" => "komga",
+  "jellyfin" => "jellyfin", "immich" => "immich", "paperless_ngx" => "paperless",
+  "tinymediamanager" => "tinymediamanager"
+}
+actual = roles.to_h do |entry|
+  raise unless entry.is_a?(Hash) && entry.fetch("tags").length == 1
+  [entry.fetch("role"), entry.fetch("tags").fetch(0)]
+end
+raise unless actual == expected
+RUBY
 
 legacy_root=$temporary_root/'nas infrastructure "quoted"'
 sandbox=$temporary_root/nas-platform-mac.LgCy42
@@ -55,9 +70,16 @@ for argument in "$@"; do printf '\t%s' "$argument" >> "$FAKE_COMMAND_LOG"; done
 printf '\n' >> "$FAKE_COMMAND_LOG"
 case " $* " in
   *' config --services '*) printf '%s\n' one two ;;
-  *' ps --status running --services '*)
-    printf '%s\n' one
-    [ "${FAKE_PS_INCOMPLETE:-0}" = 1 ] || printf '%s\n' two
+  *' ps --all --format json '*)
+    case ${FAKE_PS_STATE:-healthy} in
+      healthy) printf '%s\n' '[{"Service":"one","State":"running","Health":"healthy"},{"Service":"two","State":"running","Health":""}]' ;;
+      unhealthy) printf '%s\n' '[{"Service":"one","State":"running","Health":"unhealthy"},{"Service":"two","State":"running","Health":""}]' ;;
+      starting) printf '%s\n' '[{"Service":"one","State":"running","Health":"starting"},{"Service":"two","State":"running","Health":""}]' ;;
+      exited) printf '%s\n' '[{"Service":"one","State":"exited","Health":""},{"Service":"two","State":"running","Health":""}]' ;;
+      missing) printf '%s\n' '[{"Service":"one","State":"running","Health":"healthy"}]' ;;
+      duplicate) printf '%s\n' '[{"Service":"one","State":"running","Health":"healthy"},{"Service":"one","State":"running","Health":"healthy"},{"Service":"two","State":"running","Health":""}]' ;;
+      unexpected) printf '%s\n' '[{"Service":"one","State":"running","Health":"healthy"},{"Service":"two","State":"running","Health":""},{"Service":"three","State":"running","Health":""}]' ;;
+    esac
     ;;
 esac
 SH
@@ -65,7 +87,7 @@ chmod 0700 "$fake_bin/docker"
 
 run_compose() {
   env PATH="$fake_bin:$PATH" FAKE_COMMAND_LOG="$log" \
-    FAKE_PS_INCOMPLETE="${FAKE_PS_INCOMPLETE:-0}" \
+    FAKE_PS_STATE="${FAKE_PS_STATE:-healthy}" \
     PLATFORM_MAC_TMPDIR="$temporary_root" PLATFORM_LEGACY_ROOT="$legacy_root" \
     PLATFORM_MAC_SANDBOX="$sandbox" \
     PLATFORM_PROJECT_NAME=nas-platform-mac-lgcy42 "$compose" "$@"
@@ -86,6 +108,7 @@ for service in $services; do
   grep -F "$test_dir/legacy-overrides/$service.yml" "$log" >/dev/null ||
     fail "reviewed override is absent for $service"
 done
+run_compose beszel ps || fail 'healthy structured legacy project was rejected'
 
 if run_compose unknown config >/dev/null 2>&1; then
   fail 'unknown legacy service was accepted'
@@ -93,10 +116,12 @@ fi
 if run_compose beszel exec >/dev/null 2>&1; then
   fail 'unknown legacy action was accepted'
 fi
-if FAKE_PS_INCOMPLETE=1 run_compose beszel ps >/dev/null 2>&1; then
-  fail 'partially running legacy project passed the health gate'
-fi
-unset FAKE_PS_INCOMPLETE
+for rejected_state in unhealthy starting exited missing duplicate unexpected; do
+  if FAKE_PS_STATE=$rejected_state run_compose beszel ps >/dev/null 2>&1; then
+    fail "$rejected_state legacy project passed the health gate"
+  fi
+done
+unset FAKE_PS_STATE
 if env PATH="$fake_bin:$PATH" FAKE_COMMAND_LOG="$log" PLATFORM_MAC_TMPDIR="$temporary_root" \
     PLATFORM_LEGACY_ROOT="$legacy_root" PLATFORM_MAC_SANDBOX="$sandbox" \
     PLATFORM_PROJECT_NAME=unowned-project "$compose" beszel config >/dev/null 2>&1; then
@@ -132,47 +157,29 @@ case " $* " in
     ;;
 esac
 case " $* " in
-  *' --tags ntfy '*)
-    start=
+  *' --tags '*)
+    tag=
+    current=
+    runtime=
     previous=
     for argument in "$@"; do
-      [ "$previous" != --start-at-task ] || start=$argument
+      [ "$argument" != --start-at-task ] || exit 30
+      [ "$previous" != --tags ] || tag=$argument
+      case $argument in
+        platform_current_dir=*) current=${argument#platform_current_dir=} ;;
+        platform_runtime_dir=*) runtime=${argument#platform_runtime_dir=} ;;
+      esac
       previous=$argument
     done
-    ruby -ryaml - "$FAKE_REPO_DIR/roles/ntfy/tasks/main.yml" "$start" <<'RUBY' || exit 31
-tasks, start = ARGV
-entries = YAML.safe_load_file(tasks, aliases: false)
-start_index = entries.index { |task| task["name"] == start }
-managed_index = entries.index { |task| task["name"] == "Resolve declarative ntfy managed-user provisioning" }
-abort unless start_index && managed_index && start_index <= managed_index
-prefix = entries[start_index..managed_index].to_s
-%w[ntfy_prior_provisioned_users ntfy_existing_user_records ntfy_authoritative_absence_established].each do |fact|
-  abort unless prefix.include?(fact)
-end
-RUBY
-    : > "${FAKE_NTFY_PREREQUISITES_MARKER:?}"
-    ;;
-  *' --tags tinymediamanager '*)
-    start=
-    previous=
-    for argument in "$@"; do
-      [ "$previous" != --start-at-task ] || start=$argument
-      previous=$argument
-    done
-    ruby -ryaml - "$FAKE_REPO_DIR/roles/tinymediamanager/tasks/main.yml" "$start" <<'RUBY' || exit 32
-tasks, start = ARGV
-entries = YAML.safe_load_file(tasks, aliases: false)
-start_index = entries.index { |task| task["name"] == start }
-abort unless start_index
-suffix = entries[start_index..].to_s
-required = [
-  "vault_tinymediamanager_password",
-  "Read the installed tinyMediaManager VNC password environment",
-  "Require the installed tinyMediaManager VNC password"
-]
-required.each { |value| abort unless suffix.include?(value) }
-RUBY
-    : > "${FAKE_TMM_CREDENTIAL_MARKER:?}"
+    [ -n "$tag" ] && [ -n "$current" ] && [ -n "$runtime" ] || exit 31
+    case $tag in paperless) slug=paperless-ngx ;; *) slug=$tag ;; esac
+    [ -f "$current/services/$slug/compose.yml" ] &&
+      [ -f "$current/services/$slug/compose.mac.yml" ] || exit 32
+    mkdir -m 0700 -p "$runtime/services/$slug"
+    printf '%s\n' "SERVICE=$slug" > "$runtime/services/$slug/.env"
+    chmod 0600 "$runtime/services/$slug/.env"
+    [ "$tag" != ntfy ] || : > "${FAKE_NTFY_PREREQUISITES_MARKER:?}"
+    [ "$tag" != tinymediamanager ] || : > "${FAKE_TMM_CREDENTIAL_MARKER:?}"
     ;;
 esac
 case " $* " in
@@ -201,15 +208,49 @@ case " $* " in
   *) exit 2 ;;
 esac
 SH
-cat > "$sandbox/fake-fixtures.sh" <<'SH'
+cat > "$sandbox/fake-fixture-driver.sh" <<'SH'
 #!/bin/sh
-printf 'fixtures.sh\t%s\n' "$*" >> "${FAKE_COMMAND_LOG:?}"
-for capability in media books photos documents; do
-  printf 'fixture-capability\t%s\n' "$capability" >> "$FAKE_COMMAND_LOG"
-done
+service=$1
+mode=$2
+project=${PLATFORM_FIXTURE_COMPOSE_PROJECT:?}
+[ "$project" = "${PLATFORM_PROJECT_NAME:?}-legacy-$service" ] || exit 41
+case $service:$mode in
+  audiobookshelf:seed-progress)
+    [ "$PLATFORM_AUDIOBOOKSHELF_MEDIA_LIBRARY" = "$PLATFORM_MAC_SANDBOX/legacy/audiobookshelf/media" ] || exit 42
+    [ "$PLATFORM_FIXTURE_COMPOSE_SERVICE" = audiobookshelf ] || exit 43
+    ;;
+  komga:seed)
+    [ "$PLATFORM_KOMGA_LIBRARY_PATH" = "$PLATFORM_MAC_SANDBOX/legacy/komga/library" ] || exit 44
+    [ "$PLATFORM_FIXTURE_COMPOSE_SERVICE" = komga ] || exit 45
+    ;;
+  tinymediamanager:seed)
+    [ "$PLATFORM_TINYMEDIAMANAGER_MOVIES_ROOT" = "$PLATFORM_MAC_SANDBOX/legacy/tinymediamanager/movies" ] || exit 46
+    [ "$PLATFORM_TINYMEDIAMANAGER_SERIES_ROOT" = "$PLATFORM_MAC_SANDBOX/legacy/tinymediamanager/series" ] || exit 47
+    [ "$PLATFORM_TINYMEDIAMANAGER_SETTINGS_ROOT" = "$PLATFORM_MAC_SANDBOX/legacy/tinymediamanager/data/data" ] || exit 48
+    [ "$PLATFORM_TINYMEDIAMANAGER_CONTAINER" = "$project-tinymediamanager-1" ] || exit 49
+    ;;
+  jellyfin:seed)
+    [ "$PLATFORM_JELLYFIN_MEDIA_ROOT" = "$PLATFORM_MAC_SANDBOX/legacy/jellyfin/media" ] || exit 50
+    [ "$PLATFORM_JELLYFIN_CONTAINER" = "$project-jellyfin-1" ] || exit 51
+    ;;
+  immich:seed)
+    [ "$PLATFORM_IMMICH_UPLOAD_ROOT" = "$PLATFORM_MAC_SANDBOX/legacy/immich/data/upload" ] || exit 52
+    [ "$PLATFORM_IMMICH_THUMBNAIL_ROOT" = "$PLATFORM_MAC_SANDBOX/legacy/immich/thumbs" ] || exit 53
+    [ "$PLATFORM_IMMICH_SERVER_CONTAINER" = "$project-immich-server-1" ] || exit 54
+    [ "$PLATFORM_IMMICH_POSTGRES_CONTAINER" = "$project-database-1" ] || exit 55
+    ;;
+  paperless-ngx:seed)
+    [ "$PLATFORM_PAPERLESS_CONSUME_ROOT" = "$PLATFORM_MAC_SANDBOX/legacy/paperless-ngx/consume" ] || exit 56
+    [ "$PLATFORM_PAPERLESS_EXPORT_ROOT" = "$PLATFORM_MAC_SANDBOX/legacy/paperless-ngx/export" ] || exit 57
+    [ "$PLATFORM_PAPERLESS_WEBSERVER_CONTAINER" = "$project-webserver-1" ] || exit 58
+    ;;
+  *) exit 59 ;;
+esac
+printf 'legacy-fixture\t%s\t%s\t%s\t%s\n' "$service" "$mode" "$project" \
+  "$PLATFORM_FIXTURE_COMPOSE_SERVICE" >> "${FAKE_COMMAND_LOG:?}"
 SH
 chmod 0700 "$fake_bin/ansible-playbook" "$fake_bin/ansible-vault" "$fake_bin/git" \
-  "$sandbox/fake-fixtures.sh"
+  "$sandbox/fake-fixture-driver.sh"
 
 run_seed() {
   env PATH="$fake_bin:$PATH" FAKE_COMMAND_LOG="$log" \
@@ -221,7 +262,7 @@ run_seed() {
     PLATFORM_PROJECT_NAME=nas-platform-mac-lgcy42 \
     PLATFORM_MAC_VAULT_FILE="$temporary_root/deployment-vault.yml" \
     PLATFORM_MAC_VAULT_PASSWORD_FILE="$temporary_root/deployment-password" \
-    PLATFORM_FIXTURES_HELPER="$sandbox/fake-fixtures.sh" \
+    PLATFORM_LEGACY_FIXTURE_DRIVER="$sandbox/fake-fixture-driver.sh" \
     PLATFORM_AUDIOBOOKSHELF_PORT=31001 PLATFORM_BESZEL_PORT=31002 \
     PLATFORM_DOZZLE_PORT=31003 PLATFORM_IMMICH_PORT=31004 PLATFORM_JELLYFIN_PORT=31005 \
     PLATFORM_KOMGA_PORT=31006 PLATFORM_NTFY_PORT=31007 PLATFORM_PAPERLESS_PORT=31008 \
@@ -252,6 +293,26 @@ printf '%s\n' '$ANSIBLE_VAULT;1.1;AES256' > "$parity_vault"
 printf '%s\n' disposable > "$parity_password"
 chmod 0600 "$parity_vault" "$parity_password"
 
+unhealthy_sandbox=$temporary_root/nas-platform-mac.Unhl42
+mkdir -m 0700 "$unhealthy_sandbox"
+printf 'schema=1\nproject=nas-platform-mac-unhl42\n' > "$unhealthy_sandbox/.nas-platform-mac-owned"
+chmod 0600 "$unhealthy_sandbox/.nas-platform-mac-owned"
+: > "$log"
+if env PATH="$fake_bin:$PATH" FAKE_COMMAND_LOG="$log" FAKE_PARITY_DOCUMENT="$parity_document" \
+    FAKE_PS_STATE=unhealthy PLATFORM_MAC_TMPDIR="$temporary_root" \
+    PLATFORM_LEGACY_ROOT="$legacy_root" NAS_INFRASTRUCTURE_DIR="$legacy_root" \
+    PLATFORM_MAC_SANDBOX="$unhealthy_sandbox" PLATFORM_PROJECT_NAME=nas-platform-mac-unhl42 \
+    PLATFORM_MAC_PARITY_VAULT_FILE="$parity_vault" \
+    PLATFORM_MAC_PARITY_VAULT_PASSWORD_FILE="$parity_password" \
+    "$test_dir/adoption.sh" legacy-deploy >/dev/null 2>&1; then
+  fail 'unhealthy containers after Compose up passed legacy deployment'
+fi
+grep -q "${tab}up${tab}--detach${tab}--wait${tab}--wait-timeout${tab}600$" "$log" ||
+  fail 'unhealthy-after-up test did not reach Compose deployment'
+if grep '^ansible-playbook' "$log" | grep -v 'legacy-render.yml' >/dev/null; then
+  fail 'service seeding began after an unhealthy deployment'
+fi
+
 : > "$log"
 env PATH="$fake_bin:$PATH" FAKE_COMMAND_LOG="$log" FAKE_PARITY_DOCUMENT="$parity_document" \
   PLATFORM_MAC_TMPDIR="$temporary_root" PLATFORM_LEGACY_ROOT="$legacy_root" \
@@ -269,7 +330,7 @@ first_config=$(grep -n "${tab}config${tab}--quiet$" "$log" | head -n 1 | cut -d:
 last_config=$(grep -n "${tab}config${tab}--quiet$" "$log" | tail -n 1 | cut -d: -f1)
 first_up=$(grep -n "${tab}up${tab}--detach${tab}--wait${tab}--wait-timeout${tab}600$" "$log" | head -n 1 | cut -d: -f1)
 last_up=$(grep -n "${tab}up${tab}--detach${tab}--wait${tab}--wait-timeout${tab}600$" "$log" | tail -n 1 | cut -d: -f1)
-first_health=$(grep -n "${tab}ps${tab}--status${tab}running${tab}--services$" "$log" | head -n 1 | cut -d: -f1)
+first_health=$(grep -n "${tab}ps${tab}--all${tab}--format${tab}json$" "$log" | head -n 1 | cut -d: -f1)
 [ "$render_line" -lt "$first_config" ] && [ "$last_config" -lt "$first_up" ] && \
   [ "$last_up" -lt "$first_health" ] || fail 'runtime legacy deployment ordering differs'
 [ "$(grep "${tab}config${tab}--quiet$" "$log" | wc -l | tr -d ' ')" -eq 9 ] ||
@@ -293,21 +354,28 @@ fi
 
 external_seed_root=$temporary_root/external-seed-root
 mkdir -m 0700 "$external_seed_root"
-ln -s "$external_seed_root" "$sandbox/legacy-seed-runtime"
+ln -s "$external_seed_root" "$sandbox/legacy/nas-platform"
 if run_seed >/dev/null 2>&1; then
   fail 'symlinked legacy seed runtime was accepted'
 fi
 [ ! -e "$external_seed_root/current" ] || fail 'legacy seeding escaped through a runtime symlink'
-unlink "$sandbox/legacy-seed-runtime"
+unlink "$sandbox/legacy/nas-platform"
 
 seed_output=$temporary_root/seed-output
 run_seed > "$seed_output"
 [ -f "$temporary_root/ntfy-prerequisites" ] ||
   fail 'ntfy prerequisite state was not established before provisioning'
-[ -f "$sandbox/legacy-seed-runtime/runtime/services/ntfy/.env" ] ||
+[ -f "$sandbox/legacy/nas-platform/runtime/services/ntfy/.env" ] ||
   fail 'ntfy ownership inspection had no prior declarative environment'
 [ -f "$temporary_root/tmm-credential" ] ||
   fail 'tinyMediaManager vault credential interface was not invoked'
+for prerequisite_service in beszel paperless-ngx; do
+  [ -f "$sandbox/legacy/nas-platform/current/services/$prerequisite_service/compose.yml" ] &&
+    [ -f "$sandbox/legacy/nas-platform/current/services/$prerequisite_service/compose.mac.yml" ] ||
+    fail "$prerequisite_service exact legacy Compose prerequisites were not staged"
+  [ -s "$sandbox/legacy/nas-platform/runtime/services/$prerequisite_service/.env" ] ||
+    fail "$prerequisite_service role environment prerequisite was not rendered"
+done
 grep -qx 'legacy-seed: audiobookshelf/users' "$seed_output" ||
   fail 'seed output omitted a service/capability label'
 grep -qx 'legacy-seed: audiobookshelf/administrator' "$seed_output" ||
@@ -323,8 +391,8 @@ for service in audiobookshelf beszel dozzle immich jellyfin komga ntfy paperless
   [ "$administrator_line" -lt "$users_line" ] ||
     fail "allowlisted $service users were seeded before its primary administrator"
 done
-fixture_line=$(grep -n '^fixtures.sh' "$log" | cut -d: -f1)
-last_health_gate=$(grep -n "${tab}ps${tab}--status${tab}running${tab}--services$" "$log" |
+fixture_line=$(grep -n '^legacy-fixture' "$log" | head -n 1 | cut -d: -f1)
+last_health_gate=$(grep -n "${tab}ps${tab}--all${tab}--format${tab}json$" "$log" |
   tail -n 1 | cut -d: -f1)
 first_service_seed=$(grep -n '^ansible-playbook' "$log" | grep -v 'legacy-render.yml' |
   head -n 1 | cut -d: -f1)
@@ -333,11 +401,39 @@ last_service_seed=$(grep -n '^ansible-playbook' "$log" | tail -n 1 | cut -d: -f1
   fail 'service seeding began before the deployment health gates completed'
 [ "$last_service_seed" -lt "$fixture_line" ] ||
   fail 'fixture helper ran before every service seed action completed'
-grep -q '^fixtures.sh[[:space:]]seed$' "$log" || fail 'existing fixture helper was not reused'
-for capability in media books photos documents; do
-  grep -q "^fixture-capability[[:space:]]$capability$" "$log" ||
-    fail "$capability fixture capability was not seeded"
+for expected_fixture in \
+  'audiobookshelf seed-progress audiobookshelf' \
+  'komga seed komga' \
+  'tinymediamanager seed tinymediamanager' \
+  'jellyfin seed jellyfin' \
+  'immich seed immich-server' \
+  'paperless-ngx seed webserver'; do
+  set -- $expected_fixture
+  grep -q "^legacy-fixture[[:space:]]$1[[:space:]]$2[[:space:]]nas-platform-mac-lgcy42-legacy-$1[[:space:]]$3$" "$log" ||
+    fail "$1 legacy fixture did not target its exact project and service"
 done
+
+cp "$test_dir/lib.sh" "$sandbox/lib.sh"
+wrong_root_adapter=$sandbox/legacy-fixtures-wrong-root.sh
+sed 's#/legacy/audiobookshelf/media"#/legacy/audiobookshelf/wrong"#' \
+  "$test_dir/legacy-fixtures.sh" > "$wrong_root_adapter"
+chmod 0700 "$wrong_root_adapter"
+if env FAKE_COMMAND_LOG="$log" PLATFORM_MAC_TMPDIR="$temporary_root" \
+    PLATFORM_MAC_SANDBOX="$sandbox" PLATFORM_PROJECT_NAME=nas-platform-mac-lgcy42 \
+    PLATFORM_LEGACY_FIXTURE_DRIVER="$sandbox/fake-fixture-driver.sh" \
+    "$wrong_root_adapter" seed >/dev/null 2>&1; then
+  fail 'legacy fixture adapter accepted a wrong reviewed bind root'
+fi
+wrong_project_adapter=$sandbox/legacy-fixtures-wrong-project.sh
+sed 's/PLATFORM_PROJECT_NAME-legacy-/PLATFORM_PROJECT_NAME-wrong-/' \
+  "$test_dir/legacy-fixtures.sh" > "$wrong_project_adapter"
+chmod 0700 "$wrong_project_adapter"
+if env FAKE_COMMAND_LOG="$log" PLATFORM_MAC_TMPDIR="$temporary_root" \
+    PLATFORM_MAC_SANDBOX="$sandbox" PLATFORM_PROJECT_NAME=nas-platform-mac-lgcy42 \
+    PLATFORM_LEGACY_FIXTURE_DRIVER="$sandbox/fake-fixture-driver.sh" \
+    "$wrong_project_adapter" seed >/dev/null 2>&1; then
+  fail 'legacy fixture adapter accepted a wrong Compose project identifier'
+fi
 ruby -rjson - "$log" <<'RUBY'
 File.foreach(ARGV.fetch(0)) do |line|
   line.split("\t").grep(/\A\{.*_compose_files/).each do |argument|
@@ -353,7 +449,7 @@ RUBY
 if FAKE_SEED_FAIL_LABEL=dozzle run_seed > "$seed_output" 2>&1; then
   fail 'seed command failure was ignored'
 fi
-if grep -F 'fixtures.sh' "$log" >/dev/null; then
+if grep -F 'legacy-fixture' "$log" >/dev/null; then
   fail 'fixture seeding continued after service seed failure'
 fi
 
@@ -384,7 +480,7 @@ run_runner_phase() {
     FAKE_NTFY_PREREQUISITES_MARKER="$temporary_root/runner-ntfy-prerequisites" \
     FAKE_TMM_CREDENTIAL_MARKER="$temporary_root/runner-tmm-credential" \
     FAKE_PARITY_DOCUMENT="$parity_document" FAKE_SEED_FAIL_LABEL=dozzle \
-    PLATFORM_FIXTURES_HELPER="$sandbox/fake-fixtures.sh" \
+    PLATFORM_LEGACY_FIXTURE_DRIVER="$sandbox/fake-fixture-driver.sh" \
     PLATFORM_MAC_TMPDIR="$temporary_root" PLATFORM_LEGACY_ROOT="$legacy_root" \
     NAS_INFRASTRUCTURE_DIR="$legacy_root" \
     "$test_dir/run.sh" --lane adoption \
@@ -406,7 +502,7 @@ legacy_seed_status=$(ruby -rjson -e '
   print phase.fetch("status")
 ' "$state_input")
 [ "$legacy_seed_status" = failed ] || fail 'runner did not record failed legacy seed status'
-if grep -F 'fixtures.sh' "$log" >/dev/null; then
+if grep -F 'legacy-fixture' "$log" >/dev/null; then
   fail 'runner reached fixtures after a failed service seed'
 fi
 

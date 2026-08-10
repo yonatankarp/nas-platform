@@ -65,18 +65,50 @@ case $action in
   stop) run_compose stop ;;
   start) run_compose start ;;
   ps)
-    expected_services=$(docker compose --env-file "$env_file" \
+    expected_file=$(mktemp "$PLATFORM_MAC_SANDBOX/.legacy-expected.XXXXXX") ||
+      die 'health validation failed'
+    state_file=$(mktemp "$PLATFORM_MAC_SANDBOX/.legacy-state.XXXXXX") || {
+      rm -f -- "$expected_file"
+      die 'health validation failed'
+    }
+    if ! docker compose --env-file "$env_file" \
       --project-name "$PLATFORM_PROJECT_NAME-legacy-$service" \
-      -f "$base_file" -f "$override_file" config --services 2>/dev/null) ||
+      -f "$base_file" -f "$override_file" config --services >"$expected_file" 2>/dev/null; then
+      rm -f -- "$expected_file" "$state_file"
       die 'Compose action failed'
-    running_services=$(docker compose --env-file "$env_file" \
+    fi
+    if ! docker compose --env-file "$env_file" \
       --project-name "$PLATFORM_PROJECT_NAME-legacy-$service" \
-      -f "$base_file" -f "$override_file" ps --status running --services 2>/dev/null) ||
+      -f "$base_file" -f "$override_file" ps --all --format json >"$state_file" 2>/dev/null; then
+      rm -f -- "$expected_file" "$state_file"
       die 'Compose action failed'
-    [ -n "$expected_services" ] &&
-      [ "$(printf '%s\n' "$running_services" | LC_ALL=C sort)" = \
-        "$(printf '%s\n' "$expected_services" | LC_ALL=C sort)" ] ||
+    fi
+    if ! ruby -rjson - "$expected_file" "$state_file" >/dev/null 2>&1 <<'RUBY'
+expected_path, state_path = ARGV
+expected = File.readlines(expected_path, chomp: true).reject(&:empty?)
+raise unless !expected.empty? && expected.uniq.length == expected.length
+source = File.read(state_path).strip
+raise if source.empty?
+begin
+  parsed = JSON.parse(source)
+  records = parsed.is_a?(Array) ? parsed : [parsed]
+rescue JSON::ParserError
+  records = source.lines.map { |line| JSON.parse(line) }
+end
+raise unless records.all? { |record| record.is_a?(Hash) }
+services = records.map { |record| record.fetch("Service") }
+raise unless services.sort == expected.sort && services.uniq.length == services.length
+records.each do |record|
+  raise unless record.fetch("State") == "running"
+  health = record.fetch("Health", "")
+  raise unless health.empty? || health == "healthy"
+end
+RUBY
+    then
+      rm -f -- "$expected_file" "$state_file"
       die 'legacy service is not running'
+    fi
+    rm -f -- "$expected_file" "$state_file"
     ;;
   down) run_compose down ;;
 esac

@@ -125,12 +125,23 @@ MODE = ARGV.fetch(0)
 MEDIA_ROOT = Pathname.new(ENV.fetch("PLATFORM_MEDIA_ROOT")).expand_path
 REPORT_ROOT = Pathname.new(ENV.fetch("PLATFORM_REPORT_ROOT")).expand_path
 CONTAINER = ENV.fetch("PLATFORM_TINYMEDIAMANAGER_CONTAINER")
-MOVIE_DIRECTORY = MEDIA_ROOT.join("Media", "Movies", "Task 10 Contract Movie (2024)")
+MOVIES_ROOT = Pathname.new(
+  ENV.fetch("PLATFORM_TINYMEDIAMANAGER_MOVIES_ROOT", MEDIA_ROOT.join("Media", "Movies").to_s)
+).expand_path
+SERIES_ROOT = Pathname.new(
+  ENV.fetch("PLATFORM_TINYMEDIAMANAGER_SERIES_ROOT", MEDIA_ROOT.join("Media", "Series").to_s)
+).expand_path
+MOVIE_DIRECTORY = MOVIES_ROOT.join("Task 10 Contract Movie (2024)")
 MOVIE_FILE = MOVIE_DIRECTORY.join("Task 10 Contract Movie (2024).mp4")
-SERIES_DIRECTORY = MEDIA_ROOT.join("Media", "Series", "Task 10 Contract Series", "Season 01")
+SERIES_DIRECTORY = SERIES_ROOT.join("Task 10 Contract Series", "Season 01")
 SERIES_FILE = SERIES_DIRECTORY.join("Task 10 Contract Series - S01E01.mp4")
 STATE_PATH = REPORT_ROOT.join("tinymediamanager-persistence.sha256")
-SETTINGS_ROOT = Pathname.new(ENV.fetch("PLATFORM_DOCKER_ROOT")).expand_path.join("tinymediamanager", "data", "data")
+SETTINGS_ROOT = Pathname.new(
+  ENV.fetch(
+    "PLATFORM_TINYMEDIAMANAGER_SETTINGS_ROOT",
+    Pathname.new(ENV.fetch("PLATFORM_DOCKER_ROOT")).expand_path.join("tinymediamanager", "data", "data").to_s
+  )
+).expand_path
 API = URI("http://127.0.0.1:#{Integer(ENV.fetch('PLATFORM_TINYMEDIAMANAGER_API_PORT'), 10)}")
 VIDEO_FIXTURE = (
   "AAAAJGZ0eXBpc29tAAACAGlzb21pc282aXNvMmF2YzFtcDQxAAAC7W1vb3YAAABsbXZoZAAAAAAA" \
