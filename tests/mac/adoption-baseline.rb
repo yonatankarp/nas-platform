@@ -423,7 +423,7 @@ end
 def secure_file_handle(path, trusted_root:)
   absolute = File.expand_path(path)
   root = File.expand_path(trusted_root)
-  raise "capture input is unsafe" unless absolute.start_with?("#{root}/")
+  raise "capture input is unsafe" unless absolute == root || absolute.start_with?("#{root}/")
 
   components = absolute.split(File::SEPARATOR).reject(&:empty?)
   root_components = root.split(File::SEPARATOR).reject(&:empty?)
@@ -595,7 +595,8 @@ def pinned_images(bytes, canaries)
 end
 
 def open_bound_directory(path)
-  secure_file_handle(path, trusted_root: File.dirname(File.expand_path(path))) do |directory|
+  absolute = File.expand_path(path)
+  secure_file_handle(absolute, trusted_root: absolute) do |directory|
     stat = directory.stat
     raise "publication directory is unsafe" unless stat.directory? && stat.uid == Process.uid &&
                                                    (stat.mode & 0o777) == 0o700

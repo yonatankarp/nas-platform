@@ -227,6 +227,15 @@ sticky_tmp = ["/private/tmp", "/tmp"].filter_map do |candidate|
   canonical if stat.uid.zero? && (stat.mode & 0o7777) == 0o1777
 end.uniq.first
 failures << "standard root-owned sticky temporary directory is unavailable" unless sticky_tmp
+if sticky_tmp && ENV["ADOPTION_STICKY_FULL_RECORDER_CHILD"] != "1" &&
+   File.realpath(Dir.tmpdir) != sticky_tmp
+  sticky_output, sticky_error, sticky_status = Open3.capture3({
+    "TMPDIR" => sticky_tmp,
+    "ADOPTION_STICKY_FULL_RECORDER_CHILD" => "1"
+  }, RbConfig.ruby, __FILE__)
+  failures << "full recorder rejected a safe sticky temporary ancestor: #{sticky_error}#{sticky_output}" unless
+    sticky_status.success?
+end
 Dir.mktmpdir("beszel-probe-test-") do |probe_root|
   probe_root = File.realpath(probe_root)
   FileUtils.mkdir_p("#{probe_root}/bin")
