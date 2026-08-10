@@ -132,6 +132,20 @@ def contract_failures(service, tasks)
         %w[MANAGED_EMAIL MANAGED_PASSWORD MANAGED_USERNAME]
     failures << "Paperless create must set the initial password" unless
       create&.dig("community.docker.docker_compose_v2_exec", "argv").to_s.include?("set_password")
+    create_script = Array(create&.dig("community.docker.docker_compose_v2_exec", "argv")).last.to_s
+    create_lines = create_script.lines
+    atomic_index = create_lines.index { |line| line.strip == "with transaction.atomic():" }
+    create_index = create_lines.index { |line| line.include?("objects.create(") }
+    password_index = create_lines.index { |line| line.include?("user.set_password(") }
+    save_index = create_lines.index { |line| line.include?("user.save()") }
+    atomic_indent = atomic_index && create_lines[atomic_index][/^\s*/].length
+    nested_indexes = [create_index, password_index, save_index]
+    atomic_creation = create_script.include?("from django.db import transaction") && atomic_index &&
+                      nested_indexes.all? && nested_indexes == nested_indexes.sort &&
+                      nested_indexes.all? do |index|
+                        index > atomic_index && create_lines[index][/^\s*/].length > atomic_indent
+                      end
+    failures << "Paperless create is not atomic across identity and password persistence" unless atomic_creation
     failures << "Paperless creation is not limited to reconciliation" unless
       create&.fetch("when", [])&.include?("paperless_managed_users_phase == 'reconcile'")
     failures << "Paperless existing-user repair calls set_password" if
@@ -286,16 +300,29 @@ PAPERLESS_EXECUTOR_MODULE = <<~'PYTHON'
       state["events"].append("create:" + command_env["MANAGED_USERNAME"])
       user_id = state["next_id"]
       state["next_id"] += 1
-      state["users"].append({
+      created_user = {
           "id": user_id,
           "username": command_env["MANAGED_USERNAME"],
           "email": command_env["MANAGED_EMAIL"],
-          "password": "mangled" if state.get("mangle_create") else command_env["MANAGED_PASSWORD"],
+          "password": None,
           "is_active": True,
           "is_staff": False,
           "is_superuser": False,
           "groups": [],
-      })
+      }
+      state["users"].append(created_user)
+      if state.get("fail_after_identity_create"):
+          if "with transaction.atomic():" in script:
+              state["users"].pop()
+              state["events"].append("rollback:" + command_env["MANAGED_USERNAME"])
+          else:
+              state["events"].append("partial-commit:" + command_env["MANAGED_USERNAME"])
+          with open(path, "w", encoding="utf-8") as handle:
+              json.dump(state, handle)
+          module.fail_json(msg="managed user creation failed")
+      created_user["password"] = (
+          "mangled" if state.get("mangle_create") else command_env["MANAGED_PASSWORD"]
+      )
       changed = True
   else:
       event = "repair:" if "MANAGED_EMAIL" in command_env else "bind:"
@@ -493,6 +520,7 @@ def exercise_paperless(failures, scenario: :normal, task_path: nil)
     "next_id" => 3, "tokens" => {}, "commands" => [], "events" => []
   }
   state["mangle_create"] = true if scenario == :mangled
+  state["fail_after_identity_create"] = true if scenario == :create_failure
   state["users"][0]["password"] = "deployed-other-secret" if scenario == :auth_failure
   if scenario == :swap
     state["swap_on_second_list"] = true
@@ -539,12 +567,35 @@ def exercise_paperless(failures, scenario: :normal, task_path: nil)
       }
       arguments = scenario == :check ? ["--check"] : []
       includes = managed_includes("paperless_ngx", {}, path: task_path)
-      includes = [includes.first] if scenario == :check
+      includes = [includes.first] if %i[check create_failure].include?(scenario)
       stdout, stderr, status = run_playbook(
         includes, variables, *arguments, env: executor_env
       )
       final = read_fixture_state(state_path)
-      if scenario == :normal
+      if scenario == :create_failure
+        failures << "Paperless injected create failure unexpectedly succeeded" if status.success?
+        failures << "Paperless failed create left a partial managed user" if
+          final["users"].any? { |user| user["username"] == "new" }
+        failures << "Paperless failed create omitted rollback evidence" unless
+          final["events"].include?("rollback:new")
+        failures << "Paperless create failure disclosed a password" if
+          ["reader-secret", "new-secret"].any? { |secret| (stdout + stderr).include?(secret) }
+
+        final["fail_after_identity_create"] = false
+        write_fixture_state(state_path, final)
+        retry_stdout, retry_stderr, retry_status = run_playbook(
+          managed_includes("paperless_ngx", {}, path: task_path), variables, env: executor_env
+        )
+        retried = read_fixture_state(state_path)
+        failures << "Paperless retry after rolled-back create failed: #{failure_tail(retry_stdout + retry_stderr)}" unless
+          retry_status.success?
+        failures << "Paperless retry did not create exactly one managed user" unless
+          retried["users"].count { |user| user["username"] == "new" } == 1
+        failures << "Paperless retry diagnostics disclosed a password" if
+          ["reader-secret", "new-secret"].any? do |secret|
+            (retry_stdout + retry_stderr).include?(secret)
+          end
+      elsif scenario == :normal
         failures << "Paperless behavior fixture failed: #{failure_tail(stdout + stderr)}" unless status.success?
         reader = final["users"].find { |user| user["username"] == "reader" }
         created = final["users"].find { |user| user["username"] == "new" }
@@ -931,6 +982,38 @@ if ARGV == ["--self-test"]
         unless create_mutant_failures.any? { |failure| failure.start_with?("Beszel behavior fixture failed:") }
           failures << "beszel unverified-create mutant survived behavior fixtures"
         end
+
+        paperless_create_mutant = YAML.safe_load_file(
+          File.join(ROOT, "roles", "paperless_ngx", "tasks", "managed_users.yml"), aliases: false
+        )
+        create = paperless_create_mutant.find do |task|
+          task_name(task) == "Create absent Paperless managed users"
+        end
+        argv = create.fetch("community.docker.docker_compose_v2_exec").fetch("argv")
+        inside_atomic = false
+        argv[-1] = argv.last.lines.filter_map do |line|
+          next if line.include?("from django.db import transaction")
+          if line.strip == "with transaction.atomic():"
+            inside_atomic = true
+            next
+          end
+          inside_atomic && line.start_with?("    ") ? line.delete_prefix("    ") : line
+        end.join
+        create_mutant_path = File.join(directory, "paperless_non_atomic_create.yml")
+        File.write(create_mutant_path, YAML.dump(paperless_create_mutant), mode: "w", perm: 0o600)
+        create_mutant_failures = []
+        exercise_paperless(
+          create_mutant_failures, scenario: :create_failure, task_path: create_mutant_path
+        )
+        partial_commit_detected = create_mutant_failures.include?(
+          "Paperless failed create left a partial managed user"
+        )
+        unsafe_retry_detected = create_mutant_failures.any? do |failure|
+          failure.start_with?("Paperless retry after rolled-back create failed:")
+        end
+        unless partial_commit_detected && unsafe_retry_detected
+          failures << "paperless non-atomic-create mutant survived behavior fixtures"
+        end
       end
     end
   end
@@ -940,6 +1023,7 @@ elsif ARGV.empty?
     exercise_beszel(failures)
     exercise_paperless(failures)
     exercise_paperless(failures, scenario: :mangled)
+    exercise_paperless(failures, scenario: :create_failure)
     exercise_paperless(failures, scenario: :auth_failure)
     exercise_paperless(failures, scenario: :check)
     exercise_fail_closed_and_check_mode(failures)

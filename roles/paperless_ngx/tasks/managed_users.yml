@@ -140,12 +140,18 @@
       - manage.py
       - shell
       - -c
-      - >-
-        import os; from django.contrib.auth import get_user_model;
-        user=get_user_model().objects.create(username=os.environ["MANAGED_USERNAME"],
-        email=os.environ["MANAGED_EMAIL"]);
-        user.set_password(os.environ["MANAGED_PASSWORD"]);
-        user.save()
+      - |
+        import os
+        from django.contrib.auth import get_user_model
+        from django.db import transaction
+
+        with transaction.atomic():
+            user = get_user_model().objects.create(
+                username=os.environ["MANAGED_USERNAME"],
+                email=os.environ["MANAGED_EMAIL"],
+            )
+            user.set_password(os.environ["MANAGED_PASSWORD"])
+            user.save()
     tty: false
   register: paperless_managed_user_creation
   when:
