@@ -210,10 +210,33 @@ for file in "$sandbox"/legacy-env/*.env; do
   grep -F 'DOLLAR=$$safe' "$file" >/dev/null || fail 'Compose dollar escaping differs'
 done
 
-ruby -ryaml - "$test_dir/legacy-render.yml" "$test_dir/templates/legacy-env.j2" <<'RUBY'
+ruby -ryaml - "$test_dir/legacy-render.yml" "$test_dir/templates/legacy-env.j2" \
+  "$repo_dir/services/manifest.yml" <<'RUBY'
 play = YAML.safe_load_file(ARGV.fetch(0))
-tasks = play.fetch(0).fetch("tasks")
+render_play = play.fetch(0)
+tasks = render_play.fetch("tasks")
 raise "render tasks can expose values" unless tasks.all? { |task| task["no_log"] == true }
+
+manifest = YAML.safe_load_file(ARGV.fetch(2))
+manifest_services = manifest.fetch("services").map { |service| service.fetch("name") }.sort
+expected_services = render_play.fetch("vars").fetch("legacy_expected_services").sort
+raise "legacy expected service set differs from manifest" unless expected_services == manifest_services
+
+root_validation = tasks.find { |task| task["name"] == "Validate legacy parity root identity" }
+raise "legacy parity root validation is absent" unless root_validation
+required_root_assertions = [
+  "schema is integer",
+  "schema == 1",
+  "legacy_commit is string",
+  "legacy_commit == legacy_expected_commit",
+  "stacks is mapping",
+  "stacks.keys() | list | sort == legacy_expected_services | sort",
+]
+actual_root_assertions = root_validation.fetch("ansible.builtin.assert").fetch("that")
+unless actual_root_assertions.sort == required_root_assertions.sort
+  raise "legacy parity root assertions differ from contract"
+end
+
 source = File.read(ARGV.fetch(1))
 raise "template does not sort entries" unless source.include?("sort(attribute='key')")
 raise "template does not escape Compose dollars" unless source.include?("replace('$', '$$')")
