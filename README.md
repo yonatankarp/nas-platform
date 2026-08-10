@@ -151,11 +151,12 @@ tests/mac/run.sh \
   --vault-password-file /absolute/path/to/password-command
 ```
 
-For this harness, executable password providers use the exact `#!/bin/sh`
-shebang without options. The harness executes inspected provider bytes once in
-the provider's original directory context, so sibling-helper wrappers remain
-supported; other executable formats fail closed. Regular password files remain
-supported unchanged.
+For this harness, executable password providers are POSIX shell text with the
+exact `#!/bin/sh` shebang, no shebang options, and no NUL bytes. The harness
+streams inspected provider bytes through an anonymous pipe and executes them
+once in the provider's original directory context, so sibling-helper wrappers
+remain supported without creating a plaintext script file. Other executable
+formats fail closed. Regular password files remain supported unchanged.
 
 Use `--lane adoption` to exercise the generic legacy-state adoption lane. Later
 service tranches supply its adoption hooks; the lifecycle itself never reads

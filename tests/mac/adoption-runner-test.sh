@@ -75,7 +75,7 @@ help_output=$temporary_parent/help
 grep -F -- '--parity-vault-file FILE' "$help_output" >/dev/null || fail 'usage omits parity vault option'
 grep -F -- '--parity-vault-password-file FILE_OR_EXECUTABLE' "$help_output" >/dev/null ||
   fail 'usage omits parity password option'
-grep -F -- 'exact #!/bin/sh shebang without options' "$help_output" >/dev/null ||
+grep -F -- 'exact #!/bin/sh shebang without options or NUL bytes' "$help_output" >/dev/null ||
   fail 'usage omits the executable password provider format'
 
 expect_failure 'adoption without parity vault' 'adoption requires --parity-vault-file' \
@@ -411,6 +411,12 @@ descriptor_provider=$temporary_parent/provider-descriptor-check
 descriptor_helper=$temporary_parent/provider-descriptor-helper
 cat > "$descriptor_helper" <<'SH'
 #!/bin/sh
+case $(ps -o command= -p "$PPID") in
+  *provider-process-inspection-secret*) exit 11 ;;
+esac
+if IFS= read -r unexpected_input; then
+  exit 12
+fi
 ruby -e '
   cwd = File.stat(".")
   provider = File.stat(ENV.fetch("PLATFORM_DESCRIPTOR_PROVIDER"))
@@ -429,6 +435,20 @@ cat > "$descriptor_provider" <<'SH'
 #!/bin/sh
 printf 'argc=%s first=%s\n' "$#" "${1+x}" > "${PLATFORM_DESCRIPTOR_MARKER:?}"
 [ "$#" -eq 0 ] && [ "${1+x}" != x ] || exit 8
+if /usr/bin/find "${PLATFORM_DESCRIPTOR_PROTECTED_ROOT:?}" -name '.provider-*' -print | grep . >/dev/null; then
+  printf '%s\n' named-snapshot >> "${PLATFORM_DESCRIPTOR_MARKER:?}"
+  exit 11
+fi
+case $(ps -o command= -p $$)$(env) in
+  *provider-process-inspection-secret*)
+    printf '%s\n' process-bytes >> "${PLATFORM_DESCRIPTOR_MARKER:?}"
+    exit 12
+    ;;
+esac
+if IFS= read -r unexpected_input; then
+  printf '%s\n' stdin-open >> "${PLATFORM_DESCRIPTOR_MARKER:?}"
+  exit 13
+fi
 "$(dirname -- "$0")/provider-descriptor-helper" || exit 9
 printf '%s\n' descriptor-safe-output
 SH
@@ -439,6 +459,7 @@ printf 'schema=1\nproject=%s\n' nas-platform-mac-fdd123 > "$descriptor_sandbox/.
 chmod 0600 "$descriptor_sandbox/.nas-platform-mac-owned"
 descriptor_marker=$temporary_parent/provider-descriptor-marker
 PLATFORM_DESCRIPTOR_PROVIDER="$descriptor_provider" PLATFORM_DESCRIPTOR_MARKER="$descriptor_marker" \
+  PLATFORM_DESCRIPTOR_PROTECTED_ROOT="$descriptor_sandbox/protected-inputs" \
   PLATFORM_MAC_TMPDIR="$temporary_parent" \
   "$runner" --lane adoption \
   --vault-file "$vault_file" --vault-password-file "$password_file" \
@@ -447,6 +468,9 @@ PLATFORM_DESCRIPTOR_PROVIDER="$descriptor_provider" PLATFORM_DESCRIPTOR_MARKER="
   --phase report --sandbox "$descriptor_sandbox" >/dev/null 2>&1 || {
   grep -Fx 'argc=0 first=' "$descriptor_marker" >/dev/null ||
     fail 'provider received positional arguments from the launcher'
+  if grep -Fx named-snapshot "$descriptor_marker" >/dev/null; then
+    fail 'provider observed a named private snapshot'
+  fi
   fail 'provider or helper inherited an inspected descriptor'
 }
 printf '%s\n' descriptor-safe-output > "$temporary_parent/descriptor-expected"
@@ -491,6 +515,53 @@ if /usr/bin/find "$temporary_parent" -name '.provider-*' -print | grep . >/dev/n
   fail 'private provider snapshot remained after provider execution'
 fi
 
+nul_provider=$temporary_parent/provider-nul
+printf '#!/bin/sh\nprintf before\000after\n' > "$nul_provider"
+chmod 0700 "$nul_provider"
+expect_failure 'NUL-bearing executable parity provider' \
+  'protected parity password input provider contains unsupported NUL bytes' \
+  env PLATFORM_MAC_TMPDIR="$temporary_parent" "$runner" --lane adoption \
+    --vault-file "$vault_file" --vault-password-file "$password_file" \
+    --parity-vault-file "$parity_vault_file" \
+    --parity-vault-password-file "$nul_provider" --phase report
+
+no_newline_provider=$temporary_parent/provider-no-final-newline
+printf '#!/bin/sh\nprintf "%%s\\n" no-final-newline-output' > "$no_newline_provider"
+chmod 0700 "$no_newline_provider"
+no_newline_sandbox=$temporary_parent/nas-platform-mac.NoN123
+mkdir -m 0700 "$no_newline_sandbox"
+printf 'schema=1\nproject=%s\n' nas-platform-mac-non123 > "$no_newline_sandbox/.nas-platform-mac-owned"
+chmod 0600 "$no_newline_sandbox/.nas-platform-mac-owned"
+PLATFORM_MAC_TMPDIR="$temporary_parent" "$runner" --lane adoption \
+  --vault-file "$vault_file" --vault-password-file "$password_file" \
+  --parity-vault-file "$parity_vault_file" \
+  --parity-vault-password-file "$no_newline_provider" \
+  --phase report --sandbox "$no_newline_sandbox" >/dev/null 2>&1 ||
+  fail 'provider without a final source newline was not preserved'
+printf '%s\n' no-final-newline-output > "$temporary_parent/no-newline-expected"
+cmp -s "$temporary_parent/no-newline-expected" \
+  "$no_newline_sandbox/protected-inputs/parity-password" ||
+  fail 'provider without a final source newline produced unexpected output'
+
+trailing_newline_provider=$temporary_parent/provider-trailing-newlines
+printf '#!/bin/sh\nprintf "%%s\\n" trailing-newline-output\n\n\n' > "$trailing_newline_provider"
+chmod 0700 "$trailing_newline_provider"
+trailing_newline_sandbox=$temporary_parent/nas-platform-mac.TrN123
+mkdir -m 0700 "$trailing_newline_sandbox"
+printf 'schema=1\nproject=%s\n' nas-platform-mac-trn123 \
+  > "$trailing_newline_sandbox/.nas-platform-mac-owned"
+chmod 0600 "$trailing_newline_sandbox/.nas-platform-mac-owned"
+PLATFORM_MAC_TMPDIR="$temporary_parent" "$runner" --lane adoption \
+  --vault-file "$vault_file" --vault-password-file "$password_file" \
+  --parity-vault-file "$parity_vault_file" \
+  --parity-vault-password-file "$trailing_newline_provider" \
+  --phase report --sandbox "$trailing_newline_sandbox" >/dev/null 2>&1 ||
+  fail 'provider trailing source newlines were not preserved'
+printf '%s\n' trailing-newline-output > "$temporary_parent/trailing-newline-expected"
+cmp -s "$temporary_parent/trailing-newline-expected" \
+  "$trailing_newline_sandbox/protected-inputs/parity-password" ||
+  fail 'provider trailing source newlines produced unexpected output'
+
 unsupported_provider=$temporary_parent/provider-unsupported
 printf '%s\n' '#!/bin/bash' 'printf "%s\\n" unsupported-provider-secret' > "$unsupported_provider"
 chmod 0700 "$unsupported_provider"
@@ -531,16 +602,25 @@ if grep -F provider-nonzero-secret "$temporary_parent/output" >/dev/null; then
 fi
 
 timeout_provider=$temporary_parent/provider-timeout
+timeout_child_marker=$temporary_parent/provider-timeout-child
 printf '%s\n' '#!/bin/sh' 'printf "%s\\n" provider-timeout-secret' \
-  'printf "%s\\n" provider-timeout-secret >&2' 'sleep 10' > "$timeout_provider"
+  'printf "%s\\n" provider-timeout-secret >&2' \
+  'sleep 10 & child=$!; printf "%s\\n" "$child" > "${PLATFORM_TIMEOUT_CHILD_MARKER:?}"; wait "$child"' \
+  > "$timeout_provider"
 chmod 0700 "$timeout_provider"
 expect_failure 'timed out parity provider' 'protected parity password input provider timed out' \
-  env PLATFORM_MAC_TMPDIR="$temporary_parent" "$runner" --lane adoption \
+  env PLATFORM_TIMEOUT_CHILD_MARKER="$timeout_child_marker" PLATFORM_MAC_TMPDIR="$temporary_parent" \
+    "$runner" --lane adoption \
     --vault-file "$vault_file" --vault-password-file "$password_file" \
     --parity-vault-file "$parity_vault_file" --parity-vault-password-file "$timeout_provider" \
     --phase report
 if grep -F provider-timeout-secret "$temporary_parent/output" >/dev/null; then
   fail 'timed out parity provider leaked stderr'
+fi
+timeout_child=$(sed -n '1p' "$timeout_child_marker")
+case $timeout_child in *[!0-9]*|'') fail 'timed out provider did not record its child' ;; esac
+if kill -0 "$timeout_child" 2>/dev/null; then
+  fail 'timed out provider left a child process running'
 fi
 if /usr/bin/find "$temporary_parent" -name '.provider-*' -print | grep . >/dev/null; then
   fail 'private provider snapshot remained after timeout cleanup'

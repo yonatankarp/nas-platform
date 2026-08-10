@@ -67,9 +67,11 @@ tests/mac/run.sh \
   --vault-password-file "$HOME/.config/nas-platform/vault-password"
 ```
 
-The password input may also be an executable provider with the exact
-`#!/bin/sh` shebang and no shebang options. Other executable formats are
-rejected by this harness; regular password files are unaffected.
+The password input may also be a POSIX-shell-text executable provider with the
+exact `#!/bin/sh` shebang, no shebang options, and no NUL bytes. Other
+executable formats are rejected by this harness; regular password files are
+unaffected. Provider text is streamed through an anonymous pipe and is never
+written to a harness snapshot file.
 
 The harness creates unique paths and ports, then runs these phases in order:
 `preflight`, `deploy`, `seed`, `verify`, `idempotence`, `drift`, `reconcile`,

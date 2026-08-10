@@ -16,7 +16,7 @@ usage() {
     'usage: run.sh --lane fresh|adoption --vault-file FILE --vault-password-file FILE_OR_EXECUTABLE' \
     '              [--parity-vault-file FILE --parity-vault-password-file FILE_OR_EXECUTABLE]' \
     '              [--keep-on-failure] [--phase NAME] [--sandbox PATH]' \
-    'Executable password providers must use the exact #!/bin/sh shebang without options.'
+    'Executable password providers must use the exact #!/bin/sh shebang without options or NUL bytes.'
 }
 
 lane=
@@ -188,7 +188,6 @@ pin_protected_input() {
 source_path, destination_path, label, kind, external, repository, protected_root = ARGV
 require "open3"
 require "rbconfig"
-require "shellwords"
 require "timeout"
 
 maximum_size = kind == "vault" ? 16 * 1024 * 1024 : 1024 * 1024
@@ -220,35 +219,29 @@ rescue IOError
   { bytes: "", failed: true }
 end
 
-def execute_provider(directory, basename, provider_bytes, protected_root, maximum_size)
+def execute_provider(directory, basename, provider_bytes, maximum_size)
   result = {
     output: "", success: false, timed_out: false, oversized: false,
-    capture_failed: false, unsupported: false
+    capture_failed: false, unsupported: false, contains_nul: false
   }
   unless provider_bytes.lines.first == "#!/bin/sh\n"
     result[:unsupported] = true
     return result
   end
-  snapshot_staging = File.join(protected_root, ".provider-#{Process.pid}-#{rand(1 << 32)}.tmp")
-  snapshot_path = snapshot_staging.delete_suffix(".tmp")
-  File.open(snapshot_staging, File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW, 0o600) do |snapshot|
-    snapshot.write(provider_bytes)
-    snapshot.flush
-    snapshot.fsync
+  if provider_bytes.include?("\0")
+    result[:contains_nul] = true
+    return result
   end
-  File.chmod(0o700, snapshot_staging)
-  File.rename(snapshot_staging, snapshot_path)
-  snapshot_staging = nil
-  snapshot = File.lstat(snapshot_path)
-  return result unless
-    snapshot.file? && snapshot.uid == Process.uid && (snapshot.mode & 0o777) == 0o700 &&
-      snapshot.size == provider_bytes.bytesize
   directory_descriptor = directory.fileno
   directory.close_on_exec = false
-  provider_command = ". #{Shellwords.escape(snapshot_path)}"
-  # Run an immutable copy of the inspected bytes. The launcher retains the
-  # inspected directory as cwd, closes that capability before /bin/sh sees it,
-  # and supplies the original relative $0 with no positional arguments.
+  # Buffer the inspected bytes from an anonymous pipe before evaluating them.
+  # The sentinel prevents command substitution from stripping trailing newlines.
+  provider_command = <<~'PROVIDER_COMMAND'
+    provider_script=$(cat; printf '\036') || exit 70
+    provider_script=${provider_script%?}
+    exec </dev/null || exit 70
+    eval "$provider_script"
+  PROVIDER_COMMAND
   launcher = <<~'PROVIDER_LAUNCHER'
     directory_descriptor = Integer(ARGV.fetch(0), 10)
     basename = ARGV.fetch(1)
@@ -263,12 +256,23 @@ def execute_provider(directory, basename, provider_bytes, protected_root, maximu
     [RbConfig.ruby, RbConfig.ruby], "-e", launcher,
     directory_descriptor.to_s, basename, provider_command, spawn_options
   ) do |stdin, stdout, stderr, wait_thread|
-    stdin.close
+    writer = Thread.new do
+      begin
+        stdin.write(provider_bytes)
+        { failed: false }
+      rescue IOError, SystemCallError
+        { failed: true }
+      ensure
+        stdin.close unless stdin.closed?
+      end
+    end
     stdout_reader = Thread.new { bounded_read(stdout, maximum_size) }
     stderr_reader = Thread.new { bounded_read(stderr, 64 * 1024) }
     stdout_reader.report_on_exception = false
     stderr_reader.report_on_exception = false
+    writer.report_on_exception = false
     reader_cleanup_failed = false
+    writer_cleanup_failed = false
     begin
       status = Timeout.timeout(5) { wait_thread.value }
       result[:success] = status.success?
@@ -280,6 +284,12 @@ def execute_provider(directory, basename, provider_bytes, protected_root, maximu
         wait_thread.join
       end
     ensure
+      unless writer.join(1)
+        writer_cleanup_failed = true
+        stdin.close unless stdin.closed?
+        terminate_group(wait_thread.pid, "TERM")
+        terminate_group(wait_thread.pid, "KILL") unless writer.join(1)
+      end
       readers = [[stdout_reader, stdout], [stderr_reader, stderr]]
       readers.each do |reader, _stream|
         next if reader.join(1)
@@ -295,22 +305,21 @@ def execute_provider(directory, basename, provider_bytes, protected_root, maximu
         reader.kill unless reader.join(1)
         reader.join
       end
+      writer.kill unless writer.join(1)
+      writer.join
     end
+    writer_capture = writer.value || { failed: true }
     stdout_capture = stdout_reader.value || { bytes: "", failed: true }
     stderr_capture = stderr_reader.value || { bytes: "", failed: true }
     result[:output] = stdout_capture[:bytes]
-    result[:capture_failed] = reader_cleanup_failed || stdout_capture[:failed] || stderr_capture[:failed]
+    result[:capture_failed] = writer_cleanup_failed || writer_capture[:failed] ||
+                              reader_cleanup_failed || stdout_capture[:failed] || stderr_capture[:failed]
     result[:oversized] = result[:output].bytesize > maximum_size ||
                          stderr_capture[:bytes].bytesize > 64 * 1024
   end
   result
 rescue SystemCallError, IOError
   result
-ensure
-  File.unlink(snapshot_staging) if snapshot_staging && File.file?(snapshot_staging) &&
-                                   !File.symlink?(snapshot_staging)
-  File.unlink(snapshot_path) if snapshot_path && File.file?(snapshot_path) &&
-                                !File.symlink?(snapshot_path)
 end
 
 temporary_path = nil
@@ -381,7 +390,7 @@ begin
   if kind == "password" && executable
     source.close
     source = nil
-    provider = execute_provider(parent_directory, basename, bytes, protected_root, maximum_size)
+    provider = execute_provider(parent_directory, basename, bytes, maximum_size)
     provider_parent_after = File.realpath(parent_path)
     provider_parent_path_after = File.lstat(parent_path)
     provider_canonical_parent_after = File.lstat(parent_before)
@@ -398,13 +407,9 @@ begin
     fail_pin(label, "provider timed out") if provider[:timed_out]
     fail_pin(label, "provider output exceeds the size limit") if provider[:oversized]
     fail_pin(label, "provider must use the exact #!/bin/sh executable format") if provider[:unsupported]
+    fail_pin(label, "provider contains unsupported NUL bytes") if provider[:contains_nul]
     fail_pin(label, "provider failed") unless provider[:success] && !provider[:capture_failed]
     bytes = provider[:output]
-    protected_root_after_provider = File.lstat(protected_root)
-    fail_pin(label, "destination is unsafe") unless
-      identity(protected_root_before) == identity(protected_root_after_provider) &&
-        File.realpath(protected_root) == protected_root
-    protected_root_before = protected_root_after_provider
   end
   if source
     source.close
