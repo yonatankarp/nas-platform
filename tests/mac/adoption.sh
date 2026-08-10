@@ -16,7 +16,7 @@ die() {
 subcommand=$1
 case $subcommand in
   --self-test) exec "$script_dir/adoption-self-test.sh" ;;
-  preflight|render) ;;
+  preflight|render|legacy-deploy|legacy-seed) ;;
   *) die 'unsupported subcommand' ;;
 esac
 
@@ -101,6 +101,78 @@ preflight() {
 }
 
 preflight
+[ "$subcommand" = legacy-deploy ] && {
+  "$script_dir/adoption.sh" render
+  sandbox=$(mac_validate_sandbox "$PLATFORM_MAC_SANDBOX" 2>/dev/null) ||
+    die 'owned sandbox is invalid'
+  if ! ruby - "$sandbox" >/dev/null 2>&1 <<'RUBY'
+sandbox = File.realpath(ARGV.fetch(0))
+directories = %w[
+  legacy/audiobookshelf/config legacy/audiobookshelf/metadata legacy/audiobookshelf/media
+  legacy/beszel/hub legacy/beszel/agent legacy/beszel/volume1 legacy/beszel/volume2
+  legacy/dozzle/data
+  legacy/immich/data legacy/immich/thumbs legacy/immich/encoded-video legacy/immich/profile
+  legacy/immich/backups legacy/immich/model-cache legacy/immich/postgres
+  legacy/jellyfin/config legacy/jellyfin/cache legacy/jellyfin/media
+  legacy/komga/config legacy/komga/library
+  legacy/ntfy/cache legacy/ntfy/data
+  legacy/paperless-ngx/redis legacy/paperless-ngx/postgres legacy/paperless-ngx/data
+  legacy/paperless-ngx/export legacy/paperless-ngx/tessdata legacy/paperless-ngx/media
+  legacy/paperless-ngx/consume
+  legacy/tinymediamanager/data legacy/tinymediamanager/movies legacy/tinymediamanager/series
+]
+directories.each do |relative|
+  current = sandbox
+  relative.split("/").each do |component|
+    current = File.join(current, component)
+    begin
+      stat = File.lstat(current)
+      raise "unsafe" unless stat.directory? && !stat.symlink? && stat.uid == Process.uid
+    rescue Errno::ENOENT
+      Dir.mkdir(current, 0o700)
+    end
+    File.chmod(0o700, current)
+  end
+end
+model = File.join(sandbox, "legacy/paperless-ngx/tessdata/heb.traineddata")
+begin
+  stat = File.lstat(model)
+  raise "unsafe" unless stat.file? && !stat.symlink? && stat.uid == Process.uid
+rescue Errno::ENOENT
+  flags = File::WRONLY | File::CREAT | File::EXCL
+  flags |= File::NOFOLLOW if File.const_defined?(:NOFOLLOW)
+  File.open(model, flags, 0o600) { |file| file.flush; file.fsync }
+end
+RUBY
+  then
+    die 'legacy bind preparation failed'
+  fi
+  tab=$(printf '\t')
+  printf '%s\n' "$service_paths" | while IFS="$tab" read -r service path; do
+    [ -n "$service" ] && [ -n "$path" ] || die 'service manifest is invalid'
+    "$script_dir/legacy-compose.sh" "$service" config
+  done
+  printf '%s\n' "$service_paths" | while IFS="$tab" read -r service path; do
+    [ -n "$service" ] && [ -n "$path" ] || die 'service manifest is invalid'
+    "$script_dir/legacy-compose.sh" "$service" up
+  done
+  printf '%s\n' "$service_paths" | while IFS="$tab" read -r service path; do
+    [ -n "$service" ] && [ -n "$path" ] || die 'service manifest is invalid'
+    "$script_dir/legacy-compose.sh" "$service" ps
+  done
+  printf '%s\n' 'Legacy adoption deploy: nine isolated projects healthy'
+  exit 0
+}
+[ "$subcommand" = legacy-seed ] && {
+  tab=$(printf '\t')
+  printf '%s\n' "$service_paths" | while IFS="$tab" read -r service path; do
+    [ -n "$service" ] && [ -n "$path" ] || die 'service manifest is invalid'
+    "$script_dir/legacy-compose.sh" "$service" ps
+  done
+  "$script_dir/legacy-seed.sh"
+  printf '%s\n' 'Legacy adoption seed: supported capabilities ready'
+  exit 0
+}
 [ "$subcommand" = render ] || {
   printf '%s\n' 'Legacy adoption preflight: pinned checkout holds'
   exit 0
