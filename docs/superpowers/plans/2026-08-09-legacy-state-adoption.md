@@ -8,6 +8,29 @@
 
 **Tech Stack:** POSIX shell, Ruby, Ansible, Docker Compose v2, YAML/JSON, GitHub Actions.
 
+## Implementation checkpoint — 2026-08-10
+
+- Branch: `agent/task-14-adoption`
+- Current HEAD: `7ba47a2e75bd879e7924aef21700febc5277c73c`
+- Managed-user migration prerequisite: complete. Full synthetic integration passed at
+  `a3195f49a00a1906fae7fd92811d08a329af9e19`, including all registered live
+  contracts, second convergence with `changed=0`, and final check mode.
+- Task 1: complete and independently spec/security reviewed. Feature commit
+  `ac384978fad004d24901f9353caa5676239c2e20`; protected-input corrections end at
+  `ed88de7582b43d99a4e19923104ccdcd86083e44`.
+- Task 2: implemented in
+  `7ba47a2e75bd879e7924aef21700febc5277c73c`; focused tests passed. Independent
+  spec review and code-quality/security review are the immediate next actions.
+- Tasks 3–9: not started.
+- Task 10: not started and remains gated on explicitly supplied/authorized
+  protected deployment and parity inputs plus the clean pinned legacy checkout.
+- No protected production inputs have been accessed and no live migration has
+  been claimed.
+- Process hygiene: monitor Ruby mutation/self-test processes by PID, parent,
+  elapsed time, CPU, and output progress during long gates. At this checkpoint
+  no Ruby test process is running. Stop only a confirmed orphan or spin loop.
+- Commit policy: never add `Co-Authored-By` trailers.
+
 ---
 
 ### Task 1: Extend the runner and report schemas
