@@ -11,17 +11,22 @@ require "time"
 require "yaml"
 
 FORBIDDEN_KEY = /password|secret|token|authorization|private_key|hash/i
-PHASES = %w[
+FRESH_PHASES = %w[
   preflight deploy seed verify idempotence drift reconcile recreate persistence
   report cleanup
 ].freeze
+ADOPTION_PHASES = %w[
+  preflight legacy-deploy legacy-seed capture-baseline snapshot cutover verify
+  idempotence recreate persistence rollback report cleanup
+].freeze
+PHASES = (FRESH_PHASES + ADOPTION_PHASES).uniq.freeze
 STATUSES = %w[running passed failed].freeze
 REDACTION = "[REDACTED]"
 SAFE_DIAGNOSTIC = /\A[A-Za-z0-9][A-Za-z0-9_.-]*\z/
 ROOT_KEYS = %w[
   schema lane sandbox_id project_name beszel_port ntfy_port dozzle_port audiobookshelf_port komga_port
   tinymediamanager_web_port tinymediamanager_api_port jellyfin_port immich_port paperless_port
-  git_revision vault_checksum diagnostic_locations phases
+  git_revision vault_checksum parity_vault_checksum legacy_commit diagnostic_locations phases
 ].freeze
 IDENTITY_KEYS = %w[git_sha platform_kind platform_compose_kind].freeze
 
@@ -77,6 +82,15 @@ def validate_input(input)
   %w[sandbox_id project_name git_revision vault_checksum].each do |field|
     raise "input #{field} must be a non-empty string" unless input[field].is_a?(String) && !input[field].empty?
   end
+  if input["lane"] == "adoption"
+    raise "adoption parity_vault_checksum must be lowercase SHA256" unless
+      input["parity_vault_checksum"].is_a?(String) && input["parity_vault_checksum"].match?(/\A[0-9a-f]{64}\z/)
+    raise "adoption legacy_commit must be lowercase Git SHA" unless
+      input["legacy_commit"].is_a?(String) && input["legacy_commit"].match?(/\A[0-9a-f]{40}\z/)
+  else
+    raise "fresh parity_vault_checksum must be null" unless input["parity_vault_checksum"].nil?
+    raise "fresh legacy_commit must be null" unless input["legacy_commit"].nil?
+  end
   raise "input project_name is unsafe" unless input["project_name"].match?(/\Anas-platform-mac-[a-z0-9.-]+\z/)
   service_port_fields = %w[
     beszel_port ntfy_port dozzle_port audiobookshelf_port komga_port
@@ -97,7 +111,8 @@ def validate_input(input)
   raise "input phase entries must be JSON objects" unless phases.all?(Hash)
   phases.each do |phase|
     raise "input phase fields are invalid" unless exact_keys?(phase, %w[name status], %w[started_at finished_at])
-    raise "input contains an unknown phase" unless PHASES.include?(phase["name"])
+    lane_phases = input["lane"] == "fresh" ? FRESH_PHASES : ADOPTION_PHASES
+    raise "input contains an unknown phase" unless lane_phases.include?(phase["name"])
     raise "input contains an unknown phase status" unless STATUSES.include?(phase["status"])
     %w[started_at finished_at].each do |field|
       raise "input phase timestamps must be strings" if phase.key?(field) && !phase[field].is_a?(String)
@@ -186,9 +201,12 @@ def markdown_report(report)
   %w[
     lane sandbox_id project_name beszel_port ntfy_port dozzle_port audiobookshelf_port komga_port
     tinymediamanager_web_port tinymediamanager_api_port jellyfin_port immich_port paperless_port
-    git_revision vault_checksum generated_at
+    git_revision vault_checksum parity_vault_checksum legacy_commit generated_at
   ].each do |key|
-    lines << "- #{key.tr('_', ' ').capitalize}: #{markdown_cell(report[key])}" if report.key?(key)
+    next unless report.key?(key)
+
+    rendered_value = report[key].nil? ? "null" : markdown_cell(report[key])
+    lines << "- #{key.tr('_', ' ').capitalize}: #{rendered_value}"
   end
   manifest = report["deployment_manifest"]
   identity = manifest ? manifest.fetch("identity") : {}
@@ -298,6 +316,8 @@ def initialize_input(path, options)
     "paperless_port" => options.fetch(:paperless_port),
     "git_revision" => options.fetch(:git_revision),
     "vault_checksum" => options.fetch(:vault_checksum),
+    "parity_vault_checksum" => options[:parity_vault_checksum],
+    "legacy_commit" => options[:legacy_commit],
     "diagnostic_locations" => [],
     "phases" => []
   }
@@ -377,6 +397,8 @@ def self_test
       "paperless_port" => 38_000,
       "git_revision" => "abc123",
       "vault_checksum" => "0" * 64,
+      "parity_vault_checksum" => nil,
+      "legacy_commit" => nil,
       "diagnostic_locations" => [],
       "phases" => []
     }
@@ -414,6 +436,29 @@ def self_test
     raise "missing deployment evidence was not persisted as null" unless nil_report["deployment_manifest"].nil?
     raise "generated_at has the wrong type" unless nil_report["generated_at"].is_a?(String)
     raise "redacted_field_count has the wrong type" unless nil_report["redacted_field_count"].is_a?(Integer)
+    fresh_markdown = File.read(nil_markdown)
+    raise "fresh Markdown parity identity is not explicitly null" unless
+      fresh_markdown.include?("Parity vault checksum: null")
+    raise "fresh Markdown legacy identity is not explicitly null" unless
+      fresh_markdown.include?("Legacy commit: null")
+
+    adoption_input = valid_input.merge(
+      "lane" => "adoption",
+      "parity_vault_checksum" => "1" * 64,
+      "legacy_commit" => "a" * 40,
+      "phases" => [{
+        "name" => "legacy-deploy", "status" => "passed",
+        "finished_at" => Time.now.utc.iso8601
+      }]
+    )
+    File.write(input, JSON.generate(adoption_input))
+    write_report(input, json, markdown)
+    adoption_report = JSON.parse(File.read(json))
+    raise "adoption parity checksum is missing" unless adoption_report["parity_vault_checksum"] == "1" * 64
+    raise "adoption legacy commit is missing" unless adoption_report["legacy_commit"] == "a" * 40
+    adoption_markdown = File.read(markdown)
+    raise "Markdown parity checksum is missing" unless adoption_markdown.include?("Parity vault checksum: #{'1' * 64}")
+    raise "Markdown legacy commit is missing" unless adoption_markdown.include?("Legacy commit: #{'a' * 40}")
 
     record_phase(input, "preflight", "failed")
     record_phase(input, "preflight", "running")
@@ -473,6 +518,18 @@ def self_test
       "malformed root" => [],
       "unknown root field" => valid_input.merge("unexpected" => true),
       "root field type" => valid_input.merge("vault_checksum" => []),
+      "fresh parity identity" => valid_input.merge("parity_vault_checksum" => "1" * 64),
+      "fresh legacy identity" => valid_input.merge("legacy_commit" => "a" * 40),
+      "adoption missing parity identity" => adoption_input.merge("parity_vault_checksum" => nil),
+      "adoption uppercase parity identity" => adoption_input.merge("parity_vault_checksum" => "A" * 64),
+      "adoption missing legacy identity" => adoption_input.merge("legacy_commit" => nil),
+      "adoption uppercase legacy identity" => adoption_input.merge("legacy_commit" => "A" * 40),
+      "fresh adoption phase" => valid_input.merge(
+        "phases" => [{ "name" => "legacy-deploy", "status" => "failed", "finished_at" => Time.now.utc.iso8601 }]
+      ),
+      "adoption fresh phase" => adoption_input.merge(
+        "phases" => [{ "name" => "deploy", "status" => "failed", "finished_at" => Time.now.utc.iso8601 }]
+      ),
       "phase status" => valid_input.merge("phases" => [{ "name" => "preflight", "status" => "unknown" }]),
       "phase timestamp" => valid_input.merge(
         "phases" => [{ "name" => "preflight", "status" => "failed", "finished_at" => 123 }]
@@ -587,6 +644,8 @@ parser = OptionParser.new do |opts|
   opts.on("--paperless-port PORT", Integer) { |value| options[:paperless_port] = value }
   opts.on("--git-revision SHA") { |value| options[:git_revision] = value }
   opts.on("--vault-checksum SHA256") { |value| options[:vault_checksum] = value }
+  opts.on("--parity-vault-checksum SHA256") { |value| options[:parity_vault_checksum] = value }
+  opts.on("--legacy-commit SHA") { |value| options[:legacy_commit] = value }
   opts.on("--phase NAME") { |value| options[:phase] = value }
   opts.on("--status STATUS") { |value| options[:status] = value }
   opts.on("--self-test") { options[:self_test] = true }

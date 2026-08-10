@@ -3,7 +3,8 @@ set -eu
 set +x
 umask 077
 
-PHASES=' preflight deploy seed verify idempotence drift reconcile recreate persistence report cleanup '
+FRESH_PHASES=' preflight deploy seed verify idempotence drift reconcile recreate persistence report cleanup '
+ADOPTION_PHASES=' preflight legacy-deploy legacy-seed capture-baseline snapshot cutover verify idempotence recreate persistence rollback report cleanup '
 
 mac_script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 mac_repo_dir=$(CDPATH= cd -- "$mac_script_dir/../.." && pwd -P)
@@ -12,23 +13,29 @@ mac_repo_dir=$(CDPATH= cd -- "$mac_script_dir/../.." && pwd -P)
 
 usage() {
   printf '%s\n' \
-    'usage: run.sh --lane fresh|adoption --vault-file FILE --vault-password-file FILE_OR_EXECUTABLE [--keep-on-failure] [--phase NAME] [--sandbox PATH]'
+    'usage: run.sh --lane fresh|adoption --vault-file FILE --vault-password-file FILE_OR_EXECUTABLE' \
+    '              [--parity-vault-file FILE --parity-vault-password-file FILE_OR_EXECUTABLE]' \
+    '              [--keep-on-failure] [--phase NAME] [--sandbox PATH]'
 }
 
 lane=
 vault_file=
 vault_password_file=
+parity_vault_file=
+parity_vault_password_file=
 selected_phase=
 requested_sandbox=
 keep_on_failure=false
 while [ "$#" -gt 0 ]; do
   case $1 in
-    --lane|--vault-file|--vault-password-file|--phase|--sandbox)
+    --lane|--vault-file|--vault-password-file|--parity-vault-file|--parity-vault-password-file|--phase|--sandbox)
       [ "$#" -ge 2 ] || { usage >&2; exit 2; }
       case $1 in
         --lane) lane=$2 ;;
         --vault-file) vault_file=$2 ;;
         --vault-password-file) vault_password_file=$2 ;;
+        --parity-vault-file) parity_vault_file=$2 ;;
+        --parity-vault-password-file) parity_vault_password_file=$2 ;;
         --phase) selected_phase=$2 ;;
         --sandbox) requested_sandbox=$2 ;;
       esac
@@ -40,7 +47,19 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-case $lane in fresh|adoption) ;; *) usage >&2; exit 2 ;; esac
+case $lane in
+  fresh)
+    PHASES=$FRESH_PHASES
+    [ -z "$parity_vault_file" ] && [ -z "$parity_vault_password_file" ] ||
+      mac_die 'fresh lane rejects parity vault options'
+    ;;
+  adoption)
+    PHASES=$ADOPTION_PHASES
+    [ -n "$parity_vault_file" ] || mac_die 'adoption requires --parity-vault-file'
+    [ -n "$parity_vault_password_file" ] || mac_die 'adoption requires --parity-vault-password-file'
+    ;;
+  *) usage >&2; exit 2 ;;
+esac
 [ -f "$vault_file" ] && [ ! -L "$vault_file" ] && [ -r "$vault_file" ] ||
   mac_die 'vault file must be a readable, regular encrypted file'
 IFS= read -r vault_header < "$vault_file" || mac_die 'vault file has no Ansible Vault header'
@@ -54,6 +73,28 @@ esac
 case $(CDPATH= cd -- "$(dirname -- "$vault_password_file")" 2>/dev/null && pwd -P)/ in
   "$mac_repo_dir"/*) mac_die 'vault password input must remain outside the repository' ;;
 esac
+
+if [ "$lane" = adoption ]; then
+  [ -f "$parity_vault_file" ] && [ ! -L "$parity_vault_file" ] && [ -r "$parity_vault_file" ] ||
+    mac_die 'parity vault file must be a readable, regular encrypted file'
+  IFS= read -r parity_vault_header < "$parity_vault_file" ||
+    mac_die 'parity vault file has no Ansible Vault header'
+  case $parity_vault_header in
+    '$ANSIBLE_VAULT;'*) ;;
+    *) mac_die 'parity vault file is not Ansible Vault encrypted' ;;
+  esac
+  parity_vault_parent=$(CDPATH= cd -- "$(dirname -- "$parity_vault_file")" 2>/dev/null && pwd -P) ||
+    mac_die 'parity vault file parent is unavailable'
+  case "$parity_vault_parent/$(basename -- "$parity_vault_file")" in
+    "$mac_repo_dir"/*) mac_die 'parity vault file must remain outside the repository' ;;
+  esac
+  [ -f "$parity_vault_password_file" ] && [ ! -L "$parity_vault_password_file" ] &&
+    { [ -r "$parity_vault_password_file" ] || [ -x "$parity_vault_password_file" ]; } ||
+    mac_die 'parity vault password input must be a readable file or executable'
+  case $(CDPATH= cd -- "$(dirname -- "$parity_vault_password_file")" 2>/dev/null && pwd -P)/ in
+    "$mac_repo_dir"/*) mac_die 'parity vault password input must remain outside the repository' ;;
+  esac
+fi
 
 if [ -n "$selected_phase" ]; then
   case "$PHASES" in *" $selected_phase "*) ;; *) mac_die "unknown phase: $selected_phase" ;; esac
@@ -129,6 +170,20 @@ state_input=$report_root/phase-input.json
 
 git_revision=$(git -C "$mac_repo_dir" rev-parse HEAD)
 vault_checksum=$(shasum -a 256 "$vault_file" | awk '{print $1}')
+parity_vault_checksum=
+legacy_commit=
+if [ "$lane" = adoption ]; then
+  parity_vault_checksum=$(shasum -a 256 "$parity_vault_file" | awk '{print $1}')
+  legacy_commit=$(ruby -ryaml -e '
+    manifest = YAML.safe_load_file(ARGV.fetch(0))
+    print manifest.fetch("legacy_source").fetch("commit")
+  ' "$mac_repo_dir/services/manifest.yml") || mac_die 'could not read the pinned legacy commit'
+  [ "${#legacy_commit}" -eq 40 ] ||
+    mac_die 'pinned legacy commit must be a lowercase 40-character Git SHA'
+  case $legacy_commit in
+    *[!0123456789abcdef]*) mac_die 'pinned legacy commit must be a lowercase 40-character Git SHA' ;;
+  esac
+fi
 
 allocate_service_port() {
   while :; do
@@ -142,6 +197,18 @@ allocate_service_port() {
       return 0
     fi
   done
+}
+
+initialize_report_input() {
+  "$mac_script_dir/report.rb" --init "$state_input" --lane "$lane" \
+    --sandbox-id "$(basename -- "$sandbox")" --git-revision "$git_revision" \
+    --vault-checksum "$vault_checksum" --project-name "$project_name" \
+    --beszel-port "$beszel_port" --ntfy-port "$ntfy_port" --dozzle-port "$dozzle_port" \
+    --audiobookshelf-port "$audiobookshelf_port" --komga-port "$komga_port" \
+    --tinymediamanager-web-port "$tinymediamanager_web_port" \
+    --tinymediamanager-api-port "$tinymediamanager_api_port" \
+    --jellyfin-port "$jellyfin_port" --immich-port "$immich_port" \
+    --paperless-port "$paperless_port" "$@"
 }
 
 if [ ! -f "$state_input" ]; then
@@ -165,19 +232,18 @@ if [ ! -f "$state_input" ]; then
   paperless_port=$(allocate_service_port \
     "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port" "$komga_port" \
     "$tinymediamanager_web_port" "$tinymediamanager_api_port" "$jellyfin_port" "$immich_port")
-  "$mac_script_dir/report.rb" --init "$state_input" --lane "$lane" \
-    --sandbox-id "$(basename -- "$sandbox")" --git-revision "$git_revision" \
-    --vault-checksum "$vault_checksum" --project-name "$project_name" \
-    --beszel-port "$beszel_port" --ntfy-port "$ntfy_port" --dozzle-port "$dozzle_port" \
-    --audiobookshelf-port "$audiobookshelf_port" --komga-port "$komga_port" \
-    --tinymediamanager-web-port "$tinymediamanager_web_port" \
-    --tinymediamanager-api-port "$tinymediamanager_api_port" \
-    --jellyfin-port "$jellyfin_port" --immich-port "$immich_port" \
-    --paperless-port "$paperless_port"
+  if [ "$lane" = adoption ]; then
+    initialize_report_input --parity-vault-checksum "$parity_vault_checksum" \
+      --legacy-commit "$legacy_commit"
+  else
+    initialize_report_input
+  fi
 else
   state_lane=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("lane")' "$state_input")
   state_git_revision=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("git_revision")' "$state_input")
   state_vault_checksum=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("vault_checksum")' "$state_input")
+  state_parity_vault_checksum=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("parity_vault_checksum")' "$state_input")
+  state_legacy_commit=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("legacy_commit")' "$state_input")
   state_project_name=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("project_name")' "$state_input")
   beszel_port=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("beszel_port")' "$state_input")
   ntfy_port=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("ntfy_port")' "$state_input")
@@ -196,6 +262,10 @@ else
     mac_die 'resume Git revision does not match the recorded run'
   [ "$state_vault_checksum" = "$vault_checksum" ] ||
     mac_die 'resume vault checksum does not match the recorded run'
+  [ "$state_parity_vault_checksum" = "$parity_vault_checksum" ] ||
+    mac_die 'resume parity vault checksum does not match the recorded run'
+  [ "$state_legacy_commit" = "$legacy_commit" ] ||
+    mac_die 'resume legacy commit does not match the recorded run'
 fi
 
 export PLATFORM_MAC_SANDBOX=$sandbox
@@ -218,6 +288,8 @@ export PLATFORM_PAPERLESS_PORT=$paperless_port
 export COMPOSE_PROJECT_NAME=$project_name
 export PLATFORM_MAC_VAULT_FILE=$vault_file
 export PLATFORM_MAC_VAULT_PASSWORD_FILE=$vault_password_file
+export PLATFORM_MAC_PARITY_VAULT_FILE=$parity_vault_file
+export PLATFORM_MAC_PARITY_VAULT_PASSWORD_FILE=$parity_vault_password_file
 export PLATFORM_VAULT_FILE=$vault_file
 
 run_site() {
@@ -371,6 +443,9 @@ execute_phase() {
       else
         mac_run_hooks adoption-deploy && run_site && "$mac_script_dir/verify.sh"
       fi
+      ;;
+    legacy-deploy|legacy-seed|capture-baseline|snapshot|cutover|rollback)
+      "$mac_script_dir/adoption.sh" "$1"
       ;;
     seed) "$mac_script_dir/fixtures.sh" seed ;;
     verify) "$mac_script_dir/verify.sh" ;;
