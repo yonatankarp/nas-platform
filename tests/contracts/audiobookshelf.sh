@@ -443,6 +443,41 @@ def artifact_path(name = "persistence")
   REPORT_ROOT.join("audiobookshelf-#{name}.json")
 end
 
+def session_token_path
+  REPORT_ROOT.join(".audiobookshelf-contract-session")
+end
+
+def read_session_token(expected_uid: Process.uid)
+  path = session_token_path
+  file = path.open(File::RDONLY | File::NOFOLLOW)
+  stat = file.stat
+  fail_contract("cached Audiobookshelf session is unavailable or unsafe") unless
+    stat.file? && stat.uid == expected_uid && (stat.mode & 0o777) == 0o600 && stat.size <= 4096
+  token = file.read(4097)
+  fail_contract("cached Audiobookshelf session is malformed") unless
+    token.match?(/\A[A-Za-z0-9._~-]{20,4096}\z/)
+  token
+rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP
+  fail_contract("cached Audiobookshelf session is unavailable or unsafe")
+ensure
+  file&.close
+end
+
+def write_session_token(token)
+  fail_contract("report root is unavailable or unsafe") unless REPORT_ROOT.directory? && !REPORT_ROOT.symlink?
+  fail_contract("Audiobookshelf session token is malformed") unless
+    token.to_s.match?(/\A[A-Za-z0-9._~-]{20,4096}\z/)
+  path = session_token_path
+  fail_contract("refusing to replace cached Audiobookshelf session") if path.exist? || path.symlink?
+  path.open(File::WRONLY | File::CREAT | File::EXCL, 0o600) { |file| file.write(token) }
+end
+
+def remove_session_token
+  path = session_token_path
+  read_session_token
+  path.unlink
+end
+
 def write_artifact(item_id)
   fail_contract("report root is unavailable or unsafe") unless REPORT_ROOT.directory? && !REPORT_ROOT.symlink?
   fail_contract("refusing to replace persistence artifact") if artifact_path.exist? || artifact_path.symlink?
@@ -574,6 +609,62 @@ def inactive_admin_refusal!(username, password, retained_token, vault)
 end
 
 case MODE
+when "authentication-budget-self-test"
+  integration = Pathname.new(ENV.fetch("PLATFORM_REPO_ROOT")).join("tests/integration.sh").read
+  contract_modes = integration.scan(/^\s*run_audiobookshelf_contract\s+([a-z0-9-]+)/).flatten
+  expected_modes = %w[
+    run inactive-admin-refusal duplicate-admin-api-refusal
+    duplicate-library-create duplicate-library-verify duplicate-library-assert-output
+    duplicate-library-cleanup run check-repair-seed assert-check-output
+    check-repair-unchanged run check-repair-cleanup drift drift-verify run
+    check-missing-seed assert-check-output check-missing-unchanged check-missing-cleanup
+    run seed-progress assert-persistence authentication-session-cleanup
+  ]
+  fail_contract("Audiobookshelf integration contract call sequence differs") unless contract_modes == expected_modes
+
+  tagged_role_calls = integration.scan(/run_play --tags audiobookshelf/).length
+  check_role_calls = integration.scan(/run_play --tags audiobookshelf --check --diff/).length
+  verify_role_calls = integration.scan(/^\s*if run_audiobookshelf_verify_only/).length
+  fail_contract("Audiobookshelf integration role call sequence differs") unless
+    tagged_role_calls == 7 && check_role_calls == 2 && verify_role_calls == 4
+  fail_contract("Audiobookshelf integration session cleanup lifecycle differs") unless
+    integration.include?("run_audiobookshelf_contract authentication-session-cleanup") &&
+      integration.include?("trap cleanup_integration_on_exit EXIT") &&
+      integration.include?("trap 'exit 130' HUP INT TERM") &&
+      integration.include?('cleanup_sandbox "$sandbox"')
+
+  initial_role_logins = 5 # initial convergence + idempotence + check mode
+  scenario_role_logins = (tagged_role_calls - check_role_calls) * 2 + check_role_calls +
+                         verify_role_calls + 2 # inactive fixture site + verify refusals
+  harness_logins = 5 # first wrong+right proof + two inactive refusals + recovery
+  total_logins = initial_role_logins + scenario_role_logins + harness_logins
+  fail_contract("Audiobookshelf integration authentication budget is exhausted") unless total_logins < 40
+
+  test_token = "contract-session-token"
+  write_session_token(test_token)
+  fail_contract("Audiobookshelf cached session did not round-trip") unless read_session_token == test_token
+  expect_contract_failure("Audiobookshelf cached session replacement was accepted") do
+    write_session_token("replacement-session-token")
+  end
+  session_token_path.chmod(0o644)
+  expect_contract_failure("Audiobookshelf cached session unsafe mode was accepted") { read_session_token }
+  session_token_path.chmod(0o600)
+  expect_contract_failure("Audiobookshelf cached session foreign ownership was accepted") do
+    read_session_token(expected_uid: Process.uid + 1)
+  end
+  remove_session_token
+  fail_contract("Audiobookshelf cached session cleanup failed") if session_token_path.exist?
+  session_token_path.mkdir(0o700)
+  expect_contract_failure("Audiobookshelf cached session directory was accepted") { read_session_token }
+  session_token_path.rmdir
+  symlink_target = REPORT_ROOT.join(".audiobookshelf-contract-session-target")
+  symlink_target.open(File::WRONLY | File::CREAT | File::EXCL, 0o600) { |file| file.write(test_token) }
+  File.symlink(symlink_target, session_token_path)
+  expect_contract_failure("Audiobookshelf cached session symlink was accepted") { read_session_token }
+  session_token_path.unlink
+  symlink_target.unlink
+  puts "Audiobookshelf authentication budget self-test passed"
+  exit 0
 when "administrator-selection-self-test"
   username = "vault-root"
   root = { "id" => "root-id", "username" => username, "type" => "root", "isActive" => true }
@@ -774,6 +865,10 @@ when "check-missing-cleanup"
   remove_state_artifact("check-missing")
   puts "Audiobookshelf create check-mode artifact removed"
   exit 0
+when "authentication-session-cleanup"
+  remove_session_token
+  puts "Audiobookshelf cached contract session removed"
+  exit 0
 end
 
 vault_yaml, vault_error, vault_status = Open3.capture3(
@@ -788,22 +883,28 @@ vault_error.replace("\0" * vault_error.bytesize)
 username = vault.fetch("vault_audiobookshelf_admin_username")
 password = vault.fetch("vault_audiobookshelf_admin_password")
 
-wrong_login_response = if MODE == "run"
-                         request(
-                           "post", "/login",
-                           body: { username: username, password: "contract-wrong-password" }, expected: [401]
-                         ).first
-                       end
-login_response, login = request("post", "/login", body: { username: username, password: password })
-token = login.dig("user", "accessToken")
-fail_contract("vault administrator login did not return a token") if token.to_s.empty?
-if MODE == "run"
-  limit = Integer(login_response["RateLimit-Limit"], 10)
-  wrong_remaining = Integer(wrong_login_response["RateLimit-Remaining"], 10)
-  login_remaining = Integer(login_response["RateLimit-Remaining"], 10)
-  fail_contract("pinned authentication rate contract differs") unless
-    limit == 40 && wrong_remaining == login_remaining + 1
-  puts "Audiobookshelf authentication call budget passed"
+reuse_integration_session = ENV["PLATFORM_KIND"] == "integration"
+if reuse_integration_session && (session_token_path.exist? || session_token_path.symlink?)
+  token = read_session_token
+else
+  wrong_login_response = if MODE == "run"
+                           request(
+                             "post", "/login",
+                             body: { username: username, password: "contract-wrong-password" }, expected: [401]
+                           ).first
+                         end
+  login_response, login = request("post", "/login", body: { username: username, password: password })
+  token = login.dig("user", "accessToken")
+  fail_contract("vault administrator login did not return a token") if token.to_s.empty?
+  if MODE == "run"
+    limit = Integer(login_response["RateLimit-Limit"], 10)
+    wrong_remaining = Integer(wrong_login_response["RateLimit-Remaining"], 10)
+    login_remaining = Integer(login_response["RateLimit-Remaining"], 10)
+    fail_contract("pinned authentication rate contract differs") unless
+      limit == 40 && wrong_remaining == login_remaining + 1
+    puts "Audiobookshelf authentication call budget passed"
+  end
+  write_session_token(token) if reuse_integration_session
 end
 
 if MODE == "inactive-admin-refusal"

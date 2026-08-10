@@ -76,4 +76,23 @@ grep -Fqx 'Audiobookshelf administrator selection self-test passed' <<<"$selecti
   exit 1
 }
 
+budget_status=0
+budget_output=$(
+  PLATFORM_MEDIA_ROOT="$test_root/media" \
+  PLATFORM_REPORT_ROOT="$test_root/reports" \
+  PLATFORM_AUDIOBOOKSHELF_PORT=13378 \
+    "$repo_dir/tests/contracts/audiobookshelf.sh" authentication-budget-self-test 2>&1
+) || budget_status=$?
+
+if [ "$budget_status" -ne 0 ]; then
+  printf '%s\n' "$budget_output" >&2
+  exit "$budget_status"
+fi
+
+grep -Fqx 'Audiobookshelf authentication budget self-test passed' <<<"$budget_output" || {
+  printf '%s\n' "$budget_output" >&2
+  printf '%s\n' 'Audiobookshelf audio test failed: authentication budget marker is absent' >&2
+  exit 1
+}
+
 printf '%s\n' 'Audiobookshelf audio contract test passed'

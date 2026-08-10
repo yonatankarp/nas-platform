@@ -1261,6 +1261,7 @@ docker run --rm \
         PLATFORM_TINYMEDIAMANAGER_CONTAINER=tinymediamanager \
         PLATFORM_JELLYFIN_CONTAINER=jellyfin \
         ruby /repo/tests/run_contracts.rb --execute
+      run_audiobookshelf_contract authentication-session-cleanup
     fi
 
     printf '\n=== phase 2: asserting idempotence ===\n'
