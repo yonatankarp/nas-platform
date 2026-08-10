@@ -33,6 +33,35 @@ export PLATFORM_KOMGA_LIBRARY_PATH=$sandbox/legacy/komga/library
 legacy_fixture_validate PLATFORM_KOMGA_LIBRARY_PATH legacy/komga/library ||
   fail 'exact owned legacy fixture path was rejected'
 
+default_parent=$temporary_root/default-tmp
+default_sandbox=$default_parent/nas-platform-mac.Def456
+mkdir -m 0700 "$default_parent" "$default_sandbox"
+printf 'schema=1\nproject=nas-platform-mac-def456\n' > "$default_sandbox/.nas-platform-mac-owned"
+chmod 0600 "$default_sandbox/.nas-platform-mac-owned"
+default_driver=$default_sandbox/default-driver.sh
+cat > "$default_driver" <<'SH'
+#!/bin/sh
+[ "${PLATFORM_MAC_TMPDIR:?}" = "${TMPDIR:?}" ] || exit 71
+[ "$PLATFORM_LEGACY_FIXTURE_SANDBOX" = "${TMPDIR}/nas-platform-mac.Def456" ] || exit 72
+[ "$PLATFORM_LEGACY_FIXTURE_MODE" = nas-platform-owned-legacy-v1 ] || exit 73
+case $1:$2 in
+  audiobookshelf:seed-progress|komga:seed|tinymediamanager:seed|jellyfin:seed|immich:seed|paperless-ngx:seed) ;;
+  *) exit 74 ;;
+esac
+printf '%s\n' "$1:$2" >> "${DEFAULT_DRIVER_LOG:?}"
+SH
+chmod 0700 "$default_driver"
+default_driver_log=$temporary_root/default-driver.log
+(
+  unset PLATFORM_MAC_TMPDIR
+  TMPDIR=$default_parent DEFAULT_DRIVER_LOG=$default_driver_log \
+    PLATFORM_MAC_SANDBOX=$default_sandbox PLATFORM_PROJECT_NAME=nas-platform-mac-def456 \
+    PLATFORM_LEGACY_FIXTURE_DRIVER=$default_driver \
+    "$test_dir/legacy-fixtures.sh" seed
+) || fail 'legacy fixtures require undocumented PLATFORM_MAC_TMPDIR input'
+[ "$(wc -l < "$default_driver_log" | tr -d ' ')" -eq 6 ] ||
+  fail 'default temporary parent legacy fixture flow was incomplete'
+
 outside=$temporary_root/outside
 mkdir -m 0700 "$outside"
 PLATFORM_KOMGA_LIBRARY_PATH=$outside

@@ -9,6 +9,8 @@ script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 [ "${1-}" = seed ] && [ "$#" -eq 1 ] || mac_die 'usage: legacy-fixtures.sh seed'
 : "${PLATFORM_MAC_SANDBOX:?PLATFORM_MAC_SANDBOX is required}"
 : "${PLATFORM_PROJECT_NAME:?PLATFORM_PROJECT_NAME is required}"
+PLATFORM_MAC_TMPDIR=$(mac_temporary_parent) || mac_die 'Mac temporary parent is invalid'
+export PLATFORM_MAC_TMPDIR
 PLATFORM_MAC_SANDBOX=$(mac_validate_sandbox "$PLATFORM_MAC_SANDBOX") ||
   mac_die 'owned sandbox is invalid'
 owned_project=$(sed -n 's/^project=//p' "$PLATFORM_MAC_SANDBOX/.nas-platform-mac-owned")
