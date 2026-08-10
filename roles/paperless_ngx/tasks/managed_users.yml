@@ -66,7 +66,6 @@
     return_content: true
   register: paperless_managed_user_authentication
   when:
-    - paperless_managed_users_phase == 'reconcile'
     - not ansible_check_mode
     - paperless_managed_user_matches[item.username] | length == 1
   loop: "{{ vault_managed_paperless_ngx_users }}"
@@ -88,8 +87,29 @@
   loop_control:
     label: paperless-managed-user
   when:
-    - paperless_managed_users_phase == 'reconcile'
     - not ansible_check_mode
+  no_log: true
+
+- name: Resolve authenticated existing Paperless managed-user bindings
+  ansible.builtin.set_fact:
+    paperless_initial_authenticated_managed_user_ids: >-
+      {{ (paperless_initial_authenticated_managed_user_ids | default({})) |
+         combine({item.item.username:
+           (paperless_initial_authenticated_managed_user_ids | default({})).get(
+             item.item.username,
+             paperless_managed_user_matches[item.item.username][0].id
+           )}) }}
+    paperless_authenticated_managed_user_ids: >-
+      {{ (paperless_authenticated_managed_user_ids | default({})) |
+         combine({item.item.username:
+           paperless_managed_user_matches[item.item.username][0].id}) }}
+    paperless_authenticated_managed_user_tokens: >-
+      {{ (paperless_authenticated_managed_user_tokens | default({})) |
+         combine({item.item.username: item.json.token}) }}
+  loop: "{{ paperless_managed_user_authentication.results | default([]) | rejectattr('skipped', 'defined') | list }}"
+  loop_control:
+    label: paperless-managed-user
+  when: not ansible_check_mode
   no_log: true
 
 - name: Report planned Paperless managed-user creation
@@ -228,6 +248,62 @@
     - not ansible_check_mode
   no_log: true
 
+- name: Authenticate effective Paperless managed users after re-list
+  ansible.builtin.uri:
+    url: "{{ paperless_api }}/api/token/"
+    method: POST
+    body_format: json
+    body:
+      username: "{{ item.username }}"
+      password: "{{ item.password }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: paperless_effective_managed_user_authentication
+  loop: "{{ vault_managed_paperless_ngx_users }}"
+  loop_control:
+    label: paperless-managed-user
+  when:
+    - paperless_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+  failed_when: false
+  changed_when: false
+  no_log: true
+
+- name: Require effective Paperless managed-user credentials
+  ansible.builtin.assert:
+    that:
+      - item.status | default(0) | int == 200
+      - item.json.token | default('') | length > 0
+    fail_msg: >-
+      A re-resolved Paperless managed user does not accept its preserved vault
+      password. Run the reviewed credential-migration procedure; Ansible will
+      not reset it automatically or continue privilege reconciliation.
+  loop: "{{ paperless_effective_managed_user_authentication.results | default([]) | rejectattr('skipped', 'defined') | list }}"
+  loop_control:
+    label: paperless-managed-user
+  when:
+    - paperless_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+  no_log: true
+
+- name: Resolve effective authenticated Paperless managed-user bindings
+  ansible.builtin.set_fact:
+    paperless_authenticated_managed_user_ids: >-
+      {{ (paperless_authenticated_managed_user_ids | default({})) |
+         combine({item.item.username:
+           (paperless_managed_users_refreshed_listing |
+            selectattr('username', 'equalto', item.item.username) | first).id}) }}
+    paperless_authenticated_managed_user_tokens: >-
+      {{ (paperless_authenticated_managed_user_tokens | default({})) |
+         combine({item.item.username: item.json.token}) }}
+  loop: "{{ paperless_effective_managed_user_authentication.results | default([]) | rejectattr('skipped', 'defined') | list }}"
+  loop_control:
+    label: paperless-managed-user
+  when:
+    - paperless_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+  no_log: true
+
 - name: Resolve effective Paperless managed identities after creation
   ansible.builtin.set_fact:
     paperless_effective_managed_user_matches: >-
@@ -260,6 +336,72 @@
     label: paperless-managed-user
   changed_when: true
 
+- name: Require stable authenticated Paperless managed identities
+  ansible.builtin.assert:
+    that:
+      - paperless_effective_managed_user_matches[item.username] | length == 1
+      - >-
+        paperless_effective_managed_user_matches[item.username][0].id | int ==
+        paperless_authenticated_managed_user_ids[item.username] | int
+      - >-
+        paperless_effective_managed_user_matches[item.username][0].id | int ==
+        paperless_initial_authenticated_managed_user_ids.get(
+          item.username,
+          paperless_effective_managed_user_matches[item.username][0].id
+        ) | int
+      - paperless_authenticated_managed_user_tokens[item.username] | length > 0
+    fail_msg: >-
+      A Paperless managed username resolved to a different primary key after
+      credential proof. Run the reviewed credential-migration procedure;
+      Ansible will not mutate a replacement identity.
+  when:
+    - not ansible_check_mode
+  loop: "{{ vault_managed_paperless_ngx_users }}"
+  loop_control:
+    label: paperless-managed-user
+  no_log: true
+
+- name: Bind authenticated Paperless managed users to listed primary keys
+  community.docker.docker_compose_v2_exec:
+    project_src: "{{ platform_current_dir }}/services/paperless-ngx"
+    project_name: "{{ paperless_compose_project_name }}"
+    files: "{{ paperless_compose_files }}"
+    env_files: ["{{ platform_runtime_dir }}/services/paperless-ngx/.env"]
+    service: webserver
+    env:
+      MANAGED_USERNAME: "{{ item.username }}"
+      MANAGED_ID: "{{ paperless_authenticated_managed_user_ids[item.username] | string }}"
+      MANAGED_TOKEN: "{{ paperless_authenticated_managed_user_tokens[item.username] }}"
+    argv:
+      - python
+      - manage.py
+      - shell
+      - -c
+      - |
+        import os
+        from django.contrib.auth import get_user_model
+        from django.db import transaction
+        from rest_framework.authtoken.models import Token
+
+        with transaction.atomic():
+            expected_id = int(os.environ["MANAGED_ID"])
+            expected_username = os.environ["MANAGED_USERNAME"].strip().casefold()
+            token = Token.objects.select_related("user").select_for_update().get(
+                key=os.environ["MANAGED_TOKEN"]
+            )
+            user = get_user_model().objects.select_for_update().get(pk=expected_id)
+            assert (
+                token.user_id == expected_id
+                and user.username.strip().casefold() == expected_username
+            ), "managed identity binding invalid"
+    tty: false
+  when: not ansible_check_mode
+  loop: "{{ vault_managed_paperless_ngx_users }}"
+  loop_control:
+    label: paperless-managed-user
+  changed_when: false
+  no_log: true
+
 - name: Repair Paperless managed-user non-secret properties
   community.docker.docker_compose_v2_exec:
     project_src: "{{ platform_current_dir }}/services/paperless-ngx"
@@ -269,6 +411,8 @@
     service: webserver
     env:
       MANAGED_USERNAME: "{{ item.username }}"
+      MANAGED_ID: "{{ paperless_authenticated_managed_user_ids[item.username] | string }}"
+      MANAGED_TOKEN: "{{ paperless_authenticated_managed_user_tokens[item.username] }}"
       MANAGED_EMAIL: "{{ item.email }}"
       MANAGED_ACTIVE: "{{ item.is_active | ternary('true', 'false') }}"
       MANAGED_STAFF: "{{ item.is_staff | ternary('true', 'false') }}"
@@ -279,18 +423,34 @@
       - manage.py
       - shell
       - -c
-      - >-
-        import json,os; from django.contrib.auth import get_user_model;
-        from django.contrib.auth.models import Group;
-        names=json.loads(os.environ["MANAGED_GROUPS"]);
-        groups=list(Group.objects.filter(name__in=names));
-        assert len(groups)==len(names),"managed group contract invalid";
-        user=get_user_model().objects.get(username=os.environ["MANAGED_USERNAME"]);
-        user.email=os.environ["MANAGED_EMAIL"]; user.is_active=os.environ["MANAGED_ACTIVE"]=="true";
-        user.is_staff=os.environ["MANAGED_STAFF"]=="true";
-        user.is_superuser=os.environ["MANAGED_SUPERUSER"]=="true";
-        user.save(update_fields=["email","is_active","is_staff","is_superuser"]);
-        user.groups.set(groups)
+      - |
+        import json
+        import os
+        from django.contrib.auth import get_user_model
+        from django.contrib.auth.models import Group
+        from django.db import transaction
+        from rest_framework.authtoken.models import Token
+
+        with transaction.atomic():
+            expected_id = int(os.environ["MANAGED_ID"])
+            expected_username = os.environ["MANAGED_USERNAME"].strip().casefold()
+            token = Token.objects.select_related("user").select_for_update().get(
+                key=os.environ["MANAGED_TOKEN"]
+            )
+            user = get_user_model().objects.select_for_update().get(pk=expected_id)
+            assert (
+                token.user_id == expected_id
+                and user.username.strip().casefold() == expected_username
+            ), "managed identity binding invalid"
+            names = json.loads(os.environ["MANAGED_GROUPS"])
+            groups = list(Group.objects.filter(name__in=names))
+            assert len(groups) == len(names), "managed group contract invalid"
+            user.email = os.environ["MANAGED_EMAIL"]
+            user.is_active = os.environ["MANAGED_ACTIVE"] == "true"
+            user.is_staff = os.environ["MANAGED_STAFF"] == "true"
+            user.is_superuser = os.environ["MANAGED_SUPERUSER"] == "true"
+            user.save(update_fields=["email", "is_active", "is_staff", "is_superuser"])
+            user.groups.set(groups)
     tty: false
   when:
     - paperless_managed_users_phase == 'reconcile'
@@ -318,6 +478,9 @@
       - paperless_managed_user_matches[item.username][0].is_staff | bool == item.is_staff | bool
       - paperless_managed_user_matches[item.username][0].is_superuser | bool == item.is_superuser | bool
       - paperless_managed_user_matches[item.username][0].groups | sort == item.groups | sort
+      - >-
+        paperless_managed_user_matches[item.username][0].id | int ==
+        paperless_authenticated_managed_user_ids[item.username] | int
     fail_msg: A managed Paperless identity is absent, duplicated, or differs from its exact projection.
   when: paperless_managed_users_phase == 'verify'
   loop: "{{ vault_managed_paperless_ngx_users }}"

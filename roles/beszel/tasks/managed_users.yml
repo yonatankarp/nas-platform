@@ -82,7 +82,6 @@
     return_content: true
   register: beszel_managed_user_authentication
   when:
-    - beszel_managed_users_phase == 'reconcile'
     - not ansible_check_mode
     - beszel_managed_user_matches[item.email] | length == 1
   loop: "{{ vault_managed_beszel_users }}"
@@ -97,6 +96,7 @@
     that:
       - item.status | default(0) | int == 200
       - item.json.record.email | default('') | trim | lower == item.item.email | trim | lower
+      - item.json.record.id | default('') == beszel_managed_user_matches[item.item.email][0].id
     fail_msg: >-
       Existing Beszel managed user does not accept its preserved vault password.
       Run the reviewed credential-migration procedure; Ansible will not reset it automatically.
@@ -104,8 +104,24 @@
   loop_control:
     label: beszel-managed-user
   when:
-    - beszel_managed_users_phase == 'reconcile'
     - not ansible_check_mode
+  no_log: true
+
+- name: Resolve authenticated existing Beszel managed-user IDs
+  ansible.builtin.set_fact:
+    beszel_initial_authenticated_managed_user_ids: >-
+      {{ (beszel_initial_authenticated_managed_user_ids | default({})) |
+         combine({item.item.email:
+           (beszel_initial_authenticated_managed_user_ids | default({})).get(
+             item.item.email, item.json.record.id
+           )}) }}
+    beszel_authenticated_managed_user_ids: >-
+      {{ (beszel_authenticated_managed_user_ids | default({})) |
+         combine({item.item.email: item.json.record.id}) }}
+  loop: "{{ beszel_managed_user_authentication.results | default([]) | rejectattr('skipped', 'defined') | list }}"
+  loop_control:
+    label: beszel-managed-user
+  when: not ansible_check_mode
   no_log: true
 
 - name: Report planned Beszel managed-user creation
@@ -207,9 +223,32 @@
     that:
       - item.status | default(0) | int == 200
       - item.json.record.email | default('') | trim | lower == item.item.item.email | trim | lower
+      - >-
+        item.json.record.id | default('') ==
+        (beszel_managed_users_refreshed_listing.json.get('items', []) |
+         selectattr('email', 'equalto', item.item.item.email) | first).id
     fail_msg: >-
       Newly created Beszel managed user does not accept its vault password. Run the reviewed
       credential-migration procedure; Ansible will not reset it or continue privilege reconciliation.
+  loop: "{{ beszel_new_managed_user_authentication.results | default([]) | rejectattr('skipped', 'defined') | list }}"
+  loop_control:
+    label: beszel-managed-user
+  when:
+    - beszel_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+  no_log: true
+
+- name: Resolve authenticated newly created Beszel managed-user IDs
+  ansible.builtin.set_fact:
+    beszel_initial_authenticated_managed_user_ids: >-
+      {{ (beszel_initial_authenticated_managed_user_ids | default({})) |
+         combine({item.item.item.email:
+           (beszel_initial_authenticated_managed_user_ids | default({})).get(
+             item.item.item.email, item.json.record.id
+           )}) }}
+    beszel_authenticated_managed_user_ids: >-
+      {{ beszel_authenticated_managed_user_ids | default({}) |
+         combine({item.item.item.email: item.json.record.id}) }}
   loop: "{{ beszel_new_managed_user_authentication.results | default([]) | rejectattr('skipped', 'defined') | list }}"
   loop_control:
     label: beszel-managed-user
@@ -247,6 +286,28 @@
     label: beszel-managed-user
   changed_when: true
 
+- name: Require stable authenticated Beszel managed identities
+  ansible.builtin.assert:
+    that:
+      - beszel_effective_managed_user_matches[item.email] | length == 1
+      - >-
+        beszel_effective_managed_user_matches[item.email][0].id ==
+        beszel_authenticated_managed_user_ids[item.email]
+      - >-
+        beszel_effective_managed_user_matches[item.email][0].id ==
+        beszel_initial_authenticated_managed_user_ids[item.email]
+    fail_msg: >-
+      A Beszel managed email resolved to a different record after credential
+      proof. Run the reviewed credential-migration procedure; Ansible will not
+      mutate a replacement identity.
+  when:
+    - beszel_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+  loop: "{{ vault_managed_beszel_users }}"
+  loop_control:
+    label: beszel-managed-user
+  no_log: true
+
 - name: Repair Beszel managed-user role and verification
   ansible.builtin.uri:
     url: >-
@@ -280,6 +341,12 @@
       - beszel_managed_user_matches[item.email][0].email | trim | lower == item.email | trim | lower
       - beszel_managed_user_matches[item.email][0].role == item.role
       - beszel_managed_user_matches[item.email][0].verified | bool == item.verified | bool
+      - >-
+        beszel_managed_user_matches[item.email][0].id ==
+        beszel_authenticated_managed_user_ids[item.email]
+      - >-
+        beszel_managed_user_matches[item.email][0].id ==
+        beszel_initial_authenticated_managed_user_ids[item.email]
     fail_msg: A managed Beszel identity is absent, duplicated, or differs from its exact projection.
   when: beszel_managed_users_phase == 'verify'
   loop: "{{ vault_managed_beszel_users }}"

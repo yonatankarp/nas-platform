@@ -69,7 +69,6 @@
     return_content: true
   register: immich_managed_user_authentication
   when:
-    - immich_managed_users_phase == 'reconcile'
     - not ansible_check_mode
     - immich_managed_user_matches[item.email] | length == 1
   loop: "{{ vault_managed_immich_users }}"
@@ -84,6 +83,7 @@
     that:
       - item.status | default(0) | int == 201
       - item.json.userEmail | default('') | trim | lower == item.item.email | trim | lower
+      - item.json.userId | default('') == immich_managed_user_matches[item.item.email][0].id
     fail_msg: >-
       Existing Immich managed user does not accept its preserved vault password.
       Run the reviewed credential-migration procedure; Ansible will not reset it automatically.
@@ -91,8 +91,24 @@
   loop_control:
     label: immich-managed-user
   when:
-    - immich_managed_users_phase == 'reconcile'
     - not ansible_check_mode
+  no_log: true
+
+- name: Resolve authenticated existing Immich managed-user IDs
+  ansible.builtin.set_fact:
+    immich_initial_authenticated_managed_user_ids: >-
+      {{ (immich_initial_authenticated_managed_user_ids | default({})) |
+         combine({item.item.email:
+           (immich_initial_authenticated_managed_user_ids | default({})).get(
+             item.item.email, item.json.userId
+           )}) }}
+    immich_authenticated_managed_user_ids: >-
+      {{ (immich_authenticated_managed_user_ids | default({})) |
+         combine({item.item.email: item.json.userId}) }}
+  loop: "{{ immich_managed_user_authentication.results | default([]) | rejectattr('skipped', 'defined') | list }}"
+  loop_control:
+    label: immich-managed-user
+  when: not ansible_check_mode
   no_log: true
 
 - name: Report planned Immich managed-user creation
@@ -191,9 +207,32 @@
     that:
       - item.status | default(0) | int == 201
       - item.json.userEmail | default('') | trim | lower == item.item.item.email | trim | lower
+      - >-
+        item.json.userId | default('') ==
+        (immich_managed_users_refreshed_listing.json |
+         selectattr('email', 'equalto', item.item.item.email) | first).id
     fail_msg: >-
       Newly created Immich managed user does not accept its vault password. Run the reviewed
       credential-migration procedure; Ansible will not reset it or continue reconciliation.
+  loop: "{{ immich_new_managed_user_authentication.results | default([]) | rejectattr('skipped', 'defined') | list }}"
+  loop_control:
+    label: immich-managed-user
+  when:
+    - immich_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+  no_log: true
+
+- name: Resolve authenticated newly created Immich managed-user IDs
+  ansible.builtin.set_fact:
+    immich_initial_authenticated_managed_user_ids: >-
+      {{ (immich_initial_authenticated_managed_user_ids | default({})) |
+         combine({item.item.item.email:
+           (immich_initial_authenticated_managed_user_ids | default({})).get(
+             item.item.item.email, item.json.userId
+           )}) }}
+    immich_authenticated_managed_user_ids: >-
+      {{ immich_authenticated_managed_user_ids | default({}) |
+         combine({item.item.item.email: item.json.userId}) }}
   loop: "{{ immich_new_managed_user_authentication.results | default([]) | rejectattr('skipped', 'defined') | list }}"
   loop_control:
     label: immich-managed-user
@@ -231,6 +270,28 @@
     label: immich-managed-user
   changed_when: true
 
+- name: Require stable authenticated Immich managed identities
+  ansible.builtin.assert:
+    that:
+      - immich_effective_managed_user_matches[item.email] | length == 1
+      - >-
+        immich_effective_managed_user_matches[item.email][0].id ==
+        immich_authenticated_managed_user_ids[item.email]
+      - >-
+        immich_effective_managed_user_matches[item.email][0].id ==
+        immich_initial_authenticated_managed_user_ids[item.email]
+    fail_msg: >-
+      An Immich managed email resolved to a different record after credential
+      proof. Run the reviewed credential-migration procedure; Ansible will not
+      mutate a replacement identity.
+  when:
+    - immich_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+  loop: "{{ vault_managed_immich_users }}"
+  loop_control:
+    label: immich-managed-user
+  no_log: true
+
 - name: Repair Immich managed-user non-secret properties
   ansible.builtin.uri:
     url: >-
@@ -265,6 +326,12 @@
       - immich_managed_user_matches[item.email][0].name == item.name
       - immich_managed_user_matches[item.email][0].quotaSizeInBytes == item.quota_size
       - immich_managed_user_matches[item.email][0].status == 'active'
+      - >-
+        immich_managed_user_matches[item.email][0].id ==
+        immich_authenticated_managed_user_ids[item.email]
+      - >-
+        immich_managed_user_matches[item.email][0].id ==
+        immich_initial_authenticated_managed_user_ids[item.email]
     fail_msg: A managed Immich identity is absent, duplicated, inactive, or differs from its exact projection.
   when: immich_managed_users_phase == 'verify'
   loop: "{{ vault_managed_immich_users }}"

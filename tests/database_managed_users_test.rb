@@ -3,6 +3,7 @@
 
 require "yaml"
 require "json"
+require "fileutils"
 require "open3"
 require "socket"
 require "tmpdir"
@@ -106,6 +107,16 @@ def contract_failures(service, tasks)
     create = tasks.find { |task| task_name(task) == "Create absent Immich managed users" }
     failures << "Immich allowlist must not set administrator status" if
       create&.dig("ansible.builtin.uri", "body")&.key?("isAdmin")
+    preserved = tasks.find { |task| task_name(task) == "Require preserved Immich managed-user credentials" }
+    created = tasks.find { |task| task_name(task) == "Require newly created Immich managed-user credentials" }
+    failures << "Immich existing auth is not bound to the listed user ID" unless
+      preserved&.dig("ansible.builtin.assert", "that").to_s.include?("userId") &&
+      preserved&.dig("ansible.builtin.assert", "that").to_s.include?(".id")
+    failures << "Immich new auth is not bound to the re-resolved user ID" unless
+      created&.dig("ansible.builtin.assert", "that").to_s.include?("userId") &&
+      created&.dig("ansible.builtin.assert", "that").to_s.include?(".id")
+    failures << "Immich omits stable authenticated-ID enforcement before repair" unless
+      names.include?("Require stable authenticated Immich managed identities")
   elsif service == "paperless_ngx"
     commands = tasks.filter_map { |task| task["community.docker.docker_compose_v2_exec"] }
     commands.each do |command|
@@ -121,24 +132,47 @@ def contract_failures(service, tasks)
         %w[MANAGED_EMAIL MANAGED_PASSWORD MANAGED_USERNAME]
     failures << "Paperless create must set the initial password" unless
       create&.dig("community.docker.docker_compose_v2_exec", "argv").to_s.include?("set_password")
+    failures << "Paperless creation is not limited to reconciliation" unless
+      create&.fetch("when", [])&.include?("paperless_managed_users_phase == 'reconcile'")
     failures << "Paperless existing-user repair calls set_password" if
       repair&.dig("community.docker.docker_compose_v2_exec", "argv").to_s.include?("set_password")
+    repair_env = repair&.dig("community.docker.docker_compose_v2_exec", "env") || {}
+    repair_script = repair&.dig("community.docker.docker_compose_v2_exec", "argv").to_s
+    failures << "Paperless repair lacks token and expected-PK binding inputs" unless
+      repair_env.key?("MANAGED_TOKEN") && repair_env.key?("MANAGED_ID")
+    failures << "Paperless repair lacks atomic token-owner identity binding" unless
+      repair_script.include?("transaction.atomic") && repair_script.include?("Token") &&
+      repair_script.include?("select_for_update") && repair_script.include?("token.user_id")
+    failures << "Paperless omits stable authenticated-PK enforcement before repair" unless
+      names.include?("Require stable authenticated Paperless managed identities")
+    failures << "Paperless omits effective post-list reauthentication" unless
+      names.include?("Authenticate effective Paperless managed users after re-list")
   elsif service == "beszel"
     repair = tasks.find { |task| task_name(task) == "Repair Beszel managed-user role and verification" }
     failures << "Beszel repair must contain only role and verified" unless
       repair&.dig("ansible.builtin.uri", "body")&.keys&.map(&:to_s)&.sort == %w[role verified]
     ownership_words = tasks.to_s.scan(/universal_tokens|user_settings|systems|alerts/)
     failures << "Beszel additional-user tasks cross the primary ownership boundary" unless ownership_words.empty?
+    preserved = tasks.find { |task| task_name(task) == "Require preserved Beszel managed-user credentials" }
+    created = tasks.find { |task| task_name(task) == "Require newly created Beszel managed-user credentials" }
+    failures << "Beszel existing auth is not bound to the listed record ID" unless
+      preserved&.dig("ansible.builtin.assert", "that").to_s.include?("record.id") &&
+      preserved&.dig("ansible.builtin.assert", "that").to_s.include?(".id")
+    failures << "Beszel new auth is not bound to the re-resolved record ID" unless
+      created&.dig("ansible.builtin.assert", "that").to_s.include?("record.id") &&
+      created&.dig("ansible.builtin.assert", "that").to_s.include?(".id")
+    failures << "Beszel omits stable authenticated-ID enforcement before repair" unless
+      names.include?("Require stable authenticated Beszel managed identities")
   end
   failures
 end
 
-def run_playbook(tasks, variables, *arguments)
+def run_playbook(tasks, variables, *arguments, env: {})
   Dir.mktmpdir("nas-platform-database-managed-users-") do |directory|
     playbook = File.join(directory, "playbook.yml")
     File.write(playbook, YAML.dump([{ "hosts" => "localhost", "gather_facts" => false,
                                      "vars" => variables, "tasks" => tasks }]), mode: "w", perm: 0o600)
-    Open3.capture3({ "ANSIBLE_NOCOLOR" => "1" }, "ansible-playbook", "-i", "localhost,",
+    Open3.capture3({ "ANSIBLE_NOCOLOR" => "1" }.merge(env), "ansible-playbook", "-i", "localhost,",
                    "-c", "local", playbook, *arguments, chdir: ROOT)
   end
 end
@@ -185,18 +219,124 @@ ensure
   raise error if error
 end
 
-def managed_includes(service, extra_vars = {})
-  path = File.join(ROOT, "roles", service, "tasks", "managed_users.yml")
+def managed_includes(service, extra_vars = {}, path: nil)
+  path ||= File.join(ROOT, "roles", service, "tasks", "managed_users.yml")
+  phase_prefix = service == "paperless_ngx" ? "paperless" : service
   [
     { "name" => "Reconcile fixture #{service}", "ansible.builtin.include_tasks" => path,
-      "vars" => extra_vars.merge("#{service}_managed_users_phase" => "reconcile") },
+      "vars" => extra_vars.merge("#{phase_prefix}_managed_users_phase" => "reconcile") },
     { "name" => "Verify fixture #{service}", "ansible.builtin.include_tasks" => path,
-      "vars" => extra_vars.merge("#{service}_managed_users_phase" => "verify") }
+      "vars" => extra_vars.merge("#{phase_prefix}_managed_users_phase" => "verify") }
   ]
 end
 
 def failure_tail(output)
   output.lines.map(&:strip).reject(&:empty?).last(8).join(" | ")
+end
+
+PAPERLESS_EXECUTOR_MODULE = <<~'PYTHON'
+  #!/usr/bin/python
+  import json
+  import os
+  from ansible.module_utils.basic import AnsibleModule
+
+  module = AnsibleModule(
+      argument_spec={
+          "project_src": {"type": "str"},
+          "project_name": {"type": "str"},
+          "files": {"type": "list"},
+          "env_files": {"type": "list"},
+          "service": {"type": "str"},
+          "env": {"type": "dict", "default": {}},
+          "argv": {"type": "list", "elements": "str", "required": True},
+          "tty": {"type": "bool"},
+      },
+      supports_check_mode=True,
+  )
+  path = os.environ["PAPERLESS_FIXTURE_STATE"]
+  with open(path, encoding="utf-8") as handle:
+      state = json.load(handle)
+  argv = module.params["argv"]
+  command_env = module.params["env"]
+  script = argv[-1]
+  state.setdefault("commands", []).append({"argv": argv, "env_keys": sorted(command_env)})
+  state.setdefault("events", [])
+  changed = False
+  stdout = ""
+
+  if "objects.all()" in script:
+      state["events"].append("list")
+      state["list_count"] = state.get("list_count", 0) + 1
+      if state.get("swap_on_second_list") and state["list_count"] == 2:
+          for user in state["users"]:
+              if user["username"] == state["swap_username"]:
+                  user["id"] = state["replacement_id"]
+      sanitized = [
+          {key: value for key, value in user.items() if key != "password"}
+          for user in state["users"]
+      ]
+      stdout = json.dumps(sanitized, sort_keys=True)
+  elif "set_password" in script:
+      state["events"].append("create:" + command_env["MANAGED_USERNAME"])
+      user_id = state["next_id"]
+      state["next_id"] += 1
+      state["users"].append({
+          "id": user_id,
+          "username": command_env["MANAGED_USERNAME"],
+          "email": command_env["MANAGED_EMAIL"],
+          "password": "mangled" if state.get("mangle_create") else command_env["MANAGED_PASSWORD"],
+          "is_active": True,
+          "is_staff": False,
+          "is_superuser": False,
+          "groups": [],
+      })
+      changed = True
+  else:
+      event = "repair:" if "MANAGED_EMAIL" in command_env else "bind:"
+      state["events"].append(event + command_env["MANAGED_USERNAME"])
+      username = command_env["MANAGED_USERNAME"]
+      user = next((entry for entry in state["users"] if entry["username"] == username), None)
+      if user is None:
+          module.fail_json(msg="managed identity binding invalid")
+      if "token.user_id" in script:
+          token_owner = state.get("tokens", {}).get(command_env.get("MANAGED_TOKEN"))
+          if token_owner != int(command_env["MANAGED_ID"]) or user["id"] != int(command_env["MANAGED_ID"]):
+              module.fail_json(msg="managed identity binding invalid")
+      if "MANAGED_EMAIL" in command_env:
+          user.update({
+              "email": command_env["MANAGED_EMAIL"],
+              "is_active": command_env["MANAGED_ACTIVE"] == "true",
+              "is_staff": command_env["MANAGED_STAFF"] == "true",
+              "is_superuser": command_env["MANAGED_SUPERUSER"] == "true",
+              "groups": sorted(json.loads(command_env["MANAGED_GROUPS"])),
+          })
+          changed = True
+
+  with open(path, "w", encoding="utf-8") as handle:
+      json.dump(state, handle)
+  module.exit_json(changed=changed, stdout=stdout, stdout_lines=stdout.splitlines())
+PYTHON
+
+def with_paperless_executor(state)
+  Dir.mktmpdir("nas-platform-paperless-executor-") do |directory|
+    module_directory = File.join(
+      directory, "ansible_collections", "community", "docker", "plugins", "modules"
+    )
+    FileUtils.mkdir_p(module_directory)
+    module_path = File.join(module_directory, "docker_compose_v2_exec.py")
+    File.write(module_path, PAPERLESS_EXECUTOR_MODULE, mode: "w", perm: 0o700)
+    state_path = File.join(directory, "state.json")
+    File.write(state_path, JSON.generate(state), mode: "w", perm: 0o600)
+    yield directory, state_path
+  end
+end
+
+def read_fixture_state(path)
+  JSON.parse(File.read(path))
+end
+
+def write_fixture_state(path, state)
+  File.write(path, JSON.generate(state), mode: "w", perm: 0o600)
 end
 
 def exercise_immich(failures)
@@ -221,7 +361,8 @@ def exercise_immich(failures)
     when ["POST", "/api/auth/login"]
       body = request.fetch("json")
       user = users.find { |candidate| candidate["email"] == body["email"] && candidate["password"] == body["password"] }
-      user ? [201, { "userEmail" => user["email"], "accessToken" => "user-token" }] : [401, {}]
+      user ? [201, { "userId" => user["id"], "userEmail" => user["email"],
+                     "accessToken" => "user-token" }] : [401, {}]
     when ["POST", "/api/admin/users"]
       body = request.fetch("json")
       users << body.merge("id" => "33333333-3333-4333-8333-333333333333",
@@ -240,15 +381,24 @@ def exercise_immich(failures)
   with_http_service(responder) do |port, requests|
     vars = { "immich_api" => "http://127.0.0.1:#{port}/api",
              "immich_managed_users_token" => "admin-token", "vault_managed_immich_users" => managed }
-    stdout, stderr, status = run_playbook(managed_includes("immich", "immich_managed_users_token" => "admin-token"), vars)
+    stdout, stderr, status = run_playbook(
+      managed_includes("immich", { "immich_managed_users_token" => "admin-token" }), vars
+    )
     failures << "Immich behavior fixture failed: #{failure_tail(stdout + stderr)}" unless status.success?
     failures << "Immich unmanaged user was not preserved" unless users.any? { |user| user["email"] == "friend@example.invalid" }
     failures << "Immich existing user did not authenticate with its own credential" unless
       requests.any? { |request| request["target"] == "/api/auth/login" &&
         request.dig("json", "email") == "reader@example.invalid" }
+    new_auth_index = requests.index do |request|
+      request["target"] == "/api/auth/login" &&
+        request.dig("json", "email") == "new@example.invalid"
+    end
+    new_repair_index = requests.index do |request|
+      request["method"] == "PUT" &&
+        request["target"].end_with?("33333333-3333-4333-8333-333333333333")
+    end
     failures << "Immich newly created user was not authenticated before repair" unless
-      requests.index { |request| request["target"] == "/api/auth/login" && request.dig("json", "email") == "new@example.invalid" }.to_i <
-      requests.index { |request| request["method"] == "PUT" && request["target"].end_with?("33333333-3333-4333-8333-333333333333") }.to_i
+      new_auth_index && new_repair_index && new_auth_index < new_repair_index
     failures << "Immich repair escaped the non-secret projection" if requests.any? do |request|
       request["method"] == "PUT" && request.fetch("json").keys.sort != %w[name quotaSizeInBytes]
     end
@@ -301,9 +451,146 @@ def exercise_beszel(failures)
     failures << "Beszel repair escaped role and verified" if requests.any? do |request|
       request["method"] == "PATCH" && request.fetch("json").keys.sort != %w[role verified]
     end
+    %w[reader@example.invalid new@example.invalid].each do |email|
+      user = users.find { |candidate| candidate["email"] == email }
+      auth_index = requests.index do |request|
+        request["target"] == "/api/collections/users/auth-with-password" &&
+          request.dig("json", "identity") == email
+      end
+      patch_index = requests.index do |request|
+        request["method"] == "PATCH" && request["target"].end_with?(user["id"])
+      end
+      failures << "Beszel #{email} was not authenticated before PATCH" unless
+        auth_index && patch_index && auth_index < patch_index
+    end
+    failures << "Beszel final verification did not freshly list users" unless
+      requests.count { |request| request["target"] == "/api/collections/users/records?perPage=500" } >= 2
     forbidden = %r{/api/collections/(universal_tokens|user_settings|systems|alerts)/}
     failures << "Beszel additional users crossed the primary ownership boundary" if
       requests.any? { |request| request["target"].match?(forbidden) }
+  end
+end
+
+def exercise_paperless(failures, scenario: :normal, task_path: nil)
+  state = {
+    "users" => [
+      { "id" => 1, "username" => "reader", "email" => "old@example.invalid",
+        "password" => "reader-secret", "is_active" => true, "is_staff" => false,
+        "is_superuser" => false, "groups" => ["Legacy"] },
+      { "id" => 2, "username" => "friend", "email" => "friend@example.invalid",
+        "password" => "friend-secret", "is_active" => true, "is_staff" => false,
+        "is_superuser" => false, "groups" => ["Friends"] }
+    ],
+    "next_id" => 3, "tokens" => {}, "commands" => [], "events" => []
+  }
+  state["mangle_create"] = true if scenario == :mangled
+  state["users"][0]["password"] = "deployed-other-secret" if scenario == :auth_failure
+  if scenario == :swap
+    state["swap_on_second_list"] = true
+    state["swap_username"] = "reader"
+    state["replacement_id"] = 99
+  end
+  managed = [
+    { "username" => "reader", "password" => "reader-secret", "email" => "reader@example.invalid",
+      "is_active" => true, "is_staff" => true, "is_superuser" => false, "groups" => ["Readers"] },
+    { "username" => "new", "password" => "new-secret", "email" => "new@example.invalid",
+      "is_active" => true, "is_staff" => false, "is_superuser" => false, "groups" => ["Readers"] }
+  ]
+  managed = [managed.first] if scenario == :swap
+  with_paperless_executor(state) do |collection_path, state_path|
+    responder = lambda do |request|
+      current = read_fixture_state(state_path)
+      body = request.fetch("json")
+      user = current["users"].find do |candidate|
+        candidate["username"] == body["username"] && candidate["password"] == body["password"] &&
+          candidate["is_active"]
+      end
+      if user
+        token = "fixture-token-#{user['id']}"
+        current["tokens"][token] = user["id"]
+        current["events"] << "auth:#{user['username']}"
+        write_fixture_state(state_path, current)
+        [200, { "token" => token }]
+      else
+        [400, {}]
+      end
+    end
+    with_http_service(responder) do |port, requests|
+      variables = {
+        "paperless_api" => "http://127.0.0.1:#{port}",
+        "platform_current_dir" => "/fixture/current",
+        "platform_runtime_dir" => "/fixture/runtime",
+        "paperless_compose_project_name" => "fixture-paperless",
+        "paperless_compose_files" => ["compose.yml"],
+        "vault_managed_paperless_ngx_users" => managed
+      }
+      executor_env = {
+        "ANSIBLE_COLLECTIONS_PATH" => collection_path,
+        "PAPERLESS_FIXTURE_STATE" => state_path
+      }
+      arguments = scenario == :check ? ["--check"] : []
+      includes = managed_includes("paperless_ngx", {}, path: task_path)
+      includes = [includes.first] if scenario == :check
+      stdout, stderr, status = run_playbook(
+        includes, variables, *arguments, env: executor_env
+      )
+      final = read_fixture_state(state_path)
+      if scenario == :normal
+        failures << "Paperless behavior fixture failed: #{failure_tail(stdout + stderr)}" unless status.success?
+        reader = final["users"].find { |user| user["username"] == "reader" }
+        created = final["users"].find { |user| user["username"] == "new" }
+        failures << "Paperless exact non-secret repair failed" unless
+          reader&.slice("email", "is_active", "is_staff", "is_superuser", "groups") == {
+            "email" => "reader@example.invalid", "is_active" => true, "is_staff" => true,
+            "is_superuser" => false, "groups" => ["Readers"]
+          }
+        failures << "Paperless absent user was not created and repaired" unless
+          created && created["groups"] == ["Readers"] && created["password"] == "new-secret"
+        failures << "Paperless unmanaged user was not preserved" unless
+          final["users"].any? { |user| user["username"] == "friend" }
+        failures << "Paperless existing user was not reauthenticated after re-list" unless
+          final["events"].count("auth:reader") >= 2
+        paperless_new_auth_index = final["events"].index("auth:new")
+        paperless_new_repair_index = final["events"].index("repair:new")
+        failures << "Paperless new user was not authenticated before repair" unless
+          paperless_new_auth_index && paperless_new_repair_index &&
+          paperless_new_auth_index < paperless_new_repair_index
+        managed_values = managed.flat_map do |entry|
+          [entry["username"], entry["email"], entry["password"], *entry["groups"]]
+        end + final["tokens"].keys
+        failures << "Paperless command argv contains a secret or managed value" if final["commands"].any? do |command|
+          managed_values.any? { |value| command["argv"].join(" ").include?(value) }
+        end
+        failures << "Paperless final verification did not freshly list users" unless
+          final["events"].count("list") >= 3
+      elsif scenario == :mangled
+        failures << "Paperless mangled-created-password fixture unexpectedly succeeded" if status.success?
+        failures << "Paperless mangled-created-password fixture reached repair" if
+          final["events"].include?("repair:new")
+        failures << "Paperless mangled-created-password fixture missed credential assertion" unless
+          (stdout + stderr).include?("Require newly created Paperless managed-user credentials")
+      elsif scenario == :swap
+        failures << "Paperless identity-swap fixture unexpectedly succeeded" if status.success?
+        failures << "Paperless identity-swap fixture reached replacement repair" if
+          final["events"].include?("repair:reader")
+        failures << "Paperless identity-swap fixture missed stable-PK assertion" unless
+          (stdout + stderr).include?("Require stable authenticated Paperless managed identities")
+      elsif scenario == :auth_failure
+        failures << "Paperless authentication-failure fixture unexpectedly succeeded" if status.success?
+        failures << "Paperless authentication failure reached a mutation" if
+          final["events"].any? { |event| event.start_with?("create:", "repair:") }
+        failures << "Paperless authentication failure missed credential assertion" unless
+          (stdout + stderr).include?("Require preserved Paperless managed-user credentials")
+      else
+        failures << "Paperless check-mode fixture failed: #{failure_tail(stdout + stderr)}" unless status.success?
+        failures << "Paperless check mode authenticated" unless requests.empty?
+        failures << "Paperless check mode mutated users" unless final["users"] == state["users"]
+        failures << "Paperless check mode ran a mutation command" if
+          final["events"].any? { |event| event.start_with?("create:", "repair:") }
+      end
+      failures << "Paperless auth fixture did not use only token endpoint" if
+        requests.any? { |request| request["target"] != "/api/token/" }
+    end
   end
 end
 
@@ -318,7 +605,7 @@ def exercise_fail_closed_and_check_mode(failures)
   }) do |port, requests|
     vars = { "immich_api" => "http://127.0.0.1:#{port}/api",
              "immich_managed_users_token" => "admin", "vault_managed_immich_users" => immich_managed }
-    task = managed_includes("immich", "immich_managed_users_token" => "admin").first
+    task = managed_includes("immich", { "immich_managed_users_token" => "admin" }).first
     stdout, stderr, status = run_playbook([task], vars)
     failures << "Immich authentication-failure fixture unexpectedly succeeded" if status.success?
     failures << "Immich authentication failure missed credential-migration assertion" unless
@@ -331,7 +618,7 @@ def exercise_fail_closed_and_check_mode(failures)
     vars = { "immich_api" => "http://127.0.0.1:#{port}/api",
              "immich_managed_users_token" => "admin", "vault_managed_immich_users" => immich_managed }
     _stdout, _stderr, status = run_playbook(
-      [managed_includes("immich", "immich_managed_users_token" => "admin").first], vars, "--check"
+      [managed_includes("immich", { "immich_managed_users_token" => "admin" }).first], vars, "--check"
     )
     failures << "Immich check-mode fixture failed" unless status.success?
     failures << "Immich check mode authenticated or mutated" if
@@ -415,7 +702,7 @@ def exercise_mangled_created_credentials(failures)
                  "name" => "New", "quota_size" => 1024 }
              ] }
     stdout, stderr, status = run_playbook(
-      [managed_includes("immich", "immich_managed_users_token" => "admin").first], vars
+      [managed_includes("immich", { "immich_managed_users_token" => "admin" }).first], vars
     )
     failures << "Immich mangled-created-password fixture unexpectedly succeeded" if status.success?
     failures << "Immich mangled-created-password fixture missed new credential assertion" unless
@@ -454,6 +741,72 @@ def exercise_mangled_created_credentials(failures)
     failures << "Beszel mangled-created-password fixture reached repair" if
       requests.any? { |request| request["method"] == "PATCH" }
   end
+end
+
+def exercise_identity_swap_refusal(failures, task_paths: {})
+  immich_reads = 0
+  old_immich = { "id" => "11111111-1111-4111-8111-111111111111",
+                 "email" => "reader@example.invalid", "name" => "Old",
+                 "quotaSizeInBytes" => 0, "status" => "active" }
+  replacement_immich = old_immich.merge("id" => "22222222-2222-4222-8222-222222222222")
+  with_http_service(lambda { |request|
+    case [request["method"], request["target"]]
+    when ["GET", "/api/admin/users?withDeleted=true"]
+      immich_reads += 1
+      [200, [immich_reads == 1 ? old_immich : replacement_immich]]
+    when ["POST", "/api/auth/login"]
+      [201, { "userId" => old_immich["id"], "userEmail" => old_immich["email"],
+              "accessToken" => "user-token" }]
+    else [200, {}]
+    end
+  }) do |port, requests|
+    vars = { "immich_api" => "http://127.0.0.1:#{port}/api",
+             "immich_managed_users_token" => "admin", "vault_managed_immich_users" => [
+               { "email" => "reader@example.invalid", "password" => "secret",
+                 "name" => "Reader", "quota_size" => 1024 }
+             ] }
+    stdout, stderr, status = run_playbook(
+      [managed_includes("immich", { "immich_managed_users_token" => "admin" },
+                        path: task_paths["immich"]).first], vars
+    )
+    failures << "Immich identity-swap fixture unexpectedly succeeded" if status.success?
+    failures << "Immich identity-swap fixture reached replacement mutation" if
+      requests.any? { |request| request["method"] == "PUT" }
+    failures << "Immich identity-swap fixture missed stable-ID assertion" unless
+      (stdout + stderr).include?("Require stable authenticated Immich managed identities")
+  end
+
+  old_beszel = { "id" => "reader123456789", "email" => "reader@example.invalid",
+                 "role" => "user", "verified" => false }
+  replacement_beszel = old_beszel.merge("id" => "replace123456789")
+  with_http_service(lambda { |request|
+    case [request["method"], request["target"]]
+    when ["POST", "/api/collections/users/auth-with-password"]
+      [200, { "record" => old_beszel, "token" => "user-token" }]
+    when ["GET", "/api/collections/users/records?perPage=500"]
+      [200, { "items" => [replacement_beszel], "totalPages" => 1, "totalItems" => 1 }]
+    else [200, {}]
+    end
+  }) do |port, requests|
+    vars = { "beszel_api" => "http://127.0.0.1:#{port}",
+             "beszel_auth" => { "json" => { "token" => "admin" } },
+             "beszel_complete_users" => {
+               "json" => { "items" => [old_beszel], "totalPages" => 1, "totalItems" => 1 }
+             },
+             "vault_managed_beszel_users" => [
+               { "email" => "reader@example.invalid", "password" => "secret",
+                 "role" => "admin", "verified" => true }
+             ] }
+    stdout, stderr, status = run_playbook(
+      [managed_includes("beszel", {}, path: task_paths["beszel"]).first], vars
+    )
+    failures << "Beszel identity-swap fixture unexpectedly succeeded" if status.success?
+    failures << "Beszel identity-swap fixture reached replacement mutation" if
+      requests.any? { |request| request["method"] == "PATCH" }
+    failures << "Beszel identity-swap fixture missed stable-ID assertion" unless
+      (stdout + stderr).include?("Require stable authenticated Beszel managed identities")
+  end
+  exercise_paperless(failures, scenario: :swap, task_path: task_paths["paperless_ngx"])
 end
 
 failures = []
@@ -506,14 +859,55 @@ if ARGV == ["--self-test"]
       failures << "#{service} no-log mutant survived"
     end
   end
+  if failures.empty?
+    unless ENV.fetch("PATH", "").split(File::PATH_SEPARATOR).any? do |directory|
+      File.executable?(File.join(directory, "ansible-playbook"))
+    end
+      failures << "ansible-playbook is required for database managed-user mutation fixtures"
+    else
+      Dir.mktmpdir("nas-platform-database-binding-mutants-") do |directory|
+        task_paths = {}
+        SERVICES.each do |service|
+          tasks = YAML.safe_load_file(
+            File.join(ROOT, "roles", service, "tasks", "managed_users.yml"), aliases: false
+          )
+          tasks.reject! { |task| task_name(task).start_with?("Require stable authenticated") }
+          if service == "paperless_ngx"
+            tasks.each do |task|
+              argv = task.dig("community.docker.docker_compose_v2_exec", "argv")
+              next unless argv
+
+              argv.map! { |argument| argument.to_s.gsub("token.user_id", "expected_id") }
+            end
+          end
+          task_paths[service] = File.join(directory, "#{service}.yml")
+          File.write(task_paths[service], YAML.dump(tasks), mode: "w", perm: 0o600)
+        end
+        mutant_failures = []
+        exercise_identity_swap_refusal(mutant_failures, task_paths: task_paths)
+        SERVICES.each do |service|
+          label = service == "paperless_ngx" ? "Paperless" : service.capitalize
+          unless mutant_failures.any? { |failure| failure == "#{label} identity-swap fixture unexpectedly succeeded" } &&
+                 mutant_failures.any? { |failure| failure.include?("#{label} identity-swap fixture reached") }
+            failures << "#{service} authenticated-ID binding mutant survived behavior fixtures"
+          end
+        end
+      end
+    end
+  end
 elsif ARGV.empty?
   if ENV.fetch("PATH", "").split(File::PATH_SEPARATOR).any? { |directory| File.executable?(File.join(directory, "ansible-playbook")) }
     exercise_immich(failures)
     exercise_beszel(failures)
+    exercise_paperless(failures)
+    exercise_paperless(failures, scenario: :mangled)
+    exercise_paperless(failures, scenario: :auth_failure)
+    exercise_paperless(failures, scenario: :check)
     exercise_fail_closed_and_check_mode(failures)
     exercise_verify_tag_selection(failures)
     exercise_disabled_paperless_target_rejection(failures)
     exercise_mangled_created_credentials(failures)
+    exercise_identity_swap_refusal(failures)
   else
     failures << "ansible-playbook is required for database managed-user behavior fixtures"
   end
