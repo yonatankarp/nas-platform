@@ -75,32 +75,73 @@ ENVIRONMENT = {
   "USER_ID" => "1000"
 }.freeze
 
-EXPECTED_MOUNTS = {
-  "audiobookshelf" => { "audiobookshelf" => %w[/config /metadata /audiobooks] },
+EXPECTED_BINDS = {
+  "audiobookshelf" => {
+    "audiobookshelf" => {
+      "/config" => "legacy/audiobookshelf/config",
+      "/metadata" => "legacy/audiobookshelf/metadata",
+      "/audiobooks" => "legacy/audiobookshelf/media"
+    }
+  },
   "beszel" => {
-    "hub" => ["/beszel_data"],
-    "agent" => ["/var/lib/beszel-agent", "/extra-filesystems/volume1", "/extra-filesystems/volume2"],
-    "socket-proxy" => ["/var/run/docker.sock"]
+    "hub" => { "/beszel_data" => "legacy/beszel/hub" },
+    "agent" => {
+      "/var/lib/beszel-agent" => "legacy/beszel/agent",
+      "/extra-filesystems/volume1" => "legacy/beszel/volume1",
+      "/extra-filesystems/volume2" => "legacy/beszel/volume2"
+    },
+    "socket-proxy" => { "/var/run/docker.sock" => :docker_socket }
   },
-  "dozzle" => { "dozzle" => ["/data"], "socket-proxy" => ["/var/run/docker.sock"] },
+  "dozzle" => {
+    "dozzle" => { "/data" => "legacy/dozzle/data" },
+    "socket-proxy" => { "/var/run/docker.sock" => :docker_socket }
+  },
   "immich" => {
-    "immich-server" => ["/data", "/data/thumbs", "/data/encoded-video", "/data/profile", "/data/backups"],
-    "immich-machine-learning" => ["/cache"],
-    "database" => ["/var/lib/postgresql/data"]
+    "immich-server" => {
+      "/data" => "legacy/immich/data",
+      "/data/thumbs" => "legacy/immich/thumbs",
+      "/data/encoded-video" => "legacy/immich/encoded-video",
+      "/data/profile" => "legacy/immich/profile",
+      "/data/backups" => "legacy/immich/backups"
+    },
+    "immich-machine-learning" => { "/cache" => "legacy/immich/model-cache" },
+    "database" => { "/var/lib/postgresql/data" => "legacy/immich/postgres" }
   },
-  "jellyfin" => { "jellyfin" => %w[/config /cache /media] },
-  "komga" => { "komga" => %w[/config /data] },
-  "ntfy" => { "ntfy" => %w[/var/cache/ntfy /var/lib/ntfy] },
+  "jellyfin" => {
+    "jellyfin" => {
+      "/config" => "legacy/jellyfin/config",
+      "/cache" => "legacy/jellyfin/cache",
+      "/media" => "legacy/jellyfin/media"
+    }
+  },
+  "komga" => {
+    "komga" => { "/config" => "legacy/komga/config", "/data" => "legacy/komga/library" }
+  },
+  "ntfy" => {
+    "ntfy" => {
+      "/var/cache/ntfy" => "legacy/ntfy/cache",
+      "/var/lib/ntfy" => "legacy/ntfy/data"
+    }
+  },
   "paperless-ngx" => {
-    "broker" => ["/data"],
-    "db" => ["/var/lib/postgresql"],
-    "webserver" => [
-      "/usr/src/paperless/data", "/usr/src/paperless/export",
-      "/usr/share/tesseract-ocr/5/tessdata/heb.traineddata",
-      "/usr/src/paperless/media", "/usr/src/paperless/consume"
-    ]
+    "broker" => { "/data" => "legacy/paperless-ngx/redis" },
+    "db" => { "/var/lib/postgresql" => "legacy/paperless-ngx/postgres" },
+    "webserver" => {
+      "/usr/src/paperless/data" => "legacy/paperless-ngx/data",
+      "/usr/src/paperless/export" => "legacy/paperless-ngx/export",
+      "/usr/share/tesseract-ocr/5/tessdata/heb.traineddata" =>
+        "legacy/paperless-ngx/tessdata/heb.traineddata",
+      "/usr/src/paperless/media" => "legacy/paperless-ngx/media",
+      "/usr/src/paperless/consume" => "legacy/paperless-ngx/consume"
+    }
   },
-  "tinymediamanager" => { "tinymediamanager" => ["/data", "/media/Movies", "/media/Series"] }
+  "tinymediamanager" => {
+    "tinymediamanager" => {
+      "/data" => "legacy/tinymediamanager/data",
+      "/media/Movies" => "legacy/tinymediamanager/movies",
+      "/media/Series" => "legacy/tinymediamanager/series"
+    }
+  }
 }.freeze
 
 ALLOWED_OVERRIDE_KEYS = {
@@ -162,6 +203,16 @@ end
 
 def bind_mounts(service)
   service.fetch("volumes", []).select { |mount| mount.fetch("type") == "bind" }
+end
+
+def expected_port(published, target)
+  {
+    "mode" => "ingress",
+    "host_ip" => "127.0.0.1",
+    "target" => target.to_i,
+    "published" => published,
+    "protocol" => "tcp"
+  }
 end
 
 def yaml_key?(node, expected_key)
@@ -297,7 +348,8 @@ Dir.mktmpdir("nas-platform-legacy-overrides.") do |temporary|
 
       mounts = bind_mounts(service)
       base_mounts_by_target = bind_mounts(base_service).to_h { |mount| [mount.fetch("target"), mount] }
-      expected_targets = EXPECTED_MOUNTS.fetch(name).fetch(service_name, []).sort
+      planned_binds = EXPECTED_BINDS.fetch(name).fetch(service_name, {})
+      expected_targets = planned_binds.keys.sort
       fail_contract("#{name}/#{service_name} changed or omitted a container-side bind target") unless
         mounts.map { |mount| mount.fetch("target") }.sort == expected_targets
 
@@ -305,8 +357,15 @@ Dir.mktmpdir("nas-platform-legacy-overrides.") do |temporary|
         source = mount.fetch("source")
         target = mount.fetch("target")
         base_mount = base_mounts_by_target.fetch(target)
-        fail_contract("#{name}/#{service_name} changes bind access semantics for #{target}") unless
-          mount.fetch("read_only", false) == base_mount.fetch("read_only", false)
+        planned_source = planned_binds.fetch(target)
+        expected_source = if planned_source == :docker_socket
+                            "/var/run/docker.sock"
+                          else
+                            sandbox.join(planned_source).to_s
+                          end
+        expected_mount = base_mount.merge("source" => expected_source)
+        fail_contract("#{name}/#{service_name} changes normalized bind semantics for #{target}") unless
+          mount == expected_mount
         if target == "/var/run/docker.sock"
           fail_contract("#{name}/#{service_name} has unauthorized Docker socket access") unless
             %w[beszel dozzle].include?(name) && service_name == "socket-proxy" &&
@@ -318,20 +377,20 @@ Dir.mktmpdir("nas-platform-legacy-overrides.") do |temporary|
         end
       end
 
-      actual_ports = service.fetch("ports", []).map do |port|
-        fail_contract("#{name}/#{service_name} publishes beyond localhost") unless port.fetch("host_ip") == "127.0.0.1"
-        [port.fetch("published").to_s, port.fetch("target").to_s]
-      end.sort
-      expected_ports = PORTS.fetch(name).fetch(service_name, []).sort
-      fail_contract("#{name}/#{service_name} does not use only its allocated ports") unless
+      actual_ports = service.fetch("ports", []).sort_by { |port| [port.fetch("published"), port.fetch("target")] }
+      expected_port_pairs = PORTS.fetch(name).fetch(service_name, [])
+      expected_ports = expected_port_pairs.map do |published, target|
+        expected_port(published, target)
+      end.sort_by { |port| [port.fetch("published"), port.fetch("target")] }
+      fail_contract("#{name}/#{service_name} changes normalized port semantics") unless
         actual_ports == expected_ports
 
-      second_ports = second.fetch("services").fetch(service_name).fetch("ports", []).map do |port|
-        fail_contract("#{name}/#{service_name} second project publishes beyond localhost") unless
-          port.fetch("host_ip") == "127.0.0.1"
-        [port.fetch("published").to_s, port.fetch("target").to_s]
-      end.sort
-      second_expected_ports = expected_ports.map { |published, target| [(published.to_i + 1000).to_s, target] }
+      second_ports = second.fetch("services").fetch(service_name).fetch("ports", []).sort_by do |port|
+        [port.fetch("published"), port.fetch("target")]
+      end
+      second_expected_ports = expected_port_pairs.map do |published, target|
+        expected_port((published.to_i + 1000).to_s, target)
+      end.sort_by { |port| [port.fetch("published"), port.fetch("target")] }
       fail_contract("#{name}/#{service_name} ports are not driven by the allocation") unless
         second_ports == second_expected_ports
     end
