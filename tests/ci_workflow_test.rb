@@ -12,6 +12,7 @@ FULL_STEPS = [
   ["Check policy properties", "tests/validate-policy.sh"],
   ["Check integration sandbox cleanup", "tests/integration_cleanup_test.sh"],
   ["Install Ansible tooling", "ansible-core==2.21.2"],
+  ["Check legacy parity rendering", "tests/mac/adoption-render-test.sh"],
   ["Check Immich probe status rendering", "tests/immich_probe_status_test.py"],
   ["Check generated credential redaction", "tests/generate-secrets-redaction-test.sh"],
   ["Check silent ephemeral vault generation", "tests/generate-ephemeral-vault.sh --self-test"],
@@ -227,6 +228,11 @@ end
 def self_test
   source = File.binread(WORKFLOW)
   triggers = "on:\n  pull_request:\n  push:\n    branches:\n      - main\n"
+  render_step = <<~YAML.gsub(/^/, "      ")
+    - name: Check legacy parity rendering
+      if: steps.scope.outputs.docs_only != 'true'
+      run: tests/mac/adoption-render-test.sh
+  YAML
   validate_workflow(source)
   assert_failure("renamed job", replace_once(source, "  validate:\n", "  verify:\n"), "only the validate job")
   assert_failure("removed job", replace_once(source, "  validate:\n", "  inspect:\n"), "only the validate job")
@@ -239,6 +245,14 @@ def self_test
   assert_failure("fetch depth", replace_once(source, "fetch-depth: 0", "fetch-depth: 1"), "complete history")
   assert_failure("unconditional docs", replace_once(source, "        if: steps.scope.outputs.docs_only == 'true'\n", ""), "docs-only guard")
   assert_failure("unguarded full step", replace_once(source, "      - name: Validate shell syntax\n        if: steps.scope.outputs.docs_only != 'true'\n", "      - name: Validate shell syntax\n"), "full-validation guard")
+  without_render = replace_once(source, render_step, "")
+  assert_failure("missing legacy render", without_render, "Check legacy parity rendering")
+  render_before_install = replace_once(
+    without_render,
+    "      - name: Install Ansible tooling\n",
+    "#{render_step}\n      - name: Install Ansible tooling\n"
+  )
+  assert_failure("legacy render before Ansible", render_before_install, "out of order")
   assert_failure("extra job", replace_once(source, "jobs:\n", "jobs:\n  extra:\n    runs-on: ubuntu-latest\n    steps: []\n"), "only the validate job")
   assert_failure("malformed YAML", "jobs: [", "YAML is malformed")
   assert_failure("jobs shape", "#{triggers}jobs: []\n", "jobs must be a mapping")
