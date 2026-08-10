@@ -96,7 +96,10 @@
 # its atomic create command is the reviewed exception. The command creates an
 # absent identity but cannot update an existing password. Post-authentication
 # distinguishes successful creation from an existing identity with another
-# password without parsing CLI output or treating its always-zero exit as change.
+# password. Beszel 0.18.7 prints one exact non-secret success line only for the
+# controller that creates the record; duplicate create attempts print the unique
+# email error while still exiting zero. Exact post-authentication remains the
+# authority for credentials, and the pinned success line only owns the change.
 - name: Check for an existing Beszel superuser with vault credentials
   ansible.builtin.uri:
     url: "{{ beszel_api }}/api/collections/_superusers/auth-with-password"
@@ -164,8 +167,12 @@
   when:
     - not ansible_check_mode
     - beszel_superuser_pre_auth.status | int != 200
+    - >-
+      beszel_superuser_create.stdout | default('') ==
+      'Successfully created new superuser "' ~ vault_beszel_superuser_email ~ '"!'
     - beszel_auth.status | int == 200
   changed_when: true
+  no_log: true
 
 - name: Report planned Beszel superuser creation
   ansible.builtin.debug:

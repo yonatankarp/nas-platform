@@ -5,14 +5,19 @@ require "json"
 require "open3"
 require "rbconfig"
 require "socket"
+require "timeout"
 require "tmpdir"
 require "yaml"
 
 ROOT = File.expand_path("..", __dir__)
+DEFAULT_TASKS_PATH = File.join(ROOT, "roles", "beszel", "tasks", "main.yml")
 TASKS_PATH = ENV.fetch(
   "BESZEL_PASSWORD_TASKS_PATH",
-  File.join(ROOT, "roles", "beszel", "tasks", "main.yml")
+  DEFAULT_TASKS_PATH
 )
+
+class FixtureTimeout < StandardError; end
+class FixtureServerError < StandardError; end
 
 def check(failures, condition, message)
   failures << message unless condition
@@ -22,47 +27,103 @@ def normalized(value)
   value.to_s.split.join(" ")
 end
 
-def with_superuser_auth_service(state_path)
+def terminate_process_group(pid, signal)
+  Process.kill(signal, -pid)
+rescue Errno::ESRCH
+  nil
+end
+
+def capture3_with_timeout(environment, *command, chdir:, timeout_seconds:)
+  Open3.popen3(environment, *command, chdir: chdir, pgroup: true) do |stdin, stdout, stderr, wait_thread|
+    stdin.close
+    stdout_reader = Thread.new { stdout.read }
+    stderr_reader = Thread.new { stderr.read }
+    begin
+      status = Timeout.timeout(timeout_seconds) { wait_thread.value }
+    rescue Timeout::Error
+      terminate_process_group(wait_thread.pid, "TERM")
+      unless wait_thread.join(1)
+        terminate_process_group(wait_thread.pid, "KILL")
+        wait_thread.join
+      end
+      stdout_reader.join
+      stderr_reader.join
+      unit = timeout_seconds == 1 ? "second" : "seconds"
+      raise FixtureTimeout, "Ansible fixture timed out after #{timeout_seconds} #{unit}"
+    end
+    [stdout_reader.value, stderr_reader.value, status]
+  end
+end
+
+def with_superuser_auth_service(state_path, responder: :normal)
   server = TCPServer.new("127.0.0.1", 0)
+  shutdown_reader, shutdown_writer = IO.pipe
   requests = []
-  stopped = false
+  thread_error = nil
   thread = Thread.new do
-    until stopped
-      next unless IO.select([server], nil, nil, 0.05)
+    Thread.current.report_on_exception = false
+    loop do
+      ready = IO.select([server, shutdown_reader], nil, nil, 0.05)
+      next unless ready
+      break if ready.first.include?(shutdown_reader)
 
       client = server.accept
-      request_line = client.gets.to_s
-      headers = {}
-      while (line = client.gets)
-        line = line.chomp
-        break if line == "\r" || line.empty?
+      begin
+        if responder == :blocked
+          IO.select([shutdown_reader])
+          break
+        end
+        raise "fixture responder failure" if responder == :broken
 
-        key, value = line.split(":", 2)
-        headers[key.downcase] = value.to_s.strip
+        client.gets
+        headers = {}
+        while (line = client.gets)
+          line = line.chomp
+          break if line == "\r" || line.empty?
+
+          key, value = line.split(":", 2)
+          headers[key.downcase] = value.to_s.strip
+        end
+        body = JSON.parse(client.read(headers.fetch("content-length", "0").to_i))
+        state = JSON.parse(File.read(state_path))
+        authenticated = state["identity"] == body["identity"] && state["password"] == body["password"]
+        requests << body
+        response = authenticated ? { "token" => "fixture-token" } : {}
+        payload = JSON.generate(response)
+        status = authenticated ? "200 OK" : "400 Bad Request"
+        client.write("HTTP/1.1 #{status}\r\nContent-Type: application/json\r\n" \
+                     "Content-Length: #{payload.bytesize}\r\nConnection: close\r\n\r\n#{payload}")
+      ensure
+        client.close unless client.closed?
       end
-      body = JSON.parse(client.read(headers.fetch("content-length", "0").to_i))
-      state = JSON.parse(File.read(state_path))
-      authenticated = state["identity"] == body["identity"] && state["password"] == body["password"]
-      requests << body
-      response = authenticated ? { "token" => "fixture-token" } : {}
-      payload = JSON.generate(response)
-      status = authenticated ? "200 OK" : "400 Bad Request"
-      client.write("HTTP/1.1 #{status}\r\nContent-Type: application/json\r\n" \
-                   "Content-Length: #{payload.bytesize}\r\nConnection: close\r\n\r\n#{payload}")
-      client.close
     end
   rescue IOError, Errno::EBADF
     nil
+  rescue StandardError => error
+    thread_error = error
   end
   yield server.addr.fetch(1), requests
 ensure
-  stopped = true
+  begin
+    shutdown_writer&.write("x")
+  rescue IOError, Errno::EPIPE
+    nil
+  end
+  shutdown_writer&.close
   server&.close
+  thread&.join(1)
+  thread&.kill if thread&.alive?
   thread&.join
+  shutdown_reader&.close
+  raise FixtureServerError, "superuser auth fixture responder failed" if thread_error
 end
 
-def run_superuser_lifecycle(tasks, state_path, creator_path, port, *arguments)
+def run_superuser_lifecycle(tasks, state_path, creator_path, port, *arguments, timeout_seconds: 20)
   fixture = Marshal.load(Marshal.dump(tasks))
+  fixture.each do |task|
+    uri = task["ansible.builtin.uri"]
+    uri["timeout"] = 2 if uri.is_a?(Hash)
+  end
   create = fixture.find { |task| task["name"] == "Create the superuser without updating an existing identity" }
   create.delete("community.docker.docker_compose_v2_exec")
   create["ansible.builtin.command"] = {
@@ -82,9 +143,9 @@ def run_superuser_lifecycle(tasks, state_path, creator_path, port, *arguments)
   Dir.mktmpdir("beszel-superuser-playbook-") do |directory|
     path = File.join(directory, "playbook.yml")
     File.write(path, YAML.dump(playbook), mode: "w", perm: 0o600)
-    Open3.capture3(
+    capture3_with_timeout(
       { "ANSIBLE_NOCOLOR" => "1" }, "ansible-playbook", "-i", "localhost,", "-c", "local",
-      path, *arguments, chdir: ROOT
+      path, *arguments, chdir: ROOT, timeout_seconds: timeout_seconds
     )
   end
 end
@@ -185,9 +246,13 @@ check(failures,
       superuser_created&.fetch("changed_when", nil) == true &&
         Array(superuser_created&.fetch("when", nil)) == [
           "not ansible_check_mode", "beszel_superuser_pre_auth.status | int != 200",
+          "beszel_superuser_create.stdout | default('') == " \
+          "'Successfully created new superuser \"' ~ vault_beszel_superuser_email ~ '\"!'",
           "beszel_auth.status | int == 200"
         ],
-      "Beszel must report changed only when failed pre-authentication becomes successful post-authentication")
+      "Beszel must report changed only for the exact pinned create-success signal and post-authentication")
+check(failures, superuser_created&.fetch("no_log", nil) == true,
+      "Beszel create-success classification must redact the captured CLI result")
 superuser_planned = tasks.find { |task| task["name"] == "Report planned Beszel superuser creation" }
 check(failures,
       superuser_planned&.fetch("changed_when", nil) == true &&
@@ -210,7 +275,7 @@ end
 check(failures, lifecycle_tasks.length == lifecycle_names.length,
       "Beszel stateful superuser lifecycle task selection is incomplete")
 
-if lifecycle_tasks.length == lifecycle_names.length
+if lifecycle_tasks.length == lifecycle_names.length && TASKS_PATH == DEFAULT_TASKS_PATH
   Dir.mktmpdir("beszel-superuser-state-") do |directory|
     state_path = File.join(directory, "state.json")
     creator_path = File.join(directory, "create.rb")
@@ -220,9 +285,14 @@ if lifecycle_tasks.length == lifecycle_names.length
       state_path, identity, password = ARGV
       state = JSON.parse(File.read(state_path))
       if state["identity"].nil?
+        concurrent = state.delete("concurrent_create")
         state = { "identity" => identity, "password" => password }
         File.write(state_path, JSON.generate(state), mode: "w", perm: 0o600)
-        puts "Successfully created new superuser"
+        if concurrent
+          puts "Error: failed to create new superuser account: email: Value must be unique."
+        else
+          puts %(Successfully created new superuser "\#{identity}"!)
+        end
       else
         puts "Error: failed to create new superuser account: email: Value must be unique."
       end
@@ -247,6 +317,19 @@ if lifecycle_tasks.length == lifecycle_names.length
             "Beszel existing exact superuser credentials were not idempotent")
       check(failures, JSON.parse(File.read(state_path)) == desired_state,
             "Beszel idempotent superuser run mutated persisted credentials")
+
+      File.write(
+        state_path,
+        JSON.generate({ "identity" => nil, "password" => nil, "concurrent_create" => true }),
+        mode: "w", perm: 0o600
+      )
+      concurrent_stdout, concurrent_stderr, concurrent_status = run_superuser_lifecycle(
+        lifecycle_tasks, state_path, creator_path, port
+      )
+      check(failures,
+            concurrent_status.success? && changed_count(concurrent_stdout) == 0 &&
+              JSON.parse(File.read(state_path)) == desired_state,
+            "Beszel concurrent duplicate creation was incorrectly attributed to this controller")
 
       wrong_state = desired_state.merge("password" => "deployed-other-secret")
       File.write(state_path, JSON.generate(wrong_state), mode: "w", perm: 0o600)
@@ -285,12 +368,34 @@ if lifecycle_tasks.length == lifecycle_names.length
             verify_status.success? && changed_count(verify_stdout) == 0 &&
               JSON.parse(File.read(state_path)) == desired_state,
             "Beszel verify-only superuser authentication was not non-mutating")
-      check(failures, requests.length == 10,
+      check(failures, requests.length == 12,
             "Beszel superuser lifecycle did not execute the exact authentication sequence")
-      [first_stderr, second_stderr, check_stderr, verify_stderr].each do |output|
+      [first_stderr, second_stderr, concurrent_stderr, check_stderr, verify_stderr].each do |output|
         check(failures, !output.include?(desired_state.fetch("password")),
               "Beszel lifecycle diagnostics leaked the vault password")
       end
+    end
+
+    begin
+      with_superuser_auth_service(state_path, responder: :blocked) do |port, _requests|
+        run_superuser_lifecycle(
+          lifecycle_tasks, state_path, creator_path, port, timeout_seconds: 1
+        )
+      end
+      failures << "blocked Beszel auth fixture did not time out diagnostically"
+    rescue FixtureTimeout => error
+      check(failures, error.message == "Ansible fixture timed out after 1 second",
+            "blocked Beszel auth fixture timeout diagnostic differs")
+    end
+
+    begin
+      with_superuser_auth_service(state_path, responder: :broken) do |port, _requests|
+        run_superuser_lifecycle(lifecycle_tasks, state_path, creator_path, port)
+      end
+      failures << "broken Beszel auth fixture error was not propagated"
+    rescue FixtureServerError => error
+      check(failures, error.message == "superuser auth fixture responder failed",
+            "broken Beszel auth fixture exposed an unsafe diagnostic")
     end
   end
 end
@@ -452,10 +557,24 @@ if ARGV == ["--self-test"] && failures.empty?
       end
     ],
     "missing post-authenticated change classification" => [
-      "Beszel must report changed only when failed pre-authentication becomes successful post-authentication",
+      "Beszel must report changed only for the exact pinned create-success signal and post-authentication",
       lambda do |fixture|
         report = fixture.find { |task| task["name"] == "Report newly created Beszel superuser" }
         report["when"].delete("beszel_auth.status | int == 200")
+      end
+    ],
+    "drifted create-success signal" => [
+      "Beszel must report changed only for the exact pinned create-success signal and post-authentication",
+      lambda do |fixture|
+        report = fixture.find { |task| task["name"] == "Report newly created Beszel superuser" }
+        report["when"][2] = "beszel_superuser_create.stdout | default('') is search('Successfully')"
+      end
+    ],
+    "unredacted create-success classification" => [
+      "Beszel create-success classification must redact the captured CLI result",
+      lambda do |fixture|
+        report = fixture.find { |task| task["name"] == "Report newly created Beszel superuser" }
+        report.delete("no_log")
       end
     ],
     "unredacted atomic superuser creation" => [
@@ -493,9 +612,9 @@ if ARGV == ["--self-test"] && failures.empty?
       mutate.call(fixture)
       path = File.join(directory, "tasks.yml")
       File.write(path, YAML.dump(fixture))
-      _stdout, stderr, status = Open3.capture3(
+      _stdout, stderr, status = capture3_with_timeout(
         { "BESZEL_PASSWORD_TASKS_PATH" => path },
-        RbConfig.ruby, __FILE__
+        RbConfig.ruby, __FILE__, chdir: ROOT, timeout_seconds: 20
       )
       check(failures, !status.success? && stderr.include?(expected_failure),
             "self-test mutation was not rejected precisely: #{label}")
