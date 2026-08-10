@@ -5,6 +5,7 @@ require "fileutils"
 require "json"
 require "open3"
 require "socket"
+require "timeout"
 require "tmpdir"
 require "yaml"
 
@@ -12,18 +13,51 @@ ROOT = File.expand_path("..", __dir__)
 NTFY_MAIN = File.join(ROOT, "roles", "ntfy", "tasks", "main.yml")
 NTFY_MANAGED = File.join(ROOT, "roles", "ntfy", "tasks", "managed_users.yml")
 
-def run_ansible(playbook, *arguments)
+class FixtureTimeout < StandardError; end
+
+def terminate_process_group(pid, signal)
+  Process.kill(signal, -pid)
+rescue Errno::ESRCH
+  nil
+end
+
+def capture3_with_timeout(environment, *command, chdir:, timeout_seconds:)
+  Open3.popen3(environment, *command, chdir: chdir, pgroup: true) do |stdin, stdout, stderr, wait_thread|
+    stdin.close
+    stdout_reader = Thread.new { stdout.read }
+    stderr_reader = Thread.new { stderr.read }
+    begin
+      status = Timeout.timeout(timeout_seconds) { wait_thread.value }
+    rescue Timeout::Error
+      terminate_process_group(wait_thread.pid, "TERM")
+      unless wait_thread.join(1)
+        terminate_process_group(wait_thread.pid, "KILL")
+        wait_thread.join
+      end
+      stdout_reader.join
+      stderr_reader.join
+      unit = timeout_seconds == 1 ? "second" : "seconds"
+      raise FixtureTimeout, "Ansible fixture timed out after #{timeout_seconds} #{unit}"
+    end
+    [stdout_reader.value, stderr_reader.value, status]
+  end
+end
+
+def run_ansible(playbook, *arguments, timeout_seconds: 20)
   Dir.mktmpdir("nas-platform-ntfy-selection-") do |directory|
     path = File.join(directory, "playbook.yml")
     File.write(path, YAML.dump(playbook), mode: "w", perm: 0o600)
-    Open3.capture3(
+    capture3_with_timeout(
       { "ANSIBLE_NOCOLOR" => "1" }, "ansible-playbook", "-i", "localhost,", "-c", "local",
-      path, *arguments, chdir: ROOT
+      path, *arguments, chdir: ROOT, timeout_seconds: timeout_seconds
     )
   end
 end
 
-def run_authoritative_probe_fixture(probe_tasks, auth_database_exists:, main_running:)
+def run_authoritative_probe_fixture(
+  probe_tasks, auth_database_exists:, main_running:, failure_sentinel: nil,
+  block_stdin: false, timeout_seconds: nil
+)
   Dir.mktmpdir("nas-platform-ntfy-compose-probe-") do |directory|
     current = File.join(directory, "current")
     runtime_root = File.join(directory, "runtime-root")
@@ -39,6 +73,12 @@ def run_authoritative_probe_fixture(probe_tasks, auth_database_exists:, main_run
     YAML
     File.write(File.join(runtime, ".env"), "NTFY_AUTH_USERS=fixture-secret\n", mode: "w", perm: 0o600)
     log = File.join(directory, "docker.log")
+    state_path = File.join(directory, "docker-state.json")
+    File.write(
+      state_path,
+      JSON.generate("main_running" => main_running, "one_off_runs" => 0, "one_off_active" => false),
+      mode: "w", perm: 0o600
+    )
     docker = File.join(directory, "docker")
     File.write(docker, <<~RUBY, mode: "w", perm: 0o700)
       #!/usr/bin/env ruby
@@ -48,6 +88,8 @@ def run_authoritative_probe_fixture(probe_tasks, auth_database_exists:, main_run
       end
       arguments = ARGV.dup
       arguments.shift(2) if arguments.first == "--host"
+      failure_sentinel = #{failure_sentinel.inspect}
+      block_stdin = #{block_stdin}
       case
       when arguments == ["version", "--format", "{{ json . }}"]
         puts JSON.generate("Client" => { "Version" => "29.5.3" }, "Server" => { "Version" => "29.6.2" })
@@ -58,12 +100,34 @@ def run_authoritative_probe_fixture(probe_tasks, auth_database_exists:, main_run
           warn "pinned Compose rejected an unsupported interaction flag: fixture-secret"
           exit 125
         end
+        state = JSON.parse(File.read(#{state_path.dump}))
+        if state.fetch("one_off_active") ||
+           (state.fetch("main_running") && arguments.each_cons(2).any? { |pair| pair == ["--name", "ntfy"] })
+          warn "one-off container state conflicts with the running main service"
+          exit 125
+        end
+        state["one_off_active"] = true
+        state["one_off_runs"] += 1
+        File.write(#{state_path.dump}, JSON.generate(state), mode: "w", perm: 0o600)
+        if failure_sentinel
+          puts failure_sentinel
+          warn failure_sentinel
+          state["one_off_active"] = false
+          File.write(#{state_path.dump}, JSON.generate(state), mode: "w", perm: 0o600)
+          exit 125
+        end
+        if block_stdin
+          blocked_reader, blocked_writer = IO.pipe
+          STDIN.reopen(blocked_reader)
+        end
         unless STDIN.read.empty?
           warn "authoritative probe unexpectedly received standard input"
           exit 125
         end
         puts "user * (role: anonymous, tier: none)"
         puts "- no access to any (other) topics (server config)"
+        state["one_off_active"] = false
+        File.write(#{state_path.dump}, JSON.generate(state), mode: "w", perm: 0o600)
       else
         warn "unexpected Docker CLI operation"
         exit 125
@@ -84,9 +148,11 @@ def run_authoritative_probe_fixture(probe_tasks, auth_database_exists:, main_run
       },
       "tasks" => tasks
     }]
-    _stdout, stderr, status = run_ansible(playbook)
+    stdout, stderr, status = run_ansible(
+      playbook, timeout_seconds: timeout_seconds || 20
+    )
     calls = File.exist?(log) ? File.readlines(log, chomp: true).map { |line| JSON.parse(line) } : []
-    [stderr, status, calls]
+    [stdout + stderr, status, calls, JSON.parse(File.read(state_path))]
   end
 end
 
@@ -237,23 +303,23 @@ unless probe_tasks.length == probe_names.length
   failures << "authoritative ntfy probe fixture tasks are incomplete"
 end
 
-fresh_stderr, fresh_status, fresh_calls = run_authoritative_probe_fixture(
+fresh_output, fresh_status, fresh_calls = run_authoritative_probe_fixture(
   probe_tasks, auth_database_exists: false, main_running: false
 )
 failures << "fresh install authoritative probe was not a redacted non-mutating skip" unless
-  fresh_status.success? && fresh_calls.empty? && !fresh_stderr.include?("fixture-secret")
+  fresh_status.success? && fresh_calls.empty? && !fresh_output.include?("fixture-secret")
 
 [
   [false, "stopped main service"],
   [true, "running main service"]
 ].each do |main_running, label|
-  stderr, probe_status, calls = run_authoritative_probe_fixture(
+  probe_output, probe_status, calls, fake_state = run_authoritative_probe_fixture(
     probe_tasks, auth_database_exists: true, main_running: main_running
   )
   run_record = calls.find { |record| record.fetch("argv").include?("run") }
   run_call = run_record&.fetch("argv")
   failures << "#{label} authoritative probe failed with redacted diagnostics" unless
-    probe_status.success? && !stderr.include?("fixture-secret")
+    probe_status.success? && !probe_output.include?("fixture-secret")
   failures << "#{label} authoritative probe did not use one non-provisioning user-list call" unless
     run_call && run_call.last(5) == [
       "ntfy", "user", "--auth-file=/var/lib/ntfy/auth.db",
@@ -263,6 +329,35 @@ failures << "fresh install authoritative probe was not a redacted non-mutating s
       run_call.include?("--no-TTY") && !run_call.include?("--interactive") &&
       !run_call.include?("--no-interactive") &&
       !run_call.include?("up") && !run_call.include?("create") && !run_call.include?("start")
+  failures << "#{label} one-off lifecycle did not preserve the main service state" unless
+    fake_state == {
+      "main_running" => main_running, "one_off_runs" => 1, "one_off_active" => false
+    }
+end
+
+redaction_sentinel = "ntfy-probe-secret-sentinel"
+failure_output, failure_status, = run_authoritative_probe_fixture(
+  probe_tasks,
+  auth_database_exists: true,
+  main_running: true,
+  failure_sentinel: redaction_sentinel
+)
+failures << "authoritative ntfy probe failure injection did not fail safely" if failure_status.success?
+failures << "authoritative ntfy probe no_log leaked injected output" if
+  failure_output.include?(redaction_sentinel)
+
+begin
+  run_authoritative_probe_fixture(
+    probe_tasks,
+    auth_database_exists: true,
+    main_running: true,
+    block_stdin: true,
+    timeout_seconds: 1
+  )
+  failures << "blocked authoritative ntfy probe did not time out diagnostically"
+rescue FixtureTimeout => error
+  failures << "blocked authoritative ntfy probe timeout diagnostic differs" unless
+    error.message == "Ansible fixture timed out after 1 second"
 end
 probe_playbook = [{
   "hosts" => "localhost", "gather_facts" => false,
