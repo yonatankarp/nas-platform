@@ -16,7 +16,7 @@ die() {
 subcommand=$1
 case $subcommand in
   --self-test) exec "$script_dir/adoption-self-test.sh" ;;
-  preflight|render|legacy-deploy|legacy-seed) ;;
+  preflight|render|legacy-deploy|legacy-seed|capture-baseline) ;;
   *) die 'unsupported subcommand' ;;
 esac
 
@@ -181,6 +181,27 @@ RUBY
   done
   "$script_dir/legacy-seed.sh"
   printf '%s\n' 'Legacy adoption seed: supported capabilities ready'
+  exit 0
+}
+[ "$subcommand" = capture-baseline ] && {
+  sandbox=$(mac_validate_sandbox "${PLATFORM_MAC_SANDBOX:?PLATFORM_MAC_SANDBOX is required}" 2>/dev/null) ||
+    die 'owned sandbox is invalid'
+  tab=$(printf '\t')
+  printf '%s\n' "$service_paths" | while IFS="$tab" read -r service path; do
+    [ -n "$service" ] && [ -n "$path" ] || die 'service manifest is invalid'
+    "$script_dir/legacy-compose.sh" "$service" ps
+  done
+  if ! "$script_dir/adoption-baseline.rb" \
+      --output "$sandbox/baseline.json" \
+      --legacy-commit "$expected_commit" \
+      --manifest "$manifest" \
+      --legacy-root "$PLATFORM_LEGACY_ROOT" \
+      --override-root "$script_dir/legacy-overrides" \
+      --env-root "$sandbox/legacy-env" \
+      --probe-root "$script_dir/adoption-probes"; then
+    die 'legacy baseline capture failed'
+  fi
+  printf '%s\n' 'Legacy adoption baseline: strict non-secret evidence ready'
   exit 0
 }
 [ "$subcommand" = render ] || {
