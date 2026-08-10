@@ -60,7 +60,12 @@ ENVIRONMENT = {
   "JELLYFIN_HOST_PORT" => "38096",
   "KOMGA_HOST_PORT" => "35600",
   "NTFY_BASE_URL" => "http://127.0.0.1:32586",
+  "NTFY_AUTH_ACCESS" => "admin:*:rw,user:nas-critical:w",
+  "NTFY_AUTH_TOKENS" => "user:tk_test-token",
+  "NTFY_AUTH_USERS" => "admin:test-hash,user:test-hash",
   "NTFY_HOST_PORT" => "32586",
+  "NAS_GID" => "20",
+  "NAS_UID" => "501",
   "PAPERLESS_AI_ENABLED" => "false",
   "PAPERLESS_AI_LLM_ENDPOINT" => "http://example.invalid:11434",
   "PAPERLESS_AI_LLM_MODEL" => "test-model",
@@ -70,6 +75,7 @@ ENVIRONMENT = {
   "PAPERLESS_THREADS_PER_WORKER" => "1",
   "PASSWORD" => "test-password",
   "TINYMEDIAMANAGER_API_HOST_PORT" => "37878",
+  "TINYMEDIAMANAGER_PASSWORD" => "test-role-password",
   "TINYMEDIAMANAGER_WEB_HOST_PORT" => "34000",
   "TZ" => "UTC",
   "USER_ID" => "1000"
@@ -163,7 +169,7 @@ ALLOWED_OVERRIDE_KEYS = {
   },
   "jellyfin" => { "jellyfin" => %w[container_name devices group_add ports volumes] },
   "komga" => { "komga" => %w[container_name ports volumes] },
-  "ntfy" => { "ntfy" => %w[container_name ports volumes] },
+  "ntfy" => { "ntfy" => %w[container_name environment ports user volumes] },
   "paperless-ngx" => {
     "broker" => %w[container_name ports volumes],
     "db" => %w[container_name ports volumes],
@@ -185,6 +191,9 @@ ALLOWED_ENVIRONMENT_KEYS = {
       PAPERLESS_DBHOST PAPERLESS_REDIS PAPERLESS_TIKA_ENDPOINT
       PAPERLESS_TIKA_GOTENBERG_ENDPOINT
     ]
+  },
+  "ntfy" => {
+    "ntfy" => %w[NTFY_AUTH_ACCESS NTFY_AUTH_TOKENS NTFY_AUTH_USERS]
   }
 }.freeze
 
