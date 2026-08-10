@@ -71,6 +71,7 @@
       - item.role is string
       - item.role in ['user', 'admin']
       - item.verified is boolean
+      - item.verified == true
     fail_msg: beszel managed user has invalid field; values are redacted.
   loop: "{{ vault_managed_users.beszel }}"
   loop_control:

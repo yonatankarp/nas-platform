@@ -148,7 +148,13 @@ def contract_failures(service, tasks)
     failures << "Paperless omits effective post-list reauthentication" unless
       names.include?("Authenticate effective Paperless managed users after re-list")
   elsif service == "beszel"
+    create = tasks.find { |task| task_name(task) == "Create absent Beszel managed users" }
     repair = tasks.find { |task| task_name(task) == "Repair Beszel managed-user role and verification" }
+    failures << "Beszel absent-user creation must set the pinned authentication prerequisite" unless
+      create&.dig("ansible.builtin.uri", "body", "verified") == true
+    failures << "Beszel absent-user creation grants privilege before credential proof" unless
+      create&.dig("ansible.builtin.uri", "body")&.keys&.map(&:to_s)&.sort ==
+        %w[email password passwordConfirm verified].sort
     failures << "Beszel repair must contain only role and verified" unless
       repair&.dig("ansible.builtin.uri", "body")&.keys&.map(&:to_s)&.sort == %w[role verified]
     ownership_words = tasks.to_s.scan(/universal_tokens|user_settings|systems|alerts/)
@@ -407,16 +413,16 @@ def exercise_immich(failures)
   end
 end
 
-def exercise_beszel(failures)
+def exercise_beszel(failures, task_path: nil)
   users = [
     { "id" => "reader123456789", "email" => "reader@example.invalid", "password" => "reader-secret",
-      "role" => "user", "verified" => false },
+      "role" => "user", "verified" => true },
     { "id" => "friend123456789", "email" => "friend@example.invalid", "password" => "friend-secret",
       "role" => "user", "verified" => true }
   ]
   managed = [
     { "email" => "reader@example.invalid", "password" => "reader-secret", "role" => "admin", "verified" => true },
-    { "email" => "new@example.invalid", "password" => "new-secret", "role" => "user", "verified" => true }
+    { "email" => "new@example.invalid", "password" => "new-secret", "role" => "admin", "verified" => true }
   ]
   listing = -> { { "items" => users.map { |user| user.reject { |key, _| key == "password" } },
                    "totalPages" => 1, "totalItems" => users.length } }
@@ -425,12 +431,15 @@ def exercise_beszel(failures)
     when ["GET", "/api/collections/users/records?perPage=500"] then [200, listing.call]
     when ["POST", "/api/collections/users/auth-with-password"]
       body = request.fetch("json")
-      user = users.find { |candidate| candidate["email"] == body["identity"] && candidate["password"] == body["password"] }
+      user = users.find do |candidate|
+        candidate["verified"] && candidate["email"] == body["identity"] &&
+          candidate["password"] == body["password"]
+      end
       user ? [200, { "record" => user.reject { |key, _| key == "password" }, "token" => "user-token" }] : [400, {}]
     when ["POST", "/api/collections/users/records"]
       body = request.fetch("json")
       users << { "id" => "newuser12345678", "email" => body["email"], "password" => body["password"],
-                 "role" => "user", "verified" => false }
+                 "role" => "user", "verified" => body.fetch("verified", false) }
       [200, users.last.reject { |key, _| key == "password" }]
     else
       if request["method"] == "PATCH" && request["target"].start_with?("/api/collections/users/records/")
@@ -445,7 +454,7 @@ def exercise_beszel(failures)
   with_http_service(responder) do |port, requests|
     vars = { "beszel_api" => "http://127.0.0.1:#{port}", "beszel_auth" => { "json" => { "token" => "admin" } },
              "beszel_complete_users" => { "json" => listing.call }, "vault_managed_beszel_users" => managed }
-    stdout, stderr, status = run_playbook(managed_includes("beszel"), vars)
+    stdout, stderr, status = run_playbook(managed_includes("beszel", {}, path: task_path), vars)
     failures << "Beszel behavior fixture failed: #{failure_tail(stdout + stderr)}" unless status.success?
     failures << "Beszel unmanaged user was not preserved" unless users.any? { |user| user["email"] == "friend@example.invalid" }
     failures << "Beszel repair escaped role and verified" if requests.any? do |request|
@@ -633,16 +642,16 @@ def exercise_fail_closed_and_check_mode(failures)
                   "beszel_auth" => { "json" => { "token" => "admin" } },
                   "beszel_complete_users" => { "json" => listing },
                   "vault_managed_beszel_users" => [
-                    { "email" => "reader@example.invalid", "password" => "wrong",
+                    { "email" => "reader@example.invalid", "password" => "reader-secret",
                       "role" => "admin", "verified" => true }
                   ] }
   with_http_service(->(_request) { [400, {}] }) do |port, requests|
     vars = beszel_vars.merge("beszel_api" => "http://127.0.0.1:#{port}")
     stdout, stderr, status = run_playbook([managed_includes("beszel").first], vars)
-    failures << "Beszel authentication-failure fixture unexpectedly succeeded" if status.success?
-    failures << "Beszel authentication failure missed credential-migration assertion" unless
+    failures << "Beszel existing-unverified fixture unexpectedly succeeded" if status.success?
+    failures << "Beszel existing-unverified failure missed credential-migration assertion" unless
       (stdout + stderr).include?("Require preserved Beszel managed-user credentials")
-    failures << "Beszel authentication failure reached a mutation" if
+    failures << "Beszel existing-unverified failure reached a mutation" if
       requests.any? { |request| request["method"] != "POST" ||
         request["target"] != "/api/collections/users/auth-with-password" }
   end
@@ -850,6 +859,21 @@ if ARGV == ["--self-test"]
       failures << "#{service} existing-password-update mutant survived"
     end
 
+    if service == "beszel"
+      [nil, false].each do |verified_value|
+        create_mutant = Marshal.load(Marshal.dump(tasks))
+        create = create_mutant.find { |task| task_name(task) == "Create absent Beszel managed users" }
+        body = create.fetch("ansible.builtin.uri").fetch("body")
+        verified_value.nil? ? body.delete("verified") : body["verified"] = verified_value
+        detected = contract_failures(service, create_mutant).any? do |failure|
+          failure.include?("authentication prerequisite")
+        end
+        unless detected
+          failures << "beszel create verified prerequisite mutant survived"
+        end
+      end
+    end
+
     visible_secret = Marshal.load(Marshal.dump(tasks))
     secret_task = visible_secret.find do |task|
       task.key?("ansible.builtin.uri") || task.key?("community.docker.docker_compose_v2_exec")
@@ -891,6 +915,21 @@ if ARGV == ["--self-test"]
                  mutant_failures.any? { |failure| failure.include?("#{label} identity-swap fixture reached") }
             failures << "#{service} authenticated-ID binding mutant survived behavior fixtures"
           end
+        end
+
+        beszel_create_mutant = YAML.safe_load_file(
+          File.join(ROOT, "roles", "beszel", "tasks", "managed_users.yml"), aliases: false
+        )
+        create = beszel_create_mutant.find do |task|
+          task_name(task) == "Create absent Beszel managed users"
+        end
+        create.fetch("ansible.builtin.uri").fetch("body").delete("verified")
+        create_mutant_path = File.join(directory, "beszel_create.yml")
+        File.write(create_mutant_path, YAML.dump(beszel_create_mutant), mode: "w", perm: 0o600)
+        create_mutant_failures = []
+        exercise_beszel(create_mutant_failures, task_path: create_mutant_path)
+        unless create_mutant_failures.any? { |failure| failure.start_with?("Beszel behavior fixture failed:") }
+          failures << "beszel unverified-create mutant survived behavior fixtures"
         end
       end
     end

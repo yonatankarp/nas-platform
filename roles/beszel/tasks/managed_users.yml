@@ -147,6 +147,7 @@
       email: "{{ item.email }}"
       password: "{{ item.password }}"
       passwordConfirm: "{{ item.password }}"
+      verified: true
     status_code: [200]
   register: beszel_managed_user_creation
   when:

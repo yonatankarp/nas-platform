@@ -82,9 +82,11 @@ remain unchanged. Managed identities cannot duplicate the root administrator.
 #### beszel managed users
 
 `email` is the normalized login identity; `password` is its preserved clear
-credential; `role` is `user` or `admin`; and `verified` is a boolean. A managed
-identity cannot duplicate either the Beszel superuser or the existing primary
-application user.
+credential; `role` is `user` or `admin`; and `verified` must be `true`.
+Beszel 0.18.7 password authentication requires verified users, so an existing
+unverified identity fails with credential-migration guidance and is never
+auto-verified. A managed identity cannot duplicate either the Beszel superuser
+or the existing primary application user.
 
 #### dozzle managed users
 

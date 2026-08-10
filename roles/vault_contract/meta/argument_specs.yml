@@ -72,7 +72,7 @@ argument_specs:
               email: {type: str, required: true}
               password: {type: str, required: true}
               role: {type: str, required: true}
-              verified: {type: bool, required: true}
+              verified: {type: bool, choices: [true], required: true}
           dozzle:
             type: list
             elements: dict

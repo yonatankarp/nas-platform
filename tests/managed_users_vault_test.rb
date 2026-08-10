@@ -200,7 +200,8 @@ end
 managed.fetch("beszel", []).each do |entry|
   next unless entry.is_a?(Hash)
   check(failures, %w[user admin].include?(entry["role"]), "beszel role must be supported")
-  check(failures, [true, false].include?(entry["verified"]), "beszel verified must be boolean")
+  check(failures, entry["verified"] == true,
+        "beszel verified must be true for password verification")
 end
 
 managed.fetch("dozzle", []).each do |entry|
@@ -334,6 +335,9 @@ check(failures,
 check(failures,
       managed_options.dig("audiobookshelf", "options", "is_active", "choices") == [true],
       "audiobookshelf is_active argument must only accept true")
+check(failures,
+      managed_options.dig("beszel", "options", "verified", "choices") == [true],
+      "beszel verified argument must only accept true")
 
 tasks = File.file?(TASKS_PATH) ? File.read(TASKS_PATH) : ""
 parsed_tasks = File.file?(TASKS_PATH) ? YAML.safe_load_file(TASKS_PATH, aliases: false) : []
@@ -433,6 +437,10 @@ ENTRY_FIELDS.each do |service, fields|
   end
 end
 check(failures,
+      docs.include?("`verified` must be `true`") &&
+        docs.include?("Beszel 0.18.7 password authentication requires verified users"),
+      "secrets guide must document the Beszel verified authentication prerequisite")
+check(failures,
       docs.include?("validates bcrypt shape only") &&
         docs.include?("authenticates the plaintext password") &&
         docs.include?("compares the stored hash before mutation"),
@@ -448,6 +456,11 @@ expect_role_rejection(failures, "wrong nested field type", wrong_type, "wrong-ty
 disabled_audiobookshelf = duplicate(vault)
 disabled_audiobookshelf.dig("vault_managed_users", "audiobookshelf", 0)["is_active"] = false
 expect_role_rejection(failures, "disabled Audiobookshelf target", disabled_audiobookshelf,
+                      "example-reader-password")
+
+unverified_beszel = duplicate(vault)
+unverified_beszel.dig("vault_managed_users", "beszel", 0)["verified"] = false
+expect_role_rejection(failures, "unverified Beszel target", unverified_beszel,
                       "example-reader-password")
 
 disabled_jellyfin = duplicate(vault)
