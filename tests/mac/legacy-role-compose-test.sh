@@ -68,6 +68,9 @@ vault_paperless_django_secret_key: 'disposable-paperless-secret-key'
 vault_paperless_admin_username: 'administrator'
 vault_paperless_admin_password: 'disposable-paperless-admin-password'
 vault_paperless_admin_email: 'administrator@example.invalid'
+vault_immich_db_name: 'immich'
+vault_immich_db_username: 'immich'
+vault_immich_db_password: 'disposable-immich-db-password'
 YAML
 chmod 0600 "$vault_password" "$vault_plain"
 "$ansible_vault" encrypt --vault-password-file "$vault_password" \
@@ -110,6 +113,11 @@ cat > "$playbook" <<YAML
     paperless_ai_enabled: false
     paperless_ai_llm_endpoint: http://example.invalid:11434
     paperless_ai_llm_model: disposable
+    audiobookshelf_port: 33378
+    dozzle_port: 38080
+    immich_port: 32283
+    jellyfin_port: 38096
+    komga_port: 35600
   tasks:
     - name: Render the production ntfy role environment
       ansible.builtin.template:
@@ -133,6 +141,36 @@ cat > "$playbook" <<YAML
       ansible.builtin.template:
         src: "$repo_dir/roles/paperless_ngx/templates/env.j2"
         dest: "$render_root/paperless-ngx.env"
+        mode: "0600"
+      no_log: true
+    - name: Render the production Audiobookshelf role environment
+      ansible.builtin.template:
+        src: "$repo_dir/roles/audiobookshelf/templates/env.j2"
+        dest: "$render_root/audiobookshelf.env"
+        mode: "0600"
+      no_log: true
+    - name: Render the production Dozzle role environment
+      ansible.builtin.template:
+        src: "$repo_dir/roles/dozzle/templates/env.j2"
+        dest: "$render_root/dozzle.env"
+        mode: "0600"
+      no_log: true
+    - name: Render the production Immich role environment
+      ansible.builtin.template:
+        src: "$repo_dir/roles/immich/templates/env.j2"
+        dest: "$render_root/immich.env"
+        mode: "0600"
+      no_log: true
+    - name: Render the production Jellyfin role environment
+      ansible.builtin.template:
+        src: "$repo_dir/roles/jellyfin/templates/env.j2"
+        dest: "$render_root/jellyfin.env"
+        mode: "0600"
+      no_log: true
+    - name: Render the production Komga role environment
+      ansible.builtin.template:
+        src: "$repo_dir/roles/komga/templates/env.j2"
+        dest: "$render_root/komga.env"
         mode: "0600"
       no_log: true
 YAML
@@ -160,6 +198,7 @@ validate_config() {
   service=$1
   override=$2
   env_file=${3:-$render_root/$service.env}
+  canonical_env=${4:-$render_root/$service.env}
   base=$(base_for "$service")
   output=$temporary_root/$service.config.json
   diagnostic=$temporary_root/$service.config.error
@@ -168,15 +207,41 @@ validate_config() {
       -f "$base" -f "$override" config --format json > "$output" 2> "$diagnostic"; then
     return 1
   fi
-  ruby -rjson - "$service" "$env_file" "$output" >/dev/null 2>&1 <<'RUBY'
-service, environment_path, config_path = ARGV
-environment = File.readlines(environment_path, chomp: true).reject do |line|
-  line.empty? || line.start_with?("#")
-end.to_h do |line|
-  key, value = line.split("=", 2)
-  [key, value]
+  [ ! -s "$diagnostic" ] || return 1
+  ruby -rjson - "$service" "$env_file" "$canonical_env" "$output" >/dev/null 2>&1 <<'RUBY'
+service, environment_path, canonical_path, config_path = ARGV
+def read_environment(path)
+  File.readlines(path, chomp: true).reject do |line|
+    line.empty? || line.start_with?("#")
+  end.to_h do |line|
+    key, value = line.split("=", 2)
+    [key, value]
+  end
+end
+environment = read_environment(environment_path)
+canonical = read_environment(canonical_path)
+required = {
+  "audiobookshelf" => %w[TZ AUDIOBOOKSHELF_HOST_PORT],
+  "beszel" => %w[TZ BESZEL_AGENT_KEY BESZEL_AGENT_TOKEN BESZEL_APP_URL BESZEL_HOST_PORT BESZEL_SYSTEM_NAME],
+  "dozzle" => %w[TZ DOZZLE_HOST_PORT],
+  "immich" => %w[TZ IMMICH_DB_NAME IMMICH_DB_PASSWORD IMMICH_DB_USERNAME DB_DATABASE_NAME DB_PASSWORD DB_USERNAME IMMICH_HOST_PORT],
+  "jellyfin" => %w[TZ JELLYFIN_HOST_PORT],
+  "komga" => %w[TZ NAS_UID NAS_GID USER_ID GROUP_ID KOMGA_HOST_PORT],
+  "ntfy" => %w[TZ USER_ID GROUP_ID NAS_UID NAS_GID NTFY_BASE_URL NTFY_HOST_PORT NTFY_AUTH_USERS NTFY_AUTH_ACCESS NTFY_AUTH_TOKENS],
+  "paperless-ngx" => %w[TZ USER_ID GROUP_ID DB_NAME DB_USER DB_PASSWORD PAPERLESS_SECRET_KEY PAPERLESS_TASK_WORKERS PAPERLESS_THREADS_PER_WORKER PAPERLESS_AI_ENABLED PAPERLESS_AI_LLM_ENDPOINT PAPERLESS_AI_LLM_MODEL PAPERLESS_HOST_PORT],
+  "tinymediamanager" => %w[TZ USER_ID GROUP_ID PASSWORD TINYMEDIAMANAGER_PASSWORD TINYMEDIAMANAGER_WEB_HOST_PORT TINYMEDIAMANAGER_API_HOST_PORT]
+}.fetch(service)
+required.each do |key|
+  expected = canonical.fetch(key)
+  raise if expected.empty? || environment.fetch(key) != expected
 end
 services = JSON.parse(File.read(config_path)).fetch("services")
+raise if services.empty?
+services.each_value do |model|
+  raise if model.fetch("image", "").empty?
+  user = model["user"]
+  raise if user == ":" || (user && user.split(":", -1).any?(&:empty?))
+end
 if service == "ntfy"
   config = services.fetch("ntfy")
   container_environment = config.fetch("environment")
@@ -200,8 +265,24 @@ elsif service == "paperless-ngx"
   raise unless database.fetch("POSTGRES_PASSWORD") == environment.fetch("DB_PASSWORD")
   raise unless webserver.fetch("PAPERLESS_DBPASS") == environment.fetch("DB_PASSWORD")
   raise unless webserver.fetch("PAPERLESS_SECRET_KEY") == environment.fetch("PAPERLESS_SECRET_KEY")
+elsif service == "komga"
+  raise unless environment.fetch("USER_ID") == environment.fetch("NAS_UID")
+  raise unless environment.fetch("GROUP_ID") == environment.fetch("NAS_GID")
+  raise unless services.fetch("komga").fetch("user") == "#{environment.fetch('USER_ID')}:#{environment.fetch('GROUP_ID')}"
+elsif service == "immich"
+  raise unless environment.fetch("DB_DATABASE_NAME") == environment.fetch("IMMICH_DB_NAME")
+  raise unless environment.fetch("DB_USERNAME") == environment.fetch("IMMICH_DB_USERNAME")
+  raise unless environment.fetch("DB_PASSWORD") == environment.fetch("IMMICH_DB_PASSWORD")
+  server = services.fetch("immich-server").fetch("environment")
+  database = services.fetch("database").fetch("environment")
+  raise unless server.fetch("DB_DATABASE_NAME") == environment.fetch("DB_DATABASE_NAME")
+  raise unless server.fetch("DB_USERNAME") == environment.fetch("DB_USERNAME")
+  raise unless server.fetch("DB_PASSWORD") == environment.fetch("DB_PASSWORD")
+  raise unless database.fetch("POSTGRES_DB") == environment.fetch("DB_DATABASE_NAME")
+  raise unless database.fetch("POSTGRES_USER") == environment.fetch("DB_USERNAME")
+  raise unless database.fetch("POSTGRES_PASSWORD") == environment.fetch("DB_PASSWORD")
 else
-  raise
+  raise unless %w[audiobookshelf dozzle jellyfin].include?(service)
 end
 RUBY
 }
@@ -210,6 +291,11 @@ ntfy_override=$test_dir/legacy-overrides/ntfy.yml
 tmm_override=$test_dir/legacy-overrides/tinymediamanager.yml
 beszel_override=$test_dir/legacy-overrides/beszel.yml
 paperless_override=$test_dir/legacy-overrides/paperless-ngx.yml
+abs_override=$test_dir/legacy-overrides/audiobookshelf.yml
+dozzle_override=$test_dir/legacy-overrides/dozzle.yml
+immich_override=$test_dir/legacy-overrides/immich.yml
+jellyfin_override=$test_dir/legacy-overrides/jellyfin.yml
+komga_override=$test_dir/legacy-overrides/komga.yml
 adapter_failed=false
 if ! validate_config ntfy "$ntfy_override"; then
   printf '%s\n' 'ntfy legacy role adapter is incompatible' >&2
@@ -227,12 +313,33 @@ if ! validate_config paperless-ngx "$paperless_override"; then
   printf '%s\n' 'Paperless legacy role prerequisites are incompatible' >&2
   adapter_failed=true
 fi
+if ! validate_config audiobookshelf "$abs_override"; then
+  printf '%s\n' 'Audiobookshelf legacy role prerequisites are incompatible' >&2
+  adapter_failed=true
+fi
+if ! validate_config dozzle "$dozzle_override"; then
+  printf '%s\n' 'Dozzle legacy role prerequisites are incompatible' >&2
+  adapter_failed=true
+fi
+if ! validate_config immich "$immich_override"; then
+  printf '%s\n' 'Immich legacy role prerequisites are incompatible' >&2
+  adapter_failed=true
+fi
+if ! validate_config jellyfin "$jellyfin_override"; then
+  printf '%s\n' 'Jellyfin legacy role prerequisites are incompatible' >&2
+  adapter_failed=true
+fi
+if ! validate_config komga "$komga_override"; then
+  printf '%s\n' 'Komga legacy role prerequisites are incompatible' >&2
+  adapter_failed=true
+fi
 [ "$adapter_failed" = false ] || exit 1
 
-ntfy_no_identity=$temporary_root/ntfy-no-identity.yml
-sed '/^[[:space:]]*user:/d' "$ntfy_override" > "$ntfy_no_identity"
-if validate_config ntfy "$ntfy_no_identity"; then
-  fail 'ntfy adapter accepted removal of the role-rendered identity mapping'
+ntfy_mismatched_identity=$temporary_root/ntfy-mismatched-identity.yml
+sed 's/user: "${NAS_UID:?}:${NAS_GID:?}"/user: "999:999"/' \
+  "$ntfy_override" > "$ntfy_mismatched_identity"
+if validate_config ntfy "$ntfy_mismatched_identity"; then
+  fail 'ntfy adapter accepted a mismatched role-rendered identity mapping'
 fi
 ntfy_mismatched_auth=$temporary_root/ntfy-mismatched-auth.yml
 sed 's/NTFY_AUTH_TOKENS:.*$/NTFY_AUTH_TOKENS: "${NTFY_AUTH_ACCESS:?}"/' \
@@ -261,6 +368,71 @@ sed '/^DB_PASSWORD=/d' "$render_root/paperless-ngx.env" > "$paperless_no_databas
 if validate_config paperless-ngx "$paperless_override" "$paperless_no_database_password"; then
   fail 'Paperless prerequisites accepted a missing rendered role database password'
 fi
+
+override_for() {
+  case $1 in
+    audiobookshelf) printf '%s\n' "$abs_override" ;;
+    beszel) printf '%s\n' "$beszel_override" ;;
+    dozzle) printf '%s\n' "$dozzle_override" ;;
+    immich) printf '%s\n' "$immich_override" ;;
+    jellyfin) printf '%s\n' "$jellyfin_override" ;;
+    komga) printf '%s\n' "$komga_override" ;;
+    ntfy) printf '%s\n' "$ntfy_override" ;;
+    paperless-ngx) printf '%s\n' "$paperless_override" ;;
+    tinymediamanager) printf '%s\n' "$tmm_override" ;;
+    *) return 1 ;;
+  esac
+}
+
+required_for() {
+  case $1 in
+    audiobookshelf) printf '%s\n' TZ AUDIOBOOKSHELF_HOST_PORT ;;
+    beszel) printf '%s\n' TZ BESZEL_AGENT_KEY BESZEL_AGENT_TOKEN BESZEL_APP_URL BESZEL_HOST_PORT BESZEL_SYSTEM_NAME ;;
+    dozzle) printf '%s\n' TZ DOZZLE_HOST_PORT ;;
+    immich) printf '%s\n' TZ IMMICH_DB_NAME IMMICH_DB_PASSWORD IMMICH_DB_USERNAME DB_DATABASE_NAME DB_PASSWORD DB_USERNAME IMMICH_HOST_PORT ;;
+    jellyfin) printf '%s\n' TZ JELLYFIN_HOST_PORT ;;
+    komga) printf '%s\n' TZ NAS_UID NAS_GID USER_ID GROUP_ID KOMGA_HOST_PORT ;;
+    ntfy) printf '%s\n' TZ USER_ID GROUP_ID NAS_UID NAS_GID NTFY_BASE_URL NTFY_HOST_PORT NTFY_AUTH_USERS NTFY_AUTH_ACCESS NTFY_AUTH_TOKENS ;;
+    paperless-ngx) printf '%s\n' TZ USER_ID GROUP_ID DB_NAME DB_USER DB_PASSWORD PAPERLESS_SECRET_KEY PAPERLESS_TASK_WORKERS PAPERLESS_THREADS_PER_WORKER PAPERLESS_AI_ENABLED PAPERLESS_AI_LLM_ENDPOINT PAPERLESS_AI_LLM_MODEL PAPERLESS_HOST_PORT ;;
+    tinymediamanager) printf '%s\n' TZ USER_ID GROUP_ID PASSWORD TINYMEDIAMANAGER_PASSWORD TINYMEDIAMANAGER_WEB_HOST_PORT TINYMEDIAMANAGER_API_HOST_PORT ;;
+    *) return 1 ;;
+  esac
+}
+
+mutate_environment() {
+  source=$1
+  destination=$2
+  key=$3
+  mode=$4
+  ruby - "$source" "$destination" "$key" "$mode" <<'RUBY'
+source, destination, key, mode = ARGV
+found = false
+lines = File.readlines(source).filter_map do |line|
+  unless line.start_with?("#{key}=")
+    next line
+  end
+  found = true
+  mode == "remove" ? nil : "#{key}=mismatched-disposable-value\n"
+end
+raise unless found
+File.write(destination, lines.join, mode: "w", perm: 0o600)
+RUBY
+}
+
+for mutation_service in audiobookshelf beszel dozzle immich jellyfin komga ntfy paperless-ngx tinymediamanager; do
+  mutation_override=$(override_for "$mutation_service")
+  canonical_environment=$render_root/$mutation_service.env
+  required_for "$mutation_service" | while IFS= read -r required_key; do
+    for mutation_mode in remove mismatch; do
+      mutated_environment=$temporary_root/$mutation_service-$required_key-$mutation_mode.env
+      mutate_environment "$canonical_environment" "$mutated_environment" "$required_key" "$mutation_mode"
+      if validate_config "$mutation_service" "$mutation_override" "$mutated_environment" \
+          "$canonical_environment"; then
+        fail "$mutation_service accepted $mutation_mode mutation of $required_key"
+      fi
+    done
+  done
+done
 
 if grep -R -F 'disposable-tmm-password' "$temporary_root" \
     --exclude='*.env' --exclude='*.enc' --exclude='*.json' --exclude='render.yml' >/dev/null 2>&1; then
