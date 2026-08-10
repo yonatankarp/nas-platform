@@ -14,6 +14,14 @@ OVERRIDE_DIR = TEST_DIR.join("legacy-overrides")
 MANIFEST = YAML.safe_load_file(REPO_DIR.join("services/manifest.yml"), aliases: false)
 SERVICES = MANIFEST.fetch("services").to_h { |entry| [entry.fetch("name"), entry] }.freeze
 
+COMMAND_ENVIRONMENT = {
+  "HOME" => ENV.fetch("HOME"),
+  "LANG" => "C",
+  "LC_ALL" => "C",
+  "PATH" => ENV.fetch("PATH"),
+  "TMPDIR" => ENV.fetch("TMPDIR", "/tmp")
+}.freeze
+
 PORTS = {
   "audiobookshelf" => { "audiobookshelf" => [["33378", "80"]] },
   "beszel" => { "hub" => [["38090", "8090"]] },
@@ -42,8 +50,10 @@ ENVIRONMENT = {
   "BESZEL_HOST_PORT" => "38090",
   "BESZEL_SYSTEM_NAME" => "disposable-test",
   "DB_NAME" => "paperless",
+  "DB_DATABASE_NAME" => "immich_test",
   "DB_PASSWORD" => "test-password",
   "DB_USER" => "paperless",
+  "DB_USERNAME" => "immich_test_user",
   "DOZZLE_HOST_PORT" => "38080",
   "GROUP_ID" => "100",
   "IMMICH_HOST_PORT" => "32283",
@@ -93,14 +103,60 @@ EXPECTED_MOUNTS = {
   "tinymediamanager" => { "tinymediamanager" => ["/data", "/media/Movies", "/media/Series"] }
 }.freeze
 
+ALLOWED_OVERRIDE_KEYS = {
+  "audiobookshelf" => { "audiobookshelf" => %w[container_name ports volumes] },
+  "beszel" => {
+    "hub" => %w[container_name ports volumes],
+    "agent" => %w[cap_add container_name devices environment network_mode volumes],
+    "socket-proxy" => %w[container_name ports]
+  },
+  "dozzle" => {
+    "dozzle" => %w[container_name ports volumes],
+    "socket-proxy" => %w[container_name ports]
+  },
+  "immich" => {
+    "immich-server" => %w[container_name devices ports volumes],
+    "immich-machine-learning" => %w[container_name volumes],
+    "redis" => %w[container_name],
+    "database" => %w[container_name volumes]
+  },
+  "jellyfin" => { "jellyfin" => %w[container_name devices group_add ports volumes] },
+  "komga" => { "komga" => %w[container_name ports volumes] },
+  "ntfy" => { "ntfy" => %w[container_name ports volumes] },
+  "paperless-ngx" => {
+    "broker" => %w[container_name ports volumes],
+    "db" => %w[container_name ports volumes],
+    "webserver" => %w[container_name environment network_mode ports volumes],
+    "gotenberg" => %w[container_name ports],
+    "tika" => %w[container_name ports]
+  },
+  "tinymediamanager" => {
+    "tinymediamanager" => %w[container_name network_mode ports volumes]
+  }
+}.freeze
+
+ALLOWED_ENVIRONMENT_KEYS = {
+  "beszel" => {
+    "agent" => %w[DOCKER_HOST EXCLUDE_SMART HUB_URL INTEL_GPU_DEVICE]
+  },
+  "paperless-ngx" => {
+    "webserver" => %w[
+      PAPERLESS_DBHOST PAPERLESS_REDIS PAPERLESS_TIKA_ENDPOINT
+      PAPERLESS_TIKA_GOTENBERG_ENDPOINT
+    ]
+  }
+}.freeze
+
 def fail_contract(message)
   warn "Legacy override contract failed: #{message}"
   exit 1
 end
 
 def capture!(*command, env: {})
-  stdout, stderr, status = Open3.capture3(env, *command)
+  command_environment = COMMAND_ENVIRONMENT.merge(env)
+  stdout, stderr, status = Open3.capture3(command_environment, *command, unsetenv_others: true)
   fail_contract("#{command.join(' ')} failed: #{stderr.strip}") unless status.success?
+  fail_contract("#{command.join(' ')} emitted a warning: #{stderr.strip}") unless stderr.empty?
   stdout
 end
 
@@ -169,6 +225,21 @@ Dir.mktmpdir("nas-platform-legacy-overrides.") do |temporary|
     override_text = override.read
     override_document = Psych.parse(override_text)
     fail_contract("#{override.basename} overrides an image") if yaml_key?(override_document, "image")
+    fail_contract("#{override.basename} has unexpected top-level keys") unless
+      yaml_mapping_keys(override_document.root) == ["services"]
+    override_services = yaml_mapping_value(override_document.root, "services")
+    expected_service_overrides = ALLOWED_OVERRIDE_KEYS.fetch(name)
+    fail_contract("#{override.basename} has an unexpected service override") unless
+      yaml_mapping_keys(override_services).sort == expected_service_overrides.keys.sort
+    expected_service_overrides.each do |service_name, allowed_keys|
+      service_override = yaml_mapping_value(override_services, service_name)
+      fail_contract("#{name}/#{service_name} changes unauthorized runtime semantics") unless
+        yaml_mapping_keys(service_override).sort == allowed_keys.sort
+      environment_override = yaml_mapping_value(service_override, "environment")
+      allowed_environment = ALLOWED_ENVIRONMENT_KEYS.dig(name, service_name) || []
+      fail_contract("#{name}/#{service_name} changes unauthorized environment semantics") unless
+        yaml_mapping_keys(environment_override).sort == allowed_environment.sort
+    end
     active_override_text = override_text.lines.reject { |line| line.lstrip.start_with?("#") }.join
     fail_contract("#{override.basename} contains a production NAS path") if
       active_override_text.match?(%r{(?:^|\s)/(?:volume[0-9]+|dev/dri)(?:/|\b)})
@@ -203,16 +274,29 @@ Dir.mktmpdir("nas-platform-legacy-overrides.") do |temporary|
     fail_contract("#{name} project namespaces collide") if first.fetch("name") == second.fetch("name")
     fail_contract("#{name} changed the pinned service set") unless
       first.fetch("services").keys.sort == base.fetch("services").keys.sort
+    default_network = first.fetch("networks")
+    fail_contract("#{name} attaches to an external or additional network") unless
+      default_network.keys == ["default"] &&
+      default_network.dig("default", "name") == "#{first.fetch('name')}_default" &&
+      !default_network.fetch("default").fetch("external", false)
 
     first.fetch("services").each do |service_name, service|
       base_service = base.fetch("services").fetch(service_name)
       fail_contract("#{name}/#{service_name} changed its pinned image") unless
         service.fetch("image") == base_service.fetch("image")
       fail_contract("#{name}/#{service_name} retains a fixed container_name") if service.key?("container_name")
-      fail_contract("#{name}/#{service_name} uses production host networking") if service["network_mode"] == "host"
+      fail_contract("#{name}/#{service_name} overrides the default Compose network") if service.key?("network_mode")
+      fail_contract("#{name}/#{service_name} enables privileged mode") if service.fetch("privileged", false)
+      fail_contract("#{name}/#{service_name} retains an unexpected capability") unless
+        service.fetch("cap_add", []).empty?
       fail_contract("#{name}/#{service_name} retains a NAS device") unless service.fetch("devices", []).empty?
+      fail_contract("#{name}/#{service_name} retains an unexpected supplemental group") unless
+        service.fetch("group_add", []).empty?
+      fail_contract("#{name}/#{service_name} leaves the private default network") unless
+        service.fetch("networks", {}).keys == ["default"]
 
       mounts = bind_mounts(service)
+      base_mounts_by_target = bind_mounts(base_service).to_h { |mount| [mount.fetch("target"), mount] }
       expected_targets = EXPECTED_MOUNTS.fetch(name).fetch(service_name, []).sort
       fail_contract("#{name}/#{service_name} changed or omitted a container-side bind target") unless
         mounts.map { |mount| mount.fetch("target") }.sort == expected_targets
@@ -220,6 +304,9 @@ Dir.mktmpdir("nas-platform-legacy-overrides.") do |temporary|
       mounts.each do |mount|
         source = mount.fetch("source")
         target = mount.fetch("target")
+        base_mount = base_mounts_by_target.fetch(target)
+        fail_contract("#{name}/#{service_name} changes bind access semantics for #{target}") unless
+          mount.fetch("read_only", false) == base_mount.fetch("read_only", false)
         if target == "/var/run/docker.sock"
           fail_contract("#{name}/#{service_name} has unauthorized Docker socket access") unless
             %w[beszel dozzle].include?(name) && service_name == "socket-proxy" &&
@@ -270,6 +357,17 @@ Dir.mktmpdir("nas-platform-legacy-overrides.") do |temporary|
 
     if name == "immich"
       server = first.fetch("services").fetch("immich-server")
+      database = first.fetch("services").fetch("database")
+      expected_identity = {
+        "DB_DATABASE_NAME" => ENVIRONMENT.fetch("DB_DATABASE_NAME"),
+        "DB_USERNAME" => ENVIRONMENT.fetch("DB_USERNAME")
+      }
+      fail_contract("Immich server rendered an empty or mismatched database identity") unless
+        expected_identity.values.none?(&:empty?) &&
+        server.fetch("environment").slice(*expected_identity.keys) == expected_identity
+      fail_contract("Immich database identity differs from the server") unless
+        database.dig("environment", "POSTGRES_DB") == expected_identity.fetch("DB_DATABASE_NAME") &&
+        database.dig("environment", "POSTGRES_USER") == expected_identity.fetch("DB_USERNAME")
       fail_contract("Immich dependency DNS contract changed") unless
         server.fetch("depends_on").keys.sort == %w[database redis]
       fail_contract("Immich dependencies are not on the default Compose network") unless
@@ -287,15 +385,6 @@ Dir.mktmpdir("nas-platform-legacy-overrides.") do |temporary|
       "PAPERLESS_TIKA_ENDPOINT" => "http://tika:9998",
       "PAPERLESS_TIKA_GOTENBERG_ENDPOINT" => "http://gotenberg:3000"
     }
-    override_services = yaml_mapping_value(override_document.root, "services")
-    allowed_environment_overrides = first.fetch("services").keys.to_h { |service_name| [service_name, []] }
-    allowed_environment_overrides.fetch("webserver").concat(expected_addresses.keys).sort!
-    allowed_environment_overrides.each do |service_name, allowed_keys|
-      service_override = yaml_mapping_value(override_services, service_name)
-      environment_override = yaml_mapping_value(service_override, "environment")
-      actual_keys = yaml_mapping_keys(environment_override).sort
-      fail_contract("Paperless #{service_name} overrides non-address environment") unless actual_keys == allowed_keys
-    end
     base_addresses = base.dig("services", "webserver", "environment").slice(*expected_addresses.keys)
     fail_contract("Paperless override does not exclusively change network addresses") unless
       base_addresses.keys.sort == expected_addresses.keys.sort &&
