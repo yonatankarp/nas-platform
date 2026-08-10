@@ -234,6 +234,12 @@ Dir.mktmpdir("adoption-probes-test-") do |root|
     "PLATFORM_NTFY_PORT" => port.to_s, "PLATFORM_PAPERLESS_PORT" => port.to_s,
     "PLATFORM_TINYMEDIAMANAGER_API_PORT" => port.to_s
   }
+  env["TMPDIR"] = ["/private/tmp", "/tmp"].filter_map do |candidate|
+    next unless File.exist?(candidate)
+    canonical = File.realpath(candidate)
+    stat = File.stat(canonical)
+    canonical if stat.uid.zero? && (stat.mode & 0o7777) == 0o1777
+  end.uniq.fetch(0)
   SERVICES.each do |service|
     stdout, stderr, status = Open3.capture3(env, File.join(PROBES, "#{service}.sh"))
     failures << "#{service} real probe failed: #{stderr}" unless status.success?

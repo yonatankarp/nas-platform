@@ -300,6 +300,15 @@ def component_binding(stat, exact:)
   [stat.dev, stat.ino, stat.mode, stat.uid]
 end
 
+def safe_capture_directory?(stat, trusted:)
+  return false unless stat.directory?
+  return stat.uid == Process.uid && (stat.mode & 0o022).zero? if trusted
+
+  non_writable = [0, Process.uid].include?(stat.uid) && (stat.mode & 0o022).zero?
+  root_sticky_tmp = stat.uid.zero? && (stat.mode & 0o7777) == 0o1777
+  non_writable || root_sticky_tmp
+end
+
 def secure_file_handle(path, trusted_root:)
   absolute = File.expand_path(path)
   root = File.expand_path(trusted_root)
@@ -313,12 +322,8 @@ def secure_file_handle(path, trusted_root:)
   components[0...-1].each_with_index do |component, index|
     child = open_component(current, component)
     stat = child.stat
-    raise "capture input parent is unsafe" unless stat.directory? && [0, Process.uid].include?(stat.uid) &&
-                                                   (stat.mode & 0o022).zero?
-    if index + 1 == root_components.length
-      raise "capture input root is unsafe" unless stat.uid == Process.uid
-    end
     exact = index + 1 >= root_components.length
+    raise "capture input parent is unsafe" unless safe_capture_directory?(stat, trusted: exact)
     bindings << [current, component, component_binding(stat, exact: exact), exact]
     opened << child
     current = child

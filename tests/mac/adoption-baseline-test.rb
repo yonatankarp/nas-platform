@@ -146,6 +146,31 @@ casefold_contract = recorder_prefix + <<~'RUBY'
 RUBY
 _fold_output, _fold_diagnostic, fold_status = Open3.capture3(RbConfig.ruby, "-e", casefold_contract)
 failures << "identity normalization does not use full case folding" unless fold_status.success?
+ancestor_policy_contract = recorder_prefix + <<~'RUBY'
+  stat = Struct.new(:uid, :mode) do
+    def directory? = true
+  end
+  directory = 0o040000
+  cases = [
+    [stat.new(0, directory | 0o1777), false, true],
+    [stat.new(0, directory | 0o0777), false, false],
+    [stat.new(Process.uid, directory | 0o1777), false, false],
+    [stat.new(0, directory | 0o1777), true, false],
+    [stat.new(Process.uid, directory | 0o0755), true, true]
+  ]
+  exit(cases.all? { |entry, trusted, expected| safe_capture_directory?(entry, trusted: trusted) == expected } ? 0 : 1)
+RUBY
+_policy_output, _policy_diagnostic, policy_status = Open3.capture3(
+  RbConfig.ruby, "-e", ancestor_policy_contract
+)
+failures << "sticky temporary ancestor policy differs" unless policy_status.success?
+sticky_tmp = ["/private/tmp", "/tmp"].filter_map do |candidate|
+  next unless File.exist?(candidate)
+  canonical = File.realpath(candidate)
+  stat = File.stat(canonical)
+  canonical if stat.uid.zero? && (stat.mode & 0o7777) == 0o1777
+end.uniq.first
+failures << "standard root-owned sticky temporary directory is unavailable" unless sticky_tmp
 Dir.mktmpdir("beszel-probe-test-") do |probe_root|
   probe_root = File.realpath(probe_root)
   FileUtils.mkdir_p("#{probe_root}/bin")
@@ -185,6 +210,7 @@ Dir.mktmpdir("beszel-probe-test-") do |probe_root|
   RUBY
   probe_env = {
     "PATH" => "#{probe_root}/bin:#{ENV.fetch('PATH')}",
+    "TMPDIR" => sticky_tmp,
     "PLATFORM_MAC_VAULT_FILE" => "#{probe_root}/vault.yml",
     "PLATFORM_MAC_VAULT_PASSWORD_FILE" => "#{probe_root}/vault-password",
     "PLATFORM_MAC_SANDBOX" => probe_root,
@@ -375,6 +401,35 @@ Dir.mktmpdir("adoption-baseline-test-") do |root|
 
   original = File.binread(output)
   original_mode = File.stat(output).mode & 0o777
+  Dir.mktmpdir("adoption-sticky-manifest-", sticky_tmp) do |sticky_root|
+    sticky_root = File.realpath(sticky_root)
+    File.chmod(0o700, sticky_root)
+    sticky_manifest = File.join(sticky_root, "manifest.json")
+    FileUtils.cp("#{root}/manifest.json", sticky_manifest)
+    _out, _diagnostic, accepted = run_recorder(
+      root, output, {}, [], manifest: sticky_manifest
+    )
+    failures << "root-owned sticky temporary ancestor was rejected" unless accepted.success?
+    failures << "sticky temporary capture changed baseline mode" unless
+      (File.stat(output).mode & 0o777) == original_mode
+  end
+  File.binwrite(output, original)
+  File.chmod(original_mode, output)
+  [0o1777, 0o0777].each do |unsafe_mode|
+    unsafe_parent = "#{root}/unsafe-ancestor-#{unsafe_mode.to_s(8)}"
+    manifest_parent = "#{unsafe_parent}/owned"
+    FileUtils.mkdir_p(manifest_parent)
+    File.chmod(unsafe_mode, unsafe_parent)
+    File.chmod(0o700, manifest_parent)
+    unsafe_manifest = "#{manifest_parent}/manifest.json"
+    FileUtils.cp("#{root}/manifest.json", unsafe_manifest)
+    _out, _diagnostic, rejected = run_recorder(
+      root, output, {}, [], manifest: unsafe_manifest
+    )
+    failures << "user-owned writable ancestor #{unsafe_mode.to_s(8)} was accepted" if rejected.success?
+    failures << "user-owned writable ancestor replaced baseline" unless File.binread(output) == original
+    File.chmod(0o700, unsafe_parent)
+  end
   parent_link_cases = {
     "manifest" => [:manifest, "manifest-parent", "manifest.json"],
     "override" => [:override_root, "overrides", nil],
