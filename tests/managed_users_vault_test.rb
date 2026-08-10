@@ -174,8 +174,27 @@ managed.fetch("audiobookshelf", []).each do |entry|
         "audiobookshelf type must be supported")
   check(failures, [true, false].include?(entry["is_active"]),
         "audiobookshelf is_active must be boolean")
-  check(failures, entry["permissions"].is_a?(Hash),
-        "audiobookshelf permissions must be a mapping")
+  permissions = entry["permissions"]
+  check(failures,
+        permissions.is_a?(Hash) && permissions.keys.sort ==
+          %w[flags itemTagsSelected librariesAccessible].sort,
+        "audiobookshelf permissions must use the pinned nested contract")
+  next unless permissions.is_a?(Hash)
+
+  flags = permissions["flags"]
+  supported_flags = %w[download update delete upload createEreader accessAllLibraries
+                       accessAllTags accessExplicitContent selectedTagsNotAccessible]
+  check(failures,
+        flags.is_a?(Hash) && (flags.keys - supported_flags).empty? &&
+          flags.values.all? { |value| [true, false].include?(value) },
+        "audiobookshelf permission flags must be supported booleans")
+  %w[librariesAccessible itemTagsSelected].each do |field|
+    values = permissions[field]
+    check(failures,
+          values.is_a?(Array) && values.all? { |value| value.is_a?(String) && !value.empty? } &&
+            values.uniq.length == values.length,
+          "audiobookshelf #{field} must contain unique non-empty strings")
+  end
 end
 
 managed.fetch("beszel", []).each do |entry|
@@ -206,7 +225,7 @@ end
 managed.fetch("komga", []).each do |entry|
   next unless entry.is_a?(Hash)
   roles = entry["roles"]
-  supported = %w[ADMIN FILE_DOWNLOAD PAGE_STREAMING KOBO_SYNC OPDS]
+  supported = %w[ADMIN FILE_DOWNLOAD PAGE_STREAMING KOBO_SYNC KOREADER_SYNC]
   check(failures, roles.is_a?(Array) && !roles.empty? && (roles - supported).empty?,
         "komga roles must be supported")
 end
@@ -300,6 +319,16 @@ check(failures,
       access_options.is_a?(Hash) && access_options.keys.sort == %w[permission topic] &&
         access_options.values.all? { |option| option == { "type" => "str", "required" => true } },
       "ntfy access argument fields must be required strings")
+abs_permissions_spec = managed_options.is_a?(Hash) ?
+  managed_options.dig("audiobookshelf", "options", "permissions") : nil
+check(failures,
+      abs_permissions_spec.is_a?(Hash) &&
+        abs_permissions_spec.dig("options", "flags", "type") == "dict" &&
+        abs_permissions_spec.dig("options", "librariesAccessible") ==
+          { "type" => "list", "elements" => "str", "required" => true } &&
+        abs_permissions_spec.dig("options", "itemTagsSelected") ==
+          { "type" => "list", "elements" => "str", "required" => true },
+      "audiobookshelf nested permissions argument contract differs")
 
 tasks = File.file?(TASKS_PATH) ? File.read(TASKS_PATH) : ""
 parsed_tasks = File.file?(TASKS_PATH) ? YAML.safe_load_file(TASKS_PATH, aliases: false) : []
@@ -336,7 +365,7 @@ required_validation_fragments = [
   "item.password_hash is match",
   "item.type in ['admin', 'user', 'guest']",
   "item.role in ['user', 'admin']",
-  "difference(['ADMIN', 'FILE_DOWNLOAD', 'PAGE_STREAMING', 'KOBO_SYNC', 'OPDS'])"
+  "difference(['ADMIN', 'FILE_DOWNLOAD', 'PAGE_STREAMING', 'KOBO_SYNC', 'KOREADER_SYNC'])"
 ]
 required_validation_fragments.each do |fragment|
   check(failures, tasks.include?(fragment),
@@ -410,6 +439,22 @@ check(failures, valid_status.success?, "vault example must pass actual role eval
 wrong_type = duplicate(vault)
 wrong_type.dig("vault_managed_users", "audiobookshelf", 0)["permissions"] = ["wrong-type-sentinel"]
 expect_role_rejection(failures, "wrong nested field type", wrong_type, "wrong-type-sentinel")
+
+unsupported_abs_permission = duplicate(vault)
+unsupported_abs_permission.dig("vault_managed_users", "audiobookshelf", 0)["permissions"] = {
+  "flags" => { "libraries" => true }, "librariesAccessible" => [], "itemTagsSelected" => []
+}
+expect_role_rejection(failures, "unsupported Audiobookshelf permission", unsupported_abs_permission,
+                      "libraries")
+
+invalid_komga_role = duplicate(vault)
+invalid_komga_role.dig("vault_managed_users", "komga", 0)["roles"] = ["OPDS"]
+expect_role_rejection(failures, "unsupported Komga OPDS role", invalid_komga_role, "OPDS")
+
+koreader_komga_role = duplicate(vault)
+koreader_komga_role.dig("vault_managed_users", "komga", 0)["roles"] = ["KOREADER_SYNC"]
+_stdout, _stderr, koreader_status = validate_with_role(koreader_komga_role)
+check(failures, koreader_status.success?, "Komga KOREADER_SYNC must pass actual role evaluation")
 
 integer_username = duplicate(vault)
 integer_username.dig("vault_managed_users", "audiobookshelf", 0)["username"] = 424_242

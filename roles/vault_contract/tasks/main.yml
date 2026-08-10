@@ -30,6 +30,29 @@
       - item.type in ['admin', 'user', 'guest']
       - item.is_active is boolean
       - item.permissions is mapping
+      - >-
+        item.permissions.keys() | list | sort ==
+        ['flags', 'librariesAccessible', 'itemTagsSelected'] | sort
+      - item.permissions.flags is mapping
+      - item.permissions.flags.keys() | reject('string') | list | length == 0
+      - >-
+        item.permissions.flags.keys() |
+        difference(['download', 'update', 'delete', 'upload', 'createEreader',
+                    'accessAllLibraries', 'accessAllTags', 'accessExplicitContent',
+                    'selectedTagsNotAccessible']) | length == 0
+      - item.permissions.flags.values() | reject('boolean') | list | length == 0
+      - item.permissions.librariesAccessible | type_debug == 'list'
+      - item.permissions.librariesAccessible | reject('string') | list | length == 0
+      - item.permissions.librariesAccessible | select('equalto', '') | list | length == 0
+      - >-
+        item.permissions.librariesAccessible | unique | length ==
+        item.permissions.librariesAccessible | length
+      - item.permissions.itemTagsSelected | type_debug == 'list'
+      - item.permissions.itemTagsSelected | reject('string') | list | length == 0
+      - item.permissions.itemTagsSelected | select('equalto', '') | list | length == 0
+      - >-
+        item.permissions.itemTagsSelected | unique | length ==
+        item.permissions.itemTagsSelected | length
     fail_msg: audiobookshelf managed user has invalid field; values are redacted.
   loop: "{{ vault_managed_users.audiobookshelf }}"
   loop_control:
@@ -104,6 +127,9 @@
       - item.password | length > 0
       - item.policy is mapping
       - item.policy.keys() | reject('string') | list | length == 0
+      - item.policy | length > 0
+      - item.policy.keys() | difference(supported_jellyfin_policy_fields) | length == 0
+      - item.policy.values() | reject('boolean') | list | length == 0
       - >-
         item.policy.keys() | map('lower') |
         intersect(forbidden_jellyfin_policy_fields) | length == 0
@@ -112,6 +138,32 @@
   loop_control:
     label: jellyfin
   vars:
+    supported_jellyfin_policy_fields:
+      - IsAdministrator
+      - IsHidden
+      - EnableCollectionManagement
+      - EnableSubtitleManagement
+      - EnableLyricManagement
+      - IsDisabled
+      - EnableUserPreferenceAccess
+      - EnableRemoteControlOfOtherUsers
+      - EnableSharedDeviceControl
+      - EnableRemoteAccess
+      - EnableLiveTvManagement
+      - EnableLiveTvAccess
+      - EnableMediaPlayback
+      - EnableAudioPlaybackTranscoding
+      - EnableVideoPlaybackTranscoding
+      - EnablePlaybackRemuxing
+      - ForceRemoteSourceTranscoding
+      - EnableContentDeletion
+      - EnableContentDownloading
+      - EnableSyncTranscoding
+      - EnableMediaConversion
+      - EnableAllDevices
+      - EnableAllChannels
+      - EnableAllFolders
+      - EnablePublicSharing
     forbidden_jellyfin_policy_fields:
       - password
       - passwordhash
@@ -137,7 +189,7 @@
       - item.roles | type_debug == 'list'
       - item.roles | reject('string') | list | length == 0
       - item.roles | length > 0
-      - item.roles | difference(['ADMIN', 'FILE_DOWNLOAD', 'PAGE_STREAMING', 'KOBO_SYNC', 'OPDS']) | length == 0
+      - item.roles | difference(['ADMIN', 'FILE_DOWNLOAD', 'PAGE_STREAMING', 'KOBO_SYNC', 'KOREADER_SYNC']) | length == 0
       - item.roles | unique | length == item.roles | length
     fail_msg: komga managed user has invalid field; values are redacted.
   loop: "{{ vault_managed_users.komga }}"

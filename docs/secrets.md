@@ -71,8 +71,10 @@ interface. A mismatch stops reconciliation rather than rotating credentials.
 
 `username` is the login identity; `password` is its preserved clear credential;
 `type` is `admin`, `user`, or `guest`; `is_active` is a boolean; and `permissions`
-is the native Audiobookshelf permissions mapping, including explicit library
-access. Managed identities cannot duplicate the root administrator.
+contains `flags`, `librariesAccessible`, and `itemTagsSelected`. `flags` is an
+exact subset of the pinned boolean permission fields; the two lists map to the
+top-level fields returned by Audiobookshelf 2.36.0. Undeclared expanded flags
+remain unchanged. Managed identities cannot duplicate the root administrator.
 
 #### beszel managed users
 
@@ -103,15 +105,18 @@ not part of this allowlist contract.
 #### jellyfin managed users
 
 `username` is the login identity; `password` is its preserved clear credential;
-and `policy` is the exact native Jellyfin policy mapping to reconcile without a
-password field. Keep administrative access disabled unless a separately
-reviewed policy explicitly requires it.
+and `policy` is an exact mapping of declared, supported boolean Jellyfin policy
+fields. Reconciliation merges those fields into the complete policy returned by
+Jellyfin so required provider IDs and every undeclared field remain unchanged.
+Password, provider, credential, token, and server-maintained fields are not part
+of the vault policy contract. Keep administrative access disabled unless a
+separately reviewed policy explicitly requires it.
 
 #### komga managed users
 
 `email` is the normalized login identity; `password` is its preserved clear
 credential; and `roles` is a non-empty unique list drawn from `ADMIN`,
-`FILE_DOWNLOAD`, `PAGE_STREAMING`, `KOBO_SYNC`, and `OPDS`. The administrator
+`FILE_DOWNLOAD`, `PAGE_STREAMING`, `KOBO_SYNC`, and `KOREADER_SYNC`. The administrator
 identity remains under the separate primary credential contract.
 
 #### ntfy managed users

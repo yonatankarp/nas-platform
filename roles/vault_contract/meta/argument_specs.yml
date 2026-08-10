@@ -57,7 +57,13 @@ argument_specs:
               password: {type: str, required: true}
               type: {type: str, required: true}
               is_active: {type: bool, required: true}
-              permissions: {type: dict, required: true}
+              permissions:
+                type: dict
+                required: true
+                options:
+                  flags: {type: dict, required: true}
+                  librariesAccessible: {type: list, elements: str, required: true}
+                  itemTagsSelected: {type: list, elements: str, required: true}
           beszel:
             type: list
             elements: dict

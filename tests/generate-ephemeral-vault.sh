@@ -192,8 +192,10 @@ vault_managed_users:
       type: user
       is_active: true
       permissions:
-        accessAllLibraries: false
-        libraries: []
+        flags:
+          accessAllLibraries: false
+        librariesAccessible: []
+        itemTagsSelected: []
   beszel:
     - email: reader@beszel.ephemeral.example.invalid
       password: '$(random_password)'

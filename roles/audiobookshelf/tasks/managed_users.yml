@@ -132,7 +132,9 @@
       password: "{{ item.password }}"
       type: "{{ item.type }}"
       isActive: "{{ item.is_active }}"
-      permissions: "{{ item.permissions }}"
+      permissions: "{{ item.permissions.flags }}"
+      librariesAccessible: "{{ item.permissions.librariesAccessible }}"
+      itemTagsSelected: "{{ item.permissions.itemTagsSelected }}"
     status_code: [200]
   when:
     - audiobookshelf_managed_users_phase == 'reconcile'
@@ -154,7 +156,13 @@
     - >-
       audiobookshelf_managed_user_matches[item.username][0].type != item.type or
       audiobookshelf_managed_user_matches[item.username][0].isActive | bool != item.is_active | bool or
-      audiobookshelf_managed_user_matches[item.username][0].permissions != item.permissions
+      (audiobookshelf_managed_user_matches[item.username][0].permissions | dict2items |
+       selectattr('key', 'in', item.permissions.flags.keys()) | items2dict) !=
+        item.permissions.flags or
+      audiobookshelf_managed_user_matches[item.username][0].librariesAccessible !=
+        item.permissions.librariesAccessible or
+      audiobookshelf_managed_user_matches[item.username][0].itemTagsSelected !=
+        item.permissions.itemTagsSelected
   loop: "{{ vault_managed_audiobookshelf_users }}"
   loop_control:
     label: audiobookshelf-managed-user
@@ -172,7 +180,9 @@
     body:
       type: "{{ item.type }}"
       isActive: "{{ item.is_active }}"
-      permissions: "{{ item.permissions }}"
+      permissions: "{{ item.permissions.flags }}"
+      librariesAccessible: "{{ item.permissions.librariesAccessible }}"
+      itemTagsSelected: "{{ item.permissions.itemTagsSelected }}"
     status_code: [200]
   when:
     - audiobookshelf_managed_users_phase == 'reconcile'
@@ -181,7 +191,13 @@
     - >-
       audiobookshelf_managed_user_matches[item.username][0].type != item.type or
       audiobookshelf_managed_user_matches[item.username][0].isActive | bool != item.is_active | bool or
-      audiobookshelf_managed_user_matches[item.username][0].permissions != item.permissions
+      (audiobookshelf_managed_user_matches[item.username][0].permissions | dict2items |
+       selectattr('key', 'in', item.permissions.flags.keys()) | items2dict) !=
+        item.permissions.flags or
+      audiobookshelf_managed_user_matches[item.username][0].librariesAccessible !=
+        item.permissions.librariesAccessible or
+      audiobookshelf_managed_user_matches[item.username][0].itemTagsSelected !=
+        item.permissions.itemTagsSelected
   loop: "{{ vault_managed_audiobookshelf_users }}"
   loop_control:
     label: audiobookshelf-managed-user
@@ -195,7 +211,16 @@
       - audiobookshelf_managed_user_matches[item.username][0].username == item.username
       - audiobookshelf_managed_user_matches[item.username][0].type == item.type
       - audiobookshelf_managed_user_matches[item.username][0].isActive | bool == item.is_active | bool
-      - audiobookshelf_managed_user_matches[item.username][0].permissions == item.permissions
+      - >-
+        (audiobookshelf_managed_user_matches[item.username][0].permissions | dict2items |
+         selectattr('key', 'in', item.permissions.flags.keys()) | items2dict) ==
+          item.permissions.flags
+      - >-
+        audiobookshelf_managed_user_matches[item.username][0].librariesAccessible ==
+        item.permissions.librariesAccessible
+      - >-
+        audiobookshelf_managed_user_matches[item.username][0].itemTagsSelected ==
+        item.permissions.itemTagsSelected
     fail_msg: >-
       A managed Audiobookshelf identity is absent, duplicated, aliased, or
       differs from its exact declared non-secret state.

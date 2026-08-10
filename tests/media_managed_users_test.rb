@@ -146,17 +146,29 @@ def failure_tail(output)
 end
 
 def exercise_audiobookshelf(failures)
+  default_permissions = {
+    "download" => true, "update" => false, "delete" => false, "upload" => false,
+    "createEreader" => false, "accessAllLibraries" => true, "accessAllTags" => true,
+    "accessExplicitContent" => false, "selectedTagsNotAccessible" => false
+  }
   users = [
     { "id" => "abs-reader", "username" => "reader", "type" => "guest",
-      "isActive" => false, "permissions" => { "accessAllLibraries" => true } },
+      "isActive" => false, "permissions" => default_permissions.dup,
+      "librariesAccessible" => ["legacy-library"], "itemTagsSelected" => ["legacy-tag"] },
     { "id" => "abs-unmanaged", "username" => "friend", "type" => "user",
-      "isActive" => true, "permissions" => {} }
+      "isActive" => true, "permissions" => default_permissions.dup,
+      "librariesAccessible" => [], "itemTagsSelected" => [] }
   ]
   managed = [
     { "username" => "reader", "password" => "reader-secret", "type" => "user",
-      "is_active" => true, "permissions" => { "accessAllLibraries" => false } },
+      "is_active" => true,
+      "permissions" => { "flags" => { "accessAllLibraries" => false },
+                           "librariesAccessible" => ["library-a"],
+                           "itemTagsSelected" => ["tag-a"] } },
     { "username" => "new-reader", "password" => "new-secret", "type" => "guest",
-      "is_active" => true, "permissions" => {} }
+      "is_active" => true,
+      "permissions" => { "flags" => { "accessAllLibraries" => false },
+                           "librariesAccessible" => [], "itemTagsSelected" => [] } }
   ]
   responder = lambda do |request|
     case [request["method"], request["target"]]
@@ -167,10 +179,14 @@ def exercise_audiobookshelf(failures)
         [200, { "user" => { "username" => "reader" } }] : [401, {}]
     when ["POST", "/api/users"]
       body = request.fetch("json")
-      users << body.reject { |key, _| key == "password" }.merge("id" => "abs-created")
+      users << body.reject { |key, _| key == "password" }
+                   .merge("id" => "abs-created",
+                          "permissions" => default_permissions.merge(body.fetch("permissions")))
       [200, users.last]
     when ["PATCH", "/api/users/abs-reader"]
-      users[0].merge!(request.fetch("json"))
+      body = request.fetch("json")
+      users[0].merge!(body.reject { |key, _| key == "permissions" })
+      users[0]["permissions"].merge!(body.fetch("permissions"))
       [200, users[0]]
     else [500, {}]
     end
@@ -184,7 +200,13 @@ def exercise_audiobookshelf(failures)
     failures << "Audiobookshelf behavior fixture failed: #{failure_tail(stdout + stderr)}" unless status.success?
     patch = requests.find { |request| request["method"] == "PATCH" }
     failures << "Audiobookshelf repair payload is not non-secret and exact" unless
-      patch && patch["json"].keys.sort == %w[isActive permissions type]
+      patch && patch["json"].keys.sort == %w[isActive itemTagsSelected librariesAccessible permissions type]
+    failures << "Audiobookshelf repair did not split pinned array fields" unless
+      patch&.dig("json", "permissions") == { "accessAllLibraries" => false } &&
+        patch&.dig("json", "librariesAccessible") == ["library-a"] &&
+        patch&.dig("json", "itemTagsSelected") == ["tag-a"]
+    failures << "Audiobookshelf repair overwrote an undeclared expanded permission" unless
+      users[0].dig("permissions", "download") == true
     failures << "Audiobookshelf absent creation omitted its initial password" unless
       requests.any? { |request| request["target"] == "/api/users" &&
         request["method"] == "POST" && request.dig("json", "password") == "new-secret" }
@@ -196,11 +218,16 @@ def exercise_audiobookshelf(failures)
 end
 
 def exercise_jellyfin(failures)
+  default_policy = {
+    "AuthenticationProviderId" => "Jellyfin.Server.Implementations.Users.DefaultAuthenticationProvider",
+    "PasswordResetProviderId" => "Jellyfin.Server.Implementations.Users.DefaultPasswordResetProvider",
+    "IsAdministrator" => false, "EnableAllFolders" => true,
+    "IsHidden" => true, "EnableMediaPlayback" => true
+  }
   users = [
     { "Id" => "a" * 32, "Name" => "reader",
-      "Policy" => { "IsAdministrator" => false, "EnableAllFolders" => true,
-                     "UnmanagedDefault" => true } },
-    { "Id" => "b" * 32, "Name" => "friend", "Policy" => { "IsAdministrator" => false } }
+      "Policy" => default_policy.dup },
+    { "Id" => "b" * 32, "Name" => "friend", "Policy" => default_policy.dup }
   ]
   managed = [
     { "username" => "reader", "password" => "reader-secret",
@@ -213,17 +240,27 @@ def exercise_jellyfin(failures)
     when ["GET", "/Users"] then [200, users]
     when ["POST", "/Users/New"]
       body = request.fetch("json")
-      created = { "Id" => "c" * 32, "Name" => body.fetch("Name"), "Policy" => {} }
+      created = { "Id" => "c" * 32, "Name" => body.fetch("Name"), "Policy" => default_policy.dup }
       users << created
       [200, created]
     when ["POST", "/Users/#{'c' * 32}/Policy"]
-      users[2]["Policy"].merge!(request.fetch("json")); [204, nil]
+      body = request.fetch("json")
+      required = %w[AuthenticationProviderId PasswordResetProviderId]
+      next [400, {}] unless body.keys.sort == users[2]["Policy"].keys.sort &&
+                            required.all? { |key| !body[key].to_s.empty? }
+      users[2]["Policy"] = body
+      [204, nil]
     when ["POST", "/Users/AuthenticateByName"]
       body = request.fetch("json")
       body == { "Username" => "reader", "Pw" => "reader-secret" } ?
         [200, { "User" => users[0], "AccessToken" => "reader-token" }] : [401, {}]
     when ["POST", "/Users/#{'a' * 32}/Policy"]
-      users[0]["Policy"].merge!(request.fetch("json")); [204, nil]
+      body = request.fetch("json")
+      required = %w[AuthenticationProviderId PasswordResetProviderId]
+      next [400, {}] unless body.keys.sort == users[0]["Policy"].keys.sort &&
+                            required.all? { |key| !body[key].to_s.empty? }
+      users[0]["Policy"] = body
+      [204, nil]
     else [500, {}]
     end
   end
@@ -239,23 +276,33 @@ def exercise_jellyfin(failures)
       create&.dig("json") == { "Name" => "new-reader", "Password" => "new-secret" }
     policy_requests = requests.select { |request| request["target"].end_with?("/Policy") }
     failures << "Jellyfin policy update contains a secret field" unless policy_requests.all? do |request|
-      request.fetch("json").keys.none? { |key| key.match?(/password|secret|token/i) }
+      request.fetch("json").keys.none? do |key|
+        key != "PasswordResetProviderId" && key.match?(/password|secret|token/i)
+      end
     end
+    failures << "Jellyfin complete policy update did not preserve provider IDs" unless
+      policy_requests.all? do |request|
+        request.dig("json", "AuthenticationProviderId") == default_policy["AuthenticationProviderId"] &&
+          request.dig("json", "PasswordResetProviderId") == default_policy["PasswordResetProviderId"]
+      end
+    failures << "Jellyfin complete policy update reset undeclared policy state" unless
+      users[0].dig("Policy", "IsHidden") == true && users[2].dig("Policy", "EnableMediaPlayback") == true
     failures << "Jellyfin unmanaged user was not preserved" unless users.any? { |user| user["Name"] == "friend" }
     failures << "Jellyfin final verification did not re-list users" unless
-      requests.count { |request| request["target"] == "/Users" } == 2
+      requests.count { |request| request["target"] == "/Users" } == 3
   end
 end
 
 def exercise_komga(failures)
+  supported_roles = %w[ADMIN FILE_DOWNLOAD PAGE_STREAMING KOBO_SYNC KOREADER_SYNC]
   users = [
-    { "id" => "komga-reader", "email" => "reader@example.invalid", "roles" => %w[USER OPDS] },
-    { "id" => "komga-friend", "email" => "friend@example.invalid", "roles" => %w[USER OPDS] }
+    { "id" => "komga-reader", "email" => "reader@example.invalid", "roles" => %w[USER KOBO_SYNC] },
+    { "id" => "komga-friend", "email" => "friend@example.invalid", "roles" => %w[USER KOBO_SYNC] }
   ]
   managed = [
     { "email" => "reader@example.invalid", "password" => "reader-secret",
       "roles" => ["PAGE_STREAMING"] },
-    { "email" => "new@example.invalid", "password" => "new-secret", "roles" => ["OPDS"] }
+    { "email" => "new@example.invalid", "password" => "new-secret", "roles" => ["KOREADER_SYNC"] }
   ]
   responder = lambda do |request|
     case [request["method"], request["target"]]
@@ -265,10 +312,11 @@ def exercise_komga(failures)
     when ["POST", "/api/v2/users"]
       body = request.fetch("json")
       users << body.reject { |key, _| key == "password" }
-                   .merge("id" => "komga-created", "roles" => body.fetch("roles") + ["USER"])
+                   .merge("id" => "komga-created",
+                          "roles" => body.fetch("roles").intersection(supported_roles) + ["USER"])
       [201, users.last]
     when ["PATCH", "/api/v2/users/komga-reader"]
-      users[0]["roles"] = request.fetch("json").fetch("roles") + ["USER"]
+      users[0]["roles"] = request.fetch("json").fetch("roles").intersection(supported_roles) + ["USER"]
       [204, nil]
     else [500, {}]
     end
@@ -295,7 +343,7 @@ end
 
 def exercise_check_mode(failures)
   users = [
-    { "id" => "komga-reader", "email" => "reader@example.invalid", "roles" => %w[USER OPDS] }
+    { "id" => "komga-reader", "email" => "reader@example.invalid", "roles" => %w[USER KOBO_SYNC] }
   ]
   responder = lambda do |request|
     case [request["method"], request["target"]]
@@ -311,7 +359,7 @@ def exercise_check_mode(failures)
       "vault_managed_komga_users" => [
         { "email" => "reader@example.invalid", "password" => "reader-secret",
           "roles" => ["PAGE_STREAMING"] },
-        { "email" => "new@example.invalid", "password" => "new-secret", "roles" => ["OPDS"] }
+        { "email" => "new@example.invalid", "password" => "new-secret", "roles" => ["KOREADER_SYNC"] }
       ]
     }
     tasks = [includes_for("komga").first]
@@ -350,12 +398,12 @@ def exercise_komga_fail_closed(failures)
   scenarios = {
     "incomplete listing" => lambda { |_request| [200, { "content" => [], "last" => false }] },
     "duplicate identity" => lambda do |_request|
-      [200, [{ "id" => "one", "email" => "reader@example.invalid", "roles" => %w[USER OPDS] },
-             { "id" => "two", "email" => "reader@example.invalid", "roles" => %w[USER OPDS] }]]
+      [200, [{ "id" => "one", "email" => "reader@example.invalid", "roles" => %w[USER KOBO_SYNC] },
+             { "id" => "two", "email" => "reader@example.invalid", "roles" => %w[USER KOBO_SYNC] }]]
     end,
     "authentication failure" => lambda do |request|
       if request["target"] == "/api/v2/users"
-        [200, [{ "id" => "reader", "email" => "reader@example.invalid", "roles" => %w[USER OPDS] }]]
+        [200, [{ "id" => "reader", "email" => "reader@example.invalid", "roles" => %w[USER KOBO_SYNC] }]]
       else
         [401, {}]
       end
@@ -370,6 +418,107 @@ def exercise_komga_fail_closed(failures)
         requests.any? { |request| %w[POST PATCH DELETE].include?(request["method"]) }
       failures << "Komga #{label} fixture did not fail in managed-user tasks: #{failure_tail(stdout + stderr)}" unless
         (stdout + stderr).include?("roles/komga/tasks/managed_users.yml")
+    end
+  end
+end
+
+def exercise_media_fail_closed(failures)
+  jellyfin_policy = {
+    "AuthenticationProviderId" => "DefaultAuthenticationProvider",
+    "PasswordResetProviderId" => "DefaultPasswordResetProvider",
+    "IsAdministrator" => false
+  }
+  cases = [
+    ["Audiobookshelf", "audiobookshelf",
+     { "vault_managed_audiobookshelf_users" => [
+       { "username" => "reader", "password" => "wrong", "type" => "user",
+         "is_active" => true,
+         "permissions" => { "flags" => { "accessAllLibraries" => false },
+                              "librariesAccessible" => [], "itemTagsSelected" => [] } }
+     ] },
+     lambda do |request|
+       request["target"] == "/api/users" ?
+         [200, { "users" => [{ "id" => "reader", "username" => "reader", "type" => "user",
+                               "isActive" => true, "permissions" => { "accessAllLibraries" => false },
+                               "librariesAccessible" => [], "itemTagsSelected" => [] }] }] : [401, {}]
+     end],
+    ["Jellyfin", "jellyfin",
+     { "jellyfin_client_header" => "MediaBrowser Fixture",
+       "vault_managed_jellyfin_users" => [
+         { "username" => "reader", "password" => "wrong",
+           "policy" => { "IsAdministrator" => false } }
+       ] },
+     lambda do |request|
+       request["target"] == "/Users" ?
+         [200, [{ "Id" => "a" * 32, "Name" => "reader", "Policy" => jellyfin_policy }]] : [401, {}]
+     end]
+  ]
+  cases.each do |label, service, variables, responder|
+    with_http_service(responder) do |port, requests|
+      variables["#{service}_api"] = "http://127.0.0.1:#{port}"
+      stdout, stderr, status = run_playbook(
+        [includes_for(service, service == "audiobookshelf" ? "fixture-token" : "admin-token").first],
+        variables
+      )
+      failures << "#{label} authentication-failure fixture unexpectedly succeeded" if status.success?
+      failures << "#{label} authentication failure reached a mutation" if
+        requests.any? { |request| %w[PATCH DELETE].include?(request["method"]) ||
+          (request["method"] == "POST" && !request["target"].match?(/login|AuthenticateByName/)) }
+      failures << "#{label} authentication failure did not stop at preserved credential assertion" unless
+        (stdout + stderr).include?("Require preserved #{label} managed-user credentials")
+    end
+  end
+end
+
+def exercise_media_listing_fail_closed(failures)
+  cases = [
+    ["Audiobookshelf incomplete listing", "audiobookshelf",
+     { "vault_managed_audiobookshelf_users" => [
+       { "username" => "reader", "password" => "secret", "type" => "user",
+         "is_active" => true,
+         "permissions" => { "flags" => {}, "librariesAccessible" => [], "itemTagsSelected" => [] } }
+     ] },
+     ->(_request) { [200, { "users" => [], "hasMore" => true }] }],
+    ["Audiobookshelf normalized duplicate", "audiobookshelf",
+     { "vault_managed_audiobookshelf_users" => [
+       { "username" => "reader", "password" => "secret", "type" => "user",
+         "is_active" => true,
+         "permissions" => { "flags" => {}, "librariesAccessible" => [], "itemTagsSelected" => [] } }
+     ] },
+     lambda do |_request|
+       [200, { "users" => [
+         { "id" => "one", "username" => "reader" },
+         { "id" => "two", "username" => "Reader" }
+       ] }]
+     end],
+    ["Jellyfin unsupported listing", "jellyfin",
+     { "jellyfin_client_header" => "MediaBrowser Fixture",
+       "vault_managed_jellyfin_users" => [
+         { "username" => "reader", "password" => "secret",
+           "policy" => { "IsAdministrator" => false } }
+       ] },
+     ->(_request) { [200, { "Items" => [], "TotalRecordCount" => 1 }] }],
+    ["Jellyfin normalized duplicate", "jellyfin",
+     { "jellyfin_client_header" => "MediaBrowser Fixture",
+       "vault_managed_jellyfin_users" => [
+         { "username" => "reader", "password" => "secret",
+           "policy" => { "IsAdministrator" => false } }
+       ] },
+     lambda do |_request|
+       [200, [{ "Id" => "a" * 32, "Name" => "reader" },
+              { "Id" => "b" * 32, "Name" => "Reader" }]]
+     end]
+  ]
+  cases.each do |label, service, variables, responder|
+    with_http_service(responder) do |port, requests|
+      variables["#{service}_api"] = "http://127.0.0.1:#{port}"
+      _stdout, _stderr, status = run_playbook(
+        [includes_for(service, service == "audiobookshelf" ? "fixture-token" : "admin-token").first],
+        variables
+      )
+      failures << "#{label} fixture unexpectedly succeeded" if status.success?
+      failures << "#{label} fixture reached a mutation" if
+        requests.any? { |request| %w[POST PATCH DELETE].include?(request["method"]) }
     end
   end
 end
@@ -401,6 +550,18 @@ def contract_failures(service, tasks)
 
     forbidden = body.keys.map(&:to_s).grep(/password|passwd|secret|token/i)
     failures << "#{service} existing-user repair contains secret fields" unless forbidden.empty?
+  end
+
+  repair = tasks.find { |task| task_name(task).match?(/Repair .* managed-user/) && uri_task?(task) }
+  if service == "audiobookshelf"
+    body = repair&.dig("ansible.builtin.uri", "body")
+    failures << "audiobookshelf repair does not split the pinned permission fields" unless
+      body.is_a?(Hash) && body.keys.sort ==
+        %w[isActive itemTagsSelected librariesAccessible permissions type]
+  elsif service == "jellyfin"
+    body = repair&.dig("ansible.builtin.uri", "body").to_s
+    failures << "jellyfin repair does not merge into the complete current policy" unless
+      body.include?(".Policy") && body.include?("combine(item.policy")
   end
 
   auth_assert = tasks.find { |task| task_name(task).start_with?("Require preserved") }
@@ -464,6 +625,11 @@ if ARGV == ["--self-test"] && failures.empty?
       failures << "#{service} password-update mutant survived"
     end
 
+    if %w[audiobookshelf jellyfin].include?(service) &&
+       !contract_failures(service, mutant).any? { |failure| failure.match?(/split|complete current policy/) }
+      failures << "#{service} pinned merge/body mutant survived"
+    end
+
     missing_verify = tasks.reject { |task| task_name(task) == REQUIRED_TASKS.fetch(service).last }
     unless contract_failures(service, missing_verify).any? { |failure| failure.include?("Verify exact") }
       failures << "#{service} final-verification mutant survived"
@@ -482,6 +648,8 @@ if ARGV.empty? && failures.empty?
     exercise_check_mode(failures) if selected_probes.intersect?(%w[all check_mode])
     exercise_verify_tag_selection(failures) if selected_probes.intersect?(%w[all verify_tags])
     exercise_komga_fail_closed(failures) if selected_probes.intersect?(%w[all fail_closed])
+    exercise_media_fail_closed(failures) if selected_probes.intersect?(%w[all fail_closed])
+    exercise_media_listing_fail_closed(failures) if selected_probes.intersect?(%w[all fail_closed])
   end
 elsif ARGV != ["--self-test"] && !ARGV.empty?
   failures << "usage: media_managed_users_test.rb [--self-test]"
