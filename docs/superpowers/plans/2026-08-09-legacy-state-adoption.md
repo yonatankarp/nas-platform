@@ -11,7 +11,8 @@
 ## Implementation checkpoint — 2026-08-10
 
 - Branch: `agent/task-14-adoption`
-- Current HEAD: `7ba47a2e75bd879e7924aef21700febc5277c73c`
+- Implementation baseline before this checkpoint:
+  `7ba47a2e75bd879e7924aef21700febc5277c73c`
 - Managed-user migration prerequisite: complete. Full synthetic integration passed at
   `a3195f49a00a1906fae7fd92811d08a329af9e19`, including all registered live
   contracts, second convergence with `changed=0`, and final check mode.
