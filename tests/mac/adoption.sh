@@ -134,6 +134,9 @@ cleanup_render() {
      [ ! -e "$published_env_root" ]; then
     mv "$previous_env_root" "$published_env_root" || render_status=1
   fi
+  if [ -d "$render_work/encrypted" ] && [ ! -L "$render_work/encrypted" ]; then
+    chmod 0700 "$render_work/encrypted" || render_status=1
+  fi
   if [ -d "$render_work" ] && [ ! -L "$render_work" ]; then
     /usr/bin/find "$render_work" -depth -delete
   fi
@@ -141,9 +144,51 @@ cleanup_render() {
 }
 trap cleanup_render EXIT HUP INT TERM
 
+snapshot_root=$render_work/encrypted
+mkdir -m 0700 "$snapshot_root" || die 'legacy parity snapshot failed'
+encrypted_parity=$snapshot_root/parity.vault
+if ! ruby - "$PLATFORM_MAC_PARITY_VAULT_FILE" "$encrypted_parity" \
+    >/dev/null 2>&1 <<'RUBY'
+source_path, destination_path = ARGV
+maximum_size = 16 * 1024 * 1024
+
+def signature(stat)
+  [stat.dev, stat.ino, stat.size, stat.mode, stat.uid, stat.mtime.to_r, stat.ctime.to_r]
+end
+
+initial = File.lstat(source_path)
+raise "unsafe source" unless initial.file? && !initial.symlink?
+source_flags = File::RDONLY
+source_flags |= File::NOFOLLOW if File.const_defined?(:NOFOLLOW)
+File.open(source_path, source_flags) do |source|
+  opened = source.stat
+  raise "source changed" unless signature(initial) == signature(opened)
+
+  bytes = source.read(maximum_size + 1)
+  raise "source too large" if bytes.bytesize > maximum_size
+  raise "source changed" unless signature(opened) == signature(source.stat) &&
+                                signature(initial) == signature(File.lstat(source_path))
+
+  destination_flags = File::WRONLY | File::CREAT | File::EXCL
+  destination_flags |= File::NOFOLLOW if File.const_defined?(:NOFOLLOW)
+  File.open(destination_path, destination_flags, 0o400) do |destination|
+    destination.write(bytes)
+    destination.flush
+    destination.fsync
+  end
+end
+RUBY
+then
+  die 'legacy parity snapshot failed'
+fi
+chmod 0400 "$encrypted_parity" || die 'legacy parity snapshot failed'
+chmod 0500 "$snapshot_root" || die 'legacy parity snapshot failed'
+[ "$(sed -n '1p' "$encrypted_parity")" = '$ANSIBLE_VAULT;1.1;AES256' ] ||
+  die 'legacy parity snapshot failed'
+
 decrypted_parity=$render_work/parity.yml
 if ! ansible-vault view --vault-password-file "$PLATFORM_MAC_PARITY_VAULT_PASSWORD_FILE" \
-    "$PLATFORM_MAC_PARITY_VAULT_FILE" > "$decrypted_parity" 2>/dev/null; then
+    "$encrypted_parity" > "$decrypted_parity" 2>/dev/null; then
   die 'legacy parity rendering failed'
 fi
 chmod 0600 "$decrypted_parity" || die 'legacy parity rendering failed'
@@ -156,7 +201,8 @@ fi
 legacy_env_root=$render_work/legacy-env
 mkdir -m 0700 "$legacy_env_root" || die 'legacy render staging failed'
 if ! ansible-playbook -i localhost, -c local "$script_dir/legacy-render.yml" \
-  -e @"$decrypted_parity" -e legacy_env_root="$legacy_env_root" \
+  --vault-password-file "$PLATFORM_MAC_PARITY_VAULT_PASSWORD_FILE" \
+  -e @"$encrypted_parity" -e legacy_env_root="$legacy_env_root" \
   -e legacy_expected_commit="$expected_commit" >/dev/null 2>&1; then
   die 'legacy parity rendering failed'
 fi

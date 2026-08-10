@@ -95,7 +95,7 @@ cat > "$fake_bin/ansible-playbook" <<'SH'
 #!/bin/sh
 printf 'ansible-playbook %s\n' "$*" >> "${FAKE_COMMAND_LOG:?}"
 case " $* " in
-  *' -e @'*' -e legacy_env_root='*' -e legacy_expected_commit='*) ;;
+  *' --vault-password-file '*' -e @'*' -e legacy_env_root='*' -e legacy_expected_commit='*) ;;
   *) exit 2 ;;
 esac
 case ${FAKE_PARITY_MODE:-valid} in
@@ -104,10 +104,20 @@ case ${FAKE_PARITY_MODE:-valid} in
   *) exit 2 ;;
 esac
 root=
+extra_vars=
 for argument in "$@"; do
-  case $argument in legacy_env_root=*) root=${argument#legacy_env_root=} ;; esac
+  case $argument in
+    @*) extra_vars=${argument#@} ;;
+    legacy_env_root=*) root=${argument#legacy_env_root=} ;;
+  esac
 done
 [ -n "$root" ] || exit 2
+[ "$(sed -n '1p' "$extra_vars")" = '$ANSIBLE_VAULT;1.1;AES256' ] || exit 3
+[ "$extra_vars" = "$(sed -n '1p' "${FAKE_PARITY_VIEW_LOG:?}")" ] || exit 3
+[ "$extra_vars" != "${PLATFORM_MAC_PARITY_VAULT_FILE:?}" ] || exit 3
+cmp -s "$extra_vars" "$PLATFORM_MAC_PARITY_VAULT_FILE" || exit 3
+snapshot_mode=$(stat -f '%Lp' "$extra_vars" 2>/dev/null || stat -c '%a' "$extra_vars")
+[ "$snapshot_mode" = 400 ] || exit 3
 mkdir -m 0700 "$root"
 for service in audiobookshelf beszel dozzle immich jellyfin komga ntfy paperless-ngx tinymediamanager; do
   printf 'A=%s\nDOLLAR=$$safe\n' "${FAKE_RENDER_CANARY:?}" > "$root/$service.env"
@@ -118,7 +128,7 @@ cat > "$fake_bin/ansible-vault" <<'SH'
 #!/bin/sh
 [ "${1-}" = view ] || exit 2
 for argument in "$@"; do vault_path=$argument; done
-[ "$vault_path" = "${PLATFORM_MAC_PARITY_VAULT_FILE:?}" ] || exit 2
+printf '%s\n' "$vault_path" > "${FAKE_PARITY_VIEW_LOG:?}"
 cat "${FAKE_PARITY_FIXTURE_ROOT:?}/${FAKE_PARITY_MODE:-valid}.yml"
 SH
 chmod 0700 "$fake_bin/git" "$fake_bin/docker" "$fake_bin/ansible-playbook" \
@@ -134,6 +144,7 @@ printf '%s\n' '$ANSIBLE_VAULT;1.1;AES256' > "$parity_vault"
 printf '%s\n' disposable > "$parity_password"
 chmod 0600 "$parity_vault" "$parity_password"
 fake_parity_fixtures=$temporary_root/fake-parity
+fake_parity_view_log=$temporary_root/fake-parity-view.log
 mkdir -m 0700 "$fake_parity_fixtures"
 ruby -ryaml - "$repo_dir/config/portainer-parity.yml" "$fake_parity_fixtures" <<'RUBY'
 mapping = YAML.safe_load_file(ARGV.fetch(0))
@@ -153,7 +164,7 @@ RUBY
 
 run_coordinator() {
   env PATH="$fake_bin:$PATH" FAKE_COMMAND_LOG="$log" FAKE_RENDER_CANARY='value-secret-canary' \
-    FAKE_PARITY_FIXTURE_ROOT="$fake_parity_fixtures" \
+    FAKE_PARITY_FIXTURE_ROOT="$fake_parity_fixtures" FAKE_PARITY_VIEW_LOG="$fake_parity_view_log" \
     PLATFORM_MAC_TMPDIR="$temporary_root" \
     NAS_INFRASTRUCTURE_DIR="$legacy_root" PLATFORM_MAC_SANDBOX="$sandbox" \
     PLATFORM_MAC_PARITY_VAULT_FILE="$parity_vault" \
@@ -248,7 +259,7 @@ for mode in schema commit services; do
   expect_failure "parity $mode" 'legacy parity rendering failed' \
     env FAKE_PARITY_MODE="$mode" PATH="$fake_bin:$PATH" FAKE_COMMAND_LOG="$log" \
       FAKE_RENDER_CANARY='value-secret-canary' FAKE_PARITY_FIXTURE_ROOT="$fake_parity_fixtures" \
-      NAS_INFRASTRUCTURE_DIR="$legacy_root" \
+      FAKE_PARITY_VIEW_LOG="$fake_parity_view_log" NAS_INFRASTRUCTURE_DIR="$legacy_root" \
       PLATFORM_MAC_TMPDIR="$temporary_root" \
       PLATFORM_MAC_SANDBOX="$sandbox" PLATFORM_MAC_PARITY_VAULT_FILE="$parity_vault" \
       PLATFORM_MAC_PARITY_VAULT_PASSWORD_FILE="$parity_password" "$coordinator" render
@@ -260,7 +271,9 @@ printf '%s\n' '$ANSIBLE_VAULT;1.1;AES256' > "$parity_vault"
 
 : > "$log"
 render_output=$temporary_root/render-output
-run_coordinator render > "$render_output" 2>&1
+if ! run_coordinator render > "$render_output" 2>&1; then
+  fail 'ansible-playbook did not receive the validated encrypted parity snapshot'
+fi
 grep -F value-secret-canary "$render_output" >/dev/null && fail 'render output leaked a value'
 rendered=$(/usr/bin/find "$sandbox/legacy-env" -type f -name '*.env' | wc -l | tr -d ' ')
 [ "$rendered" = 9 ] || fail 'render did not create the exact nine-service set'
@@ -273,9 +286,21 @@ for file in "$sandbox"/legacy-env/*.env; do
   grep -F 'DOLLAR=$$safe' "$file" >/dev/null || fail 'Compose dollar escaping differs'
 done
 
-real_ansible_bin=/var/folders/z6/qvbh9dlx2_s98lt4__4fwg9m0000gn/T/nas-platform-task14-ansible.qp6qkn/bin
+if grep -Eq '^real_ansible_bin=/' "$0"; then
+  fail 'real Ansible behavior test uses a machine-specific path'
+fi
+if [ -x "$repo_dir/.venv/bin/ansible-playbook" ] && [ -x "$repo_dir/.venv/bin/ansible-vault" ]; then
+  real_ansible_bin=$repo_dir/.venv/bin
+else
+  real_ansible_playbook=$(command -v ansible-playbook 2>/dev/null || true)
+  if [ -n "$real_ansible_playbook" ]; then
+    real_ansible_bin=$(dirname -- "$real_ansible_playbook")
+  else
+    real_ansible_bin=
+  fi
+fi
 [ -x "$real_ansible_bin/ansible-playbook" ] && [ -x "$real_ansible_bin/ansible-vault" ] ||
-  fail 'pinned Ansible is unavailable for parity behavior tests'
+  fail 'repository .venv or PATH must provide pinned Ansible for parity behavior tests'
 real_parity_root=$temporary_root/real-parity
 real_parity_password=$real_parity_root/password
 mkdir -m 0700 "$real_parity_root"
