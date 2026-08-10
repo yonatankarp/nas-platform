@@ -10,6 +10,8 @@ ruby tests/managed_user_capabilities_test.rb --self-test
 ruby tests/managed_users_vault_test.rb
 ruby tests/beszel_password_preservation_test.rb --self-test
 ruby tests/config_managed_users_test.rb --self-test
+ruby tests/media_managed_users_test.rb
+ruby tests/media_managed_users_test.rb --self-test
 ruby tests/ntfy_verify_execution_test.rb
 ansible_playbook=$(command -v ansible-playbook) || {
   printf '%s\n' 'ansible-playbook is required for managed-user behavior tests' >&2

@@ -182,6 +182,13 @@
   when: not ansible_check_mode or jellyfin_wizard_completed | bool
   no_log: true
 
+- name: Reconcile managed Jellyfin users
+  ansible.builtin.include_tasks: managed_users.yml
+  vars:
+    jellyfin_managed_users_phase: reconcile
+    jellyfin_managed_users_token: "{{ jellyfin_reconcile_token }}"
+  when: not ansible_check_mode or jellyfin_wizard_completed | bool
+
 - name: List Jellyfin libraries for reconciliation
   ansible.builtin.uri:
     url: "{{ jellyfin_api }}/Library/VirtualFolders"
@@ -345,6 +352,17 @@
          else jellyfin_verify_login.json.AccessToken }}
   when: not ansible_check_mode
   no_log: true
+
+- name: Verify managed Jellyfin users
+  tags: [platform_verify_jellyfin]
+  ansible.builtin.include_tasks:
+    file: managed_users.yml
+    apply:
+      tags: [platform_verify_jellyfin]
+  vars:
+    jellyfin_managed_users_phase: verify
+    jellyfin_managed_users_token: "{{ jellyfin_verification_token }}"
+  when: not ansible_check_mode
 
 - name: Read exact Jellyfin libraries
   tags: [platform_verify_jellyfin]

@@ -1,0 +1,191 @@
+---
+- name: List complete Komga users for managed-user reconciliation
+  ansible.builtin.uri:
+    url: "{{ komga_api }}/api/v2/users"
+    url_username: "{{ vault_komga_admin_email }}"
+    url_password: "{{ vault_komga_admin_password }}"
+    force_basic_auth: true
+    status_code: [200]
+    return_content: true
+  register: komga_managed_users_listing
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Refuse incomplete Komga managed-user listing
+  ansible.builtin.assert:
+    that:
+      - komga_managed_users_listing.json | type_debug == 'list'
+    fail_msg: >-
+      Komga returned an unsupported or paginated users response;
+      reconciliation is refusing a partial identity view.
+
+- name: Resolve normalized Komga managed identities
+  ansible.builtin.set_fact:
+    komga_managed_user_matches: >-
+      {{ (komga_managed_user_matches | default({})) |
+         combine(dict([(item.email,
+           komga_managed_users_listing.json |
+           selectattr('email', 'equalto', item.email) | list)])) }}
+  loop: "{{ vault_managed_komga_users }}"
+  loop_control:
+    label: komga-managed-user
+  no_log: true
+
+- name: Refuse ambiguous normalized Komga managed identities
+  ansible.builtin.assert:
+    that:
+      - komga_managed_user_matches[item.email] | length <= 1
+      - >-
+        komga_managed_users_listing.json | map(attribute='email') |
+        map('trim') | map('lower') | select('equalto', item.email | trim | lower) |
+        list | length == komga_managed_user_matches[item.email] | length
+    fail_msg: >-
+      Komga contains duplicate normalized managed emails; resolve the ambiguity
+      manually before reconciliation.
+  loop: "{{ vault_managed_komga_users }}"
+  loop_control:
+    label: komga-managed-user
+  no_log: true
+
+- name: Require safe Komga managed-user identifiers
+  ansible.builtin.assert:
+    that:
+      - >-
+        komga_managed_user_matches[item.email] | length == 0 or
+        komga_managed_user_matches[item.email][0].id | string
+          is match('^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$')
+    fail_msg: Komga returned an unsafe managed-user API identifier.
+  loop: "{{ vault_managed_komga_users }}"
+  loop_control:
+    label: komga-managed-user
+  no_log: true
+
+- name: Authenticate existing Komga managed users
+  ansible.builtin.uri:
+    url: "{{ komga_api }}/api/v2/users/me"
+    url_username: "{{ item.email }}"
+    url_password: "{{ item.password }}"
+    force_basic_auth: true
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: komga_managed_user_authentication
+  when:
+    - komga_managed_users_phase == 'reconcile'
+    - komga_managed_user_matches[item.email] | length == 1
+  loop: "{{ vault_managed_komga_users }}"
+  loop_control:
+    label: komga-managed-user
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require preserved Komga managed-user credentials
+  ansible.builtin.assert:
+    that:
+      - item.status | default(0) | int == 200
+      - item.json.email | default('') | trim | lower == item.item.email | trim | lower
+    fail_msg: >-
+      Existing Komga managed user does not accept its preserved vault password.
+      Run the reviewed credential-migration procedure; Ansible will not reset
+      it automatically.
+  loop: >-
+    {{ komga_managed_user_authentication.results | default([]) |
+       rejectattr('skipped', 'defined') | list }}
+  loop_control:
+    label: komga-managed-user
+  no_log: true
+
+- name: Report planned Komga managed-user creation
+  ansible.builtin.debug:
+    msg: KOMGA_PLAN_MANAGED_USER_CREATE
+  when:
+    - komga_managed_users_phase == 'reconcile'
+    - ansible_check_mode
+    - komga_managed_user_matches[item.email] | length == 0
+  loop: "{{ vault_managed_komga_users }}"
+  loop_control:
+    label: komga-managed-user
+  changed_when: true
+
+- name: Create absent Komga managed users
+  ansible.builtin.uri:
+    url: "{{ komga_api }}/api/v2/users"
+    method: POST
+    url_username: "{{ vault_komga_admin_email }}"
+    url_password: "{{ vault_komga_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      email: "{{ item.email }}"
+      password: "{{ item.password }}"
+      roles: "{{ item.roles }}"
+    status_code: [201]
+  when:
+    - komga_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+    - komga_managed_user_matches[item.email] | length == 0
+  loop: "{{ vault_managed_komga_users }}"
+  loop_control:
+    label: komga-managed-user
+  changed_when: true
+  no_log: true
+
+- name: Report planned Komga managed-user role repair
+  ansible.builtin.debug:
+    msg: KOMGA_PLAN_MANAGED_USER_REPAIR
+  when:
+    - komga_managed_users_phase == 'reconcile'
+    - ansible_check_mode
+    - komga_managed_user_matches[item.email] | length == 1
+    - >-
+      (komga_managed_user_matches[item.email][0].roles |
+       difference(['USER']) | sort) != (item.roles | sort)
+  loop: "{{ vault_managed_komga_users }}"
+  loop_control:
+    label: komga-managed-user
+  changed_when: true
+
+- name: Repair Komga managed-user roles
+  ansible.builtin.uri:
+    url: >-
+      {{ komga_api }}/api/v2/users/{{
+         komga_managed_user_matches[item.email][0].id | urlencode }}
+    method: PATCH
+    url_username: "{{ vault_komga_admin_email }}"
+    url_password: "{{ vault_komga_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      roles: "{{ item.roles }}"
+    status_code: [204]
+  when:
+    - komga_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+    - komga_managed_user_matches[item.email] | length == 1
+    - >-
+      (komga_managed_user_matches[item.email][0].roles |
+       difference(['USER']) | sort) != (item.roles | sort)
+  loop: "{{ vault_managed_komga_users }}"
+  loop_control:
+    label: komga-managed-user
+  changed_when: true
+  no_log: true
+
+- name: Verify exact Komga managed users
+  ansible.builtin.assert:
+    that:
+      - komga_managed_user_matches[item.email] | length == 1
+      - komga_managed_user_matches[item.email][0].email | trim | lower == item.email | trim | lower
+      - >-
+        (komga_managed_user_matches[item.email][0].roles |
+         difference(['USER']) | sort) == (item.roles | sort)
+    fail_msg: >-
+      A managed Komga identity is absent, duplicated, or differs from its exact
+      declared email and roles.
+  when: komga_managed_users_phase == 'verify'
+  loop: "{{ vault_managed_komga_users }}"
+  loop_control:
+    label: komga-managed-user
+  no_log: true

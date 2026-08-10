@@ -107,6 +107,12 @@
   when: not ansible_check_mode or komga_claim_status.json.isClaimed | bool
   no_log: true
 
+- name: Reconcile managed Komga users
+  ansible.builtin.include_tasks: managed_users.yml
+  vars:
+    komga_managed_users_phase: reconcile
+  when: not ansible_check_mode or komga_claim_status.json.isClaimed | bool
+
 - name: List Komga libraries for reconciliation
   ansible.builtin.uri:
     url: "{{ komga_api }}/api/v1/libraries"
@@ -238,6 +244,15 @@
       - "'ADMIN' in komga_verified_admin.roles"
     fail_msg: The vault Komga administrator is absent or drifted.
   no_log: true
+
+- name: Verify managed Komga users
+  tags: [platform_verify_komga]
+  ansible.builtin.include_tasks:
+    file: managed_users.yml
+    apply:
+      tags: [platform_verify_komga]
+  vars:
+    komga_managed_users_phase: verify
 
 - name: Require exactly the managed Komga library
   tags: [platform_verify_komga]

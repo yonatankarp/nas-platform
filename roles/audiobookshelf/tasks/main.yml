@@ -144,6 +144,13 @@
   when: not ansible_check_mode or audiobookshelf_initialized | bool
   no_log: true
 
+- name: Reconcile managed Audiobookshelf users
+  ansible.builtin.include_tasks: managed_users.yml
+  vars:
+    audiobookshelf_managed_users_phase: reconcile
+    audiobookshelf_managed_users_token: "{{ audiobookshelf_reconcile_token }}"
+  when: not ansible_check_mode or audiobookshelf_initialized | bool
+
 - name: List Audiobookshelf administrators for reconciliation
   ansible.builtin.uri:
     url: "{{ audiobookshelf_api }}/api/users"
@@ -443,6 +450,17 @@
          else audiobookshelf_verify_login.json.user.accessToken }}
   when: not ansible_check_mode
   no_log: true
+
+- name: Verify managed Audiobookshelf users
+  tags: [platform_verify_audiobookshelf]
+  ansible.builtin.include_tasks:
+    file: managed_users.yml
+    apply:
+      tags: [platform_verify_audiobookshelf]
+  vars:
+    audiobookshelf_managed_users_phase: verify
+    audiobookshelf_managed_users_token: "{{ audiobookshelf_verification_token }}"
+  when: not ansible_check_mode
 
 - name: Read exact Audiobookshelf users and libraries
   tags: [platform_verify_audiobookshelf]

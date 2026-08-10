@@ -1,0 +1,222 @@
+---
+- name: List complete Jellyfin users for managed-user reconciliation
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Users"
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_managed_users_token }}"'
+    status_code: [200]
+    return_content: true
+  register: jellyfin_managed_users_listing
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Refuse incomplete Jellyfin managed-user listing
+  ansible.builtin.assert:
+    that:
+      - jellyfin_managed_users_listing.json | type_debug == 'list'
+    fail_msg: >-
+      Jellyfin returned an unsupported or paginated users response;
+      reconciliation is refusing a partial identity view.
+
+- name: Resolve normalized Jellyfin managed identities
+  ansible.builtin.set_fact:
+    jellyfin_managed_user_matches: >-
+      {{ (jellyfin_managed_user_matches | default({})) |
+         combine(dict([(item.username,
+           jellyfin_managed_users_listing.json |
+           selectattr('Name', 'equalto', item.username) | list)])) }}
+  loop: "{{ vault_managed_jellyfin_users }}"
+  loop_control:
+    label: jellyfin-managed-user
+  no_log: true
+
+- name: Refuse ambiguous normalized Jellyfin managed identities
+  ansible.builtin.assert:
+    that:
+      - jellyfin_managed_user_matches[item.username] | length <= 1
+      - >-
+        jellyfin_managed_users_listing.json | map(attribute='Name') |
+        map('trim') | map('lower') | select('equalto', item.username | trim | lower) |
+        list | length == jellyfin_managed_user_matches[item.username] | length
+    fail_msg: >-
+      Jellyfin contains duplicate normalized managed usernames; resolve the
+      ambiguity manually before reconciliation.
+  loop: "{{ vault_managed_jellyfin_users }}"
+  loop_control:
+    label: jellyfin-managed-user
+  no_log: true
+
+- name: Require safe Jellyfin managed-user identifiers
+  ansible.builtin.assert:
+    that:
+      - >-
+        jellyfin_managed_user_matches[item.username] | length == 0 or
+        jellyfin_managed_user_matches[item.username][0].Id | string
+          is match('^[A-Fa-f0-9-]{32,36}$')
+    fail_msg: Jellyfin returned an unsafe managed-user API identifier.
+  loop: "{{ vault_managed_jellyfin_users }}"
+  loop_control:
+    label: jellyfin-managed-user
+  no_log: true
+
+- name: Authenticate existing Jellyfin managed users
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Users/AuthenticateByName"
+    method: POST
+    headers:
+      Authorization: "{{ jellyfin_client_header }}"
+    body_format: json
+    body:
+      Username: "{{ item.username }}"
+      Pw: "{{ item.password }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: jellyfin_managed_user_authentication
+  when:
+    - jellyfin_managed_users_phase == 'reconcile'
+    - jellyfin_managed_user_matches[item.username] | length == 1
+  loop: "{{ vault_managed_jellyfin_users }}"
+  loop_control:
+    label: jellyfin-managed-user
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require preserved Jellyfin managed-user credentials
+  ansible.builtin.assert:
+    that:
+      - item.status | default(0) | int == 200
+      - item.json.User.Name | default('') | trim | lower == item.item.username | trim | lower
+    fail_msg: >-
+      Existing Jellyfin managed user does not accept its preserved vault
+      password. Run the reviewed credential-migration procedure; Ansible will
+      not reset it automatically.
+  loop: >-
+    {{ jellyfin_managed_user_authentication.results | default([]) |
+       rejectattr('skipped', 'defined') | list }}
+  loop_control:
+    label: jellyfin-managed-user
+  no_log: true
+
+- name: Report planned Jellyfin managed-user creation
+  ansible.builtin.debug:
+    msg: JELLYFIN_PLAN_MANAGED_USER_CREATE
+  when:
+    - jellyfin_managed_users_phase == 'reconcile'
+    - ansible_check_mode
+    - jellyfin_managed_user_matches[item.username] | length == 0
+  loop: "{{ vault_managed_jellyfin_users }}"
+  loop_control:
+    label: jellyfin-managed-user
+  changed_when: true
+
+- name: Create absent Jellyfin managed users with initial passwords
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Users/New"
+    method: POST
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_managed_users_token }}"'
+    body_format: json
+    body:
+      Name: "{{ item.username }}"
+      Password: "{{ item.password }}"
+    status_code: [200]
+    return_content: true
+  register: jellyfin_managed_user_creation
+  when:
+    - jellyfin_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+    - jellyfin_managed_user_matches[item.username] | length == 0
+  loop: "{{ vault_managed_jellyfin_users }}"
+  loop_control:
+    label: jellyfin-managed-user
+  changed_when: true
+  no_log: true
+
+- name: Require safe newly created Jellyfin managed-user identifiers
+  ansible.builtin.assert:
+    that:
+      - item.json.Id | string is match('^[A-Fa-f0-9-]{32,36}$')
+      - item.json.Name == item.item.username
+    fail_msg: Jellyfin returned an unsafe or ambiguous created-user identity.
+  loop: >-
+    {{ jellyfin_managed_user_creation.results | default([]) |
+       rejectattr('skipped', 'defined') | list }}
+  loop_control:
+    label: jellyfin-managed-user
+  no_log: true
+
+- name: Set declared policy on newly created Jellyfin managed users
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Users/{{ item.json.Id | urlencode }}/Policy"
+    method: POST
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_managed_users_token }}"'
+    body_format: json
+    body: "{{ item.item.policy }}"
+    status_code: [204]
+  loop: >-
+    {{ jellyfin_managed_user_creation.results | default([]) |
+       rejectattr('skipped', 'defined') | list }}
+  loop_control:
+    label: jellyfin-managed-user
+  changed_when: true
+  no_log: true
+
+- name: Report planned Jellyfin managed-user policy repair
+  ansible.builtin.debug:
+    msg: JELLYFIN_PLAN_MANAGED_USER_REPAIR
+  when:
+    - jellyfin_managed_users_phase == 'reconcile'
+    - ansible_check_mode
+    - jellyfin_managed_user_matches[item.username] | length == 1
+    - >-
+      (jellyfin_managed_user_matches[item.username][0].Policy | dict2items |
+       selectattr('key', 'in', item.policy.keys()) | items2dict) != item.policy
+  loop: "{{ vault_managed_jellyfin_users }}"
+  loop_control:
+    label: jellyfin-managed-user
+  changed_when: true
+
+- name: Repair Jellyfin managed-user policies
+  ansible.builtin.uri:
+    url: >-
+      {{ jellyfin_api }}/Users/{{
+         jellyfin_managed_user_matches[item.username][0].Id | urlencode }}/Policy
+    method: POST
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_managed_users_token }}"'
+    body_format: json
+    body: "{{ item.policy }}"
+    status_code: [204]
+  when:
+    - jellyfin_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+    - jellyfin_managed_user_matches[item.username] | length == 1
+    - >-
+      (jellyfin_managed_user_matches[item.username][0].Policy | dict2items |
+       selectattr('key', 'in', item.policy.keys()) | items2dict) != item.policy
+  loop: "{{ vault_managed_jellyfin_users }}"
+  loop_control:
+    label: jellyfin-managed-user
+  changed_when: true
+  no_log: true
+
+- name: Verify exact Jellyfin managed users
+  ansible.builtin.assert:
+    that:
+      - jellyfin_managed_user_matches[item.username] | length == 1
+      - jellyfin_managed_user_matches[item.username][0].Name | trim | lower == item.username | trim | lower
+      - >-
+        (jellyfin_managed_user_matches[item.username][0].Policy | dict2items |
+         selectattr('key', 'in', item.policy.keys()) | items2dict) == item.policy
+    fail_msg: >-
+      A managed Jellyfin identity is absent, duplicated, or differs from its
+      exact declared policy fields.
+  when: jellyfin_managed_users_phase == 'verify'
+  loop: "{{ vault_managed_jellyfin_users }}"
+  loop_control:
+    label: jellyfin-managed-user
+  no_log: true
