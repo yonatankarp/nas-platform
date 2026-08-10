@@ -109,7 +109,9 @@
     cleanup: true
     no_deps: true
     service_ports: false
-    interactive: false
+    # community.docker 5.2.1 maps false to --no-interactive, which pinned
+    # Compose v5.1.4 does not support. True omits the flag; no stdin is supplied.
+    interactive: true
     tty: false
   register: ntfy_existing_user_list
   when:

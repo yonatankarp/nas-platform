@@ -1,6 +1,7 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require "fileutils"
 require "json"
 require "open3"
 require "socket"
@@ -19,6 +20,73 @@ def run_ansible(playbook, *arguments)
       { "ANSIBLE_NOCOLOR" => "1" }, "ansible-playbook", "-i", "localhost,", "-c", "local",
       path, *arguments, chdir: ROOT
     )
+  end
+end
+
+def run_authoritative_probe_fixture(probe_tasks, auth_database_exists:, main_running:)
+  Dir.mktmpdir("nas-platform-ntfy-compose-probe-") do |directory|
+    current = File.join(directory, "current")
+    runtime_root = File.join(directory, "runtime-root")
+    project = File.join(current, "services", "ntfy")
+    runtime = File.join(runtime_root, "services", "ntfy")
+    FileUtils.mkdir_p(project, mode: 0o700)
+    FileUtils.mkdir_p(runtime, mode: 0o700)
+    File.write(File.join(project, "compose.yml"), <<~YAML, mode: "w", perm: 0o600)
+      services:
+        ntfy:
+          image: ntfy-pinned-fixture
+          container_name: ntfy
+    YAML
+    File.write(File.join(runtime, ".env"), "NTFY_AUTH_USERS=fixture-secret\n", mode: "w", perm: 0o600)
+    log = File.join(directory, "docker.log")
+    docker = File.join(directory, "docker")
+    File.write(docker, <<~RUBY, mode: "w", perm: 0o700)
+      #!/usr/bin/env ruby
+      require "json"
+      File.open(#{log.dump}, "a", 0o600) do |file|
+        file.puts(JSON.generate("main_running" => #{main_running}, "argv" => ARGV))
+      end
+      arguments = ARGV.dup
+      arguments.shift(2) if arguments.first == "--host"
+      case
+      when arguments == ["version", "--format", "{{ json . }}"]
+        puts JSON.generate("Client" => { "Version" => "29.5.3" }, "Server" => { "Version" => "29.6.2" })
+      when arguments == ["compose", "version", "--format", "json"]
+        puts JSON.generate("version" => "v5.1.4")
+      when arguments.include?("run")
+        if arguments.include?("--no-interactive")
+          warn "pinned Compose rejected an unsupported interaction flag: fixture-secret"
+          exit 125
+        end
+        unless STDIN.read.empty?
+          warn "authoritative probe unexpectedly received standard input"
+          exit 125
+        end
+        puts "user * (role: anonymous, tier: none)"
+        puts "- no access to any (other) topics (server config)"
+      else
+        warn "unexpected Docker CLI operation"
+        exit 125
+      end
+    RUBY
+
+    tasks = Marshal.load(Marshal.dump(probe_tasks))
+    tasks.fetch(0).fetch("community.docker.docker_compose_v2_run")["docker_cli"] = docker
+    playbook = [{
+      "hosts" => "localhost", "gather_facts" => false,
+      "vars" => {
+        "ntfy_auth_database_stat" => { "stat" => { "exists" => auth_database_exists } },
+        "ntfy_prior_provisioned_users" => {},
+        "platform_current_dir" => current,
+        "platform_runtime_dir" => runtime_root,
+        "ntfy_compose_project_name" => "ntfy-authoritative-fixture",
+        "ntfy_compose_files" => ["compose.yml"]
+      },
+      "tasks" => tasks
+    }]
+    _stdout, stderr, status = run_ansible(playbook)
+    calls = File.exist?(log) ? File.readlines(log, chomp: true).map { |line| JSON.parse(line) } : []
+    [stderr, status, calls]
   end
 end
 
@@ -165,6 +233,37 @@ probe_names = [
   "Resolve authoritative existing ntfy users"
 ]
 probe_tasks = probe_names.filter_map { |name| main_tasks.find { |task| task["name"] == name } }
+unless probe_tasks.length == probe_names.length
+  failures << "authoritative ntfy probe fixture tasks are incomplete"
+end
+
+fresh_stderr, fresh_status, fresh_calls = run_authoritative_probe_fixture(
+  probe_tasks, auth_database_exists: false, main_running: false
+)
+failures << "fresh install authoritative probe was not a redacted non-mutating skip" unless
+  fresh_status.success? && fresh_calls.empty? && !fresh_stderr.include?("fixture-secret")
+
+[
+  [false, "stopped main service"],
+  [true, "running main service"]
+].each do |main_running, label|
+  stderr, probe_status, calls = run_authoritative_probe_fixture(
+    probe_tasks, auth_database_exists: true, main_running: main_running
+  )
+  run_record = calls.find { |record| record.fetch("argv").include?("run") }
+  run_call = run_record&.fetch("argv")
+  failures << "#{label} authoritative probe failed with redacted diagnostics" unless
+    probe_status.success? && !stderr.include?("fixture-secret")
+  failures << "#{label} authoritative probe did not use one non-provisioning user-list call" unless
+    run_call && run_call.last(5) == [
+      "ntfy", "user", "--auth-file=/var/lib/ntfy/auth.db",
+      "--auth-default-access=deny-all", "list"
+    ] &&
+      run_record.fetch("main_running") == main_running &&
+      run_call.include?("--no-TTY") && !run_call.include?("--interactive") &&
+      !run_call.include?("--no-interactive") &&
+      !run_call.include?("up") && !run_call.include?("create") && !run_call.include?("start")
+end
 probe_playbook = [{
   "hosts" => "localhost", "gather_facts" => false,
   "vars" => {

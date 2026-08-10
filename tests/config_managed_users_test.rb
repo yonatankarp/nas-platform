@@ -154,6 +154,21 @@ def ntfy_main_order_valid?(tasks)
     preflight < provision && provision < render && provision < deploy
 end
 
+def ntfy_cli_probe_valid?(tasks)
+  probe = tasks.find { |task| task["name"] == "List authoritative existing ntfy users" }
+  run = probe&.fetch("community.docker.docker_compose_v2_run", nil)
+  run && run["service"] == "ntfy" && run["cleanup"] == true &&
+    run["no_deps"] == true && run["tty"] == false && run["interactive"] == true &&
+    !run.key?("stdin") &&
+    probe["changed_when"] == false && probe["failed_when"] == false &&
+    probe["check_mode"] != false && probe["no_log"] == true &&
+    Array(probe["when"]).include?("not ansible_check_mode") &&
+    run["argv"] == [
+      "user", "--auth-file=/var/lib/ntfy/auth.db",
+      "--auth-default-access=deny-all", "list"
+    ]
+end
+
 def ntfy_verify_contract_valid?(tasks)
   auth = tasks.find { |task| task["name"] == "Basic-authenticate each managed ntfy user" }
   read_access = tasks.find { |task| task["name"] == "Verify managed ntfy declared read access" }
@@ -458,19 +473,7 @@ check(failures, ntfy_tasks.include?("Verify managed ntfy declared read access") 
 ntfy_main_tasks = YAML.safe_load(ntfy_main, aliases: false) || []
 check(failures, ntfy_main_order_valid?(ntfy_main_tasks),
       "ntfy ownership preflight does not precede environment rendering and deployment")
-ntfy_cli_probe = ntfy_main_tasks.find { |task| task["name"] == "List authoritative existing ntfy users" }
-ntfy_cli_run = ntfy_cli_probe&.fetch("community.docker.docker_compose_v2_run", nil)
-check(failures,
-      ntfy_cli_run && ntfy_cli_run["service"] == "ntfy" && ntfy_cli_run["cleanup"] == true &&
-        ntfy_cli_run["no_deps"] == true && ntfy_cli_run["tty"] == false &&
-        ntfy_cli_run["interactive"] == false &&
-        ntfy_cli_probe["changed_when"] == false && ntfy_cli_probe["failed_when"] == false &&
-        ntfy_cli_probe["check_mode"] != false && ntfy_cli_probe["no_log"] == true &&
-        Array(ntfy_cli_probe["when"]).include?("not ansible_check_mode") &&
-        ntfy_cli_run["argv"] == [
-          "user", "--auth-file=/var/lib/ntfy/auth.db",
-          "--auth-default-access=deny-all", "list"
-        ],
+check(failures, ntfy_cli_probe_valid?(ntfy_main_tasks),
       "ntfy authoritative CLI probe differs from the pinned v2.27 user-list contract")
 check(failures, !ntfy_main.include?("change-pass") && !ntfy_main.include?("change-role") &&
                 !ntfy_tasks.include?("change-pass"),
@@ -737,6 +740,13 @@ if ARGV == ["--self-test"]
   reordered_main.insert(preflight_index, provision_task)
   check(failures, !ntfy_main_order_valid?(reordered_main),
         "behavioral self-test did not reject ntfy preflight reordering")
+
+  unsupported_interaction = Marshal.load(Marshal.dump(ntfy_main_tasks))
+  unsupported_interaction.find do |task|
+    task["name"] == "List authoritative existing ntfy users"
+  end.fetch("community.docker.docker_compose_v2_run")["interactive"] = false
+  check(failures, !ntfy_cli_probe_valid?(unsupported_interaction),
+        "behavioral self-test did not reject the unsupported Compose interaction flag")
 
   {
     "wrong auth status" => proc do |tasks|
