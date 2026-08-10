@@ -1,0 +1,12 @@
+---
+services:
+  dozzle:
+    container_name: !reset null
+    ports: !override
+      - "127.0.0.1:${DOZZLE_HOST_PORT:?}:8080"
+    volumes: !override
+      - ${PLATFORM_MAC_SANDBOX:?}/legacy/dozzle/data:/data
+
+  socket-proxy:
+    container_name: !reset null
+    ports: !override []

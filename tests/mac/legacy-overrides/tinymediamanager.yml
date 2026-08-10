@@ -1,0 +1,12 @@
+---
+services:
+  tinymediamanager:
+    container_name: !reset null
+    network_mode: !reset null
+    ports: !override
+      - "127.0.0.1:${TINYMEDIAMANAGER_WEB_HOST_PORT:?}:4000"
+      - "127.0.0.1:${TINYMEDIAMANAGER_API_HOST_PORT:?}:7878"
+    volumes: !override
+      - ${PLATFORM_MAC_SANDBOX:?}/legacy/tinymediamanager/data:/data
+      - ${PLATFORM_MAC_SANDBOX:?}/legacy/tinymediamanager/movies:/media/Movies
+      - ${PLATFORM_MAC_SANDBOX:?}/legacy/tinymediamanager/series:/media/Series
