@@ -132,6 +132,50 @@ case " $* " in
     ;;
 esac
 case " $* " in
+  *' --tags ntfy '*)
+    start=
+    previous=
+    for argument in "$@"; do
+      [ "$previous" != --start-at-task ] || start=$argument
+      previous=$argument
+    done
+    ruby -ryaml - "$FAKE_REPO_DIR/roles/ntfy/tasks/main.yml" "$start" <<'RUBY' || exit 31
+tasks, start = ARGV
+entries = YAML.safe_load_file(tasks, aliases: false)
+start_index = entries.index { |task| task["name"] == start }
+managed_index = entries.index { |task| task["name"] == "Resolve declarative ntfy managed-user provisioning" }
+abort unless start_index && managed_index && start_index <= managed_index
+prefix = entries[start_index..managed_index].to_s
+%w[ntfy_prior_provisioned_users ntfy_existing_user_records ntfy_authoritative_absence_established].each do |fact|
+  abort unless prefix.include?(fact)
+end
+RUBY
+    : > "${FAKE_NTFY_PREREQUISITES_MARKER:?}"
+    ;;
+  *' --tags tinymediamanager '*)
+    start=
+    previous=
+    for argument in "$@"; do
+      [ "$previous" != --start-at-task ] || start=$argument
+      previous=$argument
+    done
+    ruby -ryaml - "$FAKE_REPO_DIR/roles/tinymediamanager/tasks/main.yml" "$start" <<'RUBY' || exit 32
+tasks, start = ARGV
+entries = YAML.safe_load_file(tasks, aliases: false)
+start_index = entries.index { |task| task["name"] == start }
+abort unless start_index
+suffix = entries[start_index..].to_s
+required = [
+  "vault_tinymediamanager_password",
+  "Read the installed tinyMediaManager VNC password environment",
+  "Require the installed tinyMediaManager VNC password"
+]
+required.each { |value| abort unless suffix.include?(value) }
+RUBY
+    : > "${FAKE_TMM_CREDENTIAL_MARKER:?}"
+    ;;
+esac
+case " $* " in
   *" ${FAKE_SEED_FAIL_LABEL:-never-match} "*) exit 29 ;;
 esac
 SH
@@ -157,27 +201,35 @@ case " $* " in
   *) exit 2 ;;
 esac
 SH
-cat > "$fake_bin/fixtures.sh" <<'SH'
+cat > "$sandbox/fake-fixtures.sh" <<'SH'
 #!/bin/sh
 printf 'fixtures.sh\t%s\n' "$*" >> "${FAKE_COMMAND_LOG:?}"
+for capability in media books photos documents; do
+  printf 'fixture-capability\t%s\n' "$capability" >> "$FAKE_COMMAND_LOG"
+done
 SH
 chmod 0700 "$fake_bin/ansible-playbook" "$fake_bin/ansible-vault" "$fake_bin/git" \
-  "$fake_bin/fixtures.sh"
+  "$sandbox/fake-fixtures.sh"
 
 run_seed() {
   env PATH="$fake_bin:$PATH" FAKE_COMMAND_LOG="$log" \
+    FAKE_REPO_DIR="$repo_dir" \
+    FAKE_NTFY_PREREQUISITES_MARKER="$temporary_root/ntfy-prerequisites" \
+    FAKE_TMM_CREDENTIAL_MARKER="$temporary_root/tmm-credential" \
     PLATFORM_MAC_TMPDIR="$temporary_root" PLATFORM_LEGACY_ROOT="$legacy_root" \
     PLATFORM_MAC_SANDBOX="$sandbox" \
     PLATFORM_PROJECT_NAME=nas-platform-mac-lgcy42 \
     PLATFORM_MAC_VAULT_FILE="$temporary_root/deployment-vault.yml" \
     PLATFORM_MAC_VAULT_PASSWORD_FILE="$temporary_root/deployment-password" \
+    PLATFORM_FIXTURES_HELPER="$sandbox/fake-fixtures.sh" \
     PLATFORM_AUDIOBOOKSHELF_PORT=31001 PLATFORM_BESZEL_PORT=31002 \
     PLATFORM_DOZZLE_PORT=31003 PLATFORM_IMMICH_PORT=31004 PLATFORM_JELLYFIN_PORT=31005 \
     PLATFORM_KOMGA_PORT=31006 PLATFORM_NTFY_PORT=31007 PLATFORM_PAPERLESS_PORT=31008 \
     PLATFORM_TINYMEDIAMANAGER_WEB_PORT=31009 PLATFORM_TINYMEDIAMANAGER_API_PORT=31010 \
-    "$seed" --services-only
+    "$seed" "$@"
 }
-printf '%s\n' '$ANSIBLE_VAULT;1.1;AES256' > "$temporary_root/deployment-vault.yml"
+printf '%s\n%s\n' '$ANSIBLE_VAULT;1.1;AES256' 'tmm-secret-canary' \
+  > "$temporary_root/deployment-vault.yml"
 printf '%s\n' disposable > "$temporary_root/deployment-password"
 chmod 0600 "$temporary_root/deployment-vault.yml" "$temporary_root/deployment-password"
 
@@ -248,16 +300,21 @@ fi
 [ ! -e "$external_seed_root/current" ] || fail 'legacy seeding escaped through a runtime symlink'
 unlink "$sandbox/legacy-seed-runtime"
 
-: > "$log"
 seed_output=$temporary_root/seed-output
 run_seed > "$seed_output"
+[ -f "$temporary_root/ntfy-prerequisites" ] ||
+  fail 'ntfy prerequisite state was not established before provisioning'
+[ -f "$sandbox/legacy-seed-runtime/runtime/services/ntfy/.env" ] ||
+  fail 'ntfy ownership inspection had no prior declarative environment'
+[ -f "$temporary_root/tmm-credential" ] ||
+  fail 'tinyMediaManager vault credential interface was not invoked'
 grep -qx 'legacy-seed: audiobookshelf/users' "$seed_output" ||
   fail 'seed output omitted a service/capability label'
 grep -qx 'legacy-seed: audiobookshelf/administrator' "$seed_output" ||
   fail 'seed output omitted a primary-administrator capability label'
-grep -F "legacy-seed: fixtures/media-books-photos-documents" "$seed" >/dev/null ||
+grep -qx 'legacy-seed: fixtures/media-books-photos-documents' "$seed_output" ||
   fail 'seed output omitted the fixture capability label'
-if grep -F 'protected-value' "$seed_output" >/dev/null; then
+if grep -E 'protected-value|tmm-secret-canary' "$seed_output" "$log" >/dev/null; then
   fail 'seed output disclosed a protected value'
 fi
 for service in audiobookshelf beszel dozzle immich jellyfin komga ntfy paperless-ngx; do
@@ -266,7 +323,21 @@ for service in audiobookshelf beszel dozzle immich jellyfin komga ntfy paperless
   [ "$administrator_line" -lt "$users_line" ] ||
     fail "allowlisted $service users were seeded before its primary administrator"
 done
-grep -F 'fixtures.sh' "$seed" >/dev/null || fail 'existing fixture helper was not reused'
+fixture_line=$(grep -n '^fixtures.sh' "$log" | cut -d: -f1)
+last_health_gate=$(grep -n "${tab}ps${tab}--status${tab}running${tab}--services$" "$log" |
+  tail -n 1 | cut -d: -f1)
+first_service_seed=$(grep -n '^ansible-playbook' "$log" | grep -v 'legacy-render.yml' |
+  head -n 1 | cut -d: -f1)
+last_service_seed=$(grep -n '^ansible-playbook' "$log" | tail -n 1 | cut -d: -f1)
+[ "$last_health_gate" -lt "$first_service_seed" ] ||
+  fail 'service seeding began before the deployment health gates completed'
+[ "$last_service_seed" -lt "$fixture_line" ] ||
+  fail 'fixture helper ran before every service seed action completed'
+grep -q '^fixtures.sh[[:space:]]seed$' "$log" || fail 'existing fixture helper was not reused'
+for capability in media books photos documents; do
+  grep -q "^fixture-capability[[:space:]]$capability$" "$log" ||
+    fail "$capability fixture capability was not seeded"
+done
 ruby -rjson - "$log" <<'RUBY'
 File.foreach(ARGV.fetch(0)) do |line|
   line.split("\t").grep(/\A\{.*_compose_files/).each do |argument|
@@ -282,22 +353,69 @@ RUBY
 if FAKE_SEED_FAIL_LABEL=dozzle run_seed > "$seed_output" 2>&1; then
   fail 'seed command failure was ignored'
 fi
-grep -F 'fixtures_helper=$script_dir/fixtures.sh' "$seed" >/dev/null ||
-  fail 'service seeding does not fail before the fixed fixture helper'
+if grep -F 'fixtures.sh' "$log" >/dev/null; then
+  fail 'fixture seeding continued after service seed failure'
+fi
 
-ruby - "$test_dir/adoption.sh" "$test_dir/run.sh" <<'RUBY'
-adoption = File.read(ARGV.fetch(0))
-runner = File.read(ARGV.fetch(1))
-render = adoption.index('"$script_dir/adoption.sh" render')
-config = adoption.index('"$script_dir/legacy-compose.sh" "$service" config')
-up = adoption.index('"$script_dir/legacy-compose.sh" "$service" up')
-health = adoption.index('"$script_dir/legacy-compose.sh" "$service" ps')
-seed = adoption.index('"$script_dir/legacy-seed.sh"')
-raise "legacy deployment ordering is absent" unless [render, config, up, health].all? &&
-  render < config && config < up && up < health
-raise "health gate is not before seeding" unless seed && health < seed
-raise "runner predecessor gate is absent" unless runner.include?('require_predecessors "$current_phase"') &&
-  runner.match?(/if execute_phase "\$current_phase".*?status failed.*?return "\$phase_exit_status"/m)
-RUBY
+report_root=$sandbox.reports
+state_input=$report_root/phase-input.json
+mkdir -m 0700 "$report_root"
+printf 'schema=1\nsandbox=%s\n' "$(basename -- "$sandbox")" \
+  > "$report_root/.nas-platform-mac-report-owned"
+chmod 0600 "$report_root/.nas-platform-mac-report-owned"
+git_revision=400f03f276ae1bb69f5460c175b9fb923d620f1a
+vault_checksum=$(shasum -a 256 "$temporary_root/deployment-vault.yml" | awk '{print $1}')
+parity_checksum=$(shasum -a 256 "$parity_vault" | awk '{print $1}')
+"$test_dir/report.rb" --init "$state_input" --lane adoption \
+  --sandbox-id "$(basename -- "$sandbox")" --git-revision "$git_revision" \
+  --vault-checksum "$vault_checksum" --project-name nas-platform-mac-lgcy42 \
+  --beszel-port 31002 --ntfy-port 31007 --dozzle-port 31003 \
+  --audiobookshelf-port 31001 --komga-port 31006 \
+  --tinymediamanager-web-port 31009 --tinymediamanager-api-port 31010 \
+  --jellyfin-port 31005 --immich-port 31004 --paperless-port 31008 \
+  --parity-vault-checksum "$parity_checksum" \
+  --legacy-commit 400f03f276ae1bb69f5460c175b9fb923d620f1a
+"$test_dir/report.rb" --record "$state_input" --phase preflight --status passed
+"$test_dir/report.rb" --record "$state_input" --phase legacy-deploy --status passed
+
+run_runner_phase() {
+  runner_phase=$1
+  env PATH="$fake_bin:$PATH" FAKE_COMMAND_LOG="$log" FAKE_REPO_DIR="$repo_dir" \
+    FAKE_NTFY_PREREQUISITES_MARKER="$temporary_root/runner-ntfy-prerequisites" \
+    FAKE_TMM_CREDENTIAL_MARKER="$temporary_root/runner-tmm-credential" \
+    FAKE_PARITY_DOCUMENT="$parity_document" FAKE_SEED_FAIL_LABEL=dozzle \
+    PLATFORM_FIXTURES_HELPER="$sandbox/fake-fixtures.sh" \
+    PLATFORM_MAC_TMPDIR="$temporary_root" PLATFORM_LEGACY_ROOT="$legacy_root" \
+    NAS_INFRASTRUCTURE_DIR="$legacy_root" \
+    "$test_dir/run.sh" --lane adoption \
+      --vault-file "$temporary_root/deployment-vault.yml" \
+      --vault-password-file "$temporary_root/deployment-password" \
+      --parity-vault-file "$parity_vault" --parity-vault-password-file "$parity_password" \
+      --phase "$runner_phase" --sandbox "$sandbox"
+}
+
+: > "$log"
+runner_output=$temporary_root/runner-output
+if run_runner_phase legacy-seed > "$runner_output" 2>&1; then
+  fail 'runner accepted a failing legacy seed phase'
+fi
+legacy_seed_status=$(ruby -rjson -e '
+  phase = JSON.parse(File.read(ARGV.fetch(0))).fetch("phases").find do |entry|
+    entry["name"] == "legacy-seed"
+  end
+  print phase.fetch("status")
+' "$state_input")
+[ "$legacy_seed_status" = failed ] || fail 'runner did not record failed legacy seed status'
+if grep -F 'fixtures.sh' "$log" >/dev/null; then
+  fail 'runner reached fixtures after a failed service seed'
+fi
+
+for blocked_phase in capture-baseline snapshot cutover; do
+  if run_runner_phase "$blocked_phase" > "$runner_output" 2>&1; then
+    fail "$blocked_phase ran after failed legacy seeding"
+  fi
+  grep -F "phase $blocked_phase requires passed phase legacy-seed" "$runner_output" >/dev/null ||
+    fail "$blocked_phase was rejected for the wrong reason"
+done
 
 printf '%s\n' 'Legacy seed orchestration: ordering, isolation, failure propagation, and redaction hold'
