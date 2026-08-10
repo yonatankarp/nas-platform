@@ -11,6 +11,10 @@ require "yaml"
 ROOT = File.expand_path("..", __dir__)
 SERVICES = %w[audiobookshelf jellyfin komga].freeze
 VALIDATE_POLICY = File.join(ROOT, "tests", "validate-policy.sh")
+KOMGA_AUTH_PASSWORD_EXPRESSIONS = {
+  "Authenticate existing Komga managed users" => "{{ item.password }}",
+  "Authenticate newly created Komga managed users" => "{{ item.item.password }}"
+}.freeze
 
 REQUIRED_TASKS = {
   "audiobookshelf" => [
@@ -142,9 +146,13 @@ def includes_for(service, token_variable = nil)
   ]
 end
 
-def basic_identity(request)
+def basic_credentials(request)
   encoded = request.fetch("headers").fetch("authorization", "").delete_prefix("Basic ")
-  Base64.decode64(encoded).split(":", 2).first
+  Base64.decode64(encoded).split(":", 2)
+end
+
+def basic_identity(request)
+  basic_credentials(request).first
 end
 
 def failure_tail(output)
@@ -311,8 +319,10 @@ end
 def exercise_komga(failures)
   supported_roles = %w[ADMIN FILE_DOWNLOAD PAGE_STREAMING KOBO_SYNC KOREADER_SYNC]
   users = [
-    { "id" => "komga-reader", "email" => "reader@example.invalid", "roles" => %w[USER KOBO_SYNC] },
-    { "id" => "komga-friend", "email" => "friend@example.invalid", "roles" => %w[USER KOBO_SYNC] }
+    { "id" => "komga-reader", "email" => "reader@example.invalid", "password" => "reader-secret",
+      "roles" => %w[USER KOBO_SYNC] },
+    { "id" => "komga-friend", "email" => "friend@example.invalid", "password" => "friend-secret",
+      "roles" => %w[USER KOBO_SYNC] }
   ]
   managed = [
     { "email" => "reader@example.invalid", "password" => "reader-secret",
@@ -321,16 +331,17 @@ def exercise_komga(failures)
   ]
   responder = lambda do |request|
     case [request["method"], request["target"]]
-    when ["GET", "/api/v2/users"] then [200, users]
+    when ["GET", "/api/v2/users"]
+      [200, users.map { |user| user.reject { |key, _| key == "password" } }]
     when ["GET", "/api/v2/users/me"]
-      authenticated = users.find { |user| user["email"] == basic_identity(request) }
-      authenticated ? [200, authenticated] : [401, {}]
+      email, password = basic_credentials(request)
+      authenticated = users.find { |user| user["email"] == email && user["password"] == password }
+      authenticated ? [200, authenticated.reject { |key, _| key == "password" }] : [401, {}]
     when ["POST", "/api/v2/users"]
       body = request.fetch("json")
-      users << body.reject { |key, _| key == "password" }
-                   .merge("id" => "komga-created",
+      users << body.merge("id" => "komga-created",
                           "roles" => body.fetch("roles").intersection(supported_roles) + ["USER"])
-      [201, users.last]
+      [201, users.last.reject { |key, _| key == "password" }]
     when ["PATCH", "/api/v2/users/komga-reader"]
       users[0]["roles"] = request.fetch("json").fetch("roles").intersection(supported_roles) + ["USER"]
       [204, nil]
@@ -350,10 +361,10 @@ def exercise_komga(failures)
     failures << "Komga absent creation omitted its initial password" unless create&.dig("json", "password") == "new-secret"
     failures << "Komga newly created user did not prove its vault password" unless
       requests.any? { |request| request["target"] == "/api/v2/users/me" &&
-        basic_identity(request) == "new@example.invalid" }
+        basic_credentials(request) == ["new@example.invalid", "new-secret"] }
     failures << "Komga existing user did not authenticate with its own credential" unless
       requests.any? { |request| request["target"] == "/api/v2/users/me" &&
-        basic_identity(request) == "reader@example.invalid" }
+        basic_credentials(request) == ["reader@example.invalid", "reader-secret"] }
     failures << "Komga unmanaged user was not preserved" unless users.any? { |user| user["email"] == "friend@example.invalid" }
     failures << "Komga final verification did not re-list users" unless
       requests.count { |request| request["target"] == "/api/v2/users" && request["method"] == "GET" } == 3
@@ -722,6 +733,13 @@ def contract_failures(service, tasks)
     failures << "#{service} authentication is not disabled in check mode: #{task_name(task)}" unless
       Array(task["when"]).include?("not ansible_check_mode") && task["check_mode"] != false
   end
+  if service == "komga"
+    KOMGA_AUTH_PASSWORD_EXPRESSIONS.each do |auth_name, expected_password|
+      auth_task = tasks.find { |task| task_name(task) == auth_name }
+      failures << "komga vault password expression differs for #{auth_name}" unless
+        auth_task&.dig("ansible.builtin.uri", "url_password") == expected_password
+    end
+  end
 
   failures << "#{service} task file mentions unmanaged deletion" if tasks.any? do |task|
     task_name(task).match?(/delete|remove|absent.*unmanaged/i)
@@ -779,6 +797,19 @@ if ARGV == ["--self-test"] && failures.empty?
     missing_verify = tasks.reject { |task| task_name(task) == REQUIRED_TASKS.fetch(service).last }
     unless contract_failures(service, missing_verify).any? { |failure| failure.include?("Verify exact") }
       failures << "#{service} final-verification mutant survived"
+    end
+
+    next unless service == "komga"
+
+    KOMGA_AUTH_PASSWORD_EXPRESSIONS.each do |auth_name, expected_password|
+      wrong_password = Marshal.load(Marshal.dump(tasks))
+      wrong_password.find { |task| task_name(task) == auth_name }
+                    .fetch("ansible.builtin.uri")["url_password"] = "{{ wrong_password }}"
+      unless contract_failures(service, wrong_password).any? do |failure|
+        failure.include?("vault password expression") && failure.include?(auth_name)
+      end
+        failures << "Komga #{auth_name} wrong-password mutant survived (expected #{expected_password})"
+      end
     end
   end
 end
