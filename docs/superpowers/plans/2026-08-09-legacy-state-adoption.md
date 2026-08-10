@@ -12,17 +12,24 @@
 
 - Branch: `agent/task-14-adoption`
 - Implementation baseline before this checkpoint:
-  `7ba47a2e75bd879e7924aef21700febc5277c73c`
+  `81b5c6a8606eb0ef30899480525a55d6be1ef9af`
 - Managed-user migration prerequisite: complete. Full synthetic integration passed at
   `a3195f49a00a1906fae7fd92811d08a329af9e19`, including all registered live
   contracts, second convergence with `changed=0`, and final check mode.
 - Task 1: complete and independently spec/security reviewed. Feature commit
   `ac384978fad004d24901f9353caa5676239c2e20`; protected-input corrections end at
   `ed88de7582b43d99a4e19923104ccdcd86083e44`.
-- Task 2: implemented in
-  `7ba47a2e75bd879e7924aef21700febc5277c73c`; focused tests passed. Independent
-  spec review and code-quality/security review are the immediate next actions.
-- Tasks 3–9: not started.
+- Task 2: complete and independently spec/security reviewed. Initial feature
+  commit `7ba47a2e75bd879e7924aef21700febc5277c73c`; encrypted-snapshot, checkout
+  integrity, runner-preflight, and real-Ansible regression corrections end at
+  `03eb26d`.
+- Task 3: complete and independently spec/security reviewed. Override feature
+  commit `8e10e04506bbe50e2af6be7156cb61871e06e3d5`; exact environment,
+  runtime-semantics, port, and bind contract corrections end at
+  `81b5c6a8606eb0ef30899480525a55d6be1ef9af`. The pinned Beszel Intel image is
+  retained with a portable runtime posture. Read-only Docker socket binds are
+  allowed only on the Beszel and Dozzle socket-proxy services.
+- Task 4 is the immediate next action. Tasks 5–9 are not started.
 - Task 10: not started and remains gated on explicitly supplied/authorized
   protected deployment and parity inputs plus the clean pinned legacy checkout.
 - No protected production inputs have been accessed and no live migration has
