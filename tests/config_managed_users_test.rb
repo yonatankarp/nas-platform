@@ -4,6 +4,7 @@
 require "base64"
 require "json"
 require "open3"
+require "shellwords"
 require "socket"
 require "tmpdir"
 require "timeout"
@@ -70,7 +71,17 @@ def command_path(name)
 end
 
 def ansible_python
-  interpreter = File.open(command_path("ansible-playbook"), &:readline).delete_prefix("#!").strip
+  shebang = Shellwords.split(
+    File.open(command_path("ansible-playbook"), &:readline).delete_prefix("#!").strip
+  )
+  if File.basename(shebang.first.to_s) == "env"
+    shebang.shift
+    shebang.shift if shebang.first == "-S"
+    shebang.shift while shebang.first&.match?(/\A[A-Za-z_][A-Za-z0-9_]*=/)
+    interpreter = command_path(shebang.first.to_s)
+  else
+    interpreter = shebang.first
+  end
   raise "ansible-playbook interpreter is unavailable" unless File.executable?(interpreter)
 
   interpreter
