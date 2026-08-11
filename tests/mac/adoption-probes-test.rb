@@ -137,25 +137,30 @@ Dir.mktmpdir("adoption-probes-test-") do |root|
     "dozzle" => "true",
     "immich" => "[ \"$PLATFORM_IMMICH_UPLOAD_ROOT\" = '#{root}/legacy/immich/data/upload' ] && " \
                 "if [ \"${PLATFORM_ADOPTION_PROBE_TARGET:-false}\" = true ]; then " \
-                "[ \"$PLATFORM_IMMICH_SERVER_CONTAINER\" = 'proof-immich-server' ] && " \
-                "[ \"$PLATFORM_IMMICH_POSTGRES_CONTAINER\" = 'proof-immich-postgres' ]; else " \
+                "[ \"$PLATFORM_IMMICH_SERVER_CONTAINER\" = " \
+                "\"${PLATFORM_EXPECT_IMMICH_SERVER_CONTAINER:-proof-immich-server}\" ] && " \
+                "[ \"$PLATFORM_IMMICH_POSTGRES_CONTAINER\" = " \
+                "\"${PLATFORM_EXPECT_IMMICH_POSTGRES_CONTAINER:-proof-immich-postgres}\" ]; else " \
                 "[ \"$PLATFORM_IMMICH_SERVER_CONTAINER\" = 'proof-legacy-immich-immich-server-1' ] && " \
                 "[ \"$PLATFORM_IMMICH_POSTGRES_CONTAINER\" = 'proof-legacy-immich-database-1' ]; fi",
     "jellyfin" => "[ \"$PLATFORM_JELLYFIN_MEDIA_ROOT\" = '#{root}/legacy/jellyfin/media' ] && " \
                   "if [ \"${PLATFORM_ADOPTION_PROBE_TARGET:-false}\" = true ]; then " \
-                  "[ \"$PLATFORM_JELLYFIN_CONTAINER\" = 'proof-jellyfin' ]; else " \
+                  "[ \"$PLATFORM_JELLYFIN_CONTAINER\" = " \
+                  "\"${PLATFORM_EXPECT_JELLYFIN_CONTAINER:-proof-jellyfin}\" ]; else " \
                   "[ \"$PLATFORM_JELLYFIN_CONTAINER\" = 'proof-legacy-jellyfin-jellyfin-1' ]; fi",
     "komga" => "[ \"$PLATFORM_KOMGA_LIBRARY_PATH\" = '#{root}/legacy/komga/library' ]",
     "paperless" => "[ \"$PLATFORM_PAPERLESS_CONSUME_ROOT\" = '#{root}/legacy/paperless-ngx/consume' ] && " \
                    "[ \"$PLATFORM_CONTRACT_REPO_DIR\" = '#{root}/tests/mac/../..' ] && " \
                    "if [ \"${PLATFORM_ADOPTION_PROBE_TARGET:-false}\" = true ]; then " \
-                   "[ \"$PLATFORM_PAPERLESS_WEBSERVER_CONTAINER\" = 'proof-paperless-webserver' ]; else " \
+                   "[ \"$PLATFORM_PAPERLESS_WEBSERVER_CONTAINER\" = " \
+                   "\"${PLATFORM_EXPECT_PAPERLESS_CONTAINER:-proof-paperless-webserver}\" ]; else " \
                    "[ \"$PLATFORM_PAPERLESS_WEBSERVER_CONTAINER\" = " \
                    "'proof-legacy-paperless-ngx-webserver-1' ]; fi",
     "tinymediamanager" => "[ \"$PLATFORM_TINYMEDIAMANAGER_MOVIES_ROOT\" = " \
                            "'#{root}/legacy/tinymediamanager/movies' ] && " \
                            "if [ \"${PLATFORM_ADOPTION_PROBE_TARGET:-false}\" = true ]; then " \
-                           "[ \"$PLATFORM_TINYMEDIAMANAGER_CONTAINER\" = 'proof-tinymediamanager' ]; else " \
+                           "[ \"$PLATFORM_TINYMEDIAMANAGER_CONTAINER\" = " \
+                           "\"${PLATFORM_EXPECT_TMM_CONTAINER:-proof-tinymediamanager}\" ]; else " \
                            "[ \"$PLATFORM_TINYMEDIAMANAGER_CONTAINER\" = " \
                            "'proof-legacy-tinymediamanager-tinymediamanager-1' ]; fi"
   }
@@ -354,6 +359,27 @@ Dir.mktmpdir("adoption-probes-test-") do |root|
   SERVICES.each do |service|
     _stdout, stderr, status = Open3.capture3(target_env, File.join(PROBES, "#{service}.sh"))
     failures << "#{service} target probe path failed: #{stderr}" unless status.success?
+  end
+  integration_target_env = target_env.merge(
+    "PLATFORM_PROOF_PLATFORM" => "integration",
+    "PLATFORM_ADOPTION_NTFY_CONTAINER" => "ntfy",
+    "PLATFORM_EXPECT_NTFY_CONTAINER" => "ntfy",
+    "PLATFORM_IMMICH_SERVER_CONTAINER" => "immich_server",
+    "PLATFORM_IMMICH_MACHINE_LEARNING_CONTAINER" => "immich_machine_learning",
+    "PLATFORM_IMMICH_REDIS_CONTAINER" => "immich_redis",
+    "PLATFORM_IMMICH_POSTGRES_CONTAINER" => "immich_postgres",
+    "PLATFORM_EXPECT_IMMICH_SERVER_CONTAINER" => "immich_server",
+    "PLATFORM_EXPECT_IMMICH_POSTGRES_CONTAINER" => "immich_postgres",
+    "PLATFORM_JELLYFIN_CONTAINER" => "jellyfin",
+    "PLATFORM_EXPECT_JELLYFIN_CONTAINER" => "jellyfin",
+    "PLATFORM_PAPERLESS_WEBSERVER_CONTAINER" => "paperless_webserver",
+    "PLATFORM_EXPECT_PAPERLESS_CONTAINER" => "paperless_webserver",
+    "PLATFORM_TINYMEDIAMANAGER_CONTAINER" => "tinymediamanager",
+    "PLATFORM_EXPECT_TMM_CONTAINER" => "tinymediamanager"
+  )
+  SERVICES.each do |service|
+    _stdout, stderr, status = Open3.capture3(integration_target_env, File.join(PROBES, "#{service}.sh"))
+    failures << "#{service} integration target probe path failed: #{stderr}" unless status.success?
   end
   descriptor_paths = {
     "PLATFORM_ADOPTION_BASELINE_FILE" => File.join(mac, "adoption-baseline.rb"),

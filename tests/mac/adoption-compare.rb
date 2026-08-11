@@ -288,7 +288,9 @@ begin
     environment["PLATFORM_ADOPTION_BASELINE_FILE"] = "/dev/fd/#{baseline_descriptor.fileno}"
     environment["PLATFORM_CONTRACT_REPO_DIR"] = "."
     environment["PLATFORM_LEGACY_FIXTURE_HELPER_FILE"] = "/dev/fd/#{fixture_helper_descriptor.fileno}"
-    environment["PLATFORM_ADOPTION_NTFY_CONTAINER"] = "#{ENV.fetch('PLATFORM_PROJECT_NAME')}-ntfy"
+    environment["PLATFORM_ADOPTION_NTFY_CONTAINER"] =
+      ENV.fetch("PLATFORM_PROOF_PLATFORM", "mac") == "integration" ?
+        "ntfy" : "#{ENV.fetch('PLATFORM_PROJECT_NAME')}-ntfy"
     environment["PLATFORM_ADOPTION_NTFY_ENV_FILE"] = File.join(
       ENV.fetch("PLATFORM_DOCKER_ROOT"), "nas-platform/runtime/services/ntfy/.env"
     )

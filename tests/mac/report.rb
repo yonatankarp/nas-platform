@@ -24,7 +24,7 @@ STATUSES = %w[running passed failed].freeze
 REDACTION = "[REDACTED]"
 SAFE_DIAGNOSTIC = /\A[A-Za-z0-9][A-Za-z0-9_.-]*\z/
 ROOT_KEYS = %w[
-  schema lane sandbox_id project_name beszel_port ntfy_port dozzle_port audiobookshelf_port komga_port
+  schema lane proof_platform platform_kind platform_compose_kind sandbox_id project_name beszel_port ntfy_port dozzle_port audiobookshelf_port komga_port
   tinymediamanager_web_port tinymediamanager_api_port jellyfin_port immich_port paperless_port
   git_revision vault_checksum parity_vault_checksum legacy_commit diagnostic_locations phases
 ].freeze
@@ -76,9 +76,21 @@ end
 
 def validate_input(input)
   raise "input must be a JSON object" unless input.is_a?(Hash)
+  input = input.dup
+  identity_keys = %w[proof_platform platform_kind platform_compose_kind]
+  if (input.keys & identity_keys).empty?
+    input.merge!(
+      "proof_platform" => "mac", "platform_kind" => "mac", "platform_compose_kind" => "mac"
+    )
+  end
   raise "input contains unknown or missing root fields" unless exact_keys?(input, ROOT_KEYS, ["deployment_manifest"])
   raise "input schema must be 1" unless input["schema"] == 1
   raise "input lane must be fresh or adoption" unless %w[fresh adoption].include?(input["lane"])
+  raise "input proof_platform must be mac or integration" unless
+    %w[mac integration].include?(input["proof_platform"])
+  raise "input platform_kind must preserve Mac adoption capabilities" unless input["platform_kind"] == "mac"
+  raise "input platform_compose_kind differs from proof platform" unless
+    input["platform_compose_kind"] == input["proof_platform"]
   %w[sandbox_id project_name git_revision vault_checksum].each do |field|
     raise "input #{field} must be a non-empty string" unless input[field].is_a?(String) && !input[field].empty?
   end
@@ -199,7 +211,7 @@ end
 def markdown_report(report)
   lines = ["# Mac platform proof report", ""]
   %w[
-    lane sandbox_id project_name beszel_port ntfy_port dozzle_port audiobookshelf_port komga_port
+    lane proof_platform platform_kind platform_compose_kind sandbox_id project_name beszel_port ntfy_port dozzle_port audiobookshelf_port komga_port
     tinymediamanager_web_port tinymediamanager_api_port jellyfin_port immich_port paperless_port
     git_revision vault_checksum parity_vault_checksum legacy_commit generated_at
   ].each do |key|
@@ -302,6 +314,9 @@ def initialize_input(path, options)
   input = {
     "schema" => 1,
     "lane" => options.fetch(:lane),
+    "proof_platform" => options.fetch(:proof_platform, "mac"),
+    "platform_kind" => "mac",
+    "platform_compose_kind" => options.fetch(:proof_platform, "mac"),
     "sandbox_id" => options.fetch(:sandbox_id),
     "project_name" => options.fetch(:project_name),
     "beszel_port" => options.fetch(:beszel_port),
@@ -383,6 +398,9 @@ def self_test
     valid_input = {
       "schema" => 1,
       "lane" => "fresh",
+      "proof_platform" => "mac",
+      "platform_kind" => "mac",
+      "platform_compose_kind" => "mac",
       "sandbox_id" => "nas-platform-mac.Abc123",
       "project_name" => "nas-platform-mac-abc123",
       "beszel_port" => 38_090,
@@ -518,6 +536,10 @@ def self_test
       "malformed root" => [],
       "unknown root field" => valid_input.merge("unexpected" => true),
       "root field type" => valid_input.merge("vault_checksum" => []),
+      "partial proof platform identity" => valid_input.reject { |key, _value| key == "proof_platform" },
+      "proof platform invalid" => valid_input.merge("proof_platform" => "linux"),
+      "platform kind invalid" => valid_input.merge("platform_kind" => "nas"),
+      "compose kind mismatch" => valid_input.merge("platform_compose_kind" => "integration"),
       "fresh parity identity" => valid_input.merge("parity_vault_checksum" => "1" * 64),
       "fresh legacy identity" => valid_input.merge("legacy_commit" => "a" * 40),
       "adoption missing parity identity" => adoption_input.merge("parity_vault_checksum" => nil),
@@ -630,6 +652,7 @@ parser = OptionParser.new do |opts|
   opts.on("--location BASENAME") { |value| options[:location] = value }
   opts.on("--manifest PATH") { |value| options[:manifest] = value }
   opts.on("--lane LANE") { |value| options[:lane] = value }
+  opts.on("--proof-platform PLATFORM") { |value| options[:proof_platform] = value }
   opts.on("--sandbox-id ID") { |value| options[:sandbox_id] = value }
   opts.on("--project-name NAME") { |value| options[:project_name] = value }
   opts.on("--beszel-port PORT", Integer) { |value| options[:beszel_port] = value }

@@ -6,7 +6,11 @@ dir=${PLATFORM_ADOPTION_SCRIPT_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/.." && p
 sandbox=${PLATFORM_MAC_SANDBOX:?}
 project=${PLATFORM_PROJECT_NAME:?}
 if [ "${PLATFORM_ADOPTION_PROBE_TARGET:-false}" = true ]; then
-  container=$project-jellyfin
+  case ${PLATFORM_PROOF_PLATFORM:-mac} in
+    integration) container=jellyfin ;;
+    mac) container=$project-jellyfin ;;
+    *) exit 1 ;;
+  esac
 else
   container=$project-legacy-jellyfin-jellyfin-1
 fi

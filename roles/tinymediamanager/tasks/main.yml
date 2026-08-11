@@ -48,8 +48,8 @@
   ansible.builtin.file:
     path: "{{ tinymediamanager_state_root }}/data"
     state: directory
-    owner: "{{ nas_uid if platform_kind == 'nas' else omit }}"
-    group: "{{ nas_gid if platform_kind == 'nas' else omit }}"
+    owner: "{{ nas_uid if platform_kind == 'nas' or (platform_manage_linux_ownership | bool) else omit }}"
+    group: "{{ nas_gid if platform_kind == 'nas' or (platform_manage_linux_ownership | bool) else omit }}"
     mode: "0755"
 
 - name: Inspect stable tinyMediaManager settings
@@ -121,8 +121,8 @@
   ansible.builtin.copy:
     dest: "{{ tinymediamanager_state_root }}/data/{{ item.key }}.json"
     content: "{{ item.value | to_nice_json }}\n"
-    owner: "{{ nas_uid if platform_kind == 'nas' else omit }}"
-    group: "{{ nas_gid if platform_kind == 'nas' else omit }}"
+    owner: "{{ nas_uid if platform_kind == 'nas' or (platform_manage_linux_ownership | bool) else omit }}"
+    group: "{{ nas_gid if platform_kind == 'nas' or (platform_manage_linux_ownership | bool) else omit }}"
     mode: "0600"
   loop: "{{ tinymediamanager_managed_settings | dict2items }}"
   when: tinymediamanager_existing_settings.get(item.key, {}) != item.value

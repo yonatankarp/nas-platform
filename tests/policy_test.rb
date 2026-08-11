@@ -1419,10 +1419,22 @@ host_prep_create = host_prep_tasks.find do |task|
 end
 host_prep_file = host_prep_create&.fetch("ansible.builtin.file", {})
 check(failures, host_prep_file["owner"].to_s.include?("platform_kind == 'nas'") &&
+                host_prep_file["owner"].to_s.include?("platform_manage_linux_ownership | bool") &&
                 host_prep_file["group"].to_s.include?("platform_kind == 'nas'") &&
+                host_prep_file["group"].to_s.include?("platform_manage_linux_ownership | bool") &&
                 host_prep_file["owner"].to_s.include?("else omit") &&
                 host_prep_file["group"].to_s.include?("else omit"),
-      "Mac host preparation must omit Linux-only storage ownership")
+      "host preparation must restrict Linux ownership to the explicit integration capability")
+
+preflight_tasks = YAML.safe_load_file(File.join(ROOT, "roles", "preflight", "tasks", "main.yml"))
+ownership_guard = preflight_tasks.find do |task|
+  task["name"] == "Restrict synthetic Linux ownership correction"
+end&.dig("ansible.builtin.assert", "that")&.join(" ").to_s
+%w[platform_manage_linux_ownership platform_compose_kind deployment_bundle_test_mode
+   ansible_facts.system nas_docker_root nas_media_root].each do |token|
+  check(failures, ownership_guard.include?(token),
+        "integration Linux ownership guard must bind #{token}")
+end
 
 beszel_user_lists = beszel_tasks.select do |task|
   task["name"].to_s.start_with?("List application users") &&

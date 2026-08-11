@@ -58,8 +58,8 @@
   ansible.builtin.template:
     src: users.yml.j2
     dest: "{{ dozzle_state_root }}/users.yml"
-    owner: "{{ nas_uid if platform_kind == 'nas' else omit }}"
-    group: "{{ nas_gid if platform_kind == 'nas' else omit }}"
+    owner: "{{ nas_uid if platform_kind == 'nas' or (platform_manage_linux_ownership | bool) else omit }}"
+    group: "{{ nas_gid if platform_kind == 'nas' or (platform_manage_linux_ownership | bool) else omit }}"
     mode: "0600"
     unsafe_writes: false
   register: dozzle_users_file

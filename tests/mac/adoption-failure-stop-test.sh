@@ -70,6 +70,7 @@ mac_repo_dir=$fixture/repo
 vault_password_file=$fixture/password
 vault_file=$fixture/vault
 enable_adoption_mapping() { printf '%s\n' mapping >> "$FAILURE_ORDER_LOG"; }
+mac_ansible_playbook() { command ansible-playbook "$@"; }
 . "$fixture/functions.sh"
 cutover_state=$fixture/cutover-state.json
 "$test_dir/report.rb" --init "$cutover_state" --lane adoption \
@@ -106,6 +107,7 @@ fi
 
 mkdir -m 0700 -p "$fixture/hook-tree/hooks/fixtures-recreate"
 cp "$test_dir"/hooks/fixtures-recreate/*.sh "$fixture/hook-tree/hooks/fixtures-recreate/"
+cp "$test_dir/lib.sh" "$fixture/hook-tree/lib.sh"
 cat > "$fixture/hook-tree/adoption-container-attest.sh" <<'SH'
 #!/bin/sh
 exit 0
@@ -122,6 +124,7 @@ chmod 0700 "$fixture/hook-tree"/*.sh
 cat > "$fixture/bin/docker" <<'SH'
 #!/bin/sh
 [ -z "${HOSTILE_DOCKER_MARKER:-}" ] || printf '%s\n' "$*" >> "$HOSTILE_DOCKER_MARKER"
+[ -z "${PARTIAL_DOCKER_LOG:-}" ] || printf '%s\n' "$*" >> "$PARTIAL_DOCKER_LOG"
 case " $* " in
   *' compose '*' up -d --force-recreate --wait '*) exit 8 ;;
   *) exit 0 ;;
@@ -129,7 +132,16 @@ esac
 SH
 chmod 0700 "$fixture/bin/docker"
 mkdir -m 0700 "$fixture/docker-root"
+for service in beszel ntfy dozzle audiobookshelf komga tinymediamanager jellyfin immich paperless-ngx; do
+  current=$fixture/docker-root/nas-platform/current/services/$service
+  mkdir -m 0700 -p "$current"
+  printf '%s\n' 'services: {}' > "$current/compose.yml"
+  printf '%s\n' 'services: {}' > "$current/compose.mac.yml"
+  printf '%s\n' 'services: {}' > "$current/compose.adoption.yml"
+done
 HOOK_STOP_LOG=$fixture/hook-stops.log
+PARTIAL_DOCKER_LOG=$fixture/partial-docker.log
+export PARTIAL_DOCKER_LOG
 export HOOK_STOP_LOG
 for hook in "$fixture/hook-tree/hooks/fixtures-recreate"/*.sh; do
   CURRENT_HOOK=$(basename -- "$hook")
@@ -141,6 +153,9 @@ for hook in "$fixture/hook-tree/hooks/fixtures-recreate"/*.sh; do
 done
 [ "$(wc -l < "$HOOK_STOP_LOG" | tr -d ' ')" = 9 ] ||
   fail 'not every recreation hook stopped all adoption targets after partial Compose failure'
+[ "$(wc -l < "$PARTIAL_DOCKER_LOG" | tr -d ' ')" = 9 ] ||
+  fail 'not every partial recreation reached the exact Docker Compose up operation'
+unset PARTIAL_DOCKER_LOG
 
 hostile_sandbox=$fixture/nas-platform-mac.Safe12
 mkdir -m 0700 "$hostile_sandbox"

@@ -63,20 +63,17 @@ RUBY
   exit 1
 }
 sh -n "$repo_dir/tests/adoption-integration.sh"
-ruby - "$repo_dir/tests/mac/run.sh" "$repo_dir/tests/mac/legacy-seed.sh" <<'RUBY'
-runner, legacy_seed = ARGV.map { |path| File.binread(path) }
-run_site = runner[/^run_site\(\) \{.*?^\}/m]
-integration_branch = run_site && run_site[/if \[ "\$proof_platform" = integration \]; then.*?\n  fi/m]
-raise "runner contract: integration site branch is missing" unless integration_branch
-raise "runner contract: integration compose mode is missing" unless
-  integration_branch.include?("platform_compose_kind=integration") &&
-    integration_branch.include?("deployment_bundle_test_mode=true")
-raise "runner contract: test mode escaped integration branch" unless
-  runner.scan("deployment_bundle_test_mode=true").length == 1
+ruby - "$repo_dir/tests/mac/run.sh" "$repo_dir/tests/mac/lib.sh" \
+  "$repo_dir/tests/mac/legacy-seed.sh" <<'RUBY'
+runner, library, legacy_seed = ARGV.map { |path| File.binread(path) }
+raise "runner contract: integration context is not centralized" unless
+  runner.include?("mac_ansible_playbook") && library.include?("platform_compose_kind=integration") &&
+    library.include?("deployment_bundle_test_mode=true") &&
+    library.include?("platform_manage_linux_ownership=true")
 raise "runner contract: dirty-controller bypass is enabled" if
   runner.include?("deployment_bundle_allow_dirty_controller=true")
-raise "runner contract: legacy seed does not preserve Mac capabilities" unless
-  legacy_seed.include?("platform_kind=mac") && legacy_seed.include?("platform_compose_kind=integration")
+raise "runner contract: legacy seed bypasses centralized integration context" unless
+  legacy_seed.include?("mac_ansible_playbook")
 RUBY
 
 fail() {
@@ -234,7 +231,56 @@ cat > "$fake_bin/ansible-vault" <<'SH'
 [ "$1" = view ] || exit 2
 cat "${FAKE_VAULT_VIEW:?}"
 SH
-chmod 0755 "$fake_bin/uname" "$fake_bin/git" "$fake_bin/ansible-vault"
+cat > "$fake_bin/docker" <<'SH'
+#!/bin/sh
+set -eu
+case ${1-} in
+  network)
+    printf '%s\n' 172.17.0.1
+    ;;
+  run)
+    printf 'docker-run:' >> "${FAKE_DOCKER_LOG:?}"
+    for argument in "$@"; do printf '<%s>' "$argument" >> "$FAKE_DOCKER_LOG"; done
+    printf '\n' >> "$FAKE_DOCKER_LOG"
+    script= owned= identity=
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = sh ] && [ "${2-}" = -eu ] && [ "${3-}" = -c ]; then
+        script=${9-}
+        owned=${8-}
+        identity=${10-}
+        break
+      fi
+      shift
+    done
+    [ -n "$script" ] && [ -n "$owned" ] && [ -n "$identity" ] || exit 91
+    inner_status=0
+    FAKE_INNER_ROOT=1 "$script" --inner "$owned" "$identity" || inner_status=$?
+    case ${FAKE_DIAGNOSTIC_MUTATION:-} in
+      symlink) ln -s "${FAKE_DIAGNOSTIC_SENTINEL:?}" "$ADOPTION_DIAGNOSTICS_DIR/sanitized.txt" ;;
+      fifo) mkfifo "$ADOPTION_DIAGNOSTICS_DIR/sanitized.txt" ;;
+      parent)
+        mv "$ADOPTION_DIAGNOSTICS_DIR" "$ADOPTION_DIAGNOSTICS_DIR.swapped"
+        mkdir -m 0700 "$ADOPTION_DIAGNOSTICS_DIR"
+        ;;
+      directory-fifo)
+        rmdir "$ADOPTION_DIAGNOSTICS_DIR"
+        mkfifo "$ADOPTION_DIAGNOSTICS_DIR"
+        ;;
+      '') ;;
+      *) exit 93 ;;
+    esac
+    [ "${FAKE_OUTER_CLEANUP_FAIL:-0}" = 0 ] || printf '%s\n' residue > "$owned/unexpected"
+    exit "$inner_status"
+    ;;
+  *) exit 92 ;;
+esac
+SH
+cat > "$fake_bin/id" <<'SH'
+#!/bin/sh
+if [ "${FAKE_INNER_ROOT:-0}" = 1 ] && [ "${1-}" = -u ]; then printf '%s\n' 0; else /usr/bin/id "$@"; fi
+SH
+chmod 0755 "$fake_bin/uname" "$fake_bin/git" "$fake_bin/ansible-vault" \
+  "$fake_bin/docker" "$fake_bin/id"
 
 gateway_bin=$fixture_parent/gateway-bin
 mkdir "$gateway_bin"
@@ -270,7 +316,8 @@ vault_log=$fixture_parent/vault.log
 import_log=$fixture_parent/import.log
 coordinator_log=$fixture_parent/coordinator.log
 cleanup_log=$fixture_parent/cleanup.log
-: > "$vault_log"; : > "$import_log"; : > "$coordinator_log"; : > "$cleanup_log"
+docker_log=$fixture_parent/docker.log
+: > "$vault_log"; : > "$import_log"; : > "$coordinator_log"; : > "$cleanup_log"; : > "$docker_log"
 
 run_fixture() {
   PATH="$fake_bin:$PATH" RUNNER_TEMP="$runner_parent" TMPDIR="$other_tmp" \
@@ -282,6 +329,9 @@ run_fixture() {
     FAKE_CONTROLLER_MANIFEST="$committed_manifest" \
     FAKE_VAULT_LOG="$vault_log" FAKE_IMPORT_LOG="$import_log" \
     FAKE_COORDINATOR_LOG="$coordinator_log" FAKE_CLEANUP_LOG="$cleanup_log" \
+    FAKE_DOCKER_LOG="$docker_log" \
+    FAKE_DIAGNOSTIC_MUTATION="${TEST_DIAGNOSTIC_MUTATION:-}" \
+    FAKE_DIAGNOSTIC_SENTINEL="${TEST_DIAGNOSTIC_SENTINEL:-}" \
     "$fixture_repo/tests/adoption-integration.sh"
 }
 
@@ -295,6 +345,24 @@ fi
   fail 'successful wrapper retained owned state'
 [ -z "$(find "$other_tmp" -mindepth 1 -maxdepth 1 -print -quit)" ] ||
   fail 'wrapper used TMPDIR instead of RUNNER_TEMP'
+fixture_legacy_physical=$(CDPATH= cd -- "$fixture_legacy" && pwd -P)
+fixture_repo_physical=$(CDPATH= cd -- "$fixture_repo" && pwd -P)
+runner_parent_physical=$(CDPATH= cd -- "$runner_parent" && pwd -P)
+grep -F '<--network><host>' "$docker_log" >/dev/null || fail 'runner container lacks host networking'
+grep -F '</var/run/docker.sock:/var/run/docker.sock>' "$docker_log" >/dev/null ||
+  fail 'runner container lacks the Docker socket'
+grep -F "<$fixture_repo_physical:$fixture_repo_physical:ro>" "$docker_log" >/dev/null ||
+  fail 'controller checkout is not mounted read-only at its exact path'
+grep -F "<$fixture_legacy_physical:$fixture_legacy_physical:ro>" "$docker_log" >/dev/null ||
+  fail 'legacy checkout is not mounted read-only at its exact path'
+grep -F "<NAS_INFRASTRUCTURE_DIR=$fixture_legacy_physical>" "$docker_log" >/dev/null ||
+  fail 'runner container did not receive the pinned legacy checkout'
+grep -E '<RUNNER_TEMP=.*/nas-platform-integration\.[A-Za-z0-9]{6}>' "$docker_log" >/dev/null ||
+  fail 'runner container did not receive its mounted owned temporary parent'
+grep -F 'chown 0:0' "$docker_log" >/dev/null &&
+  fail 'runner container changes ownership of the outer root'
+grep -F '<docker.io/library/python:3.13-alpine@sha256:399babc8b49529dabfd9c922f2b5eea81d611e4512e3ed250d75bd2e7683f4b0>' \
+  "$docker_log" >/dev/null || fail 'runner image is not digest-pinned'
 [ "$(grep -c '^generate:' "$vault_log")" -eq 1 ] || fail 'deployment vault was not generated once'
 [ "$(grep -c '^import:' "$import_log")" -eq 1 ] || fail 'parity vault was not imported once'
 deployment_root=$(sed -n 's/^generate:\([^:]*\)\/vault.yml:.*/\1/p' "$vault_log")
@@ -303,14 +371,12 @@ parity_root=$(sed -n 's/^import:[^:]*:\([^:]*\)\/vault.yml:.*/\1/p' "$import_log
   fail 'deployment and parity credentials share a namespace'
 grep -F 'coordinator-argv:<--lane><adoption><--platform><integration><--integration-ports-file>' \
   "$coordinator_log" >/dev/null || fail 'coordinator did not receive full integration mode'
-fixture_legacy_physical=$(CDPATH= cd -- "$fixture_legacy" && pwd -P)
-runner_parent_physical=$(CDPATH= cd -- "$runner_parent" && pwd -P)
 grep -F "coordinator-env:$fixture_legacy_physical:$runner_parent_physical/" "$coordinator_log" >/dev/null ||
   fail 'coordinator did not receive the pinned sibling or owned root'
 [ "$(grep -c '^vault-cleanup:' "$cleanup_log")" -eq 2 ] ||
   fail 'credential namespaces were not cleaned exactly once'
 grep -c '^sandbox:' "$cleanup_log" | grep -qx 1 || fail 'coordinator sandbox cleanup differs'
-grep -c '^outer:' "$cleanup_log" | grep -qx 1 || fail 'outer contained cleanup differs'
+grep '^outer:' "$cleanup_log" >/dev/null && fail 'outer root used recursive cleanup instead of bound empty removal'
 
 if FAKE_COORDINATOR_FAIL=1 run_fixture > "$fixture_parent/failure.out" 2>&1; then
   fail 'coordinator failure was accepted'
@@ -329,6 +395,19 @@ fi
 [ -f "$diagnostic" ] || fail 'cleanup failure did not retain sanitized diagnostics'
 grep -F "$fixture_parent" "$diagnostic" >/dev/null && fail 'cleanup diagnostic leaked a raw path'
 find "$runner_parent" -depth -mindepth 1 -delete
+
+diagnostic_sentinel=$fixture_parent/diagnostic-sentinel
+printf '%s\n' protected > "$diagnostic_sentinel"
+for diagnostic_mutation in symlink fifo parent directory-fifo; do
+  if FAKE_COORDINATOR_FAIL=1 TEST_DIAGNOSTIC_MUTATION="$diagnostic_mutation" \
+      TEST_DIAGNOSTIC_SENTINEL="$diagnostic_sentinel" run_fixture \
+      > "$fixture_parent/diagnostic-$diagnostic_mutation.out" 2>&1; then
+    fail "$diagnostic_mutation diagnostic mutation was accepted"
+  fi
+  [ "$(cat "$diagnostic_sentinel")" = protected ] ||
+    fail "$diagnostic_mutation diagnostic mutation changed an external sentinel"
+  find "$runner_parent" -depth -mindepth 1 -delete
+done
 
 if TEST_DIAGNOSTICS_DIR="$other_tmp/escape" run_fixture \
     > "$fixture_parent/path-failure.out" 2>&1; then

@@ -149,20 +149,9 @@ name, files = ARGV
 print JSON.generate(name => JSON.parse(files))
 RUBY
 ) || die 'service Compose paths are invalid'
-  case ${PLATFORM_PROOF_PLATFORM:-mac} in
-    mac) set -- -e platform_kind=mac -e platform_compose_kind=mac ;;
-    integration)
-      seed_callback_host=$(mac_integration_gateway) ||
-        die 'integration Docker host address is unavailable'
-      set -- -e platform_kind=mac -e platform_compose_kind=integration \
-        -e "platform_callback_host=$seed_callback_host"
-      ;;
-    *) die 'proof platform is invalid' ;;
-  esac
-  if ! ansible-playbook -i "$repo_dir/inventory/mac.yml" "$script_dir/legacy-role-seed.yml" \
+  if ! mac_ansible_playbook -i "$repo_dir/inventory/mac.yml" "$script_dir/legacy-role-seed.yml" \
       --vault-password-file "$PLATFORM_MAC_VAULT_PASSWORD_FILE" \
       -e @"$PLATFORM_MAC_VAULT_FILE" -e "platform_vault_file=$PLATFORM_MAC_VAULT_FILE" \
-      "$@" \
       -e "nas_docker_root=$PLATFORM_MAC_SANDBOX/legacy" -e "platform_release_id=$release_id" \
       -e "platform_current_dir=$seed_root/current" -e "platform_runtime_dir=$seed_root/runtime" \
       -e "$seed_port_variable=$seed_port_value" \

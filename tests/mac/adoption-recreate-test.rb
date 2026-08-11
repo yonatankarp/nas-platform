@@ -33,12 +33,18 @@ Dir.mktmpdir("adoption-recreate-test-") do |temporary|
   docker_root = File.join(root, "docker")
   FileUtils.mkdir_p([hooks, bin, docker_root], mode: 0o700)
   Dir.glob(File.join(SOURCE, "*.sh")).each { |source| FileUtils.cp(source, hooks, preserve: true) }
+  FileUtils.cp(File.join(__dir__, "lib.sh"), mac, preserve: true)
 
   STACKS.each_value do |_project_suffix, service_dir, _services|
     current = File.join(docker_root, "nas-platform/current/services", service_dir)
     runtime = File.join(docker_root, "nas-platform/runtime/services", service_dir)
     FileUtils.mkdir_p([current, runtime], mode: 0o700)
-    %w[compose.yml compose.mac.yml compose.adoption.yml].each { |name| File.write(File.join(current, name), "---\n") }
+    %w[compose.yml compose.mac.yml compose.adoption.yml].each do |name|
+      File.write(File.join(current, name), "---\n")
+    end
+    if %w[immich jellyfin tinymediamanager].include?(service_dir)
+      File.write(File.join(current, "compose.integration.yml"), "---\n")
+    end
     File.write(File.join(runtime, ".env"), "FIXTURE=true\n")
   end
 
@@ -103,6 +109,35 @@ Dir.mktmpdir("adoption-recreate-test-") do |temporary|
     failures << "#{hook_name} recreation order differs" unless order == expected_order
   end
 
+  integration_environment = environment.merge(
+    "PLATFORM_PROOF_PLATFORM" => "integration",
+    "PLATFORM_COMPOSE_KIND" => "integration"
+  )
+  STACKS.each do |hook_name, (project_suffix, service_dir, services)|
+    hook = File.join(hooks, hook_name)
+    stack_environment = integration_environment.merge("CURRENT_STACK" => project_suffix)
+    calls_before = File.file?(command_log) ? File.readlines(command_log).length : 0
+    _stdout, stderr, status = Open3.capture3(stack_environment, hook)
+    failures << "#{hook_name} integration recreation failed: #{stderr}" unless status.success?
+    current = File.join(docker_root, "nas-platform/current/services", service_dir)
+    runtime = File.join(docker_root, "nas-platform/runtime/services", service_dir, ".env")
+    expected = [
+      "compose", "--project-name", "nas-platform-mac-recreate-#{project_suffix}",
+      "--env-file", runtime,
+      "-f", File.join(current, "compose.yml")
+    ]
+    expected += ["-f", File.join(current, "compose.integration.yml")] if
+      %w[immich jellyfin tinymediamanager].include?(service_dir)
+    expected += [
+      "-f", File.join(current, "compose.adoption.yml"), "up", "-d",
+      "--force-recreate", "--wait", *services
+    ]
+    calls = File.file?(command_log) ? File.readlines(command_log, chomp: true).map { |line| JSON.parse(line) } : []
+    failures << "#{hook_name} integration did not invoke Docker exactly once" unless
+      calls.length == calls_before + 1
+    failures << "#{hook_name} integration Compose command differs" unless calls.last == expected
+  end
+
   %w[beszel ntfy].each do |project_suffix|
     hook_name = STACKS.find { |_name, value| value.fetch(0) == project_suffix }&.first
     next unless hook_name && File.file?(File.join(hooks, hook_name))
@@ -116,6 +151,22 @@ Dir.mktmpdir("adoption-recreate-test-") do |temporary|
     failures << "#{project_suffix} ran attestation or contract after failure" unless
       failure_order == ["docker:#{project_suffix}"]
   end
+
+  missing_mapping_hook = File.join(hooks, "10-beszel.sh")
+  missing_mapping = File.join(
+    docker_root, "nas-platform/current/services/beszel/compose.adoption.yml"
+  )
+  File.unlink(missing_mapping)
+  calls_before = File.file?(command_log) ? File.readlines(command_log).length : 0
+  stops_before = File.file?(stop_log) ? File.readlines(stop_log).length : 0
+  _stdout, _stderr, status = Open3.capture3(
+    environment.merge("CURRENT_STACK" => "beszel"), missing_mapping_hook
+  )
+  failures << "missing adoption mapping was accepted" if status.success?
+  calls_after = File.file?(command_log) ? File.readlines(command_log).length : 0
+  stops_after = File.file?(stop_log) ? File.readlines(stop_log).length : 0
+  failures << "missing adoption mapping reached Docker" unless calls_after == calls_before
+  failures << "missing adoption mapping did not stop targets" unless stops_after == stops_before + 1
 end
 
 abort failures.join("\n") unless failures.empty?

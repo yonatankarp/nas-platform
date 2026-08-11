@@ -892,6 +892,7 @@ initialize_adoption_state() {
   recorded_parity_checksum=$2
   recorded_legacy_commit=$3
   recorded_vault_checksum=${4:-$vault_checksum}
+  recorded_proof_platform=${5:-mac}
   report_root=$sandbox.reports
   suffix=$(printf '%s' "${sandbox##*.}" | tr '[:upper:]' '[:lower:]')
   project_name=nas-platform-mac-$suffix
@@ -902,6 +903,7 @@ initialize_adoption_state() {
     > "$report_root/.nas-platform-mac-report-owned"
   chmod 0600 "$report_root/.nas-platform-mac-report-owned"
   "$reporter" --init "$report_root/phase-input.json" --lane adoption \
+    --proof-platform "$recorded_proof_platform" \
     --sandbox-id "$(basename -- "$sandbox")" --git-revision "$git_revision" \
     --vault-checksum "$recorded_vault_checksum" --parity-vault-checksum "$recorded_parity_checksum" \
     --legacy-commit "$recorded_legacy_commit" --project-name "$project_name" \
@@ -956,30 +958,62 @@ cat > "$resume_ports_file" <<'JSON'
 {"schema":1,"audiobookshelf_port":33378,"beszel_port":38090,"dozzle_port":38080,"immich_port":32283,"jellyfin_port":38096,"komga_port":35600,"ntfy_port":32586,"paperless_port":38000,"tinymediamanager_api_port":37878,"tinymediamanager_web_port":34000}
 JSON
 chmod 0600 "$resume_ports_file"
+expect_failure 'integration resume of Mac state' \
+  'resume proof platform does not match the recorded run' \
+  env PLATFORM_MAC_TMPDIR="$temporary_parent" "$runner" --lane adoption --platform integration \
+    --integration-ports-file "$resume_ports_file" \
+    --vault-file "$vault_file" --vault-password-file "$password_file" \
+    --parity-vault-file "$parity_vault_file" --parity-vault-password-file "$parity_password_file" \
+    --phase report --sandbox "$matching_sandbox"
+
+legacy_mac_sandbox=$temporary_parent/nas-platform-mac.Old123
+initialize_adoption_state "$legacy_mac_sandbox" "$parity_checksum" "$legacy_commit"
+ruby -rjson - "$legacy_mac_sandbox.reports/phase-input.json" <<'RUBY'
+path = ARGV.fetch(0)
+input = JSON.parse(File.binread(path))
+%w[proof_platform platform_kind platform_compose_kind].each { |key| input.delete(key) }
+File.binwrite(path, JSON.generate(input) << "\n")
+RUBY
+env PLATFORM_MAC_TMPDIR="$temporary_parent" "$runner" --lane adoption \
+  --vault-file "$vault_file" --vault-password-file "$password_file" \
+  --parity-vault-file "$parity_vault_file" --parity-vault-password-file "$parity_password_file" \
+  --phase report --sandbox "$legacy_mac_sandbox" >/dev/null 2>&1 ||
+  fail 'legacy Mac state was not safely defaulted to Mac proof identity'
+
+integration_sandbox=$temporary_parent/nas-platform-mac.Int123
+initialize_adoption_state "$integration_sandbox" "$parity_checksum" "$legacy_commit" \
+  "$vault_checksum" integration
 env PLATFORM_MAC_TMPDIR="$temporary_parent" "$runner" --lane adoption --platform integration \
   --integration-ports-file "$resume_ports_file" \
   --vault-file "$vault_file" --vault-password-file "$password_file" \
   --parity-vault-file "$parity_vault_file" --parity-vault-password-file "$parity_password_file" \
-  --phase report --sandbox "$matching_sandbox" >/dev/null 2>&1 ||
+  --phase report --sandbox "$integration_sandbox" >/dev/null 2>&1 ||
   fail 'matching resumed integration ports were rejected'
+expect_failure 'Mac resume of integration state' \
+  'resume proof platform does not match the recorded run' \
+  env PLATFORM_MAC_TMPDIR="$temporary_parent" "$runner" --lane adoption \
+    --vault-file "$vault_file" --vault-password-file "$password_file" \
+    --parity-vault-file "$parity_vault_file" --parity-vault-password-file "$parity_password_file" \
+    --phase report --sandbox "$integration_sandbox"
 expect_failure 'resumed integration without ports input' \
   'integration platform requires --integration-ports-file' \
   env PLATFORM_MAC_TMPDIR="$temporary_parent" "$runner" --lane adoption --platform integration \
     --vault-file "$vault_file" --vault-password-file "$password_file" \
     --parity-vault-file "$parity_vault_file" --parity-vault-password-file "$parity_password_file" \
-    --phase report --sandbox "$matching_sandbox"
+    --phase report --sandbox "$integration_sandbox"
 expect_failure 'resumed integration port mismatch' \
   'resume integration ports do not match the recorded run' \
   env PLATFORM_MAC_TMPDIR="$temporary_parent" "$runner" --lane adoption --platform integration \
     --integration-ports-file "$integration_ports_file" \
     --vault-file "$vault_file" --vault-password-file "$password_file" \
     --parity-vault-file "$parity_vault_file" --parity-vault-password-file "$parity_password_file" \
-    --phase report --sandbox "$matching_sandbox"
+    --phase report --sandbox "$integration_sandbox"
 
 report_input=$temporary_parent/report-input.json
 report_json=$temporary_parent/report.json
 report_markdown=$temporary_parent/report.md
 "$reporter" --init "$report_input" --lane adoption \
+  --proof-platform integration \
   --sandbox-id nas-platform-mac.Report1 --git-revision "$git_revision" \
   --vault-checksum "$vault_checksum" --parity-vault-checksum "$parity_checksum" \
   --legacy-commit "$legacy_commit" --project-name nas-platform-mac-report1 \
@@ -992,11 +1026,14 @@ ruby -rjson - "$report_json" "$parity_checksum" "$legacy_commit" <<'RUBY'
 report, parity_checksum, legacy_commit = JSON.parse(File.read(ARGV.fetch(0))), ARGV.fetch(1), ARGV.fetch(2)
 raise "JSON parity checksum differs" unless report["parity_vault_checksum"] == parity_checksum
 raise "JSON legacy commit differs" unless report["legacy_commit"] == legacy_commit
+raise "JSON proof platform differs" unless report["proof_platform"] == "integration"
 RUBY
 grep -F -- "- Parity vault checksum: $parity_checksum" "$report_markdown" >/dev/null ||
   fail 'Markdown omits parity vault checksum'
 grep -F -- "- Legacy commit: $legacy_commit" "$report_markdown" >/dev/null ||
   fail 'Markdown omits legacy commit'
+grep -F -- '- Proof platform: integration' "$report_markdown" >/dev/null ||
+  fail 'Markdown omits proof platform'
 if find "$temporary_parent" -name '*.tmp.*' -print -quit | grep . >/dev/null; then
   fail 'protected input pinning left an unsafe temporary copy'
 fi

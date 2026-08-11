@@ -6,7 +6,11 @@ dir=${PLATFORM_ADOPTION_SCRIPT_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/.." && p
 sandbox=${PLATFORM_MAC_SANDBOX:?}
 project=${PLATFORM_PROJECT_NAME:?}
 if [ "${PLATFORM_ADOPTION_PROBE_TARGET:-false}" = true ]; then
-  webserver_container=$project-paperless-webserver
+  case ${PLATFORM_PROOF_PLATFORM:-mac} in
+    integration) webserver_container=paperless_webserver ;;
+    mac) webserver_container=$project-paperless-webserver ;;
+    *) exit 1 ;;
+  esac
 else
   webserver_container=$project-legacy-paperless-ngx-webserver-1
 fi

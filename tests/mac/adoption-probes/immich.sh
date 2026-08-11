@@ -6,10 +6,21 @@ dir=${PLATFORM_ADOPTION_SCRIPT_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/.." && p
 sandbox=${PLATFORM_MAC_SANDBOX:?}
 project=${PLATFORM_PROJECT_NAME:?}
 if [ "${PLATFORM_ADOPTION_PROBE_TARGET:-false}" = true ]; then
-  server_container=$project-immich-server
-  machine_learning_container=$project-immich-machine-learning
-  redis_container=$project-immich-redis
-  postgres_container=$project-immich-postgres
+  case ${PLATFORM_PROOF_PLATFORM:-mac} in
+    integration)
+      server_container=immich_server
+      machine_learning_container=immich_machine_learning
+      redis_container=immich_redis
+      postgres_container=immich_postgres
+      ;;
+    mac)
+      server_container=$project-immich-server
+      machine_learning_container=$project-immich-machine-learning
+      redis_container=$project-immich-redis
+      postgres_container=$project-immich-postgres
+      ;;
+    *) exit 1 ;;
+  esac
 else
   server_container=$project-legacy-immich-immich-server-1
   machine_learning_container=$project-legacy-immich-immich-machine-learning-1

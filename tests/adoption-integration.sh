@@ -9,11 +9,140 @@ die() {
   exit 1
 }
 
+diagnostics_operation() {
+  ruby - "$@" <<'RUBY'
+operation, parent_path, name, expected = ARGV
+raise "unsafe" unless name == "nas-platform-adoption-diagnostics"
+flags = File::RDONLY
+flags |= File::NOFOLLOW if File.const_defined?(:NOFOLLOW)
+flags |= File::NONBLOCK if File.const_defined?(:NONBLOCK)
+identity = ->(stat) { [stat.dev, stat.ino, stat.uid, stat.mode & 0o777].join(":") }
+parent = File.open(parent_path, flags)
+parent_stat = parent.stat
+raise "unsafe" unless parent_stat.directory? && parent_stat.uid == Process.uid &&
+  (parent_stat.mode & 0o022).zero? && File.realpath(parent_path) == parent_path
+
+if operation == "create"
+  Dir.fchdir(parent.fileno) { Dir.mkdir(name, 0o700) }
+end
+directory = Dir.fchdir(parent.fileno) { File.open(name, flags) }
+directory_stat = directory.stat
+raise "unsafe" unless directory_stat.directory? && directory_stat.uid == Process.uid &&
+  (directory_stat.mode & 0o777) == 0o700
+signature = "#{identity.call(parent_stat)}|#{identity.call(directory_stat)}"
+raise "unsafe" unless expected.empty? || signature == expected
+
+case operation
+when "create"
+  puts signature
+when "publish"
+  output_flags = File::WRONLY | File::CREAT | File::EXCL
+  output_flags |= File::NOFOLLOW if File.const_defined?(:NOFOLLOW)
+  output = Dir.fchdir(directory.fileno) do
+    File.open("sanitized.txt", output_flags, 0o600)
+  end
+  begin
+    output.write("synthetic legacy adoption failed; diagnostics are redacted\n")
+    output.chmod(0o600)
+    output.flush
+    output.fsync
+    directory.fsync
+    current_parent = File.lstat(parent_path)
+    current_directory = Dir.fchdir(parent.fileno) { File.lstat(name) }
+    raise "unsafe" unless identity.call(current_parent) == identity.call(parent_stat) &&
+      identity.call(current_directory) == identity.call(directory_stat)
+  rescue Exception
+    Dir.fchdir(directory.fileno) { File.unlink("sanitized.txt") rescue nil }
+    raise
+  ensure
+    output.close
+  end
+when "remove"
+  raise "unsafe" unless Dir.fchdir(directory.fileno) { Dir.children(".").empty? }
+  current_parent = File.lstat(parent_path)
+  current_directory = Dir.fchdir(parent.fileno) { File.lstat(name) }
+  raise "unsafe" unless identity.call(current_parent) == identity.call(parent_stat) &&
+    identity.call(current_directory) == identity.call(directory_stat)
+  directory.close
+  Dir.fchdir(parent.fileno) { Dir.rmdir(name) }
+else
+  raise "unsafe"
+end
+RUBY
+}
+
+owned_root_operation() {
+  ruby - "$@" <<'RUBY'
+operation, path, expected = ARGV
+name = File.basename(path)
+raise "unsafe" unless name.match?(/\Anas-platform-integration\.[A-Za-z0-9]{6}\z/)
+flags = File::RDONLY
+flags |= File::NOFOLLOW if File.const_defined?(:NOFOLLOW)
+flags |= File::NONBLOCK if File.const_defined?(:NONBLOCK)
+identity = ->(stat) { [stat.dev, stat.ino, stat.uid, stat.mode & 0o777].join(":") }
+parent_path = File.dirname(path)
+parent = File.open(parent_path, flags)
+root = Dir.fchdir(parent.fileno) { File.open(name, flags) }
+root_stat = root.stat
+raise "unsafe" unless root_stat.directory? && root_stat.uid == Process.uid &&
+  (root_stat.mode & 0o777) == 0o700
+signature = "#{identity.call(parent.stat)}|#{identity.call(root_stat)}"
+raise "unsafe" unless expected.empty? || signature == expected
+marker_name = ".nas-platform-integration-owned"
+if operation == "create"
+  marker_flags = File::WRONLY | File::CREAT | File::EXCL
+  marker_flags |= File::NOFOLLOW if File.const_defined?(:NOFOLLOW)
+  marker = Dir.fchdir(root.fileno) { File.open(marker_name, marker_flags, 0o600) }
+  marker.write("schema=1\n")
+  marker.chmod(0o600)
+  marker.flush
+  marker.fsync
+  marker.close
+  root.fsync
+  puts signature
+elsif operation == "verify"
+  raise "unsafe" unless Dir.fchdir(root.fileno) { Dir.children(".") } == [marker_name]
+  marker = Dir.fchdir(root.fileno) { File.open(marker_name, flags) }
+  marker_stat = marker.stat
+  raise "unsafe" unless marker_stat.file? && marker_stat.uid == Process.uid &&
+    (marker_stat.mode & 0o777) == 0o600 && marker.read(4097) == "schema=1\n"
+  puts signature
+elsif operation == "remove"
+  raise "unsafe" unless Dir.fchdir(root.fileno) { Dir.children(".") } == [marker_name]
+  marker = Dir.fchdir(root.fileno) { File.open(marker_name, flags) }
+  marker_stat = marker.stat
+  raise "unsafe" unless marker_stat.file? && marker_stat.uid == Process.uid &&
+    (marker_stat.mode & 0o777) == 0o600 && marker.read(4097) == "schema=1\n"
+  marker.close
+  current_root = Dir.fchdir(parent.fileno) { File.lstat(name) }
+  raise "unsafe" unless identity.call(current_root) == identity.call(root_stat)
+  Dir.fchdir(root.fileno) { File.unlink(marker_name) }
+  root.fsync
+  root.close
+  Dir.fchdir(parent.fileno) { Dir.rmdir(name) }
+  parent.fsync
+else
+  raise "unsafe"
+end
+RUBY
+}
+
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P) || die 'repository is unavailable'
 repo_dir=$(CDPATH= cd -- "$script_dir/.." && pwd -P) || die 'repository is unavailable'
 . "$script_dir/sandbox_cleanup.sh"
 
-[ "$#" -eq 0 ] || die 'unsupported argument'
+inner_mode=false
+requested_owned_root=
+requested_owned_identity=
+case $#:${1-} in
+  0:) ;;
+  3:--inner)
+    inner_mode=true
+    requested_owned_root=$2
+    requested_owned_identity=$3
+    ;;
+  *) die 'unsupported argument' ;;
+esac
 [ "$(uname -s)" = Linux ] || die 'integration platform requires Linux'
 
 temporary_parent_input=${RUNNER_TEMP:-${TMPDIR:-/tmp}}
@@ -59,11 +188,95 @@ case $legacy_revision in *[!0123456789abcdef]*) die 'legacy manifest revision is
 [ -z "$(git -C "$legacy_root" status --porcelain=v1 --untracked-files=all 2>/dev/null)" ] ||
   die 'legacy checkout must be clean'
 
-owned_root=
+if [ "$inner_mode" = false ]; then
+  runner_image=docker.io/library/python:3.13-alpine@sha256:399babc8b49529dabfd9c922f2b5eea81d611e4512e3ed250d75bd2e7683f4b0
+  owned_root=$(mktemp -d "$temporary_parent/nas-platform-integration.XXXXXX") ||
+    die 'could not create owned integration root'
+  chmod 0700 "$owned_root"
+  owned_root_identity=$(owned_root_operation create "$owned_root" '') ||
+    die 'could not bind owned integration root'
+
+  finish_outer_early() {
+    outer_status=$?
+    trap - EXIT HUP INT TERM
+    owned_root_operation remove "$owned_root" "$owned_root_identity" >/dev/null 2>&1 ||
+      outer_status=1
+    exit "$outer_status"
+  }
+  trap finish_outer_early EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+
+  diagnostics_input=${ADOPTION_DIAGNOSTICS_DIR:-$temporary_parent/nas-platform-adoption-diagnostics}
+  case $diagnostics_input in /*) ;; *) die 'diagnostics path is outside the temporary parent' ;; esac
+  diagnostics_parent=$(CDPATH= cd -- "$(dirname -- "$diagnostics_input")" 2>/dev/null && pwd -P) ||
+    die 'diagnostics parent is unavailable'
+  [ "$diagnostics_parent" = "$temporary_parent" ] &&
+    [ "$(basename -- "$diagnostics_input")" = nas-platform-adoption-diagnostics ] ||
+    die 'diagnostics path is outside the temporary parent'
+  diagnostics_input=$diagnostics_parent/nas-platform-adoption-diagnostics
+  diagnostics_name=nas-platform-adoption-diagnostics
+  diagnostics_identity=$(diagnostics_operation create "$diagnostics_parent" \
+    "$diagnostics_name" '') || die 'diagnostics path is unsafe'
+
+  finish_outer() {
+    outer_status=$?
+    trap - EXIT HUP INT TERM
+    owned_root_operation remove "$owned_root" "$owned_root_identity" >/dev/null 2>&1 ||
+      outer_status=1
+    if [ "$outer_status" -eq 0 ]; then
+      diagnostics_operation remove "$diagnostics_parent" "$diagnostics_name" \
+        "$diagnostics_identity" >/dev/null 2>&1 || outer_status=1
+    fi
+    if [ "$outer_status" -ne 0 ]; then
+      diagnostics_operation publish "$diagnostics_parent" "$diagnostics_name" \
+        "$diagnostics_identity" >/dev/null 2>&1 || true
+    fi
+    exit "$outer_status"
+  }
+  trap finish_outer EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+
+  docker run --rm --network host \
+    -v /var/run/docker.sock:/var/run/docker.sock \
+    -v "$repo_dir:$repo_dir:ro" -v "$legacy_root:$legacy_root:ro" \
+    -v "$owned_root:$owned_root" -w "$repo_dir" \
+    -e "NAS_INFRASTRUCTURE_DIR=$legacy_root" -e "RUNNER_TEMP=$owned_root" \
+    "$runner_image" \
+    sh -eu -c '
+      apk add --no-cache --quiet docker-cli docker-cli-compose git tar openssl \
+        apache2-utils openssh-client ruby=3.4.9-r0 curl=8.21.0-r0 >/dev/null
+      pip install --quiet --no-input ansible-core==2.21.2
+      ansible-galaxy collection install -r "$1/requirements.yml" >/dev/null
+      git config --global --add safe.directory "$1"
+      git config --global --add safe.directory "$2"
+      exec "$4" --inner "$3" "$5"
+    ' sh "$repo_dir" "$legacy_root" "$owned_root" "$script_dir/adoption-integration.sh" \
+      "$owned_root_identity"
+  exit 0
+fi
+
+[ "$(id -u)" -eq 0 ] || die 'integration inner mode requires root'
+case $requested_owned_root in /*/nas-platform-integration.??????) ;; *) die 'integration inner root is invalid' ;; esac
+[ -d "$requested_owned_root" ] && [ ! -L "$requested_owned_root" ] &&
+  [ -f "$requested_owned_root/.nas-platform-integration-owned" ] &&
+  [ ! -L "$requested_owned_root/.nas-platform-integration-owned" ] &&
+  [ "$(cat "$requested_owned_root/.nas-platform-integration-owned")" = schema=1 ] ||
+  die 'integration inner root is invalid'
+owned_root=$(CDPATH= cd -- "$requested_owned_root" && pwd -P) ||
+  die 'integration inner root is invalid'
+[ "$owned_root" = "$requested_owned_root" ] || die 'integration inner root is invalid'
+[ "$(owned_root_operation verify "$owned_root" "$requested_owned_identity" 2>/dev/null)" = \
+  "$requested_owned_identity" ] || die 'integration inner root identity differs'
+
 sandbox=
 deployment_vault_root=
 parity_vault_root=
-diagnostics_root=
+ports_file=
+exports_root=
 
 cleanup() {
   cleanup_status=$?
@@ -84,26 +297,15 @@ cleanup() {
     TMPDIR="$owned_root" "$repo_dir/tests/generate-ephemeral-vault.sh" \
       --cleanup "$parity_vault_root" >/dev/null 2>&1 || cleanup_failed=true
   fi
-  if [ "$cleanup_failed" = false ] && [ -n "$owned_root" ] &&
-     [ -d "$owned_root" ] && [ ! -L "$owned_root" ]; then
-    TMPDIR="$temporary_parent" cleanup_sandbox "$owned_root" >/dev/null 2>&1 ||
-      cleanup_failed=true
+  if [ -n "$exports_root" ] && [ -d "$exports_root" ] && [ ! -L "$exports_root" ]; then
+    for export_file in "$exports_root"/*.env; do
+      [ -f "$export_file" ] && [ ! -L "$export_file" ] || { cleanup_failed=true; continue; }
+      unlink "$export_file" || cleanup_failed=true
+    done
+    rmdir -- "$exports_root" 2>/dev/null || cleanup_failed=true
   fi
-  [ "$cleanup_failed" = false ] || [ "$cleanup_status" -ne 0 ] || cleanup_status=1
-  if [ "$cleanup_status" -ne 0 ] && [ -n "$diagnostics_root" ] &&
-     [ -d "$diagnostics_root" ] && [ ! -L "$diagnostics_root" ]; then
-    printf '%s\n' 'synthetic legacy adoption failed; diagnostics are redacted' \
-      > "$diagnostics_root/sanitized.txt" || cleanup_failed=true
-    chmod 0600 "$diagnostics_root/sanitized.txt" 2>/dev/null || cleanup_failed=true
-  elif [ "$cleanup_status" -eq 0 ] && [ -n "$diagnostics_root" ] &&
-       [ -d "$diagnostics_root" ] && [ ! -L "$diagnostics_root" ]; then
-    rmdir -- "$diagnostics_root" 2>/dev/null || {
-      cleanup_failed=true
-      cleanup_status=1
-      printf '%s\n' 'synthetic legacy adoption failed; diagnostics are redacted' \
-        > "$diagnostics_root/sanitized.txt" 2>/dev/null || true
-      chmod 0600 "$diagnostics_root/sanitized.txt" 2>/dev/null || true
-    }
+  if [ -n "$ports_file" ] && [ -f "$ports_file" ] && [ ! -L "$ports_file" ]; then
+    unlink "$ports_file" || cleanup_failed=true
   fi
   [ "$cleanup_failed" = false ] || [ "$cleanup_status" -ne 0 ] || cleanup_status=1
   exit "$cleanup_status"
@@ -112,26 +314,6 @@ trap cleanup EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
-
-owned_root=$(mktemp -d "$temporary_parent/nas-platform-integration.XXXXXX") ||
-  die 'could not create owned integration root'
-chmod 0700 "$owned_root"
-printf '%s\n' 'schema=1' > "$owned_root/.nas-platform-integration-owned"
-chmod 0600 "$owned_root/.nas-platform-integration-owned"
-
-diagnostics_input=${ADOPTION_DIAGNOSTICS_DIR:-$temporary_parent/nas-platform-adoption-diagnostics}
-case $diagnostics_input in /*) ;; *) die 'diagnostics path is outside the temporary parent' ;; esac
-diagnostics_parent=$(CDPATH= cd -- "$(dirname -- "$diagnostics_input")" 2>/dev/null && pwd -P) ||
-  die 'diagnostics parent is unavailable'
-[ "$diagnostics_parent" = "$temporary_parent" ] &&
-  [ "$(basename -- "$diagnostics_input")" = nas-platform-adoption-diagnostics ] ||
-  die 'diagnostics path is outside the temporary parent'
-[ "$diagnostics_input" = "$diagnostics_parent/nas-platform-adoption-diagnostics" ] ||
-  diagnostics_input=$diagnostics_parent/nas-platform-adoption-diagnostics
-[ ! -e "$diagnostics_input" ] && [ ! -L "$diagnostics_input" ] ||
-  die 'diagnostics path already exists'
-mkdir -m 0700 "$diagnostics_input"
-diagnostics_root=$diagnostics_input
 
 deployment_vault_root=$(mktemp -d "$owned_root/nas-platform-vault.XXXXXX")
 parity_vault_root=$(mktemp -d "$owned_root/nas-platform-vault.XXXXXX")
