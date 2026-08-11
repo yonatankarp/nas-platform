@@ -297,7 +297,7 @@ self_test() {
       die 'self-test did not produce an encrypted vault'
     ansible-vault view --vault-password-file "$directory/password" "$directory/vault.yml" \
       >/dev/null 2>&1 || die 'self-test could not decrypt the generated vault'
-    ansible-playbook "$repo_dir/validate-vault.yml" \
+    ansible-playbook -i localhost, -c local "$repo_dir/validate-vault.yml" \
       --vault-password-file "$directory/password" \
       -e @"$directory/vault.yml" \
       -e platform_vault_file="$directory/vault.yml" \
