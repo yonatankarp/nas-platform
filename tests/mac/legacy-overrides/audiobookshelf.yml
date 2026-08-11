@@ -1,0 +1,10 @@
+---
+services:
+  audiobookshelf:
+    container_name: !reset null
+    ports: !override
+      - "127.0.0.1:${AUDIOBOOKSHELF_HOST_PORT:?}:80"
+    volumes: !override
+      - ${PLATFORM_MAC_SANDBOX:?}/legacy/audiobookshelf/config:/config
+      - ${PLATFORM_MAC_SANDBOX:?}/legacy/audiobookshelf/metadata:/metadata
+      - ${PLATFORM_MAC_SANDBOX:?}/legacy/audiobookshelf/media:/audiobooks:ro

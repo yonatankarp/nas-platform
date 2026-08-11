@@ -1,0 +1,3 @@
+{% for entry in stacks[legacy_service] | dict2items | sort(attribute='key') %}
+{{ entry.key }}={{ entry.value | replace('$', '$$') }}
+{% endfor %}

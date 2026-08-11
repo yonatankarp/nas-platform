@@ -5,6 +5,7 @@ require "yaml"
 WORKFLOW_PATH = File.expand_path("../../.github/workflows/ci.yml", __dir__)
 POLICY_PATH = File.expand_path("../validate-policy.sh", __dir__)
 CHECKOUT_ACTION = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
+UPLOAD_ARTIFACT_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 SELECTABLE_JOBS = %w[
   static foundation smoke beszel dozzle audiobookshelf media paperless idempotence_check
 ].freeze
@@ -243,8 +244,9 @@ check(failures, !workflow_source.match?(/dorny\/paths-filter|paths-filter@/i),
 all_uses = jobs.values.flat_map do |job|
   Array(job["steps"]).filter_map { |step| step["uses"] }
 end
-check(failures, all_uses.all? { |uses| uses == CHECKOUT_ACTION },
-      "every action use must be the repository's pinned checkout action: #{all_uses.inspect}")
+allowed_actions = [CHECKOUT_ACTION, UPLOAD_ARTIFACT_ACTION]
+check(failures, all_uses.all? { |uses| allowed_actions.include?(uses) },
+      "every action use must be an approved pinned action: #{all_uses.inspect}")
 
 unless failures.empty?
   failures.each { |failure| warn "FAIL #{failure}" }

@@ -2,7 +2,7 @@
 set -eu
 set +x
 
-repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)
+repo_dir=${PLATFORM_CONTRACT_REPO_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)}
 compose=$repo_dir/services/immich/compose.yml
 role=$repo_dir/roles/immich/tasks/main.yml
 defaults=$repo_dir/roles/immich/defaults/main.yml
@@ -292,6 +292,11 @@ puts "Immich static contract passed (#{platform})"
 RUBY
 
 [ "$mode" = static ] && exit 0
+. "${PLATFORM_LEGACY_FIXTURE_HELPER_FILE:-$repo_dir/tests/contracts/legacy-fixture-paths.sh}"
+legacy_fixture_validate PLATFORM_IMMICH_UPLOAD_ROOT legacy/immich/data/upload ||
+  fail_contract 'legacy upload root is unsafe'
+legacy_fixture_validate PLATFORM_IMMICH_THUMBNAIL_ROOT legacy/immich/thumbs ||
+  fail_contract 'legacy thumbnail root is unsafe'
 
 : "${PLATFORM_CONTRACT_VAULT_FILE:=${PLATFORM_MAC_VAULT_FILE:-}}"
 : "${PLATFORM_CONTRACT_VAULT_PASSWORD_FILE:=${PLATFORM_MAC_VAULT_PASSWORD_FILE:-}}"
@@ -671,11 +676,13 @@ assert_cpu_machine_learning(token, records.map { |record| record.fetch("id") }) 
 # Generated derivatives must land on the redirected Docker-root volume rather
 # than beside the originals, which is the whole point of the nested bind layout.
 thumbnail_root = DOCKER_ROOT.join("immich", "data", "thumbs")
+thumbnail_root = Pathname.new(ENV.fetch("PLATFORM_IMMICH_THUMBNAIL_ROOT", thumbnail_root.to_s)).expand_path
 fail_contract("the generated asset volume is unavailable or unsafe") unless
   thumbnail_root.directory? && !thumbnail_root.symlink?
 fail_contract("no generated thumbnail reached the Docker-root volume") if
   Dir.glob(thumbnail_root.join("**", "*_thumbnail.webp").to_s).empty?
 originals_root = MEDIA_ROOT.join("Immich", "upload")
+originals_root = Pathname.new(ENV.fetch("PLATFORM_IMMICH_UPLOAD_ROOT", originals_root.to_s)).expand_path
 fail_contract("the originals volume is unavailable or unsafe") unless
   originals_root.directory? && !originals_root.symlink?
 

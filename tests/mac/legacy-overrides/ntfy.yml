@@ -1,0 +1,14 @@
+---
+services:
+  ntfy:
+    container_name: !reset null
+    user: "${NAS_UID:?}:${NAS_GID:?}"
+    ports: !override
+      - "127.0.0.1:${NTFY_HOST_PORT:?}:80"
+    environment:
+      NTFY_AUTH_USERS: "${NTFY_AUTH_USERS:?}"
+      NTFY_AUTH_ACCESS: "${NTFY_AUTH_ACCESS:?}"
+      NTFY_AUTH_TOKENS: "${NTFY_AUTH_TOKENS:?}"
+    volumes: !override
+      - ${PLATFORM_MAC_SANDBOX:?}/legacy/ntfy/cache:/var/cache/ntfy
+      - ${PLATFORM_MAC_SANDBOX:?}/legacy/ntfy/data:/var/lib/ntfy

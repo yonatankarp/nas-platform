@@ -4,6 +4,8 @@ set +x
 
 mac_script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 mac_repo_dir=$(CDPATH= cd -- "$mac_script_dir/../.." && pwd -P)
+. "$mac_repo_dir/tests/contracts/legacy-fixture-paths.sh"
+legacy_fixture_unset_controls
 
 : "${PLATFORM_MAC_VAULT_FILE:?PLATFORM_MAC_VAULT_FILE is required}"
 : "${PLATFORM_MAC_VAULT_PASSWORD_FILE:?PLATFORM_MAC_VAULT_PASSWORD_FILE is required}"
@@ -12,7 +14,13 @@ mac_repo_dir=$(CDPATH= cd -- "$mac_script_dir/../.." && pwd -P)
 : "${PLATFORM_PROJECT_NAME:?PLATFORM_PROJECT_NAME is required}"
 : "${PLATFORM_PAPERLESS_PORT:?PLATFORM_PAPERLESS_PORT is required}"
 
-PLATFORM_CONTRACT_VAULT_FILE=$PLATFORM_MAC_VAULT_FILE \
-PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=$PLATFORM_MAC_VAULT_PASSWORD_FILE \
-PLATFORM_PAPERLESS_WEBSERVER_CONTAINER="$PLATFORM_PROJECT_NAME-paperless-webserver" \
-  exec "$mac_repo_dir/tests/contracts/paperless.sh" "$@"
+PLATFORM_CONTRACT_VAULT_FILE=$PLATFORM_MAC_VAULT_FILE
+PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=$PLATFORM_MAC_VAULT_PASSWORD_FILE
+case ${PLATFORM_PROOF_PLATFORM:-mac} in
+  integration) PLATFORM_PAPERLESS_WEBSERVER_CONTAINER=paperless_webserver ;;
+  mac) PLATFORM_PAPERLESS_WEBSERVER_CONTAINER=$PLATFORM_PROJECT_NAME-paperless-webserver ;;
+  *) exit 1 ;;
+esac
+export PLATFORM_PAPERLESS_WEBSERVER_CONTAINER
+export PLATFORM_CONTRACT_VAULT_FILE PLATFORM_CONTRACT_VAULT_PASSWORD_FILE
+exec "$mac_repo_dir/tests/contracts/paperless.sh" "$@"

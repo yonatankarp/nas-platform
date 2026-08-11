@@ -2,7 +2,7 @@
 set -eu
 set +x
 
-repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)
+repo_dir=${PLATFORM_CONTRACT_REPO_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)}
 compose=$repo_dir/services/jellyfin/compose.yml
 role=$repo_dir/roles/jellyfin/tasks/main.yml
 defaults=$repo_dir/roles/jellyfin/defaults/main.yml
@@ -139,6 +139,11 @@ puts "Jellyfin static contract passed (#{platform})"
 RUBY
 
 [ "$mode" = static ] && exit 0
+. "${PLATFORM_LEGACY_FIXTURE_HELPER_FILE:-$repo_dir/tests/contracts/legacy-fixture-paths.sh}"
+legacy_fixture_validate PLATFORM_JELLYFIN_MEDIA_ROOT legacy/jellyfin/media ||
+  fail_contract 'legacy media root is unsafe'
+legacy_fixture_validate PLATFORM_JELLYFIN_TRANSCODE_ROOT legacy/jellyfin/cache/transcodes ||
+  fail_contract 'legacy transcode root is unsafe'
 
 : "${PLATFORM_CONTRACT_VAULT_FILE:=${PLATFORM_MAC_VAULT_FILE:-}}"
 : "${PLATFORM_CONTRACT_VAULT_PASSWORD_FILE:=${PLATFORM_MAC_VAULT_PASSWORD_FILE:-}}"
@@ -188,7 +193,10 @@ MANAGED_OPTIONS = {
 
 # The fixture lives beside the tinyMediaManager movie fixtures because the NAS
 # mounts one media tree and both services see it. Jellyfin only reads it.
-FIXTURE_DIRECTORY = MEDIA_ROOT.join("Media", "Movies", "Task 11 Contract Movie (2026)")
+JELLYFIN_MEDIA_ROOT = Pathname.new(
+  ENV.fetch("PLATFORM_JELLYFIN_MEDIA_ROOT", MEDIA_ROOT.join("Media").to_s)
+).expand_path
+FIXTURE_DIRECTORY = JELLYFIN_MEDIA_ROOT.join("Movies", "Task 11 Contract Movie (2026)")
 FIXTURE_PATH = FIXTURE_DIRECTORY.join("Task 11 Contract Movie (2026).mp4")
 FIXTURE_LIBRARY_PATH = "#{LIBRARY_PATH}/Task 11 Contract Movie (2026)/Task 11 Contract Movie (2026).mp4"
 FIXTURE_RUNTIME_TICKS = 40_000_000
@@ -446,7 +454,9 @@ def assert_cpu_transcode(token, item_id, source_id)
 
   # Durable evidence that re-encoded output really reached the cache volume,
   # independent of how long the session stays visible.
-  transcode_root = DOCKER_ROOT.join("jellyfin", "cache", "transcodes")
+  transcode_root = Pathname.new(
+    ENV.fetch("PLATFORM_JELLYFIN_TRANSCODE_ROOT", DOCKER_ROOT.join("jellyfin", "cache", "transcodes").to_s)
+  ).expand_path
   fail_contract("the transcode cache is unavailable or unsafe") unless
     transcode_root.directory? && !transcode_root.symlink?
   fail_contract("no transcoded segment reached the cache volume") if

@@ -9,9 +9,14 @@
       - "{{ platform_current_dir }}/services/paperless-ngx"
       - "{{ platform_current_dir }}/services/paperless-ngx/compose.yml"
       - "{{ platform_current_dir }}/services/paperless-ngx/compose.{{ platform_compose_kind }}.yml"
+      - "{{ platform_current_dir }}/services/paperless-ngx/compose.adoption.yml"
       - "{{ platform_runtime_dir }}/services/paperless-ngx"
       - "{{ platform_runtime_dir }}/services/paperless-ngx/.env"
       - "{{ platform_runtime_dir }}/services/paperless-ngx/.gmail-credential-fingerprint"
+      - >-
+        {{ (platform_adoption_root ~ '/legacy/paperless-ngx/tessdata/heb.traineddata')
+           if (platform_adoption_enabled | default(false) | bool)
+           else (nas_docker_root ~ '/paperless-ngx/tessdata/heb.traineddata') }}
 
 - name: Check for a Paperless platform override
   ansible.builtin.stat:
@@ -23,12 +28,28 @@
     paperless_compose_files: >-
       {{ ['compose.yml'] +
          (paperless_platform_compose.stat.exists
-          | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) }}
+          | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) +
+         ((platform_adoption_enabled | default(false) | bool)
+          | ternary(['compose.adoption.yml'], [])) }}
+
+- name: Select the Paperless mounted tessdata root
+  ansible.builtin.set_fact:
+    paperless_tessdata_root: >-
+      {{ (platform_adoption_root ~ '/legacy/paperless-ngx/tessdata')
+         if (platform_adoption_enabled | default(false) | bool)
+         else (nas_docker_root ~ '/paperless-ngx/tessdata') }}
+
+- name: Require the internally derived Paperless tessdata root
+  ansible.builtin.assert:
+    that:
+      - paperless_tessdata_root == ((platform_adoption_root ~ '/legacy/paperless-ngx/tessdata') if
+        (platform_adoption_enabled | default(false) | bool) else
+        (nas_docker_root ~ '/paperless-ngx/tessdata'))
 
 - name: Install the pinned Hebrew OCR model
   ansible.builtin.get_url:
     url: "{{ paperless_hebrew_model_url }}"
-    dest: "{{ nas_docker_root }}/paperless-ngx/tessdata/heb.traineddata"
+    dest: "{{ paperless_tessdata_root }}/heb.traineddata"
     checksum: "{{ paperless_hebrew_model_checksum }}"
     mode: "0644"
 
@@ -264,6 +285,11 @@
     fail_msg: >-
       Paperless does not accept the preserved vault administrator. Restore the deployed identity
       from the password manager or migrate it explicitly before rerunning.
+
+- name: Reconcile managed Paperless users
+  ansible.builtin.include_tasks: managed_users.yml
+  vars:
+    paperless_managed_users_phase: reconcile
 
 - name: Verify Paperless users for exact administrator identity
   tags: [platform_verify_paperless]
@@ -774,6 +800,16 @@
            paperless_mail_account_repair_required | bool or
            paperless_mail_rule_create_required | bool or
            paperless_mail_rule_repair_required | bool)
+
+- name: Verify managed Paperless users
+  tags: [platform_verify_paperless]
+  ansible.builtin.include_tasks:
+    file: managed_users.yml
+    apply:
+      tags: [platform_verify_paperless]
+  vars:
+    paperless_managed_users_phase: verify
+  when: not ansible_check_mode
 
 - name: Record the verified Paperless Gmail credential fingerprint
   ansible.builtin.copy:

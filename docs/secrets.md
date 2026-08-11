@@ -9,6 +9,12 @@ editor. Do not put credentials in chat, command-line `-e` arguments, shell
 history, logs, tickets, or pull requests. Do not paste them into diagnostic
 output.
 
+This permanent deployment vault is distinct from the
+[temporary Portainer parity vault](portainer-parity.md). The parity vault is
+migration evidence derived from legacy environment exports and is retired after
+the rollback window; production roles consume only the deployment vault
+described here.
+
 ## Start here: choose fresh or migration
 
 A fresh platform has no deployed users, databases, agents, tokens, keys, or
@@ -673,6 +679,118 @@ source of values. Every key below is required.
 - Beszel: `vault_beszel_superuser_email`, `vault_beszel_superuser_password`, `vault_beszel_app_user_email`, `vault_beszel_app_user_password`, `vault_beszel_agent_key`, `vault_beszel_universal_token`, `vault_beszel_hub_private_key`. Recover both deployed hub identities from the current Beszel hub and their matching passwords from the password manager. Recover the universal token and public agent key from the deployed agent configuration, and recover the matching OpenSSH Ed25519 private key from the hub's protected key file. If the agent's public value is unavailable, derive its public half from the recovered private key as described above; if both sources exist, compare them. Never regenerate or replace the pair. Both emails need nonempty local and domain parts. The universal token must be a lowercase RFC 4122 UUID. The agent key contains exactly two whitespace-separated fields, the `ssh-ed25519` type and its base64 public key, with no comment.
 - Paperless: `vault_paperless_admin_username`, `vault_paperless_admin_password`, `vault_paperless_admin_email`, `vault_paperless_db_name`, `vault_paperless_db_username`, `vault_paperless_db_password`, `vault_paperless_django_secret_key`, `vault_paperless_gmail_account`, `vault_paperless_gmail_app_password`, `vault_paperless_mail_account_name`, `vault_paperless_mail_rule_name`. Recover the administrator identity from the current Paperless application and its password from the password manager. Recover the database name, user, and password together from the current Portainer/Compose environment and database stack; recover the Django signing key from the deployed application/Compose environment. Recover the mail account and rule names plus Gmail account from current Paperless mail configuration, and recover the matching Gmail app password from the password manager or protected deployed mail configuration. Use the Google account only to confirm the named account and existing app-password registration; do not create a replacement. Preserve these as one deployed identity set. The email fields need nonempty local and domain parts; database identifiers follow the Immich rules. The Gmail credential must be an app password for the named account, handled according to [Google's app-password guidance](https://support.google.com/accounts/answer/185833), not the normal account password.
 - tinyMediaManager: `vault_tinymediamanager_password`. Recover the deployed API password from the current tinyMediaManager configuration and confirm it against an existing client; changing it breaks those clients.
+- Managed application users: `vault_managed_users`. This mapping has exactly the eight service lists documented below. Identity comparisons trim surrounding whitespace and ignore case. Every list entry needs a non-empty preserved password, must be unique within its service, and must not duplicate that service's primary administrator. Beszel entries also differ from the primary Beszel application user; ntfy entries differ from the Dozzle and Beszel publishers. Do not add tinyMediaManager here because it retains its single shared-login contract.
+
+### Managed application-user fields
+
+These lists declare only identities the platform owns. They do not authorize
+deleting users outside the lists, and they do not authorize replacing the
+password of an existing identity. During migration, recover each existing
+identity and matching password from its authoritative source. The examples are
+synthetic schema illustrations, not deployable credentials.
+
+The portable vault contract validates bcrypt shape only; it does not attempt a
+portable cryptographic password/hash comparison on the Ansible controller. The
+service-specific reconciliation authenticates the plaintext password and
+compares the stored hash before mutation through the pinned application
+interface. A newly created identity immediately authenticates with its vault
+password before any later non-secret or privilege repair. A mismatch stops
+reconciliation rather than rotating credentials.
+
+#### audiobookshelf managed users
+
+`username` is the login identity; `password` is its preserved clear credential;
+`type` is `admin`, `user`, or `guest`; `is_active` must be `true` so every run
+can prove the preserved password before reconciliation; and `permissions`
+contains `flags`, `librariesAccessible`, and `itemTagsSelected`. `flags` is an
+exact subset of the pinned boolean permission fields; the two lists map to the
+top-level fields returned by Audiobookshelf 2.36.0. Undeclared expanded flags
+remain unchanged. Managed identities cannot duplicate the root administrator.
+
+#### beszel managed users
+
+`email` is the normalized login identity; `password` is its preserved clear
+credential; `role` is `user` or `admin`; and `verified` must be `true`.
+Beszel 0.18.7 password authentication requires verified users, so an existing
+unverified identity fails with credential-migration guidance and is never
+auto-verified. A managed identity cannot duplicate either the Beszel superuser
+or the existing primary application user.
+
+#### dozzle managed users
+
+`username` is the login identity; `password` is its preserved clear credential;
+`password_hash` is the matching 60-character bcrypt value; `email` is either
+empty or a syntactically valid address; `name` is the displayed name; `filter`
+is the native container filter string; and `roles` is one supported Dozzle role:
+`none`, `user`, or `admin`. Never replace one half of the clear-password/hash
+pair independently. Before reconciliation, the role opens the existing users
+file once in nonblocking mode with no symlink following, validates that opened
+descriptor as a regular file, and enforces a 1 MiB read limit. The subsequent
+template update uses Ansible's atomic writer with unsafe writes disabled.
+
+#### immich managed users
+
+`email` is the normalized login identity; `password` is its preserved clear
+credential; `name` is the displayed name; and `quota_size` is a non-negative
+integer in the units expected by the pinned Immich API. Administrator status is
+not part of this allowlist contract.
+
+#### jellyfin managed users
+
+`username` is the login identity; `password` is its preserved clear credential;
+and `policy` is an exact mapping of declared, supported boolean Jellyfin policy
+fields. Reconciliation merges those fields into the complete policy returned by
+Jellyfin so required provider IDs and every undeclared field remain unchanged.
+Password, provider, credential, token, and server-maintained fields are not part
+of the vault policy contract. `IsDisabled: true` is rejected because it would
+prevent mandatory password proof on later runs; an already-disabled account
+fails authentication with migration guidance and is never enabled before that
+proof. Keep administrative access disabled unless a separately reviewed policy
+explicitly requires it.
+
+#### komga managed users
+
+`email` is the normalized login identity; `password` is its preserved clear
+credential; and `roles` is a non-empty unique list drawn from `ADMIN`,
+`FILE_DOWNLOAD`, `PAGE_STREAMING`, `KOBO_SYNC`, and `KOREADER_SYNC`. The administrator
+identity remains under the separate primary credential contract.
+
+#### ntfy managed users
+
+`username` is the login identity; `password` is its preserved clear credential;
+`password_hash` is the matching bcrypt value; `role` is `user` or `admin`
+(`user` is the least-privilege default); `access` is a list of exact literal
+`topic` and `permission` mappings; and
+`tokens` is a unique list of owned `tk_` tokens, which may be empty. Supported
+permissions are `read-only`, `write-only`, `read-write`, and `deny`. Managed
+topics use only letters, digits, `_`, and `-`, with a maximum of 64 characters;
+wildcards, URL separators, whitespace, commas, and colons are not supported by
+this exact verifier. Usernames follow ntfy's native letters, digits, `_`, `-`,
+`.`, `+`, and `@` contract. Because ntfy administrators always have read-write
+access to every topic and reject ACL provisioning, administrator declarations
+may contain only `read-write` topic entries; the role omits those redundant ACL
+rows and verifies both reads and writes. Managed identities cannot duplicate
+the administrator or the Dozzle and Beszel publishers. The role treats the
+prior rendered ntfy `.env` as the declarative ownership record and confirms
+database identities with the pinned `ntfy user list` command before rendering a
+replacement. An owned identity must retain its exact prior hash; a same-name
+database identity outside that record is refused for automatic adoption. A
+server-config identity absent from that record is also refused, preventing ntfy
+from deleting state outside reviewed ownership. Removing an identity already
+present in the prior ownership record remains an explicit declarative removal
+from the reviewed desired configuration. If an existing authentication database
+has no prior ownership record, restore reviewed migration evidence instead of
+regenerating credentials.
+
+#### paperless_ngx managed users
+
+`username` is the normalized login identity; `password` is its preserved clear
+credential; `email` is the account address; `is_active`, `is_staff`, and
+`is_superuser` are booleans; and `groups` is a unique list of exact Django group
+names, which may be empty. `is_active` must be true because every managed user
+must prove its preserved password before reconciliation; disabling a user would
+make the next converge unable to perform that proof. The separately managed
+Paperless administrator may not appear in this list.
 
 These requirements describe relationships as well as syntax. Do not fabricate
 values merely to satisfy the contract.

@@ -491,9 +491,12 @@ git commit -m "feat: add disposable Mac proof harness"
 
 - [x] **Step 1: Write failing Beszel drift tests**
 
-After initial deployment, mutate the application-user role, replace the managed
-universal token, change the ntfy webhook, change an alert threshold, and add a
-second system record. Re-run Ansible and assert:
+After initial deployment, mutate only the application-user role while retaining
+`verified: true`, replace the managed universal token, change the ntfy webhook,
+change an alert threshold, and add a second system record. Beszel 0.18.7 requires
+verified users for password authentication, so an existing unverified identity
+must fail with credential-migration guidance rather than be auto-verified.
+Re-run Ansible and assert:
 
 - The vault token exists exactly once for the managed user.
 - The user is verified and has role `admin`.
@@ -509,10 +512,12 @@ Expected: token, role, alert-update, and system-selection assertions fail.
 
 - [x] **Step 3: Implement record-specific reconciliation**
 
-List and select records by managed identity. Use `PATCH` for existing mismatched
-users, tokens, settings, and alerts; use `POST` only when absent. Never treat a
-generic HTTP 400 as successful convergence. Refuse duplicate managed identities
-with a diagnostic that contains IDs but no secrets.
+List and select records by managed identity. Authenticate existing users before
+using `PATCH` for non-secret role drift; an existing unverified identity cannot
+authenticate and therefore fails closed without a PATCH. Use `PATCH` for
+existing mismatched tokens, settings, and alerts, and use `POST` only when
+absent. Never treat a generic HTTP 400 as successful convergence. Refuse
+duplicate managed identities with a diagnostic that contains IDs but no secrets.
 
 - [x] **Step 4: Add explicit agent lifecycle handling**
 

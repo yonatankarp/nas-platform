@@ -5,6 +5,42 @@ import stat
 import sys
 
 
+ADOPTION_SOURCES = (
+    "legacy/audiobookshelf/config",
+    "legacy/audiobookshelf/metadata",
+    "legacy/audiobookshelf/media",
+    "legacy/beszel/hub",
+    "legacy/beszel/agent",
+    "legacy/beszel/volume1",
+    "legacy/beszel/volume2",
+    "legacy/dozzle/data",
+    "legacy/immich/data",
+    "legacy/immich/thumbs",
+    "legacy/immich/encoded-video",
+    "legacy/immich/profile",
+    "legacy/immich/backups",
+    "legacy/immich/model-cache",
+    "legacy/immich/postgres",
+    "legacy/jellyfin/config",
+    "legacy/jellyfin/cache",
+    "legacy/jellyfin/media",
+    "legacy/komga/config",
+    "legacy/komga/library",
+    "legacy/ntfy/cache",
+    "legacy/ntfy/data",
+    "legacy/paperless-ngx/redis",
+    "legacy/paperless-ngx/postgres",
+    "legacy/paperless-ngx/data",
+    "legacy/paperless-ngx/export",
+    "legacy/paperless-ngx/tessdata/heb.traineddata",
+    "legacy/paperless-ngx/media",
+    "legacy/paperless-ngx/consume",
+    "legacy/tinymediamanager/data",
+    "legacy/tinymediamanager/movies",
+    "legacy/tinymediamanager/series",
+)
+
+
 def refuse_payload(message):
     raise SystemExit(f"Unsafe deployment target payload: {message}")
 
@@ -96,15 +132,41 @@ def validate_target(root, expected_release, current, next_pointer, require_curre
         if os.path.commonpath([canonical_root, canonical_existing]) != canonical_root:
             refuse(f"canonical ancestor {canonical_existing} escapes {canonical_root}")
     except ValueError:
-        refuse(f"canonical ancestor cannot be compared with {canonical_root}")
+            refuse(f"canonical ancestor cannot be compared with {canonical_root}")
+
+
+def target_root(default_root, adoption_root, adoption_enabled, target):
+    if not adoption_enabled:
+        return default_root
+
+    normalized_adoption_root = os.path.normpath(adoption_root)
+    if adoption_root != normalized_adoption_root or not os.path.isabs(adoption_root):
+        refuse_invocation("adoption root must be an absolute normalized path")
+    allowed_roots = [
+        os.path.join(normalized_adoption_root, relative) for relative in ADOPTION_SOURCES
+    ]
+    if any(target == root or target.startswith(root + os.sep) for root in allowed_roots):
+        return normalized_adoption_root
+    return default_root
 
 
 def main(argv):
-    if len(argv) != 6:
-        refuse_invocation("expected 6 arguments")
-    root, expected_release, current, next_pointer, require_current, paths_json = argv
+    if len(argv) != 8:
+        refuse_invocation("expected 8 arguments")
+    (
+        root,
+        expected_release,
+        current,
+        next_pointer,
+        require_current,
+        paths_json,
+        adoption_root,
+        adoption_enabled,
+    ) = argv
     if require_current not in {"0", "1"}:
         refuse_invocation("require_current must be 0 or 1")
+    if adoption_enabled not in {"0", "1"}:
+        refuse_invocation("adoption_enabled must be 0 or 1")
     try:
         paths = json.loads(paths_json)
     except json.JSONDecodeError:
@@ -117,7 +179,7 @@ def main(argv):
 
     for target in paths:
         validate_target(
-            root,
+            target_root(root, adoption_root, adoption_enabled == "1", target),
             expected_release,
             current,
             next_pointer,

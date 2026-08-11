@@ -80,6 +80,11 @@ vault_checksum=$(shasum -a 256 "$vault_file" | awk '{print $1}')
   --tinymediamanager-web-port 34000 --tinymediamanager-api-port 37878 \
   --jellyfin-port 38096 \
   --immich-port 32283 --paperless-port 38000
+ruby -rjson -e '
+  input = JSON.parse(File.read(ARGV.fetch(0)))
+  abort "fresh report retained adoption identity" unless
+    input["parity_vault_checksum"].nil? && input["legacy_commit"].nil?
+' "$state_input"
 "$mac_test_dir/report.rb" --record "$state_input" --phase preflight --status running
 "$mac_test_dir/report.rb" --record "$state_input" --phase preflight --status passed
 

@@ -1,0 +1,51 @@
+---
+- name: Render protected legacy parity environments
+  hosts: localhost
+  gather_facts: false
+  vars:
+    legacy_expected_services:
+      - audiobookshelf
+      - beszel
+      - dozzle
+      - immich
+      - jellyfin
+      - komga
+      - ntfy
+      - paperless-ngx
+      - tinymediamanager
+  tasks:
+    - name: Validate legacy parity root identity
+      ansible.builtin.assert:
+        that:
+          - schema is integer
+          - schema == 1
+          - legacy_commit is string
+          - legacy_commit == legacy_expected_commit
+          - stacks is mapping
+          - stacks.keys() | list | sort == legacy_expected_services | sort
+        fail_msg: Legacy parity root identity differs from the pinned contract
+        quiet: true
+      no_log: true
+
+    - name: Validate each legacy parity environment mapping
+      ansible.builtin.assert:
+        that:
+          - stacks[item] is mapping
+          - stacks[item].keys() | list | length > 0
+          - stacks[item] | dict2items | rejectattr('key', 'match', '^[A-Za-z_][A-Za-z0-9_]*$') | list | length == 0
+          - stacks[item] | dict2items | rejectattr('value', 'string') | list | length == 0
+          - stacks[item] | dict2items | selectattr('value', 'search', '[\r\n\x00]') | list | length == 0
+        fail_msg: Legacy parity environment differs from the pinned contract
+        quiet: true
+      loop: "{{ legacy_expected_services }}"
+      no_log: true
+
+    - name: Render each protected legacy environment
+      ansible.builtin.template:
+        src: templates/legacy-env.j2
+        dest: "{{ legacy_env_root }}/{{ item }}.env"
+        mode: "0600"
+      vars:
+        legacy_service: "{{ item }}"
+      loop: "{{ legacy_expected_services | sort }}"
+      no_log: true

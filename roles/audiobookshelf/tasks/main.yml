@@ -9,6 +9,7 @@
       - "{{ platform_current_dir }}/services/audiobookshelf"
       - "{{ platform_current_dir }}/services/audiobookshelf/compose.yml"
       - "{{ platform_current_dir }}/services/audiobookshelf/compose.{{ platform_compose_kind }}.yml"
+      - "{{ platform_current_dir }}/services/audiobookshelf/compose.adoption.yml"
       - "{{ platform_runtime_dir }}/services/audiobookshelf"
       - "{{ platform_runtime_dir }}/services/audiobookshelf/.env"
 
@@ -22,7 +23,9 @@
     audiobookshelf_compose_files: >-
       {{ ['compose.yml'] +
          (audiobookshelf_platform_compose.stat.exists
-          | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) }}
+          | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) +
+         ((platform_adoption_enabled | default(false) | bool)
+          | ternary(['compose.adoption.yml'], [])) }}
 
 - name: Render the Audiobookshelf environment
   ansible.builtin.template:
@@ -143,6 +146,13 @@
     audiobookshelf_reconcile_token: "{{ audiobookshelf_reconcile_login.json.user.accessToken }}"
   when: not ansible_check_mode or audiobookshelf_initialized | bool
   no_log: true
+
+- name: Reconcile managed Audiobookshelf users
+  ansible.builtin.include_tasks: managed_users.yml
+  vars:
+    audiobookshelf_managed_users_phase: reconcile
+    audiobookshelf_managed_users_token: "{{ audiobookshelf_reconcile_token }}"
+  when: not ansible_check_mode or audiobookshelf_initialized | bool
 
 - name: List Audiobookshelf administrators for reconciliation
   ansible.builtin.uri:
@@ -443,6 +453,17 @@
          else audiobookshelf_verify_login.json.user.accessToken }}
   when: not ansible_check_mode
   no_log: true
+
+- name: Verify managed Audiobookshelf users
+  tags: [platform_verify_audiobookshelf]
+  ansible.builtin.include_tasks:
+    file: managed_users.yml
+    apply:
+      tags: [platform_verify_audiobookshelf]
+  vars:
+    audiobookshelf_managed_users_phase: verify
+    audiobookshelf_managed_users_token: "{{ audiobookshelf_verification_token }}"
+  when: not ansible_check_mode
 
 - name: Read exact Audiobookshelf users and libraries
   tags: [platform_verify_audiobookshelf]

@@ -3,7 +3,7 @@ set -eu
 set +x
 
 mode=${1:-run}
-repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)
+repo_dir=${PLATFORM_CONTRACT_REPO_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)}
 compose=$repo_dir/services/tinymediamanager/compose.yml
 mac_compose=$repo_dir/services/tinymediamanager/compose.mac.yml
 integration_compose=$repo_dir/services/tinymediamanager/compose.integration.yml
@@ -96,6 +96,13 @@ abort "tinyMediaManager contract failed: role must not edit an opaque database" 
 RUBY
 
 [ "$mode" = static ] && { printf '%s\n' 'tinyMediaManager static contract passed'; exit 0; }
+. "${PLATFORM_LEGACY_FIXTURE_HELPER_FILE:-$repo_dir/tests/contracts/legacy-fixture-paths.sh}"
+legacy_fixture_validate PLATFORM_TINYMEDIAMANAGER_MOVIES_ROOT legacy/tinymediamanager/movies ||
+  fail_contract 'legacy movies root is unsafe'
+legacy_fixture_validate PLATFORM_TINYMEDIAMANAGER_SERIES_ROOT legacy/tinymediamanager/series ||
+  fail_contract 'legacy series root is unsafe'
+legacy_fixture_validate PLATFORM_TINYMEDIAMANAGER_SETTINGS_ROOT legacy/tinymediamanager/data/data ||
+  fail_contract 'legacy settings root is unsafe'
 
 : "${PLATFORM_CONTRACT_VAULT_FILE:=${PLATFORM_MAC_VAULT_FILE:-}}"
 : "${PLATFORM_CONTRACT_VAULT_PASSWORD_FILE:=${PLATFORM_MAC_VAULT_PASSWORD_FILE:-}}"
@@ -125,12 +132,23 @@ MODE = ARGV.fetch(0)
 MEDIA_ROOT = Pathname.new(ENV.fetch("PLATFORM_MEDIA_ROOT")).expand_path
 REPORT_ROOT = Pathname.new(ENV.fetch("PLATFORM_REPORT_ROOT")).expand_path
 CONTAINER = ENV.fetch("PLATFORM_TINYMEDIAMANAGER_CONTAINER")
-MOVIE_DIRECTORY = MEDIA_ROOT.join("Media", "Movies", "Task 10 Contract Movie (2024)")
+MOVIES_ROOT = Pathname.new(
+  ENV.fetch("PLATFORM_TINYMEDIAMANAGER_MOVIES_ROOT", MEDIA_ROOT.join("Media", "Movies").to_s)
+).expand_path
+SERIES_ROOT = Pathname.new(
+  ENV.fetch("PLATFORM_TINYMEDIAMANAGER_SERIES_ROOT", MEDIA_ROOT.join("Media", "Series").to_s)
+).expand_path
+MOVIE_DIRECTORY = MOVIES_ROOT.join("Task 10 Contract Movie (2024)")
 MOVIE_FILE = MOVIE_DIRECTORY.join("Task 10 Contract Movie (2024).mp4")
-SERIES_DIRECTORY = MEDIA_ROOT.join("Media", "Series", "Task 10 Contract Series", "Season 01")
+SERIES_DIRECTORY = SERIES_ROOT.join("Task 10 Contract Series", "Season 01")
 SERIES_FILE = SERIES_DIRECTORY.join("Task 10 Contract Series - S01E01.mp4")
 STATE_PATH = REPORT_ROOT.join("tinymediamanager-persistence.sha256")
-SETTINGS_ROOT = Pathname.new(ENV.fetch("PLATFORM_DOCKER_ROOT")).expand_path.join("tinymediamanager", "data", "data")
+SETTINGS_ROOT = Pathname.new(
+  ENV.fetch(
+    "PLATFORM_TINYMEDIAMANAGER_SETTINGS_ROOT",
+    Pathname.new(ENV.fetch("PLATFORM_DOCKER_ROOT")).expand_path.join("tinymediamanager", "data", "data").to_s
+  )
+).expand_path
 API = URI("http://127.0.0.1:#{Integer(ENV.fetch('PLATFORM_TINYMEDIAMANAGER_API_PORT'), 10)}")
 VIDEO_FIXTURE = (
   "AAAAJGZ0eXBpc29tAAACAGlzb21pc282aXNvMmF2YzFtcDQxAAAC7W1vb3YAAABsbXZoZAAAAAAA" \

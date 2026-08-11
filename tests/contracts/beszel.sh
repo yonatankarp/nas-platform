@@ -133,8 +133,11 @@ end
 case MODE
 when "drift"
   managed_system = exact_record(managed_systems, "managed system")
+  # Beszel 0.18.7 pins the users authRule to verified=true. Keep the primary
+  # identity authentication-compatible so convergence can prove its preserved
+  # password before repairing the independently mutable role.
   request("patch", endpoint(HUB, "/api/collections/users/records/#{user_id}"), token: admin_token,
-          body: { role: "user", verified: false })
+          body: { role: "user" })
 
   token = exact_record(records("universal_tokens", admin_token, equality("user", user_id)),
                        "managed universal token")
@@ -160,7 +163,7 @@ when "drift"
   end
 when "drift-verify"
   managed_system = exact_record(managed_systems, "managed system")
-  fail_contract("managed application user drift changed") unless user["role"] == "user" && user["verified"] == false
+  fail_contract("managed application user drift changed") unless user["role"] == "user" && user["verified"] == true
   token = exact_record(records("universal_tokens", admin_token, equality("user", user_id)),
                        "managed universal token")
   fail_contract("managed universal token drift changed") unless token["token"] == "11111111-1111-4111-a111-111111111111"

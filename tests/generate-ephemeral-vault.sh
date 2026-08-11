@@ -137,6 +137,8 @@ generate_vault() (
   ntfy_dozzle_password=$(random_password)
   ntfy_beszel_password=$(random_password)
   dozzle_admin_password=$(random_password)
+  managed_dozzle_password=$(random_password)
+  managed_ntfy_password=$(random_password)
   ssh-keygen -q -t ed25519 -N '' -C 'ephemeral beszel hub' -f "$private_key" \
     >/dev/null 2>&1 || die 'failed to generate ephemeral key material'
 
@@ -183,6 +185,62 @@ vault_paperless_gmail_app_password: '$(random_password)'
 vault_paperless_mail_account_name: ephemeral-gmail
 vault_paperless_mail_rule_name: ephemeral-inbox
 vault_tinymediamanager_password: '$(random_password)'
+vault_managed_users:
+  audiobookshelf:
+    - username: reader-ephemeral-example-invalid
+      password: '$(random_password)'
+      type: user
+      is_active: true
+      permissions:
+        flags:
+          accessAllLibraries: false
+        librariesAccessible: []
+        itemTagsSelected: []
+  beszel:
+    - email: reader@beszel.ephemeral.example.invalid
+      password: '$(random_password)'
+      role: user
+      verified: true
+  dozzle:
+    - username: reader-ephemeral-example-invalid
+      password: '$managed_dozzle_password'
+      password_hash: '$(bcrypt_password "$managed_dozzle_password")'
+      email: reader@dozzle.ephemeral.example.invalid
+      name: Synthetic Ephemeral Reader
+      filter: ""
+      roles: none
+  immich:
+    - email: reader@immich.ephemeral.example.invalid
+      password: '$(random_password)'
+      name: Synthetic Ephemeral Reader
+      quota_size: 0
+  jellyfin:
+    - username: reader-ephemeral-example-invalid
+      password: '$(random_password)'
+      policy:
+        IsAdministrator: false
+        EnableAllFolders: false
+  komga:
+    - email: reader@komga.ephemeral.example.invalid
+      password: '$(random_password)'
+      roles: [PAGE_STREAMING]
+  ntfy:
+    - username: reader-ephemeral-example-invalid
+      password: '$managed_ntfy_password'
+      password_hash: '$(bcrypt_password "$managed_ntfy_password")'
+      role: user
+      access:
+        - topic: nas-critical
+          permission: read-only
+      tokens: []
+  paperless_ngx:
+    - username: reader-ephemeral-example-invalid
+      password: '$(random_password)'
+      email: reader@paperless.ephemeral.example.invalid
+      is_active: true
+      is_staff: false
+      is_superuser: false
+      groups: []
 EOF
   chmod 0600 "$plain"
   ansible-vault encrypt --vault-password-file "$password_file" \

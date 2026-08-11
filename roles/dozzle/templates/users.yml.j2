@@ -1,8 +1,4 @@
 ---
-users:
-  {{ vault_dozzle_admin_username | to_json }}:
-    email: ""
-    name: Administrator
-    password: {{ vault_dozzle_admin_password_hash | to_json }}
-    filter: ""
-    roles: none
+{% for key, value in dozzle_reconciled_document | dictsort %}
+{{ key | to_json }}: {{ value | to_json }}
+{% endfor %}

@@ -16,12 +16,15 @@ supported_names = (
     r"nas-platform-integration\.[A-Za-z0-9]{6}",
     r"nas-platform-cleanup\.[A-Za-z0-9]{6}",
     r"nas-platform-mac\.[A-Za-z0-9]{6}",
+    r"nas-platform-mac\.[A-Za-z0-9]{6}\.reports",
 )
 if not any(re.fullmatch(pattern, name) for pattern in supported_names):
     raise ValueError("invalid sandbox basename")
 if preserve and not (
-    re.fullmatch(r"nas-platform-mac\.[A-Za-z0-9]{6}", name)
-    and preserve == ".nas-platform-mac-owned"
+    (re.fullmatch(r"nas-platform-mac\.[A-Za-z0-9]{6}", name)
+     and preserve == ".nas-platform-mac-owned")
+    or (re.fullmatch(r"nas-platform-mac\.[A-Za-z0-9]{6}\.reports", name)
+        and preserve == ".nas-platform-mac-report-owned")
 ):
     raise ValueError("invalid preserved marker")
 

@@ -85,10 +85,17 @@ esac
 snapshot_dir=$1
 
 if [ "$mode" = drill ]; then
-  case ${PLATFORM_KIND:-}:${PLATFORM_PROJECT_NAME:-} in
-    integration:) ;;
-    mac:nas-platform-mac-[abcdefghijklmnopqrstuvwxyz0123456789]*|\
-    :nas-platform-mac-[abcdefghijklmnopqrstuvwxyz0123456789]*) ;;
+  case ${PLATFORM_PROOF_PLATFORM:-mac}:${PLATFORM_PROOF_LANE:-fresh}:${PLATFORM_KIND:-}:${PLATFORM_PROJECT_NAME:-} in
+    integration:adoption:integration:nas-platform-mac-[abcdefghijklmnopqrstuvwxyz0123456789]*)
+      paperless_integration_adoption=true
+      ;;
+    mac:fresh:integration:)
+      paperless_integration_adoption=false
+      ;;
+    mac:*:mac:nas-platform-mac-[abcdefghijklmnopqrstuvwxyz0123456789]*|\
+    mac:*::nas-platform-mac-[abcdefghijklmnopqrstuvwxyz0123456789]*)
+      paperless_integration_adoption=false
+      ;;
     *)
       printf '%s\n' 'drill refuses to run outside a disposable Mac or integration sandbox' >&2
       exit 1
@@ -101,7 +108,38 @@ fi
 : "${PLATFORM_DOCKER_ROOT:?}"
 : "${PLATFORM_MEDIA_ROOT:?}"
 : "${PLATFORM_PAPERLESS_PORT:=8000}"
-if [ "$mode" = drill ] && [ "${PLATFORM_KIND:-}" = integration ]; then
+if [ "$mode" = drill ] && [ "${paperless_integration_adoption:-false}" = true ]; then
+  : "${PLATFORM_MAC_SANDBOX:?}"
+  paperless_drill_root=$(CDPATH= cd -- "$PLATFORM_MAC_SANDBOX" && pwd -P)
+  case $(basename -- "$paperless_drill_root") in nas-platform-mac.??????) ;; *) exit 1 ;; esac
+  paperless_suffix=$(printf '%s' "${paperless_drill_root##*.}" | tr '[:upper:]' '[:lower:]')
+  [ "$paperless_drill_root" = "$PLATFORM_MAC_SANDBOX" ] &&
+    [ "$PLATFORM_DOCKER_ROOT" = "$paperless_drill_root/service-data/docker" ] &&
+    [ "$PLATFORM_MEDIA_ROOT" = "$paperless_drill_root/service-data/media" ] || {
+    printf '%s\n' 'integration adoption drill roots differ from the owned Mac sandbox' >&2
+    exit 1
+  }
+  marker=$paperless_drill_root/.nas-platform-mac-owned
+  case $(uname -s) in
+    Darwin)
+      paperless_marker_uid=$(stat -f '%u' "$marker" 2>/dev/null || true)
+      paperless_marker_mode=$(stat -f '%Lp' "$marker" 2>/dev/null || true)
+      ;;
+    *)
+      paperless_marker_uid=$(stat -c '%u' "$marker" 2>/dev/null || true)
+      paperless_marker_mode=$(stat -c '%a' "$marker" 2>/dev/null || true)
+      ;;
+  esac
+  [ -f "$marker" ] && [ ! -L "$marker" ] &&
+    [ "$paperless_marker_uid" = "$(id -u)" ] && [ "$paperless_marker_mode" = 600 ] &&
+    [ "$(sed -n 's/^project=//p' "$marker")" = "$PLATFORM_PROJECT_NAME" ] &&
+    [ "$PLATFORM_PROJECT_NAME" = "nas-platform-mac-$paperless_suffix" ] &&
+    grep -qx schema=1 "$marker" &&
+    [ "$(wc -l < "$marker" | tr -d ' ')" -eq 2 ] || {
+    printf '%s\n' 'integration adoption drill project is not owned' >&2
+    exit 1
+  }
+elif [ "$mode" = drill ] && [ "${PLATFORM_KIND:-}" = integration ]; then
   paperless_drill_root=$(CDPATH= cd -- "$PLATFORM_DOCKER_ROOT/../.." && pwd -P)
   paperless_media_parent=$(CDPATH= cd -- "$PLATFORM_MEDIA_ROOT/.." && pwd -P)
   case $(basename -- "$paperless_drill_root") in
@@ -116,7 +154,11 @@ if [ "$mode" = drill ] && [ "${PLATFORM_KIND:-}" = integration ]; then
     exit 1
   }
 fi
-if [ -n "${PLATFORM_PROJECT_NAME:-}" ]; then
+if [ "${paperless_integration_adoption:-false}" = true ]; then
+  PLATFORM_PAPERLESS_WEBSERVER_CONTAINER=paperless_webserver
+  PLATFORM_PAPERLESS_POSTGRES_CONTAINER=paperless_postgres
+  PLATFORM_PAPERLESS_REDIS_CONTAINER=paperless_redis
+elif [ -n "${PLATFORM_PROJECT_NAME:-}" ]; then
   : "${PLATFORM_PAPERLESS_WEBSERVER_CONTAINER:=$PLATFORM_PROJECT_NAME-paperless-webserver}"
   : "${PLATFORM_PAPERLESS_POSTGRES_CONTAINER:=$PLATFORM_PROJECT_NAME-paperless-postgres}"
   : "${PLATFORM_PAPERLESS_REDIS_CONTAINER:=$PLATFORM_PROJECT_NAME-paperless-redis}"

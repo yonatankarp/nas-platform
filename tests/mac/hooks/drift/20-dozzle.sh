@@ -6,6 +6,7 @@ umask 077
 mac_hook_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 mac_script_dir=$(CDPATH= cd -- "$mac_hook_dir/../.." && pwd -P)
 mac_repo_dir=$(CDPATH= cd -- "$mac_script_dir/../.." && pwd -P)
+. "$mac_script_dir/lib.sh"
 expected_failure=
 check_output=
 fixture_owned=false
@@ -71,7 +72,7 @@ check_output=$(mktemp "$PLATFORM_REPORT_ROOT/dozzle-check-mixed.XXXXXX")
 
 fixture_owned=true
 "$mac_script_dir/run-dozzle-contract.sh" check-mixed-create
-if ! ansible-playbook -i "$mac_repo_dir/inventory/mac.yml" "$mac_repo_dir/site.yml" \
+if ! mac_ansible_playbook -i "$mac_repo_dir/inventory/mac.yml" "$mac_repo_dir/site.yml" \
     --vault-password-file "$PLATFORM_MAC_VAULT_PASSWORD_FILE" \
     -e @"$PLATFORM_MAC_VAULT_FILE" \
     -e "platform_vault_file=$PLATFORM_MAC_VAULT_FILE" \
@@ -85,7 +86,7 @@ fi
 grep -qE 'changed=[1-9][0-9]* .*failed=0 ' "$check_output"
 "$mac_script_dir/run-dozzle-contract.sh" assert-check-mixed-output "$check_output"
 "$mac_script_dir/run-dozzle-contract.sh" check-mixed-unchanged
-if ansible-playbook -i "$mac_repo_dir/inventory/mac.yml" "$mac_repo_dir/verify.yml" \
+if mac_ansible_playbook -i "$mac_repo_dir/inventory/mac.yml" "$mac_repo_dir/verify.yml" \
     --vault-password-file "$PLATFORM_MAC_VAULT_PASSWORD_FILE" \
     -e @"$PLATFORM_MAC_VAULT_FILE" \
     -e "platform_vault_file=$PLATFORM_MAC_VAULT_FILE" \

@@ -3,7 +3,7 @@ set -eu
 set +x
 
 mode=${1:-run}
-repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)
+repo_dir=${PLATFORM_CONTRACT_REPO_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)}
 compose=$repo_dir/services/audiobookshelf/compose.yml
 mac_compose=$repo_dir/services/audiobookshelf/compose.mac.yml
 role=$repo_dir/roles/audiobookshelf/tasks/main.yml
@@ -85,6 +85,9 @@ end
 RUBY
 
 [ "$mode" = static ] && { printf '%s\n' 'Audiobookshelf static contract passed'; exit 0; }
+. "${PLATFORM_LEGACY_FIXTURE_HELPER_FILE:-$repo_dir/tests/contracts/legacy-fixture-paths.sh}"
+legacy_fixture_validate PLATFORM_AUDIOBOOKSHELF_MEDIA_LIBRARY legacy/audiobookshelf/media ||
+  fail_contract 'legacy fixture root is unsafe'
 
 : "${PLATFORM_CONTRACT_VAULT_FILE:=${PLATFORM_MAC_VAULT_FILE:-}}"
 : "${PLATFORM_CONTRACT_VAULT_PASSWORD_FILE:=${PLATFORM_MAC_VAULT_PASSWORD_FILE:-}}"
@@ -113,7 +116,9 @@ MEDIA_ROOT = Pathname.new(ENV.fetch("PLATFORM_MEDIA_ROOT")).expand_path
 REPORT_ROOT = Pathname.new(ENV.fetch("PLATFORM_REPORT_ROOT")).expand_path
 LIBRARY_NAME = "Audiobooks"
 FIXTURE_TITLE = "Task 9 Contract Book"
-MEDIA_LIBRARY = MEDIA_ROOT.join("Media", "Audiobooks")
+MEDIA_LIBRARY = Pathname.new(
+  ENV.fetch("PLATFORM_AUDIOBOOKSHELF_MEDIA_LIBRARY", MEDIA_ROOT.join("Media", "Audiobooks").to_s)
+).expand_path
 FIXTURE_DIRECTORY = MEDIA_LIBRARY.join("task-9-contract-book")
 FIXTURE_PATH = FIXTURE_DIRECTORY.join("task-9-contract-book.wav")
 PROGRESS_SECONDS = 1.25
@@ -190,6 +195,19 @@ def safe_id(value)
   id = value.to_s
   fail_contract("API returned an unsafe identifier") unless id.match?(SAFE_ID)
   id
+end
+
+def exact_vault_named_administrator(users, username, type:, active:)
+  fail_contract("administrator user listing is malformed") unless users.is_a?(Array)
+  matches = users.select { |user| user.is_a?(Hash) && user["username"] == username }
+  fail_contract("vault-named administrator identity is absent or duplicated") unless matches.length == 1
+  administrator = matches.fetch(0)
+  fail_contract("vault-named administrator privilege or active state differs") unless
+    administrator["type"] == type && administrator["isActive"] == active
+  safe_id(administrator.fetch("id"))
+  administrator
+rescue KeyError
+  fail_contract("vault-named administrator state is malformed")
 end
 
 def exact_library_folders(folders, library_id)
@@ -321,15 +339,103 @@ def remove_drift_snapshot
   require_owned_drift_snapshot_directory!.rmdir
 end
 
-def expect_contract_failure
+def expect_contract_failure(message = "unsafe drift snapshot was accepted", timeout: 2)
   pid = fork do
     $stdout.reopen(File::NULL, "w")
     $stderr.reopen(File::NULL, "w")
     yield
     exit! 0
   end
-  _waited, status = Process.wait2(pid)
-  fail_contract("unsafe drift snapshot was accepted") if status.success?
+  deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+  status = nil
+  until status || Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+    _waited, status = Process.wait2(pid, Process::WNOHANG)
+    sleep 0.01 unless status
+  end
+  unless status
+    Process.kill("KILL", pid)
+    Process.wait(pid)
+    fail_contract("#{message}; rejection blocked")
+  end
+  fail_contract(message) if status.success?
+end
+
+def exact_role_auth_model(main_tasks, managed_tasks)
+  login_tasks = lambda do |tasks|
+    tasks.each_with_index.filter_map do |task, index|
+      uri = task.is_a?(Hash) ? task["ansible.builtin.uri"] : nil
+      [task, index] if uri.is_a?(Hash) && uri["url"] == "{{ audiobookshelf_api }}/login"
+    end
+  end
+  main_logins = login_tasks.call(main_tasks)
+  managed_logins = login_tasks.call(managed_tasks)
+  expected_main_names = [
+    "Authenticate the Audiobookshelf administrator for reconciliation",
+    "Authenticate to Audiobookshelf for exact verification"
+  ]
+  expected_managed_names = [
+    "Authenticate existing Audiobookshelf managed users",
+    "Authenticate newly created Audiobookshelf managed users"
+  ]
+  fail_contract("Audiobookshelf administrator authentication task model differs") unless
+    main_logins.map { |task, _index| task["name"] } == expected_main_names
+  fail_contract("Audiobookshelf managed-user authentication task model differs") unless
+    managed_logins.map { |task, _index| task["name"] } == expected_managed_names
+
+  reconcile, verify = main_logins.map(&:first)
+  existing, created = managed_logins.map(&:first)
+  fail_contract("Audiobookshelf administrator authentication guards differ") unless
+    reconcile["when"] == "not ansible_check_mode or audiobookshelf_initialized | bool" &&
+      verify["when"] == ["not ansible_check_mode", "audiobookshelf_reconcile_token is not defined"]
+  fail_contract("Audiobookshelf managed-user authentication guards differ") unless
+    existing["when"] == [
+      "audiobookshelf_managed_users_phase == 'reconcile'",
+      "not ansible_check_mode",
+      "audiobookshelf_managed_user_matches[item.username] | length == 1"
+    ] && existing["loop"] == "{{ vault_managed_audiobookshelf_users }}" &&
+      created["when"] == [
+        "audiobookshelf_managed_users_phase == 'reconcile'",
+        "not ansible_check_mode"
+      ] && created["loop"].to_s.include?("audiobookshelf_managed_user_creation.results")
+  fail_contract("Audiobookshelf authentication tasks are not protected from disclosure") unless
+    (main_logins + managed_logins).all? do |task, _index|
+      task.dig("ansible.builtin.uri", "method") == "POST" && task["no_log"] == true
+    end
+
+  {
+    reconcile_admin: main_logins.count { |task, _index| task["name"] == expected_main_names.fetch(0) },
+    check_admin: main_logins.count { |task, _index| task["name"] == expected_main_names.fetch(0) },
+    verify_admin: main_logins.count { |task, _index| task["name"] == expected_main_names.fetch(1) },
+    managed_per_user: managed_logins.count do |task, _index|
+      task["name"] == expected_managed_names.fetch(0)
+    end,
+    main_task_indexes: main_logins.map(&:last)
+  }
+end
+
+def generated_audiobookshelf_user_count(generator)
+  section = generator.match(/^  audiobookshelf:\n(?<body>.*?)(?=^  [a-z0-9_]+:\n)/m)
+  fail_contract("ephemeral Audiobookshelf managed-user input is absent or ambiguous") unless section
+  count = section[:body].scan(/^    - username:/).length
+  fail_contract("ephemeral Audiobookshelf managed-user input is empty") unless count.positive?
+  count
+end
+
+def exact_baseline_role_runs(integration)
+  initial = integration.scan(
+    /^\s*if \[ "\\\$#" -eq 0 \]; then\n\s*run_play\n\s*else\n\s*run_play "\\\$@"\n\s*fi$/
+  ).length
+  idempotence = integration.scan(/^\s*run_play "\\\$@" \| tee \/tmp\/second\.txt$/).length
+  check = integration.scan(/^\s*if run_play "\\\$@" --check --diff; then$/).length
+  fail_contract("Audiobookshelf baseline role call sequence differs") unless
+    initial == 1 && idempotence == 1 && check == 1
+  { normal: initial + idempotence, check: check }
+end
+
+def direct_harness_login_count(contract)
+  count = contract.scan(/request\(\s*"post",\s*"\/login"/).length
+  fail_contract("Audiobookshelf direct authentication proof is absent") unless count.positive?
+  count
 end
 
 def owned_directory!(path, parent)
@@ -410,9 +516,14 @@ def exact_playback?(source, full_body, range_body, content_range)
 end
 
 def seed_fixture
-  media_parent = MEDIA_ROOT.join("Media")
-  owned_directory!(media_parent, MEDIA_ROOT)
-  owned_directory!(MEDIA_LIBRARY, media_parent)
+  if ENV.key?("PLATFORM_AUDIOBOOKSHELF_MEDIA_LIBRARY")
+    fail_contract("legacy media library is unavailable or unsafe") unless
+      MEDIA_LIBRARY.directory? && !MEDIA_LIBRARY.symlink?
+  else
+    media_parent = MEDIA_ROOT.join("Media")
+    owned_directory!(media_parent, MEDIA_ROOT)
+    owned_directory!(MEDIA_LIBRARY, media_parent)
+  end
   owned_directory!(FIXTURE_DIRECTORY, MEDIA_LIBRARY)
   fail_contract("fixture path is a symlink") if FIXTURE_PATH.symlink?
   bytes = tagged_wave
@@ -428,6 +539,42 @@ end
 
 def artifact_path(name = "persistence")
   REPORT_ROOT.join("audiobookshelf-#{name}.json")
+end
+
+def session_token_path
+  REPORT_ROOT.join(".audiobookshelf-contract-session")
+end
+
+def read_session_token(expected_uid: Process.uid)
+  path = session_token_path
+  fail_contract("nonblocking cached session reads are unsupported") unless File.const_defined?(:NONBLOCK)
+  file = path.open(File::RDONLY | File::NOFOLLOW | File::NONBLOCK)
+  stat = file.stat
+  fail_contract("cached Audiobookshelf session is unavailable or unsafe") unless
+    stat.file? && stat.uid == expected_uid && (stat.mode & 0o777) == 0o600 && stat.size <= 4096
+  token = file.read(4097)
+  fail_contract("cached Audiobookshelf session is malformed") unless
+    token.match?(/\A[A-Za-z0-9._~-]{20,4096}\z/)
+  token
+rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP, Errno::ENXIO
+  fail_contract("cached Audiobookshelf session is unavailable or unsafe")
+ensure
+  file&.close
+end
+
+def write_session_token(token)
+  fail_contract("report root is unavailable or unsafe") unless REPORT_ROOT.directory? && !REPORT_ROOT.symlink?
+  fail_contract("Audiobookshelf session token is malformed") unless
+    token.to_s.match?(/\A[A-Za-z0-9._~-]{20,4096}\z/)
+  path = session_token_path
+  fail_contract("refusing to replace cached Audiobookshelf session") if path.exist? || path.symlink?
+  path.open(File::WRONLY | File::CREAT | File::EXCL, 0o600) { |file| file.write(token) }
+end
+
+def remove_session_token
+  path = session_token_path
+  read_session_token
+  path.unlink
 end
 
 def write_artifact(item_id)
@@ -508,11 +655,8 @@ def inactive_admin_refusal!(username, password, retained_token, vault)
   limitation = "Managed Audiobookshelf administrator cannot authenticate. Pinned Audiobookshelf 2.36.0"
   recovery_username = "task9-contract-recovery-root"
   users = request("get", "/api/users", token: retained_token).last.fetch("users")
-  original = users.select { |user| user["username"] == username }
-  fail_contract("inactive fixture requires exactly one active vault-named root") unless
-    users.length == 1 && original.length == 1 && original.fetch(0)["type"] == "root" &&
-      original.fetch(0)["isActive"] == true
-  original_id = safe_id(original.fetch(0).fetch("id"))
+  original = exact_vault_named_administrator(users, username, type: "root", active: true)
+  original_id = safe_id(original.fetch("id"))
   temporary_id = nil
 
   begin
@@ -526,13 +670,14 @@ def inactive_admin_refusal!(username, password, retained_token, vault)
       body: { username: username, password: password, type: "admin", isActive: true }
     )
     fixture_users = request("get", "/api/users", token: retained_token).last.fetch("users")
-    temporary = fixture_users.select { |user| user["username"] == username }
-    fail_contract("temporary inactive administrator fixture was not created exactly once") unless temporary.length == 1
-    temporary_id = safe_id(temporary.fetch(0).fetch("id"))
+    temporary = exact_vault_named_administrator(fixture_users, username, type: "admin", active: true)
+    temporary_id = safe_id(temporary.fetch("id"))
     request(
       "patch", "/api/users/#{temporary_id}", token: retained_token,
       body: { type: "admin", isActive: false }
     )
+    inactive_users = request("get", "/api/users", token: retained_token).last.fetch("users")
+    exact_vault_named_administrator(inactive_users, username, type: "admin", active: false)
     request("post", "/login", body: { username: username, password: password }, expected: [401])
 
     [["site.yml", "audiobookshelf"], ["verify.yml", "platform_verify_audiobookshelf"]].each do |playbook, tags|
@@ -556,14 +701,117 @@ def inactive_admin_refusal!(username, password, retained_token, vault)
     restored_login, restored = request("post", "/login", body: { username: username, password: password })
     restored_token = restored.dig("user", "accessToken")
     restored_users = request("get", "/api/users", token: restored_token).last.fetch("users")
+    restored_root = exact_vault_named_administrator(restored_users, username, type: "root", active: true)
     fail_contract("inactive administrator fixture did not recover exact user state") unless
-      restored_login.code.to_i == 200 && restored_users.length == 1 &&
-        restored_users.fetch(0)["username"] == username && restored_users.fetch(0)["type"] == "root" &&
-        restored_users.fetch(0)["isActive"] == true
+      restored_login.code.to_i == 200 && safe_id(restored_root.fetch("id")) == original_id
   end
 end
 
 case MODE
+when "authentication-budget-self-test"
+  integration = Pathname.new(ENV.fetch("PLATFORM_REPO_ROOT")).join("tests/integration.sh").read
+  contract_modes = integration.scan(/^\s*run_audiobookshelf_contract\s+([a-z0-9-]+)/).flatten
+  expected_modes = %w[
+    run inactive-admin-refusal duplicate-admin-api-refusal
+    duplicate-library-create duplicate-library-verify duplicate-library-assert-output
+    duplicate-library-cleanup run check-repair-seed assert-check-output
+    check-repair-unchanged run check-repair-cleanup drift drift-verify run
+    check-missing-seed assert-check-output check-missing-unchanged check-missing-cleanup
+    run seed-progress assert-persistence authentication-session-cleanup
+  ]
+  fail_contract("Audiobookshelf integration contract call sequence differs") unless contract_modes == expected_modes
+
+  tagged_role_calls = integration.scan(/run_play --tags audiobookshelf/).length
+  check_role_calls = integration.scan(/run_play --tags audiobookshelf --check --diff/).length
+  verify_role_calls = integration.scan(/^\s*if run_audiobookshelf_verify_only/).length
+  fail_contract("Audiobookshelf integration role call sequence differs") unless
+    tagged_role_calls == 7 && check_role_calls == 2 && verify_role_calls == 4
+  fail_contract("Audiobookshelf integration session cleanup lifecycle differs") unless
+    integration.include?("run_audiobookshelf_contract authentication-session-cleanup") &&
+      integration.include?("trap cleanup_integration_on_exit EXIT") &&
+      integration.include?("trap 'exit 130' HUP INT TERM") &&
+      integration.include?('cleanup_sandbox "$sandbox"')
+
+  repo_root = Pathname.new(ENV.fetch("PLATFORM_REPO_ROOT"))
+  main_tasks = YAML.safe_load_file(repo_root.join("roles/audiobookshelf/tasks/main.yml"))
+  managed_tasks = YAML.safe_load_file(repo_root.join("roles/audiobookshelf/tasks/managed_users.yml"))
+  auth_model = exact_role_auth_model(main_tasks, managed_tasks)
+  expect_contract_failure("an added Audiobookshelf role authentication call was accepted") do
+    exact_role_auth_model(main_tasks + [main_tasks.fetch(auth_model.fetch(:main_task_indexes).first)], managed_tasks)
+  end
+  managed_user_count = generated_audiobookshelf_user_count(
+    repo_root.join("tests/generate-ephemeral-vault.sh").read
+  )
+  baseline_runs = exact_baseline_role_runs(integration)
+  normal_role_logins = auth_model.fetch(:reconcile_admin) +
+                       auth_model.fetch(:managed_per_user) * managed_user_count
+  check_role_logins = auth_model.fetch(:check_admin)
+  verify_role_logins_per_run = auth_model.fetch(:verify_admin)
+  initial_role_logins = baseline_runs.fetch(:normal) * normal_role_logins +
+                        baseline_runs.fetch(:check) * check_role_logins
+  scenario_role_logins = (tagged_role_calls - check_role_calls) * normal_role_logins +
+                         check_role_calls * check_role_logins +
+                         verify_role_calls * verify_role_logins_per_run +
+                         auth_model.fetch(:reconcile_admin) + verify_role_logins_per_run
+  harness_logins = direct_harness_login_count(repo_root.join("tests/contracts/audiobookshelf.sh").read)
+  total_logins = initial_role_logins + scenario_role_logins + harness_logins
+  fail_contract("Audiobookshelf integration authentication budget is exhausted") unless total_logins < 40
+
+  test_token = "contract-session-token"
+  write_session_token(test_token)
+  fail_contract("Audiobookshelf cached session did not round-trip") unless read_session_token == test_token
+  expect_contract_failure("Audiobookshelf cached session replacement was accepted") do
+    write_session_token("replacement-session-token")
+  end
+  session_token_path.chmod(0o644)
+  expect_contract_failure("Audiobookshelf cached session unsafe mode was accepted") { read_session_token }
+  session_token_path.chmod(0o600)
+  expect_contract_failure("Audiobookshelf cached session foreign ownership was accepted") do
+    read_session_token(expected_uid: Process.uid + 1)
+  end
+  remove_session_token
+  fail_contract("Audiobookshelf cached session cleanup failed") if session_token_path.exist?
+  session_token_path.mkdir(0o700)
+  expect_contract_failure("Audiobookshelf cached session directory was accepted") { read_session_token }
+  session_token_path.rmdir
+  fail_contract("Audiobookshelf FIFO fixture could not be created") unless
+    system("mkfifo", session_token_path.to_s, out: File::NULL, err: File::NULL)
+  expect_contract_failure("Audiobookshelf cached session FIFO was accepted") { read_session_token }
+  session_token_path.unlink
+  symlink_target = REPORT_ROOT.join(".audiobookshelf-contract-session-target")
+  symlink_target.open(File::WRONLY | File::CREAT | File::EXCL, 0o600) { |file| file.write(test_token) }
+  File.symlink(symlink_target, session_token_path)
+  expect_contract_failure("Audiobookshelf cached session symlink was accepted") { read_session_token }
+  session_token_path.unlink
+  symlink_target.unlink
+  puts "Audiobookshelf authentication budget self-test passed"
+  exit 0
+when "administrator-selection-self-test"
+  username = "vault-root"
+  root = { "id" => "root-id", "username" => username, "type" => "root", "isActive" => true }
+  managed = { "id" => "reader-id", "username" => "managed-reader", "type" => "user", "isActive" => true }
+  unmanaged = { "id" => "friend-id", "username" => "unmanaged-friend", "type" => "admin", "isActive" => true }
+  users = [managed, root, unmanaged]
+  fail_contract("vault-named root was not selected independently of other users") unless
+    exact_vault_named_administrator(users, username, type: "root", active: true) == root
+
+  duplicate = root.merge("id" => "duplicate-root-id")
+  expect_contract_failure("duplicate vault-named root was accepted") do
+    exact_vault_named_administrator(users + [duplicate], username, type: "root", active: true)
+  end
+  expect_contract_failure("absent vault-named root was accepted") do
+    exact_vault_named_administrator([managed, unmanaged], username, type: "root", active: true)
+  end
+  expect_contract_failure("inactive vault-named root was accepted") do
+    exact_vault_named_administrator(users.map { |user| user.equal?(root) ? user.merge("isActive" => false) : user },
+                                    username, type: "root", active: true)
+  end
+  expect_contract_failure("non-root vault-named administrator was accepted") do
+    exact_vault_named_administrator(users.map { |user| user.equal?(root) ? user.merge("type" => "admin") : user },
+                                    username, type: "root", active: true)
+  end
+  puts "Audiobookshelf administrator selection self-test passed"
+  exit 0
 when "secret-redaction-self-test"
   vault = {
     "vault_immich_db_name" => "immich",
@@ -738,6 +986,10 @@ when "check-missing-cleanup"
   remove_state_artifact("check-missing")
   puts "Audiobookshelf create check-mode artifact removed"
   exit 0
+when "authentication-session-cleanup"
+  remove_session_token
+  puts "Audiobookshelf cached contract session removed"
+  exit 0
 end
 
 vault_yaml, vault_error, vault_status = Open3.capture3(
@@ -752,22 +1004,28 @@ vault_error.replace("\0" * vault_error.bytesize)
 username = vault.fetch("vault_audiobookshelf_admin_username")
 password = vault.fetch("vault_audiobookshelf_admin_password")
 
-wrong_login_response = if MODE == "run"
-                         request(
-                           "post", "/login",
-                           body: { username: username, password: "contract-wrong-password" }, expected: [401]
-                         ).first
-                       end
-login_response, login = request("post", "/login", body: { username: username, password: password })
-token = login.dig("user", "accessToken")
-fail_contract("vault administrator login did not return a token") if token.to_s.empty?
-if MODE == "run"
-  limit = Integer(login_response["RateLimit-Limit"], 10)
-  wrong_remaining = Integer(wrong_login_response["RateLimit-Remaining"], 10)
-  login_remaining = Integer(login_response["RateLimit-Remaining"], 10)
-  fail_contract("pinned authentication rate contract differs") unless
-    limit == 40 && wrong_remaining == login_remaining + 1
-  puts "Audiobookshelf authentication call budget passed"
+reuse_integration_session = ENV["PLATFORM_KIND"] == "integration"
+if reuse_integration_session && (session_token_path.exist? || session_token_path.symlink?)
+  token = read_session_token
+else
+  wrong_login_response = if MODE == "run"
+                           request(
+                             "post", "/login",
+                             body: { username: username, password: "contract-wrong-password" }, expected: [401]
+                           ).first
+                         end
+  login_response, login = request("post", "/login", body: { username: username, password: password })
+  token = login.dig("user", "accessToken")
+  fail_contract("vault administrator login did not return a token") if token.to_s.empty?
+  if MODE == "run"
+    limit = Integer(login_response["RateLimit-Limit"], 10)
+    wrong_remaining = Integer(wrong_login_response["RateLimit-Remaining"], 10)
+    login_remaining = Integer(login_response["RateLimit-Remaining"], 10)
+    fail_contract("pinned authentication rate contract differs") unless
+      limit == 40 && wrong_remaining == login_remaining + 1
+    puts "Audiobookshelf authentication call budget passed"
+  end
+  write_session_token(token) if reuse_integration_session
 end
 
 if MODE == "inactive-admin-refusal"

@@ -64,6 +64,44 @@
   register: deployment_bundle_platform_sources
   delegate_to: localhost
 
+- name: Validate adoption mapping activation
+  ansible.builtin.assert:
+    that:
+      - >-
+        not (platform_adoption_enabled | default(false) | bool) or
+        (platform_kind == 'mac' and
+         platform_adoption_root | default('') | length > 0 and
+         platform_adoption_marker | default('') | length > 0)
+      - >-
+        (platform_adoption_enabled | default(false) | bool) or
+        (platform_adoption_root | default('') | length == 0 and
+         platform_adoption_marker | default('') | length == 0)
+    fail_msg: Adoption mapping requires the Mac lane, exact state root, and immutable binding marker.
+
+- name: Inspect adoption controller Compose definitions
+  ansible.builtin.stat:
+    path: "{{ playbook_dir }}/services/{{ item.name }}/compose.adoption.yml"
+  loop: "{{ deployment_bundle_services }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: deployment_bundle_adoption_sources
+  delegate_to: localhost
+  when: platform_adoption_enabled | default(false) | bool
+
+- name: Require adoption Compose for each implemented service
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isreg
+      - not item.stat.islnk
+    fail_msg: Implemented service {{ item.item.name }} has no safe adoption Compose definition.
+  loop: "{{ deployment_bundle_adoption_sources.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  when:
+    - platform_adoption_enabled | default(false) | bool
+    - not (item.skipped | default(false))
+
 - name: Revalidate before creating deployment and runtime directories
   ansible.builtin.include_tasks: target.yml
 
@@ -149,6 +187,20 @@
   when:
     - not ansible_check_mode
     - item.stat.exists
+
+- name: Copy adoption Compose definitions from the controller
+  ansible.builtin.copy:
+    src: "{{ item.stat.path }}"
+    dest: "{{ deployment_bundle_staging_dir }}/services/{{ item.item.name }}/compose.adoption.yml"
+    mode: "0644"
+  loop: "{{ deployment_bundle_adoption_sources.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  changed_when: false
+  when:
+    - not ansible_check_mode
+    - platform_adoption_enabled | default(false) | bool
+    - not (item.skipped | default(false))
 
 - name: Write the deployment manifest
   ansible.builtin.template:

@@ -29,6 +29,7 @@ mkdir -p "$fixture_root/tests/mac/hooks/drift" "$fixture_root/tests/mac" \
   "$fixture_root/tests" "$fixture_root/inventory" "$fake_bin"
 cp "$repo_dir/tests/mac/hooks/drift/30-audiobookshelf.sh" \
   "$fixture_root/tests/mac/hooks/drift/30-audiobookshelf.sh"
+cp "$repo_dir/tests/mac/lib.sh" "$fixture_root/tests/mac/lib.sh"
 chmod 0755 "$fixture_root/tests/mac/hooks/drift/30-audiobookshelf.sh"
 : > "$fixture_root/verify.yml"
 : > "$fixture_root/inventory/mac.yml"

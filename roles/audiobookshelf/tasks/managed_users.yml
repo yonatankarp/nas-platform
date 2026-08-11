@@ -1,0 +1,327 @@
+---
+- name: List complete Audiobookshelf users for managed-user reconciliation
+  ansible.builtin.uri:
+    url: "{{ audiobookshelf_api }}/api/users"
+    headers:
+      Authorization: "Bearer {{ audiobookshelf_managed_users_token }}"
+    status_code: [200]
+    return_content: true
+  register: audiobookshelf_managed_users_listing
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Refuse incomplete Audiobookshelf managed-user listing
+  ansible.builtin.assert:
+    that:
+      - audiobookshelf_managed_users_listing.json is mapping
+      - audiobookshelf_managed_users_listing.json.users | type_debug == 'list'
+      - audiobookshelf_managed_users_listing.json.hasMore | default(false) | bool == false
+      - audiobookshelf_managed_users_listing.json.nextPage | default(none) is none
+      - >-
+        audiobookshelf_managed_users_listing.json.total is not defined or
+        audiobookshelf_managed_users_listing.json.total | int ==
+          audiobookshelf_managed_users_listing.json.users | length
+    fail_msg: >-
+      Audiobookshelf returned an unsupported or incomplete users response;
+      reconciliation is refusing a partial identity view.
+
+- name: Resolve normalized Audiobookshelf managed identities
+  ansible.builtin.set_fact:
+    audiobookshelf_managed_user_matches: >-
+      {{ (audiobookshelf_managed_user_matches | default({})) |
+         combine(dict([(item.username,
+           audiobookshelf_managed_users_listing.json.users |
+           selectattr('username', 'equalto', item.username) | list)])) }}
+  loop: "{{ vault_managed_audiobookshelf_users }}"
+  loop_control:
+    label: audiobookshelf-managed-user
+  no_log: true
+
+- name: Refuse ambiguous normalized Audiobookshelf managed identities
+  ansible.builtin.assert:
+    that:
+      - audiobookshelf_managed_user_matches[item.username] | length <= 1
+      - >-
+        audiobookshelf_managed_users_listing.json.users | map(attribute='username') |
+        map('trim') | map('lower') | select('equalto', item.username | trim | lower) |
+        list | length == audiobookshelf_managed_user_matches[item.username] | length
+      - >-
+        audiobookshelf_managed_user_matches[item.username] | length == 0 or
+        audiobookshelf_managed_user_matches[item.username][0].username == item.username
+    fail_msg: >-
+      Audiobookshelf contains a duplicate or normalized alias for a managed
+      username; resolve it manually before reconciliation.
+  loop: "{{ vault_managed_audiobookshelf_users }}"
+  loop_control:
+    label: audiobookshelf-managed-user
+  no_log: true
+
+- name: Require safe Audiobookshelf managed-user identifiers
+  ansible.builtin.assert:
+    that:
+      - >-
+        audiobookshelf_managed_user_matches[item.username] | length == 0 or
+        audiobookshelf_managed_user_matches[item.username][0].id | string
+          is match('^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$')
+    fail_msg: Audiobookshelf returned an unsafe managed-user API identifier.
+  loop: "{{ vault_managed_audiobookshelf_users }}"
+  loop_control:
+    label: audiobookshelf-managed-user
+  no_log: true
+
+- name: Authenticate existing Audiobookshelf managed users
+  ansible.builtin.uri:
+    url: "{{ audiobookshelf_api }}/login"
+    method: POST
+    body_format: json
+    body:
+      username: "{{ item.username }}"
+      password: "{{ item.password }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: audiobookshelf_managed_user_authentication
+  when:
+    - audiobookshelf_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+    - audiobookshelf_managed_user_matches[item.username] | length == 1
+  loop: "{{ vault_managed_audiobookshelf_users }}"
+  loop_control:
+    label: audiobookshelf-managed-user
+  failed_when: false
+  changed_when: false
+  no_log: true
+
+- name: Require preserved Audiobookshelf managed-user credentials
+  ansible.builtin.assert:
+    that:
+      - item.status | default(0) | int == 200
+      - item.json.user.username | default('') == item.item.username
+    fail_msg: >-
+      Existing Audiobookshelf managed user does not accept its preserved vault
+      password. Run the reviewed credential-migration procedure; Ansible will
+      not reset it automatically.
+  loop: >-
+    {{ audiobookshelf_managed_user_authentication.results | default([]) |
+       rejectattr('skipped', 'defined') | list }}
+  loop_control:
+    label: audiobookshelf-managed-user
+  when:
+    - audiobookshelf_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+  no_log: true
+
+- name: Report planned Audiobookshelf managed-user creation
+  ansible.builtin.debug:
+    msg: AUDIOBOOKSHELF_PLAN_MANAGED_USER_CREATE
+  when:
+    - audiobookshelf_managed_users_phase == 'reconcile'
+    - ansible_check_mode
+    - audiobookshelf_managed_user_matches[item.username] | length == 0
+  loop: "{{ vault_managed_audiobookshelf_users }}"
+  loop_control:
+    label: audiobookshelf-managed-user
+  changed_when: true
+
+- name: Create absent Audiobookshelf managed users
+  ansible.builtin.uri:
+    url: "{{ audiobookshelf_api }}/api/users"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ audiobookshelf_managed_users_token }}"
+    body_format: json
+    body:
+      username: "{{ item.username }}"
+      password: "{{ item.password }}"
+      type: "{{ item.type }}"
+      isActive: "{{ item.is_active }}"
+      permissions: "{{ item.permissions.flags }}"
+      librariesAccessible: "{{ item.permissions.librariesAccessible }}"
+      itemTagsSelected: "{{ item.permissions.itemTagsSelected }}"
+    status_code: [200]
+  register: audiobookshelf_managed_user_creation
+  when:
+    - audiobookshelf_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+    - audiobookshelf_managed_user_matches[item.username] | length == 0
+  loop: "{{ vault_managed_audiobookshelf_users }}"
+  loop_control:
+    label: audiobookshelf-managed-user
+  changed_when: true
+  no_log: true
+
+- name: Re-list Audiobookshelf users after managed-user creation
+  ansible.builtin.uri:
+    url: "{{ audiobookshelf_api }}/api/users"
+    headers:
+      Authorization: "Bearer {{ audiobookshelf_managed_users_token }}"
+    status_code: [200]
+    return_content: true
+  register: audiobookshelf_managed_users_refreshed_listing
+  when:
+    - audiobookshelf_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require exact newly created Audiobookshelf managed identities
+  ansible.builtin.assert:
+    that:
+      - audiobookshelf_managed_users_refreshed_listing.json is mapping
+      - audiobookshelf_managed_users_refreshed_listing.json.users | type_debug == 'list'
+      - audiobookshelf_managed_users_refreshed_listing.json.hasMore | default(false) | bool == false
+      - audiobookshelf_managed_users_refreshed_listing.json.nextPage | default(none) is none
+      - >-
+        audiobookshelf_managed_users_refreshed_listing.json.total is not defined or
+        audiobookshelf_managed_users_refreshed_listing.json.total | int ==
+          audiobookshelf_managed_users_refreshed_listing.json.users | length
+      - >-
+        audiobookshelf_managed_users_refreshed_listing.json.users |
+        selectattr('username', 'equalto', item.item.username) | list | length == 1
+      - >-
+        audiobookshelf_managed_users_refreshed_listing.json.users | map(attribute='username') |
+        map('trim') | map('lower') | select('equalto', item.item.username | trim | lower) |
+        list | length == 1
+      - >-
+        (audiobookshelf_managed_users_refreshed_listing.json.users |
+         selectattr('username', 'equalto', item.item.username) | first).id | string
+          is match('^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$')
+    fail_msg: >-
+      Audiobookshelf did not return one exact safe newly created managed identity;
+      reconciliation refuses any subsequent repair.
+  loop: >-
+    {{ audiobookshelf_managed_user_creation.results | default([]) |
+       rejectattr('skipped', 'defined') | list }}
+  loop_control:
+    label: audiobookshelf-managed-user
+  when:
+    - audiobookshelf_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+  no_log: true
+
+- name: Authenticate newly created Audiobookshelf managed users
+  ansible.builtin.uri:
+    url: "{{ audiobookshelf_api }}/login"
+    method: POST
+    body_format: json
+    body:
+      username: "{{ item.item.username }}"
+      password: "{{ item.item.password }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: audiobookshelf_new_managed_user_authentication
+  loop: >-
+    {{ audiobookshelf_managed_user_creation.results | default([]) |
+       rejectattr('skipped', 'defined') | list }}
+  loop_control:
+    label: audiobookshelf-managed-user
+  when:
+    - audiobookshelf_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+  failed_when: false
+  changed_when: false
+  no_log: true
+
+- name: Require newly created Audiobookshelf managed-user credentials
+  ansible.builtin.assert:
+    that:
+      - item.status | default(0) | int == 200
+      - item.json.user.username | default('') == item.item.item.username
+    fail_msg: >-
+      Newly created Audiobookshelf managed user does not accept its vault
+      password. Run the reviewed credential-migration procedure; Ansible will
+      not reset it automatically or continue privilege reconciliation.
+  loop: >-
+    {{ audiobookshelf_new_managed_user_authentication.results | default([]) |
+       rejectattr('skipped', 'defined') | list }}
+  loop_control:
+    label: audiobookshelf-managed-user
+  when:
+    - audiobookshelf_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+  no_log: true
+
+- name: Report planned Audiobookshelf managed-user repair
+  ansible.builtin.debug:
+    msg: AUDIOBOOKSHELF_PLAN_MANAGED_USER_REPAIR
+  when:
+    - audiobookshelf_managed_users_phase == 'reconcile'
+    - ansible_check_mode
+    - audiobookshelf_managed_user_matches[item.username] | length == 1
+    - >-
+      audiobookshelf_managed_user_matches[item.username][0].type != item.type or
+      audiobookshelf_managed_user_matches[item.username][0].isActive | bool != item.is_active | bool or
+      (audiobookshelf_managed_user_matches[item.username][0].permissions | dict2items |
+       selectattr('key', 'in', item.permissions.flags.keys()) | items2dict) !=
+        item.permissions.flags or
+      audiobookshelf_managed_user_matches[item.username][0].librariesAccessible !=
+        item.permissions.librariesAccessible or
+      audiobookshelf_managed_user_matches[item.username][0].itemTagsSelected !=
+        item.permissions.itemTagsSelected
+  loop: "{{ vault_managed_audiobookshelf_users }}"
+  loop_control:
+    label: audiobookshelf-managed-user
+  changed_when: true
+
+- name: Repair Audiobookshelf managed-user non-secret properties
+  ansible.builtin.uri:
+    url: >-
+      {{ audiobookshelf_api }}/api/users/{{
+         audiobookshelf_managed_user_matches[item.username][0].id | urlencode }}
+    method: PATCH
+    headers:
+      Authorization: "Bearer {{ audiobookshelf_managed_users_token }}"
+    body_format: json
+    body:
+      type: "{{ item.type }}"
+      isActive: "{{ item.is_active }}"
+      permissions: "{{ item.permissions.flags }}"
+      librariesAccessible: "{{ item.permissions.librariesAccessible }}"
+      itemTagsSelected: "{{ item.permissions.itemTagsSelected }}"
+    status_code: [200]
+  when:
+    - audiobookshelf_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+    - audiobookshelf_managed_user_matches[item.username] | length == 1
+    - >-
+      audiobookshelf_managed_user_matches[item.username][0].type != item.type or
+      audiobookshelf_managed_user_matches[item.username][0].isActive | bool != item.is_active | bool or
+      (audiobookshelf_managed_user_matches[item.username][0].permissions | dict2items |
+       selectattr('key', 'in', item.permissions.flags.keys()) | items2dict) !=
+        item.permissions.flags or
+      audiobookshelf_managed_user_matches[item.username][0].librariesAccessible !=
+        item.permissions.librariesAccessible or
+      audiobookshelf_managed_user_matches[item.username][0].itemTagsSelected !=
+        item.permissions.itemTagsSelected
+  loop: "{{ vault_managed_audiobookshelf_users }}"
+  loop_control:
+    label: audiobookshelf-managed-user
+  changed_when: true
+  no_log: true
+
+- name: Verify exact Audiobookshelf managed users
+  ansible.builtin.assert:
+    that:
+      - audiobookshelf_managed_user_matches[item.username] | length == 1
+      - audiobookshelf_managed_user_matches[item.username][0].username == item.username
+      - audiobookshelf_managed_user_matches[item.username][0].type == item.type
+      - audiobookshelf_managed_user_matches[item.username][0].isActive | bool == item.is_active | bool
+      - >-
+        (audiobookshelf_managed_user_matches[item.username][0].permissions | dict2items |
+         selectattr('key', 'in', item.permissions.flags.keys()) | items2dict) ==
+          item.permissions.flags
+      - >-
+        audiobookshelf_managed_user_matches[item.username][0].librariesAccessible ==
+        item.permissions.librariesAccessible
+      - >-
+        audiobookshelf_managed_user_matches[item.username][0].itemTagsSelected ==
+        item.permissions.itemTagsSelected
+    fail_msg: >-
+      A managed Audiobookshelf identity is absent, duplicated, aliased, or
+      differs from its exact declared non-secret state.
+  when: audiobookshelf_managed_users_phase == 'verify'
+  loop: "{{ vault_managed_audiobookshelf_users }}"
+  loop_control:
+    label: audiobookshelf-managed-user
+  no_log: true

@@ -6,6 +6,8 @@ argument_specs:
       platform_compose_kind: {type: str, required: true}
       platform_project_name: {type: str, required: false}
       paperless_port: {type: int, required: false}
+      paperless_task_workers: {type: int, required: false}
+      paperless_threads_per_worker: {type: int, required: false}
       paperless_ai_enabled: {type: bool, required: false}
       paperless_ai_llm_endpoint: {type: str, required: false}
       paperless_ai_llm_model: {type: str, required: false}
