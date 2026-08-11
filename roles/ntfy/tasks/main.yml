@@ -15,6 +15,7 @@
       - "{{ platform_current_dir }}/services/ntfy"
       - "{{ platform_current_dir }}/services/ntfy/compose.yml"
       - "{{ platform_current_dir }}/services/ntfy/compose.{{ platform_compose_kind }}.yml"
+      - "{{ platform_current_dir }}/services/ntfy/compose.adoption.yml"
       - "{{ platform_runtime_dir }}/services/ntfy"
       - "{{ platform_runtime_dir }}/services/ntfy/.env"
 
@@ -28,7 +29,9 @@
     ntfy_compose_files: >-
       {{ ['compose.yml'] +
          (ntfy_platform_compose.stat.exists
-          | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) }}
+          | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) +
+         ((platform_adoption_enabled | default(false) | bool)
+          | ternary(['compose.adoption.yml'], [])) }}
 
 - name: Inspect existing ntfy declarative ownership and users
   block:

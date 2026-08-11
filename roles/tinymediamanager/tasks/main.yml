@@ -9,6 +9,7 @@
       - "{{ platform_current_dir }}/services/tinymediamanager"
       - "{{ platform_current_dir }}/services/tinymediamanager/compose.yml"
       - "{{ platform_current_dir }}/services/tinymediamanager/compose.{{ platform_compose_kind }}.yml"
+      - "{{ platform_current_dir }}/services/tinymediamanager/compose.adoption.yml"
       - "{{ platform_runtime_dir }}/services/tinymediamanager"
       - "{{ platform_runtime_dir }}/services/tinymediamanager/.env"
       - "{{ nas_docker_root }}/tinymediamanager/data/data"
@@ -25,7 +26,9 @@
     tinymediamanager_compose_files: >-
       {{ ['compose.yml'] +
          (tinymediamanager_platform_compose.stat.exists
-          | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) }}
+          | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) +
+         ((platform_adoption_enabled | default(false) | bool)
+          | ternary(['compose.adoption.yml'], [])) }}
 
 - name: Create the stable tinyMediaManager settings directory
   ansible.builtin.file:

@@ -9,6 +9,7 @@
       - "{{ platform_current_dir }}/services/audiobookshelf"
       - "{{ platform_current_dir }}/services/audiobookshelf/compose.yml"
       - "{{ platform_current_dir }}/services/audiobookshelf/compose.{{ platform_compose_kind }}.yml"
+      - "{{ platform_current_dir }}/services/audiobookshelf/compose.adoption.yml"
       - "{{ platform_runtime_dir }}/services/audiobookshelf"
       - "{{ platform_runtime_dir }}/services/audiobookshelf/.env"
 
@@ -22,7 +23,9 @@
     audiobookshelf_compose_files: >-
       {{ ['compose.yml'] +
          (audiobookshelf_platform_compose.stat.exists
-          | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) }}
+          | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) +
+         ((platform_adoption_enabled | default(false) | bool)
+          | ternary(['compose.adoption.yml'], [])) }}
 
 - name: Render the Audiobookshelf environment
   ansible.builtin.template:

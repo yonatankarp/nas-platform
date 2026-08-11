@@ -9,6 +9,7 @@
       - "{{ platform_current_dir }}/services/immich"
       - "{{ platform_current_dir }}/services/immich/compose.yml"
       - "{{ platform_current_dir }}/services/immich/compose.{{ platform_compose_kind }}.yml"
+      - "{{ platform_current_dir }}/services/immich/compose.adoption.yml"
       - "{{ platform_runtime_dir }}/services/immich"
       - "{{ platform_runtime_dir }}/services/immich/.env"
 
@@ -22,7 +23,9 @@
     immich_compose_files: >-
       {{ ['compose.yml'] +
          (immich_platform_compose.stat.exists
-          | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) }}
+          | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) +
+         ((platform_adoption_enabled | default(false) | bool)
+          | ternary(['compose.adoption.yml'], [])) }}
 
 - name: Render the Immich environment
   ansible.builtin.template:

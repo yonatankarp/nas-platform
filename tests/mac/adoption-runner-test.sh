@@ -86,6 +86,9 @@ expect_failure 'adoption without parity password' 'adoption requires --parity-va
 expect_failure 'fresh parity options' 'fresh lane rejects parity vault options' \
   "$runner" --lane fresh --vault-file "$vault_file" --vault-password-file "$password_file" \
     --parity-vault-file "$parity_vault_file" --parity-vault-password-file "$parity_password_file"
+expect_failure 'fresh ambient adoption mapping' 'reserved adoption mapping environment must be unset' \
+  env PLATFORM_ADOPTION_ROOT="$temporary_parent/hostile" "$runner" --lane fresh \
+    --vault-file "$vault_file" --vault-password-file "$password_file"
 expect_failure 'same explicit password path' 'unknown phase: not-a-phase' \
   "$runner" --lane adoption --vault-file "$vault_file" --vault-password-file "$password_file" \
     --parity-vault-file "$parity_vault_file" --parity-vault-password-file "$password_file" \

@@ -105,7 +105,8 @@ end
 
 failures = []
 adoption_source = File.read(File.join(__dir__, "adoption.sh"))
-failures << "adoption coordinator omits capture-baseline" unless adoption_source.include?("preflight|render|legacy-deploy|legacy-seed|capture-baseline)")
+failures << "adoption coordinator omits capture-baseline" unless
+  adoption_source.include?("preflight|render|legacy-deploy|legacy-seed|capture-baseline|snapshot|cutover)")
 failures << "adoption coordinator does not invoke recorder" unless adoption_source.include?('"$script_dir/adoption-baseline.rb"')
 failures << "adoption coordinator publishes outside the sandbox" unless adoption_source.include?('"$sandbox/baseline.json"')
 recorder_prefix = File.read(RECORDER).split(/^def emit_probe\b/, 2).first

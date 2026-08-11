@@ -1,0 +1,10 @@
+---
+services:
+  hub:
+    volumes: !override
+      - ${PLATFORM_ADOPTION_ROOT:?}/legacy/beszel/hub:/beszel_data
+  agent-portable:
+    volumes: !override
+      - ${PLATFORM_ADOPTION_ROOT:?}/legacy/beszel/agent:/var/lib/beszel-agent
+      - ${PLATFORM_ADOPTION_ROOT:?}/legacy/beszel/volume1:/extra-filesystems/volume1:ro
+      - ${PLATFORM_ADOPTION_ROOT:?}/legacy/beszel/volume2:/extra-filesystems/volume2:ro

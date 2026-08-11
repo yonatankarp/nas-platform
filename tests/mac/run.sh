@@ -27,6 +27,11 @@ parity_vault_password_file=
 selected_phase=
 requested_sandbox=
 keep_on_failure=false
+[ -z "${PLATFORM_ADOPTION_ROOT+x}" ] && [ -z "${PLATFORM_ADOPTION_MARKER+x}" ] &&
+  [ -z "${PLATFORM_ADOPTION_ENABLED+x}" ] &&
+  [ -z "${PLATFORM_ADOPTION_SNAPSHOT_SELF_TEST+x}" ] &&
+  [ -z "${PLATFORM_SNAPSHOT_ESCAPE+x}" ] ||
+  mac_die 'reserved adoption mapping environment must be unset'
 while [ "$#" -gt 0 ]; do
   case $1 in
     --lane|--vault-file|--vault-password-file|--parity-vault-file|--parity-vault-password-file|--phase|--sandbox)
@@ -610,6 +615,26 @@ run_site() {
     -e "platform_vault_file=$vault_file" "$@"
 }
 
+enable_adoption_mapping() {
+  adoption_mapping_stage=$1
+  case $adoption_mapping_stage in
+    cutover) "$mac_script_dir/adoption.sh" cutover; adoption_marker_action=marker ;;
+    resume) adoption_marker_action=marker-post-cutover ;;
+    *) mac_die 'invalid adoption mapping stage' ;;
+  esac
+  export PLATFORM_ADOPTION_ENABLED=true
+  export PLATFORM_ADOPTION_ROOT=$sandbox
+  PLATFORM_ADOPTION_MARKER=$("$mac_script_dir/adoption-snapshot.sh" "$adoption_marker_action" \
+    --override-root "$mac_script_dir/legacy-overrides" \
+    --baseline "$sandbox/baseline.json" --run-state "$report_root/phase-input.json") ||
+    mac_die 'could not bind the adoption mapping marker'
+  case $PLATFORM_ADOPTION_MARKER in
+    ''|*[!0123456789abcdef]*) mac_die 'adoption mapping marker is invalid' ;;
+  esac
+  [ "${#PLATFORM_ADOPTION_MARKER}" -eq 64 ] || mac_die 'adoption mapping marker is invalid'
+  export PLATFORM_ADOPTION_MARKER
+}
+
 run_idempotence() {
   idempotence_output=$(mktemp "$report_root/idempotence.XXXXXX")
   if run_site >"$idempotence_output" 2>&1; then
@@ -753,14 +778,16 @@ execute_phase() {
       fi
       ;;
     deploy)
-      if [ "$lane" = fresh ]; then
-        run_site
-      else
-        mac_run_hooks adoption-deploy && run_site && "$mac_script_dir/verify.sh"
-      fi
+      [ "$lane" = fresh ] || mac_die 'deploy phase is available only in the fresh lane'
+      run_site
       ;;
-    legacy-deploy|legacy-seed|capture-baseline|snapshot|cutover|rollback)
+    legacy-deploy|legacy-seed|capture-baseline|snapshot|rollback)
       "$mac_script_dir/adoption.sh" "$1"
+      ;;
+    cutover)
+      enable_adoption_mapping cutover
+      run_site
+      "$mac_script_dir/verify.sh"
       ;;
     seed) "$mac_script_dir/fixtures.sh" seed ;;
     verify) "$mac_script_dir/verify.sh" ;;
@@ -818,6 +845,10 @@ run_phase() {
     return "$phase_exit_status"
   fi
 }
+
+if [ "$lane" = adoption ] && [ "$(phase_status cutover)" = passed ]; then
+  enable_adoption_mapping resume
+fi
 
 if [ -n "$selected_phase" ]; then
   run_phase "$selected_phase"

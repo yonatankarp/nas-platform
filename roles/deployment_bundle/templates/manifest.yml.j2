@@ -13,6 +13,10 @@ services:
       - path: compose.{{ platform_compose_kind }}.yml
         checksum_sha256: {{ (lookup('file', platform_source.stat.path, rstrip=false) | hash('sha256')) | to_json }}
 {% endif %}
+{% if platform_adoption_enabled | default(false) | bool %}
+      - path: compose.adoption.yml
+        checksum_sha256: {{ (lookup('file', playbook_dir ~ '/services/' ~ service.name ~ '/compose.adoption.yml', rstrip=false) | hash('sha256')) | to_json }}
+{% endif %}
     images:
 {% set canonical_compose = lookup('file', playbook_dir ~ '/services/' ~ service.name ~ '/compose.yml') | from_yaml %}
 {% set platform_compose = (lookup('file', platform_source.stat.path) | platform_compose_metadata) if platform_source.stat.exists else {'services': {}} %}

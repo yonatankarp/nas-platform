@@ -15,6 +15,10 @@ immich_port: "{{ lookup('env', 'PLATFORM_IMMICH_PORT') | int }}"
 paperless_port: "{{ lookup('env', 'PLATFORM_PAPERLESS_PORT') | int }}"
 nas_docker_root: "{{ lookup('env', 'PLATFORM_DOCKER_ROOT') | platform_physical_path }}"
 nas_media_root: "{{ lookup('env', 'PLATFORM_MEDIA_ROOT') | platform_physical_path }}"
+platform_adoption_root: "{{ lookup('env', 'PLATFORM_ADOPTION_ROOT') }}"
+platform_adoption_marker: "{{ lookup('env', 'PLATFORM_ADOPTION_MARKER') }}"
+platform_adoption_enabled: >-
+  {{ lookup('env', 'PLATFORM_ADOPTION_ENABLED') == 'true' }}
 
 platform_render_device_available: false
 platform_render_device_path: /dev/dri/card0

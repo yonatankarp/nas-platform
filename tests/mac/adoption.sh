@@ -16,7 +16,7 @@ die() {
 subcommand=$1
 case $subcommand in
   --self-test) exec "$script_dir/adoption-self-test.sh" ;;
-  preflight|render|legacy-deploy|legacy-seed|capture-baseline) ;;
+  preflight|render|legacy-deploy|legacy-seed|capture-baseline|snapshot|cutover) ;;
   *) die 'unsupported subcommand' ;;
 esac
 
@@ -101,6 +101,37 @@ preflight() {
 }
 
 preflight
+stop_legacy_projects() {
+  tab=$(printf '\t')
+  printf '%s\n' "$service_paths" | while IFS="$tab" read -r service path; do
+    [ -n "$service" ] && [ -n "$path" ] || die 'service manifest is invalid'
+    "$script_dir/legacy-compose.sh" "$service" stop
+  done
+}
+
+[ "$subcommand" = snapshot ] && {
+  sandbox=$(mac_validate_sandbox "${PLATFORM_MAC_SANDBOX:?PLATFORM_MAC_SANDBOX is required}" 2>/dev/null) ||
+    die 'owned sandbox is invalid'
+  stop_legacy_projects || die 'legacy project stop failed'
+  "$script_dir/adoption-snapshot.sh" publish \
+    --override-root "$script_dir/legacy-overrides" \
+    --baseline "$sandbox/baseline.json" \
+    --run-state "${PLATFORM_REPORT_ROOT:?PLATFORM_REPORT_ROOT is required}/phase-input.json" ||
+    die 'pre-cutover snapshot failed'
+  printf '%s\n' 'Legacy adoption snapshot: stopped state published atomically'
+  exit 0
+}
+[ "$subcommand" = cutover ] && {
+  sandbox=$(mac_validate_sandbox "${PLATFORM_MAC_SANDBOX:?PLATFORM_MAC_SANDBOX is required}" 2>/dev/null) ||
+    die 'owned sandbox is invalid'
+  "$script_dir/adoption-snapshot.sh" verify \
+    --override-root "$script_dir/legacy-overrides" \
+    --baseline "$sandbox/baseline.json" \
+    --run-state "${PLATFORM_REPORT_ROOT:?PLATFORM_REPORT_ROOT is required}/phase-input.json" ||
+    die 'pre-cutover snapshot validation failed'
+  printf '%s\n' 'Legacy adoption cutover: immutable snapshot revalidated'
+  exit 0
+}
 [ "$subcommand" = legacy-deploy ] && {
   "$script_dir/adoption.sh" render
   sandbox=$(mac_validate_sandbox "$PLATFORM_MAC_SANDBOX" 2>/dev/null) ||

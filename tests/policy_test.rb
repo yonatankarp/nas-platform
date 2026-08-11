@@ -245,6 +245,7 @@ PLATFORM_INVENTORIES.values.map { |values| [values[0], values[3]] }.uniq.each do
                           platform_project_name beszel_port ntfy_port dozzle_port
                           audiobookshelf_port komga_port tinymediamanager_web_port
                           tinymediamanager_api_port jellyfin_port immich_port paperless_port
+                          platform_adoption_root platform_adoption_marker platform_adoption_enabled
                         ]
                       else
                         []
@@ -1585,8 +1586,14 @@ check(failures, verification_roles.any? && verification_roles.all? do |role|
                   role.is_a?(Hash) && Array(role["tags"]).include?("never")
                 end,
       "verify.yml roles must be inert unless an explicit verification tag is selected")
+cutover_phase = mac_run[/cutover\)\n(.*?)\n\s*;;/m, 1].to_s
+snapshot_validation = cutover_phase.index("enable_adoption_mapping")
+target_deployment = cutover_phase.index("run_site")
+adoption_verification = cutover_phase.index('"$mac_script_dir/verify.sh"')
 check(failures, mac_run.scan('"$mac_script_dir/verify.sh"').length >= 3 &&
-                mac_run.include?('mac_run_hooks adoption-deploy && run_site && "$mac_script_dir/verify.sh"'),
+                [snapshot_validation, target_deployment, adoption_verification].all? &&
+                snapshot_validation < target_deployment &&
+                target_deployment < adoption_verification,
       "Mac lifecycle must verify after seed, drift reconciliation, recreation, and adoption")
 check(failures, mac_run.include?("resume vault checksum does not match") &&
                 mac_run.include?("resume Git revision does not match"),
