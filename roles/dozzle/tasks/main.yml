@@ -12,6 +12,10 @@
       - "{{ platform_current_dir }}/services/dozzle/compose.adoption.yml"
       - "{{ platform_runtime_dir }}/services/dozzle"
       - "{{ platform_runtime_dir }}/services/dozzle/.env"
+      - >-
+        {{ (platform_adoption_root ~ '/legacy/dozzle/data/users.yml')
+           if (platform_adoption_enabled | default(false) | bool)
+           else (nas_docker_root ~ '/dozzle/data/users.yml') }}
 
 - name: Check for a Dozzle platform override
   ansible.builtin.stat:
@@ -27,10 +31,23 @@
          ((platform_adoption_enabled | default(false) | bool)
           | ternary(['compose.adoption.yml'], [])) }}
 
+- name: Select the Dozzle mounted state root
+  ansible.builtin.set_fact:
+    dozzle_state_root: >-
+      {{ (platform_adoption_root ~ '/legacy/dozzle/data')
+         if (platform_adoption_enabled | default(false) | bool)
+         else (nas_docker_root ~ '/dozzle/data') }}
+
+- name: Require the internally derived Dozzle mounted state root
+  ansible.builtin.assert:
+    that:
+      - dozzle_state_root == ((platform_adoption_root ~ '/legacy/dozzle/data') if
+        (platform_adoption_enabled | default(false) | bool) else (nas_docker_root ~ '/dozzle/data'))
+
 - name: Reconcile preserved and managed Dozzle users
   ansible.builtin.include_tasks: managed_users.yml
   vars:
-    dozzle_users_path: "{{ nas_docker_root }}/dozzle/data/users.yml"
+    dozzle_users_path: "{{ dozzle_state_root }}/users.yml"
 
 # Dozzle runs as NAS_UID:NAS_GID, so a 0600 file owned by whoever ran the play
 # is unreadable to it and the container exits before serving. Docker Desktop
@@ -40,7 +57,7 @@
 - name: Render the Dozzle administrator
   ansible.builtin.template:
     src: users.yml.j2
-    dest: "{{ nas_docker_root }}/dozzle/data/users.yml"
+    dest: "{{ dozzle_state_root }}/users.yml"
     owner: "{{ nas_uid if platform_kind == 'nas' else omit }}"
     group: "{{ nas_gid if platform_kind == 'nas' else omit }}"
     mode: "0600"

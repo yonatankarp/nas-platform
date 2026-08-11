@@ -1,4 +1,18 @@
 ---
+- name: Select the tinyMediaManager mounted state root
+  ansible.builtin.set_fact:
+    tinymediamanager_state_root: >-
+      {{ (platform_adoption_root ~ '/legacy/tinymediamanager/data')
+         if (platform_adoption_enabled | default(false) | bool)
+         else (nas_docker_root ~ '/tinymediamanager/data') }}
+
+- name: Require the internally derived tinyMediaManager mounted state root
+  ansible.builtin.assert:
+    that:
+      - tinymediamanager_state_root == ((platform_adoption_root ~ '/legacy/tinymediamanager/data') if
+        (platform_adoption_enabled | default(false) | bool) else
+        (nas_docker_root ~ '/tinymediamanager/data'))
+
 - name: Revalidate deployment paths before tinyMediaManager runtime use
   ansible.builtin.include_role:
     name: deployment_bundle
@@ -12,7 +26,7 @@
       - "{{ platform_current_dir }}/services/tinymediamanager/compose.adoption.yml"
       - "{{ platform_runtime_dir }}/services/tinymediamanager"
       - "{{ platform_runtime_dir }}/services/tinymediamanager/.env"
-      - "{{ nas_docker_root }}/tinymediamanager/data/data"
+      - "{{ tinymediamanager_state_root }}/data"
 
 - name: Check for a tinyMediaManager platform override
   tags: [platform_verify_tinymediamanager]
@@ -32,7 +46,7 @@
 
 - name: Create the stable tinyMediaManager settings directory
   ansible.builtin.file:
-    path: "{{ nas_docker_root }}/tinymediamanager/data/data"
+    path: "{{ tinymediamanager_state_root }}/data"
     state: directory
     owner: "{{ nas_uid if platform_kind == 'nas' else omit }}"
     group: "{{ nas_gid if platform_kind == 'nas' else omit }}"
@@ -40,13 +54,13 @@
 
 - name: Inspect stable tinyMediaManager settings
   ansible.builtin.stat:
-    path: "{{ nas_docker_root }}/tinymediamanager/data/data/{{ item }}.json"
+    path: "{{ tinymediamanager_state_root }}/data/{{ item }}.json"
   loop: [tmm, movies, tvShows]
   register: tinymediamanager_settings_files
 
 - name: Read existing stable tinyMediaManager settings
   ansible.builtin.slurp:
-    path: "{{ nas_docker_root }}/tinymediamanager/data/data/{{ item.item }}.json"
+    path: "{{ tinymediamanager_state_root }}/data/{{ item.item }}.json"
   loop: "{{ tinymediamanager_settings_files.results }}"
   when: item.stat.exists
   register: tinymediamanager_settings_contents
@@ -105,7 +119,7 @@
 
 - name: Provision stable tinyMediaManager first-run settings
   ansible.builtin.copy:
-    dest: "{{ nas_docker_root }}/tinymediamanager/data/data/{{ item.key }}.json"
+    dest: "{{ tinymediamanager_state_root }}/data/{{ item.key }}.json"
     content: "{{ item.value | to_nice_json }}\n"
     owner: "{{ nas_uid if platform_kind == 'nas' else omit }}"
     group: "{{ nas_gid if platform_kind == 'nas' else omit }}"
@@ -206,7 +220,7 @@
 - name: Read exact stable tinyMediaManager settings
   tags: [platform_verify_tinymediamanager]
   ansible.builtin.slurp:
-    path: "{{ nas_docker_root }}/tinymediamanager/data/data/{{ item }}.json"
+    path: "{{ tinymediamanager_state_root }}/data/{{ item }}.json"
   loop: [tmm, movies, tvShows]
   register: tinymediamanager_verify_settings_files
   no_log: true

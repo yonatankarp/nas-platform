@@ -76,8 +76,28 @@
         import stat
         import sys
 
-        root, expected_release, current, next_pointer, require_current, target = sys.argv[1:]
-        raw_root, raw_target = root, target
+        root, expected_release, current, next_pointer, require_current, target, adoption_root, adoption = sys.argv[1:]
+        raw_target = target
+        adoption_sources = [
+            'legacy/audiobookshelf/config', 'legacy/audiobookshelf/metadata', 'legacy/audiobookshelf/media',
+            'legacy/beszel/hub', 'legacy/beszel/agent', 'legacy/beszel/volume1', 'legacy/beszel/volume2',
+            'legacy/dozzle/data', 'legacy/immich/data', 'legacy/immich/thumbs',
+            'legacy/immich/encoded-video', 'legacy/immich/profile', 'legacy/immich/backups',
+            'legacy/immich/model-cache', 'legacy/immich/postgres', 'legacy/jellyfin/config',
+            'legacy/jellyfin/cache', 'legacy/jellyfin/media', 'legacy/komga/config',
+            'legacy/komga/library', 'legacy/ntfy/cache', 'legacy/ntfy/data',
+            'legacy/paperless-ngx/redis', 'legacy/paperless-ngx/postgres',
+            'legacy/paperless-ngx/data', 'legacy/paperless-ngx/export',
+            'legacy/paperless-ngx/tessdata/heb.traineddata', 'legacy/paperless-ngx/media',
+            'legacy/paperless-ngx/consume', 'legacy/tinymediamanager/data',
+            'legacy/tinymediamanager/movies', 'legacy/tinymediamanager/series',
+        ]
+        if adoption == '1':
+            normalized_adoption = os.path.normpath(adoption_root)
+            allowed_adoption_roots = [os.path.join(normalized_adoption, value) for value in adoption_sources]
+            if any(target == value or target.startswith(value + os.sep) for value in allowed_adoption_roots):
+                root = normalized_adoption
+        raw_root = root
         root = os.path.normpath(root)
         target = os.path.normpath(target)
         expected_release = os.path.normpath(expected_release)
@@ -157,6 +177,8 @@
       - "{{ platform_deploy_root }}/.current-{{ platform_release_id }}"
       - "{{ (deployment_target_require_current_release | default(false) | bool) | ternary('1', '0') }}"
       - "{{ item }}"
+      - "{{ platform_adoption_root | default('') }}"
+      - "{{ (platform_adoption_enabled | default(false) | bool) | ternary('1', '0') }}"
   loop: >-
     {{ deployment_target_candidate_paths
        if (platform_adoption_enabled | default(false) | bool)

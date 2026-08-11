@@ -610,9 +610,14 @@ export PLATFORM_MAC_PARITY_VAULT_PASSWORD_FILE=$parity_vault_password_file
 export PLATFORM_VAULT_FILE=$vault_file
 
 run_site() {
+  run_site_status=0
   ansible-playbook -i "$mac_repo_dir/inventory/mac.yml" "$mac_repo_dir/site.yml" \
     --vault-password-file "$vault_password_file" -e @"$vault_file" \
-    -e "platform_vault_file=$vault_file" "$@"
+    -e "platform_vault_file=$vault_file" "$@" || run_site_status=$?
+  if [ "$lane" = adoption ]; then
+    "$mac_script_dir/adoption-container-attest.sh" || run_site_status=$?
+  fi
+  return "$run_site_status"
 }
 
 enable_adoption_mapping() {

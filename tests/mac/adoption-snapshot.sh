@@ -23,7 +23,7 @@ shift 2
 [ "$1" = --run-state ] || die 'expected --run-state'
 run_state=$2
 case $action in
-  publish|verify|marker|marker-post-cutover|begin-cutover) ;;
+  publish|verify|marker|marker-post-cutover|begin-cutover|attestations|live-namespace) ;;
   self-test-candidate-swap|self-test-post-publish-failure)
     [ "${PLATFORM_ADOPTION_SNAPSHOT_SELF_TEST:-}" = 1 ] || die 'self-test action is unavailable'
     ;;
@@ -82,10 +82,23 @@ EXPECTED_BINDINGS = %w[
   tinymediamanager|legacy/tinymediamanager/data|/data
   tinymediamanager|legacy/tinymediamanager/movies|/media/Movies
   tinymediamanager|legacy/tinymediamanager/series|/media/Series
-].map { |entry| entry.split("|", 3) }.freeze
+].map { |entry| entry.split("|", 3) }
+READ_ONLY_BINDINGS = %w[
+  audiobookshelf|legacy/audiobookshelf/media
+  beszel|legacy/beszel/volume1
+  beszel|legacy/beszel/volume2
+  jellyfin|legacy/jellyfin/media
+  komga|legacy/komga/library
+  paperless-ngx|legacy/paperless-ngx/tessdata/heb.traineddata
+].freeze
+EXPECTED_BINDINGS.each do |binding|
+  binding << (READ_ONLY_BINDINGS.include?(binding.first(2).join("|")) ? "ro" : "rw")
+end
+EXPECTED_BINDINGS.freeze
 BINDING_FIELDS = %w[
   schema lane sandbox_id project_name legacy_commit git_revision vault_checksum parity_vault_checksum
   baseline_sha256 inventory_sha256 overrides_sha256
+  attestations_sha256
 ].freeze
 CUTOVER_FIELDS = %w[
   schema binding_sha256 lane sandbox_id project_name legacy_commit git_revision vault_checksum
@@ -102,6 +115,26 @@ module SnapshotFileSystem
   extern "int linkat(int, const char *, int, const char *, int)"
   extern "int unlinkat(int, const char *, int)"
   extern "int futimens(int, const void *)"
+  extern "int fcopyfile(int, int, void *, unsigned int)" if RUBY_PLATFORM.include?("darwin")
+  if RUBY_PLATFORM.include?("darwin")
+    extern "long flistxattr(int, void *, unsigned long, int)"
+    extern "long fgetxattr(int, const char *, void *, unsigned long, unsigned int, int)"
+    extern "void * acl_get_fd_np(int, int)"
+    extern "int acl_free(void *)"
+    extern "int fstat(int, void *)"
+  end
+end
+
+COPYFILE_METADATA = 0x7
+COPYFILE_ALL = 0xf
+COPYFILE_DATA_SPARSE = 1 << 27
+
+module SnapshotDurability
+  module_function
+
+  def sync(descriptor, _label)
+    descriptor.fsync
+  end
 end
 
 def refuse(message)
@@ -208,6 +241,15 @@ def mkdir_at(parent, name, permissions)
   raise SystemCallError.new("mkdirat", Fiddle.last_error) if result.negative?
 end
 
+def mkdir_synced_at(parent, name, permissions, label)
+  mkdir_at(parent, name, permissions)
+  directory = open_directory_at(parent, name)
+  SnapshotDurability.sync(directory, label)
+  SnapshotDurability.sync(parent, "#{label}-parent")
+ensure
+  directory&.close
+end
+
 def rename_at(parent, source, destination)
   result = SnapshotFileSystem.renameat(
     parent.fileno, safe_component(source), parent.fileno, safe_component(destination)
@@ -268,11 +310,37 @@ def set_descriptor_times(file, stat)
   raise SystemCallError.new("futimens", Fiddle.last_error) if result.negative?
 end
 
-def metadata_entry(stat, relative, digest = nil)
+def xattr_digest(file)
+  return nil unless RUBY_PLATFORM.include?("darwin")
+
+  size = SnapshotFileSystem.flistxattr(file.fileno, nil, 0, 0)
+  raise SystemCallError.new("flistxattr", Fiddle.last_error) if size.negative?
+  names = if size.zero?
+            []
+          else
+            buffer = Fiddle::Pointer.malloc(size)
+            result = SnapshotFileSystem.flistxattr(file.fileno, buffer, size, 0)
+            raise SystemCallError.new("flistxattr", Fiddle.last_error) if result.negative?
+            buffer[0, result].split("\0").reject(&:empty?).sort
+          end
+  digest = Digest::SHA256.new
+  names.each do |name|
+    value_size = SnapshotFileSystem.fgetxattr(file.fileno, name, nil, 0, 0, 0)
+    raise SystemCallError.new("fgetxattr", Fiddle.last_error) if value_size.negative?
+    value = value_size.zero? ? "" : Fiddle::Pointer.malloc(value_size).tap do |value_buffer|
+      SnapshotFileSystem.fgetxattr(file.fileno, name, value_buffer, value_size, 0, 0)
+    end[0, value_size]
+    digest.update(name).update("\0").update(value).update("\0")
+  end
+  digest.hexdigest
+end
+
+def metadata_entry(stat, relative, descriptor, digest = nil)
   entry = {
     "path" => relative, "type" => stat.directory? ? "directory" : "file",
     "mode" => mode(stat), "uid" => stat.uid, "gid" => stat.gid,
-    "size" => stat.size, "mtime_ns" => (stat.mtime.to_r * 1_000_000_000).to_i
+    "size" => stat.size, "mtime_ns" => (stat.mtime.to_r * 1_000_000_000).to_i,
+    "xattrs_sha256" => xattr_digest(descriptor)
   }
   entry["sha256"] = digest if digest
   entry
@@ -286,12 +354,58 @@ def digest_descriptor(file)
   digest.hexdigest
 end
 
+def sparse_file?(stat)
+  stat.size.positive? && stat.blocks * 512 < stat.size
+end
+
+def refuse_unverifiable_archive_metadata(file)
+  return unless RUBY_PLATFORM.include?("darwin")
+
+  xattr_size = SnapshotFileSystem.flistxattr(file.fileno, nil, 0, 0)
+  raise SystemCallError.new("flistxattr", Fiddle.last_error) if xattr_size.negative?
+  acl = SnapshotFileSystem.acl_get_fd_np(file.fileno, 0x100)
+  unless acl.to_i.zero?
+    SnapshotFileSystem.acl_free(acl)
+    refuse("access control lists are outside the accepted archive class")
+  end
+
+  stat_buffer = Fiddle::Pointer.malloc(144)
+  result = SnapshotFileSystem.fstat(file.fileno, stat_buffer)
+  raise SystemCallError.new("fstat", Fiddle.last_error) if result.negative?
+  flags = stat_buffer[116, 4].unpack1("L")
+  refuse("file flags are outside the accepted archive class") unless flags.zero?
+end
+
+def copy_file_archive(source, destination, stat)
+  unless RUBY_PLATFORM.include?("darwin")
+    refuse("special state metadata requires macOS archive support") if sparse_file?(stat)
+    until source.eof?
+      destination.write(source.read(64 * 1024))
+    end
+    return
+  end
+
+  flags = sparse_file?(stat) ? COPYFILE_METADATA | COPYFILE_DATA_SPARSE : COPYFILE_ALL
+  result = SnapshotFileSystem.fcopyfile(source.fileno, destination.fileno, nil, flags)
+  refuse("state archive metadata could not be preserved") if result.negative?
+end
+
+def copy_directory_metadata(source, destination)
+  return unless RUBY_PLATFORM.include?("darwin")
+
+  result = SnapshotFileSystem.fcopyfile(
+    source.fileno, destination.fileno, nil, COPYFILE_METADATA
+  )
+  refuse("state archive metadata could not be preserved") if result.negative?
+end
+
 def inventory_entry_at(parent, name, relative, entries)
   source = open_at(parent, name, File::RDONLY | File::NOFOLLOW)
   before = source.stat
   refuse("state source is unsafe") unless before.directory? || before.file?
+  refuse_unverifiable_archive_metadata(source)
   digest = before.file? ? digest_descriptor(source) : nil
-  entries << metadata_entry(before, relative, digest)
+  entries << metadata_entry(before, relative, source, digest)
   if before.directory?
     descriptor_children(source).each do |child|
       inventory_entry_at(source, child, File.join(relative, child), entries)
@@ -343,7 +457,7 @@ def ensure_directory_at(parent, name)
   begin
     directory = open_directory_at(parent, name)
   rescue Errno::ENOENT
-    mkdir_at(parent, name, 0o700)
+    mkdir_synced_at(parent, name, 0o700, "snapshot-nested-directory-entry")
     directory = open_directory_at(parent, name)
   end
   refuse("snapshot destination is unsafe") unless directory.stat.uid == Process.uid
@@ -353,13 +467,17 @@ end
 def copy_entry_at(source_parent, source_name, destination_parent, destination_name, relative, entries)
   source = open_at(source_parent, source_name, File::RDONLY | File::NOFOLLOW)
   before = source.stat
+  refuse_unverifiable_archive_metadata(source)
   if before.directory?
-    entries << metadata_entry(before, relative)
-    mkdir_at(destination_parent, destination_name, 0o700)
+    entries << metadata_entry(before, relative, source)
+    mkdir_synced_at(
+      destination_parent, destination_name, 0o700, "snapshot-nested-directory-entry"
+    )
     destination = open_directory_at(destination_parent, destination_name)
     descriptor_children(source).each do |child|
       copy_entry_at(source, child, destination, child, File.join(relative, child), entries)
     end
+    copy_directory_metadata(source, destination)
     begin
       destination.chown(before.uid, before.gid)
     rescue SystemCallError
@@ -369,14 +487,11 @@ def copy_entry_at(source_parent, source_name, destination_parent, destination_na
     set_descriptor_times(destination, before)
     destination.fsync
   elsif before.file?
-    flags = File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW
+    refuse("hardlinked state is outside the accepted archive class") if before.nlink > 1
+    flags = File::RDWR | File::CREAT | File::EXCL | File::NOFOLLOW
     destination = open_at(destination_parent, destination_name, flags, mode(before))
-    digest = Digest::SHA256.new
-    until source.eof?
-      chunk = source.read(64 * 1024)
-      digest.update(chunk)
-      destination.write(chunk)
-    end
+    source_digest = digest_descriptor(source)
+    copy_file_archive(source, destination, before)
     destination.flush
     begin
       destination.chown(before.uid, before.gid)
@@ -386,11 +501,12 @@ def copy_entry_at(source_parent, source_name, destination_parent, destination_na
     destination.chmod(mode(before))
     set_descriptor_times(destination, before)
     destination.fsync
-    source.rewind
-    second_digest = Digest::SHA256.new
-    second_digest.update(source.read(64 * 1024)) until source.eof?
-    refuse("state source changed during copy") unless second_digest.hexdigest == digest.hexdigest
-    entries << metadata_entry(before, relative, digest.hexdigest)
+    refuse("state source changed during copy") unless digest_descriptor(source) == source_digest
+    refuse("snapshot archive content differs") unless digest_descriptor(destination) == source_digest
+    if sparse_file?(before)
+      refuse("snapshot archive expanded sparse state") unless destination.stat.blocks <= before.blocks
+    end
+    entries << metadata_entry(before, relative, source, source_digest)
   else
     refuse("state source is unsafe")
   end
@@ -434,25 +550,71 @@ end
 
 def mapping_bindings(directory, names, variable, label, digest, service_name: nil)
   names.flat_map do |name|
-    service = service_name || name.delete_suffix(".yml")
+    manifest_service = service_name || name.delete_suffix(".yml")
     bytes = read_file_at(directory, name, label)
-    digest.update(label).update("\0").update(service).update("\0")
+    digest.update(label).update("\0").update(manifest_service).update("\0")
       .update(name).update("\0").update(bytes).update("\0")
+    compose_service = nil
+    in_services = false
+    in_volumes = false
     bytes.lines(chomp: true).filter_map do |line|
-      match = line.match(
-        %r{^\s*-\s+\$\{#{Regexp.escape(variable)}:\?\}/(legacy/[^:]+):(/[^:]+)(?::(?:ro|rw))?\s*$}
+      if line.match?(/^services:\s*$/)
+        in_services = true
+        compose_service = nil
+        in_volumes = false
+        next
+      elsif line.match?(/^[^\s#]/)
+        in_services = false
+        compose_service = nil
+        in_volumes = false
+      elsif in_services && (service_match = line.match(/^  ([a-z0-9][a-z0-9-]*):\s*$/))
+        compose_service = service_match[1]
+        in_volumes = false
+        next
+      elsif in_services && compose_service && line.match?(/^    volumes:\s*!override\s*$/)
+        in_volumes = true
+        next
+      elsif in_services && compose_service && line.match?(/^    [^\s#]/)
+        in_volumes = false
+      end
+      match = in_volumes && line.match(
+        %r{^\s*-\s+\$\{#{Regexp.escape(variable)}:\?\}/(legacy/[^:]+):(/[^:]+?)(?::(ro|rw))?\s*$}
       )
       if line.include?("${#{variable}") && !match
         refuse("#{label} bind mapping is unsafe")
       end
       next unless match
 
-      relative, target = match.captures
+      relative, target, access = match.captures
       components = relative.split("/")
       refuse("#{label} bind mapping is unsafe") unless components.first == "legacy" &&
         components.all? { |part| part.match?(/\A[-.A-Za-z0-9]+\z/) && ![".", ".."].include?(part) }
-      [service, relative, target]
+      refuse("#{label} service association is unavailable") unless compose_service
+      [manifest_service, compose_service, relative, target, access || "rw"]
     end
+  end
+end
+
+def expected_compose_service(manifest_service, source, target: false)
+  service = case manifest_service
+            when "beszel" then source == "legacy/beszel/hub" ? "hub" : "agent"
+            when "immich"
+              return "immich-machine-learning" if source.end_with?("model-cache")
+              return "database" if source.end_with?("postgres")
+              "immich-server"
+            when "paperless-ngx"
+              return "broker" if source.end_with?("redis")
+              return "db" if source.end_with?("postgres")
+              "webserver"
+            else manifest_service
+            end
+  target && manifest_service == "beszel" && service == "agent" ? "agent-portable" : service
+end
+
+def expected_policy_bindings(target: false)
+  EXPECTED_BINDINGS.map do |manifest_service, source, destination, access|
+    [manifest_service, expected_compose_service(manifest_service, source, target: target),
+     source, destination, access]
   end
 end
 
@@ -466,7 +628,7 @@ def binding_sources(override_root, target_mapping_root)
     directory, files, "PLATFORM_MAC_SANDBOX", "reviewed legacy mapping", mappings_digest
   )
   refuse("legacy adoption mapping differs from committed policy") unless
-    legacy_bindings.sort == EXPECTED_BINDINGS.sort
+    legacy_bindings.sort == expected_policy_bindings.sort
 
   target_directory = open_bound_directory(File.expand_path(target_mapping_root), "target mapping root")
   target_bindings = EXPECTED_SERVICES.flat_map do |service|
@@ -479,7 +641,7 @@ def binding_sources(override_root, target_mapping_root)
     service_directory&.close
   end
   refuse("target adoption mapping differs from committed policy") unless
-    target_bindings.sort == EXPECTED_BINDINGS.sort
+    target_bindings.sort == expected_policy_bindings(target: true).sort
   roots = EXPECTED_BINDINGS.map { |_, source,| source }.sort
   refuse("committed adoption sources are duplicated") unless roots.uniq.length == roots.length
   [roots, mappings_digest.hexdigest]
@@ -492,6 +654,93 @@ end
 
 def write_json_at(parent, name, value, permissions)
   write_bytes_at(parent, name, "#{JSON.generate(value)}\n", permissions)
+end
+
+def relative_parent_at(root, relative)
+  components = relative.split("/")
+  parent = root.dup
+  components[0...-1].each do |component|
+    child = open_directory_at(parent, component)
+    parent.close
+    parent = child
+  end
+  [parent, components.last]
+end
+
+def install_mount_attestations(sandbox, bindings, run_identity, baseline_digest)
+  created = []
+  records = bindings.map do |service, source, target, access|
+    parent, name = relative_parent_at(sandbox, source)
+    entry = open_at(parent, name, File::RDONLY | File::NOFOLLOW)
+    tuple = [run_identity, baseline_digest, service, source, target, access]
+    expected = "#{Digest::SHA256.hexdigest(JSON.generate(tuple))}\n"
+    if entry.stat.directory?
+      sentinel_name = ".nas-platform-adoption-root-sentinel"
+      begin
+        existing = read_file_at(entry, sentinel_name, "adoption mount sentinel", 0o444)
+        refuse("adoption mount sentinel differs") unless existing == expected
+      rescue Errno::ENOENT
+        write_bytes_at(entry, sentinel_name, expected, 0o444)
+        SnapshotDurability.sync(entry, "adoption-sentinel-directory-entry")
+        created << {
+          "source" => source, "directory_signature" => identity_signature(entry.stat),
+          "bytes" => expected
+        }
+      end
+      kind = "sentinel"
+      container_path = File.join(target, sentinel_name)
+      expected_sha256 = Digest::SHA256.hexdigest(expected)
+      expected_size = expected.bytesize
+    elsif entry.stat.file?
+      kind = "file"
+      container_path = target
+      expected_sha256 = digest_descriptor(entry)
+      expected_size = entry.stat.size
+      refuse("file mount attestation exceeds the accepted size") if expected_size > 64 * 1024 * 1024
+    else
+      refuse("adoption attestation source is unsafe")
+    end
+    {
+      "service" => service,
+      "legacy_compose_service" => expected_compose_service(service, source),
+      "target_compose_service" => expected_compose_service(service, source, target: true),
+      "project_suffix" => (service == "paperless-ngx" ? "paperless" : service),
+      "source" => source, "target" => target, "access" => access,
+      "kind" => kind, "container_path" => container_path,
+      "size" => expected_size, "sha256" => expected_sha256
+    }
+  ensure
+    entry&.close
+    parent&.close
+  end
+  [records, created]
+rescue Errno::ELOOP, Errno::ENOTDIR
+  remove_mount_sentinels(sandbox, created)
+  refuse("state source is unsafe")
+rescue Errno::ENOENT
+  remove_mount_sentinels(sandbox, created)
+  refuse("state source is unavailable")
+rescue Exception # rubocop:disable Lint/RescueException
+  remove_mount_sentinels(sandbox, created)
+  raise
+end
+
+def remove_mount_sentinels(sandbox, records)
+  records.each do |record|
+    parent, name = relative_parent_at(sandbox, record.fetch("source"))
+    directory = open_directory_at(parent, name)
+    unless identity_signature(directory.stat) == record.fetch("directory_signature") &&
+        read_file_at(directory, ".nas-platform-adoption-root-sentinel", "adoption mount sentinel", 0o444) ==
+          record.fetch("bytes")
+      warn "adoption-snapshot-error: created sentinel changed; retaining it"
+      next
+    end
+    unlink_at(directory, ".nas-platform-adoption-root-sentinel")
+    SnapshotDurability.sync(directory, "adoption-sentinel-rollback")
+  ensure
+    directory&.close
+    parent&.close
+  end
 end
 
 def load_run_state(path)
@@ -582,6 +831,9 @@ def verify_snapshot(sandbox_directory, roots, overrides_digest, baseline_path, r
     snapshot_stat.uid == Process.uid && mode(snapshot_stat) == 0o500
   baseline_copy_bytes = read_file_at(snapshot_directory, "baseline.json", "snapshot baseline", 0o400)
   inventory_bytes = read_file_at(snapshot_directory, "inventory.json", "snapshot inventory", 0o400)
+  attestations_bytes = read_file_at(
+    snapshot_directory, "attestations.json", "snapshot attestations", 0o400
+  )
   binding_bytes = read_file_at(snapshot_directory, "binding.json", "snapshot binding", 0o400)
   binding = load_binding_bytes(binding_bytes)
   begin
@@ -606,6 +858,8 @@ def verify_snapshot(sandbox_directory, roots, overrides_digest, baseline_path, r
     Digest::SHA256.hexdigest(baseline_copy_bytes) == baseline_digest
   refuse("snapshot inventory changed") unless
     binding["inventory_sha256"] == Digest::SHA256.hexdigest(inventory_bytes)
+  refuse("snapshot attestations changed") unless
+    binding["attestations_sha256"] == Digest::SHA256.hexdigest(attestations_bytes)
   inventory = JSON.parse(inventory_bytes, create_additions: false)
   refuse("snapshot inventory roots differ") unless inventory.is_a?(Hash) && inventory["schema"] == 1 &&
     inventory["verified"] == true && inventory["roots"].is_a?(Array) &&
@@ -673,27 +927,80 @@ refuse("snapshot lock is held") unless snapshot_lock.flock(File::LOCK_EX | File:
 roots, overrides_digest = binding_sources(override_root, target_mapping_root)
 snapshot_parent = File.join(sandbox, "snapshot")
 
-if %w[verify marker marker-post-cutover begin-cutover].include?(action)
+if %w[verify marker marker-post-cutover begin-cutover attestations live-namespace].include?(action)
   transition_mode = case action
-                    when "marker-post-cutover" then :required
+                    when "marker-post-cutover", "attestations", "live-namespace" then :required
                     when "begin-cutover" then :begin
                     else :none
                     end
   marker = verify_snapshot(
     sandbox_directory, roots, overrides_digest, baseline_path, run_state_path,
-    compare_source: action != "marker-post-cutover", transition_mode: transition_mode
+    compare_source: !%w[marker-post-cutover attestations live-namespace].include?(action),
+    transition_mode: transition_mode
   )
   puts marker if action.start_with?("marker") || action == "begin-cutover"
+  if action == "attestations"
+    parent = open_directory_at(sandbox_directory, "snapshot")
+    publication = open_directory_at(parent, "pre-cutover")
+    parent_signature = identity_signature(parent.stat)
+    publication_signature = identity_signature(publication.stat)
+    bytes = read_file_at(publication, "attestations.json", "snapshot attestations", 0o400)
+    reopened_binding = read_file_at(publication, "binding.json", "snapshot binding", 0o400)
+    refuse("snapshot binding changed before attestation emit") unless
+      Digest::SHA256.hexdigest(reopened_binding) == marker
+    binding = load_binding_bytes(reopened_binding)
+    refuse("snapshot attestations changed") unless
+      binding["attestations_sha256"] == Digest::SHA256.hexdigest(bytes)
+    rebound_publication = open_directory_at(parent, "pre-cutover")
+    rebound_parent = open_directory_at(sandbox_directory, "snapshot")
+    refuse("snapshot namespace changed before attestation emit") unless
+      identity_signature(rebound_publication.stat) == publication_signature &&
+      identity_signature(rebound_parent.stat) == parent_signature
+    print bytes
+    rebound_publication.close
+    rebound_parent.close
+    publication.close
+    parent.close
+  elsif action == "live-namespace"
+    signatures = roots.to_h do |relative|
+      parent, name = relative_parent_at(sandbox_directory, relative)
+      entry = open_at(parent, name, File::RDONLY | File::NOFOLLOW)
+      [relative, identity_signature(entry.stat).first(2)]
+    ensure
+      entry&.close
+      parent&.close
+    end
+    puts JSON.generate(signatures)
+  end
   exit 0
 end
 
 baseline_bytes = secure_file_bytes_path(baseline_path, "baseline", expected_mode: 0o600)
 run_identity = load_run_state(run_state_path)
 baseline_digest = Digest::SHA256.hexdigest(baseline_bytes)
+attestations, created_sentinels = install_mount_attestations(
+  sandbox_directory, EXPECTED_BINDINGS, run_identity, baseline_digest
+)
+sentinels_committed = false
+sentinel_cleanup_directory = sandbox_directory.dup
+at_exit do
+  remove_mount_sentinels(sentinel_cleanup_directory, created_sentinels) unless sentinels_committed
+  sentinel_cleanup_directory.close
+end
 begin
   snapshot_parent_directory = open_directory_at(sandbox_directory, "snapshot")
 rescue Errno::ENOENT
-  mkdir_at(sandbox_directory, "snapshot", 0o700)
+  begin
+    mkdir_synced_at(sandbox_directory, "snapshot", 0o700, "snapshot-parent-entry")
+  rescue Exception # rubocop:disable Lint/RescueException
+    begin
+      remove_tree_at(sandbox_directory, "snapshot")
+      SnapshotDurability.sync(sandbox_directory, "snapshot-parent-rollback")
+    rescue Errno::ENOENT
+      nil
+    end
+    raise
+  end
   snapshot_parent_directory = open_directory_at(sandbox_directory, "snapshot")
 end
 refuse("snapshot directory is unsafe") unless snapshot_parent_directory.stat.uid == Process.uid &&
@@ -714,11 +1021,13 @@ candidate_path = File.join(snapshot_parent, candidate_name)
 published_by_call = false
 candidate_created = false
 begin
-  mkdir_at(snapshot_parent_directory, candidate_name, 0o700)
+  mkdir_synced_at(
+    snapshot_parent_directory, candidate_name, 0o700, "snapshot-candidate-directory-entry"
+  )
   candidate_created = true
   candidate_directory = open_directory_at(snapshot_parent_directory, candidate_name)
   state_copy = File.join(candidate_path, "state")
-  mkdir_at(candidate_directory, "state", 0o700)
+  mkdir_synced_at(candidate_directory, "state", 0o700, "snapshot-state-directory-entry")
   state_directory = open_directory_at(candidate_directory, "state")
   state_binding = identity_signature(state_directory.stat)
   if candidate_swap_self_test
@@ -741,12 +1050,16 @@ begin
     "roots" => roots.map { |path| { "path" => path } }, "entries" => source_entries
   }
   write_json_at(candidate_directory, "inventory.json", inventory, 0o400)
+  write_json_at(candidate_directory, "attestations.json", attestations, 0o400)
   inventory_digest = Digest::SHA256.hexdigest(
     read_file_at(candidate_directory, "inventory.json", "snapshot inventory", 0o400)
   )
   binding = { "schema" => 1 }.merge(run_identity).merge(
     "baseline_sha256" => baseline_digest, "inventory_sha256" => inventory_digest,
-    "overrides_sha256" => overrides_digest
+    "overrides_sha256" => overrides_digest,
+    "attestations_sha256" => Digest::SHA256.hexdigest(
+      read_file_at(candidate_directory, "attestations.json", "snapshot attestations", 0o400)
+    )
   )
   write_json_at(candidate_directory, "binding.json", binding, 0o400)
   refuse("adopted state changed before publication") unless
@@ -766,6 +1079,7 @@ begin
   refuse("forced post-publication failure") if post_publish_self_test
   snapshot_parent_directory.fsync
   verify_snapshot(sandbox_directory, roots, overrides_digest, baseline_path, run_state_path)
+  sentinels_committed = true
   published_by_call = false
 # Refusals use SystemExit after emitting their stable diagnostic. Catch all
 # exceptions here so a post-rename refusal still rolls publication back.

@@ -9,4 +9,5 @@ set -- docker compose --project-name "$PLATFORM_PROJECT_NAME-audiobookshelf" \
   --env-file "$runtime" -f "$current/compose.yml" -f "$current/compose.mac.yml"
 [ "$PLATFORM_PROOF_LANE" != adoption ] || set -- "$@" -f "$current/compose.adoption.yml"
 "$@" up -d --force-recreate --wait
+[ "$PLATFORM_PROOF_LANE" != adoption ] || "$mac_hook_dir/../../adoption-container-attest.sh"
 "$mac_hook_dir/../../run-audiobookshelf-contract.sh" run

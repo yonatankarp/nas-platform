@@ -8,7 +8,7 @@ require "pathname"
 ROOT = Pathname(__dir__).join("../..").realpath
 SERVICES = %w[audiobookshelf beszel dozzle immich jellyfin komga ntfy paperless-ngx tinymediamanager].freeze
 ADOPTION_ROOT = "/private/tmp/nas-platform-adoption-root"
-COMMITTED_BINDINGS = <<~BINDINGS.lines(chomp: true).map { |line| line.split("\t", 3) }.freeze
+COMMITTED_BINDINGS = <<~BINDINGS.lines(chomp: true).map { |line| line.split("\t", 4) }.freeze
   audiobookshelf\tlegacy/audiobookshelf/config\t/config
   audiobookshelf\tlegacy/audiobookshelf/metadata\t/metadata
   audiobookshelf\tlegacy/audiobookshelf/media\t/audiobooks
@@ -43,6 +43,18 @@ COMMITTED_BINDINGS = <<~BINDINGS.lines(chomp: true).map { |line| line.split("\t"
   tinymediamanager\tlegacy/tinymediamanager/series\t/media/Series
 BINDINGS
 
+READ_ONLY_BINDINGS = %w[
+  audiobookshelf:legacy/audiobookshelf/media
+  beszel:legacy/beszel/volume1
+  beszel:legacy/beszel/volume2
+  jellyfin:legacy/jellyfin/media
+  komga:legacy/komga/library
+  paperless-ngx:legacy/paperless-ngx/tessdata/heb.traineddata
+].freeze
+COMMITTED_BINDINGS.each do |binding|
+  binding << (READ_ONLY_BINDINGS.include?("#{binding[0]}:#{binding[1]}") ? "ro" : "rw")
+end
+
 def refuse(message)
   warn "Adoption target override failed: #{message}"
   exit 1
@@ -67,12 +79,12 @@ end
 
 reviewed = SERVICES.flat_map do |service|
   ROOT.join("tests/mac/legacy-overrides/#{service}.yml").each_line.filter_map do |line|
-    match = line.match(%r{\$\{PLATFORM_MAC_SANDBOX:\?\}/(?<source>legacy/[^:]+):(?<target>/[^:]+)})
-    [service, match[:source], match[:target].strip] if match
+    match = line.match(%r{\$\{PLATFORM_MAC_SANDBOX:\?\}/(?<source>legacy/[^:]+):(?<target>/[^:]+?)(?::(?<mode>ro|rw))?\s*$})
+    [service, match[:source], match[:target], match[:mode] || "rw"] if match
   end
 end.sort
 refuse("reviewed legacy mapping differs from committed policy") unless reviewed == COMMITTED_BINDINGS.sort
-expected = COMMITTED_BINDINGS.map { |_, source, target| [source, target] }.sort
+expected = COMMITTED_BINDINGS.map { |_, source, target, access| [source, target, access] }.sort
 
 actual = []
 SERVICES.each do |service|
@@ -103,7 +115,8 @@ SERVICES.each do |service|
     configured.fetch(name).fetch("volumes", []).each do |mount|
       next unless mount.fetch("type") == "bind" && mount.fetch("source").start_with?("#{ADOPTION_ROOT}/legacy/")
 
-      actual << [mount.fetch("source").delete_prefix("#{ADOPTION_ROOT}/"), mount.fetch("target")]
+      access = mount.fetch("read_only", false) ? "ro" : "rw"
+      actual << [mount.fetch("source").delete_prefix("#{ADOPTION_ROOT}/"), mount.fetch("target"), access]
     end
   end
 end
@@ -134,5 +147,25 @@ hooks = ROOT.join("tests/mac/hooks/fixtures-recreate").children.select do |path|
 end
 refuse("adoption recreation hooks cannot discover the staged override") unless
   hooks.all? { |path| path.binread.include?("compose.adoption.yml") }
+
+host_paths = {
+  "beszel" => ["beszel_state_root", "legacy/beszel/hub"],
+  "dozzle" => ["dozzle_state_root", "legacy/dozzle/data"],
+  "ntfy" => ["ntfy_state_root", "legacy/ntfy/data"],
+  "paperless_ngx" => ["paperless_tessdata_root", "legacy/paperless-ngx/tessdata"],
+  "tinymediamanager" => ["tinymediamanager_state_root", "legacy/tinymediamanager/data"]
+}
+host_paths.each do |role, (variable, adopted_source)|
+  source = ROOT.join("roles", role, "tasks/main.yml").binread
+  refuse("#{role} host operations do not select the adopted mounted root") unless
+    source.include?(variable) && source.include?(adopted_source) &&
+    source.include?("Require the internally derived")
+  direct_root = role == "paperless_ngx" ? "paperless-ngx/tessdata" : role.tr("_", "-")
+  refuse("#{role} still mutates the divergent fresh host root") if
+    source.scan(%r{nas_docker_root[^\n]*#{Regexp.escape(direct_root)}}).length > 3
+end
+refuse("target containment does not whitelist only committed adoption roots") unless
+  target.include?("adoption_sources = [") && target.include?("legacy/ntfy/data") &&
+  target.include?("legacy/paperless-ngx/tessdata/heb.traineddata")
 
 puts "Adoption target overrides: exact legacy binds with target semantics hold"

@@ -13,6 +13,10 @@
       - "{{ platform_runtime_dir }}/services/paperless-ngx"
       - "{{ platform_runtime_dir }}/services/paperless-ngx/.env"
       - "{{ platform_runtime_dir }}/services/paperless-ngx/.gmail-credential-fingerprint"
+      - >-
+        {{ (platform_adoption_root ~ '/legacy/paperless-ngx/tessdata/heb.traineddata')
+           if (platform_adoption_enabled | default(false) | bool)
+           else (nas_docker_root ~ '/paperless-ngx/tessdata/heb.traineddata') }}
 
 - name: Check for a Paperless platform override
   ansible.builtin.stat:
@@ -28,10 +32,24 @@
          ((platform_adoption_enabled | default(false) | bool)
           | ternary(['compose.adoption.yml'], [])) }}
 
+- name: Select the Paperless mounted tessdata root
+  ansible.builtin.set_fact:
+    paperless_tessdata_root: >-
+      {{ (platform_adoption_root ~ '/legacy/paperless-ngx/tessdata')
+         if (platform_adoption_enabled | default(false) | bool)
+         else (nas_docker_root ~ '/paperless-ngx/tessdata') }}
+
+- name: Require the internally derived Paperless tessdata root
+  ansible.builtin.assert:
+    that:
+      - paperless_tessdata_root == ((platform_adoption_root ~ '/legacy/paperless-ngx/tessdata') if
+        (platform_adoption_enabled | default(false) | bool) else
+        (nas_docker_root ~ '/paperless-ngx/tessdata'))
+
 - name: Install the pinned Hebrew OCR model
   ansible.builtin.get_url:
     url: "{{ paperless_hebrew_model_url }}"
-    dest: "{{ nas_docker_root }}/paperless-ngx/tessdata/heb.traineddata"
+    dest: "{{ paperless_tessdata_root }}/heb.traineddata"
     checksum: "{{ paperless_hebrew_model_checksum }}"
     mode: "0644"
 

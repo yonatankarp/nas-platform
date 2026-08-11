@@ -58,6 +58,10 @@ legacy = runner.match(/legacy-deploy\)\s*(?<body>.*?)\s*;;/m)
 raise "legacy deploy invoked target roles" if legacy && legacy[:body].include?("run_site")
 deploy = runner.match(/deploy\)\s*\n(?<body>.*?)\n\s*;;/m)
 raise "old adoption deploy behavior remains" if deploy && deploy[:body].include?("adoption-deploy")
+run_site = runner.match(/run_site\(\) \{(?<body>.*?)\n\}/m)
+raise "run_site does not fail closed through container attestation" unless
+  run_site && run_site[:body].include?("adoption-container-attest.sh") &&
+  run_site[:body].include?('return "$run_site_status"')
 RUBY
 
 sandbox=$fixture/nas-platform-mac.AbC123
@@ -86,6 +90,10 @@ Dir.glob(File.join(root, "*.yml")).sort.each do |path|
   end
 end
 RUBY
+# Exercise the file-bind attestation path with a realistic payload that exceeds
+# the tiny fixed-size directory sentinel bound.
+ruby -e 'File.binwrite(ARGV.fetch(0), "ocr-model\n" * 1024)' \
+  "$sandbox/legacy/paperless-ngx/tessdata/heb.traineddata"
 
 baseline=$sandbox/baseline.json
 state=$sandbox/report/phase-input.json
@@ -94,6 +102,9 @@ printf '%s\n' '{"schema":1,"legacy_commit":"012345678901234567890123456789012345
 printf '%s\n' '{"lane":"adoption","sandbox_id":"nas-platform-mac.AbC123","git_revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","vault_checksum":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","parity_vault_checksum":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","legacy_commit":"0123456789012345678901234567890123456789","project_name":"nas-platform-mac-abc123"}' > "$state"
 chmod 0600 "$baseline" "$state"
 baseline_before=$(shasum -a 256 "$baseline" | awk '{print $1}')
+if command -v xattr >/dev/null 2>&1; then
+  xattr -cr "$sandbox"
+fi
 
 archive_gid=$(id -G | tr ' ' '\n' | awk -v primary="$(id -g)" '$1 != primary { print; exit }')
 if [ -n "$archive_gid" ]; then
@@ -102,9 +113,21 @@ if [ -n "$archive_gid" ]; then
   chown "$(id -u):$archive_gid" "$sandbox/legacy/dozzle/data/owned-by-secondary-group"
 fi
 
+cp "$override_root/audiobookshelf.yml" "$fixture/audiobookshelf-mode.original"
+sed -i '' -e 's#:/audiobooks:ro#:/audiobooks:rw#' "$override_root/audiobookshelf.yml"
+if PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
+  "$snapshotter" publish --override-root "$override_root" \
+  --baseline "$baseline" --run-state "$state" >"$fixture/output" 2>&1; then
+  fail 'read-only mapping changed to read-write was accepted'
+fi
+grep -F 'legacy adoption mapping differs from committed policy' "$fixture/output" >/dev/null ||
+  fail 'mapping access-mode drift was not rejected by committed policy'
+mv "$fixture/audiobookshelf-mode.original" "$override_root/audiobookshelf.yml"
+
 cp "$override_root/dozzle.yml" "$fixture/dozzle-policy.original"
-printf '%s\n' '      - ${PLATFORM_MAC_SANDBOX:?}/legacy/dozzle/extra:/extra' \
-  >> "$override_root/dozzle.yml"
+sed -i '' -e '/legacy\/dozzle\/data:\/data/a\
+      - ${PLATFORM_MAC_SANDBOX:?}/legacy/dozzle/extra:/extra
+' "$override_root/dozzle.yml"
 if PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
   "$snapshotter" publish --override-root "$override_root" \
   --baseline "$baseline" --run-state "$state" >"$fixture/output" 2>&1; then
@@ -113,6 +136,151 @@ fi
 grep -F 'legacy adoption mapping differs from committed policy' "$fixture/output" >/dev/null ||
   fail 'extra valid source was not rejected by committed policy'
 mv "$fixture/dozzle-policy.original" "$override_root/dozzle.yml"
+
+paperless_model=$sandbox/legacy/paperless-ngx/tessdata/heb.traineddata
+cp -p "$paperless_model" "$fixture/paperless-model.original"
+ruby -e 'File.truncate(ARGV.fetch(0), 64 * 1024 * 1024 + 1)' "$paperless_model"
+if PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
+  "$snapshotter" publish --override-root "$override_root" \
+  --baseline "$baseline" --run-state "$state" >"$fixture/output" 2>&1; then
+  fail 'oversized file-bind attestation was accepted'
+fi
+grep -F 'file mount attestation exceeds the accepted size' "$fixture/output" >/dev/null ||
+  fail 'oversized file-bind attestation emitted wrong diagnostic'
+mv "$fixture/paperless-model.original" "$paperless_model"
+
+durability_shim=$fixture/durability-fault.rb
+cat > "$durability_shim" <<'RUBY'
+trace = TracePoint.new(:end) do |event|
+  next unless event.self.name == "SnapshotDurability"
+
+  trace.disable
+  singleton = event.self.singleton_class
+  singleton.alias_method(:original_sync_for_fault_test, :sync)
+  singleton.define_method(:sync) do |descriptor, label|
+    if label == ENV["PLATFORM_DURABILITY_FAULT_LABEL"]
+      File.write(ENV.fetch("PLATFORM_DURABILITY_FAULT_MARKER"), "fired\n")
+      raise Errno::EIO, "forced directory fsync failure"
+    end
+    original_sync_for_fault_test(descriptor, label)
+  end
+end
+trace.enable
+RUBY
+for durability_label in snapshot-parent-entry snapshot-nested-directory-entry; do
+  durability_marker=$fixture/durability-$durability_label
+  if RUBYOPT="-r$durability_shim" \
+    PLATFORM_DURABILITY_FAULT_LABEL=$durability_label \
+    PLATFORM_DURABILITY_FAULT_MARKER=$durability_marker \
+    PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
+    "$snapshotter" publish --override-root "$override_root" \
+    --baseline "$baseline" --run-state "$state" >"$fixture/output" 2>&1; then
+    fail "$durability_label fsync failure was accepted"
+  fi
+  [ -f "$durability_marker" ] || fail "$durability_label fsync fault did not fire"
+  [ ! -e "$sandbox/snapshot/pre-cutover" ] || fail "$durability_label fault published a snapshot"
+  if [ "$durability_label" = snapshot-parent-entry ]; then
+    [ ! -e "$sandbox/snapshot" ] || fail 'top-level fsync fault left an uncommitted snapshot directory'
+  fi
+done
+
+conflicting_sentinel=$sandbox/legacy/audiobookshelf/metadata/.nas-platform-adoption-root-sentinel
+printf '%s\n' conflicting > "$conflicting_sentinel"
+chmod 0444 "$conflicting_sentinel"
+if PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
+  "$snapshotter" publish --override-root "$override_root" \
+  --baseline "$baseline" --run-state "$state" >"$fixture/output" 2>&1; then
+  fail 'conflicting sentinel was accepted'
+fi
+[ ! -e "$sandbox/legacy/audiobookshelf/config/.nas-platform-adoption-root-sentinel" ] ||
+  fail 'partial sentinel installation was not rolled back'
+[ "$(cat "$conflicting_sentinel")" = conflicting ] ||
+  fail 'conflicting user sentinel was modified during rollback'
+chmod 0600 "$conflicting_sentinel"
+rm "$conflicting_sentinel"
+
+sentinel_swap_shim=$fixture/sentinel-cleanup-swap.rb
+cat > "$sentinel_swap_shim" <<'RUBY'
+trace = TracePoint.new(:end) do |event|
+  next unless event.self.name == "SnapshotFileSystem"
+  trace.disable
+  singleton = event.self.singleton_class
+  singleton.alias_method(:original_openat_for_sentinel_cleanup_test, :openat)
+  singleton.define_method(:openat) do |parent, name, flags, permissions|
+    if name == ".nas-platform-adoption-root-sentinel"
+      @sentinel_opens = @sentinel_opens.to_i + 1
+      if @sentinel_opens == 3
+        path = ENV.fetch("PLATFORM_SENTINEL_REPLACEMENT_TARGET")
+        File.chmod(0o600, path)
+        File.binwrite(path, "replacement sentinel\n")
+        File.chmod(0o444, path)
+      end
+    end
+    original_openat_for_sentinel_cleanup_test(parent, name, flags, permissions)
+  end
+end
+trace.enable
+RUBY
+printf '%s\n' conflicting > "$conflicting_sentinel"
+chmod 0444 "$conflicting_sentinel"
+replacement_sentinel=$sandbox/legacy/audiobookshelf/config/.nas-platform-adoption-root-sentinel
+if RUBYOPT="-r$sentinel_swap_shim" \
+  PLATFORM_SENTINEL_REPLACEMENT_TARGET="$replacement_sentinel" \
+  PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
+  "$snapshotter" publish --override-root "$override_root" \
+  --baseline "$baseline" --run-state "$state" >"$fixture/output" 2>&1; then
+  fail 'sentinel cleanup replacement race was accepted'
+fi
+[ "$(cat "$replacement_sentinel")" = 'replacement sentinel' ] ||
+  fail 'cleanup deleted a concurrently replaced sentinel'
+chmod 0600 "$replacement_sentinel" "$conflicting_sentinel"
+rm "$replacement_sentinel" "$conflicting_sentinel"
+
+ln "$sandbox/legacy/dozzle/data/state" "$sandbox/legacy/dozzle/data/state-hardlink"
+if PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
+  "$snapshotter" publish --override-root "$override_root" \
+  --baseline "$baseline" --run-state "$state" >"$fixture/output" 2>&1; then
+  fail 'hardlinked state topology was silently flattened'
+fi
+grep -F 'hardlinked state is outside the accepted archive class' "$fixture/output" >/dev/null ||
+  fail "hardlinked state emitted wrong archive diagnostic: $(cat "$fixture/output"); $(xattr -lr "$sandbox")"
+rm "$sandbox/legacy/dozzle/data/state-hardlink"
+
+archive_feature_file=$sandbox/legacy/dozzle/data/archive-features
+printf archive-metadata > "$archive_feature_file"
+if command -v xattr >/dev/null 2>&1; then
+  xattr -w com.nas-platform.archive-fidelity exact "$archive_feature_file"
+fi
+if [ "$(uname -s)" = Darwin ]; then
+  chmod +a "user:$(id -un) allow read" "$archive_feature_file"
+  if PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
+    "$snapshotter" publish --override-root "$override_root" \
+    --baseline "$baseline" --run-state "$state" >"$fixture/output" 2>&1; then
+    fail 'ACL state was accepted without verifiable inventory metadata'
+  fi
+  grep -F 'access control lists are outside the accepted archive class' "$fixture/output" >/dev/null ||
+    fail 'ACL state emitted wrong archive diagnostic'
+  chmod -N "$archive_feature_file"
+  chflags hidden "$archive_feature_file"
+  if PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
+    "$snapshotter" publish --override-root "$override_root" \
+    --baseline "$baseline" --run-state "$state" >"$fixture/output" 2>&1; then
+    fail 'file-flag state was accepted without verifiable inventory metadata'
+  fi
+  grep -F 'file flags are outside the accepted archive class' "$fixture/output" >/dev/null ||
+    fail 'file-flag state emitted wrong archive diagnostic'
+  chflags nohidden "$archive_feature_file"
+fi
+if [ "$(uname -s)" = Darwin ]; then
+  mkfile -n 8m "$archive_feature_file"
+  printf x | dd of="$archive_feature_file" bs=1 seek=8388607 conv=notrunc 2>/dev/null
+else
+  dd if=/dev/zero of="$archive_feature_file" bs=1 count=1 seek=8388607 2>/dev/null
+fi
+source_sparse_blocks=$(stat -f '%b' "$archive_feature_file" 2>/dev/null || stat -c '%b' "$archive_feature_file")
+source_sparse_size=$(stat -f '%z' "$archive_feature_file" 2>/dev/null || stat -c '%s' "$archive_feature_file")
+sparse_supported=false
+[ $((source_sparse_blocks * 512)) -ge "$source_sparse_size" ] || sparse_supported=true
 
 lock_ready=$fixture/lock-ready
 ruby - "$sandbox/.adoption-snapshot.lock" "$lock_ready" <<'RUBY' &
@@ -176,6 +344,49 @@ published=$sandbox/snapshot/pre-cutover
 cmp -s "$baseline" "$published/baseline.json" || fail 'immutable baseline copy differs'
 [ "$(stat -f '%Lp' "$published/baseline.json" 2>/dev/null || stat -c '%a' "$published/baseline.json")" = 400 ] ||
   fail 'baseline copy mode differs'
+
+challenge_fault_shim=$fixture/challenge-handoff-fault.rb
+cat > "$challenge_fault_shim" <<'RUBY'
+trace = TracePoint.new(:end) do |event|
+  next unless event.self.name == "ChallengeFS"
+
+  trace.disable
+  singleton = event.self.singleton_class
+  singleton.alias_method(:original_futimens_for_handoff_test, :futimens)
+  singleton.define_method(:futimens) do |descriptor, times|
+    result = original_futimens_for_handoff_test(descriptor, times)
+    if ENV.delete("PLATFORM_CHALLENGE_HANDOFF_FAULT")
+      File.binwrite(ENV.fetch("PLATFORM_CHALLENGE_HANDOFF_MARKER"), "fired\n")
+      ENV["PLATFORM_CHALLENGE_HANDOFF_MODE"] == "signal" ?
+        Process.kill("TERM", Process.pid) : raise("forced pre-handoff failure")
+    end
+    result
+  end
+end
+trace.enable
+RUBY
+challenge_source=legacy/audiobookshelf/config
+challenge_file=$sandbox/$challenge_source/.nas-platform-adoption-root-sentinel
+challenge_digest=$(shasum -a 256 "$challenge_file" | awk '{print $1}')
+for challenge_mode in exception signal; do
+  challenge_before=$(ruby -e 's=File.stat(ARGV.fetch(0)); puts((s.mtime.to_r*1_000_000_000).to_i)' "$challenge_file")
+  challenge_journal=$sandbox/report/challenge-$challenge_mode.json
+  challenge_marker=$fixture/challenge-$challenge_mode-fired
+  if RUBYOPT="-r$challenge_fault_shim" PLATFORM_CHALLENGE_HANDOFF_FAULT=1 \
+    PLATFORM_CHALLENGE_HANDOFF_MODE=$challenge_mode \
+    PLATFORM_CHALLENGE_HANDOFF_MARKER=$challenge_marker \
+    ruby "$test_dir/adoption-mount-challenge.rb" prepare "$sandbox" \
+    "$challenge_source" sentinel "$challenge_digest" "$challenge_journal" \
+    >"$fixture/output" 2>&1; then
+    fail "$challenge_mode before challenge-token handoff was accepted"
+  fi
+  [ -f "$challenge_marker" ] ||
+    { cat "$fixture/output" >&2; fail "$challenge_mode before challenge-token handoff did not fire"; }
+  challenge_after=$(ruby -e 's=File.stat(ARGV.fetch(0)); puts((s.mtime.to_r*1_000_000_000).to_i)' "$challenge_file")
+  [ "$challenge_after" = "$challenge_before" ] ||
+    fail "$challenge_mode before token handoff did not restore source metadata"
+  [ ! -e "$challenge_journal" ] || fail "$challenge_mode before token handoff retained its journal"
+done
 if [ -n "$archive_gid" ]; then
   source_owner=$(stat -f '%u:%g' "$sandbox/legacy/dozzle/data/owned-by-secondary-group" 2>/dev/null ||
     stat -c '%u:%g' "$sandbox/legacy/dozzle/data/owned-by-secondary-group")
@@ -188,6 +399,15 @@ if [ -n "$archive_gid" ]; then
     stat -c '%u:%g' "$published/state/legacy/dozzle/data")
   [ "$snapshot_directory_owner" = "$source_directory_owner" ] ||
     fail 'snapshot did not preserve numeric directory ownership'
+fi
+snapshot_feature_file=$published/state/legacy/dozzle/data/archive-features
+snapshot_sparse_blocks=$(stat -f '%b' "$snapshot_feature_file" 2>/dev/null || stat -c '%b' "$snapshot_feature_file")
+if [ "$sparse_supported" = true ]; then
+  [ "$snapshot_sparse_blocks" -le "$source_sparse_blocks" ] || fail 'snapshot expanded sparse state'
+fi
+if command -v xattr >/dev/null 2>&1; then
+  [ "$(xattr -p com.nas-platform.archive-fidelity "$snapshot_feature_file")" = exact ] ||
+    fail 'snapshot did not preserve extended attributes'
 fi
 
 ruby -rjson - "$published/inventory.json" <<'RUBY'
@@ -322,6 +542,174 @@ if RUBYOPT="-r$transition_swap_shim" PLATFORM_TRANSITION_SWAP_ARMED=1 \
 fi
 [ -f "$fixture/transition-race-fired" ] || fail 'cutover transition swap race did not fire'
 [ -f "$transition" ] && [ ! -L "$transition" ] || fail 'cutover transition race escaped its binding'
+
+attestation_swap_shim=$fixture/attestation-binding-swap.rb
+cat > "$attestation_swap_shim" <<'RUBY'
+count = 0
+trace = TracePoint.new(:end) do |event|
+  next unless event.self.name == "SnapshotFileSystem"
+  trace.disable
+  singleton = event.self.singleton_class
+  singleton.alias_method(:original_openat_for_attestation_test, :openat)
+  singleton.define_method(:openat) do |parent, name, flags, permissions|
+    count += 1 if name == "attestations.json"
+    if count == 3
+      target = ENV.fetch("PLATFORM_ATTESTATION_BINDING_TARGET")
+      publication = File.dirname(target)
+      File.chmod(0o700, publication)
+      File.rename(target, ENV.fetch("PLATFORM_ATTESTATION_BINDING_HELD"))
+      File.rename(ENV.fetch("PLATFORM_ATTESTATION_BINDING_REPLACEMENT"), target)
+      File.chmod(0o500, publication)
+      File.binwrite(ENV.fetch("PLATFORM_ATTESTATION_BINDING_MARKER"), "fired\n")
+      count += 1
+    end
+    original_openat_for_attestation_test(parent, name, flags, permissions)
+  end
+end
+trace.enable
+RUBY
+printf '%s\n' '{}' > "$fixture/attestation-binding-replacement"
+chmod 0400 "$fixture/attestation-binding-replacement"
+if RUBYOPT="-r$attestation_swap_shim" \
+  PLATFORM_ATTESTATION_BINDING_TARGET="$published/binding.json" \
+  PLATFORM_ATTESTATION_BINDING_HELD="$fixture/attestation-binding-held" \
+  PLATFORM_ATTESTATION_BINDING_REPLACEMENT="$fixture/attestation-binding-replacement" \
+  PLATFORM_ATTESTATION_BINDING_MARKER="$fixture/attestation-binding-race-fired" \
+  PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
+  "$snapshotter" attestations --override-root "$override_root" \
+  --baseline "$baseline" --run-state "$state" >"$fixture/output" 2>&1; then
+  fail 'binding swap before attestation emission was accepted'
+fi
+[ -f "$fixture/attestation-binding-race-fired" ] ||
+  { cat "$fixture/output" >&2; fail 'binding swap before attestation emission did not fire'; }
+grep -F 'snapshot binding changed before attestation emit' "$fixture/output" >/dev/null ||
+  fail 'binding swap before attestation emission emitted wrong diagnostic'
+chmod 0700 "$published"
+mv "$published/binding.json" "$fixture/attestation-binding-replacement.used"
+mv "$fixture/attestation-binding-held" "$published/binding.json"
+chmod 0500 "$published"
+
+fake_docker_dir=$fixture/fake-docker
+mkdir "$fake_docker_dir"
+cat > "$fake_docker_dir/docker" <<'RUBY'
+#!/usr/bin/env ruby
+require "json"
+require "fileutils"
+records = JSON.parse(File.binread(ENV.fetch("PLATFORM_FAKE_ATTESTATIONS")))
+case ARGV.shift
+when "ps"
+  project = ARGV.join(" ")[/com[.]docker[.]compose[.]project=([^ ]+)/, 1]
+  service = ARGV.join(" ")[/com[.]docker[.]compose[.]service=([^ ]+)/, 1]
+  selected = records.select { |entry| "#{ENV.fetch('PLATFORM_PROJECT_NAME')}-#{entry['project_suffix']}" == project }
+  selected.select! { |entry| entry["target_compose_service"] == service } if service
+  puts selected.map { |entry| "#{project}__#{entry['target_compose_service']}" }.uniq
+when "inspect"
+  id = ARGV.last
+  project, service = id.split("__", 2)
+  mounts = records.select do |entry|
+    "#{ENV.fetch('PLATFORM_PROJECT_NAME')}-#{entry['project_suffix']}" == project &&
+      entry["target_compose_service"] == service
+  end.map do |entry|
+    { "Source" => File.join(ENV.fetch("PLATFORM_ADOPTION_ROOT"), entry["source"]),
+      "Destination" => entry["target"], "RW" => entry["access"] == "rw" }
+  end
+  puts JSON.generate(mounts)
+when "cp"
+  specification, destination = ARGV
+  id, path = specification.split(":", 2)
+  project, service = id.split("__", 2)
+  entry = records.find do |candidate|
+    "#{ENV.fetch('PLATFORM_PROJECT_NAME')}-#{candidate['project_suffix']}" == project &&
+      candidate["target_compose_service"] == service && candidate["container_path"] == path
+  end or abort "missing fake cp source"
+  if ENV["PLATFORM_FAKE_CP_LOG"]
+    File.open(ENV.fetch("PLATFORM_FAKE_CP_LOG"), "a") do |file|
+      file.puts([project, service, path].join("\t"))
+    end
+  end
+  if ENV["PLATFORM_FAKE_SWAP"] == "copied" && !File.exist?(ENV.fetch("PLATFORM_FAKE_SWAP_MARKER"))
+    FileUtils.cp(ENV.fetch("PLATFORM_FAKE_COPIED_SENTINEL"), destination, preserve: true)
+    File.binwrite(ENV.fetch("PLATFORM_FAKE_SWAP_MARKER"), "fired\n")
+  elsif ENV["PLATFORM_FAKE_SWAP"] == "symlink"
+    File.symlink(ENV.fetch("PLATFORM_FAKE_ESCAPE"), destination)
+    exit 0
+  elsif ENV["PLATFORM_FAKE_SWAP"] == "directory"
+    Dir.mkdir(destination)
+  elsif ENV["PLATFORM_FAKE_SWAP"] == "oversize"
+    File.binwrite(destination, "x" * 257)
+  elsif ENV["PLATFORM_FAKE_SWAP"] == "1"
+    ENV["PLATFORM_FAKE_SWAP"] = "0"
+    File.binwrite(destination, "x" * entry.fetch("size"))
+  else
+    source_path = File.join(ENV.fetch("PLATFORM_ADOPTION_ROOT"), entry["source"])
+    source_path = File.join(source_path, ".nas-platform-adoption-root-sentinel") if entry["kind"] == "sentinel"
+    FileUtils.cp(source_path, destination, preserve: true)
+  end
+  File.chmod(0o444, destination)
+when "stop"
+  File.open(ENV.fetch("PLATFORM_FAKE_STOP_LOG"), "a") { |file| file.puts(ARGV) }
+else
+  abort "unexpected fake docker command"
+end
+RUBY
+chmod 0755 "$fake_docker_dir/docker"
+PATH="$fake_docker_dir:$PATH" PLATFORM_FAKE_SWAP=0 \
+  PLATFORM_FAKE_CP_LOG="$fixture/attested-mounts.log" \
+  PLATFORM_FAKE_ATTESTATIONS="$published/attestations.json" \
+  PLATFORM_FAKE_STOP_LOG="$fixture/target-stop.log" PLATFORM_ADOPTION_ENABLED=true \
+  PLATFORM_ADOPTION_ROOT=$sandbox PLATFORM_PROJECT_NAME=nas-platform-mac-abc123 \
+  PLATFORM_REPORT_ROOT=$sandbox/report PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
+  "$test_dir/adoption-container-attest.sh" >"$fixture/output" 2>&1 ||
+  fail 'complete fake container attestation failed'
+[ "$(wc -l < "$fixture/attested-mounts.log" | tr -d ' ')" = 32 ] ||
+  fail 'container attestation did not read all 32 mounted roots'
+grep -F "$(printf 'nas-platform-mac-abc123-beszel\tagent-portable\t/var/lib/beszel-agent/.nas-platform-adoption-root-sentinel')" \
+  "$fixture/attested-mounts.log" >/dev/null || fail 'Beszel portable-agent sentinel was not read'
+grep -F "$(printf 'nas-platform-mac-abc123-paperless\tbroker\t/data/.nas-platform-adoption-root-sentinel')" \
+  "$fixture/attested-mounts.log" >/dev/null || fail 'Paperless broker sentinel was not read'
+grep -F "$(printf 'nas-platform-mac-abc123-paperless\twebserver\t/usr/src/paperless/data/.nas-platform-adoption-root-sentinel')" \
+  "$fixture/attested-mounts.log" >/dev/null || fail 'Paperless webserver sentinel was not read'
+[ ! -e "$fixture/target-stop.log" ] || fail 'successful mount attestation stopped targets'
+copied_sentinel=$fixture/copied-sentinel
+cp -p "$sandbox/legacy/audiobookshelf/config/.nas-platform-adoption-root-sentinel" "$copied_sentinel"
+if PATH="$fake_docker_dir:$PATH" PLATFORM_FAKE_SWAP=copied \
+  PLATFORM_FAKE_SWAP_MARKER="$fixture/copied-sentinel-fired" \
+  PLATFORM_FAKE_COPIED_SENTINEL="$copied_sentinel" \
+  PLATFORM_FAKE_ATTESTATIONS="$published/attestations.json" \
+  PLATFORM_FAKE_STOP_LOG="$fixture/target-stop.log" PLATFORM_ADOPTION_ENABLED=true \
+  PLATFORM_ADOPTION_ROOT=$sandbox PLATFORM_PROJECT_NAME=nas-platform-mac-abc123 \
+  PLATFORM_REPORT_ROOT=$sandbox/report PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
+  "$test_dir/adoption-container-attest.sh" >"$fixture/output" 2>&1; then
+  fail 'same-content copied sentinel mount was accepted'
+fi
+[ -f "$fixture/copied-sentinel-fired" ] || fail 'same-content copied sentinel swap did not fire'
+[ -s "$fixture/target-stop.log" ] || fail 'same-content copied sentinel did not stop target projects'
+if PATH="$fake_docker_dir:$PATH" PLATFORM_FAKE_SWAP=1 \
+  PLATFORM_FAKE_ATTESTATIONS="$published/attestations.json" \
+  PLATFORM_FAKE_STOP_LOG="$fixture/target-stop.log" PLATFORM_ADOPTION_ENABLED=true \
+  PLATFORM_ADOPTION_ROOT=$sandbox PLATFORM_PROJECT_NAME=nas-platform-mac-abc123 \
+  PLATFORM_REPORT_ROOT=$sandbox/report PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
+  "$test_dir/adoption-container-attest.sh" >"$fixture/output" 2>&1; then
+  fail 'swap-and-restore replacement sentinel was accepted'
+fi
+grep -F 'mounted sentinel differs' "$fixture/output" >/dev/null ||
+  fail 'replacement sentinel emitted wrong diagnostic'
+[ -s "$fixture/target-stop.log" ] || fail 'sentinel mismatch did not stop target projects'
+for unsafe_copy in symlink directory oversize; do
+  : > "$fixture/target-stop.log"
+  if PATH="$fake_docker_dir:$PATH" PLATFORM_FAKE_SWAP=$unsafe_copy \
+    PLATFORM_FAKE_ESCAPE="$fixture/escape-target" \
+    PLATFORM_FAKE_ATTESTATIONS="$published/attestations.json" \
+    PLATFORM_FAKE_STOP_LOG="$fixture/target-stop.log" PLATFORM_ADOPTION_ENABLED=true \
+    PLATFORM_ADOPTION_ROOT=$sandbox PLATFORM_PROJECT_NAME=nas-platform-mac-abc123 \
+    PLATFORM_REPORT_ROOT=$sandbox/report PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
+    "$test_dir/adoption-container-attest.sh" >"$fixture/output" 2>&1; then
+    fail "unsafe Docker-copy $unsafe_copy output was accepted"
+  fi
+  grep -F 'unsafe sentinel readback' "$fixture/output" >/dev/null ||
+    fail "unsafe Docker-copy $unsafe_copy emitted wrong diagnostic"
+  [ -s "$fixture/target-stop.log" ] || fail "unsafe Docker-copy $unsafe_copy did not stop targets"
+done
 cp -p "$fixture/dozzle-state.original" "$sandbox/legacy/dozzle/data/state"
 chmod 0640 "$sandbox/legacy/dozzle/data/state"
 published_digest=$(shasum -a 256 "$published/binding.json" | awk '{print $1}')

@@ -23,6 +23,10 @@
       - "{{ platform_current_dir }}/services/beszel/compose.adoption.yml"
       - "{{ platform_runtime_dir }}/services/beszel"
       - "{{ platform_runtime_dir }}/services/beszel/.env"
+      - >-
+        {{ (platform_adoption_root ~ '/legacy/beszel/hub/id_ed25519')
+           if (platform_adoption_enabled | default(false) | bool)
+           else (nas_docker_root ~ '/beszel/hub/id_ed25519') }}
 
 - name: Check for a Beszel platform override
   ansible.builtin.stat:
@@ -38,10 +42,23 @@
          ((platform_adoption_enabled | default(false) | bool)
           | ternary(['compose.adoption.yml'], [])) }}
 
+- name: Select the Beszel mounted state root
+  ansible.builtin.set_fact:
+    beszel_state_root: >-
+      {{ (platform_adoption_root ~ '/legacy/beszel/hub')
+         if (platform_adoption_enabled | default(false) | bool)
+         else (nas_docker_root ~ '/beszel/hub') }}
+
+- name: Require the internally derived Beszel mounted state root
+  ansible.builtin.assert:
+    that:
+      - beszel_state_root == ((platform_adoption_root ~ '/legacy/beszel/hub') if
+        (platform_adoption_enabled | default(false) | bool) else (nas_docker_root ~ '/beszel/hub'))
+
 - name: Install the hub keypair before the hub can generate its own
   ansible.builtin.copy:
     content: "{{ vault_beszel_hub_private_key }}"
-    dest: "{{ nas_docker_root }}/beszel/hub/id_ed25519"
+    dest: "{{ beszel_state_root }}/id_ed25519"
     mode: "0600"
   no_log: "{{ beszel_no_log | default(true) }}"
 
@@ -209,7 +226,7 @@
     fail_msg: >-
       The hub advertises a different public key than vault holds, so the agent
       would be rejected. This happens when the hub started once before the keypair
-      was installed. Remove {{ nas_docker_root }}/beszel/hub/id_ed25519 together
+      was installed. Remove {{ beszel_state_root }}/id_ed25519 together
       with the generated database, then run again.
       Hub advertises '{{ beszel_advertised_key.json.key | default('<none>') }}',
       vault holds '{{ vault_beszel_agent_key }}'.

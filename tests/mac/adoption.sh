@@ -109,10 +109,21 @@ stop_legacy_projects() {
   done
 }
 
+require_legacy_projects_stopped() {
+  running_projects=$(docker ps --format '{{.Label "com.docker.compose.project"}}') || return 1
+  tab=$(printf '\t')
+  printf '%s\n' "$service_paths" | while IFS="$tab" read -r service path; do
+    [ -n "$service" ] && [ -n "$path" ] || return 1
+    project=$PLATFORM_PROJECT_NAME-legacy-$service
+    [ "$(printf '%s\n' "$running_projects" | grep -Fxc -- "$project")" -eq 0 ] || return 1
+  done
+}
+
 [ "$subcommand" = snapshot ] && {
   sandbox=$(mac_validate_sandbox "${PLATFORM_MAC_SANDBOX:?PLATFORM_MAC_SANDBOX is required}" 2>/dev/null) ||
     die 'owned sandbox is invalid'
   stop_legacy_projects || die 'legacy project stop failed'
+  require_legacy_projects_stopped || die 'legacy projects restarted before snapshot copy'
   "$script_dir/adoption-snapshot.sh" publish \
     --override-root "$script_dir/legacy-overrides" \
     --baseline "$sandbox/baseline.json" \

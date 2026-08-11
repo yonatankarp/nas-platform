@@ -70,6 +70,9 @@ for argument in "$@"; do printf '\t%s' "$argument" >> "$FAKE_COMMAND_LOG"; done
 printf '\n' >> "$FAKE_COMMAND_LOG"
 case " $* " in
   *' config --services '*) printf '%s\n' one two ;;
+  *' ps --format {{.Label "com.docker.compose.project"}} '*)
+    [ -z "${FAKE_RESTARTED_PROJECT:-}" ] || printf '%s\n' "$FAKE_RESTARTED_PROJECT"
+    ;;
   *' ps --all --format json '*)
     case ${FAKE_PS_STATE:-healthy} in
       healthy) printf '%s\n' '[{"Service":"one","State":"running","Health":"healthy"},{"Service":"two","State":"running","Health":""}]' ;;
@@ -261,6 +264,20 @@ printf 'legacy-fixture\t%s\t%s\t%s\t%s\n' "$service" "$mode" "$project" \
 SH
 chmod 0700 "$fake_bin/ansible-playbook" "$fake_bin/ansible-vault" "$fake_bin/git" \
   "$sandbox/fake-fixture-driver.sh"
+
+: > "$log"
+if env PATH="$fake_bin:$PATH" FAKE_COMMAND_LOG="$log" \
+  FAKE_RESTARTED_PROJECT=nas-platform-mac-lgcy42-legacy-audiobookshelf \
+  PLATFORM_MAC_TMPDIR="$temporary_root" PLATFORM_LEGACY_ROOT="$legacy_root" \
+  NAS_INFRASTRUCTURE_DIR="$legacy_root" PLATFORM_MAC_SANDBOX="$sandbox" \
+  PLATFORM_PROJECT_NAME=nas-platform-mac-lgcy42 PLATFORM_REPORT_ROOT="$sandbox/report" \
+  "$test_dir/adoption.sh" snapshot >"$temporary_root/snapshot-restart-output" 2>&1; then
+  fail 'restarted legacy project was accepted immediately before snapshot copy'
+fi
+[ "$(grep -c "$(printf '\t')stop$" "$log")" -eq 9 ] ||
+  fail 'legacy restart regression did not first stop all nine projects'
+grep -F 'legacy projects restarted before snapshot copy' "$temporary_root/snapshot-restart-output" >/dev/null ||
+  fail 'legacy restart regression emitted wrong diagnostic'
 
 run_seed() {
   env PATH="$fake_bin:$PATH" FAKE_COMMAND_LOG="$log" \
