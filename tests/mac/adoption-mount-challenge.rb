@@ -180,8 +180,9 @@ begin
     $stdout.flush
     handoff_complete = true
   else
+    current_mtime = time_ns(stat.mtime)
     refuse("challenge restoration token differs") unless token.fetch("signature") == signature(stat) &&
-      token.fetch("challenge_ns") == time_ns(stat.mtime)
+      [token.fetch("challenge_ns"), token.fetch("mtime_ns")].include?(current_mtime)
     set_times(file, token.fetch("atime_ns"), token.fetch("mtime_ns"))
     unlink_at(journal_directory, journal_name)
     journal_directory.fsync

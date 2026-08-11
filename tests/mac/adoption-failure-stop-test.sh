@@ -114,6 +114,10 @@ cat > "$fixture/hook-tree/adoption-stop-targets.sh" <<'SH'
 #!/bin/sh
 printf '%s\n' "${CURRENT_HOOK:?}" >> "${HOOK_STOP_LOG:?}"
 SH
+cat > "$fixture/hook-tree/run-beszel-contract.sh" <<'SH'
+#!/bin/sh
+exit 8
+SH
 chmod 0700 "$fixture/hook-tree"/*.sh
 cat > "$fixture/bin/docker" <<'SH'
 #!/bin/sh
@@ -127,7 +131,7 @@ chmod 0700 "$fixture/bin/docker"
 mkdir -m 0700 "$fixture/docker-root"
 HOOK_STOP_LOG=$fixture/hook-stops.log
 export HOOK_STOP_LOG
-for hook in "$fixture/hook-tree/hooks/fixtures-recreate"/[2-8]0-*.sh; do
+for hook in "$fixture/hook-tree/hooks/fixtures-recreate"/[1-8]0-*.sh; do
   CURRENT_HOOK=$(basename -- "$hook")
   export CURRENT_HOOK
   if PLATFORM_PROOF_LANE=adoption PLATFORM_DOCKER_ROOT=$fixture/docker-root \
@@ -135,7 +139,7 @@ for hook in "$fixture/hook-tree/hooks/fixtures-recreate"/[2-8]0-*.sh; do
     fail "$CURRENT_HOOK accepted a partial Compose recreation"
   fi
 done
-[ "$(wc -l < "$HOOK_STOP_LOG" | tr -d ' ')" = 7 ] ||
+[ "$(wc -l < "$HOOK_STOP_LOG" | tr -d ' ')" = 8 ] ||
   fail 'not every recreation hook stopped all adoption targets after partial Compose failure'
 
 hostile_sandbox=$fixture/nas-platform-mac.Safe12

@@ -1586,7 +1586,9 @@ check(failures, verification_roles.any? && verification_roles.all? do |role|
                   role.is_a?(Hash) && Array(role["tags"]).include?("never")
                 end,
       "verify.yml roles must be inert unless an explicit verification tag is selected")
-cutover_phase = mac_run[/cutover\)\n(.*?)\n\s*;;/m, 1].to_s
+execute_phase_offset = mac_run.index("execute_phase()")
+execute_phase_source = execute_phase_offset ? mac_run[execute_phase_offset..] : ""
+cutover_phase = execute_phase_source[/cutover\)\n(.*?)\n\s*;;/m, 1].to_s
 snapshot_validation = cutover_phase.index("enable_adoption_mapping")
 target_deployment = cutover_phase.index("run_site")
 adoption_verification = cutover_phase.index('"$mac_script_dir/verify.sh"')

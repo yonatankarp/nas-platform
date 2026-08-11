@@ -43,7 +43,8 @@ raise "snapshot stop must not delete volumes" if adoption.match?(/stop[^\n]*--vo
 cutover_branch = adoption.index('[ "$subcommand" = cutover ]')
 verify_call = adoption.index('adoption-snapshot.sh" begin-cutover', cutover_branch)
 raise "cutover does not atomically record strict snapshot validation" unless cutover_branch && verify_call
-runner_cutover = runner.match(/cutover\)\s*\n(?<body>.*?)\n\s*;;/m)
+execute_phase = runner.index("execute_phase()")
+runner_cutover = runner[execute_phase..].match(/cutover\)\s*\n(?<body>.*?)\n\s*;;/m) if execute_phase
 raise "runner cutover is unavailable" unless runner_cutover
 body = runner_cutover[:body]
 validation = body.index("enable_adoption_mapping")
@@ -96,8 +97,12 @@ ruby -e 'File.binwrite(ARGV.fetch(0), "ocr-model\n" * 1024)' \
   "$sandbox/legacy/paperless-ngx/tessdata/heb.traineddata"
 
 baseline=$sandbox/baseline.json
-state=$sandbox/report/phase-input.json
-mkdir -m 0700 "$sandbox/report"
+report_root=$sandbox.reports
+state=$report_root/phase-input.json
+mkdir -m 0700 "$report_root"
+printf 'schema=1\nsandbox=%s\n' "$(basename -- "$sandbox")" \
+  > "$report_root/.nas-platform-mac-report-owned"
+chmod 0600 "$report_root/.nas-platform-mac-report-owned"
 printf '%s\n' '{"schema":1,"legacy_commit":"0123456789012345678901234567890123456789"}' > "$baseline"
 printf '%s\n' '{"lane":"adoption","sandbox_id":"nas-platform-mac.AbC123","git_revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","vault_checksum":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","parity_vault_checksum":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","legacy_commit":"0123456789012345678901234567890123456789","project_name":"nas-platform-mac-abc123"}' > "$state"
 chmod 0600 "$baseline" "$state"
@@ -370,7 +375,7 @@ challenge_file=$sandbox/$challenge_source/.nas-platform-adoption-root-sentinel
 challenge_digest=$(shasum -a 256 "$challenge_file" | awk '{print $1}')
 for challenge_mode in exception signal; do
   challenge_before=$(ruby -e 's=File.stat(ARGV.fetch(0)); puts((s.mtime.to_r*1_000_000_000).to_i)' "$challenge_file")
-  challenge_journal=$sandbox/report/challenge-$challenge_mode.json
+  challenge_journal=$report_root/challenge-$challenge_mode.json
   challenge_marker=$fixture/challenge-$challenge_mode-fired
   if RUBYOPT="-r$challenge_fault_shim" PLATFORM_CHALLENGE_HANDOFF_FAULT=1 \
     PLATFORM_CHALLENGE_HANDOFF_MODE=$challenge_mode \
@@ -653,20 +658,66 @@ else
 end
 RUBY
 chmod 0755 "$fake_docker_dir/docker"
+hostile_report=$fixture/hostile.reports
+mkdir -m 0700 "$hostile_report"
+printf 'schema=1\nsandbox=%s\n' "$(basename -- "$sandbox")" \
+  > "$hostile_report/.nas-platform-mac-report-owned"
+chmod 0600 "$hostile_report/.nas-platform-mac-report-owned"
+if PATH="$fake_docker_dir:$PATH" PLATFORM_FAKE_SWAP=0 \
+  PLATFORM_FAKE_ATTESTATIONS="$published/attestations.json" \
+  PLATFORM_FAKE_STOP_LOG="$fixture/target-stop.log" PLATFORM_ADOPTION_ENABLED=true \
+  PLATFORM_ADOPTION_ROOT=$sandbox PLATFORM_PROJECT_NAME=nas-platform-mac-abc123 \
+  PLATFORM_REPORT_ROOT=$hostile_report PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
+  "$test_dir/adoption-container-attest.sh" >"$fixture/output" 2>&1; then
+  fail 'non-sibling adoption report root was accepted'
+fi
+grep -F 'owned report root is invalid' "$fixture/output" >/dev/null ||
+  fail 'non-sibling adoption report root emitted wrong diagnostic'
+[ ! -e "$fixture/target-stop.log" ] || fail 'hostile report root reached target operations'
+
+cp -p "$report_root/.nas-platform-mac-report-owned" "$fixture/report-marker.original"
+printf 'schema=1\nsandbox=nas-platform-mac.Wrong1\n' > "$report_root/.nas-platform-mac-report-owned"
+chmod 0600 "$report_root/.nas-platform-mac-report-owned"
+if PATH="$fake_docker_dir:$PATH" PLATFORM_FAKE_SWAP=0 \
+  PLATFORM_FAKE_ATTESTATIONS="$published/attestations.json" \
+  PLATFORM_FAKE_STOP_LOG="$fixture/target-stop.log" PLATFORM_ADOPTION_ENABLED=true \
+  PLATFORM_ADOPTION_ROOT=$sandbox PLATFORM_PROJECT_NAME=nas-platform-mac-abc123 \
+  PLATFORM_REPORT_ROOT=$report_root PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
+  "$test_dir/adoption-container-attest.sh" >"$fixture/output" 2>&1; then
+  fail 'report marker bound to another sandbox was accepted'
+fi
+grep -F 'owned report root is invalid' "$fixture/output" >/dev/null ||
+  fail 'foreign report marker emitted wrong diagnostic'
+mv "$fixture/report-marker.original" "$report_root/.nas-platform-mac-report-owned"
+
+if PATH="$fake_docker_dir:$PATH" PLATFORM_FAKE_SWAP=0 \
+  PLATFORM_FAKE_ATTESTATIONS="$published/attestations.json" \
+  PLATFORM_FAKE_STOP_LOG="$fixture/target-stop.log" PLATFORM_ADOPTION_ENABLED=true \
+  PLATFORM_ADOPTION_ROOT=$sandbox PLATFORM_PROJECT_NAME=nas-platform-mac-wrong1 \
+  PLATFORM_REPORT_ROOT=$report_root PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
+  "$test_dir/adoption-container-attest.sh" >"$fixture/output" 2>&1; then
+  fail 'report context with another project was accepted'
+fi
+grep -F 'owned report project is invalid' "$fixture/output" >/dev/null ||
+  fail 'foreign report project emitted wrong diagnostic'
+[ ! -e "$fixture/target-stop.log" ] || fail 'hostile report binding reached target operations'
+
 crash_source=legacy/audiobookshelf/config
 crash_sentinel=$sandbox/$crash_source/.nas-platform-adoption-root-sentinel
 crash_digest=$(shasum -a 256 "$crash_sentinel" | awk '{print $1}')
 crash_mtime=$(ruby -e 's=File.stat(ARGV.fetch(0)); puts((s.mtime.to_r*1_000_000_000).to_i)' "$crash_sentinel")
-crash_journal=$sandbox/report/adoption-attestation-challenge.json
+crash_journal=$report_root/adoption-attestation-challenge.json
 ruby "$test_dir/adoption-mount-challenge.rb" prepare "$sandbox" \
   "$crash_source" sentinel "$crash_digest" "$crash_journal" >/dev/null
 [ -f "$crash_journal" ] || fail 'killed guard fixture did not leave a recoverable challenge journal'
+[ "$(ruby -e 's=File.stat(ARGV.fetch(0)); puts((s.mtime.to_r*1_000_000_000).to_i)' "$crash_sentinel")" != "$crash_mtime" ] ||
+  fail 'killed guard fixture did not reach the challenged-mtime crash window'
 PATH="$fake_docker_dir:$PATH" PLATFORM_FAKE_SWAP=0 \
   PLATFORM_FAKE_CP_LOG="$fixture/attested-mounts.log" \
   PLATFORM_FAKE_ATTESTATIONS="$published/attestations.json" \
   PLATFORM_FAKE_STOP_LOG="$fixture/target-stop.log" PLATFORM_ADOPTION_ENABLED=true \
   PLATFORM_ADOPTION_ROOT=$sandbox PLATFORM_PROJECT_NAME=nas-platform-mac-abc123 \
-  PLATFORM_REPORT_ROOT=$sandbox/report PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
+  PLATFORM_REPORT_ROOT=$report_root PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
   "$test_dir/adoption-container-attest.sh" >"$fixture/output" 2>&1 ||
   fail 'complete fake container attestation failed'
 [ ! -e "$crash_journal" ] || fail 'next guard did not remove the prior crash journal'
@@ -682,6 +733,27 @@ grep -F "$(printf 'nas-platform-mac-abc123-paperless\twebserver\t/usr/src/paperl
   "$fixture/attested-mounts.log" >/dev/null || fail 'Paperless webserver sentinel was not read'
 [ ! -e "$fixture/target-stop.log" ] || fail 'successful mount attestation stopped targets'
 
+attestation_bytes=$(cat "$published/attestations.json")
+for idempotent_action in recover restore; do
+  original_mtime=$(ruby -e 's=File.stat(ARGV.fetch(0)); puts((s.mtime.to_r*1_000_000_000).to_i)' "$crash_sentinel")
+  ruby "$test_dir/adoption-mount-challenge.rb" prepare "$sandbox" \
+    "$crash_source" sentinel "$crash_digest" "$crash_journal" >/dev/null
+  cp -p "$crash_journal" "$fixture/$idempotent_action-journal.saved"
+  ruby "$test_dir/adoption-mount-challenge.rb" restore "$sandbox" \
+    "$crash_source" sentinel "$crash_digest" "$crash_journal" >/dev/null
+  cp -p "$fixture/$idempotent_action-journal.saved" "$crash_journal"
+  if [ "$idempotent_action" = recover ]; then
+    ruby "$test_dir/adoption-mount-challenge.rb" recover "$sandbox" - - - \
+      "$crash_journal" "$attestation_bytes" >/dev/null
+  else
+    ruby "$test_dir/adoption-mount-challenge.rb" restore "$sandbox" \
+      "$crash_source" sentinel "$crash_digest" "$crash_journal" >/dev/null
+  fi
+  [ ! -e "$crash_journal" ] || fail "$idempotent_action did not remove an original-mtime journal"
+  [ "$(ruby -e 's=File.stat(ARGV.fetch(0)); puts((s.mtime.to_r*1_000_000_000).to_i)' "$crash_sentinel")" = "$original_mtime" ] ||
+    fail "$idempotent_action changed an already restored source timestamp"
+done
+
 forged_source=legacy/dozzle/data/state
 forged_file=$sandbox/$forged_source
 forged_digest=$(shasum -a 256 "$forged_file" | awk '{print $1}')
@@ -691,7 +763,7 @@ if PATH="$fake_docker_dir:$PATH" PLATFORM_FAKE_SWAP=0 \
   PLATFORM_FAKE_ATTESTATIONS="$published/attestations.json" \
   PLATFORM_FAKE_STOP_LOG="$fixture/target-stop.log" PLATFORM_ADOPTION_ENABLED=true \
   PLATFORM_ADOPTION_ROOT=$sandbox PLATFORM_PROJECT_NAME=nas-platform-mac-abc123 \
-  PLATFORM_REPORT_ROOT=$sandbox/report PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
+  PLATFORM_REPORT_ROOT=$report_root PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
   "$test_dir/adoption-container-attest.sh" >"$fixture/output" 2>&1; then
   fail 'journal outside the signed attestation set was accepted for crash recovery'
 fi
@@ -708,7 +780,7 @@ if PATH="$fake_docker_dir:$PATH" PLATFORM_FAKE_SWAP=0 \
   PLATFORM_FAKE_ATTESTATIONS="$published/attestations.json" \
   PLATFORM_FAKE_STOP_LOG="$fixture/target-stop.log" PLATFORM_ADOPTION_ENABLED=true \
   PLATFORM_ADOPTION_ROOT=$sandbox PLATFORM_PROJECT_NAME=nas-platform-mac-abc123 \
-  PLATFORM_REPORT_ROOT=$sandbox/report PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
+  PLATFORM_REPORT_ROOT=$report_root PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
   "$test_dir/adoption-container-attest.sh" >"$fixture/output" 2>&1; then
   fail 'oversized stable challenge journal was accepted'
 fi
@@ -724,7 +796,7 @@ if PATH="$fake_docker_dir:$PATH" PLATFORM_FAKE_SWAP=0 \
   PLATFORM_FAKE_ATTESTATIONS="$published/attestations.json" \
   PLATFORM_FAKE_STOP_LOG="$fixture/target-stop.log" PLATFORM_ADOPTION_ENABLED=true \
   PLATFORM_ADOPTION_ROOT=$sandbox PLATFORM_PROJECT_NAME=nas-platform-mac-abc123 \
-  PLATFORM_REPORT_ROOT=$sandbox/report PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
+  PLATFORM_REPORT_ROOT=$report_root PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
   "$test_dir/adoption-container-attest.sh" >"$fixture/output" 2>&1; then
   fail 'hardlinked adoption sentinel was accepted by the live challenge'
 fi
@@ -740,7 +812,7 @@ if PATH="$fake_docker_dir:$PATH" PLATFORM_FAKE_SWAP=0 \
   PLATFORM_FAKE_ATTESTATIONS="$published/attestations.json" \
   PLATFORM_FAKE_STOP_LOG="$fixture/target-stop.log" PLATFORM_ADOPTION_ENABLED=true \
   PLATFORM_ADOPTION_ROOT=$sandbox PLATFORM_PROJECT_NAME=nas-platform-mac-abc123 \
-  PLATFORM_REPORT_ROOT=$sandbox/report PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
+  PLATFORM_REPORT_ROOT=$report_root PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
   "$test_dir/adoption-container-attest.sh" >"$fixture/output" 2>&1; then
   fail 'persistent alternate adopted root was accepted'
 fi
@@ -758,7 +830,7 @@ if PATH="$fake_docker_dir:$PATH" PLATFORM_FAKE_SWAP=copied \
   PLATFORM_FAKE_ATTESTATIONS="$published/attestations.json" \
   PLATFORM_FAKE_STOP_LOG="$fixture/target-stop.log" PLATFORM_ADOPTION_ENABLED=true \
   PLATFORM_ADOPTION_ROOT=$sandbox PLATFORM_PROJECT_NAME=nas-platform-mac-abc123 \
-  PLATFORM_REPORT_ROOT=$sandbox/report PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
+  PLATFORM_REPORT_ROOT=$report_root PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
   "$test_dir/adoption-container-attest.sh" >"$fixture/output" 2>&1; then
   fail 'same-content copied sentinel mount was accepted'
 fi
@@ -768,7 +840,7 @@ if PATH="$fake_docker_dir:$PATH" PLATFORM_FAKE_SWAP=1 \
   PLATFORM_FAKE_ATTESTATIONS="$published/attestations.json" \
   PLATFORM_FAKE_STOP_LOG="$fixture/target-stop.log" PLATFORM_ADOPTION_ENABLED=true \
   PLATFORM_ADOPTION_ROOT=$sandbox PLATFORM_PROJECT_NAME=nas-platform-mac-abc123 \
-  PLATFORM_REPORT_ROOT=$sandbox/report PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
+  PLATFORM_REPORT_ROOT=$report_root PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
   "$test_dir/adoption-container-attest.sh" >"$fixture/output" 2>&1; then
   fail 'swap-and-restore replacement sentinel was accepted'
 fi
@@ -782,7 +854,7 @@ for unsafe_copy in symlink directory oversize; do
     PLATFORM_FAKE_ATTESTATIONS="$published/attestations.json" \
     PLATFORM_FAKE_STOP_LOG="$fixture/target-stop.log" PLATFORM_ADOPTION_ENABLED=true \
     PLATFORM_ADOPTION_ROOT=$sandbox PLATFORM_PROJECT_NAME=nas-platform-mac-abc123 \
-    PLATFORM_REPORT_ROOT=$sandbox/report PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
+    PLATFORM_REPORT_ROOT=$report_root PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
     "$test_dir/adoption-container-attest.sh" >"$fixture/output" 2>&1; then
     fail "unsafe Docker-copy $unsafe_copy output was accepted"
   fi

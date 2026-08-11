@@ -10,10 +10,20 @@ die() { printf 'adoption-attestation-error: %s\n' "$1" >&2; exit 1; }
 
 sandbox=$(mac_validate_sandbox "${PLATFORM_ADOPTION_ROOT:?}" 2>/dev/null) || die 'owned adoption root is invalid'
 [ "${PLATFORM_ADOPTION_ENABLED:-}" = true ] || die 'adoption mapping is not enabled'
-[ "${PLATFORM_REPORT_ROOT:?}" = "$sandbox/report" ] &&
+report_marker=${PLATFORM_REPORT_ROOT:?}/.nas-platform-mac-report-owned
+[ "$PLATFORM_REPORT_ROOT" = "$sandbox.reports" ] &&
   [ -d "$PLATFORM_REPORT_ROOT" ] && [ ! -L "$PLATFORM_REPORT_ROOT" ] &&
+  [ "$(CDPATH= cd -- "$PLATFORM_REPORT_ROOT" 2>/dev/null && pwd -P)" = "$PLATFORM_REPORT_ROOT" ] &&
   [ "$(mac_owner_id "$PLATFORM_REPORT_ROOT")" = "$(id -u)" ] &&
-  [ "$(mac_file_mode "$PLATFORM_REPORT_ROOT")" = 700 ] || die 'owned report root is invalid'
+  [ "$(mac_file_mode "$PLATFORM_REPORT_ROOT")" = 700 ] &&
+  [ -f "$report_marker" ] && [ ! -L "$report_marker" ] &&
+  [ "$(mac_owner_id "$report_marker")" = "$(id -u)" ] &&
+  [ "$(mac_file_mode "$report_marker")" = 600 ] &&
+  printf 'schema=1\nsandbox=%s\n' "$(basename -- "$sandbox")" | cmp -s - "$report_marker" ||
+  die 'owned report root is invalid'
+sandbox_suffix=${sandbox##*.}
+expected_project=nas-platform-mac-$(printf '%s' "$sandbox_suffix" | tr '[:upper:]' '[:lower:]')
+[ "${PLATFORM_PROJECT_NAME:?}" = "$expected_project" ] || die 'owned report project is invalid'
 temporary_dir=$(mktemp -d "${PLATFORM_REPORT_ROOT:?}/adoption-attestation.XXXXXX")
 chmod 0700 "$temporary_dir"
 temporary=$temporary_dir/readback
