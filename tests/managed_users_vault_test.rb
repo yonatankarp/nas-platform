@@ -4,6 +4,7 @@
 require "open3"
 require "tmpdir"
 require "yaml"
+require "fileutils"
 
 ROOT = File.expand_path("..", __dir__)
 VAULT_PATH = File.join(ROOT, "inventory", "group_vars", "all", "vault.yml.example")
@@ -122,11 +123,17 @@ end
 def validate_with_role(document)
   Dir.mktmpdir("nas-platform-managed-users-vault-") do |directory|
     path = File.join(directory, "vault.yml")
+    playbook = File.join(directory, "validate-vault.yml")
     File.write(path, YAML.dump(document), mode: "w", perm: 0o600)
+    FileUtils.cp(File.join(ROOT, "validate-vault.yml"), playbook)
     Open3.capture3(
-      { "ANSIBLE_NOCOLOR" => "1" },
-      "ansible-playbook", File.join(ROOT, "validate-vault.yml"), "-e", "@#{path}",
-      chdir: ROOT
+      {
+        "ANSIBLE_NOCOLOR" => "1",
+        "ANSIBLE_CONFIG" => File.join(ROOT, "ansible.cfg"),
+        "ANSIBLE_ROLES_PATH" => File.join(ROOT, "roles")
+      },
+      "ansible-playbook", "-i", "localhost,", playbook, "-e", "@#{path}",
+      chdir: directory
     )
   end
 end
