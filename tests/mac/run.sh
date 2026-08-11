@@ -615,7 +615,14 @@ run_site() {
     --vault-password-file "$vault_password_file" -e @"$vault_file" \
     -e "platform_vault_file=$vault_file" "$@" || run_site_status=$?
   if [ "$lane" = adoption ]; then
-    "$mac_script_dir/adoption-container-attest.sh" || run_site_status=$?
+    attestation_status=0
+    "$mac_script_dir/adoption-container-attest.sh" || attestation_status=$?
+    if [ "$run_site_status" -eq 0 ] && [ "$attestation_status" -ne 0 ]; then
+      run_site_status=$attestation_status
+    fi
+    if [ "$run_site_status" -ne 0 ]; then
+      "$mac_script_dir/adoption-stop-targets.sh" >/dev/null 2>&1 || true
+    fi
   fi
   return "$run_site_status"
 }
@@ -623,7 +630,10 @@ run_site() {
 enable_adoption_mapping() {
   adoption_mapping_stage=$1
   case $adoption_mapping_stage in
-    cutover) "$mac_script_dir/adoption.sh" cutover; adoption_marker_action=marker-post-cutover ;;
+    cutover)
+      "$mac_script_dir/adoption.sh" cutover || return $?
+      adoption_marker_action=marker-post-cutover
+      ;;
     resume) adoption_marker_action=marker-post-cutover ;;
     *) mac_die 'invalid adoption mapping stage' ;;
   esac
@@ -632,11 +642,17 @@ enable_adoption_mapping() {
   PLATFORM_ADOPTION_MARKER=$("$mac_script_dir/adoption-snapshot.sh" "$adoption_marker_action" \
     --override-root "$mac_script_dir/legacy-overrides" \
     --baseline "$sandbox/baseline.json" --run-state "$report_root/phase-input.json") ||
-    mac_die 'could not bind the adoption mapping marker'
+    { mac_die 'could not bind the adoption mapping marker'; return 1; }
   case $PLATFORM_ADOPTION_MARKER in
-    ''|*[!0123456789abcdef]*) mac_die 'adoption mapping marker is invalid' ;;
+    ''|*[!0123456789abcdef]*)
+      mac_die 'adoption mapping marker is invalid'
+      return 1
+      ;;
   esac
-  [ "${#PLATFORM_ADOPTION_MARKER}" -eq 64 ] || mac_die 'adoption mapping marker is invalid'
+  [ "${#PLATFORM_ADOPTION_MARKER}" -eq 64 ] || {
+    mac_die 'adoption mapping marker is invalid'
+    return 1
+  }
   export PLATFORM_ADOPTION_MARKER
 }
 
@@ -790,9 +806,14 @@ execute_phase() {
       "$mac_script_dir/adoption.sh" "$1"
       ;;
     cutover)
-      enable_adoption_mapping cutover
-      run_site
-      "$mac_script_dir/verify.sh"
+      enable_adoption_mapping cutover || return $?
+      run_site || return $?
+      cutover_verify_status=0
+      "$mac_script_dir/verify.sh" || cutover_verify_status=$?
+      if [ "$cutover_verify_status" -ne 0 ]; then
+        "$mac_script_dir/adoption-stop-targets.sh" >/dev/null 2>&1 || true
+        return "$cutover_verify_status"
+      fi
       ;;
     seed) "$mac_script_dir/fixtures.sh" seed ;;
     verify) "$mac_script_dir/verify.sh" ;;

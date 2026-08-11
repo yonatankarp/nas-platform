@@ -403,6 +403,7 @@ def inventory_entry_at(parent, name, relative, entries)
   source = open_at(parent, name, File::RDONLY | File::NOFOLLOW)
   before = source.stat
   refuse("state source is unsafe") unless before.directory? || before.file?
+  refuse("hardlinked state is outside the accepted archive class") if before.file? && before.nlink > 1
   refuse_unverifiable_archive_metadata(source)
   digest = before.file? ? digest_descriptor(source) : nil
   entries << metadata_entry(before, relative, source, digest)
@@ -700,6 +701,12 @@ def install_mount_attestations(sandbox, bindings, run_identity, baseline_digest)
     else
       refuse("adoption attestation source is unsafe")
     end
+    if kind == "sentinel"
+      sentinel = open_at(entry, ".nas-platform-adoption-root-sentinel", File::RDONLY | File::NOFOLLOW)
+      refuse("hardlinked adoption sentinel is unsafe") unless sentinel.stat.nlink == 1
+    else
+      refuse("hardlinked adoption source is unsafe") unless entry.stat.nlink == 1
+    end
     {
       "service" => service,
       "legacy_compose_service" => expected_compose_service(service, source),
@@ -707,9 +714,11 @@ def install_mount_attestations(sandbox, bindings, run_identity, baseline_digest)
       "project_suffix" => (service == "paperless-ngx" ? "paperless" : service),
       "source" => source, "target" => target, "access" => access,
       "kind" => kind, "container_path" => container_path,
-      "size" => expected_size, "sha256" => expected_sha256
+      "size" => expected_size, "sha256" => expected_sha256,
+      "live_dev" => entry.stat.dev, "live_ino" => entry.stat.ino
     }
   ensure
+    sentinel&.close
     entry&.close
     parent&.close
   end

@@ -20,7 +20,7 @@ temporary=$temporary_dir/readback
 records=$temporary_dir/records
 temporary_signature=$(ruby -e 's = File.lstat(ARGV.fetch(0)); puts "#{s.dev}:#{s.ino}"' "$temporary_dir")
 challenge_token=
-challenge_journal=$temporary_dir/challenge.json
+challenge_journal=$PLATFORM_REPORT_ROOT/adoption-attestation-challenge.json
 challenge_source=
 challenge_kind=
 challenge_digest=
@@ -33,10 +33,7 @@ restore_challenge() {
 }
 
 stop_targets() {
-  for suffix in audiobookshelf beszel dozzle immich jellyfin komga ntfy paperless tinymediamanager; do
-    ids=$(docker ps -q --filter "label=com.docker.compose.project=$PLATFORM_PROJECT_NAME-$suffix" 2>/dev/null || true)
-    [ -z "$ids" ] || docker stop $ids >/dev/null 2>&1 || true
-  done
+  "$script_dir/adoption-stop-targets.sh" >/dev/null 2>&1 || true
 }
 cleanup() {
   status=$?
@@ -95,15 +92,26 @@ RUBY
 }
 trap cleanup EXIT HUP INT TERM
 
+attestation_json=$("$script_dir/adoption-snapshot.sh" attestations \
+  --override-root "$script_dir/legacy-overrides" --baseline "$sandbox/baseline.json" \
+  --run-state "$PLATFORM_REPORT_ROOT/phase-input.json") || die 'snapshot attestations are unavailable'
+if [ -e "$challenge_journal" ] || [ -L "$challenge_journal" ]; then
+  ruby "$script_dir/adoption-mount-challenge.rb" recover "$sandbox" - - - "$challenge_journal" \
+    "$attestation_json" ||
+    die 'prior mount challenge recovery failed'
+fi
+
 namespace_before=$("$script_dir/adoption-snapshot.sh" live-namespace \
   --override-root "$script_dir/legacy-overrides" --baseline "$sandbox/baseline.json" \
   --run-state "$PLATFORM_REPORT_ROOT/phase-input.json") || die 'namespace pre-attestation failed'
 
-attestation_json=$("$script_dir/adoption-snapshot.sh" attestations \
-  --override-root "$script_dir/legacy-overrides" --baseline "$sandbox/baseline.json" \
-  --run-state "$PLATFORM_REPORT_ROOT/phase-input.json") || die 'snapshot attestations are unavailable'
-ruby -rjson - "$attestation_json" > "$records" <<'RUBY'
-JSON.parse(ARGV.fetch(0)).each do |entry|
+ruby -rjson - "$attestation_json" "$namespace_before" > "$records" <<'RUBY'
+entries = JSON.parse(ARGV.fetch(0))
+namespace = JSON.parse(ARGV.fetch(1))
+entries.each do |entry|
+  expected_identity = [entry.fetch("live_dev"), entry.fetch("live_ino")]
+  abort "live source identity differs from pre-cutover attestation" unless
+    namespace.fetch(entry.fetch("source")) == expected_identity
   puts %w[project_suffix target_compose_service source target access kind container_path size sha256].map {
     |key| entry.fetch(key)
   }.join("\t")
@@ -142,7 +150,7 @@ while IFS="$tab" read -r suffix service source destination access kind container
   challenge_kind=$kind
   challenge_digest=$expected
   challenge_mtime_ns=$(ruby "$script_dir/adoption-mount-challenge.rb" prepare "$sandbox" \
-    "$source" "$kind" "$expected" "$challenge_journal") || die 'mount challenge preparation failed'
+    "$source" "$kind" "$expected" "$challenge_journal" -) || die 'mount challenge preparation failed'
   challenge_token=$challenge_mtime_ns
   rm -f -- "$temporary"
   (ulimit -f "$copy_blocks"; docker cp "$ids:$container_path" "$temporary" >/dev/null) || {
@@ -162,7 +170,7 @@ file = File.for_fd(descriptor)
 before = file.stat
 expected_size, copy_limit = Integer(ARGV.fetch(1), 10), Integer(ARGV.fetch(2), 10)
 abort "unsafe Docker copy output" unless before.file? && before.uid == Process.uid &&
-  before.size == expected_size && before.size <= copy_limit
+  before.size == expected_size && before.size <= copy_limit && before.nlink == 1
 file.chmod(0o400)
 before = file.stat
 abort "unsafe Docker copy output" unless (before.mode & 0o222).zero?

@@ -89,9 +89,29 @@ rescue Errno::ENOENT, Errno::ENOTDIR, Errno::ELOOP
   refuse("challenge path is unsafe")
 end
 
-action, sandbox, source, kind, expected_digest, journal_path = ARGV
-refuse("challenge arguments are invalid") unless %w[prepare restore].include?(action) &&
-  source.start_with?("legacy/") && expected_digest.match?(/\A[0-9a-f]{64}\z/)
+def read_token(directory, name)
+  journal = open_at(directory, name)
+  stat = journal.stat
+  refuse("challenge journal is unsafe") unless stat.file? && stat.uid == Process.uid &&
+    (stat.mode & 0o7777) == 0o400 && stat.nlink == 1 && stat.size <= 4096
+  bytes = journal.read(4097)
+  refuse("challenge journal is unsafe") unless bytes.bytesize <= 4096
+  token = JSON.parse(bytes, create_additions: false)
+  expected_keys = %w[atime_ns challenge_ns kind mtime_ns sha256 signature source]
+  refuse("challenge restoration token differs") unless token.is_a?(Hash) &&
+    token.keys.sort == expected_keys && token.fetch("signature").is_a?(Array) &&
+    token.fetch("signature").length == 5 &&
+    token.fetch("signature").all? { |value| value.is_a?(Integer) } &&
+    %w[atime_ns mtime_ns challenge_ns].all? { |key| token.fetch(key).is_a?(Integer) } &&
+    token.fetch("source").start_with?("legacy/") && %w[sentinel file].include?(token.fetch("kind")) &&
+    token.fetch("sha256").match?(/\A[0-9a-f]{64}\z/)
+  token
+ensure
+  journal&.close
+end
+
+action, sandbox, source, kind, expected_digest, journal_path, attestations_json = ARGV
+refuse("challenge arguments are invalid") unless %w[prepare restore recover].include?(action)
 journal_parent = File.dirname(journal_path)
 journal_name = File.basename(journal_path)
 journal_directory = open_bound_directory(journal_parent)
@@ -102,10 +122,38 @@ refuse("challenge journal is unsafe") unless journal_stat.directory? && journal_
 prepare_attempted = false
 handoff_complete = false
 begin
+  if action != "prepare"
+    token = read_token(journal_directory, journal_name)
+    if action == "recover"
+      source = token.fetch("source")
+      kind = token.fetch("kind")
+      expected_digest = token.fetch("sha256")
+      attestations = JSON.parse(attestations_json, create_additions: false)
+      matches = attestations.select do |entry|
+        entry.is_a?(Hash) && entry["source"] == source && entry["kind"] == kind &&
+          entry["sha256"] == expected_digest
+      end
+      refuse("challenge recovery is not bound to the snapshot attestations") unless matches.length == 1
+      recovery_attestation = matches.fetch(0)
+    else
+      refuse("challenge arguments are invalid") unless source.start_with?("legacy/") &&
+        expected_digest.match?(/\A[0-9a-f]{64}\z/)
+      refuse("challenge restoration token differs") unless token.fetch("source") == source &&
+        token.fetch("kind") == kind && token.fetch("sha256") == expected_digest
+    end
+  else
+    refuse("challenge arguments are invalid") unless source.start_with?("legacy/") &&
+      expected_digest.match?(/\A[0-9a-f]{64}\z/)
+  end
   root, parent, file = open_challenged_file(sandbox, source, kind)
   stat = file.stat
   refuse("challenge source is unsafe") unless stat.file? && stat.uid == Process.uid &&
-    digest(file) == expected_digest
+    stat.nlink == 1 && digest(file) == expected_digest
+  if action == "recover"
+    live_root = kind == "sentinel" ? parent.stat : stat
+    refuse("challenge recovery source identity differs") unless
+      [live_root.dev, live_root.ino] == recovery_attestation.values_at("live_dev", "live_ino")
+  end
 
   if action == "prepare"
     challenge_ns = (Time.now.to_i + 86_400 + SecureRandom.random_number(86_400)) * 1_000_000_000
@@ -113,7 +161,7 @@ begin
     token = {
       "source" => source, "kind" => kind, "signature" => signature(stat),
       "atime_ns" => time_ns(stat.atime), "mtime_ns" => time_ns(stat.mtime),
-      "challenge_ns" => challenge_ns
+      "challenge_ns" => challenge_ns, "sha256" => expected_digest
     }
     journal = open_at(
       journal_directory, journal_name, File::WRONLY | File::CREAT | File::EXCL, 0o400
@@ -132,20 +180,7 @@ begin
     $stdout.flush
     handoff_complete = true
   else
-    journal = open_at(journal_directory, journal_name)
-    journal_stat = journal.stat
-    refuse("challenge journal is unsafe") unless journal_stat.file? && journal_stat.uid == Process.uid &&
-      (journal_stat.mode & 0o7777) == 0o400
-    token = JSON.parse(journal.read, create_additions: false)
-    journal.close
-    expected_keys = %w[atime_ns challenge_ns kind mtime_ns signature source]
-    refuse("challenge restoration token differs") unless token.is_a?(Hash) &&
-      token.keys.sort == expected_keys && token.fetch("signature").is_a?(Array) &&
-      token.fetch("signature").length == 5 &&
-      token.fetch("signature").all? { |value| value.is_a?(Integer) } &&
-      %w[atime_ns mtime_ns challenge_ns].all? { |key| token.fetch(key).is_a?(Integer) }
-    refuse("challenge restoration token differs") unless token.fetch("source") == source &&
-      token.fetch("kind") == kind && token.fetch("signature") == signature(stat) &&
+    refuse("challenge restoration token differs") unless token.fetch("signature") == signature(stat) &&
       token.fetch("challenge_ns") == time_ns(stat.mtime)
     set_times(file, token.fetch("atime_ns"), token.fetch("mtime_ns"))
     unlink_at(journal_directory, journal_name)

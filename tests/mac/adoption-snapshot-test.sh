@@ -653,6 +653,14 @@ else
 end
 RUBY
 chmod 0755 "$fake_docker_dir/docker"
+crash_source=legacy/audiobookshelf/config
+crash_sentinel=$sandbox/$crash_source/.nas-platform-adoption-root-sentinel
+crash_digest=$(shasum -a 256 "$crash_sentinel" | awk '{print $1}')
+crash_mtime=$(ruby -e 's=File.stat(ARGV.fetch(0)); puts((s.mtime.to_r*1_000_000_000).to_i)' "$crash_sentinel")
+crash_journal=$sandbox/report/adoption-attestation-challenge.json
+ruby "$test_dir/adoption-mount-challenge.rb" prepare "$sandbox" \
+  "$crash_source" sentinel "$crash_digest" "$crash_journal" >/dev/null
+[ -f "$crash_journal" ] || fail 'killed guard fixture did not leave a recoverable challenge journal'
 PATH="$fake_docker_dir:$PATH" PLATFORM_FAKE_SWAP=0 \
   PLATFORM_FAKE_CP_LOG="$fixture/attested-mounts.log" \
   PLATFORM_FAKE_ATTESTATIONS="$published/attestations.json" \
@@ -661,6 +669,9 @@ PATH="$fake_docker_dir:$PATH" PLATFORM_FAKE_SWAP=0 \
   PLATFORM_REPORT_ROOT=$sandbox/report PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
   "$test_dir/adoption-container-attest.sh" >"$fixture/output" 2>&1 ||
   fail 'complete fake container attestation failed'
+[ ! -e "$crash_journal" ] || fail 'next guard did not remove the prior crash journal'
+[ "$(ruby -e 's=File.stat(ARGV.fetch(0)); puts((s.mtime.to_r*1_000_000_000).to_i)' "$crash_sentinel")" = "$crash_mtime" ] ||
+  fail 'next guard did not exactly restore the prior challenged timestamp'
 [ "$(wc -l < "$fixture/attested-mounts.log" | tr -d ' ')" = 32 ] ||
   fail 'container attestation did not read all 32 mounted roots'
 grep -F "$(printf 'nas-platform-mac-abc123-beszel\tagent-portable\t/var/lib/beszel-agent/.nas-platform-adoption-root-sentinel')" \
@@ -670,6 +681,75 @@ grep -F "$(printf 'nas-platform-mac-abc123-paperless\tbroker\t/data/.nas-platfor
 grep -F "$(printf 'nas-platform-mac-abc123-paperless\twebserver\t/usr/src/paperless/data/.nas-platform-adoption-root-sentinel')" \
   "$fixture/attested-mounts.log" >/dev/null || fail 'Paperless webserver sentinel was not read'
 [ ! -e "$fixture/target-stop.log" ] || fail 'successful mount attestation stopped targets'
+
+forged_source=legacy/dozzle/data/state
+forged_file=$sandbox/$forged_source
+forged_digest=$(shasum -a 256 "$forged_file" | awk '{print $1}')
+ruby "$test_dir/adoption-mount-challenge.rb" prepare "$sandbox" \
+  "$forged_source" file "$forged_digest" "$crash_journal" >/dev/null
+if PATH="$fake_docker_dir:$PATH" PLATFORM_FAKE_SWAP=0 \
+  PLATFORM_FAKE_ATTESTATIONS="$published/attestations.json" \
+  PLATFORM_FAKE_STOP_LOG="$fixture/target-stop.log" PLATFORM_ADOPTION_ENABLED=true \
+  PLATFORM_ADOPTION_ROOT=$sandbox PLATFORM_PROJECT_NAME=nas-platform-mac-abc123 \
+  PLATFORM_REPORT_ROOT=$sandbox/report PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
+  "$test_dir/adoption-container-attest.sh" >"$fixture/output" 2>&1; then
+  fail 'journal outside the signed attestation set was accepted for crash recovery'
+fi
+grep -F 'challenge recovery is not bound to the snapshot attestations' "$fixture/output" >/dev/null ||
+  fail 'unbound crash journal emitted wrong diagnostic'
+ruby "$test_dir/adoption-mount-challenge.rb" restore "$sandbox" \
+  "$forged_source" file "$forged_digest" "$crash_journal" >/dev/null
+
+: > "$fixture/target-stop.log"
+oversize_mtime=$(ruby -e 's=File.stat(ARGV.fetch(0)); puts((s.mtime.to_r*1_000_000_000).to_i)' "$crash_sentinel")
+ruby -e 'File.binwrite(ARGV.fetch(0), "x" * 4097)' "$crash_journal"
+chmod 0400 "$crash_journal"
+if PATH="$fake_docker_dir:$PATH" PLATFORM_FAKE_SWAP=0 \
+  PLATFORM_FAKE_ATTESTATIONS="$published/attestations.json" \
+  PLATFORM_FAKE_STOP_LOG="$fixture/target-stop.log" PLATFORM_ADOPTION_ENABLED=true \
+  PLATFORM_ADOPTION_ROOT=$sandbox PLATFORM_PROJECT_NAME=nas-platform-mac-abc123 \
+  PLATFORM_REPORT_ROOT=$sandbox/report PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
+  "$test_dir/adoption-container-attest.sh" >"$fixture/output" 2>&1; then
+  fail 'oversized stable challenge journal was accepted'
+fi
+grep -F 'challenge journal is unsafe' "$fixture/output" >/dev/null ||
+  fail 'oversized stable challenge journal emitted wrong diagnostic'
+[ "$(ruby -e 's=File.stat(ARGV.fetch(0)); puts((s.mtime.to_r*1_000_000_000).to_i)' "$crash_sentinel")" = "$oversize_mtime" ] ||
+  fail 'oversized stable challenge journal mutated a live source'
+rm "$crash_journal"
+
+: > "$fixture/target-stop.log"
+ln "$crash_sentinel" "$fixture/hardlinked-sentinel"
+if PATH="$fake_docker_dir:$PATH" PLATFORM_FAKE_SWAP=0 \
+  PLATFORM_FAKE_ATTESTATIONS="$published/attestations.json" \
+  PLATFORM_FAKE_STOP_LOG="$fixture/target-stop.log" PLATFORM_ADOPTION_ENABLED=true \
+  PLATFORM_ADOPTION_ROOT=$sandbox PLATFORM_PROJECT_NAME=nas-platform-mac-abc123 \
+  PLATFORM_REPORT_ROOT=$sandbox/report PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
+  "$test_dir/adoption-container-attest.sh" >"$fixture/output" 2>&1; then
+  fail 'hardlinked adoption sentinel was accepted by the live challenge'
+fi
+[ -s "$fixture/target-stop.log" ] || fail 'hardlinked adoption sentinel did not stop targets'
+rm "$fixture/hardlinked-sentinel"
+
+: > "$fixture/target-stop.log"
+mv "$sandbox/legacy/audiobookshelf/config" "$fixture/config-original"
+mkdir -m 0700 "$sandbox/legacy/audiobookshelf/config"
+cp -p "$fixture/config-original/.nas-platform-adoption-root-sentinel" \
+  "$sandbox/legacy/audiobookshelf/config/.nas-platform-adoption-root-sentinel"
+if PATH="$fake_docker_dir:$PATH" PLATFORM_FAKE_SWAP=0 \
+  PLATFORM_FAKE_ATTESTATIONS="$published/attestations.json" \
+  PLATFORM_FAKE_STOP_LOG="$fixture/target-stop.log" PLATFORM_ADOPTION_ENABLED=true \
+  PLATFORM_ADOPTION_ROOT=$sandbox PLATFORM_PROJECT_NAME=nas-platform-mac-abc123 \
+  PLATFORM_REPORT_ROOT=$sandbox/report PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
+  "$test_dir/adoption-container-attest.sh" >"$fixture/output" 2>&1; then
+  fail 'persistent alternate adopted root was accepted'
+fi
+grep -F 'live source identity differs from pre-cutover attestation' "$fixture/output" >/dev/null ||
+  fail 'persistent alternate adopted root emitted wrong diagnostic'
+[ -s "$fixture/target-stop.log" ] || fail 'persistent alternate adopted root did not stop targets'
+rm -R "$sandbox/legacy/audiobookshelf/config"
+mv "$fixture/config-original" "$sandbox/legacy/audiobookshelf/config"
+
 copied_sentinel=$fixture/copied-sentinel
 cp -p "$sandbox/legacy/audiobookshelf/config/.nas-platform-adoption-root-sentinel" "$copied_sentinel"
 if PATH="$fake_docker_dir:$PATH" PLATFORM_FAKE_SWAP=copied \
