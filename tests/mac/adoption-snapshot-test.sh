@@ -41,8 +41,8 @@ raise "all legacy projects must stop before publication" unless
   stop_definition && snapshot_branch && stop_call && publish_call && stop_call < publish_call
 raise "snapshot stop must not delete volumes" if adoption.match?(/stop[^\n]*--volumes|down[^\n]*--volumes/)
 cutover_branch = adoption.index('[ "$subcommand" = cutover ]')
-verify_call = adoption.index('adoption-snapshot.sh" verify', cutover_branch)
-raise "cutover does not revalidate snapshot" unless cutover_branch && verify_call
+verify_call = adoption.index('adoption-snapshot.sh" begin-cutover', cutover_branch)
+raise "cutover does not atomically record strict snapshot validation" unless cutover_branch && verify_call
 runner_cutover = runner.match(/cutover\)\s*\n(?<body>.*?)\n\s*;;/m)
 raise "runner cutover is unavailable" unless runner_cutover
 body = runner_cutover[:body]
@@ -94,6 +94,25 @@ printf '%s\n' '{"schema":1,"legacy_commit":"012345678901234567890123456789012345
 printf '%s\n' '{"lane":"adoption","sandbox_id":"nas-platform-mac.AbC123","git_revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","vault_checksum":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","parity_vault_checksum":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","legacy_commit":"0123456789012345678901234567890123456789","project_name":"nas-platform-mac-abc123"}' > "$state"
 chmod 0600 "$baseline" "$state"
 baseline_before=$(shasum -a 256 "$baseline" | awk '{print $1}')
+
+archive_gid=$(id -G | tr ' ' '\n' | awk -v primary="$(id -g)" '$1 != primary { print; exit }')
+if [ -n "$archive_gid" ]; then
+  printf '%s\n' archive-ownership > "$sandbox/legacy/dozzle/data/owned-by-secondary-group"
+  chown "$(id -u):$archive_gid" "$sandbox/legacy/dozzle/data"
+  chown "$(id -u):$archive_gid" "$sandbox/legacy/dozzle/data/owned-by-secondary-group"
+fi
+
+cp "$override_root/dozzle.yml" "$fixture/dozzle-policy.original"
+printf '%s\n' '      - ${PLATFORM_MAC_SANDBOX:?}/legacy/dozzle/extra:/extra' \
+  >> "$override_root/dozzle.yml"
+if PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
+  "$snapshotter" publish --override-root "$override_root" \
+  --baseline "$baseline" --run-state "$state" >"$fixture/output" 2>&1; then
+  fail 'valid extra source outside the committed 32-source policy was accepted'
+fi
+grep -F 'legacy adoption mapping differs from committed policy' "$fixture/output" >/dev/null ||
+  fail 'extra valid source was not rejected by committed policy'
+mv "$fixture/dozzle-policy.original" "$override_root/dozzle.yml"
 
 lock_ready=$fixture/lock-ready
 ruby - "$sandbox/.adoption-snapshot.lock" "$lock_ready" <<'RUBY' &
@@ -157,6 +176,19 @@ published=$sandbox/snapshot/pre-cutover
 cmp -s "$baseline" "$published/baseline.json" || fail 'immutable baseline copy differs'
 [ "$(stat -f '%Lp' "$published/baseline.json" 2>/dev/null || stat -c '%a' "$published/baseline.json")" = 400 ] ||
   fail 'baseline copy mode differs'
+if [ -n "$archive_gid" ]; then
+  source_owner=$(stat -f '%u:%g' "$sandbox/legacy/dozzle/data/owned-by-secondary-group" 2>/dev/null ||
+    stat -c '%u:%g' "$sandbox/legacy/dozzle/data/owned-by-secondary-group")
+  snapshot_owner=$(stat -f '%u:%g' "$published/state/legacy/dozzle/data/owned-by-secondary-group" 2>/dev/null ||
+    stat -c '%u:%g' "$published/state/legacy/dozzle/data/owned-by-secondary-group")
+  [ "$snapshot_owner" = "$source_owner" ] || fail 'snapshot did not preserve numeric archive ownership'
+  source_directory_owner=$(stat -f '%u:%g' "$sandbox/legacy/dozzle/data" 2>/dev/null ||
+    stat -c '%u:%g' "$sandbox/legacy/dozzle/data")
+  snapshot_directory_owner=$(stat -f '%u:%g' "$published/state/legacy/dozzle/data" 2>/dev/null ||
+    stat -c '%u:%g' "$published/state/legacy/dozzle/data")
+  [ "$snapshot_directory_owner" = "$source_directory_owner" ] ||
+    fail 'snapshot did not preserve numeric directory ownership'
+fi
 
 ruby -rjson - "$published/inventory.json" <<'RUBY'
 inventory = JSON.parse(File.read(ARGV.fetch(0)))
@@ -177,18 +209,119 @@ ruby -rjson -e 'raise unless JSON.parse(File.read(ARGV.fetch(0))).fetch("sandbox
 PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
   "$snapshotter" verify --override-root "$override_root" \
   --baseline "$baseline" --run-state "$state"
+if PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
+  "$snapshotter" marker-post-cutover --override-root "$override_root" \
+  --baseline "$baseline" --run-state "$state" >"$fixture/output" 2>&1; then
+  fail 'post-cutover marker was available before strict cutover validation'
+fi
+grep -F 'cutover transition is unavailable' "$fixture/output" >/dev/null ||
+  fail 'missing cutover transition emitted wrong diagnostic'
+cp -p "$sandbox/legacy/dozzle/data/state" "$fixture/pre-cutover-state.original"
+printf '%s\n' changed-before-strict-validation >> "$sandbox/legacy/dozzle/data/state"
+if PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
+  "$snapshotter" begin-cutover --override-root "$override_root" \
+  --baseline "$baseline" --run-state "$state" >"$fixture/output" 2>&1; then
+  fail 'strict cutover validation accepted changed live state'
+fi
+[ ! -e "$sandbox/snapshot/cutover-started.json" ] ||
+  fail 'cutover transition was set before strict validation passed'
+cp -p "$fixture/pre-cutover-state.original" "$sandbox/legacy/dozzle/data/state"
+cutover_marker=$(PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
+  "$snapshotter" begin-cutover --override-root "$override_root" \
+  --baseline "$baseline" --run-state "$state")
+[ "$cutover_marker" = "$(shasum -a 256 "$published/binding.json" | awk '{print $1}')" ] ||
+  fail 'strict cutover transition did not bind the snapshot'
+transition=$sandbox/snapshot/cutover-started.json
+[ -f "$transition" ] && [ ! -L "$transition" ] || fail 'cutover transition was not published safely'
+[ "$(stat -f '%Lp' "$transition" 2>/dev/null || stat -c '%a' "$transition")" = 400 ] ||
+  fail 'cutover transition mode differs'
 cp -p "$sandbox/legacy/dozzle/data/state" "$fixture/dozzle-state.original"
-printf '%s\n' post-cutover-write >> "$sandbox/legacy/dozzle/data/state"
+simulate_failed_target_and_verifier() {
+  printf '%s\n' post-cutover-write >> "$sandbox/legacy/dozzle/data/state"
+  return 23
+}
+if simulate_failed_target_and_verifier; then
+  fail 'simulated cutover verifier unexpectedly passed'
+fi
 if PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
   "$snapshotter" marker --override-root "$override_root" \
   --baseline "$baseline" --run-state "$state" >"$fixture/output" 2>&1; then
   fail 'pre-cutover marker accepted changed live state'
 fi
 post_cutover_marker=$(PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
-  "$snapshotter" marker-post-cutover --override-root "$override_root" \
+  "$snapshotter" begin-cutover --override-root "$override_root" \
   --baseline "$baseline" --run-state "$state")
 [ "$post_cutover_marker" = "$(shasum -a 256 "$published/binding.json" | awk '{print $1}')" ] ||
-  fail 'post-cutover marker did not revalidate the immutable publication'
+  fail 'failed cutover retry did not revalidate the immutable publication'
+chmod 0600 "$transition"
+if PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
+  "$snapshotter" begin-cutover --override-root "$override_root" \
+  --baseline "$baseline" --run-state "$state" >"$fixture/output" 2>&1; then
+  fail 'writable cutover transition was accepted'
+fi
+chmod 0400 "$transition"
+cp -p "$transition" "$fixture/cutover-transition.original"
+chmod 0600 "$transition"
+printf '%s\n' '{}' > "$transition"
+chmod 0400 "$transition"
+if PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
+  "$snapshotter" begin-cutover --override-root "$override_root" \
+  --baseline "$baseline" --run-state "$state" >"$fixture/output" 2>&1; then
+  fail 'forged cutover transition was accepted'
+fi
+chmod 0600 "$transition"
+cp -p "$fixture/cutover-transition.original" "$transition"
+mv "$transition" "$fixture/cutover-transition.held"
+ln -s "$published/binding.json" "$transition"
+if PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
+  "$snapshotter" begin-cutover --override-root "$override_root" \
+  --baseline "$baseline" --run-state "$state" >"$fixture/output" 2>&1; then
+  fail 'symlinked cutover transition was accepted'
+fi
+rm "$transition"
+mv "$fixture/cutover-transition.held" "$transition"
+transition_swap_shim=$fixture/transition-swap.rb
+cat > "$transition_swap_shim" <<'RUBY'
+trace = TracePoint.new(:end) do |event|
+  next unless event.self.name == "SnapshotFileSystem"
+
+  trace.disable
+  singleton = event.self.singleton_class
+  singleton.alias_method(:original_openat_for_transition_test, :openat)
+  singleton.define_method(:openat) do |parent, name, flags, permissions|
+    unless name == "cutover-started.json" && ENV["PLATFORM_TRANSITION_SWAP_ARMED"] == "1"
+      next original_openat_for_transition_test(parent, name, flags, permissions)
+    end
+
+    ENV["PLATFORM_TRANSITION_SWAP_ARMED"] = "0"
+    target = ENV.fetch("PLATFORM_TRANSITION_SWAP_TARGET")
+    held = ENV.fetch("PLATFORM_TRANSITION_SWAP_HELD")
+    replacement = ENV.fetch("PLATFORM_TRANSITION_SWAP_REPLACEMENT")
+    File.rename(target, held)
+    File.rename(replacement, target)
+    descriptor = original_openat_for_transition_test(parent, name, flags, permissions)
+    File.rename(target, replacement)
+    File.rename(held, target)
+    File.write(ENV.fetch("PLATFORM_TRANSITION_SWAP_MARKER"), "fired\n")
+    descriptor
+  end
+end
+trace.enable
+RUBY
+printf '%s\n' '{}' > "$fixture/transition-race-replacement"
+chmod 0400 "$fixture/transition-race-replacement"
+if RUBYOPT="-r$transition_swap_shim" PLATFORM_TRANSITION_SWAP_ARMED=1 \
+  PLATFORM_TRANSITION_SWAP_TARGET="$transition" \
+  PLATFORM_TRANSITION_SWAP_HELD="$fixture/transition-race-held" \
+  PLATFORM_TRANSITION_SWAP_REPLACEMENT="$fixture/transition-race-replacement" \
+  PLATFORM_TRANSITION_SWAP_MARKER="$fixture/transition-race-fired" \
+  PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
+  "$snapshotter" marker-post-cutover --override-root "$override_root" \
+  --baseline "$baseline" --run-state "$state" >"$fixture/output" 2>&1; then
+  fail 'cutover transition swap race was accepted'
+fi
+[ -f "$fixture/transition-race-fired" ] || fail 'cutover transition swap race did not fire'
+[ -f "$transition" ] && [ ! -L "$transition" ] || fail 'cutover transition race escaped its binding'
 cp -p "$fixture/dozzle-state.original" "$sandbox/legacy/dozzle/data/state"
 chmod 0640 "$sandbox/legacy/dozzle/data/state"
 published_digest=$(shasum -a 256 "$published/binding.json" | awk '{print $1}')

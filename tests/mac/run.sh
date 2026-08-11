@@ -618,7 +618,7 @@ run_site() {
 enable_adoption_mapping() {
   adoption_mapping_stage=$1
   case $adoption_mapping_stage in
-    cutover) "$mac_script_dir/adoption.sh" cutover; adoption_marker_action=marker ;;
+    cutover) "$mac_script_dir/adoption.sh" cutover; adoption_marker_action=marker-post-cutover ;;
     resume) adoption_marker_action=marker-post-cutover ;;
     *) mac_die 'invalid adoption mapping stage' ;;
   esac

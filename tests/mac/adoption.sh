@@ -124,7 +124,7 @@ stop_legacy_projects() {
 [ "$subcommand" = cutover ] && {
   sandbox=$(mac_validate_sandbox "${PLATFORM_MAC_SANDBOX:?PLATFORM_MAC_SANDBOX is required}" 2>/dev/null) ||
     die 'owned sandbox is invalid'
-  "$script_dir/adoption-snapshot.sh" verify \
+  "$script_dir/adoption-snapshot.sh" begin-cutover \
     --override-root "$script_dir/legacy-overrides" \
     --baseline "$sandbox/baseline.json" \
     --run-state "${PLATFORM_REPORT_ROOT:?PLATFORM_REPORT_ROOT is required}/phase-input.json" ||

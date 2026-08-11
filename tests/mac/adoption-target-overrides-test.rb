@@ -8,6 +8,40 @@ require "pathname"
 ROOT = Pathname(__dir__).join("../..").realpath
 SERVICES = %w[audiobookshelf beszel dozzle immich jellyfin komga ntfy paperless-ngx tinymediamanager].freeze
 ADOPTION_ROOT = "/private/tmp/nas-platform-adoption-root"
+COMMITTED_BINDINGS = <<~BINDINGS.lines(chomp: true).map { |line| line.split("\t", 3) }.freeze
+  audiobookshelf\tlegacy/audiobookshelf/config\t/config
+  audiobookshelf\tlegacy/audiobookshelf/metadata\t/metadata
+  audiobookshelf\tlegacy/audiobookshelf/media\t/audiobooks
+  beszel\tlegacy/beszel/hub\t/beszel_data
+  beszel\tlegacy/beszel/agent\t/var/lib/beszel-agent
+  beszel\tlegacy/beszel/volume1\t/extra-filesystems/volume1
+  beszel\tlegacy/beszel/volume2\t/extra-filesystems/volume2
+  dozzle\tlegacy/dozzle/data\t/data
+  immich\tlegacy/immich/data\t/data
+  immich\tlegacy/immich/thumbs\t/data/thumbs
+  immich\tlegacy/immich/encoded-video\t/data/encoded-video
+  immich\tlegacy/immich/profile\t/data/profile
+  immich\tlegacy/immich/backups\t/data/backups
+  immich\tlegacy/immich/model-cache\t/cache
+  immich\tlegacy/immich/postgres\t/var/lib/postgresql/data
+  jellyfin\tlegacy/jellyfin/config\t/config
+  jellyfin\tlegacy/jellyfin/cache\t/cache
+  jellyfin\tlegacy/jellyfin/media\t/media
+  komga\tlegacy/komga/config\t/config
+  komga\tlegacy/komga/library\t/data
+  ntfy\tlegacy/ntfy/cache\t/var/cache/ntfy
+  ntfy\tlegacy/ntfy/data\t/var/lib/ntfy
+  paperless-ngx\tlegacy/paperless-ngx/redis\t/data
+  paperless-ngx\tlegacy/paperless-ngx/postgres\t/var/lib/postgresql
+  paperless-ngx\tlegacy/paperless-ngx/data\t/usr/src/paperless/data
+  paperless-ngx\tlegacy/paperless-ngx/export\t/usr/src/paperless/export
+  paperless-ngx\tlegacy/paperless-ngx/tessdata/heb.traineddata\t/usr/share/tesseract-ocr/5/tessdata/heb.traineddata
+  paperless-ngx\tlegacy/paperless-ngx/media\t/usr/src/paperless/media
+  paperless-ngx\tlegacy/paperless-ngx/consume\t/usr/src/paperless/consume
+  tinymediamanager\tlegacy/tinymediamanager/data\t/data
+  tinymediamanager\tlegacy/tinymediamanager/movies\t/media/Movies
+  tinymediamanager\tlegacy/tinymediamanager/series\t/media/Series
+BINDINGS
 
 def refuse(message)
   warn "Adoption target override failed: #{message}"
@@ -31,13 +65,14 @@ def required_environment(paths)
   end
 end
 
-expected = SERVICES.flat_map do |service|
+reviewed = SERVICES.flat_map do |service|
   ROOT.join("tests/mac/legacy-overrides/#{service}.yml").each_line.filter_map do |line|
     match = line.match(%r{\$\{PLATFORM_MAC_SANDBOX:\?\}/(?<source>legacy/[^:]+):(?<target>/[^:]+)})
-    [match[:source], match[:target].strip] if match
+    [service, match[:source], match[:target].strip] if match
   end
 end.sort
-refuse("reviewed legacy source inventory differs") unless expected.length == 32 && expected.uniq.length == 32
+refuse("reviewed legacy mapping differs from committed policy") unless reviewed == COMMITTED_BINDINGS.sort
+expected = COMMITTED_BINDINGS.map { |_, source, target| [source, target] }.sort
 
 actual = []
 SERVICES.each do |service|

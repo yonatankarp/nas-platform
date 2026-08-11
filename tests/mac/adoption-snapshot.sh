@@ -23,7 +23,7 @@ shift 2
 [ "$1" = --run-state ] || die 'expected --run-state'
 run_state=$2
 case $action in
-  publish|verify|marker|marker-post-cutover) ;;
+  publish|verify|marker|marker-post-cutover|begin-cutover) ;;
   self-test-candidate-swap|self-test-post-publish-failure)
     [ "${PLATFORM_ADOPTION_SNAPSHOT_SELF_TEST:-}" = 1 ] || die 'self-test action is unavailable'
     ;;
@@ -33,21 +33,63 @@ esac
 sandbox=$(mac_validate_sandbox "${PLATFORM_MAC_SANDBOX:?PLATFORM_MAC_SANDBOX is required}" 2>/dev/null) ||
   die 'owned sandbox is invalid'
 
-if ! ruby - "$action" "$sandbox" "$override_root" "$baseline" "$run_state" <<'RUBY'
+target_mapping_root=$(CDPATH= cd -- "$script_dir/../../services" && pwd -P) ||
+  die 'target adoption mapping root is unavailable'
+
+if ! ruby - "$action" "$sandbox" "$override_root" "$baseline" "$run_state" \
+    "$target_mapping_root" <<'RUBY'
 require "digest"
 require "fiddle/import"
 require "json"
 require "securerandom"
 
-action, sandbox, override_root, baseline_path, run_state_path = ARGV
+action, sandbox, override_root, baseline_path, run_state_path, target_mapping_root = ARGV
 candidate_swap_self_test = action == "self-test-candidate-swap"
 post_publish_self_test = action == "self-test-post-publish-failure"
 EXPECTED_SERVICES = %w[
   audiobookshelf beszel dozzle immich jellyfin komga ntfy paperless-ngx tinymediamanager
 ].freeze
+EXPECTED_BINDINGS = %w[
+  audiobookshelf|legacy/audiobookshelf/config|/config
+  audiobookshelf|legacy/audiobookshelf/metadata|/metadata
+  audiobookshelf|legacy/audiobookshelf/media|/audiobooks
+  beszel|legacy/beszel/hub|/beszel_data
+  beszel|legacy/beszel/agent|/var/lib/beszel-agent
+  beszel|legacy/beszel/volume1|/extra-filesystems/volume1
+  beszel|legacy/beszel/volume2|/extra-filesystems/volume2
+  dozzle|legacy/dozzle/data|/data
+  immich|legacy/immich/data|/data
+  immich|legacy/immich/thumbs|/data/thumbs
+  immich|legacy/immich/encoded-video|/data/encoded-video
+  immich|legacy/immich/profile|/data/profile
+  immich|legacy/immich/backups|/data/backups
+  immich|legacy/immich/model-cache|/cache
+  immich|legacy/immich/postgres|/var/lib/postgresql/data
+  jellyfin|legacy/jellyfin/config|/config
+  jellyfin|legacy/jellyfin/cache|/cache
+  jellyfin|legacy/jellyfin/media|/media
+  komga|legacy/komga/config|/config
+  komga|legacy/komga/library|/data
+  ntfy|legacy/ntfy/cache|/var/cache/ntfy
+  ntfy|legacy/ntfy/data|/var/lib/ntfy
+  paperless-ngx|legacy/paperless-ngx/redis|/data
+  paperless-ngx|legacy/paperless-ngx/postgres|/var/lib/postgresql
+  paperless-ngx|legacy/paperless-ngx/data|/usr/src/paperless/data
+  paperless-ngx|legacy/paperless-ngx/export|/usr/src/paperless/export
+  paperless-ngx|legacy/paperless-ngx/tessdata/heb.traineddata|/usr/share/tesseract-ocr/5/tessdata/heb.traineddata
+  paperless-ngx|legacy/paperless-ngx/media|/usr/src/paperless/media
+  paperless-ngx|legacy/paperless-ngx/consume|/usr/src/paperless/consume
+  tinymediamanager|legacy/tinymediamanager/data|/data
+  tinymediamanager|legacy/tinymediamanager/movies|/media/Movies
+  tinymediamanager|legacy/tinymediamanager/series|/media/Series
+].map { |entry| entry.split("|", 3) }.freeze
 BINDING_FIELDS = %w[
   schema lane sandbox_id project_name legacy_commit git_revision vault_checksum parity_vault_checksum
   baseline_sha256 inventory_sha256 overrides_sha256
+].freeze
+CUTOVER_FIELDS = %w[
+  schema binding_sha256 lane sandbox_id project_name legacy_commit git_revision vault_checksum
+  parity_vault_checksum
 ].freeze
 AT_REMOVEDIR = 0x80
 
@@ -57,6 +99,7 @@ module SnapshotFileSystem
   extern "int openat(int, const char *, int, int)"
   extern "int mkdirat(int, const char *, int)"
   extern "int renameat(int, const char *, int, const char *)"
+  extern "int linkat(int, const char *, int, const char *, int)"
   extern "int unlinkat(int, const char *, int)"
   extern "int futimens(int, const void *)"
 end
@@ -130,8 +173,11 @@ def read_file_at(parent, name, label, expected_mode = nil)
     (!expected_mode || mode(stat) == expected_mode)
   bytes = file.read
   refuse("#{label} changed") unless entry_signature(file.stat) == entry_signature(stat)
+  rebound = open_at(parent, name, File::RDONLY | File::NOFOLLOW)
+  refuse("#{label} changed") unless entry_signature(rebound.stat) == entry_signature(stat)
   bytes
 ensure
+  rebound&.close
   file&.close
 end
 
@@ -167,6 +213,13 @@ def rename_at(parent, source, destination)
     parent.fileno, safe_component(source), parent.fileno, safe_component(destination)
   )
   raise SystemCallError.new("renameat", Fiddle.last_error) if result.negative?
+end
+
+def link_at(parent, source, destination)
+  result = SnapshotFileSystem.linkat(
+    parent.fileno, safe_component(source), parent.fileno, safe_component(destination), 0
+  )
+  raise SystemCallError.new("linkat", Fiddle.last_error) if result.negative?
 end
 
 def unlink_at(parent, name, directory: false)
@@ -274,8 +327,6 @@ def inventories_match?(left, right)
     entries.map do |entry|
       copy = entry.dup
       copy.delete("size") if copy["type"] == "directory"
-      copy.delete("uid")
-      copy.delete("gid")
       copy
     end
   end
@@ -309,6 +360,11 @@ def copy_entry_at(source_parent, source_name, destination_parent, destination_na
     descriptor_children(source).each do |child|
       copy_entry_at(source, child, destination, child, File.join(relative, child), entries)
     end
+    begin
+      destination.chown(before.uid, before.gid)
+    rescue SystemCallError
+      refuse("snapshot cannot preserve state ownership")
+    end
     destination.chmod(mode(before))
     set_descriptor_times(destination, before)
     destination.fsync
@@ -322,6 +378,11 @@ def copy_entry_at(source_parent, source_name, destination_parent, destination_na
       destination.write(chunk)
     end
     destination.flush
+    begin
+      destination.chown(before.uid, before.gid)
+    rescue SystemCallError
+      refuse("snapshot cannot preserve state ownership")
+    end
     destination.chmod(mode(before))
     set_descriptor_times(destination, before)
     destination.fsync
@@ -371,36 +432,62 @@ ensure
   destination_parent&.close
 end
 
-def binding_sources(override_root)
-  root = File.expand_path(override_root)
-  directory = open_bound_directory(root, "reviewed override root")
+def mapping_bindings(directory, names, variable, label, digest, service_name: nil)
+  names.flat_map do |name|
+    service = service_name || name.delete_suffix(".yml")
+    bytes = read_file_at(directory, name, label)
+    digest.update(label).update("\0").update(service).update("\0")
+      .update(name).update("\0").update(bytes).update("\0")
+    bytes.lines(chomp: true).filter_map do |line|
+      match = line.match(
+        %r{^\s*-\s+\$\{#{Regexp.escape(variable)}:\?\}/(legacy/[^:]+):(/[^:]+)(?::(?:ro|rw))?\s*$}
+      )
+      if line.include?("${#{variable}") && !match
+        refuse("#{label} bind mapping is unsafe")
+      end
+      next unless match
+
+      relative, target = match.captures
+      components = relative.split("/")
+      refuse("#{label} bind mapping is unsafe") unless components.first == "legacy" &&
+        components.all? { |part| part.match?(/\A[-.A-Za-z0-9]+\z/) && ![".", ".."].include?(part) }
+      [service, relative, target]
+    end
+  end
+end
+
+def binding_sources(override_root, target_mapping_root)
+  directory = open_bound_directory(File.expand_path(override_root), "reviewed override root")
   files = descriptor_children(directory)
   expected = EXPECTED_SERVICES.map { |service| "#{service}.yml" }
   refuse("reviewed override service set differs") unless files == expected
-  override_digest = Digest::SHA256.new
-  paths = files.flat_map do |name|
-    bytes = read_file_at(directory, name, "reviewed override")
-    override_digest.update(name).update("\0").update(bytes).update("\0")
-    bytes.lines(chomp: true).filter_map do |line|
-      match = line.match(%r{^\s*-\s+\$\{PLATFORM_MAC_SANDBOX:\?\}/(legacy/[^:]+):/[^:]+(?::(?:ro|rw))?\s*$})
-      if line.include?("${PLATFORM_MAC_SANDBOX") && !match
-        refuse("reviewed bind source is unsafe")
-      end
-      next unless match
-      relative = match[1]
-      components = relative.split("/")
-      refuse("reviewed bind source is unsafe") unless components.first == "legacy" &&
-        components.all? { |part| part.match?(/\A[-.A-Za-z0-9]+\z/) && ![".", ".."].include?(part) }
-      relative
-    end
+  mappings_digest = Digest::SHA256.new
+  legacy_bindings = mapping_bindings(
+    directory, files, "PLATFORM_MAC_SANDBOX", "reviewed legacy mapping", mappings_digest
+  )
+  refuse("legacy adoption mapping differs from committed policy") unless
+    legacy_bindings.sort == EXPECTED_BINDINGS.sort
+
+  target_directory = open_bound_directory(File.expand_path(target_mapping_root), "target mapping root")
+  target_bindings = EXPECTED_SERVICES.flat_map do |service|
+    service_directory = open_directory_at(target_directory, service)
+    mapping_bindings(
+      service_directory, ["compose.adoption.yml"], "PLATFORM_ADOPTION_ROOT",
+      "target adoption mapping", mappings_digest, service_name: service
+    )
+  ensure
+    service_directory&.close
   end
-  refuse("reviewed bind sources are duplicated") unless paths.uniq.length == paths.length
-  refuse("reviewed bind source set is empty") if paths.empty?
-  [paths.sort, override_digest.hexdigest]
+  refuse("target adoption mapping differs from committed policy") unless
+    target_bindings.sort == EXPECTED_BINDINGS.sort
+  roots = EXPECTED_BINDINGS.map { |_, source,| source }.sort
+  refuse("committed adoption sources are duplicated") unless roots.uniq.length == roots.length
+  [roots, mappings_digest.hexdigest]
 rescue Errno::ENOENT, Errno::ENOTDIR
-  refuse("reviewed override root is unavailable")
+  refuse("adoption mapping input is unavailable")
 ensure
   directory&.close
+  target_directory&.close
 end
 
 def write_json_at(parent, name, value, permissions)
@@ -426,8 +513,65 @@ rescue JSON::ParserError
   refuse("snapshot binding is invalid")
 end
 
+def cutover_value(binding, binding_bytes)
+  {
+    "schema" => 1,
+    "binding_sha256" => Digest::SHA256.hexdigest(binding_bytes)
+  }.merge(binding.slice(
+    "lane", "sandbox_id", "project_name", "legacy_commit", "git_revision",
+    "vault_checksum", "parity_vault_checksum"
+  ))
+end
+
+def validate_cutover_bytes(bytes, binding, binding_bytes)
+  transition = JSON.parse(bytes, create_additions: false)
+  refuse("cutover transition fields differ") unless
+    transition.is_a?(Hash) && transition.keys.sort == CUTOVER_FIELDS.sort
+  refuse("cutover transition binding differs") unless transition == cutover_value(binding, binding_bytes)
+  transition
+rescue JSON::ParserError
+  refuse("cutover transition is invalid")
+end
+
+def publish_cutover_transition(parent, snapshot, binding, binding_bytes,
+                                parent_signature, snapshot_signature)
+  candidate = ".cutover-started-#{SecureRandom.hex(16)}"
+  published = false
+  begin
+    write_json_at(parent, candidate, cutover_value(binding, binding_bytes), 0o400)
+    rebound_snapshot = open_directory_at(parent, "pre-cutover")
+    refuse("published snapshot changed before cutover transition") unless
+      identity_signature(parent.stat) == parent_signature &&
+      identity_signature(snapshot.stat) == snapshot_signature &&
+      identity_signature(rebound_snapshot.stat) == snapshot_signature
+    link_at(parent, candidate, "cutover-started.json")
+    published = true
+    unlink_at(parent, candidate)
+    candidate = nil
+    parent.fsync
+    bytes = read_file_at(parent, "cutover-started.json", "cutover transition", 0o400)
+    validate_cutover_bytes(bytes, binding, binding_bytes)
+    published = false
+  rescue Errno::EEXIST
+    refuse("cutover transition changed concurrently")
+  rescue Exception # rubocop:disable Lint/RescueException
+    if published
+      unlink_at(parent, "cutover-started.json")
+      parent.fsync
+    end
+    raise
+  ensure
+    rebound_snapshot&.close
+    begin
+      unlink_at(parent, candidate) if candidate
+    rescue Errno::ENOENT
+      nil
+    end
+  end
+end
+
 def verify_snapshot(sandbox_directory, roots, overrides_digest, baseline_path, run_state_path,
-                    compare_source: true)
+                    compare_source: true, transition_mode: :none)
   sandbox_directory = sandbox_directory.dup
   snapshot_parent_directory = open_directory_at(sandbox_directory, "snapshot")
   snapshot_directory = open_directory_at(snapshot_parent_directory, "pre-cutover")
@@ -440,6 +584,19 @@ def verify_snapshot(sandbox_directory, roots, overrides_digest, baseline_path, r
   inventory_bytes = read_file_at(snapshot_directory, "inventory.json", "snapshot inventory", 0o400)
   binding_bytes = read_file_at(snapshot_directory, "binding.json", "snapshot binding", 0o400)
   binding = load_binding_bytes(binding_bytes)
+  begin
+    cutover_bytes = read_file_at(
+      snapshot_parent_directory, "cutover-started.json", "cutover transition", 0o400
+    )
+  rescue Errno::ENOENT
+    cutover_bytes = nil
+  end
+  if cutover_bytes
+    validate_cutover_bytes(cutover_bytes, binding, binding_bytes)
+  elsif transition_mode == :required
+    refuse("cutover transition is unavailable")
+  end
+  compare_source = false if transition_mode == :begin && cutover_bytes
   refuse("reviewed overrides changed") unless binding["overrides_sha256"] == overrides_digest
   current_state = load_run_state(run_state_path)
   refuse("snapshot run identity changed") unless current_state.all? { |key, value| binding[key] == value }
@@ -464,6 +621,11 @@ def verify_snapshot(sandbox_directory, roots, overrides_digest, baseline_path, r
   end
   refuse("snapshot binding changed during validation") unless
     load_binding_bytes(read_file_at(snapshot_directory, "binding.json", "snapshot binding", 0o400)) == binding
+  if cutover_bytes
+    refuse("cutover transition changed during validation") unless
+      read_file_at(snapshot_parent_directory, "cutover-started.json", "cutover transition", 0o400) ==
+        cutover_bytes
+  end
   rebound_state = open_directory_at(snapshot_directory, "state")
   rebound_snapshot = open_directory_at(snapshot_parent_directory, "pre-cutover")
   rebound_parent = open_directory_at(sandbox_directory, "snapshot")
@@ -471,6 +633,12 @@ def verify_snapshot(sandbox_directory, roots, overrides_digest, baseline_path, r
     identity_signature(rebound_state.stat) == state_binding &&
     identity_signature(rebound_snapshot.stat) == snapshot_binding &&
     identity_signature(rebound_parent.stat) == snapshot_parent_binding
+  if transition_mode == :begin && !cutover_bytes
+    publish_cutover_transition(
+      snapshot_parent_directory, snapshot_directory, binding, binding_bytes,
+      snapshot_parent_binding, snapshot_binding
+    )
+  end
   Digest::SHA256.hexdigest(binding_bytes)
 rescue Errno::ENOENT, Errno::ENOTDIR, Errno::ELOOP, JSON::ParserError, KeyError
   refuse("published snapshot is incomplete")
@@ -488,22 +656,34 @@ requested_sandbox = sandbox
 sandbox = File.realpath(requested_sandbox)
 refuse("owned sandbox changed") unless sandbox == requested_sandbox
 sandbox_directory = open_bound_directory(sandbox, "owned sandbox")
-snapshot_lock = open_at(
-  sandbox_directory, ".adoption-snapshot.lock",
-  File::RDWR | File::CREAT | File::NOFOLLOW, 0o600
-)
+begin
+  snapshot_lock = open_at(
+    sandbox_directory, ".adoption-snapshot.lock",
+    File::RDWR | File::CREAT | File::EXCL | File::NOFOLLOW, 0o600
+  )
+  snapshot_lock.chmod(0o600)
+  snapshot_lock.fsync
+rescue Errno::EEXIST
+  snapshot_lock = open_at(sandbox_directory, ".adoption-snapshot.lock", File::RDWR | File::NOFOLLOW)
+end
 lock_stat = snapshot_lock.stat
-refuse("snapshot lock is unsafe") unless lock_stat.file? && lock_stat.uid == Process.uid && mode(lock_stat) == 0o600
+refuse("snapshot lock is unsafe") unless lock_stat.file? && lock_stat.uid == Process.uid &&
+  mode(lock_stat) == 0o600
 refuse("snapshot lock is held") unless snapshot_lock.flock(File::LOCK_EX | File::LOCK_NB)
-roots, overrides_digest = binding_sources(override_root)
+roots, overrides_digest = binding_sources(override_root, target_mapping_root)
 snapshot_parent = File.join(sandbox, "snapshot")
 
-if %w[verify marker marker-post-cutover].include?(action)
+if %w[verify marker marker-post-cutover begin-cutover].include?(action)
+  transition_mode = case action
+                    when "marker-post-cutover" then :required
+                    when "begin-cutover" then :begin
+                    else :none
+                    end
   marker = verify_snapshot(
     sandbox_directory, roots, overrides_digest, baseline_path, run_state_path,
-    compare_source: action != "marker-post-cutover"
+    compare_source: action != "marker-post-cutover", transition_mode: transition_mode
   )
-  puts marker if action.start_with?("marker")
+  puts marker if action.start_with?("marker") || action == "begin-cutover"
   exit 0
 end
 
