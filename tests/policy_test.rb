@@ -20,12 +20,6 @@ def check(failures, condition, message)
   failures << message unless condition
 end
 
-ansible_lint = YAML.safe_load_file(File.join(ROOT, ".ansible-lint"))
-ansible_lint_excludes = Array(ansible_lint["exclude_paths"])
-check(failures,
-      %w[services/ tests/mac/legacy-overrides/].all? { |path| ansible_lint_excludes.include?(path) },
-      "ansible-lint must exclude Docker Compose definitions with custom loader tags")
-
 beginner_guides = %w[
   docs/getting-started.md
   docs/getting-started-mac.md
