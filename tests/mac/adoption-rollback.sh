@@ -99,6 +99,16 @@ PLATFORM_ADOPTION_ROLLBACK_PROJECT=$rollback_project \
     --run-state "$report_root/phase-input.json" >/dev/null || die 'snapshot restore failed'
 [ "${PLATFORM_ADOPTION_ROLLBACK_FAULT:-}" != after-restore ] || die 'forced failure after restore'
 
+attestations_json=$(PLATFORM_ADOPTION_ROLLBACK_ROOT=$rollback_root \
+  "$snapshot_command" attestations \
+  --override-root "$script_dir/legacy-overrides" --baseline "$source_sandbox/baseline.json" \
+  --run-state "$report_root/phase-input.json") || die 'rollback mount attestations are unavailable'
+attestations_sha256=$(printf '%s\n' "$attestations_json" | shasum -a 256 | awk '{print $1}') ||
+  die 'rollback mount attestations are unavailable'
+attestations_file=$(printf '%s\n' "$attestations_json" |
+  "$compose_helper" publish-attestations "$rollback_root" "$attestations_sha256") ||
+  die 'rollback mount attestation publication failed'
+
 for coordinated_path in \
   legacy/immich/data legacy/immich/thumbs legacy/immich/encoded-video \
   legacy/immich/profile legacy/immich/backups legacy/immich/model-cache legacy/immich/postgres \
@@ -230,7 +240,8 @@ RUBY
   "$compose_helper" resolve "$base_file" "$override_root/$service.yml" \
     "$rollback_root/legacy-env/$service.env" "$compose_root" "$service" \
     "$rollback_project-legacy-$service" "$(dirname -- "$base_file")" "$rollback_root" \
-    "$base_digest" "$override_digest" "$environment_digest" >/dev/null ||
+    "$base_digest" "$override_digest" "$environment_digest" \
+    "$attestations_file" "$attestations_sha256" >/dev/null ||
     die 'rollback Compose resolution failed'
 done
 chmod 0500 "$compose_root" || die 'rollback Compose staging failed'

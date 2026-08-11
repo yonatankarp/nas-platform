@@ -71,26 +71,74 @@ cleanup_one_mac_sandbox() {
   mac_container_ids=$(for mac_service_project in $(mac_owned_project_labels "$mac_project"); do
     docker ps -aq --filter "label=com.docker.compose.project=$mac_service_project" || exit 1
   done) || return 1
-  for mac_container_id in $mac_container_ids; do
-    docker rm -f "$mac_container_id" >/dev/null || return 1
-  done
   mac_network_ids=$(for mac_service_project in $(mac_owned_project_labels "$mac_project"); do
     docker network ls -q --filter "label=com.docker.compose.project=$mac_service_project" || exit 1
   done) || return 1
-  for mac_network_id in $mac_network_ids; do
-    docker network rm "$mac_network_id" >/dev/null || return 1
-  done
   mac_volume_ids=$(for mac_service_project in $(mac_owned_project_labels "$mac_project"); do
     docker volume ls -q --filter "label=com.docker.compose.project=$mac_service_project" || exit 1
   done) || return 1
+
+  # Discovery itself is a mutation boundary. Recheck every related label after
+  # all IDs are known and before the first removal.
+  preflight_mac_resources "$mac_cleanup_target" || return 1
+  for mac_container_id in $mac_container_ids; do
+    docker rm -f "$mac_container_id" >/dev/null || return 1
+  done
+  for mac_network_id in $mac_network_ids; do
+    docker network rm "$mac_network_id" >/dev/null || return 1
+  done
   for mac_volume_id in $mac_volume_ids; do
     docker volume rm "$mac_volume_id" >/dev/null || return 1
   done
+
+  # Require two consecutive owned and empty observations. This is bounded so
+  # a recreating resource fails closed and leaves the sandbox marker intact.
+  mac_empty_rounds=0
+  mac_stability_attempts=0
+  while [ "$mac_empty_rounds" -lt 2 ] && [ "$mac_stability_attempts" -lt 4 ]; do
+    mac_stability_attempts=$((mac_stability_attempts + 1))
+    preflight_mac_resources "$mac_cleanup_target" || return 1
+    mac_remaining=$(for mac_service_project in $(mac_owned_project_labels "$mac_project"); do
+      mac_ids=$(docker ps -aq --filter "label=com.docker.compose.project=$mac_service_project") || exit 1
+      [ -z "$mac_ids" ] || printf '%s\n' "$mac_ids" | sed 's/^/container:/'
+      mac_ids=$(docker network ls -q --filter "label=com.docker.compose.project=$mac_service_project") || exit 1
+      [ -z "$mac_ids" ] || printf '%s\n' "$mac_ids" | sed 's/^/network:/'
+      mac_ids=$(docker volume ls -q --filter "label=com.docker.compose.project=$mac_service_project") || exit 1
+      [ -z "$mac_ids" ] || printf '%s\n' "$mac_ids" | sed 's/^/volume:/'
+    done) || return 1
+    if [ -z "$mac_remaining" ]; then
+      mac_empty_rounds=$((mac_empty_rounds + 1))
+    else
+      mac_empty_rounds=0
+      preflight_mac_resources "$mac_cleanup_target" || return 1
+      for mac_remaining_id in $mac_remaining; do
+        case $mac_remaining_id in
+          container:*) docker rm -f "${mac_remaining_id#container:}" >/dev/null || return 1 ;;
+          network:*) docker network rm "${mac_remaining_id#network:}" >/dev/null || return 1 ;;
+          volume:*) docker volume rm "${mac_remaining_id#volume:}" >/dev/null || return 1 ;;
+          *) return 1 ;;
+        esac
+      done
+    fi
+  done
+  [ "$mac_empty_rounds" -eq 2 ] || return 1
+
+  preflight_mac_resources "$mac_cleanup_target" || return 1
+  mac_final_remaining=$(for mac_service_project in $(mac_owned_project_labels "$mac_project"); do
+    mac_ids=$(docker ps -aq --filter "label=com.docker.compose.project=$mac_service_project") || exit 1
+    [ -z "$mac_ids" ] || printf '%s\n' "$mac_ids"
+    mac_ids=$(docker network ls -q --filter "label=com.docker.compose.project=$mac_service_project") || exit 1
+    [ -z "$mac_ids" ] || printf '%s\n' "$mac_ids"
+    mac_ids=$(docker volume ls -q --filter "label=com.docker.compose.project=$mac_service_project") || exit 1
+    [ -z "$mac_ids" ] || printf '%s\n' "$mac_ids"
+  done) || return 1
+  [ -z "$mac_final_remaining" ] || return 1
 
   # Revalidate immediately before the descriptor-relative removal. The shared
   # helper opens both parent and children with O_NOFOLLOW inside the pinned
   # cleanup image, so a concurrent symlink swap cannot redirect traversal.
   [ "$(mac_validate_sandbox "$mac_cleanup_target")" = "$mac_cleanup_target" ] || return 1
+  preflight_mac_resources "$mac_cleanup_target" || return 1
   cleanup_sandbox_contents "$(dirname -- "$mac_cleanup_target")" \
     "$(basename -- "$mac_cleanup_target")" ".nas-platform-mac-owned" || return 1
   [ ! -e "$mac_cleanup_target" ] && [ ! -L "$mac_cleanup_target" ]

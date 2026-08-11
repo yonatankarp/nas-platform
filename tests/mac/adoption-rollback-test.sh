@@ -36,6 +36,13 @@ case $1 in
       "$(printf %064d 0 | tr 0 c)" "$baseline_digest" "$FAKE_GIT_REVISION" \
       '400f03f276ae1bb69f5460c175b9fb923d620f1a'
     ;;
+  attestations)
+    if [ "${FAKE_ATTESTATION_COLLISION:-}" = 1 ]; then
+      ln -s "$FAKE_COLLISION_TARGET" \
+        "$PLATFORM_ADOPTION_ROLLBACK_ROOT/rollback-attestations.json"
+    fi
+    cat "$FAKE_ATTESTATIONS"
+    ;;
   restore)
     printf 'restore %s %s\n' "$PLATFORM_MAC_SANDBOX" "$PLATFORM_ADOPTION_ROLLBACK_ROOT" >> "$FAKE_LOG"
     marker=$PLATFORM_ADOPTION_ROLLBACK_ROOT/.nas-platform-mac-owned
@@ -119,9 +126,11 @@ SH
 cat > "$bin/docker" <<'SH'
 #!/bin/sh
 set -eu
-printf 'docker' >> "$FAKE_LOG"
-for argument in "$@"; do printf ' %s' "$argument" >> "$FAKE_LOG"; done
-printf '\n' >> "$FAKE_LOG"
+if [ "$1" != cp ]; then
+  printf 'docker' >> "$FAKE_LOG"
+  for argument in "$@"; do printf ' %s' "$argument" >> "$FAKE_LOG"; done
+  printf '\n' >> "$FAKE_LOG"
+fi
 [ -z "${FAKE_CLEANUP_DISCOVERY_FAILURE:-}" ] || {
   case "$FAKE_CLEANUP_DISCOVERY_FAILURE:$*" in
     'ps:ps -a --format '*) exit 95 ;;
@@ -142,6 +151,50 @@ printf '\n' >> "$FAKE_LOG"
       ;;
   esac
 }
+[ -z "${FAKE_CLEANUP_LATE_UNKNOWN:-}" ] || {
+  case " $* " in
+    *' ps -a --format '*)
+      [ ! -e "$FAKE_CLEANUP_LATE_UNKNOWN" ] ||
+        printf '%s-late-unknown\n' "$(sed -n '1p' "$FAKE_CLEANUP_LATE_UNKNOWN")"
+      exit 0
+      ;;
+    *' ps -aq --filter '*)
+      late_label=
+      for argument in "$@"; do
+        case $argument in label=com.docker.compose.project=*) late_label=${argument#label=com.docker.compose.project=} ;; esac
+      done
+      printf '%s\n' "$late_label" > "$FAKE_CLEANUP_LATE_UNKNOWN"
+      printf 'late-known-container\n'
+      exit 0
+      ;;
+    *' network ls '*|*' volume ls '*) exit 0 ;;
+    ' rm -f '*|' network rm '*|' volume rm '*|' run --rm '*) exit 0 ;;
+  esac
+}
+[ -z "${FAKE_CLEANUP_POST_REMOVE_UNKNOWN:-}" ] || {
+  case " $* " in
+    *' ps -a --format '*)
+      [ ! -e "$FAKE_CLEANUP_POST_REMOVE_UNKNOWN" ] ||
+        printf '%s-post-remove-unknown\n' "$(sed -n '1p' "$FAKE_CLEANUP_POST_REMOVE_UNKNOWN")"
+      exit 0
+      ;;
+    *' ps -aq --filter '*)
+      post_label=
+      for argument in "$@"; do
+        case $argument in label=com.docker.compose.project=*) post_label=${argument#label=com.docker.compose.project=} ;; esac
+      done
+      printf '%s\n' "$post_label" > "$FAKE_CLEANUP_POST_REMOVE_UNKNOWN.project"
+      printf 'post-remove-known-container\n'
+      exit 0
+      ;;
+    *' network ls '*|*' volume ls '*) exit 0 ;;
+    ' rm -f '*)
+      cp "$FAKE_CLEANUP_POST_REMOVE_UNKNOWN.project" "$FAKE_CLEANUP_POST_REMOVE_UNKNOWN"
+      exit 0
+      ;;
+    ' network rm '*|' volume rm '*) exit 0 ;;
+  esac
+}
 [ -z "${FAKE_CLEANUP_SUCCESS:-}" ] || {
   case " $* " in
     *' ps -a --format '*|*' network ls --format '*|*' volume ls --format '*)
@@ -155,10 +208,16 @@ printf '\n' >> "$FAKE_LOG"
       for argument in "$@"; do
         case $argument in label=com.docker.compose.project=*) label=${argument#label=com.docker.compose.project=} ;; esac
       done
-      printf 'id-%s-%s\n' "$1" "$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
+      resource_id=id-$1-$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')
+      [ -e "$FAKE_CLEANUP_STATE/$resource_id" ] || printf '%s\n' "$resource_id"
       exit 0
       ;;
-    ' rm -f '*|' network rm '*|' volume rm '*) exit 0 ;;
+    ' rm -f '*|' network rm '*|' volume rm '*)
+      for resource_id in "$@"; do
+        case $resource_id in id-*) : > "$FAKE_CLEANUP_STATE/$resource_id" ;; esac
+      done
+      exit 0
+      ;;
     ' run --rm -i -v '*)
       mount=$5
       parent=${mount%:/sandbox-parent}
@@ -176,6 +235,50 @@ printf '\n' >> "$FAKE_LOG"
     *' network ls --format '*|*' volume ls --format '*) exit 0 ;;
   esac
 }
+[ "$1" != inspect ] || {
+  container=${4:-}
+  manifest_service=$(printf '%s' "$container" | sed -n 's/^container__\([^_]*\)__.*$/\1/p')
+  compose_service=${container##*__}
+  ruby -rjson -e '
+    records = JSON.parse(File.binread(ARGV.fetch(0)))
+    root, manifest_service, compose_service = ARGV.drop(1)
+    mounts = records.select { |record|
+      record.fetch("service") == manifest_service &&
+        record.fetch("legacy_compose_service") == compose_service
+    }.map { |record|
+      { "Source" => File.join(root, record.fetch("source")),
+        "Destination" => record.fetch("target"), "RW" => record.fetch("access") == "rw" }
+    }
+    puts JSON.generate(mounts)
+  ' "$FAKE_ATTESTATIONS" "$PLATFORM_MAC_SANDBOX" "$manifest_service" "$compose_service"
+  exit
+}
+[ "$1" != cp ] || {
+  container_path=$2
+  output=$3
+  container=${container_path%%:*}
+  mounted_path=${container_path#*:}
+  manifest_service=$(printf '%s' "$container" | sed -n 's/^container__\([^_]*\)__.*$/\1/p')
+  compose_service=${container##*__}
+  source_path=$(ruby -rjson -e '
+    records = JSON.parse(File.binread(ARGV.fetch(0)))
+    root, manifest_service, compose_service, mounted_path, swap_record = ARGV.drop(1)
+    record = records.find { |entry|
+      entry.fetch("service") == manifest_service &&
+        entry.fetch("legacy_compose_service") == compose_service &&
+        entry.fetch("container_path") == mounted_path
+    }
+    abort unless record
+    source = File.join(root, record.fetch("source"))
+    source = "#{source}.rollback-attacker" if File.directory?("#{source}.rollback-attacker") &&
+      File.file?(swap_record) && File.binread(swap_record).chomp == record.fetch("source")
+    source = File.join(source, ".nas-platform-adoption-root-sentinel") if record.fetch("kind") == "sentinel"
+    print source
+  ' "$FAKE_ATTESTATIONS" "$PLATFORM_MAC_SANDBOX" "$manifest_service" \
+    "$compose_service" "$mounted_path" "${FAKE_MOUNT_SWAP_RECORD:-}") || exit 97
+  cp -p "$source_path" "$output" || exit 97
+  exit
+}
 [ "$1" = compose ] || exit 92
 project=
 previous=
@@ -186,10 +289,26 @@ done
 service=${project##*-legacy-}
 case " $* " in
   *' config --format json '*)
-    printf '{"services":{"%s":{"image":"example/%s@sha256:%s","volumes":[]}}}\n' \
-      "$service" "$service" "$(printf %064d 0 | tr 0 c)"
+    ruby -rjson -e '
+      records = JSON.parse(File.binread(ARGV.fetch(0))).select { |record|
+        record.fetch("service") == ARGV.fetch(2)
+      }
+      services = records.group_by { |record| record.fetch("legacy_compose_service") }.to_h { |name, mounts|
+        [name, { "image" => "example/#{ARGV.fetch(2)}@sha256:#{"c" * 64}",
+          "volumes" => mounts.map { |record|
+            { "type" => "bind", "source" => File.join(ARGV.fetch(1), record.fetch("source")),
+              "target" => record.fetch("target"), "read_only" => record.fetch("access") == "ro" }
+          } }]
+      }
+      puts JSON.generate("services" => services)
+    ' "$FAKE_ATTESTATIONS" "$PLATFORM_MAC_SANDBOX" "$service"
     ;;
   *' config --images '*)
+    if [ "${FAKE_BIND_PREUP_SYMLINK_SERVICE:-}" = "$service" ]; then
+      symlink_source=$PLATFORM_MAC_SANDBOX/legacy/immich/data
+      mv "$symlink_source" "$symlink_source.rollback-original"
+      ln -s "$FAKE_BIND_SYMLINK_TARGET" "$symlink_source"
+    fi
     if [ "${FAKE_IMAGE_MISMATCH:-}" = "$service" ]; then
       printf 'hostile/%s@sha256:%s\n' "$service" "$(printf %064d 0 | tr 0 d)"
     elif [ "$service" = immich ]; then
@@ -214,7 +333,20 @@ case " $* " in
       legacy/paperless-ngx/media legacy/paperless-ngx/consume; do
       [ -e "$PLATFORM_MAC_SANDBOX/$path" ] || exit 93
     done
+    if [ "${FAKE_BIND_SWAP_SERVICE:-}" = "$service" ]; then
+      swap_source=$PLATFORM_MAC_SANDBOX/legacy/immich/data
+      mv "$swap_source" "$swap_source.rollback-original"
+      mkdir -m 0700 "$swap_source"
+      printf 'attacker\n' > "$swap_source/.nas-platform-adoption-root-sentinel"
+      mv "$swap_source" "$swap_source.rollback-attacker"
+      mv "$swap_source.rollback-original" "$swap_source"
+      printf 'legacy/immich/data\n' > "$FAKE_MOUNT_SWAP_RECORD"
+    fi
     [ "${FAKE_UP_FAILURE:-}" != "$service" ] || exit 94
+    ;;
+  *' ps -q '*)
+    for compose_service in "$@"; do :; done
+    printf 'container__%s__%s\n' "$service" "$compose_service"
     ;;
 esac
 SH
@@ -255,6 +387,65 @@ for service in audiobookshelf beszel dozzle jellyfin komga ntfy tinymediamanager
 done
 
 baseline=$sandbox/snapshot/pre-cutover/baseline.json
+attestations=$test_parent/attestations.json
+ruby -rdigest -rfileutils -rjson - "$sandbox/snapshot/pre-cutover/state" "$attestations" <<'RUBY'
+root, output = ARGV
+bindings = %w[
+  audiobookshelf|legacy/audiobookshelf/config|/config|rw|audiobookshelf
+  audiobookshelf|legacy/audiobookshelf/metadata|/metadata|rw|audiobookshelf
+  audiobookshelf|legacy/audiobookshelf/media|/audiobooks|ro|audiobookshelf
+  beszel|legacy/beszel/hub|/beszel_data|rw|hub
+  beszel|legacy/beszel/agent|/var/lib/beszel-agent|rw|agent
+  beszel|legacy/beszel/volume1|/extra-filesystems/volume1|ro|agent
+  beszel|legacy/beszel/volume2|/extra-filesystems/volume2|ro|agent
+  dozzle|legacy/dozzle/data|/data|rw|dozzle
+  immich|legacy/immich/data|/data|rw|immich-server
+  immich|legacy/immich/thumbs|/data/thumbs|rw|immich-server
+  immich|legacy/immich/encoded-video|/data/encoded-video|rw|immich-server
+  immich|legacy/immich/profile|/data/profile|rw|immich-server
+  immich|legacy/immich/backups|/data/backups|rw|immich-server
+  immich|legacy/immich/model-cache|/cache|rw|immich-machine-learning
+  immich|legacy/immich/postgres|/var/lib/postgresql/data|rw|database
+  jellyfin|legacy/jellyfin/config|/config|rw|jellyfin
+  jellyfin|legacy/jellyfin/cache|/cache|rw|jellyfin
+  jellyfin|legacy/jellyfin/media|/media|ro|jellyfin
+  komga|legacy/komga/config|/config|rw|komga
+  komga|legacy/komga/library|/data|ro|komga
+  ntfy|legacy/ntfy/cache|/var/cache/ntfy|rw|ntfy
+  ntfy|legacy/ntfy/data|/var/lib/ntfy|rw|ntfy
+  paperless-ngx|legacy/paperless-ngx/redis|/data|rw|broker
+  paperless-ngx|legacy/paperless-ngx/postgres|/var/lib/postgresql|rw|db
+  paperless-ngx|legacy/paperless-ngx/data|/usr/src/paperless/data|rw|webserver
+  paperless-ngx|legacy/paperless-ngx/export|/usr/src/paperless/export|rw|webserver
+  paperless-ngx|legacy/paperless-ngx/tessdata/heb.traineddata|/usr/share/tesseract-ocr/5/tessdata/heb.traineddata|ro|webserver
+  paperless-ngx|legacy/paperless-ngx/media|/usr/src/paperless/media|rw|webserver
+  paperless-ngx|legacy/paperless-ngx/consume|/usr/src/paperless/consume|rw|webserver
+  tinymediamanager|legacy/tinymediamanager/data|/data|rw|tinymediamanager
+  tinymediamanager|legacy/tinymediamanager/movies|/media/Movies|rw|tinymediamanager
+  tinymediamanager|legacy/tinymediamanager/series|/media/Series|rw|tinymediamanager
+].map { |entry| entry.split("|", 5) }
+records = bindings.map do |service, source, target, access, compose_service|
+  path = File.join(root, source)
+  if source.end_with?("heb.traineddata")
+    FileUtils.mkdir_p(File.dirname(path))
+    File.write(path, "snapshot-model\n") unless File.exist?(path)
+    kind = "file"
+    challenged = path
+    container_path = target
+  else
+    FileUtils.mkdir_p(path)
+    challenged = File.join(path, ".nas-platform-adoption-root-sentinel")
+    File.write(challenged, "sentinel-#{source}\n")
+    File.chmod(0o444, challenged)
+    kind = "sentinel"
+    container_path = File.join(target, ".nas-platform-adoption-root-sentinel")
+  end
+  { "service" => service, "legacy_compose_service" => compose_service, "source" => source,
+    "target" => target, "access" => access, "kind" => kind, "container_path" => container_path,
+    "size" => File.size(challenged), "sha256" => Digest::SHA256.file(challenged).hexdigest }
+end
+File.write(output, "#{JSON.generate(records)}\n")
+RUBY
 ruby -rjson - "$baseline" <<'RUBY'
 services = %w[audiobookshelf beszel dozzle immich jellyfin komga ntfy paperless-ngx tinymediamanager]
 images = services.to_h { |service| [service, ["example/#{service}@sha256:#{'c' * 64}"]] }
@@ -293,6 +484,7 @@ RUBY
 
 run_rollback() {
   env PATH="$bin:$PATH" FAKE_LOG="$log" FAKE_BASELINE="$baseline" \
+    FAKE_ATTESTATIONS="$attestations" FAKE_MOUNT_SWAP_RECORD="$test_parent/mount-swap-record" \
     FAKE_LEGACY_ROOT="$legacy_root" FAKE_REPO_DIR="$test_dir/../.." \
     FAKE_GIT_REVISION="$(git -C "$test_dir/../.." rev-parse HEAD)" \
     FAKE_OVERRIDE_ROOT="$reviewed_overrides" FAKE_PREOPEN_BASE_PATH="$audiobookshelf_legacy_path" \
@@ -347,6 +539,19 @@ for fault in before-restore after-restore; do
   [ "$(tree_digest "$sandbox")" = "$sandbox_before" ] || fail "$fault fault changed cutover state"
 done
 
+collision_target=$test_parent/attestation-collision-target
+printf 'collision-sentinel\n' > "$collision_target"
+collision_before=$(shasum -a 256 "$collision_target")
+: > "$log"
+if run_rollback FAKE_ATTESTATION_COLLISION=1 FAKE_COLLISION_TARGET="$collision_target" \
+    >/dev/null 2>&1; then
+  fail 'rollback accepted a colliding attestation publication symlink'
+fi
+[ "$(shasum -a 256 "$collision_target")" = "$collision_before" ] ||
+  fail 'attestation publication followed a colliding symlink'
+[ "$(grep -c ' up --detach ' "$log" || true)" -eq 0 ] ||
+  fail 'attestation publication collision started rollback containers'
+
 : > "$log"
 if run_rollback FAKE_UP_FAILURE=immich >/dev/null 2>&1; then
   fail 'rollback accepted a partial project start failure'
@@ -357,6 +562,26 @@ failed_project=$(grep ' up --detach ' "$log" | tail -1 | sed -n 's/.*--project-n
 grep -F -- "--project-name $failed_project" "$log" | grep -q ' stop$' ||
   fail 'failed project namespace was not stopped'
 [ "$(tree_digest "$sandbox")" = "$sandbox_before" ] || fail 'partial start failure changed cutover state'
+
+: > "$log"
+: > "$test_parent/mount-swap-record"
+if run_rollback FAKE_BIND_SWAP_SERVICE=immich >/dev/null 2>&1; then
+  fail 'rollback accepted a bind source replaced and restored during start'
+fi
+[ "$(grep -c ' up --detach ' "$log")" -eq 4 ] || fail 'bind swap fixture did not reach Immich'
+[ "$(grep -c ' stop$' "$log")" -eq 4 ] || fail 'bind swap did not stop every attempted project'
+[ "$(tree_digest "$sandbox")" = "$sandbox_before" ] || fail 'bind swap changed cutover state'
+
+bind_symlink_target=$test_parent/bind-symlink-target
+mkdir -m 0700 "$bind_symlink_target"
+: > "$log"
+if run_rollback FAKE_BIND_PREUP_SYMLINK_SERVICE=immich \
+    FAKE_BIND_SYMLINK_TARGET="$bind_symlink_target" >/dev/null 2>&1; then
+  fail 'rollback accepted a bind source symlink before start'
+fi
+[ "$(grep -c ' up --detach ' "$log")" -eq 3 ] || fail 'bind symlink fixture started an unsafe project'
+[ "$(grep -c ' stop$' "$log")" -eq 4 ] || fail 'bind symlink did not stop every attempted project'
+[ "$(tree_digest "$sandbox")" = "$sandbox_before" ] || fail 'bind symlink changed cutover state'
 
 : > "$log"
 run_rollback FAKE_LIVE_INPUT_MUTATION=1 FAKE_LIVE_LEGACY_ROOT="$legacy_root" \
@@ -435,6 +660,34 @@ for discovery_failure in ps network volume; do
   fi
 done
 
+late_unknown=$test_parent/late-cleanup-unknown
+owned_before=$(find "$test_parent" -maxdepth 1 -type d -name 'nas-platform-mac.??????' | sort)
+: > "$log"
+if PATH="$bin:$PATH" FAKE_LOG="$log" FAKE_CLEANUP_LATE_UNKNOWN="$late_unknown" \
+    PLATFORM_MAC_TMPDIR="$test_parent" "$test_dir/cleanup.sh" "$sandbox" >/dev/null 2>&1; then
+  fail 'cleanup accepted a resource introduced between preflight and deletion'
+fi
+owned_after=$(find "$test_parent" -maxdepth 1 -type d -name 'nas-platform-mac.??????' | sort)
+[ "$owned_after" = "$owned_before" ] || fail 'late unknown resource deleted an owned sandbox'
+if grep -Eq '^docker (rm|network rm|volume rm|run) ' "$log"; then
+  fail 'late unknown resource caused cleanup mutation before refusal'
+fi
+
+post_remove_unknown=$test_parent/post-remove-cleanup-unknown
+owned_before=$(find "$test_parent" -maxdepth 1 -type d -name 'nas-platform-mac.??????' | sort)
+: > "$log"
+if PATH="$bin:$PATH" FAKE_LOG="$log" \
+    FAKE_CLEANUP_POST_REMOVE_UNKNOWN="$post_remove_unknown" PLATFORM_MAC_TMPDIR="$test_parent" \
+    "$test_dir/cleanup.sh" "$sandbox" >/dev/null 2>&1; then
+  fail 'cleanup accepted an unknown resource introduced after removal'
+fi
+owned_after=$(find "$test_parent" -maxdepth 1 -type d -name 'nas-platform-mac.??????' | sort)
+[ "$owned_after" = "$owned_before" ] || fail 'post-removal unknown resource deleted an owned sandbox'
+grep -q '^docker rm -f ' "$log" || fail 'post-removal unknown fixture did not reach removal'
+if grep -q '^docker run ' "$log"; then
+  fail 'post-removal unknown resource reached sandbox deletion'
+fi
+
 vault_sentinel=$test_parent/external-vault
 report_sentinel=$test_parent/external-report
 legacy_sentinel=$legacy_root/external-sentinel
@@ -448,8 +701,11 @@ cleanup_projects=$(printf '%s\n' "$owned_before" | while IFS= read -r owned_root
 done | tr '\n' ' ')
 owned_count=$(printf '%s\n' "$owned_before" | grep -c .)
 : > "$log"
+cleanup_state=$test_parent/cleanup-state
+mkdir -m 0700 "$cleanup_state"
 PATH="$bin:$PATH" FAKE_LOG="$log" FAKE_CLEANUP_SUCCESS=1 \
-  FAKE_CLEANUP_PROJECTS="$cleanup_projects" PLATFORM_MAC_TMPDIR="$test_parent" \
+  FAKE_CLEANUP_PROJECTS="$cleanup_projects" FAKE_CLEANUP_STATE="$cleanup_state" \
+  PLATFORM_MAC_TMPDIR="$test_parent" \
   "$test_dir/cleanup.sh" "$sandbox"
 [ -z "$(find "$test_parent" -maxdepth 1 -type d -name 'nas-platform-mac.??????' -print -quit)" ] ||
   fail 'cleanup did not remove source and rollback sandboxes'
