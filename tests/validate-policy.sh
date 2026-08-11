@@ -6,6 +6,7 @@ ruby tests/secrets_docs_test.rb
 ruby tests/ci_workflow_test.rb
 tests/adoption-integration-test.sh
 tests/mac/integration-context-test.sh
+tests/mac/snapshot-paperless-context-test.sh
 ruby tests/policy_manifest_test.rb
 ruby tests/portainer_parity_mapping_test.rb
 ruby tests/managed_user_capabilities_test.rb --self-test

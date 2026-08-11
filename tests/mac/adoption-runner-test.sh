@@ -177,6 +177,12 @@ expect_failure 'ambient ntfy probe container' 'reserved adoption mapping environ
 expect_failure 'ambient ntfy probe environment' 'reserved adoption mapping environment must be unset' \
   env PLATFORM_ADOPTION_NTFY_ENV_FILE="$temporary_parent/hostile.env" "$runner" --lane fresh \
     --vault-file "$vault_file" --vault-password-file "$password_file"
+expect_failure 'ambient proof callback host' 'reserved adoption mapping environment must be unset' \
+  env PLATFORM_PROOF_CALLBACK_HOST=192.0.2.1 "$runner" --lane fresh \
+    --vault-file "$vault_file" --vault-password-file "$password_file"
+expect_failure 'ambient callback host' 'reserved adoption mapping environment must be unset' \
+  env PLATFORM_CALLBACK_HOST=192.0.2.1 "$runner" --lane fresh \
+    --vault-file "$vault_file" --vault-password-file "$password_file"
 ruby_startup_marker=$temporary_parent/ruby-startup-injection-executed
 ruby_startup_loader=$temporary_parent/ruby-startup-injection.rb
 printf "File.write('%s', 'executed')\n" "$ruby_startup_marker" > "$ruby_startup_loader"
@@ -893,6 +899,11 @@ initialize_adoption_state() {
   recorded_legacy_commit=$3
   recorded_vault_checksum=${4:-$vault_checksum}
   recorded_proof_platform=${5:-mac}
+  if [ "$recorded_proof_platform" = integration ]; then
+    recorded_callback_host=172.17.0.1
+  else
+    recorded_callback_host=host.docker.internal
+  fi
   report_root=$sandbox.reports
   suffix=$(printf '%s' "${sandbox##*.}" | tr '[:upper:]' '[:lower:]')
   project_name=nas-platform-mac-$suffix
@@ -904,6 +915,7 @@ initialize_adoption_state() {
   chmod 0600 "$report_root/.nas-platform-mac-report-owned"
   "$reporter" --init "$report_root/phase-input.json" --lane adoption \
     --proof-platform "$recorded_proof_platform" \
+    --callback-host "$recorded_callback_host" \
     --sandbox-id "$(basename -- "$sandbox")" --git-revision "$git_revision" \
     --vault-checksum "$recorded_vault_checksum" --parity-vault-checksum "$recorded_parity_checksum" \
     --legacy-commit "$recorded_legacy_commit" --project-name "$project_name" \
@@ -958,6 +970,16 @@ cat > "$resume_ports_file" <<'JSON'
 {"schema":1,"audiobookshelf_port":33378,"beszel_port":38090,"dozzle_port":38080,"immich_port":32283,"jellyfin_port":38096,"komga_port":35600,"ntfy_port":32586,"paperless_port":38000,"tinymediamanager_api_port":37878,"tinymediamanager_web_port":34000}
 JSON
 chmod 0600 "$resume_ports_file"
+gateway_fake_bin=$temporary_parent/gateway-tools
+mkdir -m 0700 "$gateway_fake_bin"
+cat > "$gateway_fake_bin/docker" <<'SH'
+#!/bin/sh
+[ "${1-}" = network ] && [ "${2-}" = inspect ] || exit 2
+printf '%s\n' 172.17.0.1
+SH
+chmod 0700 "$gateway_fake_bin/docker"
+PATH="$gateway_fake_bin:$PATH"
+export PATH
 expect_failure 'integration resume of Mac state' \
   'resume proof platform does not match the recorded run' \
   env PLATFORM_MAC_TMPDIR="$temporary_parent" "$runner" --lane adoption --platform integration \
@@ -971,7 +993,7 @@ initialize_adoption_state "$legacy_mac_sandbox" "$parity_checksum" "$legacy_comm
 ruby -rjson - "$legacy_mac_sandbox.reports/phase-input.json" <<'RUBY'
 path = ARGV.fetch(0)
 input = JSON.parse(File.binread(path))
-%w[proof_platform platform_kind platform_compose_kind].each { |key| input.delete(key) }
+%w[proof_platform platform_kind platform_compose_kind callback_host].each { |key| input.delete(key) }
 File.binwrite(path, JSON.generate(input) << "\n")
 RUBY
 env PLATFORM_MAC_TMPDIR="$temporary_parent" "$runner" --lane adoption \
@@ -989,6 +1011,25 @@ env PLATFORM_MAC_TMPDIR="$temporary_parent" "$runner" --lane adoption --platform
   --parity-vault-file "$parity_vault_file" --parity-vault-password-file "$parity_password_file" \
   --phase report --sandbox "$integration_sandbox" >/dev/null 2>&1 ||
   fail 'matching resumed integration ports were rejected'
+ruby -rjson - "$integration_sandbox.reports/phase-input.json" <<'RUBY'
+path = ARGV.fetch(0)
+input = JSON.parse(File.binread(path))
+input["callback_host"] = "172.18.0.1"
+File.binwrite(path, JSON.generate(input) << "\n")
+RUBY
+expect_failure 'resumed integration callback mismatch' \
+  'resume callback host does not match the recorded run' \
+  env PLATFORM_MAC_TMPDIR="$temporary_parent" "$runner" --lane adoption --platform integration \
+    --integration-ports-file "$resume_ports_file" \
+    --vault-file "$vault_file" --vault-password-file "$password_file" \
+    --parity-vault-file "$parity_vault_file" --parity-vault-password-file "$parity_password_file" \
+    --phase report --sandbox "$integration_sandbox"
+ruby -rjson - "$integration_sandbox.reports/phase-input.json" <<'RUBY'
+path = ARGV.fetch(0)
+input = JSON.parse(File.binread(path))
+input["callback_host"] = "172.17.0.1"
+File.binwrite(path, JSON.generate(input) << "\n")
+RUBY
 expect_failure 'Mac resume of integration state' \
   'resume proof platform does not match the recorded run' \
   env PLATFORM_MAC_TMPDIR="$temporary_parent" "$runner" --lane adoption \
@@ -1014,6 +1055,7 @@ report_json=$temporary_parent/report.json
 report_markdown=$temporary_parent/report.md
 "$reporter" --init "$report_input" --lane adoption \
   --proof-platform integration \
+  --callback-host 172.17.0.1 \
   --sandbox-id nas-platform-mac.Report1 --git-revision "$git_revision" \
   --vault-checksum "$vault_checksum" --parity-vault-checksum "$parity_checksum" \
   --legacy-commit "$legacy_commit" --project-name nas-platform-mac-report1 \
@@ -1027,6 +1069,7 @@ report, parity_checksum, legacy_commit = JSON.parse(File.read(ARGV.fetch(0))), A
 raise "JSON parity checksum differs" unless report["parity_vault_checksum"] == parity_checksum
 raise "JSON legacy commit differs" unless report["legacy_commit"] == legacy_commit
 raise "JSON proof platform differs" unless report["proof_platform"] == "integration"
+raise "JSON callback host differs" unless report["callback_host"] == "172.17.0.1"
 RUBY
 grep -F -- "- Parity vault checksum: $parity_checksum" "$report_markdown" >/dev/null ||
   fail 'Markdown omits parity vault checksum'

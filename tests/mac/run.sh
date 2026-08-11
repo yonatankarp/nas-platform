@@ -50,6 +50,8 @@ proof_platform=mac
   [ -z "${PLATFORM_ADOPTION_PROBE_TARGET+x}" ] &&
   [ -z "${PLATFORM_ADOPTION_NTFY_CONTAINER+x}" ] &&
   [ -z "${PLATFORM_ADOPTION_NTFY_ENV_FILE+x}" ] &&
+  [ -z "${PLATFORM_PROOF_CALLBACK_HOST+x}" ] &&
+  [ -z "${PLATFORM_CALLBACK_HOST+x}" ] &&
   [ -z "${PLATFORM_ADOPTION_SCRIPT_DIR+x}" ] &&
   [ -z "${PLATFORM_ADOPTION_BASELINE_FILE+x}" ] &&
   [ -z "${PLATFORM_ADOPTION_BASELINE_SELF_TEST+x}" ] &&
@@ -617,11 +619,15 @@ if [ "$proof_platform" = integration ]; then
   expected_ntfy_port=$7 expected_paperless_port=$8 expected_tinymediamanager_api_port=$9
   shift 9
   expected_tinymediamanager_web_port=$1
+  callback_host=$(mac_integration_gateway) || mac_die 'integration callback host is invalid'
+else
+  callback_host=host.docker.internal
 fi
 
 initialize_report_input() {
   "$mac_script_dir/report.rb" --init "$state_input" --lane "$lane" \
     --proof-platform "$proof_platform" \
+    --callback-host "$callback_host" \
     --sandbox-id "$(basename -- "$sandbox")" --git-revision "$git_revision" \
     --vault-checksum "$vault_checksum" --project-name "$project_name" \
     --beszel-port "$beszel_port" --ntfy-port "$ntfy_port" --dozzle-port "$dozzle_port" \
@@ -673,6 +679,7 @@ else
   state_proof_platform=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("proof_platform", "mac")' "$state_input")
   state_platform_kind=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("platform_kind", "mac")' "$state_input")
   state_platform_compose_kind=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("platform_compose_kind", "mac")' "$state_input")
+  state_callback_host=$(ruby -rjson -e 'input = JSON.parse(File.read(ARGV.fetch(0))); print input.fetch("callback_host", input.fetch("proof_platform", "mac") == "mac" ? "host.docker.internal" : "")' "$state_input")
   state_git_revision=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("git_revision")' "$state_input")
   state_vault_checksum=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("vault_checksum")' "$state_input")
   state_parity_vault_checksum=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("parity_vault_checksum")' "$state_input")
@@ -693,6 +700,8 @@ else
     mac_die 'resume proof platform does not match the recorded run'
   [ "$state_platform_kind" = mac ] && [ "$state_platform_compose_kind" = "$proof_platform" ] ||
     mac_die 'resume platform capabilities do not match the recorded run'
+  [ "$state_callback_host" = "$callback_host" ] ||
+    mac_die 'resume callback host does not match the recorded run'
   [ "$state_project_name" = "$project_name" ] ||
     mac_die 'resume project namespace does not match the recorded run'
   [ "$state_git_revision" = "$git_revision" ] ||
@@ -724,6 +733,7 @@ export PLATFORM_MEDIA_ROOT=$sandbox/service-data/media
 export PLATFORM_FIXTURE_ROOT=$sandbox/fixtures
 export PLATFORM_REPORT_ROOT=$report_root
 export PLATFORM_PROOF_LANE=$lane
+export PLATFORM_CALLBACK_HOST=$callback_host
 export PLATFORM_COMPOSE_KIND=$proof_platform
 export PLATFORM_KIND=$proof_platform
 export PLATFORM_PROJECT_NAME=$project_name

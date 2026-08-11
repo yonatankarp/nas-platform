@@ -4,6 +4,7 @@
 require "json"
 require "open3"
 require "optparse"
+require "ipaddr"
 require "rbconfig"
 require "tempfile"
 require "tmpdir"
@@ -24,7 +25,7 @@ STATUSES = %w[running passed failed].freeze
 REDACTION = "[REDACTED]"
 SAFE_DIAGNOSTIC = /\A[A-Za-z0-9][A-Za-z0-9_.-]*\z/
 ROOT_KEYS = %w[
-  schema lane proof_platform platform_kind platform_compose_kind sandbox_id project_name beszel_port ntfy_port dozzle_port audiobookshelf_port komga_port
+  schema lane proof_platform platform_kind platform_compose_kind callback_host sandbox_id project_name beszel_port ntfy_port dozzle_port audiobookshelf_port komga_port
   tinymediamanager_web_port tinymediamanager_api_port jellyfin_port immich_port paperless_port
   git_revision vault_checksum parity_vault_checksum legacy_commit diagnostic_locations phases
 ].freeze
@@ -83,6 +84,8 @@ def validate_input(input)
       "proof_platform" => "mac", "platform_kind" => "mac", "platform_compose_kind" => "mac"
     )
   end
+  input["callback_host"] = "host.docker.internal" if
+    !input.key?("callback_host") && input["proof_platform"] == "mac"
   raise "input contains unknown or missing root fields" unless exact_keys?(input, ROOT_KEYS, ["deployment_manifest"])
   raise "input schema must be 1" unless input["schema"] == 1
   raise "input lane must be fresh or adoption" unless %w[fresh adoption].include?(input["lane"])
@@ -91,6 +94,20 @@ def validate_input(input)
   raise "input platform_kind must preserve Mac adoption capabilities" unless input["platform_kind"] == "mac"
   raise "input platform_compose_kind differs from proof platform" unless
     input["platform_compose_kind"] == input["proof_platform"]
+  if input["proof_platform"] == "mac"
+    raise "input callback_host differs from Mac proof" unless
+      input["callback_host"] == "host.docker.internal"
+  else
+    begin
+      callback = IPAddr.new(input["callback_host"])
+    rescue IPAddr::InvalidAddressError, TypeError
+      raise "input callback_host must be canonical IPv4"
+    end
+    raise "input callback_host must be canonical IPv4" unless
+      callback.ipv4? && callback.to_s == input["callback_host"] &&
+        input["callback_host"] != "0.0.0.0" && !callback.loopback? &&
+        !IPAddr.new("224.0.0.0/4").include?(callback)
+  end
   %w[sandbox_id project_name git_revision vault_checksum].each do |field|
     raise "input #{field} must be a non-empty string" unless input[field].is_a?(String) && !input[field].empty?
   end
@@ -211,7 +228,7 @@ end
 def markdown_report(report)
   lines = ["# Mac platform proof report", ""]
   %w[
-    lane proof_platform platform_kind platform_compose_kind sandbox_id project_name beszel_port ntfy_port dozzle_port audiobookshelf_port komga_port
+    lane proof_platform platform_kind platform_compose_kind callback_host sandbox_id project_name beszel_port ntfy_port dozzle_port audiobookshelf_port komga_port
     tinymediamanager_web_port tinymediamanager_api_port jellyfin_port immich_port paperless_port
     git_revision vault_checksum parity_vault_checksum legacy_commit generated_at
   ].each do |key|
@@ -317,6 +334,7 @@ def initialize_input(path, options)
     "proof_platform" => options.fetch(:proof_platform, "mac"),
     "platform_kind" => "mac",
     "platform_compose_kind" => options.fetch(:proof_platform, "mac"),
+    "callback_host" => options.fetch(:callback_host, "host.docker.internal"),
     "sandbox_id" => options.fetch(:sandbox_id),
     "project_name" => options.fetch(:project_name),
     "beszel_port" => options.fetch(:beszel_port),
@@ -401,6 +419,7 @@ def self_test
       "proof_platform" => "mac",
       "platform_kind" => "mac",
       "platform_compose_kind" => "mac",
+      "callback_host" => "host.docker.internal",
       "sandbox_id" => "nas-platform-mac.Abc123",
       "project_name" => "nas-platform-mac-abc123",
       "beszel_port" => 38_090,
@@ -540,6 +559,7 @@ def self_test
       "proof platform invalid" => valid_input.merge("proof_platform" => "linux"),
       "platform kind invalid" => valid_input.merge("platform_kind" => "nas"),
       "compose kind mismatch" => valid_input.merge("platform_compose_kind" => "integration"),
+      "callback host mismatch" => valid_input.merge("callback_host" => "192.0.2.1"),
       "fresh parity identity" => valid_input.merge("parity_vault_checksum" => "1" * 64),
       "fresh legacy identity" => valid_input.merge("legacy_commit" => "a" * 40),
       "adoption missing parity identity" => adoption_input.merge("parity_vault_checksum" => nil),
@@ -653,6 +673,7 @@ parser = OptionParser.new do |opts|
   opts.on("--manifest PATH") { |value| options[:manifest] = value }
   opts.on("--lane LANE") { |value| options[:lane] = value }
   opts.on("--proof-platform PLATFORM") { |value| options[:proof_platform] = value }
+  opts.on("--callback-host HOST") { |value| options[:callback_host] = value }
   opts.on("--sandbox-id ID") { |value| options[:sandbox_id] = value }
   opts.on("--project-name NAME") { |value| options[:project_name] = value }
   opts.on("--beszel-port PORT", Integer) { |value| options[:beszel_port] = value }

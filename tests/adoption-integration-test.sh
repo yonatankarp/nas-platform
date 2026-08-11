@@ -75,6 +75,23 @@ raise "runner contract: dirty-controller bypass is enabled" if
 raise "runner contract: legacy seed bypasses centralized integration context" unless
   legacy_seed.include?("mac_ansible_playbook")
 RUBY
+ruby -ropen3 - "$repo_dir/tests/adoption-integration.sh" <<'RUBY'
+source = File.binread(ARGV.fetch(0))
+runner_shell = source[/sh -eu -c '(.*?)' sh /m, 1] or raise "runner shell is unavailable"
+raise "runner shell must install packages exactly once" unless runner_shell.scan(/apk add /).length == 1
+raise "runner shell lacks the pinned shasum provider" unless runner_shell.include?("perl-utils")
+raise "runner shell does not validate shasum" unless
+  runner_shell.include?("command -v shasum") && runner_shell.include?("e3b0c44298fc1c149afbf4c8996fb924")
+validation = runner_shell[/command -v shasum.*?b855 \]/m] or raise "shasum validation is unavailable"
+_stdout, stderr, status = Open3.capture3("sh", "-eu", "-c", validation)
+raise "shasum validation is not executable: #{stderr}" unless status.success?
+verification = source[/elsif operation == "verify"(.*?)elsif operation == "remove"/m, 1] or
+  raise "inner owned-root verification is unavailable"
+raise "inner verification incorrectly requires container Process.uid" if
+  verification.include?("Process.uid")
+raise "inner verification does not bind the recorded host owner" unless
+  verification.include?("marker_stat.uid == root_stat.uid") && verification.include?("signature == expected")
+RUBY
 
 fail() {
   printf '%s\n' "adoption integration contract: $1" >&2
@@ -120,6 +137,13 @@ cleanup_sandbox() {
   if [ "${FAKE_OUTER_CLEANUP_FAIL:-0}" = 1 ]; then
     return 1
   fi
+  find "$target" -depth -mindepth 1 -delete && rmdir -- "$target"
+}
+cleanup_sandbox_contents() {
+  parent=$1 name=$2 preserve=$3
+  [ "$preserve" = .nas-platform-mac-report-owned ] || return 1
+  target=$parent/$name
+  printf 'report:%s\n' "$target" >> "${FAKE_CLEANUP_LOG:?}"
   find "$target" -depth -mindepth 1 -delete && rmdir -- "$target"
 }
 SH
@@ -183,8 +207,21 @@ set -eu
 printf 'coordinator-env:%s:%s\n' "${NAS_INFRASTRUCTURE_DIR:?}" "${PLATFORM_MAC_TMPDIR:?}" \
   >> "${FAKE_COORDINATOR_LOG:?}"
 printf 'coordinator-argv:' >> "${FAKE_COORDINATOR_LOG:?}"
-for argument in "$@"; do printf '<%s>' "$argument" >> "${FAKE_COORDINATOR_LOG:?}"; done
+sandbox=
+while [ "$#" -gt 0 ]; do
+  argument=$1
+  printf '<%s>' "$argument" >> "${FAKE_COORDINATOR_LOG:?}"
+  if [ "$argument" = --sandbox ]; then
+    sandbox=$2
+  fi
+  shift
+done
 printf '\n' >> "${FAKE_COORDINATOR_LOG:?}"
+[ -n "$sandbox" ] || exit 2
+mkdir -m 0700 "$sandbox.reports"
+printf 'schema=1\nsandbox=%s\n' "$(basename -- "$sandbox")" \
+  > "$sandbox.reports/.nas-platform-mac-report-owned"
+chmod 0600 "$sandbox.reports/.nas-platform-mac-report-owned"
 [ "${FAKE_COORDINATOR_FAIL:-0}" = 0 ]
 SH
 cat > "$fixture_repo/tests/mac/cleanup.sh" <<'SH'
@@ -194,7 +231,7 @@ printf 'sandbox:%s\n' "$1" >> "${FAKE_CLEANUP_LOG:?}"
 find "$1" -depth -mindepth 1 -delete
 rmdir -- "$1"
 report=$1.reports
-if [ -d "$report" ]; then find "$report" -depth -mindepth 1 -delete; rmdir -- "$report"; fi
+[ ! -d "$report" ] || printf 'production-cleanup-left-report:%s\n' "$report" >> "${FAKE_CLEANUP_LOG:?}"
 SH
 chmod 0755 "$fixture_repo/tests/generate-ephemeral-vault.sh" \
   "$fixture_repo/scripts/import-portainer-parity.sh" "$fixture_repo/tests/mac/run.sh" \
@@ -376,6 +413,9 @@ grep -F "coordinator-env:$fixture_legacy_physical:$runner_parent_physical/" "$co
 [ "$(grep -c '^vault-cleanup:' "$cleanup_log")" -eq 2 ] ||
   fail 'credential namespaces were not cleaned exactly once'
 grep -c '^sandbox:' "$cleanup_log" | grep -qx 1 || fail 'coordinator sandbox cleanup differs'
+grep -c '^report:' "$cleanup_log" | grep -qx 1 || fail 'synthetic report cleanup differs'
+grep -c '^production-cleanup-left-report:' "$cleanup_log" | grep -qx 1 ||
+  fail 'fixture did not mirror production report retention'
 grep '^outer:' "$cleanup_log" >/dev/null && fail 'outer root used recursive cleanup instead of bound empty removal'
 
 if FAKE_COORDINATOR_FAIL=1 run_fixture > "$fixture_parent/failure.out" 2>&1; then

@@ -184,6 +184,9 @@ Dir.mktmpdir("adoption-probes-test-") do |root|
       [ "$#" -eq 1 ] && [ "$1" = verify ] || exit 64
       [ "$PLATFORM_MAC_VAULT_FILE" = '#{root}/vault.yml' ] || exit 65
       [ "$PLATFORM_MAC_VAULT_PASSWORD_FILE" = '#{root}/vault-password' ] || exit 66
+      if [ "${PLATFORM_PROOF_PLATFORM:-mac}" = integration ]; then
+        [ "$PLATFORM_CALLBACK_HOST" = 172.17.0.1 ] || exit 67
+      fi
       exit 0
     SH
   end
@@ -362,6 +365,7 @@ Dir.mktmpdir("adoption-probes-test-") do |root|
   end
   integration_target_env = target_env.merge(
     "PLATFORM_PROOF_PLATFORM" => "integration",
+    "PLATFORM_CALLBACK_HOST" => "172.17.0.1",
     "PLATFORM_ADOPTION_NTFY_CONTAINER" => "ntfy",
     "PLATFORM_EXPECT_NTFY_CONTAINER" => "ntfy",
     "PLATFORM_IMMICH_SERVER_CONTAINER" => "immich_server",

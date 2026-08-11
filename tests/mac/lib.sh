@@ -107,6 +107,11 @@ mac_integration_gateway() {
   mac_gateway=$(docker network inspect bridge \
     --format '{{ (index .IPAM.Config 0).Gateway }}') ||
     mac_die 'integration Docker host address is unavailable'
+  mac_validate_integration_callback "$mac_gateway"
+}
+
+mac_validate_integration_callback() {
+  mac_gateway=$1
   ruby -ripaddr -e '
     value = ARGV.fetch(0)
     address = IPAddr.new(value)
@@ -119,16 +124,24 @@ mac_integration_gateway() {
 
 mac_ansible_playbook() {
   case ${PLATFORM_PROOF_PLATFORM:-mac} in
-    mac) command ansible-playbook "$@" ;;
+    mac)
+      case ${PLATFORM_CALLBACK_HOST:-host.docker.internal} in
+        host.docker.internal) ;;
+        *) mac_die 'Mac callback host is invalid'; return 1 ;;
+      esac
+      command ansible-playbook "$@"
+      ;;
     integration)
       [ "${PLATFORM_PROOF_LANE:-}" = adoption ] || {
         mac_die 'integration Ansible context requires the adoption lane'
         return 1
       }
-      mac_callback_host=${PLATFORM_PROOF_CALLBACK_HOST:-}
-      if [ -z "$mac_callback_host" ]; then
-        mac_callback_host=$(mac_integration_gateway) || return 1
-      fi
+      mac_callback_host=${PLATFORM_CALLBACK_HOST:-}
+      [ -n "$mac_callback_host" ] || {
+        mac_die 'integration callback host is unavailable'
+        return 1
+      }
+      mac_callback_host=$(mac_validate_integration_callback "$mac_callback_host") || return 1
       command ansible-playbook "$@" \
         -e platform_kind=mac -e platform_compose_kind=integration \
         -e deployment_bundle_test_mode=true \

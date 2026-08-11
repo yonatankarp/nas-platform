@@ -23,7 +23,7 @@ chmod 0700 "$fixture/bin/ansible-playbook"
 (
   export PATH="$fixture/bin:$PATH" CONTEXT_LOG="$log"
   export PLATFORM_PROOF_PLATFORM=integration PLATFORM_PROOF_LANE=adoption
-  export PLATFORM_PROOF_CALLBACK_HOST=172.17.0.1
+  export PLATFORM_CALLBACK_HOST=172.17.0.1
   mac_ansible_playbook -i inventory/mac.yml site.yml --tags dozzle
 )
 for expected in platform_kind=mac platform_compose_kind=integration \
@@ -38,10 +38,25 @@ done
 if (
   export PATH="$fixture/bin:$PATH" CONTEXT_LOG="$log"
   export PLATFORM_PROOF_PLATFORM=integration PLATFORM_PROOF_LANE=fresh
-  export PLATFORM_PROOF_CALLBACK_HOST=172.17.0.1
+  export PLATFORM_CALLBACK_HOST=172.17.0.1
   mac_ansible_playbook site.yml
 ) >/dev/null 2>&1; then
   printf '%s\n' 'integration-context-error: fresh lane accepted integration context' >&2
+  exit 1
+fi
+
+for hostile_callback in 127.0.0.1 0.0.0.0 224.0.0.1 '172.17.0.1 -e hostile=true'; do
+  if mac_validate_integration_callback "$hostile_callback" >/dev/null 2>&1; then
+    printf 'integration-context-error: hostile callback accepted: %s\n' "$hostile_callback" >&2
+    exit 1
+  fi
+done
+if (
+  export PATH="$fixture/bin:$PATH" CONTEXT_LOG="$log"
+  export PLATFORM_PROOF_PLATFORM=mac PLATFORM_CALLBACK_HOST=192.0.2.1
+  mac_ansible_playbook site.yml
+) >/dev/null 2>&1; then
+  printf '%s\n' 'integration-context-error: hostile Mac callback was accepted' >&2
   exit 1
 fi
 

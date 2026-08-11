@@ -84,12 +84,11 @@ parent_path = File.dirname(path)
 parent = File.open(parent_path, flags)
 root = Dir.fchdir(parent.fileno) { File.open(name, flags) }
 root_stat = root.stat
-raise "unsafe" unless root_stat.directory? && root_stat.uid == Process.uid &&
-  (root_stat.mode & 0o777) == 0o700
-signature = "#{identity.call(parent.stat)}|#{identity.call(root_stat)}"
-raise "unsafe" unless expected.empty? || signature == expected
+raise "unsafe" unless root_stat.directory? && (root_stat.mode & 0o777) == 0o700
+root_signature = identity.call(root_stat)
 marker_name = ".nas-platform-integration-owned"
 if operation == "create"
+  raise "unsafe" unless expected.empty? && root_stat.uid == Process.uid
   marker_flags = File::WRONLY | File::CREAT | File::EXCL
   marker_flags |= File::NOFOLLOW if File.const_defined?(:NOFOLLOW)
   marker = Dir.fchdir(root.fileno) { File.open(marker_name, marker_flags, 0o600) }
@@ -99,20 +98,28 @@ if operation == "create"
   marker.fsync
   marker.close
   root.fsync
-  puts signature
+  marker_stat = Dir.fchdir(root.fileno) { File.lstat(marker_name) }
+  marker_signature = identity.call(marker_stat)
+  puts "#{identity.call(parent.stat)}|#{root_signature}|#{marker_signature}"
+  puts "#{root_signature}|#{marker_signature}"
 elsif operation == "verify"
   raise "unsafe" unless Dir.fchdir(root.fileno) { Dir.children(".") } == [marker_name]
   marker = Dir.fchdir(root.fileno) { File.open(marker_name, flags) }
   marker_stat = marker.stat
-  raise "unsafe" unless marker_stat.file? && marker_stat.uid == Process.uid &&
+  raise "unsafe" unless marker_stat.file? && marker_stat.uid == root_stat.uid &&
     (marker_stat.mode & 0o777) == 0o600 && marker.read(4097) == "schema=1\n"
+  signature = "#{root_signature}|#{identity.call(marker_stat)}"
+  raise "unsafe" unless signature == expected
   puts signature
 elsif operation == "remove"
+  signature_prefix = "#{identity.call(parent.stat)}|#{root_signature}|"
   raise "unsafe" unless Dir.fchdir(root.fileno) { Dir.children(".") } == [marker_name]
   marker = Dir.fchdir(root.fileno) { File.open(marker_name, flags) }
   marker_stat = marker.stat
   raise "unsafe" unless marker_stat.file? && marker_stat.uid == Process.uid &&
     (marker_stat.mode & 0o777) == 0o600 && marker.read(4097) == "schema=1\n"
+  raise "unsafe" unless root_stat.uid == Process.uid &&
+    "#{signature_prefix}#{identity.call(marker_stat)}" == expected
   marker.close
   current_root = Dir.fchdir(parent.fileno) { File.lstat(name) }
   raise "unsafe" unless identity.call(current_root) == identity.call(root_stat)
@@ -193,7 +200,11 @@ if [ "$inner_mode" = false ]; then
   owned_root=$(mktemp -d "$temporary_parent/nas-platform-integration.XXXXXX") ||
     die 'could not create owned integration root'
   chmod 0700 "$owned_root"
-  owned_root_identity=$(owned_root_operation create "$owned_root" '') ||
+  owned_root_signatures=$(owned_root_operation create "$owned_root" '') ||
+    die 'could not bind owned integration root'
+  owned_root_identity=$(printf '%s\n' "$owned_root_signatures" | sed -n '1p')
+  owned_bind_identity=$(printf '%s\n' "$owned_root_signatures" | sed -n '2p')
+  [ -n "$owned_root_identity" ] && [ -n "$owned_bind_identity" ] ||
     die 'could not bind owned integration root'
 
   finish_outer_early() {
@@ -248,14 +259,17 @@ if [ "$inner_mode" = false ]; then
     "$runner_image" \
     sh -eu -c '
       apk add --no-cache --quiet docker-cli docker-cli-compose git tar openssl \
-        apache2-utils openssh-client ruby=3.4.9-r0 curl=8.21.0-r0 >/dev/null
+        apache2-utils openssh-client perl-utils ruby=3.4.9-r0 curl=8.21.0-r0 >/dev/null
+      command -v shasum >/dev/null
+      [ "$(printf "" | shasum -a 256 | cut -c 1-64)" = \
+        e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 ]
       pip install --quiet --no-input ansible-core==2.21.2
       ansible-galaxy collection install -r "$1/requirements.yml" >/dev/null
       git config --global --add safe.directory "$1"
       git config --global --add safe.directory "$2"
       exec "$4" --inner "$3" "$5"
     ' sh "$repo_dir" "$legacy_root" "$owned_root" "$script_dir/adoption-integration.sh" \
-      "$owned_root_identity"
+      "$owned_bind_identity"
   exit 0
 fi
 
@@ -286,6 +300,11 @@ cleanup() {
   if [ -n "$sandbox" ] && [ -d "$sandbox" ] && [ ! -L "$sandbox" ]; then
     PLATFORM_MAC_TMPDIR="$owned_root" "$repo_dir/tests/mac/cleanup.sh" "$sandbox" \
       >/dev/null 2>&1 || cleanup_failed=true
+  fi
+  report_root=$sandbox.reports
+  if [ -n "$sandbox" ] && [ -d "$report_root" ] && [ ! -L "$report_root" ]; then
+    cleanup_sandbox_contents "$owned_root" "$(basename -- "$report_root")" \
+      .nas-platform-mac-report-owned >/dev/null 2>&1 || cleanup_failed=true
   fi
   if [ -n "$deployment_vault_root" ] && [ -d "$deployment_vault_root" ] &&
      [ ! -L "$deployment_vault_root" ]; then
