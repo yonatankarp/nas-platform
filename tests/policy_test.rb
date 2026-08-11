@@ -1215,14 +1215,35 @@ check(failures, !controller_preflight.nil?,
 # again before service roles write runtime configuration or consume `current`.
 target_tasks_path = File.join(ROOT, "roles", "deployment_bundle", "tasks", "target.yml")
 target_tasks_body = File.file?(target_tasks_path) ? File.read(target_tasks_path) : ""
+target_validator_path = File.join(ROOT, "roles", "deployment_bundle", "files", "validate_target.py")
+target_validator_body = File.file?(target_validator_path) ? File.read(target_validator_path) : ""
+target_tasks = File.file?(target_tasks_path) ? YAML.safe_load_file(target_tasks_path) : []
+target_validation_tasks = Array(target_tasks).select do |task|
+  task["name"] == "Validate target path ancestry and canonical containment"
+end
+target_validation = target_validation_tasks.one? ? target_validation_tasks.first : {}
+target_validation_argv = Array(target_validation.dig("ansible.builtin.command", "argv"))
+validator_lookup = "{{ lookup('ansible.builtin.file', role_path ~ '/files/validate_target.py') }}"
+batched_target_paths = "{{ ((deployment_target_paths | list) + " \
+                       "(deployment_target_extra_paths | default([]) | list)) | to_json }}"
+check(failures, target_validation_tasks.one? &&
+                target_validation_argv[1] == "-c" &&
+                target_validation_argv[2] == validator_lookup &&
+                target_validation_argv.count(validator_lookup) == 1,
+      "target containment task must execute the exact extracted validator source")
+check(failures, target_validation_argv.length == 9 &&
+                target_validation_argv.last == batched_target_paths,
+      "target containment task must pass one JSON array of combined target paths")
+check(failures, !target_validation.key?("loop") && !target_validation.key?("loop_control"),
+      "target containment task must validate the batch without an Ansible loop")
 %w[os.lstat os.path.realpath os.path.commonpath os.path.lexists].each do |primitive|
-  check(failures, target_tasks_body.include?(primitive),
+  check(failures, target_validator_body.include?(primitive),
         "target validator must use #{primitive} for symlink-safe canonical containment")
 end
 check(failures, target_tasks_body.include?("concurrent privileged filesystem mutation"),
       "target validator must document its adjacent-revalidation threat boundary")
-check(failures, target_tasks_body.include?("os.path.abspath(os.sep)") &&
-                target_tasks_body.include?("root_relative_parts"),
+check(failures, target_validator_body.include?("os.path.abspath(os.sep)") &&
+                target_validator_body.include?("root_relative_parts"),
       "target validator must lstat every existing ancestor from filesystem root to nas_docker_root")
 check(failures, target_tasks_body.include?("nas_docker_root ~ '/.nas-platform-preflight-probe'") ||
                 target_tasks_body.include?("{{ nas_docker_root }}/.nas-platform-preflight-probe"),
