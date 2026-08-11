@@ -196,7 +196,7 @@ Use `beszel`, `dozzle`, `immich`, or `paperless` according to the containing sta
 
 - [ ] **Step 4: Cover drift and runtime verification**
 
-Have the drift hook remove one managed label and add an unrelated sentinel label. Verify reconciliation restores the group label and preserves the sentinel; inspect effective Docker labels rather than the source YAML alone.
+Have the drift hook remove or corrupt one managed label and add an unrelated sentinel label. Compose owns the complete declared label map, so use the sentinel only to prove full-map reconciliation: verify reconciliation restores the group label and removes the out-of-band sentinel. Inspect effective Docker labels rather than the source YAML alone.
 
 - [ ] **Step 5: Verify GREEN and commit**
 

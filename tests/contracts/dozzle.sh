@@ -24,6 +24,7 @@ role=$repo_dir/roles/dozzle/tasks/main.yml
 defaults=$repo_dir/roles/dozzle/defaults/main.yml
 integration=$repo_dir/tests/integration.sh
 mac_drift=$repo_dir/tests/mac/hooks/drift/20-dozzle.sh
+mac_verify=$repo_dir/tests/mac/hooks/verify/20-dozzle.sh
 
 fail_contract() {
   printf 'Dozzle contract failed: %s\n' "$1" >&2
@@ -32,6 +33,117 @@ fail_contract() {
 
 [ -f "$compose" ] || fail_contract 'services/dozzle/compose.yml is absent'
 [ -f "$role" ] || fail_contract 'roles/dozzle/tasks/main.yml is absent'
+
+render_group_contract() {
+  stack=$1
+  expected_group=$2
+  variant=$3
+  shift 3
+  rendered=$(env \
+    PLATFORM_PROJECT_NAME=dozzle-contract NAS_DOCKER_ROOT=/tmp/dozzle-contract/docker \
+    NAS_MEDIA_ROOT=/tmp/dozzle-contract/media NAS_RENDER_DEVICE=/dev/null \
+    PLATFORM_ADOPTION_ROOT=/tmp/dozzle-contract/adoption NAS_UID=1000 NAS_GID=100 \
+    BESZEL_APP_URL=http://127.0.0.1:8090 BESZEL_SYSTEM_NAME=contract \
+    BESZEL_AGENT_KEY=contract BESZEL_AGENT_TOKEN=contract BESZEL_HOST_PORT=38090 \
+    DOZZLE_HOST_PORT=38080 NTFY_HOST_PORT=32586 NTFY_BASE_URL=http://127.0.0.1:32586 \
+    NTFY_AUTH_USERS= NTFY_AUTH_ACCESS= NTFY_AUTH_TOKENS= \
+    AUDIOBOOKSHELF_HOST_PORT=33378 \
+    AUDIOBOOKSHELF_CONFIG_PATH=/tmp/dozzle-contract/audiobookshelf-config \
+    AUDIOBOOKSHELF_METADATA_PATH=/tmp/dozzle-contract/audiobookshelf-metadata \
+    AUDIOBOOKSHELF_MEDIA_PATH=/tmp/dozzle-contract/audiobooks \
+    KOMGA_HOST_PORT=35600 KOMGA_CONFIG_PATH=/tmp/dozzle-contract/komga-config \
+    KOMGA_LIBRARY_PATH=/tmp/dozzle-contract/books JELLYFIN_HOST_PORT=38096 \
+    JELLYFIN_CONFIG_PATH=/tmp/dozzle-contract/jellyfin-config \
+    JELLYFIN_CACHE_PATH=/tmp/dozzle-contract/jellyfin-cache \
+    JELLYFIN_MEDIA_PATH=/tmp/dozzle-contract/media IMMICH_HOST_PORT=32283 \
+    IMMICH_DB_NAME=contract IMMICH_DB_USERNAME=contract IMMICH_DB_PASSWORD=contract \
+    PAPERLESS_HOST_PORT=38000 PAPERLESS_POSTGRES_PATH=/tmp/dozzle-contract/paperless-postgres \
+    PAPERLESS_REDIS_PATH=/tmp/dozzle-contract/paperless-redis \
+    PAPERLESS_DATA_PATH=/tmp/dozzle-contract/paperless-data \
+    PAPERLESS_CACHE_PATH=/tmp/dozzle-contract/paperless-cache \
+    PAPERLESS_TESSDATA_PATH=/tmp/dozzle-contract/paperless-tessdata \
+    PAPERLESS_MEDIA_PATH=/tmp/dozzle-contract/paperless-media \
+    PAPERLESS_CONSUME_PATH=/tmp/dozzle-contract/paperless-consume \
+    PAPERLESS_EXPORT_PATH=/tmp/dozzle-contract/paperless-export \
+    PAPERLESS_ADMIN_USER=contract PAPERLESS_ADMIN_PASSWORD=contract \
+    PAPERLESS_ADMIN_MAIL=contract@example.invalid PAPERLESS_DBHOST=db \
+    PAPERLESS_REDIS=redis://broker:6379 PAPERLESS_TIKA_ENDPOINT=http://tika:9998 \
+    PAPERLESS_GOTENBERG_ENDPOINT=http://gotenberg:3000 PAPERLESS_AI_ENABLED=false \
+    PAPERLESS_AI_LLM_ENDPOINT=http://example.invalid:11434 PAPERLESS_AI_LLM_MODEL=contract \
+    PAPERLESS_SECRET_KEY=contract DB_NAME=contract DB_USER=contract DB_PASSWORD=contract \
+    TINYMEDIAMANAGER_WEB_HOST_PORT=34000 TINYMEDIAMANAGER_API_HOST_PORT=37878 \
+    TINYMEDIAMANAGER_DATA_PATH=/tmp/dozzle-contract/tinymediamanager-data \
+    TINYMEDIAMANAGER_MOVIES_PATH=/tmp/dozzle-contract/movies \
+    TINYMEDIAMANAGER_SERIES_PATH=/tmp/dozzle-contract/series \
+    TINYMEDIAMANAGER_PASSWORD=contract \
+    USER_ID=1000 GROUP_ID=100 TZ=UTC \
+    docker compose --project-name "dozzle-contract-$stack-$variant" "$@" config --format json) ||
+    fail_contract "$stack $variant Compose render failed"
+
+  DOZZLE_RENDERED_COMPOSE=$rendered ruby -rjson - "$stack" "$variant" "$expected_group" <<'RUBY'
+stack, variant, expected_group = ARGV
+services = JSON.parse(ENV.fetch("DOZZLE_RENDERED_COMPOSE")).fetch("services")
+if expected_group.empty?
+  abort "Dozzle contract failed: #{stack} #{variant} must remain a single-container stack" unless
+    services.length == 1
+  services.each do |service, definition|
+    abort "Dozzle contract failed: #{stack} #{variant} #{service} left Running Containers grouping" if
+      definition.fetch("labels", {}).key?("dev.dozzle.group")
+  end
+else
+  abort "Dozzle contract failed: #{stack} #{variant} must remain a multi-container stack" unless
+    services.length > 1
+  services.each do |service, definition|
+    labels = definition.fetch("labels", {})
+    matches = labels.select { |name, _value| name == "dev.dozzle.group" }
+    abort "Dozzle contract failed: #{stack} #{variant} #{service} group label differs" unless
+      matches == {"dev.dozzle.group" => expected_group}
+  end
+end
+RUBY
+}
+
+render_group_variants() {
+  stack=$1
+  expected_group=$2
+  service_dir=$repo_dir/services/$stack
+  render_group_contract "$stack" "$expected_group" base -f "$service_dir/compose.yml"
+  render_group_contract "$stack" "$expected_group" mac \
+    -f "$service_dir/compose.yml" -f "$service_dir/compose.mac.yml"
+  render_group_contract "$stack" "$expected_group" adoption \
+    -f "$service_dir/compose.yml" -f "$service_dir/compose.adoption.yml"
+  render_group_contract "$stack" "$expected_group" mac-adoption \
+    -f "$service_dir/compose.yml" -f "$service_dir/compose.mac.yml" \
+    -f "$service_dir/compose.adoption.yml"
+}
+
+if [ "$mode" = static ]; then
+  render_group_variants beszel beszel
+  render_group_variants dozzle dozzle
+  render_group_variants paperless-ngx paperless
+  render_group_variants immich immich
+  render_group_contract immich immich integration \
+    -f "$repo_dir/services/immich/compose.yml" \
+    -f "$repo_dir/services/immich/compose.integration.yml"
+  render_group_contract immich immich integration-adoption \
+    -f "$repo_dir/services/immich/compose.yml" \
+    -f "$repo_dir/services/immich/compose.integration.yml" \
+    -f "$repo_dir/services/immich/compose.adoption.yml"
+  render_group_variants audiobookshelf ""
+  render_group_variants jellyfin ""
+  render_group_variants komga ""
+  render_group_variants ntfy ""
+  render_group_variants tinymediamanager ""
+  for stack in jellyfin tinymediamanager; do
+    render_group_contract "$stack" "" integration \
+      -f "$repo_dir/services/$stack/compose.yml" \
+      -f "$repo_dir/services/$stack/compose.integration.yml"
+    render_group_contract "$stack" "" integration-adoption \
+      -f "$repo_dir/services/$stack/compose.yml" \
+      -f "$repo_dir/services/$stack/compose.integration.yml" \
+      -f "$repo_dir/services/$stack/compose.adoption.yml"
+  done
+fi
 
 ruby -ryaml - "$compose" <<'RUBY'
 compose = YAML.safe_load_file(ARGV.fetch(0), aliases: true)
@@ -62,12 +174,13 @@ abort "Dozzle contract failed: proxy permissions differ" unless
   }
 RUBY
 
-ruby -ryaml - "$defaults" "$role" "$integration" "$mac_drift" "$mode" <<'RUBY'
+ruby -ryaml - "$defaults" "$role" "$integration" "$mac_drift" "$mac_verify" "$mode" <<'RUBY'
 defaults_path = ARGV.fetch(0)
 defaults = YAML.safe_load_file(defaults_path)
 role = File.read(ARGV.fetch(1))
 integration = File.read(ARGV.fetch(2))
 mac_drift = File.read(ARGV.fetch(3))
+mac_verify = File.read(ARGV.fetch(4))
 expected = {
   "OOM" => ['name == "oom"', 300],
   "Unexpected exit" => ['name == "die" && !(attributes["exitCode"] in ["0", "130", "143", "137"])', 300],
@@ -99,7 +212,7 @@ markers = %w[
   DOZZLE_CHECK_MIXED_PLANNED_IMMUTABLE_AND_REPAIRED
   DOZZLE_CHECK_MISSING_PLANNED_IMMUTABLE_AND_REPAIRED
 ]
-if ARGV.fetch(4) == "static"
+if ARGV.fetch(5) == "static"
   planned_tasks.each do |name|
     abort "Dozzle contract failed: missing #{name}" unless role.include?("- name: #{name}")
   end
@@ -109,6 +222,12 @@ if ARGV.fetch(4) == "static"
   %w[check-mixed-create check-mixed-unchanged --check --diff].each do |proof|
     abort "Dozzle contract failed: Mac drift proof is missing #{proof}" unless mac_drift.include?(proof)
   end
+  abort "Dozzle contract failed: Mac drift proof does not corrupt a managed group label" unless
+    mac_drift.include?("dev.dozzle.group")
+  abort "Dozzle contract failed: Mac drift proof does not install an unrelated sentinel label" unless
+    mac_drift.include?("dev.dozzle.contract.sentinel")
+  abort "Dozzle contract failed: Mac runtime verification does not inspect Docker labels" unless
+    mac_verify.include?("docker container inspect") && mac_verify.include?("dev.dozzle.group")
 end
 RUBY
 

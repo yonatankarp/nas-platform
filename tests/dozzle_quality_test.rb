@@ -92,6 +92,9 @@ check(failures,
       contract.include?('rule.dig("dispatcher", "id").to_s == dispatcher["id"].to_s'),
       "Dozzle contract does not normalize opaque dispatcher IDs as strings")
 
+_stdout, stderr, status = Open3.capture3(CONTRACT, "static")
+check(failures, status.success?, "Dozzle static contract rejected effective Compose labels: #{stderr.lines.first&.strip}")
+
 role = File.read(ROLE)
 check(failures, !role.include?("dispatcher.id | int"),
       "Dozzle verification coerces opaque dispatcher IDs to integers")

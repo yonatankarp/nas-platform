@@ -9,6 +9,8 @@ services:
   broker:
     container_name: paperless_redis
     image: docker.io/valkey/valkey:9.1.1-alpine@sha256:ee91f7a174ac4d6a6b0685b3a60e321f0a9dbbb691f9b0e285be2ba1d1be8328
+    labels:
+      dev.dozzle.group: paperless
     volumes:
       - ${PAPERLESS_REDIS_PATH:?}:/data
     ports:
@@ -26,6 +28,8 @@ services:
   db:
     container_name: paperless_postgres
     image: docker.io/library/postgres:18.4-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
+    labels:
+      dev.dozzle.group: paperless
     volumes:
       - ${PAPERLESS_POSTGRES_PATH:?}:/var/lib/postgresql
     ports:
@@ -46,6 +50,8 @@ services:
   webserver:
     container_name: paperless_webserver
     image: ghcr.io/paperless-ngx/paperless-ngx:3.0.5@sha256:65a4cabf0169ea7fbd90ab7bb28ba3f8b5909613635acda1a03ad606f34b456b
+    labels:
+      dev.dozzle.group: paperless
     depends_on:
       broker:
         condition: service_healthy
@@ -105,6 +111,8 @@ services:
   gotenberg:
     container_name: paperless_gotenberg
     image: docker.io/gotenberg/gotenberg:8.35.0@sha256:a16a14e1f18a71405624bc028e90d4ef50ea774c352b303639c10bf7b141f760
+    labels:
+      dev.dozzle.group: paperless
     command:
       - gotenberg
       - --chromium-disable-javascript=true
@@ -125,6 +133,8 @@ services:
   tika:
     container_name: paperless_tika
     image: docker.io/apache/tika:3.3.1.0@sha256:90b7fa1dc018434075fce9e1d9b88b1e3d0ea6979d0cf86e116c79a8073ae973
+    labels:
+      dev.dozzle.group: paperless
     environment:
       TZ: ${TZ:?}
     ports:

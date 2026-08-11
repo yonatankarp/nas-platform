@@ -8,6 +8,8 @@ services:
   dozzle:
     container_name: dozzle
     image: docker.io/amir20/dozzle:v10.7.1@sha256:a8441e9d2928cc7b30d0023f5eedbb87ef6e234d87f3be02662bd8f417955b8b
+    labels:
+      dev.dozzle.group: dozzle
     user: "${NAS_UID:?}:${NAS_GID:?}"
     ports:
       - "8080:8080"
@@ -41,6 +43,8 @@ services:
   socket-proxy:
     container_name: dozzle_socket_proxy
     image: lscr.io/linuxserver/socket-proxy:3.4.3@sha256:5253050dd304d351df2ee61bba43c57dd2b19bb640497a679592051de3a3c639
+    labels:
+      dev.dozzle.group: dozzle
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:

@@ -19,15 +19,23 @@ cleanup_fixture() {
 }
 trap cleanup_fixture EXIT HUP INT TERM
 
-mkdir -p "$fixture_root/tests/mac/hooks/drift" "$fixture_root/tests/mac" \
-  "$fixture_root/tests" "$fixture_root/inventory" "$fake_bin"
+mkdir -p "$fixture_root/tests/mac/hooks/drift" "$fixture_root/tests/mac/hooks/verify" \
+  "$fixture_root/tests/mac" \
+  "$fixture_root/tests" "$fixture_root/inventory" "$fake_bin" \
+  "$fixture_root/current/services/dozzle" "$fixture_root/runtime/services/dozzle"
 cp "$repo_dir/tests/mac/hooks/drift/20-dozzle.sh" \
   "$fixture_root/tests/mac/hooks/drift/20-dozzle.sh"
+cp "$repo_dir/tests/mac/hooks/verify/20-dozzle.sh" \
+  "$fixture_root/tests/mac/hooks/verify/20-dozzle.sh"
 cp "$repo_dir/tests/mac/lib.sh" "$fixture_root/tests/mac/lib.sh"
-chmod 0755 "$fixture_root/tests/mac/hooks/drift/20-dozzle.sh"
+chmod 0755 "$fixture_root/tests/mac/hooks/drift/20-dozzle.sh" \
+  "$fixture_root/tests/mac/hooks/verify/20-dozzle.sh"
 : > "$fixture_root/site.yml"
 : > "$fixture_root/verify.yml"
 : > "$fixture_root/inventory/mac.yml"
+: > "$fixture_root/current/services/dozzle/compose.yml"
+: > "$fixture_root/current/services/dozzle/compose.mac.yml"
+: > "$fixture_root/runtime/services/dozzle/.env"
 
 cat > "$fixture_root/tests/mac/run-dozzle-contract.sh" <<'STUB'
 #!/bin/sh
@@ -99,6 +107,51 @@ esac
 STUB
 chmod 0755 "$fake_bin/ansible-playbook"
 
+cat > "$fake_bin/docker" <<'STUB'
+#!/bin/sh
+case " $* " in
+  *" container inspect "*)
+    for argument in "$@"; do container=$argument; done
+    printf 'INSPECT %s\n' "$container" >> "${PLATFORM_HOOK_EVENTS:?}"
+    case $container in
+      *paperless*) expected_group=paperless ;;
+      *immich*) expected_group=immich ;;
+      *beszel*) expected_group=beszel ;;
+      *dozzle*) expected_group=dozzle ;;
+      *) exit 2 ;;
+    esac
+    label_state=$(cat "${PLATFORM_HOOK_LABEL_STATE:?}")
+    if [ "$container" = dozzle-hook-test-dozzle-socket-proxy ]; then
+      case $label_state in
+        drifted)
+          printf '%s\n' '{"dev.dozzle.group":"dozzle-contract-drift","dev.dozzle.contract.sentinel":"unrelated-label-must-not-survive-reconciliation"}'
+          exit 0
+          ;;
+        wrong-group)
+          printf '%s\n' '{"dev.dozzle.group":"dozzle-contract-drift"}'
+          exit 0
+          ;;
+        sentinel)
+          printf '%s\n' '{"dev.dozzle.group":"dozzle","dev.dozzle.contract.sentinel":"unrelated-label-must-not-survive-reconciliation"}'
+          exit 0
+          ;;
+      esac
+    fi
+    printf '{"dev.dozzle.group":"%s"}\n' "$expected_group"
+    ;;
+  *"dozzle-label-drift."*)
+    printf '%s\n' drifted > "${PLATFORM_HOOK_LABEL_STATE:?}"
+    printf '%s\n' LABEL_DRIFT >> "${PLATFORM_HOOK_EVENTS:?}"
+    ;;
+  *" compose "*)
+    printf '%s\n' managed > "${PLATFORM_HOOK_LABEL_STATE:?}"
+    printf '%s\n' LABEL_RECOVER >> "${PLATFORM_HOOK_EVENTS:?}"
+    ;;
+  *) exit 2 ;;
+esac
+STUB
+chmod 0755 "$fake_bin/docker"
+
 run_hook() {
   scenario=$1
   case_root=$temporary_input/$scenario
@@ -107,6 +160,7 @@ run_hook() {
   : > "$case_root/vault.yml"
   : > "$case_root/password"
   : > "$case_root/events"
+  printf '%s\n' managed > "$case_root/labels"
   PLATFORM_REPORT_ROOT="$report_root" \
     PLATFORM_MAC_VAULT_FILE="$case_root/vault.yml" \
     PLATFORM_MAC_VAULT_PASSWORD_FILE="$case_root/password" \
@@ -114,16 +168,34 @@ run_hook() {
     PLATFORM_HOOK_FIXTURE="$case_root/fixture" \
     PLATFORM_HOOK_RECOVERED="$case_root/recovered" \
     PLATFORM_HOOK_READY="$case_root/ready" \
+    PLATFORM_HOOK_LABEL_STATE="$case_root/labels" \
     PLATFORM_HOOK_SCENARIO="$scenario" \
+    PLATFORM_DOCKER_ROOT="$fixture_root" \
+    PLATFORM_PROJECT_NAME=dozzle-hook-test \
+    PLATFORM_PROOF_LANE=fresh \
+    PLATFORM_COMPOSE_KIND=mac \
     PATH="$fake_bin:$PATH" \
     "$fixture_root/tests/mac/hooks/drift/20-dozzle.sh"
+}
+
+run_verify_hook() {
+  case_root=$1
+  PLATFORM_REPORT_ROOT="$case_root/reports" \
+    PLATFORM_HOOK_EVENTS="$case_root/events" \
+    PLATFORM_HOOK_LABEL_STATE="$case_root/labels" \
+    PLATFORM_PROJECT_NAME=dozzle-hook-test \
+    PLATFORM_PROOF_PLATFORM=mac \
+    PATH="$fake_bin:$PATH" \
+    "$fixture_root/tests/mac/hooks/verify/20-dozzle.sh"
 }
 
 false_status=0
 run_hook dozzle-accept >/dev/null 2>&1 || false_status=$?
 [ "$false_status" -ne 0 ] &&
   [ -f "$temporary_input/dozzle-accept/recovered" ] &&
-  [ ! -e "$temporary_input/dozzle-accept/fixture" ] || {
+  [ ! -e "$temporary_input/dozzle-accept/fixture" ] &&
+  [ "$(cat "$temporary_input/dozzle-accept/labels")" = managed ] &&
+  grep -q '^LABEL_RECOVER$' "$temporary_input/dozzle-accept/events" || {
   printf '%s\n' 'Dozzle drift hook accepted a Beszel-only failure or did not recover' >&2
   exit 1
 }
@@ -134,6 +206,61 @@ success_root=$temporary_input/success
   printf '%s\n' 'successful Dozzle drift hook did not leave only its fixture for reconcile' >&2
   exit 1
 }
+grep -q '^LABEL_DRIFT$' "$success_root/events" &&
+  ! grep -q '^LABEL_RECOVER$' "$success_root/events" || {
+  printf '%s\n' 'successful Dozzle drift hook did not leave container-label drift for reconcile' >&2
+  exit 1
+}
+[ "$(cat "$success_root/labels")" = drifted ] || {
+  printf '%s\n' 'successful Dozzle drift hook did not retain the drifted label map' >&2
+  exit 1
+}
+drift_verify_status=0
+printf '%s\n' wrong-group > "$success_root/labels"
+run_verify_hook "$success_root" >/dev/null 2>&1 || drift_verify_status=$?
+[ "$drift_verify_status" -ne 0 ] || {
+  printf '%s\n' 'Dozzle runtime verification accepted the drifted group' >&2
+  exit 1
+}
+sentinel_verify_status=0
+printf '%s\n' sentinel > "$success_root/labels"
+run_verify_hook "$success_root" >/dev/null 2>&1 || sentinel_verify_status=$?
+[ "$sentinel_verify_status" -ne 0 ] || {
+  printf '%s\n' 'Dozzle runtime verification accepted the unmanaged sentinel' >&2
+  exit 1
+}
+: > "$success_root/events"
+PLATFORM_HOOK_EVENTS="$success_root/events" \
+  PLATFORM_HOOK_LABEL_STATE="$success_root/labels" \
+  PATH="$fake_bin:$PATH" docker compose --project-name dozzle-hook-test-dozzle up -d
+[ "$(cat "$success_root/labels")" = managed ] && run_verify_hook "$success_root" || {
+  printf '%s\n' 'Dozzle Compose reconciliation did not restore the managed runtime labels' >&2
+  exit 1
+}
+grep -q '^verify$' "$success_root/events" && grep -q '^notify$' "$success_root/events" || {
+  printf '%s\n' 'Dozzle runtime verification did not complete after label reconciliation' >&2
+  exit 1
+}
+for container in \
+  dozzle-hook-test-beszel \
+  dozzle-hook-test-beszel-agent-portable \
+  dozzle-hook-test-beszel-socket-proxy \
+  dozzle-hook-test-dozzle \
+  dozzle-hook-test-dozzle-socket-proxy \
+  dozzle-hook-test-immich-server \
+  dozzle-hook-test-immich-machine-learning \
+  dozzle-hook-test-immich-redis \
+  dozzle-hook-test-immich-postgres \
+  dozzle-hook-test-paperless-redis \
+  dozzle-hook-test-paperless-postgres \
+  dozzle-hook-test-paperless-webserver \
+  dozzle-hook-test-paperless-gotenberg \
+  dozzle-hook-test-paperless-tika; do
+  grep -Fqx "INSPECT $container" "$success_root/events" || {
+    printf 'Dozzle runtime verification omitted %s\n' "$container" >&2
+    exit 1
+  }
+done
 ! grep -q '^VERIFY_ALL$' "$success_root/events" || {
   printf '%s\n' 'Dozzle drift hook used all-service verification' >&2
   exit 1
@@ -147,7 +274,9 @@ assertion_status=0
 run_hook assertion-failure >/dev/null 2>&1 || assertion_status=$?
 [ "$assertion_status" -ne 0 ] &&
   [ -f "$temporary_input/assertion-failure/recovered" ] &&
-  [ ! -e "$temporary_input/assertion-failure/fixture" ] || {
+  [ ! -e "$temporary_input/assertion-failure/fixture" ] &&
+  [ "$(cat "$temporary_input/assertion-failure/labels")" = managed ] &&
+  grep -q '^LABEL_RECOVER$' "$temporary_input/assertion-failure/events" || {
   printf '%s\n' 'Dozzle drift assertion failure did not recover its fixture' >&2
   exit 1
 }
@@ -159,6 +288,7 @@ for signal in HUP INT TERM; do
   : > "$signal_root/vault.yml"
   : > "$signal_root/password"
   : > "$signal_root/events"
+  printf '%s\n' managed > "$signal_root/labels"
   signal_status_file=$signal_root/status
   PLATFORM_REPORT_ROOT="$signal_root/reports" \
     PLATFORM_MAC_VAULT_FILE="$signal_root/vault.yml" \
@@ -167,7 +297,12 @@ for signal in HUP INT TERM; do
     PLATFORM_HOOK_FIXTURE="$signal_root/fixture" \
     PLATFORM_HOOK_RECOVERED="$signal_root/recovered" \
     PLATFORM_HOOK_READY="$signal_root/ready" \
+    PLATFORM_HOOK_LABEL_STATE="$signal_root/labels" \
     PLATFORM_HOOK_SCENARIO=signal \
+    PLATFORM_DOCKER_ROOT="$fixture_root" \
+    PLATFORM_PROJECT_NAME=dozzle-hook-test \
+    PLATFORM_PROOF_LANE=fresh \
+    PLATFORM_COMPOSE_KIND=mac \
     PATH="$fake_bin:$PATH" \
     ruby - "$signal" "$fixture_root/tests/mac/hooks/drift/20-dozzle.sh" \
       "$signal_root/ready" "$signal_status_file" <<'RUBY'
@@ -190,6 +325,8 @@ RUBY
   [ "$signal_status" -eq "$expected" ] &&
     [ -f "$signal_root/recovered" ] &&
     [ ! -e "$signal_root/fixture" ] &&
+    [ "$(cat "$signal_root/labels")" = managed ] &&
+    grep -q '^LABEL_RECOVER$' "$signal_root/events" &&
     [ -z "$(find "$signal_root/reports" -mindepth 1 -maxdepth 1 -print -quit)" ] || {
     printf 'Dozzle drift hook mishandled %s (status %s)\n' "$signal" "$signal_status" >&2
     exit 1
