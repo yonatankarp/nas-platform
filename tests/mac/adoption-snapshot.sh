@@ -114,6 +114,7 @@ module SnapshotFileSystem
   extern "int renameat(int, const char *, int, const char *)"
   extern "int linkat(int, const char *, int, const char *, int)"
   extern "int unlinkat(int, const char *, int)"
+  extern "int fchdir(int)"
   extern "int futimens(int, const void *)"
   extern "int fcopyfile(int, int, void *, unsigned int)" if RUBY_PLATFORM.include?("darwin")
   if RUBY_PLATFORM.include?("darwin")
@@ -271,11 +272,17 @@ def unlink_at(parent, name, directory: false)
 end
 
 def descriptor_children(directory)
-  duplicate = directory.dup
-  duplicate.autoclose = false
-  Dir.for_fd(duplicate.fileno).children.sort
+  previous = File.open(".", File::RDONLY)
+  result = SnapshotFileSystem.fchdir(directory.fileno)
+  raise SystemCallError.new("fchdir", Fiddle.last_error) if result.negative?
+
+  Dir.children(".").sort
 ensure
-  duplicate&.close if duplicate&.autoclose?
+  if previous
+    restored = SnapshotFileSystem.fchdir(previous.fileno)
+    previous.close
+    raise SystemCallError.new("fchdir", Fiddle.last_error) if restored.negative?
+  end
 end
 
 def remove_tree_at(parent, name)

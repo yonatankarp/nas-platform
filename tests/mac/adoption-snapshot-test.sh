@@ -9,6 +9,11 @@ snapshotter=$test_dir/adoption-snapshot.sh
 adoption=$test_dir/adoption.sh
 runner=$test_dir/run.sh
 
+if grep -Eq 'Dir\.(for_fd|fchdir)' "$snapshotter"; then
+  printf '%s\n' 'adoption snapshot uses unavailable Ruby directory descriptor APIs' >&2
+  exit 1
+fi
+
 fail() {
   printf '%s\n' "$1" >&2
   exit 1
