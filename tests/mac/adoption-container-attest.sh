@@ -64,7 +64,7 @@ module CleanupFS
   extern "int unlinkat(int, const char *, int)"
   extern "int fchdir(int)"
 end
-AT_REMOVEDIR = 0x80
+AT_REMOVEDIR = RUBY_PLATFORM.include?("darwin") ? 0x80 : 0x200
 def open_at(parent, name)
   fd = CleanupFS.openat(parent.fileno, name, File::RDONLY | File::NOFOLLOW, 0)
   raise SystemCallError.new("openat", Fiddle.last_error) if fd.negative?
@@ -161,7 +161,8 @@ while IFS="$tab" read -r suffix service source destination access kind container
       ;;
     *) die 'invalid attestation kind' ;;
   esac
-  copy_blocks=$(( (copy_limit + 511) / 512 ))
+  copy_budget=$((copy_limit + 1048576))
+  copy_blocks=$(( (copy_budget + 511) / 512 ))
   challenge_source=$source
   challenge_kind=$kind
   challenge_digest=$expected

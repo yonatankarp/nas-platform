@@ -372,7 +372,7 @@ module AdoptionFileSystem
 end
 
 StagingDirectory = Struct.new(:parent, :name, :file, :path, :removed, keyword_init: true)
-AT_REMOVEDIR = 0x80
+AT_REMOVEDIR = RUBY_PLATFORM.include?("darwin") ? 0x80 : 0x200
 
 def safe_basename!(name)
   unsafe = name.empty? || %w[. ..].include?(name) || name.include?(File::SEPARATOR) || name.include?("\0")

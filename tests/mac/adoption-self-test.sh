@@ -24,6 +24,10 @@ fail() {
   exit 1
 }
 
+mode() {
+  ruby -e 'puts((File.lstat(ARGV.fetch(0)).mode & 0o777).to_s(8))' "$1"
+}
+
 [ -x "$coordinator" ] || fail 'adoption coordinator is absent or not executable'
 
 legacy_root=$temporary_root/nas-infrastructure
@@ -93,6 +97,9 @@ printf 'docker %s\n' "$*" >> "${FAKE_COMMAND_LOG:?}"
 SH
 cat > "$fake_bin/ansible-playbook" <<'SH'
 #!/bin/sh
+mode() {
+  ruby -e 'puts((File.lstat(ARGV.fetch(0)).mode & 0o777).to_s(8))' "$1"
+}
 printf 'ansible-playbook %s\n' "$*" >> "${FAKE_COMMAND_LOG:?}"
 case " $* " in
   *' --vault-password-file '*' -e @'*' -e legacy_env_root='*' -e legacy_expected_commit='*) ;;
@@ -116,7 +123,7 @@ done
 [ "$extra_vars" = "$(sed -n '1p' "${FAKE_PARITY_VIEW_LOG:?}")" ] || exit 3
 [ "$extra_vars" != "${PLATFORM_MAC_PARITY_VAULT_FILE:?}" ] || exit 3
 cmp -s "$extra_vars" "$PLATFORM_MAC_PARITY_VAULT_FILE" || exit 3
-snapshot_mode=$(stat -f '%Lp' "$extra_vars" 2>/dev/null || stat -c '%a' "$extra_vars")
+snapshot_mode=$(mode "$extra_vars")
 [ "$snapshot_mode" = 400 ] || exit 3
 mkdir -m 0700 "$root"
 for service in audiobookshelf beszel dozzle immich jellyfin komga ntfy paperless-ngx tinymediamanager; do
@@ -281,8 +288,8 @@ docker_line=$(grep -n '^docker version$' "$log" | tail -n 1 | cut -d: -f1)
 ansible_line=$(grep -n '^ansible-playbook ' "$log" | tail -n 1 | cut -d: -f1)
 [ "$docker_line" -lt "$ansible_line" ] || fail 'render ran before preflight completed'
 for file in "$sandbox"/legacy-env/*.env; do
-  mode=$(stat -f '%Lp' "$file" 2>/dev/null || stat -c '%a' "$file")
-  [ "$mode" = 600 ] || fail 'rendered legacy environment mode differs'
+  rendered_mode=$(mode "$file")
+  [ "$rendered_mode" = 600 ] || fail 'rendered legacy environment mode differs'
   grep -F 'DOLLAR=$$safe' "$file" >/dev/null || fail 'Compose dollar escaping differs'
 done
 

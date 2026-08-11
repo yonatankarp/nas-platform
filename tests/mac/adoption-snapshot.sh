@@ -104,7 +104,7 @@ CUTOVER_FIELDS = %w[
   schema binding_sha256 lane sandbox_id project_name legacy_commit git_revision vault_checksum
   parity_vault_checksum
 ].freeze
-AT_REMOVEDIR = 0x80
+AT_REMOVEDIR = RUBY_PLATFORM.include?("darwin") ? 0x80 : 0x200
 
 module SnapshotFileSystem
   extend Fiddle::Importer

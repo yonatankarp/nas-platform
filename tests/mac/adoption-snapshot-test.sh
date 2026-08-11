@@ -23,6 +23,22 @@ fail() {
   exit 1
 }
 
+mode() {
+  ruby -e 'puts((File.lstat(ARGV.fetch(0)).mode & 0o777).to_s(8))' "$1"
+}
+
+blocks() {
+  ruby -e 'puts File.stat(ARGV.fetch(0)).blocks' "$1"
+}
+
+size() {
+  ruby -e 'puts File.stat(ARGV.fetch(0)).size' "$1"
+}
+
+owner() {
+  ruby -e 's = File.stat(ARGV.fetch(0)); puts "#{s.uid}:#{s.gid}"' "$1"
+}
+
 fixture=$(mktemp -d "${TMPDIR:-/tmp}/nas-platform-snapshot-test.XXXXXX")
 fixture=$(CDPATH= cd -- "$fixture" && pwd -P)
 override_root=$fixture/overrides
@@ -116,7 +132,7 @@ printf '%s\n' '{"schema":1,"legacy_commit":"012345678901234567890123456789012345
 printf '%s\n' '{"lane":"adoption","sandbox_id":"nas-platform-mac.AbC123","git_revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","vault_checksum":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","parity_vault_checksum":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","legacy_commit":"0123456789012345678901234567890123456789","project_name":"nas-platform-mac-abc123"}' > "$state"
 chmod 0600 "$baseline" "$state"
 baseline_before=$(shasum -a 256 "$baseline" | awk '{print $1}')
-if command -v xattr >/dev/null 2>&1; then
+if [ "$(uname -s)" = Darwin ] && command -v xattr >/dev/null 2>&1; then
   xattr -cr "$sandbox"
 fi
 
@@ -128,7 +144,12 @@ if [ -n "$archive_gid" ]; then
 fi
 
 cp "$override_root/audiobookshelf.yml" "$fixture/audiobookshelf-mode.original"
-sed -i '' -e 's#:/audiobooks:ro#:/audiobooks:rw#' "$override_root/audiobookshelf.yml"
+ruby -e '
+  path = ARGV.fetch(0)
+  source = File.binread(path)
+  abort unless source.scan(":/audiobooks:ro").length == 1
+  File.binwrite(path, source.sub(":/audiobooks:ro", ":/audiobooks:rw"))
+' "$override_root/audiobookshelf.yml"
 if PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
   "$snapshotter" publish --override-root "$override_root" \
   --baseline "$baseline" --run-state "$state" >"$fixture/output" 2>&1; then
@@ -139,8 +160,12 @@ grep -F 'legacy adoption mapping differs from committed policy' "$fixture/output
 mv "$fixture/audiobookshelf-mode.original" "$override_root/audiobookshelf.yml"
 
 cp "$override_root/dozzle.yml" "$fixture/dozzle-policy.original"
-sed -i '' -e '/legacy\/dozzle\/data:\/data/a\
-      - ${PLATFORM_MAC_SANDBOX:?}/legacy/dozzle/extra:/extra
+ruby -e '
+  path = ARGV.fetch(0)
+  source = File.binread(path)
+  needle = "      - ${PLATFORM_MAC_SANDBOX:?}/legacy/dozzle/data:/data\n"
+  abort unless source.scan(needle).length == 1
+  File.binwrite(path, source.sub(needle, needle + "      - ${PLATFORM_MAC_SANDBOX:?}/legacy/dozzle/extra:/extra\n"))
 ' "$override_root/dozzle.yml"
 if PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
   "$snapshotter" publish --override-root "$override_root" \
@@ -290,9 +315,17 @@ if [ "$(uname -s)" = Darwin ]; then
   printf x | dd of="$archive_feature_file" bs=1 seek=8388607 conv=notrunc 2>/dev/null
 else
   dd if=/dev/zero of="$archive_feature_file" bs=1 count=1 seek=8388607 2>/dev/null
+  if PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
+    "$snapshotter" publish --override-root "$override_root" \
+    --baseline "$baseline" --run-state "$state" >"$fixture/output" 2>&1; then
+    fail 'sparse state was accepted without portable archive support'
+  fi
+  grep -F 'special state metadata requires macOS archive support' "$fixture/output" >/dev/null ||
+    fail 'sparse state emitted wrong archive diagnostic'
+  printf archive-metadata > "$archive_feature_file"
 fi
-source_sparse_blocks=$(stat -f '%b' "$archive_feature_file" 2>/dev/null || stat -c '%b' "$archive_feature_file")
-source_sparse_size=$(stat -f '%z' "$archive_feature_file" 2>/dev/null || stat -c '%s' "$archive_feature_file")
+source_sparse_blocks=$(blocks "$archive_feature_file")
+source_sparse_size=$(size "$archive_feature_file")
 sparse_supported=false
 [ $((source_sparse_blocks * 512)) -ge "$source_sparse_size" ] || sparse_supported=true
 
@@ -349,14 +382,14 @@ PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
 
 published=$sandbox/snapshot/pre-cutover
 [ -d "$published" ] && [ ! -L "$published" ] || fail 'snapshot was not published as a directory'
-[ "$(stat -f '%Lp' "$published" 2>/dev/null || stat -c '%a' "$published")" = 500 ] ||
+[ "$(mode "$published")" = 500 ] ||
   fail 'published snapshot is not immutable by mode'
 [ -f "$published/inventory.json" ] && [ -f "$published/binding.json" ] ||
   fail 'snapshot metadata is incomplete'
 [ "$(shasum -a 256 "$baseline" | awk '{print $1}')" = "$baseline_before" ] ||
   fail 'baseline changed during snapshot'
 cmp -s "$baseline" "$published/baseline.json" || fail 'immutable baseline copy differs'
-[ "$(stat -f '%Lp' "$published/baseline.json" 2>/dev/null || stat -c '%a' "$published/baseline.json")" = 400 ] ||
+[ "$(mode "$published/baseline.json")" = 400 ] ||
   fail 'baseline copy mode differs'
 
 challenge_fault_shim=$fixture/challenge-handoff-fault.rb
@@ -402,24 +435,20 @@ for challenge_mode in exception signal; do
   [ ! -e "$challenge_journal" ] || fail "$challenge_mode before token handoff retained its journal"
 done
 if [ -n "$archive_gid" ]; then
-  source_owner=$(stat -f '%u:%g' "$sandbox/legacy/dozzle/data/owned-by-secondary-group" 2>/dev/null ||
-    stat -c '%u:%g' "$sandbox/legacy/dozzle/data/owned-by-secondary-group")
-  snapshot_owner=$(stat -f '%u:%g' "$published/state/legacy/dozzle/data/owned-by-secondary-group" 2>/dev/null ||
-    stat -c '%u:%g' "$published/state/legacy/dozzle/data/owned-by-secondary-group")
+  source_owner=$(owner "$sandbox/legacy/dozzle/data/owned-by-secondary-group")
+  snapshot_owner=$(owner "$published/state/legacy/dozzle/data/owned-by-secondary-group")
   [ "$snapshot_owner" = "$source_owner" ] || fail 'snapshot did not preserve numeric archive ownership'
-  source_directory_owner=$(stat -f '%u:%g' "$sandbox/legacy/dozzle/data" 2>/dev/null ||
-    stat -c '%u:%g' "$sandbox/legacy/dozzle/data")
-  snapshot_directory_owner=$(stat -f '%u:%g' "$published/state/legacy/dozzle/data" 2>/dev/null ||
-    stat -c '%u:%g' "$published/state/legacy/dozzle/data")
+  source_directory_owner=$(owner "$sandbox/legacy/dozzle/data")
+  snapshot_directory_owner=$(owner "$published/state/legacy/dozzle/data")
   [ "$snapshot_directory_owner" = "$source_directory_owner" ] ||
     fail 'snapshot did not preserve numeric directory ownership'
 fi
 snapshot_feature_file=$published/state/legacy/dozzle/data/archive-features
-snapshot_sparse_blocks=$(stat -f '%b' "$snapshot_feature_file" 2>/dev/null || stat -c '%b' "$snapshot_feature_file")
+snapshot_sparse_blocks=$(blocks "$snapshot_feature_file")
 if [ "$sparse_supported" = true ]; then
   [ "$snapshot_sparse_blocks" -le "$source_sparse_blocks" ] || fail 'snapshot expanded sparse state'
 fi
-if command -v xattr >/dev/null 2>&1; then
+if [ "$(uname -s)" = Darwin ] && command -v xattr >/dev/null 2>&1; then
   [ "$(xattr -p com.nas-platform.archive-fidelity "$snapshot_feature_file")" = exact ] ||
     fail 'snapshot did not preserve extended attributes'
 fi
@@ -515,7 +544,7 @@ ruby -rjson -rdigest -e '
 ' "$published/inventory.json" "$rollback_sandbox" || fail 'rollback restored state differs'
 transition=$sandbox/snapshot/cutover-started.json
 [ -f "$transition" ] && [ ! -L "$transition" ] || fail 'cutover transition was not published safely'
-[ "$(stat -f '%Lp' "$transition" 2>/dev/null || stat -c '%a' "$transition")" = 400 ] ||
+[ "$(mode "$transition")" = 400 ] ||
   fail 'cutover transition mode differs'
 cp -p "$sandbox/legacy/dozzle/data/state" "$fixture/dozzle-state.original"
 simulate_failed_target_and_verifier() {
@@ -936,7 +965,12 @@ if PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
 fi
 grep -F 'reviewed overrides changed' "$fixture/output" >/dev/null ||
   fail 'changed reviewed overrides emitted wrong diagnostic'
-sed -i '' -e '$d' "$override_root/dozzle.yml"
+ruby -e '
+  path = ARGV.fetch(0)
+  lines = File.readlines(path, mode: "rb")
+  abort unless lines.last == "# changed reviewed mapping\n"
+  File.binwrite(path, lines[0...-1].join)
+' "$override_root/dozzle.yml"
 
 cp "$baseline" "$fixture/baseline.original"
 printf '%s\n' changed >> "$baseline"
