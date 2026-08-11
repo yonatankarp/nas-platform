@@ -13,6 +13,10 @@ if grep -Eq 'Dir\.(for_fd|fchdir)' "$snapshotter"; then
   printf '%s\n' 'adoption snapshot uses unavailable Ruby directory descriptor APIs' >&2
   exit 1
 fi
+if grep -Eq 'Dir\.(for_fd|fchdir)' "$test_dir/adoption-container-attest.sh"; then
+  printf '%s\n' 'adoption attester uses unavailable Ruby directory descriptor APIs' >&2
+  exit 1
+fi
 
 fail() {
   printf '%s\n' "$1" >&2

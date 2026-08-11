@@ -62,6 +62,7 @@ module CleanupFS
   dlload Fiddle.dlopen(nil)
   extern "int openat(int, const char *, int, int)"
   extern "int unlinkat(int, const char *, int)"
+  extern "int fchdir(int)"
 end
 AT_REMOVEDIR = 0x80
 def open_at(parent, name)
@@ -72,11 +73,16 @@ end
 def remove_at(parent, name)
   entry = open_at(parent, name)
   if entry.stat.directory?
-    duplicate = entry.dup
-    duplicate.autoclose = false
-    directory = Dir.for_fd(duplicate.fileno)
-    children = directory.children
-    directory.close
+    previous = File.open(".", File::RDONLY)
+    result = CleanupFS.fchdir(entry.fileno)
+    raise SystemCallError.new("fchdir", Fiddle.last_error) if result.negative?
+    begin
+      children = Dir.children(".")
+    ensure
+      restored = CleanupFS.fchdir(previous.fileno)
+      previous.close
+      raise SystemCallError.new("fchdir", Fiddle.last_error) if restored.negative?
+    end
     children.each { |child| remove_at(entry, child) }
     entry.close
     result = CleanupFS.unlinkat(parent.fileno, name, AT_REMOVEDIR)
