@@ -48,8 +48,10 @@ cleanup() {
 }
 ACTIVE_PID=
 run_child() {
-  "$@" <&0 &
+  exec 9<&0 || return 1
+  "$@" <&9 9<&- &
   ACTIVE_PID=$!
+  exec 9<&-
   if wait "$ACTIVE_PID"; then
     status=0
   else
