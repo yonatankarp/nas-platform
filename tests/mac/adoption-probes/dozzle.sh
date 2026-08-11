@@ -3,7 +3,15 @@ set -eu
 set +x
 umask 077
 dir=${PLATFORM_ADOPTION_SCRIPT_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)}
-if ! "$dir/run-dozzle-contract.sh" verify >/dev/null 2>&1; then
+if [ -n "${PLATFORM_ADOPTION_CONTRACT_FILE:-}" ]; then
+  export PLATFORM_KIND=mac
+  export PLATFORM_CONTRACT_VAULT_FILE=${PLATFORM_MAC_VAULT_FILE:?}
+  export PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=${PLATFORM_MAC_VAULT_PASSWORD_FILE:?}
+  run_contract() { /bin/sh "$PLATFORM_ADOPTION_CONTRACT_FILE" "$@"; }
+else
+  run_contract() { "$dir/run-dozzle-contract.sh" "$@"; }
+fi
+if ! run_contract verify >/dev/null 2>&1; then
   printf '%s\n' 'adoption-probe-error: dozzle evidence unavailable' >&2
   exit 1
 fi

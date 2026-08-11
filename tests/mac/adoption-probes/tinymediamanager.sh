@@ -16,7 +16,8 @@ if ! PLATFORM_TINYMEDIAMANAGER_MOVIES_ROOT="$sandbox/legacy/tinymediamanager/mov
   PLATFORM_TINYMEDIAMANAGER_SERIES_ROOT="$sandbox/legacy/tinymediamanager/series" \
   PLATFORM_TINYMEDIAMANAGER_SETTINGS_ROOT="$sandbox/legacy/tinymediamanager/data/data" \
   PLATFORM_TINYMEDIAMANAGER_CONTAINER="$container" \
-  "$dir/../contracts/tinymediamanager.sh" assert-persistence >/dev/null 2>&1; then
+  /bin/sh "${PLATFORM_ADOPTION_CONTRACT_FILE:-$dir/../contracts/tinymediamanager.sh}" \
+    assert-persistence >/dev/null 2>&1; then
   printf '%s\n' 'adoption-probe-error: tinymediamanager evidence unavailable' >&2
   exit 1
 fi

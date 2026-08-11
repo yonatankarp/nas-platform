@@ -123,6 +123,8 @@ Dir.mktmpdir("adoption-probes-test-") do |root|
   FileUtils.cp_r(File.join(PROBES, "tinymediamanager-templates"), File.join(mac, "adoption-probes"))
   contract_arguments = {
     "audiobookshelf" => "assert-persistence",
+    "beszel" => "verify",
+    "dozzle" => "verify",
     "immich" => "--platform mac assert-persistence",
     "jellyfin" => "--platform mac assert-persistence",
     "komga" => "assert-persistence",
@@ -131,6 +133,8 @@ Dir.mktmpdir("adoption-probes-test-") do |root|
   }
   contract_environment = {
     "audiobookshelf" => "[ \"$PLATFORM_AUDIOBOOKSHELF_MEDIA_LIBRARY\" = '#{root}/legacy/audiobookshelf/media' ]",
+    "beszel" => "true",
+    "dozzle" => "true",
     "immich" => "[ \"$PLATFORM_IMMICH_UPLOAD_ROOT\" = '#{root}/legacy/immich/data/upload' ] && " \
                 "if [ \"${PLATFORM_ADOPTION_PROBE_TARGET:-false}\" = true ]; then " \
                 "[ \"$PLATFORM_IMMICH_SERVER_CONTAINER\" = 'proof-immich-server' ] && " \
@@ -166,6 +170,8 @@ Dir.mktmpdir("adoption-probes-test-") do |root|
       exit 0
     SH
   end
+  fixture_helper = File.join(contracts, "legacy-fixture-paths.sh")
+  executable(fixture_helper, "#!/bin/sh\ntrue\n")
   %w[beszel dozzle].each do |name|
     executable(File.join(mac, "run-#{name}-contract.sh"), <<~SH)
       #!/bin/sh
@@ -361,17 +367,33 @@ Dir.mktmpdir("adoption-probes-test-") do |root|
       File.join(mac, "adoption-probes/tinymediamanager-templates/tvshow/list.jmte")
   }
   descriptors = descriptor_paths.transform_values { |path| File.open(path, File::RDONLY) }
+  contract_names = {
+    "audiobookshelf" => "audiobookshelf", "beszel" => "beszel", "dozzle" => "dozzle",
+    "immich" => "immich", "jellyfin" => "jellyfin", "komga" => "komga",
+    "paperless-ngx" => "paperless", "tinymediamanager" => "tinymediamanager"
+  }
+  contract_descriptors = contract_names.to_h do |service, name|
+    [service, File.open(File.join(contracts, "#{name}.sh"), File::RDONLY)]
+  end
+  helper_descriptor = File.open(fixture_helper, File::RDONLY)
   descriptor_env = target_env.merge(
-    descriptors.to_h { |variable, descriptor| [variable, "/dev/fd/#{descriptor.fileno}"] }
+    descriptors.to_h { |variable, descriptor| [variable, "/dev/fd/#{descriptor.fileno}"] },
+    "PLATFORM_CONTRACT_REPO_DIR" => root,
+    "PLATFORM_LEGACY_FIXTURE_HELPER_FILE" => "/dev/fd/#{helper_descriptor.fileno}"
   )
-  descriptor_options = descriptors.values.to_h { |descriptor| [descriptor.fileno, descriptor.fileno] }
+  all_descriptors = descriptors.values + contract_descriptors.values + [helper_descriptor]
+  descriptor_options = all_descriptors.to_h { |descriptor| [descriptor.fileno, descriptor.fileno] }
   SERVICES.each do |service|
+    service_env = descriptor_env.dup
+    if (contract = contract_descriptors[service])
+      service_env["PLATFORM_ADOPTION_CONTRACT_FILE"] = "/dev/fd/#{contract.fileno}"
+    end
     _stdout, stderr, status = Open3.capture3(
-      descriptor_env, File.join(PROBES, "#{service}.sh"), descriptor_options
+      service_env, File.join(PROBES, "#{service}.sh"), descriptor_options
     )
     failures << "#{service} descriptor-bound target probe failed: #{stderr}" unless status.success?
   end
-  descriptors.each_value(&:close)
+  all_descriptors.each(&:close)
   FileUtils.cp(target_ntfy_env, ntfy_env)
   File.chmod(0o600, ntfy_env)
 

@@ -2,7 +2,7 @@
 set -eu
 set +x
 
-repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)
+repo_dir=${PLATFORM_CONTRACT_REPO_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)}
 compose=$repo_dir/services/jellyfin/compose.yml
 role=$repo_dir/roles/jellyfin/tasks/main.yml
 defaults=$repo_dir/roles/jellyfin/defaults/main.yml
@@ -139,7 +139,7 @@ puts "Jellyfin static contract passed (#{platform})"
 RUBY
 
 [ "$mode" = static ] && exit 0
-. "$repo_dir/tests/contracts/legacy-fixture-paths.sh"
+. "${PLATFORM_LEGACY_FIXTURE_HELPER_FILE:-$repo_dir/tests/contracts/legacy-fixture-paths.sh}"
 legacy_fixture_validate PLATFORM_JELLYFIN_MEDIA_ROOT legacy/jellyfin/media ||
   fail_contract 'legacy media root is unsafe'
 legacy_fixture_validate PLATFORM_JELLYFIN_TRANSCODE_ROOT legacy/jellyfin/cache/transcodes ||

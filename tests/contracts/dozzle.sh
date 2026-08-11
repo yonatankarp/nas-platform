@@ -18,7 +18,7 @@ case $mode in
 esac
 [ "$#" -eq 0 ] || shift
 
-repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)
+repo_dir=${PLATFORM_CONTRACT_REPO_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)}
 compose=$repo_dir/services/dozzle/compose.yml
 role=$repo_dir/roles/dozzle/tasks/main.yml
 defaults=$repo_dir/roles/dozzle/defaults/main.yml

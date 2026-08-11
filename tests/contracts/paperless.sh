@@ -3,7 +3,7 @@ set -eu
 set +x
 
 mode=${1:-run}
-repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)
+repo_dir=${PLATFORM_CONTRACT_REPO_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)}
 compose=$repo_dir/services/paperless-ngx/compose.yml
 mac_compose=$repo_dir/services/paperless-ngx/compose.mac.yml
 role=$repo_dir/roles/paperless_ngx/tasks/main.yml
@@ -207,7 +207,7 @@ grep -qF 'wait_healthy(REDIS, WEBSERVER)' "$snapshot" ||
 grep -qF 'request("delete", "/api/documents/' "$snapshot" ||
   fail_contract 'Paperless rollback drill does not destructively test restoration'
 [ "$mode" = static ] && { printf '%s\n' 'Paperless static contract passed'; exit 0; }
-. "$repo_dir/tests/contracts/legacy-fixture-paths.sh"
+. "${PLATFORM_LEGACY_FIXTURE_HELPER_FILE:-$repo_dir/tests/contracts/legacy-fixture-paths.sh}"
 legacy_fixture_validate PLATFORM_PAPERLESS_CONSUME_ROOT legacy/paperless-ngx/consume ||
   fail_contract 'legacy consume root is unsafe'
 legacy_fixture_validate PLATFORM_PAPERLESS_EXPORT_ROOT legacy/paperless-ngx/export ||

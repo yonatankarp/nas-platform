@@ -16,7 +16,8 @@ if ! PLATFORM_PAPERLESS_CONSUME_ROOT="$sandbox/legacy/paperless-ngx/consume" \
   PLATFORM_PAPERLESS_EXPORT_ROOT="$sandbox/legacy/paperless-ngx/export" \
   PLATFORM_CONTRACT_REPO_DIR="$dir/../.." \
   PLATFORM_PAPERLESS_WEBSERVER_CONTAINER="$webserver_container" \
-  "$dir/../contracts/paperless.sh" assert-persistence >/dev/null 2>&1; then
+  /bin/sh "${PLATFORM_ADOPTION_CONTRACT_FILE:-$dir/../contracts/paperless.sh}" \
+    assert-persistence >/dev/null 2>&1; then
   printf '%s\n' 'adoption-probe-error: paperless-ngx evidence unavailable' >&2
   exit 1
 fi

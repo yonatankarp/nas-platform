@@ -3,7 +3,7 @@ set -eu
 set +x
 
 mode=${1:-run}
-repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)
+repo_dir=${PLATFORM_CONTRACT_REPO_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)}
 compose=$repo_dir/services/audiobookshelf/compose.yml
 mac_compose=$repo_dir/services/audiobookshelf/compose.mac.yml
 role=$repo_dir/roles/audiobookshelf/tasks/main.yml
@@ -85,7 +85,7 @@ end
 RUBY
 
 [ "$mode" = static ] && { printf '%s\n' 'Audiobookshelf static contract passed'; exit 0; }
-. "$repo_dir/tests/contracts/legacy-fixture-paths.sh"
+. "${PLATFORM_LEGACY_FIXTURE_HELPER_FILE:-$repo_dir/tests/contracts/legacy-fixture-paths.sh}"
 legacy_fixture_validate PLATFORM_AUDIOBOOKSHELF_MEDIA_LIBRARY legacy/audiobookshelf/media ||
   fail_contract 'legacy fixture root is unsafe'
 

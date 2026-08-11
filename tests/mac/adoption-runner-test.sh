@@ -104,6 +104,9 @@ expect_failure 'ambient comparison self-test' 'reserved adoption mapping environ
 expect_failure 'ambient dependency mutation' 'reserved adoption mapping environment must be unset' \
   env PLATFORM_ADOPTION_COMPARE_DEPENDENCY_MUTATION=transient "$runner" --lane fresh \
     --vault-file "$vault_file" --vault-password-file "$password_file"
+expect_failure 'ambient dependency target' 'reserved adoption mapping environment must be unset' \
+  env PLATFORM_ADOPTION_COMPARE_DEPENDENCY_TARGET=contract "$runner" --lane fresh \
+    --vault-file "$vault_file" --vault-password-file "$password_file"
 expect_failure 'ambient dependency payload' 'reserved adoption mapping environment must be unset' \
   env PLATFORM_ADOPTION_COMPARE_DEPENDENCY_PAYLOAD=hostile "$runner" --lane fresh \
     --vault-file "$vault_file" --vault-password-file "$password_file"
@@ -112,6 +115,15 @@ expect_failure 'ambient probe script root' 'reserved adoption mapping environmen
     --vault-file "$vault_file" --vault-password-file "$password_file"
 expect_failure 'ambient baseline descriptor' 'reserved adoption mapping environment must be unset' \
   env PLATFORM_ADOPTION_BASELINE_FILE=/dev/fd/9 "$runner" --lane fresh \
+    --vault-file "$vault_file" --vault-password-file "$password_file"
+expect_failure 'ambient contract descriptor' 'reserved adoption mapping environment must be unset' \
+  env PLATFORM_ADOPTION_CONTRACT_FILE=/dev/fd/11 "$runner" --lane fresh \
+    --vault-file "$vault_file" --vault-password-file "$password_file"
+expect_failure 'ambient contract repository' 'reserved adoption mapping environment must be unset' \
+  env PLATFORM_CONTRACT_REPO_DIR="$temporary_parent" "$runner" --lane fresh \
+    --vault-file "$vault_file" --vault-password-file "$password_file"
+expect_failure 'ambient fixture helper descriptor' 'reserved adoption mapping environment must be unset' \
+  env PLATFORM_LEGACY_FIXTURE_HELPER_FILE=/dev/fd/12 "$runner" --lane fresh \
     --vault-file "$vault_file" --vault-password-file "$password_file"
 expect_failure 'ambient tMM template descriptor' 'reserved adoption mapping environment must be unset' \
   env PLATFORM_ADOPTION_TMM_MOVIE_TEMPLATE_CONF=/dev/fd/10 "$runner" --lane fresh \

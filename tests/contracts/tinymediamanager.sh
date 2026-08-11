@@ -3,7 +3,7 @@ set -eu
 set +x
 
 mode=${1:-run}
-repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)
+repo_dir=${PLATFORM_CONTRACT_REPO_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)}
 compose=$repo_dir/services/tinymediamanager/compose.yml
 mac_compose=$repo_dir/services/tinymediamanager/compose.mac.yml
 integration_compose=$repo_dir/services/tinymediamanager/compose.integration.yml
@@ -96,7 +96,7 @@ abort "tinyMediaManager contract failed: role must not edit an opaque database" 
 RUBY
 
 [ "$mode" = static ] && { printf '%s\n' 'tinyMediaManager static contract passed'; exit 0; }
-. "$repo_dir/tests/contracts/legacy-fixture-paths.sh"
+. "${PLATFORM_LEGACY_FIXTURE_HELPER_FILE:-$repo_dir/tests/contracts/legacy-fixture-paths.sh}"
 legacy_fixture_validate PLATFORM_TINYMEDIAMANAGER_MOVIES_ROOT legacy/tinymediamanager/movies ||
   fail_contract 'legacy movies root is unsafe'
 legacy_fixture_validate PLATFORM_TINYMEDIAMANAGER_SERIES_ROOT legacy/tinymediamanager/series ||

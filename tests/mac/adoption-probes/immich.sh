@@ -24,7 +24,8 @@ if ! PLATFORM_IMMICH_UPLOAD_ROOT="$sandbox/legacy/immich/data/upload" \
   PLATFORM_IMMICH_MACHINE_LEARNING_CONTAINER="$machine_learning_container" \
   PLATFORM_IMMICH_REDIS_CONTAINER="$redis_container" \
   PLATFORM_IMMICH_POSTGRES_CONTAINER="$postgres_container" \
-  "$dir/../contracts/immich.sh" --platform mac assert-persistence >/dev/null 2>&1; then
+  /bin/sh "${PLATFORM_ADOPTION_CONTRACT_FILE:-$dir/../contracts/immich.sh}" \
+    --platform mac assert-persistence >/dev/null 2>&1; then
   printf '%s\n' 'adoption-probe-error: immich evidence unavailable' >&2
   exit 1
 fi

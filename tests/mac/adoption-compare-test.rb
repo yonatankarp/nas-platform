@@ -68,6 +68,11 @@ def write_probe(root, service)
     #!/bin/sh
     set -eu
     if [ "${PLATFORM_FAKE_EXECUTE_DEPENDENCY:-}" = true ] && [ "#{service}" = audiobookshelf ]; then
+      case ${PLATFORM_FAKE_DEPENDENCY_KIND:-baseline} in
+        contract) "${PLATFORM_ADOPTION_CONTRACT_FILE:-$PLATFORM_ADOPTION_SCRIPT_DIR/../contracts/audiobookshelf.sh}" \
+          assert-persistence ;;
+        helper) . "${PLATFORM_LEGACY_FIXTURE_HELPER_FILE:-$PLATFORM_ADOPTION_SCRIPT_DIR/../contracts/legacy-fixture-paths.sh}" ;;
+      esac
       exec ruby "${PLATFORM_ADOPTION_BASELINE_FILE:-$PLATFORM_ADOPTION_SCRIPT_DIR/adoption-baseline.rb}" \
         --emit-probe audiobookshelf
     fi
@@ -318,22 +323,30 @@ Dir.mktmpdir("adoption-compare-test-") do |root|
   failures << "scrubbed Ruby startup environment broke comparison: #{stderr}" unless status.success?
   failures << "probe subprocess executed hostile Ruby startup loader" if File.exist?(startup_marker)
 
-  dependency_marker = File.join(root, "hostile-dependency-executed")
-  dependency_payload = <<~RUBY
-    File.write(#{dependency_marker.dump}, "executed")
-    puts ENV.fetch("PLATFORM_FAKE_AUDIOBOOKSHELF_EVIDENCE")
-  RUBY
-  _stdout, _stderr, status = run_compare(
-    root, baseline: baseline_path, capabilities: capabilities_path,
-    output: output, evidence_by_service: baseline_services,
-    extra_env: {
-      "PLATFORM_FAKE_EXECUTE_DEPENDENCY" => "true",
-      "PLATFORM_ADOPTION_COMPARE_DEPENDENCY_MUTATION" => "transient",
-      "PLATFORM_ADOPTION_COMPARE_DEPENDENCY_PAYLOAD" => dependency_payload
-    }
-  )
-  failures << "transient dependency replacement was accepted" if status.success?
-  failures << "transient dependency replacement executed" if File.exist?(dependency_marker)
+  %w[baseline contract helper].each do |dependency_kind|
+    dependency_marker = File.join(root, "hostile-#{dependency_kind}-executed")
+    dependency_payload = if dependency_kind == "baseline"
+                           <<~RUBY
+                             File.write(#{dependency_marker.dump}, "executed")
+                             puts ENV.fetch("PLATFORM_FAKE_AUDIOBOOKSHELF_EVIDENCE")
+                           RUBY
+                         else
+                           "#!/bin/sh\nprintf executed > #{dependency_marker.dump}\nexit 0\n"
+                         end
+    _stdout, _stderr, status = run_compare(
+      root, baseline: baseline_path, capabilities: capabilities_path,
+      output: output, evidence_by_service: baseline_services,
+      extra_env: {
+        "PLATFORM_FAKE_EXECUTE_DEPENDENCY" => "true",
+        "PLATFORM_FAKE_DEPENDENCY_KIND" => dependency_kind,
+        "PLATFORM_ADOPTION_COMPARE_DEPENDENCY_MUTATION" => "transient",
+        "PLATFORM_ADOPTION_COMPARE_DEPENDENCY_TARGET" => dependency_kind,
+        "PLATFORM_ADOPTION_COMPARE_DEPENDENCY_PAYLOAD" => dependency_payload
+      }
+    )
+    failures << "transient #{dependency_kind} replacement was accepted" if status.success?
+    failures << "transient #{dependency_kind} replacement executed" if File.exist?(dependency_marker)
+  end
 
   hostile_marker = File.join(root, "hostile-probe-executed")
   hostile_script = "printf hostile > '#{hostile_marker}'\n"

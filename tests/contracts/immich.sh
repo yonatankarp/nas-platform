@@ -2,7 +2,7 @@
 set -eu
 set +x
 
-repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)
+repo_dir=${PLATFORM_CONTRACT_REPO_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)}
 compose=$repo_dir/services/immich/compose.yml
 role=$repo_dir/roles/immich/tasks/main.yml
 defaults=$repo_dir/roles/immich/defaults/main.yml
@@ -292,7 +292,7 @@ puts "Immich static contract passed (#{platform})"
 RUBY
 
 [ "$mode" = static ] && exit 0
-. "$repo_dir/tests/contracts/legacy-fixture-paths.sh"
+. "${PLATFORM_LEGACY_FIXTURE_HELPER_FILE:-$repo_dir/tests/contracts/legacy-fixture-paths.sh}"
 legacy_fixture_validate PLATFORM_IMMICH_UPLOAD_ROOT legacy/immich/data/upload ||
   fail_contract 'legacy upload root is unsafe'
 legacy_fixture_validate PLATFORM_IMMICH_THUMBNAIL_ROOT legacy/immich/thumbs ||

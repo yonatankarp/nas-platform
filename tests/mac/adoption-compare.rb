@@ -14,6 +14,16 @@ RUBY_STARTUP_ENVIRONMENT = %w[
   RUBYOPT RUBYLIB RUBYGEMS_GEMDEPS GEM_HOME GEM_PATH
   BUNDLE_GEMFILE BUNDLE_BIN_PATH BUNDLE_PATH BUNDLE_APP_CONFIG BUNDLE_WITH BUNDLE_WITHOUT
 ].freeze
+PROBE_CONTRACT_DEPENDENCIES = {
+  "audiobookshelf" => "tests/contracts/audiobookshelf.sh",
+  "beszel" => "tests/contracts/beszel.sh",
+  "dozzle" => "tests/contracts/dozzle.sh",
+  "immich" => "tests/contracts/immich.sh",
+  "jellyfin" => "tests/contracts/jellyfin.sh",
+  "komga" => "tests/contracts/komga.sh",
+  "paperless-ngx" => "tests/contracts/paperless.sh",
+  "tinymediamanager" => "tests/contracts/tinymediamanager.sh"
+}.freeze
 
 def compare_refuse(output, checks)
   begin
@@ -127,10 +137,17 @@ end
 def with_dependency_mutation(stage)
   return yield unless ENV["PLATFORM_ADOPTION_COMPARE_DEPENDENCY_MUTATION"] == "transient"
 
-  target = File.join(stage.path, "tests/mac/adoption-baseline.rb")
+  relative = case ENV.fetch("PLATFORM_ADOPTION_COMPARE_DEPENDENCY_TARGET", "baseline")
+             when "baseline" then "tests/mac/adoption-baseline.rb"
+             when "contract" then "tests/contracts/audiobookshelf.sh"
+             when "helper" then "tests/contracts/legacy-fixture-paths.sh"
+             else raise "dependency mutation target differs"
+             end
+  target = File.join(stage.path, relative)
   held = "#{target}.held"
   File.rename(target, held)
   File.write(target, ENV.fetch("PLATFORM_ADOPTION_COMPARE_DEPENDENCY_PAYLOAD"))
+  File.chmod(0o700, target) if relative.end_with?(".sh")
   result = yield
   File.unlink(target)
   File.rename(held, target)
@@ -220,6 +237,16 @@ begin
   baseline_descriptor = open_snapshot_descriptor(
     baseline_path, dependency_snapshot_states.fetch(baseline_path), max_bytes: 16 * 1024 * 1024
   )
+  contract_descriptors = PROBE_CONTRACT_DEPENDENCIES.to_h do |service, relative|
+    path = File.join(dependency_stage.path, relative)
+    [service, open_snapshot_descriptor(
+      path, dependency_snapshot_states.fetch(path), max_bytes: 16 * 1024 * 1024
+    )]
+  end
+  helper_path = File.join(dependency_stage.path, "tests/contracts/legacy-fixture-paths.sh")
+  fixture_helper_descriptor = open_snapshot_descriptor(
+    helper_path, dependency_snapshot_states.fetch(helper_path), max_bytes: 16 * 1024 * 1024
+  )
   template_variables = {
     "PLATFORM_ADOPTION_TMM_MOVIE_TEMPLATE_CONF" =>
       "tests/mac/adoption-probes/tinymediamanager-templates/movie/template.conf",
@@ -259,6 +286,8 @@ begin
     environment["PLATFORM_ADOPTION_PROBE_TARGET"] = "true"
     environment["PLATFORM_ADOPTION_SCRIPT_DIR"] = "tests/mac"
     environment["PLATFORM_ADOPTION_BASELINE_FILE"] = "/dev/fd/#{baseline_descriptor.fileno}"
+    environment["PLATFORM_CONTRACT_REPO_DIR"] = "."
+    environment["PLATFORM_LEGACY_FIXTURE_HELPER_FILE"] = "/dev/fd/#{fixture_helper_descriptor.fileno}"
     environment["PLATFORM_ADOPTION_NTFY_CONTAINER"] = "#{ENV.fetch('PLATFORM_PROJECT_NAME')}-ntfy"
     environment["PLATFORM_ADOPTION_NTFY_ENV_FILE"] = File.join(
       ENV.fetch("PLATFORM_DOCKER_ROOT"), "nas-platform/runtime/services/ntfy/.env"
@@ -268,6 +297,11 @@ begin
       options[descriptor.fileno] = descriptor.fileno
     end
     descriptor_options[baseline_descriptor.fileno] = baseline_descriptor.fileno
+    descriptor_options[fixture_helper_descriptor.fileno] = fixture_helper_descriptor.fileno
+    if (contract_descriptor = contract_descriptors[service])
+      environment["PLATFORM_ADOPTION_CONTRACT_FILE"] = "/dev/fd/#{contract_descriptor.fileno}"
+      descriptor_options[contract_descriptor.fileno] = contract_descriptor.fileno
+    end
     probe = File.join(probe_stage.path, "#{service}.sh")
     stage_signature = file_signature_from_stat(probe_stage.file.stat)
     probe_bytes = secure_file_bytes(probe, max_bytes: 16 * 1024 * 1024, executable: true)
@@ -313,6 +347,10 @@ begin
   probe_stage = nil
   baseline_descriptor.close
   baseline_descriptor = nil
+  contract_descriptors.each_value(&:close)
+  contract_descriptors = nil
+  fixture_helper_descriptor.close
+  fixture_helper_descriptor = nil
   template_descriptors.each_value(&:close)
   template_descriptors = nil
   destroy_staging_directory(dependency_stage)
@@ -339,5 +377,7 @@ ensure
   end
   output_parent&.close
   baseline_descriptor&.close unless baseline_descriptor&.closed?
+  contract_descriptors&.each_value { |descriptor| descriptor.close unless descriptor.closed? }
+  fixture_helper_descriptor&.close unless fixture_helper_descriptor&.closed?
   template_descriptors&.each_value { |descriptor| descriptor.close unless descriptor.closed? }
 end
