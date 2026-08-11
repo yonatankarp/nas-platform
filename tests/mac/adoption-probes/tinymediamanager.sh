@@ -20,4 +20,4 @@ if ! PLATFORM_TINYMEDIAMANAGER_MOVIES_ROOT="$sandbox/legacy/tinymediamanager/mov
   printf '%s\n' 'adoption-probe-error: tinymediamanager evidence unavailable' >&2
   exit 1
 fi
-exec ruby "$dir/adoption-baseline.rb" --emit-probe tinymediamanager
+exec ruby "${PLATFORM_ADOPTION_BASELINE_FILE:-$dir/adoption-baseline.rb}" --emit-probe tinymediamanager

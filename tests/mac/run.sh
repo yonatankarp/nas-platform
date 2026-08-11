@@ -45,6 +45,11 @@ keep_on_failure=false
   [ -z "${PLATFORM_ADOPTION_NTFY_CONTAINER+x}" ] &&
   [ -z "${PLATFORM_ADOPTION_NTFY_ENV_FILE+x}" ] &&
   [ -z "${PLATFORM_ADOPTION_SCRIPT_DIR+x}" ] &&
+  [ -z "${PLATFORM_ADOPTION_BASELINE_FILE+x}" ] &&
+  [ -z "${PLATFORM_ADOPTION_TMM_MOVIE_TEMPLATE_CONF+x}" ] &&
+  [ -z "${PLATFORM_ADOPTION_TMM_MOVIE_LIST_JMTE+x}" ] &&
+  [ -z "${PLATFORM_ADOPTION_TMM_TVSHOW_TEMPLATE_CONF+x}" ] &&
+  [ -z "${PLATFORM_ADOPTION_TMM_TVSHOW_LIST_JMTE+x}" ] &&
   [ -z "${PLATFORM_SNAPSHOT_ESCAPE+x}" ] ||
   mac_die 'reserved adoption mapping environment must be unset'
 while [ "$#" -gt 0 ]; do

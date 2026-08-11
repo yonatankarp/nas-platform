@@ -110,6 +110,12 @@ expect_failure 'ambient dependency payload' 'reserved adoption mapping environme
 expect_failure 'ambient probe script root' 'reserved adoption mapping environment must be unset' \
   env PLATFORM_ADOPTION_SCRIPT_DIR="$temporary_parent" "$runner" --lane fresh \
     --vault-file "$vault_file" --vault-password-file "$password_file"
+expect_failure 'ambient baseline descriptor' 'reserved adoption mapping environment must be unset' \
+  env PLATFORM_ADOPTION_BASELINE_FILE=/dev/fd/9 "$runner" --lane fresh \
+    --vault-file "$vault_file" --vault-password-file "$password_file"
+expect_failure 'ambient tMM template descriptor' 'reserved adoption mapping environment must be unset' \
+  env PLATFORM_ADOPTION_TMM_MOVIE_TEMPLATE_CONF=/dev/fd/10 "$runner" --lane fresh \
+    --vault-file "$vault_file" --vault-password-file "$password_file"
 expect_failure 'ambient target probe mode' 'reserved adoption mapping environment must be unset' \
   env PLATFORM_ADOPTION_PROBE_TARGET=true "$runner" --lane fresh \
     --vault-file "$vault_file" --vault-password-file "$password_file"

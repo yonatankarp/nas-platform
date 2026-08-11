@@ -19,4 +19,4 @@ if ! PLATFORM_JELLYFIN_MEDIA_ROOT="$sandbox/legacy/jellyfin/media" \
   printf '%s\n' 'adoption-probe-error: jellyfin evidence unavailable' >&2
   exit 1
 fi
-exec ruby "$dir/adoption-baseline.rb" --emit-probe jellyfin
+exec ruby "${PLATFORM_ADOPTION_BASELINE_FILE:-$dir/adoption-baseline.rb}" --emit-probe jellyfin

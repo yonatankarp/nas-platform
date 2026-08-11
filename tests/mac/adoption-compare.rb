@@ -124,40 +124,48 @@ def inject_staged_probe_mutation(path, mode, payload)
   File.rename(held, path)
 end
 
-def capture_with_dependency_mutation(stage, environment, probe_bytes)
-  return capture(environment, "/bin/sh", "-c", probe_bytes) unless
-    ENV["PLATFORM_ADOPTION_COMPARE_DEPENDENCY_MUTATION"] == "transient"
+def with_dependency_mutation(stage)
+  return yield unless ENV["PLATFORM_ADOPTION_COMPARE_DEPENDENCY_MUTATION"] == "transient"
 
-  held = "#{stage.name}.held"
-  native_at!(:rename, stage.parent, stage.name, held)
-  FileUtils.mkdir_p(File.join(stage.path, "tests/mac"), mode: 0o700)
-  File.write(
-    File.join(stage.path, "tests/mac/adoption-baseline.rb"),
-    ENV.fetch("PLATFORM_ADOPTION_COMPARE_DEPENDENCY_PAYLOAD")
-  )
-  result = capture(environment, "/bin/sh", "-c", probe_bytes)
-  FileUtils.remove_entry_secure(stage.path)
-  native_at!(:rename, stage.parent, held, stage.name)
+  target = File.join(stage.path, "tests/mac/adoption-baseline.rb")
+  held = "#{target}.held"
+  File.rename(target, held)
+  File.write(target, ENV.fetch("PLATFORM_ADOPTION_COMPARE_DEPENDENCY_PAYLOAD"))
+  result = yield
+  File.unlink(target)
+  File.rename(held, target)
   result
 ensure
-  if held && directory_children(stage.parent).include?(held)
-    FileUtils.remove_entry_secure(stage.path) if File.exist?(stage.path)
-    native_at!(:rename, stage.parent, held, stage.name)
+  if held && File.file?(held)
+    File.unlink(target) if File.exist?(target)
+    File.rename(held, target)
   end
 end
 
-def capture_in_staged_dependencies(stage, environment, probe_bytes, mutate:)
+def open_snapshot_descriptor(path, state, max_bytes: 64 * 1024)
+  signature, digest = state
+  descriptor = nil
+  secure_file_handle(path, trusted_root: File.dirname(path)) do |file|
+    bytes = file.read(max_bytes + 1)
+    raise "staged dependency differs" if bytes.bytesize > max_bytes ||
+                                                Digest::SHA256.hexdigest(bytes) != digest
+    descriptor = file.dup
+    descriptor.rewind
+  end
+  raise "staged dependency differs" unless file_signature(path) == signature
+
+  descriptor
+end
+
+def capture_staged_probe(stage, environment, probe_bytes, descriptor_options, mutate:)
   previous = File.open(".", File::RDONLY)
   expected = stage.file.stat
   Dir.fchdir(stage.file.fileno)
   current = File.stat(".")
   raise "staged dependency namespace differs" unless [current.dev, current.ino] == [expected.dev, expected.ino]
 
-  if mutate
-    capture_with_dependency_mutation(stage, environment, probe_bytes)
-  else
-    capture(environment, "/bin/sh", "-c", probe_bytes)
-  end
+  run = -> { capture(environment, "/bin/sh", "-c", probe_bytes, spawn_options: descriptor_options) }
+  mutate ? with_dependency_mutation(stage, &run) : run.call
 ensure
   Dir.fchdir(previous.fileno) if previous
   previous&.close
@@ -208,6 +216,24 @@ begin
   dependency_stage = nil
   _dependency_root, dependency_source_states, dependency_snapshot_states, dependency_stage =
     snapshot_probe_dependencies(source_root, private_root)
+  baseline_path = File.join(dependency_stage.path, "tests/mac/adoption-baseline.rb")
+  baseline_descriptor = open_snapshot_descriptor(
+    baseline_path, dependency_snapshot_states.fetch(baseline_path), max_bytes: 16 * 1024 * 1024
+  )
+  template_variables = {
+    "PLATFORM_ADOPTION_TMM_MOVIE_TEMPLATE_CONF" =>
+      "tests/mac/adoption-probes/tinymediamanager-templates/movie/template.conf",
+    "PLATFORM_ADOPTION_TMM_MOVIE_LIST_JMTE" =>
+      "tests/mac/adoption-probes/tinymediamanager-templates/movie/list.jmte",
+    "PLATFORM_ADOPTION_TMM_TVSHOW_TEMPLATE_CONF" =>
+      "tests/mac/adoption-probes/tinymediamanager-templates/tvshow/template.conf",
+    "PLATFORM_ADOPTION_TMM_TVSHOW_LIST_JMTE" =>
+      "tests/mac/adoption-probes/tinymediamanager-templates/tvshow/list.jmte"
+  }
+  template_descriptors = template_variables.to_h do |variable, relative|
+    path = File.join(dependency_stage.path, relative)
+    [variable, open_snapshot_descriptor(path, dependency_snapshot_states.fetch(path))]
+  end
   probe_stage = create_staging_directory(private_root.file, private_root.path, "probes-")
   probe_source_digests = {}
   staged_probe_digests = {}
@@ -232,6 +258,16 @@ begin
     environment = RUBY_STARTUP_ENVIRONMENT.to_h { |name| [name, nil] }
     environment["PLATFORM_ADOPTION_PROBE_TARGET"] = "true"
     environment["PLATFORM_ADOPTION_SCRIPT_DIR"] = "tests/mac"
+    environment["PLATFORM_ADOPTION_BASELINE_FILE"] = "/dev/fd/#{baseline_descriptor.fileno}"
+    environment["PLATFORM_ADOPTION_NTFY_CONTAINER"] = "#{ENV.fetch('PLATFORM_PROJECT_NAME')}-ntfy"
+    environment["PLATFORM_ADOPTION_NTFY_ENV_FILE"] = File.join(
+      ENV.fetch("PLATFORM_DOCKER_ROOT"), "nas-platform/runtime/services/ntfy/.env"
+    )
+    descriptor_options = template_descriptors.each_with_object({}) do |(variable, descriptor), options|
+      environment[variable] = "/dev/fd/#{descriptor.fileno}"
+      options[descriptor.fileno] = descriptor.fileno
+    end
+    descriptor_options[baseline_descriptor.fileno] = baseline_descriptor.fileno
     probe = File.join(probe_stage.path, "#{service}.sh")
     stage_signature = file_signature_from_stat(probe_stage.file.stat)
     probe_bytes = secure_file_bytes(probe, max_bytes: 16 * 1024 * 1024, executable: true)
@@ -244,8 +280,8 @@ begin
         ENV.fetch("PLATFORM_ADOPTION_COMPARE_STAGE_PAYLOAD", "#!/bin/sh\nexit 99\n")
       )
     end
-    stdout, stderr = capture_in_staged_dependencies(
-      dependency_stage, environment, probe_bytes,
+    stdout, stderr = capture_staged_probe(
+      dependency_stage, environment, probe_bytes, descriptor_options,
       mutate: self_test && service == SERVICES.first
     )
     raise "probe diagnostic differs" unless stderr.empty?
@@ -275,6 +311,10 @@ begin
   end
   destroy_staging_directory(probe_stage)
   probe_stage = nil
+  baseline_descriptor.close
+  baseline_descriptor = nil
+  template_descriptors.each_value(&:close)
+  template_descriptors = nil
   destroy_staging_directory(dependency_stage)
   dependency_stage = nil
   destroy_staging_directory(private_root)
@@ -298,4 +338,6 @@ ensure
     nil
   end
   output_parent&.close
+  baseline_descriptor&.close unless baseline_descriptor&.closed?
+  template_descriptors&.each_value { |descriptor| descriptor.close unless descriptor.closed? }
 end

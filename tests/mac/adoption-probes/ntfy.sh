@@ -8,4 +8,4 @@ if [ "${PLATFORM_ADOPTION_PROBE_TARGET:-false}" = true ]; then
   export PLATFORM_ADOPTION_NTFY_CONTAINER=$project-ntfy
   export PLATFORM_ADOPTION_NTFY_ENV_FILE=${PLATFORM_DOCKER_ROOT:?}/nas-platform/runtime/services/ntfy/.env
 fi
-exec ruby "$dir/adoption-baseline.rb" --emit-probe ntfy
+exec ruby "${PLATFORM_ADOPTION_BASELINE_FILE:-$dir/adoption-baseline.rb}" --emit-probe ntfy

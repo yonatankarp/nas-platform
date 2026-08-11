@@ -7,4 +7,4 @@ if ! "$dir/run-beszel-contract.sh" verify >/dev/null 2>&1; then
   printf '%s\n' 'adoption-probe-error: beszel evidence unavailable' >&2
   exit 1
 fi
-exec ruby "$dir/adoption-baseline.rb" --emit-probe beszel
+exec ruby "${PLATFORM_ADOPTION_BASELINE_FILE:-$dir/adoption-baseline.rb}" --emit-probe beszel

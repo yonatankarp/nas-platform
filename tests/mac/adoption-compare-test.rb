@@ -68,7 +68,8 @@ def write_probe(root, service)
     #!/bin/sh
     set -eu
     if [ "${PLATFORM_FAKE_EXECUTE_DEPENDENCY:-}" = true ] && [ "#{service}" = audiobookshelf ]; then
-      exec ruby "$PLATFORM_ADOPTION_SCRIPT_DIR/adoption-baseline.rb" --emit-probe audiobookshelf
+      exec ruby "${PLATFORM_ADOPTION_BASELINE_FILE:-$PLATFORM_ADOPTION_SCRIPT_DIR/adoption-baseline.rb}" \
+        --emit-probe audiobookshelf
     fi
     #{evidence_command}
     : > "$PLATFORM_FAKE_PROBE_LOG/#{service}"
@@ -85,7 +86,9 @@ def run_compare(root, baseline:, capabilities:, output:, evidence_by_service:, e
   environment = {
     "PLATFORM_FAKE_PROBE_LOG" => File.join(root, "probe-log"),
     "PLATFORM_ADOPTION_COMPARE_SELF_TEST" => "1",
-    "PLATFORM_ADOPTION_MARKER" => binding.fetch("binding_sha256")
+    "PLATFORM_ADOPTION_MARKER" => binding.fetch("binding_sha256"),
+    "PLATFORM_PROJECT_NAME" => "comparison-test",
+    "PLATFORM_DOCKER_ROOT" => root
   }.merge(extra_env)
   evidence_by_service.each do |service, value|
     environment["PLATFORM_FAKE_#{service.upcase.tr('-', '_')}_EVIDENCE"] = JSON.generate(value)

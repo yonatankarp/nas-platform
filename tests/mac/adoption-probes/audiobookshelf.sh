@@ -11,4 +11,4 @@ if ! PLATFORM_AUDIOBOOKSHELF_MEDIA_LIBRARY="$sandbox/legacy/audiobookshelf/media
   printf '%s\n' 'adoption-probe-error: audiobookshelf evidence unavailable' >&2
   exit 1
 fi
-exec ruby "$dir/adoption-baseline.rb" --emit-probe audiobookshelf
+exec ruby "${PLATFORM_ADOPTION_BASELINE_FILE:-$dir/adoption-baseline.rb}" --emit-probe audiobookshelf

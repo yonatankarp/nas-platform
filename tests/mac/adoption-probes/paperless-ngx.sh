@@ -20,4 +20,4 @@ if ! PLATFORM_PAPERLESS_CONSUME_ROOT="$sandbox/legacy/paperless-ngx/consume" \
   printf '%s\n' 'adoption-probe-error: paperless-ngx evidence unavailable' >&2
   exit 1
 fi
-exec ruby "$dir/adoption-baseline.rb" --emit-probe paperless-ngx
+exec ruby "${PLATFORM_ADOPTION_BASELINE_FILE:-$dir/adoption-baseline.rb}" --emit-probe paperless-ngx

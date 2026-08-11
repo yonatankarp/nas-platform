@@ -11,4 +11,4 @@ if ! PLATFORM_KOMGA_LIBRARY_PATH="$sandbox/legacy/komga/library" \
   printf '%s\n' 'adoption-probe-error: komga evidence unavailable' >&2
   exit 1
 fi
-exec ruby "$dir/adoption-baseline.rb" --emit-probe komga
+exec ruby "${PLATFORM_ADOPTION_BASELINE_FILE:-$dir/adoption-baseline.rb}" --emit-probe komga

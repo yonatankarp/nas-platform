@@ -224,11 +224,11 @@ def validate_evidence!(service, evidence)
   evidence
 end
 
-def capture(*command)
+def capture(*command, spawn_options: {})
   stdout = +""
   stderr = +""
   status = nil
-  Open3.popen3(*command, pgroup: true) do |stdin, output, error, wait_thread|
+  Open3.popen3(*command, spawn_options.merge(pgroup: true)) do |stdin, output, error, wait_thread|
     stdin.close
     stdout_reader = Thread.new { output.read(MAX_CAPTURE + 1) }
     stderr_reader = Thread.new { error.read(MAX_CAPTURE + 1) }
@@ -1033,6 +1033,22 @@ def ntfy_live_access(users)
   end.sort
 end
 
+def tmm_template_bytes(source)
+  match = source.match(%r{\A/dev/fd/([0-9]+)\z})
+  return secure_file_bytes(source, max_bytes: 64 * 1024) unless match
+
+  file = File.for_fd(Integer(match[1], 10), "rb", autoclose: false)
+  opened = file.stat
+  raise "tinyMediaManager template descriptor is unsafe" unless
+    opened.file? && opened.uid == Process.uid && (opened.mode & 0o022).zero?
+  file.rewind
+  bytes = file.read(64 * 1024 + 1)
+  raise "tinyMediaManager template descriptor is too large" if bytes.bytesize > 64 * 1024
+  raise "tinyMediaManager template descriptor changed" unless
+    file_signature_from_stat(file.stat) == file_signature_from_stat(opened)
+  bytes
+end
+
 def tmm_indexed_count(base, password, module_name, data_root, template_source)
   data_stat = File.lstat(data_root)
   raise "tinyMediaManager data root is unsafe" unless data_stat.directory? && !data_stat.symlink? &&
@@ -1049,7 +1065,8 @@ def tmm_indexed_count(base, password, module_name, data_root, template_source)
   File.chmod(0o700, template_dir)
   File.chmod(0o700, output_dir)
   %w[template.conf list.jmte].each do |name|
-    bytes = secure_file_bytes(File.join(template_source, name), max_bytes: 64 * 1024)
+    source = template_source.is_a?(Hash) ? template_source.fetch(name) : File.join(template_source, name)
+    bytes = tmm_template_bytes(source)
     File.open(File.join(template_dir, name), File::WRONLY | File::CREAT | File::EXCL, 0o600) do |file|
       file.write(bytes)
       file.flush
@@ -1418,12 +1435,26 @@ def emit_probe(service)
                series_root = File.join(sandbox, "legacy/tinymediamanager/series")
                data_root = File.join(sandbox, "legacy/tinymediamanager/data")
                template_root = File.join(__dir__, "adoption-probes/tinymediamanager-templates")
+               movie_templates = if ENV["PLATFORM_ADOPTION_TMM_MOVIE_TEMPLATE_CONF"]
+                                   {
+                                     "template.conf" => ENV.fetch("PLATFORM_ADOPTION_TMM_MOVIE_TEMPLATE_CONF"),
+                                     "list.jmte" => ENV.fetch("PLATFORM_ADOPTION_TMM_MOVIE_LIST_JMTE")
+                                   }
+                                 else
+                                   File.join(template_root, "movie")
+                                 end
+               show_templates = if ENV["PLATFORM_ADOPTION_TMM_TVSHOW_TEMPLATE_CONF"]
+                                  {
+                                    "template.conf" => ENV.fetch("PLATFORM_ADOPTION_TMM_TVSHOW_TEMPLATE_CONF"),
+                                    "list.jmte" => ENV.fetch("PLATFORM_ADOPTION_TMM_TVSHOW_LIST_JMTE")
+                                  }
+                                else
+                                  File.join(template_root, "tvshow")
+                                end
                base = "http://127.0.0.1:#{Integer(ENV.fetch('PLATFORM_TINYMEDIAMANAGER_API_PORT'), 10)}"
                password = vault.fetch("vault_tinymediamanager_password")
-               movie_count = tmm_indexed_count(base, password, "movie", data_root,
-                                               File.join(template_root, "movie"))
-               show_count = tmm_indexed_count(base, password, "tvshow", data_root,
-                                              File.join(template_root, "tvshow"))
+               movie_count = tmm_indexed_count(base, password, "movie", data_root, movie_templates)
+               show_count = tmm_indexed_count(base, password, "tvshow", data_root, show_templates)
                raise "tinyMediaManager fixture is not indexed" unless movie_count.positive? && show_count.positive?
                { "identities" => [probe_identity("shared-login", "administrator")],
                  "record_counts" => { "movies" => movie_count, "shows" => show_count },

@@ -349,6 +349,29 @@ Dir.mktmpdir("adoption-probes-test-") do |root|
     _stdout, stderr, status = Open3.capture3(target_env, File.join(PROBES, "#{service}.sh"))
     failures << "#{service} target probe path failed: #{stderr}" unless status.success?
   end
+  descriptor_paths = {
+    "PLATFORM_ADOPTION_BASELINE_FILE" => File.join(mac, "adoption-baseline.rb"),
+    "PLATFORM_ADOPTION_TMM_MOVIE_TEMPLATE_CONF" =>
+      File.join(mac, "adoption-probes/tinymediamanager-templates/movie/template.conf"),
+    "PLATFORM_ADOPTION_TMM_MOVIE_LIST_JMTE" =>
+      File.join(mac, "adoption-probes/tinymediamanager-templates/movie/list.jmte"),
+    "PLATFORM_ADOPTION_TMM_TVSHOW_TEMPLATE_CONF" =>
+      File.join(mac, "adoption-probes/tinymediamanager-templates/tvshow/template.conf"),
+    "PLATFORM_ADOPTION_TMM_TVSHOW_LIST_JMTE" =>
+      File.join(mac, "adoption-probes/tinymediamanager-templates/tvshow/list.jmte")
+  }
+  descriptors = descriptor_paths.transform_values { |path| File.open(path, File::RDONLY) }
+  descriptor_env = target_env.merge(
+    descriptors.to_h { |variable, descriptor| [variable, "/dev/fd/#{descriptor.fileno}"] }
+  )
+  descriptor_options = descriptors.values.to_h { |descriptor| [descriptor.fileno, descriptor.fileno] }
+  SERVICES.each do |service|
+    _stdout, stderr, status = Open3.capture3(
+      descriptor_env, File.join(PROBES, "#{service}.sh"), descriptor_options
+    )
+    failures << "#{service} descriptor-bound target probe failed: #{stderr}" unless status.success?
+  end
+  descriptors.each_value(&:close)
   FileUtils.cp(target_ntfy_env, ntfy_env)
   File.chmod(0o600, ntfy_env)
 
