@@ -17,15 +17,25 @@ flags = File::RDONLY
 flags |= File::NOFOLLOW if File.const_defined?(:NOFOLLOW)
 flags |= File::NONBLOCK if File.const_defined?(:NONBLOCK)
 identity = ->(stat) { [stat.dev, stat.ino, stat.uid, stat.mode & 0o777].join(":") }
+descriptor_chdir = lambda do |file, &block|
+  duplicate = file.dup
+  duplicate.autoclose = false
+  directory = Dir.for_fd(duplicate.fileno)
+  begin
+    directory.chdir(&block)
+  ensure
+    directory.close
+  end
+end
 parent = File.open(parent_path, flags)
 parent_stat = parent.stat
 raise "unsafe" unless parent_stat.directory? && parent_stat.uid == Process.uid &&
   (parent_stat.mode & 0o022).zero? && File.realpath(parent_path) == parent_path
 
 if operation == "create"
-  Dir.fchdir(parent.fileno) { Dir.mkdir(name, 0o700) }
+  descriptor_chdir.call(parent) { Dir.mkdir(name, 0o700) }
 end
-directory = Dir.fchdir(parent.fileno) { File.open(name, flags) }
+directory = descriptor_chdir.call(parent) { File.open(name, flags) }
 directory_stat = directory.stat
 raise "unsafe" unless directory_stat.directory? && directory_stat.uid == Process.uid &&
   (directory_stat.mode & 0o777) == 0o700
@@ -38,7 +48,7 @@ when "create"
 when "publish"
   output_flags = File::WRONLY | File::CREAT | File::EXCL
   output_flags |= File::NOFOLLOW if File.const_defined?(:NOFOLLOW)
-  output = Dir.fchdir(directory.fileno) do
+  output = descriptor_chdir.call(directory) do
     File.open("sanitized.txt", output_flags, 0o600)
   end
   begin
@@ -48,23 +58,23 @@ when "publish"
     output.fsync
     directory.fsync
     current_parent = File.lstat(parent_path)
-    current_directory = Dir.fchdir(parent.fileno) { File.lstat(name) }
+    current_directory = descriptor_chdir.call(parent) { File.lstat(name) }
     raise "unsafe" unless identity.call(current_parent) == identity.call(parent_stat) &&
       identity.call(current_directory) == identity.call(directory_stat)
   rescue Exception
-    Dir.fchdir(directory.fileno) { File.unlink("sanitized.txt") rescue nil }
+    descriptor_chdir.call(directory) { File.unlink("sanitized.txt") rescue nil }
     raise
   ensure
     output.close
   end
 when "remove"
-  raise "unsafe" unless Dir.fchdir(directory.fileno) { Dir.children(".").empty? }
+  raise "unsafe" unless descriptor_chdir.call(directory) { Dir.children(".").empty? }
   current_parent = File.lstat(parent_path)
-  current_directory = Dir.fchdir(parent.fileno) { File.lstat(name) }
+  current_directory = descriptor_chdir.call(parent) { File.lstat(name) }
   raise "unsafe" unless identity.call(current_parent) == identity.call(parent_stat) &&
     identity.call(current_directory) == identity.call(directory_stat)
   directory.close
-  Dir.fchdir(parent.fileno) { Dir.rmdir(name) }
+  descriptor_chdir.call(parent) { Dir.rmdir(name) }
 else
   raise "unsafe"
 end
@@ -80,9 +90,19 @@ flags = File::RDONLY
 flags |= File::NOFOLLOW if File.const_defined?(:NOFOLLOW)
 flags |= File::NONBLOCK if File.const_defined?(:NONBLOCK)
 identity = ->(stat) { [stat.dev, stat.ino, stat.uid, stat.mode & 0o777].join(":") }
+descriptor_chdir = lambda do |file, &block|
+  duplicate = file.dup
+  duplicate.autoclose = false
+  directory = Dir.for_fd(duplicate.fileno)
+  begin
+    directory.chdir(&block)
+  ensure
+    directory.close
+  end
+end
 parent_path = File.dirname(path)
 parent = File.open(parent_path, flags)
-root = Dir.fchdir(parent.fileno) { File.open(name, flags) }
+root = descriptor_chdir.call(parent) { File.open(name, flags) }
 root_stat = root.stat
 raise "unsafe" unless root_stat.directory? && (root_stat.mode & 0o777) == 0o700
 root_signature = identity.call(root_stat)
@@ -91,20 +111,20 @@ if operation == "create"
   raise "unsafe" unless expected.empty? && root_stat.uid == Process.uid
   marker_flags = File::WRONLY | File::CREAT | File::EXCL
   marker_flags |= File::NOFOLLOW if File.const_defined?(:NOFOLLOW)
-  marker = Dir.fchdir(root.fileno) { File.open(marker_name, marker_flags, 0o600) }
+  marker = descriptor_chdir.call(root) { File.open(marker_name, marker_flags, 0o600) }
   marker.write("schema=1\n")
   marker.chmod(0o600)
   marker.flush
   marker.fsync
   marker.close
   root.fsync
-  marker_stat = Dir.fchdir(root.fileno) { File.lstat(marker_name) }
+  marker_stat = descriptor_chdir.call(root) { File.lstat(marker_name) }
   marker_signature = identity.call(marker_stat)
   puts "#{identity.call(parent.stat)}|#{root_signature}|#{marker_signature}"
   puts "#{root_signature}|#{marker_signature}"
 elsif operation == "verify"
-  raise "unsafe" unless Dir.fchdir(root.fileno) { Dir.children(".") } == [marker_name]
-  marker = Dir.fchdir(root.fileno) { File.open(marker_name, flags) }
+  raise "unsafe" unless descriptor_chdir.call(root) { Dir.children(".") } == [marker_name]
+  marker = descriptor_chdir.call(root) { File.open(marker_name, flags) }
   marker_stat = marker.stat
   raise "unsafe" unless marker_stat.file? && marker_stat.uid == root_stat.uid &&
     (marker_stat.mode & 0o777) == 0o600 && marker.read(4097) == "schema=1\n"
@@ -113,20 +133,20 @@ elsif operation == "verify"
   puts signature
 elsif operation == "remove"
   signature_prefix = "#{identity.call(parent.stat)}|#{root_signature}|"
-  raise "unsafe" unless Dir.fchdir(root.fileno) { Dir.children(".") } == [marker_name]
-  marker = Dir.fchdir(root.fileno) { File.open(marker_name, flags) }
+  raise "unsafe" unless descriptor_chdir.call(root) { Dir.children(".") } == [marker_name]
+  marker = descriptor_chdir.call(root) { File.open(marker_name, flags) }
   marker_stat = marker.stat
   raise "unsafe" unless marker_stat.file? && marker_stat.uid == Process.uid &&
     (marker_stat.mode & 0o777) == 0o600 && marker.read(4097) == "schema=1\n"
   raise "unsafe" unless root_stat.uid == Process.uid &&
     "#{signature_prefix}#{identity.call(marker_stat)}" == expected
   marker.close
-  current_root = Dir.fchdir(parent.fileno) { File.lstat(name) }
+  current_root = descriptor_chdir.call(parent) { File.lstat(name) }
   raise "unsafe" unless identity.call(current_root) == identity.call(root_stat)
-  Dir.fchdir(root.fileno) { File.unlink(marker_name) }
+  descriptor_chdir.call(root) { File.unlink(marker_name) }
   root.fsync
   root.close
-  Dir.fchdir(parent.fileno) { Dir.rmdir(name) }
+  descriptor_chdir.call(parent) { Dir.rmdir(name) }
   parent.fsync
 else
   raise "unsafe"

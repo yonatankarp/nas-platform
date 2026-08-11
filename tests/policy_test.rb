@@ -1143,11 +1143,13 @@ check(failures,
         !harness.include?("ntfy_token()"),
       "integration must consume the ephemeral encrypted vault without duplicate secret authoring")
 check(failures,
-      harness.include?('if [ -f "$repo_dir/.git" ]') &&
-        harness.include?('git clone --quiet --no-local --no-checkout "$repo_dir" "$sandbox/repo"') &&
-        harness.include?('git -C "$sandbox/repo" checkout -q --detach "$expected_release_id"') &&
-        harness.include?('-v "$controller_mount":/repo:ro'),
-      "integration must make linked worktree Git metadata available inside its controller mount")
+      harness.include?('controller_mount=$sandbox/repo') &&
+        harness.include?('git clone --quiet --no-local --no-checkout "$repo_dir" "$controller_mount"') &&
+        harness.include?('git -C "$controller_mount" checkout -q --detach "$expected_release_id"') &&
+        harness.include?('-v "$controller_mount":/repo') &&
+        harness.include?('install -m 0600 \"\$vault_file\" /repo/inventory/group_vars/all/vault.yml') &&
+        !harness.include?('controller_mount=$repo_dir'),
+      "integration must isolate normal and linked-worktree controllers before installing its ephemeral vault")
 lock_acquire_index = harness.index("acquire_integration_lock")
 sandbox_create_index = harness.index('sandbox=$(mktemp -d')
 check(failures,

@@ -78,6 +78,10 @@ RUBY
 ruby -ropen3 - "$repo_dir/tests/adoption-integration.sh" <<'RUBY'
 source = File.binread(ARGV.fetch(0))
 runner_shell = source[/sh -eu -c '(.*?)' sh /m, 1] or raise "runner shell is unavailable"
+raise "synthetic wrapper uses nonportable Dir.fchdir" if source.include?("Dir.fchdir")
+raise "synthetic wrapper does not use descriptor-bound Dir#chdir" unless
+  source.include?("Dir.for_fd") && source.include?("duplicate.autoclose = false") &&
+    source.include?("directory.chdir")
 raise "runner shell must install packages exactly once" unless runner_shell.scan(/apk add /).length == 1
 raise "runner shell lacks the pinned shasum provider" unless runner_shell.include?("perl-utils")
 raise "runner shell does not validate shasum" unless

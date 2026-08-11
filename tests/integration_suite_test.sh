@@ -107,6 +107,18 @@ grep -qF -- '\"\$playbook\" \"\$@\"' "$integration"
 grep -qF -- 'run_play --tags \"\$INTEGRATION_TAGS\" \"\$@\"' "$integration"
 grep -qF -- 'run_play \"\$@\"' "$integration"
 
+# The committed deployment vault is intentionally encrypted with an operator
+# password unavailable to CI. Every suite must use an isolated controller copy,
+# replace only that copy with its generated ephemeral vault, and export the
+# matching password before any Ansible invocation.
+grep -qF -- 'controller_mount=$sandbox/repo' "$integration"
+grep -qF -- 'install -m 0600 \"\$vault_file\" /repo/inventory/group_vars/all/vault.yml' "$integration"
+grep -qF -- 'export ANSIBLE_VAULT_PASSWORD_FILE=\"\$vault_password_file\"' "$integration"
+if grep -qF -- 'controller_mount=$repo_dir' "$integration"; then
+  printf '%s\n' 'integration may mount the committed deployment vault directly' >&2
+  exit 1
+fi
+
 assert_rejected 'unknown integration suite: unknown' --suite unknown
 assert_rejected 'unknown integration suite: <missing>' --suite
 assert_rejected 'unknown integration suite: <missing>' --suite --tags ntfy
