@@ -6,69 +6,19 @@ umask 077
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 repo_dir=$(CDPATH= cd -- "$script_dir/.." && pwd -P)
 
-ruby -ryaml - "$repo_dir/.github/workflows/ci.yml" <<'RUBY'
-workflow = YAML.safe_load_file(ARGV.fetch(0), aliases: true)
-jobs = workflow.fetch("jobs")
-steps = jobs.fetch("static").fetch("steps")
-
-def one_step(steps, name)
-  matches = steps.select { |step| step.is_a?(Hash) && step["name"] == name }
-  raise "CI adoption contract: requires exactly one #{name.inspect} step" unless matches.length == 1
-  matches.first
+ruby - "$repo_dir/.github/workflows/ci.yml" <<'RUBY'
+workflow_source = File.binread(ARGV.fetch(0))
+forbidden_ci_inputs = [
+  "nas-infrastructure",
+  "NAS_INFRASTRUCTURE",
+  "tests/adoption-integration.sh",
+  "synthetic legacy adoption",
+  "synthetic-adoption-diagnostics"
+]
+forbidden_ci_inputs.each do |input|
+  raise "CI adoption contract: legacy adoption must remain local-only (found #{input})" if
+    workflow_source.include?(input)
 end
-
-guard = "steps.scope.outputs.docs_only != 'true'"
-legacy_revision = "400f03f276ae1bb69f5460c175b9fb923d620f1a"
-checkout = one_step(steps, "Check out pinned legacy infrastructure")
-raise "CI adoption contract: legacy checkout must use the full-lane guard" unless checkout["if"] == guard
-raise "CI adoption contract: legacy checkout secret is not scoped to the checkout step" unless
-  checkout["env"] == {
-    "NAS_INFRASTRUCTURE_TOKEN" => "${{ secrets.NAS_INFRASTRUCTURE_TOKEN }}"
-  }
-checkout_run = checkout.fetch("run")
-raise "CI adoption contract: legacy checkout uses a mutable ref" unless
-  checkout_run.include?(legacy_revision) &&
-    !checkout_run.match?(/\b(?:main|master|HEAD|latest)\b/)
-raise "CI adoption contract: legacy checkout is not a non-repository sibling" unless
-  checkout_run.include?('"$GITHUB_WORKSPACE/../nas-infrastructure"')
-raise "CI adoption contract: legacy checkout repository differs" unless
-  checkout_run.include?("https://github.com/yonatankarp/nas-infrastructure.git")
-raise "CI adoption contract: legacy checkout does not use non-interactive askpass authentication" unless
-  checkout_run.include?('GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0') &&
-    checkout_run.include?('"${NAS_INFRASTRUCTURE_TOKEN:?}"')
-raise "CI adoption contract: legacy checkout credential helper is not private and ephemeral" unless
-  checkout_run.include?('askpass=$(mktemp "$RUNNER_TEMP/nas-infrastructure-askpass.XXXXXX")') &&
-    checkout_run.include?('chmod 0700 "$askpass"') && checkout_run.include?('rm -f -- "$askpass"')
-raise "CI adoption contract: legacy token could be embedded in checkout commands" if
-  checkout_run.include?("secrets.NAS_INFRASTRUCTURE_TOKEN") ||
-    checkout_run.match?(%r{https://[^\s]+@github\.com/yonatankarp/nas-infrastructure\.git})
-
-adoption = one_step(steps, "Converge synthetic legacy adoption")
-raise "CI adoption contract: adoption must use the full-lane guard" unless adoption["if"] == guard
-raise "CI adoption contract: adoption command changed" unless adoption["run"] == "tests/adoption-integration.sh"
-raise "CI adoption contract: adoption must follow the pinned legacy checkout" unless
-  steps.index(adoption) > steps.index(checkout)
-environment = adoption.fetch("env")
-expected_environment = {
-  "NAS_INFRASTRUCTURE_DIR" => "${{ github.workspace }}/../nas-infrastructure",
-  "ADOPTION_DIAGNOSTICS_DIR" => "${{ runner.temp }}/nas-platform-adoption-diagnostics"
-}
-raise "CI adoption contract: adoption environment is not closed" unless environment == expected_environment
-
-upload = one_step(steps, "Upload sanitized adoption diagnostics")
-raise "CI adoption contract: diagnostic upload guard changed" unless
-  upload["if"] == "failure() && steps.scope.outputs.docs_only != 'true'"
-raise "CI adoption contract: diagnostic uploader is not commit-pinned" unless
-  upload.fetch("uses").match?(/\Aactions\/upload-artifact@[0-9a-f]{40}\z/)
-upload_options = upload.fetch("with")
-raise "CI adoption contract: raw adoption output could be uploaded" unless
-  upload_options == {
-    "name" => "synthetic-adoption-diagnostics",
-    "path" => "${{ runner.temp }}/nas-platform-adoption-diagnostics/sanitized.txt",
-    "if-no-files-found" => "ignore",
-    "retention-days" => 1
-  }
-raise "CI adoption contract: diagnostic upload must follow convergence" unless steps.index(upload) > steps.index(adoption)
 RUBY
 
 [ -x "$repo_dir/tests/adoption-integration.sh" ] || {

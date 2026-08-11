@@ -23,8 +23,6 @@ FULL_STEPS = [
     tests/mac/adoption-runner-test.sh
     tests/mac/adoption-rollback-test.sh
   SH
-  ["Check out pinned legacy infrastructure", "git -C \"$legacy_root\" fetch --depth=1 origin \"$legacy_revision\""],
-  ["Check legacy role Compose compatibility", "tests/mac/legacy-role-compose-test.sh"],
   ["Check legacy seed playbook syntax", "ansible-playbook -i inventory/mac.yml tests/mac/legacy-role-seed.yml --syntax-check"],
   ["Check legacy seed playbook syntax", "ansible-playbook -i localhost, -c local tests/mac/legacy-beszel-key.yml --syntax-check"],
   ["Check legacy parity rendering", "tests/mac/adoption-render-test.sh"],
@@ -32,8 +30,7 @@ FULL_STEPS = [
   ["Check generated credential redaction", "tests/generate-secrets-redaction-test.sh"],
   ["Check silent ephemeral vault generation", "tests/generate-ephemeral-vault.sh --self-test"],
   ["Lint Ansible", "ansible-lint --strict"],
-  ["Check playbook syntax", "ansible-playbook -i inventory/local.yml site.yml --syntax-check"],
-  ["Converge synthetic legacy adoption", "tests/adoption-integration.sh"]
+  ["Check playbook syntax", "ansible-playbook -i inventory/local.yml site.yml --syntax-check"]
 ].freeze
 CLASSIFIER_RUN = <<~'SH'.chomp
   case "$EVENT_NAME" in
@@ -203,8 +200,21 @@ def assert_boundary(steps, checkout, classifier, docs, full_positions)
   executable = steps[(classifier_index + 1)..].select do |step|
     step.is_a?(Hash) && (key?(step, "run") || key?(step, "uses"))
   end
-  allowed_names = ["Validate documentation", *FULL_STEPS.map(&:first), "Upload sanitized adoption diagnostics"]
+  allowed_names = ["Validate documentation", *FULL_STEPS.map(&:first)]
   fail_contract("contains an unexpected executable step after classification") unless executable.all? { |step| allowed_names.include?(value_for(step, "name")) }
+end
+
+def assert_adoption_is_local_only(source)
+  forbidden = [
+    "nas-infrastructure",
+    "NAS_INFRASTRUCTURE",
+    "tests/adoption-integration.sh",
+    "synthetic legacy adoption",
+    "synthetic-adoption-diagnostics"
+  ]
+  forbidden.each do |input|
+    fail_contract("legacy adoption must remain local-only") if source.include?(input)
+  end
 end
 
 def validate_workflow(source)
@@ -223,15 +233,7 @@ def validate_workflow(source)
   docs = assert_docs_step(steps)
   full_positions = assert_full_steps(steps)
   assert_boundary(steps, checkout, classifier, docs, full_positions)
-
-  upload = one_step(steps, "Upload sanitized adoption diagnostics")
-  expected_upload_condition = "failure() && steps.scope.outputs.docs_only != 'true'"
-  fail_contract("diagnostic upload guard changed") unless value_for(upload, "if") == expected_upload_condition
-  expected_upload = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
-  fail_contract("diagnostic upload action pin changed") unless value_for(upload, "uses") == expected_upload
-  upload_options = mapping(value_for(upload, "with"), "diagnostic upload options")
-  expected_path = "${{ runner.temp }}/nas-platform-adoption-diagnostics/sanitized.txt"
-  fail_contract("diagnostic upload path changed") unless value_for(upload_options, "path") == expected_path
+  assert_adoption_is_local_only(source)
 end
 
 def assert_failure(label, source, message)

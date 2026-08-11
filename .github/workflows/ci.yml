@@ -128,47 +128,6 @@ jobs:
           tests/mac/adoption-runner-test.sh
           tests/mac/adoption-rollback-test.sh
 
-      - name: Check out pinned legacy infrastructure
-        if: steps.scope.outputs.docs_only != 'true'
-        env:
-          NAS_INFRASTRUCTURE_TOKEN: ${{ secrets.NAS_INFRASTRUCTURE_TOKEN }}
-        run: |
-          if [ -z "$NAS_INFRASTRUCTURE_TOKEN" ]; then
-            printf '%s\n' 'NAS_INFRASTRUCTURE_TOKEN is required' >&2
-            exit 1
-          fi
-          askpass=$(mktemp "$RUNNER_TEMP/nas-infrastructure-askpass.XXXXXX")
-          cleanup_askpass() { rm -f -- "$askpass"; }
-          trap cleanup_askpass EXIT HUP INT TERM
-          chmod 0700 "$askpass"
-          cat > "$askpass" <<'SH'
-          #!/bin/sh
-          case $1 in
-            *Username*) printf '%s\n' x-access-token ;;
-            *Password*) printf '%s\n' "${NAS_INFRASTRUCTURE_TOKEN:?}" ;;
-            *) exit 1 ;;
-          esac
-          SH
-          legacy_root="$GITHUB_WORKSPACE/../nas-infrastructure"
-          legacy_revision=400f03f276ae1bb69f5460c175b9fb923d620f1a
-          test ! -e "$legacy_root"
-          mkdir -m 0700 "$legacy_root"
-          git -C "$legacy_root" init -q
-          git -C "$legacy_root" remote add origin https://github.com/yonatankarp/nas-infrastructure.git
-          GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0 \
-            git -C "$legacy_root" fetch --depth=1 origin "$legacy_revision"
-          cleanup_askpass
-          trap - EXIT HUP INT TERM
-          git -C "$legacy_root" checkout --detach -q FETCH_HEAD
-          test "$(git -C "$legacy_root" rev-parse --verify "$legacy_revision^{commit}")" = "$legacy_revision"
-          test -z "$(git -C "$legacy_root" status --porcelain=v1 --untracked-files=all)"
-
-      - name: Check legacy role Compose compatibility
-        if: steps.scope.outputs.docs_only != 'true'
-        env:
-          NAS_INFRASTRUCTURE_DIR: ${{ github.workspace }}/../nas-infrastructure
-        run: tests/mac/legacy-role-compose-test.sh
-
       - name: Check legacy seed playbook syntax
         if: steps.scope.outputs.docs_only != 'true'
         run: |
@@ -210,22 +169,6 @@ jobs:
         run: |
           ansible-playbook -i inventory/local.yml site.yml --syntax-check
           ansible-playbook generate-secrets.yml --syntax-check
-
-      - name: Converge synthetic legacy adoption
-        if: steps.scope.outputs.docs_only != 'true'
-        env:
-          NAS_INFRASTRUCTURE_DIR: ${{ github.workspace }}/../nas-infrastructure
-          ADOPTION_DIAGNOSTICS_DIR: ${{ runner.temp }}/nas-platform-adoption-diagnostics
-        run: tests/adoption-integration.sh
-
-      - name: Upload sanitized adoption diagnostics
-        if: failure() && steps.scope.outputs.docs_only != 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: synthetic-adoption-diagnostics
-          path: ${{ runner.temp }}/nas-platform-adoption-diagnostics/sanitized.txt
-          if-no-files-found: ignore
-          retention-days: 1
 
   foundation:
     needs: changes
