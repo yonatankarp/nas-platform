@@ -797,7 +797,10 @@ fi
 timeout_child=$(sed -n '1p' "$timeout_child_marker")
 case $timeout_child in *[!0-9]*|'') fail 'timed out provider did not record its child' ;; esac
 if kill -0 "$timeout_child" 2>/dev/null; then
-  fail 'timed out provider left a child process running'
+  if [ ! -r "/proc/$timeout_child/stat" ] ||
+    [ "$(awk '{print $3}' "/proc/$timeout_child/stat")" != Z ]; then
+    fail 'timed out provider left a child process running'
+  fi
 fi
 if /usr/bin/find "$temporary_parent" -name '.provider-*' -print | grep . >/dev/null; then
   fail 'private provider snapshot remained after timeout cleanup'
@@ -1093,6 +1096,10 @@ cat > "$preflight_fake_bin/docker" <<'STUB'
 case ${1-} in
   info|version) exit 0 ;;
   ps) exit 0 ;;
+  network)
+    [ "${2-}" = inspect ] || exit 2
+    printf '%s\n' 172.17.0.1
+    ;;
   *) exit 2 ;;
 esac
 STUB
@@ -1101,12 +1108,22 @@ cat > "$preflight_fake_bin/ansible-playbook" <<'STUB'
 exit 0
 STUB
 chmod 0700 "$preflight_fake_bin/docker" "$preflight_fake_bin/ansible-playbook"
-expect_failure 'adoption preflight without legacy checkout' 'NAS_INFRASTRUCTURE_DIR is required' \
-  env -u NAS_INFRASTRUCTURE_DIR PLATFORM_MAC_TMPDIR="$temporary_parent" \
-    PATH="$preflight_fake_bin:$PATH" "$runner" --lane adoption \
-    --vault-file "$vault_file" --vault-password-file "$password_file" \
-    --parity-vault-file "$parity_vault_file" --parity-vault-password-file "$parity_password_file" \
-    --phase preflight
+if [ "$(uname -s)" = Darwin ]; then
+  expect_failure 'adoption preflight without legacy checkout' 'NAS_INFRASTRUCTURE_DIR is required' \
+    env -u NAS_INFRASTRUCTURE_DIR PLATFORM_MAC_TMPDIR="$temporary_parent" \
+      PATH="$preflight_fake_bin:$PATH" "$runner" --lane adoption \
+      --vault-file "$vault_file" --vault-password-file "$password_file" \
+      --parity-vault-file "$parity_vault_file" --parity-vault-password-file "$parity_password_file" \
+      --phase preflight
+else
+  expect_failure 'adoption preflight without legacy checkout' 'NAS_INFRASTRUCTURE_DIR is required' \
+    env -u NAS_INFRASTRUCTURE_DIR PLATFORM_MAC_TMPDIR="$temporary_parent" \
+      PATH="$preflight_fake_bin:$PATH" "$runner" --lane adoption --platform integration \
+      --integration-ports-file "$integration_ports_file" \
+      --vault-file "$vault_file" --vault-password-file "$password_file" \
+      --parity-vault-file "$parity_vault_file" --parity-vault-password-file "$parity_password_file" \
+      --phase preflight
+fi
 
 preflight_legacy_root=$temporary_parent/nas-infrastructure
 mkdir -p "$preflight_legacy_root/.git"
@@ -1155,11 +1172,22 @@ cat > "$preflight_fake_bin/ansible-vault" <<'STUB'
 exit 1
 STUB
 chmod 0700 "$preflight_fake_bin/git" "$preflight_fake_bin/ansible-vault"
-expect_failure 'adoption preflight with invalid parity' 'legacy parity rendering failed' \
-  env NAS_INFRASTRUCTURE_DIR="$preflight_legacy_root" FAKE_LEGACY_ROOT="$preflight_legacy_root" \
-    PLATFORM_MAC_TMPDIR="$temporary_parent" PATH="$preflight_fake_bin:$PATH" \
-    "$runner" --lane adoption --vault-file "$vault_file" --vault-password-file "$password_file" \
-    --parity-vault-file "$parity_vault_file" --parity-vault-password-file "$parity_password_file" \
-    --phase preflight
+if [ "$(uname -s)" = Darwin ]; then
+  expect_failure 'adoption preflight with invalid parity' 'legacy parity rendering failed' \
+    env NAS_INFRASTRUCTURE_DIR="$preflight_legacy_root" FAKE_LEGACY_ROOT="$preflight_legacy_root" \
+      PLATFORM_MAC_TMPDIR="$temporary_parent" PATH="$preflight_fake_bin:$PATH" \
+      "$runner" --lane adoption --vault-file "$vault_file" --vault-password-file "$password_file" \
+      --parity-vault-file "$parity_vault_file" --parity-vault-password-file "$parity_password_file" \
+      --phase preflight
+else
+  expect_failure 'adoption preflight with invalid parity' 'legacy parity rendering failed' \
+    env NAS_INFRASTRUCTURE_DIR="$preflight_legacy_root" FAKE_LEGACY_ROOT="$preflight_legacy_root" \
+      PLATFORM_MAC_TMPDIR="$temporary_parent" PATH="$preflight_fake_bin:$PATH" \
+      "$runner" --lane adoption --platform integration \
+      --integration-ports-file "$integration_ports_file" \
+      --vault-file "$vault_file" --vault-password-file "$password_file" \
+      --parity-vault-file "$parity_vault_file" --parity-vault-password-file "$parity_password_file" \
+      --phase preflight
+fi
 
 printf '%s\n' 'Mac adoption runner: lane phases and protected resume identity hold'
