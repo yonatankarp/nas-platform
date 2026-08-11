@@ -422,13 +422,16 @@ def generated_audiobookshelf_user_count(generator)
 end
 
 def exact_baseline_role_runs(integration)
-  initial = integration.scan(
-    /^\s*if \[ "\\\$#" -eq 0 \]; then\n\s*run_play\n\s*else\n\s*run_play "\\\$@"\n\s*fi$/
+  selector = integration.scan(
+    /^\s*run_selected_play\(\) \{\n\s*if \[ -n "\\\$INTEGRATION_TAGS" \]; then\n\s*run_play --tags \\"\\\$INTEGRATION_TAGS\\" \\"\\\$@\\"\n\s*elif \[ "\\\$#" -eq 0 \]; then\n\s*run_play\n\s*else\n\s*run_play \\"\\\$@\\"\n\s*fi\n\s*\}$/
   ).length
-  idempotence = integration.scan(/^\s*run_play "\\\$@" \| tee \/tmp\/second\.txt$/).length
-  check = integration.scan(/^\s*if run_play "\\\$@" --check --diff; then$/).length
+  initial = integration.scan(
+    /^\s*if \[ -z "\\\$INTEGRATION_TAGS" \] && \[ "\\\$#" -eq 0 \]; then\n\s*run_play\n\s*else\n\s*run_selected_play "\\\$@"\n\s*fi$/
+  ).length
+  idempotence = integration.scan(/^\s*run_selected_play "\\\$@" \| tee \/tmp\/second\.txt$/).length
+  check = integration.scan(/^\s*if run_selected_play "\\\$@" --check --diff; then$/).length
   fail_contract("Audiobookshelf baseline role call sequence differs") unless
-    initial == 1 && idempotence == 1 && check == 1
+    selector == 1 && initial == 1 && idempotence == 1 && check == 1
   { normal: initial + idempotence, check: check }
 end
 
