@@ -61,17 +61,39 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Classify changed paths
+        id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          case "$EVENT_NAME" in
+            pull_request) base_sha=$PR_BASE_SHA ;;
+            push) base_sha=$PUSH_BEFORE_SHA ;;
+            *) base_sha= ;;
+          esac
+          if ! printf '%s' "$base_sha" | grep -Eq '^[0-9a-f]{40}$' ||
+             printf '%s' "$base_sha" | grep -Eq '^0{40}$'; then
+            printf 'docs_only=false\nchanged_count=0\n' >> "$GITHUB_OUTPUT"
+          else
+            git diff --name-only -z "$base_sha" "$GITHUB_SHA" |
+              ruby tests/ci_change_scope.rb >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Validate documentation
+        if: steps.scope.outputs.docs_only == 'true'
+        run: tests/validate-docs.sh
 
       - name: Validate shell syntax
+        if: steps.scope.outputs.docs_only != 'true'
         run: find tests -type f -name '*.sh' -exec sh -n {} +
 
-      - name: Check policy properties
-        run: tests/validate-policy.sh
-
-      - name: Check integration sandbox cleanup
-        run: tests/integration_cleanup_test.sh
-
       - name: Install Ansible tooling
+        if: steps.scope.outputs.docs_only != 'true'
         run: |
           sudo apt-get update
           sudo apt-get install --yes apache2-utils openssh-client openssl
@@ -79,16 +101,56 @@ jobs:
           pipx install 'ansible-lint==26.6.0'
           ansible-galaxy collection install -r requirements.yml
 
+      - name: Check policy properties
+        if: steps.scope.outputs.docs_only != 'true'
+        run: tests/validate-policy.sh
+
+      - name: Check integration sandbox cleanup
+        if: steps.scope.outputs.docs_only != 'true'
+        run: tests/integration_cleanup_test.sh
+
+      - name: Check legacy seed security
+        if: steps.scope.outputs.docs_only != 'true'
+        run: |
+          tests/mac/legacy-seed-test.sh
+          tests/mac/legacy-fixture-path-test.sh
+          ruby tests/mac/legacy-secure-copy-test.rb
+
+      - name: Check legacy adoption baseline capture
+        if: steps.scope.outputs.docs_only != 'true'
+        run: |
+          ruby tests/mac/adoption-baseline-test.rb
+          ruby tests/mac/adoption-probes-test.rb
+          tests/mac/adoption-snapshot-test.sh
+          ruby tests/mac/adoption-compare-test.rb
+          ruby tests/mac/adoption-recreate-test.rb
+          tests/mac/adoption-failure-stop-test.sh
+          tests/mac/adoption-runner-test.sh
+          tests/mac/adoption-rollback-test.sh
+
+      - name: Check legacy seed playbook syntax
+        if: steps.scope.outputs.docs_only != 'true'
+        run: |
+          ansible-playbook -i inventory/mac.yml tests/mac/legacy-role-seed.yml --syntax-check
+          ansible-playbook -i localhost, -c local tests/mac/legacy-beszel-key.yml --syntax-check
+
+      - name: Check legacy parity rendering
+        if: steps.scope.outputs.docs_only != 'true'
+        run: tests/mac/adoption-render-test.sh
+
       - name: Check Immich probe status rendering
+        if: steps.scope.outputs.docs_only != 'true'
         run: |
           ansible_python="$(dirname "$(readlink -f "$(command -v ansible-playbook)")")/python"
           test -x "$ansible_python"
           PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/immich_probe_status_test.py
 
       - name: Check generated credential redaction
+        if: steps.scope.outputs.docs_only != 'true'
         run: tests/generate-secrets-redaction-test.sh
 
       - name: Check silent ephemeral vault generation
+        if: steps.scope.outputs.docs_only != 'true'
         run: |
           self_test_log=$(mktemp)
           trap 'rm -f "$self_test_log"' EXIT
@@ -99,9 +161,11 @@ jobs:
           test ! -s "$self_test_log"
 
       - name: Lint Ansible
+        if: steps.scope.outputs.docs_only != 'true'
         run: ansible-lint --strict
 
       - name: Check playbook syntax
+        if: steps.scope.outputs.docs_only != 'true'
         run: |
           ansible-playbook -i inventory/local.yml site.yml --syntax-check
           ansible-playbook generate-secrets.yml --syntax-check

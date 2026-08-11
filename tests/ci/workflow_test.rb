@@ -4,7 +4,9 @@ require "yaml"
 
 WORKFLOW_PATH = File.expand_path("../../.github/workflows/ci.yml", __dir__)
 POLICY_PATH = File.expand_path("../validate-policy.sh", __dir__)
+ANSIBLE_LINT_PATH = File.expand_path("../../.ansible-lint", __dir__)
 CHECKOUT_ACTION = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
+UPLOAD_ARTIFACT_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 SELECTABLE_JOBS = %w[
   static foundation smoke beszel dozzle audiobookshelf media paperless idempotence_check
 ].freeze
@@ -28,6 +30,12 @@ failures = []
 def check(failures, condition, message)
   failures << message unless condition
 end
+
+ansible_lint = YAML.safe_load_file(ANSIBLE_LINT_PATH)
+ansible_lint_excludes = Array(ansible_lint["exclude_paths"])
+check(failures,
+      %w[services/ tests/mac/legacy-overrides/].all? { |path| ansible_lint_excludes.include?(path) },
+      "ansible-lint must exclude Docker Compose definitions with custom loader tags")
 
 def expression(value)
   value.to_s.gsub(/\s+/, " ").strip
@@ -243,8 +251,9 @@ check(failures, !workflow_source.match?(/dorny\/paths-filter|paths-filter@/i),
 all_uses = jobs.values.flat_map do |job|
   Array(job["steps"]).filter_map { |step| step["uses"] }
 end
-check(failures, all_uses.all? { |uses| uses == CHECKOUT_ACTION },
-      "every action use must be the repository's pinned checkout action: #{all_uses.inspect}")
+allowed_actions = [CHECKOUT_ACTION, UPLOAD_ARTIFACT_ACTION]
+check(failures, all_uses.all? { |uses| allowed_actions.include?(uses) },
+      "every action use must be an approved pinned action: #{all_uses.inspect}")
 
 unless failures.empty?
   failures.each { |failure| warn "FAIL #{failure}" }

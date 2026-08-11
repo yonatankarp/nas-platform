@@ -3,7 +3,7 @@ set -eu
 set +x
 
 mode=${1:-run}
-repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)
+repo_dir=${PLATFORM_CONTRACT_REPO_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)}
 compose=$repo_dir/services/paperless-ngx/compose.yml
 mac_compose=$repo_dir/services/paperless-ngx/compose.mac.yml
 role=$repo_dir/roles/paperless_ngx/tasks/main.yml
@@ -207,6 +207,11 @@ grep -qF 'wait_healthy(REDIS, WEBSERVER)' "$snapshot" ||
 grep -qF 'request("delete", "/api/documents/' "$snapshot" ||
   fail_contract 'Paperless rollback drill does not destructively test restoration'
 [ "$mode" = static ] && { printf '%s\n' 'Paperless static contract passed'; exit 0; }
+. "${PLATFORM_LEGACY_FIXTURE_HELPER_FILE:-$repo_dir/tests/contracts/legacy-fixture-paths.sh}"
+legacy_fixture_validate PLATFORM_PAPERLESS_CONSUME_ROOT legacy/paperless-ngx/consume ||
+  fail_contract 'legacy consume root is unsafe'
+legacy_fixture_validate PLATFORM_PAPERLESS_EXPORT_ROOT legacy/paperless-ngx/export ||
+  fail_contract 'legacy export root is unsafe'
 
 : "${PLATFORM_CONTRACT_VAULT_FILE:=${PLATFORM_MAC_VAULT_FILE:-}}"
 : "${PLATFORM_CONTRACT_VAULT_PASSWORD_FILE:=${PLATFORM_MAC_VAULT_PASSWORD_FILE:-}}"
@@ -239,7 +244,13 @@ REPORT_ROOT = Pathname.new(ENV.fetch("PLATFORM_REPORT_ROOT")).expand_path
 REPO_ROOT = Pathname.new(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR", Dir.pwd)).expand_path
 WEBSERVER = ENV.fetch("PLATFORM_PAPERLESS_WEBSERVER_CONTAINER")
 STATE_PATH = REPORT_ROOT.join("paperless-persistence.json")
-EXPORT_PATH = MEDIA_ROOT.join("Documents/export/task-13-contract-export")
+EXPORT_ROOT = Pathname.new(
+  ENV.fetch("PLATFORM_PAPERLESS_EXPORT_ROOT", MEDIA_ROOT.join("Documents", "export").to_s)
+).expand_path
+CONSUME_ROOT = Pathname.new(
+  ENV.fetch("PLATFORM_PAPERLESS_CONSUME_ROOT", MEDIA_ROOT.join("Documents", "inbox").to_s)
+).expand_path
+EXPORT_PATH = EXPORT_ROOT.join("task-13-contract-export")
 PDF_MARKER = "paperlesscontractenglish"
 IMAGE_MARKER = "paperless contract image ocr"
 OFFICE_MARKER = "paperlesscontracthebrew"
@@ -547,7 +558,7 @@ if MODE == "run"
 end
 fail_contract("unknown mode: #{MODE}") unless %w[seed assert-persistence].include?(MODE)
 
-consume = MEDIA_ROOT.join("Documents/inbox")
+consume = CONSUME_ROOT
 if MODE == "seed"
   write_fixture(consume.join("task-13-contract.pdf"), pdf_bytes("Paperless PDF #{PDF_MARKER}"))
   write_fixture(

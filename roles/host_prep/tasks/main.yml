@@ -22,8 +22,14 @@
     path: "{{ item.path }}"
     state: directory
     # Linux container UID/GID declarations do not map to macOS host ownership.
-    owner: "{{ item.owner if platform_kind == 'nas' and item.owner is defined else omit }}"
-    group: "{{ item.group if platform_kind == 'nas' and item.group is defined else omit }}"
+    owner: >-
+      {{ item.owner
+         if (platform_kind == 'nas' or (platform_manage_linux_ownership | bool)) and item.owner is defined
+         else omit }}
+    group: >-
+      {{ item.group
+         if (platform_kind == 'nas' or (platform_manage_linux_ownership | bool)) and item.group is defined
+         else omit }}
     mode: "{{ item.mode }}"
   loop: "{{ nas_storage }}"
   loop_control:

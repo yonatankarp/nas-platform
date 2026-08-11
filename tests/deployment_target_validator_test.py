@@ -31,9 +31,18 @@ class DeploymentTargetValidatorTest(unittest.TestCase):
         self.expected_release = self.releases / RELEASE_ID
         self.current = self.deploy_root / "current"
         self.next_pointer = self.deploy_root / f".current-{RELEASE_ID}"
+        self.adoption_root = self.base / "adoption"
         self.expected_release.mkdir(parents=True)
 
-    def run_validator(self, paths, *, require_current="0", paths_json=None):
+    def run_validator(
+        self,
+        paths,
+        *,
+        require_current="0",
+        paths_json=None,
+        adoption_enabled="0",
+        adoption_root=None,
+    ):
         payload = json.dumps(paths) if paths_json is None else paths_json
         return subprocess.run(
             [
@@ -45,6 +54,8 @@ class DeploymentTargetValidatorTest(unittest.TestCase):
                 str(self.next_pointer),
                 require_current,
                 payload,
+                str(adoption_root or self.adoption_root),
+                adoption_enabled,
             ],
             capture_output=True,
             text=True,
@@ -96,6 +107,8 @@ class DeploymentTargetValidatorTest(unittest.TestCase):
                 str(target / f".current-{RELEASE_ID}"),
                 "0",
                 json.dumps([str(target)]),
+                str(self.adoption_root),
+                "0",
             ],
             capture_output=True,
             text=True,
@@ -183,7 +196,7 @@ class DeploymentTargetValidatorTest(unittest.TestCase):
         )
 
         self.assert_refused(
-            result, "Unsafe deployment target invocation: expected 6 arguments"
+            result, "Unsafe deployment target invocation: expected 8 arguments"
         )
 
     def test_rejects_invalid_require_current_without_traceback(self):
@@ -192,6 +205,49 @@ class DeploymentTargetValidatorTest(unittest.TestCase):
         self.assert_refused(
             result,
             "Unsafe deployment target invocation: require_current must be 0 or 1",
+        )
+
+    def test_accepts_exact_reviewed_adoption_source(self):
+        source = self.adoption_root / "legacy" / "ntfy" / "data"
+        source.mkdir(parents=True)
+
+        result = self.run_validator([str(source)], adoption_enabled="1")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_rejects_unreviewed_adoption_source(self):
+        source = self.adoption_root / "legacy" / "ntfy" / "unexpected"
+        source.mkdir(parents=True)
+
+        result = self.run_validator([str(source)], adoption_enabled="1")
+
+        self.assert_refused(
+            result,
+            f"Unsafe deployment target {source}: path escapes storage root {self.root}",
+        )
+
+    def test_rejects_noncanonical_adoption_root(self):
+        source = self.adoption_root / "legacy" / "ntfy" / "data"
+
+        result = self.run_validator(
+            [str(source)],
+            adoption_enabled="1",
+            adoption_root=f"{self.adoption_root}/.",
+        )
+
+        self.assert_refused(
+            result,
+            "Unsafe deployment target invocation: adoption root must be an absolute normalized path",
+        )
+
+    def test_rejects_invalid_adoption_enabled_without_traceback(self):
+        result = self.run_validator(
+            [str(self.root)], adoption_enabled="invalid"
+        )
+
+        self.assert_refused(
+            result,
+            "Unsafe deployment target invocation: adoption_enabled must be 0 or 1",
         )
 
     def test_next_pointer_only_accepts_expected_canonical_release(self):

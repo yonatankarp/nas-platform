@@ -152,6 +152,7 @@ EXPECTED_VAULT_KEYS = %w[
   vault_paperless_gmail_app_password
   vault_paperless_mail_account_name
   vault_paperless_mail_rule_name
+  vault_managed_users
   vault_tinymediamanager_password
 ].sort.freeze
 REQUIRED_MANIFEST_FIELDS = %w[name legacy_path role tranche status].freeze
@@ -244,6 +245,7 @@ PLATFORM_INVENTORIES.values.map { |values| [values[0], values[3]] }.uniq.each do
                           platform_project_name beszel_port ntfy_port dozzle_port
                           audiobookshelf_port komga_port tinymediamanager_web_port
                           tinymediamanager_api_port jellyfin_port immich_port paperless_port
+                          platform_adoption_root platform_adoption_marker platform_adoption_enabled
                         ]
                       else
                         []
@@ -365,6 +367,39 @@ check(failures, filter_status.success?,
   check(failures, role_options.dig("platform_render_device_path", "type") == "path" &&
                   role_options.dig("platform_render_device_path", "required") == true,
         "Beszel argument specs must require platform_render_device_path")
+end
+
+paperless_defaults = YAML.safe_load_file(
+  File.join(ROOT, "roles", "paperless_ngx", "defaults", "main.yml")
+)
+{
+  "paperless_task_workers" => 2,
+  "paperless_threads_per_worker" => 1
+}.each do |variable, expected|
+  actual = paperless_defaults[variable]
+  check(failures, actual.is_a?(Integer) && actual == expected,
+        "Paperless #{variable} default must be integer #{expected}")
+end
+
+paperless_options = YAML.safe_load_file(
+  File.join(ROOT, "roles", "paperless_ngx", "meta", "argument_specs.yml")
+).dig("argument_specs", "main", "options")
+%w[paperless_task_workers paperless_threads_per_worker].each do |variable|
+  check(failures, paperless_options.dig(variable, "type") == "int" &&
+                  paperless_options.dig(variable, "required") == false,
+        "Paperless argument specs must declare optional integer #{variable}")
+end
+
+paperless_env_lines = File.readlines(
+  File.join(ROOT, "roles", "paperless_ngx", "templates", "env.j2"),
+  chomp: true
+)
+[
+  "PAPERLESS_TASK_WORKERS={{ paperless_task_workers }}",
+  "PAPERLESS_THREADS_PER_WORKER={{ paperless_threads_per_worker }}"
+].each do |line|
+  check(failures, paperless_env_lines.include?(line),
+        "Paperless environment template must contain exact line: #{line}")
 end
 
 def flatten_tasks(tasks, flattened = [])
@@ -803,6 +838,8 @@ validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "te
   ruby\ tests/policy_manifest_test.rb
   ruby\ tests/run_contracts_test.rb
   ruby\ tests/run_contracts.rb\ --validate-only
+  ruby\ tests/database_managed_users_test.rb
+  ruby\ tests/database_managed_users_test.rb\ --self-test
   tests/integration_lock_test.sh
   tests/mac/audiobookshelf-drift-hook-test.sh
   tests/contracts/audiobookshelf-audio-test.sh
@@ -890,10 +927,9 @@ vault_contract_tasks = File.file?(vault_contract_tasks_path) ?
   YAML.safe_load_file(vault_contract_tasks_path) : []
 check(failures, !vault_contract_tasks.empty? && vault_contract_tasks.all? { |task| task["no_log"] == true },
       "every vault contract task must use no_log")
-shape_task = vault_contract_tasks.find do |task|
-  task["name"] == "Validate credential shapes without disclosing credential material"
-end
-shape_conditions = Array(shape_task&.dig("ansible.builtin.assert", "that")).join(" ")
+shape_conditions = vault_contract_tasks.flat_map do |task|
+  Array(task.dig("ansible.builtin.assert", "that"))
+end.join(" ")
 EXPECTED_VAULT_KEYS.each do |key|
   check(failures, shape_conditions.match?(/\b#{Regexp.escape(key)}\b/),
         "vault contract shape validation must inspect #{key}")
@@ -1107,11 +1143,13 @@ check(failures,
         !harness.include?("ntfy_token()"),
       "integration must consume the ephemeral encrypted vault without duplicate secret authoring")
 check(failures,
-      harness.include?('if [ -f "$repo_dir/.git" ]') &&
-        harness.include?('git clone --quiet --no-local --no-checkout "$repo_dir" "$sandbox/repo"') &&
-        harness.include?('git -C "$sandbox/repo" checkout -q --detach "$expected_release_id"') &&
-        harness.include?('-v "$controller_mount":/repo:ro'),
-      "integration must make linked worktree Git metadata available inside its controller mount")
+      harness.include?('controller_mount=$sandbox/repo') &&
+        harness.include?('git clone --quiet --no-local --no-checkout "$repo_dir" "$controller_mount"') &&
+        harness.include?('git -C "$controller_mount" checkout -q --detach "$expected_release_id"') &&
+        harness.include?('-v "$controller_mount":/repo') &&
+        harness.include?('install -m 0600 \"\$vault_file\" /repo/inventory/group_vars/all/vault.yml') &&
+        !harness.include?('controller_mount=$repo_dir'),
+      "integration must isolate normal and linked-worktree controllers before installing its ephemeral vault")
 lock_acquire_index = harness.index("acquire_integration_lock")
 sandbox_create_index = harness.index('sandbox=$(mktemp -d')
 check(failures,
@@ -1224,16 +1262,17 @@ end
 target_validation = target_validation_tasks.one? ? target_validation_tasks.first : {}
 target_validation_argv = Array(target_validation.dig("ansible.builtin.command", "argv"))
 validator_lookup = "{{ lookup('ansible.builtin.file', role_path ~ '/files/validate_target.py') }}"
-batched_target_paths = "{{ ((deployment_target_paths | list) + " \
-                       "(deployment_target_extra_paths | default([]) | list)) | to_json }}"
 check(failures, target_validation_tasks.one? &&
                 target_validation_argv[1] == "-c" &&
                 target_validation_argv[2] == validator_lookup &&
                 target_validation_argv.count(validator_lookup) == 1,
       "target containment task must execute the exact extracted validator source")
-check(failures, target_validation_argv.length == 9 &&
-                target_validation_argv.last == batched_target_paths,
-      "target containment task must pass one JSON array of combined target paths")
+check(failures, target_validation_argv.length == 11 &&
+                target_validation_argv[8].include?("deployment_target_candidate_paths") &&
+                target_validation_argv[8].include?("to_json") &&
+                target_validation_argv[9] == "{{ platform_adoption_root | default('') }}" &&
+                target_validation_argv[10].include?("platform_adoption_enabled"),
+      "target containment task must pass one JSON target batch and adoption binding")
 check(failures, !target_validation.key?("loop") && !target_validation.key?("loop_control"),
       "target containment task must validate the batch without an Ansible loop")
 %w[os.lstat os.path.realpath os.path.commonpath os.path.lexists].each do |primitive|
@@ -1404,10 +1443,22 @@ host_prep_create = host_prep_tasks.find do |task|
 end
 host_prep_file = host_prep_create&.fetch("ansible.builtin.file", {})
 check(failures, host_prep_file["owner"].to_s.include?("platform_kind == 'nas'") &&
+                host_prep_file["owner"].to_s.include?("platform_manage_linux_ownership | bool") &&
                 host_prep_file["group"].to_s.include?("platform_kind == 'nas'") &&
+                host_prep_file["group"].to_s.include?("platform_manage_linux_ownership | bool") &&
                 host_prep_file["owner"].to_s.include?("else omit") &&
                 host_prep_file["group"].to_s.include?("else omit"),
-      "Mac host preparation must omit Linux-only storage ownership")
+      "host preparation must restrict Linux ownership to the explicit integration capability")
+
+preflight_tasks = YAML.safe_load_file(File.join(ROOT, "roles", "preflight", "tasks", "main.yml"))
+ownership_guard = preflight_tasks.find do |task|
+  task["name"] == "Restrict synthetic Linux ownership correction"
+end&.dig("ansible.builtin.assert", "that")&.join(" ").to_s
+%w[platform_manage_linux_ownership platform_compose_kind deployment_bundle_test_mode
+   ansible_facts.system nas_docker_root nas_media_root].each do |token|
+  check(failures, ownership_guard.include?(token),
+        "integration Linux ownership guard must bind #{token}")
+end
 
 beszel_user_lists = beszel_tasks.select do |task|
   task["name"].to_s.start_with?("List application users") &&
@@ -1421,6 +1472,28 @@ beszel_user_lists.each do |task|
                   !url.include?("skipTotal=1"),
         "#{task['name']}: must use a complete URL-encoded server identity filter")
 end
+check(failures,
+      beszel_contract.include?('body: { role: "user" })') &&
+        beszel_contract.include?('user["role"] == "user" && user["verified"] == true') &&
+        !beszel_contract.include?('body: { role: "user", verified: false }'),
+      "Beszel drift fixture must preserve the verified authentication prerequisite while drifting role")
+
+beszel_complete_user_read = beszel_tasks.find do |task|
+  task["name"] == "Read the complete PocketBase users collection for managed users"
+end
+check(failures,
+      beszel_complete_user_read&.dig("ansible.builtin.uri", "url") ==
+        "{{ beszel_api }}/api/collections/users/records?perPage=500",
+      "Beszel managed users must reuse one explicitly bounded complete users collection")
+beszel_complete_user_assert = beszel_tasks.find do |task|
+  task["name"] == "Require a complete PocketBase users collection"
+end
+complete_user_conditions = Array(
+  beszel_complete_user_assert&.dig("ansible.builtin.assert", "that")
+).join(" ")
+check(failures, complete_user_conditions.include?("totalPages") &&
+                complete_user_conditions.include?("totalItems"),
+      "Beszel complete users collection must prove pagination and item-count completeness")
 
 beszel_alert_tasks = flatten_tasks(
   YAML.safe_load_file(File.join(ROOT, "roles", "beszel", "tasks", "alert.yml"))
@@ -1432,6 +1505,8 @@ end
 check(failures, identity_reads.length >= 11,
       "Beszel reconciliation must retain all filtered collection readbacks")
 identity_reads.each do |task|
+  next if task["name"] == "Read the complete PocketBase users collection for managed users"
+
   url = task.dig("ansible.builtin.uri", "url").to_s
   check(failures, url.include?("filter={{") && url.include?("urlencode") && !url.include?("skipTotal=1"),
         "#{task['name']}: collection readback must use a URL-encoded identity filter with totals")
@@ -1547,8 +1622,16 @@ check(failures, verification_roles.any? && verification_roles.all? do |role|
                   role.is_a?(Hash) && Array(role["tags"]).include?("never")
                 end,
       "verify.yml roles must be inert unless an explicit verification tag is selected")
+execute_phase_offset = mac_run.index("execute_phase()")
+execute_phase_source = execute_phase_offset ? mac_run[execute_phase_offset..] : ""
+cutover_phase = execute_phase_source[/cutover\)\n(.*?)\n\s*;;/m, 1].to_s
+snapshot_validation = cutover_phase.index("enable_adoption_mapping")
+target_deployment = cutover_phase.index("run_site")
+adoption_verification = cutover_phase.index('"$mac_script_dir/verify.sh"')
 check(failures, mac_run.scan('"$mac_script_dir/verify.sh"').length >= 3 &&
-                mac_run.include?('mac_run_hooks adoption-deploy && run_site && "$mac_script_dir/verify.sh"'),
+                [snapshot_validation, target_deployment, adoption_verification].all? &&
+                snapshot_validation < target_deployment &&
+                target_deployment < adoption_verification,
       "Mac lifecycle must verify after seed, drift reconciliation, recreation, and adoption")
 check(failures, mac_run.include?("resume vault checksum does not match") &&
                 mac_run.include?("resume Git revision does not match"),

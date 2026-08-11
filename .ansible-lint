@@ -4,6 +4,7 @@
 # integration overrides depend on to replace list values rather than merge them.
 exclude_paths:
   - services/
+  - tests/mac/legacy-overrides/
 
 skip_list:
   # Variables passed to include_role carry the prefix of the role that consumes

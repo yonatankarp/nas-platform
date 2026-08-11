@@ -1,0 +1,2 @@
+${foreach movies movie}record
+${end}

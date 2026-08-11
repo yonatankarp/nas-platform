@@ -9,8 +9,13 @@
       - "{{ platform_current_dir }}/services/dozzle"
       - "{{ platform_current_dir }}/services/dozzle/compose.yml"
       - "{{ platform_current_dir }}/services/dozzle/compose.{{ platform_compose_kind }}.yml"
+      - "{{ platform_current_dir }}/services/dozzle/compose.adoption.yml"
       - "{{ platform_runtime_dir }}/services/dozzle"
       - "{{ platform_runtime_dir }}/services/dozzle/.env"
+      - >-
+        {{ (platform_adoption_root ~ '/legacy/dozzle/data/users.yml')
+           if (platform_adoption_enabled | default(false) | bool)
+           else (nas_docker_root ~ '/dozzle/data/users.yml') }}
 
 - name: Check for a Dozzle platform override
   ansible.builtin.stat:
@@ -22,7 +27,27 @@
     dozzle_compose_files: >-
       {{ ['compose.yml'] +
          (dozzle_platform_compose.stat.exists
-          | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) }}
+          | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) +
+         ((platform_adoption_enabled | default(false) | bool)
+          | ternary(['compose.adoption.yml'], [])) }}
+
+- name: Select the Dozzle mounted state root
+  ansible.builtin.set_fact:
+    dozzle_state_root: >-
+      {{ (platform_adoption_root ~ '/legacy/dozzle/data')
+         if (platform_adoption_enabled | default(false) | bool)
+         else (nas_docker_root ~ '/dozzle/data') }}
+
+- name: Require the internally derived Dozzle mounted state root
+  ansible.builtin.assert:
+    that:
+      - dozzle_state_root == ((platform_adoption_root ~ '/legacy/dozzle/data') if
+        (platform_adoption_enabled | default(false) | bool) else (nas_docker_root ~ '/dozzle/data'))
+
+- name: Reconcile preserved and managed Dozzle users
+  ansible.builtin.include_tasks: managed_users.yml
+  vars:
+    dozzle_users_path: "{{ dozzle_state_root }}/users.yml"
 
 # Dozzle runs as NAS_UID:NAS_GID, so a 0600 file owned by whoever ran the play
 # is unreadable to it and the container exits before serving. Docker Desktop
@@ -32,10 +57,11 @@
 - name: Render the Dozzle administrator
   ansible.builtin.template:
     src: users.yml.j2
-    dest: "{{ nas_docker_root }}/dozzle/data/users.yml"
-    owner: "{{ nas_uid if platform_kind == 'nas' else omit }}"
-    group: "{{ nas_gid if platform_kind == 'nas' else omit }}"
+    dest: "{{ dozzle_state_root }}/users.yml"
+    owner: "{{ nas_uid if platform_kind == 'nas' or (platform_manage_linux_ownership | bool) else omit }}"
+    group: "{{ nas_gid if platform_kind == 'nas' or (platform_manage_linux_ownership | bool) else omit }}"
     mode: "0600"
+    unsafe_writes: false
   register: dozzle_users_file
   no_log: true
 
@@ -80,6 +106,22 @@
   delay: 3
   changed_when: false
   check_mode: false
+
+- name: Authenticate each managed Dozzle user
+  ansible.builtin.uri:
+    url: "{{ dozzle_api }}/token"
+    method: POST
+    body_format: form-urlencoded
+    body:
+      username: "{{ item.username }}"
+      password: "{{ item.password }}"
+    status_code: [200]
+  loop: "{{ vault_managed_dozzle_users }}"
+  loop_control:
+    label: dozzle-managed-user
+  changed_when: false
+  check_mode: false
+  no_log: true
 
 - name: Authenticate to the pinned Dozzle API for reconciliation
   ansible.builtin.uri:

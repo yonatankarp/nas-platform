@@ -1,0 +1,5 @@
+---
+services:
+  dozzle:
+    volumes: !override
+      - ${PLATFORM_ADOPTION_ROOT:?}/legacy/dozzle/data:/data

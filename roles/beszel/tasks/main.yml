@@ -20,8 +20,13 @@
       - "{{ platform_current_dir }}/services/beszel"
       - "{{ platform_current_dir }}/services/beszel/compose.yml"
       - "{{ platform_current_dir }}/services/beszel/compose.{{ platform_compose_kind }}.yml"
+      - "{{ platform_current_dir }}/services/beszel/compose.adoption.yml"
       - "{{ platform_runtime_dir }}/services/beszel"
       - "{{ platform_runtime_dir }}/services/beszel/.env"
+      - >-
+        {{ (platform_adoption_root ~ '/legacy/beszel/hub/id_ed25519')
+           if (platform_adoption_enabled | default(false) | bool)
+           else (nas_docker_root ~ '/beszel/hub/id_ed25519') }}
 
 - name: Check for a Beszel platform override
   ansible.builtin.stat:
@@ -33,12 +38,27 @@
     beszel_compose_files: >-
       {{ ['compose.yml'] +
          (beszel_platform_compose.stat.exists
-          | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) }}
+          | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) +
+         ((platform_adoption_enabled | default(false) | bool)
+          | ternary(['compose.adoption.yml'], [])) }}
+
+- name: Select the Beszel mounted state root
+  ansible.builtin.set_fact:
+    beszel_state_root: >-
+      {{ (platform_adoption_root ~ '/legacy/beszel/hub')
+         if (platform_adoption_enabled | default(false) | bool)
+         else (nas_docker_root ~ '/beszel/hub') }}
+
+- name: Require the internally derived Beszel mounted state root
+  ansible.builtin.assert:
+    that:
+      - beszel_state_root == ((platform_adoption_root ~ '/legacy/beszel/hub') if
+        (platform_adoption_enabled | default(false) | bool) else (nas_docker_root ~ '/beszel/hub'))
 
 - name: Install the hub keypair before the hub can generate its own
   ansible.builtin.copy:
     content: "{{ vault_beszel_hub_private_key }}"
-    dest: "{{ nas_docker_root }}/beszel/hub/id_ed25519"
+    dest: "{{ beszel_state_root }}/id_ed25519"
     mode: "0600"
   no_log: "{{ beszel_no_log | default(true) }}"
 
@@ -91,8 +111,16 @@
   changed_when: false
   check_mode: false
 
-# Checked before creating, so a converging run never rewrites the password.
-- name: Check whether the superuser can already authenticate
+# PocketBase has no supported non-secret list or existence command. Exact
+# authentication safely proves the desired identity already exists; otherwise
+# its atomic create command is the reviewed exception. The command creates an
+# absent identity but cannot update an existing password. Post-authentication
+# distinguishes successful creation from an existing identity with another
+# password. Beszel 0.18.7 prints one exact non-secret success line only for the
+# controller that creates the record; duplicate create attempts print the unique
+# email error while still exiting zero. Exact post-authentication remains the
+# authority for credentials, and the pinned success line only owns the change.
+- name: Check for an existing Beszel superuser with vault credentials
   ansible.builtin.uri:
     url: "{{ beszel_api }}/api/collections/_superusers/auth-with-password"
     method: POST
@@ -100,17 +128,13 @@
     body:
       identity: "{{ vault_beszel_superuser_email }}"
       password: "{{ vault_beszel_superuser_password }}"
-    status_code: [200, 400]
-  register: beszel_superuser_auth
+    status_code: [200, 400, 403]
+  register: beszel_superuser_pre_auth
   changed_when: false
   check_mode: false
   no_log: "{{ beszel_no_log | default(true) }}"
 
-# upsert is idempotent by the tool's own definition, "creates, or updates if email
-# exists". docker_compose_v2_exec rather than docker_container_exec: the latter
-# talks to the Docker API and needs the requests library on the target, which
-# cannot be assumed on ADM. This drives the Compose CLI like the deploy task.
-- name: Create the superuser
+- name: Create the superuser without updating an existing identity
   community.docker.docker_compose_v2_exec:
     project_src: "{{ platform_current_dir }}/services/beszel"
     project_name: "{{ beszel_compose_project_name }}"
@@ -120,10 +144,15 @@
     argv:
       - /beszel
       - superuser
-      - upsert
+      - create
       - "{{ vault_beszel_superuser_email }}"
       - "{{ vault_beszel_superuser_password }}"
-  when: beszel_superuser_auth.status | default(0) != 200
+  register: beszel_superuser_create
+  when:
+    - not ansible_check_mode
+    - beszel_superuser_pre_auth.status | int != 200
+  failed_when: false
+  changed_when: false
   no_log: "{{ beszel_no_log | default(true) }}"
 
 - name: Authenticate as the superuser
@@ -135,11 +164,43 @@
     body:
       identity: "{{ vault_beszel_superuser_email }}"
       password: "{{ vault_beszel_superuser_password }}"
-    status_code: [200]
+    status_code: [200, 400, 403]
   register: beszel_auth
   changed_when: false
   check_mode: false
   no_log: "{{ beszel_no_log | default(true) }}"
+
+- name: Require created or preserved Beszel superuser credentials
+  tags: [platform_verify_beszel]
+  ansible.builtin.assert:
+    that:
+      - ansible_check_mode or beszel_auth.status | int == 200
+    fail_msg: >-
+      Beszel superuser creation failed or the existing identity does not accept
+      its preserved vault password. Run the reviewed credential-migration
+      procedure; Ansible will not reset it automatically.
+  no_log: true
+
+- name: Report newly created Beszel superuser
+  ansible.builtin.debug:
+    msg: Beszel superuser was created and authenticated.
+  when:
+    - not ansible_check_mode
+    - beszel_superuser_pre_auth.status | int != 200
+    - >-
+      beszel_superuser_create.stdout | default('') ==
+      'Successfully created new superuser "' ~ vault_beszel_superuser_email ~ '"!'
+    - beszel_auth.status | int == 200
+  changed_when: true
+  no_log: true
+
+- name: Report planned Beszel superuser creation
+  ansible.builtin.debug:
+    msg: Beszel superuser would be created and authenticated.
+  when:
+    - ansible_check_mode
+    - beszel_superuser_pre_auth.status | int != 200
+  changed_when: true
 
 # The point of authoring the keypair is that the hub adopts it, so assert rather
 # than assume. getkey needs superuser authentication, hence its position here.
@@ -165,7 +226,7 @@
     fail_msg: >-
       The hub advertises a different public key than vault holds, so the agent
       would be rejected. This happens when the hub started once before the keypair
-      was installed. Remove {{ nas_docker_root }}/beszel/hub/id_ed25519 together
+      was installed. Remove {{ beszel_state_root }}/id_ed25519 together
       with the generated database, then run again.
       Hub advertises '{{ beszel_advertised_key.json.key | default('<none>') }}',
       vault holds '{{ vault_beszel_agent_key }}'.
@@ -174,6 +235,29 @@
 # Collections use URL-encoded PocketBase identity filters, then repeat the exact
 # identity selection in Jinja before resolving a record. Totals remain enabled so
 # each read can refuse a result spanning more than the complete 500-record page.
+- name: Read the complete PocketBase users collection for managed users
+  ansible.builtin.uri:
+    url: "{{ beszel_api }}/api/collections/users/records?perPage=500"
+    headers:
+      Authorization: "{{ beszel_auth.json.token }}"
+    status_code: [200]
+    return_content: true
+  register: beszel_complete_users
+  changed_when: false
+  check_mode: false
+  no_log: "{{ beszel_no_log | default(true) }}"
+
+- name: Require a complete PocketBase users collection
+  ansible.builtin.assert:
+    that:
+      - beszel_complete_users.json.get('totalPages', 0) | int <= 1
+      - beszel_complete_users.json.get('items', []) | type_debug == 'list'
+      - >-
+        beszel_complete_users.json.get('totalItems',
+          beszel_complete_users.json.get('items', []) | length) | int ==
+        beszel_complete_users.json.get('items', []) | length
+    fail_msg: PocketBase users collection exceeds one complete page.
+
 - name: List application users
   tags: [platform_verify_beszel]
   ansible.builtin.uri:
@@ -300,8 +384,20 @@
   changed_when: false
   check_mode: false
   no_log: "{{ beszel_no_log | default(true) }}"
+  when: beszel_user_id | length > 0
 
-- name: Reconcile managed application user credentials, role, and verification
+- name: Require preserved Beszel application-user credentials
+  ansible.builtin.assert:
+    that:
+      - beszel_app_user_auth.status | int == 200
+    fail_msg: >-
+      Existing Beszel application user does not accept its preserved vault
+      password. Run the reviewed credential-migration procedure; Ansible will
+      not reset it automatically.
+  when: beszel_user_id | length > 0
+  no_log: true
+
+- name: Reconcile managed application user role and verification
   ansible.builtin.uri:
     url: "{{ beszel_api }}/api/collections/users/records/{{ beszel_user_id }}"
     method: PATCH
@@ -309,16 +405,14 @@
       Authorization: "{{ beszel_auth.json.token }}"
     body_format: json
     body:
-      password: "{{ vault_beszel_app_user_password }}"
-      passwordConfirm: "{{ vault_beszel_app_user_password }}"
       verified: true
       role: admin
     status_code: [200]
   when:
     - beszel_user_id | length > 0
-    - beszel_app_user_auth.status | default(0) != 200
-      or not (beszel_users_after.json.get('items', [])
-              | selectattr('id', 'equalto', beszel_user_id) | first).verified
+    - >-
+      not (beszel_users_after.json.get('items', [])
+           | selectattr('id', 'equalto', beszel_user_id) | first).verified
       or (beszel_users_after.json.get('items', [])
           | selectattr('id', 'equalto', beszel_user_id) | first).role != 'admin'
   changed_when: true
@@ -326,13 +420,13 @@
 
 - name: Report planned managed application user reconciliation
   ansible.builtin.debug:
-    msg: Managed application user credentials, role, or verification would be reconciled.
+    msg: Managed application user role or verification would be reconciled.
   when:
     - ansible_check_mode
     - beszel_user_id | length > 0
-    - beszel_app_user_auth.status | default(0) != 200
-      or not (beszel_users_after.json.get('items', [])
-              | selectattr('id', 'equalto', beszel_user_id) | first).verified
+    - >-
+      not (beszel_users_after.json.get('items', [])
+           | selectattr('id', 'equalto', beszel_user_id) | first).verified
       or (beszel_users_after.json.get('items', [])
           | selectattr('id', 'equalto', beszel_user_id) | first).role != 'admin'
   changed_when: true
@@ -385,6 +479,11 @@
   check_mode: false
   no_log: "{{ beszel_no_log | default(true) }}"
   when: not ansible_check_mode
+
+- name: Reconcile managed Beszel users
+  ansible.builtin.include_tasks: managed_users.yml
+  vars:
+    beszel_managed_users_phase: reconcile
 
 - name: Report when Beszel configuration cannot continue
   ansible.builtin.debug:
@@ -698,3 +797,13 @@
         loop_var: beszel_alert
         label: "{{ beszel_alert.name }}"
       when: beszel_matching_systems | length == 1
+
+- name: Verify managed Beszel users
+  tags: [platform_verify_beszel]
+  ansible.builtin.include_tasks:
+    file: managed_users.yml
+    apply:
+      tags: [platform_verify_beszel]
+  vars:
+    beszel_managed_users_phase: verify
+  when: not ansible_check_mode

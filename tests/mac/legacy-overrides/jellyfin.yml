@@ -1,0 +1,12 @@
+---
+services:
+  jellyfin:
+    container_name: !reset null
+    devices: !override []
+    group_add: !override []
+    ports: !override
+      - "127.0.0.1:${JELLYFIN_HOST_PORT:?}:8096"
+    volumes: !override
+      - ${PLATFORM_MAC_SANDBOX:?}/legacy/jellyfin/config:/config
+      - ${PLATFORM_MAC_SANDBOX:?}/legacy/jellyfin/cache:/cache
+      - ${PLATFORM_MAC_SANDBOX:?}/legacy/jellyfin/media:/media:ro

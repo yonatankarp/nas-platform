@@ -2,10 +2,25 @@
 set -eu
 
 mac_hook_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+mac_script_dir=$(CDPATH= cd -- "$mac_hook_dir/../.." && pwd -P)
+. "$mac_script_dir/lib.sh"
+stop_failed_adoption_recreation() {
+  status=$?
+  trap - EXIT HUP INT TERM
+  if [ "$status" -ne 0 ] && [ "$PLATFORM_PROOF_LANE" = adoption ]; then
+    "$mac_hook_dir/../../adoption-stop-targets.sh" >/dev/null 2>&1 || true
+  fi
+  exit "$status"
+}
+trap stop_failed_adoption_recreation EXIT HUP INT TERM
 current=$PLATFORM_DOCKER_ROOT/nas-platform/current/services/paperless-ngx
 runtime=$PLATFORM_DOCKER_ROOT/nas-platform/runtime/services/paperless-ngx/.env
 
-docker compose --project-name "$PLATFORM_PROJECT_NAME-paperless" \
-  --env-file "$runtime" -f "$current/compose.yml" -f "$current/compose.mac.yml" \
-  up -d --force-recreate --wait
+set -- docker compose --project-name "$PLATFORM_PROJECT_NAME-paperless" --env-file "$runtime"
+compose_arguments=$(mac_compose_files "$current")
+while IFS= read -r compose_argument; do set -- "$@" "$compose_argument"; done <<EOF
+$compose_arguments
+EOF
+"$@" up -d --force-recreate --wait broker db webserver gotenberg tika
+[ "$PLATFORM_PROOF_LANE" != adoption ] || "$mac_hook_dir/../../adoption-container-attest.sh"
 "$mac_hook_dir/../../run-paperless-contract.sh" run

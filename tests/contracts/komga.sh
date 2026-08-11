@@ -3,7 +3,7 @@ set -eu
 set +x
 
 mode=${1:-run}
-repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)
+repo_dir=${PLATFORM_CONTRACT_REPO_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)}
 compose=$repo_dir/services/komga/compose.yml
 mac_compose=$repo_dir/services/komga/compose.mac.yml
 role=$repo_dir/roles/komga/tasks/main.yml
@@ -60,6 +60,9 @@ abort "Komga contract failed: role must not edit an opaque database" if
 RUBY
 
 [ "$mode" = static ] && { printf '%s\n' 'Komga static contract passed'; exit 0; }
+. "${PLATFORM_LEGACY_FIXTURE_HELPER_FILE:-$repo_dir/tests/contracts/legacy-fixture-paths.sh}"
+legacy_fixture_validate PLATFORM_KOMGA_LIBRARY_PATH legacy/komga/library ||
+  fail_contract 'legacy fixture root is unsafe'
 
 : "${PLATFORM_CONTRACT_VAULT_FILE:=${PLATFORM_MAC_VAULT_FILE:-}}"
 : "${PLATFORM_CONTRACT_VAULT_PASSWORD_FILE:=${PLATFORM_MAC_VAULT_PASSWORD_FILE:-}}"
@@ -86,8 +89,11 @@ MEDIA_ROOT = Pathname.new(ENV.fetch("PLATFORM_MEDIA_ROOT")).expand_path
 REPORT_ROOT = Pathname.new(ENV.fetch("PLATFORM_REPORT_ROOT")).expand_path
 LIBRARY_NAME = "Books"
 LIBRARY_ROOT = "/data"
-FIXTURE_RELATIVE = Pathname.new("Books/task-10-contract-comic/Task 10 Contract Comic.cbz")
-FIXTURE_PATH = MEDIA_ROOT.join(FIXTURE_RELATIVE)
+LIBRARY_FILESYSTEM_ROOT = Pathname.new(
+  ENV.fetch("PLATFORM_KOMGA_LIBRARY_PATH", MEDIA_ROOT.join("Books").to_s)
+).expand_path
+FIXTURE_RELATIVE = Pathname.new("task-10-contract-comic/Task 10 Contract Comic.cbz")
+FIXTURE_PATH = LIBRARY_FILESYSTEM_ROOT.join(FIXTURE_RELATIVE)
 FIXTURE_LIBRARY_URL = "/data/task-10-contract-comic/Task 10 Contract Comic.cbz"
 STATE_PATH = REPORT_ROOT.join("komga-persistence.json")
 MANAGED_SETTINGS = {

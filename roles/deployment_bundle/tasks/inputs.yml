@@ -48,6 +48,18 @@
     loop_var: deployment_controller_service
     label: "{{ deployment_controller_service.name }}"
 
+- name: Validate adoption controller Compose inputs
+  ansible.builtin.include_tasks: controller_input.yml
+  vars:
+    deployment_controller_input_path: >-
+      {{ playbook_dir }}/services/{{ deployment_controller_service.name }}/compose.adoption.yml
+    deployment_controller_input_allow_missing: false
+  loop: "{{ deployment_bundle_services }}"
+  loop_control:
+    loop_var: deployment_controller_service
+    label: "{{ deployment_controller_service.name }}"
+  when: platform_adoption_enabled | default(false) | bool
+
 - name: Record controller input validation
   ansible.builtin.set_fact:
     deployment_bundle_controller_inputs_validated: true

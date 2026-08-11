@@ -368,17 +368,14 @@ EOF
 create_controller_symlink_fixture manifest manifest
 create_controller_symlink_fixture override override
 
-# A linked worktree's .git file points outside the directory Docker mounts. Give
-# the container an isolated checkout at the same HEAD, then overlay the working
-# files so the integration-only dirty-controller path retains its exact meaning.
-# A normal checkout keeps the direct read-only mount used by CI.
-controller_mount=$repo_dir
-if [ -f "$repo_dir/.git" ]; then
-  git clone --quiet --no-local --no-checkout "$repo_dir" "$sandbox/repo"
-  git -C "$sandbox/repo" checkout -q --detach "$expected_release_id"
-  tar -C "$repo_dir" -cf - --exclude .git . | tar -C "$sandbox/repo" -xf -
-  controller_mount=$sandbox/repo
-fi
+# Always give the container an isolated checkout at the same HEAD, then overlay
+# the working files so integration-only dirty-controller tests retain their
+# exact meaning. The isolated copy is also the only place where CI replaces the
+# committed deployment vault with its generated ephemeral fixture.
+controller_mount=$sandbox/repo
+git clone --quiet --no-local --no-checkout "$repo_dir" "$controller_mount"
+git -C "$controller_mount" checkout -q --detach "$expected_release_id"
+tar -C "$repo_dir" -cf - --exclude .git . | tar -C "$controller_mount" -xf -
 
 # Exercise the controller guard in an isolated Git checkout. Its play has a
 # target-mutating task immediately after validation, so each refusal also proves
@@ -438,7 +435,7 @@ printf 'host address: %s\n' "$nas_address"
 docker run --rm \
   --network host \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  -v "$controller_mount":/repo:ro \
+  -v "$controller_mount":/repo \
   `# Mounted at its own path so the storage roots resolve identically inside` \
   `# this container and on the Docker daemon's host.` \
   -v "$sandbox":"$sandbox" \
@@ -481,6 +478,11 @@ docker run --rm \
       TMPDIR='$sandbox' /repo/tests/generate-ephemeral-vault.sh --cleanup \
         \"\$vault_directory\"
     }
+
+    test -f /repo/inventory/group_vars/all/vault.yml
+    test ! -L /repo/inventory/group_vars/all/vault.yml
+    install -m 0600 \"\$vault_file\" /repo/inventory/group_vars/all/vault.yml
+    export ANSIBLE_VAULT_PASSWORD_FILE=\"\$vault_password_file\"
 
     if suite_is foundation; then
     PLATFORM_DOCKER_ROOT='$sandbox/var/folders/path fixture/missing/Docker' \
@@ -1479,6 +1481,7 @@ docker run --rm \
         PLATFORM_TINYMEDIAMANAGER_CONTAINER=tinymediamanager \
         PLATFORM_JELLYFIN_CONTAINER=jellyfin \
         ruby /repo/tests/run_contracts.rb --execute
+      run_audiobookshelf_contract authentication-session-cleanup
     fi
 
     if suite_is idempotence-check; then

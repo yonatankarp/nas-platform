@@ -43,6 +43,102 @@ argument_specs:
       vault_paperless_mail_account_name: {type: str, required: true}
       vault_paperless_mail_rule_name: {type: str, required: true}
       vault_tinymediamanager_password: {type: str, required: true}
+      vault_managed_users:
+        type: dict
+        required: true
+        description: Service-specific managed application-user allowlists.
+        options:
+          audiobookshelf:
+            type: list
+            elements: dict
+            required: true
+            options:
+              username: {type: str, required: true}
+              password: {type: str, required: true}
+              type: {type: str, required: true}
+              is_active: {type: bool, choices: [true], required: true}
+              permissions:
+                type: dict
+                required: true
+                options:
+                  flags: {type: dict, required: true}
+                  librariesAccessible: {type: list, elements: str, required: true}
+                  itemTagsSelected: {type: list, elements: str, required: true}
+          beszel:
+            type: list
+            elements: dict
+            required: true
+            options:
+              email: {type: str, required: true}
+              password: {type: str, required: true}
+              role: {type: str, required: true}
+              verified: {type: bool, choices: [true], required: true}
+          dozzle:
+            type: list
+            elements: dict
+            required: true
+            options:
+              username: {type: str, required: true}
+              password: {type: str, required: true}
+              password_hash: {type: str, required: true}
+              email: {type: str, required: true}
+              name: {type: str, required: true}
+              filter: {type: str, required: true}
+              roles: {type: str, required: true}
+          immich:
+            type: list
+            elements: dict
+            required: true
+            options:
+              email: {type: str, required: true}
+              password: {type: str, required: true}
+              name: {type: str, required: true}
+              quota_size: {type: int, required: true}
+          jellyfin:
+            type: list
+            elements: dict
+            required: true
+            options:
+              username: {type: str, required: true}
+              password: {type: str, required: true}
+              policy: {type: dict, required: true}
+          komga:
+            type: list
+            elements: dict
+            required: true
+            options:
+              email: {type: str, required: true}
+              password: {type: str, required: true}
+              roles: {type: list, elements: str, required: true}
+          ntfy:
+            type: list
+            elements: dict
+            required: true
+            options:
+              username: {type: str, required: true}
+              password: {type: str, required: true}
+              password_hash: {type: str, required: true}
+              role: {type: str, required: true}
+              access:
+                type: list
+                elements: dict
+                required: true
+                options:
+                  topic: {type: str, required: true}
+                  permission: {type: str, required: true}
+              tokens: {type: list, elements: str, required: true}
+          paperless_ngx:
+            type: list
+            elements: dict
+            required: true
+            options:
+              username: {type: str, required: true}
+              password: {type: str, required: true}
+              email: {type: str, required: true}
+              is_active: {type: bool, required: true}
+              is_staff: {type: bool, required: true}
+              is_superuser: {type: bool, required: true}
+              groups: {type: list, elements: str, required: true}
       platform_vault_file:
         type: path
         required: false

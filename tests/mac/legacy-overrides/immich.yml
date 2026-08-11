@@ -1,0 +1,26 @@
+---
+services:
+  immich-server:
+    container_name: !reset null
+    devices: !override []
+    ports: !override
+      - "127.0.0.1:${IMMICH_HOST_PORT:?}:2283"
+    volumes: !override
+      - ${PLATFORM_MAC_SANDBOX:?}/legacy/immich/data:/data
+      - ${PLATFORM_MAC_SANDBOX:?}/legacy/immich/thumbs:/data/thumbs
+      - ${PLATFORM_MAC_SANDBOX:?}/legacy/immich/encoded-video:/data/encoded-video
+      - ${PLATFORM_MAC_SANDBOX:?}/legacy/immich/profile:/data/profile
+      - ${PLATFORM_MAC_SANDBOX:?}/legacy/immich/backups:/data/backups
+
+  immich-machine-learning:
+    container_name: !reset null
+    volumes: !override
+      - ${PLATFORM_MAC_SANDBOX:?}/legacy/immich/model-cache:/cache
+
+  redis:
+    container_name: !reset null
+
+  database:
+    container_name: !reset null
+    volumes: !override
+      - ${PLATFORM_MAC_SANDBOX:?}/legacy/immich/postgres:/var/lib/postgresql/data

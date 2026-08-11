@@ -6,6 +6,7 @@ umask 077
 mac_hook_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 mac_script_dir=$(CDPATH= cd -- "$mac_hook_dir/../.." && pwd -P)
 mac_repo_dir=$(CDPATH= cd -- "$mac_script_dir/../.." && pwd -P)
+. "$mac_script_dir/lib.sh"
 expected_failure=
 fixture_owned=false
 
@@ -63,7 +64,7 @@ expected_failure=$(mktemp "$PLATFORM_REPORT_ROOT/audiobookshelf-verify-drift.XXX
 fixture_owned=true
 "$mac_script_dir/run-audiobookshelf-contract.sh" drift
 "$mac_script_dir/run-audiobookshelf-contract.sh" drift-verify
-if ansible-playbook -i "$mac_repo_dir/inventory/mac.yml" "$mac_repo_dir/verify.yml" \
+if mac_ansible_playbook -i "$mac_repo_dir/inventory/mac.yml" "$mac_repo_dir/verify.yml" \
     --vault-password-file "$PLATFORM_MAC_VAULT_PASSWORD_FILE" \
     -e @"$PLATFORM_MAC_VAULT_FILE" \
     -e "platform_vault_file=$PLATFORM_MAC_VAULT_FILE" \

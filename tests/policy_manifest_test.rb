@@ -23,6 +23,8 @@ BASE_FIXTURE_PATHS = %w[
   docs/getting-started-nas.md
   filter_plugins/platform_paths.py
   filter_plugins/compose_metadata.py
+  filter_plugins/managed_user_state.py
+  library/atomic_safe_slurp.py
   generate-secrets.yml
   inventory/group_vars/all/main.yml
   inventory/group_vars/all/vault.yml.example
@@ -62,6 +64,10 @@ BASE_FIXTURE_PATHS = %w[
   tests/generate-ephemeral-vault.sh
   tests/generate-secrets-redaction-test.sh
   tests/mac_inventory_path_test.yml
+  tests/managed_user_state_filter_test.py
+  tests/ntfy_verify_execution_test.rb
+  tests/safe_slurp_test.py
+  tests/safe_slurp_test.yml
   tests/mac/cleanup.sh
   tests/mac/drift.sh
   tests/mac/fixtures.sh
@@ -108,6 +114,8 @@ def fixture_paths(root = ROOT)
     role_root = File.join("roles", role)
     paths << File.join(role_root, "meta", "argument_specs.yml")
     paths << File.join(role_root, "tasks", "main.yml")
+    defaults = File.join(role_root, "defaults", "main.yml")
+    paths << defaults if File.file?(File.join(root, defaults))
     env_template = File.join(role_root, "templates", "env.j2")
     paths << env_template if File.file?(File.join(root, env_template))
   end
@@ -290,14 +298,7 @@ def implement_paperless(root)
   YAML
 
   role_dir = File.join(root, "roles", "paperless_ngx")
-  FileUtils.mkdir_p(File.join(role_dir, "meta"))
   FileUtils.mkdir_p(File.join(role_dir, "tasks"))
-  File.write(File.join(role_dir, "meta", "argument_specs.yml"), <<~YAML)
-    ---
-    argument_specs:
-      main:
-        options: {}
-  YAML
   File.write(File.join(role_dir, "tasks", "main.yml"), <<~YAML)
     ---
     - name: Provision Paperless
@@ -505,7 +506,7 @@ expect_failure(failures, "missing Beszel Compose interface",
 end
 
 expect_failure(failures, "Mac storage claims Linux ownership",
-               "Mac host preparation must omit Linux-only storage ownership") do |root|
+               "host preparation must restrict Linux ownership to the explicit integration capability") do |root|
   mutate_yaml_file(root, "roles/host_prep/tasks/main.yml") do |tasks|
     task = tasks.find { |entry| entry["name"] == "Create service state directories" }
     task.fetch("ansible.builtin.file")["owner"] = "{{ item.owner | default(omit) }}"

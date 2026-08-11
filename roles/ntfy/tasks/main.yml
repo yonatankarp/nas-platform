@@ -15,8 +15,13 @@
       - "{{ platform_current_dir }}/services/ntfy"
       - "{{ platform_current_dir }}/services/ntfy/compose.yml"
       - "{{ platform_current_dir }}/services/ntfy/compose.{{ platform_compose_kind }}.yml"
+      - "{{ platform_current_dir }}/services/ntfy/compose.adoption.yml"
       - "{{ platform_runtime_dir }}/services/ntfy"
       - "{{ platform_runtime_dir }}/services/ntfy/.env"
+      - >-
+        {{ (platform_adoption_root ~ '/legacy/ntfy/data/auth.db')
+           if (platform_adoption_enabled | default(false) | bool)
+           else (nas_docker_root ~ '/ntfy/data/auth.db') }}
 
 - name: Check for an ntfy platform override
   ansible.builtin.stat:
@@ -28,7 +33,150 @@
     ntfy_compose_files: >-
       {{ ['compose.yml'] +
          (ntfy_platform_compose.stat.exists
-          | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) }}
+          | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) +
+         ((platform_adoption_enabled | default(false) | bool)
+          | ternary(['compose.adoption.yml'], [])) }}
+
+- name: Select the ntfy mounted state root
+  ansible.builtin.set_fact:
+    ntfy_state_root: >-
+      {{ (platform_adoption_root ~ '/legacy/ntfy/data')
+         if (platform_adoption_enabled | default(false) | bool)
+         else (nas_docker_root ~ '/ntfy/data') }}
+
+- name: Require the internally derived ntfy mounted state root
+  ansible.builtin.assert:
+    that:
+      - ntfy_state_root == ((platform_adoption_root ~ '/legacy/ntfy/data') if
+        (platform_adoption_enabled | default(false) | bool) else (nas_docker_root ~ '/ntfy/data'))
+
+- name: Inspect existing ntfy declarative ownership and users
+  block:
+    - name: Inspect the prior ntfy runtime environment
+      ansible.builtin.stat:
+        path: "{{ platform_runtime_dir }}/services/ntfy/.env"
+        follow: false
+      register: ntfy_prior_environment_stat
+
+    - name: Inspect the existing ntfy authentication database
+      ansible.builtin.stat:
+        path: "{{ ntfy_state_root }}/auth.db"
+        follow: false
+      register: ntfy_auth_database_stat
+
+    - name: Require safe existing ntfy state files
+      ansible.builtin.assert:
+        that:
+          - >-
+            not ntfy_prior_environment_stat.stat.exists or
+            (ntfy_prior_environment_stat.stat.isreg | default(false) and
+             not (ntfy_prior_environment_stat.stat.islnk | default(false)))
+          - >-
+            not ntfy_auth_database_stat.stat.exists or
+            (ntfy_auth_database_stat.stat.isreg | default(false) and
+             not (ntfy_auth_database_stat.stat.islnk | default(false)))
+        fail_msg: Existing ntfy state must use regular, non-symlink files.
+
+    - name: Read the prior ntfy runtime environment
+      ansible.builtin.slurp:
+        src: "{{ platform_runtime_dir }}/services/ntfy/.env"
+      register: ntfy_prior_environment_source
+      when: ntfy_prior_environment_stat.stat.exists
+      no_log: true
+
+    - name: Parse prior ntfy declarative ownership
+      ansible.builtin.set_fact:
+        ntfy_prior_environment: >-
+          {{ (ntfy_prior_environment_source.content | b64decode | managed_user_env)
+             if ntfy_prior_environment_stat.stat.exists else {} }}
+      no_log: true
+
+    - name: Resolve prior ntfy declarative users
+      ansible.builtin.set_fact:
+        ntfy_prior_provisioned_users: >-
+          {{ ntfy_prior_environment.NTFY_AUTH_USERS | default('') |
+             ntfy_auth_users }}
+      no_log: true
+  rescue:
+    - name: Refuse unsafe prior ntfy state
+      ansible.builtin.fail:
+        msg: >-
+          Existing ntfy ownership state is malformed or unsafe; no configuration
+          was changed. Restore the reviewed prior runtime environment and retry.
+
+- name: Require prior ownership for an existing ntfy authentication database
+  ansible.builtin.assert:
+    that:
+      - >-
+        not ntfy_auth_database_stat.stat.exists or
+        ntfy_prior_environment_stat.stat.exists
+    fail_msg: >-
+      Existing ntfy authentication state has no declarative ownership record.
+      Restore the reviewed prior runtime environment before managing users.
+
+- name: List authoritative existing ntfy users
+  community.docker.docker_compose_v2_run:
+    project_src: "{{ platform_current_dir }}/services/ntfy"
+    project_name: "{{ ntfy_compose_project_name }}"
+    files: "{{ ntfy_compose_files }}"
+    env_files: ["{{ platform_runtime_dir }}/services/ntfy/.env"]
+    service: ntfy
+    argv:
+      - user
+      - --auth-file=/var/lib/ntfy/auth.db
+      - --auth-default-access=deny-all
+      - list
+    cleanup: true
+    no_deps: true
+    service_ports: false
+    # community.docker 5.2.1 maps false to --no-interactive, which pinned
+    # Compose v5.1.4 does not support. True omits the flag; no stdin is supplied.
+    interactive: true
+    tty: false
+  register: ntfy_existing_user_list
+  when:
+    - ntfy_auth_database_stat.stat.exists
+    - not ansible_check_mode
+  failed_when: false
+  changed_when: false
+  no_log: true
+
+- name: Require authoritative ntfy user listing
+  ansible.builtin.assert:
+    that:
+      - >-
+        not ntfy_auth_database_stat.stat.exists or ansible_check_mode or
+        ntfy_existing_user_list.rc | default(1) | int == 0
+    fail_msg: >-
+      Existing ntfy users could not be listed authoritatively; no configuration
+      was changed. Restore runtime access to the auth database and retry.
+  no_log: true
+
+- name: Resolve authoritative existing ntfy users
+  ansible.builtin.set_fact:
+    ntfy_existing_user_records: >-
+      {{ (ntfy_existing_user_list.stdout | ntfy_user_list)
+         if ntfy_auth_database_stat.stat.exists and not ansible_check_mode else {} }}
+    ntfy_authoritative_absence_established: >-
+      {{ not ntfy_auth_database_stat.stat.exists or
+         (not ansible_check_mode and
+          ntfy_existing_user_list.rc | default(1) | int == 0) }}
+  no_log: true
+
+- name: Report deferred authoritative ntfy inspection in check mode
+  ansible.builtin.debug:
+    msg: >-
+      Existing ntfy identities require authoritative inspection during a normal
+      convergence; check mode will not create a one-off probe container.
+  when:
+    - ansible_check_mode
+    - ntfy_auth_database_stat.stat.exists
+  changed_when: false
+
+- name: Resolve declarative ntfy managed-user provisioning
+  ansible.builtin.include_tasks: managed_users.yml
+  vars:
+    ntfy_managed_users_phase: provision
 
 - name: Render the ntfy environment
   ansible.builtin.template:
@@ -55,6 +203,16 @@
   until: ntfy_health.json.healthy | default(false)
   retries: 20
   delay: 3
+
+- name: Verify managed ntfy users and declared access
+  ansible.builtin.include_tasks:
+    file: managed_users.yml
+    apply:
+      tags: [platform_verify_ntfy]
+  vars:
+    ntfy_managed_users_phase: verify
+  tags: [platform_verify_ntfy]
+  when: not ansible_check_mode
 
 # Proving provisioning took effect matters more than proving a file was written:
 # an unescaped or malformed hash leaves the server running with the alerting

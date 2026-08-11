@@ -9,6 +9,19 @@
       coordinates before target mutation.
     success_msg: Application endpoint coordinates are explicit.
 
+- name: Restrict synthetic Linux ownership correction
+  ansible.builtin.assert:
+    that:
+      - not (platform_manage_linux_ownership | bool) or
+        (platform_kind == 'mac' and
+         platform_compose_kind == 'integration' and
+         (deployment_bundle_test_mode | bool) and
+         ansible_facts.system == 'Linux' and
+         nas_docker_root is match('^.*/nas-platform-mac\.[A-Za-z0-9]{6}/service-data/docker$') and
+         nas_media_root is match('^.*/nas-platform-mac\.[A-Za-z0-9]{6}/service-data/media$'))
+    fail_msg: Linux ownership correction is restricted to an owned integration adoption sandbox.
+    success_msg: Linux ownership correction scope is explicit.
+
 - name: Report how this run reaches the NAS
   ansible.builtin.debug:
     msg: >-

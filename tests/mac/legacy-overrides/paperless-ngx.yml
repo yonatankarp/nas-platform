@@ -1,0 +1,38 @@
+---
+services:
+  broker:
+    container_name: !reset null
+    ports: !override []
+    volumes: !override
+      - ${PLATFORM_MAC_SANDBOX:?}/legacy/paperless-ngx/redis:/data
+
+  db:
+    container_name: !reset null
+    ports: !override []
+    volumes: !override
+      - ${PLATFORM_MAC_SANDBOX:?}/legacy/paperless-ngx/postgres:/var/lib/postgresql
+
+  webserver:
+    container_name: !reset null
+    network_mode: !reset null
+    ports: !override
+      - "127.0.0.1:${PAPERLESS_HOST_PORT:?}:8000"
+    volumes: !override
+      - ${PLATFORM_MAC_SANDBOX:?}/legacy/paperless-ngx/data:/usr/src/paperless/data
+      - ${PLATFORM_MAC_SANDBOX:?}/legacy/paperless-ngx/export:/usr/src/paperless/export
+      - ${PLATFORM_MAC_SANDBOX:?}/legacy/paperless-ngx/tessdata/heb.traineddata:/usr/share/tesseract-ocr/5/tessdata/heb.traineddata:ro
+      - ${PLATFORM_MAC_SANDBOX:?}/legacy/paperless-ngx/media:/usr/src/paperless/media
+      - ${PLATFORM_MAC_SANDBOX:?}/legacy/paperless-ngx/consume:/usr/src/paperless/consume
+    environment:
+      PAPERLESS_DBHOST: db
+      PAPERLESS_REDIS: redis://broker:6379
+      PAPERLESS_TIKA_ENDPOINT: http://tika:9998
+      PAPERLESS_TIKA_GOTENBERG_ENDPOINT: http://gotenberg:3000
+
+  gotenberg:
+    container_name: !reset null
+    ports: !override []
+
+  tika:
+    container_name: !reset null
+    ports: !override []
