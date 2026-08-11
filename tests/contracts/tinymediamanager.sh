@@ -30,8 +30,7 @@ role = File.read(role_path)
 role_tasks = YAML.safe_load_file(role_path, aliases: true)
 defaults = YAML.safe_load_file(defaults_path)
 service = compose.fetch("services").fetch("tinymediamanager")
-expected_image = "docker.io/tinymediamanager/tinymediamanager:5.3.0@sha256:e33769b278eefbec646b659342a86a7831869c5a3fa3cca97e7c47f518da4d89"
-expected_amd64_image = "docker.io/tinymediamanager/tinymediamanager:5.3.0@sha256:ef2b7c248ff2b6b8d30f509f5fa8aaae63508899403f2441da2fd6e2b0a216f6"
+expected_image = "docker.io/tinymediamanager/tinymediamanager:5.3.1@sha256:bada62a398e3aabe7a67b0e081c40dc08ce74aa86b7ba63e0a34a1bf278146a4"
 abort "tinyMediaManager contract failed: legacy image pin differs" unless service.fetch("image") == expected_image
 abort "tinyMediaManager contract failed: NAS host networking differs" unless service.fetch("network_mode") == "host"
 abort "tinyMediaManager contract failed: NAS storage contract differs" unless service.fetch("volumes") == [
@@ -50,7 +49,7 @@ abort "tinyMediaManager contract failed: logging policy differs" unless service.
 mac_service = mac.fetch("services").fetch("tinymediamanager")
 abort "tinyMediaManager contract failed: Mac override must replace host networking" unless
   mac_service.fetch("network_mode") == "bridge" &&
-    mac_service.fetch("image") == expected_amd64_image &&
+    mac_service.fetch("image") == expected_image &&
     mac_service.fetch("platform") == "linux/amd64" && mac_service.fetch("ports").sort == [
     "${TINYMEDIAMANAGER_API_HOST_PORT:?}:7878",
     "${TINYMEDIAMANAGER_WEB_HOST_PORT:?}:4000"
@@ -58,8 +57,8 @@ abort "tinyMediaManager contract failed: Mac override must replace host networki
 abort "tinyMediaManager contract failed: Mac override must not publish direct VNC" if
   mac_service.fetch("ports").any? { |port| port.end_with?(":5900") }
 integration_service = integration.fetch("services").fetch("tinymediamanager")
-abort "tinyMediaManager contract failed: integration must select the canonical amd64 child" unless
-  integration_service.fetch("image") == expected_amd64_image &&
+abort "tinyMediaManager contract failed: integration must select the canonical multi-platform image" unless
+  integration_service.fetch("image") == expected_image &&
     integration_service.fetch("platform") == "linux/amd64"
 # The application binds the container side of the published mapping. If the role
 # instead wrote the host port into httpServerPort, the mapping would forward to a
@@ -240,7 +239,7 @@ def deep_sorted(value)
 end
 
 def metadata_paths
-  # Pinned 5.3.0 reloadMediaInfo writes NFOs for entities that own video files,
+  # Pinned 5.3.1 reloadMediaInfo writes NFOs for entities that own video files,
   # and its HTTP API exposes no action that writes a series-root tvshow.nfo.
   [
     MOVIE_FILE.sub_ext(".nfo"),

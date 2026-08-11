@@ -7,7 +7,7 @@ x-logging: &default-logging
 services:
   dozzle:
     container_name: dozzle
-    image: docker.io/amir20/dozzle:v10.6.14@sha256:08286e731710cbb0247c8d96380d5036d9e1c1447d257bc3c71336430a4c4668
+    image: docker.io/amir20/dozzle:v10.7.1@sha256:a8441e9d2928cc7b30d0023f5eedbb87ef6e234d87f3be02662bd8f417955b8b
     user: "${NAS_UID:?}:${NAS_GID:?}"
     ports:
       - "8080:8080"
