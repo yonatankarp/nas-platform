@@ -10,6 +10,9 @@ require "tmpdir"
 require "yaml"
 
 COMPARATOR = File.join(__dir__, "adoption-compare.rb")
+comparator_source = File.binread(COMPARATOR)
+raise "adoption comparator uses unavailable Ruby directory descriptor APIs" if
+  comparator_source.include?("Dir.for_fd") || comparator_source.include?("Dir.fchdir")
 SERVICES = %w[
   audiobookshelf beszel dozzle immich jellyfin komga ntfy paperless-ngx tinymediamanager
 ].freeze

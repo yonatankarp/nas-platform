@@ -177,15 +177,19 @@ end
 def capture_staged_probe(stage, environment, probe_bytes, descriptor_options, mutate:)
   previous = File.open(".", File::RDONLY)
   expected = stage.file.stat
-  Dir.fchdir(stage.file.fileno)
+  result = AdoptionFileSystem.fchdir(stage.file.fileno)
+  raise SystemCallError.new("fchdir", Fiddle.last_error) if result.negative?
   current = File.stat(".")
   raise "staged dependency namespace differs" unless [current.dev, current.ino] == [expected.dev, expected.ino]
 
   run = -> { capture(environment, "/bin/sh", "-c", probe_bytes, spawn_options: descriptor_options) }
   mutate ? with_dependency_mutation(stage, &run) : run.call
 ensure
-  Dir.fchdir(previous.fileno) if previous
-  previous&.close
+  if previous
+    restored = AdoptionFileSystem.fchdir(previous.fileno)
+    previous.close
+    raise SystemCallError.new("fchdir", Fiddle.last_error) if restored.negative?
+  end
 end
 
 options = {}
