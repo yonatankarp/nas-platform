@@ -8,15 +8,14 @@ PARSER="$ROOT/scripts/portainer-parity.rb"
 MAPPING="$ROOT/config/portainer-parity.yml"
 COMMIT=400f03f276ae1bb69f5460c175b9fb923d620f1a
 CANARY=PORTAINER-PARITY-IMPORT-CANARY-DO-NOT-LEAK
-ANSIBLE_BIN=/var/folders/z6/qvbh9dlx2_s98lt4__4fwg9m0000gn/T/nas-platform-task14-ansible.qp6qkn/bin
-[ -x "$ANSIBLE_BIN/ansible-vault" ] && PATH="$ANSIBLE_BIN:$PATH"
-export PATH
 
 fail() { printf '%s\n' "portainer import test: $1" >&2; exit 1; }
 assert() { [ "$1" = "$2" ] || fail "$3"; }
 mode() { ruby -e 'puts((File.lstat(ARGV.fetch(0)).mode & 0o777).to_s(8))' "$1"; }
 sum() { ruby -rdigest -e 'puts Digest::SHA256.file(ARGV.fetch(0)).hexdigest' "$1"; }
 identity() { ruby -e 's = File.lstat(ARGV.fetch(0)); puts "#{s.dev}:#{s.ino}:#{(s.mode & 0o777).to_s(8)}"' "$1"; }
+
+command -v ansible-vault >/dev/null 2>&1 || fail "ansible-vault is required"
 
 repo_password=
 repo_output=

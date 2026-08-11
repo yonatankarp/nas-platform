@@ -9,6 +9,7 @@ SUCCESS = "CI workflow: required job and docs-only boundary hold"
 CHECKOUT_ACTION = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
 FULL_STEPS = [
   ["Validate shell syntax", "find tests -type f -name '*.sh' -exec sh -n {} +"],
+  ["Install Ansible tooling", "ansible-core==2.21.2"],
   ["Check policy properties", "tests/validate-policy.sh"],
   ["Check integration sandbox cleanup", "tests/integration_cleanup_test.sh"],
   ["Check legacy seed security", "tests/mac/legacy-seed-test.sh\ntests/mac/legacy-fixture-path-test.sh\nruby tests/mac/legacy-secure-copy-test.rb"],
@@ -22,7 +23,6 @@ FULL_STEPS = [
     tests/mac/adoption-runner-test.sh
     tests/mac/adoption-rollback-test.sh
   SH
-  ["Install Ansible tooling", "ansible-core==2.21.2"],
   ["Check out pinned legacy infrastructure", "git -C \"$legacy_root\" fetch --depth=1 origin \"$legacy_revision\""],
   ["Check legacy role Compose compatibility", "tests/mac/legacy-role-compose-test.sh"],
   ["Check legacy seed playbook syntax", "ansible-playbook -i inventory/mac.yml tests/mac/legacy-role-seed.yml --syntax-check"],

@@ -92,6 +92,15 @@ jobs:
         if: steps.scope.outputs.docs_only != 'true'
         run: find tests -type f -name '*.sh' -exec sh -n {} +
 
+      - name: Install Ansible tooling
+        if: steps.scope.outputs.docs_only != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes apache2-utils openssh-client openssl
+          pipx install 'ansible-core==2.21.2'
+          pipx install 'ansible-lint==26.6.0'
+          ansible-galaxy collection install -r requirements.yml
+
       - name: Check policy properties
         if: steps.scope.outputs.docs_only != 'true'
         run: tests/validate-policy.sh
@@ -118,15 +127,6 @@ jobs:
           tests/mac/adoption-failure-stop-test.sh
           tests/mac/adoption-runner-test.sh
           tests/mac/adoption-rollback-test.sh
-
-      - name: Install Ansible tooling
-        if: steps.scope.outputs.docs_only != 'true'
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes apache2-utils openssh-client openssl
-          pipx install 'ansible-core==2.21.2'
-          pipx install 'ansible-lint==26.6.0'
-          ansible-galaxy collection install -r requirements.yml
 
       - name: Check out pinned legacy infrastructure
         if: steps.scope.outputs.docs_only != 'true'
