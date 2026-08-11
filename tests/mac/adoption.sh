@@ -166,10 +166,15 @@ require_legacy_projects_stopped() {
     *[!0123456789abcdef]*|'') die 'adoption mapping marker is invalid' ;;
   esac
   [ "${#PLATFORM_ADOPTION_MARKER}" -eq 64 ] || die 'adoption mapping marker is invalid'
+  snapshot_binding=$("$script_dir/adoption-snapshot.sh" baseline-binding \
+    --override-root "$script_dir/legacy-overrides" --baseline "$sandbox/baseline.json" \
+    --run-state "$PLATFORM_REPORT_ROOT/phase-input.json") ||
+    die 'snapshot baseline binding is unavailable'
   comparison=$PLATFORM_REPORT_ROOT/adoption-comparison.json
   comparison_status=0
   "$script_dir/adoption-compare.rb" \
-    --baseline "$sandbox/baseline.json" --output "$comparison" \
+    --baseline "$sandbox/snapshot/pre-cutover/baseline.json" --output "$comparison" \
+    --snapshot-binding "$snapshot_binding" \
     --capabilities "$repo_dir/config/managed-user-capabilities.yml" || comparison_status=$?
   if [ -f "$comparison" ] && [ ! -L "$comparison" ]; then
     "$script_dir/report.rb" --diagnostic "$PLATFORM_REPORT_ROOT/phase-input.json" \

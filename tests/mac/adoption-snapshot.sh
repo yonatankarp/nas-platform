@@ -23,7 +23,7 @@ shift 2
 [ "$1" = --run-state ] || die 'expected --run-state'
 run_state=$2
 case $action in
-  publish|verify|marker|marker-post-cutover|begin-cutover|attestations|live-namespace) ;;
+  publish|verify|marker|marker-post-cutover|begin-cutover|attestations|live-namespace|baseline-binding) ;;
   self-test-candidate-swap|self-test-post-publish-failure)
     [ "${PLATFORM_ADOPTION_SNAPSHOT_SELF_TEST:-}" = 1 ] || die 'self-test action is unavailable'
     ;;
@@ -936,15 +936,15 @@ refuse("snapshot lock is held") unless snapshot_lock.flock(File::LOCK_EX | File:
 roots, overrides_digest = binding_sources(override_root, target_mapping_root)
 snapshot_parent = File.join(sandbox, "snapshot")
 
-if %w[verify marker marker-post-cutover begin-cutover attestations live-namespace].include?(action)
+if %w[verify marker marker-post-cutover begin-cutover attestations live-namespace baseline-binding].include?(action)
   transition_mode = case action
-                    when "marker-post-cutover", "attestations", "live-namespace" then :required
+                    when "marker-post-cutover", "attestations", "live-namespace", "baseline-binding" then :required
                     when "begin-cutover" then :begin
                     else :none
                     end
   marker = verify_snapshot(
     sandbox_directory, roots, overrides_digest, baseline_path, run_state_path,
-    compare_source: !%w[marker-post-cutover attestations live-namespace].include?(action),
+    compare_source: !%w[marker-post-cutover attestations live-namespace baseline-binding].include?(action),
     transition_mode: transition_mode
   )
   puts marker if action.start_with?("marker") || action == "begin-cutover"
@@ -966,6 +966,30 @@ if %w[verify marker marker-post-cutover begin-cutover attestations live-namespac
       identity_signature(rebound_publication.stat) == publication_signature &&
       identity_signature(rebound_parent.stat) == parent_signature
     print bytes
+    rebound_publication.close
+    rebound_parent.close
+    publication.close
+    parent.close
+  elsif action == "baseline-binding"
+    parent = open_directory_at(sandbox_directory, "snapshot")
+    publication = open_directory_at(parent, "pre-cutover")
+    parent_signature = identity_signature(parent.stat)
+    publication_signature = identity_signature(publication.stat)
+    binding_bytes = read_file_at(publication, "binding.json", "snapshot binding", 0o400)
+    baseline_bytes = read_file_at(publication, "baseline.json", "snapshot baseline", 0o400)
+    binding = load_binding_bytes(binding_bytes)
+    refuse("snapshot binding changed before baseline emit") unless
+      Digest::SHA256.hexdigest(binding_bytes) == marker
+    refuse("snapshot baseline changed before baseline emit") unless
+      binding["baseline_sha256"] == Digest::SHA256.hexdigest(baseline_bytes)
+    rebound_publication = open_directory_at(parent, "pre-cutover")
+    rebound_parent = open_directory_at(sandbox_directory, "snapshot")
+    refuse("snapshot namespace changed before baseline emit") unless
+      identity_signature(rebound_publication.stat) == publication_signature &&
+      identity_signature(rebound_parent.stat) == parent_signature
+    puts JSON.generate(
+      "binding_sha256" => marker, "baseline_sha256" => binding.fetch("baseline_sha256")
+    )
     rebound_publication.close
     rebound_parent.close
     publication.close

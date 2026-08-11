@@ -17,6 +17,6 @@ runtime=$PLATFORM_DOCKER_ROOT/nas-platform/runtime/services/komga/.env
 set -- docker compose --project-name "$PLATFORM_PROJECT_NAME-komga" \
   --env-file "$runtime" -f "$current/compose.yml" -f "$current/compose.mac.yml"
 [ "$PLATFORM_PROOF_LANE" != adoption ] || set -- "$@" -f "$current/compose.adoption.yml"
-"$@" up -d --force-recreate --wait
+"$@" up -d --force-recreate --wait komga
 [ "$PLATFORM_PROOF_LANE" != adoption ] || "$mac_hook_dir/../../adoption-container-attest.sh"
 "$mac_hook_dir/../../run-komga-contract.sh" run

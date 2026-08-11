@@ -2,6 +2,7 @@
 # frozen_string_literal: true
 
 require "fileutils"
+require "digest"
 require "json"
 require "open3"
 require "rbconfig"
@@ -58,27 +59,53 @@ end
 
 def write_probe(root, service)
   path = File.join(root, "#{service}.sh")
+  evidence_command = if service == "audiobookshelf"
+                       "ruby -e 'print ENV.fetch(\"PLATFORM_FAKE_AUDIOBOOKSHELF_EVIDENCE\")'"
+                     else
+                       "printf '%s\\n' \"$PLATFORM_FAKE_#{service.upcase.tr('-', '_')}_EVIDENCE\""
+                     end
   File.write(path, <<~SH)
     #!/bin/sh
     set -eu
-    printf '%s\n' "$PLATFORM_FAKE_#{service.upcase.tr('-', '_')}_EVIDENCE"
+    if [ "${PLATFORM_FAKE_EXECUTE_DEPENDENCY:-}" = true ] && [ "#{service}" = audiobookshelf ]; then
+      exec ruby "$PLATFORM_ADOPTION_SCRIPT_DIR/adoption-baseline.rb" --emit-probe audiobookshelf
+    fi
+    #{evidence_command}
     : > "$PLATFORM_FAKE_PROBE_LOG/#{service}"
   SH
   File.chmod(0o700, path)
 end
 
-def run_compare(root, baseline:, capabilities:, output:, evidence_by_service:)
+def run_compare(root, baseline:, capabilities:, output:, evidence_by_service:, extra_env: {}, binding: nil,
+                late_startup_env: {})
+  binding ||= {
+    "binding_sha256" => "b" * 64,
+    "baseline_sha256" => Digest::SHA256.hexdigest(File.binread(baseline))
+  }
   environment = {
     "PLATFORM_FAKE_PROBE_LOG" => File.join(root, "probe-log"),
-    "PLATFORM_ADOPTION_COMPARE_SELF_TEST" => "1"
-  }
+    "PLATFORM_ADOPTION_COMPARE_SELF_TEST" => "1",
+    "PLATFORM_ADOPTION_MARKER" => binding.fetch("binding_sha256")
+  }.merge(extra_env)
   evidence_by_service.each do |service, value|
     environment["PLATFORM_FAKE_#{service.upcase.tr('-', '_')}_EVIDENCE"] = JSON.generate(value)
   end
+  command = if late_startup_env.empty?
+              [RbConfig.ruby, COMPARATOR]
+            else
+              environment["PLATFORM_FAKE_LATE_STARTUP_ENV"] = JSON.generate(late_startup_env)
+              wrapper = <<~'RUBY'
+                require "json"
+                JSON.parse(ENV.delete("PLATFORM_FAKE_LATE_STARTUP_ENV")).each { |key, value| ENV[key] = value }
+                load ARGV.shift
+              RUBY
+              [RbConfig.ruby, "-e", wrapper, COMPARATOR]
+            end
   Open3.capture3(
-    environment, RbConfig.ruby, COMPARATOR,
+    environment, *command,
     "--baseline", baseline, "--output", output,
-    "--capabilities", capabilities, "--probe-root", File.join(root, "probes")
+    "--capabilities", capabilities, "--probe-root", File.join(root, "probes"),
+    "--snapshot-binding", JSON.generate(binding)
   )
 end
 
@@ -89,6 +116,9 @@ runner_source = File.read(File.join(__dir__, "run.sh"))
 failures << "adoption verify does not run semantic comparison" unless
   adoption_source.include?('"$script_dir/adoption-compare.rb"') &&
   adoption_source.include?("--location adoption-comparison.json")
+failures << "adoption verify compares against a live replaceable baseline" unless
+  adoption_source.include?('"$sandbox/snapshot/pre-cutover/baseline.json"') &&
+  adoption_source.include?("baseline-binding")
 failures << "adoption verify does not bind the owned report root and project" unless
   adoption_source.include?('[ "$PLATFORM_REPORT_ROOT" = "$sandbox.reports" ]') &&
   adoption_source.include?("owned report project is invalid")
@@ -259,6 +289,65 @@ Dir.mktmpdir("adoption-compare-test-") do |root|
   )
   failures << "symlink comparison output was accepted" if status.success?
   failures << "symlink comparison output changed target" unless File.binread(protected_output) == "protected\n"
+
+  mismatched_binding = {
+    "binding_sha256" => "b" * 64, "baseline_sha256" => "0" * 64
+  }
+  _stdout, _stderr, status = run_compare(
+    root, baseline: baseline_path, capabilities: capabilities_path,
+    output: output, evidence_by_service: baseline_services, binding: mismatched_binding
+  )
+  failures << "baseline digest outside the snapshot binding was accepted" if status.success?
+
+  startup_marker = File.join(root, "ruby-startup-injection-executed")
+  startup_shim = File.join(root, "ruby-startup-injection.rb")
+  File.write(startup_shim, "File.write(#{startup_marker.dump}, 'executed')\n")
+  File.chmod(0o600, startup_shim)
+  hostile_rubyopt = "-r#{startup_shim}"
+  _stdout, _stderr, status = Open3.capture3({ "RUBYOPT" => hostile_rubyopt }, RbConfig.ruby, "-e", "")
+  failures << "Ruby startup-injection fixture is ineffective" unless status.success? && File.file?(startup_marker)
+  File.unlink(startup_marker) if File.file?(startup_marker)
+  _stdout, stderr, status = run_compare(
+    root, baseline: baseline_path, capabilities: capabilities_path,
+    output: output, evidence_by_service: baseline_services,
+    late_startup_env: { "RUBYOPT" => hostile_rubyopt }
+  )
+  failures << "scrubbed Ruby startup environment broke comparison: #{stderr}" unless status.success?
+  failures << "probe subprocess executed hostile Ruby startup loader" if File.exist?(startup_marker)
+
+  dependency_marker = File.join(root, "hostile-dependency-executed")
+  dependency_payload = <<~RUBY
+    File.write(#{dependency_marker.dump}, "executed")
+    puts ENV.fetch("PLATFORM_FAKE_AUDIOBOOKSHELF_EVIDENCE")
+  RUBY
+  _stdout, _stderr, status = run_compare(
+    root, baseline: baseline_path, capabilities: capabilities_path,
+    output: output, evidence_by_service: baseline_services,
+    extra_env: {
+      "PLATFORM_FAKE_EXECUTE_DEPENDENCY" => "true",
+      "PLATFORM_ADOPTION_COMPARE_DEPENDENCY_MUTATION" => "transient",
+      "PLATFORM_ADOPTION_COMPARE_DEPENDENCY_PAYLOAD" => dependency_payload
+    }
+  )
+  failures << "transient dependency replacement was accepted" if status.success?
+  failures << "transient dependency replacement executed" if File.exist?(dependency_marker)
+
+  hostile_marker = File.join(root, "hostile-probe-executed")
+  hostile_script = "printf hostile > '#{hostile_marker}'\n"
+  %w[persistent transient].each do |mutation|
+    _stdout, stderr, status = run_compare(
+      root, baseline: baseline_path, capabilities: capabilities_path,
+      output: output, evidence_by_service: baseline_services,
+      extra_env: {
+        "PLATFORM_ADOPTION_COMPARE_STAGE_MUTATION" => mutation,
+        "PLATFORM_ADOPTION_COMPARE_STAGE_PAYLOAD" => hostile_script
+      }
+    )
+    failures << "#{mutation} staged probe replacement was accepted" if status.success?
+    failures << "#{mutation} staged probe diagnostic differs" unless
+      stderr == "adoption-compare-error: comparison refused\n"
+    failures << "#{mutation} staged replacement executed" if File.exist?(hostile_marker)
+  end
 end
 
 abort failures.join("\n") unless failures.empty?

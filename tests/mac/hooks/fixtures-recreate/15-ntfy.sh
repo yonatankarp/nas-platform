@@ -11,12 +11,11 @@ stop_failed_adoption_recreation() {
   exit "$status"
 }
 trap stop_failed_adoption_recreation EXIT HUP INT TERM
-current=$PLATFORM_DOCKER_ROOT/nas-platform/current/services/immich
-runtime=$PLATFORM_DOCKER_ROOT/nas-platform/runtime/services/immich/.env
+current=$PLATFORM_DOCKER_ROOT/nas-platform/current/services/ntfy
+runtime=$PLATFORM_DOCKER_ROOT/nas-platform/runtime/services/ntfy/.env
 
-set -- docker compose --project-name "$PLATFORM_PROJECT_NAME-immich" \
+set -- docker compose --project-name "$PLATFORM_PROJECT_NAME-ntfy" \
   --env-file "$runtime" -f "$current/compose.yml" -f "$current/compose.mac.yml"
 [ "$PLATFORM_PROOF_LANE" != adoption ] || set -- "$@" -f "$current/compose.adoption.yml"
-"$@" up -d --force-recreate --wait immich-server immich-machine-learning redis database
+"$@" up -d --force-recreate --wait ntfy
 [ "$PLATFORM_PROOF_LANE" != adoption ] || "$mac_hook_dir/../../adoption-container-attest.sh"
-"$mac_hook_dir/../../run-immich-contract.sh" run

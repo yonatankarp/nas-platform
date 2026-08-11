@@ -11,4 +11,12 @@ stop_failed_adoption_recreation() {
   exit "$status"
 }
 trap stop_failed_adoption_recreation EXIT HUP INT TERM
+current=$PLATFORM_DOCKER_ROOT/nas-platform/current/services/beszel
+runtime=$PLATFORM_DOCKER_ROOT/nas-platform/runtime/services/beszel/.env
+
+set -- docker compose --project-name "$PLATFORM_PROJECT_NAME-beszel" \
+  --env-file "$runtime" -f "$current/compose.yml" -f "$current/compose.mac.yml"
+[ "$PLATFORM_PROOF_LANE" != adoption ] || set -- "$@" -f "$current/compose.adoption.yml"
+"$@" up -d --force-recreate --wait hub agent-portable socket-proxy
+[ "$PLATFORM_PROOF_LANE" != adoption ] || "$mac_hook_dir/../../adoption-container-attest.sh"
 "$mac_hook_dir/../../run-beszel-contract.sh" verify

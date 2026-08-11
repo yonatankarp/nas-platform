@@ -27,10 +27,20 @@ parity_vault_password_file=
 selected_phase=
 requested_sandbox=
 keep_on_failure=false
+[ -z "${RUBYOPT+x}" ] && [ -z "${RUBYLIB+x}" ] &&
+  [ -z "${RUBYGEMS_GEMDEPS+x}" ] && [ -z "${GEM_HOME+x}" ] && [ -z "${GEM_PATH+x}" ] &&
+  [ -z "${BUNDLE_GEMFILE+x}" ] && [ -z "${BUNDLE_BIN_PATH+x}" ] &&
+  [ -z "${BUNDLE_PATH+x}" ] && [ -z "${BUNDLE_APP_CONFIG+x}" ] &&
+  [ -z "${BUNDLE_WITH+x}" ] && [ -z "${BUNDLE_WITHOUT+x}" ] ||
+  mac_die 'reserved language startup environment must be unset'
 [ -z "${PLATFORM_ADOPTION_ROOT+x}" ] && [ -z "${PLATFORM_ADOPTION_MARKER+x}" ] &&
   [ -z "${PLATFORM_ADOPTION_ENABLED+x}" ] &&
   [ -z "${PLATFORM_ADOPTION_SNAPSHOT_SELF_TEST+x}" ] &&
   [ -z "${PLATFORM_ADOPTION_COMPARE_SELF_TEST+x}" ] &&
+  [ -z "${PLATFORM_ADOPTION_COMPARE_STAGE_MUTATION+x}" ] &&
+  [ -z "${PLATFORM_ADOPTION_COMPARE_STAGE_PAYLOAD+x}" ] &&
+  [ -z "${PLATFORM_ADOPTION_COMPARE_DEPENDENCY_MUTATION+x}" ] &&
+  [ -z "${PLATFORM_ADOPTION_COMPARE_DEPENDENCY_PAYLOAD+x}" ] &&
   [ -z "${PLATFORM_ADOPTION_PROBE_TARGET+x}" ] &&
   [ -z "${PLATFORM_ADOPTION_NTFY_CONTAINER+x}" ] &&
   [ -z "${PLATFORM_ADOPTION_NTFY_ENV_FILE+x}" ] &&

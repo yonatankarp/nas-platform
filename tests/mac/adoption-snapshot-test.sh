@@ -456,6 +456,16 @@ cutover_marker=$(PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
   --baseline "$baseline" --run-state "$state")
 [ "$cutover_marker" = "$(shasum -a 256 "$published/binding.json" | awk '{print $1}')" ] ||
   fail 'strict cutover transition did not bind the snapshot'
+baseline_binding=$(PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
+  "$snapshotter" baseline-binding --override-root "$override_root" \
+  --baseline "$baseline" --run-state "$state")
+ruby -rjson -rdigest -e '
+  value = JSON.parse(ARGV.fetch(0))
+  raise unless value.keys.sort == %w[baseline_sha256 binding_sha256]
+  raise unless value.fetch("binding_sha256") == Digest::SHA256.file(ARGV.fetch(1)).hexdigest
+  raise unless value.fetch("baseline_sha256") == Digest::SHA256.file(ARGV.fetch(2)).hexdigest
+' "$baseline_binding" "$published/binding.json" "$published/baseline.json" ||
+  fail 'baseline binding output differs from immutable publication'
 transition=$sandbox/snapshot/cutover-started.json
 [ -f "$transition" ] && [ ! -L "$transition" ] || fail 'cutover transition was not published safely'
 [ "$(stat -f '%Lp' "$transition" 2>/dev/null || stat -c '%a' "$transition")" = 400 ] ||
@@ -890,6 +900,11 @@ if PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
 fi
 grep -F 'snapshot baseline changed' "$fixture/output" >/dev/null ||
   fail 'changed immutable baseline emitted wrong diagnostic'
+if PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
+  "$snapshotter" baseline-binding --override-root "$override_root" \
+  --baseline "$baseline" --run-state "$state" >"$fixture/output" 2>&1; then
+  fail 'baseline binding accepted replaced live expectations'
+fi
 cp "$fixture/baseline.original" "$baseline"
 chmod 0600 "$baseline"
 

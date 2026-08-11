@@ -10,6 +10,10 @@ EXACT_COUNT_FIELDS = {
   "beszel" => %w[systems],
   "dozzle" => %w[dispatchers rules]
 }.freeze
+RUBY_STARTUP_ENVIRONMENT = %w[
+  RUBYOPT RUBYLIB RUBYGEMS_GEMDEPS GEM_HOME GEM_PATH
+  BUNDLE_GEMFILE BUNDLE_BIN_PATH BUNDLE_PATH BUNDLE_APP_CONFIG BUNDLE_WITH BUNDLE_WITHOUT
+].freeze
 
 def compare_refuse(output, checks)
   begin
@@ -104,6 +108,61 @@ def publish_comparison(path, document)
   end
 end
 
+def inject_staged_probe_mutation(path, mode, payload)
+  return unless %w[persistent transient].include?(mode)
+
+  held = "#{path}.held"
+  File.rename(path, held)
+  File.open(path, File::WRONLY | File::CREAT | File::EXCL, 0o700) do |file|
+    file.write(payload)
+    file.flush
+    file.fsync
+  end
+  return unless mode == "transient"
+
+  File.unlink(path)
+  File.rename(held, path)
+end
+
+def capture_with_dependency_mutation(stage, environment, probe_bytes)
+  return capture(environment, "/bin/sh", "-c", probe_bytes) unless
+    ENV["PLATFORM_ADOPTION_COMPARE_DEPENDENCY_MUTATION"] == "transient"
+
+  held = "#{stage.name}.held"
+  native_at!(:rename, stage.parent, stage.name, held)
+  FileUtils.mkdir_p(File.join(stage.path, "tests/mac"), mode: 0o700)
+  File.write(
+    File.join(stage.path, "tests/mac/adoption-baseline.rb"),
+    ENV.fetch("PLATFORM_ADOPTION_COMPARE_DEPENDENCY_PAYLOAD")
+  )
+  result = capture(environment, "/bin/sh", "-c", probe_bytes)
+  FileUtils.remove_entry_secure(stage.path)
+  native_at!(:rename, stage.parent, held, stage.name)
+  result
+ensure
+  if held && directory_children(stage.parent).include?(held)
+    FileUtils.remove_entry_secure(stage.path) if File.exist?(stage.path)
+    native_at!(:rename, stage.parent, held, stage.name)
+  end
+end
+
+def capture_in_staged_dependencies(stage, environment, probe_bytes, mutate:)
+  previous = File.open(".", File::RDONLY)
+  expected = stage.file.stat
+  Dir.fchdir(stage.file.fileno)
+  current = File.stat(".")
+  raise "staged dependency namespace differs" unless [current.dev, current.ino] == [expected.dev, expected.ino]
+
+  if mutate
+    capture_with_dependency_mutation(stage, environment, probe_bytes)
+  else
+    capture(environment, "/bin/sh", "-c", probe_bytes)
+  end
+ensure
+  Dir.fchdir(previous.fileno) if previous
+  previous&.close
+end
+
 options = {}
 set_option = lambda do |key, value|
   raise OptionParser::InvalidOption, "duplicate option" if options.key?(key)
@@ -114,21 +173,31 @@ OptionParser.new do |parser|
   parser.on("--output PATH") { |value| set_option.call(:output, value) }
   parser.on("--capabilities PATH") { |value| set_option.call(:capabilities, value) }
   parser.on("--probe-root PATH") { |value| set_option.call(:probe_root, value) }
+  parser.on("--snapshot-binding JSON") { |value| set_option.call(:snapshot_binding, value) }
 end.parse!
 
 output = options[:output]
 checks = []
 begin
-  raise "arguments differ" unless ARGV.empty? && %i[baseline output capabilities].all? { |key| options[key] }
+  raise "arguments differ" unless ARGV.empty? &&
+    %i[baseline output capabilities snapshot_binding].all? { |key| options[key] }
   self_test = ENV["PLATFORM_ADOPTION_COMPARE_SELF_TEST"] == "1"
   raise "probe root override is forbidden" if options[:probe_root] && !self_test
   source_root = File.expand_path("../..", __dir__)
   expected_probe_root = File.join(__dir__, "adoption-probes")
   requested_probe_root = options[:probe_root] || expected_probe_root
   raise "probe root differs" unless self_test || File.realpath(requested_probe_root) == File.realpath(expected_probe_root)
-  baseline = validate_baseline(parse_strict_json(
-    secure_file_bytes(options.fetch(:baseline), max_bytes: 16 * 1024 * 1024, private: true)
-  ))
+  snapshot_binding = parse_strict_json(options.fetch(:snapshot_binding))
+  exact_keys!(snapshot_binding, %w[binding_sha256 baseline_sha256], "snapshot binding")
+  snapshot_binding.each_value do |digest|
+    raise "snapshot binding differs" unless digest.is_a?(String) && digest.match?(/\A[0-9a-f]{64}\z/)
+  end
+  raise "snapshot marker differs" unless
+    ENV.fetch("PLATFORM_ADOPTION_MARKER") == snapshot_binding.fetch("binding_sha256")
+  baseline_bytes = secure_file_bytes(options.fetch(:baseline), max_bytes: 16 * 1024 * 1024, private: true)
+  raise "snapshot baseline differs" unless
+    Digest::SHA256.hexdigest(baseline_bytes) == snapshot_binding.fetch("baseline_sha256")
+  baseline = validate_baseline(parse_strict_json(baseline_bytes))
   capability_bytes = secure_file_bytes(options.fetch(:capabilities), max_bytes: 1024 * 1024)
   reject_duplicate_json_keys!(Psych.parse(capability_bytes))
   capabilities = YAML.safe_load(capability_bytes, aliases: false)
@@ -137,37 +206,60 @@ begin
   output_parent = open_bound_directory(output_parent_path)
   private_root = create_staging_directory(output_parent, output_parent_path, ".adoption-compare-private-")
   dependency_stage = nil
-  if self_test
-    dependency_root = nil
-    dependency_source_states = {}
-    dependency_snapshot_states = {}
-  else
-    dependency_root, dependency_source_states, dependency_snapshot_states, dependency_stage =
-      snapshot_probe_dependencies(source_root, private_root)
-  end
+  _dependency_root, dependency_source_states, dependency_snapshot_states, dependency_stage =
+    snapshot_probe_dependencies(source_root, private_root)
   probe_stage = create_staging_directory(private_root.file, private_root.path, "probes-")
-  probe_states = {}
+  probe_source_digests = {}
+  staged_probe_digests = {}
   SERVICES.each do |service|
     source = File.join(requested_probe_root, "#{service}.sh")
     probe, digest = snapshot_input(source, probe_stage, "#{service}.sh", executable: true)
-    probe_states[source] = [file_signature(source), digest]
+    probe_source_digests[source] = digest
+    staged_probe_digests[probe] = digest
+  end
+  probe_source_states = probe_source_digests.to_h do |path, digest|
+    [path, [file_signature(path), digest]]
+  end
+  staged_probe_states = staged_probe_digests.to_h do |path, digest|
+    [path, [file_signature(path), digest]]
   end
   raise "probe dependencies changed" unless snapshots_unchanged?(dependency_source_states) &&
                                               snapshots_unchanged?(dependency_snapshot_states) &&
-                                              snapshots_unchanged?(probe_states)
+                                              snapshots_unchanged?(probe_source_states) &&
+                                              snapshots_unchanged?(staged_probe_states)
 
   target = SERVICES.to_h do |service|
-    environment = { "PLATFORM_ADOPTION_PROBE_TARGET" => "true" }
-    environment["PLATFORM_ADOPTION_SCRIPT_DIR"] = File.join(dependency_root, "tests/mac") if dependency_root
-    stdout, stderr = capture(environment, File.join(probe_stage.path, "#{service}.sh"))
+    environment = RUBY_STARTUP_ENVIRONMENT.to_h { |name| [name, nil] }
+    environment["PLATFORM_ADOPTION_PROBE_TARGET"] = "true"
+    environment["PLATFORM_ADOPTION_SCRIPT_DIR"] = "tests/mac"
+    probe = File.join(probe_stage.path, "#{service}.sh")
+    stage_signature = file_signature_from_stat(probe_stage.file.stat)
+    probe_bytes = secure_file_bytes(probe, max_bytes: 16 * 1024 * 1024, executable: true)
+    raise "staged probe differs" unless
+      Digest::SHA256.hexdigest(probe_bytes) == staged_probe_states.fetch(probe).last &&
+      probe_bytes.start_with?("#!/bin/sh\n") && !probe_bytes.include?("\0")
+    if self_test && service == SERVICES.first
+      inject_staged_probe_mutation(
+        probe, ENV["PLATFORM_ADOPTION_COMPARE_STAGE_MUTATION"],
+        ENV.fetch("PLATFORM_ADOPTION_COMPARE_STAGE_PAYLOAD", "#!/bin/sh\nexit 99\n")
+      )
+    end
+    stdout, stderr = capture_in_staged_dependencies(
+      dependency_stage, environment, probe_bytes,
+      mutate: self_test && service == SERVICES.first
+    )
     raise "probe diagnostic differs" unless stderr.empty?
+    raise "staged probe namespace changed" unless
+      file_signature_from_stat(probe_stage.file.stat) == stage_signature &&
+      snapshots_unchanged?(staged_probe_states)
     evidence = parse_strict_json(stdout)
     reject_forbidden_keys!(evidence)
     [service, validate_evidence!(service, evidence)]
   end
   raise "probe dependencies changed" unless snapshots_unchanged?(dependency_source_states) &&
                                               snapshots_unchanged?(dependency_snapshot_states) &&
-                                              snapshots_unchanged?(probe_states)
+                                              snapshots_unchanged?(probe_source_states) &&
+                                              snapshots_unchanged?(staged_probe_states)
 
   SERVICES.each do |service|
     expected = baseline.fetch("services").fetch(service)

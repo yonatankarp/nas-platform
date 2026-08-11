@@ -70,6 +70,15 @@ raise "phase constants must precede parsing" unless [fresh_definition, adoption_
 raise "phase selection must follow lane validation" unless lane_validation && phase_assignment && lane_validation < phase_assignment
 RUBY
 
+real_ruby=$(command -v ruby)
+ruby_wrapper_dir=$temporary_parent/ruby-wrapper
+mkdir "$ruby_wrapper_dir"
+printf '%s\n' '#!/bin/sh' \
+  'RUBYOPT=${PLATFORM_TEST_RUBYOPT:?}' \
+  'export RUBYOPT' \
+  "exec '$real_ruby' \"\$@\"" > "$ruby_wrapper_dir/ruby"
+chmod 0700 "$ruby_wrapper_dir/ruby"
+
 help_output=$temporary_parent/help
 "$runner" --help > "$help_output"
 grep -F -- '--parity-vault-file FILE' "$help_output" >/dev/null || fail 'usage omits parity vault option'
@@ -92,6 +101,12 @@ expect_failure 'fresh ambient adoption mapping' 'reserved adoption mapping envir
 expect_failure 'ambient comparison self-test' 'reserved adoption mapping environment must be unset' \
   env PLATFORM_ADOPTION_COMPARE_SELF_TEST=1 "$runner" --lane fresh \
     --vault-file "$vault_file" --vault-password-file "$password_file"
+expect_failure 'ambient dependency mutation' 'reserved adoption mapping environment must be unset' \
+  env PLATFORM_ADOPTION_COMPARE_DEPENDENCY_MUTATION=transient "$runner" --lane fresh \
+    --vault-file "$vault_file" --vault-password-file "$password_file"
+expect_failure 'ambient dependency payload' 'reserved adoption mapping environment must be unset' \
+  env PLATFORM_ADOPTION_COMPARE_DEPENDENCY_PAYLOAD=hostile "$runner" --lane fresh \
+    --vault-file "$vault_file" --vault-password-file "$password_file"
 expect_failure 'ambient probe script root' 'reserved adoption mapping environment must be unset' \
   env PLATFORM_ADOPTION_SCRIPT_DIR="$temporary_parent" "$runner" --lane fresh \
     --vault-file "$vault_file" --vault-password-file "$password_file"
@@ -103,6 +118,43 @@ expect_failure 'ambient ntfy probe container' 'reserved adoption mapping environ
     --vault-file "$vault_file" --vault-password-file "$password_file"
 expect_failure 'ambient ntfy probe environment' 'reserved adoption mapping environment must be unset' \
   env PLATFORM_ADOPTION_NTFY_ENV_FILE="$temporary_parent/hostile.env" "$runner" --lane fresh \
+    --vault-file "$vault_file" --vault-password-file "$password_file"
+ruby_startup_marker=$temporary_parent/ruby-startup-injection-executed
+ruby_startup_loader=$temporary_parent/ruby-startup-injection.rb
+printf "File.write('%s', 'executed')\n" "$ruby_startup_marker" > "$ruby_startup_loader"
+expect_failure 'ambient RUBYOPT' 'reserved language startup environment must be unset' \
+  env RUBYOPT="-r$ruby_startup_loader" "$runner" --lane fresh \
+    --vault-file "$vault_file" --vault-password-file "$password_file"
+[ ! -e "$ruby_startup_marker" ] || fail 'ambient RUBYOPT loader executed before rejection'
+expect_failure 'ambient RUBYLIB' 'reserved language startup environment must be unset' \
+  env RUBYLIB="$temporary_parent" "$runner" --lane fresh \
+    --vault-file "$vault_file" --vault-password-file "$password_file"
+expect_failure 'ambient RUBYGEMS_GEMDEPS' 'reserved language startup environment must be unset' \
+  env RUBYGEMS_GEMDEPS="$temporary_parent/Gemfile" "$runner" --lane fresh \
+    --vault-file "$vault_file" --vault-password-file "$password_file"
+expect_failure 'ambient GEM_HOME' 'reserved language startup environment must be unset' \
+  env GEM_HOME="$temporary_parent/gems" "$runner" --lane fresh \
+    --vault-file "$vault_file" --vault-password-file "$password_file"
+expect_failure 'ambient GEM_PATH' 'reserved language startup environment must be unset' \
+  env GEM_PATH="$temporary_parent/gems" "$runner" --lane fresh \
+    --vault-file "$vault_file" --vault-password-file "$password_file"
+expect_failure 'ambient BUNDLE_GEMFILE' 'reserved language startup environment must be unset' \
+  env BUNDLE_GEMFILE="$temporary_parent/Gemfile" "$runner" --lane fresh \
+    --vault-file "$vault_file" --vault-password-file "$password_file"
+expect_failure 'ambient BUNDLE_BIN_PATH' 'reserved language startup environment must be unset' \
+  env BUNDLE_BIN_PATH="$temporary_parent/bundle" "$runner" --lane fresh \
+    --vault-file "$vault_file" --vault-password-file "$password_file"
+expect_failure 'ambient BUNDLE_PATH' 'reserved language startup environment must be unset' \
+  env BUNDLE_PATH="$temporary_parent/bundle-path" "$runner" --lane fresh \
+    --vault-file "$vault_file" --vault-password-file "$password_file"
+expect_failure 'ambient BUNDLE_APP_CONFIG' 'reserved language startup environment must be unset' \
+  env BUNDLE_APP_CONFIG="$temporary_parent/bundle-config" "$runner" --lane fresh \
+    --vault-file "$vault_file" --vault-password-file "$password_file"
+expect_failure 'ambient BUNDLE_WITH' 'reserved language startup environment must be unset' \
+  env BUNDLE_WITH=hostile "$runner" --lane fresh \
+    --vault-file "$vault_file" --vault-password-file "$password_file"
+expect_failure 'ambient BUNDLE_WITHOUT' 'reserved language startup environment must be unset' \
+  env BUNDLE_WITHOUT=default "$runner" --lane fresh \
     --vault-file "$vault_file" --vault-password-file "$password_file"
 expect_failure 'same explicit password path' 'unknown phase: not-a-phase' \
   "$runner" --lane adoption --vault-file "$vault_file" --vault-password-file "$password_file" \
@@ -246,7 +298,7 @@ printf '%s\n%s\n' '$ANSIBLE_VAULT;1.1;AES256' replacement-ciphertext > "$vault_r
 chmod 0600 "$swapped_vault" "$vault_replacement"
 expect_failure 'parity vault validation-to-open replacement' \
   'protected parity vault input changed while being pinned' \
-  env RUBYOPT="-r$swap_fixture" PLATFORM_SWAP_STAGE=open \
+  env PATH="$ruby_wrapper_dir:$PATH" PLATFORM_TEST_RUBYOPT="-r$swap_fixture" PLATFORM_SWAP_STAGE=open \
     PLATFORM_SWAP_TARGET="$swapped_vault" PLATFORM_SWAP_REPLACEMENT="$vault_replacement" \
     PLATFORM_MAC_TMPDIR="$temporary_parent" "$runner" --lane adoption \
     --vault-file "$vault_file" --vault-password-file "$password_file" \
@@ -263,7 +315,7 @@ printf '%s\n' replacement-disposable > "$password_replacement"
 chmod 0600 "$swapped_password" "$password_replacement"
 expect_failure 'parity password opened-descriptor replacement' \
   'protected parity password input changed while being pinned' \
-  env RUBYOPT="-r$swap_fixture" PLATFORM_SWAP_STAGE=read \
+  env PATH="$ruby_wrapper_dir:$PATH" PLATFORM_TEST_RUBYOPT="-r$swap_fixture" PLATFORM_SWAP_STAGE=read \
     PLATFORM_SWAP_TARGET="$swapped_password" PLATFORM_SWAP_REPLACEMENT="$password_replacement" \
     PLATFORM_MAC_TMPDIR="$temporary_parent" "$runner" --lane adoption \
     --vault-file "$vault_file" --vault-password-file "$password_file" \
@@ -280,7 +332,7 @@ printf '%s\n' '#!/bin/sh' 'printf "%s\\n" replacement-provider-output' > "$provi
 chmod 0700 "$provider_swap" "$provider_swap_replacement"
 expect_failure 'parity provider validation-to-exec replacement' \
   'protected parity password input changed while being pinned' \
-  env RUBYOPT="-r$swap_fixture" PLATFORM_SWAP_STAGE=spawn \
+  env PATH="$ruby_wrapper_dir:$PATH" PLATFORM_TEST_RUBYOPT="-r$swap_fixture" PLATFORM_SWAP_STAGE=spawn \
     PLATFORM_SWAP_TARGET="$provider_swap" PLATFORM_SWAP_REPLACEMENT="$provider_swap_replacement" \
     PLATFORM_MAC_TMPDIR="$temporary_parent" "$runner" --lane adoption \
     --vault-file "$vault_file" --vault-password-file "$password_file" \
@@ -323,7 +375,7 @@ mkdir -m 0700 "$transient_sandbox"
 printf 'schema=1\nproject=%s\n' nas-platform-mac-fda123 > "$transient_sandbox/.nas-platform-mac-owned"
 chmod 0600 "$transient_sandbox/.nas-platform-mac-owned"
 transient_output=$temporary_parent/transient-output
-RUBYOPT="-r$swap_fixture" PLATFORM_SWAP_STAGE=parent_spawn \
+PATH="$ruby_wrapper_dir:$PATH" PLATFORM_TEST_RUBYOPT="-r$swap_fixture" PLATFORM_SWAP_STAGE=parent_spawn \
   PLATFORM_SWAP_PARENT_TARGET="$transient_parent" \
   PLATFORM_SWAP_PARENT_HOLDING="$transient_holding" \
   PLATFORM_SWAP_PARENT_REPLACEMENT="$transient_replacement" \
@@ -362,7 +414,7 @@ mkdir -m 0700 "$child_swap_sandbox"
 printf 'schema=1\nproject=%s\n' nas-platform-mac-fdc123 > "$child_swap_sandbox/.nas-platform-mac-owned"
 chmod 0600 "$child_swap_sandbox/.nas-platform-mac-owned"
 child_swap_output=$temporary_parent/child-swap-output
-if RUBYOPT="-r$swap_fixture" PLATFORM_SWAP_STAGE=child_spawn \
+if PATH="$ruby_wrapper_dir:$PATH" PLATFORM_TEST_RUBYOPT="-r$swap_fixture" PLATFORM_SWAP_STAGE=child_spawn \
   PLATFORM_SWAP_CHILD_TARGET="$child_swap_provider" \
   PLATFORM_SWAP_CHILD_HOLDING="$child_swap_holding" \
   PLATFORM_SWAP_CHILD_REPLACEMENT="$child_swap_replacement" \
@@ -405,7 +457,7 @@ mkdir -m 0700 "$logical_parent_sandbox"
 printf 'schema=1\nproject=%s\n' nas-platform-mac-fdl123 > "$logical_parent_sandbox/.nas-platform-mac-owned"
 chmod 0600 "$logical_parent_sandbox/.nas-platform-mac-owned"
 logical_parent_output=$temporary_parent/logical-parent-output
-RUBYOPT="-r$swap_fixture" PLATFORM_SWAP_STAGE=logical_parent_spawn \
+PATH="$ruby_wrapper_dir:$PATH" PLATFORM_TEST_RUBYOPT="-r$swap_fixture" PLATFORM_SWAP_STAGE=logical_parent_spawn \
   PLATFORM_SWAP_LOGICAL_PARENT_TARGET="$logical_parent_link" \
   PLATFORM_SWAP_LOGICAL_PARENT_HOLDING="$logical_parent_holding" \
   PLATFORM_SWAP_LOGICAL_PARENT_REPLACEMENT="$logical_parent_replacement" \
@@ -513,7 +565,7 @@ mkdir -m 0700 "$in_place_sandbox"
 printf 'schema=1\nproject=%s\n' nas-platform-mac-fdi123 > "$in_place_sandbox/.nas-platform-mac-owned"
 chmod 0600 "$in_place_sandbox/.nas-platform-mac-owned"
 in_place_output=$temporary_parent/in-place-output
-if RUBYOPT="-r$swap_fixture" PLATFORM_SWAP_STAGE=child_in_place_spawn \
+if PATH="$ruby_wrapper_dir:$PATH" PLATFORM_TEST_RUBYOPT="-r$swap_fixture" PLATFORM_SWAP_STAGE=child_in_place_spawn \
   PLATFORM_SWAP_CHILD_TARGET="$in_place_provider" \
   PLATFORM_SWAP_CHILD_REPLACEMENT="$in_place_replacement" \
   PLATFORM_IN_PLACE_MARKER="$in_place_marker" PLATFORM_MAC_TMPDIR="$temporary_parent" \
