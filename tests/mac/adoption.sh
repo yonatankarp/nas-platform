@@ -406,6 +406,44 @@ for service in $expected_services; do
   [ -f "$rendered" ] && [ ! -L "$rendered" ] && [ "$(mac_owner_id "$rendered")" = "$(id -u)" ] &&
     [ "$(mac_file_mode "$rendered")" = 600 ] || die 'rendered legacy environment is unsafe'
 done
+render_binding_sha=$(ruby -rdigest -rjson - "$legacy_env_root" $expected_services <<'RUBY'
+root = File.realpath(ARGV.shift)
+services = ARGV
+raise unless services.length == 9 && services.uniq.length == services.length
+
+def signature(stat)
+  [stat.dev, stat.ino, stat.size, stat.mode, stat.uid, stat.gid, stat.mtime.to_r, stat.ctime.to_r]
+end
+
+digests = services.to_h do |service|
+  path = File.join(root, "#{service}.env")
+  before = File.lstat(path)
+  raise unless before.file? && !before.symlink? && before.uid == Process.uid && (before.mode & 0o777) == 0o600
+  file = File.open(path, File::RDONLY | File::NOFOLLOW)
+  begin
+    raise unless signature(file.stat) == signature(before)
+    digest = Digest::SHA256.file("/dev/fd/#{file.fileno}").hexdigest
+    raise unless signature(file.stat) == signature(before) && signature(File.lstat(path)) == signature(before)
+    [service, digest]
+  ensure
+    file.close
+  end
+end
+bytes = "#{JSON.generate("schema" => 1, "services" => digests)}\n"
+binding = File.join(root, ".binding.json")
+File.open(binding, File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW, 0o400) do |file|
+  file.write(bytes)
+  file.flush
+  file.fsync
+end
+File.open(root, File::RDONLY | File::NOFOLLOW, &:fsync)
+print Digest::SHA256.hexdigest(bytes)
+RUBY
+) || die 'rendered legacy environment binding failed'
+case $render_binding_sha in
+  *[!0123456789abcdef]*|'') die 'rendered legacy environment binding failed' ;;
+esac
+[ "${#render_binding_sha}" -eq 64 ] || die 'rendered legacy environment binding failed'
 previous_env_root=$render_work/previous-env
 if [ -e "$published_env_root" ]; then
   mv "$published_env_root" "$previous_env_root" || die 'legacy environment publication failed'
@@ -419,4 +457,5 @@ fi
 if [ -d "$previous_env_root" ] && [ ! -L "$previous_env_root" ]; then
   /usr/bin/find "$previous_env_root" -depth -delete
 fi
+printf 'Legacy adoption render binding: %s\n' "$render_binding_sha"
 printf '%s\n' 'Legacy adoption render: nine protected environments ready'

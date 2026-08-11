@@ -72,6 +72,7 @@ jobs:
           ruby tests/mac/adoption-recreate-test.rb
           tests/mac/adoption-failure-stop-test.sh
           tests/mac/adoption-runner-test.sh
+          tests/mac/adoption-rollback-test.sh
 
       - name: Install Ansible tooling
         if: steps.scope.outputs.docs_only != 'true'

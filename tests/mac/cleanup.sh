@@ -55,12 +55,12 @@ related_rollback_sandboxes() {
 preflight_mac_resources() {
   mac_preflight_target=$(mac_validate_sandbox "$1") || return 1
   mac_preflight_project=$(sed -n 's/^project=//p' "$mac_preflight_target/.nas-platform-mac-owned")
-  docker ps -a --format '{{.Label "com.docker.compose.project"}}' |
-    mac_projects_are_owned "$mac_preflight_project" || return 1
-  docker network ls --format '{{.Label "com.docker.compose.project"}}' |
-    mac_projects_are_owned "$mac_preflight_project" || return 1
-  docker volume ls --format '{{.Label "com.docker.compose.project"}}' |
-    mac_projects_are_owned "$mac_preflight_project" || return 1
+  mac_observed_containers=$(docker ps -a --format '{{.Label "com.docker.compose.project"}}') || return 1
+  printf '%s\n' "$mac_observed_containers" | mac_projects_are_owned "$mac_preflight_project" || return 1
+  mac_observed_networks=$(docker network ls --format '{{.Label "com.docker.compose.project"}}') || return 1
+  printf '%s\n' "$mac_observed_networks" | mac_projects_are_owned "$mac_preflight_project" || return 1
+  mac_observed_volumes=$(docker volume ls --format '{{.Label "com.docker.compose.project"}}') || return 1
+  printf '%s\n' "$mac_observed_volumes" | mac_projects_are_owned "$mac_preflight_project" || return 1
 }
 
 cleanup_one_mac_sandbox() {

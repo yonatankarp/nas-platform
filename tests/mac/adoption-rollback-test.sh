@@ -14,12 +14,15 @@ fail() {
 [ -x "$rollback" ] || fail 'rollback helper is absent or not executable'
 test_parent=$(mktemp -d "${TMPDIR:-/tmp}/adoption-rollback-test.XXXXXX")
 test_parent=$(CDPATH= cd -- "$test_parent" && pwd -P)
-trap '/usr/bin/find "$test_parent" -depth -delete' EXIT HUP INT TERM
+trap '/usr/bin/find "$test_parent" -type d -exec chmod u+rwx {} +; /usr/bin/find "$test_parent" -depth -delete' EXIT HUP INT TERM
 chmod 0700 "$test_parent"
 
 bin=$test_parent/bin
 legacy_root=$test_parent/legacy-checkout
-mkdir -m 0700 "$bin" "$legacy_root"
+reviewed_overrides=$test_parent/reviewed-overrides
+mkdir -m 0700 "$bin" "$legacy_root" "$reviewed_overrides"
+cp "$test_dir"/legacy-overrides/*.yml "$reviewed_overrides/"
+chmod 0600 "$reviewed_overrides"/*.yml
 log=$test_parent/operations.log
 : > "$log"
 
@@ -27,10 +30,11 @@ cat > "$bin/snapshot" <<'SH'
 #!/bin/sh
 set -eu
 case $1 in
-  baseline-binding)
+  rollback-binding)
     baseline_digest=$(shasum -a 256 "$PLATFORM_MAC_SANDBOX/snapshot/pre-cutover/baseline.json" | awk '{print $1}')
-    printf '{"binding_sha256":"%s","baseline_sha256":"%s"}\n' \
-      "$(printf %064d 0 | tr 0 c)" "$baseline_digest"
+    printf '{"binding_sha256":"%s","baseline_sha256":"%s","git_revision":"%s","legacy_commit":"%s"}\n' \
+      "$(printf %064d 0 | tr 0 c)" "$baseline_digest" "$FAKE_GIT_REVISION" \
+      '400f03f276ae1bb69f5460c175b9fb923d620f1a'
     ;;
   restore)
     printf 'restore %s %s\n' "$PLATFORM_MAC_SANDBOX" "$PLATFORM_ADOPTION_ROLLBACK_ROOT" >> "$FAKE_LOG"
@@ -59,6 +63,20 @@ for service in audiobookshelf beszel dozzle immich jellyfin komga ntfy paperless
   printf 'SAFE=value\n' > "$PLATFORM_MAC_SANDBOX/legacy-env/$service.env"
   chmod 0600 "$PLATFORM_MAC_SANDBOX/legacy-env/$service.env"
 done
+binding_sha=$(ruby -rdigest -rjson - "$PLATFORM_MAC_SANDBOX/legacy-env" <<'RUBY'
+root = ARGV.fetch(0)
+services = %w[audiobookshelf beszel dozzle immich jellyfin komga ntfy paperless-ngx tinymediamanager]
+bytes = "#{JSON.generate("schema" => 1, "services" => services.to_h { |service|
+  [service, Digest::SHA256.file(File.join(root, "#{service}.env")).hexdigest]
+})}\n"
+File.write(File.join(root, ".binding.json"), bytes, mode: "wx", perm: 0o400)
+print Digest::SHA256.hexdigest(bytes)
+RUBY
+)
+printf 'Legacy adoption render binding: %s\n' "$binding_sha"
+if [ "${FAKE_PREOPEN_MUTATION:-}" = environment ]; then
+  printf 'MUTATED=value\n' >> "$PLATFORM_MAC_SANDBOX/legacy-env/audiobookshelf.env"
+fi
 SH
 
 cat > "$bin/baseline" <<'SH'
@@ -75,12 +93,55 @@ cp "$FAKE_BASELINE" "$output"
 chmod 0600 "$output"
 SH
 
+cat > "$bin/git" <<'SH'
+#!/bin/sh
+set -eu
+[ "$1" = -C ] && [ "$3" = cat-file ] && [ "$4" = blob ]
+repository=$2
+object=$5
+path=${object#*:}
+if [ "$repository" = "$FAKE_LEGACY_ROOT" ]; then
+  cat "$FAKE_LEGACY_ROOT/$path"
+  if [ "${FAKE_PREOPEN_MUTATION:-}" = base ] &&
+      [ "$path" = "$FAKE_PREOPEN_BASE_PATH" ]; then
+    printf 'mutated: true\n' >> "$FAKE_LEGACY_ROOT/$path"
+  fi
+else
+  [ "${object%%:*}" = "$FAKE_GIT_REVISION" ]
+  cat "$FAKE_REPO_DIR/$path"
+  if [ "${FAKE_PREOPEN_MUTATION:-}" = override ] &&
+      [ "$(basename -- "$path")" = audiobookshelf.yml ]; then
+    printf 'mutated: true\n' >> "$FAKE_OVERRIDE_ROOT/audiobookshelf.yml"
+  fi
+fi
+SH
+
 cat > "$bin/docker" <<'SH'
 #!/bin/sh
 set -eu
 printf 'docker' >> "$FAKE_LOG"
 for argument in "$@"; do printf ' %s' "$argument" >> "$FAKE_LOG"; done
 printf '\n' >> "$FAKE_LOG"
+[ -z "${FAKE_CLEANUP_DISCOVERY_FAILURE:-}" ] || {
+  case "$FAKE_CLEANUP_DISCOVERY_FAILURE:$*" in
+    'ps:ps -a --format '*) exit 95 ;;
+    'network:network ls --format '*) exit 95 ;;
+    'volume:volume ls --format '*) exit 95 ;;
+  esac
+  case " $* " in
+    *' ps -a --format '*|*' network ls --format '*|*' volume ls --format '*) exit 0 ;;
+    *' -aq --filter '*|*' -q --filter '*) exit 0 ;;
+    ' rm -f '*|' network rm '*|' volume rm '*) exit 0 ;;
+    ' run --rm -i -v '*)
+      mount=$5
+      parent=${mount%:/sandbox-parent}
+      shift 8
+      /usr/bin/find "$parent/$1" -type d -exec chmod u+rwx {} +
+      /usr/bin/find "$parent/$1" -depth -delete
+      exit 0
+      ;;
+  esac
+}
 [ -z "${FAKE_CLEANUP_SUCCESS:-}" ] || {
   case " $* " in
     *' ps -a --format '*|*' network ls --format '*|*' volume ls --format '*)
@@ -103,6 +164,7 @@ printf '\n' >> "$FAKE_LOG"
       parent=${mount%:/sandbox-parent}
       shift 8
       name=$1
+      /usr/bin/find "$parent/$name" -type d -exec chmod u+rwx {} +
       /usr/bin/find "$parent/$name" -depth -delete
       exit 0
       ;;
@@ -123,14 +185,27 @@ for argument in "$@"; do
 done
 service=${project##*-legacy-}
 case " $* " in
+  *' config --format json '*)
+    printf '{"services":{"%s":{"image":"example/%s@sha256:%s","volumes":[]}}}\n' \
+      "$service" "$service" "$(printf %064d 0 | tr 0 c)"
+    ;;
   *' config --images '*)
     if [ "${FAKE_IMAGE_MISMATCH:-}" = "$service" ]; then
       printf 'hostile/%s@sha256:%s\n' "$service" "$(printf %064d 0 | tr 0 d)"
+    elif [ "$service" = immich ]; then
+      printf 'example/shared@sha256:%s\n' "$(printf %064d 0 | tr 0 e)"
+      printf 'example/immich@sha256:%s\n' "$(printf %064d 0 | tr 0 c)"
+      printf 'example/shared@sha256:%s\n' "$(printf %064d 0 | tr 0 e)"
     else
       printf 'example/%s@sha256:%s\n' "$service" "$(printf %064d 0 | tr 0 c)"
     fi
     ;;
   *' up --detach '*)
+    if [ "${FAKE_LIVE_INPUT_MUTATION:-}" = 1 ]; then
+      case " $* " in
+        *"$FAKE_LIVE_LEGACY_ROOT"*|*"$FAKE_LIVE_OVERRIDE_ROOT"*|*'/legacy-env/'*) exit 96 ;;
+      esac
+    fi
     for path in \
       legacy/immich/data legacy/immich/thumbs legacy/immich/encoded-video \
       legacy/immich/profile legacy/immich/backups legacy/immich/model-cache legacy/immich/postgres \
@@ -139,10 +214,11 @@ case " $* " in
       legacy/paperless-ngx/media legacy/paperless-ngx/consume; do
       [ -e "$PLATFORM_MAC_SANDBOX/$path" ] || exit 93
     done
+    [ "${FAKE_UP_FAILURE:-}" != "$service" ] || exit 94
     ;;
 esac
 SH
-chmod 0755 "$bin/snapshot" "$bin/render" "$bin/baseline" "$bin/docker"
+chmod 0755 "$bin/snapshot" "$bin/render" "$bin/baseline" "$bin/git" "$bin/docker"
 
 services='audiobookshelf beszel dozzle immich jellyfin komga ntfy paperless-ngx tinymediamanager'
 for service in $services; do
@@ -153,6 +229,10 @@ for service in $services; do
   mkdir -p "$legacy_root/$(dirname -- "$legacy_path")"
   printf 'services: {}\n' > "$legacy_root/$legacy_path"
 done
+audiobookshelf_legacy_path=$(ruby -ryaml -e '
+  entry = YAML.safe_load_file(ARGV[0], aliases: false).fetch("services").find { |item| item.fetch("name") == "audiobookshelf" }
+  print entry.fetch("legacy_path")
+' "$test_dir/../../services/manifest.yml")
 
 sandbox=$test_parent/nas-platform-mac.Abc123
 mkdir -m 0700 "$sandbox"
@@ -178,7 +258,15 @@ baseline=$sandbox/snapshot/pre-cutover/baseline.json
 ruby -rjson - "$baseline" <<'RUBY'
 services = %w[audiobookshelf beszel dozzle immich jellyfin komga ntfy paperless-ngx tinymediamanager]
 images = services.to_h { |service| [service, ["example/#{service}@sha256:#{'c' * 64}"]] }
-File.write(ARGV.fetch(0), JSON.generate("legacy_images" => images, "services" => {}))
+images["immich"] = [
+  "example/immich@sha256:#{'c' * 64}",
+  "example/shared@sha256:#{'e' * 64}",
+  "example/shared@sha256:#{'e' * 64}"
+]
+File.write(ARGV.fetch(0), JSON.generate(
+  "legacy_commit" => "400f03f276ae1bb69f5460c175b9fb923d620f1a",
+  "legacy_images" => images, "services" => {}
+))
 RUBY
 chmod 0400 "$baseline"
 cp "$baseline" "$sandbox/baseline.json"
@@ -205,6 +293,9 @@ RUBY
 
 run_rollback() {
   env PATH="$bin:$PATH" FAKE_LOG="$log" FAKE_BASELINE="$baseline" \
+    FAKE_LEGACY_ROOT="$legacy_root" FAKE_REPO_DIR="$test_dir/../.." \
+    FAKE_GIT_REVISION="$(git -C "$test_dir/../.." rev-parse HEAD)" \
+    FAKE_OVERRIDE_ROOT="$reviewed_overrides" FAKE_PREOPEN_BASE_PATH="$audiobookshelf_legacy_path" \
     PLATFORM_MAC_TMPDIR="$test_parent" PLATFORM_MAC_SANDBOX="$sandbox" \
     PLATFORM_PROJECT_NAME="$project" PLATFORM_ADOPTION_ENABLED=true \
     PLATFORM_ADOPTION_ROOT="$sandbox" \
@@ -213,7 +304,8 @@ run_rollback() {
     PLATFORM_ADOPTION_ROLLBACK_SELF_TEST=1 \
     PLATFORM_ADOPTION_ROLLBACK_SNAPSHOT_COMMAND="$bin/snapshot" \
     PLATFORM_ADOPTION_ROLLBACK_BASELINE_COMMAND="$bin/baseline" \
-    PLATFORM_ADOPTION_ROLLBACK_RENDER_COMMAND="$bin/render" "$@" "$rollback"
+    PLATFORM_ADOPTION_ROLLBACK_RENDER_COMMAND="$bin/render" \
+    PLATFORM_ADOPTION_ROLLBACK_OVERRIDE_ROOT="$reviewed_overrides" "$@" "$rollback"
 }
 
 sandbox_before=$(tree_digest "$sandbox")
@@ -256,6 +348,40 @@ for fault in before-restore after-restore; do
 done
 
 : > "$log"
+if run_rollback FAKE_UP_FAILURE=immich >/dev/null 2>&1; then
+  fail 'rollback accepted a partial project start failure'
+fi
+[ "$(grep -c ' up --detach ' "$log")" -eq 4 ] || fail 'partial start fixture did not reach Immich'
+[ "$(grep -c ' stop$' "$log")" -eq 4 ] || fail 'partial start did not stop every attempted project'
+failed_project=$(grep ' up --detach ' "$log" | tail -1 | sed -n 's/.*--project-name \([^ ]*\).*/\1/p')
+grep -F -- "--project-name $failed_project" "$log" | grep -q ' stop$' ||
+  fail 'failed project namespace was not stopped'
+[ "$(tree_digest "$sandbox")" = "$sandbox_before" ] || fail 'partial start failure changed cutover state'
+
+: > "$log"
+run_rollback FAKE_LIVE_INPUT_MUTATION=1 FAKE_LIVE_LEGACY_ROOT="$legacy_root" \
+  FAKE_LIVE_OVERRIDE_ROOT="$reviewed_overrides" >/dev/null ||
+  fail 'transient live Compose input mutation reached rollback execution'
+if grep ' up --detach ' "$log" | grep -Eq "${legacy_root}|${reviewed_overrides}|/legacy-env/"; then
+  fail 'rollback up reopened a live Compose input path'
+fi
+[ "$(tree_digest "$sandbox")" = "$sandbox_before" ] || fail 'live input mutation changed cutover state'
+
+for preopen_mutation in base override environment; do
+  cp "$test_dir/legacy-overrides/audiobookshelf.yml" "$reviewed_overrides/audiobookshelf.yml"
+  chmod 0600 "$reviewed_overrides/audiobookshelf.yml"
+  printf 'services: {}\n' > "$legacy_root/$audiobookshelf_legacy_path"
+  : > "$log"
+  if run_rollback FAKE_PREOPEN_MUTATION="$preopen_mutation" >/dev/null 2>&1; then
+    fail "rollback accepted a $preopen_mutation input replaced before descriptor binding"
+  fi
+  [ "$(grep -c ' up --detach ' "$log" || true)" -eq 0 ] ||
+    fail "$preopen_mutation input mutation started rollback containers"
+  [ "$(tree_digest "$sandbox")" = "$sandbox_before" ] ||
+    fail "$preopen_mutation input mutation changed cutover state"
+done
+
+: > "$log"
 if run_rollback FAKE_IMAGE_MISMATCH=immich >/dev/null 2>&1; then
   fail 'rollback accepted an image different from the baseline'
 fi
@@ -294,6 +420,21 @@ if grep -Eq '^docker (rm|network rm|volume rm|run) ' "$log"; then
   fail 'cleanup mutated Docker resources before unknown-project refusal'
 fi
 
+for discovery_failure in ps network volume; do
+  owned_before=$(find "$test_parent" -maxdepth 1 -type d -name 'nas-platform-mac.??????' | sort)
+  : > "$log"
+  if PATH="$bin:$PATH" FAKE_LOG="$log" \
+      FAKE_CLEANUP_DISCOVERY_FAILURE="$discovery_failure" PLATFORM_MAC_TMPDIR="$test_parent" \
+      "$test_dir/cleanup.sh" "$sandbox" >/dev/null 2>&1; then
+    fail "cleanup accepted a failed $discovery_failure discovery"
+  fi
+  owned_after=$(find "$test_parent" -maxdepth 1 -type d -name 'nas-platform-mac.??????' | sort)
+  [ "$owned_after" = "$owned_before" ] || fail "$discovery_failure discovery failure deleted an owned namespace"
+  if grep -Eq '^docker (rm|network rm|volume rm|run) ' "$log"; then
+    fail "$discovery_failure discovery failure mutated resources"
+  fi
+done
+
 vault_sentinel=$test_parent/external-vault
 report_sentinel=$test_parent/external-report
 legacy_sentinel=$legacy_root/external-sentinel
@@ -320,5 +461,8 @@ PATH="$bin:$PATH" FAKE_LOG="$log" FAKE_CLEANUP_SUCCESS=1 \
   fail 'cleanup did not remove each owned volume exactly once'
 [ "$(shasum -a 256 "$vault_sentinel" "$report_sentinel" "$legacy_sentinel")" = "$external_before" ] ||
   fail 'cleanup changed external vault, report, or legacy checkout evidence'
+
+grep -Fq 'tests/mac/adoption-rollback-test.sh' "$test_dir/../../.github/workflows/ci.yml" ||
+  fail 'required CI does not execute the rollback rehearsal gate'
 
 printf 'adoption rollback: isolation properties hold\n'

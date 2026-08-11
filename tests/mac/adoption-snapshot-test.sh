@@ -466,6 +466,19 @@ ruby -rjson -rdigest -e '
   raise unless value.fetch("baseline_sha256") == Digest::SHA256.file(ARGV.fetch(2)).hexdigest
 ' "$baseline_binding" "$published/binding.json" "$published/baseline.json" ||
   fail 'baseline binding output differs from immutable publication'
+rollback_binding=$(PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
+  "$snapshotter" rollback-binding --override-root "$override_root" \
+  --baseline "$baseline" --run-state "$state")
+ruby -rjson -rdigest -e '
+  value = JSON.parse(ARGV.fetch(0))
+  binding = JSON.parse(File.binread(ARGV.fetch(1)))
+  raise unless value.keys.sort == %w[baseline_sha256 binding_sha256 git_revision legacy_commit]
+  raise unless value.fetch("binding_sha256") == Digest::SHA256.file(ARGV.fetch(1)).hexdigest
+  raise unless value.fetch("baseline_sha256") == Digest::SHA256.file(ARGV.fetch(2)).hexdigest
+  raise unless value.fetch("git_revision") == binding.fetch("git_revision")
+  raise unless value.fetch("legacy_commit") == binding.fetch("legacy_commit")
+' "$rollback_binding" "$published/binding.json" "$published/baseline.json" ||
+  fail 'rollback binding output differs from immutable publication'
 rollback_sandbox=$(mktemp -d "$fixture/nas-platform-mac.XXXXXX")
 rollback_sandbox=$(CDPATH= cd -- "$rollback_sandbox" && pwd -P)
 chmod 0700 "$rollback_sandbox"

@@ -23,7 +23,7 @@ shift 2
 [ "$1" = --run-state ] || die 'expected --run-state'
 run_state=$2
 case $action in
-  publish|verify|marker|marker-post-cutover|begin-cutover|attestations|live-namespace|baseline-binding|restore) ;;
+  publish|verify|marker|marker-post-cutover|begin-cutover|attestations|live-namespace|baseline-binding|rollback-binding|restore) ;;
   self-test-candidate-swap|self-test-post-publish-failure)
     [ "${PLATFORM_ADOPTION_SNAPSHOT_SELF_TEST:-}" = 1 ] || die 'self-test action is unavailable'
     ;;
@@ -936,15 +936,15 @@ refuse("snapshot lock is held") unless snapshot_lock.flock(File::LOCK_EX | File:
 roots, overrides_digest = binding_sources(override_root, target_mapping_root)
 snapshot_parent = File.join(sandbox, "snapshot")
 
-if %w[verify marker marker-post-cutover begin-cutover attestations live-namespace baseline-binding restore].include?(action)
+if %w[verify marker marker-post-cutover begin-cutover attestations live-namespace baseline-binding rollback-binding restore].include?(action)
   transition_mode = case action
-                    when "marker-post-cutover", "attestations", "live-namespace", "baseline-binding", "restore" then :required
+                    when "marker-post-cutover", "attestations", "live-namespace", "baseline-binding", "rollback-binding", "restore" then :required
                     when "begin-cutover" then :begin
                     else :none
                     end
   marker = verify_snapshot(
     sandbox_directory, roots, overrides_digest, baseline_path, run_state_path,
-    compare_source: !%w[marker-post-cutover attestations live-namespace baseline-binding restore].include?(action),
+    compare_source: !%w[marker-post-cutover attestations live-namespace baseline-binding rollback-binding restore].include?(action),
     transition_mode: transition_mode
   )
   puts marker if action.start_with?("marker") || action == "begin-cutover"
@@ -970,7 +970,7 @@ if %w[verify marker marker-post-cutover begin-cutover attestations live-namespac
     rebound_parent.close
     publication.close
     parent.close
-  elsif action == "baseline-binding"
+  elsif %w[baseline-binding rollback-binding].include?(action)
     parent = open_directory_at(sandbox_directory, "snapshot")
     publication = open_directory_at(parent, "pre-cutover")
     parent_signature = identity_signature(parent.stat)
@@ -987,9 +987,14 @@ if %w[verify marker marker-post-cutover begin-cutover attestations live-namespac
     refuse("snapshot namespace changed before baseline emit") unless
       identity_signature(rebound_publication.stat) == publication_signature &&
       identity_signature(rebound_parent.stat) == parent_signature
-    puts JSON.generate(
+    output = {
       "binding_sha256" => marker, "baseline_sha256" => binding.fetch("baseline_sha256")
-    )
+    }
+    if action == "rollback-binding"
+      output["legacy_commit"] = binding.fetch("legacy_commit")
+      output["git_revision"] = binding.fetch("git_revision")
+    end
+    puts JSON.generate(output)
     rebound_publication.close
     rebound_parent.close
     publication.close

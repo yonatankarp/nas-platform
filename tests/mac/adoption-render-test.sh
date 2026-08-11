@@ -173,5 +173,24 @@ fi
 grep -F value-secret-canary "$valid_output" >/dev/null && fail 'valid parity render leaked a value'
 [ "$(/usr/bin/find "$valid_sandbox/legacy-env" -type f -name '*.env' | wc -l | tr -d ' ')" = 9 ] ||
   fail 'valid encrypted parity fixture did not render nine environments'
+render_binding_sha=$(ruby -rdigest -rjson - "$valid_sandbox/legacy-env" <<'RUBY'
+root = ARGV.fetch(0)
+path = File.join(root, ".binding.json")
+stat = File.lstat(path)
+raise unless stat.file? && !stat.symlink? && stat.uid == Process.uid && (stat.mode & 0o777) == 0o400
+bytes = File.binread(path)
+document = JSON.parse(bytes)
+services = %w[audiobookshelf beszel dozzle immich jellyfin komga ntfy paperless-ngx tinymediamanager]
+raise unless document.keys.sort == %w[schema services] && document.fetch("schema") == 1 &&
+             document.fetch("services").keys.sort == services
+services.each do |service|
+  raise unless document.fetch("services").fetch(service) ==
+               Digest::SHA256.file(File.join(root, "#{service}.env")).hexdigest
+end
+print Digest::SHA256.hexdigest(bytes)
+RUBY
+) || fail 'valid encrypted parity fixture did not bind the rendered environments'
+grep -Fqx "Legacy adoption render binding: $render_binding_sha" "$valid_output" ||
+  fail 'valid encrypted parity fixture did not return its environment binding'
 
 printf '%s\n' 'Mac adoption render: pinned Ansible rejects malicious parity fixtures'

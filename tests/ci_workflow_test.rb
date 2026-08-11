@@ -20,6 +20,7 @@ FULL_STEPS = [
     ruby tests/mac/adoption-recreate-test.rb
     tests/mac/adoption-failure-stop-test.sh
     tests/mac/adoption-runner-test.sh
+    tests/mac/adoption-rollback-test.sh
   SH
   ["Install Ansible tooling", "ansible-core==2.21.2"],
   ["Check legacy role Compose compatibility", "tests/mac/legacy-role-compose-test.sh"],
@@ -260,6 +261,11 @@ def self_test
   assert_failure("unguarded full step", replace_once(source, "      - name: Validate shell syntax\n        if: steps.scope.outputs.docs_only != 'true'\n", "      - name: Validate shell syntax\n"), "full-validation guard")
   without_render = replace_once(source, render_step, "")
   assert_failure("missing legacy render", without_render, "Check legacy parity rendering")
+  assert_failure(
+    "missing rollback rehearsal",
+    replace_once(source, "          tests/mac/adoption-rollback-test.sh\n", ""),
+    "Check legacy adoption baseline capture command changed"
+  )
   render_before_install = replace_once(
     without_render,
     "      - name: Install Ansible tooling\n",
