@@ -247,11 +247,30 @@ pin_protected_input() {
   ruby - "$pin_source" "$pin_destination" "$pin_label" "$pin_kind" \
     "$pin_external" "$mac_repo_dir" "$protected_input_root" <<'RUBY'
 source_path, destination_path, label, kind, external, repository, protected_root = ARGV
+require "fiddle"
 require "open3"
 require "rbconfig"
 require "timeout"
 
 maximum_size = kind == "vault" ? 16 * 1024 * 1024 : 1024 * 1024
+FCHDIR = Fiddle::Function.new(
+  Fiddle::Handle::DEFAULT["fchdir"],
+  [Fiddle::TYPE_INT],
+  Fiddle::TYPE_INT
+)
+
+def in_directory(directory)
+  previous = File.open(".", File::RDONLY)
+  raise SystemCallError.new("fchdir", Fiddle.last_error) if FCHDIR.call(directory.fileno).negative?
+
+  yield
+ensure
+  if previous
+    restored = FCHDIR.call(previous.fileno)
+    previous.close
+    raise SystemCallError.new("fchdir", Fiddle.last_error) if restored.negative?
+  end
+end
 
 def fail_pin(label, detail)
   warn "protected #{label} input #{detail}"
@@ -304,11 +323,15 @@ def execute_provider(directory, basename, provider_bytes, maximum_size)
     eval "$provider_script"
   PROVIDER_COMMAND
   launcher = <<~'PROVIDER_LAUNCHER'
+    require "fiddle"
     directory_descriptor = Integer(ARGV.fetch(0), 10)
     basename = ARGV.fetch(1)
     provider_command = ARGV.fetch(2)
     directory = IO.for_fd(directory_descriptor)
-    Dir.fchdir(directory.fileno)
+    fchdir = Fiddle::Function.new(
+      Fiddle::Handle::DEFAULT["fchdir"], [Fiddle::TYPE_INT], Fiddle::TYPE_INT
+    )
+    raise SystemCallError.new("fchdir", Fiddle.last_error) if fchdir.call(directory.fileno).negative?
     directory.close
     exec(["/bin/sh", "/bin/sh"], "-c", provider_command, "./#{basename}")
   PROVIDER_LAUNCHER
@@ -388,7 +411,7 @@ parent_directory = nil
 source = nil
 begin
   fail_pin(label, "cannot be pinned safely") unless
-    File.const_defined?(:NOFOLLOW) && File.const_defined?(:NONBLOCK) && Dir.respond_to?(:fchdir)
+    File.const_defined?(:NOFOLLOW) && File.const_defined?(:NONBLOCK)
   source_path = File.expand_path(source_path)
   repository = File.realpath(repository)
   protected_root = File.expand_path(protected_root)
@@ -416,14 +439,14 @@ begin
     parent_descriptor_before.directory? &&
       identity(canonical_parent_before) == identity(parent_descriptor_before)
   path_before = File.lstat(source_path)
-  held_path_before = Dir.fchdir(parent_directory.fileno) { File.lstat("./#{basename}") }
+  held_path_before = in_directory(parent_directory) { File.lstat("./#{basename}") }
   fail_pin(label, "must be a regular non-symlink file") unless
     path_before.file? && held_path_before.file?
   fail_pin(label, "changed while being pinned") unless
     signature(path_before) == signature(held_path_before)
   bytes = nil
   executable = false
-  source = Dir.fchdir(parent_directory.fileno) { File.open("./#{basename}", flags) }
+  source = in_directory(parent_directory) { File.open("./#{basename}", flags) }
   descriptor_before = source.stat
   fail_pin(label, "changed while being pinned") unless
     descriptor_before.file? && signature(path_before) == signature(descriptor_before)
@@ -440,7 +463,7 @@ begin
   canonical_parent_after = File.lstat(parent_before)
   parent_descriptor_after = parent_directory.stat
   path_after = File.lstat(source_path)
-  held_path_after = Dir.fchdir(parent_directory.fileno) { File.lstat("./#{basename}") }
+  held_path_after = in_directory(parent_directory) { File.lstat("./#{basename}") }
   fail_pin(label, "changed while being pinned") unless
     parent_before == parent_after &&
       identity(parent_path_before) == identity(parent_path_after) &&
@@ -457,7 +480,7 @@ begin
     provider_canonical_parent_after = File.lstat(parent_before)
     provider_parent_descriptor_after = parent_directory.stat
     provider_path_after = File.lstat(source_path)
-    provider_held_path_after = Dir.fchdir(parent_directory.fileno) { File.lstat("./#{basename}") }
+    provider_held_path_after = in_directory(parent_directory) { File.lstat("./#{basename}") }
     fail_pin(label, "changed while being pinned") unless
       parent_before == provider_parent_after &&
         identity(parent_path_before) == identity(provider_parent_path_after) &&

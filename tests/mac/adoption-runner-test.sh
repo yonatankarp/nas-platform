@@ -8,6 +8,11 @@ repo_dir=$(CDPATH= cd -- "$mac_test_dir/../.." && pwd -P)
 runner=$mac_test_dir/run.sh
 reporter=$mac_test_dir/report.rb
 
+if grep -Eq 'Dir\.(for_fd|fchdir)' "$runner"; then
+  printf '%s\n' 'adoption runner uses unavailable Ruby directory descriptor APIs' >&2
+  exit 1
+fi
+
 fail() {
   printf '%s\n' "$1" >&2
   exit 1
