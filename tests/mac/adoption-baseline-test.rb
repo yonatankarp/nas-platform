@@ -660,8 +660,10 @@ Dir.mktmpdir("adoption-baseline-test-") do |root|
   failures << "rollback fsync failure left publication artifacts" unless
     Dir.glob("#{root}/.adoption-{baseline,backup,recovery}-*").empty?
   Dir.mktmpdir("publication-parent-race-") do |race_container|
+    race_container = File.realpath(race_container)
     race_root = File.join(race_container, "root")
     clone_recorder_fixture(root, race_root)
+    race_root = File.realpath(race_root)
     race_output = File.join(race_root, "baseline.json")
     saved_parent = "#{race_root}.publication-saved"
     _out, parent_race_diagnostic, parent_race_status = run_recorder(race_root, race_output, {
@@ -685,8 +687,10 @@ Dir.mktmpdir("adoption-baseline-test-") do |root|
     failures << "publication parent replacement left publication artifacts" unless publication_artifacts.empty?
   end
   Dir.mktmpdir("first-publication-parent-race-") do |race_container|
+    race_container = File.realpath(race_container)
     race_root = File.join(race_container, "root")
     clone_recorder_fixture(root, race_root)
+    race_root = File.realpath(race_root)
     race_output = File.join(race_root, "baseline.json")
     File.unlink(race_output)
     saved_parent = "#{race_root}.publication-saved"
@@ -710,8 +714,10 @@ Dir.mktmpdir("adoption-baseline-test-") do |root|
     failures << "first publication parent replacement left publication artifacts" unless first_artifacts.empty?
   end
   Dir.mktmpdir("capture-parent-race-") do |race_container|
+    race_container = File.realpath(race_container)
     race_root = File.join(race_container, "root")
     clone_recorder_fixture(root, race_root)
+    race_root = File.realpath(race_root)
     race_output = File.join(race_root, "baseline.json")
     capture_saved_parent = "#{race_root}.capture-saved"
     write_executable("#{race_root}/probes/beszel.sh", <<~SH)
