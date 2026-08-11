@@ -21,6 +21,10 @@ guard = "steps.scope.outputs.docs_only != 'true'"
 legacy_revision = "400f03f276ae1bb69f5460c175b9fb923d620f1a"
 checkout = one_step(steps, "Check out pinned legacy infrastructure")
 raise "CI adoption contract: legacy checkout must use the full-lane guard" unless checkout["if"] == guard
+raise "CI adoption contract: legacy checkout secret is not scoped to the checkout step" unless
+  checkout["env"] == {
+    "NAS_INFRASTRUCTURE_TOKEN" => "${{ secrets.NAS_INFRASTRUCTURE_TOKEN }}"
+  }
 checkout_run = checkout.fetch("run")
 raise "CI adoption contract: legacy checkout uses a mutable ref" unless
   checkout_run.include?(legacy_revision) &&
@@ -29,6 +33,15 @@ raise "CI adoption contract: legacy checkout is not a non-repository sibling" un
   checkout_run.include?('"$GITHUB_WORKSPACE/../nas-infrastructure"')
 raise "CI adoption contract: legacy checkout repository differs" unless
   checkout_run.include?("https://github.com/yonatankarp/nas-infrastructure.git")
+raise "CI adoption contract: legacy checkout does not use non-interactive askpass authentication" unless
+  checkout_run.include?('GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0') &&
+    checkout_run.include?('"${NAS_INFRASTRUCTURE_TOKEN:?}"')
+raise "CI adoption contract: legacy checkout credential helper is not private and ephemeral" unless
+  checkout_run.include?('askpass=$(mktemp "$RUNNER_TEMP/nas-infrastructure-askpass.XXXXXX")') &&
+    checkout_run.include?('chmod 0700 "$askpass"') && checkout_run.include?('rm -f -- "$askpass"')
+raise "CI adoption contract: legacy token could be embedded in checkout commands" if
+  checkout_run.include?("secrets.NAS_INFRASTRUCTURE_TOKEN") ||
+    checkout_run.match?(%r{https://[^\s]+@github\.com/yonatankarp/nas-infrastructure\.git})
 
 adoption = one_step(steps, "Converge synthetic legacy adoption")
 raise "CI adoption contract: adoption must use the full-lane guard" unless adoption["if"] == guard
