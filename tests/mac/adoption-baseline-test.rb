@@ -2,6 +2,7 @@
 # frozen_string_literal: true
 
 require "fileutils"
+require "digest"
 require "json"
 require "open3"
 require "rbconfig"
@@ -109,7 +110,7 @@ end
 failures = []
 adoption_source = File.read(File.join(__dir__, "adoption.sh"))
 failures << "adoption coordinator omits capture-baseline" unless
-  adoption_source.include?("preflight|render|legacy-deploy|legacy-seed|capture-baseline|snapshot|cutover|verify)")
+  adoption_source.include?("preflight|render|legacy-deploy|legacy-seed|capture-baseline|snapshot|cutover|verify|rollback)")
 failures << "adoption coordinator does not invoke recorder" unless adoption_source.include?('"$script_dir/adoption-baseline.rb"')
 failures << "adoption coordinator publishes outside the sandbox" unless adoption_source.include?('"$sandbox/baseline.json"')
 recorder_prefix = File.read(RECORDER).split(/^def emit_probe\b/, 2).first
@@ -479,6 +480,49 @@ Dir.mktmpdir("adoption-baseline-test-") do |root|
 
   original = File.binread(output)
   original_mode = File.stat(output).mode & 0o777
+  expected = "#{root}/expected-baseline.json"
+  File.binwrite(expected, original)
+  File.chmod(0o400, expected)
+  expected_digest = Digest::SHA256.hexdigest(original)
+  expected_args = ["--expected-baseline", expected, "--expected-baseline-sha256", expected_digest]
+  _expected_out, expected_error, expected_status = run_recorder(root, output, {}, expected_args)
+  failures << "matching expected baseline failed: #{expected_error}" unless expected_status.success?
+  mismatched = JSON.parse(original)
+  mismatched.fetch("services").fetch("immich").fetch("record_counts")["assets"] += 1
+  File.chmod(0o600, expected)
+  File.binwrite(expected, JSON.generate(mismatched))
+  File.chmod(0o400, expected)
+  mismatch_digest = Digest::SHA256.file(expected).hexdigest
+  _mismatch_out, mismatch_error, mismatch_status = run_recorder(
+    root, output, {}, ["--expected-baseline", expected, "--expected-baseline-sha256", mismatch_digest]
+  )
+  failures << "mismatched expected evidence was accepted" if mismatch_status.success?
+  failures << "mismatched expected evidence replaced output" unless File.binread(output) == original
+  File.chmod(0o600, expected)
+  File.binwrite(expected, original)
+  File.chmod(0o400, expected)
+  _digest_out, digest_error, digest_status = run_recorder(
+    root, output, {}, ["--expected-baseline", expected, "--expected-baseline-sha256", "f" * 64]
+  )
+  failures << "wrong expected digest was accepted" if digest_status.success?
+  failures << "wrong expected digest replaced output" unless File.binread(output) == original
+  expected_target = "#{root}/expected-target.json"
+  File.rename(expected, expected_target)
+  File.symlink(expected_target, expected)
+  _symlink_out, symlink_error, symlink_status = run_recorder(root, output, {}, expected_args)
+  failures << "symlinked expected baseline was accepted" if symlink_status.success?
+  failures << "symlinked expected baseline replaced output" unless File.binread(output) == original
+  File.unlink(expected)
+  File.rename(expected_target, expected)
+  _mutation_out, mutation_error, mutation_status = run_recorder(root, output, {
+    "PLATFORM_ADOPTION_BASELINE_SELF_TEST" => "1",
+    "PLATFORM_ADOPTION_BASELINE_EXPECTED_MUTATION" => "1"
+  }, expected_args)
+  failures << "final-window expected baseline mutation was accepted" if mutation_status.success?
+  failures << "final-window expected baseline mutation replaced output" unless File.binread(output) == original
+  File.chmod(0o600, expected)
+  File.binwrite(expected, original)
+  File.chmod(0o400, expected)
   cleanup_fault = "#{root}/cleanup-fault.rb"
   File.write(cleanup_fault, <<~'RUBY')
     class IO

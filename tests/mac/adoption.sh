@@ -16,7 +16,7 @@ die() {
 subcommand=$1
 case $subcommand in
   --self-test) exec "$script_dir/adoption-self-test.sh" ;;
-  preflight|render|legacy-deploy|legacy-seed|capture-baseline|snapshot|cutover|verify) ;;
+  preflight|render|legacy-deploy|legacy-seed|capture-baseline|snapshot|cutover|verify|rollback) ;;
   *) die 'unsupported subcommand' ;;
 esac
 
@@ -101,6 +101,10 @@ preflight() {
 }
 
 preflight
+[ "$subcommand" = rollback ] && {
+  "$script_dir/adoption-rollback.sh" || die 'legacy rollback rehearsal failed'
+  exit 0
+}
 stop_legacy_projects() {
   tab=$(printf '\t')
   printf '%s\n' "$service_paths" | while IFS="$tab" read -r service path; do

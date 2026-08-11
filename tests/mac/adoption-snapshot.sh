@@ -23,7 +23,7 @@ shift 2
 [ "$1" = --run-state ] || die 'expected --run-state'
 run_state=$2
 case $action in
-  publish|verify|marker|marker-post-cutover|begin-cutover|attestations|live-namespace|baseline-binding) ;;
+  publish|verify|marker|marker-post-cutover|begin-cutover|attestations|live-namespace|baseline-binding|restore) ;;
   self-test-candidate-swap|self-test-post-publish-failure)
     [ "${PLATFORM_ADOPTION_SNAPSHOT_SELF_TEST:-}" = 1 ] || die 'self-test action is unavailable'
     ;;
@@ -936,15 +936,15 @@ refuse("snapshot lock is held") unless snapshot_lock.flock(File::LOCK_EX | File:
 roots, overrides_digest = binding_sources(override_root, target_mapping_root)
 snapshot_parent = File.join(sandbox, "snapshot")
 
-if %w[verify marker marker-post-cutover begin-cutover attestations live-namespace baseline-binding].include?(action)
+if %w[verify marker marker-post-cutover begin-cutover attestations live-namespace baseline-binding restore].include?(action)
   transition_mode = case action
-                    when "marker-post-cutover", "attestations", "live-namespace", "baseline-binding" then :required
+                    when "marker-post-cutover", "attestations", "live-namespace", "baseline-binding", "restore" then :required
                     when "begin-cutover" then :begin
                     else :none
                     end
   marker = verify_snapshot(
     sandbox_directory, roots, overrides_digest, baseline_path, run_state_path,
-    compare_source: !%w[marker-post-cutover attestations live-namespace baseline-binding].include?(action),
+    compare_source: !%w[marker-post-cutover attestations live-namespace baseline-binding restore].include?(action),
     transition_mode: transition_mode
   )
   puts marker if action.start_with?("marker") || action == "begin-cutover"
@@ -994,6 +994,79 @@ if %w[verify marker marker-post-cutover begin-cutover attestations live-namespac
     rebound_parent.close
     publication.close
     parent.close
+  elsif action == "restore"
+    rollback_path = ENV.fetch("PLATFORM_ADOPTION_ROLLBACK_ROOT")
+    rollback_project = ENV.fetch("PLATFORM_ADOPTION_ROLLBACK_PROJECT")
+    rollback = File.realpath(rollback_path)
+    refuse("rollback sandbox changed") unless rollback == rollback_path && rollback != sandbox &&
+      File.dirname(rollback) == File.dirname(sandbox)
+    rollback_directory = open_bound_directory(rollback, "owned rollback sandbox")
+    refuse("rollback sandbox is unsafe") unless rollback_directory.stat.uid == Process.uid &&
+      mode(rollback_directory.stat) == 0o700
+    marker_bytes = read_file_at(
+      rollback_directory, ".nas-platform-mac-owned", "rollback ownership marker", 0o600
+    )
+    rollback_suffix = File.basename(rollback).delete_prefix("nas-platform-mac.")
+    refuse("rollback sandbox name differs") unless File.basename(rollback).match?(/\Anas-platform-mac\.[A-Za-z0-9]{6}\z/)
+    expected_project = "nas-platform-mac-#{rollback_suffix.downcase}"
+    expected_marker = [
+      "schema=1", "project=#{expected_project}", "namespace=rollback",
+      "source_project=#{ENV.fetch('PLATFORM_PROJECT_NAME')}", "snapshot_binding=#{marker}"
+    ].join("\n") << "\n"
+    refuse("rollback ownership marker differs") unless rollback_project == expected_project &&
+      marker_bytes == expected_marker && descriptor_children(rollback_directory) == [".nas-platform-mac-owned"]
+    snapshot_parent_directory = open_directory_at(sandbox_directory, "snapshot")
+    snapshot_directory = open_directory_at(snapshot_parent_directory, "pre-cutover")
+    state_directory = open_directory_at(snapshot_directory, "state")
+    snapshot_parent_identity = identity_signature(snapshot_parent_directory.stat)
+    snapshot_identity = identity_signature(snapshot_directory.stat)
+    state_identity = identity_signature(state_directory.stat)
+    binding_bytes = read_file_at(snapshot_directory, "binding.json", "snapshot binding", 0o400)
+    refuse("snapshot binding changed before restore") unless Digest::SHA256.hexdigest(binding_bytes) == marker
+    inventory_bytes = read_file_at(snapshot_directory, "inventory.json", "snapshot inventory", 0o400)
+    inventory_document = JSON.parse(inventory_bytes, create_additions: false)
+    refuse("snapshot inventory differs before restore") unless
+      inventory_document.is_a?(Hash) && inventory_document.fetch("entries").is_a?(Array)
+    restored_baseline = read_file_at(snapshot_directory, "baseline.json", "snapshot baseline", 0o400)
+    binding_document = load_binding_bytes(binding_bytes)
+    refuse("snapshot baseline differs") unless
+      Digest::SHA256.hexdigest(restored_baseline) == binding_document.fetch("baseline_sha256")
+    write_bytes_at(rollback_directory, "pre-cutover-baseline.json", restored_baseline, 0o400)
+    restored_entries = []
+    roots.each do |relative|
+      copy_relative_root(state_directory, rollback_directory, relative, restored_entries)
+    end
+    rollback_directory.fsync
+    snapshot_entries = inventory_roots_at(state_directory, roots)
+    restored_inventory = inventory_roots_at(rollback_directory, roots)
+    refuse("rollback restore differs from snapshot") unless
+      inventories_match?(inventory_document.fetch("entries"), snapshot_entries) &&
+      inventories_match?(snapshot_entries, restored_entries) &&
+      inventories_match?(snapshot_entries, restored_inventory)
+    rebound_snapshot_parent = open_directory_at(sandbox_directory, "snapshot")
+    rebound_snapshot = open_directory_at(rebound_snapshot_parent, "pre-cutover")
+    rebound_state = open_directory_at(rebound_snapshot, "state")
+    refuse("snapshot namespace changed during restore") unless
+      identity_signature(rebound_snapshot_parent.stat) == snapshot_parent_identity &&
+      identity_signature(rebound_snapshot.stat) == snapshot_identity &&
+      identity_signature(rebound_state.stat) == state_identity &&
+      read_file_at(rebound_snapshot, "binding.json", "snapshot binding", 0o400) == binding_bytes &&
+      read_file_at(rebound_snapshot, "inventory.json", "snapshot inventory", 0o400) == inventory_bytes
+    rebound_rollback = open_bound_directory(rollback, "owned rollback sandbox")
+    refuse("rollback sandbox changed during restore") unless
+      identity_signature(rebound_rollback.stat) == identity_signature(rollback_directory.stat) &&
+      read_file_at(rebound_rollback, ".nas-platform-mac-owned", "rollback ownership marker", 0o600) ==
+        marker_bytes && descriptor_children(rebound_rollback) ==
+          [".nas-platform-mac-owned", "legacy", "pre-cutover-baseline.json"]
+    puts marker
+    rebound_rollback.close
+    rebound_state.close
+    rebound_snapshot.close
+    rebound_snapshot_parent.close
+    state_directory.close
+    snapshot_directory.close
+    snapshot_parent_directory.close
+    rollback_directory.close
   elsif action == "live-namespace"
     signatures = roots.to_h do |relative|
       parent, name = relative_parent_at(sandbox_directory, relative)

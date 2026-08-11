@@ -116,6 +116,12 @@ expect_failure 'ambient probe script root' 'reserved adoption mapping environmen
 expect_failure 'ambient baseline descriptor' 'reserved adoption mapping environment must be unset' \
   env PLATFORM_ADOPTION_BASELINE_FILE=/dev/fd/9 "$runner" --lane fresh \
     --vault-file "$vault_file" --vault-password-file "$password_file"
+expect_failure 'ambient baseline mutation self-test' 'reserved adoption mapping environment must be unset' \
+  env PLATFORM_ADOPTION_BASELINE_SELF_TEST=1 "$runner" --lane fresh \
+    --vault-file "$vault_file" --vault-password-file "$password_file"
+expect_failure 'ambient rollback helper override' 'reserved adoption mapping environment must be unset' \
+  env PLATFORM_ADOPTION_ROLLBACK_SNAPSHOT_COMMAND="$temporary_parent/hostile" "$runner" --lane fresh \
+    --vault-file "$vault_file" --vault-password-file "$password_file"
 expect_failure 'ambient contract descriptor' 'reserved adoption mapping environment must be unset' \
   env PLATFORM_ADOPTION_CONTRACT_FILE=/dev/fd/11 "$runner" --lane fresh \
     --vault-file "$vault_file" --vault-password-file "$password_file"

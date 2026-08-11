@@ -1502,8 +1502,11 @@ OptionParser.new do |parser|
   parser.on("--override-root PATH") { |value| set_option.call(:override_root, value) }
   parser.on("--env-root PATH") { |value| set_option.call(:env_root, value) }
   parser.on("--probe-root PATH") { |value| set_option.call(:probe_root, value) }
+  parser.on("--expected-baseline PATH") { |value| set_option.call(:expected_baseline, value) }
+  parser.on("--expected-baseline-sha256 SHA") { |value| set_option.call(:expected_baseline_sha256, value) }
 end.parse!
 refuse("invalid arguments") unless ARGV.empty? && %i[output commit manifest legacy_root override_root env_root probe_root].all? { |key| options[key] }
+refuse("invalid arguments") unless options.key?(:expected_baseline) == options.key?(:expected_baseline_sha256)
 
 capture_failed = false
 begin
@@ -1665,6 +1668,25 @@ begin
   }
   encoded = JSON.pretty_generate(document) << "\n"
   reject_canaries!(encoded, canaries)
+  expected_bytes = nil
+  expected_digest = nil
+  expected_unchanged = nil
+  if options[:expected_baseline]
+    expected_digest = options.fetch(:expected_baseline_sha256)
+    raise "expected baseline digest is invalid" unless expected_digest.match?(/\A[0-9a-f]{64}\z/)
+    expected_bytes = secure_file_bytes(
+      options.fetch(:expected_baseline), max_bytes: 16 * 1024 * 1024, private: true
+    )
+    raise "expected baseline binding differs" unless Digest::SHA256.hexdigest(expected_bytes) == expected_digest
+    raise "rollback evidence differs from baseline" unless parse_strict_json(expected_bytes) == document
+    expected_unchanged = lambda do
+      rebound = secure_file_bytes(
+        options.fetch(:expected_baseline), max_bytes: 16 * 1024 * 1024, private: true
+      )
+      raise "expected baseline changed" unless rebound == expected_bytes &&
+        Digest::SHA256.hexdigest(rebound) == expected_digest
+    end
+  end
   raise "protected capture input changed" unless snapshots_unchanged?(protected_input_states)
   raise "probe dependency changed" unless snapshots_unchanged?(dependency_source_states) &&
                                           snapshots_unchanged?(dependency_snapshot_states)
@@ -1696,6 +1718,7 @@ begin
                                             snapshots_unchanged?(dependency_snapshot_states)
     raise "baseline staging changed" unless
       publication_file_state_at(parent_directory, staging_name, expected_mode: 0o600) == staged
+    expected_unchanged&.call
     staging.close
     dependency_stage.file.close
     dependency_stage = nil
@@ -1703,6 +1726,12 @@ begin
     private_root = nil
     raise "publication directory changed" unless bound_directory_matches_path?(parent, parent_directory)
     publish_baseline_at(staging_name, basename, parent_directory, initial) do |phase|
+      if phase == :published && ENV["PLATFORM_ADOPTION_BASELINE_SELF_TEST"] == "1" &&
+          ENV["PLATFORM_ADOPTION_BASELINE_EXPECTED_MUTATION"] == "1"
+        File.chmod(0o600, options.fetch(:expected_baseline))
+        File.binwrite(options.fetch(:expected_baseline), "mutated-after-final-check\n")
+      end
+      expected_unchanged&.call if phase == :published
       raise "publication directory changed" unless bound_directory_matches_path?(parent, parent_directory)
       puts "Legacy adoption baseline: captured" if phase == :before_success
     end

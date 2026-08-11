@@ -466,6 +466,31 @@ ruby -rjson -rdigest -e '
   raise unless value.fetch("baseline_sha256") == Digest::SHA256.file(ARGV.fetch(2)).hexdigest
 ' "$baseline_binding" "$published/binding.json" "$published/baseline.json" ||
   fail 'baseline binding output differs from immutable publication'
+rollback_sandbox=$(mktemp -d "$fixture/nas-platform-mac.XXXXXX")
+rollback_sandbox=$(CDPATH= cd -- "$rollback_sandbox" && pwd -P)
+chmod 0700 "$rollback_sandbox"
+rollback_suffix=${rollback_sandbox##*.}
+rollback_project=nas-platform-mac-$(printf '%s' "$rollback_suffix" | tr '[:upper:]' '[:lower:]')
+printf 'schema=1\nproject=%s\nnamespace=rollback\nsource_project=nas-platform-mac-abc123\nsnapshot_binding=%s\n' \
+  "$rollback_project" "$cutover_marker" > "$rollback_sandbox/.nas-platform-mac-owned"
+chmod 0600 "$rollback_sandbox/.nas-platform-mac-owned"
+restored_marker=$(PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
+  PLATFORM_PROJECT_NAME=nas-platform-mac-abc123 \
+  PLATFORM_ADOPTION_ROLLBACK_ROOT=$rollback_sandbox \
+  PLATFORM_ADOPTION_ROLLBACK_PROJECT=$rollback_project \
+  "$snapshotter" restore --override-root "$override_root" \
+  --baseline "$baseline" --run-state "$state")
+[ "$restored_marker" = "$cutover_marker" ] || fail 'rollback restore marker differs'
+cmp -s "$published/baseline.json" "$rollback_sandbox/pre-cutover-baseline.json" ||
+  fail 'rollback restore baseline differs'
+ruby -rjson -rdigest -e '
+  inventory = JSON.parse(File.read(ARGV.fetch(0)))
+  inventory.fetch("entries").select { |entry| entry.fetch("type") == "file" }.each do |entry|
+    restored = File.join(ARGV.fetch(1), entry.fetch("path"))
+    raise unless File.file?(restored) && !File.symlink?(restored)
+    raise unless Digest::SHA256.file(restored).hexdigest == entry.fetch("sha256")
+  end
+' "$published/inventory.json" "$rollback_sandbox" || fail 'rollback restored state differs'
 transition=$sandbox/snapshot/cutover-started.json
 [ -f "$transition" ] && [ ! -L "$transition" ] || fail 'cutover transition was not published safely'
 [ "$(stat -f '%Lp' "$transition" 2>/dev/null || stat -c '%a' "$transition")" = 400 ] ||
