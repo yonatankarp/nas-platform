@@ -506,7 +506,7 @@ expect_failure(failures, "missing Beszel Compose interface",
 end
 
 expect_failure(failures, "Mac storage claims Linux ownership",
-               "Mac host preparation must omit Linux-only storage ownership") do |root|
+               "host preparation must restrict Linux ownership to the explicit integration capability") do |root|
   mutate_yaml_file(root, "roles/host_prep/tasks/main.yml") do |tasks|
     task = tasks.find { |entry| entry["name"] == "Create service state directories" }
     task.fetch("ansible.builtin.file")["owner"] = "{{ item.owner | default(omit) }}"
