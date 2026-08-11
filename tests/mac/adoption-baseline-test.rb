@@ -94,6 +94,15 @@ def run_recorder(root, output, extra_env = {}, extra_args = [], path_overrides =
   Open3.capture3(env, *arguments)
 end
 
+def clone_recorder_fixture(source, destination)
+  FileUtils.cp_r(source, destination, preserve: true)
+  Dir.glob("#{destination}/{bin,probes}/**/*").each do |path|
+    next unless File.file?(path) && !File.symlink?(path)
+    bytes = File.binread(path)
+    File.binwrite(path, bytes.gsub(source, destination)) if bytes.include?(source)
+  end
+end
+
 failures = []
 adoption_source = File.read(File.join(__dir__, "adoption.sh"))
 failures << "adoption coordinator omits capture-baseline" unless adoption_source.include?("preflight|render|legacy-deploy|legacy-seed|capture-baseline)")
@@ -466,6 +475,30 @@ Dir.mktmpdir("adoption-baseline-test-") do |root|
 
   original = File.binread(output)
   original_mode = File.stat(output).mode & 0o777
+  cleanup_fault = "#{root}/cleanup-fault.rb"
+  File.write(cleanup_fault, <<~'RUBY')
+    class IO
+      alias adoption_cleanup_original_write write
+
+      def write(value)
+        if caller_locations.any? { |location| location.base_label == "erase_regular_file" } &&
+           !$adoption_cleanup_failed
+          $adoption_cleanup_failed = true
+          raise Errno::EIO, "injected private cleanup failure"
+        end
+        adoption_cleanup_original_write(value)
+      end
+    end
+  RUBY
+  _cleanup_out, cleanup_diagnostic, cleanup_status = run_recorder(root, output, {
+    "RUBYOPT" => "-r#{cleanup_fault}"
+  })
+  failures << "private cleanup failure was accepted" if cleanup_status.success?
+  failures << "private cleanup failure diagnostic was not fixed" unless
+    cleanup_diagnostic == "adoption-baseline-error: capture refused\n"
+  failures << "private cleanup failure replaced baseline" unless File.binread(output) == original
+  failures << "private cleanup failure left staging directories" unless
+    Dir.glob("#{root}/.adoption-{private,inputs}-*").empty?
   dependency_repo = "#{root}/dependency-repo"
   FileUtils.mkdir_p(dependency_repo)
   %w[tests services roles].each do |name|
@@ -626,49 +659,81 @@ Dir.mktmpdir("adoption-baseline-test-") do |root|
     File.binread(output) == original && (File.stat(output).mode & 0o777) == original_mode
   failures << "rollback fsync failure left publication artifacts" unless
     Dir.glob("#{root}/.adoption-{baseline,backup,recovery}-*").empty?
-  File.binwrite(output, original)
-  File.chmod(original_mode, output)
-  saved_parent = "#{root}.publication-saved"
-  _out, _diagnostic, _parent_race_status = run_recorder(root, output, {
-    "RUBYOPT" => "-r#{fsync_fault}",
-    "ADOPTION_FSYNC_PARENT" => root,
-    "ADOPTION_FAIL_DIRECTORY_SYNC_AT" => "999",
-    "ADOPTION_REPLACE_PARENT" => "1"
-  })
-  failures << "publication parent replacement overwrote newer output" unless
-    File.binread(output) == "newer-external-baseline\n"
-  original_output = File.join(saved_parent, "baseline.json")
-  failures << "publication parent replacement changed bound baseline" unless
-    File.binread(original_output) == original
-  FileUtils.remove_entry(root)
-  File.rename(saved_parent, root)
-  Dir.glob("#{root}/.adoption-private-*").each { |path| FileUtils.remove_entry_secure(path) }
-  publication_artifacts = Dir.glob("#{root}/.adoption-{baseline,backup,recovery}-*")
-  failures << "publication parent replacement left publication artifacts" unless publication_artifacts.empty?
-  publication_artifacts.each { |path| File.unlink(path) }
-  capture_saved_parent = "#{root}.capture-saved"
-  write_executable("#{root}/probes/beszel.sh", <<~SH)
-    #!/bin/sh
-    printf '%s\\n' '#{JSON.generate(evidence("beszel"))}'
-    mv '#{root}' '#{capture_saved_parent}'
-    mkdir -m 700 '#{root}'
-    printf '%s\\n' 'newer-capture-baseline' > '#{output}'
-    chmod 600 '#{output}'
-  SH
-  _out, _diagnostic, capture_parent_status = run_recorder(root, output)
-  failures << "capture parent replacement was accepted" if capture_parent_status.success?
-  failures << "capture parent replacement overwrote newer output" unless
-    File.binread(output) == "newer-capture-baseline\n"
-  failures << "capture parent replacement changed bound baseline" unless
-    File.binread(File.join(capture_saved_parent, "baseline.json")) == original
-  FileUtils.remove_entry(root)
-  File.rename(capture_saved_parent, root)
-  Dir.glob("#{root}/.adoption-private-*").each { |path| FileUtils.remove_entry_secure(path) }
-  Dir.glob("#{root}/.adoption-{baseline,backup,recovery}-*").each { |path| File.unlink(path) }
-  write_executable("#{root}/probes/beszel.sh", <<~SH)
-    #!/bin/sh
-    printf '%s\\n' '#{JSON.generate(evidence("beszel"))}'
-  SH
+  Dir.mktmpdir("publication-parent-race-") do |race_container|
+    race_root = File.join(race_container, "root")
+    clone_recorder_fixture(root, race_root)
+    race_output = File.join(race_root, "baseline.json")
+    saved_parent = "#{race_root}.publication-saved"
+    _out, parent_race_diagnostic, parent_race_status = run_recorder(race_root, race_output, {
+      "RUBYOPT" => "-r#{File.join(race_root, File.basename(fsync_fault))}",
+      "ADOPTION_FSYNC_PARENT" => race_root,
+      "ADOPTION_FAIL_DIRECTORY_SYNC_AT" => "999",
+      "ADOPTION_REPLACE_PARENT" => "1"
+    })
+    failures << "publication parent replacement was accepted" if parent_race_status.success?
+    failures << "publication parent replacement diagnostic was not fixed" unless
+      parent_race_diagnostic == "adoption-baseline-error: capture refused\n"
+    failures << "publication parent replacement overwrote newer output" unless
+      File.binread(race_output) == "newer-external-baseline\n"
+    original_output = File.join(saved_parent, "baseline.json")
+    failures << "publication parent replacement changed bound baseline" unless
+      File.binread(original_output) == original
+    publication_private = Dir.glob("#{saved_parent}/.adoption-{private,inputs}-*")
+    failures << "publication parent replacement left detached private inputs: #{publication_private.inspect}" unless
+      publication_private.empty?
+    publication_artifacts = Dir.glob("#{saved_parent}/.adoption-{baseline,backup,recovery}-*")
+    failures << "publication parent replacement left publication artifacts" unless publication_artifacts.empty?
+  end
+  Dir.mktmpdir("first-publication-parent-race-") do |race_container|
+    race_root = File.join(race_container, "root")
+    clone_recorder_fixture(root, race_root)
+    race_output = File.join(race_root, "baseline.json")
+    File.unlink(race_output)
+    saved_parent = "#{race_root}.publication-saved"
+    _out, parent_race_diagnostic, parent_race_status = run_recorder(race_root, race_output, {
+      "RUBYOPT" => "-r#{File.join(race_root, File.basename(fsync_fault))}",
+      "ADOPTION_FSYNC_PARENT" => race_root,
+      "ADOPTION_FAIL_DIRECTORY_SYNC_AT" => "999",
+      "ADOPTION_REPLACE_PARENT" => "1"
+    })
+    failures << "first publication parent replacement was accepted" if parent_race_status.success?
+    failures << "first publication parent replacement diagnostic was not fixed" unless
+      parent_race_diagnostic == "adoption-baseline-error: capture refused\n"
+    failures << "first publication parent replacement overwrote newer output" unless
+      File.binread(race_output) == "newer-external-baseline\n"
+    failures << "first publication parent replacement left detached output" if
+      File.exist?(File.join(saved_parent, "baseline.json"))
+    first_private = Dir.glob("#{saved_parent}/.adoption-{private,inputs}-*")
+    failures << "first publication parent replacement left detached private inputs: #{first_private.inspect}" unless
+      first_private.empty?
+    first_artifacts = Dir.glob("#{saved_parent}/.adoption-{baseline,backup,recovery}-*")
+    failures << "first publication parent replacement left publication artifacts" unless first_artifacts.empty?
+  end
+  Dir.mktmpdir("capture-parent-race-") do |race_container|
+    race_root = File.join(race_container, "root")
+    clone_recorder_fixture(root, race_root)
+    race_output = File.join(race_root, "baseline.json")
+    capture_saved_parent = "#{race_root}.capture-saved"
+    write_executable("#{race_root}/probes/beszel.sh", <<~SH)
+      #!/bin/sh
+      printf '%s\\n' '#{JSON.generate(evidence("beszel"))}'
+      mv '#{race_root}' '#{capture_saved_parent}'
+      mkdir -m 700 '#{race_root}'
+      printf '%s\\n' 'newer-capture-baseline' > '#{race_output}'
+      chmod 600 '#{race_output}'
+    SH
+    _out, capture_parent_diagnostic, capture_parent_status = run_recorder(race_root, race_output)
+    failures << "capture parent replacement was accepted" if capture_parent_status.success?
+    failures << "capture parent replacement diagnostic was not fixed" unless
+      capture_parent_diagnostic == "adoption-baseline-error: capture refused\n"
+    failures << "capture parent replacement overwrote newer output" unless
+      File.binread(race_output) == "newer-capture-baseline\n"
+    failures << "capture parent replacement changed bound baseline" unless
+      File.binread(File.join(capture_saved_parent, "baseline.json")) == original
+    capture_private = Dir.glob("#{capture_saved_parent}/.adoption-{private,inputs}-*")
+    failures << "capture parent replacement left detached private inputs: #{capture_private.inspect}" unless
+      capture_private.empty?
+  end
   File.unlink(output)
   _out, _diagnostic, rejected = run_recorder(root, output, {
     "RUBYOPT" => "-r#{fsync_fault}",

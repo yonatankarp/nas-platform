@@ -367,7 +367,11 @@ module AdoptionFileSystem
   extern "int renameat(int, const char *, int, const char *)"
   extern "int linkat(int, const char *, int, const char *, int)"
   extern "int unlinkat(int, const char *, int)"
+  extern "int mkdirat(int, const char *, int)"
 end
+
+StagingDirectory = Struct.new(:parent, :name, :file, :path, :removed, keyword_init: true)
+AT_REMOVEDIR = 0x80
 
 def safe_basename!(name)
   unsafe = name.empty? || %w[. ..].include?(name) || name.include?(File::SEPARATOR) || name.include?("\0")
@@ -398,11 +402,109 @@ def native_at!(operation, parent, source, destination = nil)
            when :rename then AdoptionFileSystem.renameat(parent.fileno, source, parent.fileno, destination)
            when :link then AdoptionFileSystem.linkat(parent.fileno, source, parent.fileno, destination, 0)
            when :unlink then AdoptionFileSystem.unlinkat(parent.fileno, source, 0)
+           when :rmdir then AdoptionFileSystem.unlinkat(parent.fileno, source, AT_REMOVEDIR)
            else raise "unknown directory operation"
            end
   raise SystemCallError.new("#{operation}at", Fiddle.last_error) if result.negative?
 
   true
+end
+
+def create_staging_directory(parent, parent_path, prefix)
+  32.times do
+    name = "#{prefix}#{SecureRandom.hex(16)}"
+    result = AdoptionFileSystem.mkdirat(parent.fileno, name, 0o700)
+    if result.negative?
+      next if Fiddle.last_error == Errno::EEXIST::Errno
+      raise SystemCallError.new("mkdirat", Fiddle.last_error)
+    end
+    begin
+      directory = open_at(parent, name, File::RDONLY | File::NOFOLLOW)
+      stat = directory.stat
+      raise "private capture directory is unsafe" unless stat.directory? && stat.uid == Process.uid &&
+                                                          (stat.mode & 0o777) == 0o700
+      return StagingDirectory.new(
+        parent: parent, name: name, file: directory, path: File.join(parent_path, name)
+      )
+    rescue StandardError
+      directory&.close
+      native_at!(:rmdir, parent, name)
+      raise
+    end
+  end
+  raise "private capture directory name is unavailable"
+end
+
+def directory_children(directory)
+  duplicate = directory.dup
+  descriptor = duplicate.fileno
+  duplicate.autoclose = false
+  stream = Dir.for_fd(descriptor)
+  stream.children
+ensure
+  stream&.close
+  duplicate&.close if duplicate&.autoclose?
+end
+
+def erase_regular_file(file)
+  stat = file.stat
+  raise "private capture file is unsafe" unless stat.file? && stat.uid == Process.uid &&
+                                                (stat.mode & 0o077).zero?
+  file.rewind
+  remaining = stat.size
+  zeros = "\0" * [remaining, 64 * 1024].min
+  while remaining.positive?
+    length = [remaining, zeros.bytesize].min
+    file.write(zeros.byteslice(0, length))
+    remaining -= length
+  end
+  file.flush
+  file.fsync
+  after = file.stat
+  raise "private capture file changed" unless [after.dev, after.ino, after.size, after.mode, after.uid] ==
+                                                [stat.dev, stat.ino, stat.size, stat.mode, stat.uid]
+end
+
+def destroy_directory_contents_at(directory)
+  failure = nil
+  directory_children(directory).each do |name|
+    child = nil
+    begin
+      child = open_at(directory, name, File::RDONLY | File::NOFOLLOW)
+      stat = child.stat
+      if stat.directory?
+        raise "private capture directory is unsafe" unless stat.uid == Process.uid &&
+                                                            (stat.mode & 0o077).zero?
+        destroy_directory_contents_at(child)
+        child.close
+        native_at!(:rmdir, directory, name)
+      else
+        child.close
+        child = open_at(directory, name, File::WRONLY | File::NOFOLLOW)
+        erase_regular_file(child)
+        child.close
+        native_at!(:unlink, directory, name)
+      end
+    rescue Errno::ELOOP
+      native_at!(:unlink, directory, name)
+    rescue StandardError => error
+      failure ||= error
+    ensure
+      child&.close unless child&.closed?
+    end
+  end
+  raise failure if failure
+end
+
+def destroy_staging_directory(stage)
+  return unless stage
+  return if stage.file.closed?
+  destroy_directory_contents_at(stage.file)
+  unless stage.removed
+    native_at!(:rmdir, stage.parent, stage.name)
+    stage.removed = true
+  end
+  stage.file.close
 end
 
 def component_binding(stat, exact:)
@@ -481,50 +583,83 @@ def snapshot_input(source, directory, name, executable: false, private: false)
   bytes = secure_file_bytes(
     source, max_bytes: 16 * 1024 * 1024, executable: executable, private: private
   )
-  temporary = File.join(directory, ".#{name}.tmp")
-  destination = File.join(directory, name)
   mode = executable ? 0o700 : 0o600
-  File.open(temporary, File::WRONLY | File::CREAT | File::EXCL, mode) do |file|
-    file.write(bytes)
-    file.flush
-    file.fsync
+  if directory.is_a?(StagingDirectory)
+    temporary_name = ".#{name}.tmp"
+    temporary = open_at(
+      directory.file, temporary_name,
+      File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW, mode
+    )
+    begin
+      temporary.write(bytes)
+      temporary.flush
+      temporary.fsync
+    ensure
+      temporary.close
+    end
+    native_at!(:rename, directory.file, temporary_name, name)
+    directory.file.fsync
+    destination = File.join(directory.path, name)
+  else
+    temporary_path = File.join(directory, ".#{name}.tmp")
+    destination = File.join(directory, name)
+    File.open(temporary_path, File::WRONLY | File::CREAT | File::EXCL, mode) do |file|
+      file.write(bytes)
+      file.flush
+      file.fsync
+    end
+    File.rename(temporary_path, destination)
+    File.open(directory, File::RDONLY) { |dir| dir.fsync }
   end
-  File.rename(temporary, destination)
-  File.open(directory, File::RDONLY) { |dir| dir.fsync }
   [destination, Digest::SHA256.hexdigest(bytes)]
 end
 
 def snapshot_probe_dependencies(source_root, private_root)
-  destination_root = File.join(private_root, "dependencies")
-  Dir.mkdir(destination_root, 0o700)
+  dependency_stage = create_staging_directory(private_root.file, private_root.path, "dependencies-")
+  destination_root = dependency_stage.path
   source_states = {}
   snapshot_digests = {}
   PROBE_DEPENDENCIES.each do |relative|
     source = File.join(source_root, relative)
     destination_parent = File.dirname(File.join(destination_root, relative))
-    current = destination_root
+    current_stage = dependency_stage
+    opened_stages = []
     destination_parent.delete_prefix("#{destination_root}/").split("/").each do |component|
       next if component.empty?
-      current = File.join(current, component)
-      Dir.mkdir(current, 0o700) unless File.exist?(current)
-      stat = File.lstat(current)
-      raise "dependency snapshot directory is unsafe" unless stat.directory? && !stat.symlink? &&
-                                                            stat.uid == Process.uid &&
-                                                            (stat.mode & 0o077).zero?
+      begin
+        child = open_at(current_stage.file, component, File::RDONLY | File::NOFOLLOW)
+        stat = child.stat
+        raise "dependency snapshot directory is unsafe" unless stat.directory? &&
+                                                              stat.uid == Process.uid &&
+                                                              (stat.mode & 0o077).zero?
+        child_stage = StagingDirectory.new(
+          parent: current_stage.file, name: component, file: child,
+          path: File.join(current_stage.path, component)
+        )
+      rescue Errno::ENOENT
+        child_stage = create_staging_directory(current_stage.file, current_stage.path, "#{component}.")
+        native_at!(:rename, current_stage.file, child_stage.name, component)
+        child_stage.name = component
+        child_stage.path = File.join(current_stage.path, component)
+      end
+      opened_stages << child_stage
+      current_stage = child_stage
     end
     executable = (relative.end_with?(".sh") && relative != "tests/contracts/legacy-fixture-paths.sh") ||
                  relative == "tests/mac/adoption-baseline.rb"
     source_signature = file_signature(source)
     snapshot, digest = snapshot_input(
-      source, destination_parent, File.basename(relative), executable: executable
+      source, current_stage, File.basename(relative), executable: executable
     )
     source_states[source] = [source_signature, digest]
     snapshot_digests[snapshot] = digest
+  ensure
+    opened_stages&.reverse_each { |stage| stage.file.close unless stage.file.closed? }
   end
   snapshot_states = snapshot_digests.to_h do |snapshot, digest|
     [snapshot, [file_signature(snapshot), digest]]
   end
-  [destination_root, source_states, snapshot_states]
+  [destination_root, source_states, snapshot_states, dependency_stage]
 end
 
 def snapshot_unchanged?(path, signature, digest)
@@ -564,25 +699,6 @@ def with_private_input_snapshots(paths)
   end
 end
 
-def destroy_private_directory(directory)
-  return unless directory
-  stat = File.lstat(directory)
-  raise "private capture directory is unsafe" unless stat.directory? && !stat.symlink? &&
-                                                       stat.uid == Process.uid
-  Dir.children(directory).each do |name|
-    path = File.join(directory, name)
-    next unless File.file?(path) && !File.symlink?(path)
-    File.open(path, File::WRONLY) do |file|
-      file.write("\0" * file.stat.size)
-      file.flush
-      file.fsync
-    end
-  end
-  FileUtils.remove_entry_secure(directory)
-rescue Errno::ENOENT
-  nil
-end
-
 def pinned_images(bytes, canaries)
   reject_canaries!(bytes, canaries)
   images = bytes.lines(chomp: true)
@@ -602,6 +718,17 @@ def open_bound_directory(path)
                                                    (stat.mode & 0o777) == 0o700
     directory.dup
   end
+end
+
+def bound_directory_matches_path?(path, bound_directory)
+  candidate = open_bound_directory(path)
+  expected = bound_directory.stat
+  actual = candidate.stat
+  [actual.dev, actual.ino] == [expected.dev, expected.ino]
+rescue StandardError
+  false
+ensure
+  candidate&.close
 end
 
 def publication_file_state_at(parent, name, expected_mode:)
@@ -711,10 +838,12 @@ def publish_baseline_at(staging_name, output_name, parent, initial)
     end
     native_at!(:rename, parent, staging_name, output_name)
     sync_bound_directory(parent)
+    yield(:published) if block_given?
     if backup_name
       native_at!(:unlink, parent, backup_name)
       sync_bound_directory(parent)
     end
+    yield(:before_success) if block_given?
     backup_cleanup_safe = true
   rescue StandardError => publication_error
     begin
@@ -1317,6 +1446,7 @@ OptionParser.new do |parser|
 end.parse!
 refuse("invalid arguments") unless ARGV.empty? && %i[output commit manifest legacy_root override_root env_root probe_root].all? { |key| options[key] }
 
+capture_failed = false
 begin
   raise "legacy commit is invalid" unless options[:commit].match?(/\A[0-9a-f]{40}\z/)
   canaries = ENV.fetch("PLATFORM_ADOPTION_BASELINE_CANARIES", "").split("\n").reject(&:empty?)
@@ -1349,11 +1479,9 @@ begin
   lock_check.close
   raise "baseline lock failed" unless lock_file.flock(File::LOCK_EX)
   initial = publication_state_or_nil(parent_directory, basename)
-  private_root = Dir.mktmpdir(".adoption-private-", parent)
-  File.chmod(0o700, private_root)
-  dependency_root, dependency_source_states, dependency_snapshot_states = snapshot_probe_dependencies(
-    File.expand_path("../..", __dir__), private_root
-  )
+  private_root = create_staging_directory(parent_directory, parent, ".adoption-private-")
+  dependency_root, dependency_source_states, dependency_snapshot_states, dependency_stage =
+    snapshot_probe_dependencies(File.expand_path("../..", __dir__), private_root)
   raise "probe dependency changed" unless snapshots_unchanged?(dependency_source_states) &&
                                           snapshots_unchanged?(dependency_snapshot_states)
   vault_path = ENV["PLATFORM_MAC_VAULT_FILE"]
@@ -1407,8 +1535,8 @@ begin
   raise "project name is invalid" unless project_name.match?(/\A[a-z0-9][a-z0-9_-]{0,62}\z/)
   legacy_images = {}
   services = {}
-  Dir.mktmpdir(".adoption-inputs-", parent) do |input_root|
-    File.chmod(0o700, input_root)
+  input_root = create_staging_directory(parent_directory, parent, ".adoption-inputs-")
+  begin
     SERVICES.each do |service|
       legacy_path = service_entries.fetch(service)
       source_base = File.join(legacy_root, legacy_path)
@@ -1467,6 +1595,9 @@ begin
       reject_forbidden_keys!(evidence)
       services[service] = validate_evidence!(service, evidence)
     end
+  ensure
+    destroy_staging_directory(input_root)
+    input_root = nil
   end
 
   document = {
@@ -1507,18 +1638,33 @@ begin
     raise "baseline staging changed" unless
       publication_file_state_at(parent_directory, staging_name, expected_mode: 0o600) == staged
     staging.close
-    publish_baseline_at(staging_name, basename, parent_directory, initial)
+    dependency_stage.file.close
+    dependency_stage = nil
+    destroy_staging_directory(private_root)
+    private_root = nil
+    raise "publication directory changed" unless bound_directory_matches_path?(parent, parent_directory)
+    publish_baseline_at(staging_name, basename, parent_directory, initial) do |phase|
+      raise "publication directory changed" unless bound_directory_matches_path?(parent, parent_directory)
+      puts "Legacy adoption baseline: captured" if phase == :before_success
+    end
   ensure
     staging&.close unless staging&.closed?
     if staging_name && publication_state_or_nil(parent_directory, staging_name)
       native_at!(:unlink, parent_directory, staging_name)
     end
   end
-  puts "Legacy adoption baseline: captured"
 rescue StandardError
-  refuse("capture refused")
+  capture_failed = true
 ensure
-  destroy_private_directory(private_root)
+  dependency_stage&.file&.close unless dependency_stage&.file&.closed?
+  [input_root, private_root].each do |stage|
+    begin
+      destroy_staging_directory(stage)
+    rescue StandardError
+      capture_failed = true
+    end
+  end
   lock_file&.close
   parent_directory&.close
 end
+refuse("capture refused") if capture_failed
