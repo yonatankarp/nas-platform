@@ -60,6 +60,140 @@
     label: audiobookshelf
   no_log: true
 
+- name: Validate Immich managed-user preference collections
+  ansible.builtin.assert:
+    that:
+      - immich_managed_user_preference_profile_default is string
+      - >-
+        immich_managed_user_preference_profile_default in
+        immich_managed_user_preference_profiles.keys() | list
+      - immich_managed_user_preference_profile_by_email is mapping
+      - immich_managed_user_preference_overrides is mapping
+      - immich_managed_user_preference_profiles is mapping
+      - >-
+        immich_managed_user_preference_profile_by_email.keys() |
+        reject('string') | list | length == 0
+      - >-
+        immich_managed_user_preference_profile_by_email.values() |
+        reject('string') | list | length == 0
+      - >-
+        immich_managed_user_preference_profiles.keys() |
+        reject('string') | list | length == 0
+      - >-
+        immich_managed_user_preference_profiles.values() |
+        reject('mapping') | list | length == 0
+      - >-
+        immich_managed_user_preference_overrides.keys() |
+        reject('string') | list | length == 0
+      - >-
+        immich_managed_user_preference_overrides.values() |
+        reject('mapping') | list | length == 0
+      - >-
+        immich_managed_user_preference_profile_by_email.values() | list |
+        difference(immich_managed_user_preference_profiles.keys() | list) | length == 0
+      - >-
+        immich_managed_user_preference_profile_by_email.keys() | map('trim') | map('lower') |
+        list | unique | length == immich_managed_user_preference_profile_by_email | length
+      - >-
+        immich_managed_user_preference_overrides.keys() | map('trim') | map('lower') |
+        list | unique | length == immich_managed_user_preference_overrides | length
+      - >-
+        immich_managed_user_preference_profile_by_email.keys() | map('trim') | map('lower') |
+        difference(vault_managed_users.immich | map(attribute='email') |
+                   map('trim') | map('lower') | list) | length == 0
+      - >-
+        immich_managed_user_preference_overrides.keys() | map('trim') | map('lower') |
+        difference(vault_managed_users.immich | map(attribute='email') |
+                   map('trim') | map('lower') | list) | length == 0
+    fail_msg: Immich managed-user preference selection is invalid; values are redacted.
+  when:
+    - immich_managed_user_preference_profile_default is defined
+    - immich_managed_user_preference_profile_by_email is defined
+    - immich_managed_user_preference_overrides is defined
+    - immich_managed_user_preference_profiles is defined
+  no_log: true
+
+- name: Validate Immich managed-user preference schema
+  ansible.builtin.assert:
+    that:
+      - item.value is mapping
+      - >-
+        item.value.keys() | list |
+        difference(['albums', 'avatar', 'cast', 'download', 'emailNotifications',
+                    'folders', 'memories', 'people', 'purchase', 'ratings',
+                    'recentlyAdded', 'sharedLinks', 'tags']) | length == 0
+      - item.value.albums | default({}) is mapping
+      - (item.value.albums | default({})).keys() | difference(['defaultAssetOrder']) | length == 0
+      - (item.value.albums | default({})).defaultAssetOrder | default('desc') in ['asc', 'desc']
+      - item.value.avatar | default({}) is mapping
+      - (item.value.avatar | default({})).keys() | difference(['color']) | length == 0
+      - (item.value.avatar | default({})).color | default('primary') is string
+      - (item.value.avatar | default({})).color | default('primary') | length > 0
+      - item.value.cast | default({}) is mapping
+      - (item.value.cast | default({})).keys() | difference(['gCastEnabled']) | length == 0
+      - (item.value.cast | default({})).gCastEnabled | default(false) is boolean
+      - item.value.download | default({}) is mapping
+      - >-
+        (item.value.download | default({})).keys() |
+        difference(['archiveSize', 'includeEmbeddedVideos']) | length == 0
+      - (item.value.download | default({})).archiveSize | default(4294967296) is integer
+      - (item.value.download | default({})).archiveSize | default(4294967296) | int > 0
+      - (item.value.download | default({})).includeEmbeddedVideos | default(false) is boolean
+      - item.value.emailNotifications | default({}) is mapping
+      - >-
+        (item.value.emailNotifications | default({})).keys() |
+        difference(['enabled', 'albumInvite', 'albumUpdate']) | length == 0
+      - (item.value.emailNotifications | default({})).enabled | default(false) is boolean
+      - (item.value.emailNotifications | default({})).albumInvite | default(false) is boolean
+      - (item.value.emailNotifications | default({})).albumUpdate | default(false) is boolean
+      - item.value.folders | default({}) is mapping
+      - (item.value.folders | default({})).keys() | difference(['enabled', 'sidebarWeb']) | length == 0
+      - (item.value.folders | default({})).enabled | default(false) is boolean
+      - (item.value.folders | default({})).sidebarWeb | default(false) is boolean
+      - item.value.memories | default({}) is mapping
+      - (item.value.memories | default({})).keys() | difference(['enabled', 'duration']) | length == 0
+      - (item.value.memories | default({})).enabled | default(false) is boolean
+      - (item.value.memories | default({})).duration | default(5) is integer
+      - (item.value.memories | default({})).duration | default(5) | int > 0
+      - item.value.people | default({}) is mapping
+      - >-
+        (item.value.people | default({})).keys() |
+        difference(['enabled', 'sidebarWeb', 'minimumFaces']) | length == 0
+      - (item.value.people | default({})).enabled | default(false) is boolean
+      - (item.value.people | default({})).sidebarWeb | default(false) is boolean
+      - (item.value.people | default({})).minimumFaces | default(3) is integer
+      - (item.value.people | default({})).minimumFaces | default(3) | int > 0
+      - item.value.purchase | default({}) is mapping
+      - >-
+        (item.value.purchase | default({})).keys() |
+        difference(['showSupportBadge', 'hideBuyButtonUntil']) | length == 0
+      - (item.value.purchase | default({})).showSupportBadge | default(false) is boolean
+      - (item.value.purchase | default({})).hideBuyButtonUntil | default('') is string
+      - item.value.ratings | default({}) is mapping
+      - (item.value.ratings | default({})).keys() | difference(['enabled']) | length == 0
+      - (item.value.ratings | default({})).enabled | default(false) is boolean
+      - item.value.recentlyAdded | default({}) is mapping
+      - (item.value.recentlyAdded | default({})).keys() | difference(['sidebarWeb']) | length == 0
+      - (item.value.recentlyAdded | default({})).sidebarWeb | default(false) is boolean
+      - item.value.sharedLinks | default({}) is mapping
+      - (item.value.sharedLinks | default({})).keys() | difference(['enabled', 'sidebarWeb']) | length == 0
+      - (item.value.sharedLinks | default({})).enabled | default(false) is boolean
+      - (item.value.sharedLinks | default({})).sidebarWeb | default(false) is boolean
+      - item.value.tags | default({}) is mapping
+      - (item.value.tags | default({})).keys() | difference(['enabled', 'sidebarWeb']) | length == 0
+      - (item.value.tags | default({})).enabled | default(false) is boolean
+      - (item.value.tags | default({})).sidebarWeb | default(false) is boolean
+    fail_msg: Immich managed-user preference fields are invalid; values are redacted.
+  loop: >-
+    {{ (immich_managed_user_preference_profiles | dict2items) +
+       (immich_managed_user_preference_overrides | dict2items) }}
+  loop_control:
+    label: immich-managed-user-preference
+  when:
+    - immich_managed_user_preference_profiles is defined
+    - immich_managed_user_preference_overrides is defined
+  no_log: true
+
 - name: Validate beszel managed-user entries
   ansible.builtin.assert:
     that:
@@ -336,8 +470,14 @@
       - vault_immich_db_name is match('^[A-Za-z_][A-Za-z0-9_-]*$')
       - vault_immich_db_username is match('^[A-Za-z_][A-Za-z0-9_-]*$')
       - vault_immich_db_password | length > 0
-      - vault_jellyfin_admin_username | length > 0
+      - vault_jellyfin_admin_username == 'Yonatan'
       - vault_jellyfin_admin_password | length > 0
+      - vault_jellyfin_opensubtitles_username | length > 0
+      - vault_jellyfin_opensubtitles_username != 'example-opensubtitles-username'
+      - vault_jellyfin_opensubtitles_username != 'replace-with-opensubtitles-username'
+      - vault_jellyfin_opensubtitles_password | length > 0
+      - vault_jellyfin_opensubtitles_password != 'example-opensubtitles-password'
+      - vault_jellyfin_opensubtitles_password != 'replace-with-opensubtitles-password'
       - vault_komga_admin_email is match('^[^@ ]+@[^@ ]+$')
       - vault_komga_admin_password | length > 0
       - vault_ntfy_admin_user | length > 0

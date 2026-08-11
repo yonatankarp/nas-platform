@@ -26,3 +26,47 @@ immich_managed_settings:
 # the creating account as the sole administrator, so this is created once and
 # only ever reconciled afterwards.
 immich_admin_name: NAS Platform Administrator
+
+# Safe standalone defaults mirror the portable normal-inventory policy. These
+# values remain outside the encrypted managed-user records.
+immich_managed_user_preference_profile_default: standard
+immich_managed_user_preference_profile_by_email: {}
+immich_managed_user_preference_overrides: {}
+immich_managed_user_preference_profiles:
+  standard:
+    albums:
+      defaultAssetOrder: desc
+    avatar:
+      color: primary
+    cast:
+      gCastEnabled: false
+    download:
+      archiveSize: 4294967296
+      includeEmbeddedVideos: false
+    emailNotifications:
+      enabled: true
+      albumInvite: true
+      albumUpdate: true
+    folders:
+      enabled: false
+      sidebarWeb: false
+    memories:
+      enabled: true
+      duration: 5
+    people:
+      enabled: true
+      sidebarWeb: false
+      minimumFaces: 3
+    purchase:
+      showSupportBadge: true
+      hideBuyButtonUntil: "2022-02-12T00:00:00.000Z"
+    ratings:
+      enabled: false
+    recentlyAdded:
+      sidebarWeb: false
+    sharedLinks:
+      enabled: true
+      sidebarWeb: false
+    tags:
+      enabled: false
+      sidebarWeb: false

@@ -132,6 +132,8 @@ EXPECTED_VAULT_KEYS = %w[
   vault_immich_db_password
   vault_jellyfin_admin_username
   vault_jellyfin_admin_password
+  vault_jellyfin_opensubtitles_username
+  vault_jellyfin_opensubtitles_password
   vault_komga_admin_email
   vault_komga_admin_password
   vault_ntfy_admin_user
@@ -388,6 +390,56 @@ paperless_options = YAML.safe_load_file(
   check(failures, paperless_options.dig(variable, "type") == "int" &&
                   paperless_options.dig(variable, "required") == false,
         "Paperless argument specs must declare optional integer #{variable}")
+end
+
+expected_immich_preference_profile = {
+  "albums" => { "defaultAssetOrder" => "desc" },
+  "avatar" => { "color" => "primary" },
+  "cast" => { "gCastEnabled" => false },
+  "download" => { "archiveSize" => 4_294_967_296, "includeEmbeddedVideos" => false },
+  "emailNotifications" => { "enabled" => true, "albumInvite" => true, "albumUpdate" => true },
+  "folders" => { "enabled" => false, "sidebarWeb" => false },
+  "memories" => { "enabled" => true, "duration" => 5 },
+  "people" => { "enabled" => true, "sidebarWeb" => false, "minimumFaces" => 3 },
+  "purchase" => {
+    "showSupportBadge" => true,
+    "hideBuyButtonUntil" => "2022-02-12T00:00:00.000Z"
+  },
+  "ratings" => { "enabled" => false },
+  "recentlyAdded" => { "sidebarWeb" => false },
+  "sharedLinks" => { "enabled" => true, "sidebarWeb" => false },
+  "tags" => { "enabled" => false, "sidebarWeb" => false }
+}.freeze
+immich_preference_keys = %w[
+  immich_managed_user_preference_profile_default
+  immich_managed_user_preference_profile_by_email
+  immich_managed_user_preference_overrides
+  immich_managed_user_preference_profiles
+]
+immich_defaults = YAML.safe_load_file(File.join(ROOT, "roles", "immich", "defaults", "main.yml"))
+[shared_vars, immich_defaults].each_with_index do |variables, index|
+  source = index.zero? ? "normal inventory" : "Immich role defaults"
+  check(failures, variables["immich_managed_user_preference_profile_default"] == "standard",
+        "#{source} must select the standard Immich preference profile by default")
+  check(failures, variables["immich_managed_user_preference_profile_by_email"] == {},
+        "#{source} must default Immich per-email profile selection to an empty mapping")
+  check(failures, variables["immich_managed_user_preference_overrides"] == {},
+        "#{source} must default Immich per-email preference overrides to an empty mapping")
+  check(failures,
+        variables.dig("immich_managed_user_preference_profiles", "standard") ==
+          expected_immich_preference_profile,
+        "#{source} standard Immich preference profile differs from the approved v3.1.0 schema")
+end
+
+immich_options = YAML.safe_load_file(
+  File.join(ROOT, "roles", "immich", "meta", "argument_specs.yml")
+).dig("argument_specs", "main", "options")
+immich_preference_keys.each do |key|
+  expected_type = key.end_with?("_default") ? "str" : "dict"
+  check(failures,
+        immich_options.dig(key, "type") == expected_type &&
+          immich_options.dig(key, "required") == false,
+        "Immich argument specs must declare optional #{expected_type} #{key}")
 end
 
 paperless_env_lines = File.readlines(
@@ -867,6 +919,7 @@ example_path = File.join(ROOT, "inventory", "group_vars", "all", "vault.yml.exam
 example = YAML.safe_load_file(example_path)
 example.each do |key, value|
   next unless value.is_a?(String)
+  next if key == "vault_jellyfin_admin_username" && value == "Yonatan"
   next if value.match?(/^example[-_]/) || value.end_with?("@example.invalid")
   next if value.match?(/^\$2b\$12\$0{53}$/)
   next if value.match?(/^tk_[01]{29}$/)
