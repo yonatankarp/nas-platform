@@ -82,6 +82,8 @@ raise "runner shell must install packages exactly once" unless runner_shell.scan
 raise "runner shell lacks the pinned shasum provider" unless runner_shell.include?("perl-utils")
 raise "runner shell does not validate shasum" unless
   runner_shell.include?("command -v shasum") && runner_shell.include?("e3b0c44298fc1c149afbf4c8996fb924")
+raise "runner shell omits the root-run bind ownership regression" unless
+  runner_shell.include?('ruby "$1/tests/mac/adoption-bind-prep-test.rb"')
 validation = runner_shell[/command -v shasum.*?b855 \]/m] or raise "shasum validation is unavailable"
 _stdout, stderr, status = Open3.capture3("sh", "-eu", "-c", validation)
 raise "shasum validation is not executable: #{stderr}" unless status.success?

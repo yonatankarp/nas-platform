@@ -146,7 +146,8 @@ hooks = ROOT.join("tests/mac/hooks/fixtures-recreate").children.select do |path|
   path.extname == ".sh" && path.binread.include?("docker compose")
 end
 refuse("adoption recreation hooks cannot discover the staged override") unless
-  hooks.all? { |path| path.binread.include?("compose.adoption.yml") }
+  hooks.all? { |path| path.binread.include?("mac_compose_files") } &&
+    ROOT.join("tests/mac/lib.sh").binread.include?('set -- "$@" -f "$mac_current/compose.adoption.yml"')
 
 host_paths = {
   "beszel" => ["beszel_state_root", "legacy/beszel/hub"],

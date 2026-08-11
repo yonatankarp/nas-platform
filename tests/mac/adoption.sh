@@ -192,45 +192,10 @@ require_legacy_projects_stopped() {
   "$script_dir/adoption.sh" render
   sandbox=$(mac_validate_sandbox "$PLATFORM_MAC_SANDBOX" 2>/dev/null) ||
     die 'owned sandbox is invalid'
-  if ! ruby - "$sandbox" >/dev/null 2>&1 <<'RUBY'
-sandbox = File.realpath(ARGV.fetch(0))
-directories = %w[
-  legacy/audiobookshelf/config legacy/audiobookshelf/metadata legacy/audiobookshelf/media
-  legacy/beszel/hub legacy/beszel/agent legacy/beszel/volume1 legacy/beszel/volume2
-  legacy/dozzle/data
-  legacy/immich/data legacy/immich/thumbs legacy/immich/encoded-video legacy/immich/profile
-  legacy/immich/backups legacy/immich/model-cache legacy/immich/postgres
-  legacy/jellyfin/config legacy/jellyfin/cache legacy/jellyfin/media
-  legacy/komga/config legacy/komga/library
-  legacy/ntfy/cache legacy/ntfy/data
-  legacy/paperless-ngx/redis legacy/paperless-ngx/postgres legacy/paperless-ngx/data
-  legacy/paperless-ngx/export legacy/paperless-ngx/tessdata legacy/paperless-ngx/media
-  legacy/paperless-ngx/consume
-  legacy/tinymediamanager/data legacy/tinymediamanager/movies legacy/tinymediamanager/series
-]
-directories.each do |relative|
-  current = sandbox
-  relative.split("/").each do |component|
-    current = File.join(current, component)
-    begin
-      stat = File.lstat(current)
-      raise "unsafe" unless stat.directory? && !stat.symlink? && stat.uid == Process.uid
-    rescue Errno::ENOENT
-      Dir.mkdir(current, 0o700)
-    end
-    File.chmod(0o700, current)
-  end
-end
-model = File.join(sandbox, "legacy/paperless-ngx/tessdata/heb.traineddata")
-begin
-  stat = File.lstat(model)
-  raise "unsafe" unless stat.file? && !stat.symlink? && stat.uid == Process.uid
-rescue Errno::ENOENT
-  flags = File::WRONLY | File::CREAT | File::EXCL
-  flags |= File::NOFOLLOW if File.const_defined?(:NOFOLLOW)
-  File.open(model, flags, 0o600) { |file| file.flush; file.fsync }
-end
-RUBY
+  if ! "$script_dir/adoption_bind_prep.rb" "$sandbox" \
+    "${PLATFORM_PROOF_PLATFORM:-mac}" "$repo_dir/inventory/group_vars/all/main.yml" \
+    "${PLATFORM_PROJECT_NAME:?}" \
+    >/dev/null 2>&1
   then
     die 'legacy bind preparation failed'
   fi

@@ -263,6 +263,7 @@ if [ "$inner_mode" = false ]; then
       command -v shasum >/dev/null
       [ "$(printf "" | shasum -a 256 | cut -c 1-64)" = \
         e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 ]
+      ruby "$1/tests/mac/adoption-bind-prep-test.rb"
       pip install --quiet --no-input ansible-core==2.21.2
       ansible-galaxy collection install -r "$1/requirements.yml" >/dev/null
       git config --global --add safe.directory "$1"
