@@ -27,16 +27,10 @@ ansible_playbook=$(command -v ansible-playbook) || {
   printf '%s\n' 'ansible-playbook is required for managed-user behavior tests' >&2
   exit 1
 }
-ansible_python=$(sed -n '1{s/^#!//;p;}' "$ansible_playbook")
-case $ansible_python in
-  /usr/bin/env\ -S\ *) ansible_python=${ansible_python#'/usr/bin/env -S '} ;;
-  /usr/bin/env\ *) ansible_python=${ansible_python#'/usr/bin/env '} ;;
-esac
-case $ansible_python in
-  ''|*' '*) ansible_python= ;;
-  */*) ;;
-  *) ansible_python=$(command -v "$ansible_python") || ansible_python= ;;
-esac
+ansible_python=$(
+  "$ansible_playbook" --version |
+    sed -n 's/^  python version = .* (\(\/[^()]*\))$/\1/p'
+)
 [ -x "$ansible_python" ] || {
   printf '%s\n' 'the ansible-playbook Python interpreter is unavailable' >&2
   exit 1
