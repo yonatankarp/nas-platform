@@ -55,20 +55,27 @@ assert_no_sentinel() {
 
 success_dir="$test_root/success"
 mkdir -p "$success_dir" "$success_dir/state"
+set +e
 PATH="$fake_bin:$PATH" FAKE_DOCKER_STATE="$success_dir/state" \
-  ansible-playbook "$repo_dir/generate-secrets.yml" --diff \
+  ansible-playbook -i localhost, -c local "$repo_dir/generate-secrets.yml" --diff \
     -e generate_brand_new_platform=true \
     -e vault_plain_path="$success_dir/vault-plain.yml" \
     -e vault_encrypted_path="$success_dir/vault.yml" \
     -e audiobookshelf_admin_password=SENTINEL_GENERATED_PASSWORD \
     >"$success_dir/output" 2>&1
+success_status=$?
+set -e
 assert_no_sentinel "$success_dir/output"
+if [ "$success_status" -ne 0 ]; then
+  cat "$success_dir/output" >&2
+  exit "$success_status"
+fi
 
 failure_dir="$test_root/failure"
 mkdir -p "$failure_dir" "$failure_dir/state"
 if PATH="$fake_bin:$PATH" FAKE_DOCKER_STATE="$failure_dir/state" \
     FAKE_DOCKER_TOKEN_FAILURE=true \
-    ansible-playbook "$repo_dir/generate-secrets.yml" --diff \
+    ansible-playbook -i localhost, -c local "$repo_dir/generate-secrets.yml" --diff \
       -e generate_brand_new_platform=true \
       -e vault_plain_path="$failure_dir/vault-plain.yml" \
       -e vault_encrypted_path="$failure_dir/vault.yml" \
