@@ -12,7 +12,7 @@
 
 - Branch: `agent/task-14-adoption`
 - Implementation baseline before this checkpoint:
-  `07da7aa9bd270f15e2b60e0ab101fd7a555e2c93`
+  `786551ca3efa7bf199f61e074146efc59ff7cdc1`
 - Managed-user migration prerequisite: complete. Full synthetic integration passed at
   `a3195f49a00a1906fae7fd92811d08a329af9e19`, including all registered live
   contracts, second convergence with `changed=0`, and final check mode.
@@ -35,7 +35,12 @@
   pre-start Beszel identity, contained fixture controls, secure staging, and
   default temporary-root corrections end at
   `07da7aa9bd270f15e2b60e0ab101fd7a555e2c93`.
-- Task 5 is the immediate next action. Tasks 6–9 are not started.
+- Task 5: complete and independently spec/security reviewed. Initial feature
+  commit `3d31fb7`; live all-nine evidence, pinned image provenance, indexed
+  tinyMediaManager exports, closed dependency snapshots, descriptor-relative
+  staging/publication, rollback durability, concurrency, and race-test
+  corrections end at `786551ca3efa7bf199f61e074146efc59ff7cdc1`.
+- Task 6 is the immediate next action. Tasks 7–9 are not started.
 - Task 10: not started and remains gated on explicitly supplied/authorized
   protected deployment and parity inputs plus the clean pinned legacy checkout.
 - No protected production inputs have been accessed and no live migration has
