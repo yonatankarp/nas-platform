@@ -197,6 +197,28 @@ check(failures,
       "canonical secrets guide must place Migration workflow before Brand-new platform")
 
 mac_guide = File.read(File.join(ROOT, "docs", "getting-started-mac.md"))
+adoption_command = <<~'SH'
+  NAS_INFRASTRUCTURE_DIR=/absolute/clean/nas-infrastructure \
+  tests/mac/run.sh --lane adoption \
+    --vault-file /external/deployment-vault.yml \
+    --vault-password-file /external/vault-password \
+    --parity-vault-file /external/portainer-parity.yml \
+    --parity-vault-password-file /external/vault-password
+SH
+[mac_guide, parity_guide].zip(["Mac", "Portainer"]).each do |guide, label|
+  adoption_block = guide.scan(/```sh\n(.*?)```/m).flatten.find do |block|
+    block.include?("tests/mac/run.sh --lane adoption")
+  end.to_s
+  normalized = guide.gsub(/\s+/, " ")
+  check(failures,
+        adoption_block == adoption_command && shell_syntax_valid?(adoption_block),
+        "#{label} guide must document the exact executable adoption command")
+  check(failures,
+        normalized.include?("does not contact or modify the physical NAS") &&
+        normalized.include?("Synthetic CI is not production-parity evidence") &&
+        normalized.include?("Reports retain only ciphertext checksums and no values"),
+        "#{label} guide must state the adoption evidence and isolation boundaries")
+end
 mac_proof_block = mac_guide.scan(/```sh\n(.*?)```/m).flatten.find do |block|
   block.include?("for phase in deploy seed verify")
 end.to_s

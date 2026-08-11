@@ -82,7 +82,30 @@ cleanup removes the service-data sandbox. The sibling `.reports` directory is
 retained and contains `report.md` and `report.json`; the harness prints its
 absolute path. Reports are sanitized and contain no application log bodies.
 
-## 4. Perform the manual review
+## 4. Run the legacy adoption proof
+
+Prepare the deployment vault as described above and the temporary parity vault
+in the [Portainer parity lifecycle](portainer-parity.md). Use a separate clean
+checkout of the pinned legacy repository. Keep both vaults, both password
+inputs, and the legacy checkout outside this repository, then run exactly:
+
+```sh
+NAS_INFRASTRUCTURE_DIR=/absolute/clean/nas-infrastructure \
+tests/mac/run.sh --lane adoption \
+  --vault-file /external/deployment-vault.yml \
+  --vault-password-file /external/vault-password \
+  --parity-vault-file /external/portainer-parity.yml \
+  --parity-vault-password-file /external/vault-password
+```
+
+This adoption proof is confined to its disposable Mac sandbox and does not
+contact or modify the physical NAS. Synthetic CI is not production-parity
+evidence; it proves the contained workflow but cannot replace an operator-run
+proof using the protected external ciphertexts. Reports retain only ciphertext
+checksums and no values. Do not copy either vault, password input, or decrypted
+content into the checkout or report directory.
+
+## 5. Perform the manual review
 
 The complete run above proves the automated lifecycle and cleans its containers.
 For a manual review, start a second proof one phase at a time. Run `preflight`
@@ -162,7 +185,7 @@ tests/mac/run.sh \
   --phase cleanup
 ```
 
-## 5. Resume or clean a failed proof
+## 6. Resume or clean a failed proof
 
 Failures preserve the sandbox and print exactly one validated `Cleanup command`.
 Copy that exact command when you are finished inspecting it. Do not replace it

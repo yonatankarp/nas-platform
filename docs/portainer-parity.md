@@ -184,6 +184,29 @@ The owned temporary view exists only during these two separately checked
 commands. Normal completion, either command failure, shell exit, and handled
 signals remove it; do not retain or copy the decrypted view.
 
+## Run the adoption proof
+
+After the importer and independent validation both succeed, keep the parity
+vault and its password outside the checkout. Prepare the separate deployment
+vault and password from the [secrets guide](secrets.md), and use a clean
+checkout of the pinned legacy repository. From the platform repository root,
+run exactly:
+
+```sh
+NAS_INFRASTRUCTURE_DIR=/absolute/clean/nas-infrastructure \
+tests/mac/run.sh --lane adoption \
+  --vault-file /external/deployment-vault.yml \
+  --vault-password-file /external/vault-password \
+  --parity-vault-file /external/portainer-parity.yml \
+  --parity-vault-password-file /external/vault-password
+```
+
+The command uses disposable local state and does not contact or modify the
+physical NAS. Synthetic CI is not production-parity evidence; its generated
+credentials and parity export prove only the contained workflow. Reports
+retain only ciphertext checksums and no values. Never place either ciphertext,
+either password input, decrypted content, or plaintext exports in a report.
+
 ## Remove plaintext and retire the vault
 
 Only after verification of the encrypted header, permissions, ciphertext
