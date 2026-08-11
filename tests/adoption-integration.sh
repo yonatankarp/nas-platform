@@ -11,20 +11,27 @@ die() {
 
 diagnostics_operation() {
   ruby - "$@" <<'RUBY'
+require "fiddle"
 operation, parent_path, name, expected = ARGV
 raise "unsafe" unless name == "nas-platform-adoption-diagnostics"
 flags = File::RDONLY
 flags |= File::NOFOLLOW if File.const_defined?(:NOFOLLOW)
 flags |= File::NONBLOCK if File.const_defined?(:NONBLOCK)
 identity = ->(stat) { [stat.dev, stat.ino, stat.uid, stat.mode & 0o777].join(":") }
+fchdir = Fiddle::Function.new(
+  Fiddle::Handle::DEFAULT["fchdir"],
+  [Fiddle::TYPE_INT],
+  Fiddle::TYPE_INT
+)
 descriptor_chdir = lambda do |file, &block|
-  duplicate = file.dup
-  duplicate.autoclose = false
-  directory = Dir.for_fd(duplicate.fileno)
+  previous = File.open(".", flags)
+  raise "unsafe" unless fchdir.call(file.fileno).zero?
   begin
-    directory.chdir(&block)
+    block.call
   ensure
-    directory.close
+    restored = fchdir.call(previous.fileno).zero?
+    previous.close
+    raise "unsafe" unless restored
   end
 end
 parent = File.open(parent_path, flags)
@@ -83,6 +90,7 @@ RUBY
 
 owned_root_operation() {
   ruby - "$@" <<'RUBY'
+require "fiddle"
 operation, path, expected = ARGV
 name = File.basename(path)
 raise "unsafe" unless name.match?(/\Anas-platform-integration\.[A-Za-z0-9]{6}\z/)
@@ -90,14 +98,20 @@ flags = File::RDONLY
 flags |= File::NOFOLLOW if File.const_defined?(:NOFOLLOW)
 flags |= File::NONBLOCK if File.const_defined?(:NONBLOCK)
 identity = ->(stat) { [stat.dev, stat.ino, stat.uid, stat.mode & 0o777].join(":") }
+fchdir = Fiddle::Function.new(
+  Fiddle::Handle::DEFAULT["fchdir"],
+  [Fiddle::TYPE_INT],
+  Fiddle::TYPE_INT
+)
 descriptor_chdir = lambda do |file, &block|
-  duplicate = file.dup
-  duplicate.autoclose = false
-  directory = Dir.for_fd(duplicate.fileno)
+  previous = File.open(".", flags)
+  raise "unsafe" unless fchdir.call(file.fileno).zero?
   begin
-    directory.chdir(&block)
+    block.call
   ensure
-    directory.close
+    restored = fchdir.call(previous.fileno).zero?
+    previous.close
+    raise "unsafe" unless restored
   end
 end
 parent_path = File.dirname(path)
