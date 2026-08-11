@@ -89,6 +89,21 @@ expect_failure 'fresh parity options' 'fresh lane rejects parity vault options' 
 expect_failure 'fresh ambient adoption mapping' 'reserved adoption mapping environment must be unset' \
   env PLATFORM_ADOPTION_ROOT="$temporary_parent/hostile" "$runner" --lane fresh \
     --vault-file "$vault_file" --vault-password-file "$password_file"
+expect_failure 'ambient comparison self-test' 'reserved adoption mapping environment must be unset' \
+  env PLATFORM_ADOPTION_COMPARE_SELF_TEST=1 "$runner" --lane fresh \
+    --vault-file "$vault_file" --vault-password-file "$password_file"
+expect_failure 'ambient probe script root' 'reserved adoption mapping environment must be unset' \
+  env PLATFORM_ADOPTION_SCRIPT_DIR="$temporary_parent" "$runner" --lane fresh \
+    --vault-file "$vault_file" --vault-password-file "$password_file"
+expect_failure 'ambient target probe mode' 'reserved adoption mapping environment must be unset' \
+  env PLATFORM_ADOPTION_PROBE_TARGET=true "$runner" --lane fresh \
+    --vault-file "$vault_file" --vault-password-file "$password_file"
+expect_failure 'ambient ntfy probe container' 'reserved adoption mapping environment must be unset' \
+  env PLATFORM_ADOPTION_NTFY_CONTAINER=hostile "$runner" --lane fresh \
+    --vault-file "$vault_file" --vault-password-file "$password_file"
+expect_failure 'ambient ntfy probe environment' 'reserved adoption mapping environment must be unset' \
+  env PLATFORM_ADOPTION_NTFY_ENV_FILE="$temporary_parent/hostile.env" "$runner" --lane fresh \
+    --vault-file "$vault_file" --vault-password-file "$password_file"
 expect_failure 'same explicit password path' 'unknown phase: not-a-phase' \
   "$runner" --lane adoption --vault-file "$vault_file" --vault-password-file "$password_file" \
     --parity-vault-file "$parity_vault_file" --parity-vault-password-file "$password_file" \

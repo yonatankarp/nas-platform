@@ -31,7 +31,10 @@ def evidence(service)
   when "dozzle"
     identity["permissions"] = ["read"]
     { "identities" => [identity], "record_counts" => { "dispatchers" => 1, "rules" => 1, "users" => 1 },
-      "fixture_sha256" => {}, "managed_settings" => { "dispatcher_name" => "ntfy" } }
+      "fixture_sha256" => {}, "managed_settings" => {
+        "dispatcher_name" => "ntfy", "dispatcher_semantics_sha256" => "d" * 64,
+        "rules_semantics_sha256" => "e" * 64
+      } }
   when "immich"
     { "identities" => [identity], "record_counts" => { "assets" => 2, "users" => 1 },
       "fixture_sha256" => { "photo" => "b" * 64, "video" => "c" * 64 },
@@ -106,11 +109,11 @@ end
 failures = []
 adoption_source = File.read(File.join(__dir__, "adoption.sh"))
 failures << "adoption coordinator omits capture-baseline" unless
-  adoption_source.include?("preflight|render|legacy-deploy|legacy-seed|capture-baseline|snapshot|cutover)")
+  adoption_source.include?("preflight|render|legacy-deploy|legacy-seed|capture-baseline|snapshot|cutover|verify)")
 failures << "adoption coordinator does not invoke recorder" unless adoption_source.include?('"$script_dir/adoption-baseline.rb"')
 failures << "adoption coordinator publishes outside the sandbox" unless adoption_source.include?('"$sandbox/baseline.json"')
 recorder_prefix = File.read(RECORDER).split(/^def emit_probe\b/, 2).first
-probe_library = File.read(RECORDER).split(/^if ARGV.first == "--emit-probe"/, 2).first
+probe_library = File.read(RECORDER).split(/^if .*ARGV.first == "--emit-probe"/, 2).first
 ntfy_collision_contract = recorder_prefix + <<~'RUBY'
   input = <<~LIST
     user * (role: anonymous, tier: none)

@@ -16,7 +16,7 @@ die() {
 subcommand=$1
 case $subcommand in
   --self-test) exec "$script_dir/adoption-self-test.sh" ;;
-  preflight|render|legacy-deploy|legacy-seed|capture-baseline|snapshot|cutover) ;;
+  preflight|render|legacy-deploy|legacy-seed|capture-baseline|snapshot|cutover|verify) ;;
   *) die 'unsupported subcommand' ;;
 esac
 
@@ -141,6 +141,42 @@ require_legacy_projects_stopped() {
     --run-state "${PLATFORM_REPORT_ROOT:?PLATFORM_REPORT_ROOT is required}/phase-input.json" ||
     die 'pre-cutover snapshot validation failed'
   printf '%s\n' 'Legacy adoption cutover: immutable snapshot revalidated'
+  exit 0
+}
+[ "$subcommand" = verify ] && {
+  sandbox=$(mac_validate_sandbox "${PLATFORM_MAC_SANDBOX:?PLATFORM_MAC_SANDBOX is required}" 2>/dev/null) ||
+    die 'owned sandbox is invalid'
+  [ "${PLATFORM_ADOPTION_ENABLED:-false}" = true ] && [ "${PLATFORM_ADOPTION_ROOT:-}" = "$sandbox" ] ||
+    die 'target adoption mapping is unavailable'
+  report_marker=${PLATFORM_REPORT_ROOT:?}/.nas-platform-mac-report-owned
+  [ "$PLATFORM_REPORT_ROOT" = "$sandbox.reports" ] &&
+    [ -d "$PLATFORM_REPORT_ROOT" ] && [ ! -L "$PLATFORM_REPORT_ROOT" ] &&
+    [ "$(CDPATH= cd -- "$PLATFORM_REPORT_ROOT" 2>/dev/null && pwd -P)" = "$PLATFORM_REPORT_ROOT" ] &&
+    [ "$(mac_owner_id "$PLATFORM_REPORT_ROOT")" = "$(id -u)" ] &&
+    [ "$(mac_file_mode "$PLATFORM_REPORT_ROOT")" = 700 ] &&
+    [ -f "$report_marker" ] && [ ! -L "$report_marker" ] &&
+    [ "$(mac_owner_id "$report_marker")" = "$(id -u)" ] &&
+    [ "$(mac_file_mode "$report_marker")" = 600 ] &&
+    printf 'schema=1\nsandbox=%s\n' "$(basename -- "$sandbox")" | cmp -s - "$report_marker" ||
+    die 'owned report root is invalid'
+  sandbox_suffix=${sandbox##*.}
+  expected_project=nas-platform-mac-$(printf '%s' "$sandbox_suffix" | tr '[:upper:]' '[:lower:]')
+  [ "${PLATFORM_PROJECT_NAME:?}" = "$expected_project" ] || die 'owned report project is invalid'
+  case ${PLATFORM_ADOPTION_MARKER:-} in
+    *[!0123456789abcdef]*|'') die 'adoption mapping marker is invalid' ;;
+  esac
+  [ "${#PLATFORM_ADOPTION_MARKER}" -eq 64 ] || die 'adoption mapping marker is invalid'
+  comparison=$PLATFORM_REPORT_ROOT/adoption-comparison.json
+  comparison_status=0
+  "$script_dir/adoption-compare.rb" \
+    --baseline "$sandbox/baseline.json" --output "$comparison" \
+    --capabilities "$repo_dir/config/managed-user-capabilities.yml" || comparison_status=$?
+  if [ -f "$comparison" ] && [ ! -L "$comparison" ]; then
+    "$script_dir/report.rb" --diagnostic "$PLATFORM_REPORT_ROOT/phase-input.json" \
+      --location adoption-comparison.json || die 'comparison report registration failed'
+  fi
+  [ "$comparison_status" -eq 0 ] || die 'target evidence comparison failed'
+  printf '%s\n' 'Legacy adoption comparison: target evidence matches baseline'
   exit 0
 }
 [ "$subcommand" = legacy-deploy ] && {

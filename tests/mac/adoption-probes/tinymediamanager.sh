@@ -5,12 +5,17 @@ umask 077
 dir=${PLATFORM_ADOPTION_SCRIPT_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)}
 sandbox=${PLATFORM_MAC_SANDBOX:?}
 project=${PLATFORM_PROJECT_NAME:?}
+if [ "${PLATFORM_ADOPTION_PROBE_TARGET:-false}" = true ]; then
+  container=$project-tinymediamanager
+else
+  container=$project-legacy-tinymediamanager-tinymediamanager-1
+fi
 export PLATFORM_CONTRACT_VAULT_FILE=${PLATFORM_MAC_VAULT_FILE:?}
 export PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=${PLATFORM_MAC_VAULT_PASSWORD_FILE:?}
 if ! PLATFORM_TINYMEDIAMANAGER_MOVIES_ROOT="$sandbox/legacy/tinymediamanager/movies" \
   PLATFORM_TINYMEDIAMANAGER_SERIES_ROOT="$sandbox/legacy/tinymediamanager/series" \
   PLATFORM_TINYMEDIAMANAGER_SETTINGS_ROOT="$sandbox/legacy/tinymediamanager/data/data" \
-  PLATFORM_TINYMEDIAMANAGER_CONTAINER="$project-legacy-tinymediamanager-tinymediamanager-1" \
+  PLATFORM_TINYMEDIAMANAGER_CONTAINER="$container" \
   "$dir/../contracts/tinymediamanager.sh" assert-persistence >/dev/null 2>&1; then
   printf '%s\n' 'adoption-probe-error: tinymediamanager evidence unavailable' >&2
   exit 1

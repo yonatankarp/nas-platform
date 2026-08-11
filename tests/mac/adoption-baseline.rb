@@ -63,7 +63,7 @@ FIXTURE_FIELDS = {
 }.freeze
 SETTING_FIELDS = {
   "audiobookshelf" => %w[library_name media_type], "beszel" => %w[system_name],
-  "dozzle" => %w[dispatcher_name],
+  "dozzle" => %w[dispatcher_name dispatcher_semantics_sha256 rules_semantics_sha256],
   "immich" => %w[database_backup machine_learning new_version_check],
   "jellyfin" => %w[library_name], "komga" => %w[library_name], "ntfy" => %w[topic],
   "paperless-ngx" => %w[mail_account_name], "tinymediamanager" => %w[api_enabled]
@@ -1191,11 +1191,35 @@ def emit_probe(service)
                end
                managed_dispatcher = dispatchers.find { |entry| entry["name"] == "ntfy nas-critical" }
                raise "managed dispatcher is unavailable" unless managed_dispatcher
+               dispatcher_semantics = {
+                 "name" => managed_dispatcher.fetch("name"),
+                 "type" => managed_dispatcher.fetch("type"),
+                 "url" => managed_dispatcher.fetch("url"),
+                 "template" => managed_dispatcher.fetch("template"),
+                 "header_names" => managed_dispatcher.fetch("headers", {}).keys.sort
+               }
+               dispatcher_names = dispatchers.to_h do |dispatcher|
+                 [dispatcher.fetch("id").to_s, canonical_identity_name(dispatcher.fetch("name"))]
+               end
+               rule_semantics = rules.map do |rule|
+                 {
+                   "name" => rule.fetch("name"), "enabled" => rule.fetch("enabled"),
+                   "container_expression" => rule.fetch("containerExpression"),
+                   "log_expression" => rule.fetch("logExpression"),
+                   "event_expression" => rule.fetch("eventExpression", ""),
+                   "cooldown" => rule.fetch("cooldown", 0),
+                   "dispatcher" => dispatcher_names.fetch(rule.dig("dispatcher", "id").to_s, "missing")
+                 }
+               end.sort_by { |entry| entry.fetch("name") }
                { "identities" => identities,
                  "record_counts" => { "dispatchers" => dispatchers.length, "rules" => rules.length,
                                       "users" => users.length },
                  "fixture_sha256" => {},
-                 "managed_settings" => { "dispatcher_name" => managed_dispatcher.fetch("name") } }
+                 "managed_settings" => {
+                   "dispatcher_name" => managed_dispatcher.fetch("name"),
+                   "dispatcher_semantics_sha256" => Digest::SHA256.hexdigest(JSON.generate(dispatcher_semantics)),
+                   "rules_semantics_sha256" => Digest::SHA256.hexdigest(JSON.generate(rule_semantics))
+                 } }
              when "immich"
                base = "http://127.0.0.1:#{Integer(ENV.fetch('PLATFORM_IMMICH_PORT'), 10)}/api"
                _response, login = http_json(
@@ -1314,7 +1338,10 @@ def emit_probe(service)
                declared_names = declared_entries.map(&:first)
                raise "ntfy environment contains duplicate identities" unless declared_names.uniq.length == declared_names.length
                declared_users = declared_entries.to_h
-               container = "#{ENV.fetch('PLATFORM_PROJECT_NAME')}-legacy-ntfy-ntfy-1"
+               container = ENV.fetch(
+                 "PLATFORM_ADOPTION_NTFY_CONTAINER",
+                 "#{ENV.fetch('PLATFORM_PROJECT_NAME')}-legacy-ntfy-ntfy-1"
+               )
                live_output, = capture(
                  "docker", "exec", container, "ntfy", "user",
                  "--auth-file=/var/lib/ntfy/auth.db", "--auth-default-access=deny-all", "list"
@@ -1419,7 +1446,7 @@ ensure
   vault_error.replace("\0" * vault_error.bytesize) if vault_error && !vault_error.frozen?
 end
 
-if ARGV.first == "--emit-probe"
+if __FILE__ == $PROGRAM_NAME && ARGV.first == "--emit-probe"
   begin
     raise "probe arguments are invalid" unless ARGV.length == 2
     emit_probe(ARGV.fetch(1))
@@ -1430,6 +1457,7 @@ if ARGV.first == "--emit-probe"
   exit 0
 end
 
+if __FILE__ == $PROGRAM_NAME
 options = {}
 set_option = lambda do |key, value|
   raise OptionParser::InvalidOption, "duplicate --#{key.to_s.tr('_', '-')}" if options.key?(key)
@@ -1668,3 +1696,4 @@ ensure
   parent_directory&.close
 end
 refuse("capture refused") if capture_failed
+end

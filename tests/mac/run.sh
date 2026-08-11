@@ -30,6 +30,11 @@ keep_on_failure=false
 [ -z "${PLATFORM_ADOPTION_ROOT+x}" ] && [ -z "${PLATFORM_ADOPTION_MARKER+x}" ] &&
   [ -z "${PLATFORM_ADOPTION_ENABLED+x}" ] &&
   [ -z "${PLATFORM_ADOPTION_SNAPSHOT_SELF_TEST+x}" ] &&
+  [ -z "${PLATFORM_ADOPTION_COMPARE_SELF_TEST+x}" ] &&
+  [ -z "${PLATFORM_ADOPTION_PROBE_TARGET+x}" ] &&
+  [ -z "${PLATFORM_ADOPTION_NTFY_CONTAINER+x}" ] &&
+  [ -z "${PLATFORM_ADOPTION_NTFY_ENV_FILE+x}" ] &&
+  [ -z "${PLATFORM_ADOPTION_SCRIPT_DIR+x}" ] &&
   [ -z "${PLATFORM_SNAPSHOT_ESCAPE+x}" ] ||
   mac_die 'reserved adoption mapping environment must be unset'
 while [ "$#" -gt 0 ]; do
@@ -667,9 +672,36 @@ run_idempotence() {
   if [ "$idempotence_status" -ne 0 ] ||
      ! grep -qE 'changed=0 .*failed=0 ' "$idempotence_output"; then
     rm -f -- "$idempotence_output"
+    if [ "$lane" = adoption ]; then
+      "$mac_script_dir/adoption-stop-targets.sh" >/dev/null 2>&1 || true
+    fi
     return 1
   fi
   rm -f -- "$idempotence_output"
+}
+
+run_persistence() {
+  persistence_status=0
+  "$mac_script_dir/fixtures.sh" persistence || persistence_status=$?
+  if [ "$persistence_status" -eq 0 ] && [ "$lane" = adoption ]; then
+    "$mac_script_dir/adoption.sh" verify || persistence_status=$?
+  fi
+  if [ "$persistence_status" -ne 0 ] && [ "$lane" = adoption ]; then
+    "$mac_script_dir/adoption-stop-targets.sh" >/dev/null 2>&1 || true
+  fi
+  return "$persistence_status"
+}
+
+verify_target_state() {
+  target_verify_status=0
+  "$mac_script_dir/verify.sh" || target_verify_status=$?
+  if [ "$target_verify_status" -eq 0 ] && [ "$lane" = adoption ]; then
+    "$mac_script_dir/adoption.sh" verify || target_verify_status=$?
+  fi
+  if [ "$target_verify_status" -ne 0 ] && [ "$lane" = adoption ]; then
+    "$mac_script_dir/adoption-stop-targets.sh" >/dev/null 2>&1 || true
+  fi
+  return "$target_verify_status"
 }
 
 render_report() {
@@ -816,12 +848,12 @@ execute_phase() {
       fi
       ;;
     seed) "$mac_script_dir/fixtures.sh" seed ;;
-    verify) "$mac_script_dir/verify.sh" ;;
+    verify) verify_target_state ;;
     idempotence) run_idempotence ;;
     drift) "$mac_script_dir/drift.sh" ;;
     reconcile) run_site && "$mac_script_dir/verify.sh" ;;
-    recreate) "$mac_script_dir/fixtures.sh" recreate && "$mac_script_dir/verify.sh" ;;
-    persistence) "$mac_script_dir/fixtures.sh" persistence ;;
+    recreate) "$mac_script_dir/fixtures.sh" recreate && verify_target_state ;;
+    persistence) run_persistence ;;
     report) render_report ;;
     cleanup) release_run_lock && "$mac_script_dir/cleanup.sh" "$sandbox" ;;
     *) mac_die "unknown phase: $1" ;;

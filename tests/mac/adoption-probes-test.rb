@@ -50,8 +50,18 @@ def response_for(path, method, headers, body, root, mode)
   when %r{/api/collections/alerts/records} then
     json_response(200, { "totalPages" => 1, "items" => [{ "id" => "alert" }] })
   when "/api/token" then json_response(200, nil, "Set-Cookie" => "session=opaque; HttpOnly")
-  when "/api/notifications/dispatchers" then json_response(200, [{ "name" => "ntfy nas-critical" }, { "name" => "unmanaged" }])
-  when "/api/notifications/rules" then json_response(200, [{ "name" => "all" }])
+  when "/api/notifications/dispatchers" then
+    json_response(200, [
+      { "id" => "managed", "name" => "ntfy nas-critical", "type" => "webhook",
+        "url" => "http://ntfy/nas-critical", "template" => "managed-template",
+        "headers" => { "Authorization" => "protected" } },
+      { "id" => "other", "name" => "unmanaged", "type" => "webhook", "url" => "http://other",
+        "template" => "other", "headers" => {} }
+    ])
+  when "/api/notifications/rules" then
+    json_response(200, [{ "name" => "all", "enabled" => true, "containerExpression" => "true",
+                          "logExpression" => "", "eventExpression" => "event", "cooldown" => 1,
+                          "dispatcher" => { "id" => "managed" } }])
   when "/api/auth/login" then json_response(201, { "accessToken" => "opaque" })
   when "/api/admin/users?withDeleted=true" then
     json_response(200, [{ "email" => "admin@example.test", "isAdmin" => true, "deletedAt" => nil }])
@@ -122,16 +132,28 @@ Dir.mktmpdir("adoption-probes-test-") do |root|
   contract_environment = {
     "audiobookshelf" => "[ \"$PLATFORM_AUDIOBOOKSHELF_MEDIA_LIBRARY\" = '#{root}/legacy/audiobookshelf/media' ]",
     "immich" => "[ \"$PLATFORM_IMMICH_UPLOAD_ROOT\" = '#{root}/legacy/immich/data/upload' ] && " \
-                "[ \"$PLATFORM_IMMICH_SERVER_CONTAINER\" = 'proof-legacy-immich-immich-server-1' ]",
+                "if [ \"${PLATFORM_ADOPTION_PROBE_TARGET:-false}\" = true ]; then " \
+                "[ \"$PLATFORM_IMMICH_SERVER_CONTAINER\" = 'proof-immich-server' ] && " \
+                "[ \"$PLATFORM_IMMICH_POSTGRES_CONTAINER\" = 'proof-immich-postgres' ]; else " \
+                "[ \"$PLATFORM_IMMICH_SERVER_CONTAINER\" = 'proof-legacy-immich-immich-server-1' ] && " \
+                "[ \"$PLATFORM_IMMICH_POSTGRES_CONTAINER\" = 'proof-legacy-immich-database-1' ]; fi",
     "jellyfin" => "[ \"$PLATFORM_JELLYFIN_MEDIA_ROOT\" = '#{root}/legacy/jellyfin/media' ] && " \
-                  "[ \"$PLATFORM_JELLYFIN_CONTAINER\" = 'proof-legacy-jellyfin-jellyfin-1' ]",
+                  "if [ \"${PLATFORM_ADOPTION_PROBE_TARGET:-false}\" = true ]; then " \
+                  "[ \"$PLATFORM_JELLYFIN_CONTAINER\" = 'proof-jellyfin' ]; else " \
+                  "[ \"$PLATFORM_JELLYFIN_CONTAINER\" = 'proof-legacy-jellyfin-jellyfin-1' ]; fi",
     "komga" => "[ \"$PLATFORM_KOMGA_LIBRARY_PATH\" = '#{root}/legacy/komga/library' ]",
     "paperless" => "[ \"$PLATFORM_PAPERLESS_CONSUME_ROOT\" = '#{root}/legacy/paperless-ngx/consume' ] && " \
-                   "[ \"$PLATFORM_CONTRACT_REPO_DIR\" = '#{root}/tests/mac/../..' ]",
+                   "[ \"$PLATFORM_CONTRACT_REPO_DIR\" = '#{root}/tests/mac/../..' ] && " \
+                   "if [ \"${PLATFORM_ADOPTION_PROBE_TARGET:-false}\" = true ]; then " \
+                   "[ \"$PLATFORM_PAPERLESS_WEBSERVER_CONTAINER\" = 'proof-paperless-webserver' ]; else " \
+                   "[ \"$PLATFORM_PAPERLESS_WEBSERVER_CONTAINER\" = " \
+                   "'proof-legacy-paperless-ngx-webserver-1' ]; fi",
     "tinymediamanager" => "[ \"$PLATFORM_TINYMEDIAMANAGER_MOVIES_ROOT\" = " \
                            "'#{root}/legacy/tinymediamanager/movies' ] && " \
+                           "if [ \"${PLATFORM_ADOPTION_PROBE_TARGET:-false}\" = true ]; then " \
+                           "[ \"$PLATFORM_TINYMEDIAMANAGER_CONTAINER\" = 'proof-tinymediamanager' ]; else " \
                            "[ \"$PLATFORM_TINYMEDIAMANAGER_CONTAINER\" = " \
-                           "'proof-legacy-tinymediamanager-tinymediamanager-1' ]"
+                           "'proof-legacy-tinymediamanager-tinymediamanager-1' ]; fi"
   }
   contract_arguments.each do |name, expected|
     executable(File.join(contracts, "#{name}.sh"), <<~SH)
@@ -179,6 +201,9 @@ Dir.mktmpdir("adoption-probes-test-") do |root|
   YAML
   executable(File.join(bin, "docker"), <<~'SH')
     #!/bin/sh
+    if [ -n "${PLATFORM_EXPECT_NTFY_CONTAINER:-}" ]; then
+      [ "$1" = exec ] && [ "$2" = "$PLATFORM_EXPECT_NTFY_CONTAINER" ] || exit 68
+    fi
     cat <<'EOF'
     user * (role: anonymous, tier: none)
     - no access to any (other) topics (server config)
@@ -232,6 +257,10 @@ Dir.mktmpdir("adoption-probes-test-") do |root|
     "NTFY_AUTH_ACCESS=reader:nas-critical:read-only,reader:side-channel:write-only\n"
   )
   File.chmod(0o600, ntfy_env)
+  target_ntfy_env = File.join(root, "nas-platform/runtime/services/ntfy/.env")
+  FileUtils.mkdir_p(File.dirname(target_ntfy_env))
+  FileUtils.cp(ntfy_env, target_ntfy_env)
+  File.chmod(0o600, target_ntfy_env)
   report = File.join(root, "reports")
   FileUtils.mkdir_p(report)
   paperless_state = File.join(report, "paperless-persistence.json")
@@ -310,6 +339,18 @@ Dir.mktmpdir("adoption-probes-test-") do |root|
       failures << "#{service} probe output is invalid: #{error.message}"
     end
   end
+
+  target_env = env.merge(
+    "PLATFORM_ADOPTION_PROBE_TARGET" => "true",
+    "PLATFORM_EXPECT_NTFY_CONTAINER" => "proof-ntfy"
+  )
+  File.write(ntfy_env, "NTFY_AUTH_USERS=stale:x:user\nNTFY_AUTH_ACCESS=stale:wrong:write-only\n")
+  SERVICES.each do |service|
+    _stdout, stderr, status = Open3.capture3(target_env, File.join(PROBES, "#{service}.sh"))
+    failures << "#{service} target probe path failed: #{stderr}" unless status.success?
+  end
+  FileUtils.cp(target_ntfy_env, ntfy_env)
+  File.chmod(0o600, ntfy_env)
 
   mode = "pagination"
   _stdout, stderr, status = Open3.capture3(env, File.join(PROBES, "beszel.sh"))
