@@ -50,7 +50,7 @@ case $1 in
     grep -qx "project=$PLATFORM_ADOPTION_ROLLBACK_PROJECT" "$marker"
     grep -qx 'namespace=rollback' "$marker"
     [ "$PLATFORM_ADOPTION_ROLLBACK_ROOT" != "$PLATFORM_MAC_SANDBOX" ]
-    cp -R "$PLATFORM_MAC_SANDBOX/snapshot/pre-cutover/state/legacy" \
+    cp -pR "$PLATFORM_MAC_SANDBOX/snapshot/pre-cutover/state/legacy" \
       "$PLATFORM_ADOPTION_ROLLBACK_ROOT/legacy"
     cp "$PLATFORM_MAC_SANDBOX/snapshot/pre-cutover/baseline.json" \
       "$PLATFORM_ADOPTION_ROLLBACK_ROOT/pre-cutover-baseline.json"
@@ -280,6 +280,29 @@ fi
   exit
 }
 [ "$1" = compose ] || exit 92
+previous=
+for argument in "$@"; do
+  case $previous in
+    --env-file)
+      [ -s "$argument" ] && grep -q '^SAFE=value$' "$argument" || exit 98
+      printf 'fd-open environment\n' >> "$FAKE_LOG"
+      ;;
+    -f)
+      if printf '%s\n' " $* " | grep -Fq ' config --format json '; then
+        [ -s "$argument" ] || exit 98
+        printf 'fd-open compose-source\n' >> "$FAKE_LOG"
+      else
+        ruby -rjson -e '
+          document = JSON.parse(File.binread(ARGV.fetch(0)))
+          abort unless document.fetch("services").is_a?(Hash) &&
+            document.fetch("x-nas-platform-adoption-binding").fetch("schema") == 1
+        ' "$argument" || exit 98
+        printf 'fd-open normalized\n' >> "$FAKE_LOG"
+      fi
+      ;;
+  esac
+  previous=$argument
+done
 project=
 previous=
 for argument in "$@"; do
@@ -304,6 +327,29 @@ case " $* " in
     ' "$FAKE_ATTESTATIONS" "$PLATFORM_MAC_SANDBOX" "$service"
     ;;
   *' config --images '*)
+    if [ "${FAKE_PREPARE_CRASH_JOURNAL:-}" = "$service" ]; then
+      challenge_record=$(ruby -rjson -e '
+        record = JSON.parse(File.binread(ARGV.fetch(0))).find { |entry|
+          entry.fetch("service") == ARGV.fetch(1)
+        }
+        abort unless record
+        puts [record.fetch("source"), record.fetch("kind"), record.fetch("sha256")].join("\t")
+      ' "$FAKE_ATTESTATIONS" "$service")
+      challenge_source=${challenge_record%%"$(printf '\t')"*}
+      challenge_rest=${challenge_record#*"$(printf '\t')"}
+      challenge_kind=${challenge_rest%%"$(printf '\t')"*}
+      challenge_digest=${challenge_rest#*"$(printf '\t')"}
+      if [ "$challenge_kind" = sentinel ]; then
+        challenged_path=$PLATFORM_MAC_SANDBOX/$challenge_source/.nas-platform-adoption-root-sentinel
+      else
+        challenged_path=$PLATFORM_MAC_SANDBOX/$challenge_source
+      fi
+      ruby -e 'print (File.lstat(ARGV.fetch(0)).mtime.to_r * 1_000_000_000).to_i' \
+        "$challenged_path" > "$FAKE_CHALLENGE_MTIME_LOG"
+      ruby "$FAKE_CHALLENGE_HELPER" prepare "$PLATFORM_MAC_SANDBOX" \
+        "$challenge_source" "$challenge_kind" "$challenge_digest" \
+        "$PLATFORM_MAC_SANDBOX/.rollback-mount-challenge.json" - >/dev/null
+    fi
     if [ "${FAKE_BIND_PREUP_SYMLINK_SERVICE:-}" = "$service" ]; then
       symlink_source=$PLATFORM_MAC_SANDBOX/legacy/immich/data
       mv "$symlink_source" "$symlink_source.rollback-original"
@@ -320,6 +366,10 @@ case " $* " in
     fi
     ;;
   *' up --detach '*)
+    if [ -n "${FAKE_PREPARE_CRASH_JOURNAL:-}" ] &&
+        [ -e "$PLATFORM_MAC_SANDBOX/.rollback-mount-challenge.json" ]; then
+      exit 99
+    fi
     if [ "${FAKE_LIVE_INPUT_MUTATION:-}" = 1 ]; then
       case " $* " in
         *"$FAKE_LIVE_LEGACY_ROOT"*|*"$FAKE_LIVE_OVERRIDE_ROOT"*|*'/legacy-env/'*) exit 96 ;;
@@ -485,6 +535,8 @@ RUBY
 run_rollback() {
   env PATH="$bin:$PATH" FAKE_LOG="$log" FAKE_BASELINE="$baseline" \
     FAKE_ATTESTATIONS="$attestations" FAKE_MOUNT_SWAP_RECORD="$test_parent/mount-swap-record" \
+    FAKE_CHALLENGE_HELPER="$test_dir/adoption-mount-challenge.rb" \
+    FAKE_CHALLENGE_MTIME_LOG="$test_parent/challenge-original-mtime" \
     FAKE_LEGACY_ROOT="$legacy_root" FAKE_REPO_DIR="$test_dir/../.." \
     FAKE_GIT_REVISION="$(git -C "$test_dir/../.." rev-parse HEAD)" \
     FAKE_OVERRIDE_ROOT="$reviewed_overrides" FAKE_PREOPEN_BASE_PATH="$audiobookshelf_legacy_path" \
@@ -512,6 +564,10 @@ rollback_root=$(find "$test_parent" -maxdepth 1 -type d -name 'nas-platform-mac.
   fail 'rollback marker and project differ'
 grep -Fqx "render $rollback_root $rollback_project" "$log" ||
   fail 'parity rendering did not receive the rollback sandbox and project'
+[ "$(grep -c '^fd-open environment$' "$log")" -ge 9 ] &&
+  [ "$(grep -c '^fd-open compose-source$' "$log")" -ge 18 ] &&
+  [ "$(grep -c '^fd-open normalized$' "$log")" -ge 9 ] ||
+  fail 'fake Docker did not consume every inherited Compose descriptor class'
 
 up_count=$(grep -c ' up --detach ' "$log")
 stop_count=$(grep -c ' stop$' "$log")
@@ -582,6 +638,49 @@ fi
 [ "$(grep -c ' up --detach ' "$log")" -eq 3 ] || fail 'bind symlink fixture started an unsafe project'
 [ "$(grep -c ' stop$' "$log")" -eq 4 ] || fail 'bind symlink did not stop every attempted project'
 [ "$(tree_digest "$sandbox")" = "$sandbox_before" ] || fail 'bind symlink changed cutover state'
+
+mtime_ns() {
+  ruby -e 'print (File.lstat(ARGV.fetch(0)).mtime.to_r * 1_000_000_000).to_i' "$1"
+}
+challenge_relative=legacy/audiobookshelf/config/.nas-platform-adoption-root-sentinel
+roots_before=$test_parent/roots-before-fault
+find "$test_parent" -maxdepth 1 -type d -name 'nas-platform-mac.??????' | sort > "$roots_before"
+: > "$log"
+run_rollback FAKE_PREPARE_CRASH_JOURNAL=audiobookshelf >/dev/null ||
+  fail 'rollback did not recover a prior crash journal before mount attestation'
+challenge_original_mtime=$(cat "$test_parent/challenge-original-mtime")
+crash_root=$(find "$test_parent" -maxdepth 1 -type d -name 'nas-platform-mac.??????' \
+  | while IFS= read -r candidate; do grep -Fqx "$candidate" "$roots_before" || printf '%s\n' "$candidate"; done)
+[ -n "$crash_root" ] && [ ! -e "$crash_root/.rollback-mount-challenge.json" ] ||
+  fail 'crash journal recovery did not remove the journal'
+[ "$(mtime_ns "$crash_root/$challenge_relative")" = "$challenge_original_mtime" ] ||
+  fail 'crash journal recovery did not restore the exact mtime'
+
+find "$test_parent" -maxdepth 1 -type d -name 'nas-platform-mac.??????' | sort > "$roots_before"
+: > "$log"
+if run_rollback PLATFORM_ADOPTION_ROLLBACK_CHALLENGE_FAULT=malformed-handoff >/dev/null 2>&1; then
+  fail 'rollback accepted a malformed mount challenge handoff'
+fi
+malformed_root=$(find "$test_parent" -maxdepth 1 -type d -name 'nas-platform-mac.??????' |
+  while IFS= read -r candidate; do grep -Fqx "$candidate" "$roots_before" || printf '%s\n' "$candidate"; done)
+[ -n "$malformed_root" ] && [ ! -e "$malformed_root/.rollback-mount-challenge.json" ] ||
+  fail 'malformed handoff did not clean the challenge journal'
+[ "$(mtime_ns "$malformed_root/$challenge_relative")" = "$challenge_original_mtime" ] ||
+  fail 'malformed handoff did not restore the exact mtime'
+
+find "$test_parent" -maxdepth 1 -type d -name 'nas-platform-mac.??????' | sort > "$roots_before"
+: > "$log"
+if run_rollback PLATFORM_ADOPTION_ROLLBACK_CHALLENGE_FAULT=restore-failure >/dev/null 2>&1; then
+  fail 'rollback accepted a mount challenge restoration failure'
+fi
+restore_failure_root=$(find "$test_parent" -maxdepth 1 -type d -name 'nas-platform-mac.??????' |
+  while IFS= read -r candidate; do grep -Fqx "$candidate" "$roots_before" || printf '%s\n' "$candidate"; done)
+[ -f "$restore_failure_root/.rollback-mount-challenge.json" ] ||
+  fail 'restoration failure discarded the recovery journal'
+[ "$(mtime_ns "$restore_failure_root/$challenge_relative")" != "$challenge_original_mtime" ] ||
+  fail 'restoration failure hid the challenged mtime'
+[ -z "$(find "$restore_failure_root" -maxdepth 1 -name '.rollback-mount-readback.*' -print -quit)" ] ||
+  fail 'restoration failure retained an unrelated readback temporary'
 
 : > "$log"
 run_rollback FAKE_LIVE_INPUT_MUTATION=1 FAKE_LIVE_LEGACY_ROOT="$legacy_root" \

@@ -249,7 +249,49 @@ def capture_external(environment, *command, limit: 1024 * 1024, inherit_descript
   stdout
 end
 
+def entry_exists_at?(parent, name)
+  entry = openat(parent, name, File::RDONLY | File::NOFOLLOW)
+  true
+rescue Errno::ENOENT
+  false
+ensure
+  entry&.close
+end
+
+def recovery_attestations(records)
+  records.map do |record|
+    final_identity = record.fetch("components").last.fetch(1)
+    {
+      "source" => record.fetch("source"), "kind" => record.fetch("kind"),
+      "sha256" => record.fetch("sha256"), "live_dev" => final_identity.fetch("dev"),
+      "live_ino" => final_identity.fetch("ino")
+    }
+  end
+end
+
+def recover_challenge!(challenge, rollback_root, records, journal)
+  capture_external(
+    {}, RbConfig.ruby, challenge, "recover", rollback_root, "-", "-", "-", journal,
+    JSON.generate(recovery_attestations(records))
+  )
+end
+
+def recover_pending_challenge!(records, rollback_root)
+  challenge = File.join(__dir__, "adoption-mount-challenge.rb")
+  journal = File.join(rollback_root, ".rollback-mount-challenge.json")
+  root = File.open(rollback_root, File::RDONLY | File::NOFOLLOW)
+  raise unless root.stat.directory? && root.stat.uid == Process.uid && (root.stat.mode & 0o777) == 0o700
+  if entry_exists_at?(root, ".rollback-mount-challenge.json")
+    recover_challenge!(challenge, rollback_root, records, journal)
+  end
+  raise if entry_exists_at?(root, ".rollback-mount-challenge.json")
+ensure
+  root&.close
+end
+
 def restore_challenge!(challenge, rollback_root, record, journal)
+  raise "forced challenge restoration failure" if
+    ENV["PLATFORM_ADOPTION_ROLLBACK_CHALLENGE_FAULT"] == "restore-failure"
   capture_external(
     {}, RbConfig.ruby, challenge, "restore", rollback_root, record.fetch("source"),
     record.fetch("kind"), record.fetch("sha256"), journal, "-"
@@ -261,6 +303,11 @@ def attest_mounts!(config, compose_arguments, records, rollback_root)
   environment = { "PLATFORM_MAC_SANDBOX" => rollback_root }
   root = File.open(rollback_root, File::RDONLY | File::NOFOLLOW)
   raise unless root.stat.directory? && root.stat.uid == Process.uid && (root.stat.mode & 0o777) == 0o700
+  journal = File.join(rollback_root, ".rollback-mount-challenge.json")
+  if entry_exists_at?(root, ".rollback-mount-challenge.json")
+    recover_challenge!(challenge, rollback_root, records, journal)
+    raise if entry_exists_at?(root, ".rollback-mount-challenge.json")
+  end
   containers = {}
   records.each do |record|
     compose_service = record.fetch("legacy_compose_service")
@@ -283,16 +330,18 @@ def attest_mounts!(config, compose_arguments, records, rollback_root)
       raise "mount tuple differs for #{container}: #{mounts.inspect}"
     end
 
-    journal = File.join(rollback_root, ".rollback-mount-challenge.json")
     temporary_name = ".rollback-mount-readback.#{SecureRandom.hex(16)}"
     temporary_path = File.join(rollback_root, temporary_name)
-    challenge_prepared = false
+    prepare_attempted = false
     begin
-      challenge_ns = Integer(capture_external(
+      prepare_attempted = true
+      handoff = capture_external(
         {}, RbConfig.ruby, challenge, "prepare", rollback_root, record.fetch("source"),
         record.fetch("kind"), record.fetch("sha256"), journal, "-"
-      ).strip, 10)
-      challenge_prepared = true
+      ).strip
+      handoff = "malformed" if
+        ENV["PLATFORM_ADOPTION_ROLLBACK_CHALLENGE_FAULT"] == "malformed-handoff"
+      challenge_ns = Integer(handoff, 10)
       capture_external(
         environment, "docker", "cp", "#{container}:#{record.fetch('container_path')}", temporary_path,
         file_size_limit: record.fetch("kind") == "sentinel" ? 256 : 64 * 1024 * 1024
@@ -304,12 +353,20 @@ def attest_mounts!(config, compose_arguments, records, rollback_root)
                    (stat.mtime.to_r * 1_000_000_000).to_i == challenge_ns
     ensure
       readback&.close
-      restore_challenge!(challenge, rollback_root, record, journal) if challenge_prepared
+      restoration_error = nil
+      if prepare_attempted && entry_exists_at?(root, ".rollback-mount-challenge.json")
+        begin
+          restore_challenge!(challenge, rollback_root, record, journal)
+        rescue StandardError => error
+          restoration_error = error
+        end
+      end
       begin
         unlinkat(root, temporary_name)
       rescue Errno::ENOENT
         nil
       end
+      raise restoration_error if restoration_error
     end
   end
 ensure
@@ -335,6 +392,7 @@ def run_bound(config_path, digest, project, action)
                    else raise
                    end)
   records = verify_bind_records!(document, rollback_root) if action == "up"
+  recover_pending_challenge!(records, rollback_root) if action == "up"
   stdout, _stderr, status = Open3.capture3(
     { "PLATFORM_MAC_SANDBOX" => rollback_root },
     "docker", "compose", *arguments, close_others: false
@@ -354,6 +412,10 @@ end
 
 begin
   action = ARGV.shift
+  challenge_fault = ENV.fetch("PLATFORM_ADOPTION_ROLLBACK_CHALLENGE_FAULT", "")
+  raise unless challenge_fault.empty? ||
+               (ENV["PLATFORM_ADOPTION_ROLLBACK_SELF_TEST"] == "1" &&
+                %w[malformed-handoff restore-failure].include?(challenge_fault))
   case action
   when "publish-attestations"
     raise unless ARGV.length == 2

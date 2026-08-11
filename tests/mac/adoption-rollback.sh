@@ -20,7 +20,8 @@ if [ "$rollback_self_test" = 0 ]; then
     [ -z "${PLATFORM_ADOPTION_ROLLBACK_SNAPSHOT_COMMAND+x}" ] &&
     [ -z "${PLATFORM_ADOPTION_ROLLBACK_BASELINE_COMMAND+x}" ] &&
     [ -z "${PLATFORM_ADOPTION_ROLLBACK_RENDER_COMMAND+x}" ] &&
-    [ -z "${PLATFORM_ADOPTION_ROLLBACK_OVERRIDE_ROOT+x}" ] ||
+    [ -z "${PLATFORM_ADOPTION_ROLLBACK_OVERRIDE_ROOT+x}" ] &&
+    [ -z "${PLATFORM_ADOPTION_ROLLBACK_CHALLENGE_FAULT+x}" ] ||
     die 'self-test controls are forbidden'
 fi
 case ${PLATFORM_ADOPTION_ROLLBACK_FAULT:-} in
