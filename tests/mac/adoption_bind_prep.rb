@@ -2,6 +2,7 @@
 # frozen_string_literal: true
 
 require "yaml"
+require "fiddle"
 
 module AdoptionBindPrep
   class UnsafePath < StandardError; end
@@ -32,6 +33,11 @@ module AdoptionBindPrep
     legacy/paperless-ngx/media legacy/paperless-ngx/consume
     legacy/tinymediamanager/data legacy/tinymediamanager/movies legacy/tinymediamanager/series
   ].freeze
+  FCHDIR = Fiddle::Function.new(
+    Fiddle::Handle::DEFAULT["fchdir"],
+    [Fiddle::TYPE_INT],
+    Fiddle::TYPE_INT
+  )
 
   module_function
 
@@ -50,16 +56,29 @@ module AdoptionBindPrep
     flags
   end
 
+  def in_directory(directory)
+    previous = File.open(".", directory_flags)
+    raise UnsafePath unless FCHDIR.call(directory.fileno).zero?
+
+    yield
+  ensure
+    if previous
+      restored = FCHDIR.call(previous.fileno).zero?
+      previous.close
+      raise UnsafePath unless restored
+    end
+  end
+
   def open_directory_at(parent, component, create: false)
     raise UnsafePath unless component.match?(/\A[-A-Za-z0-9.]+\z/) && ![".", ".."].include?(component)
 
-    Dir.fchdir(parent.fileno) { File.open(component, directory_flags) }
+    in_directory(parent) { File.open(component, directory_flags) }
   rescue Errno::ENOENT
     raise unless create
 
-    Dir.fchdir(parent.fileno) { Dir.mkdir(component, 0o700) }
+    in_directory(parent) { Dir.mkdir(component, 0o700) }
     parent.fsync
-    Dir.fchdir(parent.fileno) { File.open(component, directory_flags) }
+    in_directory(parent) { File.open(component, directory_flags) }
   rescue Errno::ELOOP, Errno::ENOTDIR
     raise UnsafePath
   end
@@ -89,7 +108,7 @@ module AdoptionBindPrep
   def verify_marker(root, expected_project)
     flags = File::RDONLY
     flags |= File::NOFOLLOW if File.const_defined?(:NOFOLLOW)
-    marker = Dir.fchdir(root.fileno) { File.open(".nas-platform-mac-owned", flags) }
+    marker = in_directory(root) { File.open(".nas-platform-mac-owned", flags) }
     stat = marker.stat
     expected = "schema=1\nproject=#{expected_project}\n"
     raise UnsafePath unless stat.file? && stat.nlink == 1 && stat.uid == root.stat.uid &&
@@ -104,7 +123,7 @@ module AdoptionBindPrep
   def prepare_model(tessdata, platform, nas_uid, nas_gid)
     flags = File::RDWR | File::CREAT
     flags |= File::NOFOLLOW if File.const_defined?(:NOFOLLOW)
-    model = Dir.fchdir(tessdata.fileno) { File.open("heb.traineddata", flags, 0o600) }
+    model = in_directory(tessdata) { File.open("heb.traineddata", flags, 0o600) }
     raise UnsafePath unless model.stat.file? && model.stat.nlink == 1
 
     if platform == "integration"

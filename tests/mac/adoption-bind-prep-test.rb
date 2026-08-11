@@ -95,7 +95,7 @@ Dir.mktmpdir("nas-platform-bind-prep-parent.") do |parent|
       Process::GID.change_privilege(test_nas_gid)
       Process::UID.change_privilege(test_nas_uid)
       bind_descriptors.each do |relative, descriptor|
-        Dir.fchdir(descriptor.fileno) do
+        AdoptionBindPrep.in_directory(descriptor) do
           File.write(".nas-platform-access-check", "ok\n", mode: "w", perm: 0o600)
           File.unlink(".nas-platform-access-check")
           File.read("heb.traineddata") if relative == "legacy/paperless-ngx/tessdata"
