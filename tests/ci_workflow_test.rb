@@ -23,6 +23,7 @@ FULL_STEPS = [
     tests/mac/adoption-rollback-test.sh
   SH
   ["Install Ansible tooling", "ansible-core==2.21.2"],
+  ["Check out pinned legacy infrastructure", "git -C \"$legacy_root\" fetch --depth=1 origin \"$legacy_revision\""],
   ["Check legacy role Compose compatibility", "tests/mac/legacy-role-compose-test.sh"],
   ["Check legacy seed playbook syntax", "ansible-playbook -i inventory/mac.yml tests/mac/legacy-role-seed.yml --syntax-check"],
   ["Check legacy seed playbook syntax", "ansible-playbook -i localhost, -c local tests/mac/legacy-beszel-key.yml --syntax-check"],
@@ -32,7 +33,8 @@ FULL_STEPS = [
   ["Check silent ephemeral vault generation", "tests/generate-ephemeral-vault.sh --self-test"],
   ["Lint Ansible", "ansible-lint --strict"],
   ["Check playbook syntax", "ansible-playbook -i inventory/local.yml site.yml --syntax-check"],
-  ["Converge against a disposable sandbox", "tests/integration.sh site.yml"]
+  ["Converge against a disposable sandbox", "tests/integration.sh site.yml"],
+  ["Converge synthetic legacy adoption", "tests/adoption-integration.sh"]
 ].freeze
 CLASSIFIER_RUN = <<~'SH'.chomp
   case "$EVENT_NAME" in
@@ -202,7 +204,7 @@ def assert_boundary(steps, checkout, classifier, docs, full_positions)
   executable = steps[(classifier_index + 1)..].select do |step|
     step.is_a?(Hash) && (key?(step, "run") || key?(step, "uses"))
   end
-  allowed_names = ["Validate documentation", *FULL_STEPS.map(&:first)]
+  allowed_names = ["Validate documentation", *FULL_STEPS.map(&:first), "Upload sanitized adoption diagnostics"]
   fail_contract("contains an unexpected executable step after classification") unless executable.all? { |step| allowed_names.include?(value_for(step, "name")) }
 end
 

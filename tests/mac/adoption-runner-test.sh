@@ -34,11 +34,16 @@ vault_file=$temporary_parent/deployment-vault.yml
 parity_vault_file=$temporary_parent/parity-vault.yml
 password_file=$temporary_parent/deployment-password
 parity_password_file=$temporary_parent/parity-password
+integration_ports_file=$temporary_parent/integration-ports.json
 printf '%s\n' '$ANSIBLE_VAULT;1.1;AES256' > "$vault_file"
 printf '%s\n' '$ANSIBLE_VAULT;1.1;AES256' > "$parity_vault_file"
 printf '%s\n' disposable > "$password_file"
 printf '%s\n' parity-disposable > "$parity_password_file"
 chmod 0600 "$vault_file" "$parity_vault_file" "$password_file" "$parity_password_file"
+cat > "$integration_ports_file" <<'JSON'
+{"schema":1,"audiobookshelf_port":43378,"beszel_port":48090,"dozzle_port":48080,"immich_port":42283,"jellyfin_port":48096,"komga_port":45600,"ntfy_port":42586,"paperless_port":48000,"tinymediamanager_api_port":47878,"tinymediamanager_web_port":44000}
+JSON
+chmod 0600 "$integration_ports_file"
 
 expect_failure() {
   label=$1
@@ -84,6 +89,10 @@ help_output=$temporary_parent/help
 grep -F -- '--parity-vault-file FILE' "$help_output" >/dev/null || fail 'usage omits parity vault option'
 grep -F -- '--parity-vault-password-file FILE_OR_EXECUTABLE' "$help_output" >/dev/null ||
   fail 'usage omits parity password option'
+grep -F -- '--platform mac|integration' "$help_output" >/dev/null ||
+  fail 'usage omits explicit proof platform option'
+grep -F -- '--integration-ports-file FILE' "$help_output" >/dev/null ||
+  fail 'usage omits integration ports input'
 grep -F -- 'exact #!/bin/sh shebang without options or NUL bytes' "$help_output" >/dev/null ||
   fail 'usage omits the executable password provider format'
 
@@ -95,6 +104,31 @@ expect_failure 'adoption without parity password' 'adoption requires --parity-va
 expect_failure 'fresh parity options' 'fresh lane rejects parity vault options' \
   "$runner" --lane fresh --vault-file "$vault_file" --vault-password-file "$password_file" \
     --parity-vault-file "$parity_vault_file" --parity-vault-password-file "$parity_password_file"
+expect_failure 'fresh integration platform' 'integration platform is available only in the adoption lane' \
+  "$runner" --lane fresh --platform integration \
+    --vault-file "$vault_file" --vault-password-file "$password_file"
+expect_failure 'integration without owned ports' 'integration platform requires --integration-ports-file' \
+  "$runner" --lane adoption --platform integration \
+    --vault-file "$vault_file" --vault-password-file "$password_file" \
+    --parity-vault-file "$parity_vault_file" --parity-vault-password-file "$parity_password_file"
+expect_failure 'Mac with integration ports' 'integration ports are available only with the integration platform' \
+  "$runner" --lane adoption --integration-ports-file "$integration_ports_file" \
+    --vault-file "$vault_file" --vault-password-file "$password_file" \
+    --parity-vault-file "$parity_vault_file" --parity-vault-password-file "$parity_password_file"
+duplicate_ports_file=$temporary_parent/duplicate-ports.json
+sed 's/"ntfy_port":42586/"ntfy_port":48090/' "$integration_ports_file" > "$duplicate_ports_file"
+chmod 0600 "$duplicate_ports_file"
+expect_failure 'duplicate integration ports' 'integration ports input is invalid' \
+  "$runner" --lane adoption --platform integration --integration-ports-file "$duplicate_ports_file" \
+    --vault-file "$vault_file" --vault-password-file "$password_file" \
+    --parity-vault-file "$parity_vault_file" --parity-vault-password-file "$parity_password_file"
+expect_failure 'unknown proof platform' 'unknown proof platform' \
+  "$runner" --lane adoption --platform linux \
+    --vault-file "$vault_file" --vault-password-file "$password_file" \
+    --parity-vault-file "$parity_vault_file" --parity-vault-password-file "$parity_password_file"
+expect_failure 'ambient proof platform' 'reserved proof platform environment must be unset' \
+  env PLATFORM_PROOF_PLATFORM=integration "$runner" --lane fresh \
+    --vault-file "$vault_file" --vault-password-file "$password_file"
 expect_failure 'fresh ambient adoption mapping' 'reserved adoption mapping environment must be unset' \
   env PLATFORM_ADOPTION_ROOT="$temporary_parent/hostile" "$runner" --lane fresh \
     --vault-file "$vault_file" --vault-password-file "$password_file"
@@ -916,6 +950,31 @@ env PLATFORM_MAC_TMPDIR="$temporary_parent" "$runner" --lane adoption \
   --parity-vault-file "$parity_vault_file" --parity-vault-password-file "$parity_password_file" \
   --phase report --sandbox "$matching_sandbox" >/dev/null 2>&1 ||
   fail 'repeated resumed adoption could not safely replace its pinned copies'
+
+resume_ports_file=$temporary_parent/resume-integration-ports.json
+cat > "$resume_ports_file" <<'JSON'
+{"schema":1,"audiobookshelf_port":33378,"beszel_port":38090,"dozzle_port":38080,"immich_port":32283,"jellyfin_port":38096,"komga_port":35600,"ntfy_port":32586,"paperless_port":38000,"tinymediamanager_api_port":37878,"tinymediamanager_web_port":34000}
+JSON
+chmod 0600 "$resume_ports_file"
+env PLATFORM_MAC_TMPDIR="$temporary_parent" "$runner" --lane adoption --platform integration \
+  --integration-ports-file "$resume_ports_file" \
+  --vault-file "$vault_file" --vault-password-file "$password_file" \
+  --parity-vault-file "$parity_vault_file" --parity-vault-password-file "$parity_password_file" \
+  --phase report --sandbox "$matching_sandbox" >/dev/null 2>&1 ||
+  fail 'matching resumed integration ports were rejected'
+expect_failure 'resumed integration without ports input' \
+  'integration platform requires --integration-ports-file' \
+  env PLATFORM_MAC_TMPDIR="$temporary_parent" "$runner" --lane adoption --platform integration \
+    --vault-file "$vault_file" --vault-password-file "$password_file" \
+    --parity-vault-file "$parity_vault_file" --parity-vault-password-file "$parity_password_file" \
+    --phase report --sandbox "$matching_sandbox"
+expect_failure 'resumed integration port mismatch' \
+  'resume integration ports do not match the recorded run' \
+  env PLATFORM_MAC_TMPDIR="$temporary_parent" "$runner" --lane adoption --platform integration \
+    --integration-ports-file "$integration_ports_file" \
+    --vault-file "$vault_file" --vault-password-file "$password_file" \
+    --parity-vault-file "$parity_vault_file" --parity-vault-password-file "$parity_password_file" \
+    --phase report --sandbox "$matching_sandbox"
 
 report_input=$temporary_parent/report-input.json
 report_json=$temporary_parent/report.json

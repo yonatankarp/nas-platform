@@ -103,6 +103,20 @@ mac_shell_quote() {
   esac
 }
 
+mac_integration_gateway() {
+  mac_gateway=$(docker network inspect bridge \
+    --format '{{ (index .IPAM.Config 0).Gateway }}') ||
+    mac_die 'integration Docker host address is unavailable'
+  ruby -ripaddr -e '
+    value = ARGV.fetch(0)
+    address = IPAddr.new(value)
+    abort unless address.ipv4? && value == address.to_s &&
+      value != "0.0.0.0" && !address.loopback? &&
+      !IPAddr.new("224.0.0.0/4").include?(address)
+    puts value
+  ' "$mac_gateway" 2>/dev/null || mac_die 'integration Docker host address is invalid'
+}
+
 mac_run_hooks() {
   mac_hook_group=$1
   shift

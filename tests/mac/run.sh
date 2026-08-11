@@ -15,6 +15,7 @@ usage() {
   printf '%s\n' \
     'usage: run.sh --lane fresh|adoption --vault-file FILE --vault-password-file FILE_OR_EXECUTABLE' \
     '              [--parity-vault-file FILE --parity-vault-password-file FILE_OR_EXECUTABLE]' \
+    '              [--platform mac|integration] [--integration-ports-file FILE]' \
     '              [--keep-on-failure] [--phase NAME] [--sandbox PATH]' \
     'Executable password providers must use the exact #!/bin/sh shebang without options or NUL bytes.'
 }
@@ -26,7 +27,11 @@ parity_vault_file=
 parity_vault_password_file=
 selected_phase=
 requested_sandbox=
+integration_ports_file=
 keep_on_failure=false
+[ -z "${PLATFORM_PROOF_PLATFORM+x}" ] ||
+  mac_die 'reserved proof platform environment must be unset'
+proof_platform=mac
 [ -z "${RUBYOPT+x}" ] && [ -z "${RUBYLIB+x}" ] &&
   [ -z "${RUBYGEMS_GEMDEPS+x}" ] && [ -z "${GEM_HOME+x}" ] && [ -z "${GEM_PATH+x}" ] &&
   [ -z "${BUNDLE_GEMFILE+x}" ] && [ -z "${BUNDLE_BIN_PATH+x}" ] &&
@@ -67,7 +72,7 @@ keep_on_failure=false
   mac_die 'reserved adoption mapping environment must be unset'
 while [ "$#" -gt 0 ]; do
   case $1 in
-    --lane|--vault-file|--vault-password-file|--parity-vault-file|--parity-vault-password-file|--phase|--sandbox)
+    --lane|--vault-file|--vault-password-file|--parity-vault-file|--parity-vault-password-file|--phase|--sandbox|--platform|--integration-ports-file)
       [ "$#" -ge 2 ] || { usage >&2; exit 2; }
       case $1 in
         --lane) lane=$2 ;;
@@ -77,6 +82,8 @@ while [ "$#" -gt 0 ]; do
         --parity-vault-password-file) parity_vault_password_file=$2 ;;
         --phase) selected_phase=$2 ;;
         --sandbox) requested_sandbox=$2 ;;
+        --platform) proof_platform=$2 ;;
+        --integration-ports-file) integration_ports_file=$2 ;;
       esac
       shift 2
       ;;
@@ -85,6 +92,20 @@ while [ "$#" -gt 0 ]; do
     *) usage >&2; exit 2 ;;
   esac
 done
+
+case $proof_platform in
+  mac) ;;
+  integration)
+    [ "$lane" = adoption ] ||
+      mac_die 'integration platform is available only in the adoption lane'
+    [ -n "$integration_ports_file" ] ||
+      mac_die 'integration platform requires --integration-ports-file'
+    ;;
+  *) mac_die 'unknown proof platform' ;;
+esac
+[ "$proof_platform" = integration ] || [ -z "$integration_ports_file" ] ||
+  mac_die 'integration ports are available only with the integration platform'
+export PLATFORM_PROOF_PLATFORM=$proof_platform
 
 case $lane in
   fresh)
@@ -549,6 +570,55 @@ allocate_service_port() {
   done
 }
 
+read_integration_ports() {
+  ruby -rjson - "$integration_ports_file" "$mac_repo_dir" <<'RUBY'
+path, repository = ARGV
+expected = %w[
+  audiobookshelf_port beszel_port dozzle_port immich_port jellyfin_port komga_port
+  ntfy_port paperless_port tinymediamanager_api_port tinymediamanager_web_port
+]
+flags = File::RDONLY
+flags |= File::NOFOLLOW if File.const_defined?(:NOFOLLOW)
+raise "unsafe" unless File.absolute_path(path) == path && !File.symlink?(path)
+parent = File.realpath(File.dirname(path))
+repository = File.realpath(repository)
+raise "unsafe" if parent == repository || parent.start_with?(repository + File::SEPARATOR)
+before = File.lstat(path)
+raise "unsafe" unless before.file? && before.uid == Process.uid &&
+  (before.mode & 0o777) == 0o600 && before.size <= 4096
+bytes = File.open(path, flags) do |input|
+  held = input.stat
+  raise "unsafe" unless [held.dev, held.ino, held.size, held.mode, held.uid] ==
+    [before.dev, before.ino, before.size, before.mode, before.uid]
+  value = input.read(4097)
+  raise "unsafe" if value.bytesize > 4096
+  after = input.stat
+  raise "unsafe" unless [after.dev, after.ino, after.size, after.mode, after.uid, after.mtime.to_r, after.ctime.to_r] ==
+    [held.dev, held.ino, held.size, held.mode, held.uid, held.mtime.to_r, held.ctime.to_r]
+  value
+end
+document = JSON.parse(bytes)
+raise "unsafe" unless document.is_a?(Hash) && document.keys.sort == (["schema"] + expected).sort &&
+  document["schema"] == 1
+ports = expected.map { |name| document.fetch(name) }
+raise "unsafe" unless ports.all? { |port| port.is_a?(Integer) && port.between?(1024, 65_535) } &&
+  ports.uniq.length == ports.length
+puts ports.join(" ")
+RUBY
+}
+
+if [ "$proof_platform" = integration ]; then
+  integration_ports=$(read_integration_ports) || mac_die 'integration ports input is invalid'
+  # The validated representation contains exactly ten decimal integers.
+  set -- $integration_ports
+  [ "$#" -eq 10 ] || mac_die 'integration ports input is invalid'
+  expected_audiobookshelf_port=$1 expected_beszel_port=$2 expected_dozzle_port=$3
+  expected_immich_port=$4 expected_jellyfin_port=$5 expected_komga_port=$6
+  expected_ntfy_port=$7 expected_paperless_port=$8 expected_tinymediamanager_api_port=$9
+  shift 9
+  expected_tinymediamanager_web_port=$1
+fi
+
 initialize_report_input() {
   "$mac_script_dir/report.rb" --init "$state_input" --lane "$lane" \
     --sandbox-id "$(basename -- "$sandbox")" --git-revision "$git_revision" \
@@ -562,26 +632,35 @@ initialize_report_input() {
 }
 
 if [ ! -f "$state_input" ]; then
-  beszel_port=$(allocate_service_port)
-  ntfy_port=$(allocate_service_port "$beszel_port")
-  dozzle_port=$(allocate_service_port "$beszel_port" "$ntfy_port")
-  audiobookshelf_port=$(allocate_service_port "$beszel_port" "$ntfy_port" "$dozzle_port")
-  komga_port=$(allocate_service_port \
-    "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port")
-  tinymediamanager_web_port=$(allocate_service_port \
-    "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port" "$komga_port")
-  tinymediamanager_api_port=$(allocate_service_port \
-    "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port" "$komga_port" \
-    "$tinymediamanager_web_port")
-  jellyfin_port=$(allocate_service_port \
-    "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port" "$komga_port" \
-    "$tinymediamanager_web_port" "$tinymediamanager_api_port")
-  immich_port=$(allocate_service_port \
-    "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port" "$komga_port" \
-    "$tinymediamanager_web_port" "$tinymediamanager_api_port" "$jellyfin_port")
-  paperless_port=$(allocate_service_port \
-    "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port" "$komga_port" \
-    "$tinymediamanager_web_port" "$tinymediamanager_api_port" "$jellyfin_port" "$immich_port")
+  if [ "$proof_platform" = integration ]; then
+    audiobookshelf_port=$expected_audiobookshelf_port beszel_port=$expected_beszel_port
+    dozzle_port=$expected_dozzle_port immich_port=$expected_immich_port
+    jellyfin_port=$expected_jellyfin_port komga_port=$expected_komga_port
+    ntfy_port=$expected_ntfy_port paperless_port=$expected_paperless_port
+    tinymediamanager_api_port=$expected_tinymediamanager_api_port
+    tinymediamanager_web_port=$expected_tinymediamanager_web_port
+  else
+    beszel_port=$(allocate_service_port)
+    ntfy_port=$(allocate_service_port "$beszel_port")
+    dozzle_port=$(allocate_service_port "$beszel_port" "$ntfy_port")
+    audiobookshelf_port=$(allocate_service_port "$beszel_port" "$ntfy_port" "$dozzle_port")
+    komga_port=$(allocate_service_port \
+      "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port")
+    tinymediamanager_web_port=$(allocate_service_port \
+      "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port" "$komga_port")
+    tinymediamanager_api_port=$(allocate_service_port \
+      "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port" "$komga_port" \
+      "$tinymediamanager_web_port")
+    jellyfin_port=$(allocate_service_port \
+      "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port" "$komga_port" \
+      "$tinymediamanager_web_port" "$tinymediamanager_api_port")
+    immich_port=$(allocate_service_port \
+      "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port" "$komga_port" \
+      "$tinymediamanager_web_port" "$tinymediamanager_api_port" "$jellyfin_port")
+    paperless_port=$(allocate_service_port \
+      "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port" "$komga_port" \
+      "$tinymediamanager_web_port" "$tinymediamanager_api_port" "$jellyfin_port" "$immich_port")
+  fi
   if [ "$lane" = adoption ]; then
     initialize_report_input --parity-vault-checksum "$parity_vault_checksum" \
       --legacy-commit "$legacy_commit"
@@ -616,6 +695,19 @@ else
     mac_die 'resume parity vault checksum does not match the recorded run'
   [ "$state_legacy_commit" = "$legacy_commit" ] ||
     mac_die 'resume legacy commit does not match the recorded run'
+  if [ "$proof_platform" = integration ]; then
+    [ "$audiobookshelf_port" = "$expected_audiobookshelf_port" ] &&
+      [ "$beszel_port" = "$expected_beszel_port" ] &&
+      [ "$dozzle_port" = "$expected_dozzle_port" ] &&
+      [ "$immich_port" = "$expected_immich_port" ] &&
+      [ "$jellyfin_port" = "$expected_jellyfin_port" ] &&
+      [ "$komga_port" = "$expected_komga_port" ] &&
+      [ "$ntfy_port" = "$expected_ntfy_port" ] &&
+      [ "$paperless_port" = "$expected_paperless_port" ] &&
+      [ "$tinymediamanager_api_port" = "$expected_tinymediamanager_api_port" ] &&
+      [ "$tinymediamanager_web_port" = "$expected_tinymediamanager_web_port" ] ||
+      mac_die 'resume integration ports do not match the recorded run'
+  fi
 fi
 
 export PLATFORM_MAC_SANDBOX=$sandbox
@@ -644,6 +736,12 @@ export PLATFORM_VAULT_FILE=$vault_file
 
 run_site() {
   run_site_status=0
+  if [ "$proof_platform" = integration ]; then
+    integration_callback_host=$(mac_integration_gateway) || return 1
+    set -- -e platform_kind=mac -e platform_compose_kind=integration \
+      -e deployment_bundle_test_mode=true \
+      -e "platform_callback_host=$integration_callback_host" "$@"
+  fi
   ansible-playbook -i "$mac_repo_dir/inventory/mac.yml" "$mac_repo_dir/site.yml" \
     --vault-password-file "$vault_password_file" -e @"$vault_file" \
     -e "platform_vault_file=$vault_file" "$@" || run_site_status=$?
@@ -791,10 +889,17 @@ capture_diagnostics() {
 execute_phase() {
   case $1 in
     preflight)
-      [ "$(uname -s)" = Darwin ] || {
-        mac_die 'Mac proof harness requires Darwin'
-        return 1
-      }
+      case $proof_platform:$(uname -s) in
+        mac:Darwin|integration:Linux) ;;
+        mac:*)
+          mac_die 'Mac proof harness requires Darwin'
+          return 1
+          ;;
+        integration:*)
+          mac_die 'integration proof harness requires Linux'
+          return 1
+          ;;
+      esac
       command -v docker >/dev/null 2>&1 || {
         mac_die 'Docker is required'
         return 1

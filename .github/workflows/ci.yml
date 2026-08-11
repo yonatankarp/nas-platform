@@ -83,15 +83,25 @@ jobs:
           pipx install 'ansible-lint==26.6.0'
           ansible-galaxy collection install -r requirements.yml
 
-      - name: Check legacy role Compose compatibility
+      - name: Check out pinned legacy infrastructure
         if: steps.scope.outputs.docs_only != 'true'
         run: |
-          legacy_root=$(mktemp -d)
-          trap 'find "$legacy_root" -depth -delete' EXIT
-          git -C "$legacy_root" init
+          legacy_root="$GITHUB_WORKSPACE/../nas-infrastructure"
+          legacy_revision=400f03f276ae1bb69f5460c175b9fb923d620f1a
+          test ! -e "$legacy_root"
+          mkdir -m 0700 "$legacy_root"
+          git -C "$legacy_root" init -q
           git -C "$legacy_root" remote add origin https://github.com/yonatankarp/nas-infrastructure.git
-          git -C "$legacy_root" fetch --depth=1 origin 400f03f276ae1bb69f5460c175b9fb923d620f1a
-          NAS_INFRASTRUCTURE_DIR="$legacy_root" tests/mac/legacy-role-compose-test.sh
+          git -C "$legacy_root" fetch --depth=1 origin "$legacy_revision"
+          git -C "$legacy_root" checkout --detach -q FETCH_HEAD
+          test "$(git -C "$legacy_root" rev-parse --verify "$legacy_revision^{commit}")" = "$legacy_revision"
+          test -z "$(git -C "$legacy_root" status --porcelain=v1 --untracked-files=all)"
+
+      - name: Check legacy role Compose compatibility
+        if: steps.scope.outputs.docs_only != 'true'
+        env:
+          NAS_INFRASTRUCTURE_DIR: ${{ github.workspace }}/../nas-infrastructure
+        run: tests/mac/legacy-role-compose-test.sh
 
       - name: Check legacy seed playbook syntax
         if: steps.scope.outputs.docs_only != 'true'
@@ -141,3 +151,19 @@ jobs:
       - name: Converge against a disposable sandbox
         if: steps.scope.outputs.docs_only != 'true'
         run: tests/integration.sh site.yml
+
+      - name: Converge synthetic legacy adoption
+        if: steps.scope.outputs.docs_only != 'true'
+        env:
+          NAS_INFRASTRUCTURE_DIR: ${{ github.workspace }}/../nas-infrastructure
+          ADOPTION_DIAGNOSTICS_DIR: ${{ runner.temp }}/nas-platform-adoption-diagnostics
+        run: tests/adoption-integration.sh
+
+      - name: Upload sanitized adoption diagnostics
+        if: failure() && steps.scope.outputs.docs_only != 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: synthetic-adoption-diagnostics
+          path: ${{ runner.temp }}/nas-platform-adoption-diagnostics/sanitized.txt
+          if-no-files-found: ignore
+          retention-days: 1
