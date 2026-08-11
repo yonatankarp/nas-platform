@@ -18,6 +18,10 @@ COMMIT = "400f03f276ae1bb69f5460c175b9fb923d620f1a"
 CANARY = "baseline-canary-must-never-publish"
 IMAGE_DIGEST = "sha256:#{'1' * 64}"
 
+recorder_source = File.binread(RECORDER)
+raise "baseline recorder uses unavailable Ruby directory descriptor APIs" if
+  recorder_source.include?("Dir.for_fd") || recorder_source.include?("Dir.fchdir")
+
 def evidence(service)
   identity = { "name" => "#{service}-operator", "role" => "administrator", "enabled" => true }
   case service

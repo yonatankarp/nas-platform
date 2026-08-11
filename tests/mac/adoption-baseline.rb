@@ -368,6 +368,7 @@ module AdoptionFileSystem
   extern "int linkat(int, const char *, int, const char *, int)"
   extern "int unlinkat(int, const char *, int)"
   extern "int mkdirat(int, const char *, int)"
+  extern "int fchdir(int)"
 end
 
 StagingDirectory = Struct.new(:parent, :name, :file, :path, :removed, keyword_init: true)
@@ -436,14 +437,17 @@ def create_staging_directory(parent, parent_path, prefix)
 end
 
 def directory_children(directory)
-  duplicate = directory.dup
-  descriptor = duplicate.fileno
-  duplicate.autoclose = false
-  stream = Dir.for_fd(descriptor)
-  stream.children
+  previous = File.open(".", File::RDONLY)
+  result = AdoptionFileSystem.fchdir(directory.fileno)
+  raise SystemCallError.new("fchdir", Fiddle.last_error) if result.negative?
+
+  Dir.children(".")
 ensure
-  stream&.close
-  duplicate&.close if duplicate&.autoclose?
+  if previous
+    restored = AdoptionFileSystem.fchdir(previous.fileno)
+    previous.close
+    raise SystemCallError.new("fchdir", Fiddle.last_error) if restored.negative?
+  end
 end
 
 def erase_regular_file(file)
