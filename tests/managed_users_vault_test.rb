@@ -261,7 +261,7 @@ managed.fetch("ntfy", []).each do |entry|
   next unless entry.is_a?(Hash)
   check(failures, BCRYPT.match?(entry["password_hash"].to_s),
         "ntfy password_hash must have bcrypt shape")
-  check(failures, %w[user admin].include?(entry["role"]), "ntfy role must be supported")
+  check(failures, entry["role"] == "user", "ntfy role must be nonadministrative")
   check(failures, NTFY_USERNAME.match?(entry["username"].to_s),
         "ntfy username must use native safe characters")
   access = entry["access"]
@@ -269,8 +269,7 @@ managed.fetch("ntfy", []).each do |entry|
         access.is_a?(Array) && access.all? do |rule|
           rule.is_a?(Hash) && rule.keys.sort == %w[permission topic] &&
             NTFY_LITERAL_TOPIC.match?(rule["topic"].to_s) &&
-            %w[read-only write-only read-write deny].include?(rule["permission"]) &&
-            (entry["role"] != "admin" || rule["permission"] == "read-write")
+            %w[read-only write-only read-write deny].include?(rule["permission"])
         end,
         "ntfy access rules must have supported values")
   tokens = entry["tokens"]
@@ -362,6 +361,9 @@ check(failures,
 check(failures,
       managed_options.dig("beszel", "options", "verified", "choices") == [true],
       "beszel verified argument must only accept true")
+check(failures,
+      managed_options.dig("ntfy", "options", "role", "choices") == ["user"],
+      "ntfy managed role argument must only accept user")
 immich_fields = managed_options.is_a?(Hash) ?
   managed_options.dig("immich", "options")&.keys&.sort : nil
 check(failures, immich_fields == %w[email name password quota_size],
@@ -409,6 +411,7 @@ required_validation_fragments = [
   "item.password_hash is match",
   "item.type in ['admin', 'user', 'guest']",
   "item.role in ['user', 'admin']",
+  "item.role == 'user'",
   "difference(['ADMIN', 'FILE_DOWNLOAD', 'PAGE_STREAMING', 'KOBO_SYNC', 'KOREADER_SYNC'])"
 ]
 required_validation_fragments.each do |fragment|

@@ -23,3 +23,4 @@ $compose_arguments
 EOF
 "$@" up -d --force-recreate --wait ntfy
 [ "$PLATFORM_PROOF_LANE" != adoption ] || "$mac_hook_dir/../../adoption-container-attest.sh"
+"$mac_hook_dir/../verify/15-ntfy.sh"

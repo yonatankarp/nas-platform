@@ -12,6 +12,8 @@ require "yaml"
 ROOT = File.expand_path("..", __dir__)
 NTFY_MAIN = File.join(ROOT, "roles", "ntfy", "tasks", "main.yml")
 NTFY_MANAGED = File.join(ROOT, "roles", "ntfy", "tasks", "managed_users.yml")
+NTFY_VERIFY_HOOK = File.join(ROOT, "tests", "mac", "hooks", "verify", "15-ntfy.sh")
+NTFY_RECREATE_HOOK = File.join(ROOT, "tests", "mac", "hooks", "fixtures-recreate", "15-ntfy.sh")
 
 class FixtureTimeout < StandardError; end
 
@@ -156,7 +158,7 @@ def run_authoritative_probe_fixture(
   end
 end
 
-def with_http_recorder
+def with_http_recorder(account_mutator = nil)
   server = TCPServer.new("127.0.0.1", 0)
   requests = []
   stopped = false
@@ -177,7 +179,27 @@ def with_http_recorder
       end
       body = client.read(headers.fetch("content-length", "0").to_i)
       requests << [method, target, body]
-      client.write("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+      response_body = if target == "/v1/account"
+                        username = headers.fetch("authorization", "").delete_prefix("Basic ")
+                        username = username.unpack1("m0").to_s.split(":", 2).first
+                        host = headers.fetch("host")
+                        account = {
+                          "username" => username, "role" => "user",
+                          "subscriptions" => [{
+                            "base_url" => "http://#{host}", "topic" => "nas-critical",
+                            "display_name" => nil
+                          }]
+                        }
+                        account = account_mutator.call(account) if account_mutator
+                        JSON.generate(account)
+                      else
+                        ""
+                      end
+      content_type = target == "/v1/account" ? "application/json" : "text/plain"
+      client.write(
+        "HTTP/1.1 200 OK\r\nContent-Type: #{content_type}\r\n" \
+        "Content-Length: #{response_body.bytesize}\r\nConnection: close\r\n\r\n#{response_body}"
+      )
       client.close
     end
   rescue IOError, Errno::EBADF
@@ -190,8 +212,99 @@ ensure
   thread&.join
 end
 
+def run_ntfy_verify_hook_fixture(port)
+  Dir.mktmpdir("nas-platform-ntfy-hook-") do |directory|
+    fake_vault = File.join(directory, "vault.yml")
+    fake_password = File.join(directory, "password")
+    fake_ansible_vault = File.join(directory, "ansible-vault")
+    File.write(fake_password, "fixture\n", mode: "w", perm: 0o600)
+    File.write(fake_vault, YAML.dump(
+      "vault_managed_users" => {
+        "ntfy" => [
+          {
+            "username" => "reader", "password" => "reader-secret", "role" => "user",
+            "access" => [{ "topic" => "nas-critical", "permission" => "read-only" }]
+          },
+          {
+            "username" => "writer", "password" => "writer-secret", "role" => "user",
+            "access" => [{ "topic" => "nas-critical", "permission" => "write-only" }]
+          },
+          {
+            "username" => "other", "password" => "other-secret", "role" => "user",
+            "access" => [{ "topic" => "other-topic", "permission" => "read-write" }]
+          }
+        ]
+      }
+    ), mode: "w", perm: 0o600)
+    File.write(fake_ansible_vault, <<~'SH', mode: "w", perm: 0o700)
+      #!/bin/sh
+      exec /bin/cat "${FAKE_NTFY_VAULT:?}"
+    SH
+    environment = {
+      "PATH" => "#{directory}:#{ENV.fetch('PATH')}",
+      "FAKE_NTFY_VAULT" => fake_vault,
+      "PLATFORM_MAC_VAULT_FILE" => fake_vault,
+      "PLATFORM_MAC_VAULT_PASSWORD_FILE" => fake_password,
+      "PLATFORM_NTFY_PORT" => port.to_s
+    }
+    Open3.capture3(environment, NTFY_VERIFY_HOOK)
+  end
+end
+
 failures = []
 main_tasks = YAML.safe_load_file(NTFY_MAIN, aliases: false)
+verify_hook = File.exist?(NTFY_VERIFY_HOOK) ? File.read(NTFY_VERIFY_HOOK) : ""
+recreate_hook = File.read(NTFY_RECREATE_HOOK)
+failures << "ntfy verification hook is missing or not executable" unless
+  File.file?(NTFY_VERIFY_HOOK) && File.executable?(NTFY_VERIFY_HOOK)
+failures << "ntfy verification hook does not inspect every eligible account subscription" unless
+  verify_hook.include?("vault_managed_users") && verify_hook.include?("nas-critical") &&
+    verify_hook.include?("base_url") && verify_hook.include?("subscriptions") &&
+    verify_hook.include?("Net::HTTP") && verify_hook.include?("basic_auth")
+failures << "ntfy verification hook incorrectly manages browser-local notification state" if
+  verify_hook.match?(/web.?push|notification.?permission|local.?storage/i)
+failures << "ntfy recreation does not verify synchronized account subscriptions" unless
+  recreate_hook.include?("../verify/15-ntfy.sh")
+
+with_http_recorder do |port, hook_requests|
+  stdout, stderr, hook_status = run_ntfy_verify_hook_fixture(port)
+  failures << "ntfy verification hook fixture failed: #{stderr.lines.last&.strip}" unless
+    hook_status.success?
+  failures << "ntfy verification hook disclosed a managed password" if
+    (stdout + stderr).match?(/reader-secret|writer-secret|other-secret/)
+  failures << "ntfy verification hook did not authenticate exactly every eligible account" unless
+    hook_requests.map { |method, target, _body| [method, target] } == [["GET", "/v1/account"]]
+end
+
+with_http_recorder(proc do |account|
+  account.merge("subscriptions" => [account.fetch("subscriptions").first.merge(
+    "display_name" => "Critical"
+  )])
+end) do |port, _requests|
+  _stdout, _stderr, hook_status = run_ntfy_verify_hook_fixture(port)
+  failures << "ntfy verification hook rejected a string display_name" unless hook_status.success?
+end
+
+{
+  "wrong username" => proc { |account| account.merge("username" => "other") },
+  "administrator role" => proc { |account| account.merge("role" => "admin") },
+  "missing display_name" => proc do |account|
+    account.merge("subscriptions" => [account.fetch("subscriptions").first.reject do |key, _value|
+      key == "display_name"
+    end])
+  end,
+  "extra subscription field" => proc do |account|
+    account.merge("subscriptions" => [account.fetch("subscriptions").first.merge("extra" => true)])
+  end,
+  "wrong subscription field type" => proc do |account|
+    account.merge("subscriptions" => [account.fetch("subscriptions").first.merge("display_name" => 7)])
+  end
+}.each do |label, mutation|
+  with_http_recorder(mutation) do |port, _requests|
+    _stdout, _stderr, hook_status = run_ntfy_verify_hook_fixture(port)
+    failures << "ntfy verification hook accepted #{label}" if hook_status.success?
+  end
+end
 verify_include = main_tasks.find do |task|
   task["name"] == "Verify managed ntfy users and declared access"
 end
@@ -230,10 +343,12 @@ if verify_include
       "hosts" => "localhost", "gather_facts" => false,
       "vars" => {
         "ntfy_account_api" => "http://127.0.0.1:#{port}/v1/account",
+        "ntfy_account_subscription_api" => "http://127.0.0.1:#{port}/v1/account/subscription",
+        "ntfy_base_url" => "http://127.0.0.1:#{port}",
         "ntfy_port" => port,
         "vault_managed_ntfy_users" => [{
-          "username" => "auditor", "password" => "plain", "role" => "admin",
-          "access" => [{ "topic" => "admin-topic", "permission" => "read-write" }]
+          "username" => "auditor", "password" => "plain", "role" => "user",
+          "access" => [{ "topic" => "nas-critical", "permission" => "read-write" }]
         }]
       },
       "tasks" => [selected_include]
@@ -242,7 +357,8 @@ if verify_include
     failures << "normal verify tag fixture failed: #{stderr.lines.last&.strip}" unless status.success?
     failures << "normal verify tag fixture omitted managed authentication/read/write" unless
       requests.map { |method, target, _body| [method, target] } == [
-        ["GET", "/v1/account"], ["GET", "/admin-topic/json?poll=1"], ["POST", "/admin-topic"]
+        ["GET", "/v1/account"], ["GET", "/v1/account"],
+        ["GET", "/nas-critical/json?poll=1"], ["POST", "/nas-critical"]
       ]
   end
 
@@ -256,10 +372,12 @@ if verify_include
       "hosts" => "localhost", "gather_facts" => false,
       "vars" => {
         "ntfy_account_api" => "http://127.0.0.1:#{port}/v1/account",
+        "ntfy_account_subscription_api" => "http://127.0.0.1:#{port}/v1/account/subscription",
+        "ntfy_base_url" => "http://127.0.0.1:#{port}",
         "ntfy_port" => port,
         "vault_managed_ntfy_users" => [{
-          "username" => "auditor", "password" => "plain", "role" => "admin",
-          "access" => [{ "topic" => "admin-topic", "permission" => "read-write" }]
+          "username" => "auditor", "password" => "plain", "role" => "user",
+          "access" => [{ "topic" => "nas-critical", "permission" => "read-write" }]
         }]
       },
       "tasks" => [direct_include]
@@ -275,10 +393,12 @@ if verify_include
       "hosts" => "localhost", "gather_facts" => false,
       "vars" => {
         "ntfy_account_api" => "http://127.0.0.1:#{port}/v1/account",
+        "ntfy_account_subscription_api" => "http://127.0.0.1:#{port}/v1/account/subscription",
+        "ntfy_base_url" => "http://127.0.0.1:#{port}",
         "ntfy_port" => port,
         "vault_managed_ntfy_users" => [{
-          "username" => "auditor", "password" => "plain", "role" => "admin",
-          "access" => [{ "topic" => "admin-topic", "permission" => "read-write" }]
+          "username" => "auditor", "password" => "plain", "role" => "user",
+          "access" => [{ "topic" => "nas-critical", "permission" => "read-write" }]
         }]
       },
       "tasks" => [selected_include]

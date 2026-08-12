@@ -758,19 +758,18 @@ identity remains under the separate primary credential contract.
 #### ntfy managed users
 
 `username` is the login identity; `password` is its preserved clear credential;
-`password_hash` is the matching bcrypt value; `role` is `user` or `admin`
-(`user` is the least-privilege default); `access` is a list of exact literal
-`topic` and `permission` mappings; and
+`password_hash` is the matching bcrypt value; `role` is exactly `user` because
+managed entries are interactive nonadministrative accounts; `access` is a list
+of exact literal `topic` and `permission` mappings; and
 `tokens` is a unique list of owned `tk_` tokens, which may be empty. Supported
 permissions are `read-only`, `write-only`, `read-write`, and `deny`. Managed
 topics use only letters, digits, `_`, and `-`, with a maximum of 64 characters;
 wildcards, URL separators, whitespace, commas, and colons are not supported by
 this exact verifier. Usernames follow ntfy's native letters, digits, `_`, `-`,
-`.`, `+`, and `@` contract. Because ntfy administrators always have read-write
-access to every topic and reject ACL provisioning, administrator declarations
-may contain only `read-write` topic entries; the role omits those redundant ACL
-rows and verifies both reads and writes. Managed identities cannot duplicate
-the administrator or the Dozzle and Beszel publishers. The role treats the
+`.`, `+`, and `@` contract. Publisher and administrator identities remain under
+their separate noninteractive and primary-credential contracts. Managed
+identities cannot duplicate the administrator or the Dozzle and Beszel
+publishers. The role treats the
 prior rendered ntfy `.env` as the declarative ownership record and confirms
 database identities with the pinned `ntfy user list` command before rendering a
 replacement. An owned identity must retain its exact prior hash; a same-name
