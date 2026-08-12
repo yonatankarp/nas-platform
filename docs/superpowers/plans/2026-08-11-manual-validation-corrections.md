@@ -333,7 +333,7 @@ git commit -m "feat: verify Beszel platform telemetry"
 
 - [ ] **Step 1: Add failing profile-selection and preservation tests**
 
-Cover default `standard`, an explicit profile-by-email selection, recursive per-email leaf overrides, rejection of unknown keys/admin fields, and preservation of an unowned sentinel preference.
+Cover default `standard`, an explicit partial profile-by-email selection, recursive per-email leaf overrides, rejection of unknown keys/admin fields, and preservation of a supported preference leaf that the partial profile does not own.
 
 - [ ] **Step 2: Verify RED**
 
@@ -349,9 +349,14 @@ For each encrypted managed user, select the configured profile or `standard`, re
 
 Authenticate once as the primary admin; GET the target user's preference document, compare only declared leaves, PATCH the merged owned leaves only on drift, and GET again to verify. Fail on zero/multiple user matches or unsupported response schema.
 
+Pinned v3.1.0 persists the operator-facing `avatar.color` leaf as the separate
+administrator user property `avatarColor`; translate only that leaf through a
+conditional `PATCH /admin/users/:id` and authoritative `GET /admin/users/:id`.
+Do not send `avatar` through the preference PATCH.
+
 - [ ] **Step 5: Exercise drift and adoption preservation**
 
-Seed an unrelated preference sentinel, mutate multiple owned leaves, and prove reconciliation restores all profile leaves without deleting the sentinel or changing non-admin status.
+Seed a legitimate pinned preference leaf that a partial profile does not own, mutate multiple owned leaves, and prove reconciliation restores the owned leaves without changing the supported unowned leaf or non-admin status.
 
 - [ ] **Step 6: Verify and commit**
 

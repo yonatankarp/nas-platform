@@ -151,7 +151,8 @@ RUBY
 ) || die 'service Compose paths are invalid'
   if ! mac_ansible_playbook -i "$repo_dir/inventory/mac.yml" "$script_dir/legacy-role-seed.yml" \
       --vault-password-file "$PLATFORM_MAC_VAULT_PASSWORD_FILE" \
-      -e @"$PLATFORM_MAC_VAULT_FILE" -e "platform_vault_file=$PLATFORM_MAC_VAULT_FILE" \
+      -e @"$PLATFORM_MAC_VAULT_FILE" -e @"$PLATFORM_MAC_FIXTURE_VARS_FILE" \
+      -e "platform_vault_file=$PLATFORM_MAC_VAULT_FILE" \
       -e "nas_docker_root=$PLATFORM_MAC_SANDBOX/legacy" -e "platform_release_id=$release_id" \
       -e "platform_current_dir=$seed_root/current" -e "platform_runtime_dir=$seed_root/runtime" \
       -e "$seed_port_variable=$seed_port_value" \

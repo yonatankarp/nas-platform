@@ -660,6 +660,28 @@ expect_role_rejection(
   }
 )
 
+empty_avatar_preferences = {
+  "immich_managed_user_preference_profiles" => { "empty-avatar" => { "avatar" => {} } },
+  "immich_managed_user_preference_profile_default" => "empty-avatar",
+  "immich_managed_user_preference_profile_by_email" => {},
+  "immich_managed_user_preference_overrides" => {}
+}
+_stdout, _stderr, empty_avatar_status = validate_with_role(runtime_vault, empty_avatar_preferences)
+check(failures, empty_avatar_status.success?, "empty Immich avatar scope must remain unowned and valid")
+
+expect_role_rejection(
+  failures,
+  "unsupported Immich avatar color",
+  runtime_vault,
+  "cyan-avatar-sentinel",
+  "immich_managed_user_preference_profiles" => {
+    "invalid-avatar" => { "avatar" => { "color" => "cyan-avatar-sentinel" } }
+  },
+  "immich_managed_user_preference_profile_default" => "invalid-avatar",
+  "immich_managed_user_preference_profile_by_email" => {},
+  "immich_managed_user_preference_overrides" => {}
+)
+
 if failures.empty?
   puts "Managed-user vault: all eight service schemas are valid"
 else

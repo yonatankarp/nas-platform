@@ -78,7 +78,52 @@ lane_validation = source.index("case $lane in")
 phase_assignment = source.index("PHASES=$FRESH_PHASES")
 raise "phase constants must precede parsing" unless [fresh_definition, adoption_definition].all? { |index| index && index < parser }
 raise "phase selection must follow lane validation" unless lane_validation && phase_assignment && lane_validation < phase_assignment
+raise "runner does not generate protected Immich fixture policy" unless
+  source.include?("generate_immich_fixture_vars") &&
+  source.include?("ansible-vault view") &&
+  source.include?("export PLATFORM_MAC_FIXTURE_VARS_FILE=$fixture_vars_file") &&
+  source.include?("ensure_immich_fixture_vars")
+raise "fresh/adoption site runs omit fixture policy" unless
+  source.include?('-e @"$fixture_vars_file"')
 RUBY
+
+ruby - "$mac_test_dir/verify.sh" "$mac_test_dir/hooks/drift/70-immich.sh" \
+  "$mac_test_dir/legacy-seed.sh" <<'RUBY'
+ARGV.each do |path|
+  source = File.read(path)
+  raise "#{path} omits protected Immich fixture policy" unless
+    source.include?('PLATFORM_MAC_FIXTURE_VARS_FILE') &&
+    source.include?('-e @"$PLATFORM_MAC_FIXTURE_VARS_FILE"')
+end
+RUBY
+
+fixture_policy=$temporary_parent/immich-fixture-vars.yml
+: > "$fixture_policy"
+chmod 0600 "$fixture_policy"
+printf '%s\n' \
+  'vault_managed_users:' \
+  '  immich:' \
+  '    - email: fixture@example.invalid' |
+  ruby "$mac_test_dir/generate-immich-fixture-vars.rb" \
+    "$fixture_policy" "$repo_dir/inventory/group_vars/all/main.yml"
+ruby -ryaml - "$fixture_policy" "$repo_dir/inventory/group_vars/all/main.yml" <<'RUBY'
+fixture = YAML.safe_load_file(ARGV.fetch(0), aliases: false)
+production = YAML.safe_load_file(ARGV.fetch(1), aliases: false)
+selector = fixture.fetch("immich_managed_user_preference_profile_by_email")
+raise "fixture selector differs" unless selector == { " FIXTURE@EXAMPLE.INVALID " => "compact" }
+compact = fixture.fetch("immich_managed_user_preference_profiles").fetch("compact")
+raise "fixture compact profile differs" unless compact == {
+  "avatar" => {}, "folders" => { "enabled" => true },
+  "people" => { "sidebarWeb" => true }
+}
+raise "fixture designation differs" unless
+  fixture.fetch("immich_contract_partial_profile_email") == "fixture@example.invalid"
+raise "test fixture leaked into production inventory" unless
+  production.fetch("immich_managed_user_preference_profile_by_email").empty? &&
+  production.fetch("immich_managed_user_preference_profiles").keys == ["standard"]
+RUBY
+[ "$(stat -f '%Lp' "$fixture_policy" 2>/dev/null || stat -c '%a' "$fixture_policy")" = 600 ] ||
+  fail 'generated Immich fixture policy mode is unsafe'
 
 real_ruby=$(command -v ruby)
 ruby_wrapper_dir=$temporary_parent/ruby-wrapper

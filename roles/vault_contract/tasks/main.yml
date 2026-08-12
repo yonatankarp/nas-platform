@@ -128,7 +128,10 @@
       - item.value.avatar | default({}) is mapping
       - (item.value.avatar | default({})).keys() | difference(['color']) | length == 0
       - (item.value.avatar | default({})).color | default('primary') is string
-      - (item.value.avatar | default({})).color | default('primary') | length > 0
+      - >-
+        (item.value.avatar | default({})).color | default('primary') in
+        ['primary', 'pink', 'red', 'yellow', 'blue', 'green', 'purple', 'orange',
+         'gray', 'amber']
       - item.value.cast | default({}) is mapping
       - (item.value.cast | default({})).keys() | difference(['gCastEnabled']) | length == 0
       - (item.value.cast | default({})).gCastEnabled | default(false) is boolean

@@ -38,7 +38,7 @@ proof_platform=mac
   [ -z "${BUNDLE_PATH+x}" ] && [ -z "${BUNDLE_APP_CONFIG+x}" ] &&
   [ -z "${BUNDLE_WITH+x}" ] && [ -z "${BUNDLE_WITHOUT+x}" ] ||
   mac_die 'reserved language startup environment must be unset'
-[ -z "${PLATFORM_ADOPTION_ROOT+x}" ] && [ -z "${PLATFORM_ADOPTION_MARKER+x}" ] &&
+  [ -z "${PLATFORM_ADOPTION_ROOT+x}" ] && [ -z "${PLATFORM_ADOPTION_MARKER+x}" ] &&
   [ -z "${PLATFORM_ADOPTION_ENABLED+x}" ] &&
   [ -z "${PLATFORM_ADOPTION_SNAPSHOT_SELF_TEST+x}" ] &&
   [ -z "${PLATFORM_ADOPTION_COMPARE_SELF_TEST+x}" ] &&
@@ -64,6 +64,7 @@ proof_platform=mac
   [ -z "${PLATFORM_ADOPTION_ROLLBACK_OVERRIDE_ROOT+x}" ] &&
   [ -z "${PLATFORM_ADOPTION_ROLLBACK_CHALLENGE_FAULT+x}" ] &&
   [ -z "${PLATFORM_ADOPTION_CONTRACT_FILE+x}" ] &&
+  [ -z "${PLATFORM_MAC_FIXTURE_VARS_FILE+x}" ] &&
   [ -z "${PLATFORM_CONTRACT_REPO_DIR+x}" ] &&
   [ -z "${PLATFORM_LEGACY_FIXTURE_HELPER_FILE+x}" ] &&
   [ -z "${PLATFORM_ADOPTION_TMM_MOVIE_TEMPLATE_CONF+x}" ] &&
@@ -562,6 +563,47 @@ if [ "$lane" = adoption ]; then
   parity_vault_file=$protected_input_root/parity-vault.yml
   parity_vault_password_file=$protected_input_root/parity-password
 fi
+
+generate_immich_fixture_vars() {
+  fixture_output=$1
+  fixture_temporary=$(mktemp "$protected_input_root/.immich-fixture-vars.XXXXXX") || return 1
+  if ! ansible-vault view --vault-password-file "$vault_password_file" "$vault_file" 2>/dev/null |
+      ruby "$mac_script_dir/generate-immich-fixture-vars.rb" \
+        "$fixture_temporary" "$mac_repo_dir/inventory/group_vars/all/main.yml" 2>/dev/null
+  then
+    unlink "$fixture_temporary" >/dev/null 2>&1 || true
+    return 1
+  fi
+  chmod 0600 "$fixture_temporary" || {
+    unlink "$fixture_temporary" >/dev/null 2>&1 || true
+    return 1
+  }
+  mv -f -- "$fixture_temporary" "$fixture_output"
+}
+
+fixture_vars_file=$protected_input_root/immich-fixture-vars.yml
+immich_fixture_vars_verified=false
+ensure_immich_fixture_vars() {
+  [ "$immich_fixture_vars_verified" = false ] || return 0
+  if [ -e "$fixture_vars_file" ]; then
+    expected_fixture_vars=$(mktemp "$protected_input_root/.immich-fixture-expected.XXXXXX") || return 1
+    if ! generate_immich_fixture_vars "$expected_fixture_vars" ||
+       ! cmp -s "$expected_fixture_vars" "$fixture_vars_file"; then
+      unlink "$expected_fixture_vars" >/dev/null 2>&1 || true
+      mac_die 'protected Immich fixture policy differs from the pinned deployment vault'
+      return 1
+    fi
+    unlink "$expected_fixture_vars" >/dev/null 2>&1 || true
+  else
+    generate_immich_fixture_vars "$fixture_vars_file" ||
+      mac_die 'protected Immich fixture policy could not be generated'
+  fi
+  [ -f "$fixture_vars_file" ] && [ ! -L "$fixture_vars_file" ] &&
+    [ "$(mac_owner_id "$fixture_vars_file")" = "$(id -u)" ] &&
+    [ "$(mac_file_mode "$fixture_vars_file")" = 600 ] ||
+    mac_die 'protected Immich fixture policy is unsafe'
+  immich_fixture_vars_verified=true
+}
 state_input=$report_root/phase-input.json
 
 git_revision=$(git -C "$mac_repo_dir" rev-parse HEAD)
@@ -776,11 +818,14 @@ export PLATFORM_MAC_VAULT_PASSWORD_FILE=$vault_password_file
 export PLATFORM_MAC_PARITY_VAULT_FILE=$parity_vault_file
 export PLATFORM_MAC_PARITY_VAULT_PASSWORD_FILE=$parity_vault_password_file
 export PLATFORM_VAULT_FILE=$vault_file
+export PLATFORM_MAC_FIXTURE_VARS_FILE=$fixture_vars_file
 
 run_site() {
+  ensure_immich_fixture_vars || return $?
   run_site_status=0
   mac_ansible_playbook -i "$mac_repo_dir/inventory/mac.yml" "$mac_repo_dir/site.yml" \
     --vault-password-file "$vault_password_file" -e @"$vault_file" \
+    -e @"$fixture_vars_file" \
     -e "platform_vault_file=$vault_file" "$@" || run_site_status=$?
   if [ "$lane" = adoption ]; then
     attestation_status=0
@@ -844,6 +889,7 @@ run_idempotence() {
 }
 
 run_persistence() {
+  ensure_immich_fixture_vars || return $?
   persistence_status=0
   "$mac_script_dir/fixtures.sh" persistence || persistence_status=$?
   if [ "$persistence_status" -eq 0 ] && [ "$lane" = adoption ]; then
@@ -856,6 +902,7 @@ run_persistence() {
 }
 
 verify_target_state() {
+  ensure_immich_fixture_vars || return $?
   target_verify_status=0
   "$mac_script_dir/verify.sh" || target_verify_status=$?
   if [ "$target_verify_status" -eq 0 ] && [ "$lane" = adoption ]; then
@@ -983,18 +1030,24 @@ execute_phase() {
       ' "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port" "$komga_port" \
         "$tinymediamanager_web_port" "$tinymediamanager_api_port" "$jellyfin_port" \
         "$immich_port" "$paperless_port" || return 1
+      if [ "$lane" = adoption ]; then
+        "$mac_script_dir/adoption.sh" render || return $?
+      fi
+      ensure_immich_fixture_vars || return $?
       ansible-playbook "$mac_repo_dir/validate-vault.yml" \
         --vault-password-file "$vault_password_file" -e @"$vault_file" \
+        -e @"$fixture_vars_file" \
         -e "platform_vault_file=$vault_file"
-      if [ "$lane" = adoption ]; then
-        "$mac_script_dir/adoption.sh" render
-      fi
       ;;
     deploy)
       [ "$lane" = fresh ] || mac_die 'deploy phase is available only in the fresh lane'
       run_site
       ;;
-    legacy-deploy|legacy-seed|capture-baseline|snapshot|rollback)
+    legacy-seed)
+      ensure_immich_fixture_vars || return $?
+      "$mac_script_dir/adoption.sh" "$1"
+      ;;
+    legacy-deploy|capture-baseline|snapshot|rollback)
       "$mac_script_dir/adoption.sh" "$1"
       ;;
     cutover)
@@ -1007,12 +1060,12 @@ execute_phase() {
         return "$cutover_verify_status"
       fi
       ;;
-    seed) "$mac_script_dir/fixtures.sh" seed ;;
+    seed) ensure_immich_fixture_vars && "$mac_script_dir/fixtures.sh" seed ;;
     verify) verify_target_state ;;
     idempotence) run_idempotence ;;
-    drift) "$mac_script_dir/drift.sh" ;;
+    drift) ensure_immich_fixture_vars && "$mac_script_dir/drift.sh" ;;
     reconcile) run_site && "$mac_script_dir/verify.sh" ;;
-    recreate) "$mac_script_dir/fixtures.sh" recreate && verify_target_state ;;
+    recreate) ensure_immich_fixture_vars && "$mac_script_dir/fixtures.sh" recreate && verify_target_state ;;
     persistence) run_persistence ;;
     report) render_report ;;
     cleanup) release_run_lock && "$mac_script_dir/cleanup.sh" "$sandbox" ;;

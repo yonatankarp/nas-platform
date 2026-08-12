@@ -181,8 +181,16 @@ Before mutation, validation rejects unknown profile names, override emails not
 present in the encrypted managed-user array, administrator fields, and keys
 outside the pinned preference schema. The role uses the administrator endpoint
 for the target user's preferences, patches the merged profile, and verifies all
-declared leaves. It does not authenticate as each user to configure settings.
-Unowned future preference keys remain untouched during adoption.
+declared leaves. Pinned Immich v3.1.0 splits `avatar.color` from the preference
+document: the update DTO accepts that spelling, but the preference response and
+persistence projection omit it, while the supported administrator user document
+durably exposes the same value as `avatarColor`. The role therefore translates
+only that policy leaf to a separate drift-only `PATCH /admin/users/:id`, verifies
+it with an authoritative `GET /admin/users/:id`, and sends every other leaf
+through `GET/PATCH /admin/users/:id/preferences`. It does not authenticate as
+each user to configure settings. Legitimate pinned preference leaves omitted by
+a selected partial profile, plus unrelated user properties, remain untouched
+during adoption; unknown preference keys are not used as persistence sentinels.
 
 ## Jellyfin
 

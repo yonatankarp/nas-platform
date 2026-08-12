@@ -178,6 +178,104 @@ refuse("managed settings must keep machine learning enabled") unless
 refuse("managed settings must keep the database backup enabled") unless
   settings.dig("backup", "database", "enabled") == true
 
+expected_standard_preferences = {
+  "albums" => { "defaultAssetOrder" => "desc" },
+  "avatar" => { "color" => "primary" },
+  "cast" => { "gCastEnabled" => false },
+  "download" => { "archiveSize" => 4_294_967_296, "includeEmbeddedVideos" => false },
+  "emailNotifications" => { "enabled" => true, "albumInvite" => true, "albumUpdate" => true },
+  "folders" => { "enabled" => false, "sidebarWeb" => false },
+  "memories" => { "enabled" => true, "duration" => 5 },
+  "people" => { "enabled" => true, "sidebarWeb" => false, "minimumFaces" => 3 },
+  "purchase" => {
+    "showSupportBadge" => true, "hideBuyButtonUntil" => "2022-02-12T00:00:00.000Z"
+  },
+  "ratings" => { "enabled" => false },
+  "recentlyAdded" => { "sidebarWeb" => false },
+  "sharedLinks" => { "enabled" => true, "sidebarWeb" => false },
+  "tags" => { "enabled" => false, "sidebarWeb" => false }
+}.freeze
+refuse("standard managed-user preference profile differs from pinned v3.1.0 policy") unless
+  defaults.dig("immich_managed_user_preference_profiles", "standard") == expected_standard_preferences
+refuse("production inventory must not select the test-only compact profile") unless
+  defaults.fetch("immich_managed_user_preference_profile_by_email").empty? &&
+  defaults.fetch("immich_managed_user_preference_overrides").empty? &&
+  defaults.fetch("immich_managed_user_preference_profiles").keys == ["standard"]
+contract_source = File.read(File.join(root, "tests", "contracts", "immich.sh"))
+refuse("runtime contract permits a dormant supported preference sentinel") unless
+  contract_source.include?(
+    "designated partial profile has no supported unowned preference sentinel"
+  ) && contract_source.include?("supported unowned managed preference")
+
+managed_user_tasks = YAML.safe_load_file(
+  File.join(root, "roles", "immich", "tasks", "managed_users.yml"), aliases: true
+)
+managed_task = lambda do |name|
+  managed_user_tasks.find { |task| task["name"] == name }
+end
+preference_read = managed_task.call("Read Immich managed user preferences")
+preference_repair = managed_task.call("Repair Immich managed user preferences")
+preference_verify = managed_task.call("Verify exact Immich managed user preferences")
+avatar_repair = managed_task.call("Repair Immich managed user avatar preference")
+avatar_verify = managed_task.call("Verify exact Immich managed user avatar preference")
+user_read = managed_task.call("Read Immich managed user avatar preferences")
+preference_guard = managed_task.call("Require supported Immich managed user preference responses")
+user_guard = managed_task.call("Require supported Immich managed user avatar responses")
+nonadmin_guard = managed_task.call("Require non-administrator Immich managed preference targets")
+refuse("managed user preference non-administrator guard is absent") unless
+  nonadmin_guard&.dig("ansible.builtin.assert", "that").to_s.include?("isAdmin")
+refuse("managed user preference read is absent") unless preference_read
+refuse("managed user preference read does not address a target through the admin API") unless
+  preference_read.dig("ansible.builtin.uri", "url").to_s.include?("/admin/users/") &&
+  preference_read.dig("ansible.builtin.uri", "url").to_s.end_with?("/preferences")
+refuse("managed user preference repair must use the pinned v3 PATCH") unless
+  preference_repair&.dig("ansible.builtin.uri", "method") == "PATCH"
+refuse("managed user preference repair does not send the desired owned leaves") unless
+  preference_repair&.dig("ansible.builtin.uri", "body").to_s.include?(
+    "immich_managed_user_desired_preferences"
+  )
+refuse("managed user preference repair must not send avatar") if
+  preference_repair&.dig("ansible.builtin.uri", "body").to_s.match?(/avatar/i)
+refuse("managed user preference authoritative verification is absent") unless preference_verify
+refuse("avatar preference translation must use a separate pinned v3 PATCH") unless
+  avatar_repair&.dig("ansible.builtin.uri", "method") == "PATCH" &&
+  avatar_repair&.dig("ansible.builtin.uri", "body") == {
+    "avatarColor" => "{{ immich_managed_user_desired_avatar_colors[item.item.email] }}"
+  }
+refuse("avatar repair must be conditional on effective avatar ownership") unless
+  Array(avatar_repair["when"]).any? do |condition|
+    condition.include?("item.item.email in immich_managed_user_desired_avatar_colors")
+  end
+refuse("avatar preference authoritative admin-user verification is absent") unless avatar_verify
+refuse("authoritative admin-user pre-read must cover profiles without avatar ownership") if
+  Array(user_read["when"]).to_s.include?("desired_avatar_colors")
+task_positions = managed_user_tasks.each_with_index.to_h { |task, index| [task["name"], index] }
+first_managed_mutation = task_positions.fetch("Repair Immich managed-user non-secret properties")
+create_position = task_positions.fetch("Create absent Immich managed users")
+[
+  "Validate effective Immich managed user preference policies",
+  "Read existing Immich managed user preferences before creation",
+  "Read existing Immich managed users before creation",
+  "Require supported existing Immich managed user preference responses",
+  "Require non-administrator Immich managed preference targets"
+].each do |name|
+  refuse("#{name} must precede the batch creation boundary") unless
+    task_positions.fetch(name) < create_position
+end
+{
+  "preference read" => preference_read,
+  "preference schema guard" => preference_guard,
+  "administrator user read" => user_read,
+  "administrator user schema guard" => user_guard
+}.each do |label, task|
+  refuse("#{label} must precede every managed-user PATCH") unless
+    task && task_positions.fetch(task.fetch("name")) < first_managed_mutation
+end
+managed_user_tasks.select { |task| task.key?("ansible.builtin.uri") }.each do |task|
+  refuse("secret-bearing managed-user API task is not redacted: #{task['name']}") unless
+    task["no_log"] == true
+end
+
 role = File.read(File.join(root, "roles", "immich", "tasks", "main.yml"))
 required_tasks = [
   "Read Immich initialization state",
@@ -309,7 +407,9 @@ legacy_fixture_validate PLATFORM_IMMICH_THUMBNAIL_ROOT legacy/immich/thumbs ||
 : "${PLATFORM_IMMICH_REDIS_CONTAINER:=immich_redis}"
 : "${PLATFORM_IMMICH_POSTGRES_CONTAINER:=immich_postgres}"
 PLATFORM_IMMICH_PLATFORM=$platform
+PLATFORM_CONTRACT_REPO_DIR=$repo_dir
 export PLATFORM_CONTRACT_VAULT_FILE PLATFORM_CONTRACT_VAULT_PASSWORD_FILE
+export PLATFORM_CONTRACT_REPO_DIR
 export PLATFORM_MEDIA_ROOT PLATFORM_DOCKER_ROOT PLATFORM_REPORT_ROOT
 export PLATFORM_IMMICH_PORT PLATFORM_IMMICH_PLATFORM
 export PLATFORM_IMMICH_SERVER_CONTAINER PLATFORM_IMMICH_MACHINE_LEARNING_CONTAINER
@@ -337,6 +437,14 @@ HELPER_CONTAINERS = [
   ENV.fetch("PLATFORM_IMMICH_POSTGRES_CONTAINER")
 ].freeze
 STATE_PATH = REPORT_ROOT.join("immich-persistence.json")
+REPO_DIR = Pathname.new(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR")).expand_path
+MANAGED_SENTINEL = "nas-platform-unowned-sentinel"
+SUPPORTED_UNOWNED_PREFERENCE_SENTINELS = [
+  [%w[albums defaultAssetOrder], "asc"],
+  [%w[folders enabled], true],
+  [%w[ratings enabled], true],
+  [%w[tags sidebarWeb], true]
+].freeze
 
 DEVICE_ID = "nas-platform-immich-contract"
 MANAGED_SETTINGS = {
@@ -531,6 +639,181 @@ def assert_managed_settings(config)
   end
 end
 
+def deep_merge(left, right)
+  left.merge(right) do |_key, old_value, new_value|
+    old_value.is_a?(Hash) && new_value.is_a?(Hash) ? deep_merge(old_value, new_value) : new_value
+  end
+end
+
+def managed_user_policy
+  base = YAML.safe_load_file(
+    REPO_DIR.join("inventory", "group_vars", "all", "main.yml"), aliases: false
+  )
+  fixture_path = Pathname.new(ENV.fetch("PLATFORM_MAC_FIXTURE_VARS_FILE")).expand_path
+  stat = fixture_path.lstat
+  fail_contract("protected Immich fixture policy is unsafe") unless
+    fixture_path.absolute? && stat.file? && !stat.symlink? && stat.uid == Process.uid &&
+    (stat.mode & 0o777) == 0o600
+  fixture = YAML.safe_load_file(fixture_path, aliases: false)
+  deep_merge(base, fixture)
+rescue SystemCallError, KeyError, Psych::Exception
+  fail_contract("protected Immich fixture policy is unavailable")
+end
+
+def desired_managed_user_profile(policy, email)
+  normalized = email.strip.downcase
+  profile_by_email = policy.fetch("immich_managed_user_preference_profile_by_email").to_h do |key, value|
+    [key.strip.downcase, value]
+  end
+  overrides = policy.fetch("immich_managed_user_preference_overrides").to_h do |key, value|
+    [key.strip.downcase, value]
+  end
+  profile_name = profile_by_email.fetch(
+    normalized, policy.fetch("immich_managed_user_preference_profile_default")
+  )
+  profile = policy.fetch("immich_managed_user_preference_profiles").fetch(profile_name)
+  deep_merge(profile, overrides.fetch(normalized, {}))
+end
+
+def supported_unowned_preference_sentinel(profile)
+  preferences = profile.reject { |key, _value| key == "avatar" }
+  SUPPORTED_UNOWNED_PREFERENCE_SENTINELS.find do |path, _value|
+    !preferences.fetch(path.fetch(0), {}).key?(path.fetch(1))
+  end
+end
+
+def nested_preference_patch(path, value)
+  { path.fetch(0) => { path.fetch(1) => value } }
+end
+
+def designated_partial_profile_email(policy)
+  designated = policy.fetch("immich_contract_partial_profile_email").strip.downcase
+  selected = policy.fetch("immich_managed_user_preference_profile_by_email").filter_map do |email, name|
+    email.strip.downcase if name == "compact"
+  end
+  fail_contract("test-only compact profile must select exactly the designated managed account") unless
+    selected == [designated]
+  designated
+end
+
+def list_managed_user_records(token, managed_users)
+  _response, users = request("get", "/api/admin/users?withDeleted=true", token: token)
+  fail_contract("Immich returned an unsupported administrator user listing") unless users.is_a?(Array)
+  managed_users.to_h do |managed|
+    normalized = managed.fetch("email").strip.downcase
+    matches = users.select { |user| user.fetch("email", "").strip.downcase == normalized }
+    fail_contract("managed Immich identity does not resolve uniquely") unless matches.length == 1
+    user = matches.first
+    fail_contract("managed Immich preference target is not an active non-administrator") unless
+      user["status"] == "active" && user["isAdmin"] == false
+    [normalized, user]
+  end
+end
+
+def seed_managed_user_state(token, managed_users, policy)
+  _response, users = request("get", "/api/admin/users?withDeleted=true", token: token)
+  designated = designated_partial_profile_email(policy)
+  managed_users.each do |managed|
+    normalized = managed.fetch("email").strip.downcase
+    matches = users.select { |user| user.fetch("email", "").strip.downcase == normalized }
+    fail_contract("managed Immich seed identity is ambiguous") if matches.length > 1
+    if matches.empty?
+      _response, created = request(
+        "post", "/api/admin/users", token: token, expected: [201],
+        body: managed.slice("email", "password", "name")
+      )
+      users << created
+      target = created
+    else
+      target = matches.first
+    end
+    fail_contract("refusing to seed an administrator as a managed user") unless target["isAdmin"] == false
+    id = safe_id(target.fetch("id"))
+    profile = desired_managed_user_profile(policy, managed.fetch("email"))
+    user_patch = {
+      "name" => managed.fetch("name"), "quotaSizeInBytes" => managed.fetch("quota_size"),
+      "storageLabel" => MANAGED_SENTINEL
+    }
+    user_patch["avatarColor"] = profile.dig("avatar", "color") if
+      profile.fetch("avatar", {}).key?("color")
+    request(
+      "patch", "/api/admin/users/#{id}", token: token,
+      body: user_patch
+    )
+    request(
+      "patch", "/api/admin/users/#{id}/preferences", token: token,
+      body: profile.reject { |key, _value| key == "avatar" }
+    )
+    sentinel = supported_unowned_preference_sentinel(profile)
+    if normalized == designated
+      fail_contract("designated partial profile has no supported unowned preference sentinel") unless
+        sentinel
+      path, value = sentinel
+      request(
+        "patch", "/api/admin/users/#{id}/preferences", token: token,
+        body: nested_preference_patch(path, value)
+      )
+    end
+  end
+end
+
+def assert_managed_user_profiles(token, managed_users, policy, require_sentinel: false)
+  records = list_managed_user_records(token, managed_users)
+  designated = designated_partial_profile_email(policy)
+  managed_users.map do |managed|
+    normalized = managed.fetch("email").strip.downcase
+    user = records.fetch(normalized)
+    id = safe_id(user.fetch("id"))
+    _response, authoritative_user = request("get", "/api/admin/users/#{id}", token: token)
+    fail_contract("managed Immich authoritative user read changed identity") unless
+      authoritative_user.fetch("email").strip.downcase == normalized &&
+      authoritative_user["status"] == "active" && authoritative_user["isAdmin"] == false
+    profile = desired_managed_user_profile(policy, managed.fetch("email"))
+    if profile.fetch("avatar", {}).key?("color")
+      fail_contract("managed Immich avatar preference differs") unless
+        authoritative_user["avatarColor"] == profile.dig("avatar", "color")
+    end
+    fail_contract("managed Immich unowned sentinel was not preserved") if
+      require_sentinel && authoritative_user["storageLabel"] != MANAGED_SENTINEL
+    _response, preferences = request(
+      "get", "/api/admin/users/#{id}/preferences", token: token
+    )
+    profile.reject { |key, _value| key == "avatar" }.each do |scope, leaves|
+      leaves.each do |leaf, expected|
+        fail_contract("managed preference #{scope}.#{leaf} differs for #{id}") unless
+          preferences.dig(scope, leaf) == expected
+      end
+    end
+    sentinel = supported_unowned_preference_sentinel(profile)
+    if normalized == designated
+      fail_contract("designated partial profile has no supported unowned preference sentinel") unless
+        sentinel
+    end
+    if normalized == designated && require_sentinel
+      path, expected = sentinel
+      fail_contract("supported unowned managed preference #{path.join('.')} was not preserved") unless
+        preferences.dig(*path) == expected
+    end
+    _response, managed_session = request(
+      "post", "/api/auth/login", expected: [201],
+      body: { "email" => managed.fetch("email"), "password" => managed.fetch("password") }
+    )
+    fail_contract("managed Immich authentication resolved a different identity or role") unless
+      managed_session["userId"] == id &&
+      managed_session.fetch("userEmail").strip.downcase == normalized &&
+      managed_session["isAdmin"] == false
+    {
+      "id" => id, "email" => normalized, "name" => authoritative_user["name"],
+      "quotaSizeInBytes" => authoritative_user["quotaSizeInBytes"],
+      "isAdmin" => authoritative_user["isAdmin"], "avatarColor" => authoritative_user["avatarColor"],
+      "storageLabel" => authoritative_user["storageLabel"],
+      "preferences" => profile.reject { |key, _value| key == "avatar" },
+      "supportedUnownedPreference" => sentinel && { "path" => sentinel.first.join("."),
+                                                      "value" => sentinel.last }
+    }
+  end.sort_by { |record| record.fetch("email") }
+end
+
 def upload_fixture(token, fixture)
   _response, payload = request(
     "post", "/api/assets", token: token, expected: [200, 201],
@@ -611,6 +894,8 @@ vault_yaml.replace("\0" * vault_yaml.bytesize)
 vault_error.replace("\0" * vault_error.bytesize)
 email = vault.fetch("vault_immich_admin_email")
 password = vault.fetch("vault_immich_admin_password")
+managed_users = vault.fetch("vault_managed_users").fetch("immich")
+policy = managed_user_policy
 
 wait_for_application
 # A rejected login answers JSON here, unlike some other services in this
@@ -629,6 +914,8 @@ user_id = safe_id(session.fetch("userId"))
 fail_contract("the vault administrator identity or role differs") unless
   session.fetch("userEmail") == email && session.fetch("isAdmin") == true
 
+seed_managed_user_state(token, managed_users, policy) if MODE == "seed"
+
 # Creating a second administrator must be refused by the server itself, which is
 # what makes the role's create-once behavior safe to rerun.
 request(
@@ -643,16 +930,58 @@ config = read_settings(token)
 if MODE == "drift-verify"
   fail_contract("the Immich drift fixture was not installed") unless
     config.dig("newVersionCheck", "enabled") == true
-  puts "Immich settings drift is present"
+  target = list_managed_user_records(token, managed_users).fetch(
+    managed_users.first.fetch("email").strip.downcase
+  )
+  target_id = safe_id(target.fetch("id"))
+  _response, drifted_user = request("get", "/api/admin/users/#{target_id}", token: token)
+  _response, drifted_preferences = request(
+    "get", "/api/admin/users/#{target_id}/preferences", token: token
+  )
+  desired = desired_managed_user_profile(policy, managed_users.first.fetch("email"))
+  fail_contract("the Immich managed preference drift fixture was not installed") unless
+    drifted_preferences.dig("folders", "enabled") != desired.dig("folders", "enabled") &&
+    drifted_preferences.dig("people", "sidebarWeb") != desired.dig("people", "sidebarWeb") &&
+    drifted_preferences.dig("people", "minimumFaces") != desired.dig("people", "minimumFaces") &&
+    drifted_preferences.dig("albums", "defaultAssetOrder") == "asc"
+  fail_contract("the Immich unowned sentinel did not survive drift installation") unless
+    drifted_user["storageLabel"] == MANAGED_SENTINEL && drifted_user["isAdmin"] == false
+  if STATE_PATH.file?
+    seeded = JSON.parse(STATE_PATH.binread).fetch("managed_users").find do |record|
+      record.fetch("email") == managed_users.first.fetch("email").strip.downcase
+    end
+    fail_contract("the Immich unowned avatar changed during drift installation") unless
+      seeded && drifted_user["avatarColor"] == seeded["avatarColor"]
+  end
+  puts "Immich settings and managed-user preference drift are present"
   exit
 end
 
 assert_managed_settings(config)
+managed_user_state = assert_managed_user_profiles(
+  token, managed_users, policy, require_sentinel: STATE_PATH.file? || MODE == "seed"
+)
 
 if MODE == "drift"
   drifted = config.merge("newVersionCheck" => config.fetch("newVersionCheck").merge("enabled" => true))
   request("put", "/api/system-config", token: token, body: drifted)
-  puts "Immich settings drift installed"
+  first_managed = managed_users.first
+  target = list_managed_user_records(token, [first_managed]).fetch(
+    first_managed.fetch("email").strip.downcase
+  )
+  target_id = safe_id(target.fetch("id"))
+  desired = desired_managed_user_profile(policy, first_managed.fetch("email"))
+  request(
+    "patch", "/api/admin/users/#{target_id}/preferences", token: token,
+    body: {
+      "folders" => { "enabled" => !desired.dig("folders", "enabled") },
+      "people" => {
+        "sidebarWeb" => !desired.dig("people", "sidebarWeb"),
+        "minimumFaces" => desired.dig("people", "minimumFaces") + 1
+      }
+    }
+  )
+  puts "Immich settings and managed-user preference drift installed"
   exit
 end
 
@@ -689,7 +1018,8 @@ fail_contract("the originals volume is unavailable or unsafe") unless
 state = JSON.generate(
   "user_id" => user_id,
   "assets" => records.sort_by { |record| record.fetch("name") },
-  "settings" => managed_leaves(config)
+  "settings" => managed_leaves(config),
+  "managed_users" => managed_user_state
 )
 
 case MODE

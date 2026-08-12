@@ -17,11 +17,15 @@ REQUIRED_TASKS = {
     "Refuse ambiguous normalized Immich managed identities",
     "Authenticate existing Immich managed users",
     "Require preserved Immich managed-user credentials",
+    "Require non-administrator Immich managed preference targets",
     "Create absent Immich managed users",
     "Require exact newly created Immich managed identities",
     "Authenticate newly created Immich managed users",
     "Require newly created Immich managed-user credentials",
+    "Read Immich managed user preferences",
     "Repair Immich managed-user non-secret properties",
+    "Repair Immich managed user preferences",
+    "Verify exact Immich managed user preferences",
     "Verify exact Immich managed users"
   ],
   "paperless_ngx" => [
@@ -108,8 +112,8 @@ def contract_failures(service, tasks)
 
   if service == "immich"
     repair = tasks.find { |task| task_name(task) == "Repair Immich managed-user non-secret properties" }
-    failures << "Immich repair must use the pinned PUT endpoint" unless
-      repair&.dig("ansible.builtin.uri", "method") == "PUT"
+    failures << "Immich repair must use the pinned v3 PATCH endpoint" unless
+      repair&.dig("ansible.builtin.uri", "method") == "PATCH"
     failures << "Immich repair must contain only name and quotaSizeInBytes" unless
       repair&.dig("ansible.builtin.uri", "body")&.keys&.map(&:to_s)&.sort == %w[name quotaSizeInBytes]
     create = tasks.find { |task| task_name(task) == "Create absent Immich managed users" }
@@ -125,6 +129,29 @@ def contract_failures(service, tasks)
       created&.dig("ansible.builtin.assert", "that").to_s.include?(".id")
     failures << "Immich omits stable authenticated-ID enforcement before repair" unless
       names.include?("Require stable authenticated Immich managed identities")
+    preference_read = tasks.find do |task|
+      task_name(task) == "Read Immich managed user preferences"
+    end
+    preference_repair = tasks.find do |task|
+      task_name(task) == "Repair Immich managed user preferences"
+    end
+    avatar_repair = tasks.find do |task|
+      task_name(task) == "Repair Immich managed user avatar preference"
+    end
+    failures << "Immich preference read must use the target admin preference endpoint" unless
+      preference_read&.dig("ansible.builtin.uri", "url").to_s.include?("/admin/users/") &&
+      preference_read&.dig("ansible.builtin.uri", "url").to_s.include?("/preferences")
+    failures << "Immich preference repair must use the pinned v3 PATCH endpoint" unless
+      preference_repair&.dig("ansible.builtin.uri", "method") == "PATCH"
+    failures << "Immich preference repair must send only the recursively merged owned profile" unless
+      preference_repair&.dig("ansible.builtin.uri", "body").to_s.include?(
+        "immich_managed_user_desired_preferences"
+      )
+    failures << "Immich avatar preference must use a separate pinned v3 PATCH" unless
+      avatar_repair&.dig("ansible.builtin.uri", "method") == "PATCH" &&
+      avatar_repair&.dig("ansible.builtin.uri", "body")&.keys == ["avatarColor"]
+    failures << "Immich avatar must not be sent through the preferences API" if
+      preference_repair&.dig("ansible.builtin.uri", "body").to_s.match?(/avatar/i)
   elsif service == "paperless_ngx"
     commands = tasks.filter_map { |task| task["community.docker.docker_compose_v2_exec"] }
     commands.each do |command|
@@ -250,11 +277,19 @@ end
 def managed_includes(service, extra_vars = {}, path: nil)
   path ||= File.join(ROOT, "roles", service, "tasks", "managed_users.yml")
   phase_prefix = service == "paperless_ngx" ? "paperless" : service
+  role_vars = {}
+  if service == "immich"
+    defaults = YAML.safe_load_file(
+      File.join(ROOT, "roles", "immich", "defaults", "main.yml"), aliases: false
+    )
+    role_vars = defaults.select { |key, _value| key.start_with?("immich_managed_user_preference_") }
+  end
+  include_vars = role_vars.merge(extra_vars)
   [
     { "name" => "Reconcile fixture #{service}", "ansible.builtin.include_tasks" => path,
-      "vars" => extra_vars.merge("#{phase_prefix}_managed_users_phase" => "reconcile") },
+      "vars" => include_vars.merge("#{phase_prefix}_managed_users_phase" => "reconcile") },
     { "name" => "Verify fixture #{service}", "ansible.builtin.include_tasks" => path,
-      "vars" => extra_vars.merge("#{phase_prefix}_managed_users_phase" => "verify") }
+      "vars" => include_vars.merge("#{phase_prefix}_managed_users_phase" => "verify") }
   ]
 end
 
@@ -393,15 +428,44 @@ def write_fixture_state(path, state)
   File.write(path, JSON.generate(state), mode: "w", perm: 0o600)
 end
 
+def deep_merge(left, right)
+  left.merge(right) do |_key, old_value, new_value|
+    old_value.is_a?(Hash) && new_value.is_a?(Hash) ? deep_merge(old_value, new_value) : new_value
+  end
+end
+
+def deep_contains?(actual, expected)
+  expected.all? do |key, value|
+    value.is_a?(Hash) ? actual[key].is_a?(Hash) && deep_contains?(actual[key], value) : actual[key] == value
+  end
+end
+
 def exercise_immich(failures)
+  standard_profile = YAML.safe_load_file(
+    File.join(ROOT, "roles", "immich", "defaults", "main.yml"), aliases: false
+  ).fetch("immich_managed_user_preference_profiles").fetch("standard")
+  standard_preferences = standard_profile.reject { |key, _value| key == "avatar" }
+  compact_profile = {
+    "avatar" => {}, "folders" => { "enabled" => true }, "people" => { "sidebarWeb" => true }
+  }
+  reader_preferences = deep_merge(
+    compact_profile, { "people" => { "minimumFaces" => 7 } }
+  ).reject { |key, _value| key == "avatar" }
   users = [
-    { "id" => "11111111-1111-4111-8111-111111111111", "email" => "reader@example.invalid",
+    { "id" => "11111111-1111-4111-8111-111111111111", "email" => " Reader@Example.Invalid ",
       "name" => "Old", "quotaSizeInBytes" => nil, "status" => "active", "isAdmin" => false,
-      "password" => "reader-secret" },
+      "avatarColor" => "red", "storageLabel" => "unowned-sentinel", "password" => "reader-secret" },
     { "id" => "22222222-2222-4222-8222-222222222222", "email" => "friend@example.invalid",
       "name" => "Friend", "quotaSizeInBytes" => nil, "status" => "active", "isAdmin" => false,
-      "password" => "friend-secret" }
+      "avatarColor" => "blue", "storageLabel" => "friend-unowned", "password" => "friend-secret" }
   ]
+  preferences = {
+    users.first.fetch("id") => deep_merge(
+      standard_preferences, { "albums" => { "defaultAssetOrder" => "asc" },
+                              "folders" => { "enabled" => false },
+                              "people" => { "minimumFaces" => 2 } }
+    )
+  }
   managed = [
     { "email" => "reader@example.invalid", "password" => "reader-secret", "name" => "Reader",
       "quota_size" => 1024 },
@@ -414,32 +478,66 @@ def exercise_immich(failures)
       [200, users.map { |user| user.reject { |key, _| key == "password" } }]
     when ["POST", "/api/auth/login"]
       body = request.fetch("json")
-      user = users.find { |candidate| candidate["email"] == body["email"] && candidate["password"] == body["password"] }
+      user = users.find do |candidate|
+        candidate["email"].strip.downcase == body["email"].strip.downcase &&
+          candidate["password"] == body["password"]
+      end
       user ? [201, { "userId" => user["id"], "userEmail" => user["email"],
                      "accessToken" => "user-token" }] : [401, {}]
     when ["POST", "/api/admin/users"]
       body = request.fetch("json")
       users << body.merge("id" => "33333333-3333-4333-8333-333333333333",
-                          "quotaSizeInBytes" => nil, "status" => "active", "password" => body["password"])
+                          "quotaSizeInBytes" => nil, "status" => "active", "isAdmin" => false,
+                          "avatarColor" => "blue", "storageLabel" => nil,
+                          "password" => body["password"])
+      preferences[users.last.fetch("id")] = deep_merge(
+        standard_preferences, { "albums" => { "defaultAssetOrder" => "asc" } }
+      )
       [201, users.last.reject { |key, _| key == "password" }]
     else
-      if request["method"] == "PUT" && request["target"].start_with?("/api/admin/users/")
-        user = users.find { |candidate| request["target"].end_with?(candidate["id"]) }
-        user&.merge!(request.fetch("json"))
-        [200, user]
+      target_id = request["target"].split("/")[4]
+      user = users.find { |candidate| candidate["id"] == target_id }
+      preference_path = request["target"].end_with?("/preferences")
+      if request["method"] == "GET" && preference_path
+        [200, preferences[target_id]]
+      elsif request["method"] == "PATCH" && preference_path
+        preferences[target_id] = deep_merge(preferences.fetch(target_id), request.fetch("json"))
+        [200, preferences[target_id]]
+      elsif request["method"] == "GET" && user
+        [200, user.reject { |key, _| key == "password" }]
+      elsif request["method"] == "PATCH" && user
+        user.merge!(request.fetch("json"))
+        [200, user.reject { |key, _| key == "password" }]
       else
         [500, {}]
       end
     end
   end
   with_http_service(responder) do |port, requests|
+    preference_vars = {
+      "immich_managed_user_preference_profiles" => {
+        "standard" => standard_profile, "compact" => compact_profile
+      },
+      "immich_managed_user_preference_profile_default" => "standard",
+      "immich_managed_user_preference_profile_by_email" => {
+        " READER@EXAMPLE.INVALID " => "compact"
+      },
+      "immich_managed_user_preference_overrides" => {
+        " Reader@Example.Invalid " => { "people" => { "minimumFaces" => 7 } }
+      }
+    }
     vars = { "immich_api" => "http://127.0.0.1:#{port}/api",
-             "immich_managed_users_token" => "admin-token", "vault_managed_immich_users" => managed }
+             "immich_managed_users_token" => "admin-token", "vault_managed_immich_users" => managed,
+             **preference_vars }
     stdout, stderr, status = run_playbook(
-      managed_includes("immich", { "immich_managed_users_token" => "admin-token" }), vars
+      managed_includes(
+        "immich", preference_vars.merge("immich_managed_users_token" => "admin-token")
+      ), vars
     )
     failures << "Immich behavior fixture failed: #{failure_tail(stdout + stderr)}" unless status.success?
-    failures << "Immich unmanaged user was not preserved" unless users.any? { |user| user["email"] == "friend@example.invalid" }
+    failures << "Immich unmanaged user was not preserved" unless users.any? do |user|
+      user["email"] == "friend@example.invalid" && user["storageLabel"] == "friend-unowned"
+    end
     failures << "Immich existing user did not authenticate with its own credential" unless
       requests.any? { |request| request["target"] == "/api/auth/login" &&
         request.dig("json", "email") == "reader@example.invalid" }
@@ -448,16 +546,168 @@ def exercise_immich(failures)
         request.dig("json", "email") == "new@example.invalid"
     end
     new_repair_index = requests.index do |request|
-      request["method"] == "PUT" &&
+      request["method"] == "PATCH" &&
         request["target"].end_with?("33333333-3333-4333-8333-333333333333")
     end
     failures << "Immich newly created user was not authenticated before repair" unless
       new_auth_index && new_repair_index && new_auth_index < new_repair_index
     failures << "Immich repair escaped the non-secret projection" if requests.any? do |request|
-      request["method"] == "PUT" && request.fetch("json").keys.sort != %w[name quotaSizeInBytes]
+      request["method"] == "PATCH" && !request["target"].end_with?("/preferences") &&
+        (request.fetch("json").keys - %w[avatarColor name quotaSizeInBytes]).any?
     end
+    reader = users.find { |user| user["email"].strip.downcase == "reader@example.invalid" }
+    created = users.find { |user| user["email"] == "new@example.invalid" }
+    failures << "Immich mapped profile or recursive override was not reconciled" unless
+      deep_contains?(preferences.fetch(reader.fetch("id")), reader_preferences)
+    failures << "Immich default standard profile was not reconciled" unless
+      created && preferences.fetch(created.fetch("id")).slice(*standard_preferences.keys) == standard_preferences
+    failures << "Immich supported unowned preference leaf was not preserved" unless
+      preferences.dig(reader.fetch("id"), "albums", "defaultAssetOrder") == "asc"
+    failures << "Immich avatar profile translation was not reconciled" unless
+      reader["avatarColor"] == "red" && created && created["avatarColor"] == "primary"
+    failures << "Immich preference reconciliation altered identity, quota, or admin status" unless
+      reader.slice("name", "quotaSizeInBytes", "isAdmin", "storageLabel") == {
+        "name" => "Reader", "quotaSizeInBytes" => 1024, "isAdmin" => false,
+        "storageLabel" => "unowned-sentinel"
+      }
+    preference_patches = requests.select do |request|
+      request["method"] == "PATCH" && request["target"].end_with?("/preferences")
+    end
+    failures << "Immich preference repair was not drift-only and idempotent" unless
+      preference_patches.length == 2
+    avatar_patches = requests.select do |request|
+      request["method"] == "PATCH" && request.fetch("json", {}).keys == ["avatarColor"]
+    end
+    failures << "Immich avatar translation was not a separate drift-only mutation" unless
+      avatar_patches.length == 1
     failures << "Immich final verification did not freshly list users" unless
       requests.count { |request| request["target"] == "/api/admin/users?withDeleted=true" } >= 3
+
+    patch_count = requests.count { |request| request["method"] == "PATCH" }
+    repeat_stdout, repeat_stderr, repeat_status = run_playbook(
+      [managed_includes(
+        "immich", preference_vars.merge("immich_managed_users_token" => "admin-token")
+      ).first], vars
+    )
+    failures << "Immich repeated reconciliation failed: #{failure_tail(repeat_stdout + repeat_stderr)}" unless
+      repeat_status.success?
+    failures << "Immich repeated reconciliation was not idempotent" unless
+      requests.count { |request| request["method"] == "PATCH" } == patch_count
+  end
+end
+
+def exercise_immich_normalized_duplicate_refusal(failures)
+  managed = [{ "email" => "reader@example.invalid", "password" => "secret",
+               "name" => "Reader", "quota_size" => 1024 }]
+  users = [
+    { "id" => "11111111-1111-4111-8111-111111111111", "email" => "Reader@Example.Invalid",
+      "name" => "Reader", "quotaSizeInBytes" => 1024, "status" => "active", "isAdmin" => false },
+    { "id" => "22222222-2222-4222-8222-222222222222", "email" => " reader@example.invalid ",
+      "name" => "Duplicate", "quotaSizeInBytes" => 1024, "status" => "active", "isAdmin" => false }
+  ]
+  with_http_service(->(_request) { [200, users] }) do |port, requests|
+    vars = { "immich_api" => "http://127.0.0.1:#{port}/api",
+             "immich_managed_users_token" => "admin", "vault_managed_immich_users" => managed }
+    stdout, stderr, status = run_playbook(
+      [managed_includes("immich", { "immich_managed_users_token" => "admin" }).first], vars
+    )
+    failures << "Immich normalized duplicate fixture unexpectedly succeeded" if status.success?
+    failures << "Immich normalized duplicate fixture missed ambiguity refusal" unless
+      (stdout + stderr).include?("Refuse ambiguous normalized Immich managed identities")
+    failures << "Immich normalized duplicate fixture reached mutation" if
+      requests.any? { |request| %w[POST PATCH PUT DELETE].include?(request["method"]) }
+  end
+end
+
+def exercise_immich_schema_fail_closed(failures, resource:)
+  user_id = "11111111-1111-4111-8111-111111111111"
+  user = { "id" => user_id, "email" => "reader@example.invalid", "name" => "Old",
+           "quotaSizeInBytes" => 0, "status" => "active", "isAdmin" => false,
+           "avatarColor" => "red", "storageLabel" => "schema-sentinel" }
+  user["isAdmin"] = true if resource == :admin
+  standard = YAML.safe_load_file(
+    File.join(ROOT, "roles", "immich", "defaults", "main.yml"), aliases: false
+  ).dig("immich_managed_user_preference_profiles", "standard")
+  preferences = deep_merge(
+    standard.reject { |key, _value| key == "avatar" },
+    { "albums" => { "defaultAssetOrder" => "asc" } }
+  )
+  responder = lambda do |request|
+    case [request["method"], request["target"]]
+    when ["GET", "/api/admin/users?withDeleted=true"] then [200, [user]]
+    when ["POST", "/api/auth/login"]
+      [201, { "userId" => user_id, "userEmail" => user.fetch("email"), "accessToken" => "token" }]
+    when ["GET", "/api/admin/users/#{user_id}/preferences"]
+      unsupported_preferences = case resource
+                                when :preferences
+                                  preferences.merge("albums" => "unsupported")
+                                when :preference_leaf
+                                  deep_merge(preferences, { "albums" => { "defaultAssetOrder" => 42 } })
+                                else
+                                  preferences
+                                end
+      [200, unsupported_preferences]
+    when ["GET", "/api/admin/users/#{user_id}"]
+      [200, resource == :user ? user.reject { |key, _value| key == "isAdmin" } : user]
+    else [500, {}]
+    end
+  end
+  with_http_service(responder) do |port, requests|
+    vars = { "immich_api" => "http://127.0.0.1:#{port}/api",
+             "immich_managed_users_token" => "admin", "vault_managed_immich_users" => [
+               { "email" => "absent@example.invalid", "password" => "absent-secret",
+                 "name" => "Absent", "quota_size" => 2048 },
+               { "email" => "reader@example.invalid", "password" => "secret",
+                 "name" => "Reader", "quota_size" => 1024 }
+             ] }
+    stdout, stderr, status = run_playbook(
+      [managed_includes("immich", { "immich_managed_users_token" => "admin" }).first], vars
+    )
+    failures << "Immich unsupported #{resource} schema fixture unexpectedly succeeded" if status.success?
+    expected_task = resource == :user ?
+      "Require non-administrator Immich managed preference targets" :
+      resource == :admin ? "Require non-administrator Immich managed preference targets" :
+      "Require supported existing Immich managed user preference responses"
+    failures << "Immich unsupported #{resource} schema missed authoritative guard" unless
+      (stdout + stderr).include?(expected_task)
+    failures << "Immich unsupported #{resource} schema reached mutation" if
+      requests.any? do |request|
+        request["method"] == "PATCH" ||
+          request["method"] == "POST" && request["target"] == "/api/admin/users"
+      end
+  end
+end
+
+def exercise_immich_invalid_avatar_policy(failures)
+  defaults = YAML.safe_load_file(
+    File.join(ROOT, "roles", "immich", "defaults", "main.yml"), aliases: false
+  )
+  invalid_profile = deep_merge(
+    defaults.dig("immich_managed_user_preference_profiles", "standard"),
+    { "avatar" => { "color" => "cyan" } }
+  )
+  managed = [{ "email" => "absent@example.invalid", "password" => "secret",
+               "name" => "Absent", "quota_size" => 1024 }]
+  with_http_service(->(_request) { [200, []] }) do |port, requests|
+    preference_vars = {
+      "immich_managed_user_preference_profiles" => { "invalid" => invalid_profile },
+      "immich_managed_user_preference_profile_default" => "invalid",
+      "immich_managed_user_preference_profile_by_email" => {},
+      "immich_managed_user_preference_overrides" => {}
+    }
+    vars = { "immich_api" => "http://127.0.0.1:#{port}/api",
+             "immich_managed_users_token" => "admin", "vault_managed_immich_users" => managed,
+             **preference_vars }
+    stdout, stderr, status = run_playbook(
+      [managed_includes("immich", preference_vars.merge(
+        "immich_managed_users_token" => "admin"
+      )).first], vars
+    )
+    failures << "Immich invalid avatar enum fixture unexpectedly succeeded" if status.success?
+    failures << "Immich invalid avatar enum missed policy preflight" unless
+      (stdout + stderr).include?("Validate effective Immich managed user preference policies")
+    failures << "Immich invalid avatar enum reached mutation" if
+      requests.any? { |request| %w[POST PATCH].include?(request["method"]) }
   end
 end
 
@@ -713,7 +963,19 @@ def exercise_fail_closed_and_check_mode(failures)
       requests.any? { |request| %w[PUT PATCH DELETE].include?(request["method"]) ||
         (request["method"] == "POST" && request["target"] != "/api/auth/login") }
   end
-  with_http_service(->(_request) { [200, [immich_user]] }) do |port, requests|
+  standard = YAML.safe_load_file(
+    File.join(ROOT, "roles", "immich", "defaults", "main.yml"), aliases: false
+  ).dig("immich_managed_user_preference_profiles", "standard")
+  with_http_service(lambda { |request|
+    case request["target"]
+    when "/api/admin/users?withDeleted=true" then [200, [immich_user.merge("avatarColor" => "primary")]]
+    when "/api/admin/users/#{immich_user.fetch('id')}/preferences"
+      [200, standard.reject { |key, _value| key == "avatar" }]
+    when "/api/admin/users/#{immich_user.fetch('id')}"
+      [200, immich_user.merge("avatarColor" => "primary")]
+    else [500, {}]
+    end
+  }) do |port, requests|
     vars = { "immich_api" => "http://127.0.0.1:#{port}/api",
              "immich_managed_users_token" => "admin", "vault_managed_immich_users" => immich_managed }
     _stdout, _stderr, status = run_playbook(
@@ -872,7 +1134,7 @@ def exercise_mangled_created_credentials(failures)
     failures << "Immich mangled-created-password fixture missed new credential assertion" unless
       (stdout + stderr).include?("Require newly created Immich managed-user credentials")
     failures << "Immich mangled-created-password fixture reached repair" if
-      requests.any? { |request| request["method"] == "PUT" }
+      requests.any? { |request| request["method"] == "PATCH" }
   end
 
   beszel_users = []
@@ -911,8 +1173,14 @@ def exercise_identity_swap_refusal(failures, task_paths: {})
   immich_reads = 0
   old_immich = { "id" => "11111111-1111-4111-8111-111111111111",
                  "email" => "reader@example.invalid", "name" => "Old",
-                 "quotaSizeInBytes" => 0, "status" => "active" }
+                 "quotaSizeInBytes" => 0, "status" => "active", "isAdmin" => false,
+                 "avatarColor" => "red" }
   replacement_immich = old_immich.merge("id" => "22222222-2222-4222-8222-222222222222")
+  immich_preferences = YAML.safe_load_file(
+    File.join(ROOT, "roles", "immich", "defaults", "main.yml"), aliases: false
+  ).dig("immich_managed_user_preference_profiles", "standard").reject do |key, _value|
+    key == "avatar"
+  end
   with_http_service(lambda { |request|
     case [request["method"], request["target"]]
     when ["GET", "/api/admin/users?withDeleted=true"]
@@ -921,6 +1189,20 @@ def exercise_identity_swap_refusal(failures, task_paths: {})
     when ["POST", "/api/auth/login"]
       [201, { "userId" => old_immich["id"], "userEmail" => old_immich["email"],
               "accessToken" => "user-token" }]
+    when ["GET", "/api/admin/users/#{old_immich.fetch('id')}"]
+      [200, old_immich]
+    when ["GET", "/api/admin/users/#{old_immich.fetch('id')}/preferences"]
+      [200, immich_preferences]
+    when ["GET", "/api/admin/users/#{replacement_immich.fetch('id')}"]
+      [200, replacement_immich]
+    when ["GET", "/api/admin/users/#{replacement_immich.fetch('id')}/preferences"]
+      [200, immich_preferences]
+    when ["PATCH", "/api/admin/users/#{replacement_immich.fetch('id')}"]
+      replacement_immich.merge!(request.fetch("json"))
+      [200, replacement_immich]
+    when ["PATCH", "/api/admin/users/#{replacement_immich.fetch('id')}/preferences"]
+      immich_preferences = deep_merge(immich_preferences, request.fetch("json"))
+      [200, immich_preferences]
     else [200, {}]
     end
   }) do |port, requests|
@@ -935,7 +1217,7 @@ def exercise_identity_swap_refusal(failures, task_paths: {})
     )
     failures << "Immich identity-swap fixture unexpectedly succeeded" if status.success?
     failures << "Immich identity-swap fixture reached replacement mutation" if
-      requests.any? { |request| request["method"] == "PUT" }
+      requests.any? { |request| request["method"] == "PATCH" }
     failures << "Immich identity-swap fixture missed stable-ID assertion" unless
       (stdout + stderr).include?("Require stable authenticated Immich managed identities")
   end
@@ -1147,6 +1429,12 @@ if ARGV == ["--self-test"]
 elsif ARGV.empty?
   if ENV.fetch("PATH", "").split(File::PATH_SEPARATOR).any? { |directory| File.executable?(File.join(directory, "ansible-playbook")) }
     exercise_immich(failures)
+    exercise_immich_normalized_duplicate_refusal(failures)
+    exercise_immich_schema_fail_closed(failures, resource: :preferences)
+    exercise_immich_schema_fail_closed(failures, resource: :preference_leaf)
+    exercise_immich_schema_fail_closed(failures, resource: :user)
+    exercise_immich_schema_fail_closed(failures, resource: :admin)
+    exercise_immich_invalid_avatar_policy(failures)
     exercise_beszel(failures)
     exercise_paperless(failures)
     exercise_paperless(failures, scenario: :empty)
