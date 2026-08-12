@@ -12,13 +12,16 @@ argument_specs:
       jellyfin_port:
         type: int
         required: false
-      jellyfin_library_name:
+      jellyfin_admin_username:
         type: str
         required: false
-      jellyfin_library_collection_type:
+      jellyfin_server_name:
         type: str
         required: false
-      jellyfin_library_path_infos:
+      jellyfin_admin_avatar_sha256:
+        type: str
+        required: false
+      jellyfin_libraries:
         type: list
         elements: dict
         required: false

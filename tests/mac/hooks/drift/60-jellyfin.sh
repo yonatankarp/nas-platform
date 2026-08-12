@@ -22,5 +22,5 @@ if mac_ansible_playbook -i "$mac_repo_dir/inventory/mac.yml" "$mac_repo_dir/veri
 fi
 "$mac_repo_dir/tests/assert-no-vault-secrets.rb" \
   "$PLATFORM_MAC_VAULT_FILE" "$PLATFORM_MAC_VAULT_PASSWORD_FILE" "$expected_failure"
-grep -qF 'The managed Jellyfin library is absent, duplicated, or drifted.' \
+grep -qF 'The Jellyfin primary identity, branding, image, or managed library is drifted.' \
   "$expected_failure"

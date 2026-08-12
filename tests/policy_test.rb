@@ -1170,7 +1170,7 @@ repository_vault_nas_references = Dir[File.join(ROOT, "{inventory,roles,template
   relative = path.delete_prefix("#{ROOT}/")
   next if %w[tests/policy_test.rb tests/policy_manifest_test.rb].include?(relative)
 
-  relative if File.read(path).match?(/\bvault_nas_[a-z_]+\b/)
+  relative if File.binread(path).match?(/\bvault_nas_[a-z_]+\b/n)
 end
 check(failures, repository_vault_nas_references.empty?,
       "NAS connection coordinates must stay in inventory, not shared vault: " \

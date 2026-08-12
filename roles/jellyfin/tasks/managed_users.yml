@@ -74,7 +74,7 @@
     return_content: true
   register: jellyfin_managed_user_authentication
   when:
-    - jellyfin_managed_users_phase == 'reconcile'
+    - jellyfin_managed_users_phase in ['preflight', 'reconcile']
     - not ansible_check_mode
     - jellyfin_managed_user_matches[item.username] | length == 1
   loop: "{{ vault_managed_jellyfin_users }}"
@@ -99,7 +99,7 @@
   loop_control:
     label: jellyfin-managed-user
   when:
-    - jellyfin_managed_users_phase == 'reconcile'
+    - jellyfin_managed_users_phase in ['preflight', 'reconcile']
     - not ansible_check_mode
   no_log: true
 
@@ -139,7 +139,7 @@
       Jellyfin returned an incomplete or unsafe complete policy; reconciliation
       refuses to replace policy state without preserved provider identifiers.
   when:
-    - jellyfin_managed_users_phase == 'reconcile'
+    - jellyfin_managed_users_phase in ['preflight', 'reconcile']
     - jellyfin_managed_user_matches[item.username] | length == 1
   loop: "{{ vault_managed_jellyfin_users }}"
   loop_control:

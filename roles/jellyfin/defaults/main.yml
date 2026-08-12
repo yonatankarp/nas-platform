@@ -12,12 +12,19 @@ jellyfin_client_header: >-
   MediaBrowser Client="nas-platform", Device="ansible",
   DeviceId="nas-platform-jellyfin-role", Version="1.0.0"
 
-jellyfin_library_name: Movies
-jellyfin_library_collection_type: movies
-# Declared in the shape Jellyfin's API accepts. vars/main.yml derives the plain
-# path list used for comparison from this single source of truth.
-jellyfin_library_path_infos:
-  - Path: /media/Movies
+jellyfin_admin_username: Yonatan
+jellyfin_server_name: Yonflix 2.0
+jellyfin_admin_avatar_sha256: bf12ac53a05f1db64f3d00440315a6626e7c2dd12dd41867c93c9ac7aeccc792
+
+# Only these two media libraries are Ansible-owned. Jellyfin's Collections
+# library is application-owned and intentionally absent from this declaration.
+jellyfin_libraries:
+  - name: Movies
+    collection_type: movies
+    path: /media/Movies
+  - name: Shows
+    collection_type: tvshows
+    path: /media/Series
 
 # Deliberately small and explicit. Everything here is either forced by the
 # read-only media mount or by tinyMediaManager owning metadata for this tree.

@@ -6,6 +6,7 @@ repo_dir=${PLATFORM_CONTRACT_REPO_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/../..
 compose=$repo_dir/services/jellyfin/compose.yml
 role=$repo_dir/roles/jellyfin/tasks/main.yml
 defaults=$repo_dir/roles/jellyfin/defaults/main.yml
+avatar=$repo_dir/roles/jellyfin/files/yonatan-avatar.jpeg
 
 fail_contract() {
   printf 'Jellyfin contract failed: %s\n' "$1" >&2
@@ -42,8 +43,9 @@ esac
 [ -f "$role" ] || fail_contract 'roles/jellyfin/tasks/main.yml is absent'
 [ -f "$defaults" ] || fail_contract 'roles/jellyfin/defaults/main.yml is absent'
 [ -f "$compose" ] || fail_contract 'services/jellyfin/compose.yml is absent'
+[ -f "$avatar" ] || fail_contract 'approved administrator avatar is absent'
 
-ruby -ryaml - "$repo_dir" "$platform" <<'RUBY'
+ruby -ryaml -rdigest - "$repo_dir" "$platform" <<'RUBY'
 root, platform = ARGV
 compose_path = File.join(root, "services", "jellyfin", "compose.yml")
 compose = YAML.safe_load_file(compose_path, aliases: true)
@@ -56,6 +58,10 @@ end
 expected_image = "docker.io/jellyfin/jellyfin:10.11.11@" \
                  "sha256:aefb67e6a7ff1debdd154a78a7bbb780fd0c873d8639210a7f6a2016ad2b35db"
 refuse("legacy image pin differs") unless service.fetch("image") == expected_image
+avatar = File.join(root, "roles", "jellyfin", "files", "yonatan-avatar.jpeg")
+refuse("approved administrator avatar hash differs") unless
+  Digest::SHA256.file(avatar).hexdigest ==
+    "bf12ac53a05f1db64f3d00440315a6626e7c2dd12dd41867c93c9ac7aeccc792"
 refuse("NAS UID/GID differs") unless service.fetch("user") == "1000:100"
 refuse("NAS port differs") unless service.fetch("ports") == ["8096:8096/tcp"]
 refuse("storage contract differs") unless service.fetch("volumes") == [
@@ -104,14 +110,23 @@ else
 end
 
 defaults = YAML.safe_load_file(File.join(root, "roles", "jellyfin", "defaults", "main.yml"))
-refuse("managed library root differs") unless
-  defaults.fetch("jellyfin_library_path_infos") == [{ "Path" => "/media/Movies" }]
-refuse("managed library collection type differs") unless
-  defaults.fetch("jellyfin_library_collection_type") == "movies"
+refuse("primary administrator differs") unless defaults.fetch("jellyfin_admin_username") == "Yonatan"
+refuse("server name differs") unless defaults.fetch("jellyfin_server_name") == "Yonflix 2.0"
+refuse("administrator avatar hash differs") unless
+  defaults.fetch("jellyfin_admin_avatar_sha256") ==
+    "bf12ac53a05f1db64f3d00440315a6626e7c2dd12dd41867c93c9ac7aeccc792"
+refuse("managed libraries differ") unless defaults.fetch("jellyfin_libraries") == [
+  { "name" => "Movies", "collection_type" => "movies", "path" => "/media/Movies" },
+  { "name" => "Shows", "collection_type" => "tvshows", "path" => "/media/Series" }
+]
+refuse("Collections must remain application-managed") if
+  defaults.fetch("jellyfin_libraries").any? { |library| library.fetch("name") == "Collections" }
 refuse("managed library must not write metadata into read-only media") unless
   defaults.fetch("jellyfin_library_options").fetch("SaveLocalMetadata") == false
 
-role = File.read(File.join(root, "roles", "jellyfin", "tasks", "main.yml"))
+identity_path = File.join(root, "roles", "jellyfin", "tasks", "primary_identity.yml")
+identity = File.file?(identity_path) ? File.read(identity_path) : ""
+role = File.read(File.join(root, "roles", "jellyfin", "tasks", "main.yml")) + identity
 contract = File.read(File.join(root, "tests", "contracts", "jellyfin.sh"))
 runtime_query = ["fields=Path,MediaSources", "RunTimeTicks"].join(",")
 refuse("fixture query does not request its runtime field") unless contract.include?(runtime_query)
@@ -124,15 +139,67 @@ required_tasks = [
   "Materialize the Jellyfin first user",
   "Create the vault Jellyfin administrator",
   "Complete the Jellyfin startup wizard",
-  "Refuse duplicate managed Jellyfin libraries",
-  "Create the managed Jellyfin library",
-  "Repair the managed Jellyfin library",
+  "Report planned Jellyfin administrator image upload after startup",
+  "Report planned Jellyfin managed library creation after startup",
+  "Preflight Jellyfin managed users",
+  "List Jellyfin users for primary administrator preflight",
+  "Refuse ambiguous Jellyfin primary administrator identity",
+  "Read Jellyfin server configuration for preflight",
+  "List Jellyfin libraries for preflight",
+  "Refuse unsafe Jellyfin managed library path representation",
+  "Refuse ambiguous Jellyfin managed library ownership",
+  "Reconcile the Jellyfin primary administrator name safely",
+  "Recover the Jellyfin primary administrator name after rename failure",
+  "Require recovered Jellyfin primary administrator identity",
+  "Update the Jellyfin server name",
+  "Upload the Jellyfin primary administrator image",
+  "Rename adopted Jellyfin managed libraries",
+  "Create absent Jellyfin managed libraries",
+  "Remove extra paths from Jellyfin managed libraries",
+  "Repair Jellyfin managed library options",
   "Require the vault Jellyfin administrator",
-  "Require exactly the managed Jellyfin library"
+  "Verify exact Jellyfin owned state"
 ]
 required_tasks.each do |name|
   refuse("missing #{name}") unless role.include?("- name: #{name}")
 end
+preflight_names = [
+  "Preflight Jellyfin managed users",
+  "List Jellyfin users for primary administrator preflight",
+  "Refuse ambiguous Jellyfin primary administrator identity",
+  "Read Jellyfin server configuration for preflight",
+  "List Jellyfin libraries for preflight",
+  "Refuse unsafe Jellyfin managed library path representation",
+  "Refuse ambiguous Jellyfin managed library ownership"
+]
+mutation_names = [
+  "Reconcile the Jellyfin primary administrator name safely",
+  "Update the Jellyfin server name",
+  "Upload the Jellyfin primary administrator image",
+  "Rename adopted Jellyfin managed libraries",
+  "Create absent Jellyfin managed libraries",
+  "Remove extra paths from Jellyfin managed libraries",
+  "Repair Jellyfin managed library options"
+]
+preflight = preflight_names.map { |name| role.index("- name: #{name}") }
+mutations = mutation_names.map { |name| role.index("- name: #{name}") }
+refuse("all identity/library preflight must precede mutation") unless
+  preflight.none?(&:nil?) && mutations.none?(&:nil?) && preflight.max < mutations.min
+refuse("current user update API is absent") unless role.include?("/Users?userId=")
+refuse("current user image API is absent") unless role.include?("/UserImage?userId=")
+refuse("current path removal API is absent") unless
+  role.include?("/Library/VirtualFolders/Paths?name=") && role.include?("method: DELETE")
+refuse("primary identity rename lacks recovery") unless identity.include?("rescue:")
+refuse("temporary recovery name match is not byte-exact") unless
+  role.include?("if item.Name == jellyfin_primary_temporary_name else")
+refuse("recovery marker privacy is not checked before reading") unless
+  role.index("stat.mode == '0600'") < role.index("Read Jellyfin primary administrator recovery marker") &&
+    role.index("stat.pw_name == ansible_facts.user_id") <
+      role.index("Read Jellyfin primary administrator recovery marker")
+refuse("server configuration update does not preserve unrelated fields") unless
+  role.include?("jellyfin_server_configuration_before.json | combine")
+refuse("avatar upload is unconditional") unless
+  role.include?("jellyfin_admin_avatar_upload_required")
 refuse("role must not edit an opaque database") if
   role.match?(/sqlite|library\.db|jellyfin\.db/i)
 puts "Jellyfin static contract passed (#{platform})"
@@ -155,12 +222,15 @@ if [ -z "${PLATFORM_JELLYFIN_CONTAINER:-}" ]; then
   PLATFORM_JELLYFIN_CONTAINER=${PLATFORM_PROJECT_NAME:+$PLATFORM_PROJECT_NAME-}jellyfin
 fi
 PLATFORM_JELLYFIN_PLATFORM=$platform
+PLATFORM_JELLYFIN_AVATAR_PATH=$avatar
 export PLATFORM_CONTRACT_VAULT_FILE PLATFORM_CONTRACT_VAULT_PASSWORD_FILE
 export PLATFORM_MEDIA_ROOT PLATFORM_DOCKER_ROOT PLATFORM_REPORT_ROOT
 export PLATFORM_JELLYFIN_PORT PLATFORM_JELLYFIN_CONTAINER PLATFORM_JELLYFIN_PLATFORM
+export PLATFORM_JELLYFIN_AVATAR_PATH
 
 exec ruby - "$mode" "$@" <<'RUBY'
 require "json"
+require "digest"
 require "net/http"
 require "open3"
 require "pathname"
@@ -177,9 +247,24 @@ REPORT_ROOT = Pathname.new(ENV.fetch("PLATFORM_REPORT_ROOT")).expand_path
 CONTAINER = ENV.fetch("PLATFORM_JELLYFIN_CONTAINER")
 STATE_PATH = REPORT_ROOT.join("jellyfin-persistence.json")
 
-LIBRARY_NAME = "Movies"
-LIBRARY_COLLECTION_TYPE = "movies"
-LIBRARY_PATH = "/media/Movies"
+ADMIN_NAME = "Yonatan"
+SERVER_NAME = "Yonflix 2.0"
+AVATAR_PATH = Pathname.new(ENV.fetch("PLATFORM_JELLYFIN_AVATAR_PATH")).expand_path
+AVATAR_SHA256 = "bf12ac53a05f1db64f3d00440315a6626e7c2dd12dd41867c93c9ac7aeccc792"
+LIBRARIES = [
+  { "Name" => "Movies", "CollectionType" => "movies", "Path" => "/media/Movies" },
+  { "Name" => "Shows", "CollectionType" => "tvshows", "Path" => "/media/Series" }
+].freeze
+UNMANAGED_LIBRARY = {
+  "Name" => "Jellyfin Contract Sentinel",
+  "CollectionType" => "books",
+  "Path" => "/media/Unmanaged"
+}.freeze
+ADOPTION_SHOWS_SEED_NAME = "Legacy Series By Path"
+ADOPTION_EXTRA_PATH = "/media/Legacy-Series-Extra"
+DRIFT_EXTRA_PATH = "/media/Movies-Drift-Extra"
+CONFIG_SENTINEL_KEY = "EnableMetrics"
+CONFIG_SENTINEL_VALUE = true
 MANAGED_OPTIONS = {
   "EnableRealtimeMonitor" => false,
   "EnableChapterImageExtraction" => false,
@@ -198,8 +283,14 @@ JELLYFIN_MEDIA_ROOT = Pathname.new(
 ).expand_path
 FIXTURE_DIRECTORY = JELLYFIN_MEDIA_ROOT.join("Movies", "Task 11 Contract Movie (2026)")
 FIXTURE_PATH = FIXTURE_DIRECTORY.join("Task 11 Contract Movie (2026).mp4")
-FIXTURE_LIBRARY_PATH = "#{LIBRARY_PATH}/Task 11 Contract Movie (2026)/Task 11 Contract Movie (2026).mp4"
+FIXTURE_LIBRARY_PATH = "/media/Movies/Task 11 Contract Movie (2026)/Task 11 Contract Movie (2026).mp4"
 FIXTURE_RUNTIME_TICKS = 40_000_000
+DRIFT_IMAGE = (
+  "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////" \
+  "2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAA" \
+  "AAAAAAAAAAAAB//EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhADEAAAAU//xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oACAEBAAE/" \
+  "AH//xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oACAECAQE/AH//xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oACAEDAQE/AH//2Q=="
+).unpack1("m0").freeze
 
 # Four seconds of 64x48 H.264 produced by the pinned image's own ffmpeg with
 # bitexact flags, so regenerating it yields these exact bytes. Small enough to
@@ -248,7 +339,7 @@ def fail_contract(message)
   exit 1
 end
 
-def request(method, path, token: nil, body: nil, expected: [200], headers: {}, raw: false)
+def request(method, path, token: nil, body: nil, encoded_body: nil, expected: [200], headers: {}, raw: false)
   uri = URI.join(BASE.to_s, path)
   request = Net::HTTP.const_get(method.capitalize).new(uri)
   request["Authorization"] = token ? %(#{CLIENT}, Token="#{token}") : CLIENT
@@ -256,6 +347,8 @@ def request(method, path, token: nil, body: nil, expected: [200], headers: {}, r
   if body
     request["Content-Type"] = "application/json"
     request.body = JSON.generate(body)
+  elsif encoded_body
+    request.body = encoded_body
   end
   response = Net::HTTP.start(uri.host, uri.port, open_timeout: 5, read_timeout: 120) do |http|
     http.request(request)
@@ -311,35 +404,76 @@ def authenticate(username, password)
   payload
 end
 
-def managed_library(token)
+def libraries(token)
   _response, folders = request("get", "/Library/VirtualFolders", token: token)
-  managed = folders.select { |folder| folder["Name"] == LIBRARY_NAME }
-  fail_contract("managed library is absent or duplicated") unless managed.length == 1
-  managed.fetch(0)
+  fail_contract("library response is not complete") unless folders.is_a?(Array)
+  folders
 end
 
-def canonical_library(folder)
-  options = folder.fetch("LibraryOptions")
-  JSON.generate(
-    "Name" => folder.fetch("Name"),
-    "CollectionType" => folder.fetch("CollectionType"),
-    "Locations" => folder.fetch("Locations").sort,
-    "PathInfos" => options.fetch("PathInfos").map { |info| info.fetch("Path") }.sort,
-    "Options" => MANAGED_OPTIONS.keys.sort.to_h { |key| [key, options[key]] }
-  )
+def normalize_path(path)
+  path.sub(%r{/+\z}, "")
 end
 
-def assert_managed_library(folder)
+def library_by_path(folders, definition)
+  matches = folders.select do |folder|
+    Array(folder["Locations"]).map { |path| normalize_path(path) }.include?(definition.fetch("Path"))
+  end
+  fail_contract("library path #{definition.fetch('Path')} is absent or duplicated") unless matches.length == 1
+  matches.fetch(0)
+end
+
+def assert_managed_library(folder, definition)
+  fail_contract("managed library name differs") unless folder.fetch("Name") == definition.fetch("Name")
   fail_contract("managed library collection type differs") unless
-    folder.fetch("CollectionType") == LIBRARY_COLLECTION_TYPE
+    folder.fetch("CollectionType") == definition.fetch("CollectionType")
   fail_contract("managed library locations differ") unless
-    folder.fetch("Locations") == [LIBRARY_PATH]
+    folder.fetch("Locations") == [definition.fetch("Path")]
   options = folder.fetch("LibraryOptions")
   fail_contract("managed library paths differ") unless
-    options.fetch("PathInfos").map { |info| info.fetch("Path") } == [LIBRARY_PATH]
+    options.fetch("PathInfos").map { |info| info.fetch("Path") } == [definition.fetch("Path")]
   MANAGED_OPTIONS.each do |key, value|
     fail_contract("managed library option #{key} differs") unless options[key] == value
   end
+end
+
+def server_configuration(token)
+  _response, configuration = request("get", "/System/Configuration", token: token)
+  fail_contract("server configuration response is incomplete") unless configuration.is_a?(Hash)
+  configuration
+end
+
+def user_image(token, user)
+  tag = URI.encode_www_form_component(user.fetch("PrimaryImageTag"))
+  id = safe_id(user.fetch("Id"))
+  request("get", "/UserImage?userId=#{id}&tag=#{tag}&format=original", token: token, raw: true).body
+end
+
+def upload_user_image(token, user_id, bytes)
+  request(
+    "post", "/UserImage?userId=#{safe_id(user_id)}", token: token,
+    encoded_body: [bytes].pack("m0"), headers: { "Content-Type" => "image/jpeg" },
+    expected: [204], raw: true
+  )
+end
+
+def rename_user(token, user, new_name)
+  id = safe_id(user.fetch("Id"))
+  request(
+    "post", "/Users?userId=#{id}", token: token,
+    body: user.merge("Name" => new_name), expected: [204]
+  )
+end
+
+def rename_library(token, old_name, new_name)
+  query = URI.encode_www_form("name" => old_name, "newName" => new_name, "refreshLibrary" => false)
+  request("post", "/Library/VirtualFolders/Name?#{query}", token: token, expected: [204])
+end
+
+def add_library_path(token, name, path)
+  request(
+    "post", "/Library/VirtualFolders/Paths", token: token,
+    body: { "Name" => name, "PathInfo" => { "Path" => path } }, expected: [204]
+  )
 end
 
 def assert_container_capabilities
@@ -474,6 +608,9 @@ vault_yaml.replace("\0" * vault_yaml.bytesize)
 vault_error.replace("\0" * vault_error.bytesize)
 username = vault.fetch("vault_jellyfin_admin_username")
 password = vault.fetch("vault_jellyfin_admin_password")
+fail_contract("vault primary administrator must be exact Yonatan") unless username == ADMIN_NAME
+fail_contract("approved administrator avatar bytes drifted") unless
+  AVATAR_PATH.file? && Digest::SHA256.file(AVATAR_PATH).hexdigest == AVATAR_SHA256
 
 wait_for_application
 # Rejected credentials come back as plain text, not JSON, so this asks for the
@@ -486,41 +623,136 @@ session = authenticate(username, password)
 token = session.fetch("AccessToken")
 user = session.fetch("User")
 user_id = safe_id(user.fetch("Id"))
-fail_contract("the vault administrator identity or role differs") unless
-  user.fetch("Name") == username && user.dig("Policy", "IsAdministrator") == true
+fail_contract("the vault administrator role differs") unless user.dig("Policy", "IsAdministrator") == true
 
 assert_container_capabilities
-folder = managed_library(token)
-safe_id(folder.fetch("ItemId"))
+folders = libraries(token)
+configuration = server_configuration(token)
+
+if MODE == "seed"
+  seed_fixture
+  unless user.fetch("Name") == ADMIN_NAME
+    temporary_name = "nas-platform-contract-seed-#{user_id[0, 8]}"
+    rename_user(token, user, temporary_name)
+    rename_user(token, user.merge("Name" => temporary_name), ADMIN_NAME)
+  end
+  unless configuration["ServerName"] == SERVER_NAME &&
+         configuration[CONFIG_SENTINEL_KEY] == CONFIG_SENTINEL_VALUE
+    configuration["ServerName"] = SERVER_NAME
+    configuration[CONFIG_SENTINEL_KEY] = CONFIG_SENTINEL_VALUE
+    request("post", "/System/Configuration", token: token, body: configuration, expected: [204])
+  end
+  current_image_matches = user["PrimaryImageTag"].to_s.length.positive? &&
+                          Digest::SHA256.hexdigest(user_image(token, user)) == AVATAR_SHA256
+  upload_user_image(token, user_id, AVATAR_PATH.binread) unless current_image_matches
+
+  JELLYFIN_MEDIA_ROOT.join("Series").mkpath
+  JELLYFIN_MEDIA_ROOT.join("Unmanaged").mkpath
+  JELLYFIN_MEDIA_ROOT.join("Legacy-Series-Extra").mkpath
+  (LIBRARIES + [UNMANAGED_LIBRARY]).each do |definition|
+    path_matches = folders.select do |candidate|
+      Array(candidate["Locations"]).map { |path| normalize_path(path) }.include?(definition.fetch("Path"))
+    end
+    fail_contract("seed library path #{definition.fetch('Path')} is duplicated") if path_matches.length > 1
+    next unless path_matches.empty?
+
+    seed_name = if ENV["PLATFORM_PROOF_LANE"] == "adoption" &&
+                   definition.fetch("Name") == "Shows"
+                  ADOPTION_SHOWS_SEED_NAME
+                else
+                  definition.fetch("Name")
+                end
+    query = URI.encode_www_form(
+      "name" => seed_name,
+      "collectionType" => definition.fetch("CollectionType"),
+      "refreshLibrary" => false
+    )
+    seed_paths = [definition.fetch("Path")]
+    seed_paths << ADOPTION_EXTRA_PATH if ENV["PLATFORM_PROOF_LANE"] == "adoption" &&
+                                            definition.fetch("Name") == "Shows"
+    request(
+      "post", "/Library/VirtualFolders?#{query}", token: token,
+      body: { "LibraryOptions" => MANAGED_OPTIONS.merge(
+        "PathInfos" => seed_paths.map { |path| { "Path" => path } }
+      ) }, expected: [204]
+    )
+  end
+  request("post", "/Library/Refresh", token: token, expected: [204])
+  session = authenticate(username, password)
+  token = session.fetch("AccessToken")
+  user = session.fetch("User")
+  folders = libraries(token)
+  configuration = server_configuration(token)
+end
 
 if MODE == "drift-verify"
-  fail_contract("the Jellyfin drift fixture was not installed") unless
-    folder.fetch("LibraryOptions").fetch("EnableRealtimeMonitor") == true
-  puts "Jellyfin library drift is present"
+  movies = library_by_path(folders, LIBRARIES.fetch(0))
+  fail_contract("the Jellyfin identity drift fixture was not installed") unless user.fetch("Name") == "yonatan"
+  fail_contract("the Jellyfin server drift fixture was not installed") unless
+    configuration.fetch("ServerName") == "Yonflix Drifted"
+  fail_contract("the Jellyfin image drift fixture was not installed") unless
+    Digest::SHA256.hexdigest(user_image(token, user)) == Digest::SHA256.hexdigest(DRIFT_IMAGE)
+  fail_contract("the Jellyfin library drift fixture was not installed") unless
+    movies.fetch("Name") == "Movies Drifted" &&
+      movies.fetch("LibraryOptions").fetch("EnableRealtimeMonitor") == true &&
+      movies.fetch("Locations").include?(DRIFT_EXTRA_PATH)
+  puts "Jellyfin identity, branding, image, and library drift is present"
   exit
 end
 
-assert_managed_library(folder)
+fail_contract("the primary administrator name differs") unless user.fetch("Name") == ADMIN_NAME
+fail_contract("the Jellyfin server name differs") unless configuration.fetch("ServerName") == SERVER_NAME
+fail_contract("the primary administrator image differs") unless
+  user.fetch("PrimaryImageTag").to_s.length.positive? &&
+    Digest::SHA256.hexdigest(user_image(token, user)) == AVATAR_SHA256
+managed_folders = LIBRARIES.to_h do |definition|
+  folder = library_by_path(folders, definition)
+  safe_id(folder.fetch("ItemId"))
+  if MODE == "seed" && ENV["PLATFORM_PROOF_LANE"] == "adoption" &&
+     definition.fetch("Name") == "Shows"
+    fail_contract("adoption Shows seed name differs") unless folder.fetch("Name") == ADOPTION_SHOWS_SEED_NAME
+    fail_contract("adoption Shows seed paths differ") unless
+      folder.fetch("Locations").sort == [definition.fetch("Path"), ADOPTION_EXTRA_PATH].sort
+  else
+    assert_managed_library(folder, definition)
+  end
+  [definition.fetch("Name"), folder]
+end
 
 if MODE == "drift"
-  options = folder.fetch("LibraryOptions").merge("EnableRealtimeMonitor" => true)
+  movies = managed_folders.fetch("Movies")
+  temporary_name = "nas-platform-contract-admin-#{user_id[0, 8]}"
+  rename_user(token, user, temporary_name)
+  rename_user(token, user.merge("Name" => temporary_name), "yonatan")
+  configuration["ServerName"] = "Yonflix Drifted"
+  request("post", "/System/Configuration", token: token, body: configuration, expected: [204])
+  upload_user_image(token, user_id, DRIFT_IMAGE)
+  JELLYFIN_MEDIA_ROOT.join("Movies-Drift-Extra").mkpath
+  add_library_path(token, movies.fetch("Name"), DRIFT_EXTRA_PATH)
+  rename_library(token, movies.fetch("Name"), "Movies Drifted")
+  options = movies.fetch("LibraryOptions").merge("EnableRealtimeMonitor" => true)
   request(
     "post", "/Library/VirtualFolders/LibraryOptions", token: token,
-    body: { "Id" => folder.fetch("ItemId"), "LibraryOptions" => options }, expected: [204]
+    body: { "Id" => movies.fetch("ItemId"), "LibraryOptions" => options }, expected: [204]
   )
-  puts "Jellyfin library drift installed"
+  puts "Jellyfin identity, branding, image, and library drift installed"
   exit
 end
 
 if MODE == "run"
-  puts "Jellyfin login, capability, and library contract passed"
+  unmanaged = library_by_path(folders, UNMANAGED_LIBRARY)
+  fail_contract("unmanaged Jellyfin library was not preserved") unless
+    unmanaged.fetch("Name") == UNMANAGED_LIBRARY.fetch("Name")
+  fail_contract("Jellyfin configuration sentinel was not preserved") unless
+    configuration.fetch(CONFIG_SENTINEL_KEY) == CONFIG_SENTINEL_VALUE
+  puts "Jellyfin identity, branding, image, capability, and library contract passed"
   exit
 end
 fail_contract("unknown mode: #{MODE}") unless %w[seed assert-persistence].include?(MODE)
 
 if MODE == "seed"
-  seed_fixture
-  request("post", "/Library/Refresh", token: token, expected: [204])
+  fail_contract("seed configuration sentinel was not installed") unless
+    configuration.fetch(CONFIG_SENTINEL_KEY) == CONFIG_SENTINEL_VALUE
 end
 
 item = find_fixture_item(token, user_id, timeout: MODE == "seed" ? 300 : 120)
@@ -536,7 +768,9 @@ state = JSON.generate(
   "user_id" => user_id,
   "item_id" => item_id,
   "runtime_ticks" => item.fetch("RunTimeTicks"),
-  "library" => canonical_library(folder)
+  "library_ids" => managed_folders.transform_values { |folder| safe_id(folder.fetch("ItemId")) },
+  "unmanaged_library_id" => safe_id(library_by_path(libraries(token), UNMANAGED_LIBRARY).fetch("ItemId")),
+  "config_sentinel" => server_configuration(token).fetch(CONFIG_SENTINEL_KEY)
 )
 
 case MODE
