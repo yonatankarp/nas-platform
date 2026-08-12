@@ -54,6 +54,8 @@ BASE_FIXTURE_PATHS = %w[
   roles/vault_contract/meta/argument_specs.yml
   roles/vault_contract/tasks/main.yml
   services/manifest.yml
+  services/tinymediamanager/compose.integration.yml
+  services/tinymediamanager/compose.mac.yml
   templates/vault-plain.yml.j2
   tests/contracts/registry.yml
   tests/compose_metadata_filter_test.yml
