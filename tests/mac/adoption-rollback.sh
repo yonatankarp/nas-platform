@@ -114,6 +114,7 @@ for coordinated_path in \
   legacy/immich/data legacy/immich/thumbs legacy/immich/encoded-video \
   legacy/immich/profile legacy/immich/backups legacy/immich/model-cache legacy/immich/postgres \
   legacy/paperless-ngx/redis legacy/paperless-ngx/postgres legacy/paperless-ngx/data \
+  legacy/paperless-ngx/cache \
   legacy/paperless-ngx/export legacy/paperless-ngx/tessdata/heb.traineddata \
   legacy/paperless-ngx/media legacy/paperless-ngx/consume; do
   [ -e "$rollback_root/$coordinated_path" ] && [ ! -L "$rollback_root/$coordinated_path" ] ||

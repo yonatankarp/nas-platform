@@ -9,6 +9,7 @@ services:
   webserver:
     volumes: !override
       - ${PLATFORM_ADOPTION_ROOT:?}/legacy/paperless-ngx/data:/usr/src/paperless/data
+      - ${PLATFORM_ADOPTION_ROOT:?}/legacy/paperless-ngx/cache:/usr/src/paperless/cache
       - ${PLATFORM_ADOPTION_ROOT:?}/legacy/paperless-ngx/export:/usr/src/paperless/export
       - ${PLATFORM_ADOPTION_ROOT:?}/legacy/paperless-ngx/tessdata/heb.traineddata:/usr/share/tesseract-ocr/5/tessdata/heb.traineddata:ro
       - ${PLATFORM_ADOPTION_ROOT:?}/legacy/paperless-ngx/media:/usr/src/paperless/media

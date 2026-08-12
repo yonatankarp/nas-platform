@@ -379,6 +379,7 @@ case " $* " in
       legacy/immich/data legacy/immich/thumbs legacy/immich/encoded-video \
       legacy/immich/profile legacy/immich/backups legacy/immich/model-cache legacy/immich/postgres \
       legacy/paperless-ngx/redis legacy/paperless-ngx/postgres legacy/paperless-ngx/data \
+      legacy/paperless-ngx/cache \
       legacy/paperless-ngx/export legacy/paperless-ngx/tessdata/heb.traineddata \
       legacy/paperless-ngx/media legacy/paperless-ngx/consume; do
       [ -e "$PLATFORM_MAC_SANDBOX/$path" ] || exit 93
@@ -425,7 +426,7 @@ mkdir -p "$sandbox/snapshot/pre-cutover/state/legacy"
 for path in \
   immich/data immich/thumbs immich/encoded-video immich/profile immich/backups \
   immich/model-cache immich/postgres paperless-ngx/redis paperless-ngx/postgres \
-  paperless-ngx/data paperless-ngx/export paperless-ngx/media paperless-ngx/consume; do
+  paperless-ngx/data paperless-ngx/cache paperless-ngx/export paperless-ngx/media paperless-ngx/consume; do
   mkdir -p "$sandbox/snapshot/pre-cutover/state/legacy/$path"
   printf 'snapshot-%s\n' "$path" > "$sandbox/snapshot/pre-cutover/state/legacy/$path/state"
 done
@@ -467,6 +468,7 @@ bindings = %w[
   paperless-ngx|legacy/paperless-ngx/redis|/data|rw|broker
   paperless-ngx|legacy/paperless-ngx/postgres|/var/lib/postgresql|rw|db
   paperless-ngx|legacy/paperless-ngx/data|/usr/src/paperless/data|rw|webserver
+  paperless-ngx|legacy/paperless-ngx/cache|/usr/src/paperless/cache|rw|webserver
   paperless-ngx|legacy/paperless-ngx/export|/usr/src/paperless/export|rw|webserver
   paperless-ngx|legacy/paperless-ngx/tessdata/heb.traineddata|/usr/share/tesseract-ocr/5/tessdata/heb.traineddata|ro|webserver
   paperless-ngx|legacy/paperless-ngx/media|/usr/src/paperless/media|rw|webserver

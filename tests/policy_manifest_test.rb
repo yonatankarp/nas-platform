@@ -69,6 +69,7 @@ BASE_FIXTURE_PATHS = %w[
   tests/managed_user_state_filter_test.py
   tests/ntfy_verify_execution_test.rb
   tests/komga_library_reconciliation_test.rb
+  tests/paperless_mail_reconciliation_test.rb
   tests/safe_slurp_test.py
   tests/safe_slurp_test.yml
   tests/mac/cleanup.sh
@@ -292,6 +293,14 @@ def implement_paperless(root)
     services:
       paperless:
         image: ghcr.io/paperless-ngx/paperless-ngx:2.0@sha256:#{'0' * 64}
+        restart: unless-stopped
+        logging:
+          driver: json-file
+          options:
+            max-size: 10m
+            max-file: "3"
+      gotenberg:
+        image: docker.io/gotenberg/gotenberg:8.35.0@sha256:a16a14e1f18a71405624bc028e90d4ef50ea774c352b303639c10bf7b141f760
         restart: unless-stopped
         logging:
           driver: json-file
@@ -1223,7 +1232,8 @@ end
   "Beszel telemetry Ansible regression" => "ruby tests/beszel_telemetry_ansible_test.rb",
   "Beszel telemetry production probe regression" => "python3 tests/beszel_telemetry_module_test.py",
   "Beszel telemetry Mac hook regression" => "tests/mac/beszel-telemetry-hook-test.sh",
-  "Komga library reconciliation regression" => "ruby tests/komga_library_reconciliation_test.rb"
+  "Komga library reconciliation regression" => "ruby tests/komga_library_reconciliation_test.rb",
+  "Paperless mail reconciliation regression" => "ruby tests/paperless_mail_reconciliation_test.rb"
 }.each do |name, command|
   expect_failure(failures, "#{name} removed from policy validation",
                  "validate-policy.sh must run #{command}") do |root|

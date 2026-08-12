@@ -135,6 +135,7 @@ EXPECTED_BINDS = {
     "db" => { "/var/lib/postgresql" => "legacy/paperless-ngx/postgres" },
     "webserver" => {
       "/usr/src/paperless/data" => "legacy/paperless-ngx/data",
+      "/usr/src/paperless/cache" => "legacy/paperless-ngx/cache",
       "/usr/src/paperless/export" => "legacy/paperless-ngx/export",
       "/usr/share/tesseract-ocr/5/tessdata/heb.traineddata" =>
         "legacy/paperless-ngx/tessdata/heb.traineddata",
@@ -367,8 +368,10 @@ Dir.mktmpdir("nas-platform-legacy-overrides.") do |temporary|
         source = mount.fetch("source")
         target = mount.fetch("target")
         base_mount = base_mounts_by_target.fetch(target) do
-          if name == "audiobookshelf" && service_name == "audiobookshelf" &&
-              target == "/metadata/backups"
+          if (name == "audiobookshelf" && service_name == "audiobookshelf" &&
+              target == "/metadata/backups") ||
+              (name == "paperless-ngx" && service_name == "webserver" &&
+               target == "/usr/src/paperless/cache")
             { "type" => "bind", "target" => target, "bind" => {} }
           else
             fail_contract("#{name}/#{service_name} adds an unreviewed bind target #{target}")

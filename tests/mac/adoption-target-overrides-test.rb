@@ -35,6 +35,7 @@ COMMITTED_BINDINGS = <<~BINDINGS.lines(chomp: true).map { |line| line.split("\t"
   paperless-ngx\tlegacy/paperless-ngx/redis\t/data
   paperless-ngx\tlegacy/paperless-ngx/postgres\t/var/lib/postgresql
   paperless-ngx\tlegacy/paperless-ngx/data\t/usr/src/paperless/data
+  paperless-ngx\tlegacy/paperless-ngx/cache\t/usr/src/paperless/cache
   paperless-ngx\tlegacy/paperless-ngx/export\t/usr/src/paperless/export
   paperless-ngx\tlegacy/paperless-ngx/tessdata/heb.traineddata\t/usr/share/tesseract-ocr/5/tessdata/heb.traineddata
   paperless-ngx\tlegacy/paperless-ngx/media\t/usr/src/paperless/media

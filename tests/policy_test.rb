@@ -935,6 +935,7 @@ validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "te
   ruby\ tests/database_managed_users_test.rb
   ruby\ tests/database_managed_users_test.rb\ --self-test
   ruby\ tests/komga_library_reconciliation_test.rb
+  ruby\ tests/paperless_mail_reconciliation_test.rb
   tests/integration_lock_test.sh
   tests/mac/audiobookshelf-drift-hook-test.sh
   tests/contracts/audiobookshelf-audio-test.sh
@@ -1363,11 +1364,13 @@ check(failures, target_validation_tasks.one? &&
                 target_validation_argv[2] == validator_lookup &&
                 target_validation_argv.count(validator_lookup) == 1,
       "target containment task must execute the exact extracted validator source")
-check(failures, target_validation_argv.length == 11 &&
-                target_validation_argv[8].include?("deployment_target_candidate_paths") &&
-                target_validation_argv[8].include?("to_json") &&
-                target_validation_argv[9] == "{{ platform_adoption_root | default('') }}" &&
-                target_validation_argv[10].include?("platform_adoption_enabled"),
+check(failures, target_validation_argv.length == 12 &&
+                target_validation_argv[3] == "{{ nas_docker_root }}" &&
+                target_validation_argv[4] == "{{ nas_media_root }}" &&
+                target_validation_argv[9].include?("deployment_target_candidate_paths") &&
+                target_validation_argv[9].include?("to_json") &&
+                target_validation_argv[10] == "{{ platform_adoption_root | default('') }}" &&
+                target_validation_argv[11].include?("platform_adoption_enabled"),
       "target containment task must pass one JSON target batch and adoption binding")
 check(failures, !target_validation.key?("loop") && !target_validation.key?("loop_control"),
       "target containment task must validate the batch without an Ansible loop")

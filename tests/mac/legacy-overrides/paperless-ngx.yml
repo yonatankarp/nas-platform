@@ -19,6 +19,7 @@ services:
       - "127.0.0.1:${PAPERLESS_HOST_PORT:?}:8000"
     volumes: !override
       - ${PLATFORM_MAC_SANDBOX:?}/legacy/paperless-ngx/data:/usr/src/paperless/data
+      - ${PLATFORM_MAC_SANDBOX:?}/legacy/paperless-ngx/cache:/usr/src/paperless/cache
       - ${PLATFORM_MAC_SANDBOX:?}/legacy/paperless-ngx/export:/usr/src/paperless/export
       - ${PLATFORM_MAC_SANDBOX:?}/legacy/paperless-ngx/tessdata/heb.traineddata:/usr/share/tesseract-ocr/5/tessdata/heb.traineddata:ro
       - ${PLATFORM_MAC_SANDBOX:?}/legacy/paperless-ngx/media:/usr/src/paperless/media

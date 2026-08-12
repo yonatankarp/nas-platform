@@ -20,7 +20,7 @@ module AdoptionBindPrep
     legacy/komga/config legacy/komga/library
     legacy/ntfy/cache legacy/ntfy/data
     legacy/paperless-ngx/redis legacy/paperless-ngx/postgres legacy/paperless-ngx/data
-    legacy/paperless-ngx/export legacy/paperless-ngx/tessdata legacy/paperless-ngx/media
+    legacy/paperless-ngx/cache legacy/paperless-ngx/export legacy/paperless-ngx/tessdata legacy/paperless-ngx/media
     legacy/paperless-ngx/consume
     legacy/tinymediamanager/data legacy/tinymediamanager/movies legacy/tinymediamanager/series
   ].freeze
@@ -31,7 +31,7 @@ module AdoptionBindPrep
     legacy/jellyfin/config legacy/jellyfin/cache legacy/jellyfin/media
     legacy/komga/config legacy/komga/library
     legacy/ntfy/cache legacy/ntfy/data
-    legacy/paperless-ngx/data legacy/paperless-ngx/export legacy/paperless-ngx/tessdata
+    legacy/paperless-ngx/data legacy/paperless-ngx/cache legacy/paperless-ngx/export legacy/paperless-ngx/tessdata
     legacy/paperless-ngx/media legacy/paperless-ngx/consume
     legacy/tinymediamanager/data legacy/tinymediamanager/movies legacy/tinymediamanager/series
   ].freeze

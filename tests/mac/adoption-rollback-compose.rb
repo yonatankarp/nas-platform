@@ -137,9 +137,9 @@ end
 def expected_bindings(attestations_bytes, rollback_root, adoption_service)
   records = JSON.parse(attestations_bytes)
   required = %w[service legacy_compose_service source target access kind container_path size sha256]
-  raise unless records.is_a?(Array) && records.length == 33 &&
+  raise unless records.is_a?(Array) && records.length == 34 &&
                records.all? { |record| record.is_a?(Hash) && required.all? { |key| record.key?(key) } } &&
-               records.map { |record| record.fetch("source") }.uniq.length == 33
+               records.map { |record| record.fetch("source") }.uniq.length == 34
   selected = records.select { |record| record.fetch("service") == adoption_service }
   raise if selected.empty?
   selected.map do |record|

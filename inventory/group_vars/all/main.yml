@@ -214,13 +214,13 @@ nas_storage:
     recovery: cache
   - path: "{{ nas_media_root }}/Documents/archive"
     mode: "0755"
-    recovery: user
+    recovery: critical
   - path: "{{ nas_media_root }}/Documents/inbox"
     mode: "0755"
-    recovery: user
+    recovery: critical
   - path: "{{ nas_media_root }}/Documents/export"
     mode: "0755"
-    recovery: user
+    recovery: critical
 
   # Dozzle authentication and notification configuration.
   - path: "{{ nas_docker_root }}/dozzle/data"

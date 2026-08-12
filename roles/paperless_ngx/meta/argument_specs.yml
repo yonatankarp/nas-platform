@@ -11,6 +11,22 @@ argument_specs:
       paperless_ai_enabled: {type: bool, required: false}
       paperless_ai_llm_endpoint: {type: str, required: false}
       paperless_ai_llm_model: {type: str, required: false}
+      paperless_archive_host_path:
+        type: str
+        required: false
+        choices: [/volume2/Documents/archive]
+      paperless_consume_host_path:
+        type: str
+        required: false
+        choices: [/volume2/Documents/inbox]
+      paperless_export_host_path:
+        type: str
+        required: false
+        choices: [/volume2/Documents/export]
+      paperless_state_host_path:
+        type: str
+        required: false
+        choices: [/volume1/Docker/paperless-ngx]
       paperless_hebrew_model_url: {type: str, required: false}
       paperless_hebrew_model_checksum: {type: str, required: false}
       paperless_mail_account: {type: dict, required: false}

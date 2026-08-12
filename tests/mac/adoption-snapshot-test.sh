@@ -170,7 +170,7 @@ ruby -e '
 if PLATFORM_MAC_TMPDIR=$fixture PLATFORM_MAC_SANDBOX=$sandbox \
   "$snapshotter" publish --override-root "$override_root" \
   --baseline "$baseline" --run-state "$state" >"$fixture/output" 2>&1; then
-  fail 'valid extra source outside the committed 33-source policy was accepted'
+  fail 'valid extra source outside the committed 34-source policy was accepted'
 fi
 grep -F 'legacy adoption mapping differs from committed policy' "$fixture/output" >/dev/null ||
   fail 'extra valid source was not rejected by committed policy'
@@ -456,11 +456,11 @@ fi
 ruby -rjson - "$published/inventory.json" <<'RUBY'
 inventory = JSON.parse(File.read(ARGV.fetch(0)))
 paths = inventory.fetch("roots").map { |entry| entry.fetch("path") }
-raise "inventory does not derive all reviewed bindings" unless paths.length == 33 && paths.uniq.length == paths.length
+raise "inventory does not derive all reviewed bindings" unless paths.length == 34 && paths.uniq.length == paths.length
 %w[
   legacy/immich/data legacy/immich/thumbs legacy/immich/encoded-video
   legacy/immich/profile legacy/immich/backups legacy/immich/model-cache legacy/immich/postgres
-  legacy/paperless-ngx/redis legacy/paperless-ngx/postgres legacy/paperless-ngx/data
+  legacy/paperless-ngx/redis legacy/paperless-ngx/postgres legacy/paperless-ngx/data legacy/paperless-ngx/cache
   legacy/paperless-ngx/export legacy/paperless-ngx/tessdata/heb.traineddata
   legacy/paperless-ngx/media legacy/paperless-ngx/consume
 ].each { |path| raise "coordinated service root missing" unless paths.include?(path) }
@@ -809,8 +809,8 @@ PATH="$fake_docker_dir:$PATH" PLATFORM_FAKE_SWAP=0 \
 [ ! -e "$crash_journal" ] || fail 'next guard did not remove the prior crash journal'
 [ "$(ruby -e 's=File.stat(ARGV.fetch(0)); puts((s.mtime.to_r*1_000_000_000).to_i)' "$crash_sentinel")" = "$crash_mtime" ] ||
   fail 'next guard did not exactly restore the prior challenged timestamp'
-[ "$(wc -l < "$fixture/attested-mounts.log" | tr -d ' ')" = 33 ] ||
-  fail 'container attestation did not read all 33 mounted roots'
+[ "$(wc -l < "$fixture/attested-mounts.log" | tr -d ' ')" = 34 ] ||
+  fail 'container attestation did not read all 34 mounted roots'
 grep -F "$(printf 'nas-platform-mac-abc123-beszel\tagent-portable\t/var/lib/beszel-agent/.nas-platform-adoption-root-sentinel')" \
   "$fixture/attested-mounts.log" >/dev/null || fail 'Beszel portable-agent sentinel was not read'
 grep -F "$(printf 'nas-platform-mac-abc123-paperless\tbroker\t/data/.nas-platform-adoption-root-sentinel')" \

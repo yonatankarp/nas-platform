@@ -10,6 +10,11 @@ paperless_ai_enabled: false
 paperless_ai_llm_endpoint: http://192.0.2.1:11434
 paperless_ai_llm_model: gemma3:4b
 
+paperless_archive_host_path: /volume2/Documents/archive
+paperless_consume_host_path: /volume2/Documents/inbox
+paperless_export_host_path: /volume2/Documents/export
+paperless_state_host_path: /volume1/Docker/paperless-ngx
+
 paperless_hebrew_model_url: >-
   https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/4.1.0/heb.traineddata
 paperless_hebrew_model_checksum: >-

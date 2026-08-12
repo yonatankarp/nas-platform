@@ -4,6 +4,13 @@
 # classification. Previously this was a directory list, a set of chown
 # instructions in prose, and a hand-maintained recovery table: three places to
 # forget.
+- name: Validate central storage targets before directory creation
+  ansible.builtin.include_role:
+    name: deployment_bundle
+    tasks_from: target
+  vars:
+    deployment_target_extra_paths: "{{ nas_storage | map(attribute='path') | list }}"
+
 - name: Refuse to claim ownership of NAS-managed user files
   ansible.builtin.assert:
     that:
