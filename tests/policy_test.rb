@@ -934,6 +934,7 @@ validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "te
   ruby\ tests/run_contracts.rb\ --validate-only
   ruby\ tests/database_managed_users_test.rb
   ruby\ tests/database_managed_users_test.rb\ --self-test
+  ruby\ tests/komga_library_reconciliation_test.rb
   tests/integration_lock_test.sh
   tests/mac/audiobookshelf-drift-hook-test.sh
   tests/contracts/audiobookshelf-audio-test.sh

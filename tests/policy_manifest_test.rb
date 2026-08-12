@@ -68,6 +68,7 @@ BASE_FIXTURE_PATHS = %w[
   tests/mac_inventory_path_test.yml
   tests/managed_user_state_filter_test.py
   tests/ntfy_verify_execution_test.rb
+  tests/komga_library_reconciliation_test.rb
   tests/safe_slurp_test.py
   tests/safe_slurp_test.yml
   tests/mac/cleanup.sh
@@ -1221,7 +1222,8 @@ end
   "Beszel telemetry deadline regression" => "ruby tests/beszel_telemetry_timeout_test.rb",
   "Beszel telemetry Ansible regression" => "ruby tests/beszel_telemetry_ansible_test.rb",
   "Beszel telemetry production probe regression" => "python3 tests/beszel_telemetry_module_test.py",
-  "Beszel telemetry Mac hook regression" => "tests/mac/beszel-telemetry-hook-test.sh"
+  "Beszel telemetry Mac hook regression" => "tests/mac/beszel-telemetry-hook-test.sh",
+  "Komga library reconciliation regression" => "ruby tests/komga_library_reconciliation_test.rb"
 }.each do |name, command|
   expect_failure(failures, "#{name} removed from policy validation",
                  "validate-policy.sh must run #{command}") do |root|

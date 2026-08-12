@@ -346,7 +346,14 @@ begin
     checks << { "service" => service, "capability" => "record-counts", "passed" => true }
     raise "fixture checksums differ" unless actual.fetch("fixture_sha256") == expected.fetch("fixture_sha256")
     checks << { "service" => service, "capability" => "fixture-checksums", "passed" => true }
-    raise "managed settings differ" unless actual.fetch("managed_settings") == expected.fetch("managed_settings")
+    expected_settings = expected.fetch("managed_settings")
+    if service == "komga"
+      raise "managed settings differ" unless
+        expected_settings.fetch("library_name") == "Books" &&
+        expected_settings.fetch("library_root") == "/data"
+      expected_settings = expected_settings.merge("library_name" => "Comics")
+    end
+    raise "managed settings differ" unless actual.fetch("managed_settings") == expected_settings
     checks << { "service" => service, "capability" => "managed-settings", "passed" => true }
   end
   destroy_staging_directory(probe_stage)

@@ -43,6 +43,7 @@ run_fixture() {
 export PLATFORM_AUDIOBOOKSHELF_MEDIA_LIBRARY="$PLATFORM_MAC_SANDBOX/legacy/audiobookshelf/media"
 run_fixture audiobookshelf audiobookshelf seed-progress
 export PLATFORM_KOMGA_LIBRARY_PATH="$PLATFORM_MAC_SANDBOX/legacy/komga/library"
+export PLATFORM_KOMGA_CONFIG_PATH="$PLATFORM_MAC_SANDBOX/legacy/komga/config"
 run_fixture komga komga seed
 export PLATFORM_TINYMEDIAMANAGER_MOVIES_ROOT="$PLATFORM_MAC_SANDBOX/legacy/tinymediamanager/movies"
 export PLATFORM_TINYMEDIAMANAGER_SERIES_ROOT="$PLATFORM_MAC_SANDBOX/legacy/tinymediamanager/series"

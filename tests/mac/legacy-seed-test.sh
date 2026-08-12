@@ -234,6 +234,7 @@ case $service:$mode in
     ;;
   komga:seed)
     [ "$PLATFORM_KOMGA_LIBRARY_PATH" = "$PLATFORM_MAC_SANDBOX/legacy/komga/library" ] || exit 44
+    [ "$PLATFORM_KOMGA_CONFIG_PATH" = "$PLATFORM_MAC_SANDBOX/legacy/komga/config" ] || exit 60
     [ "$PLATFORM_FIXTURE_COMPOSE_SERVICE" = komga ] || exit 45
     ;;
   tinymediamanager:seed)
@@ -404,6 +405,8 @@ unlink "$sandbox/legacy/nas-platform"
 
 seed_output=$temporary_root/seed-output
 run_seed > "$seed_output"
+grep -F $'\t{"komga_library_name":"Books"}\t--tags\tkomga' \
+  "$log" >/dev/null || fail 'legacy Komga seed did not pin the pre-rename Books library'
 grep -F "@$temporary_root/immich-fixture-vars.yml" "$log" >/dev/null ||
   fail 'legacy managed-user seeding omitted the protected Immich fixture policy'
 [ -f "$temporary_root/ntfy-prerequisites" ] ||

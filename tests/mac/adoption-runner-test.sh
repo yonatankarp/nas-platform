@@ -233,6 +233,9 @@ expect_failure 'ambient proof callback host' 'reserved adoption mapping environm
 expect_failure 'ambient callback host' 'reserved adoption mapping environment must be unset' \
   env PLATFORM_CALLBACK_HOST=192.0.2.1 "$runner" --lane fresh \
     --vault-file "$vault_file" --vault-password-file "$password_file"
+expect_failure 'ambient Komga config fixture path' 'reserved adoption mapping environment must be unset' \
+  env PLATFORM_KOMGA_CONFIG_PATH="$temporary_parent/hostile" "$runner" --lane fresh \
+    --vault-file "$vault_file" --vault-password-file "$password_file"
 ruby_startup_marker=$temporary_parent/ruby-startup-injection-executed
 ruby_startup_loader=$temporary_parent/ruby-startup-injection.rb
 printf "File.write('%s', 'executed')\n" "$ruby_startup_marker" > "$ruby_startup_loader"

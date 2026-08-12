@@ -136,6 +136,11 @@ seed_role() {
   seed_project_variable=${6:-${seed_role_name}_compose_project_name}
   seed_files_variable=${7:-${seed_role_name}_compose_files}
   seed_vault_key=${8:-$seed_role_name}
+  if [ "$#" -ge 9 ]; then
+    seed_service_extra=$9
+  else
+    seed_service_extra='{}'
+  fi
   if [ "$seed_role_name" = tinymediamanager ]; then
     seed_managed_users_extra='{"vault_managed_tinymediamanager_users":[]}'
   else
@@ -160,6 +165,7 @@ RUBY
       -e "$seed_project_variable=$PLATFORM_PROJECT_NAME-legacy-$seed_service" \
       -e "$seed_files_extra" \
       -e "$seed_managed_users_extra" \
+      -e "$seed_service_extra" \
       --tags "$seed_tag" >/dev/null 2>&1; then
     die "$seed_service capability failed"
   fi
@@ -180,7 +186,8 @@ seed_role dozzle dozzle dozzle_port "${PLATFORM_DOZZLE_PORT:?}" dozzle dozzle_co
 seed_role audiobookshelf audiobookshelf audiobookshelf_port "${PLATFORM_AUDIOBOOKSHELF_PORT:?}" audiobookshelf \
   audiobookshelf_compose_project_name audiobookshelf_compose_files audiobookshelf
 seed_role komga komga komga_port "${PLATFORM_KOMGA_PORT:?}" \
-  komga komga_compose_project_name komga_compose_files komga
+  komga komga_compose_project_name komga_compose_files komga \
+  '{"komga_library_name":"Books"}'
 seed_role jellyfin jellyfin jellyfin_port "${PLATFORM_JELLYFIN_PORT:?}" jellyfin jellyfin_compose_project_name \
   jellyfin_compose_files jellyfin
 seed_role immich immich immich_port \

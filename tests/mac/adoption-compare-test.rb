@@ -43,7 +43,7 @@ SETTING_FIELDS = {
   "audiobookshelf" => %w[library_name media_type], "beszel" => %w[system_name],
   "dozzle" => %w[dispatcher_name dispatcher_semantics_sha256 rules_semantics_sha256],
   "immich" => %w[database_backup machine_learning new_version_check],
-  "jellyfin" => %w[library_name], "komga" => %w[library_name], "ntfy" => %w[topic],
+  "jellyfin" => %w[library_name], "komga" => %w[library_id library_name library_root], "ntfy" => %w[topic],
   "paperless-ngx" => %w[mail_account_name], "tinymediamanager" => %w[api_enabled]
 }.freeze
 
@@ -57,7 +57,11 @@ def evidence(service)
     "managed_settings" => SETTING_FIELDS.fetch(service).to_h do |field|
       [field, field.end_with?("enabled") ? true : (field.end_with?("_sha256") ? "9" * 64 : "managed")]
     end
-  }
+  }.tap do |value|
+    value["managed_settings"] = {
+      "library_id" => "legacy-library", "library_name" => "Books", "library_root" => "/data"
+    } if service == "komga"
+  end
 end
 
 def write_probe(root, service)
@@ -152,6 +156,8 @@ Dir.mktmpdir("adoption-compare-test-") do |root|
   output = File.join(root, "comparison.json")
   capabilities_path = File.join(root, "capabilities.yml")
   baseline_services = SERVICES.to_h { |service| [service, evidence(service)] }
+  target_services = Marshal.load(Marshal.dump(baseline_services))
+  target_services.fetch("komga").fetch("managed_settings")["library_name"] = "Comics"
   File.write(baseline_path, JSON.generate(
     "schema" => 1, "legacy_commit" => "b" * 40,
     "legacy_images" => SERVICES.to_h { |service| [service, ["example/#{service}@sha256:#{'c' * 64}"]] },
@@ -169,7 +175,7 @@ Dir.mktmpdir("adoption-compare-test-") do |root|
 
   stdout, stderr, status = run_compare(
     root, baseline: baseline_path, capabilities: capabilities_path,
-    output: output, evidence_by_service: baseline_services
+    output: output, evidence_by_service: target_services
   )
   failures << "matching evidence failed: #{stderr}" unless status.success?
   expected_labels = SERVICES.flat_map do |service|
@@ -204,7 +210,7 @@ Dir.mktmpdir("adoption-compare-test-") do |root|
     "unknown evidence" => ["beszel", ->(value) { value["unexpected"] = "sensitive-canary" }]
   }
   cases.each do |label, (service, mutation)|
-    target = Marshal.load(Marshal.dump(baseline_services))
+    target = Marshal.load(Marshal.dump(target_services))
     mutation.call(target.fetch(service))
     stdout, stderr, status = run_compare(
       root, baseline: baseline_path, capabilities: capabilities_path,
@@ -223,7 +229,7 @@ Dir.mktmpdir("adoption-compare-test-") do |root|
     end
   end
 
-  target = Marshal.load(Marshal.dump(baseline_services))
+  target = Marshal.load(Marshal.dump(target_services))
   unmanaged = target.fetch("audiobookshelf").fetch("identities").first.merge("name" => "unmanaged-user")
   target.fetch("audiobookshelf").fetch("identities") << unmanaged
   target.fetch("audiobookshelf").fetch("record_counts")["users"] += 1
@@ -233,7 +239,7 @@ Dir.mktmpdir("adoption-compare-test-") do |root|
   )
   failures << "allowed unmanaged identity failed: #{stderr}" unless status.success?
 
-  target = Marshal.load(Marshal.dump(baseline_services))
+  target = Marshal.load(Marshal.dump(target_services))
   target.fetch("tinymediamanager").fetch("identities") <<
     target.fetch("tinymediamanager").fetch("identities").first.merge("name" => "second-login")
   _stdout, _stderr, status = run_compare(
@@ -242,7 +248,7 @@ Dir.mktmpdir("adoption-compare-test-") do |root|
   )
   failures << "unmanaged identity without preserve policy was accepted" if status.success?
 
-  target = Marshal.load(Marshal.dump(baseline_services))
+  target = Marshal.load(Marshal.dump(target_services))
   target.fetch("immich").fetch("record_counts")["assets"] = 2
   _stdout, stderr, status = run_compare(
     root, baseline: baseline_path, capabilities: capabilities_path,
@@ -250,7 +256,7 @@ Dir.mktmpdir("adoption-compare-test-") do |root|
   )
   failures << "additional preserved records failed: #{stderr}" unless status.success?
 
-  target = Marshal.load(Marshal.dump(baseline_services))
+  target = Marshal.load(Marshal.dump(target_services))
   target.fetch("komga").fetch("identities") <<
     target.fetch("komga").fetch("identities").first.merge("name" => "ＫＯＭＧＡ-ADMINISTRATOR")
   _stdout, _stderr, status = run_compare(
@@ -258,6 +264,20 @@ Dir.mktmpdir("adoption-compare-test-") do |root|
     output: output, evidence_by_service: target
   )
   failures << "NFKC/case-folded duplicate identity was accepted" if status.success?
+
+  {
+    "Komga identifier replacement" => ["library_id", "replacement-library"],
+    "Komga root replacement" => ["library_root", "/elsewhere"],
+    "Komga rename omission" => ["library_name", "Books"]
+  }.each do |label, (field, value)|
+    target = Marshal.load(Marshal.dump(target_services))
+    target.fetch("komga").fetch("managed_settings")[field] = value
+    _stdout, _stderr, status = run_compare(
+      root, baseline: baseline_path, capabilities: capabilities_path,
+      output: output, evidence_by_service: target
+    )
+    failures << "#{label} was accepted" if status.success?
+  end
 
   malformed_baselines = {
     "missing service" => JSON.parse(File.read(baseline_path)).tap { |value| value["services"].delete("ntfy") },
@@ -272,7 +292,7 @@ Dir.mktmpdir("adoption-compare-test-") do |root|
     File.chmod(0o600, malformed_path)
     _stdout, _stderr, status = run_compare(
       root, baseline: malformed_path, capabilities: capabilities_path,
-      output: output, evidence_by_service: baseline_services
+      output: output, evidence_by_service: target_services
     )
     failures << "#{label} baseline was accepted" if status.success?
   end
@@ -282,7 +302,7 @@ Dir.mktmpdir("adoption-compare-test-") do |root|
   File.chmod(0o700, File.join(probes, "ntfy.sh"))
   stdout, stderr, status = run_compare(
     root, baseline: baseline_path, capabilities: capabilities_path,
-    output: output, evidence_by_service: baseline_services
+    output: output, evidence_by_service: target_services
   )
   failures << "probe stderr was accepted" if status.success?
   comparison_bytes = File.file?(output) ? File.binread(output) : ""
@@ -296,7 +316,7 @@ Dir.mktmpdir("adoption-compare-test-") do |root|
   File.symlink(protected_output, symlink_output)
   _stdout, _stderr, status = run_compare(
     root, baseline: baseline_path, capabilities: capabilities_path,
-    output: symlink_output, evidence_by_service: baseline_services
+    output: symlink_output, evidence_by_service: target_services
   )
   failures << "symlink comparison output was accepted" if status.success?
   failures << "symlink comparison output changed target" unless File.binread(protected_output) == "protected\n"
@@ -306,7 +326,7 @@ Dir.mktmpdir("adoption-compare-test-") do |root|
   }
   _stdout, _stderr, status = run_compare(
     root, baseline: baseline_path, capabilities: capabilities_path,
-    output: output, evidence_by_service: baseline_services, binding: mismatched_binding
+    output: output, evidence_by_service: target_services, binding: mismatched_binding
   )
   failures << "baseline digest outside the snapshot binding was accepted" if status.success?
 
@@ -320,7 +340,7 @@ Dir.mktmpdir("adoption-compare-test-") do |root|
   File.unlink(startup_marker) if File.file?(startup_marker)
   _stdout, stderr, status = run_compare(
     root, baseline: baseline_path, capabilities: capabilities_path,
-    output: output, evidence_by_service: baseline_services,
+    output: output, evidence_by_service: target_services,
     late_startup_env: { "RUBYOPT" => hostile_rubyopt }
   )
   failures << "scrubbed Ruby startup environment broke comparison: #{stderr}" unless status.success?
@@ -338,7 +358,7 @@ Dir.mktmpdir("adoption-compare-test-") do |root|
                          end
     _stdout, _stderr, status = run_compare(
       root, baseline: baseline_path, capabilities: capabilities_path,
-      output: output, evidence_by_service: baseline_services,
+      output: output, evidence_by_service: target_services,
       extra_env: {
         "PLATFORM_FAKE_EXECUTE_DEPENDENCY" => "true",
         "PLATFORM_FAKE_DEPENDENCY_KIND" => dependency_kind,
@@ -356,7 +376,7 @@ Dir.mktmpdir("adoption-compare-test-") do |root|
   %w[persistent transient].each do |mutation|
     _stdout, stderr, status = run_compare(
       root, baseline: baseline_path, capabilities: capabilities_path,
-      output: output, evidence_by_service: baseline_services,
+      output: output, evidence_by_service: target_services,
       extra_env: {
         "PLATFORM_ADOPTION_COMPARE_STAGE_MUTATION" => mutation,
         "PLATFORM_ADOPTION_COMPARE_STAGE_PAYLOAD" => hostile_script
