@@ -126,7 +126,11 @@ refuse("managed library must not write metadata into read-only media") unless
 
 identity_path = File.join(root, "roles", "jellyfin", "tasks", "primary_identity.yml")
 identity = File.file?(identity_path) ? File.read(identity_path) : ""
-role = File.read(File.join(root, "roles", "jellyfin", "tasks", "main.yml")) + identity
+settings_path = File.join(root, "roles", "jellyfin", "tasks", "settings.yml")
+settings = File.file?(settings_path) ? File.read(settings_path) : ""
+qsv_path = File.join(root, "roles", "jellyfin", "tasks", "qsv_probe.yml")
+qsv = File.file?(qsv_path) ? File.read(qsv_path) : ""
+role = File.read(File.join(root, "roles", "jellyfin", "tasks", "main.yml")) + identity + settings + qsv
 contract = File.read(File.join(root, "tests", "contracts", "jellyfin.sh"))
 runtime_query = ["fields=Path,MediaSources", "RunTimeTicks"].join(",")
 refuse("fixture query does not request its runtime field") unless contract.include?(runtime_query)
@@ -200,6 +204,80 @@ refuse("server configuration update does not preserve unrelated fields") unless
   role.include?("jellyfin_server_configuration_before.json | combine")
 refuse("avatar upload is unconditional") unless
   role.include?("jellyfin_admin_avatar_upload_required")
+expected_nas_encoding = {
+  "HardwareAccelerationType" => "qsv",
+  "QsvDevice" => "/dev/dri/renderD128",
+  "HardwareDecodingCodecs" => %w[h264 hevc mpeg2video vc1 vp8 vp9],
+  "EnableDecodingColorDepth10Hevc" => true,
+  "EnableDecodingColorDepth10Vp9" => true,
+  "EnableHardwareEncoding" => true,
+  "AllowHevcEncoding" => true,
+  "AllowAv1Encoding" => false,
+  "EnableIntelLowPowerH264HwEncoder" => true,
+  "EnableIntelLowPowerHevcHwEncoder" => true,
+  "EnableVppTonemapping" => true,
+  "EnableTonemapping" => false
+}
+refuse("NAS encoding policy differs") unless
+  defaults.dig("jellyfin_encoding_profiles", "nas") == expected_nas_encoding
+refuse("Mac encoding policy is not explicit CPU fallback") unless
+  defaults.dig("jellyfin_encoding_profiles", "mac") == expected_nas_encoding.merge(
+    "HardwareAccelerationType" => "none",
+    "QsvDevice" => "",
+    "HardwareDecodingCodecs" => [],
+    "EnableDecodingColorDepth10Hevc" => false,
+    "EnableDecodingColorDepth10Vp9" => false,
+    "EnableHardwareEncoding" => false,
+    "AllowHevcEncoding" => false,
+    "EnableIntelLowPowerH264HwEncoder" => false,
+    "EnableIntelLowPowerHevcHwEncoder" => false,
+    "EnableVppTonemapping" => false
+  )
+refuse("managed plugin repositories differ") unless defaults["jellyfin_plugin_repositories"] == [
+  { "Name" => "Jellyfin Stable", "Url" => "https://repo.jellyfin.org/releases/plugin/manifest-stable.json", "Enabled" => true },
+  { "Name" => "Intro Skipper", "Url" => "https://intro-skipper.org/manifest.json", "Enabled" => true }
+]
+refuse("managed plugins differ") unless defaults["jellyfin_plugins"] == ["Intro Skipper", "Open Subtitles"]
+refuse("managed plugin package identities differ") unless defaults["jellyfin_plugin_packages"] == [
+  { "Name" => "Intro Skipper", "AssemblyGuid" => "c83d86bb-a1e0-4c35-a113-e2101cf4ee6b",
+    "RepositoryUrl" => "https://intro-skipper.org/manifest.json" },
+  { "Name" => "Open Subtitles", "AssemblyGuid" => "4b9ed42f-5185-48b5-9803-6ff2989014c4",
+    "RepositoryUrl" => "https://repo.jellyfin.org/releases/plugin/manifest-stable.json" }
+]
+[
+  "Require the exact NAS Jellyfin render device",
+  "Probe the Jellyfin QSV hardware device",
+  "Read Jellyfin encoding configuration for preflight",
+  "Refuse duplicate Jellyfin plugin repository URLs",
+  "Update Jellyfin encoding configuration",
+  "Merge Jellyfin plugin repositories",
+  "Install absent Jellyfin plugins without a version pin",
+  "Restart Jellyfin once for pending plugins",
+  "Validate the Open Subtitles vault credentials",
+  "Update Open Subtitles plugin configuration",
+  "Verify exact Jellyfin acceleration and plugins"
+].each do |name|
+  refuse("missing #{name}") unless role.include?("- name: #{name}")
+end
+refuse("encoding update does not preserve unrelated fields") unless
+  settings.include?("jellyfin_encoding_before.json | combine(jellyfin_encoding_policy)")
+refuse("plugin install must not supply a version") if
+  settings.match?(%r{Packages/Installed/.*[?&]version=})
+refuse("plugin install is not assembly and repository scoped") unless
+  settings.include?("?assemblyGuid=") && settings.include?("&repositoryUrl=")
+refuse("compatible package catalog preflight is absent") unless
+  settings.include?("url: \"{{ jellyfin_api }}/Packages\"")
+refuse("disabled plugin enable endpoint is absent") unless
+  settings.match?(%r{/Plugins/.*Version.*?/Enable}m)
+refuse("global pending restart must not trigger a container restart") if
+  settings.include?("jellyfin_system_after_install")
+refuse("Open Subtitles configuration API GUID differs") unless
+  settings.include?("/Plugins/{{ jellyfin_opensubtitles_plugin_id }}/Configuration") &&
+    defaults["jellyfin_opensubtitles_plugin_id"] == "4b9ed42f-5185-48b5-9803-6ff2989014c4"
+refuse("Open Subtitles validation endpoint differs") unless
+  settings.include?("/Jellyfin.Plugin.OpenSubtitles/ValidateLoginInfo")
+refuse("Open Subtitles secret operations are not suppressed") unless
+  settings.scan(/no_log: true/).length >= 5
 refuse("role must not edit an opaque database") if
   role.match?(/sqlite|library\.db|jellyfin\.db/i)
 puts "Jellyfin static contract passed (#{platform})"
@@ -246,6 +324,7 @@ DOCKER_ROOT = Pathname.new(ENV.fetch("PLATFORM_DOCKER_ROOT")).expand_path
 REPORT_ROOT = Pathname.new(ENV.fetch("PLATFORM_REPORT_ROOT")).expand_path
 CONTAINER = ENV.fetch("PLATFORM_JELLYFIN_CONTAINER")
 STATE_PATH = REPORT_ROOT.join("jellyfin-persistence.json")
+DRIFT_STATE_PATH = REPORT_ROOT.join("jellyfin-drift-sentinels.json")
 
 ADMIN_NAME = "Yonatan"
 SERVER_NAME = "Yonflix 2.0"
@@ -265,6 +344,42 @@ ADOPTION_EXTRA_PATH = "/media/Legacy-Series-Extra"
 DRIFT_EXTRA_PATH = "/media/Movies-Drift-Extra"
 CONFIG_SENTINEL_KEY = "EnableMetrics"
 CONFIG_SENTINEL_VALUE = true
+ENCODING_SENTINEL_KEY = "EnableAudioVbr"
+ENCODING_SENTINEL_VALUE = true
+ENCODING_POLICIES = {
+  "nas" => {
+    "HardwareAccelerationType" => "qsv", "QsvDevice" => "/dev/dri/renderD128",
+    "HardwareDecodingCodecs" => %w[h264 hevc mpeg2video vc1 vp8 vp9],
+    "EnableDecodingColorDepth10Hevc" => true, "EnableDecodingColorDepth10Vp9" => true,
+    "EnableHardwareEncoding" => true, "AllowHevcEncoding" => true,
+    "AllowAv1Encoding" => false, "EnableIntelLowPowerH264HwEncoder" => true,
+    "EnableIntelLowPowerHevcHwEncoder" => true, "EnableVppTonemapping" => true,
+    "EnableTonemapping" => false
+  },
+  "mac" => {
+    "HardwareAccelerationType" => "none", "QsvDevice" => "",
+    "HardwareDecodingCodecs" => [], "EnableDecodingColorDepth10Hevc" => false,
+    "EnableDecodingColorDepth10Vp9" => false, "EnableHardwareEncoding" => false,
+    "AllowHevcEncoding" => false, "AllowAv1Encoding" => false,
+    "EnableIntelLowPowerH264HwEncoder" => false,
+    "EnableIntelLowPowerHevcHwEncoder" => false, "EnableVppTonemapping" => false,
+    "EnableTonemapping" => false
+  }
+}
+ENCODING_POLICIES["integration"] = ENCODING_POLICIES.fetch("mac")
+ENCODING_POLICIES.freeze
+PLUGIN_REPOSITORIES = [
+  { "Name" => "Jellyfin Stable",
+    "Url" => "https://repo.jellyfin.org/releases/plugin/manifest-stable.json", "Enabled" => true },
+  { "Name" => "Intro Skipper", "Url" => "https://intro-skipper.org/manifest.json",
+    "Enabled" => true }
+].freeze
+REPOSITORY_SENTINEL = {
+  "Name" => "Jellyfin Contract Sentinel",
+  "Url" => "https://example.invalid/jellyfin-contract-manifest.json", "Enabled" => false
+}.freeze
+REQUIRED_PLUGINS = ["Intro Skipper", "Open Subtitles"].freeze
+OPENSUBTITLES_ID = "4b9ed42f-5185-48b5-9803-6ff2989014c4"
 MANAGED_OPTIONS = {
   "EnableRealtimeMonitor" => false,
   "EnableChapterImageExtraction" => false,
@@ -442,6 +557,76 @@ def server_configuration(token)
   configuration
 end
 
+def encoding_configuration(token)
+  _response, configuration = request("get", "/System/Configuration/encoding", token: token)
+  fail_contract("encoding configuration response is incomplete") unless configuration.is_a?(Hash)
+  configuration
+end
+
+def plugin_repositories(token)
+  _response, repositories = request("get", "/Repositories", token: token)
+  fail_contract("plugin repository response is incomplete") unless repositories.is_a?(Array)
+  repositories
+end
+
+def installed_plugins(token)
+  _response, plugins = request("get", "/Plugins", token: token)
+  fail_contract("installed plugin response is incomplete") unless plugins.is_a?(Array)
+  plugins
+end
+
+def plugin_configuration(token, plugin_id)
+  _response, configuration = request(
+    "get", "/Plugins/#{safe_id(plugin_id)}/Configuration", token: token
+  )
+  fail_contract("plugin configuration response is incomplete") unless configuration.is_a?(Hash)
+  configuration
+end
+
+def assert_acceleration_and_plugins(token, opensubtitles_username, opensubtitles_password)
+  encoding = encoding_configuration(token)
+  ENCODING_POLICIES.fetch(PLATFORM).each do |key, value|
+    fail_contract("owned encoding option #{key} differs") unless encoding[key] == value
+  end
+  fail_contract("unrelated encoding option was not preserved") unless
+    encoding[ENCODING_SENTINEL_KEY] == ENCODING_SENTINEL_VALUE
+
+  repositories = plugin_repositories(token)
+  normalized = repositories.group_by { |entry| entry.fetch("Url").strip.downcase.sub(%r{/+\z}, "") }
+  fail_contract("plugin repository URLs are duplicated") unless normalized.values.all? { |items| items.one? }
+  PLUGIN_REPOSITORIES.each do |desired|
+    key = desired.fetch("Url").downcase.sub(%r{/+\z}, "")
+    fail_contract("managed plugin repository differs") unless normalized[key] == [desired]
+  end
+  fail_contract("unrelated plugin repository was not preserved") unless
+    repositories.include?(REPOSITORY_SENTINEL)
+
+  plugins = installed_plugins(token)
+  REQUIRED_PLUGINS.each do |name|
+    matches = plugins.select { |plugin| plugin["Name"] == name && plugin["Status"] == "Active" }
+    fail_contract("required plugin #{name} is absent, ambiguous, or inactive") unless matches.one?
+  end
+  opensubtitles = plugins.find do |plugin|
+    plugin["Name"] == "Open Subtitles" && plugin["Status"] == "Active"
+  end
+  fail_contract("Open Subtitles assembly identity differs") unless
+    opensubtitles && opensubtitles.fetch("Id").casecmp?(OPENSUBTITLES_ID)
+  configuration = plugin_configuration(token, OPENSUBTITLES_ID)
+  fail_contract("Open Subtitles vault username differs") unless
+    configuration["Username"] == opensubtitles_username
+  fail_contract("Open Subtitles vault password differs") unless
+    configuration["Password"] == opensubtitles_password
+  fail_contract("Open Subtitles credentials remain invalid") unless
+    configuration["CredentialsInvalid"] == false
+  _response, validation = request(
+    "post", "/Jellyfin.Plugin.OpenSubtitles/ValidateLoginInfo", token: token,
+    body: { "Username" => opensubtitles_username, "Password" => opensubtitles_password }
+  )
+  fail_contract("Open Subtitles validation response is unsupported") unless
+    validation.is_a?(Hash) && validation["Downloads"].is_a?(Numeric)
+  [encoding, repositories, plugins]
+end
+
 def user_image(token, user)
   tag = URI.encode_www_form_component(user.fetch("PrimaryImageTag"))
   id = safe_id(user.fetch("Id"))
@@ -608,6 +793,8 @@ vault_yaml.replace("\0" * vault_yaml.bytesize)
 vault_error.replace("\0" * vault_error.bytesize)
 username = vault.fetch("vault_jellyfin_admin_username")
 password = vault.fetch("vault_jellyfin_admin_password")
+opensubtitles_username = vault.fetch("vault_jellyfin_opensubtitles_username")
+opensubtitles_password = vault.fetch("vault_jellyfin_opensubtitles_password")
 fail_contract("vault primary administrator must be exact Yonatan") unless username == ADMIN_NAME
 fail_contract("approved administrator avatar bytes drifted") unless
   AVATAR_PATH.file? && Digest::SHA256.file(AVATAR_PATH).hexdigest == AVATAR_SHA256
@@ -628,6 +815,8 @@ fail_contract("the vault administrator role differs") unless user.dig("Policy", 
 assert_container_capabilities
 folders = libraries(token)
 configuration = server_configuration(token)
+encoding = encoding_configuration(token)
+repositories = plugin_repositories(token)
 
 if MODE == "seed"
   seed_fixture
@@ -642,6 +831,28 @@ if MODE == "seed"
     configuration[CONFIG_SENTINEL_KEY] = CONFIG_SENTINEL_VALUE
     request("post", "/System/Configuration", token: token, body: configuration, expected: [204])
   end
+  seeded_encoding = encoding.merge(ENCODING_POLICIES.fetch(PLATFORM))
+  seeded_encoding["EnableHardwareEncoding"] = !ENCODING_POLICIES.fetch(PLATFORM).fetch("EnableHardwareEncoding")
+  seeded_encoding[ENCODING_SENTINEL_KEY] = ENCODING_SENTINEL_VALUE
+  request(
+    "post", "/System/Configuration/encoding", token: token,
+    body: seeded_encoding, expected: [204]
+  )
+  repositories.reject! do |entry|
+    entry.fetch("Url").strip.downcase.sub(%r{/+\z}, "") ==
+      PLUGIN_REPOSITORIES.fetch(1).fetch("Url").downcase
+  end
+  stable_url = PLUGIN_REPOSITORIES.fetch(0).fetch("Url").downcase
+  stable = repositories.find do |entry|
+    entry.fetch("Url").strip.downcase.sub(%r{/+\z}, "") == stable_url
+  end
+  if stable
+    stable.replace(PLUGIN_REPOSITORIES.fetch(0).merge("Enabled" => false))
+  else
+    repositories << PLUGIN_REPOSITORIES.fetch(0).merge("Enabled" => false)
+  end
+  repositories << REPOSITORY_SENTINEL unless repositories.include?(REPOSITORY_SENTINEL)
+  request("post", "/Repositories", token: token, body: repositories, expected: [204])
   current_image_matches = user["PrimaryImageTag"].to_s.length.positive? &&
                           Digest::SHA256.hexdigest(user_image(token, user)) == AVATAR_SHA256
   upload_user_image(token, user_id, AVATAR_PATH.binread) unless current_image_matches
@@ -683,6 +894,8 @@ if MODE == "seed"
   user = session.fetch("User")
   folders = libraries(token)
   configuration = server_configuration(token)
+  encoding = encoding_configuration(token)
+  repositories = plugin_repositories(token)
 end
 
 if MODE == "drift-verify"
@@ -696,7 +909,16 @@ if MODE == "drift-verify"
     movies.fetch("Name") == "Movies Drifted" &&
       movies.fetch("LibraryOptions").fetch("EnableRealtimeMonitor") == true &&
       movies.fetch("Locations").include?(DRIFT_EXTRA_PATH)
-  puts "Jellyfin identity, branding, image, and library drift is present"
+  expected_encoding = ENCODING_POLICIES.fetch(PLATFORM)
+  fail_contract("the Jellyfin encoding drift fixture was not installed") unless
+    encoding["EnableHardwareEncoding"] == !expected_encoding.fetch("EnableHardwareEncoding")
+  intro_repository = repositories.find do |entry|
+    entry.fetch("Url").strip.downcase.sub(%r{/+\z}, "") ==
+      PLUGIN_REPOSITORIES.fetch(1).fetch("Url").downcase
+  end
+  fail_contract("the Intro Skipper repository drift fixture was not installed") unless
+    intro_repository && intro_repository["Enabled"] == false
+  puts "Jellyfin identity, settings, and library drift is present"
   exit
 end
 
@@ -735,7 +957,31 @@ if MODE == "drift"
     "post", "/Library/VirtualFolders/LibraryOptions", token: token,
     body: { "Id" => movies.fetch("ItemId"), "LibraryOptions" => options }, expected: [204]
   )
-  puts "Jellyfin identity, branding, image, and library drift installed"
+  encoding["EnableHardwareEncoding"] =
+    !ENCODING_POLICIES.fetch(PLATFORM).fetch("EnableHardwareEncoding")
+  request("post", "/System/Configuration/encoding", token: token, body: encoding, expected: [204])
+  intro_repository = repositories.find do |entry|
+    entry.fetch("Url").strip.downcase.sub(%r{/+\z}, "") ==
+      PLUGIN_REPOSITORIES.fetch(1).fetch("Url").downcase
+  end
+  fail_contract("Intro Skipper repository is absent before drift") if intro_repository.nil?
+  intro_repository["Enabled"] = false
+  request("post", "/Repositories", token: token, body: repositories, expected: [204])
+  plugins = installed_plugins(token)
+  intro = plugins.find { |plugin| plugin["Name"] == "Intro Skipper" && plugin["Status"] == "Active" }
+  fail_contract("active Intro Skipper plugin is absent before drift") if intro.nil?
+  drift_state = JSON.generate(
+    "repository_sentinel" => repositories.find { |entry| entry == REPOSITORY_SENTINEL },
+    "encoding_sentinel" => encoding[ENCODING_SENTINEL_KEY],
+    "plugin_versions" => plugins.to_h { |plugin| [plugin.fetch("Name"), plugin.fetch("Version")] },
+    "intro_configuration" => plugin_configuration(token, intro.fetch("Id"))
+  )
+  fail_contract("refusing to replace the Jellyfin drift sentinel artifact") if
+    DRIFT_STATE_PATH.exist? || DRIFT_STATE_PATH.symlink?
+  DRIFT_STATE_PATH.open(File::WRONLY | File::CREAT | File::EXCL, 0o600) do |file|
+    file.write(drift_state)
+  end
+  puts "Jellyfin identity, settings, and library drift installed"
   exit
 end
 
@@ -745,7 +991,29 @@ if MODE == "run"
     unmanaged.fetch("Name") == UNMANAGED_LIBRARY.fetch("Name")
   fail_contract("Jellyfin configuration sentinel was not preserved") unless
     configuration.fetch(CONFIG_SENTINEL_KEY) == CONFIG_SENTINEL_VALUE
-  puts "Jellyfin identity, branding, image, capability, and library contract passed"
+  current_encoding, current_repositories, current_plugins = assert_acceleration_and_plugins(
+    token, opensubtitles_username, opensubtitles_password
+  )
+  if DRIFT_STATE_PATH.exist?
+    fail_contract("the Jellyfin drift sentinel artifact is unsafe") unless
+      DRIFT_STATE_PATH.file? && !DRIFT_STATE_PATH.symlink?
+    drift_state = JSON.parse(DRIFT_STATE_PATH.binread)
+    fail_contract("unrelated repository sentinel changed during repair") unless
+      current_repositories.find { |entry| entry == REPOSITORY_SENTINEL } ==
+        drift_state.fetch("repository_sentinel")
+    fail_contract("unrelated encoding sentinel changed during repair") unless
+      current_encoding[ENCODING_SENTINEL_KEY] == drift_state.fetch("encoding_sentinel")
+    fail_contract("installed plugin versions changed during repair") unless
+      current_plugins.to_h { |plugin| [plugin.fetch("Name"), plugin.fetch("Version")] } ==
+        drift_state.fetch("plugin_versions")
+    intro = current_plugins.find do |plugin|
+      plugin["Name"] == "Intro Skipper" && plugin["Status"] == "Active"
+    end
+    fail_contract("Intro Skipper configuration changed during repair") unless
+      intro && plugin_configuration(token, intro.fetch("Id")) ==
+        drift_state.fetch("intro_configuration")
+  end
+  puts "Jellyfin identity, settings, plugins, capability, and library contract passed"
   exit
 end
 fail_contract("unknown mode: #{MODE}") unless %w[seed assert-persistence].include?(MODE)

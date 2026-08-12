@@ -1,0 +1,1052 @@
+---
+# Jellyfin 10.11.11 exposes transcoding policy as the named `encoding`
+# configuration. Reads are kept separate from mutations so every ambiguity is
+# rejected before any owned application setting changes.
+- name: Read Jellyfin encoding configuration for preflight
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/System/Configuration/encoding"
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_settings_token }}"'
+    status_code: [200]
+    return_content: true
+  register: jellyfin_encoding_before
+  when: jellyfin_settings_phase == 'preflight'
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require complete Jellyfin encoding configuration
+  ansible.builtin.assert:
+    that:
+      - jellyfin_encoding_before.json is mapping
+      - jellyfin_encoding_before.json.HardwareAccelerationType is string
+      - jellyfin_encoding_before.json.QsvDevice is string
+      - jellyfin_encoding_before.json.HardwareDecodingCodecs | type_debug == 'list'
+      - jellyfin_encoding_before.json.EnableDecodingColorDepth10Hevc is boolean
+      - jellyfin_encoding_before.json.EnableDecodingColorDepth10Vp9 is boolean
+      - jellyfin_encoding_before.json.EnableHardwareEncoding is boolean
+      - jellyfin_encoding_before.json.AllowHevcEncoding is boolean
+      - jellyfin_encoding_before.json.AllowAv1Encoding is boolean
+      - jellyfin_encoding_before.json.EnableIntelLowPowerH264HwEncoder is boolean
+      - jellyfin_encoding_before.json.EnableIntelLowPowerHevcHwEncoder is boolean
+      - jellyfin_encoding_before.json.EnableVppTonemapping is boolean
+      - jellyfin_encoding_before.json.EnableTonemapping is boolean
+    fail_msg: >-
+      Jellyfin returned an incomplete pinned encoding document; no encoding,
+      repository, or plugin state was changed.
+  when: jellyfin_settings_phase == 'preflight'
+  no_log: true
+
+- name: Resolve Jellyfin encoding repair requirement
+  ansible.builtin.set_fact:
+    jellyfin_encoding_update_required: >-
+      {{ (jellyfin_encoding_before.json | dict2items |
+          selectattr('key', 'in', jellyfin_encoding_policy.keys()) |
+          items2dict) != jellyfin_encoding_policy }}
+    jellyfin_encoding_reconciled_document: >-
+      {{ jellyfin_encoding_before.json | combine(jellyfin_encoding_policy) }}
+  when: jellyfin_settings_phase == 'preflight'
+  no_log: true
+
+- name: Read Jellyfin plugin repositories for preflight
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Repositories"
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_settings_token }}"'
+    status_code: [200]
+    return_content: true
+  register: jellyfin_repositories_before
+  when: jellyfin_settings_phase == 'preflight'
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require complete Jellyfin plugin repository schema
+  ansible.builtin.assert:
+    that:
+      - jellyfin_repositories_before.json | type_debug == 'list'
+      - item is mapping
+      - item.Name is string
+      - item.Name | trim | length > 0
+      - item.Url is string
+      - item.Url | trim | length > 0
+      - item.Enabled is boolean
+    fail_msg: >-
+      Jellyfin returned a malformed plugin repository; no encoding, repository,
+      or plugin state was changed.
+  loop: "{{ jellyfin_repositories_before.json | default([]) }}"
+  loop_control:
+    label: jellyfin-plugin-repository
+  when: jellyfin_settings_phase == 'preflight'
+  no_log: true
+
+- name: Initialize normalized Jellyfin plugin repository inventory
+  ansible.builtin.set_fact:
+    jellyfin_repository_inventory: []
+    jellyfin_repository_by_normalized_url: {}
+  when: jellyfin_settings_phase == 'preflight'
+  no_log: true
+
+- name: Resolve normalized desired Jellyfin plugin repositories
+  ansible.builtin.set_fact:
+    jellyfin_repository_by_normalized_url: >-
+      {{ jellyfin_repository_by_normalized_url |
+         combine({(item.Url | trim | lower | regex_replace('/+$', '')): item}) }}
+  loop: "{{ jellyfin_plugin_repositories }}"
+  loop_control:
+    label: "{{ item.Name }}"
+  when: jellyfin_settings_phase == 'preflight'
+  no_log: true
+
+- name: Resolve normalized current Jellyfin plugin repositories
+  ansible.builtin.set_fact:
+    jellyfin_repository_inventory: >-
+      {{ jellyfin_repository_inventory + [{
+        'raw': item,
+        'normalized_url': item.Url | trim | lower | regex_replace('/+$', '')
+      }] }}
+  loop: "{{ jellyfin_repositories_before.json | default([]) }}"
+  loop_control:
+    label: jellyfin-plugin-repository
+  when: jellyfin_settings_phase == 'preflight'
+  no_log: true
+
+- name: Refuse duplicate Jellyfin plugin repository URLs
+  ansible.builtin.assert:
+    that:
+      - >-
+        jellyfin_repository_inventory | map(attribute='normalized_url') | list | length ==
+        jellyfin_repository_inventory | map(attribute='normalized_url') | unique | list | length
+      - >-
+        jellyfin_repository_by_normalized_url | length ==
+        jellyfin_plugin_repositories | length
+    fail_msg: >-
+      Jellyfin plugin repository URLs are duplicated after case, whitespace, and
+      trailing-slash normalization; resolve them manually before mutation.
+  when: jellyfin_settings_phase == 'preflight'
+  no_log: true
+
+- name: Initialize merged Jellyfin plugin repositories
+  ansible.builtin.set_fact:
+    jellyfin_repositories_merged: []
+  when: jellyfin_settings_phase == 'preflight'
+  no_log: true
+
+- name: Preserve and merge current Jellyfin plugin repositories
+  ansible.builtin.set_fact:
+    jellyfin_repositories_merged: >-
+      {{ jellyfin_repositories_merged + [
+        item.raw | combine(
+          jellyfin_repository_by_normalized_url[item.normalized_url]
+          if item.normalized_url in jellyfin_repository_by_normalized_url else {})
+      ] }}
+  loop: "{{ jellyfin_repository_inventory }}"
+  loop_control:
+    label: jellyfin-plugin-repository
+  when: jellyfin_settings_phase == 'preflight'
+  no_log: true
+
+- name: Append absent Jellyfin plugin repositories
+  ansible.builtin.set_fact:
+    jellyfin_repositories_merged: "{{ jellyfin_repositories_merged + [item] }}"
+  loop: "{{ jellyfin_plugin_repositories }}"
+  loop_control:
+    label: "{{ item.Name }}"
+  vars:
+    jellyfin_desired_repository_url: "{{ item.Url | trim | lower | regex_replace('/+$', '') }}"
+  when:
+    - jellyfin_settings_phase == 'preflight'
+    - >-
+      jellyfin_desired_repository_url not in
+      (jellyfin_repository_inventory | map(attribute='normalized_url') | list)
+  no_log: true
+
+- name: Resolve Jellyfin repository repair requirement
+  ansible.builtin.set_fact:
+    jellyfin_repositories_update_required: >-
+      {{ jellyfin_repositories_merged != jellyfin_repositories_before.json }}
+  when: jellyfin_settings_phase == 'preflight'
+  no_log: true
+
+- name: Read installed Jellyfin plugins for preflight
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Plugins"
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_settings_token }}"'
+    status_code: [200]
+    return_content: true
+  register: jellyfin_plugins_before
+  when: jellyfin_settings_phase == 'preflight'
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require complete installed Jellyfin plugin schema
+  ansible.builtin.assert:
+    that:
+      - jellyfin_plugins_before.json | type_debug == 'list'
+      - item is mapping
+      - item.Name is string
+      - item.Id | string is match('^[A-Fa-f0-9-]{32,36}$')
+      - item.Version | string is match('^[0-9]+(\.[0-9]+){1,3}$')
+      - item.Status is string
+    fail_msg: >-
+      Jellyfin returned a malformed installed plugin record; no encoding,
+      repository, or plugin state was changed.
+  loop: "{{ jellyfin_plugins_before.json | default([]) }}"
+  loop_control:
+    label: jellyfin-installed-plugin
+  when: jellyfin_settings_phase == 'preflight'
+  no_log: true
+
+- name: Initialize Jellyfin plugin reconciliation inventory
+  ansible.builtin.set_fact:
+    jellyfin_missing_plugins: []
+    jellyfin_disabled_plugins: []
+    jellyfin_opensubtitles_credentials_validated: false
+  when: jellyfin_settings_phase == 'preflight'
+  no_log: true
+
+- name: Refuse ambiguous required Jellyfin plugin identities
+  ansible.builtin.assert:
+    that:
+      - jellyfin_matching_plugin_ids | unique | length <= 1
+      - >-
+        jellyfin_matching_plugin_ids | length == 0 or
+        jellyfin_matching_plugin_ids[0] | lower == item.AssemblyGuid | lower
+    fail_msg: >-
+      A required Jellyfin plugin name maps to conflicting assembly identities;
+      resolve the catalog or installed plugin state before mutation.
+  loop: "{{ jellyfin_plugin_packages }}"
+  loop_control:
+    label: "{{ item.Name }}"
+  vars:
+    jellyfin_matching_plugin_ids: >-
+      {{ jellyfin_plugins_before.json | selectattr('Name', 'equalto', item.Name) |
+         map(attribute='Id') | map('string') | list }}
+  when: jellyfin_settings_phase == 'preflight'
+  no_log: true
+
+- name: Refuse ambiguous installed required Jellyfin plugin versions
+  ansible.builtin.assert:
+    that:
+      - jellyfin_required_current_plugins | length <= 1
+      - >-
+        jellyfin_required_installed_plugins | length <= 1 or
+        jellyfin_required_current_plugins | length == 1
+    fail_msg: >-
+      A required Jellyfin plugin has multiple installed versions without one
+      unique active or restart-pending version. Resolve the ambiguity manually
+      before any owned application state is changed.
+  loop: "{{ jellyfin_plugins }}"
+  loop_control:
+    label: "{{ item }}"
+  vars:
+    jellyfin_required_installed_plugins: >-
+      {{ jellyfin_plugins_before.json |
+         selectattr('Name', 'equalto', item) | list }}
+    jellyfin_required_current_plugins: >-
+      {{ jellyfin_plugins_before.json |
+         selectattr('Name', 'equalto', item) |
+         selectattr('Status', 'in', ['Active', 'Restart']) | list }}
+  when: jellyfin_settings_phase == 'preflight'
+  no_log: true
+
+- name: Resolve absent and uniquely disabled Jellyfin plugins
+  ansible.builtin.set_fact:
+    jellyfin_missing_plugins: >-
+      {{ jellyfin_missing_plugins +
+         ([item] if jellyfin_required_installed_plugins | length == 0 else []) }}
+    jellyfin_disabled_plugins: >-
+      {{ jellyfin_disabled_plugins +
+         ([jellyfin_required_installed_plugins[0]]
+          if jellyfin_required_installed_plugins | length == 1 and
+             jellyfin_required_installed_plugins[0].Status == 'Disabled'
+          else []) }}
+  loop: "{{ jellyfin_plugins }}"
+  loop_control:
+    label: "{{ item }}"
+  vars:
+    jellyfin_required_installed_plugins: >-
+      {{ jellyfin_plugins_before.json |
+         selectattr('Name', 'equalto', item) | list }}
+  when: jellyfin_settings_phase == 'preflight'
+  no_log: true
+
+- name: Resolve whether Open Subtitles requires activation
+  ansible.builtin.set_fact:
+    jellyfin_opensubtitles_activation_required: >-
+      {{ jellyfin_plugins_before.json |
+         selectattr('Name', 'equalto', 'Open Subtitles') |
+         selectattr('Status', 'equalto', 'Active') | list | length != 1 }}
+  when: jellyfin_settings_phase == 'preflight'
+  no_log: true
+
+- name: Refuse unusable installed required Jellyfin plugins
+  ansible.builtin.assert:
+    that:
+      - >-
+        jellyfin_required_installed | length == 0 or
+        jellyfin_required_installed |
+          selectattr('Status', 'in', ['Active', 'Restart', 'Disabled']) |
+          list | length > 0
+    fail_msg: >-
+      A required Jellyfin plugin is installed but no version is active, pending
+      restart, or eligible for supported enablement. Refusing to replace or
+      rewrite its version.
+  loop: "{{ jellyfin_plugins }}"
+  loop_control:
+    label: "{{ item }}"
+  vars:
+    jellyfin_required_installed: >-
+      {{ jellyfin_plugins_before.json | selectattr('Name', 'equalto', item) | list }}
+  when: jellyfin_settings_phase == 'preflight'
+  no_log: true
+
+- name: Read active Open Subtitles configuration for preflight
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Plugins/{{ jellyfin_opensubtitles_plugin_id }}/Configuration"
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_settings_token }}"'
+    status_code: [200]
+    return_content: true
+  register: jellyfin_opensubtitles_preflight_read
+  when:
+    - jellyfin_settings_phase == 'preflight'
+    - >-
+      jellyfin_plugins_before.json |
+        selectattr('Name', 'equalto', 'Open Subtitles') |
+        selectattr('Status', 'equalto', 'Active') | list | length == 1
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require active Open Subtitles preflight configuration schema
+  ansible.builtin.assert:
+    that:
+      - jellyfin_opensubtitles_preflight_read.json is mapping
+      - jellyfin_opensubtitles_preflight_read.json.Username is string
+      - jellyfin_opensubtitles_preflight_read.json.Password is string
+      - jellyfin_opensubtitles_preflight_read.json.CredentialsInvalid is boolean
+    fail_msg: The active Open Subtitles plugin configuration schema is unsupported.
+  when:
+    - jellyfin_settings_phase == 'preflight'
+    - not jellyfin_opensubtitles_preflight_read.skipped | default(false) | bool
+  no_log: true
+
+- name: Validate active Open Subtitles credentials during global preflight
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Jellyfin.Plugin.OpenSubtitles/ValidateLoginInfo"
+    method: POST
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_settings_token }}"'
+    body_format: json
+    body:
+      Username: "{{ vault_jellyfin_opensubtitles_username }}"
+      Password: "{{ vault_jellyfin_opensubtitles_password }}"
+    status_code: [200]
+    return_content: true
+    timeout: 120
+  register: jellyfin_opensubtitles_preflight_validation
+  when:
+    - jellyfin_settings_phase == 'preflight'
+    - not jellyfin_opensubtitles_preflight_read.skipped | default(false) | bool
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require valid active Open Subtitles credentials during global preflight
+  ansible.builtin.assert:
+    that:
+      - jellyfin_opensubtitles_preflight_validation.json is mapping
+      - jellyfin_opensubtitles_preflight_validation.json.Downloads is number
+      - jellyfin_opensubtitles_preflight_validation.json.Downloads | int >= 0
+    fail_msg: Open Subtitles rejected the vault credentials before global mutation.
+  when:
+    - jellyfin_settings_phase == 'preflight'
+    - not jellyfin_opensubtitles_preflight_validation.skipped | default(false) | bool
+  no_log: true
+
+- name: Preserve active Open Subtitles preflight configuration for reconciliation
+  ansible.builtin.set_fact:
+    jellyfin_opensubtitles_configuration_before: "{{ jellyfin_opensubtitles_preflight_read }}"
+  when:
+    - jellyfin_settings_phase == 'preflight'
+    - not jellyfin_opensubtitles_preflight_read.skipped | default(false) | bool
+  no_log: true
+
+- name: Preserve active Open Subtitles credential validation
+  ansible.builtin.set_fact:
+    jellyfin_opensubtitles_credentials_validated: true
+  when:
+    - jellyfin_settings_phase == 'preflight'
+    - not jellyfin_opensubtitles_preflight_validation.skipped | default(false) | bool
+  no_log: true
+
+- name: Resolve planned Open Subtitles configuration repair
+  ansible.builtin.set_fact:
+    jellyfin_opensubtitles_configuration_update_required: >-
+      {{ jellyfin_opensubtitles_preflight_read.skipped | default(false) | bool or
+         jellyfin_opensubtitles_preflight_read.json.Username |
+           default('') != vault_jellyfin_opensubtitles_username or
+         jellyfin_opensubtitles_preflight_read.json.Password |
+           default('') != vault_jellyfin_opensubtitles_password or
+         jellyfin_opensubtitles_preflight_read.json.CredentialsInvalid |
+           default(true) | bool }}
+  when: jellyfin_settings_phase == 'preflight'
+  no_log: true
+
+- name: Report planned Jellyfin encoding update
+  ansible.builtin.debug:
+    msg: JELLYFIN_PLAN_ENCODING
+  when:
+    - jellyfin_settings_phase == 'reconcile'
+    - ansible_check_mode
+    - jellyfin_encoding_update_required | default(true) | bool
+  changed_when: true
+
+- name: Report planned Jellyfin plugin repository update
+  ansible.builtin.debug:
+    msg: JELLYFIN_PLAN_PLUGIN_REPOSITORIES
+  when:
+    - jellyfin_settings_phase == 'reconcile'
+    - ansible_check_mode
+    - jellyfin_repositories_update_required | default(true) | bool
+  changed_when: true
+
+- name: Report planned absent Jellyfin plugin installation
+  ansible.builtin.debug:
+    msg: "JELLYFIN_PLAN_PLUGIN_INSTALL {{ item }}"
+  loop: "{{ jellyfin_missing_plugins | default(jellyfin_plugins) }}"
+  loop_control:
+    label: "{{ item }}"
+  when:
+    - jellyfin_settings_phase == 'reconcile'
+    - ansible_check_mode
+  changed_when: true
+
+- name: Report planned disabled Jellyfin plugin enablement
+  ansible.builtin.debug:
+    msg: "JELLYFIN_PLAN_PLUGIN_ENABLE {{ item.Name }}"
+  loop: "{{ jellyfin_disabled_plugins | default([]) }}"
+  loop_control:
+    label: jellyfin-required-plugin
+  when:
+    - jellyfin_settings_phase == 'reconcile'
+    - ansible_check_mode
+  changed_when: true
+
+- name: Report planned Open Subtitles configuration update
+  ansible.builtin.debug:
+    msg: JELLYFIN_PLAN_OPENSUBTITLES_CONFIGURATION
+  when:
+    - jellyfin_settings_phase == 'reconcile'
+    - ansible_check_mode
+    - jellyfin_opensubtitles_configuration_update_required | default(true) | bool
+  changed_when: true
+
+- name: Initialize the Jellyfin settings reconciliation token
+  ansible.builtin.set_fact:
+    jellyfin_settings_effective_token: "{{ jellyfin_settings_token }}"
+    jellyfin_activation_plugin_names: >-
+      {{ ['Open Subtitles']
+         if jellyfin_activation_scope | default('all') == 'opensubtitles'
+         else (jellyfin_plugins | difference(['Open Subtitles'])
+               if jellyfin_activation_scope | default('all') == 'remaining'
+               else jellyfin_plugins) }}
+  when:
+    - jellyfin_settings_phase in ['activate', 'finalize']
+    - not ansible_check_mode
+  no_log: true
+
+- name: Update Jellyfin encoding configuration
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/System/Configuration/encoding"
+    method: POST
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_settings_token }}"'
+    body_format: json
+    body: "{{ jellyfin_encoding_reconciled_document }}"
+    status_code: [204]
+  when:
+    - jellyfin_settings_phase == 'reconcile'
+    - not ansible_check_mode
+    - jellyfin_encoding_update_required | bool
+  changed_when: true
+  no_log: true
+
+- name: Read back Jellyfin encoding configuration after update
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/System/Configuration/encoding"
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_settings_token }}"'
+    status_code: [200]
+    return_content: true
+  register: jellyfin_encoding_after
+  when:
+    - jellyfin_settings_phase == 'reconcile'
+    - not ansible_check_mode
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require authoritative Jellyfin encoding read-back
+  ansible.builtin.assert:
+    that:
+      - >-
+        (jellyfin_encoding_after.json | dict2items |
+         selectattr('key', 'in', jellyfin_encoding_policy.keys()) |
+         items2dict) == jellyfin_encoding_policy
+    fail_msg: Jellyfin did not persist the exact owned encoding policy.
+  when:
+    - jellyfin_settings_phase == 'reconcile'
+    - not ansible_check_mode
+  no_log: true
+
+- name: Merge Jellyfin plugin repositories
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Repositories"
+    method: POST
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_settings_token }}"'
+    body_format: json
+    body: "{{ jellyfin_repositories_merged }}"
+    status_code: [204]
+  when:
+    - >-
+      (jellyfin_settings_phase == 'prepare' and
+       jellyfin_missing_plugins | default([]) | length > 0) or
+      (jellyfin_settings_phase == 'reconcile' and
+       jellyfin_missing_plugins | default([]) | length == 0)
+    - not ansible_check_mode
+    - jellyfin_repositories_update_required | bool
+  changed_when: true
+  no_log: true
+
+- name: Read back Jellyfin plugin repositories after merge
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Repositories"
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_settings_token }}"'
+    status_code: [200]
+    return_content: true
+  register: jellyfin_repositories_after
+  when:
+    - >-
+      (jellyfin_settings_phase == 'prepare' and
+       jellyfin_missing_plugins | default([]) | length > 0) or
+      (jellyfin_settings_phase == 'reconcile' and
+       jellyfin_missing_plugins | default([]) | length == 0)
+    - not ansible_check_mode
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require authoritative Jellyfin repository read-back
+  ansible.builtin.assert:
+    that:
+      - jellyfin_repositories_after.json == jellyfin_repositories_merged
+    fail_msg: Jellyfin did not persist the merged plugin repository document.
+  when:
+    - >-
+      (jellyfin_settings_phase == 'prepare' and
+       jellyfin_missing_plugins | default([]) | length > 0) or
+      (jellyfin_settings_phase == 'reconcile' and
+       jellyfin_missing_plugins | default([]) | length == 0)
+    - not ansible_check_mode
+  no_log: true
+
+- name: Read compatible Jellyfin package catalog after repository preparation
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Packages"
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_settings_token }}"'
+    status_code: [200]
+    return_content: true
+  register: jellyfin_package_catalog
+  when:
+    - jellyfin_settings_phase == 'prepare'
+    - jellyfin_missing_plugins | length > 0
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require exact compatible Jellyfin package identities
+  ansible.builtin.assert:
+    that:
+      - jellyfin_package_catalog.json | type_debug == 'list'
+      - jellyfin_catalog_name_matches | length == 1
+      - jellyfin_catalog_name_matches[0].guid is string
+      - jellyfin_catalog_name_matches[0].guid | lower == item.AssemblyGuid | lower
+      - jellyfin_catalog_name_matches[0].versions | type_debug == 'list'
+      - jellyfin_catalog_name_matches[0].versions | length > 0
+      - >-
+        jellyfin_catalog_name_matches[0].versions |
+        map(attribute='repositoryUrl') | unique | list == [item.RepositoryUrl]
+    fail_msg: >-
+      An absent required Jellyfin plugin does not have one unambiguous compatible
+      package with the approved assembly GUID and repository source.
+  loop: "{{ jellyfin_plugin_packages }}"
+  loop_control:
+    label: "{{ item.Name }}"
+  vars:
+    jellyfin_catalog_name_matches: >-
+      {{ jellyfin_package_catalog.json | default([]) |
+         selectattr('name', 'equalto', item.Name) | list }}
+  when:
+    - jellyfin_settings_phase == 'prepare'
+    - item.Name in jellyfin_missing_plugins
+  no_log: true
+
+- name: Enable a uniquely disabled installed Jellyfin plugin version
+  ansible.builtin.uri:
+    url: >-
+      {{ jellyfin_api ~ '/Plugins/' ~ (item.Id | string | urlencode) ~ '/' ~
+         (item.Version | string | urlencode) ~ '/Enable' }}
+    method: POST
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_settings_token }}"'
+    status_code: [204]
+  loop: "{{ jellyfin_disabled_plugins | default([]) }}"
+  loop_control:
+    label: jellyfin-required-plugin
+  when:
+    - jellyfin_settings_phase == 'activate'
+    - not ansible_check_mode
+    - item.Name in jellyfin_activation_plugin_names
+  changed_when: true
+  no_log: true
+
+# Omitting the version is deliberate: Jellyfin 10.11.11 selects the latest
+# compatible version after the assembly and repository identities are fixed.
+# Existing versions are never supplied, updated, downgraded, or rewritten.
+- name: Install absent Jellyfin plugins without a version pin
+  ansible.builtin.uri:
+    url: >-
+      {{ jellyfin_api ~ '/Packages/Installed/' ~ (item.Name | urlencode) ~
+         '?assemblyGuid=' ~ (item.AssemblyGuid | urlencode) ~
+         '&repositoryUrl=' ~ (item.RepositoryUrl | urlencode) }}
+    method: POST
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_settings_token }}"'
+    status_code: [204]
+    timeout: 300
+  loop: >-
+    {{ jellyfin_plugin_packages |
+       selectattr('Name', 'in', jellyfin_missing_plugins | default([])) | list }}
+  loop_control:
+    label: "{{ item.Name }}"
+  register: jellyfin_plugin_installation
+  when:
+    - jellyfin_settings_phase == 'activate'
+    - not ansible_check_mode
+    - item.Name in jellyfin_activation_plugin_names
+  changed_when: true
+  no_log: true
+
+- name: Read installed Jellyfin plugins after reconciliation
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Plugins"
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_settings_token }}"'
+    status_code: [200]
+    return_content: true
+  register: jellyfin_plugins_after_install
+  when:
+    - jellyfin_settings_phase in ['activate', 'finalize']
+    - not ansible_check_mode
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Resolve Jellyfin plugin restart requirement
+  ansible.builtin.set_fact:
+    jellyfin_plugin_restart_required: >-
+      {{ jellyfin_plugins_after_install.json |
+         selectattr('Name', 'in', jellyfin_activation_plugin_names | default(jellyfin_plugins)) |
+         selectattr('Status', 'equalto', 'Restart') | list | length > 0 }}
+  when:
+    - jellyfin_settings_phase == 'finalize'
+    - not ansible_check_mode
+  no_log: true
+
+- name: Resolve whether Open Subtitles credentials can be validated before restart
+  ansible.builtin.set_fact:
+    jellyfin_opensubtitles_validation_now: >-
+      {{ not jellyfin_opensubtitles_credentials_validated | default(false) | bool and
+         jellyfin_settings_phase == 'activate' and
+         jellyfin_activation_scope | default('all') == 'opensubtitles' and
+         jellyfin_plugins_after_install.json |
+           selectattr('Name', 'equalto', 'Open Subtitles') |
+           selectattr('Status', 'equalto', 'Active') | list | length == 1 }}
+  when:
+    - jellyfin_settings_phase == 'activate'
+    - not ansible_check_mode
+  no_log: true
+
+# Activations are deliberately accumulated before this single barrier. A plugin
+# in Restart state cannot serve its credential endpoint until after restart, so
+# Open Subtitles validation follows this barrier immediately and all unrelated
+# encoding/configuration writes remain in the later reconcile phase.
+- name: Restart Jellyfin once for pending plugins
+  community.docker.docker_compose_v2:
+    project_src: "{{ platform_current_dir }}/services/jellyfin"
+    project_name: "{{ jellyfin_compose_project_name }}"
+    files: "{{ jellyfin_compose_files }}"
+    env_files: ["{{ platform_runtime_dir }}/services/jellyfin/.env"]
+    services: [jellyfin]
+    state: restarted
+    wait: true
+    wait_timeout: 300
+  when:
+    - jellyfin_settings_phase == 'finalize'
+    - not ansible_check_mode
+    - jellyfin_plugin_restart_required | bool
+
+- name: Wait for the Jellyfin startup API after plugin restart
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Startup/Configuration"
+    headers:
+      Authorization: "{{ jellyfin_client_header }}"
+    status_code: "{{ range(100, 600) | list }}"
+  register: jellyfin_plugin_startup_readiness
+  until: jellyfin_plugin_startup_readiness.status | default(0) | int in [200, 401, 403]
+  retries: 100
+  delay: 3
+  when:
+    - jellyfin_settings_phase == 'finalize'
+    - not ansible_check_mode
+    - jellyfin_plugin_restart_required | bool
+  changed_when: false
+  check_mode: false
+
+- name: Reauthenticate Jellyfin after plugin restart
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Users/AuthenticateByName"
+    method: POST
+    headers:
+      Authorization: "{{ jellyfin_client_header }}"
+    body_format: json
+    body:
+      Username: "{{ jellyfin_reconcile_login.json.User.Name }}"
+      Pw: "{{ vault_jellyfin_admin_password }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: jellyfin_after_restart_login
+  until: jellyfin_after_restart_login.status | default(0) | int == 200
+  retries: 20
+  delay: 3
+  when:
+    - jellyfin_settings_phase == 'finalize'
+    - not ansible_check_mode
+    - jellyfin_plugin_restart_required | bool
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Adopt the post-restart Jellyfin token
+  ansible.builtin.set_fact:
+    jellyfin_reconcile_token: "{{ jellyfin_after_restart_login.json.AccessToken }}"
+    jellyfin_settings_effective_token: "{{ jellyfin_after_restart_login.json.AccessToken }}"
+  when:
+    - jellyfin_settings_phase == 'finalize'
+    - not ansible_check_mode
+    - jellyfin_plugin_restart_required | bool
+  no_log: true
+
+- name: Reread installed Jellyfin plugins after controlled restart
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Plugins"
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_settings_effective_token }}"'
+    status_code: [200]
+    return_content: true
+  register: jellyfin_plugins_reconciled
+  when:
+    - jellyfin_settings_phase == 'finalize'
+    - not ansible_check_mode
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require active reconciled Jellyfin plugins
+  ansible.builtin.assert:
+    that:
+      - jellyfin_active_plugin_matches | length == 1
+    fail_msg: A required Jellyfin plugin is absent, ambiguous, or not active after reconciliation.
+  loop: >-
+    {{ ['Open Subtitles']
+       if jellyfin_activation_scope | default('all') == 'opensubtitles'
+       else jellyfin_plugins }}
+  loop_control:
+    label: "{{ item }}"
+  vars:
+    jellyfin_active_plugin_matches: >-
+      {{ jellyfin_plugins_reconciled.json |
+         selectattr('Name', 'equalto', item) |
+         selectattr('Status', 'equalto', 'Active') | list }}
+  when:
+    - jellyfin_settings_phase == 'finalize'
+    - not ansible_check_mode
+  no_log: true
+
+- name: Require deferred Open Subtitles validation after the restart barrier
+  ansible.builtin.set_fact:
+    jellyfin_opensubtitles_validation_now: >-
+      {{ not jellyfin_opensubtitles_credentials_validated | default(false) | bool }}
+  when:
+    - jellyfin_settings_phase == 'finalize'
+    - not ansible_check_mode
+  no_log: true
+
+- name: Read Open Subtitles plugin configuration
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Plugins/{{ jellyfin_opensubtitles_plugin_id }}/Configuration"
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_settings_effective_token }}"'
+    status_code: [200]
+    return_content: true
+  register: jellyfin_opensubtitles_activation_configuration
+  when:
+    - jellyfin_settings_phase in ['activate', 'finalize']
+    - not ansible_check_mode
+    - jellyfin_opensubtitles_validation_now | default(false) | bool
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require the pinned Open Subtitles plugin configuration schema
+  ansible.builtin.assert:
+    that:
+      - jellyfin_opensubtitles_activation_configuration.json is mapping
+      - jellyfin_opensubtitles_activation_configuration.json.Username is string
+      - jellyfin_opensubtitles_activation_configuration.json.Password is string
+      - jellyfin_opensubtitles_activation_configuration.json.CredentialsInvalid is boolean
+    fail_msg: The installed Open Subtitles plugin configuration schema is unsupported.
+  when:
+    - jellyfin_settings_phase in ['activate', 'finalize']
+    - not ansible_check_mode
+    - jellyfin_opensubtitles_validation_now | default(false) | bool
+  no_log: true
+
+- name: Preserve activated Open Subtitles configuration for reconciliation
+  ansible.builtin.set_fact:
+    jellyfin_opensubtitles_configuration_before: >-
+      {{ jellyfin_opensubtitles_activation_configuration }}
+  when:
+    - jellyfin_settings_phase in ['activate', 'finalize']
+    - not ansible_check_mode
+    - jellyfin_opensubtitles_validation_now | default(false) | bool
+  no_log: true
+
+- name: Validate the Open Subtitles vault credentials
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Jellyfin.Plugin.OpenSubtitles/ValidateLoginInfo"
+    method: POST
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_settings_effective_token }}"'
+    body_format: json
+    body:
+      Username: "{{ vault_jellyfin_opensubtitles_username }}"
+      Password: "{{ vault_jellyfin_opensubtitles_password }}"
+    status_code: [200]
+    return_content: true
+    timeout: 120
+  register: jellyfin_opensubtitles_validation
+  when:
+    - jellyfin_settings_phase in ['activate', 'finalize']
+    - not ansible_check_mode
+    - jellyfin_opensubtitles_validation_now | default(false) | bool
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require successful Open Subtitles credential validation
+  ansible.builtin.assert:
+    that:
+      - jellyfin_opensubtitles_validation.json is mapping
+      - jellyfin_opensubtitles_validation.json.Downloads is number
+      - jellyfin_opensubtitles_validation.json.Downloads | int >= 0
+    fail_msg: Open Subtitles rejected the vault credentials.
+  when:
+    - jellyfin_settings_phase in ['activate', 'finalize']
+    - not ansible_check_mode
+    - jellyfin_opensubtitles_validation_now | default(false) | bool
+  no_log: true
+
+- name: Preserve successful Open Subtitles activation credential validation
+  ansible.builtin.set_fact:
+    jellyfin_opensubtitles_credentials_validated: true
+  when:
+    - jellyfin_settings_phase in ['activate', 'finalize']
+    - not ansible_check_mode
+    - jellyfin_opensubtitles_validation_now | default(false) | bool
+  no_log: true
+
+- name: Update Open Subtitles plugin configuration
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Plugins/{{ jellyfin_opensubtitles_plugin_id }}/Configuration"
+    method: POST
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_settings_effective_token }}"'
+    body_format: json
+    body: >-
+      {{ jellyfin_opensubtitles_configuration_before.json | combine({
+        'Username': vault_jellyfin_opensubtitles_username,
+        'Password': vault_jellyfin_opensubtitles_password,
+        'CredentialsInvalid': false
+      }) }}
+    status_code: [204]
+  when:
+    - jellyfin_settings_phase == 'reconcile'
+    - not ansible_check_mode
+    - >-
+      jellyfin_opensubtitles_configuration_before.json.Username !=
+        vault_jellyfin_opensubtitles_username or
+      jellyfin_opensubtitles_configuration_before.json.Password !=
+        vault_jellyfin_opensubtitles_password or
+      jellyfin_opensubtitles_configuration_before.json.CredentialsInvalid | bool
+  changed_when: true
+  no_log: true
+
+- name: Read back Open Subtitles plugin configuration
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Plugins/{{ jellyfin_opensubtitles_plugin_id }}/Configuration"
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_settings_effective_token }}"'
+    status_code: [200]
+    return_content: true
+  register: jellyfin_opensubtitles_configuration_after
+  when:
+    - jellyfin_settings_phase == 'reconcile'
+    - not ansible_check_mode
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require authoritative Open Subtitles configuration read-back
+  ansible.builtin.assert:
+    that:
+      - >-
+        jellyfin_opensubtitles_configuration_after.json.Username ==
+        vault_jellyfin_opensubtitles_username
+      - >-
+        jellyfin_opensubtitles_configuration_after.json.Password ==
+        vault_jellyfin_opensubtitles_password
+      - not jellyfin_opensubtitles_configuration_after.json.CredentialsInvalid | bool
+    fail_msg: Open Subtitles did not persist the validated vault credentials.
+  when:
+    - jellyfin_settings_phase == 'reconcile'
+    - not ansible_check_mode
+  no_log: true
+
+- name: Report safe Open Subtitles credential status
+  ansible.builtin.debug:
+    msg: JELLYFIN_OPENSUBTITLES_CREDENTIALS_VALID
+  when:
+    - jellyfin_settings_phase in ['activate', 'finalize']
+    - not ansible_check_mode
+    - jellyfin_opensubtitles_validation_now | default(false) | bool
+  changed_when: false
+
+- name: Read exact Jellyfin acceleration and plugins
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}{{ item }}"
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_settings_token }}"'
+    status_code: [200]
+    return_content: true
+  loop:
+    - /System/Configuration/encoding
+    - /Repositories
+    - /Plugins
+  loop_control:
+    label: "{{ item }}"
+  register: jellyfin_settings_verified_reads
+  when: jellyfin_settings_phase == 'verify'
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Read exact Open Subtitles plugin configuration
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Plugins/{{ jellyfin_opensubtitles_plugin_id }}/Configuration"
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_settings_token }}"'
+    status_code: [200]
+    return_content: true
+  register: jellyfin_opensubtitles_configuration_verified
+  when: jellyfin_settings_phase == 'verify'
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Validate exact Open Subtitles credentials
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Jellyfin.Plugin.OpenSubtitles/ValidateLoginInfo"
+    method: POST
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_settings_token }}"'
+    body_format: json
+    body:
+      Username: "{{ vault_jellyfin_opensubtitles_username }}"
+      Password: "{{ vault_jellyfin_opensubtitles_password }}"
+    status_code: [200]
+    return_content: true
+    timeout: 120
+  register: jellyfin_opensubtitles_validation_verified
+  when: jellyfin_settings_phase == 'verify'
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Verify exact Jellyfin encoding policy
+  ansible.builtin.assert:
+    that:
+      - >-
+        (jellyfin_settings_verified_reads.results[0].json | dict2items |
+         selectattr('key', 'in', jellyfin_encoding_policy.keys()) |
+         items2dict) == jellyfin_encoding_policy
+    fail_msg: The Jellyfin platform encoding policy is drifted.
+  when: jellyfin_settings_phase == 'verify'
+  no_log: true
+
+- name: Verify exact enabled Jellyfin plugin repositories
+  ansible.builtin.assert:
+    that:
+      - jellyfin_verified_repository_matches | length == 1
+      - jellyfin_verified_repository_matches[0].Name == item.Name
+      - jellyfin_verified_repository_matches[0].Enabled | bool
+    fail_msg: A managed Jellyfin plugin repository is absent, duplicated, renamed, or disabled.
+  loop: "{{ jellyfin_plugin_repositories }}"
+  loop_control:
+    label: "{{ item.Name }}"
+  vars:
+    jellyfin_verified_repository_matches: >-
+      {{ jellyfin_settings_verified_reads.results[1].json |
+         selectattr('Url', 'equalto', item.Url) | list }}
+  when: jellyfin_settings_phase == 'verify'
+  no_log: true
+
+- name: Verify exact Jellyfin acceleration and plugins
+  ansible.builtin.assert:
+    that:
+      - jellyfin_verified_intro_plugins | length == 1
+      - jellyfin_verified_opensubtitles_plugins | length == 1
+      - jellyfin_opensubtitles_configuration_verified.json.Username == vault_jellyfin_opensubtitles_username
+      - jellyfin_opensubtitles_configuration_verified.json.Password == vault_jellyfin_opensubtitles_password
+      - not jellyfin_opensubtitles_configuration_verified.json.CredentialsInvalid | bool
+      - jellyfin_opensubtitles_validation_verified.json.Downloads is number
+    fail_msg: The Jellyfin plugin or Open Subtitles state is drifted.
+  vars:
+    jellyfin_verified_intro_plugins: >-
+      {{ jellyfin_settings_verified_reads.results[2].json |
+         selectattr('Name', 'equalto', 'Intro Skipper') |
+         selectattr('Status', 'equalto', 'Active') | list }}
+    jellyfin_verified_opensubtitles_plugins: >-
+      {{ jellyfin_settings_verified_reads.results[2].json |
+         selectattr('Name', 'equalto', 'Open Subtitles') |
+         selectattr('Id', 'equalto', jellyfin_opensubtitles_plugin_id) |
+         selectattr('Status', 'equalto', 'Active') | list }}
+  when: jellyfin_settings_phase == 'verify'
+  no_log: true

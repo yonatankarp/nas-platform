@@ -28,9 +28,33 @@ argument_specs:
       jellyfin_library_options:
         type: dict
         required: false
+      jellyfin_encoding_profiles:
+        type: dict
+        required: false
+      jellyfin_plugin_repositories:
+        type: list
+        elements: dict
+        required: false
+      jellyfin_plugins:
+        type: list
+        elements: str
+        required: false
+      jellyfin_plugin_packages:
+        type: list
+        elements: dict
+        required: false
+      jellyfin_opensubtitles_plugin_id:
+        type: str
+        required: false
       vault_jellyfin_admin_username:
         type: str
         required: true
       vault_jellyfin_admin_password:
+        type: str
+        required: true
+      vault_jellyfin_opensubtitles_username:
+        type: str
+        required: true
+      vault_jellyfin_opensubtitles_password:
         type: str
         required: true

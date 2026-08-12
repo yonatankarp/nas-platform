@@ -4,7 +4,6 @@ jellyfin_api: "http://127.0.0.1:{{ jellyfin_port }}"
 jellyfin_compose_project_name: >-
   {{ (platform_project_name ~ '-jellyfin')
      if platform_project_name | default('') | length > 0 else 'jellyfin' }}
-
 # Jellyfin authenticates every call with this header rather than a bearer token,
 # and it registers the caller as a device, so the identity stays stable across
 # runs instead of accumulating one session per converge.
@@ -15,6 +14,58 @@ jellyfin_client_header: >-
 jellyfin_admin_username: Yonatan
 jellyfin_server_name: Yonflix 2.0
 jellyfin_admin_avatar_sha256: bf12ac53a05f1db64f3d00440315a6626e7c2dd12dd41867c93c9ac7aeccc792
+
+# These are explicit platform policies. In particular, the Mac fallback does
+# not infer CPU transcoding from the absence of a Docker device mapping.
+jellyfin_encoding_profiles:
+  nas:
+    HardwareAccelerationType: qsv
+    QsvDevice: /dev/dri/renderD128
+    HardwareDecodingCodecs: [h264, hevc, mpeg2video, vc1, vp8, vp9]
+    EnableDecodingColorDepth10Hevc: true
+    EnableDecodingColorDepth10Vp9: true
+    EnableHardwareEncoding: true
+    AllowHevcEncoding: true
+    AllowAv1Encoding: false
+    EnableIntelLowPowerH264HwEncoder: true
+    EnableIntelLowPowerHevcHwEncoder: true
+    EnableVppTonemapping: true
+    EnableTonemapping: false
+  mac:
+    HardwareAccelerationType: none
+    QsvDevice: ""
+    HardwareDecodingCodecs: []
+    EnableDecodingColorDepth10Hevc: false
+    EnableDecodingColorDepth10Vp9: false
+    EnableHardwareEncoding: false
+    AllowHevcEncoding: false
+    AllowAv1Encoding: false
+    EnableIntelLowPowerH264HwEncoder: false
+    EnableIntelLowPowerHevcHwEncoder: false
+    EnableVppTonemapping: false
+    EnableTonemapping: false
+
+jellyfin_plugin_repositories:
+  - Name: Jellyfin Stable
+    Url: https://repo.jellyfin.org/releases/plugin/manifest-stable.json
+    Enabled: true
+  - Name: Intro Skipper
+    Url: https://intro-skipper.org/manifest.json
+    Enabled: true
+jellyfin_plugins:
+  - Intro Skipper
+  - Open Subtitles
+jellyfin_plugin_packages:
+  # Official 10.11 branch, IntroSkipper/Plugin.cs at source commit
+  # 6ccb1a6decb983449a9e3c7a942ae2b5fd0b4bc0.
+  - Name: Intro Skipper
+    AssemblyGuid: c83d86bb-a1e0-4c35-a113-e2101cf4ee6b
+    RepositoryUrl: https://intro-skipper.org/manifest.json
+  - Name: Open Subtitles
+    AssemblyGuid: 4b9ed42f-5185-48b5-9803-6ff2989014c4
+    RepositoryUrl: https://repo.jellyfin.org/releases/plugin/manifest-stable.json
+jellyfin_opensubtitles_plugin_id: 4b9ed42f-5185-48b5-9803-6ff2989014c4
+jellyfin_encoding_policy: "{{ jellyfin_encoding_profiles[platform_kind] }}"
 
 # Only these two media libraries are Ansible-owned. Jellyfin's Collections
 # library is application-owned and intentionally absent from this declaration.
