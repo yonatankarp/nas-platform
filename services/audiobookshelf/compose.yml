@@ -16,6 +16,7 @@ services:
       - ${AUDIOBOOKSHELF_CONFIG_PATH:?}:/config
       - ${AUDIOBOOKSHELF_METADATA_PATH:?}:/metadata
       - ${AUDIOBOOKSHELF_MEDIA_PATH:?}:/audiobooks:ro
+      - ${AUDIOBOOKSHELF_BACKUP_PATH:?}:/metadata/backups
     environment:
       TZ: ${TZ:?}
     healthcheck:

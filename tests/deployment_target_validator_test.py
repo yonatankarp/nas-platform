@@ -215,6 +215,24 @@ class DeploymentTargetValidatorTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_rejects_symlinked_audiobookshelf_backup_adoption_source(self):
+        service_root = self.adoption_root / "legacy" / "audiobookshelf"
+        service_root.mkdir(parents=True)
+        outside = self.base / "outside-backups"
+        outside.mkdir()
+        backup_source = service_root / "backups"
+        backup_source.symlink_to(outside, target_is_directory=True)
+
+        result = self.run_validator(
+            [str(backup_source)], adoption_enabled="1"
+        )
+
+        self.assert_refused(
+            result,
+            f"Unsafe deployment target {backup_source}: symlink component "
+            f"{backup_source} is not an allowed deployment pointer",
+        )
+
     def test_rejects_unreviewed_adoption_source(self):
         source = self.adoption_root / "legacy" / "ntfy" / "unexpected"
         source.mkdir(parents=True)

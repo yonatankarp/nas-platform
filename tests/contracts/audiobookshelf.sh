@@ -6,9 +6,14 @@ mode=${1:-run}
 repo_dir=${PLATFORM_CONTRACT_REPO_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)}
 compose=$repo_dir/services/audiobookshelf/compose.yml
 mac_compose=$repo_dir/services/audiobookshelf/compose.mac.yml
+adoption_compose=$repo_dir/services/audiobookshelf/compose.adoption.yml
 role=$repo_dir/roles/audiobookshelf/tasks/main.yml
 defaults=$repo_dir/roles/audiobookshelf/defaults/main.yml
+argument_specs=$repo_dir/roles/audiobookshelf/meta/argument_specs.yml
+environment_template=$repo_dir/roles/audiobookshelf/templates/env.j2
 integration=$repo_dir/tests/integration.sh
+storage_inventory=$repo_dir/inventory/group_vars/all/main.yml
+contract_source=$repo_dir/tests/contracts/audiobookshelf.sh
 
 fail_contract() {
   printf 'Audiobookshelf contract failed: %s\n' "$1" >&2
@@ -19,14 +24,26 @@ fail_contract() {
 [ -f "$defaults" ] || fail_contract 'roles/audiobookshelf/defaults/main.yml is absent'
 [ -f "$compose" ] || fail_contract 'services/audiobookshelf/compose.yml is absent'
 [ -f "$mac_compose" ] || fail_contract 'services/audiobookshelf/compose.mac.yml is absent'
+[ -f "$adoption_compose" ] || fail_contract 'services/audiobookshelf/compose.adoption.yml is absent'
+[ -f "$argument_specs" ] || fail_contract 'roles/audiobookshelf/meta/argument_specs.yml is absent'
+[ -f "$environment_template" ] || fail_contract 'roles/audiobookshelf/templates/env.j2 is absent'
 
-ruby -ryaml - "$compose" "$mac_compose" "$role" "$defaults" "$integration" "$mode" <<'RUBY'
-compose_path, mac_path, role_path, defaults_path, integration_path, mode = ARGV
+ruby -ryaml - "$compose" "$mac_compose" "$adoption_compose" "$role" "$defaults" \
+  "$argument_specs" "$environment_template" "$integration" "$storage_inventory" \
+  "$contract_source" "$mode" <<'RUBY'
+compose_path, mac_path, adoption_path, role_path, defaults_path, argument_specs_path,
+  environment_template_path, integration_path, storage_inventory_path,
+  contract_source_path, mode = ARGV
 compose = YAML.safe_load_file(compose_path, aliases: true)
 mac = YAML.safe_load_file(mac_path, aliases: true)
+adoption = YAML.safe_load_file(adoption_path, aliases: true)
 role = File.read(role_path)
+role_tasks = YAML.safe_load_file(role_path)
 defaults = YAML.safe_load_file(defaults_path)
+argument_specs = YAML.safe_load_file(argument_specs_path)
+environment_template = File.read(environment_template_path)
 integration = File.read(integration_path)
+storage = YAML.safe_load_file(storage_inventory_path)
 service = compose.fetch("services").fetch("audiobookshelf")
 expected_image = "ghcr.io/advplyr/audiobookshelf:2.36.0@sha256:180acad33d69c99ed208676465d8edcb268fa46967735579a7810859885b1a8e"
 abort "Audiobookshelf contract failed: legacy image pin differs" unless service.fetch("image") == expected_image
@@ -35,7 +52,8 @@ abort "Audiobookshelf contract failed: NAS port differs" unless service.fetch("p
 abort "Audiobookshelf contract failed: storage contract differs" unless service.fetch("volumes") == [
   "${AUDIOBOOKSHELF_CONFIG_PATH:?}:/config",
   "${AUDIOBOOKSHELF_METADATA_PATH:?}:/metadata",
-  "${AUDIOBOOKSHELF_MEDIA_PATH:?}:/audiobooks:ro"
+  "${AUDIOBOOKSHELF_MEDIA_PATH:?}:/audiobooks:ro",
+  "${AUDIOBOOKSHELF_BACKUP_PATH:?}:/metadata/backups"
 ]
 health = service.fetch("healthcheck")
 abort "Audiobookshelf contract failed: legacy health check differs" unless
@@ -48,17 +66,91 @@ abort "Audiobookshelf contract failed: logging policy differs" unless service.fe
   "driver" => "json-file", "options" => { "max-size" => "10m", "max-file" => "3" }
 }
 mac_service = mac.fetch("services").fetch("audiobookshelf")
-abort "Audiobookshelf contract failed: Mac override may only replace container name and ports" unless
-  mac_service.keys.sort == %w[container_name ports] && !mac_service.key?("image")
+abort "Audiobookshelf contract failed: Mac override differs" unless
+  mac_service.keys.sort == %w[container_name ports volumes] && !mac_service.key?("image") &&
+    mac_service.fetch("volumes") == [
+      "${PLATFORM_DOCKER_ROOT:?}/audiobookshelf/backups:/metadata/backups"
+    ]
+adoption_service = adoption.fetch("services").fetch("audiobookshelf")
+abort "Audiobookshelf contract failed: adoption backup mount differs" unless
+  adoption_service.fetch("volumes").include?(
+    "${PLATFORM_ADOPTION_ROOT:?}/legacy/audiobookshelf/backups:/metadata/backups"
+  )
 abort "Audiobookshelf contract failed: managed library must be rooted at /audiobooks" unless
   defaults.fetch("audiobookshelf_library_folders") == [{ "path" => "/audiobooks" }]
 
+expected_owned_settings = {
+  "storeCoverWithItem" => true,
+  "storeMetadataWithItem" => true,
+  "sortingIgnorePrefix" => false,
+  "scannerParseSubtitle" => true,
+  "scannerFindCovers" => true,
+  "scannerCoverProvider" => "google",
+  "scannerPreferMatchedMetadata" => true,
+  "scannerDisableWatcher" => false,
+  "chromecastEnabled" => true,
+  "allowIframe" => true,
+  "homeBookshelfView" => 1,
+  "bookshelfView" => 1,
+  "dateFormat" => "dd/MM/yyyy",
+  "timeFormat" => "HH:mm",
+  "language" => "en-us"
+}
+abort "Audiobookshelf contract failed: owned server settings differ" unless
+  defaults.fetch("audiobookshelf_owned_server_settings") == expected_owned_settings
+abort "Audiobookshelf contract failed: backup policy defaults differ" unless
+  defaults.values_at(
+    "audiobookshelf_backup_cron", "audiobookshelf_backup_retention",
+    "audiobookshelf_backup_container_path", "audiobookshelf_backup_host_path"
+  ) == ["0 3 * * *", 7, "/metadata/backups", "/volume1/Docker/audiobookshelf/backups"]
+abort "Audiobookshelf contract failed: backup environment is absent" unless
+  environment_template.include?(
+    "AUDIOBOOKSHELF_BACKUP_PATH={{ audiobookshelf_effective_backup_host_path }}"
+  )
+backup_storage = storage.fetch("nas_storage").find do |entry|
+  entry["path"] == "{{ nas_docker_root }}/audiobookshelf/backups"
+end
+abort "Audiobookshelf contract failed: backup storage inventory differs" unless
+  backup_storage == {
+    "path" => "{{ nas_docker_root }}/audiobookshelf/backups",
+    "owner" => "{{ nas_uid }}", "group" => "{{ nas_gid }}",
+    "mode" => "0755", "recovery" => "critical"
+  }
+
+argument_options = argument_specs.dig("argument_specs", "main", "options")
+abort "Audiobookshelf contract failed: server settings argument validation is absent" unless
+  argument_options.dig("audiobookshelf_owned_server_settings", "type") == "dict" &&
+    argument_options.dig("audiobookshelf_backup_cron", "type") == "str" &&
+    argument_options.dig("audiobookshelf_backup_retention", "type") == "int" &&
+    argument_options.dig("audiobookshelf_backup_container_path", "type") == "str" &&
+    argument_options.dig("audiobookshelf_backup_host_path", "type") == "str"
+
 if mode == "static"
+  resolve_backup_index = role_tasks.index { |task| task["name"] == "Resolve the effective Audiobookshelf backup directory" }
+  validate_target_index = role_tasks.index { |task| task["name"] == "Revalidate deployment paths before Audiobookshelf runtime use" }
+  render_index = role_tasks.index { |task| task["name"] == "Render the Audiobookshelf environment" }
+  validation_task = validate_target_index ? role_tasks.fetch(validate_target_index) : {}
+  validation_paths = validation_task.fetch("vars", {}).fetch("deployment_target_extra_paths", [])
+  abort "Audiobookshelf contract failed: backup path is not resolved and validated before mutation" unless
+    resolve_backup_index && validate_target_index && render_index &&
+      resolve_backup_index < validate_target_index && validate_target_index < render_index &&
+      validation_paths.include?("{{ audiobookshelf_effective_backup_host_path }}")
+  abort "Audiobookshelf contract failed: service role duplicates host_prep backup ownership" if
+    role_tasks.any? do |task|
+      file = task["ansible.builtin.file"]
+      file.is_a?(Hash) && file["path"] == "{{ audiobookshelf_effective_backup_host_path }}"
+    end
   required_tasks = [
     "Refuse duplicate managed Audiobookshelf administrators",
     "Refuse unavailable Audiobookshelf administrator authentication",
     "Refuse unexpected Audiobookshelf administrator authentication responses",
     "Report planned Audiobookshelf administrator creation",
+    "Read Audiobookshelf server settings for reconciliation",
+    "Validate current Audiobookshelf server settings schema",
+    "Report planned Audiobookshelf server settings reconciliation",
+    "Reconcile owned Audiobookshelf server settings",
+    "Re-authorize after Audiobookshelf server settings reconciliation",
+    "Require exact owned Audiobookshelf server settings after reconciliation",
     "Report planned Audiobookshelf library creation",
     "Report planned Audiobookshelf library repair",
     "Require exactly the managed Audiobookshelf administrator",
@@ -67,6 +159,43 @@ if mode == "static"
   required_tasks.each do |name|
     abort "Audiobookshelf contract failed: missing #{name}" unless role.include?("- name: #{name}")
   end
+  settings_reads = role_tasks.each_with_index.filter_map do |task, index|
+    uri = task.is_a?(Hash) ? task["ansible.builtin.uri"] : nil
+    [task, uri, index] if uri.is_a?(Hash) && uri["url"] == "{{ audiobookshelf_api }}/api/authorize"
+  end
+  settings_patch = role_tasks.each_with_index.filter_map do |task, index|
+    uri = task.is_a?(Hash) ? task["ansible.builtin.uri"] : nil
+    [task, uri, index] if uri.is_a?(Hash) && uri["url"] == "{{ audiobookshelf_api }}/api/settings"
+  end
+  abort "Audiobookshelf contract failed: unsupported GET /api/settings is assumed" if
+    settings_patch.any? { |_task, uri, _index| uri.fetch("method", "GET") == "GET" }
+  abort "Audiobookshelf contract failed: authoritative settings reads must re-authorize" unless
+    settings_reads.length >= 2 && settings_reads.all? { |task, uri, _index| uri["method"] == "POST" && task["no_log"] == true }
+  abort "Audiobookshelf contract failed: settings mutation must be one conditional partial PATCH" unless
+    settings_patch.length == 1 && settings_patch.fetch(0).fetch(1)["method"] == "PATCH" &&
+      settings_patch.fetch(0).fetch(0)["when"].include?("audiobookshelf_server_settings_drifted | bool")
+  patch_index = settings_patch.fetch(0).fetch(2)
+  post_patch_read = settings_reads.find do |task, _uri, index|
+    index > patch_index && task["name"] == "Re-authorize after Audiobookshelf server settings reconciliation"
+  end
+  abort "Audiobookshelf contract failed: PATCH response is treated as final settings verification" unless
+    post_patch_read && role_tasks[(post_patch_read.fetch(2) + 1)..].any? do |task|
+      task.is_a?(Hash) && task["name"] == "Require exact owned Audiobookshelf server settings after reconciliation"
+    end
+  timezone_assertions = role_tasks.filter_map do |task|
+    assertion = task["ansible.builtin.assert"]
+    Array(assertion["that"]) if assertion.is_a?(Hash)
+  end.flatten.grep(/serverSettings[.]timeZone.*Europe\/Berlin/)
+  abort "Audiobookshelf contract failed: authoritative timezone is not checked on every settings read" unless
+    timezone_assertions.length >= 3
+  patch_body = settings_patch.fetch(0).fetch(1).fetch("body").to_s
+  abort "Audiobookshelf contract failed: non-persisted timezone is included in PATCH" if
+    patch_body.include?("timeZone") || defaults.fetch("audiobookshelf_owned_server_settings").key?("timeZone")
+  drift_commit_branch = File.read(contract_source_path)
+                            .rpartition(%q{when "drift-commit"}).last
+                            .partition(%q{when "check-repair-unchanged"}).first
+  abort "Audiobookshelf contract failed: drift commit consumes reconciliation evidence" if
+    drift_commit_branch.include?("remove_drift_snapshot")
   abort "Audiobookshelf contract failed: role still claims inactive administrator repair" if
     role.include?("not audiobookshelf_existing_admin.isActive") ||
       role.include?("isActive: true\n    status_code: [200]\n  when:\n    - not ansible_check_mode\n    - audiobookshelf_admin_repair_required")
@@ -138,8 +267,36 @@ DESIRED_SETTINGS = {
   "markAsFinishedTimeRemaining" => 10
 }.freeze
 DRIFT_SETTINGS = DESIRED_SETTINGS.merge("disableWatcher" => true).freeze
+OWNED_SERVER_SETTINGS = {
+  "storeCoverWithItem" => true,
+  "storeMetadataWithItem" => true,
+  "sortingIgnorePrefix" => false,
+  "scannerParseSubtitle" => true,
+  "scannerFindCovers" => true,
+  "scannerCoverProvider" => "google",
+  "scannerPreferMatchedMetadata" => true,
+  "scannerDisableWatcher" => false,
+  "chromecastEnabled" => true,
+  "allowIframe" => true,
+  "homeBookshelfView" => 1,
+  "bookshelfView" => 1,
+  "dateFormat" => "dd/MM/yyyy",
+  "timeFormat" => "HH:mm",
+  "language" => "en-us",
+  "backupPath" => "/metadata/backups",
+  "backupSchedule" => "0 3 * * *",
+  "backupsToKeep" => 7
+}.freeze
+DRIFT_SERVER_SETTINGS = {
+  "scannerParseSubtitle" => false,
+  "backupSchedule" => "0 4 * * *",
+  "backupsToKeep" => 2
+}.freeze
+UNOWNED_SERVER_SETTINGS_SENTINEL = "loggerDailyLogsToKeep"
+AUTHORITATIVE_SERVER_TIME_ZONE = "Europe/Berlin"
 LIBRARY_STATE_KEYS = %w[folders icon mediaType name provider settings].freeze
 LIBRARY_FOLDER_STATE_KEYS = %w[addedAt fullPath id libraryId].freeze
+SERVER_SETTINGS_STATE_KEYS = (OWNED_SERVER_SETTINGS.keys + [UNOWNED_SERVER_SETTINGS_SENTINEL]).sort.freeze
 DRIFT_SNAPSHOT_KIND = "audiobookshelf-library-drift-snapshot"
 VAULT_CREDENTIAL_KEY = /_(?:password|hash|token|key)\z/
 
@@ -253,6 +410,37 @@ def drifted_library_state(state)
   state.merge("provider" => "audible", "icon" => "podcast", "settings" => DRIFT_SETTINGS)
 end
 
+def authoritative_server_settings(token)
+  payload = request("post", "/api/authorize", token: token).last
+  fail_contract("authoritative server settings response is malformed") unless
+    payload.is_a?(Hash) && payload["serverSettings"].is_a?(Hash)
+  settings = payload.fetch("serverSettings")
+  fail_contract("authoritative server timezone differs") unless
+    settings["timeZone"] == AUTHORITATIVE_SERVER_TIME_ZONE
+  settings
+end
+
+def selected_server_settings(settings)
+  fail_contract("server settings state is malformed") unless settings.is_a?(Hash)
+  selected = SERVER_SETTINGS_STATE_KEYS.to_h do |key|
+    fail_contract("server settings state is missing #{key}") unless settings.key?(key)
+    [key, settings.fetch(key)]
+  end
+  OWNED_SERVER_SETTINGS.each do |key, expected|
+    actual = selected.fetch(key)
+    type_matches = if expected == true || expected == false
+                     actual == true || actual == false
+                   else
+                     actual.class == expected.class
+                   end
+    fail_contract("server settings type differs for #{key}") unless
+      type_matches
+  end
+  fail_contract("unowned server settings sentinel type differs") unless
+    selected.fetch(UNOWNED_SERVER_SETTINGS_SENTINEL).is_a?(Integer)
+  selected
+end
+
 def drift_snapshot_path
   drift_snapshot_directory.join("snapshot.json")
 end
@@ -288,7 +476,7 @@ rescue Errno::ENOENT, Errno::EACCES
   fail_contract("drift snapshot is unavailable or unsafe")
 end
 
-def write_drift_snapshot(library)
+def write_drift_snapshot(library, server_settings)
   require_report_root!
   directory = drift_snapshot_directory
   fail_contract("refusing ambiguous drift snapshot ownership") if directory.exist? || directory.symlink?
@@ -299,7 +487,8 @@ def write_drift_snapshot(library)
     "schema" => 1,
     "kind" => DRIFT_SNAPSHOT_KIND,
     "library_id" => safe_id(library.fetch("id")),
-    "state" => exact_library_state(library)
+    "state" => exact_library_state(library),
+    "server_settings" => selected_server_settings(server_settings)
   }
   path.open(File::WRONLY | File::CREAT | File::EXCL, 0o600) do |file|
     file.write(JSON.generate(snapshot))
@@ -310,13 +499,17 @@ end
 def read_drift_snapshot
   snapshot = JSON.parse(require_owned_drift_snapshot!.binread)
   fail_contract("drift snapshot schema is malformed") unless
-    snapshot.is_a?(Hash) && snapshot.keys.sort == %w[kind library_id schema state] &&
+    snapshot.is_a?(Hash) &&
+      snapshot.keys.sort == %w[kind library_id schema server_settings state] &&
       snapshot["schema"] == 1 && snapshot["kind"] == DRIFT_SNAPSHOT_KIND &&
-      snapshot["state"].is_a?(Hash) && snapshot["state"].keys.sort == LIBRARY_STATE_KEYS
+      snapshot["state"].is_a?(Hash) && snapshot["state"].keys.sort == LIBRARY_STATE_KEYS &&
+      snapshot["server_settings"].is_a?(Hash) &&
+      snapshot["server_settings"].keys.sort == SERVER_SETTINGS_STATE_KEYS
   snapshot["library_id"] = safe_id(snapshot.fetch("library_id"))
   snapshot["state"] = exact_library_state(
     snapshot.fetch("state"), library_id: snapshot.fetch("library_id")
   )
+  snapshot["server_settings"] = selected_server_settings(snapshot.fetch("server_settings"))
   snapshot
 rescue JSON::ParserError, KeyError, TypeError
   fail_contract("drift snapshot is malformed")
@@ -852,6 +1045,12 @@ when "secret-redaction-self-test"
   puts "Audiobookshelf diagnostic secret redaction self-test passed"
   exit 0
 when "drift-recovery-self-test"
+  original_server_settings = OWNED_SERVER_SETTINGS.merge(UNOWNED_SERVER_SETTINGS_SENTINEL => 5)
+  drifted_server_settings = selected_server_settings(
+    original_server_settings.merge(DRIFT_SERVER_SETTINGS)
+  )
+  fail_contract("boolean drift was not accepted as typed server settings") unless
+    drifted_server_settings.fetch("scannerParseSubtitle") == false
   original = {
     "id" => "contract-library",
     "name" => LIBRARY_NAME,
@@ -866,11 +1065,13 @@ when "drift-recovery-self-test"
     "icon" => "database",
     "settings" => DESIRED_SETTINGS.merge("metadataPrecedence" => %w[folderStructure audioMetatags])
   }
-  write_drift_snapshot(original)
+  write_drift_snapshot(original, original_server_settings)
   drifted = original.merge(
     "provider" => "audible", "icon" => "podcast", "settings" => DRIFT_SETTINGS
   )
   snapshot = read_drift_snapshot
+  fail_contract("drift recovery self-test changed the unrelated settings sentinel") unless
+    snapshot.fetch("server_settings").fetch(UNOWNED_SERVER_SETTINGS_SENTINEL) == 5
   recovered = drifted.merge(snapshot_state_for_library(snapshot, drifted))
   fail_contract("drift recovery self-test did not restore exact provider, icon, and settings") unless
     exact_snapshot_recovered?([recovered], snapshot) &&
@@ -889,7 +1090,7 @@ when "drift-recovery-self-test"
   drift_snapshot_path.unlink
   drift_snapshot_directory.rmdir
 
-  write_drift_snapshot(original)
+  write_drift_snapshot(original, original_server_settings)
   drift_snapshot_path.chmod(0o644)
   expect_contract_failure { read_drift_snapshot }
   drift_snapshot_path.chmod(0o600)
@@ -1089,14 +1290,33 @@ fail_contract("managed library media type differs") unless library["mediaType"] 
 folders = library.fetch("folders").map { |folder| { "path" => folder["fullPath"] || folder.fetch("path") } }
 fail_contract("managed library must be rooted exactly at /audiobooks") unless folders == [{ "path" => "/audiobooks" }]
 
+if MODE == "run"
+  server_settings = selected_server_settings(authoritative_server_settings(token))
+  fail_contract("owned Audiobookshelf server settings differ") unless
+    server_settings.slice(*OWNED_SERVER_SETTINGS.keys) == OWNED_SERVER_SETTINGS
+  if drift_snapshot_directory.exist? || drift_snapshot_directory.symlink?
+    snapshot = read_drift_snapshot
+    fail_contract("reconciliation did not restore exact library drift state") unless
+      exact_snapshot_recovered?(libraries, snapshot)
+    fail_contract("reconciliation changed an unrelated server setting") unless
+      server_settings.fetch(UNOWNED_SERVER_SETTINGS_SENTINEL) ==
+        snapshot.fetch("server_settings").fetch(UNOWNED_SERVER_SETTINGS_SENTINEL)
+    remove_drift_snapshot
+  end
+end
+
 case MODE
 when "drift"
-  write_drift_snapshot(library)
+  server_settings = selected_server_settings(authoritative_server_settings(token))
+  fail_contract("server-settings drift fixture requires exact owned baseline") unless
+    server_settings.slice(*OWNED_SERVER_SETTINGS.keys) == OWNED_SERVER_SETTINGS
+  write_drift_snapshot(library, server_settings)
   request(
     "patch", "/api/libraries/#{library_id}", token: token,
     body: drifted_library_state(exact_library_state(library))
   )
-  puts "Audiobookshelf library drift seeded"
+  request("patch", "/api/settings", token: token, body: DRIFT_SERVER_SETTINGS)
+  puts "Audiobookshelf library and server-settings drift seeded"
   exit 0
 when "check-repair-seed"
   request(
@@ -1114,26 +1334,37 @@ when "drift-recover"
     "patch", "/api/libraries/#{library_id}", token: token,
     body: original_state
   )
+  request("patch", "/api/settings", token: token, body: snapshot.fetch("server_settings"))
   recovered = request("get", "/api/libraries", token: token).last.fetch("libraries")
+  recovered_server_settings = selected_server_settings(authoritative_server_settings(token))
   fail_contract("library drift recovery did not restore exact state") unless
     exact_snapshot_recovered?(recovered, snapshot)
+  fail_contract("server-settings drift recovery did not restore exact state") unless
+    recovered_server_settings == snapshot.fetch("server_settings")
   remove_drift_snapshot
-  puts "Audiobookshelf library drift recovered"
+  puts "Audiobookshelf library and server-settings drift recovered"
   exit 0
 when "drift-verify"
   snapshot = read_drift_snapshot
   original_state = snapshot_state_for_library(snapshot, library)
+  expected_server_settings = snapshot.fetch("server_settings").merge(DRIFT_SERVER_SETTINGS)
+  drifted_server_settings = selected_server_settings(authoritative_server_settings(token))
   fail_contract("library drift fixture is absent") unless
     exact_library_state(library) == drifted_library_state(original_state)
-  puts "Audiobookshelf library drift verified"
+  fail_contract("server-settings drift fixture or unrelated sentinel differs") unless
+    drifted_server_settings == expected_server_settings
+  puts "Audiobookshelf library and server-settings drift verified"
   exit 0
 when "drift-commit"
   snapshot = read_drift_snapshot
   original_state = snapshot_state_for_library(snapshot, library)
+  expected_server_settings = snapshot.fetch("server_settings").merge(DRIFT_SERVER_SETTINGS)
+  drifted_server_settings = selected_server_settings(authoritative_server_settings(token))
   fail_contract("library drift fixture changed before snapshot finalization") unless
     exact_library_state(library) == drifted_library_state(original_state)
-  remove_drift_snapshot
-  puts "Audiobookshelf library drift snapshot finalized"
+  fail_contract("server-settings drift fixture changed before snapshot finalization") unless
+    drifted_server_settings == expected_server_settings
+  puts "Audiobookshelf library and server-settings drift snapshot retained for reconciliation"
   exit 0
 when "check-repair-unchanged"
   assert_state_artifact("check-repair", libraries)

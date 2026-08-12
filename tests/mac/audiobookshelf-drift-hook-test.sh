@@ -47,6 +47,7 @@ case $mode in
 provider=audible
 icon=podcast
 settings={"disableWatcher":true,"metadataPrecedence":["audioMetatags"]}
+serverSettings={"scannerParseSubtitle":false,"backupSchedule":"0 4 * * *","backupsToKeep":2,"loggerDailyLogsToKeep":5}
 STATE
     : > "${PLATFORM_HOOK_FIXTURE:?}"
     ;;
@@ -69,6 +70,16 @@ STATE
     grep -qxF 'icon=podcast' "${PLATFORM_HOOK_STATE:?}"
     grep -qxF 'settings={"disableWatcher":true,"metadataPrecedence":["audioMetatags"]}' \
       "${PLATFORM_HOOK_STATE:?}"
+    grep -qxF 'serverSettings={"scannerParseSubtitle":false,"backupSchedule":"0 4 * * *","backupsToKeep":2,"loggerDailyLogsToKeep":5}' \
+      "${PLATFORM_HOOK_STATE:?}"
+    [ -f "${PLATFORM_HOOK_SNAPSHOT:?}" ]
+    ;;
+  run)
+    cmp -s "${PLATFORM_HOOK_STATE:?}" "${PLATFORM_HOOK_EXPECTED_STATE:?}"
+    grep -qxF 'serverSettings={"scannerParseSubtitle":true,"backupSchedule":"0 3 * * *","backupsToKeep":7,"loggerDailyLogsToKeep":5}' \
+      "${PLATFORM_HOOK_STATE:?}"
+    grep -qxF 'serverSettings={"scannerParseSubtitle":true,"backupSchedule":"0 3 * * *","backupsToKeep":7,"loggerDailyLogsToKeep":5}' \
+      "${PLATFORM_HOOK_SNAPSHOT:?}"
     unlink "${PLATFORM_HOOK_SNAPSHOT:?}"
     ;;
 esac
@@ -104,7 +115,7 @@ case ${PLATFORM_HOOK_SCENARIO:?} in
     sleep 1
     ;;
 esac
-printf '%s\n' 'The managed Audiobookshelf library is absent, duplicated, surplus, or drifted.' >&2
+printf '%s\n' 'The managed Audiobookshelf server settings or library are absent, duplicated, surplus, or drifted.' >&2
 exit 2
 STUB
 chmod 0755 "$fake_bin/ansible-playbook"
@@ -121,6 +132,7 @@ run_hook() {
 provider=google
 icon=database
 settings={"disableWatcher":false,"metadataPrecedence":["folderStructure","audioMetatags"]}
+serverSettings={"scannerParseSubtitle":true,"backupSchedule":"0 3 * * *","backupsToKeep":7,"loggerDailyLogsToKeep":5}
 STATE
   cp "$case_root/expected-state" "$case_root/state"
   PLATFORM_REPORT_ROOT="$report_root" \
@@ -152,7 +164,8 @@ run_hook audiobookshelf-accept >/dev/null 2>&1 || false_status=$?
 
 run_hook success
 success_root=$temporary_input/success
-[ -f "$success_root/fixture" ] && [ ! -e "$success_root/recovered" ] || {
+[ -f "$success_root/fixture" ] && [ ! -e "$success_root/recovered" ] &&
+  [ -f "$success_root/reports/audiobookshelf-drift-snapshot.json" ] || {
   printf '%s\n' 'successful Audiobookshelf drift hook did not leave only its fixture for reconcile' >&2
   exit 1
 }
@@ -165,8 +178,20 @@ grep -q '^drift-commit$' "$success_root/events" || {
   exit 1
 }
 grep -q '^VERIFY_AUDIOBOOKSHELF$' "$success_root/events"
-[ -z "$(find "$success_root/reports" -mindepth 1 -maxdepth 1 -print -quit)" ] || {
-  printf '%s\n' 'successful Audiobookshelf drift hook retained raw verification output' >&2
+find "$success_root/reports" -mindepth 1 -maxdepth 1 ! -name audiobookshelf-drift-snapshot.json \
+  -print -quit | grep -q . && {
+  printf '%s\n' 'successful Audiobookshelf drift hook retained unexpected raw verification output' >&2
+  exit 1
+}
+cp "$success_root/expected-state" "$success_root/state"
+PLATFORM_HOOK_EVENTS="$success_root/events" \
+  PLATFORM_HOOK_SNAPSHOT="$success_root/reports/audiobookshelf-drift-snapshot.json" \
+  PLATFORM_HOOK_STATE="$success_root/state" \
+  PLATFORM_HOOK_EXPECTED_STATE="$success_root/expected-state" \
+  PLATFORM_HOOK_FIXTURE="$success_root/fixture" \
+  "$fixture_root/tests/mac/run-audiobookshelf-contract.sh" run
+[ ! -e "$success_root/reports/audiobookshelf-drift-snapshot.json" ] || {
+  printf '%s\n' 'reconciliation verification did not consume the drift snapshot' >&2
   exit 1
 }
 
@@ -193,6 +218,7 @@ for signal in HUP INT TERM; do
 provider=google
 icon=database
 settings={"disableWatcher":false,"metadataPrecedence":["folderStructure","audioMetatags"]}
+serverSettings={"scannerParseSubtitle":true,"backupSchedule":"0 3 * * *","backupsToKeep":7,"loggerDailyLogsToKeep":5}
 STATE
   cp "$signal_root/expected-state" "$signal_root/state"
   signal_status_file=$signal_root/status

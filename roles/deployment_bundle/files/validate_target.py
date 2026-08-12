@@ -9,6 +9,7 @@ ADOPTION_SOURCES = (
     "legacy/audiobookshelf/config",
     "legacy/audiobookshelf/metadata",
     "legacy/audiobookshelf/media",
+    "legacy/audiobookshelf/backups",
     "legacy/beszel/hub",
     "legacy/beszel/agent",
     "legacy/beszel/volume1",

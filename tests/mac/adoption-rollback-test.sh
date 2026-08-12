@@ -444,6 +444,7 @@ bindings = %w[
   audiobookshelf|legacy/audiobookshelf/config|/config|rw|audiobookshelf
   audiobookshelf|legacy/audiobookshelf/metadata|/metadata|rw|audiobookshelf
   audiobookshelf|legacy/audiobookshelf/media|/audiobooks|ro|audiobookshelf
+  audiobookshelf|legacy/audiobookshelf/backups|/metadata/backups|rw|audiobookshelf
   beszel|legacy/beszel/hub|/beszel_data|rw|hub
   beszel|legacy/beszel/agent|/var/lib/beszel-agent|rw|agent
   beszel|legacy/beszel/volume1|/extra-filesystems/volume1|ro|agent

@@ -86,7 +86,8 @@ EXPECTED_BINDS = {
     "audiobookshelf" => {
       "/config" => "legacy/audiobookshelf/config",
       "/metadata" => "legacy/audiobookshelf/metadata",
-      "/audiobooks" => "legacy/audiobookshelf/media"
+      "/audiobooks" => "legacy/audiobookshelf/media",
+      "/metadata/backups" => "legacy/audiobookshelf/backups"
     }
   },
   "beszel" => {
@@ -365,7 +366,14 @@ Dir.mktmpdir("nas-platform-legacy-overrides.") do |temporary|
       mounts.each do |mount|
         source = mount.fetch("source")
         target = mount.fetch("target")
-        base_mount = base_mounts_by_target.fetch(target)
+        base_mount = base_mounts_by_target.fetch(target) do
+          if name == "audiobookshelf" && service_name == "audiobookshelf" &&
+              target == "/metadata/backups"
+            { "type" => "bind", "target" => target, "bind" => {} }
+          else
+            fail_contract("#{name}/#{service_name} adds an unreviewed bind target #{target}")
+          end
+        end
         planned_source = planned_binds.fetch(target)
         expected_source = if planned_source == :docker_socket
                             "/var/run/docker.sock"

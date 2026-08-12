@@ -11,6 +11,7 @@ module AdoptionBindPrep
 
   DIRECTORIES = %w[
     legacy/audiobookshelf/config legacy/audiobookshelf/metadata legacy/audiobookshelf/media
+    legacy/audiobookshelf/backups
     legacy/beszel/hub legacy/beszel/agent legacy/beszel/volume1 legacy/beszel/volume2
     legacy/dozzle/data
     legacy/immich/data legacy/immich/thumbs legacy/immich/encoded-video legacy/immich/profile
@@ -25,6 +26,7 @@ module AdoptionBindPrep
   ].freeze
   NAS_OWNED = %w[
     legacy/audiobookshelf/config legacy/audiobookshelf/metadata legacy/audiobookshelf/media
+    legacy/audiobookshelf/backups
     legacy/dozzle/data
     legacy/jellyfin/config legacy/jellyfin/cache legacy/jellyfin/media
     legacy/komga/config legacy/komga/library

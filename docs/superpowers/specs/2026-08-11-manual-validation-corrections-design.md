@@ -73,17 +73,24 @@ manual-review screenshot:
 | Time format | `HH:mm` |
 | Default server language | English (`en-us`) |
 
-The role reads the current server settings, constructs a partial patch from
-these owned keys, applies `PATCH /api/settings` only on drift, and verifies the
-same keys. It continues to own the existing Audiobooks library and its existing
-library-specific settings.
+Audiobookshelf 2.36.0 does not expose `GET /api/settings`. The role reads the
+current `serverSettings` through authenticated `POST /api/authorize`, constructs
+a partial patch from these owned keys, applies `PATCH /api/settings` only on
+drift, and performs a fresh authorization read to verify the same keys. It never
+treats the PATCH response as authoritative. The role continues to own the
+existing Audiobooks library and its existing library-specific settings.
 
 Automatic backups are enabled with cron expression `0 3 * * *`, interpreted in
 the container's configured `Europe/Berlin` timezone. Seven backups are retained.
 The host directory is `/volume1/Docker/audiobookshelf/backups`; it is exposed to
 the container as `/metadata/backups`, and the API-owned backup path is
 `/metadata/backups`. Mac and adoption overrides map the same container path to
-their disposable state roots.
+their disposable state roots. The backup directory is classified `critical` in
+the central `nas_storage` inventory, so `host_prep` alone owns its creation,
+permissions, and disaster-recovery classification. The service validates the
+effective source, including the adoption source, before any runtime file
+mutation. Authoritative authorization responses must report the configured
+`Europe/Berlin` timezone; that derived field is verified but never patched.
 
 ## Beszel
 

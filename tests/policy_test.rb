@@ -810,12 +810,16 @@ service_dirs.each do |dir|
       check(failures, !source.match?(%r{\A/volume\d}),
             "#{label}: volume source #{source} is hardcoded; use ${NAS_DOCKER_ROOT:?} or ${NAS_MEDIA_ROOT:?}")
 
-      next unless source.include?("NAS_DOCKER_ROOT")
+      inventory_source = if source.include?("NAS_DOCKER_ROOT")
+                           source.sub(/\A\$\{NAS_DOCKER_ROOT:\?\}/, "{{ nas_docker_root }}")
+                         elsif source == "${AUDIOBOOKSHELF_BACKUP_PATH:?}"
+                           "{{ nas_docker_root }}/audiobookshelf/backups"
+                         end
+      next unless inventory_source
 
       # Service state must be declared in the storage inventory so host_prep
       # creates it with the right ownership and it gets a recovery class.
-      relative = source.sub(/\A\$\{NAS_DOCKER_ROOT:\?\}/, "")
-      expected = "{{ nas_docker_root }}#{relative}"
+      expected = inventory_source
       declared = declared_paths.include?(expected) ||
                  declared_paths.any? { |p| expected.start_with?(p + "/") }
       check(failures, declared,

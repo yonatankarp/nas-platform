@@ -53,6 +53,7 @@ EXPECTED_BINDINGS = %w[
   audiobookshelf|legacy/audiobookshelf/config|/config
   audiobookshelf|legacy/audiobookshelf/metadata|/metadata
   audiobookshelf|legacy/audiobookshelf/media|/audiobooks
+  audiobookshelf|legacy/audiobookshelf/backups|/metadata/backups
   beszel|legacy/beszel/hub|/beszel_data
   beszel|legacy/beszel/agent|/var/lib/beszel-agent
   beszel|legacy/beszel/volume1|/extra-filesystems/volume1

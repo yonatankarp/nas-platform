@@ -12,6 +12,7 @@ COMMITTED_BINDINGS = <<~BINDINGS.lines(chomp: true).map { |line| line.split("\t"
   audiobookshelf\tlegacy/audiobookshelf/config\t/config
   audiobookshelf\tlegacy/audiobookshelf/metadata\t/metadata
   audiobookshelf\tlegacy/audiobookshelf/media\t/audiobooks
+  audiobookshelf\tlegacy/audiobookshelf/backups\t/metadata/backups
   beszel\tlegacy/beszel/hub\t/beszel_data
   beszel\tlegacy/beszel/agent\t/var/lib/beszel-agent
   beszel\tlegacy/beszel/volume1\t/extra-filesystems/volume1

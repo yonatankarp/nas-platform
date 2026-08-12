@@ -213,6 +213,7 @@ git commit -m "feat: declare stable Dozzle container groups"
 - Modify: `roles/audiobookshelf/defaults/main.yml`
 - Modify: `roles/audiobookshelf/meta/argument_specs.yml`
 - Modify: `roles/audiobookshelf/tasks/main.yml`
+- Modify: `inventory/group_vars/all/main.yml`
 - Modify: `services/audiobookshelf/compose.yml`
 - Modify: `services/audiobookshelf/compose.mac.yml`
 - Modify: `services/audiobookshelf/compose.adoption.yml`
@@ -220,10 +221,15 @@ git commit -m "feat: declare stable Dozzle container groups"
 - Modify: `tests/mac/hooks/drift/30-audiobookshelf.sh`
 - Modify: `tests/mac/hooks/verify/30-audiobookshelf.sh`
 - Modify: `tests/mac/audiobookshelf-drift-hook-test.sh`
+- Modify: `tests/deployment_target_validator_test.py`
+- Modify: `tests/policy_test.rb`
 
 - [ ] **Step 1: Add failing static and API assertions**
 
-Require the `/metadata/backups` mount, the owned settings map from the approved design, cron `0 3 * * *`, retention `7`, and API verification through `/api/settings`.
+Require the `/metadata/backups` mount, its `critical` central-storage declaration,
+the owned settings map from the approved design, cron `0 3 * * *`, retention `7`,
+mutation through `PATCH /api/settings`, and authoritative reads through authenticated
+`POST /api/authorize` that report `Europe/Berlin`.
 
 - [ ] **Step 2: Verify RED**
 
@@ -243,10 +249,12 @@ audiobookshelf_backup_host_path: /volume1/Docker/audiobookshelf/backups
 ```
 
 Map the same container path to disposable state roots in Mac and adoption overlays.
+Resolve and validate each effective bind source before mutation; let `host_prep`
+alone create the inventory-owned backup directory.
 
 - [ ] **Step 4: Implement read/merge/patch/read-back**
 
-Authenticate with the existing admin flow, GET `/api/settings`, compare only owned leaves, PATCH only on drift, and re-read. Reject a missing or changed schema before mutation. Preserve unowned keys.
+Authenticate with the existing admin flow, read `serverSettings` through `POST /api/authorize`, compare only owned leaves, PATCH only on drift, and re-authorize for an authoritative read-back. Audiobookshelf 2.36.0 has no GET settings route, so reject code that assumes `GET /api/settings` or treats the PATCH response as final verification. Reject a missing or changed schema before mutation. Preserve unowned keys.
 
 - [ ] **Step 5: Add drift and adoption coverage**
 
