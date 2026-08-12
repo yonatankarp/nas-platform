@@ -40,7 +40,8 @@ render_group_contract() {
   variant=$3
   shift 3
   rendered=$(env \
-    PLATFORM_PROJECT_NAME=dozzle-contract NAS_DOCKER_ROOT=/tmp/dozzle-contract/docker \
+    PLATFORM_PROJECT_NAME=dozzle-contract PLATFORM_DOCKER_ROOT=/tmp/dozzle-contract/docker \
+    NAS_DOCKER_ROOT=/tmp/dozzle-contract/docker \
     NAS_MEDIA_ROOT=/tmp/dozzle-contract/media NAS_RENDER_DEVICE=/dev/null \
     PLATFORM_ADOPTION_ROOT=/tmp/dozzle-contract/adoption NAS_UID=1000 NAS_GID=100 \
     BESZEL_APP_URL=http://127.0.0.1:8090 BESZEL_SYSTEM_NAME=contract \
@@ -50,6 +51,7 @@ render_group_contract() {
     AUDIOBOOKSHELF_HOST_PORT=33378 \
     AUDIOBOOKSHELF_CONFIG_PATH=/tmp/dozzle-contract/audiobookshelf-config \
     AUDIOBOOKSHELF_METADATA_PATH=/tmp/dozzle-contract/audiobookshelf-metadata \
+    AUDIOBOOKSHELF_BACKUP_PATH=/tmp/dozzle-contract/audiobookshelf-backups \
     AUDIOBOOKSHELF_MEDIA_PATH=/tmp/dozzle-contract/audiobooks \
     KOMGA_HOST_PORT=35600 KOMGA_CONFIG_PATH=/tmp/dozzle-contract/komga-config \
     KOMGA_LIBRARY_PATH=/tmp/dozzle-contract/books JELLYFIN_HOST_PORT=38096 \
