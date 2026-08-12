@@ -53,6 +53,7 @@ tests/integration_lock_test.sh
 tests/integration_suite_test.sh
 tests/mac/config-isolation.sh
 tests/mac/run-phase-status-test.sh
+tests/mac/manual-validation-runner-test.sh
 tests/mac/adoption-self-test.sh
 tests/mac/adoption.sh --self-test
 tests/mac/legacy-seed-test.sh

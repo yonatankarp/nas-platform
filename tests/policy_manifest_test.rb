@@ -77,6 +77,8 @@ BASE_FIXTURE_PATHS = %w[
   tests/mac/fixtures.sh
   tests/mac/lib.sh
   tests/mac/manual-review.md
+  tests/mac/manual-validation-handoff.rb
+  tests/mac/manual-validation-runner-test.sh
   tests/mac/report.rb
   tests/mac/run.sh
   tests/mac/run-phase-status-test.sh
@@ -1233,7 +1235,8 @@ end
   "Beszel telemetry production probe regression" => "python3 tests/beszel_telemetry_module_test.py",
   "Beszel telemetry Mac hook regression" => "tests/mac/beszel-telemetry-hook-test.sh",
   "Komga library reconciliation regression" => "ruby tests/komga_library_reconciliation_test.rb",
-  "Paperless mail reconciliation regression" => "ruby tests/paperless_mail_reconciliation_test.rb"
+  "Paperless mail reconciliation regression" => "ruby tests/paperless_mail_reconciliation_test.rb",
+  "Mac manual-validation runner regression" => "tests/mac/manual-validation-runner-test.sh"
 }.each do |name, command|
   expect_failure(failures, "#{name} removed from policy validation",
                  "validate-policy.sh must run #{command}") do |root|

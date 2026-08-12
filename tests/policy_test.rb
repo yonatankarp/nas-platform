@@ -937,6 +937,7 @@ validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "te
   ruby\ tests/komga_library_reconciliation_test.rb
   ruby\ tests/paperless_mail_reconciliation_test.rb
   tests/integration_lock_test.sh
+  tests/mac/manual-validation-runner-test.sh
   tests/mac/audiobookshelf-drift-hook-test.sh
   tests/contracts/audiobookshelf-audio-test.sh
   ruby\ tests/mac/report.rb\ --self-test
@@ -1676,7 +1677,7 @@ end
 # plug their fixture, drift, and verification behavior into these stable phases.
 mac_harness_files = %w[
   lib.sh run.sh cleanup.sh fixtures.sh verify.sh drift.sh report.rb
-  sanitize-logs.rb manual-review.md
+  sanitize-logs.rb manual-review.md manual-validation-handoff.rb
 ]
 mac_harness_files.each do |name|
   check(failures, File.file?(File.join(ROOT, "tests", "mac", name)),
@@ -1693,9 +1694,29 @@ mac_phases.each do |phase|
   check(failures, mac_run.match?(/(?:^|[[:space:]])#{Regexp.escape(phase)}(?:$|[[:space:]])/),
         "Mac proof harness must support the #{phase} phase")
 end
-%w[--lane --vault-file --vault-password-file --keep-on-failure --phase].each do |option|
+%w[--lane --vault-file --vault-password-file --keep-on-failure --manual-validation --phase].each do |option|
   check(failures, mac_run.include?(option), "Mac proof harness must accept #{option}")
 end
+
+manual_handoff_path = File.join(ROOT, "tests", "mac", "manual-validation-handoff.rb")
+manual_handoff = File.file?(manual_handoff_path) ? File.read(manual_handoff_path) : ""
+check(failures, manual_handoff.include?('YAML.safe_load($stdin.read, aliases: false)') &&
+                manual_handoff.include?("read_deployed_manifest") &&
+                manual_handoff.include?('File.join(deployment_root, "current", "manifest.yml")') &&
+                manual_handoff.include?('File::RDONLY | File::NOFOLLOW') &&
+                manual_handoff.include?('File.realpath(current) == release_root') &&
+                manual_handoff.include?('services = service_entries.map') &&
+                manual_handoff.include?('services.sort == PORT_FIELDS.keys.sort') &&
+                manual_handoff.include?("Shellwords.shellescape") &&
+                manual_handoff.include?("Passwords remain in the encrypted vault source."),
+      "Mac manual-validation handoff must derive safe identities and services from the immutable deployment")
+check(failures, mac_run.include?('if [ "$manual_validation" = true ] && [ "$phase" = verify ]') &&
+                mac_run.include?('preserve_sandbox_on_exit=true') &&
+                mac_run.include?("emit_manual_validation_handoff || exit $?") &&
+                mac_run.include?('> "$manual_vault_plaintext" 2>/dev/null || vault_view_status=$?') &&
+                mac_run.include?('< "$manual_vault_plaintext" || handoff_status=$?') &&
+                mac_run.include?("remove_manual_vault_plaintext"),
+      "Mac manual validation must stop through the preserved-sandbox EXIT trap after verify")
 
 mac_cleanup_path = File.join(ROOT, "tests", "mac", "cleanup.sh")
 mac_cleanup = File.file?(mac_cleanup_path) ? File.read(mac_cleanup_path) : ""
