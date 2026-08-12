@@ -218,6 +218,19 @@ check(failures, static_commands.include?("pipx install 'ansible-lint==26.6.0'"),
       "static checks must install pinned ansible-lint")
 check(failures, !static_commands.include?("python3 tests/deployment_target_validator_test.py"),
       "static must not duplicate the deployment validator already run by validate-policy.sh")
+
+policy_source = File.read(POLICY_PATH)
+%w[
+  ruby\ tests/beszel_telemetry_probe_test.rb
+  ruby\ tests/beszel_telemetry_timeout_test.rb
+  ruby\ tests/beszel_telemetry_ansible_test.rb
+  python3\ tests/beszel_telemetry_module_test.py
+  tests/mac/beszel-telemetry-hook-test.sh
+].each do |command|
+  normalized = command.gsub("\\ ", " ")
+  check(failures, registers_command_once?(policy_source, normalized),
+        "policy validation must invoke exactly once #{normalized.inspect}")
+end
 validator_command = "python3 tests/deployment_target_validator_test.py"
 policy_source = File.read(POLICY_PATH)
 check(failures, registers_command_once?(policy_source, validator_command),

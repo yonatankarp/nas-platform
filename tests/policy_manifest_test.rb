@@ -1216,6 +1216,20 @@ expect_failure(failures, "Mac cleanup self-test removed",
   File.write(path, File.read(path).gsub("tests/mac/cleanup.sh --self-test", "true"))
 end
 
+{
+  "Beszel telemetry semantic probe" => "ruby tests/beszel_telemetry_probe_test.rb",
+  "Beszel telemetry deadline regression" => "ruby tests/beszel_telemetry_timeout_test.rb",
+  "Beszel telemetry Ansible regression" => "ruby tests/beszel_telemetry_ansible_test.rb",
+  "Beszel telemetry production probe regression" => "python3 tests/beszel_telemetry_module_test.py",
+  "Beszel telemetry Mac hook regression" => "tests/mac/beszel-telemetry-hook-test.sh"
+}.each do |name, command|
+  expect_failure(failures, "#{name} removed from policy validation",
+                 "validate-policy.sh must run #{command}") do |root|
+    path = File.join(root, "tests", "validate-policy.sh")
+    File.write(path, File.read(path).lines.reject { |line| line.strip == command }.join)
+  end
+end
+
 expect_failure(failures, "Mac raw log body retained",
                "Mac log sanitizer self-test must pass without raw values") do |root|
   path = File.join(root, "tests", "mac", "sanitize-logs.rb")

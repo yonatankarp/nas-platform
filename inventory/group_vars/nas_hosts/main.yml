@@ -6,9 +6,15 @@ nas_docker_root: /volume1/Docker
 nas_media_root: /volume2
 
 platform_render_device_available: true
-platform_render_device_path: /dev/dri/card0
+platform_render_device_path: /dev/dri/renderD128
 platform_beszel_agent_available: true
 platform_beszel_agent_kind: intel
+beszel_required_telemetry_categories:
+  - core
+  - disk
+  - containers
+  - gpu
+beszel_require_gpu_telemetry: true
 
 platform_host_network_available: true
 platform_host_network_adapter: host

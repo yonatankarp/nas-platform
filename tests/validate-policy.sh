@@ -2,6 +2,11 @@
 set -eu
 
 ruby tests/policy_test.rb
+ruby tests/beszel_telemetry_probe_test.rb
+ruby tests/beszel_telemetry_timeout_test.rb
+ruby tests/beszel_telemetry_ansible_test.rb
+python3 tests/beszel_telemetry_module_test.py
+tests/mac/beszel-telemetry-hook-test.sh
 ruby tests/ci/classify_changes_test.rb
 ruby tests/ci/validate_results_test.rb
 ruby tests/ci/workflow_test.rb

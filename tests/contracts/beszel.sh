@@ -4,14 +4,148 @@ set +x
 umask 077
 
 mode=${1:-verify}
-case $mode in verify|drift|drift-verify|duplicate|wrong-owner|remove-duplicate|notify) ;; *) exit 2 ;; esac
+case $mode in static|telemetry-fixtures|verify|drift|drift-verify|duplicate|wrong-owner|remove-duplicate|notify) ;; *) exit 2 ;; esac
+
+repo_dir=${PLATFORM_CONTRACT_REPO_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)}
+export PLATFORM_CONTRACT_REPO_DIR
+
+if [ "$mode" = static ]; then
+  ruby -ryaml - "$repo_dir" <<'RUBY'
+root = ARGV.fetch(0)
+defaults = YAML.safe_load_file(File.join(root, "roles/beszel/defaults/main.yml"))
+vars = File.read(File.join(root, "roles/beszel/vars/main.yml"))
+role_path = File.join(root, "roles/beszel/tasks/main.yml")
+role = File.read(role_path)
+probe_path = File.join(root, "library/beszel_telemetry_probe.py")
+probe = File.file?(probe_path) ? File.read(probe_path) : ""
+probe_support_path = File.join(root, "module_utils/beszel_telemetry.py")
+probe_support = File.file?(probe_support_path) ? File.read(probe_support_path) : ""
+def flatten_tasks(tasks)
+  Array(tasks).flat_map do |task|
+    [task] + flatten_tasks(task.is_a?(Hash) ? task["block"] : nil) +
+      flatten_tasks(task.is_a?(Hash) ? task["rescue"] : nil) +
+      flatten_tasks(task.is_a?(Hash) ? task["always"] : nil)
+  end
+end
+role_tasks = flatten_tasks(YAML.safe_load_file(role_path))
+specs = YAML.safe_load_file(File.join(root, "roles/beszel/meta/argument_specs.yml"))
+compose = YAML.safe_load_file(File.join(root, "services/beszel/compose.yml"), aliases: true)
+nas_inventory = YAML.safe_load_file(File.join(root, "inventory/group_vars/nas_hosts/main.yml"))
+mac_inventory = YAML.safe_load_file(File.join(root, "inventory/group_vars/mac_hosts/main.yml"))
+verify_hook = File.read(File.join(root, "tests/mac/hooks/verify/10-beszel.sh"))
+drift_hook = File.read(File.join(root, "tests/mac/hooks/drift/10-beszel.sh"))
+
+def refuse(message)
+  abort "Beszel contract failed: #{message}"
+end
+
+refuse("defaults must not silently infer platform telemetry") unless
+  defaults["beszel_required_telemetry_categories"] == [] &&
+    defaults["beszel_require_gpu_telemetry"] == false
+refuse("freshness must cover exactly three one-minute samples") unless
+  defaults["beszel_telemetry_freshness_seconds"] == 180
+refuse("telemetry polling timeout differs") unless
+  defaults["beszel_telemetry_poll_timeout_seconds"] == 90
+refuse("effective categories must use explicit inventory policy") unless
+  vars.include?("beszel_effective_required_telemetry_categories") &&
+    !vars.include?("['gpu'] if beszel_require_gpu_telemetry")
+refuse("telemetry polling must not use derived retry arithmetic") if
+  vars.include?("beszel_telemetry_poll_retries")
+
+options = specs.dig("argument_specs", "main", "options")
+{
+  "beszel_required_telemetry_categories" => "list",
+  "beszel_require_gpu_telemetry" => "bool",
+  "beszel_telemetry_freshness_seconds" => "int",
+  "beszel_telemetry_poll_timeout_seconds" => "int",
+  "beszel_telemetry_request_timeout_seconds" => "int"
+}.each do |name, type|
+  refuse("#{name} argument validation is absent") unless options.dig(name, "type") == type
+end
+
+required_tasks = [
+  "Require the selected Beszel telemetry capability",
+  "Poll persisted Beszel telemetry collections",
+  "Require exactly one managed Beszel system for telemetry",
+  "Resolve persisted Beszel telemetry evidence",
+  "Verify persisted Beszel telemetry categories"
+]
+required_tasks.each do |name|
+  refuse("missing #{name}") unless role.include?("- name: #{name}")
+end
+collection_poll = role_tasks.find { |task| task["name"] == "Poll persisted Beszel telemetry collections" }
+refuse("persisted telemetry poll must suppress authenticated results") unless
+  collection_poll && collection_poll["no_log"] == true
+probe_args = collection_poll && collection_poll["beszel_telemetry_probe"]
+refuse("persisted telemetry poll must use one deadline-aware probe") unless probe_args.is_a?(Hash)
+refuse("persisted telemetry probe is not authenticated") unless probe_args&.key?("auth_token")
+refuse("persisted telemetry probe does not receive the total deadline") unless
+  probe_args&.key?("timeout_seconds") && probe_args&.key?("request_timeout_seconds") &&
+    probe_args&.key?("delay_seconds")
+refuse("deadline probe implementation is absent") unless
+  probe.include?("poll_telemetry") && probe_support.include?('fetcher("system_stats"') &&
+    probe_support.include?('fetcher("container_stats"')
+refuse("role treats live health as persisted telemetry") unless role.include?("beszel_telemetry_probe_result")
+
+intel = compose.fetch("services").fetch("agent-intel")
+portable = compose.fetch("services").fetch("agent-portable")
+proxy = compose.fetch("services").fetch("socket-proxy")
+refuse("NAS Intel agent image differs") unless
+  intel.fetch("image").start_with?("ghcr.io/henrygd/beszel/beszel-agent-intel:0.18.7@sha256:")
+refuse("NAS Intel render device differs") unless
+  intel.fetch("devices") == ["${NAS_RENDER_DEVICE:?}:${NAS_RENDER_DEVICE:?}"] &&
+    nas_inventory.fetch("platform_render_device_path") == "/dev/dri/renderD128"
+expected_mounts = [
+  "${NAS_DOCKER_ROOT:?}/beszel/volume1:/extra-filesystems/volume1:ro",
+  "${NAS_MEDIA_ROOT:?}/.beszel:/extra-filesystems/volume2:ro"
+]
+[intel, portable].each do |agent|
+  refuse("agent capacity mounts differ") unless expected_mounts.all? { |mount| agent.fetch("volumes").include?(mount) }
+end
+refuse("socket proxy is absent") unless proxy.fetch("volumes") == ["/var/run/docker.sock:/var/run/docker.sock:ro"]
+refuse("Mac must use portable telemetry without a render device") unless
+  mac_inventory.fetch("platform_beszel_agent_kind") == "portable" &&
+    mac_inventory.fetch("platform_render_device_available") == false &&
+    mac_inventory.fetch("beszel_required_telemetry_categories") == %w[core disk containers] &&
+    mac_inventory.fetch("beszel_require_gpu_telemetry") == false
+refuse("NAS telemetry policy must explicitly require GPU") unless
+  nas_inventory.fetch("beszel_required_telemetry_categories") == %w[core disk containers gpu] &&
+    nas_inventory.fetch("beszel_require_gpu_telemetry") == true
+refuse("Mac verification does not execute persisted telemetry proof") unless
+  verify_hook.include?('"$mac_hook_dir/../../run-beszel-contract.sh" verify')
+refuse("Mac drift hook does not execute category rejection semantics") unless
+  drift_hook.include?('ruby "$mac_script_dir/../beszel_telemetry_probe_test.rb"')
+
+puts "Beszel static contract passed"
+RUBY
+  exit 0
+fi
+
+if [ "$mode" = telemetry-fixtures ]; then
+  [ "$#" -eq 3 ] || exit 2
+  exec ruby -rjson -r"$repo_dir/tests/contracts/support/beszel_telemetry" - "$2" "$3" <<'RUBY'
+platform, fixture_path = ARGV
+abort "Beszel telemetry fixture failed: unknown platform" unless %w[mac nas].include?(platform)
+fixture = JSON.parse(File.read(fixture_path))
+evidence = BeszelTelemetry.evaluate(
+  platform: platform,
+  system: fixture["system"],
+  system_stats: fixture["system_stats"],
+  container_stats: fixture["container_stats"],
+  now: Time.parse(fixture.fetch("now")).utc
+)
+abort "Beszel telemetry fixture failed: #{evidence.safe_failure}" unless evidence.ready?
+puts "Beszel telemetry fixture passed (#{platform})"
+RUBY
+fi
 
 : "${PLATFORM_CONTRACT_VAULT_FILE:?}"
 : "${PLATFORM_CONTRACT_VAULT_PASSWORD_FILE:?}"
 : "${PLATFORM_REPORT_ROOT:?}"
 : "${PLATFORM_BESZEL_PORT:=8090}"
 : "${PLATFORM_NTFY_PORT:=2586}"
-export PLATFORM_BESZEL_PORT PLATFORM_NTFY_PORT
+: "${PLATFORM_KIND:=nas}"
+export PLATFORM_BESZEL_PORT PLATFORM_NTFY_PORT PLATFORM_KIND
 
 exec ruby - "$mode" <<'RUBY'
 require "json"
@@ -19,6 +153,8 @@ require "net/http"
 require "open3"
 require "uri"
 require "yaml"
+require "timeout"
+require File.join(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR"), "tests/contracts/support/beszel_telemetry")
 
 MODE = ARGV.fetch(0)
 HUB = URI("http://127.0.0.1:#{Integer(ENV.fetch('PLATFORM_BESZEL_PORT'), 10)}")
@@ -56,7 +192,7 @@ vault = YAML.safe_load(vault_yaml)
 vault_yaml.replace("\0" * vault_yaml.bytesize)
 vault_error.replace("\0" * vault_error.bytesize)
 
-def request(method, uri, token: nil, basic: nil, body: nil, expected: [200])
+def request(method, uri, token: nil, basic: nil, body: nil, expected: [200], timeout: nil)
   request = Net::HTTP.const_get(method.capitalize).new(uri)
   request["Authorization"] = "#{token}" if token
   request.basic_auth(*basic) if basic
@@ -64,8 +200,10 @@ def request(method, uri, token: nil, basic: nil, body: nil, expected: [200])
     request["Content-Type"] = "application/json"
     request.body = JSON.generate(body)
   end
-  response = Net::HTTP.start(uri.host, uri.port, open_timeout: 5, read_timeout: 15) do |http|
-    http.request(request)
+  request_timeout = timeout || 15
+  response = Timeout.timeout(request_timeout) do
+    Net::HTTP.start(uri.host, uri.port, open_timeout: [request_timeout, 1].min,
+                    read_timeout: request_timeout) { |http| http.request(request) }
   end
   fail_contract("#{method.upcase} #{uri.path} returned HTTP #{response.code}") unless expected.include?(response.code.to_i)
   response.body.to_s.empty? ? {} : JSON.parse(response.body)
@@ -110,6 +248,28 @@ def records(collection, token, filter)
   response = request("get", endpoint(HUB, "/api/collections/#{collection}/records?#{query}"), token: token)
   fail_contract("#{collection} filtered identity exceeds one complete page") if response.fetch("totalPages", 0).to_i > 1
   response.fetch("items")
+end
+
+def latest_telemetry_record(collection, token, system_id, timeout)
+  BeszelTelemetry.fetch_latest_record(
+    base_uri: HUB, collection: collection, token: token, system_id: system_id,
+    timeout_seconds: timeout
+  )
+end
+
+def persisted_telemetry(platform, system, token)
+  evidence = BeszelTelemetry.poll(
+    platform: platform, system: system, timeout_seconds: 90,
+    request_timeout_seconds: 3, delay_seconds: 3,
+    fetcher: lambda do |collection, timeout|
+      latest_telemetry_record(collection, token, system.fetch("id"), timeout)
+    end
+  )
+  unless evidence.ready?
+    fail_contract(evidence.safe_failure)
+  end
+rescue BeszelTelemetry::NonRetryableFetchError => error
+  fail_contract(error.message)
 end
 
 def exact_record(records, description)
@@ -280,6 +440,7 @@ else
   fail_contract("managed ntfy webhook differs") unless notification_settings["webhooks"] == [expected_url]
 
   managed_system = exact_record(managed_systems, "managed system")
+  persisted_telemetry(ENV.fetch("PLATFORM_KIND"), managed_system, admin_token)
   MANAGED_ALERTS.each do |name, (value, duration)|
     alert_filter = [equality("user", user_id), equality("system", managed_system.fetch("id")),
                     equality("name", name)].join(" && ")

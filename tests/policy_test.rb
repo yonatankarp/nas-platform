@@ -66,6 +66,18 @@ check(failures,
         !beszel_contract.include?("iso8601"),
       "Beszel notification proof must poll after a captured ntfy message ID")
 
+policy_runner = File.read(File.join(ROOT, "tests", "validate-policy.sh"))
+%w[
+  ruby\ tests/beszel_telemetry_probe_test.rb
+  ruby\ tests/beszel_telemetry_timeout_test.rb
+  ruby\ tests/beszel_telemetry_ansible_test.rb
+  python3\ tests/beszel_telemetry_module_test.py
+  tests/mac/beszel-telemetry-hook-test.sh
+].each do |command|
+  check(failures, policy_runner.lines.map(&:strip).include?(command.gsub("\\ ", " ")),
+        "validate-policy.sh must run #{command.gsub('\\ ', ' ')}")
+end
+
 mac_run_path = File.join(ROOT, "tests", "mac", "run.sh")
 mac_run = File.file?(mac_run_path) ? File.read(mac_run_path) : ""
 dozzle_tasks_path = File.join(ROOT, "roles", "dozzle", "tasks", "main.yml")
@@ -171,8 +183,12 @@ PLATFORM_CAPABILITIES = %w[
   platform_host_network_available platform_host_network_adapter
   platform_external_integration_checks
 ].freeze
-MACHINE_FACTS = (
-  %w[platform_kind nas_docker_root nas_media_root] + PLATFORM_CAPABILITIES
+PLATFORM_TELEMETRY_POLICY = %w[
+  beszel_required_telemetry_categories beszel_require_gpu_telemetry
+].freeze
+HOST_SCOPED_VARS = (
+  %w[platform_kind nas_docker_root nas_media_root] + PLATFORM_CAPABILITIES +
+    PLATFORM_TELEMETRY_POLICY
 ).freeze
 
 PLATFORM_INVENTORIES.each do |inventory_name, (host_group, host_name, connection, _platform_kind)|
@@ -204,7 +220,7 @@ PLATFORM_INVENTORIES.each do |inventory_name, (host_group, host_name, connection
 end
 
 shared_vars = YAML.safe_load_file(File.join(ROOT, "inventory", "group_vars", "all", "main.yml"))
-shared_machine_facts = shared_vars.keys & MACHINE_FACTS
+shared_machine_facts = shared_vars.keys & HOST_SCOPED_VARS
 check(failures, shared_machine_facts.empty?,
       "machine facts must not be all-group variables: #{shared_machine_facts.join(', ')}")
 
@@ -226,6 +242,10 @@ PLATFORM_INVENTORIES.values.map { |values| [values[0], values[3]] }.uniq.each do
   PLATFORM_CAPABILITIES.each do |capability|
     check(failures, host_vars.key?(capability),
           "#{relative_path} must define #{capability}")
+  end
+  PLATFORM_TELEMETRY_POLICY.each do |policy|
+    check(failures, host_vars.key?(policy),
+          "#{relative_path} must define #{policy}")
   end
   %w[
     platform_render_device_available platform_host_network_available
@@ -252,7 +272,7 @@ PLATFORM_INVENTORIES.values.map { |values| [values[0], values[3]] }.uniq.each do
                       else
                         []
                       end
-  unexpected_vars = host_vars.keys - MACHINE_FACTS - mac_runtime_facts
+  unexpected_vars = host_vars.keys - HOST_SCOPED_VARS - mac_runtime_facts
   check(failures, unexpected_vars.empty?,
         "#{relative_path} contains portable configuration: #{unexpected_vars.join(', ')}")
 end

@@ -24,6 +24,11 @@ platform_render_device_available: false
 platform_render_device_path: /dev/dri/card0
 platform_beszel_agent_available: true
 platform_beszel_agent_kind: portable
+beszel_required_telemetry_categories:
+  - core
+  - disk
+  - containers
+beszel_require_gpu_telemetry: false
 
 platform_host_network_available: false
 platform_host_network_adapter: published_ports

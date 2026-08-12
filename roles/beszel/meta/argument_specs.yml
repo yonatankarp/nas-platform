@@ -6,6 +6,11 @@ argument_specs:
       - Installs the hub keypair from vault before first start, so the agent key
         and universal token are known in advance and the run converges in one pass.
     options:
+      platform_kind:
+        type: str
+        required: true
+        choices: [nas, mac]
+        description: Selects the persisted telemetry capability policy.
       platform_compose_kind:
         type: str
         required: true
@@ -40,6 +45,31 @@ argument_specs:
       beszel_system_name:
         type: str
         required: false
+      beszel_required_telemetry_categories:
+        type: list
+        elements: str
+        required: false
+        description: Persisted categories required on every supported platform.
+      beszel_require_gpu_telemetry:
+        type: bool
+        required: false
+        description: Whether the platform must persist native GPU telemetry.
+      beszel_telemetry_freshness_seconds:
+        type: int
+        required: false
+        description: Maximum accepted age of a persisted one-minute sample.
+      beszel_telemetry_poll_timeout_seconds:
+        type: int
+        required: false
+        description: Maximum bounded wait for required persisted telemetry.
+      beszel_telemetry_request_timeout_seconds:
+        type: int
+        required: false
+        description: Per-request timeout included in the shared telemetry budget.
+      beszel_telemetry_poll_delay_seconds:
+        type: int
+        required: false
+        description: Delay between persisted collection reads.
       beszel_alerts:
         type: list
         elements: dict
