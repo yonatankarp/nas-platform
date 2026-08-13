@@ -113,7 +113,10 @@ module BeszelTelemetry
     return false unless record["created"].is_a?(String)
     return false unless record["created"].match?(/(?:Z|[+-]\d{2}:\d{2})\z/)
 
-    created = Time.iso8601(record.fetch("created")).utc
+    created_text = record.fetch("created").sub(
+      /\A(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})/, '\\1T\\2'
+    )
+    created = Time.iso8601(created_text).utc
     age = now.utc - created
     age >= -FUTURE_SKEW_SECONDS && age <= freshness_seconds
   rescue KeyError, ArgumentError, TypeError

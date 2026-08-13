@@ -50,6 +50,14 @@ failures = []
   failures << "valid #{platform} persisted telemetry was rejected: #{stderr}" unless status.success?
 end
 
+live_pocketbase_timestamps = fixture
+%w[system_stats container_stats].each do |record|
+  live_pocketbase_timestamps.fetch(record)["created"] = "2026-08-12 11:59:00.000Z"
+end
+_stdout, stderr, status = run_probe("mac", live_pocketbase_timestamps)
+failures << "valid PocketBase space-separated timestamps were rejected: #{stderr}" unless
+  status.success?
+
 record_mutations = {
   "missing system record ID" => ->(data) { data.fetch("system_stats").delete("id") },
   "invalid system record ID" => ->(data) { data.fetch("system_stats")["id"] = "bad id" },
