@@ -7,6 +7,7 @@ mode=${1:-verify}
 case $mode in static|telemetry-fixtures|verify|drift|drift-verify|duplicate|wrong-owner|remove-duplicate|notify) ;; *) exit 2 ;; esac
 
 repo_dir=${PLATFORM_CONTRACT_REPO_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)}
+PLATFORM_CONTRACT_REPO_DIR=$repo_dir
 export PLATFORM_CONTRACT_REPO_DIR
 
 if [ "$mode" = static ]; then
@@ -16,6 +17,7 @@ defaults = YAML.safe_load_file(File.join(root, "roles/beszel/defaults/main.yml")
 vars = File.read(File.join(root, "roles/beszel/vars/main.yml"))
 role_path = File.join(root, "roles/beszel/tasks/main.yml")
 role = File.read(role_path)
+contract = File.read(File.join(root, "tests/contracts/beszel.sh"))
 probe_path = File.join(root, "library/beszel_telemetry_probe.py")
 probe = File.file?(probe_path) ? File.read(probe_path) : ""
 probe_support_path = File.join(root, "module_utils/beszel_telemetry.py")
@@ -39,6 +41,8 @@ def refuse(message)
   abort "Beszel contract failed: #{message}"
 end
 
+refuse("runtime contract does not export its resolved repository root") unless
+  contract.include?("PLATFORM_CONTRACT_REPO_DIR=$repo_dir\nexport PLATFORM_CONTRACT_REPO_DIR")
 refuse("defaults must not silently infer platform telemetry") unless
   defaults["beszel_required_telemetry_categories"] == [] &&
     defaults["beszel_require_gpu_telemetry"] == false
