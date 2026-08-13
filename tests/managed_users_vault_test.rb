@@ -500,6 +500,11 @@ check(failures, valid_status.success?, "vault example with runtime integrations 
 expect_role_rejection(failures, "documented OpenSubtitles placeholders", vault,
                       "example-opensubtitles-password")
 
+empty_immich = duplicate(runtime_vault)
+empty_immich.dig("vault_managed_users", "immich").clear
+expect_role_rejection(failures, "missing Immich family account", empty_immich,
+                      runtime_vault.fetch("vault_immich_admin_email"))
+
 wrong_type = duplicate(runtime_vault)
 wrong_type.dig("vault_managed_users", "audiobookshelf", 0)["permissions"] = ["wrong-type-sentinel"]
 expect_role_rejection(failures, "wrong nested field type", wrong_type, "wrong-type-sentinel")

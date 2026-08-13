@@ -11,6 +11,7 @@
       - vault_managed_users.beszel | type_debug == 'list'
       - vault_managed_users.dozzle | type_debug == 'list'
       - vault_managed_users.immich | type_debug == 'list'
+      - vault_managed_users.immich | length > 0
       - vault_managed_users.jellyfin | type_debug == 'list'
       - vault_managed_users.komga | type_debug == 'list'
       - vault_managed_users.ntfy | type_debug == 'list'
