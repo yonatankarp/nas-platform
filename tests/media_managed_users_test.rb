@@ -378,7 +378,7 @@ def exercise_jellyfin_settings(failures)
   plugins = [
     { "Name" => "Intro Skipper", "Id" => JELLYFIN_INTRO_SKIPPER_ID, "Version" => "1.2.3.4",
       "Status" => "Active" },
-    { "Name" => "Open Subtitles", "Id" => "4b9ed42f-5185-48b5-9803-6ff2989014c4",
+    { "Name" => "Open Subtitles", "Id" => "4b9ed42f518548b598036ff2989014c4",
       "Version" => "24.0.0.0", "Status" => "Active" },
     { "Name" => "Unmanaged Plugin", "Id" => "2" * 32, "Version" => "9.8.7.6",
       "Status" => "Active" }

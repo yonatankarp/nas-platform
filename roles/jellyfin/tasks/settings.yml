@@ -215,10 +215,11 @@
 - name: Refuse ambiguous required Jellyfin plugin identities
   ansible.builtin.assert:
     that:
-      - jellyfin_matching_plugin_ids | unique | length <= 1
+      - jellyfin_normalized_matching_plugin_ids | unique | length <= 1
       - >-
-        jellyfin_matching_plugin_ids | length == 0 or
-        jellyfin_matching_plugin_ids[0] | lower == item.AssemblyGuid | lower
+        jellyfin_normalized_matching_plugin_ids | length == 0 or
+        jellyfin_normalized_matching_plugin_ids[0] ==
+        item.AssemblyGuid | lower | regex_replace('-', '')
     fail_msg: >-
       A required Jellyfin plugin name maps to conflicting assembly identities;
       resolve the catalog or installed plugin state before mutation.
@@ -229,6 +230,9 @@
     jellyfin_matching_plugin_ids: >-
       {{ jellyfin_plugins_before.json | selectattr('Name', 'equalto', item.Name) |
          map(attribute='Id') | map('string') | list }}
+    jellyfin_normalized_matching_plugin_ids: >-
+      {{ jellyfin_matching_plugin_ids | map('lower') |
+         map('regex_replace', '-', '') | list }}
   when: jellyfin_settings_phase == 'preflight'
   no_log: true
 
@@ -1040,6 +1044,10 @@
     that:
       - jellyfin_verified_intro_plugins | length == 1
       - jellyfin_verified_opensubtitles_plugins | length == 1
+      - >-
+        jellyfin_verified_opensubtitles_plugins[0].Id | lower |
+        regex_replace('-', '') ==
+        jellyfin_opensubtitles_plugin_id | lower | regex_replace('-', '')
       - jellyfin_opensubtitles_configuration_verified.json.Username == vault_jellyfin_opensubtitles_username
       - jellyfin_opensubtitles_configuration_verified.json.Password == vault_jellyfin_opensubtitles_password
       - not jellyfin_opensubtitles_configuration_verified.json.CredentialsInvalid | bool
@@ -1053,7 +1061,6 @@
     jellyfin_verified_opensubtitles_plugins: >-
       {{ jellyfin_settings_verified_reads.results[2].json |
          selectattr('Name', 'equalto', 'Open Subtitles') |
-         selectattr('Id', 'equalto', jellyfin_opensubtitles_plugin_id) |
          selectattr('Status', 'equalto', 'Active') | list }}
   when: jellyfin_settings_phase == 'verify'
   no_log: true
