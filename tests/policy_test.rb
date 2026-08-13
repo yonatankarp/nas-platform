@@ -693,9 +693,13 @@ check(failures,
       paperless_contract.include?("PDF_MARKER = \"paperlesscontractenglish\""),
       "Paperless contract must define the PDF fixture marker")
 check(failures,
-      paperless_contract.include?("def request(method, path, token: nil, body: nil, expected: [200], parse_json: true)") &&
+      paperless_contract.include?("def request(method, path, token: nil, body: nil, expected: [200], parse_json: true, read_timeout: 60)") &&
       paperless_contract.match?(%r{/preview/.*, token: token, parse_json: false}),
       "Paperless binary preview responses must bypass JSON parsing")
+check(failures,
+      paperless_contract.include?("MAIL_PROBE_READ_TIMEOUT = 180") &&
+      paperless_contract.match?(%r{/api/mail_accounts/test/.*?read_timeout:\s*MAIL_PROBE_READ_TIMEOUT}m),
+      "Paperless synchronous Gmail probe must use its explicit bounded timeout")
 check(failures,
       paperless_contract.match?(root_version_checksum),
       "Paperless checksum verification must select the API v3 root-version checksum")

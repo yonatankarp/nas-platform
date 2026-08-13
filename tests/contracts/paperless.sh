@@ -269,6 +269,7 @@ probe = role.find { |task| task["name"] == "Test the candidate Paperless Gmail c
 refuse("pinned Paperless 3.0.5 synchronous mail test endpoint differs") unless
   probe&.dig("ansible.builtin.uri", "url") == "{{ paperless_api }}/api/mail_accounts/test/" &&
     probe.dig("ansible.builtin.uri", "method") == "POST" &&
+    probe.dig("ansible.builtin.uri", "timeout") == 180 &&
     probe.dig("ansible.builtin.uri", "status_code").to_s.include?("range(100, 600)") &&
     probe["failed_when"] == false
 probe_assertion_index = role.index do |task|
@@ -426,7 +427,14 @@ grep -qF 'wait_healthy(REDIS, WEBSERVER)' "$snapshot" ||
   fail_contract 'Paperless restore does not wait for application health'
 grep -qF 'request("delete", "/api/documents/' "$snapshot" ||
   fail_contract 'Paperless rollback drill does not destructively test restoration'
-[ "$mode" = static ] && { printf '%s\n' 'Paperless static contract passed'; exit 0; }
+if [ "$mode" = static ]; then
+  grep -F 'MAIL_PROBE_READ_TIMEOUT = 180' "$0" >/dev/null ||
+    fail_contract 'runtime Gmail probe timeout constant differs'
+  grep -F 'read_timeout: MAIL_PROBE_READ_TIMEOUT' "$0" >/dev/null ||
+    fail_contract 'runtime Gmail probe lacks its explicit bounded timeout'
+  printf '%s\n' 'Paperless static contract passed'
+  exit 0
+fi
 . "${PLATFORM_LEGACY_FIXTURE_HELPER_FILE:-$repo_dir/tests/contracts/legacy-fixture-paths.sh}"
 legacy_fixture_validate PLATFORM_PAPERLESS_CONSUME_ROOT legacy/paperless-ngx/consume ||
   fail_contract 'legacy consume root is unsafe'
@@ -475,6 +483,7 @@ PDF_MARKER = "paperlesscontractenglish"
 IMAGE_MARKER = "paperless contract image ocr"
 OFFICE_MARKER = "paperlesscontracthebrew"
 OFFICE_TEXT = "Paperless contract English Deutsch Überprüfung Hebrew שלום #{OFFICE_MARKER}"
+MAIL_PROBE_READ_TIMEOUT = 180
 
 def fail_contract(message)
   warn "Paperless contract failed: #{message}"
@@ -485,7 +494,7 @@ def endpoint(path)
   URI.join(BASE.to_s, path)
 end
 
-def request(method, path, token: nil, body: nil, expected: [200], parse_json: true)
+def request(method, path, token: nil, body: nil, expected: [200], parse_json: true, read_timeout: 60)
   uri = endpoint(path)
   request = Net::HTTP.const_get(method.capitalize).new(uri)
   request["Authorization"] = "Token #{token}" if token
@@ -493,7 +502,7 @@ def request(method, path, token: nil, body: nil, expected: [200], parse_json: tr
     request["Content-Type"] = "application/json"
     request.body = JSON.generate(body)
   end
-  response = Net::HTTP.start(uri.host, uri.port, open_timeout: 5, read_timeout: 60) do |http|
+  response = Net::HTTP.start(uri.host, uri.port, open_timeout: 5, read_timeout: read_timeout) do |http|
     http.request(request)
   end
   fail_contract("#{method.upcase} #{uri.path} returned HTTP #{response.code}") unless
@@ -765,7 +774,8 @@ unless ENV["PLATFORM_KIND"] == "integration"
   }
   test_payload = expected_account.merge("id" => account.fetch("id"), "password" => "**********")
   _test_response, test_result = request(
-    "post", "/api/mail_accounts/test/", token: token, body: test_payload, expected: [200]
+    "post", "/api/mail_accounts/test/", token: token, body: test_payload, expected: [200],
+    read_timeout: MAIL_PROBE_READ_TIMEOUT
   )
   fail_contract("Gmail connection test did not return exact success") unless test_result == { "success" => true }
   _accounts_after_response, accounts_after_payload = request(

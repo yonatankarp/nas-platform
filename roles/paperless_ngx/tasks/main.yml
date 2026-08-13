@@ -672,6 +672,7 @@
     body: "{{ paperless_mail_account_payload }}"
     status_code: "{{ range(100, 600) | list }}"
     return_content: true
+    timeout: 180
   register: paperless_candidate_mail_test
   failed_when: false
   changed_when: false
