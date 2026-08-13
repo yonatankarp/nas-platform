@@ -10,6 +10,7 @@ services:
     image: ghcr.io/henrygd/beszel/beszel:0.18.7@sha256:5b583633750cae65a9c1ab399c4c0eed229666ad74e103801724e3bc465338b8
     labels:
       dev.dozzle.group: beszel
+      dev.dozzle.name: hub
     ports:
       - "8090:8090"
     volumes:
@@ -36,6 +37,7 @@ services:
     image: ghcr.io/henrygd/beszel/beszel-agent:0.18.7@sha256:41252f7c7adf0b53ee1d72cbe2e3ea7adc7fffd357ff54bf2bd0c59d166e30c9
     labels:
       dev.dozzle.group: beszel
+      dev.dozzle.name: agent-portable
     depends_on:
       hub:
         condition: service_healthy
@@ -70,6 +72,7 @@ services:
     image: ghcr.io/henrygd/beszel/beszel-agent-intel:0.18.7@sha256:7a5ee1cfbd8faf95d10a965bd1cb9e2208b2ce731bb3ef5b00020e1985ffd824
     labels:
       dev.dozzle.group: beszel
+      dev.dozzle.name: agent-intel
     # Host networking is a monitoring compatibility exception: the agent must
     # observe the NAS network interfaces rather than only its own namespace. Its
     # SSH server is disabled, it publishes no port, and it dials the hub outbound.
@@ -116,6 +119,7 @@ services:
     image: lscr.io/linuxserver/socket-proxy:3.4.3@sha256:5253050dd304d351df2ee61bba43c57dd2b19bb640497a679592051de3a3c639
     labels:
       dev.dozzle.group: beszel
+      dev.dozzle.name: socket-proxy
     ports:
       - "127.0.0.1:2375:2375"
     volumes:

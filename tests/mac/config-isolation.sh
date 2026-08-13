@@ -151,6 +151,34 @@ def bind_source(config, service, target)
   matches.fetch(0).fetch("source")
 end
 
+def assert_dozzle_aliases_and_distinct_names(first, second, stack)
+  first.fetch("services").each_key do |service|
+    first_alias = first.dig("services", service, "labels", "dev.dozzle.name")
+    second_alias = second.dig("services", service, "labels", "dev.dozzle.name")
+    raise "#{stack} first #{service} Dozzle name is not the service key" unless first_alias == service
+    raise "#{stack} second #{service} Dozzle name is not the service key" unless second_alias == service
+
+    first_name = first.dig("services", service, "container_name")
+    second_name = second.dig("services", service, "container_name")
+    raise "#{stack} #{service} container name is absent" unless first_name && second_name
+    raise "#{stack} #{service} container names collide" if first_name == second_name
+  end
+end
+
+[
+  [first_beszel, second_beszel, "Beszel"],
+  [first_ntfy, second_ntfy, "ntfy"],
+  [first_dozzle, second_dozzle, "Dozzle"],
+  [first_audiobookshelf, second_audiobookshelf, "Audiobookshelf"],
+  [first_komga, second_komga, "Komga"],
+  [first_tinymediamanager, second_tinymediamanager, "tinyMediaManager"],
+  [first_jellyfin, second_jellyfin, "Jellyfin"],
+  [first_immich, second_immich, "Immich"],
+  [first_paperless, second_paperless, "Paperless"]
+].each do |first, second, stack|
+  assert_dozzle_aliases_and_distinct_names(first, second, stack)
+end
+
 raise "Beszel project namespaces collide" if first_beszel["name"] == second_beszel["name"]
 raise "ntfy project namespaces collide" if first_ntfy["name"] == second_ntfy["name"]
 raise "Dozzle project namespaces collide" if first_dozzle["name"] == second_dozzle["name"]
