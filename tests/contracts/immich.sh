@@ -5,6 +5,7 @@ set +x
 repo_dir=${PLATFORM_CONTRACT_REPO_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)}
 compose=$repo_dir/services/immich/compose.yml
 role=$repo_dir/roles/immich/tasks/main.yml
+user_onboarding_role=$repo_dir/roles/immich/tasks/user_onboarding.yml
 defaults=$repo_dir/roles/immich/defaults/main.yml
 
 fail_contract() {
@@ -40,6 +41,8 @@ case $platform in
 esac
 
 [ -f "$role" ] || fail_contract 'roles/immich/tasks/main.yml is absent'
+[ -f "$user_onboarding_role" ] ||
+  fail_contract 'roles/immich/tasks/user_onboarding.yml is absent'
 [ -f "$defaults" ] || fail_contract 'roles/immich/defaults/main.yml is absent'
 [ -f "$compose" ] || fail_contract 'services/immich/compose.yml is absent'
 
@@ -210,6 +213,36 @@ refuse("runtime contract permits a dormant supported preference sentinel") unles
 managed_user_tasks = YAML.safe_load_file(
   File.join(root, "roles", "immich", "tasks", "managed_users.yml"), aliases: true
 )
+onboarding_tasks = YAML.safe_load_file(
+  File.join(root, "roles", "immich", "tasks", "user_onboarding.yml"), aliases: true
+)
+onboarding_names = onboarding_tasks.map { |task| task.fetch("name") }
+required_onboarding_names = [
+  "Authenticate every configured Immich onboarding account",
+  "Require every configured Immich onboarding account",
+  "Read every configured Immich user onboarding state before mutation",
+  "Require every configured Immich user onboarding response before mutation",
+  "Complete configured Immich user onboarding",
+  "Read back every configured Immich user onboarding state",
+  "Require completed onboarding for every configured Immich user"
+]
+refuse("configured Immich user onboarding lifecycle is incomplete") unless
+  required_onboarding_names.all? { |name| onboarding_names.include?(name) }
+onboarding_positions = required_onboarding_names.map { |name| onboarding_names.index(name) }
+refuse("configured Immich user onboarding lifecycle is out of order") unless
+  onboarding_positions == onboarding_positions.sort
+onboarding_update = onboarding_tasks.find do |task|
+  task["name"] == "Complete configured Immich user onboarding"
+end
+refuse("configured Immich onboarding must use only the supported self API") unless
+  onboarding_update&.dig("ansible.builtin.uri", "url") ==
+    "{{ immich_api }}/users/me/onboarding" &&
+    onboarding_update.dig("ansible.builtin.uri", "method") == "PUT" &&
+    onboarding_update.dig("ansible.builtin.uri", "body") == { "isOnboarded" => true } &&
+    Array(onboarding_update["when"]).include?("immich_user_onboarding_phase == 'reconcile'")
+refuse("Immich user onboarding role contains a database write path") if
+  File.read(File.join(root, "roles", "immich", "tasks", "user_onboarding.yml"))
+      .match?(/\bpsql\b|\buser_metadata\b|community\.postgresql|docker_compose_v2_exec/i)
 managed_task = lambda do |name|
   managed_user_tasks.find { |task| task["name"] == name }
 end
@@ -286,6 +319,8 @@ required_tasks = [
   "Read the Immich system configuration",
   "Repair the Immich system configuration",
   "Complete Immich administrator onboarding",
+  "Reconcile configured Immich user onboarding",
+  "Verify configured Immich user onboarding",
   "Require the managed Immich settings"
 ]
 required_tasks.each do |name|
@@ -629,6 +664,12 @@ def read_settings(token)
   config
 end
 
+def assert_user_onboarding(token)
+  _response, onboarding = request("get", "/api/users/me/onboarding", token: token)
+  fail_contract("configured Immich user onboarding is incomplete") unless
+    onboarding == { "isOnboarded" => true }
+end
+
 def managed_leaves(config)
   MANAGED_SETTINGS.keys.to_h { |path| [path.join("."), config.dig(*path)] }
 end
@@ -802,6 +843,7 @@ def assert_managed_user_profiles(token, managed_users, policy, require_sentinel:
       managed_session["userId"] == id &&
       managed_session.fetch("userEmail").strip.downcase == normalized &&
       managed_session["isAdmin"] == false
+    assert_user_onboarding(managed_session.fetch("accessToken"))
     {
       "id" => id, "email" => normalized, "name" => authoritative_user["name"],
       "quotaSizeInBytes" => authoritative_user["quotaSizeInBytes"],
@@ -913,6 +955,7 @@ token = session.fetch("accessToken")
 user_id = safe_id(session.fetch("userId"))
 fail_contract("the vault administrator identity or role differs") unless
   session.fetch("userEmail") == email && session.fetch("isAdmin") == true
+assert_user_onboarding(token)
 
 seed_managed_user_state(token, managed_users, policy) if MODE == "seed"
 

@@ -1,0 +1,123 @@
+---
+- name: Initialize configured Immich onboarding accounts
+  ansible.builtin.set_fact:
+    immich_onboarding_accounts:
+      - email: "{{ vault_immich_admin_email }}"
+        password: "{{ vault_immich_admin_password }}"
+        is_admin: true
+  no_log: true
+
+- name: Add configured Immich managed-user onboarding accounts
+  ansible.builtin.set_fact:
+    immich_onboarding_accounts: >-
+      {{ immich_onboarding_accounts +
+         [{'email': item.email, 'password': item.password, 'is_admin': false}] }}
+  loop: "{{ vault_managed_immich_users }}"
+  no_log: true
+
+- name: Authenticate every configured Immich onboarding account
+  ansible.builtin.uri:
+    url: "{{ immich_api }}/auth/login"
+    method: POST
+    body_format: json
+    body:
+      email: "{{ item.email }}"
+      password: "{{ item.password }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  loop: "{{ immich_onboarding_accounts }}"
+  register: immich_onboarding_logins
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require every configured Immich onboarding account
+  ansible.builtin.assert:
+    that:
+      - item.status | default(0) | int == 201
+      - item.json is mapping
+      - item.json.accessToken is string
+      - item.json.accessToken | length > 0
+      - item.json.userEmail is string
+      - item.json.userEmail | trim | lower == item.item.email | trim | lower
+      - item.json.isAdmin is boolean
+      - item.json.isAdmin == item.item.is_admin
+      - item.json.isOnboarded is boolean
+    fail_msg: >-
+      A configured Immich account could not be authenticated with its expected role;
+      no per-user onboarding state was changed.
+  loop: "{{ immich_onboarding_logins.results }}"
+  no_log: true
+
+- name: Read every configured Immich user onboarding state before mutation
+  ansible.builtin.uri:
+    url: "{{ immich_api }}/users/me/onboarding"
+    headers:
+      Authorization: "Bearer {{ item.json.accessToken }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  loop: "{{ immich_onboarding_logins.results }}"
+  register: immich_onboarding_reads
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require every configured Immich user onboarding response before mutation
+  ansible.builtin.assert:
+    that:
+      - item.status | default(0) | int == 200
+      - item.json is mapping
+      - item.json.keys() | list | sort == ['isOnboarded']
+      - item.json.isOnboarded is boolean
+    fail_msg: >-
+      A configured Immich account returned unsupported onboarding state;
+      no per-user onboarding state was changed.
+  loop: "{{ immich_onboarding_reads.results }}"
+  no_log: true
+
+- name: Complete configured Immich user onboarding
+  ansible.builtin.uri:
+    url: "{{ immich_api }}/users/me/onboarding"
+    method: PUT
+    headers:
+      Authorization: "Bearer {{ item.item.json.accessToken }}"
+    body_format: json
+    body:
+      isOnboarded: true
+    status_code: [200]
+    return_content: true
+  loop: "{{ immich_onboarding_reads.results }}"
+  when:
+    - not ansible_check_mode
+    - immich_user_onboarding_phase == 'reconcile'
+    - not item.json.isOnboarded | bool
+  changed_when: true
+  no_log: true
+
+- name: Read back every configured Immich user onboarding state
+  ansible.builtin.uri:
+    url: "{{ immich_api }}/users/me/onboarding"
+    headers:
+      Authorization: "Bearer {{ item.json.accessToken }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  loop: "{{ immich_onboarding_logins.results }}"
+  register: immich_onboarding_readback
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require completed onboarding for every configured Immich user
+  ansible.builtin.assert:
+    that:
+      - item.status | default(0) | int == 200
+      - item.json is mapping
+      - item.json.keys() | list | sort == ['isOnboarded']
+      - item.json.isOnboarded is boolean
+      - item.json.isOnboarded
+    fail_msg: A configured Immich user would still receive the first-login wizard.
+  loop: "{{ immich_onboarding_readback.results }}"
+  no_log: true

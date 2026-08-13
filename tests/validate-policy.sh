@@ -27,6 +27,7 @@ ruby tests/config_managed_users_test.rb --self-test
 ruby tests/media_managed_users_test.rb
 ruby tests/media_managed_users_test.rb --self-test
 ruby tests/komga_library_reconciliation_test.rb
+ruby tests/immich_user_onboarding_test.rb
 ruby tests/database_managed_users_test.rb
 ruby tests/database_managed_users_test.rb --self-test
 ruby tests/ntfy_verify_execution_test.rb
