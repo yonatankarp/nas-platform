@@ -252,10 +252,13 @@ if ARGV.fetch(5) == "static"
   end
   abort "Dozzle contract failed: Mac drift proof does not corrupt a managed group label" unless
     mac_drift.include?("dev.dozzle.group")
+  abort "Dozzle contract failed: Mac drift proof does not corrupt the managed friendly name" unless
+    mac_drift.include?("dev.dozzle.name: dozzle-contract-drift")
   abort "Dozzle contract failed: Mac drift proof does not install an unrelated sentinel label" unless
     mac_drift.include?("dev.dozzle.contract.sentinel")
   abort "Dozzle contract failed: Mac runtime verification does not inspect Docker labels" unless
-    mac_verify.include?("docker container inspect") && mac_verify.include?("dev.dozzle.group")
+    mac_verify.include?("docker container inspect") && mac_verify.include?("dev.dozzle.group") &&
+      mac_verify.include?("dev.dozzle.name")
 end
 RUBY
 

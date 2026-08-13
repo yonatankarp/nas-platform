@@ -115,12 +115,13 @@ services:
   socket-proxy:
     labels:
       dev.dozzle.group: dozzle-contract-drift
+      dev.dozzle.name: dozzle-contract-drift
       dev.dozzle.contract.sentinel: unrelated-label-must-not-survive-reconciliation
 YAML
 
 # Compose owns the complete service label set. The unmanaged sentinel proves the
 # drift fixture exercised that boundary; normal reconciliation is expected to
-# remove it while restoring the managed Dozzle group.
+# remove it while restoring the managed Dozzle group and friendly name.
 label_fixture_owned=true
 recreate_socket_proxy "$label_override"
 socket_proxy=$(dozzle_socket_proxy_name)
@@ -128,6 +129,7 @@ drifted_labels=$(docker container inspect --format '{{json .Config.Labels}}' "$s
 DOZZLE_DRIFTED_LABELS=$drifted_labels ruby -rjson -e '
   labels = JSON.parse(ENV.fetch("DOZZLE_DRIFTED_LABELS"))
   abort unless labels["dev.dozzle.group"] == "dozzle-contract-drift" &&
+               labels["dev.dozzle.name"] == "dozzle-contract-drift" &&
                labels["dev.dozzle.contract.sentinel"] ==
                  "unrelated-label-must-not-survive-reconciliation"
 '

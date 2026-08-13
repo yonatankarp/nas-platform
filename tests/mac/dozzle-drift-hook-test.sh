@@ -114,30 +114,62 @@ case " $* " in
     for argument in "$@"; do container=$argument; done
     printf 'INSPECT %s\n' "$container" >> "${PLATFORM_HOOK_EVENTS:?}"
     case $container in
-      *paperless*) expected_group=paperless ;;
-      *immich*) expected_group=immich ;;
-      *beszel*) expected_group=beszel ;;
-      *dozzle*) expected_group=dozzle ;;
+      *-audiobookshelf) expected_name=audiobookshelf; expected_group= ;;
+      *-beszel) expected_name=hub; expected_group=beszel ;;
+      *-beszel-agent-portable) expected_name=agent-portable; expected_group=beszel ;;
+      *-beszel-socket-proxy) expected_name=socket-proxy; expected_group=beszel ;;
+      *-dozzle) expected_name=dozzle; expected_group=dozzle ;;
+      *-dozzle-socket-proxy) expected_name=socket-proxy; expected_group=dozzle ;;
+      *-immich-server) expected_name=immich-server; expected_group=immich ;;
+      *-immich-machine-learning) expected_name=immich-machine-learning; expected_group=immich ;;
+      *-immich-redis) expected_name=redis; expected_group=immich ;;
+      *-immich-postgres) expected_name=database; expected_group=immich ;;
+      *-jellyfin) expected_name=jellyfin; expected_group= ;;
+      *-komga) expected_name=komga; expected_group= ;;
+      *-ntfy) expected_name=ntfy; expected_group= ;;
+      *-paperless-redis) expected_name=broker; expected_group=paperless ;;
+      *-paperless-postgres) expected_name=db; expected_group=paperless ;;
+      *-paperless-webserver) expected_name=webserver; expected_group=paperless ;;
+      *-paperless-gotenberg) expected_name=gotenberg; expected_group=paperless ;;
+      *-paperless-tika) expected_name=tika; expected_group=paperless ;;
+      *-tinymediamanager) expected_name=tinymediamanager; expected_group= ;;
       *) exit 2 ;;
     esac
     label_state=$(cat "${PLATFORM_HOOK_LABEL_STATE:?}")
     if [ "$container" = dozzle-hook-test-dozzle-socket-proxy ]; then
       case $label_state in
         drifted)
-          printf '%s\n' '{"dev.dozzle.group":"dozzle-contract-drift","dev.dozzle.contract.sentinel":"unrelated-label-must-not-survive-reconciliation"}'
+          printf '%s\n' '{"dev.dozzle.group":"dozzle-contract-drift","dev.dozzle.name":"dozzle-contract-drift","dev.dozzle.contract.sentinel":"unrelated-label-must-not-survive-reconciliation"}'
           exit 0
           ;;
         wrong-group)
-          printf '%s\n' '{"dev.dozzle.group":"dozzle-contract-drift"}'
+          printf '%s\n' '{"dev.dozzle.group":"dozzle-contract-drift","dev.dozzle.name":"socket-proxy"}'
           exit 0
           ;;
         sentinel)
-          printf '%s\n' '{"dev.dozzle.group":"dozzle","dev.dozzle.contract.sentinel":"unrelated-label-must-not-survive-reconciliation"}'
+          printf '%s\n' '{"dev.dozzle.group":"dozzle","dev.dozzle.name":"socket-proxy","dev.dozzle.contract.sentinel":"unrelated-label-must-not-survive-reconciliation"}'
+          exit 0
+          ;;
+        wrong-name)
+          printf '%s\n' '{"dev.dozzle.group":"dozzle","dev.dozzle.name":"dozzle-contract-drift"}'
+          exit 0
+          ;;
+        missing-name)
+          printf '%s\n' '{"dev.dozzle.group":"dozzle"}'
+          exit 0
+          ;;
+        non-object)
+          printf '%s\n' 'null'
           exit 0
           ;;
       esac
     fi
-    printf '{"dev.dozzle.group":"%s"}\n' "$expected_group"
+    if [ -n "$expected_group" ]; then
+      printf '{"dev.dozzle.group":"%s","dev.dozzle.name":"%s"}\n' \
+        "$expected_group" "$expected_name"
+    else
+      printf '{"dev.dozzle.name":"%s"}\n' "$expected_name"
+    fi
     ;;
   *"dozzle-label-drift."*)
     printf '%s\n' drifted > "${PLATFORM_HOOK_LABEL_STATE:?}"
@@ -215,6 +247,35 @@ grep -q '^LABEL_DRIFT$' "$success_root/events" &&
   printf '%s\n' 'successful Dozzle drift hook did not retain the drifted label map' >&2
   exit 1
 }
+for name_state in wrong-name missing-name; do
+  name_verify_status=0
+  name_verify_output=$success_root/$name_state-output
+  : > "$success_root/events"
+  printf '%s\n' "$name_state" > "$success_root/labels"
+  run_verify_hook "$success_root" >"$name_verify_output" 2>&1 || name_verify_status=$?
+  [ "$name_verify_status" -ne 0 ] &&
+    [ "$(cat "$name_verify_output")" = \
+      'dozzle-hook-test-dozzle-socket-proxy has an incorrect dev.dozzle.name label' ] &&
+    ! grep -Eq '^(verify|notify)$' "$success_root/events" || {
+    printf 'Dozzle runtime verification accepted %s, emitted an unsafe diagnostic, or reached the contract runner\n' \
+      "$name_state" >&2
+    exit 1
+  }
+done
+non_object_verify_status=0
+non_object_verify_output=$success_root/non-object-output
+: > "$success_root/events"
+printf '%s\n' non-object > "$success_root/labels"
+run_verify_hook "$success_root" >"$non_object_verify_output" 2>&1 ||
+  non_object_verify_status=$?
+[ "$non_object_verify_status" -ne 0 ] &&
+  [ "$(cat "$non_object_verify_output")" = \
+    'dozzle-hook-test-dozzle-socket-proxy returned non-object Docker labels' ] &&
+  ! grep -Eq '^(verify|notify)$' "$success_root/events" || {
+  printf '%s\n' \
+    'Dozzle runtime verification accepted non-object labels, emitted an unsafe diagnostic, or reached the contract runner' >&2
+  exit 1
+}
 drift_verify_status=0
 printf '%s\n' wrong-group > "$success_root/labels"
 run_verify_hook "$success_root" >/dev/null 2>&1 || drift_verify_status=$?
@@ -242,6 +303,7 @@ grep -q '^verify$' "$success_root/events" && grep -q '^notify$' "$success_root/e
   exit 1
 }
 for container in \
+  dozzle-hook-test-audiobookshelf \
   dozzle-hook-test-beszel \
   dozzle-hook-test-beszel-agent-portable \
   dozzle-hook-test-beszel-socket-proxy \
@@ -251,11 +313,15 @@ for container in \
   dozzle-hook-test-immich-machine-learning \
   dozzle-hook-test-immich-redis \
   dozzle-hook-test-immich-postgres \
+  dozzle-hook-test-jellyfin \
+  dozzle-hook-test-komga \
+  dozzle-hook-test-ntfy \
   dozzle-hook-test-paperless-redis \
   dozzle-hook-test-paperless-postgres \
   dozzle-hook-test-paperless-webserver \
   dozzle-hook-test-paperless-gotenberg \
-  dozzle-hook-test-paperless-tika; do
+  dozzle-hook-test-paperless-tika \
+  dozzle-hook-test-tinymediamanager; do
   grep -Fqx "INSPECT $container" "$success_root/events" || {
     printf 'Dozzle runtime verification omitted %s\n' "$container" >&2
     exit 1
