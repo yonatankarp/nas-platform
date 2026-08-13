@@ -1,5 +1,6 @@
 ---
 - name: Select the tinyMediaManager mounted state root
+  tags: [platform_verify_tinymediamanager]
   ansible.builtin.set_fact:
     tinymediamanager_state_root: >-
       {{ (platform_adoption_root ~ '/legacy/tinymediamanager/data')

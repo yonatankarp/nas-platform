@@ -43,6 +43,7 @@
           | ternary(['compose.adoption.yml'], [])) }}
 
 - name: Select the Beszel mounted state root
+  tags: [platform_verify_beszel]
   ansible.builtin.set_fact:
     beszel_state_root: >-
       {{ (platform_adoption_root ~ '/legacy/beszel/hub')

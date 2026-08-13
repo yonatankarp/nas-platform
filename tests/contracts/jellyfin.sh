@@ -279,8 +279,13 @@ refuse("Open Subtitles configuration API GUID differs") unless
     defaults["jellyfin_opensubtitles_plugin_id"] == "4b9ed42f-5185-48b5-9803-6ff2989014c4"
 refuse("Open Subtitles validation endpoint differs") unless
   settings.include?("/Jellyfin.Plugin.OpenSubtitles/ValidateLoginInfo")
+refuse("runtime Open Subtitles identity verification does not normalize GUID representation") unless
+  contract.include?('opensubtitles.fetch("Id").delete("-").casecmp?(OPENSUBTITLES_ID.delete("-"))')
 refuse("Open Subtitles secret operations are not suppressed") unless
   settings.scan(/no_log: true/).length >= 5
+refuse("fresh seed does not verify that owned plugin and encoding policy survived") unless
+  contract.include?("assert_acceleration_and_plugins(token, opensubtitles_username, opensubtitles_password) unless") &&
+    contract.include?('ENV["PLATFORM_PROOF_LANE"] == "adoption"')
 refuse("role must not edit an opaque database") if
   role.match?(/sqlite|library\.db|jellyfin\.db/i)
 puts "Jellyfin static contract passed (#{platform})"
@@ -613,7 +618,8 @@ def assert_acceleration_and_plugins(token, opensubtitles_username, opensubtitles
     plugin["Name"] == "Open Subtitles" && plugin["Status"] == "Active"
   end
   fail_contract("Open Subtitles assembly identity differs") unless
-    opensubtitles && opensubtitles.fetch("Id").casecmp?(OPENSUBTITLES_ID)
+    opensubtitles &&
+      opensubtitles.fetch("Id").delete("-").casecmp?(OPENSUBTITLES_ID.delete("-"))
   configuration = plugin_configuration(token, OPENSUBTITLES_ID)
   fail_contract("Open Subtitles vault username differs") unless
     configuration["Username"] == opensubtitles_username
@@ -835,24 +841,29 @@ if MODE == "seed"
     request("post", "/System/Configuration", token: token, body: configuration, expected: [204])
   end
   seeded_encoding = encoding.merge(ENCODING_POLICIES.fetch(PLATFORM))
-  seeded_encoding["EnableHardwareEncoding"] = !ENCODING_POLICIES.fetch(PLATFORM).fetch("EnableHardwareEncoding")
   seeded_encoding[ENCODING_SENTINEL_KEY] = ENCODING_SENTINEL_VALUE
+  if ENV["PLATFORM_PROOF_LANE"] == "adoption"
+    seeded_encoding["EnableHardwareEncoding"] =
+      !ENCODING_POLICIES.fetch(PLATFORM).fetch("EnableHardwareEncoding")
+  end
   request(
     "post", "/System/Configuration/encoding", token: token,
     body: seeded_encoding, expected: [204]
   )
-  repositories.reject! do |entry|
-    entry.fetch("Url").strip.downcase.sub(%r{/+\z}, "") ==
-      PLUGIN_REPOSITORIES.fetch(1).fetch("Url").downcase
-  end
-  stable_url = PLUGIN_REPOSITORIES.fetch(0).fetch("Url").downcase
-  stable = repositories.find do |entry|
-    entry.fetch("Url").strip.downcase.sub(%r{/+\z}, "") == stable_url
-  end
-  if stable
-    stable.replace(PLUGIN_REPOSITORIES.fetch(0).merge("Enabled" => false))
-  else
-    repositories << PLUGIN_REPOSITORIES.fetch(0).merge("Enabled" => false)
+  if ENV["PLATFORM_PROOF_LANE"] == "adoption"
+    repositories.reject! do |entry|
+      entry.fetch("Url").strip.downcase.sub(%r{/+\z}, "") ==
+        PLUGIN_REPOSITORIES.fetch(1).fetch("Url").downcase
+    end
+    stable_url = PLUGIN_REPOSITORIES.fetch(0).fetch("Url").downcase
+    stable = repositories.find do |entry|
+      entry.fetch("Url").strip.downcase.sub(%r{/+\z}, "") == stable_url
+    end
+    if stable
+      stable.replace(PLUGIN_REPOSITORIES.fetch(0).merge("Enabled" => false))
+    else
+      repositories << PLUGIN_REPOSITORIES.fetch(0).merge("Enabled" => false)
+    end
   end
   repositories << REPOSITORY_SENTINEL unless repositories.include?(REPOSITORY_SENTINEL)
   request("post", "/Repositories", token: token, body: repositories, expected: [204])
@@ -1024,6 +1035,8 @@ fail_contract("unknown mode: #{MODE}") unless %w[seed assert-persistence].includ
 if MODE == "seed"
   fail_contract("seed configuration sentinel was not installed") unless
     configuration.fetch(CONFIG_SENTINEL_KEY) == CONFIG_SENTINEL_VALUE
+  assert_acceleration_and_plugins(token, opensubtitles_username, opensubtitles_password) unless
+    ENV["PLATFORM_PROOF_LANE"] == "adoption"
 end
 
 item = find_fixture_item(token, user_id, timeout: MODE == "seed" ? 300 : 120)
