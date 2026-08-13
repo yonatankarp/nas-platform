@@ -117,8 +117,14 @@ def contract_failures(service, tasks)
     failures << "Immich repair must contain only name and quotaSizeInBytes" unless
       repair&.dig("ansible.builtin.uri", "body")&.keys&.map(&:to_s)&.sort == %w[name quotaSizeInBytes]
     create = tasks.find { |task| task_name(task) == "Create absent Immich managed users" }
-    failures << "Immich allowlist must not set administrator status" if
-      create&.dig("ansible.builtin.uri", "body")&.key?("isAdmin")
+    create_body = create&.dig("ansible.builtin.uri", "body")
+    failures << "Immich create must use the exact safe account projection" unless
+      create_body&.keys&.map(&:to_s)&.sort == %w[email name password shouldChangePassword].sort &&
+      create_body["shouldChangePassword"] == false
+    failures << "Immich existing-user repair contains a password field" if tasks.any? do |task|
+      task.dig("ansible.builtin.uri", "method") == "PATCH" &&
+        task.dig("ansible.builtin.uri", "body").to_s.match?(/password/i)
+    end
     preserved = tasks.find { |task| task_name(task) == "Require preserved Immich managed-user credentials" }
     created = tasks.find { |task| task_name(task) == "Require newly created Immich managed-user credentials" }
     failures << "Immich existing auth is not bound to the listed user ID" unless
@@ -551,6 +557,17 @@ def exercise_immich(failures)
     end
     failures << "Immich newly created user was not authenticated before repair" unless
       new_auth_index && new_repair_index && new_auth_index < new_repair_index
+    creation_requests = requests.select do |request|
+      request.values_at("method", "target") == ["POST", "/api/admin/users"]
+    end
+    failures << "Immich create escaped the exact safe account projection" unless
+      creation_requests.length == 1 &&
+      creation_requests.first.fetch("json").keys.sort ==
+        %w[email name password shouldChangePassword].sort &&
+      creation_requests.first.dig("json", "shouldChangePassword") == false
+    failures << "Immich existing-user repair sent a password field" if requests.any? do |request|
+      request["method"] == "PATCH" && request.fetch("json", {}).to_s.match?(/password/i)
+    end
     failures << "Immich repair escaped the non-secret projection" if requests.any? do |request|
       request["method"] == "PATCH" && !request["target"].end_with?("/preferences") &&
         (request.fetch("json").keys - %w[avatarColor name quotaSizeInBytes]).any?

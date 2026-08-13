@@ -343,6 +343,7 @@
       email: "{{ item.email }}"
       password: "{{ item.password }}"
       name: "{{ item.name }}"
+      shouldChangePassword: false
     status_code: [201]
   register: immich_managed_user_creation
   when:
