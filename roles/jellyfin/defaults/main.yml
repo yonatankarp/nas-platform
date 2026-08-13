@@ -47,11 +47,13 @@ jellyfin_encoding_profiles:
 
 jellyfin_plugin_repositories:
   - Name: Jellyfin Stable
-    Url: https://repo.jellyfin.org/releases/plugin/manifest-stable.json
+    Url: https://repo.jellyfin.org/files/plugin/manifest.json
     Enabled: true
   - Name: Intro Skipper
     Url: https://intro-skipper.org/manifest.json
     Enabled: true
+jellyfin_retired_plugin_repository_urls:
+  - https://repo.jellyfin.org/releases/plugin/manifest-stable.json
 jellyfin_plugins:
   - Intro Skipper
   - Open Subtitles
@@ -63,7 +65,7 @@ jellyfin_plugin_packages:
     RepositoryUrl: https://intro-skipper.org/manifest.json
   - Name: Open Subtitles
     AssemblyGuid: 4b9ed42f-5185-48b5-9803-6ff2989014c4
-    RepositoryUrl: https://repo.jellyfin.org/releases/plugin/manifest-stable.json
+    RepositoryUrl: https://repo.jellyfin.org/files/plugin/manifest.json
 jellyfin_opensubtitles_plugin_id: 4b9ed42f-5185-48b5-9803-6ff2989014c4
 jellyfin_encoding_policy: "{{ jellyfin_encoding_profiles[platform_kind] }}"
 

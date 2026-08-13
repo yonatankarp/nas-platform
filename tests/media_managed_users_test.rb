@@ -15,11 +15,13 @@ VALIDATE_POLICY = File.join(ROOT, "tests", "validate-policy.sh")
 JELLYFIN_AVATAR_SHA256 = "bf12ac53a05f1db64f3d00440315a6626e7c2dd12dd41867c93c9ac7aeccc792"
 JELLYFIN_INTRO_SKIPPER_ID = "c83d86bb-a1e0-4c35-a113-e2101cf4ee6b"
 JELLYFIN_OPENSUBTITLES_ID = "4b9ed42f-5185-48b5-9803-6ff2989014c4"
+JELLYFIN_RETIRED_STABLE_REPOSITORY =
+  "https://repo.jellyfin.org/releases/plugin/manifest-stable.json"
 JELLYFIN_PLUGIN_PACKAGES = [
   { "Name" => "Intro Skipper", "AssemblyGuid" => JELLYFIN_INTRO_SKIPPER_ID,
     "RepositoryUrl" => "https://intro-skipper.org/manifest.json" },
   { "Name" => "Open Subtitles", "AssemblyGuid" => JELLYFIN_OPENSUBTITLES_ID,
-    "RepositoryUrl" => "https://repo.jellyfin.org/releases/plugin/manifest-stable.json" }
+    "RepositoryUrl" => "https://repo.jellyfin.org/files/plugin/manifest.json" }
 ].freeze
 KOMGA_AUTH_PASSWORD_EXPRESSIONS = {
   "Authenticate existing Komga managed users" => "{{ item.password }}",
@@ -361,13 +363,15 @@ def exercise_jellyfin_settings(failures)
   encoding = desired_encoding.merge("EnableHardwareEncoding" => true, "EnableAudioVbr" => true)
   desired_repositories = [
     { "Name" => "Jellyfin Stable",
-      "Url" => "https://repo.jellyfin.org/releases/plugin/manifest-stable.json", "Enabled" => true },
+      "Url" => "https://repo.jellyfin.org/files/plugin/manifest.json", "Enabled" => true },
     { "Name" => "Intro Skipper", "Url" => "https://intro-skipper.org/manifest.json",
       "Enabled" => true }
   ]
   repositories = [
     { "Name" => "Stable Drifted",
-      "Url" => "https://repo.jellyfin.org/releases/plugin/manifest-stable.json/", "Enabled" => false },
+      "Url" => "https://repo.jellyfin.org/files/plugin/manifest.json/", "Enabled" => false },
+    { "Name" => "Jellyfin Stable",
+      "Url" => JELLYFIN_RETIRED_STABLE_REPOSITORY, "Enabled" => true },
     { "Name" => "Unmanaged Sentinel", "Url" => "https://example.invalid/sentinel.json",
       "Enabled" => false }
   ]
@@ -426,6 +430,8 @@ def exercise_jellyfin_settings(failures)
       encoding["EnableAudioVbr"] == true && desired_encoding.all? { |key, value| encoding[key] == value }
     failures << "Jellyfin repository merge lost the unrelated repository" unless
       repositories.any? { |entry| entry["Name"] == "Unmanaged Sentinel" && entry["Enabled"] == false }
+    failures << "Jellyfin repository merge retained the previously owned retired stable URL" if
+      repositories.any? { |entry| entry["Url"] == JELLYFIN_RETIRED_STABLE_REPOSITORY }
     failures << "Jellyfin repository merge did not normalize and repair owned URLs" unless
       desired_repositories.all? { |desired| repositories.count { |entry| entry["Url"] == desired["Url"] && entry["Name"] == desired["Name"] && entry["Enabled"] } == 1 }
     failures << "Jellyfin reconciliation installed an already present plugin" if
@@ -523,11 +529,11 @@ def exercise_jellyfin_policy_preflight(failures)
     end,
     "repository URL surrounding whitespace" => lambda do |variables|
       variables.fetch("jellyfin_plugin_repositories")[0]["Url"] =
-        " https://repo.jellyfin.org/releases/plugin/manifest-stable.json "
+        " https://repo.jellyfin.org/files/plugin/manifest.json "
     end,
     "repository URL case variant" => lambda do |variables|
       variables.fetch("jellyfin_plugin_repositories")[0]["Url"] =
-        "HTTPS://REPO.JELLYFIN.ORG/releases/plugin/manifest-stable.json"
+        "HTTPS://REPO.JELLYFIN.ORG/files/plugin/manifest.json"
     end,
     "repository URL trailing slash" => lambda do |variables|
       variables.fetch("jellyfin_plugin_repositories")[1]["Url"] =
@@ -552,7 +558,7 @@ def exercise_jellyfin_policy_preflight(failures)
     end,
     "duplicate required repository URL" => lambda do |variables|
       variables.fetch("jellyfin_plugin_repositories")[1]["Url"] =
-        "HTTPS://REPO.JELLYFIN.ORG/releases/plugin/manifest-stable.json/"
+        "HTTPS://REPO.JELLYFIN.ORG/files/plugin/manifest.json/"
     end
   }
   mutations.each do |label, mutate|
@@ -579,7 +585,7 @@ def exercise_jellyfin_plugin_versions(failures)
   }
   desired_repositories = [
     { "Name" => "Jellyfin Stable",
-      "Url" => "https://repo.jellyfin.org/releases/plugin/manifest-stable.json", "Enabled" => true },
+      "Url" => "https://repo.jellyfin.org/files/plugin/manifest.json", "Enabled" => true },
     { "Name" => "Intro Skipper", "Url" => "https://intro-skipper.org/manifest.json",
       "Enabled" => true }
   ]
@@ -744,7 +750,7 @@ def exercise_jellyfin_plugin_versions(failures)
         repository == desired_repositories.last
       end
       intro_ready ?
-        [200, [{ "name" => "Intro Skipper", "guid" => JELLYFIN_INTRO_SKIPPER_ID,
+        [200, [{ "name" => "Intro Skipper", "guid" => JELLYFIN_INTRO_SKIPPER_ID.delete("-"),
                  "versions" => [{ "version" => "3.0.0.0", "targetAbi" => "10.11.11.0",
                                    "repositoryUrl" => "https://intro-skipper.org/manifest.json" }] }]] :
         [200, []]
@@ -1120,7 +1126,7 @@ def exercise_jellyfin_opensubtitles_ordering(failures)
   }
   desired_repositories = [
     { "Name" => "Jellyfin Stable",
-      "Url" => "https://repo.jellyfin.org/releases/plugin/manifest-stable.json", "Enabled" => true },
+      "Url" => "https://repo.jellyfin.org/files/plugin/manifest.json", "Enabled" => true },
     { "Name" => "Intro Skipper", "Url" => "https://intro-skipper.org/manifest.json",
       "Enabled" => true }
   ]
@@ -1167,7 +1173,7 @@ def exercise_jellyfin_opensubtitles_ordering(failures)
         [200, [{ "name" => "Open Subtitles", "guid" => JELLYFIN_OPENSUBTITLES_ID,
                  "versions" => [{ "version" => "24.0.0.0", "targetAbi" => "10.11.11.0",
                                    "repositoryUrl" =>
-                                     "https://repo.jellyfin.org/releases/plugin/manifest-stable.json" }] }]]
+                                     "https://repo.jellyfin.org/files/plugin/manifest.json" }] }]]
       when ["POST", "/Plugins/#{JELLYFIN_OPENSUBTITLES_ID}/24.0.0.0/Enable"]
         plugins.last["Status"] = "Active"
         [204, nil]

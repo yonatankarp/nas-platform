@@ -143,7 +143,12 @@
   loop: "{{ jellyfin_repository_inventory }}"
   loop_control:
     label: jellyfin-plugin-repository
-  when: jellyfin_settings_phase == 'preflight'
+  when:
+    - jellyfin_settings_phase == 'preflight'
+    - >-
+      item.normalized_url not in
+      (jellyfin_retired_plugin_repository_urls |
+       default(['https://repo.jellyfin.org/releases/plugin/manifest-stable.json']))
   no_log: true
 
 - name: Append absent Jellyfin plugin repositories
@@ -577,7 +582,9 @@
       - jellyfin_package_catalog.json | type_debug == 'list'
       - jellyfin_catalog_name_matches | length == 1
       - jellyfin_catalog_name_matches[0].guid is string
-      - jellyfin_catalog_name_matches[0].guid | lower == item.AssemblyGuid | lower
+      - >-
+        jellyfin_catalog_name_matches[0].guid | lower | regex_replace('-', '') ==
+        item.AssemblyGuid | lower | regex_replace('-', '')
       - jellyfin_catalog_name_matches[0].versions | type_debug == 'list'
       - jellyfin_catalog_name_matches[0].versions | length > 0
       - >-

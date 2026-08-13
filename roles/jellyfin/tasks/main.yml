@@ -92,13 +92,16 @@
         jellyfin_plugin_repositories[1].Url is string
       - >-
         jellyfin_plugin_repositories | map(attribute='Url') | list ==
-        ['https://repo.jellyfin.org/releases/plugin/manifest-stable.json',
+        ['https://repo.jellyfin.org/files/plugin/manifest.json',
          'https://intro-skipper.org/manifest.json']
       - >-
         jellyfin_plugin_repositories[0].Enabled is boolean and
         jellyfin_plugin_repositories[1].Enabled is boolean
       - jellyfin_plugin_repositories[0].Enabled
       - jellyfin_plugin_repositories[1].Enabled
+      - >-
+        jellyfin_retired_plugin_repository_urls ==
+        ['https://repo.jellyfin.org/releases/plugin/manifest-stable.json']
       - jellyfin_plugins | type_debug == 'list'
       - jellyfin_plugins | select('string') | list | length == jellyfin_plugins | length
       - jellyfin_plugins == ['Intro Skipper', 'Open Subtitles']
@@ -144,7 +147,7 @@
         RepositoryUrl: https://intro-skipper.org/manifest.json
       - Name: Open Subtitles
         AssemblyGuid: 4b9ed42f-5185-48b5-9803-6ff2989014c4
-        RepositoryUrl: https://repo.jellyfin.org/releases/plugin/manifest-stable.json
+        RepositoryUrl: https://repo.jellyfin.org/files/plugin/manifest.json
 
 - name: Inspect the exact NAS Jellyfin render device
   ansible.builtin.stat:

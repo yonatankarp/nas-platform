@@ -234,15 +234,18 @@ refuse("Mac encoding policy is not explicit CPU fallback") unless
     "EnableVppTonemapping" => false
   )
 refuse("managed plugin repositories differ") unless defaults["jellyfin_plugin_repositories"] == [
-  { "Name" => "Jellyfin Stable", "Url" => "https://repo.jellyfin.org/releases/plugin/manifest-stable.json", "Enabled" => true },
+  { "Name" => "Jellyfin Stable", "Url" => "https://repo.jellyfin.org/files/plugin/manifest.json", "Enabled" => true },
   { "Name" => "Intro Skipper", "Url" => "https://intro-skipper.org/manifest.json", "Enabled" => true }
 ]
+refuse("retired managed plugin repositories differ") unless
+  defaults["jellyfin_retired_plugin_repository_urls"] ==
+    ["https://repo.jellyfin.org/releases/plugin/manifest-stable.json"]
 refuse("managed plugins differ") unless defaults["jellyfin_plugins"] == ["Intro Skipper", "Open Subtitles"]
 refuse("managed plugin package identities differ") unless defaults["jellyfin_plugin_packages"] == [
   { "Name" => "Intro Skipper", "AssemblyGuid" => "c83d86bb-a1e0-4c35-a113-e2101cf4ee6b",
     "RepositoryUrl" => "https://intro-skipper.org/manifest.json" },
   { "Name" => "Open Subtitles", "AssemblyGuid" => "4b9ed42f-5185-48b5-9803-6ff2989014c4",
-    "RepositoryUrl" => "https://repo.jellyfin.org/releases/plugin/manifest-stable.json" }
+    "RepositoryUrl" => "https://repo.jellyfin.org/files/plugin/manifest.json" }
 ]
 [
   "Require the exact NAS Jellyfin render device",
@@ -370,7 +373,7 @@ ENCODING_POLICIES["integration"] = ENCODING_POLICIES.fetch("mac")
 ENCODING_POLICIES.freeze
 PLUGIN_REPOSITORIES = [
   { "Name" => "Jellyfin Stable",
-    "Url" => "https://repo.jellyfin.org/releases/plugin/manifest-stable.json", "Enabled" => true },
+    "Url" => "https://repo.jellyfin.org/files/plugin/manifest.json", "Enabled" => true },
   { "Name" => "Intro Skipper", "Url" => "https://intro-skipper.org/manifest.json",
     "Enabled" => true }
 ].freeze
