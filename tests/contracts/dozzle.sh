@@ -85,6 +85,12 @@ render_group_contract() {
   DOZZLE_RENDERED_COMPOSE=$rendered ruby -rjson - "$stack" "$variant" "$expected_group" <<'RUBY'
 stack, variant, expected_group = ARGV
 services = JSON.parse(ENV.fetch("DOZZLE_RENDERED_COMPOSE")).fetch("services")
+services.each do |service, definition|
+  matches = definition.fetch("labels", {}).select { |name, _value| name == "dev.dozzle.name" }
+  abort "Dozzle contract failed: #{stack} #{variant} #{service} name label is absent" if matches.empty?
+  abort "Dozzle contract failed: #{stack} #{variant} #{service} name label differs" unless
+    matches == {"dev.dozzle.name" => service}
+end
 if expected_group.empty?
   abort "Dozzle contract failed: #{stack} #{variant} must remain a single-container stack" unless
     services.length == 1
@@ -120,6 +126,26 @@ render_group_variants() {
 }
 
 if [ "$mode" = static ]; then
+  ruby -r"$repo_dir/tests/policy_support.rb" - \
+    "$repo_dir/services/audiobookshelf/compose.yml" \
+    "$repo_dir/services/beszel/compose.yml" \
+    "$repo_dir/services/dozzle/compose.yml" \
+    "$repo_dir/services/immich/compose.yml" \
+    "$repo_dir/services/jellyfin/compose.yml" \
+    "$repo_dir/services/komga/compose.yml" \
+    "$repo_dir/services/ntfy/compose.yml" \
+    "$repo_dir/services/paperless-ngx/compose.yml" \
+    "$repo_dir/services/tinymediamanager/compose.yml" <<'RUBY'
+begin
+  ARGV.each do |path|
+    document = Psych.parse_stream(File.read(path))
+    abort "Dozzle contract failed: base Compose has duplicate dev.dozzle.name labels" if
+      PolicySupport.duplicate_yaml_keys(document).include?("dev.dozzle.name")
+  end
+rescue Psych::Exception, SystemCallError
+  abort "Dozzle contract failed: base Compose label YAML is invalid"
+end
+RUBY
   render_group_variants beszel beszel
   render_group_variants dozzle dozzle
   render_group_variants paperless-ngx paperless
