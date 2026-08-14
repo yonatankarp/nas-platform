@@ -320,6 +320,7 @@ require "digest"
 require "net/http"
 require "open3"
 require "pathname"
+require "securerandom"
 require "timeout"
 require "uri"
 require "yaml"
@@ -456,16 +457,23 @@ VIDEO_FIXTURE = (
 
 CLIENT = 'MediaBrowser Client="nas-platform-contract", Device="contract", ' \
          'DeviceId="nas-platform-jellyfin-contract", Version="1.0.0"'
+TRANSCODE_PROOF_TIMEOUT_SECONDS = 60
 
 def fail_contract(message)
   warn "Jellyfin contract failed: #{message}"
   exit 1
 end
 
-def request(method, path, token: nil, body: nil, encoded_body: nil, expected: [200], headers: {}, raw: false)
+def request(method, path, token: nil, body: nil, encoded_body: nil, expected: [200], headers: {}, raw: false,
+            device_id: nil, deadline: nil, timeout_message: nil)
   uri = URI.join(BASE.to_s, path)
   request = Net::HTTP.const_get(method.capitalize).new(uri)
-  request["Authorization"] = token ? %(#{CLIENT}, Token="#{token}") : CLIENT
+  client = if device_id
+             %(MediaBrowser Client="nas-platform-contract", Device="contract", DeviceId="#{device_id}", Version="1.0.0")
+           else
+             CLIENT
+           end
+  request["Authorization"] = token ? %(#{client}, Token="#{token}") : client
   headers.each { |name, value| request[name] = value }
   if body
     request["Content-Type"] = "application/json"
@@ -473,9 +481,19 @@ def request(method, path, token: nil, body: nil, encoded_body: nil, expected: [2
   elsif encoded_body
     request.body = encoded_body
   end
-  response = Net::HTTP.start(uri.host, uri.port, open_timeout: 5, read_timeout: 120) do |http|
-    http.request(request)
+  remaining = deadline && deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+  fail_contract(timeout_message || "#{method.upcase} #{uri.path} timed out") if
+    remaining && remaining <= 0
+  open_timeout = remaining ? [5, remaining].min : 5
+  read_timeout = remaining ? [120, remaining].min : 120
+  perform = proc do
+    Net::HTTP.start(
+      uri.host, uri.port, open_timeout: open_timeout, read_timeout: read_timeout
+    ) do |http|
+      http.request(request)
+    end
   end
+  response = remaining ? Timeout.timeout(remaining, &perform) : perform.call
   fail_contract("#{method.upcase} #{uri.path} returned HTTP #{response.code}") unless
     expected.include?(response.code.to_i)
   return response if raw
@@ -484,7 +502,9 @@ def request(method, path, token: nil, body: nil, encoded_body: nil, expected: [2
   [response, parsed]
 rescue JSON::ParserError
   fail_contract("#{method.upcase} #{uri.path} returned malformed JSON")
-rescue SystemCallError, Timeout::Error, EOFError => error
+rescue Timeout::Error => error
+  fail_contract(timeout_message || "#{method.upcase} #{uri.path} failed: #{error.class}")
+rescue SystemCallError, EOFError => error
   fail_contract("#{method.upcase} #{uri.path} failed: #{error.class}")
 end
 
@@ -737,40 +757,137 @@ def assert_direct_play(token, item_id, source_id)
     ranged.body == VIDEO_FIXTURE.byteslice(0, 128)
 end
 
+def transcode_segment_signatures(transcode_root)
+  Dir.children(transcode_root).sort.filter_map do |name|
+    next unless File.extname(name).casecmp?(".ts")
+
+    path = transcode_root.join(name).expand_path
+    fail_contract("the transcode cache is unavailable or unsafe") unless
+      path.dirname == transcode_root && path.file? && !path.symlink?
+    stat = path.lstat
+    [path.to_s, [stat.dev, stat.ino, stat.size, stat.mtime.to_i, stat.mtime.nsec]]
+  end.to_h
+rescue SystemCallError
+  fail_contract("the transcode cache is unavailable or unsafe")
+end
+
 # Forcing a smaller frame size makes the source unusable as-is, so the server
 # must decode and re-encode rather than remux. A tiny source keeps that honest
 # and fast on every platform.
 def assert_cpu_transcode(token, item_id, source_id)
-  query = "deviceId=nas-platform-jellyfin-contract&mediaSourceId=#{source_id}" \
-          "&videoCodec=h264&audioCodec=aac&static=false&maxWidth=32&videoBitRate=8000" \
-          "&segmentContainer=ts&minSegments=1&breakOnNonKeyFrames=false"
-  master = request("get", "/Videos/#{item_id}/master.m3u8?#{query}", token: token, raw: true)
+  deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + TRANSCODE_PROOF_TIMEOUT_SECONDS
+  transcode_root = Pathname.new(
+    ENV.fetch("PLATFORM_JELLYFIN_TRANSCODE_ROOT", DOCKER_ROOT.join("jellyfin", "cache", "transcodes").to_s)
+  ).expand_path
+  fail_contract("the transcode cache is unavailable or unsafe") unless
+    transcode_root.directory? && !transcode_root.symlink?
+  segments_before = transcode_segment_signatures(transcode_root)
+  proof_suffix = SecureRandom.hex(16)
+  device_id = "nas-platform-jellyfin-proof-#{proof_suffix}"
+  play_session_id = "nas-platform-jellyfin-proof-#{proof_suffix}"
+  # TranscodingInfo is keyed by DeviceId. Jellyfin's only session-end endpoint
+  # logs out the access token, so it cannot safely remove this ephemeral session
+  # without invalidating the administrator token shared by the remaining proof.
+  request(
+    "post", "/Sessions/Capabilities", token: token, device_id: device_id,
+    expected: [204], raw: true, deadline: deadline, timeout_message: "transcode proof timed out"
+  )
+  query = URI.encode_www_form(
+    "deviceId" => device_id, "playSessionId" => play_session_id,
+    "mediaSourceId" => source_id, "videoCodec" => "h264", "audioCodec" => "aac",
+    "static" => false, "maxWidth" => 32, "videoBitRate" => 8000,
+    "segmentContainer" => "ts", "minSegments" => 1, "breakOnNonKeyFrames" => false
+  )
+  master = request(
+    "get", "/Videos/#{item_id}/master.m3u8?#{query}", token: token, raw: true,
+    device_id: device_id, deadline: deadline, timeout_message: "transcode proof timed out"
+  )
   fail_contract("the transcode playlist returned HTTP #{master.code}") unless
     master.code.to_i == 200
   variant = master.body.lines.map(&:strip).find { |line| line.start_with?("main.m3u8") }
   fail_contract("the transcode playlist names no variant") if variant.nil?
 
-  main = request("get", "/Videos/#{item_id}/#{variant}", token: token, raw: true)
+  main = request(
+    "get", "/Videos/#{item_id}/#{variant}", token: token, raw: true,
+    device_id: device_id, deadline: deadline, timeout_message: "transcode proof timed out"
+  )
   fail_contract("the transcode variant returned HTTP #{main.code}") unless main.code.to_i == 200
   segment_path = main.body.lines.map(&:strip).find { |line| line.include?("hls1/") }
   fail_contract("the transcode variant names no segment") if segment_path.nil?
 
-  segment = request("get", "/Videos/#{item_id}/#{segment_path}", token: token, raw: true)
+  segment = nil
+  segment_error = nil
+  segment_state_mutex = Mutex.new
+  segment_state_condition = ConditionVariable.new
+  segment_started = false
+  segment_in_progress = false
+  segment_worker = Thread.new do
+    Thread.current.report_on_exception = false
+    segment_state_mutex.synchronize do
+      segment_started = true
+      segment_in_progress = true
+      segment_state_condition.broadcast
+    end
+    begin
+      segment = request(
+        "get", "/Videos/#{item_id}/#{segment_path}", token: token, raw: true,
+        device_id: device_id, deadline: deadline, timeout_message: "transcode proof timed out"
+      )
+    rescue SystemExit, StandardError => error
+      segment_state_mutex.synchronize { segment_error = error }
+    ensure
+      segment_state_mutex.synchronize { segment_in_progress = false }
+    end
+  end
+  transcode = nil
+  begin
+    segment_state_mutex.synchronize do
+      until segment_started
+        remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        fail_contract("transcode proof timed out") if remaining <= 0
+        segment_state_condition.wait(segment_state_mutex, remaining)
+      end
+    end
+    loop do
+      error = segment_state_mutex.synchronize { segment_error }
+      raise error if error
+
+      session_query = URI.encode_www_form("deviceId" => device_id)
+      _response, sessions = request(
+        "get", "/Sessions?#{session_query}", token: token,
+        deadline: deadline, timeout_message: "transcode proof timed out"
+      )
+      session = sessions.find { |candidate| candidate["DeviceId"] == device_id }
+      transcode = session && session["TranscodingInfo"]
+      error, active = segment_state_mutex.synchronize do
+        [segment_error, segment_in_progress]
+      end
+      raise error if error
+      if transcode
+        fail_contract("transcode session was observed only after the segment request completed") unless active
+        break
+      end
+      fail_contract("transcode session was observed only after the segment request completed") unless active
+
+      fail_contract("transcode proof timed out") if
+        Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+      sleep 0.1
+    end
+    while segment_worker.alive?
+      remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      fail_contract("transcode proof timed out") if remaining <= 0
+      segment_worker.join([remaining, 0.1].min)
+    end
+    raise segment_error if segment_error
+  ensure
+    segment_worker.kill if segment_worker.alive?
+    segment_worker.join
+  end
+
   fail_contract("the transcoded segment returned HTTP #{segment.code}") unless
     segment.code.to_i == 200
   fail_contract("the transcoded segment is empty") if segment.body.to_s.empty?
   fail_contract("the transcoded segment is not MPEG-TS") unless segment.body.getbyte(0) == 0x47
-
-  deadline = Time.now + 60
-  transcode = nil
-  loop do
-    _response, sessions = request("get", "/Sessions", token: token)
-    transcode = sessions.filter_map { |session| session["TranscodingInfo"] }.first
-    break if transcode
-
-    fail_contract("no active transcode session was reported") if Time.now >= deadline
-    sleep 2
-  end
   fail_contract("the server direct-played instead of transcoding") if transcode["IsVideoDirect"]
   fail_contract("the transcode did not honor the requested frame size") unless
     transcode["Width"] == 32
@@ -780,15 +897,11 @@ def assert_cpu_transcode(token, item_id, source_id)
       transcode["HardwareAccelerationType"].to_s.casecmp?("none")
   end
 
-  # Durable evidence that re-encoded output really reached the cache volume,
-  # independent of how long the session stays visible.
-  transcode_root = Pathname.new(
-    ENV.fetch("PLATFORM_JELLYFIN_TRANSCODE_ROOT", DOCKER_ROOT.join("jellyfin", "cache", "transcodes").to_s)
-  ).expand_path
-  fail_contract("the transcode cache is unavailable or unsafe") unless
-    transcode_root.directory? && !transcode_root.symlink?
-  fail_contract("no transcoded segment reached the cache volume") if
-    Dir.glob(transcode_root.join("*.ts").to_s).empty?
+  # Durable evidence must belong to this unique proof identity. Old segments
+  # demonstrate historical transcoding but cannot satisfy the current attempt.
+  segments_after = transcode_segment_signatures(transcode_root)
+  fail_contract("no current-attempt transcoded segment reached the cache volume") if
+    (segments_after.keys - segments_before.keys).empty?
 end
 
 vault_yaml, vault_error, vault_status = Open3.capture3(
