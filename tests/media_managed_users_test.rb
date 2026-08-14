@@ -1079,6 +1079,10 @@ def exercise_jellyfin_qsv_probe(failures)
     failures << "Jellyfin reusable QSV probe omits FFmpeg container execution"
     return
   end
+  qsv_argv = Array(exec_task.dig("community.docker.docker_compose_v2_exec", "argv"))
+  unless qsv_argv.each_cons(3).include?(["-f", "null", "-"])
+    failures << "Jellyfin reusable QSV probe must pass the literal null muxer to FFmpeg"
+  end
   exec_task.delete("community.docker.docker_compose_v2_exec")
   exec_task["ansible.builtin.uri"] = {
     "url" => "{{ jellyfin_api }}/qsv", "method" => "POST", "status_code" => [204]
