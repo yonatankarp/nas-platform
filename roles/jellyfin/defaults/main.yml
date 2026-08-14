@@ -67,7 +67,13 @@ jellyfin_plugin_packages:
     AssemblyGuid: 4b9ed42f-5185-48b5-9803-6ff2989014c4
     RepositoryUrl: https://repo.jellyfin.org/files/plugin/manifest.json
 jellyfin_opensubtitles_plugin_id: 4b9ed42f-5185-48b5-9803-6ff2989014c4
-jellyfin_encoding_policy: "{{ jellyfin_encoding_profiles[platform_kind] }}"
+jellyfin_encoding_policy: >-
+  {{ jellyfin_encoding_profiles[
+       'mac'
+       if ((platform_compose_kind | default('') == 'integration') and
+           (deployment_bundle_test_mode | default(false) | bool))
+       else platform_kind
+     ] }}
 
 # Only these two media libraries are Ansible-owned. Jellyfin's Collections
 # library is application-owned and intentionally absent from this declaration.

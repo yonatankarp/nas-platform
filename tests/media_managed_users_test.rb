@@ -486,9 +486,50 @@ def exercise_jellyfin_policy_preflight(failures)
   base = defaults.merge(
     "vault_jellyfin_opensubtitles_username" => "subtitle-user",
     "vault_jellyfin_opensubtitles_password" => "subtitle-secret",
-    "platform_kind" => "mac"
+    "platform_kind" => "mac",
+    "platform_compose_kind" => "mac",
+    "deployment_bundle_test_mode" => false
   )
   base["jellyfin_encoding_policy"] = base.dig("jellyfin_encoding_profiles", "mac")
+
+  integration = Marshal.load(Marshal.dump(base))
+  integration["platform_kind"] = "nas"
+  integration["platform_compose_kind"] = "integration"
+  integration["deployment_bundle_test_mode"] = true
+  with_http_service(->(_request) { [204, nil] }) do |port, requests|
+    integration["jellyfin_api"] = "http://127.0.0.1:#{port}"
+    _stdout, _stderr, status = run_playbook([policy_task, sentinel], integration)
+    failures << "Jellyfin integration CPU policy was rejected" unless status.success?
+    failures << "Jellyfin integration CPU policy did not reach the sentinel" unless requests.length == 1
+  end
+
+  [
+    ["integration without test mode", "integration", false],
+    ["test mode outside integration", "nas", true]
+  ].each do |label, compose_kind, test_mode|
+    variables = Marshal.load(Marshal.dump(integration))
+    variables["platform_compose_kind"] = compose_kind
+    variables["deployment_bundle_test_mode"] = test_mode
+    with_http_service(->(_request) { [204, nil] }) do |port, requests|
+      variables["jellyfin_api"] = "http://127.0.0.1:#{port}"
+      _stdout, _stderr, status = run_playbook([policy_task, sentinel], variables)
+      failures << "Jellyfin #{label} CPU bypass was accepted" if status.success?
+      failures << "Jellyfin #{label} CPU bypass reached mutation" unless requests.empty?
+    end
+  end
+
+  render_tasks = main.select do |task|
+    ["Inspect the exact NAS Jellyfin render device",
+     "Require the exact NAS Jellyfin render device"].include?(task_name(task))
+  end
+  _stdout, _stderr, status = run_playbook(render_tasks, integration)
+  failures << "Jellyfin integration still required a host render device" unless status.success?
+
+  production_nas = Marshal.load(Marshal.dump(integration))
+  production_nas["platform_compose_kind"] = "nas"
+  production_nas["deployment_bundle_test_mode"] = false
+  _stdout, _stderr, status = run_playbook(render_tasks, production_nas)
+  failures << "Jellyfin production NAS accepted an absent render device" if status.success?
   mutations = {
     "wrong codec list" => lambda do |variables|
       variables.dig("jellyfin_encoding_profiles", "nas", "HardwareDecodingCodecs") << "av1"
@@ -1058,12 +1099,16 @@ def exercise_jellyfin_qsv_probe(failures)
     ["nas", [], true, 1],
     ["mac", [], true, 0],
     ["nas", ["--check"], false, 0],
-    ["nas", ["--check"], true, 1]
+    ["nas", ["--check"], true, 1],
+    ["integration", [], true, 0]
   ]
   cases.each do |platform, arguments, container_exists, expected|
     with_http_service(->(_request) { [204, nil] }) do |port, requests|
       fixture_variables = variables.merge(
-        "jellyfin_api" => "http://127.0.0.1:#{port}", "platform_kind" => platform,
+        "jellyfin_api" => "http://127.0.0.1:#{port}",
+        "platform_kind" => platform == "integration" ? "nas" : platform,
+        "platform_compose_kind" => platform == "integration" ? "integration" : platform,
+        "deployment_bundle_test_mode" => platform == "integration",
         "fixture_container_exists" => container_exists
       )
       stdout, stderr, status = run_playbook(probe_tasks, fixture_variables, *arguments)

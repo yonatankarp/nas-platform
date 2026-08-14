@@ -77,7 +77,13 @@
       - jellyfin_encoding_profiles.mac.EnableTonemapping is boolean
       - jellyfin_encoding_profiles.nas == jellyfin_required_nas_encoding_policy
       - jellyfin_encoding_profiles.mac == jellyfin_required_mac_encoding_policy
-      - jellyfin_encoding_policy == jellyfin_encoding_profiles[platform_kind]
+      - >-
+        jellyfin_encoding_policy == jellyfin_encoding_profiles[
+          'mac'
+          if ((platform_compose_kind | default('') == 'integration') and
+              (deployment_bundle_test_mode | default(false) | bool))
+          else platform_kind
+        ]
       - jellyfin_plugin_repositories | type_debug == 'list'
       - jellyfin_plugin_repositories | length == 2
       - jellyfin_plugin_repositories[0] is mapping
@@ -154,7 +160,11 @@
     path: /dev/dri/renderD128
     follow: false
   register: jellyfin_render_device
-  when: platform_kind == 'nas'
+  when:
+    - platform_kind == 'nas'
+    - >-
+      not ((platform_compose_kind | default('') == 'integration') and
+           (deployment_bundle_test_mode | default(false) | bool))
   changed_when: false
   check_mode: false
 
@@ -169,7 +179,11 @@
     fail_msg: >-
       The NAS must expose /dev/dri/renderD128 as the exact character render device
       before Jellyfin Compose or application state is changed.
-  when: platform_kind == 'nas'
+  when:
+    - platform_kind == 'nas'
+    - >-
+      not ((platform_compose_kind | default('') == 'integration') and
+           (deployment_bundle_test_mode | default(false) | bool))
 
 - name: Select the Jellyfin Compose definitions
   tags: [platform_verify_jellyfin]
@@ -199,7 +213,11 @@
 
 - name: Prove Jellyfin QSV during convergence
   ansible.builtin.include_tasks: qsv_probe.yml
-  when: platform_kind == 'nas'
+  when:
+    - platform_kind == 'nas'
+    - >-
+      not ((platform_compose_kind | default('') == 'integration') and
+           (deployment_bundle_test_mode | default(false) | bool))
 
 # The container health check passes as soon as /health answers, which happens
 # well before the application can serve its own startup API: that endpoint
@@ -1125,7 +1143,11 @@
     file: qsv_probe.yml
     apply:
       tags: [platform_verify_jellyfin]
-  when: platform_kind == 'nas'
+  when:
+    - platform_kind == 'nas'
+    - >-
+      not ((platform_compose_kind | default('') == 'integration') and
+           (deployment_bundle_test_mode | default(false) | bool))
 
 - name: Authenticate to Jellyfin for exact verification
   tags: [platform_verify_jellyfin]

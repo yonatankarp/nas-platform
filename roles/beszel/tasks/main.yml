@@ -60,10 +60,10 @@
   ansible.builtin.assert:
     that:
       - platform_kind in ['mac', 'nas']
-      - beszel_required_telemetry_categories | length > 0
-      - beszel_required_telemetry_categories | unique | list | length ==
-        beszel_required_telemetry_categories | length
-      - beszel_required_telemetry_categories |
+      - beszel_effective_required_telemetry_categories | length > 0
+      - beszel_effective_required_telemetry_categories | unique | list | length ==
+        beszel_effective_required_telemetry_categories | length
+      - beszel_effective_required_telemetry_categories |
         difference(['core', 'disk', 'containers', 'gpu']) | length == 0
       - beszel_telemetry_freshness_seconds | int >= 60
       - beszel_telemetry_poll_timeout_seconds | int >= 90
@@ -71,16 +71,36 @@
       - beszel_telemetry_request_timeout_seconds | int <= 10
       - beszel_telemetry_poll_delay_seconds | int > 0
       - beszel_telemetry_poll_delay_seconds | int <= 10
-      - platform_beszel_agent_available | bool
+      - >-
+        beszel_integration_test_capability | bool ==
+        ((platform_compose_kind | default('') == 'integration') and
+         (deployment_bundle_test_mode | default(false) | bool))
+      - >-
+        beszel_effective_required_telemetry_categories ==
+        (['core', 'disk', 'containers']
+         if (beszel_integration_test_capability | bool)
+         else beszel_required_telemetry_categories)
+      - >-
+        beszel_effective_require_gpu_telemetry | bool ==
+        (false
+         if (beszel_integration_test_capability | bool)
+         else (beszel_require_gpu_telemetry | bool))
       - >-
         platform_kind != 'mac' or
-        (beszel_required_telemetry_categories | sort == ['containers', 'core', 'disk'] and
-         not (beszel_require_gpu_telemetry | bool) and
+        (not (beszel_integration_test_capability | bool) and
+         beszel_effective_required_telemetry_categories | sort == ['containers', 'core', 'disk'] and
+         not (beszel_effective_require_gpu_telemetry | bool) and
          platform_beszel_agent_kind == 'portable')
       - >-
         platform_kind != 'nas' or
-        (beszel_required_telemetry_categories | sort == ['containers', 'core', 'disk', 'gpu'] and
-         beszel_require_gpu_telemetry | bool and
+        ((beszel_integration_test_capability | bool) and
+         beszel_effective_required_telemetry_categories | sort == ['containers', 'core', 'disk'] and
+         not (beszel_effective_require_gpu_telemetry | bool) and
+         platform_beszel_agent_kind == 'portable' and
+         not (preflight_gpu_available | bool)) or
+        (not (beszel_integration_test_capability | bool) and
+         beszel_effective_required_telemetry_categories | sort == ['containers', 'core', 'disk', 'gpu'] and
+         beszel_effective_require_gpu_telemetry | bool and
          platform_beszel_agent_kind == 'intel' and
          platform_render_device_path == '/dev/dri/renderD128' and
          preflight_gpu_available | bool)

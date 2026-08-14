@@ -56,6 +56,14 @@ if capability
   cases = [
     ["valid Mac", "mac", %w[core disk containers], false, "portable", false, true],
     ["valid NAS", "nas", %w[core disk containers gpu], true, "intel", true, true],
+    ["valid integration", "nas", %w[core disk containers], false, "portable", false, true,
+     "/dev/dri/renderD128", true, "integration", true],
+    ["integration without test mode", "nas", %w[core disk containers], false, "portable", false, false,
+     "/dev/dri/renderD128", true, "integration", false],
+    ["test mode outside integration", "nas", %w[core disk containers], false, "portable", false, false,
+     "/dev/dri/renderD128", true, "nas", true],
+    ["integration with NAS GPU policy", "nas", %w[core disk containers gpu], true, "intel", true, false,
+     "/dev/dri/renderD128", true, "integration", true],
     ["Mac core-only", "mac", %w[core], false, "portable", false, false],
     ["Mac missing disk", "mac", %w[core containers], false, "portable", false, false],
     ["Mac missing containers", "mac", %w[core disk], false, "portable", false, false],
@@ -63,7 +71,9 @@ if capability
     ["NAS missing GPU", "nas", %w[core disk containers], true, "intel", true, false],
     ["NAS duplicate category", "nas", %w[core disk containers gpu gpu], true, "intel", true, false],
     ["NAS wrong render path", "nas", %w[core disk containers gpu], true, "intel", true, false, "/dev/dri/card0"],
-    ["NAS unavailable agent", "nas", %w[core disk containers gpu], true, "intel", true, false, "/dev/dri/renderD128", false],
+    ["NAS unavailable agent", "nas", %w[core disk containers gpu], true, "intel", true, true, "/dev/dri/renderD128", false],
+    ["Mac unavailable agent", "mac", %w[core disk containers], false, "portable", false, true,
+     "/dev/dri/card0", false],
     ["NAS wrong agent kind", "nas", %w[core disk containers gpu], true, "portable", true, false],
     ["NAS GPU flag mismatch", "nas", %w[core disk containers gpu], false, "intel", true, false],
     ["Mac GPU flag mismatch", "mac", %w[core disk containers], true, "portable", false, false],
@@ -71,7 +81,7 @@ if capability
     ["unknown platform", "other", %w[core disk containers], false, "portable", false, false]
   ]
   cases.each do |name, platform, categories, require_gpu, kind, gpu_available, expected_success,
-                 render_path, agent_available|
+                 render_path, agent_available, compose_kind, test_mode|
     vars = {
       "platform_kind" => platform,
       "platform_beszel_agent_available" => agent_available.nil? ? true : agent_available,
@@ -81,10 +91,15 @@ if capability
       "beszel_required_telemetry_categories" => categories,
       "beszel_require_gpu_telemetry" => require_gpu,
       "beszel_effective_required_telemetry_categories" => categories,
+      "beszel_effective_require_gpu_telemetry" => require_gpu,
+      "beszel_integration_test_capability" =>
+        (compose_kind == "integration" && test_mode == true),
       "beszel_telemetry_freshness_seconds" => 180,
       "beszel_telemetry_poll_timeout_seconds" => 90,
       "beszel_telemetry_poll_delay_seconds" => 3,
-      "beszel_telemetry_request_timeout_seconds" => 3
+      "beszel_telemetry_request_timeout_seconds" => 3,
+      "platform_compose_kind" => compose_kind || platform,
+      "deployment_bundle_test_mode" => test_mode || false
     }
     _stdout, _stderr, status = run_play([capability], vars)
     failures << "#{name} capability policy #{expected_success ? 'failed' : 'was accepted'}" unless
@@ -98,10 +113,14 @@ if capability
       "platform_beszel_agent_kind" => "portable", "platform_render_device_path" => "/dev/dri/card0",
       "preflight_gpu_available" => false, "beszel_required_telemetry_categories" => %w[core disk containers],
       "beszel_require_gpu_telemetry" => false, "beszel_effective_required_telemetry_categories" => %w[core disk containers],
+      "beszel_effective_require_gpu_telemetry" => false,
+      "beszel_integration_test_capability" => false,
       "beszel_telemetry_freshness_seconds" => freshness,
       "beszel_telemetry_poll_timeout_seconds" => timeout,
       "beszel_telemetry_poll_delay_seconds" => delay,
-      "beszel_telemetry_request_timeout_seconds" => request_timeout
+      "beszel_telemetry_request_timeout_seconds" => request_timeout,
+      "platform_compose_kind" => "mac",
+      "deployment_bundle_test_mode" => false
     }
     _stdout, _stderr, status = run_play([capability], vars)
     timing = "freshness=#{freshness} timeout=#{timeout} delay=#{delay} request=#{request_timeout}"

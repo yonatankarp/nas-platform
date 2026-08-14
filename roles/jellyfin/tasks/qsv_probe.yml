@@ -5,6 +5,9 @@
   register: jellyfin_qsv_container_info
   when:
     - platform_kind == 'nas'
+    - >-
+      not ((platform_compose_kind | default('') == 'integration') and
+           (deployment_bundle_test_mode | default(false) | bool))
     - ansible_check_mode
   changed_when: false
   check_mode: false
@@ -16,6 +19,9 @@
     msg: JELLYFIN_PLAN_QSV_PROBE
   when:
     - platform_kind == 'nas'
+    - >-
+      not ((platform_compose_kind | default('') == 'integration') and
+           (deployment_bundle_test_mode | default(false) | bool))
     - ansible_check_mode
     - jellyfin_qsv_container_info.rc | default(1) | int == 1
   changed_when: false
@@ -50,6 +56,9 @@
     tty: false
   when:
     - platform_kind == 'nas'
+    - >-
+      not ((platform_compose_kind | default('') == 'integration') and
+           (deployment_bundle_test_mode | default(false) | bool))
     - >-
       not ansible_check_mode or
       jellyfin_qsv_container_info.rc | default(1) | int == 0
