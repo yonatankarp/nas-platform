@@ -254,6 +254,7 @@ MEDIA_LIBRARY = Pathname.new(
 FIXTURE_DIRECTORY = MEDIA_LIBRARY.join("task-9-contract-book")
 FIXTURE_PATH = FIXTURE_DIRECTORY.join("task-9-contract-book.wav")
 FIXTURE_COVER_PATH = FIXTURE_DIRECTORY.join("cover.png")
+FIXTURE_REL_PATH = "task-9-contract-book"
 FIXTURE_COVER_BYTES = [
   "89504e470d0a1a0a0000000d4948445200000001000000010804000000b51c0c02" \
   "0000000b4944415478da6364f80f00010501012718e3660000000049454e44ae426082"
@@ -709,7 +710,11 @@ def tagged_wave_title(bytes)
 end
 
 def matching_fixture_item(items)
-  items.find { |candidate| candidate.dig("media", "metadata", "title") == FIXTURE_TITLE }
+  matches = items.select do |candidate|
+    candidate.is_a?(Hash) && candidate["relPath"] == FIXTURE_REL_PATH
+  end
+  fail_contract("fixture source identity is duplicated") if matches.length > 1
+  matches.first
 end
 
 def exact_playback?(source, full_body, range_body, content_range)
@@ -1129,10 +1134,13 @@ when "audio-self-test"
   wrong_title = source.sub(FIXTURE_TITLE, "Task 9 Contract Faux")
   fail_contract("wrong embedded title was accepted") if tagged_wave_title(wrong_title) == FIXTURE_TITLE
 
-  path_only = [{ "relPath" => "task-9-contract-book/task-9-contract-book.wav", "media" => {} }]
-  fail_contract("path-only fixture identity was accepted") if matching_fixture_item(path_only)
-  exact_item = { "relPath" => "unrelated", "media" => { "metadata" => { "title" => FIXTURE_TITLE } } }
-  fail_contract("exact extracted title was rejected") unless matching_fixture_item([exact_item]) == exact_item
+  exact_item = { "relPath" => "task-9-contract-book", "media" => { "metadata" => { "title" => "Changed title" } } }
+  fail_contract("exact fixture source identity was rejected") unless matching_fixture_item([exact_item]) == exact_item
+  title_only = { "relPath" => "unrelated", "media" => { "metadata" => { "title" => FIXTURE_TITLE } } }
+  fail_contract("mutable title-only fixture identity was accepted") if matching_fixture_item([title_only])
+  expect_contract_failure do
+    matching_fixture_item([exact_item, exact_item.merge("id" => "duplicate")])
+  end
 
   range = source.byteslice(0, 128)
   content_range = "bytes 0-127/#{source.bytesize}"
