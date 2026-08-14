@@ -107,7 +107,9 @@ services:
       interval: 30s
       timeout: 10s
       retries: 4
-      start_period: 60s
+      # A fresh database applies every migration before binding port 8000. The
+      # production NAS needed just over three minutes for that first boot.
+      start_period: 300s
     restart: unless-stopped
     logging: *default-logging
 
