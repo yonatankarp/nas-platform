@@ -717,17 +717,36 @@ def matching_fixture_item(items)
   matches.first
 end
 
-def container_fixture_visible?
+def container_fixture_state
   container = ENV["PLATFORM_AUDIOBOOKSHELF_CONTAINER"]
-  return nil if container.to_s.empty?
+  return "unconfigured" if container.to_s.empty?
 
   expected_digest = Digest::SHA256.hexdigest(FIXTURE_PATH.binread)
   path = "/audiobooks/#{FIXTURE_REL_PATH}/#{FIXTURE_PATH.basename}"
-  stdout, _stderr, status = Open3.capture3("docker", "exec", container, "sha256sum", path)
-  status.success? && stdout == "#{expected_digest}  #{path}\n"
+  inspect_stdout, _inspect_stderr, inspect_status = Open3.capture3("docker", "inspect", container)
+  return "inspect-failed" unless inspect_status.success?
+
+  inspect = JSON.parse(inspect_stdout)
+  mounts = inspect.is_a?(Array) && inspect.length == 1 ? inspect.fetch(0)["Mounts"] : nil
+  return "inspect-malformed" unless mounts.is_a?(Array)
+
+  media_mounts = mounts.select { |mount| mount.is_a?(Hash) && mount["Destination"] == "/audiobooks" }
+  return "mount-cardinality" unless media_mounts.length == 1
+  return "mount-source-mismatch" unless media_mounts.fetch(0)["Source"] == MEDIA_LIBRARY.to_s
+
+  _stdout, _stderr, exists_status = Open3.capture3("docker", "exec", container, "test", "-f", path)
+  return "missing" unless exists_status.success?
+
+  stdout, _stderr, digest_status = Open3.capture3("docker", "exec", container, "sha256sum", path)
+  return "digest-unavailable" unless digest_status.success?
+  return "digest-mismatch" unless stdout.split.first == expected_digest
+
+  "exact"
+rescue JSON::ParserError, KeyError, TypeError
+  "inspect-malformed"
 end
 
-def scan_timeout_diagnostic(items, tasks_payload, container_visible, library_id)
+def scan_timeout_diagnostic(items, tasks_payload, container_state, library_id)
   tasks = tasks_payload.is_a?(Hash) && tasks_payload["tasks"].is_a?(Array) ? tasks_payload["tasks"] : []
   active_scan = tasks.any? do |task|
     task.is_a?(Hash) && task["action"] == "library-scan" && task["isFinished"] == false &&
@@ -735,7 +754,7 @@ def scan_timeout_diagnostic(items, tasks_payload, container_visible, library_id)
   end
   item_count = items.is_a?(Array) ? items.length : -1
   "fixture scan did not discover the audiobook " \
-    "(container-visible=#{container_visible == true}, observed-items=#{item_count}, active-scan=#{active_scan})"
+    "(container-state=#{container_state}, observed-items=#{item_count}, active-scan=#{active_scan})"
 end
 
 def exact_playback?(source, full_body, range_body, content_range)
@@ -1170,12 +1189,12 @@ when "audio-self-test"
         "isFinished" => false
       }]
     },
-    true,
+    "exact",
     "contract-library"
   )
   fail_contract("bounded scan diagnostic differs") unless diagnostic ==
     "fixture scan did not discover the audiobook " \
-    "(container-visible=true, observed-items=0, active-scan=true)"
+    "(container-state=exact, observed-items=0, active-scan=true)"
 
   range = source.byteslice(0, 128)
   content_range = "bytes 0-127/#{source.bytesize}"
@@ -1443,8 +1462,9 @@ when "check-missing-seed"
 end
 
 seed_fixture
-container_visible = container_fixture_visible?
-fail_contract("fixture bytes are not visible inside Audiobookshelf") if container_visible == false
+container_state = container_fixture_state
+fail_contract("fixture container state differs: #{container_state}") unless
+  %w[unconfigured exact].include?(container_state)
 request("post", "/api/libraries/#{library_id}/scan", token: token, expected: [200])
 deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + FIXTURE_SCAN_TIMEOUT_SECONDS
 next_fixture_scan_at = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 10
@@ -1459,7 +1479,7 @@ loop do
   now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
   if now >= deadline
     tasks_payload = request("get", "/api/tasks", token: token).last
-    fail_contract(scan_timeout_diagnostic(items, tasks_payload, container_visible, library_id))
+    fail_contract(scan_timeout_diagnostic(items, tasks_payload, container_state, library_id))
   end
   if now >= next_fixture_scan_at
     request("post", "/api/libraries/#{library_id}/scan", token: token, expected: [200])
