@@ -1014,6 +1014,7 @@
     - not ansible_check_mode
     - item.path_matches | length == 1
     - item.path_matches[0].raw.Name != item.desired.name
+  register: jellyfin_library_renames
   changed_when: true
   no_log: true
 
@@ -1033,7 +1034,7 @@
     url: >-
       {{ jellyfin_api ~ '/Library/VirtualFolders?name=' ~
          (item.desired.name | urlencode) ~ '&collectionType=' ~
-         (item.desired.collection_type | urlencode) ~ '&refreshLibrary=true' }}
+         (item.desired.collection_type | urlencode) ~ '&refreshLibrary=false' }}
     method: POST
     headers:
       Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_reconcile_token }}"'
@@ -1049,6 +1050,7 @@
   when:
     - not ansible_check_mode
     - item.path_matches | length == 0
+  register: jellyfin_library_creations
   changed_when: true
   no_log: true
 
@@ -1097,6 +1099,7 @@
   loop_control:
     label: "{{ item.0.desired.name }} extra-path"
   when: not ansible_check_mode
+  register: jellyfin_library_extra_path_removals
   changed_when: true
   no_log: true
 
@@ -1127,6 +1130,24 @@
       (item.path_matches[0].raw.LibraryOptions | dict2items |
        selectattr('key', 'in', jellyfin_library_options.keys()) |
        items2dict) != jellyfin_library_options
+  register: jellyfin_library_option_repairs
+  changed_when: true
+  no_log: true
+
+- name: Refresh Jellyfin after managed library changes
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Library/Refresh"
+    method: POST
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_reconcile_token }}"'
+    status_code: [204]
+  when:
+    - not ansible_check_mode
+    - >-
+      jellyfin_library_renames is changed or
+      jellyfin_library_creations is changed or
+      jellyfin_library_extra_path_removals is changed or
+      jellyfin_library_option_repairs is changed
   changed_when: true
   no_log: true
 
