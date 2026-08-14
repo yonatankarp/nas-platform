@@ -122,7 +122,12 @@ raise "test fixture leaked into production inventory" unless
   production.fetch("immich_managed_user_preference_profile_by_email").empty? &&
   production.fetch("immich_managed_user_preference_profiles").keys == ["standard"]
 RUBY
-[ "$(stat -f '%Lp' "$fixture_policy" 2>/dev/null || stat -c '%a' "$fixture_policy")" = 600 ] ||
+if [ "$(uname -s)" = Darwin ]; then
+  fixture_policy_mode=$(stat -f '%Lp' "$fixture_policy")
+else
+  fixture_policy_mode=$(stat -c '%a' "$fixture_policy")
+fi
+[ "$fixture_policy_mode" = 600 ] ||
   fail 'generated Immich fixture policy mode is unsafe'
 
 real_ruby=$(command -v ruby)
