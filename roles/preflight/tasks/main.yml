@@ -75,13 +75,6 @@
   register: preflight_mounts
   when: platform_kind == 'nas'
 
-- name: Resolve mounted volume paths
-  ansible.builtin.set_fact:
-    preflight_mount_targets: >-
-      {{ (preflight_mounts.content | b64decode).splitlines()
-         | map('regex_replace', '^(\S+)\s+(\S+).*$', '\2') | list }}
-  when: platform_kind == 'nas'
-
 # Checked through /proc/mounts rather than the mounts fact, which is not
 # populated on every platform and raises instead of failing cleanly when absent.
 # Only applied to real NAS volumes: the integration sandbox puts the storage
@@ -89,7 +82,13 @@
 - name: Require the NAS volumes to be mounted
   ansible.builtin.assert:
     that:
-      - item | regex_replace('^(/[^/]+).*$', '\1') in preflight_mount_targets
+      - >-
+        (preflight_mounts.content | b64decode
+         | regex_search(
+             '(?m)^\S+\s+'
+             ~ (item | regex_replace('^(/[^/]+).*$', '\1') | regex_escape)
+             ~ '\s+'
+           )) is not none
     fail_msg: >-
       {{ item }} is not on a mount point. Refusing to continue, because writing
       service state to an unmounted path would put it on the system volume.

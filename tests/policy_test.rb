@@ -314,12 +314,15 @@ end
 mount_guard_task = preflight_tasks.find do |task|
   task["name"] == "Require the NAS volumes to be mounted"
 end
+mount_guard_conditions = Array(
+  mount_guard_task&.dig("ansible.builtin.assert", "that")
+).join(" ")
 check(failures,
-      mount_targets_task&.dig("ansible.builtin.set_fact", "preflight_mount_targets") &&
-        mount_guard_task &&
-        preflight_tasks.index(mount_targets_task) < preflight_tasks.index(mount_guard_task) &&
-        !mount_guard_task&.key?("vars"),
-      "preflight must materialize mount targets before the looped assertion")
+      mount_targets_task.nil? &&
+        mount_guard_conditions.include?("preflight_mounts.content | b64decode") &&
+        mount_guard_conditions.include?("regex_search") &&
+        mount_guard_conditions.include?("is not none"),
+      "preflight must match each volume directly against the raw mount table")
 gpu_fact_task = preflight_tasks.find do |task|
   task["name"] == "Record whether hardware acceleration is available"
 end
