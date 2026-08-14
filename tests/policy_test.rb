@@ -308,6 +308,18 @@ check(failures, endpoint_guard&.dig("name") ==
 mount_table_task = preflight_tasks.find { |task| task["name"] == "Read the kernel mount table" }
 check(failures, mount_table_task && mount_table_task["when"].to_s.include?("platform_kind == 'nas'"),
       "preflight must read the Linux mount table only on NAS hosts")
+mount_targets_task = preflight_tasks.find do |task|
+  task["name"] == "Resolve mounted volume paths"
+end
+mount_guard_task = preflight_tasks.find do |task|
+  task["name"] == "Require the NAS volumes to be mounted"
+end
+check(failures,
+      mount_targets_task&.dig("ansible.builtin.set_fact", "preflight_mount_targets") &&
+        mount_guard_task &&
+        preflight_tasks.index(mount_targets_task) < preflight_tasks.index(mount_guard_task) &&
+        !mount_guard_task&.key?("vars"),
+      "preflight must materialize mount targets before the looped assertion")
 gpu_fact_task = preflight_tasks.find do |task|
   task["name"] == "Record whether hardware acceleration is available"
 end

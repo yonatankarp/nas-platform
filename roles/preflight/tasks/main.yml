@@ -75,6 +75,13 @@
   register: preflight_mounts
   when: platform_kind == 'nas'
 
+- name: Resolve mounted volume paths
+  ansible.builtin.set_fact:
+    preflight_mount_targets: >-
+      {{ (preflight_mounts.content | b64decode).splitlines()
+         | map('regex_replace', '^(\S+)\s+(\S+).*$', '\2') | list }}
+  when: platform_kind == 'nas'
+
 # Checked through /proc/mounts rather than the mounts fact, which is not
 # populated on every platform and raises instead of failing cleanly when absent.
 # Only applied to real NAS volumes: the integration sandbox puts the storage
@@ -93,10 +100,6 @@
   when:
     - platform_kind == 'nas'
     - item is match('^/volume')
-  vars:
-    preflight_mount_targets: >-
-      {{ (preflight_mounts.content | b64decode).splitlines()
-         | map('regex_replace', '^(\S+)\s+(\S+).*$', '\2') | list }}
 
 # A capable host must also expose the declared path. This keeps the inventory
 # contract explicit without pretending that a missing device is usable.
