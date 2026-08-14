@@ -306,23 +306,19 @@ check(failures, endpoint_guard&.dig("name") ==
                 endpoint_conditions.include?("platform_callback_host | length > 0"),
       "preflight must reject empty public and callback host coordinates first")
 mount_table_task = preflight_tasks.find { |task| task["name"] == "Read the kernel mount table" }
-check(failures, mount_table_task && mount_table_task["when"].to_s.include?("platform_kind == 'nas'"),
-      "preflight must read the Linux mount table only on NAS hosts")
-mount_targets_task = preflight_tasks.find do |task|
-  task["name"] == "Resolve mounted volume paths"
-end
 mount_guard_task = preflight_tasks.find do |task|
   task["name"] == "Require the NAS volumes to be mounted"
 end
-mount_guard_conditions = Array(
-  mount_guard_task&.dig("ansible.builtin.assert", "that")
-).join(" ")
+mount_guard_argv = Array(mount_guard_task&.dig("ansible.builtin.command", "argv"))
 check(failures,
-      mount_targets_task.nil? &&
-        mount_guard_conditions.include?("preflight_mounts.content | b64decode") &&
-        mount_guard_conditions.include?("regex_search") &&
-        mount_guard_conditions.include?("is not none"),
-      "preflight must match each volume directly against the raw mount table")
+      mount_table_task.nil? &&
+        mount_guard_argv.first == "awk" &&
+        mount_guard_argv.include?("target={{ item }}") &&
+        mount_guard_argv.include?("/proc/mounts") &&
+        mount_guard_argv.any? { |argument| argument.include?("$2 == target") } &&
+        mount_guard_task["changed_when"] == false &&
+        mount_guard_task["check_mode"] == false,
+      "preflight must check mounts by command exit status, including in check mode")
 gpu_fact_task = preflight_tasks.find do |task|
   task["name"] == "Record whether hardware acceleration is available"
 end
