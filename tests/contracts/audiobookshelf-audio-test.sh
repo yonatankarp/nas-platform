@@ -19,6 +19,39 @@ trap cleanup EXIT HUP INT TERM
 
 mkdir -p "$test_root/media" "$test_root/reports"
 
+preseed_status=0
+preseed_output=$(
+  PLATFORM_MEDIA_ROOT="$test_root/media" \
+  PLATFORM_REPORT_ROOT="$test_root/reports" \
+  PLATFORM_AUDIOBOOKSHELF_PORT=13378 \
+    "$repo_dir/tests/contracts/audiobookshelf.sh" seed-fixture-only 2>&1
+) || preseed_status=$?
+
+if [ "$preseed_status" -ne 0 ]; then
+  printf '%s\n' "$preseed_output" >&2
+  exit "$preseed_status"
+fi
+
+grep -Fqx 'Audiobookshelf media fixture prepared before deployment' <<<"$preseed_output" || {
+  printf '%s\n' "$preseed_output" >&2
+  printf '%s\n' 'Audiobookshelf audio test failed: pre-deployment fixture marker is absent' >&2
+  exit 1
+}
+
+test -f "$test_root/media/Media/Audiobooks/task-9-contract-book/task-9-contract-book.wav" || {
+  printf '%s\n' 'Audiobookshelf audio test failed: pre-deployment fixture is absent' >&2
+  exit 1
+}
+
+preseed_line=$(grep -nF 'run_audiobookshelf_contract seed-fixture-only' \
+  "$repo_dir/tests/integration.sh" | cut -d: -f1)
+deploy_line=$(grep -nF "printf 'FRESH_ROOT_OK: clean deployment root converged" \
+  "$repo_dir/tests/integration.sh" | cut -d: -f1)
+if [ -z "$preseed_line" ] || [ -z "$deploy_line" ] || [ "$preseed_line" -ge "$deploy_line" ]; then
+  printf '%s\n' 'Audiobookshelf audio test failed: fixture is not prepared before deployment' >&2
+  exit 1
+fi
+
 grep -Fq 'next_fixture_scan_at = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 10' \
   "$repo_dir/tests/contracts/audiobookshelf.sh" || {
   printf '%s\n' 'Audiobookshelf audio test failed: bounded fixture rescan is absent' >&2

@@ -1026,6 +1026,10 @@ docker run --rm \
       fi
     }
 
+    if [ "\$INTEGRATION_RUN_SERVICE_SCENARIOS" = true ] && suite_is audiobookshelf; then
+      run_audiobookshelf_contract seed-fixture-only
+    fi
+
     if [ -z "\$INTEGRATION_TAGS" ] && [ "\$#" -eq 0 ]; then
     run_play
     else
