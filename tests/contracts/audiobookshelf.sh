@@ -717,6 +717,27 @@ def matching_fixture_item(items)
   matches.first
 end
 
+def container_fixture_visible?
+  container = ENV["PLATFORM_AUDIOBOOKSHELF_CONTAINER"]
+  return nil if container.to_s.empty?
+
+  expected_digest = Digest::SHA256.hexdigest(FIXTURE_PATH.binread)
+  path = "/audiobooks/#{FIXTURE_REL_PATH}/#{FIXTURE_PATH.basename}"
+  stdout, _stderr, status = Open3.capture3("docker", "exec", container, "sha256sum", path)
+  status.success? && stdout == "#{expected_digest}  #{path}\n"
+end
+
+def scan_timeout_diagnostic(items, tasks_payload, container_visible, library_id)
+  tasks = tasks_payload.is_a?(Hash) && tasks_payload["tasks"].is_a?(Array) ? tasks_payload["tasks"] : []
+  active_scan = tasks.any? do |task|
+    task.is_a?(Hash) && task["action"] == "library-scan" && task["isFinished"] == false &&
+      task["data"].is_a?(Hash) && task.dig("data", "libraryId") == library_id
+  end
+  item_count = items.is_a?(Array) ? items.length : -1
+  "fixture scan did not discover the audiobook " \
+    "(container-visible=#{container_visible == true}, observed-items=#{item_count}, active-scan=#{active_scan})"
+end
+
 def exact_playback?(source, full_body, range_body, content_range)
   full_body == source &&
     Digest::SHA256.hexdigest(full_body) == Digest::SHA256.hexdigest(source) &&
@@ -1141,6 +1162,20 @@ when "audio-self-test"
   expect_contract_failure do
     matching_fixture_item([exact_item, exact_item.merge("id" => "duplicate")])
   end
+  diagnostic = scan_timeout_diagnostic(
+    [],
+    {
+      "tasks" => [{
+        "action" => "library-scan", "data" => { "libraryId" => "contract-library" },
+        "isFinished" => false
+      }]
+    },
+    true,
+    "contract-library"
+  )
+  fail_contract("bounded scan diagnostic differs") unless diagnostic ==
+    "fixture scan did not discover the audiobook " \
+    "(container-visible=true, observed-items=0, active-scan=true)"
 
   range = source.byteslice(0, 128)
   content_range = "bytes 0-127/#{source.bytesize}"
@@ -1408,6 +1443,8 @@ when "check-missing-seed"
 end
 
 seed_fixture
+container_visible = container_fixture_visible?
+fail_contract("fixture bytes are not visible inside Audiobookshelf") if container_visible == false
 request("post", "/api/libraries/#{library_id}/scan", token: token, expected: [200])
 deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + FIXTURE_SCAN_TIMEOUT_SECONDS
 next_fixture_scan_at = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 10
@@ -1420,7 +1457,10 @@ loop do
   item = matching_fixture_item(items)
   break if item
   now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-  fail_contract("fixture scan did not discover the tagged audiobook") if now >= deadline
+  if now >= deadline
+    tasks_payload = request("get", "/api/tasks", token: token).last
+    fail_contract(scan_timeout_diagnostic(items, tasks_payload, container_visible, library_id))
+  end
   if now >= next_fixture_scan_at
     request("post", "/api/libraries/#{library_id}/scan", token: token, expected: [200])
     next_fixture_scan_at = now + 10

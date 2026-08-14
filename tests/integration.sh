@@ -648,6 +648,7 @@ docker run --rm \
         PLATFORM_FIXTURE_ROOT='$sandbox/fixtures' \
         PLATFORM_REPORT_ROOT='$sandbox/reports' \
         PLATFORM_AUDIOBOOKSHELF_PORT=13378 \
+        PLATFORM_AUDIOBOOKSHELF_CONTAINER=audiobookshelf \
         /repo/tests/contracts/audiobookshelf.sh \"\$@\"
     }
 
