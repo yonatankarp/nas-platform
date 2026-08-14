@@ -6,7 +6,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import ctypes
 from dataclasses import dataclass, fields
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import errno
 import fcntl
 import hashlib
@@ -25,7 +25,7 @@ import sys
 import tempfile
 import threading
 import time
-from typing import Any, Sequence
+from typing import Any, Iterator, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -46,6 +46,7 @@ GIT_TIMEOUT_SECONDS = 10
 COMMAND_TIMEOUT_SECONDS = 60 * 60
 TOOLING_TIMEOUT_SECONDS = 15 * 60
 SYSTEM_GIT_PATH = Path("/usr/bin/git")
+SYSTEM_CURL_PATH = Path("/usr/bin/curl")
 SAFE_SYSTEM_PATH = "/usr/bin:/bin"
 PROCESS_TERM_GRACE_SECONDS = 0.25
 PROCESS_KILL_WAIT_SECONDS = 2.0
@@ -57,6 +58,14 @@ TIMESTAMP_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 LOCK_FILE_NAME = "deployment.lock"
 LOCK_IDENTITY_FILE_NAME = ".deployment.lock.identity"
 ATTEMPT_RESERVATION_FILE_NAME = ".deployment.attempt-reservation"
+LATEST_LOG_FILE_NAME = "latest"
+ATTEMPT_LOG_PATTERN = re.compile(
+    r"attempt-(\d{8}T\d{6}(?:\d{6})?Z)-([0-9a-f]{40})\.log"
+)
+REDACTION_MARKER = b"[REDACTED]"
+NOTIFICATION_TIMEOUT_SECONDS = 10
+PROTECTED_VALUE_MAX_BYTES = 64 * 1024
+ATTEMPT_LOG_COLLISION_LIMIT = 1000
 LOCK_BOOTSTRAP_ATTEMPTS = 3
 STATE_ROOT_CONVERGENCE_ATTEMPTS = 3
 STATE_ROOT_CONVERGENCE_DELAY_SECONDS = 0.01
@@ -398,6 +407,24 @@ def _validate_protected_config(config: Config) -> None:
 
 def _same_inode(left: os.stat_result, right: os.stat_result) -> bool:
     return (left.st_dev, left.st_ino) == (right.st_dev, right.st_ino)
+
+
+def _same_file_version(left: os.stat_result, right: os.stat_result) -> bool:
+    return _same_inode(left, right) and (
+        left.st_size,
+        left.st_mtime_ns,
+        left.st_ctime_ns,
+        left.st_mode,
+        left.st_uid,
+        left.st_nlink,
+    ) == (
+        right.st_size,
+        right.st_mtime_ns,
+        right.st_ctime_ns,
+        right.st_mode,
+        right.st_uid,
+        right.st_nlink,
+    )
 
 
 def _validate_open_directory_path(directory_fd: int, path: Path) -> None:
@@ -1122,10 +1149,35 @@ def _run_command(
     env: dict[str, str],
     timeout: float,
     log=None,
+    stdin_data: bytes | None = None,
+    pass_fds: Sequence[int] = (),
 ) -> subprocess.CompletedProcess:
     """Run one argument-array command in a killable process group."""
 
     command = [str(argument) for argument in arguments]
+    inherited_descriptors = tuple(pass_fds)
+    if (
+        any(
+            type(descriptor) is not int or descriptor <= 2
+            for descriptor in inherited_descriptors
+        )
+        or len(set(inherited_descriptors)) != len(inherited_descriptors)
+    ):
+        raise DeploymentError("deployment command descriptor is unsafe")
+    try:
+        descriptor_stats = [
+            os.fstat(descriptor) for descriptor in inherited_descriptors
+        ]
+    except OSError as error:
+        raise DeploymentError("deployment command descriptor is unsafe") from error
+    if any(
+        not stat.S_ISREG(descriptor_stat.st_mode)
+        or descriptor_stat.st_uid != os.geteuid()
+        or _mode(descriptor_stat) != 0o600
+        or descriptor_stat.st_nlink not in (0, 1)
+        for descriptor_stat in descriptor_stats
+    ):
+        raise DeploymentError("deployment command descriptor is unsafe")
     _enable_child_subreaper()
     process_table = _linux_process_table()
     baseline_children = {
@@ -1136,11 +1188,12 @@ def _run_command(
             command,
             cwd=str(cwd),
             env=dict(env),
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             shell=False,
             start_new_session=True,
+            pass_fds=inherited_descriptors,
         )
     except OSError as error:
         raise DeploymentError("deployment command could not start") from error
@@ -1152,19 +1205,13 @@ def _run_command(
         actual_process_group = process_group
     if actual_process_group != process_group or process_group <= 1:
         process.kill()
+        if process.stdin is not None:
+            process.stdin.close()
         if process.stdout is not None:
             process.stdout.close()
         process.wait()
         raise DeploymentError("deployment process group is unsafe")
-    output = bytearray()
-    deadline = time.monotonic() + timeout
-    if process.stdout is None:
-        _terminate_process_group(process, process_group, descendants, baseline_children)
-        raise DeploymentError("deployment command output is unavailable")
-    output_fd = process.stdout.fileno()
-    os.set_blocking(output_fd, False)
-    selector = selectors.DefaultSelector()
-    selector.register(output_fd, selectors.EVENT_READ)
+    selector = None
     try:
         with _command_signal_guard(
             process,
@@ -1172,8 +1219,32 @@ def _run_command(
             descendants,
             baseline_children,
         ):
+            output = bytearray()
+            deadline = time.monotonic() + timeout
+            if process.stdout is None:
+                raise DeploymentError("deployment command output is unavailable")
+            output_fd = process.stdout.fileno()
+            os.set_blocking(output_fd, False)
+            selector = selectors.DefaultSelector()
+            selector.register(output_fd, selectors.EVENT_READ, "output")
+            input_payload = (
+                memoryview(stdin_data) if stdin_data is not None else None
+            )
+            input_fd = None
+            input_offset = 0
+            input_open = False
+            if input_payload is not None:
+                if process.stdin is None:
+                    raise DeploymentError("deployment command input is unavailable")
+                input_fd = process.stdin.fileno()
+                if input_payload:
+                    os.set_blocking(input_fd, False)
+                    selector.register(input_fd, selectors.EVENT_WRITE, "input")
+                    input_open = True
+                else:
+                    process.stdin.close()
             output_open = True
-            while output_open or process.poll() is None:
+            while output_open or input_open or process.poll() is None:
                 _refresh_descendant_processes(
                     process,
                     descendants,
@@ -1185,17 +1256,54 @@ def _run_command(
                 for _key, _events in selector.select(
                     min(remaining, PROCESS_GROUP_POLL_SECONDS)
                 ):
-                    chunk = os.read(output_fd, HTTP_READ_SIZE)
-                    if not chunk:
-                        selector.unregister(output_fd)
-                        output_open = False
-                        break
-                    available = MAX_RESPONSE_BYTES - len(output)
-                    accepted = chunk[:available]
-                    output.extend(accepted)
-                    _write_command_output(log, accepted)
-                    if len(chunk) > available:
-                        raise DeploymentError("deployment command output is too large")
+                    if _key.data == "output":
+                        chunk = os.read(output_fd, HTTP_READ_SIZE)
+                        if not chunk:
+                            selector.unregister(output_fd)
+                            output_open = False
+                            continue
+                        available = MAX_RESPONSE_BYTES - len(output)
+                        accepted = chunk[:available]
+                        output.extend(accepted)
+                        _write_command_output(log, accepted)
+                        if len(chunk) > available:
+                            raise DeploymentError(
+                                "deployment command output is too large"
+                            )
+                        continue
+                    try:
+                        written = os.write(
+                            input_fd,
+                            input_payload[
+                                input_offset : input_offset + HTTP_READ_SIZE
+                            ],
+                        )
+                    except BlockingIOError:
+                        continue
+                    except BrokenPipeError:
+                        selector.unregister(input_fd)
+                        process.stdin.close()
+                        input_open = False
+                        continue
+                    except OSError as error:
+                        raise DeploymentError(
+                            "deployment command input failed"
+                        ) from error
+                    input_offset += written
+                    if input_offset == len(input_payload):
+                        selector.unregister(input_fd)
+                        process.stdin.close()
+                        input_open = False
+            _refresh_descendant_processes(process, descendants, baseline_children)
+            _reap_process_tree_children(process, process_group, descendants)
+            if _process_tree_exists(process_group, descendants):
+                raise DeploymentError("deployment command left background processes")
+            result = subprocess.CompletedProcess(
+                command,
+                process.returncode,
+                bytes(output),
+                b"",
+            )
     except subprocess.TimeoutExpired as error:
         _terminate_process_group(process, process_group, descendants, baseline_children)
         raise DeploymentError("deployment command timed out") from error
@@ -1203,15 +1311,13 @@ def _run_command(
         _terminate_process_group(process, process_group, descendants, baseline_children)
         raise
     finally:
-        selector.close()
-    _refresh_descendant_processes(process, descendants, baseline_children)
-    _reap_process_tree_children(process, process_group, descendants)
-    if _process_tree_exists(process_group, descendants):
-        _terminate_process_group(process, process_group, descendants, baseline_children)
-        raise DeploymentError("deployment command left background processes")
-    process.stdout.close()
-    output_bytes = bytes(output)
-    return subprocess.CompletedProcess(command, process.returncode, output_bytes, b"")
+        if selector is not None:
+            selector.close()
+        if process.stdin is not None and not process.stdin.closed:
+            process.stdin.close()
+        if process.stdout is not None and not process.stdout.closed:
+            process.stdout.close()
+    return result
 
 
 def _checked_output(result: subprocess.CompletedProcess) -> bytes:
@@ -2488,12 +2594,614 @@ def deploy_candidate(config: Config, sha: str, log) -> bool:
         return False
 
 
-def attempt_candidate(config: Config, sha: str) -> bool:
-    """Deploy through a protected temporary sink until durable logs are added."""
+def redact(
+    chunk: bytes | str,
+    protected_values: Sequence[bytes | str],
+) -> bytes | str:
+    """Replace known protected values and Authorization payloads in one chunk."""
 
-    with tempfile.TemporaryFile(mode="w+b", dir=str(config.log_root)) as attempt_log:
-        os.fchmod(attempt_log.fileno(), 0o600)
-        return deploy_candidate(config, sha, attempt_log)
+    is_text = isinstance(chunk, str)
+    if is_text:
+        marker = REDACTION_MARKER.decode("ascii")
+        redacted = re.sub(
+            r"(?i)(Authorization\s*:\s*)[^\r\n]+",
+            lambda match: match.group(1) + marker,
+            chunk,
+        )
+        values = []
+        for value in protected_values:
+            if isinstance(value, bytes):
+                value = value.decode("utf-8", errors="ignore")
+            else:
+                value = str(value)
+            if value:
+                values.append(value)
+        for value in sorted(set(values), key=len, reverse=True):
+            redacted = redacted.replace(value, marker)
+        return redacted
+
+    redacted = re.sub(
+        br"(?i)(Authorization\s*:\s*)[^\r\n]+",
+        lambda match: match.group(1) + REDACTION_MARKER,
+        bytes(chunk),
+    )
+    values = []
+    for value in protected_values:
+        if isinstance(value, bytes):
+            encoded = value
+        else:
+            encoded = str(value).encode("utf-8")
+        if encoded:
+            values.append(encoded)
+    for value in sorted(set(values), key=len, reverse=True):
+        redacted = redacted.replace(value, REDACTION_MARKER)
+    return redacted
+
+
+def _read_protected_bytes(
+    path: Path,
+    maximum: int = PROTECTED_VALUE_MAX_BYTES,
+) -> bytes:
+    before = _validate_owned_file(path)
+    descriptor = -1
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        opened = os.fstat(descriptor)
+        if not _same_file_version(before, opened):
+            raise StateError("protected file is unsafe")
+        body = bytearray()
+        while len(body) <= maximum:
+            chunk = os.read(descriptor, min(HTTP_READ_SIZE, maximum + 1 - len(body)))
+            if not chunk:
+                break
+            body.extend(chunk)
+        after_opened = os.fstat(descriptor)
+        after = path.lstat()
+        if (
+            not _same_file_version(opened, after_opened)
+            or not _same_file_version(opened, after)
+        ):
+            raise StateError("protected file is unsafe")
+    except OSError as error:
+        raise StateError("protected file is unreadable") from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    if len(body) > maximum:
+        raise StateError("protected file is too large")
+    return bytes(body)
+
+
+@contextmanager
+def _private_file_snapshot(directory: Path, payload: bytes):
+    """Yield a read-only descriptor for an unlinked private copy of payload."""
+
+    name = f".notification-config-{secrets.token_hex(16)}.snapshot"
+    write_descriptor = -1
+    read_descriptor = -1
+    linked = False
+    created = None
+    with _open_owned_directory(directory) as directory_descriptor:
+        try:
+            write_descriptor = os.open(
+                name,
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=directory_descriptor,
+            )
+            linked = True
+            created = os.fstat(write_descriptor)
+            if (
+                not stat.S_ISREG(created.st_mode)
+                or created.st_uid != os.geteuid()
+                or _mode(created) != 0o600
+                or created.st_nlink != 1
+            ):
+                raise StateError("notification configuration snapshot is unsafe")
+            _write_all(write_descriptor, payload)
+            os.fsync(write_descriptor)
+            read_descriptor = os.open(
+                name,
+                os.O_RDONLY | os.O_NOFOLLOW,
+                dir_fd=directory_descriptor,
+            )
+            opened = os.fstat(read_descriptor)
+            if (
+                not _same_inode(created, opened)
+                or not stat.S_ISREG(opened.st_mode)
+                or opened.st_uid != os.geteuid()
+                or _mode(opened) != 0o600
+                or opened.st_nlink != 1
+                or opened.st_size != len(payload)
+            ):
+                raise StateError("notification configuration snapshot is unsafe")
+            os.close(write_descriptor)
+            write_descriptor = -1
+            os.unlink(name, dir_fd=directory_descriptor)
+            linked = False
+            os.fsync(directory_descriptor)
+            unlinked = os.fstat(read_descriptor)
+            if not _same_inode(opened, unlinked) or unlinked.st_nlink != 0:
+                raise StateError("notification configuration snapshot is unsafe")
+            yield read_descriptor
+        except OSError as error:
+            raise StateError("notification configuration snapshot failed") from error
+        finally:
+            if write_descriptor >= 0:
+                os.close(write_descriptor)
+            if read_descriptor >= 0:
+                os.close(read_descriptor)
+            if linked and created is not None:
+                try:
+                    current = os.stat(
+                        name,
+                        dir_fd=directory_descriptor,
+                        follow_symlinks=False,
+                    )
+                    if _same_inode(created, current):
+                        os.unlink(name, dir_fd=directory_descriptor)
+                        os.fsync(directory_descriptor)
+                except OSError:
+                    pass
+
+
+def _curl_config_value_variants(raw_value: bytes) -> set[bytes]:
+    value = raw_value.strip()
+    if (
+        len(value) < 2
+        or value[:1] != value[-1:]
+        or value[:1] not in (b"'", b'"')
+    ):
+        return {value}
+    unquoted = value[1:-1]
+    if value[:1] == b"'":
+        return {unquoted}
+
+    escape_values = {
+        ord("\\"): ord("\\"),
+        ord('"'): ord('"'),
+        ord("t"): ord("\t"),
+        ord("n"): ord("\n"),
+        ord("r"): ord("\r"),
+        ord("v"): ord("\v"),
+    }
+    decoded = bytearray()
+    index = 0
+    while index < len(unquoted):
+        current = unquoted[index]
+        if current == ord("\\") and index + 1 < len(unquoted):
+            index += 1
+            current = escape_values.get(unquoted[index], unquoted[index])
+        decoded.append(current)
+        index += 1
+    return {unquoted, bytes(decoded)}
+
+
+def _curl_config_values(payload: bytes) -> set[bytes]:
+    values = {payload, payload.rstrip(b"\r\n")}
+    for raw_line in payload.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith(b"#"):
+            continue
+        values.add(line)
+        option = re.match(
+            br"^([^\s:=]+)(?:(?:\s*[=:]\s*)|\s+)(.*)$",
+            line,
+        )
+        option_values = set()
+        if option is not None:
+            option_values = _curl_config_value_variants(option.group(2))
+            values.update(option_values)
+            option_name = option.group(1).lower().lstrip(b"-")
+            for value in option_values:
+                parts = re.split(br"[\s:]+", value)
+                if option_name in (b"user", b"u", b"oauth2-bearer"):
+                    values.update(part for part in parts if part)
+                else:
+                    values.update(part for part in parts if len(part) >= 4)
+        for candidate in {line, *option_values}:
+            authorization = re.search(
+                br"(?i)Authorization\s*:\s*(.+)",
+                candidate,
+            )
+            if authorization is not None:
+                for value in _curl_config_value_variants(authorization.group(1)):
+                    value = value.strip(b"'\"")
+                    values.add(value)
+                    values.update(part for part in value.split() if part)
+    return {value for value in values if value}
+
+
+def _protected_log_values(config: Config) -> tuple[bytes, ...]:
+    values = {
+        str(config.vault_file).encode("utf-8"),
+        str(config.vault_password_file).encode("utf-8"),
+        str(config.ntfy_curl_config).encode("utf-8"),
+    }
+    vault_payload = _read_protected_bytes(config.vault_file)
+    values.add(vault_payload)
+    values.add(vault_payload.rstrip(b"\r\n"))
+    values.update(line.strip() for line in vault_payload.splitlines())
+    password_payload = _read_protected_bytes(config.vault_password_file)
+    values.add(password_payload)
+    values.add(password_payload.rstrip(b"\r\n"))
+    values.update(line.strip() for line in password_payload.splitlines())
+    values.update(_curl_config_values(_read_protected_bytes(config.ntfy_curl_config)))
+    return tuple(value for value in values if value)
+
+
+class _RedactingLog:
+    def __init__(
+        self,
+        output_file,
+        path: Path,
+        protected_values: Sequence[bytes],
+    ) -> None:
+        self._output_file = output_file
+        self._protected_values = tuple(protected_values)
+        self._buffer = bytearray()
+        self._carry_size = max(
+            max((len(value) for value in self._protected_values), default=1) - 1,
+            len(b"authorization") - 1,
+        )
+        self._discard_authorization = False
+        self._authorization_continuation = False
+        self._authorization_prefix = b""
+        self.name = str(path)
+
+    def write(self, chunk: bytes) -> int:
+        payload = bytes(chunk)
+        self._buffer.extend(payload)
+        self._drain(final=False)
+        return len(payload)
+
+    def flush(self) -> None:
+        self._output_file.flush()
+
+    def fileno(self) -> int:
+        return self._output_file.fileno()
+
+    def finish(self) -> None:
+        self._drain(final=True)
+        self._output_file.flush()
+
+    def _drain(self, *, final: bool) -> None:
+        while self._buffer:
+            newline = self._buffer.find(b"\n")
+            if self._discard_authorization:
+                if newline < 0:
+                    self._buffer.clear()
+                    return
+                del self._buffer[: newline + 1]
+                self._output_file.write(b"\n")
+                self._discard_authorization = False
+                self._authorization_continuation = True
+                continue
+            if newline >= 0:
+                line = bytes(self._buffer[: newline + 1])
+                del self._buffer[: newline + 1]
+                self._output_file.write(self._redact_line(line))
+                continue
+            if final:
+                self._output_file.write(self._redact_line(bytes(self._buffer)))
+                self._buffer.clear()
+                return
+            if len(self._buffer) <= PROTECTED_VALUE_MAX_BYTES:
+                return
+            if self._authorization_continuation:
+                self._output_file.write(REDACTION_MARKER)
+                self._buffer.clear()
+                self._discard_authorization = True
+                return
+            authorization = re.search(br"(?i)authorization", self._buffer)
+            if authorization is not None:
+                prefix = bytes(self._buffer[: authorization.start()])
+                self._output_file.write(redact(prefix, self._protected_values))
+                self._output_file.write(b"Authorization: " + REDACTION_MARKER)
+                self._authorization_prefix = prefix
+                self._buffer.clear()
+                self._discard_authorization = True
+                return
+            self._drain_known_prefix()
+
+    def _redact_line(self, line: bytes) -> bytes:
+        if line.endswith(b"\r\n"):
+            body, ending = line[:-2], b"\r\n"
+        elif line.endswith(b"\n"):
+            body, ending = line[:-1], b"\n"
+        else:
+            body, ending = line, b""
+
+        if self._authorization_continuation:
+            continuation = body
+            if self._authorization_prefix and body.startswith(
+                self._authorization_prefix
+            ):
+                continuation = body[len(self._authorization_prefix) :]
+            folded = continuation.startswith((b" ", b"\t"))
+            if folded:
+                return REDACTION_MARKER + ending
+            self._authorization_continuation = False
+            self._authorization_prefix = b""
+
+        authorization = re.search(br"(?i)authorization\s*:", body)
+        if authorization is None:
+            return redact(line, self._protected_values)
+        self._authorization_continuation = True
+        self._authorization_prefix = body[: authorization.start()]
+        prefix = redact(self._authorization_prefix, self._protected_values)
+        return prefix + b"Authorization: " + REDACTION_MARKER + ending
+
+    def _drain_known_prefix(self) -> None:
+        cutoff = len(self._buffer) - self._carry_size
+        buffer_bytes = bytes(self._buffer)
+        for value in self._protected_values:
+            start = buffer_bytes.find(value)
+            while 0 <= start < cutoff:
+                if start + len(value) > cutoff:
+                    cutoff = start
+                    break
+                start = buffer_bytes.find(value, start + 1)
+        if cutoff <= 0:
+            prefix_lengths = [
+                len(value)
+                for value in self._protected_values
+                if buffer_bytes.startswith(value)
+            ]
+            if not prefix_lengths:
+                return
+            cutoff = max(prefix_lengths)
+        payload = bytes(self._buffer[:cutoff])
+        del self._buffer[:cutoff]
+        self._output_file.write(redact(payload, self._protected_values))
+
+
+_ACTIVE_ATTEMPT_LOG = threading.local()
+
+
+def _write_private_pointer_at(directory_fd: int, name: str, payload: bytes) -> None:
+    _validate_existing_state_at(directory_fd, name)
+    descriptor = -1
+    temporary_name = f".{name}.{secrets.token_hex(16)}.tmp"
+    try:
+        descriptor = os.open(
+            temporary_name,
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=directory_fd,
+        )
+        os.fchmod(descriptor, 0o600)
+        _validate_open_state_file(descriptor)
+        _write_all(descriptor, payload)
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = -1
+        os.replace(
+            temporary_name,
+            name,
+            src_dir_fd=directory_fd,
+            dst_dir_fd=directory_fd,
+        )
+        temporary_name = ""
+        os.fsync(directory_fd)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if temporary_name:
+            try:
+                os.unlink(temporary_name, dir_fd=directory_fd)
+            except FileNotFoundError:
+                pass
+
+
+def _basic_timestamp(now: datetime | None = None) -> str:
+    moment = datetime.now(timezone.utc) if now is None else now
+    if moment.tzinfo is None:
+        raise StateError("log timestamp is invalid")
+    return moment.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+
+
+@contextmanager
+def attempt_log(config: Config, sha: str) -> Iterator[_RedactingLog]:
+    """Create and durably publish one protected, streaming attempt log."""
+
+    if SHA_PATTERN.fullmatch(sha) is None:
+        raise StateError("attempt log SHA is invalid")
+    _validate_protected_config(config)
+    protected_values = _protected_log_values(config)
+    attempt_moment = datetime.now(timezone.utc)
+    with _open_owned_directory(config.log_root) as directory_fd:
+        _validate_existing_state_at(directory_fd, LATEST_LOG_FILE_NAME)
+        descriptor = -1
+        output_file = None
+        previous_log = getattr(_ACTIVE_ATTEMPT_LOG, "sink", None)
+        try:
+            filename = ""
+            for collision in range(ATTEMPT_LOG_COLLISION_LIMIT):
+                timestamp = _basic_timestamp(
+                    attempt_moment + timedelta(microseconds=collision)
+                )
+                candidate = f"attempt-{timestamp}-{sha}.log"
+                try:
+                    descriptor = os.open(
+                        candidate,
+                        os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW,
+                        0o600,
+                        dir_fd=directory_fd,
+                    )
+                except FileExistsError:
+                    continue
+                filename = candidate
+                break
+            if descriptor < 0:
+                raise StateError("attempt log name is unavailable")
+            os.fchmod(descriptor, 0o600)
+            opened = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or opened.st_uid != os.geteuid()
+                or opened.st_nlink != 1
+                or _mode(opened) != 0o600
+            ):
+                raise StateError("attempt log is unsafe")
+            output_file = os.fdopen(descriptor, "wb", closefd=True)
+            descriptor = -1
+            sink = _RedactingLog(output_file, config.log_root / filename, protected_values)
+            _ACTIVE_ATTEMPT_LOG.sink = sink
+            try:
+                yield sink
+            finally:
+                sink.finish()
+                os.fsync(output_file.fileno())
+                _validate_open_directory_path(directory_fd, config.log_root)
+                _write_private_pointer_at(
+                    directory_fd,
+                    LATEST_LOG_FILE_NAME,
+                    (filename + "\n").encode("ascii"),
+                )
+        except OSError as error:
+            raise StateError("attempt log could not be written") from error
+        finally:
+            _ACTIVE_ATTEMPT_LOG.sink = previous_log
+            if output_file is not None:
+                output_file.close()
+            if descriptor >= 0:
+                os.close(descriptor)
+
+
+def rotate_logs(config: Config, now: datetime) -> None:
+    """Remove only validated attempt logs outside count or age retention."""
+
+    if now.tzinfo is None:
+        raise StateError("log rotation timestamp is invalid")
+    cutoff = now.astimezone(timezone.utc) - timedelta(days=config.log_retention_days)
+    _validate_protected_config(config)
+    with _open_owned_directory(config.log_root) as directory_fd:
+        candidates = []
+        try:
+            names = os.listdir(directory_fd)
+            for name in names:
+                match = ATTEMPT_LOG_PATTERN.fullmatch(name)
+                if match is None:
+                    continue
+                entry = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                if (
+                    not stat.S_ISREG(entry.st_mode)
+                    or entry.st_uid != os.geteuid()
+                    or entry.st_nlink != 1
+                    or _mode(entry) != 0o600
+                ):
+                    continue
+                try:
+                    timestamp_format = (
+                        "%Y%m%dT%H%M%S%fZ"
+                        if len(match.group(1)) == 22
+                        else "%Y%m%dT%H%M%SZ"
+                    )
+                    timestamp = datetime.strptime(
+                        match.group(1),
+                        timestamp_format,
+                    ).replace(tzinfo=timezone.utc)
+                except ValueError:
+                    continue
+                candidates.append((timestamp, name, entry))
+            candidates.sort(reverse=True)
+            for index, (timestamp, name, original) in enumerate(candidates):
+                if index < config.log_retention_count and timestamp >= cutoff:
+                    continue
+                _validate_open_directory_path(directory_fd, config.log_root)
+                current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                if (
+                    not stat.S_ISREG(current.st_mode)
+                    or current.st_uid != os.geteuid()
+                    or current.st_nlink != 1
+                    or _mode(current) != 0o600
+                    or not _same_inode(current, original)
+                ):
+                    continue
+                os.unlink(name, dir_fd=directory_fd)
+            os.fsync(directory_fd)
+        except OSError as error:
+            raise StateError("attempt log rotation failed") from error
+
+
+def _validate_notification_log(config: Config, log_path: Path) -> None:
+    if (
+        not log_path.is_absolute()
+        or log_path.parent != config.log_root
+        or ATTEMPT_LOG_PATTERN.fullmatch(log_path.name) is None
+    ):
+        raise StateError("notification log path is unsafe")
+    _validate_owned_file(log_path)
+
+
+def notify(
+    config: Config,
+    outcome: str,
+    sha: str,
+    started: str,
+    finished: str,
+    log_path: Path,
+) -> bool:
+    """Publish a secret-free deployment outcome through protected curl config."""
+
+    try:
+        _validate_state_values(sha, started, outcome)
+        _validate_state_values(sha, finished, outcome)
+        _validate_protected_config(config)
+        _validate_notification_log(config, Path(log_path))
+        config_payload = _read_protected_bytes(config.ntfy_curl_config)
+        curl = _validate_trusted_executable(SYSTEM_CURL_PATH)
+        payload = json.dumps(
+            {
+                "outcome": outcome,
+                "sha": sha,
+                "started": started,
+                "finished": finished,
+                "log_path": str(log_path),
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        with _private_file_snapshot(
+            config.ntfy_curl_config.parent,
+            config_payload,
+        ) as config_descriptor:
+            result = _run_command(
+                [
+                    str(curl),
+                    "--disable",
+                    "--fail",
+                    "--silent",
+                    "--show-error",
+                    "--max-time",
+                    "10",
+                    "--config",
+                    f"/dev/fd/{config_descriptor}",
+                    "--data-binary",
+                    "@-",
+                ],
+                cwd=_owned_root(config),
+                env=_minimal_environment(_owned_root(config)),
+                timeout=NOTIFICATION_TIMEOUT_SECONDS,
+                stdin_data=payload,
+                pass_fds=(config_descriptor,),
+            )
+            _checked_output(result)
+        return True
+    except Exception:
+        print("deployment notification could not be delivered", file=sys.stderr)
+        return False
+
+
+def attempt_candidate(config: Config, sha: str) -> bool:
+    """Deploy through the active protected attempt log."""
+
+    active_log = getattr(_ACTIVE_ATTEMPT_LOG, "sink", None)
+    if active_log is not None:
+        return deploy_candidate(config, sha, active_log)
+    with attempt_log(config, sha) as log:
+        return deploy_candidate(config, sha, log)
 
 
 def _timestamp_now() -> str:
@@ -2621,6 +3329,35 @@ def _reconcile_attempt_reservation(
     )
 
 
+def _notify_best_effort(
+    config: Config,
+    outcome: str,
+    sha: str,
+    started: str,
+    finished: str,
+    log_path: Path,
+) -> None:
+    try:
+        notify(config, outcome, sha, started, finished, log_path)
+    except Exception:
+        print("deployment notification could not be delivered", file=sys.stderr)
+
+
+def _report_attempt(
+    config: Config,
+    outcome: str,
+    sha: str,
+    started: str,
+    finished: str,
+    log_path: Path,
+) -> None:
+    try:
+        rotate_logs(config, datetime.now(timezone.utc))
+    except Exception:
+        print("deployment log rotation could not be completed", file=sys.stderr)
+    _notify_best_effort(config, outcome, sha, started, finished, log_path)
+
+
 def poll(config: Config, retry_sha: str | None = None) -> bool | None:
     """Attempt one eligible unrecorded SHA while holding the deployment lock."""
 
@@ -2711,25 +3448,52 @@ def poll(config: Config, retry_sha: str | None = None) -> bool | None:
             attempt_timestamp,
         ):
             return False
-        try:
-            succeeded = attempt_candidate(config, head_sha) is True
-        except Exception:
-            succeeded = False
+        attempt_exception = None
+        with attempt_log(config, head_sha) as log:
+            log_path = Path(log.name)
+            try:
+                succeeded = attempt_candidate(config, head_sha) is True
+            except BaseException as error:
+                succeeded = False
+                if not isinstance(error, Exception):
+                    attempt_exception = error
+        finished = _timestamp_now()
         if _quarantine_if_state_root_replaced(
             config,
             state_directory_fd,
             head_sha,
             attempt_timestamp,
         ):
+            _report_attempt(
+                config,
+                "failed",
+                head_sha,
+                attempt_timestamp,
+                finished,
+                log_path,
+            )
+            if attempt_exception is not None:
+                raise attempt_exception
             return False
         if not succeeded:
+            _report_attempt(
+                config,
+                "failed",
+                head_sha,
+                attempt_timestamp,
+                finished,
+                log_path,
+            )
+            if attempt_exception is not None:
+                raise attempt_exception
             return False
         try:
+            success_timestamp = _timestamp_now()
             _write_sha_state_at(
                 state_directory_fd,
                 "last-successful",
                 head_sha,
-                _timestamp_now(),
+                success_timestamp,
                 "success",
             )
             if _quarantine_if_state_root_replaced(
@@ -2738,6 +3502,14 @@ def poll(config: Config, retry_sha: str | None = None) -> bool | None:
                 head_sha,
                 attempt_timestamp,
             ):
+                _report_attempt(
+                    config,
+                    "failed",
+                    head_sha,
+                    attempt_timestamp,
+                    _timestamp_now(),
+                    log_path,
+                )
                 return False
             _remove_matching_sha_state_at(
                 state_directory_fd,
@@ -2751,7 +3523,23 @@ def poll(config: Config, retry_sha: str | None = None) -> bool | None:
                 head_sha,
                 attempt_timestamp,
             ):
+                _report_attempt(
+                    config,
+                    "failed",
+                    head_sha,
+                    attempt_timestamp,
+                    _timestamp_now(),
+                    log_path,
+                )
                 return False
+            _report_attempt(
+                config,
+                "failed",
+                head_sha,
+                attempt_timestamp,
+                _timestamp_now(),
+                log_path,
+            )
             raise
         if _quarantine_if_state_root_replaced(
             config,
@@ -2759,7 +3547,23 @@ def poll(config: Config, retry_sha: str | None = None) -> bool | None:
             head_sha,
             attempt_timestamp,
         ):
+            _report_attempt(
+                config,
+                "failed",
+                head_sha,
+                attempt_timestamp,
+                _timestamp_now(),
+                log_path,
+            )
             return False
+        _report_attempt(
+            config,
+            "success",
+            head_sha,
+            attempt_timestamp,
+            success_timestamp,
+            log_path,
+        )
         return True
 
 

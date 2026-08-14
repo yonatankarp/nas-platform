@@ -2,6 +2,7 @@
 
 import contextlib
 import dataclasses
+import datetime
 import errno
 import hashlib
 from http.client import HTTPException
@@ -199,7 +200,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
         self.write_config()
         self.install_fake("git", self.fake_git_source(MAIN_SHA))
         self.install_recording_fake("ansible-playbook")
-        self.install_recording_fake("curl")
+        self.install_recording_fake("curl", consume_stdin=True)
         self.real_validate_trusted_executable = (
             production_auto_deploy._validate_trusted_executable
         )
@@ -220,6 +221,13 @@ class ProductionAutoDeployTest(unittest.TestCase):
         )
         system_git.start()
         self.addCleanup(system_git.stop)
+        system_curl = mock.patch.object(
+            production_auto_deploy,
+            "SYSTEM_CURL_PATH",
+            self.fake_bin / "curl",
+        )
+        system_curl.start()
+        self.addCleanup(system_curl.stop)
         controller_python = mock.patch.object(
             production_auto_deploy,
             "_validate_controller_python",
@@ -251,13 +259,15 @@ class ProductionAutoDeployTest(unittest.TestCase):
             f"print({sha!r} + '\\trefs/heads/main')\n"
         )
 
-    def install_recording_fake(self, name):
+    def install_recording_fake(self, name, *, consume_stdin=False):
+        stdin_source = "sys.stdin.buffer.read()\n" if consume_stdin else ""
         self.install_fake(
             name,
             f"#!{sys.executable}\n"
             "import pathlib\n"
             "import sys\n"
-            f"pathlib.Path({str(self.tool_calls)!r}).open('a').write("
+            + stdin_source
+            + f"pathlib.Path({str(self.tool_calls)!r}).open('a').write("
             f"{name!r} + ' ' + ' '.join(sys.argv[1:]) + '\\n')\n",
         )
 
@@ -1933,6 +1943,8 @@ class ProductionAutoDeployTest(unittest.TestCase):
             ("exception", RuntimeError("attempt failed")),
         ):
             with self.subTest(label=label):
+                for log_entry in (self.root / "logs").iterdir():
+                    log_entry.unlink()
                 failed_path = self.state_path("last-failed")
                 if failed_path.exists():
                     failed_path.unlink()
@@ -3948,6 +3960,38 @@ class ProductionAutoDeployTest(unittest.TestCase):
 
         self.assertFalse(orphan_marker.exists())
 
+    def test_command_signal_during_pipe_setup_cleans_child(self):
+        orphan_marker = self.root / "pipe-setup-signal-orphan"
+        child_source = (
+            "import pathlib,time\n"
+            "time.sleep(.5)\n"
+            f"pathlib.Path({str(orphan_marker)!r}).write_text('orphaned')\n"
+        )
+        runner_source = (
+            "import os,pathlib,signal,sys\n"
+            f"sys.path.insert(0,{str(SCRIPT.parent)!r})\n"
+            "import production_auto_deploy as module\n"
+            "real_set_blocking=module.os.set_blocking\n"
+            "def interrupt(descriptor,blocking):\n"
+            " os.kill(os.getpid(),signal.SIGTERM)\n"
+            " real_set_blocking(descriptor,blocking)\n"
+            "module.os.set_blocking=interrupt\n"
+            f"module._run_command([sys.executable,'-c',{child_source!r}],"
+            f"cwd=pathlib.Path({str(self.root)!r}),"
+            "env={'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C',"
+            f"'HOME':{str(self.root)!r}}},timeout=2)\n"
+        )
+
+        subprocess.run(
+            [sys.executable, "-c", runner_source],
+            capture_output=True,
+            check=False,
+            timeout=3,
+        )
+        time.sleep(0.7)
+
+        self.assertFalse(orphan_marker.exists())
+
     def test_command_timeout_kills_descendant_after_group_leader_exits(self):
         orphan_marker = self.root / "orphaned-after-timeout"
         command_source = (
@@ -4133,6 +4177,83 @@ class ProductionAutoDeployTest(unittest.TestCase):
             len(sink.getvalue()), production_auto_deploy.MAX_RESPONSE_BYTES
         )
 
+    def test_command_streams_large_input_and_output_without_deadlock(self):
+        child_pid = self.root / "duplex-command-pid"
+        transfer_size = 256 * 1024
+        child_source = (
+            "import os,pathlib,sys\n"
+            f"pathlib.Path({str(child_pid)!r}).write_text(str(os.getpid()))\n"
+            f"remaining={transfer_size}\n"
+            "chunk=b'o'*65536\n"
+            "while remaining:\n"
+            " size=min(len(chunk),remaining); os.write(1,chunk[:size]); remaining-=size\n"
+            "received=sys.stdin.buffer.read()\n"
+            f"raise SystemExit(0 if len(received)=={transfer_size} else 71)\n"
+        )
+        runner_source = (
+            "import os,pathlib,signal,sys,time\n"
+            f"sys.path.insert(0,{str(SCRIPT.parent)!r})\n"
+            "import production_auto_deploy as module\n"
+            "def alarm(_signal,_frame): raise TimeoutError('outer deadline')\n"
+            "signal.signal(signal.SIGALRM,alarm)\n"
+            "signal.setitimer(signal.ITIMER_REAL,2)\n"
+            "succeeded=False\n"
+            "try:\n"
+            f" result=module._run_command([sys.executable,'-c',{child_source!r}],"
+            f"cwd=pathlib.Path({str(self.root)!r}),"
+            "env={'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C',"
+            f"'HOME':{str(self.root)!r}}},timeout=1,stdin_data=b'i'*{transfer_size})\n"
+            " succeeded=result.returncode==0 and len(result.stdout)=="
+            f"{transfer_size} and len(result.stdout)<=module.MAX_RESPONSE_BYTES\n"
+            "except Exception:\n"
+            " pass\n"
+            "finally:\n"
+            " signal.setitimer(signal.ITIMER_REAL,0)\n"
+            "time.sleep(.2)\n"
+            f"pid=int(pathlib.Path({str(child_pid)!r}).read_text())\n"
+            "try:\n"
+            " os.kill(pid,0)\n"
+            " alive=True\n"
+            "except ProcessLookupError:\n"
+            " alive=False\n"
+            "raise SystemExit(0 if succeeded and not alive else 9)\n"
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-c", runner_source],
+            capture_output=True,
+            check=False,
+            timeout=5,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+
+    def test_command_runner_passes_only_requested_private_descriptor(self):
+        with tempfile.TemporaryFile(mode="w+b") as snapshot:
+            snapshot.write(b"snapshot")
+            snapshot.flush()
+            snapshot.seek(0)
+            descriptor = snapshot.fileno()
+
+            result = production_auto_deploy._run_command(
+                [
+                    sys.executable,
+                    "-c",
+                    f"import os; os.write(1, os.read({descriptor}, 8))",
+                ],
+                cwd=self.root,
+                env={
+                    "PATH": "/usr/bin:/bin",
+                    "LANG": "C",
+                    "LC_ALL": "C",
+                    "HOME": str(self.root),
+                },
+                timeout=5,
+                pass_fds=(descriptor,),
+            )
+
+        self.assertEqual(result.stdout, b"snapshot")
+
     @unittest.skipUnless(sys.platform.startswith("linux"), "requires Linux /proc")
     def test_git_timeout_kills_setsid_descendant(self):
         orphan_marker = self.root / "git-setsid-orphan"
@@ -4162,6 +4283,837 @@ class ProductionAutoDeployTest(unittest.TestCase):
         time.sleep(1)
 
         self.assertFalse(orphan_marker.exists())
+
+    def test_attempt_log_is_private_exact_and_updates_regular_latest_file(self):
+        config = self.loaded_config()
+
+        with production_auto_deploy.attempt_log(config, MAIN_SHA) as log:
+            log_path = Path(log.name)
+            log.write(b"deployment output\n")
+
+        self.assertRegex(
+            log_path.name,
+            rf"^attempt-\d{{8}}T\d{{12}}Z-{MAIN_SHA}\.log$",
+        )
+        self.assertEqual(stat.S_IMODE(log_path.stat().st_mode), 0o600)
+        latest = self.root / "logs" / "latest"
+        self.assertFalse(latest.is_symlink())
+        self.assertTrue(latest.is_file())
+        self.assertEqual(stat.S_IMODE(latest.stat().st_mode), 0o600)
+        self.assertEqual(latest.read_text(encoding="utf-8"), log_path.name + "\n")
+
+    def test_attempt_log_names_are_unique_within_the_same_second(self):
+        moments = iter(
+            (
+                datetime.datetime(
+                    2026,
+                    8,
+                    14,
+                    12,
+                    0,
+                    0,
+                    100001,
+                    tzinfo=datetime.timezone.utc,
+                ),
+                datetime.datetime(
+                    2026,
+                    8,
+                    14,
+                    12,
+                    0,
+                    0,
+                    100001,
+                    tzinfo=datetime.timezone.utc,
+                ),
+            )
+        )
+
+        class AttemptDatetime(datetime.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return next(moments)
+
+        paths = []
+        with mock.patch.object(production_auto_deploy, "datetime", AttemptDatetime):
+            for _attempt in range(2):
+                try:
+                    with production_auto_deploy.attempt_log(
+                        self.loaded_config(),
+                        MAIN_SHA,
+                    ) as log:
+                        paths.append(Path(log.name))
+                except production_auto_deploy.StateError:
+                    break
+
+        self.assertEqual(len(paths), 2)
+        self.assertNotEqual(paths[0], paths[1])
+        for path in paths:
+            self.assertRegex(
+                path.name,
+                rf"^attempt-\d{{8}}T\d{{12}}Z-{MAIN_SHA}\.log$",
+            )
+            self.assertTrue(path.is_file())
+
+    def test_attempt_log_rejects_hostile_latest_before_entering_context(self):
+        latest = self.root / "logs" / "latest"
+        external = self.root / "external-latest"
+        external.write_text("external unchanged\n", encoding="utf-8")
+        latest.symlink_to(external)
+        entered = False
+
+        with self.assertRaises(production_auto_deploy.StateError):
+            with production_auto_deploy.attempt_log(
+                self.loaded_config(),
+                MAIN_SHA,
+            ):
+                entered = True
+
+        self.assertFalse(entered)
+        self.assertTrue(latest.is_symlink())
+        self.assertEqual(external.read_text(encoding="utf-8"), "external unchanged\n")
+        self.assertEqual(
+            [path.name for path in (self.root / "logs").iterdir()],
+            ["latest"],
+        )
+
+    def test_attempt_log_redacts_known_values_split_across_chunks(self):
+        password = "PASSWORD_PROVIDER_SENTINEL_7654321"
+        token = "NTFY_TOKEN_SENTINEL_3141592"
+        password_file = Path(self.config["vault_password_file"])
+        password_file.write_text(password + "\n", encoding="utf-8")
+        ntfy_config = Path(self.config["ntfy_curl_config"])
+        ntfy_config.write_text(
+            f'header = "Authorization: Bearer {token}"\n',
+            encoding="utf-8",
+        )
+        config = self.loaded_config()
+
+        with production_auto_deploy.attempt_log(config, MAIN_SHA) as log:
+            log_path = Path(log.name)
+            split = len(password) // 2
+            log.write(("before " + password[:split]).encode())
+            log.write(
+                (
+                    password[split:]
+                    + " after\nAuthorization: Bearer "
+                    + token
+                    + "\n"
+                    + str(config.vault_file)
+                    + "\n"
+                ).encode()
+            )
+
+        body = log_path.read_bytes()
+        self.assertNotIn(password.encode(), body)
+        self.assertNotIn(token.encode(), body)
+        self.assertNotIn(str(config.vault_file).encode(), body)
+        self.assertIn(b"[REDACTED]", body)
+
+    def test_attempt_log_redacts_encrypted_vault_bytes_split_across_chunks(self):
+        vault_sentinel = b"ENCRYPTED_VAULT_SENTINEL_8675309"
+        vault_file = Path(self.config["vault_file"])
+        vault_file.write_bytes(
+            b"$ANSIBLE_VAULT;1.1;AES256\n"
+            b"616263646566\n"
+            + vault_sentinel
+            + b"\n"
+        )
+
+        with production_auto_deploy.attempt_log(
+            self.loaded_config(),
+            MAIN_SHA,
+        ) as log:
+            log_path = Path(log.name)
+            split = len(vault_sentinel) // 2
+            log.write(vault_sentinel[:split])
+            log.write(vault_sentinel[split:] + b"\n")
+
+        body = log_path.read_bytes()
+        self.assertNotIn(vault_sentinel, body)
+        self.assertEqual(body, b"[REDACTED]\n")
+
+    def test_protected_file_read_rejects_same_inode_rewrite(self):
+        vault_file = Path(self.config["vault_file"])
+        old_payload = b"A" * 32000 + b"OLD_VAULT_TAIL"
+        new_payload = b"B" * 32000 + b"NEW_VAULT_TAIL"
+        vault_file.write_bytes(old_payload)
+        vault_file.chmod(0o600)
+        real_read = os.read
+        reads = 0
+
+        def rewrite_after_first_chunk(descriptor, size):
+            nonlocal reads
+            chunk = real_read(descriptor, min(size, 8192))
+            reads += 1
+            if reads == 1:
+                vault_file.write_bytes(new_payload)
+                vault_file.chmod(0o600)
+            return chunk
+
+        with mock.patch.object(
+            production_auto_deploy.os,
+            "read",
+            side_effect=rewrite_after_first_chunk,
+        ), self.assertRaisesRegex(
+            production_auto_deploy.StateError,
+            "protected file is unsafe",
+        ):
+            production_auto_deploy._read_protected_bytes(vault_file)
+
+    def test_attempt_log_redacts_all_valid_curl_config_value_separators(self):
+        sentinels = (
+            "OAUTH_EQUALS_SENTINEL_1001",
+            "OAUTH_COLON_SENTINEL_1002",
+            "OAUTH_SPACE_SENTINEL_1003",
+            "USER_EQUALS_SENTINEL_2001",
+            "USER_COLON_SENTINEL_2002",
+            "USER_SPACE_SENTINEL_2003",
+        )
+        ntfy_config = Path(self.config["ntfy_curl_config"])
+        ntfy_config.write_text(
+            "\n".join(
+                (
+                    f'oauth2-bearer = "{sentinels[0]}"',
+                    f'oauth2-bearer: "{sentinels[1]}"',
+                    f'oauth2-bearer "{sentinels[2]}"',
+                    f'user = "publisher:{sentinels[3]}"',
+                    f'user: "publisher:{sentinels[4]}"',
+                    f'user "publisher:{sentinels[5]}"',
+                )
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        with production_auto_deploy.attempt_log(
+            self.loaded_config(),
+            MAIN_SHA,
+        ) as log:
+            log_path = Path(log.name)
+            for sentinel in sentinels:
+                split = len(sentinel) // 2
+                log.write(sentinel[:split].encode())
+                log.write((sentinel[split:] + "\n").encode())
+
+        body = log_path.read_bytes()
+        for sentinel in sentinels:
+            self.assertNotIn(sentinel.encode(), body)
+        self.assertEqual(body.count(b"[REDACTED]"), len(sentinels))
+
+    def test_attempt_log_redacts_curl_decoded_quoted_config_values(self):
+        self.assertIn(
+            b'A\\B"C\tD\nE\rF\vG',
+            production_auto_deploy._curl_config_value_variants(
+                b'"A\\\\B\\"C\\tD\\nE\\rF\\vG"'
+            ),
+        )
+        oauth_value = b"OAUTH\\ESCAPED_SENTINEL_3001"
+        user_value = b'USER"ESCAPED_SENTINEL_3002'
+        ntfy_config = Path(self.config["ntfy_curl_config"])
+        ntfy_config.write_bytes(
+            b'oauth2-bearer = "OAUTH\\\\ESCAPED_SENTINEL_3001"\n'
+            b'user = "publisher:USER\\"ESCAPED_SENTINEL_3002"\n'
+        )
+
+        with production_auto_deploy.attempt_log(
+            self.loaded_config(),
+            MAIN_SHA,
+        ) as log:
+            log_path = Path(log.name)
+            for value in (oauth_value, user_value):
+                split = len(value) // 2
+                log.write(value[:split])
+                log.write(value[split:] + b"\n")
+
+        body = log_path.read_bytes()
+        self.assertNotIn(oauth_value, body)
+        self.assertNotIn(user_value, body)
+        self.assertEqual(body.count(b"[REDACTED]"), 2)
+
+    def test_attempt_log_redacts_short_user_password_component(self):
+        ntfy_config = Path(self.config["ntfy_curl_config"])
+        ntfy_config.write_bytes(b'user: "u:p"\n')
+
+        with production_auto_deploy.attempt_log(
+            self.loaded_config(),
+            MAIN_SHA,
+        ) as log:
+            log_path = Path(log.name)
+            log.write(b"p")
+            log.write(b"\n")
+
+        body = log_path.read_bytes()
+        self.assertNotIn(b"p", body)
+        self.assertEqual(body, b"[REDACTED]\n")
+
+    def test_attempt_log_redacts_short_dashed_curl_credential_values(self):
+        ntfy_config = Path(self.config["ntfy_curl_config"])
+        ntfy_config.write_bytes(
+            b'--user "u:p"\n'
+            b'-u "x:q"\n'
+            b'--oauth2-bearer "r"\n'
+        )
+
+        with production_auto_deploy.attempt_log(
+            self.loaded_config(),
+            MAIN_SHA,
+        ) as log:
+            log_path = Path(log.name)
+            for value in (b"p", b"q", b"r"):
+                log.write(value)
+                log.write(b"\n")
+
+        body = log_path.read_bytes()
+        for value in (b"p", b"q", b"r"):
+            self.assertNotIn(value, body)
+        self.assertEqual(body.count(b"[REDACTED]"), 3)
+
+    def test_attempt_log_redacts_unknown_authorization_across_chunk_boundaries(self):
+        secret = b"UNKNOWN_AUTHORIZATION_SENTINEL_" + (
+            b"s" * (production_auto_deploy.PROTECTED_VALUE_MAX_BYTES + 100)
+        )
+
+        with production_auto_deploy.attempt_log(
+            self.loaded_config(),
+            MAIN_SHA,
+        ) as log:
+            log_path = Path(log.name)
+            log.write(b"prefix\nAuthor")
+            log.write(b"ization: Bearer " + secret)
+            log.write(b"\nsuffix\n")
+
+        body = log_path.read_bytes()
+        self.assertNotIn(secret, body)
+        self.assertNotIn(b"s" * 50, body)
+        self.assertNotIn(b"Bearer", body)
+        self.assertIn(b"Authorization: [REDACTED]", body)
+
+    def test_attempt_log_redacts_folded_authorization_continuations(self):
+        bearer_secret = b"FOLDED_BEARER_SENTINEL_4101"
+        basic_secret = b"FOLDED_BASIC_SENTINEL_4102"
+        response_secret = b"FOLDED_RESPONSE_SENTINEL_4103"
+        trace_secret = b"FOLDED_TRACE_SENTINEL_4104"
+        payload = (
+            b"Authorization:\r\n  Bearer "
+            + bearer_secret
+            + b"\r\nsafe\n> Authorization:\n> \tBasic "
+            + basic_secret
+            + b"\n< Authorization:\r\n<   Bearer "
+            + response_secret
+            + b"\r\n* Authorization:\n*  Other "
+            + trace_secret
+            + b"\nend\n"
+        )
+
+        with production_auto_deploy.attempt_log(
+            self.loaded_config(),
+            MAIN_SHA,
+        ) as log:
+            log_path = Path(log.name)
+            for start in range(0, len(payload), 3):
+                log.write(payload[start : start + 3])
+
+        body = log_path.read_bytes()
+        self.assertNotIn(bearer_secret, body)
+        self.assertNotIn(basic_secret, body)
+        self.assertNotIn(response_secret, body)
+        self.assertNotIn(trace_secret, body)
+        self.assertNotIn(b"Bearer", body)
+        self.assertNotIn(b"Basic", body)
+        self.assertIn(b"safe\n", body)
+        self.assertIn(b"end\n", body)
+
+    def test_attempt_log_bounds_long_folded_authorization_continuation(self):
+        secret = b"S" * (production_auto_deploy.PROTECTED_VALUE_MAX_BYTES * 2)
+        payload = b"Authorization:\n  Bearer " + secret + b"\nend\n"
+
+        with production_auto_deploy.attempt_log(
+            self.loaded_config(),
+            MAIN_SHA,
+        ) as log:
+            log_path = Path(log.name)
+            for start in range(0, len(payload), 4096):
+                log.write(payload[start : start + 4096])
+
+        body = log_path.read_bytes()
+        self.assertNotIn(b"S" * 50, body)
+        self.assertNotIn(b"Bearer", body)
+        self.assertLess(len(body), 256)
+        self.assertIn(b"end\n", body)
+
+    def test_redactor_consumes_maximum_sized_known_value_without_spinning(self):
+        source = (
+            "import io,pathlib,sys\n"
+            f"sys.path.insert(0,{str(SCRIPT.parent)!r})\n"
+            "import production_auto_deploy as module\n"
+            "secret=b'x'*module.PROTECTED_VALUE_MAX_BYTES\n"
+            "output=io.BytesIO()\n"
+            "sink=module._RedactingLog(output,pathlib.Path('/tmp/log'),(secret,))\n"
+            "sink.write(secret+b'y')\n"
+            "sink.finish()\n"
+            "assert secret not in output.getvalue()\n"
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-c", source],
+            capture_output=True,
+            check=False,
+            timeout=1,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+
+    def test_redactor_handles_protected_value_overlapping_authorization_name(self):
+        output = io.BytesIO()
+        sink = production_auto_deploy._RedactingLog(
+            output,
+            Path("/tmp/log"),
+            (b"Auth",),
+        )
+
+        sink.write(b"Authorization: Bearer UNKNOWN_SECRET\n")
+        sink.finish()
+
+        body = output.getvalue()
+        self.assertNotIn(b"UNKNOWN_SECRET", body)
+        self.assertNotIn(b"Bearer", body)
+        self.assertIn(b"[REDACTED]", body)
+
+    def test_rotate_logs_enforces_count_and_age_without_touching_unsafe_entries(self):
+        config = self.loaded_config()
+        log_root = Path(config.log_root)
+        now = datetime.datetime(2026, 8, 14, 12, 0, tzinfo=datetime.timezone.utc)
+        names = []
+        for offset in range(22):
+            timestamp = now - datetime.timedelta(days=offset)
+            name = (
+                "attempt-"
+                + timestamp.strftime("%Y%m%dT%H%M%SZ")
+                + f"-{offset:040x}.log"
+            )
+            path = log_root / name
+            path.write_bytes(str(offset).encode())
+            path.chmod(0o600)
+            names.append(name)
+        old_name = f"attempt-20260701T120000Z-{'f' * 40}.log"
+        old_path = log_root / old_name
+        old_path.write_text("old\n", encoding="utf-8")
+        old_path.chmod(0o600)
+        external = self.root / "external-log"
+        external.write_text("external unchanged\n", encoding="utf-8")
+        symlink = log_root / f"attempt-20200101T000000Z-{'e' * 40}.log"
+        symlink.symlink_to(external)
+        unmatched = log_root / "attempt-not-a-log"
+        unmatched.write_text("unchanged\n", encoding="utf-8")
+
+        production_auto_deploy.rotate_logs(config, now)
+
+        retained = sorted(
+            path.name
+            for path in log_root.glob("*.log")
+            if not path.is_symlink()
+        )
+        self.assertEqual(retained, sorted(names[:20]))
+        self.assertTrue(symlink.is_symlink())
+        self.assertEqual(external.read_text(encoding="utf-8"), "external unchanged\n")
+        self.assertEqual(unmatched.read_text(encoding="utf-8"), "unchanged\n")
+
+    def test_notify_uses_exact_curl_argv_and_secret_free_json_stdin(self):
+        config = self.loaded_config()
+        token = "NOTIFICATION_TOKEN_SENTINEL_2718281"
+        config.ntfy_curl_config.write_text(
+            f'header = "Authorization: Bearer {token}"\n',
+            encoding="utf-8",
+        )
+        log_path = config.log_root / (
+            f"attempt-20260814T120000Z-{MAIN_SHA}.log"
+        )
+        log_path.write_text("safe\n", encoding="utf-8")
+        log_path.chmod(0o600)
+        calls = []
+        snapshot = {}
+
+        def run(arguments, **kwargs):
+            calls.append((list(arguments), kwargs))
+            descriptor = kwargs["pass_fds"][0]
+            snapshot["descriptor"] = descriptor
+            snapshot["payload"] = os.pread(
+                descriptor,
+                production_auto_deploy.PROTECTED_VALUE_MAX_BYTES,
+                0,
+            )
+            snapshot["stat"] = os.fstat(descriptor)
+            with self.assertRaises(OSError):
+                os.write(descriptor, b"changed")
+            return subprocess.CompletedProcess(arguments, 0, b"", b"")
+
+        with mock.patch.object(
+            production_auto_deploy,
+            "SYSTEM_CURL_PATH",
+            self.fake_bin / "curl",
+        ), mock.patch.object(
+            production_auto_deploy,
+            "_run_command",
+            side_effect=run,
+        ):
+            delivered = production_auto_deploy.notify(
+                config,
+                "success",
+                MAIN_SHA,
+                "2026-08-14T12:00:00Z",
+                "2026-08-14T12:01:00Z",
+                log_path,
+            )
+
+        self.assertTrue(delivered)
+        self.assertEqual(
+            calls[0][0],
+            [
+                str(self.fake_bin / "curl"),
+                "--disable",
+                "--fail",
+                "--silent",
+                "--show-error",
+                "--max-time",
+                "10",
+                "--config",
+                f"/dev/fd/{snapshot['descriptor']}",
+                "--data-binary",
+                "@-",
+            ],
+        )
+        self.assertEqual(
+            snapshot["payload"],
+            config.ntfy_curl_config.read_bytes(),
+        )
+        self.assertEqual(snapshot["stat"].st_nlink, 0)
+        self.assertEqual(calls[0][1]["pass_fds"], (snapshot["descriptor"],))
+        with self.assertRaises(OSError):
+            os.fstat(snapshot["descriptor"])
+        self.assertEqual(
+            list(config.ntfy_curl_config.parent.glob(".notification-config-*")),
+            [],
+        )
+        self.assertEqual(
+            json.loads(calls[0][1]["stdin_data"]),
+            {
+                "outcome": "success",
+                "sha": MAIN_SHA,
+                "started": "2026-08-14T12:00:00Z",
+                "finished": "2026-08-14T12:01:00Z",
+                "log_path": str(log_path),
+            },
+        )
+        self.assertNotIn(token, " ".join(calls[0][0]))
+        self.assertNotIn(token.encode(), calls[0][1]["stdin_data"])
+
+    def test_notify_disables_hostile_ambient_home_curl_config(self):
+        config = self.loaded_config()
+        log_path = config.log_root / (
+            f"attempt-20260814T120000Z-{MAIN_SHA}.log"
+        )
+        log_path.write_text("safe\n", encoding="utf-8")
+        log_path.chmod(0o600)
+        ambient_sentinel = "AMBIENT_CURL_SENTINEL_9090"
+        (self.root / ".curlrc").write_text(ambient_sentinel, encoding="utf-8")
+        self.install_fake(
+            "curl",
+            f"#!{sys.executable}\n"
+            "import os,pathlib,sys\n"
+            "if sys.argv[1:2] != ['--disable']:\n"
+            "    print((pathlib.Path(os.environ['HOME'])/'.curlrc').read_text())\n"
+            "    raise SystemExit(73)\n"
+            "sys.stdin.buffer.read()\n",
+        )
+        stderr = io.StringIO()
+
+        with contextlib.redirect_stderr(stderr):
+            delivered = production_auto_deploy.notify(
+                config,
+                "success",
+                MAIN_SHA,
+                "2026-08-14T12:00:00Z",
+                "2026-08-14T12:01:00Z",
+                log_path,
+            )
+
+        self.assertTrue(delivered)
+        self.assertEqual(stderr.getvalue(), "")
+        self.assertNotIn(ambient_sentinel, stderr.getvalue())
+
+    def test_notify_uses_snapshot_when_original_config_is_replaced_during_run(self):
+        config = self.loaded_config()
+        token = "SNAPSHOT_TOKEN_SENTINEL_8181"
+        original_payload = f'oauth2-bearer "{token}"\n'.encode()
+        config.ntfy_curl_config.write_bytes(original_payload)
+        log_path = config.log_root / (
+            f"attempt-20260814T120000Z-{MAIN_SHA}.log"
+        )
+        log_path.write_text("safe\n", encoding="utf-8")
+        log_path.chmod(0o600)
+        observed = {}
+
+        def replace_config(arguments, **kwargs):
+            descriptor = kwargs["pass_fds"][0]
+            observed["descriptor"] = descriptor
+            observed["payload"] = os.pread(
+                descriptor,
+                production_auto_deploy.PROTECTED_VALUE_MAX_BYTES,
+                0,
+            )
+            observed["arguments"] = list(arguments)
+            observed["stdin"] = kwargs["stdin_data"]
+            replacement = config.ntfy_curl_config.with_name("replacement.curlrc")
+            replacement.write_text("changed\n", encoding="utf-8")
+            replacement.chmod(0o600)
+            os.replace(replacement, config.ntfy_curl_config)
+            return subprocess.CompletedProcess(arguments, 0, b"", b"")
+
+        stderr = io.StringIO()
+        with mock.patch.object(
+            production_auto_deploy,
+            "_run_command",
+            side_effect=replace_config,
+        ), contextlib.redirect_stderr(stderr):
+            delivered = production_auto_deploy.notify(
+                config,
+                "failed",
+                MAIN_SHA,
+                "2026-08-14T12:00:00Z",
+                "2026-08-14T12:01:00Z",
+                log_path,
+            )
+
+        self.assertTrue(delivered)
+        self.assertEqual(stderr.getvalue(), "")
+        self.assertEqual(observed["payload"], original_payload)
+        self.assertEqual(config.ntfy_curl_config.read_bytes(), b"changed\n")
+        self.assertNotIn(token, " ".join(observed["arguments"]))
+        self.assertNotIn(token.encode(), observed["stdin"])
+        with self.assertRaises(OSError):
+            os.fstat(observed["descriptor"])
+        self.assertEqual(
+            list(config.ntfy_curl_config.parent.glob(".notification-config-*")),
+            [],
+        )
+
+    def test_notify_closes_snapshot_when_runner_fails(self):
+        config = self.loaded_config()
+        log_path = config.log_root / (
+            f"attempt-20260814T120000Z-{MAIN_SHA}.log"
+        )
+        log_path.write_text("safe\n", encoding="utf-8")
+        log_path.chmod(0o600)
+        observed = {}
+
+        def fail(_arguments, **kwargs):
+            observed["descriptor"] = kwargs["pass_fds"][0]
+            raise production_auto_deploy.DeploymentError("curl failed")
+
+        stderr = io.StringIO()
+        with mock.patch.object(
+            production_auto_deploy,
+            "_run_command",
+            side_effect=fail,
+        ), contextlib.redirect_stderr(stderr):
+            delivered = production_auto_deploy.notify(
+                config,
+                "failed",
+                MAIN_SHA,
+                "2026-08-14T12:00:00Z",
+                "2026-08-14T12:01:00Z",
+                log_path,
+            )
+
+        self.assertFalse(delivered)
+        self.assertEqual(
+            stderr.getvalue(),
+            "deployment notification could not be delivered\n",
+        )
+        with self.assertRaises(OSError):
+            os.fstat(observed["descriptor"])
+        self.assertEqual(
+            list(config.ntfy_curl_config.parent.glob(".notification-config-*")),
+            [],
+        )
+
+    def test_poll_notifies_only_after_durable_outcome_and_ignores_notify_failure(self):
+        observed = []
+        stderr = io.StringIO()
+
+        def notification(_config, outcome, sha, started, finished, log_path):
+            state = production_auto_deploy.read_sha_state(
+                self.state_path("last-successful")
+            )
+            observed.append((outcome, sha, started, finished, log_path, state))
+            raise OSError("ntfy unavailable")
+
+        with self.candidate(MAIN_SHA), mock.patch.object(
+            production_auto_deploy,
+            "attempt_candidate",
+            return_value=True,
+        ), mock.patch.object(
+            production_auto_deploy,
+            "notify",
+            side_effect=notification,
+        ), contextlib.redirect_stderr(stderr):
+            result = production_auto_deploy.poll(self.loaded_config())
+
+        self.assertTrue(result)
+        self.assertEqual(len(observed), 1)
+        self.assertEqual(observed[0][0:2], ("success", MAIN_SHA))
+        self.assertEqual(observed[0][5].outcome, "success")
+        self.assertTrue(Path(observed[0][4]).is_file())
+        self.assertEqual(
+            stderr.getvalue(),
+            "deployment notification could not be delivered\n",
+        )
+
+    def test_failed_poll_notifies_only_after_durable_failure_and_keeps_result(self):
+        observed = []
+
+        def notification(_config, outcome, sha, started, finished, log_path):
+            state = production_auto_deploy.read_sha_state(
+                self.state_path("last-failed")
+            )
+            observed.append((outcome, sha, started, finished, log_path, state))
+            return False
+
+        with self.candidate(MAIN_SHA), mock.patch.object(
+            production_auto_deploy,
+            "attempt_candidate",
+            return_value=False,
+        ), mock.patch.object(
+            production_auto_deploy,
+            "notify",
+            side_effect=notification,
+        ):
+            result = production_auto_deploy.poll(self.loaded_config())
+
+        self.assertFalse(result)
+        self.assertEqual(len(observed), 1)
+        self.assertEqual(observed[0][0:2], ("failed", MAIN_SHA))
+        self.assertEqual(observed[0][5].outcome, "failed")
+        self.assertTrue(Path(observed[0][4]).is_file())
+
+    def test_successful_cli_ignores_rotation_failure_and_notifies_once(self):
+        notifications = []
+        with self.candidate(MAIN_SHA), mock.patch.object(
+            production_auto_deploy,
+            "attempt_candidate",
+            return_value=True,
+        ), mock.patch.object(
+            production_auto_deploy,
+            "rotate_logs",
+            side_effect=production_auto_deploy.StateError("rotation failed"),
+        ), mock.patch.object(
+            production_auto_deploy,
+            "notify",
+            side_effect=lambda _config, outcome, *_args: notifications.append(
+                outcome
+            ),
+        ):
+            status, _stdout, stderr = self.invoke_main("--poll")
+
+        self.assertEqual(status, 0)
+        self.assertEqual(notifications, ["success"])
+        self.assertEqual(
+            stderr,
+            "deployment log rotation could not be completed\n",
+        )
+
+    def test_failed_cli_ignores_rotation_failure_and_notifies_once(self):
+        notifications = []
+        with self.candidate(MAIN_SHA), mock.patch.object(
+            production_auto_deploy,
+            "attempt_candidate",
+            return_value=False,
+        ), mock.patch.object(
+            production_auto_deploy,
+            "rotate_logs",
+            side_effect=production_auto_deploy.StateError("rotation failed"),
+        ), mock.patch.object(
+            production_auto_deploy,
+            "notify",
+            side_effect=lambda _config, outcome, *_args: notifications.append(
+                outcome
+            ),
+        ):
+            status, _stdout, stderr = self.invoke_main("--poll")
+
+        self.assertEqual(status, 1)
+        self.assertEqual(notifications, ["failed"])
+        self.assertEqual(
+            stderr,
+            "deployment log rotation could not be completed\n"
+            "production auto-deploy: attempt failed\n",
+        )
+
+    def test_poll_sigterm_cleans_children_records_failure_and_releases_lock(self):
+        entered = self.root / "signal-attempt-entered"
+        child_pid = self.root / "signal-child-pid"
+        orphan = self.root / "signal-orphan"
+        command_source = (
+            "import pathlib,subprocess,sys,time\n"
+            "child=subprocess.Popen([sys.executable,'-c',"
+            + repr(
+                "import os,pathlib,time; "
+                f"pathlib.Path({str(child_pid)!r}).write_text(str(os.getpid())); "
+                "time.sleep(1); "
+                f"pathlib.Path({str(orphan)!r}).write_text('orphaned')"
+            )
+            + "])\n"
+            f"pid_path=pathlib.Path({str(child_pid)!r})\n"
+            "deadline=time.monotonic()+2\n"
+            "while not pid_path.exists() and time.monotonic()<deadline: time.sleep(.01)\n"
+            f"pathlib.Path({str(entered)!r}).write_text('entered')\n"
+            "time.sleep(10)\n"
+        )
+        runner_source = (
+            "import pathlib,sys\n"
+            f"sys.path.insert(0, {str(SCRIPT.parent)!r})\n"
+            "import production_auto_deploy as module\n"
+            f"config=module.load_config({str(self.config_path)!r})\n"
+            f"sha={MAIN_SHA!r}\n"
+            "module._validate_controller_python=lambda _config: _config.controller_python\n"
+            "module.resolve_main_sha=lambda _config: sha\n"
+            "module.fetch_ci_runs=lambda _config,_sha: (module.CiRun("
+            "head_sha=sha,status='completed',conclusion='success',event='push',"
+            "head_branch='main',name='CI'),)\n"
+            "module.notify=lambda *_args,**_kwargs: True\n"
+            "def attempt(_config,_sha):\n"
+            "    sink=getattr(module._ACTIVE_ATTEMPT_LOG,'sink')\n"
+            f"    result=module._run_command([sys.executable,'-c',{command_source!r}],"
+            f"cwd=pathlib.Path({str(self.root)!r}),"
+            "env={'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C',"
+            f"'HOME':{str(self.root)!r}}},timeout=10,log=sink)\n"
+            "    return result.returncode == 0\n"
+            "module.attempt_candidate=attempt\n"
+            "module.poll(config)\n"
+        )
+        runner = subprocess.Popen(
+            [sys.executable, "-c", runner_source],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        deadline = time.monotonic() + 3
+        while not entered.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        if not entered.exists():
+            runner.kill()
+            _stdout, stderr = runner.communicate(timeout=3)
+            self.fail(f"poll attempt did not start: {stderr}")
+
+        runner.terminate()
+        runner.communicate(timeout=5)
+        time.sleep(1.1)
+
+        self.assertFalse(orphan.exists())
+        failed = production_auto_deploy.read_sha_state(self.state_path("last-failed"))
+        self.assertEqual((failed.sha, failed.outcome), (MAIN_SHA, "failed"))
+        with production_auto_deploy.deployment_lock(self.loaded_config()) as lock_fd:
+            self.assertIsNotNone(lock_fd)
 
     def test_status_suppresses_matching_stale_failure_without_mutation(self):
         self.write_sha_state("last-successful", MAIN_SHA, "success")
