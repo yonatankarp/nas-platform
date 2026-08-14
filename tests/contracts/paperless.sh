@@ -32,6 +32,8 @@ fail_contract() {
 [ -f "$host_prep" ] || fail_contract 'roles/host_prep/tasks/main.yml is absent'
 [ -x "$snapshot" ] || fail_contract 'tests/mac/snapshot-paperless.sh is absent or not executable'
 [ -f "$ocr_fixture" ] || fail_contract 'tests/fixtures/paperless-ocr.png.base64 is absent'
+grep -qx 'DOCUMENT_INDEX_TIMEOUT_SECONDS = 600' "$0" ||
+  fail_contract 'document indexing timeout differs'
 
 render_paperless_mounts() {
   variant=$1
@@ -467,6 +469,7 @@ require "yaml"
 require "zlib"
 
 MODE = ARGV.fetch(0)
+DOCUMENT_INDEX_TIMEOUT_SECONDS = 600
 BASE = URI("http://127.0.0.1:#{Integer(ENV.fetch('PLATFORM_PAPERLESS_PORT'), 10)}")
 MEDIA_ROOT = Pathname.new(ENV.fetch("PLATFORM_MEDIA_ROOT")).expand_path
 REPORT_ROOT = Pathname.new(ENV.fetch("PLATFORM_REPORT_ROOT")).expand_path
@@ -853,7 +856,7 @@ if MODE == "seed"
   write_fixture(consume.join("task-13-contract.docx"), docx_bytes(OFFICE_TEXT))
 end
 
-processing_deadline = Time.now + 240
+processing_deadline = Time.now + DOCUMENT_INDEX_TIMEOUT_SECONDS
 pdf_document = document_for(token, PDF_MARKER, deadline: processing_deadline)
 image_document = document_for(token, IMAGE_MARKER, deadline: processing_deadline)
 office_document = document_for(token, OFFICE_MARKER, deadline: processing_deadline)
@@ -923,7 +926,7 @@ when "seed"
   run_bounded(120, "docker", "restart", WEBSERVER, label: "webserver restart")
   wait_healthy(WEBSERVER, deadline: Time.now + 120)
   puts "Paperless encrypted portable export imported"
-  import_deadline = Time.now + 240
+  import_deadline = Time.now + DOCUMENT_INDEX_TIMEOUT_SECONDS
   imported_pdf = document_for(token, PDF_MARKER, deadline: import_deadline)
   imported_image = document_for(token, IMAGE_MARKER, deadline: import_deadline)
   imported_office = document_for(token, OFFICE_MARKER, deadline: import_deadline)

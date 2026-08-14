@@ -18,6 +18,8 @@ fail_contract() {
 [ -f "$defaults" ] || fail_contract 'roles/komga/defaults/main.yml is absent'
 [ -f "$compose" ] || fail_contract 'services/komga/compose.yml is absent'
 [ -f "$mac_compose" ] || fail_contract 'services/komga/compose.mac.yml is absent'
+grep -qx 'FIXTURE_SCAN_TIMEOUT_SECONDS = 240' "$0" ||
+  fail_contract 'fixture scan timeout differs'
 
 ruby -ryaml - "$compose" "$mac_compose" "$role" "$defaults" <<'RUBY'
 compose_path, mac_path, role_path, defaults_path = ARGV
@@ -132,6 +134,7 @@ require "yaml"
 require "zlib"
 
 MODE = ARGV.fetch(0)
+FIXTURE_SCAN_TIMEOUT_SECONDS = 240
 BASE = URI("http://127.0.0.1:#{Integer(ENV.fetch('PLATFORM_KOMGA_PORT'), 10)}")
 MEDIA_ROOT = Pathname.new(ENV.fetch("PLATFORM_MEDIA_ROOT")).expand_path
 REPORT_ROOT = Pathname.new(ENV.fetch("PLATFORM_REPORT_ROOT")).expand_path
@@ -350,7 +353,7 @@ if MODE == "seed"
   request("post", "/api/v1/libraries/#{library.fetch('id')}/scan", basic: credentials, expected: [202])
 end
 
-deadline = Time.now + 90
+deadline = Time.now + FIXTURE_SCAN_TIMEOUT_SECONDS
 books = nil
 loop do
   _books_response, payload = request(

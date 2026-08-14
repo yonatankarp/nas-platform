@@ -27,6 +27,8 @@ fail_contract() {
 [ -f "$adoption_compose" ] || fail_contract 'services/audiobookshelf/compose.adoption.yml is absent'
 [ -f "$argument_specs" ] || fail_contract 'roles/audiobookshelf/meta/argument_specs.yml is absent'
 [ -f "$environment_template" ] || fail_contract 'roles/audiobookshelf/templates/env.j2 is absent'
+grep -qx 'FIXTURE_SCAN_TIMEOUT_SECONDS = 180' "$contract_source" ||
+  fail_contract 'fixture scan timeout differs'
 
 ruby -ryaml - "$compose" "$mac_compose" "$adoption_compose" "$role" "$defaults" \
   "$argument_specs" "$environment_template" "$integration" "$storage_inventory" \
@@ -240,6 +242,7 @@ require "uri"
 require "yaml"
 
 MODE = ARGV.fetch(0)
+FIXTURE_SCAN_TIMEOUT_SECONDS = 180
 BASE = URI("http://127.0.0.1:#{Integer(ENV.fetch('PLATFORM_AUDIOBOOKSHELF_PORT'), 10)}")
 MEDIA_ROOT = Pathname.new(ENV.fetch("PLATFORM_MEDIA_ROOT")).expand_path
 REPORT_ROOT = Pathname.new(ENV.fetch("PLATFORM_REPORT_ROOT")).expand_path
@@ -1380,7 +1383,7 @@ end
 
 seed_fixture
 request("post", "/api/libraries/#{library_id}/scan", token: token, expected: [200])
-deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 45
+deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + FIXTURE_SCAN_TIMEOUT_SECONDS
 item = nil
 loop do
   _items_response, items_payload = request(
