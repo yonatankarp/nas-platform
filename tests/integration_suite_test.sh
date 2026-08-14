@@ -107,6 +107,18 @@ grep -qF -- '\"\$playbook\" \"\$@\"' "$integration"
 grep -qF -- 'run_play --tags \"\$INTEGRATION_TAGS\" \"\$@\"' "$integration"
 grep -qF -- 'run_play \"\$@\"' "$integration"
 
+# Media fixtures consumed through nested Docker bind mounts must exist on the
+# daemon host before the controller container establishes its sandbox mount.
+paperless_preseed_line=$(grep -nF '"$repo_dir/tests/contracts/paperless.sh" seed-fixture-only' \
+  "$integration" | cut -d: -f1)
+controller_line=$(grep -nF 'docker run --rm' "$integration" | head -1 | cut -d: -f1)
+[ -n "$paperless_preseed_line" ] && [ "$paperless_preseed_line" -lt "$controller_line" ] || {
+  printf '%s\n' 'Paperless integration fixture is not prepared before the controller mount' >&2
+  exit 1
+}
+grep -qF 'paperless:true|full:true)' "$integration"
+grep -qF -- '-e PLATFORM_PAPERLESS_FIXTURE_PRESEEDED="$paperless_fixture_preseeded"' "$integration"
+
 # The committed deployment vault is intentionally encrypted with an operator
 # password unavailable to CI. Every suite must use an isolated controller copy,
 # replace only that copy with its generated ephemeral vault, and export the

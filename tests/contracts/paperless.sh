@@ -422,6 +422,9 @@ RUBY
 
 grep -qF 'run_paperless_contract seed' "$repo_dir/tests/integration.sh" ||
   fail_contract 'integration does not exercise Paperless document fixtures'
+grep -qF '"$repo_dir/tests/contracts/paperless.sh" seed-fixture-only' \
+  "$repo_dir/tests/integration.sh" ||
+  fail_contract 'integration does not prepare Paperless fixtures on the Docker host'
 grep -qF 'run_paperless_snapshot drill' "$repo_dir/tests/integration.sh" ||
   fail_contract 'integration does not exercise coordinated Paperless recovery'
 grep -qF 'run("docker", "stop", WEBSERVER, REDIS)' "$snapshot" ||
@@ -450,10 +453,12 @@ legacy_fixture_validate PLATFORM_PAPERLESS_EXPORT_ROOT legacy/paperless-ngx/expo
 : "${PLATFORM_REPORT_ROOT:?}"
 : "${PLATFORM_PAPERLESS_PORT:=8000}"
 : "${PLATFORM_PAPERLESS_WEBSERVER_CONTAINER:=paperless_webserver}"
+: "${PLATFORM_PAPERLESS_FIXTURE_PRESEEDED:=false}"
 PLATFORM_CONTRACT_REPO_DIR=$repo_dir
 export PLATFORM_CONTRACT_VAULT_FILE PLATFORM_CONTRACT_VAULT_PASSWORD_FILE
 export PLATFORM_MEDIA_ROOT PLATFORM_REPORT_ROOT PLATFORM_PAPERLESS_PORT
 export PLATFORM_PAPERLESS_WEBSERVER_CONTAINER PLATFORM_CONTRACT_REPO_DIR
+export PLATFORM_PAPERLESS_FIXTURE_PRESEEDED
 
 shift || true
 exec ruby - "$mode" "$@" <<'RUBY'
@@ -600,6 +605,18 @@ def write_fixture(path, bytes)
   end
 end
 
+def seed_document_fixtures
+  write_fixture(
+    CONSUME_ROOT.join("task-13-contract.pdf"),
+    pdf_bytes("Paperless PDF #{PDF_MARKER}")
+  )
+  write_fixture(
+    CONSUME_ROOT.join("task-13-contract.png"),
+    REPO_ROOT.join("tests/fixtures/paperless-ocr.png.base64").read.delete("\n").unpack1("m0")
+  )
+  write_fixture(CONSUME_ROOT.join("task-13-contract.docx"), docx_bytes(OFFICE_TEXT))
+end
+
 def run_bounded(seconds, *argv, input: nil, label:)
   reader, writer = IO.pipe if input
   Tempfile.create("paperless-contract-command") do |stderr|
@@ -698,6 +715,12 @@ def document_checksum(document)
   checksum = root_version&.fetch("checksum")
   fail_contract("document root-version checksum is absent") if checksum.to_s.empty?
   checksum
+end
+
+if MODE == "seed-fixture-only"
+  seed_document_fixtures
+  puts "Paperless document fixtures prepared before deployment"
+  exit 0
 end
 
 vault_yaml, vault_error, vault_status = Open3.capture3(
@@ -846,14 +869,8 @@ if MODE == "run"
 end
 fail_contract("unknown mode: #{MODE}") unless %w[seed assert-persistence].include?(MODE)
 
-consume = CONSUME_ROOT
-if MODE == "seed"
-  write_fixture(consume.join("task-13-contract.pdf"), pdf_bytes("Paperless PDF #{PDF_MARKER}"))
-  write_fixture(
-    consume.join("task-13-contract.png"),
-    REPO_ROOT.join("tests/fixtures/paperless-ocr.png.base64").read.delete("\n").unpack1("m0")
-  )
-  write_fixture(consume.join("task-13-contract.docx"), docx_bytes(OFFICE_TEXT))
+if MODE == "seed" && ENV.fetch("PLATFORM_PAPERLESS_FIXTURE_PRESEEDED") != "true"
+  seed_document_fixtures
 end
 
 processing_deadline = Time.now + DOCUMENT_INDEX_TIMEOUT_SECONDS

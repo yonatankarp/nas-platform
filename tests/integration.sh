@@ -433,6 +433,7 @@ else
 fi
 printf 'host address: %s\n' "$nas_address"
 
+paperless_fixture_preseeded=false
 case "$suite:$run_service_scenarios" in
   audiobookshelf:true|full:true)
     env \
@@ -440,6 +441,16 @@ case "$suite:$run_service_scenarios" in
       PLATFORM_REPORT_ROOT="$sandbox/reports" \
       PLATFORM_AUDIOBOOKSHELF_PORT=13378 \
       "$repo_dir/tests/contracts/audiobookshelf.sh" seed-fixture-only
+    ;;
+esac
+case "$suite:$run_service_scenarios" in
+  paperless:true|full:true)
+    env \
+      PLATFORM_MEDIA_ROOT="$sandbox/volume2" \
+      PLATFORM_REPORT_ROOT="$sandbox/reports" \
+      PLATFORM_PAPERLESS_PORT=8000 \
+      "$repo_dir/tests/contracts/paperless.sh" seed-fixture-only
+    paperless_fixture_preseeded=true
     ;;
 esac
 
@@ -455,6 +466,7 @@ docker run --rm \
   -e INTEGRATION_SUITE="$suite" \
   -e INTEGRATION_TAGS="$suite_tags" \
   -e INTEGRATION_RUN_SERVICE_SCENARIOS="$run_service_scenarios" \
+  -e PLATFORM_PAPERLESS_FIXTURE_PRESEEDED="$paperless_fixture_preseeded" \
   -w /repo \
   "$runner_image" \
   sh -eu -c "
