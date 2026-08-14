@@ -42,6 +42,10 @@ test -f "$test_root/media/Media/Audiobooks/task-9-contract-book/task-9-contract-
   printf '%s\n' 'Audiobookshelf audio test failed: pre-deployment fixture is absent' >&2
   exit 1
 }
+test -f "$test_root/media/Media/Audiobooks/task-9-contract-book/cover.png" || {
+  printf '%s\n' 'Audiobookshelf audio test failed: deterministic local cover is absent' >&2
+  exit 1
+}
 
 preseed_line=$(grep -nF 'run_audiobookshelf_contract seed-fixture-only' \
   "$repo_dir/tests/integration.sh" | cut -d: -f1)

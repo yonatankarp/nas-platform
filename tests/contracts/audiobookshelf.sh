@@ -233,6 +233,7 @@ export PLATFORM_REPO_ROOT
 shift || true
 exec ruby - "$mode" "$@" <<'RUBY'
 require "digest"
+require "base64"
 require "json"
 require "net/http"
 require "open3"
@@ -253,6 +254,10 @@ MEDIA_LIBRARY = Pathname.new(
 ).expand_path
 FIXTURE_DIRECTORY = MEDIA_LIBRARY.join("task-9-contract-book")
 FIXTURE_PATH = FIXTURE_DIRECTORY.join("task-9-contract-book.wav")
+FIXTURE_COVER_PATH = FIXTURE_DIRECTORY.join("cover.png")
+FIXTURE_COVER_BYTES = Base64.strict_decode64(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+).freeze
 PROGRESS_SECONDS = 1.25
 SAFE_ID = /\A[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\z/
 DESIRED_SETTINGS = {
@@ -733,6 +738,15 @@ def seed_fixture
     fail_contract("fixture bytes drifted") unless FIXTURE_PATH.binread == bytes
   else
     FIXTURE_PATH.open(File::WRONLY | File::CREAT | File::EXCL, 0o644) { |file| file.write(bytes) }
+  end
+  fail_contract("fixture cover path is a symlink") if FIXTURE_COVER_PATH.symlink?
+  if FIXTURE_COVER_PATH.exist?
+    fail_contract("fixture cover path is not a regular file") unless FIXTURE_COVER_PATH.file?
+    fail_contract("fixture cover bytes drifted") unless FIXTURE_COVER_PATH.binread == FIXTURE_COVER_BYTES
+  else
+    FIXTURE_COVER_PATH.open(File::WRONLY | File::CREAT | File::EXCL, 0o644) do |file|
+      file.write(FIXTURE_COVER_BYTES)
+    end
   end
 end
 
