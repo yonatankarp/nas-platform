@@ -137,6 +137,10 @@ grep -qF -- '-e PLATFORM_MEDIA_FIXTURES_PRESEEDED="$media_fixtures_preseeded"' "
 grep -qF -- 'controller_mount=$sandbox/repo' "$integration"
 grep -qF -- 'install -m 0600 \"\$vault_file\" /repo/inventory/group_vars/all/vault.yml' "$integration"
 grep -qF -- 'export ANSIBLE_VAULT_PASSWORD_FILE=\"\$vault_password_file\"' "$integration"
+grep -qF -- '-e @\"\$fixture_vars_file\"' "$integration" || {
+  printf '%s\n' 'integration deployment does not consume the protected Immich fixture policy' >&2
+  exit 1
+}
 if grep -qF -- 'controller_mount=$repo_dir' "$integration"; then
   printf '%s\n' 'integration may mount the committed deployment vault directly' >&2
   exit 1

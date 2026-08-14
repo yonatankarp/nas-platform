@@ -648,6 +648,7 @@ docker run --rm \
         -i inventory/local.yml \
         --vault-password-file \"\$vault_password_file\" \
         -e @\"\$vault_file\" \
+        -e @\"\$fixture_vars_file\" \
         -e platform_vault_file=\"\$vault_file\" \
         -e nas_docker_root=$sandbox/volume1/Docker \
         -e nas_media_root=$sandbox/volume2 \
