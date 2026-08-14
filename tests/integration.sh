@@ -433,6 +433,16 @@ else
 fi
 printf 'host address: %s\n' "$nas_address"
 
+case "$suite:$run_service_scenarios" in
+  audiobookshelf:true|full:true)
+    env \
+      PLATFORM_MEDIA_ROOT="$sandbox/volume2" \
+      PLATFORM_REPORT_ROOT="$sandbox/reports" \
+      PLATFORM_AUDIOBOOKSHELF_PORT=13378 \
+      "$repo_dir/tests/contracts/audiobookshelf.sh" seed-fixture-only
+    ;;
+esac
+
 docker run --rm \
   --network host \
   -v /var/run/docker.sock:/var/run/docker.sock \
@@ -1026,10 +1036,6 @@ docker run --rm \
         run_play \"\$@\"
       fi
     }
-
-    if [ "\$INTEGRATION_RUN_SERVICE_SCENARIOS" = true ] && suite_is audiobookshelf; then
-      run_audiobookshelf_contract seed-fixture-only
-    fi
 
     if [ -z "\$INTEGRATION_TAGS" ] && [ "\$#" -eq 0 ]; then
     run_play

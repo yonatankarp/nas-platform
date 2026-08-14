@@ -47,10 +47,9 @@ test -f "$test_root/media/Media/Audiobooks/task-9-contract-book/cover.png" || {
   exit 1
 }
 
-preseed_line=$(grep -nF 'run_audiobookshelf_contract seed-fixture-only' \
+preseed_line=$(grep -nF '"$repo_dir/tests/contracts/audiobookshelf.sh" seed-fixture-only' \
   "$repo_dir/tests/integration.sh" | cut -d: -f1)
-deploy_line=$(grep -nF "printf 'FRESH_ROOT_OK: clean deployment root converged" \
-  "$repo_dir/tests/integration.sh" | cut -d: -f1)
+deploy_line=$(grep -nF 'docker run --rm' "$repo_dir/tests/integration.sh" | head -1 | cut -d: -f1)
 if [ -z "$preseed_line" ] || [ -z "$deploy_line" ] || [ "$preseed_line" -ge "$deploy_line" ]; then
   printf '%s\n' 'Audiobookshelf audio test failed: fixture is not prepared before deployment' >&2
   exit 1

@@ -974,7 +974,7 @@ when "authentication-budget-self-test"
   integration = Pathname.new(ENV.fetch("PLATFORM_REPO_ROOT")).join("tests/integration.sh").read
   contract_modes = integration.scan(/^\s*run_audiobookshelf_contract\s+([a-z0-9-]+)/).flatten
   expected_modes = %w[
-    seed-fixture-only run inactive-admin-refusal duplicate-admin-api-refusal
+    run inactive-admin-refusal duplicate-admin-api-refusal
     duplicate-library-create duplicate-library-verify duplicate-library-assert-output
     duplicate-library-cleanup run check-repair-seed assert-check-output
     check-repair-unchanged run check-repair-cleanup drift drift-verify run
