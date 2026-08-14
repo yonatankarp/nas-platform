@@ -1384,6 +1384,7 @@ end
 seed_fixture
 request("post", "/api/libraries/#{library_id}/scan", token: token, expected: [200])
 deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + FIXTURE_SCAN_TIMEOUT_SECONDS
+next_fixture_scan_at = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 10
 item = nil
 loop do
   _items_response, items_payload = request(
@@ -1392,8 +1393,12 @@ loop do
   items = items_payload.is_a?(Hash) ? items_payload.fetch("results", []) : items_payload
   item = matching_fixture_item(items)
   break if item
-  fail_contract("fixture scan did not discover the tagged audiobook") if
-    Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+  now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+  fail_contract("fixture scan did not discover the tagged audiobook") if now >= deadline
+  if now >= next_fixture_scan_at
+    request("post", "/api/libraries/#{library_id}/scan", token: token, expected: [200])
+    next_fixture_scan_at = now + 10
+  end
   sleep 1
 end
 item_id = safe_id(item.fetch("id"))

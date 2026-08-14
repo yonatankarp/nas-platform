@@ -19,6 +19,12 @@ trap cleanup EXIT HUP INT TERM
 
 mkdir -p "$test_root/media" "$test_root/reports"
 
+grep -Fq 'next_fixture_scan_at = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 10' \
+  "$repo_dir/tests/contracts/audiobookshelf.sh" || {
+  printf '%s\n' 'Audiobookshelf audio test failed: bounded fixture rescan is absent' >&2
+  exit 1
+}
+
 test_status=0
 output=$(
   PLATFORM_MEDIA_ROOT="$test_root/media" \
