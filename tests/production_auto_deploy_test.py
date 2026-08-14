@@ -3,6 +3,7 @@
 import contextlib
 import dataclasses
 import errno
+import hashlib
 from http.client import HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib.util
@@ -11,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import shutil
 import stat
 import subprocess
 import sys
@@ -25,6 +27,11 @@ from urllib.request import Request, build_opener
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "production_auto_deploy.py"
 MAIN_SHA = "0123456789abcdef0123456789abcdef01234567"
+INSTALLED_TOOLING_MANIFEST = (
+    b'{"ansible_core":"2.21.2","ansible_lint":"26.6.0",'
+    b'"collections":{"community.docker":"5.2.1"},'
+    b'"pip_freeze":[],"python":"3.12"}\n'
+)
 
 
 def load_production_module():
@@ -170,6 +177,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
             "workflow": "ci.yml",
             "workflow_name": "CI",
             "branch": "main",
+            "controller_python": sys.executable,
             "controller_root": str(self.root / "controller"),
             "tooling_root": str(self.root / "tooling"),
             "state_root": str(self.root / "state"),
@@ -192,6 +200,33 @@ class ProductionAutoDeployTest(unittest.TestCase):
         self.install_fake("git", self.fake_git_source(MAIN_SHA))
         self.install_recording_fake("ansible-playbook")
         self.install_recording_fake("curl")
+        self.real_validate_trusted_executable = (
+            production_auto_deploy._validate_trusted_executable
+        )
+        self.real_validate_controller_python = (
+            production_auto_deploy._validate_controller_python
+        )
+        trusted_executable = mock.patch.object(
+            production_auto_deploy,
+            "_validate_trusted_executable",
+            side_effect=lambda path: Path(path),
+        )
+        trusted_executable.start()
+        self.addCleanup(trusted_executable.stop)
+        system_git = mock.patch.object(
+            production_auto_deploy,
+            "SYSTEM_GIT_PATH",
+            self.fake_bin / "git",
+        )
+        system_git.start()
+        self.addCleanup(system_git.stop)
+        controller_python = mock.patch.object(
+            production_auto_deploy,
+            "_validate_controller_python",
+            return_value=Path(sys.executable),
+        )
+        controller_python.start()
+        self.addCleanup(controller_python.stop)
 
     def write_config(self):
         self.config_path.write_text(json.dumps(self.config), encoding="utf-8")
@@ -208,7 +243,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
             "import sys\n"
             f"pathlib.Path({str(self.tool_calls)!r}).open('a').write("
             "'git ' + ' '.join(sys.argv[1:]) + '\\n')\n"
-            "expected = ['ls-remote', '--exit-code', "
+            "expected = ['--no-replace-objects', 'ls-remote', '--exit-code', "
             "'https://github.com/yonatankarp/nas-platform.git', "
             "'refs/heads/main']\n"
             "if sys.argv[1:] != expected:\n"
@@ -225,6 +260,142 @@ class ProductionAutoDeployTest(unittest.TestCase):
             f"pathlib.Path({str(self.tool_calls)!r}).open('a').write("
             f"{name!r} + ' ' + ' '.join(sys.argv[1:]) + '\\n')\n",
         )
+
+    def checkout_command_runner(
+        self,
+        *,
+        sha=MAIN_SHA,
+        origin="https://github.com/yonatankarp/nas-platform.git",
+        dirty=b"",
+        ignored=b"",
+        gitmodules=False,
+        submodule=False,
+        symlink=False,
+        sparse_config=False,
+        skip_worktree=False,
+        toplevel=None,
+        git_dir=None,
+        git_common_dir=None,
+        post_checkout_sha=None,
+    ):
+        calls = []
+
+        def run(arguments, **kwargs):
+            raw_arguments = list(arguments)
+            command = raw_arguments[1:]
+            if command[:1] == ["--no-replace-objects"]:
+                command = command[1:]
+            while command[:1] == ["-c"]:
+                command = command[2:]
+            arguments = [raw_arguments[0], *command]
+            calls.append((arguments, kwargs))
+            stdout = b""
+            returncode = 0
+            if command == ["remote", "get-url", "origin"]:
+                stdout = (origin + "\n").encode()
+            elif command == ["remote"]:
+                stdout = b"origin\n"
+            elif command == ["status", "--porcelain=v1", "--untracked-files=all"]:
+                stdout = dirty
+            elif command == [
+                "status",
+                "--porcelain=v1",
+                "--untracked-files=all",
+                "--ignored=matching",
+            ]:
+                stdout = dirty + ignored
+            elif command[:3] == ["config", "--local", "--get-regexp"]:
+                if sparse_config and "sparseCheckout" in command[3]:
+                    stdout = b"core.sparseCheckout true\n"
+                else:
+                    returncode = 1
+            elif command == ["ls-files", "-v"]:
+                stdout = b"S site.yml\n" if skip_worktree else b"H site.yml\n"
+            elif command == ["rev-parse", "--show-toplevel"]:
+                stdout = (str(toplevel or self.root / "controller") + "\n").encode()
+            elif command == ["rev-parse", "--absolute-git-dir"]:
+                stdout = (
+                    str(git_dir or self.root / "controller" / ".git") + "\n"
+                ).encode()
+            elif command == ["rev-parse", "--path-format=absolute", "--git-common-dir"]:
+                stdout = (
+                    str(git_common_dir or self.root / "controller" / ".git") + "\n"
+                ).encode()
+            elif command[:2] == ["cat-file", "-e"]:
+                returncode = 0 if gitmodules else 1
+            elif command[:3] == ["ls-tree", "-r", "--full-tree"]:
+                if submodule:
+                    stdout = (
+                        b"160000 commit 1111111111111111111111111111111111111111"
+                        b"\tthird-party\n"
+                    )
+                elif symlink:
+                    stdout = (
+                        b"120000 blob 1111111111111111111111111111111111111111"
+                        b"\tunsafe-link\n"
+                    )
+            elif command == ["symbolic-ref", "-q", "HEAD"]:
+                returncode = 1
+            elif command in (
+                ["rev-parse", "HEAD"],
+                ["rev-parse", "refs/remotes/origin/main"],
+            ):
+                resolved_sha = sha
+                if (
+                    command == ["rev-parse", "refs/remotes/origin/main"]
+                    and post_checkout_sha is not None
+                    and any(call[0][1:2] == ["checkout"] for call in calls)
+                ):
+                    resolved_sha = post_checkout_sha
+                stdout = (resolved_sha + "\n").encode()
+            return subprocess.CompletedProcess(
+                arguments,
+                returncode,
+                stdout=stdout,
+                stderr=b"",
+            )
+
+        return calls, run
+
+    def seed_candidate_files(self, checkout=None):
+        checkout = Path(checkout or self.config["controller_root"])
+        (checkout / "controller-requirements.txt").write_bytes(
+            b"ansible-core==2.21.2\nansible-lint==26.6.0\n"
+        )
+        (checkout / "requirements.yml").write_bytes(
+            b"---\ncollections:\n  - name: community.docker\n    version: 5.2.1\n"
+        )
+        (checkout / "ansible.cfg").write_text("[defaults]\n", encoding="utf-8")
+        (checkout / "inventory").mkdir(exist_ok=True)
+        (checkout / "inventory" / "local.yml").write_text(
+            "all:\n  hosts:\n    localhost:\n",
+            encoding="utf-8",
+        )
+        for play in (
+            "validate-vault.yml",
+            "site.yml",
+            "verify.yml",
+            "install-production-auto-deploy.yml",
+        ):
+            (checkout / play).write_text("---\n", encoding="utf-8")
+        return checkout
+
+    def seed_valid_tooling(self, root, identity):
+        root = Path(root)
+        (root / "venv" / "bin").mkdir(parents=True)
+        (root / "collections").mkdir()
+        root.chmod(0o700)
+        for name in ("python", "ansible-playbook", "ansible-galaxy", "ansible-lint"):
+            executable = root / "venv" / "bin" / name
+            executable.write_text("#!/bin/sh\n", encoding="utf-8")
+            executable.chmod(0o700)
+        production_auto_deploy._write_seal_file(
+            root,
+            ".installed",
+            INSTALLED_TOOLING_MANIFEST,
+        )
+        production_auto_deploy._seal_tooling(root, identity)
+        return root
 
     def successful_run(self, **overrides):
         run = {
@@ -447,6 +618,194 @@ class ProductionAutoDeployTest(unittest.TestCase):
                 with self.assertRaises(production_auto_deploy.ConfigurationError):
                     production_auto_deploy.load_config(self.config_path)
 
+    def test_config_requires_absolute_controller_python(self):
+        self.config["controller_python"] = "python3.12"
+        self.write_config()
+
+        with self.assertRaises(production_auto_deploy.ConfigurationError):
+            production_auto_deploy.load_config(self.config_path)
+
+    def test_prepare_tooling_uses_validated_controller_python_for_venv(self):
+        checkout = self.seed_candidate_files()
+        calls = []
+
+        def stop_after_venv(arguments, **_kwargs):
+            calls.append(list(arguments))
+            raise production_auto_deploy.DeploymentError("stop after venv")
+
+        with mock.patch.object(
+            production_auto_deploy,
+            "_validate_controller_python",
+            return_value=Path("/trusted/python3.12"),
+        ), mock.patch.object(
+            production_auto_deploy,
+            "_run_command",
+            side_effect=stop_after_venv,
+        ), self.assertRaises(
+            production_auto_deploy.DeploymentError
+        ):
+            production_auto_deploy.prepare_tooling(self.loaded_config(), checkout)
+
+        self.assertEqual(
+            calls[0][:4], ["/trusted/python3.12", "-m", "venv", "--copies"]
+        )
+
+    def test_reviewed_controller_requirements_must_keep_exact_pins(self):
+        checkout = self.seed_candidate_files()
+        (checkout / "controller-requirements.txt").write_bytes(
+            b"ansible-core==2.22.0\nansible-lint==26.6.0\n"
+        )
+
+        with mock.patch.object(
+            production_auto_deploy,
+            "_validate_materialized_checkout",
+        ), self.assertRaises(production_auto_deploy.DeploymentError):
+            production_auto_deploy._read_reviewed_requirement(
+                self.loaded_config(),
+                MAIN_SHA,
+                "controller-requirements.txt",
+            )
+
+    def test_git_commands_ignore_malicious_ambient_path(self):
+        malicious_git = self.fake_bin / "git"
+        calls = []
+
+        def record(arguments, **kwargs):
+            calls.append((list(arguments), kwargs))
+            return subprocess.CompletedProcess(
+                arguments,
+                0,
+                (MAIN_SHA + "\trefs/heads/main\n").encode("ascii"),
+                b"",
+            )
+
+        with mock.patch.object(
+            production_auto_deploy,
+            "SYSTEM_GIT_PATH",
+            Path("/usr/bin/git"),
+            create=True,
+        ), mock.patch.object(
+            production_auto_deploy,
+            "_validate_trusted_executable",
+            return_value=Path("/usr/bin/git"),
+            create=True,
+        ), mock.patch.object(
+            production_auto_deploy,
+            "_run_command",
+            side_effect=record,
+        ), mock.patch.dict(
+            os.environ, {"PATH": str(self.fake_bin)}
+        ):
+            self.assertEqual(
+                production_auto_deploy.resolve_main_sha(self.loaded_config()),
+                MAIN_SHA,
+            )
+
+        self.assertNotEqual(calls[0][0][0], str(malicious_git))
+        self.assertEqual(calls[0][0][0], "/usr/bin/git")
+        self.assertEqual(calls[0][1]["env"]["PATH"], "/usr/bin:/bin")
+
+    def test_git_query_rejects_oversized_output_during_execution(self):
+        fake_git = self.fake_bin / "git"
+        fake_git.write_text(
+            f"#!{sys.executable}\n"
+            "import os\n"
+            f"remaining={production_auto_deploy.MAX_RESPONSE_BYTES + production_auto_deploy.HTTP_READ_SIZE}\n"
+            f"chunk=b'x'*{production_auto_deploy.HTTP_READ_SIZE}\n"
+            "while remaining:\n"
+            " size=min(remaining,len(chunk)); os.write(1,chunk[:size]); remaining-=size\n",
+            encoding="utf-8",
+        )
+        fake_git.chmod(0o700)
+
+        with self.assertRaises(production_auto_deploy.EligibilityError):
+            production_auto_deploy.resolve_main_sha(self.loaded_config())
+
+    def test_trusted_executable_rejects_symlink_and_writable_binary(self):
+        symlink = self.root / "git-link"
+        symlink.symlink_to("/usr/bin/git")
+        writable_git = self.fake_bin / "git"
+        writable_git.chmod(0o777)
+
+        with self.assertRaises(production_auto_deploy.DeploymentError):
+            self.real_validate_trusted_executable(symlink)
+        with self.assertRaises(production_auto_deploy.DeploymentError):
+            self.real_validate_trusted_executable(writable_git)
+
+        self.assertEqual(
+            self.real_validate_trusted_executable(Path("/usr/bin/git")),
+            Path("/usr/bin/git"),
+        )
+
+    @unittest.skipUnless(
+        sys.platform.startswith("linux") and os.geteuid() == 0,
+        "requires a root Linux test container",
+    )
+    def test_trusted_executable_rejects_root_binary_below_untrusted_directory(self):
+        untrusted_directory = self.root / "replaceable"
+        untrusted_directory.mkdir()
+        os.chown(untrusted_directory, 1000, 1000)
+        untrusted_directory.chmod(0o700)
+        executable = untrusted_directory / "python"
+        executable.write_bytes(b"#!/bin/sh\nexit 0\n")
+        os.chown(executable, 0, 0)
+        executable.chmod(0o755)
+
+        with self.assertRaises(production_auto_deploy.DeploymentError):
+            self.real_validate_trusted_executable(executable)
+
+    def test_controller_python_requires_version_3_12_or_newer(self):
+        config = self.loaded_config()
+        for version, accepted in ((b"3.11\n", False), (b"3.12\n", True)):
+            with self.subTest(version=version), mock.patch.object(
+                production_auto_deploy,
+                "_run_command",
+                return_value=subprocess.CompletedProcess([], 0, version, b""),
+            ):
+                if accepted:
+                    self.assertEqual(
+                        self.real_validate_controller_python(config),
+                        Path(sys.executable),
+                    )
+                else:
+                    with self.assertRaises(production_auto_deploy.DeploymentError):
+                        self.real_validate_controller_python(config)
+
+    def test_poll_cli_reports_controller_runtime_failures_without_mutation(self):
+        invalid_python = self.fake_bin / "invalid-controller-python"
+        invalid_python.write_text(
+            f"#!{sys.executable}\nprint('not-a-version')\n", encoding="utf-8"
+        )
+        invalid_python.chmod(0o700)
+        old_python = self.fake_bin / "old-controller-python"
+        old_python.write_text(f"#!{sys.executable}\nprint('3.11')\n", encoding="utf-8")
+        old_python.chmod(0o700)
+
+        for label, controller_python in (
+            ("unavailable", self.fake_bin / "missing-controller-python"),
+            ("invalid", invalid_python),
+            ("too old", old_python),
+        ):
+            with self.subTest(label=label):
+                self.config["controller_python"] = str(controller_python)
+                self.write_config()
+                before = self.state_snapshot()
+                with mock.patch.object(
+                    production_auto_deploy,
+                    "_validate_controller_python",
+                    self.real_validate_controller_python,
+                ):
+                    status, stdout, stderr = self.invoke_main("--poll")
+
+                self.assertEqual(status, 1)
+                self.assertEqual(stdout, "")
+                self.assertEqual(
+                    stderr,
+                    "production auto-deploy: unsafe controller runtime\n",
+                )
+                self.assertNotIn("Traceback", stderr)
+                self.assertEqual(self.state_snapshot(), before)
+
     def test_github_api_base_is_fixed_to_production_origin(self):
         self.config["github_api_base"] = self.loopback_api_base
         self.write_config()
@@ -546,7 +905,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
         self.assertEqual(
             self.tool_calls.read_text(encoding="utf-8").splitlines(),
             [
-                "git ls-remote --exit-code "
+                "git --no-replace-objects ls-remote --exit-code "
                 "https://github.com/yonatankarp/nas-platform.git refs/heads/main"
             ],
         )
@@ -1253,6 +1612,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
             "    state.mkdir(mode=0o700)\n"
             "    os.kill(os.getpid(), signal.SIGKILL)\n"
             "module.attempt_candidate = terminate\n"
+            "module._validate_controller_python = lambda config: config.controller_python\n"
             "module.poll(config)\n"
         )
         child = subprocess.run(
@@ -2376,6 +2736,1432 @@ class ProductionAutoDeployTest(unittest.TestCase):
             self.state_path("last-successful")
         )
         self.assertEqual(successful.sha, MAIN_SHA)
+
+    def test_controller_requirements_are_exact_authoritative_pins(self):
+        self.assertEqual(
+            (ROOT / "controller-requirements.txt").read_bytes(),
+            b"ansible-core==2.21.2\nansible-lint==26.6.0\n",
+        )
+
+    def test_task3_public_api_is_available(self):
+        self.assertEqual(
+            [
+                name
+                for name in (
+                    "DeploymentError",
+                    "Tooling",
+                    "_run_command",
+                    "prepare_checkout",
+                    "tooling_identity",
+                    "prepare_tooling",
+                    "deploy_candidate",
+                )
+                if not hasattr(production_auto_deploy, name)
+            ],
+            [],
+        )
+
+    def test_prepare_checkout_fetches_only_main_and_detaches_exact_sha(self):
+        checkout = self.seed_candidate_files()
+        (checkout / ".git" / "objects" / "info").mkdir(parents=True)
+        calls, run = self.checkout_command_runner()
+
+        with mock.patch.object(
+            production_auto_deploy,
+            "_run_command",
+            side_effect=run,
+        ):
+            result = production_auto_deploy.prepare_checkout(
+                self.loaded_config(),
+                MAIN_SHA,
+            )
+
+        self.assertEqual(result, checkout)
+        commands = [arguments[1:] for arguments, _kwargs in calls]
+        self.assertIn(
+            [
+                "fetch",
+                "--no-tags",
+                "--prune",
+                "origin",
+                "+refs/heads/main:refs/remotes/origin/main",
+            ],
+            commands,
+        )
+        self.assertIn(["checkout", "--detach", MAIN_SHA], commands)
+        self.assertEqual(
+            commands[-4:],
+            [
+                ["rev-parse", "HEAD"],
+                ["rev-parse", "refs/remotes/origin/main"],
+                ["symbolic-ref", "-q", "HEAD"],
+                [
+                    "cat-file",
+                    "-e",
+                    f"{MAIN_SHA}:.gitmodules",
+                ],
+            ],
+        )
+
+    def test_prepare_checkout_rejects_dirty_or_wrong_origin_before_fetch(self):
+        self.seed_candidate_files()
+        (self.root / "controller" / ".git" / "objects" / "info").mkdir(parents=True)
+        cases = (
+            {"dirty": b" M site.yml\n"},
+            {"origin": "https://github.com/attacker/nas-platform.git"},
+        )
+        for overrides in cases:
+            with self.subTest(overrides=overrides):
+                calls, run = self.checkout_command_runner(**overrides)
+                with mock.patch.object(
+                    production_auto_deploy,
+                    "_run_command",
+                    side_effect=run,
+                ), self.assertRaises(production_auto_deploy.DeploymentError):
+                    production_auto_deploy.prepare_checkout(
+                        self.loaded_config(),
+                        MAIN_SHA,
+                    )
+                self.assertFalse(
+                    any(arguments[1] == "fetch" for arguments, _kwargs in calls)
+                )
+
+    def test_prepare_checkout_rejects_gitmodules_submodules_and_sha_mismatch(self):
+        self.seed_candidate_files()
+        (self.root / "controller" / ".git" / "objects" / "info").mkdir(parents=True)
+        cases = (
+            {"gitmodules": True},
+            {"submodule": True},
+            {"sha": "fedcba9876543210fedcba9876543210fedcba98"},
+        )
+        for overrides in cases:
+            with self.subTest(overrides=overrides):
+                calls, run = self.checkout_command_runner(**overrides)
+                with mock.patch.object(
+                    production_auto_deploy,
+                    "_run_command",
+                    side_effect=run,
+                ), self.assertRaises(production_auto_deploy.DeploymentError):
+                    production_auto_deploy.prepare_checkout(
+                        self.loaded_config(),
+                        MAIN_SHA,
+                    )
+
+    def test_prepare_checkout_rejects_all_git_symlink_entries(self):
+        self.seed_candidate_files()
+        (self.root / "controller" / ".git" / "objects" / "info").mkdir(parents=True)
+        _calls, run = self.checkout_command_runner(symlink=True)
+
+        with mock.patch.object(
+            production_auto_deploy,
+            "_run_command",
+            side_effect=run,
+        ), self.assertRaises(production_auto_deploy.DeploymentError):
+            production_auto_deploy.prepare_checkout(self.loaded_config(), MAIN_SHA)
+
+    def test_prepare_checkout_revalidates_origin_main_after_checkout(self):
+        self.seed_candidate_files()
+        (self.root / "controller" / ".git" / "objects" / "info").mkdir(parents=True)
+        _calls, run = self.checkout_command_runner(
+            post_checkout_sha="abcdef0123456789abcdef0123456789abcdef01"
+        )
+
+        with mock.patch.object(
+            production_auto_deploy,
+            "_run_command",
+            side_effect=run,
+        ), self.assertRaises(production_auto_deploy.DeploymentError):
+            production_auto_deploy.prepare_checkout(self.loaded_config(), MAIN_SHA)
+
+    def test_prepare_checkout_rejects_alternate_object_environment_and_file(self):
+        self.seed_candidate_files()
+        alternate = (
+            self.root / "controller" / ".git" / "objects" / "info" / "alternates"
+        )
+        alternate.parent.mkdir(parents=True)
+        for label, environment, create_file in (
+            ("object directory", {"GIT_OBJECT_DIRECTORY": "/tmp/objects"}, False),
+            (
+                "alternate directories",
+                {"GIT_ALTERNATE_OBJECT_DIRECTORIES": "/tmp/alternate"},
+                False,
+            ),
+            ("config injection", {"GIT_CONFIG_COUNT": "1"}, False),
+            ("alternates file", {}, True),
+        ):
+            with self.subTest(label=label):
+                if create_file:
+                    alternate.write_text("/tmp/objects\n", encoding="utf-8")
+                calls, run = self.checkout_command_runner()
+                with mock.patch.dict(
+                    os.environ, environment, clear=False
+                ), mock.patch.object(
+                    production_auto_deploy,
+                    "_run_command",
+                    side_effect=run,
+                ), self.assertRaises(
+                    production_auto_deploy.DeploymentError
+                ):
+                    production_auto_deploy.prepare_checkout(
+                        self.loaded_config(),
+                        MAIN_SHA,
+                    )
+                self.assertFalse(
+                    any(arguments[1] == "fetch" for arguments, _kwargs in calls)
+                )
+                if alternate.exists():
+                    alternate.unlink()
+
+    def test_prepare_checkout_rejects_symlinked_git_metadata(self):
+        self.seed_candidate_files()
+        external_git = self.root / "external-git"
+        external_git.mkdir()
+        (self.root / "controller" / ".git").symlink_to(
+            external_git,
+            target_is_directory=True,
+        )
+        calls, run = self.checkout_command_runner()
+
+        with mock.patch.object(
+            production_auto_deploy,
+            "_run_command",
+            side_effect=run,
+        ), self.assertRaises(production_auto_deploy.DeploymentError):
+            production_auto_deploy.prepare_checkout(self.loaded_config(), MAIN_SHA)
+
+        self.assertEqual(calls, [])
+
+    def test_prepare_checkout_rejects_replacement_refs_before_fetch(self):
+        checkout = self.root / "controller"
+        real_git = shutil.which("git")
+        self.assertIsNotNone(real_git)
+        production_auto_deploy.SYSTEM_GIT_PATH = Path(real_git)
+
+        def git(*arguments, capture=False):
+            return subprocess.run(
+                [real_git, *arguments],
+                cwd=checkout,
+                check=True,
+                stdout=subprocess.PIPE if capture else subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                text=True,
+            )
+
+        git("init")
+        git("config", "user.name", "Test User")
+        git("config", "user.email", "test@example.invalid")
+        git("config", "remote.origin.url", self.config["repository_url"])
+        tracked = checkout / "tracked"
+        tracked.write_text("safe\n", encoding="utf-8")
+        git("add", "tracked")
+        git("commit", "-m", "approved")
+        approved = git("rev-parse", "HEAD", capture=True).stdout.strip()
+        tracked.write_text("evil\n", encoding="utf-8")
+        git("commit", "-am", "replacement")
+        replacement = git("rev-parse", "HEAD", capture=True).stdout.strip()
+        git("replace", approved, replacement)
+        git("checkout", "--detach", "--force", approved)
+        self.assertEqual(tracked.read_text(encoding="utf-8"), "evil\n")
+        self.assertEqual(
+            git(
+                "--no-replace-objects", "show", f"{approved}:tracked", capture=True
+            ).stdout,
+            "safe\n",
+        )
+        safe_show = production_auto_deploy._git_command(
+            self.loaded_config(),
+            ["show", f"{approved}:tracked"],
+        )
+        self.assertEqual((safe_show.returncode, safe_show.stdout), (0, b"safe\n"))
+        fetch_marker = self.root / "replacement-fetch"
+        real_command = production_auto_deploy._git_command
+
+        def reject_fetch(config, arguments):
+            if arguments[:1] == ["fetch"]:
+                fetch_marker.write_text("reached fetch\n", encoding="utf-8")
+                return subprocess.CompletedProcess(arguments, 1, b"", b"")
+            return real_command(config, arguments)
+
+        with mock.patch.object(
+            production_auto_deploy,
+            "_git_command",
+            side_effect=reject_fetch,
+        ), self.assertRaises(production_auto_deploy.DeploymentError):
+            production_auto_deploy.prepare_checkout(
+                self.loaded_config(),
+                approved,
+            )
+
+        self.assertFalse(fetch_marker.exists())
+
+    def test_prepare_checkout_rejects_redirected_core_worktree_before_fetch(self):
+        checkout = self.root / "controller"
+        external = self.root / "external-worktree"
+        external.mkdir()
+        real_git = shutil.which("git")
+        self.assertIsNotNone(real_git)
+        production_auto_deploy.SYSTEM_GIT_PATH = Path(real_git)
+
+        def git(*arguments, cwd=checkout):
+            subprocess.run(
+                [real_git, *arguments],
+                cwd=cwd,
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+        git("init")
+        git("config", "user.name", "Test User")
+        git("config", "user.email", "test@example.invalid")
+        git("config", "remote.origin.url", self.config["repository_url"])
+        (checkout / "tracked").write_text("tracked\n", encoding="utf-8")
+        git("add", "tracked")
+        git("commit", "-m", "test fixture")
+        (external / "tracked").write_text("tracked\n", encoding="utf-8")
+        git("config", "core.worktree", str(external))
+        before = (external / "tracked").read_bytes()
+        fetch_marker = self.root / "worktree-fetch"
+        real_command = production_auto_deploy._git_command
+
+        def reject_fetch(config, arguments):
+            if arguments[:1] == ["fetch"]:
+                fetch_marker.write_text("reached fetch\n", encoding="utf-8")
+                return subprocess.CompletedProcess(arguments, 1, b"", b"")
+            return real_command(config, arguments)
+
+        with mock.patch.object(
+            production_auto_deploy,
+            "_git_command",
+            side_effect=reject_fetch,
+        ), self.assertRaises(production_auto_deploy.DeploymentError):
+            production_auto_deploy.prepare_checkout(
+                self.loaded_config(),
+                "0123456789abcdef0123456789abcdef01234567",
+            )
+
+        self.assertFalse(fetch_marker.exists())
+        self.assertEqual((external / "tracked").read_bytes(), before)
+
+    def test_prepare_checkout_rejects_grafts_or_shallow_metadata(self):
+        self.seed_candidate_files()
+        git_directory = self.root / "controller" / ".git"
+        (git_directory / "objects" / "info").mkdir(parents=True)
+        (git_directory / "info").mkdir()
+        for metadata in (
+            git_directory / "info" / "grafts",
+            git_directory / "shallow",
+        ):
+            with self.subTest(metadata=metadata):
+                metadata.write_text(MAIN_SHA + "\n", encoding="ascii")
+                calls, run = self.checkout_command_runner()
+                with mock.patch.object(
+                    production_auto_deploy,
+                    "_run_command",
+                    side_effect=run,
+                ), self.assertRaises(production_auto_deploy.DeploymentError):
+                    production_auto_deploy.prepare_checkout(
+                        self.loaded_config(),
+                        MAIN_SHA,
+                    )
+                self.assertEqual(calls, [])
+                metadata.unlink()
+
+    def test_prepare_checkout_rejects_redirected_common_git_directory(self):
+        self.seed_candidate_files()
+        git_directory = self.root / "controller" / ".git"
+        git_directory.mkdir()
+        external_common_directory = self.root / "external-common-git"
+        external_common_directory.mkdir()
+        (git_directory / "commondir").write_text(
+            str(external_common_directory) + "\n",
+            encoding="utf-8",
+        )
+        calls, run = self.checkout_command_runner()
+
+        with mock.patch.object(
+            production_auto_deploy,
+            "_run_command",
+            side_effect=run,
+        ), self.assertRaises(production_auto_deploy.DeploymentError):
+            production_auto_deploy.prepare_checkout(self.loaded_config(), MAIN_SHA)
+
+        self.assertEqual(calls, [])
+
+    def test_prepare_checkout_rejects_mismatched_top_level_or_git_directory(self):
+        self.seed_candidate_files()
+        (self.root / "controller" / ".git" / "objects" / "info").mkdir(parents=True)
+        cases = (
+            {"toplevel": self.root / "external-worktree"},
+            {"git_dir": self.root / "external-git"},
+            {"git_common_dir": self.root / "external-common-git"},
+        )
+        for overrides in cases:
+            with self.subTest(overrides=overrides):
+                calls, run = self.checkout_command_runner(**overrides)
+                with mock.patch.object(
+                    production_auto_deploy,
+                    "_run_command",
+                    side_effect=run,
+                ), self.assertRaises(production_auto_deploy.DeploymentError):
+                    production_auto_deploy.prepare_checkout(
+                        self.loaded_config(),
+                        MAIN_SHA,
+                    )
+                self.assertFalse(
+                    any(arguments[1] == "fetch" for arguments, _kwargs in calls)
+                )
+
+    def test_prepare_checkout_rejects_ignored_sparse_or_skip_worktree_state(self):
+        self.seed_candidate_files()
+        (self.root / "controller" / ".git" / "objects" / "info").mkdir(parents=True)
+        cases = (
+            {
+                "ignored": b"!! inventory/group_vars/all/vault-plain.yml\n",
+            },
+            {"sparse_config": True},
+            {"skip_worktree": True},
+        )
+        for overrides in cases:
+            with self.subTest(overrides=overrides):
+                calls, run = self.checkout_command_runner(**overrides)
+                with mock.patch.object(
+                    production_auto_deploy,
+                    "_run_command",
+                    side_effect=run,
+                ), self.assertRaises(production_auto_deploy.DeploymentError):
+                    production_auto_deploy.prepare_checkout(
+                        self.loaded_config(),
+                        MAIN_SHA,
+                    )
+                self.assertFalse(
+                    any(arguments[1] == "fetch" for arguments, _kwargs in calls)
+                )
+
+    def test_git_commands_disable_repository_hooks_and_fsmonitor(self):
+        checkout = self.root / "controller"
+        real_git = shutil.which("git")
+        self.assertIsNotNone(real_git)
+        production_auto_deploy.SYSTEM_GIT_PATH = Path(real_git)
+
+        def git(*arguments):
+            subprocess.run(
+                [real_git, *arguments],
+                cwd=checkout,
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+        git("init")
+        git("config", "user.name", "Test User")
+        git("config", "user.email", "test@example.invalid")
+        (checkout / "tracked").write_text("tracked\n", encoding="utf-8")
+        git("add", "tracked")
+        git("commit", "-m", "test fixture")
+        sha = subprocess.check_output(
+            [real_git, "rev-parse", "HEAD"],
+            cwd=checkout,
+            text=True,
+        ).strip()
+
+        hook_marker = self.root / "hook-executed"
+        hook = checkout / ".git" / "hooks" / "post-checkout"
+        hook.write_text(
+            f"#!/bin/sh\nprintf executed > {str(hook_marker)!r}\n",
+            encoding="utf-8",
+        )
+        hook.chmod(0o700)
+        fsmonitor_marker = self.root / "fsmonitor-executed"
+        fsmonitor = self.root / "fsmonitor"
+        fsmonitor.write_text(
+            f"#!/bin/sh\nprintf executed > {str(fsmonitor_marker)!r}\nprintf '\\n'\n",
+            encoding="utf-8",
+        )
+        fsmonitor.chmod(0o700)
+        git("config", "core.fsmonitor", str(fsmonitor))
+
+        status = production_auto_deploy._git_command(
+            self.loaded_config(),
+            ["status", "--porcelain=v1"],
+        )
+        checkout_result = production_auto_deploy._git_command(
+            self.loaded_config(),
+            ["checkout", "--detach", sha],
+        )
+
+        self.assertEqual((status.returncode, checkout_result.returncode), (0, 0))
+        self.assertFalse(fsmonitor_marker.exists())
+        self.assertFalse(hook_marker.exists())
+
+    def test_prepare_checkout_rejects_clean_filter_before_status_executes_it(self):
+        checkout = self.root / "controller"
+        real_git = shutil.which("git")
+        self.assertIsNotNone(real_git)
+        production_auto_deploy.SYSTEM_GIT_PATH = Path(real_git)
+
+        def git(*arguments):
+            subprocess.run(
+                [real_git, *arguments],
+                cwd=checkout,
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+        git("init")
+        git("config", "user.name", "Test User")
+        git("config", "user.email", "test@example.invalid")
+        git("config", "remote.origin.url", self.config["repository_url"])
+        (checkout / ".gitattributes").write_text(
+            "tracked filter=hostile\n",
+            encoding="utf-8",
+        )
+        tracked = checkout / "tracked"
+        tracked.write_text("tracked\n", encoding="utf-8")
+        git("add", ".gitattributes", "tracked")
+        git("commit", "-m", "test fixture")
+        sha = subprocess.check_output(
+            [real_git, "rev-parse", "HEAD"],
+            cwd=checkout,
+            text=True,
+        ).strip()
+
+        filter_marker = self.root / "filter-executed"
+        clean_filter = self.root / "clean-filter"
+        clean_filter.write_text(
+            f"#!/bin/sh\nprintf executed > {str(filter_marker)!r}\ncat\n",
+            encoding="utf-8",
+        )
+        clean_filter.chmod(0o700)
+        git("config", "filter.hostile.clean", str(clean_filter))
+        tracked.write_text("tracked\n", encoding="utf-8")
+
+        with self.assertRaises(production_auto_deploy.DeploymentError):
+            production_auto_deploy.prepare_checkout(self.loaded_config(), sha)
+
+        self.assertFalse(filter_marker.exists())
+
+    def test_tooling_identity_hashes_length_prefixed_exact_file_bytes(self):
+        checkout = self.seed_candidate_files()
+        controller = (checkout / "controller-requirements.txt").read_bytes()
+        collections = (checkout / "requirements.yml").read_bytes()
+        expected = hashlib.sha256(
+            len(controller).to_bytes(8, "big")
+            + controller
+            + len(collections).to_bytes(8, "big")
+            + collections
+        ).hexdigest()
+
+        self.assertEqual(production_auto_deploy.tooling_identity(checkout), expected)
+
+    def test_tooling_identity_rejects_symlinked_requirement_inputs(self):
+        checkout = self.seed_candidate_files()
+        external = self.root / "external-requirements"
+        external.write_text("ansible-core==2.21.2\n", encoding="utf-8")
+        controller_requirements = checkout / "controller-requirements.txt"
+        controller_requirements.unlink()
+        controller_requirements.symlink_to(external)
+
+        with self.assertRaises(production_auto_deploy.DeploymentError):
+            production_auto_deploy.tooling_identity(checkout)
+
+    def test_prepare_tooling_without_sha_rejects_symlinked_requirement_inputs(self):
+        checkout = self.seed_candidate_files()
+        external = self.root / "external-requirements"
+        external.write_bytes(b"ansible-core==2.21.2\nansible-lint==26.6.0\n")
+        controller_requirements = checkout / "controller-requirements.txt"
+        controller_requirements.unlink()
+        controller_requirements.symlink_to(external)
+
+        with mock.patch.object(
+            production_auto_deploy,
+            "_run_command",
+        ) as run, self.assertRaises(production_auto_deploy.DeploymentError):
+            production_auto_deploy.prepare_tooling(self.loaded_config(), checkout)
+
+        run.assert_not_called()
+
+    def test_prepare_tooling_builds_privately_and_atomically_publishes(self):
+        checkout = self.seed_candidate_files()
+        calls = []
+
+        def build(arguments, **kwargs):
+            arguments = list(arguments)
+            calls.append((arguments, kwargs))
+            if arguments[1:3] == ["-m", "venv"]:
+                bin_path = Path(arguments[-1]) / "bin"
+                bin_path.mkdir(parents=True)
+                for name in (
+                    "python",
+                    "ansible-playbook",
+                    "ansible-galaxy",
+                    "ansible-lint",
+                ):
+                    executable = bin_path / name
+                    executable.write_text("#!/bin/sh\n", encoding="utf-8")
+                    executable.chmod(0o700)
+            if "collection" in arguments and "install" in arguments:
+                Path(arguments[arguments.index("--collections-path") + 1]).mkdir(
+                    parents=True
+                )
+            stdout = (
+                b"ansible-playbook [core 2.21.2]\n"
+                if arguments[-1:] == ["--version"]
+                else b""
+            )
+            return subprocess.CompletedProcess(arguments, 0, stdout, b"")
+
+        with mock.patch.object(
+            production_auto_deploy,
+            "_run_command",
+            side_effect=build,
+        ), mock.patch.object(
+            production_auto_deploy,
+            "_capture_installed_tooling_manifest",
+            return_value=INSTALLED_TOOLING_MANIFEST,
+        ):
+            tooling = production_auto_deploy.prepare_tooling(
+                self.loaded_config(),
+                checkout,
+            )
+
+        identity = production_auto_deploy.tooling_identity(checkout)
+        published = self.root / "tooling" / identity
+        self.assertTrue(tooling.__dataclass_params__.frozen)
+        self.assertEqual(
+            tooling,
+            production_auto_deploy.Tooling(
+                ansible_playbook=(published / "venv/bin/ansible-playbook").resolve(),
+                python=(published / "venv/bin/python").resolve(),
+                collections=(published / "collections").resolve(),
+            ),
+        )
+        self.assertTrue((published / ".complete").is_file())
+        self.assertEqual(
+            [
+                path
+                for path in (self.root / "tooling").iterdir()
+                if path.name.startswith(".")
+            ],
+            [],
+        )
+        pip_calls = [
+            (arguments, kwargs)
+            for arguments, kwargs in calls
+            if "pip" in arguments and "install" in arguments
+        ]
+        self.assertEqual(len(pip_calls), 1)
+        pip_arguments, pip_kwargs = pip_calls[0]
+        self.assertIn("--isolated", pip_arguments)
+        self.assertEqual(pip_arguments[-2], "--requirement")
+        self.assertTrue(
+            pip_arguments[-1].endswith("/.inputs/controller-requirements.txt")
+        )
+        self.assertEqual(
+            (published / ".inputs" / "controller-requirements.txt").read_bytes(),
+            (checkout / "controller-requirements.txt").read_bytes(),
+        )
+        self.assertEqual(pip_kwargs["env"]["PIP_CONFIG_FILE"], "/dev/null")
+        self.assertEqual(pip_kwargs["env"]["PYTHONNOUSERSITE"], "1")
+        galaxy_arguments, galaxy_kwargs = next(
+            (arguments, kwargs)
+            for arguments, kwargs in calls
+            if "collection" in arguments and "install" in arguments
+        )
+        self.assertTrue(
+            galaxy_kwargs["env"]["ANSIBLE_CONFIG"].endswith("/.ansible-build.cfg")
+        )
+        self.assertEqual(
+            galaxy_kwargs["env"]["ANSIBLE_COLLECTIONS_PATH"],
+            galaxy_arguments[galaxy_arguments.index("--collections-path") + 1],
+        )
+        self.assertTrue(
+            galaxy_arguments[
+                galaxy_arguments.index("--requirements-file") + 1
+            ].endswith("/.inputs/requirements.yml")
+        )
+
+    def test_concurrent_tooling_publication_accepts_only_valid_complete_target(self):
+        checkout = self.seed_candidate_files()
+        identity = production_auto_deploy.tooling_identity(checkout)
+        published = self.root / "tooling" / identity
+        published.mkdir()
+
+        with self.assertRaises(production_auto_deploy.DeploymentError):
+            production_auto_deploy.prepare_tooling(self.loaded_config(), checkout)
+
+        self.assertEqual(list(published.iterdir()), [])
+
+    def test_concurrent_tooling_publication_accepts_valid_race_winner(self):
+        checkout = self.seed_candidate_files()
+        identity = production_auto_deploy.tooling_identity(checkout)
+        published = self.root / "tooling" / identity
+
+        def build(arguments, **_kwargs):
+            arguments = list(arguments)
+            if arguments[1:3] == ["-m", "venv"]:
+                bin_path = Path(arguments[-1]) / "bin"
+                bin_path.mkdir(parents=True)
+                for name in (
+                    "python",
+                    "ansible-playbook",
+                    "ansible-galaxy",
+                    "ansible-lint",
+                ):
+                    executable = bin_path / name
+                    executable.write_text("#!/bin/sh\n", encoding="utf-8")
+                    executable.chmod(0o700)
+            if "collection" in arguments and "install" in arguments:
+                Path(arguments[arguments.index("--collections-path") + 1]).mkdir(
+                    parents=True
+                )
+            stdout = (
+                b"ansible-playbook [core 2.21.2]\n"
+                if arguments[-1:] == ["--version"]
+                else b""
+            )
+            return subprocess.CompletedProcess(arguments, 0, stdout, b"")
+
+        def publish_winner(_source, destination):
+            self.seed_valid_tooling(destination, identity)
+            raise OSError(errno.ENOTEMPTY, "concurrent winner published")
+
+        with mock.patch.object(
+            production_auto_deploy,
+            "_run_command",
+            side_effect=build,
+        ), mock.patch.object(
+            production_auto_deploy,
+            "_capture_installed_tooling_manifest",
+            return_value=INSTALLED_TOOLING_MANIFEST,
+        ), mock.patch.object(
+            production_auto_deploy.os,
+            "rename",
+            side_effect=publish_winner,
+        ):
+            try:
+                tooling = production_auto_deploy.prepare_tooling(
+                    self.loaded_config(),
+                    checkout,
+                )
+            except production_auto_deploy.DeploymentError as error:
+                self.fail(f"valid concurrent publication was rejected: {error}")
+
+        self.assertEqual(tooling, production_auto_deploy._tooling_paths(published))
+        self.assertEqual(
+            [
+                path
+                for path in (self.root / "tooling").iterdir()
+                if path.name.startswith(".")
+            ],
+            [],
+        )
+
+    def test_published_tooling_reuse_rejects_collection_tampering(self):
+        checkout = self.seed_candidate_files()
+
+        def build(arguments, **_kwargs):
+            arguments = list(arguments)
+            if arguments[1:3] == ["-m", "venv"]:
+                bin_path = Path(arguments[-1]) / "bin"
+                bin_path.mkdir(parents=True)
+                for name in (
+                    "python",
+                    "ansible-playbook",
+                    "ansible-galaxy",
+                    "ansible-lint",
+                ):
+                    executable = bin_path / name
+                    executable.write_text("#!/bin/sh\n", encoding="utf-8")
+                    executable.chmod(0o700)
+            if "collection" in arguments and "install" in arguments:
+                Path(arguments[arguments.index("--collections-path") + 1]).mkdir(
+                    parents=True
+                )
+            stdout = (
+                b"ansible-playbook [core 2.21.2]\n"
+                if arguments[-1:] == ["--version"]
+                else b""
+            )
+            return subprocess.CompletedProcess(arguments, 0, stdout, b"")
+
+        with mock.patch.object(
+            production_auto_deploy,
+            "_run_command",
+            side_effect=build,
+        ), mock.patch.object(
+            production_auto_deploy,
+            "_capture_installed_tooling_manifest",
+            return_value=INSTALLED_TOOLING_MANIFEST,
+        ):
+            tooling = production_auto_deploy.prepare_tooling(
+                self.loaded_config(),
+                checkout,
+            )
+
+        tooling.collections.chmod(0o700)
+        (tooling.collections / "tampered.py").write_text(
+            "raise RuntimeError('tampered')\n",
+            encoding="utf-8",
+        )
+        with mock.patch.object(
+            production_auto_deploy,
+            "_run_command",
+            side_effect=build,
+        ), mock.patch.object(
+            production_auto_deploy,
+            "_capture_installed_tooling_manifest",
+            return_value=INSTALLED_TOOLING_MANIFEST,
+        ), self.assertRaises(
+            production_auto_deploy.DeploymentError
+        ):
+            production_auto_deploy.prepare_tooling(
+                self.loaded_config(),
+                checkout,
+            )
+
+    def test_tooling_manifest_rejects_symlink_and_hardlink_artifacts(self):
+        for artifact_type in ("symlink", "hardlink"):
+            with self.subTest(artifact_type=artifact_type):
+                staging = self.root / f"tooling-{artifact_type}"
+                staging.mkdir()
+                target = staging / "target"
+                target.write_text("payload\n", encoding="utf-8")
+                artifact = staging / "artifact"
+                if artifact_type == "symlink":
+                    artifact.symlink_to(target.name)
+                else:
+                    os.link(target, artifact)
+
+                with self.assertRaises(production_auto_deploy.DeploymentError):
+                    production_auto_deploy._tooling_manifest(staging)
+
+    def test_standard_venv_lib64_symlink_is_removed_but_other_links_fail(self):
+        venv = self.root / "venv-links"
+        (venv / "lib").mkdir(parents=True)
+        (venv / "lib64").symlink_to("lib")
+
+        production_auto_deploy._remove_standard_venv_symlink(venv)
+        self.assertFalse((venv / "lib64").exists())
+        self.assertFalse((venv / "lib64").is_symlink())
+
+        (venv / "lib64").symlink_to(self.root)
+        with self.assertRaises(production_auto_deploy.DeploymentError):
+            production_auto_deploy._remove_standard_venv_symlink(venv)
+
+    def test_internal_file_symlinks_are_materialized_before_tooling_seal(self):
+        staging = self.root / "materialized-tooling"
+        staging.mkdir()
+        target = staging / "target"
+        target.write_bytes(b"exact payload\n")
+        target.chmod(0o700)
+        internal = staging / "internal"
+        internal.symlink_to("target")
+
+        production_auto_deploy._materialize_internal_symlinks(staging)
+
+        self.assertFalse(internal.is_symlink())
+        self.assertEqual(internal.read_bytes(), target.read_bytes())
+        self.assertTrue(internal.stat().st_mode & stat.S_IXUSR)
+
+        external_target = self.root / "external-target"
+        external_target.write_bytes(b"external\n")
+        (staging / "external").symlink_to(external_target)
+        with self.assertRaises(production_auto_deploy.DeploymentError):
+            production_auto_deploy._materialize_internal_symlinks(staging)
+
+    def test_installed_tooling_manifest_validates_exact_versions_and_collections(self):
+        root = self.root / "canonical-tooling"
+        (root / "venv" / "bin").mkdir(parents=True)
+        (root / "collections").mkdir()
+        tooling = production_auto_deploy._tooling_paths(root)
+        calls = []
+
+        def run(arguments, **kwargs):
+            arguments = list(arguments)
+            calls.append((arguments, kwargs))
+            if arguments[1:3] == ["-m", "pip"]:
+                output = b"ansible-core==2.21.2\nansible-lint==26.6.0\n"
+            elif arguments[1:3] == ["-m", "ansiblelint"]:
+                output = b"ansible-lint 26.6.0 using ansible-core:2.21.2\n"
+            elif arguments[1:3] == ["-m", "ansible.cli.galaxy"]:
+                output = json.dumps(
+                    {
+                        str(tooling.collections / "ansible_collections"): {
+                            "community.docker": {"version": "5.2.1"},
+                            "community.library_inventory_filtering_v1": {
+                                "version": "1.1.5"
+                            },
+                        }
+                    }
+                ).encode("ascii")
+            elif arguments[1:2] == ["-c"]:
+                output = b"3.12\n"
+            else:
+                output = b"ansible-playbook [core 2.21.2]\n"
+            return subprocess.CompletedProcess(arguments, 0, output, b"")
+
+        with mock.patch.object(
+            production_auto_deploy,
+            "_run_command",
+            side_effect=run,
+        ):
+            manifest = production_auto_deploy._capture_installed_tooling_manifest(
+                tooling,
+                self.root,
+                {"community.docker": "5.2.1"},
+            )
+
+        payload = json.loads(manifest)
+        self.assertEqual(payload["python"], "3.12")
+        self.assertEqual(payload["ansible_core"], "2.21.2")
+        self.assertEqual(payload["ansible_lint"], "26.6.0")
+        self.assertEqual(
+            payload["collections"],
+            {
+                "community.docker": "5.2.1",
+                "community.library_inventory_filtering_v1": "1.1.5",
+            },
+        )
+        pip_call = next(arguments for arguments, _kwargs in calls if "pip" in arguments)
+        self.assertIn("--isolated", pip_call)
+        self.assertIn("--all", pip_call)
+        self.assertIn(
+            [tooling.python, "-m", "ansiblelint", "--version"],
+            [arguments for arguments, _kwargs in calls],
+        )
+        self.assertTrue(
+            any(
+                arguments[1:3] == ["-m", "ansible.cli.galaxy"]
+                for arguments, _kwargs in calls
+            )
+        )
+
+    def test_deploy_candidate_runs_exact_plays_with_minimal_environment(self):
+        checkout = self.seed_candidate_files()
+        tooling_root = self.root / "tooling" / "prepared"
+        (tooling_root / "venv/bin").mkdir(parents=True)
+        (tooling_root / "collections").mkdir()
+        tooling = production_auto_deploy.Tooling(
+            ansible_playbook=(tooling_root / "venv/bin/ansible-playbook").resolve(),
+            python=(tooling_root / "venv/bin/python").resolve(),
+            collections=(tooling_root / "collections").resolve(),
+        )
+        calls = []
+
+        def record(arguments, **kwargs):
+            calls.append((list(arguments), kwargs))
+            return subprocess.CompletedProcess(arguments, 0, b"", b"")
+
+        hostile_environment = {
+            "ANSIBLE_ROLES_PATH": "/attacker/roles",
+            "PLATFORM_ADOPTION_ROOT": "/attacker/adoption",
+            "PLATFORM_MAC_PARITY_VAULT_FILE": "/attacker/parity",
+            "PLATFORM_LEGACY_ROOT": "/attacker/legacy",
+        }
+        with mock.patch.object(
+            production_auto_deploy,
+            "prepare_checkout",
+            return_value=checkout,
+        ), mock.patch.object(
+            production_auto_deploy,
+            "prepare_tooling",
+            return_value=tooling,
+        ), mock.patch.object(
+            production_auto_deploy,
+            "_validate_materialized_checkout",
+        ), mock.patch.object(
+            production_auto_deploy,
+            "_validate_tooling_for_execution",
+        ), mock.patch.object(
+            production_auto_deploy,
+            "_run_command",
+            side_effect=record,
+        ), mock.patch.dict(
+            os.environ, hostile_environment, clear=False
+        ):
+            succeeded = production_auto_deploy.deploy_candidate(
+                self.loaded_config(),
+                MAIN_SHA,
+                io.BytesIO(),
+            )
+
+        self.assertTrue(succeeded)
+        ansible = str(tooling.ansible_playbook)
+        vault = str(self.root / "config" / "vault.yml")
+        password = str(self.root / "config" / "vault-password")
+        shared_arguments = [
+            "--vault-password-file",
+            password,
+            "-e",
+            f"@{vault}",
+            "-e",
+            f"platform_vault_file={vault}",
+        ]
+        self.assertEqual(
+            [arguments for arguments, _kwargs in calls],
+            [
+                [ansible, "validate-vault.yml", *shared_arguments],
+                [ansible, "-i", "inventory/local.yml", "site.yml", *shared_arguments],
+                [ansible, "-i", "inventory/local.yml", "verify.yml", *shared_arguments],
+                [
+                    ansible,
+                    "-i",
+                    "inventory/local.yml",
+                    "install-production-auto-deploy.yml",
+                    *shared_arguments,
+                ],
+            ],
+        )
+        allowed = {
+            "PATH",
+            "LANG",
+            "LC_ALL",
+            "HOME",
+            "PLATFORM_NAS_ADDRESS",
+            "PLATFORM_PUBLIC_HOST",
+            "PLATFORM_CALLBACK_HOST",
+            "PLATFORM_VAULT_FILE",
+            "ANSIBLE_CONFIG",
+            "ANSIBLE_COLLECTIONS_PATH",
+        }
+        for arguments, kwargs in calls:
+            self.assertEqual(kwargs["cwd"], checkout)
+            environment = kwargs["env"]
+            self.assertEqual(set(environment), allowed)
+            self.assertFalse(hostile_environment.keys() & kwargs["env"].keys())
+            self.assertEqual(
+                {
+                    "PLATFORM_NAS_ADDRESS": environment["PLATFORM_NAS_ADDRESS"],
+                    "PLATFORM_PUBLIC_HOST": environment["PLATFORM_PUBLIC_HOST"],
+                    "PLATFORM_CALLBACK_HOST": environment["PLATFORM_CALLBACK_HOST"],
+                    "PLATFORM_VAULT_FILE": environment["PLATFORM_VAULT_FILE"],
+                    "ANSIBLE_CONFIG": environment["ANSIBLE_CONFIG"],
+                    "ANSIBLE_COLLECTIONS_PATH": environment["ANSIBLE_COLLECTIONS_PATH"],
+                },
+                {
+                    "PLATFORM_NAS_ADDRESS": "192.168.0.139",
+                    "PLATFORM_PUBLIC_HOST": "192.168.0.139",
+                    "PLATFORM_CALLBACK_HOST": "192.168.0.139",
+                    "PLATFORM_VAULT_FILE": vault,
+                    "ANSIBLE_CONFIG": str(checkout / "ansible.cfg"),
+                    "ANSIBLE_COLLECTIONS_PATH": str(tooling.collections),
+                },
+            )
+
+    def test_deploy_candidate_stops_after_each_failed_play(self):
+        checkout = self.seed_candidate_files()
+        tooling = production_auto_deploy.Tooling(
+            ansible_playbook=Path("/private/tooling/ansible-playbook"),
+            python=Path("/private/tooling/python"),
+            collections=Path("/private/tooling/collections"),
+        )
+        old_launcher = self.root / "launcher"
+        old_launcher.write_text("old launcher\n", encoding="utf-8")
+        plays = (
+            "validate-vault.yml",
+            "site.yml",
+            "verify.yml",
+            "install-production-auto-deploy.yml",
+        )
+        for failed_play in plays:
+            with self.subTest(failed_play=failed_play):
+                called_plays = []
+
+                def fail_selected(arguments, **_kwargs):
+                    play = next(item for item in arguments if Path(item).name in plays)
+                    called_plays.append(play)
+                    return subprocess.CompletedProcess(
+                        arguments,
+                        1 if play == failed_play else 0,
+                        b"",
+                        b"failed",
+                    )
+
+                with mock.patch.object(
+                    production_auto_deploy,
+                    "prepare_checkout",
+                    return_value=checkout,
+                ), mock.patch.object(
+                    production_auto_deploy,
+                    "prepare_tooling",
+                    return_value=tooling,
+                ), mock.patch.object(
+                    production_auto_deploy,
+                    "_validate_materialized_checkout",
+                ), mock.patch.object(
+                    production_auto_deploy,
+                    "_validate_tooling_for_execution",
+                ), mock.patch.object(
+                    production_auto_deploy,
+                    "_run_command",
+                    side_effect=fail_selected,
+                ):
+                    succeeded = production_auto_deploy.deploy_candidate(
+                        self.loaded_config(),
+                        MAIN_SHA,
+                        io.BytesIO(),
+                    )
+
+                failed_index = plays.index(failed_play)
+                self.assertFalse(succeeded)
+                self.assertEqual(called_plays, list(plays[: failed_index + 1]))
+                self.assertEqual(
+                    old_launcher.read_text(encoding="utf-8"), "old launcher\n"
+                )
+
+    def test_deploy_candidate_revalidates_checkout_before_every_play(self):
+        checkout = self.seed_candidate_files()
+        tooling = production_auto_deploy.Tooling(
+            ansible_playbook=Path("/private/tooling/ansible-playbook"),
+            python=Path("/private/tooling/python"),
+            collections=Path("/private/tooling/collections"),
+        )
+        events = []
+
+        def validate(_config, validated_sha):
+            events.append(("validate", validated_sha))
+            if (checkout / "site.yml").read_text(encoding="utf-8") != "---\n":
+                raise production_auto_deploy.DeploymentError("checkout changed")
+
+        def run(arguments, **_kwargs):
+            play = next(
+                item
+                for item in arguments
+                if item.endswith(".yml") and not item.startswith("@")
+            )
+            events.append(("play", play))
+            (checkout / "site.yml").write_text("mutated\n", encoding="utf-8")
+            return subprocess.CompletedProcess(arguments, 0, b"", b"")
+
+        with mock.patch.object(
+            production_auto_deploy,
+            "prepare_checkout",
+            return_value=checkout,
+        ), mock.patch.object(
+            production_auto_deploy,
+            "prepare_tooling",
+            return_value=tooling,
+        ), mock.patch.object(
+            production_auto_deploy,
+            "_validate_materialized_checkout",
+            side_effect=validate,
+            create=True,
+        ), mock.patch.object(
+            production_auto_deploy,
+            "_validate_tooling_for_execution",
+            create=True,
+        ), mock.patch.object(
+            production_auto_deploy,
+            "_run_command",
+            side_effect=run,
+        ):
+            succeeded = production_auto_deploy.deploy_candidate(
+                self.loaded_config(), MAIN_SHA, io.BytesIO()
+            )
+
+        self.assertFalse(succeeded)
+        self.assertEqual(
+            events,
+            [
+                ("validate", MAIN_SHA),
+                ("validate", MAIN_SHA),
+                ("play", "validate-vault.yml"),
+                ("validate", MAIN_SHA),
+            ],
+        )
+
+    def test_default_poll_callback_deploys_candidate_and_preserves_journal_policy(self):
+        with self.candidate(MAIN_SHA), mock.patch.object(
+            production_auto_deploy,
+            "deploy_candidate",
+            return_value=True,
+        ) as deploy:
+            result = production_auto_deploy.poll(self.loaded_config())
+
+        self.assertTrue(result)
+        deploy.assert_called_once()
+        self.assertEqual(deploy.call_args.args[:2], (self.loaded_config(), MAIN_SHA))
+        successful = production_auto_deploy.read_sha_state(
+            self.state_path("last-successful")
+        )
+        self.assertEqual((successful.sha, successful.outcome), (MAIN_SHA, "success"))
+
+    def test_poll_rejects_invalid_controller_python_before_resolving_candidate(self):
+        before = self.state_snapshot()
+        with mock.patch.object(
+            production_auto_deploy,
+            "_validate_controller_python",
+            side_effect=production_auto_deploy.DeploymentError(
+                "controller Python 3.12 or newer is required"
+            ),
+        ), mock.patch.object(
+            production_auto_deploy,
+            "resolve_main_sha",
+            return_value=MAIN_SHA,
+        ) as resolve, self.assertRaises(
+            production_auto_deploy.DeploymentError
+        ):
+            production_auto_deploy.poll(self.loaded_config())
+
+        resolve.assert_not_called()
+        self.assertEqual(self.state_snapshot(), before)
+
+    def test_command_runner_terminates_process_group_on_sigterm(self):
+        orphan_marker = self.root / "orphaned-command"
+        entered_marker = self.root / "command-entered"
+        command_source = (
+            "import pathlib, subprocess, sys, time\n"
+            f"pathlib.Path({str(entered_marker)!r}).write_text('entered')\n"
+            "subprocess.Popen([sys.executable, '-c', "
+            f"\"import pathlib,time; time.sleep(0.8); pathlib.Path({str(orphan_marker)!r}).write_text('orphaned')\""
+            "])\n"
+            "time.sleep(10)\n"
+        )
+        runner_source = (
+            "import pathlib, sys\n"
+            f"sys.path.insert(0, {str(SCRIPT.parent)!r})\n"
+            "import production_auto_deploy as module\n"
+            f"module._run_command([sys.executable, '-c', {command_source!r}], "
+            f"cwd=pathlib.Path({str(self.root)!r}), "
+            "env={'PATH': '/usr/bin:/bin', 'LANG': 'C', 'LC_ALL': 'C', "
+            f"'HOME': {str(self.root)!r}}}, timeout=10)\n"
+        )
+        runner = subprocess.Popen(
+            [sys.executable, "-c", runner_source],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        deadline = time.monotonic() + 2
+        while not entered_marker.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        if not entered_marker.exists():
+            runner.terminate()
+            _stdout, stderr = runner.communicate(timeout=3)
+            self.fail(f"command runner did not start: {stderr}")
+
+        runner.terminate()
+        runner.communicate(timeout=3)
+        time.sleep(1)
+
+        self.assertFalse(orphan_marker.exists())
+
+    def test_command_timeout_kills_descendant_after_group_leader_exits(self):
+        orphan_marker = self.root / "orphaned-after-timeout"
+        command_source = (
+            "import subprocess, sys\n"
+            "subprocess.Popen([sys.executable, '-c', "
+            f"\"import pathlib,time; time.sleep(0.8); pathlib.Path({str(orphan_marker)!r}).write_text('orphaned')\""
+            "])\n"
+        )
+
+        with self.assertRaises(production_auto_deploy.DeploymentError):
+            production_auto_deploy._run_command(
+                [sys.executable, "-c", command_source],
+                cwd=self.root,
+                env={
+                    "PATH": "/usr/bin:/bin",
+                    "LANG": "C",
+                    "LC_ALL": "C",
+                    "HOME": str(self.root),
+                },
+                timeout=0.1,
+            )
+        time.sleep(1)
+
+        self.assertFalse(orphan_marker.exists())
+
+    def test_command_timeout_kills_term_resistant_descendant_with_closed_stdio(self):
+        orphan_marker = self.root / "term-resistant-orphan"
+        descendant_pid = self.root / "term-resistant-pid"
+        child_source = (
+            "import os,pathlib,signal,time\n"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            "os.close(1); os.close(2)\n"
+            f"pathlib.Path({str(descendant_pid)!r}).write_text(str(os.getpid()))\n"
+            "time.sleep(0.8)\n"
+            f"pathlib.Path({str(orphan_marker)!r}).write_text('orphaned')\n"
+        )
+        leader_source = (
+            "import pathlib,subprocess,sys,time\n"
+            f"subprocess.Popen([sys.executable, '-c', {child_source!r}])\n"
+            f"pid_path=pathlib.Path({str(descendant_pid)!r})\n"
+            "deadline=time.monotonic()+2\n"
+            "while not pid_path.exists() and time.monotonic()<deadline: time.sleep(0.01)\n"
+            "time.sleep(10)\n"
+        )
+
+        with self.assertRaisesRegex(
+            production_auto_deploy.DeploymentError,
+            "deployment command timed out",
+        ):
+            production_auto_deploy._run_command(
+                [sys.executable, "-c", leader_source],
+                cwd=self.root,
+                env={
+                    "PATH": "/usr/bin:/bin",
+                    "LANG": "C",
+                    "LC_ALL": "C",
+                    "HOME": str(self.root),
+                },
+                timeout=0.3,
+            )
+        time.sleep(1)
+
+        self.assertTrue(descendant_pid.exists())
+        self.assertFalse(orphan_marker.exists())
+        pid = int(descendant_pid.read_text(encoding="utf-8"))
+        with self.assertRaises(ProcessLookupError):
+            os.kill(pid, 0)
+
+    def test_command_rejects_live_descendant_after_successful_leader_exit(self):
+        orphan_marker = self.root / "successful-leader-orphan"
+        descendant_pid = self.root / "successful-leader-pid"
+        child_source = (
+            "import os,pathlib,signal,time\n"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            "os.close(1); os.close(2)\n"
+            f"pathlib.Path({str(descendant_pid)!r}).write_text(str(os.getpid()))\n"
+            "time.sleep(0.8)\n"
+            f"pathlib.Path({str(orphan_marker)!r}).write_text('orphaned')\n"
+        )
+        leader_source = (
+            "import pathlib,subprocess,sys,time\n"
+            f"subprocess.Popen([sys.executable, '-c', {child_source!r}])\n"
+            f"pid_path=pathlib.Path({str(descendant_pid)!r})\n"
+            "deadline=time.monotonic()+2\n"
+            "while not pid_path.exists() and time.monotonic()<deadline: time.sleep(0.01)\n"
+        )
+
+        with self.assertRaisesRegex(
+            production_auto_deploy.DeploymentError,
+            "deployment command left background processes",
+        ):
+            production_auto_deploy._run_command(
+                [sys.executable, "-c", leader_source],
+                cwd=self.root,
+                env={
+                    "PATH": "/usr/bin:/bin",
+                    "LANG": "C",
+                    "LC_ALL": "C",
+                    "HOME": str(self.root),
+                },
+                timeout=2,
+            )
+        time.sleep(1)
+
+        self.assertTrue(descendant_pid.exists())
+        self.assertFalse(orphan_marker.exists())
+        pid = int(descendant_pid.read_text(encoding="utf-8"))
+        with self.assertRaises(ProcessLookupError):
+            os.kill(pid, 0)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "requires Linux /proc")
+    def test_command_timeout_kills_descendant_that_escapes_with_setsid(self):
+        orphan_marker = self.root / "setsid-orphan"
+        descendant_pid = self.root / "setsid-pid"
+        child_source = (
+            "import os,pathlib,signal,time\n"
+            "os.setsid()\n"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            "os.close(1); os.close(2)\n"
+            f"pathlib.Path({str(descendant_pid)!r}).write_text(str(os.getpid()))\n"
+            "time.sleep(0.8)\n"
+            f"pathlib.Path({str(orphan_marker)!r}).write_text('orphaned')\n"
+        )
+        leader_source = (
+            "import pathlib,subprocess,sys,time\n"
+            f"subprocess.Popen([sys.executable, '-c', {child_source!r}])\n"
+            f"pid_path=pathlib.Path({str(descendant_pid)!r})\n"
+            "deadline=time.monotonic()+2\n"
+            "while not pid_path.exists() and time.monotonic()<deadline: time.sleep(0.01)\n"
+            "time.sleep(10)\n"
+        )
+
+        with self.assertRaisesRegex(
+            production_auto_deploy.DeploymentError,
+            "deployment command timed out",
+        ):
+            production_auto_deploy._run_command(
+                [sys.executable, "-c", leader_source],
+                cwd=self.root,
+                env={
+                    "PATH": "/usr/bin:/bin",
+                    "LANG": "C",
+                    "LC_ALL": "C",
+                    "HOME": str(self.root),
+                },
+                timeout=0.3,
+            )
+        time.sleep(1)
+
+        self.assertFalse(orphan_marker.exists())
+        pid = int(descendant_pid.read_text(encoding="utf-8"))
+        with self.assertRaises(ProcessLookupError):
+            os.kill(pid, 0)
+
+    def test_command_streams_only_bounded_output_to_attempt_sink(self):
+        sink = io.BytesIO()
+        source = (
+            "import os\n"
+            f"chunk=b'x'*{production_auto_deploy.HTTP_READ_SIZE}\n"
+            f"remaining={production_auto_deploy.MAX_RESPONSE_BYTES + production_auto_deploy.HTTP_READ_SIZE}\n"
+            "while remaining:\n"
+            " size=min(len(chunk),remaining); os.write(1,chunk[:size]); remaining-=size\n"
+        )
+
+        with self.assertRaisesRegex(
+            production_auto_deploy.DeploymentError,
+            "deployment command output is too large",
+        ):
+            production_auto_deploy._run_command(
+                [sys.executable, "-c", source],
+                cwd=self.root,
+                env={
+                    "PATH": "/usr/bin:/bin",
+                    "LANG": "C",
+                    "LC_ALL": "C",
+                    "HOME": str(self.root),
+                },
+                timeout=5,
+                log=sink,
+            )
+
+        self.assertLessEqual(
+            len(sink.getvalue()), production_auto_deploy.MAX_RESPONSE_BYTES
+        )
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "requires Linux /proc")
+    def test_git_timeout_kills_setsid_descendant(self):
+        orphan_marker = self.root / "git-setsid-orphan"
+        fake_git = self.fake_bin / "git"
+        child_source = (
+            "import os,pathlib,signal,time; os.setsid(); "
+            "signal.signal(signal.SIGTERM,signal.SIG_IGN); "
+            "os.close(1); os.close(2); time.sleep(.8); "
+            f"pathlib.Path({str(orphan_marker)!r}).write_text('orphaned')"
+        )
+        fake_git.write_text(
+            f"#!{sys.executable}\n"
+            "import os,subprocess,sys,time\n"
+            f"child={child_source!r}\n"
+            "subprocess.Popen([sys.executable,'-c',child])\n"
+            "time.sleep(10)\n",
+            encoding="utf-8",
+        )
+        fake_git.chmod(0o700)
+
+        with mock.patch.object(
+            production_auto_deploy,
+            "GIT_TIMEOUT_SECONDS",
+            0.3,
+        ), self.assertRaises(production_auto_deploy.EligibilityError):
+            production_auto_deploy.resolve_main_sha(self.loaded_config())
+        time.sleep(1)
+
+        self.assertFalse(orphan_marker.exists())
 
     def test_status_suppresses_matching_stale_failure_without_mutation(self):
         self.write_sha_state("last-successful", MAIN_SHA, "success")
