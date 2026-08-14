@@ -512,6 +512,7 @@
         paperless_mail_account_credential_fingerprint
     fail_msg: The installed Paperless Gmail credential configuration is absent or drifted.
   no_log: true
+  when: "'platform_verify_paperless' in ansible_run_tags"
 
 - name: List Paperless mail accounts for reconciliation
   tags: [platform_verify_paperless]

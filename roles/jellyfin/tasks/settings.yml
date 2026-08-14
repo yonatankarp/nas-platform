@@ -360,6 +360,9 @@
   when:
     - jellyfin_settings_phase == 'preflight'
     - not jellyfin_opensubtitles_preflight_read.skipped | default(false) | bool
+    - >-
+      not ((platform_compose_kind | default('') == 'integration') and
+           (deployment_bundle_test_mode | default(false) | bool))
   changed_when: false
   check_mode: false
   no_log: true
@@ -868,6 +871,9 @@
     - jellyfin_settings_phase in ['activate', 'finalize']
     - not ansible_check_mode
     - jellyfin_opensubtitles_validation_now | default(false) | bool
+    - >-
+      not ((platform_compose_kind | default('') == 'integration') and
+           (deployment_bundle_test_mode | default(false) | bool))
   changed_when: false
   check_mode: false
   no_log: true
@@ -883,6 +889,9 @@
     - jellyfin_settings_phase in ['activate', 'finalize']
     - not ansible_check_mode
     - jellyfin_opensubtitles_validation_now | default(false) | bool
+    - >-
+      not ((platform_compose_kind | default('') == 'integration') and
+           (deployment_bundle_test_mode | default(false) | bool))
   no_log: true
 
 - name: Preserve successful Open Subtitles activation credential validation
@@ -1006,7 +1015,11 @@
     return_content: true
     timeout: 120
   register: jellyfin_opensubtitles_validation_verified
-  when: jellyfin_settings_phase == 'verify'
+  when:
+    - jellyfin_settings_phase == 'verify'
+    - >-
+      not ((platform_compose_kind | default('') == 'integration') and
+           (deployment_bundle_test_mode | default(false) | bool))
   changed_when: false
   check_mode: false
   no_log: true
@@ -1051,7 +1064,10 @@
       - jellyfin_opensubtitles_configuration_verified.json.Username == vault_jellyfin_opensubtitles_username
       - jellyfin_opensubtitles_configuration_verified.json.Password == vault_jellyfin_opensubtitles_password
       - not jellyfin_opensubtitles_configuration_verified.json.CredentialsInvalid | bool
-      - jellyfin_opensubtitles_validation_verified.json.Downloads is number
+      - >-
+        ((platform_compose_kind | default('') == 'integration') and
+         (deployment_bundle_test_mode | default(false) | bool)) or
+        jellyfin_opensubtitles_validation_verified.json.Downloads is number
     fail_msg: The Jellyfin plugin or Open Subtitles state is drifted.
   vars:
     jellyfin_verified_intro_plugins: >-

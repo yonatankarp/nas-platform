@@ -1142,6 +1142,21 @@ def exercise_jellyfin_opensubtitles_ordering(failures)
   main = YAML.safe_load_file(
     File.join(ROOT, "roles", "jellyfin", "tasks", "main.yml"), aliases: false
   )
+  settings = YAML.safe_load_file(
+    File.join(ROOT, "roles", "jellyfin", "tasks", "settings.yml"), aliases: false
+  )
+  [
+    "Validate active Open Subtitles credentials during global preflight",
+    "Validate the Open Subtitles vault credentials",
+    "Validate exact Open Subtitles credentials"
+  ].each do |name|
+    task = settings.find { |candidate| task_name(candidate) == name }
+    condition = Array(task && task["when"]).join(" ")
+    failures << "Jellyfin #{name} is not restricted to non-synthetic credentials" unless
+      condition.include?("platform_compose_kind") &&
+        condition.include?("integration") &&
+        condition.include?("deployment_bundle_test_mode")
+  end
   opensubtitles_index = main.index do |task|
     task_name(task) == "Activate and validate the Open Subtitles plugin when immediately available" &&
       task.dig("vars", "jellyfin_activation_scope") == "opensubtitles"

@@ -389,7 +389,8 @@ end
 refuse("Paperless credential fingerprint verification must remain redacted") unless
   fingerprint_assertion && fingerprint_assertion["no_log"] == true
 refuse("Paperless credential fingerprint assertion must remain verify-only") unless
-  Array(fingerprint_assertion["tags"]).sort == %w[never platform_verify_paperless]
+  Array(fingerprint_assertion["tags"]).sort == %w[never platform_verify_paperless] &&
+    fingerprint_assertion["when"] == "'platform_verify_paperless' in ansible_run_tags"
 refuse("Gmail app password must be a visible sentinel in the new-platform generator") unless
   generator.include?("paperless_gmail_app_password: replace-with-google-app-password")
 refuse("generator must not synthesize a Gmail app password") if

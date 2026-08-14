@@ -229,8 +229,9 @@ printf '%s\n' undeclared-service > \
 # by the real service deployment.
 manifest_controller="$sandbox/manifest-controller"
 manifest_docker_root="$sandbox/manifest-root/Docker"
+manifest_media_root="$sandbox/manifest-root/media"
 mkdir -p "$manifest_controller/roles" "$manifest_controller/services/demo" \
-  "$manifest_docker_root"
+  "$manifest_docker_root" "$manifest_media_root"
 cp -R "$repo_dir/roles/deployment_bundle" "$manifest_controller/roles/"
 cat > "$manifest_controller/services/manifest.yml" <<'EOF'
 ---
@@ -978,6 +979,7 @@ docker run --rm \
     ansible-playbook -i localhost, \
       '$manifest_controller/manifest-fixture.yml' \
       -e nas_docker_root='$manifest_docker_root' \
+      -e nas_media_root='$manifest_media_root' \
       -e platform_release_id='$manifest_fixture_sha'
     ruby /repo/tests/verify_deployment_manifest.rb \
       '$manifest_docker_root/nas-platform/current/manifest.yml' \

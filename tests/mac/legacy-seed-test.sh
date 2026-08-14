@@ -405,7 +405,7 @@ unlink "$sandbox/legacy/nas-platform"
 
 seed_output=$temporary_root/seed-output
 run_seed > "$seed_output"
-grep -F $'\t{"komga_library_name":"Books"}\t--tags\tkomga' \
+grep -F "${tab}{\"komga_library_name\":\"Books\"}${tab}--tags${tab}komga" \
   "$log" >/dev/null || fail 'legacy Komga seed did not pin the pre-rename Books library'
 grep -F "@$temporary_root/immich-fixture-vars.yml" "$log" >/dev/null ||
   fail 'legacy managed-user seeding omitted the protected Immich fixture policy'
