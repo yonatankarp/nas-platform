@@ -69,7 +69,9 @@ mac_script_dir=$fixture/helpers
 mac_repo_dir=$fixture/repo
 vault_password_file=$fixture/password
 vault_file=$fixture/vault
+fixture_vars_file=$fixture/fixture-vars.yml
 enable_adoption_mapping() { printf '%s\n' mapping >> "$FAILURE_ORDER_LOG"; }
+ensure_immich_fixture_vars() { :; }
 mac_ansible_playbook() { command ansible-playbook "$@"; }
 . "$fixture/functions.sh"
 cutover_state=$fixture/cutover-state.json
