@@ -212,10 +212,10 @@ static_commands = run_steps(jobs.fetch("static", {}))
   check(failures, static_commands.include?(command), "static checks must retain #{command.inspect}")
 end
 check(failures, static_commands.include?("apt-get install"), "static checks must install system tools")
-check(failures, static_commands.include?("pipx install 'ansible-core==2.21.2'"),
-      "static checks must install pinned ansible-core")
-check(failures, static_commands.include?("pipx install 'ansible-lint==26.6.0'"),
-      "static checks must install pinned ansible-lint")
+check(failures, static_commands.include?("pipx install --force 'ansible-core==2.21.2'"),
+      "static checks must force-install pinned ansible-core")
+check(failures, static_commands.include?("pipx install --force 'ansible-lint==26.6.0'"),
+      "static checks must force-install pinned ansible-lint")
 check(failures, !static_commands.include?("python3 tests/deployment_target_validator_test.py"),
       "static must not duplicate the deployment validator already run by validate-policy.sh")
 

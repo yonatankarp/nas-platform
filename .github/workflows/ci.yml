@@ -97,8 +97,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes apache2-utils openssh-client openssl
-          pipx install 'ansible-core==2.21.2'
-          pipx install 'ansible-lint==26.6.0'
+          pipx install --force 'ansible-core==2.21.2'
+          pipx install --force 'ansible-lint==26.6.0'
           ansible-galaxy collection install -r requirements.yml
 
       - name: Check policy properties
