@@ -118,8 +118,10 @@ fi
 : "${PLATFORM_MEDIA_ROOT:?}"
 : "${PLATFORM_REPORT_ROOT:?}"
 : "${PLATFORM_KOMGA_PORT:=25600}"
+: "${PLATFORM_MEDIA_FIXTURES_PRESEEDED:=false}"
 export PLATFORM_CONTRACT_VAULT_FILE PLATFORM_CONTRACT_VAULT_PASSWORD_FILE
 export PLATFORM_MEDIA_ROOT PLATFORM_REPORT_ROOT PLATFORM_KOMGA_PORT
+export PLATFORM_MEDIA_FIXTURES_PRESEEDED
 
 shift || true
 exec ruby - "$mode" "$@" <<'RUBY'
@@ -277,6 +279,12 @@ def seed_fixture
   end
 end
 
+if MODE == "seed-fixture-only"
+  seed_fixture
+  puts "Komga comic fixture prepared before deployment"
+  exit 0
+end
+
 vault_yaml, vault_error, vault_status = Open3.capture3(
   "ansible-vault", "view", "--vault-password-file",
   ENV.fetch("PLATFORM_CONTRACT_VAULT_PASSWORD_FILE"),
@@ -349,7 +357,7 @@ if MODE == "seed"
     end
     fail_contract("unrelated Komga fixture is absent or ambiguous") unless unrelated.length == 1
   end
-  seed_fixture
+  seed_fixture unless ENV.fetch("PLATFORM_MEDIA_FIXTURES_PRESEEDED") == "true"
   request("post", "/api/v1/libraries/#{library.fetch('id')}/scan", basic: credentials, expected: [202])
 end
 

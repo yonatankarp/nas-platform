@@ -118,6 +118,17 @@ controller_line=$(grep -nF 'docker run --rm' "$integration" | head -1 | cut -d: 
 }
 grep -qF 'paperless:true|full:true)' "$integration"
 grep -qF -- '-e PLATFORM_PAPERLESS_FIXTURE_PRESEEDED="$paperless_fixture_preseeded"' "$integration"
+for contract in komga tinymediamanager jellyfin; do
+  media_preseed_line=$(grep -nF \
+    '"$repo_dir/tests/contracts/'"$contract"'.sh" seed-fixture-only' \
+    "$integration" | cut -d: -f1)
+  [ -n "$media_preseed_line" ] && [ "$media_preseed_line" -lt "$controller_line" ] || {
+    printf '%s\n' "$contract integration fixture is not prepared before the controller mount" >&2
+    exit 1
+  }
+done
+grep -qF 'media:true|full:true)' "$integration"
+grep -qF -- '-e PLATFORM_MEDIA_FIXTURES_PRESEEDED="$media_fixtures_preseeded"' "$integration"
 
 # The committed deployment vault is intentionally encrypted with an operator
 # password unavailable to CI. Every suite must use an isolated controller copy,

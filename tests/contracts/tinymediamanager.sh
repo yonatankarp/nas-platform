@@ -109,12 +109,14 @@ legacy_fixture_validate PLATFORM_TINYMEDIAMANAGER_SETTINGS_ROOT legacy/tinymedia
 : "${PLATFORM_REPORT_ROOT:?}"
 : "${PLATFORM_DOCKER_ROOT:?}"
 : "${PLATFORM_TINYMEDIAMANAGER_API_PORT:=7878}"
+: "${PLATFORM_MEDIA_FIXTURES_PRESEEDED:=false}"
 if [ -z "${PLATFORM_TINYMEDIAMANAGER_CONTAINER:-}" ]; then
   PLATFORM_TINYMEDIAMANAGER_CONTAINER=${PLATFORM_PROJECT_NAME:+$PLATFORM_PROJECT_NAME-}tinymediamanager
 fi
 export PLATFORM_CONTRACT_VAULT_FILE PLATFORM_CONTRACT_VAULT_PASSWORD_FILE
 export PLATFORM_MEDIA_ROOT PLATFORM_REPORT_ROOT PLATFORM_DOCKER_ROOT
 export PLATFORM_TINYMEDIAMANAGER_API_PORT PLATFORM_TINYMEDIAMANAGER_CONTAINER
+export PLATFORM_MEDIA_FIXTURES_PRESEEDED
 
 shift || true
 exec ruby - "$mode" "$@" <<'RUBY'
@@ -247,6 +249,13 @@ def metadata_paths
   ]
 end
 
+if MODE == "seed-fixture-only"
+  seed_file(MOVIE_FILE, VIDEO_FIXTURE)
+  seed_file(SERIES_FILE, VIDEO_FIXTURE)
+  puts "tinyMediaManager video fixtures prepared before deployment"
+  exit 0
+end
+
 vault_yaml, vault_error, vault_status = Open3.capture3(
   "ansible-vault", "view", "--vault-password-file",
   ENV.fetch("PLATFORM_CONTRACT_VAULT_PASSWORD_FILE"),
@@ -320,8 +329,10 @@ end
 fail_contract("unknown mode: #{MODE}") unless %w[seed assert-persistence].include?(MODE)
 
 if MODE == "seed"
-  seed_file(MOVIE_FILE, VIDEO_FIXTURE)
-  seed_file(SERIES_FILE, VIDEO_FIXTURE)
+  unless ENV.fetch("PLATFORM_MEDIA_FIXTURES_PRESEEDED") == "true"
+    seed_file(MOVIE_FILE, VIDEO_FIXTURE)
+    seed_file(SERIES_FILE, VIDEO_FIXTURE)
+  end
   authentication_deadline = Time.now + 120
   authentication_response = nil
   until authentication_response

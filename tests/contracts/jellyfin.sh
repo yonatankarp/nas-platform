@@ -307,6 +307,7 @@ legacy_fixture_validate PLATFORM_JELLYFIN_TRANSCODE_ROOT legacy/jellyfin/cache/t
 : "${PLATFORM_DOCKER_ROOT:?}"
 : "${PLATFORM_REPORT_ROOT:?}"
 : "${PLATFORM_JELLYFIN_PORT:=8096}"
+: "${PLATFORM_MEDIA_FIXTURES_PRESEEDED:=false}"
 if [ -z "${PLATFORM_JELLYFIN_CONTAINER:-}" ]; then
   PLATFORM_JELLYFIN_CONTAINER=${PLATFORM_PROJECT_NAME:+$PLATFORM_PROJECT_NAME-}jellyfin
 fi
@@ -316,6 +317,7 @@ export PLATFORM_CONTRACT_VAULT_FILE PLATFORM_CONTRACT_VAULT_PASSWORD_FILE
 export PLATFORM_MEDIA_ROOT PLATFORM_DOCKER_ROOT PLATFORM_REPORT_ROOT
 export PLATFORM_JELLYFIN_PORT PLATFORM_JELLYFIN_CONTAINER PLATFORM_JELLYFIN_PLATFORM
 export PLATFORM_JELLYFIN_AVATAR_PATH
+export PLATFORM_MEDIA_FIXTURES_PRESEEDED
 
 exec ruby - "$mode" "$@" <<'RUBY'
 require "json"
@@ -726,6 +728,12 @@ def seed_fixture
   end
 end
 
+if MODE == "seed-fixture-only"
+  seed_fixture
+  puts "Jellyfin video fixture prepared before deployment"
+  exit 0
+end
+
 def find_fixture_item(token, user_id, timeout:)
   deadline = Time.now + timeout
   query = "userId=#{user_id}&recursive=true&includeItemTypes=Movie&" \
@@ -947,7 +955,7 @@ encoding = encoding_configuration(token)
 repositories = plugin_repositories(token)
 
 if MODE == "seed"
-  seed_fixture
+  seed_fixture unless ENV.fetch("PLATFORM_MEDIA_FIXTURES_PRESEEDED") == "true"
   unless user.fetch("Name") == ADMIN_NAME
     temporary_name = "nas-platform-contract-seed-#{user_id[0, 8]}"
     rename_user(token, user, temporary_name)
