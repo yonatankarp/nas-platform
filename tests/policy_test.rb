@@ -1251,6 +1251,7 @@ check(failures,
       "integration must consume the ephemeral encrypted vault without duplicate secret authoring")
 check(failures,
       harness.include?('/repo/tests/mac/generate-immich-fixture-vars.rb') &&
+        harness.include?('ANSIBLE_VAULT_PASSWORD_FILE=\"\$vault_password_file\" ansible-vault view') &&
         harness.include?('fixture_vars_file=\"\$fixture_input_directory/immich-fixture-vars.yml\"') &&
         harness.include?('PLATFORM_MAC_FIXTURE_VARS_FILE=\"\$fixture_vars_file\"') &&
         harness.include?('install -m 0600 /dev/null \"\$fixture_vars_file\"') &&

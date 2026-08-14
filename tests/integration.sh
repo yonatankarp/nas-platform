@@ -485,7 +485,7 @@ docker run --rm \
     }
     trap cleanup_fixture_vault_view EXIT
     umask 077
-    ansible-vault view --vault-password-file \"\$vault_password_file\" \
+    ANSIBLE_VAULT_PASSWORD_FILE=\"\$vault_password_file\" ansible-vault view \
       \"\$vault_file\" > \"\$fixture_vault_view\"
     install -m 0600 /dev/null \"\$fixture_vars_file\"
     ruby /repo/tests/mac/generate-immich-fixture-vars.rb \
