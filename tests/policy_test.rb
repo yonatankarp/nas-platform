@@ -310,12 +310,15 @@ mount_guard_task = preflight_tasks.find do |task|
   task["name"] == "Require the NAS volumes to be mounted"
 end
 mount_guard_argv = Array(mount_guard_task&.dig("ansible.builtin.command", "argv"))
+mount_guard_conditions = Array(mount_guard_task&.fetch("when", []))
 check(failures,
       mount_table_task.nil? &&
         mount_guard_argv.first == "awk" &&
         mount_guard_argv.include?("target={{ item }}") &&
         mount_guard_argv.include?("/proc/mounts") &&
         mount_guard_argv.any? { |argument| argument.include?("$2 == target") } &&
+        mount_guard_conditions.include?("platform_kind == 'nas'") &&
+        mount_guard_conditions.include?("item is match('^/volume')") &&
         mount_guard_task["changed_when"] == false &&
         mount_guard_task["check_mode"] == false,
       "preflight must check mounts by command exit status, including in check mode")
