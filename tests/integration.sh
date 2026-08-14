@@ -487,6 +487,7 @@ docker run --rm \
     umask 077
     ansible-vault view --vault-password-file \"\$vault_password_file\" \
       \"\$vault_file\" > \"\$fixture_vault_view\"
+    install -m 0600 /dev/null \"\$fixture_vars_file\"
     ruby /repo/tests/mac/generate-immich-fixture-vars.rb \
       \"\$fixture_vars_file\" /repo/inventory/group_vars/all/main.yml \
       < \"\$fixture_vault_view\"

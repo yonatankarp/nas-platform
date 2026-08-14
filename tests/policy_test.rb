@@ -1253,6 +1253,7 @@ check(failures,
       harness.include?('/repo/tests/mac/generate-immich-fixture-vars.rb') &&
         harness.include?('fixture_vars_file=\"\$fixture_input_directory/immich-fixture-vars.yml\"') &&
         harness.include?('PLATFORM_MAC_FIXTURE_VARS_FILE=\"\$fixture_vars_file\"') &&
+        harness.include?('install -m 0600 /dev/null \"\$fixture_vars_file\"') &&
         harness.include?('chmod 0600 \"\$fixture_vars_file\"') &&
         harness.include?('rm -f \"\$fixture_vault_view\"') &&
         harness.include?('trap cleanup_fixture_vault_view EXIT'),
