@@ -15,6 +15,7 @@ trap 'unlink "$expected_failure" >/dev/null 2>&1 || true' EXIT HUP INT TERM
 if mac_ansible_playbook -i "$mac_repo_dir/inventory/mac.yml" "$mac_repo_dir/verify.yml" \
     --vault-password-file "$PLATFORM_MAC_VAULT_PASSWORD_FILE" \
     -e @"$PLATFORM_MAC_VAULT_FILE" \
+    -e @"$PLATFORM_MAC_FIXTURE_VARS_FILE" \
     -e "platform_vault_file=$PLATFORM_MAC_VAULT_FILE" \
     --tags platform_verify_immich >"$expected_failure" 2>&1; then
   printf '%s\n' 'verification-only run accepted Immich drift' >&2
@@ -22,4 +23,4 @@ if mac_ansible_playbook -i "$mac_repo_dir/inventory/mac.yml" "$mac_repo_dir/veri
 fi
 "$mac_repo_dir/tests/assert-no-vault-secrets.rb" \
   "$PLATFORM_MAC_VAULT_FILE" "$PLATFORM_MAC_VAULT_PASSWORD_FILE" "$expected_failure"
-grep -qF 'The managed Immich settings are absent or drifted.' "$expected_failure"
+grep -qF 'Verify exact Immich managed user preferences' "$expected_failure"

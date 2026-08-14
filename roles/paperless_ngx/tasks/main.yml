@@ -1,4 +1,112 @@
 ---
+- name: Resolve effective Paperless storage roots
+  ansible.builtin.set_fact:
+    paperless_effective_state_host_path: >-
+      {{ (platform_adoption_root ~ '/legacy/paperless-ngx')
+         if platform_adoption_enabled | default(false) | bool
+         else paperless_state_host_path
+         if platform_compose_kind == 'nas'
+         else (nas_docker_root ~ '/paperless-ngx') }}
+    paperless_effective_archive_host_path: >-
+      {{ (platform_adoption_root ~ '/legacy/paperless-ngx/media')
+         if platform_adoption_enabled | default(false) | bool
+         else paperless_archive_host_path
+         if platform_compose_kind == 'nas'
+         else (nas_media_root ~ '/Documents/archive') }}
+    paperless_effective_consume_host_path: >-
+      {{ (platform_adoption_root ~ '/legacy/paperless-ngx/consume')
+         if platform_adoption_enabled | default(false) | bool
+         else paperless_consume_host_path
+         if platform_compose_kind == 'nas'
+         else (nas_media_root ~ '/Documents/inbox') }}
+    paperless_effective_export_host_path: >-
+      {{ (platform_adoption_root ~ '/legacy/paperless-ngx/export')
+         if platform_adoption_enabled | default(false) | bool
+         else paperless_export_host_path
+         if platform_compose_kind == 'nas'
+         else (nas_media_root ~ '/Documents/export') }}
+    paperless_effective_cache_host_path: >-
+      {{ (platform_adoption_root ~ '/legacy/paperless-ngx/cache')
+         if platform_adoption_enabled | default(false) | bool
+         else paperless_state_host_path ~ '/cache'
+         if platform_compose_kind == 'nas'
+         else (nas_docker_root ~ '/paperless-ngx/cache') }}
+
+- name: Resolve effective Paperless mount source lists
+  ansible.builtin.set_fact:
+    paperless_effective_document_host_paths:
+      - "{{ paperless_effective_archive_host_path }}"
+      - "{{ paperless_effective_consume_host_path }}"
+      - "{{ paperless_effective_export_host_path }}"
+    paperless_effective_state_host_paths:
+      - "{{ paperless_effective_state_host_path }}/postgres"
+      - "{{ paperless_effective_state_host_path }}/redis"
+      - "{{ paperless_effective_state_host_path }}/data"
+      - "{{ paperless_effective_cache_host_path }}"
+      - "{{ paperless_effective_state_host_path }}/tessdata"
+
+- name: Require exact Paperless host storage policy
+  ansible.builtin.assert:
+    that:
+      - paperless_archive_host_path == '/volume2/Documents/archive'
+      - paperless_consume_host_path == '/volume2/Documents/inbox'
+      - paperless_export_host_path == '/volume2/Documents/export'
+      - paperless_state_host_path == '/volume1/Docker/paperless-ngx'
+      - paperless_effective_document_host_paths | unique | length == 3
+      - paperless_effective_state_host_paths | unique | length == 5
+      - >-
+        paperless_effective_archive_host_path != paperless_effective_consume_host_path and
+        not paperless_effective_archive_host_path.startswith(paperless_effective_consume_host_path ~ '/') and
+        not paperless_effective_consume_host_path.startswith(paperless_effective_archive_host_path ~ '/')
+      - >-
+        paperless_effective_archive_host_path != paperless_effective_export_host_path and
+        not paperless_effective_archive_host_path.startswith(paperless_effective_export_host_path ~ '/') and
+        not paperless_effective_export_host_path.startswith(paperless_effective_archive_host_path ~ '/')
+      - >-
+        paperless_effective_consume_host_path != paperless_effective_export_host_path and
+        not paperless_effective_consume_host_path.startswith(paperless_effective_export_host_path ~ '/') and
+        not paperless_effective_export_host_path.startswith(paperless_effective_consume_host_path ~ '/')
+    fail_msg: Paperless document and state storage paths overlap or differ from the owned policy.
+
+- name: Validate canonical Paperless storage source separation
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_facts.python.executable }}"
+      - -c
+      - "{{ lookup('ansible.builtin.file', role_path ~ '/files/validate_storage_layout.py') }}"
+      - "{{ paperless_effective_document_host_paths | to_json }}"
+      - "{{ paperless_effective_state_host_paths | to_json }}"
+  changed_when: false
+  check_mode: false
+
+- name: Resolve required central Paperless storage declarations
+  ansible.builtin.set_fact:
+    paperless_required_storage_declarations:
+      - {path: "{{ nas_docker_root }}/paperless-ngx/postgres", mode: "0755", recovery: critical}
+      - {path: "{{ nas_docker_root }}/paperless-ngx/redis", mode: "0755", recovery: cache}
+      - {path: "{{ nas_docker_root }}/paperless-ngx/data", mode: "0755", recovery: critical}
+      - {path: "{{ nas_docker_root }}/paperless-ngx/cache", mode: "0755", recovery: cache}
+      - {path: "{{ nas_docker_root }}/paperless-ngx/tessdata", mode: "0755", recovery: cache}
+      - {path: "{{ nas_media_root }}/Documents/archive", mode: "0755", recovery: critical}
+      - {path: "{{ nas_media_root }}/Documents/inbox", mode: "0755", recovery: critical}
+      - {path: "{{ nas_media_root }}/Documents/export", mode: "0755", recovery: critical}
+
+- name: Require unique central Paperless storage declarations
+  ansible.builtin.assert:
+    that:
+      - paperless_storage_matches | length == 1
+      - paperless_storage_matches[0].mode == item.mode
+      - paperless_storage_matches[0].recovery == item.recovery
+    fail_msg: >-
+      {{ item.path }} must have one exact mode/recovery declaration in nas_storage;
+      host_prep alone owns its creation and ownership policy.
+  vars:
+    paperless_storage_matches: >-
+      {{ nas_storage | selectattr('path', 'equalto', item.path) | list }}
+  loop: "{{ paperless_required_storage_declarations }}"
+  loop_control:
+    label: "{{ item.path }}"
+
 - name: Revalidate deployment paths before Paperless runtime use
   ansible.builtin.include_role:
     name: deployment_bundle
@@ -13,17 +121,24 @@
       - "{{ platform_runtime_dir }}/services/paperless-ngx"
       - "{{ platform_runtime_dir }}/services/paperless-ngx/.env"
       - "{{ platform_runtime_dir }}/services/paperless-ngx/.gmail-credential-fingerprint"
-      - >-
-        {{ (platform_adoption_root ~ '/legacy/paperless-ngx/tessdata/heb.traineddata')
-           if (platform_adoption_enabled | default(false) | bool)
-           else (nas_docker_root ~ '/paperless-ngx/tessdata/heb.traineddata') }}
+      - "{{ paperless_effective_state_host_path }}/postgres"
+      - "{{ paperless_effective_state_host_path }}/redis"
+      - "{{ paperless_effective_state_host_path }}/data"
+      - "{{ paperless_effective_cache_host_path }}"
+      - "{{ paperless_effective_state_host_path }}/tessdata"
+      - "{{ paperless_effective_state_host_path }}/tessdata/heb.traineddata"
+      - "{{ paperless_effective_archive_host_path }}"
+      - "{{ paperless_effective_consume_host_path }}"
+      - "{{ paperless_effective_export_host_path }}"
 
 - name: Check for a Paperless platform override
+  tags: [platform_verify_paperless]
   ansible.builtin.stat:
     path: "{{ platform_current_dir }}/services/paperless-ngx/compose.{{ platform_compose_kind }}.yml"
   register: paperless_platform_compose
 
 - name: Select the Paperless Compose definitions
+  tags: [platform_verify_paperless]
   ansible.builtin.set_fact:
     paperless_compose_files: >-
       {{ ['compose.yml'] +
@@ -34,17 +149,15 @@
 
 - name: Select the Paperless mounted tessdata root
   ansible.builtin.set_fact:
-    paperless_tessdata_root: >-
-      {{ (platform_adoption_root ~ '/legacy/paperless-ngx/tessdata')
-         if (platform_adoption_enabled | default(false) | bool)
-         else (nas_docker_root ~ '/paperless-ngx/tessdata') }}
+    paperless_tessdata_root: "{{ paperless_effective_state_host_path }}/tessdata"
 
 - name: Require the internally derived Paperless tessdata root
   ansible.builtin.assert:
     that:
       - paperless_tessdata_root == ((platform_adoption_root ~ '/legacy/paperless-ngx/tessdata') if
         (platform_adoption_enabled | default(false) | bool) else
-        (nas_docker_root ~ '/paperless-ngx/tessdata'))
+        (paperless_state_host_path if platform_compose_kind == 'nas' else
+         (nas_docker_root ~ '/paperless-ngx')) ~ '/tessdata')
 
 - name: Install the pinned Hebrew OCR model
   ansible.builtin.get_url:
@@ -367,6 +480,7 @@
   no_log: true
 
 - name: Inspect the installed Paperless Gmail credential fingerprint
+  tags: [platform_verify_paperless]
   ansible.builtin.stat:
     path: "{{ platform_runtime_dir }}/services/paperless-ngx/.gmail-credential-fingerprint"
     get_checksum: false
@@ -374,6 +488,7 @@
   no_log: true
 
 - name: Read the installed Paperless Gmail credential fingerprint
+  tags: [platform_verify_paperless]
   ansible.builtin.slurp:
     path: "{{ platform_runtime_dir }}/services/paperless-ngx/.gmail-credential-fingerprint"
   register: paperless_mail_account_fingerprint_content
@@ -381,11 +496,23 @@
   no_log: true
 
 - name: Resolve the installed Paperless Gmail credential fingerprint
+  tags: [platform_verify_paperless]
   ansible.builtin.set_fact:
     paperless_installed_mail_account_credential_fingerprint: >-
       {{ (paperless_mail_account_fingerprint_content.content | b64decode | trim)
          if paperless_mail_account_fingerprint_file.stat.exists else '' }}
   no_log: true
+
+- name: Require the installed Paperless Gmail credential fingerprint
+  tags: [never, platform_verify_paperless]
+  ansible.builtin.assert:
+    that:
+      - >-
+        paperless_installed_mail_account_credential_fingerprint ==
+        paperless_mail_account_credential_fingerprint
+    fail_msg: The installed Paperless Gmail credential configuration is absent or drifted.
+  no_log: true
+  when: "'platform_verify_paperless' in ansible_run_tags"
 
 - name: List Paperless mail accounts for reconciliation
   tags: [platform_verify_paperless]
@@ -400,6 +527,76 @@
   check_mode: false
   no_log: true
 
+- name: List Paperless mail rules for reconciliation
+  tags: [platform_verify_paperless]
+  ansible.builtin.uri:
+    url: "{{ paperless_api }}/api/mail_rules/?page_size=1000"
+    headers:
+      Authorization: "Token {{ paperless_api_token }}"
+    status_code: [200]
+    return_content: true
+  register: paperless_mail_rules_before
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Validate Paperless mail account and rule schemas before mutation
+  tags: [platform_verify_paperless]
+  ansible.builtin.assert:
+    that:
+      - paperless_mail_accounts_before.json is mapping
+      - paperless_mail_accounts_before.json.keys() | sort == ['count', 'next', 'previous', 'results']
+      - paperless_mail_accounts_before.json.count | type_debug == 'int'
+      - paperless_mail_accounts_before.json.next is none
+      - paperless_mail_accounts_before.json.previous is none
+      - paperless_mail_accounts_before.json.results | type_debug == 'list'
+      - paperless_mail_accounts_before.json.count == paperless_mail_accounts_before.json.results | length
+      - paperless_mail_rules_before.json is mapping
+      - paperless_mail_rules_before.json.keys() | sort == ['count', 'next', 'previous', 'results']
+      - paperless_mail_rules_before.json.count | type_debug == 'int'
+      - paperless_mail_rules_before.json.next is none
+      - paperless_mail_rules_before.json.previous is none
+      - paperless_mail_rules_before.json.results | type_debug == 'list'
+      - paperless_mail_rules_before.json.count == paperless_mail_rules_before.json.results | length
+    fail_msg: >-
+      Paperless 3.0.5 returned unsupported mail collection schemas; refusing to mutate mail state.
+
+- name: Validate every existing Paperless mail account before mutation
+  tags: [platform_verify_paperless]
+  ansible.builtin.assert:
+    that:
+      - item is mapping
+      - item.id | type_debug == 'int'
+      - item.name | type_debug == 'str'
+      - item.imap_server | type_debug == 'str'
+      - item.imap_port | type_debug == 'int'
+      - item.imap_security | type_debug == 'int'
+      - item.username | type_debug == 'str'
+      - item.is_token | type_debug == 'bool'
+      - item.account_type | type_debug == 'int'
+      - item.character_set | type_debug == 'str'
+      - item.owner is none or item.owner | type_debug == 'int'
+    fail_msg: Paperless 3.0.5 returned an unsupported mail-account schema; refusing mutation.
+  loop: "{{ paperless_mail_accounts_before.json.results }}"
+  loop_control:
+    label: "{{ item.id | default('invalid') }}"
+
+- name: Validate every existing Paperless mail rule before mutation
+  tags: [platform_verify_paperless]
+  ansible.builtin.assert:
+    that:
+      - item is mapping
+      - item.id | type_debug == 'int'
+      - item.name | type_debug == 'str'
+      - item.account | type_debug == 'int'
+      - item.enabled | type_debug == 'bool'
+      - item.folder | type_debug == 'str'
+      - item.owner is none or item.owner | type_debug == 'int'
+    fail_msg: Paperless 3.0.5 returned an unsupported mail-rule schema; refusing mutation.
+  loop: "{{ paperless_mail_rules_before.json.results }}"
+  loop_control:
+    label: "{{ item.id | default('invalid') }}"
+
 - name: Resolve managed Paperless mail accounts
   tags: [platform_verify_paperless]
   ansible.builtin.set_fact:
@@ -408,12 +605,27 @@
          | selectattr('name', 'equalto', vault_paperless_mail_account_name) | list }}
   no_log: true
 
+- name: Resolve managed Paperless mail rules
+  tags: [platform_verify_paperless]
+  ansible.builtin.set_fact:
+    paperless_managed_mail_rules: >-
+      {{ paperless_mail_rules_before.json.results
+         | selectattr('name', 'equalto', vault_paperless_mail_rule_name) | list }}
+  no_log: true
+
 - name: Refuse duplicate managed Paperless mail accounts
   tags: [platform_verify_paperless]
   ansible.builtin.assert:
     that:
       - paperless_managed_mail_accounts | length <= 1
     fail_msg: The managed Paperless mail account name is duplicated; resolve it in Paperless.
+
+- name: Refuse duplicate managed Paperless mail rules
+  tags: [platform_verify_paperless]
+  ansible.builtin.assert:
+    that:
+      - paperless_managed_mail_rules | length <= 1
+    fail_msg: The managed Paperless mail rule name is duplicated; resolve it in Paperless.
 
 - name: Resolve Paperless mail account reconciliation
   tags: [platform_verify_paperless]
@@ -436,21 +648,20 @@
           paperless_mail_account_credential_fingerprint) }}
   no_log: true
 
-- name: Snapshot Paperless mail and task counts before candidate credential testing
-  ansible.builtin.uri:
-    url: "{{ paperless_api }}/api/{{ item }}/?page_size=1"
-    headers:
-      Authorization: "Token {{ paperless_api_token }}"
-    status_code: [200]
-    return_content: true
-  loop: [processed_mail, tasks]
-  register: paperless_candidate_non_consuming_before
-  changed_when: false
-  check_mode: false
+- name: Resolve Paperless mail rule reconciliation
+  tags: [platform_verify_paperless]
+  ansible.builtin.set_fact:
+    paperless_existing_mail_rule: "{{ paperless_managed_mail_rules | first | default({}) }}"
+    paperless_mail_rule_create_required: "{{ paperless_managed_mail_rules | length == 0 }}"
   no_log: true
-  when:
-    - platform_compose_kind != 'integration'
-    - paperless_mail_account_create_required | bool or paperless_mail_account_repair_required | bool
+
+- name: Snapshot normalized managed Paperless mail state before credential testing
+  tags: [platform_verify_paperless]
+  ansible.builtin.set_fact:
+    paperless_managed_mail_probe_state_before:
+      accounts: "{{ paperless_managed_mail_accounts | sort(attribute='id') }}"
+      rules: "{{ paperless_managed_mail_rules | sort(attribute='id') }}"
+  no_log: true
 
 - name: Test the candidate Paperless Gmail credential before persistence
   ansible.builtin.uri:
@@ -460,46 +671,97 @@
       Authorization: "Token {{ paperless_api_token }}"
     body_format: json
     body: "{{ paperless_mail_account_payload }}"
-    status_code: [200]
+    status_code: "{{ range(100, 600) | list }}"
     return_content: true
+    timeout: 180
   register: paperless_candidate_mail_test
+  failed_when: false
   changed_when: false
   check_mode: false
   no_log: true
-  when:
-    - platform_compose_kind != 'integration'
-    - paperless_mail_account_create_required | bool or paperless_mail_account_repair_required | bool
+  when: platform_compose_kind != 'integration'
 
-- name: Read Paperless mail and task counts after candidate credential testing
+- name: Resolve sanitized synchronous Paperless Gmail credential response
+  ansible.builtin.set_fact:
+    paperless_candidate_mail_probe_verified: >-
+      {{ platform_compose_kind == 'integration' or
+         (paperless_candidate_mail_test.status | default(0) | int == 200 and
+          paperless_candidate_mail_test.json | default({}) == {'success': true}) }}
+  no_log: true
+
+- name: Require the exact synchronous Paperless Gmail credential response
+  ansible.builtin.assert:
+    that:
+      - >-
+        platform_compose_kind == 'integration' or
+        (paperless_candidate_mail_test.status | default(0) | int == 200 and
+         paperless_candidate_mail_test.json == {'success': true})
+    fail_msg: >-
+      The synchronous Paperless 3.0.5 Gmail credential test failed; managed mail state was not mutated.
+
+- name: Reread Paperless mail accounts after credential testing
   ansible.builtin.uri:
-    url: "{{ paperless_api }}/api/{{ item }}/?page_size=1"
+    url: "{{ paperless_api }}/api/mail_accounts/?page_size=1000"
     headers:
       Authorization: "Token {{ paperless_api_token }}"
     status_code: [200]
     return_content: true
-  loop: [processed_mail, tasks]
-  register: paperless_candidate_non_consuming_after
+  register: paperless_mail_accounts_after_probe
   changed_when: false
   check_mode: false
   no_log: true
-  when:
-    - platform_compose_kind != 'integration'
-    - paperless_mail_account_create_required | bool or paperless_mail_account_repair_required | bool
 
-- name: Require a valid non-consuming Paperless Gmail credential before persistence
+- name: Reread Paperless mail rules after credential testing
+  ansible.builtin.uri:
+    url: "{{ paperless_api }}/api/mail_rules/?page_size=1000"
+    headers:
+      Authorization: "Token {{ paperless_api_token }}"
+    status_code: [200]
+    return_content: true
+  register: paperless_mail_rules_after_probe
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require complete Paperless mail listings after credential testing
   ansible.builtin.assert:
     that:
-      - paperless_candidate_mail_test.json.success | bool
-      - >-
-        paperless_candidate_non_consuming_before.results[0].json.count ==
-        paperless_candidate_non_consuming_after.results[0].json.count
-      - >-
-        paperless_candidate_non_consuming_before.results[1].json.count ==
-        paperless_candidate_non_consuming_after.results[1].json.count
-    fail_msg: The candidate Paperless Gmail credential failed without replacing the stored credential.
-  when:
-    - platform_compose_kind != 'integration'
-    - paperless_mail_account_create_required | bool or paperless_mail_account_repair_required | bool
+      - paperless_mail_accounts_after_probe.json is mapping
+      - paperless_mail_accounts_after_probe.json.keys() | sort == ['count', 'next', 'previous', 'results']
+      - paperless_mail_accounts_after_probe.json.count | type_debug == 'int'
+      - paperless_mail_accounts_after_probe.json.next is none
+      - paperless_mail_accounts_after_probe.json.previous is none
+      - paperless_mail_accounts_after_probe.json.results | type_debug == 'list'
+      - paperless_mail_accounts_after_probe.json.count == paperless_mail_accounts_after_probe.json.results | length
+      - paperless_mail_rules_after_probe.json is mapping
+      - paperless_mail_rules_after_probe.json.keys() | sort == ['count', 'next', 'previous', 'results']
+      - paperless_mail_rules_after_probe.json.count | type_debug == 'int'
+      - paperless_mail_rules_after_probe.json.next is none
+      - paperless_mail_rules_after_probe.json.previous is none
+      - paperless_mail_rules_after_probe.json.results | type_debug == 'list'
+      - paperless_mail_rules_after_probe.json.count == paperless_mail_rules_after_probe.json.results | length
+    fail_msg: >-
+      Paperless mail listings became incomplete or malformed during credential testing;
+      managed mail state was not mutated.
+
+- name: Resolve normalized managed Paperless mail state after credential testing
+  ansible.builtin.set_fact:
+    paperless_managed_mail_probe_state_after:
+      accounts: >-
+        {{ paperless_mail_accounts_after_probe.json.results
+           | selectattr('name', 'equalto', vault_paperless_mail_account_name)
+           | sort(attribute='id') }}
+      rules: >-
+        {{ paperless_mail_rules_after_probe.json.results
+           | selectattr('name', 'equalto', vault_paperless_mail_rule_name)
+           | sort(attribute='id') }}
+  no_log: true
+
+- name: Require credential testing to preserve managed Paperless mail state
+  ansible.builtin.assert:
+    that:
+      - paperless_managed_mail_probe_state_before == paperless_managed_mail_probe_state_after
+    fail_msg: The synchronous Paperless Gmail credential probe altered the managed account or rule.
 
 - name: Report planned Paperless mail account creation
   ansible.builtin.debug:
@@ -520,6 +782,7 @@
     status_code: [201]
   when:
     - not ansible_check_mode
+    - paperless_candidate_mail_probe_verified | bool
     - paperless_mail_account_create_required | bool
   register: paperless_mail_account_created
   changed_when: true
@@ -544,11 +807,13 @@
     status_code: [200]
   when:
     - not ansible_check_mode
+    - paperless_candidate_mail_probe_verified | bool
     - paperless_mail_account_repair_required | bool
   changed_when: true
   no_log: true
 
 - name: Read the reconciled Paperless mail account
+  tags: [platform_verify_paperless]
   ansible.builtin.uri:
     url: "{{ paperless_api }}/api/mail_accounts/?page_size=1000"
     headers:
@@ -560,16 +825,27 @@
   check_mode: false
   no_log: true
 
+- name: Require complete reconciled Paperless mail account listing
+  tags: [platform_verify_paperless]
+  ansible.builtin.assert:
+    that:
+      - paperless_mail_accounts_after.json is mapping
+      - paperless_mail_accounts_after.json.keys() | sort == ['count', 'next', 'previous', 'results']
+      - paperless_mail_accounts_after.json.count | type_debug == 'int'
+      - paperless_mail_accounts_after.json.next is none
+      - paperless_mail_accounts_after.json.previous is none
+      - paperless_mail_accounts_after.json.results | type_debug == 'list'
+      - paperless_mail_accounts_after.json.count == paperless_mail_accounts_after.json.results | length
+    fail_msg: Reconciled Paperless mail-account listing is incomplete or malformed.
+
 - name: Resolve the reconciled Paperless mail account
   tags: [platform_verify_paperless]
   ansible.builtin.set_fact:
     paperless_reconciled_mail_accounts: >-
-      {{ (paperless_mail_accounts_after.json.results
-          if paperless_mail_accounts_after is defined else paperless_managed_mail_accounts)
+      {{ paperless_mail_accounts_after.json.results
          | selectattr('name', 'equalto', vault_paperless_mail_account_name) | list }}
     paperless_reconciled_mail_account: >-
-      {{ ((paperless_mail_accounts_after.json.results
-           if paperless_mail_accounts_after is defined else paperless_managed_mail_accounts)
+      {{ (paperless_mail_accounts_after.json.results
           | selectattr('name', 'equalto', vault_paperless_mail_account_name) | list | first)
          | default({}) }}
   no_log: true
@@ -583,41 +859,6 @@
            'account': paperless_reconciled_mail_account.id | default(0),
            'owner': paperless_managed_administrators[0].id
          }) }}
-  no_log: true
-
-- name: List Paperless mail rules for reconciliation
-  tags: [platform_verify_paperless]
-  ansible.builtin.uri:
-    url: "{{ paperless_api }}/api/mail_rules/?page_size=1000"
-    headers:
-      Authorization: "Token {{ paperless_api_token }}"
-    status_code: [200]
-    return_content: true
-  register: paperless_mail_rules_before
-  changed_when: false
-  check_mode: false
-  no_log: true
-
-- name: Resolve managed Paperless mail rules
-  tags: [platform_verify_paperless]
-  ansible.builtin.set_fact:
-    paperless_managed_mail_rules: >-
-      {{ paperless_mail_rules_before.json.results
-         | selectattr('name', 'equalto', vault_paperless_mail_rule_name) | list }}
-  no_log: true
-
-- name: Refuse duplicate managed Paperless mail rules
-  tags: [platform_verify_paperless]
-  ansible.builtin.assert:
-    that:
-      - paperless_managed_mail_rules | length <= 1
-    fail_msg: The managed Paperless mail rule name is duplicated; resolve it in Paperless.
-
-- name: Resolve Paperless mail rule reconciliation
-  tags: [platform_verify_paperless]
-  ansible.builtin.set_fact:
-    paperless_existing_mail_rule: "{{ paperless_managed_mail_rules | first | default({}) }}"
-    paperless_mail_rule_create_required: "{{ paperless_managed_mail_rules | length == 0 }}"
   no_log: true
 
 - name: Resolve Paperless mail rule repair requirement
@@ -649,6 +890,7 @@
     status_code: [201]
   when:
     - not ansible_check_mode
+    - paperless_candidate_mail_probe_verified | bool
     - paperless_mail_rule_create_required | bool
   changed_when: true
   no_log: true
@@ -672,92 +914,10 @@
     status_code: [200]
   when:
     - not ansible_check_mode
+    - paperless_candidate_mail_probe_verified | bool
     - paperless_mail_rule_repair_required | bool
   changed_when: true
   no_log: true
-
-- name: Snapshot Paperless mail and task counts before connection testing
-  tags: [platform_verify_paperless]
-  ansible.builtin.uri:
-    url: "{{ paperless_api }}/api/{{ item }}/?page_size=1"
-    headers:
-      Authorization: "Token {{ paperless_api_token }}"
-    status_code: [200]
-    return_content: true
-  loop: [processed_mail, tasks]
-  register: paperless_non_consuming_before
-  changed_when: false
-  check_mode: false
-  no_log: true
-  when:
-    - platform_compose_kind != 'integration'
-    - paperless_reconciled_mail_accounts | length == 1
-    - >-
-      not ansible_check_mode or
-      not (paperless_mail_account_create_required | bool or
-           paperless_mail_account_repair_required | bool)
-
-- name: Test the managed Paperless mail account without consuming messages
-  tags: [platform_verify_paperless]
-  ansible.builtin.uri:
-    url: "{{ paperless_api }}/api/mail_accounts/test/"
-    method: POST
-    headers:
-      Authorization: "Token {{ paperless_api_token }}"
-    body_format: json
-    body: >-
-      {{ paperless_mail_account_payload
-         | combine({'id': paperless_reconciled_mail_account.id, 'password': '**********'}) }}
-    status_code: [200]
-    return_content: true
-  register: paperless_mail_test
-  changed_when: false
-  check_mode: false
-  no_log: true
-  when:
-    - platform_compose_kind != 'integration'
-    - paperless_reconciled_mail_accounts | length == 1
-    - >-
-      not ansible_check_mode or
-      not (paperless_mail_account_create_required | bool or
-           paperless_mail_account_repair_required | bool)
-
-- name: Read Paperless mail and task counts after connection testing
-  tags: [platform_verify_paperless]
-  ansible.builtin.uri:
-    url: "{{ paperless_api }}/api/{{ item }}/?page_size=1"
-    headers:
-      Authorization: "Token {{ paperless_api_token }}"
-    status_code: [200]
-    return_content: true
-  loop: [processed_mail, tasks]
-  register: paperless_non_consuming_after
-  changed_when: false
-  check_mode: false
-  no_log: true
-  when:
-    - platform_compose_kind != 'integration'
-    - paperless_reconciled_mail_accounts | length == 1
-    - >-
-      not ansible_check_mode or
-      not (paperless_mail_account_create_required | bool or
-           paperless_mail_account_repair_required | bool)
-
-- name: Require the non-consuming Paperless mail connection test
-  tags: [platform_verify_paperless]
-  ansible.builtin.assert:
-    that:
-      - paperless_mail_test.json.success | bool
-      - paperless_non_consuming_before.results[0].json.count == paperless_non_consuming_after.results[0].json.count
-      - paperless_non_consuming_before.results[1].json.count == paperless_non_consuming_after.results[1].json.count
-    fail_msg: The Paperless Gmail authentication failed or the connection test consumed mail.
-  when:
-    - platform_compose_kind != 'integration'
-    - paperless_reconciled_mail_accounts | length == 1
-    - >-
-      not ansible_check_mode or
-      not (paperless_mail_account_create_required | bool or
-           paperless_mail_account_repair_required | bool)
 
 - name: Read the exact reconciled Paperless mail rule
   tags: [platform_verify_paperless]
@@ -771,6 +931,19 @@
   changed_when: false
   check_mode: false
   no_log: true
+
+- name: Require complete reconciled Paperless mail rule listing
+  tags: [platform_verify_paperless]
+  ansible.builtin.assert:
+    that:
+      - paperless_mail_rules_after.json is mapping
+      - paperless_mail_rules_after.json.keys() | sort == ['count', 'next', 'previous', 'results']
+      - paperless_mail_rules_after.json.count | type_debug == 'int'
+      - paperless_mail_rules_after.json.next is none
+      - paperless_mail_rules_after.json.previous is none
+      - paperless_mail_rules_after.json.results | type_debug == 'list'
+      - paperless_mail_rules_after.json.count == paperless_mail_rules_after.json.results | length
+    fail_msg: Reconciled Paperless mail-rule listing is incomplete or malformed.
 
 - name: Require exact Paperless administrator, mail account, and mail rule
   tags: [platform_verify_paperless]

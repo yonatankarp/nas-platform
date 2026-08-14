@@ -9,6 +9,7 @@ ADOPTION_SOURCES = (
     "legacy/audiobookshelf/config",
     "legacy/audiobookshelf/metadata",
     "legacy/audiobookshelf/media",
+    "legacy/audiobookshelf/backups",
     "legacy/beszel/hub",
     "legacy/beszel/agent",
     "legacy/beszel/volume1",
@@ -31,7 +32,9 @@ ADOPTION_SOURCES = (
     "legacy/paperless-ngx/redis",
     "legacy/paperless-ngx/postgres",
     "legacy/paperless-ngx/data",
+    "legacy/paperless-ngx/cache",
     "legacy/paperless-ngx/export",
+    "legacy/paperless-ngx/tessdata",
     "legacy/paperless-ngx/tessdata/heb.traineddata",
     "legacy/paperless-ngx/media",
     "legacy/paperless-ngx/consume",
@@ -135,7 +138,14 @@ def validate_target(root, expected_release, current, next_pointer, require_curre
             refuse(f"canonical ancestor cannot be compared with {canonical_root}")
 
 
-def target_root(default_root, adoption_root, adoption_enabled, target):
+def target_root(
+    default_root, media_root, adoption_root, adoption_enabled, target
+):
+    normalized_media_root = os.path.normpath(media_root)
+    if target == normalized_media_root or target.startswith(
+        normalized_media_root + os.sep
+    ):
+        return normalized_media_root
     if not adoption_enabled:
         return default_root
 
@@ -150,11 +160,33 @@ def target_root(default_root, adoption_root, adoption_enabled, target):
     return default_root
 
 
+def validate_storage_roots(default_root, media_root):
+    normalized_default = os.path.normpath(default_root)
+    normalized_media = os.path.normpath(media_root)
+    if (
+        default_root != normalized_default
+        or media_root != normalized_media
+        or not os.path.isabs(default_root)
+        or not os.path.isabs(media_root)
+    ):
+        refuse_invocation("storage roots must be absolute normalized paths")
+
+    canonical_default = os.path.realpath(default_root)
+    canonical_media = os.path.realpath(media_root)
+    try:
+        common = os.path.commonpath([canonical_default, canonical_media])
+    except ValueError:
+        refuse_invocation("storage roots cannot be compared")
+    if common in {canonical_default, canonical_media}:
+        refuse_invocation("storage roots must not overlap")
+
+
 def main(argv):
-    if len(argv) != 8:
-        refuse_invocation("expected 8 arguments")
+    if len(argv) != 9:
+        refuse_invocation("expected 9 arguments")
     (
         root,
+        media_root,
         expected_release,
         current,
         next_pointer,
@@ -167,6 +199,7 @@ def main(argv):
         refuse_invocation("require_current must be 0 or 1")
     if adoption_enabled not in {"0", "1"}:
         refuse_invocation("adoption_enabled must be 0 or 1")
+    validate_storage_roots(root, media_root)
     try:
         paths = json.loads(paths_json)
     except json.JSONDecodeError:
@@ -179,7 +212,7 @@ def main(argv):
 
     for target in paths:
         validate_target(
-            target_root(root, adoption_root, adoption_enabled == "1", target),
+            target_root(root, media_root, adoption_root, adoption_enabled == "1", target),
             expected_release,
             current,
             next_pointer,

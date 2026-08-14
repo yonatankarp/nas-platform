@@ -3,14 +3,25 @@ services:
   broker:
     container_name: ${PLATFORM_PROJECT_NAME:?}-paperless-redis
     ports: !override []
+    volumes: !override
+      - ${PAPERLESS_REDIS_PATH:?}:/data
   db:
     container_name: ${PLATFORM_PROJECT_NAME:?}-paperless-postgres
     ports: !override []
+    volumes: !override
+      - ${PAPERLESS_POSTGRES_PATH:?}:/var/lib/postgresql
   webserver:
     container_name: ${PLATFORM_PROJECT_NAME:?}-paperless-webserver
     network_mode: !reset null
     ports: !override
       - "${PAPERLESS_HOST_PORT:?}:8000"
+    volumes: !override
+      - ${PAPERLESS_DATA_PATH:?}:/usr/src/paperless/data
+      - ${PAPERLESS_CACHE_PATH:?}:/usr/src/paperless/cache
+      - ${PAPERLESS_EXPORT_PATH:?}:/usr/src/paperless/export
+      - ${PAPERLESS_TESSDATA_PATH:?}/heb.traineddata:/usr/share/tesseract-ocr/5/tessdata/heb.traineddata:ro
+      - ${PAPERLESS_MEDIA_PATH:?}:/usr/src/paperless/media
+      - ${PAPERLESS_CONSUME_PATH:?}:/usr/src/paperless/consume
   gotenberg:
     container_name: ${PLATFORM_PROJECT_NAME:?}-paperless-gotenberg
     ports: !override []

@@ -15,6 +15,14 @@ DOCS_PATH = File.join(ROOT, "docs", "secrets.md")
 POLICY_PATH = File.join(ROOT, "tests", "policy_test.rb")
 VALIDATE_POLICY_PATH = File.join(ROOT, "tests", "validate-policy.sh")
 PLAIN_TEMPLATE_PATH = File.join(ROOT, "templates", "vault-plain.yml.j2")
+SHARED_VARS_PATH = File.join(ROOT, "inventory", "group_vars", "all", "main.yml")
+
+IMMICH_PREFERENCE_KEYS = %w[
+  immich_managed_user_preference_profile_default
+  immich_managed_user_preference_profile_by_email
+  immich_managed_user_preference_overrides
+  immich_managed_user_preference_profiles
+].freeze
 
 ENTRY_FIELDS = {
   "audiobookshelf" => %w[username password type is_active permissions],
@@ -120,11 +128,14 @@ def duplicate(document)
   Marshal.load(Marshal.dump(document))
 end
 
-def validate_with_role(document)
+def validate_with_role(document, preference_overrides = {})
   Dir.mktmpdir("nas-platform-managed-users-vault-") do |directory|
     path = File.join(directory, "vault.yml")
     playbook = File.join(directory, "validate-vault.yml")
-    File.write(path, YAML.dump(document), mode: "w", perm: 0o600)
+    shared_vars = YAML.safe_load_file(SHARED_VARS_PATH, aliases: false)
+    preferences = IMMICH_PREFERENCE_KEYS.to_h { |key| [key, shared_vars[key]] }
+    variables = preferences.merge(document).merge(preference_overrides)
+    File.write(path, YAML.dump(variables), mode: "w", perm: 0o600)
     FileUtils.cp(File.join(ROOT, "validate-vault.yml"), playbook)
     Open3.capture3(
       {
@@ -138,8 +149,8 @@ def validate_with_role(document)
   end
 end
 
-def expect_role_rejection(failures, label, document, forbidden_value)
-  stdout, stderr, status = validate_with_role(document)
+def expect_role_rejection(failures, label, document, forbidden_value, preference_overrides = {})
+  stdout, stderr, status = validate_with_role(document, preference_overrides)
   check(failures, !status.success?, "#{label} must be rejected by vault role evaluation")
   output = stdout + stderr
   check(failures, !output.include?(forbidden_value), "#{label} diagnostic disclosed a managed-user value")
@@ -147,6 +158,12 @@ end
 
 failures = []
 vault = load_mapping(VAULT_PATH, failures, "vault example")
+check(failures, vault["vault_jellyfin_admin_username"] == "Yonatan",
+      "Jellyfin administrator username must have exact approved casing")
+%w[vault_jellyfin_opensubtitles_username vault_jellyfin_opensubtitles_password].each do |key|
+  check(failures, vault[key].is_a?(String) && !vault[key].empty?,
+        "vault example must declare #{key}")
+end
 managed = vault["vault_managed_users"]
 check(failures, managed.is_a?(Hash), "vault_managed_users must be a mapping")
 managed = {} unless managed.is_a?(Hash)
@@ -244,7 +261,7 @@ managed.fetch("ntfy", []).each do |entry|
   next unless entry.is_a?(Hash)
   check(failures, BCRYPT.match?(entry["password_hash"].to_s),
         "ntfy password_hash must have bcrypt shape")
-  check(failures, %w[user admin].include?(entry["role"]), "ntfy role must be supported")
+  check(failures, entry["role"] == "user", "ntfy role must be nonadministrative")
   check(failures, NTFY_USERNAME.match?(entry["username"].to_s),
         "ntfy username must use native safe characters")
   access = entry["access"]
@@ -252,8 +269,7 @@ managed.fetch("ntfy", []).each do |entry|
         access.is_a?(Array) && access.all? do |rule|
           rule.is_a?(Hash) && rule.keys.sort == %w[permission topic] &&
             NTFY_LITERAL_TOPIC.match?(rule["topic"].to_s) &&
-            %w[read-only write-only read-write deny].include?(rule["permission"]) &&
-            (entry["role"] != "admin" || rule["permission"] == "read-write")
+            %w[read-only write-only read-write deny].include?(rule["permission"])
         end,
         "ntfy access rules must have supported values")
   tokens = entry["tokens"]
@@ -345,6 +361,20 @@ check(failures,
 check(failures,
       managed_options.dig("beszel", "options", "verified", "choices") == [true],
       "beszel verified argument must only accept true")
+check(failures,
+      managed_options.dig("ntfy", "options", "role", "choices") == ["user"],
+      "ntfy managed role argument must only accept user")
+immich_fields = managed_options.is_a?(Hash) ?
+  managed_options.dig("immich", "options")&.keys&.sort : nil
+check(failures, immich_fields == %w[email name password quota_size],
+      "Immich preference policy must not enter the encrypted user records")
+
+vault_options = spec.dig("argument_specs", "main", "options") || {}
+%w[vault_jellyfin_opensubtitles_username vault_jellyfin_opensubtitles_password].each do |key|
+  check(failures,
+        vault_options[key] == { "type" => "str", "required" => true },
+        "vault argument spec must require #{key}")
+end
 
 tasks = File.file?(TASKS_PATH) ? File.read(TASKS_PATH) : ""
 parsed_tasks = File.file?(TASKS_PATH) ? YAML.safe_load_file(TASKS_PATH, aliases: false) : []
@@ -381,6 +411,7 @@ required_validation_fragments = [
   "item.password_hash is match",
   "item.type in ['admin', 'user', 'guest']",
   "item.role in ['user', 'admin']",
+  "item.role == 'user'",
   "difference(['ADMIN', 'FILE_DOWNLOAD', 'PAGE_STREAMING', 'KOBO_SYNC', 'KOREADER_SYNC'])"
 ]
 required_validation_fragments.each do |fragment|
@@ -412,6 +443,14 @@ check(failures, tasks.include?("forbidden_jellyfin_policy_fields"),
 check(failures, tasks.include?("vault_contract_managed_ntfy_tokens") &&
                 tasks.include?("vault_ntfy_dozzle_token") && tasks.include?("vault_ntfy_beszel_token"),
       "vault contract must enforce global ntfy token uniqueness and publisher separation")
+check(failures, tasks.include?("vault_jellyfin_admin_username == 'Yonatan'"),
+      "vault contract must require the exact Jellyfin administrator username")
+%w[vault_jellyfin_opensubtitles_username vault_jellyfin_opensubtitles_password].each do |key|
+  check(failures, tasks.include?("#{key} | length > 0"),
+        "vault contract must reject empty #{key}")
+  check(failures, tasks.include?("#{key} != 'example-opensubtitles-#{key.end_with?('username') ? 'username' : 'password'}'"),
+        "vault contract must reject the documented #{key} placeholder")
+end
 
 generator = File.file?(GENERATOR_PATH) ? File.read(GENERATOR_PATH) : ""
 check(failures, generator.include?("vault_managed_users:"),
@@ -453,98 +492,108 @@ check(failures,
         docs.include?("compares the stored hash before mutation"),
       "secrets guide must state the deferred bcrypt pair verification boundary")
 
-_stdout, _stderr, valid_status = validate_with_role(vault)
-check(failures, valid_status.success?, "vault example must pass actual role evaluation")
+runtime_vault = duplicate(vault)
+runtime_vault["vault_jellyfin_opensubtitles_username"] = "runtime-opensubtitles-user"
+runtime_vault["vault_jellyfin_opensubtitles_password"] = "runtime-opensubtitles-password"
+_stdout, _stderr, valid_status = validate_with_role(runtime_vault)
+check(failures, valid_status.success?, "vault example with runtime integrations must pass role evaluation")
+expect_role_rejection(failures, "documented OpenSubtitles placeholders", vault,
+                      "example-opensubtitles-password")
 
-wrong_type = duplicate(vault)
+empty_immich = duplicate(runtime_vault)
+empty_immich.dig("vault_managed_users", "immich").clear
+expect_role_rejection(failures, "missing Immich family account", empty_immich,
+                      runtime_vault.fetch("vault_immich_admin_email"))
+
+wrong_type = duplicate(runtime_vault)
 wrong_type.dig("vault_managed_users", "audiobookshelf", 0)["permissions"] = ["wrong-type-sentinel"]
 expect_role_rejection(failures, "wrong nested field type", wrong_type, "wrong-type-sentinel")
 
-disabled_audiobookshelf = duplicate(vault)
+disabled_audiobookshelf = duplicate(runtime_vault)
 disabled_audiobookshelf.dig("vault_managed_users", "audiobookshelf", 0)["is_active"] = false
 expect_role_rejection(failures, "disabled Audiobookshelf target", disabled_audiobookshelf,
                       "example-reader-password")
 
-unverified_beszel = duplicate(vault)
+unverified_beszel = duplicate(runtime_vault)
 unverified_beszel.dig("vault_managed_users", "beszel", 0)["verified"] = false
 expect_role_rejection(failures, "unverified Beszel target", unverified_beszel,
                       "example-reader-password")
 
-disabled_jellyfin = duplicate(vault)
+disabled_jellyfin = duplicate(runtime_vault)
 disabled_jellyfin.dig("vault_managed_users", "jellyfin", 0, "policy")["IsDisabled"] = true
 expect_role_rejection(failures, "disabled Jellyfin target", disabled_jellyfin,
                       "example-reader-password")
 
-unsupported_abs_permission = duplicate(vault)
+unsupported_abs_permission = duplicate(runtime_vault)
 unsupported_abs_permission.dig("vault_managed_users", "audiobookshelf", 0)["permissions"] = {
   "flags" => { "libraries" => true }, "librariesAccessible" => [], "itemTagsSelected" => []
 }
 expect_role_rejection(failures, "unsupported Audiobookshelf permission", unsupported_abs_permission,
                       "libraries")
 
-invalid_komga_role = duplicate(vault)
+invalid_komga_role = duplicate(runtime_vault)
 invalid_komga_role.dig("vault_managed_users", "komga", 0)["roles"] = ["OPDS"]
 expect_role_rejection(failures, "unsupported Komga OPDS role", invalid_komga_role, "OPDS")
 
-koreader_komga_role = duplicate(vault)
+koreader_komga_role = duplicate(runtime_vault)
 koreader_komga_role.dig("vault_managed_users", "komga", 0)["roles"] = ["KOREADER_SYNC"]
 _stdout, _stderr, koreader_status = validate_with_role(koreader_komga_role)
 check(failures, koreader_status.success?, "Komga KOREADER_SYNC must pass actual role evaluation")
 
-integer_username = duplicate(vault)
+integer_username = duplicate(runtime_vault)
 integer_username.dig("vault_managed_users", "audiobookshelf", 0)["username"] = 424_242
 expect_role_rejection(failures, "integer audiobookshelf username", integer_username, "424242")
 
-list_password = duplicate(vault)
+list_password = duplicate(runtime_vault)
 list_password.dig("vault_managed_users", "audiobookshelf", 0)["password"] =
   ["list-password-sentinel"]
 expect_role_rejection(failures, "list audiobookshelf password", list_password,
                       "list-password-sentinel")
 
-list_dozzle_email = duplicate(vault)
+list_dozzle_email = duplicate(runtime_vault)
 list_dozzle_email.dig("vault_managed_users", "dozzle", 0)["email"] =
   ["list-email-sentinel"]
 expect_role_rejection(failures, "list Dozzle email", list_dozzle_email,
                       "list-email-sentinel")
 
-list_dozzle_name = duplicate(vault)
+list_dozzle_name = duplicate(runtime_vault)
 list_dozzle_name.dig("vault_managed_users", "dozzle", 0)["name"] =
   ["list-name-sentinel"]
 expect_role_rejection(failures, "list Dozzle name", list_dozzle_name,
                       "list-name-sentinel")
 
-list_ntfy_topic = duplicate(vault)
+list_ntfy_topic = duplicate(runtime_vault)
 list_ntfy_topic.dig("vault_managed_users", "ntfy", 0, "access", 0)["topic"] =
   ["list-topic-sentinel"]
 expect_role_rejection(failures, "list ntfy access topic", list_ntfy_topic,
                       "list-topic-sentinel")
 
 %w[bad,user bad:user bad/user].each do |username|
-  hostile_username = duplicate(vault)
+  hostile_username = duplicate(runtime_vault)
   hostile_username.dig("vault_managed_users", "ntfy", 0)["username"] = username
   expect_role_rejection(failures, "unsafe ntfy username", hostile_username, username)
 end
 
 ["bad topic", "bad/topic", "bad*topic", "bad:topic", "bad,topic"].each do |topic|
-  hostile_topic = duplicate(vault)
+  hostile_topic = duplicate(runtime_vault)
   hostile_topic.dig("vault_managed_users", "ntfy", 0, "access", 0)["topic"] = topic
   expect_role_rejection(failures, "unsafe ntfy literal topic", hostile_topic, topic)
 end
 
-restricted_admin = duplicate(vault)
+restricted_admin = duplicate(runtime_vault)
 restricted_admin_entry = restricted_admin.dig("vault_managed_users", "ntfy", 0)
 restricted_admin_entry["role"] = "admin"
 restricted_admin_entry.dig("access", 0)["permission"] = "read-only"
 expect_role_rejection(failures, "restricted ntfy administrator ACL", restricted_admin,
                       restricted_admin_entry.dig("access", 0, "topic"))
 
-jellyfin_secret = duplicate(vault)
+jellyfin_secret = duplicate(runtime_vault)
 jellyfin_secret.dig("vault_managed_users", "jellyfin", 0, "policy")["Password"] =
   "jellyfin-secret-sentinel"
 expect_role_rejection(failures, "secret-bearing Jellyfin policy", jellyfin_secret,
                       "jellyfin-secret-sentinel")
 
-duplicate_token = duplicate(vault)
+duplicate_token = duplicate(runtime_vault)
 shared_token = "tk_33333333333333333333333333333"
 duplicate_token.dig("vault_managed_users", "ntfy", 0, "tokens") << shared_token
 second_ntfy = duplicate(duplicate_token.dig("vault_managed_users", "ntfy", 0))
@@ -552,10 +601,94 @@ second_ntfy["username"] = "second-reader-example-invalid"
 duplicate_token.dig("vault_managed_users", "ntfy") << second_ntfy
 expect_role_rejection(failures, "cross-user duplicate ntfy token", duplicate_token, shared_token)
 
-publisher_collision = duplicate(vault)
+publisher_collision = duplicate(runtime_vault)
 publisher_token = publisher_collision.fetch("vault_ntfy_dozzle_token")
 publisher_collision.dig("vault_managed_users", "ntfy", 0, "tokens") << publisher_token
 expect_role_rejection(failures, "ntfy publisher token collision", publisher_collision, publisher_token)
+
+expect_role_rejection(
+  failures,
+  "unknown Immich preference profile",
+  runtime_vault,
+  "unknown-profile-sentinel",
+  "immich_managed_user_preference_profile_default" => "unknown-profile-sentinel"
+)
+
+expect_role_rejection(
+  failures,
+  "preference override for unmanaged Immich email",
+  runtime_vault,
+  "unmanaged-preference@example.invalid",
+  "immich_managed_user_preference_overrides" => {
+    "unmanaged-preference@example.invalid" => { "albums" => { "defaultAssetOrder" => "asc" } }
+  }
+)
+
+managed_immich_email = runtime_vault.dig("vault_managed_users", "immich", 0, "email")
+normalized_collision_email = " #{managed_immich_email.upcase} "
+expect_role_rejection(
+  failures,
+  "normalized Immich preference profile selector collision",
+  runtime_vault,
+  normalized_collision_email,
+  "immich_managed_user_preference_profile_by_email" => {
+    managed_immich_email => "standard",
+    normalized_collision_email => "standard"
+  }
+)
+
+expect_role_rejection(
+  failures,
+  "normalized Immich preference override collision",
+  runtime_vault,
+  normalized_collision_email,
+  "immich_managed_user_preference_overrides" => {
+    managed_immich_email => { "albums" => { "defaultAssetOrder" => "desc" } },
+    normalized_collision_email => { "albums" => { "defaultAssetOrder" => "asc" } }
+  }
+)
+
+expect_role_rejection(
+  failures,
+  "Immich administrator preference field",
+  runtime_vault,
+  managed_immich_email,
+  "immich_managed_user_preference_overrides" => {
+    managed_immich_email => { "isAdmin" => true }
+  }
+)
+
+expect_role_rejection(
+  failures,
+  "unknown Immich preference schema field",
+  runtime_vault,
+  "unsupported-preference-sentinel",
+  "immich_managed_user_preference_overrides" => {
+    managed_immich_email => { "albums" => { "unsupported-preference-sentinel" => true } }
+  }
+)
+
+empty_avatar_preferences = {
+  "immich_managed_user_preference_profiles" => { "empty-avatar" => { "avatar" => {} } },
+  "immich_managed_user_preference_profile_default" => "empty-avatar",
+  "immich_managed_user_preference_profile_by_email" => {},
+  "immich_managed_user_preference_overrides" => {}
+}
+_stdout, _stderr, empty_avatar_status = validate_with_role(runtime_vault, empty_avatar_preferences)
+check(failures, empty_avatar_status.success?, "empty Immich avatar scope must remain unowned and valid")
+
+expect_role_rejection(
+  failures,
+  "unsupported Immich avatar color",
+  runtime_vault,
+  "cyan-avatar-sentinel",
+  "immich_managed_user_preference_profiles" => {
+    "invalid-avatar" => { "avatar" => { "color" => "cyan-avatar-sentinel" } }
+  },
+  "immich_managed_user_preference_profile_default" => "invalid-avatar",
+  "immich_managed_user_preference_profile_by_email" => {},
+  "immich_managed_user_preference_overrides" => {}
+)
 
 if failures.empty?
   puts "Managed-user vault: all eight service schemas are valid"

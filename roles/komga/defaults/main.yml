@@ -5,7 +5,7 @@ komga_compose_project_name: >-
   {{ (platform_project_name ~ '-komga')
      if platform_project_name | default('') | length > 0 else 'komga' }}
 
-komga_library_name: Books
+komga_library_name: Comics
 komga_library_root: /data
 komga_library_settings:
   importComicInfoBook: true

@@ -16,7 +16,10 @@ DOZZLE_TASKS = File.join(ROOT, "roles", "dozzle", "tasks", "managed_users.yml")
 DOZZLE_MAIN = File.join(ROOT, "roles", "dozzle", "tasks", "main.yml")
 DOZZLE_TEMPLATE = File.join(ROOT, "roles", "dozzle", "templates", "users.yml.j2")
 NTFY_TASKS = File.join(ROOT, "roles", "ntfy", "tasks", "managed_users.yml")
+NTFY_SUBSCRIPTION_TASKS = File.join(ROOT, "roles", "ntfy", "tasks", "subscription.yml")
 NTFY_MAIN = File.join(ROOT, "roles", "ntfy", "tasks", "main.yml")
+NTFY_DEFAULTS = File.join(ROOT, "roles", "ntfy", "defaults", "main.yml")
+NTFY_ARGUMENT_SPECS = File.join(ROOT, "roles", "ntfy", "meta", "argument_specs.yml")
 STATE_FILTER = File.join(ROOT, "filter_plugins", "managed_user_state.py")
 SAFE_SLURP = File.join(ROOT, "library", "atomic_safe_slurp.py")
 VALIDATE_POLICY = File.join(ROOT, "tests", "validate-policy.sh")
@@ -44,6 +47,9 @@ SOURCE_REQUIREMENTS = {
   "ntfy token ownership" => ["ntfy_tasks", "Refuse duplicate ntfy token ownership"],
   "ntfy Basic authentication" => ["ntfy_tasks", "force_basic_auth: true"],
   "ntfy declared access verification" => ["ntfy_tasks", "Verify managed ntfy declared write access"],
+  "ntfy account subscription preflight" => ["ntfy_tasks", "Read all eligible managed ntfy accounts before subscription mutation"],
+  "ntfy account subscription mutation" => ["ntfy_subscription_tasks", "Create missing managed ntfy account subscriptions"],
+  "ntfy account subscription post-read" => ["ntfy_subscription_tasks", "Re-read managed ntfy accounts after subscription creation"],
   "policy registration" => ["validate_policy", "config_managed_users_test.rb --self-test"],
   "filter behavior registration" => ["validate_policy", "managed_user_state_filter_test.py"]
 }.freeze
@@ -110,8 +116,11 @@ def with_http_probe(expected_count, responder)
   server = TCPServer.new("127.0.0.1", 0)
   requests = []
   error = nil
+  stopped = false
   thread = Thread.new do
-    expected_count.times do
+    until stopped
+      next unless IO.select([server], nil, nil, 0.05)
+
       client = server.accept
       request_line = client.gets&.strip
       raise "HTTP probe received an empty request" unless request_line
@@ -127,21 +136,36 @@ def with_http_probe(expected_count, responder)
       body = client.read(headers.fetch("content-length", "0").to_i)
       request = { "method" => method, "target" => target, "headers" => headers, "body" => body }
       requests << request
-      status = responder.call(request)
-      reason = status == 200 ? "OK" : "Forbidden"
-      client.write("HTTP/1.1 #{status} #{reason}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+      response = responder.call(request)
+      if response.is_a?(Hash)
+        status = response.fetch("status")
+        body = response.fetch("body", "")
+        content_type = response.fetch("content_type", "application/json")
+      else
+        status = response
+        body = ""
+        content_type = "text/plain"
+      end
+      reason = { 200 => "OK", 403 => "Forbidden", 409 => "Conflict" }.fetch(status, "Error")
+      client.write(
+        "HTTP/1.1 #{status} #{reason}\r\nContent-Type: #{content_type}\r\n" \
+        "Content-Length: #{body.bytesize}\r\nConnection: close\r\n\r\n#{body}"
+      )
       client.close
     end
   rescue StandardError => caught
-    error = caught
-  ensure
-    server.close
+    error = caught unless stopped
   end
   yield server.addr.fetch(1), requests
+  stopped = true
+  server.close
   Timeout.timeout(10) { thread.join }
   raise error if error
+  raise "HTTP probe request count differs" unless requests.length == expected_count
 ensure
+  stopped = true
   server&.close unless server&.closed?
+  thread&.join
 end
 
 def task_playbook(tasks, variables)
@@ -324,6 +348,102 @@ def run_ntfy_fixture(extra_vars = {}, tasks_path = NTFY_TASKS)
   result
 end
 
+def run_ntfy_subscription_fixture(
+  users:, subscriptions:, expected_requests:, conflict_modes: {}, malformed_accounts: {},
+  create_responses: {}, post_read_subscriptions: {}, runs: 1
+)
+  result = nil
+  requests_by_user = []
+  with_http_probe(expected_requests, proc do |request|
+    encoded = request.dig("headers", "authorization").to_s.delete_prefix("Basic ")
+    username = Base64.strict_decode64(encoded).split(":", 2).first
+    requests_by_user << [username, request["method"], request["target"]]
+    if request["method"] == "GET" && request["target"] == "/v1/account"
+      account = malformed_accounts.fetch(username) do
+        {
+          "username" => username,
+          "role" => "user",
+          "subscriptions" => subscriptions.fetch(username, [])
+        }
+      end
+      { "status" => 200, "body" => JSON.generate(account) }
+    elsif request["method"] == "POST" && request["target"] == "/v1/account/subscription"
+      requested = JSON.parse(request["body"])
+      desired = requested.merge("display_name" => nil)
+      case conflict_modes[username]
+      when :create
+        subscriptions[username] = subscriptions.fetch(username, []) + [desired]
+        {
+          "status" => 409,
+          "body" => JSON.generate(
+            "code" => 40903, "http" => 409,
+            "error" => "conflict: topic subscription already exists"
+          )
+        }
+      when :reject
+        {
+          "status" => 409,
+          "body" => JSON.generate(
+            "code" => 40903, "http" => 409,
+            "error" => "conflict: topic subscription already exists"
+          )
+        }
+      when :duplicate
+        subscriptions[username] = subscriptions.fetch(username, []) + [desired, desired.dup]
+        {
+          "status" => 409,
+          "body" => JSON.generate(
+            "code" => 40903, "http" => 409,
+            "error" => "conflict: topic subscription already exists"
+          )
+        }
+      when :wrong_code
+        {
+          "status" => 409,
+          "body" => JSON.generate(
+            "code" => 40901, "http" => 409, "error" => "conflict: user already exists"
+          )
+        }
+      else
+        subscriptions[username] = subscriptions.fetch(username, []) + [desired]
+        response = { "status" => 200, "body" => JSON.generate(create_responses.fetch(username, desired)) }
+        subscriptions[username] = post_read_subscriptions.fetch(username) if
+          post_read_subscriptions.key?(username)
+        response
+      end
+    else
+      { "status" => 500, "body" => JSON.generate("unexpected" => true) }
+    end
+  end) do |port, requests|
+    base_url = "http://127.0.0.1:#{port}"
+    subscriptions.each_value do |entries|
+      next unless entries.is_a?(Array)
+
+      entries.each do |entry|
+        entry["base_url"] = base_url if entry["base_url"] == "DESIRED_BASE_URL"
+      end
+    end
+    variables = {
+      "ntfy_account_api" => "#{base_url}/v1/account",
+      "ntfy_account_subscription_api" => "#{base_url}/v1/account/subscription",
+      "ntfy_base_url" => base_url,
+      "ntfy_managed_users_phase" => "subscription_sync",
+      "vault_managed_ntfy_users" => users
+    }
+    include_task = { "ansible.builtin.include_tasks" => NTFY_TASKS }
+    outputs = []
+    statuses = []
+    runs.times do
+      run_playbook(task_playbook([include_task], variables)) do |_tmp, output, status|
+        outputs << output
+        statuses << status
+      end
+    end
+    result = [subscriptions, requests.dup, requests_by_user, outputs, statuses, base_url]
+  end
+  result
+end
+
 failures = []
 abort "Config managed users: ansible-playbook is required for behavior coverage" unless
   command_available?("ansible-playbook")
@@ -332,7 +452,10 @@ dozzle_tasks = read(DOZZLE_TASKS)
 dozzle_main = read(DOZZLE_MAIN)
 dozzle_template = read(DOZZLE_TEMPLATE)
 ntfy_tasks = read(NTFY_TASKS)
+ntfy_subscription_tasks = read(NTFY_SUBSCRIPTION_TASKS)
 ntfy_main = read(NTFY_MAIN)
+ntfy_defaults = read(NTFY_DEFAULTS)
+ntfy_argument_specs = read(NTFY_ARGUMENT_SPECS)
 state_filter = read(STATE_FILTER)
 safe_slurp = read(SAFE_SLURP)
 
@@ -481,6 +604,274 @@ check(failures, ntfy_tasks.include?("url_username") && ntfy_tasks.include?("forc
 check(failures, ntfy_tasks.include?("Verify managed ntfy declared read access") &&
                 ntfy_tasks.include?("Verify managed ntfy declared write access"),
       "ntfy does not verify each declared topic permission")
+check(failures,
+      ntfy_defaults.include?("ntfy_account_subscription_api:") &&
+        ntfy_argument_specs.include?("ntfy_account_subscription_api:"),
+      "ntfy does not declare the pinned account-subscription endpoint")
+ntfy_managed_tasks = YAML.safe_load(ntfy_tasks, aliases: false) || []
+managed_subscription_task_names = [
+  "Validate managed ntfy subscription eligibility",
+  "Read all eligible managed ntfy accounts before subscription mutation",
+  "Validate all eligible managed ntfy account responses",
+  "Refuse duplicate desired ntfy account subscriptions",
+  "Read eligible managed ntfy accounts for subscription verification",
+  "Verify synchronized managed ntfy account subscriptions"
+]
+atomic_subscription_task_names = [
+  "Create missing managed ntfy account subscriptions",
+  "Validate provisional managed ntfy duplicate-subscription conflicts",
+  "Re-read managed ntfy accounts after subscription creation",
+  "Validate synchronized managed ntfy account subscriptions"
+]
+check(failures,
+      managed_subscription_task_names.all? { |name| ntfy_tasks.include?(name) } &&
+        atomic_subscription_task_names.all? { |name| ntfy_subscription_tasks.include?(name) },
+      "ntfy account subscription synchronization is incomplete")
+check(failures,
+      begin
+        parsed_subscription_tasks = YAML.safe_load(ntfy_subscription_tasks, aliases: false) || []
+        create_task = parsed_subscription_tasks.find do |task|
+          task["name"] == "Create missing managed ntfy account subscriptions"
+        end
+        request = create_task&.fetch("ansible.builtin.uri", nil)
+        request && request["url"] == "{{ ntfy_account_subscription_api }}" &&
+          request["method"] == "POST" && request["body_format"] == "json" &&
+          request["body"] == {
+            "base_url" => "{{ ntfy_base_url }}", "topic" => "nas-critical"
+          } && request["status_code"] == [200, 409]
+      end,
+      "ntfy account subscription request differs from the pinned v2.27 interface")
+check(failures,
+      ntfy_tasks.include?("read-only") && ntfy_tasks.include?("read-write") &&
+        ntfy_tasks.include?("item.role == 'user'") &&
+        !ntfy_tasks.include?("web-push") && !ntfy_tasks.include?("local-storage"),
+      "ntfy subscription eligibility or browser-state boundary differs")
+check(failures,
+      ntfy_subscription_tasks.include?("ntfy_subscription_create.json.code == 40903") &&
+        ntfy_subscription_tasks.include?("['code', 'error', 'http']"),
+      "ntfy provisional conflict validation differs from pinned v2.27 error 40903")
+
+subscription_users = [
+  {
+    "username" => "reader", "password" => "reader-password", "role" => "user",
+    "access" => [{ "topic" => "nas-critical", "permission" => "read-only" }]
+  },
+  {
+    "username" => "writer", "password" => "writer-password", "role" => "user",
+    "access" => [{ "topic" => "nas-critical", "permission" => "write-only" }]
+  },
+  {
+    "username" => "private-reader", "password" => "private-password", "role" => "user",
+    "access" => [{ "topic" => "private", "permission" => "read-write" }]
+  },
+  {
+    "username" => "read-writer", "password" => "rw-password", "role" => "user",
+    "access" => [{ "topic" => "nas-critical", "permission" => "read-write" }]
+  }
+]
+unrelated = {
+  "base_url" => "https://unrelated.invalid", "topic" => "other-topic", "display_name" => "Other"
+}
+initial_subscriptions = {
+  "reader" => [unrelated.dup],
+  "read-writer" => [{
+    "base_url" => "DESIRED_BASE_URL", "topic" => "nas-critical", "display_name" => "Critical"
+  }],
+  "publisher" => [{
+    "base_url" => "DESIRED_BASE_URL", "topic" => "nas-critical", "display_name" => "Critical"
+  }]
+}
+state, requests, requests_by_user, outputs, statuses, base_url = run_ntfy_subscription_fixture(
+  users: subscription_users,
+  subscriptions: initial_subscriptions,
+  expected_requests: 6,
+  runs: 2
+)
+check(failures, statuses.all?(&:success?),
+      "ntfy eligible subscription synchronization or idempotence failed: #{outputs.last&.lines&.last&.strip}")
+check(failures, requests_by_user == [
+        ["reader", "GET", "/v1/account"],
+        ["read-writer", "GET", "/v1/account"],
+        ["reader", "POST", "/v1/account/subscription"],
+        ["reader", "GET", "/v1/account"],
+        ["reader", "GET", "/v1/account"],
+        ["read-writer", "GET", "/v1/account"]
+      ], "ntfy synchronized ineligible users or was not idempotent")
+desired = { "base_url" => base_url, "topic" => "nas-critical", "display_name" => nil }
+check(failures, state.fetch("reader") == [unrelated, desired],
+      "ntfy did not preserve the unrelated subscription while adding the desired one")
+post = requests.find { |request| request["method"] == "POST" }
+check(failures, post && JSON.parse(post["body"]) == desired.reject { |key, _value| key == "display_name" },
+      "ntfy subscription create body differs from the exact supported pair")
+
+duplicate_subscriptions = {
+  "reader" => [],
+  "read-writer" => [
+    { "base_url" => "DESIRED_BASE_URL", "topic" => "nas-critical", "display_name" => "" },
+    { "base_url" => "DESIRED_BASE_URL", "topic" => "nas-critical", "display_name" => "" }
+  ]
+}
+_state, _requests, duplicate_calls, _outputs, duplicate_statuses, =
+  run_ntfy_subscription_fixture(
+    users: subscription_users,
+    subscriptions: duplicate_subscriptions,
+    expected_requests: 2
+  )
+check(failures,
+      !duplicate_statuses.first.success? && duplicate_calls == [
+        ["reader", "GET", "/v1/account"],
+        ["read-writer", "GET", "/v1/account"]
+      ], "ntfy mutated an earlier user before rejecting a later duplicate subscription")
+
+malformed_account = {
+  "username" => "read-writer", "role" => "user", "subscriptions" => "invalid"
+}
+_state, _requests, malformed_calls, _outputs, malformed_statuses, =
+  run_ntfy_subscription_fixture(
+    users: subscription_users,
+    subscriptions: { "reader" => [], "read-writer" => [] },
+    malformed_accounts: { "read-writer" => malformed_account },
+    expected_requests: 2
+  )
+check(failures,
+      !malformed_statuses.first.success? && malformed_calls.none? { |call| call[1] == "POST" },
+      "ntfy mutated an earlier user before rejecting a later account schema")
+
+accepted_state, _requests, accepted_calls, accepted_outputs, accepted_statuses, accepted_base =
+  run_ntfy_subscription_fixture(
+    users: [subscription_users.first],
+    subscriptions: { "reader" => [] },
+    conflict_modes: { "reader" => :create },
+    expected_requests: 3
+  )
+check(failures,
+      accepted_statuses.first.success? && accepted_calls.map { |call| call[1] } == %w[GET POST GET] &&
+        accepted_state.fetch("reader") == [{
+          "base_url" => accepted_base, "topic" => "nas-critical", "display_name" => nil
+        }],
+      "ntfy did not accept a provisional 409 only after an authoritative exact match")
+
+_state, _requests, rejected_calls, rejected_outputs, rejected_statuses, =
+  run_ntfy_subscription_fixture(
+    users: [subscription_users.first],
+    subscriptions: { "reader" => [] },
+    conflict_modes: { "reader" => :reject },
+    expected_requests: 3
+  )
+check(failures,
+      !rejected_statuses.first.success? && rejected_calls.map { |call| call[1] } == %w[GET POST GET],
+      "ntfy accepted a 409 without an authoritative desired subscription")
+
+%i[reject duplicate].each do |mode|
+  _state, _requests, blocked_calls, _outputs, blocked_statuses, =
+    run_ntfy_subscription_fixture(
+      users: [subscription_users.first, subscription_users.last],
+      subscriptions: { "reader" => [], "read-writer" => [] },
+      conflict_modes: { "reader" => mode },
+      expected_requests: 4
+    )
+  check(failures,
+        !blocked_statuses.first.success? && blocked_calls == [
+          ["reader", "GET", "/v1/account"],
+          ["read-writer", "GET", "/v1/account"],
+          ["reader", "POST", "/v1/account/subscription"],
+          ["reader", "GET", "/v1/account"]
+        ], "ntfy mutated a later user after an unresolved #{mode} 409")
+end
+
+_state, _requests, wrong_code_calls, _outputs, wrong_code_statuses, =
+  run_ntfy_subscription_fixture(
+    users: [subscription_users.first, subscription_users.last],
+    subscriptions: { "reader" => [], "read-writer" => [] },
+    conflict_modes: { "reader" => :wrong_code },
+    expected_requests: 3
+  )
+check(failures,
+      !wrong_code_statuses.first.success? && wrong_code_calls.last == [
+        "reader", "POST", "/v1/account/subscription"
+      ], "ntfy accepted or re-read a non-40903 conflict")
+
+_state, _requests, continued_calls, continued_outputs, continued_statuses, =
+  run_ntfy_subscription_fixture(
+    users: [subscription_users.first, subscription_users.last],
+    subscriptions: { "reader" => [], "read-writer" => [] },
+    conflict_modes: { "reader" => :create },
+    expected_requests: 6
+  )
+check(failures,
+      continued_statuses.first.success? && continued_calls.map { |call| [call[0], call[1]] } == [
+        ["reader", "GET"], ["read-writer", "GET"], ["reader", "POST"],
+        ["reader", "GET"], ["read-writer", "POST"], ["read-writer", "GET"]
+      ], "ntfy did not resolve each missing user before mutating the next")
+
+subscription_schema_mutations = {
+  "missing display_name" => { "base_url" => "DESIRED_BASE_URL", "topic" => "nas-critical" },
+  "extra field" => {
+    "base_url" => "DESIRED_BASE_URL", "topic" => "nas-critical", "display_name" => "", "extra" => true
+  },
+  "wrong display_name type" => {
+    "base_url" => "DESIRED_BASE_URL", "topic" => "nas-critical", "display_name" => 7
+  },
+  "wrong base_url type" => {
+    "base_url" => 7, "topic" => "nas-critical", "display_name" => ""
+  }
+}
+subscription_schema_mutations.each do |label, invalid_subscription|
+  _state, _requests, schema_calls, _outputs, schema_statuses, =
+    run_ntfy_subscription_fixture(
+      users: [subscription_users.first, subscription_users.last],
+      subscriptions: { "reader" => [], "read-writer" => [invalid_subscription] },
+      expected_requests: 2
+    )
+  check(failures,
+        !schema_statuses.first.success? && schema_calls.none? { |call| call[1] == "POST" },
+        "ntfy accepted #{label} in a preflight subscription entry")
+end
+
+invalid_create_response = {
+  "base_url" => "wrong", "topic" => "nas-critical", "display_name" => nil, "extra" => true
+}
+_state, _requests, create_schema_calls, _outputs, create_schema_statuses, =
+  run_ntfy_subscription_fixture(
+    users: [subscription_users.first],
+    subscriptions: { "reader" => [] },
+    create_responses: { "reader" => invalid_create_response },
+    expected_requests: 2
+  )
+check(failures,
+      !create_schema_statuses.first.success? && create_schema_calls.map { |call| call[1] } == %w[GET POST],
+      "ntfy accepted an invalid HTTP 200 subscription response")
+
+invalid_post_read = [{
+  "base_url" => "DESIRED_BASE_URL", "topic" => "nas-critical", "display_name" => "", "extra" => true
+}]
+_state, _requests, post_schema_calls, _outputs, post_schema_statuses, =
+  run_ntfy_subscription_fixture(
+    users: [subscription_users.first],
+    subscriptions: { "reader" => [] },
+    post_read_subscriptions: { "reader" => invalid_post_read },
+    expected_requests: 3
+  )
+check(failures,
+      !post_schema_statuses.first.success? && post_schema_calls.map { |call| call[1] } == %w[GET POST GET],
+      "ntfy accepted an invalid authoritative post-create subscription schema")
+
+admin_user = Marshal.load(Marshal.dump(subscription_users.first))
+admin_user["role"] = "admin"
+_state, _requests, admin_calls, _outputs, admin_statuses, = run_ntfy_subscription_fixture(
+  users: [admin_user], subscriptions: {}, expected_requests: 0
+)
+check(failures, !admin_statuses.first.success? && admin_calls.empty?,
+      "ntfy accepted or authenticated a managed administrator")
+
+duplicate_users = [subscription_users.first, Marshal.load(Marshal.dump(subscription_users.first))]
+duplicate_users.last["username"] = " Reader "
+_state, _requests, identity_calls, _outputs, identity_statuses, = run_ntfy_subscription_fixture(
+  users: duplicate_users, subscriptions: {}, expected_requests: 0
+)
+check(failures, !identity_statuses.first.success? && identity_calls.empty?,
+      "ntfy authenticated duplicate normalized managed usernames")
+
 ntfy_main_tasks = YAML.safe_load(ntfy_main, aliases: false) || []
 check(failures, ntfy_main_order_valid?(ntfy_main_tasks),
       "ntfy ownership preflight does not precede environment rendering and deployment")
@@ -494,7 +885,6 @@ check(failures,
         ntfy_tasks.include?("ntfy_existing_user_records") &&
         ntfy_tasks.include?("reviewed credential-migration procedure"),
       "ntfy does not enforce prior ownership, existing-user refusal, and hash preservation")
-ntfy_managed_tasks = YAML.safe_load(ntfy_tasks, aliases: false) || []
 ntfy_auth_index = ntfy_managed_tasks.index { |task| task["name"] == "Basic-authenticate each managed ntfy user" }
 ntfy_read_index = ntfy_managed_tasks.index { |task| task["name"] == "Verify managed ntfy declared read access" }
 ntfy_write_index = ntfy_managed_tasks.index { |task| task["name"] == "Verify managed ntfy declared write access" }
@@ -655,15 +1045,12 @@ if !ntfy_tasks.empty?
   admin_records = absent_records.merge(
     "auditor" => { "username" => "auditor", "role" => "admin", "provisioned" => true }
   )
-  provisioned, admin_output, status = run_ntfy_fixture(
+  _provisioned, _admin_output, status = run_ntfy_fixture(
     "vault_managed_ntfy_users" => [admin_user],
     "ntfy_prior_provisioned_users" => admin_prior,
     "ntfy_existing_user_records" => admin_records
   )
-  check(failures, status.success?, "ntfy rejected supported administrator semantics: #{admin_output.lines.last&.strip}")
-  check(failures,
-        provisioned && !provisioned["access"].split(",").any? { |entry| entry.start_with?("auditor:") },
-        "ntfy emitted an unsupported ACL provisioning entry for an administrator")
+  check(failures, !status.success?, "ntfy accepted a managed administrator account")
 
   %w[read-only write-only deny].each do |permission|
     restricted_admin = Marshal.load(Marshal.dump(admin_user))
@@ -726,7 +1113,10 @@ if ARGV == ["--self-test"]
     "dozzle_main" => dozzle_main,
     "dozzle_template" => dozzle_template,
     "ntfy_tasks" => ntfy_tasks,
+    "ntfy_subscription_tasks" => ntfy_subscription_tasks,
     "ntfy_main" => ntfy_main,
+    "ntfy_defaults" => ntfy_defaults,
+    "ntfy_argument_specs" => ntfy_argument_specs,
     "state_filter" => state_filter,
     "safe_slurp" => safe_slurp,
     "validate_policy" => validate_policy
@@ -826,7 +1216,7 @@ if ARGV == ["--self-test"]
       "ntfy_prior_provisioned_users" => prior_without_reader,
       "ntfy_existing_user_records" => unmanaged_records.reject { |identity, _entry| identity == "reader" }
     }],
-    "administrator semantics guard" => ["Require supported ntfy administrator access semantics", {
+    "managed administrator guard" => ["Require managed ntfy accounts to remain nonadministrative", {
       "vault_managed_ntfy_users" => [{
         "username" => "auditor", "password" => "plain", "password_hash" => BCRYPT_B,
         "role" => "admin", "access" => [{ "topic" => "admin-topic", "permission" => "deny" }],

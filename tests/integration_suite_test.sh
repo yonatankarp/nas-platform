@@ -107,6 +107,29 @@ grep -qF -- '\"\$playbook\" \"\$@\"' "$integration"
 grep -qF -- 'run_play --tags \"\$INTEGRATION_TAGS\" \"\$@\"' "$integration"
 grep -qF -- 'run_play \"\$@\"' "$integration"
 
+# Media fixtures consumed through nested Docker bind mounts must exist on the
+# daemon host before the controller container establishes its sandbox mount.
+paperless_preseed_line=$(grep -nF '"$repo_dir/tests/contracts/paperless.sh" seed-fixture-only' \
+  "$integration" | cut -d: -f1)
+controller_line=$(grep -nF 'docker run --rm' "$integration" | head -1 | cut -d: -f1)
+[ -n "$paperless_preseed_line" ] && [ "$paperless_preseed_line" -lt "$controller_line" ] || {
+  printf '%s\n' 'Paperless integration fixture is not prepared before the controller mount' >&2
+  exit 1
+}
+grep -qF 'paperless:true|full:true)' "$integration"
+grep -qF -- '-e PLATFORM_PAPERLESS_FIXTURE_PRESEEDED="$paperless_fixture_preseeded"' "$integration"
+for contract in komga tinymediamanager jellyfin; do
+  media_preseed_line=$(grep -nF \
+    '"$repo_dir/tests/contracts/'"$contract"'.sh" seed-fixture-only' \
+    "$integration" | cut -d: -f1)
+  [ -n "$media_preseed_line" ] && [ "$media_preseed_line" -lt "$controller_line" ] || {
+    printf '%s\n' "$contract integration fixture is not prepared before the controller mount" >&2
+    exit 1
+  }
+done
+grep -qF 'media:true|full:true)' "$integration"
+grep -qF -- '-e PLATFORM_MEDIA_FIXTURES_PRESEEDED="$media_fixtures_preseeded"' "$integration"
+
 # The committed deployment vault is intentionally encrypted with an operator
 # password unavailable to CI. Every suite must use an isolated controller copy,
 # replace only that copy with its generated ephemeral vault, and export the
@@ -114,6 +137,10 @@ grep -qF -- 'run_play \"\$@\"' "$integration"
 grep -qF -- 'controller_mount=$sandbox/repo' "$integration"
 grep -qF -- 'install -m 0600 \"\$vault_file\" /repo/inventory/group_vars/all/vault.yml' "$integration"
 grep -qF -- 'export ANSIBLE_VAULT_PASSWORD_FILE=\"\$vault_password_file\"' "$integration"
+grep -qF -- '-e @\"\$fixture_vars_file\"' "$integration" || {
+  printf '%s\n' 'integration deployment does not consume the protected Immich fixture policy' >&2
+  exit 1
+}
 if grep -qF -- 'controller_mount=$repo_dir' "$integration"; then
   printf '%s\n' 'integration may mount the committed deployment vault directly' >&2
   exit 1

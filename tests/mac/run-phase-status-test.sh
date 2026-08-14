@@ -60,6 +60,16 @@ exit 4
 STUB
 chmod 0755 "$fake_bin/ansible-playbook"
 
+cat > "$fake_bin/ansible-vault" <<'STUB'
+#!/bin/sh
+cat <<'YAML'
+vault_managed_users:
+  immich:
+    - email: fixture@example.invalid
+YAML
+STUB
+chmod 0755 "$fake_bin/ansible-vault"
+
 cat > "$fake_bin/docker" <<'STUB'
 #!/bin/sh
 if [ "${1-}" = info ]; then

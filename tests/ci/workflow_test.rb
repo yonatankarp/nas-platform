@@ -212,12 +212,32 @@ static_commands = run_steps(jobs.fetch("static", {}))
   check(failures, static_commands.include?(command), "static checks must retain #{command.inspect}")
 end
 check(failures, static_commands.include?("apt-get install"), "static checks must install system tools")
-check(failures, static_commands.include?("pipx install 'ansible-core==2.21.2'"),
-      "static checks must install pinned ansible-core")
-check(failures, static_commands.include?("pipx install 'ansible-lint==26.6.0'"),
-      "static checks must install pinned ansible-lint")
+check(failures, static_commands.include?('python3 -m venv "$RUNNER_TEMP/ansible"'),
+      "static checks must create an isolated Ansible environment")
+check(failures, static_commands.include?(
+        '"$RUNNER_TEMP/ansible/bin/pip" install \'ansible-core==2.21.2\' \'ansible-lint==26.6.0\''
+      ), "static checks must install exact Ansible pins in the isolated environment")
+check(failures, static_commands.include?('echo "$RUNNER_TEMP/ansible/bin" >> "$GITHUB_PATH"'),
+      "static checks must expose only the isolated pinned Ansible tools")
+check(failures, static_commands.include?(
+        '"$RUNNER_TEMP/ansible/bin/ansible-galaxy" collection install -r requirements.yml'
+      ), "static checks must install collections with the isolated pinned Ansible tools")
 check(failures, !static_commands.include?("python3 tests/deployment_target_validator_test.py"),
       "static must not duplicate the deployment validator already run by validate-policy.sh")
+
+policy_source = File.read(POLICY_PATH)
+%w[
+  ruby\ tests/beszel_telemetry_probe_test.rb
+  ruby\ tests/beszel_telemetry_timeout_test.rb
+  ruby\ tests/beszel_telemetry_ansible_test.rb
+  python3\ tests/beszel_telemetry_module_test.py
+  tests/mac/beszel-telemetry-hook-test.sh
+  ruby\ tests/paperless_mail_reconciliation_test.rb
+].each do |command|
+  normalized = command.gsub("\\ ", " ")
+  check(failures, registers_command_once?(policy_source, normalized),
+        "policy validation must invoke exactly once #{normalized.inspect}")
+end
 validator_command = "python3 tests/deployment_target_validator_test.py"
 policy_source = File.read(POLICY_PATH)
 check(failures, registers_command_once?(policy_source, validator_command),
@@ -226,6 +246,12 @@ check(failures, !registers_command_once?("#{validator_command}\n#{validator_comm
       "policy registration matcher must reject duplicate validator commands")
 check(failures, !registers_command_once?("ruby tests/policy_test.rb\n", validator_command),
       "policy registration matcher must reject a missing validator command")
+paperless_mail_command = "ruby tests/paperless_mail_reconciliation_test.rb"
+check(failures, registers_command_once?(policy_source, paperless_mail_command),
+      "validate-policy.sh must register the Paperless mail reconciliation fixture exactly once")
+check(failures,
+      !registers_command_once?("#{paperless_mail_command}\n#{paperless_mail_command}\n", paperless_mail_command),
+      "policy registration matcher must reject duplicate Paperless mail fixture commands")
 
 validate = jobs.fetch("validate", {})
 check(failures, validate["name"] == "validate", "aggregate check name must remain validate")

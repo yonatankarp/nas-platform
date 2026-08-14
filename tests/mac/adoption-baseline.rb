@@ -65,7 +65,7 @@ SETTING_FIELDS = {
   "audiobookshelf" => %w[library_name media_type], "beszel" => %w[system_name],
   "dozzle" => %w[dispatcher_name dispatcher_semantics_sha256 rules_semantics_sha256],
   "immich" => %w[database_backup machine_learning new_version_check],
-  "jellyfin" => %w[library_name], "komga" => %w[library_name], "ntfy" => %w[topic],
+  "jellyfin" => %w[library_name], "komga" => %w[library_id library_name library_root], "ntfy" => %w[topic],
   "paperless-ngx" => %w[mail_account_name], "tinymediamanager" => %w[api_enabled]
 }.freeze
 PROBE_DEPENDENCIES = %w[
@@ -1333,14 +1333,21 @@ def emit_probe(service)
                  )
                  payload.fetch("content").length
                end
-               managed_library = libraries.find { |entry| entry["name"] == "Books" }
-               raise "managed library is unavailable" unless managed_library
+               managed_libraries = libraries.select do |entry|
+                 entry["root"].is_a?(String) && entry.fetch("root").sub(%r{/+\z}, "") == "/data"
+               end
+               raise "managed library is unavailable or duplicated" unless managed_libraries.length == 1
+               managed_library = managed_libraries.fetch(0)
                fixture = File.join(sandbox, "legacy/komga/library/task-10-contract-comic/Task 10 Contract Comic.cbz")
                { "identities" => identities,
                  "record_counts" => { "books" => books, "libraries" => libraries.length,
                                       "series" => series, "users" => users.length },
                  "fixture_sha256" => { "book" => fixture_digest(fixture) },
-                 "managed_settings" => { "library_name" => managed_library.fetch("name") } }
+                 "managed_settings" => {
+                   "library_id" => managed_library.fetch("id"),
+                   "library_name" => managed_library.fetch("name"),
+                   "library_root" => managed_library.fetch("root").sub(%r{/+\z}, "")
+                 } }
              when "ntfy"
                ntfy_uri = URI("http://127.0.0.1:#{Integer(ENV.fetch('PLATFORM_NTFY_PORT'), 10)}/v1/account")
                ntfy_request = Net::HTTP::Get.new(ntfy_uri)

@@ -1,0 +1,126 @@
+---
+- name: Reconcile the Jellyfin primary administrator name safely
+  when:
+    - not ansible_check_mode
+    - jellyfin_primary_rename_required | default(false) | bool
+  block:
+    - name: Record Jellyfin primary administrator rename recovery state
+      ansible.builtin.copy:
+        content: >-
+          {{ {'id': jellyfin_primary_authenticated_id,
+              'original_name': jellyfin_primary_user_before.Name} | to_json }}
+        dest: "{{ jellyfin_primary_recovery_marker }}"
+        mode: "0600"
+      when: not jellyfin_primary_temporary_recovery | bool
+      no_log: true
+
+    - name: Rename Jellyfin primary administrator through a temporary name
+      ansible.builtin.uri:
+        url: "{{ jellyfin_api }}/Users?userId={{ jellyfin_primary_authenticated_id | urlencode }}"
+        method: POST
+        headers:
+          Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_reconcile_token }}"'
+        body_format: json
+        body: >-
+          {{ jellyfin_primary_user_before |
+             combine({'Name': jellyfin_primary_temporary_name}) }}
+        status_code: [204]
+      when: not jellyfin_primary_temporary_recovery | bool
+      changed_when: true
+      no_log: true
+
+    - name: Set exact Jellyfin primary administrator name
+      ansible.builtin.uri:
+        url: "{{ jellyfin_api }}/Users?userId={{ jellyfin_primary_authenticated_id | urlencode }}"
+        method: POST
+        headers:
+          Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_reconcile_token }}"'
+        body_format: json
+        body: >-
+          {{ jellyfin_primary_user_before |
+             combine({'Name': jellyfin_admin_username}) }}
+        status_code: [204]
+      changed_when: true
+      no_log: true
+
+  rescue:
+    - name: Recover the Jellyfin primary administrator name after rename failure
+      ansible.builtin.uri:
+        url: "{{ jellyfin_api }}/Users?userId={{ jellyfin_primary_authenticated_id | urlencode }}"
+        method: POST
+        headers:
+          Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_reconcile_token }}"'
+        body_format: json
+        body: >-
+          {{ jellyfin_primary_user_before |
+             combine({'Name': jellyfin_primary_recovery_name}) }}
+        status_code: "{{ range(100, 600) | list }}"
+      register: jellyfin_primary_recovery_attempt
+      failed_when: false
+      changed_when: jellyfin_primary_recovery_attempt.status | default(0) | int == 204
+      no_log: true
+
+    - name: Read recovered Jellyfin primary administrator identity
+      ansible.builtin.uri:
+        url: "{{ jellyfin_api }}/Users/{{ jellyfin_primary_authenticated_id | urlencode }}"
+        headers:
+          Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_reconcile_token }}"'
+        status_code: "{{ range(100, 600) | list }}"
+        return_content: true
+      register: jellyfin_primary_recovery_readback
+      failed_when: false
+      changed_when: false
+      no_log: true
+
+    - name: Require recovered Jellyfin primary administrator identity
+      ansible.builtin.assert:
+        that:
+          - jellyfin_primary_recovery_readback.status | default(0) | int == 200
+          - jellyfin_primary_recovery_readback.json.Id | string == jellyfin_primary_authenticated_id
+          - jellyfin_primary_recovery_readback.json.Name == jellyfin_primary_recovery_name
+          - jellyfin_primary_recovery_readback.json.Policy.IsAdministrator | bool
+        fail_msg: >-
+          Jellyfin primary administrator rename and recovery both failed. The authoritative
+          identity did not return to a safe name; inspect the user by its preserved ID.
+      no_log: true
+
+    - name: Clear recovered Jellyfin primary administrator rename state
+      ansible.builtin.file:
+        path: "{{ jellyfin_primary_recovery_marker }}"
+        state: absent
+      no_log: true
+
+    - name: Stop after recovered Jellyfin primary administrator rename failure
+      ansible.builtin.fail:
+        msg: >-
+          Jellyfin primary administrator rename failed, but the authoritative identity
+          was restored to its pre-run safe name. Rerun reconciliation.
+
+- name: Read exact Jellyfin primary administrator after rename
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Users/{{ jellyfin_primary_authenticated_id | urlencode }}"
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_reconcile_token }}"'
+    status_code: [200]
+    return_content: true
+  register: jellyfin_primary_after_rename
+  when: not ansible_check_mode
+  changed_when: false
+  no_log: true
+
+- name: Require exact Jellyfin primary administrator after rename
+  ansible.builtin.assert:
+    that:
+      - jellyfin_primary_after_rename.json.Id | string == jellyfin_primary_authenticated_id
+      - jellyfin_primary_after_rename.json.Name == jellyfin_admin_username
+      - jellyfin_primary_after_rename.json.Policy.IsAdministrator | bool
+    fail_msg: The authoritative Jellyfin primary administrator identity did not converge exactly.
+  when: not ansible_check_mode
+  no_log: true
+
+- name: Clear exact Jellyfin primary administrator rename state
+  ansible.builtin.file:
+    path: "{{ jellyfin_primary_recovery_marker }}"
+    state: absent
+  when: not ansible_check_mode
+  no_log: true

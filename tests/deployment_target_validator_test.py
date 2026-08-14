@@ -26,6 +26,7 @@ class DeploymentTargetValidatorTest(unittest.TestCase):
         self.addCleanup(self.temporary_directory.cleanup)
         self.base = Path(os.path.realpath(self.temporary_directory.name))
         self.root = self.base / "storage"
+        self.media_root = self.base / "media"
         self.deploy_root = self.root / "nas-platform"
         self.releases = self.deploy_root / "releases"
         self.expected_release = self.releases / RELEASE_ID
@@ -33,6 +34,7 @@ class DeploymentTargetValidatorTest(unittest.TestCase):
         self.next_pointer = self.deploy_root / f".current-{RELEASE_ID}"
         self.adoption_root = self.base / "adoption"
         self.expected_release.mkdir(parents=True)
+        self.media_root.mkdir()
 
     def run_validator(
         self,
@@ -42,13 +44,16 @@ class DeploymentTargetValidatorTest(unittest.TestCase):
         paths_json=None,
         adoption_enabled="0",
         adoption_root=None,
+        storage_root=None,
+        media_root=None,
     ):
         payload = json.dumps(paths) if paths_json is None else paths_json
         return subprocess.run(
             [
                 sys.executable,
                 str(SCRIPT),
-                str(self.root),
+                str(storage_root or self.root),
+                str(media_root or self.media_root),
                 str(self.expected_release),
                 str(self.current),
                 str(self.next_pointer),
@@ -102,6 +107,7 @@ class DeploymentTargetValidatorTest(unittest.TestCase):
                 sys.executable,
                 str(SCRIPT),
                 str(linked_storage),
+                str(self.media_root),
                 str(target / "releases" / RELEASE_ID),
                 str(target / "current"),
                 str(target / f".current-{RELEASE_ID}"),
@@ -196,7 +202,57 @@ class DeploymentTargetValidatorTest(unittest.TestCase):
         )
 
         self.assert_refused(
-            result, "Unsafe deployment target invocation: expected 8 arguments"
+            result, "Unsafe deployment target invocation: expected 9 arguments"
+        )
+
+    def test_accepts_media_target_and_rejects_media_symlink_escape(self):
+        documents = self.media_root / "Documents"
+        documents.mkdir()
+        archive = documents / "archive"
+
+        result = self.run_validator([str(archive)])
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        outside = self.base / "outside-documents"
+        outside.mkdir()
+        archive.symlink_to(outside, target_is_directory=True)
+        result = self.run_validator([str(archive)])
+        self.assert_refused(
+            result,
+            f"Unsafe deployment target {archive}: symlink component {archive} "
+            "is not an allowed deployment pointer",
+        )
+
+    def test_rejects_state_root_nested_under_document_roots(self):
+        for document_name in ("archive", "inbox", "export"):
+            document_root = self.media_root / "Documents" / document_name
+            state_root = document_root / "paperless-state"
+            state_root.mkdir(parents=True)
+
+            result = self.run_validator(
+                [], storage_root=state_root, media_root=self.media_root
+            )
+
+            self.assert_refused(
+                result,
+                "Unsafe deployment target invocation: storage roots must not overlap",
+            )
+
+    def test_rejects_media_root_nested_under_state_or_aliasing_it(self):
+        nested_media = self.root / "paperless-state" / "Documents"
+        nested_media.mkdir(parents=True)
+        result = self.run_validator([], storage_root=self.root, media_root=nested_media)
+        self.assert_refused(
+            result,
+            "Unsafe deployment target invocation: storage roots must not overlap",
+        )
+
+        alias = self.base / "media-alias"
+        alias.symlink_to(self.root, target_is_directory=True)
+        result = self.run_validator([], storage_root=self.root, media_root=alias)
+        self.assert_refused(
+            result,
+            "Unsafe deployment target invocation: storage roots must not overlap",
         )
 
     def test_rejects_invalid_require_current_without_traceback(self):
@@ -214,6 +270,55 @@ class DeploymentTargetValidatorTest(unittest.TestCase):
         result = self.run_validator([str(source)], adoption_enabled="1")
 
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_accepts_adopted_paperless_tessdata_directory_and_model(self):
+        tessdata = self.adoption_root / "legacy" / "paperless-ngx" / "tessdata"
+        tessdata.mkdir(parents=True)
+        model = tessdata / "heb.traineddata"
+        cache = self.adoption_root / "legacy" / "paperless-ngx" / "cache"
+
+        result = self.run_validator(
+            [str(tessdata), str(model), str(cache)], adoption_enabled="1"
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_rejects_symlinked_adopted_paperless_tessdata_before_model_write(self):
+        paperless = self.adoption_root / "legacy" / "paperless-ngx"
+        paperless.mkdir(parents=True)
+        outside = self.base / "outside-tessdata"
+        outside.mkdir()
+        tessdata = paperless / "tessdata"
+        tessdata.symlink_to(outside, target_is_directory=True)
+
+        result = self.run_validator(
+            [str(tessdata), str(tessdata / "heb.traineddata")],
+            adoption_enabled="1",
+        )
+
+        self.assert_refused(
+            result,
+            f"Unsafe deployment target {tessdata}: symlink component {tessdata} "
+            "is not an allowed deployment pointer",
+        )
+
+    def test_rejects_symlinked_audiobookshelf_backup_adoption_source(self):
+        service_root = self.adoption_root / "legacy" / "audiobookshelf"
+        service_root.mkdir(parents=True)
+        outside = self.base / "outside-backups"
+        outside.mkdir()
+        backup_source = service_root / "backups"
+        backup_source.symlink_to(outside, target_is_directory=True)
+
+        result = self.run_validator(
+            [str(backup_source)], adoption_enabled="1"
+        )
+
+        self.assert_refused(
+            result,
+            f"Unsafe deployment target {backup_source}: symlink component "
+            f"{backup_source} is not an allowed deployment pointer",
+        )
 
     def test_rejects_unreviewed_adoption_source(self):
         source = self.adoption_root / "legacy" / "ntfy" / "unexpected"

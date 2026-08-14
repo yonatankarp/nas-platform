@@ -209,6 +209,19 @@
     immich_managed_users_token: "{{ immich_reconcile_token }}"
   when: not ansible_check_mode or immich_initialized | bool
 
+- name: Reconcile configured Immich password state
+  ansible.builtin.include_tasks: configured_password.yml
+  vars:
+    immich_configured_password_phase: reconcile
+    immich_configured_password_token: "{{ immich_reconcile_token }}"
+  when: not ansible_check_mode or immich_initialized | bool
+
+- name: Reconcile configured Immich user onboarding
+  ansible.builtin.include_tasks: user_onboarding.yml
+  vars:
+    immich_user_onboarding_phase: reconcile
+  when: not ansible_check_mode or immich_initialized | bool
+
 - name: Read the Immich system configuration
   ansible.builtin.uri:
     url: "{{ immich_api }}/system-config"
@@ -345,6 +358,27 @@
   vars:
     immich_managed_users_phase: verify
     immich_managed_users_token: "{{ immich_verification_token }}"
+  when: not ansible_check_mode
+
+- name: Verify configured Immich password state
+  tags: [platform_verify_immich]
+  ansible.builtin.include_tasks:
+    file: configured_password.yml
+    apply:
+      tags: [platform_verify_immich]
+  vars:
+    immich_configured_password_phase: verify
+    immich_configured_password_token: "{{ immich_verification_token }}"
+  when: not ansible_check_mode
+
+- name: Verify configured Immich user onboarding
+  tags: [platform_verify_immich]
+  ansible.builtin.include_tasks:
+    file: user_onboarding.yml
+    apply:
+      tags: [platform_verify_immich]
+  vars:
+    immich_user_onboarding_phase: verify
   when: not ansible_check_mode
 
 - name: Read the exact Immich system configuration

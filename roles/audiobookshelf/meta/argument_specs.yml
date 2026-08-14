@@ -1,7 +1,7 @@
 ---
 argument_specs:
   main:
-    short_description: Deploy Audiobookshelf and converge its administrator and audiobook library
+    short_description: Deploy Audiobookshelf and converge its server settings, administrator, and audiobook library
     options:
       platform_compose_kind:
         type: str
@@ -12,6 +12,77 @@ argument_specs:
       audiobookshelf_port:
         type: int
         required: false
+      audiobookshelf_owned_server_settings:
+        type: dict
+        required: false
+        options:
+          storeCoverWithItem:
+            type: bool
+            required: true
+          storeMetadataWithItem:
+            type: bool
+            required: true
+          sortingIgnorePrefix:
+            type: bool
+            required: true
+          scannerParseSubtitle:
+            type: bool
+            required: true
+          scannerFindCovers:
+            type: bool
+            required: true
+          scannerCoverProvider:
+            type: str
+            required: true
+            choices: [google]
+          scannerPreferMatchedMetadata:
+            type: bool
+            required: true
+          scannerDisableWatcher:
+            type: bool
+            required: true
+          chromecastEnabled:
+            type: bool
+            required: true
+          allowIframe:
+            type: bool
+            required: true
+          homeBookshelfView:
+            type: int
+            required: true
+            choices: [1]
+          bookshelfView:
+            type: int
+            required: true
+            choices: [1]
+          dateFormat:
+            type: str
+            required: true
+            choices: [dd/MM/yyyy]
+          timeFormat:
+            type: str
+            required: true
+            choices: ['HH:mm']
+          language:
+            type: str
+            required: true
+            choices: [en-us]
+      audiobookshelf_backup_cron:
+        type: str
+        required: false
+        choices: ['0 3 * * *']
+      audiobookshelf_backup_retention:
+        type: int
+        required: false
+        choices: [7]
+      audiobookshelf_backup_container_path:
+        type: str
+        required: false
+        choices: [/metadata/backups]
+      audiobookshelf_backup_host_path:
+        type: str
+        required: false
+        choices: [/volume1/Docker/audiobookshelf/backups]
       audiobookshelf_library_name:
         type: str
         required: false

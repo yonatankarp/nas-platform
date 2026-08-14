@@ -204,6 +204,12 @@
   retries: 20
   delay: 3
 
+- name: Synchronize managed ntfy account subscriptions
+  ansible.builtin.include_tasks: managed_users.yml
+  vars:
+    ntfy_managed_users_phase: subscription_sync
+  when: not ansible_check_mode
+
 - name: Verify managed ntfy users and declared access
   ansible.builtin.include_tasks:
     file: managed_users.yml

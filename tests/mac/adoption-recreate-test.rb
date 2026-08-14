@@ -29,9 +29,10 @@ Dir.mktmpdir("adoption-recreate-test-") do |temporary|
   root = File.realpath(temporary)
   mac = File.join(root, "tests/mac")
   hooks = File.join(mac, "hooks/fixtures-recreate")
+  verify_hooks = File.join(mac, "hooks/verify")
   bin = File.join(root, "bin")
   docker_root = File.join(root, "docker")
-  FileUtils.mkdir_p([hooks, bin, docker_root], mode: 0o700)
+  FileUtils.mkdir_p([hooks, verify_hooks, bin, docker_root], mode: 0o700)
   Dir.glob(File.join(SOURCE, "*.sh")).each { |source| FileUtils.cp(source, hooks, preserve: true) }
   FileUtils.cp(File.join(__dir__, "lib.sh"), mac, preserve: true)
 
@@ -64,6 +65,10 @@ Dir.mktmpdir("adoption-recreate-test-") do |temporary|
   executable(File.join(mac, "adoption-stop-targets.sh"), <<~'SH')
     #!/bin/sh
     printf '%s\n' "${CURRENT_STACK:?}" >> "${STOP_LOG:?}"
+  SH
+  executable(File.join(verify_hooks, "15-ntfy.sh"), <<~'SH')
+    #!/bin/sh
+    printf 'contract:%s\n' "${CURRENT_STACK:?}" >> "${ORDER_LOG:?}"
   SH
   %w[beszel ntfy dozzle audiobookshelf komga tinymediamanager jellyfin immich paperless].each do |service|
     executable(File.join(mac, "run-#{service}-contract.sh"), <<~'SH')
@@ -104,7 +109,7 @@ Dir.mktmpdir("adoption-recreate-test-") do |temporary|
     failures << "#{hook_name} did not invoke Docker exactly once" unless calls.length == calls_before + 1
     failures << "#{hook_name} Compose command differs" unless calls.last == expected
     expected_order = ["docker:#{project_suffix}", "attest:#{project_suffix}"]
-    expected_order << "contract:#{project_suffix}" unless project_suffix == "ntfy"
+    expected_order << "contract:#{project_suffix}"
     order = File.file?(order_log) ? File.readlines(order_log, chomp: true).drop(order_before) : []
     failures << "#{hook_name} recreation order differs" unless order == expected_order
   end

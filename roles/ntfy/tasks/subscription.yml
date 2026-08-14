@@ -1,0 +1,109 @@
+---
+- name: Create missing managed ntfy account subscriptions
+  ansible.builtin.uri:
+    url: "{{ ntfy_account_subscription_api }}"
+    method: POST
+    url_username: "{{ ntfy_subscription_user.username }}"
+    url_password: "{{ ntfy_subscription_user.password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      base_url: "{{ ntfy_base_url }}"
+      topic: nas-critical
+    return_content: true
+    status_code: [200, 409]
+  register: ntfy_subscription_create
+  changed_when: ntfy_subscription_create.status == 200
+  no_log: true
+
+- name: Validate successful managed ntfy subscription create responses
+  ansible.builtin.assert:
+    that:
+      - ntfy_subscription_create.json is mapping
+      - >-
+        ntfy_subscription_create.json.keys() | list | sort ==
+        ['base_url', 'display_name', 'topic']
+      - ntfy_subscription_create.json.base_url is string
+      - ntfy_subscription_create.json.topic is string
+      - >-
+        ntfy_subscription_create.json.display_name is string or
+        ntfy_subscription_create.json.display_name is none
+      - ntfy_subscription_create.json.base_url == ntfy_base_url
+      - ntfy_subscription_create.json.topic == 'nas-critical'
+    fail_msg: ntfy returned an unsupported account-subscription create response.
+  when: ntfy_subscription_create.status == 200
+  no_log: true
+
+- name: Validate provisional managed ntfy duplicate-subscription conflicts
+  ansible.builtin.assert:
+    that:
+      - ntfy_subscription_create.json is mapping
+      - >-
+        ntfy_subscription_create.json.keys() | list | sort ==
+        ['code', 'error', 'http']
+      - ntfy_subscription_create.json.code is integer
+      - ntfy_subscription_create.json.http is integer
+      - ntfy_subscription_create.json.error is string
+      - ntfy_subscription_create.json.code == 40903
+      - ntfy_subscription_create.json.http == 409
+      - >-
+        ntfy_subscription_create.json.error ==
+        'conflict: topic subscription already exists'
+    fail_msg: ntfy returned an unsupported account-subscription conflict.
+  when: ntfy_subscription_create.status == 409
+  no_log: true
+
+- name: Re-read managed ntfy accounts after subscription creation
+  ansible.builtin.uri:
+    url: "{{ ntfy_account_api }}"
+    method: GET
+    url_username: "{{ ntfy_subscription_user.username }}"
+    url_password: "{{ ntfy_subscription_user.password }}"
+    force_basic_auth: true
+    return_content: true
+    status_code: [200]
+  register: ntfy_subscription_post_read
+  changed_when: false
+  no_log: true
+
+- name: Validate authoritative managed ntfy account response after creation
+  ansible.builtin.assert:
+    that:
+      - ntfy_subscription_post_read.json is mapping
+      - >-
+        ntfy_subscription_post_read.json.username | default('') ==
+        ntfy_subscription_user.username
+      - ntfy_subscription_post_read.json.role | default('') == 'user'
+      - ntfy_subscription_post_read.json.subscriptions | default([]) is sequence
+      - ntfy_subscription_post_read.json.subscriptions | default([]) is not string
+      - ntfy_subscription_post_read.json.subscriptions | default([]) is not mapping
+    fail_msg: >-
+      The authoritative ntfy account re-read has an unsupported account schema.
+  no_log: true
+
+- name: Validate authoritative managed ntfy subscription entries after creation
+  ansible.builtin.assert:
+    that:
+      - item is mapping
+      - item.keys() | list | sort == ['base_url', 'display_name', 'topic']
+      - item.base_url is string
+      - item.topic is string
+      - item.display_name is string or item.display_name is none
+    fail_msg: >-
+      The authoritative ntfy account re-read has an unsupported subscription schema.
+  loop: "{{ ntfy_subscription_post_read.json.subscriptions | default([]) }}"
+  loop_control:
+    label: ntfy-managed-user:subscription
+  no_log: true
+
+- name: Validate synchronized managed ntfy account subscriptions
+  ansible.builtin.assert:
+    that:
+      - >-
+        ntfy_subscription_post_read.json.subscriptions | default([]) |
+        selectattr('base_url', 'equalto', ntfy_base_url) |
+        selectattr('topic', 'equalto', 'nas-critical') | list | length == 1
+    fail_msg: >-
+      The authoritative ntfy account re-read did not contain exactly one
+      synchronized nas-critical subscription.
+  no_log: true

@@ -2,11 +2,25 @@
 # Focused regression checks for predicate-sensitive Dozzle proof output.
 
 require "open3"
+require "fileutils"
 require "tmpdir"
+require "yaml"
 
 ROOT = File.expand_path("..", __dir__)
 CONTRACT = File.join(ROOT, "tests", "contracts", "dozzle.sh")
 ROLE = File.join(ROOT, "roles", "dozzle", "tasks", "main.yml")
+PAPERLESS_COMPOSE = File.join("services", "paperless-ngx", "compose.yml")
+BASE_COMPOSE_FILES = %w[
+  services/audiobookshelf/compose.yml
+  services/beszel/compose.yml
+  services/dozzle/compose.yml
+  services/immich/compose.yml
+  services/jellyfin/compose.yml
+  services/komga/compose.yml
+  services/ntfy/compose.yml
+  services/paperless-ngx/compose.yml
+  services/tinymediamanager/compose.yml
+].freeze
 failures = []
 
 MARKERS = {
@@ -45,6 +59,106 @@ def run_assertion(mode, output)
     File.write(path, output, mode: "w", perm: 0o600)
     Open3.capture3(CONTRACT, mode, path)
   end
+end
+
+def run_static(repo_root)
+  Open3.capture3({"PLATFORM_CONTRACT_REPO_DIR" => repo_root}, CONTRACT, "static")
+end
+
+def with_copied_repo
+  Dir.mktmpdir("nas-platform-dozzle-quality-") do |directory|
+    repo = File.join(directory, "repo")
+    FileUtils.cp_r(ROOT, repo)
+    yield repo
+  end
+end
+
+def add_name_labels!(repo)
+  BASE_COMPOSE_FILES.each do |relative_path|
+    path = File.join(repo, relative_path)
+    raise "base Compose fixture is unavailable" unless File.file?(path) && !File.symlink?(path)
+
+    compose = File.read(path)
+    services = YAML.safe_load(compose, aliases: true).fetch("services").keys.map(&:to_s)
+    services.reverse_each do |service|
+      header = /^  #{Regexp.escape(service)}:\s*$/
+      starts = compose.enum_for(:scan, header).map { Regexp.last_match.begin(0) }
+      raise "base Compose service fixture differs" unless starts.one?
+
+      service_start = starts.fetch(0)
+      service_end = compose.index(/^  [A-Za-z0-9_-]+:\s*$/, service_start + 1) || compose.length
+      definition = compose[service_start...service_end]
+      expected_label = "      dev.dozzle.name: #{service}\n"
+      name_labels = definition.lines.grep(/^      dev\.dozzle\.name:/)
+      if name_labels.empty?
+        if definition.scan(/^    labels:\s*$/).one?
+          definition = definition.sub(/^    labels:\s*$\n/, "    labels:\n#{expected_label}")
+        else
+          container_names = definition.scan(/^    container_name:.*$/)
+          raise "base Compose container fixture differs" unless container_names.one?
+
+          definition = definition.sub(
+            /^(    container_name:.*\n)/,
+            "\\1    labels:\n#{expected_label}"
+          )
+        end
+      elsif name_labels != [expected_label]
+        raise "base Compose name fixture differs"
+      end
+      compose[service_start...service_end] = definition
+    end
+    File.write(path, compose)
+  end
+end
+
+def with_label_complete_repo
+  with_copied_repo do |repo|
+    add_name_labels!(repo)
+    yield repo
+  end
+end
+
+def mutate_gotenberg_name!(repo, mutation)
+  path = File.join(repo, PAPERLESS_COMPOSE)
+  compose = File.read(path)
+  service_start = compose.index("\n  gotenberg:\n")
+  service_end = service_start && compose.index("\n  tika:\n", service_start)
+  raise "paperless gotenberg fixture is absent" unless service_start && service_end
+
+  service = compose[service_start...service_end]
+  label = "      dev.dozzle.name: gotenberg\n"
+  raise "paperless gotenberg name fixture differs" unless service.scan(label).one?
+
+  replacement = case mutation
+                when :missing then ""
+                when :wrong then "      dev.dozzle.name: paperless-gotenberg\n"
+                when :duplicate then label * 2
+                else raise "unknown paperless gotenberg mutation"
+                end
+  compose[service_start...service_end] = service.sub(label, replacement)
+  File.write(path, compose)
+end
+
+def check_name_mutation(failures, mutation, expected_diagnostic)
+  with_label_complete_repo do |repo|
+    mutate_gotenberg_name!(repo, mutation)
+    _stdout, stderr, status = run_static(repo)
+    check(failures, !status.success?, "Dozzle static contract accepted #{mutation} gotenberg name label")
+    check(failures, stderr == expected_diagnostic,
+          "Dozzle static contract #{mutation} gotenberg diagnostic differs")
+  end
+rescue RuntimeError, SystemCallError => error
+  failures << "Dozzle #{mutation} gotenberg mutation fixture failed: #{error.message}"
+end
+
+def check_label_complete_fixture(failures)
+  with_label_complete_repo do |repo|
+    _stdout, stderr, status = run_static(repo)
+    check(failures, status.success?,
+          "Dozzle label-complete fixture failed: #{stderr.lines.first&.strip}")
+  end
+rescue KeyError, Psych::Exception, RuntimeError, SystemCallError => error
+  failures << "Dozzle label-complete fixture setup failed: #{error.message}"
 end
 
 %w[assert-check-mixed-output assert-check-missing-output].each_with_index do |mode, index|
@@ -91,6 +205,25 @@ end
 check(failures,
       contract.include?('rule.dig("dispatcher", "id").to_s == dispatcher["id"].to_s'),
       "Dozzle contract does not normalize opaque dispatcher IDs as strings")
+
+_stdout, stderr, status = run_static(ROOT)
+check(failures, status.success?, "Dozzle static contract rejected effective Compose labels: #{stderr.lines.first&.strip}")
+check_label_complete_fixture(failures)
+check_name_mutation(
+  failures,
+  :missing,
+  "Dozzle contract failed: paperless-ngx base gotenberg name label is absent\n"
+)
+check_name_mutation(
+  failures,
+  :wrong,
+  "Dozzle contract failed: paperless-ngx base gotenberg name label differs\n"
+)
+check_name_mutation(
+  failures,
+  :duplicate,
+  "Dozzle contract failed: base Compose has duplicate dev.dozzle.name labels\n"
+)
 
 role = File.read(ROLE)
 check(failures, !role.include?("dispatcher.id | int"),

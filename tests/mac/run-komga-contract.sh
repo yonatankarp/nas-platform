@@ -13,6 +13,13 @@ legacy_fixture_unset_controls
 : "${PLATFORM_REPORT_ROOT:?PLATFORM_REPORT_ROOT is required}"
 : "${PLATFORM_KOMGA_PORT:?PLATFORM_KOMGA_PORT is required}"
 
+if [ "${1-}" = seed ] && [ "${PLATFORM_PROOF_LANE:-}" = adoption ] &&
+    [ "${PLATFORM_ADOPTION_PROBE_TARGET:-false}" != true ]; then
+  : "${PLATFORM_MAC_SANDBOX:?PLATFORM_MAC_SANDBOX is required}"
+  PLATFORM_KOMGA_CONFIG_PATH=$PLATFORM_MAC_SANDBOX/legacy/komga/config
+  export PLATFORM_KOMGA_CONFIG_PATH
+fi
+
 PLATFORM_CONTRACT_VAULT_FILE=$PLATFORM_MAC_VAULT_FILE \
 PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=$PLATFORM_MAC_VAULT_PASSWORD_FILE \
   exec "$mac_repo_dir/tests/contracts/komga.sh" "$@"

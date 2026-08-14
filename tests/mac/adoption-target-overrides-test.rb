@@ -12,6 +12,7 @@ COMMITTED_BINDINGS = <<~BINDINGS.lines(chomp: true).map { |line| line.split("\t"
   audiobookshelf\tlegacy/audiobookshelf/config\t/config
   audiobookshelf\tlegacy/audiobookshelf/metadata\t/metadata
   audiobookshelf\tlegacy/audiobookshelf/media\t/audiobooks
+  audiobookshelf\tlegacy/audiobookshelf/backups\t/metadata/backups
   beszel\tlegacy/beszel/hub\t/beszel_data
   beszel\tlegacy/beszel/agent\t/var/lib/beszel-agent
   beszel\tlegacy/beszel/volume1\t/extra-filesystems/volume1
@@ -34,6 +35,7 @@ COMMITTED_BINDINGS = <<~BINDINGS.lines(chomp: true).map { |line| line.split("\t"
   paperless-ngx\tlegacy/paperless-ngx/redis\t/data
   paperless-ngx\tlegacy/paperless-ngx/postgres\t/var/lib/postgresql
   paperless-ngx\tlegacy/paperless-ngx/data\t/usr/src/paperless/data
+  paperless-ngx\tlegacy/paperless-ngx/cache\t/usr/src/paperless/cache
   paperless-ngx\tlegacy/paperless-ngx/export\t/usr/src/paperless/export
   paperless-ngx\tlegacy/paperless-ngx/tessdata/heb.traineddata\t/usr/share/tesseract-ocr/5/tessdata/heb.traineddata
   paperless-ngx\tlegacy/paperless-ngx/media\t/usr/src/paperless/media

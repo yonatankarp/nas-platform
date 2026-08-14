@@ -18,6 +18,18 @@ argument_specs:
       immich_admin_name:
         type: str
         required: false
+      immich_managed_user_preference_profile_default:
+        type: str
+        required: false
+      immich_managed_user_preference_profile_by_email:
+        type: dict
+        required: false
+      immich_managed_user_preference_overrides:
+        type: dict
+        required: false
+      immich_managed_user_preference_profiles:
+        type: dict
+        required: false
       vault_immich_admin_email:
         type: str
         required: true

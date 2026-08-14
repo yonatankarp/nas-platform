@@ -12,22 +12,49 @@ argument_specs:
       jellyfin_port:
         type: int
         required: false
-      jellyfin_library_name:
+      jellyfin_admin_username:
         type: str
         required: false
-      jellyfin_library_collection_type:
+      jellyfin_server_name:
         type: str
         required: false
-      jellyfin_library_path_infos:
+      jellyfin_admin_avatar_sha256:
+        type: str
+        required: false
+      jellyfin_libraries:
         type: list
         elements: dict
         required: false
       jellyfin_library_options:
         type: dict
         required: false
+      jellyfin_encoding_profiles:
+        type: dict
+        required: false
+      jellyfin_plugin_repositories:
+        type: list
+        elements: dict
+        required: false
+      jellyfin_plugins:
+        type: list
+        elements: str
+        required: false
+      jellyfin_plugin_packages:
+        type: list
+        elements: dict
+        required: false
+      jellyfin_opensubtitles_plugin_id:
+        type: str
+        required: false
       vault_jellyfin_admin_username:
         type: str
         required: true
       vault_jellyfin_admin_password:
+        type: str
+        required: true
+      vault_jellyfin_opensubtitles_username:
+        type: str
+        required: true
+      vault_jellyfin_opensubtitles_password:
         type: str
         required: true

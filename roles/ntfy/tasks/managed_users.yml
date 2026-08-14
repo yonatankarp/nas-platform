@@ -83,16 +83,13 @@
       loop_control:
         label: ntfy-managed-access
 
-- name: Require supported ntfy administrator access semantics
+- name: Require managed ntfy accounts to remain nonadministrative
   ansible.builtin.assert:
     that:
-      - >-
-        item.role != 'admin' or
-        item.access | map(attribute='permission') |
-        difference(['read-write']) | length == 0
+      - item.role == 'user'
     fail_msg: >-
-      Managed ntfy administrators may declare only effective read-write topic
-      access; values are redacted.
+      Managed ntfy accounts are interactive nonadministrative users; values
+      are redacted.
   loop: "{{ vault_managed_ntfy_users }}"
   loop_control:
     label: ntfy-managed-user
@@ -269,6 +266,241 @@
     ntfy_auth_access: "{{ ntfy_auth_access_entries | join(',') }}"
     ntfy_auth_tokens: "{{ ntfy_auth_token_entries | join(',') }}"
   when: ntfy_managed_users_phase == 'provision'
+  no_log: true
+
+- name: Validate managed ntfy subscription eligibility
+  ansible.builtin.assert:
+    that:
+      - >-
+        vault_managed_ntfy_users | map(attribute='username') | map('trim') |
+        map('lower') | list | unique | length == vault_managed_ntfy_users | length
+      - item.role == 'user'
+      - item.access is sequence
+      - item.access is not string
+      - item.access is not mapping
+    fail_msg: >-
+      Managed ntfy subscription eligibility is invalid; no account
+      subscription was changed.
+  loop: "{{ vault_managed_ntfy_users }}"
+  loop_control:
+    label: ntfy-managed-user:nas-critical
+  when:
+    - ntfy_managed_users_phase in ['subscription_sync', 'verify']
+    - not ansible_check_mode
+  no_log: true
+
+- name: Validate managed ntfy subscription ACL shape
+  ansible.builtin.assert:
+    that:
+      - item.1 is mapping
+      - item.1.keys() | list | sort == ['permission', 'topic']
+      - item.1.topic is string
+      - item.1.permission is string
+      - item.1.topic is match('^[-_A-Za-z0-9]{1,64}$')
+      - item.1.permission in ['read-only', 'write-only', 'read-write', 'deny']
+    fail_msg: >-
+      Managed ntfy subscription ACL data is invalid; no account subscription
+      was changed.
+  loop: "{{ vault_managed_ntfy_users | subelements('access') }}"
+  loop_control:
+    label: ntfy-managed-access
+  when:
+    - ntfy_managed_users_phase in ['subscription_sync', 'verify']
+    - not ansible_check_mode
+  no_log: true
+
+- name: Initialize eligible managed ntfy subscription accounts
+  ansible.builtin.set_fact:
+    ntfy_subscription_eligible_users: []
+  when:
+    - ntfy_managed_users_phase in ['subscription_sync', 'verify']
+    - not ansible_check_mode
+  no_log: true
+
+- name: Select eligible managed ntfy subscription accounts
+  ansible.builtin.set_fact:
+    ntfy_subscription_eligible_users: "{{ ntfy_subscription_eligible_users + [item] }}"
+  loop: "{{ vault_managed_ntfy_users }}"
+  loop_control:
+    label: ntfy-managed-user:nas-critical
+  when:
+    - ntfy_managed_users_phase in ['subscription_sync', 'verify']
+    - not ansible_check_mode
+    - item.role == 'user'
+    - >-
+      item.access | selectattr('topic', 'equalto', 'nas-critical') |
+      selectattr('permission', 'in', ['read-only', 'read-write']) | list | length > 0
+  no_log: true
+
+- name: Read all eligible managed ntfy accounts before subscription mutation
+  ansible.builtin.uri:
+    url: "{{ ntfy_account_api }}"
+    method: GET
+    url_username: "{{ item.username }}"
+    url_password: "{{ item.password }}"
+    force_basic_auth: true
+    return_content: true
+    status_code: [200]
+  loop: "{{ ntfy_subscription_eligible_users }}"
+  loop_control:
+    label: ntfy-managed-user:nas-critical
+  register: ntfy_subscription_account_reads
+  when: ntfy_managed_users_phase == 'subscription_sync'
+  changed_when: false
+  no_log: true
+
+- name: Validate all eligible managed ntfy account responses
+  ansible.builtin.assert:
+    that:
+      - item.json is mapping
+      - item.json.username | default('') == item.item.username
+      - item.json.role | default('') == 'user'
+      - item.json.subscriptions | default([]) is sequence
+      - item.json.subscriptions | default([]) is not string
+      - item.json.subscriptions | default([]) is not mapping
+    fail_msg: >-
+      An eligible managed ntfy account response has an unsupported schema; no
+      account subscription was changed.
+  loop: "{{ ntfy_subscription_account_reads.results }}"
+  loop_control:
+    label: ntfy-managed-user:nas-critical
+  when: ntfy_managed_users_phase == 'subscription_sync'
+  no_log: true
+
+- name: Validate eligible managed ntfy subscription response entries
+  ansible.builtin.assert:
+    that:
+      - item.1 is mapping
+      - item.1.keys() | list | sort == ['base_url', 'display_name', 'topic']
+      - item.1.base_url is string
+      - item.1.topic is string
+      - item.1.display_name is string or item.1.display_name is none
+    fail_msg: >-
+      An eligible managed ntfy subscription has an unsupported schema; no
+      account subscription was changed.
+  loop: "{{ ntfy_subscription_account_reads.results | subelements('json.subscriptions', skip_missing=True) }}"
+  loop_control:
+    label: ntfy-managed-user:subscription
+  when: ntfy_managed_users_phase == 'subscription_sync'
+  no_log: true
+
+- name: Refuse duplicate desired ntfy account subscriptions
+  ansible.builtin.assert:
+    that:
+      - >-
+        item.json.subscriptions | default([]) |
+        selectattr('base_url', 'equalto', ntfy_base_url) |
+        selectattr('topic', 'equalto', 'nas-critical') | list | length <= 1
+    fail_msg: >-
+      An eligible managed ntfy account has duplicate nas-critical
+      subscriptions; no account subscription was changed.
+  loop: "{{ ntfy_subscription_account_reads.results }}"
+  loop_control:
+    label: ntfy-managed-user:nas-critical
+  when: ntfy_managed_users_phase == 'subscription_sync'
+  no_log: true
+
+- name: Initialize missing managed ntfy account subscriptions
+  ansible.builtin.set_fact:
+    ntfy_missing_subscription_users: []
+  when: ntfy_managed_users_phase == 'subscription_sync'
+  no_log: true
+
+- name: Select missing managed ntfy account subscriptions
+  ansible.builtin.set_fact:
+    ntfy_missing_subscription_users: "{{ ntfy_missing_subscription_users + [item.item] }}"
+  loop: "{{ ntfy_subscription_account_reads.results }}"
+  loop_control:
+    label: ntfy-managed-user:nas-critical
+  when:
+    - ntfy_managed_users_phase == 'subscription_sync'
+    - >-
+      item.json.subscriptions | default([]) |
+      selectattr('base_url', 'equalto', ntfy_base_url) |
+      selectattr('topic', 'equalto', 'nas-critical') | list | length == 0
+  no_log: true
+
+- name: Reconcile each missing managed ntfy account subscription atomically
+  ansible.builtin.include_tasks: subscription.yml
+  loop: "{{ ntfy_missing_subscription_users }}"
+  loop_control:
+    loop_var: ntfy_subscription_user
+    label: ntfy-managed-user:nas-critical
+  when: ntfy_managed_users_phase == 'subscription_sync'
+  no_log: true
+
+- name: Read eligible managed ntfy accounts for subscription verification
+  ansible.builtin.uri:
+    url: "{{ ntfy_account_api }}"
+    method: GET
+    url_username: "{{ item.username }}"
+    url_password: "{{ item.password }}"
+    force_basic_auth: true
+    return_content: true
+    status_code: [200]
+  loop: "{{ ntfy_subscription_eligible_users }}"
+  loop_control:
+    label: ntfy-managed-user:nas-critical
+  register: ntfy_subscription_verify_reads
+  when:
+    - ntfy_managed_users_phase == 'verify'
+    - not ansible_check_mode
+  changed_when: false
+  no_log: true
+
+- name: Validate eligible managed ntfy account responses for verification
+  ansible.builtin.assert:
+    that:
+      - item.json is mapping
+      - item.json.username | default('') == item.item.username
+      - item.json.role | default('') == 'user'
+      - item.json.subscriptions | default([]) is sequence
+      - item.json.subscriptions | default([]) is not string
+      - item.json.subscriptions | default([]) is not mapping
+    fail_msg: >-
+      An eligible managed ntfy account has an unsupported account schema.
+  loop: "{{ ntfy_subscription_verify_reads.results }}"
+  loop_control:
+    label: ntfy-managed-user:nas-critical
+  when:
+    - ntfy_managed_users_phase == 'verify'
+    - not ansible_check_mode
+  no_log: true
+
+- name: Verify managed ntfy account subscription entry schemas
+  ansible.builtin.assert:
+    that:
+      - item.1 is mapping
+      - item.1.keys() | list | sort == ['base_url', 'display_name', 'topic']
+      - item.1.base_url is string
+      - item.1.topic is string
+      - item.1.display_name is string or item.1.display_name is none
+    fail_msg: >-
+      An eligible managed ntfy account has an unsupported subscription schema.
+  loop: "{{ ntfy_subscription_verify_reads.results | subelements('json.subscriptions', skip_missing=True) }}"
+  loop_control:
+    label: ntfy-managed-user:subscription
+  when:
+    - ntfy_managed_users_phase == 'verify'
+    - not ansible_check_mode
+  no_log: true
+
+- name: Verify synchronized managed ntfy account subscriptions
+  ansible.builtin.assert:
+    that:
+      - >-
+        item.json.subscriptions | default([]) |
+        selectattr('base_url', 'equalto', ntfy_base_url) |
+        selectattr('topic', 'equalto', 'nas-critical') | list | length == 1
+    fail_msg: >-
+      An eligible managed ntfy account does not have exactly one synchronized
+      nas-critical subscription.
+  loop: "{{ ntfy_subscription_verify_reads.results }}"
+  loop_control:
+    label: ntfy-managed-user:nas-critical
+  when:
+    - ntfy_managed_users_phase == 'verify'
+    - not ansible_check_mode
   no_log: true
 
 - name: Basic-authenticate each managed ntfy user

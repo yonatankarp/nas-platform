@@ -5,6 +5,27 @@ audiobookshelf_compose_project_name: >-
   {{ (platform_project_name ~ '-audiobookshelf')
      if platform_project_name | default('') | length > 0 else 'audiobookshelf' }}
 
+audiobookshelf_owned_server_settings:
+  storeCoverWithItem: true
+  storeMetadataWithItem: true
+  sortingIgnorePrefix: false
+  scannerParseSubtitle: true
+  scannerFindCovers: true
+  scannerCoverProvider: google
+  scannerPreferMatchedMetadata: true
+  scannerDisableWatcher: false
+  chromecastEnabled: true
+  allowIframe: true
+  homeBookshelfView: 1
+  bookshelfView: 1
+  dateFormat: dd/MM/yyyy
+  timeFormat: HH:mm
+  language: en-us
+audiobookshelf_backup_cron: "0 3 * * *"
+audiobookshelf_backup_retention: 7
+audiobookshelf_backup_container_path: /metadata/backups
+audiobookshelf_backup_host_path: /volume1/Docker/audiobookshelf/backups
+
 audiobookshelf_library_name: Audiobooks
 audiobookshelf_library_folders:
   - path: /audiobooks

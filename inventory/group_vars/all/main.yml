@@ -11,6 +11,51 @@ paperless_ai_enabled: false
 paperless_ai_llm_endpoint: http://192.0.2.1:11434
 paperless_ai_llm_model: gemma3:4b
 
+# Managed Immich user preferences are nonsecret policy. Every encrypted managed
+# identity uses this profile unless its email selects another declared profile;
+# per-email overrides may replace only leaves in the pinned v3.1.0 schema.
+immich_managed_user_preference_profile_default: standard
+immich_managed_user_preference_profile_by_email: {}
+immich_managed_user_preference_overrides: {}
+immich_managed_user_preference_profiles:
+  standard:
+    albums:
+      defaultAssetOrder: desc
+    avatar:
+      color: primary
+    cast:
+      gCastEnabled: false
+    download:
+      archiveSize: 4294967296
+      includeEmbeddedVideos: false
+    emailNotifications:
+      enabled: true
+      albumInvite: true
+      albumUpdate: true
+    folders:
+      enabled: false
+      sidebarWeb: false
+    memories:
+      enabled: true
+      duration: 5
+    people:
+      enabled: true
+      sidebarWeb: false
+      minimumFaces: 3
+    purchase:
+      showSupportBadge: true
+      hideBuyButtonUntil: "2022-02-12T00:00:00.000Z"
+    ratings:
+      enabled: false
+    recentlyAdded:
+      sidebarWeb: false
+    sharedLinks:
+      enabled: true
+      sidebarWeb: false
+    tags:
+      enabled: false
+      sidebarWeb: false
+
 # Immutable deployments assembled from the controller checkout. Service roles
 # consume only the current release, never a repository checkout on the target.
 platform_compose_kind: "{{ platform_kind }}"
@@ -41,14 +86,20 @@ nas_compose_minimum: "2.18.0"
 # claiming ownership, which is required under the media root where the NAS owns
 # the files and access is granted through its own permission controls.
 nas_storage:
-  # Audiobookshelf. The database and metadata are critical application state;
-  # audiobook files remain NAS-owned user media mounted read-only.
+  # Audiobookshelf. The database, metadata, and automatic restore backups are
+  # critical application state; audiobook files remain NAS-owned user media
+  # mounted read-only.
   - path: "{{ nas_docker_root }}/audiobookshelf/config"
     owner: "{{ nas_uid }}"
     group: "{{ nas_gid }}"
     mode: "0755"
     recovery: critical
   - path: "{{ nas_docker_root }}/audiobookshelf/metadata"
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0755"
+    recovery: critical
+  - path: "{{ nas_docker_root }}/audiobookshelf/backups"
     owner: "{{ nas_uid }}"
     group: "{{ nas_gid }}"
     mode: "0755"
@@ -163,13 +214,13 @@ nas_storage:
     recovery: cache
   - path: "{{ nas_media_root }}/Documents/archive"
     mode: "0755"
-    recovery: user
+    recovery: critical
   - path: "{{ nas_media_root }}/Documents/inbox"
     mode: "0755"
-    recovery: user
+    recovery: critical
   - path: "{{ nas_media_root }}/Documents/export"
     mode: "0755"
-    recovery: user
+    recovery: critical
 
   # Dozzle authentication and notification configuration.
   - path: "{{ nas_docker_root }}/dozzle/data"

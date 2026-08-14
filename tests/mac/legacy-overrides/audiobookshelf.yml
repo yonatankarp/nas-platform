@@ -8,3 +8,4 @@ services:
       - ${PLATFORM_MAC_SANDBOX:?}/legacy/audiobookshelf/config:/config
       - ${PLATFORM_MAC_SANDBOX:?}/legacy/audiobookshelf/metadata:/metadata
       - ${PLATFORM_MAC_SANDBOX:?}/legacy/audiobookshelf/media:/audiobooks:ro
+      - ${PLATFORM_MAC_SANDBOX:?}/legacy/audiobookshelf/backups:/metadata/backups

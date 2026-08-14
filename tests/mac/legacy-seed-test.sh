@@ -234,6 +234,7 @@ case $service:$mode in
     ;;
   komga:seed)
     [ "$PLATFORM_KOMGA_LIBRARY_PATH" = "$PLATFORM_MAC_SANDBOX/legacy/komga/library" ] || exit 44
+    [ "$PLATFORM_KOMGA_CONFIG_PATH" = "$PLATFORM_MAC_SANDBOX/legacy/komga/config" ] || exit 60
     [ "$PLATFORM_FIXTURE_COMPOSE_SERVICE" = komga ] || exit 45
     ;;
   tinymediamanager:seed)
@@ -289,6 +290,7 @@ run_seed() {
     PLATFORM_PROJECT_NAME=nas-platform-mac-lgcy42 \
     PLATFORM_MAC_VAULT_FILE="$temporary_root/deployment-vault.yml" \
     PLATFORM_MAC_VAULT_PASSWORD_FILE="$temporary_root/deployment-password" \
+    PLATFORM_MAC_FIXTURE_VARS_FILE="$temporary_root/immich-fixture-vars.yml" \
     PLATFORM_LEGACY_FIXTURE_DRIVER="$sandbox/fake-fixture-driver.sh" \
     PLATFORM_AUDIOBOOKSHELF_PORT=31001 PLATFORM_BESZEL_PORT=31002 \
     PLATFORM_DOZZLE_PORT=31003 PLATFORM_IMMICH_PORT=31004 PLATFORM_JELLYFIN_PORT=31005 \
@@ -300,6 +302,9 @@ printf '%s\n%s\n' '$ANSIBLE_VAULT;1.1;AES256' 'tmm-secret-canary' \
   > "$temporary_root/deployment-vault.yml"
 printf '%s\n' disposable > "$temporary_root/deployment-password"
 chmod 0600 "$temporary_root/deployment-vault.yml" "$temporary_root/deployment-password"
+printf '%s\n' 'immich_managed_user_preference_profile_by_email: {}' \
+  > "$temporary_root/immich-fixture-vars.yml"
+chmod 0600 "$temporary_root/immich-fixture-vars.yml"
 
 parity_document=$temporary_root/parity-document.yml
 ruby -ryaml - "$repo_dir/config/portainer-parity.yml" "$parity_document" <<'RUBY'
@@ -400,6 +405,10 @@ unlink "$sandbox/legacy/nas-platform"
 
 seed_output=$temporary_root/seed-output
 run_seed > "$seed_output"
+grep -F "${tab}{\"komga_library_name\":\"Books\"}${tab}--tags${tab}komga" \
+  "$log" >/dev/null || fail 'legacy Komga seed did not pin the pre-rename Books library'
+grep -F "@$temporary_root/immich-fixture-vars.yml" "$log" >/dev/null ||
+  fail 'legacy managed-user seeding omitted the protected Immich fixture policy'
 [ -f "$temporary_root/ntfy-prerequisites" ] ||
   fail 'ntfy prerequisite state was not established before provisioning'
 [ -f "$sandbox/legacy/nas-platform/runtime/services/ntfy/.env" ] ||

@@ -72,6 +72,7 @@
       - -c
       - "{{ lookup('ansible.builtin.file', role_path ~ '/files/validate_target.py') }}"
       - "{{ nas_docker_root }}"
+      - "{{ nas_media_root }}"
       - "{{ platform_release_dir }}"
       - "{{ platform_current_dir }}"
       - "{{ platform_deploy_root }}/.current-{{ platform_release_id }}"

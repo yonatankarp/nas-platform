@@ -1,0 +1,66 @@
+---
+- name: Inspect Jellyfin container availability for a check-mode QSV proof
+  ansible.builtin.command:
+    argv: [docker, container, inspect, jellyfin]
+  register: jellyfin_qsv_container_info
+  when:
+    - platform_kind == 'nas'
+    - >-
+      not ((platform_compose_kind | default('') == 'integration') and
+           (deployment_bundle_test_mode | default(false) | bool))
+    - ansible_check_mode
+  changed_when: false
+  check_mode: false
+  failed_when: jellyfin_qsv_container_info.rc | int not in [0, 1]
+  no_log: true
+
+- name: Report planned Jellyfin QSV hardware-device proof
+  ansible.builtin.debug:
+    msg: JELLYFIN_PLAN_QSV_PROBE
+  when:
+    - platform_kind == 'nas'
+    - >-
+      not ((platform_compose_kind | default('') == 'integration') and
+           (deployment_bundle_test_mode | default(false) | bool))
+    - ansible_check_mode
+    - jellyfin_qsv_container_info.rc | default(1) | int == 1
+  changed_when: false
+
+- name: Probe the Jellyfin QSV hardware device
+  community.docker.docker_compose_v2_exec:
+    project_src: "{{ platform_current_dir }}/services/jellyfin"
+    project_name: "{{ jellyfin_compose_project_name }}"
+    files: "{{ jellyfin_compose_files }}"
+    env_files: ["{{ platform_runtime_dir }}/services/jellyfin/.env"]
+    service: jellyfin
+    argv:
+      - /usr/lib/jellyfin-ffmpeg/ffmpeg
+      - -hide_banner
+      - -loglevel
+      - error
+      - -init_hw_device
+      - vaapi=va:/dev/dri/renderD128,driver=iHD
+      - -init_hw_device
+      - qsv=qs@va
+      - -filter_hw_device
+      - qs
+      - -f
+      - lavfi
+      - -i
+      - color=size=16x16:duration=0.01
+      - -frames:v
+      - "1"
+      - -f
+      - null
+      - "-"
+    tty: false
+  when:
+    - platform_kind == 'nas'
+    - >-
+      not ((platform_compose_kind | default('') == 'integration') and
+           (deployment_bundle_test_mode | default(false) | bool))
+    - >-
+      not ansible_check_mode or
+      jellyfin_qsv_container_info.rc | default(1) | int == 0
+  changed_when: false
+  check_mode: false

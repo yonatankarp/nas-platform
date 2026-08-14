@@ -53,6 +53,7 @@ EXPECTED_BINDINGS = %w[
   audiobookshelf|legacy/audiobookshelf/config|/config
   audiobookshelf|legacy/audiobookshelf/metadata|/metadata
   audiobookshelf|legacy/audiobookshelf/media|/audiobooks
+  audiobookshelf|legacy/audiobookshelf/backups|/metadata/backups
   beszel|legacy/beszel/hub|/beszel_data
   beszel|legacy/beszel/agent|/var/lib/beszel-agent
   beszel|legacy/beszel/volume1|/extra-filesystems/volume1
@@ -75,6 +76,7 @@ EXPECTED_BINDINGS = %w[
   paperless-ngx|legacy/paperless-ngx/redis|/data
   paperless-ngx|legacy/paperless-ngx/postgres|/var/lib/postgresql
   paperless-ngx|legacy/paperless-ngx/data|/usr/src/paperless/data
+  paperless-ngx|legacy/paperless-ngx/cache|/usr/src/paperless/cache
   paperless-ngx|legacy/paperless-ngx/export|/usr/src/paperless/export
   paperless-ngx|legacy/paperless-ngx/tessdata/heb.traineddata|/usr/share/tesseract-ocr/5/tessdata/heb.traineddata
   paperless-ngx|legacy/paperless-ngx/media|/usr/src/paperless/media

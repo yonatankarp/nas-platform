@@ -22,6 +22,8 @@ argument_specs:
       vault_immich_db_password: {type: str, required: true}
       vault_jellyfin_admin_username: {type: str, required: true}
       vault_jellyfin_admin_password: {type: str, required: true}
+      vault_jellyfin_opensubtitles_username: {type: str, required: true}
+      vault_jellyfin_opensubtitles_password: {type: str, required: true}
       vault_komga_admin_email: {type: str, required: true}
       vault_komga_admin_password: {type: str, required: true}
       vault_ntfy_admin_user: {type: str, required: true}
@@ -118,7 +120,7 @@ argument_specs:
               username: {type: str, required: true}
               password: {type: str, required: true}
               password_hash: {type: str, required: true}
-              role: {type: str, required: true}
+              role: {type: str, required: true, choices: [user]}
               access:
                 type: list
                 elements: dict

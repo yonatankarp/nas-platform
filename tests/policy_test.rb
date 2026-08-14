@@ -66,6 +66,18 @@ check(failures,
         !beszel_contract.include?("iso8601"),
       "Beszel notification proof must poll after a captured ntfy message ID")
 
+policy_runner = File.read(File.join(ROOT, "tests", "validate-policy.sh"))
+%w[
+  ruby\ tests/beszel_telemetry_probe_test.rb
+  ruby\ tests/beszel_telemetry_timeout_test.rb
+  ruby\ tests/beszel_telemetry_ansible_test.rb
+  python3\ tests/beszel_telemetry_module_test.py
+  tests/mac/beszel-telemetry-hook-test.sh
+].each do |command|
+  check(failures, policy_runner.lines.map(&:strip).include?(command.gsub("\\ ", " ")),
+        "validate-policy.sh must run #{command.gsub('\\ ', ' ')}")
+end
+
 mac_run_path = File.join(ROOT, "tests", "mac", "run.sh")
 mac_run = File.file?(mac_run_path) ? File.read(mac_run_path) : ""
 dozzle_tasks_path = File.join(ROOT, "roles", "dozzle", "tasks", "main.yml")
@@ -132,6 +144,8 @@ EXPECTED_VAULT_KEYS = %w[
   vault_immich_db_password
   vault_jellyfin_admin_username
   vault_jellyfin_admin_password
+  vault_jellyfin_opensubtitles_username
+  vault_jellyfin_opensubtitles_password
   vault_komga_admin_email
   vault_komga_admin_password
   vault_ntfy_admin_user
@@ -169,8 +183,12 @@ PLATFORM_CAPABILITIES = %w[
   platform_host_network_available platform_host_network_adapter
   platform_external_integration_checks
 ].freeze
-MACHINE_FACTS = (
-  %w[platform_kind nas_docker_root nas_media_root] + PLATFORM_CAPABILITIES
+PLATFORM_TELEMETRY_POLICY = %w[
+  beszel_required_telemetry_categories beszel_require_gpu_telemetry
+].freeze
+HOST_SCOPED_VARS = (
+  %w[platform_kind nas_docker_root nas_media_root] + PLATFORM_CAPABILITIES +
+    PLATFORM_TELEMETRY_POLICY
 ).freeze
 
 PLATFORM_INVENTORIES.each do |inventory_name, (host_group, host_name, connection, _platform_kind)|
@@ -202,7 +220,7 @@ PLATFORM_INVENTORIES.each do |inventory_name, (host_group, host_name, connection
 end
 
 shared_vars = YAML.safe_load_file(File.join(ROOT, "inventory", "group_vars", "all", "main.yml"))
-shared_machine_facts = shared_vars.keys & MACHINE_FACTS
+shared_machine_facts = shared_vars.keys & HOST_SCOPED_VARS
 check(failures, shared_machine_facts.empty?,
       "machine facts must not be all-group variables: #{shared_machine_facts.join(', ')}")
 
@@ -224,6 +242,10 @@ PLATFORM_INVENTORIES.values.map { |values| [values[0], values[3]] }.uniq.each do
   PLATFORM_CAPABILITIES.each do |capability|
     check(failures, host_vars.key?(capability),
           "#{relative_path} must define #{capability}")
+  end
+  PLATFORM_TELEMETRY_POLICY.each do |policy|
+    check(failures, host_vars.key?(policy),
+          "#{relative_path} must define #{policy}")
   end
   %w[
     platform_render_device_available platform_host_network_available
@@ -250,7 +272,7 @@ PLATFORM_INVENTORIES.values.map { |values| [values[0], values[3]] }.uniq.each do
                       else
                         []
                       end
-  unexpected_vars = host_vars.keys - MACHINE_FACTS - mac_runtime_facts
+  unexpected_vars = host_vars.keys - HOST_SCOPED_VARS - mac_runtime_facts
   check(failures, unexpected_vars.empty?,
         "#{relative_path} contains portable configuration: #{unexpected_vars.join(', ')}")
 end
@@ -388,6 +410,56 @@ paperless_options = YAML.safe_load_file(
   check(failures, paperless_options.dig(variable, "type") == "int" &&
                   paperless_options.dig(variable, "required") == false,
         "Paperless argument specs must declare optional integer #{variable}")
+end
+
+expected_immich_preference_profile = {
+  "albums" => { "defaultAssetOrder" => "desc" },
+  "avatar" => { "color" => "primary" },
+  "cast" => { "gCastEnabled" => false },
+  "download" => { "archiveSize" => 4_294_967_296, "includeEmbeddedVideos" => false },
+  "emailNotifications" => { "enabled" => true, "albumInvite" => true, "albumUpdate" => true },
+  "folders" => { "enabled" => false, "sidebarWeb" => false },
+  "memories" => { "enabled" => true, "duration" => 5 },
+  "people" => { "enabled" => true, "sidebarWeb" => false, "minimumFaces" => 3 },
+  "purchase" => {
+    "showSupportBadge" => true,
+    "hideBuyButtonUntil" => "2022-02-12T00:00:00.000Z"
+  },
+  "ratings" => { "enabled" => false },
+  "recentlyAdded" => { "sidebarWeb" => false },
+  "sharedLinks" => { "enabled" => true, "sidebarWeb" => false },
+  "tags" => { "enabled" => false, "sidebarWeb" => false }
+}.freeze
+immich_preference_keys = %w[
+  immich_managed_user_preference_profile_default
+  immich_managed_user_preference_profile_by_email
+  immich_managed_user_preference_overrides
+  immich_managed_user_preference_profiles
+]
+immich_defaults = YAML.safe_load_file(File.join(ROOT, "roles", "immich", "defaults", "main.yml"))
+[shared_vars, immich_defaults].each_with_index do |variables, index|
+  source = index.zero? ? "normal inventory" : "Immich role defaults"
+  check(failures, variables["immich_managed_user_preference_profile_default"] == "standard",
+        "#{source} must select the standard Immich preference profile by default")
+  check(failures, variables["immich_managed_user_preference_profile_by_email"] == {},
+        "#{source} must default Immich per-email profile selection to an empty mapping")
+  check(failures, variables["immich_managed_user_preference_overrides"] == {},
+        "#{source} must default Immich per-email preference overrides to an empty mapping")
+  check(failures,
+        variables.dig("immich_managed_user_preference_profiles", "standard") ==
+          expected_immich_preference_profile,
+        "#{source} standard Immich preference profile differs from the approved v3.1.0 schema")
+end
+
+immich_options = YAML.safe_load_file(
+  File.join(ROOT, "roles", "immich", "meta", "argument_specs.yml")
+).dig("argument_specs", "main", "options")
+immich_preference_keys.each do |key|
+  expected_type = key.end_with?("_default") ? "str" : "dict"
+  check(failures,
+        immich_options.dig(key, "type") == expected_type &&
+          immich_options.dig(key, "required") == false,
+        "Immich argument specs must declare optional #{expected_type} #{key}")
 end
 
 paperless_env_lines = File.readlines(
@@ -621,9 +693,13 @@ check(failures,
       paperless_contract.include?("PDF_MARKER = \"paperlesscontractenglish\""),
       "Paperless contract must define the PDF fixture marker")
 check(failures,
-      paperless_contract.include?("def request(method, path, token: nil, body: nil, expected: [200], parse_json: true)") &&
+      paperless_contract.include?("def request(method, path, token: nil, body: nil, expected: [200], parse_json: true, read_timeout: 60)") &&
       paperless_contract.match?(%r{/preview/.*, token: token, parse_json: false}),
       "Paperless binary preview responses must bypass JSON parsing")
+check(failures,
+      paperless_contract.include?("MAIL_PROBE_READ_TIMEOUT = 180") &&
+      paperless_contract.match?(%r{/api/mail_accounts/test/.*?read_timeout:\s*MAIL_PROBE_READ_TIMEOUT}m),
+      "Paperless synchronous Gmail probe must use its explicit bounded timeout")
 check(failures,
       paperless_contract.match?(root_version_checksum),
       "Paperless checksum verification must select the API v3 root-version checksum")
@@ -698,6 +774,24 @@ end
 # Digest pinning with a human-readable version tag, so Renovate can propose
 # updates and a reader can tell what is deployed.
 IMAGE = %r{\A\S+:[^@\s]+@sha256:[0-9a-f]{64}\z}
+SELECTED_IMAGE_PINS = {
+  ["services/dozzle/compose.yml", "dozzle"] => "docker.io/amir20/dozzle:v10.7.1@sha256:a8441e9d2928cc7b30d0023f5eedbb87ef6e234d87f3be02662bd8f417955b8b",
+  ["services/komga/compose.yml", "komga"] => "docker.io/gotson/komga:1.26.1@sha256:e109902ebebb8a05f633f48d84a2ac7bb1334bf0f6fbc17262a333082c7de44d",
+  ["services/paperless-ngx/compose.yml", "gotenberg"] => "docker.io/gotenberg/gotenberg:8.35.0@sha256:a16a14e1f18a71405624bc028e90d4ef50ea774c352b303639c10bf7b141f760",
+  ["services/tinymediamanager/compose.yml", "tinymediamanager"] => "docker.io/tinymediamanager/tinymediamanager:5.3.1@sha256:bada62a398e3aabe7a67b0e081c40dc08ce74aa86b7ba63e0a34a1bf278146a4",
+  ["services/tinymediamanager/compose.integration.yml", "tinymediamanager"] => "docker.io/tinymediamanager/tinymediamanager:5.3.1@sha256:bada62a398e3aabe7a67b0e081c40dc08ce74aa86b7ba63e0a34a1bf278146a4",
+  ["services/tinymediamanager/compose.mac.yml", "tinymediamanager"] => "docker.io/tinymediamanager/tinymediamanager:5.3.1@sha256:bada62a398e3aabe7a67b0e081c40dc08ce74aa86b7ba63e0a34a1bf278146a4"
+}.freeze
+SUPERSEDED_SELECTED_IMAGE_TAGS = %w[v10.6.14 1.25.0 8.34 5.3.0].freeze
+
+SELECTED_IMAGE_PINS.each do |(relative_path, container), expected_image|
+  image = YAML.safe_load_file(File.join(ROOT, relative_path), aliases: true)
+              .fetch("services").fetch(container).fetch("image")
+  check(failures, image == expected_image,
+        "#{relative_path}/#{container}: selected image pin must match the approved immutable reference")
+  check(failures, SUPERSEDED_SELECTED_IMAGE_TAGS.none? { |tag| image.include?(":#{tag}@") },
+        "#{relative_path}/#{container}: selected image pin must not use a superseded version")
+end
 
 service_dirs.each do |dir|
   name = File.basename(dir)
@@ -740,12 +834,16 @@ service_dirs.each do |dir|
       check(failures, !source.match?(%r{\A/volume\d}),
             "#{label}: volume source #{source} is hardcoded; use ${NAS_DOCKER_ROOT:?} or ${NAS_MEDIA_ROOT:?}")
 
-      next unless source.include?("NAS_DOCKER_ROOT")
+      inventory_source = if source.include?("NAS_DOCKER_ROOT")
+                           source.sub(/\A\$\{NAS_DOCKER_ROOT:\?\}/, "{{ nas_docker_root }}")
+                         elsif source == "${AUDIOBOOKSHELF_BACKUP_PATH:?}"
+                           "{{ nas_docker_root }}/audiobookshelf/backups"
+                         end
+      next unless inventory_source
 
       # Service state must be declared in the storage inventory so host_prep
       # creates it with the right ownership and it gets a recovery class.
-      relative = source.sub(/\A\$\{NAS_DOCKER_ROOT:\?\}/, "")
-      expected = "{{ nas_docker_root }}#{relative}"
+      expected = inventory_source
       declared = declared_paths.include?(expected) ||
                  declared_paths.any? { |p| expected.start_with?(p + "/") }
       check(failures, declared,
@@ -755,17 +853,17 @@ service_dirs.each do |dir|
 end
 
 # Platform Compose files may add capabilities (devices, mounts, profiles, and
-# similar host-specific wiring). The sole image exception selects the immutable
-# amd64 child of tinyMediaManager's canonical multi-platform manifest because
-# that release's arm64 child does not contain its launcher.
-TINYMEDIAMANAGER_CANONICAL_IMAGE = "docker.io/tinymediamanager/tinymediamanager:5.3.0@sha256:e33769b278eefbec646b659342a86a7831869c5a3fa3cca97e7c47f518da4d89"
-TINYMEDIAMANAGER_AMD64_IMAGE = "docker.io/tinymediamanager/tinymediamanager:5.3.0@sha256:ef2b7c248ff2b6b8d30f509f5fa8aaae63508899403f2441da2fd6e2b0a216f6"
+# similar host-specific wiring). tinyMediaManager platform overrides retain the
+# canonical multi-platform manifest and select linux/amd64 through Compose.
+TINYMEDIAMANAGER_IMAGE = SELECTED_IMAGE_PINS.fetch(
+  ["services/tinymediamanager/compose.yml", "tinymediamanager"]
+)
 platform_image_overrides = {
   "services/tinymediamanager/compose.integration.yml" => {
-    "tinymediamanager" => TINYMEDIAMANAGER_AMD64_IMAGE
+    "tinymediamanager" => TINYMEDIAMANAGER_IMAGE
   },
   "services/tinymediamanager/compose.mac.yml" => {
-    "tinymediamanager" => TINYMEDIAMANAGER_AMD64_IMAGE
+    "tinymediamanager" => TINYMEDIAMANAGER_IMAGE
   }
 }
 Dir[File.join(ROOT, "services", "*", "compose.*.yml")].sort.each do |override_path|
@@ -781,8 +879,8 @@ end
 canonical_tmm_image = YAML.safe_load_file(
   File.join(ROOT, "services", "tinymediamanager", "compose.yml"), aliases: true
 ).dig("services", "tinymediamanager", "image")
-check(failures, canonical_tmm_image == TINYMEDIAMANAGER_CANONICAL_IMAGE,
-      "tinyMediaManager canonical image must remain the parent manifest for the allowed amd64 child")
+check(failures, canonical_tmm_image == TINYMEDIAMANAGER_IMAGE,
+      "tinyMediaManager canonical image must remain the approved multi-platform manifest")
 
 # Every role declares its interface, so a missing variable fails before the first
 # task naming the variable rather than midway with a trace.
@@ -840,7 +938,12 @@ validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "te
   ruby\ tests/run_contracts.rb\ --validate-only
   ruby\ tests/database_managed_users_test.rb
   ruby\ tests/database_managed_users_test.rb\ --self-test
+  ruby\ tests/immich_configured_password_test.rb
+  ruby\ tests/immich_user_onboarding_test.rb
+  ruby\ tests/komga_library_reconciliation_test.rb
+  ruby\ tests/paperless_mail_reconciliation_test.rb
   tests/integration_lock_test.sh
+  tests/mac/manual-validation-runner-test.sh
   tests/mac/audiobookshelf-drift-hook-test.sh
   tests/contracts/audiobookshelf-audio-test.sh
   ruby\ tests/mac/report.rb\ --self-test
@@ -850,6 +953,9 @@ validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "te
   check(failures, validation_commands.include?(command),
         "validate-policy.sh must run #{command}")
 end
+check(failures,
+      validation_commands.count("ruby tests/immich_configured_password_test.rb") == 1,
+      "validate-policy.sh must run ruby tests/immich_configured_password_test.rb exactly once")
 
 # Compose interpolates $ in env files and silently truncates an unescaped bcrypt
 # hash rather than rejecting it, so escaping is mandatory wherever hashes flow.
@@ -867,6 +973,7 @@ example_path = File.join(ROOT, "inventory", "group_vars", "all", "vault.yml.exam
 example = YAML.safe_load_file(example_path)
 example.each do |key, value|
   next unless value.is_a?(String)
+  next if key == "vault_jellyfin_admin_username" && value == "Yonatan"
   next if value.match?(/^example[-_]/) || value.end_with?("@example.invalid")
   next if value.match?(/^\$2b\$12\$0{53}$/)
   next if value.match?(/^tk_[01]{29}$/)
@@ -1075,7 +1182,7 @@ repository_vault_nas_references = Dir[File.join(ROOT, "{inventory,roles,template
   relative = path.delete_prefix("#{ROOT}/")
   next if %w[tests/policy_test.rb tests/policy_manifest_test.rb].include?(relative)
 
-  relative if File.read(path).match?(/\bvault_nas_[a-z_]+\b/)
+  relative if File.binread(path).match?(/\bvault_nas_[a-z_]+\b/n)
 end
 check(failures, repository_vault_nas_references.empty?,
       "NAS connection coordinates must stay in inventory, not shared vault: " \
@@ -1142,6 +1249,16 @@ check(failures,
         !harness.include?("random_password()") &&
         !harness.include?("ntfy_token()"),
       "integration must consume the ephemeral encrypted vault without duplicate secret authoring")
+check(failures,
+      harness.include?('/repo/tests/mac/generate-immich-fixture-vars.rb') &&
+        harness.include?('ANSIBLE_VAULT_PASSWORD_FILE=\"\$vault_password_file\" ansible-vault view') &&
+        harness.include?('fixture_vars_file=\"\$fixture_input_directory/immich-fixture-vars.yml\"') &&
+        harness.include?('PLATFORM_MAC_FIXTURE_VARS_FILE=\"\$fixture_vars_file\"') &&
+        harness.include?('install -m 0600 /dev/null \"\$fixture_vars_file\"') &&
+        harness.include?('chmod 0600 \"\$fixture_vars_file\"') &&
+        harness.include?('rm -f \"\$fixture_vault_view\"') &&
+        harness.include?('trap cleanup_fixture_vault_view EXIT'),
+      "integration must generate and protect the Immich fixture policy")
 check(failures,
       harness.include?('controller_mount=$sandbox/repo') &&
         harness.include?('git clone --quiet --no-local --no-checkout "$repo_dir" "$controller_mount"') &&
@@ -1267,11 +1384,13 @@ check(failures, target_validation_tasks.one? &&
                 target_validation_argv[2] == validator_lookup &&
                 target_validation_argv.count(validator_lookup) == 1,
       "target containment task must execute the exact extracted validator source")
-check(failures, target_validation_argv.length == 11 &&
-                target_validation_argv[8].include?("deployment_target_candidate_paths") &&
-                target_validation_argv[8].include?("to_json") &&
-                target_validation_argv[9] == "{{ platform_adoption_root | default('') }}" &&
-                target_validation_argv[10].include?("platform_adoption_enabled"),
+check(failures, target_validation_argv.length == 12 &&
+                target_validation_argv[3] == "{{ nas_docker_root }}" &&
+                target_validation_argv[4] == "{{ nas_media_root }}" &&
+                target_validation_argv[9].include?("deployment_target_candidate_paths") &&
+                target_validation_argv[9].include?("to_json") &&
+                target_validation_argv[10] == "{{ platform_adoption_root | default('') }}" &&
+                target_validation_argv[11].include?("platform_adoption_enabled"),
       "target containment task must pass one JSON target batch and adoption binding")
 check(failures, !target_validation.key?("loop") && !target_validation.key?("loop_control"),
       "target containment task must validate the batch without an Ansible loop")
@@ -1577,7 +1696,7 @@ end
 # plug their fixture, drift, and verification behavior into these stable phases.
 mac_harness_files = %w[
   lib.sh run.sh cleanup.sh fixtures.sh verify.sh drift.sh report.rb
-  sanitize-logs.rb manual-review.md
+  sanitize-logs.rb manual-review.md manual-validation-handoff.rb
 ]
 mac_harness_files.each do |name|
   check(failures, File.file?(File.join(ROOT, "tests", "mac", name)),
@@ -1594,9 +1713,29 @@ mac_phases.each do |phase|
   check(failures, mac_run.match?(/(?:^|[[:space:]])#{Regexp.escape(phase)}(?:$|[[:space:]])/),
         "Mac proof harness must support the #{phase} phase")
 end
-%w[--lane --vault-file --vault-password-file --keep-on-failure --phase].each do |option|
+%w[--lane --vault-file --vault-password-file --keep-on-failure --manual-validation --phase].each do |option|
   check(failures, mac_run.include?(option), "Mac proof harness must accept #{option}")
 end
+
+manual_handoff_path = File.join(ROOT, "tests", "mac", "manual-validation-handoff.rb")
+manual_handoff = File.file?(manual_handoff_path) ? File.read(manual_handoff_path) : ""
+check(failures, manual_handoff.include?('YAML.safe_load($stdin.read, aliases: false)') &&
+                manual_handoff.include?("read_deployed_manifest") &&
+                manual_handoff.include?('File.join(deployment_root, "current", "manifest.yml")') &&
+                manual_handoff.include?('File::RDONLY | File::NOFOLLOW') &&
+                manual_handoff.include?('File.realpath(current) == release_root') &&
+                manual_handoff.include?('services = service_entries.map') &&
+                manual_handoff.include?('services.sort == PORT_FIELDS.keys.sort') &&
+                manual_handoff.include?("Shellwords.shellescape") &&
+                manual_handoff.include?("Passwords remain in the encrypted vault source."),
+      "Mac manual-validation handoff must derive safe identities and services from the immutable deployment")
+check(failures, mac_run.include?('if [ "$manual_validation" = true ] && [ "$phase" = verify ]') &&
+                mac_run.include?('preserve_sandbox_on_exit=true') &&
+                mac_run.include?("emit_manual_validation_handoff || exit $?") &&
+                mac_run.include?('> "$manual_vault_plaintext" 2>/dev/null || vault_view_status=$?') &&
+                mac_run.include?('< "$manual_vault_plaintext" || handoff_status=$?') &&
+                mac_run.include?("remove_manual_vault_plaintext"),
+      "Mac manual validation must stop through the preserved-sandbox EXIT trap after verify")
 
 mac_cleanup_path = File.join(ROOT, "tests", "mac", "cleanup.sh")
 mac_cleanup = File.file?(mac_cleanup_path) ? File.read(mac_cleanup_path) : ""
@@ -1730,6 +1869,7 @@ check(failures, gitignore.include?("mac-proof-reports"),
       "gitignore must exclude local Mac proof report copies")
 
 beszel_verification_prerequisites = {
+  "Select the Beszel mounted state root" => "ansible.builtin.set_fact",
   "Authenticate as the superuser" => "ansible.builtin.uri",
   "Read the public key the hub advertises" => "ansible.builtin.uri",
   "Verify the advertised key matches vault, proving no read-back is needed" =>
@@ -1741,6 +1881,17 @@ beszel_verification_prerequisites.each do |name, module_name|
                   Array(task["tags"]).include?("platform_verify_beszel"),
         "Beszel verification-only run must include #{name.downcase}")
 end
+
+tinymediamanager_tasks = flatten_tasks(
+  YAML.safe_load_file(File.join(ROOT, "roles", "tinymediamanager", "tasks", "main.yml"))
+)
+tinymediamanager_state_root = tinymediamanager_tasks.find do |task|
+  task["name"] == "Select the tinyMediaManager mounted state root"
+end
+check(failures,
+      tinymediamanager_state_root&.key?("ansible.builtin.set_fact") &&
+        Array(tinymediamanager_state_root["tags"]).include?("platform_verify_tinymediamanager"),
+      "tinyMediaManager verification-only run must derive its mounted state root")
 
 if failures.empty?
   puts "policy: all properties hold"

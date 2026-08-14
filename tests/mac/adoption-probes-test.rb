@@ -77,7 +77,8 @@ def response_for(path, method, headers, body, root, mode)
   when "/Library/VirtualFolders" then json_response(200, [{ "Name" => "Movies" }])
   when %r{\A/Items\?} then json_response(200, { "Items" => [{ "Id" => "movie" }], "TotalRecordCount" => 1 })
   when "/api/v2/users" then json_response(200, [{ "email" => "admin@example.test", "roles" => ["ADMIN"] }])
-  when "/api/v1/libraries" then json_response(200, [{ "id" => "books", "name" => "Books" }])
+  when "/api/v1/libraries" then
+    json_response(200, [{ "id" => "books", "name" => "Books", "root" => "/data/" }])
   when %r{\A/api/v1/books\?} then json_response(200, { "content" => [{ "id" => "book" }] })
   when %r{\A/api/v1/series\?} then json_response(200, { "content" => [{ "id" => "series" }] })
   when "/v1/account" then [200, { "Content-Type" => "text/plain" }, ""]

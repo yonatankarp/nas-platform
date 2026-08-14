@@ -162,8 +162,10 @@ vault_immich_admin_password: '$(random_password)'
 vault_immich_db_name: immich
 vault_immich_db_username: immich
 vault_immich_db_password: '$(random_password)'
-vault_jellyfin_admin_username: ephemeral-admin
+vault_jellyfin_admin_username: Yonatan
 vault_jellyfin_admin_password: '$(random_password)'
+vault_jellyfin_opensubtitles_username: ephemeral-opensubtitles-user
+vault_jellyfin_opensubtitles_password: '$(random_password)'
 vault_komga_admin_email: ephemeral-admin@example.invalid
 vault_komga_admin_password: '$(random_password)'
 vault_ntfy_admin_user: ephemeral-admin

@@ -3,6 +3,7 @@
 ntfy_port: 2586
 ntfy_base_url: "http://{{ platform_public_host }}:{{ ntfy_port }}"
 ntfy_account_api: "http://127.0.0.1:{{ ntfy_port }}/v1/account"
+ntfy_account_subscription_api: "{{ ntfy_account_api }}/subscription"
 ntfy_compose_project_name: >-
   {{ (platform_project_name ~ '-ntfy')
      if platform_project_name | default('') | length > 0 else 'ntfy' }}

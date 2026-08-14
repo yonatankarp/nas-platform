@@ -43,6 +43,7 @@
           | ternary(['compose.adoption.yml'], [])) }}
 
 - name: Select the Beszel mounted state root
+  tags: [platform_verify_beszel]
   ansible.builtin.set_fact:
     beszel_state_root: >-
       {{ (platform_adoption_root ~ '/legacy/beszel/hub')
@@ -54,6 +55,58 @@
     that:
       - beszel_state_root == ((platform_adoption_root ~ '/legacy/beszel/hub') if
         (platform_adoption_enabled | default(false) | bool) else (nas_docker_root ~ '/beszel/hub'))
+
+- name: Require the selected Beszel telemetry capability
+  ansible.builtin.assert:
+    that:
+      - platform_kind in ['mac', 'nas']
+      - beszel_effective_required_telemetry_categories | length > 0
+      - beszel_effective_required_telemetry_categories | unique | list | length ==
+        beszel_effective_required_telemetry_categories | length
+      - beszel_effective_required_telemetry_categories |
+        difference(['core', 'disk', 'containers', 'gpu']) | length == 0
+      - beszel_telemetry_freshness_seconds | int >= 60
+      - beszel_telemetry_poll_timeout_seconds | int >= 90
+      - beszel_telemetry_request_timeout_seconds | int > 0
+      - beszel_telemetry_request_timeout_seconds | int <= 10
+      - beszel_telemetry_poll_delay_seconds | int > 0
+      - beszel_telemetry_poll_delay_seconds | int <= 10
+      - >-
+        beszel_integration_test_capability | bool ==
+        ((platform_compose_kind | default('') == 'integration') and
+         (deployment_bundle_test_mode | default(false) | bool))
+      - >-
+        beszel_effective_required_telemetry_categories ==
+        (['core', 'disk', 'containers']
+         if (beszel_integration_test_capability | bool)
+         else beszel_required_telemetry_categories)
+      - >-
+        beszel_effective_require_gpu_telemetry | bool ==
+        (false
+         if (beszel_integration_test_capability | bool)
+         else (beszel_require_gpu_telemetry | bool))
+      - >-
+        platform_kind != 'mac' or
+        (not (beszel_integration_test_capability | bool) and
+         beszel_effective_required_telemetry_categories | sort == ['containers', 'core', 'disk'] and
+         not (beszel_effective_require_gpu_telemetry | bool) and
+         platform_beszel_agent_kind == 'portable')
+      - >-
+        platform_kind != 'nas' or
+        ((beszel_integration_test_capability | bool) and
+         beszel_effective_required_telemetry_categories | sort == ['containers', 'core', 'disk'] and
+         not (beszel_effective_require_gpu_telemetry | bool) and
+         platform_beszel_agent_kind == 'portable' and
+         not (preflight_gpu_available | bool)) or
+        (not (beszel_integration_test_capability | bool) and
+         beszel_effective_required_telemetry_categories | sort == ['containers', 'core', 'disk', 'gpu'] and
+         beszel_effective_require_gpu_telemetry | bool and
+         platform_beszel_agent_kind == 'intel' and
+         platform_render_device_path == '/dev/dri/renderD128' and
+         preflight_gpu_available | bool)
+    fail_msg: >-
+      Beszel telemetry capability does not match platform {{ platform_kind }}.
+      Required categories: {{ beszel_effective_required_telemetry_categories | join(',') }}.
 
 - name: Install the hub keypair before the hub can generate its own
   ansible.builtin.copy:
@@ -782,12 +835,60 @@
           {{ beszel_matching_systems | map(attribute='id') | join(',') }}
       no_log: false
 
-    - name: Report that alerts need a registered system
-      ansible.builtin.debug:
-        msg: >-
-          No managed Beszel system is registered, so alerts were skipped. This is
-          expected when the host capability explicitly disables the agent.
-      when: beszel_matching_systems | length == 0
+    - name: Require exactly one managed Beszel system for telemetry
+      tags: [platform_verify_beszel]
+      ansible.builtin.assert:
+        that: beszel_matching_systems | length == 1
+        fail_msg: >-
+          Managed Beszel telemetry system record count differs (records={{
+          beszel_matching_systems | length }}, IDs={{
+          beszel_matching_systems | map(attribute='id') | join(',') | default('[none]', true) }}).
+      no_log: false
+
+    # Beszel 0.18.7 stores core, disk, and GPU fields together in the newest
+    # one-minute system_stats record. Container samples are written separately
+    # and only when the agent actually observes containers. Querying these
+    # persisted PocketBase collections proves collection capability; health,
+    # system status, and the live WebSocket cannot substitute for these reads.
+    - name: Poll persisted Beszel telemetry collections
+      tags: [platform_verify_beszel]
+      beszel_telemetry_probe:
+        api_url: "{{ beszel_api }}"
+        auth_token: "{{ beszel_auth.json.token }}"
+        system_id: "{{ (beszel_matching_systems | first).id }}"
+        required_categories: "{{ beszel_effective_required_telemetry_categories }}"
+        freshness_seconds: "{{ beszel_telemetry_freshness_seconds }}"
+        timeout_seconds: "{{ beszel_telemetry_poll_timeout_seconds }}"
+        request_timeout_seconds: "{{ beszel_telemetry_request_timeout_seconds }}"
+        delay_seconds: "{{ beszel_telemetry_poll_delay_seconds }}"
+      register: beszel_telemetry_probe_result
+      check_mode: false
+      no_log: true
+
+    - name: Resolve persisted Beszel telemetry evidence
+      tags: [platform_verify_beszel]
+      ansible.builtin.set_fact:
+        beszel_telemetry_system_id: "{{ beszel_telemetry_probe_result.evidence.system_id }}"
+        beszel_telemetry_system_stats_id: >-
+          {{ beszel_telemetry_probe_result.evidence.system_stats_id }}
+        beszel_telemetry_container_stats_id: >-
+          {{ beszel_telemetry_probe_result.evidence.container_stats_id }}
+        beszel_telemetry_missing_categories: >-
+          {{ beszel_telemetry_probe_result.evidence.missing_categories }}
+      no_log: true
+
+    - name: Verify persisted Beszel telemetry categories
+      tags: [platform_verify_beszel]
+      ansible.builtin.assert:
+        that:
+          - beszel_telemetry_missing_categories | length == 0
+        fail_msg: >-
+          Persisted Beszel telemetry categories unavailable or stale for system
+          ID {{ beszel_telemetry_system_id }}: categories={{
+          beszel_telemetry_missing_categories | join(',') }};
+          record IDs=system_stats:{{ beszel_telemetry_system_stats_id }},container_stats:{{
+          beszel_telemetry_container_stats_id }}.
+      no_log: false
 
     - name: Reconcile each managed alert
       tags: [platform_verify_beszel]
@@ -796,7 +897,6 @@
       loop_control:
         loop_var: beszel_alert
         label: "{{ beszel_alert.name }}"
-      when: beszel_matching_systems | length == 1
 
 - name: Verify managed Beszel users
   tags: [platform_verify_beszel]

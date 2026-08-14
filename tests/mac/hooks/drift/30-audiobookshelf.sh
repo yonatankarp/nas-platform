@@ -74,10 +74,9 @@ if mac_ansible_playbook -i "$mac_repo_dir/inventory/mac.yml" "$mac_repo_dir/veri
 fi
 "$mac_repo_dir/tests/assert-no-vault-secrets.rb" \
   "$PLATFORM_MAC_VAULT_FILE" "$PLATFORM_MAC_VAULT_PASSWORD_FILE" "$expected_failure"
-grep -qF 'The managed Audiobookshelf library is absent, duplicated, surplus, or drifted.' \
+grep -qF 'The managed Audiobookshelf server settings or library are absent, duplicated, surplus, or drifted.' \
   "$expected_failure" || {
   printf '%s\n' 'Audiobookshelf verification refused drift without its fixed diagnostic' >&2
   exit 1
 }
 "$mac_script_dir/run-audiobookshelf-contract.sh" drift-commit
-fixture_owned=false

@@ -30,6 +30,14 @@ argument_specs:
         type: str
         required: false
         description: Exact URL clients use, which ntfy needs for correct links.
+      ntfy_account_api:
+        type: str
+        required: false
+        description: Pinned local ntfy account API endpoint.
+      ntfy_account_subscription_api:
+        type: str
+        required: false
+        description: Pinned local ntfy account-subscription API endpoint.
       ntfy_publishers:
         type: list
         elements: dict

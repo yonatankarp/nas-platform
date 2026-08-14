@@ -9,14 +9,20 @@ mac_repo_dir=$(CDPATH= cd -- "$mac_script_dir/../.." && pwd -P)
 . "$mac_script_dir/lib.sh"
 expected_failure=
 check_output=
+label_override=
 fixture_owned=false
+label_fixture_owned=false
+current=$PLATFORM_DOCKER_ROOT/nas-platform/current/services/dozzle
+runtime=$PLATFORM_DOCKER_ROOT/nas-platform/runtime/services/dozzle/.env
 
 cleanup_owned_file() {
   cleanup_path=$1
   [ -n "$cleanup_path" ] || return 0
   [ ! -e "$cleanup_path" ] && [ ! -L "$cleanup_path" ] && return 0
   case $cleanup_path in
-    "$PLATFORM_REPORT_ROOT"/dozzle-verify-drift.??????|"$PLATFORM_REPORT_ROOT"/dozzle-check-mixed.??????) ;;
+    "$PLATFORM_REPORT_ROOT"/dozzle-verify-drift.??????|\
+    "$PLATFORM_REPORT_ROOT"/dozzle-check-mixed.??????|\
+    "$PLATFORM_REPORT_ROOT"/dozzle-label-drift.??????) ;;
     *) return 1 ;;
   esac
   [ -f "$cleanup_path" ] && [ ! -L "$cleanup_path" ] || return 1
@@ -34,13 +40,46 @@ cleanup_outputs() {
   cleanup_status=0
   cleanup_owned_file "$expected_failure" || cleanup_status=1
   cleanup_owned_file "$check_output" || cleanup_status=1
+  cleanup_owned_file "$label_override" || cleanup_status=1
   return "$cleanup_status"
 }
 
+recreate_socket_proxy() {
+  override=${1-}
+  set -- docker compose --project-name "$PLATFORM_PROJECT_NAME-dozzle" --env-file "$runtime"
+  compose_arguments=$(mac_compose_files "$current")
+  while IFS= read -r compose_argument; do set -- "$@" "$compose_argument"; done <<EOF
+$compose_arguments
+EOF
+  [ -z "$override" ] || set -- "$@" -f "$override"
+  "$@" up -d --force-recreate --wait socket-proxy
+}
+
+dozzle_socket_proxy_name() {
+  case ${PLATFORM_PROOF_PLATFORM:-mac} in
+    integration) printf '%s\n' dozzle_socket_proxy ;;
+    mac) printf '%s\n' "$PLATFORM_PROJECT_NAME-dozzle-socket-proxy" ;;
+    *) mac_die 'proof platform is invalid' ;;
+  esac
+}
+
+recover_label_fixture() {
+  [ "$label_fixture_owned" = true ] || return 0
+  recreate_socket_proxy || return 1
+  label_fixture_owned=false
+}
+
 recover_fixture() {
-  [ "$fixture_owned" = true ] || return 0
-  "$mac_script_dir/run-dozzle-contract.sh" check-mixed-recover || return 1
-  fixture_owned=false
+  recovery_status=0
+  if [ "$fixture_owned" = true ]; then
+    if "$mac_script_dir/run-dozzle-contract.sh" check-mixed-recover; then
+      fixture_owned=false
+    else
+      recovery_status=1
+    fi
+  fi
+  recover_label_fixture || recovery_status=1
+  return "$recovery_status"
 }
 
 finish_hook() {
@@ -69,6 +108,31 @@ trap 'finish_signal 130' INT
 trap 'finish_signal 143' TERM
 expected_failure=$(mktemp "$PLATFORM_REPORT_ROOT/dozzle-verify-drift.XXXXXX")
 check_output=$(mktemp "$PLATFORM_REPORT_ROOT/dozzle-check-mixed.XXXXXX")
+label_override=$(mktemp "$PLATFORM_REPORT_ROOT/dozzle-label-drift.XXXXXX")
+
+cat > "$label_override" <<'YAML'
+services:
+  socket-proxy:
+    labels:
+      dev.dozzle.group: dozzle-contract-drift
+      dev.dozzle.name: dozzle-contract-drift
+      dev.dozzle.contract.sentinel: unrelated-label-must-not-survive-reconciliation
+YAML
+
+# Compose owns the complete service label set. The unmanaged sentinel proves the
+# drift fixture exercised that boundary; normal reconciliation is expected to
+# remove it while restoring the managed Dozzle group and friendly name.
+label_fixture_owned=true
+recreate_socket_proxy "$label_override"
+socket_proxy=$(dozzle_socket_proxy_name)
+drifted_labels=$(docker container inspect --format '{{json .Config.Labels}}' "$socket_proxy")
+DOZZLE_DRIFTED_LABELS=$drifted_labels ruby -rjson -e '
+  labels = JSON.parse(ENV.fetch("DOZZLE_DRIFTED_LABELS"))
+  abort unless labels["dev.dozzle.group"] == "dozzle-contract-drift" &&
+               labels["dev.dozzle.name"] == "dozzle-contract-drift" &&
+               labels["dev.dozzle.contract.sentinel"] ==
+                 "unrelated-label-must-not-survive-reconciliation"
+'
 
 fixture_owned=true
 "$mac_script_dir/run-dozzle-contract.sh" check-mixed-create

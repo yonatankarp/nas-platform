@@ -16,7 +16,8 @@ usage() {
     'usage: run.sh --lane fresh|adoption --vault-file FILE --vault-password-file FILE_OR_EXECUTABLE' \
     '              [--parity-vault-file FILE --parity-vault-password-file FILE_OR_EXECUTABLE]' \
     '              [--platform mac|integration] [--integration-ports-file FILE]' \
-    '              [--keep-on-failure] [--phase NAME] [--sandbox PATH]' \
+    '              [--keep-on-failure] [--manual-validation] [--phase NAME] [--sandbox PATH]' \
+    '--manual-validation stops a fresh full run after verify and prints a resumable handoff.' \
     'Executable password providers must use the exact #!/bin/sh shebang without options or NUL bytes.'
 }
 
@@ -29,6 +30,7 @@ selected_phase=
 requested_sandbox=
 integration_ports_file=
 keep_on_failure=false
+manual_validation=false
 [ -z "${PLATFORM_PROOF_PLATFORM+x}" ] ||
   mac_die 'reserved proof platform environment must be unset'
 proof_platform=mac
@@ -38,7 +40,7 @@ proof_platform=mac
   [ -z "${BUNDLE_PATH+x}" ] && [ -z "${BUNDLE_APP_CONFIG+x}" ] &&
   [ -z "${BUNDLE_WITH+x}" ] && [ -z "${BUNDLE_WITHOUT+x}" ] ||
   mac_die 'reserved language startup environment must be unset'
-[ -z "${PLATFORM_ADOPTION_ROOT+x}" ] && [ -z "${PLATFORM_ADOPTION_MARKER+x}" ] &&
+  [ -z "${PLATFORM_ADOPTION_ROOT+x}" ] && [ -z "${PLATFORM_ADOPTION_MARKER+x}" ] &&
   [ -z "${PLATFORM_ADOPTION_ENABLED+x}" ] &&
   [ -z "${PLATFORM_ADOPTION_SNAPSHOT_SELF_TEST+x}" ] &&
   [ -z "${PLATFORM_ADOPTION_COMPARE_SELF_TEST+x}" ] &&
@@ -64,8 +66,10 @@ proof_platform=mac
   [ -z "${PLATFORM_ADOPTION_ROLLBACK_OVERRIDE_ROOT+x}" ] &&
   [ -z "${PLATFORM_ADOPTION_ROLLBACK_CHALLENGE_FAULT+x}" ] &&
   [ -z "${PLATFORM_ADOPTION_CONTRACT_FILE+x}" ] &&
+  [ -z "${PLATFORM_MAC_FIXTURE_VARS_FILE+x}" ] &&
   [ -z "${PLATFORM_CONTRACT_REPO_DIR+x}" ] &&
   [ -z "${PLATFORM_LEGACY_FIXTURE_HELPER_FILE+x}" ] &&
+  [ -z "${PLATFORM_KOMGA_CONFIG_PATH+x}" ] &&
   [ -z "${PLATFORM_ADOPTION_TMM_MOVIE_TEMPLATE_CONF+x}" ] &&
   [ -z "${PLATFORM_ADOPTION_TMM_MOVIE_LIST_JMTE+x}" ] &&
   [ -z "${PLATFORM_ADOPTION_TMM_TVSHOW_TEMPLATE_CONF+x}" ] &&
@@ -90,10 +94,19 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     --keep-on-failure) keep_on_failure=true; shift ;;
+    --manual-validation) manual_validation=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; exit 2 ;;
   esac
 done
+
+if [ "$manual_validation" = true ]; then
+  [ "$lane" = fresh ] || mac_die '--manual-validation requires --lane fresh'
+  [ -z "$selected_phase" ] ||
+    mac_die '--manual-validation requires a full run without --phase'
+  [ "$keep_on_failure" = false ] ||
+    mac_die '--manual-validation is incompatible with --keep-on-failure'
+fi
 
 case $proof_platform in
   mac) ;;
@@ -136,6 +149,15 @@ case $(CDPATH= cd -- "$(dirname -- "$vault_password_file")" 2>/dev/null && pwd -
   "$mac_repo_dir"/*) mac_die 'vault password input must remain outside the repository' ;;
 esac
 
+canonical_input_path() {
+  input_parent=$(CDPATH= cd -- "$(dirname -- "$1")" 2>/dev/null && pwd -P) ||
+    mac_die "$2 parent is unavailable"
+  printf '%s/%s\n' "${input_parent%/}" "$(basename -- "$1")"
+}
+
+vault_file=$(canonical_input_path "$vault_file" 'vault file')
+vault_password_file=$(canonical_input_path "$vault_password_file" 'vault password input')
+
 if [ "$lane" = adoption ]; then
   [ -f "$parity_vault_file" ] && [ ! -L "$parity_vault_file" ] && [ -r "$parity_vault_file" ] ||
     mac_die 'parity vault file must be a readable, regular encrypted file'
@@ -156,6 +178,9 @@ if [ "$lane" = adoption ]; then
   case $(CDPATH= cd -- "$(dirname -- "$parity_vault_password_file")" 2>/dev/null && pwd -P)/ in
     "$mac_repo_dir"/*) mac_die 'parity vault password input must remain outside the repository' ;;
   esac
+  parity_vault_file=$(canonical_input_path "$parity_vault_file" 'parity vault file')
+  parity_vault_password_file=$(canonical_input_path \
+    "$parity_vault_password_file" 'parity vault password input')
 fi
 
 if [ -n "$selected_phase" ]; then
@@ -166,6 +191,19 @@ temporary_parent=$(mac_temporary_parent)
 acquire_integration_lock "$temporary_parent"
 sandbox=
 preserve_sandbox_on_exit=false
+manual_vault_plaintext=
+
+remove_manual_vault_plaintext() {
+  [ -n "$manual_vault_plaintext" ] || return 0
+  case $manual_vault_plaintext in
+    "${protected_input_root-}"/.manual-validation-vault.??????) ;;
+    *) mac_die 'refusing to remove unsafe manual-validation plaintext path'; return 1 ;;
+  esac
+  if [ -e "$manual_vault_plaintext" ] || [ -L "$manual_vault_plaintext" ]; then
+    unlink "$manual_vault_plaintext" || return 1
+  fi
+  manual_vault_plaintext=
+}
 
 release_run_lock() {
   [ -z "$integration_lock_path" ] || release_integration_lock
@@ -174,6 +212,9 @@ release_run_lock() {
 on_run_exit() {
   mac_exit_status=$?
   trap - EXIT HUP INT TERM
+  if ! remove_manual_vault_plaintext; then
+    [ "$mac_exit_status" -ne 0 ] || mac_exit_status=1
+  fi
   if ! release_run_lock; then
     [ "$mac_exit_status" -ne 0 ] || mac_exit_status=1
   fi
@@ -238,15 +279,28 @@ fi
   [ "$(mac_file_mode "$protected_input_root")" = 700 ] ||
   mac_die 'protected input directory is unavailable or unsafe'
 
+state_input=$report_root/phase-input.json
+manual_resume_marker=$report_root/manual-validation-resume.json
+reuse_protected_inputs=false
+if [ -e "$manual_resume_marker" ] || [ -L "$manual_resume_marker" ]; then
+  "$mac_script_dir/manual-validation-handoff.rb" --validate-resume \
+    --state "$state_input" --marker "$manual_resume_marker" --lane "$lane" \
+    --sandbox "$sandbox" --report-root "$report_root" \
+    --vault-file "$vault_file" --vault-password-file "$vault_password_file" ||
+    mac_die 'manual-validation resume binding is invalid'
+  reuse_protected_inputs=true
+fi
+
 pin_protected_input() {
   pin_source=$1
   pin_destination=$2
   pin_label=$3
   pin_kind=$4
   pin_external=$5
+  pin_reuse=$6
   ruby - "$pin_source" "$pin_destination" "$pin_label" "$pin_kind" \
-    "$pin_external" "$mac_repo_dir" "$protected_input_root" <<'RUBY'
-source_path, destination_path, label, kind, external, repository, protected_root = ARGV
+    "$pin_external" "$mac_repo_dir" "$protected_input_root" "$pin_reuse" <<'RUBY'
+source_path, destination_path, label, kind, external, repository, protected_root, reuse = ARGV
 require "fiddle"
 require "open3"
 require "rbconfig"
@@ -509,6 +563,29 @@ begin
   fail_pin(label, "destination is unsafe") unless
     signature(protected_root_before) == signature(protected_root_after) &&
       File.realpath(protected_root) == protected_root
+  if reuse == "true"
+    fail_pin(label, "protected copy is unavailable or unsafe") unless
+      File.file?(destination_path) && !File.symlink?(destination_path)
+    destination_before = File.lstat(destination_path)
+    fail_pin(label, "protected copy is unavailable or unsafe") unless
+      destination_before.uid == Process.uid && (destination_before.mode & 0o777) == 0o600 &&
+        destination_before.size <= maximum_size
+    destination = File.open(destination_path, flags)
+    destination_held = destination.stat
+    destination_bytes = destination.read(maximum_size + 1)
+    destination_after = destination.stat
+    destination.close
+    fail_pin(label, "protected copy changed while being validated") unless
+      signature(destination_before) == signature(destination_held) &&
+        signature(destination_held) == signature(destination_after)
+    fail_pin(label, "differs from the manual-validation protected copy") unless
+      destination_bytes == bytes
+    protected_root_reused = File.lstat(protected_root)
+    fail_pin(label, "destination is unsafe") unless
+      signature(protected_root_before) == signature(protected_root_reused) &&
+        File.realpath(protected_root) == protected_root
+    exit 0
+  end
   mode = 0o600
   temporary_path = "#{destination_path}.tmp.#{Process.pid}"
   output_flags = File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW
@@ -542,28 +619,72 @@ RUBY
 deployment_vault_source=$vault_file
 deployment_password_source=$vault_password_file
 pin_protected_input "$deployment_vault_source" "$protected_input_root/deployment-vault.yml" \
-  'deployment vault' vault false || mac_die 'protected deployment vault input could not be pinned'
+  'deployment vault' vault false "$reuse_protected_inputs" ||
+  mac_die 'protected deployment vault input could not be pinned'
 pin_protected_input "$deployment_password_source" "$protected_input_root/deployment-password" \
-  'deployment password' password true || mac_die 'protected deployment password input could not be pinned'
+  'deployment password' password true "$reuse_protected_inputs" ||
+  mac_die 'protected deployment password input could not be pinned'
 vault_file=$protected_input_root/deployment-vault.yml
 vault_password_file=$protected_input_root/deployment-password
 if [ "$lane" = adoption ]; then
   parity_vault_source=$parity_vault_file
   parity_password_source=$parity_vault_password_file
   pin_protected_input "$parity_vault_source" "$protected_input_root/parity-vault.yml" \
-    'parity vault' vault true || mac_die 'protected parity vault input could not be pinned'
+    'parity vault' vault true "$reuse_protected_inputs" ||
+    mac_die 'protected parity vault input could not be pinned'
   if [ "$parity_password_source" = "$deployment_password_source" ]; then
     pin_protected_input "$vault_password_file" "$protected_input_root/parity-password" \
-      'parity password' password false || mac_die 'protected parity password input could not be pinned'
+      'parity password' password false "$reuse_protected_inputs" ||
+      mac_die 'protected parity password input could not be pinned'
   else
     pin_protected_input "$parity_password_source" "$protected_input_root/parity-password" \
-      'parity password' password true || mac_die 'protected parity password input could not be pinned'
+      'parity password' password true "$reuse_protected_inputs" ||
+      mac_die 'protected parity password input could not be pinned'
   fi
   parity_vault_file=$protected_input_root/parity-vault.yml
   parity_vault_password_file=$protected_input_root/parity-password
 fi
-state_input=$report_root/phase-input.json
 
+generate_immich_fixture_vars() {
+  fixture_output=$1
+  fixture_temporary=$(mktemp "$protected_input_root/.immich-fixture-vars.XXXXXX") || return 1
+  if ! ansible-vault view --vault-password-file "$vault_password_file" "$vault_file" 2>/dev/null |
+      ruby "$mac_script_dir/generate-immich-fixture-vars.rb" \
+        "$fixture_temporary" "$mac_repo_dir/inventory/group_vars/all/main.yml" 2>/dev/null
+  then
+    unlink "$fixture_temporary" >/dev/null 2>&1 || true
+    return 1
+  fi
+  chmod 0600 "$fixture_temporary" || {
+    unlink "$fixture_temporary" >/dev/null 2>&1 || true
+    return 1
+  }
+  mv -f -- "$fixture_temporary" "$fixture_output"
+}
+
+fixture_vars_file=$protected_input_root/immich-fixture-vars.yml
+immich_fixture_vars_verified=false
+ensure_immich_fixture_vars() {
+  [ "$immich_fixture_vars_verified" = false ] || return 0
+  if [ -e "$fixture_vars_file" ]; then
+    expected_fixture_vars=$(mktemp "$protected_input_root/.immich-fixture-expected.XXXXXX") || return 1
+    if ! generate_immich_fixture_vars "$expected_fixture_vars" ||
+       ! cmp -s "$expected_fixture_vars" "$fixture_vars_file"; then
+      unlink "$expected_fixture_vars" >/dev/null 2>&1 || true
+      mac_die 'protected Immich fixture policy differs from the pinned deployment vault'
+      return 1
+    fi
+    unlink "$expected_fixture_vars" >/dev/null 2>&1 || true
+  else
+    generate_immich_fixture_vars "$fixture_vars_file" ||
+      mac_die 'protected Immich fixture policy could not be generated'
+  fi
+  [ -f "$fixture_vars_file" ] && [ ! -L "$fixture_vars_file" ] &&
+    [ "$(mac_owner_id "$fixture_vars_file")" = "$(id -u)" ] &&
+    [ "$(mac_file_mode "$fixture_vars_file")" = 600 ] ||
+    mac_die 'protected Immich fixture policy is unsafe'
+  immich_fixture_vars_verified=true
+}
 git_revision=$(git -C "$mac_repo_dir" rev-parse HEAD)
 vault_checksum=$(shasum -a 256 "$vault_file" | awk '{print $1}')
 parity_vault_checksum=
@@ -776,11 +897,14 @@ export PLATFORM_MAC_VAULT_PASSWORD_FILE=$vault_password_file
 export PLATFORM_MAC_PARITY_VAULT_FILE=$parity_vault_file
 export PLATFORM_MAC_PARITY_VAULT_PASSWORD_FILE=$parity_vault_password_file
 export PLATFORM_VAULT_FILE=$vault_file
+export PLATFORM_MAC_FIXTURE_VARS_FILE=$fixture_vars_file
 
 run_site() {
+  ensure_immich_fixture_vars || return $?
   run_site_status=0
   mac_ansible_playbook -i "$mac_repo_dir/inventory/mac.yml" "$mac_repo_dir/site.yml" \
     --vault-password-file "$vault_password_file" -e @"$vault_file" \
+    -e @"$fixture_vars_file" \
     -e "platform_vault_file=$vault_file" "$@" || run_site_status=$?
   if [ "$lane" = adoption ]; then
     attestation_status=0
@@ -844,6 +968,7 @@ run_idempotence() {
 }
 
 run_persistence() {
+  ensure_immich_fixture_vars || return $?
   persistence_status=0
   "$mac_script_dir/fixtures.sh" persistence || persistence_status=$?
   if [ "$persistence_status" -eq 0 ] && [ "$lane" = adoption ]; then
@@ -856,6 +981,7 @@ run_persistence() {
 }
 
 verify_target_state() {
+  ensure_immich_fixture_vars || return $?
   target_verify_status=0
   "$mac_script_dir/verify.sh" || target_verify_status=$?
   if [ "$target_verify_status" -eq 0 ] && [ "$lane" = adoption ]; then
@@ -983,18 +1109,24 @@ execute_phase() {
       ' "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port" "$komga_port" \
         "$tinymediamanager_web_port" "$tinymediamanager_api_port" "$jellyfin_port" \
         "$immich_port" "$paperless_port" || return 1
+      if [ "$lane" = adoption ]; then
+        "$mac_script_dir/adoption.sh" render || return $?
+      fi
+      ensure_immich_fixture_vars || return $?
       ansible-playbook "$mac_repo_dir/validate-vault.yml" \
         --vault-password-file "$vault_password_file" -e @"$vault_file" \
+        -e @"$fixture_vars_file" \
         -e "platform_vault_file=$vault_file"
-      if [ "$lane" = adoption ]; then
-        "$mac_script_dir/adoption.sh" render
-      fi
       ;;
     deploy)
       [ "$lane" = fresh ] || mac_die 'deploy phase is available only in the fresh lane'
       run_site
       ;;
-    legacy-deploy|legacy-seed|capture-baseline|snapshot|rollback)
+    legacy-seed)
+      ensure_immich_fixture_vars || return $?
+      "$mac_script_dir/adoption.sh" "$1"
+      ;;
+    legacy-deploy|capture-baseline|snapshot|rollback)
       "$mac_script_dir/adoption.sh" "$1"
       ;;
     cutover)
@@ -1007,12 +1139,12 @@ execute_phase() {
         return "$cutover_verify_status"
       fi
       ;;
-    seed) "$mac_script_dir/fixtures.sh" seed ;;
+    seed) ensure_immich_fixture_vars && "$mac_script_dir/fixtures.sh" seed ;;
     verify) verify_target_state ;;
     idempotence) run_idempotence ;;
-    drift) "$mac_script_dir/drift.sh" ;;
+    drift) ensure_immich_fixture_vars && "$mac_script_dir/drift.sh" ;;
     reconcile) run_site && "$mac_script_dir/verify.sh" ;;
-    recreate) "$mac_script_dir/fixtures.sh" recreate && verify_target_state ;;
+    recreate) ensure_immich_fixture_vars && "$mac_script_dir/fixtures.sh" recreate && verify_target_state ;;
     persistence) run_persistence ;;
     report) render_report ;;
     cleanup) release_run_lock && "$mac_script_dir/cleanup.sh" "$sandbox" ;;
@@ -1064,6 +1196,38 @@ run_phase() {
   fi
 }
 
+emit_manual_validation_handoff() {
+  deployment_manifest=$PLATFORM_DOCKER_ROOT/nas-platform/current/manifest.yml
+  manual_vault_plaintext=$(mktemp "$protected_input_root/.manual-validation-vault.XXXXXX") ||
+    return 1
+  chmod 0600 "$manual_vault_plaintext" || {
+    remove_manual_vault_plaintext || true
+    return 1
+  }
+  vault_view_status=0
+  ansible-vault view --vault-password-file "$vault_password_file" "$vault_file" \
+    > "$manual_vault_plaintext" 2>/dev/null || vault_view_status=$?
+  if [ "$vault_view_status" -ne 0 ]; then
+    remove_manual_vault_plaintext || return 1
+    return "$vault_view_status"
+  fi
+
+  handoff_status=0
+  ruby "$mac_script_dir/manual-validation-handoff.rb" \
+    --state "$state_input" --manifest "$deployment_manifest" \
+    --deployment-root "$PLATFORM_DOCKER_ROOT/nas-platform" \
+    --marker "$manual_resume_marker" --lane "$lane" \
+    --sandbox "$sandbox" --report-root "$report_root" \
+    --runner "$mac_script_dir/run.sh" \
+    --vault-file "$deployment_vault_source" \
+    --vault-password-file "$deployment_password_source" \
+    < "$manual_vault_plaintext" || handoff_status=$?
+  if ! remove_manual_vault_plaintext; then
+    [ "$handoff_status" -ne 0 ] || handoff_status=1
+  fi
+  return "$handoff_status"
+}
+
 if [ "$lane" = adoption ] && [ "$(phase_status cutover)" = passed ]; then
   enable_adoption_mapping resume
 fi
@@ -1073,6 +1237,13 @@ if [ -n "$selected_phase" ]; then
 else
   for phase in $PHASES; do
     run_phase "$phase"
+    if [ "$manual_validation" = true ] && [ "$phase" = verify ]; then
+      [ "$(phase_status verify)" = passed ] ||
+        mac_die 'manual validation requires a durably passed verify phase'
+      preserve_sandbox_on_exit=true
+      emit_manual_validation_handoff || exit $?
+      exit 0
+    fi
   done
 fi
 

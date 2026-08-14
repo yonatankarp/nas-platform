@@ -22,5 +22,5 @@ if mac_ansible_playbook -i "$mac_repo_dir/inventory/mac.yml" "$mac_repo_dir/veri
 fi
 "$mac_repo_dir/tests/assert-no-vault-secrets.rb" \
   "$PLATFORM_MAC_VAULT_FILE" "$PLATFORM_MAC_VAULT_PASSWORD_FILE" "$expected_failure"
-grep -qF 'The managed Komga library is absent, duplicated, surplus, or drifted.' \
+grep -qF 'The managed Komga library is absent, duplicated at its root, conflicted, or drifted.' \
   "$expected_failure"

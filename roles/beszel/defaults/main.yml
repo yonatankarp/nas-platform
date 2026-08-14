@@ -3,6 +3,19 @@ beszel_port: 8090
 beszel_app_url: "http://{{ platform_public_host }}:{{ beszel_port }}"
 beszel_system_name: ASUSTOR-AS6704T
 
+# Beszel persists one sample per minute. Three samples of freshness tolerance
+# avoids false negatives from scheduling jitter while still rejecting a healthy
+# agent that has stopped writing collection records. A 90-second poll spans the
+# next expected sample without making verification unbounded.
+# Host inventories must select an exact supported policy. Empty defaults fail
+# closed if a new host class does not declare its telemetry capability.
+beszel_required_telemetry_categories: []
+beszel_require_gpu_telemetry: false
+beszel_telemetry_freshness_seconds: 180
+beszel_telemetry_poll_timeout_seconds: 90
+beszel_telemetry_request_timeout_seconds: 3
+beszel_telemetry_poll_delay_seconds: 3
+
 # Alerts to maintain for the monitored system. name must be one of Beszel's alert
 # types; value and min are its threshold and sustain period.
 beszel_alerts:

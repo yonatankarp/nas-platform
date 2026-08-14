@@ -54,6 +54,8 @@ BASE_FIXTURE_PATHS = %w[
   roles/vault_contract/meta/argument_specs.yml
   roles/vault_contract/tasks/main.yml
   services/manifest.yml
+  services/tinymediamanager/compose.integration.yml
+  services/tinymediamanager/compose.mac.yml
   templates/vault-plain.yml.j2
   tests/contracts/registry.yml
   tests/compose_metadata_filter_test.yml
@@ -66,6 +68,8 @@ BASE_FIXTURE_PATHS = %w[
   tests/mac_inventory_path_test.yml
   tests/managed_user_state_filter_test.py
   tests/ntfy_verify_execution_test.rb
+  tests/komga_library_reconciliation_test.rb
+  tests/paperless_mail_reconciliation_test.rb
   tests/safe_slurp_test.py
   tests/safe_slurp_test.yml
   tests/mac/cleanup.sh
@@ -73,6 +77,8 @@ BASE_FIXTURE_PATHS = %w[
   tests/mac/fixtures.sh
   tests/mac/lib.sh
   tests/mac/manual-review.md
+  tests/mac/manual-validation-handoff.rb
+  tests/mac/manual-validation-runner-test.sh
   tests/mac/report.rb
   tests/mac/run.sh
   tests/mac/run-phase-status-test.sh
@@ -289,6 +295,14 @@ def implement_paperless(root)
     services:
       paperless:
         image: ghcr.io/paperless-ngx/paperless-ngx:2.0@sha256:#{'0' * 64}
+        restart: unless-stopped
+        logging:
+          driver: json-file
+          options:
+            max-size: 10m
+            max-file: "3"
+      gotenberg:
+        image: docker.io/gotenberg/gotenberg:8.35.0@sha256:a16a14e1f18a71405624bc028e90d4ef50ea774c352b303639c10bf7b141f760
         restart: unless-stopped
         logging:
           driver: json-file
@@ -1212,6 +1226,23 @@ expect_failure(failures, "Mac cleanup self-test removed",
                "validate-policy.sh must run tests/mac/cleanup.sh --self-test") do |root|
   path = File.join(root, "tests", "validate-policy.sh")
   File.write(path, File.read(path).gsub("tests/mac/cleanup.sh --self-test", "true"))
+end
+
+{
+  "Beszel telemetry semantic probe" => "ruby tests/beszel_telemetry_probe_test.rb",
+  "Beszel telemetry deadline regression" => "ruby tests/beszel_telemetry_timeout_test.rb",
+  "Beszel telemetry Ansible regression" => "ruby tests/beszel_telemetry_ansible_test.rb",
+  "Beszel telemetry production probe regression" => "python3 tests/beszel_telemetry_module_test.py",
+  "Beszel telemetry Mac hook regression" => "tests/mac/beszel-telemetry-hook-test.sh",
+  "Komga library reconciliation regression" => "ruby tests/komga_library_reconciliation_test.rb",
+  "Paperless mail reconciliation regression" => "ruby tests/paperless_mail_reconciliation_test.rb",
+  "Mac manual-validation runner regression" => "tests/mac/manual-validation-runner-test.sh"
+}.each do |name, command|
+  expect_failure(failures, "#{name} removed from policy validation",
+                 "validate-policy.sh must run #{command}") do |root|
+    path = File.join(root, "tests", "validate-policy.sh")
+    File.write(path, File.read(path).lines.reject { |line| line.strip == command }.join)
+  end
 end
 
 expect_failure(failures, "Mac raw log body retained",

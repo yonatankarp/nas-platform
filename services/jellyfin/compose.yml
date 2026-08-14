@@ -9,6 +9,8 @@ services:
   jellyfin:
     container_name: jellyfin
     image: docker.io/jellyfin/jellyfin:10.11.11@sha256:aefb67e6a7ff1debdd154a78a7bbb780fd0c873d8639210a7f6a2016ad2b35db
+    labels:
+      dev.dozzle.name: jellyfin
     user: "1000:100"
     # The NAS render node is owned by root, so opening it needs the root group
     # as a supplementary group. The process itself still runs as 1000:100.

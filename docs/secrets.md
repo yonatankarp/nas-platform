@@ -673,7 +673,7 @@ source of values. Every key below is required.
 - Audiobookshelf: `vault_audiobookshelf_admin_username`, `vault_audiobookshelf_admin_password`. Recover the deployed administrator identity from the current application and its matching password from the password manager; preserve the pair unchanged.
 - Dozzle: `vault_dozzle_admin_username`, `vault_dozzle_admin_password`, `vault_dozzle_admin_password_hash`. Recover the administrator identity and clear password from the password manager/current Dozzle login, and recover its stored bcrypt hash from the deployed protected users file or current Portainer/Compose configuration. The clear password and hash must be the matching pair for that login; do not replace one independently. The hash is a 60-character bcrypt value: a `$2a$`, `$2b$`, or `$2y$` marker, a two-digit cost, and the bcrypt payload.
 - Immich: `vault_immich_admin_email`, `vault_immich_admin_password`, `vault_immich_db_name`, `vault_immich_db_username`, `vault_immich_db_password`. Recover the administrator identity from the current application and password manager. Recover the database name, user, and password together from the current Portainer/Compose environment and database stack, checking them against the database that owns the existing data. The email must contain a nonempty local and domain part. Database identifiers must start with a letter or underscore and then contain only letters, digits, underscores, or hyphens.
-- Jellyfin: `vault_jellyfin_admin_username`, `vault_jellyfin_admin_password`. Recover the deployed administrator identity from the current application and its matching password from the password manager; preserve the pair unchanged.
+- Jellyfin: `vault_jellyfin_admin_username`, `vault_jellyfin_admin_password`, `vault_jellyfin_opensubtitles_username`, `vault_jellyfin_opensubtitles_password`. The managed administrator username is exactly `Yonatan`; recover its matching password from the password manager. Recover the existing OpenSubtitles account credentials from the password manager or deployed Jellyfin plugin configuration. Preserve both credential pairs unchanged; the example and generated plaintext placeholders are not valid deployment values.
 - Komga: `vault_komga_admin_email`, `vault_komga_admin_password`. Recover the deployed administrator identity from the current application and its matching password from the password manager. The email must contain a nonempty local and domain part.
 - ntfy: `vault_ntfy_admin_user`, `vault_ntfy_admin_password`, `vault_ntfy_admin_password_hash`, `vault_ntfy_dozzle_password_hash`, `vault_ntfy_dozzle_token`, `vault_ntfy_beszel_password_hash`, `vault_ntfy_beszel_token`. Recover the administrator name and clear password from the password manager/current login, and recover the administrator hash, integration-user hashes, and access tokens from the deployed ntfy configuration and authentication data. The administrator password and hash must be the matching deployed pair. Preserve each Dozzle or Beszel hash with that same integration identity's token; do not infer a clear password from a hash or create a replacement token. Each hash has the bcrypt shape described above. Each access token is `tk_` followed by 29 lowercase letters or digits, and the Dozzle and Beszel tokens must be distinct.
 - Beszel: `vault_beszel_superuser_email`, `vault_beszel_superuser_password`, `vault_beszel_app_user_email`, `vault_beszel_app_user_password`, `vault_beszel_agent_key`, `vault_beszel_universal_token`, `vault_beszel_hub_private_key`. Recover both deployed hub identities from the current Beszel hub and their matching passwords from the password manager. Recover the universal token and public agent key from the deployed agent configuration, and recover the matching OpenSSH Ed25519 private key from the hub's protected key file. If the agent's public value is unavailable, derive its public half from the recovered private key as described above; if both sources exist, compare them. Never regenerate or replace the pair. Both emails need nonempty local and domain parts. The universal token must be a lowercase RFC 4122 UUID. The agent key contains exactly two whitespace-separated fields, the `ssh-ed25519` type and its base64 public key, with no comment.
@@ -758,19 +758,18 @@ identity remains under the separate primary credential contract.
 #### ntfy managed users
 
 `username` is the login identity; `password` is its preserved clear credential;
-`password_hash` is the matching bcrypt value; `role` is `user` or `admin`
-(`user` is the least-privilege default); `access` is a list of exact literal
-`topic` and `permission` mappings; and
+`password_hash` is the matching bcrypt value; `role` is exactly `user` because
+managed entries are interactive nonadministrative accounts; `access` is a list
+of exact literal `topic` and `permission` mappings; and
 `tokens` is a unique list of owned `tk_` tokens, which may be empty. Supported
 permissions are `read-only`, `write-only`, `read-write`, and `deny`. Managed
 topics use only letters, digits, `_`, and `-`, with a maximum of 64 characters;
 wildcards, URL separators, whitespace, commas, and colons are not supported by
 this exact verifier. Usernames follow ntfy's native letters, digits, `_`, `-`,
-`.`, `+`, and `@` contract. Because ntfy administrators always have read-write
-access to every topic and reject ACL provisioning, administrator declarations
-may contain only `read-write` topic entries; the role omits those redundant ACL
-rows and verifies both reads and writes. Managed identities cannot duplicate
-the administrator or the Dozzle and Beszel publishers. The role treats the
+`.`, `+`, and `@` contract. Publisher and administrator identities remain under
+their separate noninteractive and primary-credential contracts. Managed
+identities cannot duplicate the administrator or the Dozzle and Beszel
+publishers. The role treats the
 prior rendered ntfy `.env` as the declarative ownership record and confirms
 database identities with the pinned `ntfy user list` command before rendering a
 replacement. An owned identity must retain its exact prior hash; a same-name

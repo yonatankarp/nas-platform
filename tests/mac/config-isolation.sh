@@ -46,9 +46,11 @@ render() {
       > "$temporary_dir/$label-dozzle.json"
 
   env PLATFORM_PROJECT_NAME="$base_name" AUDIOBOOKSHELF_HOST_PORT="$audiobookshelf_port" \
+    PLATFORM_DOCKER_ROOT="$temporary_dir/$label" \
     AUDIOBOOKSHELF_CONFIG_PATH="$temporary_dir/$label-audiobookshelf-config" \
     AUDIOBOOKSHELF_METADATA_PATH="$temporary_dir/$label-audiobookshelf-metadata" \
-    AUDIOBOOKSHELF_MEDIA_PATH="$temporary_dir/$label-audiobooks" TZ=UTC \
+    AUDIOBOOKSHELF_MEDIA_PATH="$temporary_dir/$label-audiobooks" \
+    AUDIOBOOKSHELF_BACKUP_PATH="$temporary_dir/$label/audiobookshelf/backups" TZ=UTC \
     docker compose --project-name "$base_name-audiobookshelf" \
       -f "$repo_dir/services/audiobookshelf/compose.yml" \
       -f "$repo_dir/services/audiobookshelf/compose.mac.yml" config --format json \
@@ -141,6 +143,42 @@ def published(config, service)
   config.dig("services", service, "ports", 0, "published").to_s
 end
 
+def bind_source(config, service, target)
+  mounts = config.dig("services", service, "volumes") || []
+  matches = mounts.select { |mount| mount["type"] == "bind" && mount["target"] == target }
+  raise "#{service} has an ambiguous #{target} bind" unless matches.length == 1
+
+  matches.fetch(0).fetch("source")
+end
+
+def assert_dozzle_aliases_and_distinct_names(first, second, stack)
+  first.fetch("services").each_key do |service|
+    first_alias = first.dig("services", service, "labels", "dev.dozzle.name")
+    second_alias = second.dig("services", service, "labels", "dev.dozzle.name")
+    raise "#{stack} first #{service} Dozzle name is not the service key" unless first_alias == service
+    raise "#{stack} second #{service} Dozzle name is not the service key" unless second_alias == service
+
+    first_name = first.dig("services", service, "container_name")
+    second_name = second.dig("services", service, "container_name")
+    raise "#{stack} #{service} container name is absent" unless first_name && second_name
+    raise "#{stack} #{service} container names collide" if first_name == second_name
+  end
+end
+
+[
+  [first_beszel, second_beszel, "Beszel"],
+  [first_ntfy, second_ntfy, "ntfy"],
+  [first_dozzle, second_dozzle, "Dozzle"],
+  [first_audiobookshelf, second_audiobookshelf, "Audiobookshelf"],
+  [first_komga, second_komga, "Komga"],
+  [first_tinymediamanager, second_tinymediamanager, "tinyMediaManager"],
+  [first_jellyfin, second_jellyfin, "Jellyfin"],
+  [first_immich, second_immich, "Immich"],
+  [first_paperless, second_paperless, "Paperless"]
+].each do |first, second, stack|
+  assert_dozzle_aliases_and_distinct_names(first, second, stack)
+end
+
 raise "Beszel project namespaces collide" if first_beszel["name"] == second_beszel["name"]
 raise "ntfy project namespaces collide" if first_ntfy["name"] == second_ntfy["name"]
 raise "Dozzle project namespaces collide" if first_dozzle["name"] == second_dozzle["name"]
@@ -171,6 +209,12 @@ raise "Audiobookshelf container names collide" if
     second_audiobookshelf.dig("services", "audiobookshelf", "container_name")
 raise "Audiobookshelf published ports collide" if
   published(first_audiobookshelf, "audiobookshelf") == published(second_audiobookshelf, "audiobookshelf")
+raise "first Audiobookshelf backup bind escaped its Docker state root" unless
+  bind_source(first_audiobookshelf, "audiobookshelf", "/metadata/backups") ==
+    File.join(directory, "first/audiobookshelf/backups")
+raise "second Audiobookshelf backup bind escaped its Docker state root" unless
+  bind_source(second_audiobookshelf, "audiobookshelf", "/metadata/backups") ==
+    File.join(directory, "second/audiobookshelf/backups")
 raise "Komga container names collide" if first_komga.dig("services", "komga", "container_name") ==
                                          second_komga.dig("services", "komga", "container_name")
 raise "Komga published ports collide" if published(first_komga, "komga") == published(second_komga, "komga")

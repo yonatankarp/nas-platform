@@ -54,7 +54,8 @@ def evidence(service)
     identity["permissions"] = ["ADMIN"]
     { "identities" => [identity], "record_counts" => { "books" => 1, "libraries" => 1, "series" => 1, "users" => 1 },
       "fixture_sha256" => { "book" => "e" * 64 },
-      "managed_settings" => { "library_name" => "Books" } }
+      "managed_settings" => { "library_id" => "legacy-library", "library_name" => "Books",
+                                "library_root" => "/data" } }
   when "ntfy"
     identity["permissions"] = ["admin"]
     { "identities" => [identity], "record_counts" => { "access_rules" => 1, "users" => 1 },

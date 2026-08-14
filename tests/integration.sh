@@ -229,8 +229,9 @@ printf '%s\n' undeclared-service > \
 # by the real service deployment.
 manifest_controller="$sandbox/manifest-controller"
 manifest_docker_root="$sandbox/manifest-root/Docker"
+manifest_media_root="$sandbox/manifest-root/media"
 mkdir -p "$manifest_controller/roles" "$manifest_controller/services/demo" \
-  "$manifest_docker_root"
+  "$manifest_docker_root" "$manifest_media_root"
 cp -R "$repo_dir/roles/deployment_bundle" "$manifest_controller/roles/"
 cat > "$manifest_controller/services/manifest.yml" <<'EOF'
 ---
@@ -432,6 +433,48 @@ else
 fi
 printf 'host address: %s\n' "$nas_address"
 
+paperless_fixture_preseeded=false
+media_fixtures_preseeded=false
+case "$suite:$run_service_scenarios" in
+  audiobookshelf:true|full:true)
+    env \
+      PLATFORM_MEDIA_ROOT="$sandbox/volume2" \
+      PLATFORM_REPORT_ROOT="$sandbox/reports" \
+      PLATFORM_AUDIOBOOKSHELF_PORT=13378 \
+      "$repo_dir/tests/contracts/audiobookshelf.sh" seed-fixture-only
+    ;;
+esac
+case "$suite:$run_service_scenarios" in
+  paperless:true|full:true)
+    env \
+      PLATFORM_MEDIA_ROOT="$sandbox/volume2" \
+      PLATFORM_REPORT_ROOT="$sandbox/reports" \
+      PLATFORM_PAPERLESS_PORT=8000 \
+      "$repo_dir/tests/contracts/paperless.sh" seed-fixture-only
+    paperless_fixture_preseeded=true
+    ;;
+esac
+case "$suite:$run_service_scenarios" in
+  media:true|full:true)
+    env \
+      PLATFORM_MEDIA_ROOT="$sandbox/volume2" \
+      PLATFORM_REPORT_ROOT="$sandbox/reports" \
+      "$repo_dir/tests/contracts/komga.sh" seed-fixture-only
+    env \
+      PLATFORM_DOCKER_ROOT="$sandbox/volume1/Docker" \
+      PLATFORM_MEDIA_ROOT="$sandbox/volume2" \
+      PLATFORM_REPORT_ROOT="$sandbox/reports" \
+      "$repo_dir/tests/contracts/tinymediamanager.sh" seed-fixture-only
+    env \
+      PLATFORM_KIND=integration \
+      PLATFORM_DOCKER_ROOT="$sandbox/volume1/Docker" \
+      PLATFORM_MEDIA_ROOT="$sandbox/volume2" \
+      PLATFORM_REPORT_ROOT="$sandbox/reports" \
+      "$repo_dir/tests/contracts/jellyfin.sh" seed-fixture-only
+    media_fixtures_preseeded=true
+    ;;
+esac
+
 docker run --rm \
   --network host \
   -v /var/run/docker.sock:/var/run/docker.sock \
@@ -444,6 +487,8 @@ docker run --rm \
   -e INTEGRATION_SUITE="$suite" \
   -e INTEGRATION_TAGS="$suite_tags" \
   -e INTEGRATION_RUN_SERVICE_SCENARIOS="$run_service_scenarios" \
+  -e PLATFORM_PAPERLESS_FIXTURE_PRESEEDED="$paperless_fixture_preseeded" \
+  -e PLATFORM_MEDIA_FIXTURES_PRESEEDED="$media_fixtures_preseeded" \
   -w /repo \
   "$runner_image" \
   sh -eu -c "
@@ -473,6 +518,25 @@ docker run --rm \
     chmod 0700 \"\$vault_directory\"
     TMPDIR='$sandbox' /repo/tests/generate-ephemeral-vault.sh \
       --output \"\$vault_file\" --password-file \"\$vault_password_file\"
+
+    fixture_input_directory='$sandbox/protected-inputs'
+    fixture_vars_file=\"\$fixture_input_directory/immich-fixture-vars.yml\"
+    fixture_vault_view=\"\$fixture_input_directory/.immich-vault-view.yml\"
+    mkdir \"\$fixture_input_directory\"
+    chmod 0700 \"\$fixture_input_directory\"
+    cleanup_fixture_vault_view() {
+      rm -f \"\$fixture_vault_view\"
+    }
+    trap cleanup_fixture_vault_view EXIT
+    umask 077
+    ANSIBLE_VAULT_PASSWORD_FILE=\"\$vault_password_file\" ansible-vault view \
+      \"\$vault_file\" > \"\$fixture_vault_view\"
+    install -m 0600 /dev/null \"\$fixture_vars_file\"
+    ruby /repo/tests/mac/generate-immich-fixture-vars.rb \
+      \"\$fixture_vars_file\" /repo/inventory/group_vars/all/main.yml \
+      < \"\$fixture_vault_view\"
+    chmod 0600 \"\$fixture_vars_file\"
+    rm -f \"\$fixture_vault_view\"
 
     cleanup_vault() {
       TMPDIR='$sandbox' /repo/tests/generate-ephemeral-vault.sh --cleanup \
@@ -584,6 +648,7 @@ docker run --rm \
         -i inventory/local.yml \
         --vault-password-file \"\$vault_password_file\" \
         -e @\"\$vault_file\" \
+        -e @\"\$fixture_vars_file\" \
         -e platform_vault_file=\"\$vault_file\" \
         -e nas_docker_root=$sandbox/volume1/Docker \
         -e nas_media_root=$sandbox/volume2 \
@@ -628,6 +693,7 @@ docker run --rm \
         PLATFORM_FIXTURE_ROOT='$sandbox/fixtures' \
         PLATFORM_REPORT_ROOT='$sandbox/reports' \
         PLATFORM_AUDIOBOOKSHELF_PORT=13378 \
+        PLATFORM_AUDIOBOOKSHELF_CONTAINER=audiobookshelf \
         /repo/tests/contracts/audiobookshelf.sh \"\$@\"
     }
 
@@ -674,6 +740,7 @@ docker run --rm \
         PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
         PLATFORM_FIXTURE_ROOT='$sandbox/fixtures' \
         PLATFORM_REPORT_ROOT='$sandbox/reports' \
+        PLATFORM_MAC_FIXTURE_VARS_FILE=\"\$fixture_vars_file\" \
         /repo/tests/contracts/immich.sh \"\$@\"
     }
 
@@ -978,6 +1045,7 @@ docker run --rm \
     ansible-playbook -i localhost, \
       '$manifest_controller/manifest-fixture.yml' \
       -e nas_docker_root='$manifest_docker_root' \
+      -e nas_media_root='$manifest_media_root' \
       -e platform_release_id='$manifest_fixture_sha'
     ruby /repo/tests/verify_deployment_manifest.rb \
       '$manifest_docker_root/nas-platform/current/manifest.yml' \

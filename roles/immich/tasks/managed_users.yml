@@ -17,12 +17,31 @@
       - immich_managed_users_listing.json | type_debug == 'list'
     fail_msg: Immich returned an unsupported users response; reconciliation refuses a partial identity view.
 
+- name: Initialize normalized Immich user index
+  ansible.builtin.set_fact:
+    immich_managed_users_by_normalized_email: {}
+  no_log: true
+
+- name: Index Immich users by normalized email
+  ansible.builtin.set_fact:
+    immich_managed_users_by_normalized_email: >-
+      {{ immich_managed_users_by_normalized_email |
+         combine(dict([(
+           item.email | trim | lower,
+           immich_managed_users_by_normalized_email.get(item.email | trim | lower, []) + [item]
+         )])) }}
+  loop: "{{ immich_managed_users_listing.json }}"
+  loop_control:
+    label: immich-user
+  no_log: true
+
 - name: Resolve normalized Immich managed identities
   ansible.builtin.set_fact:
     immich_managed_user_matches: >-
       {{ (immich_managed_user_matches | default({})) |
-         combine(dict([(item.email, immich_managed_users_listing.json |
-           selectattr('email', 'equalto', item.email) | list)])) }}
+         combine(dict([(item.email,
+           immich_managed_users_by_normalized_email.get(item.email | trim | lower, [])
+         )])) }}
   loop: "{{ vault_managed_immich_users }}"
   loop_control:
     label: immich-managed-user
@@ -38,13 +57,6 @@
   ansible.builtin.assert:
     that:
       - immich_managed_user_matches[item.email] | length <= 1
-      - >-
-        immich_managed_users_listing.json | map(attribute='email') |
-        map('trim') | map('lower') | select('equalto', item.email | trim | lower) |
-        list | length == immich_managed_user_matches[item.email] | length
-      - >-
-        immich_managed_user_matches[item.email] | length == 0 or
-        immich_managed_user_matches[item.email][0].email == item.email
     fail_msg: Immich contains a duplicate normalized managed email.
   loop: "{{ vault_managed_immich_users }}"
   loop_control:
@@ -58,6 +70,84 @@
         immich_managed_user_matches[item.email] | length == 0 or
         immich_managed_user_matches[item.email][0].id | string is match('^[0-9A-Fa-f-]{36}$')
     fail_msg: Immich returned an unsafe managed-user API identifier.
+  loop: "{{ vault_managed_immich_users }}"
+  loop_control:
+    label: immich-managed-user
+  no_log: true
+
+- name: Normalize Immich managed user preference policy emails
+  ansible.builtin.set_fact:
+    immich_managed_user_profile_by_normalized_email: >-
+      {{ dict(
+           immich_managed_user_preference_profile_by_email.keys() |
+           map('trim') | map('lower') |
+           zip(immich_managed_user_preference_profile_by_email.values())
+         ) }}
+    immich_managed_user_overrides_by_normalized_email: >-
+      {{ dict(
+           immich_managed_user_preference_overrides.keys() |
+           map('trim') | map('lower') |
+           zip(immich_managed_user_preference_overrides.values())
+         ) }}
+  no_log: true
+
+- name: Resolve Immich managed user preference profiles
+  ansible.builtin.set_fact:
+    immich_managed_user_desired_profiles: >-
+      {{ (immich_managed_user_desired_profiles | default({})) |
+         combine({item.email:
+           immich_managed_user_preference_profiles[
+             immich_managed_user_profile_by_normalized_email.get(
+               item.email | trim | lower, immich_managed_user_preference_profile_default
+             )
+           ] | combine(
+             immich_managed_user_overrides_by_normalized_email.get(item.email | trim | lower, {}),
+             recursive=True
+           )
+         }) }}
+  loop: "{{ vault_managed_immich_users }}"
+  loop_control:
+    label: immich-managed-user
+  no_log: true
+
+- name: Validate effective Immich managed user preference policies
+  ansible.builtin.assert:
+    that:
+      - immich_managed_user_desired_profiles[item.email] is mapping
+      - >-
+        'avatar' not in immich_managed_user_desired_profiles[item.email] or
+        immich_managed_user_desired_profiles[item.email].avatar is mapping
+      - >-
+        'avatar' not in immich_managed_user_desired_profiles[item.email] or
+        'color' not in immich_managed_user_desired_profiles[item.email].avatar or
+        immich_managed_user_desired_profiles[item.email].avatar.color in
+        ['primary', 'pink', 'red', 'yellow', 'blue', 'green', 'purple', 'orange',
+         'gray', 'amber']
+    fail_msg: Immich managed-user preference policy is unsupported; values are redacted.
+  loop: "{{ vault_managed_immich_users }}"
+  loop_control:
+    label: immich-managed-user
+  no_log: true
+
+- name: Split Immich preference and durable avatar projections
+  ansible.builtin.set_fact:
+    immich_managed_user_desired_preferences: >-
+      {{ (immich_managed_user_desired_preferences | default({})) |
+         combine({item.email:
+           (immich_managed_user_desired_profiles[item.email] |
+            dict2items |
+            rejectattr('key', 'equalto', 'avatar') |
+            list |
+            items2dict)
+         }) }}
+    immich_managed_user_desired_avatar_colors: >-
+      {{ (immich_managed_user_desired_avatar_colors | default({})) |
+         combine(
+           {item.email: immich_managed_user_desired_profiles[item.email].avatar.color}
+           if 'avatar' in immich_managed_user_desired_profiles[item.email] and
+              'color' in immich_managed_user_desired_profiles[item.email].avatar
+           else {}
+         ) }}
   loop: "{{ vault_managed_immich_users }}"
   loop_control:
     label: immich-managed-user
@@ -114,7 +204,120 @@
   loop: "{{ immich_managed_user_authentication.results | default([]) | rejectattr('skipped', 'defined') | list }}"
   loop_control:
     label: immich-managed-user
-  when: not ansible_check_mode
+  when:
+    - not ansible_check_mode
+  no_log: true
+
+- name: Read existing Immich managed user preferences before creation
+  ansible.builtin.uri:
+    url: >-
+      {{ immich_api }}/admin/users/{{
+         immich_managed_user_matches[item.email][0].id | urlencode }}/preferences
+    headers:
+      Authorization: "Bearer {{ immich_managed_users_token }}"
+    status_code: [200]
+    return_content: true
+  register: immich_existing_managed_user_preference_reads
+  when:
+    - immich_managed_users_phase == 'reconcile'
+    - immich_managed_user_matches[item.email] | length == 1
+  loop: "{{ vault_managed_immich_users }}"
+  loop_control:
+    label: immich-managed-user
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Read existing Immich managed users before creation
+  ansible.builtin.uri:
+    url: >-
+      {{ immich_api }}/admin/users/{{
+         immich_managed_user_matches[item.email][0].id | urlencode }}
+    headers:
+      Authorization: "Bearer {{ immich_managed_users_token }}"
+    status_code: [200]
+    return_content: true
+  register: immich_existing_managed_user_reads
+  when:
+    - immich_managed_users_phase == 'reconcile'
+    - immich_managed_user_matches[item.email] | length == 1
+  loop: "{{ vault_managed_immich_users }}"
+  loop_control:
+    label: immich-managed-user
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require supported existing Immich managed user preference responses
+  ansible.builtin.assert:
+    that:
+      - item.json | type_debug == 'dict'
+      - >-
+        ['albums', 'cast', 'download', 'emailNotifications', 'folders', 'memories',
+         'people', 'purchase', 'ratings', 'recentlyAdded', 'sharedLinks', 'tags'] |
+        difference(item.json.keys() | list) | length == 0
+      - item.json.albums is mapping
+      - item.json.cast is mapping
+      - item.json.download is mapping
+      - item.json.emailNotifications is mapping
+      - item.json.folders is mapping
+      - item.json.memories is mapping
+      - item.json.people is mapping
+      - item.json.purchase is mapping
+      - item.json.ratings is mapping
+      - item.json.recentlyAdded is mapping
+      - item.json.sharedLinks is mapping
+      - item.json.tags is mapping
+      - item.json.albums.defaultAssetOrder in ['asc', 'desc']
+      - item.json.cast.gCastEnabled is boolean
+      - item.json.download.archiveSize is integer
+      - item.json.download.includeEmbeddedVideos is boolean
+      - item.json.emailNotifications.enabled is boolean
+      - item.json.emailNotifications.albumInvite is boolean
+      - item.json.emailNotifications.albumUpdate is boolean
+      - item.json.folders.enabled is boolean
+      - item.json.folders.sidebarWeb is boolean
+      - item.json.memories.enabled is boolean
+      - item.json.memories.duration is integer
+      - item.json.people.enabled is boolean
+      - item.json.people.sidebarWeb is boolean
+      - item.json.people.minimumFaces is integer
+      - item.json.purchase.showSupportBadge is boolean
+      - item.json.purchase.hideBuyButtonUntil is string
+      - item.json.ratings.enabled is boolean
+      - item.json.recentlyAdded.sidebarWeb is boolean
+      - item.json.sharedLinks.enabled is boolean
+      - item.json.sharedLinks.sidebarWeb is boolean
+      - item.json.tags.enabled is boolean
+      - item.json.tags.sidebarWeb is boolean
+    fail_msg: Immich returned an unsupported existing managed user preference response.
+  loop: >-
+    {{ immich_existing_managed_user_preference_reads.results | default([]) |
+       rejectattr('skipped', 'defined') | list }}
+  loop_control:
+    label: immich-managed-user
+  no_log: true
+
+- name: Require non-administrator Immich managed preference targets
+  ansible.builtin.assert:
+    that:
+      - item.json | type_debug == 'dict'
+      - item.json.id == immich_managed_user_matches[item.item.email][0].id
+      - item.json.email | trim | lower == item.item.email | trim | lower
+      - item.json.status == 'active'
+      - item.json.isAdmin is boolean
+      - not item.json.isAdmin
+      - >-
+        item.item.email not in immich_managed_user_desired_avatar_colors or
+        item.json.avatarColor is string
+    fail_msg: >-
+      An existing Immich managed preference target is inactive, unsupported, or an administrator;
+      batch reconciliation refuses every mutation.
+  loop: >-
+    {{ immich_existing_managed_user_reads.results | default([]) |
+       rejectattr('skipped', 'defined') | list }}
+  loop_control:
+    label: immich-managed-user
   no_log: true
 
 - name: Report planned Immich managed-user creation
@@ -140,6 +343,7 @@
       email: "{{ item.email }}"
       password: "{{ item.password }}"
       name: "{{ item.name }}"
+      shouldChangePassword: false
     status_code: [201]
   register: immich_managed_user_creation
   when:
@@ -167,17 +371,38 @@
   check_mode: false
   no_log: true
 
+- name: Initialize refreshed normalized Immich user index
+  ansible.builtin.set_fact:
+    immich_refreshed_users_by_normalized_email: {}
+  when:
+    - immich_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+  no_log: true
+
+- name: Index refreshed Immich users by normalized email
+  ansible.builtin.set_fact:
+    immich_refreshed_users_by_normalized_email: >-
+      {{ immich_refreshed_users_by_normalized_email |
+         combine(dict([(
+           item.email | trim | lower,
+           immich_refreshed_users_by_normalized_email.get(item.email | trim | lower, []) + [item]
+         )])) }}
+  loop: "{{ immich_managed_users_refreshed_listing.json | default([]) }}"
+  loop_control:
+    label: immich-user
+  when:
+    - immich_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+  no_log: true
+
 - name: Require exact newly created Immich managed identities
   ansible.builtin.assert:
     that:
       - immich_managed_users_refreshed_listing.json | type_debug == 'list'
-      - immich_managed_users_refreshed_listing.json | selectattr('email', 'equalto', item.item.email) | list | length == 1
+      - immich_refreshed_users_by_normalized_email.get(item.item.email | trim | lower, []) | length == 1
       - >-
-        immich_managed_users_refreshed_listing.json | map(attribute='email') |
-        map('trim') | map('lower') | select('equalto', item.item.email | trim | lower) | list | length == 1
-      - >-
-        (immich_managed_users_refreshed_listing.json |
-         selectattr('email', 'equalto', item.item.email) | first).id | string is match('^[0-9A-Fa-f-]{36}$')
+        immich_refreshed_users_by_normalized_email[item.item.email | trim | lower][0].id |
+        string is match('^[0-9A-Fa-f-]{36}$')
     fail_msg: Immich did not return one exact safe newly created managed identity.
   loop: "{{ immich_managed_user_creation.results | default([]) | rejectattr('skipped', 'defined') | list }}"
   loop_control:
@@ -215,8 +440,7 @@
       - item.json.userEmail | default('') | trim | lower == item.item.item.email | trim | lower
       - >-
         item.json.userId | default('') ==
-        (immich_managed_users_refreshed_listing.json |
-         selectattr('email', 'equalto', item.item.item.email) | first).id
+        immich_refreshed_users_by_normalized_email[item.item.item.email | trim | lower][0].id
     fail_msg: >-
       Newly created Immich managed user does not accept its vault password. Run the reviewed
       credential-migration procedure; Ansible will not reset it or continue reconciliation.
@@ -252,10 +476,11 @@
     immich_effective_managed_user_matches: >-
       {{ (immich_effective_managed_user_matches | default({})) |
          combine(dict([(item.email,
-           (immich_managed_users_refreshed_listing.json
-            if immich_managed_users_refreshed_listing.json is defined
-            else immich_managed_users_listing.json) |
-           selectattr('email', 'equalto', item.email) | list)])) }}
+           (immich_refreshed_users_by_normalized_email
+            if immich_managed_users_phase == 'reconcile' and
+               immich_refreshed_users_by_normalized_email is defined
+            else immich_managed_users_by_normalized_email).get(item.email | trim | lower, [])
+         )])) }}
   loop: "{{ vault_managed_immich_users }}"
   loop_control:
     label: immich-managed-user
@@ -298,12 +523,118 @@
     label: immich-managed-user
   no_log: true
 
+- name: Read Immich managed user preferences
+  ansible.builtin.uri:
+    url: >-
+      {{ immich_api }}/admin/users/{{
+         immich_effective_managed_user_matches[item.email][0].id | urlencode }}/preferences
+    headers:
+      Authorization: "Bearer {{ immich_managed_users_token }}"
+    status_code: [200]
+    return_content: true
+  register: immich_managed_user_preference_reads
+  when: immich_effective_managed_user_matches[item.email] | length == 1
+  loop: "{{ vault_managed_immich_users }}"
+  loop_control:
+    label: immich-managed-user
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require supported Immich managed user preference responses
+  ansible.builtin.assert:
+    that:
+      - item.json | type_debug == 'dict'
+      - >-
+        ['albums', 'cast', 'download', 'emailNotifications', 'folders', 'memories',
+         'people', 'purchase', 'ratings', 'recentlyAdded', 'sharedLinks', 'tags'] |
+        difference(item.json.keys() | list) | length == 0
+      - item.json.albums is mapping
+      - item.json.cast is mapping
+      - item.json.download is mapping
+      - item.json.emailNotifications is mapping
+      - item.json.folders is mapping
+      - item.json.memories is mapping
+      - item.json.people is mapping
+      - item.json.purchase is mapping
+      - item.json.ratings is mapping
+      - item.json.recentlyAdded is mapping
+      - item.json.sharedLinks is mapping
+      - item.json.tags is mapping
+      - item.json.albums.defaultAssetOrder in ['asc', 'desc']
+      - item.json.cast.gCastEnabled is boolean
+      - item.json.download.archiveSize is integer
+      - item.json.download.includeEmbeddedVideos is boolean
+      - item.json.emailNotifications.enabled is boolean
+      - item.json.emailNotifications.albumInvite is boolean
+      - item.json.emailNotifications.albumUpdate is boolean
+      - item.json.folders.enabled is boolean
+      - item.json.folders.sidebarWeb is boolean
+      - item.json.memories.enabled is boolean
+      - item.json.memories.duration is integer
+      - item.json.people.enabled is boolean
+      - item.json.people.sidebarWeb is boolean
+      - item.json.people.minimumFaces is integer
+      - item.json.purchase.showSupportBadge is boolean
+      - item.json.purchase.hideBuyButtonUntil is string
+      - item.json.ratings.enabled is boolean
+      - item.json.recentlyAdded.sidebarWeb is boolean
+      - item.json.sharedLinks.enabled is boolean
+      - item.json.sharedLinks.sidebarWeb is boolean
+      - item.json.tags.enabled is boolean
+      - item.json.tags.sidebarWeb is boolean
+    fail_msg: Immich returned an unsupported managed user preference response.
+  loop: >-
+    {{ immich_managed_user_preference_reads.results | default([]) |
+       rejectattr('skipped', 'defined') | list }}
+  loop_control:
+    label: immich-managed-user
+  no_log: true
+
+- name: Read Immich managed user avatar preferences
+  ansible.builtin.uri:
+    url: >-
+      {{ immich_api }}/admin/users/{{
+         immich_effective_managed_user_matches[item.email][0].id | urlencode }}
+    headers:
+      Authorization: "Bearer {{ immich_managed_users_token }}"
+    status_code: [200]
+    return_content: true
+  register: immich_managed_user_avatar_reads
+  when: immich_effective_managed_user_matches[item.email] | length == 1
+  loop: "{{ vault_managed_immich_users }}"
+  loop_control:
+    label: immich-managed-user
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require supported Immich managed user avatar responses
+  ansible.builtin.assert:
+    that:
+      - item.json | type_debug == 'dict'
+      - item.json.id == immich_effective_managed_user_matches[item.item.email][0].id
+      - item.json.email | trim | lower == item.item.email | trim | lower
+      - item.json.status == 'active'
+      - item.json.isAdmin is boolean
+      - not item.json.isAdmin
+      - >-
+        item.item.email not in immich_managed_user_desired_avatar_colors or
+        item.json.avatarColor is string
+    fail_msg: Immich returned an unsupported or unsafe managed user avatar response.
+  loop: >-
+    {{ immich_managed_user_avatar_reads.results | default([]) |
+       rejectattr('skipped', 'defined') | list }}
+  loop_control:
+    label: immich-managed-user
+  no_log: true
+
 - name: Repair Immich managed-user non-secret properties
   ansible.builtin.uri:
     url: >-
       {{ immich_api }}/admin/users/{{
          immich_effective_managed_user_matches[item.email][0].id | urlencode }}
-    method: PUT
+    method: PATCH
     headers:
       Authorization: "Bearer {{ immich_managed_users_token }}"
     body_format: json
@@ -322,6 +653,173 @@
   loop_control:
     label: immich-managed-user
   changed_when: true
+  no_log: true
+
+- name: Report planned Immich managed user preference repair
+  ansible.builtin.debug:
+    msg: IMMICH_PLAN_MANAGED_USER_PREFERENCE_REPAIR
+  when:
+    - immich_managed_users_phase == 'reconcile'
+    - ansible_check_mode
+    - not item.skipped | default(false)
+    - >-
+      item.json | combine(
+        immich_managed_user_desired_preferences[item.item.email], recursive=True
+      ) != item.json
+  loop: "{{ immich_managed_user_preference_reads.results | default([]) }}"
+  loop_control:
+    label: immich-managed-user
+  changed_when: true
+  no_log: true
+
+- name: Repair Immich managed user preferences
+  ansible.builtin.uri:
+    url: >-
+      {{ immich_api }}/admin/users/{{
+         immich_effective_managed_user_matches[item.item.email][0].id | urlencode }}/preferences
+    method: PATCH
+    headers:
+      Authorization: "Bearer {{ immich_managed_users_token }}"
+    body_format: json
+    body: "{{ immich_managed_user_desired_preferences[item.item.email] }}"
+    status_code: [200]
+    return_content: true
+  when:
+    - immich_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+    - not item.skipped | default(false)
+    - >-
+      item.json | combine(
+        immich_managed_user_desired_preferences[item.item.email], recursive=True
+      ) != item.json
+  loop: "{{ immich_managed_user_preference_reads.results | default([]) }}"
+  loop_control:
+    label: immich-managed-user
+  changed_when: true
+  no_log: true
+
+- name: Report planned Immich managed user avatar preference repair
+  ansible.builtin.debug:
+    msg: IMMICH_PLAN_MANAGED_USER_AVATAR_PREFERENCE_REPAIR
+  when:
+    - immich_managed_users_phase == 'reconcile'
+    - ansible_check_mode
+    - not item.skipped | default(false)
+    - item.item.email in immich_managed_user_desired_avatar_colors
+    - item.json.avatarColor != immich_managed_user_desired_avatar_colors[item.item.email]
+  loop: "{{ immich_managed_user_avatar_reads.results | default([]) }}"
+  loop_control:
+    label: immich-managed-user
+  changed_when: true
+  no_log: true
+
+- name: Repair Immich managed user avatar preference
+  ansible.builtin.uri:
+    url: >-
+      {{ immich_api }}/admin/users/{{
+         immich_effective_managed_user_matches[item.item.email][0].id | urlencode }}
+    method: PATCH
+    headers:
+      Authorization: "Bearer {{ immich_managed_users_token }}"
+    body_format: json
+    body:
+      avatarColor: "{{ immich_managed_user_desired_avatar_colors[item.item.email] }}"
+    status_code: [200]
+    return_content: true
+  when:
+    - immich_managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+    - not item.skipped | default(false)
+    - item.item.email in immich_managed_user_desired_avatar_colors
+    - item.json.avatarColor != immich_managed_user_desired_avatar_colors[item.item.email]
+  loop: "{{ immich_managed_user_avatar_reads.results | default([]) }}"
+  loop_control:
+    label: immich-managed-user
+  changed_when: true
+  no_log: true
+
+- name: Read back Immich managed user preferences
+  ansible.builtin.uri:
+    url: >-
+      {{ immich_api }}/admin/users/{{
+         immich_effective_managed_user_matches[item.email][0].id | urlencode }}/preferences
+    headers:
+      Authorization: "Bearer {{ immich_managed_users_token }}"
+    status_code: [200]
+    return_content: true
+  register: immich_managed_user_preference_verification
+  when:
+    - immich_managed_users_phase == 'reconcile'
+    - immich_effective_managed_user_matches[item.email] | length == 1
+  loop: "{{ vault_managed_immich_users }}"
+  loop_control:
+    label: immich-managed-user
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Verify exact Immich managed user preferences
+  ansible.builtin.assert:
+    that:
+      - item.json | type_debug == 'dict'
+      - >-
+        item.json | combine(
+          immich_managed_user_desired_preferences[item.item.email], recursive=True
+        ) == item.json
+    fail_msg: An Immich managed user's declared preference leaves differ from its effective profile.
+  loop: >-
+    {{ (immich_managed_user_preference_verification.results | default([])
+        if immich_managed_users_phase == 'reconcile'
+        else immich_managed_user_preference_reads.results | default([])) |
+       rejectattr('skipped', 'defined') | list }}
+  loop_control:
+    label: immich-managed-user
+  when:
+    - not ansible_check_mode
+  no_log: true
+
+- name: Read back Immich managed user avatar preferences
+  ansible.builtin.uri:
+    url: >-
+      {{ immich_api }}/admin/users/{{
+         immich_effective_managed_user_matches[item.email][0].id | urlencode }}
+    headers:
+      Authorization: "Bearer {{ immich_managed_users_token }}"
+    status_code: [200]
+    return_content: true
+  register: immich_managed_user_avatar_verification
+  when:
+    - immich_managed_users_phase == 'reconcile'
+    - immich_effective_managed_user_matches[item.email] | length == 1
+    - item.email in immich_managed_user_desired_avatar_colors
+  loop: "{{ vault_managed_immich_users }}"
+  loop_control:
+    label: immich-managed-user
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Verify exact Immich managed user avatar preference
+  ansible.builtin.assert:
+    that:
+      - item.json | type_debug == 'dict'
+      - item.json.id == immich_effective_managed_user_matches[item.item.email][0].id
+      - item.json.email | trim | lower == item.item.email | trim | lower
+      - item.json.status == 'active'
+      - item.json.isAdmin is boolean
+      - not item.json.isAdmin
+      - item.json.avatarColor == immich_managed_user_desired_avatar_colors[item.item.email]
+    fail_msg: An Immich managed user's durable avatar preference differs from its effective profile.
+  loop: >-
+    {{ (immich_managed_user_avatar_verification.results | default([])
+        if immich_managed_users_phase == 'reconcile'
+        else immich_managed_user_avatar_reads.results | default([])) |
+       rejectattr('skipped', 'defined') | list }}
+  loop_control:
+    label: immich-managed-user
+  when:
+    - not ansible_check_mode
+    - item.item.email in immich_managed_user_desired_avatar_colors
   no_log: true
 
 - name: Verify exact Immich managed users

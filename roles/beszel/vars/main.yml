@@ -17,6 +17,48 @@ beszel_token_filter: "user = {{ beszel_user_id | default('') | to_json }}"
 beszel_settings_filter: "user = {{ beszel_user_id | default('') | to_json }}"
 beszel_system_filter: "name = {{ beszel_system_name | to_json }}"
 
+beszel_integration_test_capability: >-
+  {{ (platform_compose_kind | default('') == 'integration') and
+     (deployment_bundle_test_mode | default(false) | bool) }}
+beszel_effective_required_telemetry_categories: >-
+  {{ ['core', 'disk', 'containers']
+     if (beszel_integration_test_capability | bool)
+     else beszel_required_telemetry_categories }}
+beszel_effective_require_gpu_telemetry: >-
+  {{ false
+     if (beszel_integration_test_capability | bool)
+     else (beszel_require_gpu_telemetry | bool) }}
+
+beszel_latest_system_stats_record: >-
+  {{ beszel_system_stats | default({}) | beszel_latest_telemetry_record }}
+beszel_latest_system_stats: >-
+  {{ beszel_latest_system_stats_record.get('stats', {}) }}
+beszel_latest_container_stats_record: >-
+  {{ beszel_container_stats | default({}) | beszel_latest_telemetry_record }}
+beszel_latest_container_stats: >-
+  {{ beszel_latest_container_stats_record.get('stats', []) }}
+beszel_telemetry_system_id: >-
+  {{ (beszel_matching_systems | first | default({})).get('id', '[absent]') }}
+
+beszel_telemetry_evidence: >-
+  {{ beszel_telemetry_system_id | beszel_telemetry_evidence(
+       beszel_latest_system_stats_record,
+       beszel_latest_container_stats_record,
+       beszel_effective_required_telemetry_categories,
+       beszel_telemetry_freshness_seconds | int) }}
+beszel_missing_system_telemetry_categories: >-
+  {{ beszel_telemetry_evidence.missing_categories | difference(['containers']) }}
+beszel_missing_telemetry_categories: >-
+  {{ beszel_telemetry_evidence.missing_categories }}
+beszel_core_telemetry_ready: >-
+  {{ 'core' not in beszel_missing_telemetry_categories }}
+beszel_disk_telemetry_ready: >-
+  {{ 'disk' not in beszel_missing_telemetry_categories }}
+beszel_gpu_telemetry_ready: >-
+  {{ 'gpu' not in beszel_missing_telemetry_categories }}
+beszel_containers_telemetry_ready: >-
+  {{ 'containers' not in beszel_missing_telemetry_categories }}
+
 beszel_matching_settings: >-
   {{ beszel_settings.json.get('items', [])
      | selectattr('user', 'equalto', beszel_user_id | default('')) | list }}

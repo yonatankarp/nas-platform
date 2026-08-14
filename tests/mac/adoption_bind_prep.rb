@@ -11,6 +11,7 @@ module AdoptionBindPrep
 
   DIRECTORIES = %w[
     legacy/audiobookshelf/config legacy/audiobookshelf/metadata legacy/audiobookshelf/media
+    legacy/audiobookshelf/backups
     legacy/beszel/hub legacy/beszel/agent legacy/beszel/volume1 legacy/beszel/volume2
     legacy/dozzle/data
     legacy/immich/data legacy/immich/thumbs legacy/immich/encoded-video legacy/immich/profile
@@ -19,17 +20,18 @@ module AdoptionBindPrep
     legacy/komga/config legacy/komga/library
     legacy/ntfy/cache legacy/ntfy/data
     legacy/paperless-ngx/redis legacy/paperless-ngx/postgres legacy/paperless-ngx/data
-    legacy/paperless-ngx/export legacy/paperless-ngx/tessdata legacy/paperless-ngx/media
+    legacy/paperless-ngx/cache legacy/paperless-ngx/export legacy/paperless-ngx/tessdata legacy/paperless-ngx/media
     legacy/paperless-ngx/consume
     legacy/tinymediamanager/data legacy/tinymediamanager/movies legacy/tinymediamanager/series
   ].freeze
   NAS_OWNED = %w[
     legacy/audiobookshelf/config legacy/audiobookshelf/metadata legacy/audiobookshelf/media
+    legacy/audiobookshelf/backups
     legacy/dozzle/data
     legacy/jellyfin/config legacy/jellyfin/cache legacy/jellyfin/media
     legacy/komga/config legacy/komga/library
     legacy/ntfy/cache legacy/ntfy/data
-    legacy/paperless-ngx/data legacy/paperless-ngx/export legacy/paperless-ngx/tessdata
+    legacy/paperless-ngx/data legacy/paperless-ngx/cache legacy/paperless-ngx/export legacy/paperless-ngx/tessdata
     legacy/paperless-ngx/media legacy/paperless-ngx/consume
     legacy/tinymediamanager/data legacy/tinymediamanager/movies legacy/tinymediamanager/series
   ].freeze
