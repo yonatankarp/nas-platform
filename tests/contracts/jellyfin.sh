@@ -279,6 +279,9 @@ refuse("Open Subtitles configuration API GUID differs") unless
     defaults["jellyfin_opensubtitles_plugin_id"] == "4b9ed42f-5185-48b5-9803-6ff2989014c4"
 refuse("Open Subtitles validation endpoint differs") unless
   settings.include?("/Jellyfin.Plugin.OpenSubtitles/ValidateLoginInfo")
+refuse("integration contract does not isolate synthetic Open Subtitles credentials") unless
+  contract.include?('VALIDATE_EXTERNAL_OPENSUBTITLES = PLATFORM != "integration"') &&
+    contract.include?("if VALIDATE_EXTERNAL_OPENSUBTITLES\n    _response, validation = request(")
 refuse("runtime Open Subtitles identity verification does not normalize GUID representation") unless
   contract.include?('opensubtitles.fetch("Id").delete("-").casecmp?(OPENSUBTITLES_ID.delete("-"))')
 refuse("Open Subtitles secret operations are not suppressed") unless
@@ -327,6 +330,7 @@ require "yaml"
 
 MODE = ARGV.fetch(0)
 PLATFORM = ENV.fetch("PLATFORM_JELLYFIN_PLATFORM")
+VALIDATE_EXTERNAL_OPENSUBTITLES = PLATFORM != "integration"
 BASE = URI("http://127.0.0.1:#{Integer(ENV.fetch('PLATFORM_JELLYFIN_PORT'), 10)}")
 MEDIA_ROOT = Pathname.new(ENV.fetch("PLATFORM_MEDIA_ROOT")).expand_path
 DOCKER_ROOT = Pathname.new(ENV.fetch("PLATFORM_DOCKER_ROOT")).expand_path
@@ -647,12 +651,14 @@ def assert_acceleration_and_plugins(token, opensubtitles_username, opensubtitles
     configuration["Password"] == opensubtitles_password
   fail_contract("Open Subtitles credentials remain invalid") unless
     configuration["CredentialsInvalid"] == false
-  _response, validation = request(
-    "post", "/Jellyfin.Plugin.OpenSubtitles/ValidateLoginInfo", token: token,
-    body: { "Username" => opensubtitles_username, "Password" => opensubtitles_password }
-  )
-  fail_contract("Open Subtitles validation response is unsupported") unless
-    validation.is_a?(Hash) && validation["Downloads"].is_a?(Numeric)
+  if VALIDATE_EXTERNAL_OPENSUBTITLES
+    _response, validation = request(
+      "post", "/Jellyfin.Plugin.OpenSubtitles/ValidateLoginInfo", token: token,
+      body: { "Username" => opensubtitles_username, "Password" => opensubtitles_password }
+    )
+    fail_contract("Open Subtitles validation response is unsupported") unless
+      validation.is_a?(Hash) && validation["Downloads"].is_a?(Numeric)
+  end
   [encoding, repositories, plugins]
 end
 
