@@ -475,6 +475,24 @@ docker run --rm \
     TMPDIR='$sandbox' /repo/tests/generate-ephemeral-vault.sh \
       --output \"\$vault_file\" --password-file \"\$vault_password_file\"
 
+    fixture_input_directory='$sandbox/protected-inputs'
+    fixture_vars_file=\"\$fixture_input_directory/immich-fixture-vars.yml\"
+    fixture_vault_view=\"\$fixture_input_directory/.immich-vault-view.yml\"
+    mkdir \"\$fixture_input_directory\"
+    chmod 0700 \"\$fixture_input_directory\"
+    cleanup_fixture_vault_view() {
+      rm -f \"\$fixture_vault_view\"
+    }
+    trap cleanup_fixture_vault_view EXIT
+    umask 077
+    ansible-vault view --vault-password-file \"\$vault_password_file\" \
+      \"\$vault_file\" > \"\$fixture_vault_view\"
+    ruby /repo/tests/mac/generate-immich-fixture-vars.rb \
+      \"\$fixture_vars_file\" /repo/inventory/group_vars/all/main.yml \
+      < \"\$fixture_vault_view\"
+    chmod 0600 \"\$fixture_vars_file\"
+    rm -f \"\$fixture_vault_view\"
+
     cleanup_vault() {
       TMPDIR='$sandbox' /repo/tests/generate-ephemeral-vault.sh --cleanup \
         \"\$vault_directory\"
@@ -675,6 +693,7 @@ docker run --rm \
         PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
         PLATFORM_FIXTURE_ROOT='$sandbox/fixtures' \
         PLATFORM_REPORT_ROOT='$sandbox/reports' \
+        PLATFORM_MAC_FIXTURE_VARS_FILE=\"\$fixture_vars_file\" \
         /repo/tests/contracts/immich.sh \"\$@\"
     }
 
