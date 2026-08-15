@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import contextlib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import fcntl
 import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -12,8 +12,8 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import stat
-import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -21,7 +21,11 @@ import urllib.request
 
 MAX_BODY_BYTES = 16 * 1024
 MAX_STATE_BYTES = 64 * 1024
-STATE_VERSION = 1
+MAX_STATE_ENTRIES = 128
+HEALTHY_RETENTION = timedelta(days=30)
+STATE_VERSION = 2
+LEGACY_STATE_VERSION = 1
+MINIMUM_TIMESTAMP = "0001-01-01T00:00:00Z"
 ENVELOPE_KEYS = {
     "version",
     "rule",
@@ -62,6 +66,16 @@ class StateError(Exception):
 
 class UpstreamError(Exception):
     pass
+
+
+class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(
+        self, _request, _file_pointer, _code, _message, _headers, _url
+    ):
+        return None
+
+
+NO_REDIRECT_OPENER = urllib.request.build_opener(NoRedirectHandler)
 
 
 class Config:
@@ -140,22 +154,54 @@ def require_text(payload, key, maximum):
     return value
 
 
-def valid_timestamp(value):
+def parse_timestamp(value):
     matched = TIMESTAMP_PATTERN.fullmatch(value)
     if not matched:
-        return False
+        raise ValueError("timestamp syntax differs")
     try:
-        parsed = datetime.strptime(matched.group("instant"), TIMESTAMP_FORMAT).replace(
-            tzinfo=timezone.utc
-        )
+        parsed = datetime.strptime(matched.group("instant"), TIMESTAMP_FORMAT)
     except ValueError:
-        return False
+        raise ValueError("timestamp calendar differs") from None
     canonical = (
         f"{parsed.year:04d}-{parsed.month:02d}-{parsed.day:02d}T"
         f"{parsed.hour:02d}:{parsed.minute:02d}:{parsed.second:02d}"
         f"{matched.group('fraction') or ''}Z"
     )
-    return canonical == value
+    if canonical != value:
+        raise ValueError("timestamp is not canonical")
+    fraction = (matched.group("fraction") or ".0")[1:].ljust(9, "0")
+    whole_seconds = (
+        (parsed.toordinal() - 1) * 86_400
+        + parsed.hour * 3_600
+        + parsed.minute * 60
+        + parsed.second
+    )
+    return whole_seconds * 1_000_000_000 + int(fraction)
+
+
+def valid_timestamp(value):
+    try:
+        parse_timestamp(value)
+        return True
+    except ValueError:
+        return False
+
+
+def utc_now():
+    return datetime.now(timezone.utc)
+
+
+def datetime_nanoseconds(value):
+    if value.tzinfo is None or value.utcoffset() != timedelta(0):
+        raise StateError("retention clock is not UTC")
+    normalized = value.astimezone(timezone.utc)
+    whole_seconds = (
+        (normalized.toordinal() - 1) * 86_400
+        + normalized.hour * 3_600
+        + normalized.minute * 60
+        + normalized.second
+    )
+    return whole_seconds * 1_000_000_000 + normalized.microsecond * 1_000
 
 
 def validate_envelope(payload):
@@ -279,7 +325,7 @@ def open_directory_no_symlinks(path):
         if (
             not stat.S_ISDIR(details.st_mode)
             or details.st_uid != os.geteuid()
-            or stat.S_IMODE(details.st_mode) & 0o022
+            or stat.S_IMODE(details.st_mode) != 0o700
         ):
             raise StateError("unsafe state directory")
         return directory_fd
@@ -298,6 +344,175 @@ def check_private_regular_file(details):
         or stat.S_IMODE(details.st_mode) != 0o600
     ):
         raise StateError("unsafe state file")
+
+
+def validate_state_identity(identity):
+    if not isinstance(identity, str) or identity.count("\0") != 1:
+        raise StateError("invalid state identity")
+    host, container_id = identity.split("\0")
+    if (
+        not host
+        or len(host) > 256
+        or contains_control(host)
+        or not CONTAINER_ID_PATTERN.fullmatch(container_id)
+    ):
+        raise StateError("invalid state identity")
+
+
+def state_bytes(entries):
+    ordered = [entries[identity] for identity in sorted(entries)]
+    document = json.dumps(
+        {"version": STATE_VERSION, "entries": ordered},
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode("utf-8") + b"\n"
+    if len(document) > MAX_STATE_BYTES:
+        raise StateError("state document is oversized")
+    return document
+
+
+def parse_state_document(raw):
+    try:
+        document = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_object)
+    except (UnicodeDecodeError, json.JSONDecodeError, SchemaError):
+        raise StateError("state file is corrupt") from None
+    if not isinstance(document, dict) or type(document.get("version")) is not int:
+        raise StateError("state schema differs")
+
+    if document["version"] == LEGACY_STATE_VERSION:
+        if set(document) != {"version", "unhealthy"} or not isinstance(
+            document["unhealthy"], list
+        ):
+            raise StateError("state schema differs")
+        identities = document["unhealthy"]
+        if not all(isinstance(identity, str) for identity in identities):
+            raise StateError("invalid state identity")
+        if identities != sorted(set(identities)):
+            raise StateError("state entries are not canonical")
+        entries = {}
+        for identity in identities:
+            validate_state_identity(identity)
+            entries[identity] = {
+                "identity": identity,
+                "state": "unhealthy",
+                "timestamp": MINIMUM_TIMESTAMP,
+            }
+        return entries, True
+
+    if (
+        document["version"] != STATE_VERSION
+        or set(document) != {"version", "entries"}
+        or not isinstance(document["entries"], list)
+    ):
+        raise StateError("state schema differs")
+    entries = {}
+    identities = []
+    for entry in document["entries"]:
+        if not isinstance(entry, dict) or set(entry) != {
+            "identity",
+            "state",
+            "timestamp",
+        }:
+            raise StateError("state entry schema differs")
+        identity = entry["identity"]
+        validate_state_identity(identity)
+        if entry["state"] not in {"healthy", "unhealthy"}:
+            raise StateError("invalid state health")
+        if not isinstance(entry["timestamp"], str) or not valid_timestamp(
+            entry["timestamp"]
+        ):
+            raise StateError("invalid state timestamp")
+        identities.append(identity)
+        entries[identity] = dict(entry)
+    if identities != sorted(set(identities)):
+        raise StateError("state entries are not canonical")
+    if len(entries) > MAX_STATE_ENTRIES:
+        raise StateError("state has too many entries")
+    return entries, False
+
+
+def bounded_entries(entries, now):
+    proposed = {identity: dict(entry) for identity, entry in entries.items()}
+    cutoff = datetime_nanoseconds(now - HEALTHY_RETENTION)
+    for identity, entry in list(proposed.items()):
+        if entry["state"] == "healthy" and parse_timestamp(entry["timestamp"]) < cutoff:
+            del proposed[identity]
+
+    while True:
+        try:
+            serialized = state_bytes(proposed)
+        except StateError:
+            serialized = None
+        if len(proposed) <= MAX_STATE_ENTRIES and serialized is not None:
+            return proposed, serialized
+        healthy = sorted(
+            (
+                (parse_timestamp(entry["timestamp"]), identity)
+                for identity, entry in proposed.items()
+                if entry["state"] == "healthy"
+            )
+        )
+        if not healthy:
+            raise StateError("unhealthy state exceeds bounds")
+        del proposed[healthy[0][1]]
+
+
+def read_state_at(directory_fd, state_name):
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        file_fd = os.open(state_name, flags, dir_fd=directory_fd)
+    except FileNotFoundError:
+        return {}, False
+    except OSError:
+        raise StateError("state file unavailable") from None
+    try:
+        details = os.fstat(file_fd)
+        check_private_regular_file(details)
+        if details.st_size > MAX_STATE_BYTES:
+            raise StateError("state file is oversized")
+        raw = b""
+        while len(raw) <= MAX_STATE_BYTES:
+            chunk = os.read(file_fd, 8192)
+            if not chunk:
+                break
+            raw += chunk
+        if len(raw) > MAX_STATE_BYTES:
+            raise StateError("state file is oversized")
+    finally:
+        os.close(file_fd)
+    return parse_state_document(raw)
+
+
+def state_is_ready(state_path):
+    state_path = Path(state_path)
+    directory_fd = open_directory_no_symlinks(state_path.parent)
+    lock_fd = None
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            lock_fd = os.open(
+                f".{state_path.name}.lock", flags, dir_fd=directory_fd
+            )
+        except FileNotFoundError:
+            read_state_at(directory_fd, state_path.name)
+            return True
+        except OSError:
+            raise StateError("state lock unavailable") from None
+        check_private_regular_file(os.fstat(lock_fd))
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        except OSError:
+            raise StateError("state lock unavailable") from None
+        read_state_at(directory_fd, state_path.name)
+        return True
+    finally:
+        if lock_fd is not None:
+            with contextlib.suppress(OSError):
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            os.close(lock_fd)
+        os.close(directory_fd)
 
 
 class LockedState:
@@ -334,73 +549,26 @@ class LockedState:
             self.directory_fd = None
 
     def read(self):
-        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-        try:
-            file_fd = os.open(self.state_path.name, flags, dir_fd=self.directory_fd)
-        except FileNotFoundError:
-            return set()
-        except OSError:
-            raise StateError("state file unavailable") from None
-        try:
-            details = os.fstat(file_fd)
-            check_private_regular_file(details)
-            if details.st_size > MAX_STATE_BYTES:
-                raise StateError("state file is oversized")
-            raw = b""
-            while len(raw) <= MAX_STATE_BYTES:
-                chunk = os.read(file_fd, 8192)
-                if not chunk:
-                    break
-                raw += chunk
-            if len(raw) > MAX_STATE_BYTES:
-                raise StateError("state file is oversized")
-        finally:
-            os.close(file_fd)
-        try:
-            document = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_object)
-        except (UnicodeDecodeError, json.JSONDecodeError, SchemaError):
-            raise StateError("state file is corrupt") from None
-        if (
-            not isinstance(document, dict)
-            or set(document) != {"version", "unhealthy"}
-            or type(document["version"]) is not int
-            or document["version"] != STATE_VERSION
-            or not isinstance(document["unhealthy"], list)
-        ):
-            raise StateError("state schema differs")
-        entries = document["unhealthy"]
-        if not all(isinstance(entry, str) for entry in entries):
-            raise StateError("invalid state identity")
-        if entries != sorted(set(entries)):
-            raise StateError("state entries are not canonical")
-        for entry in entries:
-            if entry.count("\0") != 1:
-                raise StateError("invalid state identity")
-            host, container_id = entry.split("\0")
-            if (
-                not host
-                or len(host) > 256
-                or contains_control(host)
-                or not CONTAINER_ID_PATTERN.fullmatch(container_id)
-            ):
-                raise StateError("invalid state identity")
-        return set(entries)
+        return read_state_at(self.directory_fd, self.state_path.name)
 
-    def replace(self, unhealthy):
-        document = json.dumps(
-            {"version": STATE_VERSION, "unhealthy": sorted(unhealthy)},
-            ensure_ascii=True,
-            separators=(",", ":"),
-        ).encode("utf-8") + b"\n"
-        temporary_name = (
-            f".{self.state_path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
-        )
+    def replace(self, entries, document=None):
+        document = document if document is not None else state_bytes(entries)
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
         temporary_fd = None
+        temporary_name = None
         try:
-            temporary_fd = os.open(
-                temporary_name, flags, 0o600, dir_fd=self.directory_fd
-            )
+            for _attempt in range(10):
+                candidate = f".{self.state_path.name}.{secrets.token_hex(16)}.tmp"
+                try:
+                    temporary_fd = os.open(
+                        candidate, flags, 0o600, dir_fd=self.directory_fd
+                    )
+                    temporary_name = candidate
+                    break
+                except FileExistsError:
+                    continue
+            if temporary_fd is None:
+                raise StateError("state temporary file unavailable")
             os.fchmod(temporary_fd, 0o600)
             written = 0
             while written < len(document):
@@ -418,11 +586,11 @@ class LockedState:
         except OSError:
             if temporary_fd is not None:
                 os.close(temporary_fd)
-            try:
-                os.unlink(temporary_name, dir_fd=self.directory_fd)
-            except FileNotFoundError:
-                pass
+            if temporary_name is not None:
+                with contextlib.suppress(FileNotFoundError):
+                    os.unlink(temporary_name, dir_fd=self.directory_fd)
             raise StateError("state replacement failed") from None
+
 
 def unique_object(pairs):
     result = {}
@@ -447,7 +615,7 @@ def publish(config, notification):
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=10) as response:
+        with NO_REDIRECT_OPENER.open(request, timeout=10) as response:
             if not 200 <= response.status < 300:
                 raise UpstreamError("upstream rejected publish")
     except urllib.error.HTTPError as error:
@@ -460,19 +628,55 @@ def publish(config, notification):
 def process_event(config, event):
     identity = f"{event['host']}\0{event['containerId']}"
     with LockedState(config.alert_state_path) as state_file:
-        unhealthy = state_file.read()
-        if event["rule"] == "Recovery" and identity not in unhealthy:
-            return
+        entries, migration_required = state_file.read()
+        proposed = {key: dict(entry) for key, entry in entries.items()}
+        publication_required = event["rule"] in {"OOM", "Unexpected exit"}
 
-        proposed = set(unhealthy)
-        if event["rule"] == "Unhealthy":
-            proposed.add(identity)
-        elif event["rule"] == "Recovery":
-            proposed.remove(identity)
+        if event["rule"] in {"Unhealthy", "Recovery"}:
+            incoming_state = (
+                "unhealthy" if event["rule"] == "Unhealthy" else "healthy"
+            )
+            incoming_order = parse_timestamp(event["timestamp"])
+            existing = entries.get(identity)
+            if existing is not None:
+                existing_order = parse_timestamp(existing["timestamp"])
+                if incoming_order < existing_order:
+                    return
+                if incoming_order == existing_order:
+                    if existing["state"] == "healthy":
+                        return
+                    if incoming_state == "unhealthy":
+                        publication_required = True
+                    else:
+                        publication_required = True
+                        proposed[identity] = {
+                            "identity": identity,
+                            "state": "healthy",
+                            "timestamp": event["timestamp"],
+                        }
+                else:
+                    publication_required = incoming_state == "unhealthy" or existing[
+                        "state"
+                    ] == "unhealthy"
+                    proposed[identity] = {
+                        "identity": identity,
+                        "state": incoming_state,
+                        "timestamp": event["timestamp"],
+                    }
+            else:
+                publication_required = incoming_state == "unhealthy"
+                proposed[identity] = {
+                    "identity": identity,
+                    "state": incoming_state,
+                    "timestamp": event["timestamp"],
+                }
 
-        publish(config, render_notification(event, config.ntfy_topic))
-        if proposed != unhealthy:
-            state_file.replace(proposed)
+        proposed, document = bounded_entries(proposed, utc_now())
+        replacement_required = migration_required or proposed != entries
+        if publication_required:
+            publish(config, render_notification(event, config.ntfy_topic))
+        if replacement_required:
+            state_file.replace(proposed, document)
 
 
 class RelayRequestHandler(BaseHTTPRequestHandler):
@@ -481,6 +685,11 @@ class RelayRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802 - BaseHTTPRequestHandler API
         if self.path != "/healthz":
             self.send_text(404, "not found\n")
+            return
+        try:
+            state_is_ready(self.server.config.alert_state_path)
+        except StateError:
+            self.send_text(503, "state unavailable\n")
             return
         self.send_text(200, "ok\n")
 

@@ -16,7 +16,7 @@ services:
     command: [python, /app/alert_relay.py]
     volumes:
       - ${PLATFORM_CURRENT_DIR:?}/services/dozzle/alert_relay.py:/app/alert_relay.py:ro
-      - ${DOZZLE_STATE_ROOT:?}:/state
+      - ${DOZZLE_STATE_ROOT:?}/alert-relay:/state
     environment:
       ALERT_RELAY_TOKEN: ${ALERT_RELAY_TOKEN:?}
       NTFY_PUBLISH_URL: ${NTFY_PUBLISH_URL:?}

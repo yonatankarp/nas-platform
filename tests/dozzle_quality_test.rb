@@ -271,11 +271,16 @@ relay_mutations = [
    "      test: [CMD, python, -c, \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/healthz', timeout=3).read()\"]\n      interval: 30s\n      timeout: 5s\n      retries: 4\n      start_period: 5s\n    read_only: false\n",
    "alert relay hardening differs"],
   ["relay Docker socket", "services/dozzle/compose.yml",
-   "      - ${DOZZLE_STATE_ROOT:?}:/state\n",
-   "      - ${DOZZLE_STATE_ROOT:?}:/state\n      - /var/run/docker.sock:/var/run/docker.sock:ro\n",
+   "      - ${DOZZLE_STATE_ROOT:?}/alert-relay:/state\n",
+   "      - ${DOZZLE_STATE_ROOT:?}/alert-relay:/state\n      - /var/run/docker.sock:/var/run/docker.sock:ro\n",
    "Docker socket is mounted outside socket-proxy"],
   ["read-only relay state", "services/dozzle/compose.yml",
-   "      - ${DOZZLE_STATE_ROOT:?}:/state\n", "      - ${DOZZLE_STATE_ROOT:?}:/state:ro\n",
+   "      - ${DOZZLE_STATE_ROOT:?}/alert-relay:/state\n",
+   "      - ${DOZZLE_STATE_ROOT:?}/alert-relay:/state:ro\n",
+   "alert relay mounts differ"],
+  ["parent-root relay state", "services/dozzle/compose.yml",
+   "      - ${DOZZLE_STATE_ROOT:?}/alert-relay:/state\n",
+   "      - ${DOZZLE_STATE_ROOT:?}:/state\n",
    "alert relay mounts differ"]
 ].freeze
 relay_mutations.each do |name, path, original, replacement, diagnostic|

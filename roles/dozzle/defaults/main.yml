@@ -18,7 +18,7 @@ dozzle_dispatcher:
         'event': '{{ .Event.Name }}',
         'healthStatus': '{{ index .Event.Attributes `healthStatus` }}',
         'exitCode': '{{ index .Event.Attributes `exitCode` }}',
-        'timestamp': '{{ .Event.Timestamp.Format `2006-01-02T15:04:05Z07:00` }}'}
+        'timestamp': '{{ .Event.Timestamp.Format `2006-01-02T15:04:05.999999999Z07:00` }}'}
        | to_json(separators=(',', ':')) }}
   headers:
     Authorization: "Bearer {{ vault_ntfy_dozzle_token }}"

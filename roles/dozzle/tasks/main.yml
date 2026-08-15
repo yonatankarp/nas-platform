@@ -45,6 +45,84 @@
       - dozzle_state_root == ((platform_adoption_root ~ '/legacy/dozzle/data') if
         (platform_adoption_enabled | default(false) | bool) else (nas_docker_root ~ '/dozzle/data'))
 
+- name: Inspect the selected Dozzle state parent before child creation
+  ansible.builtin.stat:
+    path: "{{ dozzle_state_root }}"
+    follow: false
+  register: dozzle_state_parent_before_child
+
+- name: Require a safe Dozzle state parent before child creation
+  ansible.builtin.assert:
+    that:
+      - dozzle_state_parent_before_child.stat.exists
+      - dozzle_state_parent_before_child.stat.isdir | default(false)
+      - not (dozzle_state_parent_before_child.stat.islnk | default(false))
+      - dozzle_state_parent_before_child.stat.mode[-2] not in ['2', '3', '6', '7']
+      - dozzle_state_parent_before_child.stat.mode[-1] not in ['2', '3', '6', '7']
+      - >-
+        (platform_kind != 'nas' and not (platform_manage_linux_ownership | bool)) or
+        dozzle_state_parent_before_child.stat.uid | int == nas_uid | int
+      - >-
+        (platform_kind != 'nas' and not (platform_manage_linux_ownership | bool)) or
+        dozzle_state_parent_before_child.stat.gid | int == nas_gid | int
+    fail_msg: Dozzle state parent is unsafe for alert relay child creation.
+
+- name: Prepare the isolated Dozzle alert relay state directory
+  ansible.builtin.file:
+    path: "{{ dozzle_state_root }}/alert-relay"
+    state: directory
+    owner: >-
+      {{ nas_uid
+         if platform_kind == 'nas' or (platform_manage_linux_ownership | bool)
+         else omit }}
+    group: >-
+      {{ nas_gid
+         if platform_kind == 'nas' or (platform_manage_linux_ownership | bool)
+         else omit }}
+    mode: "0700"
+
+- name: Inspect legacy and isolated Dozzle alert relay state files
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+  loop:
+    - "{{ dozzle_state_root }}/alert-relay.json"
+    - "{{ dozzle_state_root }}/alert-relay/alert-relay.json"
+  register: dozzle_alert_relay_state_files
+
+- name: Resolve legacy and isolated Dozzle alert relay state files
+  ansible.builtin.set_fact:
+    dozzle_alert_relay_legacy_state: "{{ dozzle_alert_relay_state_files.results[0] }}"
+    dozzle_alert_relay_isolated_state: "{{ dozzle_alert_relay_state_files.results[1] }}"
+
+- name: Refuse ambiguous or unsafe Dozzle alert relay state relocation
+  ansible.builtin.assert:
+    that:
+      - >-
+        not (dozzle_alert_relay_legacy_state.stat.exists and
+             dozzle_alert_relay_isolated_state.stat.exists)
+      - >-
+        not dozzle_alert_relay_legacy_state.stat.exists or
+        (dozzle_alert_relay_legacy_state.stat.isreg | default(false) and
+         not (dozzle_alert_relay_legacy_state.stat.islnk | default(false)) and
+         dozzle_alert_relay_legacy_state.stat.mode == '0600')
+      - >-
+        not dozzle_alert_relay_isolated_state.stat.exists or
+        (dozzle_alert_relay_isolated_state.stat.isreg | default(false) and
+         not (dozzle_alert_relay_isolated_state.stat.islnk | default(false)) and
+         dozzle_alert_relay_isolated_state.stat.mode == '0600')
+      - >-
+        not dozzle_alert_relay_legacy_state.stat.exists or
+        (platform_kind != 'nas' and not (platform_manage_linux_ownership | bool)) or
+        (dozzle_alert_relay_legacy_state.stat.uid | int == nas_uid | int and
+         dozzle_alert_relay_legacy_state.stat.gid | int == nas_gid | int)
+      - >-
+        not dozzle_alert_relay_isolated_state.stat.exists or
+        (platform_kind != 'nas' and not (platform_manage_linux_ownership | bool)) or
+        (dozzle_alert_relay_isolated_state.stat.uid | int == nas_uid | int and
+         dozzle_alert_relay_isolated_state.stat.gid | int == nas_gid | int)
+    fail_msg: Dozzle alert relay state relocation is ambiguous or unsafe.
+
 - name: Inspect the tracked Dozzle alert relay and selected state root
   ansible.builtin.stat:
     path: "{{ item }}"
@@ -54,12 +132,14 @@
   loop:
     - "{{ platform_current_dir }}/services/dozzle/alert_relay.py"
     - "{{ dozzle_state_root }}"
+    - "{{ dozzle_state_root }}/alert-relay"
   register: dozzle_alert_relay_paths
 
 - name: Resolve the tracked Dozzle alert relay and selected state root
   ansible.builtin.set_fact:
     dozzle_alert_relay_script: "{{ dozzle_alert_relay_paths.results[0] }}"
     dozzle_state_root_stat: "{{ dozzle_alert_relay_paths.results[1] }}"
+    dozzle_alert_relay_state_root_stat: "{{ dozzle_alert_relay_paths.results[2] }}"
 
 - name: Require safe Dozzle alert relay deployment paths
   ansible.builtin.assert:
@@ -73,9 +153,19 @@
       - not (dozzle_state_root_stat.stat.islnk | default(false))
       - dozzle_state_root_stat.stat.mode[-2] not in ['2', '3', '6', '7']
       - dozzle_state_root_stat.stat.mode[-1] not in ['2', '3', '6', '7']
+      - dozzle_alert_relay_state_root_stat.stat.exists
+      - dozzle_alert_relay_state_root_stat.stat.isdir | default(false)
+      - not (dozzle_alert_relay_state_root_stat.stat.islnk | default(false))
+      - dozzle_alert_relay_state_root_stat.stat.mode == '0700'
       - >-
         platform_kind != 'nas' or not (platform_manage_linux_ownership | bool) or
         dozzle_state_root_stat.stat.uid | int == nas_uid | int
+      - >-
+        (platform_kind != 'nas' and not (platform_manage_linux_ownership | bool)) or
+        dozzle_alert_relay_state_root_stat.stat.uid | int == nas_uid | int
+      - >-
+        (platform_kind != 'nas' and not (platform_manage_linux_ownership | bool)) or
+        dozzle_alert_relay_state_root_stat.stat.gid | int == nas_gid | int
     fail_msg: Dozzle alert relay script or selected state root is unsafe.
 
 - name: Reconcile preserved and managed Dozzle users
@@ -104,6 +194,33 @@
     src: env.j2
     dest: "{{ platform_runtime_dir }}/services/dozzle/.env"
     mode: "0600"
+  no_log: true
+
+- name: Stop Dozzle alert delivery before legacy relay state relocation
+  community.docker.docker_compose_v2:
+    project_src: "{{ platform_current_dir }}/services/dozzle"
+    project_name: "{{ dozzle_compose_project_name }}"
+    files: "{{ dozzle_compose_files }}"
+    env_files: ["{{ platform_runtime_dir }}/services/dozzle/.env"]
+    services: [dozzle, alert-relay]
+    state: stopped
+  when: >-
+    dozzle_alert_relay_legacy_state.stat.exists and
+    not dozzle_alert_relay_isolated_state.stat.exists
+  no_log: true
+
+- name: Relocate the legacy Dozzle alert relay state file
+  ansible.builtin.command:
+    argv:
+      - mv
+      - --
+      - "{{ dozzle_state_root }}/alert-relay.json"
+      - "{{ dozzle_state_root }}/alert-relay/alert-relay.json"
+    creates: "{{ dozzle_state_root }}/alert-relay/alert-relay.json"
+    removes: "{{ dozzle_state_root }}/alert-relay.json"
+  when: >-
+    dozzle_alert_relay_legacy_state.stat.exists and
+    not dozzle_alert_relay_isolated_state.stat.exists
   no_log: true
 
 - name: Deploy Dozzle

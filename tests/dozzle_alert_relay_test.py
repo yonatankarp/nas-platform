@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import contextlib
+from datetime import datetime, timezone
+import fcntl
 import http.client
 import importlib.util
 import io
@@ -13,7 +15,9 @@ from pathlib import Path
 import stat
 import tempfile
 import threading
+import time
 import unittest
+from unittest import mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
@@ -50,6 +54,37 @@ class RecordingNtfyHandler(BaseHTTPRequestHandler):
         self.send_response(self.server.response_status)
         self.send_header("Content-Length", "0")
         self.end_headers()
+
+    def log_message(self, _format, *_args):
+        pass
+
+
+class RedirectHandler(BaseHTTPRequestHandler):
+    def do_POST(self):  # noqa: N802 - BaseHTTPRequestHandler API
+        self.send_response(302)
+        self.send_header("Location", self.server.target_url)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def log_message(self, _format, *_args):
+        pass
+
+
+class RedirectTargetHandler(BaseHTTPRequestHandler):
+    def capture(self):
+        self.server.requests.append(
+            {
+                "method": self.command,
+                "path": self.path,
+                "authorization": self.headers.get("Authorization"),
+            }
+        )
+        self.send_response(204)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    do_GET = capture  # noqa: N815 - BaseHTTPRequestHandler API
+    do_POST = capture  # noqa: N815 - BaseHTTPRequestHandler API
 
     def log_message(self, _format, *_args):
         pass
@@ -136,11 +171,80 @@ class DozzleAlertRelayTest(unittest.TestCase):
     def read_state(self):
         return json.loads(self.state_path.read_text(encoding="utf-8"))
 
+    def write_state(self, document):
+        self.state_path.write_text(
+            json.dumps(document, ensure_ascii=False, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        self.state_path.chmod(0o600)
+
+    @staticmethod
+    def state_entry(container_id, state, timestamp, host="nas"):
+        return {
+            "identity": f"{host}\0{container_id}",
+            "state": state,
+            "timestamp": timestamp,
+        }
+
     def test_health_and_route_surface_are_exact(self):
         self.assertEqual(self.request("GET", "/healthz", token=None)[0], 200)
         self.assertEqual(self.request("GET", "/alerts", token=None)[0], 404)
         self.assertEqual(self.request("GET", "/unknown", token=None)[0], 404)
         self.assertEqual(self.request("POST", "/healthz", {}, token=RELAY_TOKEN)[0], 404)
+
+    def test_health_validates_state_without_waiting_for_an_active_lock(self):
+        self.assertEqual(
+            self.request("GET", "/healthz", token=None), (200, b"ok\n")
+        )
+        self.assertEqual(self.post(self.envelope()), (204, b""))
+        self.assertEqual(
+            self.request("GET", "/healthz", token=None), (200, b"ok\n")
+        )
+
+        self.state_path.write_text("not-json", encoding="utf-8")
+        self.state_path.chmod(0o600)
+        self.assertEqual(
+            self.request("GET", "/healthz", token=None),
+            (503, b"state unavailable\n"),
+        )
+
+        self.write_state({"version": 2, "entries": []})
+        self.state_path.chmod(0o640)
+        self.assertEqual(self.request("GET", "/healthz", token=None)[0], 503)
+        self.state_path.chmod(0o600)
+
+        self.state_path.unlink()
+        target = self.state_directory / "health-target"
+        target.write_text('{"version":2,"entries":[]}', encoding="utf-8")
+        target.chmod(0o600)
+        self.state_path.symlink_to(target)
+        self.assertEqual(self.request("GET", "/healthz", token=None)[0], 503)
+        self.state_path.unlink()
+
+        self.state_directory.chmod(0o755)
+        self.assertEqual(self.request("GET", "/healthz", token=None)[0], 503)
+        self.state_directory.chmod(0o700)
+
+        lock_path = self.state_directory / f".{self.state_path.name}.lock"
+        with contextlib.suppress(FileNotFoundError):
+            lock_path.unlink()
+        lock_target = self.state_directory / "lock-target"
+        lock_target.write_text("", encoding="utf-8")
+        lock_target.chmod(0o600)
+        lock_path.symlink_to(lock_target)
+        self.assertEqual(self.request("GET", "/healthz", token=None)[0], 503)
+        lock_path.unlink()
+
+        self.write_state({"version": 2, "entries": []})
+        lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        self.addCleanup(os.close, lock_fd)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        started = time.monotonic()
+        self.assertEqual(
+            self.request("GET", "/healthz", token=None), (200, b"ok\n")
+        )
+        self.assertLess(time.monotonic() - started, 1)
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
 
     def test_missing_and_wrong_bearer_tokens_are_rejected_without_side_effects(self):
         for token in (None, "", "wrong-token", f"{RELAY_TOKEN}extra"):
@@ -288,25 +392,45 @@ class DozzleAlertRelayTest(unittest.TestCase):
 
     def test_unhealthy_recovery_transition_and_duplicate_suppression(self):
         healthy = self.envelope(
-            "Recovery", container="immich_server", containerId="b" * 64
+            "Recovery",
+            container="immich_server",
+            containerId="b" * 64,
+            timestamp="2026-08-15T01:22:12Z",
         )
         unhealthy = self.envelope(
-            "Unhealthy", container="immich_server", containerId="b" * 64
+            "Unhealthy",
+            container="immich_server",
+            containerId="b" * 64,
+            timestamp="2026-08-15T01:22:13Z",
         )
 
         self.assertEqual(self.post(healthy)[0], 204)
         self.assertEqual(len(self.ntfy.requests), 0)
-        self.assertFalse(self.state_path.exists())
+        self.assertEqual(
+            self.read_state(),
+            {
+                "version": 2,
+                "entries": [
+                    self.state_entry("b" * 64, "healthy", "2026-08-15T01:22:12Z")
+                ],
+            },
+        )
 
         self.assertEqual(self.post(unhealthy)[0], 204)
         self.assertEqual(self.post(unhealthy)[0], 204)
         self.assertEqual(
             self.read_state(),
-            {"version": 1, "unhealthy": [f"nas\0{'b' * 64}"]},
+            {
+                "version": 2,
+                "entries": [
+                    self.state_entry("b" * 64, "unhealthy", "2026-08-15T01:22:13Z")
+                ],
+            },
         )
         self.assertEqual(len(self.ntfy.requests), 2)
 
-        self.assertEqual(self.post(healthy)[0], 204)
+        recovered = dict(healthy, timestamp="2026-08-15T01:22:14Z")
+        self.assertEqual(self.post(recovered)[0], 204)
         self.assertEqual(
             self.ntfy.requests[-1]["json"],
             {
@@ -318,9 +442,174 @@ class DozzleAlertRelayTest(unittest.TestCase):
                 "markdown": True,
             },
         )
-        self.assertEqual(self.read_state(), {"version": 1, "unhealthy": []})
-        self.assertEqual(self.post(healthy)[0], 204)
+        self.assertEqual(
+            self.read_state(),
+            {
+                "version": 2,
+                "entries": [
+                    self.state_entry("b" * 64, "healthy", "2026-08-15T01:22:14Z")
+                ],
+            },
+        )
+        self.assertEqual(self.post(recovered)[0], 204)
         self.assertEqual(len(self.ntfy.requests), 3)
+
+    def test_later_recovery_wins_when_older_unhealthy_arrives_late(self):
+        identity = "b" * 64
+        recovery = self.envelope(
+            "Recovery", containerId=identity, timestamp="2026-08-15T01:22:14.000000001Z"
+        )
+        stale_unhealthy = self.envelope(
+            "Unhealthy", containerId=identity, timestamp="2026-08-15T01:22:13.999999999Z"
+        )
+
+        self.assertEqual(self.post(recovery), (204, b""))
+        self.assertEqual(self.post(stale_unhealthy), (204, b""))
+        self.assertEqual(self.ntfy.requests, [])
+        expected = {
+            "version": 2,
+            "entries": [
+                self.state_entry(identity, "healthy", "2026-08-15T01:22:14.000000001Z")
+            ],
+        }
+        self.assertEqual(self.read_state(), expected)
+
+        restarted = self.relay_module.create_server(("127.0.0.1", 0), self.config)
+        restarted_thread = threading.Thread(target=restarted.serve_forever, daemon=True)
+        restarted_thread.start()
+        self.addCleanup(self.stop_server, restarted, restarted_thread)
+        original_relay = self.relay
+        self.relay = restarted
+        try:
+            self.assertEqual(self.post(stale_unhealthy), (204, b""))
+        finally:
+            self.relay = original_relay
+        self.assertEqual(self.ntfy.requests, [])
+        self.assertEqual(self.read_state(), expected)
+
+    def test_equal_timestamp_health_ordering_is_deterministic(self):
+        timestamp = "2026-08-15T01:22:14.123456789Z"
+        recovery_first_id = "b" * 64
+        recovery_first = self.envelope(
+            "Recovery", containerId=recovery_first_id, timestamp=timestamp
+        )
+        unhealthy_after = self.envelope(
+            "Unhealthy", containerId=recovery_first_id, timestamp=timestamp
+        )
+        self.assertEqual(self.post(recovery_first), (204, b""))
+        self.assertEqual(self.post(unhealthy_after), (204, b""))
+        self.assertEqual(self.ntfy.requests, [])
+
+        unhealthy_id = "c" * 64
+        repeated_unhealthy = self.envelope(
+            "Unhealthy", containerId=unhealthy_id, timestamp=timestamp
+        )
+        equal_recovery = self.envelope(
+            "Recovery", containerId=unhealthy_id, timestamp=timestamp
+        )
+        self.assertEqual(self.post(repeated_unhealthy), (204, b""))
+        self.assertEqual(self.post(repeated_unhealthy), (204, b""))
+        self.assertEqual(self.post(equal_recovery), (204, b""))
+        self.assertEqual(self.post(repeated_unhealthy), (204, b""))
+        self.assertEqual(len(self.ntfy.requests), 3)
+        entries = {entry["identity"]: entry for entry in self.read_state()["entries"]}
+        self.assertEqual(entries[f"nas\0{recovery_first_id}"]["state"], "healthy")
+        self.assertEqual(entries[f"nas\0{unhealthy_id}"]["state"], "healthy")
+
+    def test_version_one_state_migrates_without_discarding_unhealthy(self):
+        first_id = "b" * 64
+        second_id = "c" * 64
+        self.write_state(
+            {
+                "version": 1,
+                "unhealthy": sorted([f"nas\0{first_id}", f"nas\0{second_id}"]),
+            }
+        )
+
+        recovery = self.envelope(
+            "Recovery", containerId=first_id, timestamp="2026-08-15T01:22:14Z"
+        )
+        self.assertEqual(self.post(recovery), (204, b""))
+
+        self.assertEqual(len(self.ntfy.requests), 1)
+        self.assertEqual(
+            self.read_state(),
+            {
+                "version": 2,
+                "entries": [
+                    self.state_entry(first_id, "healthy", "2026-08-15T01:22:14Z"),
+                    self.state_entry(second_id, "unhealthy", "0001-01-01T00:00:00Z"),
+                ],
+            },
+        )
+
+    def test_healthy_tombstone_retention_is_bounded(self):
+        now = datetime(2026, 8, 15, 12, 0, tzinfo=timezone.utc)
+        old_id = "b" * 64
+        recent_id = "c" * 64
+        unhealthy_id = "d" * 64
+        entries = [
+            self.state_entry(old_id, "healthy", "2026-07-15T11:59:59Z"),
+            self.state_entry(recent_id, "healthy", "2026-07-17T12:00:00Z"),
+            self.state_entry(unhealthy_id, "unhealthy", "2026-01-01T00:00:00Z"),
+        ]
+        self.write_state({"version": 2, "entries": sorted(entries, key=lambda item: item["identity"])})
+
+        new_id = "e" * 64
+        with mock.patch.object(
+            self.relay_module, "utc_now", return_value=now, create=True
+        ):
+            self.assertEqual(
+                self.post(
+                    self.envelope(
+                        "Recovery", containerId=new_id, timestamp="2026-08-15T12:00:00Z"
+                    )
+                ),
+                (204, b""),
+            )
+        identities = {entry["identity"] for entry in self.read_state()["entries"]}
+        self.assertNotIn(f"nas\0{old_id}", identities)
+        self.assertIn(f"nas\0{recent_id}", identities)
+        self.assertIn(f"nas\0{unhealthy_id}", identities)
+        self.assertIn(f"nas\0{new_id}", identities)
+        self.assertEqual(self.ntfy.requests, [])
+
+        capped_entries = [
+            self.state_entry(
+                f"{index:064x}",
+                "healthy",
+                f"2026-08-15T11:{index // 60:02d}:{index % 60:02d}Z",
+            )
+            for index in range(128)
+        ]
+        self.write_state(
+            {"version": 2, "entries": sorted(capped_entries, key=lambda item: item["identity"])}
+        )
+        with mock.patch.object(
+            self.relay_module, "utc_now", return_value=now, create=True
+        ):
+            self.assertEqual(
+                self.post(
+                    self.envelope(
+                        "Recovery", containerId="f" * 64, timestamp="2026-08-15T12:00:00Z"
+                    )
+                )[0],
+                204,
+            )
+        bounded = self.read_state()["entries"]
+        self.assertEqual(len(bounded), 128)
+        self.assertNotIn(f"nas\0{0:064x}", {entry["identity"] for entry in bounded})
+
+    def test_unprunable_migration_over_size_limit_fails_before_publish(self):
+        identities = [f"{'\u00e9' * 256}\0{index:064x}" for index in range(100)]
+        self.write_state({"version": 1, "unhealthy": sorted(identities)})
+        original = self.state_path.read_bytes()
+
+        status_code, response_body = self.post(self.envelope("OOM"))
+
+        self.assertEqual((status_code, response_body), (500, b"state unavailable\n"))
+        self.assertEqual(self.ntfy.requests, [])
+        self.assertEqual(self.state_path.read_bytes(), original)
 
     def test_exit_and_oom_always_publish_without_changing_state(self):
         for _iteration in range(2):
@@ -332,11 +621,79 @@ class DozzleAlertRelayTest(unittest.TestCase):
     def test_state_is_atomic_versioned_and_mode_0600(self):
         self.assertEqual(self.post(self.envelope())[0], 204)
         state = self.read_state()
-        self.assertEqual(state, {"version": 1, "unhealthy": [f"nas\0{CONTAINER_ID}"]})
+        self.assertEqual(
+            state,
+            {
+                "version": 2,
+                "entries": [
+                    self.state_entry(
+                        CONTAINER_ID, "unhealthy", "2026-08-15T01:22:13Z"
+                    )
+                ],
+            },
+        )
         self.assertEqual(stat.S_IMODE(self.state_path.stat().st_mode), 0o600)
         self.assertEqual(self.state_path.stat().st_uid, os.geteuid())
         leftovers = [path.name for path in self.state_directory.iterdir() if path.name.endswith(".tmp")]
         self.assertEqual(leftovers, [])
+
+    def test_state_replace_uses_random_exclusive_names_and_cleans_failures(self):
+        collision = self.state_directory / f".{self.state_path.name}.collision.tmp"
+        collision.write_text("sentinel", encoding="utf-8")
+        collision.chmod(0o600)
+        random_source = mock.Mock()
+        random_source.token_hex.side_effect = ["collision", "fresh"]
+
+        with mock.patch.object(
+            self.relay_module, "secrets", random_source, create=True
+        ):
+            self.assertEqual(self.post(self.envelope()), (204, b""))
+
+        self.assertEqual(random_source.token_hex.call_count, 2)
+        self.assertEqual(collision.read_text(encoding="utf-8"), "sentinel")
+        self.assertFalse(
+            (self.state_directory / f".{self.state_path.name}.fresh.tmp").exists()
+        )
+        collision.unlink()
+
+        failed_source = mock.Mock()
+        failed_source.token_hex.return_value = "replace-failure"
+        with (
+            mock.patch.object(self.relay_module, "secrets", failed_source, create=True),
+            mock.patch.object(self.relay_module.os, "replace", side_effect=OSError),
+        ):
+            status_code, response_body = self.post(
+                self.envelope(timestamp="2026-08-15T01:22:14Z")
+            )
+        self.assertEqual((status_code, response_body), (500, b"state unavailable\n"))
+        self.assertFalse(
+            (
+                self.state_directory
+                / f".{self.state_path.name}.replace-failure.tmp"
+            ).exists()
+        )
+
+    def test_publish_refuses_redirects_without_forwarding_token(self):
+        target = ThreadingHTTPServer(("127.0.0.1", 0), RedirectTargetHandler)
+        target.requests = []
+        target_thread = threading.Thread(target=target.serve_forever, daemon=True)
+        target_thread.start()
+        self.addCleanup(self.stop_server, target, target_thread)
+
+        redirector = ThreadingHTTPServer(("127.0.0.1", 0), RedirectHandler)
+        redirector.target_url = f"http://127.0.0.1:{target.server_port}/capture"
+        redirect_thread = threading.Thread(
+            target=redirector.serve_forever, daemon=True
+        )
+        redirect_thread.start()
+        self.addCleanup(self.stop_server, redirector, redirect_thread)
+        self.config.ntfy_publish_url = f"http://127.0.0.1:{redirector.server_port}/"
+
+        status_code, response_body = self.post(self.envelope())
+
+        self.assertEqual((status_code, response_body), (502, b"upstream unavailable\n"))
+        self.assertEqual(target.requests, [])
+        self.assertFalse(self.state_path.exists())
 
     def test_corrupt_symlink_and_unsafe_state_fail_closed(self):
         fixtures = ("corrupt", "corrupt-entry", "symlink", "unsafe-mode")

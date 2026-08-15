@@ -229,7 +229,7 @@ abort "Dozzle contract failed: alert relay environment differs" unless
   }
 abort "Dozzle contract failed: alert relay mounts differ" unless relay["volumes"] == [
   "${PLATFORM_CURRENT_DIR:?}/services/dozzle/alert_relay.py:/app/alert_relay.py:ro",
-  "${DOZZLE_STATE_ROOT:?}:/state"
+  "${DOZZLE_STATE_ROOT:?}/alert-relay:/state"
 ]
 abort "Dozzle contract failed: alert relay must not publish a port" if
   relay.key?("ports") || relay.key?("network_mode")
@@ -245,7 +245,7 @@ abort "Dozzle contract failed: Dozzle dependency health gates differ" unless
 adoption = File.read(ARGV.fetch(1))
 abort "Dozzle contract failed: adoption does not share the legacy Dozzle root with the relay" unless
   adoption.include?("  alert-relay:") &&
-  adoption.scan('${PLATFORM_ADOPTION_ROOT:?}/legacy/dozzle/data:/state').length == 1 &&
+  adoption.scan('${PLATFORM_ADOPTION_ROOT:?}/legacy/dozzle/data/alert-relay:/state').length == 1 &&
   adoption.scan('${PLATFORM_ADOPTION_ROOT:?}/legacy/dozzle/data:/data').length == 1
 relay_source = File.read(ARGV.fetch(2))
 role = File.read(ARGV.fetch(3))
@@ -259,6 +259,28 @@ abort "Dozzle contract failed: immutable release does not include the alert rela
     deployment_bundle.include?("alert_relay.py")
 abort "Dozzle contract failed: role does not validate the tracked relay script" unless
   role.include?("{{ platform_current_dir }}/services/dozzle/alert_relay.py")
+abort "Dozzle contract failed: role does not prepare an isolated private relay state directory" unless
+  role.include?("Inspect the selected Dozzle state parent before child creation") &&
+  role.include?("Require a safe Dozzle state parent before child creation") &&
+  role.include?('path: "{{ dozzle_state_root }}/alert-relay"') &&
+  role.include?("state: directory") && role.include?('mode: "0700"') &&
+  role.include?("dozzle_alert_relay_state_root_stat") &&
+  role.include?("dozzle_alert_relay_state_root_stat.stat.mode == '0700'") &&
+  role.index("Require a safe Dozzle state parent before child creation") <
+    role.index("Prepare the isolated Dozzle alert relay state directory")
+abort "Dozzle contract failed: role does not safely relocate the legacy relay state file" unless
+  role.include?("Inspect legacy and isolated Dozzle alert relay state files") &&
+  role.include?('"{{ dozzle_state_root }}/alert-relay.json"') &&
+  role.include?('"{{ dozzle_state_root }}/alert-relay/alert-relay.json"') &&
+  role.include?("Refuse ambiguous or unsafe Dozzle alert relay state relocation") &&
+  role.include?("Stop Dozzle alert delivery before legacy relay state relocation") &&
+  role.include?("services: [dozzle, alert-relay]") &&
+  role.include?("state: stopped") &&
+  role.include?("Relocate the legacy Dozzle alert relay state file") &&
+  role.include?("ansible.builtin.command:") && role.include?("- mv") &&
+  role.include?("dozzle_alert_relay_legacy_state.stat.exists and") &&
+  role.index("Stop Dozzle alert delivery before legacy relay state relocation") <
+    role.index("Relocate the legacy Dozzle alert relay state file")
 abort "Dozzle contract failed: environment does not render the selected state and script roots" unless
   env_template.include?("PLATFORM_CURRENT_DIR={{ platform_current_dir }}") &&
   env_template.include?("DOZZLE_STATE_ROOT={{ dozzle_state_root }}")
@@ -300,7 +322,7 @@ expected_template_fields = {
   "event" => ".Event.Name",
   "healthStatus" => 'index .Event.Attributes `healthStatus`',
   "exitCode" => 'index .Event.Attributes `exitCode`',
-  "timestamp" => '.Event.Timestamp.Format `2006-01-02T15:04:05Z07:00`'
+  "timestamp" => '.Event.Timestamp.Format `2006-01-02T15:04:05.999999999Z07:00`'
 }
 template_source = dispatcher.fetch("template")
 abort "Dozzle contract failed: managed dispatcher retains an ntfy presentation envelope" if
@@ -887,7 +909,7 @@ expected_template = JSON.generate(
   event: "{{ .Event.Name }}",
   healthStatus: '{{ index .Event.Attributes `healthStatus` }}',
   exitCode: '{{ index .Event.Attributes `exitCode` }}',
-  timestamp: '{{ .Event.Timestamp.Format `2006-01-02T15:04:05Z07:00` }}'
+  timestamp: '{{ .Event.Timestamp.Format `2006-01-02T15:04:05.999999999Z07:00` }}'
 )
 fail_contract("managed dispatcher name differs") unless dispatcher["name"] == "ntfy nas-critical"
 fail_contract("managed dispatcher type differs") unless dispatcher["type"] == "webhook"
