@@ -268,6 +268,23 @@ abort "Dozzle contract failed: role does not prepare an isolated private relay s
   role.include?("dozzle_alert_relay_state_root_stat.stat.mode == '0700'") &&
   role.index("Require a safe Dozzle state parent before child creation") <
     role.index("Prepare the isolated Dozzle alert relay state directory")
+child_inspect = role.index("Inspect the Dozzle alert relay state child before mutation")
+child_gate = role.index("Require a safe Dozzle alert relay state child before mutation")
+child_prepare = role.index("Prepare the isolated Dozzle alert relay state directory")
+legacy_inspect = role.index("Inspect legacy and isolated Dozzle alert relay state files")
+abort "Dozzle contract failed: role can mutate an unsafe relay state child" unless
+  child_inspect && child_gate && child_prepare && legacy_inspect &&
+  child_inspect < child_gate && child_gate < child_prepare && child_prepare < legacy_inspect &&
+  role[child_inspect...child_gate].include?('path: "{{ dozzle_state_root }}/alert-relay"') &&
+  role[child_inspect...child_gate].include?("follow: false") &&
+  role[child_inspect...child_gate].include?("dozzle_alert_relay_state_child_before_prepare") &&
+  role[child_gate...child_prepare].include?("stat.exists") &&
+  role[child_gate...child_prepare].include?("stat.isdir") &&
+  role[child_gate...child_prepare].include?("stat.islnk") &&
+  role[child_gate...child_prepare].include?("stat.mode") &&
+  role[child_gate...child_prepare].include?("stat.uid") &&
+  role[child_gate...child_prepare].include?("stat.gid") &&
+  role[child_prepare...legacy_inspect].include?("follow: false")
 abort "Dozzle contract failed: role does not safely relocate the legacy relay state file" unless
   role.include?("Inspect legacy and isolated Dozzle alert relay state files") &&
   role.include?('"{{ dozzle_state_root }}/alert-relay.json"') &&

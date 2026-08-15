@@ -945,6 +945,7 @@ validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "te
   ruby\ tests/audiobookshelf_initial_scan_behavior_test.rb
   ruby\ tests/paperless_mail_reconciliation_test.rb
   python3\ -m\ unittest\ -v\ tests/dozzle_alert_relay_test.py
+  tests/dozzle_alert_state_symlink_test.sh
   tests/integration_lock_test.sh
   tests/mac/manual-validation-runner-test.sh
   tests/mac/audiobookshelf-drift-hook-test.sh
@@ -968,6 +969,9 @@ check(failures,
 check(failures,
       validation_commands.count("python3 -m unittest -v tests/dozzle_alert_relay_test.py") == 1,
       "validate-policy.sh must run the Dozzle alert relay unit test exactly once")
+check(failures,
+      validation_commands.count("tests/dozzle_alert_state_symlink_test.sh") == 1,
+      "validate-policy.sh must run the Dozzle alert state symlink test exactly once")
 
 # Compose interpolates $ in env files and silently truncates an unescaped bcrypt
 # hash rather than rejecting it, so escaping is mandatory wherever hashes flow.

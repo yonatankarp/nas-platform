@@ -67,10 +67,42 @@
         dozzle_state_parent_before_child.stat.gid | int == nas_gid | int
     fail_msg: Dozzle state parent is unsafe for alert relay child creation.
 
+- name: Inspect the Dozzle alert relay state child before mutation
+  ansible.builtin.stat:
+    path: "{{ dozzle_state_root }}/alert-relay"
+    follow: false
+  register: dozzle_alert_relay_state_child_before_prepare
+
+- name: Require a safe Dozzle alert relay state child before mutation
+  ansible.builtin.assert:
+    that:
+      - >-
+        not dozzle_alert_relay_state_child_before_prepare.stat.exists or
+        (dozzle_alert_relay_state_child_before_prepare.stat.isdir | default(false) and
+         not (dozzle_alert_relay_state_child_before_prepare.stat.islnk | default(false)))
+      - >-
+        not dozzle_alert_relay_state_child_before_prepare.stat.exists or
+        dozzle_alert_relay_state_child_before_prepare.stat.mode[-2]
+        not in ['2', '3', '6', '7']
+      - >-
+        not dozzle_alert_relay_state_child_before_prepare.stat.exists or
+        dozzle_alert_relay_state_child_before_prepare.stat.mode[-1]
+        not in ['2', '3', '6', '7']
+      - >-
+        not dozzle_alert_relay_state_child_before_prepare.stat.exists or
+        (platform_kind != 'nas' and not (platform_manage_linux_ownership | bool)) or
+        dozzle_alert_relay_state_child_before_prepare.stat.uid | int == nas_uid | int
+      - >-
+        not dozzle_alert_relay_state_child_before_prepare.stat.exists or
+        (platform_kind != 'nas' and not (platform_manage_linux_ownership | bool)) or
+        dozzle_alert_relay_state_child_before_prepare.stat.gid | int == nas_gid | int
+    fail_msg: Dozzle alert relay state child is unsafe before mutation.
+
 - name: Prepare the isolated Dozzle alert relay state directory
   ansible.builtin.file:
     path: "{{ dozzle_state_root }}/alert-relay"
     state: directory
+    follow: false
     owner: >-
       {{ nas_uid
          if platform_kind == 'nas' or (platform_manage_linux_ownership | bool)

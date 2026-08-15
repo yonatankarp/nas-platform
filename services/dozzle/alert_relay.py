@@ -147,10 +147,18 @@ def contains_control(value):
     return any(ord(character) < 0x20 or ord(character) == 0x7F for character in value)
 
 
+def require_utf8(value, error):
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        raise SchemaError(error) from None
+
+
 def require_text(payload, key, maximum):
     value = payload[key]
     if not isinstance(value, str) or not value or len(value) > maximum or contains_control(value):
         raise SchemaError(f"invalid {key}")
+    require_utf8(value, f"invalid {key}")
     return value
 
 
@@ -227,6 +235,8 @@ def validate_envelope(payload):
         raise SchemaError("status fields must be strings")
     if contains_control(health_status) or contains_control(exit_code):
         raise SchemaError("invalid status fields")
+    require_utf8(health_status, "invalid status fields")
+    require_utf8(exit_code, "invalid status fields")
 
     if rule == "Unexpected exit":
         if (

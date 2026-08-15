@@ -287,6 +287,43 @@ relay_mutations.each do |name, path, original, replacement, diagnostic|
   check_static_mutation(failures, name, path, original, replacement, diagnostic)
 end
 
+role_safety_mutations = [
+  ["child preflight follows symlinks",
+   "- name: Inspect the Dozzle alert relay state child before mutation\n" \
+   "  ansible.builtin.stat:\n" \
+   "    path: \"{{ dozzle_state_root }}/alert-relay\"\n" \
+   "    follow: false\n",
+   "- name: Inspect the Dozzle alert relay state child before mutation\n" \
+   "  ansible.builtin.stat:\n" \
+   "    path: \"{{ dozzle_state_root }}/alert-relay\"\n" \
+   "    follow: true\n"],
+  ["child preparation follows symlinks",
+   "- name: Prepare the isolated Dozzle alert relay state directory\n" \
+   "  ansible.builtin.file:\n" \
+   "    path: \"{{ dozzle_state_root }}/alert-relay\"\n" \
+   "    state: directory\n" \
+   "    follow: false\n",
+   "- name: Prepare the isolated Dozzle alert relay state directory\n" \
+   "  ansible.builtin.file:\n" \
+   "    path: \"{{ dozzle_state_root }}/alert-relay\"\n" \
+   "    state: directory\n" \
+   "    follow: true\n"],
+  ["child symlink rejection removed",
+   "        (dozzle_alert_relay_state_child_before_prepare.stat.isdir | default(false) and\n" \
+   "         not (dozzle_alert_relay_state_child_before_prepare.stat.islnk | default(false)))\n",
+   "        dozzle_alert_relay_state_child_before_prepare.stat.isdir | default(false)\n"]
+].freeze
+role_safety_mutations.each do |name, original, replacement|
+  check_static_mutation(
+    failures,
+    name,
+    "roles/dozzle/tasks/main.yml",
+    original,
+    replacement,
+    "role can mutate an unsafe relay state child"
+  )
+end
+
 role = File.read(ROLE)
 check(failures, !role.include?("dispatcher.id | int"),
       "Dozzle verification coerces opaque dispatcher IDs to integers")

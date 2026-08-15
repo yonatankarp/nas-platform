@@ -8,6 +8,7 @@ ruby tests/beszel_telemetry_timeout_test.rb
 ruby tests/beszel_telemetry_ansible_test.rb
 python3 tests/beszel_telemetry_module_test.py
 python3 -m unittest -v tests/dozzle_alert_relay_test.py
+tests/dozzle_alert_state_symlink_test.sh
 tests/mac/beszel-telemetry-hook-test.sh
 ruby tests/ci/classify_changes_test.rb
 ruby tests/ci/validate_results_test.rb

@@ -1,0 +1,13 @@
+---
+- name: Prove Dozzle relay child symlinks fail before mutation
+  hosts: localhost
+  gather_facts: false
+  vars:
+    dozzle_state_root: "{{ lookup('env', 'DOZZLE_SYMLINK_STATE_ROOT') }}"
+    platform_kind: nas
+    platform_manage_linux_ownership: false
+    nas_uid: "{{ lookup('env', 'DOZZLE_SYMLINK_UID') | int }}"
+    nas_gid: "{{ lookup('env', 'DOZZLE_SYMLINK_GID') | int }}"
+    platform_current_dir: "{{ lookup('env', 'DOZZLE_SYMLINK_REPO_ROOT') }}"
+  roles:
+    - role: dozzle

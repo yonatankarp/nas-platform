@@ -299,6 +299,35 @@ class DozzleAlertRelayTest(unittest.TestCase):
         self.assertEqual(self.ntfy.requests, [])
         self.assertFalse(self.state_path.exists())
 
+    def test_unpaired_surrogates_are_rejected_in_every_string_field(self):
+        string_fields = (
+            "rule",
+            "containerId",
+            "container",
+            "host",
+            "event",
+            "healthStatus",
+            "exitCode",
+            "timestamp",
+        )
+        captured = io.StringIO()
+        with contextlib.redirect_stderr(captured):
+            for field in string_fields:
+                with self.subTest(field=field):
+                    payload = self.envelope()
+                    payload[field] = "\ud800"
+                    raw = json.dumps(
+                        payload, ensure_ascii=True, separators=(",", ":")
+                    ).encode("ascii")
+                    try:
+                        result = self.request("POST", "/alerts", raw)
+                    except http.client.RemoteDisconnected:
+                        result = (None, b"connection closed")
+                    self.assertEqual(result, (400, b"invalid request\n"))
+                    self.assertEqual(self.ntfy.requests, [])
+                    self.assertFalse(self.state_path.exists())
+        self.assertNotIn("Traceback", captured.getvalue())
+
     def test_unexpected_exit_requires_canonical_nonzero_decimal_code(self):
         for exit_code in ("00", "000", "01", "0130", "0137", "0143", "1\u0662"):
             with self.subTest(exit_code=exit_code):
