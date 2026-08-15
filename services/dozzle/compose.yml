@@ -5,6 +5,38 @@ x-logging: &default-logging
     max-file: "3"
 
 services:
+  alert-relay:
+    container_name: dozzle_alert_relay
+    image: docker.io/library/python:3.13-alpine@sha256:399babc8b49529dabfd9c922f2b5eea81d611e4512e3ed250d75bd2e7683f4b0
+    labels:
+      dev.dozzle.group: dozzle
+      dev.dozzle.name: alert-relay
+      dev.nas-platform.alert-relay.script-sha256: ${ALERT_RELAY_SCRIPT_SHA256:?}
+    user: "${NAS_UID:?}:${NAS_GID:?}"
+    command: [python, /app/alert_relay.py]
+    volumes:
+      - ${PLATFORM_CURRENT_DIR:?}/services/dozzle/alert_relay.py:/app/alert_relay.py:ro
+      - ${DOZZLE_STATE_ROOT:?}:/state
+    environment:
+      ALERT_RELAY_TOKEN: ${ALERT_RELAY_TOKEN:?}
+      NTFY_PUBLISH_URL: ${NTFY_PUBLISH_URL:?}
+      NTFY_TOPIC: ${NTFY_TOPIC:?}
+      NTFY_TOKEN: ${NTFY_TOKEN:?}
+      ALERT_STATE_PATH: /state/alert-relay.json
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/healthz', timeout=3).read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 4
+      start_period: 5s
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    logging: *default-logging
+
   dozzle:
     container_name: dozzle
     image: docker.io/amir20/dozzle:v10.7.1@sha256:a8441e9d2928cc7b30d0023f5eedbb87ef6e234d87f3be02662bd8f417955b8b
@@ -15,7 +47,7 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - ${NAS_DOCKER_ROOT:?}/dozzle/data:/data
+      - ${DOZZLE_STATE_ROOT:?}:/data
     environment:
       DOZZLE_AUTH_PROVIDER: simple
       DOZZLE_ENABLE_ACTIONS: "false"
@@ -26,6 +58,8 @@ services:
       TZ: ${TZ:?}
     depends_on:
       socket-proxy:
+        condition: service_healthy
+      alert-relay:
         condition: service_healthy
     healthcheck:
       test: [CMD, /dozzle, healthcheck]

@@ -10,6 +10,7 @@
       - "{{ platform_current_dir }}/services/dozzle/compose.yml"
       - "{{ platform_current_dir }}/services/dozzle/compose.{{ platform_compose_kind }}.yml"
       - "{{ platform_current_dir }}/services/dozzle/compose.adoption.yml"
+      - "{{ platform_current_dir }}/services/dozzle/alert_relay.py"
       - "{{ platform_runtime_dir }}/services/dozzle"
       - "{{ platform_runtime_dir }}/services/dozzle/.env"
       - >-
@@ -43,6 +44,39 @@
     that:
       - dozzle_state_root == ((platform_adoption_root ~ '/legacy/dozzle/data') if
         (platform_adoption_enabled | default(false) | bool) else (nas_docker_root ~ '/dozzle/data'))
+
+- name: Inspect the tracked Dozzle alert relay and selected state root
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+  loop:
+    - "{{ platform_current_dir }}/services/dozzle/alert_relay.py"
+    - "{{ dozzle_state_root }}"
+  register: dozzle_alert_relay_paths
+
+- name: Resolve the tracked Dozzle alert relay and selected state root
+  ansible.builtin.set_fact:
+    dozzle_alert_relay_script: "{{ dozzle_alert_relay_paths.results[0] }}"
+    dozzle_state_root_stat: "{{ dozzle_alert_relay_paths.results[1] }}"
+
+- name: Require safe Dozzle alert relay deployment paths
+  ansible.builtin.assert:
+    that:
+      - dozzle_alert_relay_script.stat.exists
+      - dozzle_alert_relay_script.stat.isreg | default(false)
+      - not (dozzle_alert_relay_script.stat.islnk | default(false))
+      - dozzle_alert_relay_script.stat.checksum is match('^[0-9a-f]{64}$')
+      - dozzle_state_root_stat.stat.exists
+      - dozzle_state_root_stat.stat.isdir | default(false)
+      - not (dozzle_state_root_stat.stat.islnk | default(false))
+      - dozzle_state_root_stat.stat.mode[-2] not in ['2', '3', '6', '7']
+      - dozzle_state_root_stat.stat.mode[-1] not in ['2', '3', '6', '7']
+      - >-
+        platform_kind != 'nas' or not (platform_manage_linux_ownership | bool) or
+        dozzle_state_root_stat.stat.uid | int == nas_uid | int
+    fail_msg: Dozzle alert relay script or selected state root is unsafe.
 
 - name: Reconcile preserved and managed Dozzle users
   ansible.builtin.include_tasks: managed_users.yml

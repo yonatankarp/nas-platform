@@ -207,13 +207,14 @@ def render_notification(event, topic):
     rule = event["rule"]
     host = markdown_escape(event["host"])
     container = markdown_escape(event["container"])
+    title_container = event["container"][:128]
     title_prefix = {
         "OOM": "Out of memory",
         "Unexpected exit": "Unexpected exit",
         "Unhealthy": "Unhealthy",
         "Recovery": "Recovered",
     }[rule]
-    title = f"{title_prefix} · {container}"
+    title = f"{title_prefix} · {title_container}"
     lines = [f"**Host:** `{host}`", f"**Container:** `{container}`"]
     if rule == "Unexpected exit":
         lines.append(f"**Exit code:** `{event['exitCode']}`")

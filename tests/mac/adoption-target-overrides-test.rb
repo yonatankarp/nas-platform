@@ -56,6 +56,9 @@ READ_ONLY_BINDINGS = %w[
 COMMITTED_BINDINGS.each do |binding|
   binding << (READ_ONLY_BINDINGS.include?("#{binding[0]}:#{binding[1]}") ? "ro" : "rw")
 end
+TARGET_BINDINGS = (
+  COMMITTED_BINDINGS + [["dozzle", "legacy/dozzle/data", "/state", "rw"]]
+).freeze
 
 def refuse(message)
   warn "Adoption target override failed: #{message}"
@@ -67,6 +70,7 @@ def required_environment(paths)
   names.to_h do |name|
     value = case name
             when "PLATFORM_ADOPTION_ROOT" then ADOPTION_ROOT
+            when "PLATFORM_CURRENT_DIR" then "/private/tmp/unused-platform-current-dir"
             when "NAS_DOCKER_ROOT" then "/private/tmp/unused-docker-root"
             when "NAS_MEDIA_ROOT" then "/private/tmp/unused-media-root"
             when /(?:PATH|ROOT)\z/ then "/private/tmp/unused-#{name.downcase.tr('_', '-')}"
@@ -86,7 +90,7 @@ reviewed = SERVICES.flat_map do |service|
   end
 end.sort
 refuse("reviewed legacy mapping differs from committed policy") unless reviewed == COMMITTED_BINDINGS.sort
-expected = COMMITTED_BINDINGS.map { |_, source, target, access| [source, target, access] }.sort
+expected = TARGET_BINDINGS.map { |_, source, target, access| [source, target, access] }.sort
 
 actual = []
 SERVICES.each do |service|

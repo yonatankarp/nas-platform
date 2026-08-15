@@ -161,6 +161,22 @@ rescue KeyError, Psych::Exception, RuntimeError, SystemCallError => error
   failures << "Dozzle label-complete fixture setup failed: #{error.message}"
 end
 
+def check_static_mutation(failures, name, relative_path, original, replacement, diagnostic)
+  with_copied_repo do |repo|
+    path = File.join(repo, relative_path)
+    source = File.read(path)
+    raise "#{name} fixture differs" unless source.scan(original).length == 1
+
+    File.write(path, source.sub(original, replacement))
+    _stdout, stderr, status = run_static(repo)
+    check(failures, !status.success?, "Dozzle static contract accepted #{name}")
+    check(failures, stderr == "Dozzle contract failed: #{diagnostic}\n",
+          "Dozzle static contract #{name} diagnostic differs: #{stderr.lines.first&.strip}")
+  end
+rescue RuntimeError, SystemCallError => error
+  failures << "Dozzle #{name} mutation fixture failed: #{error.message}"
+end
+
 %w[assert-check-mixed-output assert-check-missing-output].each_with_index do |mode, index|
   output = output_for(index)
   _stdout, stderr, status = run_assertion(mode, output)
@@ -184,10 +200,13 @@ contract = File.read(CONTRACT)
 fixed_diagnostics = [
   "OOM drift fixture differs",
   "managed dispatcher template differs",
-  "managed webhook test reported failure",
-  "managed webhook test did not reach disposable ntfy",
+  "unhealthy event did not reach the private relay and disposable ntfy",
+  "healthy transition did not produce one correlated recovery",
+  "startup healthy fixture did not exercise the managed recovery rule",
+  "startup healthy event produced a false recovery",
   "disposable exit fixture did not exit with the expected status",
-  "exit-code-1 event did not reach disposable ntfy"
+  "exit-code-1 event did not reach the private relay and disposable ntfy",
+  "relay exposed its event envelope as ntfy message text"
 ]
 fixed_diagnostics.each do |diagnostic|
   check(failures, contract.include?(diagnostic), "Dozzle contract is missing fixed diagnostic: #{diagnostic}")
@@ -224,6 +243,44 @@ check_name_mutation(
   :duplicate,
   "Dozzle contract failed: base Compose has duplicate dev.dozzle.name labels\n"
 )
+
+relay_mutations = [
+  ["direct ntfy topic publishing", "roles/dozzle/defaults/main.yml",
+   "  url: http://alert-relay:8081/alerts\n", "  url: http://ntfy:80/nas-critical\n",
+   "managed dispatcher must target only the private alert relay"],
+  ["direct ntfy root publishing", "roles/dozzle/defaults/main.yml",
+   "  url: http://alert-relay:8081/alerts\n", "  url: http://ntfy:80/\n",
+   "managed dispatcher must target only the private alert relay"],
+  ["missing relay authorization", "roles/dozzle/defaults/main.yml",
+   "  headers:\n    Authorization: \"Bearer {{ vault_ntfy_dozzle_token }}\"\n",
+   "  headers: {}\n", "managed dispatcher authorization differs"],
+  ["missing envelope version", "roles/dozzle/defaults/main.yml",
+   "    {{ {'version': 1,\n", "    {{ {\n", "managed dispatcher is missing exact version"],
+  ["missing container identity", "roles/dozzle/defaults/main.yml",
+   "        'containerId': '{{ .Container.ID }}',\n", "",
+   "managed dispatcher is missing exact containerId"],
+  ["missing health status", "roles/dozzle/defaults/main.yml",
+   "        'healthStatus': '{{ index .Event.Attributes `healthStatus` }}',\n", "",
+   "managed dispatcher is missing exact healthStatus"],
+  ["published relay port", "services/dozzle/compose.yml",
+   "    command: [python, /app/alert_relay.py]\n",
+   "    command: [python, /app/alert_relay.py]\n    ports:\n      - \"8081:8081\"\n",
+   "alert relay must not publish a port"],
+  ["writable relay root", "services/dozzle/compose.yml",
+   "      test: [CMD, python, -c, \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/healthz', timeout=3).read()\"]\n      interval: 30s\n      timeout: 5s\n      retries: 4\n      start_period: 5s\n    read_only: true\n",
+   "      test: [CMD, python, -c, \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/healthz', timeout=3).read()\"]\n      interval: 30s\n      timeout: 5s\n      retries: 4\n      start_period: 5s\n    read_only: false\n",
+   "alert relay hardening differs"],
+  ["relay Docker socket", "services/dozzle/compose.yml",
+   "      - ${DOZZLE_STATE_ROOT:?}:/state\n",
+   "      - ${DOZZLE_STATE_ROOT:?}:/state\n      - /var/run/docker.sock:/var/run/docker.sock:ro\n",
+   "Docker socket is mounted outside socket-proxy"],
+  ["read-only relay state", "services/dozzle/compose.yml",
+   "      - ${DOZZLE_STATE_ROOT:?}:/state\n", "      - ${DOZZLE_STATE_ROOT:?}:/state:ro\n",
+   "alert relay mounts differ"]
+].freeze
+relay_mutations.each do |name, path, original, replacement, diagnostic|
+  check_static_mutation(failures, name, path, original, replacement, diagnostic)
+end
 
 role = File.read(ROLE)
 check(failures, !role.include?("dispatcher.id | int"),

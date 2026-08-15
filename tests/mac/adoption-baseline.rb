@@ -71,7 +71,8 @@ SETTING_FIELDS = {
 PROBE_DEPENDENCIES = %w[
   generate-secrets.yml
   services/audiobookshelf/compose.yml services/audiobookshelf/compose.mac.yml
-  services/dozzle/compose.yml services/immich/compose.yml services/immich/compose.mac.yml
+  services/dozzle/alert_relay.py services/dozzle/compose.yml services/dozzle/compose.mac.yml
+  services/dozzle/compose.adoption.yml services/immich/compose.yml services/immich/compose.mac.yml
   services/jellyfin/compose.yml services/jellyfin/compose.mac.yml
   services/komga/compose.yml services/komga/compose.mac.yml
   services/paperless-ngx/compose.yml services/paperless-ngx/compose.mac.yml
@@ -79,7 +80,7 @@ PROBE_DEPENDENCIES = %w[
   services/tinymediamanager/compose.integration.yml
   roles/audiobookshelf/tasks/main.yml roles/audiobookshelf/tasks/managed_users.yml
   roles/audiobookshelf/defaults/main.yml
-  roles/dozzle/tasks/main.yml roles/dozzle/defaults/main.yml
+  roles/dozzle/tasks/main.yml roles/dozzle/defaults/main.yml roles/dozzle/templates/env.j2
   roles/immich/tasks/main.yml roles/immich/defaults/main.yml
   roles/jellyfin/tasks/main.yml roles/jellyfin/defaults/main.yml
   roles/komga/tasks/main.yml roles/komga/defaults/main.yml

@@ -118,6 +118,7 @@ case " $* " in
       *-beszel) expected_name=hub; expected_group=beszel ;;
       *-beszel-agent-portable) expected_name=agent-portable; expected_group=beszel ;;
       *-beszel-socket-proxy) expected_name=socket-proxy; expected_group=beszel ;;
+      *-dozzle-alert-relay) expected_name=alert-relay; expected_group=dozzle ;;
       *-dozzle) expected_name=dozzle; expected_group=dozzle ;;
       *-dozzle-socket-proxy) expected_name=socket-proxy; expected_group=dozzle ;;
       *-immich-server) expected_name=immich-server; expected_group=immich ;;
@@ -307,6 +308,7 @@ for container in \
   dozzle-hook-test-beszel \
   dozzle-hook-test-beszel-agent-portable \
   dozzle-hook-test-beszel-socket-proxy \
+  dozzle-hook-test-dozzle-alert-relay \
   dozzle-hook-test-dozzle \
   dozzle-hook-test-dozzle-socket-proxy \
   dozzle-hook-test-immich-server \

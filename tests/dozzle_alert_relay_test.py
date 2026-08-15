@@ -341,7 +341,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
         self.assertEqual(status_code, 204)
         self.assertEqual(wrong_status, 401)
         published = self.ntfy.requests[0]["json"]
-        self.assertEqual(published["title"], "Unhealthy · svc\\`\\_\\*\\[\\]\\(\\)\\\\")
+        self.assertEqual(published["title"], "Unhealthy · svc`_*[]()\\")
         self.assertIn("`svc\\`\\_\\*\\[\\]\\(\\)\\\\`", published["message"])
         combined = captured.getvalue() + response_body.decode() + wrong_body.decode()
         for secret in (RELAY_TOKEN, NTFY_TOKEN, "request-secret"):

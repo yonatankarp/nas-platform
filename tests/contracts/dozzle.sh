@@ -20,8 +20,13 @@ esac
 
 repo_dir=${PLATFORM_CONTRACT_REPO_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)}
 compose=$repo_dir/services/dozzle/compose.yml
+adoption_compose=$repo_dir/services/dozzle/compose.adoption.yml
+relay_script=$repo_dir/services/dozzle/alert_relay.py
 role=$repo_dir/roles/dozzle/tasks/main.yml
 defaults=$repo_dir/roles/dozzle/defaults/main.yml
+env_template=$repo_dir/roles/dozzle/templates/env.j2
+deployment_inputs=$repo_dir/roles/deployment_bundle/tasks/inputs.yml
+deployment_bundle=$repo_dir/roles/deployment_bundle/tasks/main.yml
 integration=$repo_dir/tests/integration.sh
 mac_drift=$repo_dir/tests/mac/hooks/drift/20-dozzle.sh
 mac_verify=$repo_dir/tests/mac/hooks/verify/20-dozzle.sh
@@ -32,6 +37,7 @@ fail_contract() {
 }
 
 [ -f "$compose" ] || fail_contract 'services/dozzle/compose.yml is absent'
+[ -f "$relay_script" ] || fail_contract 'services/dozzle/alert_relay.py is absent'
 [ -f "$role" ] || fail_contract 'roles/dozzle/tasks/main.yml is absent'
 
 render_group_contract() {
@@ -41,12 +47,16 @@ render_group_contract() {
   shift 3
   rendered=$(env \
     PLATFORM_PROJECT_NAME=dozzle-contract PLATFORM_DOCKER_ROOT=/tmp/dozzle-contract/docker \
+    PLATFORM_CURRENT_DIR="$repo_dir" DOZZLE_STATE_ROOT=/tmp/dozzle-contract/docker/dozzle/data \
     NAS_DOCKER_ROOT=/tmp/dozzle-contract/docker \
     NAS_MEDIA_ROOT=/tmp/dozzle-contract/media NAS_RENDER_DEVICE=/dev/null \
     PLATFORM_ADOPTION_ROOT=/tmp/dozzle-contract/adoption NAS_UID=1000 NAS_GID=100 \
     BESZEL_APP_URL=http://127.0.0.1:8090 BESZEL_SYSTEM_NAME=contract \
     BESZEL_AGENT_KEY=contract BESZEL_AGENT_TOKEN=contract BESZEL_HOST_PORT=38090 \
     DOZZLE_HOST_PORT=38080 NTFY_HOST_PORT=32586 NTFY_BASE_URL=http://127.0.0.1:32586 \
+    ALERT_RELAY_SCRIPT_SHA256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    ALERT_RELAY_TOKEN=contract-relay-token NTFY_PUBLISH_URL=http://host.docker.internal:32586/ \
+    NTFY_TOPIC=nas-critical NTFY_TOKEN=contract-ntfy-token \
     NTFY_AUTH_USERS= NTFY_AUTH_ACCESS= NTFY_AUTH_TOKENS= \
     AUDIOBOOKSHELF_HOST_PORT=33378 \
     AUDIOBOOKSHELF_CONFIG_PATH=/tmp/dozzle-contract/audiobookshelf-config \
@@ -173,14 +183,16 @@ RUBY
   done
 fi
 
-ruby -ryaml - "$compose" <<'RUBY'
+ruby -ryaml - "$compose" "$adoption_compose" "$relay_script" "$role" "$env_template" \
+  "$deployment_inputs" "$deployment_bundle" <<'RUBY'
 compose = YAML.safe_load_file(ARGV.fetch(0), aliases: true)
 services = compose.fetch("services")
-abort "Dozzle contract failed: stack must define exactly dozzle and socket-proxy" unless
-  services.keys.sort == %w[dozzle socket-proxy]
+abort "Dozzle contract failed: stack must define exactly alert-relay, dozzle, and socket-proxy" unless
+  services.keys.sort == %w[alert-relay dozzle socket-proxy]
 
 dozzle = services.fetch("dozzle")
 proxy = services.fetch("socket-proxy")
+relay = services.fetch("alert-relay")
 expected_environment = {
   "DOZZLE_AUTH_PROVIDER" => "simple",
   "DOZZLE_ENABLE_ACTIONS" => "false",
@@ -193,13 +205,65 @@ expected_environment = {
 abort "Dozzle contract failed: security environment differs" unless
   dozzle.fetch("environment") == expected_environment
 abort "Dozzle contract failed: Docker socket is mounted outside socket-proxy" if
-  dozzle.fetch("volumes").any? { |volume| volume.to_s.include?("docker.sock") }
+  [dozzle, relay].any? do |service|
+    service.fetch("volumes", []).any? { |volume| volume.to_s.include?("docker.sock") }
+  end
 abort "Dozzle contract failed: proxy Docker socket must be read-only" unless
   proxy.fetch("volumes") == ["/var/run/docker.sock:/var/run/docker.sock:ro"]
 abort "Dozzle contract failed: proxy permissions differ" unless
   proxy.fetch("environment").slice("CONTAINERS", "EVENTS", "INFO", "POST") == {
     "CONTAINERS" => "1", "EVENTS" => "1", "INFO" => "1", "POST" => "0"
   }
+expected_python = "docker.io/library/python:3.13-alpine@sha256:399babc8b49529dabfd9c922f2b5eea81d611e4512e3ed250d75bd2e7683f4b0"
+abort "Dozzle contract failed: alert relay image is not the pinned multi-architecture Python image" unless
+  relay["image"] == expected_python
+abort "Dozzle contract failed: alert relay runtime identity differs" unless
+  relay["user"] == "${NAS_UID:?}:${NAS_GID:?}" && relay["command"] == ["python", "/app/alert_relay.py"]
+abort "Dozzle contract failed: alert relay environment differs" unless
+  relay["environment"] == {
+    "ALERT_RELAY_TOKEN" => "${ALERT_RELAY_TOKEN:?}",
+    "NTFY_PUBLISH_URL" => "${NTFY_PUBLISH_URL:?}",
+    "NTFY_TOPIC" => "${NTFY_TOPIC:?}",
+    "NTFY_TOKEN" => "${NTFY_TOKEN:?}",
+    "ALERT_STATE_PATH" => "/state/alert-relay.json"
+  }
+abort "Dozzle contract failed: alert relay mounts differ" unless relay["volumes"] == [
+  "${PLATFORM_CURRENT_DIR:?}/services/dozzle/alert_relay.py:/app/alert_relay.py:ro",
+  "${DOZZLE_STATE_ROOT:?}:/state"
+]
+abort "Dozzle contract failed: alert relay must not publish a port" if
+  relay.key?("ports") || relay.key?("network_mode")
+abort "Dozzle contract failed: alert relay hardening differs" unless
+  relay["read_only"] == true && relay["tmpfs"] == ["/tmp"] &&
+  relay["security_opt"] == ["no-new-privileges:true"] && relay.key?("healthcheck") &&
+  relay["restart"] == "unless-stopped" && relay["logging"] == compose["x-logging"]
+abort "Dozzle contract failed: Dozzle dependency health gates differ" unless
+  dozzle["depends_on"] == {
+    "socket-proxy" => {"condition" => "service_healthy"},
+    "alert-relay" => {"condition" => "service_healthy"}
+  }
+adoption = File.read(ARGV.fetch(1))
+abort "Dozzle contract failed: adoption does not share the legacy Dozzle root with the relay" unless
+  adoption.include?("  alert-relay:") &&
+  adoption.scan('${PLATFORM_ADOPTION_ROOT:?}/legacy/dozzle/data:/state').length == 1 &&
+  adoption.scan('${PLATFORM_ADOPTION_ROOT:?}/legacy/dozzle/data:/data').length == 1
+relay_source = File.read(ARGV.fetch(2))
+role = File.read(ARGV.fetch(3))
+env_template = File.read(ARGV.fetch(4))
+deployment_inputs = File.read(ARGV.fetch(5))
+deployment_bundle = File.read(ARGV.fetch(6))
+abort "Dozzle contract failed: deployment inputs do not validate the alert relay" unless
+  deployment_inputs.include?("services/dozzle/alert_relay.py")
+abort "Dozzle contract failed: immutable release does not include the alert relay" unless
+  deployment_bundle.include?("services/dozzle/alert_relay.py") &&
+    deployment_bundle.include?("alert_relay.py")
+abort "Dozzle contract failed: role does not validate the tracked relay script" unless
+  role.include?("{{ platform_current_dir }}/services/dozzle/alert_relay.py")
+abort "Dozzle contract failed: environment does not render the selected state and script roots" unless
+  env_template.include?("PLATFORM_CURRENT_DIR={{ platform_current_dir }}") &&
+  env_template.include?("DOZZLE_STATE_ROOT={{ dozzle_state_root }}")
+abort "Dozzle contract failed: relay source does not bind the private listener" unless
+  relay_source.include?('create_server(("0.0.0.0", 8081), config)')
 RUBY
 
 ruby -ryaml - "$defaults" "$role" "$integration" "$mac_drift" "$mac_verify" "$mode" <<'RUBY'
@@ -220,8 +284,31 @@ actual = alerts.to_h { |alert| [alert.fetch("name"), [alert.fetch("eventExpressi
 abort "Dozzle contract failed: exact alert definitions differ" unless actual == expected
 abort "Dozzle contract failed: alerts must be enabled event-only rules over all containers" unless
   alerts.all? { |alert| alert.fetch("enabled") == true && alert.fetch("containerExpression") == "true" && alert.fetch("logExpression") == "" }
+dispatcher = defaults.fetch("dozzle_dispatcher")
+abort "Dozzle contract failed: managed dispatcher must target only the private alert relay" unless
+  dispatcher.fetch("url") == "http://alert-relay:8081/alerts"
+abort "Dozzle contract failed: managed dispatcher authorization differs" unless
+  dispatcher.fetch("headers") == {"Authorization" => "Bearer {{ vault_ntfy_dozzle_token }}"}
 abort "Dozzle contract failed: role does not wire the write-only ntfy token" unless
   File.read(defaults_path).include?("vault_ntfy_dozzle_token")
+expected_template_fields = {
+  "version" => "1",
+  "rule" => ".Subscription.Name",
+  "containerId" => ".Container.ID",
+  "container" => ".Container.Name",
+  "host" => ".Container.HostName",
+  "event" => ".Event.Name",
+  "healthStatus" => 'index .Event.Attributes `healthStatus`',
+  "exitCode" => 'index .Event.Attributes `exitCode`',
+  "timestamp" => '.Event.Timestamp.Format `2006-01-02T15:04:05Z07:00`'
+}
+template_source = dispatcher.fetch("template")
+abort "Dozzle contract failed: managed dispatcher retains an ntfy presentation envelope" if
+  %w[topic title message priority tags markdown].any? { |field| template_source.include?("'#{field}'") }
+expected_template_fields.each do |field, expression|
+  abort "Dozzle contract failed: managed dispatcher is missing exact #{field}" unless
+    template_source.include?("'#{field}':") && template_source.include?(expression)
+end
 abort "Dozzle contract failed: role does not reconcile enabled state through PATCH" unless
   role.include?("method: PATCH")
 planned_tasks = [
@@ -479,6 +566,22 @@ def parse_json_lines(text)
     JSON.parse(line)
   rescue JSON::ParserError
     fail_contract("ntfy returned malformed JSONL")
+  end
+end
+
+def ntfy_messages_since(id, basic)
+  query = URI.encode_www_form(poll: 1, since: id)
+  parse_json_lines(request_text(endpoint(NTFY, "/nas-critical/json?#{query}"), basic: basic))
+end
+
+def wait_for_ntfy(id, basic, diagnostic, timeout: 40)
+  deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+  loop do
+    messages = ntfy_messages_since(id, basic)
+    match = yield messages
+    return [match, messages] if match
+    fail_contract(diagnostic) if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+    sleep 2
   end
 end
 
@@ -774,9 +877,17 @@ end
 
 fail_contract("expected exactly one dispatcher") unless dispatchers.length == 1
 dispatcher = dispatchers.first
-expected_url = "http://#{CALLBACK_HOST}:#{NTFY.port}"
+expected_url = "http://alert-relay:8081/alerts"
 expected_template = JSON.generate(
-  topic: "nas-critical", title: "{{ .Container.Name }}", message: "{{ .Detail }}"
+  version: 1,
+  rule: "{{ .Subscription.Name }}",
+  containerId: "{{ .Container.ID }}",
+  container: "{{ .Container.Name }}",
+  host: "{{ .Container.HostName }}",
+  event: "{{ .Event.Name }}",
+  healthStatus: '{{ index .Event.Attributes `healthStatus` }}',
+  exitCode: '{{ index .Event.Attributes `exitCode` }}',
+  timestamp: '{{ .Event.Timestamp.Format `2006-01-02T15:04:05Z07:00` }}'
 )
 fail_contract("managed dispatcher name differs") unless dispatcher["name"] == "ntfy nas-critical"
 fail_contract("managed dispatcher type differs") unless dispatcher["type"] == "webhook"
@@ -809,53 +920,99 @@ if MODE == "notify"
   baseline_id = baseline&.fetch("id", nil)
   fail_contract("disposable ntfy baseline publish returned no anti-replay id") unless baseline_id
 
-  _response, webhook_test = request(
-    "post", endpoint(DOZZLE, "/api/notifications/test-webhook"), cookie: cookie,
-    body: { url: dispatcher.fetch("url"), template: dispatcher.fetch("template"),
-            headers: dispatcher.fetch("headers") }
-  )
-  fail_contract("managed webhook test reported failure") unless webhook_test["success"] == true
-  webhook_message = nil
-  webhook_deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 15
-  until webhook_message
-    query = URI.encode_www_form(poll: 1, since: baseline_id)
-    webhook_messages = parse_json_lines(request_text(endpoint(NTFY, "/nas-critical/json?#{query}"), basic: admin))
-    webhook_message = webhook_messages.reverse.find { |message| message["title"] == "test-container" }
-    fail_contract("managed webhook test did not reach disposable ntfy") if
-      !webhook_message && Process.clock_gettime(Process::CLOCK_MONOTONIC) >= webhook_deadline
-    sleep 3 unless webhook_message
-  end
-  baseline_id = webhook_message.fetch("id")
-  initial_exit_count = rules.find { |rule| rule["name"] == "Unexpected exit" }.fetch("triggerCount")
-
-  fixture_name = "dozzle-contract-exit-#{SecureRandom.hex(6)}"
   image = "docker.io/binwiederhier/ntfy:v2.27.0@sha256:f2419f405127afa868f10985c1a41449e673477cee1eb19994339a5ae8b592e7"
-  _out, _error, run_status = Open3.capture3(
-    "docker", "run", "--name", fixture_name, "--entrypoint", "/bin/sh", image, "-c", "exit 1"
-  )
-  fail_contract("disposable exit fixture did not exit with the expected status") unless run_status.exitstatus == 1
+  health_fixture = "dozzle_contract_health_#{SecureRandom.hex(6)}"
+  startup_fixture = "dozzle_contract_startup_#{SecureRandom.hex(6)}"
+  exit_fixture = "dozzle_contract_exit_#{SecureRandom.hex(6)}"
+  initial_exit_count = rules.find { |rule| rule["name"] == "Unexpected exit" }.fetch("triggerCount")
   begin
-    delivered = false
-    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 30
-    loop do
-      query = URI.encode_www_form(poll: 1, since: baseline_id)
-      messages = parse_json_lines(request_text(endpoint(NTFY, "/nas-critical/json?#{query}"), basic: admin))
-      if messages.any? { |message| message["id"] != baseline_id && message["title"] == fixture_name }
-        delivered = true
-        break
-      end
-      if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
-        fail_contract("exit-code-1 event did not reach disposable ntfy")
-      end
-      sleep 3
+    _out, _error, health_status = Open3.capture3(
+      "docker", "run", "-d", "--name", health_fixture,
+      "--health-cmd", "test -f /tmp/healthy", "--health-interval", "1s",
+      "--health-timeout", "1s", "--health-retries", "1",
+      "--entrypoint", "/bin/sh", image, "-c", "sleep 120"
+    )
+    fail_contract("disposable unhealthy fixture did not start") unless health_status.success?
+    unhealthy, observed = wait_for_ntfy(
+      baseline_id, admin, "unhealthy event did not reach the private relay and disposable ntfy"
+    ) do |messages|
+      messages.reverse.find { |message| message["title"] == "Unhealthy · #{health_fixture}" }
     end
+    expected_unhealthy_tail = "**Container:** `#{health_fixture}`\n**Status:** `unhealthy`"
+    fail_contract("unhealthy notification presentation differs") unless
+      unhealthy["message"].start_with?("**Host:** `") &&
+      unhealthy["message"].end_with?(expected_unhealthy_tail) &&
+      unhealthy["priority"] == 5 && unhealthy["tags"] == ["rotating_light", "warning"] &&
+      unhealthy["content_type"] == "text/markdown"
+    fail_contract("relay exposed its event envelope as ntfy message text") if
+      observed.any? { |message| message["message"].to_s.include?('"version":1') }
+
+    baseline_id = unhealthy.fetch("id")
+    _exec_out, _exec_error, exec_status = Open3.capture3(
+      "docker", "exec", health_fixture, "/bin/sh", "-c", "touch /tmp/healthy"
+    )
+    fail_contract("disposable unhealthy fixture could not recover") unless exec_status.success?
+    recovered, observed = wait_for_ntfy(
+      baseline_id, admin, "healthy transition did not produce one correlated recovery"
+    ) do |messages|
+      messages.reverse.find { |message| message["title"] == "Recovered · #{health_fixture}" }
+    end
+    expected_recovery_tail = "**Container:** `#{health_fixture}`\n**Status:** `healthy`"
+    fail_contract("recovery notification presentation differs") unless
+      recovered["message"].start_with?("**Host:** `") &&
+      recovered["message"].end_with?(expected_recovery_tail) &&
+      recovered["priority"] == 3 && recovered["tags"] == ["white_check_mark"] &&
+      recovered["content_type"] == "text/markdown" &&
+      observed.count { |message| message["title"] == "Recovered · #{health_fixture}" } == 1
+    baseline_id = recovered.fetch("id")
+    recovery_rules = request(
+      "get", endpoint(DOZZLE, "/api/notifications/rules"), cookie: cookie
+    ).last
+    recovery_count = recovery_rules.find { |rule| rule["name"] == "Recovery" }.fetch("triggerCount")
+
+    _out, _error, startup_status = Open3.capture3(
+      "docker", "run", "-d", "--name", startup_fixture,
+      "--health-cmd", "exit 0", "--health-interval", "1s", "--health-timeout", "1s",
+      "--health-retries", "1", "--entrypoint", "/bin/sh", image, "-c", "sleep 120"
+    )
+    fail_contract("disposable startup-healthy fixture did not start") unless startup_status.success?
+    sleep 6
+    startup_rules = request(
+      "get", endpoint(DOZZLE, "/api/notifications/rules"), cookie: cookie
+    ).last
+    startup_recovery_count = startup_rules.find { |rule| rule["name"] == "Recovery" }.fetch("triggerCount")
+    fail_contract("startup healthy fixture did not exercise the managed recovery rule") unless
+      startup_recovery_count > recovery_count
+    startup_messages = ntfy_messages_since(baseline_id, admin)
+    fail_contract("startup healthy event produced a false recovery") if
+      startup_messages.any? { |message| message["title"] == "Recovered · #{startup_fixture}" }
+
+    _out, _error, run_status = Open3.capture3(
+      "docker", "run", "--name", exit_fixture, "--entrypoint", "/bin/sh", image, "-c", "exit 1"
+    )
+    fail_contract("disposable exit fixture did not exit with the expected status") unless
+      run_status.exitstatus == 1
+    exited, observed = wait_for_ntfy(
+      baseline_id, admin, "exit-code-1 event did not reach the private relay and disposable ntfy"
+    ) do |messages|
+      messages.reverse.find { |message| message["title"] == "Unexpected exit · #{exit_fixture}" }
+    end
+    expected_exit_tail = "**Container:** `#{exit_fixture}`\n**Exit code:** `1`"
+    fail_contract("unexpected-exit notification presentation differs") unless
+      exited["message"].start_with?("**Host:** `") &&
+      exited["message"].end_with?(expected_exit_tail) && exited["priority"] == 5 &&
+      exited["tags"] == ["warning", "skull"] && exited["content_type"] == "text/markdown"
+    fail_contract("relay exposed its event envelope as ntfy message text") if
+      observed.any? { |message| message["message"].to_s.include?('"version":1') }
   ensure
-    system("docker", "rm", "-f", fixture_name, out: File::NULL, err: File::NULL)
+    [health_fixture, startup_fixture, exit_fixture].each do |fixture|
+      system("docker", "rm", "-f", fixture, out: File::NULL, err: File::NULL)
+    end
   end
   current_rules = request("get", endpoint(DOZZLE, "/api/notifications/rules"), cookie: cookie).last
   current_exit_count = current_rules.find { |rule| rule["name"] == "Unexpected exit" }.fetch("triggerCount")
   fail_contract("unique exit event was delivered without incrementing its managed rule") unless
-    delivered && current_exit_count > initial_exit_count
+    exited && current_exit_count > initial_exit_count
 end
 
 puts "Dozzle contract passed"
