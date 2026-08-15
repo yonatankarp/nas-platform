@@ -71,6 +71,40 @@ def classifier_uses_effective_roots?(tasks)
   end
 end
 
+def classifier_uses_deployed_helper?(main_tasks, restore_tasks)
+  expected = "{{ platform_current_dir }}/services/immich/classify_restore.py"
+  invocations_valid = [
+    task(main_tasks, "Classify Immich storage before startup"),
+    task(restore_tasks, "Verify restored Immich source files")
+  ].all? do |candidate|
+    argv = candidate&.dig("ansible.builtin.command", "argv")
+    argv.is_a?(Array) && argv.count(expected) == 1 &&
+      argv.none? { |argument| argument.to_s.include?("roles/immich/files") }
+  end
+  target_paths = task(main_tasks, "Revalidate deployment paths before Immich runtime use")
+                 &.dig("vars", "deployment_target_extra_paths")
+  invocations_valid && Array(target_paths).count(expected) == 1
+end
+
+def classifier_release_packaged?(input_tasks, bundle_tasks, manifest, verifier)
+  input = task(input_tasks, "Validate the tracked Immich restore classifier input")
+  copy = task(bundle_tasks, "Copy the tracked Immich restore classifier from the controller")
+  input&.dig("vars", "deployment_controller_input_path") ==
+    "{{ playbook_dir }}/services/immich/classify_restore.py" &&
+    input&.dig("vars", "deployment_controller_input_allow_missing") == false &&
+    copy&.dig("ansible.builtin.copy", "src") ==
+      "{{ playbook_dir }}/services/immich/classify_restore.py" &&
+    copy&.dig("ansible.builtin.copy", "dest") ==
+      "{{ deployment_bundle_staging_dir }}/services/immich/classify_restore.py" &&
+    copy&.dig("ansible.builtin.copy", "mode") == "0644" &&
+    manifest.include?("runtime_files:") &&
+    manifest.include?("'immich': ['classify_restore.py']") &&
+    manifest.include?("playbook_dir ~ '/services/' ~ service.name ~ '/' ~ runtime_file") &&
+    manifest.include?("mode: \"0644\"") &&
+    verifier.include?("RUNTIME_FILES") &&
+    verifier.include?('"immich" => ["classify_restore.py"]')
+end
+
 def lifecycle_ordered?(tasks)
   ordered?(
     tasks,
@@ -93,9 +127,11 @@ def require_mutation_rejected(label)
   refuse("#{label} mutation was not detected") if yield
 end
 
-classifier_path = File.join(ROOT, "roles", "immich", "files", "classify_restore.py")
+classifier_path = File.join(ROOT, "services", "immich", "classify_restore.py")
 restore_path = File.join(ROOT, "roles", "immich", "tasks", "restore.yml")
 refuse("classifier is absent") unless File.file?(classifier_path)
+refuse("divergent role-local classifier remains") if
+  File.exist?(File.join(ROOT, "roles", "immich", "files", "classify_restore.py"))
 refuse("restore task file is absent") unless File.file?(restore_path)
 
 defaults = YAML.safe_load_file(File.join(ROOT, "roles", "immich", "defaults", "main.yml"))
@@ -268,6 +304,57 @@ refuse("restored path can create a new administrator") unless
 
 restore_text = File.read(restore_path)
 restore_tasks = flatten_tasks(YAML.safe_load_file(restore_path, aliases: true))
+refuse("classifier is not executed from the immutable release") unless
+  classifier_uses_deployed_helper?(main_tasks, restore_tasks)
+
+input_tasks = flatten_tasks(YAML.safe_load_file(
+  File.join(ROOT, "roles", "deployment_bundle", "tasks", "inputs.yml"), aliases: true
+))
+bundle_tasks = flatten_tasks(YAML.safe_load_file(
+  File.join(ROOT, "roles", "deployment_bundle", "tasks", "main.yml"), aliases: true
+))
+manifest_template = File.read(
+  File.join(ROOT, "roles", "deployment_bundle", "templates", "manifest.yml.j2")
+)
+manifest_verifier = File.read(File.join(ROOT, "tests", "verify_deployment_manifest.rb"))
+refuse("classifier is not integrity-bound into immutable releases") unless
+  classifier_release_packaged?(input_tasks, bundle_tasks, manifest_template, manifest_verifier)
+
+mutated = deep_copy(main_tasks)
+mutated_classifier = task(mutated, "Classify Immich storage before startup")
+mutated_argv = mutated_classifier.dig("ansible.builtin.command", "argv")
+mutated_argv[mutated_argv.index("{{ platform_current_dir }}/services/immich/classify_restore.py")] =
+  "{{ platform_current_dir }}/roles/immich/files/classify_restore.py"
+require_mutation_rejected("source-checkout classifier path") do
+  classifier_uses_deployed_helper?(mutated, restore_tasks)
+end
+
+mutated = deep_copy(main_tasks)
+target_paths = task(mutated, "Revalidate deployment paths before Immich runtime use")
+               .fetch("vars").fetch("deployment_target_extra_paths")
+target_paths.delete("{{ platform_current_dir }}/services/immich/classify_restore.py")
+require_mutation_rejected("classifier target containment bypass") do
+  classifier_uses_deployed_helper?(mutated, restore_tasks)
+end
+
+mutated_inputs = deep_copy(input_tasks)
+task(mutated_inputs, "Validate the tracked Immich restore classifier input")
+  .fetch("vars")["deployment_controller_input_allow_missing"] = true
+require_mutation_rejected("optional classifier controller input") do
+  classifier_release_packaged?(
+    mutated_inputs, bundle_tasks, manifest_template, manifest_verifier
+  )
+end
+
+mutated_bundle = deep_copy(bundle_tasks)
+task(mutated_bundle, "Copy the tracked Immich restore classifier from the controller")
+  .fetch("ansible.builtin.copy")["mode"] = "0755"
+require_mutation_rejected("classifier release mode drift") do
+  classifier_release_packaged?(
+    input_tasks, mutated_bundle, manifest_template, manifest_verifier
+  )
+end
+
 restore = task(restore_tasks, "Restore the selected Immich database backup")
 argv = restore&.dig("community.docker.docker_compose_v2_exec", "argv")
 refuse("restore must use a redacted argv execution") unless argv.is_a?(Array) && restore["no_log"] == true

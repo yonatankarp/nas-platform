@@ -10,6 +10,7 @@
       - "{{ platform_current_dir }}/services/immich/compose.yml"
       - "{{ platform_current_dir }}/services/immich/compose.{{ platform_compose_kind }}.yml"
       - "{{ platform_current_dir }}/services/immich/compose.adoption.yml"
+      - "{{ platform_current_dir }}/services/immich/classify_restore.py"
       - "{{ platform_runtime_dir }}/services/immich"
       - "{{ platform_runtime_dir }}/services/immich/.env"
 
@@ -90,7 +91,7 @@
   ansible.builtin.command:
     argv:
       - "{{ ansible_facts.python.executable }}"
-      - "{{ platform_current_dir }}/roles/immich/files/classify_restore.py"
+      - "{{ platform_current_dir }}/services/immich/classify_restore.py"
       - --postgres-dir
       - "{{ immich_restore_database_root }}"
       - --originals-root

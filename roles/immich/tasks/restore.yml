@@ -101,7 +101,7 @@
       ansible.builtin.command:
         argv:
           - "{{ ansible_facts.python.executable }}"
-          - "{{ platform_current_dir }}/roles/immich/files/classify_restore.py"
+          - "{{ platform_current_dir }}/services/immich/classify_restore.py"
           - --verify-assets-json
           - '-'
           - --originals-root

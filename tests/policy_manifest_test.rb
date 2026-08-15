@@ -54,6 +54,8 @@ BASE_FIXTURE_PATHS = %w[
   roles/vault_contract/meta/argument_specs.yml
   roles/vault_contract/tasks/main.yml
   services/manifest.yml
+  services/dozzle/alert_relay.py
+  services/immich/classify_restore.py
   services/tinymediamanager/compose.integration.yml
   services/tinymediamanager/compose.mac.yml
   templates/vault-plain.yml.j2
@@ -62,6 +64,7 @@ BASE_FIXTURE_PATHS = %w[
   tests/integration.sh
   tests/integration_lock.sh
   tests/integration_lock_test.sh
+  tests/immich_release_helper_test.rb
   tests/sandbox_cleanup.sh
   tests/generate-ephemeral-vault.sh
   tests/generate-secrets-redaction-test.sh
@@ -890,6 +893,40 @@ expect_failure(failures, "release mode comparison removed",
                "immutable release comparison must include stat.S_IMODE") do |root|
   path = File.join(root, "roles", "deployment_bundle", "tasks", "main.yml")
   File.write(path, File.read(path).gsub("stat.S_IMODE", "stat.filemode"))
+end
+
+expect_failure(failures, "Immich classifier controller validation removed",
+               "controller inputs must validate every tracked runtime helper") do |root|
+  path = File.join(root, "roles", "deployment_bundle", "tasks", "inputs.yml")
+  File.write(path, File.read(path).gsub(
+    "services/immich/classify_restore.py", "services/immich/missing.py"
+  ))
+end
+
+expect_failure(failures, "Immich classifier release copy removed",
+               "deployment bundle must package the exact Immich classifier with mode 0644") do |root|
+  path = File.join(root, "roles", "deployment_bundle", "tasks", "main.yml")
+  tasks = YAML.safe_load_file(path)
+  tasks.reject! do |task|
+    task["name"] == "Copy the tracked Immich restore classifier from the controller"
+  end
+  File.write(path, YAML.dump(tasks))
+end
+
+expect_failure(failures, "Immich classifier manifest integrity removed",
+               "deployment manifest must bind runtime helper paths, modes, and checksums") do |root|
+  path = File.join(root, "roles", "deployment_bundle", "templates", "manifest.yml.j2")
+  File.write(path, File.read(path).gsub(
+    "'immich': ['classify_restore.py']", "'immich': []"
+  ))
+end
+
+expect_failure(failures, "Immich classifier manifest verifier removed",
+               "deployment manifest verifier must reproduce runtime helper integrity") do |root|
+  path = File.join(root, "tests", "verify_deployment_manifest.rb")
+  File.write(path, File.read(path).gsub(
+    '"immich" => ["classify_restore.py"]', '"immich" => []'
+  ))
 end
 
 expect_failure(failures, "deployment sha unquoted",

@@ -54,6 +54,12 @@
     deployment_controller_input_path: "{{ playbook_dir }}/services/dozzle/alert_relay.py"
     deployment_controller_input_allow_missing: false
 
+- name: Validate the tracked Immich restore classifier input
+  ansible.builtin.include_tasks: controller_input.yml
+  vars:
+    deployment_controller_input_path: "{{ playbook_dir }}/services/immich/classify_restore.py"
+    deployment_controller_input_allow_missing: false
+
 - name: Validate adoption controller Compose inputs
   ansible.builtin.include_tasks: controller_input.yml
   vars:

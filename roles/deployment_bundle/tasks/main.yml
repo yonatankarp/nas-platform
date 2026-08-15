@@ -182,6 +182,14 @@
   changed_when: false
   when: not ansible_check_mode
 
+- name: Copy the tracked Immich restore classifier from the controller
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/services/immich/classify_restore.py"
+    dest: "{{ deployment_bundle_staging_dir }}/services/immich/classify_restore.py"
+    mode: "0644"
+  changed_when: false
+  when: not ansible_check_mode
+
 - name: Copy present platform-specific Compose definitions from the controller
   ansible.builtin.copy:
     src: "{{ item.stat.path }}"

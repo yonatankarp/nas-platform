@@ -15,7 +15,7 @@ from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CLASSIFIER = ROOT / "roles" / "immich" / "files" / "classify_restore.py"
+CLASSIFIER = ROOT / "services" / "immich" / "classify_restore.py"
 VALID_NAME = "immich-db-backup-20260815T010000-v3.1.0-pg14.19.sql.gz"
 CLASSIFIER_SPEC = importlib.util.spec_from_file_location(
     "immich_restore_classifier", CLASSIFIER

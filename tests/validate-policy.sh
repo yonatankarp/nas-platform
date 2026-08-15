@@ -11,6 +11,7 @@ python3 -m unittest -v tests/dozzle_alert_relay_test.py
 python3 -m unittest -v tests/immich_restore_classifier_test.py
 ruby tests/immich_restore_quality_test.rb
 ruby tests/immich_restore_lifecycle_test.rb
+ruby tests/immich_release_helper_test.rb
 tests/dozzle_alert_state_symlink_test.sh
 tests/mac/beszel-telemetry-hook-test.sh
 ruby tests/ci/classify_changes_test.rb

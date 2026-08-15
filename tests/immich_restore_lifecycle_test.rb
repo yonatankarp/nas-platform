@@ -26,6 +26,7 @@ ANSIBLE = if ANSIBLE_ON_PATH.empty?
             ANSIBLE_ON_PATH
           end
 BACKUP_NAME = "immich-db-backup-20260815T010000-v3.1.0-pg14.19.sql.gz"
+CLASSIFIER = File.join(ROOT, "services", "immich", "classify_restore.py")
 PREFLIGHT_TASK_NAMES = [
   "Resolve the Immich storage mode",
   "Derive the effective Immich storage roots",
@@ -163,6 +164,11 @@ end
 
 def run_fixture(root, roots, adoption:, initialized:, failure_stage: "none")
   event_log = File.join(root, "events.log")
+  release_root = File.join(root, "release")
+  release_helper = File.join(release_root, "services", "immich", "classify_restore.py")
+  FileUtils.mkdir_p(File.dirname(release_helper))
+  FileUtils.cp(CLASSIFIER, release_helper)
+  FileUtils.chmod(0o644, release_helper)
   variables = {
     "ansible_facts" => { "python" => { "executable" => PYTHON } },
     "platform_adoption_enabled" => adoption,
@@ -174,7 +180,7 @@ def run_fixture(root, roots, adoption:, initialized:, failure_stage: "none")
     "immich_restore_backup_gid" => Process.gid,
     "nas_uid" => Process.uid,
     "nas_gid" => Process.gid,
-    "platform_current_dir" => ROOT,
+    "platform_current_dir" => release_root,
     "fixture_event_log" => event_log,
     "fixture_initialized" => initialized,
     "fixture_failure_stage" => failure_stage

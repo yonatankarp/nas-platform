@@ -72,7 +72,8 @@ PROBE_DEPENDENCIES = %w[
   generate-secrets.yml
   services/audiobookshelf/compose.yml services/audiobookshelf/compose.mac.yml
   services/dozzle/alert_relay.py services/dozzle/compose.yml services/dozzle/compose.mac.yml
-  services/dozzle/compose.adoption.yml services/immich/compose.yml services/immich/compose.mac.yml
+  services/dozzle/compose.adoption.yml services/immich/classify_restore.py
+  services/immich/compose.yml services/immich/compose.mac.yml
   services/jellyfin/compose.yml services/jellyfin/compose.mac.yml
   services/komga/compose.yml services/komga/compose.mac.yml
   services/paperless-ngx/compose.yml services/paperless-ngx/compose.mac.yml
