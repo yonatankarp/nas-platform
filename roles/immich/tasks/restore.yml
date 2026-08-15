@@ -101,7 +101,7 @@
       ansible.builtin.command:
         argv:
           - "{{ ansible_facts.python.executable }}"
-          - "{{ platform_runtime_dir }}/services/immich/classify_restore.py"
+          - "{{ platform_current_dir }}/roles/immich/files/classify_restore.py"
           - --verify-assets-json
           - '-'
           - --media-root
@@ -122,11 +122,6 @@
           - (immich_restored_source_verification.stdout | from_json).verified | int == immich_restored_database_evidence.assets | length
         fail_msg: Restored Immich database verification failed (source-files).
       no_log: true
-
-    - name: Remove the Immich restore failure marker
-      ansible.builtin.file:
-        path: "{{ immich_restore_failure_marker }}"
-        state: absent
 
   rescue:
     - name: Record sanitized Immich restore failure stage

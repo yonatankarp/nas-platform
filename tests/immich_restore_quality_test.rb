@@ -86,25 +86,25 @@ main_tasks = YAML.safe_load_file(main_path, aliases: true)
 require_order(
   main_tasks,
   [
-    "Install the Immich restore classifier",
     "Classify Immich storage before startup",
     "Require successful Immich storage classification",
     "Parse the Immich storage classification",
     "Require exact Immich storage classification",
+    "Stop Immich application services before database restore",
     "Protect an in-progress Immich database restore",
     "Deploy the Immich data services",
     "Restore and verify the Immich database",
     "Refuse a rotated Immich database credential",
     "Deploy Immich",
     "Require initialized Immich after database restore",
+    "Remove successful Immich restore provenance",
     "Create the vault Immich administrator"
   ]
 )
 
 classifier = task(main_tasks, "Classify Immich storage before startup")
-classifier_install = task(main_tasks, "Install the Immich restore classifier")
-refuse("classifier cannot execute during first-deployment check mode") unless
-  classifier_install&.fetch("check_mode", nil) == false
+refuse("check mode writes a classifier copy") if
+  task(main_tasks, "Install the Immich restore classifier")
 refuse("classifier must use command argv") unless
   classifier&.dig("ansible.builtin.command", "argv").is_a?(Array)
 refuse("classifier output is not redacted") unless classifier["no_log"] == true
@@ -167,12 +167,13 @@ require_order(
     "Restore the selected Immich database backup",
     "Read restored Immich database evidence",
     "Require restored Immich database evidence",
-    "Verify restored Immich source files",
-    "Remove the Immich restore failure marker"
+    "Verify restored Immich source files"
   ]
 )
 refuse("restore verification mutates an application table") if
   restore_text.match?(/\b(?:insert|update|delete|truncate)\b/i)
+refuse("restore removes provenance before server initialization") if
+  restore_text.include?("Remove the Immich restore failure marker")
 refuse("restore does not verify the pinned v3 migration marker") unless
   restore_text.include?("public.kysely_migrations")
 refuse("restore failures do not preserve a sanitized marker stage") unless

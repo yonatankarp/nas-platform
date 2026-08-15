@@ -34,26 +34,11 @@
     mode: "0600"
   no_log: true
 
-- name: Install the Immich restore classifier
-  ansible.builtin.copy:
-    src: classify_restore.py
-    dest: "{{ platform_runtime_dir }}/services/immich/classify_restore.py"
-    mode: "0500"
-    owner: >-
-      {{ nas_uid
-         if platform_kind == 'nas' or (platform_manage_linux_ownership | bool)
-         else omit }}
-    group: >-
-      {{ nas_gid
-         if platform_kind == 'nas' or (platform_manage_linux_ownership | bool)
-         else omit }}
-  check_mode: false
-
 - name: Classify Immich storage before startup
   ansible.builtin.command:
     argv:
       - "{{ ansible_facts.python.executable }}"
-      - "{{ platform_runtime_dir }}/services/immich/classify_restore.py"
+      - "{{ platform_current_dir }}/roles/immich/files/classify_restore.py"
       - --postgres-dir
       - "{{ nas_docker_root }}/immich/postgres"
       - --media-root
@@ -138,6 +123,18 @@
   when:
     - ansible_check_mode
     - immich_restore_required | bool
+
+- name: Stop Immich application services before database restore
+  community.docker.docker_compose_v2:
+    project_src: "{{ platform_current_dir }}/services/immich"
+    project_name: "{{ immich_compose_project_name }}"
+    files: "{{ immich_compose_files }}"
+    env_files: ["{{ platform_runtime_dir }}/services/immich/.env"]
+    services: [immich-server, immich-machine-learning]
+    state: stopped
+  when:
+    - immich_restore_required | bool
+    - not ansible_check_mode
 
 - name: Protect an in-progress Immich database restore
   ansible.builtin.copy:
@@ -263,6 +260,12 @@
     fail_msg: >-
       Immich reported an uninitialized server after a database restore. A new
       administrator was not created; inspect the protected restored state.
+  when: immich_restore_required | bool
+
+- name: Remove successful Immich restore provenance
+  ansible.builtin.file:
+    path: "{{ immich_restore_failure_marker }}"
+    state: absent
   when: immich_restore_required | bool
 
 - name: Report planned Immich administrator creation
