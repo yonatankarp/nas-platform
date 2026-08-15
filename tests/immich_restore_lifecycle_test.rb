@@ -105,6 +105,11 @@ def fixture_tasks
   }
   tasks << log_task("Deploy Immich", "server-start")
   tasks << {
+    "name" => "Interrupt after Immich server startup",
+    "ansible.builtin.fail" => { "msg" => "fixture-interrupted-after-server-start" },
+    "when" => "fixture_failure_stage == 'server-start'"
+  }
+  tasks << {
     "name" => "Read Immich initialization state",
     "ansible.builtin.set_fact" => {
       "immich_public_config" => {
@@ -245,6 +250,28 @@ Dir.mktmpdir("nas-platform-immich-lifecycle-sql-failure-") do |temporary|
   fail_test("post-SQL retry reached mutation") unless retry_events == events
   assert_sanitized(retry_output, roots)
   fail_test("post-SQL retry did not report prior provenance") unless
+    retry_output.include?("previous-failed-restore")
+end
+
+Dir.mktmpdir("nas-platform-immich-lifecycle-server-failure-") do |temporary|
+  root = File.realpath(temporary)
+  roots = prepare_roots(root, adoption: false)
+  output, status, events = run_fixture(
+    root, roots, adoption: false, initialized: true, failure_stage: "server-start"
+  )
+  fail_test("post-startup interruption unexpectedly succeeded") if status.success?
+  expected = %w[server-stop data-start sql-restore restore-verified server-start]
+  fail_test("post-startup interruption lifecycle differs: #{events.inspect}") unless events == expected
+  fail_test("post-startup interruption lost its marker") unless File.file?(roots.fetch(:marker))
+  assert_sanitized(output, roots)
+
+  retry_output, retry_status, retry_events = run_fixture(
+    root, roots, adoption: false, initialized: true
+  )
+  fail_test("post-startup retry bypassed provenance") if retry_status.success?
+  fail_test("post-startup retry reached server/admin mutation") unless retry_events == events
+  assert_sanitized(retry_output, roots)
+  fail_test("post-startup retry did not report prior provenance") unless
     retry_output.include?("previous-failed-restore")
 end
 

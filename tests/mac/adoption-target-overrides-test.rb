@@ -57,7 +57,10 @@ COMMITTED_BINDINGS.each do |binding|
   binding << (READ_ONLY_BINDINGS.include?("#{binding[0]}:#{binding[1]}") ? "ro" : "rw")
 end
 TARGET_BINDINGS = (
-  COMMITTED_BINDINGS + [["dozzle", "legacy/dozzle/data/alert-relay", "/state", "rw"]]
+  COMMITTED_BINDINGS + [
+    ["dozzle", "legacy/dozzle/data/alert-relay", "/state", "rw"],
+    ["immich", "legacy/immich/backups", "/immich-backups", "ro"]
+  ]
 ).freeze
 
 def refuse(message)
