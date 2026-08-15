@@ -97,6 +97,9 @@
       ansible.builtin.set_fact:
         immich_restore_stage: source-file-verification
 
+    - name: Verify Immich restore classifier before asset verification
+      ansible.builtin.include_tasks: verify_classifier.yml
+
     - name: Verify restored Immich source files
       ansible.builtin.command:
         argv:

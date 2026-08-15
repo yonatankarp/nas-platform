@@ -87,6 +87,9 @@
     mode: "0600"
   no_log: true
 
+- name: Verify Immich restore classifier before storage classification
+  ansible.builtin.include_tasks: verify_classifier.yml
+
 - name: Classify Immich storage before startup
   ansible.builtin.command:
     argv:

@@ -940,6 +940,7 @@ validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "te
   ruby\ tests/database_managed_users_test.rb\ --self-test
   ruby\ tests/immich_configured_password_test.rb
   ruby\ tests/immich_user_onboarding_test.rb
+  ruby\ tests/immich_selective_helper_integrity_test.rb
   ruby\ tests/komga_library_reconciliation_test.rb
   ruby\ tests/audiobookshelf_initial_scan_test.rb
   ruby\ tests/audiobookshelf_initial_scan_behavior_test.rb
@@ -987,9 +988,16 @@ check(failures,
       validation_commands.count("ruby tests/immich_release_helper_test.rb") == 1,
       "validate-policy.sh must run the Immich release helper test exactly once")
 check(failures,
+      validation_commands.count("ruby tests/immich_selective_helper_integrity_test.rb") == 1,
+      "validate-policy.sh must run the Immich selective helper integrity test exactly once")
+check(failures,
       owned_file?(File.join(ROOT, "tests", "immich_release_helper_test.rb"),
                   File.join(ROOT, "tests")),
       "Immich release helper test must be a regular non-symlink file")
+check(failures,
+      owned_file?(File.join(ROOT, "tests", "immich_selective_helper_integrity_test.rb"),
+                  File.join(ROOT, "tests")),
+      "Immich selective helper integrity test must be a regular non-symlink file")
 
 # Compose interpolates $ in env files and silently truncates an unescaped bcrypt
 # hash rather than rejecting it, so escaping is mandatory wherever hashes flow.

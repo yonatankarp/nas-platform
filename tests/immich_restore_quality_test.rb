@@ -105,6 +105,44 @@ def classifier_release_packaged?(input_tasks, bundle_tasks, manifest, verifier)
     verifier.include?('"immich" => ["classify_restore.py"]')
 end
 
+def classifier_integrity_bound?(main_tasks, restore_tasks, integrity_tasks)
+  source_stat = task(integrity_tasks, "Inspect the trusted Immich restore classifier source")
+  source_guard = task(integrity_tasks, "Require the trusted Immich restore classifier source")
+  deployed_stat = task(integrity_tasks, "Inspect the deployed Immich restore classifier")
+  deployed_guard = task(integrity_tasks, "Require the deployed Immich restore classifier")
+  source_conditions = Array(source_guard&.dig("ansible.builtin.assert", "that")).join(" ")
+  deployed_conditions = Array(deployed_guard&.dig("ansible.builtin.assert", "that")).join(" ")
+  includes = [
+    [main_tasks, "Verify Immich restore classifier before storage classification",
+     "Classify Immich storage before startup"],
+    [restore_tasks, "Verify Immich restore classifier before asset verification",
+     "Verify restored Immich source files"]
+  ]
+  includes_valid = includes.all? do |tasks, include_name, command_name|
+    include_index = tasks.index { |candidate| candidate["name"] == include_name }
+    command_index = tasks.index { |candidate| candidate["name"] == command_name }
+    include_task = task(tasks, include_name)
+    include_index && command_index && include_index + 1 == command_index &&
+      include_task&.fetch("ansible.builtin.include_tasks", nil) == "verify_classifier.yml"
+  end
+
+  includes_valid &&
+    source_stat&.dig("ansible.builtin.stat", "path") ==
+      "{{ playbook_dir }}/services/immich/classify_restore.py" &&
+    source_stat&.dig("ansible.builtin.stat", "follow") == false &&
+    source_stat&.dig("ansible.builtin.stat", "checksum_algorithm") == "sha256" &&
+    source_stat&.fetch("delegate_to", nil) == "localhost" &&
+    source_conditions.include?("isreg") && source_conditions.include?("islnk") &&
+    source_conditions.include?("stat.mode | default('') == '0644'") &&
+    deployed_stat&.dig("ansible.builtin.stat", "path") ==
+      "{{ platform_current_dir }}/services/immich/classify_restore.py" &&
+    deployed_stat&.dig("ansible.builtin.stat", "follow") == false &&
+    deployed_stat&.dig("ansible.builtin.stat", "checksum_algorithm") == "sha256" &&
+    deployed_conditions.include?("isreg") && deployed_conditions.include?("islnk") &&
+    deployed_conditions.include?("stat.mode | default('') == '0644'") &&
+    deployed_conditions.include?("immich_restore_classifier_source_stat.stat.checksum")
+end
+
 def lifecycle_ordered?(tasks)
   ordered?(
     tasks,
@@ -129,10 +167,12 @@ end
 
 classifier_path = File.join(ROOT, "services", "immich", "classify_restore.py")
 restore_path = File.join(ROOT, "roles", "immich", "tasks", "restore.yml")
+integrity_path = File.join(ROOT, "roles", "immich", "tasks", "verify_classifier.yml")
 refuse("classifier is absent") unless File.file?(classifier_path)
 refuse("divergent role-local classifier remains") if
   File.exist?(File.join(ROOT, "roles", "immich", "files", "classify_restore.py"))
 refuse("restore task file is absent") unless File.file?(restore_path)
+refuse("classifier integrity task file is absent") unless File.file?(integrity_path)
 
 defaults = YAML.safe_load_file(File.join(ROOT, "roles", "immich", "defaults", "main.yml"))
 expected_defaults = {
@@ -304,8 +344,11 @@ refuse("restored path can create a new administrator") unless
 
 restore_text = File.read(restore_path)
 restore_tasks = flatten_tasks(YAML.safe_load_file(restore_path, aliases: true))
+integrity_tasks = flatten_tasks(YAML.safe_load_file(integrity_path, aliases: true))
 refuse("classifier is not executed from the immutable release") unless
   classifier_uses_deployed_helper?(main_tasks, restore_tasks)
+refuse("classifier is not integrity-checked before every execution") unless
+  classifier_integrity_bound?(main_tasks, restore_tasks, integrity_tasks)
 
 input_tasks = flatten_tasks(YAML.safe_load_file(
   File.join(ROOT, "roles", "deployment_bundle", "tasks", "inputs.yml"), aliases: true
@@ -353,6 +396,45 @@ require_mutation_rejected("classifier release mode drift") do
   classifier_release_packaged?(
     input_tasks, mutated_bundle, manifest_template, manifest_verifier
   )
+end
+
+mutated_integrity = deep_copy(integrity_tasks)
+task(mutated_integrity, "Inspect the trusted Immich restore classifier source")
+  .fetch("ansible.builtin.stat")["path"] = "services/immich/classify_restore.py"
+require_mutation_rejected("ambient classifier trust path") do
+  classifier_integrity_bound?(main_tasks, restore_tasks, mutated_integrity)
+end
+
+mutated_integrity = deep_copy(integrity_tasks)
+task(mutated_integrity, "Inspect the deployed Immich restore classifier")
+  .fetch("ansible.builtin.stat")["follow"] = true
+require_mutation_rejected("deployed classifier symlink following") do
+  classifier_integrity_bound?(main_tasks, restore_tasks, mutated_integrity)
+end
+
+mutated_integrity = deep_copy(integrity_tasks)
+task(mutated_integrity, "Require the deployed Immich restore classifier")
+  .dig("ansible.builtin.assert", "that").reject! do |condition|
+    condition.include?("source_stat.stat.checksum")
+  end
+require_mutation_rejected("deployed classifier checksum bypass") do
+  classifier_integrity_bound?(main_tasks, restore_tasks, mutated_integrity)
+end
+
+mutated_main = deep_copy(main_tasks)
+mutated_main.reject! do |candidate|
+  candidate["name"] == "Verify Immich restore classifier before storage classification"
+end
+require_mutation_rejected("pre-classification integrity bypass") do
+  classifier_integrity_bound?(mutated_main, restore_tasks, integrity_tasks)
+end
+
+mutated_restore = deep_copy(restore_tasks)
+mutated_restore.reject! do |candidate|
+  candidate["name"] == "Verify Immich restore classifier before asset verification"
+end
+require_mutation_rejected("pre-verification integrity bypass") do
+  classifier_integrity_bound?(main_tasks, mutated_restore, integrity_tasks)
 end
 
 restore = task(restore_tasks, "Restore the selected Immich database backup")

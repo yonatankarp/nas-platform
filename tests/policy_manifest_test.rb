@@ -48,6 +48,8 @@ BASE_FIXTURE_PATHS = %w[
   roles/deployment_bundle/tasks/main.yml
   roles/deployment_bundle/tasks/target.yml
   roles/deployment_bundle/templates/manifest.yml.j2
+  roles/immich/tasks/restore.yml
+  roles/immich/tasks/verify_classifier.yml
   roles/preflight/meta/argument_specs.yml
   roles/preflight/tasks/main.yml
   roles/beszel/tasks/alert.yml
@@ -65,6 +67,7 @@ BASE_FIXTURE_PATHS = %w[
   tests/integration_lock.sh
   tests/integration_lock_test.sh
   tests/immich_release_helper_test.rb
+  tests/immich_selective_helper_integrity_test.rb
   tests/sandbox_cleanup.sh
   tests/generate-ephemeral-vault.sh
   tests/generate-secrets-redaction-test.sh
@@ -1273,6 +1276,8 @@ end
   "Beszel telemetry Mac hook regression" => "tests/mac/beszel-telemetry-hook-test.sh",
   "Komga library reconciliation regression" => "ruby tests/komga_library_reconciliation_test.rb",
   "Paperless mail reconciliation regression" => "ruby tests/paperless_mail_reconciliation_test.rb",
+  "Immich selective helper integrity regression" =>
+    "ruby tests/immich_selective_helper_integrity_test.rb",
   "Mac manual-validation runner regression" => "tests/mac/manual-validation-runner-test.sh"
 }.each do |name, command|
   expect_failure(failures, "#{name} removed from policy validation",

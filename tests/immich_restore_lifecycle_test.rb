@@ -31,6 +31,7 @@ PREFLIGHT_TASK_NAMES = [
   "Resolve the Immich storage mode",
   "Derive the effective Immich storage roots",
   "Require exact Immich effective storage roots",
+  "Verify Immich restore classifier before storage classification",
   "Classify Immich storage before startup",
   "Resolve sanitized Immich storage classification status",
   "Require successful Immich storage classification",
@@ -166,6 +167,14 @@ def run_fixture(root, roots, adoption:, initialized:, failure_stage: "none")
   event_log = File.join(root, "events.log")
   release_root = File.join(root, "release")
   release_helper = File.join(release_root, "services", "immich", "classify_restore.py")
+  controller_helper = File.join(root, "services", "immich", "classify_restore.py")
+  FileUtils.mkdir_p(File.dirname(controller_helper))
+  FileUtils.cp(CLASSIFIER, controller_helper)
+  FileUtils.chmod(0o644, controller_helper)
+  FileUtils.cp(
+    File.join(ROOT, "roles", "immich", "tasks", "verify_classifier.yml"),
+    File.join(root, "verify_classifier.yml")
+  )
   FileUtils.mkdir_p(File.dirname(release_helper))
   FileUtils.cp(CLASSIFIER, release_helper)
   FileUtils.chmod(0o644, release_helper)
