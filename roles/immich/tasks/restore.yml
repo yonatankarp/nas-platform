@@ -1,6 +1,33 @@
 ---
 - name: Restore and validate the protected Immich database
   block:
+    - name: Record the Immich Redis reset stage
+      ansible.builtin.set_fact:
+        immich_restore_stage: redis-reset
+
+    - name: Clear stale Immich Redis state
+      community.docker.docker_compose_v2_exec:
+        project_src: "{{ platform_current_dir }}/services/immich"
+        project_name: "{{ immich_compose_project_name }}"
+        files: "{{ immich_compose_files }}"
+        env_files: ["{{ platform_runtime_dir }}/services/immich/.env"]
+        service: redis
+        argv: [redis-cli, --raw, flushall]
+        tty: false
+      register: immich_restore_redis_reset
+      failed_when: false
+      changed_when: true
+      no_log: true
+
+    - name: Require cleared Immich Redis state
+      ansible.builtin.assert:
+        that:
+          - immich_restore_redis_reset.rc | default(1) | int == 0
+          - immich_restore_redis_reset.stdout | default('') | trim == 'OK'
+          - immich_restore_redis_reset.stderr | default('') | length == 0
+        fail_msg: Immich database recovery failed at a protected cache-reset stage.
+      no_log: true
+
     - name: Record the Immich database restore stage
       ansible.builtin.set_fact:
         immich_restore_stage: database-restore

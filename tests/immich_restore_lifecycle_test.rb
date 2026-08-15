@@ -11,6 +11,9 @@ ROOT = File.expand_path("..", __dir__)
 MAIN = YAML.safe_load_file(
   File.join(ROOT, "roles", "immich", "tasks", "main.yml"), aliases: true
 )
+RESTORE = YAML.safe_load_file(
+  File.join(ROOT, "roles", "immich", "tasks", "restore.yml"), aliases: true
+)
 DEFAULTS = YAML.safe_load_file(
   File.join(ROOT, "roles", "immich", "defaults", "main.yml")
 )
@@ -50,6 +53,20 @@ def source_task(name)
   Marshal.load(Marshal.dump(task))
 end
 
+def flatten_tasks(tasks)
+  tasks.flat_map do |candidate|
+    [candidate] + %w[block rescue always].flat_map do |section|
+      flatten_tasks(Array(candidate[section]))
+    end
+  end
+end
+
+def source_restore_task(name)
+  task = flatten_tasks(RESTORE).find { |candidate| candidate["name"] == name }
+  fail_test("source restore task is absent: #{name}") unless task
+  Marshal.load(Marshal.dump(task))
+end
+
 def log_task(name, event, when_conditions: nil)
   task = {
     "name" => name,
@@ -79,6 +96,14 @@ def fixture_tasks
   tasks << {
     "name" => "Restore and verify the Immich database",
     "block" => [
+      source_restore_task("Record the Immich Redis reset stage"),
+      log_task("Simulate clearing stale Immich Redis state", "redis-reset"),
+      {
+        "name" => "Interrupt during Immich Redis reset",
+        "ansible.builtin.fail" => { "msg" => "fixture-redis-reset-failed" },
+        "when" => "fixture_failure_stage == 'redis-reset'"
+      },
+      source_restore_task("Record the Immich database restore stage"),
       {
         "name" => "Simulate committed Immich SQL restore",
         "ansible.builtin.shell" => {
@@ -102,6 +127,10 @@ def fixture_tasks
         "when" => "fixture_failure_stage == 'after-sql'"
       },
       log_task("Record completed Immich restore verification", "restore-verified")
+    ],
+    "rescue" => [
+      source_restore_task("Record sanitized Immich restore failure stage"),
+      source_restore_task("Refuse startup after an Immich restore failure")
     ],
     "when" => ["immich_restore_required | bool", "not ansible_check_mode"]
   }
@@ -234,7 +263,7 @@ fail_test("python3 is unavailable") if PYTHON.empty?
     )
     fail_test("#{label} initialized restore failed: #{output.lines.last(8).join}") unless
       status.success?
-    expected = %w[server-stop data-start sql-restore restore-verified server-start]
+    expected = %w[server-stop data-start redis-reset sql-restore restore-verified server-start]
     fail_test("#{label} restore lifecycle differs: #{events.inspect}") unless events == expected
     fail_test("#{label} restore did not write its active database") unless
       File.read(File.join(roots.fetch(:database_root), "PG_VERSION")) == "14\n"
@@ -259,7 +288,7 @@ Dir.mktmpdir("nas-platform-immich-lifecycle-sql-failure-") do |temporary|
   )
   fail_test("post-SQL interruption unexpectedly succeeded") if status.success?
   fail_test("post-SQL interruption reached server/admin: #{events.inspect}") unless
-    events == %w[server-stop data-start sql-restore]
+    events == %w[server-stop data-start redis-reset sql-restore]
   fail_test("post-SQL interruption lost its marker") unless File.file?(roots.fetch(:marker))
 
   retry_output, retry_status, retry_events = run_fixture(
@@ -279,7 +308,7 @@ Dir.mktmpdir("nas-platform-immich-lifecycle-server-failure-") do |temporary|
     root, roots, adoption: false, initialized: true, failure_stage: "server-start"
   )
   fail_test("post-startup interruption unexpectedly succeeded") if status.success?
-  expected = %w[server-stop data-start sql-restore restore-verified server-start]
+  expected = %w[server-stop data-start redis-reset sql-restore restore-verified server-start]
   fail_test("post-startup interruption lifecycle differs: #{events.inspect}") unless events == expected
   fail_test("post-startup interruption lost its marker") unless File.file?(roots.fetch(:marker))
   assert_sanitized(output, roots)
@@ -292,6 +321,19 @@ Dir.mktmpdir("nas-platform-immich-lifecycle-server-failure-") do |temporary|
   assert_sanitized(retry_output, roots)
   fail_test("post-startup retry did not report prior provenance") unless
     retry_output.include?("previous-failed-restore")
+end
+
+Dir.mktmpdir("nas-platform-immich-lifecycle-redis-failure-") do |temporary|
+  root = File.realpath(temporary)
+  roots = prepare_roots(root, adoption: false)
+  output, status, events = run_fixture(
+    root, roots, adoption: false, initialized: true, failure_stage: "redis-reset"
+  )
+  fail_test("Redis reset failure unexpectedly succeeded") if status.success?
+  fail_test("Redis reset failure reached SQL/server/admin: #{events.inspect}") unless
+    events == %w[server-stop data-start redis-reset]
+  fail_test("Redis reset failure lost its marker") unless File.file?(roots.fetch(:marker))
+  assert_sanitized(output, roots)
 end
 
 Dir.mktmpdir("nas-platform-immich-lifecycle-uninitialized-") do |temporary|

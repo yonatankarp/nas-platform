@@ -438,6 +438,24 @@ require_mutation_rejected("pre-verification integrity bypass") do
 end
 
 restore = task(restore_tasks, "Restore the selected Immich database backup")
+redis_reset = task(restore_tasks, "Clear stale Immich Redis state")
+redis_reset_guard = task(restore_tasks, "Require cleared Immich Redis state")
+redis_reset_argv = redis_reset&.dig("community.docker.docker_compose_v2_exec", "argv")
+refuse("restore does not clear Redis with redacted argv") unless
+  redis_reset&.dig("community.docker.docker_compose_v2_exec", "service") == "redis" &&
+  redis_reset_argv == %w[redis-cli --raw flushall] &&
+  redis_reset["failed_when"] == false && redis_reset["no_log"] == true
+redis_reset_conditions = Array(
+  redis_reset_guard&.dig("ansible.builtin.assert", "that")
+)
+[
+  "immich_restore_redis_reset.rc | default(1) | int == 0",
+  "immich_restore_redis_reset.stdout | default('') | trim == 'OK'",
+  "immich_restore_redis_reset.stderr | default('') | length == 0"
+].each do |condition|
+  refuse("Redis reset does not require #{condition}") unless
+    redis_reset_conditions.include?(condition)
+end
 argv = restore&.dig("community.docker.docker_compose_v2_exec", "argv")
 refuse("restore must use a redacted argv execution") unless argv.is_a?(Array) && restore["no_log"] == true
 shell_source = argv.find { |value| value.to_s.include?("gzip -dc") }.to_s
@@ -454,12 +472,40 @@ refuse("restore target differs from database") unless
 require_order(
   restore_tasks,
   [
+    "Record the Immich Redis reset stage",
+    "Clear stale Immich Redis state",
+    "Require cleared Immich Redis state",
+    "Record the Immich database restore stage",
     "Restore the selected Immich database backup",
     "Read restored Immich database evidence",
     "Require restored Immich database evidence",
     "Verify restored Immich source files"
   ]
 )
+
+mutated_restore = deep_copy(restore_tasks)
+task(mutated_restore, "Require cleared Immich Redis state")
+  .dig("ansible.builtin.assert", "that").clear
+require_mutation_rejected("ignored Redis reset failure") do
+  guard = task(mutated_restore, "Require cleared Immich Redis state")
+  Array(guard&.dig("ansible.builtin.assert", "that")).include?(
+    "immich_restore_redis_reset.rc | default(1) | int == 0"
+  )
+end
+
+mutated_restore = deep_copy(restore_tasks)
+reset_index = mutated_restore.index { |candidate| candidate["name"] == "Clear stale Immich Redis state" }
+sql_index = mutated_restore.index do |candidate|
+  candidate["name"] == "Restore the selected Immich database backup"
+end
+mutated_restore[reset_index], mutated_restore[sql_index] =
+  mutated_restore[sql_index], mutated_restore[reset_index]
+require_mutation_rejected("Redis reset after SQL restore") do
+  ordered?(
+    mutated_restore,
+    ["Clear stale Immich Redis state", "Restore the selected Immich database backup"]
+  )
+end
 refuse("restore verification mutates an application table") if
   restore_text.match?(/\b(?:insert|update|delete|truncate)\b/i)
 refuse("restore removes provenance before server initialization") if
