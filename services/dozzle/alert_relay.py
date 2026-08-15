@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import contextlib
+from datetime import datetime, timezone
 import fcntl
 import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -39,8 +40,11 @@ RELATIONSHIPS = {
 }
 CONTAINER_ID_PATTERN = re.compile(r"[0-9a-f]{12,64}\Z")
 TIMESTAMP_PATTERN = re.compile(
-    r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z\Z"
+    r"(?P<instant>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})"
+    r"(?P<fraction>\.[0-9]{1,9})?Z\Z"
 )
+TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%S"
+EXIT_CODE_PATTERN = re.compile(r"(?:0|[1-9][0-9]{0,2})\Z")
 MARKDOWN_PATTERN = re.compile(r"([\\`*_{}\[\]()#+\-.!|>])")
 
 
@@ -136,6 +140,24 @@ def require_text(payload, key, maximum):
     return value
 
 
+def valid_timestamp(value):
+    matched = TIMESTAMP_PATTERN.fullmatch(value)
+    if not matched:
+        return False
+    try:
+        parsed = datetime.strptime(matched.group("instant"), TIMESTAMP_FORMAT).replace(
+            tzinfo=timezone.utc
+        )
+    except ValueError:
+        return False
+    canonical = (
+        f"{parsed.year:04d}-{parsed.month:02d}-{parsed.day:02d}T"
+        f"{parsed.hour:02d}:{parsed.minute:02d}:{parsed.second:02d}"
+        f"{matched.group('fraction') or ''}Z"
+    )
+    return canonical == value
+
+
 def validate_envelope(payload):
     if not isinstance(payload, dict) or set(payload) != ENVELOPE_KEYS:
         raise SchemaError("envelope keys differ")
@@ -150,7 +172,7 @@ def validate_envelope(payload):
     timestamp = require_text(payload, "timestamp", 40)
     if not CONTAINER_ID_PATTERN.fullmatch(container_id):
         raise SchemaError("invalid containerId")
-    if not TIMESTAMP_PATTERN.fullmatch(timestamp):
+    if not valid_timestamp(timestamp):
         raise SchemaError("invalid timestamp")
 
     health_status = payload["healthStatus"]
@@ -161,10 +183,14 @@ def validate_envelope(payload):
         raise SchemaError("invalid status fields")
 
     if rule == "Unexpected exit":
-        if event != "die" or health_status != "" or not re.fullmatch(r"\d{1,3}", exit_code):
+        if (
+            event != "die"
+            or health_status != ""
+            or not EXIT_CODE_PATTERN.fullmatch(exit_code)
+        ):
             raise SchemaError("invalid unexpected-exit relationship")
         numeric_exit = int(exit_code)
-        if numeric_exit > 255 or exit_code in {"0", "130", "137", "143"}:
+        if numeric_exit > 255 or numeric_exit in {0, 130, 137, 143}:
             raise SchemaError("invalid unexpected exit code")
     elif rule in RELATIONSHIPS:
         if (event, health_status, exit_code) != RELATIONSHIPS[rule]:
@@ -464,7 +490,13 @@ class RelayRequestHandler(BaseHTTPRequestHandler):
             return
         authorization = self.headers.get("Authorization", "")
         expected = f"Bearer {self.server.config.alert_relay_token}"
-        if not hmac.compare_digest(authorization, expected):
+        try:
+            authorized = hmac.compare_digest(
+                authorization.encode("ascii"), expected.encode("ascii")
+            )
+        except UnicodeEncodeError:
+            authorized = False
+        if not authorized:
             self.send_text(401, "unauthorized\n")
             return
         if self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() != "application/json":

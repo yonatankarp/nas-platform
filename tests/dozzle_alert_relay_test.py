@@ -150,6 +150,16 @@ class DozzleAlertRelayTest(unittest.TestCase):
         self.assertEqual(self.ntfy.requests, [])
         self.assertFalse(self.state_path.exists())
 
+    def test_non_ascii_bearer_is_rejected_without_traceback_or_side_effects(self):
+        captured = io.StringIO()
+        with contextlib.redirect_stderr(captured):
+            status_code, response_body = self.post(self.envelope(), token="\xff")
+
+        self.assertEqual((status_code, response_body), (401, b"unauthorized\n"))
+        self.assertNotIn("Traceback", captured.getvalue())
+        self.assertEqual(self.ntfy.requests, [])
+        self.assertFalse(self.state_path.exists())
+
     def test_schema_and_encoding_are_strict(self):
         cases = {
             "unknown version": {"version": 2},
@@ -183,6 +193,45 @@ class DozzleAlertRelayTest(unittest.TestCase):
         oversized = b"{" + (b" " * (16 * 1024)) + b"}"
         self.assertEqual(self.request("POST", "/alerts", oversized)[0], 413)
         self.assertEqual(self.ntfy.requests, [])
+        self.assertFalse(self.state_path.exists())
+
+    def test_unexpected_exit_requires_canonical_nonzero_decimal_code(self):
+        for exit_code in ("00", "000", "01", "0130", "0137", "0143", "1\u0662"):
+            with self.subTest(exit_code=exit_code):
+                status_code, response_body = self.post(
+                    self.envelope("Unexpected exit", exitCode=exit_code)
+                )
+                self.assertEqual((status_code, response_body), (400, b"invalid request\n"))
+
+        self.assertEqual(self.ntfy.requests, [])
+        self.assertFalse(self.state_path.exists())
+
+    def test_timestamp_is_a_real_canonical_utc_instant(self):
+        leap_day = self.envelope("OOM", timestamp="2024-02-29T23:59:59Z")
+        self.assertEqual(self.post(leap_day), (204, b""))
+        fractional_leap_day = self.envelope(
+            "OOM", timestamp="2024-02-29T23:59:59.123456789Z"
+        )
+        self.assertEqual(self.post(fractional_leap_day), (204, b""))
+        request_count = len(self.ntfy.requests)
+
+        invalid_timestamps = (
+            "2023-02-29T23:59:59Z",
+            "2026-04-31T01:22:13Z",
+            "2026-08-15T24:00:00Z",
+            "2026-08-15T01:60:00Z",
+            "2026-08-15T01:22:60Z",
+            "2024-02-29T23:59:59+00:00",
+            "\u0662\u0660\u0662\u0664-02-29T23:59:59Z",
+        )
+        for timestamp in invalid_timestamps:
+            with self.subTest(timestamp=timestamp):
+                status_code, response_body = self.post(
+                    self.envelope("OOM", timestamp=timestamp)
+                )
+                self.assertEqual((status_code, response_body), (400, b"invalid request\n"))
+
+        self.assertEqual(len(self.ntfy.requests), request_count)
         self.assertFalse(self.state_path.exists())
 
     def test_unhealthy_renders_exact_structured_ntfy_root_request(self):
