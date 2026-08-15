@@ -7,7 +7,10 @@ immich_compose_project_name: >-
 
 # A marker outside PostgreSQL's data directory survives a partially initialized
 # cluster and makes the next convergence refuse an unsafe automatic retry.
-immich_restore_failure_marker: "{{ nas_docker_root }}/immich/.restore-failed"
+immich_restore_failure_marker: >-
+  {{ (platform_adoption_root ~ '/legacy/immich/.restore-failed')
+     if platform_adoption_enabled | default(false) | bool
+     else (nas_docker_root ~ '/immich/.restore-failed') }}
 immich_restore_backup_container_path: /immich-backups
 immich_restore_backup_uid: 0
 immich_restore_backup_gid: 0

@@ -21,6 +21,7 @@ class ClassifierFixture:
         self.root = root.resolve()
         self.postgres = self.root / "docker" / "immich" / "postgres"
         self.media = self.root / "media"
+        self.originals_root = self.media / "Immich"
         self.backups = self.media / "Immich-backups" / "database"
         self.marker = self.root / "docker" / "immich" / ".restore-failed"
         self.postgres.mkdir(parents=True)
@@ -28,7 +29,7 @@ class ClassifierFixture:
 
     @property
     def originals(self):
-        return self.media / "Immich" / "upload"
+        return self.originals_root / "upload"
 
     def add_original(self, name="library/admin/asset.jpg", content=b"asset"):
         path = self.originals / name
@@ -38,6 +39,7 @@ class ClassifierFixture:
 
     def add_backup(self, name=VALID_NAME, content=b"SELECT 1;\n"):
         path = self.backups / name
+        path.parent.mkdir(parents=True, exist_ok=True)
         with gzip.open(path, "wb") as stream:
             stream.write(content)
         return path
@@ -48,8 +50,8 @@ class ClassifierFixture:
             str(CLASSIFIER),
             "--postgres-dir",
             str(self.postgres),
-            "--media-root",
-            str(self.media),
+            "--originals-root",
+            str(self.originals_root),
             "--backup-dir",
             str(self.backups),
             "--failure-marker",
@@ -68,8 +70,8 @@ class ClassifierFixture:
                 str(CLASSIFIER),
                 "--verify-assets-json",
                 "-",
-                "--media-root",
-                str(self.media),
+                "--originals-root",
+                str(self.originals_root),
             ],
             input=json.dumps(assets),
             text=True,
@@ -175,6 +177,45 @@ class ImmichRestoreClassifierTest(unittest.TestCase):
         self.fixture.add_original()
         (self.fixture.backups / VALID_NAME).write_bytes(b"not gzip")
         self.assertEqual(self.fixture.classify()["database"], "existing")
+
+    def test_adopted_existing_database_never_uses_normal_restore_inputs(self):
+        normal_original = self.fixture.add_original("normal-only.jpg")
+        self.fixture.add_backup()
+        adopted = self.fixture.root / "adoption" / "legacy" / "immich"
+        self.fixture.postgres = adopted / "postgres"
+        self.fixture.originals_root = adopted / "data"
+        self.fixture.backups = adopted / "backups"
+        self.fixture.marker = adopted / ".restore-failed"
+        self.fixture.postgres.mkdir(parents=True)
+        (self.fixture.postgres / "PG_VERSION").write_text("14\n")
+        self.fixture.backups.mkdir(parents=True)
+
+        self.assertTrue(normal_original.is_file())
+        self.assertEqual(
+            self.fixture.classify(),
+            {
+                "database": "existing",
+                "originalsPresent": False,
+                "restoreRequired": False,
+                "backupFilename": None,
+            },
+        )
+
+    def test_adopted_fresh_database_selects_only_adopted_backup(self):
+        self.fixture.add_original("normal-only.jpg")
+        self.fixture.add_backup("immich-db-backup-20260816T010000-v3.1.0-pg14.19.sql.gz")
+        adopted = self.fixture.root / "adoption" / "legacy" / "immich"
+        self.fixture.postgres = adopted / "postgres"
+        self.fixture.originals_root = adopted / "data"
+        self.fixture.backups = adopted / "backups"
+        self.fixture.marker = adopted / ".restore-failed"
+        self.fixture.postgres.mkdir(parents=True)
+        self.fixture.add_original("adopted.jpg")
+        self.fixture.add_backup(VALID_NAME)
+
+        classification = self.fixture.classify()
+        self.assertTrue(classification["restoreRequired"])
+        self.assertEqual(classification["backupFilename"], VALID_NAME)
 
     def test_originals_without_backup_are_refused(self):
         self.fixture.add_original()

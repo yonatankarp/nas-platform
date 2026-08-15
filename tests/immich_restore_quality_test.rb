@@ -37,7 +37,10 @@ refuse("restore task file is absent") unless File.file?(restore_path)
 
 defaults = YAML.safe_load_file(File.join(ROOT, "roles", "immich", "defaults", "main.yml"))
 expected_defaults = {
-  "immich_restore_failure_marker" => "{{ nas_docker_root }}/immich/.restore-failed",
+  "immich_restore_failure_marker" =>
+    "{{ (platform_adoption_root ~ '/legacy/immich/.restore-failed') if " \
+    "platform_adoption_enabled | default(false) | bool else " \
+    "(nas_docker_root ~ '/immich/.restore-failed') }}",
   "immich_restore_backup_container_path" => "/immich-backups",
   "immich_restore_backup_uid" => 0,
   "immich_restore_backup_gid" => 0,
@@ -45,7 +48,9 @@ expected_defaults = {
   "immich_restore_database_wait_timeout" => 300
 }
 expected_defaults.each do |key, value|
-  refuse("#{key} default differs") unless defaults[key] == value
+  actual = defaults[key]
+  actual = actual.split.join(" ") if key == "immich_restore_failure_marker"
+  refuse("#{key} default differs") unless actual == value
 end
 
 argument_specs = YAML.safe_load_file(
@@ -77,8 +82,13 @@ adoption = YAML.safe_load_file(
   File.join(ROOT, "services", "immich", "compose.adoption.yml"), aliases: true
 )
 adoption_database_volumes = adoption.dig("services", "database", "volumes")
-refuse("adoption override drops the read-only classifier backup mount") unless
-  adoption_database_volumes.include?(backup_mount)
+adoption_backup_mount =
+  "${PLATFORM_ADOPTION_ROOT:?}/legacy/immich/backups:/immich-backups:ro"
+refuse("adoption database restore does not use the adopted backup tree") unless
+  adoption_database_volumes == [
+    "${PLATFORM_ADOPTION_ROOT:?}/legacy/immich/postgres:/var/lib/postgresql/data",
+    adoption_backup_mount
+  ]
 
 main_path = File.join(ROOT, "roles", "immich", "tasks", "main.yml")
 main_text = File.read(main_path)
@@ -86,6 +96,9 @@ main_tasks = YAML.safe_load_file(main_path, aliases: true)
 require_order(
   main_tasks,
   [
+    "Resolve the Immich storage mode",
+    "Derive the effective Immich storage roots",
+    "Require exact Immich effective storage roots",
     "Classify Immich storage before startup",
     "Require successful Immich storage classification",
     "Parse the Immich storage classification",
@@ -102,6 +115,38 @@ require_order(
   ]
 )
 
+effective_roots = task(main_tasks, "Derive the effective Immich storage roots")
+expected_root_facts = {
+  "immich_restore_database_root" => [
+    "platform_adoption_root ~ '/legacy/immich/postgres'",
+    "nas_docker_root ~ '/immich/postgres'"
+  ],
+  "immich_restore_originals_root" => [
+    "platform_adoption_root ~ '/legacy/immich/data'",
+    "nas_media_root ~ '/Immich'"
+  ],
+  "immich_restore_backup_root" => [
+    "platform_adoption_root ~ '/legacy/immich/backups'",
+    "nas_media_root ~ '/Immich-backups/database'"
+  ],
+  "immich_restore_effective_failure_marker" => [
+    "platform_adoption_root ~ '/legacy/immich/.restore-failed'",
+    "nas_docker_root ~ '/immich/.restore-failed'"
+  ]
+}
+root_facts = effective_roots&.fetch("ansible.builtin.set_fact", nil)
+expected_root_facts.each do |name, alternatives|
+  expression = root_facts&.fetch(name, "").to_s
+  refuse("#{name} is not derived from the active Compose mode") unless
+    alternatives.all? { |alternative| expression.include?(alternative) }
+end
+root_guard = task(main_tasks, "Require exact Immich effective storage roots")
+root_conditions = root_guard&.dig("ansible.builtin.assert", "that").to_s
+expected_root_facts.each_key do |name|
+  refuse("effective root guard does not constrain #{name}") unless
+    root_conditions.include?(name)
+end
+
 classifier = task(main_tasks, "Classify Immich storage before startup")
 refuse("check mode writes a classifier copy") if
   task(main_tasks, "Install the Immich restore classifier")
@@ -110,6 +155,18 @@ refuse("classifier must use command argv") unless
 refuse("classifier output is not redacted") unless classifier["no_log"] == true
 refuse("classifier may be skipped in check mode") unless classifier["check_mode"] == false
 refuse("classifier can mutate state") unless classifier["changed_when"] == false
+classifier_argv = classifier.dig("ansible.builtin.command", "argv")
+{
+  "--postgres-dir" => "{{ immich_restore_database_root }}",
+  "--originals-root" => "{{ immich_restore_originals_root }}",
+  "--backup-dir" => "{{ immich_restore_backup_root }}",
+  "--failure-marker" => "{{ immich_restore_effective_failure_marker }}"
+}.each do |option, value|
+  option_index = classifier_argv.index(option)
+  refuse("classifier does not consume effective #{option}") unless
+    option_index && classifier_argv.fetch(option_index + 1, nil) == value
+end
+refuse("classifier can bypass effective roots") if classifier_argv.include?("--media-root")
 
 classification_guard = task(main_tasks, "Require successful Immich storage classification")
 refuse("classification failure is ignored") unless
@@ -135,7 +192,9 @@ refuse("marker ownership differs") unless
   marker.dig("ansible.builtin.copy", "owner") == "{{ nas_uid }}" &&
   marker.dig("ansible.builtin.copy", "group") == "{{ nas_gid }}"
 refuse("marker can be created outside restore path") unless
-  Array(marker["when"]).include?("immich_restore_required | bool")
+  Array(marker["when"]).include?("immich_restore_required | bool") &&
+  marker.dig("ansible.builtin.copy", "dest") ==
+    "{{ immich_restore_effective_failure_marker }}"
 
 restore_include = task(main_tasks, "Restore and verify the Immich database")
 refuse("restore include differs") unless

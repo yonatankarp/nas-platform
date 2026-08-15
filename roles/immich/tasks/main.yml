@@ -27,6 +27,42 @@
          ((platform_adoption_enabled | default(false) | bool)
           | ternary(['compose.adoption.yml'], [])) }}
 
+- name: Resolve the Immich storage mode
+  ansible.builtin.set_fact:
+    immich_restore_adoption_enabled: >-
+      {{ platform_adoption_enabled | default(false) | bool }}
+
+- name: Derive the effective Immich storage roots
+  ansible.builtin.set_fact:
+    immich_restore_database_root: >-
+      {{ (platform_adoption_root ~ '/legacy/immich/postgres')
+         if immich_restore_adoption_enabled | bool
+         else (nas_docker_root ~ '/immich/postgres') }}
+    immich_restore_originals_root: >-
+      {{ (platform_adoption_root ~ '/legacy/immich/data')
+         if immich_restore_adoption_enabled | bool
+         else (nas_media_root ~ '/Immich') }}
+    immich_restore_backup_root: >-
+      {{ (platform_adoption_root ~ '/legacy/immich/backups')
+         if immich_restore_adoption_enabled | bool
+         else (nas_media_root ~ '/Immich-backups/database') }}
+    immich_restore_effective_failure_marker: >-
+      {{ (platform_adoption_root ~ '/legacy/immich/.restore-failed')
+         if immich_restore_adoption_enabled | bool
+         else (nas_docker_root ~ '/immich/.restore-failed') }}
+
+- name: Require exact Immich effective storage roots
+  ansible.builtin.assert:
+    that:
+      - immich_restore_database_root == ((platform_adoption_root ~ '/legacy/immich/postgres') if immich_restore_adoption_enabled | bool else (nas_docker_root ~ '/immich/postgres'))
+      - immich_restore_originals_root == ((platform_adoption_root ~ '/legacy/immich/data') if immich_restore_adoption_enabled | bool else (nas_media_root ~ '/Immich'))
+      - immich_restore_backup_root == ((platform_adoption_root ~ '/legacy/immich/backups') if immich_restore_adoption_enabled | bool else (nas_media_root ~ '/Immich-backups/database'))
+      - immich_restore_effective_failure_marker == ((platform_adoption_root ~ '/legacy/immich/.restore-failed') if immich_restore_adoption_enabled | bool else (nas_docker_root ~ '/immich/.restore-failed'))
+      - immich_restore_failure_marker == immich_restore_effective_failure_marker
+    fail_msg: >-
+      Immich restore roots do not match the active Compose storage mode.
+      Refusing deployment before storage classification.
+
 - name: Render the Immich environment
   ansible.builtin.template:
     src: env.j2
@@ -40,13 +76,13 @@
       - "{{ ansible_facts.python.executable }}"
       - "{{ platform_current_dir }}/roles/immich/files/classify_restore.py"
       - --postgres-dir
-      - "{{ nas_docker_root }}/immich/postgres"
-      - --media-root
-      - "{{ nas_media_root }}"
+      - "{{ immich_restore_database_root }}"
+      - --originals-root
+      - "{{ immich_restore_originals_root }}"
       - --backup-dir
-      - "{{ nas_media_root }}/Immich-backups/database"
+      - "{{ immich_restore_backup_root }}"
       - --failure-marker
-      - "{{ immich_restore_failure_marker }}"
+      - "{{ immich_restore_effective_failure_marker }}"
       - --expected-uid
       - "{{ immich_restore_backup_uid | string }}"
       - --expected-gid
@@ -138,7 +174,7 @@
 
 - name: Protect an in-progress Immich database restore
   ansible.builtin.copy:
-    dest: "{{ immich_restore_failure_marker }}"
+    dest: "{{ immich_restore_effective_failure_marker }}"
     content: '{"version":1,"stage":"dependencies-start"}\n'
     mode: "0600"
     owner: "{{ nas_uid }}"
@@ -264,7 +300,7 @@
 
 - name: Remove successful Immich restore provenance
   ansible.builtin.file:
-    path: "{{ immich_restore_failure_marker }}"
+    path: "{{ immich_restore_effective_failure_marker }}"
     state: absent
   when: immich_restore_required | bool
 

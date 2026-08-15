@@ -104,8 +104,8 @@
           - "{{ platform_current_dir }}/roles/immich/files/classify_restore.py"
           - --verify-assets-json
           - '-'
-          - --media-root
-          - "{{ nas_media_root }}"
+          - --originals-root
+          - "{{ immich_restore_originals_root }}"
         stdin: "{{ immich_restored_database_evidence.assets | to_json }}"
         stdin_add_newline: false
       register: immich_restored_source_verification
@@ -126,7 +126,7 @@
   rescue:
     - name: Record sanitized Immich restore failure stage
       ansible.builtin.copy:
-        dest: "{{ immich_restore_failure_marker }}"
+        dest: "{{ immich_restore_effective_failure_marker }}"
         content: >-
           {"version":1,"stage":"{{ immich_restore_stage | default('restore') }}"}
         mode: "0600"

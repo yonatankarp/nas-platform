@@ -13,4 +13,4 @@ services:
   database:
     volumes: !override
       - ${PLATFORM_ADOPTION_ROOT:?}/legacy/immich/postgres:/var/lib/postgresql/data
-      - ${NAS_MEDIA_ROOT:?}/Immich-backups/database:/immich-backups:ro
+      - ${PLATFORM_ADOPTION_ROOT:?}/legacy/immich/backups:/immich-backups:ro

@@ -31,7 +31,7 @@ class Refusal(Exception):
 def parse_args():
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--postgres-dir")
-    parser.add_argument("--media-root", required=True)
+    parser.add_argument("--originals-root", required=True)
     parser.add_argument("--backup-dir")
     parser.add_argument("--failure-marker")
     parser.add_argument("--expected-uid", type=int)
@@ -166,31 +166,27 @@ def directory_has_regular_file(descriptor):
     return False
 
 
-def originals_present(media_root):
-    media_fd = open_directory(media_root, category="unsafe-storage")
+def originals_present(originals_root):
+    immich_fd = open_directory(
+        originals_root, missing_ok=True, category="unsafe-originals"
+    )
+    if immich_fd is None:
+        return False
     try:
-        immich_fd = open_child_directory(
-            media_fd, "Immich", missing_ok=True, category="unsafe-originals"
-        )
-        if immich_fd is None:
-            return False
-        try:
-            for tree in ("upload", "library"):
-                tree_fd = open_child_directory(
-                    immich_fd, tree, missing_ok=True, category="unsafe-originals"
-                )
-                if tree_fd is None:
-                    continue
-                try:
-                    if directory_has_regular_file(tree_fd):
-                        return True
-                finally:
-                    os.close(tree_fd)
-            return False
-        finally:
-            os.close(immich_fd)
+        for tree in ("upload", "library"):
+            tree_fd = open_child_directory(
+                immich_fd, tree, missing_ok=True, category="unsafe-originals"
+            )
+            if tree_fd is None:
+                continue
+            try:
+                if directory_has_regular_file(tree_fd):
+                    return True
+            finally:
+                os.close(tree_fd)
+        return False
     finally:
-        os.close(media_fd)
+        os.close(immich_fd)
 
 
 def parse_backup_timestamp(name):
@@ -300,7 +296,7 @@ def verify_asset_path(immich_fd, original_path):
         os.close(descriptor)
 
 
-def verify_assets(media_root, source):
+def verify_assets(originals_root, source):
     if source != "-":
         raise Refusal("unsafe-restored-assets")
     try:
@@ -310,26 +306,20 @@ def verify_assets(media_root, source):
     if not isinstance(assets, list) or not 1 <= len(assets) <= 1000:
         raise Refusal("unsafe-restored-assets")
 
-    media_fd = open_directory(media_root, category="unsafe-restored-assets")
+    immich_fd = open_directory(originals_root, category="unsafe-restored-assets")
     try:
-        immich_fd = open_child_directory(
-            media_fd, "Immich", category="unsafe-restored-assets"
-        )
-        try:
-            for asset in assets:
-                if (
-                    not isinstance(asset, dict)
-                    or set(asset) != {"id", "originalPath"}
-                    or not isinstance(asset["id"], str)
-                    or not asset["id"]
-                    or not isinstance(asset["originalPath"], str)
-                ):
-                    raise Refusal("unsafe-restored-assets")
-                verify_asset_path(immich_fd, asset["originalPath"])
-        finally:
-            os.close(immich_fd)
+        for asset in assets:
+            if (
+                not isinstance(asset, dict)
+                or set(asset) != {"id", "originalPath"}
+                or not isinstance(asset["id"], str)
+                or not asset["id"]
+                or not isinstance(asset["originalPath"], str)
+            ):
+                raise Refusal("unsafe-restored-assets")
+            verify_asset_path(immich_fd, asset["originalPath"])
     finally:
-        os.close(media_fd)
+        os.close(immich_fd)
     return {"verified": len(assets)}
 
 
@@ -337,7 +327,7 @@ def classify(args):
     if marker_present(args.failure_marker):
         raise Refusal("previous-failed-restore")
     database = classify_database(args.postgres_dir)
-    present = originals_present(args.media_root)
+    present = originals_present(args.originals_root)
     restore_required = database == "fresh" and present
     backup = None
     if restore_required:
@@ -349,7 +339,7 @@ def main():
     try:
         args = parse_args()
         if args.verify_assets_json is not None:
-            document = verify_assets(args.media_root, args.verify_assets_json)
+            document = verify_assets(args.originals_root, args.verify_assets_json)
         else:
             document = classify(args)
     except Refusal as error:
