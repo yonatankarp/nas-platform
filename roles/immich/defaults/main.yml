@@ -14,6 +14,8 @@ immich_restore_failure_marker: >-
 immich_restore_backup_container_path: /immich-backups
 immich_restore_backup_uid: 0
 immich_restore_backup_gid: 0
+immich_restore_expected_immich_version: "3.1.0"
+immich_restore_expected_postgres_major: 14
 immich_restore_verify_limit: 25
 immich_restore_database_wait_timeout: 300
 

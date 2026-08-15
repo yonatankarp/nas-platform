@@ -14,7 +14,7 @@ import sys
 
 BACKUP_NAME = re.compile(
     r"^immich-db-backup-(\d{8}T\d{6})-"
-    r"v[0-9]+(?:\.[0-9]+)*-pg[0-9]+(?:\.[0-9]+)*\.sql\.gz$"
+    r"v([0-9]+(?:\.[0-9]+)*)-pg([0-9]+(?:\.[0-9]+)*)\.sql\.gz$"
 )
 OUTPUT_KEYS = (
     "database",
@@ -36,6 +36,8 @@ def parse_args():
     parser.add_argument("--failure-marker")
     parser.add_argument("--expected-uid", type=int)
     parser.add_argument("--expected-gid", type=int)
+    parser.add_argument("--expected-immich-version")
+    parser.add_argument("--expected-postgres-major", type=int)
     parser.add_argument("--verify-assets-json")
     args = parser.parse_args()
     classification_values = (
@@ -44,6 +46,8 @@ def parse_args():
         args.failure_marker,
         args.expected_uid,
         args.expected_gid,
+        args.expected_immich_version,
+        args.expected_postgres_major,
     )
     if args.verify_assets_json is None and any(value is None for value in classification_values):
         parser.error("classification arguments are required")
@@ -195,14 +199,15 @@ def originals_present(originals_root):
         os.close(immich_fd)
 
 
-def parse_backup_timestamp(name):
+def parse_backup_metadata(name):
     match = BACKUP_NAME.fullmatch(name)
     if match is None:
         return None
     try:
-        return datetime.strptime(match.group(1), "%Y%m%dT%H%M%S")
+        timestamp = datetime.strptime(match.group(1), "%Y%m%dT%H%M%S")
     except ValueError:
         return None
+    return timestamp, match.group(2), match.group(3)
 
 
 def validate_backup(descriptor, name, expected_uid, expected_gid):
@@ -243,27 +248,41 @@ def validate_backup(descriptor, name, expected_uid, expected_gid):
         os.close(backup_fd)
 
 
-def select_backup(path, expected_uid, expected_gid):
+def select_backup(
+    path, expected_uid, expected_gid, expected_immich_version, expected_postgres_major
+):
     descriptor = open_directory(path, missing_ok=True, category="missing-safe-backup")
     if descriptor is None:
         raise Refusal("missing-safe-backup")
     try:
         try:
             candidates = [
-                (timestamp, name)
+                (metadata, name)
                 for name in os.listdir(descriptor)
-                if (timestamp := parse_backup_timestamp(name)) is not None
+                if (metadata := parse_backup_metadata(name)) is not None
             ]
         except OSError:
             raise Refusal("missing-safe-backup") from None
         if not candidates:
             raise Refusal("missing-safe-backup")
-        newest_timestamp = max(timestamp for timestamp, _ in candidates)
-        newest = [name for timestamp, name in candidates if timestamp == newest_timestamp]
+        newest_timestamp = max(metadata[0] for metadata, _ in candidates)
+        newest = [
+            (metadata, name)
+            for metadata, name in candidates
+            if metadata[0] == newest_timestamp
+        ]
         if len(newest) != 1:
             raise Refusal("ambiguous-newest-backup")
-        validate_backup(descriptor, newest[0], expected_uid, expected_gid)
-        return newest[0]
+        metadata, name = newest[0]
+        _, immich_version, postgres_version = metadata
+        postgres_major = int(postgres_version.split(".", 1)[0])
+        if (
+            immich_version != expected_immich_version
+            or postgres_major != expected_postgres_major
+        ):
+            raise Refusal("incompatible-newest-backup")
+        validate_backup(descriptor, name, expected_uid, expected_gid)
+        return name
     finally:
         os.close(descriptor)
 
@@ -337,7 +356,13 @@ def classify(args):
     restore_required = database == "fresh" and present
     backup = None
     if restore_required:
-        backup = select_backup(args.backup_dir, args.expected_uid, args.expected_gid)
+        backup = select_backup(
+            args.backup_dir,
+            args.expected_uid,
+            args.expected_gid,
+            args.expected_immich_version,
+            args.expected_postgres_major,
+        )
     return dict(zip(OUTPUT_KEYS, (database, present, restore_required, backup)))
 
 

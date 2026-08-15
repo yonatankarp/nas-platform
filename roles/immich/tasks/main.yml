@@ -104,6 +104,10 @@
       - "{{ immich_restore_backup_uid | string }}"
       - --expected-gid
       - "{{ immich_restore_backup_gid | string }}"
+      - --expected-immich-version
+      - "{{ immich_restore_expected_immich_version }}"
+      - --expected-postgres-major
+      - "{{ immich_restore_expected_postgres_major | string }}"
   register: immich_restore_classification_command
   failed_when: false
   changed_when: false
@@ -116,8 +120,9 @@
       {{ immich_restore_classification_command.stderr | default('') | trim
          if immich_restore_classification_command.rc | default(1) | int != 0 and
             immich_restore_classification_command.stderr | default('') | trim in
-            ['unsafe-storage', 'unsafe-originals', 'missing-safe-backup',
+             ['unsafe-storage', 'unsafe-originals', 'missing-safe-backup',
              'ambiguous-newest-backup', 'unsafe-newest-backup',
+             'incompatible-newest-backup',
              'previous-failed-restore']
          else 'classification-failed'
          if immich_restore_classification_command.rc | default(1) | int != 0

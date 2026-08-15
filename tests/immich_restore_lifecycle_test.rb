@@ -178,6 +178,10 @@ def run_fixture(root, roots, adoption:, initialized:, failure_stage: "none")
     "immich_restore_failure_marker" => DEFAULTS.fetch("immich_restore_failure_marker"),
     "immich_restore_backup_uid" => Process.uid,
     "immich_restore_backup_gid" => Process.gid,
+    "immich_restore_expected_immich_version" =>
+      DEFAULTS.fetch("immich_restore_expected_immich_version"),
+    "immich_restore_expected_postgres_major" =>
+      DEFAULTS.fetch("immich_restore_expected_postgres_major"),
     "nas_uid" => Process.uid,
     "nas_gid" => Process.gid,
     "platform_current_dir" => release_root,

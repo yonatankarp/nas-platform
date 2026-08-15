@@ -100,6 +100,10 @@ class ClassifierFixture:
             str(os.getuid() if expected_uid is None else expected_uid),
             "--expected-gid",
             str(os.getgid() if expected_gid is None else expected_gid),
+            "--expected-immich-version",
+            "3.1.0",
+            "--expected-postgres-major",
+            "14",
         ]
         return subprocess.run(command, text=True, capture_output=True, check=False)
 
@@ -297,6 +301,26 @@ class ImmichRestoreClassifierTest(unittest.TestCase):
         newest = self.fixture.backups / VALID_NAME
         newest.write_bytes(b"not gzip")
         self.assert_refused("unsafe-newest-backup")
+
+    def test_incompatible_newest_immich_version_does_not_fall_back(self):
+        self.fixture.add_original()
+        self.fixture.add_backup(
+            "immich-db-backup-20260814T010000-v3.1.0-pg14.19.sql.gz"
+        )
+        self.fixture.add_backup(
+            "immich-db-backup-20260815T010000-v3.2.0-pg14.19.sql.gz"
+        )
+        self.assert_refused("incompatible-newest-backup")
+
+    def test_incompatible_newest_postgres_major_does_not_fall_back(self):
+        self.fixture.add_original()
+        self.fixture.add_backup(
+            "immich-db-backup-20260814T010000-v3.1.0-pg14.19.sql.gz"
+        )
+        self.fixture.add_backup(
+            "immich-db-backup-20260815T010000-v3.1.0-pg15.1.sql.gz"
+        )
+        self.assert_refused("incompatible-newest-backup")
 
     def test_symlink_backup_is_refused(self):
         self.fixture.add_original()
