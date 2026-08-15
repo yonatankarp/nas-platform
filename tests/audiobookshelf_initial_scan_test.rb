@@ -14,6 +14,14 @@ PLAN_TASK = "Report planned Audiobookshelf initial scan"
 TASK_POLL = "Poll Audiobookshelf initial library scan tasks"
 ITEM_POLL = "Poll Audiobookshelf managed library items after initial scan"
 LIBRARY_POLL = "Poll authoritative Audiobookshelf library scan state"
+PRE_REPAIR_DRAIN = "Drain active Audiobookshelf library scan before folder repair"
+PRE_REPAIR_DRAIN_ASSERT = "Require drained Audiobookshelf library scan before folder repair"
+FINAL_DRAIN = "Drain active Audiobookshelf library scan before initial scan request"
+FINAL_DRAIN_ASSERT = "Require drained Audiobookshelf library scan before initial scan request"
+BASELINE_REFETCH = "Refetch authoritative Audiobookshelf library before initial scan"
+BASELINE_OUTER_ASSERT = "Require strict authoritative Audiobookshelf library baseline response"
+BASELINE_RESOLVE = "Resolve authoritative Audiobookshelf library baseline"
+BASELINE_ASSERT = "Require safe authoritative Audiobookshelf last scan baseline"
 PRECREATE_PENDING_TASK = "Record pre-create Audiobookshelf initial scan intent"
 BIND_PENDING_TASK = "Bind Audiobookshelf initial scan intent to current library"
 CLEAR_PENDING_TASK = "Clear completed Audiobookshelf initial scan intent"
@@ -225,11 +233,76 @@ def validate_initial_scan!(tasks, defaults)
     "item polling must validate response shape without rejecting an empty source"
   )
 
-  baseline, baseline_index = task_named(tasks, "Capture Audiobookshelf last scan before initial scan request")
+  pre_repair_drain, pre_repair_drain_index = task_named(tasks, PRE_REPAIR_DRAIN)
+  pre_repair_drain_assert, pre_repair_drain_assert_index = task_named(
+    tasks, PRE_REPAIR_DRAIN_ASSERT
+  )
+  final_drain, final_drain_index = task_named(tasks, FINAL_DRAIN)
+  final_drain_assert, final_drain_assert_index = task_named(tasks, FINAL_DRAIN_ASSERT)
+  [
+    [pre_repair_drain, "audiobookshelf_library_folder_repair_required | bool"],
+    [final_drain, "audiobookshelf_initial_scan_required | bool"]
+  ].each do |drain, guard|
+    drain_uri = drain.fetch("ansible.builtin.uri", {})
+    drain_until = Array(drain["until"]).join(" ")
+    require_condition(
+      drain_uri["url"].to_s.end_with?("/api/tasks") &&
+        drain["retries"] == "{{ audiobookshelf_initial_scan_retries }}" &&
+        drain["delay"] == "{{ audiobookshelf_initial_scan_delay }}" &&
+        Array(drain["when"]) == ["not ansible_check_mode", guard] && drain["no_log"] == true &&
+        drain_until.include?("type_debug == 'list'") && drain_until.include?("library-scan") &&
+        drain_until.include?("audiobookshelf_current_library.id") &&
+        drain_until.include?("isFinished"),
+      "scan drains must strictly and finitely wait for the managed library only"
+    )
+  end
   require_condition(
-    baseline.dig("ansible.builtin.set_fact", "audiobookshelf_initial_scan_last_scan_before")
-            .to_s.include?("audiobookshelf_current_library.lastScan") && baseline_index < scan_index,
-    "lastScan baseline must be captured before the single scan POST"
+    bound_pending_index < pre_repair_drain_index &&
+      pre_repair_drain_index < pre_repair_drain_assert_index &&
+      pre_repair_drain_assert_index < repair_index && repair_index < final_drain_index &&
+      final_drain_index < final_drain_assert_index,
+    "active scans must drain both before folder PATCH and again after mutation"
+  )
+  [
+    [pre_repair_drain_assert, "audiobookshelf_library_folder_repair_required | bool"],
+    [final_drain_assert, "audiobookshelf_initial_scan_required | bool"]
+  ].each do |drain_assert, guard|
+    assertions = Array(drain_assert.dig("ansible.builtin.assert", "that")).join(" ")
+    require_condition(
+      assertions.include?("type_debug == 'list'") && assertions.include?("library-scan") &&
+        assertions.include?("audiobookshelf_current_library.id") && drain_assert["no_log"] == true &&
+        Array(drain_assert["when"]) == ["not ansible_check_mode", guard],
+      "scan drain completion must be strictly asserted without disclosure"
+    )
+  end
+
+  baseline_refetch, baseline_refetch_index = task_named(tasks, BASELINE_REFETCH)
+  baseline_outer, baseline_outer_index = task_named(tasks, BASELINE_OUTER_ASSERT)
+  baseline_resolve, baseline_resolve_index = task_named(tasks, BASELINE_RESOLVE)
+  baseline_assert, baseline_assert_index = task_named(tasks, BASELINE_ASSERT)
+  baseline, baseline_index = task_named(tasks, "Capture Audiobookshelf last scan before initial scan request")
+  baseline_outer_assertions = Array(
+    baseline_outer.dig("ansible.builtin.assert", "that")
+  ).join(" ")
+  baseline_assertions = Array(baseline_assert.dig("ansible.builtin.assert", "that")).join(" ")
+  require_condition(
+    baseline_refetch.dig("ansible.builtin.uri", "url").to_s.end_with?("/api/libraries") &&
+      baseline_refetch["no_log"] == true &&
+      Array(baseline_refetch["when"]) == [
+        "not ansible_check_mode", "audiobookshelf_initial_scan_required | bool"
+      ] && baseline_outer_assertions.include?("type_debug == 'list'") &&
+      baseline_resolve.dig(
+        "ansible.builtin.set_fact", "audiobookshelf_initial_scan_library_before"
+      ).to_s.include?("audiobookshelf_initial_scan_baseline_libraries") &&
+      baseline_assertions.include?("audiobookshelf_initial_scan_library_before[0].lastScan") &&
+      baseline_assertions.include?("type_debug == 'int'") &&
+      baseline.dig("ansible.builtin.set_fact", "audiobookshelf_initial_scan_last_scan_before")
+              .to_s.include?("audiobookshelf_initial_scan_library_before[0].lastScan") &&
+      final_drain_assert_index < baseline_refetch_index &&
+      baseline_refetch_index < baseline_outer_index && baseline_outer_index < baseline_resolve_index &&
+      baseline_resolve_index < baseline_assert_index && baseline_assert_index < baseline_index &&
+      baseline_index + 1 == scan_index,
+    "a strict authoritative lastScan baseline must be freshly captured immediately before POST"
   )
   marker_state, marker_state_index = task_named(
     tasks, "Resolve Audiobookshelf initial scan marker path and expected intents"
@@ -436,6 +509,35 @@ scan = wrong_order.delete_at(scan_index)
 repair_index = task_named(wrong_order, REPAIR_TASK).last
 wrong_order.insert(repair_index, scan)
 mutation_rejected!(wrong_order, defaults, "wrong ordering")
+
+missing_pre_repair_drain = deep_copy(tasks)
+missing_pre_repair_drain.reject! { |task| task["name"] == PRE_REPAIR_DRAIN }
+mutation_rejected!(missing_pre_repair_drain, defaults, "missing pre-repair scan drain")
+
+missing_final_drain = deep_copy(tasks)
+missing_final_drain.reject! { |task| task["name"] == FINAL_DRAIN }
+mutation_rejected!(missing_final_drain, defaults, "missing final scan drain")
+
+late_final_drain = deep_copy(tasks)
+final_drain_index = task_named(late_final_drain, FINAL_DRAIN).last
+final_drain_task = late_final_drain.delete_at(final_drain_index)
+late_final_drain.insert(task_named(late_final_drain, SCAN_TASK).last + 1, final_drain_task)
+mutation_rejected!(late_final_drain, defaults, "late final scan drain")
+
+stale_scan_baseline = deep_copy(tasks)
+baseline_facts = task_named(
+  stale_scan_baseline, "Capture Audiobookshelf last scan before initial scan request"
+).first.fetch("ansible.builtin.set_fact")
+baseline_facts["audiobookshelf_initial_scan_last_scan_before"] =
+  "{{ audiobookshelf_current_library.lastScan | default(none) }}"
+mutation_rejected!(stale_scan_baseline, defaults, "stale lastScan baseline")
+
+loose_baseline_libraries = deep_copy(tasks)
+baseline_conditions = task_named(
+  loose_baseline_libraries, BASELINE_OUTER_ASSERT
+).first.dig("ansible.builtin.assert", "that")
+baseline_conditions.map! { |condition| condition.to_s.sub("type_debug == 'list'", "is sequence") }
+mutation_rejected!(loose_baseline_libraries, defaults, "loose baseline libraries shape")
 
 unbounded_poll = deep_copy(tasks)
 task_named(unbounded_poll, TASK_POLL).first.delete("retries")

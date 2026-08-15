@@ -705,6 +705,60 @@
     - audiobookshelf_library_repair_required | bool
   changed_when: true
 
+- name: Drain active Audiobookshelf library scan before folder repair
+  ansible.builtin.uri:
+    url: "{{ audiobookshelf_api }}/api/tasks"
+    headers:
+      Authorization: "Bearer {{ audiobookshelf_reconcile_token }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: audiobookshelf_pre_repair_scan_tasks
+  until:
+    - audiobookshelf_pre_repair_scan_tasks.status | default(0) | int == 200
+    - audiobookshelf_pre_repair_scan_tasks.json | default({}) is mapping
+    - "'tasks' in (audiobookshelf_pre_repair_scan_tasks.json | default({}))"
+    - audiobookshelf_pre_repair_scan_tasks.json.tasks | type_debug == 'list'
+    - >-
+      audiobookshelf_pre_repair_scan_tasks.json.tasks | default([])
+      | selectattr('action', 'defined')
+      | selectattr('action', 'equalto', 'library-scan')
+      | selectattr('isFinished', 'defined')
+      | selectattr('isFinished', 'equalto', false)
+      | selectattr('data.libraryId', 'defined')
+      | selectattr('data.libraryId', 'equalto', audiobookshelf_current_library.id)
+      | list | length == 0
+  retries: "{{ audiobookshelf_initial_scan_retries }}"
+  delay: "{{ audiobookshelf_initial_scan_delay }}"
+  failed_when: false
+  when:
+    - not ansible_check_mode
+    - audiobookshelf_library_folder_repair_required | bool
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require drained Audiobookshelf library scan before folder repair
+  ansible.builtin.assert:
+    that:
+      - audiobookshelf_pre_repair_scan_tasks.status | default(0) | int == 200
+      - audiobookshelf_pre_repair_scan_tasks.json | default({}) is mapping
+      - "'tasks' in (audiobookshelf_pre_repair_scan_tasks.json | default({}))"
+      - audiobookshelf_pre_repair_scan_tasks.json.tasks | type_debug == 'list'
+      - >-
+        audiobookshelf_pre_repair_scan_tasks.json.tasks | default([])
+        | selectattr('action', 'defined')
+        | selectattr('action', 'equalto', 'library-scan')
+        | selectattr('isFinished', 'defined')
+        | selectattr('isFinished', 'equalto', false)
+        | selectattr('data.libraryId', 'defined')
+        | selectattr('data.libraryId', 'equalto', audiobookshelf_current_library.id)
+        | list | length == 0
+    fail_msg: The managed Audiobookshelf library scan did not drain before folder repair.
+  when:
+    - not ansible_check_mode
+    - audiobookshelf_library_folder_repair_required | bool
+  no_log: true
+
 - name: Repair the managed Audiobookshelf library
   ansible.builtin.uri:
     url: "{{ audiobookshelf_api }}/api/libraries/{{ audiobookshelf_current_library.id }}"
@@ -734,23 +788,122 @@
     - audiobookshelf_initial_scan_required | bool
   changed_when: true
 
-- name: Capture Audiobookshelf last scan before initial scan request
-  ansible.builtin.set_fact:
-    audiobookshelf_initial_scan_last_scan_before: >-
-      {{ audiobookshelf_current_library.lastScan | default(none) }}
+- name: Drain active Audiobookshelf library scan before initial scan request
+  ansible.builtin.uri:
+    url: "{{ audiobookshelf_api }}/api/tasks"
+    headers:
+      Authorization: "Bearer {{ audiobookshelf_reconcile_token }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: audiobookshelf_pre_initial_scan_tasks
+  until:
+    - audiobookshelf_pre_initial_scan_tasks.status | default(0) | int == 200
+    - audiobookshelf_pre_initial_scan_tasks.json | default({}) is mapping
+    - "'tasks' in (audiobookshelf_pre_initial_scan_tasks.json | default({}))"
+    - audiobookshelf_pre_initial_scan_tasks.json.tasks | type_debug == 'list'
+    - >-
+      audiobookshelf_pre_initial_scan_tasks.json.tasks | default([])
+      | selectattr('action', 'defined')
+      | selectattr('action', 'equalto', 'library-scan')
+      | selectattr('isFinished', 'defined')
+      | selectattr('isFinished', 'equalto', false)
+      | selectattr('data.libraryId', 'defined')
+      | selectattr('data.libraryId', 'equalto', audiobookshelf_current_library.id)
+      | list | length == 0
+  retries: "{{ audiobookshelf_initial_scan_retries }}"
+  delay: "{{ audiobookshelf_initial_scan_delay }}"
+  failed_when: false
+  when:
+    - not ansible_check_mode
+    - audiobookshelf_initial_scan_required | bool
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require drained Audiobookshelf library scan before initial scan request
+  ansible.builtin.assert:
+    that:
+      - audiobookshelf_pre_initial_scan_tasks.status | default(0) | int == 200
+      - audiobookshelf_pre_initial_scan_tasks.json | default({}) is mapping
+      - "'tasks' in (audiobookshelf_pre_initial_scan_tasks.json | default({}))"
+      - audiobookshelf_pre_initial_scan_tasks.json.tasks | type_debug == 'list'
+      - >-
+        audiobookshelf_pre_initial_scan_tasks.json.tasks | default([])
+        | selectattr('action', 'defined')
+        | selectattr('action', 'equalto', 'library-scan')
+        | selectattr('isFinished', 'defined')
+        | selectattr('isFinished', 'equalto', false)
+        | selectattr('data.libraryId', 'defined')
+        | selectattr('data.libraryId', 'equalto', audiobookshelf_current_library.id)
+        | list | length == 0
+    fail_msg: The managed Audiobookshelf library scan did not drain before the initial scan request.
   when:
     - not ansible_check_mode
     - audiobookshelf_initial_scan_required | bool
   no_log: true
 
-- name: Require safe Audiobookshelf last scan baseline
+- name: Refetch authoritative Audiobookshelf library before initial scan
+  ansible.builtin.uri:
+    url: "{{ audiobookshelf_api }}/api/libraries"
+    headers:
+      Authorization: "Bearer {{ audiobookshelf_reconcile_token }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: audiobookshelf_initial_scan_baseline_libraries
+  failed_when: false
+  when:
+    - not ansible_check_mode
+    - audiobookshelf_initial_scan_required | bool
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require strict authoritative Audiobookshelf library baseline response
   ansible.builtin.assert:
     that:
-      - audiobookshelf_initial_scan_last_scan_before is none or
-        audiobookshelf_initial_scan_last_scan_before | type_debug == 'int'
-      - audiobookshelf_initial_scan_last_scan_before is none or
-        audiobookshelf_initial_scan_last_scan_before | int >= 0
-    fail_msg: The managed Audiobookshelf library last scan baseline is malformed.
+      - audiobookshelf_initial_scan_baseline_libraries.status | default(0) | int == 200
+      - audiobookshelf_initial_scan_baseline_libraries.json | default({}) is mapping
+      - "'libraries' in (audiobookshelf_initial_scan_baseline_libraries.json | default({}))"
+      - audiobookshelf_initial_scan_baseline_libraries.json.libraries | type_debug == 'list'
+    fail_msg: The authoritative Audiobookshelf library baseline response is malformed.
+  when:
+    - not ansible_check_mode
+    - audiobookshelf_initial_scan_required | bool
+  no_log: true
+
+- name: Resolve authoritative Audiobookshelf library baseline
+  ansible.builtin.set_fact:
+    audiobookshelf_initial_scan_library_before: >-
+      {{ audiobookshelf_initial_scan_baseline_libraries.json.libraries | default([])
+         | selectattr('id', 'defined')
+         | selectattr('id', 'equalto', audiobookshelf_current_library.id)
+         | list }}
+  when:
+    - not ansible_check_mode
+    - audiobookshelf_initial_scan_required | bool
+  no_log: true
+
+- name: Require safe authoritative Audiobookshelf last scan baseline
+  ansible.builtin.assert:
+    that:
+      - audiobookshelf_initial_scan_library_before | type_debug == 'list'
+      - audiobookshelf_initial_scan_library_before | length == 1
+      - audiobookshelf_initial_scan_library_before[0] is mapping
+      - audiobookshelf_initial_scan_library_before[0].lastScan is defined
+      - audiobookshelf_initial_scan_library_before[0].lastScan is none or
+        audiobookshelf_initial_scan_library_before[0].lastScan | type_debug == 'int'
+      - audiobookshelf_initial_scan_library_before[0].lastScan is none or
+        audiobookshelf_initial_scan_library_before[0].lastScan | int >= 0
+    fail_msg: The managed Audiobookshelf library has a malformed last scan baseline.
+  when:
+    - not ansible_check_mode
+    - audiobookshelf_initial_scan_required | bool
+  no_log: true
+
+- name: Capture Audiobookshelf last scan before initial scan request
+  ansible.builtin.set_fact:
+    audiobookshelf_initial_scan_last_scan_before: >-
+      {{ audiobookshelf_initial_scan_library_before[0].lastScan }}
   when:
     - not ansible_check_mode
     - audiobookshelf_initial_scan_required | bool
