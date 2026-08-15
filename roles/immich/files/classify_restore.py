@@ -341,13 +341,7 @@ def classify(args):
     backup = None
     if restore_required:
         backup = select_backup(args.backup_dir, args.expected_uid, args.expected_gid)
-    return dict(
-        zip(
-            OUTPUT_KEYS,
-            (database, present, restore_required, backup),
-            strict=True,
-        )
-    )
+    return dict(zip(OUTPUT_KEYS, (database, present, restore_required, backup)))
 
 
 def main():

@@ -13,6 +13,14 @@ def task(tasks, name)
   tasks.find { |candidate| candidate["name"] == name }
 end
 
+def flatten_tasks(tasks)
+  tasks.flat_map do |candidate|
+    [candidate] + %w[block rescue always].flat_map do |section|
+      flatten_tasks(Array(candidate[section]))
+    end
+  end
+end
+
 def require_order(tasks, names)
   positions = names.map do |name|
     index = tasks.index { |candidate| candidate["name"] == name }
@@ -31,6 +39,8 @@ defaults = YAML.safe_load_file(File.join(ROOT, "roles", "immich", "defaults", "m
 expected_defaults = {
   "immich_restore_failure_marker" => "{{ nas_docker_root }}/immich/.restore-failed",
   "immich_restore_backup_container_path" => "/immich-backups",
+  "immich_restore_backup_uid" => 0,
+  "immich_restore_backup_gid" => 0,
   "immich_restore_verify_limit" => 25,
   "immich_restore_database_wait_timeout" => 300
 }
@@ -44,6 +54,8 @@ argument_specs = YAML.safe_load_file(
 {
   "immich_restore_failure_marker" => "str",
   "immich_restore_backup_container_path" => "str",
+  "immich_restore_backup_uid" => "int",
+  "immich_restore_backup_gid" => "int",
   "immich_restore_verify_limit" => "int",
   "immich_restore_database_wait_timeout" => "int"
 }.each do |name, type|
@@ -90,6 +102,9 @@ require_order(
 )
 
 classifier = task(main_tasks, "Classify Immich storage before startup")
+classifier_install = task(main_tasks, "Install the Immich restore classifier")
+refuse("classifier cannot execute during first-deployment check mode") unless
+  classifier_install&.fetch("check_mode", nil) == false
 refuse("classifier must use command argv") unless
   classifier&.dig("ansible.builtin.command", "argv").is_a?(Array)
 refuse("classifier output is not redacted") unless classifier["no_log"] == true
@@ -104,6 +119,9 @@ schema_conditions = schema_guard&.dig("ansible.builtin.assert", "that").to_s
 %w[database originalsPresent restoreRequired backupFilename].each do |key|
   refuse("classification schema does not constrain #{key}") unless schema_conditions.include?(key)
 end
+refuse("split-brain classification can bypass restore") unless
+  schema_conditions.include?("database == 'fresh'") &&
+  schema_conditions.include?("== immich_restore_classification.restoreRequired")
 
 plan_task = task(main_tasks, "Report planned Immich database restore")
 refuse("check mode restore plan is absent") unless
@@ -128,12 +146,12 @@ refuse("restored path can create a new administrator") unless
   initialized_guard&.dig("ansible.builtin.assert", "that").to_s.include?("immich_initialized")
 
 restore_text = File.read(restore_path)
-restore_tasks = YAML.safe_load_file(restore_path, aliases: true)
+restore_tasks = flatten_tasks(YAML.safe_load_file(restore_path, aliases: true))
 restore = task(restore_tasks, "Restore the selected Immich database backup")
 argv = restore&.dig("community.docker.docker_compose_v2_exec", "argv")
 refuse("restore must use a redacted argv execution") unless argv.is_a?(Array) && restore["no_log"] == true
-shell_source = argv.fetch(2, "")
-refuse("restore does not enable pipeline failure detection") unless shell_source.include?("pipefail")
+shell_source = argv.find { |value| value.to_s.include?("gzip -dc") }.to_s
+refuse("restore does not enable pipeline failure detection") unless argv.include?("pipefail")
 refuse("restore is not transactional and fail-fast") unless
   shell_source.include?("--single-transaction") && shell_source.include?("ON_ERROR_STOP=on")
 refuse("restore filename is interpolated into shell source") if
@@ -155,6 +173,8 @@ require_order(
 )
 refuse("restore verification mutates an application table") if
   restore_text.match?(/\b(?:insert|update|delete|truncate)\b/i)
+refuse("restore does not verify the pinned v3 migration marker") unless
+  restore_text.include?("public.kysely_migrations")
 refuse("restore failures do not preserve a sanitized marker stage") unless
   restore_text.include?("Record sanitized Immich restore failure stage") &&
   restore_text.include?("immich_restore_stage")
@@ -174,5 +194,20 @@ refuse("ordering mutation was not detected") if mutated_positions == mutated_pos
 mutated_shell = shell_source.sub('$1', "{{ immich_restore_backup_filename }}")
 refuse("filename-injection mutation was not detected") unless
   mutated_shell.include?("immich_restore_backup_filename")
+
+contract_text = File.read(File.join(ROOT, "tests", "contracts", "immich.sh"))
+integration_text = File.read(File.join(ROOT, "tests", "integration.sh"))
+%w[clean-restore-seed clean-restore-assert].each do |mode|
+  refuse("Immich contract omits #{mode}") unless contract_text.include?(mode)
+end
+[
+  "run_immich_contract clean-restore-seed",
+  "docker compose --project-name immich",
+  "run_play --tags immich",
+  "run_immich_contract clean-restore-assert",
+  "IMMICH_CLEAN_RESTORE_IDEMPOTENT"
+].each do |sentinel|
+  refuse("media integration omits #{sentinel}") unless integration_text.include?(sentinel)
+end
 
 puts "Immich restore quality contract passed"

@@ -24,6 +24,12 @@ argument_specs:
       immich_restore_backup_container_path:
         type: str
         required: false
+      immich_restore_backup_uid:
+        type: int
+        required: false
+      immich_restore_backup_gid:
+        type: int
+        required: false
       immich_restore_verify_limit:
         type: int
         required: false

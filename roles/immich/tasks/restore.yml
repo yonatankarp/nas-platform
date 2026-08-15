@@ -1,0 +1,146 @@
+---
+- name: Restore and validate the protected Immich database
+  block:
+    - name: Record the Immich database restore stage
+      ansible.builtin.set_fact:
+        immich_restore_stage: database-restore
+
+    - name: Restore the selected Immich database backup
+      community.docker.docker_compose_v2_exec:
+        project_src: "{{ platform_current_dir }}/services/immich"
+        project_name: "{{ immich_compose_project_name }}"
+        files: "{{ immich_compose_files }}"
+        env_files: ["{{ platform_runtime_dir }}/services/immich/.env"]
+        service: database
+        argv:
+          - bash
+          - -o
+          - pipefail
+          - -ec
+          - >-
+            gzip -dc -- "$2/$1" |
+            env PGPASSWORD="$POSTGRES_PASSWORD"
+            psql --host=database --username="$POSTGRES_USER"
+            --dbname="$POSTGRES_DB" --single-transaction
+            --set=ON_ERROR_STOP=on
+          - immich-database-restore
+          - "{{ immich_restore_backup_filename }}"
+          - "{{ immich_restore_backup_container_path }}"
+        tty: false
+      no_log: true
+
+    - name: Record the restored Immich database verification stage
+      ansible.builtin.set_fact:
+        immich_restore_stage: database-verification
+
+    - name: Read restored Immich database evidence
+      community.docker.docker_compose_v2_exec:
+        project_src: "{{ platform_current_dir }}/services/immich"
+        project_name: "{{ immich_compose_project_name }}"
+        files: "{{ immich_compose_files }}"
+        env_files: ["{{ platform_runtime_dir }}/services/immich/.env"]
+        service: database
+        argv:
+          - sh
+          - -ec
+          - |
+            exec env PGPASSWORD="$POSTGRES_PASSWORD" \
+            psql --host=database --username="$POSTGRES_USER" \
+            --dbname="$POSTGRES_DB" --no-align --tuples-only --quiet \
+            --set=ON_ERROR_STOP=on --set=sample_limit="$1" \
+            <<'IMMICH_RESTORE_SQL'
+            SELECT json_build_object(
+            'schemaMarker', to_regclass('public.kysely_migrations') IS NOT NULL,
+            'assetCount', (SELECT count(*) FROM asset WHERE "deletedAt" IS NULL),
+            'assets', COALESCE((SELECT json_agg(json_build_object(
+            'id', sampled.id::text, 'originalPath', sampled."originalPath"))
+            FROM (SELECT id, "originalPath" FROM asset
+            WHERE "deletedAt" IS NULL ORDER BY id
+            LIMIT :'sample_limit') AS sampled), '[]'::json));
+            IMMICH_RESTORE_SQL
+          - immich-database-evidence
+          - "{{ immich_restore_verify_limit | string }}"
+        tty: false
+      register: immich_restored_database_evidence_command
+      failed_when: false
+      changed_when: false
+      no_log: true
+
+    - name: Require readable restored Immich database evidence
+      ansible.builtin.assert:
+        that:
+          - immich_restored_database_evidence_command.rc | default(1) | int == 0
+        fail_msg: Restored Immich database verification failed (database-query).
+
+    - name: Parse restored Immich database evidence
+      ansible.builtin.set_fact:
+        immich_restored_database_evidence: >-
+          {{ immich_restored_database_evidence_command.stdout | trim | from_json }}
+      no_log: true
+
+    - name: Require restored Immich database evidence
+      ansible.builtin.assert:
+        that:
+          - immich_restored_database_evidence.keys() | list | sort == ['assetCount', 'assets', 'schemaMarker']
+          - immich_restored_database_evidence.schemaMarker is boolean
+          - immich_restored_database_evidence.schemaMarker
+          - immich_restored_database_evidence.assetCount is number
+          - immich_restored_database_evidence.assetCount | int > 0
+          - immich_restored_database_evidence.assets is sequence
+          - immich_restored_database_evidence.assets is not string
+          - immich_restored_database_evidence.assets | length > 0
+          - immich_restored_database_evidence.assets | length <= immich_restore_verify_limit | int
+        fail_msg: Restored Immich database verification failed (schema-or-assets).
+      no_log: true
+
+    - name: Record the restored Immich source-file verification stage
+      ansible.builtin.set_fact:
+        immich_restore_stage: source-file-verification
+
+    - name: Verify restored Immich source files
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_facts.python.executable }}"
+          - "{{ platform_runtime_dir }}/services/immich/classify_restore.py"
+          - --verify-assets-json
+          - '-'
+          - --media-root
+          - "{{ nas_media_root }}"
+        stdin: "{{ immich_restored_database_evidence.assets | to_json }}"
+        stdin_add_newline: false
+      register: immich_restored_source_verification
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require verified restored Immich source files
+      ansible.builtin.assert:
+        that:
+          - immich_restored_source_verification.rc | default(1) | int == 0
+          - (immich_restored_source_verification.stdout | from_json).keys() | list == ['verified']
+          - (immich_restored_source_verification.stdout | from_json).verified | int == immich_restored_database_evidence.assets | length
+        fail_msg: Restored Immich database verification failed (source-files).
+      no_log: true
+
+    - name: Remove the Immich restore failure marker
+      ansible.builtin.file:
+        path: "{{ immich_restore_failure_marker }}"
+        state: absent
+
+  rescue:
+    - name: Record sanitized Immich restore failure stage
+      ansible.builtin.copy:
+        dest: "{{ immich_restore_failure_marker }}"
+        content: >-
+          {"version":1,"stage":"{{ immich_restore_stage | default('restore') }}"}
+        mode: "0600"
+        owner: "{{ nas_uid }}"
+        group: "{{ nas_gid }}"
+      no_log: true
+
+    - name: Refuse startup after an Immich restore failure
+      ansible.builtin.fail:
+        msg: >-
+          Immich database recovery failed at a protected verification stage.
+          The application server was not started and automatic retry is blocked.
