@@ -538,12 +538,13 @@
   changed_when: true
   no_log: true
 
-- name: Resolve Audiobookshelf initial scan marker path and desired state
+- name: Resolve Audiobookshelf initial scan marker path and pending intent
   ansible.builtin.set_fact:
     audiobookshelf_initial_scan_marker_path: >-
       {{ audiobookshelf_effective_config_host_path }}/.nas-platform-initial-scan.json
-    audiobookshelf_initial_scan_desired_state:
+    audiobookshelf_initial_scan_pending_state:
       schema: 1
+      state: pending
       library_id: "{{ audiobookshelf_current_library.id | default('') }}"
       folder_paths: "{{ audiobookshelf_library_folders | map(attribute='path') | list }}"
   no_log: true
@@ -601,13 +602,19 @@
           - >-
             audiobookshelf_initial_scan_marker_state | length == 0 or
             audiobookshelf_initial_scan_marker_state.keys() | list | sort ==
-              ['folder_paths', 'library_id', 'schema']
+              ['folder_paths', 'library_id', 'schema', 'state']
           - >-
             audiobookshelf_initial_scan_marker_state | length == 0 or
             audiobookshelf_initial_scan_marker_state.schema | type_debug == 'int'
           - >-
             audiobookshelf_initial_scan_marker_state | length == 0 or
             audiobookshelf_initial_scan_marker_state.schema | int == 1
+          - >-
+            audiobookshelf_initial_scan_marker_state | length == 0 or
+            audiobookshelf_initial_scan_marker_state.state | type_debug == 'str'
+          - >-
+            audiobookshelf_initial_scan_marker_state | length == 0 or
+            audiobookshelf_initial_scan_marker_state.state == 'pending'
           - >-
             audiobookshelf_initial_scan_marker_state | length == 0 or
             audiobookshelf_initial_scan_marker_state.library_id | string is
@@ -628,7 +635,16 @@
 - name: Resolve Audiobookshelf initial scan marker match
   ansible.builtin.set_fact:
     audiobookshelf_initial_scan_marker_matches: >-
-      {{ audiobookshelf_initial_scan_marker_state == audiobookshelf_initial_scan_desired_state }}
+      {{ audiobookshelf_initial_scan_marker_state == audiobookshelf_initial_scan_pending_state }}
+  no_log: true
+
+- name: Refuse mismatched Audiobookshelf initial scan intent
+  ansible.builtin.assert:
+    that:
+      - audiobookshelf_initial_scan_marker_state | length == 0 or
+        audiobookshelf_initial_scan_marker_matches | bool
+    fail_msg: The Audiobookshelf initial scan intent does not match the managed library.
+  when: audiobookshelf_current_library | length > 0
   no_log: true
 
 - name: Resolve Audiobookshelf initial scan requirement
@@ -636,7 +652,7 @@
     audiobookshelf_initial_scan_required: >-
       {{ audiobookshelf_library_create_required | bool or
          audiobookshelf_library_folder_repair_required | bool or
-         not audiobookshelf_initial_scan_marker_matches | bool }}
+         audiobookshelf_initial_scan_marker_matches | bool }}
   no_log: true
 
 - name: Report planned Audiobookshelf initial scan
@@ -646,6 +662,21 @@
     - ansible_check_mode
     - audiobookshelf_initial_scan_required | bool
   changed_when: true
+
+- name: Record pending Audiobookshelf initial scan intent
+  ansible.builtin.copy:
+    content: "{{ audiobookshelf_initial_scan_pending_state | to_json }}\n"
+    dest: "{{ audiobookshelf_initial_scan_marker_path }}"
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0600"
+    follow: false
+    unsafe_writes: false
+  when:
+    - not ansible_check_mode
+    - audiobookshelf_library_create_required | bool or
+      audiobookshelf_library_folder_repair_required | bool
+  no_log: true
 
 - name: Capture Audiobookshelf last scan before initial scan request
   ansible.builtin.set_fact:
@@ -853,15 +884,10 @@
     - not ansible_check_mode
     - audiobookshelf_initial_scan_required | bool
 
-- name: Record durable Audiobookshelf initial scan state
-  ansible.builtin.copy:
-    content: "{{ audiobookshelf_initial_scan_desired_state | to_json }}\n"
-    dest: "{{ audiobookshelf_initial_scan_marker_path }}"
-    owner: "{{ nas_uid }}"
-    group: "{{ nas_gid }}"
-    mode: "0600"
-    follow: false
-    unsafe_writes: false
+- name: Clear completed Audiobookshelf initial scan intent
+  ansible.builtin.file:
+    path: "{{ audiobookshelf_initial_scan_marker_path }}"
+    state: absent
   when:
     - not ansible_check_mode
     - audiobookshelf_initial_scan_required | bool
