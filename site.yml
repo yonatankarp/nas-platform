@@ -45,6 +45,8 @@
         tasks_from: target
         apply:
           tags: [always]
+      vars:
+        deployment_target_require_current_release: false
       tags: [always]
 
   roles:

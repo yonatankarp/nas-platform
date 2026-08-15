@@ -104,6 +104,10 @@
 
 - name: Revalidate before creating deployment and runtime directories
   ansible.builtin.include_tasks: target.yml
+  vars:
+    # A deployment may legitimately replace an older active release. Runtime
+    # service callers set this true after the new pointer is activated.
+    deployment_target_require_current_release: false
 
 - name: Create deployment and mutable runtime directories
   ansible.builtin.file:
@@ -133,6 +137,8 @@
 
 - name: Revalidate before removing the staging release
   ansible.builtin.include_tasks: target.yml
+  vars:
+    deployment_target_require_current_release: false
 
 - name: Remove an abandoned staging release
   ansible.builtin.file:
@@ -341,6 +347,8 @@
 
 - name: Revalidate before removing the verified staging release
   ansible.builtin.include_tasks: target.yml
+  vars:
+    deployment_target_require_current_release: false
   when:
     - not ansible_check_mode
     - not deployment_bundle_release_install_required
@@ -362,6 +370,8 @@
 
 - name: Revalidate before replacing the current pointer
   ansible.builtin.include_tasks: target.yml
+  vars:
+    deployment_target_require_current_release: false
   when:
     - deployment_bundle_current.stat.exists
     - not (deployment_bundle_current.stat.islnk | default(false))
@@ -376,6 +386,8 @@
 
 - name: Revalidate before creating the next deployment pointer
   ansible.builtin.include_tasks: target.yml
+  vars:
+    deployment_target_require_current_release: false
   when: deployment_bundle_switch_required
 
 - name: Create the next deployment pointer
@@ -388,6 +400,8 @@
 
 - name: Revalidate before activating the controller release
   ansible.builtin.include_tasks: target.yml
+  vars:
+    deployment_target_require_current_release: false
   when: deployment_bundle_switch_required
 
 - name: Atomically activate the controller release
