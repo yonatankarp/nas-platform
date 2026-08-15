@@ -42,7 +42,11 @@ exceed either hard bound, the request fails closed before publication.
 
 ## Filesystem isolation and readiness
 
-The role creates `${DOZZLE_STATE_ROOT}/alert-relay` as the NAS UID/GID with mode
+Before any child-path mutation, the role inspects
+`${DOZZLE_STATE_ROOT}/alert-relay` without following links. An existing child
+must be a real directory with the expected managed ownership and no group/world
+write permission; symlinks and special files fail closed. Only after that gate
+may the non-following file task converge the child to the NAS UID/GID and mode
 `0700`. Compose mounts only that subdirectory read-write at `/state`; the relay
 cannot access Dozzle's `users.yml` or `notifications.yml`. Adoption uses the same
 dedicated child under the selected legacy Dozzle root.
@@ -52,6 +56,13 @@ ownership, permissions, size, and schema. It takes a nonblocking shared lock. A
 valid lock held exclusively by an active request is considered ready immediately
 after directory and lock-file safety are established; readiness never waits for
 the publisher network call. Unsafe, corrupt, or symlinked state returns 503.
+
+## Strict event strings
+
+Every JSON envelope string must encode as valid UTF-8 before relationship,
+rendering, or state processing. JSON escape sequences that decode to unpaired
+Unicode surrogates are rejected with the same fixed 400 response as other schema
+errors, without upstream publication, state mutation, or traceback output.
 
 ## Upstream and atomic-write hardening
 
@@ -67,5 +78,7 @@ Real local HTTP tests cover ordering in both arrival orders, equal timestamps,
 restart persistence, version 1 migration, retention and hard bounds, readiness
 with safe/unsafe state and a held lock, randomized temporary cleanup, and redirect
 rejection. Static and mutation contracts protect the dedicated child mount and
-role preparation. Existing Dozzle notification integration continues to prove the
-real unhealthy-to-recovered path.
+pre-mutation role preparation. An executable Ansible proof places the child path
+as a symlink to a sentinel directory and verifies failure before the sentinel's
+ownership, mode, or contents change. Existing Dozzle notification integration
+continues to prove the real unhealthy-to-recovered path.

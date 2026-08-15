@@ -15,9 +15,10 @@
 - Modify `services/dozzle/alert_relay.py`: timestamp ordering, state v2/migration, readiness, atomic temporary files, and redirect refusal.
 - Modify `tests/dozzle_alert_relay_test.py`: real HTTP and filesystem regression coverage.
 - Modify `services/dozzle/compose.yml` and `services/dozzle/compose.adoption.yml`: dedicated state-child mounts.
-- Modify `roles/dozzle/tasks/main.yml`: prepare and validate the mode-0700 relay directory.
+- Modify `roles/dozzle/tasks/main.yml`: reject unsafe existing child paths before preparing the mode-0700 relay directory.
 - Modify `tests/contracts/dozzle.sh`: protect the mount, role, timestamp template, and readiness contract.
 - Modify `tests/dozzle_quality_test.rb`: mutation-protect against restoring the parent-root mount.
+- Create `tests/dozzle_alert_state_symlink_test.yml` and `tests/dozzle_alert_state_symlink_test.sh`: execute the role against a child symlink and prove its sentinel target is unchanged.
 - Modify related Mac adoption binding expectations only where the effective Compose mount contract requires it.
 
 ### Task 1: Ordered version-2 state
@@ -114,7 +115,7 @@ Expected: all relay tests pass without traceback or temporary artifacts.
 
 - [ ] **Step 1: Change static and mutation tests first**
 
-Require the base relay mount to be `${DOZZLE_STATE_ROOT:?}/alert-relay:/state`, the adoption mount to be `${PLATFORM_ADOPTION_ROOT:?}/legacy/dozzle/data/alert-relay:/state`, and the role to create and validate `{{ dozzle_state_root }}/alert-relay` as a nonsymlink directory owned by the runtime UID with mode `0700`. Add a mutation that replaces the child mount with the parent root and require static failure.
+Require the base relay mount to be `${DOZZLE_STATE_ROOT:?}/alert-relay:/state`, the adoption mount to be `${PLATFORM_ADOPTION_ROOT:?}/legacy/dozzle/data/alert-relay:/state`, and the role to inspect `{{ dozzle_state_root }}/alert-relay` with `follow: false` before mutation, reject an existing symlink/special/unsafe child, then converge a real directory with a second non-following task. Add mutations that replace the child mount with the parent root or remove either no-follow prerequisite and require static failure.
 
 - [ ] **Step 2: Run Compose contract RED**
 
@@ -127,7 +128,7 @@ Expected: failures naming the parent-root relay mount.
 
 - [ ] **Step 3: Implement the least-privilege mount and role preparation**
 
-Create the child directory before Compose deployment with NAS UID/GID ownership where Linux ownership is managed and mode `0700`; inspect it with `follow: false`; assert type, owner, and exact mode. Change normal and adoption relay mounts while keeping Dozzle on the parent `/data` mount.
+Before child mutation, inspect with `follow: false` and allow only an absent path or a real directory with expected managed ownership and no group/world write permission. Reject symlinks and special files. Then use `ansible.builtin.file` with explicit `follow: false` to converge NAS UID/GID ownership where Linux ownership is managed and mode `0700`; validate the result afterward. Change normal and adoption relay mounts while keeping Dozzle on the parent `/data` mount.
 
 - [ ] **Step 4: Update the dispatcher timestamp precision**
 
@@ -142,10 +143,48 @@ ruby tests/dozzle_quality_test.rb
 
 Expected: both pass, including effective adoption renders.
 
-### Task 4: Full verification and intentional commit
+### Task 4: Child-symlink and Unicode-scalar review blockers
 
 **Files:**
-- Verify all files changed in Tasks 1–3.
+- Modify: `tests/dozzle_alert_relay_test.py`
+- Modify: `services/dozzle/alert_relay.py`
+- Modify: `tests/contracts/dozzle.sh`
+- Modify: `tests/dozzle_quality_test.rb`
+- Modify: `roles/dozzle/tasks/main.yml`
+- Create: `tests/dozzle_alert_state_symlink_test.yml`
+- Create: `tests/dozzle_alert_state_symlink_test.sh`
+
+- [ ] **Step 1: Write and run relay RED**
+
+Send raw authenticated JSON with each envelope string replaced in turn by the
+escape `\ud800`. Require exact `400 invalid request`, no traceback, no upstream
+request, and no state file. Run the focused unit test and observe failure from
+the current renderer or state path accepting the decoded surrogate.
+
+- [ ] **Step 2: Implement Unicode-scalar validation and run GREEN**
+
+Require every envelope string to encode as UTF-8, translating
+`UnicodeEncodeError` into `SchemaError` before relationship checks, rendering,
+or identity construction. Re-run the focused and complete relay unit suites.
+
+- [ ] **Step 3: Write and run deployment RED**
+
+Extend the static role contract and mutation suite to require child `stat` with
+`follow: false` before the file task, an absent-or-safe-real-directory assertion,
+and explicit `follow: false` on the file task. Add an executable localhost play
+whose child path is a symlink to a sentinel directory. Verify the current role
+changes the sentinel mode, causing the proof to fail.
+
+- [ ] **Step 4: Implement pre-mutation refusal and run GREEN**
+
+Add the preflight stat/assert before the child file task and make the file task
+non-following. The executable proof must fail the role at the assertion while
+preserving the symlink and the target's ownership, mode, and contents.
+
+### Task 5: Full verification and intentional commit
+
+**Files:**
+- Verify all files changed in Tasks 1–4.
 
 - [ ] **Step 1: Run local and pinned relay tests**
 
