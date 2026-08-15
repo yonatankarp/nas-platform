@@ -9,12 +9,87 @@ require "yaml"
 
 ROOT = File.expand_path("..", __dir__)
 ROLE = File.join(ROOT, "roles/komga/tasks/main.yml")
+COMPOSE = File.join(ROOT, "services/komga/compose.yml")
+ARGUMENT_SPECS = File.join(ROOT, "roles/komga/meta/argument_specs.yml")
 DEFAULTS = YAML.safe_load_file(File.join(ROOT, "roles/komga/defaults/main.yml"), aliases: false)
 START_TASK = "List Komga libraries for reconciliation"
 END_TASK = "Require exact reconciled Komga library"
 
 def task_name(task)
   task.fetch("name", "")
+end
+
+def deep_copy(value)
+  Marshal.load(Marshal.dump(value))
+end
+
+def health_task(tasks)
+  matches = tasks.each_with_index.select do |task, _index|
+    task_name(task) == "Wait for Komga application health"
+  end
+  raise "application health readiness task must occur exactly once" unless matches.length == 1
+
+  matches.first
+end
+
+def validate_health_gating!(compose, tasks, defaults, argument_specs)
+  service = compose.fetch("services").fetch("komga")
+  expected_test = [
+    "CMD-SHELL",
+    "test \"$$(/usr/bin/curl --fail --silent --show-error " \
+      "http://127.0.0.1:25600/actuator/health)\" = '{\"status\":\"UP\"}'"
+  ]
+  raise "Komga application healthcheck is absent or weakened" unless
+    service["healthcheck"] == {
+      "test" => expected_test,
+      "interval" => "30s",
+      "timeout" => "10s",
+      "retries" => 5,
+      "start_period" => "60s"
+    }
+
+  raise "Komga application health timing defaults differ" unless
+    defaults.values_at("komga_health_retries", "komga_health_delay") == [60, 3]
+  options = argument_specs.dig("argument_specs", "main", "options")
+  raise "Komga application health timing arguments are undeclared" unless
+    options&.slice("komga_health_retries", "komga_health_delay") == {
+      "komga_health_retries" => { "type" => "int", "required" => false },
+      "komga_health_delay" => { "type" => "int", "required" => false }
+    }
+
+  readiness, readiness_index = health_task(tasks)
+  deploy_index = tasks.index { |task| task_name(task) == "Deploy Komga" }
+  claim_index = tasks.index { |task| task_name(task) == "Read Komga claim status" }
+  raise "Komga readiness does not gate claim reconciliation" unless
+    deploy_index && claim_index && deploy_index < readiness_index && readiness_index < claim_index
+  raise "Komga readiness request differs" unless readiness["ansible.builtin.uri"] == {
+    "url" => "{{ komga_api }}/actuator/health",
+    "method" => "GET",
+    "status_code" => [200],
+    "return_content" => true
+  }
+  raise "Komga readiness status gate differs" unless
+    readiness.values_at(
+      "register", "until", "retries", "delay", "changed_when", "check_mode"
+    ) == [
+      "komga_health",
+      [
+        "komga_health.json | default(none) is mapping",
+        "komga_health.json.status | default(none) == 'UP'"
+      ],
+      "{{ komga_health_retries }}",
+      "{{ komga_health_delay }}",
+      false,
+      false
+    ]
+end
+
+def health_mutation_rejected!(compose, tasks, defaults, argument_specs, label)
+  validate_health_gating!(compose, tasks, defaults, argument_specs)
+rescue KeyError, RuntimeError
+  return
+else
+  raise "#{label} health mutation was not rejected"
 end
 
 def library_tasks
@@ -144,6 +219,34 @@ end
 failures = []
 
 main_tasks = YAML.safe_load_file(ROLE, aliases: false)
+compose = YAML.safe_load_file(COMPOSE, aliases: true)
+argument_specs = YAML.safe_load_file(ARGUMENT_SPECS, aliases: false)
+validate_health_gating!(compose, main_tasks, DEFAULTS, argument_specs)
+
+missing_healthcheck = deep_copy(compose)
+missing_healthcheck.fetch("services").fetch("komga").delete("healthcheck")
+health_mutation_rejected!(missing_healthcheck, main_tasks, DEFAULTS, argument_specs, "absent")
+
+weakened_healthcheck = deep_copy(compose)
+weakened_healthcheck.dig("services", "komga", "healthcheck")["test"] = [
+  "CMD", "/usr/bin/curl", "--fail", "http://127.0.0.1:25600/actuator/health"
+]
+health_mutation_rejected!(weakened_healthcheck, main_tasks, DEFAULTS, argument_specs, "weakened")
+
+wrong_endpoint = deep_copy(compose)
+wrong_endpoint.dig("services", "komga", "healthcheck", "test")[1] =
+  wrong_endpoint.dig("services", "komga", "healthcheck", "test", 1).sub(
+    "/actuator/health", "/api/v1/claim"
+  )
+health_mutation_rejected!(wrong_endpoint, main_tasks, DEFAULTS, argument_specs, "wrong endpoint")
+
+late_readiness = deep_copy(main_tasks)
+readiness, readiness_index = health_task(late_readiness)
+late_readiness.delete_at(readiness_index)
+claim_index = late_readiness.index { |task| task_name(task) == "Read Komga claim status" }
+late_readiness.insert(claim_index + 1, readiness)
+health_mutation_rejected!(compose, late_readiness, DEFAULTS, argument_specs, "late readiness")
+
 main_names = main_tasks.map { |task| task_name(task) }
 preflight_index = main_names.index("Refuse ambiguous Komga library candidates")
 user_index = main_names.index("Reconcile managed Komga users")

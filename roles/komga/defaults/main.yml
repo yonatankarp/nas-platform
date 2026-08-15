@@ -1,6 +1,8 @@
 ---
 komga_port: 25600
 komga_api: "http://127.0.0.1:{{ komga_port }}"
+komga_health_retries: 60
+komga_health_delay: 3
 komga_compose_project_name: >-
   {{ (platform_project_name ~ '-komga')
      if platform_project_name | default('') | length > 0 else 'komga' }}
