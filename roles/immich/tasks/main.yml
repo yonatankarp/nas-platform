@@ -200,10 +200,17 @@
 - name: Protect an in-progress Immich database restore
   ansible.builtin.copy:
     dest: "{{ immich_restore_effective_failure_marker }}"
-    content: '{"version":1,"stage":"dependencies-start"}\n'
+    content: |
+      {{ {'version': 1, 'stage': 'dependencies-start'} | to_json }}
     mode: "0600"
-    owner: "{{ nas_uid }}"
-    group: "{{ nas_gid }}"
+    owner: >-
+      {{ nas_uid
+         if platform_kind == 'nas' or (platform_manage_linux_ownership | bool)
+         else omit }}
+    group: >-
+      {{ nas_gid
+         if platform_kind == 'nas' or (platform_manage_linux_ownership | bool)
+         else omit }}
   when:
     - immich_restore_required | bool
     - not ansible_check_mode

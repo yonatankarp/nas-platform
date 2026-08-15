@@ -165,6 +165,15 @@ def require_mutation_rejected(label)
   refuse("#{label} mutation was not detected") if yield
 end
 
+def safe_marker_copy?(candidate, expected_owner, expected_group)
+  copy = candidate&.fetch("ansible.builtin.copy", {})
+  content = copy.fetch("content", "").to_s
+  content.include?("to_json") && content.end_with?("\n") &&
+    !content.end_with?("\\n") &&
+    copy.fetch("owner", "").to_s.split.join(" ") == expected_owner &&
+    copy.fetch("group", "").to_s.split.join(" ") == expected_group
+end
+
 classifier_path = File.join(ROOT, "services", "immich", "classify_restore.py")
 restore_path = File.join(ROOT, "roles", "immich", "tasks", "restore.yml")
 integrity_path = File.join(ROOT, "roles", "immich", "tasks", "verify_classifier.yml")
@@ -181,14 +190,20 @@ expected_defaults = {
     "platform_adoption_enabled | default(false) | bool else " \
     "(nas_docker_root ~ '/immich/.restore-failed') }}",
   "immich_restore_backup_container_path" => "/immich-backups",
-  "immich_restore_backup_uid" => 0,
-  "immich_restore_backup_gid" => 0,
+  "immich_restore_backup_uid" =>
+    "{{ ansible_facts.user_uid if platform_kind == 'mac' and not " \
+    "(platform_manage_linux_ownership | bool) else 0 }}",
+  "immich_restore_backup_gid" =>
+    "{{ ansible_facts.user_gid if platform_kind == 'mac' and not " \
+    "(platform_manage_linux_ownership | bool) else 0 }}",
+  "immich_restore_expected_immich_version" => "3.1.0",
+  "immich_restore_expected_postgres_major" => 14,
   "immich_restore_verify_limit" => 25,
   "immich_restore_database_wait_timeout" => 300
 }
 expected_defaults.each do |key, value|
   actual = defaults[key]
-  actual = actual.split.join(" ") if key == "immich_restore_failure_marker"
+  actual = actual.split.join(" ") if actual.is_a?(String) && actual.include?("{{")
   refuse("#{key} default differs") unless actual == value
 end
 
@@ -200,6 +215,8 @@ argument_specs = YAML.safe_load_file(
   "immich_restore_backup_container_path" => "str",
   "immich_restore_backup_uid" => "int",
   "immich_restore_backup_gid" => "int",
+  "immich_restore_expected_immich_version" => "str",
+  "immich_restore_expected_postgres_major" => "int",
   "immich_restore_verify_limit" => "int",
   "immich_restore_database_wait_timeout" => "int"
 }.each do |name, type|
@@ -326,9 +343,18 @@ marker = task(main_tasks, "Protect an in-progress Immich database restore")
 refuse("marker must be atomic mode 0600") unless
   marker&.dig("ansible.builtin.copy", "mode") == "0600" &&
   marker.dig("ansible.builtin.copy", "unsafe_writes") != true
+expected_owner =
+  "{{ nas_uid if platform_kind == 'nas' or " \
+  "(platform_manage_linux_ownership | bool) else omit }}"
+expected_group =
+  "{{ nas_gid if platform_kind == 'nas' or " \
+  "(platform_manage_linux_ownership | bool) else omit }}"
 refuse("marker ownership differs") unless
-  marker.dig("ansible.builtin.copy", "owner") == "{{ nas_uid }}" &&
-  marker.dig("ansible.builtin.copy", "group") == "{{ nas_gid }}"
+  marker.dig("ansible.builtin.copy", "owner").to_s.split.join(" ") == expected_owner &&
+  marker.dig("ansible.builtin.copy", "group").to_s.split.join(" ") == expected_group
+marker_content = marker.dig("ansible.builtin.copy", "content").to_s
+refuse("initial marker is not JSON-serialized with a real newline") unless
+  safe_marker_copy?(marker, expected_owner, expected_group)
 refuse("marker can be created outside restore path") unless
   Array(marker["when"]).include?("immich_restore_required | bool") &&
   marker.dig("ansible.builtin.copy", "dest") ==
@@ -515,6 +541,23 @@ refuse("restore does not verify the pinned v3 migration marker") unless
 refuse("restore failures do not preserve a sanitized marker stage") unless
   restore_text.include?("Record sanitized Immich restore failure stage") &&
   restore_text.include?("immich_restore_stage")
+rescue_marker = task(restore_tasks, "Record sanitized Immich restore failure stage")
+rescue_content = rescue_marker&.dig("ansible.builtin.copy", "content").to_s
+refuse("rescue marker is not JSON-serialized with a real newline") unless
+  safe_marker_copy?(rescue_marker, expected_owner, expected_group)
+
+mutated_marker = deep_copy(marker)
+mutated_marker.fetch("ansible.builtin.copy")["content"] =
+  '{"version":1,"stage":"dependencies-start"}\\n'
+require_mutation_rejected("literal-backslash initial marker") do
+  safe_marker_copy?(mutated_marker, expected_owner, expected_group)
+end
+
+mutated_rescue_marker = deep_copy(rescue_marker)
+mutated_rescue_marker.fetch("ansible.builtin.copy")["owner"] = "{{ nas_uid }}"
+require_mutation_rejected("forced native rescue marker ownership") do
+  safe_marker_copy?(mutated_rescue_marker, expected_owner, expected_group)
+end
 
 # Mutation sentinels prove each high-risk safety boundary is actively checked.
 mutated = deep_copy(main_tasks)

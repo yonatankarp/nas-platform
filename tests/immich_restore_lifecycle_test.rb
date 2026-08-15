@@ -2,6 +2,7 @@
 # frozen_string_literal: true
 
 require "fileutils"
+require "json"
 require "open3"
 require "tmpdir"
 require "yaml"
@@ -208,14 +209,20 @@ def run_fixture(root, roots, adoption:, initialized:, failure_stage: "none")
   FileUtils.cp(CLASSIFIER, release_helper)
   FileUtils.chmod(0o644, release_helper)
   variables = {
-    "ansible_facts" => { "python" => { "executable" => PYTHON } },
+    "ansible_facts" => {
+      "python" => { "executable" => PYTHON },
+      "user_uid" => Process.uid,
+      "user_gid" => Process.gid
+    },
+    "platform_kind" => "mac",
+    "platform_manage_linux_ownership" => false,
     "platform_adoption_enabled" => adoption,
     "platform_adoption_root" => roots.fetch(:adoption_root),
     "nas_docker_root" => roots.fetch(:docker_root),
     "nas_media_root" => roots.fetch(:media_root),
     "immich_restore_failure_marker" => DEFAULTS.fetch("immich_restore_failure_marker"),
-    "immich_restore_backup_uid" => Process.uid,
-    "immich_restore_backup_gid" => Process.gid,
+    "immich_restore_backup_uid" => DEFAULTS.fetch("immich_restore_backup_uid"),
+    "immich_restore_backup_gid" => DEFAULTS.fetch("immich_restore_backup_gid"),
     "immich_restore_expected_immich_version" =>
       DEFAULTS.fetch("immich_restore_expected_immich_version"),
     "immich_restore_expected_postgres_major" =>
@@ -250,6 +257,20 @@ def assert_sanitized(output, roots)
   fail_test("failure output leaked the backup filename") if output.include?(BACKUP_NAME)
 end
 
+def assert_marker(path, expected_stage)
+  fail_test("marker is absent for stage #{expected_stage}") unless File.file?(path)
+  content = File.binread(path)
+  fail_test("marker has no real final newline for stage #{expected_stage}") unless
+    content.end_with?("\n") && !content.end_with?("\\n")
+  document = JSON.parse(content)
+  fail_test("marker schema differs for stage #{expected_stage}") unless
+    document.keys.sort == %w[stage version] && document["version"] == 1 &&
+    document["stage"] == expected_stage
+  metadata = File.stat(path)
+  fail_test("native marker owner changed for stage #{expected_stage}") unless
+    metadata.uid == Process.uid && metadata.gid == Process.gid
+end
+
 fail_test("pinned ansible-playbook is unavailable") unless File.executable?(ANSIBLE)
 fail_test("python3 is unavailable") if PYTHON.empty?
 
@@ -280,25 +301,28 @@ fail_test("python3 is unavailable") if PYTHON.empty?
   end
 end
 
-Dir.mktmpdir("nas-platform-immich-lifecycle-sql-failure-") do |temporary|
-  root = File.realpath(temporary)
-  roots = prepare_roots(root, adoption: false)
-  output, status, events = run_fixture(
-    root, roots, adoption: false, initialized: true, failure_stage: "after-sql"
-  )
-  fail_test("post-SQL interruption unexpectedly succeeded") if status.success?
-  fail_test("post-SQL interruption reached server/admin: #{events.inspect}") unless
-    events == %w[server-stop data-start redis-reset sql-restore]
-  fail_test("post-SQL interruption lost its marker") unless File.file?(roots.fetch(:marker))
+[false, true].each do |adoption|
+  label = adoption ? "adoption" : "normal"
+  Dir.mktmpdir("nas-platform-immich-lifecycle-#{label}-sql-failure-") do |temporary|
+    root = File.realpath(temporary)
+    roots = prepare_roots(root, adoption: adoption)
+    output, status, events = run_fixture(
+      root, roots, adoption: adoption, initialized: true, failure_stage: "after-sql"
+    )
+    fail_test("#{label} post-SQL interruption unexpectedly succeeded") if status.success?
+    fail_test("#{label} post-SQL interruption reached server/admin: #{events.inspect}") unless
+      events == %w[server-stop data-start redis-reset sql-restore]
+    assert_marker(roots.fetch(:marker), "database-restore")
 
-  retry_output, retry_status, retry_events = run_fixture(
-    root, roots, adoption: false, initialized: true
-  )
-  fail_test("post-SQL retry bypassed provenance") if retry_status.success?
-  fail_test("post-SQL retry reached mutation") unless retry_events == events
-  assert_sanitized(retry_output, roots)
-  fail_test("post-SQL retry did not report prior provenance") unless
-    retry_output.include?("previous-failed-restore")
+    retry_output, retry_status, retry_events = run_fixture(
+      root, roots, adoption: adoption, initialized: true
+    )
+    fail_test("#{label} post-SQL retry bypassed provenance") if retry_status.success?
+    fail_test("#{label} post-SQL retry reached mutation") unless retry_events == events
+    assert_sanitized(retry_output, roots)
+    fail_test("#{label} post-SQL retry did not report prior provenance") unless
+      retry_output.include?("previous-failed-restore")
+  end
 end
 
 Dir.mktmpdir("nas-platform-immich-lifecycle-server-failure-") do |temporary|
@@ -310,7 +334,7 @@ Dir.mktmpdir("nas-platform-immich-lifecycle-server-failure-") do |temporary|
   fail_test("post-startup interruption unexpectedly succeeded") if status.success?
   expected = %w[server-stop data-start redis-reset sql-restore restore-verified server-start]
   fail_test("post-startup interruption lifecycle differs: #{events.inspect}") unless events == expected
-  fail_test("post-startup interruption lost its marker") unless File.file?(roots.fetch(:marker))
+  assert_marker(roots.fetch(:marker), "dependencies-start")
   assert_sanitized(output, roots)
 
   retry_output, retry_status, retry_events = run_fixture(
@@ -332,7 +356,7 @@ Dir.mktmpdir("nas-platform-immich-lifecycle-redis-failure-") do |temporary|
   fail_test("Redis reset failure unexpectedly succeeded") if status.success?
   fail_test("Redis reset failure reached SQL/server/admin: #{events.inspect}") unless
     events == %w[server-stop data-start redis-reset]
-  fail_test("Redis reset failure lost its marker") unless File.file?(roots.fetch(:marker))
+  assert_marker(roots.fetch(:marker), "redis-reset")
   assert_sanitized(output, roots)
 end
 
@@ -345,7 +369,7 @@ Dir.mktmpdir("nas-platform-immich-lifecycle-uninitialized-") do |temporary|
   fail_test("uninitialized restored server unexpectedly succeeded") if status.success?
   fail_test("uninitialized restore invoked administrator signup") if events.include?("admin-signup")
   fail_test("uninitialized restore did not reach full stack") unless events.last == "server-start"
-  fail_test("uninitialized restore cleared provenance") unless File.file?(roots.fetch(:marker))
+  assert_marker(roots.fetch(:marker), "dependencies-start")
 
   retry_output, retry_status, retry_events = run_fixture(
     root, roots, adoption: false, initialized: false

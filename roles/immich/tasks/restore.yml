@@ -157,11 +157,17 @@
     - name: Record sanitized Immich restore failure stage
       ansible.builtin.copy:
         dest: "{{ immich_restore_effective_failure_marker }}"
-        content: >-
-          {"version":1,"stage":"{{ immich_restore_stage | default('restore') }}"}
+        content: |
+          {{ {'version': 1, 'stage': (immich_restore_stage | default('restore'))} | to_json }}
         mode: "0600"
-        owner: "{{ nas_uid }}"
-        group: "{{ nas_gid }}"
+        owner: >-
+          {{ nas_uid
+             if platform_kind == 'nas' or (platform_manage_linux_ownership | bool)
+             else omit }}
+        group: >-
+          {{ nas_gid
+             if platform_kind == 'nas' or (platform_manage_linux_ownership | bool)
+             else omit }}
       no_log: true
 
     - name: Refuse startup after an Immich restore failure
