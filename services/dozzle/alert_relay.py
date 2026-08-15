@@ -360,6 +360,11 @@ def validate_state_identity(identity):
     if not isinstance(identity, str) or identity.count("\0") != 1:
         raise StateError("invalid state identity")
     host, container_id = identity.split("\0")
+    try:
+        host.encode("utf-8")
+        container_id.encode("utf-8")
+    except UnicodeEncodeError:
+        raise StateError("invalid state identity") from None
     if (
         not host
         or len(host) > 256
@@ -426,7 +431,10 @@ def parse_state_document(raw):
             raise StateError("state entry schema differs")
         identity = entry["identity"]
         validate_state_identity(identity)
-        if entry["state"] not in {"healthy", "unhealthy"}:
+        if not isinstance(entry["state"], str) or entry["state"] not in {
+            "healthy",
+            "unhealthy",
+        }:
             raise StateError("invalid state health")
         if not isinstance(entry["timestamp"], str) or not valid_timestamp(
             entry["timestamp"]
@@ -468,7 +476,7 @@ def bounded_entries(entries, now):
 
 
 def read_state_at(directory_fd, state_name):
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    flags = os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0)
     try:
         file_fd = os.open(state_name, flags, dir_fd=directory_fd)
     except FileNotFoundError:
@@ -493,18 +501,23 @@ def read_state_at(directory_fd, state_name):
     return parse_state_document(raw)
 
 
+def validate_operational_state_at(directory_fd, state_name):
+    entries, _ = read_state_at(directory_fd, state_name)
+    bounded_entries(entries, utc_now())
+
+
 def state_is_ready(state_path):
     state_path = Path(state_path)
     directory_fd = open_directory_no_symlinks(state_path.parent)
     lock_fd = None
     try:
-        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        flags = os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0)
         try:
             lock_fd = os.open(
                 f".{state_path.name}.lock", flags, dir_fd=directory_fd
             )
         except FileNotFoundError:
-            read_state_at(directory_fd, state_path.name)
+            validate_operational_state_at(directory_fd, state_path.name)
             return True
         except OSError:
             raise StateError("state lock unavailable") from None
@@ -515,7 +528,7 @@ def state_is_ready(state_path):
             return True
         except OSError:
             raise StateError("state lock unavailable") from None
-        read_state_at(directory_fd, state_path.name)
+        validate_operational_state_at(directory_fd, state_path.name)
         return True
     finally:
         if lock_fd is not None:
@@ -533,7 +546,12 @@ class LockedState:
 
     def __enter__(self):
         self.directory_fd = open_directory_no_symlinks(self.state_path.parent)
-        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+        flags = (
+            os.O_RDWR
+            | os.O_CREAT
+            | os.O_NONBLOCK
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
         try:
             self.lock_fd = os.open(
                 f".{self.state_path.name}.lock",

@@ -178,6 +178,44 @@ class DozzleAlertRelayTest(unittest.TestCase):
         )
         self.state_path.chmod(0o600)
 
+    def write_ascii_state(self, document):
+        self.state_path.write_bytes(
+            json.dumps(document, ensure_ascii=True, separators=(",", ":")).encode(
+                "ascii"
+            )
+            + b"\n"
+        )
+        self.state_path.chmod(0o600)
+
+    def request_with_fifo_guard(
+        self, fifo_path, method, path, body=b"", token=RELAY_TOKEN
+    ):
+        outcome = {}
+
+        def run_request():
+            try:
+                outcome["response"] = self.request(method, path, body, token=token)
+            except Exception as error:  # captured for the calling test thread
+                outcome["error"] = error
+
+        started = time.monotonic()
+        request_thread = threading.Thread(target=run_request, daemon=True)
+        request_thread.start()
+        request_thread.join(timeout=0.3)
+        blocked = request_thread.is_alive()
+        unblock_fd = None
+        if blocked:
+            unblock_fd = os.open(fifo_path, os.O_RDWR | os.O_NONBLOCK)
+            request_thread.join(timeout=3)
+        if unblock_fd is not None:
+            os.close(unblock_fd)
+        self.assertFalse(
+            request_thread.is_alive(), "FIFO request could not be unblocked"
+        )
+        if "error" in outcome:
+            raise outcome["error"]
+        return blocked, time.monotonic() - started, outcome["response"]
+
     @staticmethod
     def state_entry(container_id, state, timestamp, host="nas"):
         return {
@@ -752,6 +790,106 @@ class DozzleAlertRelayTest(unittest.TestCase):
                 self.assertEqual(status_code, 500)
                 self.assertEqual(response_body, b"state unavailable\n")
                 self.assertEqual(len(self.ntfy.requests), before)
+
+    def test_malformed_version_two_values_fail_closed_without_traceback(self):
+        base_entry = self.state_entry(
+            CONTAINER_ID, "unhealthy", "2026-08-15T01:22:13Z"
+        )
+        fixtures = {
+            "surrogate identity": dict(base_entry, identity=f"\ud800\0{CONTAINER_ID}"),
+            "list state": dict(base_entry, state=[]),
+            "mapping state": dict(base_entry, state={}),
+        }
+        captured = io.StringIO()
+        with contextlib.redirect_stderr(captured):
+            for name, entry in fixtures.items():
+                with self.subTest(name=name):
+                    self.write_ascii_state({"version": 2, "entries": [entry]})
+                    original = self.state_path.read_bytes()
+                    try:
+                        health = self.request("GET", "/healthz", token=None)
+                    except http.client.RemoteDisconnected:
+                        health = (None, b"connection closed")
+                    try:
+                        posted = self.post(self.envelope("OOM"))
+                    except http.client.RemoteDisconnected:
+                        posted = (None, b"connection closed")
+                    self.assertEqual(health, (503, b"state unavailable\n"))
+                    self.assertEqual(posted, (500, b"state unavailable\n"))
+                    self.assertEqual(self.ntfy.requests, [])
+                    self.assertEqual(self.state_path.read_bytes(), original)
+        self.assertNotIn("Traceback", captured.getvalue())
+
+    def test_health_rejects_parseable_state_that_cannot_be_reconciled(self):
+        too_many = {
+            "version": 1,
+            "unhealthy": [f"nas\0{index:064x}" for index in range(129)],
+        }
+        expanded_too_large = {
+            "version": 1,
+            "unhealthy": sorted(
+                f"{'é' * 256}\0{index:064x}" for index in range(100)
+            ),
+        }
+        for name, document in (
+            ("entry bound", too_many),
+            ("expanded byte bound", expanded_too_large),
+        ):
+            with self.subTest(name=name):
+                self.write_state(document)
+                original = self.state_path.read_bytes()
+                self.assertLessEqual(len(original), self.relay_module.MAX_STATE_BYTES)
+                health = self.request("GET", "/healthz", token=None)
+                posted = self.post(self.envelope("OOM"))
+                self.assertEqual(health, (503, b"state unavailable\n"))
+                self.assertEqual(posted, (500, b"state unavailable\n"))
+                self.assertEqual(self.ntfy.requests, [])
+                self.assertEqual(self.state_path.read_bytes(), original)
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "FIFO support is required")
+    def test_state_and_lock_fifos_fail_promptly_without_side_effects(self):
+        captured = io.StringIO()
+        with contextlib.redirect_stderr(captured):
+            os.mkfifo(self.state_path, 0o600)
+            state_results = [
+                self.request_with_fifo_guard(
+                    self.state_path, "GET", "/healthz", token=None
+                ),
+                self.request_with_fifo_guard(
+                    self.state_path, "POST", "/alerts", self.envelope("OOM")
+                ),
+            ]
+            self.assertTrue(stat.S_ISFIFO(self.state_path.stat().st_mode))
+            self.state_path.unlink()
+
+            lock_path = self.state_directory / f".{self.state_path.name}.lock"
+            with contextlib.suppress(FileNotFoundError):
+                lock_path.unlink()
+            os.mkfifo(lock_path, 0o600)
+            lock_results = [
+                self.request_with_fifo_guard(
+                    lock_path, "GET", "/healthz", token=None
+                ),
+                self.request_with_fifo_guard(
+                    lock_path, "POST", "/alerts", self.envelope("OOM")
+                ),
+            ]
+            self.assertTrue(stat.S_ISFIFO(lock_path.stat().st_mode))
+
+        expected = (
+            (503, b"state unavailable\n"),
+            (500, b"state unavailable\n"),
+        )
+        for fixture, results in (("state", state_results), ("lock", lock_results)):
+            with self.subTest(fixture=fixture):
+                self.assertEqual(tuple(result[2] for result in results), expected)
+                self.assertFalse(
+                    any(result[0] for result in results), "FIFO request hung"
+                )
+                self.assertTrue(all(result[1] < 1 for result in results))
+        self.assertEqual(self.ntfy.requests, [])
+        self.assertFalse(self.state_path.exists())
+        self.assertNotIn("Traceback", captured.getvalue())
 
     def test_upstream_failure_does_not_commit_transition(self):
         self.ntfy.response_status = 503
