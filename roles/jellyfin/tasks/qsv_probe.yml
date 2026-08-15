@@ -51,7 +51,7 @@
       - -frames:v
       - "1"
       - -f
-      - null
+      - "null"
       - "-"
     tty: false
   when:

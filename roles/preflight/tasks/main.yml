@@ -69,34 +69,32 @@
   vars:
     preflight_compose_version: "{{ preflight_compose.stdout | trim | regex_replace('^v', '') }}"
 
-- name: Read the kernel mount table
-  ansible.builtin.slurp:
-    src: /proc/mounts
-  register: preflight_mounts
-  when: platform_kind == 'nas'
-
 # Checked through /proc/mounts rather than the mounts fact, which is not
 # populated on every platform and raises instead of failing cleanly when absent.
 # Only applied to real NAS volumes: the integration sandbox puts the storage
 # roots under a temporary directory, where a mount check would be meaningless.
 - name: Require the NAS volumes to be mounted
-  ansible.builtin.assert:
-    that:
-      - item | regex_replace('^(/[^/]+).*$', '\1') in preflight_mount_targets
-    fail_msg: >-
-      {{ item }} is not on a mount point. Refusing to continue, because writing
-      service state to an unmounted path would put it on the system volume.
-    success_msg: "{{ item }} is on a mounted volume"
+  ansible.builtin.command:
+    argv:
+      - awk
+      - -v
+      - "target={{ item }}"
+      - |-
+        BEGIN {
+          split(target, path, "/")
+          target = "/" path[2]
+        }
+        $2 == target { found = 1 }
+        END { exit !found }
+      - /proc/mounts
+  changed_when: false
+  check_mode: false
   loop:
     - "{{ nas_docker_root }}"
     - "{{ nas_media_root }}"
   when:
     - platform_kind == 'nas'
     - item is match('^/volume')
-  vars:
-    preflight_mount_targets: >-
-      {{ (preflight_mounts.content | b64decode).splitlines()
-         | map('regex_replace', '^(\S+)\s+(\S+).*$', '\2') | list }}
 
 # A capable host must also expose the declared path. This keeps the inventory
 # contract explicit without pretending that a missing device is usable.

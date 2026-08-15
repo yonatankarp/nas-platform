@@ -175,6 +175,13 @@ end
 web = services.fetch("webserver")
 refuse("NAS webserver must use host networking") unless web.fetch("network_mode") == "host"
 refuse("NAS webserver must not publish ports") if web.key?("ports")
+web_healthcheck = web.fetch("healthcheck")
+refuse("webserver startup grace must cover fresh database migrations") unless
+  web_healthcheck.fetch("start_period") == "300s"
+refuse("webserver runtime health threshold differs") unless
+  web_healthcheck.slice("interval", "timeout", "retries") == {
+    "interval" => "30s", "timeout" => "10s", "retries" => 4
+  }
 refuse("webserver must wait for healthy Tika") unless
   web.fetch("depends_on").fetch("tika").fetch("condition") == "service_healthy"
 refuse("Tika healthcheck is absent") unless services.fetch("tika").key?("healthcheck")

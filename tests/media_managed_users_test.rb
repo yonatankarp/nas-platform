@@ -1079,6 +1079,10 @@ def exercise_jellyfin_qsv_probe(failures)
     failures << "Jellyfin reusable QSV probe omits FFmpeg container execution"
     return
   end
+  qsv_argv = Array(exec_task.dig("community.docker.docker_compose_v2_exec", "argv"))
+  unless qsv_argv.each_cons(3).include?(["-f", "null", "-"])
+    failures << "Jellyfin reusable QSV probe must pass the literal null muxer to FFmpeg"
+  end
   exec_task.delete("community.docker.docker_compose_v2_exec")
   exec_task["ansible.builtin.uri"] = {
     "url" => "{{ jellyfin_api }}/qsv", "method" => "POST", "status_code" => [204]
@@ -1851,7 +1855,8 @@ def jellyfin_identity_contract_failures
   identity_path = File.join(ROOT, "roles", "jellyfin", "tasks", "primary_identity.yml")
   identity = File.file?(identity_path) ? File.read(identity_path) : ""
   role = File.read(role_path) + identity
-  names = nested_task_names(YAML.safe_load_file(role_path, aliases: false))
+  main_tasks = YAML.safe_load_file(role_path, aliases: false)
+  names = nested_task_names(main_tasks)
   names += nested_task_names(YAML.safe_load_file(identity_path, aliases: false)) if
     File.file?(identity_path)
   avatar = File.join(ROOT, "roles", "jellyfin", "files", "yonatan-avatar.jpeg")
@@ -1894,6 +1899,7 @@ def jellyfin_identity_contract_failures
     "Create absent Jellyfin managed libraries",
     "Remove extra paths from Jellyfin managed libraries",
     "Repair Jellyfin managed library options",
+    "Refresh Jellyfin after managed library changes",
     "Verify exact Jellyfin owned state"
   ]
   required.each { |name| failures << "Jellyfin main role omits #{name}" unless names.include?(name) }
@@ -1915,6 +1921,18 @@ def jellyfin_identity_contract_failures
     role.include?("if item.Name == jellyfin_primary_temporary_name else")
   failures << "Jellyfin extra library paths do not use the supported removal endpoint" unless
     role.include?("/Library/VirtualFolders/Paths?name=") && role.include?("method: DELETE")
+  create_library = main_tasks.find do |task|
+    task_name(task) == "Create absent Jellyfin managed libraries"
+  end
+  refresh_library = main_tasks.find do |task|
+    task_name(task) == "Refresh Jellyfin after managed library changes"
+  end
+  failures << "Jellyfin library creation starts a scan before reconciliation completes" unless
+    create_library&.dig("ansible.builtin.uri", "url").to_s.include?("refreshLibrary=false")
+  failures << "Jellyfin managed library reconciliation does not trigger one deferred refresh" unless
+    refresh_library&.dig("ansible.builtin.uri", "url").to_s.include?("/Library/Refresh") &&
+      refresh_library&.dig("ansible.builtin.uri", "method") == "POST" &&
+      refresh_library&.fetch("when", []).any? { |condition| condition.to_s.include?("is changed") }
   failures << "Jellyfin image upload does not use the supported current endpoint" unless
     role.include?("/UserImage?userId=")
   failures << "Jellyfin server update does not preserve the full configuration" unless

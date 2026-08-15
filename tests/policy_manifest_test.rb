@@ -453,10 +453,10 @@ expect_failure(failures, "invalid production platform kind", "platform_kind must
   end
 end
 
-expect_failure(failures, "removed Mac mount guard",
-               "preflight must read the Linux mount table only on NAS hosts") do |root|
+expect_failure(failures, "removed NAS mount guard",
+               "preflight must check mounts by command exit status, including in check mode") do |root|
   mutate_yaml_file(root, "roles/preflight/tasks/main.yml") do |tasks|
-    tasks.find { |task| task["name"] == "Read the kernel mount table" }.delete("when")
+    tasks.find { |task| task["name"] == "Require the NAS volumes to be mounted" }.delete("when")
   end
 end
 
