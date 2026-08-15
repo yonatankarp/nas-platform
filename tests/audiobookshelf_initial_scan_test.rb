@@ -15,6 +15,9 @@ TASK_POLL = "Poll Audiobookshelf initial library scan tasks"
 ITEM_POLL = "Poll Audiobookshelf managed library items after initial scan"
 REPAIR_TASK = "Repair the managed Audiobookshelf library"
 VERIFY_TASK = "Authenticate to Audiobookshelf for exact verification"
+CURRENT_LIBRARY_TASK = "Resolve the current managed Audiobookshelf library"
+CURRENT_LIBRARY_ID_TASK = "Require safe current managed Audiobookshelf library ID"
+SAFE_ID_PATTERN = "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
 
 def task_named(tasks, name)
   matches = tasks.each_with_index.select { |task, _index| task["name"] == name }
@@ -100,12 +103,33 @@ def validate_initial_scan!(tasks, defaults)
   end
   require_condition(scan_posts == 1, "role must contain exactly one library scan POST")
 
+  current_library_index = task_named(tasks, CURRENT_LIBRARY_TASK).last
+  current_id_gate, current_id_gate_index = task_named(tasks, CURRENT_LIBRARY_ID_TASK)
+  current_id_assert = current_id_gate.fetch("ansible.builtin.assert", {})
+  require_condition(
+    Array(current_id_assert["that"]) == [
+      "audiobookshelf_current_library.id | string is match('#{SAFE_ID_PATTERN}')"
+    ] && Array(current_id_gate["when"]) == ["audiobookshelf_current_library | length > 0"],
+    "current library ID must be validated against the safe API pattern"
+  )
+  require_condition(
+    current_id_gate["no_log"] == true &&
+      !current_id_assert.fetch("fail_msg", "").to_s.include?("{{"),
+    "unsafe current library IDs must not be disclosed"
+  )
+
   repair_index = task_named(tasks, REPAIR_TASK).last
   verify_index = task_named(tasks, VERIFY_TASK).last
+  diagnostic_index = task_named(tasks, "Resolve sanitized Audiobookshelf initial scan observation").last
   require_condition(
     classification_index < scan_classification_index && scan_classification_index < plan_index &&
       repair_index < scan_index && scan_index < verify_index,
     "initial scan must follow create/repair classification and precede exact verification"
+  )
+  require_condition(
+    current_id_gate_index == current_library_index + 1 && current_id_gate_index < repair_index &&
+      current_id_gate_index < scan_index && current_id_gate_index < diagnostic_index,
+    "current library ID validation must precede every API or diagnostic use"
   )
 
   task_poll, task_poll_index = task_named(tasks, TASK_POLL)
@@ -182,6 +206,17 @@ mutation_rejected!(missing_scan, defaults, "missing scan")
 unconditional_scan = deep_copy(tasks)
 task_named(unconditional_scan, SCAN_TASK).first["when"] = ["not ansible_check_mode"]
 mutation_rejected!(unconditional_scan, defaults, "unconditional scan")
+
+unsafe_create_response = deep_copy(tasks)
+unsafe_id_assert = task_named(
+  unsafe_create_response, CURRENT_LIBRARY_ID_TASK
+).first.fetch("ansible.builtin.assert")
+unsafe_id_assert["that"] = ["audiobookshelf_current_library.id | string is match('.*')"]
+mutation_rejected!(unsafe_create_response, defaults, "unsafe create-response ID")
+
+disclosed_create_response = deep_copy(tasks)
+task_named(disclosed_create_response, CURRENT_LIBRARY_ID_TASK).first["no_log"] = false
+mutation_rejected!(disclosed_create_response, defaults, "disclosed create-response ID")
 
 inverted_folder_guard = deep_copy(tasks)
 folder_facts = task_named(

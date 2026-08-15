@@ -484,6 +484,14 @@
          else (audiobookshelf_library_created.json if not ansible_check_mode else {}) }}
   no_log: true
 
+- name: Require safe current managed Audiobookshelf library ID
+  ansible.builtin.assert:
+    that:
+      - audiobookshelf_current_library.id | string is match('^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$')
+    fail_msg: The current managed Audiobookshelf library has an unsafe API identifier.
+  when: audiobookshelf_current_library | length > 0
+  no_log: true
+
 - name: Resolve folder-safe Audiobookshelf repair payload
   ansible.builtin.set_fact:
     audiobookshelf_library_repair_folders: >-
