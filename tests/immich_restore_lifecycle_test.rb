@@ -18,7 +18,10 @@ RESTORE = YAML.safe_load_file(
 DEFAULTS = YAML.safe_load_file(
   File.join(ROOT, "roles", "immich", "defaults", "main.yml")
 )
-PYTHON = Open3.capture2("command", "-v", "python3").first.strip
+PYTHON = ENV.fetch("PATH", "").split(File::PATH_SEPARATOR).map do |directory|
+  candidate = File.join(directory, "python3")
+  candidate if File.executable?(candidate)
+end.compact.first.to_s
 GIT_COMMON_DIR = File.expand_path(
   Open3.capture2("git", "rev-parse", "--git-common-dir", chdir: ROOT).first.strip,
   ROOT
