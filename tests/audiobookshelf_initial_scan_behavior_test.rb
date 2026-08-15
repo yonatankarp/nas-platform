@@ -17,29 +17,35 @@ DEFAULTS = YAML.safe_load_file(
 )
 MARKER_NAME = ".nas-platform-initial-scan.json"
 LIBRARY_ID = "managed-library"
+LIBRARY_NAME = DEFAULTS.fetch("audiobookshelf_library_name")
 MEDIA_SENTINEL = "MEDIA_SECRET_SENTINEL"
 
-def selected_scan_tasks
+def selected_scan_tasks(stop_after: nil, stop_before: nil)
   return YAML.safe_load_file(SCAN_TASKS, aliases: false) if File.file?(SCAN_TASKS)
 
   tasks = YAML.safe_load_file(MAIN_TASKS, aliases: false)
-  first = tasks.index do |task|
-    task["name"] == "Resolve Audiobookshelf initial scan marker path and pending intent"
-  end
+  first = tasks.index { |task| task["name"] == "Resolve Audiobookshelf library repair requirement" }
   last = tasks.index { |task| task["name"] == "Clear completed Audiobookshelf initial scan intent" }
-  last ||= tasks.index { |task| task["name"] == "Record durable Audiobookshelf initial scan state" }
-  first ||= tasks.index { |task| task["name"] == "Report planned Audiobookshelf initial scan" }
-  last ||= tasks.index { |task| task["name"] == "Require completed Audiobookshelf initial library scan" }
   raise "Audiobookshelf initial scan task slice is unavailable" unless first && last && first <= last
 
-  return tasks[first..last] if tasks[first]["name"].include?("marker path")
+  selected = tasks[first..last]
+  interruption = {
+    "name" => "Interrupt Audiobookshelf reconciliation fixture",
+    "ansible.builtin.fail" => { "msg" => "EXPECTED_RECONCILIATION_INTERRUPTION" },
+    "no_log" => true
+  }
+  if stop_after
+    index = selected.index { |task| task["name"] == stop_after }
+    raise "Audiobookshelf interruption target is unavailable: #{stop_after}" unless index
 
-  [{
-    "name" => "Resolve fixture Audiobookshelf initial scan requirement",
-    "ansible.builtin.set_fact" => {
-      "audiobookshelf_initial_scan_required" => "{{ audiobookshelf_library_create_required | bool or audiobookshelf_library_folder_repair_required | bool }}"
-    }
-  }, *tasks[first..last]]
+    selected.insert(index + 1, interruption)
+  elsif stop_before
+    index = selected.index { |task| task["name"] == stop_before }
+    raise "Audiobookshelf interruption target is unavailable: #{stop_before}" unless index
+
+    selected.insert(index, interruption)
+  end
+  selected
 end
 
 def send_json(client, status, body)
@@ -50,16 +56,31 @@ def send_json(client, status, body)
   )
 end
 
+def exact_library(folder_paths: ["/audiobooks"], last_scan: nil)
+  {
+    "id" => LIBRARY_ID,
+    "name" => LIBRARY_NAME,
+    "folders" => folder_paths.map { |path| { "fullPath" => path } },
+    "mediaType" => DEFAULTS.fetch("audiobookshelf_library_media_type"),
+    "provider" => DEFAULTS.fetch("audiobookshelf_library_provider"),
+    "icon" => DEFAULTS.fetch("audiobookshelf_library_icon"),
+    "settings" => DEFAULTS.fetch("audiobookshelf_library_settings"),
+    "lastScan" => last_scan
+  }
+end
+
 class ScanFixture
   attr_accessor :advance_last_scan, :tasks_shape, :items_shape
-  attr_reader :port, :scan_requests, :last_scan
+  attr_reader :port, :create_requests, :patch_requests, :scan_requests, :library
 
-  def initialize(advance_last_scan:, tasks_shape: [], items_shape: [])
+  def initialize(advance_last_scan:, library: exact_library, tasks_shape: [], items_shape: [])
     @advance_last_scan = advance_last_scan
+    @library = library
     @tasks_shape = tasks_shape
     @items_shape = items_shape
+    @create_requests = 0
+    @patch_requests = 0
     @scan_requests = 0
-    @last_scan = nil
     @pending_scan = false
     @server = TCPServer.new("127.0.0.1", 0)
     @port = @server.addr.fetch(1)
@@ -102,8 +123,8 @@ class ScanFixture
           key, value = line.split(":", 2)
           headers[key.downcase] = value.to_s.strip
         end
-        client.read(headers.fetch("content-length", "0").to_i)
-        respond(client, method, target)
+        body = client.read(headers.fetch("content-length", "0").to_i)
+        respond(client, method, target, body)
       ensure
         client.close unless client.closed?
       end
@@ -114,8 +135,16 @@ class ScanFixture
     @error = error
   end
 
-  def respond(client, method, target)
+  def respond(client, method, target, body)
     case [method, target]
+    when ["POST", "/api/libraries"]
+      @create_requests += 1
+      @library = library_from_payload(JSON.parse(body))
+      send_json(client, 200, @library)
+    when ["PATCH", "/api/libraries/#{LIBRARY_ID}"]
+      @patch_requests += 1
+      @library = library_from_payload(JSON.parse(body), last_scan: @library["lastScan"])
+      send_json(client, 200, @library)
     when ["POST", "/api/libraries/#{LIBRARY_ID}/scan"]
       @scan_requests += 1
       @pending_scan = true
@@ -124,27 +153,42 @@ class ScanFixture
       send_json(client, 200, { "tasks" => @tasks_shape })
     when ["GET", "/api/libraries"]
       if @pending_scan && @advance_last_scan
-        @last_scan = (@last_scan || 100) + 1
+        @library["lastScan"] = (@library["lastScan"] || 100) + 1
         @pending_scan = false
       end
-      send_json(client, 200, { "libraries" => [{ "id" => LIBRARY_ID, "lastScan" => @last_scan }] })
+      send_json(client, 200, { "libraries" => [@library].compact })
     when ["GET", "/api/libraries/#{LIBRARY_ID}/items?limit=1&minified=1"]
       send_json(client, 200, { "results" => @items_shape, "total" => 0 })
     else
       send_json(client, 500, { "error" => "unexpected fixture request" })
     end
   end
+
+  def library_from_payload(payload, last_scan: nil)
+    {
+      "id" => LIBRARY_ID,
+      "name" => payload.fetch("name"),
+      "folders" => payload.fetch("folders").map { |folder| { "fullPath" => folder.fetch("path") } },
+      "mediaType" => payload.fetch("mediaType"),
+      "provider" => payload.fetch("provider"),
+      "icon" => payload.fetch("icon"),
+      "settings" => payload.fetch("settings"),
+      "lastScan" => last_scan
+    }
+  end
 end
 
-def run_scan(fixture, config_root, create_required:, folder_repair_required: false)
+def run_scan(fixture, config_root, stop_after: nil, stop_before: nil)
+  existing_library = fixture.library || {}
   variables = DEFAULTS.merge(
     "audiobookshelf_api" => "http://127.0.0.1:#{fixture.port}",
     "audiobookshelf_reconcile_token" => "RECONCILE_SECRET_SENTINEL",
     "audiobookshelf_effective_config_host_path" => config_root,
-    "audiobookshelf_current_library" => { "id" => LIBRARY_ID, "lastScan" => fixture.last_scan },
-    "audiobookshelf_existing_library_paths" => ["/audiobooks"],
-    "audiobookshelf_library_create_required" => create_required,
-    "audiobookshelf_library_folder_repair_required" => folder_repair_required,
+    "audiobookshelf_initialized" => true,
+    "audiobookshelf_existing_library" => existing_library,
+    "audiobookshelf_existing_library_paths" => existing_library.fetch("folders", []).map do |folder|
+      folder.fetch("fullPath")
+    end,
     "audiobookshelf_initial_scan_retries" => 2,
     "audiobookshelf_initial_scan_delay" => 0,
     "nas_uid" => Process.uid,
@@ -152,7 +196,8 @@ def run_scan(fixture, config_root, create_required:, folder_repair_required: fal
   )
   playbook = [{
     "hosts" => "localhost", "gather_facts" => false,
-    "vars" => variables, "tasks" => selected_scan_tasks
+    "vars" => variables,
+    "tasks" => selected_scan_tasks(stop_after: stop_after, stop_before: stop_before)
   }]
   Dir.mktmpdir("audiobookshelf-scan-playbook-") do |directory|
     path = File.join(directory, "playbook.yml")
@@ -179,9 +224,15 @@ def pending_state(library_id: LIBRARY_ID, folder_paths: ["/audiobooks"])
   {
     "schema" => 1,
     "state" => "pending",
+    "library_name" => LIBRARY_NAME,
     "library_id" => library_id,
     "folder_paths" => folder_paths
   }
+end
+
+
+def precreate_state
+  pending_state(library_id: nil)
 end
 
 def write_marker(config_root, state)
@@ -210,7 +261,7 @@ failures = []
     FileUtils.mkdir_p(config_root)
     fixture = ScanFixture.new(advance_last_scan: true)
     begin
-      stdout, stderr, status = run_scan(fixture, config_root, create_required: false)
+      stdout, stderr, status = run_scan(fixture, config_root)
       output = stdout + stderr
       failures << "markerless #{layout} convergence failed: #{failure_tail(output)}" unless status.success?
       failures << "markerless #{layout} convergence scanned" unless fixture.scan_requests.zero?
@@ -224,11 +275,11 @@ failures = []
 end
 
 Dir.mktmpdir("audiobookshelf-folder-repair-") do |config_root|
-  fixture = ScanFixture.new(advance_last_scan: true)
+  fixture = ScanFixture.new(
+    advance_last_scan: true, library: exact_library(folder_paths: ["/old-audiobooks"])
+  )
   begin
-    stdout, stderr, status = run_scan(
-      fixture, config_root, create_required: false, folder_repair_required: true
-    )
+    stdout, stderr, status = run_scan(fixture, config_root)
     output = stdout + stderr
     failures << "folder repair scan failed: #{failure_tail(output)}" unless status.success?
     failures << "folder repair did not POST exactly once" unless fixture.scan_requests == 1
@@ -239,10 +290,113 @@ Dir.mktmpdir("audiobookshelf-folder-repair-") do |config_root|
   end
 end
 
-Dir.mktmpdir("audiobookshelf-scan-state-") do |config_root|
-  fixture = ScanFixture.new(advance_last_scan: false)
+Dir.mktmpdir("audiobookshelf-create-interruption-") do |config_root|
+  fixture = ScanFixture.new(advance_last_scan: true, library: nil)
   begin
-    stdout, stderr, status = run_scan(fixture, config_root, create_required: true)
+    stdout, stderr, interrupted = run_scan(
+      fixture, config_root, stop_after: "Create the managed Audiobookshelf library"
+    )
+    output = stdout + stderr
+    failures << "post-create interruption was accepted" if interrupted.success?
+    failures << "post-create interruption did not create exactly once" unless fixture.create_requests == 1
+    failures << "post-create interruption mutated after create" unless
+      fixture.patch_requests.zero? && fixture.scan_requests.zero?
+    marker = File.join(config_root, MARKER_NAME)
+    failures << "post-create interruption did not preserve exact pre-create intent" unless
+      File.file?(marker) && JSON.parse(File.read(marker)) == precreate_state
+
+    stdout, stderr, resumed = run_scan(fixture, config_root)
+    output = stdout + stderr
+    failures << "post-create interruption did not resume: #{failure_tail(output)}" unless resumed.success?
+    failures << "post-create resume recreated the library" unless fixture.create_requests == 1
+    failures << "post-create resume did not scan exactly once" unless fixture.scan_requests == 1
+    failures << "post-create resume retained pending intent" if File.exist?(marker)
+
+    stdout, stderr, unchanged = run_scan(fixture, config_root)
+    failures << "post-create third convergence failed: #{failure_tail(stdout + stderr)}" unless
+      unchanged.success?
+    failures << "post-create third convergence changed" unless changed_count(stdout + stderr) == 0
+    failures << "post-create third convergence rescanned" unless fixture.scan_requests == 1
+  ensure
+    fixture.close
+  end
+end
+
+Dir.mktmpdir("audiobookshelf-repair-interruption-") do |config_root|
+  fixture = ScanFixture.new(
+    advance_last_scan: true, library: exact_library(folder_paths: ["/old-audiobooks"])
+  )
+  begin
+    stdout, stderr, interrupted = run_scan(
+      fixture, config_root, stop_before: "Repair the managed Audiobookshelf library"
+    )
+    output = stdout + stderr
+    failures << "pre-repair interruption was accepted" if interrupted.success?
+    failures << "pre-repair interruption mutated the API" unless
+      fixture.create_requests.zero? && fixture.patch_requests.zero? && fixture.scan_requests.zero?
+    marker = File.join(config_root, MARKER_NAME)
+    failures << "pre-repair interruption did not preserve exact ID-bound intent" unless
+      File.file?(marker) && JSON.parse(File.read(marker)) == pending_state
+
+    stdout, stderr, resumed = run_scan(fixture, config_root)
+    output = stdout + stderr
+    failures << "pre-repair interruption did not resume: #{failure_tail(output)}" unless resumed.success?
+    failures << "pre-repair resume did not PATCH exactly once" unless fixture.patch_requests == 1
+    failures << "pre-repair resume did not scan exactly once" unless fixture.scan_requests == 1
+    failures << "pre-repair resume retained pending intent" if File.exist?(marker)
+
+    stdout, stderr, unchanged = run_scan(fixture, config_root)
+    failures << "pre-repair third convergence failed: #{failure_tail(stdout + stderr)}" unless
+      unchanged.success?
+    failures << "pre-repair third convergence changed" unless changed_count(stdout + stderr) == 0
+    failures << "pre-repair third convergence rescanned" unless fixture.scan_requests == 1
+  ensure
+    fixture.close
+  end
+end
+
+Dir.mktmpdir("audiobookshelf-stale-repair-intent-") do |config_root|
+  stale = pending_state(library_id: "stale-library", folder_paths: ["/#{MEDIA_SENTINEL}"])
+  marker = write_marker(config_root, stale)
+  fixture = ScanFixture.new(
+    advance_last_scan: true, library: exact_library(folder_paths: ["/old-audiobooks"])
+  )
+  begin
+    stdout, stderr, status = run_scan(fixture, config_root)
+    output = stdout + stderr
+    failures << "stale marker with folder drift was accepted" if status.success?
+    failures << "stale marker with folder drift mutated the API" unless
+      fixture.create_requests.zero? && fixture.patch_requests.zero? && fixture.scan_requests.zero?
+    failures << "stale marker with folder drift leaked protected data" if output.include?(MEDIA_SENTINEL)
+    failures << "stale marker with folder drift was mutated" unless
+      File.file?(marker) && JSON.parse(File.read(marker)) == stale
+  ensure
+    fixture.close
+  end
+end
+
+Dir.mktmpdir("audiobookshelf-unsupported-repair-intent-") do |config_root|
+  marker = write_marker(config_root, {})
+  fixture = ScanFixture.new(
+    advance_last_scan: true, library: exact_library(folder_paths: ["/old-audiobooks"])
+  )
+  begin
+    stdout, stderr, status = run_scan(fixture, config_root)
+    output = stdout + stderr
+    failures << "empty-object marker with folder drift was accepted" if status.success?
+    failures << "empty-object marker with folder drift mutated the API" unless
+      fixture.create_requests.zero? && fixture.patch_requests.zero? && fixture.scan_requests.zero?
+    failures << "empty-object marker with folder drift was mutated" unless
+      File.file?(marker) && JSON.parse(File.read(marker)) == {}
+  ensure
+    fixture.close
+  end
+end
+
+Dir.mktmpdir("audiobookshelf-scan-state-") do |config_root|
+  fixture = ScanFixture.new(advance_last_scan: false, library: nil)
+  begin
+    stdout, stderr, status = run_scan(fixture, config_root)
     output = stdout + stderr
     failures << "disappeared failed scan was accepted" if status.success?
     failures << "failed scan did not POST exactly once" unless fixture.scan_requests == 1
@@ -254,13 +408,13 @@ Dir.mktmpdir("audiobookshelf-scan-state-") do |config_root|
     end
 
     fixture.advance_last_scan = true
-    stdout, stderr, retry_status = run_scan(fixture, config_root, create_required: false)
+    stdout, stderr, retry_status = run_scan(fixture, config_root)
     failures << "partial convergence did not retry successfully: #{failure_tail(stdout + stderr)}" unless
       retry_status.success?
     failures << "partial convergence did not POST a second scan" unless fixture.scan_requests == 2
     failures << "successful empty-source scan did not clear pending intent" if File.exist?(marker)
 
-    stdout, stderr, third_status = run_scan(fixture, config_root, create_required: false)
+    stdout, stderr, third_status = run_scan(fixture, config_root)
     failures << "unchanged third convergence failed: #{failure_tail(stdout + stderr)}" unless
       third_status.success?
     failures << "unchanged third convergence rescanned" unless fixture.scan_requests == 2
@@ -273,9 +427,9 @@ end
 
 [{ "bad" => "tasks" }, MEDIA_SENTINEL].each do |tasks_shape|
   Dir.mktmpdir("audiobookshelf-task-shape-") do |config_root|
-    fixture = ScanFixture.new(advance_last_scan: true, tasks_shape: tasks_shape)
+    fixture = ScanFixture.new(advance_last_scan: true, library: nil, tasks_shape: tasks_shape)
     begin
-      stdout, stderr, status = run_scan(fixture, config_root, create_required: true)
+      stdout, stderr, status = run_scan(fixture, config_root)
       output = stdout + stderr
       failures << "malformed tasks shape was accepted" if status.success?
       failures << "malformed tasks shape leaked media data" if output.include?(MEDIA_SENTINEL)
@@ -290,9 +444,9 @@ end
 
 [{ "bad" => "items" }, MEDIA_SENTINEL].each do |items_shape|
   Dir.mktmpdir("audiobookshelf-item-shape-") do |config_root|
-    fixture = ScanFixture.new(advance_last_scan: true, items_shape: items_shape)
+    fixture = ScanFixture.new(advance_last_scan: true, library: nil, items_shape: items_shape)
     begin
-      stdout, stderr, status = run_scan(fixture, config_root, create_required: true)
+      stdout, stderr, status = run_scan(fixture, config_root)
       output = stdout + stderr
       failures << "malformed items shape was accepted" if status.success?
       failures << "malformed items shape leaked media data" if output.include?(MEDIA_SENTINEL)
@@ -315,7 +469,7 @@ end
     marker = write_marker(config_root, state)
     fixture = ScanFixture.new(advance_last_scan: true)
     begin
-      stdout, stderr, status = run_scan(fixture, config_root, create_required: false)
+      stdout, stderr, status = run_scan(fixture, config_root)
       output = stdout + stderr
       failures << "#{kind} intent was accepted" if status.success?
       failures << "#{kind} intent triggered a scan" unless fixture.scan_requests.zero?

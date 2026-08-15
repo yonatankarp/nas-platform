@@ -14,9 +14,11 @@ PLAN_TASK = "Report planned Audiobookshelf initial scan"
 TASK_POLL = "Poll Audiobookshelf initial library scan tasks"
 ITEM_POLL = "Poll Audiobookshelf managed library items after initial scan"
 LIBRARY_POLL = "Poll authoritative Audiobookshelf library scan state"
-PENDING_TASK = "Record pending Audiobookshelf initial scan intent"
+PRECREATE_PENDING_TASK = "Record pre-create Audiobookshelf initial scan intent"
+BIND_PENDING_TASK = "Bind Audiobookshelf initial scan intent to current library"
 CLEAR_PENDING_TASK = "Clear completed Audiobookshelf initial scan intent"
 REFUSE_STALE_TASK = "Refuse mismatched Audiobookshelf initial scan intent"
+CREATE_TASK = "Create the managed Audiobookshelf library"
 REPAIR_TASK = "Repair the managed Audiobookshelf library"
 VERIFY_TASK = "Authenticate to Audiobookshelf for exact verification"
 CURRENT_LIBRARY_TASK = "Resolve the current managed Audiobookshelf library"
@@ -100,8 +102,9 @@ def validate_initial_scan!(tasks, defaults)
   require_condition(
     scan_guard.include?("audiobookshelf_library_create_required") &&
       scan_guard.include?("audiobookshelf_library_folder_repair_required") &&
-      scan_guard.include?("audiobookshelf_initial_scan_marker_matches") &&
-      !scan_guard.include?("not audiobookshelf_initial_scan_marker_matches") &&
+      scan_guard.include?("audiobookshelf_initial_scan_precreate_marker_matches") &&
+      scan_guard.include?("audiobookshelf_initial_scan_bound_marker_matches") &&
+      !scan_guard.include?("not audiobookshelf_initial_scan_") &&
       scan_guard.match?(/audiobookshelf_library_create_required\s*\|\s*bool\s+or/) &&
       !scan_guard.include?("audiobookshelf_library_repair_required"),
     "initial scan must be limited to creation, folder repair, or matching pending intent"
@@ -157,13 +160,16 @@ def validate_initial_scan!(tasks, defaults)
   )
 
   repair_index = task_named(tasks, REPAIR_TASK).last
+  create_index = task_named(tasks, CREATE_TASK).last
   verify_index = task_named(tasks, VERIFY_TASK).last
   diagnostic_index = task_named(tasks, "Resolve sanitized Audiobookshelf initial scan observation").last
-  pending, pending_index = task_named(tasks, PENDING_TASK)
+  precreate_pending, precreate_pending_index = task_named(tasks, PRECREATE_PENDING_TASK)
+  bound_pending, bound_pending_index = task_named(tasks, BIND_PENDING_TASK)
   require_condition(
-    classification_index < scan_classification_index && scan_classification_index < plan_index &&
-      repair_index < pending_index && pending_index < scan_index && scan_index < verify_index,
-    "initial scan must follow create/repair classification and precede exact verification"
+    classification_index < precreate_pending_index && precreate_pending_index < create_index &&
+      create_index < bound_pending_index && bound_pending_index < repair_index &&
+      repair_index < scan_index && scan_index < verify_index,
+    "pending intent must durably precede create and folder-repair mutations"
   )
   require_condition(
     current_id_gate_index == current_library_index + 1 && current_id_gate_index < repair_index &&
@@ -226,50 +232,102 @@ def validate_initial_scan!(tasks, defaults)
     "lastScan baseline must be captured before the single scan POST"
   )
   marker_state, marker_state_index = task_named(
-    tasks, "Resolve Audiobookshelf initial scan marker path and pending intent"
+    tasks, "Resolve Audiobookshelf initial scan marker path and expected intents"
   )
-  pending_state = marker_state.dig(
-    "ansible.builtin.set_fact", "audiobookshelf_initial_scan_pending_state"
+  precreate_state = marker_state.dig(
+    "ansible.builtin.set_fact", "audiobookshelf_initial_scan_precreate_state"
   )
   require_condition(
-    pending_state.is_a?(Hash) && pending_state.keys.sort ==
-      %w[folder_paths library_id schema state] && pending_state["schema"] == 1 &&
-      pending_state["state"] == "pending" &&
-      pending_state["library_id"].to_s.include?("audiobookshelf_current_library.id") &&
-      pending_state["folder_paths"].to_s.include?("audiobookshelf_library_folders"),
-    "pending scan intent must be keyed by safe library ID and canonical desired folders"
+    precreate_state.is_a?(Hash) && precreate_state.keys.sort ==
+      %w[folder_paths library_id library_name schema state] && precreate_state["schema"] == 1 &&
+      precreate_state["state"] == "pending" && precreate_state["library_id"].nil? &&
+      precreate_state["library_name"].to_s.include?("audiobookshelf_library_name") &&
+      precreate_state["folder_paths"].to_s.include?("audiobookshelf_library_folders"),
+    "pre-create intent must use managed identity, canonical folders, and a null library ID"
   )
   marker_schema = nested_task_named(tasks, "Require safe Audiobookshelf initial scan marker schema")
   marker_assertions = Array(marker_schema.dig("ansible.builtin.assert", "that")).join(" ")
   require_condition(
-    marker_assertions.include?("['folder_paths', 'library_id', 'schema', 'state']") &&
+    marker_assertions.include?(
+      "['folder_paths', 'library_id', 'library_name', 'schema', 'state']"
+    ) && marker_assertions.include?("not audiobookshelf_initial_scan_marker_present or") &&
+      marker_assertions.include?(".library_id is none or") &&
       marker_assertions.include?(".state | type_debug == 'str'") &&
       marker_assertions.include?(".state == 'pending'"),
     "only a strict pending-intent marker schema may request a retry"
   )
+  marker_load, marker_load_index = task_named(tasks, "Safely load Audiobookshelf initial scan marker")
+  marker_parse = nested_task_named(tasks, "Parse Audiobookshelf initial scan marker")
+  marker_parse_facts = marker_parse.fetch("ansible.builtin.set_fact", {})
+  marker_matches, marker_matches_index = task_named(
+    tasks, "Resolve Audiobookshelf initial scan marker matches"
+  )
+  marker_match_facts = marker_matches.fetch("ansible.builtin.set_fact", {})
+  marker_acceptance, marker_acceptance_index = task_named(
+    tasks, "Resolve Audiobookshelf initial scan marker acceptance"
+  )
+  marker_acceptance_fact = marker_acceptance.dig(
+    "ansible.builtin.set_fact", "audiobookshelf_initial_scan_marker_accepted"
+  ).to_s
+  require_condition(
+    !marker_load.key?("when") && marker_state_index < marker_load_index &&
+      marker_load_index < marker_matches_index && marker_matches_index < marker_acceptance_index &&
+      marker_parse_facts.fetch("audiobookshelf_initial_scan_marker_present", "")
+                        .to_s.include?("audiobookshelf_initial_scan_marker_source.exists") &&
+      marker_match_facts.fetch("audiobookshelf_initial_scan_precreate_marker_matches", "")
+                        .to_s.include?("audiobookshelf_initial_scan_precreate_state") &&
+      marker_match_facts.fetch("audiobookshelf_initial_scan_bound_marker_matches", "")
+                        .to_s.include?("audiobookshelf_initial_scan_existing_bound_state") &&
+      marker_acceptance_fact.include?("not audiobookshelf_initial_scan_marker_present") &&
+      !marker_acceptance_fact.include?("audiobookshelf_initial_scan_marker_state | length == 0") &&
+      marker_acceptance_fact.include?("audiobookshelf_initial_scan_bound_marker_matches") &&
+      marker_acceptance_fact.include?("audiobookshelf_initial_scan_precreate_marker_matches") &&
+      marker_acceptance_fact.include?("audiobookshelf_existing_library | length == 0") &&
+      marker_acceptance_fact.include?("not audiobookshelf_library_repair_required"),
+    "marker classification must accept only absence or exact resumable pre-create/ID-bound intent"
+  )
   stale_gate, stale_gate_index = task_named(tasks, REFUSE_STALE_TASK)
   stale_assert = stale_gate.fetch("ansible.builtin.assert", {})
   require_condition(
-    marker_state_index < stale_gate_index && stale_gate_index < scan_classification_index &&
-      Array(stale_assert["that"]).join(" ").include?(
-        "audiobookshelf_initial_scan_marker_state | length == 0 or"
-      ) && Array(stale_assert["that"]).join(" ").include?(
-        "audiobookshelf_initial_scan_marker_matches | bool"
-      ) && stale_gate["no_log"] == true && !stale_assert.fetch("fail_msg", "").include?("{{"),
-    "mismatched pending scan intents must fail closed without disclosing marker data"
+    marker_state_index < stale_gate_index && stale_gate_index < precreate_pending_index &&
+      stale_gate_index < create_index && stale_gate_index < repair_index &&
+      Array(stale_assert["that"]) == ["audiobookshelf_initial_scan_marker_accepted | bool"] &&
+      stale_gate["no_log"] == true && !stale_assert.fetch("fail_msg", "").include?("{{"),
+    "mismatched pending intents must fail closed before every library API mutation"
   )
-  pending_copy = pending.fetch("ansible.builtin.copy", {})
+  precreate_copy = precreate_pending.fetch("ansible.builtin.copy", {})
   require_condition(
-    marker_state_index < pending_index && pending_index < scan_index &&
-      pending_copy["content"].to_s.include?("audiobookshelf_initial_scan_pending_state") &&
-      pending_copy["dest"] == "{{ audiobookshelf_initial_scan_marker_path }}" &&
-      pending_copy["mode"] == "0600" && pending_copy["follow"] == false &&
-      pending_copy["unsafe_writes"] == false && pending["no_log"] == true &&
-      Array(pending["when"]) == [
-        "not ansible_check_mode",
-        "audiobookshelf_library_create_required | bool or audiobookshelf_library_folder_repair_required | bool"
+    precreate_copy["content"].to_s.include?("audiobookshelf_initial_scan_precreate_state") &&
+      precreate_copy["dest"] == "{{ audiobookshelf_initial_scan_marker_path }}" &&
+      precreate_copy["mode"] == "0600" && precreate_copy["follow"] == false &&
+      precreate_copy["unsafe_writes"] == false && precreate_pending["no_log"] == true &&
+      Array(precreate_pending["when"]) == [
+        "not ansible_check_mode", "audiobookshelf_library_create_required | bool",
+        "not audiobookshelf_initial_scan_marker_present | bool"
       ],
-    "pending scan intent must be written privately and atomically before the scan POST"
+    "pre-create intent must be private, atomic, and written before library creation"
+  )
+  current_intent, current_intent_index = task_named(
+    tasks, "Resolve current Audiobookshelf initial scan intent"
+  )
+  bound_state = current_intent.dig(
+    "ansible.builtin.set_fact", "audiobookshelf_initial_scan_bound_state"
+  )
+  bound_copy = bound_pending.fetch("ansible.builtin.copy", {})
+  require_condition(
+    current_id_gate_index < current_intent_index && current_intent_index < bound_pending_index &&
+      current_intent_index < scan_classification_index && scan_classification_index < plan_index &&
+      scan_classification_index < bound_pending_index &&
+      bound_state.is_a?(Hash) && bound_state.keys.sort ==
+        %w[folder_paths library_id library_name schema state] &&
+      bound_state["library_id"].to_s.include?("audiobookshelf_current_library.id") &&
+      bound_copy["content"].to_s.include?("audiobookshelf_initial_scan_bound_state") &&
+      bound_copy["dest"] == "{{ audiobookshelf_initial_scan_marker_path }}" &&
+      bound_copy["mode"] == "0600" && bound_copy["follow"] == false &&
+      bound_copy["unsafe_writes"] == false && bound_pending["no_log"] == true &&
+      Array(bound_pending["when"]).join(" ").include?("audiobookshelf_initial_scan_required") &&
+      Array(bound_pending["when"]).join(" ").include?("!= audiobookshelf_initial_scan_bound_state"),
+    "validated current ID must be durably bound before folder repair or scan"
   )
   clear_pending, clear_pending_index = task_named(tasks, CLEAR_PENDING_TASK)
   clear_file = clear_pending.fetch("ansible.builtin.file", {})
@@ -366,7 +424,10 @@ absence_trigger_facts = task_named(
 ).first.fetch("ansible.builtin.set_fact")
 absence_trigger_facts["audiobookshelf_initial_scan_required"] =
   absence_trigger_facts.fetch("audiobookshelf_initial_scan_required")
-                       .sub("audiobookshelf_initial_scan_marker_matches", "not audiobookshelf_initial_scan_marker_matches")
+                       .sub(
+                         "audiobookshelf_initial_scan_precreate_marker_matches",
+                         "not audiobookshelf_initial_scan_precreate_marker_matches"
+                       )
 mutation_rejected!(absence_triggered_scan, defaults, "marker-absence scan")
 
 wrong_order = deep_copy(tasks)
@@ -385,18 +446,34 @@ missing_last_scan_proof.reject! { |task| task["name"] == LIBRARY_POLL }
 mutation_rejected!(missing_last_scan_proof, defaults, "missing lastScan proof")
 
 missing_durable_state = deep_copy(tasks)
-missing_durable_state.reject! { |task| task["name"] == PENDING_TASK }
-mutation_rejected!(missing_durable_state, defaults, "missing pending scan intent")
+missing_durable_state.reject! { |task| task["name"] == PRECREATE_PENDING_TASK }
+mutation_rejected!(missing_durable_state, defaults, "missing pre-create scan intent")
 
 late_pending_state = deep_copy(tasks)
-pending_index = task_named(late_pending_state, PENDING_TASK).last
+pending_index = task_named(late_pending_state, PRECREATE_PENDING_TASK).last
 pending_task = late_pending_state.delete_at(pending_index)
-late_pending_state.insert(task_named(late_pending_state, SCAN_TASK).last + 1, pending_task)
-mutation_rejected!(late_pending_state, defaults, "late pending scan intent")
+late_pending_state.insert(task_named(late_pending_state, CREATE_TASK).last + 1, pending_task)
+mutation_rejected!(late_pending_state, defaults, "late pre-create scan intent")
+
+missing_bound_state = deep_copy(tasks)
+missing_bound_state.reject! { |task| task["name"] == BIND_PENDING_TASK }
+mutation_rejected!(missing_bound_state, defaults, "missing ID-bound scan intent")
+
+late_bound_state = deep_copy(tasks)
+bound_index = task_named(late_bound_state, BIND_PENDING_TASK).last
+bound_task = late_bound_state.delete_at(bound_index)
+late_bound_state.insert(task_named(late_bound_state, REPAIR_TASK).last + 1, bound_task)
+mutation_rejected!(late_bound_state, defaults, "late ID-bound scan intent")
 
 missing_stale_gate = deep_copy(tasks)
 missing_stale_gate.reject! { |task| task["name"] == REFUSE_STALE_TASK }
 mutation_rejected!(missing_stale_gate, defaults, "missing stale-intent refusal")
+
+late_stale_gate = deep_copy(tasks)
+stale_index = task_named(late_stale_gate, REFUSE_STALE_TASK).last
+stale_task = late_stale_gate.delete_at(stale_index)
+late_stale_gate.insert(task_named(late_stale_gate, REPAIR_TASK).last + 1, stale_task)
+mutation_rejected!(late_stale_gate, defaults, "late stale-intent refusal")
 
 completed_marker_accepted = deep_copy(tasks)
 marker_conditions = nested_task_named(
@@ -404,6 +481,13 @@ marker_conditions = nested_task_named(
 ).dig("ansible.builtin.assert", "that")
 marker_conditions.map! { |condition| condition.to_s.sub(".state == 'pending'", ".state in ['pending', 'completed']") }
 mutation_rejected!(completed_marker_accepted, defaults, "completed-marker retry")
+
+arbitrary_marker_accepted = deep_copy(tasks)
+acceptance_facts = task_named(
+  arbitrary_marker_accepted, "Resolve Audiobookshelf initial scan marker acceptance"
+).first.fetch("ansible.builtin.set_fact")
+acceptance_facts["audiobookshelf_initial_scan_marker_accepted"] = true
+mutation_rejected!(arbitrary_marker_accepted, defaults, "arbitrary marker acceptance")
 
 missing_pending_clear = deep_copy(tasks)
 missing_pending_clear.reject! { |task| task["name"] == CLEAR_PENDING_TASK }
