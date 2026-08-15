@@ -63,7 +63,9 @@ def classifier_uses_effective_roots?(tasks)
     "--postgres-dir" => "{{ immich_restore_database_root }}",
     "--originals-root" => "{{ immich_restore_originals_root }}",
     "--backup-dir" => "{{ immich_restore_backup_root }}",
-    "--failure-marker" => "{{ immich_restore_effective_failure_marker }}"
+    "--failure-marker" => "{{ immich_restore_effective_failure_marker }}",
+    "--expected-immich-version" => "{{ immich_restore_expected_immich_version }}",
+    "--expected-postgres-major" => "{{ immich_restore_expected_postgres_major | string }}"
   }
   argv.is_a?(Array) && expected.all? do |option, value|
     index = argv.index(option)
@@ -322,6 +324,8 @@ classifier_argv = classifier.dig("ansible.builtin.command", "argv")
     option_index && classifier_argv.fetch(option_index + 1, nil) == value
 end
 refuse("classifier can bypass effective roots") if classifier_argv.include?("--media-root")
+refuse("incompatible newest backup diagnostic is not sanitized") unless
+  File.read(main_path).include?("'incompatible-newest-backup'")
 
 refuse("classification failure is ignored or reversed") unless
   classifier_failure_guarded?(main_tasks)
@@ -594,6 +598,15 @@ require_mutation_rejected("effective adoption database path bypass") do
   classifier_uses_effective_roots?(mutated)
 end
 
+mutated = deep_copy(main_tasks)
+argv = task(mutated, "Classify Immich storage before startup")
+       .dig("ansible.builtin.command", "argv")
+version_index = argv.index("--expected-immich-version")
+argv.slice!(version_index, 2)
+require_mutation_rejected("backup compatibility bypass") do
+  classifier_uses_effective_roots?(mutated)
+end
+
 {
   "application startup before verification" => [
     "Deploy Immich", "Restore and verify the Immich database"
@@ -620,6 +633,18 @@ refuse("filename-injection mutation was not detected") unless
 
 contract_text = File.read(File.join(ROOT, "tests", "contracts", "immich.sh"))
 integration_text = File.read(File.join(ROOT, "tests", "integration.sh"))
+clean_restore_source = integration_text[/run_immich_clean_restore\(\) \{.*?^    \}/m].to_s
+[
+  "redis-cli --raw set",
+  "redis-cli --raw exists",
+  "docker compose --project-name immich",
+  "stop immich-server immich-machine-learning database",
+  "rm -f database"
+].each do |sentinel|
+  refuse("clean restore does not preserve and verify Redis state: #{sentinel}") unless
+    clean_restore_source.include?(sentinel)
+end
+refuse("clean restore removes the live Redis container") if clean_restore_source.match?(/\sdown\s/)
 %w[clean-restore-seed clean-restore-assert].each do |mode|
   refuse("Immich contract omits #{mode}") unless contract_text.include?(mode)
 end

@@ -750,17 +750,36 @@ docker run --rm \
       immich_release='$sandbox/volume1/Docker/nas-platform/current/services/immich'
       immich_postgres='$sandbox/volume1/Docker/immich/postgres'
       immich_quarantine='$sandbox/reports/immich-postgres-quarantine'
+      immich_stale_redis_key=nas-platform-restore-stale
       test ! -e "\$immich_quarantine"
+      redis_seed_result=\$(docker compose --project-name immich \
+        --env-file "\$immich_runtime" \
+        -f "\$immich_release/compose.yml" \
+        -f "\$immich_release/compose.integration.yml" \
+        exec -T redis redis-cli --raw set "\$immich_stale_redis_key" stale)
+      test "\$redis_seed_result" = OK
       docker compose --project-name immich \
         --env-file "\$immich_runtime" \
         -f "\$immich_release/compose.yml" \
-        -f "\$immich_release/compose.integration.yml" down
+        -f "\$immich_release/compose.integration.yml" \
+        stop immich-server immich-machine-learning database
+      docker compose --project-name immich \
+        --env-file "\$immich_runtime" \
+        -f "\$immich_release/compose.yml" \
+        -f "\$immich_release/compose.integration.yml" \
+        rm -f database
       test -d "\$immich_postgres"
       test ! -L "\$immich_postgres"
       mv "\$immich_postgres" "\$immich_quarantine"
       mkdir -m 0755 "\$immich_postgres"
 
       run_play --tags immich
+      redis_stale_count=\$(docker compose --project-name immich \
+        --env-file "\$immich_runtime" \
+        -f "\$immich_release/compose.yml" \
+        -f "\$immich_release/compose.integration.yml" \
+        exec -T redis redis-cli --raw exists "\$immich_stale_redis_key")
+      test "\$redis_stale_count" = 0
       run_immich_contract clean-restore-assert
       test ! -e '$sandbox/volume1/Docker/immich/.restore-failed'
 
