@@ -142,26 +142,27 @@ def classify_database(path):
 
 def directory_has_regular_file(descriptor):
     try:
-        names = sorted(os.listdir(descriptor))
+        entries = os.scandir(descriptor)
     except OSError:
         raise Refusal("unsafe-originals") from None
-    for name in names:
-        try:
-            metadata = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
-        except OSError:
-            raise Refusal("unsafe-originals") from None
-        if stat.S_ISREG(metadata.st_mode):
-            return True
-        if not stat.S_ISDIR(metadata.st_mode):
-            raise Refusal("unsafe-originals")
-        child = open_child_directory(
-            descriptor, name, category="unsafe-originals"
-        )
-        try:
-            if directory_has_regular_file(child):
+    with entries:
+        for entry in entries:
+            try:
+                metadata = entry.stat(follow_symlinks=False)
+            except OSError:
+                raise Refusal("unsafe-originals") from None
+            if stat.S_ISREG(metadata.st_mode):
                 return True
-        finally:
-            os.close(child)
+            if not stat.S_ISDIR(metadata.st_mode):
+                raise Refusal("unsafe-originals")
+            child = open_child_directory(
+                descriptor, entry.name, category="unsafe-originals"
+            )
+            try:
+                if directory_has_regular_file(child):
+                    return True
+            finally:
+                os.close(child)
     return False
 
 

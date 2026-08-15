@@ -298,7 +298,8 @@ class ImmichRestoreClassifierTest(unittest.TestCase):
 
     def test_scan_stops_after_first_safe_regular_original(self):
         self.fixture.add_original("00-first.jpg")
-        (self.fixture.originals / "99-unsafe").symlink_to(self.fixture.root)
+        for index in range(2000):
+            (self.fixture.originals / f"later-{index:04d}.jpg").write_bytes(b"asset")
         self.fixture.add_backup()
         self.assertTrue(self.fixture.classify()["originalsPresent"])
 
