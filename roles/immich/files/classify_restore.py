@@ -141,6 +141,12 @@ def classify_database(path):
 
 
 def directory_has_regular_file(descriptor):
+    """Apply the deterministic streaming policy to one originals directory.
+
+    Symlinks, special files, and read/stat failures encountered before the
+    first safe regular file fail closed. Scanning stops at that first safe
+    regular file; later entries are deliberately not inspected or materialized.
+    """
     try:
         entries = os.scandir(descriptor)
     except OSError:

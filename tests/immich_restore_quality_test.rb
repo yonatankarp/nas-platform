@@ -30,6 +30,69 @@ def require_order(tasks, names)
   refuse("restore lifecycle is out of order") unless positions == positions.sort
 end
 
+def deep_copy(value)
+  Marshal.load(Marshal.dump(value))
+end
+
+def ordered?(tasks, names)
+  positions = names.map { |name| tasks.index { |candidate| candidate["name"] == name } }
+  positions.none?(&:nil?) && positions == positions.sort
+end
+
+def classifier_failure_guarded?(tasks)
+  conditions = task(tasks, "Require successful Immich storage classification")
+               &.dig("ansible.builtin.assert", "that")
+  Array(conditions).include?(
+    "immich_restore_classification_command.rc | default(1) | int == 0"
+  )
+end
+
+def existing_database_restore_blocked?(tasks)
+  conditions = task(tasks, "Require exact Immich storage classification")
+               &.dig("ansible.builtin.assert", "that")
+  Array(conditions).include?(
+    "not immich_restore_classification.restoreRequired or " \
+    "immich_restore_classification.database == 'fresh'"
+  )
+end
+
+def classifier_uses_effective_roots?(tasks)
+  argv = task(tasks, "Classify Immich storage before startup")
+         &.dig("ansible.builtin.command", "argv")
+  expected = {
+    "--postgres-dir" => "{{ immich_restore_database_root }}",
+    "--originals-root" => "{{ immich_restore_originals_root }}",
+    "--backup-dir" => "{{ immich_restore_backup_root }}",
+    "--failure-marker" => "{{ immich_restore_effective_failure_marker }}"
+  }
+  argv.is_a?(Array) && expected.all? do |option, value|
+    index = argv.index(option)
+    index && argv.fetch(index + 1, nil) == value
+  end
+end
+
+def lifecycle_ordered?(tasks)
+  ordered?(
+    tasks,
+    [
+      "Classify Immich storage before startup",
+      "Require successful Immich storage classification",
+      "Stop Immich application services before database restore",
+      "Protect an in-progress Immich database restore",
+      "Deploy the Immich data services",
+      "Restore and verify the Immich database",
+      "Deploy Immich",
+      "Require initialized Immich after database restore",
+      "Remove successful Immich restore provenance",
+      "Create the vault Immich administrator"
+    ]
+  )
+end
+
+def require_mutation_rejected(label)
+  refuse("#{label} mutation was not detected") if yield
+end
+
 classifier_path = File.join(ROOT, "roles", "immich", "files", "classify_restore.py")
 restore_path = File.join(ROOT, "roles", "immich", "tasks", "restore.yml")
 refuse("classifier is absent") unless File.file?(classifier_path)
@@ -91,7 +154,6 @@ refuse("adoption database restore does not use the adopted backup tree") unless
   ]
 
 main_path = File.join(ROOT, "roles", "immich", "tasks", "main.yml")
-main_text = File.read(main_path)
 main_tasks = YAML.safe_load_file(main_path, aliases: true)
 require_order(
   main_tasks,
@@ -168,9 +230,8 @@ classifier_argv = classifier.dig("ansible.builtin.command", "argv")
 end
 refuse("classifier can bypass effective roots") if classifier_argv.include?("--media-root")
 
-classification_guard = task(main_tasks, "Require successful Immich storage classification")
-refuse("classification failure is ignored") unless
-  classification_guard&.dig("ansible.builtin.assert", "that").to_s.include?("rc")
+refuse("classification failure is ignored or reversed") unless
+  classifier_failure_guarded?(main_tasks)
 schema_guard = task(main_tasks, "Require exact Immich storage classification")
 schema_conditions = schema_guard&.dig("ansible.builtin.assert", "that").to_s
 %w[database originalsPresent restoreRequired backupFilename].each do |key|
@@ -178,7 +239,8 @@ schema_conditions = schema_guard&.dig("ansible.builtin.assert", "that").to_s
 end
 refuse("split-brain classification can bypass restore") unless
   schema_conditions.include?("database == 'fresh'") &&
-  schema_conditions.include?("== immich_restore_classification.restoreRequired")
+  schema_conditions.include?("== immich_restore_classification.restoreRequired") &&
+  existing_database_restore_blocked?(main_tasks)
 
 plan_task = task(main_tasks, "Report planned Immich database restore")
 refuse("check mode restore plan is absent") unless
@@ -239,18 +301,61 @@ refuse("restore failures do not preserve a sanitized marker stage") unless
   restore_text.include?("Record sanitized Immich restore failure stage") &&
   restore_text.include?("immich_restore_stage")
 
-# Mutation sentinels protect the two safety boundaries most likely to regress.
-mutated_main = main_text.sub(
-  /(- name: Deploy the Immich data services.*?)(- name: Restore and verify the Immich database.*?\n(?=- name:))/m,
-  '\\2\\1'
+# Mutation sentinels prove each high-risk safety boundary is actively checked.
+mutated = deep_copy(main_tasks)
+task(mutated, "Require successful Immich storage classification")
+  .dig("ansible.builtin.assert", "that")[0] =
+    "immich_restore_classification_command.rc | default(1) | int != 0"
+require_mutation_rejected("reversed classifier failure guard") do
+  classifier_failure_guarded?(mutated)
+end
+
+mutated = deep_copy(main_tasks)
+task(mutated, "Require successful Immich storage classification")
+  .dig("ansible.builtin.assert", "that").clear
+require_mutation_rejected("ignored classifier failure") do
+  classifier_failure_guarded?(mutated)
+end
+
+mutated = deep_copy(main_tasks)
+schema = task(mutated, "Require exact Immich storage classification")
+         .dig("ansible.builtin.assert", "that")
+schema.delete(
+  "not immich_restore_classification.restoreRequired or " \
+  "immich_restore_classification.database == 'fresh'"
 )
-refuse("ordering mutation fixture did not change source") if mutated_main == main_text
-mutated_positions = [
-  mutated_main.index("- name: Deploy the Immich data services"),
-  mutated_main.index("- name: Restore and verify the Immich database"),
-  mutated_main.index("- name: Deploy Immich\n")
-]
-refuse("ordering mutation was not detected") if mutated_positions == mutated_positions.sort
+require_mutation_rejected("existing database restore enabled") do
+  existing_database_restore_blocked?(mutated)
+end
+
+mutated = deep_copy(main_tasks)
+argv = task(mutated, "Classify Immich storage before startup")
+       .dig("ansible.builtin.command", "argv")
+argv[argv.index("--postgres-dir") + 1] = "{{ nas_docker_root }}/immich/postgres"
+require_mutation_rejected("effective adoption database path bypass") do
+  classifier_uses_effective_roots?(mutated)
+end
+
+{
+  "application startup before verification" => [
+    "Deploy Immich", "Restore and verify the Immich database"
+  ],
+  "marker cleared before initialization" => [
+    "Remove successful Immich restore provenance",
+    "Require initialized Immich after database restore"
+  ],
+  "server stop after restore marker" => [
+    "Protect an in-progress Immich database restore",
+    "Stop Immich application services before database restore"
+  ]
+}.each do |label, (first, second)|
+  mutated = deep_copy(main_tasks)
+  first_index = mutated.index { |candidate| candidate["name"] == first }
+  second_index = mutated.index { |candidate| candidate["name"] == second }
+  mutated[first_index], mutated[second_index] = mutated[second_index], mutated[first_index]
+  require_mutation_rejected(label) { lifecycle_ordered?(mutated) }
+end
+
 mutated_shell = shell_source.sub('$1', "{{ immich_restore_backup_filename }}")
 refuse("filename-injection mutation was not detected") unless
   mutated_shell.include?("immich_restore_backup_filename")
@@ -265,7 +370,14 @@ end
   "docker compose --project-name immich",
   "run_play --tags immich",
   "run_immich_contract clean-restore-assert",
-  "IMMICH_CLEAN_RESTORE_IDEMPOTENT"
+  "IMMICH_CLEAN_RESTORE_IDEMPOTENT",
+  "run_immich_restore_negative_matrix",
+  "missing-safe-backup",
+  "unsafe-newest-backup",
+  "ambiguous-newest-backup",
+  "previous-failed-restore",
+  "IMMICH_EXISTING_DATABASE_BACKUP_IGNORED",
+  "IMMICH_NEGATIVE_RESTORE_MATRIX_OK"
 ].each do |sentinel|
   refuse("media integration omits #{sentinel}") unless integration_text.include?(sentinel)
 end

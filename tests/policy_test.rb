@@ -980,6 +980,9 @@ check(failures,
 check(failures,
       validation_commands.count("ruby tests/immich_restore_quality_test.rb") == 1,
       "validate-policy.sh must run the Immich restore quality test exactly once")
+check(failures,
+      validation_commands.count("ruby tests/immich_restore_lifecycle_test.rb") == 1,
+      "validate-policy.sh must run the Immich restore lifecycle test exactly once")
 
 # Compose interpolates $ in env files and silently truncates an unescaped bcrypt
 # hash rather than rejecting it, so escaping is mandatory wherever hashes flow.

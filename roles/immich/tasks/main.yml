@@ -54,10 +54,26 @@
 - name: Require exact Immich effective storage roots
   ansible.builtin.assert:
     that:
-      - immich_restore_database_root == ((platform_adoption_root ~ '/legacy/immich/postgres') if immich_restore_adoption_enabled | bool else (nas_docker_root ~ '/immich/postgres'))
-      - immich_restore_originals_root == ((platform_adoption_root ~ '/legacy/immich/data') if immich_restore_adoption_enabled | bool else (nas_media_root ~ '/Immich'))
-      - immich_restore_backup_root == ((platform_adoption_root ~ '/legacy/immich/backups') if immich_restore_adoption_enabled | bool else (nas_media_root ~ '/Immich-backups/database'))
-      - immich_restore_effective_failure_marker == ((platform_adoption_root ~ '/legacy/immich/.restore-failed') if immich_restore_adoption_enabled | bool else (nas_docker_root ~ '/immich/.restore-failed'))
+      - >-
+        immich_restore_database_root ==
+        ((platform_adoption_root ~ '/legacy/immich/postgres')
+        if immich_restore_adoption_enabled | bool
+        else (nas_docker_root ~ '/immich/postgres'))
+      - >-
+        immich_restore_originals_root ==
+        ((platform_adoption_root ~ '/legacy/immich/data')
+        if immich_restore_adoption_enabled | bool
+        else (nas_media_root ~ '/Immich'))
+      - >-
+        immich_restore_backup_root ==
+        ((platform_adoption_root ~ '/legacy/immich/backups')
+        if immich_restore_adoption_enabled | bool
+        else (nas_media_root ~ '/Immich-backups/database'))
+      - >-
+        immich_restore_effective_failure_marker ==
+        ((platform_adoption_root ~ '/legacy/immich/.restore-failed')
+        if immich_restore_adoption_enabled | bool
+        else (nas_docker_root ~ '/immich/.restore-failed'))
       - immich_restore_failure_marker == immich_restore_effective_failure_marker
     fail_msg: >-
       Immich restore roots do not match the active Compose storage mode.

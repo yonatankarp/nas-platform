@@ -2,6 +2,8 @@
 """Behavior contract for Immich clean-deployment restore classification."""
 
 import gzip
+import importlib.util
+import itertools
 import json
 import os
 from pathlib import Path
@@ -9,11 +11,49 @@ import stat
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
 CLASSIFIER = ROOT / "roles" / "immich" / "files" / "classify_restore.py"
 VALID_NAME = "immich-db-backup-20260815T010000-v3.1.0-pg14.19.sql.gz"
+CLASSIFIER_SPEC = importlib.util.spec_from_file_location(
+    "immich_restore_classifier", CLASSIFIER
+)
+CLASSIFIER_MODULE = importlib.util.module_from_spec(CLASSIFIER_SPEC)
+CLASSIFIER_SPEC.loader.exec_module(CLASSIFIER_MODULE)
+
+
+class ScandirSequence:
+    def __init__(self, entries):
+        self.entries = iter(entries)
+        self.request_count = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, _type, _value, _traceback):
+        return False
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        self.request_count += 1
+        return next(self.entries)
+
+
+class FakeScandirEntry:
+    def __init__(self, name, mode):
+        self.name = name
+        self.mode = mode
+        self.stat_calls = 0
+
+    def stat(self, *, follow_symlinks):
+        if follow_symlinks:
+            raise AssertionError("original traversal followed a directory entry")
+        self.stat_calls += 1
+        return os.stat_result((self.mode, 0, 0, 0, 0, 0, 1, 0, 0, 0))
 
 
 class ClassifierFixture:
@@ -343,6 +383,37 @@ class ImmichRestoreClassifierTest(unittest.TestCase):
             (self.fixture.originals / f"later-{index:04d}.jpg").write_bytes(b"asset")
         self.fixture.add_backup()
         self.assertTrue(self.fixture.classify()["originalsPresent"])
+
+    def test_streaming_scan_never_requests_entries_after_first_safe_original(self):
+        first = FakeScandirEntry("first.jpg", stat.S_IFREG | 0o600)
+        later = FakeScandirEntry("later-symlink", stat.S_IFLNK | 0o777)
+        entries = itertools.chain([first], itertools.repeat(later, 100_000))
+        scan = ScandirSequence(entries)
+        with mock.patch.object(CLASSIFIER_MODULE.os, "scandir", return_value=scan):
+            self.assertTrue(CLASSIFIER_MODULE.directory_has_regular_file(123))
+        self.assertEqual(scan.request_count, 1)
+        self.assertEqual(first.stat_calls, 1)
+        self.assertEqual(later.stat_calls, 0)
+
+    def test_streaming_scan_refuses_unsafe_entry_encountered_before_original(self):
+        unsafe = FakeScandirEntry("linked.jpg", stat.S_IFLNK | 0o777)
+        safe = FakeScandirEntry("safe.jpg", stat.S_IFREG | 0o600)
+        scan = ScandirSequence([unsafe, safe])
+        with mock.patch.object(CLASSIFIER_MODULE.os, "scandir", return_value=scan):
+            with self.assertRaisesRegex(CLASSIFIER_MODULE.Refusal, "unsafe-originals"):
+                CLASSIFIER_MODULE.directory_has_regular_file(123)
+        self.assertEqual(scan.request_count, 1)
+        self.assertEqual(safe.stat_calls, 0)
+
+    def test_original_traversal_documents_its_early_stop_safety_policy(self):
+        policy = CLASSIFIER_MODULE.directory_has_regular_file.__doc__ or ""
+        for requirement in (
+            "streaming",
+            "encountered before",
+            "first safe regular file",
+            "not inspected",
+        ):
+            self.assertIn(requirement, policy)
 
     def test_restored_asset_sample_requires_readable_internal_originals(self):
         original = self.fixture.add_original("library/admin/asset.jpg")

@@ -770,6 +770,113 @@ docker run --rm \
       printf 'IMMICH_CLEAN_RESTORE_IDEMPOTENT\n'
     }
 
+    run_immich_restore_negative_matrix() {
+      immich_server_before=\$(docker inspect --format '{{.Id}}:{{.State.StartedAt}}' immich_server)
+      immich_database_before=\$(docker inspect --format '{{.Id}}:{{.State.StartedAt}}' immich_postgres)
+
+      for scenario in no-backup corrupt-newest ambiguous-newest unsafe-permissions prior-marker; do
+        scenario_root='$sandbox/reports/immich-negative-'\$scenario
+        test ! -e \"\$scenario_root\"
+        mkdir -m 0755 \"\$scenario_root\"
+        mkdir -m 0755 \"\$scenario_root/docker\" \"\$scenario_root/media\"
+
+        run_play \
+          -e nas_docker_root=\"\$scenario_root/docker\" \
+          -e nas_media_root=\"\$scenario_root/media\" \
+          -e platform_project_name=\"immich-negative-\$scenario\" \
+          --tags host_prep,deployment_bundle
+
+        postgres_root=\"\$scenario_root/docker/immich/postgres\"
+        originals_root=\"\$scenario_root/media/Immich/upload\"
+        backup_root=\"\$scenario_root/media/Immich-backups/database\"
+        marker=\"\$scenario_root/docker/immich/.restore-failed\"
+        mkdir -p \"\$postgres_root\" \"\$originals_root\" \"\$backup_root\"
+        printf 'negative-matrix-original\n' > \"\$originals_root/asset.jpg\"
+        expected_failure=
+
+        case \$scenario in
+          no-backup)
+            expected_failure=missing-safe-backup
+            ;;
+          corrupt-newest)
+            printf 'SELECT 1;\n' | gzip -c > \
+              \"\$backup_root/immich-db-backup-20260814T010000-v3.1.0-pg14.19.sql.gz\"
+            printf 'not-a-gzip-stream\n' > \
+              \"\$backup_root/immich-db-backup-20260815T010000-v3.1.0-pg14.19.sql.gz\"
+            expected_failure=unsafe-newest-backup
+            ;;
+          ambiguous-newest)
+            printf 'SELECT 1;\n' | gzip -c > \
+              \"\$backup_root/immich-db-backup-20260815T010000-v3.1.0-pg14.19.sql.gz\"
+            printf 'SELECT 2;\n' | gzip -c > \
+              \"\$backup_root/immich-db-backup-20260815T010000-v3.1.1-pg14.20.sql.gz\"
+            expected_failure=ambiguous-newest-backup
+            ;;
+          unsafe-permissions)
+            printf 'SELECT 1;\n' | gzip -c > \
+              \"\$backup_root/immich-db-backup-20260815T010000-v3.1.0-pg14.19.sql.gz\"
+            chmod 0666 \
+              \"\$backup_root/immich-db-backup-20260815T010000-v3.1.0-pg14.19.sql.gz\"
+            expected_failure=unsafe-newest-backup
+            ;;
+          prior-marker)
+            printf '{\"version\":1,\"stage\":\"database-restore\"}\n' > \"\$marker\"
+            chmod 0600 \"\$marker\"
+            expected_failure=previous-failed-restore
+            ;;
+        esac
+
+        storage_before=\$(tar -C \"\$scenario_root\" -cf - docker/immich media | sha256sum)
+        output=/tmp/immich-negative-\$scenario.txt
+        if run_play \
+            -e nas_docker_root=\"\$scenario_root/docker\" \
+            -e nas_media_root=\"\$scenario_root/media\" \
+            -e platform_project_name=\"immich-negative-\$scenario\" \
+            --tags immich >\"\$output\" 2>&1; then
+          cat \"\$output\" >&2
+          printf 'IMMICH NEGATIVE RESTORE SCENARIO SUCCEEDED: %s\n' \"\$scenario\" >&2
+          exit 1
+        fi
+        grep -qF \"\$expected_failure\" \"\$output\"
+        if grep -qF \"\$scenario_root\" \"\$output\" || \
+           grep -qF 'immich-db-backup-20260815T010000' \"\$output\" || \
+           grep -qF 'TASK [immich : Restore and verify the Immich database]' \"\$output\" || \
+           grep -qF 'TASK [immich : Deploy Immich]' \"\$output\" || \
+           grep -qF 'TASK [immich : Create the vault Immich administrator]' \"\$output\"; then
+          cat \"\$output\" >&2
+          printf 'IMMICH NEGATIVE RESTORE BOUNDARY FAILED: %s\n' \"\$scenario\" >&2
+          exit 1
+        fi
+        /repo/tests/assert-no-vault-secrets.rb \
+          \"\$vault_file\" \"\$vault_password_file\" \"\$output\"
+        storage_after=\$(tar -C \"\$scenario_root\" -cf - docker/immich media | sha256sum)
+        test \"\$storage_after\" = \"\$storage_before\"
+        test \"\$(docker inspect --format '{{.Id}}:{{.State.StartedAt}}' immich_server)\" = \
+          \"\$immich_server_before\"
+        test \"\$(docker inspect --format '{{.Id}}:{{.State.StartedAt}}' immich_postgres)\" = \
+          \"\$immich_database_before\"
+      done
+
+      existing_backup='$sandbox/volume2/Immich-backups/database/'\
+'immich-db-backup-20260816T010000-v3.1.0-pg14.19.sql.gz'
+      existing_quarantine='$sandbox/reports/immich-existing-newer-backup.quarantine'
+      test ! -e \"\$existing_backup\"
+      test ! -e \"\$existing_quarantine\"
+      printf 'newer-backup-must-not-be-read\n' > \"\$existing_backup\"
+      existing_backup_before=\$(sha256sum \"\$existing_backup\")
+      run_play --tags immich > /tmp/immich-existing-database-backup.txt 2>&1
+      test \"\$(sha256sum \"\$existing_backup\")\" = \"\$existing_backup_before\"
+      test ! -e '$sandbox/volume1/Docker/immich/.restore-failed'
+      test \"\$(docker inspect --format '{{.Id}}:{{.State.StartedAt}}' immich_server)\" = \
+        \"\$immich_server_before\"
+      run_immich_contract clean-restore-assert
+      mv \"\$existing_backup\" \"\$existing_quarantine\"
+      printf 'IMMICH_EXISTING_DATABASE_BACKUP_IGNORED\n'
+
+      run_immich_contract run
+      printf 'IMMICH_NEGATIVE_RESTORE_MATRIX_OK\n'
+    }
+
     run_paperless_contract() {
       env \
         PLATFORM_KIND=integration \
@@ -1541,6 +1648,7 @@ docker run --rm \
         run_immich_contract run
         run_immich_contract clean-restore-seed
         run_immich_clean_restore
+        run_immich_restore_negative_matrix
       fi
     fi
 
