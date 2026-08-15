@@ -4,9 +4,20 @@ set +x
 umask 077
 dir=${PLATFORM_ADOPTION_SCRIPT_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)}
 sandbox=${PLATFORM_MAC_SANDBOX:?}
+: "${PLATFORM_PROJECT_NAME:?}"
+if [ "${PLATFORM_ADOPTION_PROBE_TARGET:-false}" = true ]; then
+  case ${PLATFORM_PROOF_PLATFORM:-mac} in
+    integration) runtime_context=base ;;
+    mac) runtime_context=mac-managed ;;
+    *) exit 1 ;;
+  esac
+else
+  runtime_context=legacy
+fi
 export PLATFORM_CONTRACT_VAULT_FILE=${PLATFORM_MAC_VAULT_FILE:?}
 export PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=${PLATFORM_MAC_VAULT_PASSWORD_FILE:?}
 if ! PLATFORM_KOMGA_LIBRARY_PATH="$sandbox/legacy/komga/library" \
+  PLATFORM_KOMGA_RUNTIME_CONTEXT="$runtime_context" \
   /bin/sh "${PLATFORM_ADOPTION_CONTRACT_FILE:-$dir/../contracts/komga.sh}" \
     assert-persistence >/dev/null 2>&1; then
   printf '%s\n' 'adoption-probe-error: komga evidence unavailable' >&2

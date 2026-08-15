@@ -1,5 +1,7 @@
 ---
 services:
+  alert-relay:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-dozzle-alert-relay
   dozzle:
     container_name: ${PLATFORM_PROJECT_NAME:?}-dozzle
     ports: !override

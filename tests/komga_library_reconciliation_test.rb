@@ -9,12 +9,175 @@ require "yaml"
 
 ROOT = File.expand_path("..", __dir__)
 ROLE = File.join(ROOT, "roles/komga/tasks/main.yml")
+COMPOSE = File.join(ROOT, "services/komga/compose.yml")
+ARGUMENT_SPECS = File.join(ROOT, "roles/komga/meta/argument_specs.yml")
+CONTRACT = File.join(ROOT, "tests/contracts/komga.sh")
+MAC_CONTRACT_WRAPPER = File.join(ROOT, "tests/mac/run-komga-contract.sh")
+LEGACY_SEED_HOOK = File.join(ROOT, "tests/mac/hooks/fixtures-seed/40-komga.sh")
+INTEGRATION_HARNESS = File.join(ROOT, "tests/integration.sh")
+ADOPTION_PROBE = File.join(ROOT, "tests/mac/adoption-probes/komga.sh")
+LEGACY_FIXTURE_SERVICE = File.join(ROOT, "tests/mac/legacy-fixture-service.sh")
+LEGACY_FIXTURE_HELPER = File.join(ROOT, "tests/contracts/legacy-fixture-paths.sh")
 DEFAULTS = YAML.safe_load_file(File.join(ROOT, "roles/komga/defaults/main.yml"), aliases: false)
 START_TASK = "List Komga libraries for reconciliation"
 END_TASK = "Require exact reconciled Komga library"
 
 def task_name(task)
   task.fetch("name", "")
+end
+
+def deep_copy(value)
+  Marshal.load(Marshal.dump(value))
+end
+
+def health_task(tasks)
+  matches = tasks.each_with_index.select do |task, _index|
+    task_name(task) == "Wait for Komga application health"
+  end
+  raise "application health readiness task must occur exactly once" unless matches.length == 1
+
+  matches.first
+end
+
+def validate_health_gating!(compose, tasks, defaults, argument_specs)
+  service = compose.fetch("services").fetch("komga")
+  expected_test = [
+    "CMD-SHELL",
+    "test \"$$(/usr/bin/curl --fail --silent --show-error " \
+      "http://127.0.0.1:25600/actuator/health)\" = '{\"status\":\"UP\"}'"
+  ]
+  raise "Komga application healthcheck is absent or weakened" unless
+    service["healthcheck"] == {
+      "test" => expected_test,
+      "interval" => "30s",
+      "timeout" => "10s",
+      "retries" => 5,
+      "start_period" => "60s"
+    }
+
+  raise "Komga application health timing defaults differ" unless
+    defaults.values_at("komga_health_retries", "komga_health_delay") == [60, 3]
+  options = argument_specs.dig("argument_specs", "main", "options")
+  raise "Komga application health timing arguments are undeclared" unless
+    options&.slice("komga_health_retries", "komga_health_delay") == {
+      "komga_health_retries" => { "type" => "int", "required" => false },
+      "komga_health_delay" => { "type" => "int", "required" => false }
+    }
+
+  readiness, readiness_index = health_task(tasks)
+  deploy_index = tasks.index { |task| task_name(task) == "Deploy Komga" }
+  claim_index = tasks.index { |task| task_name(task) == "Read Komga claim status" }
+  raise "Komga readiness does not gate claim reconciliation" unless
+    deploy_index && claim_index && deploy_index < readiness_index && readiness_index < claim_index
+  raise "Komga readiness request differs" unless readiness["ansible.builtin.uri"] == {
+    "url" => "{{ komga_api }}/actuator/health",
+    "method" => "GET",
+    "status_code" => [200],
+    "return_content" => true
+  }
+  raise "Komga readiness status gate differs" unless
+    readiness.values_at(
+      "register", "until", "retries", "delay", "changed_when", "check_mode"
+    ) == [
+      "komga_health",
+      [
+        "komga_health.json | default(none) is mapping",
+        "komga_health.json.status | default(none) == 'UP'"
+      ],
+      "{{ komga_health_retries }}",
+      "{{ komga_health_delay }}",
+      false,
+      false
+    ]
+end
+
+def health_mutation_rejected!(compose, tasks, defaults, argument_specs, label)
+  validate_health_gating!(compose, tasks, defaults, argument_specs)
+rescue KeyError, RuntimeError
+  return
+else
+  raise "#{label} health mutation was not rejected"
+end
+
+def validate_runtime_health_paths!(sources)
+  contract, wrapper, legacy_seed_hook, integration, adoption_probe, fixture_service, helper = sources
+  base_policy = [
+    "  base)",
+    "    PLATFORM_KOMGA_CONTAINER=komga",
+    "    PLATFORM_KOMGA_DOCKER_HEALTH_REQUIRED=true"
+  ].join("\n")
+  mac_policy = [
+    "  mac-managed)",
+    '    : "${PLATFORM_PROJECT_NAME:?PLATFORM_PROJECT_NAME is required for managed Mac Komga}"',
+    '    PLATFORM_KOMGA_CONTAINER=$PLATFORM_PROJECT_NAME-komga',
+    "    PLATFORM_KOMGA_DOCKER_HEALTH_REQUIRED=true"
+  ].join("\n")
+  legacy_policy = [
+    "  legacy)",
+    '    if [ "${PLATFORM_PROOF_LANE:-}" != adoption ] ||',
+    '        [ "${PLATFORM_ADOPTION_PROBE_TARGET:-false}" = true ]; then',
+    "      fail_contract 'legacy Komga runtime context is unavailable'",
+    "    fi",
+    '    : "${PLATFORM_PROJECT_NAME:?PLATFORM_PROJECT_NAME is required for the legacy Komga container}"',
+    '    PLATFORM_KOMGA_CONTAINER=$PLATFORM_PROJECT_NAME-legacy-komga-komga-1',
+    "    PLATFORM_KOMGA_DOCKER_HEALTH_REQUIRED=false"
+  ].join("\n")
+  raise "Komga runtime contexts do not derive exact container health policies" unless
+    contract.include?(base_policy) && contract.include?(mac_policy) && contract.include?(legacy_policy) &&
+      contract.scan(/PLATFORM_KOMGA_CONTAINER=/).length == 3 &&
+      !contract.include?('[ -z "${PLATFORM_KOMGA_CONTAINER:-}" ]') &&
+      contract.include?('DOCKER_HEALTH_REQUIRED = { "true" => true, "false" => false }.fetch(')
+  raise "integration Komga contexts do not allow only base and legacy" unless
+    contract.include?(': "${PLATFORM_KOMGA_RUNTIME_CONTEXT:=base}"') &&
+      contract.include?('base|legacy) ;;') &&
+      contract.include?("*) fail_contract 'integration Komga runtime context differs' ;;")
+
+  managed_health = <<~'RUBY'.strip
+    if DOCKER_HEALTH_REQUIRED
+      wait_for_container_health
+    else
+      require_absent_container_healthcheck
+    end
+    wait_for_api
+  RUBY
+  raise "managed and legacy Komga health gates are not selected before actuator readiness" unless
+    contract.include?(managed_health)
+  raise "managed Komga runtime no longer requires Docker healthy" unless
+    contract.include?('"{{.State.Health.Status}}", KOMGA_CONTAINER') &&
+      contract.include?('status.success? && stdout.strip == "healthy"')
+  raise "legacy Komga runtime does not prove its Docker healthcheck is absent" unless
+    contract.include?('"{{if .State.Health}}present{{else}}absent{{end}}", KOMGA_CONTAINER') &&
+      contract.include?('status.success? && stdout.strip == "absent"')
+  raise "actuator readiness no longer requires an exact UP mapping" unless
+    contract.include?('payload.is_a?(Hash) && payload["status"] == "UP"')
+
+  auth_index = contract.index('request("get", "/api/v2/users/me"')
+  gate_index = contract.index(managed_health)
+  raise "Komga health gates no longer precede authenticated assertions" unless
+    gate_index && auth_index && gate_index < auth_index
+  raise "Komga invoking harnesses do not bind exact runtime contexts" unless
+    integration.include?('PLATFORM_KOMGA_RUNTIME_CONTEXT=base') &&
+      wrapper.include?('PLATFORM_KOMGA_RUNTIME_CONTEXT=legacy') &&
+      wrapper.include?('elif [ "${PLATFORM_KIND:-}" = integration ]; then') &&
+      wrapper.include?('PLATFORM_KOMGA_RUNTIME_CONTEXT=base') &&
+      wrapper.include?('PLATFORM_KOMGA_RUNTIME_CONTEXT=mac-managed') &&
+      adoption_probe.include?('integration) runtime_context=base ;;') &&
+      adoption_probe.include?('mac) runtime_context=mac-managed ;;') &&
+      adoption_probe.include?('runtime_context=legacy') &&
+      adoption_probe.include?('PLATFORM_KOMGA_RUNTIME_CONTEXT="$runtime_context"') &&
+      fixture_service.include?('PLATFORM_KOMGA_RUNTIME_CONTEXT=legacy') &&
+      helper.include?('PLATFORM_KOMGA_CONFIG_PATH PLATFORM_KOMGA_RUNTIME_CONTEXT') &&
+      helper.include?('PLATFORM_KOMGA_CONTAINER PLATFORM_KOMGA_DOCKER_HEALTH_REQUIRED') &&
+      wrapper.include?('exec "$mac_repo_dir/tests/contracts/komga.sh" "$@"') &&
+      legacy_seed_hook.scan('"$mac_hook_dir/../../run-komga-contract.sh" seed').length == 1
+end
+
+def runtime_health_mutation_rejected!(sources, label)
+  validate_runtime_health_paths!(sources)
+rescue RuntimeError
+  return
+else
+  raise "#{label} runtime-health mutation was not rejected"
 end
 
 def library_tasks
@@ -144,6 +307,117 @@ end
 failures = []
 
 main_tasks = YAML.safe_load_file(ROLE, aliases: false)
+compose = YAML.safe_load_file(COMPOSE, aliases: true)
+argument_specs = YAML.safe_load_file(ARGUMENT_SPECS, aliases: false)
+validate_health_gating!(compose, main_tasks, DEFAULTS, argument_specs)
+
+contract = File.read(CONTRACT)
+mac_contract_wrapper = File.read(MAC_CONTRACT_WRAPPER)
+legacy_seed_hook = File.read(LEGACY_SEED_HOOK)
+runtime_sources = [
+  contract,
+  mac_contract_wrapper,
+  legacy_seed_hook,
+  File.read(INTEGRATION_HARNESS),
+  File.read(ADOPTION_PROBE),
+  File.read(LEGACY_FIXTURE_SERVICE),
+  File.read(LEGACY_FIXTURE_HELPER)
+]
+validate_runtime_health_paths!(runtime_sources)
+
+project_derived_base = runtime_sources.dup
+project_derived_base[0] = contract.sub(
+  "PLATFORM_KOMGA_CONTAINER=komga",
+  "PLATFORM_KOMGA_CONTAINER=$PLATFORM_PROJECT_NAME-komga"
+)
+runtime_health_mutation_rejected!(project_derived_base, "project-derived base container")
+
+legacy_requires_health = runtime_sources.dup
+legacy_requires_health[0] = contract.sub(
+  "PLATFORM_KOMGA_DOCKER_HEALTH_REQUIRED=false",
+  "PLATFORM_KOMGA_DOCKER_HEALTH_REQUIRED=true"
+)
+runtime_health_mutation_rejected!(legacy_requires_health, "legacy Docker healthy")
+
+managed_skips_health = runtime_sources.dup
+managed_skips_health[0] = contract.sub(
+  "PLATFORM_KOMGA_DOCKER_HEALTH_REQUIRED=true",
+  "PLATFORM_KOMGA_DOCKER_HEALTH_REQUIRED=false"
+)
+runtime_health_mutation_rejected!(managed_skips_health, "managed Docker health bypass")
+
+legacy_absence_unchecked = runtime_sources.dup
+legacy_absence_unchecked[0] = contract.sub(
+  'status.success? && stdout.strip == "absent"',
+  'status.success?'
+)
+runtime_health_mutation_rejected!(legacy_absence_unchecked, "legacy healthcheck absence bypass")
+
+wrong_integration_context = runtime_sources.dup
+wrong_integration_context[3] = runtime_sources.fetch(3).sub(
+  "PLATFORM_KOMGA_RUNTIME_CONTEXT=base",
+  "PLATFORM_KOMGA_RUNTIME_CONTEXT=mac-managed"
+)
+runtime_health_mutation_rejected!(wrong_integration_context, "integration context")
+
+integration_accepts_mac = runtime_sources.dup
+integration_accepts_mac[0] = contract.sub("base|legacy) ;;", "base|legacy|mac-managed) ;;")
+runtime_health_mutation_rejected!(integration_accepts_mac, "integration Mac context")
+
+integration_wrapper_uses_mac = runtime_sources.dup
+integration_wrapper_base = [
+  'elif [ "${PLATFORM_KIND:-}" = integration ]; then',
+  "  PLATFORM_KOMGA_RUNTIME_CONTEXT=base"
+].join("\n")
+integration_wrapper_uses_mac[1] = mac_contract_wrapper.sub(
+  integration_wrapper_base,
+  integration_wrapper_base.sub("=base", "=mac-managed")
+)
+runtime_health_mutation_rejected!(integration_wrapper_uses_mac, "integration wrapper context")
+
+wrong_baseline_context = runtime_sources.dup
+wrong_baseline_context[4] = runtime_sources.fetch(4).sub(
+  "  runtime_context=legacy",
+  "  runtime_context=mac-managed"
+)
+runtime_health_mutation_rejected!(wrong_baseline_context, "baseline context")
+
+wrong_target_context = runtime_sources.dup
+wrong_target_context[4] = runtime_sources.fetch(4).sub(
+  "mac) runtime_context=mac-managed ;;",
+  "mac) runtime_context=legacy ;;"
+)
+runtime_health_mutation_rejected!(wrong_target_context, "target-adoption context")
+
+wrong_legacy_invocation = legacy_seed_hook.sub("run-komga-contract.sh\" seed", "run-komga-contract.sh\" run")
+wrong_legacy_invocation_sources = runtime_sources.dup
+wrong_legacy_invocation_sources[2] = wrong_legacy_invocation
+runtime_health_mutation_rejected!(wrong_legacy_invocation_sources, "legacy fixture invocation")
+
+missing_healthcheck = deep_copy(compose)
+missing_healthcheck.fetch("services").fetch("komga").delete("healthcheck")
+health_mutation_rejected!(missing_healthcheck, main_tasks, DEFAULTS, argument_specs, "absent")
+
+weakened_healthcheck = deep_copy(compose)
+weakened_healthcheck.dig("services", "komga", "healthcheck")["test"] = [
+  "CMD", "/usr/bin/curl", "--fail", "http://127.0.0.1:25600/actuator/health"
+]
+health_mutation_rejected!(weakened_healthcheck, main_tasks, DEFAULTS, argument_specs, "weakened")
+
+wrong_endpoint = deep_copy(compose)
+wrong_endpoint.dig("services", "komga", "healthcheck", "test")[1] =
+  wrong_endpoint.dig("services", "komga", "healthcheck", "test", 1).sub(
+    "/actuator/health", "/api/v1/claim"
+  )
+health_mutation_rejected!(wrong_endpoint, main_tasks, DEFAULTS, argument_specs, "wrong endpoint")
+
+late_readiness = deep_copy(main_tasks)
+readiness, readiness_index = health_task(late_readiness)
+late_readiness.delete_at(readiness_index)
+claim_index = late_readiness.index { |task| task_name(task) == "Read Komga claim status" }
+late_readiness.insert(claim_index + 1, readiness)
+health_mutation_rejected!(compose, late_readiness, DEFAULTS, argument_specs, "late readiness")
+
 main_names = main_tasks.map { |task| task_name(task) }
 preflight_index = main_names.index("Refuse ambiguous Komga library candidates")
 user_index = main_names.index("Reconcile managed Komga users")

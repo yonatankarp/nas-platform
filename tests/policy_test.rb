@@ -940,8 +940,13 @@ validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "te
   ruby\ tests/database_managed_users_test.rb\ --self-test
   ruby\ tests/immich_configured_password_test.rb
   ruby\ tests/immich_user_onboarding_test.rb
+  ruby\ tests/immich_selective_helper_integrity_test.rb
   ruby\ tests/komga_library_reconciliation_test.rb
+  ruby\ tests/audiobookshelf_initial_scan_test.rb
+  ruby\ tests/audiobookshelf_initial_scan_behavior_test.rb
   ruby\ tests/paperless_mail_reconciliation_test.rb
+  python3\ -m\ unittest\ -v\ tests/dozzle_alert_relay_test.py
+  tests/dozzle_alert_state_symlink_test.sh
   tests/integration_lock_test.sh
   tests/mac/manual-validation-runner-test.sh
   tests/mac/audiobookshelf-drift-hook-test.sh
@@ -956,6 +961,43 @@ end
 check(failures,
       validation_commands.count("ruby tests/immich_configured_password_test.rb") == 1,
       "validate-policy.sh must run ruby tests/immich_configured_password_test.rb exactly once")
+check(failures,
+      validation_commands.count("ruby tests/audiobookshelf_initial_scan_test.rb") == 1,
+      "validate-policy.sh must run ruby tests/audiobookshelf_initial_scan_test.rb exactly once")
+check(failures,
+      validation_commands.count("ruby tests/audiobookshelf_initial_scan_behavior_test.rb") == 1,
+      "validate-policy.sh must run ruby tests/audiobookshelf_initial_scan_behavior_test.rb exactly once")
+check(failures,
+      validation_commands.count("python3 -m unittest -v tests/dozzle_alert_relay_test.py") == 1,
+      "validate-policy.sh must run the Dozzle alert relay unit test exactly once")
+check(failures,
+      validation_commands.count("tests/dozzle_alert_state_symlink_test.sh") == 1,
+      "validate-policy.sh must run the Dozzle alert state symlink test exactly once")
+check(failures,
+      validation_commands.count(
+        "python3 -m unittest -v tests/immich_restore_classifier_test.py"
+      ) == 1,
+      "validate-policy.sh must run the Immich restore classifier test exactly once")
+check(failures,
+      validation_commands.count("ruby tests/immich_restore_quality_test.rb") == 1,
+      "validate-policy.sh must run the Immich restore quality test exactly once")
+check(failures,
+      validation_commands.count("ruby tests/immich_restore_lifecycle_test.rb") == 1,
+      "validate-policy.sh must run the Immich restore lifecycle test exactly once")
+check(failures,
+      validation_commands.count("ruby tests/immich_release_helper_test.rb") == 1,
+      "validate-policy.sh must run the Immich release helper test exactly once")
+check(failures,
+      validation_commands.count("ruby tests/immich_selective_helper_integrity_test.rb") == 1,
+      "validate-policy.sh must run the Immich selective helper integrity test exactly once")
+check(failures,
+      owned_file?(File.join(ROOT, "tests", "immich_release_helper_test.rb"),
+                  File.join(ROOT, "tests")),
+      "Immich release helper test must be a regular non-symlink file")
+check(failures,
+      owned_file?(File.join(ROOT, "tests", "immich_selective_helper_integrity_test.rb"),
+                  File.join(ROOT, "tests")),
+      "Immich selective helper integrity test must be a regular non-symlink file")
 
 # Compose interpolates $ in env files and silently truncates an unescaped bcrypt
 # hash rather than rejecting it, so escaping is mandatory wherever hashes flow.
@@ -1422,6 +1464,9 @@ check(failures, inputs_body.include?("services/manifest.yml") &&
                 inputs_body.include?("compose.yml") &&
                 inputs_body.include?("compose.{{ platform_compose_kind }}.yml"),
       "controller inputs must validate manifest, canonical Compose, and platform overrides")
+check(failures, inputs_body.include?("services/dozzle/alert_relay.py") &&
+                inputs_body.include?("services/immich/classify_restore.py"),
+      "controller inputs must validate every tracked runtime helper")
 
 target_preflight_index = Array(site_play["pre_tasks"]).index do |task|
   include_role = task["ansible.builtin.include_role"]
@@ -1461,6 +1506,16 @@ end
 canonical_conditions = Array(canonical_requirement&.dig("ansible.builtin.assert", "that")).join(" ")
 check(failures, canonical_conditions.include?("not item.stat.islnk"),
       "canonical Compose validation must explicitly reject symlinks")
+immich_helper_copy = deployment_tasks.find do |task|
+  task["name"] == "Copy the tracked Immich restore classifier from the controller"
+end
+check(failures,
+      immich_helper_copy&.dig("ansible.builtin.copy", "src") ==
+        "{{ playbook_dir }}/services/immich/classify_restore.py" &&
+        immich_helper_copy&.dig("ansible.builtin.copy", "dest") ==
+          "{{ deployment_bundle_staging_dir }}/services/immich/classify_restore.py" &&
+        immich_helper_copy&.dig("ansible.builtin.copy", "mode") == "0644",
+      "deployment bundle must package the exact Immich classifier with mode 0644")
 %w[
   Revalidate_before_removing_the_staging_release
   Revalidate_before_replacing_an_inactive_release
@@ -1498,6 +1553,12 @@ check(failures, deployment_manifest_template.include?("platform_compose") &&
                 deployment_manifest_template.include?("canonical_compose") &&
                 deployment_manifest_template.include?("compose_service_name"),
       "deployment manifest images must merge canonical and platform Compose services")
+check(failures, deployment_manifest_template.include?("runtime_files:") &&
+                deployment_manifest_template.include?("'immich': ['classify_restore.py']") &&
+                deployment_manifest_template.include?("mode: \"0644\"") &&
+                deployment_manifest_template.include?("runtime_file") &&
+                deployment_manifest_template.include?("hash('sha256')"),
+      "deployment manifest must bind runtime helper paths, modes, and checksums")
 compose_metadata_filter = File.read(
   File.join(ROOT, "filter_plugins", "compose_metadata.py")
 )
@@ -1549,6 +1610,17 @@ manifest_verifier = File.read(File.join(ROOT, "tests", "verify_deployment_manife
 check(failures, manifest_verifier.include?("require-image-merge") &&
                 manifest_verifier.include?("if require_image_merge"),
       "effective-image replacement proof must be opt-in for an isolated fixture")
+check(failures, manifest_verifier.include?("RUNTIME_FILES") &&
+                manifest_verifier.include?('"immich" => ["classify_restore.py"]') &&
+                manifest_verifier.include?('"mode" => "0644"'),
+      "deployment manifest verifier must reproduce runtime helper integrity")
+
+immich_classifier = File.join(ROOT, "services", "immich", "classify_restore.py")
+check(failures, owned_file?(immich_classifier, File.join(ROOT, "services", "immich")) &&
+                (File.stat(immich_classifier).mode & 0o777) == 0o644,
+      "Immich classifier must have one canonical mode-0644 service source")
+check(failures, !File.exist?(File.join(ROOT, "roles", "immich", "files", "classify_restore.py")),
+      "Immich classifier must not retain a divergent role-local source")
 
 # Identity reads must be server-filtered and retain totals so the role can refuse
 # an identity result that exceeds the complete 500-record response page.

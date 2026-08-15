@@ -7,6 +7,13 @@ ruby tests/beszel_telemetry_probe_test.rb
 ruby tests/beszel_telemetry_timeout_test.rb
 ruby tests/beszel_telemetry_ansible_test.rb
 python3 tests/beszel_telemetry_module_test.py
+python3 -m unittest -v tests/dozzle_alert_relay_test.py
+python3 -m unittest -v tests/immich_restore_classifier_test.py
+ruby tests/immich_restore_quality_test.rb
+ruby tests/immich_restore_lifecycle_test.rb
+ruby tests/immich_release_helper_test.rb
+ruby tests/immich_selective_helper_integrity_test.rb
+tests/dozzle_alert_state_symlink_test.sh
 tests/mac/beszel-telemetry-hook-test.sh
 ruby tests/ci/classify_changes_test.rb
 ruby tests/ci/validate_results_test.rb
@@ -27,6 +34,8 @@ ruby tests/config_managed_users_test.rb --self-test
 ruby tests/media_managed_users_test.rb
 ruby tests/media_managed_users_test.rb --self-test
 ruby tests/komga_library_reconciliation_test.rb
+ruby tests/audiobookshelf_initial_scan_test.rb
+ruby tests/audiobookshelf_initial_scan_behavior_test.rb
 ruby tests/immich_user_onboarding_test.rb
 ruby tests/immich_configured_password_test.rb
 ruby tests/database_managed_users_test.rb

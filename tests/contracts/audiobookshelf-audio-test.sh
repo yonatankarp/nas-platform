@@ -55,11 +55,11 @@ if [ -z "$preseed_line" ] || [ -z "$deploy_line" ] || [ "$preseed_line" -ge "$de
   exit 1
 fi
 
-grep -Fq 'next_fixture_scan_at = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 10' \
-  "$repo_dir/tests/contracts/audiobookshelf.sh" || {
-  printf '%s\n' 'Audiobookshelf audio test failed: bounded fixture rescan is absent' >&2
+if grep -Eq 'request\([[:space:]]*"post",[[:space:]]*"/api/libraries/.*/scan"' \
+    "$repo_dir/tests/contracts/audiobookshelf.sh"; then
+  printf '%s\n' 'Audiobookshelf audio test failed: contract still owns a library scan' >&2
   exit 1
-}
+fi
 
 test_status=0
 output=$(

@@ -10,6 +10,7 @@
       - "{{ platform_current_dir }}/services/immich/compose.yml"
       - "{{ platform_current_dir }}/services/immich/compose.{{ platform_compose_kind }}.yml"
       - "{{ platform_current_dir }}/services/immich/compose.adoption.yml"
+      - "{{ platform_current_dir }}/services/immich/classify_restore.py"
       - "{{ platform_runtime_dir }}/services/immich"
       - "{{ platform_runtime_dir }}/services/immich/.env"
 
@@ -27,12 +28,192 @@
          ((platform_adoption_enabled | default(false) | bool)
           | ternary(['compose.adoption.yml'], [])) }}
 
+- name: Resolve the Immich storage mode
+  ansible.builtin.set_fact:
+    immich_restore_adoption_enabled: >-
+      {{ platform_adoption_enabled | default(false) | bool }}
+
+- name: Derive the effective Immich storage roots
+  ansible.builtin.set_fact:
+    immich_restore_database_root: >-
+      {{ (platform_adoption_root ~ '/legacy/immich/postgres')
+         if immich_restore_adoption_enabled | bool
+         else (nas_docker_root ~ '/immich/postgres') }}
+    immich_restore_originals_root: >-
+      {{ (platform_adoption_root ~ '/legacy/immich/data')
+         if immich_restore_adoption_enabled | bool
+         else (nas_media_root ~ '/Immich') }}
+    immich_restore_backup_root: >-
+      {{ (platform_adoption_root ~ '/legacy/immich/backups')
+         if immich_restore_adoption_enabled | bool
+         else (nas_media_root ~ '/Immich-backups/database') }}
+    immich_restore_effective_failure_marker: >-
+      {{ (platform_adoption_root ~ '/legacy/immich/.restore-failed')
+         if immich_restore_adoption_enabled | bool
+         else (nas_docker_root ~ '/immich/.restore-failed') }}
+
+- name: Require exact Immich effective storage roots
+  ansible.builtin.assert:
+    that:
+      - >-
+        immich_restore_database_root ==
+        ((platform_adoption_root ~ '/legacy/immich/postgres')
+        if immich_restore_adoption_enabled | bool
+        else (nas_docker_root ~ '/immich/postgres'))
+      - >-
+        immich_restore_originals_root ==
+        ((platform_adoption_root ~ '/legacy/immich/data')
+        if immich_restore_adoption_enabled | bool
+        else (nas_media_root ~ '/Immich'))
+      - >-
+        immich_restore_backup_root ==
+        ((platform_adoption_root ~ '/legacy/immich/backups')
+        if immich_restore_adoption_enabled | bool
+        else (nas_media_root ~ '/Immich-backups/database'))
+      - >-
+        immich_restore_effective_failure_marker ==
+        ((platform_adoption_root ~ '/legacy/immich/.restore-failed')
+        if immich_restore_adoption_enabled | bool
+        else (nas_docker_root ~ '/immich/.restore-failed'))
+      - immich_restore_failure_marker == immich_restore_effective_failure_marker
+    fail_msg: >-
+      Immich restore roots do not match the active Compose storage mode.
+      Refusing deployment before storage classification.
+
 - name: Render the Immich environment
   ansible.builtin.template:
     src: env.j2
     dest: "{{ platform_runtime_dir }}/services/immich/.env"
     mode: "0600"
   no_log: true
+
+- name: Verify Immich restore classifier before storage classification
+  ansible.builtin.include_tasks: verify_classifier.yml
+
+- name: Classify Immich storage before startup
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_facts.python.executable }}"
+      - "{{ platform_current_dir }}/services/immich/classify_restore.py"
+      - --postgres-dir
+      - "{{ immich_restore_database_root }}"
+      - --originals-root
+      - "{{ immich_restore_originals_root }}"
+      - --backup-dir
+      - "{{ immich_restore_backup_root }}"
+      - --failure-marker
+      - "{{ immich_restore_effective_failure_marker }}"
+      - --expected-uid
+      - "{{ immich_restore_backup_uid | string }}"
+      - --expected-gid
+      - "{{ immich_restore_backup_gid | string }}"
+      - --expected-immich-version
+      - "{{ immich_restore_expected_immich_version }}"
+      - --expected-postgres-major
+      - "{{ immich_restore_expected_postgres_major | string }}"
+  register: immich_restore_classification_command
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Resolve sanitized Immich storage classification status
+  ansible.builtin.set_fact:
+    immich_restore_classification_status: >-
+      {{ immich_restore_classification_command.stderr | default('') | trim
+         if immich_restore_classification_command.rc | default(1) | int != 0 and
+            immich_restore_classification_command.stderr | default('') | trim in
+             ['unsafe-storage', 'unsafe-originals', 'missing-safe-backup',
+             'ambiguous-newest-backup', 'unsafe-newest-backup',
+             'incompatible-newest-backup',
+             'previous-failed-restore']
+         else 'classification-failed'
+         if immich_restore_classification_command.rc | default(1) | int != 0
+         else 'classified' }}
+  no_log: true
+
+- name: Require successful Immich storage classification
+  ansible.builtin.assert:
+    that:
+      - immich_restore_classification_command.rc | default(1) | int == 0
+    fail_msg: >-
+      Immich restore preflight refused deployment
+      ({{ immich_restore_classification_status }}). The application server was
+      not started; repair the protected storage or backup condition and rerun.
+
+- name: Parse the Immich storage classification
+  ansible.builtin.set_fact:
+    immich_restore_classification: >-
+      {{ immich_restore_classification_command.stdout | from_json }}
+  no_log: true
+
+- name: Require exact Immich storage classification
+  ansible.builtin.assert:
+    that:
+      - immich_restore_classification.keys() | list | sort == ['backupFilename', 'database', 'originalsPresent', 'restoreRequired']
+      - immich_restore_classification.database in ['fresh', 'existing']
+      - immich_restore_classification.originalsPresent is boolean
+      - immich_restore_classification.restoreRequired is boolean
+      - immich_restore_classification.backupFilename is none or immich_restore_classification.backupFilename is string
+      - (immich_restore_classification.database == 'fresh' and immich_restore_classification.originalsPresent) == immich_restore_classification.restoreRequired
+      - not immich_restore_classification.restoreRequired or immich_restore_classification.database == 'fresh'
+      - not immich_restore_classification.restoreRequired or immich_restore_classification.originalsPresent
+      - not immich_restore_classification.restoreRequired or immich_restore_classification.backupFilename is string
+      - immich_restore_classification.restoreRequired or immich_restore_classification.backupFilename is none
+    fail_msg: >-
+      Immich restore preflight returned an invalid classification. The
+      application server was not started.
+  no_log: true
+
+- name: Resolve the Immich database restore decision
+  ansible.builtin.set_fact:
+    immich_restore_required: "{{ immich_restore_classification.restoreRequired | bool }}"
+    immich_restore_backup_filename: "{{ immich_restore_classification.backupFilename }}"
+  no_log: true
+
+- name: Report planned Immich database restore
+  ansible.builtin.debug:
+    msg: IMMICH_PLAN_DATABASE_RESTORE
+  when:
+    - ansible_check_mode
+    - immich_restore_required | bool
+  changed_when: true
+
+- name: Stop check mode before an Immich database restore
+  ansible.builtin.meta: end_role
+  when:
+    - ansible_check_mode
+    - immich_restore_required | bool
+
+- name: Stop Immich application services before database restore
+  community.docker.docker_compose_v2:
+    project_src: "{{ platform_current_dir }}/services/immich"
+    project_name: "{{ immich_compose_project_name }}"
+    files: "{{ immich_compose_files }}"
+    env_files: ["{{ platform_runtime_dir }}/services/immich/.env"]
+    services: [immich-server, immich-machine-learning]
+    state: stopped
+  when:
+    - immich_restore_required | bool
+    - not ansible_check_mode
+
+- name: Protect an in-progress Immich database restore
+  ansible.builtin.copy:
+    dest: "{{ immich_restore_effective_failure_marker }}"
+    content: |
+      {{ {'version': 1, 'stage': 'dependencies-start'} | to_json }}
+    mode: "0600"
+    owner: >-
+      {{ nas_uid
+         if platform_kind == 'nas' or (platform_manage_linux_ownership | bool)
+         else omit }}
+    group: >-
+      {{ nas_gid
+         if platform_kind == 'nas' or (platform_manage_linux_ownership | bool)
+         else omit }}
+  when:
+    - immich_restore_required | bool
+    - not ansible_check_mode
 
 # The database and the cache come up first and alone. PostgreSQL honors
 # POSTGRES_USER, POSTGRES_DB and POSTGRES_PASSWORD only when it initializes an
@@ -49,7 +230,14 @@
     services: [database, redis]
     state: present
     wait: true
-    wait_timeout: 300
+    wait_timeout: "{{ immich_restore_database_wait_timeout }}"
+  when: not ansible_check_mode
+
+- name: Restore and verify the Immich database
+  ansible.builtin.include_tasks: restore.yml
+  when:
+    - immich_restore_required | bool
+    - not ansible_check_mode
 
 # Loopback inside the PostgreSQL container is trust-authenticated, so this
 # deliberately connects to the Compose service name instead: that leaves the
@@ -132,6 +320,21 @@
 - name: Resolve Immich initialization state
   ansible.builtin.set_fact:
     immich_initialized: "{{ immich_public_config.json.isInitialized | bool }}"
+
+- name: Require initialized Immich after database restore
+  ansible.builtin.assert:
+    that:
+      - immich_initialized | bool
+    fail_msg: >-
+      Immich reported an uninitialized server after a database restore. A new
+      administrator was not created; inspect the protected restored state.
+  when: immich_restore_required | bool
+
+- name: Remove successful Immich restore provenance
+  ansible.builtin.file:
+    path: "{{ immich_restore_effective_failure_marker }}"
+    state: absent
+  when: immich_restore_required | bool
 
 - name: Report planned Immich administrator creation
   ansible.builtin.debug:

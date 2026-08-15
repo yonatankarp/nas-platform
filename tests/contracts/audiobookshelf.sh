@@ -27,8 +27,6 @@ fail_contract() {
 [ -f "$adoption_compose" ] || fail_contract 'services/audiobookshelf/compose.adoption.yml is absent'
 [ -f "$argument_specs" ] || fail_contract 'roles/audiobookshelf/meta/argument_specs.yml is absent'
 [ -f "$environment_template" ] || fail_contract 'roles/audiobookshelf/templates/env.j2 is absent'
-grep -qx 'FIXTURE_SCAN_TIMEOUT_SECONDS = 180' "$contract_source" ||
-  fail_contract 'fixture scan timeout differs'
 
 ruby -ryaml - "$compose" "$mac_compose" "$adoption_compose" "$role" "$defaults" \
   "$argument_specs" "$environment_template" "$integration" "$storage_inventory" \
@@ -242,7 +240,6 @@ require "uri"
 require "yaml"
 
 MODE = ARGV.fetch(0)
-FIXTURE_SCAN_TIMEOUT_SECONDS = 180
 BASE = URI("http://127.0.0.1:#{Integer(ENV.fetch('PLATFORM_AUDIOBOOKSHELF_PORT'), 10)}")
 MEDIA_ROOT = Pathname.new(ENV.fetch("PLATFORM_MEDIA_ROOT")).expand_path
 REPORT_ROOT = Pathname.new(ENV.fetch("PLATFORM_REPORT_ROOT")).expand_path
@@ -746,17 +743,6 @@ rescue JSON::ParserError, KeyError, TypeError
   "inspect-malformed"
 end
 
-def scan_timeout_diagnostic(items, tasks_payload, container_state, library_id)
-  tasks = tasks_payload.is_a?(Hash) && tasks_payload["tasks"].is_a?(Array) ? tasks_payload["tasks"] : []
-  active_scan = tasks.any? do |task|
-    task.is_a?(Hash) && task["action"] == "library-scan" && task["isFinished"] == false &&
-      task["data"].is_a?(Hash) && task.dig("data", "libraryId") == library_id
-  end
-  item_count = items.is_a?(Array) ? items.length : -1
-  "fixture scan did not discover the audiobook " \
-    "(container-state=#{container_state}, observed-items=#{item_count}, active-scan=#{active_scan})"
-end
-
 def exact_playback?(source, full_body, range_body, content_range)
   full_body == source &&
     Digest::SHA256.hexdigest(full_body) == Digest::SHA256.hexdigest(source) &&
@@ -1181,21 +1167,6 @@ when "audio-self-test"
   expect_contract_failure do
     matching_fixture_item([exact_item, exact_item.merge("id" => "duplicate")])
   end
-  diagnostic = scan_timeout_diagnostic(
-    [],
-    {
-      "tasks" => [{
-        "action" => "library-scan", "data" => { "libraryId" => "contract-library" },
-        "isFinished" => false
-      }]
-    },
-    "exact",
-    "contract-library"
-  )
-  fail_contract("bounded scan diagnostic differs") unless diagnostic ==
-    "fixture scan did not discover the audiobook " \
-    "(container-state=exact, observed-items=0, active-scan=true)"
-
   range = source.byteslice(0, 128)
   content_range = "bytes 0-127/#{source.bytesize}"
   fail_contract("exact source playback proof was rejected") unless
@@ -1250,12 +1221,14 @@ when "assert-check-output"
                { "AUDIOBOOKSHELF_PLAN_ADMIN_CREATE" => 0,
                  "AUDIOBOOKSHELF_PLAN_ADMIN_REPAIR" => 0,
                  "AUDIOBOOKSHELF_PLAN_LIBRARY_CREATE" => 0,
-                 "AUDIOBOOKSHELF_PLAN_LIBRARY_REPAIR" => 1 }
+                 "AUDIOBOOKSHELF_PLAN_LIBRARY_REPAIR" => 1,
+                 "AUDIOBOOKSHELF_PLAN_INITIAL_SCAN" => 0 }
              when "missing"
                { "AUDIOBOOKSHELF_PLAN_ADMIN_CREATE" => 0,
                  "AUDIOBOOKSHELF_PLAN_ADMIN_REPAIR" => 0,
                  "AUDIOBOOKSHELF_PLAN_LIBRARY_CREATE" => 1,
-                 "AUDIOBOOKSHELF_PLAN_LIBRARY_REPAIR" => 0 }
+                 "AUDIOBOOKSHELF_PLAN_LIBRARY_REPAIR" => 0,
+                 "AUDIOBOOKSHELF_PLAN_INITIAL_SCAN" => 1 }
              else
                fail_contract("unknown planned-change scenario")
              end
@@ -1465,28 +1438,13 @@ seed_fixture
 container_state = container_fixture_state
 fail_contract("fixture container state differs: #{container_state}") unless
   %w[unconfigured exact].include?(container_state)
-request("post", "/api/libraries/#{library_id}/scan", token: token, expected: [200])
-deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + FIXTURE_SCAN_TIMEOUT_SECONDS
-next_fixture_scan_at = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 10
-item = nil
-loop do
-  _items_response, items_payload = request(
-    "get", "/api/libraries/#{library_id}/items?limit=100&minified=0", token: token
-  )
-  items = items_payload.is_a?(Hash) ? items_payload.fetch("results", []) : items_payload
-  item = matching_fixture_item(items)
-  break if item
-  now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-  if now >= deadline
-    tasks_payload = request("get", "/api/tasks", token: token).last
-    fail_contract(scan_timeout_diagnostic(items, tasks_payload, container_state, library_id))
-  end
-  if now >= next_fixture_scan_at
-    request("post", "/api/libraries/#{library_id}/scan", token: token, expected: [200])
-    next_fixture_scan_at = now + 10
-  end
-  sleep 1
-end
+_items_response, items_payload = request(
+  "get", "/api/libraries/#{library_id}/items?limit=100&minified=0", token: token
+)
+fail_contract("managed library items response is malformed") unless
+  items_payload.is_a?(Hash) && items_payload["results"].is_a?(Array)
+item = matching_fixture_item(items_payload.fetch("results"))
+fail_contract("role-owned initial scan did not discover the pre-deployment fixture") unless item
 item_id = safe_id(item.fetch("id"))
 _item_response, full_item = request("get", "/api/items/#{item_id}?expanded=1", token: token)
 audio_file = full_item.dig("media", "audioFiles")&.first

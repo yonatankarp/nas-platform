@@ -97,6 +97,10 @@ EXPECTED_BINDINGS.each do |binding|
   binding << (READ_ONLY_BINDINGS.include?(binding.first(2).join("|")) ? "ro" : "rw")
 end
 EXPECTED_BINDINGS.freeze
+TARGET_ONLY_BINDINGS = [
+  ["dozzle", "alert-relay", "legacy/dozzle/data/alert-relay", "/state", "rw"],
+  ["immich", "database", "legacy/immich/backups", "/immich-backups", "ro"],
+].freeze
 BINDING_FIELDS = %w[
   schema lane sandbox_id project_name legacy_commit git_revision vault_checksum parity_vault_checksum
   baseline_sha256 inventory_sha256 overrides_sha256
@@ -622,10 +626,11 @@ def expected_compose_service(manifest_service, source, target: false)
 end
 
 def expected_policy_bindings(target: false)
-  EXPECTED_BINDINGS.map do |manifest_service, source, destination, access|
+  bindings = EXPECTED_BINDINGS.map do |manifest_service, source, destination, access|
     [manifest_service, expected_compose_service(manifest_service, source, target: target),
      source, destination, access]
   end
+  target ? bindings + TARGET_ONLY_BINDINGS : bindings
 end
 
 def binding_sources(override_root, target_mapping_root)

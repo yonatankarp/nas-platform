@@ -129,6 +129,12 @@ cat > "$playbook" <<YAML
     ntfy_base_url: http://127.0.0.1:32586
     ntfy_port: 32586
     platform_project_name: disposable-adoption
+    platform_current_dir: /disposable/current
+    platform_callback_host: host.docker.internal
+    dozzle_state_root: /disposable/docker/dozzle/data
+    dozzle_alert_relay_script:
+      stat:
+        checksum: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
     platform_render_device_path: ''
     beszel_app_url: http://127.0.0.1:38090
     beszel_port: 38090

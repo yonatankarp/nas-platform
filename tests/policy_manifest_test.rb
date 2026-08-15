@@ -48,12 +48,16 @@ BASE_FIXTURE_PATHS = %w[
   roles/deployment_bundle/tasks/main.yml
   roles/deployment_bundle/tasks/target.yml
   roles/deployment_bundle/templates/manifest.yml.j2
+  roles/immich/tasks/restore.yml
+  roles/immich/tasks/verify_classifier.yml
   roles/preflight/meta/argument_specs.yml
   roles/preflight/tasks/main.yml
   roles/beszel/tasks/alert.yml
   roles/vault_contract/meta/argument_specs.yml
   roles/vault_contract/tasks/main.yml
   services/manifest.yml
+  services/dozzle/alert_relay.py
+  services/immich/classify_restore.py
   services/tinymediamanager/compose.integration.yml
   services/tinymediamanager/compose.mac.yml
   templates/vault-plain.yml.j2
@@ -62,6 +66,8 @@ BASE_FIXTURE_PATHS = %w[
   tests/integration.sh
   tests/integration_lock.sh
   tests/integration_lock_test.sh
+  tests/immich_release_helper_test.rb
+  tests/immich_selective_helper_integrity_test.rb
   tests/sandbox_cleanup.sh
   tests/generate-ephemeral-vault.sh
   tests/generate-secrets-redaction-test.sh
@@ -892,6 +898,40 @@ expect_failure(failures, "release mode comparison removed",
   File.write(path, File.read(path).gsub("stat.S_IMODE", "stat.filemode"))
 end
 
+expect_failure(failures, "Immich classifier controller validation removed",
+               "controller inputs must validate every tracked runtime helper") do |root|
+  path = File.join(root, "roles", "deployment_bundle", "tasks", "inputs.yml")
+  File.write(path, File.read(path).gsub(
+    "services/immich/classify_restore.py", "services/immich/missing.py"
+  ))
+end
+
+expect_failure(failures, "Immich classifier release copy removed",
+               "deployment bundle must package the exact Immich classifier with mode 0644") do |root|
+  path = File.join(root, "roles", "deployment_bundle", "tasks", "main.yml")
+  tasks = YAML.safe_load_file(path)
+  tasks.reject! do |task|
+    task["name"] == "Copy the tracked Immich restore classifier from the controller"
+  end
+  File.write(path, YAML.dump(tasks))
+end
+
+expect_failure(failures, "Immich classifier manifest integrity removed",
+               "deployment manifest must bind runtime helper paths, modes, and checksums") do |root|
+  path = File.join(root, "roles", "deployment_bundle", "templates", "manifest.yml.j2")
+  File.write(path, File.read(path).gsub(
+    "'immich': ['classify_restore.py']", "'immich': []"
+  ))
+end
+
+expect_failure(failures, "Immich classifier manifest verifier removed",
+               "deployment manifest verifier must reproduce runtime helper integrity") do |root|
+  path = File.join(root, "tests", "verify_deployment_manifest.rb")
+  File.write(path, File.read(path).gsub(
+    '"immich" => ["classify_restore.py"]', '"immich" => []'
+  ))
+end
+
 expect_failure(failures, "deployment sha unquoted",
                "deployment manifest must quote git_sha as a YAML string") do |root|
   path = File.join(root, "roles", "deployment_bundle", "templates", "manifest.yml.j2")
@@ -1236,6 +1276,8 @@ end
   "Beszel telemetry Mac hook regression" => "tests/mac/beszel-telemetry-hook-test.sh",
   "Komga library reconciliation regression" => "ruby tests/komga_library_reconciliation_test.rb",
   "Paperless mail reconciliation regression" => "ruby tests/paperless_mail_reconciliation_test.rb",
+  "Immich selective helper integrity regression" =>
+    "ruby tests/immich_selective_helper_integrity_test.rb",
   "Mac manual-validation runner regression" => "tests/mac/manual-validation-runner-test.sh"
 }.each do |name, command|
   expect_failure(failures, "#{name} removed from policy validation",

@@ -8,6 +8,7 @@ compose=$repo_dir/services/komga/compose.yml
 mac_compose=$repo_dir/services/komga/compose.mac.yml
 role=$repo_dir/roles/komga/tasks/main.yml
 defaults=$repo_dir/roles/komga/defaults/main.yml
+argument_specs=$repo_dir/roles/komga/meta/argument_specs.yml
 
 fail_contract() {
   printf 'Komga contract failed: %s\n' "$1" >&2
@@ -16,17 +17,20 @@ fail_contract() {
 
 [ -f "$role" ] || fail_contract 'roles/komga/tasks/main.yml is absent'
 [ -f "$defaults" ] || fail_contract 'roles/komga/defaults/main.yml is absent'
+[ -f "$argument_specs" ] || fail_contract 'roles/komga/meta/argument_specs.yml is absent'
 [ -f "$compose" ] || fail_contract 'services/komga/compose.yml is absent'
 [ -f "$mac_compose" ] || fail_contract 'services/komga/compose.mac.yml is absent'
 grep -qx 'FIXTURE_SCAN_TIMEOUT_SECONDS = 240' "$0" ||
   fail_contract 'fixture scan timeout differs'
 
-ruby -ryaml - "$compose" "$mac_compose" "$role" "$defaults" <<'RUBY'
-compose_path, mac_path, role_path, defaults_path = ARGV
+ruby -ryaml - "$compose" "$mac_compose" "$role" "$defaults" "$argument_specs" <<'RUBY'
+compose_path, mac_path, role_path, defaults_path, argument_specs_path = ARGV
 compose = YAML.safe_load_file(compose_path, aliases: true)
 mac = YAML.safe_load_file(mac_path, aliases: true)
 role = File.read(role_path)
+role_tasks = YAML.safe_load_file(role_path, aliases: false)
 defaults = YAML.safe_load_file(defaults_path)
+argument_specs = YAML.safe_load_file(argument_specs_path)
 service = compose.fetch("services").fetch("komga")
 expected_image = "docker.io/gotson/komga:1.26.1@sha256:e109902ebebb8a05f633f48d84a2ac7bb1334bf0f6fbc17262a333082c7de44d"
 abort "Komga contract failed: legacy image pin differs" unless service.fetch("image") == expected_image
@@ -40,13 +44,65 @@ abort "Komga contract failed: restart policy differs" unless service.fetch("rest
 abort "Komga contract failed: logging policy differs" unless service.fetch("logging") == {
   "driver" => "json-file", "options" => { "max-size" => "10m", "max-file" => "3" }
 }
+expected_health_test = [
+  "CMD-SHELL",
+  "test \"$$(/usr/bin/curl --fail --silent --show-error " \
+    "http://127.0.0.1:25600/actuator/health)\" = '{\"status\":\"UP\"}'"
+]
+abort "Komga contract failed: application healthcheck differs" unless
+  service.fetch("healthcheck") == {
+    "test" => expected_health_test,
+    "interval" => "30s",
+    "timeout" => "10s",
+    "retries" => 5,
+    "start_period" => "60s"
+  }
 mac_service = mac.fetch("services").fetch("komga")
 abort "Komga contract failed: Mac override may only replace container name and ports" unless
   mac_service.keys.sort == %w[container_name ports] && !mac_service.key?("image")
 abort "Komga contract failed: managed library root differs" unless defaults.fetch("komga_library_root") == "/data"
 abort "Komga contract failed: managed library name differs" unless defaults.fetch("komga_library_name") == "Comics"
+abort "Komga contract failed: application health timing defaults differ" unless
+  defaults.values_at("komga_health_retries", "komga_health_delay") == [60, 3]
+health_options = argument_specs.dig("argument_specs", "main", "options")
+abort "Komga contract failed: application health timing arguments are undeclared" unless
+  health_options&.slice("komga_health_retries", "komga_health_delay") == {
+    "komga_health_retries" => { "type" => "int", "required" => false },
+    "komga_health_delay" => { "type" => "int", "required" => false }
+  }
+
+health_tasks = role_tasks.each_with_index.select do |task, _index|
+  task["name"] == "Wait for Komga application health"
+end
+abort "Komga contract failed: application health readiness task must occur exactly once" unless
+  health_tasks.length == 1
+health_task, health_index = health_tasks.first
+deploy_index = role_tasks.index { |task| task["name"] == "Deploy Komga" }
+claim_index = role_tasks.index { |task| task["name"] == "Read Komga claim status" }
+abort "Komga contract failed: application readiness must gate claim reconciliation" unless
+  deploy_index && claim_index && deploy_index < health_index && health_index < claim_index
+abort "Komga contract failed: application readiness request differs" unless
+  health_task["ansible.builtin.uri"] == {
+    "url" => "{{ komga_api }}/actuator/health",
+    "method" => "GET",
+    "status_code" => [200],
+    "return_content" => true
+  }
+abort "Komga contract failed: application readiness status gate differs" unless
+  health_task.values_at("register", "until", "retries", "delay", "changed_when", "check_mode") == [
+    "komga_health",
+    [
+      "komga_health.json | default(none) is mapping",
+      "komga_health.json.status | default(none) == 'UP'"
+    ],
+    "{{ komga_health_retries }}",
+    "{{ komga_health_delay }}",
+    false,
+    false
+  ]
 
 required_tasks = [
+  "Wait for Komga application health",
   "Read Komga claim status",
   "Claim Komga with the vault administrator",
   "Refuse ambiguous Komga library candidates",
@@ -119,9 +175,40 @@ fi
 : "${PLATFORM_REPORT_ROOT:?}"
 : "${PLATFORM_KOMGA_PORT:=25600}"
 : "${PLATFORM_MEDIA_FIXTURES_PRESEEDED:=false}"
+if [ "${PLATFORM_KIND:-}" = integration ]; then
+  : "${PLATFORM_KOMGA_RUNTIME_CONTEXT:=base}"
+  case $PLATFORM_KOMGA_RUNTIME_CONTEXT in
+    base|legacy) ;;
+    *) fail_contract 'integration Komga runtime context differs' ;;
+  esac
+elif [ -z "${PLATFORM_KOMGA_RUNTIME_CONTEXT:-}" ]; then
+  PLATFORM_KOMGA_RUNTIME_CONTEXT=base
+fi
+case $PLATFORM_KOMGA_RUNTIME_CONTEXT in
+  base)
+    PLATFORM_KOMGA_CONTAINER=komga
+    PLATFORM_KOMGA_DOCKER_HEALTH_REQUIRED=true
+    ;;
+  mac-managed)
+    : "${PLATFORM_PROJECT_NAME:?PLATFORM_PROJECT_NAME is required for managed Mac Komga}"
+    PLATFORM_KOMGA_CONTAINER=$PLATFORM_PROJECT_NAME-komga
+    PLATFORM_KOMGA_DOCKER_HEALTH_REQUIRED=true
+    ;;
+  legacy)
+    if [ "${PLATFORM_PROOF_LANE:-}" != adoption ] ||
+        [ "${PLATFORM_ADOPTION_PROBE_TARGET:-false}" = true ]; then
+      fail_contract 'legacy Komga runtime context is unavailable'
+    fi
+    : "${PLATFORM_PROJECT_NAME:?PLATFORM_PROJECT_NAME is required for the legacy Komga container}"
+    PLATFORM_KOMGA_CONTAINER=$PLATFORM_PROJECT_NAME-legacy-komga-komga-1
+    PLATFORM_KOMGA_DOCKER_HEALTH_REQUIRED=false
+    ;;
+  *) fail_contract 'Komga runtime context is invalid' ;;
+esac
 export PLATFORM_CONTRACT_VAULT_FILE PLATFORM_CONTRACT_VAULT_PASSWORD_FILE
 export PLATFORM_MEDIA_ROOT PLATFORM_REPORT_ROOT PLATFORM_KOMGA_PORT
-export PLATFORM_MEDIA_FIXTURES_PRESEEDED
+export PLATFORM_MEDIA_FIXTURES_PRESEEDED PLATFORM_KOMGA_CONTAINER
+export PLATFORM_KOMGA_DOCKER_HEALTH_REQUIRED
 
 shift || true
 exec ruby - "$mode" "$@" <<'RUBY'
@@ -138,6 +225,10 @@ require "zlib"
 MODE = ARGV.fetch(0)
 FIXTURE_SCAN_TIMEOUT_SECONDS = 240
 BASE = URI("http://127.0.0.1:#{Integer(ENV.fetch('PLATFORM_KOMGA_PORT'), 10)}")
+KOMGA_CONTAINER = ENV.fetch("PLATFORM_KOMGA_CONTAINER")
+DOCKER_HEALTH_REQUIRED = { "true" => true, "false" => false }.fetch(
+  ENV.fetch("PLATFORM_KOMGA_DOCKER_HEALTH_REQUIRED")
+)
 MEDIA_ROOT = Pathname.new(ENV.fetch("PLATFORM_MEDIA_ROOT")).expand_path
 REPORT_ROOT = Pathname.new(ENV.fetch("PLATFORM_REPORT_ROOT")).expand_path
 LIBRARY_NAME = "Comics"
@@ -239,7 +330,7 @@ def wait_for_api
       http.request(Net::HTTP::Get.new(uri))
     end
     payload = JSON.parse(response.body)
-    return if response.code.to_i == 200 && payload["status"] == "UP"
+    return if response.code.to_i == 200 && payload.is_a?(Hash) && payload["status"] == "UP"
   rescue JSON::ParserError, SystemCallError, Timeout::Error
     fail_contract("Komga API did not become ready") if Time.now >= deadline
     sleep 1
@@ -247,6 +338,27 @@ def wait_for_api
     fail_contract("Komga API did not become ready") if Time.now >= deadline
     sleep 1
   end
+end
+
+def wait_for_container_health
+  deadline = Time.now + 180
+  loop do
+    stdout, _stderr, status = Open3.capture3(
+      "docker", "inspect", "--format", "{{.State.Health.Status}}", KOMGA_CONTAINER
+    )
+    return if status.success? && stdout.strip == "healthy"
+    fail_contract("#{KOMGA_CONTAINER} did not become healthy") if Time.now >= deadline
+    sleep 2
+  end
+end
+
+def require_absent_container_healthcheck
+  stdout, _stderr, status = Open3.capture3(
+    "docker", "inspect", "--format",
+    "{{if .State.Health}}present{{else}}absent{{end}}", KOMGA_CONTAINER
+  )
+  fail_contract("#{KOMGA_CONTAINER} unexpectedly defines a Docker healthcheck") unless
+    status.success? && stdout.strip == "absent"
 end
 
 def png_bytes
@@ -296,6 +408,11 @@ vault_yaml.replace("\0" * vault_yaml.bytesize)
 vault_error.replace("\0" * vault_error.bytesize)
 credentials = [vault.fetch("vault_komga_admin_email"), vault.fetch("vault_komga_admin_password")]
 
+if DOCKER_HEALTH_REQUIRED
+  wait_for_container_health
+else
+  require_absent_container_healthcheck
+end
 wait_for_api
 request("get", "/api/v2/users/me", basic: [credentials.first, "contract-wrong-password"], expected: [401])
 _me_response, me = request("get", "/api/v2/users/me", basic: credentials)

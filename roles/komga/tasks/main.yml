@@ -43,6 +43,21 @@
     wait: true
     wait_timeout: 180
 
+- name: Wait for Komga application health
+  ansible.builtin.uri:
+    url: "{{ komga_api }}/actuator/health"
+    method: GET
+    status_code: [200]
+    return_content: true
+  register: komga_health
+  until:
+    - komga_health.json | default(none) is mapping
+    - komga_health.json.status | default(none) == 'UP'
+  retries: "{{ komga_health_retries }}"
+  delay: "{{ komga_health_delay }}"
+  changed_when: false
+  check_mode: false
+
 - name: Read Komga claim status
   ansible.builtin.uri:
     url: "{{ komga_api }}/api/v1/claim"

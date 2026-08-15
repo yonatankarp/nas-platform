@@ -62,7 +62,7 @@ fi
 
 integration_names=$(PLATFORM_PROOF_PLATFORM=integration mac_target_container_names proof)
 for expected_name in ntfy beszel beszel_agent beszel_agent_portable beszel_socket_proxy \
-    dozzle dozzle_socket_proxy audiobookshelf komga tinymediamanager jellyfin \
+    dozzle_alert_relay dozzle dozzle_socket_proxy audiobookshelf komga tinymediamanager jellyfin \
     immich_server immich_machine_learning immich_redis immich_postgres \
     paperless_redis paperless_postgres paperless_webserver paperless_gotenberg paperless_tika; do
   printf '%s\n' "$integration_names" | grep -qx "$expected_name" || {
@@ -70,7 +70,7 @@ for expected_name in ntfy beszel beszel_agent beszel_agent_portable beszel_socke
     exit 1
   }
 done
-[ "$(printf '%s\n' "$integration_names" | wc -l | tr -d ' ')" -eq 20 ] || {
+[ "$(printf '%s\n' "$integration_names" | wc -l | tr -d ' ')" -eq 21 ] || {
   printf '%s\n' 'integration-context-error: integration target identity set differs' >&2
   exit 1
 }

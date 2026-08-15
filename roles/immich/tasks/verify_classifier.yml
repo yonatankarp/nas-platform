@@ -1,0 +1,49 @@
+---
+- name: Inspect the trusted Immich restore classifier source
+  ansible.builtin.stat:
+    path: "{{ playbook_dir }}/services/immich/classify_restore.py"
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+  register: immich_restore_classifier_source_stat
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require the trusted Immich restore classifier source
+  ansible.builtin.assert:
+    that:
+      - immich_restore_classifier_source_stat.stat.exists | default(false)
+      - immich_restore_classifier_source_stat.stat.isreg | default(false)
+      - not (immich_restore_classifier_source_stat.stat.islnk | default(true))
+      - immich_restore_classifier_source_stat.stat.mode | default('') == '0644'
+      - immich_restore_classifier_source_stat.stat.checksum | default('') is string
+      - immich_restore_classifier_source_stat.stat.checksum | default('') | length == 64
+    fail_msg: Immich restore classifier integrity check failed.
+    quiet: true
+
+- name: Inspect the deployed Immich restore classifier
+  ansible.builtin.stat:
+    path: "{{ platform_current_dir }}/services/immich/classify_restore.py"
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+  register: immich_restore_classifier_deployed_stat
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require the deployed Immich restore classifier
+  ansible.builtin.assert:
+    that:
+      - immich_restore_classifier_deployed_stat.stat.exists | default(false)
+      - immich_restore_classifier_deployed_stat.stat.isreg | default(false)
+      - not (immich_restore_classifier_deployed_stat.stat.islnk | default(true))
+      - immich_restore_classifier_deployed_stat.stat.mode | default('') == '0644'
+      - >-
+        immich_restore_classifier_deployed_stat.stat.checksum | default('') ==
+        immich_restore_classifier_source_stat.stat.checksum | default('source-unavailable')
+    fail_msg: Immich restore classifier integrity check failed.
+    quiet: true

@@ -17,6 +17,17 @@ services:
       - path: compose.adoption.yml
         checksum_sha256: {{ (lookup('file', playbook_dir ~ '/services/' ~ service.name ~ '/compose.adoption.yml', rstrip=false) | hash('sha256')) | to_json }}
 {% endif %}
+{% set runtime_files = {'dozzle': ['alert_relay.py'], 'immich': ['classify_restore.py']}.get(service.name, []) %}
+{% if runtime_files %}
+    runtime_files:
+{% for runtime_file in runtime_files %}
+      - path: {{ runtime_file | to_json }}
+        mode: "0644"
+        checksum_sha256: {{ (lookup('file', playbook_dir ~ '/services/' ~ service.name ~ '/' ~ runtime_file, rstrip=false) | hash('sha256')) | to_json }}
+{% endfor %}
+{% else %}
+    runtime_files: []
+{% endif %}
     images:
 {% set canonical_compose = lookup('file', playbook_dir ~ '/services/' ~ service.name ~ '/compose.yml') | from_yaml %}
 {% set platform_compose = (lookup('file', platform_source.stat.path) | platform_compose_metadata) if platform_source.stat.exists else {'services': {}} %}

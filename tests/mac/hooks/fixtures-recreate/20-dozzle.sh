@@ -21,6 +21,6 @@ compose_arguments=$(mac_compose_files "$current")
 while IFS= read -r compose_argument; do set -- "$@" "$compose_argument"; done <<EOF
 $compose_arguments
 EOF
-"$@" up -d --force-recreate --wait dozzle socket-proxy
+"$@" up -d --force-recreate --wait alert-relay dozzle socket-proxy
 [ "$PLATFORM_PROOF_LANE" != adoption ] || "$mac_hook_dir/../../adoption-container-attest.sh"
 "$mac_hook_dir/../../run-dozzle-contract.sh" verify
