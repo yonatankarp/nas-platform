@@ -8,6 +8,10 @@ unless git_sha
 end
 abort "unknown manifest verification mode #{merge_mode}" if merge_mode && merge_mode != "require-image-merge"
 require_image_merge = merge_mode == "require-image-merge"
+RUNTIME_FILES = {
+  "dozzle" => ["alert_relay.py"],
+  "immich" => ["classify_restore.py"]
+}.freeze
 
 load_yaml = ->(path) { YAML.safe_load_file(path, aliases: true) }
 source_manifest = load_yaml.call(source_manifest_path)
@@ -41,6 +45,14 @@ expected_services = implemented.map do |service|
     "compose_files" => compose_paths.map do |path|
       {
         "path" => File.basename(path),
+        "checksum_sha256" => Digest::SHA256.file(path).hexdigest
+      }
+    end,
+    "runtime_files" => RUNTIME_FILES.fetch(name, []).map do |runtime_file|
+      path = File.join(service_root, runtime_file)
+      {
+        "path" => runtime_file,
+        "mode" => "0644",
         "checksum_sha256" => Digest::SHA256.file(path).hexdigest
       }
     end,

@@ -104,6 +104,12 @@ argument_specs:
       audiobookshelf_library_icon:
         type: str
         required: false
+      audiobookshelf_initial_scan_retries:
+        type: int
+        required: false
+      audiobookshelf_initial_scan_delay:
+        type: int
+        required: false
       audiobookshelf_library_settings:
         type: dict
         required: false

@@ -172,7 +172,10 @@ contract_bin=$temporary_root/contract-bin
 contract_report=$temporary_root/contract-report
 contract_port_file=$temporary_root/contract-port
 contract_request_log=$temporary_root/contract-requests.jsonl
+contract_docker_log=$temporary_root/contract-docker.log
+contract_library_name=$temporary_root/contract-library-name
 mkdir -m 0700 "$contract_bin" "$contract_report"
+printf '%s\n' Books > "$contract_library_name"
 printf '%s\n' disposable > "$temporary_root/vault.yml"
 printf '%s\n' disposable > "$temporary_root/vault-password"
 chmod 0600 "$temporary_root/vault.yml" "$temporary_root/vault-password"
@@ -183,6 +186,25 @@ printf '%s\n' \
   'vault_komga_admin_password: admin-secret'
 SH
 chmod 0700 "$contract_bin/ansible-vault"
+cat > "$contract_bin/docker" <<'SH'
+#!/bin/sh
+[ "$#" -eq 4 ] && [ "$1" = inspect ] && [ "$2" = --format ] || exit 2
+printf '%s\n' "$*" >> "${CONTRACT_DOCKER_LOG:?}"
+case $3:$4 in
+  '{{if .State.Health}}present{{else}}absent{{end}}':nas-platform-mac-abc123-legacy-komga-komga-1)
+    printf '%s\n' absent
+    ;;
+  '{{.State.Health.Status}}':komga|'{{.State.Health.Status}}':nas-platform-mac-abc123-komga)
+    printf '%s\n' healthy
+    ;;
+  *) exit 2 ;;
+esac
+SH
+chmod 0700 "$contract_bin/docker"
+cat > "$temporary_root/komga-baseline.rb" <<'RUBY'
+abort unless ARGV == ["--emit-probe", "komga"]
+puts "{}"
+RUBY
 cat > "$temporary_root/komga-api.rb" <<'RUBY'
 require "base64"
 require "json"
@@ -194,6 +216,7 @@ settings = {
   "convertToCbz" => false, "emptyTrashAfterScan" => false, "hashFiles" => true,
   "hashPages" => false, "hashKoreader" => false, "analyzeDimensions" => true
 }
+library_name = ARGV.fetch(2)
 libraries = [{ "id" => "legacy-library", "name" => "Books", "root" => "/data" }.merge(settings)]
 server = TCPServer.new("127.0.0.1", 0)
 File.write(ARGV.fetch(0), server.addr.fetch(1).to_s)
@@ -222,6 +245,7 @@ loop do
       payload = { "email" => "admin@example.invalid", "roles" => ["ADMIN"] }
     end
   when ["GET", "/api/v1/libraries"]
+    libraries.first["name"] = File.read(library_name).strip
     payload = libraries
   when ["POST", "/api/v1/libraries"]
     document = JSON.parse(body)
@@ -245,7 +269,8 @@ loop do
   socket.close
 end
 RUBY
-ruby "$temporary_root/komga-api.rb" "$contract_port_file" "$contract_request_log" &
+ruby "$temporary_root/komga-api.rb" "$contract_port_file" "$contract_request_log" \
+  "$contract_library_name" &
 contract_server_pid=$!
 contract_wait=0
 while [ ! -s "$contract_port_file" ]; do
@@ -255,8 +280,10 @@ while [ ! -s "$contract_port_file" ]; do
 done
 contract_port=$(cat "$contract_port_file")
 PATH="$contract_bin:$PATH" PLATFORM_MAC_TMPDIR=$temporary_root \
+  PLATFORM_KIND=integration \
   PLATFORM_MAC_SANDBOX=$sandbox PLATFORM_LEGACY_FIXTURE_SANDBOX=$sandbox \
   PLATFORM_LEGACY_FIXTURE_MODE=nas-platform-owned-legacy-v1 PLATFORM_PROOF_LANE=adoption \
+  PLATFORM_PROJECT_NAME=nas-platform-mac-abc123 CONTRACT_DOCKER_LOG=$contract_docker_log \
   PLATFORM_KOMGA_LIBRARY_PATH=$sandbox/legacy/komga/library \
   PLATFORM_KOMGA_CONFIG_PATH=$sandbox/legacy/komga/config \
   PLATFORM_MEDIA_ROOT=$sandbox/legacy/komga/library PLATFORM_REPORT_ROOT=$contract_report \
@@ -264,10 +291,57 @@ PATH="$contract_bin:$PATH" PLATFORM_MAC_TMPDIR=$temporary_root \
   PLATFORM_MAC_VAULT_PASSWORD_FILE=$temporary_root/vault-password \
   "$test_dir/legacy-fixture-service.sh" komga seed >/dev/null ||
   fail 'real legacy Komga fixture driver failed'
+
+printf '%s\n' Comics > "$contract_library_name"
+PATH="$contract_bin:$PATH" PLATFORM_MAC_TMPDIR=$temporary_root \
+  PLATFORM_KIND=integration \
+  PLATFORM_MAC_SANDBOX=$sandbox PLATFORM_LEGACY_FIXTURE_SANDBOX=$sandbox \
+  PLATFORM_LEGACY_FIXTURE_MODE=nas-platform-owned-legacy-v1 PLATFORM_PROOF_LANE=adoption \
+  PLATFORM_PROOF_PLATFORM=mac PLATFORM_PROJECT_NAME=nas-platform-mac-abc123 \
+  CONTRACT_DOCKER_LOG=$contract_docker_log PLATFORM_MEDIA_ROOT=$sandbox/legacy/komga/library \
+  PLATFORM_KOMGA_CONFIG_PATH=$sandbox/legacy/komga/config \
+  PLATFORM_REPORT_ROOT=$contract_report PLATFORM_KOMGA_PORT=$contract_port \
+  PLATFORM_MAC_VAULT_FILE=$temporary_root/vault.yml \
+  PLATFORM_MAC_VAULT_PASSWORD_FILE=$temporary_root/vault-password \
+  PLATFORM_ADOPTION_BASELINE_FILE=$temporary_root/komga-baseline.rb \
+  "$test_dir/adoption-probes/komga.sh" >/dev/null ||
+  fail 'pre-cutover Komga adoption baseline used the wrong runtime health context'
+
+PATH="$contract_bin:$PATH" PLATFORM_KIND=integration PLATFORM_PROOF_PLATFORM=integration \
+  PLATFORM_PROJECT_NAME=ambient-project PLATFORM_KOMGA_CONTAINER=hostile-container \
+  PLATFORM_KOMGA_DOCKER_HEALTH_REQUIRED=false CONTRACT_DOCKER_LOG=$contract_docker_log \
+  PLATFORM_KOMGA_RUNTIME_CONTEXT=legacy PLATFORM_MAC_VAULT_FILE=$temporary_root/vault.yml \
+  PLATFORM_MAC_VAULT_PASSWORD_FILE=$temporary_root/vault-password \
+  PLATFORM_MEDIA_ROOT=$sandbox/legacy/komga/library PLATFORM_REPORT_ROOT=$contract_report \
+  PLATFORM_KOMGA_PORT=$contract_port "$test_dir/run-komga-contract.sh" run >/dev/null ||
+  fail 'post-cutover integration Komga wrapper used Mac or ambient container health controls'
+
+PATH="$contract_bin:$PATH" PLATFORM_MAC_TMPDIR=$temporary_root \
+  PLATFORM_MAC_SANDBOX=$sandbox PLATFORM_LEGACY_FIXTURE_SANDBOX=$sandbox \
+  PLATFORM_LEGACY_FIXTURE_MODE=nas-platform-owned-legacy-v1 PLATFORM_PROOF_LANE=adoption \
+  PLATFORM_PROOF_PLATFORM=mac PLATFORM_ADOPTION_PROBE_TARGET=true \
+  PLATFORM_PROJECT_NAME=nas-platform-mac-abc123 CONTRACT_DOCKER_LOG=$contract_docker_log \
+  PLATFORM_KOMGA_CONFIG_PATH=$sandbox/legacy/komga/config \
+  PLATFORM_MEDIA_ROOT=$sandbox/legacy/komga/library PLATFORM_REPORT_ROOT=$contract_report \
+  PLATFORM_KOMGA_PORT=$contract_port PLATFORM_MAC_VAULT_FILE=$temporary_root/vault.yml \
+  PLATFORM_MAC_VAULT_PASSWORD_FILE=$temporary_root/vault-password \
+  PLATFORM_ADOPTION_BASELINE_FILE=$temporary_root/komga-baseline.rb \
+  "$test_dir/adoption-probes/komga.sh" >/dev/null ||
+  fail 'target-adoption Komga probe used the wrong runtime health context'
+
 kill "$contract_server_pid" 2>/dev/null || true
 wait "$contract_server_pid" 2>/dev/null || true
 [ -d "$sandbox/legacy/komga/config/.nas-platform-unmanaged" ] ||
   fail 'legacy Komga fixture was not created under the mounted config root'
+expected_docker_log=$temporary_root/expected-contract-docker.log
+cat > "$expected_docker_log" <<'EOF'
+inspect --format {{if .State.Health}}present{{else}}absent{{end}} nas-platform-mac-abc123-legacy-komga-komga-1
+inspect --format {{if .State.Health}}present{{else}}absent{{end}} nas-platform-mac-abc123-legacy-komga-komga-1
+inspect --format {{.State.Health.Status}} komga
+inspect --format {{.State.Health.Status}} nas-platform-mac-abc123-komga
+EOF
+cmp -s "$expected_docker_log" "$contract_docker_log" ||
+  fail 'Komga runtime contexts inspected the wrong container or Docker health policy'
 ruby -rjson - "$contract_request_log" <<'RUBY'
 requests = File.readlines(ARGV.fetch(0), chomp: true).map { |line| JSON.parse(line) }
 raise unless requests == [{ "name" => "Komga Contract Reference", "root" => "/config/.nas-platform-unmanaged" }]

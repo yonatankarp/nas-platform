@@ -141,7 +141,7 @@ cleanup_sandbox() {
   fi
 
   for cleanup_container in ntfy beszel beszel_agent beszel_agent_portable beszel_socket_proxy \
-      dozzle dozzle_socket_proxy audiobookshelf komga tinymediamanager jellyfin \
+      dozzle_alert_relay dozzle dozzle_socket_proxy audiobookshelf komga tinymediamanager jellyfin \
       immich_server immich_machine_learning immich_redis immich_postgres \
       paperless_redis paperless_postgres paperless_webserver paperless_gotenberg paperless_tika; do
     cleanup_container_ids=$(docker ps -aq --filter "name=^${cleanup_container}$") || return 1

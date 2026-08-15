@@ -115,7 +115,10 @@ refuse("model cache storage differs") unless
   ["${NAS_DOCKER_ROOT:?}/immich/data/model-cache:/cache"]
 refuse("database storage differs") unless
   containers.fetch("database").fetch("volumes") ==
-  ["${NAS_DOCKER_ROOT:?}/immich/postgres:/var/lib/postgresql/data"]
+  [
+    "${NAS_DOCKER_ROOT:?}/immich/postgres:/var/lib/postgresql/data",
+    "${NAS_MEDIA_ROOT:?}/Immich-backups/database:/immich-backups:ro"
+  ]
 
 # The application must not start against an uninitialized database or cache;
 # both are declared healthy-gated in the source definition.
@@ -978,6 +981,7 @@ export PLATFORM_IMMICH_REDIS_CONTAINER PLATFORM_IMMICH_POSTGRES_CONTAINER
 
 exec ruby - "$mode" "$@" <<'RUBY'
 require "json"
+require "digest"
 require "net/http"
 require "open3"
 require "pathname"
@@ -998,6 +1002,7 @@ HELPER_CONTAINERS = [
   ENV.fetch("PLATFORM_IMMICH_POSTGRES_CONTAINER")
 ].freeze
 STATE_PATH = REPORT_ROOT.join("immich-persistence.json")
+CLEAN_RESTORE_STATE_PATH = REPORT_ROOT.join("immich-clean-restore.json")
 REPO_DIR = Pathname.new(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR")).expand_path
 MANAGED_SENTINEL = "nas-platform-unowned-sentinel"
 SUPPORTED_UNOWNED_PREFERENCE_SENTINELS = [
@@ -1472,6 +1477,45 @@ def assert_originals_open(token, records)
   end
 end
 
+def clean_restore_records(token)
+  FIXTURES.map do |fixture|
+    id = upload_fixture(token, fixture)
+    _response, asset = request("get", "/api/assets/#{id}", token: token)
+    {
+      "name" => fixture.fetch(:name),
+      "id" => id,
+      "checksum" => asset.fetch("checksum"),
+      "bytes_sha256" => Digest::SHA256.hexdigest(fixture.fetch(:bytes))
+    }
+  end.sort_by { |record| record.fetch("name") }
+end
+
+ROUTINE_BACKUP_PATTERN =
+  /\Aimmich-db-backup-\d{8}T\d{6}-v\d+(?:\.\d+)*-pg\d+(?:\.\d+)*\.sql\.gz\z/
+
+def routine_backups(root)
+  root.children.select { |path| path.basename.to_s.match?(ROUTINE_BACKUP_PATTERN) }
+end
+
+def wait_for_routine_backup(root, timeout:)
+  deadline = Time.now + timeout
+  previous = nil
+  loop do
+    candidates = routine_backups(root).select do |path|
+      path.file? && !path.symlink?
+    end
+    if candidates.length == 1 && candidates.first.size.positive?
+      current = [candidates.first.basename.to_s, candidates.first.size]
+      return candidates.first if current == previous
+      previous = current
+    else
+      previous = nil
+    end
+    fail_contract("routine database backup did not complete") if Time.now >= deadline
+    sleep 2
+  end
+end
+
 vault_yaml, vault_error, vault_status = Open3.capture3(
   "ansible-vault", "view", "--vault-password-file",
   ENV.fetch("PLATFORM_CONTRACT_VAULT_PASSWORD_FILE"),
@@ -1574,6 +1618,72 @@ assert_managed_settings(config)
 managed_user_state = assert_managed_user_profiles(
   token, managed_users, policy, require_sentinel: STATE_PATH.file? || MODE == "seed"
 )
+
+if MODE == "clean-restore-seed"
+  backup_root = MEDIA_ROOT.join("Immich-backups", "database")
+  fail_contract("database backup root is unavailable or unsafe") unless
+    backup_root.directory? && !backup_root.symlink?
+  # Immich keeps its own bookkeeping entries inside every folder it mounts, so
+  # the guard is that no database dump predates this run rather than that the
+  # directory is bare.
+  stale_backups = routine_backups(backup_root).map { |path| path.basename.to_s }
+  fail_contract(
+    "clean-restore backup root already holds #{stale_backups.join(', ')}"
+  ) unless stale_backups.empty?
+  records = clean_restore_records(token)
+  assert_originals_open(token, records)
+  request(
+    "post", "/api/jobs", token: token, expected: [204],
+    body: { "name" => "backup-database" }
+  )
+  backup = wait_for_routine_backup(backup_root, timeout: 180)
+  state = {
+    "user_id" => user_id,
+    "assets" => records,
+    "settings" => managed_leaves(config),
+    "managed_users" => managed_user_state,
+    "backup_filename" => backup.basename.to_s
+  }
+  fail_contract("report root is unavailable or unsafe") unless
+    REPORT_ROOT.directory? && !REPORT_ROOT.symlink?
+  fail_contract("refusing to replace clean-restore state") if
+    CLEAN_RESTORE_STATE_PATH.exist? || CLEAN_RESTORE_STATE_PATH.symlink?
+  CLEAN_RESTORE_STATE_PATH.open(File::WRONLY | File::CREAT | File::EXCL, 0o600) do |file|
+    file.write(JSON.generate(state))
+  end
+  puts "Immich clean-restore assets and routine backup seeded"
+  exit
+end
+
+if MODE == "clean-restore-assert"
+  fail_contract("clean-restore state is unavailable or unsafe") unless
+    CLEAN_RESTORE_STATE_PATH.file? && !CLEAN_RESTORE_STATE_PATH.symlink?
+  expected = JSON.parse(CLEAN_RESTORE_STATE_PATH.binread)
+  records = expected.fetch("assets")
+  actual_records = records.map do |record|
+    id = safe_id(record.fetch("id"))
+    _response, asset = request("get", "/api/assets/#{id}", token: token)
+    original = request("get", "/api/assets/#{id}/original", token: token, raw: true)
+    {
+      "name" => record.fetch("name"),
+      "id" => id,
+      "checksum" => asset.fetch("checksum"),
+      "bytes_sha256" => Digest::SHA256.hexdigest(original.body)
+    }
+  end.sort_by { |record| record.fetch("name") }
+  actual = {
+    "user_id" => user_id,
+    "assets" => actual_records,
+    "settings" => managed_leaves(config),
+    "managed_users" => managed_user_state,
+    "backup_filename" => expected.fetch("backup_filename")
+  }
+  fail_contract("Immich clean restore changed protected state") unless actual == expected
+  marker = DOCKER_ROOT.join("immich", ".restore-failed")
+  fail_contract("Immich restore failure marker remains") if marker.exist? || marker.symlink?
+  puts "Immich clean restore recovered exact assets, users, and settings"
+  exit
+end
 
 if MODE == "drift"
   drifted = config.merge("newVersionCheck" => config.fetch("newVersionCheck").merge("enabled" => true))

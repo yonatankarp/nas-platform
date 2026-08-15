@@ -8,12 +8,18 @@ dozzle_compose_project_name: >-
 dozzle_dispatcher:
   name: ntfy nas-critical
   type: webhook
-  url: >-
-    http://{{ platform_callback_host }}:{{ ntfy_port | default(2586) }}
+  url: http://alert-relay:8081/alerts
   template: >-
-    {{ {'topic': ntfy_topic | default('nas-critical'),
-        'title': '{{ .Container.Name }}',
-        'message': '{{ .Detail }}'} | to_json(separators=(',', ':')) }}
+    {{ {'version': 1,
+        'rule': '{{ .Subscription.Name }}',
+        'containerId': '{{ .Container.ID }}',
+        'container': '{{ .Container.Name }}',
+        'host': '{{ .Container.HostName }}',
+        'event': '{{ .Event.Name }}',
+        'healthStatus': '{{ index .Event.Attributes `healthStatus` }}',
+        'exitCode': '{{ index .Event.Attributes `exitCode` }}',
+        'timestamp': '{{ .Event.Timestamp.Format `2006-01-02T15:04:05.999999999Z07:00` }}'}
+       | to_json(separators=(',', ':')) }}
   headers:
     Authorization: "Bearer {{ vault_ntfy_dozzle_token }}"
 

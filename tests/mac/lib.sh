@@ -174,14 +174,15 @@ mac_target_container_names() {
   case ${PLATFORM_PROOF_PLATFORM:-mac} in
     integration)
       printf '%s\n' ntfy beszel beszel_agent beszel_agent_portable beszel_socket_proxy \
-        dozzle dozzle_socket_proxy audiobookshelf komga tinymediamanager jellyfin \
+        dozzle_alert_relay dozzle dozzle_socket_proxy audiobookshelf komga tinymediamanager jellyfin \
         immich_server immich_machine_learning immich_redis immich_postgres \
         paperless_redis paperless_postgres paperless_webserver paperless_gotenberg paperless_tika
       ;;
     mac)
       printf '%s\n' "$mac_project-beszel" "$mac_project-beszel-agent-intel" \
         "$mac_project-beszel-agent-portable" "$mac_project-beszel-socket-proxy" \
-        "$mac_project-ntfy" "$mac_project-dozzle" "$mac_project-dozzle-socket-proxy" \
+        "$mac_project-ntfy" "$mac_project-dozzle-alert-relay" \
+        "$mac_project-dozzle" "$mac_project-dozzle-socket-proxy" \
         "$mac_project-audiobookshelf" "$mac_project-komga" \
         "$mac_project-tinymediamanager" "$mac_project-jellyfin" \
         "$mac_project-immich-server" "$mac_project-immich-machine-learning" \

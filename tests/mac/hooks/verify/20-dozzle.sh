@@ -43,7 +43,8 @@ case ${PLATFORM_PROOF_PLATFORM:-mac} in
     verify_dozzle_labels '' audiobookshelf audiobookshelf
     verify_dozzle_labels beszel hub beszel agent-portable beszel_agent_portable \
       socket-proxy beszel_socket_proxy
-    verify_dozzle_labels dozzle dozzle dozzle socket-proxy dozzle_socket_proxy
+    verify_dozzle_labels dozzle alert-relay dozzle_alert_relay \
+      dozzle dozzle socket-proxy dozzle_socket_proxy
     verify_dozzle_labels immich immich-server immich_server \
       immich-machine-learning immich_machine_learning redis immich_redis \
       database immich_postgres
@@ -59,7 +60,8 @@ case ${PLATFORM_PROOF_PLATFORM:-mac} in
     verify_dozzle_labels beszel hub "$PLATFORM_PROJECT_NAME-beszel" \
       agent-portable "$PLATFORM_PROJECT_NAME-beszel-agent-portable" \
       socket-proxy "$PLATFORM_PROJECT_NAME-beszel-socket-proxy"
-    verify_dozzle_labels dozzle dozzle "$PLATFORM_PROJECT_NAME-dozzle" \
+    verify_dozzle_labels dozzle alert-relay "$PLATFORM_PROJECT_NAME-dozzle-alert-relay" \
+      dozzle "$PLATFORM_PROJECT_NAME-dozzle" \
       socket-proxy "$PLATFORM_PROJECT_NAME-dozzle-socket-proxy"
     verify_dozzle_labels immich immich-server "$PLATFORM_PROJECT_NAME-immich-server" \
       immich-machine-learning "$PLATFORM_PROJECT_NAME-immich-machine-learning" \

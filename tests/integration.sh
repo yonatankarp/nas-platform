@@ -233,6 +233,11 @@ manifest_media_root="$sandbox/manifest-root/media"
 mkdir -p "$manifest_controller/roles" "$manifest_controller/services/demo" \
   "$manifest_docker_root" "$manifest_media_root"
 cp -R "$repo_dir/roles/deployment_bundle" "$manifest_controller/roles/"
+mkdir -p "$manifest_controller/services/dozzle" "$manifest_controller/services/immich"
+cp "$repo_dir/services/dozzle/alert_relay.py" \
+  "$manifest_controller/services/dozzle/alert_relay.py"
+cp "$repo_dir/services/immich/classify_restore.py" \
+  "$manifest_controller/services/immich/classify_restore.py"
 cat > "$manifest_controller/services/manifest.yml" <<'EOF'
 ---
 services:
@@ -704,6 +709,7 @@ docker run --rm \
         PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=\"\$vault_password_file\" \
         PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
         PLATFORM_REPORT_ROOT='$sandbox/reports' \
+        PLATFORM_KOMGA_RUNTIME_CONTEXT=base \
         /repo/tests/contracts/komga.sh \"\$@\"
     }
 
@@ -742,6 +748,157 @@ docker run --rm \
         PLATFORM_REPORT_ROOT='$sandbox/reports' \
         PLATFORM_MAC_FIXTURE_VARS_FILE=\"\$fixture_vars_file\" \
         /repo/tests/contracts/immich.sh \"\$@\"
+    }
+
+    run_immich_clean_restore() {
+      immich_runtime='$sandbox/volume1/Docker/nas-platform/runtime/services/immich/.env'
+      immich_release='$sandbox/volume1/Docker/nas-platform/current/services/immich'
+      immich_postgres='$sandbox/volume1/Docker/immich/postgres'
+      immich_quarantine='$sandbox/reports/immich-postgres-quarantine'
+      immich_stale_redis_key=nas-platform-restore-stale
+      test ! -e "\$immich_quarantine"
+      redis_seed_result=\$(docker compose --project-name immich \
+        --env-file "\$immich_runtime" \
+        -f "\$immich_release/compose.yml" \
+        -f "\$immich_release/compose.integration.yml" \
+        exec -T redis redis-cli --raw set "\$immich_stale_redis_key" stale)
+      test "\$redis_seed_result" = OK
+      docker compose --project-name immich \
+        --env-file "\$immich_runtime" \
+        -f "\$immich_release/compose.yml" \
+        -f "\$immich_release/compose.integration.yml" \
+        stop immich-server immich-machine-learning database
+      docker compose --project-name immich \
+        --env-file "\$immich_runtime" \
+        -f "\$immich_release/compose.yml" \
+        -f "\$immich_release/compose.integration.yml" \
+        rm -f database
+      test -d "\$immich_postgres"
+      test ! -L "\$immich_postgres"
+      mv "\$immich_postgres" "\$immich_quarantine"
+      mkdir -m 0755 "\$immich_postgres"
+
+      run_play --tags immich
+      redis_stale_count=\$(docker compose --project-name immich \
+        --env-file "\$immich_runtime" \
+        -f "\$immich_release/compose.yml" \
+        -f "\$immich_release/compose.integration.yml" \
+        exec -T redis redis-cli --raw exists "\$immich_stale_redis_key")
+      test "\$redis_stale_count" = 0
+      run_immich_contract clean-restore-assert
+      test ! -e '$sandbox/volume1/Docker/immich/.restore-failed'
+
+      run_play --tags immich | tee /tmp/immich-clean-restore-second.txt
+      grep -qE 'changed=0 .*failed=0 ' /tmp/immich-clean-restore-second.txt
+      run_immich_contract clean-restore-assert
+      printf 'IMMICH_CLEAN_RESTORE_IDEMPOTENT\n'
+    }
+
+    run_immich_restore_negative_matrix() {
+      immich_server_before=\$(docker inspect --format '{{.Id}}:{{.State.StartedAt}}' immich_server)
+      immich_database_before=\$(docker inspect --format '{{.Id}}:{{.State.StartedAt}}' immich_postgres)
+
+      for scenario in no-backup corrupt-newest ambiguous-newest unsafe-permissions prior-marker; do
+        scenario_root='$sandbox/reports/immich-negative-'\$scenario
+        test ! -e \"\$scenario_root\"
+        mkdir -m 0755 \"\$scenario_root\"
+        mkdir -m 0755 \"\$scenario_root/docker\" \"\$scenario_root/media\"
+
+        run_play \
+          -e nas_docker_root=\"\$scenario_root/docker\" \
+          -e nas_media_root=\"\$scenario_root/media\" \
+          -e platform_project_name=\"immich-negative-\$scenario\" \
+          --tags host_prep,deployment_bundle
+
+        postgres_root=\"\$scenario_root/docker/immich/postgres\"
+        originals_root=\"\$scenario_root/media/Immich/upload\"
+        backup_root=\"\$scenario_root/media/Immich-backups/database\"
+        marker=\"\$scenario_root/docker/immich/.restore-failed\"
+        mkdir -p \"\$postgres_root\" \"\$originals_root\" \"\$backup_root\"
+        printf 'negative-matrix-original\n' > \"\$originals_root/asset.jpg\"
+        expected_failure=
+
+        case \$scenario in
+          no-backup)
+            expected_failure=missing-safe-backup
+            ;;
+          corrupt-newest)
+            printf 'SELECT 1;\n' | gzip -c > \
+              \"\$backup_root/immich-db-backup-20260814T010000-v3.1.0-pg14.19.sql.gz\"
+            printf 'not-a-gzip-stream\n' > \
+              \"\$backup_root/immich-db-backup-20260815T010000-v3.1.0-pg14.19.sql.gz\"
+            expected_failure=unsafe-newest-backup
+            ;;
+          ambiguous-newest)
+            printf 'SELECT 1;\n' | gzip -c > \
+              \"\$backup_root/immich-db-backup-20260815T010000-v3.1.0-pg14.19.sql.gz\"
+            printf 'SELECT 2;\n' | gzip -c > \
+              \"\$backup_root/immich-db-backup-20260815T010000-v3.1.1-pg14.20.sql.gz\"
+            expected_failure=ambiguous-newest-backup
+            ;;
+          unsafe-permissions)
+            printf 'SELECT 1;\n' | gzip -c > \
+              \"\$backup_root/immich-db-backup-20260815T010000-v3.1.0-pg14.19.sql.gz\"
+            chmod 0666 \
+              \"\$backup_root/immich-db-backup-20260815T010000-v3.1.0-pg14.19.sql.gz\"
+            expected_failure=unsafe-newest-backup
+            ;;
+          prior-marker)
+            printf '{\"version\":1,\"stage\":\"database-restore\"}\n' > \"\$marker\"
+            chmod 0600 \"\$marker\"
+            expected_failure=previous-failed-restore
+            ;;
+        esac
+
+        storage_before=\$(tar -C \"\$scenario_root\" -cf - docker/immich media | sha256sum)
+        output=/tmp/immich-negative-\$scenario.txt
+        if run_play \
+            -e nas_docker_root=\"\$scenario_root/docker\" \
+            -e nas_media_root=\"\$scenario_root/media\" \
+            -e platform_project_name=\"immich-negative-\$scenario\" \
+            --tags immich >\"\$output\" 2>&1; then
+          cat \"\$output\" >&2
+          printf 'IMMICH NEGATIVE RESTORE SCENARIO SUCCEEDED: %s\n' \"\$scenario\" >&2
+          exit 1
+        fi
+        grep -qF \"\$expected_failure\" \"\$output\"
+        if grep -qF \"\$scenario_root\" \"\$output\" || \
+           grep -qF 'immich-db-backup-20260815T010000' \"\$output\" || \
+           grep -qF 'TASK [immich : Restore and verify the Immich database]' \"\$output\" || \
+           grep -qF 'TASK [immich : Deploy Immich]' \"\$output\" || \
+           grep -qF 'TASK [immich : Create the vault Immich administrator]' \"\$output\"; then
+          cat \"\$output\" >&2
+          printf 'IMMICH NEGATIVE RESTORE BOUNDARY FAILED: %s\n' \"\$scenario\" >&2
+          exit 1
+        fi
+        /repo/tests/assert-no-vault-secrets.rb \
+          \"\$vault_file\" \"\$vault_password_file\" \"\$output\"
+        storage_after=\$(tar -C \"\$scenario_root\" -cf - docker/immich media | sha256sum)
+        test \"\$storage_after\" = \"\$storage_before\"
+        test \"\$(docker inspect --format '{{.Id}}:{{.State.StartedAt}}' immich_server)\" = \
+          \"\$immich_server_before\"
+        test \"\$(docker inspect --format '{{.Id}}:{{.State.StartedAt}}' immich_postgres)\" = \
+          \"\$immich_database_before\"
+      done
+
+      existing_backup='$sandbox/volume2/Immich-backups/database/'\
+'immich-db-backup-20260816T010000-v3.1.0-pg14.19.sql.gz'
+      existing_quarantine='$sandbox/reports/immich-existing-newer-backup.quarantine'
+      test ! -e \"\$existing_backup\"
+      test ! -e \"\$existing_quarantine\"
+      printf 'newer-backup-must-not-be-read\n' > \"\$existing_backup\"
+      existing_backup_before=\$(sha256sum \"\$existing_backup\")
+      run_play --tags immich > /tmp/immich-existing-database-backup.txt 2>&1
+      test \"\$(sha256sum \"\$existing_backup\")\" = \"\$existing_backup_before\"
+      test ! -e '$sandbox/volume1/Docker/immich/.restore-failed'
+      test \"\$(docker inspect --format '{{.Id}}:{{.State.StartedAt}}' immich_server)\" = \
+        \"\$immich_server_before\"
+      run_immich_contract clean-restore-assert
+      mv \"\$existing_backup\" \"\$existing_quarantine\"
+      printf 'IMMICH_EXISTING_DATABASE_BACKUP_IGNORED\n'
+
+      run_immich_contract run
+      printf 'IMMICH_NEGATIVE_RESTORE_MATRIX_OK\n'
     }
 
     run_paperless_contract() {
@@ -1512,6 +1669,9 @@ docker run --rm \
         run_komga_contract run
         run_tinymediamanager_contract run
         run_jellyfin_contract run
+        run_immich_contract clean-restore-seed
+        run_immich_clean_restore
+        run_immich_restore_negative_matrix
         run_immich_contract run
       fi
     fi
@@ -1527,14 +1687,10 @@ docker run --rm \
         up -d --force-recreate --wait
       run_paperless_contract assert-persistence
     fi
-      # Immich is deliberately not seeded here. Its seed contract asserts CPU
-      # machine learning, and the first inference makes the pinned image pull
-      # roughly 800 MB of CLIP, face and OCR models from external CDNs. That is
-      # a new outbound dependency on every CI run for coverage the Mac lane
-      # already provides. Immich still deploys with the rest of site.yml, and
-      # run_contracts.rb below executes its registered run-mode contract, which
-      # covers login, containment and managed settings and needs no extra
-      # environment beyond the shared contract ABI.
+      # The full lane avoids the CPU-machine-learning seed contract because it
+      # would add an 800 MB external model download. The media lane above uses
+      # a narrower upload/backup fixture that proves database recovery without
+      # waiting for generated assets or inference.
 
     if [ "\$INTEGRATION_SUITE" = full ] && \
        [ "\$INTEGRATION_RUN_SERVICE_SCENARIOS" = true ]; then

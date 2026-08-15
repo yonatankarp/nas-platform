@@ -32,6 +32,8 @@ audiobookshelf_library_folders:
 audiobookshelf_library_media_type: book
 audiobookshelf_library_provider: google
 audiobookshelf_library_icon: database
+audiobookshelf_initial_scan_retries: 60
+audiobookshelf_initial_scan_delay: 2
 audiobookshelf_library_settings:
   coverAspectRatio: 1
   disableWatcher: false

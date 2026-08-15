@@ -5,6 +5,26 @@ immich_compose_project_name: >-
   {{ (platform_project_name ~ '-immich')
      if platform_project_name | default('') | length > 0 else 'immich' }}
 
+# A marker outside PostgreSQL's data directory survives a partially initialized
+# cluster and makes the next convergence refuse an unsafe automatic retry.
+immich_restore_failure_marker: >-
+  {{ (platform_adoption_root ~ '/legacy/immich/.restore-failed')
+     if platform_adoption_enabled | default(false) | bool
+     else (nas_docker_root ~ '/immich/.restore-failed') }}
+immich_restore_backup_container_path: /immich-backups
+immich_restore_backup_uid: >-
+  {{ ansible_facts.user_uid
+     if platform_kind == 'mac' and not (platform_manage_linux_ownership | bool)
+     else 0 }}
+immich_restore_backup_gid: >-
+  {{ ansible_facts.user_gid
+     if platform_kind == 'mac' and not (platform_manage_linux_ownership | bool)
+     else 0 }}
+immich_restore_expected_immich_version: "3.1.0"
+immich_restore_expected_postgres_major: 14
+immich_restore_verify_limit: 25
+immich_restore_database_wait_timeout: 300
+
 # Deliberately small and explicit, and every entry is grounded in the deployed
 # stack rather than in taste. Immich stores hundreds of settings; this role owns
 # only the ones the Compose definition already commits to, so an operator can

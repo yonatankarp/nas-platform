@@ -19,5 +19,15 @@ services:
       - ${KOMGA_LIBRARY_PATH:?}:/data:ro
     environment:
       TZ: ${TZ:?}
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          test "$$(/usr/bin/curl --fail --silent --show-error
+          http://127.0.0.1:25600/actuator/health)" = '{"status":"UP"}'
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
     restart: unless-stopped
     logging: *default-logging

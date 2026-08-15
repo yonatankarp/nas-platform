@@ -12,7 +12,10 @@ export PLATFORM_CONTRACT_VAULT_FILE=${PLATFORM_MAC_VAULT_FILE:?}
 export PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=${PLATFORM_MAC_VAULT_PASSWORD_FILE:?}
 case $service:$mode in
   audiobookshelf:seed-progress) exec "$repo_dir/tests/contracts/audiobookshelf.sh" seed-progress ;;
-  komga:seed) exec "$repo_dir/tests/contracts/komga.sh" seed ;;
+  komga:seed)
+    PLATFORM_KOMGA_RUNTIME_CONTEXT=legacy \
+      exec "$repo_dir/tests/contracts/komga.sh" seed
+    ;;
   tinymediamanager:seed) exec "$repo_dir/tests/contracts/tinymediamanager.sh" seed ;;
   jellyfin:seed) exec "$repo_dir/tests/contracts/jellyfin.sh" --platform mac seed ;;
   immich:seed) exec "$repo_dir/tests/contracts/immich.sh" --platform mac seed ;;
