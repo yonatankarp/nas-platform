@@ -233,6 +233,11 @@ manifest_media_root="$sandbox/manifest-root/media"
 mkdir -p "$manifest_controller/roles" "$manifest_controller/services/demo" \
   "$manifest_docker_root" "$manifest_media_root"
 cp -R "$repo_dir/roles/deployment_bundle" "$manifest_controller/roles/"
+mkdir -p "$manifest_controller/services/dozzle" "$manifest_controller/services/immich"
+cp "$repo_dir/services/dozzle/alert_relay.py" \
+  "$manifest_controller/services/dozzle/alert_relay.py"
+cp "$repo_dir/services/immich/classify_restore.py" \
+  "$manifest_controller/services/immich/classify_restore.py"
 cat > "$manifest_controller/services/manifest.yml" <<'EOF'
 ---
 services:
@@ -1664,10 +1669,10 @@ docker run --rm \
         run_komga_contract run
         run_tinymediamanager_contract run
         run_jellyfin_contract run
-        run_immich_contract run
         run_immich_contract clean-restore-seed
         run_immich_clean_restore
         run_immich_restore_negative_matrix
+        run_immich_contract run
       fi
     fi
 

@@ -23,7 +23,10 @@ GIT_COMMON_DIR = File.expand_path(
   Open3.capture2("git", "rev-parse", "--git-common-dir", chdir: ROOT).first.strip,
   ROOT
 )
-ANSIBLE_ON_PATH = Open3.capture2("command", "-v", "ansible-playbook").first.strip
+ANSIBLE_ON_PATH = ENV.fetch("PATH", "").split(File::PATH_SEPARATOR).map do |directory|
+  candidate = File.join(directory, "ansible-playbook")
+  candidate if File.executable?(candidate)
+end.compact.first.to_s
 ANSIBLE = if ANSIBLE_ON_PATH.empty?
             File.join(File.dirname(GIT_COMMON_DIR), ".venv", "bin", "ansible-playbook")
           else
