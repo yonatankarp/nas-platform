@@ -290,13 +290,18 @@ class DozzleAlertRelayTest(unittest.TestCase):
         self.assertEqual(leftovers, [])
 
     def test_corrupt_symlink_and_unsafe_state_fail_closed(self):
-        fixtures = ("corrupt", "symlink", "unsafe-mode")
+        fixtures = ("corrupt", "corrupt-entry", "symlink", "unsafe-mode")
         for fixture in fixtures:
             with self.subTest(fixture=fixture):
                 with contextlib.suppress(FileNotFoundError):
                     self.state_path.unlink()
                 if fixture == "corrupt":
                     self.state_path.write_text("not-json", encoding="utf-8")
+                    self.state_path.chmod(0o600)
+                elif fixture == "corrupt-entry":
+                    self.state_path.write_text(
+                        '{"version":1,"unhealthy":[{}]}', encoding="utf-8"
+                    )
                     self.state_path.chmod(0o600)
                 elif fixture == "symlink":
                     target = self.state_directory / "target"
