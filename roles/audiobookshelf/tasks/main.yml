@@ -412,14 +412,22 @@
          | list | first | default({}) }}
   no_log: true
 
-- name: Resolve Audiobookshelf library repair requirement
+- name: Resolve existing Audiobookshelf library folder paths
   ansible.builtin.set_fact:
     audiobookshelf_existing_library_paths: >-
       {{ audiobookshelf_existing_library.folders | default([])
          | map(attribute='fullPath') | list }}
+  no_log: true
+
+- name: Resolve Audiobookshelf library repair requirement
+  ansible.builtin.set_fact:
     audiobookshelf_library_create_required: >-
       {{ (ansible_check_mode and not audiobookshelf_initialized | bool) or
          audiobookshelf_existing_library | length == 0 }}
+    audiobookshelf_library_folder_repair_required: >-
+      {{ audiobookshelf_existing_library | length > 0 and
+         audiobookshelf_existing_library_paths !=
+           (audiobookshelf_library_folders | map(attribute='path') | list) }}
     audiobookshelf_library_repair_required: >-
       {{ audiobookshelf_existing_library | length > 0 and
          (audiobookshelf_existing_library.mediaType != audiobookshelf_library_media_type or
@@ -428,6 +436,13 @@
           audiobookshelf_existing_library.settings != audiobookshelf_library_settings or
           (audiobookshelf_existing_library.folders | map(attribute='fullPath') | list) !=
             (audiobookshelf_library_folders | map(attribute='path') | list)) }}
+  no_log: true
+
+- name: Resolve Audiobookshelf initial scan requirement
+  ansible.builtin.set_fact:
+    audiobookshelf_initial_scan_required: >-
+      {{ audiobookshelf_library_create_required | bool or
+         audiobookshelf_library_folder_repair_required | bool }}
   no_log: true
 
 - name: Report planned Audiobookshelf library creation
@@ -507,6 +522,133 @@
     - audiobookshelf_library_repair_required | bool
   changed_when: true
   no_log: true
+
+- name: Report planned Audiobookshelf initial scan
+  ansible.builtin.debug:
+    msg: AUDIOBOOKSHELF_PLAN_INITIAL_SCAN
+  when:
+    - ansible_check_mode
+    - audiobookshelf_initial_scan_required | bool
+  changed_when: true
+
+- name: Request Audiobookshelf initial library scan
+  ansible.builtin.uri:
+    url: "{{ audiobookshelf_api }}/api/libraries/{{ audiobookshelf_current_library.id }}/scan"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ audiobookshelf_reconcile_token }}"
+    status_code: [200]
+  when:
+    - not ansible_check_mode
+    - audiobookshelf_initial_scan_required | bool
+  changed_when: true
+  no_log: true
+
+- name: Poll Audiobookshelf initial library scan tasks
+  ansible.builtin.uri:
+    url: "{{ audiobookshelf_api }}/api/tasks"
+    headers:
+      Authorization: "Bearer {{ audiobookshelf_reconcile_token }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: audiobookshelf_initial_scan_tasks
+  until:
+    - audiobookshelf_initial_scan_tasks.status | default(0) | int == 200
+    - audiobookshelf_initial_scan_tasks.json | default({}) is mapping
+    - "'tasks' in (audiobookshelf_initial_scan_tasks.json | default({}))"
+    - audiobookshelf_initial_scan_tasks.json.tasks is sequence
+    - >-
+      audiobookshelf_initial_scan_tasks.json.tasks
+      | selectattr('action', 'defined')
+      | selectattr('action', 'equalto', 'library-scan')
+      | selectattr('isFinished', 'defined')
+      | selectattr('isFinished', 'equalto', false)
+      | selectattr('data.libraryId', 'defined')
+      | selectattr('data.libraryId', 'equalto', audiobookshelf_current_library.id)
+      | list | length == 0
+  retries: "{{ audiobookshelf_initial_scan_retries }}"
+  delay: "{{ audiobookshelf_initial_scan_delay }}"
+  failed_when: false
+  when:
+    - not ansible_check_mode
+    - audiobookshelf_initial_scan_required | bool
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Poll Audiobookshelf managed library items after initial scan
+  ansible.builtin.uri:
+    url: >-
+      {{ audiobookshelf_api }}/api/libraries/{{ audiobookshelf_current_library.id
+      }}/items?limit=1&minified=1
+    headers:
+      Authorization: "Bearer {{ audiobookshelf_reconcile_token }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: audiobookshelf_initial_scan_items
+  until:
+    - audiobookshelf_initial_scan_items.status | default(0) | int == 200
+    - audiobookshelf_initial_scan_items.json | default({}) is mapping
+    - "'results' in (audiobookshelf_initial_scan_items.json | default({}))"
+    - audiobookshelf_initial_scan_items.json.results is sequence
+    - "'total' in (audiobookshelf_initial_scan_items.json | default({}))"
+    - audiobookshelf_initial_scan_items.json.total | type_debug == 'int'
+  retries: "{{ audiobookshelf_initial_scan_retries }}"
+  delay: "{{ audiobookshelf_initial_scan_delay }}"
+  failed_when: false
+  when:
+    - not ansible_check_mode
+    - audiobookshelf_initial_scan_required | bool
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Resolve sanitized Audiobookshelf initial scan observation
+  ansible.builtin.set_fact:
+    audiobookshelf_initial_scan_observation:
+      library_id: "{{ audiobookshelf_current_library.id }}"
+      scan_active: >-
+        {{ audiobookshelf_initial_scan_tasks.json.tasks | default([])
+           | selectattr('action', 'defined')
+           | selectattr('action', 'equalto', 'library-scan')
+           | selectattr('isFinished', 'defined')
+           | selectattr('isFinished', 'equalto', false)
+           | selectattr('data.libraryId', 'defined')
+           | selectattr('data.libraryId', 'equalto', audiobookshelf_current_library.id)
+           | list | length > 0 }}
+      item_count: >-
+        {{ audiobookshelf_initial_scan_items.json.total | default(-1) | int }}
+      retry_observation: >-
+        tasks={{ audiobookshelf_initial_scan_tasks.attempts | default(0) }},
+        items={{ audiobookshelf_initial_scan_items.attempts | default(0) }}
+  when:
+    - not ansible_check_mode
+    - audiobookshelf_initial_scan_required | bool
+  no_log: true
+
+- name: Require completed Audiobookshelf initial library scan
+  ansible.builtin.assert:
+    that:
+      - audiobookshelf_initial_scan_tasks.status | default(0) | int == 200
+      - audiobookshelf_initial_scan_tasks.json | default({}) is mapping
+      - "'tasks' in (audiobookshelf_initial_scan_tasks.json | default({}))"
+      - audiobookshelf_initial_scan_tasks.json.tasks is sequence
+      - not audiobookshelf_initial_scan_observation.scan_active | bool
+      - audiobookshelf_initial_scan_items.status | default(0) | int == 200
+      - audiobookshelf_initial_scan_items.json | default({}) is mapping
+      - "'results' in (audiobookshelf_initial_scan_items.json | default({}))"
+      - audiobookshelf_initial_scan_items.json.results is sequence
+      - "'total' in (audiobookshelf_initial_scan_items.json | default({}))"
+      - audiobookshelf_initial_scan_items.json.total | type_debug == 'int'
+    fail_msg: >-
+      Audiobookshelf initial scan did not complete
+      (library_id={{ audiobookshelf_initial_scan_observation.library_id }},
+      scan_active={{ audiobookshelf_initial_scan_observation.scan_active | bool }},
+      item_count={{ audiobookshelf_initial_scan_observation.item_count | int }},
+      retry_observation={{ audiobookshelf_initial_scan_observation.retry_observation }}).
+  when:
+    - not ansible_check_mode
+    - audiobookshelf_initial_scan_required | bool
 
 - name: Authenticate to Audiobookshelf for exact verification
   tags: [platform_verify_audiobookshelf]
