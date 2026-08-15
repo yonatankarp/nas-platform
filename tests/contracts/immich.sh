@@ -1490,13 +1490,19 @@ def clean_restore_records(token)
   end.sort_by { |record| record.fetch("name") }
 end
 
+ROUTINE_BACKUP_PATTERN =
+  /\Aimmich-db-backup-\d{8}T\d{6}-v\d+(?:\.\d+)*-pg\d+(?:\.\d+)*\.sql\.gz\z/
+
+def routine_backups(root)
+  root.children.select { |path| path.basename.to_s.match?(ROUTINE_BACKUP_PATTERN) }
+end
+
 def wait_for_routine_backup(root, timeout:)
-  pattern = /\Aimmich-db-backup-\d{8}T\d{6}-v\d+(?:\.\d+)*-pg\d+(?:\.\d+)*\.sql\.gz\z/
   deadline = Time.now + timeout
   previous = nil
   loop do
-    candidates = root.children.select do |path|
-      path.basename.to_s.match?(pattern) && path.file? && !path.symlink?
+    candidates = routine_backups(root).select do |path|
+      path.file? && !path.symlink?
     end
     if candidates.length == 1 && candidates.first.size.positive?
       current = [candidates.first.basename.to_s, candidates.first.size]
@@ -1617,7 +1623,13 @@ if MODE == "clean-restore-seed"
   backup_root = MEDIA_ROOT.join("Immich-backups", "database")
   fail_contract("database backup root is unavailable or unsafe") unless
     backup_root.directory? && !backup_root.symlink?
-  fail_contract("clean-restore backup root is not empty") unless backup_root.children.empty?
+  # Immich keeps its own bookkeeping entries inside every folder it mounts, so
+  # the guard is that no database dump predates this run rather than that the
+  # directory is bare.
+  stale_backups = routine_backups(backup_root).map { |path| path.basename.to_s }
+  fail_contract(
+    "clean-restore backup root already holds #{stale_backups.join(', ')}"
+  ) unless stale_backups.empty?
   records = clean_restore_records(token)
   assert_originals_open(token, records)
   request(
