@@ -942,6 +942,7 @@ validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "te
   ruby\ tests/immich_user_onboarding_test.rb
   ruby\ tests/komga_library_reconciliation_test.rb
   ruby\ tests/audiobookshelf_initial_scan_test.rb
+  ruby\ tests/audiobookshelf_initial_scan_behavior_test.rb
   ruby\ tests/paperless_mail_reconciliation_test.rb
   tests/integration_lock_test.sh
   tests/mac/manual-validation-runner-test.sh
@@ -960,6 +961,9 @@ check(failures,
 check(failures,
       validation_commands.count("ruby tests/audiobookshelf_initial_scan_test.rb") == 1,
       "validate-policy.sh must run ruby tests/audiobookshelf_initial_scan_test.rb exactly once")
+check(failures,
+      validation_commands.count("ruby tests/audiobookshelf_initial_scan_behavior_test.rb") == 1,
+      "validate-policy.sh must run ruby tests/audiobookshelf_initial_scan_behavior_test.rb exactly once")
 
 # Compose interpolates $ in env files and silently truncates an unescaped bcrypt
 # hash rather than rejecting it, so escaping is mandatory wherever hashes flow.

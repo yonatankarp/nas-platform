@@ -13,6 +13,7 @@ SCAN_TASK = "Request Audiobookshelf initial library scan"
 PLAN_TASK = "Report planned Audiobookshelf initial scan"
 TASK_POLL = "Poll Audiobookshelf initial library scan tasks"
 ITEM_POLL = "Poll Audiobookshelf managed library items after initial scan"
+LIBRARY_POLL = "Poll authoritative Audiobookshelf library scan state"
 REPAIR_TASK = "Repair the managed Audiobookshelf library"
 VERIFY_TASK = "Authenticate to Audiobookshelf for exact verification"
 CURRENT_LIBRARY_TASK = "Resolve the current managed Audiobookshelf library"
@@ -34,6 +35,24 @@ def validate_initial_scan!(tasks, defaults)
   require_condition(
     defaults.values_at("audiobookshelf_initial_scan_retries", "audiobookshelf_initial_scan_delay") == [60, 2],
     "initial scan defaults must be retries=60 and delay=2"
+  )
+  effective_paths, effective_paths_index = task_named(
+    tasks, "Resolve the effective Audiobookshelf backup directory"
+  )
+  config_path = effective_paths.dig(
+    "ansible.builtin.set_fact", "audiobookshelf_effective_config_host_path"
+  ).to_s
+  require_condition(
+    config_path.include?("platform_adoption_root ~ '/legacy/audiobookshelf/config'") &&
+      config_path.include?("nas_docker_root ~ '/audiobookshelf/config'"),
+    "initial scan marker must follow normal and adoption config bindings"
+  )
+  timing, timing_index = task_named(tasks, "Require bounded Audiobookshelf initial scan timing")
+  timing_assertions = Array(timing.dig("ansible.builtin.assert", "that")).join(" ")
+  require_condition(
+    effective_paths_index < timing_index && timing_assertions.include?("retries | int >= 1") &&
+      timing_assertions.include?("delay | int >= 0"),
+    "initial scan timing inputs must be bounded"
   )
 
   path_resolution, path_resolution_index = task_named(
@@ -64,6 +83,7 @@ def validate_initial_scan!(tasks, defaults)
   require_condition(
     scan_guard.include?("audiobookshelf_library_create_required") &&
       scan_guard.include?("audiobookshelf_library_folder_repair_required") &&
+      scan_guard.include?("not audiobookshelf_initial_scan_marker_matches") &&
       scan_guard.match?(/audiobookshelf_library_create_required\s*\|\s*bool\s+or/) &&
       !scan_guard.include?("audiobookshelf_library_repair_required"),
     "initial scan must be limited to creation or folder-binding repair"
@@ -133,12 +153,17 @@ def validate_initial_scan!(tasks, defaults)
   )
 
   task_poll, task_poll_index = task_named(tasks, TASK_POLL)
+  library_poll, library_poll_index = task_named(tasks, LIBRARY_POLL)
   item_poll, item_poll_index = task_named(tasks, ITEM_POLL)
   require_condition(
-    scan_index < task_poll_index && task_poll_index < item_poll_index && item_poll_index < verify_index,
+    scan_index < task_poll_index && task_poll_index < library_poll_index &&
+      library_poll_index < item_poll_index && item_poll_index < verify_index,
     "scan polling is ordered incorrectly"
   )
-  [[task_poll, "/api/tasks"], [item_poll, "/items?limit=1&minified=1"]].each do |poll, suffix|
+  [
+    [task_poll, "/api/tasks"], [library_poll, "/api/libraries"],
+    [item_poll, "/items?limit=1&minified=1"]
+  ].each do |poll, suffix|
     uri = poll.fetch("ansible.builtin.uri", {})
     require_condition(uri["url"].to_s.end_with?(suffix), "scan polling uses an unsupported API")
     require_condition(
@@ -157,14 +182,48 @@ def validate_initial_scan!(tasks, defaults)
   task_until = Array(task_poll["until"]).join(" ")
   require_condition(
     task_until.include?("library-scan") && task_until.include?("isFinished") &&
-      task_until.include?("libraryId") && task_until.include?("audiobookshelf_current_library.id"),
+      task_until.include?("libraryId") && task_until.include?("audiobookshelf_current_library.id") &&
+      task_until.include?("type_debug == 'list'"),
     "task polling must wait for the managed library scan to finish"
+  )
+  library_until = Array(library_poll["until"]).join(" ")
+  require_condition(
+    library_until.include?("lastScan") &&
+      library_until.include?("audiobookshelf_initial_scan_last_scan_before") &&
+      library_until.include?("type_debug == 'list'") && library_until.include?(">"),
+    "authoritative library polling must require strict lastScan advancement"
   )
   item_until = Array(item_poll["until"]).join(" ")
   require_condition(
-    item_until.include?("results") && item_until.include?("sequence") &&
+    item_until.include?("results") && item_until.include?("type_debug == 'list'") &&
       !item_until.match?(/length\s*>\s*0|length\s*>=\s*1/),
     "item polling must validate response shape without rejecting an empty source"
+  )
+
+  baseline, baseline_index = task_named(tasks, "Capture Audiobookshelf last scan before initial scan request")
+  require_condition(
+    baseline.dig("ansible.builtin.set_fact", "audiobookshelf_initial_scan_last_scan_before")
+            .to_s.include?("audiobookshelf_current_library.lastScan") && baseline_index < scan_index,
+    "lastScan baseline must be captured before the single scan POST"
+  )
+  marker_state, marker_state_index = task_named(
+    tasks, "Resolve Audiobookshelf initial scan marker path and desired state"
+  )
+  marker_write, marker_write_index = task_named(tasks, "Record durable Audiobookshelf initial scan state")
+  marker_copy = marker_write.fetch("ansible.builtin.copy", {})
+  require_condition(
+    marker_state_index < scan_classification_index && marker_write_index > item_poll_index &&
+      marker_write_index > task_named(tasks, "Require completed Audiobookshelf initial library scan").last,
+    "durable scan state must be resolved before reconciliation and written only after validation"
+  )
+  require_condition(
+    marker_copy["dest"] == "{{ audiobookshelf_initial_scan_marker_path }}" &&
+      marker_copy["mode"] == "0600" && marker_copy["follow"] == false &&
+      marker_copy["unsafe_writes"] == false && marker_write["no_log"] == true &&
+      Array(marker_write["when"]) == [
+        "not ansible_check_mode", "audiobookshelf_initial_scan_required | bool"
+      ],
+    "durable scan state write must be private, atomic, and success-guarded"
   )
 
   diagnostic, = task_named(tasks, "Require completed Audiobookshelf initial library scan")
@@ -234,6 +293,15 @@ scan_facts["audiobookshelf_initial_scan_required"] =
   scan_facts.fetch("audiobookshelf_initial_scan_required").sub("bool or", "bool and")
 mutation_rejected!(missed_folder_scan, defaults, "missed folder scan")
 
+missed_retry_scan = deep_copy(tasks)
+retry_facts = task_named(
+  missed_retry_scan, "Resolve Audiobookshelf initial scan requirement"
+).first.fetch("ansible.builtin.set_fact")
+retry_facts["audiobookshelf_initial_scan_required"] =
+  "{{ audiobookshelf_library_create_required | bool or " \
+  "audiobookshelf_library_folder_repair_required | bool }}"
+mutation_rejected!(missed_retry_scan, defaults, "missing durable-state retry")
+
 wrong_order = deep_copy(tasks)
 scan_index = task_named(wrong_order, SCAN_TASK).last
 scan = wrong_order.delete_at(scan_index)
@@ -244,6 +312,24 @@ mutation_rejected!(wrong_order, defaults, "wrong ordering")
 unbounded_poll = deep_copy(tasks)
 task_named(unbounded_poll, TASK_POLL).first.delete("retries")
 mutation_rejected!(unbounded_poll, defaults, "unbounded polling")
+
+missing_last_scan_proof = deep_copy(tasks)
+missing_last_scan_proof.reject! { |task| task["name"] == LIBRARY_POLL }
+mutation_rejected!(missing_last_scan_proof, defaults, "missing lastScan proof")
+
+missing_durable_state = deep_copy(tasks)
+missing_durable_state.reject! { |task| task["name"] == "Record durable Audiobookshelf initial scan state" }
+mutation_rejected!(missing_durable_state, defaults, "missing durable scan state")
+
+loose_task_shape = deep_copy(tasks)
+task_until = task_named(loose_task_shape, TASK_POLL).first.fetch("until")
+task_until.map! { |condition| condition.to_s.sub("type_debug == 'list'", "is sequence") }
+mutation_rejected!(loose_task_shape, defaults, "loose task shape")
+
+loose_item_shape = deep_copy(tasks)
+item_until = task_named(loose_item_shape, ITEM_POLL).first.fetch("until")
+item_until.map! { |condition| condition.to_s.sub("type_debug == 'list'", "is sequence") }
+mutation_rejected!(loose_item_shape, defaults, "loose item shape")
 
 contract = File.read(CONTRACT_PATH)
 require_condition(
