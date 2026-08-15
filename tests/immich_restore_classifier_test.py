@@ -128,6 +128,10 @@ class ImmichRestoreClassifierTest(unittest.TestCase):
             },
         )
 
+    def test_absent_database_directory_is_fresh(self):
+        self.fixture.postgres.rmdir()
+        self.assertEqual(self.fixture.classify()["database"], "fresh")
+
     def test_fresh_database_with_originals_requires_newest_backup(self):
         self.fixture.add_original()
         self.fixture.add_backup(
@@ -282,6 +286,15 @@ class ImmichRestoreClassifierTest(unittest.TestCase):
         os.mkfifo(fifo)
         self.assertTrue(stat.S_ISFIFO(fifo.lstat().st_mode))
         self.assert_refused("unsafe-originals")
+
+    def test_permission_denied_original_traversal_is_refused(self):
+        denied = self.fixture.originals / "denied"
+        denied.mkdir(parents=True)
+        denied.chmod(0)
+        try:
+            self.assert_refused("unsafe-originals")
+        finally:
+            denied.chmod(0o700)
 
     def test_scan_stops_after_first_safe_regular_original(self):
         self.fixture.add_original("00-first.jpg")
