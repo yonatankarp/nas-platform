@@ -19,6 +19,8 @@ if [ "${1-}" = seed ] && [ "${PLATFORM_PROOF_LANE:-}" = adoption ] &&
   PLATFORM_KOMGA_CONFIG_PATH=$PLATFORM_MAC_SANDBOX/legacy/komga/config
   export PLATFORM_KOMGA_CONFIG_PATH
   PLATFORM_KOMGA_RUNTIME_CONTEXT=legacy
+elif [ "${PLATFORM_KIND:-}" = integration ]; then
+  PLATFORM_KOMGA_RUNTIME_CONTEXT=base
 else
   PLATFORM_KOMGA_RUNTIME_CONTEXT=mac-managed
 fi

@@ -280,6 +280,7 @@ while [ ! -s "$contract_port_file" ]; do
 done
 contract_port=$(cat "$contract_port_file")
 PATH="$contract_bin:$PATH" PLATFORM_MAC_TMPDIR=$temporary_root \
+  PLATFORM_KIND=integration \
   PLATFORM_MAC_SANDBOX=$sandbox PLATFORM_LEGACY_FIXTURE_SANDBOX=$sandbox \
   PLATFORM_LEGACY_FIXTURE_MODE=nas-platform-owned-legacy-v1 PLATFORM_PROOF_LANE=adoption \
   PLATFORM_PROJECT_NAME=nas-platform-mac-abc123 CONTRACT_DOCKER_LOG=$contract_docker_log \
@@ -293,6 +294,7 @@ PATH="$contract_bin:$PATH" PLATFORM_MAC_TMPDIR=$temporary_root \
 
 printf '%s\n' Comics > "$contract_library_name"
 PATH="$contract_bin:$PATH" PLATFORM_MAC_TMPDIR=$temporary_root \
+  PLATFORM_KIND=integration \
   PLATFORM_MAC_SANDBOX=$sandbox PLATFORM_LEGACY_FIXTURE_SANDBOX=$sandbox \
   PLATFORM_LEGACY_FIXTURE_MODE=nas-platform-owned-legacy-v1 PLATFORM_PROOF_LANE=adoption \
   PLATFORM_PROOF_PLATFORM=mac PLATFORM_PROJECT_NAME=nas-platform-mac-abc123 \
@@ -305,14 +307,14 @@ PATH="$contract_bin:$PATH" PLATFORM_MAC_TMPDIR=$temporary_root \
   "$test_dir/adoption-probes/komga.sh" >/dev/null ||
   fail 'pre-cutover Komga adoption baseline used the wrong runtime health context'
 
-PATH="$contract_bin:$PATH" PLATFORM_KIND=integration PLATFORM_KOMGA_RUNTIME_CONTEXT=base \
+PATH="$contract_bin:$PATH" PLATFORM_KIND=integration PLATFORM_PROOF_PLATFORM=integration \
   PLATFORM_PROJECT_NAME=ambient-project PLATFORM_KOMGA_CONTAINER=hostile-container \
   PLATFORM_KOMGA_DOCKER_HEALTH_REQUIRED=false CONTRACT_DOCKER_LOG=$contract_docker_log \
-  PLATFORM_CONTRACT_VAULT_FILE=$temporary_root/vault.yml \
-  PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=$temporary_root/vault-password \
+  PLATFORM_KOMGA_RUNTIME_CONTEXT=legacy PLATFORM_MAC_VAULT_FILE=$temporary_root/vault.yml \
+  PLATFORM_MAC_VAULT_PASSWORD_FILE=$temporary_root/vault-password \
   PLATFORM_MEDIA_ROOT=$sandbox/legacy/komga/library PLATFORM_REPORT_ROOT=$contract_report \
-  PLATFORM_KOMGA_PORT=$contract_port "$test_dir/../contracts/komga.sh" run >/dev/null ||
-  fail 'integration Komga contract used project-derived or ambient container health controls'
+  PLATFORM_KOMGA_PORT=$contract_port "$test_dir/run-komga-contract.sh" run >/dev/null ||
+  fail 'post-cutover integration Komga wrapper used Mac or ambient container health controls'
 
 PATH="$contract_bin:$PATH" PLATFORM_MAC_TMPDIR=$temporary_root \
   PLATFORM_MAC_SANDBOX=$sandbox PLATFORM_LEGACY_FIXTURE_SANDBOX=$sandbox \

@@ -371,6 +371,7 @@ Dir.mktmpdir("adoption-probes-test-") do |root|
     failures << "#{service} target probe path failed: #{stderr}" unless status.success?
   end
   integration_target_env = target_env.merge(
+    "PLATFORM_KIND" => "integration",
     "PLATFORM_PROOF_PLATFORM" => "integration",
     "PLATFORM_CALLBACK_HOST" => "172.17.0.1",
     "PLATFORM_ADOPTION_NTFY_CONTAINER" => "ntfy",

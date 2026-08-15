@@ -127,9 +127,10 @@ def validate_runtime_health_paths!(sources)
       contract.scan(/PLATFORM_KOMGA_CONTAINER=/).length == 3 &&
       !contract.include?('[ -z "${PLATFORM_KOMGA_CONTAINER:-}" ]') &&
       contract.include?('DOCKER_HEALTH_REQUIRED = { "true" => true, "false" => false }.fetch(')
-  raise "integration Komga context is not forced to the base container" unless
-    contract.include?('[ "$PLATFORM_KOMGA_RUNTIME_CONTEXT" = base ]') &&
-      contract.include?('PLATFORM_KOMGA_RUNTIME_CONTEXT=base')
+  raise "integration Komga contexts do not allow only base and legacy" unless
+    contract.include?(': "${PLATFORM_KOMGA_RUNTIME_CONTEXT:=base}"') &&
+      contract.include?('base|legacy) ;;') &&
+      contract.include?("*) fail_contract 'integration Komga runtime context differs' ;;")
 
   managed_health = <<~'RUBY'.strip
     if DOCKER_HEALTH_REQUIRED
@@ -157,6 +158,8 @@ def validate_runtime_health_paths!(sources)
   raise "Komga invoking harnesses do not bind exact runtime contexts" unless
     integration.include?('PLATFORM_KOMGA_RUNTIME_CONTEXT=base') &&
       wrapper.include?('PLATFORM_KOMGA_RUNTIME_CONTEXT=legacy') &&
+      wrapper.include?('elif [ "${PLATFORM_KIND:-}" = integration ]; then') &&
+      wrapper.include?('PLATFORM_KOMGA_RUNTIME_CONTEXT=base') &&
       wrapper.include?('PLATFORM_KOMGA_RUNTIME_CONTEXT=mac-managed') &&
       adoption_probe.include?('integration) runtime_context=base ;;') &&
       adoption_probe.include?('mac) runtime_context=mac-managed ;;') &&
@@ -356,6 +359,21 @@ wrong_integration_context[3] = runtime_sources.fetch(3).sub(
   "PLATFORM_KOMGA_RUNTIME_CONTEXT=mac-managed"
 )
 runtime_health_mutation_rejected!(wrong_integration_context, "integration context")
+
+integration_accepts_mac = runtime_sources.dup
+integration_accepts_mac[0] = contract.sub("base|legacy) ;;", "base|legacy|mac-managed) ;;")
+runtime_health_mutation_rejected!(integration_accepts_mac, "integration Mac context")
+
+integration_wrapper_uses_mac = runtime_sources.dup
+integration_wrapper_base = [
+  'elif [ "${PLATFORM_KIND:-}" = integration ]; then',
+  "  PLATFORM_KOMGA_RUNTIME_CONTEXT=base"
+].join("\n")
+integration_wrapper_uses_mac[1] = mac_contract_wrapper.sub(
+  integration_wrapper_base,
+  integration_wrapper_base.sub("=base", "=mac-managed")
+)
+runtime_health_mutation_rejected!(integration_wrapper_uses_mac, "integration wrapper context")
 
 wrong_baseline_context = runtime_sources.dup
 wrong_baseline_context[4] = runtime_sources.fetch(4).sub(

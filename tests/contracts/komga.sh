@@ -176,10 +176,11 @@ fi
 : "${PLATFORM_KOMGA_PORT:=25600}"
 : "${PLATFORM_MEDIA_FIXTURES_PRESEEDED:=false}"
 if [ "${PLATFORM_KIND:-}" = integration ]; then
-  [ -z "${PLATFORM_KOMGA_RUNTIME_CONTEXT:-}" ] ||
-    [ "$PLATFORM_KOMGA_RUNTIME_CONTEXT" = base ] ||
-    fail_contract 'integration Komga runtime context differs'
-  PLATFORM_KOMGA_RUNTIME_CONTEXT=base
+  : "${PLATFORM_KOMGA_RUNTIME_CONTEXT:=base}"
+  case $PLATFORM_KOMGA_RUNTIME_CONTEXT in
+    base|legacy) ;;
+    *) fail_contract 'integration Komga runtime context differs' ;;
+  esac
 elif [ -z "${PLATFORM_KOMGA_RUNTIME_CONTEXT:-}" ]; then
   PLATFORM_KOMGA_RUNTIME_CONTEXT=base
 fi
