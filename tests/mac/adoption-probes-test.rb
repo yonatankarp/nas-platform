@@ -149,7 +149,13 @@ Dir.mktmpdir("adoption-probes-test-") do |root|
                   "[ \"$PLATFORM_JELLYFIN_CONTAINER\" = " \
                   "\"${PLATFORM_EXPECT_JELLYFIN_CONTAINER:-proof-jellyfin}\" ]; else " \
                   "[ \"$PLATFORM_JELLYFIN_CONTAINER\" = 'proof-legacy-jellyfin-jellyfin-1' ]; fi",
-    "komga" => "[ \"$PLATFORM_KOMGA_LIBRARY_PATH\" = '#{root}/legacy/komga/library' ]",
+    "komga" => "[ \"$PLATFORM_KOMGA_LIBRARY_PATH\" = '#{root}/legacy/komga/library' ] && " \
+               "if [ \"${PLATFORM_ADOPTION_PROBE_TARGET:-false}\" = true ]; then " \
+               "case ${PLATFORM_PROOF_PLATFORM:-mac} in " \
+               "integration) [ \"$PLATFORM_KOMGA_RUNTIME_CONTEXT\" = base ] ;; " \
+               "mac) [ \"$PLATFORM_KOMGA_RUNTIME_CONTEXT\" = mac-managed ] ;; " \
+               "*) false ;; esac; else " \
+               "[ \"$PLATFORM_KOMGA_RUNTIME_CONTEXT\" = legacy ]; fi",
     "paperless" => "[ \"$PLATFORM_PAPERLESS_CONSUME_ROOT\" = '#{root}/legacy/paperless-ngx/consume' ] && " \
                    "[ \"$PLATFORM_CONTRACT_REPO_DIR\" = '#{root}/tests/mac/../..' ] && " \
                    "if [ \"${PLATFORM_ADOPTION_PROBE_TARGET:-false}\" = true ]; then " \

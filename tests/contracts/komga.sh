@@ -152,10 +152,8 @@ fi
 legacy_fixture_validate PLATFORM_KOMGA_LIBRARY_PATH legacy/komga/library ||
   fail_contract 'legacy fixture root is unsafe'
 
-legacy_seed=false
 if [ "$mode" = seed ] && [ "${PLATFORM_PROOF_LANE:-}" = adoption ] &&
     [ "${PLATFORM_ADOPTION_PROBE_TARGET:-false}" != true ]; then
-  legacy_seed=true
   : "${PLATFORM_KOMGA_CONFIG_PATH:?Komga legacy fixture config path is required}"
   if [ "${PLATFORM_LEGACY_FIXTURE_MODE:-}" = nas-platform-owned-legacy-v1 ]; then
     legacy_fixture_validate PLATFORM_KOMGA_CONFIG_PATH legacy/komga/config ||
@@ -177,21 +175,35 @@ fi
 : "${PLATFORM_REPORT_ROOT:?}"
 : "${PLATFORM_KOMGA_PORT:=25600}"
 : "${PLATFORM_MEDIA_FIXTURES_PRESEEDED:=false}"
-if [ -z "${PLATFORM_KOMGA_CONTAINER:-}" ]; then
-  if [ "$legacy_seed" = true ]; then
+if [ "${PLATFORM_KIND:-}" = integration ]; then
+  [ -z "${PLATFORM_KOMGA_RUNTIME_CONTEXT:-}" ] ||
+    [ "$PLATFORM_KOMGA_RUNTIME_CONTEXT" = base ] ||
+    fail_contract 'integration Komga runtime context differs'
+  PLATFORM_KOMGA_RUNTIME_CONTEXT=base
+elif [ -z "${PLATFORM_KOMGA_RUNTIME_CONTEXT:-}" ]; then
+  PLATFORM_KOMGA_RUNTIME_CONTEXT=base
+fi
+case $PLATFORM_KOMGA_RUNTIME_CONTEXT in
+  base)
+    PLATFORM_KOMGA_CONTAINER=komga
+    PLATFORM_KOMGA_DOCKER_HEALTH_REQUIRED=true
+    ;;
+  mac-managed)
+    : "${PLATFORM_PROJECT_NAME:?PLATFORM_PROJECT_NAME is required for managed Mac Komga}"
+    PLATFORM_KOMGA_CONTAINER=$PLATFORM_PROJECT_NAME-komga
+    PLATFORM_KOMGA_DOCKER_HEALTH_REQUIRED=true
+    ;;
+  legacy)
+    if [ "${PLATFORM_PROOF_LANE:-}" != adoption ] ||
+        [ "${PLATFORM_ADOPTION_PROBE_TARGET:-false}" = true ]; then
+      fail_contract 'legacy Komga runtime context is unavailable'
+    fi
     : "${PLATFORM_PROJECT_NAME:?PLATFORM_PROJECT_NAME is required for the legacy Komga container}"
     PLATFORM_KOMGA_CONTAINER=$PLATFORM_PROJECT_NAME-legacy-komga-komga-1
-  elif [ -n "${PLATFORM_PROJECT_NAME:-}" ]; then
-    PLATFORM_KOMGA_CONTAINER=$PLATFORM_PROJECT_NAME-komga
-  else
-    PLATFORM_KOMGA_CONTAINER=komga
-  fi
-fi
-if [ "$legacy_seed" = true ]; then
-  PLATFORM_KOMGA_DOCKER_HEALTH_REQUIRED=false
-else
-  PLATFORM_KOMGA_DOCKER_HEALTH_REQUIRED=true
-fi
+    PLATFORM_KOMGA_DOCKER_HEALTH_REQUIRED=false
+    ;;
+  *) fail_contract 'Komga runtime context is invalid' ;;
+esac
 export PLATFORM_CONTRACT_VAULT_FILE PLATFORM_CONTRACT_VAULT_PASSWORD_FILE
 export PLATFORM_MEDIA_ROOT PLATFORM_REPORT_ROOT PLATFORM_KOMGA_PORT
 export PLATFORM_MEDIA_FIXTURES_PRESEEDED PLATFORM_KOMGA_CONTAINER

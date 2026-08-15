@@ -704,6 +704,7 @@ docker run --rm \
         PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=\"\$vault_password_file\" \
         PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
         PLATFORM_REPORT_ROOT='$sandbox/reports' \
+        PLATFORM_KOMGA_RUNTIME_CONTEXT=base \
         /repo/tests/contracts/komga.sh \"\$@\"
     }
 
