@@ -356,7 +356,6 @@ expected_group =
 refuse("marker ownership differs") unless
   marker.dig("ansible.builtin.copy", "owner").to_s.split.join(" ") == expected_owner &&
   marker.dig("ansible.builtin.copy", "group").to_s.split.join(" ") == expected_group
-marker_content = marker.dig("ansible.builtin.copy", "content").to_s
 refuse("initial marker is not JSON-serialized with a real newline") unless
   safe_marker_copy?(marker, expected_owner, expected_group)
 refuse("marker can be created outside restore path") unless
@@ -546,7 +545,6 @@ refuse("restore failures do not preserve a sanitized marker stage") unless
   restore_text.include?("Record sanitized Immich restore failure stage") &&
   restore_text.include?("immich_restore_stage")
 rescue_marker = task(restore_tasks, "Record sanitized Immich restore failure stage")
-rescue_content = rescue_marker&.dig("ansible.builtin.copy", "content").to_s
 refuse("rescue marker is not JSON-serialized with a real newline") unless
   safe_marker_copy?(rescue_marker, expected_owner, expected_group)
 

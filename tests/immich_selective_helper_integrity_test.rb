@@ -43,13 +43,6 @@ def write_playbook(path, variables)
   File.write(path, YAML.dump(playbook), mode: "w", perm: 0o600)
 end
 
-def run_playbook(path)
-  Open3.capture3(
-    { "ANSIBLE_NOCOLOR" => "1" }, ANSIBLE, "-i", "localhost,", path,
-    chdir: ROOT
-  )
-end
-
 def tripwire_count(path)
   File.file?(path) ? File.readlines(path).length : 0
 end
