@@ -972,6 +972,14 @@ check(failures,
 check(failures,
       validation_commands.count("tests/dozzle_alert_state_symlink_test.sh") == 1,
       "validate-policy.sh must run the Dozzle alert state symlink test exactly once")
+check(failures,
+      validation_commands.count(
+        "python3 -m unittest -v tests/immich_restore_classifier_test.py"
+      ) == 1,
+      "validate-policy.sh must run the Immich restore classifier test exactly once")
+check(failures,
+      validation_commands.count("ruby tests/immich_restore_quality_test.rb") == 1,
+      "validate-policy.sh must run the Immich restore quality test exactly once")
 
 # Compose interpolates $ in env files and silently truncates an unescaped bcrypt
 # hash rather than rejecting it, so escaping is mandatory wherever hashes flow.

@@ -745,6 +745,31 @@ docker run --rm \
         /repo/tests/contracts/immich.sh \"\$@\"
     }
 
+    run_immich_clean_restore() {
+      immich_runtime='$sandbox/volume1/Docker/nas-platform/runtime/services/immich/.env'
+      immich_release='$sandbox/volume1/Docker/nas-platform/current/services/immich'
+      immich_postgres='$sandbox/volume1/Docker/immich/postgres'
+      immich_quarantine='$sandbox/reports/immich-postgres-quarantine'
+      test ! -e "\$immich_quarantine"
+      docker compose --project-name immich \
+        --env-file "\$immich_runtime" \
+        -f "\$immich_release/compose.yml" \
+        -f "\$immich_release/compose.integration.yml" down
+      test -d "\$immich_postgres"
+      test ! -L "\$immich_postgres"
+      mv "\$immich_postgres" "\$immich_quarantine"
+      mkdir -m 0755 "\$immich_postgres"
+
+      run_play --tags immich
+      run_immich_contract clean-restore-assert
+      test ! -e '$sandbox/volume1/Docker/immich/.restore-failed'
+
+      run_play --tags immich | tee /tmp/immich-clean-restore-second.txt
+      grep -qE 'changed=0 .*failed=0 ' /tmp/immich-clean-restore-second.txt
+      run_immich_contract clean-restore-assert
+      printf 'IMMICH_CLEAN_RESTORE_IDEMPOTENT\n'
+    }
+
     run_paperless_contract() {
       env \
         PLATFORM_KIND=integration \
@@ -1514,6 +1539,8 @@ docker run --rm \
         run_tinymediamanager_contract run
         run_jellyfin_contract run
         run_immich_contract run
+        run_immich_contract clean-restore-seed
+        run_immich_clean_restore
       fi
     fi
 
@@ -1528,14 +1555,10 @@ docker run --rm \
         up -d --force-recreate --wait
       run_paperless_contract assert-persistence
     fi
-      # Immich is deliberately not seeded here. Its seed contract asserts CPU
-      # machine learning, and the first inference makes the pinned image pull
-      # roughly 800 MB of CLIP, face and OCR models from external CDNs. That is
-      # a new outbound dependency on every CI run for coverage the Mac lane
-      # already provides. Immich still deploys with the rest of site.yml, and
-      # run_contracts.rb below executes its registered run-mode contract, which
-      # covers login, containment and managed settings and needs no extra
-      # environment beyond the shared contract ABI.
+      # The full lane avoids the CPU-machine-learning seed contract because it
+      # would add an 800 MB external model download. The media lane above uses
+      # a narrower upload/backup fixture that proves database recovery without
+      # waiting for generated assets or inference.
 
     if [ "\$INTEGRATION_SUITE" = full ] && \
        [ "\$INTEGRATION_RUN_SERVICE_SCENARIOS" = true ]; then
