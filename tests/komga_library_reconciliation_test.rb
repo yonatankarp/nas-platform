@@ -11,6 +11,9 @@ ROOT = File.expand_path("..", __dir__)
 ROLE = File.join(ROOT, "roles/komga/tasks/main.yml")
 COMPOSE = File.join(ROOT, "services/komga/compose.yml")
 ARGUMENT_SPECS = File.join(ROOT, "roles/komga/meta/argument_specs.yml")
+CONTRACT = File.join(ROOT, "tests/contracts/komga.sh")
+MAC_CONTRACT_WRAPPER = File.join(ROOT, "tests/mac/run-komga-contract.sh")
+LEGACY_SEED_HOOK = File.join(ROOT, "tests/mac/hooks/fixtures-seed/40-komga.sh")
 DEFAULTS = YAML.safe_load_file(File.join(ROOT, "roles/komga/defaults/main.yml"), aliases: false)
 START_TASK = "List Komga libraries for reconciliation"
 END_TASK = "Require exact reconciled Komga library"
@@ -90,6 +93,65 @@ rescue KeyError, RuntimeError
   return
 else
   raise "#{label} health mutation was not rejected"
+end
+
+def validate_runtime_health_paths!(contract, wrapper, legacy_seed_hook)
+  legacy_detection = <<~'SHELL'.strip
+    legacy_seed=false
+    if [ "$mode" = seed ] && [ "${PLATFORM_PROOF_LANE:-}" = adoption ] &&
+        [ "${PLATFORM_ADOPTION_PROBE_TARGET:-false}" != true ]; then
+      legacy_seed=true
+  SHELL
+  raise "legacy Komga seed health policy is selected by the wrong invocation" unless
+    contract.include?(legacy_detection) && contract.scan("legacy_seed=true").length == 1
+
+  legacy_selection = <<~'SHELL'.strip
+    if [ "$legacy_seed" = true ]; then
+      PLATFORM_KOMGA_DOCKER_HEALTH_REQUIRED=false
+    else
+      PLATFORM_KOMGA_DOCKER_HEALTH_REQUIRED=true
+    fi
+  SHELL
+  raise "legacy and managed Komga Docker-health policies differ" unless
+    contract.include?(legacy_selection) &&
+      contract.scan("PLATFORM_KOMGA_DOCKER_HEALTH_REQUIRED=false").length == 1 &&
+      contract.scan("PLATFORM_KOMGA_DOCKER_HEALTH_REQUIRED=true").length == 1 &&
+      contract.include?('DOCKER_HEALTH_REQUIRED = { "true" => true, "false" => false }.fetch(')
+
+  managed_health = <<~'RUBY'.strip
+    if DOCKER_HEALTH_REQUIRED
+      wait_for_container_health
+    else
+      require_absent_container_healthcheck
+    end
+    wait_for_api
+  RUBY
+  raise "managed and legacy Komga health gates are not selected before actuator readiness" unless
+    contract.include?(managed_health)
+  raise "managed Komga runtime no longer requires Docker healthy" unless
+    contract.include?('"{{.State.Health.Status}}", KOMGA_CONTAINER') &&
+      contract.include?('status.success? && stdout.strip == "healthy"')
+  raise "legacy Komga runtime does not prove its Docker healthcheck is absent" unless
+    contract.include?('"{{if .State.Health}}present{{else}}absent{{end}}", KOMGA_CONTAINER') &&
+      contract.include?('status.success? && stdout.strip == "absent"')
+  raise "actuator readiness no longer requires an exact UP mapping" unless
+    contract.include?('payload.is_a?(Hash) && payload["status"] == "UP"')
+
+  auth_index = contract.index('request("get", "/api/v2/users/me"')
+  gate_index = contract.index(managed_health)
+  raise "Komga health gates no longer precede authenticated assertions" unless
+    gate_index && auth_index && gate_index < auth_index
+  raise "Mac Komga contract wrapper no longer preserves the legacy seed invocation" unless
+    wrapper.include?('exec "$mac_repo_dir/tests/contracts/komga.sh" "$@"') &&
+      legacy_seed_hook.scan('"$mac_hook_dir/../../run-komga-contract.sh" seed').length == 1
+end
+
+def runtime_health_mutation_rejected!(contract, wrapper, legacy_seed_hook, label)
+  validate_runtime_health_paths!(contract, wrapper, legacy_seed_hook)
+rescue RuntimeError
+  return
+else
+  raise "#{label} runtime-health mutation was not rejected"
 end
 
 def library_tasks
@@ -222,6 +284,45 @@ main_tasks = YAML.safe_load_file(ROLE, aliases: false)
 compose = YAML.safe_load_file(COMPOSE, aliases: true)
 argument_specs = YAML.safe_load_file(ARGUMENT_SPECS, aliases: false)
 validate_health_gating!(compose, main_tasks, DEFAULTS, argument_specs)
+
+contract = File.read(CONTRACT)
+mac_contract_wrapper = File.read(MAC_CONTRACT_WRAPPER)
+legacy_seed_hook = File.read(LEGACY_SEED_HOOK)
+validate_runtime_health_paths!(contract, mac_contract_wrapper, legacy_seed_hook)
+
+missed_legacy_seed = contract.sub("  legacy_seed=true", "  legacy_seed=false")
+runtime_health_mutation_rejected!(
+  missed_legacy_seed, mac_contract_wrapper, legacy_seed_hook, "legacy seed detection"
+)
+
+legacy_requires_health = contract.sub(
+  "PLATFORM_KOMGA_DOCKER_HEALTH_REQUIRED=false",
+  "PLATFORM_KOMGA_DOCKER_HEALTH_REQUIRED=true"
+)
+runtime_health_mutation_rejected!(
+  legacy_requires_health, mac_contract_wrapper, legacy_seed_hook, "legacy Docker healthy"
+)
+
+managed_skips_health = contract.sub(
+  "PLATFORM_KOMGA_DOCKER_HEALTH_REQUIRED=true",
+  "PLATFORM_KOMGA_DOCKER_HEALTH_REQUIRED=false"
+)
+runtime_health_mutation_rejected!(
+  managed_skips_health, mac_contract_wrapper, legacy_seed_hook, "managed Docker health bypass"
+)
+
+legacy_absence_unchecked = contract.sub(
+  'status.success? && stdout.strip == "absent"',
+  'status.success?'
+)
+runtime_health_mutation_rejected!(
+  legacy_absence_unchecked, mac_contract_wrapper, legacy_seed_hook, "legacy healthcheck absence bypass"
+)
+
+wrong_legacy_invocation = legacy_seed_hook.sub("run-komga-contract.sh\" seed", "run-komga-contract.sh\" run")
+runtime_health_mutation_rejected!(
+  contract, mac_contract_wrapper, wrong_legacy_invocation, "legacy fixture invocation"
+)
 
 missing_healthcheck = deep_copy(compose)
 missing_healthcheck.fetch("services").fetch("komga").delete("healthcheck")

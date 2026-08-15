@@ -152,8 +152,10 @@ fi
 legacy_fixture_validate PLATFORM_KOMGA_LIBRARY_PATH legacy/komga/library ||
   fail_contract 'legacy fixture root is unsafe'
 
+legacy_seed=false
 if [ "$mode" = seed ] && [ "${PLATFORM_PROOF_LANE:-}" = adoption ] &&
     [ "${PLATFORM_ADOPTION_PROBE_TARGET:-false}" != true ]; then
+  legacy_seed=true
   : "${PLATFORM_KOMGA_CONFIG_PATH:?Komga legacy fixture config path is required}"
   if [ "${PLATFORM_LEGACY_FIXTURE_MODE:-}" = nas-platform-owned-legacy-v1 ]; then
     legacy_fixture_validate PLATFORM_KOMGA_CONFIG_PATH legacy/komga/config ||
@@ -176,8 +178,7 @@ fi
 : "${PLATFORM_KOMGA_PORT:=25600}"
 : "${PLATFORM_MEDIA_FIXTURES_PRESEEDED:=false}"
 if [ -z "${PLATFORM_KOMGA_CONTAINER:-}" ]; then
-  if [ "$mode" = seed ] && [ "${PLATFORM_PROOF_LANE:-}" = adoption ] &&
-      [ "${PLATFORM_ADOPTION_PROBE_TARGET:-false}" != true ]; then
+  if [ "$legacy_seed" = true ]; then
     : "${PLATFORM_PROJECT_NAME:?PLATFORM_PROJECT_NAME is required for the legacy Komga container}"
     PLATFORM_KOMGA_CONTAINER=$PLATFORM_PROJECT_NAME-legacy-komga-komga-1
   elif [ -n "${PLATFORM_PROJECT_NAME:-}" ]; then
@@ -186,9 +187,15 @@ if [ -z "${PLATFORM_KOMGA_CONTAINER:-}" ]; then
     PLATFORM_KOMGA_CONTAINER=komga
   fi
 fi
+if [ "$legacy_seed" = true ]; then
+  PLATFORM_KOMGA_DOCKER_HEALTH_REQUIRED=false
+else
+  PLATFORM_KOMGA_DOCKER_HEALTH_REQUIRED=true
+fi
 export PLATFORM_CONTRACT_VAULT_FILE PLATFORM_CONTRACT_VAULT_PASSWORD_FILE
 export PLATFORM_MEDIA_ROOT PLATFORM_REPORT_ROOT PLATFORM_KOMGA_PORT
 export PLATFORM_MEDIA_FIXTURES_PRESEEDED PLATFORM_KOMGA_CONTAINER
+export PLATFORM_KOMGA_DOCKER_HEALTH_REQUIRED
 
 shift || true
 exec ruby - "$mode" "$@" <<'RUBY'
@@ -206,6 +213,9 @@ MODE = ARGV.fetch(0)
 FIXTURE_SCAN_TIMEOUT_SECONDS = 240
 BASE = URI("http://127.0.0.1:#{Integer(ENV.fetch('PLATFORM_KOMGA_PORT'), 10)}")
 KOMGA_CONTAINER = ENV.fetch("PLATFORM_KOMGA_CONTAINER")
+DOCKER_HEALTH_REQUIRED = { "true" => true, "false" => false }.fetch(
+  ENV.fetch("PLATFORM_KOMGA_DOCKER_HEALTH_REQUIRED")
+)
 MEDIA_ROOT = Pathname.new(ENV.fetch("PLATFORM_MEDIA_ROOT")).expand_path
 REPORT_ROOT = Pathname.new(ENV.fetch("PLATFORM_REPORT_ROOT")).expand_path
 LIBRARY_NAME = "Comics"
@@ -329,6 +339,15 @@ def wait_for_container_health
   end
 end
 
+def require_absent_container_healthcheck
+  stdout, _stderr, status = Open3.capture3(
+    "docker", "inspect", "--format",
+    "{{if .State.Health}}present{{else}}absent{{end}}", KOMGA_CONTAINER
+  )
+  fail_contract("#{KOMGA_CONTAINER} unexpectedly defines a Docker healthcheck") unless
+    status.success? && stdout.strip == "absent"
+end
+
 def png_bytes
   signature = "\x89PNG\r\n\x1a\n".b
   chunk = lambda do |kind, data|
@@ -376,7 +395,11 @@ vault_yaml.replace("\0" * vault_yaml.bytesize)
 vault_error.replace("\0" * vault_error.bytesize)
 credentials = [vault.fetch("vault_komga_admin_email"), vault.fetch("vault_komga_admin_password")]
 
-wait_for_container_health
+if DOCKER_HEALTH_REQUIRED
+  wait_for_container_health
+else
+  require_absent_container_healthcheck
+end
 wait_for_api
 request("get", "/api/v2/users/me", basic: [credentials.first, "contract-wrong-password"], expected: [401])
 _me_response, me = request("get", "/api/v2/users/me", basic: credentials)

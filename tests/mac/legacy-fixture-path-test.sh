@@ -172,6 +172,7 @@ contract_bin=$temporary_root/contract-bin
 contract_report=$temporary_root/contract-report
 contract_port_file=$temporary_root/contract-port
 contract_request_log=$temporary_root/contract-requests.jsonl
+contract_docker_log=$temporary_root/contract-docker.log
 mkdir -m 0700 "$contract_bin" "$contract_report"
 printf '%s\n' disposable > "$temporary_root/vault.yml"
 printf '%s\n' disposable > "$temporary_root/vault-password"
@@ -183,6 +184,15 @@ printf '%s\n' \
   'vault_komga_admin_password: admin-secret'
 SH
 chmod 0700 "$contract_bin/ansible-vault"
+cat > "$contract_bin/docker" <<'SH'
+#!/bin/sh
+[ "$#" -eq 4 ] && [ "$1" = inspect ] && [ "$2" = --format ] &&
+  [ "$3" = '{{if .State.Health}}present{{else}}absent{{end}}' ] &&
+  [ "$4" = nas-platform-mac-abc123-legacy-komga-komga-1 ] || exit 2
+printf '%s\n' "$*" >> "${CONTRACT_DOCKER_LOG:?}"
+printf '%s\n' absent
+SH
+chmod 0700 "$contract_bin/docker"
 cat > "$temporary_root/komga-api.rb" <<'RUBY'
 require "base64"
 require "json"
@@ -257,6 +267,7 @@ contract_port=$(cat "$contract_port_file")
 PATH="$contract_bin:$PATH" PLATFORM_MAC_TMPDIR=$temporary_root \
   PLATFORM_MAC_SANDBOX=$sandbox PLATFORM_LEGACY_FIXTURE_SANDBOX=$sandbox \
   PLATFORM_LEGACY_FIXTURE_MODE=nas-platform-owned-legacy-v1 PLATFORM_PROOF_LANE=adoption \
+  PLATFORM_PROJECT_NAME=nas-platform-mac-abc123 CONTRACT_DOCKER_LOG=$contract_docker_log \
   PLATFORM_KOMGA_LIBRARY_PATH=$sandbox/legacy/komga/library \
   PLATFORM_KOMGA_CONFIG_PATH=$sandbox/legacy/komga/config \
   PLATFORM_MEDIA_ROOT=$sandbox/legacy/komga/library PLATFORM_REPORT_ROOT=$contract_report \
@@ -268,6 +279,8 @@ kill "$contract_server_pid" 2>/dev/null || true
 wait "$contract_server_pid" 2>/dev/null || true
 [ -d "$sandbox/legacy/komga/config/.nas-platform-unmanaged" ] ||
   fail 'legacy Komga fixture was not created under the mounted config root'
+[ "$(wc -l < "$contract_docker_log" | tr -d ' ')" -eq 1 ] ||
+  fail 'legacy Komga fixture did not inspect absent Docker health exactly once'
 ruby -rjson - "$contract_request_log" <<'RUBY'
 requests = File.readlines(ARGV.fetch(0), chomp: true).map { |line| JSON.parse(line) }
 raise unless requests == [{ "name" => "Komga Contract Reference", "root" => "/config/.nas-platform-unmanaged" }]
