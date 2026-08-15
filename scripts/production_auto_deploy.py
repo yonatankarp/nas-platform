@@ -3,9 +3,9 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import ctypes
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, replace
 from datetime import datetime, timedelta, timezone
 import errno
 import fcntl
@@ -13,6 +13,7 @@ import hashlib
 from http.client import HTTPException
 import json
 import os
+import pwd
 from pathlib import Path
 import re
 import secrets
@@ -39,7 +40,6 @@ EXPECTED_NAS_ADDRESS = "192.168.0.139"
 EXPECTED_GITHUB_API_BASE = "https://api.github.com"
 EXPECTED_LOG_RETENTION_COUNT = 20
 EXPECTED_LOG_RETENTION_DAYS = 30
-DEFAULT_CONFIG_PATH = Path("/var/lib/nas-platform-auto-deploy/config.json")
 MAX_RESPONSE_BYTES = 1024 * 1024
 NETWORK_TIMEOUT_SECONDS = 10
 GIT_TIMEOUT_SECONDS = 10
@@ -57,6 +57,10 @@ SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
 TIMESTAMP_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 LOCK_FILE_NAME = "deployment.lock"
 LOCK_IDENTITY_FILE_NAME = ".deployment.lock.identity"
+INSTALLER_LOCK_PROOF_PREFIX = ".production-auto-deploy-lock-proof-"
+INSTALLER_LOCK_PROOF_SUFFIX = ".json"
+INSTALLER_LOCK_PROOF_MAX_AGE_SECONDS = 86_400
+INSTALLER_LOCK_PROOF_MAX_COUNT = 8
 ATTEMPT_RESERVATION_FILE_NAME = ".deployment.attempt-reservation"
 LATEST_LOG_FILE_NAME = "latest"
 ATTEMPT_LOG_PATTERN = re.compile(
@@ -81,6 +85,10 @@ EXPECTED_CONTROLLER_REQUIREMENTS = b"ansible-core==2.21.2\nansible-lint==26.6.0\
 
 class ConfigurationError(ValueError):
     """The fixed production configuration is invalid or unsafe."""
+
+
+class CliConfigPathError(ValueError):
+    """The explicit CLI configuration path is not a protected regular file."""
 
 
 class EligibilityError(RuntimeError):
@@ -170,6 +178,7 @@ class Config:
     workflow_name: str
     branch: str
     controller_python: Path
+    deployment_home: Path
     controller_root: Path
     tooling_root: Path
     state_root: Path
@@ -256,12 +265,9 @@ def _validate_api_base(api_base: str) -> None:
         raise ConfigurationError("unsafe GitHub API base")
 
 
-def load_config(path: str | os.PathLike[str]) -> Config:
-    """Load the exact, closed production configuration schema."""
-
+def _load_config_stream(config_file) -> Config:
     try:
-        with Path(path).open("r", encoding="utf-8") as config_file:
-            payload = json.load(config_file)
+        payload = json.load(config_file)
     except (OSError, UnicodeError, ValueError, RecursionError) as error:
         raise ConfigurationError("configuration is unreadable") from error
 
@@ -302,6 +308,7 @@ def load_config(path: str | os.PathLike[str]) -> Config:
 
     path_fields = {
         "controller_python",
+        "deployment_home",
         "controller_root",
         "tooling_root",
         "state_root",
@@ -319,6 +326,16 @@ def load_config(path: str | os.PathLike[str]) -> Config:
         for key, value in payload.items()
     }
     return Config(**values)
+
+
+def load_config(path: str | os.PathLike[str]) -> Config:
+    """Load the exact, closed production configuration schema."""
+
+    try:
+        with Path(path).open("r", encoding="utf-8") as config_file:
+            return _load_config_stream(config_file)
+    except OSError as error:
+        raise ConfigurationError("configuration is unreadable") from error
 
 
 def _mode(path_stat: os.stat_result) -> int:
@@ -380,11 +397,25 @@ def _validate_path_from_root(root: Path, path: Path, *, file: bool) -> None:
 def _owned_root(config: Config) -> Path:
     """Return the explicit trust boundary containing all protected paths."""
 
-    return config.controller_root.parent
+    effective_home = Path(pwd.getpwuid(os.geteuid()).pw_dir)
+    if config.deployment_home != effective_home:
+        raise StateError("deployment home differs from the effective account home")
+    return effective_home
 
 
 def _validate_protected_config(config: Config) -> None:
     owned_root = _owned_root(config)
+    private_root = owned_root / ".local" / "share" / "nas-platform"
+    protected_root = owned_root / ".config" / "nas-platform"
+    for private_path in (
+        config.controller_root,
+        config.tooling_root,
+        config.state_root,
+        config.log_root,
+    ):
+        _require_within(private_root, private_path)
+    for protected_path in (config.vault_file, config.vault_password_file):
+        _require_within(protected_root, protected_path)
     directories = {
         config.controller_root,
         config.tooling_root,
@@ -397,12 +428,70 @@ def _validate_protected_config(config: Config) -> None:
     protected_files = {
         config.vault_file,
         config.vault_password_file,
-        config.ntfy_curl_config,
     }
     for directory in directories:
         _validate_path_from_root(owned_root, directory, file=False)
     for protected_file in protected_files:
         _validate_path_from_root(owned_root, protected_file, file=True)
+
+    try:
+        notifier_entry = config.ntfy_curl_config.lstat()
+    except OSError as error:
+        raise StateError("protected notifier is unsafe") from error
+    if stat.S_ISREG(notifier_entry.st_mode):
+        generations = (
+            owned_root / ".local" / "libexec" / "nas-platform" / "generations"
+        )
+        try:
+            notifier_relative = config.ntfy_curl_config.relative_to(generations)
+        except ValueError:
+            notifier_relative = None
+        if notifier_relative is None:
+            _require_within(protected_root, config.ntfy_curl_config)
+        elif (
+            len(notifier_relative.parts) != 2
+            or re.fullmatch(r"[0-9a-f]{64}", notifier_relative.parts[0]) is None
+            or notifier_relative.parts[1] != "ntfy.curl"
+        ):
+            raise StateError("protected notifier is unsafe")
+        else:
+            _validate_complete_cli_generation(config.ntfy_curl_config.parent)
+        _validate_path_from_root(
+            owned_root,
+            config.ntfy_curl_config,
+            file=True,
+        )
+        return
+
+    expected_notifier = protected_root / "ntfy.curl"
+    current = owned_root / ".local" / "libexec" / "nas-platform" / "current"
+    if (
+        config.ntfy_curl_config != expected_notifier
+        or not stat.S_ISLNK(notifier_entry.st_mode)
+        or notifier_entry.st_uid != os.geteuid()
+        or os.readlink(config.ntfy_curl_config)
+        != "../../.local/libexec/nas-platform/current/ntfy.curl"
+    ):
+        raise StateError("protected notifier is unsafe")
+    try:
+        current_entry = current.lstat()
+        current_target = os.readlink(current)
+        if (
+            not stat.S_ISLNK(current_entry.st_mode)
+            or current_entry.st_uid != os.geteuid()
+            or re.fullmatch(r"generations/[0-9a-f]{64}", current_target) is None
+        ):
+            raise StateError("protected notifier is unsafe")
+        endpoint = current.parent / current_target / "ntfy.curl"
+        endpoint_entry = _validate_owned_file(endpoint)
+        if (
+            _mode(endpoint_entry) != 0o600
+            or not _same_file_version(notifier_entry, config.ntfy_curl_config.lstat())
+            or not _same_file_version(current_entry, current.lstat())
+        ):
+            raise StateError("protected notifier is unsafe")
+    except OSError as error:
+        raise StateError("protected notifier is unsafe") from error
 
 
 def _same_inode(left: os.stat_result, right: os.stat_result) -> bool:
@@ -1445,7 +1534,12 @@ def _reject_replacement_refs(config: Config) -> None:
         raise DeploymentError("controller replacement refs are unsafe")
 
 
-def _validate_materialized_checkout(config: Config, sha: str) -> None:
+def _validate_materialized_checkout(
+    config: Config,
+    sha: str,
+    *,
+    controller_only: bool = False,
+) -> None:
     """Revalidate the dedicated checkout at a stage boundary.
 
     The deployment lock excludes cooperating poller/installer mutations. Other
@@ -1454,7 +1548,13 @@ def _validate_materialized_checkout(config: Config, sha: str) -> None:
 
     if SHA_PATTERN.fullmatch(sha) is None:
         raise DeploymentError("candidate SHA is invalid")
-    _validate_protected_config(config)
+    if controller_only:
+        owned_root = _owned_root(config)
+        private_root = owned_root / ".local" / "share" / "nas-platform"
+        _require_within(private_root, config.controller_root)
+        _validate_path_from_root(owned_root, config.controller_root, file=False)
+    else:
+        _validate_protected_config(config)
     _reject_ambient_git_overrides()
     checkout = config.controller_root
     git_directory = checkout / ".git"
@@ -1515,18 +1615,28 @@ def _validate_materialized_checkout(config: Config, sha: str) -> None:
         _checked_output(_git_command(config, ["rev-parse", "refs/remotes/origin/main"]))
     )
     symbolic_ref = _git_command(config, ["symbolic-ref", "-q", "HEAD"])
-    gitmodules = _git_command(config, ["cat-file", "-e", f"{sha}:.gitmodules"])
-    if (
-        status
-        or remote != config.repository_url
-        or remotes != [b"origin"]
-        or head_sha != sha
-        or origin_sha != sha
-        or symbolic_ref.returncode != 1
-        or symbolic_ref.stdout
-        or gitmodules.returncode != 1
-    ):
-        raise DeploymentError("materialized checkout does not match candidate")
+    gitmodules = _checked_output(
+        _git_command(
+            config,
+            ["ls-tree", "--name-only", sha, "--", ".gitmodules"],
+        )
+    )
+    if status:
+        raise DeploymentError("materialized checkout is dirty")
+    if remote != config.repository_url or remotes != [b"origin"]:
+        raise DeploymentError("materialized checkout remotes are unsafe")
+    if head_sha != sha or origin_sha != sha:
+        raise DeploymentError("materialized checkout revision differs from candidate")
+    if symbolic_ref.returncode != 1 or symbolic_ref.stdout:
+        raise DeploymentError("materialized checkout is not detached")
+    if gitmodules:
+        raise DeploymentError("materialized checkout contains Git modules")
+
+
+def _validate_controller_checkout(config: Config, sha: str) -> None:
+    """Validate only the dedicated controller checkout and its trust ancestry."""
+
+    _validate_materialized_checkout(config, sha, controller_only=True)
 
 
 def prepare_checkout(config: Config, sha: str) -> Path:
@@ -1612,11 +1722,14 @@ def prepare_checkout(config: Config, sha: str) -> Path:
     if fetched_sha != sha:
         raise DeploymentError("fetched SHA does not match candidate")
 
-    gitmodules = _git_command(config, ["cat-file", "-e", f"{sha}:.gitmodules"])
-    if gitmodules.returncode == 0:
+    gitmodules = _checked_output(
+        _git_command(
+            config,
+            ["ls-tree", "--name-only", sha, "--", ".gitmodules"],
+        )
+    )
+    if gitmodules:
         raise DeploymentError("candidate contains .gitmodules")
-    if gitmodules.returncode != 1:
-        raise DeploymentError("candidate tree could not be inspected")
     _reject_unsafe_tree_entries(config, sha)
 
     _checked_output(_git_command(config, ["checkout", "--detach", sha]))
@@ -2540,7 +2653,11 @@ def _playbook_arguments(
     playbook: str,
     *,
     inventory: bool,
+    controller_python: Path,
+    extra_vars_file: Path | None = None,
 ) -> list[str]:
+    if controller_python != config.controller_python:
+        raise DeploymentError("controller Python identity changed")
     arguments = [str(tooling.ansible_playbook)]
     if inventory:
         arguments.extend(["-i", "inventory/local.yml"])
@@ -2555,7 +2672,178 @@ def _playbook_arguments(
             f"platform_vault_file={config.vault_file}",
         ]
     )
+    if extra_vars_file is not None:
+        arguments.extend(["-e", f"@{extra_vars_file}"])
+    interpreter_assignment = f"ansible_python_interpreter={controller_python}"
+    if any(
+        argument.startswith("ansible_python_interpreter=")
+        for argument in arguments
+    ):
+        raise DeploymentError("local interpreter argument is ambiguous")
+    arguments.extend(["-e", interpreter_assignment])
     return arguments
+
+
+_ACTIVE_DEPLOYMENT_LOCK = threading.local()
+
+
+def _active_deployment_lock_held() -> bool:
+    return getattr(_ACTIVE_DEPLOYMENT_LOCK, "held", False) is True
+
+
+def _valid_installer_proof_payload(path: Path, payload: object) -> bool:
+    if not isinstance(payload, dict) or set(payload) != {
+        "production_auto_deploy_lock_proof",
+        "production_auto_deploy_lock_pid",
+        "production_auto_deploy_lock_proof_path",
+    }:
+        return False
+    token = payload["production_auto_deploy_lock_proof"]
+    pid = payload["production_auto_deploy_lock_pid"]
+    if (
+        not isinstance(token, str)
+        or re.fullmatch(r"[0-9a-f]{64}", token) is None
+        or type(pid) is not int
+        or pid <= 1
+        or payload["production_auto_deploy_lock_proof_path"] != str(path)
+    ):
+        return False
+    return True
+
+
+def _installer_proof_is_live(path: Path, payload: object) -> bool:
+    if not _valid_installer_proof_payload(path, payload):
+        return False
+    pid = payload["production_auto_deploy_lock_pid"]
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _cleanup_installer_lock_proofs(proof_root: Path) -> None:
+    now = time.time()
+    candidates = []
+    try:
+        entries = list(os.scandir(proof_root))
+    except OSError as error:
+        raise DeploymentError("installer lock proof directory is unsafe") from error
+    for entry in entries:
+        if re.fullmatch(
+            re.escape(INSTALLER_LOCK_PROOF_PREFIX)
+            + r"[0-9a-f]{64}"
+            + re.escape(INSTALLER_LOCK_PROOF_SUFFIX),
+            entry.name,
+        ) is None:
+            continue
+        path = proof_root / entry.name
+        try:
+            path_stat = entry.stat(follow_symlinks=False)
+            if (
+                not stat.S_ISREG(path_stat.st_mode)
+                or path_stat.st_uid != os.geteuid()
+                or path_stat.st_nlink != 1
+                or _mode(path_stat) != 0o600
+            ):
+                continue
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            try:
+                opened = os.fstat(descriptor)
+                if not _same_file_version(path_stat, opened):
+                    continue
+                body = os.read(descriptor, 4097)
+            finally:
+                os.close(descriptor)
+            payload = json.loads(body.decode("ascii")) if len(body) <= 4096 else None
+        except (OSError, UnicodeError, ValueError, RecursionError):
+            payload = None
+        candidates.append((path_stat.st_mtime, path, payload))
+
+    candidates.sort(reverse=True)
+    for index, (modified, path, payload) in enumerate(candidates):
+        expired = now - modified > INSTALLER_LOCK_PROOF_MAX_AGE_SECONDS
+        excessive = index >= INSTALLER_LOCK_PROOF_MAX_COUNT
+        if _installer_proof_is_live(path, payload):
+            continue
+        if (
+            not _valid_installer_proof_payload(path, payload)
+            and not expired
+            and not excessive
+        ):
+            continue
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            raise DeploymentError("stale installer lock proof could not be removed") from error
+
+
+@contextmanager
+def _automatic_installer_lock_proof(config: Config) -> Iterator[Path | None]:
+    """Publish a short-lived proof that this process owns deployment locks."""
+
+    if not _active_deployment_lock_held():
+        yield None
+        return
+
+    proof_root = config.deployment_home / ".local" / "share" / "nas-platform"
+    _validate_path_from_root(_owned_root(config), proof_root, file=False)
+    _cleanup_installer_lock_proofs(proof_root)
+    proof_path = proof_root / (
+        INSTALLER_LOCK_PROOF_PREFIX
+        + secrets.token_hex(32)
+        + INSTALLER_LOCK_PROOF_SUFFIX
+    )
+    descriptor = -1
+    token = secrets.token_hex(32)
+    payload = json.dumps(
+        {
+            "production_auto_deploy_lock_proof": token,
+            "production_auto_deploy_lock_pid": os.getpid(),
+            "production_auto_deploy_lock_proof_path": str(proof_path),
+        },
+        separators=(",", ":"),
+    ).encode("ascii")
+    try:
+        descriptor = os.open(
+            proof_path,
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW,
+            0o600,
+        )
+        os.fchmod(descriptor, 0o600)
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_uid != os.geteuid()
+            or opened.st_nlink != 1
+            or _mode(opened) != 0o600
+        ):
+            raise DeploymentError("installer lock proof is unsafe")
+        _write_all(descriptor, payload)
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = -1
+        with _open_owned_directory(proof_root) as proof_root_fd:
+            os.fsync(proof_root_fd)
+        yield proof_path
+    except OSError as error:
+        raise DeploymentError("installer lock proof could not be published") from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            proof_path.unlink()
+        except FileNotFoundError:
+            pass
+        try:
+            with _open_owned_directory(proof_root) as proof_root_fd:
+                os.fsync(proof_root_fd)
+        except (OSError, StateError) as error:
+            raise DeploymentError("installer lock proof could not be removed") from error
 
 
 def deploy_candidate(config: Config, sha: str, log) -> bool:
@@ -2565,6 +2853,7 @@ def deploy_candidate(config: Config, sha: str, log) -> bool:
         checkout = prepare_checkout(config, sha)
         _validate_materialized_checkout(config, sha)
         tooling = prepare_tooling(config, checkout, expected_sha=sha)
+        controller_python = _validate_controller_python(config)
         environment = _deployment_environment(config, checkout, tooling)
         plays = (
             ("validate-vault.yml", False),
@@ -2575,18 +2864,26 @@ def deploy_candidate(config: Config, sha: str, log) -> bool:
         for playbook, inventory in plays:
             _validate_materialized_checkout(config, sha)
             _validate_tooling_for_execution(config, tooling)
-            result = _run_command(
-                _playbook_arguments(
-                    config,
-                    tooling,
-                    playbook,
-                    inventory=inventory,
-                ),
-                cwd=checkout,
-                env=environment,
-                timeout=COMMAND_TIMEOUT_SECONDS,
-                log=log,
+            proof_context = (
+                _automatic_installer_lock_proof(config)
+                if playbook == "install-production-auto-deploy.yml"
+                else nullcontext(None)
             )
+            with proof_context as proof_path:
+                result = _run_command(
+                    _playbook_arguments(
+                        config,
+                        tooling,
+                        playbook,
+                        inventory=inventory,
+                        controller_python=controller_python,
+                        extra_vars_file=proof_path,
+                    ),
+                    cwd=checkout,
+                    env=environment,
+                    timeout=COMMAND_TIMEOUT_SECONDS,
+                    log=log,
+                )
             if result.returncode != 0:
                 return False
         return True
@@ -3451,12 +3748,16 @@ def poll(config: Config, retry_sha: str | None = None) -> bool | None:
         attempt_exception = None
         with attempt_log(config, head_sha) as log:
             log_path = Path(log.name)
+            previous_lock_state = getattr(_ACTIVE_DEPLOYMENT_LOCK, "held", False)
+            _ACTIVE_DEPLOYMENT_LOCK.held = True
             try:
                 succeeded = attempt_candidate(config, head_sha) is True
             except BaseException as error:
                 succeeded = False
                 if not isinstance(error, Exception):
                     attempt_exception = error
+            finally:
+                _ACTIVE_DEPLOYMENT_LOCK.held = previous_lock_state
         finished = _timestamp_now()
         if _quarantine_if_state_root_replaced(
             config,
@@ -3610,32 +3911,204 @@ def _evaluate_ci(config: Config) -> CiRun | None:
     return eligible_ci_run(config, head_sha, runs)
 
 
-def main(
-    argv: Sequence[str] | None = None,
-    *,
-    config_path: str | os.PathLike[str] = DEFAULT_CONFIG_PATH,
-) -> int:
+def _parse_cli_arguments(
+    arguments: Sequence[str],
+) -> tuple[Path, str, str | None] | None:
+    if len(arguments) < 3 or arguments[0] != "--config":
+        return None
+
+    config_path = Path(arguments[1])
+    if not config_path.is_absolute():
+        return None
+
+    mode_arguments = list(arguments[2:])
+    if mode_arguments == ["--poll"]:
+        return config_path, "poll", None
+    if mode_arguments == ["--status"]:
+        return config_path, "status", None
+    if (
+        len(mode_arguments) == 2
+        and mode_arguments[0] == "--retry-failed"
+        and SHA_PATTERN.fullmatch(mode_arguments[1]) is not None
+    ):
+        return config_path, "retry", mode_arguments[1]
+    return None
+
+
+def _validate_complete_cli_generation(generation: Path) -> None:
+    try:
+        directory_before = generation.lstat()
+        if (
+            not stat.S_ISDIR(directory_before.st_mode)
+            or directory_before.st_uid != os.geteuid()
+            or _mode(directory_before) != 0o700
+            or re.fullmatch(r"[0-9a-f]{64}", generation.name) is None
+            or Path(os.path.realpath(str(generation))) != generation
+        ):
+            raise CliConfigPathError("CLI generation is unsafe")
+        digest = hashlib.sha256()
+        for name, mode in (
+            ("nas-platform-deploy", 0o700),
+            ("production_auto_deploy.py", 0o700),
+            ("deployer.json", 0o600),
+            ("ntfy.curl", 0o600),
+        ):
+            asset = generation / name
+            before = asset.lstat()
+            descriptor = os.open(
+                asset,
+                os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW,
+            )
+            try:
+                opened = os.fstat(descriptor)
+                if (
+                    not stat.S_ISREG(opened.st_mode)
+                    or opened.st_uid != os.geteuid()
+                    or _mode(opened) != mode
+                    or opened.st_nlink != 1
+                    or not _same_file_version(before, opened)
+                ):
+                    raise CliConfigPathError("CLI generation is unsafe")
+                chunks = []
+                size = 0
+                while True:
+                    chunk = os.read(descriptor, 64 * 1024)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > MAX_RESPONSE_BYTES:
+                        raise CliConfigPathError("CLI generation is unsafe")
+                    chunks.append(chunk)
+            finally:
+                os.close(descriptor)
+            if not _same_file_version(opened, asset.lstat()):
+                raise CliConfigPathError("CLI generation is unsafe")
+            body = b"".join(chunks)
+            digest.update(len(name).to_bytes(2, "big") + name.encode() + body)
+        if (
+            digest.hexdigest() != generation.name
+            or not _same_file_version(directory_before, generation.lstat())
+        ):
+            raise CliConfigPathError("CLI generation is unsafe")
+    except OSError as error:
+        raise CliConfigPathError("CLI generation is unsafe") from error
+
+
+def _validate_complete_current_generation(current: Path, generations: Path) -> None:
+    for _attempt in range(3):
+        try:
+            before = current.lstat()
+            target = os.readlink(current)
+            if (
+                not stat.S_ISLNK(before.st_mode)
+                or before.st_uid != os.geteuid()
+                or re.fullmatch(r"generations/[0-9a-f]{64}", target) is None
+            ):
+                raise CliConfigPathError("current generation is unsafe")
+            generation = current.parent / target
+            if generation.parent != generations:
+                raise CliConfigPathError("current generation is unsafe")
+            _validate_complete_cli_generation(generation)
+            after = current.lstat()
+            if _same_file_version(before, after) and os.readlink(current) == target:
+                return
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            raise CliConfigPathError("current generation is unsafe") from error
+    raise CliConfigPathError("current generation changed repeatedly")
+
+
+def _load_cli_config(path: Path) -> Config:
+    effective_home = Path(pwd.getpwuid(os.geteuid()).pw_dir)
+    libexec_root = effective_home / ".local" / "libexec" / "nas-platform"
+    generations_root = libexec_root / "generations"
+    public_config = effective_home / ".config" / "nas-platform" / "deployer.json"
+    expected_public_target = (
+        "../../.local/libexec/nas-platform/current/deployer.json"
+    )
+    current = libexec_root / "current"
+    executing_poller = Path(__file__)
+    expected_poller = path.parent / "production_auto_deploy.py"
+    try:
+        relative = path.relative_to(generations_root)
+    except (TypeError, ValueError) as error:
+        raise CliConfigPathError("CLI configuration path is unsafe") from error
+    if (
+        not path.is_absolute()
+        or len(relative.parts) != 2
+        or re.fullmatch(r"[0-9a-f]{64}", relative.parts[0]) is None
+        or relative.parts[1] != "deployer.json"
+        or executing_poller != expected_poller
+        or Path(os.path.realpath(str(executing_poller))) != executing_poller
+    ):
+        raise CliConfigPathError("CLI configuration path is unsafe")
+
+    flags = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    file_descriptor = -1
+    try:
+        _validate_path_from_root(effective_home, generations_root, file=False)
+        _validate_path_from_root(effective_home, path.parent, file=False)
+        _validate_complete_cli_generation(path.parent)
+        _validate_complete_current_generation(current, generations_root)
+        public_before = public_config.lstat()
+        if (
+            not stat.S_ISLNK(public_before.st_mode)
+            or public_before.st_uid != os.geteuid()
+            or os.readlink(public_config) != expected_public_target
+            or Path(os.path.realpath(str(path))) != path
+        ):
+            raise CliConfigPathError("CLI configuration path is unsafe")
+        file_descriptor = os.open(path, flags)
+        config_stat = os.fstat(file_descriptor)
+        if (
+            not stat.S_ISREG(config_stat.st_mode)
+            or config_stat.st_uid != os.geteuid()
+            or _mode(config_stat) != 0o600
+            or config_stat.st_nlink != 1
+            or Path(os.path.realpath(str(path))) != path
+        ):
+            raise CliConfigPathError("CLI configuration path is unsafe")
+        with os.fdopen(file_descriptor, "r", encoding="utf-8") as config_file:
+            file_descriptor = -1
+            config = _load_config_stream(config_file)
+        public_after = public_config.lstat()
+        path_after = path.lstat()
+        _validate_complete_cli_generation(path.parent)
+        _validate_complete_current_generation(current, generations_root)
+        if (
+            not _same_file_version(public_before, public_after)
+            or not _same_file_version(config_stat, path_after)
+            or os.readlink(public_config) != expected_public_target
+            or config.deployment_home != effective_home
+        ):
+            raise CliConfigPathError("CLI configuration path is unsafe")
+        return replace(
+            config,
+            ntfy_curl_config=path.parent / "ntfy.curl",
+        )
+    except (OSError, StateError, ValueError) as error:
+        if isinstance(error, CliConfigPathError):
+            raise
+        raise CliConfigPathError("CLI configuration path is unsafe") from error
+    finally:
+        if file_descriptor >= 0:
+            os.close(file_descriptor)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
     """Run one explicit production auto-deployment mode."""
 
     arguments = list(sys.argv[1:] if argv is None else argv)
-    mode = "eligibility"
-    retry_sha = None
-    if arguments == ["--poll"]:
-        mode = "poll"
-    elif arguments == ["--status"]:
-        mode = "status"
-    elif len(arguments) == 2 and arguments[0] == "--retry-failed":
-        if SHA_PATTERN.fullmatch(arguments[1]) is None:
-            print("production auto-deploy: invalid arguments", file=sys.stderr)
-            return 2
-        mode = "retry"
-        retry_sha = arguments[1]
-    elif arguments:
+    parsed = _parse_cli_arguments(arguments)
+    if parsed is None:
         print("production auto-deploy: invalid arguments", file=sys.stderr)
         return 2
+    config_path, mode, retry_sha = parsed
 
     try:
-        config = load_config(config_path)
+        config = _load_cli_config(config_path)
         if mode == "status":
             print_status(config)
             return 0
@@ -3645,7 +4118,9 @@ def main(
                 print("production auto-deploy: attempt failed", file=sys.stderr)
                 return 1
             return 0
-        run = _evaluate_ci(config)
+    except CliConfigPathError:
+        print("production auto-deploy: invalid arguments", file=sys.stderr)
+        return 2
     except (ConfigurationError, OSError):
         print("production auto-deploy: unsafe configuration", file=sys.stderr)
         return 1
@@ -3656,10 +4131,6 @@ def main(
         print("production auto-deploy: no eligible CI run", file=sys.stderr)
         return 0
 
-    if run is None:
-        print("production auto-deploy: no eligible CI run", file=sys.stderr)
-        return 0
-    print(f"production auto-deploy: CI eligible for {run.head_sha}")
     return 0
 
 

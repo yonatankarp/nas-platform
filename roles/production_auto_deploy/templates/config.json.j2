@@ -1,0 +1,22 @@
+{{ {
+  'repository': production_auto_deploy_repository,
+  'repository_url': production_auto_deploy_repository_url,
+  'workflow': production_auto_deploy_workflow,
+  'workflow_name': production_auto_deploy_workflow_name,
+  'branch': production_auto_deploy_branch,
+  'controller_python': production_auto_deploy_controller_python,
+  'deployment_home': production_auto_deploy_deployment_home,
+  'controller_root': production_auto_deploy_controller_root,
+  'tooling_root': production_auto_deploy_tooling_root,
+  'state_root': production_auto_deploy_state_root,
+  'log_root': production_auto_deploy_log_root,
+  'vault_file': production_auto_deploy_vault_path,
+  'vault_password_file': production_auto_deploy_password_path,
+  'ntfy_curl_config': production_auto_deploy_notifier_path,
+  'platform_nas_address': production_auto_deploy_nas_address,
+  'platform_public_host': production_auto_deploy_nas_address,
+  'platform_callback_host': production_auto_deploy_nas_address,
+  'github_api_base': production_auto_deploy_github_api_base,
+  'log_retention_count': production_auto_deploy_log_retention_count,
+  'log_retention_days': production_auto_deploy_log_retention_days
+} | to_nice_json }}

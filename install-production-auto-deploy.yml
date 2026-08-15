@@ -1,0 +1,30 @@
+---
+- name: Install the NAS production deployment poller
+  hosts: platform_hosts
+  gather_facts: true
+  vars:
+    platform_vault_file: >-
+      {{ lookup('env', 'PLATFORM_VAULT_FILE') |
+         default(playbook_dir ~ '/inventory/group_vars/all/vault.yml', true) }}
+
+  pre_tasks:
+    - name: Validate portable credentials before poller installation
+      ansible.builtin.include_role:
+        name: vault_contract
+        apply:
+          tags: [always]
+          no_log: true
+      tags: [always]
+
+    - name: Restrict poller installation to non-adoption NAS runs
+      ansible.builtin.assert:
+        that:
+          - platform_kind == 'nas'
+          - not (platform_adoption_enabled | default(false) | bool)
+        fail_msg: >-
+          Production auto-deployment installation is NAS-only and cannot run
+          during adoption.
+      tags: [always]
+
+  roles:
+    - role: production_auto_deploy

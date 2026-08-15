@@ -1,0 +1,51 @@
+---
+argument_specs:
+  main:
+    short_description: Install the NAS production deployment poller
+    description:
+      - Installs one protected, non-root, NAS-only polling controller and cron entry.
+    options:
+      platform_kind:
+        type: str
+        required: true
+        description: Platform discriminator; the role accepts only nas.
+      platform_release_id:
+        type: str
+        required: true
+        description: Exact verified controller Git revision being installed.
+      platform_vault_file:
+        type: path
+        required: true
+        description: Absolute encrypted vault already protected by the deployment account.
+      platform_public_host:
+        type: str
+        required: true
+        description: Fixed production public address.
+      platform_callback_host:
+        type: str
+        required: true
+        description: Fixed production container callback address.
+      vault_ntfy_dozzle_token:
+        type: str
+        required: true
+        description: Existing least-privilege write-only ntfy publisher token.
+      production_auto_deploy_controller_python:
+        type: path
+        default: "{{ ansible_facts.python.executable }}"
+        description: Trusted absolute controller interpreter used by the installed poller.
+      production_auto_deploy_vault_password_file:
+        type: path
+        default: ""
+        description: Protected vault password file; defaults to the fixed private path.
+      production_auto_deploy_lock_proof:
+        type: str
+        default: ""
+        description: Ephemeral proof supplied only by a lock-owning poller process.
+      production_auto_deploy_lock_pid:
+        type: int
+        default: 0
+        description: PID of the lock-owning poller that supplied the ephemeral proof.
+      production_auto_deploy_lock_proof_path:
+        type: path
+        default: ""
+        description: Unique private proof path supplied by the lock-owning poller.

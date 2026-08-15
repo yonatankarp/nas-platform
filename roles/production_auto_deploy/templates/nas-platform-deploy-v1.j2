@@ -1,0 +1,23 @@
+#!/bin/sh
+set -eu
+
+generation_root="{{ production_auto_deploy_generations_root }}"
+active_generation=$(
+  CDPATH= cd -P -- "{{ production_auto_deploy_current_path }}"
+  pwd -P
+)
+generation_name=${active_generation##*/}
+case "$generation_name" in
+  ''|*[!0-9a-f]*) exit 1 ;;
+esac
+name_length=0
+remaining_name=$generation_name
+while [ -n "$remaining_name" ]; do
+  name_length=$((name_length + 1))
+  remaining_name=${remaining_name#?}
+done
+[ "$name_length" -eq 64 ] || exit 1
+[ "$active_generation" = "$generation_root/$generation_name" ] || exit 1
+
+exec "$active_generation/production_auto_deploy.py" \
+  --config "$active_generation/deployer.json" "$@"

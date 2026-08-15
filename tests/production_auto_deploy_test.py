@@ -153,23 +153,34 @@ class ProductionAutoDeployTest(unittest.TestCase):
         self.addCleanup(self.httpd.server_close)
         self.addCleanup(self.httpd.shutdown)
 
+        self.private_root = self.root / ".local" / "share" / "nas-platform"
+        self.private_root.mkdir(parents=True)
+        for private_parent in (
+            self.root / ".local",
+            self.root / ".local" / "share",
+            self.private_root,
+        ):
+            private_parent.chmod(0o700)
         for directory in (
             "controller",
             "tooling",
             "state",
             "logs",
-            "config",
         ):
-            (self.root / directory).mkdir()
-            (self.root / directory).chmod(0o700)
+            (self.private_root / directory).mkdir()
+            (self.private_root / directory).chmod(0o700)
+        protected_root = self.root / ".config" / "nas-platform"
+        protected_root.mkdir(parents=True)
+        (self.root / ".config").chmod(0o700)
+        protected_root.chmod(0o700)
         for protected_file in (
-            self.root / "config" / "vault.yml",
-            self.root / "config" / "vault-password",
-            self.root / "config" / "ntfy.curlrc",
+            protected_root / "vault.yml",
+            protected_root / "vault-password",
+            protected_root / "ntfy.curlrc",
         ):
             protected_file.write_text("test-only\n", encoding="utf-8")
             protected_file.chmod(0o600)
-        self.state_sentinel = self.root / "state" / "sentinel"
+        self.state_sentinel = self.private_root / "state" / "sentinel"
         self.state_sentinel.write_text("unchanged\n", encoding="utf-8")
 
         self.config = {
@@ -179,13 +190,14 @@ class ProductionAutoDeployTest(unittest.TestCase):
             "workflow_name": "CI",
             "branch": "main",
             "controller_python": sys.executable,
-            "controller_root": str(self.root / "controller"),
-            "tooling_root": str(self.root / "tooling"),
-            "state_root": str(self.root / "state"),
-            "log_root": str(self.root / "logs"),
-            "vault_file": str(self.root / "config" / "vault.yml"),
-            "vault_password_file": str(self.root / "config" / "vault-password"),
-            "ntfy_curl_config": str(self.root / "config" / "ntfy.curlrc"),
+            "deployment_home": str(self.root),
+            "controller_root": str(self.private_root / "controller"),
+            "tooling_root": str(self.private_root / "tooling"),
+            "state_root": str(self.private_root / "state"),
+            "log_root": str(self.private_root / "logs"),
+            "vault_file": str(protected_root / "vault.yml"),
+            "vault_password_file": str(protected_root / "vault-password"),
+            "ntfy_curl_config": str(protected_root / "ntfy.curlrc"),
             "platform_nas_address": "192.168.0.139",
             "platform_public_host": "192.168.0.139",
             "platform_callback_host": "192.168.0.139",
@@ -196,8 +208,15 @@ class ProductionAutoDeployTest(unittest.TestCase):
         self.loopback_api_base = f"http://127.0.0.1:{self.httpd.server_port}"
         self.github_request_urls = []
         self.loopback_opener = build_opener(production_auto_deploy.RejectRedirects())
-        self.config_path = self.root / "config.json"
+        self.config_path = protected_root / "deployer.json"
         self.write_config()
+        effective_home = mock.patch.object(
+            production_auto_deploy.pwd,
+            "getpwuid",
+            return_value=mock.Mock(pw_dir=str(self.root)),
+        )
+        effective_home.start()
+        self.addCleanup(effective_home.stop)
         self.install_fake("git", self.fake_git_source(MAIN_SHA))
         self.install_recording_fake("ansible-playbook")
         self.install_recording_fake("curl", consume_stdin=True)
@@ -238,6 +257,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
 
     def write_config(self):
         self.config_path.write_text(json.dumps(self.config), encoding="utf-8")
+        self.config_path.chmod(0o600)
 
     def install_fake(self, name, source):
         path = self.fake_bin / name
@@ -279,6 +299,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
         dirty=b"",
         ignored=b"",
         gitmodules=False,
+        gitmodules_inspection_error=False,
         submodule=False,
         symlink=False,
         sparse_config=False,
@@ -322,17 +343,20 @@ class ProductionAutoDeployTest(unittest.TestCase):
             elif command == ["ls-files", "-v"]:
                 stdout = b"S site.yml\n" if skip_worktree else b"H site.yml\n"
             elif command == ["rev-parse", "--show-toplevel"]:
-                stdout = (str(toplevel or self.root / "controller") + "\n").encode()
+                stdout = (str(toplevel or self.private_root / "controller") + "\n").encode()
             elif command == ["rev-parse", "--absolute-git-dir"]:
                 stdout = (
-                    str(git_dir or self.root / "controller" / ".git") + "\n"
+                    str(git_dir or self.private_root / "controller" / ".git") + "\n"
                 ).encode()
             elif command == ["rev-parse", "--path-format=absolute", "--git-common-dir"]:
                 stdout = (
-                    str(git_common_dir or self.root / "controller" / ".git") + "\n"
+                    str(git_common_dir or self.private_root / "controller" / ".git") + "\n"
                 ).encode()
-            elif command[:2] == ["cat-file", "-e"]:
-                returncode = 0 if gitmodules else 1
+            elif command[:2] == ["ls-tree", "--name-only"]:
+                if gitmodules_inspection_error:
+                    returncode = 41
+                else:
+                    stdout = b".gitmodules\n" if gitmodules else b""
             elif command[:3] == ["ls-tree", "-r", "--full-tree"]:
                 if submodule:
                     stdout = (
@@ -443,7 +467,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
         )
         return self.loopback_opener.open(loopback_request, timeout=timeout)
 
-    def invoke_main(self, *arguments):
+    def invoke_raw_main(self, *arguments):
         stdout = io.StringIO()
         stderr = io.StringIO()
         with mock.patch.dict(
@@ -459,10 +483,97 @@ class ProductionAutoDeployTest(unittest.TestCase):
         ), contextlib.redirect_stderr(
             stderr
         ):
-            status = production_auto_deploy.main(
-                list(arguments),
-                config_path=self.config_path,
-            )
+            status = production_auto_deploy.main(list(arguments))
+        return status, stdout.getvalue(), stderr.getvalue()
+
+    def write_cli_generation(self, config_bytes, variant=b""):
+        libexec = self.root / ".local" / "libexec" / "nas-platform"
+        generations = libexec / "generations"
+        generations.mkdir(parents=True, exist_ok=True)
+        for directory in (
+            self.root / ".local" / "libexec",
+            libexec,
+            generations,
+        ):
+            directory.chmod(0o700)
+        assets = {
+            "nas-platform-deploy": b"#!/bin/sh\nexit 1\n" + variant,
+            "production_auto_deploy.py": SCRIPT.read_bytes() + variant,
+            "deployer.json": config_bytes,
+            "ntfy.curl": b"url = test-only\n" + variant,
+        }
+        digest = hashlib.sha256()
+        for name, body in assets.items():
+            digest.update(len(name).to_bytes(2, "big") + name.encode() + body)
+        generation = generations / digest.hexdigest()
+        generation.mkdir(mode=0o700, exist_ok=True)
+        for name, body in assets.items():
+            path = generation / name
+            path.write_bytes(body)
+            path.chmod(0o700 if name in ("nas-platform-deploy", "production_auto_deploy.py") else 0o600)
+        return libexec, generation, generation / "deployer.json"
+
+    def invoke_main(self, *arguments):
+        config_bytes = self.config_path.read_bytes()
+        libexec, generation, generation_config = self.write_cli_generation(
+            config_bytes
+        )
+        current = libexec / "current"
+        if os.path.lexists(current):
+            current.unlink()
+        current.symlink_to(f"generations/{generation.name}")
+        self.config_path.unlink()
+        self.config_path.symlink_to(
+            "../../.local/libexec/nas-platform/current/deployer.json"
+        )
+        try:
+            with mock.patch.object(
+                production_auto_deploy,
+                "__file__",
+                str(generation / "production_auto_deploy.py"),
+            ):
+                return self.invoke_raw_main(
+                    "--config", str(generation_config), *arguments
+                )
+        finally:
+            self.config_path.unlink(missing_ok=True)
+            self.config_path.write_bytes(config_bytes)
+            self.config_path.chmod(0o600)
+
+    def invoke_eligibility(self):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with mock.patch.dict(
+            os.environ,
+            {"PATH": str(self.fake_bin)},
+            clear=False,
+        ), mock.patch.object(
+            production_auto_deploy,
+            "urlopen",
+            self.open_github_request,
+        ), contextlib.redirect_stdout(
+            stdout
+        ), contextlib.redirect_stderr(
+            stderr
+        ):
+            try:
+                config = production_auto_deploy.load_config(self.config_path)
+                run = production_auto_deploy._evaluate_ci(config)
+            except (production_auto_deploy.ConfigurationError, OSError):
+                print("production auto-deploy: unsafe configuration", file=sys.stderr)
+                status = 1
+            except production_auto_deploy.DeploymentError:
+                print("production auto-deploy: unsafe controller runtime", file=sys.stderr)
+                status = 1
+            except production_auto_deploy.EligibilityError:
+                print("production auto-deploy: no eligible CI run", file=sys.stderr)
+                status = 0
+            else:
+                if run is None:
+                    print("production auto-deploy: no eligible CI run", file=sys.stderr)
+                else:
+                    print(f"production auto-deploy: CI eligible for {run.head_sha}")
+                status = 0
         return status, stdout.getvalue(), stderr.getvalue()
 
     def state_snapshot(self):
@@ -470,7 +581,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
             f"{root.name}/{path.relative_to(root)}": (
                 path.read_bytes() if path.is_file() else None
             )
-            for root in (self.root / "state", self.root / "logs")
+            for root in (self.private_root / "state", self.private_root / "logs")
             for path in sorted(root.rglob("*"))
         }
 
@@ -493,10 +604,10 @@ class ProductionAutoDeployTest(unittest.TestCase):
         return production_auto_deploy.load_config(self.config_path)
 
     def state_path(self, name):
-        return self.root / "state" / name
+        return self.private_root / "state" / name
 
     def replace_state_root(self, suffix):
-        state_root = self.root / "state"
+        state_root = self.private_root / "state"
         detached_root = self.root / f"state-{suffix}"
         state_root.rename(detached_root)
         state_root.mkdir()
@@ -514,8 +625,8 @@ class ProductionAutoDeployTest(unittest.TestCase):
         return external
 
     def install_state_root_symlink(self, external):
-        state_root = self.root / "state"
-        moved_root = self.root / "state-pinned"
+        state_root = self.private_root / "state"
+        moved_root = self.private_root / "state-pinned"
         state_root.rename(moved_root)
         state_root.symlink_to(external, target_is_directory=True)
 
@@ -634,6 +745,23 @@ class ProductionAutoDeployTest(unittest.TestCase):
 
         with self.assertRaises(production_auto_deploy.ConfigurationError):
             production_auto_deploy.load_config(self.config_path)
+
+    def test_runtime_paths_have_separate_private_and_protected_home_boundaries(self):
+        cases = {
+            "controller outside private share": (
+                "controller_root",
+                self.root / "controller",
+            ),
+            "vault outside protected config": (
+                "vault_file",
+                self.private_root / "vault.yml",
+            ),
+        }
+        for label, (field, hostile_path) in cases.items():
+            with self.subTest(label=label):
+                config = dataclasses.replace(self.loaded_config(), **{field: hostile_path})
+                with self.assertRaises(production_auto_deploy.ConfigurationError):
+                    production_auto_deploy._validate_protected_config(config)
 
     def test_prepare_tooling_uses_validated_controller_python_for_venv(self):
         checkout = self.seed_candidate_files()
@@ -821,7 +949,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
         self.write_config()
         before = self.state_snapshot()
 
-        status, stdout, stderr = self.invoke_main()
+        status, stdout, stderr = self.invoke_eligibility()
 
         self.assertEqual(status, 1)
         self.assertEqual(stdout, "")
@@ -838,7 +966,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
         before = self.state_snapshot()
 
         try:
-            status, stdout, stderr = self.invoke_main()
+            status, stdout, stderr = self.invoke_eligibility()
         except ValueError as error:
             self.fail(f"configuration parser exception escaped: {type(error).__name__}")
 
@@ -860,7 +988,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
         before = self.state_snapshot()
 
         try:
-            status, stdout, stderr = self.invoke_main()
+            status, stdout, stderr = self.invoke_eligibility()
         except RecursionError as error:
             self.fail(f"configuration parser exception escaped: {type(error).__name__}")
 
@@ -877,7 +1005,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
         self.respond_with_runs([self.successful_run()])
         before = self.state_snapshot()
 
-        status, stdout, stderr = self.invoke_main()
+        status, stdout, stderr = self.invoke_eligibility()
 
         self.assertEqual(status, 0)
         self.assertEqual(
@@ -931,7 +1059,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
             with self.subTest(label=label):
                 self.respond_with_runs(runs)
                 before = self.state_snapshot()
-                status, stdout, stderr = self.invoke_main()
+                status, stdout, stderr = self.invoke_eligibility()
                 self.assert_ci_rejected(status, stdout, stderr, before)
 
     def test_wrong_ci_identity_is_rejected_without_mutation(self):
@@ -947,7 +1075,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
             with self.subTest(label=label):
                 self.respond_with_runs([self.successful_run(**overrides)])
                 before = self.state_snapshot()
-                status, stdout, stderr = self.invoke_main()
+                status, stdout, stderr = self.invoke_eligibility()
                 self.assert_ci_rejected(status, stdout, stderr, before)
 
     def test_ambiguous_duplicate_successful_runs_are_rejected_without_mutation(self):
@@ -955,7 +1083,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
         self.respond_with_runs([run, dict(run)])
         before = self.state_snapshot()
 
-        status, stdout, stderr = self.invoke_main()
+        status, stdout, stderr = self.invoke_eligibility()
 
         self.assert_ci_rejected(status, stdout, stderr, before)
 
@@ -963,7 +1091,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
         self.respond_with_runs([self.successful_run()], total_count=11)
         before = self.state_snapshot()
 
-        status, stdout, stderr = self.invoke_main()
+        status, stdout, stderr = self.invoke_eligibility()
 
         self.assert_ci_rejected(status, stdout, stderr, before)
 
@@ -978,7 +1106,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
             with self.subTest(label=label):
                 self.respond_with_runs(runs, total_count=total_count)
                 before = self.state_snapshot()
-                status, stdout, stderr = self.invoke_main()
+                status, stdout, stderr = self.invoke_eligibility()
                 self.assert_ci_rejected(status, stdout, stderr, before)
 
     def test_unexpected_json_types_are_rejected_without_mutation(self):
@@ -1007,7 +1135,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
                 self.httpd.response_status = 200
                 self.httpd.response_body = json.dumps(payload).encode()
                 before = self.state_snapshot()
-                status, stdout, stderr = self.invoke_main()
+                status, stdout, stderr = self.invoke_eligibility()
                 self.assert_ci_rejected(status, stdout, stderr, before)
 
     def test_malformed_json_is_rejected_without_echoing_response(self):
@@ -1015,7 +1143,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
         self.httpd.response_body = secret_body
         before = self.state_snapshot()
 
-        status, stdout, stderr = self.invoke_main()
+        status, stdout, stderr = self.invoke_eligibility()
 
         self.assert_ci_rejected(status, stdout, stderr, before)
         self.assertNotIn("TOP-SECRET-BODY", stdout + stderr)
@@ -1025,7 +1153,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
         before = self.state_snapshot()
 
         try:
-            status, stdout, stderr = self.invoke_main()
+            status, stdout, stderr = self.invoke_eligibility()
         except ValueError as error:
             self.fail(f"JSON parser exception escaped: {type(error).__name__}")
 
@@ -1039,7 +1167,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
         before = self.state_snapshot()
 
         try:
-            status, stdout, stderr = self.invoke_main()
+            status, stdout, stderr = self.invoke_eligibility()
         except RecursionError as error:
             self.fail(f"JSON parser exception escaped: {type(error).__name__}")
 
@@ -1051,7 +1179,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
         self.httpd.response_body = secret_body
         before = self.state_snapshot()
 
-        status, stdout, stderr = self.invoke_main()
+        status, stdout, stderr = self.invoke_eligibility()
 
         self.assert_ci_rejected(status, stdout, stderr, before)
         self.assertEqual(len(self.httpd.requests), 1)
@@ -1063,7 +1191,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
         before = self.state_snapshot()
 
         try:
-            status, stdout, stderr = self.invoke_main()
+            status, stdout, stderr = self.invoke_eligibility()
         except HTTPException as error:
             self.fail(f"HTTP exception escaped: {type(error).__name__}")
 
@@ -1084,7 +1212,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
                 self.httpd.response_body = b"redirect body SECRET-BODY"
                 before = self.state_snapshot()
 
-                status, stdout, stderr = self.invoke_main()
+                status, stdout, stderr = self.invoke_eligibility()
 
                 self.assert_ci_rejected(status, stdout, stderr, before)
                 self.assertEqual(len(self.httpd.requests), 1)
@@ -1122,7 +1250,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
             "NETWORK_TIMEOUT_SECONDS",
             0.2,
         ):
-            status, stdout, stderr = self.invoke_main()
+            status, stdout, stderr = self.invoke_eligibility()
         elapsed = time.monotonic() - started
 
         self.assert_ci_rejected(status, stdout, stderr, before)
@@ -1143,7 +1271,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
             "NETWORK_TIMEOUT_SECONDS",
             0.1,
         ):
-            status, stdout, stderr = self.invoke_main()
+            status, stdout, stderr = self.invoke_eligibility()
         elapsed = time.monotonic() - started
 
         self.assert_ci_rejected(status, stdout, stderr, before)
@@ -1165,7 +1293,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
             "NETWORK_TIMEOUT_SECONDS",
             0.1,
         ):
-            status, stdout, stderr = self.invoke_main()
+            status, stdout, stderr = self.invoke_eligibility()
         elapsed = time.monotonic() - started
 
         self.assert_ci_rejected(status, stdout, stderr, before)
@@ -1184,7 +1312,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
             "NETWORK_TIMEOUT_SECONDS",
             0.1,
         ):
-            status, stdout, stderr = self.invoke_main()
+            status, stdout, stderr = self.invoke_eligibility()
         elapsed = time.monotonic() - started
 
         self.assert_ci_rejected(status, stdout, stderr, before)
@@ -1212,7 +1340,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
                 "NETWORK_TIMEOUT_SECONDS",
                 0.1,
             ):
-                status, stdout, stderr = self.invoke_main()
+                status, stdout, stderr = self.invoke_eligibility()
 
             remaining, interval = signal.getitimer(signal.ITIMER_REAL)
             self.assertEqual(status, 0)
@@ -1292,7 +1420,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
         ).encode()
         before = self.state_snapshot()
 
-        status, stdout, stderr = self.invoke_main()
+        status, stdout, stderr = self.invoke_eligibility()
 
         self.assert_ci_rejected(status, stdout, stderr, before)
         self.assertNotIn(marker, stdout + stderr)
@@ -1311,7 +1439,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
                 self.config["repository_url"] = repository_url
                 self.write_config()
                 before = self.state_snapshot()
-                status, stdout, stderr = self.invoke_main()
+                status, stdout, stderr = self.invoke_eligibility()
                 self.assertEqual(status, 1)
                 self.assertEqual(stdout, "")
                 self.assertEqual(
@@ -1332,7 +1460,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
         before = self.state_snapshot()
 
         try:
-            status, stdout, stderr = self.invoke_main()
+            status, stdout, stderr = self.invoke_eligibility()
         except UnicodeError as error:
             self.fail(f"Git decoder exception escaped: {type(error).__name__}")
 
@@ -1350,7 +1478,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
         self.respond_with_runs([self.successful_run()])
         before = self.state_snapshot()
 
-        status, stdout, stderr = self.invoke_main()
+        status, stdout, stderr = self.invoke_eligibility()
 
         self.assert_ci_rejected(status, stdout, stderr, before)
         self.assertEqual(self.httpd.requests, [])
@@ -1368,7 +1496,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
             "GIT_TIMEOUT_SECONDS",
             0.1,
         ):
-            status, stdout, stderr = self.invoke_main()
+            status, stdout, stderr = self.invoke_eligibility()
         elapsed = time.monotonic() - started
 
         self.assert_ci_rejected(status, stdout, stderr, before)
@@ -1579,8 +1707,8 @@ class ProductionAutoDeployTest(unittest.TestCase):
         def swap_then_publish_later(_config, sha):
             nonlocal publisher
             attempts.append(sha)
-            state_root = self.root / "state"
-            state_root.rename(self.root / "state-before-delayed-publish")
+            state_root = self.private_root / "state"
+            state_root.rename(self.private_root / "state-before-delayed-publish")
 
             def publish():
                 time.sleep(0.15)
@@ -1610,6 +1738,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
             "import os, pathlib, signal, sys\n"
             f"sys.path.insert(0, {str(SCRIPT.parent)!r})\n"
             "import production_auto_deploy as module\n"
+            "module._owned_root = lambda config: config.deployment_home\n"
             f"config = module.load_config({str(self.config_path)!r})\n"
             f"sha = {MAIN_SHA!r}\n"
             "module.resolve_main_sha = lambda _config: sha\n"
@@ -1617,8 +1746,8 @@ class ProductionAutoDeployTest(unittest.TestCase):
             "    head_sha=sha, status='completed', conclusion='success',\n"
             "    event='push', head_branch='main', name='CI'),)\n"
             "def terminate(_config, _sha):\n"
-            f"    state = pathlib.Path({str(self.root / 'state')!r})\n"
-            f"    state.rename(pathlib.Path({str(self.root / 'state-before-sigkill')!r}))\n"
+            f"    state = pathlib.Path({str(self.private_root / 'state')!r})\n"
+            f"    state.rename(pathlib.Path({str(self.private_root / 'state-before-sigkill')!r}))\n"
             "    state.mkdir(mode=0o700)\n"
             "    os.kill(os.getpid(), signal.SIGKILL)\n"
             "module.attempt_candidate = terminate\n"
@@ -1943,7 +2072,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
             ("exception", RuntimeError("attempt failed")),
         ):
             with self.subTest(label=label):
-                for log_entry in (self.root / "logs").iterdir():
+                for log_entry in (self.private_root / "logs").iterdir():
                     log_entry.unlink()
                 failed_path = self.state_path("last-failed")
                 if failed_path.exists():
@@ -2001,8 +2130,8 @@ class ProductionAutoDeployTest(unittest.TestCase):
 
     def test_poll_cli_bounds_lock_descriptor_failure(self):
         with mock.patch.object(
-            production_auto_deploy.os,
-            "fstat",
+            production_auto_deploy,
+            "_open_lock_at",
             side_effect=OSError("secret lock path"),
         ):
             status, stdout, stderr = self.invoke_main("--poll")
@@ -2085,9 +2214,9 @@ class ProductionAutoDeployTest(unittest.TestCase):
         assert_rejected()
         self.state_path("last-successful").unlink()
 
-        (self.root / "state").chmod(0o755)
+        (self.private_root / "state").chmod(0o755)
         assert_rejected()
-        (self.root / "state").chmod(0o700)
+        (self.private_root / "state").chmod(0o700)
 
         with mock.patch.object(
             production_auto_deploy.os,
@@ -2270,7 +2399,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
 
         def contend():
             directory_fd = os.open(
-                self.root / "state",
+                self.private_root / "state",
                 os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
             )
             lock_fd = -1
@@ -2342,6 +2471,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
             "import pathlib, sys, time\n"
             f"sys.path.insert(0, {str(SCRIPT.parent)!r})\n"
             "import production_auto_deploy as module\n"
+            "module._owned_root = lambda config: config.deployment_home\n"
             f"config = module.load_config({str(self.config_path)!r})\n"
             f"start = pathlib.Path({str(start_path)!r})\n"
             f"result = pathlib.Path({str(result_prefix)!r} + '-' + sys.argv[1])\n"
@@ -2390,6 +2520,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
             "import pathlib, sys\n"
             f"sys.path.insert(0, {str(SCRIPT.parent)!r})\n"
             "import production_auto_deploy as module\n"
+            "module._owned_root = lambda config: config.deployment_home\n"
             f"config = module.load_config({str(self.config_path)!r})\n"
             "try:\n"
             "    with module.deployment_lock(config) as acquired:\n"
@@ -2451,6 +2582,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
             "import pathlib, sys\n"
             f"sys.path.insert(0, {str(SCRIPT.parent)!r})\n"
             "import production_auto_deploy as module\n"
+            "module._owned_root = lambda config: config.deployment_home\n"
             f"config = module.load_config({str(self.config_path)!r})\n"
             "try:\n"
             "    with module.deployment_lock(config) as acquired:\n"
@@ -2523,7 +2655,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
     def test_state_root_swap_at_directory_open_does_not_touch_external(self):
         external = self.external_state_directory()
         before = self.external_snapshot(external)
-        state_root = self.root / "state"
+        state_root = self.private_root / "state"
         lock_path = state_root / "deployment.lock"
         real_open = os.open
         swapped = False
@@ -2611,7 +2743,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
         self.assertEqual(
             [
                 path.name
-                for path in (self.root / "state").iterdir()
+                for path in (self.private_root / "state").iterdir()
                 if ".tmp" in path.name
             ],
             [],
@@ -2808,16 +2940,18 @@ class ProductionAutoDeployTest(unittest.TestCase):
                 ["rev-parse", "refs/remotes/origin/main"],
                 ["symbolic-ref", "-q", "HEAD"],
                 [
-                    "cat-file",
-                    "-e",
-                    f"{MAIN_SHA}:.gitmodules",
+                    "ls-tree",
+                    "--name-only",
+                    MAIN_SHA,
+                    "--",
+                    ".gitmodules",
                 ],
             ],
         )
 
     def test_prepare_checkout_rejects_dirty_or_wrong_origin_before_fetch(self):
         self.seed_candidate_files()
-        (self.root / "controller" / ".git" / "objects" / "info").mkdir(parents=True)
+        (self.private_root / "controller" / ".git" / "objects" / "info").mkdir(parents=True)
         cases = (
             {"dirty": b" M site.yml\n"},
             {"origin": "https://github.com/attacker/nas-platform.git"},
@@ -2840,9 +2974,10 @@ class ProductionAutoDeployTest(unittest.TestCase):
 
     def test_prepare_checkout_rejects_gitmodules_submodules_and_sha_mismatch(self):
         self.seed_candidate_files()
-        (self.root / "controller" / ".git" / "objects" / "info").mkdir(parents=True)
+        (self.private_root / "controller" / ".git" / "objects" / "info").mkdir(parents=True)
         cases = (
             {"gitmodules": True},
+            {"gitmodules_inspection_error": True},
             {"submodule": True},
             {"sha": "fedcba9876543210fedcba9876543210fedcba98"},
         )
@@ -2861,7 +2996,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
 
     def test_prepare_checkout_rejects_all_git_symlink_entries(self):
         self.seed_candidate_files()
-        (self.root / "controller" / ".git" / "objects" / "info").mkdir(parents=True)
+        (self.private_root / "controller" / ".git" / "objects" / "info").mkdir(parents=True)
         _calls, run = self.checkout_command_runner(symlink=True)
 
         with mock.patch.object(
@@ -2873,7 +3008,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
 
     def test_prepare_checkout_revalidates_origin_main_after_checkout(self):
         self.seed_candidate_files()
-        (self.root / "controller" / ".git" / "objects" / "info").mkdir(parents=True)
+        (self.private_root / "controller" / ".git" / "objects" / "info").mkdir(parents=True)
         _calls, run = self.checkout_command_runner(
             post_checkout_sha="abcdef0123456789abcdef0123456789abcdef01"
         )
@@ -2888,7 +3023,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
     def test_prepare_checkout_rejects_alternate_object_environment_and_file(self):
         self.seed_candidate_files()
         alternate = (
-            self.root / "controller" / ".git" / "objects" / "info" / "alternates"
+            self.private_root / "controller" / ".git" / "objects" / "info" / "alternates"
         )
         alternate.parent.mkdir(parents=True)
         for label, environment, create_file in (
@@ -2928,7 +3063,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
         self.seed_candidate_files()
         external_git = self.root / "external-git"
         external_git.mkdir()
-        (self.root / "controller" / ".git").symlink_to(
+        (self.private_root / "controller" / ".git").symlink_to(
             external_git,
             target_is_directory=True,
         )
@@ -2944,7 +3079,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
         self.assertEqual(calls, [])
 
     def test_prepare_checkout_rejects_replacement_refs_before_fetch(self):
-        checkout = self.root / "controller"
+        checkout = self.private_root / "controller"
         real_git = shutil.which("git")
         self.assertIsNotNone(real_git)
         production_auto_deploy.SYSTEM_GIT_PATH = Path(real_git)
@@ -3007,7 +3142,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
         self.assertFalse(fetch_marker.exists())
 
     def test_prepare_checkout_rejects_redirected_core_worktree_before_fetch(self):
-        checkout = self.root / "controller"
+        checkout = self.private_root / "controller"
         external = self.root / "external-worktree"
         external.mkdir()
         real_git = shutil.which("git")
@@ -3057,7 +3192,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
 
     def test_prepare_checkout_rejects_grafts_or_shallow_metadata(self):
         self.seed_candidate_files()
-        git_directory = self.root / "controller" / ".git"
+        git_directory = self.private_root / "controller" / ".git"
         (git_directory / "objects" / "info").mkdir(parents=True)
         (git_directory / "info").mkdir()
         for metadata in (
@@ -3081,7 +3216,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
 
     def test_prepare_checkout_rejects_redirected_common_git_directory(self):
         self.seed_candidate_files()
-        git_directory = self.root / "controller" / ".git"
+        git_directory = self.private_root / "controller" / ".git"
         git_directory.mkdir()
         external_common_directory = self.root / "external-common-git"
         external_common_directory.mkdir()
@@ -3102,7 +3237,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
 
     def test_prepare_checkout_rejects_mismatched_top_level_or_git_directory(self):
         self.seed_candidate_files()
-        (self.root / "controller" / ".git" / "objects" / "info").mkdir(parents=True)
+        (self.private_root / "controller" / ".git" / "objects" / "info").mkdir(parents=True)
         cases = (
             {"toplevel": self.root / "external-worktree"},
             {"git_dir": self.root / "external-git"},
@@ -3126,7 +3261,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
 
     def test_prepare_checkout_rejects_ignored_sparse_or_skip_worktree_state(self):
         self.seed_candidate_files()
-        (self.root / "controller" / ".git" / "objects" / "info").mkdir(parents=True)
+        (self.private_root / "controller" / ".git" / "objects" / "info").mkdir(parents=True)
         cases = (
             {
                 "ignored": b"!! inventory/group_vars/all/vault-plain.yml\n",
@@ -3151,7 +3286,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
                 )
 
     def test_git_commands_disable_repository_hooks_and_fsmonitor(self):
-        checkout = self.root / "controller"
+        checkout = self.private_root / "controller"
         real_git = shutil.which("git")
         self.assertIsNotNone(real_git)
         production_auto_deploy.SYSTEM_GIT_PATH = Path(real_git)
@@ -3207,7 +3342,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
         self.assertFalse(hook_marker.exists())
 
     def test_prepare_checkout_rejects_clean_filter_before_status_executes_it(self):
-        checkout = self.root / "controller"
+        checkout = self.private_root / "controller"
         real_git = shutil.which("git")
         self.assertIsNotNone(real_git)
         production_auto_deploy.SYSTEM_GIT_PATH = Path(real_git)
@@ -3339,7 +3474,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
             )
 
         identity = production_auto_deploy.tooling_identity(checkout)
-        published = self.root / "tooling" / identity
+        published = self.private_root / "tooling" / identity
         self.assertTrue(tooling.__dataclass_params__.frozen)
         self.assertEqual(
             tooling,
@@ -3353,7 +3488,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
         self.assertEqual(
             [
                 path
-                for path in (self.root / "tooling").iterdir()
+                for path in (self.private_root / "tooling").iterdir()
                 if path.name.startswith(".")
             ],
             [],
@@ -3397,7 +3532,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
     def test_concurrent_tooling_publication_accepts_only_valid_complete_target(self):
         checkout = self.seed_candidate_files()
         identity = production_auto_deploy.tooling_identity(checkout)
-        published = self.root / "tooling" / identity
+        published = self.private_root / "tooling" / identity
         published.mkdir()
 
         with self.assertRaises(production_auto_deploy.DeploymentError):
@@ -3408,7 +3543,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
     def test_concurrent_tooling_publication_accepts_valid_race_winner(self):
         checkout = self.seed_candidate_files()
         identity = production_auto_deploy.tooling_identity(checkout)
-        published = self.root / "tooling" / identity
+        published = self.private_root / "tooling" / identity
 
         def build(arguments, **_kwargs):
             arguments = list(arguments)
@@ -3464,7 +3599,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
         self.assertEqual(
             [
                 path
-                for path in (self.root / "tooling").iterdir()
+                for path in (self.private_root / "tooling").iterdir()
                 if path.name.startswith(".")
             ],
             [],
@@ -3652,7 +3787,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
 
     def test_deploy_candidate_runs_exact_plays_with_minimal_environment(self):
         checkout = self.seed_candidate_files()
-        tooling_root = self.root / "tooling" / "prepared"
+        tooling_root = self.private_root / "tooling" / "prepared"
         (tooling_root / "venv/bin").mkdir(parents=True)
         (tooling_root / "collections").mkdir()
         tooling = production_auto_deploy.Tooling(
@@ -3701,8 +3836,8 @@ class ProductionAutoDeployTest(unittest.TestCase):
 
         self.assertTrue(succeeded)
         ansible = str(tooling.ansible_playbook)
-        vault = str(self.root / "config" / "vault.yml")
-        password = str(self.root / "config" / "vault-password")
+        vault = str(self.root / ".config" / "nas-platform" / "vault.yml")
+        password = str(self.root / ".config" / "nas-platform" / "vault-password")
         shared_arguments = [
             "--vault-password-file",
             password,
@@ -3710,6 +3845,8 @@ class ProductionAutoDeployTest(unittest.TestCase):
             f"@{vault}",
             "-e",
             f"platform_vault_file={vault}",
+            "-e",
+            f"ansible_python_interpreter={sys.executable}",
         ]
         self.assertEqual(
             [arguments for arguments, _kwargs in calls],
@@ -3739,6 +3876,16 @@ class ProductionAutoDeployTest(unittest.TestCase):
             "ANSIBLE_COLLECTIONS_PATH",
         }
         for arguments, kwargs in calls:
+            interpreter_pins = [
+                argument
+                for argument in arguments
+                if argument.startswith("ansible_python_interpreter=")
+            ]
+            self.assertEqual(
+                interpreter_pins,
+                [f"ansible_python_interpreter={sys.executable}"],
+            )
+            self.assertEqual(arguments[-2:], ["-e", interpreter_pins[0]])
             self.assertEqual(kwargs["cwd"], checkout)
             environment = kwargs["env"]
             self.assertEqual(set(environment), allowed)
@@ -3760,6 +3907,58 @@ class ProductionAutoDeployTest(unittest.TestCase):
                     "ANSIBLE_CONFIG": str(checkout / "ansible.cfg"),
                     "ANSIBLE_COLLECTIONS_PATH": str(tooling.collections),
                 },
+            )
+
+    def test_local_interpreter_pin_follows_conflicting_extra_var_files(self):
+        tooling = production_auto_deploy.Tooling(
+            ansible_playbook=Path("/sealed/venv/bin/ansible-playbook"),
+            python=Path("/sealed/venv/bin/python"),
+            collections=Path("/sealed/collections"),
+        )
+        conflict = self.private_root / "conflicting-extra-vars.json"
+        conflict.write_text(
+            json.dumps({"ansible_python_interpreter": "/attacker/python"}),
+            encoding="utf-8",
+        )
+        conflict.chmod(0o600)
+
+        arguments = production_auto_deploy._playbook_arguments(
+            self.loaded_config(),
+            tooling,
+            "install-production-auto-deploy.yml",
+            inventory=True,
+            controller_python=Path(sys.executable),
+            extra_vars_file=conflict,
+        )
+
+        pins = [
+            argument
+            for argument in arguments
+            if argument.startswith("ansible_python_interpreter=")
+        ]
+        self.assertEqual(
+            pins,
+            [f"ansible_python_interpreter={sys.executable}"],
+        )
+        self.assertEqual(arguments[-4:], ["-e", f"@{conflict}", "-e", pins[0]])
+
+    def test_local_interpreter_pin_rejects_a_conflicting_validated_identity(self):
+        tooling = production_auto_deploy.Tooling(
+            ansible_playbook=Path("/sealed/venv/bin/ansible-playbook"),
+            python=Path("/sealed/venv/bin/python"),
+            collections=Path("/sealed/collections"),
+        )
+
+        with self.assertRaisesRegex(
+            production_auto_deploy.DeploymentError,
+            "controller Python identity changed",
+        ):
+            production_auto_deploy._playbook_arguments(
+                self.loaded_config(),
+                tooling,
+                "site.yml",
+                inventory=True,
+                controller_python=Path("/attacker/python"),
             )
 
     def test_deploy_candidate_stops_after_each_failed_play(self):
@@ -3883,6 +4082,123 @@ class ProductionAutoDeployTest(unittest.TestCase):
                 ("validate", MAIN_SHA),
             ],
         )
+
+    def test_automatic_installer_receives_a_bounded_lock_proof_without_deadlock(self):
+        checkout = self.seed_candidate_files()
+        tooling = production_auto_deploy.Tooling(
+            ansible_playbook=Path("/private/tooling/ansible-playbook"),
+            python=Path("/private/tooling/python"),
+            collections=Path("/private/tooling/collections"),
+        )
+        proof_path = None
+
+        def run(arguments, **_kwargs):
+            nonlocal proof_path
+            if "install-production-auto-deploy.yml" in arguments:
+                proof_arguments = [
+                    argument[1:]
+                    for argument in arguments
+                    if argument.startswith("@") and "lock-proof" in argument
+                ]
+                self.assertEqual(len(proof_arguments), 1)
+                proof_path = Path(proof_arguments[0])
+                self.assertEqual(stat.S_IMODE(proof_path.stat().st_mode), 0o600)
+                payload = json.loads(proof_path.read_text(encoding="utf-8"))
+                self.assertEqual(
+                    set(payload),
+                    {
+                        "production_auto_deploy_lock_proof",
+                        "production_auto_deploy_lock_pid",
+                        "production_auto_deploy_lock_proof_path",
+                    },
+                )
+                self.assertRegex(payload["production_auto_deploy_lock_proof"], r"^[0-9a-f]{64}$")
+                self.assertEqual(payload["production_auto_deploy_lock_pid"], os.getpid())
+                self.assertEqual(
+                    payload["production_auto_deploy_lock_proof_path"],
+                    str(proof_path),
+                )
+                self.assertEqual(proof_path.parent, self.private_root)
+                self.assertRegex(
+                    proof_path.name,
+                    r"^\.production-auto-deploy-lock-proof-[0-9a-f]{64}\.json$",
+                )
+            return subprocess.CompletedProcess(arguments, 0, b"", b"")
+
+        with mock.patch.object(
+            production_auto_deploy,
+            "prepare_checkout",
+            return_value=checkout,
+        ), mock.patch.object(
+            production_auto_deploy,
+            "prepare_tooling",
+            return_value=tooling,
+        ), mock.patch.object(
+            production_auto_deploy,
+            "_validate_materialized_checkout",
+        ), mock.patch.object(
+            production_auto_deploy,
+            "_validate_tooling_for_execution",
+        ), mock.patch.object(
+            production_auto_deploy,
+            "_active_deployment_lock_held",
+            return_value=True,
+            create=True,
+        ), mock.patch.object(
+            production_auto_deploy,
+            "_run_command",
+            side_effect=run,
+        ):
+            succeeded = production_auto_deploy.deploy_candidate(
+                self.loaded_config(), MAIN_SHA, io.BytesIO()
+            )
+
+        self.assertTrue(succeeded)
+        self.assertIsNotNone(proof_path)
+        self.assertFalse(proof_path.exists())
+
+    def test_sigkill_stale_installer_proof_does_not_block_or_authorize_a_new_proof(self):
+        child_source = (
+            "import os, pathlib, pwd, signal, sys, types\n"
+            f"sys.path.insert(0, {str(SCRIPT.parent)!r})\n"
+            "import production_auto_deploy as module\n"
+            f"home = pathlib.Path({str(self.root)!r})\n"
+            "module.pwd.getpwuid = lambda _uid: types.SimpleNamespace(pw_dir=str(home))\n"
+            f"config = module.load_config({str(self.config_path)!r})\n"
+            "module._ACTIVE_DEPLOYMENT_LOCK.held = True\n"
+            "with module._automatic_installer_lock_proof(config) as proof:\n"
+            "    print(proof, flush=True)\n"
+            "    os.kill(os.getpid(), signal.SIGKILL)\n"
+        )
+        child = subprocess.run(
+            [sys.executable, "-c", child_source],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=3.0,
+        )
+        self.assertEqual(child.returncode, -signal.SIGKILL)
+        stale = Path(child.stdout.strip())
+        self.assertTrue(stale.is_file())
+        stale_payload = json.loads(stale.read_text(encoding="utf-8"))
+
+        previous = getattr(production_auto_deploy._ACTIVE_DEPLOYMENT_LOCK, "held", False)
+        production_auto_deploy._ACTIVE_DEPLOYMENT_LOCK.held = True
+        try:
+            with production_auto_deploy._automatic_installer_lock_proof(
+                self.loaded_config()
+            ) as current:
+                self.assertNotEqual(current, stale)
+                current_payload = json.loads(current.read_text(encoding="utf-8"))
+                self.assertNotEqual(
+                    current_payload["production_auto_deploy_lock_proof"],
+                    stale_payload["production_auto_deploy_lock_proof"],
+                )
+        finally:
+            production_auto_deploy._ACTIVE_DEPLOYMENT_LOCK.held = previous
+            stale.unlink(missing_ok=True)
+
+        self.assertFalse(stale.exists())
 
     def test_default_poll_callback_deploys_candidate_and_preserves_journal_policy(self):
         with self.candidate(MAIN_SHA), mock.patch.object(
@@ -4296,7 +4612,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
             rf"^attempt-\d{{8}}T\d{{12}}Z-{MAIN_SHA}\.log$",
         )
         self.assertEqual(stat.S_IMODE(log_path.stat().st_mode), 0o600)
-        latest = self.root / "logs" / "latest"
+        latest = self.private_root / "logs" / "latest"
         self.assertFalse(latest.is_symlink())
         self.assertTrue(latest.is_file())
         self.assertEqual(stat.S_IMODE(latest.stat().st_mode), 0o600)
@@ -4355,7 +4671,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
             self.assertTrue(path.is_file())
 
     def test_attempt_log_rejects_hostile_latest_before_entering_context(self):
-        latest = self.root / "logs" / "latest"
+        latest = self.private_root / "logs" / "latest"
         external = self.root / "external-latest"
         external.write_text("external unchanged\n", encoding="utf-8")
         latest.symlink_to(external)
@@ -4372,7 +4688,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
         self.assertTrue(latest.is_symlink())
         self.assertEqual(external.read_text(encoding="utf-8"), "external unchanged\n")
         self.assertEqual(
-            [path.name for path in (self.root / "logs").iterdir()],
+            [path.name for path in (self.private_root / "logs").iterdir()],
             ["latest"],
         )
 
@@ -5073,6 +5389,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
             "import pathlib,sys\n"
             f"sys.path.insert(0, {str(SCRIPT.parent)!r})\n"
             "import production_auto_deploy as module\n"
+            "module._owned_root = lambda config: config.deployment_home\n"
             f"config=module.load_config({str(self.config_path)!r})\n"
             f"sha={MAIN_SHA!r}\n"
             "module._validate_controller_python=lambda _config: _config.controller_python\n"
@@ -5167,6 +5484,224 @@ class ProductionAutoDeployTest(unittest.TestCase):
         self.assert_no_mutation(before)
         self.assertEqual(self.httpd.requests, [])
         self.assertEqual(self.tool_calls.read_text(encoding="utf-8"), "")
+
+    def test_validate_controller_is_not_a_public_cli_mode(self):
+        before = self.state_snapshot()
+        with mock.patch.object(
+            production_auto_deploy,
+            "_validate_controller_checkout",
+        ) as validate:
+            status, stdout, stderr = self.invoke_main(
+                "--validate-controller",
+                MAIN_SHA,
+            )
+
+        self.assertEqual(
+            (status, stdout, stderr),
+            (2, "", "production auto-deploy: invalid arguments\n"),
+        )
+        validate.assert_not_called()
+        invalid, _, _ = self.invoke_main("--validate-controller", "not-a-sha")
+        self.assertEqual(invalid, 2)
+        self.assert_no_mutation(before)
+
+    def test_cli_accepts_only_config_first_followed_by_one_exact_mode(self):
+        before = self.state_snapshot()
+        relative_config = os.path.relpath(self.config_path, Path.cwd())
+        config_link = self.root / "config-link.json"
+        config_link.symlink_to(self.config_path)
+        absent_config = self.root / "absent.json"
+        loose_config = self.root / "loose-config.json"
+        loose_config.write_bytes(self.config_path.read_bytes())
+        loose_config.chmod(0o644)
+        cases = (
+            (),
+            ("--status",),
+            ("--config",),
+            ("--config", str(self.config_path)),
+            ("--config", relative_config, "--status"),
+            ("--config", "invalid\0config", "--status"),
+            ("--config", str(config_link), "--status"),
+            ("--config", str(absent_config), "--status"),
+            ("--config", str(loose_config), "--status"),
+            ("--status", "--config", str(self.config_path)),
+            ("--config", str(self.config_path), "--config", str(self.config_path), "--status"),
+            ("--config", str(self.config_path), "--status", "extra"),
+            ("--config", str(self.config_path), "--retry-failed"),
+            ("--config", str(self.config_path), "--retry-failed", MAIN_SHA, "extra"),
+        )
+
+        for arguments in cases:
+            with self.subTest(arguments=arguments):
+                status, stdout, stderr = self.invoke_raw_main(*arguments)
+                self.assertEqual(status, 2)
+                self.assertEqual(stdout, "")
+                self.assertEqual(
+                    stderr,
+                    "production auto-deploy: invalid arguments\n",
+                )
+
+        self.assert_no_mutation(before)
+        self.assertEqual(self.httpd.requests, [])
+        self.assertEqual(self.tool_calls.read_text(encoding="utf-8"), "")
+
+    def test_cli_accepts_only_the_physical_config_pinned_by_exact_managed_links(self):
+        libexec, generation, generation_config = self.write_cli_generation(
+            self.config_path.read_bytes()
+        )
+        generations = generation.parent
+        current = libexec / "current"
+        current.symlink_to(f"generations/{generation.name}")
+        self.config_path.unlink()
+        self.config_path.symlink_to(
+            "../../.local/libexec/nas-platform/current/deployer.json"
+        )
+
+        with mock.patch.object(
+            production_auto_deploy,
+            "__file__",
+            str(generation / "production_auto_deploy.py"),
+        ):
+            loaded = production_auto_deploy._load_cli_config(generation_config)
+            self.assertEqual(loaded.ntfy_curl_config, generation / "ntfy.curl")
+            status, stdout, stderr = self.invoke_raw_main(
+                "--config", str(generation_config), "--status"
+            )
+        self.assertEqual((status, stdout, stderr), (0, "", ""))
+
+        with self.assertRaises(production_auto_deploy.CliConfigPathError):
+            production_auto_deploy._load_cli_config(self.config_path)
+
+        _libexec, other, other_config = self.write_cli_generation(
+            generation_config.read_bytes(), b"# other\n"
+        )
+        before = self.state_snapshot()
+        with mock.patch.object(
+            production_auto_deploy,
+            "__file__",
+            str(generation / "production_auto_deploy.py"),
+        ):
+            status, stdout, stderr = self.invoke_raw_main(
+                "--config", str(other_config), "--poll"
+            )
+        self.assertEqual(
+            (status, stdout, stderr),
+            (2, "", "production auto-deploy: invalid arguments\n"),
+        )
+        self.assert_no_mutation(before)
+        self.assertEqual(self.httpd.requests, [])
+        self.assertNotEqual(other, generation)
+
+        external = self.root / "external-config.json"
+        external.write_bytes(generation_config.read_bytes())
+        external.chmod(0o600)
+        generation_config.unlink()
+        generation_config.symlink_to(external)
+        with self.assertRaises(production_auto_deploy.CliConfigPathError):
+            production_auto_deploy._load_cli_config(generation_config)
+
+    def test_cli_keeps_a_complete_pinned_config_when_current_changes_during_open(self):
+        libexec, first, first_config = self.write_cli_generation(
+            self.config_path.read_bytes(), b"# first\n"
+        )
+        _libexec, second, _second_config = self.write_cli_generation(
+            self.config_path.read_bytes(), b"# second\n"
+        )
+        current = libexec / "current"
+        current.symlink_to(f"generations/{first.name}")
+        self.config_path.unlink()
+        self.config_path.symlink_to(
+            "../../.local/libexec/nas-platform/current/deployer.json"
+        )
+        real_open = production_auto_deploy.os.open
+        switched = False
+
+        def switch_current(path, flags, mode=0o777, *, dir_fd=None):
+            nonlocal switched
+            descriptor = real_open(path, flags, mode, dir_fd=dir_fd)
+            if Path(path) == first / "deployer.json" and not switched:
+                switched = True
+                current.unlink()
+                current.symlink_to(f"generations/{second.name}")
+            return descriptor
+
+        with mock.patch.object(
+            production_auto_deploy.os,
+            "open",
+            side_effect=switch_current,
+        ), mock.patch.object(
+            production_auto_deploy,
+            "__file__",
+            str(first / "production_auto_deploy.py"),
+        ):
+            loaded = production_auto_deploy._load_cli_config(first_config)
+
+        self.assertTrue(switched)
+        self.assertEqual(loaded.deployment_home, self.root)
+
+    def test_cli_ignores_ambient_config_fallbacks(self):
+        before = self.state_snapshot()
+        hostile_environment = {
+            "NAS_PLATFORM_AUTO_DEPLOY_CONFIG": str(self.config_path),
+            "PRODUCTION_AUTO_DEPLOY_CONFIG": str(self.config_path),
+        }
+
+        with mock.patch.dict(os.environ, hostile_environment, clear=False):
+            status, stdout, stderr = self.invoke_raw_main("--status")
+
+        self.assertEqual(status, 2)
+        self.assertEqual(stdout, "")
+        self.assertEqual(stderr, "production auto-deploy: invalid arguments\n")
+        self.assert_no_mutation(before)
+        self.assertEqual(self.httpd.requests, [])
+
+    def test_cli_rejects_a_config_home_not_owned_by_the_effective_os_account(self):
+        before = self.state_snapshot()
+        with mock.patch.object(
+            production_auto_deploy.pwd,
+            "getpwuid",
+            return_value=mock.Mock(pw_dir=str(self.root / "different-home")),
+        ):
+            status, stdout, stderr = self.invoke_raw_main(
+                "--config",
+                str(self.config_path),
+                "--status",
+            )
+
+        self.assertEqual(status, 2)
+        self.assertEqual(stdout, "")
+        self.assertEqual(stderr, "production auto-deploy: invalid arguments\n")
+        self.assert_no_mutation(before)
+
+    def test_cli_does_not_reopen_a_replaced_config_path(self):
+        before = self.state_snapshot()
+        hostile_config = self.root / "hostile-config.json"
+        hostile_config.write_bytes(self.config_path.read_bytes())
+        hostile_config.chmod(0o600)
+        real_parse = production_auto_deploy._parse_cli_arguments
+
+        def replace_after_parse(arguments):
+            parsed = real_parse(arguments)
+            self.config_path.unlink()
+            self.config_path.symlink_to(hostile_config)
+            return parsed
+
+        with mock.patch.object(
+            production_auto_deploy,
+            "_parse_cli_arguments",
+            side_effect=replace_after_parse,
+        ):
+            status, stdout, stderr = self.invoke_raw_main(
+                "--config",
+                str(self.config_path),
+                "--status",
+            )
+
+        self.assertEqual(status, 2)
+        self.assertEqual(stdout, "")
+        self.assertEqual(stderr, "production auto-deploy: invalid arguments\n")
+        self.assert_no_mutation(before)
+        self.assertEqual(self.httpd.requests, [])
 
 
 if __name__ == "__main__":

@@ -1,0 +1,31 @@
+---
+production_auto_deploy_repository: yonatankarp/nas-platform
+production_auto_deploy_repository_url: https://github.com/yonatankarp/nas-platform.git
+production_auto_deploy_workflow: ci.yml
+production_auto_deploy_workflow_name: CI
+production_auto_deploy_branch: main
+production_auto_deploy_github_api_base: https://api.github.com
+production_auto_deploy_nas_address: 192.168.0.139
+production_auto_deploy_log_retention_count: 20
+production_auto_deploy_log_retention_days: 30
+production_auto_deploy_controller_python: "{{ ansible_facts.python.executable }}"
+production_auto_deploy_vault_password_file: ""
+production_auto_deploy_cron_name: NAS platform production auto-deploy
+production_auto_deploy_lock_proof: ""
+production_auto_deploy_lock_pid: 0
+production_auto_deploy_lock_proof_path: ""
+
+# These hooks exist only for the disposable Darwin role suite. The role rejects
+# them on Linux, so a NAS inventory cannot weaken production path or ownership
+# checks.
+production_auto_deploy_test_mode: false
+production_auto_deploy_test_root: ""
+production_auto_deploy_test_trusted_owner_uid: 0
+production_auto_deploy_test_identity: {}
+production_auto_deploy_test_poller_source: ""
+production_auto_deploy_test_fail_activation: ""
+production_auto_deploy_test_activation_delay: 0
+production_auto_deploy_test_lock_delay: 0
+production_auto_deploy_test_lock_marker: ""
+production_auto_deploy_test_power_boundary: ""
+production_auto_deploy_test_power_marker: ""
