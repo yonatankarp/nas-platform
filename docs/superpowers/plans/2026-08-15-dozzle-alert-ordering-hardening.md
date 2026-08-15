@@ -181,10 +181,61 @@ Add the preflight stat/assert before the child file task and make the file task
 non-following. The executable proof must fail the role at the assertion while
 preserving the symlink and the target's ownership, mode, and contents.
 
-### Task 5: Full verification and intentional commit
+### Task 5: Persisted-state validation and operational readiness
 
 **Files:**
-- Verify all files changed in Tasks 1–4.
+- Modify: `tests/dozzle_alert_relay_test.py`
+- Modify: `services/dozzle/alert_relay.py`
+
+- [ ] **Step 1: Write and run malformed-state RED**
+
+Seed canonical version-2 documents whose identity host contains an escaped
+unpaired surrogate or whose `state` is a list/dictionary. Require exact health
+503 and POST 500 responses, no traceback, no upstream request, and byte-identical
+state. Observe the current surrogate acceptance and unhashable-state traceback.
+
+- [ ] **Step 2: Implement strict persisted field validation and run GREEN**
+
+Require both identity parts to encode as UTF-8 and type-check `state` as `str`
+before membership testing. Convert every malformed case to `StateError` and
+re-run the focused tests.
+
+- [ ] **Step 3: Write and run readiness-bound RED**
+
+Seed a parseable 129-entry version-1 unhealthy set and a below-64-KiB version-1
+file whose version-2 expansion exceeds 64 KiB. Require health 503 and POST 500
+without publication or rewrite. Observe the current health 200 responses.
+
+- [ ] **Step 4: Dry-run bounds during readiness and run GREEN**
+
+After state parsing and migration expansion, call `bounded_entries(entries,
+utc_now())` without writing. Preserve the fast healthy result for a valid lock
+actively held by an event request.
+
+### Task 6: Nonblocking untrusted leaf opens
+
+**Files:**
+- Modify: `tests/dozzle_alert_relay_test.py`
+- Modify: `services/dozzle/alert_relay.py`
+
+- [ ] **Step 1: Write and run FIFO RED**
+
+Create real mode-0600 FIFOs at the state and lock paths. Run GET and POST in
+bounded helper threads that can safely unblock the old implementation, and
+require prompt fixed 503/500 responses, no traceback, no publish, and no rewrite.
+Observe that state FIFO requests and lock FIFO readiness initially hang.
+
+- [ ] **Step 2: Add nonblocking open flags and run GREEN**
+
+Combine `O_NONBLOCK` with `O_NOFOLLOW` when opening existing state and lock leaf
+paths in readiness and request processing. Keep `flock(LOCK_EX)` blocking and
+`flock(LOCK_SH | LOCK_NB)` nonblocking exactly as before. Re-run FIFO and held-lock
+tests locally and in the pinned Python image.
+
+### Task 7: Full verification and intentional commit
+
+**Files:**
+- Verify all files changed in Tasks 1–6.
 
 - [ ] **Step 1: Run local and pinned relay tests**
 

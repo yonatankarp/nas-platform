@@ -55,7 +55,18 @@ dedicated child under the selected legacy Dozzle root.
 ownership, permissions, size, and schema. It takes a nonblocking shared lock. A
 valid lock held exclusively by an active request is considered ready immediately
 after directory and lock-file safety are established; readiness never waits for
-the publisher network call. Unsafe, corrupt, or symlinked state returns 503.
+the publisher network call. After parsing an available state document, readiness
+also dry-runs retention and hard-bound reconciliation using the trusted current
+UTC clock. A parseable version-1 file whose version-2 expansion cannot fit is
+therefore unavailable. Unsafe, corrupt, symlinked, or operationally unbounded
+state returns 503.
+
+Persisted identities require valid UTF-8 scalar data in both identity parts, and
+every persisted field is type-checked before value comparison. All malformed
+persisted values become `StateError`; they never escape as handler tracebacks.
+State and lock leaf opens include `O_NONBLOCK` with `O_NOFOLLOW`, so FIFOs and
+devices reach descriptor type rejection without hanging readiness or requests.
+The subsequent `flock` behavior is unchanged.
 
 ## Strict event strings
 
@@ -81,4 +92,5 @@ rejection. Static and mutation contracts protect the dedicated child mount and
 pre-mutation role preparation. An executable Ansible proof places the child path
 as a symlink to a sentinel directory and verifies failure before the sentinel's
 ownership, mode, or contents change. Existing Dozzle notification integration
-continues to prove the real unhealthy-to-recovered path.
+continues to prove the real unhealthy-to-recovered path. Real FIFO fixtures prove
+state and lock paths return fixed failures without blocking or side effects.
