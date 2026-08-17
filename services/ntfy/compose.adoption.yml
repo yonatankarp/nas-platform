@@ -1,6 +1,0 @@
----
-services:
-  ntfy:
-    volumes: !override
-      - ${PLATFORM_ADOPTION_ROOT:?}/legacy/ntfy/cache:/var/cache/ntfy
-      - ${PLATFORM_ADOPTION_ROOT:?}/legacy/ntfy/data:/var/lib/ntfy

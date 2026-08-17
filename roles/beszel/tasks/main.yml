@@ -20,13 +20,9 @@
       - "{{ platform_current_dir }}/services/beszel"
       - "{{ platform_current_dir }}/services/beszel/compose.yml"
       - "{{ platform_current_dir }}/services/beszel/compose.{{ platform_compose_kind }}.yml"
-      - "{{ platform_current_dir }}/services/beszel/compose.adoption.yml"
       - "{{ platform_runtime_dir }}/services/beszel"
       - "{{ platform_runtime_dir }}/services/beszel/.env"
-      - >-
-        {{ (platform_adoption_root ~ '/legacy/beszel/hub/id_ed25519')
-           if (platform_adoption_enabled | default(false) | bool)
-           else (nas_docker_root ~ '/beszel/hub/id_ed25519') }}
+      - "{{ nas_docker_root }}/beszel/hub/id_ed25519"
 
 - name: Check for a Beszel platform override
   ansible.builtin.stat:
@@ -38,23 +34,17 @@
     beszel_compose_files: >-
       {{ ['compose.yml'] +
          (beszel_platform_compose.stat.exists
-          | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) +
-         ((platform_adoption_enabled | default(false) | bool)
-          | ternary(['compose.adoption.yml'], [])) }}
+          | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) }}
 
 - name: Select the Beszel mounted state root
   tags: [platform_verify_beszel]
   ansible.builtin.set_fact:
-    beszel_state_root: >-
-      {{ (platform_adoption_root ~ '/legacy/beszel/hub')
-         if (platform_adoption_enabled | default(false) | bool)
-         else (nas_docker_root ~ '/beszel/hub') }}
+    beszel_state_root: "{{ nas_docker_root }}/beszel/hub"
 
 - name: Require the internally derived Beszel mounted state root
   ansible.builtin.assert:
     that:
-      - beszel_state_root == ((platform_adoption_root ~ '/legacy/beszel/hub') if
-        (platform_adoption_enabled | default(false) | bool) else (nas_docker_root ~ '/beszel/hub'))
+      - beszel_state_root == (nas_docker_root ~ '/beszel/hub')
 
 - name: Require the selected Beszel telemetry capability
   ansible.builtin.assert:

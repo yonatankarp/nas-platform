@@ -1,7 +1,0 @@
----
-services:
-  jellyfin:
-    volumes: !override
-      - ${PLATFORM_ADOPTION_ROOT:?}/legacy/jellyfin/config:/config
-      - ${PLATFORM_ADOPTION_ROOT:?}/legacy/jellyfin/cache:/cache
-      - ${PLATFORM_ADOPTION_ROOT:?}/legacy/jellyfin/media:/media:ro

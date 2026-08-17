@@ -38,12 +38,12 @@ and [`inventory/group_vars/all/main.yml`](../inventory/group_vars/all/main.yml)
 against the real NAS paths, UID/GID, timezone, ports, and capabilities before
 continuing.
 
-## 2. Back up before migration
+## 2. Back up before deploying
 
-Back up all application data, databases, media metadata, current Compose/Portainer
+Back up all application data, databases, media metadata, the current Compose
 definitions, and the current password-manager entries to encrypted storage away
-from the NAS. Test a restore. Keep the legacy deployment definitions and a
-record of currently running image versions. An encrypted Ansible vault is not
+from the NAS. Test a restore. Keep a record of currently running image
+versions. An encrypted Ansible vault is not
 an application-data backup, and RAID is not a backup.
 
 Do not stop or remove the legacy stacks yet. The final service-specific cutover

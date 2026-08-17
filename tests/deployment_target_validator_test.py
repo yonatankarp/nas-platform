@@ -32,7 +32,6 @@ class DeploymentTargetValidatorTest(unittest.TestCase):
         self.expected_release = self.releases / RELEASE_ID
         self.current = self.deploy_root / "current"
         self.next_pointer = self.deploy_root / f".current-{RELEASE_ID}"
-        self.adoption_root = self.base / "adoption"
         self.expected_release.mkdir(parents=True)
         self.media_root.mkdir()
 
@@ -42,8 +41,6 @@ class DeploymentTargetValidatorTest(unittest.TestCase):
         *,
         require_current="0",
         paths_json=None,
-        adoption_enabled="0",
-        adoption_root=None,
         storage_root=None,
         media_root=None,
     ):
@@ -59,8 +56,6 @@ class DeploymentTargetValidatorTest(unittest.TestCase):
                 str(self.next_pointer),
                 require_current,
                 payload,
-                str(adoption_root or self.adoption_root),
-                adoption_enabled,
             ],
             capture_output=True,
             text=True,
@@ -113,8 +108,6 @@ class DeploymentTargetValidatorTest(unittest.TestCase):
                 str(target / f".current-{RELEASE_ID}"),
                 "0",
                 json.dumps([str(target)]),
-                str(self.adoption_root),
-                "0",
             ],
             capture_output=True,
             text=True,
@@ -202,7 +195,7 @@ class DeploymentTargetValidatorTest(unittest.TestCase):
         )
 
         self.assert_refused(
-            result, "Unsafe deployment target invocation: expected 9 arguments"
+            result, "Unsafe deployment target invocation: expected 7 arguments"
         )
 
     def test_accepts_media_target_and_rejects_media_symlink_escape(self):
@@ -261,98 +254,6 @@ class DeploymentTargetValidatorTest(unittest.TestCase):
         self.assert_refused(
             result,
             "Unsafe deployment target invocation: require_current must be 0 or 1",
-        )
-
-    def test_accepts_exact_reviewed_adoption_source(self):
-        source = self.adoption_root / "legacy" / "ntfy" / "data"
-        source.mkdir(parents=True)
-
-        result = self.run_validator([str(source)], adoption_enabled="1")
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-
-    def test_accepts_adopted_paperless_tessdata_directory_and_model(self):
-        tessdata = self.adoption_root / "legacy" / "paperless-ngx" / "tessdata"
-        tessdata.mkdir(parents=True)
-        model = tessdata / "heb.traineddata"
-        cache = self.adoption_root / "legacy" / "paperless-ngx" / "cache"
-
-        result = self.run_validator(
-            [str(tessdata), str(model), str(cache)], adoption_enabled="1"
-        )
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-
-    def test_rejects_symlinked_adopted_paperless_tessdata_before_model_write(self):
-        paperless = self.adoption_root / "legacy" / "paperless-ngx"
-        paperless.mkdir(parents=True)
-        outside = self.base / "outside-tessdata"
-        outside.mkdir()
-        tessdata = paperless / "tessdata"
-        tessdata.symlink_to(outside, target_is_directory=True)
-
-        result = self.run_validator(
-            [str(tessdata), str(tessdata / "heb.traineddata")],
-            adoption_enabled="1",
-        )
-
-        self.assert_refused(
-            result,
-            f"Unsafe deployment target {tessdata}: symlink component {tessdata} "
-            "is not an allowed deployment pointer",
-        )
-
-    def test_rejects_symlinked_audiobookshelf_backup_adoption_source(self):
-        service_root = self.adoption_root / "legacy" / "audiobookshelf"
-        service_root.mkdir(parents=True)
-        outside = self.base / "outside-backups"
-        outside.mkdir()
-        backup_source = service_root / "backups"
-        backup_source.symlink_to(outside, target_is_directory=True)
-
-        result = self.run_validator(
-            [str(backup_source)], adoption_enabled="1"
-        )
-
-        self.assert_refused(
-            result,
-            f"Unsafe deployment target {backup_source}: symlink component "
-            f"{backup_source} is not an allowed deployment pointer",
-        )
-
-    def test_rejects_unreviewed_adoption_source(self):
-        source = self.adoption_root / "legacy" / "ntfy" / "unexpected"
-        source.mkdir(parents=True)
-
-        result = self.run_validator([str(source)], adoption_enabled="1")
-
-        self.assert_refused(
-            result,
-            f"Unsafe deployment target {source}: path escapes storage root {self.root}",
-        )
-
-    def test_rejects_noncanonical_adoption_root(self):
-        source = self.adoption_root / "legacy" / "ntfy" / "data"
-
-        result = self.run_validator(
-            [str(source)],
-            adoption_enabled="1",
-            adoption_root=f"{self.adoption_root}/.",
-        )
-
-        self.assert_refused(
-            result,
-            "Unsafe deployment target invocation: adoption root must be an absolute normalized path",
-        )
-
-    def test_rejects_invalid_adoption_enabled_without_traceback(self):
-        result = self.run_validator(
-            [str(self.root)], adoption_enabled="invalid"
-        )
-
-        self.assert_refused(
-            result,
-            "Unsafe deployment target invocation: adoption_enabled must be 0 or 1",
         )
 
     def test_next_pointer_only_accepts_expected_canonical_release(self):

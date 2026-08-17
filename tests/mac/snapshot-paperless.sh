@@ -86,15 +86,15 @@ snapshot_dir=$1
 
 if [ "$mode" = drill ]; then
   case ${PLATFORM_PROOF_PLATFORM:-mac}:${PLATFORM_PROOF_LANE:-fresh}:${PLATFORM_KIND:-}:${PLATFORM_PROJECT_NAME:-} in
-    integration:adoption:integration:nas-platform-mac-[abcdefghijklmnopqrstuvwxyz0123456789]*)
-      paperless_integration_adoption=true
+    integration:fresh:integration:nas-platform-mac-[abcdefghijklmnopqrstuvwxyz0123456789]*)
+      paperless_integration_drill=true
       ;;
     mac:fresh:integration:)
-      paperless_integration_adoption=false
+      paperless_integration_drill=false
       ;;
     mac:*:mac:nas-platform-mac-[abcdefghijklmnopqrstuvwxyz0123456789]*|\
     mac:*::nas-platform-mac-[abcdefghijklmnopqrstuvwxyz0123456789]*)
-      paperless_integration_adoption=false
+      paperless_integration_drill=false
       ;;
     *)
       printf '%s\n' 'drill refuses to run outside a disposable Mac or integration sandbox' >&2
@@ -108,7 +108,7 @@ fi
 : "${PLATFORM_DOCKER_ROOT:?}"
 : "${PLATFORM_MEDIA_ROOT:?}"
 : "${PLATFORM_PAPERLESS_PORT:=8000}"
-if [ "$mode" = drill ] && [ "${paperless_integration_adoption:-false}" = true ]; then
+if [ "$mode" = drill ] && [ "${paperless_integration_drill:-false}" = true ]; then
   : "${PLATFORM_MAC_SANDBOX:?}"
   paperless_drill_root=$(CDPATH= cd -- "$PLATFORM_MAC_SANDBOX" && pwd -P)
   case $(basename -- "$paperless_drill_root") in nas-platform-mac.??????) ;; *) exit 1 ;; esac
@@ -116,7 +116,7 @@ if [ "$mode" = drill ] && [ "${paperless_integration_adoption:-false}" = true ];
   [ "$paperless_drill_root" = "$PLATFORM_MAC_SANDBOX" ] &&
     [ "$PLATFORM_DOCKER_ROOT" = "$paperless_drill_root/service-data/docker" ] &&
     [ "$PLATFORM_MEDIA_ROOT" = "$paperless_drill_root/service-data/media" ] || {
-    printf '%s\n' 'integration adoption drill roots differ from the owned Mac sandbox' >&2
+    printf '%s\n' 'integration drill roots differ from the owned Mac sandbox' >&2
     exit 1
   }
   marker=$paperless_drill_root/.nas-platform-mac-owned
@@ -154,7 +154,7 @@ elif [ "$mode" = drill ] && [ "${PLATFORM_KIND:-}" = integration ]; then
     exit 1
   }
 fi
-if [ "${paperless_integration_adoption:-false}" = true ]; then
+if [ "${paperless_integration_drill:-false}" = true ]; then
   PLATFORM_PAPERLESS_WEBSERVER_CONTAINER=paperless_webserver
   PLATFORM_PAPERLESS_POSTGRES_CONTAINER=paperless_postgres
   PLATFORM_PAPERLESS_REDIS_CONTAINER=paperless_redis

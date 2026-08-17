@@ -336,14 +336,15 @@ def implement_paperless(root)
   File.write(storage_path, YAML.dump(storage))
 end
 
-expect_failure(failures, "legacy commit", "legacy_source commit must equal") do |root|
-  mutate_manifest(root) { |manifest| manifest.fetch("legacy_source")["commit"] = "deadbeef" }
+expect_failure(failures, "reintroduced legacy source",
+               "must not reintroduce a legacy migration source") do |root|
+  mutate_manifest(root) do |manifest|
+    manifest["legacy_source"] = { "repository" => "example/legacy" }
+  end
 end
 
 {
-  "role" => "wrong_role",
-  "legacy_path" => "compose/wrong/compose.yml",
-  "tranche" => 99
+  "role" => "wrong_role"
 }.each do |field, value|
   expect_failure(failures, "wrong #{field}", "beszel: #{field} must equal") do |root|
     mutate_manifest(root) { |manifest| service(manifest, "beszel")[field] = value }
@@ -582,7 +583,7 @@ end
 
 {
   "duplicate top-level key" => ["\nservices: []\n", "services"],
-  "duplicate legacy key" => ["  commit: duplicate\n", "commit"],
+  "duplicate service name key" => ["    name: duplicate\n", "name"],
   "duplicate service key" => ["    role: duplicate\n", "role"]
 }.each do |label, (insertion, key)|
   expect_failure(failures, label, "service manifest contains duplicate mapping key #{key}") do |root|
@@ -591,8 +592,8 @@ end
     body = case label
            when "duplicate top-level key"
              body + insertion
-           when "duplicate legacy key"
-             body.sub(/(  commit:.*\n)/, "\\1#{insertion}")
+           when "duplicate service name key"
+             body.sub(/(  - name: audiobookshelf\n)/, "\\1#{insertion}")
            else
              body.sub(/(    role: audiobookshelf\n)/, "\\1#{insertion}")
            end

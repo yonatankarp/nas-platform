@@ -2,33 +2,23 @@
 - name: Resolve effective Paperless storage roots
   ansible.builtin.set_fact:
     paperless_effective_state_host_path: >-
-      {{ (platform_adoption_root ~ '/legacy/paperless-ngx')
-         if platform_adoption_enabled | default(false) | bool
-         else paperless_state_host_path
+      {{ paperless_state_host_path
          if platform_compose_kind == 'nas'
          else (nas_docker_root ~ '/paperless-ngx') }}
     paperless_effective_archive_host_path: >-
-      {{ (platform_adoption_root ~ '/legacy/paperless-ngx/media')
-         if platform_adoption_enabled | default(false) | bool
-         else paperless_archive_host_path
+      {{ paperless_archive_host_path
          if platform_compose_kind == 'nas'
          else (nas_media_root ~ '/Documents/archive') }}
     paperless_effective_consume_host_path: >-
-      {{ (platform_adoption_root ~ '/legacy/paperless-ngx/consume')
-         if platform_adoption_enabled | default(false) | bool
-         else paperless_consume_host_path
+      {{ paperless_consume_host_path
          if platform_compose_kind == 'nas'
          else (nas_media_root ~ '/Documents/inbox') }}
     paperless_effective_export_host_path: >-
-      {{ (platform_adoption_root ~ '/legacy/paperless-ngx/export')
-         if platform_adoption_enabled | default(false) | bool
-         else paperless_export_host_path
+      {{ paperless_export_host_path
          if platform_compose_kind == 'nas'
          else (nas_media_root ~ '/Documents/export') }}
     paperless_effective_cache_host_path: >-
-      {{ (platform_adoption_root ~ '/legacy/paperless-ngx/cache')
-         if platform_adoption_enabled | default(false) | bool
-         else paperless_state_host_path ~ '/cache'
+      {{ paperless_state_host_path ~ '/cache'
          if platform_compose_kind == 'nas'
          else (nas_docker_root ~ '/paperless-ngx/cache') }}
 
@@ -117,7 +107,6 @@
       - "{{ platform_current_dir }}/services/paperless-ngx"
       - "{{ platform_current_dir }}/services/paperless-ngx/compose.yml"
       - "{{ platform_current_dir }}/services/paperless-ngx/compose.{{ platform_compose_kind }}.yml"
-      - "{{ platform_current_dir }}/services/paperless-ngx/compose.adoption.yml"
       - "{{ platform_runtime_dir }}/services/paperless-ngx"
       - "{{ platform_runtime_dir }}/services/paperless-ngx/.env"
       - "{{ platform_runtime_dir }}/services/paperless-ngx/.gmail-credential-fingerprint"
@@ -143,9 +132,7 @@
     paperless_compose_files: >-
       {{ ['compose.yml'] +
          (paperless_platform_compose.stat.exists
-          | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) +
-         ((platform_adoption_enabled | default(false) | bool)
-          | ternary(['compose.adoption.yml'], [])) }}
+          | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) }}
 
 - name: Select the Paperless mounted tessdata root
   ansible.builtin.set_fact:
@@ -154,10 +141,9 @@
 - name: Require the internally derived Paperless tessdata root
   ansible.builtin.assert:
     that:
-      - paperless_tessdata_root == ((platform_adoption_root ~ '/legacy/paperless-ngx/tessdata') if
-        (platform_adoption_enabled | default(false) | bool) else
-        (paperless_state_host_path if platform_compose_kind == 'nas' else
-         (nas_docker_root ~ '/paperless-ngx')) ~ '/tessdata')
+      - paperless_tessdata_root == ((paperless_state_host_path
+        if platform_compose_kind == 'nas' else
+        (nas_docker_root ~ '/paperless-ngx')) ~ '/tessdata')
 
 - name: Install the pinned Hebrew OCR model
   ansible.builtin.get_url:

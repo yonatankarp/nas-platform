@@ -15,13 +15,9 @@
       - "{{ platform_current_dir }}/services/ntfy"
       - "{{ platform_current_dir }}/services/ntfy/compose.yml"
       - "{{ platform_current_dir }}/services/ntfy/compose.{{ platform_compose_kind }}.yml"
-      - "{{ platform_current_dir }}/services/ntfy/compose.adoption.yml"
       - "{{ platform_runtime_dir }}/services/ntfy"
       - "{{ platform_runtime_dir }}/services/ntfy/.env"
-      - >-
-        {{ (platform_adoption_root ~ '/legacy/ntfy/data/auth.db')
-           if (platform_adoption_enabled | default(false) | bool)
-           else (nas_docker_root ~ '/ntfy/data/auth.db') }}
+      - "{{ nas_docker_root }}/ntfy/data/auth.db"
 
 - name: Check for an ntfy platform override
   ansible.builtin.stat:
@@ -33,22 +29,16 @@
     ntfy_compose_files: >-
       {{ ['compose.yml'] +
          (ntfy_platform_compose.stat.exists
-          | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) +
-         ((platform_adoption_enabled | default(false) | bool)
-          | ternary(['compose.adoption.yml'], [])) }}
+          | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) }}
 
 - name: Select the ntfy mounted state root
   ansible.builtin.set_fact:
-    ntfy_state_root: >-
-      {{ (platform_adoption_root ~ '/legacy/ntfy/data')
-         if (platform_adoption_enabled | default(false) | bool)
-         else (nas_docker_root ~ '/ntfy/data') }}
+    ntfy_state_root: "{{ nas_docker_root }}/ntfy/data"
 
 - name: Require the internally derived ntfy mounted state root
   ansible.builtin.assert:
     that:
-      - ntfy_state_root == ((platform_adoption_root ~ '/legacy/ntfy/data') if
-        (platform_adoption_enabled | default(false) | bool) else (nas_docker_root ~ '/ntfy/data'))
+      - ntfy_state_root == (nas_docker_root ~ '/ntfy/data')
 
 - name: Inspect existing ntfy declarative ownership and users
   block:

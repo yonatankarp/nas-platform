@@ -1,52 +1,29 @@
 ---
-legacy_source:
-  repository: yonatankarp/nas-infrastructure
-  commit: 400f03f276ae1bb69f5460c175b9fb923d620f1a
-  local_path: ../nas-infrastructure
-
 services:
   - name: audiobookshelf
-    legacy_path: compose/audiobookshelf/compose.yml
     role: audiobookshelf
-    tranche: 3
     status: implemented
   - name: beszel
-    legacy_path: compose/beszel/compose.yml
     role: beszel
-    tranche: 2
     status: implemented
   - name: dozzle
-    legacy_path: compose/dozzle/compose.yml
     role: dozzle
-    tranche: 2
     status: implemented
   - name: immich
-    legacy_path: compose/immich/compose.yml
     role: immich
-    tranche: 5
     status: implemented
   - name: jellyfin
-    legacy_path: compose/jellyfin/compose.yml
     role: jellyfin
-    tranche: 4
     status: implemented
   - name: komga
-    legacy_path: compose/komga/compose.yml
     role: komga
-    tranche: 3
     status: implemented
   - name: ntfy
-    legacy_path: compose/ntfy/compose.yml
     role: ntfy
-    tranche: 2
     status: implemented
   - name: paperless-ngx
-    legacy_path: compose/paperless-ngx/compose.yml
     role: paperless_ngx
-    tranche: 6
     status: implemented
   - name: tinymediamanager
-    legacy_path: compose/tinymediamanager/compose.yml
     role: tinymediamanager
-    tranche: 3
     status: implemented

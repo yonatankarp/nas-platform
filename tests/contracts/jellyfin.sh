@@ -286,21 +286,14 @@ refuse("runtime Open Subtitles identity verification does not normalize GUID rep
   contract.include?('opensubtitles.fetch("Id").delete("-").casecmp?(OPENSUBTITLES_ID.delete("-"))')
 refuse("Open Subtitles secret operations are not suppressed") unless
   settings.scan(/no_log: true/).length >= 5
-refuse("fresh seed does not verify that owned plugin and encoding policy survived") unless
-  contract.include?("assert_acceleration_and_plugins(token, opensubtitles_username, opensubtitles_password) unless") &&
-    contract.include?('ENV["PLATFORM_PROOF_LANE"] == "adoption"')
+refuse("seed does not verify that owned plugin and encoding policy survived") unless
+  contract.include?("assert_acceleration_and_plugins(token, opensubtitles_username, opensubtitles_password)")
 refuse("role must not edit an opaque database") if
   role.match?(/sqlite|library\.db|jellyfin\.db/i)
 puts "Jellyfin static contract passed (#{platform})"
 RUBY
 
 [ "$mode" = static ] && exit 0
-. "${PLATFORM_LEGACY_FIXTURE_HELPER_FILE:-$repo_dir/tests/contracts/legacy-fixture-paths.sh}"
-legacy_fixture_validate PLATFORM_JELLYFIN_MEDIA_ROOT legacy/jellyfin/media ||
-  fail_contract 'legacy media root is unsafe'
-legacy_fixture_validate PLATFORM_JELLYFIN_TRANSCODE_ROOT legacy/jellyfin/cache/transcodes ||
-  fail_contract 'legacy transcode root is unsafe'
-
 : "${PLATFORM_CONTRACT_VAULT_FILE:=${PLATFORM_MAC_VAULT_FILE:-}}"
 : "${PLATFORM_CONTRACT_VAULT_PASSWORD_FILE:=${PLATFORM_MAC_VAULT_PASSWORD_FILE:-}}"
 : "${PLATFORM_MEDIA_ROOT:?}"
@@ -354,8 +347,6 @@ UNMANAGED_LIBRARY = {
   "CollectionType" => "books",
   "Path" => "/media/Unmanaged"
 }.freeze
-ADOPTION_SHOWS_SEED_NAME = "Legacy Series By Path"
-ADOPTION_EXTRA_PATH = "/media/Legacy-Series-Extra"
 DRIFT_EXTRA_PATH = "/media/Movies-Drift-Extra"
 CONFIG_SENTINEL_KEY = "EnableMetrics"
 CONFIG_SENTINEL_VALUE = true
@@ -969,29 +960,10 @@ if MODE == "seed"
   end
   seeded_encoding = encoding.merge(ENCODING_POLICIES.fetch(PLATFORM))
   seeded_encoding[ENCODING_SENTINEL_KEY] = ENCODING_SENTINEL_VALUE
-  if ENV["PLATFORM_PROOF_LANE"] == "adoption"
-    seeded_encoding["EnableHardwareEncoding"] =
-      !ENCODING_POLICIES.fetch(PLATFORM).fetch("EnableHardwareEncoding")
-  end
   request(
     "post", "/System/Configuration/encoding", token: token,
     body: seeded_encoding, expected: [204]
   )
-  if ENV["PLATFORM_PROOF_LANE"] == "adoption"
-    repositories.reject! do |entry|
-      entry.fetch("Url").strip.downcase.sub(%r{/+\z}, "") ==
-        PLUGIN_REPOSITORIES.fetch(1).fetch("Url").downcase
-    end
-    stable_url = PLUGIN_REPOSITORIES.fetch(0).fetch("Url").downcase
-    stable = repositories.find do |entry|
-      entry.fetch("Url").strip.downcase.sub(%r{/+\z}, "") == stable_url
-    end
-    if stable
-      stable.replace(PLUGIN_REPOSITORIES.fetch(0).merge("Enabled" => false))
-    else
-      repositories << PLUGIN_REPOSITORIES.fetch(0).merge("Enabled" => false)
-    end
-  end
   repositories << REPOSITORY_SENTINEL unless repositories.include?(REPOSITORY_SENTINEL)
   request("post", "/Repositories", token: token, body: repositories, expected: [204])
   current_image_matches = user["PrimaryImageTag"].to_s.length.positive? &&
@@ -1000,7 +972,6 @@ if MODE == "seed"
 
   JELLYFIN_MEDIA_ROOT.join("Series").mkpath
   JELLYFIN_MEDIA_ROOT.join("Unmanaged").mkpath
-  JELLYFIN_MEDIA_ROOT.join("Legacy-Series-Extra").mkpath
   (LIBRARIES + [UNMANAGED_LIBRARY]).each do |definition|
     path_matches = folders.select do |candidate|
       Array(candidate["Locations"]).map { |path| normalize_path(path) }.include?(definition.fetch("Path"))
@@ -1008,20 +979,12 @@ if MODE == "seed"
     fail_contract("seed library path #{definition.fetch('Path')} is duplicated") if path_matches.length > 1
     next unless path_matches.empty?
 
-    seed_name = if ENV["PLATFORM_PROOF_LANE"] == "adoption" &&
-                   definition.fetch("Name") == "Shows"
-                  ADOPTION_SHOWS_SEED_NAME
-                else
-                  definition.fetch("Name")
-                end
     query = URI.encode_www_form(
-      "name" => seed_name,
+      "name" => definition.fetch("Name"),
       "collectionType" => definition.fetch("CollectionType"),
       "refreshLibrary" => false
     )
     seed_paths = [definition.fetch("Path")]
-    seed_paths << ADOPTION_EXTRA_PATH if ENV["PLATFORM_PROOF_LANE"] == "adoption" &&
-                                            definition.fetch("Name") == "Shows"
     request(
       "post", "/Library/VirtualFolders?#{query}", token: token,
       body: { "LibraryOptions" => MANAGED_OPTIONS.merge(
@@ -1071,14 +1034,7 @@ fail_contract("the primary administrator image differs") unless
 managed_folders = LIBRARIES.to_h do |definition|
   folder = library_by_path(folders, definition)
   safe_id(folder.fetch("ItemId"))
-  if MODE == "seed" && ENV["PLATFORM_PROOF_LANE"] == "adoption" &&
-     definition.fetch("Name") == "Shows"
-    fail_contract("adoption Shows seed name differs") unless folder.fetch("Name") == ADOPTION_SHOWS_SEED_NAME
-    fail_contract("adoption Shows seed paths differ") unless
-      folder.fetch("Locations").sort == [definition.fetch("Path"), ADOPTION_EXTRA_PATH].sort
-  else
-    assert_managed_library(folder, definition)
-  end
+  assert_managed_library(folder, definition)
   [definition.fetch("Name"), folder]
 end
 
@@ -1162,8 +1118,7 @@ fail_contract("unknown mode: #{MODE}") unless %w[seed assert-persistence].includ
 if MODE == "seed"
   fail_contract("seed configuration sentinel was not installed") unless
     configuration.fetch(CONFIG_SENTINEL_KEY) == CONFIG_SENTINEL_VALUE
-  assert_acceleration_and_plugins(token, opensubtitles_username, opensubtitles_password) unless
-    ENV["PLATFORM_PROOF_LANE"] == "adoption"
+  assert_acceleration_and_plugins(token, opensubtitles_username, opensubtitles_password)
 end
 
 item = find_fixture_item(token, user_id, timeout: MODE == "seed" ? 300 : 120)

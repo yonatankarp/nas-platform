@@ -92,8 +92,8 @@ vault_checksum=$(shasum -a 256 "$vault_file" | awk '{print $1}')
   --immich-port 32283 --paperless-port 38000
 ruby -rjson -e '
   input = JSON.parse(File.read(ARGV.fetch(0)))
-  abort "fresh report retained adoption identity" unless
-    input["parity_vault_checksum"].nil? && input["legacy_commit"].nil?
+  abort "report retained retired migration identity" if
+    input.key?("parity_vault_checksum") || input.key?("legacy_commit")
 ' "$state_input"
 "$mac_test_dir/report.rb" --record "$state_input" --phase preflight --status running
 "$mac_test_dir/report.rb" --record "$state_input" --phase preflight --status passed

@@ -132,10 +132,6 @@ mac_ansible_playbook() {
       command ansible-playbook "$@"
       ;;
     integration)
-      [ "${PLATFORM_PROOF_LANE:-}" = adoption ] || {
-        mac_die 'integration Ansible context requires the adoption lane'
-        return 1
-      }
       mac_callback_host=${PLATFORM_CALLBACK_HOST:-}
       [ -n "$mac_callback_host" ] || {
         mac_die 'integration callback host is unavailable'
@@ -160,11 +156,6 @@ mac_compose_files() {
   if [ -f "$mac_current/compose.$mac_compose_kind.yml" ] &&
      [ ! -L "$mac_current/compose.$mac_compose_kind.yml" ]; then
     set -- "$@" -f "$mac_current/compose.$mac_compose_kind.yml"
-  fi
-  if [ "${PLATFORM_PROOF_LANE:-}" = adoption ]; then
-    [ -f "$mac_current/compose.adoption.yml" ] && [ ! -L "$mac_current/compose.adoption.yml" ] ||
-      mac_die 'adoption Compose mapping is unavailable'
-    set -- "$@" -f "$mac_current/compose.adoption.yml"
   fi
   printf '%s\n' "$@"
 }

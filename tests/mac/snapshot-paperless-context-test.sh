@@ -30,7 +30,7 @@ chmod 0700 "$fixture/bin/ruby"
 
 run_context() {
   env PATH="$fixture/bin:$PATH" PLATFORM_PROOF_PLATFORM=integration \
-    PLATFORM_PROOF_LANE=adoption PLATFORM_KIND=integration \
+    PLATFORM_PROOF_LANE=fresh PLATFORM_KIND=integration \
     PLATFORM_PROJECT_NAME="${TEST_PROJECT:-$project}" \
     PLATFORM_MAC_SANDBOX="${TEST_SANDBOX:-$sandbox}" \
     PLATFORM_DOCKER_ROOT="${TEST_DOCKER_ROOT:-$sandbox/service-data/docker}" \

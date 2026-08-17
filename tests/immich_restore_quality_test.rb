@@ -187,10 +187,7 @@ refuse("classifier integrity task file is absent") unless File.file?(integrity_p
 
 defaults = YAML.safe_load_file(File.join(ROOT, "roles", "immich", "defaults", "main.yml"))
 expected_defaults = {
-  "immich_restore_failure_marker" =>
-    "{{ (platform_adoption_root ~ '/legacy/immich/.restore-failed') if " \
-    "platform_adoption_enabled | default(false) | bool else " \
-    "(nas_docker_root ~ '/immich/.restore-failed') }}",
+  "immich_restore_failure_marker" => "{{ nas_docker_root }}/immich/.restore-failed",
   "immich_restore_backup_container_path" => "/immich-backups",
   "immich_restore_backup_uid" =>
     "{{ ansible_facts.user_uid if platform_kind == 'mac' and not " \
@@ -236,24 +233,12 @@ server_volumes = compose.dig("services", "immich-server", "volumes")
 refuse("server database-backup volume was not preserved") unless
   server_volumes.include?("${NAS_MEDIA_ROOT:?}/Immich-backups/database:/data/backups")
 
-adoption = YAML.safe_load_file(
-  File.join(ROOT, "services", "immich", "compose.adoption.yml"), aliases: true
-)
-adoption_database_volumes = adoption.dig("services", "database", "volumes")
-adoption_backup_mount =
-  "${PLATFORM_ADOPTION_ROOT:?}/legacy/immich/backups:/immich-backups:ro"
-refuse("adoption database restore does not use the adopted backup tree") unless
-  adoption_database_volumes == [
-    "${PLATFORM_ADOPTION_ROOT:?}/legacy/immich/postgres:/var/lib/postgresql/data",
-    adoption_backup_mount
-  ]
 
 main_path = File.join(ROOT, "roles", "immich", "tasks", "main.yml")
 main_tasks = YAML.safe_load_file(main_path, aliases: true)
 require_order(
   main_tasks,
   [
-    "Resolve the Immich storage mode",
     "Derive the effective Immich storage roots",
     "Require exact Immich effective storage roots",
     "Classify Immich storage before startup",
@@ -274,22 +259,10 @@ require_order(
 
 effective_roots = task(main_tasks, "Derive the effective Immich storage roots")
 expected_root_facts = {
-  "immich_restore_database_root" => [
-    "platform_adoption_root ~ '/legacy/immich/postgres'",
-    "nas_docker_root ~ '/immich/postgres'"
-  ],
-  "immich_restore_originals_root" => [
-    "platform_adoption_root ~ '/legacy/immich/data'",
-    "nas_media_root ~ '/Immich'"
-  ],
-  "immich_restore_backup_root" => [
-    "platform_adoption_root ~ '/legacy/immich/backups'",
-    "nas_media_root ~ '/Immich-backups/database'"
-  ],
-  "immich_restore_effective_failure_marker" => [
-    "platform_adoption_root ~ '/legacy/immich/.restore-failed'",
-    "nas_docker_root ~ '/immich/.restore-failed'"
-  ]
+  "immich_restore_database_root" => ["nas_docker_root }}/immich/postgres"],
+  "immich_restore_originals_root" => ["nas_media_root }}/Immich"],
+  "immich_restore_backup_root" => ["nas_media_root }}/Immich-backups/database"],
+  "immich_restore_effective_failure_marker" => ["nas_docker_root }}/immich/.restore-failed"]
 }
 root_facts = effective_roots&.fetch("ansible.builtin.set_fact", nil)
 expected_root_facts.each do |name, alternatives|

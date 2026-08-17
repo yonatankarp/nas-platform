@@ -20,7 +20,6 @@ esac
 
 repo_dir=${PLATFORM_CONTRACT_REPO_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)}
 compose=$repo_dir/services/dozzle/compose.yml
-adoption_compose=$repo_dir/services/dozzle/compose.adoption.yml
 relay_script=$repo_dir/services/dozzle/alert_relay.py
 role=$repo_dir/roles/dozzle/tasks/main.yml
 defaults=$repo_dir/roles/dozzle/defaults/main.yml
@@ -50,7 +49,7 @@ render_group_contract() {
     PLATFORM_CURRENT_DIR="$repo_dir" DOZZLE_STATE_ROOT=/tmp/dozzle-contract/docker/dozzle/data \
     NAS_DOCKER_ROOT=/tmp/dozzle-contract/docker \
     NAS_MEDIA_ROOT=/tmp/dozzle-contract/media NAS_RENDER_DEVICE=/dev/null \
-    PLATFORM_ADOPTION_ROOT=/tmp/dozzle-contract/adoption NAS_UID=1000 NAS_GID=100 \
+    NAS_UID=1000 NAS_GID=100 \
     BESZEL_APP_URL=http://127.0.0.1:8090 BESZEL_SYSTEM_NAME=contract \
     BESZEL_AGENT_KEY=contract BESZEL_AGENT_TOKEN=contract BESZEL_HOST_PORT=38090 \
     DOZZLE_HOST_PORT=38080 NTFY_HOST_PORT=32586 NTFY_BASE_URL=http://127.0.0.1:32586 \
@@ -128,11 +127,6 @@ render_group_variants() {
   render_group_contract "$stack" "$expected_group" base -f "$service_dir/compose.yml"
   render_group_contract "$stack" "$expected_group" mac \
     -f "$service_dir/compose.yml" -f "$service_dir/compose.mac.yml"
-  render_group_contract "$stack" "$expected_group" adoption \
-    -f "$service_dir/compose.yml" -f "$service_dir/compose.adoption.yml"
-  render_group_contract "$stack" "$expected_group" mac-adoption \
-    -f "$service_dir/compose.yml" -f "$service_dir/compose.mac.yml" \
-    -f "$service_dir/compose.adoption.yml"
 }
 
 if [ "$mode" = static ]; then
@@ -163,10 +157,6 @@ RUBY
   render_group_contract immich immich integration \
     -f "$repo_dir/services/immich/compose.yml" \
     -f "$repo_dir/services/immich/compose.integration.yml"
-  render_group_contract immich immich integration-adoption \
-    -f "$repo_dir/services/immich/compose.yml" \
-    -f "$repo_dir/services/immich/compose.integration.yml" \
-    -f "$repo_dir/services/immich/compose.adoption.yml"
   render_group_variants audiobookshelf ""
   render_group_variants jellyfin ""
   render_group_variants komga ""
@@ -176,14 +166,10 @@ RUBY
     render_group_contract "$stack" "" integration \
       -f "$repo_dir/services/$stack/compose.yml" \
       -f "$repo_dir/services/$stack/compose.integration.yml"
-    render_group_contract "$stack" "" integration-adoption \
-      -f "$repo_dir/services/$stack/compose.yml" \
-      -f "$repo_dir/services/$stack/compose.integration.yml" \
-      -f "$repo_dir/services/$stack/compose.adoption.yml"
   done
 fi
 
-ruby -ryaml - "$compose" "$adoption_compose" "$relay_script" "$role" "$env_template" \
+ruby -ryaml - "$compose" "$relay_script" "$role" "$env_template" \
   "$deployment_inputs" "$deployment_bundle" <<'RUBY'
 compose = YAML.safe_load_file(ARGV.fetch(0), aliases: true)
 services = compose.fetch("services")
@@ -242,16 +228,11 @@ abort "Dozzle contract failed: Dozzle dependency health gates differ" unless
     "socket-proxy" => {"condition" => "service_healthy"},
     "alert-relay" => {"condition" => "service_healthy"}
   }
-adoption = File.read(ARGV.fetch(1))
-abort "Dozzle contract failed: adoption does not share the legacy Dozzle root with the relay" unless
-  adoption.include?("  alert-relay:") &&
-  adoption.scan('${PLATFORM_ADOPTION_ROOT:?}/legacy/dozzle/data/alert-relay:/state').length == 1 &&
-  adoption.scan('${PLATFORM_ADOPTION_ROOT:?}/legacy/dozzle/data:/data').length == 1
-relay_source = File.read(ARGV.fetch(2))
-role = File.read(ARGV.fetch(3))
-env_template = File.read(ARGV.fetch(4))
-deployment_inputs = File.read(ARGV.fetch(5))
-deployment_bundle = File.read(ARGV.fetch(6))
+relay_source = File.read(ARGV.fetch(1))
+role = File.read(ARGV.fetch(2))
+env_template = File.read(ARGV.fetch(3))
+deployment_inputs = File.read(ARGV.fetch(4))
+deployment_bundle = File.read(ARGV.fetch(5))
 abort "Dozzle contract failed: deployment inputs do not validate the alert relay" unless
   deployment_inputs.include?("services/dozzle/alert_relay.py")
 abort "Dozzle contract failed: immutable release does not include the alert relay" unless

@@ -110,35 +110,6 @@ jobs:
         if: steps.scope.outputs.docs_only != 'true'
         run: tests/integration_cleanup_test.sh
 
-      - name: Check legacy seed security
-        if: steps.scope.outputs.docs_only != 'true'
-        run: |
-          tests/mac/legacy-seed-test.sh
-          tests/mac/legacy-fixture-path-test.sh
-          ruby tests/mac/legacy-secure-copy-test.rb
-
-      - name: Check legacy adoption baseline capture
-        if: steps.scope.outputs.docs_only != 'true'
-        run: |
-          ruby tests/mac/adoption-baseline-test.rb
-          ruby tests/mac/adoption-probes-test.rb
-          tests/mac/adoption-snapshot-test.sh
-          ruby tests/mac/adoption-compare-test.rb
-          ruby tests/mac/adoption-recreate-test.rb
-          tests/mac/adoption-failure-stop-test.sh
-          tests/mac/adoption-runner-test.sh
-          tests/mac/adoption-rollback-test.sh
-
-      - name: Check legacy seed playbook syntax
-        if: steps.scope.outputs.docs_only != 'true'
-        run: |
-          ansible-playbook -i inventory/mac.yml tests/mac/legacy-role-seed.yml --syntax-check
-          ansible-playbook -i localhost, -c local tests/mac/legacy-beszel-key.yml --syntax-check
-
-      - name: Check legacy parity rendering
-        if: steps.scope.outputs.docs_only != 'true'
-        run: tests/mac/adoption-render-test.sh
-
       - name: Check Immich probe status rendering
         if: steps.scope.outputs.docs_only != 'true'
         run: |

@@ -9,7 +9,6 @@
       - "{{ platform_current_dir }}/services/komga"
       - "{{ platform_current_dir }}/services/komga/compose.yml"
       - "{{ platform_current_dir }}/services/komga/compose.{{ platform_compose_kind }}.yml"
-      - "{{ platform_current_dir }}/services/komga/compose.adoption.yml"
       - "{{ platform_runtime_dir }}/services/komga"
       - "{{ platform_runtime_dir }}/services/komga/.env"
 
@@ -23,9 +22,7 @@
     komga_compose_files: >-
       {{ ['compose.yml'] +
          (komga_platform_compose.stat.exists
-          | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) +
-         ((platform_adoption_enabled | default(false) | bool)
-          | ternary(['compose.adoption.yml'], [])) }}
+          | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) }}
 
 - name: Render the Komga environment
   ansible.builtin.template:

@@ -57,10 +57,7 @@ def write_playbook(path, storage_root, media_root, release_id)
       "platform_deploy_root" => deploy_root,
       "platform_release_dir" => File.join(deploy_root, "releases", release_id),
       "platform_current_dir" => File.join(deploy_root, "current"),
-      "platform_runtime_dir" => File.join(deploy_root, "runtime"),
-      "platform_adoption_enabled" => false,
-      "platform_adoption_root" => "",
-      "platform_adoption_marker" => ""
+      "platform_runtime_dir" => File.join(deploy_root, "runtime")
     }
   }]
   File.write(path, YAML.dump(playbook), mode: "w", perm: 0o600)

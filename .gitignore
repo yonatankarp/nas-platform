@@ -29,3 +29,6 @@ __pycache__/
 
 # Optional copies of sanitized Mac proof evidence.
 /mac-proof-reports/
+
+# Local knowledge-graph output, regenerated on demand.
+/graphify-out/

@@ -1,6 +1,6 @@
 ---
-# Sanitized contract for the portable deployment vault. During migration, copy
-# these exact values from the current password manager and Portainer definitions;
+# Sanitized contract for the portable deployment vault. To recover a deployment,
+# copy these exact values from the password manager and the deployed configuration;
 # do not regenerate credentials already used by application or database state.
 # generate-secrets.yml is only for a brand-new platform with no state to adopt.
 

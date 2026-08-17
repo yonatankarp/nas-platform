@@ -4,7 +4,6 @@ set +x
 umask 077
 
 FRESH_PHASES=' preflight deploy seed verify idempotence drift reconcile recreate persistence report cleanup '
-ADOPTION_PHASES=' preflight legacy-deploy legacy-seed capture-baseline snapshot cutover verify idempotence recreate persistence rollback report cleanup '
 
 mac_script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 mac_repo_dir=$(CDPATH= cd -- "$mac_script_dir/../.." && pwd -P)
@@ -13,8 +12,7 @@ mac_repo_dir=$(CDPATH= cd -- "$mac_script_dir/../.." && pwd -P)
 
 usage() {
   printf '%s\n' \
-    'usage: run.sh --lane fresh|adoption --vault-file FILE --vault-password-file FILE_OR_EXECUTABLE' \
-    '              [--parity-vault-file FILE --parity-vault-password-file FILE_OR_EXECUTABLE]' \
+    'usage: run.sh --lane fresh --vault-file FILE --vault-password-file FILE_OR_EXECUTABLE' \
     '              [--platform mac|integration] [--integration-ports-file FILE]' \
     '              [--keep-on-failure] [--manual-validation] [--phase NAME] [--sandbox PATH]' \
     '--manual-validation stops a fresh full run after verify and prints a resumable handoff.' \
@@ -24,8 +22,6 @@ usage() {
 lane=
 vault_file=
 vault_password_file=
-parity_vault_file=
-parity_vault_password_file=
 selected_phase=
 requested_sandbox=
 integration_ports_file=
@@ -40,52 +36,21 @@ proof_platform=mac
   [ -z "${BUNDLE_PATH+x}" ] && [ -z "${BUNDLE_APP_CONFIG+x}" ] &&
   [ -z "${BUNDLE_WITH+x}" ] && [ -z "${BUNDLE_WITHOUT+x}" ] ||
   mac_die 'reserved language startup environment must be unset'
-  [ -z "${PLATFORM_ADOPTION_ROOT+x}" ] && [ -z "${PLATFORM_ADOPTION_MARKER+x}" ] &&
-  [ -z "${PLATFORM_ADOPTION_ENABLED+x}" ] &&
-  [ -z "${PLATFORM_ADOPTION_SNAPSHOT_SELF_TEST+x}" ] &&
-  [ -z "${PLATFORM_ADOPTION_COMPARE_SELF_TEST+x}" ] &&
-  [ -z "${PLATFORM_ADOPTION_COMPARE_STAGE_MUTATION+x}" ] &&
-  [ -z "${PLATFORM_ADOPTION_COMPARE_STAGE_PAYLOAD+x}" ] &&
-  [ -z "${PLATFORM_ADOPTION_COMPARE_DEPENDENCY_MUTATION+x}" ] &&
-  [ -z "${PLATFORM_ADOPTION_COMPARE_DEPENDENCY_TARGET+x}" ] &&
-  [ -z "${PLATFORM_ADOPTION_COMPARE_DEPENDENCY_PAYLOAD+x}" ] &&
-  [ -z "${PLATFORM_ADOPTION_PROBE_TARGET+x}" ] &&
-  [ -z "${PLATFORM_ADOPTION_NTFY_CONTAINER+x}" ] &&
-  [ -z "${PLATFORM_ADOPTION_NTFY_ENV_FILE+x}" ] &&
   [ -z "${PLATFORM_PROOF_CALLBACK_HOST+x}" ] &&
   [ -z "${PLATFORM_CALLBACK_HOST+x}" ] &&
-  [ -z "${PLATFORM_ADOPTION_SCRIPT_DIR+x}" ] &&
-  [ -z "${PLATFORM_ADOPTION_BASELINE_FILE+x}" ] &&
-  [ -z "${PLATFORM_ADOPTION_BASELINE_SELF_TEST+x}" ] &&
-  [ -z "${PLATFORM_ADOPTION_BASELINE_EXPECTED_MUTATION+x}" ] &&
-  [ -z "${PLATFORM_ADOPTION_ROLLBACK_SELF_TEST+x}" ] &&
-  [ -z "${PLATFORM_ADOPTION_ROLLBACK_FAULT+x}" ] &&
-  [ -z "${PLATFORM_ADOPTION_ROLLBACK_SNAPSHOT_COMMAND+x}" ] &&
-  [ -z "${PLATFORM_ADOPTION_ROLLBACK_BASELINE_COMMAND+x}" ] &&
-  [ -z "${PLATFORM_ADOPTION_ROLLBACK_RENDER_COMMAND+x}" ] &&
-  [ -z "${PLATFORM_ADOPTION_ROLLBACK_OVERRIDE_ROOT+x}" ] &&
-  [ -z "${PLATFORM_ADOPTION_ROLLBACK_CHALLENGE_FAULT+x}" ] &&
-  [ -z "${PLATFORM_ADOPTION_CONTRACT_FILE+x}" ] &&
   [ -z "${PLATFORM_MAC_FIXTURE_VARS_FILE+x}" ] &&
   [ -z "${PLATFORM_CONTRACT_REPO_DIR+x}" ] &&
-  [ -z "${PLATFORM_LEGACY_FIXTURE_HELPER_FILE+x}" ] &&
   [ -z "${PLATFORM_KOMGA_CONFIG_PATH+x}" ] &&
-  [ -z "${PLATFORM_ADOPTION_TMM_MOVIE_TEMPLATE_CONF+x}" ] &&
-  [ -z "${PLATFORM_ADOPTION_TMM_MOVIE_LIST_JMTE+x}" ] &&
-  [ -z "${PLATFORM_ADOPTION_TMM_TVSHOW_TEMPLATE_CONF+x}" ] &&
-  [ -z "${PLATFORM_ADOPTION_TMM_TVSHOW_LIST_JMTE+x}" ] &&
   [ -z "${PLATFORM_SNAPSHOT_ESCAPE+x}" ] ||
-  mac_die 'reserved adoption mapping environment must be unset'
+  mac_die 'reserved proof environment must be unset'
 while [ "$#" -gt 0 ]; do
   case $1 in
-    --lane|--vault-file|--vault-password-file|--parity-vault-file|--parity-vault-password-file|--phase|--sandbox|--platform|--integration-ports-file)
+    --lane|--vault-file|--vault-password-file|--phase|--sandbox|--platform|--integration-ports-file)
       [ "$#" -ge 2 ] || { usage >&2; exit 2; }
       case $1 in
         --lane) lane=$2 ;;
         --vault-file) vault_file=$2 ;;
         --vault-password-file) vault_password_file=$2 ;;
-        --parity-vault-file) parity_vault_file=$2 ;;
-        --parity-vault-password-file) parity_vault_password_file=$2 ;;
         --phase) selected_phase=$2 ;;
         --sandbox) requested_sandbox=$2 ;;
         --platform) proof_platform=$2 ;;
@@ -111,8 +76,6 @@ fi
 case $proof_platform in
   mac) ;;
   integration)
-    [ "$lane" = adoption ] ||
-      mac_die 'integration platform is available only in the adoption lane'
     [ -n "$integration_ports_file" ] ||
       mac_die 'integration platform requires --integration-ports-file'
     ;;
@@ -123,16 +86,7 @@ esac
 export PLATFORM_PROOF_PLATFORM=$proof_platform
 
 case $lane in
-  fresh)
-    PHASES=$FRESH_PHASES
-    [ -z "$parity_vault_file" ] && [ -z "$parity_vault_password_file" ] ||
-      mac_die 'fresh lane rejects parity vault options'
-    ;;
-  adoption)
-    PHASES=$ADOPTION_PHASES
-    [ -n "$parity_vault_file" ] || mac_die 'adoption requires --parity-vault-file'
-    [ -n "$parity_vault_password_file" ] || mac_die 'adoption requires --parity-vault-password-file'
-    ;;
+  fresh) PHASES=$FRESH_PHASES ;;
   *) usage >&2; exit 2 ;;
 esac
 [ -f "$vault_file" ] && [ ! -L "$vault_file" ] && [ -r "$vault_file" ] ||
@@ -158,30 +112,6 @@ canonical_input_path() {
 vault_file=$(canonical_input_path "$vault_file" 'vault file')
 vault_password_file=$(canonical_input_path "$vault_password_file" 'vault password input')
 
-if [ "$lane" = adoption ]; then
-  [ -f "$parity_vault_file" ] && [ ! -L "$parity_vault_file" ] && [ -r "$parity_vault_file" ] ||
-    mac_die 'parity vault file must be a readable, regular encrypted file'
-  IFS= read -r parity_vault_header < "$parity_vault_file" ||
-    mac_die 'parity vault file has no Ansible Vault header'
-  case $parity_vault_header in
-    '$ANSIBLE_VAULT;'*) ;;
-    *) mac_die 'parity vault file is not Ansible Vault encrypted' ;;
-  esac
-  parity_vault_parent=$(CDPATH= cd -- "$(dirname -- "$parity_vault_file")" 2>/dev/null && pwd -P) ||
-    mac_die 'parity vault file parent is unavailable'
-  case "$parity_vault_parent/$(basename -- "$parity_vault_file")" in
-    "$mac_repo_dir"/*) mac_die 'parity vault file must remain outside the repository' ;;
-  esac
-  [ -f "$parity_vault_password_file" ] && [ ! -L "$parity_vault_password_file" ] &&
-    { [ -r "$parity_vault_password_file" ] || [ -x "$parity_vault_password_file" ]; } ||
-    mac_die 'parity vault password input must be a readable file or executable'
-  case $(CDPATH= cd -- "$(dirname -- "$parity_vault_password_file")" 2>/dev/null && pwd -P)/ in
-    "$mac_repo_dir"/*) mac_die 'parity vault password input must remain outside the repository' ;;
-  esac
-  parity_vault_file=$(canonical_input_path "$parity_vault_file" 'parity vault file')
-  parity_vault_password_file=$(canonical_input_path \
-    "$parity_vault_password_file" 'parity vault password input')
-fi
 
 if [ -n "$selected_phase" ]; then
   case "$PHASES" in *" $selected_phase "*) ;; *) mac_die "unknown phase: $selected_phase" ;; esac
@@ -626,25 +556,6 @@ pin_protected_input "$deployment_password_source" "$protected_input_root/deploym
   mac_die 'protected deployment password input could not be pinned'
 vault_file=$protected_input_root/deployment-vault.yml
 vault_password_file=$protected_input_root/deployment-password
-if [ "$lane" = adoption ]; then
-  parity_vault_source=$parity_vault_file
-  parity_password_source=$parity_vault_password_file
-  pin_protected_input "$parity_vault_source" "$protected_input_root/parity-vault.yml" \
-    'parity vault' vault true "$reuse_protected_inputs" ||
-    mac_die 'protected parity vault input could not be pinned'
-  if [ "$parity_password_source" = "$deployment_password_source" ]; then
-    pin_protected_input "$vault_password_file" "$protected_input_root/parity-password" \
-      'parity password' password false "$reuse_protected_inputs" ||
-      mac_die 'protected parity password input could not be pinned'
-  else
-    pin_protected_input "$parity_password_source" "$protected_input_root/parity-password" \
-      'parity password' password true "$reuse_protected_inputs" ||
-      mac_die 'protected parity password input could not be pinned'
-  fi
-  parity_vault_file=$protected_input_root/parity-vault.yml
-  parity_vault_password_file=$protected_input_root/parity-password
-fi
-
 generate_immich_fixture_vars() {
   fixture_output=$1
   fixture_temporary=$(mktemp "$protected_input_root/.immich-fixture-vars.XXXXXX") || return 1
@@ -687,21 +598,6 @@ ensure_immich_fixture_vars() {
 }
 git_revision=$(git -C "$mac_repo_dir" rev-parse HEAD)
 vault_checksum=$(shasum -a 256 "$vault_file" | awk '{print $1}')
-parity_vault_checksum=
-legacy_commit=
-if [ "$lane" = adoption ]; then
-  parity_vault_checksum=$(shasum -a 256 "$parity_vault_file" | awk '{print $1}')
-  legacy_commit=$(ruby -ryaml -e '
-    manifest = YAML.safe_load_file(ARGV.fetch(0))
-    print manifest.fetch("legacy_source").fetch("commit")
-  ' "$mac_repo_dir/services/manifest.yml") || mac_die 'could not read the pinned legacy commit'
-  [ "${#legacy_commit}" -eq 40 ] ||
-    mac_die 'pinned legacy commit must be a lowercase 40-character Git SHA'
-  case $legacy_commit in
-    *[!0123456789abcdef]*) mac_die 'pinned legacy commit must be a lowercase 40-character Git SHA' ;;
-  esac
-fi
-
 allocate_service_port() {
   while :; do
     candidate_port=$(ruby -rsocket -e 'server = TCPServer.new("127.0.0.1", 0); print server.addr[1]; server.close')
@@ -812,12 +708,7 @@ if [ ! -f "$state_input" ]; then
       "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port" "$komga_port" \
       "$tinymediamanager_web_port" "$tinymediamanager_api_port" "$jellyfin_port" "$immich_port")
   fi
-  if [ "$lane" = adoption ]; then
-    initialize_report_input --parity-vault-checksum "$parity_vault_checksum" \
-      --legacy-commit "$legacy_commit"
-  else
-    initialize_report_input
-  fi
+  initialize_report_input
 else
   state_lane=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("lane")' "$state_input")
   state_proof_platform=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("proof_platform", "mac")' "$state_input")
@@ -826,8 +717,6 @@ else
   state_callback_host=$(ruby -rjson -e 'input = JSON.parse(File.read(ARGV.fetch(0))); print input.fetch("callback_host", input.fetch("proof_platform", "mac") == "mac" ? "host.docker.internal" : "")' "$state_input")
   state_git_revision=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("git_revision")' "$state_input")
   state_vault_checksum=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("vault_checksum")' "$state_input")
-  state_parity_vault_checksum=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("parity_vault_checksum")' "$state_input")
-  state_legacy_commit=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("legacy_commit")' "$state_input")
   state_project_name=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("project_name")' "$state_input")
   beszel_port=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("beszel_port")' "$state_input")
   ntfy_port=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("ntfy_port")' "$state_input")
@@ -852,10 +741,6 @@ else
     mac_die 'resume Git revision does not match the recorded run'
   [ "$state_vault_checksum" = "$vault_checksum" ] ||
     mac_die 'resume vault checksum does not match the recorded run'
-  [ "$state_parity_vault_checksum" = "$parity_vault_checksum" ] ||
-    mac_die 'resume parity vault checksum does not match the recorded run'
-  [ "$state_legacy_commit" = "$legacy_commit" ] ||
-    mac_die 'resume legacy commit does not match the recorded run'
   if [ "$proof_platform" = integration ]; then
     [ "$audiobookshelf_port" = "$expected_audiobookshelf_port" ] &&
       [ "$beszel_port" = "$expected_beszel_port" ] &&
@@ -894,8 +779,6 @@ export PLATFORM_PAPERLESS_PORT=$paperless_port
 export COMPOSE_PROJECT_NAME=$project_name
 export PLATFORM_MAC_VAULT_FILE=$vault_file
 export PLATFORM_MAC_VAULT_PASSWORD_FILE=$vault_password_file
-export PLATFORM_MAC_PARITY_VAULT_FILE=$parity_vault_file
-export PLATFORM_MAC_PARITY_VAULT_PASSWORD_FILE=$parity_vault_password_file
 export PLATFORM_VAULT_FILE=$vault_file
 export PLATFORM_MAC_FIXTURE_VARS_FILE=$fixture_vars_file
 
@@ -906,46 +789,7 @@ run_site() {
     --vault-password-file "$vault_password_file" -e @"$vault_file" \
     -e @"$fixture_vars_file" \
     -e "platform_vault_file=$vault_file" "$@" || run_site_status=$?
-  if [ "$lane" = adoption ]; then
-    attestation_status=0
-    "$mac_script_dir/adoption-container-attest.sh" || attestation_status=$?
-    if [ "$run_site_status" -eq 0 ] && [ "$attestation_status" -ne 0 ]; then
-      run_site_status=$attestation_status
-    fi
-    if [ "$run_site_status" -ne 0 ]; then
-      "$mac_script_dir/adoption-stop-targets.sh" >/dev/null 2>&1 || true
-    fi
-  fi
   return "$run_site_status"
-}
-
-enable_adoption_mapping() {
-  adoption_mapping_stage=$1
-  case $adoption_mapping_stage in
-    cutover)
-      "$mac_script_dir/adoption.sh" cutover || return $?
-      adoption_marker_action=marker-post-cutover
-      ;;
-    resume) adoption_marker_action=marker-post-cutover ;;
-    *) mac_die 'invalid adoption mapping stage' ;;
-  esac
-  export PLATFORM_ADOPTION_ENABLED=true
-  export PLATFORM_ADOPTION_ROOT=$sandbox
-  PLATFORM_ADOPTION_MARKER=$("$mac_script_dir/adoption-snapshot.sh" "$adoption_marker_action" \
-    --override-root "$mac_script_dir/legacy-overrides" \
-    --baseline "$sandbox/baseline.json" --run-state "$report_root/phase-input.json") ||
-    { mac_die 'could not bind the adoption mapping marker'; return 1; }
-  case $PLATFORM_ADOPTION_MARKER in
-    ''|*[!0123456789abcdef]*)
-      mac_die 'adoption mapping marker is invalid'
-      return 1
-      ;;
-  esac
-  [ "${#PLATFORM_ADOPTION_MARKER}" -eq 64 ] || {
-    mac_die 'adoption mapping marker is invalid'
-    return 1
-  }
-  export PLATFORM_ADOPTION_MARKER
 }
 
 run_idempotence() {
@@ -959,9 +803,6 @@ run_idempotence() {
   if [ "$idempotence_status" -ne 0 ] ||
      ! grep -qE 'changed=0 .*failed=0 ' "$idempotence_output"; then
     rm -f -- "$idempotence_output"
-    if [ "$lane" = adoption ]; then
-      "$mac_script_dir/adoption-stop-targets.sh" >/dev/null 2>&1 || true
-    fi
     return 1
   fi
   rm -f -- "$idempotence_output"
@@ -971,12 +812,6 @@ run_persistence() {
   ensure_immich_fixture_vars || return $?
   persistence_status=0
   "$mac_script_dir/fixtures.sh" persistence || persistence_status=$?
-  if [ "$persistence_status" -eq 0 ] && [ "$lane" = adoption ]; then
-    "$mac_script_dir/adoption.sh" verify || persistence_status=$?
-  fi
-  if [ "$persistence_status" -ne 0 ] && [ "$lane" = adoption ]; then
-    "$mac_script_dir/adoption-stop-targets.sh" >/dev/null 2>&1 || true
-  fi
   return "$persistence_status"
 }
 
@@ -984,12 +819,6 @@ verify_target_state() {
   ensure_immich_fixture_vars || return $?
   target_verify_status=0
   "$mac_script_dir/verify.sh" || target_verify_status=$?
-  if [ "$target_verify_status" -eq 0 ] && [ "$lane" = adoption ]; then
-    "$mac_script_dir/adoption.sh" verify || target_verify_status=$?
-  fi
-  if [ "$target_verify_status" -ne 0 ] && [ "$lane" = adoption ]; then
-    "$mac_script_dir/adoption-stop-targets.sh" >/dev/null 2>&1 || true
-  fi
   return "$target_verify_status"
 }
 
@@ -1109,9 +938,6 @@ execute_phase() {
       ' "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port" "$komga_port" \
         "$tinymediamanager_web_port" "$tinymediamanager_api_port" "$jellyfin_port" \
         "$immich_port" "$paperless_port" || return 1
-      if [ "$lane" = adoption ]; then
-        "$mac_script_dir/adoption.sh" render || return $?
-      fi
       ensure_immich_fixture_vars || return $?
       ansible-playbook "$mac_repo_dir/validate-vault.yml" \
         --vault-password-file "$vault_password_file" -e @"$vault_file" \
@@ -1121,23 +947,6 @@ execute_phase() {
     deploy)
       [ "$lane" = fresh ] || mac_die 'deploy phase is available only in the fresh lane'
       run_site
-      ;;
-    legacy-seed)
-      ensure_immich_fixture_vars || return $?
-      "$mac_script_dir/adoption.sh" "$1"
-      ;;
-    legacy-deploy|capture-baseline|snapshot|rollback)
-      "$mac_script_dir/adoption.sh" "$1"
-      ;;
-    cutover)
-      enable_adoption_mapping cutover || return $?
-      run_site || return $?
-      cutover_verify_status=0
-      "$mac_script_dir/verify.sh" || cutover_verify_status=$?
-      if [ "$cutover_verify_status" -ne 0 ]; then
-        "$mac_script_dir/adoption-stop-targets.sh" >/dev/null 2>&1 || true
-        return "$cutover_verify_status"
-      fi
       ;;
     seed) ensure_immich_fixture_vars && "$mac_script_dir/fixtures.sh" seed ;;
     verify) verify_target_state ;;
@@ -1227,10 +1036,6 @@ emit_manual_validation_handoff() {
   fi
   return "$handoff_status"
 }
-
-if [ "$lane" = adoption ] && [ "$(phase_status cutover)" = passed ]; then
-  enable_adoption_mapping resume
-fi
 
 if [ -n "$selected_phase" ]; then
   run_phase "$selected_phase"

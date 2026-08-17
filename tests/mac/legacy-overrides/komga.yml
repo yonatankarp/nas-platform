@@ -1,9 +1,0 @@
----
-services:
-  komga:
-    container_name: !reset null
-    ports: !override
-      - "127.0.0.1:${KOMGA_HOST_PORT:?}:25600"
-    volumes: !override
-      - ${PLATFORM_MAC_SANDBOX:?}/legacy/komga/config:/config
-      - ${PLATFORM_MAC_SANDBOX:?}/legacy/komga/library:/data:ro

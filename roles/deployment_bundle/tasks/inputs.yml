@@ -18,10 +18,9 @@
       - item.name is match('^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$')
       - item.role is string
       - item.role is match('^[a-z][a-z0-9_]*$')
-      - item.legacy_path == 'compose/' ~ item.name ~ '/compose.yml'
     fail_msg: >-
-      Manifest service names, roles, and legacy paths must be safe single-path
-      components before they are interpolated into controller or target paths.
+      Manifest service names and roles must be safe single-path components
+      before they are interpolated into controller or target paths.
   loop: "{{ deployment_bundle_services }}"
   loop_control:
     label: "{{ item.name | default('<invalid>') }}"
@@ -59,18 +58,6 @@
   vars:
     deployment_controller_input_path: "{{ playbook_dir }}/services/immich/classify_restore.py"
     deployment_controller_input_allow_missing: false
-
-- name: Validate adoption controller Compose inputs
-  ansible.builtin.include_tasks: controller_input.yml
-  vars:
-    deployment_controller_input_path: >-
-      {{ playbook_dir }}/services/{{ deployment_controller_service.name }}/compose.adoption.yml
-    deployment_controller_input_allow_missing: false
-  loop: "{{ deployment_bundle_services }}"
-  loop_control:
-    loop_var: deployment_controller_service
-    label: "{{ deployment_controller_service.name }}"
-  when: platform_adoption_enabled | default(false) | bool
 
 - name: Record controller input validation
   ansible.builtin.set_fact:

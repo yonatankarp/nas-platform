@@ -1,9 +1,0 @@
----
-services:
-  dozzle:
-    volumes: !override
-      - ${PLATFORM_ADOPTION_ROOT:?}/legacy/dozzle/data:/data
-  alert-relay:
-    volumes: !override
-      - ${PLATFORM_CURRENT_DIR:?}/services/dozzle/alert_relay.py:/app/alert_relay.py:ro
-      - ${PLATFORM_ADOPTION_ROOT:?}/legacy/dozzle/data/alert-relay:/state

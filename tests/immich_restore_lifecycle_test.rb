@@ -38,7 +38,6 @@ ANSIBLE = if ANSIBLE_ON_PATH.empty?
 BACKUP_NAME = "immich-db-backup-20260815T010000-v3.1.0-pg14.19.sql.gz"
 CLASSIFIER = File.join(ROOT, "services", "immich", "classify_restore.py")
 PREFLIGHT_TASK_NAMES = [
-  "Resolve the Immich storage mode",
   "Derive the effective Immich storage roots",
   "Require exact Immich effective storage roots",
   "Verify Immich restore classifier before storage classification",
@@ -172,34 +171,25 @@ def write_backup(path)
   end
 end
 
-def prepare_roots(root, adoption:)
+def prepare_roots(root)
   docker_root = File.join(root, "docker")
   media_root = File.join(root, "media")
-  adoption_root = File.join(root, "adoption")
-  if adoption
-    immich_root = File.join(adoption_root, "legacy", "immich")
-    database_root = File.join(immich_root, "postgres")
-    originals_root = File.join(immich_root, "data")
-    backup_root = File.join(immich_root, "backups")
-    marker = File.join(immich_root, ".restore-failed")
-  else
-    database_root = File.join(docker_root, "immich", "postgres")
-    originals_root = File.join(media_root, "Immich")
-    backup_root = File.join(media_root, "Immich-backups", "database")
-    marker = File.join(docker_root, "immich", ".restore-failed")
-  end
+  database_root = File.join(docker_root, "immich", "postgres")
+  originals_root = File.join(media_root, "Immich")
+  backup_root = File.join(media_root, "Immich-backups", "database")
+  marker = File.join(docker_root, "immich", ".restore-failed")
   FileUtils.mkdir_p(database_root)
   FileUtils.mkdir_p(File.join(originals_root, "upload"))
   File.binwrite(File.join(originals_root, "upload", "asset.jpg"), "asset")
   write_backup(File.join(backup_root, BACKUP_NAME))
   {
-    docker_root: docker_root, media_root: media_root, adoption_root: adoption_root,
+    docker_root: docker_root, media_root: media_root,
     database_root: database_root, originals_root: originals_root,
     backup_root: backup_root, marker: marker
   }
 end
 
-def run_fixture(root, roots, adoption:, initialized:, failure_stage: "none")
+def run_fixture(root, roots, initialized:, failure_stage: "none")
   event_log = File.join(root, "events.log")
   release_root = File.join(root, "release")
   release_helper = File.join(release_root, "services", "immich", "classify_restore.py")
@@ -222,8 +212,6 @@ def run_fixture(root, roots, adoption:, initialized:, failure_stage: "none")
     },
     "platform_kind" => "mac",
     "platform_manage_linux_ownership" => false,
-    "platform_adoption_enabled" => adoption,
-    "platform_adoption_root" => roots.fetch(:adoption_root),
     "nas_docker_root" => roots.fetch(:docker_root),
     "nas_media_root" => roots.fetch(:media_root),
     "immich_restore_failure_marker" => DEFAULTS.fetch("immich_restore_failure_marker"),
@@ -280,62 +268,56 @@ end
 fail_test("pinned ansible-playbook is unavailable") unless File.executable?(ANSIBLE)
 fail_test("python3 is unavailable") if PYTHON.empty?
 
-[false, true].each do |adoption|
-  label = adoption ? "adoption" : "normal"
-  Dir.mktmpdir("nas-platform-immich-lifecycle-#{label}-") do |temporary|
-    root = File.realpath(temporary)
-    roots = prepare_roots(root, adoption: adoption)
-    output, status, events = run_fixture(
-      root, roots, adoption: adoption, initialized: true
-    )
-    fail_test("#{label} initialized restore failed: #{output.lines.last(8).join}") unless
-      status.success?
-    expected = %w[server-stop data-start redis-reset sql-restore restore-verified server-start]
-    fail_test("#{label} restore lifecycle differs: #{events.inspect}") unless events == expected
-    fail_test("#{label} restore did not write its active database") unless
-      File.read(File.join(roots.fetch(:database_root), "PG_VERSION")) == "14\n"
-    fail_test("#{label} successful restore retained its marker") if File.exist?(roots.fetch(:marker))
+Dir.mktmpdir("nas-platform-immich-lifecycle-") do |temporary|
+  root = File.realpath(temporary)
+  roots = prepare_roots(root)
+  output, status, events = run_fixture(
+    root, roots, initialized: true
+  )
+  fail_test("initialized restore failed: #{output.lines.last(8).join}") unless
+    status.success?
+  expected = %w[server-stop data-start redis-reset sql-restore restore-verified server-start]
+  fail_test("restore lifecycle differs: #{events.inspect}") unless events == expected
+  fail_test("restore did not write its active database") unless
+    File.read(File.join(roots.fetch(:database_root), "PG_VERSION")) == "14\n"
+  fail_test("successful restore retained its marker") if File.exist?(roots.fetch(:marker))
 
-    repeat_output, repeat_status, repeat_events = run_fixture(
-      root, roots, adoption: adoption, initialized: true
-    )
-    fail_test("#{label} repeat convergence failed: #{repeat_output.lines.last(8).join}") unless
-      repeat_status.success?
-    fail_test("#{label} repeat convergence restored or signed up an admin") unless
-      repeat_events == expected + %w[data-start server-start]
-    fail_test("#{label} repeat convergence created a marker") if File.exist?(roots.fetch(:marker))
-  end
+  repeat_output, repeat_status, repeat_events = run_fixture(
+    root, roots, initialized: true
+  )
+  fail_test("repeat convergence failed: #{repeat_output.lines.last(8).join}") unless
+    repeat_status.success?
+  fail_test("repeat convergence restored or signed up an admin") unless
+    repeat_events == expected + %w[data-start server-start]
+  fail_test("repeat convergence created a marker") if File.exist?(roots.fetch(:marker))
 end
 
-[false, true].each do |adoption|
-  label = adoption ? "adoption" : "normal"
-  Dir.mktmpdir("nas-platform-immich-lifecycle-#{label}-sql-failure-") do |temporary|
-    root = File.realpath(temporary)
-    roots = prepare_roots(root, adoption: adoption)
-    output, status, events = run_fixture(
-      root, roots, adoption: adoption, initialized: true, failure_stage: "after-sql"
-    )
-    fail_test("#{label} post-SQL interruption unexpectedly succeeded") if status.success?
-    fail_test("#{label} post-SQL interruption reached server/admin: #{events.inspect}") unless
-      events == %w[server-stop data-start redis-reset sql-restore]
-    assert_marker(roots.fetch(:marker), "database-restore")
+Dir.mktmpdir("nas-platform-immich-lifecycle-sql-failure-") do |temporary|
+  root = File.realpath(temporary)
+  roots = prepare_roots(root)
+  output, status, events = run_fixture(
+    root, roots, initialized: true, failure_stage: "after-sql"
+  )
+  fail_test("post-SQL interruption unexpectedly succeeded") if status.success?
+  fail_test("post-SQL interruption reached server/admin: #{events.inspect}") unless
+    events == %w[server-stop data-start redis-reset sql-restore]
+  assert_marker(roots.fetch(:marker), "database-restore")
 
-    retry_output, retry_status, retry_events = run_fixture(
-      root, roots, adoption: adoption, initialized: true
-    )
-    fail_test("#{label} post-SQL retry bypassed provenance") if retry_status.success?
-    fail_test("#{label} post-SQL retry reached mutation") unless retry_events == events
-    assert_sanitized(retry_output, roots)
-    fail_test("#{label} post-SQL retry did not report prior provenance") unless
-      retry_output.include?("previous-failed-restore")
-  end
+  retry_output, retry_status, retry_events = run_fixture(
+    root, roots, initialized: true
+  )
+  fail_test("post-SQL retry bypassed provenance") if retry_status.success?
+  fail_test("post-SQL retry reached mutation") unless retry_events == events
+  assert_sanitized(retry_output, roots)
+  fail_test("post-SQL retry did not report prior provenance") unless
+    retry_output.include?("previous-failed-restore")
 end
 
 Dir.mktmpdir("nas-platform-immich-lifecycle-server-failure-") do |temporary|
   root = File.realpath(temporary)
-  roots = prepare_roots(root, adoption: false)
+  roots = prepare_roots(root)
   output, status, events = run_fixture(
-    root, roots, adoption: false, initialized: true, failure_stage: "server-start"
+    root, roots, initialized: true, failure_stage: "server-start"
   )
   fail_test("post-startup interruption unexpectedly succeeded") if status.success?
   expected = %w[server-stop data-start redis-reset sql-restore restore-verified server-start]
@@ -344,7 +326,7 @@ Dir.mktmpdir("nas-platform-immich-lifecycle-server-failure-") do |temporary|
   assert_sanitized(output, roots)
 
   retry_output, retry_status, retry_events = run_fixture(
-    root, roots, adoption: false, initialized: true
+    root, roots, initialized: true
   )
   fail_test("post-startup retry bypassed provenance") if retry_status.success?
   fail_test("post-startup retry reached server/admin mutation") unless retry_events == events
@@ -355,9 +337,9 @@ end
 
 Dir.mktmpdir("nas-platform-immich-lifecycle-redis-failure-") do |temporary|
   root = File.realpath(temporary)
-  roots = prepare_roots(root, adoption: false)
+  roots = prepare_roots(root)
   output, status, events = run_fixture(
-    root, roots, adoption: false, initialized: true, failure_stage: "redis-reset"
+    root, roots, initialized: true, failure_stage: "redis-reset"
   )
   fail_test("Redis reset failure unexpectedly succeeded") if status.success?
   fail_test("Redis reset failure reached SQL/server/admin: #{events.inspect}") unless
@@ -368,9 +350,9 @@ end
 
 Dir.mktmpdir("nas-platform-immich-lifecycle-uninitialized-") do |temporary|
   root = File.realpath(temporary)
-  roots = prepare_roots(root, adoption: false)
+  roots = prepare_roots(root)
   output, status, events = run_fixture(
-    root, roots, adoption: false, initialized: false
+    root, roots, initialized: false
   )
   fail_test("uninitialized restored server unexpectedly succeeded") if status.success?
   fail_test("uninitialized restore invoked administrator signup") if events.include?("admin-signup")
@@ -378,7 +360,7 @@ Dir.mktmpdir("nas-platform-immich-lifecycle-uninitialized-") do |temporary|
   assert_marker(roots.fetch(:marker), "dependencies-start")
 
   retry_output, retry_status, retry_events = run_fixture(
-    root, roots, adoption: false, initialized: false
+    root, roots, initialized: false
   )
   fail_test("uninitialized retry bypassed provenance") if retry_status.success?
   fail_test("uninitialized retry reached server/admin") unless retry_events == events

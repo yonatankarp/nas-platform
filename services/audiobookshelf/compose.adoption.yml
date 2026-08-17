@@ -1,8 +1,0 @@
----
-services:
-  audiobookshelf:
-    volumes: !override
-      - ${PLATFORM_ADOPTION_ROOT:?}/legacy/audiobookshelf/config:/config
-      - ${PLATFORM_ADOPTION_ROOT:?}/legacy/audiobookshelf/metadata:/metadata
-      - ${PLATFORM_ADOPTION_ROOT:?}/legacy/audiobookshelf/media:/audiobooks:ro
-      - ${PLATFORM_ADOPTION_ROOT:?}/legacy/audiobookshelf/backups:/metadata/backups

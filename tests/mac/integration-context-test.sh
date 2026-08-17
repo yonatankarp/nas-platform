@@ -22,7 +22,7 @@ chmod 0700 "$fixture/bin/ansible-playbook"
 
 (
   export PATH="$fixture/bin:$PATH" CONTEXT_LOG="$log"
-  export PLATFORM_PROOF_PLATFORM=integration PLATFORM_PROOF_LANE=adoption
+  export PLATFORM_PROOF_PLATFORM=integration PLATFORM_PROOF_LANE=fresh
   export PLATFORM_CALLBACK_HOST=172.17.0.1
   mac_ansible_playbook -i inventory/mac.yml site.yml --tags dozzle
 )
@@ -38,10 +38,10 @@ done
 if (
   export PATH="$fixture/bin:$PATH" CONTEXT_LOG="$log"
   export PLATFORM_PROOF_PLATFORM=integration PLATFORM_PROOF_LANE=fresh
-  export PLATFORM_CALLBACK_HOST=172.17.0.1
+  unset PLATFORM_CALLBACK_HOST
   mac_ansible_playbook site.yml
 ) >/dev/null 2>&1; then
-  printf '%s\n' 'integration-context-error: fresh lane accepted integration context' >&2
+  printf '%s\n' 'integration-context-error: absent callback host accepted' >&2
   exit 1
 fi
 

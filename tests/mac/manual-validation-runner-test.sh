@@ -29,13 +29,9 @@ trap cleanup_fixture EXIT HUP INT TERM
 
 vault_file=$temporary_parent/vault.yml
 password_file=$temporary_parent/password
-parity_vault_file=$temporary_parent/parity-vault.yml
-parity_password_file=$temporary_parent/parity-password
 printf '%s\n' '$ANSIBLE_VAULT;1.1;AES256' > "$vault_file"
-printf '%s\n' '$ANSIBLE_VAULT;1.1;AES256' > "$parity_vault_file"
 printf '%s\n' 'VAULT-PASSWORD-DO-NOT-LEAK' > "$password_file"
-printf '%s\n' 'PARITY-PASSWORD-DO-NOT-LEAK' > "$parity_password_file"
-chmod 0600 "$vault_file" "$password_file" "$parity_vault_file" "$parity_password_file"
+chmod 0600 "$vault_file" "$password_file"
 
 expect_pre_mutation_failure() {
   label=$1
@@ -58,12 +54,10 @@ help_output=$temporary_parent/help
 grep -F -- '--manual-validation' "$help_output" >/dev/null ||
   fail 'usage omits --manual-validation'
 
-expect_pre_mutation_failure 'adoption manual validation' \
+expect_pre_mutation_failure 'non-fresh manual validation' \
   '--manual-validation requires --lane fresh' \
   "$runner" --lane adoption --manual-validation \
-    --vault-file "$vault_file" --vault-password-file "$password_file" \
-    --parity-vault-file "$parity_vault_file" \
-    --parity-vault-password-file "$parity_password_file"
+    --vault-file "$vault_file" --vault-password-file "$password_file"
 expect_pre_mutation_failure 'selected manual validation phase' \
   '--manual-validation requires a full run without --phase' \
   "$runner" --lane fresh --manual-validation --phase verify \

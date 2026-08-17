@@ -1,7 +1,0 @@
----
-services:
-  tinymediamanager:
-    volumes: !override
-      - ${PLATFORM_ADOPTION_ROOT:?}/legacy/tinymediamanager/data:/data
-      - ${PLATFORM_ADOPTION_ROOT:?}/legacy/tinymediamanager/movies:/media/Movies
-      - ${PLATFORM_ADOPTION_ROOT:?}/legacy/tinymediamanager/series:/media/Series

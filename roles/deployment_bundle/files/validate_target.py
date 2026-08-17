@@ -5,44 +5,6 @@ import stat
 import sys
 
 
-ADOPTION_SOURCES = (
-    "legacy/audiobookshelf/config",
-    "legacy/audiobookshelf/metadata",
-    "legacy/audiobookshelf/media",
-    "legacy/audiobookshelf/backups",
-    "legacy/beszel/hub",
-    "legacy/beszel/agent",
-    "legacy/beszel/volume1",
-    "legacy/beszel/volume2",
-    "legacy/dozzle/data",
-    "legacy/immich/data",
-    "legacy/immich/thumbs",
-    "legacy/immich/encoded-video",
-    "legacy/immich/profile",
-    "legacy/immich/backups",
-    "legacy/immich/model-cache",
-    "legacy/immich/postgres",
-    "legacy/jellyfin/config",
-    "legacy/jellyfin/cache",
-    "legacy/jellyfin/media",
-    "legacy/komga/config",
-    "legacy/komga/library",
-    "legacy/ntfy/cache",
-    "legacy/ntfy/data",
-    "legacy/paperless-ngx/redis",
-    "legacy/paperless-ngx/postgres",
-    "legacy/paperless-ngx/data",
-    "legacy/paperless-ngx/cache",
-    "legacy/paperless-ngx/export",
-    "legacy/paperless-ngx/tessdata",
-    "legacy/paperless-ngx/tessdata/heb.traineddata",
-    "legacy/paperless-ngx/media",
-    "legacy/paperless-ngx/consume",
-    "legacy/tinymediamanager/data",
-    "legacy/tinymediamanager/movies",
-    "legacy/tinymediamanager/series",
-)
-
 
 def refuse_payload(message):
     raise SystemExit(f"Unsafe deployment target payload: {message}")
@@ -138,25 +100,12 @@ def validate_target(root, expected_release, current, next_pointer, require_curre
             refuse(f"canonical ancestor cannot be compared with {canonical_root}")
 
 
-def target_root(
-    default_root, media_root, adoption_root, adoption_enabled, target
-):
+def target_root(default_root, media_root, target):
     normalized_media_root = os.path.normpath(media_root)
     if target == normalized_media_root or target.startswith(
         normalized_media_root + os.sep
     ):
         return normalized_media_root
-    if not adoption_enabled:
-        return default_root
-
-    normalized_adoption_root = os.path.normpath(adoption_root)
-    if adoption_root != normalized_adoption_root or not os.path.isabs(adoption_root):
-        refuse_invocation("adoption root must be an absolute normalized path")
-    allowed_roots = [
-        os.path.join(normalized_adoption_root, relative) for relative in ADOPTION_SOURCES
-    ]
-    if any(target == root or target.startswith(root + os.sep) for root in allowed_roots):
-        return normalized_adoption_root
     return default_root
 
 
@@ -182,8 +131,8 @@ def validate_storage_roots(default_root, media_root):
 
 
 def main(argv):
-    if len(argv) != 9:
-        refuse_invocation("expected 9 arguments")
+    if len(argv) != 7:
+        refuse_invocation("expected 7 arguments")
     (
         root,
         media_root,
@@ -192,13 +141,9 @@ def main(argv):
         next_pointer,
         require_current,
         paths_json,
-        adoption_root,
-        adoption_enabled,
     ) = argv
     if require_current not in {"0", "1"}:
         refuse_invocation("require_current must be 0 or 1")
-    if adoption_enabled not in {"0", "1"}:
-        refuse_invocation("adoption_enabled must be 0 or 1")
     validate_storage_roots(root, media_root)
     try:
         paths = json.loads(paths_json)
@@ -212,7 +157,7 @@ def main(argv):
 
     for target in paths:
         validate_target(
-            target_root(root, media_root, adoption_root, adoption_enabled == "1", target),
+            target_root(root, media_root, target),
             expected_release,
             current,
             next_pointer,

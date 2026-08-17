@@ -148,26 +148,6 @@ if grep -E 'ENV\.fetch\("PLATFORM_KOMGA_CONFIG_PATH",[[:space:]]*MEDIA_ROOT' "$0
 fi
 
 [ "$mode" = static ] && { printf '%s\n' 'Komga static contract passed'; exit 0; }
-. "${PLATFORM_LEGACY_FIXTURE_HELPER_FILE:-$repo_dir/tests/contracts/legacy-fixture-paths.sh}"
-legacy_fixture_validate PLATFORM_KOMGA_LIBRARY_PATH legacy/komga/library ||
-  fail_contract 'legacy fixture root is unsafe'
-
-if [ "$mode" = seed ] && [ "${PLATFORM_PROOF_LANE:-}" = adoption ] &&
-    [ "${PLATFORM_ADOPTION_PROBE_TARGET:-false}" != true ]; then
-  : "${PLATFORM_KOMGA_CONFIG_PATH:?Komga legacy fixture config path is required}"
-  if [ "${PLATFORM_LEGACY_FIXTURE_MODE:-}" = nas-platform-owned-legacy-v1 ]; then
-    legacy_fixture_validate PLATFORM_KOMGA_CONFIG_PATH legacy/komga/config ||
-      fail_contract 'legacy fixture config root is unsafe'
-  else
-    : "${PLATFORM_MAC_SANDBOX:?PLATFORM_MAC_SANDBOX is required}"
-    [ "$PLATFORM_KOMGA_CONFIG_PATH" = "$PLATFORM_MAC_SANDBOX/legacy/komga/config" ] ||
-      fail_contract 'legacy fixture config root is unsafe'
-    PLATFORM_LEGACY_FIXTURE_MODE=nas-platform-owned-legacy-v1 \
-    PLATFORM_LEGACY_FIXTURE_SANDBOX=$PLATFORM_MAC_SANDBOX \
-      legacy_fixture_validate PLATFORM_KOMGA_CONFIG_PATH legacy/komga/config ||
-      fail_contract 'legacy fixture config root is unsafe'
-  fi
-fi
 
 : "${PLATFORM_CONTRACT_VAULT_FILE:=${PLATFORM_MAC_VAULT_FILE:-}}"
 : "${PLATFORM_CONTRACT_VAULT_PASSWORD_FILE:=${PLATFORM_MAC_VAULT_PASSWORD_FILE:-}}"
@@ -178,7 +158,7 @@ fi
 if [ "${PLATFORM_KIND:-}" = integration ]; then
   : "${PLATFORM_KOMGA_RUNTIME_CONTEXT:=base}"
   case $PLATFORM_KOMGA_RUNTIME_CONTEXT in
-    base|legacy) ;;
+    base) ;;
     *) fail_contract 'integration Komga runtime context differs' ;;
   esac
 elif [ -z "${PLATFORM_KOMGA_RUNTIME_CONTEXT:-}" ]; then
@@ -193,15 +173,6 @@ case $PLATFORM_KOMGA_RUNTIME_CONTEXT in
     : "${PLATFORM_PROJECT_NAME:?PLATFORM_PROJECT_NAME is required for managed Mac Komga}"
     PLATFORM_KOMGA_CONTAINER=$PLATFORM_PROJECT_NAME-komga
     PLATFORM_KOMGA_DOCKER_HEALTH_REQUIRED=true
-    ;;
-  legacy)
-    if [ "${PLATFORM_PROOF_LANE:-}" != adoption ] ||
-        [ "${PLATFORM_ADOPTION_PROBE_TARGET:-false}" = true ]; then
-      fail_contract 'legacy Komga runtime context is unavailable'
-    fi
-    : "${PLATFORM_PROJECT_NAME:?PLATFORM_PROJECT_NAME is required for the legacy Komga container}"
-    PLATFORM_KOMGA_CONTAINER=$PLATFORM_PROJECT_NAME-legacy-komga-komga-1
-    PLATFORM_KOMGA_DOCKER_HEALTH_REQUIRED=false
     ;;
   *) fail_contract 'Komga runtime context is invalid' ;;
 esac
@@ -239,11 +210,6 @@ UNRELATED_LIBRARY_ROOT = "/config/.nas-platform-unmanaged"
 LIBRARY_FILESYSTEM_ROOT = Pathname.new(
   ENV.fetch("PLATFORM_KOMGA_LIBRARY_PATH", MEDIA_ROOT.join("Books").to_s)
 ).expand_path
-LEGACY_SEED = MODE == "seed" && ENV["PLATFORM_PROOF_LANE"] == "adoption" &&
-  ENV["PLATFORM_ADOPTION_PROBE_TARGET"] != "true"
-UNRELATED_FILESYSTEM_ROOT = if LEGACY_SEED
-  Pathname.new(ENV.fetch("PLATFORM_KOMGA_CONFIG_PATH")).expand_path.join(".nas-platform-unmanaged")
-end
 FIXTURE_RELATIVE = Pathname.new("task-10-contract-comic/Task 10 Contract Comic.cbz")
 FIXTURE_PATH = LIBRARY_FILESYSTEM_ROOT.join(FIXTURE_RELATIVE)
 FIXTURE_LIBRARY_URL = "/data/task-10-contract-comic/Task 10 Contract Comic.cbz"
@@ -420,8 +386,7 @@ fail_contract("vault administrator identity or role differs") unless
   me.fetch("email") == credentials.first && Array(me.fetch("roles")).include?("ADMIN")
 
 _libraries_response, libraries = request("get", "/api/v1/libraries", basic: credentials)
-legacy_seed = LEGACY_SEED
-expected_library_name = MODE == "drift-verify" || legacy_seed ? LEGACY_LIBRARY_NAME : LIBRARY_NAME
+expected_library_name = MODE == "drift-verify" ? LEGACY_LIBRARY_NAME : LIBRARY_NAME
 library = resolve_library(libraries, expected_library_name)
 if MODE == "drift-verify"
   fail_contract("Komga drift fixture was not installed") unless
@@ -450,30 +415,6 @@ end
 fail_contract("unknown mode: #{MODE}") unless %w[seed assert-persistence].include?(MODE)
 
 if MODE == "seed"
-  if legacy_seed
-    if UNRELATED_FILESYSTEM_ROOT.exist? || UNRELATED_FILESYSTEM_ROOT.symlink?
-      fail_contract("unrelated Komga fixture directory is unsafe") unless
-        UNRELATED_FILESYSTEM_ROOT.directory? && !UNRELATED_FILESYSTEM_ROOT.symlink?
-    else
-      FileUtils.mkdir_p(UNRELATED_FILESYSTEM_ROOT, mode: 0o755)
-    end
-    unrelated = libraries.select do |entry|
-      entry.is_a?(Hash) && entry["name"] == UNRELATED_LIBRARY_NAME
-    end
-    fail_contract("unrelated Komga fixture is duplicated") if unrelated.length > 1
-    if unrelated.empty?
-      request(
-        "post", "/api/v1/libraries", basic: credentials,
-        body: { "name" => UNRELATED_LIBRARY_NAME, "root" => UNRELATED_LIBRARY_ROOT }, expected: [200]
-      )
-      _response, libraries = request("get", "/api/v1/libraries", basic: credentials)
-    end
-    unrelated = libraries.select do |entry|
-      entry.is_a?(Hash) && entry["name"] == UNRELATED_LIBRARY_NAME &&
-        entry["root"] == UNRELATED_LIBRARY_ROOT && safe_library_id?(entry["id"])
-    end
-    fail_contract("unrelated Komga fixture is absent or ambiguous") unless unrelated.length == 1
-  end
   seed_fixture unless ENV.fetch("PLATFORM_MEDIA_FIXTURES_PRESEEDED") == "true"
   request("post", "/api/v1/libraries/#{library.fetch('id')}/scan", basic: credentials, expected: [202])
 end
@@ -512,12 +453,12 @@ when "seed"
 when "assert-persistence"
   fail_contract("Komga persistence artifact is unavailable or unsafe") unless STATE_PATH.file? && !STATE_PATH.symlink?
   snapshot = JSON.parse(STATE_PATH.binread)
-  fail_contract("Komga managed library identifier changed across adoption or recreation") unless
+  fail_contract("Komga managed library identifier changed across recreation") unless
     snapshot.fetch("id") == library_state.fetch("id")
   fail_contract("Komga managed library root or settings changed across recreation") unless
     snapshot.values_at("root", "settings") == library_state.values_at("root", "settings")
   snapshot.fetch("unrelated").each do |expected|
-    fail_contract("unrelated Komga library did not survive adoption or recreation") unless
+    fail_contract("unrelated Komga library did not survive recreation") unless
       libraries.any? do |entry|
         entry.is_a?(Hash) && entry.values_at("id", "name", "root") ==
           expected.values_at("id", "name", "root")

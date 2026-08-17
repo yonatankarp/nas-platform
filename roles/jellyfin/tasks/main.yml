@@ -9,7 +9,6 @@
       - "{{ platform_current_dir }}/services/jellyfin"
       - "{{ platform_current_dir }}/services/jellyfin/compose.yml"
       - "{{ platform_current_dir }}/services/jellyfin/compose.{{ platform_compose_kind }}.yml"
-      - "{{ platform_current_dir }}/services/jellyfin/compose.adoption.yml"
       - "{{ platform_runtime_dir }}/services/jellyfin"
       - "{{ platform_runtime_dir }}/services/jellyfin/.env"
 
@@ -191,9 +190,7 @@
     jellyfin_compose_files: >-
       {{ ['compose.yml'] +
          (jellyfin_platform_compose.stat.exists
-          | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) +
-         ((platform_adoption_enabled | default(false) | bool)
-          | ternary(['compose.adoption.yml'], [])) }}
+          | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) }}
 
 - name: Render the Jellyfin environment
   ansible.builtin.template:

@@ -158,10 +158,6 @@ once in the provider's original directory context, so sibling-helper wrappers
 remain supported without creating a plaintext script file. Other executable
 formats fail closed. Regular password files remain supported unchanged.
 
-Use `--lane adoption` to exercise the generic legacy-state adoption lane. Later
-service tranches supply its adoption hooks; the lifecycle itself never reads
-production NAS data. The physical NAS is not contacted by either lane.
-
 The ordered phases are `preflight`, `deploy`, `seed`, `verify`, `idempotence`,
 `drift`, `reconcile`, `recreate`, `persistence`, `report`, and `cleanup`. Select
 one with `--phase NAME`. Resume a preserved run with `--sandbox ABSOLUTE_PATH`;

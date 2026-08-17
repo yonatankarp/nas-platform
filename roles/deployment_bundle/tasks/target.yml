@@ -1,49 +1,4 @@
 ---
-- name: Inspect the adoption state root
-  ansible.builtin.stat:
-    path: "{{ platform_adoption_root }}"
-    follow: false
-  register: deployment_adoption_root
-  when: platform_adoption_enabled | default(false) | bool
-
-- name: Inspect the immutable adoption binding marker
-  ansible.builtin.stat:
-    path: "{{ platform_adoption_root }}/snapshot/pre-cutover/binding.json"
-    follow: false
-    checksum_algorithm: sha256
-  register: deployment_adoption_binding
-  when: platform_adoption_enabled | default(false) | bool
-
-- name: Read the immutable adoption binding marker
-  ansible.builtin.slurp:
-    path: "{{ platform_adoption_root }}/snapshot/pre-cutover/binding.json"
-  register: deployment_adoption_binding_content
-  when: platform_adoption_enabled | default(false) | bool
-
-- name: Require the exact immutable adoption binding marker
-  ansible.builtin.assert:
-    that:
-      - platform_kind == 'mac'
-      - deployment_adoption_root.stat.exists
-      - deployment_adoption_root.stat.isdir
-      - not deployment_adoption_root.stat.islnk
-      - deployment_adoption_root.stat.mode == '0700'
-      - deployment_adoption_root.stat.pw_name == ansible_facts.user_id
-      - platform_adoption_marker is match('^[0-9a-f]{64}$')
-      - deployment_adoption_binding.stat.exists
-      - deployment_adoption_binding.stat.isreg
-      - not deployment_adoption_binding.stat.islnk
-      - deployment_adoption_binding.stat.mode == '0400'
-      - deployment_adoption_binding.stat.pw_name == ansible_facts.user_id
-      - deployment_adoption_binding.stat.checksum == platform_adoption_marker
-      - >-
-        (deployment_adoption_binding_content.content | b64decode | from_json).lane == 'adoption'
-      - >-
-        (deployment_adoption_binding_content.content | b64decode | from_json).sandbox_id ==
-        (platform_adoption_root | basename)
-    fail_msg: Adoption state root is not bound to the immutable pre-cutover snapshot.
-  when: platform_adoption_enabled | default(false) | bool
-
 - name: Validate exact deployment path derivation
   ansible.builtin.assert:
     that:
@@ -77,13 +32,7 @@
       - "{{ platform_current_dir }}"
       - "{{ platform_deploy_root }}/.current-{{ platform_release_id }}"
       - "{{ (deployment_target_require_current_release | default(false) | bool) | ternary('1', '0') }}"
-      - >-
-        {{ (deployment_target_candidate_paths
-            if (platform_adoption_enabled | default(false) | bool)
-            else (deployment_target_candidate_paths
-                  | reject('search', '/compose[.]adoption[.]yml$') | list)) | to_json }}
-      - "{{ platform_adoption_root | default('') }}"
-      - "{{ (platform_adoption_enabled | default(false) | bool) | ternary('1', '0') }}"
+      - "{{ deployment_target_candidate_paths | to_json }}"
   changed_when: false
   check_mode: false
   vars:

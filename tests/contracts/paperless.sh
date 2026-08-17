@@ -6,7 +6,6 @@ mode=${1:-run}
 repo_dir=${PLATFORM_CONTRACT_REPO_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)}
 compose=$repo_dir/services/paperless-ngx/compose.yml
 mac_compose=$repo_dir/services/paperless-ngx/compose.mac.yml
-adoption_compose=$repo_dir/services/paperless-ngx/compose.adoption.yml
 role=$repo_dir/roles/paperless_ngx/tasks/main.yml
 defaults=$repo_dir/roles/paperless_ngx/defaults/main.yml
 argument_specs=$repo_dir/roles/paperless_ngx/meta/argument_specs.yml
@@ -24,7 +23,6 @@ fail_contract() {
 
 [ -f "$compose" ] || fail_contract 'services/paperless-ngx/compose.yml is absent'
 [ -f "$mac_compose" ] || fail_contract 'services/paperless-ngx/compose.mac.yml is absent'
-[ -f "$adoption_compose" ] || fail_contract 'services/paperless-ngx/compose.adoption.yml is absent'
 [ -f "$role" ] || fail_contract 'roles/paperless_ngx/tasks/main.yml is absent'
 [ -f "$defaults" ] || fail_contract 'roles/paperless_ngx/defaults/main.yml is absent'
 [ -f "$argument_specs" ] || fail_contract 'roles/paperless_ngx/meta/argument_specs.yml is absent'
@@ -39,11 +37,8 @@ render_paperless_mounts() {
   variant=$1
   shift
   cache_path=/volume1/Docker/paperless-ngx/cache
-  case "$variant" in
-    *adoption*) cache_path=/tmp/paperless-contract/adoption/legacy/paperless-ngx/cache ;;
-  esac
   rendered=$(env \
-    PLATFORM_PROJECT_NAME=paperless-contract PLATFORM_ADOPTION_ROOT=/tmp/paperless-contract/adoption \
+    PLATFORM_PROJECT_NAME=paperless-contract \
     PAPERLESS_HOST_PORT=38000 PAPERLESS_POSTGRES_PATH=/volume1/Docker/paperless-ngx/postgres \
     PAPERLESS_REDIS_PATH=/volume1/Docker/paperless-ngx/redis \
     PAPERLESS_DATA_PATH=/volume1/Docker/paperless-ngx/data \
@@ -80,12 +75,6 @@ document_targets = {
   "/usr/src/paperless/consume" => "/volume2/Documents/inbox",
   "/usr/src/paperless/export" => "/volume2/Documents/export"
 }
-if variant.include?("adoption")
-  document_targets.transform_values! do |source|
-    "/tmp/paperless-contract/adoption/legacy/paperless-ngx/" +
-      { "archive" => "media", "inbox" => "consume", "export" => "export" }.fetch(File.basename(source))
-  end
-end
 document_sources = document_targets.map do |target, expected_source|
   mount = by_target.fetch(target).fetch(0)
   source = File.expand_path(mount.fetch("source"))
@@ -100,10 +89,8 @@ abort "Paperless contract failed: #{variant} document sources alias or overlap" 
     document_sources.combination(2).none? do |left, right|
       left.start_with?(right + File::SEPARATOR) || right.start_with?(left + File::SEPARATOR)
     end
-unless variant.include?("adoption")
-  abort "Paperless contract failed: #{variant} document source resolves below volume1" if
-    document_sources.any? { |source| source == "/volume1" || source.start_with?("/volume1/") }
-end
+abort "Paperless contract failed: #{variant} document source resolves below volume1" if
+  document_sources.any? { |source| source == "/volume1" || source.start_with?("/volume1/") }
 
 state_sources = [
   services.fetch("broker").fetch("volumes").fetch(0).fetch("source"),
@@ -113,8 +100,7 @@ state_sources = [
     by_target.fetch(target).fetch(0).fetch("source")
   end
 ].map { |source| File.expand_path(source) }
-expected_state_root = variant.include?("adoption") ?
-  "/tmp/paperless-contract/adoption/legacy/paperless-ngx" : "/volume1/Docker/paperless-ngx"
+expected_state_root = "/volume1/Docker/paperless-ngx"
 abort "Paperless contract failed: #{variant} state source escapes its isolated root" unless
   state_sources.all? do |source|
     source.start_with?(expected_state_root + File::SEPARATOR)
@@ -129,16 +115,13 @@ RUBY
 
 render_paperless_mounts nas -f "$compose"
 render_paperless_mounts mac -f "$compose" -f "$mac_compose"
-render_paperless_mounts adoption -f "$compose" -f "$adoption_compose"
-render_paperless_mounts mac-adoption -f "$compose" -f "$mac_compose" -f "$adoption_compose"
 
-ruby -ryaml - "$compose" "$mac_compose" "$adoption_compose" "$role" "$defaults" \
+ruby -ryaml - "$compose" "$mac_compose" "$role" "$defaults" \
   "$argument_specs" "$storage_inventory" "$host_prep" "$generator" "$environment_template" "$snapshot" <<'RUBY'
-compose_path, mac_path, adoption_path, role_path, defaults_path, argument_specs_path,
+compose_path, mac_path, role_path, defaults_path, argument_specs_path,
   storage_inventory_path, host_prep_path, generator_path, environment_template_path, snapshot_path = ARGV
 compose = YAML.safe_load_file(compose_path, aliases: true)
 mac = YAML.safe_load_file(mac_path, aliases: true)
-adoption = YAML.safe_load_file(adoption_path, aliases: true)
 role = YAML.safe_load_file(role_path, aliases: true)
 role_text = File.read(role_path)
 defaults = YAML.safe_load_file(defaults_path)
@@ -317,10 +300,6 @@ end
 refuse("canonical Paperless storage separation is not validated before mutation") unless
   storage_layout_index && first_storage_mutation_index && storage_layout_index < first_storage_mutation_index
 
-adoption_web_volumes = adoption.dig("services", "webserver", "volumes") || []
-refuse("adoption overlay must replace every Paperless webserver mount") unless
-  adoption_web_volumes.any? { |mount| mount.include?(":/usr/src/paperless/cache") }
-
 required_tasks = [
   "Render the Paperless environment",
   "Deploy the Paperless data services",
@@ -448,11 +427,6 @@ if [ "$mode" = static ]; then
   printf '%s\n' 'Paperless static contract passed'
   exit 0
 fi
-. "${PLATFORM_LEGACY_FIXTURE_HELPER_FILE:-$repo_dir/tests/contracts/legacy-fixture-paths.sh}"
-legacy_fixture_validate PLATFORM_PAPERLESS_CONSUME_ROOT legacy/paperless-ngx/consume ||
-  fail_contract 'legacy consume root is unsafe'
-legacy_fixture_validate PLATFORM_PAPERLESS_EXPORT_ROOT legacy/paperless-ngx/export ||
-  fail_contract 'legacy export root is unsafe'
 
 : "${PLATFORM_CONTRACT_VAULT_FILE:=${PLATFORM_MAC_VAULT_FILE:-}}"
 : "${PLATFORM_CONTRACT_VAULT_PASSWORD_FILE:=${PLATFORM_MAC_VAULT_PASSWORD_FILE:-}}"

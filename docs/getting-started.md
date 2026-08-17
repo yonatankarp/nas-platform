@@ -79,10 +79,10 @@ required service is still marked `planned`.
 ## Secrets: one portable contract
 
 [`inventory/group_vars/all/vault.yml.example`](../inventory/group_vars/all/vault.yml.example)
-is the exact credential schema for both environments. During migration, use the
-current NAS values from your password manager and Portainer definitions. This
-is what preserves existing logins and integrations. Do not run the brand-new
-secret generator for a migration.
+is the exact credential schema for both environments. To recover an existing
+deployment, use the current NAS values from your password manager and the
+deployed configuration. This is what preserves existing logins and integrations.
+Do not run the brand-new secret generator for a recovery.
 
 For the Paperless Gmail app password, you may paste Google's four
 space-separated groups into the vault. Provisioning removes those display

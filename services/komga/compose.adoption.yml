@@ -1,6 +1,0 @@
----
-services:
-  komga:
-    volumes: !override
-      - ${PLATFORM_ADOPTION_ROOT:?}/legacy/komga/config:/config
-      - ${PLATFORM_ADOPTION_ROOT:?}/legacy/komga/library:/data:ro

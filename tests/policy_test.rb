@@ -3,7 +3,7 @@
 #
 # Most checks deliberately assert properties rather than per-service values.
 # The source-platform inventory is the exception: pinning that finite set keeps
-# an omitted legacy service from silently disappearing from the migration scope.
+# an omitted service from silently disappearing from the platform scope.
 
 require "open3"
 require "rbconfig"
@@ -108,21 +108,16 @@ EXPECTED_SERVICES = %w[
   audiobookshelf beszel dozzle immich jellyfin komga ntfy paperless-ngx
   tinymediamanager
 ].freeze
-EXPECTED_LEGACY_SOURCE = {
-  "repository" => "yonatankarp/nas-infrastructure",
-  "commit" => "400f03f276ae1bb69f5460c175b9fb923d620f1a",
-  "local_path" => "../nas-infrastructure"
-}.freeze
 EXPECTED_SERVICE_MAPPINGS = {
-  "audiobookshelf" => { "role" => "audiobookshelf", "legacy_path" => "compose/audiobookshelf/compose.yml", "tranche" => 3 },
-  "beszel" => { "role" => "beszel", "legacy_path" => "compose/beszel/compose.yml", "tranche" => 2 },
-  "dozzle" => { "role" => "dozzle", "legacy_path" => "compose/dozzle/compose.yml", "tranche" => 2 },
-  "immich" => { "role" => "immich", "legacy_path" => "compose/immich/compose.yml", "tranche" => 5 },
-  "jellyfin" => { "role" => "jellyfin", "legacy_path" => "compose/jellyfin/compose.yml", "tranche" => 4 },
-  "komga" => { "role" => "komga", "legacy_path" => "compose/komga/compose.yml", "tranche" => 3 },
-  "ntfy" => { "role" => "ntfy", "legacy_path" => "compose/ntfy/compose.yml", "tranche" => 2 },
-  "paperless-ngx" => { "role" => "paperless_ngx", "legacy_path" => "compose/paperless-ngx/compose.yml", "tranche" => 6 },
-  "tinymediamanager" => { "role" => "tinymediamanager", "legacy_path" => "compose/tinymediamanager/compose.yml", "tranche" => 3 }
+  "audiobookshelf" => { "role" => "audiobookshelf" },
+  "beszel" => { "role" => "beszel" },
+  "dozzle" => { "role" => "dozzle" },
+  "immich" => { "role" => "immich" },
+  "jellyfin" => { "role" => "jellyfin" },
+  "komga" => { "role" => "komga" },
+  "ntfy" => { "role" => "ntfy" },
+  "paperless-ngx" => { "role" => "paperless_ngx" },
+  "tinymediamanager" => { "role" => "tinymediamanager" }
 }.freeze
 EXPECTED_VAULT_KEYS = %w[
   vault_audiobookshelf_admin_username
@@ -169,7 +164,7 @@ EXPECTED_VAULT_KEYS = %w[
   vault_managed_users
   vault_tinymediamanager_password
 ].sort.freeze
-REQUIRED_MANIFEST_FIELDS = %w[name legacy_path role tranche status].freeze
+REQUIRED_MANIFEST_FIELDS = %w[name role status].freeze
 ALLOWED_SERVICE_STATUSES = %w[planned implemented accepted].freeze
 IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
 PLATFORM_INVENTORIES = {
@@ -267,7 +262,6 @@ PLATFORM_INVENTORIES.values.map { |values| [values[0], values[3]] }.uniq.each do
                           platform_project_name beszel_port ntfy_port dozzle_port
                           audiobookshelf_port komga_port tinymediamanager_web_port
                           tinymediamanager_api_port jellyfin_port immich_port paperless_port
-                          platform_adoption_root platform_adoption_marker platform_adoption_enabled
                         ]
                       else
                         []
@@ -623,13 +617,8 @@ end
 check(failures, manifest.is_a?(Hash), "service manifest top level must be a mapping") if manifest_loaded
 manifest = {} unless manifest.is_a?(Hash)
 
-legacy_source = manifest["legacy_source"]
-check(failures, legacy_source.is_a?(Hash), "service manifest legacy_source must be a mapping") if manifest_loaded
-legacy_source = {} unless legacy_source.is_a?(Hash)
-EXPECTED_LEGACY_SOURCE.each do |field, expected|
-  check(failures, legacy_source[field] == expected,
-        "legacy_source #{field} must equal #{expected}") if manifest_loaded
-end
+check(failures, !manifest.key?("legacy_source"),
+      "service manifest must not reintroduce a legacy migration source") if manifest_loaded
 
 manifest_entries = manifest["services"]
 unless manifest_entries.is_a?(Array)
@@ -649,12 +638,8 @@ manifest_names = manifest_entries.filter_map do |service|
   check(failures, service["name"].is_a?(String), "service name must be a string")
   check(failures, service["role"].is_a?(String),
         "#{service['name'] || '<unnamed>'}: role must be a string")
-  check(failures, service["legacy_path"].is_a?(String),
-        "#{service['name'] || '<unnamed>'}: legacy_path must be a string")
   check(failures, ALLOWED_SERVICE_STATUSES.include?(service["status"]),
         "#{service['name'] || '<unnamed>'}: status must be planned, implemented, or accepted")
-  check(failures, service["tranche"].is_a?(Integer) && service["tranche"].positive?,
-        "#{service['name'] || '<unnamed>'}: tranche must be a positive integer")
 
   name = service["name"]
   if name.is_a?(String) && EXPECTED_SERVICE_MAPPINGS.key?(name)
@@ -676,7 +661,7 @@ check(failures, (manifest_names - EXPECTED_SERVICES).empty?,
         "#{name}: status must be implemented or accepted")
 end
 
-%w[name role legacy_path].each do |field|
+%w[name role].each do |field|
   values = manifest_entries.filter_map { |service| service[field] if service.is_a?(Hash) }
   duplicates = values.tally.select { |_value, count| count > 1 }.keys
   check(failures, duplicates.empty?,
@@ -1159,8 +1144,9 @@ end
 guard_conditions = Array(brand_new_guard&.dig("ansible.builtin.assert", "that")).join(" ")
 guard_message = brand_new_guard&.dig("ansible.builtin.assert", "fail_msg").to_s
 check(failures, guard_conditions.include?("generate_brand_new_platform | bool") &&
-                guard_message.include?("password manager") && guard_message.include?("Portainer"),
-      "generate-secrets.yml must refuse migration credential generation explicitly")
+                guard_message.include?("password manager") &&
+                guard_message.include?("deployed"),
+      "generate-secrets.yml must refuse recovery credential generation explicitly")
 
 secret_generator_tasks = Array(secret_generator["tasks"]).to_h { |task| [task["name"], task] }
 secret_bearing_generator_tasks = [
@@ -1440,14 +1426,12 @@ check(failures, target_validation_tasks.one? &&
                 target_validation_argv[2] == validator_lookup &&
                 target_validation_argv.count(validator_lookup) == 1,
       "target containment task must execute the exact extracted validator source")
-check(failures, target_validation_argv.length == 12 &&
+check(failures, target_validation_argv.length == 10 &&
                 target_validation_argv[3] == "{{ nas_docker_root }}" &&
                 target_validation_argv[4] == "{{ nas_media_root }}" &&
                 target_validation_argv[9].include?("deployment_target_candidate_paths") &&
-                target_validation_argv[9].include?("to_json") &&
-                target_validation_argv[10] == "{{ platform_adoption_root | default('') }}" &&
-                target_validation_argv[11].include?("platform_adoption_enabled"),
-      "target containment task must pass one JSON target batch and adoption binding")
+                target_validation_argv[9].include?("to_json"),
+      "target containment task must pass exactly one JSON target batch")
 check(failures, !target_validation.key?("loop") && !target_validation.key?("loop_control"),
       "target containment task must validate the batch without an Ansible loop")
 %w[os.lstat os.path.realpath os.path.commonpath os.path.lexists].each do |primitive|
@@ -1511,8 +1495,7 @@ manifest_path_conditions = Array(
   manifest_path_validation&.dig("ansible.builtin.assert", "that")
 ).join(" ")
 check(failures, manifest_path_conditions.include?("item.name is match") &&
-                manifest_path_conditions.include?("item.role is match") &&
-                manifest_path_conditions.include?("item.legacy_path =="),
+                manifest_path_conditions.include?("item.role is match"),
       "deployment bundle must validate manifest service path components")
 canonical_requirement = deployment_tasks.find do |task|
   task["name"] == "Require canonical Compose for each implemented service"
@@ -1778,8 +1761,8 @@ unless beszel_refresh_indexes.empty?
         "Beszel database refresh must run only when the application user is created")
 end
 
-# The Mac proof harness is an orchestration contract: later service tranches
-# plug their fixture, drift, and verification behavior into these stable phases.
+# The Mac proof harness is an orchestration contract: each service plugs its
+# fixture, drift, and verification behavior into these stable phases.
 mac_harness_files = %w[
   lib.sh run.sh cleanup.sh fixtures.sh verify.sh drift.sh report.rb
   sanitize-logs.rb manual-review.md manual-validation-handoff.rb
@@ -1849,15 +1832,13 @@ check(failures, verification_roles.any? && verification_roles.all? do |role|
       "verify.yml roles must be inert unless an explicit verification tag is selected")
 execute_phase_offset = mac_run.index("execute_phase()")
 execute_phase_source = execute_phase_offset ? mac_run[execute_phase_offset..] : ""
-cutover_phase = execute_phase_source[/cutover\)\n(.*?)\n\s*;;/m, 1].to_s
-snapshot_validation = cutover_phase.index("enable_adoption_mapping")
-target_deployment = cutover_phase.index("run_site")
-adoption_verification = cutover_phase.index('"$mac_script_dir/verify.sh"')
-check(failures, mac_run.scan('"$mac_script_dir/verify.sh"').length >= 3 &&
-                [snapshot_validation, target_deployment, adoption_verification].all? &&
-                snapshot_validation < target_deployment &&
-                target_deployment < adoption_verification,
-      "Mac lifecycle must verify after seed, drift reconciliation, recreation, and adoption")
+reconcile_phase = execute_phase_source[/reconcile\)(.*?);;/m, 1].to_s
+reconcile_deployment = reconcile_phase.index("run_site")
+reconcile_verification = reconcile_phase.index('"$mac_script_dir/verify.sh"')
+check(failures, mac_run.scan('"$mac_script_dir/verify.sh"').length >= 2 &&
+                [reconcile_deployment, reconcile_verification].all? &&
+                reconcile_deployment < reconcile_verification,
+      "Mac lifecycle must verify after seed, drift reconciliation, and recreation")
 check(failures, mac_run.include?("resume vault checksum does not match") &&
                 mac_run.include?("resume Git revision does not match"),
       "Mac lifecycle must refuse mixed vault or Git evidence when resuming")
@@ -1948,9 +1929,9 @@ check(failures, mac_report.include?("when Hash") && mac_report.include?("when Ar
 readme = File.read(File.join(ROOT, "README.md"))
 gitignore = File.read(File.join(ROOT, ".gitignore"))
 check(failures, readme.include?("tests/mac/run.sh") &&
-                readme.include?("--lane fresh") && readme.include?("--lane adoption") &&
+                readme.include?("--lane fresh") &&
                 readme.include?("--keep-on-failure"),
-      "README must document both Mac proof lanes and failure preservation")
+      "README must document the Mac proof lane and failure preservation")
 check(failures, gitignore.include?("mac-proof-reports"),
       "gitignore must exclude local Mac proof report copies")
 

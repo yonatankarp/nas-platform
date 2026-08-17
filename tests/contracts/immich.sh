@@ -954,11 +954,6 @@ puts "Immich static contract passed (#{platform})"
 RUBY
 
 [ "$mode" = static ] && exit 0
-. "${PLATFORM_LEGACY_FIXTURE_HELPER_FILE:-$repo_dir/tests/contracts/legacy-fixture-paths.sh}"
-legacy_fixture_validate PLATFORM_IMMICH_UPLOAD_ROOT legacy/immich/data/upload ||
-  fail_contract 'legacy upload root is unsafe'
-legacy_fixture_validate PLATFORM_IMMICH_THUMBNAIL_ROOT legacy/immich/thumbs ||
-  fail_contract 'legacy thumbnail root is unsafe'
 
 : "${PLATFORM_CONTRACT_VAULT_FILE:=${PLATFORM_MAC_VAULT_FILE:-}}"
 : "${PLATFORM_CONTRACT_VAULT_PASSWORD_FILE:=${PLATFORM_MAC_VAULT_PASSWORD_FILE:-}}"

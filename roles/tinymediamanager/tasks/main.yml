@@ -2,17 +2,12 @@
 - name: Select the tinyMediaManager mounted state root
   tags: [platform_verify_tinymediamanager]
   ansible.builtin.set_fact:
-    tinymediamanager_state_root: >-
-      {{ (platform_adoption_root ~ '/legacy/tinymediamanager/data')
-         if (platform_adoption_enabled | default(false) | bool)
-         else (nas_docker_root ~ '/tinymediamanager/data') }}
+    tinymediamanager_state_root: "{{ nas_docker_root }}/tinymediamanager/data"
 
 - name: Require the internally derived tinyMediaManager mounted state root
   ansible.builtin.assert:
     that:
-      - tinymediamanager_state_root == ((platform_adoption_root ~ '/legacy/tinymediamanager/data') if
-        (platform_adoption_enabled | default(false) | bool) else
-        (nas_docker_root ~ '/tinymediamanager/data'))
+      - tinymediamanager_state_root == (nas_docker_root ~ '/tinymediamanager/data')
 
 - name: Revalidate deployment paths before tinyMediaManager runtime use
   ansible.builtin.include_role:
@@ -24,7 +19,6 @@
       - "{{ platform_current_dir }}/services/tinymediamanager"
       - "{{ platform_current_dir }}/services/tinymediamanager/compose.yml"
       - "{{ platform_current_dir }}/services/tinymediamanager/compose.{{ platform_compose_kind }}.yml"
-      - "{{ platform_current_dir }}/services/tinymediamanager/compose.adoption.yml"
       - "{{ platform_runtime_dir }}/services/tinymediamanager"
       - "{{ platform_runtime_dir }}/services/tinymediamanager/.env"
       - "{{ tinymediamanager_state_root }}/data"
@@ -41,9 +35,7 @@
     tinymediamanager_compose_files: >-
       {{ ['compose.yml'] +
          (tinymediamanager_platform_compose.stat.exists
-          | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) +
-         ((platform_adoption_enabled | default(false) | bool)
-          | ternary(['compose.adoption.yml'], [])) }}
+          | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) }}
 
 - name: Create the stable tinyMediaManager settings directory
   ansible.builtin.file:

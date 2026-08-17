@@ -6,7 +6,6 @@ mode=${1:-run}
 repo_dir=${PLATFORM_CONTRACT_REPO_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)}
 compose=$repo_dir/services/audiobookshelf/compose.yml
 mac_compose=$repo_dir/services/audiobookshelf/compose.mac.yml
-adoption_compose=$repo_dir/services/audiobookshelf/compose.adoption.yml
 role=$repo_dir/roles/audiobookshelf/tasks/main.yml
 defaults=$repo_dir/roles/audiobookshelf/defaults/main.yml
 argument_specs=$repo_dir/roles/audiobookshelf/meta/argument_specs.yml
@@ -24,19 +23,17 @@ fail_contract() {
 [ -f "$defaults" ] || fail_contract 'roles/audiobookshelf/defaults/main.yml is absent'
 [ -f "$compose" ] || fail_contract 'services/audiobookshelf/compose.yml is absent'
 [ -f "$mac_compose" ] || fail_contract 'services/audiobookshelf/compose.mac.yml is absent'
-[ -f "$adoption_compose" ] || fail_contract 'services/audiobookshelf/compose.adoption.yml is absent'
 [ -f "$argument_specs" ] || fail_contract 'roles/audiobookshelf/meta/argument_specs.yml is absent'
 [ -f "$environment_template" ] || fail_contract 'roles/audiobookshelf/templates/env.j2 is absent'
 
-ruby -ryaml - "$compose" "$mac_compose" "$adoption_compose" "$role" "$defaults" \
+ruby -ryaml - "$compose" "$mac_compose" "$role" "$defaults" \
   "$argument_specs" "$environment_template" "$integration" "$storage_inventory" \
   "$contract_source" "$mode" <<'RUBY'
-compose_path, mac_path, adoption_path, role_path, defaults_path, argument_specs_path,
+compose_path, mac_path, role_path, defaults_path, argument_specs_path,
   environment_template_path, integration_path, storage_inventory_path,
   contract_source_path, mode = ARGV
 compose = YAML.safe_load_file(compose_path, aliases: true)
 mac = YAML.safe_load_file(mac_path, aliases: true)
-adoption = YAML.safe_load_file(adoption_path, aliases: true)
 role = File.read(role_path)
 role_tasks = YAML.safe_load_file(role_path)
 defaults = YAML.safe_load_file(defaults_path)
@@ -71,11 +68,6 @@ abort "Audiobookshelf contract failed: Mac override differs" unless
     mac_service.fetch("volumes") == [
       "${PLATFORM_DOCKER_ROOT:?}/audiobookshelf/backups:/metadata/backups"
     ]
-adoption_service = adoption.fetch("services").fetch("audiobookshelf")
-abort "Audiobookshelf contract failed: adoption backup mount differs" unless
-  adoption_service.fetch("volumes").include?(
-    "${PLATFORM_ADOPTION_ROOT:?}/legacy/audiobookshelf/backups:/metadata/backups"
-  )
 abort "Audiobookshelf contract failed: managed library must be rooted at /audiobooks" unless
   defaults.fetch("audiobookshelf_library_folders") == [{ "path" => "/audiobooks" }]
 
@@ -214,9 +206,6 @@ end
 RUBY
 
 [ "$mode" = static ] && { printf '%s\n' 'Audiobookshelf static contract passed'; exit 0; }
-. "${PLATFORM_LEGACY_FIXTURE_HELPER_FILE:-$repo_dir/tests/contracts/legacy-fixture-paths.sh}"
-legacy_fixture_validate PLATFORM_AUDIOBOOKSHELF_MEDIA_LIBRARY legacy/audiobookshelf/media ||
-  fail_contract 'legacy fixture root is unsafe'
 
 : "${PLATFORM_CONTRACT_VAULT_FILE:=${PLATFORM_MAC_VAULT_FILE:-}}"
 : "${PLATFORM_CONTRACT_VAULT_PASSWORD_FILE:=${PLATFORM_MAC_VAULT_PASSWORD_FILE:-}}"

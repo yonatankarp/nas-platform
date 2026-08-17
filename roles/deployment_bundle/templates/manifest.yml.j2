@@ -13,10 +13,6 @@ services:
       - path: compose.{{ platform_compose_kind }}.yml
         checksum_sha256: {{ (lookup('file', platform_source.stat.path, rstrip=false) | hash('sha256')) | to_json }}
 {% endif %}
-{% if platform_adoption_enabled | default(false) | bool %}
-      - path: compose.adoption.yml
-        checksum_sha256: {{ (lookup('file', playbook_dir ~ '/services/' ~ service.name ~ '/compose.adoption.yml', rstrip=false) | hash('sha256')) | to_json }}
-{% endif %}
 {% set runtime_files = {'dozzle': ['alert_relay.py'], 'immich': ['classify_restore.py']}.get(service.name, []) %}
 {% if runtime_files %}
     runtime_files:

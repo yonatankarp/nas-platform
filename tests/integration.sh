@@ -243,7 +243,6 @@ cat > "$manifest_controller/services/manifest.yml" <<'EOF'
 services:
   - name: demo
     role: demo
-    legacy_path: compose/demo/compose.yml
     status: implemented
 EOF
 cat > "$manifest_controller/services/demo/compose.yml" <<'EOF'
@@ -305,7 +304,6 @@ create_controller_symlink_fixture() {
 services:
   - name: demo
     role: demo
-    legacy_path: compose/demo/compose.yml
     status: implemented
 EOF
     ln -s "$outside_root/manifest.yml" "$fixture_root/services/manifest.yml"
@@ -315,7 +313,6 @@ EOF
 services:
   - name: demo
     role: demo
-    legacy_path: compose/demo/compose.yml
     status: implemented
 EOF
   fi

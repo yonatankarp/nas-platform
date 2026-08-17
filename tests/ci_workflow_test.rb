@@ -12,20 +12,6 @@ FULL_STEPS = [
   ["Install Ansible tooling", "ansible-core==2.21.2"],
   ["Check policy properties", "tests/validate-policy.sh"],
   ["Check integration sandbox cleanup", "tests/integration_cleanup_test.sh"],
-  ["Check legacy seed security", "tests/mac/legacy-seed-test.sh\ntests/mac/legacy-fixture-path-test.sh\nruby tests/mac/legacy-secure-copy-test.rb"],
-  ["Check legacy adoption baseline capture", <<~'SH'.chomp],
-    ruby tests/mac/adoption-baseline-test.rb
-    ruby tests/mac/adoption-probes-test.rb
-    tests/mac/adoption-snapshot-test.sh
-    ruby tests/mac/adoption-compare-test.rb
-    ruby tests/mac/adoption-recreate-test.rb
-    tests/mac/adoption-failure-stop-test.sh
-    tests/mac/adoption-runner-test.sh
-    tests/mac/adoption-rollback-test.sh
-  SH
-  ["Check legacy seed playbook syntax", "ansible-playbook -i inventory/mac.yml tests/mac/legacy-role-seed.yml --syntax-check"],
-  ["Check legacy seed playbook syntax", "ansible-playbook -i localhost, -c local tests/mac/legacy-beszel-key.yml --syntax-check"],
-  ["Check legacy parity rendering", "tests/mac/adoption-render-test.sh"],
   ["Check Immich probe status rendering", "tests/immich_probe_status_test.py"],
   ["Check generated credential redaction", "tests/generate-secrets-redaction-test.sh"],
   ["Check silent ephemeral vault generation", "tests/generate-ephemeral-vault.sh --self-test"],
@@ -204,16 +190,17 @@ def assert_boundary(steps, checkout, classifier, docs, full_positions)
   fail_contract("contains an unexpected executable step after classification") unless executable.all? { |step| allowed_names.include?(value_for(step, "name")) }
 end
 
-def assert_adoption_is_local_only(source)
+def assert_no_retired_migration_steps(source)
   forbidden = [
     "nas-infrastructure",
     "NAS_INFRASTRUCTURE",
     "tests/adoption-integration.sh",
-    "synthetic legacy adoption",
-    "synthetic-adoption-diagnostics"
+    "adoption-render-test.sh",
+    "legacy-seed-test.sh",
+    "portainer"
   ]
   forbidden.each do |input|
-    fail_contract("legacy adoption must remain local-only") if source.include?(input)
+    fail_contract("retired Portainer migration step reappeared") if source.include?(input)
   end
 end
 
@@ -233,7 +220,7 @@ def validate_workflow(source)
   docs = assert_docs_step(steps)
   full_positions = assert_full_steps(steps)
   assert_boundary(steps, checkout, classifier, docs, full_positions)
-  assert_adoption_is_local_only(source)
+  assert_no_retired_migration_steps(source)
 end
 
 def assert_failure(label, source, message)
@@ -255,10 +242,10 @@ end
 def self_test
   source = File.binread(WORKFLOW)
   triggers = "on:\n  pull_request:\n  push:\n    branches:\n      - main\n"
-  render_step = <<~YAML.gsub(/^/, "      ")
-    - name: Check legacy parity rendering
+  redaction_step = <<~YAML.gsub(/^/, "      ")
+    - name: Check generated credential redaction
       if: steps.scope.outputs.docs_only != 'true'
-      run: tests/mac/adoption-render-test.sh
+      run: tests/generate-secrets-redaction-test.sh
   YAML
   validate_workflow(source)
   assert_failure("renamed static job", replace_once(source, "  static:\n", "  inspect:\n"), "requires the static job")
@@ -270,19 +257,14 @@ def self_test
   assert_failure("push branch", replace_once(source, "      - main\n", "      - release\n"), "push must be restricted to main")
   assert_failure("unconditional docs", replace_once(source, "        if: steps.scope.outputs.docs_only == 'true'\n", ""), "docs-only guard")
   assert_failure("unguarded full step", replace_once(source, "      - name: Validate shell syntax\n        if: steps.scope.outputs.docs_only != 'true'\n", "      - name: Validate shell syntax\n"), "full-validation guard")
-  without_render = replace_once(source, render_step, "")
-  assert_failure("missing legacy render", without_render, "Check legacy parity rendering")
-  assert_failure(
-    "missing rollback rehearsal",
-    replace_once(source, "          tests/mac/adoption-rollback-test.sh\n", ""),
-    "Check legacy adoption baseline capture command changed"
-  )
-  render_before_install = replace_once(
-    without_render,
+  without_redaction = replace_once(source, redaction_step, "")
+  assert_failure("missing redaction check", without_redaction, "Check generated credential redaction")
+  redaction_before_install = replace_once(
+    without_redaction,
     "      - name: Install Ansible tooling\n",
-    "#{render_step}\n      - name: Install Ansible tooling\n"
+    "#{redaction_step}\n      - name: Install Ansible tooling\n"
   )
-  assert_failure("legacy render before Ansible", render_before_install, "out of order")
+  assert_failure("redaction check before Ansible", redaction_before_install, "out of order")
   assert_failure("malformed YAML", "jobs: [", "YAML is malformed")
   assert_failure("jobs shape", "#{triggers}jobs: []\n", "jobs must be a mapping")
   static_shape = "#{triggers}jobs:\n  static:\n    if: ${{ needs.changes.outputs.static == 'true' }}\n    steps: {}\n"

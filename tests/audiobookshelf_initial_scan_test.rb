@@ -70,9 +70,8 @@ def validate_initial_scan!(tasks, defaults)
     "ansible.builtin.set_fact", "audiobookshelf_effective_config_host_path"
   ).to_s
   require_condition(
-    config_path.include?("platform_adoption_root ~ '/legacy/audiobookshelf/config'") &&
-      config_path.include?("nas_docker_root ~ '/audiobookshelf/config'"),
-    "initial scan marker must follow normal and adoption config bindings"
+    config_path.include?("nas_docker_root }}/audiobookshelf/config"),
+    "initial scan marker must follow the canonical config binding"
   )
   timing, timing_index = task_named(tasks, "Require bounded Audiobookshelf initial scan timing")
   timing_assertions = Array(timing.dig("ansible.builtin.assert", "that")).join(" ")
