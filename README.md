@@ -15,6 +15,7 @@ off-site backup. RAID is not a backup.
 - [Disposable Mac walkthrough](docs/getting-started-mac.md)
 - [Physical NAS walkthrough](docs/getting-started-nas.md)
 - [Ansible concepts used here](docs/ansible-basics.md)
+- [Adding a service](docs/adding-a-service.md)
 
 All nine service stacks in [`services/manifest.yml`](services/manifest.yml) are
 implemented. Prove the complete platform on the Mac before preparing a
