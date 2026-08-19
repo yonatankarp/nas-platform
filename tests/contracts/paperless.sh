@@ -347,8 +347,6 @@ refuse("Paperless administrator password must not be copied into docker exec arg
   "Resolve Paperless mail account repair requirement",
   "Resolve Paperless mail rule reconciliation",
   "Resolve Paperless mail rule repair requirement",
-  "Check for a Paperless platform override",
-  "Select the Paperless Compose definitions",
   "Inspect the installed Paperless Gmail credential fingerprint",
   "Read the installed Paperless Gmail credential fingerprint",
   "Resolve the installed Paperless Gmail credential fingerprint",

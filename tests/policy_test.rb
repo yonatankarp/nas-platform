@@ -1601,6 +1601,40 @@ end
         "#{service_name} must guard every Compose file consumed by selective runs")
 end
 
+# Two runtime failures nothing else catches, because every integration suite includes
+# deployment_bundle in its tags and so never exercises a lone --tags <service> run.
+# Resolving before activation makes a full run read the previous release's overrides;
+# losing the always tag leaves the fact undefined on a selective converge.
+compose_bundle_tasks = YAML.safe_load_file(
+  File.join(ROOT, "roles", "deployment_bundle", "tasks", "main.yml"), aliases: true
+)
+selection_index = compose_bundle_tasks.index do |task|
+  include_tasks = task["ansible.builtin.include_tasks"]
+  include_tasks.is_a?(Hash) && include_tasks["file"] == "compose_files.yml"
+end
+activation_index = compose_bundle_tasks.index do |task|
+  task["name"] == "Atomically activate the controller release"
+end
+bundle_selection = selection_index && compose_bundle_tasks[selection_index]
+check(failures,
+      !bundle_selection.nil? && !activation_index.nil? &&
+        selection_index > activation_index &&
+        Array(bundle_selection["tags"]).include?("always") &&
+        Array(bundle_selection.dig("ansible.builtin.include_tasks", "apply", "tags"))
+          .include?("always"),
+      "deployment_bundle must resolve Compose selection after activation, under every tag")
+
+verify_play = YAML.safe_load_file(File.join(ROOT, "verify.yml"), aliases: true).first
+verify_selection = Array(verify_play["pre_tasks"]).find do |task|
+  task.dig("ansible.builtin.include_role", "tasks_from") == "compose_files"
+end
+check(failures,
+      !verify_selection.nil? &&
+        Array(verify_selection["tags"]).include?("always") &&
+        Array(verify_selection.dig("ansible.builtin.include_role", "apply", "tags"))
+          .include?("always"),
+      "verify.yml must resolve Compose selection before any verified role reads it")
+
 deployment_manifest_template = File.read(
   File.join(ROOT, "roles", "deployment_bundle", "templates", "manifest.yml.j2")
 )

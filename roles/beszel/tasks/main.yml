@@ -24,18 +24,6 @@
       - "{{ platform_runtime_dir }}/services/beszel/.env"
       - "{{ nas_docker_root }}/beszel/hub/id_ed25519"
 
-- name: Check for a Beszel platform override
-  ansible.builtin.stat:
-    path: "{{ platform_current_dir }}/services/beszel/compose.{{ platform_compose_kind }}.yml"
-  register: beszel_platform_compose
-
-- name: Select the Beszel Compose definitions
-  ansible.builtin.set_fact:
-    beszel_compose_files: >-
-      {{ ['compose.yml'] +
-         (beszel_platform_compose.stat.exists
-          | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) }}
-
 - name: Select the Beszel mounted state root
   tags: [platform_verify_beszel]
   ansible.builtin.set_fact:
@@ -123,7 +111,7 @@
   community.docker.docker_compose_v2:
     project_src: "{{ platform_current_dir }}/services/beszel"
     project_name: "{{ beszel_compose_project_name }}"
-    files: "{{ beszel_compose_files }}"
+    files: "{{ platform_service_compose_files['beszel'] }}"
     env_files: ["{{ platform_runtime_dir }}/services/beszel/.env"]
     services: >-
       {{ beszel_inactive_agent_services
@@ -137,7 +125,7 @@
   community.docker.docker_compose_v2:
     project_src: "{{ platform_current_dir }}/services/beszel"
     project_name: "{{ beszel_compose_project_name }}"
-    files: "{{ beszel_compose_files }}"
+    files: "{{ platform_service_compose_files['beszel'] }}"
     env_files: ["{{ platform_runtime_dir }}/services/beszel/.env"]
     services: "{{ ['hub', 'socket-proxy'] + ([beszel_agent_service] if beszel_agent_enabled else []) }}"
     state: present
@@ -181,7 +169,7 @@
   community.docker.docker_compose_v2_exec:
     project_src: "{{ platform_current_dir }}/services/beszel"
     project_name: "{{ beszel_compose_project_name }}"
-    files: "{{ beszel_compose_files }}"
+    files: "{{ platform_service_compose_files['beszel'] }}"
     env_files: ["{{ platform_runtime_dir }}/services/beszel/.env"]
     service: hub
     argv:
@@ -366,7 +354,7 @@
   community.docker.docker_compose_v2:
     project_src: "{{ platform_current_dir }}/services/beszel"
     project_name: "{{ beszel_compose_project_name }}"
-    files: "{{ beszel_compose_files }}"
+    files: "{{ platform_service_compose_files['beszel'] }}"
     env_files: ["{{ platform_runtime_dir }}/services/beszel/.env"]
     services: [hub]
     state: restarted

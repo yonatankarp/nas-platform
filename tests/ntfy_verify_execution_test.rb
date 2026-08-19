@@ -146,7 +146,7 @@ def run_authoritative_probe_fixture(
         "platform_current_dir" => current,
         "platform_runtime_dir" => runtime_root,
         "ntfy_compose_project_name" => "ntfy-authoritative-fixture",
-        "ntfy_compose_files" => ["compose.yml"]
+        "platform_service_compose_files" => { "ntfy" => ["compose.yml"] }
       },
       "tasks" => tasks
     }]
@@ -488,7 +488,7 @@ probe_playbook = [{
     "platform_current_dir" => "/nonexistent/current",
     "platform_runtime_dir" => "/nonexistent/runtime",
     "ntfy_compose_project_name" => "check-only",
-    "ntfy_compose_files" => ["compose.yml"]
+    "platform_service_compose_files" => { "ntfy" => ["compose.yml"] }
   },
   "tasks" => probe_tasks
 }]

@@ -23,20 +23,6 @@
       - "{{ platform_runtime_dir }}/services/tinymediamanager/.env"
       - "{{ tinymediamanager_state_root }}/data"
 
-- name: Check for a tinyMediaManager platform override
-  tags: [platform_verify_tinymediamanager]
-  ansible.builtin.stat:
-    path: "{{ platform_current_dir }}/services/tinymediamanager/compose.{{ platform_compose_kind }}.yml"
-  register: tinymediamanager_platform_compose
-
-- name: Select the tinyMediaManager Compose definitions
-  tags: [platform_verify_tinymediamanager]
-  ansible.builtin.set_fact:
-    tinymediamanager_compose_files: >-
-      {{ ['compose.yml'] +
-         (tinymediamanager_platform_compose.stat.exists
-          | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) }}
-
 - name: Create the stable tinyMediaManager settings directory
   ansible.builtin.file:
     path: "{{ tinymediamanager_state_root }}/data"
@@ -133,7 +119,7 @@
   community.docker.docker_compose_v2:
     project_src: "{{ platform_current_dir }}/services/tinymediamanager"
     project_name: "{{ tinymediamanager_compose_project_name }}"
-    files: "{{ tinymediamanager_compose_files }}"
+    files: "{{ platform_service_compose_files['tinymediamanager'] }}"
     env_files: ["{{ platform_runtime_dir }}/services/tinymediamanager/.env"]
     state: present
     recreate: >-
@@ -178,7 +164,7 @@
   community.docker.docker_compose_v2_exec:
     project_src: "{{ platform_current_dir }}/services/tinymediamanager"
     project_name: "{{ tinymediamanager_compose_project_name }}"
-    files: "{{ tinymediamanager_compose_files }}"
+    files: "{{ platform_service_compose_files['tinymediamanager'] }}"
     env_files: ["{{ platform_runtime_dir }}/services/tinymediamanager/.env"]
     service: tinymediamanager
     argv: [printenv, PASSWORD]
@@ -192,7 +178,7 @@
   community.docker.docker_compose_v2_exec:
     project_src: "{{ platform_current_dir }}/services/tinymediamanager"
     project_name: "{{ tinymediamanager_compose_project_name }}"
-    files: "{{ tinymediamanager_compose_files }}"
+    files: "{{ platform_service_compose_files['tinymediamanager'] }}"
     env_files: ["{{ platform_runtime_dir }}/services/tinymediamanager/.env"]
     service: tinymediamanager
     argv: [test, -s, /app/.vnc/passwd]

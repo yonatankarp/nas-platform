@@ -28,18 +28,6 @@
       - "{{ audiobookshelf_effective_config_host_path }}"
       - "{{ audiobookshelf_effective_backup_host_path }}"
 
-- name: Check for an Audiobookshelf platform override
-  ansible.builtin.stat:
-    path: "{{ platform_current_dir }}/services/audiobookshelf/compose.{{ platform_compose_kind }}.yml"
-  register: audiobookshelf_platform_compose
-
-- name: Select the Audiobookshelf Compose definitions
-  ansible.builtin.set_fact:
-    audiobookshelf_compose_files: >-
-      {{ ['compose.yml'] +
-         (audiobookshelf_platform_compose.stat.exists
-          | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) }}
-
 - name: Render the Audiobookshelf environment
   ansible.builtin.template:
     src: env.j2
@@ -50,7 +38,7 @@
   community.docker.docker_compose_v2:
     project_src: "{{ platform_current_dir }}/services/audiobookshelf"
     project_name: "{{ audiobookshelf_compose_project_name }}"
-    files: "{{ audiobookshelf_compose_files }}"
+    files: "{{ platform_service_compose_files['audiobookshelf'] }}"
     env_files: ["{{ platform_runtime_dir }}/services/audiobookshelf/.env"]
     state: present
     wait: true

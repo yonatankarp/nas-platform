@@ -89,7 +89,7 @@ beszel_compose_cli_argv: >-
   {{ ['docker', 'compose', '--project-directory',
      platform_current_dir ~ '/services/beszel', '--project-name',
      beszel_compose_project_name]
-     + (beszel_compose_files
+     + (platform_service_compose_files['beszel']
         | map('regex_replace', '^',
               '--file=' ~ platform_current_dir ~ '/services/beszel/') | list)
      + ['--env-file', platform_runtime_dir ~ '/services/beszel/.env'] }}

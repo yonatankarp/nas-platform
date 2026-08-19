@@ -120,20 +120,6 @@
       - "{{ paperless_effective_consume_host_path }}"
       - "{{ paperless_effective_export_host_path }}"
 
-- name: Check for a Paperless platform override
-  tags: [platform_verify_paperless]
-  ansible.builtin.stat:
-    path: "{{ platform_current_dir }}/services/paperless-ngx/compose.{{ platform_compose_kind }}.yml"
-  register: paperless_platform_compose
-
-- name: Select the Paperless Compose definitions
-  tags: [platform_verify_paperless]
-  ansible.builtin.set_fact:
-    paperless_compose_files: >-
-      {{ ['compose.yml'] +
-         (paperless_platform_compose.stat.exists
-          | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) }}
-
 - name: Select the Paperless mounted tessdata root
   ansible.builtin.set_fact:
     paperless_tessdata_root: "{{ paperless_effective_state_host_path }}/tessdata"
@@ -163,7 +149,7 @@
   community.docker.docker_compose_v2:
     project_src: "{{ platform_current_dir }}/services/paperless-ngx"
     project_name: "{{ paperless_compose_project_name }}"
-    files: "{{ paperless_compose_files }}"
+    files: "{{ platform_service_compose_files['paperless-ngx'] }}"
     env_files: ["{{ platform_runtime_dir }}/services/paperless-ngx/.env"]
     services: [broker, db]
     state: present
@@ -174,7 +160,7 @@
   community.docker.docker_compose_v2_exec:
     project_src: "{{ platform_current_dir }}/services/paperless-ngx"
     project_name: "{{ paperless_compose_project_name }}"
-    files: "{{ paperless_compose_files }}"
+    files: "{{ platform_service_compose_files['paperless-ngx'] }}"
     env_files: ["{{ platform_runtime_dir }}/services/paperless-ngx/.env"]
     service: db
     argv:
@@ -221,7 +207,7 @@
   community.docker.docker_compose_v2:
     project_src: "{{ platform_current_dir }}/services/paperless-ngx"
     project_name: "{{ paperless_compose_project_name }}"
-    files: "{{ paperless_compose_files }}"
+    files: "{{ platform_service_compose_files['paperless-ngx'] }}"
     env_files: ["{{ platform_runtime_dir }}/services/paperless-ngx/.env"]
     state: present
     wait: true
@@ -231,7 +217,7 @@
   community.docker.docker_compose_v2_exec:
     project_src: "{{ platform_current_dir }}/services/paperless-ngx"
     project_name: "{{ paperless_compose_project_name }}"
-    files: "{{ paperless_compose_files }}"
+    files: "{{ platform_service_compose_files['paperless-ngx'] }}"
     env_files: ["{{ platform_runtime_dir }}/services/paperless-ngx/.env"]
     service: webserver
     argv:
@@ -306,7 +292,7 @@
   community.docker.docker_compose_v2_exec:
     project_src: "{{ platform_current_dir }}/services/paperless-ngx"
     project_name: "{{ paperless_compose_project_name }}"
-    files: "{{ paperless_compose_files }}"
+    files: "{{ platform_service_compose_files['paperless-ngx'] }}"
     env_files: ["{{ platform_runtime_dir }}/services/paperless-ngx/.env"]
     service: webserver
     argv:
@@ -329,7 +315,7 @@
   community.docker.docker_compose_v2_exec:
     project_src: "{{ platform_current_dir }}/services/paperless-ngx"
     project_name: "{{ paperless_compose_project_name }}"
-    files: "{{ paperless_compose_files }}"
+    files: "{{ platform_service_compose_files['paperless-ngx'] }}"
     env_files: ["{{ platform_runtime_dir }}/services/paperless-ngx/.env"]
     service: webserver
     argv:

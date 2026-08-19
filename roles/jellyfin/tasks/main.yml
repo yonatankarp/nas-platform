@@ -12,12 +12,6 @@
       - "{{ platform_runtime_dir }}/services/jellyfin"
       - "{{ platform_runtime_dir }}/services/jellyfin/.env"
 
-- name: Check for a Jellyfin platform override
-  tags: [platform_verify_jellyfin]
-  ansible.builtin.stat:
-    path: "{{ platform_current_dir }}/services/jellyfin/compose.{{ platform_compose_kind }}.yml"
-  register: jellyfin_platform_compose
-
 - name: Require explicit Jellyfin acceleration and plugin policy
   ansible.builtin.assert:
     that:
@@ -184,14 +178,6 @@
       not ((platform_compose_kind | default('') == 'integration') and
            (deployment_bundle_test_mode | default(false) | bool))
 
-- name: Select the Jellyfin Compose definitions
-  tags: [platform_verify_jellyfin]
-  ansible.builtin.set_fact:
-    jellyfin_compose_files: >-
-      {{ ['compose.yml'] +
-         (jellyfin_platform_compose.stat.exists
-          | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) }}
-
 - name: Render the Jellyfin environment
   ansible.builtin.template:
     src: env.j2
@@ -202,7 +188,7 @@
   community.docker.docker_compose_v2:
     project_src: "{{ platform_current_dir }}/services/jellyfin"
     project_name: "{{ jellyfin_compose_project_name }}"
-    files: "{{ jellyfin_compose_files }}"
+    files: "{{ platform_service_compose_files['jellyfin'] }}"
     env_files: ["{{ platform_runtime_dir }}/services/jellyfin/.env"]
     state: present
     wait: true

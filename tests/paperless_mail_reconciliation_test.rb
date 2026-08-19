@@ -268,6 +268,8 @@ def run_full_verify_tag_fixture(port, fingerprint: true)
     variables = {
       "platform_compose_kind" => "mac", "platform_project_name" => "paperless-verify-fixture",
       "platform_current_dir" => ROOT, "platform_runtime_dir" => runtime,
+      # verify.yml resolves this in pre_tasks; this play stands in for that.
+      "platform_service_compose_files" => { "paperless-ngx" => ["compose.yml"] },
       "paperless_port" => port,
       "vault_paperless_admin_username" => "admin",
       "vault_paperless_admin_password" => "fixture-admin-secret",

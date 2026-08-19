@@ -14,18 +14,6 @@
       - "{{ platform_runtime_dir }}/services/dozzle/.env"
       - "{{ nas_docker_root }}/dozzle/data/users.yml"
 
-- name: Check for a Dozzle platform override
-  ansible.builtin.stat:
-    path: "{{ platform_current_dir }}/services/dozzle/compose.{{ platform_compose_kind }}.yml"
-  register: dozzle_platform_compose
-
-- name: Select the Dozzle Compose definitions
-  ansible.builtin.set_fact:
-    dozzle_compose_files: >-
-      {{ ['compose.yml'] +
-         (dozzle_platform_compose.stat.exists
-          | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) }}
-
 - name: Select the Dozzle mounted state root
   ansible.builtin.set_fact:
     dozzle_state_root: "{{ nas_docker_root }}/dozzle/data"
@@ -222,7 +210,7 @@
   community.docker.docker_compose_v2:
     project_src: "{{ platform_current_dir }}/services/dozzle"
     project_name: "{{ dozzle_compose_project_name }}"
-    files: "{{ dozzle_compose_files }}"
+    files: "{{ platform_service_compose_files['dozzle'] }}"
     env_files: ["{{ platform_runtime_dir }}/services/dozzle/.env"]
     services: [dozzle, alert-relay]
     state: stopped
@@ -249,7 +237,7 @@
   community.docker.docker_compose_v2:
     project_src: "{{ platform_current_dir }}/services/dozzle"
     project_name: "{{ dozzle_compose_project_name }}"
-    files: "{{ dozzle_compose_files }}"
+    files: "{{ platform_service_compose_files['dozzle'] }}"
     env_files: ["{{ platform_runtime_dir }}/services/dozzle/.env"]
     state: present
     wait: true
@@ -262,7 +250,7 @@
   community.docker.docker_compose_v2:
     project_src: "{{ platform_current_dir }}/services/dozzle"
     project_name: "{{ dozzle_compose_project_name }}"
-    files: "{{ dozzle_compose_files }}"
+    files: "{{ platform_service_compose_files['dozzle'] }}"
     env_files: ["{{ platform_runtime_dir }}/services/dozzle/.env"]
     services: [dozzle]
     state: restarted

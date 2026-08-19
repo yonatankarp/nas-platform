@@ -896,7 +896,7 @@ refuse("database credential probe must use Compose exec") unless compose_probe
 {
   "project_src" => "{{ platform_current_dir }}/services/immich",
   "project_name" => "{{ immich_compose_project_name }}",
-  "files" => "{{ immich_compose_files }}",
+  "files" => "{{ platform_service_compose_files['immich'] }}",
   "env_files" => ["{{ platform_runtime_dir }}/services/immich/.env"],
   "service" => "database",
   "tty" => false

@@ -706,7 +706,7 @@
   community.docker.docker_compose_v2:
     project_src: "{{ platform_current_dir }}/services/jellyfin"
     project_name: "{{ jellyfin_compose_project_name }}"
-    files: "{{ jellyfin_compose_files }}"
+    files: "{{ platform_service_compose_files['jellyfin'] }}"
     env_files: ["{{ platform_runtime_dir }}/services/jellyfin/.env"]
     services: [jellyfin]
     state: restarted

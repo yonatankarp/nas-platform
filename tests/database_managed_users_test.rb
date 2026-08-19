@@ -851,7 +851,7 @@ def exercise_paperless(failures, scenario: :normal, task_path: nil)
         "platform_current_dir" => "/fixture/current",
         "platform_runtime_dir" => "/fixture/runtime",
         "paperless_compose_project_name" => "fixture-paperless",
-        "paperless_compose_files" => ["compose.yml"],
+        "platform_service_compose_files" => { "paperless-ngx" => ["compose.yml"] },
         "vault_managed_paperless_ngx_users" => managed
       }
       executor_env = {

@@ -216,6 +216,11 @@ names, but they **must not contain an `image:` key**. The allowlist of overrides
 that may restate an image is exact and currently holds only tinyMediaManager,
 which pins a platform out of a multi-platform manifest.
 
+You do not select the override yourself. `deployment_bundle` stats every manifest
+service against the deployed release once per run and publishes the result as
+`platform_service_compose_files`, keyed by the service name in
+`services/manifest.yml`. Read it in your role; do not restat the override.
+
 ### 4. Write the role
 
 `roles/navidrome/defaults/main.yml`:
@@ -298,20 +303,6 @@ is about to touch.
       - "{{ platform_runtime_dir }}/services/navidrome"
       - "{{ platform_runtime_dir }}/services/navidrome/.env"
 
-- name: Check for a Navidrome platform override
-  tags: [platform_verify_navidrome]
-  ansible.builtin.stat:
-    path: "{{ platform_current_dir }}/services/navidrome/compose.{{ platform_compose_kind }}.yml"
-  register: navidrome_platform_compose
-
-- name: Select the Navidrome Compose definitions
-  tags: [platform_verify_navidrome]
-  ansible.builtin.set_fact:
-    navidrome_compose_files: >-
-      {{ ['compose.yml'] +
-         (navidrome_platform_compose.stat.exists
-          | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) }}
-
 - name: Render the Navidrome environment
   ansible.builtin.template:
     src: env.j2
@@ -322,7 +313,7 @@ is about to touch.
   community.docker.docker_compose_v2:
     project_src: "{{ platform_current_dir }}/services/navidrome"
     project_name: "{{ navidrome_compose_project_name }}"
-    files: "{{ navidrome_compose_files }}"
+    files: "{{ platform_service_compose_files['navidrome'] }}"
     env_files: ["{{ platform_runtime_dir }}/services/navidrome/.env"]
     state: present
     wait: true
