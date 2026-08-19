@@ -1,11 +1,20 @@
 """Ansible filter wrappers for Beszel persisted telemetry evidence."""
 
+import importlib.util
 from pathlib import Path
-import sys
 
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from module_utils.beszel_telemetry import evaluate_telemetry
+# Filter plugins cannot import module_utils/ by name, and putting the repo root
+# on sys.path to reach it would shadow site-packages with library/, roles/,
+# services/ and tests/ for the whole Ansible process. Loading the file by path
+# imports the same evaluator with no global side effect.
+_TELEMETRY_SPEC = importlib.util.spec_from_file_location(
+    "nas_platform_beszel_telemetry",
+    Path(__file__).resolve().parents[1] / "module_utils" / "beszel_telemetry.py",
+)
+_TELEMETRY = importlib.util.module_from_spec(_TELEMETRY_SPEC)
+_TELEMETRY_SPEC.loader.exec_module(_TELEMETRY)
+evaluate_telemetry = _TELEMETRY.evaluate_telemetry
 
 
 def beszel_latest_telemetry_record(response):

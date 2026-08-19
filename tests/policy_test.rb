@@ -401,6 +401,32 @@ check(failures, ansible_config_source.match?(/^filter_plugins\s*=\s*filter_plugi
 check(failures, filter_status.success?,
       "Mac physical-path filter must reject ambiguous or relative paths: #{filter_stderr.strip}")
 
+# Filter plugins cannot import module_utils/ by name. Reaching it by putting the
+# repository root on sys.path would shadow site-packages with library/,
+# module_utils/, roles/, services/ and tests/ for the whole Ansible process, so
+# shared code has to be loaded by path instead.
+sys_path_probe = <<~PYTHON
+  import importlib.util
+  import sys
+  from pathlib import Path
+
+  root = Path(sys.argv[1]).resolve()
+  for plugin in sorted((root / "filter_plugins").glob("*.py")):
+      spec = importlib.util.spec_from_file_location(f"probe_{plugin.stem}", plugin)
+      module = importlib.util.module_from_spec(spec)
+      try:
+          spec.loader.exec_module(module)
+      except Exception:
+          pass
+      if str(root) in sys.path:
+          raise SystemExit(f"{plugin.name} put the repository root on sys.path")
+PYTHON
+_sys_path_stdout, sys_path_stderr, sys_path_status = Open3.capture3(
+  "python3", "-c", sys_path_probe, ROOT
+)
+check(failures, sys_path_status.success?,
+      "filter plugins must reach shared code without mutating sys.path: #{sys_path_stderr.strip}")
+
 %w[ntfy beszel].each do |role_name|
   role_options = YAML.safe_load_file(
     File.join(ROOT, "roles", role_name, "meta", "argument_specs.yml")
