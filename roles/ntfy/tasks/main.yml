@@ -19,18 +19,6 @@
       - "{{ platform_runtime_dir }}/services/ntfy/.env"
       - "{{ nas_docker_root }}/ntfy/data/auth.db"
 
-- name: Check for an ntfy platform override
-  ansible.builtin.stat:
-    path: "{{ platform_current_dir }}/services/ntfy/compose.{{ platform_compose_kind }}.yml"
-  register: ntfy_platform_compose
-
-- name: Select the ntfy Compose definitions
-  ansible.builtin.set_fact:
-    ntfy_compose_files: >-
-      {{ ['compose.yml'] +
-         (ntfy_platform_compose.stat.exists
-          | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) }}
-
 - name: Select the ntfy mounted state root
   ansible.builtin.set_fact:
     ntfy_state_root: "{{ nas_docker_root }}/ntfy/data"
@@ -108,7 +96,7 @@
   community.docker.docker_compose_v2_run:
     project_src: "{{ platform_current_dir }}/services/ntfy"
     project_name: "{{ ntfy_compose_project_name }}"
-    files: "{{ ntfy_compose_files }}"
+    files: "{{ platform_service_compose_files['ntfy'] }}"
     env_files: ["{{ platform_runtime_dir }}/services/ntfy/.env"]
     service: ntfy
     argv:
@@ -179,7 +167,7 @@
   community.docker.docker_compose_v2:
     project_src: "{{ platform_current_dir }}/services/ntfy"
     project_name: "{{ ntfy_compose_project_name }}"
-    files: "{{ ntfy_compose_files }}"
+    files: "{{ platform_service_compose_files['ntfy'] }}"
     env_files: ["{{ platform_runtime_dir }}/services/ntfy/.env"]
     state: present
     wait: true

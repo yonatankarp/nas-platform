@@ -18,6 +18,14 @@
           tags: [always]
           no_log: true
       tags: [always]
+
+    - name: Select the deployed Compose definitions for verification
+      ansible.builtin.include_role:
+        name: deployment_bundle
+        tasks_from: compose_files
+        apply:
+          tags: [always]
+      tags: [always]
   roles:
     - role: ntfy
       tags: [never]

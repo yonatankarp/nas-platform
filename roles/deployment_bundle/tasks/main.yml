@@ -362,3 +362,13 @@
       - "{{ platform_current_dir }}"
   changed_when: true
   when: deployment_bundle_switch_required
+
+# Tagged always so a selective converge (--tags komga) still resolves the Compose
+# selection its service role needs, against whichever release `current` names.
+# Placed last so a full run reads the release this play just activated.
+- name: Resolve the deployed Compose selection for every service
+  ansible.builtin.include_tasks:
+    file: compose_files.yml
+    apply:
+      tags: [always]
+  tags: [always]

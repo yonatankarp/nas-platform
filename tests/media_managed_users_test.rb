@@ -1096,7 +1096,8 @@ def exercise_jellyfin_qsv_probe(failures)
       "rc" => "{{ 0 if fixture_container_exists else 1 }}"
     }
   }
-  variables = { "jellyfin_api" => nil, "jellyfin_compose_files" => ["compose.yml"],
+  variables = { "jellyfin_api" => nil,
+                "platform_service_compose_files" => { "jellyfin" => ["compose.yml"] },
                 "jellyfin_compose_project_name" => "fixture", "platform_current_dir" => ROOT,
                 "platform_runtime_dir" => ROOT }
   cases = [
@@ -1429,7 +1430,7 @@ def exercise_jellyfin_fresh_check_mode(failures)
         "platform_current_dir" => ROOT,
         "platform_runtime_dir" => directory,
         "jellyfin_compose_project_name" => "fresh-check-fixture",
-        "jellyfin_compose_files" => ["compose.yml"],
+        "platform_service_compose_files" => { "jellyfin" => ["compose.yml"] },
         "jellyfin_primary_recovery_marker" => File.join(directory, "recovery.json"),
         "jellyfin_admin_avatar_source" =>
           File.join(ROOT, "roles", "jellyfin", "files", "yonatan-avatar.jpeg"),

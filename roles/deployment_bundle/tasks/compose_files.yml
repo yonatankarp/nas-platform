@@ -1,0 +1,58 @@
+---
+# One rule for which Compose files each service deploys from, replacing the copy
+# every service role used to carry.
+#
+# The platform override is optional and its presence must be read from the
+# deployed release rather than the controller checkout: main.yml only copies an
+# override the controller actually carries, and target.yml validates containment
+# rather than existence, so a selective run can legitimately converge against a
+# release that predates one.
+#
+# Resolved from the controller manifest rather than deployment_bundle_services so
+# that verify.yml, which never runs inputs.yml, can include this file directly.
+- name: Resolve the manifest services requiring Compose selection
+  ansible.builtin.set_fact:
+    deployment_compose_services: >-
+      {{ (lookup('file', playbook_dir ~ '/services/manifest.yml') | from_yaml).services
+         | selectattr('status', 'in', ['implemented', 'accepted']) | list }}
+
+- name: Validate manifest service names before Compose path interpolation
+  ansible.builtin.assert:
+    that:
+      - item.name is string
+      - item.name is match('^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$')
+    fail_msg: >-
+      Manifest service names must be safe single-path components before they are
+      interpolated into deployed Compose paths.
+  loop: "{{ deployment_compose_services }}"
+  loop_control:
+    label: "{{ item.name | default('<invalid>') }}"
+
+- name: Check for deployed platform Compose overrides
+  ansible.builtin.stat:
+    path: "{{ platform_current_dir }}/services/{{ item.name }}/compose.{{ platform_compose_kind }}.yml"
+  loop: "{{ deployment_compose_services }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: deployment_compose_overrides
+
+- name: Select the deployed Compose definitions for every service
+  ansible.builtin.set_fact:
+    platform_service_compose_files: >-
+      {{ dict(deployment_compose_overrides.results
+              | map(attribute='item.name')
+              | zip(deployment_compose_overrides.results
+                    | map(attribute='stat.exists')
+                    | map('ternary',
+                          ['compose.yml', 'compose.' ~ platform_compose_kind ~ '.yml'],
+                          ['compose.yml']))) }}
+
+- name: Require a Compose selection for every manifest service
+  ansible.builtin.assert:
+    that:
+      - platform_service_compose_files | length ==
+        deployment_compose_services | length
+      - platform_service_compose_files.values() | map('first') | unique | list == ['compose.yml']
+    fail_msg: >-
+      Every implemented service must resolve to a Compose file list led by its
+      canonical compose.yml.

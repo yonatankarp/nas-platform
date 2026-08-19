@@ -3,7 +3,7 @@
   community.docker.docker_compose_v2_exec:
     project_src: "{{ platform_current_dir }}/services/paperless-ngx"
     project_name: "{{ paperless_compose_project_name }}"
-    files: "{{ paperless_compose_files }}"
+    files: "{{ platform_service_compose_files['paperless-ngx'] }}"
     env_files: ["{{ platform_runtime_dir }}/services/paperless-ngx/.env"]
     service: webserver
     argv:
@@ -134,7 +134,7 @@
   community.docker.docker_compose_v2_exec:
     project_src: "{{ platform_current_dir }}/services/paperless-ngx"
     project_name: "{{ paperless_compose_project_name }}"
-    files: "{{ paperless_compose_files }}"
+    files: "{{ platform_service_compose_files['paperless-ngx'] }}"
     env_files: ["{{ platform_runtime_dir }}/services/paperless-ngx/.env"]
     service: webserver
     env:
@@ -174,7 +174,7 @@
   community.docker.docker_compose_v2_exec:
     project_src: "{{ platform_current_dir }}/services/paperless-ngx"
     project_name: "{{ paperless_compose_project_name }}"
-    files: "{{ paperless_compose_files }}"
+    files: "{{ platform_service_compose_files['paperless-ngx'] }}"
     env_files: ["{{ platform_runtime_dir }}/services/paperless-ngx/.env"]
     service: webserver
     argv:
@@ -377,7 +377,7 @@
   community.docker.docker_compose_v2_exec:
     project_src: "{{ platform_current_dir }}/services/paperless-ngx"
     project_name: "{{ paperless_compose_project_name }}"
-    files: "{{ paperless_compose_files }}"
+    files: "{{ platform_service_compose_files['paperless-ngx'] }}"
     env_files: ["{{ platform_runtime_dir }}/services/paperless-ngx/.env"]
     service: webserver
     env:
@@ -418,7 +418,7 @@
   community.docker.docker_compose_v2_exec:
     project_src: "{{ platform_current_dir }}/services/paperless-ngx"
     project_name: "{{ paperless_compose_project_name }}"
-    files: "{{ paperless_compose_files }}"
+    files: "{{ platform_service_compose_files['paperless-ngx'] }}"
     env_files: ["{{ platform_runtime_dir }}/services/paperless-ngx/.env"]
     service: webserver
     env:

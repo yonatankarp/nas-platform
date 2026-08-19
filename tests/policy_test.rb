@@ -1599,7 +1599,41 @@ end
         guarded.any? { |path| path.to_s.end_with?("/compose.yml") } &&
           guarded.any? { |path| path.to_s.end_with?("/compose.{{ platform_compose_kind }}.yml") },
         "#{service_name} must guard every Compose file consumed by selective runs")
+
+  # Compose selection is resolved once by deployment_bundle. A role that stats the
+  # override itself has reintroduced the copy this replaced, and would drift from
+  # the shared rule.
+  restats = service_tasks.select do |task|
+    task.dig("ansible.builtin.stat", "path").to_s
+        .include?("compose.{{ platform_compose_kind }}.yml")
+  end
+  check(failures, restats.empty?,
+        "#{service_name} must read platform_service_compose_files, not restat its override")
 end
+
+# The selection is a play-level fact now, so both playbooks that run service roles
+# must resolve it, and it must survive tag selection.
+compose_bundle_tasks = YAML.safe_load_file(
+  File.join(ROOT, "roles", "deployment_bundle", "tasks", "main.yml"), aliases: true
+)
+bundle_selection = compose_bundle_tasks.last
+check(failures,
+      bundle_selection.dig("ansible.builtin.include_tasks", "file") == "compose_files.yml" &&
+        Array(bundle_selection["tags"]).include?("always") &&
+        Array(bundle_selection.dig("ansible.builtin.include_tasks", "apply", "tags"))
+          .include?("always"),
+      "deployment_bundle must resolve Compose selection last and under every tag selection")
+
+verify_play = YAML.safe_load_file(File.join(ROOT, "verify.yml"), aliases: true).first
+verify_selection = Array(verify_play["pre_tasks"]).find do |task|
+  task.dig("ansible.builtin.include_role", "tasks_from") == "compose_files"
+end
+check(failures,
+      !verify_selection.nil? &&
+        Array(verify_selection["tags"]).include?("always") &&
+        Array(verify_selection.dig("ansible.builtin.include_role", "apply", "tags"))
+          .include?("always"),
+      "verify.yml must resolve Compose selection before any verified role reads it")
 
 deployment_manifest_template = File.read(
   File.join(ROOT, "roles", "deployment_bundle", "templates", "manifest.yml.j2")

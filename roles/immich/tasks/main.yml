@@ -13,18 +13,6 @@
       - "{{ platform_runtime_dir }}/services/immich"
       - "{{ platform_runtime_dir }}/services/immich/.env"
 
-- name: Check for an Immich platform override
-  ansible.builtin.stat:
-    path: "{{ platform_current_dir }}/services/immich/compose.{{ platform_compose_kind }}.yml"
-  register: immich_platform_compose
-
-- name: Select the Immich Compose definitions
-  ansible.builtin.set_fact:
-    immich_compose_files: >-
-      {{ ['compose.yml'] +
-         (immich_platform_compose.stat.exists
-          | ternary(['compose.' ~ platform_compose_kind ~ '.yml'], [])) }}
-
 - name: Derive the effective Immich storage roots
   ansible.builtin.set_fact:
     immich_restore_database_root: "{{ nas_docker_root }}/immich/postgres"
@@ -153,7 +141,7 @@
   community.docker.docker_compose_v2:
     project_src: "{{ platform_current_dir }}/services/immich"
     project_name: "{{ immich_compose_project_name }}"
-    files: "{{ immich_compose_files }}"
+    files: "{{ platform_service_compose_files['immich'] }}"
     env_files: ["{{ platform_runtime_dir }}/services/immich/.env"]
     services: [immich-server, immich-machine-learning]
     state: stopped
@@ -189,7 +177,7 @@
   community.docker.docker_compose_v2:
     project_src: "{{ platform_current_dir }}/services/immich"
     project_name: "{{ immich_compose_project_name }}"
-    files: "{{ immich_compose_files }}"
+    files: "{{ platform_service_compose_files['immich'] }}"
     env_files: ["{{ platform_runtime_dir }}/services/immich/.env"]
     services: [database, redis]
     state: present
@@ -212,7 +200,7 @@
   community.docker.docker_compose_v2_exec:
     project_src: "{{ platform_current_dir }}/services/immich"
     project_name: "{{ immich_compose_project_name }}"
-    files: "{{ immich_compose_files }}"
+    files: "{{ platform_service_compose_files['immich'] }}"
     env_files: ["{{ platform_runtime_dir }}/services/immich/.env"]
     service: database
     argv:
@@ -260,7 +248,7 @@
   community.docker.docker_compose_v2:
     project_src: "{{ platform_current_dir }}/services/immich"
     project_name: "{{ immich_compose_project_name }}"
-    files: "{{ immich_compose_files }}"
+    files: "{{ platform_service_compose_files['immich'] }}"
     env_files: ["{{ platform_runtime_dir }}/services/immich/.env"]
     state: present
     wait: true
