@@ -7,7 +7,7 @@
   "timezone": "Europe/Berlin",
   "automerge": false,
   "rebaseWhen": "conflicted",
-  "prConcurrentLimit": 4,
+  "prConcurrentLimit": 10,
   "enabledManagers": [
     "docker-compose",
     "github-actions",
