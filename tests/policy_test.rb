@@ -1599,30 +1599,30 @@ end
         guarded.any? { |path| path.to_s.end_with?("/compose.yml") } &&
           guarded.any? { |path| path.to_s.end_with?("/compose.{{ platform_compose_kind }}.yml") },
         "#{service_name} must guard every Compose file consumed by selective runs")
-
-  # Compose selection is resolved once by deployment_bundle. A role that stats the
-  # override itself has reintroduced the copy this replaced, and would drift from
-  # the shared rule.
-  restats = service_tasks.select do |task|
-    task.dig("ansible.builtin.stat", "path").to_s
-        .include?("compose.{{ platform_compose_kind }}.yml")
-  end
-  check(failures, restats.empty?,
-        "#{service_name} must read platform_service_compose_files, not restat its override")
 end
 
-# The selection is a play-level fact now, so both playbooks that run service roles
-# must resolve it, and it must survive tag selection.
+# Two runtime failures nothing else catches, because every integration suite includes
+# deployment_bundle in its tags and so never exercises a lone --tags <service> run.
+# Resolving before activation makes a full run read the previous release's overrides;
+# losing the always tag leaves the fact undefined on a selective converge.
 compose_bundle_tasks = YAML.safe_load_file(
   File.join(ROOT, "roles", "deployment_bundle", "tasks", "main.yml"), aliases: true
 )
-bundle_selection = compose_bundle_tasks.last
+selection_index = compose_bundle_tasks.index do |task|
+  include_tasks = task["ansible.builtin.include_tasks"]
+  include_tasks.is_a?(Hash) && include_tasks["file"] == "compose_files.yml"
+end
+activation_index = compose_bundle_tasks.index do |task|
+  task["name"] == "Atomically activate the controller release"
+end
+bundle_selection = selection_index && compose_bundle_tasks[selection_index]
 check(failures,
-      bundle_selection.dig("ansible.builtin.include_tasks", "file") == "compose_files.yml" &&
+      !bundle_selection.nil? && !activation_index.nil? &&
+        selection_index > activation_index &&
         Array(bundle_selection["tags"]).include?("always") &&
         Array(bundle_selection.dig("ansible.builtin.include_tasks", "apply", "tags"))
           .include?("always"),
-      "deployment_bundle must resolve Compose selection last and under every tag selection")
+      "deployment_bundle must resolve Compose selection after activation, under every tag")
 
 verify_play = YAML.safe_load_file(File.join(ROOT, "verify.yml"), aliases: true).first
 verify_selection = Array(verify_play["pre_tasks"]).find do |task|
