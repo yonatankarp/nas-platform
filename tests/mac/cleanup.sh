@@ -266,6 +266,18 @@ cleanup_self_test() {
     *) mac_marker_gid=$(stat -c '%g' "$mac_owned/.nas-platform-mac-owned") ;;
   esac
   printf 'payload removed before final rmdir\n' > "$mac_owned/payload"
+  # The forced-failure probe runs the sandbox program inside a container, and the
+  # call below discards its output to keep the proof quiet. Without a reachable
+  # daemon the probe cannot report its authentication status at all, which would
+  # otherwise be indistinguishable from a genuinely broken rmdir contract.
+  command -v docker >/dev/null 2>&1 || {
+    printf 'cleanup self-test requires Docker to authenticate the final rmdir failure\n' >&2
+    exit 1
+  }
+  docker info >/dev/null 2>&1 || {
+    printf 'cleanup self-test requires a running Docker daemon to authenticate the final rmdir failure\n' >&2
+    exit 1
+  }
   if force_final_rmdir_failure "$mac_test_parent" "$(basename -- "$mac_owned")" \
       ".nas-platform-mac-owned" >/dev/null 2>&1; then
     mac_forced_status=0
