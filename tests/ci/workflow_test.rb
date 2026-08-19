@@ -107,6 +107,16 @@ workflow = YAML.safe_load_file(WORKFLOW_PATH, aliases: false)
 triggers = workflow["on"] || workflow[true]
 jobs = workflow.fetch("jobs", {})
 
+# Every job must bound its own runtime. GitHub's default is six hours, and on
+# 2026-08-19 an apt-get update stalled mid-download in `static`, producing no output
+# for 161 minutes before it was cancelled by hand. A missing timeout is what turns a
+# transient mirror failure into an all-day one.
+jobs.each do |job_name, job|
+  budget = job["timeout-minutes"]
+  check(failures, budget.is_a?(Integer) && budget.positive? && budget <= 90,
+        "job #{job_name} must declare timeout-minutes between 1 and 90, found #{budget.inspect}")
+end
+
 check(failures, triggers.is_a?(Hash), "workflow triggers are missing")
 if triggers.is_a?(Hash)
   pull_request = triggers["pull_request"]
@@ -254,7 +264,13 @@ static_commands = run_steps(static)
 ].each do |command|
   check(failures, static_commands.include?(command), "static checks must retain #{command.inspect}")
 end
-check(failures, static_commands.include?("apt-get install"), "static checks must install system tools")
+# Assert each package is installed rather than the exact apt invocation, so adding
+# flags (retries, timeouts) to a fetch that has stalled in CI does not fail this.
+%w[apache2-utils openssh-client openssl].each do |package|
+  check(failures,
+        static_commands.match?(/apt-get[^\n]*install[^\n]*#{Regexp.escape(package)}/),
+        "static checks must install #{package}")
+end
 check(failures, static_commands.include?('python3 -m venv "$RUNNER_TEMP/ansible"'),
       "static checks must create an isolated Ansible environment")
 check(failures, static_commands.include?(
