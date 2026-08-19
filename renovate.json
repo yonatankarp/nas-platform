@@ -42,12 +42,11 @@
       ]
     },
     {
-      "description": "Valkey and the Postgres+vector image in the Immich stack are copied verbatim, digest included, from the Immich release's own docker-compose.yml. Their correct value is whatever that release pins, which a bot cannot know, so they follow an Immich upgrade by hand rather than moving on their own.",
+      "description": "The Postgres+vector image is copied verbatim, digest included, from docker/docker-compose.yml at the pinned Immich release's git tag. Its extension versions are coupled to the Immich schema, so it follows an Immich upgrade by hand and never moves on its own.",
       "matchFileNames": [
         "services/immich/compose.yml"
       ],
       "matchPackageNames": [
-        "docker.io/valkey/valkey",
         "ghcr.io/immich-app/postgres"
       ],
       "enabled": false
