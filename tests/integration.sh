@@ -1152,7 +1152,8 @@ docker run --rm \
       printf 'EXISTING PREFLIGHT PROBE ACCEPTED\n' >&2
       exit 1
     fi
-    if ! grep -qF 'must not already exist' /tmp/existing-probe-refusal.txt; then
+    if ! grep -qF 'already exists and is not the empty directory' \
+      /tmp/existing-probe-refusal.txt; then
       cat /tmp/existing-probe-refusal.txt >&2
       printf 'EXISTING PREFLIGHT PROBE FAILED FOR WRONG REASON\n' >&2
       exit 1
@@ -1164,6 +1165,21 @@ docker run --rm \
     fi
     printf 'EXISTING_PREFLIGHT_PROBE_PRESERVED\n'
     rm -rf \"\$existing_probe\"
+
+    # An interrupted run leaves the probe directory behind empty. That is the
+    # role's own debris, not pre-existing data, so preflight must reclaim it
+    # instead of locking every later converge out of the deployment root.
+    mkdir -p \"\$existing_probe\"
+    if ! run_play --tags preflight >/tmp/interrupted-probe.txt 2>&1; then
+      cat /tmp/interrupted-probe.txt >&2
+      printf 'INTERRUPTED PREFLIGHT PROBE NOT RECLAIMED\n' >&2
+      exit 1
+    fi
+    if [ -e \"\$existing_probe\" ]; then
+      printf 'INTERRUPTED PREFLIGHT PROBE SURVIVED\n' >&2
+      exit 1
+    fi
+    printf 'INTERRUPTED_PREFLIGHT_PROBE_RECLAIMED\n'
 
     if [ \"\$(cat '$stale_deploy_root/current/services/ntfy/compose.yml')\" = \
          legacy-current-compose ] && \
