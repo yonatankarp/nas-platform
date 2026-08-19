@@ -77,7 +77,7 @@ services:
 
   socket-proxy:
     container_name: dozzle_socket_proxy
-    image: lscr.io/linuxserver/socket-proxy:3.4.3@sha256:5253050dd304d351df2ee61bba43c57dd2b19bb640497a679592051de3a3c639
+    image: lscr.io/linuxserver/socket-proxy:3.4.3@sha256:165670d41ce04c44c271075e4be87f6de17633478eae817ed967d71755de650b
     labels:
       dev.dozzle.group: dozzle
       dev.dozzle.name: socket-proxy
