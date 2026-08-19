@@ -1517,17 +1517,34 @@ end
         "immutable release comparison must include #{metadata}")
 end
 
-%w[ntfy beszel].each do |service_name|
-  service_body = File.read(File.join(ROOT, "roles", service_name, "tasks", "main.yml"))
-  target_validation = service_body.index("tasks_from: target")
-  runtime_use = [service_body.index("platform_runtime_dir"), service_body.index("platform_current_dir")].compact.min
+# Parsed rather than byte-offset: a task name or a variable reference occurring inside a
+# comment or a when: expression is not evidence of task ordering. The validating task's own
+# deployment_target_extra_paths necessarily name the runtime roots, so it is excluded from
+# the first-use search rather than compared against itself.
+%w[ntfy beszel dozzle audiobookshelf komga tinymediamanager jellyfin immich
+   paperless_ngx].each do |service_name|
+  service_tasks = YAML.safe_load_file(
+    File.join(ROOT, "roles", service_name, "tasks", "main.yml"), aliases: true
+  ) || []
+  target_validation = service_tasks.index do |task|
+    include_role = task["ansible.builtin.include_role"]
+    include_role.is_a?(Hash) && include_role["name"] == "deployment_bundle" &&
+      include_role["tasks_from"] == "target"
+  end
+  runtime_use = service_tasks.each_with_index.find do |task, index|
+    index != target_validation &&
+      YAML.dump(task).match?(/platform_runtime_dir|platform_current_dir/)
+  end&.last
   check(failures, !runtime_use || (target_validation && target_validation < runtime_use),
         "#{service_name} must revalidate target paths before runtime/current use")
-  if target_validation
-    check(failures, service_body.include?("/compose.yml") &&
-                    service_body.include?("/compose.{{ platform_compose_kind }}.yml"),
-          "#{service_name} must guard every Compose file consumed by selective runs")
-  end
+  next unless target_validation
+
+  guarded = (service_tasks.fetch(target_validation)["vars"] || {})
+            .fetch("deployment_target_extra_paths", [])
+  check(failures,
+        guarded.any? { |path| path.to_s.end_with?("/compose.yml") } &&
+          guarded.any? { |path| path.to_s.end_with?("/compose.{{ platform_compose_kind }}.yml") },
+        "#{service_name} must guard every Compose file consumed by selective runs")
 end
 
 deployment_manifest_template = File.read(
