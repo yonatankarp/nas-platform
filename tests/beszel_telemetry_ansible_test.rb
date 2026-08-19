@@ -13,8 +13,8 @@ ROLE_TASKS = File.join(ROOT, "roles/beszel/tasks/main.yml")
 ROLE_VARS = File.join(ROOT, "roles/beszel/vars/main.yml")
 
 version_output, version_status = Open3.capture2("ansible-playbook", "--version")
-abort "Beszel Ansible telemetry test requires ansible-core 2.21.2" unless
-  version_status.success? && version_output.start_with?("ansible-playbook [core 2.21.2]")
+abort "Beszel Ansible telemetry test requires ansible-core 2.21.3" unless
+  version_status.success? && version_output.start_with?("ansible-playbook [core 2.21.3]")
 
 def flatten_tasks(tasks)
   Array(tasks).flat_map do |task|
