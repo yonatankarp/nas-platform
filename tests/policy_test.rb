@@ -1468,15 +1468,15 @@ preflight_body = File.read(File.join(ROOT, "roles", "preflight", "tasks", "main.
 check(failures, preflight_body.include?("{{ nas_docker_root }}/.nas-platform-preflight-probe") &&
                 !preflight_body.include?("{{ platform_deploy_root }}/.preflight-probe"),
       "fresh-install preflight must probe the existing validated nas_docker_root")
-preflight_tasks = flatten_tasks(YAML.safe_load(preflight_body))
-probe_inspection = preflight_tasks.index { |task| task["name"] == "Inspect the deterministic write probe path" }
-probe_refusal = preflight_tasks.index { |task| task["name"] == "Refuse to remove a pre-existing write probe path" }
-probe_reclaim = preflight_tasks.index do |task|
+preflight_probe_tasks = flatten_tasks(YAML.safe_load(preflight_body))
+probe_inspection = preflight_probe_tasks.index { |task| task["name"] == "Inspect the deterministic write probe path" }
+probe_refusal = preflight_probe_tasks.index { |task| task["name"] == "Refuse to remove a pre-existing write probe path" }
+probe_reclaim = preflight_probe_tasks.index do |task|
   task["name"] == "Reclaim the empty write probe directory left by an interrupted run"
 end
-probe_creation = preflight_tasks.index { |task| task["name"] == "Confirm the service state root is writable" }
+probe_creation = preflight_probe_tasks.index { |task| task["name"] == "Confirm the service state root is writable" }
 probe_conditions = Array(
-  probe_refusal ? preflight_tasks.fetch(probe_refusal).dig("ansible.builtin.assert", "that") : nil
+  probe_refusal ? preflight_probe_tasks.fetch(probe_refusal).dig("ansible.builtin.assert", "that") : nil
 ).join(" ")
 check(failures, probe_inspection && probe_refusal && probe_reclaim && probe_creation &&
                 probe_inspection < probe_refusal && probe_refusal < probe_reclaim &&
@@ -1485,21 +1485,21 @@ check(failures, probe_inspection && probe_refusal && probe_reclaim && probe_crea
 # The probe path is the role's own debris after an interrupted run, so an empty
 # directory self-heals while anything that could be real data still refuses.
 check(failures, probe_inspection &&
-                preflight_tasks.fetch(probe_inspection).dig("ansible.builtin.stat", "follow") == false,
+                preflight_probe_tasks.fetch(probe_inspection).dig("ansible.builtin.stat", "follow") == false,
       "preflight must inspect the deterministic probe path without following symlinks")
 check(failures, probe_conditions.include?("preflight_write_probe.stat.isdir") &&
                 probe_conditions.include?("not preflight_write_probe.stat.islnk") &&
                 probe_conditions.include?("preflight_write_probe_contents.files"),
       "preflight must refuse a pre-existing probe that is not an empty non-symlink directory")
-probe_emptiness = preflight_tasks.find do |task|
+probe_emptiness = preflight_probe_tasks.find do |task|
   task.dig("ansible.builtin.find", "paths") == "{{ nas_docker_root }}/.nas-platform-preflight-probe"
 end
 check(failures, probe_emptiness&.dig("ansible.builtin.find", "hidden") == true &&
                 probe_emptiness&.dig("ansible.builtin.find", "file_type") == "any",
       "preflight must count hidden and non-file probe children when testing emptiness")
 check(failures, probe_reclaim &&
-                preflight_tasks.fetch(probe_reclaim).dig("ansible.builtin.file", "state") == "absent" &&
-                preflight_tasks.fetch(probe_reclaim)["changed_when"] == false,
+                preflight_probe_tasks.fetch(probe_reclaim).dig("ansible.builtin.file", "state") == "absent" &&
+                preflight_probe_tasks.fetch(probe_reclaim)["changed_when"] == false,
       "preflight must reclaim the stale probe directory without reporting a change")
 
 deployment_body = File.read(File.join(ROOT, "roles", "deployment_bundle", "tasks", "main.yml"))
@@ -1671,6 +1671,15 @@ check(failures, host_prep_file["owner"].to_s.include?("platform_kind == 'nas'") 
                 host_prep_file["owner"].to_s.include?("else omit") &&
                 host_prep_file["group"].to_s.include?("else omit"),
       "host preparation must restrict Linux ownership to the explicit integration capability")
+# nas_media_root is an env-derived temp path on Mac hosts and reliably contains a
+# dot, so feeding it to a regex test unescaped makes it match sibling directories.
+media_ownership_conditions = Array(
+  host_prep_tasks.find do |task|
+    task["name"] == "Refuse to claim ownership of NAS-managed user files"
+  end&.dig("ansible.builtin.assert", "that")
+).join(" ")
+check(failures, media_ownership_conditions.include?("nas_media_root | regex_escape"),
+      "NAS-managed ownership refusal must escape nas_media_root before matching it as a regex")
 
 preflight_tasks = YAML.safe_load_file(File.join(ROOT, "roles", "preflight", "tasks", "main.yml"))
 ownership_guard = preflight_tasks.find do |task|

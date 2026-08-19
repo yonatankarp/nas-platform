@@ -15,7 +15,8 @@
 - name: Refuse to claim ownership of NAS-managed user files
   ansible.builtin.assert:
     that:
-      - not (item.path is match(nas_media_root ~ '/') and (item.owner is defined or item.group is defined))
+      - not (item.path is match((nas_media_root | regex_escape) ~ '/')
+             and (item.owner is defined or item.group is defined))
     fail_msg: >-
       {{ item.path }} is under {{ nas_media_root }}, where the NAS owns the files.
       Grant access through the NAS permission controls rather than declaring
