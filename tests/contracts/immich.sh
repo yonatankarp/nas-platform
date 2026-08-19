@@ -61,26 +61,21 @@ end
 
 # The complete pinned stack. Immich is one application spread across four
 # containers, so a partial migration is a broken migration.
-EXPECTED_IMAGES = {
-  "immich-server" =>
-    "ghcr.io/immich-app/immich-server:v3.1.0@" \
-    "sha256:b434cb9287eea1471c9974845914d4dd328c9c2d652e446ed4930f99944f0ceb",
-  "immich-machine-learning" =>
-    "ghcr.io/immich-app/immich-machine-learning:v3.1.0@" \
-    "sha256:5a0839dc5303cd7215bcd2180a26aed3af41675aefb3e75e5157e9f10ad16e6e",
-  "redis" =>
-    "docker.io/valkey/valkey:9@" \
-    "sha256:3acc0687f2a2e1091fae6450d7842dd658c941338cf0a873ddd9e14b9e4ea4dd",
-  "database" =>
-    "ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0@" \
-    "sha256:bcf63357191b76a916ae5eb93464d65c07511da41e3bf7a8416db519b40b1c23"
-}.freeze
+EXPECTED_CONTAINERS = %w[
+  immich-server immich-machine-learning redis database
+].freeze
 
 refuse("stack composition differs: #{containers.keys.sort.join(', ')}") unless
-  containers.keys.sort == EXPECTED_IMAGES.keys.sort
-EXPECTED_IMAGES.each do |name, image|
-  refuse("#{name} legacy image pin differs") unless containers.fetch(name).fetch("image") == image
+  containers.keys.sort == EXPECTED_CONTAINERS.sort
+
+# The server and the machine learning worker ship as one release and must never
+# drift apart. Asserting that relationship survives an image update; asserting
+# either version would not.
+coupled_tags = %w[immich-server immich-machine-learning].map do |name|
+  containers.fetch(name).fetch("image")[%r{:([^:@/]+)@sha256:}, 1]
 end
+refuse("Immich server and machine learning versions differ: #{coupled_tags.join(', ')}") unless
+  coupled_tags.compact.uniq.length == 1
 
 containers.each do |name, spec|
   refuse("#{name} restart policy differs") unless spec.fetch("restart") == "unless-stopped"

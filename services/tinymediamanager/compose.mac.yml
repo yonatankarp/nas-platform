@@ -2,7 +2,6 @@
 services:
   tinymediamanager:
     container_name: ${PLATFORM_PROJECT_NAME:?}-tinymediamanager
-    image: docker.io/tinymediamanager/tinymediamanager:5.3.1@sha256:bada62a398e3aabe7a67b0e081c40dc08ce74aa86b7ba63e0a34a1bf278146a4
     platform: linux/amd64
     network_mode: bridge
     ports: !override

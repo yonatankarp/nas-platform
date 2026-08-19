@@ -32,8 +32,6 @@ role_tasks = YAML.safe_load_file(role_path, aliases: false)
 defaults = YAML.safe_load_file(defaults_path)
 argument_specs = YAML.safe_load_file(argument_specs_path)
 service = compose.fetch("services").fetch("komga")
-expected_image = "docker.io/gotson/komga:1.26.1@sha256:e109902ebebb8a05f633f48d84a2ac7bb1334bf0f6fbc17262a333082c7de44d"
-abort "Komga contract failed: legacy image pin differs" unless service.fetch("image") == expected_image
 abort "Komga contract failed: NAS UID/GID differs" unless service.fetch("user") == "1000:100"
 abort "Komga contract failed: NAS port differs" unless service.fetch("ports") == ["25600:25600"]
 abort "Komga contract failed: storage contract differs" unless service.fetch("volumes") == [

@@ -1,0 +1,121 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":dependencyDashboard"
+  ],
+  "timezone": "Europe/Berlin",
+  "automerge": false,
+  "rebaseWhen": "conflicted",
+  "prConcurrentLimit": 4,
+  "enabledManagers": [
+    "docker-compose",
+    "github-actions",
+    "ansible-galaxy",
+    "custom.regex"
+  ],
+  "docker": {
+    "pinDigests": true
+  },
+  "packageRules": [
+    {
+      "description": "Immich server and machine learning must always move together.",
+      "groupName": "immich",
+      "matchDatasources": [
+        "docker"
+      ],
+      "matchPackageNames": [
+        "ghcr.io/immich-app/immich-server",
+        "ghcr.io/immich-app/immich-machine-learning"
+      ]
+    },
+    {
+      "description": "The Beszel hub and both agent variants share one release train.",
+      "groupName": "beszel",
+      "matchDatasources": [
+        "docker"
+      ],
+      "matchPackageNames": [
+        "ghcr.io/henrygd/beszel/beszel",
+        "ghcr.io/henrygd/beszel/beszel-agent",
+        "ghcr.io/henrygd/beszel/beszel-agent-intel"
+      ]
+    },
+    {
+      "description": "Valkey and the Postgres+vector image in the Immich stack are copied verbatim, digest included, from the Immich release's own docker-compose.yml. Their correct value is whatever that release pins, which a bot cannot know, so they follow an Immich upgrade by hand rather than moving on their own.",
+      "matchFileNames": [
+        "services/immich/compose.yml"
+      ],
+      "matchPackageNames": [
+        "docker.io/valkey/valkey",
+        "ghcr.io/immich-app/postgres"
+      ],
+      "enabled": false
+    },
+    {
+      "description": "Bumping Immich also means re-copying the redis and database lines from that release's compose, and updating immich_restore_expected_immich_version plus the pinned preference schema.",
+      "matchDatasources": [
+        "docker"
+      ],
+      "matchPackageNames": [
+        "ghcr.io/immich-app/immich-server",
+        "ghcr.io/immich-app/immich-machine-learning"
+      ],
+      "addLabels": [
+        "needs-manual-coupling"
+      ]
+    },
+    {
+      "description": "Database major versions change on-disk formats that Ansible cannot migrate.",
+      "matchDatasources": [
+        "docker"
+      ],
+      "matchPackageNames": [
+        "docker.io/library/postgres",
+        "docker.io/valkey/valkey"
+      ],
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "dependencyDashboardApproval": true
+    }
+  ],
+  "customManagers": [
+    {
+      "description": "Ansible tooling pinned in the CI workflow's pip install step.",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/ci\\.yml$/"
+      ],
+      "matchStrings": [
+        "'(?<depName>ansible-core|ansible-lint)==(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)'"
+      ],
+      "datasourceTemplate": "pypi"
+    },
+    {
+      "description": "ansible-core pinned by the integration harness.",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^tests/integration\\.sh$/"
+      ],
+      "matchStrings": [
+        "ansible_core_version=(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)"
+      ],
+      "depNameTemplate": "ansible-core",
+      "datasourceTemplate": "pypi"
+    },
+    {
+      "description": "Python image used by the integration sandbox and its cleanup helper. All three files must move together or cleanup pulls a second image.",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^tests/integration\\.sh$/",
+        "/^tests/sandbox_cleanup\\.sh$/",
+        "/^tests/integration_cleanup_test\\.sh$/"
+      ],
+      "matchStrings": [
+        "(?:runner_image|cleanup_sandbox_image)=(?<depName>[^:\\s]+):(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[0-9a-f]{64})"
+      ],
+      "datasourceTemplate": "docker"
+    }
+  ]
+}

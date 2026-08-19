@@ -770,27 +770,11 @@ manifest_entries.each do |service|
         "#{name}: implemented service has no automated verification or service contract")
 end
 
-# Digest pinning with a human-readable version tag, so Renovate can propose
-# updates and a reader can tell what is deployed.
+# Digest pinning with a human-readable version tag, so an update bot can propose
+# a bump and a reader can tell what is deployed. The approved version is whatever
+# compose.yml declares; pinning a copy of it here would mean every image update
+# had to edit this file too, which is what a property check exists to avoid.
 IMAGE = %r{\A\S+:[^@\s]+@sha256:[0-9a-f]{64}\z}
-SELECTED_IMAGE_PINS = {
-  ["services/dozzle/compose.yml", "dozzle"] => "docker.io/amir20/dozzle:v10.7.1@sha256:a8441e9d2928cc7b30d0023f5eedbb87ef6e234d87f3be02662bd8f417955b8b",
-  ["services/komga/compose.yml", "komga"] => "docker.io/gotson/komga:1.26.1@sha256:e109902ebebb8a05f633f48d84a2ac7bb1334bf0f6fbc17262a333082c7de44d",
-  ["services/paperless-ngx/compose.yml", "gotenberg"] => "docker.io/gotenberg/gotenberg:8.35.0@sha256:a16a14e1f18a71405624bc028e90d4ef50ea774c352b303639c10bf7b141f760",
-  ["services/tinymediamanager/compose.yml", "tinymediamanager"] => "docker.io/tinymediamanager/tinymediamanager:5.3.1@sha256:bada62a398e3aabe7a67b0e081c40dc08ce74aa86b7ba63e0a34a1bf278146a4",
-  ["services/tinymediamanager/compose.integration.yml", "tinymediamanager"] => "docker.io/tinymediamanager/tinymediamanager:5.3.1@sha256:bada62a398e3aabe7a67b0e081c40dc08ce74aa86b7ba63e0a34a1bf278146a4",
-  ["services/tinymediamanager/compose.mac.yml", "tinymediamanager"] => "docker.io/tinymediamanager/tinymediamanager:5.3.1@sha256:bada62a398e3aabe7a67b0e081c40dc08ce74aa86b7ba63e0a34a1bf278146a4"
-}.freeze
-SUPERSEDED_SELECTED_IMAGE_TAGS = %w[v10.6.14 1.25.0 8.34 5.3.0].freeze
-
-SELECTED_IMAGE_PINS.each do |(relative_path, container), expected_image|
-  image = YAML.safe_load_file(File.join(ROOT, relative_path), aliases: true)
-              .fetch("services").fetch(container).fetch("image")
-  check(failures, image == expected_image,
-        "#{relative_path}/#{container}: selected image pin must match the approved immutable reference")
-  check(failures, SUPERSEDED_SELECTED_IMAGE_TAGS.none? { |tag| image.include?(":#{tag}@") },
-        "#{relative_path}/#{container}: selected image pin must not use a superseded version")
-end
 
 service_dirs.each do |dir|
   name = File.basename(dir)
@@ -852,34 +836,23 @@ service_dirs.each do |dir|
 end
 
 # Platform Compose files may add capabilities (devices, mounts, profiles, and
-# similar host-specific wiring). tinyMediaManager platform overrides retain the
-# canonical multi-platform manifest and select linux/amd64 through Compose.
-TINYMEDIAMANAGER_IMAGE = SELECTED_IMAGE_PINS.fetch(
-  ["services/tinymediamanager/compose.yml", "tinymediamanager"]
-)
-platform_image_overrides = {
-  "services/tinymediamanager/compose.integration.yml" => {
-    "tinymediamanager" => TINYMEDIAMANAGER_IMAGE
-  },
-  "services/tinymediamanager/compose.mac.yml" => {
-    "tinymediamanager" => TINYMEDIAMANAGER_IMAGE
-  }
-}
+# similar host-specific wiring). An override may restate an image only so that
+# platform keys sit beside it, as tinyMediaManager does to select linux/amd64
+# out of a multi-platform manifest, never to deploy something different. The
+# relationship is the invariant, so the canonical file stays the only place a
+# version is written and a nil canonical value fails the same way a mismatch does.
 Dir[File.join(ROOT, "services", "*", "compose.*.yml")].sort.each do |override_path|
-  override = YAML.safe_load_file(override_path, aliases: true)
-  image_services = override.fetch("services", {}).filter_map do |container, spec|
-    [container, spec.fetch("image")] if spec.is_a?(Hash) && spec.key?("image")
-  end
   relative_override = override_path.delete_prefix("#{ROOT}/")
-  expected_images = platform_image_overrides.fetch(relative_override, {}).to_a
-  check(failures, image_services.sort == expected_images.sort,
-        "#{relative_override}: platform image overrides differ from the exact allowlist")
+  canonical_path = File.join(File.dirname(override_path), "compose.yml")
+  canonical = File.file?(canonical_path) ? YAML.safe_load_file(canonical_path, aliases: true) : {}
+  override = YAML.safe_load_file(override_path, aliases: true)
+  override.fetch("services", {}).each do |container, spec|
+    next unless spec.is_a?(Hash) && spec.key?("image")
+
+    check(failures, spec.fetch("image") == canonical.dig("services", container, "image"),
+          "#{relative_override}/#{container}: platform image overrides differ from the canonical compose.yml image")
+  end
 end
-canonical_tmm_image = YAML.safe_load_file(
-  File.join(ROOT, "services", "tinymediamanager", "compose.yml"), aliases: true
-).dig("services", "tinymediamanager", "image")
-check(failures, canonical_tmm_image == TINYMEDIAMANAGER_IMAGE,
-      "tinyMediaManager canonical image must remain the approved multi-platform manifest")
 
 # Every role declares its interface, so a missing variable fails before the first
 # task naming the variable rather than midway with a trace.

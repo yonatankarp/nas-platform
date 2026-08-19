@@ -55,9 +55,6 @@ def refuse(message)
   abort "Jellyfin contract failed: #{message}"
 end
 
-expected_image = "docker.io/jellyfin/jellyfin:10.11.11@" \
-                 "sha256:aefb67e6a7ff1debdd154a78a7bbb780fd0c873d8639210a7f6a2016ad2b35db"
-refuse("legacy image pin differs") unless service.fetch("image") == expected_image
 avatar = File.join(root, "roles", "jellyfin", "files", "yonatan-avatar.jpeg")
 refuse("approved administrator avatar hash differs") unless
   Digest::SHA256.file(avatar).hexdigest ==

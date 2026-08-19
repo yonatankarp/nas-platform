@@ -308,7 +308,7 @@ def implement_paperless(root)
             max-size: 10m
             max-file: "3"
       gotenberg:
-        image: docker.io/gotenberg/gotenberg:8.35.0@sha256:a16a14e1f18a71405624bc028e90d4ef50ea774c352b303639c10bf7b141f760
+        image: docker.io/gotenberg/gotenberg:8.35.0@sha256:#{'0' * 64}
         restart: unless-stopped
         logging:
           driver: json-file
@@ -1042,7 +1042,7 @@ if permissive_output.include?("compose-filter-secret-sentinel")
 end
 
 expect_failure(failures, "platform override redefines image",
-               "platform image overrides differ from the exact allowlist") do |root|
+               "platform image overrides differ from the canonical compose.yml image") do |root|
   path = File.join(root, "services", "beszel", "compose.integration.yml")
   File.write(path, <<~YAML)
     ---

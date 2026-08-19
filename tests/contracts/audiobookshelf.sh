@@ -42,8 +42,6 @@ environment_template = File.read(environment_template_path)
 integration = File.read(integration_path)
 storage = YAML.safe_load_file(storage_inventory_path)
 service = compose.fetch("services").fetch("audiobookshelf")
-expected_image = "ghcr.io/advplyr/audiobookshelf:2.36.0@sha256:180acad33d69c99ed208676465d8edcb268fa46967735579a7810859885b1a8e"
-abort "Audiobookshelf contract failed: legacy image pin differs" unless service.fetch("image") == expected_image
 abort "Audiobookshelf contract failed: NAS UID/GID differs" unless service.fetch("user") == "1000:100"
 abort "Audiobookshelf contract failed: NAS port differs" unless service.fetch("ports") == ["13378:80"]
 abort "Audiobookshelf contract failed: storage contract differs" unless service.fetch("volumes") == [

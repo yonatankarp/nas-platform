@@ -30,8 +30,6 @@ role = File.read(role_path)
 role_tasks = YAML.safe_load_file(role_path, aliases: true)
 defaults = YAML.safe_load_file(defaults_path)
 service = compose.fetch("services").fetch("tinymediamanager")
-expected_image = "docker.io/tinymediamanager/tinymediamanager:5.3.1@sha256:bada62a398e3aabe7a67b0e081c40dc08ce74aa86b7ba63e0a34a1bf278146a4"
-abort "tinyMediaManager contract failed: legacy image pin differs" unless service.fetch("image") == expected_image
 abort "tinyMediaManager contract failed: NAS host networking differs" unless service.fetch("network_mode") == "host"
 abort "tinyMediaManager contract failed: NAS storage contract differs" unless service.fetch("volumes") == [
   "${TINYMEDIAMANAGER_DATA_PATH:?}:/data",
@@ -49,7 +47,6 @@ abort "tinyMediaManager contract failed: logging policy differs" unless service.
 mac_service = mac.fetch("services").fetch("tinymediamanager")
 abort "tinyMediaManager contract failed: Mac override must replace host networking" unless
   mac_service.fetch("network_mode") == "bridge" &&
-    mac_service.fetch("image") == expected_image &&
     mac_service.fetch("platform") == "linux/amd64" && mac_service.fetch("ports").sort == [
     "${TINYMEDIAMANAGER_API_HOST_PORT:?}:7878",
     "${TINYMEDIAMANAGER_WEB_HOST_PORT:?}:4000"
@@ -57,9 +54,8 @@ abort "tinyMediaManager contract failed: Mac override must replace host networki
 abort "tinyMediaManager contract failed: Mac override must not publish direct VNC" if
   mac_service.fetch("ports").any? { |port| port.end_with?(":5900") }
 integration_service = integration.fetch("services").fetch("tinymediamanager")
-abort "tinyMediaManager contract failed: integration must select the canonical multi-platform image" unless
-  integration_service.fetch("image") == expected_image &&
-    integration_service.fetch("platform") == "linux/amd64"
+abort "tinyMediaManager contract failed: integration must select linux/amd64" unless
+  integration_service.fetch("platform") == "linux/amd64"
 # The application binds the container side of the published mapping. If the role
 # instead wrote the host port into httpServerPort, the mapping would forward to a
 # port nothing listens on and every API call would be reset.

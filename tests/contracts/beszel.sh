@@ -95,7 +95,7 @@ intel = compose.fetch("services").fetch("agent-intel")
 portable = compose.fetch("services").fetch("agent-portable")
 proxy = compose.fetch("services").fetch("socket-proxy")
 refuse("NAS Intel agent image differs") unless
-  intel.fetch("image").start_with?("ghcr.io/henrygd/beszel/beszel-agent-intel:0.18.7@sha256:")
+  intel.fetch("image").start_with?("ghcr.io/henrygd/beszel/beszel-agent-intel:")
 refuse("NAS Intel render device differs") unless
   intel.fetch("devices") == ["${NAS_RENDER_DEVICE:?}:${NAS_RENDER_DEVICE:?}"] &&
     nas_inventory.fetch("platform_render_device_path") == "/dev/dri/renderD128"
