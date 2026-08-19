@@ -68,8 +68,10 @@ services:
 
   # Deliberately still named redis: Immich resolves its cache by this Compose
   # service name, and the image behind it is Valkey.
-  # Also copied verbatim, digest included, from the pinned Immich release's
-  # compose file rather than selected here.
+  # Tracks the digest Immich's own compose carries, but it is a cache, not part
+  # of the release contract: upstream refreshes this digest independently of
+  # Immich releases, so ours need not equal the one the pinned tag shipped with.
+  # Digest refreshes are wanted here for base-image patches.
   redis:
     container_name: immich_redis
     image: docker.io/valkey/valkey:9@sha256:3acc0687f2a2e1091fae6450d7842dd658c941338cf0a873ddd9e14b9e4ea4dd
@@ -87,10 +89,11 @@ services:
   # depends on those exact extension versions for smart search and face
   # recognition, so the value is dictated by the Immich release, not chosen here.
   #
-  # This line, digest included, is copied verbatim from the docker/docker-compose.yml
-  # of the Immich release pinned above. Re-copy it when changing that release; do
-  # not bump it on its own. immich_restore_expected_postgres_major in
-  # roles/immich/defaults/main.yml records the major and must agree.
+  # This line, digest included, is copied verbatim from docker/docker-compose.yml
+  # at the git tag of the Immich release pinned above, which is the only authority
+  # for it. Re-copy it when changing that release; never bump it on its own.
+  # immich_restore_expected_postgres_major in roles/immich/defaults/main.yml
+  # records the major and must agree.
   database:
     container_name: immich_postgres
     image: ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0@sha256:bcf63357191b76a916ae5eb93464d65c07511da41e3bf7a8416db519b40b1c23
