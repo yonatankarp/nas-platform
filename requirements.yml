@@ -4,4 +4,4 @@
 # It needs only the Docker CLI with the Compose plugin, not the Docker Python SDK.
 collections:
   - name: community.docker
-    version: 5.2.1
+    version: 5.2.2
