@@ -16,6 +16,18 @@
       {{ (lookup('file', playbook_dir ~ '/services/manifest.yml') | from_yaml).services
          | selectattr('status', 'in', ['implemented', 'accepted']) | list }}
 
+- name: Validate manifest service names before Compose path interpolation
+  ansible.builtin.assert:
+    that:
+      - item.name is string
+      - item.name is match('^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$')
+    fail_msg: >-
+      Manifest service names must be safe single-path components before they are
+      interpolated into deployed Compose paths.
+  loop: "{{ deployment_compose_services }}"
+  loop_control:
+    label: "{{ item.name | default('<invalid>') }}"
+
 - name: Check for deployed platform Compose overrides
   ansible.builtin.stat:
     path: "{{ platform_current_dir }}/services/{{ item.name }}/compose.{{ platform_compose_kind }}.yml"
@@ -34,3 +46,13 @@
                     | map('ternary',
                           ['compose.yml', 'compose.' ~ platform_compose_kind ~ '.yml'],
                           ['compose.yml']))) }}
+
+- name: Require a Compose selection for every manifest service
+  ansible.builtin.assert:
+    that:
+      - platform_service_compose_files | length ==
+        deployment_compose_services | length
+      - platform_service_compose_files.values() | map('first') | unique | list == ['compose.yml']
+    fail_msg: >-
+      Every implemented service must resolve to a Compose file list led by its
+      canonical compose.yml.
