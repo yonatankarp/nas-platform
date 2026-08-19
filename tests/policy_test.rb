@@ -1468,11 +1468,39 @@ preflight_body = File.read(File.join(ROOT, "roles", "preflight", "tasks", "main.
 check(failures, preflight_body.include?("{{ nas_docker_root }}/.nas-platform-preflight-probe") &&
                 !preflight_body.include?("{{ platform_deploy_root }}/.preflight-probe"),
       "fresh-install preflight must probe the existing validated nas_docker_root")
-probe_inspection = preflight_body.index("Inspect the deterministic write probe path")
-probe_creation = preflight_body.index("Confirm the service state root is writable")
-check(failures, probe_inspection && probe_creation && probe_inspection < probe_creation &&
-                preflight_body.include?("not preflight_write_probe.stat.exists"),
-      "preflight must refuse a pre-existing deterministic probe before creating it")
+preflight_tasks = flatten_tasks(YAML.safe_load(preflight_body))
+probe_inspection = preflight_tasks.index { |task| task["name"] == "Inspect the deterministic write probe path" }
+probe_refusal = preflight_tasks.index { |task| task["name"] == "Refuse to remove a pre-existing write probe path" }
+probe_reclaim = preflight_tasks.index do |task|
+  task["name"] == "Reclaim the empty write probe directory left by an interrupted run"
+end
+probe_creation = preflight_tasks.index { |task| task["name"] == "Confirm the service state root is writable" }
+probe_conditions = Array(
+  probe_refusal ? preflight_tasks.fetch(probe_refusal).dig("ansible.builtin.assert", "that") : nil
+).join(" ")
+check(failures, probe_inspection && probe_refusal && probe_reclaim && probe_creation &&
+                probe_inspection < probe_refusal && probe_refusal < probe_reclaim &&
+                probe_reclaim < probe_creation,
+      "preflight must inspect and adjudicate a pre-existing deterministic probe before creating it")
+# The probe path is the role's own debris after an interrupted run, so an empty
+# directory self-heals while anything that could be real data still refuses.
+check(failures, probe_inspection &&
+                preflight_tasks.fetch(probe_inspection).dig("ansible.builtin.stat", "follow") == false,
+      "preflight must inspect the deterministic probe path without following symlinks")
+check(failures, probe_conditions.include?("preflight_write_probe.stat.isdir") &&
+                probe_conditions.include?("not preflight_write_probe.stat.islnk") &&
+                probe_conditions.include?("preflight_write_probe_contents.files"),
+      "preflight must refuse a pre-existing probe that is not an empty non-symlink directory")
+probe_emptiness = preflight_tasks.find do |task|
+  task.dig("ansible.builtin.find", "paths") == "{{ nas_docker_root }}/.nas-platform-preflight-probe"
+end
+check(failures, probe_emptiness&.dig("ansible.builtin.find", "hidden") == true &&
+                probe_emptiness&.dig("ansible.builtin.find", "file_type") == "any",
+      "preflight must count hidden and non-file probe children when testing emptiness")
+check(failures, probe_reclaim &&
+                preflight_tasks.fetch(probe_reclaim).dig("ansible.builtin.file", "state") == "absent" &&
+                preflight_tasks.fetch(probe_reclaim)["changed_when"] == false,
+      "preflight must reclaim the stale probe directory without reporting a change")
 
 deployment_body = File.read(File.join(ROOT, "roles", "deployment_bundle", "tasks", "main.yml"))
 deployment_tasks = flatten_tasks(YAML.safe_load(deployment_body))

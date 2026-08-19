@@ -150,13 +150,39 @@
     follow: false
   register: preflight_write_probe
 
+# An interrupted run leaves the probe directory behind, so the empty-directory
+# case is the role's own debris rather than pre-existing data. Anything else at
+# that path could be real, so it is still refused.
+- name: Look for content inside a pre-existing write probe directory
+  ansible.builtin.find:
+    paths: "{{ nas_docker_root }}/.nas-platform-preflight-probe"
+    file_type: any
+    hidden: true
+  register: preflight_write_probe_contents
+  when:
+    - preflight_write_probe.stat.exists
+    - preflight_write_probe.stat.isdir
+    - not preflight_write_probe.stat.islnk
+
 - name: Refuse to remove a pre-existing write probe path
   ansible.builtin.assert:
     that:
-      - not preflight_write_probe.stat.exists
+      - >-
+        not preflight_write_probe.stat.exists
+        or (preflight_write_probe.stat.isdir
+            and not preflight_write_probe.stat.islnk
+            and (preflight_write_probe_contents.files | default([]) | length) == 0)
     fail_msg: >-
-      {{ nas_docker_root }}/.nas-platform-preflight-probe must not already exist;
-      refusing to remove pre-existing data.
+      {{ nas_docker_root }}/.nas-platform-preflight-probe already exists and is not
+      the empty directory an interrupted run leaves behind; refusing to remove
+      pre-existing data.
+
+- name: Reclaim the empty write probe directory left by an interrupted run
+  ansible.builtin.file:
+    path: "{{ nas_docker_root }}/.nas-platform-preflight-probe"
+    state: absent
+  when: preflight_write_probe.stat.exists
+  changed_when: false
 
 - name: Confirm the service state root is writable
   ansible.builtin.file:
