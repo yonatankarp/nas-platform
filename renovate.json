@@ -4,6 +4,11 @@
     "config:recommended",
     ":dependencyDashboard"
   ],
+  "ignorePaths": [
+    "**/node_modules/**",
+    "**/bower_components/**",
+    "**/vendor/**"
+  ],
   "timezone": "Europe/Berlin",
   "automerge": false,
   "rebaseWhen": "conflicted",
@@ -111,6 +116,18 @@
         "(?:runner_image|cleanup_sandbox_image)=(?<depName>[^:\\s]+):(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[0-9a-f]{64})"
       ],
       "datasourceTemplate": "docker"
+    },
+    {
+      "description": "ansible-core pinned by the Beszel telemetry test, which asserts exact ansible output.",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^tests/beszel_telemetry_ansible_test\\.rb$/"
+      ],
+      "matchStrings": [
+        "REQUIRED_ANSIBLE_CORE = \"(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)\""
+      ],
+      "depNameTemplate": "ansible-core",
+      "datasourceTemplate": "pypi"
     }
   ]
 }
