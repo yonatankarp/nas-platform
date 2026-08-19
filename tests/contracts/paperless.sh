@@ -347,8 +347,6 @@ refuse("Paperless administrator password must not be copied into docker exec arg
   "Resolve Paperless mail account repair requirement",
   "Resolve Paperless mail rule reconciliation",
   "Resolve Paperless mail rule repair requirement",
-  "Check for a Paperless platform override",
-  "Select the Paperless Compose definitions",
   "Inspect the installed Paperless Gmail credential fingerprint",
   "Read the installed Paperless Gmail credential fingerprint",
   "Resolve the installed Paperless Gmail credential fingerprint",
@@ -361,6 +359,19 @@ refuse("Paperless administrator password must not be copied into docker exec arg
   task = role.find { |candidate| candidate["name"] == name }
   refuse("#{name} must run during tagged Paperless verification") unless
     Array(task && task["tags"]).include?("platform_verify_paperless")
+end
+# Compose selection is resolved once by deployment_bundle and published as
+# platform_service_compose_files; verify.yml resolves it in pre_tasks, which
+# policy_test.rb pins. The role must consume that fact rather than restat the
+# override or hardcode a file list.
+compose_consumers = role.select do |task|
+  task.values.any? { |body| body.is_a?(Hash) && body.key?("files") }
+end
+refuse("Paperless must deploy from the shared Compose selection") if compose_consumers.empty?
+compose_consumers.each do |task|
+  files = task.values.find { |body| body.is_a?(Hash) && body.key?("files") }.fetch("files")
+  refuse("#{task['name']} must read the shared Compose selection") unless
+    files.to_s.include?("platform_service_compose_files['paperless-ngx']")
 end
 fingerprint_assertion = role.find do |task|
   task["name"] == "Require the installed Paperless Gmail credential fingerprint"
