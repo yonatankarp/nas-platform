@@ -149,7 +149,7 @@ else
   override_text = File.read(override_path)
   override = YAML.safe_load_file(override_path, aliases: true)
   override_containers = override.fetch("services")
-  surplus_services = override_containers.keys - EXPECTED_IMAGES.keys
+  surplus_services = override_containers.keys - EXPECTED_CONTAINERS
   refuse("#{platform} override may not add services: #{surplus_services.join(', ')}") unless
     surplus_services.empty?
   override_server = override_containers.fetch("immich-server")
