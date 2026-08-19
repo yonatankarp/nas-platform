@@ -212,6 +212,22 @@ PLATFORM_INVENTORIES.each do |inventory_name, (host_group, host_name, connection
                     !host[coordinate].empty?,
           "inventory/#{inventory_name} must define #{coordinate}")
   end
+  # The transport coordinate and the client-facing coordinate are different
+  # audiences. ntfy hashes platform_public_host into the topic it registers with
+  # its upstream push server, so a value inherited from the SSH address routes
+  # notifications to a topic no device subscribes to, with nothing to observe:
+  # deployment succeeds, the server is healthy, and no notification arrives.
+  # The endpoint guard above can only see emptiness, and an inherited value is
+  # not empty, which is how a coordinate can be non-empty without being chosen.
+  # So the audience split is enforced on the expression itself: this coordinate
+  # is stated, never derived, and no fallback may reintroduce a second audience.
+  public_host_source = host.is_a?(Hash) ? host["platform_public_host"].to_s : ""
+  borrowed = ["PLATFORM_NAS_ADDRESS", "ansible_host", "default("].find do |fragment|
+    public_host_source.include?(fragment)
+  end
+  check(failures, borrowed.nil?,
+        "inventory/#{inventory_name} platform_public_host must be stated " \
+        "explicitly, not derived from another coordinate (found #{borrowed.inspect})")
 end
 
 shared_vars = YAML.safe_load_file(File.join(ROOT, "inventory", "group_vars", "all", "main.yml"))

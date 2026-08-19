@@ -6,9 +6,14 @@ platform_hosts:
       hosts:
         nas:
           ansible_connection: local
+          # Deliberately has no fallback to PLATFORM_NAS_ADDRESS. This is the
+          # identity handed to clients, and ntfy hashes it into the topic it
+          # registers with its upstream push server, so inheriting the SSH
+          # transport address routes notifications to a topic no device
+          # subscribes to and nothing reports an error. Unset fails preflight
+          # loudly instead.
           platform_public_host: >-
-            {{ lookup('env', 'PLATFORM_PUBLIC_HOST') |
-               default(lookup('env', 'PLATFORM_NAS_ADDRESS'), true) }}
+            {{ lookup('env', 'PLATFORM_PUBLIC_HOST') }}
           platform_callback_host: >-
             {{ lookup('env', 'PLATFORM_CALLBACK_HOST') |
                default(lookup('env', 'PLATFORM_NAS_ADDRESS'), true) }}

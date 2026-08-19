@@ -80,12 +80,18 @@ committed. Never commit its password, a plaintext or decrypted vault, rendered
 
 ## 4. Validate inventory and connectivity
 
-These commands are read-only. Set public or callback coordinates separately
-only if applications must advertise addresses different from the SSH address.
+These commands are read-only. `PLATFORM_PUBLIC_HOST` is required and separate
+from the SSH address: it is the address clients use to reach published services,
+and ntfy hashes it into the topic it registers for mobile push, so it must be
+the address your devices actually use. Leaving it unset now fails preflight
+instead of silently publishing to a topic nothing subscribes to.
+`PLATFORM_CALLBACK_HOST` is only needed when containers must reach the host at
+a different address than the SSH one.
 
 ```sh
 export PLATFORM_NAS_ADDRESS=nas.example.internal
 export PLATFORM_NAS_USER=nasadmin
+export PLATFORM_PUBLIC_HOST=nas.example.ts.net
 ansible-inventory -i inventory/remote.yml --graph
 ansible -i inventory/remote.yml platform_hosts -m ansible.builtin.ping
 ```
@@ -241,6 +247,7 @@ vault in memory. Validate the vault and local connection before mutation:
 
 ```sh
 export PLATFORM_NAS_ADDRESS=nas.example.internal
+export PLATFORM_PUBLIC_HOST=nas.example.ts.net
 
 ansible-playbook -i inventory/local.yml validate-vault.yml --ask-vault-pass
 ansible -i inventory/local.yml platform_hosts \

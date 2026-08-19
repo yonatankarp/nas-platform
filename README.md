@@ -105,6 +105,7 @@ copy on disk:
 ```sh
 PLATFORM_NAS_ADDRESS=nas.example.internal \
 PLATFORM_NAS_USER=nasadmin \
+PLATFORM_PUBLIC_HOST=nas.example.ts.net \
 ansible-playbook -i inventory/remote.yml site.yml \
   --vault-password-file ~/.nas-vault-pass
 ```
@@ -113,11 +114,16 @@ where that file is a script that prints the password, for example via the
 password-manager CLI. Keep the executable outside this repository and make it
 print only the vault password.
 
-For a run executed directly on the NAS, set `PLATFORM_NAS_ADDRESS` to the NAS
-address that operators and application containers use to reach published
-services. Override `PLATFORM_PUBLIC_HOST` or `PLATFORM_CALLBACK_HOST` only when
-those audiences require different coordinates. Connection coordinates stay in
-inventory inputs and are not portable vault credentials.
+Three coordinates are separate inputs because they answer to different
+audiences. `PLATFORM_NAS_ADDRESS` is how this run reaches the NAS, over SSH or
+locally. `PLATFORM_PUBLIC_HOST` is the address clients use to reach published
+services; it is required and has no fallback, because ntfy hashes it into the
+topic it registers for mobile push, so a value inherited from the connection
+address routes notifications to a topic no device subscribes to and nothing
+reports an error. `PLATFORM_CALLBACK_HOST` is how containers reach
+host-published callbacks and does default to the connection address, which is
+the right answer for that audience. Connection coordinates stay in inventory
+inputs and are not portable vault credentials.
 
 ## Testing
 

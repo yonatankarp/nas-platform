@@ -486,6 +486,10 @@ docker run --rm \
   -v "$sandbox":"$sandbox" \
   -e ANSIBLE_CONFIG=/repo/ansible.cfg \
   -e PLATFORM_NAS_ADDRESS="$nas_address" \
+  `# The sandbox reaches published services at the same address it is` \
+  `# administered through, so the two coordinates coincide here. Stated` \
+  `# explicitly because the inventory no longer infers one from the other.` \
+  -e PLATFORM_PUBLIC_HOST="$nas_address" \
   -e INTEGRATION_SUITE="$suite" \
   -e INTEGRATION_TAGS="$suite_tags" \
   -e INTEGRATION_RUN_SERVICE_SCENARIOS="$run_service_scenarios" \

@@ -1183,6 +1183,7 @@ example; replace it with the operator's actual NAS SSH account when different:
 ```sh
 export PLATFORM_NAS_ADDRESS='nas.example.internal'
 export PLATFORM_NAS_USER='nasadmin'
+export PLATFORM_PUBLIC_HOST='nas.example.ts.net'
 ansible-playbook -i inventory/remote.yml site.yml \
   --check --diff \
   --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE"
@@ -1213,6 +1214,7 @@ roles, then check and review the local run:
 
 ```sh
 export PLATFORM_NAS_ADDRESS='nas.example.internal'
+export PLATFORM_PUBLIC_HOST='nas.example.ts.net'
 ansible-playbook -i inventory/local.yml site.yml \
   --check --diff --ask-vault-pass
 ```

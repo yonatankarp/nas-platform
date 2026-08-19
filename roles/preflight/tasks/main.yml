@@ -6,7 +6,12 @@
       - platform_callback_host | length > 0
     fail_msg: >-
       Inventory must define nonempty public and container-callback host
-      coordinates before target mutation.
+      coordinates before target mutation. Export PLATFORM_PUBLIC_HOST with the
+      address clients use to reach published services, which is not necessarily
+      the address this run connects through: ntfy hashes it into the topic it
+      registers for mobile push, so it must match what devices have stored.
+      PLATFORM_CALLBACK_HOST is the separate address containers use to reach
+      host-published callbacks.
     success_msg: Application endpoint coordinates are explicit.
 
 - name: Restrict synthetic Linux ownership correction
