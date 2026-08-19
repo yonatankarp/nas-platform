@@ -488,9 +488,11 @@ tests/integration.sh                the fixed_tags for that suite
 tests/integration_suite_test.sh     the pinned --describe-suite output
 ```
 
-A new lane additionally needs a job in `.github/workflows/ci.yml`, an entry in
-the `validate` job's `needs` list and its `validate_results.rb` arguments, and
-the lane name in `LANES`.
+A new lane additionally needs its name in `LANES` and its integration suite in
+`SUITES`, both in `tests/ci/classify_changes.rb`, plus the suite in the
+`INTEGRATION_SUITES` list that `tests/ci/workflow_test.rb` pins. The workflow
+itself needs no change: the `suites` job is a matrix fed by the `suites` output,
+and `validate` covers every leg through one `needs` entry.
 
 ## When the service has credentials
 

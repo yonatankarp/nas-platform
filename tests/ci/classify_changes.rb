@@ -1,11 +1,24 @@
 #!/usr/bin/env ruby
 
+require "json"
 require "open3"
 
 module ClassifyChanges
   LANES = %w[
     static foundation smoke beszel dozzle audiobookshelf media paperless idempotence_check
   ].freeze
+  # The integration suite each lane dispatches, in the order the CI matrix runs
+  # them. `static` is not a suite.
+  SUITES = {
+    "foundation" => "foundation",
+    "smoke" => "smoke",
+    "beszel" => "beszel",
+    "dozzle" => "dozzle",
+    "audiobookshelf" => "audiobookshelf",
+    "media" => "media",
+    "paperless" => "paperless",
+    "idempotence_check" => "idempotence-check"
+  }.freeze
   SERVICE_LANES = %w[beszel dozzle audiobookshelf media paperless].freeze
   SERVICE_TAGS = {
     "beszel" => %w[host_prep deployment_bundle ntfy beszel],
@@ -73,6 +86,7 @@ module ClassifyChanges
 
   def write_github_outputs(selection, io)
     LANES.each { |lane| io.puts "#{lane}=#{selection.fetch(lane)}" }
+    io.puts "suites=#{suites(selection).to_json}"
     io.puts "run_ci=#{selection.values.any?}"
     tags = if selection.fetch("foundation")
              []
@@ -82,6 +96,10 @@ module ClassifyChanges
                           .uniq
            end
     io.puts "selected_tags=#{tags.join(',')}"
+  end
+
+  def suites(selection)
+    SUITES.filter_map { |lane, suite| suite if selection.fetch(lane) }
   end
 
   def inert_path?(path)

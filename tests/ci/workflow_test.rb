@@ -1,29 +1,24 @@
 #!/usr/bin/env ruby
 
+require "fileutils"
+require "open3"
+require "tmpdir"
 require "yaml"
+require_relative "classify_changes"
 
 WORKFLOW_PATH = File.expand_path("../../.github/workflows/ci.yml", __dir__)
 POLICY_PATH = File.expand_path("../validate-policy.sh", __dir__)
 ANSIBLE_LINT_PATH = File.expand_path("../../.ansible-lint", __dir__)
 CHECKOUT_ACTION = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
 UPLOAD_ARTIFACT_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
-SELECTABLE_JOBS = %w[
-  static foundation smoke beszel dozzle audiobookshelf media paperless idempotence_check
+EXPECTED_JOBS = %w[changes static suites validate].freeze
+# The suites the matrix dispatches, in the order a full run enumerates them.
+INTEGRATION_SUITES = %w[
+  foundation smoke beszel dozzle audiobookshelf media paperless idempotence-check
 ].freeze
-INTEGRATION_SUITES = {
-  "foundation" => "foundation",
-  "smoke" => "smoke",
-  "beszel" => "beszel",
-  "dozzle" => "dozzle",
-  "audiobookshelf" => "audiobookshelf",
-  "media" => "media",
-  "paperless" => "paperless",
-  "idempotence_check" => "idempotence-check"
-}.freeze
-CLASSIFIER_OUTPUTS = %w[
-  run_ci static foundation smoke beszel dozzle audiobookshelf media paperless
-  idempotence_check selected_tags
-].freeze
+TAGGED_SUITES = %w[smoke idempotence-check].freeze
+CLASSIFIER_OUTPUTS = %w[static suites selected_tags].freeze
+SAMPLE_TAGS = "host_prep,deployment_bundle,ntfy,beszel"
 STATIC_STEP_NAMES = [
   "Check out repository",
   "Validate shell syntax",
@@ -86,31 +81,25 @@ def declared_content(jobs)
   end.join("\n").downcase
 end
 
-def integration_commands(source)
-  normalize_shell(source).lines(chomp: true).grep(%r{\Atests/integration\.sh(?:\s|\z)})
-end
-
 def registers_command_once?(source, command)
   normalize_shell(source).lines(chomp: true).count(command) == 1
 end
 
-def exact_fixed_integration_command?(source, suite)
-  expected = "tests/integration.sh --suite #{suite} site.yml"
-  normalize_shell(source) == expected && integration_commands(source) == [expected]
-end
-
-def exact_selectable_integration_branches?(source, suite)
-  tagged = %(tests/integration.sh --suite #{suite} --tags "$SELECTED_TAGS" site.yml)
-  untagged = "tests/integration.sh --suite #{suite} site.yml"
-  expected = <<~SHELL
-    if [ -n "$SELECTED_TAGS" ]; then
-      #{tagged}
-    else
-      #{untagged}
-    fi
-  SHELL
-  normalize_shell(source) == normalize_shell(expected) &&
-    integration_commands(source) == [tagged, untagged]
+# Runs the matrix step's own shell against a stub harness that echoes its
+# arguments, so the tags contract is proven by the argv a suite would receive
+# rather than by the step's source text.
+def integration_argv(script, suite, selected_tags)
+  Dir.mktmpdir("ci-suite-matrix-") do |root|
+    harness = File.join(root, "tests", "integration.sh")
+    FileUtils.mkdir_p(File.dirname(harness))
+    File.write(harness, %(#!/bin/sh\nprintf '%s\\n' "$@"\n))
+    File.chmod(0o755, harness)
+    stdout, stderr, status = Open3.capture3(
+      { "SUITE" => suite, "SELECTED_TAGS" => selected_tags },
+      "sh", "-c", script, chdir: root
+    )
+    return [status.success? && stderr.empty?, stdout.lines(chomp: true)]
+  end
 end
 
 workflow = YAML.safe_load_file(WORKFLOW_PATH, aliases: false)
@@ -142,9 +131,8 @@ check(
 check(failures, concurrency["cancel-in-progress"] == true, "concurrency cancellation must be enabled")
 check(failures, workflow.dig("permissions", "contents") == "read", "contents permission must be read-only")
 
-expected_jobs = ["changes", *SELECTABLE_JOBS, "validate"]
-check(failures, jobs.keys.sort == expected_jobs.sort,
-      "workflow jobs differ: got #{jobs.keys.sort.inspect}, expected #{expected_jobs.sort.inspect}")
+check(failures, jobs.keys.sort == EXPECTED_JOBS.sort,
+      "workflow jobs differ: got #{jobs.keys.sort.inspect}, expected #{EXPECTED_JOBS.sort.inspect}")
 
 changes = jobs.fetch("changes", {})
 check(failures, changes["runs-on"] == "ubuntu-latest", "changes must run on ubuntu-latest")
@@ -183,62 +171,65 @@ check(failures,
 check(failures, !classifier_run.include?("github.event.pull_request"),
       "event payload expressions must not be interpolated into shell source")
 
-SELECTABLE_JOBS.each do |job_id|
-  job = jobs.fetch(job_id, {})
-  check(failures, job["needs"] == "changes", "#{job_id} must depend only on changes")
-  expected_if = "${{ needs.changes.outputs.#{job_id} == 'true' }}"
-  check(failures, expression(job["if"]) == expected_if,
-        "#{job_id} condition must match its classifier output")
+check(failures, jobs.dig("static", "needs") == "changes", "static must depend only on changes")
+check(failures, expression(jobs.dig("static", "if")) == "${{ needs.changes.outputs.static == 'true' }}",
+      "static condition must match its classifier output")
+
+suites_job = jobs.fetch("suites", {})
+check(failures, suites_job["needs"] == "changes", "suites must depend only on changes")
+check(failures, expression(suites_job["if"]) == "${{ needs.changes.outputs.suites != '[]' }}",
+      "suites must skip entirely when the classifier selects no suite")
+check(failures, expression(suites_job["name"]) == "${{ matrix.suite }}",
+      "each matrix leg must report its own suite name as the check name")
+check(failures, suites_job.dig("strategy", "fail-fast") == false,
+      "one failing suite must not cancel the others")
+check(failures,
+      expression(suites_job.dig("strategy", "matrix", "suite")) ==
+        "${{ fromJSON(needs.changes.outputs.suites) }}",
+      "the suite matrix must come from the classifier's JSON array")
+check(failures, suites_job.dig("strategy", "matrix").keys == ["suite"],
+      "the suite matrix must have exactly one dimension")
+
+# The classifier owns the lane-to-suite mapping, including the one hyphen that
+# separates the idempotence_check lane from the idempotence-check suite.
+check(failures,
+      ClassifyChanges.suites(ClassifyChanges.classify([], full: true)) == INTEGRATION_SUITES,
+      "a full run must dispatch every suite in canonical order: " \
+      "#{ClassifyChanges.suites(ClassifyChanges.classify([], full: true)).inspect}")
+check(failures, ClassifyChanges.suites(ClassifyChanges.classify(["README.md"])) == [],
+      "an inert change must dispatch no suite")
+
+suites_checkout = Array(suites_job["steps"]).find { |step| step["uses"]&.start_with?("actions/checkout@") }
+check(failures, suites_checkout&.fetch("uses", nil) == CHECKOUT_ACTION,
+      "suites must check out the repository with the pinned action")
+integration_steps = Array(suites_job["steps"]).select { |step| step["run"]&.include?("tests/integration.sh") }
+check(failures, integration_steps.length == 1, "suites must have exactly one integration harness step")
+integration_step = integration_steps.first || {}
+check(failures, integration_step.dig("env", "SUITE") == "${{ matrix.suite }}",
+      "the matrix suite must reach the harness through env, not through shell interpolation")
+check(failures, integration_step.dig("env", "SELECTED_TAGS") == "${{ needs.changes.outputs.selected_tags }}",
+      "suites must pass selected tags through the environment")
+integration_run = integration_step["run"].to_s
+check(failures, !integration_run.match?(/\beval\b/), "suites must not use eval")
+
+# integration.sh exits 2 when --tags reaches a suite that does not accept it, so
+# the guarantee is checked as argv rather than as step text.
+INTEGRATION_SUITES.each do |suite|
+  untagged = ["--suite", suite, "site.yml"]
+  tagged = TAGGED_SUITES.include?(suite) ? ["--suite", suite, "--tags", SAMPLE_TAGS, "site.yml"] : untagged
+  ok, argv = integration_argv(integration_run, suite, SAMPLE_TAGS)
+  check(failures, ok && argv == tagged,
+        "#{suite} with selected tags must invoke #{tagged.inspect}, got #{argv.inspect}")
+  ok, argv = integration_argv(integration_run, suite, "")
+  check(failures, ok && argv == untagged,
+        "#{suite} without selected tags must invoke #{untagged.inspect}, got #{argv.inspect}")
 end
 
-INTEGRATION_SUITES.each do |job_id, suite|
-  job = jobs.fetch(job_id, {})
-  checkout = Array(job["steps"]).find { |step| step["uses"]&.start_with?("actions/checkout@") }
-  check(failures, checkout&.fetch("uses", nil) == CHECKOUT_ACTION,
-        "#{job_id} must check out the repository with the pinned action")
-  integration_steps = Array(job["steps"]).select do |step|
-    step["run"]&.include?("tests/integration.sh")
-  end
-  check(failures, integration_steps.length == 1,
-        "#{job_id} must have exactly one integration harness step")
-  next if %w[smoke idempotence_check].include?(job_id)
-
-  check(failures, exact_fixed_integration_command?(integration_steps.first&.fetch("run", nil), suite),
-        "#{job_id} must invoke exactly tests/integration.sh --suite #{suite} site.yml")
-end
-
-%w[smoke idempotence_check].each do |job_id|
-  job = jobs.fetch(job_id, {})
-  integration_step = Array(job["steps"]).find { |step| step["run"]&.include?("tests/integration.sh") } || {}
-  check(failures, integration_step.dig("env", "SELECTED_TAGS") ==
-                  "${{ needs.changes.outputs.selected_tags }}",
-        "#{job_id} must pass selected tags through the environment")
-  suite = INTEGRATION_SUITES.fetch(job_id)
-  check(failures, exact_selectable_integration_branches?(integration_step["run"], suite),
-        "#{job_id} must use exact tagged and untagged integration branches")
-  check(failures, !integration_step["run"].to_s.match?(/\beval\b/), "#{job_id} must not use eval")
-end
-
-# Mutation counterexamples keep the exact-match helpers from regressing to
-# fragment checks that accept additional invocations or tags in the empty path.
-check(failures,
-      !exact_fixed_integration_command?(<<~SHELL, "foundation"),
-        tests/integration.sh --suite foundation site.yml
-        tests/integration.sh --suite smoke site.yml
-      SHELL
-      "fixed-suite matcher must reject an extra integration invocation")
-check(failures,
-      !exact_fixed_integration_command?("tests/integration.sh --suite smoke site.yml", "foundation"),
-      "fixed-suite matcher must reject the wrong suite")
-check(failures,
-      !exact_selectable_integration_branches?(<<~SHELL, "smoke"),
-        if [ -n "$SELECTED_TAGS" ]; then
-          tests/integration.sh --suite smoke --tags "$SELECTED_TAGS" site.yml
-        else
-          tests/integration.sh --suite smoke --tags "$SELECTED_TAGS" site.yml
-        fi
-      SHELL
-      "selectable-suite matcher must reject --tags in the empty branch")
+# Counterexample: the argv harness must be able to see --tags leaking into the
+# empty-tags path, otherwise the loop above proves nothing.
+_, leaked_argv = integration_argv(integration_run.sub('[ -n "$SELECTED_TAGS" ]', "true"), "smoke", "")
+check(failures, leaked_argv == ["--suite", "smoke", "--tags", "", "site.yml"],
+      "argv harness must observe --tags reaching the untagged path: #{leaked_argv.inspect}")
 
 static = jobs.fetch("static", {})
 static_steps = Array(static["steps"])
@@ -308,9 +299,9 @@ check(failures,
 validate = jobs.fetch("validate", {})
 check(failures, validate["name"] == "validate", "aggregate check name must remain validate")
 check(failures, expression(validate["if"]) == "${{ always() }}", "validate must always run")
-expected_needs = ["changes", *SELECTABLE_JOBS]
+expected_needs = %w[changes static suites]
 check(failures, Array(validate["needs"]) == expected_needs,
-      "validate must need changes and every selectable job in canonical order")
+      "validate must need changes, static and the suite matrix in canonical order")
 validate_checkout = Array(validate["steps"]).find { |step| step["uses"]&.start_with?("actions/checkout@") }
 check(failures, validate_checkout&.fetch("uses", nil) == CHECKOUT_ACTION,
       "validate must check out the repository with the pinned action")

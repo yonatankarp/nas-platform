@@ -101,6 +101,7 @@ if defined?(ClassifyChanges)
     media=false
     paperless=false
     idempotence_check=true
+    suites=["smoke","beszel","dozzle","idempotence-check"]
     run_ci=true
     selected_tags=host_prep,deployment_bundle,ntfy,beszel,dozzle
   OUTPUT
@@ -119,6 +120,7 @@ if defined?(ClassifyChanges)
     media=true
     paperless=true
     idempotence_check=true
+    suites=["foundation","smoke","beszel","dozzle","audiobookshelf","media","paperless","idempotence-check"]
     run_ci=true
     selected_tags=
   OUTPUT
@@ -153,6 +155,7 @@ if defined?(ClassifyChanges)
     media=false
     paperless=true
     idempotence_check=true
+    suites=["smoke","paperless","idempotence-check"]
     run_ci=true
     selected_tags=host_prep,deployment_bundle,paperless
   OUTPUT
@@ -162,6 +165,16 @@ if defined?(ClassifyChanges)
   ClassifyChanges.write_github_outputs(ClassifyChanges.classify(["README.md"]), io)
   check(failures, io.string.end_with?("run_ci=false\nselected_tags=\n"),
         "inert changes must disable CI and emit empty selected_tags")
+  # The CI matrix job skips on exactly this literal, so it has to stay compact.
+  check(failures, io.string.include?("suites=[]\n"),
+        "inert changes must emit an empty suite array: #{io.string.inspect}")
+
+  check(failures, ClassifyChanges::SUITES.keys == ClassifyChanges::LANES - ["static"],
+        "every lane except static must map to exactly one integration suite")
+  check(failures,
+        ClassifyChanges.suites(ClassifyChanges.classify(["roles/beszel/tasks/main.yml"])) ==
+          %w[smoke beszel idempotence-check],
+        "a Beszel-only change must dispatch smoke, beszel and idempotence-check")
 
   Dir.mktmpdir("classify-changes-git-") do |root|
     system("git", "init", "-q", root, exception: true)
