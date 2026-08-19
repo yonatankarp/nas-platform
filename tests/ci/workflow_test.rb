@@ -24,6 +24,25 @@ CLASSIFIER_OUTPUTS = %w[
   run_ci static foundation smoke beszel dozzle audiobookshelf media paperless
   idempotence_check selected_tags
 ].freeze
+STATIC_STEP_NAMES = [
+  "Check out repository",
+  "Validate shell syntax",
+  "Install Ansible tooling",
+  "Check policy properties",
+  "Check integration sandbox cleanup",
+  "Check Immich probe status rendering",
+  "Check generated credential redaction",
+  "Check silent ephemeral vault generation",
+  "Lint Ansible",
+  "Check playbook syntax"
+].freeze
+RETIRED_MIGRATION_MARKERS = %w[
+  nas-infrastructure
+  tests/adoption-integration.sh
+  adoption-render-test.sh
+  legacy-seed-test.sh
+  portainer
+].freeze
 
 failures = []
 
@@ -47,6 +66,24 @@ end
 
 def normalize_shell(source)
   source.to_s.lines.map(&:strip).reject(&:empty?).join("\n")
+end
+
+def contains_path_filter?(value)
+  case value
+  when Hash
+    value.any? { |key, child| %w[paths paths-ignore].include?(key.to_s) || contains_path_filter?(child) }
+  when Array
+    value.any? { |child| contains_path_filter?(child) }
+  else
+    false
+  end
+end
+
+def declared_content(jobs)
+  jobs.flat_map do |job_id, job|
+    [job_id, job["name"], expression(job["if"]),
+     *Array(job["steps"]).flat_map { |step| [step["name"], step["uses"], step["run"]] }]
+  end.join("\n").downcase
 end
 
 def integration_commands(source)
@@ -83,7 +120,13 @@ jobs = workflow.fetch("jobs", {})
 
 check(failures, triggers.is_a?(Hash), "workflow triggers are missing")
 if triggers.is_a?(Hash)
-  check(failures, triggers.key?("pull_request"), "pull_request trigger is missing")
+  pull_request = triggers["pull_request"]
+  check(failures,
+        triggers.key?("pull_request") &&
+          (pull_request.nil? || (pull_request.is_a?(Hash) && pull_request.empty?)),
+        "pull_request trigger must be unfiltered")
+  check(failures, !contains_path_filter?(triggers),
+        "triggers must not filter events by path: classification belongs to the changes job")
   check(failures, triggers.dig("push", "branches") == ["main"], "push must target only main")
   check(failures, triggers.dig("schedule", 0, "cron") == "23 3 * * *", "nightly schedule is incorrect")
   check(failures, triggers.key?("workflow_dispatch"), "workflow_dispatch trigger is missing")
@@ -197,7 +240,16 @@ check(failures,
       SHELL
       "selectable-suite matcher must reject --tags in the empty branch")
 
-static_commands = run_steps(jobs.fetch("static", {}))
+static = jobs.fetch("static", {})
+static_steps = Array(static["steps"])
+check(failures, static_steps.all?(Hash), "static steps must all be mappings")
+check(failures, static_steps.map { |step| step["name"] } == STATIC_STEP_NAMES,
+      "static steps differ: got #{static_steps.map { |step| step['name'] }.inspect}, " \
+      "expected #{STATIC_STEP_NAMES.inspect}")
+check(failures, static_steps.none? { |step| step.key?("if") },
+      "static steps must be unconditional: the changes job is the only classifier")
+
+static_commands = run_steps(static)
 [
   "find tests -type f -name '*.sh' -exec sh -n {} +",
   "tests/validate-policy.sh",
@@ -274,6 +326,11 @@ check(failures, validate_commands.include?("ruby tests/ci/validate_results.rb"),
 workflow_source = File.read(WORKFLOW_PATH)
 check(failures, !workflow_source.match?(/dorny\/paths-filter|paths-filter@/i),
       "workflow must not use a third-party path filter action")
+declared = declared_content(jobs)
+RETIRED_MIGRATION_MARKERS.each do |marker|
+  check(failures, !declared.include?(marker),
+        "retired Portainer migration reference reappeared: #{marker}")
+end
 all_uses = jobs.values.flat_map do |job|
   Array(job["steps"]).filter_map { |step| step["uses"] }
 end
