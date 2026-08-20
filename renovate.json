@@ -96,6 +96,12 @@
       "dependencyDashboardApproval": true
     }
   ],
+  "customDatasources": {
+    "alpine-3.24-main": {
+      "defaultRegistryUrlTemplate": "https://raw.githubusercontent.com/alpinelinux/aports/3.24-stable/main/{{packageName}}/APKBUILD",
+      "format": "plain"
+    }
+  },
   "customManagers": [
     {
       "description": "Ansible tooling pinned in the CI workflow's pip install step.",
@@ -146,20 +152,24 @@
       "datasourceTemplate": "pypi"
     },
     {
-      "description": "Alpine ruby pinned by the integration harness. The pin uses apk's fuzzy `~` so a distro revision bump cannot drop it out of the index, which also matches repology's revisionless versions. The branch here tracks the runner image's Alpine release.",
+      "description": "Alpine ruby pinned by the integration harness. The pin uses apk's fuzzy `~` so a distro revision bump cannot drop it out of the index. Alpine's official 3.24-stable APKBUILD is the source of truth for versions available to the runner image.",
       "customType": "regex",
       "managerFilePatterns": ["/^tests/integration\\.sh$/"],
       "matchStrings": ["ruby_package='ruby~(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)'"],
-      "depNameTemplate": "alpine_3_24/ruby",
-      "datasourceTemplate": "repology"
+      "depNameTemplate": "ruby",
+      "datasourceTemplate": "custom.alpine-3.24-main",
+      "extractVersionTemplate": "^pkgver=(?<version>.+)$",
+      "versioningTemplate": "loose"
     },
     {
-      "description": "Alpine curl pinned by the integration harness. Same fuzzy-pin and branch-tracking reasoning as the ruby manager above.",
+      "description": "Alpine curl pinned by the integration harness. Same fuzzy-pin and official branch-tracking reasoning as the ruby manager above.",
       "customType": "regex",
       "managerFilePatterns": ["/^tests/integration\\.sh$/"],
       "matchStrings": ["curl_package='curl~(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)'"],
-      "depNameTemplate": "alpine_3_24/curl",
-      "datasourceTemplate": "repology"
+      "depNameTemplate": "curl",
+      "datasourceTemplate": "custom.alpine-3.24-main",
+      "extractVersionTemplate": "^pkgver=(?<version>.+)$",
+      "versioningTemplate": "loose"
     }
   ]
 }
