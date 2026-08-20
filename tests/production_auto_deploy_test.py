@@ -1,7 +1,7 @@
 """Behavioural tests for the production auto-deploy poller."""
 
 import contextlib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import io
 import json
 import os
@@ -275,6 +275,83 @@ class StateTest(PollerTestCase):
             with self.subTest(name=name):
                 mode = (config.state_root / name).stat().st_mode & 0o777
                 self.assertEqual(mode, 0o600)
+
+    def test_the_record_is_capped_by_count(self):
+        config = self.loaded_config()
+        now = datetime(2026, 8, 20, tzinfo=timezone.utc)
+        shas = [f"{index:040x}" for index in range(60)]
+        for offset, sha in enumerate(shas):
+            production_auto_deploy.record_attempt(
+                config, sha, now=now + timedelta(minutes=offset)
+            )
+
+        recorded = production_auto_deploy.attempted_shas(config)
+        self.assertEqual(len(recorded), production_auto_deploy.ATTEMPTED_RETENTION_COUNT)
+        # The newest survive; the oldest are dropped.
+        self.assertIn(shas[-1], recorded)
+        self.assertNotIn(shas[0], recorded)
+
+    def test_the_record_drops_entries_past_the_retention_window(self):
+        config = self.loaded_config()
+        old = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        production_auto_deploy.record_attempt(config, MAIN_SHA, now=old)
+        self.assertEqual(production_auto_deploy.attempted_shas(config), {MAIN_SHA})
+
+        recent = old + timedelta(days=200)
+        production_auto_deploy.record_attempt(config, OTHER_SHA, now=recent)
+
+        recorded = production_auto_deploy.attempted_shas(config)
+        self.assertIn(OTHER_SHA, recorded)
+        self.assertNotIn(MAIN_SHA, recorded, "an aged-out attempt should be pruned")
+
+    def test_the_just_recorded_attempt_always_survives_pruning(self):
+        """This is the invariant that stops a retry loop: whatever else is
+        pruned, the revision being attempted right now must remain recorded."""
+
+        config = self.loaded_config()
+        now = datetime(2026, 8, 20, tzinfo=timezone.utc)
+        # Fill the record past its cap with entries old enough to age out.
+        stale = datetime(2020, 1, 1, tzinfo=timezone.utc)
+        (config.state_root / "attempted").write_text(
+            "".join(
+                f"{index:040x} {production_auto_deploy._timestamp(stale)}\n"
+                for index in range(80)
+            ),
+            encoding="ascii",
+        )
+        production_auto_deploy.record_attempt(config, MAIN_SHA, now=now)
+
+        recorded = production_auto_deploy.attempted_shas(config)
+        self.assertEqual(recorded, {MAIN_SHA})
+
+    def test_pruning_an_all_legacy_record_empties_it(self):
+        """Bare SHAs carry no age, so they cannot be kept once pruning runs.
+        Documented deliberately: the entry being recorded is what protects the
+        current revision, not the legacy rows."""
+
+        now = datetime(2026, 8, 20, tzinfo=timezone.utc)
+        self.assertEqual(
+            production_auto_deploy._prune_attempts([(MAIN_SHA, None)], now), []
+        )
+
+    def test_a_record_from_an_older_poller_still_parses(self):
+        config = self.loaded_config()
+        (config.state_root / "attempted").write_text(
+            f"{MAIN_SHA}\n{OTHER_SHA}\n", encoding="ascii"
+        )
+        self.assertEqual(
+            production_auto_deploy.attempted_shas(config), {MAIN_SHA, OTHER_SHA}
+        )
+
+    def test_recording_the_same_sha_twice_keeps_one_entry(self):
+        config = self.loaded_config()
+        now = datetime(2026, 8, 20, tzinfo=timezone.utc)
+        production_auto_deploy.record_attempt(config, MAIN_SHA, now=now)
+        production_auto_deploy.record_attempt(
+            config, MAIN_SHA, now=now + timedelta(minutes=5)
+        )
+        body = (config.state_root / "attempted").read_text(encoding="ascii")
+        self.assertEqual(body.count(MAIN_SHA), 1)
 
     def test_the_lock_is_exclusive_across_processes(self):
         config = self.loaded_config()
@@ -700,6 +777,22 @@ class PollTest(PollerTestCase):
             self.assertIsNone(production_auto_deploy.poll(config, retry_sha=MAIN_SHA))
             production_auto_deploy.record_attempt(config, OTHER_SHA)
             self.assertIsNone(production_auto_deploy.poll(config, retry_sha=OTHER_SHA))
+        deploy.assert_not_called()
+
+    def test_retry_refuses_a_revision_already_deployed_successfully(self):
+        """--retry-failed must mean failed; a successful SHA stays in the
+        attempted record, so it would otherwise be redeployed on demand."""
+
+        config = self.loaded_config()
+        with self.eligible(MAIN_SHA), mock.patch.object(
+            production_auto_deploy, "deploy", return_value=True
+        ):
+            self.assertTrue(production_auto_deploy.poll(config))
+
+        with self.eligible(MAIN_SHA), mock.patch.object(
+            production_auto_deploy, "deploy"
+        ) as deploy:
+            self.assertIsNone(production_auto_deploy.poll(config, retry_sha=MAIN_SHA))
         deploy.assert_not_called()
 
     def test_retry_rejects_a_malformed_sha(self):

@@ -25,6 +25,11 @@ from urllib.request import Request, urlopen
 
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
 ATTEMPT_LOG_PATTERN = re.compile(r"(\d{8}T\d{6}Z)-[0-9a-f]{40}")
+TIMESTAMP_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
+# Bounds the attempted record. The count is the hard cap; the window keeps it
+# from carrying revisions nobody remembers.
+ATTEMPTED_RETENTION_COUNT = 50
+ATTEMPTED_RETENTION_DAYS = 90
 MAX_RESPONSE_BYTES = 1024 * 1024
 READ_SIZE = 64 * 1024
 NETWORK_TIMEOUT_SECONDS = 10
@@ -282,35 +287,91 @@ def _attempted_path(config: Config) -> Path:
     return config.state_root / "attempted"
 
 
-def attempted_shas(config: Config) -> set[str]:
-    """Every revision this poller has already tried, successfully or not."""
+def _read_attempts(config: Config) -> list[tuple[str, str | None]]:
+    """Every recorded attempt in the order it was made, oldest first.
+
+    Lines are "<sha> <timestamp>". A bare SHA is accepted so a record written by
+    an older poller still parses; it sorts as unknown-age and is pruned first.
+    """
 
     try:
         payload = _attempted_path(config).read_text(encoding="ascii")
     except (OSError, UnicodeError):
-        return set()
-    return {line for line in payload.split() if SHA_PATTERN.fullmatch(line)}
+        return []
+    attempts: list[tuple[str, str | None]] = []
+    seen: set[str] = set()
+    for line in payload.splitlines():
+        parts = line.split()
+        if not parts or SHA_PATTERN.fullmatch(parts[0]) is None:
+            continue
+        sha = parts[0]
+        if sha in seen:
+            continue
+        seen.add(sha)
+        stamp = parts[1] if len(parts) > 1 and TIMESTAMP_PATTERN.fullmatch(parts[1]) else None
+        attempts.append((sha, stamp))
+    return attempts
 
 
-def _store_attempted(config: Config, shas: set[str]) -> None:
-    _write_private(
-        _attempted_path(config),
-        "".join(f"{sha}\n" for sha in sorted(shas)).encode("ascii"),
+def _prune_attempts(
+    attempts: list[tuple[str, str | None]],
+    now: datetime,
+) -> list[tuple[str, str | None]]:
+    """Bound the record by count and by age.
+
+    An entry survives while it is inside the newest ATTEMPTED_RETENTION_COUNT and
+    inside the retention window. The caller always appends the current attempt
+    before pruning, so the just-recorded revision is inherently retained: that is
+    what stops a failed revision from being attempted again on the next tick.
+    """
+
+    if not attempts:
+        return []
+    cutoff = now - timedelta(days=ATTEMPTED_RETENTION_DAYS)
+    recent = attempts[-ATTEMPTED_RETENTION_COUNT:]
+    kept: list[tuple[str, str | None]] = []
+    for sha, stamp in recent:
+        if stamp is None:
+            continue
+        try:
+            stamped = datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(
+                tzinfo=timezone.utc
+            )
+        except ValueError:
+            continue
+        if stamped >= cutoff:
+            kept.append((sha, stamp))
+    return kept
+
+
+def _store_attempts(config: Config, attempts: list[tuple[str, str | None]]) -> None:
+    payload = "".join(
+        f"{sha} {stamp}\n" if stamp else f"{sha}\n" for sha, stamp in attempts
     )
+    _write_private(_attempted_path(config), payload.encode("ascii"))
 
 
-def record_attempt(config: Config, sha: str) -> None:
+def attempted_shas(config: Config) -> set[str]:
+    """Every revision this poller has already tried, successfully or not."""
+
+    return {sha for sha, _stamp in _read_attempts(config)}
+
+
+def record_attempt(config: Config, sha: str, now: datetime | None = None) -> None:
     """Record the attempt before deploying, so a crash cannot cause a retry loop."""
 
-    known = attempted_shas(config)
-    if sha not in known:
-        _store_attempted(config, known | {sha})
+    moment = datetime.now(timezone.utc) if now is None else now
+    attempts = [entry for entry in _read_attempts(config) if entry[0] != sha]
+    attempts.append((sha, _timestamp(moment)))
+    _store_attempts(config, _prune_attempts(attempts, moment))
 
 
 def forget_attempt(config: Config, sha: str) -> None:
     """Allow exactly one explicit operator retry of a previously attempted SHA."""
 
-    _store_attempted(config, attempted_shas(config) - {sha})
+    _store_attempts(
+        config, [entry for entry in _read_attempts(config) if entry[0] != sha]
+    )
 
 
 def record_success(config: Config, sha: str, timestamp: str) -> None:
@@ -578,7 +639,12 @@ def poll(config: Config, retry_sha: str | None = None) -> bool | None:
         rotate_logs(config, datetime.now(timezone.utc))
         head = resolve_main_sha(config)
         if retry_sha is not None:
-            if head != retry_sha or retry_sha not in attempted_shas(config):
+            successful = read_state(config)["last_successful"]
+            if (
+                head != retry_sha
+                or retry_sha not in attempted_shas(config)
+                or (successful is not None and successful["sha"] == retry_sha)
+            ):
                 return None
             forget_attempt(config, retry_sha)
         elif head in attempted_shas(config):
