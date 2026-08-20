@@ -171,7 +171,7 @@ Create the controller environment with the repository's current exact pins:
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install ansible-core==2.21.3 ansible-lint==26.8.0
+python -m pip install -r controller-requirements.txt
 ansible-galaxy collection install -r requirements.yml
 ```
 
@@ -304,7 +304,7 @@ git pull --ff-only origin main
 python3 -m venv .venv
 . .venv/bin/activate
 python3 -m pip install --upgrade pip
-python3 -m pip install 'ansible-core==2.21.3' 'ansible-lint==26.8.0'
+python3 -m pip install -r controller-requirements.txt
 ansible-galaxy collection install -r requirements.yml
 ```
 

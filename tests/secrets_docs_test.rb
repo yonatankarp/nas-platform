@@ -332,10 +332,16 @@ required_auto_deploy_commands.each do |description, snippets|
         "NAS automatic deployment guide must include #{description}")
 end
 
+# Install from the pin file rather than restating versions, so the guide cannot
+# drift away from controller-requirements.txt when Renovate bumps a pin.
+check(failures,
+      auto_deploy_section.include?("pip install -r controller-requirements.txt"),
+      "NAS automatic deployment guide must install controller pins from " \
+      "controller-requirements.txt")
 controller_pins = File.readlines(File.join(ROOT, "controller-requirements.txt"), chomp: true)
 controller_pins.each do |pin|
-  check(failures, auto_deploy_section.include?(pin),
-        "NAS automatic deployment guide must use current controller pin #{pin}")
+  check(failures, !auto_deploy_section.include?(pin),
+        "NAS automatic deployment guide must not restate controller pin #{pin}")
 end
 
 required_auto_deploy_guidance = {

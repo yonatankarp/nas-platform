@@ -44,7 +44,7 @@ prepare_operator_environment() {
   }
   .venv/bin/python -m pip install --upgrade pip || return 1
   .venv/bin/python -m pip install \
-    ansible-core==2.21.3 ansible-lint==26.8.0 || return 1
+    -r controller-requirements.txt || return 1
   .venv/bin/ansible-galaxy collection install -r requirements.yml || return 1
   .venv/bin/ansible-playbook --version || return 1
 }
