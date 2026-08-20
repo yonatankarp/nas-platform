@@ -20,6 +20,32 @@ NAS_ADDRESS = "192.168.0.139"
 TOKEN = "tk_#{'r' * 29}"
 ROTATED_TOKEN = "tk_#{'s' * 29}"
 LOCK_TEST_SHA = "f" * 40
+# Real role scenarios normally finish in seconds; three minutes leaves ample room
+# for a loaded runner without letting one Ansible process consume the CI job.
+ROLE_COMMAND_TIMEOUT_SECONDS = 180
+ROLE_COMMAND_TERM_GRACE_SECONDS = 1
+ROLE_COMMAND_KILL_GRACE_SECONDS = 2
+# Recent complete runs take 17-19 minutes, so this retains load tolerance while
+# keeping the exact standalone suite bounded below the surrounding CI timeout.
+ROLE_SUITE_BUDGET_SECONDS = 30 * 60
+ROLE_COMMAND_TIMEOUT_DIAGNOSTIC = "production auto-deploy role test: Ansible invocation timed out\n"
+POWER_BOUNDARY_TIMEOUT_DIAGNOSTIC = "production auto-deploy role test: power-boundary marker timed out\n"
+POLL_CHILD_TIMEOUT_DIAGNOSTIC = "production auto-deploy role test: poll child timed out\n"
+ROLE_SUITE_TIMEOUT_DIAGNOSTIC = "production auto-deploy role test: suite exceeded its wall-clock budget"
+
+workflow = File.read(File.join(ROOT, ".github/workflows/ci.yml"))
+integration = File.read(File.join(ROOT, "tests/integration.sh"))
+controller_requirements = File.read(File.join(ROOT, "controller-requirements.txt"))
+ci_pins = workflow.scan(
+  /pip" install 'ansible-core==([0-9.]+)' 'ansible-lint==([0-9.]+)'/
+)
+integration_pins = integration.scan(/^ansible_core_version=([0-9.]+)$/).flatten
+abort "CI must contain one exact Ansible controller pin pair" unless ci_pins.length == 1
+expected_core, expected_lint = ci_pins.fetch(0)
+abort "integration ansible-core pin must match CI" unless integration_pins == [expected_core]
+abort "controller requirements must match current CI pins" unless
+  controller_requirements ==
+  "ansible-core==#{expected_core}\nansible-lint==#{expected_lint}\n"
 
 def command_path(name)
   ENV.fetch("PATH", "").split(File::PATH_SEPARATOR).each do |directory|
@@ -32,13 +58,196 @@ end
 ansible = command_path("ansible-playbook")
 abort "production auto-deploy role test requires ansible-playbook" unless ansible
 version, status = Open3.capture2(ansible, "--version")
-abort "production auto-deploy role test requires ansible-core 2.21.2" unless
-  status.success? && version.start_with?("ansible-playbook [core 2.21.2]")
+abort "production auto-deploy role test requires ansible-core #{expected_core}" unless
+  status.success? && version.start_with?("ansible-playbook [core #{expected_core}]")
 
 interpreter = File.realpath(File.open(ansible, &:readline).delete_prefix("#!").strip)
 abort "production auto-deploy role test requires Ansible Python 3.12+" unless
   File.executable?(interpreter) &&
   system(interpreter, "-c", "import sys; raise SystemExit(sys.version_info < (3, 12))")
+
+class ManagedChild
+  def initialize(environment, *args, chdir: nil, process_scope: nil)
+    options = { pgroup: true }
+    options[:chdir] = chdir if chdir
+    @stdin, @stdout, @stderr, @waiter = Open3.popen3(environment, *args, **options)
+    @process_scope = process_scope
+    @stdout_reader = drain(@stdout)
+    @stderr_reader = drain(@stderr)
+  end
+
+  def close_stdin
+    @stdin.close unless @stdin.closed?
+  end
+
+  def wait_until(timeout:)
+    finished = false
+    deadline = monotonic_time + timeout
+    loop do
+      if yield
+        finished = true
+        return :condition
+      end
+      unless alive?
+        finished = true
+        return :complete
+      end
+      if monotonic_time >= deadline
+        finished = true
+        return :timeout
+      end
+      sleep [deadline - monotonic_time, 0.02].min
+    end
+  ensure
+    close unless finished
+  end
+
+  def result(timeout:, timeout_diagnostic:)
+    finished = false
+    timed_out = !wait_for_exit(timeout)
+    terminate if timed_out
+    @result ||= finalized_result(timed_out ? timeout_diagnostic : nil)
+    finished = true
+    @result
+  ensure
+    close unless finished
+  end
+
+  def force_kill
+    finished = false
+    signal_group("KILL")
+    terminate_scoped_processes
+    wait_for_exit(ROLE_COMMAND_KILL_GRACE_SECONDS)
+    @result ||= finalized_result(nil)
+    finished = true
+    @result
+  ensure
+    close unless finished
+  end
+
+  def close
+    return if @closed
+    begin
+      terminate if alive?
+      terminate_scoped_processes
+    ensure
+      [@stdin, @stdout, @stderr].each { |pipe| pipe.close unless pipe.closed? }
+      [@stdout_reader, @stderr_reader].each do |reader|
+        reader.join(ROLE_COMMAND_KILL_GRACE_SECONDS)
+        reader.kill if reader.alive?
+        reader.join(ROLE_COMMAND_KILL_GRACE_SECONDS)
+      end
+      @closed = true
+    end
+  end
+
+  private
+
+  def alive?
+    @waiter.alive? || @stdout_reader.alive? || @stderr_reader.alive?
+  end
+
+  def wait_for_exit(seconds)
+    deadline = monotonic_time + seconds
+    loop do
+      return true unless alive?
+      remaining = deadline - monotonic_time
+      return false if remaining <= 0
+      sleep [remaining, 0.02].min
+    end
+  end
+
+  def terminate
+    signal_group("TERM")
+    unless wait_for_exit(ROLE_COMMAND_TERM_GRACE_SECONDS)
+      signal_group("KILL")
+      terminate_scoped_processes
+      wait_for_exit(ROLE_COMMAND_KILL_GRACE_SECONDS)
+    end
+    unless @waiter.join(ROLE_COMMAND_KILL_GRACE_SECONDS)
+      signal_group("KILL")
+      raise ROLE_COMMAND_TIMEOUT_DIAGNOSTIC unless
+        @waiter.join(ROLE_COMMAND_KILL_GRACE_SECONDS)
+    end
+    terminate_scoped_processes
+  end
+
+  def finalized_result(diagnostic)
+    unless @waiter.join(ROLE_COMMAND_KILL_GRACE_SECONDS)
+      signal_group("KILL")
+      raise ROLE_COMMAND_TIMEOUT_DIAGNOSTIC unless
+        @waiter.join(ROLE_COMMAND_KILL_GRACE_SECONDS)
+    end
+    [@stdout_reader, @stderr_reader].each do |reader|
+      reader.join(ROLE_COMMAND_KILL_GRACE_SECONDS)
+    end
+    [@stdout, @stderr].each { |pipe| pipe.close unless pipe.closed? }
+    [@stdout_reader, @stderr_reader].each do |reader|
+      raise ROLE_COMMAND_TIMEOUT_DIAGNOSTIC unless
+        reader.join(ROLE_COMMAND_KILL_GRACE_SECONDS)
+    end
+    stderr_text = @stderr_reader.value
+    if diagnostic
+      stderr_text += "\n" unless stderr_text.empty? || stderr_text.end_with?("\n")
+      stderr_text += diagnostic
+    end
+    @closed = true
+    [@stdout_reader.value, stderr_text, @waiter.value]
+  end
+
+  def drain(pipe)
+    Thread.new do
+      output = +""
+      loop { output << pipe.readpartial(16 * 1024) }
+    rescue EOFError, IOError
+      output
+    end
+  end
+
+  def signal_group(signal)
+    Process.kill(signal, -@waiter.pid)
+  rescue Errno::ESRCH
+    nil
+  end
+
+  def terminate_scoped_processes
+    return unless @process_scope
+    deadline = monotonic_time + ROLE_COMMAND_KILL_GRACE_SECONDS
+    loop do
+      table, = Open3.capture2("ps", "-Ao", "pid=,ppid=,command=")
+      processes = table.lines.filter_map do |line|
+        pid_text, parent_text, command = line.strip.split(/\s+/, 3)
+        next unless pid_text && parent_text && command
+        [pid_text.to_i, parent_text.to_i, command]
+      end
+      parents = processes.to_h { |pid, parent, _command| [pid, parent] }
+      victims = processes.filter_map do |pid, _parent, command|
+        pid if command.include?(@process_scope)
+      end
+      victims.each do |pid|
+        parent = parents[pid]
+        while parent && parent > 1 && parent != Process.pid && !victims.include?(parent)
+          victims << parent
+          parent = parents[parent]
+        end
+      end
+      victims.reject! { |pid| pid == Process.pid }
+      return if victims.empty?
+      begin
+        Process.kill("KILL", *victims)
+      rescue Errno::ESRCH
+        nil
+      end
+      break if monotonic_time >= deadline
+      sleep 0.02
+    end
+    raise ROLE_COMMAND_TIMEOUT_DIAGNOSTIC
+  end
+
+  def monotonic_time
+    Process.clock_gettime(Process::CLOCK_MONOTONIC)
+  end
+end
 
 class Fixture
   attr_reader :root, :protected, :controller, :crontab, :sha, :fsmonitor_marker
@@ -81,7 +290,6 @@ class Fixture
   def variables(extra = {}, controller_default: false)
     variables = {
       "platform_kind" => "nas",
-      "platform_adoption_enabled" => false,
       "platform_release_id" => @sha,
       "platform_vault_file" => File.join(@protected, "vault.yml"),
       "platform_public_host" => NAS_ADDRESS,
@@ -96,7 +304,7 @@ class Fixture
   end
 
   def run(extra = {}, check: false, controller_default: false, ansible_command: nil,
-          environment: {}, extra_arguments: [])
+          environment: {}, extra_arguments: [], command_timeout: ROLE_COMMAND_TIMEOUT_SECONDS)
     play = role_play(extra, controller_default: controller_default)
     play_path = File.join(@root, "play-#{Thread.current.object_id}.yml")
     File.write(play_path, YAML.dump(play), mode: "w", perm: 0o600)
@@ -104,60 +312,41 @@ class Fixture
            ["-i", "localhost,", "-c", "local", play_path]
     args.concat(extra_arguments)
     args << "--check" if check
-    Open3.capture3({ "ANSIBLE_NOCOLOR" => "1" }.merge(environment), *args, chdir: ROOT)
+    bounded_capture3(
+      { "ANSIBLE_NOCOLOR" => "1" }.merge(environment),
+      *args,
+      chdir: ROOT,
+      timeout: command_timeout
+    )
   ensure
     File.unlink(play_path) if play_path && File.exist?(play_path)
   end
 
-  def kill_at_power_boundary(extra, marker)
+  def kill_at_power_boundary(extra, marker, ansible_command: "ansible-playbook",
+                             environment: {}, marker_timeout: 30)
     play_path = File.join(@root, "power-play-#{Thread.current.object_id}.yml")
     File.write(play_path, YAML.dump(role_play(extra)), mode: "w", perm: 0o600)
-    args = ["ansible-playbook", "-i", "localhost,", "-c", "local", play_path]
-    stdin, stdout, stderr, waiter = Open3.popen3(
-      { "ANSIBLE_NOCOLOR" => "1" }, *args, chdir: ROOT, pgroup: true
+    args = Array(ansible_command) + ["-i", "localhost,", "-c", "local", play_path]
+    child = ManagedChild.new(
+      { "ANSIBLE_NOCOLOR" => "1" }.merge(environment),
+      *args,
+      chdir: ROOT,
+      process_scope: @root
     )
-    stdin.close
-    stdout_reader = Thread.new { stdout.read }
-    stderr_reader = Thread.new { stderr.read }
-    deadline = Time.now + 30
-    sleep 0.02 until File.exist?(marker) || !waiter.alive? || Time.now >= deadline
-    reached = File.exist?(marker)
-    Process.kill("KILL", -waiter.pid) if reached && waiter.alive?
-    status = waiter.value
-    if reached
-      50.times do
-        table, = Open3.capture2("ps", "-Ao", "pid=,ppid=,command=")
-        processes = table.lines.filter_map do |line|
-          pid_text, parent_text, command = line.strip.split(/\s+/, 3)
-          next unless pid_text && parent_text && command
-          [pid_text.to_i, parent_text.to_i, command]
-        end
-        parents = processes.to_h { |pid, parent, _command| [pid, parent] }
-        victims = processes.filter_map do |pid, _parent, command|
-          pid if command.include?(@root)
-        end
-        victims.each do |pid|
-          parent = parents[pid]
-          while parent && parent > 1 && !victims.include?(parent)
-            victims << parent
-            parent = parents[parent]
-          end
-        end
-        victims.reject! { |pid| pid == Process.pid }
-        break if victims.empty?
-        begin
-          Process.kill("KILL", *victims)
-        rescue Errno::ESRCH
-          nil
-        end
-        sleep 0.02
-      end
-    end
-    [reached, stdout_reader.value, stderr_reader.value, status]
+    child.close_stdin
+    outcome = child.wait_until(timeout: marker_timeout) { File.exist?(marker) }
+    reached = outcome == :condition
+    stdout, stderr, status = if reached
+                               child.force_kill
+                             else
+                               child.result(
+                                 timeout: 0,
+                                 timeout_diagnostic: POWER_BOUNDARY_TIMEOUT_DIAGNOSTIC
+                               )
+                             end
+    [reached, stdout, stderr, status]
   ensure
-    stdin&.close unless stdin&.closed?
-    stdout&.close unless stdout&.closed?
-    stderr&.close unless stderr&.closed?
+    child&.close
     File.unlink(play_path) if play_path && File.exist?(play_path)
   end
 
@@ -420,6 +609,14 @@ class Fixture
 
   private
 
+  def bounded_capture3(environment, *args, chdir:, timeout:)
+    child = ManagedChild.new(environment, *args, chdir: chdir, process_scope: @root)
+    child.close_stdin
+    child.result(timeout: timeout, timeout_diagnostic: ROLE_COMMAND_TIMEOUT_DIAGNOSTIC)
+  ensure
+    child&.close
+  end
+
   def commit_controller_change(message, path)
     run_git("checkout", "main")
     run_git("add", path)
@@ -499,7 +696,49 @@ def snapshot(root)
     .to_h { |path| [path.delete_prefix("#{root}/"), File.symlink?(path) ? [:link, File.readlink(path)] : [File.ftype(path), File.stat(path).mode & 0o777, File.file?(path) ? File.binread(path) : nil]] }
 end
 
-def start_test_poll(fixture, interpreter, entered:, release: nil, attempted: nil)
+def write_term_resistant_tree(fixture, interpreter, label, escape_group: false)
+  ready = File.join(fixture.root, "#{label}-ready")
+  marker = File.join(fixture.root, "#{label}-delayed-marker")
+  descendant = File.join(fixture.root, "#{label}-descendant")
+  File.write(
+    descendant,
+    <<~PYTHON,
+      #!#{interpreter}
+      import os
+      import pathlib
+      import signal
+      import time
+
+      #{escape_group ? "os.setsid()" : ""}
+      signal.signal(signal.SIGTERM, signal.SIG_IGN)
+      pathlib.Path(os.environ["MANAGED_CHILD_READY"]).write_text("ready")
+      time.sleep(3)
+      pathlib.Path(os.environ["MANAGED_CHILD_MARKER"]).write_text("orphaned")
+    PYTHON
+    mode: "w",
+    perm: 0o700
+  )
+  File.chmod(0o700, descendant)
+  command = File.join(fixture.root, "#{label}-command")
+  File.write(
+    command,
+    <<~SH,
+      #!/bin/sh
+      trap '' TERM
+      "#{descendant}" &
+      while :; do wait || true; done
+    SH
+    mode: "w",
+    perm: 0o700
+  )
+  File.chmod(0o700, command)
+  [command, ready, marker]
+end
+
+def start_test_poll(fixture, interpreter, entered:, release: nil, attempted: nil,
+                    command: nil, environment: {})
+  return ManagedChild.new(environment, *command, process_scope: fixture.root) if command
+
   current = fixture.managed_paths.fetch(:current)
   generation = File.expand_path(File.readlink(current), File.dirname(current))
   poller = File.join(generation, "production_auto_deploy.py")
@@ -531,10 +770,27 @@ def start_test_poll(fixture, interpreter, entered:, release: nil, attempted: nil
     module.attempt_candidate = attempt
     raise SystemExit(module.main(["--config", #{config.inspect}, "--poll"]))
   PY
-  Open3.popen3(interpreter, "-c", source)
+  ManagedChild.new(environment, interpreter, "-c", source, process_scope: fixture.root)
 end
 
 failures = []
+suite_started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+suite_main_thread = Thread.current
+suite_watchdog = Thread.new do
+  sleep ROLE_SUITE_BUDGET_SECONDS
+  suite_main_thread.raise(RuntimeError, ROLE_SUITE_TIMEOUT_DIAGNOSTIC)
+end
+suite_watchdog.report_on_exception = false
+
+runner_parameters = Fixture.instance_method(:run).parameters
+failures << "role runner does not expose a testable per-command deadline" unless
+  runner_parameters.include?([:key, :command_timeout])
+role_test_source = File.read(__FILE__)
+failures << "asynchronous children do not have one managed spawn owner" unless
+  defined?(ManagedChild) &&
+  role_test_source.scan(["Open3", "popen3"].join(".")).length == 1 &&
+  role_test_source.scan(["@waiter", "value"].join(".")).length == 1 &&
+  role_test_source.scan(["Process", "spawn"].join(".")).empty?
 
 required = [ROLE_TASKS, ROLE_DEFAULTS, ROLE_ARGUMENTS, INSTALL_PLAY, LAUNCHER_SOURCE]
 missing = required.reject { |path| File.file?(path) }
@@ -566,6 +822,144 @@ failures << "install play must contain only production_auto_deploy" unless role_
 pre_tasks = Array(play&.dig(0, "pre_tasks"))
 failures << "install play must validate vault_contract first with no_log" unless
   pre_tasks.first.to_s.include?("vault_contract") && pre_tasks.first.to_s.include?("no_log")
+
+with_fixture(interpreter) do |fixture|
+  normal_command = File.join(fixture.root, "normal-command")
+  File.write(
+    normal_command,
+    "#!/bin/sh\nprintf normal-out\nprintf normal-err >&2\nexit 23\n",
+    mode: "w",
+    perm: 0o700
+  )
+  File.chmod(0o700, normal_command)
+  stdout, stderr, status = fixture.run(ansible_command: normal_command, command_timeout: 2)
+  failures << "bounded role runner changed normal stdout" unless stdout == "normal-out"
+  failures << "bounded role runner changed normal stderr" unless stderr == "normal-err"
+  failures << "bounded role runner changed normal exit status" unless status.exitstatus == 23
+
+  hung_command, ready, marker = write_term_resistant_tree(
+    fixture, interpreter, "hung-runner"
+  )
+  started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+  stdout, stderr, status = fixture.run(
+    ansible_command: hung_command,
+    environment: {
+      "MANAGED_CHILD_MARKER" => marker,
+      "MANAGED_CHILD_READY" => ready
+    },
+    command_timeout: 1
+  )
+  elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
+  failures << "bounded role runner did not start its TERM-resistant descendant" unless
+    File.exist?(ready)
+  failures << "bounded role runner did not terminate a hung process group" unless
+    elapsed < 3 && status.signaled?
+  failures << "bounded role runner changed timed-out stdout" unless stdout.empty?
+  failures << "bounded role runner emitted a variable or unsafe timeout diagnostic" unless
+    stderr == ROLE_COMMAND_TIMEOUT_DIAGNOSTIC
+  sleep 2
+  failures << "bounded role runner left a descendant able to write after timeout" if
+    File.exist?(marker)
+  process_table, = Open3.capture2("ps", "-Ao", "command=")
+  failures << "bounded role runner left an orphaned fixture process" if
+    process_table.lines.any? { |line| line.include?(fixture.root) }
+end
+
+if defined?(ManagedChild)
+  with_fixture(interpreter) do |fixture|
+    environment = lambda do |ready, marker|
+      {
+        "MANAGED_CHILD_READY" => ready,
+        "MANAGED_CHILD_MARKER" => marker
+      }
+    end
+
+    command, ready, delayed_marker = write_term_resistant_tree(
+      fixture, interpreter, "missing-power-marker", escape_group: true
+    )
+    reached, stdout, stderr, status = fixture.kill_at_power_boundary(
+      {},
+      File.join(fixture.root, "power-marker-never-written"),
+      ansible_command: command,
+      environment: environment.call(ready, delayed_marker),
+      marker_timeout: 1
+    )
+    failures << "missing power marker unexpectedly succeeded" if reached
+    failures << "missing power marker did not start its resistant descendant" unless
+      File.exist?(ready)
+    failures << "missing power marker did not return a failed child" unless
+      status.signaled?
+    failures << "missing power marker changed timed-out stdout" unless stdout.empty?
+    failures << "missing power marker emitted an unsafe diagnostic" unless
+      stderr == POWER_BOUNDARY_TIMEOUT_DIAGNOSTIC
+    sleep 1.2
+    failures << "power-boundary timeout left a delayed descendant" if
+      File.exist?(delayed_marker)
+
+    command, ready, delayed_marker = write_term_resistant_tree(
+      fixture, interpreter, "watchdog-interruption"
+    )
+    interrupter = Thread.new do
+      sleep 1
+      Thread.main.raise(RuntimeError, ROLE_SUITE_TIMEOUT_DIAGNOSTIC)
+    end
+    watchdog_error = begin
+      fixture.kill_at_power_boundary(
+        {},
+        File.join(fixture.root, "watchdog-power-marker"),
+        ansible_command: command,
+        environment: environment.call(ready, delayed_marker),
+        marker_timeout: 5
+      )
+      nil
+    rescue RuntimeError => error
+      error
+    ensure
+      interrupter.join
+    end
+    failures << "watchdog did not interrupt the managed child wait" unless
+      watchdog_error&.message == ROLE_SUITE_TIMEOUT_DIAGNOSTIC
+    failures << "watchdog test did not start its resistant descendant" unless File.exist?(ready)
+    sleep 1.2
+    failures << "watchdog interruption left a delayed descendant" if File.exist?(delayed_marker)
+
+    command, ready, delayed_marker = write_term_resistant_tree(
+      fixture, interpreter, "poll-timeout"
+    )
+    poll = start_test_poll(
+      fixture,
+      interpreter,
+      entered: File.join(fixture.root, "unused-poll-entry"),
+      command: [command],
+      environment: environment.call(ready, delayed_marker)
+    )
+    poll.close_stdin
+    ready_deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 1
+    sleep 0.02 until File.exist?(ready) ||
+                     Process.clock_gettime(Process::CLOCK_MONOTONIC) >= ready_deadline
+    poll_started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    stdout, stderr, status = poll.result(
+      timeout: 0.3,
+      timeout_diagnostic: POLL_CHILD_TIMEOUT_DIAGNOSTIC
+    )
+    poll_elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - poll_started_at
+    failures << "poll timeout did not start its resistant descendant" unless File.exist?(ready)
+    failures << "poll timeout did not return a failed child" unless status.signaled?
+    failures << "poll timeout did not bound the never-exiting child" unless poll_elapsed < 2
+    failures << "poll timeout changed stdout" unless stdout.empty?
+    failures << "poll timeout emitted an unsafe diagnostic" unless
+      stderr == POLL_CHILD_TIMEOUT_DIAGNOSTIC
+    poll.close
+    sleep 1.8
+    failures << "poll timeout left a delayed descendant" if File.exist?(delayed_marker)
+
+    process_table, = Open3.capture2("ps", "-Ao", "command=")
+    failures << "managed child regressions left an orphaned fixture process" if
+      process_table.lines.any? { |line| line.include?(fixture.root) }
+  ensure
+    poll&.close
+  end
+end
 
 with_fixture(interpreter) do |fixture|
   sealed_ansible, sealed_python, ansible_site = fixture.write_sealed_ansible_runtime(ansible)
@@ -1096,28 +1490,36 @@ with_fixture(interpreter) do |fixture|
   next unless status.success?
   entered = File.join(fixture.root, "poll-entered")
   release = File.join(fixture.root, "poll-release")
-  stdin, stdout, poll_stderr, waiter = start_test_poll(
-    fixture,
-    interpreter,
-    entered: entered,
-    release: release
-  )
-  stdin.close
-  deadline = Time.now + 5
-  sleep 0.02 until File.exist?(entered) || Time.now >= deadline
-  if File.exist?(entered)
-    before = snapshot(fixture.root)
-    install_stdout, install_stderr, install_status = fixture.run
-    failures << "installer did not report a clean busy poll lock" unless
-      install_status.success? && (install_stdout + install_stderr).include?("busy")
-    failures << "busy installer mutated managed state" unless snapshot(fixture.root) == before
-  else
-    failures << "real poll did not enter its paused attempt: #{poll_stderr.read}"
+  poll = nil
+  begin
+    poll = start_test_poll(
+      fixture,
+      interpreter,
+      entered: entered,
+      release: release
+    )
+    poll.close_stdin
+    deadline = Time.now + 5
+    sleep 0.02 until File.exist?(entered) || Time.now >= deadline
+    if File.exist?(entered)
+      before = snapshot(fixture.root)
+      install_stdout, install_stderr, install_status = fixture.run
+      failures << "installer did not report a clean busy poll lock" unless
+        install_status.success? && (install_stdout + install_stderr).include?("busy")
+      failures << "busy installer mutated managed state" unless snapshot(fixture.root) == before
+    end
+    File.write(release, "release\n", mode: "w", perm: 0o600)
+    _poll_stdout, poll_stderr, poll_status = poll.result(
+      timeout: 5,
+      timeout_diagnostic: POLL_CHILD_TIMEOUT_DIAGNOSTIC
+    )
+    failures << "real poll did not enter its paused attempt: #{poll_stderr}" unless
+      File.exist?(entered)
+    failures << "paused poll did not exit cleanly: #{poll_stderr}" unless
+      poll_status.success?
+  ensure
+    poll&.close
   end
-  File.write(release, "release\n", mode: "w", perm: 0o600)
-  waiter.value
-  stdout.close
-  poll_stderr.close
 end
 
 with_fixture(interpreter) do |fixture|
@@ -1136,19 +1538,26 @@ with_fixture(interpreter) do |fixture|
   sleep 0.02 until File.exist?(marker) || !installer.alive? || Time.now >= deadline
   if File.exist?(marker)
     attempted = File.join(fixture.root, "poll-attempted")
-    stdin, stdout, poll_stderr, waiter = start_test_poll(
-      fixture,
-      interpreter,
-      entered: attempted,
-      attempted: attempted
-    )
-    stdin.close
-    poll_status = waiter.value
-    failures << "poll did not exit cleanly while installer held the shared lock: #{poll_stderr.read}" unless
-      poll_status.success?
-    failures << "poll attempted deployment while installer held the shared lock" if File.exist?(attempted)
-    stdout.close
-    poll_stderr.close
+    poll = nil
+    begin
+      poll = start_test_poll(
+        fixture,
+        interpreter,
+        entered: attempted,
+        attempted: attempted
+      )
+      poll.close_stdin
+      _poll_stdout, poll_stderr, poll_status = poll.result(
+        timeout: 5,
+        timeout_diagnostic: POLL_CHILD_TIMEOUT_DIAGNOSTIC
+      )
+      failures << "poll did not exit cleanly while installer held the shared lock: #{poll_stderr}" unless
+        poll_status.success?
+      failures << "poll attempted deployment while installer held the shared lock" if
+        File.exist?(attempted)
+    ensure
+      poll&.close
+    end
   else
     failures << "installer never exposed its test-only shared-lock marker"
   end
@@ -1290,6 +1699,11 @@ with_fixture(interpreter) do |fixture|
   failures << "wrong-owner failure omitted diagnostic" unless (_stdout + stderr).include?("owned by the effective account")
   failures << "wrong-owner failure mutated the root" unless snapshot(fixture.root) == before
 end
+
+suite_elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - suite_started_at
+failures << ROLE_SUITE_TIMEOUT_DIAGNOSTIC if suite_elapsed > ROLE_SUITE_BUDGET_SECONDS
+suite_watchdog.kill
+suite_watchdog.join
 
 if failures.empty?
   puts "Production auto-deploy role: all tests passed"

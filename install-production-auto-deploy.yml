@@ -16,14 +16,11 @@
           no_log: true
       tags: [always]
 
-    - name: Restrict poller installation to non-adoption NAS runs
+    - name: Restrict poller installation to the NAS
       ansible.builtin.assert:
         that:
           - platform_kind == 'nas'
-          - not (platform_adoption_enabled | default(false) | bool)
-        fail_msg: >-
-          Production auto-deployment installation is NAS-only and cannot run
-          during adoption.
+        fail_msg: Production auto-deployment installation is NAS-only.
       tags: [always]
 
   roles:

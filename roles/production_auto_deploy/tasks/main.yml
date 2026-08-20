@@ -3,9 +3,7 @@
   ansible.builtin.assert:
     that:
       - platform_kind == 'nas'
-      - not (platform_adoption_enabled | default(false) | bool)
-    fail_msg: >-
-      Production auto-deployment is NAS-only and is forbidden during adoption.
+    fail_msg: Production auto-deployment is NAS-only.
 
 - name: Restrict disposable installer test hooks to Darwin
   ansible.builtin.assert:

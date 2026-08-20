@@ -80,7 +80,18 @@ GIT_SAFE_CONFIG = (
     "core.attributesFile=/dev/null",
     "credential.helper=",
 )
-EXPECTED_CONTROLLER_REQUIREMENTS = b"ansible-core==2.21.2\nansible-lint==26.6.0\n"
+EXPECTED_ANSIBLE_CORE_VERSION = "2.21.3"
+EXPECTED_ANSIBLE_LINT_VERSION = "26.8.0"
+EXPECTED_CONTROLLER_REQUIREMENTS = (
+    f"ansible-core=={EXPECTED_ANSIBLE_CORE_VERSION}\n"
+    f"ansible-lint=={EXPECTED_ANSIBLE_LINT_VERSION}\n"
+).encode("ascii")
+EXPECTED_VERIFY_TAGS = (
+    "platform_verify_ntfy,platform_verify_beszel,platform_verify_dozzle,"
+    "platform_verify_audiobookshelf,platform_verify_komga,"
+    "platform_verify_tinymediamanager,platform_verify_jellyfin,"
+    "platform_verify_immich,platform_verify_paperless"
+)
 
 
 class ConfigurationError(ValueError):
@@ -2164,20 +2175,23 @@ def _capture_installed_tooling_manifest(
         raise DeploymentError("published package manifest is invalid") from error
     normalized_packages = {line.casefold() for line in freeze_lines}
     if not {
-        "ansible-core==2.21.2",
-        "ansible-lint==26.6.0",
+        f"ansible-core=={EXPECTED_ANSIBLE_CORE_VERSION}",
+        f"ansible-lint=={EXPECTED_ANSIBLE_LINT_VERSION}",
     }.issubset(normalized_packages):
         raise DeploymentError("published package versions are invalid")
 
     ansible_version = output([tooling.ansible_playbook, "--version"]).splitlines()[:1]
-    if ansible_version != [b"ansible-playbook [core 2.21.2]"]:
+    expected_ansible_version = (
+        f"ansible-playbook [core {EXPECTED_ANSIBLE_CORE_VERSION}]".encode("ascii")
+    )
+    if ansible_version != [expected_ansible_version]:
         raise DeploymentError("published Ansible version is invalid")
     ansible_lint_line = output(
         [tooling.python, "-m", "ansiblelint", "--version"]
     ).splitlines()[:1]
     if not ansible_lint_line or ansible_lint_line[0].split()[:2] != [
         b"ansible-lint",
-        b"26.6.0",
+        EXPECTED_ANSIBLE_LINT_VERSION.encode("ascii"),
     ]:
         raise DeploymentError("published ansible-lint version is invalid")
 
@@ -2222,8 +2236,8 @@ def _capture_installed_tooling_manifest(
     return (
         json.dumps(
             {
-                "ansible_core": "2.21.2",
-                "ansible_lint": "26.6.0",
+                "ansible_core": EXPECTED_ANSIBLE_CORE_VERSION,
+                "ansible_lint": EXPECTED_ANSIBLE_LINT_VERSION,
                 "collections": installed_collections,
                 "pip_freeze": freeze_lines,
                 "python": python_version,
@@ -2681,6 +2695,8 @@ def _playbook_arguments(
     ):
         raise DeploymentError("local interpreter argument is ambiguous")
     arguments.extend(["-e", interpreter_assignment])
+    if playbook == "verify.yml":
+        arguments.extend(["--tags", EXPECTED_VERIFY_TAGS])
     return arguments
 
 

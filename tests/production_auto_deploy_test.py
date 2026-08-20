@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import ast
 import contextlib
 import dataclasses
 import datetime
@@ -12,6 +13,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import shutil
 import stat
@@ -28,10 +30,11 @@ from urllib.request import Request, build_opener
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "production_auto_deploy.py"
 MAIN_SHA = "0123456789abcdef0123456789abcdef01234567"
-INSTALLED_TOOLING_MANIFEST = (
-    b'{"ansible_core":"2.21.2","ansible_lint":"26.6.0",'
-    b'"collections":{"community.docker":"5.2.1"},'
-    b'"pip_freeze":[],"python":"3.12"}\n'
+VERIFY_TAGS = (
+    "platform_verify_ntfy,platform_verify_beszel,platform_verify_dozzle,"
+    "platform_verify_audiobookshelf,platform_verify_komga,"
+    "platform_verify_tinymediamanager,platform_verify_jellyfin,"
+    "platform_verify_immich,platform_verify_paperless"
 )
 
 
@@ -46,6 +49,55 @@ def load_production_module():
 
 
 production_auto_deploy = load_production_module()
+
+
+def authoritative_controller_pins():
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    integration = (ROOT / "tests/integration.sh").read_text(encoding="utf-8")
+    ci_pins = re.findall(
+        r"pip\" install 'ansible-core==([0-9.]+)' "
+        r"'ansible-lint==([0-9.]+)'",
+        workflow,
+    )
+    integration_pins = re.findall(
+        r"^ansible_core_version=([0-9.]+)$",
+        integration,
+        re.MULTILINE,
+    )
+    if len(ci_pins) != 1 or integration_pins != [ci_pins[0][0]]:
+        raise AssertionError("CI and integration must have one matching Ansible pin")
+    return ci_pins[0]
+
+
+def authoritative_collection_requirements():
+    payload = (ROOT / "requirements.yml").read_bytes()
+    return payload, production_auto_deploy._parse_collection_requirements(payload)
+
+
+def installed_tooling_manifest(collections=None):
+    if collections is None:
+        _payload, collections = authoritative_collection_requirements()
+    return (
+        json.dumps(
+            {
+                "ansible_core": production_auto_deploy.EXPECTED_ANSIBLE_CORE_VERSION,
+                "ansible_lint": production_auto_deploy.EXPECTED_ANSIBLE_LINT_VERSION,
+                "collections": collections,
+                "pip_freeze": [],
+                "python": "3.12",
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("ascii")
+        + b"\n"
+    )
+
+
+def ansible_playbook_version_output():
+    return (
+        "ansible-playbook [core "
+        f"{production_auto_deploy.EXPECTED_ANSIBLE_CORE_VERSION}]\n"
+    ).encode("ascii")
 
 
 class GithubHandler(BaseHTTPRequestHandler):
@@ -394,11 +446,10 @@ class ProductionAutoDeployTest(unittest.TestCase):
     def seed_candidate_files(self, checkout=None):
         checkout = Path(checkout or self.config["controller_root"])
         (checkout / "controller-requirements.txt").write_bytes(
-            b"ansible-core==2.21.2\nansible-lint==26.6.0\n"
+            production_auto_deploy.EXPECTED_CONTROLLER_REQUIREMENTS
         )
-        (checkout / "requirements.yml").write_bytes(
-            b"---\ncollections:\n  - name: community.docker\n    version: 5.2.1\n"
-        )
+        collection_requirements, _pins = authoritative_collection_requirements()
+        (checkout / "requirements.yml").write_bytes(collection_requirements)
         (checkout / "ansible.cfg").write_text("[defaults]\n", encoding="utf-8")
         (checkout / "inventory").mkdir(exist_ok=True)
         (checkout / "inventory" / "local.yml").write_text(
@@ -426,7 +477,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
         production_auto_deploy._write_seal_file(
             root,
             ".installed",
-            INSTALLED_TOOLING_MANIFEST,
+            installed_tooling_manifest(),
         )
         production_auto_deploy._seal_tooling(root, identity)
         return root
@@ -791,7 +842,10 @@ class ProductionAutoDeployTest(unittest.TestCase):
     def test_reviewed_controller_requirements_must_keep_exact_pins(self):
         checkout = self.seed_candidate_files()
         (checkout / "controller-requirements.txt").write_bytes(
-            b"ansible-core==2.22.0\nansible-lint==26.6.0\n"
+            (
+                "ansible-core==2.22.0\nansible-lint=="
+                f"{production_auto_deploy.EXPECTED_ANSIBLE_LINT_VERSION}\n"
+            ).encode("ascii")
         )
 
         with mock.patch.object(
@@ -1259,8 +1313,13 @@ class ProductionAutoDeployTest(unittest.TestCase):
         self.assertTrue(self.httpd.trickle_finished.wait(1.0))
 
     def test_trickled_status_obeys_outer_deadline_and_restores_signal_state(self):
+        deadline = 0.05
         self.httpd.response_trickle_interval = 0.02
         self.httpd.response_wire_trickle = b"HTTP/1.1 200 OK\r\n" + b"X" * 100
+        adversarial_duration = (
+            len(self.httpd.response_wire_trickle)
+            * self.httpd.response_trickle_interval
+        )
         previous_handler = signal.getsignal(signal.SIGALRM)
         previous_timer = signal.getitimer(signal.ITIMER_REAL)
         before = self.state_snapshot()
@@ -1269,56 +1328,100 @@ class ProductionAutoDeployTest(unittest.TestCase):
         with mock.patch.object(
             production_auto_deploy,
             "NETWORK_TIMEOUT_SECONDS",
-            0.1,
+            deadline,
         ):
             status, stdout, stderr = self.invoke_eligibility()
         elapsed = time.monotonic() - started
 
         self.assert_ci_rejected(status, stdout, stderr, before)
-        self.assertLess(elapsed, 0.6)
+        self.assertLess(elapsed, adversarial_duration)
         self.assertTrue(self.httpd.trickle_started.is_set())
         self.assertTrue(self.httpd.trickle_finished.wait(1.0))
         self.assertIs(signal.getsignal(signal.SIGALRM), previous_handler)
         self.assertEqual(signal.getitimer(signal.ITIMER_REAL), previous_timer)
 
     def test_trickled_header_obeys_outer_deadline_without_thread_leak(self):
+        deadline = 0.05
         self.httpd.response_trickle_interval = 0.02
         self.httpd.response_wire_prefix = b"HTTP/1.1 200 OK\r\n"
         self.httpd.response_wire_trickle = b"X-Slow: " + b"x" * 100
+        adversarial_duration = (
+            len(self.httpd.response_wire_trickle)
+            * self.httpd.response_trickle_interval
+        )
         before = self.state_snapshot()
 
         started = time.monotonic()
         with mock.patch.object(
             production_auto_deploy,
             "NETWORK_TIMEOUT_SECONDS",
-            0.1,
+            deadline,
         ):
             status, stdout, stderr = self.invoke_eligibility()
         elapsed = time.monotonic() - started
 
         self.assert_ci_rejected(status, stdout, stderr, before)
-        self.assertLess(elapsed, 0.6)
+        self.assertLess(elapsed, adversarial_duration)
         self.assertTrue(self.httpd.trickle_started.is_set())
         self.assertTrue(self.httpd.trickle_finished.wait(1.0))
 
     def test_trickled_chunk_header_obeys_outer_deadline_without_thread_leak(self):
+        deadline = 0.05
         self.httpd.response_trickle_interval = 0.02
         self.httpd.response_chunk_header_trickle = True
+        adversarial_duration = 100 * self.httpd.response_trickle_interval
         before = self.state_snapshot()
 
         started = time.monotonic()
         with mock.patch.object(
             production_auto_deploy,
             "NETWORK_TIMEOUT_SECONDS",
-            0.1,
+            deadline,
         ):
             status, stdout, stderr = self.invoke_eligibility()
         elapsed = time.monotonic() - started
 
         self.assert_ci_rejected(status, stdout, stderr, before)
-        self.assertLess(elapsed, 0.6)
+        self.assertLess(elapsed, adversarial_duration)
         self.assertTrue(self.httpd.trickle_started.is_set())
         self.assertTrue(self.httpd.trickle_finished.wait(1.0))
+
+    def test_outer_deadline_arms_exact_configured_itimer(self):
+        configured_deadline = 0.375
+        previous_handler = object()
+
+        with mock.patch.object(
+            production_auto_deploy.signal,
+            "getitimer",
+            return_value=(0.0, 0.0),
+        ), mock.patch.object(
+            production_auto_deploy.signal,
+            "signal",
+            return_value=previous_handler,
+        ) as install_handler, mock.patch.object(
+            production_auto_deploy.signal,
+            "setitimer",
+            return_value=(0.0, 0.0),
+        ) as set_timer:
+            with production_auto_deploy.http_wall_clock_deadline(
+                configured_deadline
+            ):
+                pass
+
+        armed_call, cleanup_call = set_timer.call_args_list
+        self.assertEqual(
+            armed_call,
+            mock.call(signal.ITIMER_REAL, configured_deadline),
+        )
+        self.assertEqual(cleanup_call, mock.call(signal.ITIMER_REAL, 0))
+        installed_handler, restored_handler = install_handler.call_args_list
+        self.assertEqual(installed_handler.args[0], signal.SIGALRM)
+        with self.assertRaises(production_auto_deploy.HttpDeadlineExpired):
+            installed_handler.args[1](None, None)
+        self.assertEqual(
+            restored_handler,
+            mock.call(signal.SIGALRM, previous_handler),
+        )
 
     def test_outer_deadline_restores_existing_alarm_handler_and_timer(self):
         self.httpd.response_trickle_interval = 0.02
@@ -2882,10 +2985,85 @@ class ProductionAutoDeployTest(unittest.TestCase):
         self.assertEqual(successful.sha, MAIN_SHA)
 
     def test_controller_requirements_are_exact_authoritative_pins(self):
+        ansible_core, ansible_lint = authoritative_controller_pins()
+        expected = (
+            f"ansible-core=={ansible_core}\n"
+            f"ansible-lint=={ansible_lint}\n"
+        ).encode("ascii")
         self.assertEqual(
             (ROOT / "controller-requirements.txt").read_bytes(),
-            b"ansible-core==2.21.2\nansible-lint==26.6.0\n",
+            expected,
         )
+        self.assertEqual(
+            production_auto_deploy.EXPECTED_CONTROLLER_REQUIREMENTS,
+            expected,
+        )
+        self.assertEqual(
+            production_auto_deploy.EXPECTED_ANSIBLE_CORE_VERSION,
+            ansible_core,
+        )
+        self.assertEqual(
+            production_auto_deploy.EXPECTED_ANSIBLE_LINT_VERSION,
+            ansible_lint,
+        )
+        installed_manifest = json.loads(installed_tooling_manifest())
+        self.assertEqual(installed_manifest["ansible_core"], ansible_core)
+        self.assertEqual(installed_manifest["ansible_lint"], ansible_lint)
+
+    def test_positive_controller_fixture_versions_are_not_duplicated(self):
+        source = Path(__file__).read_text(encoding="utf-8")
+        fixture_literals = [
+            (
+                node.value.decode("ascii", errors="ignore")
+                if isinstance(node.value, bytes)
+                else node.value
+            )
+            for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes))
+        ]
+        for version in authoritative_controller_pins():
+            with self.subTest(version=version):
+                self.assertFalse(
+                    any(version in literal for literal in fixture_literals),
+                    f"positive controller fixture version {version} must be derived",
+                )
+
+    def test_collection_fixtures_follow_authoritative_requirements(self):
+        requirements, collections = authoritative_collection_requirements()
+        self.assertEqual(collections, {"community.docker": "5.2.2"})
+        self.assertEqual(
+            (self.seed_candidate_files() / "requirements.yml").read_bytes(),
+            requirements,
+        )
+        self.assertEqual(
+            json.loads(installed_tooling_manifest())["collections"],
+            collections,
+        )
+
+    def test_verify_tags_match_the_current_fail_closed_verification_contract(self):
+        verify = (ROOT / "verify.yml").read_text(encoding="utf-8")
+        mac_verify = (ROOT / "tests/mac/verify.sh").read_text(encoding="utf-8")
+
+        self.assertEqual(verify.count("tags: [never]"), 9)
+        self.assertEqual(mac_verify.count("--tags "), 1)
+        self.assertIn(f"--tags {VERIFY_TAGS}\n", mac_verify)
+        self.assertEqual(
+            getattr(production_auto_deploy, "EXPECTED_VERIFY_TAGS", None),
+            VERIFY_TAGS,
+        )
+
+    def test_production_auto_deploy_does_not_reintroduce_retired_adoption_lane(self):
+        production_paths = [
+            ROOT / "install-production-auto-deploy.yml",
+            ROOT / "roles/production_auto_deploy/defaults/main.yml",
+            ROOT / "roles/production_auto_deploy/meta/argument_specs.yml",
+            ROOT / "roles/production_auto_deploy/tasks/main.yml",
+            ROOT / "scripts/production_auto_deploy.py",
+        ]
+
+        for path in production_paths:
+            with self.subTest(path=path.relative_to(ROOT)):
+                self.assertNotIn("platform_adoption", path.read_text(encoding="utf-8"))
 
     def test_task3_public_api_is_available(self):
         self.assertEqual(
@@ -3405,7 +3583,10 @@ class ProductionAutoDeployTest(unittest.TestCase):
     def test_tooling_identity_rejects_symlinked_requirement_inputs(self):
         checkout = self.seed_candidate_files()
         external = self.root / "external-requirements"
-        external.write_text("ansible-core==2.21.2\n", encoding="utf-8")
+        external.write_text(
+            f"ansible-core=={production_auto_deploy.EXPECTED_ANSIBLE_CORE_VERSION}\n",
+            encoding="utf-8",
+        )
         controller_requirements = checkout / "controller-requirements.txt"
         controller_requirements.unlink()
         controller_requirements.symlink_to(external)
@@ -3416,7 +3597,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
     def test_prepare_tooling_without_sha_rejects_symlinked_requirement_inputs(self):
         checkout = self.seed_candidate_files()
         external = self.root / "external-requirements"
-        external.write_bytes(b"ansible-core==2.21.2\nansible-lint==26.6.0\n")
+        external.write_bytes(production_auto_deploy.EXPECTED_CONTROLLER_REQUIREMENTS)
         controller_requirements = checkout / "controller-requirements.txt"
         controller_requirements.unlink()
         controller_requirements.symlink_to(external)
@@ -3453,7 +3634,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
                     parents=True
                 )
             stdout = (
-                b"ansible-playbook [core 2.21.2]\n"
+                ansible_playbook_version_output()
                 if arguments[-1:] == ["--version"]
                 else b""
             )
@@ -3466,7 +3647,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
         ), mock.patch.object(
             production_auto_deploy,
             "_capture_installed_tooling_manifest",
-            return_value=INSTALLED_TOOLING_MANIFEST,
+            return_value=installed_tooling_manifest(),
         ):
             tooling = production_auto_deploy.prepare_tooling(
                 self.loaded_config(),
@@ -3564,7 +3745,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
                     parents=True
                 )
             stdout = (
-                b"ansible-playbook [core 2.21.2]\n"
+                ansible_playbook_version_output()
                 if arguments[-1:] == ["--version"]
                 else b""
             )
@@ -3581,7 +3762,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
         ), mock.patch.object(
             production_auto_deploy,
             "_capture_installed_tooling_manifest",
-            return_value=INSTALLED_TOOLING_MANIFEST,
+            return_value=installed_tooling_manifest(),
         ), mock.patch.object(
             production_auto_deploy.os,
             "rename",
@@ -3627,7 +3808,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
                     parents=True
                 )
             stdout = (
-                b"ansible-playbook [core 2.21.2]\n"
+                ansible_playbook_version_output()
                 if arguments[-1:] == ["--version"]
                 else b""
             )
@@ -3640,7 +3821,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
         ), mock.patch.object(
             production_auto_deploy,
             "_capture_installed_tooling_manifest",
-            return_value=INSTALLED_TOOLING_MANIFEST,
+            return_value=installed_tooling_manifest(),
         ):
             tooling = production_auto_deploy.prepare_tooling(
                 self.loaded_config(),
@@ -3659,7 +3840,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
         ), mock.patch.object(
             production_auto_deploy,
             "_capture_installed_tooling_manifest",
-            return_value=INSTALLED_TOOLING_MANIFEST,
+            return_value=installed_tooling_manifest(),
         ), self.assertRaises(
             production_auto_deploy.DeploymentError
         ):
@@ -3719,6 +3900,8 @@ class ProductionAutoDeployTest(unittest.TestCase):
             production_auto_deploy._materialize_internal_symlinks(staging)
 
     def test_installed_tooling_manifest_validates_exact_versions_and_collections(self):
+        ansible_core, ansible_lint = authoritative_controller_pins()
+        _requirements, expected_collections = authoritative_collection_requirements()
         root = self.root / "canonical-tooling"
         (root / "venv" / "bin").mkdir(parents=True)
         (root / "collections").mkdir()
@@ -3729,24 +3912,34 @@ class ProductionAutoDeployTest(unittest.TestCase):
             arguments = list(arguments)
             calls.append((arguments, kwargs))
             if arguments[1:3] == ["-m", "pip"]:
-                output = b"ansible-core==2.21.2\nansible-lint==26.6.0\n"
+                output = (
+                    f"ansible-core=={ansible_core}\n"
+                    f"ansible-lint=={ansible_lint}\n"
+                ).encode("ascii")
             elif arguments[1:3] == ["-m", "ansiblelint"]:
-                output = b"ansible-lint 26.6.0 using ansible-core:2.21.2\n"
+                output = (
+                    f"ansible-lint {ansible_lint} using "
+                    f"ansible-core:{ansible_core}\n"
+                ).encode("ascii")
             elif arguments[1:3] == ["-m", "ansible.cli.galaxy"]:
+                installed_collections = {
+                    name: {"version": version}
+                    for name, version in expected_collections.items()
+                }
+                installed_collections[
+                    "community.library_inventory_filtering_v1"
+                ] = {"version": "1.1.5"}
                 output = json.dumps(
                     {
-                        str(tooling.collections / "ansible_collections"): {
-                            "community.docker": {"version": "5.2.1"},
-                            "community.library_inventory_filtering_v1": {
-                                "version": "1.1.5"
-                            },
-                        }
+                        str(
+                            tooling.collections / "ansible_collections"
+                        ): installed_collections
                     }
                 ).encode("ascii")
             elif arguments[1:2] == ["-c"]:
                 output = b"3.12\n"
             else:
-                output = b"ansible-playbook [core 2.21.2]\n"
+                output = f"ansible-playbook [core {ansible_core}]\n".encode("ascii")
             return subprocess.CompletedProcess(arguments, 0, output, b"")
 
         with mock.patch.object(
@@ -3757,17 +3950,17 @@ class ProductionAutoDeployTest(unittest.TestCase):
             manifest = production_auto_deploy._capture_installed_tooling_manifest(
                 tooling,
                 self.root,
-                {"community.docker": "5.2.1"},
+                expected_collections,
             )
 
         payload = json.loads(manifest)
         self.assertEqual(payload["python"], "3.12")
-        self.assertEqual(payload["ansible_core"], "2.21.2")
-        self.assertEqual(payload["ansible_lint"], "26.6.0")
+        self.assertEqual(payload["ansible_core"], ansible_core)
+        self.assertEqual(payload["ansible_lint"], ansible_lint)
         self.assertEqual(
             payload["collections"],
             {
-                "community.docker": "5.2.1",
+                **expected_collections,
                 "community.library_inventory_filtering_v1": "1.1.5",
             },
         )
@@ -3784,6 +3977,79 @@ class ProductionAutoDeployTest(unittest.TestCase):
                 for arguments, _kwargs in calls
             )
         )
+
+    def test_candidate_collection_pin_drives_published_manifest_validation(self):
+        checkout = self.seed_candidate_files()
+        requirements, current_collections = authoritative_collection_requirements()
+        current_version = current_collections["community.docker"]
+        mutated_version = "9.9.9"
+        current_pin = f"version: {current_version}".encode("ascii")
+        mutated_pin = f"version: {mutated_version}".encode("ascii")
+        self.assertEqual(requirements.count(current_pin), 1)
+        (checkout / "requirements.yml").write_bytes(
+            requirements.replace(current_pin, mutated_pin)
+        )
+        expected_collections = {"community.docker": mutated_version}
+
+        def build_and_inspect(arguments, **_kwargs):
+            arguments = list(arguments)
+            if arguments[1:3] == ["-m", "venv"]:
+                bin_path = Path(arguments[-1]) / "bin"
+                bin_path.mkdir(parents=True)
+                for name in (
+                    "python",
+                    "ansible-playbook",
+                    "ansible-galaxy",
+                    "ansible-lint",
+                ):
+                    executable = bin_path / name
+                    executable.write_text("#!/bin/sh\n", encoding="utf-8")
+                    executable.chmod(0o700)
+            if "collection" in arguments and "install" in arguments:
+                Path(arguments[arguments.index("--collections-path") + 1]).mkdir(
+                    parents=True
+                )
+
+            if arguments[1:3] == ["-m", "pip"] and "freeze" in arguments:
+                output = production_auto_deploy.EXPECTED_CONTROLLER_REQUIREMENTS
+            elif arguments[1:3] == ["-m", "ansiblelint"]:
+                output = (
+                    "ansible-lint "
+                    f"{production_auto_deploy.EXPECTED_ANSIBLE_LINT_VERSION}\n"
+                ).encode("ascii")
+            elif arguments[1:3] == ["-m", "ansible.cli.galaxy"]:
+                output = json.dumps(
+                    {
+                        "mutated": {
+                            "community.docker": {"version": mutated_version}
+                        }
+                    }
+                ).encode("ascii")
+            elif arguments[-1:] == ["--version"]:
+                output = (
+                    "ansible-playbook [core "
+                    f"{production_auto_deploy.EXPECTED_ANSIBLE_CORE_VERSION}]\n"
+                ).encode("ascii")
+            elif arguments[1:2] == ["-c"]:
+                output = b"3.14\n"
+            else:
+                output = b""
+            return subprocess.CompletedProcess(arguments, 0, output, b"")
+
+        with mock.patch.object(
+            production_auto_deploy,
+            "_run_command",
+            side_effect=build_and_inspect,
+        ):
+            tooling = production_auto_deploy.prepare_tooling(
+                self.loaded_config(),
+                checkout,
+            )
+
+        published_manifest = json.loads(
+            (tooling.python.parent.parent.parent / ".installed").read_bytes()
+        )
+        self.assertEqual(published_manifest["collections"], expected_collections)
 
     def test_deploy_candidate_runs_exact_plays_with_minimal_environment(self):
         checkout = self.seed_candidate_files()
@@ -3803,9 +4069,6 @@ class ProductionAutoDeployTest(unittest.TestCase):
 
         hostile_environment = {
             "ANSIBLE_ROLES_PATH": "/attacker/roles",
-            "PLATFORM_ADOPTION_ROOT": "/attacker/adoption",
-            "PLATFORM_MAC_PARITY_VAULT_FILE": "/attacker/parity",
-            "PLATFORM_LEGACY_ROOT": "/attacker/legacy",
         }
         with mock.patch.object(
             production_auto_deploy,
@@ -3853,7 +4116,15 @@ class ProductionAutoDeployTest(unittest.TestCase):
             [
                 [ansible, "validate-vault.yml", *shared_arguments],
                 [ansible, "-i", "inventory/local.yml", "site.yml", *shared_arguments],
-                [ansible, "-i", "inventory/local.yml", "verify.yml", *shared_arguments],
+                [
+                    ansible,
+                    "-i",
+                    "inventory/local.yml",
+                    "verify.yml",
+                    *shared_arguments,
+                    "--tags",
+                    VERIFY_TAGS,
+                ],
                 [
                     ansible,
                     "-i",
@@ -3885,7 +4156,13 @@ class ProductionAutoDeployTest(unittest.TestCase):
                 interpreter_pins,
                 [f"ansible_python_interpreter={sys.executable}"],
             )
-            self.assertEqual(arguments[-2:], ["-e", interpreter_pins[0]])
+            expected_tag_count = 1 if "verify.yml" in arguments else 0
+            self.assertEqual(arguments.count("--tags"), expected_tag_count)
+            if expected_tag_count:
+                self.assertEqual(arguments[-4:-2], ["-e", interpreter_pins[0]])
+                self.assertEqual(arguments[-2:], ["--tags", VERIFY_TAGS])
+            else:
+                self.assertEqual(arguments[-2:], ["-e", interpreter_pins[0]])
             self.assertEqual(kwargs["cwd"], checkout)
             environment = kwargs["env"]
             self.assertEqual(set(environment), allowed)
