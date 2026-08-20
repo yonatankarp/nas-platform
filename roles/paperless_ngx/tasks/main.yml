@@ -228,18 +228,14 @@
     files: "{{ platform_service_compose_files['paperless-ngx'] }}"
     env_files: ["{{ platform_runtime_dir }}/services/paperless-ngx/.env"]
     service: webserver
+    env:
+      MANAGED_USERNAME: "{{ vault_paperless_admin_username }}"
     argv:
-      - sh
-      - -ec
-      - >-
-        exec env MANAGED_USERNAME="$1" python manage.py shell -c
-        'import json, os; from django.contrib.auth import get_user_model;
-        users=get_user_model().objects.filter(username=os.environ["MANAGED_USERNAME"]);
-        user=users.first(); print(json.dumps({"count": users.count(), "email": user.email if user else "",
-        "is_active": user.is_active if user else False, "is_staff": user.is_staff if user else False,
-        "is_superuser": user.is_superuser if user else False}))'
-      - paperless-admin-inspect
-      - "{{ vault_paperless_admin_username }}"
+      - python
+      - manage.py
+      - shell
+      - -c
+      - "{{ lookup('ansible.builtin.file', role_path ~ '/files/inspect_admin.py') }}"
     tty: false
   register: paperless_admin_identity_probe
   changed_when: false
@@ -326,18 +322,15 @@
     files: "{{ platform_service_compose_files['paperless-ngx'] }}"
     env_files: ["{{ platform_runtime_dir }}/services/paperless-ngx/.env"]
     service: webserver
+    env:
+      MANAGED_USERNAME: "{{ vault_paperless_admin_username }}"
+      MANAGED_EMAIL: "{{ vault_paperless_admin_email }}"
     argv:
-      - sh
-      - -ec
-      - >-
-        exec env MANAGED_USERNAME="$1" MANAGED_EMAIL="$2" python manage.py shell -c
-        'import os; from django.contrib.auth import get_user_model;
-        user=get_user_model().objects.get(username=os.environ["MANAGED_USERNAME"]);
-        user.email=os.environ["MANAGED_EMAIL"]; user.is_active=True; user.is_staff=True;
-        user.is_superuser=True; user.save(update_fields=["email", "is_active", "is_staff", "is_superuser"])'
-      - paperless-admin-repair
-      - "{{ vault_paperless_admin_username }}"
-      - "{{ vault_paperless_admin_email }}"
+      - python
+      - manage.py
+      - shell
+      - -c
+      - "{{ lookup('ansible.builtin.file', role_path ~ '/files/repair_admin.py') }}"
     tty: false
   when:
     - not ansible_check_mode
