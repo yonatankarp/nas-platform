@@ -5,6 +5,7 @@ mac_test_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 repo_dir=$(CDPATH= cd -- "$mac_test_dir/../.." && pwd -P)
 temporary_dir=$(mktemp -d "${TMPDIR:-/tmp}/nas-platform-config-isolation.XXXXXX")
 trap 'rm -f -- "$temporary_dir"/*.json; rmdir -- "$temporary_dir"' EXIT HUP INT TERM
+export PLATFORM_CONTAINER_CPUSET=0-2
 
 render() {
   label=$1

@@ -9,6 +9,12 @@
     container_cpu_compose_services: >-
       {{ (container_cpu_compose_source.content | b64decode | from_yaml).services }}
 
+- name: Resolve the expected running Compose services
+  ansible.builtin.set_fact:
+    container_cpu_selected_services: >-
+      {{ container_cpu_expected_services
+         | default(container_cpu_compose_services.keys() | list, true) }}
+
 - name: List running containers in the managed Compose project
   ansible.builtin.command:
     argv:
@@ -44,6 +50,7 @@
       {{ container_cpu_compose_services
          | platform_container_cpu_runtime_errors(
              container_cpu_inspection.stdout | from_json,
+             container_cpu_selected_services,
              platform_effective_container_cpuset) }}
   no_log: true
 

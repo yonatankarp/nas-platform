@@ -46,24 +46,35 @@ def _expected_nanocpus(service, spec):
     return int(nanocpus)
 
 
-def platform_container_cpu_runtime_errors(compose_services, inspections, expected_cpuset):
+def platform_container_cpu_runtime_errors(
+    compose_services, inspections, expected_services, expected_cpuset
+):
     """Return non-secret drift messages for running Compose containers."""
     if not isinstance(compose_services, dict) or not compose_services:
         raise AnsibleFilterError("Compose CPU service policy must be a nonempty mapping")
     if not isinstance(inspections, list) or not inspections:
         raise AnsibleFilterError("runtime CPU inspection must contain managed containers")
+    if (
+        not isinstance(expected_services, list)
+        or not expected_services
+        or any(not isinstance(service, str) for service in expected_services)
+        or len(set(expected_services)) != len(expected_services)
+        or any(service not in compose_services for service in expected_services)
+    ):
+        raise AnsibleFilterError("expected CPU service selection is invalid")
     if not isinstance(expected_cpuset, str) or not expected_cpuset:
         raise AnsibleFilterError("effective container CPU set must be nonempty")
 
     errors = []
     seen = set()
+    expected = set(expected_services)
     for inspection in inspections:
         if not isinstance(inspection, dict):
             raise AnsibleFilterError("runtime CPU inspection entry must be a mapping")
         service = inspection.get("Config", {}).get("Labels", {}).get(
             "com.docker.compose.service"
         )
-        if not isinstance(service, str) or service not in compose_services or service in seen:
+        if not isinstance(service, str) or service not in expected or service in seen:
             raise AnsibleFilterError(
                 "runtime CPU inspection has an unknown or duplicate service"
             )
@@ -81,6 +92,8 @@ def platform_container_cpu_runtime_errors(compose_services, inspections, expecte
                 f"{service}: effective CPU quota is {actual_nano}, "
                 f"expected {expected_nano} nanocpus"
             )
+    for service in expected - seen:
+        errors.append(f"{service}: no running container found")
     return sorted(errors)
 
 

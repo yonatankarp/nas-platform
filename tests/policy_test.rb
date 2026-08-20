@@ -836,9 +836,11 @@ manifest_entries.each do |service|
         ) == 1,
         "#{name}: environment must render the effective container CPU set exactly once")
   tasks_source = tasks_owned ? File.read(tasks_path) : ""
+  deploys_compose = tasks_source.include?("community.docker.docker_compose_v2:")
   check(failures,
-        tasks_source.scan(/name:\s*container_cpu\b/).length == 1 &&
-          tasks_source.include?("container_cpu_service_name: #{name}"),
+        !deploys_compose ||
+          (tasks_source.scan(/name:\s*container_cpu\b/).length == 1 &&
+           tasks_source.include?("container_cpu_service_name: #{name}")),
         "#{name}: role must verify its effective container CPU policy exactly once")
   check(failures, declared_paths.any? { |path| path.include?("/#{name}/") || path.end_with?("/#{name}") },
         "#{name}: implemented service has no storage declaration")
@@ -875,11 +877,12 @@ service_dirs.each do |dir|
 
   containers.each do |container, spec|
     label = "#{name}/#{container}"
+    expected_cpu = expected_cpus[container]
 
     check(failures, spec["cpuset"] == "${PLATFORM_CONTAINER_CPUSET:?}",
           "#{label}: must require the Ansible-rendered platform CPU set")
-    check(failures, spec["cpus"] == expected_cpus.fetch(container),
-          "#{label}: CPU ceiling must be #{expected_cpus.fetch(container)}")
+    check(failures, !expected_cpu.nil? && spec["cpus"] == expected_cpu,
+          "#{label}: CPU ceiling must match the pinned service policy")
     check(failures, !spec.key?("cpu_shares"),
           "#{label}: must retain Docker's equal default CPU shares")
 

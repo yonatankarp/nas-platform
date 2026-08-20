@@ -9,6 +9,9 @@ argument_specs:
       container_cpu_project_name:
         type: str
         required: true
+      container_cpu_expected_services:
+        type: list
+        elements: str
       platform_effective_container_cpuset:
         type: str
         required: true

@@ -63,21 +63,29 @@ inspections = [
         "HostConfig": {"CpusetCpus": "0-2", "NanoCpus": 1_500_000_000},
     },
 ]
-assert verify_runtime(compose_services, inspections, "0-2") == []
+assert verify_runtime(compose_services, inspections, ["server", "worker"], "0-2") == []
+
+assert verify_runtime(compose_services, inspections[:1], ["server"], "0-2") == []
+
+assert verify_runtime(compose_services, inspections[:1], ["server", "worker"], "0-2") == [
+    "worker: no running container found",
+]
 
 drifted = [dict(inspections[0]), dict(inspections[1])]
 drifted[1] = {
     "Config": inspections[1]["Config"],
     "HostConfig": {"CpusetCpus": "0-3", "NanoCpus": 0},
 }
-errors = verify_runtime(compose_services, drifted, "0-2")
+errors = verify_runtime(compose_services, drifted, ["server", "worker"], "0-2")
 assert errors == [
     "worker: effective CPU quota is 0, expected 1500000000 nanocpus",
     "worker: effective CPU set is 0-3, expected 0-2",
 ]
 
-require_rejected(verify_runtime, [], inspections, "0-2")
-require_rejected(verify_runtime, compose_services, [], "0-2")
-require_rejected(verify_runtime, compose_services, inspections, "")
+require_rejected(verify_runtime, [], inspections, ["server", "worker"], "0-2")
+require_rejected(verify_runtime, compose_services, [], ["server", "worker"], "0-2")
+require_rejected(verify_runtime, compose_services, inspections, [], "0-2")
+require_rejected(verify_runtime, compose_services, inspections, ["unknown"], "0-2")
+require_rejected(verify_runtime, compose_services, inspections, ["server"], "")
 
 print("Container CPU-set derivation behavior passed")
