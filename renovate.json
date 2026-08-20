@@ -14,10 +14,13 @@
     "ansible-galaxy",
     "custom.regex"
   ],
-  "docker": {
-    "pinDigests": true
-  },
   "packageRules": [
+    {
+      "matchCategories": [
+        "docker"
+      ],
+      "pinDigests": true
+    },
     {
       "description": "Immich server and machine learning must always move together.",
       "groupName": "immich",
@@ -66,16 +69,9 @@
     },
     {
       "description": "Database major versions change on-disk formats that Ansible cannot migrate.",
-      "matchDatasources": [
-        "docker"
-      ],
-      "matchPackageNames": [
-        "docker.io/library/postgres",
-        "docker.io/valkey/valkey"
-      ],
-      "matchUpdateTypes": [
-        "major"
-      ],
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["docker.io/library/postgres", "docker.io/valkey/valkey"],
+      "matchUpdateTypes": ["major"],
       "dependencyDashboardApproval": true
     }
   ],
