@@ -227,11 +227,19 @@
   changed_when: false
   check_mode: false
 
+# The wait above polls /Startup/Configuration and accepts 401 and 403, which
+# Jellyfin can answer before it has finished loading. This endpoint is a
+# different one and returns 503 until initialization completes, so it needs its
+# own wait rather than inheriting the previous task's.
 - name: Read Jellyfin startup state
   ansible.builtin.uri:
     url: "{{ jellyfin_api }}/System/Info/Public"
     return_content: true
+    status_code: "{{ range(100, 600) | list }}"
   register: jellyfin_public_info
+  until: jellyfin_public_info.status | default(0) | int == 200
+  retries: 60
+  delay: 3
   changed_when: false
   check_mode: false
 
