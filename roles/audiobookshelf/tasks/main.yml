@@ -44,6 +44,14 @@
     wait: true
     wait_timeout: 180
 
+- name: Verify Audiobookshelf effective container CPU policy
+  ansible.builtin.include_role:
+    name: container_cpu
+  vars:
+    container_cpu_service_name: audiobookshelf
+    container_cpu_project_name: "{{ audiobookshelf_compose_project_name }}"
+  when: not ansible_check_mode
+
 - name: Wait for Audiobookshelf to report healthy
   ansible.builtin.uri:
     url: "{{ audiobookshelf_api }}/healthcheck"

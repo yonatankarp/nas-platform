@@ -213,6 +213,14 @@
     wait: true
     wait_timeout: 600
 
+- name: Verify Paperless effective container CPU policy
+  ansible.builtin.include_role:
+    name: container_cpu
+  vars:
+    container_cpu_service_name: paperless-ngx
+    container_cpu_project_name: "{{ paperless_compose_project_name }}"
+  when: not ansible_check_mode
+
 - name: Inspect the vault Paperless administrator identity
   community.docker.docker_compose_v2_exec:
     project_src: "{{ platform_current_dir }}/services/paperless-ngx"

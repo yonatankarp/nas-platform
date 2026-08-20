@@ -835,6 +835,11 @@ manifest_entries.each do |service|
           "PLATFORM_CONTAINER_CPUSET={{ platform_effective_container_cpuset }}"
         ) == 1,
         "#{name}: environment must render the effective container CPU set exactly once")
+  tasks_source = tasks_owned ? File.read(tasks_path) : ""
+  check(failures,
+        tasks_source.scan(/name:\s*container_cpu\b/).length == 1 &&
+          tasks_source.include?("container_cpu_service_name: #{name}"),
+        "#{name}: role must verify its effective container CPU policy exactly once")
   check(failures, declared_paths.any? { |path| path.include?("/#{name}/") || path.end_with?("/#{name}") },
         "#{name}: implemented service has no storage declaration")
 

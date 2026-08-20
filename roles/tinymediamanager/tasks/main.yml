@@ -128,6 +128,14 @@
     wait: true
     wait_timeout: 240
 
+- name: Verify tinyMediaManager effective container CPU policy
+  ansible.builtin.include_role:
+    name: container_cpu
+  vars:
+    container_cpu_service_name: tinymediamanager
+    container_cpu_project_name: "{{ tinymediamanager_compose_project_name }}"
+  when: not ansible_check_mode
+
 - name: Verify tinyMediaManager web access
   tags: [platform_verify_tinymediamanager]
   ansible.builtin.uri:

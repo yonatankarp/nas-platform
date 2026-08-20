@@ -194,6 +194,14 @@
     wait: true
     wait_timeout: 300
 
+- name: Verify Jellyfin effective container CPU policy
+  ansible.builtin.include_role:
+    name: container_cpu
+  vars:
+    container_cpu_service_name: jellyfin
+    container_cpu_project_name: "{{ jellyfin_compose_project_name }}"
+  when: not ansible_check_mode
+
 - name: Prove Jellyfin QSV during convergence
   ansible.builtin.include_tasks: qsv_probe.yml
   when:
