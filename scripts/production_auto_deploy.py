@@ -31,6 +31,7 @@ NETWORK_TIMEOUT_SECONDS = 10
 GIT_TIMEOUT_SECONDS = 10
 NOTIFICATION_TIMEOUT_SECONDS = 10
 COMMAND_TIMEOUT_SECONDS = 60 * 60
+TOOLING_TIMEOUT_SECONDS = 15 * 60
 SAFE_SYSTEM_PATH = "/usr/bin:/bin"
 
 
@@ -40,6 +41,10 @@ class ConfigurationError(ValueError):
 
 class EligibilityError(RuntimeError):
     """No candidate revision could be established for this poll."""
+
+
+class DeploymentError(RuntimeError):
+    """The candidate revision could not be deployed."""
 
 
 @dataclass(frozen=True)
@@ -354,7 +359,7 @@ def _tooling_bin(config: Config) -> Path:
 def _ansible_environment(config: Config) -> dict[str, str]:
     return {
         # ansible-core lives in the checkout's virtualenv, per the operator
-        # guide, so the system path alone cannot find ansible-pull.
+        # guide, so the system path alone cannot find ansible-playbook.
         "PATH": f"{_tooling_bin(config)}{os.pathsep}{SAFE_SYSTEM_PATH}",
         "HOME": str(config.checkout.parent),
         "LC_ALL": "C",
@@ -381,69 +386,90 @@ def _vault_arguments(config: Config) -> list[str]:
     ]
 
 
-def _deploy_invocations(config: Config, sha: str):
-    """Pull the candidate, then run the tagged and untagged plays separately.
+def update_checkout(config: Config, sha: str) -> None:
+    """Materialise the candidate revision in the controller checkout."""
 
-    verify.yml needs its tag list and site.yml must not receive it, and --tags is
-    global to one ansible invocation, so this cannot collapse into a single call.
+    environment = {
+        "PATH": SAFE_SYSTEM_PATH,
+        "LC_ALL": "C",
+        "GIT_TERMINAL_PROMPT": "0",
+    }
+    for arguments in (
+        ["git", "fetch", "--prune", "origin", config.branch],
+        ["git", "checkout", "--detach", sha],
+    ):
+        result = _run(
+            arguments,
+            timeout=COMMAND_TIMEOUT_SECONDS,
+            cwd=config.checkout,
+            env=environment,
+        )
+        if result.returncode != 0:
+            raise DeploymentError(f"{arguments[1]} failed for {sha}")
+
+
+def sync_tooling(config: Config, log=None) -> None:
+    """Match the controller virtualenv to the candidate's own pins.
+
+    This has to happen before any ansible process starts, which is why the
+    checkout is done with git rather than ansible-pull: the tooling that would
+    run ansible-pull is the very tooling being corrected.
+    """
+
+    requirements = config.checkout / "controller-requirements.txt"
+    result = _run(
+        [
+            _tooling_bin(config) / "pip",
+            "install",
+            "--quiet",
+            "--upgrade",
+            "--requirement",
+            str(requirements),
+        ],
+        timeout=TOOLING_TIMEOUT_SECONDS,
+        cwd=config.checkout,
+        env={"PATH": SAFE_SYSTEM_PATH, "LC_ALL": "C"},
+        log=log,
+    )
+    if result.returncode != 0:
+        raise DeploymentError("controller tooling could not be synchronised")
+
+
+def _deploy_invocations(config: Config):
+    """Every play runs through ansible-playbook from the candidate checkout.
+
+    verify.yml carries its tag list and the others must not receive it, so the
+    tags belong to individual invocations rather than one shared command.
     """
 
     vault = _vault_arguments(config)
     return (
-        (
-            [
-                "ansible-pull",
-                "--url",
-                config.repository_url,
-                "--checkout",
-                sha,
-                "--directory",
-                str(config.checkout),
-                "--accept-host-key",
-                *vault,
-                "validate-vault.yml",
-                "site.yml",
-            ],
-            None,
-        ),
-        (
-            [
-                "ansible-playbook",
-                *vault,
-                "verify.yml",
-                "--tags",
-                config.verify_tags,
-            ],
-            config.checkout,
-        ),
-        (
-            [
-                "ansible-playbook",
-                *vault,
-                "install-production-auto-deploy.yml",
-            ],
-            config.checkout,
-        ),
+        ["ansible-playbook", *vault, "validate-vault.yml"],
+        ["ansible-playbook", *vault, "site.yml"],
+        ["ansible-playbook", *vault, "verify.yml", "--tags", config.verify_tags],
+        ["ansible-playbook", *vault, "install-production-auto-deploy.yml"],
     )
 
 
 def deploy(config: Config, sha: str, log) -> bool:
-    """Deploy one candidate revision, stopping at the first failing invocation."""
+    """Deploy one candidate revision, stopping at the first failing play."""
 
     environment = _ansible_environment(config)
-    for arguments, cwd in _deploy_invocations(config, sha):
-        try:
+    try:
+        update_checkout(config, sha)
+        sync_tooling(config, log=log)
+        for arguments in _deploy_invocations(config):
             result = _run(
                 arguments,
                 timeout=COMMAND_TIMEOUT_SECONDS,
-                cwd=cwd,
+                cwd=config.checkout,
                 env=environment,
                 log=log,
             )
-        except (OSError, subprocess.SubprocessError):
-            return False
-        if result.returncode != 0:
-            return False
+            if result.returncode != 0:
+                return False
+    except (DeploymentError, OSError, subprocess.SubprocessError):
+        return False
     return True
 
 
@@ -567,17 +593,22 @@ def poll(config: Config, retry_sha: str | None = None) -> bool | None:
         with attempt_log(config, head) as log:
             log_path = Path(log.name)
             succeeded = deploy(config, head, log)
-        finished = _timestamp()
-        if succeeded:
-            record_success(config, head, finished)
-        notify(
-            config,
-            "success" if succeeded else "failed",
-            head,
-            started,
-            finished,
-            log_path,
-        )
+            finished = _timestamp()
+            if succeeded:
+                record_success(config, head, finished)
+            # Best effort, but never silent: a misconfigured publisher would
+            # otherwise lose every outcome with nothing to show for it.
+            if not notify(
+                config,
+                "success" if succeeded else "failed",
+                head,
+                started,
+                finished,
+                log_path,
+            ):
+                warning = "production auto-deploy: outcome notification failed"
+                log.write(warning.encode("ascii") + b"\n")
+                print(warning, file=sys.stderr)
         return succeeded
 
 

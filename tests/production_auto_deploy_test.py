@@ -300,80 +300,131 @@ class StateTest(PollerTestCase):
 
 
 class DeployTest(PollerTestCase):
-    def record_runs(self, returncode=0):
+    def record_runs(self, returncode=0, fail_on=None):
         calls = []
 
         def run(arguments, **kwargs):
-            calls.append(([str(a) for a in arguments], kwargs))
-            return subprocess.CompletedProcess(arguments, returncode, b"", b"")
+            rendered = [str(a) for a in arguments]
+            calls.append((rendered, kwargs))
+            code = returncode
+            if fail_on is not None and any(fail_on in part for part in rendered):
+                code = 1
+            return subprocess.CompletedProcess(arguments, code, b"", b"")
 
         return calls, run
 
-    def test_deploy_pulls_the_exact_sha_then_runs_the_tagged_verify(self):
-        config = self.loaded_config()
-        calls, run = self.record_runs()
+    def deploy_with(self, config, **kwargs):
+        calls, run = self.record_runs(**kwargs)
         with mock.patch.object(production_auto_deploy, "_run", side_effect=run):
-            self.assertTrue(production_auto_deploy.deploy(config, MAIN_SHA, None))
+            outcome = production_auto_deploy.deploy(config, MAIN_SHA, None)
+        return outcome, [call[0] for call in calls], [call[1] for call in calls]
 
-        self.assertEqual(len(calls), 3)
-        pull, verify, install = (call[0] for call in calls)
+    def test_deploy_checks_out_then_syncs_tooling_then_runs_the_plays(self):
+        config = self.loaded_config()
+        outcome, calls, _kwargs = self.deploy_with(config)
 
-        self.assertEqual(pull[0], "ansible-pull")
-        self.assertIn("--checkout", pull)
-        self.assertEqual(pull[pull.index("--checkout") + 1], MAIN_SHA)
-        self.assertIn("validate-vault.yml", pull)
-        self.assertIn("site.yml", pull)
-        self.assertNotIn("--tags", pull)
+        self.assertTrue(outcome)
+        self.assertEqual(len(calls), 7)
 
-        self.assertEqual(verify[0], "ansible-playbook")
-        self.assertIn("verify.yml", verify)
-        self.assertIn("--tags", verify)
+        self.assertEqual(calls[0][:2], ["git", "fetch"])
+        self.assertEqual(calls[1][:3], ["git", "checkout", "--detach"])
+        self.assertEqual(calls[1][3], MAIN_SHA)
+
+        self.assertTrue(calls[2][0].endswith("pip"))
+        self.assertIn("--requirement", calls[2])
+        self.assertTrue(calls[2][-1].endswith("controller-requirements.txt"))
+
+        playbooks = [call[-1] if "--tags" not in call else call[-3] for call in calls[3:]]
         self.assertEqual(
-            verify[verify.index("--tags") + 1],
+            playbooks,
+            [
+                "validate-vault.yml",
+                "site.yml",
+                "verify.yml",
+                "install-production-auto-deploy.yml",
+            ],
+        )
+
+    def test_tooling_is_synchronised_before_any_ansible_process_starts(self):
+        """The pins being installed are the ones ansible itself will run under."""
+
+        config = self.loaded_config()
+        _outcome, calls, _kwargs = self.deploy_with(config)
+        pip_index = next(i for i, call in enumerate(calls) if call[0].endswith("pip"))
+        first_ansible = next(
+            i for i, call in enumerate(calls) if call[0] == "ansible-playbook"
+        )
+        self.assertLess(pip_index, first_ansible)
+
+    def test_only_verify_receives_the_tag_list(self):
+        config = self.loaded_config()
+        _outcome, calls, _kwargs = self.deploy_with(config)
+        tagged = [call for call in calls if "--tags" in call]
+        self.assertEqual(len(tagged), 1)
+        self.assertIn("verify.yml", tagged[0])
+        self.assertEqual(
+            tagged[0][tagged[0].index("--tags") + 1],
             "platform_verify_ntfy,platform_verify_beszel",
         )
 
-        self.assertIn("install-production-auto-deploy.yml", install)
-        self.assertNotIn("--tags", install)
-
-    def test_every_invocation_carries_the_vault_arguments(self):
+    def test_every_play_carries_the_vault_arguments(self):
         config = self.loaded_config()
-        calls, run = self.record_runs()
-        with mock.patch.object(production_auto_deploy, "_run", side_effect=run):
-            production_auto_deploy.deploy(config, MAIN_SHA, None)
-        for arguments, _kwargs in calls:
-            with self.subTest(arguments=arguments[0]):
-                self.assertIn("--vault-password-file", arguments)
-                self.assertIn(str(config.vault_password_file), arguments)
-                self.assertIn(f"@{config.vault_file}", arguments)
+        _outcome, calls, _kwargs = self.deploy_with(config)
+        for call in calls:
+            if call[0] != "ansible-playbook":
+                continue
+            with self.subTest(play=call[-1]):
+                self.assertIn("--vault-password-file", call)
+                self.assertIn(str(config.vault_password_file), call)
+                self.assertIn(f"@{config.vault_file}", call)
 
-    def test_deploy_stops_at_the_first_failing_invocation(self):
+    def test_a_failed_checkout_stops_before_touching_tooling(self):
         config = self.loaded_config()
-        calls, run = self.record_runs(returncode=1)
-        with mock.patch.object(production_auto_deploy, "_run", side_effect=run):
-            self.assertFalse(production_auto_deploy.deploy(config, MAIN_SHA, None))
-        self.assertEqual(len(calls), 1)
+        outcome, calls, _kwargs = self.deploy_with(config, fail_on="checkout")
+        self.assertFalse(outcome)
+        self.assertTrue(all(not call[0].endswith("pip") for call in calls))
+        self.assertTrue(all(call[0] != "ansible-playbook" for call in calls))
+
+    def test_a_failed_tooling_sync_stops_before_any_play(self):
+        config = self.loaded_config()
+        outcome, calls, _kwargs = self.deploy_with(config, fail_on="pip")
+        self.assertFalse(outcome)
+        self.assertTrue(all(call[0] != "ansible-playbook" for call in calls))
+
+    def test_deploy_stops_at_the_first_failing_play(self):
+        config = self.loaded_config()
+        outcome, calls, _kwargs = self.deploy_with(config, fail_on="site.yml")
+        self.assertFalse(outcome)
+        self.assertNotIn(
+            "verify.yml", [part for call in calls for part in call]
+        )
 
     def test_deploy_reports_failure_when_a_command_cannot_run(self):
         config = self.loaded_config()
         with mock.patch.object(
-            production_auto_deploy, "_run", side_effect=OSError("no ansible")
+            production_auto_deploy, "_run", side_effect=OSError("no git")
         ):
             self.assertFalse(production_auto_deploy.deploy(config, MAIN_SHA, None))
 
-    def test_deploy_finds_ansible_in_the_checkout_virtualenv(self):
-        """The operator guide installs ansible-core into the checkout's .venv,
-        so PATH must reach it or every deploy fails before it starts."""
-
+    def test_plays_find_ansible_in_the_checkout_virtualenv(self):
         config = self.loaded_config()
-        calls, run = self.record_runs()
-        with mock.patch.object(production_auto_deploy, "_run", side_effect=run):
-            production_auto_deploy.deploy(config, MAIN_SHA, None)
+        _outcome, calls, kwargs = self.deploy_with(config)
         expected = str(config.checkout / ".venv" / "bin")
-        for _arguments, kwargs in calls:
-            entries = kwargs["env"]["PATH"].split(os.pathsep)
-            self.assertEqual(entries[0], expected)
-            self.assertIn("/usr/bin", entries)
+        for call, options in zip(calls, kwargs):
+            if call[0] != "ansible-playbook":
+                continue
+            entries = options["env"]["PATH"].split(os.pathsep)
+            with self.subTest(play=call[-1]):
+                self.assertEqual(entries[0], expected)
+                self.assertIn("/usr/bin", entries)
+
+    def test_no_command_receives_a_secret_through_its_environment(self):
+        config = self.loaded_config()
+        _outcome, _calls, kwargs = self.deploy_with(config)
+        for options in kwargs:
+            environment = options["env"]
+            self.assertNotIn("ANSIBLE_VAULT_PASSWORD", environment)
+            self.assertNotIn(str(config.vault_password_file), environment.values())
 
     def test_the_installed_poller_can_locate_a_real_ansible(self):
         """A smoke test that does not mock _run: the tooling path must resolve."""
@@ -381,26 +432,13 @@ class DeployTest(PollerTestCase):
         config = self.loaded_config()
         binary = config.checkout / ".venv" / "bin"
         binary.mkdir(parents=True)
-        fake = binary / "ansible-pull"
+        fake = binary / "ansible-playbook"
         fake.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         fake.chmod(0o700)
         environment = production_auto_deploy._ansible_environment(config)
-        found = shutil.which("ansible-pull", path=environment["PATH"])
-        self.assertEqual(found, str(fake))
-
-    def test_deploy_never_passes_the_vault_password_through_the_environment(self):
-        config = self.loaded_config()
-        calls, run = self.record_runs()
-        with mock.patch.object(production_auto_deploy, "_run", side_effect=run):
-            production_auto_deploy.deploy(config, MAIN_SHA, None)
-        for _arguments, kwargs in calls:
-            environment = kwargs["env"]
-            self.assertNotIn("ANSIBLE_VAULT_PASSWORD", environment)
-            self.assertNotIn("PLATFORM_VAULT_PASSWORD_FILE", environment)
-            self.assertNotIn(
-                str(config.vault_password_file), environment.values()
-            )
-            self.assertIn("/usr/bin", environment["PATH"].split(os.pathsep))
+        self.assertEqual(
+            shutil.which("ansible-playbook", path=environment["PATH"]), str(fake)
+        )
 
 
 class RunTest(PollerTestCase):
@@ -668,6 +706,32 @@ class PollTest(PollerTestCase):
         config = self.loaded_config()
         with self.assertRaises(production_auto_deploy.EligibilityError):
             production_auto_deploy.poll(config, retry_sha="nope")
+
+    def test_a_failed_notification_is_recorded_rather_than_swallowed(self):
+        config = self.loaded_config()
+        with mock.patch.object(
+            production_auto_deploy, "resolve_main_sha", return_value=MAIN_SHA
+        ), mock.patch.object(
+            production_auto_deploy,
+            "fetch_ci_runs",
+            return_value=({**self.GREEN_RUN, "head_sha": MAIN_SHA},),
+        ), mock.patch.object(
+            production_auto_deploy, "notify", return_value=False
+        ), mock.patch.object(
+            production_auto_deploy, "deploy", return_value=True
+        ):
+            buffer = io.StringIO()
+            with contextlib.redirect_stderr(buffer):
+                self.assertTrue(production_auto_deploy.poll(config))
+
+        self.assertIn("notification failed", buffer.getvalue())
+        latest = (config.log_root / "latest").resolve()
+        self.assertIn("notification failed", latest.read_text(encoding="ascii"))
+        # A lost notification must not cast doubt on the deployment itself.
+        self.assertEqual(
+            production_auto_deploy.read_state(config)["last_successful"]["sha"],
+            MAIN_SHA,
+        )
 
     def test_poll_declines_while_another_holder_deploys(self):
         config = self.loaded_config()

@@ -229,9 +229,12 @@ The first explicit `--poll` should be a no-op when the installed revision is
 already recorded as successful. After that, cron polls every five minutes. It
 resolves the exact current `main` SHA anonymously, accepts exactly one completed
 successful `push` run of the `CI` workflow for that same SHA, checks out that
-exact commit with `ansible-pull`, and runs vault validation, deployment,
+exact commit, updates the controller virtualenv from that commit's
+`controller-requirements.txt`, then runs vault validation, deployment,
 verification, and the installer update locally. The installer update reinstalls
 the poller itself, so a change to the poller takes effect on the following poll.
+Because the virtualenv is synchronised before Ansible runs, a dependency bump
+merged to `main` reaches the NAS on the next successful deployment.
 GitHub access remains read-only and uses no PAT.
 
 Each revision is attempted at most once.
