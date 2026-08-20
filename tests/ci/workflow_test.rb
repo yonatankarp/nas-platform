@@ -18,7 +18,8 @@ CHECKOUT_ACTION_NAME = "actions/checkout"
 EXPECTED_JOBS = %w[changes static suites validate].freeze
 # The suites the matrix dispatches, in the order a full run enumerates them.
 INTEGRATION_SUITES = %w[
-  foundation smoke beszel dozzle audiobookshelf media paperless idempotence-check
+  foundation smoke beszel dozzle audiobookshelf komga tinymediamanager jellyfin immich paperless
+  idempotence-check
 ].freeze
 TAGGED_SUITES = %w[smoke idempotence-check].freeze
 CLASSIFIER_OUTPUTS = %w[static suites selected_tags].freeze

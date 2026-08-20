@@ -5,7 +5,8 @@ require "open3"
 
 module ClassifyChanges
   LANES = %w[
-    static foundation smoke beszel dozzle audiobookshelf media paperless idempotence_check
+    static foundation smoke beszel dozzle audiobookshelf komga tinymediamanager jellyfin immich
+    paperless idempotence_check
   ].freeze
   # The integration suite each lane dispatches, in the order the CI matrix runs
   # them. `static` is not a suite.
@@ -15,23 +16,34 @@ module ClassifyChanges
     "beszel" => "beszel",
     "dozzle" => "dozzle",
     "audiobookshelf" => "audiobookshelf",
-    "media" => "media",
+    "komga" => "komga",
+    "tinymediamanager" => "tinymediamanager",
+    "jellyfin" => "jellyfin",
+    "immich" => "immich",
     "paperless" => "paperless",
     "idempotence_check" => "idempotence-check"
   }.freeze
-  SERVICE_LANES = %w[beszel dozzle audiobookshelf media paperless].freeze
+  SERVICE_LANES = %w[
+    beszel dozzle audiobookshelf komga tinymediamanager jellyfin immich paperless
+  ].freeze
   SERVICE_TAGS = {
     "beszel" => %w[host_prep deployment_bundle ntfy beszel],
     "dozzle" => %w[host_prep deployment_bundle ntfy dozzle],
     "audiobookshelf" => %w[host_prep deployment_bundle audiobookshelf],
-    "media" => %w[host_prep deployment_bundle komga tinymediamanager jellyfin immich],
+    "komga" => %w[host_prep deployment_bundle komga],
+    "tinymediamanager" => %w[host_prep deployment_bundle tinymediamanager],
+    "jellyfin" => %w[host_prep deployment_bundle jellyfin],
+    "immich" => %w[host_prep deployment_bundle immich],
     "paperless" => %w[host_prep deployment_bundle paperless]
   }.freeze
   SERVICE_NAMES = {
     "beszel" => %w[beszel],
     "dozzle" => %w[dozzle],
     "audiobookshelf" => %w[audiobookshelf],
-    "media" => %w[komga tinymediamanager jellyfin immich],
+    "komga" => %w[komga],
+    "tinymediamanager" => %w[tinymediamanager],
+    "jellyfin" => %w[jellyfin],
+    "immich" => %w[immich],
     "paperless" => %w[paperless paperless-ngx paperless_ngx]
   }.freeze
 

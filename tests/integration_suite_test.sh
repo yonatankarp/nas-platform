@@ -60,7 +60,7 @@ assert_rejected() {
 }
 
 assert_output \
-  'foundation smoke beszel dozzle audiobookshelf media paperless idempotence-check full' \
+  'foundation smoke beszel dozzle audiobookshelf komga tinymediamanager jellyfin immich paperless idempotence-check full' \
   --list-suites
 
 assert_output 'suite=foundation tags=deployment_bundle playbook=site.yml scenarios=true' \
@@ -71,8 +71,14 @@ assert_output 'suite=dozzle tags=host_prep,deployment_bundle,ntfy,dozzle playboo
   --describe-suite dozzle
 assert_output 'suite=audiobookshelf tags=host_prep,deployment_bundle,audiobookshelf playbook=site.yml scenarios=true' \
   --describe-suite audiobookshelf
-assert_output 'suite=media tags=host_prep,deployment_bundle,komga,tinymediamanager,jellyfin,immich playbook=site.yml scenarios=true' \
-  --describe-suite media
+assert_output 'suite=komga tags=host_prep,deployment_bundle,komga playbook=site.yml scenarios=true' \
+  --describe-suite komga
+assert_output 'suite=tinymediamanager tags=host_prep,deployment_bundle,tinymediamanager playbook=site.yml scenarios=true' \
+  --describe-suite tinymediamanager
+assert_output 'suite=jellyfin tags=host_prep,deployment_bundle,jellyfin playbook=site.yml scenarios=true' \
+  --describe-suite jellyfin
+assert_output 'suite=immich tags=host_prep,deployment_bundle,immich playbook=site.yml scenarios=true' \
+  --describe-suite immich
 assert_output 'suite=paperless tags=host_prep,deployment_bundle,paperless playbook=site.yml scenarios=true' \
   --describe-suite paperless
 assert_output 'suite=full tags= playbook=site.yml scenarios=true' --describe-suite full
@@ -107,7 +113,7 @@ grep -qF -- '\"\$playbook\" \"\$@\"' "$integration"
 grep -qF -- 'run_play --tags \"\$INTEGRATION_TAGS\" \"\$@\"' "$integration"
 grep -qF -- 'run_play \"\$@\"' "$integration"
 
-# Media fixtures consumed through nested Docker bind mounts must exist on the
+# Service fixtures consumed through nested Docker bind mounts must exist on the
 # daemon host before the controller container establishes its sandbox mount.
 paperless_preseed_line=$(grep -nF '"$repo_dir/tests/contracts/paperless.sh" seed-fixture-only' \
   "$integration" | cut -d: -f1)
@@ -119,16 +125,36 @@ controller_line=$(grep -nF 'docker run --rm' "$integration" | head -1 | cut -d: 
 grep -qF 'paperless:true|full:true)' "$integration"
 grep -qF -- '-e PLATFORM_PAPERLESS_FIXTURE_PRESEEDED="$paperless_fixture_preseeded"' "$integration"
 for contract in komga tinymediamanager jellyfin; do
-  media_preseed_line=$(grep -nF \
+  preseed_line=$(grep -nF \
     '"$repo_dir/tests/contracts/'"$contract"'.sh" seed-fixture-only' \
     "$integration" | cut -d: -f1)
-  [ -n "$media_preseed_line" ] && [ "$media_preseed_line" -lt "$controller_line" ] || {
+  [ -n "$preseed_line" ] && [ "$preseed_line" -lt "$controller_line" ] || {
     printf '%s\n' "$contract integration fixture is not prepared before the controller mount" >&2
     exit 1
   }
 done
-grep -qF 'media:true|full:true)' "$integration"
-grep -qF -- '-e PLATFORM_MEDIA_FIXTURES_PRESEEDED="$media_fixtures_preseeded"' "$integration"
+grep -qF 'komga:true|full:true)' "$integration"
+grep -qF 'tinymediamanager:true|full:true)' "$integration"
+grep -qF 'jellyfin:true|full:true)' "$integration"
+grep -qF -- '-e PLATFORM_KOMGA_FIXTURE_PRESEEDED="$komga_fixture_preseeded"' "$integration"
+grep -qF -- '-e PLATFORM_TINYMEDIAMANAGER_FIXTURE_PRESEEDED="$tinymediamanager_fixture_preseeded"' \
+  "$integration"
+grep -qF -- '-e PLATFORM_JELLYFIN_FIXTURE_PRESEEDED="$jellyfin_fixture_preseeded"' \
+  "$integration"
+
+for suite in komga tinymediamanager jellyfin immich; do
+  grep -qF "suite_is $suite" "$integration" || {
+    printf '%s\n' "$suite has no independent scenario dispatch" >&2
+    exit 1
+  }
+done
+jellyfin_scenarios=$(sed -n '/suite_is jellyfin/,/^    fi$/p' "$integration")
+printf '%s\n' "$jellyfin_scenarios" | grep -qF 'run_jellyfin_contract seed'
+printf '%s\n' "$jellyfin_scenarios" | grep -qF 'run_jellyfin_contract run'
+if printf '%s\n' "$jellyfin_scenarios" | grep -qi tinymediamanager; then
+  printf '%s\n' 'Jellyfin scenario dispatch depends on tinyMediaManager' >&2
+  exit 1
+fi
 
 # The committed deployment vault is intentionally encrypted with an operator
 # password unavailable to CI. Every suite must use an isolated controller copy,
@@ -147,6 +173,7 @@ if grep -qF -- 'controller_mount=$repo_dir' "$integration"; then
 fi
 
 assert_rejected 'unknown integration suite: unknown' --suite unknown
+assert_rejected 'unknown integration suite: media' --suite media
 assert_rejected 'unknown integration suite: <missing>' --suite
 assert_rejected 'unknown integration suite: <missing>' --suite --tags ntfy
 assert_rejected 'unknown integration suite: <missing>' --describe-suite
@@ -154,7 +181,7 @@ assert_rejected 'missing value for --tags' --suite smoke --tags
 assert_rejected 'invalid integration tags: Bad' --suite smoke --tags Bad
 assert_rejected 'invalid integration tags: ntfy,,beszel' \
   --suite smoke --tags ntfy,,beszel
-for suite in foundation beszel dozzle audiobookshelf media paperless full; do
+for suite in foundation beszel dozzle audiobookshelf komga tinymediamanager jellyfin immich paperless full; do
   assert_rejected "integration suite $suite does not accept --tags" \
     --suite "$suite" --tags ntfy
 done

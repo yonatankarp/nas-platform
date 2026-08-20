@@ -26,7 +26,7 @@ describe_suite=false
 explicit_suite=false
 
 if [ "${1:-}" = --list-suites ]; then
-  printf '%s\n' 'foundation smoke beszel dozzle audiobookshelf media paperless idempotence-check full'
+  printf '%s\n' 'foundation smoke beszel dozzle audiobookshelf komga tinymediamanager jellyfin immich paperless idempotence-check full'
   exit 0
 fi
 
@@ -75,7 +75,10 @@ case "$suite" in
   beszel) fixed_tags=host_prep,deployment_bundle,ntfy,beszel ;;
   dozzle) fixed_tags=host_prep,deployment_bundle,ntfy,dozzle ;;
   audiobookshelf) fixed_tags=host_prep,deployment_bundle,audiobookshelf ;;
-  media) fixed_tags=host_prep,deployment_bundle,komga,tinymediamanager,jellyfin,immich ;;
+  komga) fixed_tags=host_prep,deployment_bundle,komga ;;
+  tinymediamanager) fixed_tags=host_prep,deployment_bundle,tinymediamanager ;;
+  jellyfin) fixed_tags=host_prep,deployment_bundle,jellyfin ;;
+  immich) fixed_tags=host_prep,deployment_bundle,immich ;;
   paperless) fixed_tags=host_prep,deployment_bundle,paperless ;;
   idempotence-check) fixed_tags= ;;
   full) fixed_tags= ;;
@@ -436,7 +439,9 @@ fi
 printf 'host address: %s\n' "$nas_address"
 
 paperless_fixture_preseeded=false
-media_fixtures_preseeded=false
+komga_fixture_preseeded=false
+tinymediamanager_fixture_preseeded=false
+jellyfin_fixture_preseeded=false
 case "$suite:$run_service_scenarios" in
   audiobookshelf:true|full:true)
     env \
@@ -457,23 +462,33 @@ case "$suite:$run_service_scenarios" in
     ;;
 esac
 case "$suite:$run_service_scenarios" in
-  media:true|full:true)
+  komga:true|full:true)
     env \
       PLATFORM_MEDIA_ROOT="$sandbox/volume2" \
       PLATFORM_REPORT_ROOT="$sandbox/reports" \
       "$repo_dir/tests/contracts/komga.sh" seed-fixture-only
+    komga_fixture_preseeded=true
+    ;;
+esac
+case "$suite:$run_service_scenarios" in
+  tinymediamanager:true|full:true)
     env \
       PLATFORM_DOCKER_ROOT="$sandbox/volume1/Docker" \
       PLATFORM_MEDIA_ROOT="$sandbox/volume2" \
       PLATFORM_REPORT_ROOT="$sandbox/reports" \
       "$repo_dir/tests/contracts/tinymediamanager.sh" seed-fixture-only
+    tinymediamanager_fixture_preseeded=true
+    ;;
+esac
+case "$suite:$run_service_scenarios" in
+  jellyfin:true|full:true)
     env \
       PLATFORM_KIND=integration \
       PLATFORM_DOCKER_ROOT="$sandbox/volume1/Docker" \
       PLATFORM_MEDIA_ROOT="$sandbox/volume2" \
       PLATFORM_REPORT_ROOT="$sandbox/reports" \
       "$repo_dir/tests/contracts/jellyfin.sh" seed-fixture-only
-    media_fixtures_preseeded=true
+    jellyfin_fixture_preseeded=true
     ;;
 esac
 
@@ -494,7 +509,9 @@ docker run --rm \
   -e INTEGRATION_TAGS="$suite_tags" \
   -e INTEGRATION_RUN_SERVICE_SCENARIOS="$run_service_scenarios" \
   -e PLATFORM_PAPERLESS_FIXTURE_PRESEEDED="$paperless_fixture_preseeded" \
-  -e PLATFORM_MEDIA_FIXTURES_PRESEEDED="$media_fixtures_preseeded" \
+  -e PLATFORM_KOMGA_FIXTURE_PRESEEDED="$komga_fixture_preseeded" \
+  -e PLATFORM_TINYMEDIAMANAGER_FIXTURE_PRESEEDED="$tinymediamanager_fixture_preseeded" \
+  -e PLATFORM_JELLYFIN_FIXTURE_PRESEEDED="$jellyfin_fixture_preseeded" \
   -w /repo \
   "$runner_image" \
   sh -eu -c "
@@ -1694,18 +1711,29 @@ docker run --rm \
 
     fi
 
-    if [ "\$INTEGRATION_RUN_SERVICE_SCENARIOS" = true ] && suite_is media; then
-
+    if [ "\$INTEGRATION_RUN_SERVICE_SCENARIOS" = true ] && suite_is komga; then
       run_komga_contract seed
-      run_tinymediamanager_contract seed
-      # After tinyMediaManager, because both services read the same Movies tree
-      # and only a scan that already finished can be asserted independently.
-      run_jellyfin_contract seed
-
-      if [ "\$INTEGRATION_SUITE" = media ]; then
+      if [ "\$INTEGRATION_SUITE" = komga ]; then
         run_komga_contract run
+      fi
+    fi
+
+    if [ "\$INTEGRATION_RUN_SERVICE_SCENARIOS" = true ] && suite_is tinymediamanager; then
+      run_tinymediamanager_contract seed
+      if [ "\$INTEGRATION_SUITE" = tinymediamanager ]; then
         run_tinymediamanager_contract run
+      fi
+    fi
+
+    if [ "\$INTEGRATION_RUN_SERVICE_SCENARIOS" = true ] && suite_is jellyfin; then
+      run_jellyfin_contract seed
+      if [ "\$INTEGRATION_SUITE" = jellyfin ]; then
         run_jellyfin_contract run
+      fi
+    fi
+
+    if [ "\$INTEGRATION_RUN_SERVICE_SCENARIOS" = true ] && suite_is immich; then
+      if [ "\$INTEGRATION_SUITE" = immich ]; then
         run_immich_contract clean-restore-seed
         run_immich_clean_restore
         run_immich_restore_negative_matrix
@@ -1725,8 +1753,8 @@ docker run --rm \
       run_paperless_contract assert-persistence
     fi
       # The full lane avoids the CPU-machine-learning seed contract because it
-      # would add an 800 MB external model download. The media lane above uses
-      # a narrower upload/backup fixture that proves database recovery without
+      # would add an 800 MB external model download. The Immich suite owns the
+      # narrower upload/backup fixture that proves database recovery without
       # waiting for generated assets or inference.
 
     if [ "\$INTEGRATION_SUITE" = full ] && \

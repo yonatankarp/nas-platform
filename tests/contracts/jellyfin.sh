@@ -297,7 +297,7 @@ RUBY
 : "${PLATFORM_DOCKER_ROOT:?}"
 : "${PLATFORM_REPORT_ROOT:?}"
 : "${PLATFORM_JELLYFIN_PORT:=8096}"
-: "${PLATFORM_MEDIA_FIXTURES_PRESEEDED:=false}"
+: "${PLATFORM_JELLYFIN_FIXTURE_PRESEEDED:=false}"
 if [ -z "${PLATFORM_JELLYFIN_CONTAINER:-}" ]; then
   PLATFORM_JELLYFIN_CONTAINER=${PLATFORM_PROJECT_NAME:+$PLATFORM_PROJECT_NAME-}jellyfin
 fi
@@ -307,7 +307,7 @@ export PLATFORM_CONTRACT_VAULT_FILE PLATFORM_CONTRACT_VAULT_PASSWORD_FILE
 export PLATFORM_MEDIA_ROOT PLATFORM_DOCKER_ROOT PLATFORM_REPORT_ROOT
 export PLATFORM_JELLYFIN_PORT PLATFORM_JELLYFIN_CONTAINER PLATFORM_JELLYFIN_PLATFORM
 export PLATFORM_JELLYFIN_AVATAR_PATH
-export PLATFORM_MEDIA_FIXTURES_PRESEEDED
+export PLATFORM_JELLYFIN_FIXTURE_PRESEEDED
 
 exec ruby - "$mode" "$@" <<'RUBY'
 require "json"
@@ -394,8 +394,8 @@ MANAGED_OPTIONS = {
   "MetadataCountryCode" => "DE"
 }.freeze
 
-# The fixture lives beside the tinyMediaManager movie fixtures because the NAS
-# mounts one media tree and both services see it. Jellyfin only reads it.
+# The Jellyfin contract owns this fixture path and its exact bytes under the
+# shared NAS media root. Jellyfin only reads it.
 JELLYFIN_MEDIA_ROOT = Pathname.new(
   ENV.fetch("PLATFORM_JELLYFIN_MEDIA_ROOT", MEDIA_ROOT.join("Media").to_s)
 ).expand_path
@@ -943,7 +943,7 @@ encoding = encoding_configuration(token)
 repositories = plugin_repositories(token)
 
 if MODE == "seed"
-  seed_fixture unless ENV.fetch("PLATFORM_MEDIA_FIXTURES_PRESEEDED") == "true"
+  seed_fixture unless ENV.fetch("PLATFORM_JELLYFIN_FIXTURE_PRESEEDED") == "true"
   unless user.fetch("Name") == ADMIN_NAME
     temporary_name = "nas-platform-contract-seed-#{user_id[0, 8]}"
     rename_user(token, user, temporary_name)
