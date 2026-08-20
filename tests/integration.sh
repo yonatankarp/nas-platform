@@ -1240,10 +1240,6 @@ docker run --rm \
     # The preceding scenarios must not create or seed the real-service target.
     test ! -e '$sandbox/volume1/Docker/nas-platform'
 
-    if [ "\$INTEGRATION_SUITE" = foundation ]; then
-      cleanup_vault
-      exit 0
-    fi
     fi
 
     run_selected_play() {
@@ -1281,7 +1277,14 @@ docker run --rm \
       exit 0
     fi
 
-    if [ "\$INTEGRATION_SUITE" != idempotence-check ]; then
+    # Bundle drift and symlink refusal are properties of deployment_bundle and of
+    # the target validator in the always-tagged pre_tasks, not of any one service:
+    # ntfy, beszel and audiobookshelf are only the vehicles. Every suite used to
+    # re-prove them, six playbook invocations for 3m37s, on five critical paths at
+    # once. foundation owns them now because it already exists to prove deployment
+    # integrity and converges deployment_bundle alone, so it is the cheapest place
+    # to pay for them once.
+    if [ "\$INTEGRATION_SUITE" = foundation ] || [ "\$INTEGRATION_SUITE" = full ]; then
     assert_selective_compose_refused() {
       service=\$1
       evidence=\$2
@@ -1358,6 +1361,13 @@ docker run --rm \
     chown 123:456 '$active_release_dir/services/ntfy/compose.yml'
     assert_active_drift_refused ACTIVE_OWNERSHIP_DRIFT_REFUSED
     chown 0:0 '$active_release_dir/services/ntfy/compose.yml'
+    fi
+
+    # foundation converges deployment_bundle and nothing else, so there are no
+    # service scenarios below for it to run.
+    if [ "\$INTEGRATION_SUITE" = foundation ]; then
+      cleanup_vault
+      exit 0
     fi
 
     if [ "\$INTEGRATION_RUN_SERVICE_SCENARIOS" = true ] && suite_is beszel; then
