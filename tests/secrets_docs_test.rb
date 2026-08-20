@@ -357,7 +357,9 @@ required_auto_deploy_guidance = {
   /newer.*successful.*SHA.*proceed/im => "allow a newer successful SHA after a failure",
   /optionally disable SSH/i => "describe optional SSH disablement after bootstrap",
   /protected.*logs.*ntfy/im => "describe protected logs and ntfy outcomes",
-  /does not delete.*services.*data.*immutable releases/im =>
+  # The design no longer keeps immutable release directories; the boundary is
+  # now services, application data, and the retained attempt logs.
+  /does not delete.*services.*data.*attempt logs/im =>
     "state the safe automation removal boundary"
 }
 required_auto_deploy_guidance.each do |pattern, description|

@@ -229,11 +229,14 @@ The first explicit `--poll` should be a no-op when the installed revision is
 already recorded as successful. After that, cron polls every five minutes. It
 resolves the exact current `main` SHA anonymously, accepts exactly one completed
 successful `push` run of the `CI` workflow for that same SHA, checks out that
-exact commit, and runs vault validation, deployment, verification, and the
-installer update locally. GitHub access remains read-only and uses no PAT.
+exact commit with `ansible-pull`, and runs vault validation, deployment,
+verification, and the installer update locally. The installer update reinstalls
+the poller itself, so a change to the poller takes effect on the following poll.
+GitHub access remains read-only and uses no PAT.
 
-A failed SHA is quarantined. The same failed SHA is not retried automatically,
-but a newer successful SHA can proceed normally. After fixing the cause and
+Each revision is attempted at most once.
+The same failed SHA is not retried automatically, but a newer successful SHA
+can proceed normally. After fixing the cause and
 confirming that the failed commit is still current `main` with successful CI,
 retry only that exact SHA manually:
 
@@ -243,10 +246,12 @@ $HOME/.local/bin/nas-platform-deploy --retry-failed "$FAILED_SHA"
 ```
 
 Attempt logs are protected mode-0600 files under
-`$HOME/.local/share/nas-platform/logs`; state and immutable controller/tooling
-releases live under the same private root. Success and failure outcomes are sent
-to ntfy using the protected publisher token, while vault, password, token, and
-Authorization values are redacted from logs.
+`$HOME/.local/share/nas-platform/logs`, retained for 30 days. The controller
+checkout, the installed poller, and the deployment state live under the same
+private root. Success and failure outcomes are sent to ntfy using the protected
+publisher token. Secrets stay out of the logs because the tasks that handle them
+set `no_log`, and the vault password is passed to Ansible as a file path rather
+than a value.
 
 Once a local poll, cron inspection, and at least one automatic no-op have been
 verified, you may optionally disable SSH for this account if the NAS has an
@@ -256,8 +261,8 @@ and local Docker/cron access must remain available.
 To disable automation, first save `crontab -l`, then use `crontab -e` to remove
 only the `NAS platform production auto-deploy` entry and its command. Do not use
 broad recursive deletion as an uninstall procedure. Disabling or removing the
-poller does not delete running services, application data, or immutable releases;
-retaining those releases preserves audit and recovery evidence.
+poller does not delete running services, application data, or attempt logs;
+retaining the logs and the recorded deployment state preserves audit evidence.
 
 ## Recover after loss of `/volume1`
 

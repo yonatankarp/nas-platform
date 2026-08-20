@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -360,6 +361,33 @@ class DeployTest(PollerTestCase):
         ):
             self.assertFalse(production_auto_deploy.deploy(config, MAIN_SHA, None))
 
+    def test_deploy_finds_ansible_in_the_checkout_virtualenv(self):
+        """The operator guide installs ansible-core into the checkout's .venv,
+        so PATH must reach it or every deploy fails before it starts."""
+
+        config = self.loaded_config()
+        calls, run = self.record_runs()
+        with mock.patch.object(production_auto_deploy, "_run", side_effect=run):
+            production_auto_deploy.deploy(config, MAIN_SHA, None)
+        expected = str(config.checkout / ".venv" / "bin")
+        for _arguments, kwargs in calls:
+            entries = kwargs["env"]["PATH"].split(os.pathsep)
+            self.assertEqual(entries[0], expected)
+            self.assertIn("/usr/bin", entries)
+
+    def test_the_installed_poller_can_locate_a_real_ansible(self):
+        """A smoke test that does not mock _run: the tooling path must resolve."""
+
+        config = self.loaded_config()
+        binary = config.checkout / ".venv" / "bin"
+        binary.mkdir(parents=True)
+        fake = binary / "ansible-pull"
+        fake.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        fake.chmod(0o700)
+        environment = production_auto_deploy._ansible_environment(config)
+        found = shutil.which("ansible-pull", path=environment["PATH"])
+        self.assertEqual(found, str(fake))
+
     def test_deploy_never_passes_the_vault_password_through_the_environment(self):
         config = self.loaded_config()
         calls, run = self.record_runs()
@@ -369,7 +397,10 @@ class DeployTest(PollerTestCase):
             environment = kwargs["env"]
             self.assertNotIn("ANSIBLE_VAULT_PASSWORD", environment)
             self.assertNotIn("PLATFORM_VAULT_PASSWORD_FILE", environment)
-            self.assertEqual(environment["PATH"], "/usr/bin:/bin")
+            self.assertNotIn(
+                str(config.vault_password_file), environment.values()
+            )
+            self.assertIn("/usr/bin", environment["PATH"].split(os.pathsep))
 
 
 class RunTest(PollerTestCase):

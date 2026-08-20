@@ -345,9 +345,17 @@ def deployment_lock(config: Config) -> Iterator[bool]:
         os.close(descriptor)
 
 
+def _tooling_bin(config: Config) -> Path:
+    """The controller virtualenv the operator guide creates in the checkout."""
+
+    return config.checkout / ".venv" / "bin"
+
+
 def _ansible_environment(config: Config) -> dict[str, str]:
     return {
-        "PATH": SAFE_SYSTEM_PATH,
+        # ansible-core lives in the checkout's virtualenv, per the operator
+        # guide, so the system path alone cannot find ansible-pull.
+        "PATH": f"{_tooling_bin(config)}{os.pathsep}{SAFE_SYSTEM_PATH}",
         "HOME": str(config.checkout.parent),
         "LC_ALL": "C",
         "LANG": "C",
