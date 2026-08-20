@@ -118,6 +118,12 @@
   failed_when: false
   changed_when: false
   no_log: true
+  # The Compose file comes from the newly published bundle, but this runs before
+  # the environment is rendered below, so the on-disk .env is still the previous
+  # deployment's. Compose interpolates from the process environment too, which
+  # keeps a first upgrade across a new required variable from failing here.
+  environment:
+    PLATFORM_CONTAINER_CPUSET: "{{ platform_effective_container_cpuset }}"
 
 - name: Require authoritative ntfy user listing
   ansible.builtin.assert:
