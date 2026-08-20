@@ -16,6 +16,8 @@ IMMICH_PACKAGES = Set.new(%w[
   ghcr.io/immich-app/immich-server
   ghcr.io/immich-app/immich-machine-learning
 ]).freeze
+ALPINE_PACKAGE_DATASOURCE = "custom.alpine-3.24-main"
+ALPINE_PACKAGE_NAMES = Set.new(%w[ruby curl]).freeze
 
 failures = []
 
@@ -88,6 +90,32 @@ harness_lines.each do |line|
   check(failures, harness_match_strings.any? { |pattern| pattern.match?(line) },
         "no Renovate custom manager tracks the pin #{line.inspect}")
 end
+
+# Alpine package pins must be resolved from the release branch that supplies
+# the runner image. Repology can lag a new Alpine release and report no-result
+# even while the packages are present in Alpine's own repositories.
+alpine_datasource = config.dig("customDatasources", "alpine-3.24-main")
+check(failures,
+      alpine_datasource == {
+        "defaultRegistryUrlTemplate" =>
+          "https://raw.githubusercontent.com/alpinelinux/aports/3.24-stable/main/{{packageName}}/APKBUILD",
+        "format" => "plain"
+      },
+      "Alpine pins must use the official 3.24-stable APKBUILD datasource")
+
+alpine_managers = Array(config["customManagers"]).select do |manager|
+  manager["datasourceTemplate"] == ALPINE_PACKAGE_DATASOURCE
+end
+check(failures, Set.new(alpine_managers.map { |manager| manager["depNameTemplate"] }) ==
+                ALPINE_PACKAGE_NAMES,
+      "Renovate must track ruby and curl through the Alpine 3.24 datasource")
+check(failures, alpine_managers.all? { |manager| manager["extractVersionTemplate"] ==
+                                               "^pkgver=(?<version>.+)$" },
+      "Alpine managers must extract pkgver from APKBUILD")
+check(failures, Array(config["customManagers"]).none? do |manager|
+  manager["datasourceTemplate"] == "repology" &&
+    manager["depNameTemplate"].to_s.start_with?("alpine_3_24/")
+end, "Alpine 3.24 pins must not depend on Repology coverage")
 
 if failures.empty?
   puts "renovate policy: all checks passed"
