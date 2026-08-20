@@ -15,7 +15,7 @@
 set -eu
 
 ansible_core_version=2.21.3
-runner_image=docker.io/library/python:3.13-alpine@sha256:399babc8b49529dabfd9c922f2b5eea81d611e4512e3ed250d75bd2e7683f4b0
+runner_image=docker.io/library/python:3.13-alpine@sha256:540c7d91f98ff6880174c40e99067bf5941eb54d818a7a5e094d188b196a934d
 ruby_package='ruby=3.4.9-r0'
 curl_package='curl=8.21.0-r0'
 
