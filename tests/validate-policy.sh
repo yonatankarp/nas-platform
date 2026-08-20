@@ -47,6 +47,7 @@ tests/mac/integration-context-test.sh
 tests/mac/snapshot-paperless-context-test.sh
 ruby tests/policy_manifest_test.rb
 python3 tests/deployment_target_validator_test.py
+python3 tests/deployment_release_compare_test.py
 ruby tests/managed_user_capabilities_test.rb --self-test
 ruby tests/managed_users_vault_test.rb
 ruby tests/beszel_password_preservation_test.rb --self-test

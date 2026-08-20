@@ -42,6 +42,7 @@ BASE_FIXTURE_PATHS = %w[
   roles/deployment_bundle/defaults/main.yml
   roles/deployment_bundle/meta/argument_specs.yml
   roles/deployment_bundle/files/validate_target.py
+  roles/deployment_bundle/files/compare_release_trees.py
   roles/deployment_bundle/tasks/controller.yml
   roles/deployment_bundle/tasks/controller_input.yml
   roles/deployment_bundle/tasks/inputs.yml
@@ -922,8 +923,15 @@ end
 
 expect_failure(failures, "release mode comparison removed",
                "immutable release comparison must include stat.S_IMODE") do |root|
-  path = File.join(root, "roles", "deployment_bundle", "tasks", "main.yml")
+  path = File.join(root, "roles", "deployment_bundle", "files", "compare_release_trees.py")
   File.write(path, File.read(path).gsub("stat.S_IMODE", "stat.filemode"))
+end
+
+expect_failure(failures, "release comparison script unreferenced",
+               "deployment bundle must compare releases with the tracked comparison script") do |root|
+  path = File.join(root, "roles", "deployment_bundle", "tasks", "main.yml")
+  File.write(path, File.read(path).gsub("files/compare_release_trees.py",
+                                        "files/validate_target.py"))
 end
 
 expect_failure(failures, "Immich classifier controller validation removed",

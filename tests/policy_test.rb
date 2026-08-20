@@ -1618,8 +1618,13 @@ check(failures,
   check(failures, deployment_body.tr(" ", "_").include?(task_token),
         "deployment bundle must #{task_token.downcase.tr('_', ' ')}")
 end
+release_compare_path = File.join(ROOT, "roles", "deployment_bundle", "files",
+                                 "compare_release_trees.py")
+release_compare_source = File.exist?(release_compare_path) ? File.read(release_compare_path) : ""
+check(failures, deployment_body.include?("files/compare_release_trees.py"),
+      "deployment bundle must compare releases with the tracked comparison script")
 %w[stat.S_IMODE st.st_uid st.st_gid os.lstat].each do |metadata|
-  check(failures, deployment_body.include?(metadata),
+  check(failures, release_compare_source.include?(metadata),
         "immutable release comparison must include #{metadata}")
 end
 

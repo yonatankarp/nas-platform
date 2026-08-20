@@ -202,36 +202,7 @@
     argv:
       - "{{ ansible_facts.python.executable }}"
       - -c
-      - |
-        import os
-        import stat
-        import sys
-
-        def snapshot(root):
-            result = {}
-
-            def record(path, relative):
-                st = os.lstat(path)
-                metadata = (stat.S_IMODE(st.st_mode), st.st_uid, st.st_gid)
-                if stat.S_ISLNK(st.st_mode):
-                    result[relative] = ("link", *metadata, os.readlink(path))
-                elif stat.S_ISDIR(st.st_mode):
-                    result[relative] = ("dir", *metadata)
-                    for entry in sorted(os.scandir(path), key=lambda item: item.name):
-                        child_relative = entry.name if relative == "." else f"{relative}/{entry.name}"
-                        record(entry.path, child_relative)
-                elif stat.S_ISREG(st.st_mode):
-                    with open(path, "rb") as handle:
-                        result[relative] = ("file", *metadata, handle.read())
-                else:
-                    result[relative] = ("other", stat.S_IFMT(st.st_mode), *metadata)
-
-            record(root, ".")
-            return result
-
-        expected = snapshot(sys.argv[1])
-        actual = snapshot(sys.argv[2])
-        raise SystemExit(expected != actual)
+      - "{{ lookup('ansible.builtin.file', role_path ~ '/files/compare_release_trees.py') }}"
       - "{{ deployment_bundle_staging_dir }}"
       - "{{ platform_release_dir }}"
   register: deployment_bundle_release_compare
