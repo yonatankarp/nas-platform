@@ -203,8 +203,6 @@ PLATFORM_CAPABILITIES = %w[
   platform_container_cpu_budget
   platform_render_device_available platform_render_device_path
   platform_beszel_agent_available platform_beszel_agent_kind
-  platform_host_network_available platform_host_network_adapter
-  platform_external_integration_checks
 ].freeze
 PLATFORM_TELEMETRY_POLICY = %w[
   beszel_required_telemetry_categories beszel_require_gpu_telemetry
@@ -289,21 +287,13 @@ PLATFORM_INVENTORIES.values.map { |values| [values[0], values[3]] }.uniq.each do
     check(failures, host_vars.key?(policy),
           "#{relative_path} must define #{policy}")
   end
-  %w[
-    platform_render_device_available platform_host_network_available
-    platform_external_integration_checks
-  ].each do |capability|
+  %w[platform_render_device_available platform_beszel_agent_available].each do |capability|
     check(failures, [true, false].include?(host_vars[capability]),
           "#{relative_path} #{capability} must be boolean")
   end
   check(failures, host_vars["platform_render_device_path"].is_a?(String) &&
                   !host_vars["platform_render_device_path"].empty?,
         "#{relative_path} platform_render_device_path must be a nonempty path")
-  check(failures, %w[host published_ports].include?(host_vars["platform_host_network_adapter"]),
-        "#{relative_path} platform_host_network_adapter must be host or published_ports")
-  expected_network_adapter = host_vars["platform_host_network_available"] ? "host" : "published_ports"
-  check(failures, host_vars["platform_host_network_adapter"] == expected_network_adapter,
-        "#{relative_path} host-network capability and adapter must agree")
   mac_runtime_facts = if platform_kind == "mac"
                         %w[
                           platform_project_name beszel_port ntfy_port dozzle_port

@@ -462,9 +462,9 @@ expect_failure(failures, "missing Mac path fixture wiring",
   File.write(path, source)
 end
 
-expect_failure(failures, "missing host capability", "must define platform_external_integration_checks") do |root|
+expect_failure(failures, "missing host capability", "must define platform_beszel_agent_available") do |root|
   mutate_yaml_file(root, "inventory/group_vars/mac_hosts/main.yml") do |vars|
-    vars.delete("platform_external_integration_checks")
+    vars.delete("platform_beszel_agent_available")
   end
 end
 
@@ -472,13 +472,6 @@ expect_failure(failures, "wrong capability type",
                "platform_render_device_available must be boolean") do |root|
   mutate_yaml_file(root, "inventory/group_vars/mac_hosts/main.yml") do |vars|
     vars["platform_render_device_available"] = "false"
-  end
-end
-
-expect_failure(failures, "inconsistent host network capability",
-               "host-network capability and adapter must agree") do |root|
-  mutate_yaml_file(root, "inventory/group_vars/mac_hosts/main.yml") do |vars|
-    vars["platform_host_network_adapter"] = "host"
   end
 end
 
