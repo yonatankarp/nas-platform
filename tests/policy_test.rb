@@ -1337,8 +1337,8 @@ check(failures, contract_execution && contract_abi_names.all? do |name|
   contract_environment.include?("#{name}=")
 end, "integration must set the contract environment ABI before execution")
 run_play_body = harness[/^    run_play\(\) \{.*?^    \}/m].to_s
-check(failures, harness.match?(/^ruby_package='ruby=\d+\.\d+\.\d+-r\d+'$/) &&
-                harness.match?(/^curl_package='curl=\d+\.\d+\.\d+-r\d+'$/),
+check(failures, harness.match?(/^ruby_package='ruby~\d+\.\d+\.\d+'$/) &&
+                harness.match?(/^curl_package='curl~\d+\.\d+\.\d+'$/),
       "integration must pin distro ruby and curl packages")
 check(failures,
       harness.include?("/repo/tests/generate-ephemeral-vault.sh") &&

@@ -62,6 +62,33 @@ check(failures, immich_rule && immich_rule["automerge"] == false,
 check(failures, immich_rule && rules.index(immich_rule) > rules.index(eligible_rule),
       "The Immich override must follow the general automerge rule") if eligible_rule
 
+# Every pinned version in the integration harness must be tracked by a custom
+# manager. Without this, a pin silently stops being bumped: nothing fails until
+# the pinned value leaves its upstream index, and then every suite fails at
+# sandbox setup on a change that has nothing to do with it. The pins are found
+# by shape rather than by name so a newly added one is covered too, and the
+# managers' own matchStrings are the oracle for whether it is tracked.
+HARNESS_PATH = File.join(ROOT, "tests", "integration.sh")
+PIN_ASSIGNMENT = /^[a-z_]+='?[^']*\d+\.\d+/.freeze
+
+harness_lines = File.readlines(HARNESS_PATH).map(&:chomp).grep(PIN_ASSIGNMENT)
+check(failures, !harness_lines.empty?,
+      "the pinned-assignment detector matched nothing in tests/integration.sh")
+
+harness_managers = Array(config["customManagers"]).select do |manager|
+  Array(manager["managerFilePatterns"]).any? do |pattern|
+    body = pattern.sub(%r{\A/}, "").sub(%r{/\z}, "")
+    Regexp.new(body).match?("tests/integration.sh")
+  end
+end
+harness_match_strings = harness_managers.flat_map { |manager| Array(manager["matchStrings"]) }
+                                        .map { |source| Regexp.new(source) }
+
+harness_lines.each do |line|
+  check(failures, harness_match_strings.any? { |pattern| pattern.match?(line) },
+        "no Renovate custom manager tracks the pin #{line.inspect}")
+end
+
 if failures.empty?
   puts "renovate policy: all checks passed"
 else

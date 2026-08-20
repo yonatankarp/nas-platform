@@ -144,6 +144,22 @@
       ],
       "depNameTemplate": "ansible-core",
       "datasourceTemplate": "pypi"
+    },
+    {
+      "description": "Alpine ruby pinned by the integration harness. The pin uses apk's fuzzy `~` so a distro revision bump cannot drop it out of the index, which also matches repology's revisionless versions. The branch here tracks the runner image's Alpine release.",
+      "customType": "regex",
+      "managerFilePatterns": ["/^tests/integration\\.sh$/"],
+      "matchStrings": ["ruby_package='ruby~(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)'"],
+      "depNameTemplate": "alpine_3_24/ruby",
+      "datasourceTemplate": "repology"
+    },
+    {
+      "description": "Alpine curl pinned by the integration harness. Same fuzzy-pin and branch-tracking reasoning as the ruby manager above.",
+      "customType": "regex",
+      "managerFilePatterns": ["/^tests/integration\\.sh$/"],
+      "matchStrings": ["curl_package='curl~(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)'"],
+      "depNameTemplate": "alpine_3_24/curl",
+      "datasourceTemplate": "repology"
     }
   ]
 }
