@@ -2,6 +2,7 @@
 set -eu
 
 ruby tests/policy_test.rb
+ruby tests/renovate_policy_test.rb
 ruby tests/paperless_mail_reconciliation_test.rb
 ruby tests/beszel_telemetry_probe_test.rb
 ruby tests/beszel_telemetry_timeout_test.rb
