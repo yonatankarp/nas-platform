@@ -24,6 +24,7 @@ BASE_FIXTURE_PATHS = %w[
   filter_plugins/platform_paths.py
   filter_plugins/compose_metadata.py
   filter_plugins/managed_user_state.py
+  filter_plugins/vault_managed_user_schema.py
   library/atomic_safe_slurp.py
   generate-secrets.yml
   inventory/group_vars/all/main.yml

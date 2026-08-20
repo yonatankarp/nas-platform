@@ -382,19 +382,27 @@ facts = ENTRY_FIELDS.keys.map { |service| "vault_managed_#{service}_users" }
 facts.each do |fact|
   check(failures, tasks.include?("#{fact}:"), "vault contract must publish named fact #{fact}")
 end
-validation_position = tasks.index("Validate managed-user service keys")
+validation_position = tasks.index("Require a valid managed-user vault schema")
 facts_position = tasks.index("Resolve validated managed-user service lists")
 check(failures, validation_position && facts_position && validation_position < facts_position,
       "managed-user validation must precede named facts")
 check(failures, tasks.scan(/name: .*managed-user/i).length >= 3 &&
                   tasks.scan(/no_log: true/).length >= 4,
       "managed-user validation must use no_log redaction")
+# The per-service fail_msg moved into filter_plugins/vault_managed_user_schema.py,
+# which reports field paths rather than one generic message per service. Per-service
+# coverage is still required, now by asserting the filter dispatches for each one.
+schema_filter_path = File.join(ROOT, "filter_plugins", "vault_managed_user_schema.py")
+schema_filter_source = File.file?(schema_filter_path) ? File.read(schema_filter_path) : ""
+check(failures, tasks.include?("vault_managed_user_errors"),
+      "vault contract must validate managed users with the schema filter")
+check(failures, tasks.include?("values not shown"),
+      "managed-user schema failure must state that values are not shown")
 ENTRY_FIELDS.each_key do |service|
-  check(failures, tasks.include?("#{service} managed user has invalid"),
+  check(failures, schema_filter_source.match?(/^\s*"#{Regexp.escape(service)}": _/),
         "#{service} validation must use a value-free field diagnostic")
 end
 required_validation_fragments = [
-  "item.keys() | list | sort",
   "map('trim') | map('lower') | list | unique",
   "vault_audiobookshelf_admin_username",
   "vault_beszel_superuser_email",
@@ -406,41 +414,41 @@ required_validation_fragments = [
   "vault_ntfy_admin_user",
   "vault_paperless_admin_username",
   "'dozzle' not in vault_managed_users.ntfy",
-  "'beszel' not in vault_managed_users.ntfy",
-  "item.password | length > 0",
-  "item.password_hash is match",
-  "item.type in ['admin', 'user', 'guest']",
-  "item.role in ['user', 'admin']",
-  "item.role == 'user'",
-  "difference(['ADMIN', 'FILE_DOWNLOAD', 'PAGE_STREAMING', 'KOBO_SYNC', 'KOREADER_SYNC'])"
+  "'beszel' not in vault_managed_users.ntfy"
 ]
 required_validation_fragments.each do |fragment|
   check(failures, tasks.include?(fragment),
         "vault contract validation is missing #{fragment}")
 end
+# Field-level guards moved from Jinja conditions into the schema filter, so they
+# are asserted where they now live. The exhaustive per-field type coverage is in
+# tests/vault_managed_user_schema_test.py, which substitutes an incompatible type
+# for every field of every service and requires a rejection that names the field;
+# dropping the string guard there fails thirty subtests. These checks keep the
+# schema's *declarations* pinned so a field cannot quietly lose its constraints.
 TEXT_FIELDS.each do |service, fields|
-  task = parsed_tasks.find { |entry| entry["name"] == "Validate #{service} managed-user entries" }
-  conditions = Array(task&.dig("ansible.builtin.assert", "that"))
   fields.each do |field|
-    check(failures, conditions.include?("item.#{field} is string"),
+    check(failures, schema_filter_source.match?(/f"\{path\}\.#{Regexp.escape(field)}"/),
           "#{service}.#{field} must have an explicit runtime string guard")
   end
 end
 {
-  "Komga roles" => "item.roles | reject('string') | list | length == 0",
-  "ntfy tokens" => "item.tokens | reject('string') | list | length == 0",
-  "Paperless groups" => "item.groups | reject('string') | list | length == 0"
-}.each do |label, condition|
-  check(failures, tasks.include?(condition), "#{label} elements must have runtime string guards")
+  "Komga roles" => 'string_list(errors, f"{path}.roles"',
+  "ntfy tokens" => 'string_list(errors, f"{path}.tokens"',
+  "Paperless groups" => 'string_list(errors, f"{path}.groups"'
+}.each do |label, declaration|
+  check(failures, schema_filter_source.include?(declaration),
+        "#{label} elements must have runtime string guards")
 end
-check(failures, tasks.include?("item.policy.keys() | reject('string') | list | length == 0"),
+check(failures, schema_filter_source.include?('errors.append(f"{path}.policy: every key must be a string")'),
       "Jellyfin policy keys must have runtime string guards")
 check(failures,
-      tasks.include?("item.1.topic is string") && tasks.include?("item.1.permission is string"),
+      schema_filter_source.include?('f"{access_path}.topic"') &&
+      schema_filter_source.include?('f"{access_path}.permission"'),
       "ntfy access fields must have runtime string guards")
-check(failures, tasks.include?("forbidden_jellyfin_policy_fields"),
+check(failures, schema_filter_source.match?(/in JELLYFIN_FORBIDDEN_POLICY_FIELDS\b/),
       "vault contract must reject secret-bearing Jellyfin policy keys")
-check(failures, tasks.include?("vault_contract_managed_ntfy_tokens") &&
+check(failures, schema_filter_source.include?("_ntfy_token_ownership") &&
                 tasks.include?("vault_ntfy_dozzle_token") && tasks.include?("vault_ntfy_beszel_token"),
       "vault contract must enforce global ntfy token uniqueness and publisher separation")
 check(failures, tasks.include?("vault_jellyfin_admin_username == 'Yonatan'"),
