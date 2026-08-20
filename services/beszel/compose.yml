@@ -8,6 +8,8 @@ services:
   hub:
     container_name: beszel
     image: ghcr.io/henrygd/beszel/beszel:0.18.8@sha256:99181067e5a46b3147231f456114280a8119eed371808bce79e6e7f173946975
+    cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
+    cpus: 1.0
     labels:
       dev.dozzle.group: beszel
       dev.dozzle.name: hub
@@ -35,6 +37,8 @@ services:
   agent-portable:
     container_name: beszel_agent_portable
     image: ghcr.io/henrygd/beszel/beszel-agent:0.18.8@sha256:0f0c8939e7ed95707bd8a8da47fd20a7f1a61c2eebbe3b5eb82422486df1f2bf
+    cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
+    cpus: 0.5
     labels:
       dev.dozzle.group: beszel
       dev.dozzle.name: agent-portable
@@ -70,6 +74,8 @@ services:
   agent-intel:
     container_name: beszel_agent
     image: ghcr.io/henrygd/beszel/beszel-agent-intel:0.18.8@sha256:fdbb316e2b1366844f8e8926a3f8e8166ab0b7a10309c0f6aa6281f82c5c136a
+    cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
+    cpus: 0.5
     labels:
       dev.dozzle.group: beszel
       dev.dozzle.name: agent-intel
@@ -117,6 +123,8 @@ services:
     # The only Docker socket reader. Read-only access with mutation refused, and
     # never published beyond loopback.
     image: lscr.io/linuxserver/socket-proxy:3.4.3@sha256:165670d41ce04c44c271075e4be87f6de17633478eae817ed967d71755de650b
+    cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
+    cpus: 0.5
     labels:
       dev.dozzle.group: beszel
       dev.dozzle.name: socket-proxy

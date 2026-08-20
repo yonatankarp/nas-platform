@@ -45,7 +45,8 @@ render_group_contract() {
   variant=$3
   shift 3
   rendered=$(env \
-    PLATFORM_PROJECT_NAME=dozzle-contract PLATFORM_DOCKER_ROOT=/tmp/dozzle-contract/docker \
+    PLATFORM_PROJECT_NAME=dozzle-contract PLATFORM_CONTAINER_CPUSET=0-2 \
+    PLATFORM_DOCKER_ROOT=/tmp/dozzle-contract/docker \
     PLATFORM_CURRENT_DIR="$repo_dir" DOZZLE_STATE_ROOT=/tmp/dozzle-contract/docker/dozzle/data \
     NAS_DOCKER_ROOT=/tmp/dozzle-contract/docker \
     NAS_MEDIA_ROOT=/tmp/dozzle-contract/media NAS_RENDER_DEVICE=/dev/null \

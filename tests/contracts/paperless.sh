@@ -38,7 +38,7 @@ render_paperless_mounts() {
   shift
   cache_path=/volume1/Docker/paperless-ngx/cache
   rendered=$(env \
-    PLATFORM_PROJECT_NAME=paperless-contract \
+    PLATFORM_PROJECT_NAME=paperless-contract PLATFORM_CONTAINER_CPUSET=0-2 \
     PAPERLESS_HOST_PORT=38000 PAPERLESS_POSTGRES_PATH=/volume1/Docker/paperless-ngx/postgres \
     PAPERLESS_REDIS_PATH=/volume1/Docker/paperless-ngx/redis \
     PAPERLESS_DATA_PATH=/volume1/Docker/paperless-ngx/data \

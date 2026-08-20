@@ -119,6 +119,33 @@ EXPECTED_SERVICE_MAPPINGS = {
   "paperless-ngx" => { "role" => "paperless_ngx" },
   "tinymediamanager" => { "role" => "tinymediamanager" }
 }.freeze
+EXPECTED_CONTAINER_CPUS = {
+  "audiobookshelf" => { "audiobookshelf" => 1.5 },
+  "beszel" => {
+    "hub" => 1.0,
+    "agent-portable" => 0.5,
+    "agent-intel" => 0.5,
+    "socket-proxy" => 0.5
+  },
+  "dozzle" => { "alert-relay" => 0.5, "dozzle" => 1.0, "socket-proxy" => 0.5 },
+  "immich" => {
+    "immich-server" => 3.0,
+    "immich-machine-learning" => 3.0,
+    "redis" => 0.5,
+    "database" => 2.0
+  },
+  "jellyfin" => { "jellyfin" => 3.0 },
+  "komga" => { "komga" => 1.5 },
+  "ntfy" => { "ntfy" => 1.0 },
+  "paperless-ngx" => {
+    "broker" => 0.5,
+    "db" => 2.0,
+    "webserver" => 3.0,
+    "gotenberg" => 2.0,
+    "tika" => 2.0
+  },
+  "tinymediamanager" => { "tinymediamanager" => 3.0 }
+}.freeze
 EXPECTED_VAULT_KEYS = %w[
   vault_audiobookshelf_admin_username
   vault_audiobookshelf_admin_password
@@ -837,9 +864,19 @@ service_dirs.each do |dir|
 
   compose = YAML.safe_load_file(compose_path, aliases: true)
   containers = compose.fetch("services")
+  expected_cpus = EXPECTED_CONTAINER_CPUS.fetch(name)
+  check(failures, containers.keys.sort == expected_cpus.keys.sort,
+        "#{name}: CPU policy must cover the exact Compose service set")
 
   containers.each do |container, spec|
     label = "#{name}/#{container}"
+
+    check(failures, spec["cpuset"] == "${PLATFORM_CONTAINER_CPUSET:?}",
+          "#{label}: must require the Ansible-rendered platform CPU set")
+    check(failures, spec["cpus"] == expected_cpus.fetch(container),
+          "#{label}: CPU ceiling must be #{expected_cpus.fetch(container)}")
+    check(failures, !spec.key?("cpu_shares"),
+          "#{label}: must retain Docker's equal default CPU shares")
 
     check(failures, spec["image"].to_s.match?(IMAGE),
           "#{label}: image must be digest-pinned with a version tag")

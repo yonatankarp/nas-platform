@@ -8,6 +8,8 @@ services:
   alert-relay:
     container_name: dozzle_alert_relay
     image: docker.io/library/python:3.14-alpine@sha256:05b2b8b732ecd268fee8727a369f936f022d1321b59befd13c30ede22769dcdc
+    cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
+    cpus: 0.5
     labels:
       dev.dozzle.group: dozzle
       dev.dozzle.name: alert-relay
@@ -40,6 +42,8 @@ services:
   dozzle:
     container_name: dozzle
     image: docker.io/amir20/dozzle:v10.7.3@sha256:c32ca7a443796de62a07afd621b17b6c6c073320cd8431493bb1fd84e3a1eff8
+    cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
+    cpus: 1.0
     labels:
       dev.dozzle.group: dozzle
       dev.dozzle.name: dozzle
@@ -78,6 +82,8 @@ services:
   socket-proxy:
     container_name: dozzle_socket_proxy
     image: lscr.io/linuxserver/socket-proxy:3.4.3@sha256:165670d41ce04c44c271075e4be87f6de17633478eae817ed967d71755de650b
+    cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
+    cpus: 0.5
     labels:
       dev.dozzle.group: dozzle
       dev.dozzle.name: socket-proxy
