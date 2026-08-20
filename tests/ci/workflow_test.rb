@@ -264,7 +264,8 @@ static_commands = run_steps(static)
   "tests/generate-ephemeral-vault.sh --self-test",
   "ansible-lint --strict",
   "ansible-playbook -i inventory/local.yml site.yml --syntax-check",
-  "ansible-playbook generate-secrets.yml --syntax-check"
+  "ansible-playbook generate-secrets.yml --syntax-check",
+  "ansible-playbook -i inventory/local.yml install-production-auto-deploy.yml --syntax-check"
 ].each do |command|
   check(failures, static_commands.include?(command), "static checks must retain #{command.inspect}")
 end
@@ -320,6 +321,14 @@ check(failures, registers_command_once?(policy_source, paperless_mail_command),
 check(failures,
       !registers_command_once?("#{paperless_mail_command}\n#{paperless_mail_command}\n", paperless_mail_command),
       "policy registration matcher must reject duplicate Paperless mail fixture commands")
+production_auto_deploy_commands = [
+  'PYTHONDONTWRITEBYTECODE=1 "$ansible_python" -m unittest -v tests.production_auto_deploy_test',
+  "ruby tests/production_auto_deploy_role_test.rb"
+]
+production_auto_deploy_commands.each do |command|
+  check(failures, registers_command_once?(policy_source, command),
+        "validate-policy.sh must register exactly once #{command.inspect}")
+end
 
 validate = jobs.fetch("validate", {})
 check(failures, validate["name"] == "validate", "aggregate check name must remain validate")

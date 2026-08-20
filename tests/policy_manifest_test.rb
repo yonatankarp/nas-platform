@@ -17,6 +17,7 @@ BASE_FIXTURE_PATHS = %w[
   .github/workflows/ci.yml
   README.md
   ansible.cfg
+  controller-requirements.txt
   docs/ansible-basics.md
   docs/getting-started.md
   docs/getting-started-mac.md
@@ -26,6 +27,7 @@ BASE_FIXTURE_PATHS = %w[
   filter_plugins/managed_user_state.py
   library/atomic_safe_slurp.py
   generate-secrets.yml
+  install-production-auto-deploy.yml
   inventory/group_vars/all/main.yml
   inventory/group_vars/all/vault.yml.example
   inventory/group_vars/mac_hosts/main.yml
@@ -54,12 +56,19 @@ BASE_FIXTURE_PATHS = %w[
   roles/immich/tasks/verify_classifier.yml
   roles/preflight/meta/argument_specs.yml
   roles/preflight/tasks/main.yml
+  roles/production_auto_deploy/defaults/main.yml
+  roles/production_auto_deploy/meta/argument_specs.yml
+  roles/production_auto_deploy/tasks/main.yml
+  roles/production_auto_deploy/templates/config.json.j2
+  roles/production_auto_deploy/templates/ntfy.curl.j2
   roles/beszel/tasks/alert.yml
   roles/vault_contract/meta/argument_specs.yml
   roles/vault_contract/tasks/main.yml
   services/manifest.yml
   services/dozzle/alert_relay.py
   services/immich/classify_restore.py
+  scripts/nas-platform-deploy
+  scripts/production_auto_deploy.py
   services/tinymediamanager/compose.integration.yml
   services/tinymediamanager/compose.mac.yml
   templates/vault-plain.yml.j2
@@ -78,6 +87,8 @@ BASE_FIXTURE_PATHS = %w[
   tests/ntfy_verify_execution_test.rb
   tests/komga_library_reconciliation_test.rb
   tests/paperless_mail_reconciliation_test.rb
+  tests/production_auto_deploy_test.py
+  tests/production_auto_deploy_role_test.rb
   tests/safe_slurp_test.py
   tests/safe_slurp_test.yml
   tests/mac/cleanup.sh
@@ -1335,6 +1346,27 @@ end
     path = File.join(root, "tests", "validate-policy.sh")
     File.write(path, File.read(path).lines.reject { |line| line.strip == command }.join)
   end
+end
+
+{
+  "production auto-deploy poller suite" =>
+    'PYTHONDONTWRITEBYTECODE=1 "$ansible_python" -m unittest -v tests.production_auto_deploy_test',
+  "production auto-deploy installer suite" =>
+    "ruby tests/production_auto_deploy_role_test.rb"
+}.each do |name, command|
+  expect_failure(failures, "#{name} removed from policy validation",
+                 "validate-policy.sh must run the #{name} exactly once") do |root|
+    path = File.join(root, "tests", "validate-policy.sh")
+    File.write(path, File.read(path).lines.reject { |line| line.strip == command }.join)
+  end
+end
+
+expect_failure(failures, "production auto-deploy installer syntax check removed",
+               "CI must syntax-check install-production-auto-deploy.yml") do |root|
+  path = File.join(root, ".github", "workflows", "ci.yml")
+  File.write(path, File.read(path).lines.reject do |line|
+    line.strip == "ansible-playbook -i inventory/local.yml install-production-auto-deploy.yml --syntax-check"
+  end.join)
 end
 
 expect_failure(failures, "Mac raw log body retained",
