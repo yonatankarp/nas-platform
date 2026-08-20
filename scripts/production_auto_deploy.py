@@ -80,12 +80,6 @@ GIT_SAFE_CONFIG = (
     "core.attributesFile=/dev/null",
     "credential.helper=",
 )
-EXPECTED_ANSIBLE_CORE_VERSION = "2.21.3"
-EXPECTED_ANSIBLE_LINT_VERSION = "26.8.0"
-EXPECTED_CONTROLLER_REQUIREMENTS = (
-    f"ansible-core=={EXPECTED_ANSIBLE_CORE_VERSION}\n"
-    f"ansible-lint=={EXPECTED_ANSIBLE_LINT_VERSION}\n"
-).encode("ascii")
 EXPECTED_VERIFY_TAGS = (
     "platform_verify_ntfy,platform_verify_beszel,platform_verify_dozzle,"
     "platform_verify_audiobookshelf,platform_verify_komga,"
@@ -1792,12 +1786,27 @@ def _read_tooling_requirement(checkout: Path, relative_path: str) -> bytes:
             raise DeploymentError("tooling requirements are unsafe")
     except OSError as error:
         raise DeploymentError("tooling requirements are unreadable") from error
-    if (
-        relative_path == "controller-requirements.txt"
-        and payload != EXPECTED_CONTROLLER_REQUIREMENTS
-    ):
-        raise DeploymentError("controller requirements do not match exact pins")
     return payload
+
+
+def _parse_controller_pins(payload: bytes) -> tuple[str, str]:
+    """Read the exact controller pins the candidate revision requires."""
+
+    pins = {}
+    try:
+        lines = payload.decode("ascii").splitlines()
+    except UnicodeDecodeError as error:
+        raise DeploymentError("controller requirements are invalid") from error
+    for line in lines:
+        if not line:
+            continue
+        name, separator, version = line.partition("==")
+        if not separator or name in pins or not version:
+            raise DeploymentError("controller requirements are invalid")
+        pins[name] = version
+    if set(pins) != {"ansible-core", "ansible-lint"}:
+        raise DeploymentError("controller requirements are invalid")
+    return pins["ansible-core"], pins["ansible-lint"]
 
 
 def tooling_identity(checkout: Path) -> str:
@@ -1940,10 +1949,14 @@ def _validate_tooling(root: Path, identity: str, home: Path) -> Tooling:
     try:
         installed_payload = json.loads(installed_manifest_bytes.decode("ascii"))
         expected_collections = installed_payload["collections"]
+        installed_core = installed_payload["ansible_core"]
+        installed_lint = installed_payload["ansible_lint"]
     except (KeyError, TypeError, UnicodeError, ValueError, RecursionError) as error:
         raise DeploymentError("published tooling manifest is invalid") from error
     if (
         not isinstance(expected_collections, dict)
+        or type(installed_core) is not str
+        or type(installed_lint) is not str
         or any(
             type(name) is not str or type(version) is not str
             for name, version in expected_collections.items()
@@ -1952,6 +1965,8 @@ def _validate_tooling(root: Path, identity: str, home: Path) -> Tooling:
             tooling,
             home,
             expected_collections,
+            installed_core,
+            installed_lint,
         )
         != installed_manifest_bytes
     ):
@@ -2121,6 +2136,8 @@ def _capture_installed_tooling_manifest(
     tooling: Tooling,
     home: Path,
     expected_collections: dict[str, str],
+    ansible_core: str,
+    ansible_lint: str,
 ) -> bytes:
     root = tooling.python.parent.parent.parent
     environment = _tooling_environment(
@@ -2175,14 +2192,14 @@ def _capture_installed_tooling_manifest(
         raise DeploymentError("published package manifest is invalid") from error
     normalized_packages = {line.casefold() for line in freeze_lines}
     if not {
-        f"ansible-core=={EXPECTED_ANSIBLE_CORE_VERSION}",
-        f"ansible-lint=={EXPECTED_ANSIBLE_LINT_VERSION}",
+        f"ansible-core=={ansible_core}",
+        f"ansible-lint=={ansible_lint}",
     }.issubset(normalized_packages):
         raise DeploymentError("published package versions are invalid")
 
     ansible_version = output([tooling.ansible_playbook, "--version"]).splitlines()[:1]
-    expected_ansible_version = (
-        f"ansible-playbook [core {EXPECTED_ANSIBLE_CORE_VERSION}]".encode("ascii")
+    expected_ansible_version = f"ansible-playbook [core {ansible_core}]".encode(
+        "ascii"
     )
     if ansible_version != [expected_ansible_version]:
         raise DeploymentError("published Ansible version is invalid")
@@ -2191,7 +2208,7 @@ def _capture_installed_tooling_manifest(
     ).splitlines()[:1]
     if not ansible_lint_line or ansible_lint_line[0].split()[:2] != [
         b"ansible-lint",
-        EXPECTED_ANSIBLE_LINT_VERSION.encode("ascii"),
+        ansible_lint.encode("ascii"),
     ]:
         raise DeploymentError("published ansible-lint version is invalid")
 
@@ -2236,8 +2253,8 @@ def _capture_installed_tooling_manifest(
     return (
         json.dumps(
             {
-                "ansible_core": EXPECTED_ANSIBLE_CORE_VERSION,
-                "ansible_lint": EXPECTED_ANSIBLE_LINT_VERSION,
+                "ansible_core": ansible_core,
+                "ansible_lint": ansible_lint,
                 "collections": installed_collections,
                 "pip_freeze": freeze_lines,
                 "python": python_version,
@@ -2302,6 +2319,7 @@ def prepare_tooling(
         ]
     identity = _tooling_identity_payloads(requirement_payloads)
     expected_collections = _parse_collection_requirements(requirement_payloads[1])
+    ansible_core, ansible_lint = _parse_controller_pins(requirement_payloads[0])
     published = config.tooling_root / identity
     if published.exists() or published.is_symlink():
         return _validate_tooling(published, identity, _owned_root(config))
@@ -2392,6 +2410,8 @@ def prepare_tooling(
                 staging_tooling,
                 _owned_root(config),
                 expected_collections,
+                ansible_core,
+                ansible_lint,
             ),
         )
         _seal_tooling(staging, identity)

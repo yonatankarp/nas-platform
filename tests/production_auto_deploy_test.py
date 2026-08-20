@@ -69,6 +69,14 @@ def authoritative_controller_pins():
     return ci_pins[0]
 
 
+def authoritative_controller_requirements():
+    ansible_core, ansible_lint = authoritative_controller_pins()
+    return (
+        f"ansible-core=={ansible_core}\n"
+        f"ansible-lint=={ansible_lint}\n"
+    ).encode("ascii")
+
+
 def authoritative_collection_requirements():
     payload = (ROOT / "requirements.yml").read_bytes()
     return payload, production_auto_deploy._parse_collection_requirements(payload)
@@ -80,8 +88,8 @@ def installed_tooling_manifest(collections=None):
     return (
         json.dumps(
             {
-                "ansible_core": production_auto_deploy.EXPECTED_ANSIBLE_CORE_VERSION,
-                "ansible_lint": production_auto_deploy.EXPECTED_ANSIBLE_LINT_VERSION,
+                "ansible_core": authoritative_controller_pins()[0],
+                "ansible_lint": authoritative_controller_pins()[1],
                 "collections": collections,
                 "pip_freeze": [],
                 "python": "3.12",
@@ -96,7 +104,7 @@ def installed_tooling_manifest(collections=None):
 def ansible_playbook_version_output():
     return (
         "ansible-playbook [core "
-        f"{production_auto_deploy.EXPECTED_ANSIBLE_CORE_VERSION}]\n"
+        f"{authoritative_controller_pins()[0]}]\n"
     ).encode("ascii")
 
 
@@ -446,7 +454,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
     def seed_candidate_files(self, checkout=None):
         checkout = Path(checkout or self.config["controller_root"])
         (checkout / "controller-requirements.txt").write_bytes(
-            production_auto_deploy.EXPECTED_CONTROLLER_REQUIREMENTS
+            authoritative_controller_requirements()
         )
         collection_requirements, _pins = authoritative_collection_requirements()
         (checkout / "requirements.yml").write_bytes(collection_requirements)
@@ -838,25 +846,6 @@ class ProductionAutoDeployTest(unittest.TestCase):
         self.assertEqual(
             calls[0][:4], ["/trusted/python3.12", "-m", "venv", "--copies"]
         )
-
-    def test_reviewed_controller_requirements_must_keep_exact_pins(self):
-        checkout = self.seed_candidate_files()
-        (checkout / "controller-requirements.txt").write_bytes(
-            (
-                "ansible-core==2.22.0\nansible-lint=="
-                f"{production_auto_deploy.EXPECTED_ANSIBLE_LINT_VERSION}\n"
-            ).encode("ascii")
-        )
-
-        with mock.patch.object(
-            production_auto_deploy,
-            "_validate_materialized_checkout",
-        ), self.assertRaises(production_auto_deploy.DeploymentError):
-            production_auto_deploy._read_reviewed_requirement(
-                self.loaded_config(),
-                MAIN_SHA,
-                "controller-requirements.txt",
-            )
 
     def test_git_commands_ignore_malicious_ambient_path(self):
         malicious_git = self.fake_bin / "git"
@@ -2994,21 +2983,37 @@ class ProductionAutoDeployTest(unittest.TestCase):
             (ROOT / "controller-requirements.txt").read_bytes(),
             expected,
         )
-        self.assertEqual(
-            production_auto_deploy.EXPECTED_CONTROLLER_REQUIREMENTS,
-            expected,
-        )
-        self.assertEqual(
-            production_auto_deploy.EXPECTED_ANSIBLE_CORE_VERSION,
-            ansible_core,
-        )
-        self.assertEqual(
-            production_auto_deploy.EXPECTED_ANSIBLE_LINT_VERSION,
-            ansible_lint,
-        )
         installed_manifest = json.loads(installed_tooling_manifest())
         self.assertEqual(installed_manifest["ansible_core"], ansible_core)
         self.assertEqual(installed_manifest["ansible_lint"], ansible_lint)
+
+    def test_candidate_may_bump_controller_pins_without_quarantine(self):
+        checkout = self.seed_candidate_files()
+        bumped = b"ansible-core==9.9.9\nansible-lint==8.8.8\n"
+        (checkout / "controller-requirements.txt").write_bytes(bumped)
+
+        payload = production_auto_deploy._read_tooling_requirement(
+            checkout,
+            "controller-requirements.txt",
+        )
+
+        self.assertEqual(payload, bumped)
+        self.assertEqual(
+            production_auto_deploy._parse_controller_pins(payload),
+            ("9.9.9", "8.8.8"),
+        )
+
+    def test_malformed_controller_pins_are_rejected(self):
+        for payload in (
+            b"ansible-core==1.0\n",
+            b"ansible-core\nansible-lint==2.0\n",
+            b"ansible-core==1.0\nansible-core==1.0\n",
+            b"ansible-core==1.0\nansible-lint==2.0\nextra==3.0\n",
+            b"ansible-core==\nansible-lint==2.0\n",
+        ):
+            with self.subTest(payload=payload):
+                with self.assertRaises(production_auto_deploy.DeploymentError):
+                    production_auto_deploy._parse_controller_pins(payload)
 
     def test_positive_controller_fixture_versions_are_not_duplicated(self):
         source = Path(__file__).read_text(encoding="utf-8")
@@ -3584,7 +3589,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
         checkout = self.seed_candidate_files()
         external = self.root / "external-requirements"
         external.write_text(
-            f"ansible-core=={production_auto_deploy.EXPECTED_ANSIBLE_CORE_VERSION}\n",
+            f"ansible-core=={authoritative_controller_pins()[0]}\n",
             encoding="utf-8",
         )
         controller_requirements = checkout / "controller-requirements.txt"
@@ -3597,7 +3602,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
     def test_prepare_tooling_without_sha_rejects_symlinked_requirement_inputs(self):
         checkout = self.seed_candidate_files()
         external = self.root / "external-requirements"
-        external.write_bytes(production_auto_deploy.EXPECTED_CONTROLLER_REQUIREMENTS)
+        external.write_bytes(authoritative_controller_requirements())
         controller_requirements = checkout / "controller-requirements.txt"
         controller_requirements.unlink()
         controller_requirements.symlink_to(external)
@@ -3951,6 +3956,8 @@ class ProductionAutoDeployTest(unittest.TestCase):
                 tooling,
                 self.root,
                 expected_collections,
+                ansible_core,
+                ansible_lint,
             )
 
         payload = json.loads(manifest)
@@ -4011,11 +4018,11 @@ class ProductionAutoDeployTest(unittest.TestCase):
                 )
 
             if arguments[1:3] == ["-m", "pip"] and "freeze" in arguments:
-                output = production_auto_deploy.EXPECTED_CONTROLLER_REQUIREMENTS
+                output = authoritative_controller_requirements()
             elif arguments[1:3] == ["-m", "ansiblelint"]:
                 output = (
                     "ansible-lint "
-                    f"{production_auto_deploy.EXPECTED_ANSIBLE_LINT_VERSION}\n"
+                    f"{authoritative_controller_pins()[1]}\n"
                 ).encode("ascii")
             elif arguments[1:3] == ["-m", "ansible.cli.galaxy"]:
                 output = json.dumps(
@@ -4028,7 +4035,7 @@ class ProductionAutoDeployTest(unittest.TestCase):
             elif arguments[-1:] == ["--version"]:
                 output = (
                     "ansible-playbook [core "
-                    f"{production_auto_deploy.EXPECTED_ANSIBLE_CORE_VERSION}]\n"
+                    f"{authoritative_controller_pins()[0]}]\n"
                 ).encode("ascii")
             elif arguments[1:2] == ["-c"]:
                 output = b"3.14\n"
