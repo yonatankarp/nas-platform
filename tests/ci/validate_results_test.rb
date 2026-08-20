@@ -23,7 +23,7 @@ check(failures,
 
 {
   "paperless=failure" => %w[paperless failure],
-  "media=cancelled" => %w[media cancelled],
+  "immich=cancelled" => %w[immich cancelled],
   "smoke=pending" => %w[smoke pending],
   "foundation=unknown" => %w[foundation unknown],
   "static=" => ["static", ""],
