@@ -152,7 +152,7 @@ fi
 : "${PLATFORM_MEDIA_ROOT:?}"
 : "${PLATFORM_REPORT_ROOT:?}"
 : "${PLATFORM_KOMGA_PORT:=25600}"
-: "${PLATFORM_MEDIA_FIXTURES_PRESEEDED:=false}"
+: "${PLATFORM_KOMGA_FIXTURE_PRESEEDED:=false}"
 if [ "${PLATFORM_KIND:-}" = integration ]; then
   : "${PLATFORM_KOMGA_RUNTIME_CONTEXT:=base}"
   case $PLATFORM_KOMGA_RUNTIME_CONTEXT in
@@ -176,7 +176,7 @@ case $PLATFORM_KOMGA_RUNTIME_CONTEXT in
 esac
 export PLATFORM_CONTRACT_VAULT_FILE PLATFORM_CONTRACT_VAULT_PASSWORD_FILE
 export PLATFORM_MEDIA_ROOT PLATFORM_REPORT_ROOT PLATFORM_KOMGA_PORT
-export PLATFORM_MEDIA_FIXTURES_PRESEEDED PLATFORM_KOMGA_CONTAINER
+export PLATFORM_KOMGA_FIXTURE_PRESEEDED PLATFORM_KOMGA_CONTAINER
 export PLATFORM_KOMGA_DOCKER_HEALTH_REQUIRED
 
 shift || true
@@ -413,7 +413,7 @@ end
 fail_contract("unknown mode: #{MODE}") unless %w[seed assert-persistence].include?(MODE)
 
 if MODE == "seed"
-  seed_fixture unless ENV.fetch("PLATFORM_MEDIA_FIXTURES_PRESEEDED") == "true"
+  seed_fixture unless ENV.fetch("PLATFORM_KOMGA_FIXTURE_PRESEEDED") == "true"
   request("post", "/api/v1/libraries/#{library.fetch('id')}/scan", basic: credentials, expected: [202])
 end
 

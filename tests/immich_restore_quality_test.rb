@@ -633,7 +633,10 @@ end
   "IMMICH_EXISTING_DATABASE_BACKUP_IGNORED",
   "IMMICH_NEGATIVE_RESTORE_MATRIX_OK"
 ].each do |sentinel|
-  refuse("media integration omits #{sentinel}") unless integration_text.include?(sentinel)
+  refuse("Immich integration omits #{sentinel}") unless integration_text.include?(sentinel)
 end
+refuse("Immich restore scenarios are not owned by the Immich suite") unless
+  integration_text.include?("suite_is immich; then") &&
+  integration_text.include?('[ "\$INTEGRATION_SUITE" = immich ]')
 
 puts "Immich restore quality contract passed"
