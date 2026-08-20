@@ -4,10 +4,7 @@
   'workflow': production_auto_deploy_workflow,
   'workflow_name': production_auto_deploy_workflow_name,
   'branch': production_auto_deploy_branch,
-  'controller_python': production_auto_deploy_controller_python,
-  'deployment_home': production_auto_deploy_deployment_home,
-  'controller_root': production_auto_deploy_controller_root,
-  'tooling_root': production_auto_deploy_tooling_root,
+  'checkout': production_auto_deploy_checkout,
   'state_root': production_auto_deploy_state_root,
   'log_root': production_auto_deploy_log_root,
   'vault_file': production_auto_deploy_vault_path,
@@ -17,6 +14,6 @@
   'platform_public_host': production_auto_deploy_nas_address,
   'platform_callback_host': production_auto_deploy_nas_address,
   'github_api_base': production_auto_deploy_github_api_base,
-  'log_retention_count': production_auto_deploy_log_retention_count,
-  'log_retention_days': production_auto_deploy_log_retention_days
+  'log_retention_days': production_auto_deploy_log_retention_days | int,
+  'verify_tags': production_auto_deploy_verify_tags | trim
 } | to_nice_json }}

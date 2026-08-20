@@ -60,6 +60,7 @@ BASE_FIXTURE_PATHS = %w[
   roles/production_auto_deploy/meta/argument_specs.yml
   roles/production_auto_deploy/tasks/main.yml
   roles/production_auto_deploy/templates/config.json.j2
+  roles/production_auto_deploy/templates/nas-platform-deploy.j2
   roles/production_auto_deploy/templates/ntfy.curl.j2
   roles/beszel/tasks/alert.yml
   roles/vault_contract/meta/argument_specs.yml
@@ -67,7 +68,6 @@ BASE_FIXTURE_PATHS = %w[
   services/manifest.yml
   services/dozzle/alert_relay.py
   services/immich/classify_restore.py
-  scripts/nas-platform-deploy
   scripts/production_auto_deploy.py
   services/tinymediamanager/compose.integration.yml
   services/tinymediamanager/compose.mac.yml

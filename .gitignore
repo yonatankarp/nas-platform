@@ -32,3 +32,4 @@ __pycache__/
 
 # Local knowledge-graph output, regenerated on demand.
 /graphify-out/
+scripts/__pycache__/
