@@ -1,12 +1,11 @@
 # Physical NAS walkthrough
 
-This path targets production. Complete the
-[disposable Mac proof](getting-started-mac.md), back up application data, and
-confirm every required service is `implemented` or `accepted` in
-[`services/manifest.yml`](../services/manifest.yml) before cutover. All nine
+This path targets a fresh production installation. Complete the
+[disposable Mac proof](getting-started-mac.md), protect any media already on the
+NAS, and confirm every required service is `implemented` or `accepted` in
+[`services/manifest.yml`](../services/manifest.yml) before installation. All nine
 current services are implemented: Audiobookshelf, Beszel, Dozzle, Immich,
-Jellyfin, Komga, ntfy, Paperless-ngx, and tinyMediaManager. Implementation and
-the Mac proof do not replace the service-specific production cutover packets.
+Jellyfin, Komga, ntfy, Paperless-ngx, and tinyMediaManager.
 
 Commands are labelled **read-only**, **check mode**, or **changes production**.
 
@@ -38,32 +37,21 @@ and [`inventory/group_vars/all/main.yml`](../inventory/group_vars/all/main.yml)
 against the real NAS paths, UID/GID, timezone, ports, and capabilities before
 continuing.
 
-## 2. Back up before deploying
+## 2. Protect existing storage before deploying
 
-Back up all application data, databases, media metadata, the current Compose
-definitions, and the current password-manager entries to encrypted storage away
-from the NAS. Test a restore. Keep a record of currently running image
-versions. An encrypted Ansible vault is not
-an application-data backup, and RAID is not a backup.
+Even for a fresh install, back up any media or documents already present on the
+NAS to encrypted storage away from it and test a restore. An encrypted Ansible
+vault is not an application-data backup, and RAID is not a backup.
 
-Do not stop or remove the legacy stacks yet. The final service-specific cutover
-and rollback packet is a later migration deliverable.
+## 3. Prepare the reviewed deployment vault
 
-## 3. Reuse the reviewed migration vault
-
-The migration requirement is credential continuity: every login, database
-password, hash, ntfy token, Beszel key, Gmail setting, and other deployed value
-must remain exactly current. The preparation, validation, private-review, and
+Complete the brand-new-platform preparation, private review, validation, and
 Mac-proof portions of the
-[secrets and encrypted-vault guide](secrets.md) must be complete before
-continuing.
-
-Now resume the canonical workflow at
+[secrets and encrypted-vault guide](secrets.md) before continuing. Then follow
 [Install reviewed vault for NAS](secrets.md#install-reviewed-vault-for-nas)
-section exactly once. Its guarded mutation copies only the reviewed Mac
-ciphertext and refuses to overwrite an existing repository vault. If the
-repository vault already exists, stop and inspect it, then explicitly decide to
-reuse it or follow a separate backed-up replacement procedure.
+exactly once. Its guarded mutation copies only reviewed ciphertext and refuses
+to overwrite an existing repository vault. If a vault already exists, stop and
+inspect it instead of regenerating or overwriting it.
 
 After that canonical step installs a new vault, or after you explicitly confirm
 that the existing vault is the reviewed artifact to reuse, verify its header and
@@ -150,6 +138,127 @@ against the production deployment without exercising external integrations; for
 ntfy, use only an agreed disposable topic when verifying alerts from Beszel and
 Dozzle.
 
+## Automatic deployment from the NAS
+
+Automatic deployment is a second step after the first manual deployment and
+verification above. It uses a dedicated non-root deployment account on the NAS;
+do not install it as `root` or reuse a general interactive administrator. The
+account's real home must be owned by that account and mode `0700`, and the
+account needs Docker access. The NAS must provide trusted, root-owned
+`/usr/bin/git` and `/usr/bin/curl`, Python 3.12 or newer with pip, and working
+effective-user `crontab` support. The installer fails closed when any of these
+prerequisites is absent or unsafe.
+
+Clone anonymously over HTTPS. Keep the controller outside
+`/volume1/Docker/nas-platform`, which is service state rather than deployment
+source. No PAT, deploy key, GitHub secret, or inbound self-hosted runner is
+required:
+
+```sh
+mkdir -p "$HOME/.local/share/nas-platform"
+chmod 700 "$HOME" "$HOME/.local" "$HOME/.local/share" \
+  "$HOME/.local/share/nas-platform"
+git clone https://github.com/yonatankarp/nas-platform.git \
+  "$HOME/.local/share/nas-platform/controller"
+cd "$HOME/.local/share/nas-platform/controller"
+git switch main
+git pull --ff-only origin main
+```
+
+Create the controller environment with the repository's current exact pins:
+
+```sh
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install ansible-core==2.21.3 ansible-lint==26.8.0
+ansible-galaxy collection install -r requirements.yml
+```
+
+Place the already reviewed encrypted vault and its password provider at the
+fixed protected paths described in
+[Production auto-deployment inputs](secrets.md#production-auto-deployment-inputs).
+The following values match the production contract for this NAS:
+
+```sh
+export PLATFORM_NAS_ADDRESS=192.168.0.139
+export PLATFORM_PUBLIC_HOST=192.168.0.139
+export PLATFORM_CALLBACK_HOST=192.168.0.139
+export PLATFORM_VAULT_FILE="$HOME/.config/nas-platform/vault.yml"
+export PLATFORM_VAULT_PASSWORD_FILE="$HOME/.config/nas-platform/vault-password"
+```
+
+Before installing automation, manually validate the vault, deploy the platform,
+and run the complete fail-closed verification set. Each command must finish
+with `failed=0` and `unreachable=0`:
+
+```sh
+ansible-playbook -i inventory/local.yml validate-vault.yml \
+  --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE" \
+  -e @"$PLATFORM_VAULT_FILE" \
+  -e platform_vault_file="$PLATFORM_VAULT_FILE"
+
+ansible-playbook -i inventory/local.yml site.yml \
+  --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE" \
+  -e @"$PLATFORM_VAULT_FILE" \
+  -e platform_vault_file="$PLATFORM_VAULT_FILE"
+
+ansible-playbook -i inventory/local.yml verify.yml \
+  --tags platform_verify_ntfy,platform_verify_beszel,platform_verify_dozzle,platform_verify_audiobookshelf,platform_verify_komga,platform_verify_tinymediamanager,platform_verify_jellyfin,platform_verify_immich,platform_verify_paperless \
+  --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE" \
+  -e @"$PLATFORM_VAULT_FILE" \
+  -e platform_vault_file="$PLATFORM_VAULT_FILE"
+```
+
+Only after those three commands pass, install the poller and its single
+five-minute cron entry:
+
+```sh
+ansible-playbook -i inventory/local.yml install-production-auto-deploy.yml \
+  --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE" \
+  -e @"$PLATFORM_VAULT_FILE" \
+  -e platform_vault_file="$PLATFORM_VAULT_FILE" \
+  -e production_auto_deploy_vault_password_file="$PLATFORM_VAULT_PASSWORD_FILE"
+
+crontab -l
+$HOME/.local/bin/nas-platform-deploy --status
+$HOME/.local/bin/nas-platform-deploy --poll
+```
+
+The first explicit `--poll` should be a no-op when the installed revision is
+already recorded as successful. After that, cron polls every five minutes. It
+resolves the exact current `main` SHA anonymously, accepts exactly one completed
+successful `push` run of the `CI` workflow for that same SHA, checks out that
+exact commit, and runs vault validation, deployment, verification, and the
+installer update locally. GitHub access remains read-only and uses no PAT.
+
+A failed SHA is quarantined. The same failed SHA is not retried automatically,
+but a newer successful SHA can proceed normally. After fixing the cause and
+confirming that the failed commit is still current `main` with successful CI,
+retry only that exact SHA manually:
+
+```sh
+FAILED_SHA=0123456789abcdef0123456789abcdef01234567
+$HOME/.local/bin/nas-platform-deploy --retry-failed "$FAILED_SHA"
+```
+
+Attempt logs are protected mode-0600 files under
+`$HOME/.local/share/nas-platform/logs`; state and immutable controller/tooling
+releases live under the same private root. Success and failure outcomes are sent
+to ntfy using the protected publisher token, while vault, password, token, and
+Authorization values are redacted from logs.
+
+Once a local poll, cron inspection, and at least one automatic no-op have been
+verified, you may optionally disable SSH for this account if the NAS has an
+independent, tested break-glass administration path. Outbound HTTPS to GitHub
+and local Docker/cron access must remain available.
+
+To disable automation, first save `crontab -l`, then use `crontab -e` to remove
+only the `NAS platform production auto-deploy` entry and its command. Do not use
+broad recursive deletion as an uninstall procedure. Disabling or removing the
+poller does not delete running services, application data, or immutable releases;
+retaining those releases preserves audit and recovery evidence.
+
 ## Recover after loss of `/volume1`
 
 Use this procedure when the service-state volume was recreated or wiped but the
@@ -186,7 +295,7 @@ source from rendered service state:
 
 ```sh
 mkdir -p ~/.local/share/nas-platform
-git clone git@github.com:yonatankarp/nas-platform.git \
+git clone https://github.com/yonatankarp/nas-platform.git \
   ~/.local/share/nas-platform/controller
 cd ~/.local/share/nas-platform/controller
 git switch main
@@ -195,7 +304,7 @@ git pull --ff-only origin main
 python3 -m venv .venv
 . .venv/bin/activate
 python3 -m pip install --upgrade pip
-python3 -m pip install 'ansible-core==2.21.2' 'ansible-lint==26.6.0'
+python3 -m pip install 'ansible-core==2.21.3' 'ansible-lint==26.8.0'
 ansible-galaxy collection install -r requirements.yml
 ```
 
@@ -319,10 +428,6 @@ When only the service-state volume is lost, follow the bounded
 [`/volume1` recovery procedure](#recover-after-loss-of-volume1) above instead
 of treating surviving `/volume2` data as a fresh installation.
 
-Before each service cutover, its migration packet must name the old stack,
-new stack, data snapshot, acceptance checks, maximum outage, and exact rollback
-trigger. Until that packet exists for a service, keep its legacy deployment
-recoverable and stop before its production cutover. If a run
-fails, capture the first failure, container state, and bounded logs; then use
-the tested service-specific backup/rollback procedure or fix forward with a
-reviewed Ansible change.
+If a run fails, capture the first failure, container state, and bounded logs;
+then use the tested service-specific backup/restore procedure or fix forward
+with a reviewed Ansible change.

@@ -286,6 +286,99 @@ required_nas_local_guidance.each do |pattern, description|
         "### NAS-local controller must #{description}")
 end
 
+nas_guide_path = File.join(ROOT, "docs", "getting-started-nas.md")
+nas_guide = File.file?(nas_guide_path) ? File.read(nas_guide_path) : ""
+auto_deploy_section = markdown_section(nas_guide, "## Automatic deployment from the NAS")
+auto_deploy_shell_blocks = shell_code_fences(auto_deploy_section)
+verify_tags = %w[
+  platform_verify_ntfy platform_verify_beszel platform_verify_dozzle
+  platform_verify_audiobookshelf platform_verify_komga
+  platform_verify_tinymediamanager platform_verify_jellyfin
+  platform_verify_immich platform_verify_paperless
+].join(",")
+
+required_auto_deploy_commands = {
+  "anonymous controller clone" => [
+    "git clone https://github.com/yonatankarp/nas-platform.git",
+    '$HOME/.local/share/nas-platform/controller'
+  ],
+  "vault validation" => [
+    "ansible-playbook -i inventory/local.yml validate-vault.yml",
+    '--vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE"'
+  ],
+  "first deployment" => [
+    "ansible-playbook -i inventory/local.yml site.yml",
+    '--vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE"'
+  ],
+  "full verification" => [
+    "ansible-playbook -i inventory/local.yml verify.yml",
+    "--tags #{verify_tags}"
+  ],
+  "poller installation" => [
+    "ansible-playbook -i inventory/local.yml install-production-auto-deploy.yml",
+    '--vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE"'
+  ],
+  "cron inspection" => ["crontab -l"],
+  "status inspection" => ['$HOME/.local/bin/nas-platform-deploy --status'],
+  "no-op poll" => ['$HOME/.local/bin/nas-platform-deploy --poll'],
+  "failed-SHA retry" => [
+    'FAILED_SHA=',
+    '$HOME/.local/bin/nas-platform-deploy --retry-failed "$FAILED_SHA"'
+  ]
+}
+required_auto_deploy_commands.each do |description, snippets|
+  check(failures,
+        auto_deploy_shell_blocks.any? { |block| shell_block?(block, *snippets) },
+        "NAS automatic deployment guide must include #{description}")
+end
+
+controller_pins = File.readlines(File.join(ROOT, "controller-requirements.txt"), chomp: true)
+controller_pins.each do |pin|
+  check(failures, auto_deploy_section.include?(pin),
+        "NAS automatic deployment guide must use current controller pin #{pin}")
+end
+
+required_auto_deploy_guidance = {
+  /dedicated non-root/i => "require a dedicated non-root deployment account",
+  %r{/usr/bin/git.*?/usr/bin/curl}m => "require trusted system Git and curl",
+  /Python 3\.12 or newer.*pip/m => "require Python 3.12 or newer with pip",
+  /effective-user.*crontab/m => "require effective-user crontab support",
+  %r{outside\s+`/volume1/Docker/nas-platform`}m => "keep the controller outside service data",
+  /every five minutes/i => "state the polling cadence",
+  /exact.*main.*push.*CI.*success/im => "gate on exact successful main push CI",
+  /no PAT/i => "state that no PAT is used",
+  /same failed SHA.*not.*automatic/i => "forbid automatic same-SHA retries",
+  /newer.*successful.*SHA.*proceed/im => "allow a newer successful SHA after a failure",
+  /optionally disable SSH/i => "describe optional SSH disablement after bootstrap",
+  /protected.*logs.*ntfy/im => "describe protected logs and ntfy outcomes",
+  /does not delete.*services.*data.*immutable releases/im =>
+    "state the safe automation removal boundary"
+}
+required_auto_deploy_guidance.each do |pattern, description|
+  check(failures, auto_deploy_section.match?(pattern),
+        "NAS automatic deployment guide must #{description}")
+end
+
+auto_deploy_secrets_section = markdown_section(
+  secrets_guide,
+  "### Production auto-deployment inputs"
+)
+check(failures,
+      auto_deploy_secrets_section.include?("$HOME/.config/nas-platform/vault.yml") &&
+        auto_deploy_secrets_section.include?("$HOME/.config/nas-platform/vault-password"),
+      "secrets guide must name both protected NAS auto-deployment inputs")
+check(failures,
+      auto_deploy_secrets_section.match?(/never committed.*never logged/im) &&
+        auto_deploy_secrets_section.match?(/mode-0600 regular, non-symlink/m),
+      "secrets guide must protect NAS auto-deployment inputs from commits and logs")
+
+check(failures, readme.include?("Automatic NAS deployments"),
+      "README must summarize automatic NAS deployments")
+check(failures,
+      readme.match?(/successful.*main.*CI/im) && readme.match?(/no PAT/i) &&
+        readme.include?("docs/getting-started-nas.md"),
+      "README automatic deployment summary must describe the CI gate and link the NAS guide")
+
 individual_recipes = markdown_section(secrets_guide, "## Individual secret recipes")
 check(failures, individual_recipes.include?("no separate Beszel agent API secret"),
       "## Individual secret recipes must state there is no separate Beszel agent API secret")
