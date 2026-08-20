@@ -353,7 +353,12 @@ check(failures,
         mount_guard_task["changed_when"] == false &&
         mount_guard_task["check_mode"] == false,
       "preflight must check mounts by command exit status, including in check mode")
-gpu_fact_task = preflight_tasks.find do |task|
+# The detection moved into a shared task file so verify.yml can establish the
+# same fact without running all of preflight.
+preflight_gpu_tasks = YAML.safe_load_file(
+  File.join(ROOT, "roles", "preflight", "tasks", "gpu.yml")
+)
+gpu_fact_task = preflight_gpu_tasks.find do |task|
   task["name"] == "Record whether hardware acceleration is available"
 end
 gpu_expression = gpu_fact_task&.dig("ansible.builtin.set_fact", "preflight_gpu_available").to_s
@@ -1763,6 +1768,20 @@ check(failures,
         Array(verify_selection.dig("ansible.builtin.include_role", "apply", "tags"))
           .include?("always"),
       "verify.yml must resolve Compose selection before any verified role reads it")
+
+# beszel_agent_enabled reads preflight_gpu_available on every host whose agent
+# kind is not portable, and verify.yml does not run preflight. Without this the
+# fact is undefined and verification fails on the NAS while passing on the Mac,
+# where the portable branch short-circuits the expression.
+verify_gpu = Array(verify_play["pre_tasks"]).find do |task|
+  task.dig("ansible.builtin.include_role", "tasks_from") == "gpu"
+end
+check(failures,
+      !verify_gpu.nil? &&
+        Array(verify_gpu["tags"]).include?("always") &&
+        Array(verify_gpu.dig("ansible.builtin.include_role", "apply", "tags"))
+          .include?("always"),
+      "verify.yml must resolve hardware acceleration before any verified role reads it")
 
 deployment_manifest_template = File.read(
   File.join(ROOT, "roles", "deployment_bundle", "templates", "manifest.yml.j2")

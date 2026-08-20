@@ -123,26 +123,10 @@
     - item is match('^/volume')
 
 # A capable host must also expose the declared path. This keeps the inventory
-# contract explicit without pretending that a missing device is usable.
-- name: Look for a render device
-  ansible.builtin.stat:
-    path: "{{ platform_render_device_path }}"
-  register: preflight_render_device
-  when: platform_render_device_available | bool
-
-- name: Record whether hardware acceleration is available
-  ansible.builtin.set_fact:
-    preflight_gpu_available: >-
-      {{ (platform_render_device_available | bool) and
-         (preflight_render_device.stat.exists | default(false)) and
-         (preflight_render_device.stat.ischr | default(false)) }}
-
-- name: Report the hardware acceleration decision
-  ansible.builtin.debug:
-    msg: >-
-      {{ platform_render_device_path }}
-      {{ preflight_gpu_available | ternary('present, GPU services enabled',
-                                     'absent, GPU services skipped') }}
+# contract explicit without pretending that a missing device is usable. Shared
+# with verify.yml, which needs the same fact without running all of preflight.
+- name: Resolve hardware acceleration availability
+  ansible.builtin.include_tasks: gpu.yml
 
 - name: Look for the controller bundle source
   ansible.builtin.stat:

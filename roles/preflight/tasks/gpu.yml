@@ -1,0 +1,24 @@
+---
+# Read-only hardware-acceleration detection, split out so verification can
+# establish the same fact the deployment used. verify.yml does not run
+# preflight, and beszel_agent_enabled reads preflight_gpu_available on any host
+# whose agent kind is not portable, so without this the fact is undefined there.
+- name: Look for a render device
+  ansible.builtin.stat:
+    path: "{{ platform_render_device_path }}"
+  register: preflight_render_device
+  when: platform_render_device_available | bool
+
+- name: Record whether hardware acceleration is available
+  ansible.builtin.set_fact:
+    preflight_gpu_available: >-
+      {{ (platform_render_device_available | bool) and
+         (preflight_render_device.stat.exists | default(false)) and
+         (preflight_render_device.stat.ischr | default(false)) }}
+
+- name: Report the hardware acceleration decision
+  ansible.builtin.debug:
+    msg: >-
+      {{ platform_render_device_path }}
+      {{ preflight_gpu_available | ternary('present, GPU services enabled',
+                                     'absent, GPU services skipped') }}

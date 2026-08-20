@@ -19,6 +19,14 @@
           no_log: true
       tags: [always]
 
+    - name: Resolve hardware acceleration for verification
+      ansible.builtin.include_role:
+        name: preflight
+        tasks_from: gpu
+        apply:
+          tags: [always]
+      tags: [always]
+
     - name: Select the deployed Compose definitions for verification
       ansible.builtin.include_role:
         name: deployment_bundle

@@ -57,6 +57,7 @@ BASE_FIXTURE_PATHS = %w[
   roles/immich/tasks/verify_classifier.yml
   roles/preflight/meta/argument_specs.yml
   roles/preflight/tasks/main.yml
+  roles/preflight/tasks/gpu.yml
   roles/production_auto_deploy/defaults/main.yml
   roles/production_auto_deploy/meta/argument_specs.yml
   roles/production_auto_deploy/tasks/main.yml
@@ -504,7 +505,7 @@ end
 
 expect_failure(failures, "weakened GPU device proof",
                "GPU availability must require declared capability and an existing character device") do |root|
-  mutate_yaml_file(root, "roles/preflight/tasks/main.yml") do |tasks|
+  mutate_yaml_file(root, "roles/preflight/tasks/gpu.yml") do |tasks|
     task = tasks.find { |entry| entry["name"] == "Record whether hardware acceleration is available" }
     task.fetch("ansible.builtin.set_fact")["preflight_gpu_available"] =
       "{{ platform_render_device_available and preflight_render_device.stat.exists }}"
