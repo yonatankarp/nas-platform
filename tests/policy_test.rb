@@ -1513,7 +1513,23 @@ check(failures, target_tasks_body.include?("deployment_bundle_services") &&
       "target validator must guard every implemented runtime service leaf")
 
 controller_input_path = File.join(ROOT, "roles", "deployment_bundle", "tasks", "controller_input.yml")
-controller_input_body = File.file?(controller_input_path) ? File.read(controller_input_path) : ""
+controller_input_tasks = File.file?(controller_input_path) ? YAML.safe_load_file(controller_input_path) : []
+controller_input_validation = Array(controller_input_tasks).select do |task|
+  task["name"] == "Validate controller bundle input identity"
+end
+controller_input_argv = controller_input_validation.one? ?
+  Array(controller_input_validation.first.dig("ansible.builtin.command", "argv")) : []
+controller_input_lookup =
+  "{{ lookup('ansible.builtin.file', role_path ~ '/files/validate_controller_input.py') }}"
+check(failures, controller_input_validation.one? &&
+                controller_input_argv[1] == "-c" &&
+                controller_input_argv[2] == controller_input_lookup &&
+                controller_input_argv.count(controller_input_lookup) == 1,
+      "controller input task must execute the exact extracted validator source")
+controller_input_validator_path = File.join(ROOT, "roles", "deployment_bundle", "files",
+                                            "validate_controller_input.py")
+controller_input_body = File.file?(controller_input_validator_path) ?
+  File.read(controller_input_validator_path) : ""
 %w[os.lstat os.path.realpath os.path.commonpath stat.S_ISREG].each do |primitive|
   check(failures, controller_input_body.include?(primitive),
         "controller input validator must use #{primitive}")
@@ -1621,7 +1637,17 @@ end
 release_compare_path = File.join(ROOT, "roles", "deployment_bundle", "files",
                                  "compare_release_trees.py")
 release_compare_source = File.exist?(release_compare_path) ? File.read(release_compare_path) : ""
-check(failures, deployment_body.include?("files/compare_release_trees.py"),
+release_compare_tasks = deployment_tasks.select do |task|
+  task["name"] == "Compare the staged and immutable releases"
+end
+release_compare_argv = release_compare_tasks.one? ?
+  Array(release_compare_tasks.first.dig("ansible.builtin.command", "argv")) : []
+release_compare_lookup =
+  "{{ lookup('ansible.builtin.file', role_path ~ '/files/compare_release_trees.py') }}"
+check(failures, release_compare_tasks.one? &&
+                release_compare_argv[1] == "-c" &&
+                release_compare_argv[2] == release_compare_lookup &&
+                release_compare_argv.count(release_compare_lookup) == 1,
       "deployment bundle must compare releases with the tracked comparison script")
 %w[stat.S_IMODE st.st_uid st.st_gid os.lstat].each do |metadata|
   check(failures, release_compare_source.include?(metadata),
