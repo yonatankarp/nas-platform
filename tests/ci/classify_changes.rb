@@ -46,6 +46,11 @@ module ClassifyChanges
     "immich" => %w[immich],
     "paperless" => %w[paperless paperless-ngx paperless_ngx]
   }.freeze
+  STATIC_ONLY_PATHS = %w[
+    README.md
+    docs/getting-started-nas.md
+    docs/secrets.md
+  ].freeze
 
   module_function
 
@@ -56,6 +61,10 @@ module ClassifyChanges
     service_lanes = []
     paths.each do |raw_path|
       path = raw_path.to_s.sub(%r{\A\./}, "")
+      if STATIC_ONLY_PATHS.include?(path)
+        selection["static"] = true
+        next
+      end
       next if inert_path?(path)
 
       lane = service_lane(path)

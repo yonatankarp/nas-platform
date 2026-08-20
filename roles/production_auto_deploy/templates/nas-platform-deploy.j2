@@ -1,0 +1,6 @@
+#!/bin/sh
+# Operator entry point. The poller serialises itself with an flock on its state
+# directory, so this wrapper only needs to supply the configuration path.
+set -eu
+exec "{{ production_auto_deploy_poller_path }}" \
+  --config "{{ production_auto_deploy_config_path }}" "$@"

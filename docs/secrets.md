@@ -44,7 +44,7 @@ prepare_operator_environment() {
   }
   .venv/bin/python -m pip install --upgrade pip || return 1
   .venv/bin/python -m pip install \
-    ansible-core==2.21.2 ansible-lint==26.6.0 || return 1
+    -r controller-requirements.txt || return 1
   .venv/bin/ansible-galaxy collection install -r requirements.yml || return 1
   .venv/bin/ansible-playbook --version || return 1
 }
@@ -1233,6 +1233,22 @@ audit those accounts accordingly. Use the provider with
 `--vault-password-file` only after that storage and access decision has been
 reviewed. Do not transfer a password through a shell command or write it with
 `echo`.
+
+### Production auto-deployment inputs
+
+The NAS poller requires the reviewed encrypted vault at
+`$HOME/.config/nas-platform/vault.yml` and its provider at
+`$HOME/.config/nas-platform/vault-password`. Both remain private NAS inputs
+outside the controller checkout: they are never committed and never logged.
+The containing `$HOME/.config/nas-platform` directory must be mode `0700`.
+
+Each input must be a mode-0600 regular, non-symlink file owned by the dedicated
+deployment account. The password input may be the protected one-line password
+file used during bootstrap. Do not pass either value through argv, an
+environment variable, cron source, or notification. The installer validates
+the paths before activation, and the poller reads them only for the local
+Ansible runs described in the
+[physical NAS walkthrough](getting-started-nas.md#automatic-deployment-from-the-nas).
 
 ## Vault password rotation boundary
 

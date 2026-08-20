@@ -1,0 +1,30 @@
+---
+production_auto_deploy_repository: yonatankarp/nas-platform
+production_auto_deploy_repository_url: https://github.com/yonatankarp/nas-platform.git
+production_auto_deploy_workflow: ci.yml
+production_auto_deploy_workflow_name: CI
+production_auto_deploy_branch: main
+production_auto_deploy_github_api_base: https://api.github.com
+production_auto_deploy_nas_address: 192.168.0.139
+production_auto_deploy_log_retention_days: 30
+production_auto_deploy_cron_name: NAS platform production auto-deploy
+production_auto_deploy_verify_tags: >-
+  platform_verify_ntfy,platform_verify_beszel,platform_verify_dozzle,platform_verify_audiobookshelf,platform_verify_komga,platform_verify_tinymediamanager,platform_verify_jellyfin,platform_verify_immich,platform_verify_paperless
+production_auto_deploy_vault_password_file: ""
+
+# Every managed path derives from the effective account's real home, so the role
+# cannot be pointed at another account's tree by overriding one variable.
+production_auto_deploy_home: "{{ ansible_facts.user_dir }}"
+production_auto_deploy_share_root: "{{ production_auto_deploy_home }}/.local/share/nas-platform"
+production_auto_deploy_checkout: "{{ production_auto_deploy_share_root }}/controller"
+production_auto_deploy_poller_root: "{{ production_auto_deploy_share_root }}/poller"
+production_auto_deploy_state_root: "{{ production_auto_deploy_share_root }}/state"
+production_auto_deploy_log_root: "{{ production_auto_deploy_share_root }}/logs"
+production_auto_deploy_config_root: "{{ production_auto_deploy_home }}/.config/nas-platform"
+production_auto_deploy_config_path: "{{ production_auto_deploy_config_root }}/deployer.json"
+production_auto_deploy_notifier_path: "{{ production_auto_deploy_config_root }}/ntfy.curl"
+production_auto_deploy_vault_path: "{{ production_auto_deploy_config_root }}/vault.yml"
+production_auto_deploy_password_path: "{{ production_auto_deploy_config_root }}/vault-password"
+production_auto_deploy_launcher_root: "{{ production_auto_deploy_home }}/.local/bin"
+production_auto_deploy_launcher_path: "{{ production_auto_deploy_launcher_root }}/nas-platform-deploy"
+production_auto_deploy_poller_path: "{{ production_auto_deploy_poller_root }}/production_auto_deploy.py"

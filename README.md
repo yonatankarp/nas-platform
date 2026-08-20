@@ -18,8 +18,8 @@ off-site backup. RAID is not a backup.
 - [Adding a service](docs/adding-a-service.md)
 
 All nine service stacks in [`services/manifest.yml`](services/manifest.yml) are
-implemented. Prove the complete platform on the Mac before preparing a
-production NAS cutover.
+implemented. Prove the complete platform on the Mac before preparing a fresh
+production NAS installation.
 
 ## Design
 
@@ -84,9 +84,8 @@ Prerequisites on the NAS: Docker with the Compose plugin 2.18.0 or newer, and
 python3, which Ansible needs in both run modes.
 
 Complete the [complete secrets and encrypted-vault guide](docs/secrets.md)
-before deploying. Migrations must reuse every current credential value; use the
-generator only for a truly brand-new platform with no identities or state to
-preserve.
+before deploying. Use the generator only for a truly brand-new platform with no
+identities or state to preserve.
 
 ```sh
 ansible-galaxy collection install -r requirements.yml
@@ -99,7 +98,7 @@ ansible-playbook -i inventory/remote.yml site.yml --ask-vault-pass
 ## Secrets and the vault
 
 Follow the [complete secrets and encrypted-vault guide](docs/secrets.md) for
-migration, validation, review, backup, and the separate brand-new-platform path.
+fresh generation, validation, private review, and backup.
 
 An encrypted file starts with `$ANSIBLE_VAULT;1.1;AES256` followed by hex
 ciphertext. Plays read it directly given the password, so it never has to be
@@ -145,6 +144,20 @@ reports an error. `PLATFORM_CALLBACK_HOST` is how containers reach
 host-published callbacks and does default to the connection address, which is
 the right answer for that audience. Connection coordinates stay in inventory
 inputs and are not portable vault credentials.
+
+### Automatic NAS deployments
+
+After the first NAS-local deployment and full verification, the repository can
+install a five-minute, non-root poller on the NAS. It anonymously resolves
+`main`, requires the exact commit's successful GitHub `CI` push run, and then
+runs the local Ansible deployment and verification. It uses no PAT, deploy key,
+GitHub write permission, inbound webhook, or self-hosted runner. A failed commit
+is quarantined until an operator explicitly retries that exact current SHA; a
+newer successful commit may proceed normally.
+
+The complete bootstrap, status, manual retry, protected-log, ntfy, SSH, and
+disable/removal procedures are in the
+[physical NAS walkthrough](docs/getting-started-nas.md#automatic-deployment-from-the-nas).
 
 ## Testing
 

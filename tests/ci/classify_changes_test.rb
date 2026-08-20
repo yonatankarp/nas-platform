@@ -30,7 +30,10 @@ end
 if defined?(ClassifyChanges)
   {
     ["docs/getting-started.md"] => [],
-    ["README.md", ".gitignore"] => [],
+    [".gitignore"] => [],
+    ["README.md"] => %w[static],
+    ["docs/getting-started-nas.md"] => %w[static],
+    ["docs/secrets.md"] => %w[static],
     ["roles/paperless_ngx/tasks/main.yml"] => %w[static smoke paperless idempotence_check],
     ["services/dozzle/compose.yml"] => %w[static smoke dozzle idempotence_check],
     ["tests/contracts/jellyfin.sh"] => %w[static smoke jellyfin idempotence_check],
@@ -187,11 +190,11 @@ if defined?(ClassifyChanges)
 
   io = StringIO.new
   ClassifyChanges.write_github_outputs(ClassifyChanges.classify(["README.md"]), io)
-  check(failures, io.string.end_with?("run_ci=false\nselected_tags=\n"),
-        "inert changes must disable CI and emit empty selected_tags")
+  check(failures, io.string.end_with?("run_ci=true\nselected_tags=\n"),
+        "protected operator docs must select static CI and emit empty selected_tags")
   # The CI matrix job skips on exactly this literal, so it has to stay compact.
   check(failures, io.string.include?("suites=[]\n"),
-        "inert changes must emit an empty suite array: #{io.string.inspect}")
+        "protected operator docs must emit an empty suite array: #{io.string.inspect}")
 
   check(failures, ClassifyChanges::SUITES.keys == ClassifyChanges::LANES - ["static"],
         "every lane except static must map to exactly one integration suite")
@@ -287,8 +290,9 @@ Dir.mktmpdir("classify-changes-cli-") do |root|
   check(failures, stderr.include?("usage:"), "invalid CLI modes must print usage")
 
   stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCRIPT, "--files", "README.md")
-  check(failures, status.success? && stderr.empty? && stdout.include?("run_ci=false\n"),
-        "--files CLI mode did not emit an inert selection")
+  check(failures, status.success? && stderr.empty? &&
+                  stdout.include?("static=true\n") && stdout.include?("run_ci=true\n"),
+        "--files CLI mode did not select static CI for protected operator docs")
 
   stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCRIPT, "--full")
   check(failures, status.success? && stderr.empty? && stdout == expected_full_output,

@@ -1,0 +1,6 @@
+{# Derive the port and topic like every other publisher, so changing ntfy_port
+   or ntfy_topic cannot silently redirect deployment notifications into a void.
+   The address stays loopback: this publisher always runs on the NAS itself. #}
+url = "http://127.0.0.1:{{ ntfy_port | default(2586) }}/{{ ntfy_topic | default('nas-critical') }}"
+header = "Authorization: Bearer {{ vault_ntfy_dozzle_token }}"
+header = "Content-Type: application/json"

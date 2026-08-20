@@ -1,0 +1,52 @@
+---
+argument_specs:
+  main:
+    short_description: Install the NAS production deployment poller
+    description:
+      - Installs the poller, its non-secret configuration, the protected ntfy
+        publisher configuration, and one polling cron entry.
+    options:
+      platform_kind:
+        description: Platform discriminator; the role accepts only nas.
+        type: str
+        required: true
+      vault_ntfy_dozzle_token:
+        description: Existing least-privilege write-only ntfy publisher token.
+        type: str
+        required: true
+      production_auto_deploy_home:
+        description: Real home of the dedicated non-root deployment account.
+        type: path
+      production_auto_deploy_repository:
+        description: Owner and name of the deployed repository.
+        type: str
+      production_auto_deploy_repository_url:
+        description: Anonymous HTTPS clone URL for the deployed repository.
+        type: str
+      production_auto_deploy_workflow:
+        description: Workflow file whose run gates a deployment.
+        type: str
+      production_auto_deploy_workflow_name:
+        description: Display name of the gating workflow.
+        type: str
+      production_auto_deploy_branch:
+        description: Branch the poller deploys from.
+        type: str
+      production_auto_deploy_github_api_base:
+        description: HTTPS base URL of the GitHub API.
+        type: str
+      production_auto_deploy_nas_address:
+        description: Fixed production address handed to clients.
+        type: str
+      production_auto_deploy_log_retention_days:
+        description: Days of attempt logs to retain.
+        type: int
+      production_auto_deploy_cron_name:
+        description: Comment identifying the managed cron entry.
+        type: str
+      production_auto_deploy_verify_tags:
+        description: Exact verification tag list passed to verify.yml.
+        type: str
+      production_auto_deploy_vault_password_file:
+        description: Protected vault password file; defaults to the fixed private path.
+        type: path

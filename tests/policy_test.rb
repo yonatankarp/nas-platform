@@ -984,6 +984,13 @@ ci_commands = ci.fetch("jobs", {}).values.flat_map do |job|
 end.flat_map { |run| run.to_s.lines.map(&:strip) }
 check(failures, ci_commands.include?("tests/validate-policy.sh"),
       "CI must run tests/validate-policy.sh")
+check(
+  failures,
+  ci_commands.include?(
+    "ansible-playbook -i inventory/local.yml install-production-auto-deploy.yml --syntax-check"
+  ),
+  "CI must syntax-check install-production-auto-deploy.yml"
+)
 
 validation_script_path = File.join(ROOT, "tests", "validate-policy.sh")
 validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "tests"))
@@ -1006,6 +1013,8 @@ validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "te
   ruby\ tests/audiobookshelf_initial_scan_test.rb
   ruby\ tests/audiobookshelf_initial_scan_behavior_test.rb
   ruby\ tests/paperless_mail_reconciliation_test.rb
+  PYTHONDONTWRITEBYTECODE=1\ "$ansible_python"\ -m\ unittest\ -v\ tests.production_auto_deploy_test
+  ruby\ tests/production_auto_deploy_role_test.rb
   python3\ -m\ unittest\ -v\ tests/dozzle_alert_relay_test.py
   tests/dozzle_alert_state_symlink_test.sh
   tests/integration_lock_test.sh
@@ -1018,6 +1027,15 @@ validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "te
 ].each do |command|
   check(failures, validation_commands.include?(command),
         "validate-policy.sh must run #{command}")
+end
+{
+  'PYTHONDONTWRITEBYTECODE=1 "$ansible_python" -m unittest -v tests.production_auto_deploy_test' =>
+    "the production auto-deploy poller suite",
+  "ruby tests/production_auto_deploy_role_test.rb" =>
+    "the production auto-deploy installer suite"
+}.each do |command, description|
+  check(failures, validation_commands.count(command) == 1,
+        "validate-policy.sh must run #{description} exactly once")
 end
 check(failures,
       validation_commands.count("ruby tests/immich_configured_password_test.rb") == 1,

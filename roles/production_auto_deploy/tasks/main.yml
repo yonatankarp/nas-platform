@@ -1,0 +1,118 @@
+---
+- name: Restrict production auto-deployment to the NAS
+  ansible.builtin.assert:
+    that:
+      - platform_kind == 'nas'
+    fail_msg: Production auto-deployment installation is NAS-only.
+
+- name: Require a dedicated non-root deployment account
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.user_uid | int != 0
+      - production_auto_deploy_home | length > 1
+    fail_msg: Install as the dedicated non-root deployment account.
+
+- name: Require Python 3.12 or newer
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.python_version is version('3.12', '>=')
+    fail_msg: >-
+      production auto-deployment requires Python 3.12 or newer, found
+      {{ ansible_facts.python_version }}.
+
+- name: Require the reviewed vault and its password provider
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: production_auto_deploy_protected_inputs
+  loop:
+    - "{{ production_auto_deploy_vault_path }}"
+    - "{{ production_auto_deploy_password_path }}"
+
+- name: Reject missing or world-readable protected inputs
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isreg
+      - item.stat.mode == '0600'
+    fail_msg: >-
+      {{ item.item }} must exist as a regular mode-0600 file before the poller
+      is installed.
+  loop: "{{ production_auto_deploy_protected_inputs.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Require the controller checkout the poller deploys from
+  ansible.builtin.stat:
+    path: "{{ production_auto_deploy_checkout }}/.git"
+  register: production_auto_deploy_checkout_git
+
+- name: Reject an absent controller checkout
+  ansible.builtin.assert:
+    that:
+      - production_auto_deploy_checkout_git.stat.exists
+    fail_msg: >-
+      Clone the repository to {{ production_auto_deploy_checkout }} before
+      installing the poller.
+
+- name: Require the controller virtualenv the poller runs Ansible from
+  ansible.builtin.stat:
+    path: "{{ production_auto_deploy_checkout }}/.venv/bin/ansible-playbook"
+  register: production_auto_deploy_tooling
+
+- name: Reject an absent controller virtualenv
+  ansible.builtin.assert:
+    that:
+      - production_auto_deploy_tooling.stat.exists
+    fail_msg: >-
+      Create the controller virtualenv at
+      {{ production_auto_deploy_checkout }}/.venv from
+      controller-requirements.txt before installing the poller. Without it the
+      first automatic poll fails and records the revision as attempted.
+
+- name: Create the private runtime directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0700"
+  loop:
+    - "{{ production_auto_deploy_share_root }}"
+    - "{{ production_auto_deploy_poller_root }}"
+    - "{{ production_auto_deploy_state_root }}"
+    - "{{ production_auto_deploy_log_root }}"
+    - "{{ production_auto_deploy_config_root }}"
+    - "{{ production_auto_deploy_launcher_root }}"
+
+- name: Install the reviewed poller
+  ansible.builtin.copy:
+    src: "{{ production_auto_deploy_checkout }}/scripts/production_auto_deploy.py"
+    dest: "{{ production_auto_deploy_poller_path }}"
+    mode: "0700"
+    remote_src: true
+
+- name: Install the operator launcher
+  ansible.builtin.template:
+    src: nas-platform-deploy.j2
+    dest: "{{ production_auto_deploy_launcher_path }}"
+    mode: "0700"
+
+- name: Write the non-secret poller configuration
+  ansible.builtin.template:
+    src: config.json.j2
+    dest: "{{ production_auto_deploy_config_path }}"
+    mode: "0600"
+
+- name: Render the protected ntfy publisher configuration
+  ansible.builtin.template:
+    src: ntfy.curl.j2
+    dest: "{{ production_auto_deploy_notifier_path }}"
+    mode: "0600"
+  no_log: true
+
+- name: Install one polling cron entry
+  ansible.builtin.cron:
+    name: "{{ production_auto_deploy_cron_name }}"
+    minute: "*/5"
+    job: "{{ production_auto_deploy_launcher_path }} --poll"
+    state: present
+  tags:
+    - production_auto_deploy_cron
