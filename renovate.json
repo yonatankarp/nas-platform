@@ -6,7 +6,10 @@
   ],
   "timezone": "Europe/Berlin",
   "automerge": false,
-  "rebaseWhen": "conflicted",
+  "automergeType": "pr",
+  "platformAutomerge": true,
+  "automergeStrategy": "rebase",
+  "rebaseWhen": "behind-base-branch",
   "prConcurrentLimit": 10,
   "enabledManagers": [
     "docker-compose",
@@ -15,6 +18,18 @@
     "custom.regex"
   ],
   "packageRules": [
+    {
+      "description": "Automerge routine non-major updates after required checks pass.",
+      "matchUpdateTypes": [
+        "minor",
+        "patch",
+        "pin",
+        "pinDigest",
+        "digest",
+        "lockFileMaintenance"
+      ],
+      "automerge": true
+    },
     {
       "matchCategories": [
         "docker"
@@ -65,7 +80,8 @@
       ],
       "addLabels": [
         "needs-manual-coupling"
-      ]
+      ],
+      "automerge": false
     },
     {
       "description": "Database major versions change on-disk formats that Ansible cannot migrate.",
