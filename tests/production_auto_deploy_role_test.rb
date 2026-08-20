@@ -16,6 +16,7 @@ ROOT = File.expand_path("..", __dir__)
 ROLE_TASKS = File.join(ROOT, "roles/production_auto_deploy/tasks/main.yml")
 POLLER_SOURCE = File.join(ROOT, "scripts/production_auto_deploy.py")
 TOKEN = "tk_#{'r' * 29}"
+PUBLIC_HOST = "100.64.0.1"
 TIMEOUT_SECONDS = 300
 
 CONFIG_KEYS = %w[
@@ -180,6 +181,7 @@ Dir.mktmpdir("auto-deploy-role") do |root|
     "--skip-tags", "production_auto_deploy_cron",
     "-e", "production_auto_deploy_home=#{home}",
     "-e", "vault_ntfy_dozzle_token=#{TOKEN}",
+    "-e", "production_auto_deploy_public_host=#{PUBLIC_HOST}",
   ]
   output, status = Open3.capture2e(environment, *arguments)
   check(failures, status.success?, "the role must converge: #{output.lines.last(12).join}")
@@ -211,6 +213,15 @@ Dir.mktmpdir("auto-deploy-role") do |root|
           "verify_tags must be a single line")
     check(failures, config.values.none? { |value| value.to_s.include?(TOKEN) },
           "the non-secret configuration must never contain the ntfy token")
+    # ntfy hashes the public host into the mobile push topic, so collapsing it
+    # onto the LAN address silently publishes where nothing is subscribed.
+    check(failures, config["platform_public_host"] == PUBLIC_HOST,
+          "platform_public_host must come from its own variable, got " \
+          "#{config['platform_public_host'].inspect}")
+    check(failures, config["platform_nas_address"] != config["platform_public_host"],
+          "platform_public_host must not be collapsed onto the LAN address")
+    check(failures, config["platform_callback_host"] == config["platform_nas_address"],
+          "platform_callback_host defaults to the NAS address")
 
     notifier = File.join(config_root, "ntfy.curl")
     check(failures, (File.stat(notifier).mode & 0o777) == 0o600,

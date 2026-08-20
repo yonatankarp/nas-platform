@@ -143,7 +143,7 @@ Dozzle.
 Automatic deployment is a second step after the first manual deployment and
 verification above. It uses a dedicated non-root deployment account on the NAS;
 do not install it as `root` or reuse a general interactive administrator. The
-account's real home must be owned by that account and mode `0700`, and the
+account's real home must be owned by that account, and the
 account needs Docker access. The NAS must provide trusted, root-owned
 `/usr/bin/git` and `/usr/bin/curl`, Python 3.12 or newer with pip, and working
 effective-user `crontab` support. The installer fails closed when any of these
@@ -156,8 +156,7 @@ required:
 
 ```sh
 mkdir -p "$HOME/.local/share/nas-platform"
-chmod 700 "$HOME" "$HOME/.local" "$HOME/.local/share" \
-  "$HOME/.local/share/nas-platform"
+chmod 700 "$HOME/.local/share/nas-platform"
 git clone https://github.com/yonatankarp/nas-platform.git \
   "$HOME/.local/share/nas-platform/controller"
 cd "$HOME/.local/share/nas-platform/controller"
@@ -175,6 +174,12 @@ python -m pip install -r controller-requirements.txt
 ansible-galaxy collection install -r requirements.yml
 ```
 
+`PLATFORM_PUBLIC_HOST` is the address your devices actually use to reach
+published services, which is normally not the LAN address. ntfy hashes it into
+the mobile push topic, so setting it to the LAN address publishes where nothing
+is subscribed and reports no error. The installer requires it explicitly rather
+than defaulting it.
+
 Place the already reviewed encrypted vault and its password provider at the
 fixed protected paths described in
 [Production auto-deployment inputs](secrets.md#production-auto-deployment-inputs).
@@ -182,7 +187,7 @@ The following values match the production contract for this NAS:
 
 ```sh
 export PLATFORM_NAS_ADDRESS=192.168.0.139
-export PLATFORM_PUBLIC_HOST=192.168.0.139
+export PLATFORM_PUBLIC_HOST=100.102.136.50
 export PLATFORM_CALLBACK_HOST=192.168.0.139
 export PLATFORM_VAULT_FILE="$HOME/.config/nas-platform/vault.yml"
 export PLATFORM_VAULT_PASSWORD_FILE="$HOME/.config/nas-platform/vault-password"
@@ -218,15 +223,17 @@ ansible-playbook -i inventory/local.yml install-production-auto-deploy.yml \
   --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE" \
   -e @"$PLATFORM_VAULT_FILE" \
   -e platform_vault_file="$PLATFORM_VAULT_FILE" \
-  -e production_auto_deploy_vault_password_file="$PLATFORM_VAULT_PASSWORD_FILE"
+  -e production_auto_deploy_vault_password_file="$PLATFORM_VAULT_PASSWORD_FILE" \
+  -e production_auto_deploy_public_host="$PLATFORM_PUBLIC_HOST"
 
 crontab -l
 $HOME/.local/bin/nas-platform-deploy --status
 $HOME/.local/bin/nas-platform-deploy --poll
 ```
 
-The first explicit `--poll` should be a no-op when the installed revision is
-already recorded as successful. After that, cron polls every five minutes. It
+On a first installation the explicit `--poll` is not a no-op: nothing is
+recorded yet, so it runs a full deployment cycle. It is a no-op on later runs,
+once the current revision is already recorded as successful. After that, cron polls every five minutes. It
 resolves the exact current `main` SHA anonymously, accepts exactly one completed
 successful `push` run of the `CI` workflow for that same SHA, checks out that
 exact commit, updates the controller virtualenv from that commit's

@@ -12,6 +12,16 @@
       - production_auto_deploy_home | length > 1
     fail_msg: Install as the dedicated non-root deployment account.
 
+- name: Require the public address clients actually use
+  ansible.builtin.assert:
+    that:
+      - production_auto_deploy_public_host | length > 0
+    fail_msg: >-
+      Set production_auto_deploy_public_host to the address your devices use to
+      reach published services, normally the same value as PLATFORM_PUBLIC_HOST.
+      ntfy hashes it into the mobile push topic, so defaulting it to the LAN
+      address would silently publish where nothing is subscribed.
+
 - name: Require Python 3.12 or newer
   ansible.builtin.assert:
     that:

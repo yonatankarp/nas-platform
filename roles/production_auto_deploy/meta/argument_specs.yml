@@ -36,7 +36,13 @@ argument_specs:
         description: HTTPS base URL of the GitHub API.
         type: str
       production_auto_deploy_nas_address:
-        description: Fixed production address handed to clients.
+        description: LAN address of the NAS itself.
+        type: str
+      production_auto_deploy_public_host:
+        description: Address clients use to reach published services.
+        type: str
+      production_auto_deploy_callback_host:
+        description: Address containers use to reach the host.
         type: str
       production_auto_deploy_log_retention_days:
         description: Days of attempt logs to retain.

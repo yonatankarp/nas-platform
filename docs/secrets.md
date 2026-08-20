@@ -1238,8 +1238,11 @@ reviewed. Do not transfer a password through a shell command or write it with
 
 The NAS poller requires the reviewed encrypted vault at
 `$HOME/.config/nas-platform/vault.yml` and its provider at
-`$HOME/.config/nas-platform/vault-password`. Both remain private NAS inputs
-outside the controller checkout: they are never committed and never logged.
+`$HOME/.config/nas-platform/vault-password`. Both live outside the controller
+checkout, because the poller rewrites that checkout on every deployment. Copy
+the encrypted vault there from the checkout's
+`inventory/group_vars/all/vault.yml`, which is committed. The password provider
+is never committed, and both inputs are never logged.
 The containing `$HOME/.config/nas-platform` directory must be mode `0700`.
 
 Each input must be a mode-0600 regular, non-symlink file owned by the dedicated

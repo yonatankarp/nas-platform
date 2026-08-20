@@ -6,6 +6,12 @@ production_auto_deploy_workflow_name: CI
 production_auto_deploy_branch: main
 production_auto_deploy_github_api_base: https://api.github.com
 production_auto_deploy_nas_address: 192.168.0.139
+# The address clients actually use. ntfy hashes it into the mobile push topic,
+# so a wrong value publishes to a topic nothing subscribes to and reports no
+# error. Deliberately empty: the role fails rather than guessing.
+production_auto_deploy_public_host: ""
+# Only differs when containers reach the host at another address.
+production_auto_deploy_callback_host: "{{ production_auto_deploy_nas_address }}"
 production_auto_deploy_log_retention_days: 30
 production_auto_deploy_cron_name: NAS platform production auto-deploy
 production_auto_deploy_verify_tags: >-
