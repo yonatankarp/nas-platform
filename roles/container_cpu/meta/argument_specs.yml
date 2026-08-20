@@ -1,0 +1,17 @@
+---
+argument_specs:
+  main:
+    short_description: Verify effective Docker CPU controls for one Compose project
+    options:
+      container_cpu_service_name:
+        type: str
+        required: true
+      container_cpu_project_name:
+        type: str
+        required: true
+      platform_effective_container_cpuset:
+        type: str
+        required: true
+      platform_current_dir:
+        type: path
+        required: true

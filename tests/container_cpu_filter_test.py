@@ -48,4 +48,36 @@ for arguments in [
 ]:
     require_rejected(derive, *arguments)
 
+verify_runtime = plugin.platform_container_cpu_runtime_errors
+compose_services = {
+    "server": {"cpuset": "0-2", "cpus": 3.0},
+    "worker": {"cpuset": "0-2", "cpus": 1.5},
+}
+inspections = [
+    {
+        "Config": {"Labels": {"com.docker.compose.service": "server"}},
+        "HostConfig": {"CpusetCpus": "0-2", "NanoCpus": 3_000_000_000},
+    },
+    {
+        "Config": {"Labels": {"com.docker.compose.service": "worker"}},
+        "HostConfig": {"CpusetCpus": "0-2", "NanoCpus": 1_500_000_000},
+    },
+]
+assert verify_runtime(compose_services, inspections, "0-2") == []
+
+drifted = [dict(inspections[0]), dict(inspections[1])]
+drifted[1] = {
+    "Config": inspections[1]["Config"],
+    "HostConfig": {"CpusetCpus": "0-3", "NanoCpus": 0},
+}
+errors = verify_runtime(compose_services, drifted, "0-2")
+assert errors == [
+    "worker: effective CPU quota is 0, expected 1500000000 nanocpus",
+    "worker: effective CPU set is 0-3, expected 0-2",
+]
+
+require_rejected(verify_runtime, [], inspections, "0-2")
+require_rejected(verify_runtime, compose_services, [], "0-2")
+require_rejected(verify_runtime, compose_services, inspections, "")
+
 print("Container CPU-set derivation behavior passed")
