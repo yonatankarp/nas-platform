@@ -1,8 +1,31 @@
 #!/bin/sh
+# Policy validation entry point. Run from the repository root.
+#
+# The check list is data, not straight-line shell: this script reads its own
+# manifest and runs the checks concurrently. Run one after another they took
+# 15m28s, which made `static` the second-longest job in CI and made a full local
+# run impractical enough to skip.
+#
+# Each check stays one bare command per line. tests/policy_test.rb asserts that
+# every check appears exactly once as a stripped line of this file, and
+# tests/policy_manifest_test.rb proves that deleting a line is caught. Wrapping
+# these lines in a helper, or prefixing them, silently disables those guards
+# while leaving this script working, so keep the shape.
+#
+# POLICY_JOBS sets concurrency and defaults to the CPU count. POLICY_JOBS=1
+# restores the original one-at-a-time order, which is what to use when bisecting
+# a failure that only shows up under load.
+#
+# Unlike the sequential version this does not stop at the first failure: every
+# check runs and every failure is reported, so one broken check no longer hides
+# the state of the other fifty-six.
 set -eu
 
+policy_checks() {
+  cat <<'POLICY_CHECKS'
 ruby tests/policy_test.rb
 ruby tests/renovate_policy_test.rb
+tests/policy_runner_test.sh
 ruby tests/paperless_mail_reconciliation_test.rb
 ruby tests/beszel_telemetry_probe_test.rb
 ruby tests/beszel_telemetry_timeout_test.rb
@@ -38,18 +61,6 @@ ruby tests/immich_configured_password_test.rb
 ruby tests/database_managed_users_test.rb
 ruby tests/database_managed_users_test.rb --self-test
 ruby tests/ntfy_verify_execution_test.rb
-ansible_playbook=$(command -v ansible-playbook) || {
-  printf '%s\n' 'ansible-playbook is required for managed-user behavior tests' >&2
-  exit 1
-}
-ansible_python=$(
-  "$ansible_playbook" --version |
-    sed -n 's/^  python version = .* (\(\/[^()]*\))$/\1/p'
-)
-[ -x "$ansible_python" ] || {
-  printf '%s\n' 'the ansible-playbook Python interpreter is unavailable' >&2
-  exit 1
-}
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/managed_user_state_filter_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/safe_slurp_test.py
 ansible-playbook -i localhost, -c local tests/compose_metadata_filter_test.yml
@@ -69,3 +80,94 @@ ruby tests/mac/report.rb --self-test
 tests/mac/cleanup.sh --self-test
 tests/mac/snapshot-immich.sh --self-test
 ruby tests/mac/sanitize-logs.rb --self-test
+POLICY_CHECKS
+}
+
+# Resolved before the checks run because two of them invoke this interpreter
+# directly, and exported because each check is executed in its own shell.
+ansible_playbook=$(command -v ansible-playbook) || {
+  printf '%s\n' 'ansible-playbook is required for managed-user behavior tests' >&2
+  exit 1
+}
+ansible_python=$(
+  "$ansible_playbook" --version |
+    sed -n 's/^  python version = .* (\(\/[^()]*\))$/\1/p'
+)
+[ -x "$ansible_python" ] || {
+  printf '%s\n' 'the ansible-playbook Python interpreter is unavailable' >&2
+  exit 1
+}
+export ansible_python
+
+jobs=${POLICY_JOBS:-}
+if [ -z "$jobs" ]; then
+  jobs=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
+fi
+case $jobs in
+  '' | *[!0-9]*) jobs=4 ;;
+esac
+[ "$jobs" -ge 1 ] || jobs=1
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT HUP INT TERM
+
+# One file per check rather than a delimited record, so a command containing any
+# character at all still round-trips to its runner intact.
+policy_checks >"$work/manifest"
+total=$(awk 'END { print NR }' "$work/manifest")
+index=0
+while [ "$index" -lt "$total" ]; do
+  index=$((index + 1))
+  awk -v n="$index" 'NR == n { print; exit }' "$work/manifest" >"$work/cmd.$index"
+  printf '%s\n' "$work/cmd.$index" >>"$work/queue"
+done
+
+# Always exits 0: the parent decides pass or fail from the recorded status, so a
+# failing check neither aborts the pool nor leaves the remaining checks unrun.
+cat >"$work/run-check" <<'RUNNER'
+spec=$1
+dir=$(dirname "$spec")
+index=${spec##*/cmd.}
+sh -c "$(cat "$spec")" >"$dir/out.$index" 2>&1
+printf '%s\n' "$?" >"$dir/status.$index"
+exit 0
+RUNNER
+
+# A child killed by a signal makes xargs abandon the pool, so its status is
+# recorded rather than allowed to abort the script: the accounting below is what
+# names the checks that never reported, and it has to run for that to be said.
+dispatch=0
+tr '\n' '\0' <"$work/queue" |
+  xargs -0 -n 1 -P "$jobs" sh "$work/run-check" || dispatch=$?
+
+ran=0
+failed=0
+index=0
+while [ "$index" -lt "$total" ]; do
+  index=$((index + 1))
+  check=$(cat "$work/cmd.$index")
+  if [ ! -f "$work/status.$index" ]; then
+    printf 'POLICY CHECK NEVER RAN: %s\n' "$check" >&2
+    failed=$((failed + 1))
+    continue
+  fi
+  ran=$((ran + 1))
+  status=$(cat "$work/status.$index")
+  if [ "$status" -eq 0 ]; then
+    cat "$work/out.$index"
+  else
+    printf '\n=== FAILED (exit %s): %s ===\n' "$status" "$check" >&2
+    cat "$work/out.$index" >&2
+  fi
+  [ "$status" -eq 0 ] || failed=$((failed + 1))
+done
+
+if [ "$ran" -ne "$total" ] || [ "$failed" -ne 0 ] || [ "$dispatch" -ne 0 ]; then
+  printf '\npolicy validation failed: %s of %s checks ran, %s failed' \
+    "$ran" "$total" "$failed" >&2
+  [ "$dispatch" -eq 0 ] || printf ', dispatcher exited %s' "$dispatch" >&2
+  printf '\n' >&2
+  exit 1
+fi
+
+printf 'policy validation: all %s checks passed\n' "$total"
