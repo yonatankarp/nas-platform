@@ -7,7 +7,10 @@ require "stringio"
 require "tmpdir"
 
 SCRIPT = File.expand_path("classify_changes.rb", __dir__)
-LANES = %w[static foundation smoke beszel dozzle audiobookshelf media paperless idempotence_check].freeze
+LANES = %w[
+  static foundation smoke beszel dozzle audiobookshelf komga tinymediamanager jellyfin immich
+  paperless idempotence_check
+].freeze
 failures = []
 
 def check(failures, condition, message)
@@ -30,7 +33,7 @@ if defined?(ClassifyChanges)
     ["README.md", ".gitignore"] => [],
     ["roles/paperless_ngx/tasks/main.yml"] => %w[static smoke paperless idempotence_check],
     ["services/dozzle/compose.yml"] => %w[static smoke dozzle idempotence_check],
-    ["tests/contracts/jellyfin.sh"] => %w[static smoke media idempotence_check],
+    ["tests/contracts/jellyfin.sh"] => %w[static smoke jellyfin idempotence_check],
     ["roles/deployment_bundle/tasks/main.yml"] => LANES,
     ["unexpected/new-runtime-file"] => LANES
   }.each do |paths, expected|
@@ -42,10 +45,10 @@ if defined?(ClassifyChanges)
     "beszel" => %w[beszel],
     "dozzle" => %w[dozzle],
     "audiobookshelf" => %w[audiobookshelf],
-    "komga" => %w[media],
-    "tinymediamanager" => %w[media],
-    "jellyfin" => %w[media],
-    "immich" => %w[media],
+    "komga" => %w[komga],
+    "tinymediamanager" => %w[tinymediamanager],
+    "jellyfin" => %w[jellyfin],
+    "immich" => %w[immich],
     "paperless-ngx" => %w[paperless]
   }.each do |service, expected_service_lanes|
     role = service == "paperless-ngx" ? "paperless_ngx" : service
@@ -64,6 +67,15 @@ if defined?(ClassifyChanges)
   check(failures, selected_lanes(["roles/beszel/tasks/main.yml", "services/dozzle/compose.yml"]) ==
                   %w[static smoke beszel dozzle idempotence_check],
         "multiple service changes must combine service lanes in canonical order")
+  check(
+    failures,
+    selected_lanes([
+      "roles/komga/tasks/main.yml",
+      "services/jellyfin/compose.yml",
+      "tests/contracts/immich.sh"
+    ]) == %w[static smoke komga jellyfin immich idempotence_check],
+    "multiple media service changes must remain independent and canonically ordered"
+  )
   check(failures, ClassifyChanges.classify([], full: false).keys == LANES,
         "classify must return every lane in canonical order")
   check(failures, selected_lanes([], full: true) == LANES,
@@ -77,8 +89,11 @@ if defined?(ClassifyChanges)
     "roles/beszel/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,beszel",
     "roles/dozzle/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,dozzle",
     "roles/audiobookshelf/tasks/main.yml" => "host_prep,deployment_bundle,audiobookshelf",
-    "roles/jellyfin/tasks/main.yml" =>
-      "host_prep,deployment_bundle,komga,tinymediamanager,jellyfin,immich",
+    "roles/komga/tasks/main.yml" => "host_prep,deployment_bundle,komga",
+    "roles/tinymediamanager/tasks/main.yml" =>
+      "host_prep,deployment_bundle,tinymediamanager",
+    "roles/jellyfin/tasks/main.yml" => "host_prep,deployment_bundle,jellyfin",
+    "roles/immich/tasks/main.yml" => "host_prep,deployment_bundle,immich",
     "roles/paperless_ngx/tasks/main.yml" => "host_prep,deployment_bundle,paperless"
   }.each do |path, expected_tags|
     service_output = StringIO.new
@@ -98,7 +113,10 @@ if defined?(ClassifyChanges)
     beszel=true
     dozzle=true
     audiobookshelf=false
-    media=false
+    komga=false
+    tinymediamanager=false
+    jellyfin=false
+    immich=false
     paperless=false
     idempotence_check=true
     suites=["smoke","beszel","dozzle","idempotence-check"]
@@ -117,10 +135,13 @@ if defined?(ClassifyChanges)
     beszel=true
     dozzle=true
     audiobookshelf=true
-    media=true
+    komga=true
+    tinymediamanager=true
+    jellyfin=true
+    immich=true
     paperless=true
     idempotence_check=true
-    suites=["foundation","smoke","beszel","dozzle","audiobookshelf","media","paperless","idempotence-check"]
+    suites=["foundation","smoke","beszel","dozzle","audiobookshelf","komga","tinymediamanager","jellyfin","immich","paperless","idempotence-check"]
     run_ci=true
     selected_tags=
   OUTPUT
@@ -152,7 +173,10 @@ if defined?(ClassifyChanges)
     beszel=false
     dozzle=false
     audiobookshelf=false
-    media=false
+    komga=false
+    tinymediamanager=false
+    jellyfin=false
+    immich=false
     paperless=true
     idempotence_check=true
     suites=["smoke","paperless","idempotence-check"]
