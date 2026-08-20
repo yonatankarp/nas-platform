@@ -26,8 +26,3 @@ beszel_required_telemetry_categories:
   - disk
   - containers
 beszel_require_gpu_telemetry: false
-
-platform_host_network_available: false
-platform_host_network_adapter: published_ports
-
-platform_external_integration_checks: true
