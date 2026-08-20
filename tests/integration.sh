@@ -799,22 +799,32 @@ docker run --rm \
       immich_server_before=\$(docker inspect --format '{{.Id}}:{{.State.StartedAt}}' immich_server)
       immich_database_before=\$(docker inspect --format '{{.Id}}:{{.State.StartedAt}}' immich_postgres)
 
+      # One root, and one bundle render for all five scenarios. Each scenario
+      # already asserts its own storage sha is unchanged across its play, which is
+      # the proof that no scenario mutates the tree, so a pristine root each time
+      # only bought five more renders of the same bundle at 66s apiece.
+      scenario_root='$sandbox/reports/immich-negative'
+      test ! -e \"\$scenario_root\"
+      mkdir -m 0755 \"\$scenario_root\"
+      mkdir -m 0755 \"\$scenario_root/docker\" \"\$scenario_root/media\"
+
+      run_play \
+        -e nas_docker_root=\"\$scenario_root/docker\" \
+        -e nas_media_root=\"\$scenario_root/media\" \
+        -e platform_project_name=immich-negative \
+        --tags host_prep,deployment_bundle
+
+      postgres_root=\"\$scenario_root/docker/immich/postgres\"
+      originals_root=\"\$scenario_root/media/Immich/upload\"
+      backup_root=\"\$scenario_root/media/Immich-backups/database\"
+      marker=\"\$scenario_root/docker/immich/.restore-failed\"
+
       for scenario in no-backup corrupt-newest ambiguous-newest unsafe-permissions prior-marker; do
-        scenario_root='$sandbox/reports/immich-negative-'\$scenario
-        test ! -e \"\$scenario_root\"
-        mkdir -m 0755 \"\$scenario_root\"
-        mkdir -m 0755 \"\$scenario_root/docker\" \"\$scenario_root/media\"
-
-        run_play \
-          -e nas_docker_root=\"\$scenario_root/docker\" \
-          -e nas_media_root=\"\$scenario_root/media\" \
-          -e platform_project_name=\"immich-negative-\$scenario\" \
-          --tags host_prep,deployment_bundle
-
-        postgres_root=\"\$scenario_root/docker/immich/postgres\"
-        originals_root=\"\$scenario_root/media/Immich/upload\"
-        backup_root=\"\$scenario_root/media/Immich-backups/database\"
-        marker=\"\$scenario_root/docker/immich/.restore-failed\"
+        # The fixtures are the only state that would carry between scenarios, and
+        # each expected failure is derived from exactly them: a backup left behind
+        # would make unsafe-permissions report ambiguous-newest-backup, and would
+        # stop no-backup from ever seeing an empty directory.
+        rm -rf \"\$backup_root\" \"\$marker\"
         mkdir -p \"\$postgres_root\" \"\$originals_root\" \"\$backup_root\"
         printf 'negative-matrix-original\n' > \"\$originals_root/asset.jpg\"
         expected_failure=
@@ -856,7 +866,7 @@ docker run --rm \
         if run_play \
             -e nas_docker_root=\"\$scenario_root/docker\" \
             -e nas_media_root=\"\$scenario_root/media\" \
-            -e platform_project_name=\"immich-negative-\$scenario\" \
+            -e platform_project_name=immich-negative \
             --tags immich >\"\$output\" 2>&1; then
           cat \"\$output\" >&2
           printf 'IMMICH NEGATIVE RESTORE SCENARIO SUCCEEDED: %s\n' \"\$scenario\" >&2
