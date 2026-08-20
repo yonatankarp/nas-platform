@@ -16,8 +16,14 @@ set -eu
 
 ansible_core_version=2.21.3
 runner_image=docker.io/library/python:3.14-alpine@sha256:05b2b8b732ecd268fee8727a369f936f022d1321b59befd13c30ede22769dcdc
-ruby_package='ruby=3.4.9-r0'
-curl_package='curl=8.21.0-r0'
+# Fuzzy `~` rather than `=`: apk's `=` requires the distro revision, so a
+# packaging-only bump from -r0 to -r1 drops the pinned version out of the index
+# and every suite fails at sandbox setup with "unable to select packages". `~`
+# pins the upstream version and accepts any revision of it. Dropping the
+# revision is also what lets Renovate track these, since repology reports
+# Alpine versions without one.
+ruby_package='ruby~3.4.9'
+curl_package='curl~8.21.0'
 
 suite=full
 suite_tags=
