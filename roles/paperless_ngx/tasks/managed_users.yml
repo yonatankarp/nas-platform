@@ -11,13 +11,7 @@
       - manage.py
       - shell
       - -c
-      - >-
-        import json; from django.contrib.auth import get_user_model;
-        users=[{"id":u.pk,"username":u.username,"email":u.email,
-        "is_active":u.is_active,"is_staff":u.is_staff,"is_superuser":u.is_superuser,
-        "groups":sorted(u.groups.values_list("name",flat=True))}
-        for u in get_user_model().objects.all()];
-        print(json.dumps(users,sort_keys=True))
+      - "{{ lookup('ansible.builtin.file', role_path ~ '/files/list_users.py') }}"
     tty: false
   register: paperless_managed_users_probe
   changed_when: false
@@ -146,18 +140,7 @@
       - manage.py
       - shell
       - -c
-      - |
-        import os
-        from django.contrib.auth import get_user_model
-        from django.db import transaction
-
-        with transaction.atomic():
-            user = get_user_model().objects.create(
-                username=os.environ["MANAGED_USERNAME"],
-                email=os.environ["MANAGED_EMAIL"],
-            )
-            user.set_password(os.environ["MANAGED_PASSWORD"])
-            user.save()
+      - "{{ lookup('ansible.builtin.file', role_path ~ '/files/create_managed_user.py') }}"
     tty: false
   register: paperless_managed_user_creation
   when:
@@ -182,13 +165,7 @@
       - manage.py
       - shell
       - -c
-      - >-
-        import json; from django.contrib.auth import get_user_model;
-        users=[{"id":u.pk,"username":u.username,"email":u.email,
-        "is_active":u.is_active,"is_staff":u.is_staff,"is_superuser":u.is_superuser,
-        "groups":sorted(u.groups.values_list("name",flat=True))}
-        for u in get_user_model().objects.all()];
-        print(json.dumps(users,sort_keys=True))
+      - "{{ lookup('ansible.builtin.file', role_path ~ '/files/list_users.py') }}"
     tty: false
   register: paperless_managed_users_refreshed_probe
   when:
@@ -389,23 +366,7 @@
       - manage.py
       - shell
       - -c
-      - |
-        import os
-        from django.contrib.auth import get_user_model
-        from django.db import transaction
-        from rest_framework.authtoken.models import Token
-
-        with transaction.atomic():
-            expected_id = int(os.environ["MANAGED_ID"])
-            expected_username = os.environ["MANAGED_USERNAME"].strip().casefold()
-            token = Token.objects.select_related("user").select_for_update().get(
-                key=os.environ["MANAGED_TOKEN"]
-            )
-            user = get_user_model().objects.select_for_update().get(pk=expected_id)
-            assert (
-                token.user_id == expected_id
-                and user.username.strip().casefold() == expected_username
-            ), "managed identity binding invalid"
+      - "{{ lookup('ansible.builtin.file', role_path ~ '/files/bind_managed_identity.py') }}"
     tty: false
   when: not ansible_check_mode
   loop: "{{ vault_managed_paperless_ngx_users }}"
@@ -435,34 +396,7 @@
       - manage.py
       - shell
       - -c
-      - |
-        import json
-        import os
-        from django.contrib.auth import get_user_model
-        from django.contrib.auth.models import Group
-        from django.db import transaction
-        from rest_framework.authtoken.models import Token
-
-        with transaction.atomic():
-            expected_id = int(os.environ["MANAGED_ID"])
-            expected_username = os.environ["MANAGED_USERNAME"].strip().casefold()
-            token = Token.objects.select_related("user").select_for_update().get(
-                key=os.environ["MANAGED_TOKEN"]
-            )
-            user = get_user_model().objects.select_for_update().get(pk=expected_id)
-            assert (
-                token.user_id == expected_id
-                and user.username.strip().casefold() == expected_username
-            ), "managed identity binding invalid"
-            names = json.loads(os.environ["MANAGED_GROUPS"])
-            groups = list(Group.objects.filter(name__in=names))
-            assert len(groups) == len(names), "managed group contract invalid"
-            user.email = os.environ["MANAGED_EMAIL"]
-            user.is_active = os.environ["MANAGED_ACTIVE"] == "true"
-            user.is_staff = os.environ["MANAGED_STAFF"] == "true"
-            user.is_superuser = os.environ["MANAGED_SUPERUSER"] == "true"
-            user.save(update_fields=["email", "is_active", "is_staff", "is_superuser"])
-            user.groups.set(groups)
+      - "{{ lookup('ansible.builtin.file', role_path ~ '/files/repair_managed_user.py') }}"
     tty: false
   when:
     - paperless_managed_users_phase == 'reconcile'

@@ -55,6 +55,20 @@ REQUIRED_TASKS = {
   ]
 }.freeze
 
+PAPERLESS_SCRIPT_LOOKUP =
+  %r{\A\{\{ lookup\('ansible\.builtin\.file', role_path ~ '/files/[a-z_]+\.py'\) \}\}\z}.freeze
+
+# Follow the task's own wiring to the script it loads, so an assertion about the
+# script's contents fails loudly when the task stops loading one.
+def paperless_exec_script(task)
+  argv = Array(task&.dig("community.docker.docker_compose_v2_exec", "argv"))
+  name = argv.last.to_s[%r{/files/([a-z_]+\.py)}, 1]
+  return "" unless name
+
+  path = File.join(ROOT, "roles", "paperless_ngx", "files", name)
+  File.exist?(path) ? File.read(path) : ""
+end
+
 def task_name(task)
   task.fetch("name", "")
 end
@@ -162,7 +176,13 @@ def contract_failures(service, tasks)
     commands = tasks.filter_map { |task| task["community.docker.docker_compose_v2_exec"] }
     commands.each do |command|
       argv = Array(command["argv"])
-      failures << "Paperless command interpolates a vault value into argv" if argv.any? { |arg| arg.to_s.include?("{{") }
+      # A tracked script loaded from the role's files/ directory carries no value,
+      # so it is the one interpolation allowed here. Every other Jinja expression
+      # in argv would put a resolved value on the command line.
+      offending = argv.select do |arg|
+        arg.to_s.include?("{{") && !arg.to_s.match?(PAPERLESS_SCRIPT_LOOKUP)
+      end
+      failures << "Paperless command interpolates a vault value into argv" unless offending.empty?
     end
     create = tasks.find { |task| task_name(task) == "Create absent Paperless managed users" }
     repair = tasks.find { |task| task_name(task) == "Repair Paperless managed-user non-secret properties" }
@@ -172,8 +192,8 @@ def contract_failures(service, tasks)
       create&.dig("community.docker.docker_compose_v2_exec", "env")&.keys&.sort ==
         %w[MANAGED_EMAIL MANAGED_PASSWORD MANAGED_USERNAME]
     failures << "Paperless create must set the initial password" unless
-      create&.dig("community.docker.docker_compose_v2_exec", "argv").to_s.include?("set_password")
-    create_script = Array(create&.dig("community.docker.docker_compose_v2_exec", "argv")).last.to_s
+      paperless_exec_script(create).include?("set_password")
+    create_script = paperless_exec_script(create)
     create_lines = create_script.lines
     atomic_index = create_lines.index { |line| line.strip == "with transaction.atomic():" }
     create_index = create_lines.index { |line| line.include?("objects.create(") }
@@ -190,9 +210,9 @@ def contract_failures(service, tasks)
     failures << "Paperless creation is not limited to reconciliation" unless
       create&.fetch("when", [])&.include?("paperless_managed_users_phase == 'reconcile'")
     failures << "Paperless existing-user repair calls set_password" if
-      repair&.dig("community.docker.docker_compose_v2_exec", "argv").to_s.include?("set_password")
+      paperless_exec_script(repair).include?("set_password")
     repair_env = repair&.dig("community.docker.docker_compose_v2_exec", "env") || {}
-    repair_script = repair&.dig("community.docker.docker_compose_v2_exec", "argv").to_s
+    repair_script = paperless_exec_script(repair)
     failures << "Paperless repair lacks token and expected-PK binding inputs" unless
       repair_env.key?("MANAGED_TOKEN") && repair_env.key?("MANAGED_ID")
     failures << "Paperless repair lacks atomic token-owner identity binding" unless
@@ -290,7 +310,10 @@ def managed_includes(service, extra_vars = {}, path: nil)
     )
     role_vars = defaults.select { |key, _value| key.start_with?("immich_managed_user_preference_") }
   end
-  include_vars = role_vars.merge(extra_vars)
+  # include_tasks does not set role_path, but the production path reaches these
+  # tasks through include_role, which does. Scripts loaded from the role's files/
+  # directory resolve against it, so the fixture has to supply it.
+  include_vars = role_vars.merge("role_path" => File.join(ROOT, "roles", service)).merge(extra_vars)
   [
     { "name" => "Reconcile fixture #{service}", "ansible.builtin.include_tasks" => path,
       "vars" => include_vars.merge("#{phase_prefix}_managed_users_phase" => "reconcile") },
@@ -1394,7 +1417,10 @@ if ARGV == ["--self-test"]
         end
         argv = create.fetch("community.docker.docker_compose_v2_exec").fetch("argv")
         inside_atomic = false
-        argv[-1] = argv.last.lines.filter_map do |line|
+        # argv now carries a lookup of the tracked script, so the mutant is built
+        # from the script's own text and written back inline. The mutant task file
+        # is a throwaway, so inlining it keeps this independent of role_path.
+        argv[-1] = paperless_exec_script(create).lines.filter_map do |line|
           next if line.include?("from django.db import transaction")
           if line.strip == "with transaction.atomic():"
             inside_atomic = true
