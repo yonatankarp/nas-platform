@@ -46,19 +46,6 @@ argument_specs:
         required: true
         choices: [intel, portable]
         description: Agent artifact and host wiring supported by this host class.
-      platform_host_network_available:
-        type: bool
-        required: true
-        description: Whether containers can use native host networking.
-      platform_host_network_adapter:
-        type: str
-        required: true
-        choices: [host, published_ports]
-        description: Host-specific networking adaptation for service roles.
-      platform_external_integration_checks:
-        type: bool
-        required: true
-        description: Whether non-mutating external integration checks may run.
       nas_python_minimum:
         type: str
         required: true
