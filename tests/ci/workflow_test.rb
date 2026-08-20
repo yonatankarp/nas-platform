@@ -274,7 +274,7 @@ end
 check(failures, static_commands.include?('python3 -m venv "$RUNNER_TEMP/ansible"'),
       "static checks must create an isolated Ansible environment")
 check(failures, static_commands.include?(
-        '"$RUNNER_TEMP/ansible/bin/pip" install \'ansible-core==2.21.3\' \'ansible-lint==26.6.0\''
+        '"$RUNNER_TEMP/ansible/bin/pip" install \'ansible-core==2.21.3\' \'ansible-lint==26.8.0\''
       ), "static checks must install exact Ansible pins in the isolated environment")
 check(failures, static_commands.include?('echo "$RUNNER_TEMP/ansible/bin" >> "$GITHUB_PATH"'),
       "static checks must expose only the isolated pinned Ansible tools")
