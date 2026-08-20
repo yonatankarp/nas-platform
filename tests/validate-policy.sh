@@ -18,7 +18,7 @@
 #
 # Unlike the sequential version this does not stop at the first failure: every
 # check runs and every failure is reported, so one broken check no longer hides
-# the state of the other fifty-four.
+# the state of the other fifty-six.
 set -eu
 
 policy_checks() {
