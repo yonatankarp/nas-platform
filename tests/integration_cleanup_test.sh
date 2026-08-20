@@ -20,7 +20,7 @@ swap_victim=
 python_sandbox=
 python_root_symlink=
 python_victim=
-runner_image=docker.io/library/python:3.13-alpine@sha256:399babc8b49529dabfd9c922f2b5eea81d611e4512e3ed250d75bd2e7683f4b0
+runner_image=docker.io/library/python:3.14-alpine@sha256:05b2b8b732ecd268fee8727a369f936f022d1321b59befd13c30ede22769dcdc
 
 assert_cleanup_rejected() {
   rejected_path=$1

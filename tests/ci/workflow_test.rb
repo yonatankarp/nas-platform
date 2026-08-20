@@ -9,8 +9,12 @@ require_relative "classify_changes"
 WORKFLOW_PATH = File.expand_path("../../.github/workflows/ci.yml", __dir__)
 POLICY_PATH = File.expand_path("../validate-policy.sh", __dir__)
 ANSIBLE_LINT_PATH = File.expand_path("../../.ansible-lint", __dir__)
-CHECKOUT_ACTION = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
-UPLOAD_ARTIFACT_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+# Approved by name, not by commit. The security properties are that only these actions
+# are used and that every use is pinned to a full commit SHA rather than a mutable tag;
+# which commit is current is Renovate's job, and restating it here only guarantees that
+# routine action bumps fail this test.
+ALLOWED_ACTION_NAMES = %w[actions/checkout actions/upload-artifact].freeze
+CHECKOUT_ACTION_NAME = "actions/checkout"
 EXPECTED_JOBS = %w[changes static suites validate].freeze
 # The suites the matrix dispatches, in the order a full run enumerates them.
 INTEGRATION_SUITES = %w[
@@ -156,7 +160,7 @@ end
 
 changes_steps = Array(changes["steps"])
 changes_checkout = changes_steps.find { |step| step["uses"]&.start_with?("actions/checkout@") }
-check(failures, changes_checkout&.fetch("uses", nil) == CHECKOUT_ACTION,
+check(failures, changes_checkout&.fetch("uses", nil).to_s.split("@").first == CHECKOUT_ACTION_NAME,
       "changes checkout must use the repository's pinned action")
 check(failures, changes_checkout&.dig("with", "fetch-depth") == 0,
       "changes checkout must fetch full history")
@@ -210,7 +214,7 @@ check(failures, ClassifyChanges.suites(ClassifyChanges.classify(["README.md"])) 
       "an inert change must dispatch no suite")
 
 suites_checkout = Array(suites_job["steps"]).find { |step| step["uses"]&.start_with?("actions/checkout@") }
-check(failures, suites_checkout&.fetch("uses", nil) == CHECKOUT_ACTION,
+check(failures, suites_checkout&.fetch("uses", nil).to_s.split("@").first == CHECKOUT_ACTION_NAME,
       "suites must check out the repository with the pinned action")
 integration_steps = Array(suites_job["steps"]).select { |step| step["run"]&.include?("tests/integration.sh") }
 check(failures, integration_steps.length == 1, "suites must have exactly one integration harness step")
@@ -273,9 +277,14 @@ end
 end
 check(failures, static_commands.include?('python3 -m venv "$RUNNER_TEMP/ansible"'),
       "static checks must create an isolated Ansible environment")
-check(failures, static_commands.include?(
-        '"$RUNNER_TEMP/ansible/bin/pip" install \'ansible-core==2.21.3\' \'ansible-lint==26.8.0\''
-      ), "static checks must install exact Ansible pins in the isolated environment")
+# Assert the pins are exact rather than restating the versions, for the same reason
+# the apt check above matches loosely: a routine dependency bump should not have to
+# edit this file. The versions themselves are proved consistent below.
+ansible_pin = static_commands.match(
+  /"\$RUNNER_TEMP\/ansible\/bin\/pip" install 'ansible-core==(\d+\.\d+\.\d+)' 'ansible-lint==(\d+\.\d+\.\d+)'/
+)
+check(failures, !ansible_pin.nil?,
+      "static checks must install exact Ansible pins in the isolated environment")
 check(failures, static_commands.include?('echo "$RUNNER_TEMP/ansible/bin" >> "$GITHUB_PATH"'),
       "static checks must expose only the isolated pinned Ansible tools")
 check(failures, static_commands.include?(
@@ -319,7 +328,7 @@ expected_needs = %w[changes static suites]
 check(failures, Array(validate["needs"]) == expected_needs,
       "validate must need changes, static and the suite matrix in canonical order")
 validate_checkout = Array(validate["steps"]).find { |step| step["uses"]&.start_with?("actions/checkout@") }
-check(failures, validate_checkout&.fetch("uses", nil) == CHECKOUT_ACTION,
+check(failures, validate_checkout&.fetch("uses", nil).to_s.split("@").first == CHECKOUT_ACTION_NAME,
       "validate must check out the repository with the pinned action")
 validate_commands = run_steps(validate)
 expected_needs.each do |job_id|
@@ -341,9 +350,35 @@ end
 all_uses = jobs.values.flat_map do |job|
   Array(job["steps"]).filter_map { |step| step["uses"] }
 end
-allowed_actions = [CHECKOUT_ACTION, UPLOAD_ARTIFACT_ACTION]
-check(failures, all_uses.all? { |uses| allowed_actions.include?(uses) },
-      "every action use must be an approved pinned action: #{all_uses.inspect}")
+all_uses.each do |uses|
+  name, commit = uses.split("@", 2)
+  check(failures, ALLOWED_ACTION_NAMES.include?(name),
+        "every action use must be an approved action: #{uses.inspect}")
+  check(failures, commit.to_s.match?(/\A[0-9a-f]{40}\z/),
+        "every action use must be pinned to a full commit SHA, not a tag: #{uses.inspect}")
+end
+# One action must not be pinned to two different commits across jobs.
+all_uses.group_by { |uses| uses.split("@", 2).first }.each do |name, uses|
+  check(failures, uses.uniq.length == 1,
+        "#{name} must be pinned to one commit across every job: #{uses.uniq.inspect}")
+end
+
+# The ansible-core pin is restated outside ci.yml: the integration sandbox builds its
+# runner image from it, and the Beszel telemetry test refuses to run against any other
+# version. Renovate maintains all three, so assert they agree rather than pinning a
+# version here. A bump that updates only some of them fails immediately and by name,
+# instead of surfacing later as a confusing suite failure.
+if ansible_pin
+  expected_core = ansible_pin[1]
+  {
+    "tests/integration.sh" => /^ansible_core_version=(\d+\.\d+\.\d+)$/,
+    "tests/beszel_telemetry_ansible_test.rb" => /^REQUIRED_ANSIBLE_CORE = "(\d+\.\d+\.\d+)"/
+  }.each do |relative, pattern|
+    mirrored = File.read(File.expand_path("../../#{relative}", __dir__))[pattern, 1]
+    check(failures, mirrored == expected_core,
+          "#{relative} must pin ansible-core #{expected_core} to match ci.yml, got #{mirrored.inspect}")
+  end
+end
 
 unless failures.empty?
   failures.each { |failure| warn "FAIL #{failure}" }

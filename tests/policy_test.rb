@@ -1003,6 +1003,7 @@ validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "te
                       end
 %w[
   ruby\ tests/policy_test.rb
+  ruby\ tests/renovate_policy_test.rb
   ruby\ tests/policy_manifest_test.rb
   ruby\ tests/run_contracts_test.rb
   ruby\ tests/run_contracts.rb\ --validate-only

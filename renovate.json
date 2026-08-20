@@ -4,9 +4,17 @@
     "config:recommended",
     ":dependencyDashboard"
   ],
+  "ignorePaths": [
+    "**/node_modules/**",
+    "**/bower_components/**",
+    "**/vendor/**"
+  ],
   "timezone": "Europe/Berlin",
   "automerge": false,
-  "rebaseWhen": "conflicted",
+  "automergeType": "pr",
+  "platformAutomerge": true,
+  "automergeStrategy": "rebase",
+  "rebaseWhen": "behind-base-branch",
   "prConcurrentLimit": 10,
   "enabledManagers": [
     "docker-compose",
@@ -15,6 +23,18 @@
     "custom.regex"
   ],
   "packageRules": [
+    {
+      "description": "Automerge routine non-major updates after required checks pass.",
+      "matchUpdateTypes": [
+        "minor",
+        "patch",
+        "pin",
+        "pinDigest",
+        "digest",
+        "lockFileMaintenance"
+      ],
+      "automerge": true
+    },
     {
       "matchCategories": [
         "docker"
@@ -65,7 +85,8 @@
       ],
       "addLabels": [
         "needs-manual-coupling"
-      ]
+      ],
+      "automerge": false
     },
     {
       "description": "Database major versions change on-disk formats that Ansible cannot migrate.",
@@ -111,6 +132,18 @@
         "(?:runner_image|cleanup_sandbox_image)=(?<depName>[^:\\s]+):(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[0-9a-f]{64})"
       ],
       "datasourceTemplate": "docker"
+    },
+    {
+      "description": "ansible-core pinned by the Beszel telemetry test, which asserts exact ansible output.",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^tests/beszel_telemetry_ansible_test\\.rb$/"
+      ],
+      "matchStrings": [
+        "REQUIRED_ANSIBLE_CORE = \"(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)\""
+      ],
+      "depNameTemplate": "ansible-core",
+      "datasourceTemplate": "pypi"
     }
   ]
 }

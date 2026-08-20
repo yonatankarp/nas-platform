@@ -1,6 +1,6 @@
 #!/bin/sh
 
-cleanup_sandbox_image=docker.io/library/python:3.13-alpine@sha256:399babc8b49529dabfd9c922f2b5eea81d611e4512e3ed250d75bd2e7683f4b0
+cleanup_sandbox_image=docker.io/library/python:3.14-alpine@sha256:05b2b8b732ecd268fee8727a369f936f022d1321b59befd13c30ede22769dcdc
 
 cleanup_sandbox_program() {
   cat <<'PY'

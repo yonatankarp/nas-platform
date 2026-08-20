@@ -15,7 +15,7 @@
 set -eu
 
 ansible_core_version=2.21.3
-runner_image=docker.io/library/python:3.13-alpine@sha256:399babc8b49529dabfd9c922f2b5eea81d611e4512e3ed250d75bd2e7683f4b0
+runner_image=docker.io/library/python:3.14-alpine@sha256:05b2b8b732ecd268fee8727a369f936f022d1321b59befd13c30ede22769dcdc
 ruby_package='ruby=3.4.9-r0'
 curl_package='curl=8.21.0-r0'
 
@@ -799,22 +799,32 @@ docker run --rm \
       immich_server_before=\$(docker inspect --format '{{.Id}}:{{.State.StartedAt}}' immich_server)
       immich_database_before=\$(docker inspect --format '{{.Id}}:{{.State.StartedAt}}' immich_postgres)
 
+      # One root, and one bundle render for all five scenarios. Each scenario
+      # already asserts its own storage sha is unchanged across its play, which is
+      # the proof that no scenario mutates the tree, so a pristine root each time
+      # only bought five more renders of the same bundle at 66s apiece.
+      scenario_root='$sandbox/reports/immich-negative'
+      test ! -e \"\$scenario_root\"
+      mkdir -m 0755 \"\$scenario_root\"
+      mkdir -m 0755 \"\$scenario_root/docker\" \"\$scenario_root/media\"
+
+      run_play \
+        -e nas_docker_root=\"\$scenario_root/docker\" \
+        -e nas_media_root=\"\$scenario_root/media\" \
+        -e platform_project_name=immich-negative \
+        --tags host_prep,deployment_bundle
+
+      postgres_root=\"\$scenario_root/docker/immich/postgres\"
+      originals_root=\"\$scenario_root/media/Immich/upload\"
+      backup_root=\"\$scenario_root/media/Immich-backups/database\"
+      marker=\"\$scenario_root/docker/immich/.restore-failed\"
+
       for scenario in no-backup corrupt-newest ambiguous-newest unsafe-permissions prior-marker; do
-        scenario_root='$sandbox/reports/immich-negative-'\$scenario
-        test ! -e \"\$scenario_root\"
-        mkdir -m 0755 \"\$scenario_root\"
-        mkdir -m 0755 \"\$scenario_root/docker\" \"\$scenario_root/media\"
-
-        run_play \
-          -e nas_docker_root=\"\$scenario_root/docker\" \
-          -e nas_media_root=\"\$scenario_root/media\" \
-          -e platform_project_name=\"immich-negative-\$scenario\" \
-          --tags host_prep,deployment_bundle
-
-        postgres_root=\"\$scenario_root/docker/immich/postgres\"
-        originals_root=\"\$scenario_root/media/Immich/upload\"
-        backup_root=\"\$scenario_root/media/Immich-backups/database\"
-        marker=\"\$scenario_root/docker/immich/.restore-failed\"
+        # The fixtures are the only state that would carry between scenarios, and
+        # each expected failure is derived from exactly them: a backup left behind
+        # would make unsafe-permissions report ambiguous-newest-backup, and would
+        # stop no-backup from ever seeing an empty directory.
+        rm -rf \"\$backup_root\" \"\$marker\"
         mkdir -p \"\$postgres_root\" \"\$originals_root\" \"\$backup_root\"
         printf 'negative-matrix-original\n' > \"\$originals_root/asset.jpg\"
         expected_failure=
@@ -856,7 +866,7 @@ docker run --rm \
         if run_play \
             -e nas_docker_root=\"\$scenario_root/docker\" \
             -e nas_media_root=\"\$scenario_root/media\" \
-            -e platform_project_name=\"immich-negative-\$scenario\" \
+            -e platform_project_name=immich-negative \
             --tags immich >\"\$output\" 2>&1; then
           cat \"\$output\" >&2
           printf 'IMMICH NEGATIVE RESTORE SCENARIO SUCCEEDED: %s\n' \"\$scenario\" >&2
@@ -1230,10 +1240,6 @@ docker run --rm \
     # The preceding scenarios must not create or seed the real-service target.
     test ! -e '$sandbox/volume1/Docker/nas-platform'
 
-    if [ "\$INTEGRATION_SUITE" = foundation ]; then
-      cleanup_vault
-      exit 0
-    fi
     fi
 
     run_selected_play() {
@@ -1271,7 +1277,14 @@ docker run --rm \
       exit 0
     fi
 
-    if [ "\$INTEGRATION_SUITE" != idempotence-check ]; then
+    # Bundle drift and symlink refusal are properties of deployment_bundle and of
+    # the target validator in the always-tagged pre_tasks, not of any one service:
+    # ntfy, beszel and audiobookshelf are only the vehicles. Every suite used to
+    # re-prove them, six playbook invocations for 3m37s, on five critical paths at
+    # once. foundation owns them now because it already exists to prove deployment
+    # integrity and converges deployment_bundle alone, so it is the cheapest place
+    # to pay for them once.
+    if [ "\$INTEGRATION_SUITE" = foundation ] || [ "\$INTEGRATION_SUITE" = full ]; then
     assert_selective_compose_refused() {
       service=\$1
       evidence=\$2
@@ -1348,6 +1361,13 @@ docker run --rm \
     chown 123:456 '$active_release_dir/services/ntfy/compose.yml'
     assert_active_drift_refused ACTIVE_OWNERSHIP_DRIFT_REFUSED
     chown 0:0 '$active_release_dir/services/ntfy/compose.yml'
+    fi
+
+    # foundation converges deployment_bundle and nothing else, so there are no
+    # service scenarios below for it to run.
+    if [ "\$INTEGRATION_SUITE" = foundation ]; then
+      cleanup_vault
+      exit 0
     fi
 
     if [ "\$INTEGRATION_RUN_SERVICE_SCENARIOS" = true ] && suite_is beszel; then
