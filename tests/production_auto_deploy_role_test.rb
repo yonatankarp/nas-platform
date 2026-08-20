@@ -73,6 +73,61 @@ check(failures, python_floor,
 check(failures, File.read(ROLE_TASKS).scan(/\bmode:\s*"0[0-7]{3}"/).length >= 5,
       "every managed path must declare an explicit mode")
 
+# --- drift screens: values duplicated across artifacts -----------------------
+
+# The poller passes a fixed tag list to verify.yml. If a service role gains a
+# verification tag and this list is not updated, automatic deployments silently
+# verify less than the documented manual command does.
+defaults = YAML.safe_load_file(File.join(ROOT, "roles/production_auto_deploy/defaults/main.yml"))
+declared_tags = defaults.fetch("production_auto_deploy_verify_tags").split(",").map(&:strip).reject(&:empty?)
+existing_tags = Dir.glob(File.join(ROOT, "roles/**/*.yml")).flat_map do |path|
+  File.read(path).scan(/platform_verify_[a-z_]+/)
+end.uniq
+check(failures, declared_tags.sort == existing_tags.sort,
+      "the poller's verify tags must match the service roles exactly; " \
+      "missing=#{(existing_tags - declared_tags).inspect} " \
+      "stale=#{(declared_tags - existing_tags).inspect}")
+
+doc_tags = File.read(File.join(ROOT, "docs/getting-started-nas.md"))
+              .scan(/platform_verify_[a-z_]+/).uniq
+check(failures, doc_tags.sort == declared_tags.sort,
+      "the operator guide's manual verify tags must match the poller's list; " \
+      "difference=#{((doc_tags | declared_tags) - (doc_tags & declared_tags)).inspect}")
+
+# The poller selects CI runs by workflow file and display name. A rename in
+# either direction makes it stop finding runs and stall without an error.
+workflow_file = defaults.fetch("production_auto_deploy_workflow")
+workflow_path = File.join(ROOT, ".github/workflows", workflow_file)
+check(failures, File.exist?(workflow_path),
+      "the configured workflow #{workflow_file} must exist")
+if File.exist?(workflow_path)
+  workflow_name = YAML.safe_load_file(workflow_path)["name"]
+  check(failures, workflow_name == defaults.fetch("production_auto_deploy_workflow_name"),
+        "workflow_name must equal #{workflow_file}'s name, found " \
+        "#{workflow_name.inspect} vs #{defaults.fetch('production_auto_deploy_workflow_name').inspect}")
+end
+
+# Every playbook and inventory the poller invokes must exist under this name.
+%w[
+  validate-vault.yml site.yml verify.yml install-production-auto-deploy.yml
+  inventory/local.yml
+].each do |relative|
+  check(failures, File.exist?(File.join(ROOT, relative)),
+        "the poller invokes #{relative}, which must exist")
+end
+
+# The notifier must derive the port and topic rather than restating them.
+# Inspect the url line itself: a comment mentioning ntfy_port must not satisfy
+# this check, or the guard passes while the value is hardcoded.
+notifier = File.read(File.join(ROOT, "roles/production_auto_deploy/templates/ntfy.curl.j2"))
+notifier_url = notifier.lines.find { |line| line.start_with?("url") }.to_s
+check(failures, notifier_url.include?("ntfy_port"),
+      "the ntfy.curl url must derive its port from ntfy_port, found: #{notifier_url.strip}")
+check(failures, notifier_url.include?("ntfy_topic"),
+      "the ntfy.curl url must derive its topic from ntfy_topic, found: #{notifier_url.strip}")
+check(failures, notifier_url.include?("127.0.0.1"),
+      "the ntfy.curl url must stay on loopback, found: #{notifier_url.strip}")
+
 # --- real role run -----------------------------------------------------------
 
 Dir.mktmpdir("auto-deploy-role") do |root|
