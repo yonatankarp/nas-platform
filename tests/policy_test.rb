@@ -173,6 +173,7 @@ PLATFORM_INVENTORIES = {
   "mac.yml" => ["mac_hosts", "mac", "local", "mac"]
 }.freeze
 PLATFORM_CAPABILITIES = %w[
+  platform_container_cpu_budget
   platform_render_device_available platform_render_device_path
   platform_beszel_agent_available platform_beszel_agent_kind
   platform_host_network_available platform_host_network_adapter
@@ -254,6 +255,9 @@ PLATFORM_INVENTORIES.values.map { |values| [values[0], values[3]] }.uniq.each do
     check(failures, host_vars.key?(capability),
           "#{relative_path} must define #{capability}")
   end
+  expected_cpu_budget = platform_kind == "nas" ? 3 : 0
+  check(failures, host_vars["platform_container_cpu_budget"] == expected_cpu_budget,
+        "#{relative_path} platform_container_cpu_budget must be #{expected_cpu_budget}")
   PLATFORM_TELEMETRY_POLICY.each do |policy|
     check(failures, host_vars.key?(policy),
           "#{relative_path} must define #{policy}")
@@ -797,6 +801,13 @@ manifest_entries.each do |service|
   check(failures, role_root_owned, "#{name}: role must be a real directory within roles")
   check(failures, spec_owned, "#{name}: argument_specs.yml must be a regular file within its role root")
   check(failures, tasks_owned, "#{name}: tasks/main.yml must be a regular file within its role root")
+  env_path = File.join(role_root, "templates", "env.j2")
+  env_source = File.file?(env_path) ? File.read(env_path) : ""
+  check(failures,
+        env_source.lines.map(&:strip).count(
+          "PLATFORM_CONTAINER_CPUSET={{ platform_effective_container_cpuset }}"
+        ) == 1,
+        "#{name}: environment must render the effective container CPU set exactly once")
   check(failures, declared_paths.any? { |path| path.include?("/#{name}/") || path.end_with?("/#{name}") },
         "#{name}: implemented service has no storage declaration")
 
@@ -1491,6 +1502,11 @@ check(failures, !target_preflight_index.nil?,
       "target containment must be validated before preflight can mutate the target")
 
 preflight_body = File.read(File.join(ROOT, "roles", "preflight", "tasks", "main.yml"))
+check(failures,
+      preflight_body.include?("docker, info, --format, json") &&
+        preflight_body.include?("platform_container_cpuset") &&
+        preflight_body.include?("platform_effective_container_cpuset"),
+      "preflight must derive the effective container CPU set from Docker capacity")
 check(failures, preflight_body.include?("{{ nas_docker_root }}/.nas-platform-preflight-probe") &&
                 !preflight_body.include?("{{ platform_deploy_root }}/.preflight-probe"),
       "fresh-install preflight must probe the existing validated nas_docker_root")
