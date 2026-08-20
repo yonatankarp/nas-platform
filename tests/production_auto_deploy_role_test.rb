@@ -137,6 +137,14 @@ Dir.mktmpdir("auto-deploy-role") do |root|
   FileUtils.mkdir_p([File.join(checkout, ".git"), File.join(checkout, "scripts"),
                      config_root])
   FileUtils.cp(POLLER_SOURCE, File.join(checkout, "scripts/production_auto_deploy.py"))
+  # The poller runs Ansible from this virtualenv, so the role must find it.
+  tooling_bin = File.join(checkout, ".venv/bin")
+  FileUtils.mkdir_p(tooling_bin)
+  %w[ansible-playbook pip].each do |name|
+    path = File.join(tooling_bin, name)
+    File.write(path, "#!/bin/sh\nexit 0\n")
+    File.chmod(0o700, path)
+  end
   %w[vault.yml vault-password].each do |name|
     path = File.join(config_root, name)
     File.write(path, "placeholder\n")
@@ -229,6 +237,12 @@ Dir.mktmpdir("auto-deploy-role") do |root|
           "a fresh installation must report no successful deployment")
   end
 end
+
+# The role must refuse to install when the virtualenv the poller needs is absent,
+# so the operator learns at install time instead of via a failed poll later.
+tasks_source = File.read(ROLE_TASKS)
+check(failures, tasks_source.include?(".venv/bin/ansible-playbook"),
+      "the role must verify the controller virtualenv before installing")
 
 if failures.empty?
   puts "production auto-deploy role: installed contract holds"
