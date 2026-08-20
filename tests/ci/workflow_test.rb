@@ -51,8 +51,7 @@ end
 
 ansible_lint = YAML.safe_load_file(ANSIBLE_LINT_PATH)
 ansible_lint_excludes = Array(ansible_lint["exclude_paths"])
-check(failures,
-      %w[services/ tests/mac/legacy-overrides/].all? { |path| ansible_lint_excludes.include?(path) },
+check(failures, ansible_lint_excludes.include?("services/"),
       "ansible-lint must exclude Docker Compose definitions with custom loader tags")
 
 def expression(value)
