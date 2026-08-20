@@ -132,6 +132,16 @@
     wait: true
     wait_timeout: 180
 
+- name: Verify Beszel effective container CPU policy
+  ansible.builtin.include_role:
+    name: container_cpu
+  vars:
+    container_cpu_service_name: beszel
+    container_cpu_project_name: "{{ beszel_compose_project_name }}"
+    container_cpu_expected_services: >-
+      {{ ['hub', 'socket-proxy'] + ([beszel_agent_service] if beszel_agent_enabled else []) }}
+  when: not ansible_check_mode
+
 - name: Wait for the hub to report healthy
   ansible.builtin.uri:
     url: "{{ beszel_api }}/api/health"

@@ -54,6 +54,27 @@
   changed_when: false
   check_mode: false
 
+- name: Read Docker logical CPU capacity
+  ansible.builtin.command:
+    argv: [docker, info, --format, json]
+  register: preflight_docker_info
+  changed_when: false
+  check_mode: false
+
+- name: Derive the managed container CPU set
+  ansible.builtin.set_fact:
+    platform_effective_container_cpuset: >-
+      {{ ((preflight_docker_info.stdout | from_json).NCPU)
+         | platform_container_cpuset(
+             platform_container_cpu_budget,
+             platform_kind == 'nas') }}
+
+- name: Report the managed container CPU boundary
+  ansible.builtin.debug:
+    msg: >-
+      Managed containers use CPUs {{ platform_effective_container_cpuset }} of
+      {{ (preflight_docker_info.stdout | from_json).NCPU }} reported by Docker.
+
 - name: Read the Docker Compose plugin version
   ansible.builtin.command:
     argv: [docker, compose, version, --short]

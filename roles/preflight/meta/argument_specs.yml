@@ -15,6 +15,12 @@ argument_specs:
         description: >-
           Production platform identifier. Test-only Compose selection uses a
           separate deployment bundle override.
+      platform_container_cpu_budget:
+        type: int
+        required: true
+        description: >-
+          Logical CPUs available to managed containers. Zero means every CPU
+          reported by Docker and is allowed only on non-production platforms.
       platform_public_host:
         type: str
         required: true

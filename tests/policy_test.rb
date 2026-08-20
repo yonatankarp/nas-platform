@@ -119,6 +119,33 @@ EXPECTED_SERVICE_MAPPINGS = {
   "paperless-ngx" => { "role" => "paperless_ngx" },
   "tinymediamanager" => { "role" => "tinymediamanager" }
 }.freeze
+EXPECTED_CONTAINER_CPUS = {
+  "audiobookshelf" => { "audiobookshelf" => 1.5 },
+  "beszel" => {
+    "hub" => 1.0,
+    "agent-portable" => 0.5,
+    "agent-intel" => 0.5,
+    "socket-proxy" => 0.5
+  },
+  "dozzle" => { "alert-relay" => 0.5, "dozzle" => 1.0, "socket-proxy" => 0.5 },
+  "immich" => {
+    "immich-server" => 3.0,
+    "immich-machine-learning" => 3.0,
+    "redis" => 0.5,
+    "database" => 2.0
+  },
+  "jellyfin" => { "jellyfin" => 3.0 },
+  "komga" => { "komga" => 1.5 },
+  "ntfy" => { "ntfy" => 1.0 },
+  "paperless-ngx" => {
+    "broker" => 0.5,
+    "db" => 2.0,
+    "webserver" => 3.0,
+    "gotenberg" => 2.0,
+    "tika" => 2.0
+  },
+  "tinymediamanager" => { "tinymediamanager" => 3.0 }
+}.freeze
 EXPECTED_VAULT_KEYS = %w[
   vault_audiobookshelf_admin_username
   vault_audiobookshelf_admin_password
@@ -173,6 +200,7 @@ PLATFORM_INVENTORIES = {
   "mac.yml" => ["mac_hosts", "mac", "local", "mac"]
 }.freeze
 PLATFORM_CAPABILITIES = %w[
+  platform_container_cpu_budget
   platform_render_device_available platform_render_device_path
   platform_beszel_agent_available platform_beszel_agent_kind
   platform_host_network_available platform_host_network_adapter
@@ -254,6 +282,9 @@ PLATFORM_INVENTORIES.values.map { |values| [values[0], values[3]] }.uniq.each do
     check(failures, host_vars.key?(capability),
           "#{relative_path} must define #{capability}")
   end
+  expected_cpu_budget = platform_kind == "nas" ? 3 : 0
+  check(failures, host_vars["platform_container_cpu_budget"] == expected_cpu_budget,
+        "#{relative_path} platform_container_cpu_budget must be #{expected_cpu_budget}")
   PLATFORM_TELEMETRY_POLICY.each do |policy|
     check(failures, host_vars.key?(policy),
           "#{relative_path} must define #{policy}")
@@ -797,6 +828,20 @@ manifest_entries.each do |service|
   check(failures, role_root_owned, "#{name}: role must be a real directory within roles")
   check(failures, spec_owned, "#{name}: argument_specs.yml must be a regular file within its role root")
   check(failures, tasks_owned, "#{name}: tasks/main.yml must be a regular file within its role root")
+  env_path = File.join(role_root, "templates", "env.j2")
+  env_source = File.file?(env_path) ? File.read(env_path) : ""
+  check(failures,
+        env_source.lines.map(&:strip).count(
+          "PLATFORM_CONTAINER_CPUSET={{ platform_effective_container_cpuset }}"
+        ) == 1,
+        "#{name}: environment must render the effective container CPU set exactly once")
+  tasks_source = tasks_owned ? File.read(tasks_path) : ""
+  deploys_compose = tasks_source.include?("community.docker.docker_compose_v2:")
+  check(failures,
+        !deploys_compose ||
+          (tasks_source.scan(/name:\s*container_cpu\b/).length == 1 &&
+           tasks_source.include?("container_cpu_service_name: #{name}")),
+        "#{name}: role must verify its effective container CPU policy exactly once")
   check(failures, declared_paths.any? { |path| path.include?("/#{name}/") || path.end_with?("/#{name}") },
         "#{name}: implemented service has no storage declaration")
 
@@ -826,9 +871,20 @@ service_dirs.each do |dir|
 
   compose = YAML.safe_load_file(compose_path, aliases: true)
   containers = compose.fetch("services")
+  expected_cpus = EXPECTED_CONTAINER_CPUS.fetch(name)
+  check(failures, containers.keys.sort == expected_cpus.keys.sort,
+        "#{name}: CPU policy must cover the exact Compose service set")
 
   containers.each do |container, spec|
     label = "#{name}/#{container}"
+    expected_cpu = expected_cpus[container]
+
+    check(failures, spec["cpuset"] == "${PLATFORM_CONTAINER_CPUSET:?}",
+          "#{label}: must require the Ansible-rendered platform CPU set")
+    check(failures, !expected_cpu.nil? && spec["cpus"] == expected_cpu,
+          "#{label}: CPU ceiling must match the pinned service policy")
+    check(failures, !spec.key?("cpu_shares"),
+          "#{label}: must retain Docker's equal default CPU shares")
 
     check(failures, spec["image"].to_s.match?(IMAGE),
           "#{label}: image must be digest-pinned with a version tag")
@@ -1492,6 +1548,11 @@ check(failures, !target_preflight_index.nil?,
       "target containment must be validated before preflight can mutate the target")
 
 preflight_body = File.read(File.join(ROOT, "roles", "preflight", "tasks", "main.yml"))
+check(failures,
+      preflight_body.include?("docker, info, --format, json") &&
+        preflight_body.include?("platform_container_cpuset") &&
+        preflight_body.include?("platform_effective_container_cpuset"),
+      "preflight must derive the effective container CPU set from Docker capacity")
 check(failures, preflight_body.include?("{{ nas_docker_root }}/.nas-platform-preflight-probe") &&
                 !preflight_body.include?("{{ platform_deploy_root }}/.preflight-probe"),
       "fresh-install preflight must probe the existing validated nas_docker_root")

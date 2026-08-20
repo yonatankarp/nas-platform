@@ -173,6 +173,14 @@
     wait: true
     wait_timeout: 180
 
+- name: Verify ntfy effective container CPU policy
+  ansible.builtin.include_role:
+    name: container_cpu
+  vars:
+    container_cpu_service_name: ntfy
+    container_cpu_project_name: "{{ ntfy_compose_project_name }}"
+  when: not ansible_check_mode
+
 - name: Wait for ntfy to report healthy
   ansible.builtin.uri:
     url: "http://127.0.0.1:{{ ntfy_port }}/v1/health"

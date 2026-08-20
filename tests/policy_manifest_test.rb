@@ -299,8 +299,30 @@ def implement_paperless(root)
   File.write(File.join(compose_dir, "compose.yml"), <<~YAML)
     ---
     services:
-      paperless:
+      broker:
+        image: docker.io/valkey/valkey:9-alpine@sha256:#{'0' * 64}
+        cpuset: \${PLATFORM_CONTAINER_CPUSET:?}
+        cpus: 0.5
+        restart: unless-stopped
+        logging:
+          driver: json-file
+          options:
+            max-size: 10m
+            max-file: "3"
+      db:
+        image: docker.io/library/postgres:18-alpine@sha256:#{'0' * 64}
+        cpuset: \${PLATFORM_CONTAINER_CPUSET:?}
+        cpus: 2.0
+        restart: unless-stopped
+        logging:
+          driver: json-file
+          options:
+            max-size: 10m
+            max-file: "3"
+      webserver:
         image: ghcr.io/paperless-ngx/paperless-ngx:2.0@sha256:#{'0' * 64}
+        cpuset: \${PLATFORM_CONTAINER_CPUSET:?}
+        cpus: 3.0
         restart: unless-stopped
         logging:
           driver: json-file
@@ -309,6 +331,18 @@ def implement_paperless(root)
             max-file: "3"
       gotenberg:
         image: docker.io/gotenberg/gotenberg:8.35.0@sha256:#{'0' * 64}
+        cpuset: \${PLATFORM_CONTAINER_CPUSET:?}
+        cpus: 2.0
+        restart: unless-stopped
+        logging:
+          driver: json-file
+          options:
+            max-size: 10m
+            max-file: "3"
+      tika:
+        image: docker.io/apache/tika:3.0.0@sha256:#{'0' * 64}
+        cpuset: \${PLATFORM_CONTAINER_CPUSET:?}
+        cpus: 2.0
         restart: unless-stopped
         logging:
           driver: json-file

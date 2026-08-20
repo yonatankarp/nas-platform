@@ -23,6 +23,27 @@ production NAS cutover.
 
 ## Design
 
+### Container CPU policy
+
+Production containers are restricted to logical CPUs `0-2` on the four-core
+AS6704T, leaving one logical CPU free of container processes. Every Compose
+service also has a workload-specific hard ceiling between 0.5 and 3.0 CPUs.
+Compute-heavy services may use the full three-CPU container set when it is idle;
+lighter services cannot monopolize it. Docker's default equal CPU shares remain
+unchanged.
+
+Ansible derives and validates the effective CPU set before deployment, then
+checks Docker's applied CPU set and quota after each stack starts. Inspect one
+container manually with:
+
+```sh
+docker inspect --format '{{json .HostConfig}}' immich_server
+```
+
+Change the production budget only through
+`inventory/group_vars/nas_hosts/main.yml`; the next Ansible run recreates and
+verifies affected containers.
+
 **Nothing is manual after the first run.** Two residues are irreducible and are
 stated rather than engineered around: someone must author the vault once and hold
 its password, because that is the root of trust; and credentials issued by a third

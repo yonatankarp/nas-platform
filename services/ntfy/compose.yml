@@ -8,6 +8,8 @@ services:
   ntfy:
     container_name: ntfy
     image: docker.io/binwiederhier/ntfy:v2.27.0@sha256:f2419f405127afa868f10985c1a41449e673477cee1eb19994339a5ae8b592e7
+    cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
+    cpus: 1.0
     labels:
       dev.dozzle.name: ntfy
     command:
