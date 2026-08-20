@@ -12,9 +12,15 @@ ROOT = File.expand_path("..", __dir__)
 ROLE_TASKS = File.join(ROOT, "roles/beszel/tasks/main.yml")
 ROLE_VARS = File.join(ROOT, "roles/beszel/vars/main.yml")
 
+# This test executes real ansible-playbook runs and asserts exact output, so it is
+# pinned to the version CI installs rather than tolerating a range. Stated once and
+# maintained by Renovate; tests/ci/workflow_test.rb proves it still matches ci.yml.
+REQUIRED_ANSIBLE_CORE = "2.21.3" # renovate: datasource=pypi depName=ansible-core
+
 version_output, version_status = Open3.capture2("ansible-playbook", "--version")
-abort "Beszel Ansible telemetry test requires ansible-core 2.21.3" unless
-  version_status.success? && version_output.start_with?("ansible-playbook [core 2.21.3]")
+abort "Beszel Ansible telemetry test requires ansible-core #{REQUIRED_ANSIBLE_CORE}" unless
+  version_status.success? &&
+  version_output.start_with?("ansible-playbook [core #{REQUIRED_ANSIBLE_CORE}]")
 
 def flatten_tasks(tasks)
   Array(tasks).flat_map do |task|
