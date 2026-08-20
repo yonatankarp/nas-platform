@@ -992,6 +992,34 @@ check(
   "CI must syntax-check install-production-auto-deploy.yml"
 )
 
+# Compose interpolation runs against the newly published bundle while the
+# on-disk .env can still be the previous deployment's. Any compose invocation
+# that precedes its role's env render must supply the required variables itself.
+ntfy_tasks_path = File.join(ROOT, "roles/ntfy/tasks/main.yml")
+ntfy_tasks = File.exist?(ntfy_tasks_path) ? YAML.safe_load_file(ntfy_tasks_path) : []
+ntfy_listing = ntfy_tasks.find do |task|
+  task.dig("community.docker.docker_compose_v2_run", "argv")&.include?("list")
+end
+# Assert the property when the task is present. Its existence is another
+# check's business, and claiming it here fires on unrelated role mutations.
+check(failures,
+      ntfy_listing.nil? ||
+        ntfy_listing.dig("environment", "PLATFORM_CONTAINER_CPUSET").to_s.include?("platform_effective_container_cpuset"),
+      "the ntfy user listing must supply PLATFORM_CONTAINER_CPUSET, which its " \
+      "role does not render until later")
+
+# /System/Info/Public answers 503 while Jellyfin initializes, and the preceding
+# wait polls a different endpoint that can succeed earlier.
+jellyfin_tasks_path = File.join(ROOT, "roles/jellyfin/tasks/main.yml")
+jellyfin_tasks = File.exist?(jellyfin_tasks_path) ? YAML.safe_load_file(jellyfin_tasks_path) : []
+jellyfin_startup = jellyfin_tasks.find do |task|
+  task.dig("ansible.builtin.uri", "url").to_s.include?("/System/Info/Public")
+end
+check(failures,
+      jellyfin_startup.nil? ||
+        (jellyfin_startup.key?("until") && jellyfin_startup["retries"].to_i > 0),
+      "reading Jellyfin startup state must retry until the server finishes loading")
+
 validation_script_path = File.join(ROOT, "tests", "validate-policy.sh")
 validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "tests"))
                         File.readlines(validation_script_path).map(&:strip)

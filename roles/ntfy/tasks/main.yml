@@ -123,7 +123,7 @@
   # deployment's. Compose interpolates from the process environment too, which
   # keeps a first upgrade across a new required variable from failing here.
   environment:
-    PLATFORM_CONTAINER_CPUSET: "{{ platform_effective_container_cpuset }}"
+    PLATFORM_CONTAINER_CPUSET: "{{ platform_effective_container_cpuset | default('') }}"
 
 - name: Require authoritative ntfy user listing
   ansible.builtin.assert:
