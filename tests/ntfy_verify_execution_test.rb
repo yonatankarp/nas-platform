@@ -345,6 +345,7 @@ if verify_include
         "ntfy_account_api" => "http://127.0.0.1:#{port}/v1/account",
         "ntfy_account_subscription_api" => "http://127.0.0.1:#{port}/v1/account/subscription",
         "ntfy_base_url" => "http://127.0.0.1:#{port}",
+        "ntfy_topics" => %w[nas-critical nas-deployment nas-containers],
         "ntfy_port" => port,
         "vault_managed_ntfy_users" => [{
           "username" => "auditor", "password" => "plain", "role" => "user",
@@ -374,6 +375,7 @@ if verify_include
         "ntfy_account_api" => "http://127.0.0.1:#{port}/v1/account",
         "ntfy_account_subscription_api" => "http://127.0.0.1:#{port}/v1/account/subscription",
         "ntfy_base_url" => "http://127.0.0.1:#{port}",
+        "ntfy_topics" => %w[nas-critical nas-deployment nas-containers],
         "ntfy_port" => port,
         "vault_managed_ntfy_users" => [{
           "username" => "auditor", "password" => "plain", "role" => "user",
@@ -395,6 +397,7 @@ if verify_include
         "ntfy_account_api" => "http://127.0.0.1:#{port}/v1/account",
         "ntfy_account_subscription_api" => "http://127.0.0.1:#{port}/v1/account/subscription",
         "ntfy_base_url" => "http://127.0.0.1:#{port}",
+        "ntfy_topics" => %w[nas-critical nas-deployment nas-containers],
         "ntfy_port" => port,
         "vault_managed_ntfy_users" => [{
           "username" => "auditor", "password" => "plain", "role" => "user",

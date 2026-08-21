@@ -25,7 +25,20 @@ argument_specs:
       ntfy_topic:
         type: str
         required: false
-        description: Single topic every monitor publishes alerts to.
+        description: Topic for anything that should get a human out of their chair.
+      ntfy_deployment_topic:
+        type: str
+        required: false
+        description: Topic for the routine deployment record.
+      ntfy_containers_topic:
+        type: str
+        required: false
+        description: Topic for the routine container record; recoveries.
+      ntfy_topics:
+        type: list
+        elements: str
+        required: false
+        description: Every topic the platform provisions, in declaration order.
       ntfy_base_url:
         type: str
         required: false
@@ -53,6 +66,11 @@ argument_specs:
           token:
             type: str
             required: true
+          topics:
+            type: list
+            elements: str
+            required: true
+            description: Exactly the topics this publisher may write to.
       vault_ntfy_admin_user:
         type: str
         required: true

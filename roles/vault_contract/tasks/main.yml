@@ -3,7 +3,8 @@
   ansible.builtin.set_fact:
     vault_contract_schema_errors: >-
       {{ vault_managed_users |
-         vault_managed_user_errors([vault_ntfy_dozzle_token, vault_ntfy_beszel_token]) }}
+         vault_managed_user_errors([vault_ntfy_dozzle_token, vault_ntfy_beszel_token,
+                                    vault_ntfy_deploy_token]) }}
   no_log: true
 
 # no_log does not suppress fail_msg, and the filter emits field paths with no
@@ -229,9 +230,13 @@
       - vault_ntfy_admin_password_hash is match('^\\$2[aby]\\$[0-9]{2}\\$[./A-Za-z0-9]{53}$')
       - vault_ntfy_dozzle_password_hash is match('^\\$2[aby]\\$[0-9]{2}\\$[./A-Za-z0-9]{53}$')
       - vault_ntfy_beszel_password_hash is match('^\\$2[aby]\\$[0-9]{2}\\$[./A-Za-z0-9]{53}$')
+      - vault_ntfy_deploy_password_hash is match('^\\$2[aby]\\$[0-9]{2}\\$[./A-Za-z0-9]{53}$')
       - vault_ntfy_dozzle_token is match('^tk_[a-z0-9]{29}$')
       - vault_ntfy_beszel_token is match('^tk_[a-z0-9]{29}$')
-      - vault_ntfy_dozzle_token != vault_ntfy_beszel_token
+      - vault_ntfy_deploy_token is match('^tk_[a-z0-9]{29}$')
+      - >-
+        [vault_ntfy_dozzle_token, vault_ntfy_beszel_token, vault_ntfy_deploy_token]
+        | unique | length == 3
       - vault_beszel_superuser_email is match('^[^@ ]+@[^@ ]+$')
       - vault_beszel_superuser_password | length > 0
       - vault_beszel_app_user_email is match('^[^@ ]+@[^@ ]+$')

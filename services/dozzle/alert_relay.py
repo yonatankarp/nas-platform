@@ -85,14 +85,18 @@ class Config:
         "alert_relay_token",
         "ntfy_publish_url",
         "ntfy_topic",
+        "ntfy_containers_topic",
         "ntfy_token",
         "alert_state_path",
     )
 
-    def __init__(self, relay_token, publish_url, topic, ntfy_token, state_path):
+    def __init__(
+        self, relay_token, publish_url, topic, events_topic, ntfy_token, state_path
+    ):
         self.alert_relay_token = relay_token
         self.ntfy_publish_url = publish_url
         self.ntfy_topic = topic
+        self.ntfy_containers_topic = events_topic
         self.ntfy_token = ntfy_token
         self.alert_state_path = state_path
 
@@ -102,6 +106,7 @@ class Config:
             "ALERT_RELAY_TOKEN",
             "NTFY_PUBLISH_URL",
             "NTFY_TOPIC",
+            "NTFY_CONTAINERS_TOPIC",
             "NTFY_TOKEN",
             "ALERT_STATE_PATH",
         )
@@ -128,8 +133,12 @@ class Config:
         )
 
         topic = resolved["NTFY_TOPIC"]
-        if len(topic) > 128 or not re.fullmatch(r"[A-Za-z0-9_-]+", topic):
-            raise ConfigurationError("NTFY_TOPIC is invalid")
+        events_topic = resolved["NTFY_CONTAINERS_TOPIC"]
+        for name, value in (("NTFY_TOPIC", topic), ("NTFY_CONTAINERS_TOPIC", events_topic)):
+            if len(value) > 128 or not re.fullmatch(r"[A-Za-z0-9_-]+", value):
+                raise ConfigurationError(f"{name} is invalid")
+        if topic == events_topic:
+            raise ConfigurationError("NTFY_TOPIC and NTFY_CONTAINERS_TOPIC must differ")
         state_path = Path(resolved["ALERT_STATE_PATH"])
         if not state_path.is_absolute() or state_path.name in {"", ".", ".."}:
             raise ConfigurationError("ALERT_STATE_PATH must be an absolute file path")
@@ -138,6 +147,7 @@ class Config:
             resolved["ALERT_RELAY_TOKEN"],
             publish_url,
             topic,
+            events_topic,
             resolved["NTFY_TOKEN"],
             state_path,
         )
@@ -285,7 +295,9 @@ def markdown_escape(value, maximum=128):
     return MARKDOWN_PATTERN.sub(escape, bounded)
 
 
-def render_notification(event, topic):
+def render_notification(event, topic, events_topic):
+    """Render one event. A recovery is a record, not something to wake up for."""
+
     rule = event["rule"]
     host = markdown_escape(event["host"])
     container = markdown_escape(event["container"])
@@ -314,7 +326,7 @@ def render_notification(event, topic):
         "Recovery": (3, ["white_check_mark"]),
     }[rule]
     return {
-        "topic": topic,
+        "topic": events_topic if rule == "Recovery" else topic,
         "title": title,
         "message": "\n".join(lines),
         "priority": priority,
@@ -702,7 +714,12 @@ def process_event(config, event):
         proposed, document = bounded_entries(proposed, utc_now())
         replacement_required = migration_required or proposed != entries
         if publication_required:
-            publish(config, render_notification(event, config.ntfy_topic))
+            publish(
+                config,
+                render_notification(
+                    event, config.ntfy_topic, config.ntfy_containers_topic
+                ),
+            )
         if replacement_required:
             state_file.replace(proposed, document)
 

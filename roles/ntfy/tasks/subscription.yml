@@ -3,13 +3,13 @@
   ansible.builtin.uri:
     url: "{{ ntfy_account_subscription_api }}"
     method: POST
-    url_username: "{{ ntfy_subscription_user.username }}"
-    url_password: "{{ ntfy_subscription_user.password }}"
+    url_username: "{{ ntfy_subscription_pair.user.username }}"
+    url_password: "{{ ntfy_subscription_pair.user.password }}"
     force_basic_auth: true
     body_format: json
     body:
       base_url: "{{ ntfy_base_url }}"
-      topic: nas-critical
+      topic: "{{ ntfy_subscription_pair.topic }}"
     return_content: true
     status_code: [200, 409]
   register: ntfy_subscription_create
@@ -29,7 +29,7 @@
         ntfy_subscription_create.json.display_name is string or
         ntfy_subscription_create.json.display_name is none
       - ntfy_subscription_create.json.base_url == ntfy_base_url
-      - ntfy_subscription_create.json.topic == 'nas-critical'
+      - ntfy_subscription_create.json.topic == ntfy_subscription_pair.topic
     fail_msg: ntfy returned an unsupported account-subscription create response.
   when: ntfy_subscription_create.status == 200
   no_log: true
@@ -57,8 +57,8 @@
   ansible.builtin.uri:
     url: "{{ ntfy_account_api }}"
     method: GET
-    url_username: "{{ ntfy_subscription_user.username }}"
-    url_password: "{{ ntfy_subscription_user.password }}"
+    url_username: "{{ ntfy_subscription_pair.user.username }}"
+    url_password: "{{ ntfy_subscription_pair.user.password }}"
     force_basic_auth: true
     return_content: true
     status_code: [200]
@@ -72,7 +72,7 @@
       - ntfy_subscription_post_read.json is mapping
       - >-
         ntfy_subscription_post_read.json.username | default('') ==
-        ntfy_subscription_user.username
+        ntfy_subscription_pair.user.username
       - ntfy_subscription_post_read.json.role | default('') == 'user'
       - ntfy_subscription_post_read.json.subscriptions | default([]) is sequence
       - ntfy_subscription_post_read.json.subscriptions | default([]) is not string
@@ -102,8 +102,9 @@
       - >-
         ntfy_subscription_post_read.json.subscriptions | default([]) |
         selectattr('base_url', 'equalto', ntfy_base_url) |
-        selectattr('topic', 'equalto', 'nas-critical') | list | length == 1
+        selectattr('topic', 'equalto', ntfy_subscription_pair.topic) |
+        list | length == 1
     fail_msg: >-
       The authoritative ntfy account re-read did not contain exactly one
-      synchronized nas-critical subscription.
+      synchronized subscription for the reconciled topic.
   no_log: true
