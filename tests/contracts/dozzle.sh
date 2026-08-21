@@ -620,15 +620,18 @@ def parse_json_lines(text)
   end
 end
 
-def ntfy_messages_since(id, basic)
+# Alerts are split across topics by severity, and ntfy scopes the since= id to
+# one topic, so every poll names the topic it expects the message on. Watching
+# the wrong topic is the failure this parameter exists to make impossible.
+def ntfy_messages_since(topic, id, basic)
   query = URI.encode_www_form(poll: 1, since: id)
-  parse_json_lines(request_text(endpoint(NTFY, "/nas-critical/json?#{query}"), basic: basic))
+  parse_json_lines(request_text(endpoint(NTFY, "/#{topic}/json?#{query}"), basic: basic))
 end
 
-def wait_for_ntfy(id, basic, diagnostic, timeout: 40)
+def wait_for_ntfy(topic, id, basic, diagnostic, timeout: 40)
   deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
   loop do
-    messages = ntfy_messages_since(id, basic)
+    messages = ntfy_messages_since(topic, id, basic)
     match = yield messages
     return [match, messages] if match
     fail_contract(diagnostic) if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
@@ -959,17 +962,23 @@ ALERTS.each do |name, (expression, cooldown)|
 end
 
 publisher = vault.fetch("vault_ntfy_dozzle_token")
-request("get", endpoint(NTFY, "/nas-critical/json?poll=1"), bearer: publisher, expected: [403])
+%w[nas-critical nas-containers].each do |topic|
+  request("get", endpoint(NTFY, "/#{topic}/json?poll=1"), bearer: publisher, expected: [403])
+end
 
 if MODE == "notify"
   admin = [vault.fetch("vault_ntfy_admin_user"), vault.fetch("vault_ntfy_admin_password")]
-  baseline_message = "dozzle-contract-baseline-#{SecureRandom.hex(6)}"
-  _response, baseline = request(
-    "post", endpoint(NTFY, "/nas-critical"), bearer: publisher,
-    body: { message: baseline_message }
-  )
-  baseline_id = baseline&.fetch("id", nil)
-  fail_contract("disposable ntfy baseline publish returned no anti-replay id") unless baseline_id
+  baselines = {}
+  %w[nas-critical nas-containers].each do |topic|
+    baseline_message = "dozzle-contract-baseline-#{SecureRandom.hex(6)}"
+    _response, baseline = request(
+      "post", endpoint(NTFY, "/#{topic}"), bearer: publisher,
+      body: { message: baseline_message }
+    )
+    baselines[topic] = baseline&.fetch("id", nil)
+    fail_contract("disposable ntfy baseline publish returned no anti-replay id") unless
+      baselines[topic]
+  end
 
   image = "docker.io/binwiederhier/ntfy:v2.27.0@sha256:f2419f405127afa868f10985c1a41449e673477cee1eb19994339a5ae8b592e7"
   health_fixture = "dozzle_contract_health_#{SecureRandom.hex(6)}"
@@ -985,7 +994,8 @@ if MODE == "notify"
     )
     fail_contract("disposable unhealthy fixture did not start") unless health_status.success?
     unhealthy, observed = wait_for_ntfy(
-      baseline_id, admin, "unhealthy event did not reach the private relay and disposable ntfy"
+      "nas-critical", baselines["nas-critical"], admin,
+      "unhealthy event did not reach the private relay and disposable ntfy"
     ) do |messages|
       messages.reverse.find { |message| message["title"] == "Unhealthy · #{health_fixture}" }
     end
@@ -998,13 +1008,16 @@ if MODE == "notify"
     fail_contract("relay exposed its event envelope as ntfy message text") if
       observed.any? { |message| message["message"].to_s.include?('"version":1') }
 
-    baseline_id = unhealthy.fetch("id")
+    baselines["nas-critical"] = unhealthy.fetch("id")
     _exec_out, _exec_error, exec_status = Open3.capture3(
       "docker", "exec", health_fixture, "/bin/sh", "-c", "touch /tmp/healthy"
     )
     fail_contract("disposable unhealthy fixture could not recover") unless exec_status.success?
+    # A recovery is a record, not an emergency, so it lands on the container
+    # topic rather than the critical one.
     recovered, observed = wait_for_ntfy(
-      baseline_id, admin, "healthy transition did not produce one correlated recovery"
+      "nas-containers", baselines["nas-containers"], admin,
+      "healthy transition did not produce one correlated recovery"
     ) do |messages|
       messages.reverse.find { |message| message["title"] == "Recovered · #{health_fixture}" }
     end
@@ -1015,7 +1028,7 @@ if MODE == "notify"
       recovered["priority"] == 3 && recovered["tags"] == ["white_check_mark"] &&
       recovered["content_type"] == "text/markdown" &&
       observed.count { |message| message["title"] == "Recovered · #{health_fixture}" } == 1
-    baseline_id = recovered.fetch("id")
+    baselines["nas-containers"] = recovered.fetch("id")
     recovery_rules = request(
       "get", endpoint(DOZZLE, "/api/notifications/rules"), cookie: cookie
     ).last
@@ -1034,7 +1047,9 @@ if MODE == "notify"
     startup_recovery_count = startup_rules.find { |rule| rule["name"] == "Recovery" }.fetch("triggerCount")
     fail_contract("startup healthy fixture did not exercise the managed recovery rule") unless
       startup_recovery_count > recovery_count
-    startup_messages = ntfy_messages_since(baseline_id, admin)
+    startup_messages = ntfy_messages_since(
+      "nas-containers", baselines["nas-containers"], admin
+    )
     fail_contract("startup healthy event produced a false recovery") if
       startup_messages.any? { |message| message["title"] == "Recovered · #{startup_fixture}" }
 
@@ -1044,7 +1059,8 @@ if MODE == "notify"
     fail_contract("disposable exit fixture did not exit with the expected status") unless
       run_status.exitstatus == 1
     exited, observed = wait_for_ntfy(
-      baseline_id, admin, "exit-code-1 event did not reach the private relay and disposable ntfy"
+      "nas-critical", baselines["nas-critical"], admin,
+      "exit-code-1 event did not reach the private relay and disposable ntfy"
     ) do |messages|
       messages.reverse.find { |message| message["title"] == "Unexpected exit · #{exit_fixture}" }
     end
