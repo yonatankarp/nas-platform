@@ -78,3 +78,33 @@ argument_specs:
         type: str
         required: true
         description: Bcrypt hash from the pinned ntfy image's own hasher.
+
+  deployment_report:
+    short_description: Publish one deployment report for a service Compose recreated
+    description:
+      - Called by every service role after its Compose deployment, so the caller
+        needs no ntfy port, topic or token of its own.
+    options:
+      ntfy_deployment_report_service:
+        type: str
+        required: true
+        description: Service name as it should read in the notification title.
+      ntfy_deployment_report_changed:
+        type: bool
+        required: true
+        description: Whether Compose recreated anything; false publishes nothing.
+      platform_release_id:
+        type: str
+        required: true
+        description: Git SHA of the release the service was deployed from.
+      ntfy_port:
+        type: int
+        required: false
+      ntfy_deployment_topic:
+        type: str
+        required: false
+        description: Topic for the routine deployment record.
+      vault_ntfy_deploy_token:
+        type: str
+        required: true
+        description: Write-only token of the deploy publisher.

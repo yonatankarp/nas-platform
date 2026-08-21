@@ -67,6 +67,7 @@ BASE_FIXTURE_PATHS = %w[
   roles/production_auto_deploy/templates/nas-platform-deploy.j2
   roles/production_auto_deploy/templates/ntfy.curl.j2
   roles/beszel/tasks/alert.yml
+  roles/ntfy/tasks/deployment_report.yml
   roles/vault_contract/meta/argument_specs.yml
   roles/vault_contract/tasks/main.yml
   services/manifest.yml

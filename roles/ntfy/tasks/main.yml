@@ -178,6 +178,7 @@
     state: present
     wait: true
     wait_timeout: 180
+  register: ntfy_deploy
 
 - name: Verify ntfy effective container CPU policy
   ansible.builtin.include_role:
@@ -201,6 +202,12 @@
   vars:
     ntfy_managed_users_phase: subscription_sync
   when: not ansible_check_mode
+
+- name: Report the ntfy deployment
+  ansible.builtin.include_tasks: deployment_report.yml
+  vars:
+    ntfy_deployment_report_service: ntfy
+    ntfy_deployment_report_changed: "{{ ntfy_deploy is changed }}"
 
 - name: Verify managed ntfy users and declared access
   ansible.builtin.include_tasks:

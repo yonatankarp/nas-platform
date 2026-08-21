@@ -148,6 +148,14 @@ subject, so deployment chatter can be muted without also muting container
 events: `nas-deployment` for successful deployments and poller recovery, and
 `nas-containers` for container recoveries.
 
+Every service reports its own deployment on `nas-deployment` at priority 2, one
+message per service whose containers Compose actually recreated. The controller
+publishes them with the deploy publisher's token, so no service needs a token
+of its own inside its image. A converge that leaves a service untouched sends
+nothing, which keeps a no-op run silent and makes the messages you do get name
+exactly what changed. The poller's own deployment summary stays at priority 3,
+above the per-service detail.
+
 Each publisher may write only to the topics it reports on, so a leaked Beszel
 token cannot reach either record topic, and a leaked deploy token cannot post
 container events.

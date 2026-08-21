@@ -184,6 +184,7 @@
     wait: true
     wait_timeout: "{{ immich_restore_database_wait_timeout }}"
   when: not ansible_check_mode
+  register: immich_data_deploy
 
 - name: Restore and verify the Immich database
   ansible.builtin.include_tasks: restore.yml
@@ -253,6 +254,15 @@
     state: present
     wait: true
     wait_timeout: 600
+  register: immich_deploy
+
+- name: Report the Immich deployment
+  ansible.builtin.include_role:
+    name: ntfy
+    tasks_from: deployment_report
+  vars:
+    ntfy_deployment_report_service: Immich
+    ntfy_deployment_report_changed: "{{ (immich_data_deploy is changed) or (immich_deploy is changed) }}"
 
 - name: Verify Immich effective container CPU policy
   ansible.builtin.include_role:
