@@ -79,6 +79,9 @@ class Config:
     # supplies no locale at all. Which UTF-8 locale exists varies by firmware,
     # so the installer discovers a working one rather than assuming.
     ansible_locale: str
+    # The fourth play reinstalls this poller, so the installer's own choices
+    # have to be replayed or the role rejects its own invocation.
+    external_scheduler: bool
 
 
 _PATH_FIELDS = frozenset(
@@ -109,7 +112,11 @@ def load_config(path: str | os.PathLike[str]) -> Config:
         if field.name not in payload:
             raise ConfigurationError(f"configuration is missing {field.name}")
         raw = payload[field.name]
-        if field.name == "log_retention_days":
+        if field.name == "external_scheduler":
+            if type(raw) is not bool:
+                raise ConfigurationError("external_scheduler must be a boolean")
+            values[field.name] = raw
+        elif field.name == "log_retention_days":
             if type(raw) is not int or raw < 1:
                 raise ConfigurationError(
                     "log_retention_days must be a positive integer"
@@ -269,10 +276,10 @@ def fetch_ci_runs(config: Config, sha: str) -> tuple[dict, ...]:
     return tuple(run for run in runs if isinstance(run, dict))
 
 
-def is_ci_green(config: Config, sha: str, runs) -> bool:
-    """Accept exactly one completed successful push run of the CI workflow."""
+def matching_ci_runs(config: Config, sha: str, runs) -> list[dict]:
+    """Completed successful push runs of the gating workflow for this SHA."""
 
-    matching = [
+    return [
         run
         for run in runs
         if run.get("head_sha") == sha
@@ -282,7 +289,12 @@ def is_ci_green(config: Config, sha: str, runs) -> bool:
         and run.get("head_branch") == config.branch
         and run.get("name") == config.workflow_name
     ]
-    return len(matching) == 1
+
+
+def is_ci_green(config: Config, sha: str, runs) -> bool:
+    """Accept exactly one such run. More than one is ambiguity, not success."""
+
+    return len(matching_ci_runs(config, sha, runs)) == 1
 
 
 def _write_private(path: Path, payload: bytes) -> None:
@@ -555,7 +567,19 @@ def _deploy_invocations(config: Config):
         ["ansible-playbook", *vault, "validate-vault.yml"],
         ["ansible-playbook", *vault, "site.yml"],
         ["ansible-playbook", *vault, "verify.yml", "--tags", config.verify_tags],
-        ["ansible-playbook", *vault, "install-production-auto-deploy.yml"],
+        # The installer's own choices must be replayed: the role requires the
+        # public host, and would otherwise try to install a cron entry on a host
+        # where scheduling is external.
+        [
+            "ansible-playbook",
+            *vault,
+            "install-production-auto-deploy.yml",
+            "-e",
+            f"production_auto_deploy_public_host={config.platform_public_host}",
+            "-e",
+            "production_auto_deploy_external_scheduler="
+            f"{str(config.external_scheduler).lower()}",
+        ],
     )
 
 
@@ -725,8 +749,45 @@ def poll(config: Config, retry_sha: str | None = None) -> bool | None:
         return succeeded
 
 
+def _next_poll_verdict(config: Config, state: dict) -> tuple[str, str]:
+    """Explain what the next poll would do, without doing any of it.
+
+    Silence is the normal outcome of a poll, so an operator otherwise cannot
+    tell a healthy idle poller from a broken one.
+    """
+
+    try:
+        head = resolve_main_sha(config)
+    except EligibilityError as error:
+        return "unknown", f"could not resolve {config.branch}: {error}"
+    short = head[:9]
+    if head in set(state["attempted"]):
+        successful = state["last_successful"]
+        if successful is not None and successful["sha"] == head:
+            return head, f"nothing to do: {short} is deployed"
+        return head, (
+            f"nothing to do: {short} was already attempted and failed. "
+            f"Retry it explicitly with --retry-failed {head}"
+        )
+    try:
+        runs = matching_ci_runs(config, head, fetch_ci_runs(config, head))
+    except EligibilityError as error:
+        return head, f"could not query CI for {short}: {error}"
+    if len(runs) == 1:
+        return head, f"would deploy {short}"
+    if not runs:
+        return head, (
+            f"waiting: no completed successful {config.workflow_name} push run "
+            f"for {short} yet"
+        )
+    return head, (
+        f"blocked: {len(runs)} successful push runs exist for {short}, and "
+        "exactly one is required. Re-run only failed jobs rather than all of them"
+    )
+
+
 def print_status(config: Config) -> None:
-    """Print the recorded, non-secret deployment state."""
+    """Print the recorded state and what the next poll would do."""
 
     state = read_state(config)
     successful = state["last_successful"]
@@ -739,6 +800,9 @@ def print_status(config: Config) -> None:
     for sha in attempted:
         marker = " (successful)" if successful and successful["sha"] == sha else ""
         print(f"  {sha}{marker}")
+    head, verdict = _next_poll_verdict(config, state)
+    print(f"current {config.branch}: {head}")
+    print(f"next poll: {verdict}")
 
 
 def _parse_arguments(argv):

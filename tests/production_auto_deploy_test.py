@@ -66,6 +66,7 @@ class PollerTestCase(unittest.TestCase):
             "curl_path": "/usr/bin/curl",
             "tool_path": "/usr/local/bin:/usr/bin:/bin",
             "ansible_locale": "en_US.UTF-8",
+            "external_scheduler": True,
         }
         payload.update(overrides)
         return payload
@@ -417,7 +418,22 @@ class DeployTest(PollerTestCase):
         self.assertTrue(calls[2][-1].endswith("controller-requirements.txt"))
 
         self.assertTrue(calls[3][0].endswith("ansible-galaxy"))
-        playbooks = [call[-1] if "--tags" not in call else call[-3] for call in calls[4:]]
+
+        def playbook_of(call):
+            # A playbook is a bare filename: vault arguments are paths or
+            # key=value pairs and also end in .yml.
+            names = [
+                a
+                for a in call
+                if a.endswith(".yml")
+                and "/" not in a
+                and "=" not in a
+                and not a.startswith("@")
+            ]
+            self.assertEqual(len(names), 1, f"one playbook per call, got {names}")
+            return names[0]
+
+        playbooks = [playbook_of(call) for call in calls[4:]]
         self.assertEqual(
             playbooks,
             [
@@ -446,7 +462,7 @@ class DeployTest(PollerTestCase):
         for call, options in zip(calls, kwargs):
             if call[0] != "ansible-playbook":
                 continue
-            with self.subTest(play=call[-1]):
+            with self.subTest(play=" ".join(call[-1:])):
                 self.assertEqual(options["env"]["ANSIBLE_COLLECTIONS_PATH"], expected)
 
     def test_collections_install_before_any_play_runs(self):
@@ -473,6 +489,37 @@ class DeployTest(PollerTestCase):
         )
         self.assertLess(pip_index, first_ansible)
 
+    def test_the_self_reinstall_replays_the_installer_choices(self):
+        """The fourth play reinstalls this poller. Without the installer's own
+        variables the role rejects its own invocation, which is how a deploy
+        can succeed through verification and still fail at the last step."""
+
+        config = self.loaded_config()
+        _outcome, calls, _kwargs = self.deploy_with(config)
+        install = next(c for c in calls if "install-production-auto-deploy.yml" in c)
+        joined = " ".join(install)
+        self.assertIn(
+            f"production_auto_deploy_public_host={config.platform_public_host}", joined
+        )
+        self.assertIn("production_auto_deploy_external_scheduler=true", joined)
+
+    def test_the_reinstall_passes_scheduling_false_when_cron_is_managed(self):
+        config = self.loaded_config(external_scheduler=False)
+        _outcome, calls, _kwargs = self.deploy_with(config)
+        install = next(c for c in calls if "install-production-auto-deploy.yml" in c)
+        self.assertIn("production_auto_deploy_external_scheduler=false", " ".join(install))
+
+    def test_only_the_install_play_receives_the_installer_variables(self):
+        config = self.loaded_config()
+        _outcome, calls, _kwargs = self.deploy_with(config)
+        for call in calls:
+            if call[0] != "ansible-playbook":
+                continue
+            if "install-production-auto-deploy.yml" in call:
+                continue
+            with self.subTest(play=" ".join(call[-1:])):
+                self.assertNotIn("production_auto_deploy_public_host", " ".join(call))
+
     def test_only_verify_receives_the_tag_list(self):
         config = self.loaded_config()
         _outcome, calls, _kwargs = self.deploy_with(config)
@@ -490,7 +537,7 @@ class DeployTest(PollerTestCase):
         for call in calls:
             if call[0] != "ansible-playbook":
                 continue
-            with self.subTest(play=call[-1]):
+            with self.subTest(play=" ".join(call[-1:])):
                 self.assertIn("--vault-password-file", call)
                 self.assertIn(str(config.vault_password_file), call)
                 self.assertIn(f"@{config.vault_file}", call)
@@ -531,7 +578,7 @@ class DeployTest(PollerTestCase):
             if call[0] != "ansible-playbook":
                 continue
             entries = options["env"]["PATH"].split(os.pathsep)
-            with self.subTest(play=call[-1]):
+            with self.subTest(play=" ".join(call[-1:])):
                 self.assertEqual(entries[0], expected)
                 self.assertIn("/usr/bin", entries)
 
@@ -544,7 +591,7 @@ class DeployTest(PollerTestCase):
         for call, options in zip(calls, kwargs):
             if call[0] != "ansible-playbook":
                 continue
-            with self.subTest(play=call[-1]):
+            with self.subTest(play=" ".join(call[-1:])):
                 self.assertEqual(options["env"]["LANG"], "en_US.UTF-8")
                 self.assertNotIn("LC_ALL", options["env"])
 
@@ -906,6 +953,64 @@ class CliTest(PollerTestCase):
             )
         self.assertEqual(code, 0)
         self.assertIn(MAIN_SHA, buffer.getvalue())
+
+    def status_text(self, sha=MAIN_SHA, runs=None, resolve_error=None):
+        buffer = io.StringIO()
+        resolve = (
+            mock.patch.object(
+                production_auto_deploy, "resolve_main_sha", side_effect=resolve_error
+            )
+            if resolve_error
+            else mock.patch.object(
+                production_auto_deploy, "resolve_main_sha", return_value=sha
+            )
+        )
+        with resolve, mock.patch.object(
+            production_auto_deploy, "fetch_ci_runs", return_value=runs or ()
+        ), contextlib.redirect_stdout(buffer):
+            production_auto_deploy.main(["--config", str(self.config_path), "--status"])
+        return buffer.getvalue()
+
+    GREEN_RUN = EligibilityTest.GREEN_RUN
+
+    def test_status_says_it_would_deploy_a_green_unattempted_head(self):
+        text = self.status_text(runs=(self.GREEN_RUN,))
+        self.assertIn(f"current main: {MAIN_SHA}", text)
+        self.assertIn("would deploy", text)
+
+    def test_status_distinguishes_waiting_for_ci_from_broken(self):
+        """Silence is the normal outcome of a poll, so an idle poller and a
+        broken one must not look the same."""
+
+        text = self.status_text(runs=())
+        self.assertIn("waiting", text)
+        self.assertIn("no completed successful CI push run", text)
+
+    def test_status_reports_a_deployed_head_as_nothing_to_do(self):
+        config = self.loaded_config()
+        production_auto_deploy.record_attempt(config, MAIN_SHA)
+        production_auto_deploy.record_success(config, MAIN_SHA, "2026-08-21T10:00:00Z")
+        text = self.status_text(runs=(self.GREEN_RUN,))
+        self.assertIn("is deployed", text)
+
+    def test_status_tells_you_how_to_retry_a_quarantined_head(self):
+        config = self.loaded_config()
+        production_auto_deploy.record_attempt(config, MAIN_SHA)
+        text = self.status_text(runs=(self.GREEN_RUN,))
+        self.assertIn("already attempted and failed", text)
+        self.assertIn(f"--retry-failed {MAIN_SHA}", text)
+
+    def test_status_names_the_ambiguous_run_trap(self):
+        text = self.status_text(runs=(self.GREEN_RUN, self.GREEN_RUN))
+        self.assertIn("2 successful push runs", text)
+        self.assertIn("exactly one is required", text)
+
+    def test_status_survives_being_offline(self):
+        text = self.status_text(
+            resolve_error=production_auto_deploy.EligibilityError("git query failed")
+        )
+        self.assertIn("could not resolve main", text)
+        self.assertIn("last successful:", text)
 
     def test_invalid_arguments_exit_two(self):
         for argv in (
