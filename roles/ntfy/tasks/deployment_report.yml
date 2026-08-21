@@ -26,6 +26,10 @@
       priority: 2
       tags: [package]
     status_code: [200]
+  # A refused publish fails the converge on purpose. It costs nothing: ntfy is
+  # deployed and its publish path verified before any service role runs, so a
+  # sink this task cannot reach has already aborted the play.
+  #
   # Publishing is not host state, and the converge-every-run model asserts a
   # second run reports no changes.
   changed_when: false
