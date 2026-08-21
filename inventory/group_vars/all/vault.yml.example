@@ -34,6 +34,8 @@ vault_ntfy_dozzle_password_hash: $2b$12$0000000000000000000000000000000000000000
 vault_ntfy_dozzle_token: tk_00000000000000000000000000000
 vault_ntfy_beszel_password_hash: $2b$12$00000000000000000000000000000000000000000000000000000
 vault_ntfy_beszel_token: tk_11111111111111111111111111111
+vault_ntfy_deploy_password_hash: $2b$12$00000000000000000000000000000000000000000000000000000
+vault_ntfy_deploy_token: tk_01010101010101010101010101010
 
 # The Beszel hub keypair is authored before first start. The agent key contains
 # only the key type and public key, without a trailing comment.
@@ -109,7 +111,14 @@ vault_managed_users:
       password_hash: $2b$12$22222222222222222222222222222222222222222222222222222
       role: user
       access:
+        # ntfy runs deny-all, so a reader sees only the topics listed here, and
+        # the role subscribes the account to exactly these. A topic left out is
+        # a 403 on the phone, not a quiet omission.
         - topic: nas-critical
+          permission: read-only
+        - topic: nas-deployment
+          permission: read-only
+        - topic: nas-containers
           permission: read-only
       tokens: []
   paperless_ngx:

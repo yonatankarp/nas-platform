@@ -297,12 +297,15 @@ def ntfy_playbook(output_path, tasks_path = NTFY_TASKS)
       gather_facts: false
       vars:
         ntfy_topic: nas-critical
+        ntfy_containers_topic: nas-containers
+        ntfy_topics: [nas-critical, nas-deployment, nas-containers]
         vault_ntfy_admin_user: admin
         vault_ntfy_admin_password_hash: #{BCRYPT_A.to_json}
         ntfy_publishers:
           - name: dozzle
             password_hash: #{BCRYPT_A.to_json}
             token: #{TOKEN_A}
+            topics: [nas-critical, nas-containers]
         vault_managed_ntfy_users:
           - username: reader
             password: managed-plaintext
@@ -427,6 +430,7 @@ def run_ntfy_subscription_fixture(
       "ntfy_account_api" => "#{base_url}/v1/account",
       "ntfy_account_subscription_api" => "#{base_url}/v1/account/subscription",
       "ntfy_base_url" => base_url,
+      "ntfy_topics" => %w[nas-critical nas-deployment nas-containers],
       "ntfy_managed_users_phase" => "subscription_sync",
       "vault_managed_ntfy_users" => users
     }
@@ -637,7 +641,8 @@ check(failures,
         request && request["url"] == "{{ ntfy_account_subscription_api }}" &&
           request["method"] == "POST" && request["body_format"] == "json" &&
           request["body"] == {
-            "base_url" => "{{ ntfy_base_url }}", "topic" => "nas-critical"
+            "base_url" => "{{ ntfy_base_url }}",
+            "topic" => "{{ ntfy_subscription_pair.topic }}"
           } && request["status_code"] == [200, 409]
       end,
       "ntfy account subscription request differs from the pinned v2.27 interface")
@@ -722,6 +727,45 @@ check(failures,
         ["reader", "GET", "/v1/account"],
         ["read-writer", "GET", "/v1/account"]
       ], "ntfy mutated an earlier user before rejecting a later duplicate subscription")
+
+# Two provisioned topics, and an account that may read both. Each topic is a
+# separate subscription, and a topic the account cannot read is never created.
+both_topics_user = [
+  {
+    "username" => "reader", "password" => "reader-password", "role" => "user",
+    "access" => [
+      { "topic" => "nas-critical", "permission" => "read-only" },
+      { "topic" => "nas-containers", "permission" => "read-only" }
+    ]
+  },
+  {
+    "username" => "critical-only", "password" => "critical-password", "role" => "user",
+    "access" => [{ "topic" => "nas-critical", "permission" => "read-only" }]
+  }
+]
+both_state, _requests, both_calls, both_outputs, both_statuses, both_base =
+  run_ntfy_subscription_fixture(
+    users: both_topics_user,
+    subscriptions: { "reader" => [], "critical-only" => [] },
+    expected_requests: 8
+  )
+check(failures, both_statuses.all?(&:success?),
+      "ntfy multi-topic subscription synchronization failed: " \
+      "#{both_outputs.last&.lines&.last&.strip}")
+check(failures,
+      both_state.fetch("reader") == [
+        { "base_url" => both_base, "topic" => "nas-critical", "display_name" => nil },
+        { "base_url" => both_base, "topic" => "nas-containers", "display_name" => nil }
+      ],
+      "ntfy did not subscribe a both-topic reader to both topics")
+check(failures,
+      both_state.fetch("critical-only") == [
+        { "base_url" => both_base, "topic" => "nas-critical", "display_name" => nil }
+      ],
+      "ntfy subscribed an account to a topic it may not read")
+check(failures,
+      both_calls.count { |call| call[0] == "critical-only" && call[1] == "POST" } == 1,
+      "ntfy did not create exactly one subscription for the critical-only reader")
 
 malformed_account = {
   "username" => "read-writer", "role" => "user", "subscriptions" => "invalid"
@@ -973,7 +1017,8 @@ if !ntfy_tasks.empty?
             "admin:#{BCRYPT_A}:admin", "dozzle:#{BCRYPT_A}:user", "reader:#{BCRYPT_B}:user"
           ], "ntfy user provisioning entries differ")
     check(failures, provisioned["access"].split(",") == [
-            "dozzle:nas-critical:write-only", "reader:nas-critical:read-only", "reader:private:deny"
+            "dozzle:nas-critical:write-only", "dozzle:nas-containers:write-only",
+            "reader:nas-critical:read-only", "reader:private:deny"
           ], "ntfy access provisioning entries differ")
     check(failures, provisioned["tokens"].split(",") == ["dozzle:#{TOKEN_A}", "reader:#{TOKEN_B}"],
           "ntfy token ownership entries differ")
@@ -983,8 +1028,10 @@ if !ntfy_tasks.empty?
   check(failures, !status.success?, "ntfy accepted an administrator/managed-user collision")
   _provisioned, _output, status = run_ntfy_fixture(
     "ntfy_publishers" => [
-      { "name" => "dozzle", "password_hash" => BCRYPT_A, "token" => TOKEN_A },
-      { "name" => "beszel", "password_hash" => BCRYPT_A, "token" => TOKEN_A }
+      { "name" => "dozzle", "password_hash" => BCRYPT_A, "token" => TOKEN_A,
+        "topics" => ["nas-critical"] },
+      { "name" => "beszel", "password_hash" => BCRYPT_A, "token" => TOKEN_A,
+        "topics" => ["nas-critical"] }
     ]
   )
   check(failures, !status.success?, "ntfy accepted duplicate token ownership")

@@ -138,6 +138,26 @@ against the production deployment without exercising external integrations; for
 ntfy, use only an agreed disposable topic when verifying alerts from Beszel and
 Dozzle.
 
+The platform provisions three ntfy topics: severity first, then subject.
+
+`nas-critical` cuts across every publisher and carries only what should get you
+out of your chair: out of memory, an unexpected container exit, an unhealthy
+container, a Beszel threshold breach, a failed deployment, and a deployment
+poller that has gone blind. The other two are the routine record, one per
+subject, so deployment chatter can be muted without also muting container
+events: `nas-deployment` for successful deployments and poller recovery, and
+`nas-containers` for container recoveries.
+
+Each publisher may write only to the topics it reports on, so a leaked Beszel
+token cannot reach either record topic, and a leaked deploy token cannot post
+container events.
+
+ntfy runs `deny-all`, so a reading account sees only the topics named in its
+own `vault_managed_users.ntfy[].access` list, and the role subscribes it to
+exactly those. Adding a topic to the platform therefore does not reach a phone
+until that account's ACL names it; a topic left out is a 403, not a quiet
+omission.
+
 ## Automatic deployment from the NAS
 
 Automatic deployment is a second step after the first manual deployment and
@@ -197,16 +217,16 @@ the mobile push topic, so setting it to the LAN address publishes where nothing
 is subscribed and reports no error. The installer requires it explicitly rather
 than defaulting it.
 
-Place the already reviewed encrypted vault and its password provider at the
-fixed protected paths described in
+Place the vault password provider at the fixed protected path described in
 [Production auto-deployment inputs](secrets.md#production-auto-deployment-inputs).
-The following values match the production contract for this NAS:
+The encrypted vault itself needs no copy: it is committed, so the checkout
+carries the candidate revision's own. The following values match the production
+contract for this NAS:
 
 ```sh
 export PLATFORM_NAS_ADDRESS=192.168.0.139
 export PLATFORM_PUBLIC_HOST=nas.example.ts.net
 export PLATFORM_CALLBACK_HOST=192.168.0.139
-export PLATFORM_VAULT_FILE="$HOME/.config/nas-platform/vault.yml"
 export PLATFORM_VAULT_PASSWORD_FILE="$HOME/.config/nas-platform/vault-password"
 ```
 
@@ -216,20 +236,14 @@ with `failed=0` and `unreachable=0`:
 
 ```sh
 ansible-playbook -i inventory/local.yml validate-vault.yml \
-  --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE" \
-  -e @"$PLATFORM_VAULT_FILE" \
-  -e platform_vault_file="$PLATFORM_VAULT_FILE"
+  --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE"
 
 ansible-playbook -i inventory/local.yml site.yml \
-  --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE" \
-  -e @"$PLATFORM_VAULT_FILE" \
-  -e platform_vault_file="$PLATFORM_VAULT_FILE"
+  --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE"
 
 ansible-playbook -i inventory/local.yml verify.yml \
   --tags platform_verify_ntfy,platform_verify_beszel,platform_verify_dozzle,platform_verify_audiobookshelf,platform_verify_komga,platform_verify_tinymediamanager,platform_verify_jellyfin,platform_verify_immich,platform_verify_paperless \
-  --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE" \
-  -e @"$PLATFORM_VAULT_FILE" \
-  -e platform_vault_file="$PLATFORM_VAULT_FILE"
+  --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE"
 ```
 
 Only after those three commands pass, install the poller and its single
@@ -238,8 +252,6 @@ five-minute cron entry:
 ```sh
 ansible-playbook -i inventory/local.yml install-production-auto-deploy.yml \
   --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE" \
-  -e @"$PLATFORM_VAULT_FILE" \
-  -e platform_vault_file="$PLATFORM_VAULT_FILE" \
   -e production_auto_deploy_vault_password_file="$PLATFORM_VAULT_PASSWORD_FILE" \
   -e production_auto_deploy_public_host="$PLATFORM_PUBLIC_HOST"
 
@@ -275,10 +287,25 @@ $HOME/.local/bin/nas-platform-deploy --retry-failed "$FAILED_SHA"
 Attempt logs are protected mode-0600 files under
 `$HOME/.local/share/nas-platform/logs`, retained for 30 days. The controller
 checkout, the installed poller, and the deployment state live under the same
-private root. Success and failure outcomes are sent to ntfy using the protected
-publisher token. Secrets stay out of the logs because the tasks that handle them
-set `no_log`, and the vault password is passed to Ansible as a file path rather
-than a value.
+private root. Success and failure outcomes are sent to ntfy using the
+deployer's own protected publisher token, as rendered Markdown rather than a
+raw document. A failed deployment publishes to `nas-critical` at priority 5; a
+successful one publishes to `nas-deployment` at priority 3, so a routine deploy
+does not compete with a real problem for attention.
+
+A poll that cannot establish a candidate revision at all -- Git unreachable,
+the GitHub API failing, an unparsable response -- is a worse failure than a
+failed deployment, because a silent poll is also what a healthy idle poll looks
+like. After three consecutive blind polls, a quarter hour at the five-minute
+cadence, the poller publishes once to `nas-critical` and stays quiet until the
+condition changes; recovery is announced once on `nas-deployment`. A single
+blip never alerts. An unusable configuration cannot be reported this way,
+because the notifier credentials come from the same file; it remains a stderr
+message and a non-zero exit.
+
+Secrets stay out of the logs because the tasks that handle them set `no_log`,
+and the vault password is passed to Ansible as a file path rather than a
+value.
 
 Once a local poll, cron inspection, and at least one automatic no-op have been
 verified, you may optionally disable SSH for this account if the NAS has an

@@ -177,6 +177,8 @@ EXPECTED_VAULT_KEYS = %w[
   vault_ntfy_dozzle_token
   vault_ntfy_beszel_password_hash
   vault_ntfy_beszel_token
+  vault_ntfy_deploy_password_hash
+  vault_ntfy_deploy_token
   vault_paperless_admin_username
   vault_paperless_admin_password
   vault_paperless_admin_email

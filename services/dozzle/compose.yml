@@ -23,6 +23,7 @@ services:
       ALERT_RELAY_TOKEN: ${ALERT_RELAY_TOKEN:?}
       NTFY_PUBLISH_URL: ${NTFY_PUBLISH_URL:?}
       NTFY_TOPIC: ${NTFY_TOPIC:?}
+      NTFY_CONTAINERS_TOPIC: ${NTFY_CONTAINERS_TOPIC:?}
       NTFY_TOKEN: ${NTFY_TOKEN:?}
       ALERT_STATE_PATH: /state/alert-relay.json
     healthcheck:

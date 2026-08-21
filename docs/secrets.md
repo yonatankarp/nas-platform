@@ -441,8 +441,8 @@ unset platform_ntfy_image
 unset -f resolve_ntfy_image
 ```
 
-For a fresh platform, run the recipe twice: once for the Dozzle integration and
-once for the Beszel integration. The two tokens must be distinct. The command
+For a fresh platform, run the recipe three times: once each for the Dozzle,
+Beszel, and deployment-poller integrations. All three tokens must be distinct. The command
 displays each token, so transfer its output immediately to the encrypted editor
 and password manager without putting it in shell history, logs, or chat.
 Existing deployments must recover both deployed tokens from their authoritative
@@ -669,7 +669,7 @@ source of values. Every key below is required.
 - Immich: `vault_immich_admin_email`, `vault_immich_admin_password`, `vault_immich_db_name`, `vault_immich_db_username`, `vault_immich_db_password`. Recover the administrator identity from the current application and password manager. Recover the database name, user, and password together from the deployed Compose environment and database stack, checking them against the database that owns the existing data. The email must contain a nonempty local and domain part. Database identifiers must start with a letter or underscore and then contain only letters, digits, underscores, or hyphens.
 - Jellyfin: `vault_jellyfin_admin_username`, `vault_jellyfin_admin_password`, `vault_jellyfin_opensubtitles_username`, `vault_jellyfin_opensubtitles_password`. The managed administrator username is exactly `Yonatan`; recover its matching password from the password manager. Recover the existing OpenSubtitles account credentials from the password manager or deployed Jellyfin plugin configuration. Preserve both credential pairs unchanged; the example and generated plaintext placeholders are not valid deployment values.
 - Komga: `vault_komga_admin_email`, `vault_komga_admin_password`. Recover the deployed administrator identity from the current application and its matching password from the password manager. The email must contain a nonempty local and domain part.
-- ntfy: `vault_ntfy_admin_user`, `vault_ntfy_admin_password`, `vault_ntfy_admin_password_hash`, `vault_ntfy_dozzle_password_hash`, `vault_ntfy_dozzle_token`, `vault_ntfy_beszel_password_hash`, `vault_ntfy_beszel_token`. Recover the administrator name and clear password from the password manager/current login, and recover the administrator hash, integration-user hashes, and access tokens from the deployed ntfy configuration and authentication data. The administrator password and hash must be the matching deployed pair. Preserve each Dozzle or Beszel hash with that same integration identity's token; do not infer a clear password from a hash or create a replacement token. Each hash has the bcrypt shape described above. Each access token is `tk_` followed by 29 lowercase letters or digits, and the Dozzle and Beszel tokens must be distinct.
+- ntfy: `vault_ntfy_admin_user`, `vault_ntfy_admin_password`, `vault_ntfy_admin_password_hash`, `vault_ntfy_dozzle_password_hash`, `vault_ntfy_dozzle_token`, `vault_ntfy_beszel_password_hash`, `vault_ntfy_beszel_token`, `vault_ntfy_deploy_password_hash`, `vault_ntfy_deploy_token`. Recover the administrator name and clear password from the password manager/current login, and recover the administrator hash, integration-user hashes, and access tokens from the deployed ntfy configuration and authentication data. The administrator password and hash must be the matching deployed pair. Preserve each Dozzle, Beszel or deploy hash with that same integration identity's token; do not infer a clear password from a hash or create a replacement token. Each hash has the bcrypt shape described above. Each access token is `tk_` followed by 29 lowercase letters or digits, and the Dozzle, Beszel and deploy tokens must all be distinct.
 - Beszel: `vault_beszel_superuser_email`, `vault_beszel_superuser_password`, `vault_beszel_app_user_email`, `vault_beszel_app_user_password`, `vault_beszel_agent_key`, `vault_beszel_universal_token`, `vault_beszel_hub_private_key`. Recover both deployed hub identities from the current Beszel hub and their matching passwords from the password manager. Recover the universal token and public agent key from the deployed agent configuration, and recover the matching OpenSSH Ed25519 private key from the hub's protected key file. If the agent's public value is unavailable, derive its public half from the recovered private key as described above; if both sources exist, compare them. Never regenerate or replace the pair. Both emails need nonempty local and domain parts. The universal token must be a lowercase RFC 4122 UUID. The agent key contains exactly two whitespace-separated fields, the `ssh-ed25519` type and its base64 public key, with no comment.
 - Paperless: `vault_paperless_admin_username`, `vault_paperless_admin_password`, `vault_paperless_admin_email`, `vault_paperless_db_name`, `vault_paperless_db_username`, `vault_paperless_db_password`, `vault_paperless_django_secret_key`, `vault_paperless_gmail_account`, `vault_paperless_gmail_app_password`, `vault_paperless_mail_account_name`, `vault_paperless_mail_rule_name`. Recover the administrator identity from the current Paperless application and its password from the password manager. Recover the database name, user, and password together from the deployed Compose environment and database stack; recover the Django signing key from the deployed application/Compose environment. Recover the mail account and rule names plus Gmail account from current Paperless mail configuration, and recover the matching Gmail app password from the password manager or protected deployed mail configuration. Use the Google account only to confirm the named account and existing app-password registration; do not create a replacement. Preserve these as one deployed identity set. The email fields need nonempty local and domain parts; database identifiers follow the Immich rules. The Gmail credential must be an app password for the named account, handled according to [Google's app-password guidance](https://support.google.com/accounts/answer/185833), not the normal account password.
 - tinyMediaManager: `vault_tinymediamanager_password`. Recover the deployed API password from the current tinyMediaManager configuration and confirm it against an existing client; changing it breaks those clients.
@@ -762,7 +762,7 @@ wildcards, URL separators, whitespace, commas, and colons are not supported by
 this exact verifier. Usernames follow ntfy's native letters, digits, `_`, `-`,
 `.`, `+`, and `@` contract. Publisher and administrator identities remain under
 their separate noninteractive and primary-credential contracts. Managed
-identities cannot duplicate the administrator or the Dozzle and Beszel
+identities cannot duplicate the administrator or the Dozzle, Beszel, and deploy
 publishers. The role treats the
 prior rendered ntfy `.env` as the declarative ownership record and confirms
 database identities with the pinned `ntfy user list` command before rendering a
@@ -1236,20 +1236,23 @@ reviewed. Do not transfer a password through a shell command or write it with
 
 ### Production auto-deployment inputs
 
-The NAS poller requires the reviewed encrypted vault at
-`$HOME/.config/nas-platform/vault.yml` and its provider at
-`$HOME/.config/nas-platform/vault-password`. Both live outside the controller
-checkout, because the poller rewrites that checkout on every deployment. Copy
-the encrypted vault there from the checkout's
-`inventory/group_vars/all/vault.yml`, which is committed. The password provider
-is never committed, and both inputs are never logged.
-The containing `$HOME/.config/nas-platform` directory must be mode `0700`.
+The NAS poller requires the vault password provider at
+`$HOME/.config/nas-platform/vault-password`. It lives outside the controller
+checkout because it is never committed, and the poller rewrites that checkout on
+every deployment. It is never logged. The containing
+`$HOME/.config/nas-platform` directory must be mode `0700`.
 
-Each input must be a mode-0600 regular, non-symlink file owned by the dedicated
-deployment account. The password input may be the protected one-line password
-file used during bootstrap. Do not pass either value through argv, an
-environment variable, cron source, or notification. The installer validates
-the paths before activation, and the poller reads them only for the local
+The encrypted vault needs no copy there. It is committed, so `git checkout` of
+the candidate revision puts that revision's own vault in the checkout and
+`group_vars` loads it. A second copy passed from outside as extra vars would
+outrank `group_vars`, so a stale one would silently shadow the revision being
+deployed while every play still reported success.
+
+The password input must be a mode-0600 regular, non-symlink file owned by the
+dedicated deployment account. It may be the protected one-line password file
+used during bootstrap. Do not pass it through argv, an environment variable,
+cron source, or notification. The installer validates the path before
+activation, and the poller reads it only for the local
 Ansible runs described in the
 [physical NAS walkthrough](getting-started-nas.md#automatic-deployment-from-the-nas).
 

@@ -136,6 +136,7 @@ generate_vault() (
   ntfy_admin_password=$(random_password)
   ntfy_dozzle_password=$(random_password)
   ntfy_beszel_password=$(random_password)
+  ntfy_deploy_password=$(random_password)
   dozzle_admin_password=$(random_password)
   managed_dozzle_password=$(random_password)
   managed_ntfy_password=$(random_password)
@@ -175,6 +176,8 @@ vault_ntfy_dozzle_password_hash: '$(bcrypt_password "$ntfy_dozzle_password")'
 vault_ntfy_dozzle_token: '$(random_token)'
 vault_ntfy_beszel_password_hash: '$(bcrypt_password "$ntfy_beszel_password")'
 vault_ntfy_beszel_token: '$(random_token)'
+vault_ntfy_deploy_password_hash: '$(bcrypt_password "$ntfy_deploy_password")'
+vault_ntfy_deploy_token: '$(random_token)'
 vault_paperless_admin_username: ephemeral-admin
 vault_paperless_admin_password: '$(random_password)'
 vault_paperless_admin_email: ephemeral-admin@example.invalid

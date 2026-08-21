@@ -111,6 +111,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
                 "ALERT_RELAY_TOKEN": RELAY_TOKEN,
                 "NTFY_PUBLISH_URL": f"http://127.0.0.1:{self.ntfy.server_port}/",
                 "NTFY_TOPIC": "nas-critical",
+                "NTFY_CONTAINERS_TOPIC": "nas-containers",
                 "NTFY_TOKEN": NTFY_TOKEN,
                 "ALERT_STATE_PATH": str(self.state_path),
             }
@@ -457,6 +458,41 @@ class DozzleAlertRelayTest(unittest.TestCase):
                 self.assertEqual(published["tags"], tags)
                 self.assertIs(published["markdown"], True)
 
+    def test_every_problem_rule_stays_on_the_critical_topic(self):
+        """Only a recovery is routed away; a problem must never be downgraded."""
+
+        for rule, changes in (
+            ("Unexpected exit", {"exitCode": "23"}),
+            ("OOM", {}),
+            ("Unhealthy", {}),
+        ):
+            with self.subTest(rule=rule):
+                self.assertEqual(self.post(self.envelope(rule, **changes))[0], 204)
+                self.assertEqual(
+                    self.ntfy.requests[-1]["json"]["topic"], "nas-critical"
+                )
+
+    def test_config_requires_two_distinct_topics(self):
+        base = {
+            "ALERT_RELAY_TOKEN": RELAY_TOKEN,
+            "NTFY_PUBLISH_URL": "http://127.0.0.1:1/",
+            "NTFY_TOPIC": "nas-critical",
+            "NTFY_CONTAINERS_TOPIC": "nas-containers",
+            "NTFY_TOKEN": NTFY_TOKEN,
+            "ALERT_STATE_PATH": str(self.state_path),
+        }
+        self.relay_module.Config.from_mapping(base)
+
+        for label, mutation in (
+            ("missing", {"NTFY_CONTAINERS_TOPIC": ""}),
+            ("invalid", {"NTFY_CONTAINERS_TOPIC": "nas events"}),
+            # One topic under two names silently reunites the two streams.
+            ("identical", {"NTFY_CONTAINERS_TOPIC": "nas-critical"}),
+        ):
+            with self.subTest(label=label):
+                with self.assertRaises(self.relay_module.ConfigurationError):
+                    self.relay_module.Config.from_mapping({**base, **mutation})
+
     def test_unhealthy_recovery_transition_and_duplicate_suppression(self):
         healthy = self.envelope(
             "Recovery",
@@ -501,7 +537,8 @@ class DozzleAlertRelayTest(unittest.TestCase):
         self.assertEqual(
             self.ntfy.requests[-1]["json"],
             {
-                "topic": "nas-critical",
+                # A recovery is a record, not an emergency: events topic.
+                "topic": "nas-containers",
                 "title": "Recovered · immich_server",
                 "message": "**Host:** `nas`\n**Container:** `immich_server`\n**Status:** `healthy`",
                 "priority": 3,

@@ -61,20 +61,18 @@ python -m pip install --upgrade pip
 python -m pip install -r controller-requirements.txt
 ```
 
-Place the credentials. The encrypted vault is committed, so it comes from the
-checkout; the password provider exists only in your keeping:
+Place the credentials. The encrypted vault is committed, so every run reads it
+from the checkout; only the password provider has to be placed by hand:
 
 ```sh
 mkdir -p "$HOME/.config/nas-platform" && chmod 700 "$HOME/.config/nas-platform"
-cp inventory/group_vars/all/vault.yml "$HOME/.config/nas-platform/vault.yml"
-chmod 600 "$HOME/.config/nas-platform/vault.yml"
 ```
 
 Copy the vault password file to `$HOME/.config/nas-platform/vault-password` and
-`chmod 600` it, then confirm the pair opens before going further:
+`chmod 600` it, then confirm it opens the committed vault before going further:
 
 ```sh
-ansible-vault view --vault-password-file "$HOME/.config/nas-platform/vault-password" "$HOME/.config/nas-platform/vault.yml" | head -3
+ansible-vault view --vault-password-file "$HOME/.config/nas-platform/vault-password" inventory/group_vars/all/vault.yml | head -3
 ```
 
 Export the environment. `inventory/local.yml` reads these through `lookup('env')`,
@@ -89,7 +87,6 @@ subscribed to, and nothing reports an error:
 export PLATFORM_NAS_ADDRESS=<nas-lan-address>
 export PLATFORM_PUBLIC_HOST=<nas-hostname>.<tailnet>.ts.net
 export PLATFORM_CALLBACK_HOST=<nas-lan-address>
-export PLATFORM_VAULT_FILE="$HOME/.config/nas-platform/vault.yml"
 export PLATFORM_VAULT_PASSWORD_FILE="$HOME/.config/nas-platform/vault-password"
 ```
 
@@ -106,7 +103,7 @@ Run `validate-vault.yml`, `site.yml`, and `verify.yml` with the tag list from th
 then install the poller, declaring that scheduling is external:
 
 ```sh
-ansible-playbook -i inventory/local.yml install-production-auto-deploy.yml --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE" -e @"$PLATFORM_VAULT_FILE" -e platform_vault_file="$PLATFORM_VAULT_FILE" -e production_auto_deploy_vault_password_file="$PLATFORM_VAULT_PASSWORD_FILE" -e production_auto_deploy_public_host="$PLATFORM_PUBLIC_HOST" -e production_auto_deploy_external_scheduler=true
+ansible-playbook -i inventory/local.yml install-production-auto-deploy.yml --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE" -e production_auto_deploy_vault_password_file="$PLATFORM_VAULT_PASSWORD_FILE" -e production_auto_deploy_public_host="$PLATFORM_PUBLIC_HOST" -e production_auto_deploy_external_scheduler=true
 ```
 
 Then confirm the poller runs at all, before scheduling anything:

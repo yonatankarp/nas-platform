@@ -23,8 +23,9 @@ CONFIG_KEYS = %w[
   ansible_locale branch checkout curl_path external_scheduler git_path
   github_api_base
   log_retention_days log_root
-  ntfy_curl_config platform_callback_host platform_nas_address
-  platform_public_host repository repository_url state_root tool_path vault_file
+  ntfy_curl_config ntfy_topic_critical ntfy_topic_deployment
+  platform_callback_host platform_nas_address
+  platform_public_host repository repository_url state_root tool_path
   vault_password_file verify_tags workflow workflow_name
 ].freeze
 
@@ -132,17 +133,31 @@ end
         "the poller invokes #{relative}, which must exist")
 end
 
-# The notifier must derive the port and topic rather than restating them.
-# Inspect the url line itself: a comment mentioning ntfy_port must not satisfy
-# this check, or the guard passes while the value is hardcoded.
+# The notifier must derive the port rather than restating it, and must address
+# the ntfy root. ntfy only parses a JSON publish document posted to the root; a
+# document posted to /<topic> is delivered as literal JSON text, which is how
+# deploy alerts became unreadable. Inspect the url line itself: a comment
+# mentioning ntfy_port must not satisfy this check, or the guard passes while
+# the value is hardcoded.
 notifier = File.read(File.join(ROOT, "roles/production_auto_deploy/templates/ntfy.curl.j2"))
 notifier_url = notifier.lines.find { |line| line.start_with?("url") }.to_s
 check(failures, notifier_url.include?("ntfy_port"),
       "the ntfy.curl url must derive its port from ntfy_port, found: #{notifier_url.strip}")
-check(failures, notifier_url.include?("ntfy_topic"),
-      "the ntfy.curl url must derive its topic from ntfy_topic, found: #{notifier_url.strip}")
+check(failures, notifier_url.match?(%r{/"\s*$}),
+      "the ntfy.curl url must address the ntfy root so the topic travels in " \
+      "the body, found: #{notifier_url.strip}")
+check(failures, !notifier_url.include?("ntfy_topic"),
+      "the ntfy.curl url must not carry a topic, found: #{notifier_url.strip}")
 check(failures, notifier_url.include?("127.0.0.1"),
       "the ntfy.curl url must stay on loopback, found: #{notifier_url.strip}")
+
+# The deployer is its own publisher. Borrowing dozzle's token would give a
+# leaked deploy token dozzle's rights, which is exactly what per-publisher
+# identities exist to prevent.
+check(failures, notifier.include?("vault_ntfy_deploy_token"),
+      "the ntfy.curl config must use the deploy publisher's own token")
+check(failures, !notifier.include?("vault_ntfy_dozzle_token"),
+      "the ntfy.curl config must not borrow dozzle's token")
 
 # --- real role run -----------------------------------------------------------
 
@@ -161,11 +176,12 @@ Dir.mktmpdir("auto-deploy-role") do |root|
     File.write(path, "#!/bin/sh\nexit 0\n")
     File.chmod(0o700, path)
   end
-  %w[vault.yml vault-password].each do |name|
-    path = File.join(config_root, name)
-    File.write(path, "placeholder\n")
-    File.chmod(0o600, path)
-  end
+  # Only the password provider is planted. The role must converge without a
+  # vault copy outside the checkout, because the committed vault travels with
+  # the revision and a second copy would outrank it.
+  path = File.join(config_root, "vault-password")
+  File.write(path, "placeholder\n")
+  File.chmod(0o600, path)
 
   inventory = File.join(root, "inventory.yml")
   File.write(inventory, <<~YAML)
@@ -195,7 +211,7 @@ Dir.mktmpdir("auto-deploy-role") do |root|
     ansible, "-i", inventory, play,
     "--skip-tags", "production_auto_deploy_cron",
     "-e", "production_auto_deploy_home=#{home}",
-    "-e", "vault_ntfy_dozzle_token=#{TOKEN}",
+    "-e", "vault_ntfy_deploy_token=#{TOKEN}",
     "-e", "production_auto_deploy_public_host=#{PUBLIC_HOST}",
     # The cron tag is skipped so the suite never writes a developer's crontab;
     # declare external scheduling so the matching precondition is skipped too.

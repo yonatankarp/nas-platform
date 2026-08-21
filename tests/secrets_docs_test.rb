@@ -69,8 +69,8 @@ vault_keys = if vault_example.is_a?(Hash)
                []
              end
 
-check(failures, vault_keys.length == 43,
-      "vault example must contain exactly 43 vault_* keys (found #{vault_keys.length})")
+check(failures, vault_keys.length == 45,
+      "vault example must contain exactly 45 vault_* keys (found #{vault_keys.length})")
 
 secrets_guide_path = File.join(ROOT, "docs", "secrets.md")
 secrets_guide = File.file?(secrets_guide_path) ? File.read(secrets_guide_path) : ""
@@ -375,9 +375,15 @@ auto_deploy_secrets_section = markdown_section(
   "### Production auto-deployment inputs"
 )
 check(failures,
-      auto_deploy_secrets_section.include?("$HOME/.config/nas-platform/vault.yml") &&
-        auto_deploy_secrets_section.include?("$HOME/.config/nas-platform/vault-password"),
-      "secrets guide must name both protected NAS auto-deployment inputs")
+      auto_deploy_secrets_section.include?("$HOME/.config/nas-platform/vault-password"),
+      "secrets guide must name the protected NAS auto-deployment password provider")
+# The vault is committed and travels with the revision. A copy outside the
+# checkout would outrank group_vars, so the guide must say it is not placed
+# there rather than leaving an operator to infer it from silence.
+check(failures,
+      !auto_deploy_secrets_section.include?("$HOME/.config/nas-platform/vault.yml") &&
+        auto_deploy_secrets_section.match?(/needs no copy|no copy there/),
+      "secrets guide must say the encrypted vault is not copied beside the provider")
 check(failures,
       auto_deploy_secrets_section.match?(/never committed.*never logged/im) &&
         auto_deploy_secrets_section.match?(/mode-0600 regular, non-symlink/m),

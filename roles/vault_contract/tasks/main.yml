@@ -3,10 +3,11 @@
   ansible.builtin.set_fact:
     vault_contract_schema_errors: >-
       {{ vault_managed_users |
-         vault_managed_user_errors([vault_ntfy_dozzle_token, vault_ntfy_beszel_token],
+         vault_managed_user_errors([vault_ntfy_dozzle_token, vault_ntfy_beszel_token,
+                                    vault_ntfy_deploy_token],
                                    vault_contract_reserved_identities) }}
   vars:
-    # The administrator of each service, plus the two usernames the platform
+    # The administrator of each service, plus the usernames the platform
     # publishes under. A managed user claiming one of these would take over an
     # account the platform reconciles from a different source.
     vault_contract_reserved_identities:
@@ -16,7 +17,7 @@
       immich: ["{{ vault_immich_admin_email }}"]
       jellyfin: ["{{ vault_jellyfin_admin_username }}"]
       komga: ["{{ vault_komga_admin_email }}"]
-      ntfy: ["{{ vault_ntfy_admin_user }}", dozzle, beszel]
+      ntfy: ["{{ vault_ntfy_admin_user }}", dozzle, beszel, deploy]
       paperless_ngx: ["{{ vault_paperless_admin_username }}"]
   no_log: true
 
@@ -105,9 +106,13 @@
       - vault_ntfy_admin_password_hash is match('^\\$2[aby]\\$[0-9]{2}\\$[./A-Za-z0-9]{53}$')
       - vault_ntfy_dozzle_password_hash is match('^\\$2[aby]\\$[0-9]{2}\\$[./A-Za-z0-9]{53}$')
       - vault_ntfy_beszel_password_hash is match('^\\$2[aby]\\$[0-9]{2}\\$[./A-Za-z0-9]{53}$')
+      - vault_ntfy_deploy_password_hash is match('^\\$2[aby]\\$[0-9]{2}\\$[./A-Za-z0-9]{53}$')
       - vault_ntfy_dozzle_token is match('^tk_[a-z0-9]{29}$')
       - vault_ntfy_beszel_token is match('^tk_[a-z0-9]{29}$')
-      - vault_ntfy_dozzle_token != vault_ntfy_beszel_token
+      - vault_ntfy_deploy_token is match('^tk_[a-z0-9]{29}$')
+      - >-
+        [vault_ntfy_dozzle_token, vault_ntfy_beszel_token, vault_ntfy_deploy_token]
+        | unique | length == 3
       - vault_beszel_superuser_email is match('^[^@ ]+@[^@ ]+$')
       - vault_beszel_superuser_password | length > 0
       - vault_beszel_app_user_email is match('^[^@ ]+@[^@ ]+$')
