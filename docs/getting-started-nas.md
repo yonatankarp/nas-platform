@@ -152,6 +152,10 @@ firmwares place them under `/usr/local`, `/usr/builtin` or `/opt` rather than
 installer fails closed when any of these prerequisites is absent or unsafe, and
 it checks them before creating anything.
 
+Firmware-specific findings from a real rollout, including hosts where cron,
+tool locations and locales all differ from the assumptions above, are recorded in
+[Automatic deployment on ASUSTOR ADM](asustor-adm-rollout.md).
+
 The poller prefers working effective-user `crontab` support, but that is not
 universal: some firmwares ship BusyBox `crontab` without the setuid bit and keep
 the spool root-owned, so an unprivileged account cannot schedule anything. The installer detects this and

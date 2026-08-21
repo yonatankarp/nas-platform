@@ -21,6 +21,7 @@ BASE_FIXTURE_PATHS = %w[
   docs/ansible-basics.md
   docs/getting-started.md
   docs/getting-started-mac.md
+  docs/asustor-adm-rollout.md
   docs/getting-started-nas.md
   filter_plugins/platform_paths.py
   filter_plugins/compose_metadata.py
