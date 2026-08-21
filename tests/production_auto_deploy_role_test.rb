@@ -20,7 +20,8 @@ PUBLIC_HOST = "100.64.0.1"
 TIMEOUT_SECONDS = 300
 
 CONFIG_KEYS = %w[
-  ansible_locale branch checkout curl_path git_path github_api_base
+  ansible_locale branch checkout curl_path external_scheduler git_path
+  github_api_base
   log_retention_days log_root
   ntfy_curl_config platform_callback_host platform_nas_address
   platform_public_host repository repository_url state_root tool_path vault_file

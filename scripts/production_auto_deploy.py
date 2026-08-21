@@ -79,6 +79,9 @@ class Config:
     # supplies no locale at all. Which UTF-8 locale exists varies by firmware,
     # so the installer discovers a working one rather than assuming.
     ansible_locale: str
+    # The fourth play reinstalls this poller, so the installer's own choices
+    # have to be replayed or the role rejects its own invocation.
+    external_scheduler: bool
 
 
 _PATH_FIELDS = frozenset(
@@ -109,7 +112,11 @@ def load_config(path: str | os.PathLike[str]) -> Config:
         if field.name not in payload:
             raise ConfigurationError(f"configuration is missing {field.name}")
         raw = payload[field.name]
-        if field.name == "log_retention_days":
+        if field.name == "external_scheduler":
+            if type(raw) is not bool:
+                raise ConfigurationError("external_scheduler must be a boolean")
+            values[field.name] = raw
+        elif field.name == "log_retention_days":
             if type(raw) is not int or raw < 1:
                 raise ConfigurationError(
                     "log_retention_days must be a positive integer"
@@ -555,7 +562,19 @@ def _deploy_invocations(config: Config):
         ["ansible-playbook", *vault, "validate-vault.yml"],
         ["ansible-playbook", *vault, "site.yml"],
         ["ansible-playbook", *vault, "verify.yml", "--tags", config.verify_tags],
-        ["ansible-playbook", *vault, "install-production-auto-deploy.yml"],
+        # The installer's own choices must be replayed: the role requires the
+        # public host, and would otherwise try to install a cron entry on a host
+        # where scheduling is external.
+        [
+            "ansible-playbook",
+            *vault,
+            "install-production-auto-deploy.yml",
+            "-e",
+            f"production_auto_deploy_public_host={config.platform_public_host}",
+            "-e",
+            "production_auto_deploy_external_scheduler="
+            f"{str(config.external_scheduler).lower()}",
+        ],
     )
 
 

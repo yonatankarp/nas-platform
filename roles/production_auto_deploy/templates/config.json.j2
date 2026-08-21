@@ -19,5 +19,6 @@
   'git_path': production_auto_deploy_tools['git'],
   'curl_path': production_auto_deploy_tools['curl'],
   'tool_path': production_auto_deploy_tool_path,
-  'ansible_locale': production_auto_deploy_locale
+  'ansible_locale': production_auto_deploy_locale,
+  'external_scheduler': production_auto_deploy_external_scheduler | bool
 } | to_nice_json }}
