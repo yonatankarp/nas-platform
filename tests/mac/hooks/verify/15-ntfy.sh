@@ -5,7 +5,7 @@ set +x
 : "${PLATFORM_MAC_VAULT_FILE:?PLATFORM_MAC_VAULT_FILE is required}"
 : "${PLATFORM_MAC_VAULT_PASSWORD_FILE:?PLATFORM_MAC_VAULT_PASSWORD_FILE is required}"
 : "${PLATFORM_NTFY_PORT:?PLATFORM_NTFY_PORT is required}"
-: "${PLATFORM_NTFY_TOPICS:=nas-critical nas-events}"
+: "${PLATFORM_NTFY_TOPICS:=nas-critical nas-deployment nas-containers}"
 
 ntfy_hook_base_url=http://127.0.0.1:$PLATFORM_NTFY_PORT
 ansible-vault view \

@@ -11,7 +11,7 @@
   'vault_password_file': production_auto_deploy_password_path,
   'ntfy_curl_config': production_auto_deploy_notifier_path,
   'ntfy_topic_critical': ntfy_topic | default('nas-critical'),
-  'ntfy_topic_events': ntfy_events_topic | default('nas-events'),
+  'ntfy_topic_deployment': ntfy_deployment_topic | default('nas-deployment'),
   'platform_nas_address': production_auto_deploy_nas_address,
   'platform_public_host': production_auto_deploy_public_host,
   'platform_callback_host': production_auto_deploy_callback_host,

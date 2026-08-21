@@ -57,7 +57,7 @@ class PollerTestCase(unittest.TestCase):
             "vault_password_file": str(self.password),
             "ntfy_curl_config": str(self.notifier),
             "ntfy_topic_critical": "nas-critical",
-            "ntfy_topic_events": "nas-events",
+            "ntfy_topic_deployment": "nas-deployment",
             "platform_nas_address": "192.168.0.139",
             "platform_public_host": "192.168.0.139",
             "platform_callback_host": "192.168.0.139",
@@ -759,7 +759,7 @@ class NotifyTest(PollerTestCase):
         config = self.loaded_config()
         _delivered, _arguments, body = self.published(config, "success")
 
-        self.assertEqual(body["topic"], "nas-events")
+        self.assertEqual(body["topic"], "nas-deployment")
         self.assertEqual(body["priority"], 3)
         self.assertEqual(body["tags"], ["white_check_mark"])
         self.assertEqual(body["title"], f"Deployed \u00b7 {MAIN_SHA[:9]}")
@@ -885,6 +885,104 @@ class NotifyTest(PollerTestCase):
                             config.log_root / "latest",
                         )
                     )
+
+
+class PollBlindnessTest(PollerTestCase):
+    """A poller that cannot see main is silent today, and exits 0 while doing it.
+
+    Silence is also what a healthy idle poll looks like, so an unreachable
+    GitHub is indistinguishable from nothing to deploy until someone runs
+    --status by hand. That is the failure worth alerting on.
+    """
+
+    def blind_poll(self, config, reason="GitHub request failed"):
+        published = []
+
+        def fake_notify(_config, notification):
+            published.append(notification)
+            return True
+
+        with mock.patch.object(
+            production_auto_deploy, "resolve_main_sha",
+            side_effect=production_auto_deploy.EligibilityError(reason),
+        ), mock.patch.object(production_auto_deploy, "publish", fake_notify):
+            with self.assertRaises(production_auto_deploy.EligibilityError):
+                production_auto_deploy.poll(config)
+        return published
+
+    def seeing_poll(self, config):
+        published = []
+
+        def fake_notify(_config, notification):
+            published.append(notification)
+            return True
+
+        state = production_auto_deploy.read_state(config)
+        with mock.patch.object(
+            production_auto_deploy, "resolve_main_sha", return_value=MAIN_SHA
+        ), mock.patch.object(
+            production_auto_deploy, "attempted_shas", return_value={MAIN_SHA}
+        ), mock.patch.object(production_auto_deploy, "publish", fake_notify):
+            production_auto_deploy.poll(config)
+        del state
+        return published
+
+    def test_a_single_blind_poll_stays_quiet(self):
+        """A transient blip at a five-minute cadence must not become an alert."""
+
+        config = self.loaded_config()
+
+        self.assertEqual(self.blind_poll(config), [])
+
+    def test_sustained_blindness_alerts_once_on_the_critical_topic(self):
+        config = self.loaded_config()
+
+        for _poll in range(production_auto_deploy.BLIND_POLL_THRESHOLD - 1):
+            self.assertEqual(self.blind_poll(config), [])
+        published = self.blind_poll(config)
+
+        self.assertEqual(len(published), 1)
+        self.assertEqual(published[0]["topic"], "nas-critical")
+        self.assertEqual(published[0]["priority"], 5)
+        self.assertIn("GitHub request failed", published[0]["message"])
+        self.assertIn(
+            str(production_auto_deploy.BLIND_POLL_THRESHOLD), published[0]["message"]
+        )
+
+        # Still blind is not news; only the transition is.
+        self.assertEqual(self.blind_poll(config), [])
+        self.assertEqual(self.blind_poll(config), [])
+
+    def test_recovery_is_announced_once_and_resets_the_count(self):
+        config = self.loaded_config()
+        for _poll in range(production_auto_deploy.BLIND_POLL_THRESHOLD):
+            self.blind_poll(config)
+
+        published = self.seeing_poll(config)
+        self.assertEqual(len(published), 1)
+        self.assertEqual(published[0]["topic"], "nas-deployment")
+        self.assertIn("again", published[0]["message"])
+
+        self.assertEqual(self.seeing_poll(config), [])
+        # The count reset, so the next outage needs the full threshold again.
+        for _poll in range(production_auto_deploy.BLIND_POLL_THRESHOLD - 1):
+            self.assertEqual(self.blind_poll(config), [])
+        self.assertEqual(len(self.blind_poll(config)), 1)
+
+    def test_recovery_is_silent_when_blindness_never_reached_the_threshold(self):
+        config = self.loaded_config()
+        self.blind_poll(config)
+
+        self.assertEqual(self.seeing_poll(config), [])
+
+    def test_a_corrupt_blind_count_does_not_stop_the_poller(self):
+        config = self.loaded_config()
+        (config.state_root / "blind-polls").write_text("not-a-number\n", encoding="ascii")
+
+        self.assertEqual(self.blind_poll(config), [])
+        self.assertEqual(
+            (config.state_root / "blind-polls").read_text(encoding="ascii").strip(), "1"
+        )
 
 
 class PollTest(PollerTestCase):

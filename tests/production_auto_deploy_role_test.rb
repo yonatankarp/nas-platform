@@ -23,7 +23,7 @@ CONFIG_KEYS = %w[
   ansible_locale branch checkout curl_path external_scheduler git_path
   github_api_base
   log_retention_days log_root
-  ntfy_curl_config ntfy_topic_critical ntfy_topic_events
+  ntfy_curl_config ntfy_topic_critical ntfy_topic_deployment
   platform_callback_host platform_nas_address
   platform_public_host repository repository_url state_root tool_path vault_file
   vault_password_file verify_tags workflow workflow_name

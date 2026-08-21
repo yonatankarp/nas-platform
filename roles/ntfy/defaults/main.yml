@@ -8,25 +8,27 @@ ntfy_compose_project_name: >-
   {{ (platform_project_name ~ '-ntfy')
      if platform_project_name | default('') | length > 0 else 'ntfy' }}
 
-# Two topics, split by severity rather than by publisher. Anything that wants
-# a human out of their chair goes to the critical topic; everything else is a
-# record of what happened. A topic named nas-critical that also carries routine
-# deploy pings is the thing that trains an operator to ignore it.
+# Severity first, then subject. nas-critical cuts across every publisher and
+# carries only what should get a human out of their chair, so it stays worth
+# reacting to. The remaining topics are the routine record, one per subject, so
+# deployment chatter can be muted without also muting container events.
 ntfy_topic: nas-critical
-ntfy_events_topic: nas-events
-ntfy_topics: "{{ [ntfy_topic, ntfy_events_topic] }}"
+ntfy_deployment_topic: nas-deployment
+ntfy_containers_topic: nas-containers
+ntfy_topics: "{{ [ntfy_topic, ntfy_deployment_topic, ntfy_containers_topic] }}"
 
 # Each publisher is its own user with write-only access and one token, because a
 # token inherits all of its user's rights. Sharing one identity would let a
 # leaked token read notification history.
 #
-# topics lists exactly what each publisher may write to. Beszel emits only
-# threshold breaches, so it never needs the events topic.
+# topics lists exactly what each publisher may write to, so a leaked token
+# cannot reach a subject its owner never reports on. Beszel emits only threshold
+# breaches, so it needs nothing but the critical topic.
 ntfy_publishers:
   - name: dozzle
     password_hash: "{{ vault_ntfy_dozzle_password_hash }}"
     token: "{{ vault_ntfy_dozzle_token }}"
-    topics: "{{ [ntfy_topic, ntfy_events_topic] }}"
+    topics: "{{ [ntfy_topic, ntfy_containers_topic] }}"
   - name: beszel
     password_hash: "{{ vault_ntfy_beszel_password_hash }}"
     token: "{{ vault_ntfy_beszel_token }}"
@@ -34,4 +36,4 @@ ntfy_publishers:
   - name: deploy
     password_hash: "{{ vault_ntfy_deploy_password_hash }}"
     token: "{{ vault_ntfy_deploy_token }}"
-    topics: "{{ [ntfy_topic, ntfy_events_topic] }}"
+    topics: "{{ [ntfy_topic, ntfy_deployment_topic] }}"

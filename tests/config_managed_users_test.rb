@@ -297,15 +297,15 @@ def ntfy_playbook(output_path, tasks_path = NTFY_TASKS)
       gather_facts: false
       vars:
         ntfy_topic: nas-critical
-        ntfy_events_topic: nas-events
-        ntfy_topics: [nas-critical, nas-events]
+        ntfy_containers_topic: nas-containers
+        ntfy_topics: [nas-critical, nas-deployment, nas-containers]
         vault_ntfy_admin_user: admin
         vault_ntfy_admin_password_hash: #{BCRYPT_A.to_json}
         ntfy_publishers:
           - name: dozzle
             password_hash: #{BCRYPT_A.to_json}
             token: #{TOKEN_A}
-            topics: [nas-critical, nas-events]
+            topics: [nas-critical, nas-containers]
         vault_managed_ntfy_users:
           - username: reader
             password: managed-plaintext
@@ -430,7 +430,7 @@ def run_ntfy_subscription_fixture(
       "ntfy_account_api" => "#{base_url}/v1/account",
       "ntfy_account_subscription_api" => "#{base_url}/v1/account/subscription",
       "ntfy_base_url" => base_url,
-      "ntfy_topics" => %w[nas-critical nas-events],
+      "ntfy_topics" => %w[nas-critical nas-deployment nas-containers],
       "ntfy_managed_users_phase" => "subscription_sync",
       "vault_managed_ntfy_users" => users
     }
@@ -735,7 +735,7 @@ both_topics_user = [
     "username" => "reader", "password" => "reader-password", "role" => "user",
     "access" => [
       { "topic" => "nas-critical", "permission" => "read-only" },
-      { "topic" => "nas-events", "permission" => "read-only" }
+      { "topic" => "nas-containers", "permission" => "read-only" }
     ]
   },
   {
@@ -755,7 +755,7 @@ check(failures, both_statuses.all?(&:success?),
 check(failures,
       both_state.fetch("reader") == [
         { "base_url" => both_base, "topic" => "nas-critical", "display_name" => nil },
-        { "base_url" => both_base, "topic" => "nas-events", "display_name" => nil }
+        { "base_url" => both_base, "topic" => "nas-containers", "display_name" => nil }
       ],
       "ntfy did not subscribe a both-topic reader to both topics")
 check(failures,
@@ -1017,7 +1017,7 @@ if !ntfy_tasks.empty?
             "admin:#{BCRYPT_A}:admin", "dozzle:#{BCRYPT_A}:user", "reader:#{BCRYPT_B}:user"
           ], "ntfy user provisioning entries differ")
     check(failures, provisioned["access"].split(",") == [
-            "dozzle:nas-critical:write-only", "dozzle:nas-events:write-only",
+            "dozzle:nas-critical:write-only", "dozzle:nas-containers:write-only",
             "reader:nas-critical:read-only", "reader:private:deny"
           ], "ntfy access provisioning entries differ")
     check(failures, provisioned["tokens"].split(",") == ["dozzle:#{TOKEN_A}", "reader:#{TOKEN_B}"],

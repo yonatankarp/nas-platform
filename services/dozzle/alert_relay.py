@@ -85,7 +85,7 @@ class Config:
         "alert_relay_token",
         "ntfy_publish_url",
         "ntfy_topic",
-        "ntfy_events_topic",
+        "ntfy_containers_topic",
         "ntfy_token",
         "alert_state_path",
     )
@@ -96,7 +96,7 @@ class Config:
         self.alert_relay_token = relay_token
         self.ntfy_publish_url = publish_url
         self.ntfy_topic = topic
-        self.ntfy_events_topic = events_topic
+        self.ntfy_containers_topic = events_topic
         self.ntfy_token = ntfy_token
         self.alert_state_path = state_path
 
@@ -106,7 +106,7 @@ class Config:
             "ALERT_RELAY_TOKEN",
             "NTFY_PUBLISH_URL",
             "NTFY_TOPIC",
-            "NTFY_EVENTS_TOPIC",
+            "NTFY_CONTAINERS_TOPIC",
             "NTFY_TOKEN",
             "ALERT_STATE_PATH",
         )
@@ -133,12 +133,12 @@ class Config:
         )
 
         topic = resolved["NTFY_TOPIC"]
-        events_topic = resolved["NTFY_EVENTS_TOPIC"]
-        for name, value in (("NTFY_TOPIC", topic), ("NTFY_EVENTS_TOPIC", events_topic)):
+        events_topic = resolved["NTFY_CONTAINERS_TOPIC"]
+        for name, value in (("NTFY_TOPIC", topic), ("NTFY_CONTAINERS_TOPIC", events_topic)):
             if len(value) > 128 or not re.fullmatch(r"[A-Za-z0-9_-]+", value):
                 raise ConfigurationError(f"{name} is invalid")
         if topic == events_topic:
-            raise ConfigurationError("NTFY_TOPIC and NTFY_EVENTS_TOPIC must differ")
+            raise ConfigurationError("NTFY_TOPIC and NTFY_CONTAINERS_TOPIC must differ")
         state_path = Path(resolved["ALERT_STATE_PATH"])
         if not state_path.is_absolute() or state_path.name in {"", ".", ".."}:
             raise ConfigurationError("ALERT_STATE_PATH must be an absolute file path")
@@ -717,7 +717,7 @@ def process_event(config, event):
             publish(
                 config,
                 render_notification(
-                    event, config.ntfy_topic, config.ntfy_events_topic
+                    event, config.ntfy_topic, config.ntfy_containers_topic
                 ),
             )
         if replacement_required:

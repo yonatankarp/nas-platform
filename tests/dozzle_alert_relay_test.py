@@ -111,7 +111,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
                 "ALERT_RELAY_TOKEN": RELAY_TOKEN,
                 "NTFY_PUBLISH_URL": f"http://127.0.0.1:{self.ntfy.server_port}/",
                 "NTFY_TOPIC": "nas-critical",
-                "NTFY_EVENTS_TOPIC": "nas-events",
+                "NTFY_CONTAINERS_TOPIC": "nas-containers",
                 "NTFY_TOKEN": NTFY_TOKEN,
                 "ALERT_STATE_PATH": str(self.state_path),
             }
@@ -477,17 +477,17 @@ class DozzleAlertRelayTest(unittest.TestCase):
             "ALERT_RELAY_TOKEN": RELAY_TOKEN,
             "NTFY_PUBLISH_URL": "http://127.0.0.1:1/",
             "NTFY_TOPIC": "nas-critical",
-            "NTFY_EVENTS_TOPIC": "nas-events",
+            "NTFY_CONTAINERS_TOPIC": "nas-containers",
             "NTFY_TOKEN": NTFY_TOKEN,
             "ALERT_STATE_PATH": str(self.state_path),
         }
         self.relay_module.Config.from_mapping(base)
 
         for label, mutation in (
-            ("missing", {"NTFY_EVENTS_TOPIC": ""}),
-            ("invalid", {"NTFY_EVENTS_TOPIC": "nas events"}),
+            ("missing", {"NTFY_CONTAINERS_TOPIC": ""}),
+            ("invalid", {"NTFY_CONTAINERS_TOPIC": "nas events"}),
             # One topic under two names silently reunites the two streams.
-            ("identical", {"NTFY_EVENTS_TOPIC": "nas-critical"}),
+            ("identical", {"NTFY_CONTAINERS_TOPIC": "nas-critical"}),
         ):
             with self.subTest(label=label):
                 with self.assertRaises(self.relay_module.ConfigurationError):
@@ -538,7 +538,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
             self.ntfy.requests[-1]["json"],
             {
                 # A recovery is a record, not an emergency: events topic.
-                "topic": "nas-events",
+                "topic": "nas-containers",
                 "title": "Recovered · immich_server",
                 "message": "**Host:** `nas`\n**Container:** `immich_server`\n**Status:** `healthy`",
                 "priority": 3,

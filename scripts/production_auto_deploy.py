@@ -35,6 +35,10 @@ READ_SIZE = 64 * 1024
 NETWORK_TIMEOUT_SECONDS = 10
 GIT_TIMEOUT_SECONDS = 10
 NOTIFICATION_TIMEOUT_SECONDS = 10
+# Consecutive polls that fail before eligibility is even decided. At the
+# five-minute cron cadence this is a quarter hour of being unable to see
+# main, which no transient network blip should reach.
+BLIND_POLL_THRESHOLD = 3
 # Mirrors services/dozzle/alert_relay.py so both publishers escape alike.
 MARKDOWN_PATTERN = re.compile(r"([\\`*_{}\[\]()#+\-.!|>])")
 COMMAND_TIMEOUT_SECONDS = 60 * 60
@@ -69,7 +73,7 @@ class Config:
     # Addressed in the publish body, not the URL: ntfy only parses a JSON
     # publish document when the POST goes to the server root.
     ntfy_topic_critical: str
-    ntfy_topic_events: str
+    ntfy_topic_deployment: str
     platform_nas_address: str
     platform_public_host: str
     platform_callback_host: str
@@ -665,7 +669,7 @@ OUTCOMES = {
     # topic attribute, title prefix, priority, tags. Severity picks the topic:
     # a failed deployment belongs on the critical topic, a successful one does
     # not, which is the whole point of having two.
-    "success": ("ntfy_topic_events", "Deployed", 3, ("white_check_mark",)),
+    "success": ("ntfy_topic_deployment", "Deployed", 3, ("white_check_mark",)),
     "failed": ("ntfy_topic_critical", "Deploy failed", 5, ("warning", "skull")),
 }
 
@@ -749,11 +753,15 @@ def notify(
     JSON text rather than a rendered notification.
     """
 
-    body = json.dumps(
-        render_notification(config, outcome, sha, started, finished, log_path),
-        ensure_ascii=False,
-        separators=(",", ":"),
+    return publish(
+        config, render_notification(config, outcome, sha, started, finished, log_path)
     )
+
+
+def publish(config: Config, notification: dict) -> bool:
+    """Send one prepared ntfy document through the protected curl config."""
+
+    body = json.dumps(notification, ensure_ascii=False, separators=(",", ":"))
     try:
         result = _run(
             [
@@ -777,6 +785,89 @@ def notify(
     return result.returncode == 0
 
 
+def _blind_path(config: Config) -> Path:
+    return config.state_root / "blind-polls"
+
+
+def read_blind_polls(config: Config) -> int:
+    """Consecutive polls that could not establish a candidate revision."""
+
+    try:
+        raw = _blind_path(config).read_text(encoding="ascii").strip()
+    except (OSError, UnicodeError):
+        return 0
+    try:
+        count = int(raw)
+    except ValueError:
+        # Unreadable state must not stop the poller; treat it as a fresh start.
+        return 0
+    return count if count >= 0 else 0
+
+
+def _write_blind_polls(config: Config, count: int) -> None:
+    _write_private(_blind_path(config), f"{count}\n".encode("ascii"))
+
+
+def note_blind_poll(config: Config, reason: str) -> None:
+    """Count one blind poll and announce the transition into blindness once."""
+
+    count = read_blind_polls(config) + 1
+    _write_blind_polls(config, count)
+    if count != BLIND_POLL_THRESHOLD:
+        return
+    publish(
+        config,
+        {
+            "topic": config.ntfy_topic_critical,
+            "title": f"Deploy poller blind \u00b7 {count} polls",
+            "message": "\n".join(
+                (
+                    f"**Reason:** `{markdown_escape(reason)}`",
+                    f"**Consecutive failures:** `{count}`",
+                    "**Effect:** `no revision can be deployed until this clears`",
+                )
+            ),
+            "priority": 5,
+            "tags": ["warning"],
+            "markdown": True,
+        },
+    )
+
+
+def note_seeing_poll(config: Config) -> None:
+    """Clear the blind count, announcing recovery only if blindness was reported."""
+
+    if read_blind_polls(config) >= BLIND_POLL_THRESHOLD:
+        publish(
+            config,
+            {
+                "topic": config.ntfy_topic_deployment,
+                "title": "Deploy poller recovered",
+                "message": "**Status:** `the poller can reach main again`",
+                "priority": 3,
+                "tags": ["white_check_mark"],
+                "markdown": True,
+            },
+        )
+    _write_blind_polls(config, 0)
+
+
+def _eligible_revision(config: Config, head: str, retry_sha: str | None) -> bool:
+    """Decide whether head may be deployed. Raises only on an unusable answer."""
+
+    if retry_sha is not None:
+        successful = read_state(config)["last_successful"]
+        if (
+            head != retry_sha
+            or retry_sha not in attempted_shas(config)
+            or (successful is not None and successful["sha"] == retry_sha)
+        ):
+            return False
+    elif head in attempted_shas(config):
+        return False
+    return is_ci_green(config, head, fetch_ci_runs(config, head))
+
+
 def poll(config: Config, retry_sha: str | None = None) -> bool | None:
     """Attempt at most one eligible revision. None means nothing was attempted."""
 
@@ -786,20 +877,21 @@ def poll(config: Config, retry_sha: str | None = None) -> bool | None:
         if not acquired:
             return None
         rotate_logs(config, datetime.now(timezone.utc))
-        head = resolve_main_sha(config)
+        # Eligibility is the part that reaches the network. Failing it leaves
+        # the poller unable to deploy anything at all, and a poll that decides
+        # nothing looks exactly like a poll with nothing to do, so the outcome
+        # is tracked rather than only printed to a cron mailbox nobody reads.
+        try:
+            head = resolve_main_sha(config)
+            eligible = _eligible_revision(config, head, retry_sha)
+        except EligibilityError as error:
+            note_blind_poll(config, str(error))
+            raise
+        note_seeing_poll(config)
+        if not eligible:
+            return None
         if retry_sha is not None:
-            successful = read_state(config)["last_successful"]
-            if (
-                head != retry_sha
-                or retry_sha not in attempted_shas(config)
-                or (successful is not None and successful["sha"] == retry_sha)
-            ):
-                return None
             forget_attempt(config, retry_sha)
-        elif head in attempted_shas(config):
-            return None
-        if not is_ci_green(config, head, fetch_ci_runs(config, head)):
-            return None
 
         # Recorded before the attempt: a crash mid-deploy must not become a
         # retry loop on the next five-minute tick.
@@ -928,7 +1020,10 @@ def main(argv=None) -> int:
         print("production auto-deploy: unusable configuration", file=sys.stderr)
         return 1
     except EligibilityError:
-        print("production auto-deploy: no eligible revision", file=sys.stderr)
+        # Not "nothing to deploy": poll() returns None for that. Reaching
+        # here means the candidate could not be established at all.
+        print("production auto-deploy: could not determine a candidate",
+              file=sys.stderr)
         return 0
     if outcome is False:
         print("production auto-deploy: attempt failed", file=sys.stderr)

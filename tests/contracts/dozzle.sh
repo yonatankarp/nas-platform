@@ -56,7 +56,7 @@ render_group_contract() {
     DOZZLE_HOST_PORT=38080 NTFY_HOST_PORT=32586 NTFY_BASE_URL=http://127.0.0.1:32586 \
     ALERT_RELAY_SCRIPT_SHA256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     ALERT_RELAY_TOKEN=contract-relay-token NTFY_PUBLISH_URL=http://host.docker.internal:32586/ \
-    NTFY_TOPIC=nas-critical NTFY_EVENTS_TOPIC=nas-events NTFY_TOKEN=contract-ntfy-token \
+    NTFY_TOPIC=nas-critical NTFY_CONTAINERS_TOPIC=nas-containers NTFY_TOKEN=contract-ntfy-token \
     NTFY_AUTH_USERS= NTFY_AUTH_ACCESS= NTFY_AUTH_TOKENS= \
     AUDIOBOOKSHELF_HOST_PORT=33378 \
     AUDIOBOOKSHELF_CONFIG_PATH=/tmp/dozzle-contract/audiobookshelf-config \
@@ -210,7 +210,7 @@ abort "Dozzle contract failed: alert relay environment differs" unless
     "ALERT_RELAY_TOKEN" => "${ALERT_RELAY_TOKEN:?}",
     "NTFY_PUBLISH_URL" => "${NTFY_PUBLISH_URL:?}",
     "NTFY_TOPIC" => "${NTFY_TOPIC:?}",
-    "NTFY_EVENTS_TOPIC" => "${NTFY_EVENTS_TOPIC:?}",
+    "NTFY_CONTAINERS_TOPIC" => "${NTFY_CONTAINERS_TOPIC:?}",
     "NTFY_TOKEN" => "${NTFY_TOKEN:?}",
     "ALERT_STATE_PATH" => "/state/alert-relay.json"
   }

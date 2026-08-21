@@ -44,7 +44,7 @@ render() {
     PLATFORM_CURRENT_DIR="$repo_dir" DOZZLE_STATE_ROOT="$temporary_dir/$label/dozzle/data" \
     ALERT_RELAY_SCRIPT_SHA256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     ALERT_RELAY_TOKEN=test-relay-token NTFY_PUBLISH_URL="http://127.0.0.1:$ntfy_port/" \
-    NTFY_TOPIC=nas-critical NTFY_EVENTS_TOPIC=nas-events NTFY_TOKEN=test-ntfy-token \
+    NTFY_TOPIC=nas-critical NTFY_CONTAINERS_TOPIC=nas-containers NTFY_TOKEN=test-ntfy-token \
     docker compose --project-name "$base_name-dozzle" \
       -f "$repo_dir/services/dozzle/compose.yml" \
       -f "$repo_dir/services/dozzle/compose.mac.yml" config --format json \
