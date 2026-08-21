@@ -837,7 +837,12 @@ def note_blind_poll(config: Config, reason: str) -> None:
 def note_seeing_poll(config: Config) -> None:
     """Clear the blind count, announcing recovery only if blindness was reported."""
 
-    if read_blind_polls(config) >= BLIND_POLL_THRESHOLD:
+    count = read_blind_polls(config)
+    if count == 0:
+        # The overwhelming majority of polls land here. Rewriting a zero every
+        # five minutes would fsync the state directory for no change.
+        return
+    if count >= BLIND_POLL_THRESHOLD:
         publish(
             config,
             {
