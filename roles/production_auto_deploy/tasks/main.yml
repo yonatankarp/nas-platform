@@ -79,6 +79,45 @@
       controller-requirements.txt before installing the poller. Without it the
       first automatic poll fails and records the revision as attempted.
 
+# The poller runs from cron with a deliberately narrow PATH, so it cannot rely
+# on the operator's login environment. NAS firmwares scatter binaries across
+# /usr/local, /usr/builtin and /opt, so discover them here instead of assuming
+# /usr/bin, and record the result in the poller's configuration.
+- name: Locate the tools the poller must run
+  ansible.builtin.shell:
+    cmd: command -v {{ item | quote }}
+    executable: /bin/sh
+  register: production_auto_deploy_tool_probe
+  loop: [git, curl, docker]
+  changed_when: false
+  failed_when: false
+
+- name: Require every tool the poller depends on
+  ansible.builtin.assert:
+    that:
+      - item.rc | int == 0
+      - item.stdout | trim | length > 0
+    fail_msg: >-
+      {{ item.item }} was not found on this host. The poller runs with a narrow
+      PATH and cannot deploy without it.
+  loop: "{{ production_auto_deploy_tool_probe.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Record the discovered tool locations
+  ansible.builtin.set_fact:
+    production_auto_deploy_tools: >-
+      {{ dict(production_auto_deploy_tool_probe.results
+              | map(attribute='item') | list
+              | zip(production_auto_deploy_tool_probe.results
+                    | map(attribute='stdout') | map('trim') | list)) }}
+
+- name: Compose the poller's tool path
+  ansible.builtin.set_fact:
+    production_auto_deploy_tool_path: >-
+      {{ (production_auto_deploy_tools.values() | map('dirname') | list
+          + ['/usr/bin', '/bin']) | unique | join(':') }}
+
 # Some NAS firmwares ship BusyBox crontab without the setuid bit and keep the
 # spool root-owned, so an unprivileged account cannot schedule anything. Probe
 # here rather than discovering it at the final task, after everything else has

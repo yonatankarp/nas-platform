@@ -62,6 +62,9 @@ class PollerTestCase(unittest.TestCase):
             "github_api_base": "https://api.github.com",
             "log_retention_days": 30,
             "verify_tags": "platform_verify_ntfy,platform_verify_beszel",
+            "git_path": "/usr/local/bin/git",
+            "curl_path": "/usr/bin/curl",
+            "tool_path": "/usr/local/bin:/usr/bin:/bin",
         }
         payload.update(overrides)
         return payload
@@ -175,7 +178,8 @@ class EligibilityTest(PollerTestCase):
             )
             self.assertEqual(production_auto_deploy.resolve_main_sha(config), MAIN_SHA)
         arguments = [str(a) for a in run.call_args.args[0]]
-        self.assertEqual(arguments[:3], ["git", "ls-remote", "--exit-code"])
+        self.assertEqual(arguments[0], "/usr/local/bin/git")
+        self.assertEqual(arguments[1:3], ["ls-remote", "--exit-code"])
         self.assertIn("refs/heads/main", arguments)
 
     def test_resolve_main_sha_rejects_malformed_answers(self):
@@ -403,8 +407,8 @@ class DeployTest(PollerTestCase):
         self.assertTrue(outcome)
         self.assertEqual(len(calls), 7)
 
-        self.assertEqual(calls[0][:2], ["git", "fetch"])
-        self.assertEqual(calls[1][:3], ["git", "checkout", "--detach"])
+        self.assertEqual([calls[0][0], calls[0][1]], ["/usr/local/bin/git", "fetch"])
+        self.assertEqual(calls[1][:3], ["/usr/local/bin/git", "checkout", "--detach"])
         self.assertEqual(calls[1][3], MAIN_SHA)
 
         self.assertTrue(calls[2][0].endswith("pip"))
@@ -622,7 +626,7 @@ class NotifyTest(PollerTestCase):
             )
 
         arguments = seen["arguments"]
-        self.assertEqual(arguments[0], "curl")
+        self.assertEqual(arguments[0], "/usr/bin/curl")
         self.assertIn("--config", arguments)
         self.assertEqual(
             arguments[arguments.index("--config") + 1], str(config.ntfy_curl_config)

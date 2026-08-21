@@ -15,5 +15,8 @@
   'platform_callback_host': production_auto_deploy_callback_host,
   'github_api_base': production_auto_deploy_github_api_base,
   'log_retention_days': production_auto_deploy_log_retention_days | int,
-  'verify_tags': production_auto_deploy_verify_tags | trim
+  'verify_tags': production_auto_deploy_verify_tags | trim,
+  'git_path': production_auto_deploy_tools['git'],
+  'curl_path': production_auto_deploy_tools['curl'],
+  'tool_path': production_auto_deploy_tool_path
 } | to_nice_json }}

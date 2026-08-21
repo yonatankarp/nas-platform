@@ -20,10 +20,10 @@ PUBLIC_HOST = "100.64.0.1"
 TIMEOUT_SECONDS = 300
 
 CONFIG_KEYS = %w[
-  branch checkout github_api_base log_retention_days log_root ntfy_curl_config
-  platform_callback_host platform_nas_address platform_public_host repository
-  repository_url state_root vault_file vault_password_file verify_tags workflow
-  workflow_name
+  branch checkout curl_path git_path github_api_base log_retention_days log_root
+  ntfy_curl_config platform_callback_host platform_nas_address
+  platform_public_host repository repository_url state_root tool_path vault_file
+  vault_password_file verify_tags workflow workflow_name
 ].freeze
 
 failures = []
@@ -223,6 +223,26 @@ Dir.mktmpdir("auto-deploy-role") do |root|
           "deployer.json keys must match the poller's Config exactly; " \
           "extra=#{(config.keys - CONFIG_KEYS).inspect} " \
           "missing=#{(CONFIG_KEYS - config.keys).inspect}")
+    # The poller runs with a narrow PATH from cron, so the installer must record
+    # where the tools really are rather than assuming /usr/bin.
+    %w[git_path curl_path].each do |key|
+      check(failures, config[key].to_s.start_with?("/") && File.executable?(config[key].to_s),
+            "#{key} must be an absolute path to an executable, got #{config[key].inspect}")
+    end
+    # Discover independently of the role: asserting only git's directory would
+    # pass on a host where git happens to live in /usr/bin, which is exactly the
+    # assumption being removed.
+    entries = config["tool_path"].to_s.split(":")
+    %w[git curl docker].each do |tool|
+      located = `command -v #{tool} 2>/dev/null`.strip
+      next if located.empty?
+      check(failures, entries.include?(File.dirname(located)),
+            "tool_path must contain #{File.dirname(located)} where #{tool} lives, got " \
+            "#{config['tool_path'].inspect}")
+    end
+    check(failures, config["tool_path"].to_s.split(":").all? { |entry| entry.start_with?("/") },
+          "every tool_path entry must be absolute")
+
     check(failures, config["log_retention_days"].is_a?(Integer),
           "log_retention_days must be JSON integer, not a string")
     check(failures, !config["verify_tags"].include?("\n"),

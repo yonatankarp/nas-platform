@@ -145,7 +145,10 @@ verification above. It uses a dedicated non-root deployment account on the NAS;
 do not install it as `root` or reuse a general interactive administrator. The
 account's real home must be owned by that account, and the
 account needs Docker access. The NAS must provide trusted, root-owned
-`/usr/bin/git` and `/usr/bin/curl`, and Python 3.12 or newer with pip. The
+`git`, `curl` and `docker` on the operator's PATH, and Python 3.12 or newer
+with pip. The installer records where each tool actually lives, because NAS
+firmwares place them under `/usr/local`, `/usr/builtin` or `/opt` rather than
+`/usr/bin`, and the poller runs from a scheduler without the operator's PATH. The
 installer fails closed when any of these prerequisites is absent or unsafe, and
 it checks them before creating anything.
 

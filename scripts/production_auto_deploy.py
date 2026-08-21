@@ -37,7 +37,6 @@ GIT_TIMEOUT_SECONDS = 10
 NOTIFICATION_TIMEOUT_SECONDS = 10
 COMMAND_TIMEOUT_SECONDS = 60 * 60
 TOOLING_TIMEOUT_SECONDS = 15 * 60
-SAFE_SYSTEM_PATH = "/usr/bin:/bin"
 
 
 class ConfigurationError(ValueError):
@@ -71,6 +70,11 @@ class Config:
     github_api_base: str
     log_retention_days: int
     verify_tags: str
+    # Discovered by the installer. NAS firmwares scatter binaries across
+    # /usr/local, /usr/builtin and /opt, so no fixed directory is correct.
+    git_path: Path
+    curl_path: Path
+    tool_path: str
 
 
 _PATH_FIELDS = frozenset(
@@ -81,6 +85,8 @@ _PATH_FIELDS = frozenset(
         "vault_file",
         "vault_password_file",
         "ntfy_curl_config",
+        "git_path",
+        "curl_path",
     }
 )
 
@@ -189,14 +195,14 @@ def resolve_main_sha(config: Config) -> str:
     try:
         result = _run(
             [
-                "git",
+                config.git_path,
                 "ls-remote",
                 "--exit-code",
                 config.repository_url,
                 f"refs/heads/{config.branch}",
             ],
             timeout=GIT_TIMEOUT_SECONDS,
-            env={"PATH": SAFE_SYSTEM_PATH, "LC_ALL": "C", "GIT_TERMINAL_PROMPT": "0"},
+            env={"PATH": config.tool_path, "LC_ALL": "C", "GIT_TERMINAL_PROMPT": "0"},
         )
     except (OSError, subprocess.SubprocessError) as error:
         raise EligibilityError("git query failed") from error
@@ -421,7 +427,7 @@ def _ansible_environment(config: Config) -> dict[str, str]:
     return {
         # ansible-core lives in the checkout's virtualenv, per the operator
         # guide, so the system path alone cannot find ansible-playbook.
-        "PATH": f"{_tooling_bin(config)}{os.pathsep}{SAFE_SYSTEM_PATH}",
+        "PATH": f"{_tooling_bin(config)}{os.pathsep}{config.tool_path}",
         "HOME": str(config.checkout.parent),
         "LC_ALL": "C",
         "LANG": "C",
@@ -451,13 +457,13 @@ def update_checkout(config: Config, sha: str) -> None:
     """Materialise the candidate revision in the controller checkout."""
 
     environment = {
-        "PATH": SAFE_SYSTEM_PATH,
+        "PATH": config.tool_path,
         "LC_ALL": "C",
         "GIT_TERMINAL_PROMPT": "0",
     }
     for arguments in (
-        ["git", "fetch", "--prune", "origin", config.branch],
-        ["git", "checkout", "--detach", sha],
+        [config.git_path, "fetch", "--prune", "origin", config.branch],
+        [config.git_path, "checkout", "--detach", sha],
     ):
         result = _run(
             arguments,
@@ -466,7 +472,7 @@ def update_checkout(config: Config, sha: str) -> None:
             env=environment,
         )
         if result.returncode != 0:
-            raise DeploymentError(f"{arguments[1]} failed for {sha}")
+            raise DeploymentError(f"git {arguments[1]} failed for {sha}")
 
 
 def sync_tooling(config: Config, log=None) -> None:
@@ -489,7 +495,7 @@ def sync_tooling(config: Config, log=None) -> None:
         ],
         timeout=TOOLING_TIMEOUT_SECONDS,
         cwd=config.checkout,
-        env={"PATH": SAFE_SYSTEM_PATH, "LC_ALL": "C"},
+        env={"PATH": config.tool_path, "LC_ALL": "C"},
         log=log,
     )
     if result.returncode != 0:
@@ -608,7 +614,7 @@ def notify(
     try:
         result = _run(
             [
-                "curl",
+                config.curl_path,
                 "--disable",
                 "--fail",
                 "--silent",
@@ -621,7 +627,7 @@ def notify(
                 body,
             ],
             timeout=NOTIFICATION_TIMEOUT_SECONDS,
-            env={"PATH": SAFE_SYSTEM_PATH, "LC_ALL": "C"},
+            env={"PATH": config.tool_path, "LC_ALL": "C"},
         )
     except (OSError, subprocess.SubprocessError):
         return False

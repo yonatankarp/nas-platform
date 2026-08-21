@@ -346,7 +346,10 @@ end
 
 required_auto_deploy_guidance = {
   /dedicated non-root/i => "require a dedicated non-root deployment account",
-  %r{/usr/bin/git.*?/usr/bin/curl}m => "require trusted system Git and curl",
+  # The tools are no longer required at fixed /usr/bin paths: the installer
+  # discovers them, because NAS firmwares place them elsewhere.
+  /git.*?curl.*?docker.*?records where each tool actually lives/m =>
+    "require Git, curl and docker and state that their locations are recorded",
   /Python 3\.12 or newer.*pip/m => "require Python 3.12 or newer with pip",
   /effective-user.*crontab/m => "require effective-user crontab support",
   %r{outside\s+`/volume1/Docker/nas-platform`}m => "keep the controller outside service data",
