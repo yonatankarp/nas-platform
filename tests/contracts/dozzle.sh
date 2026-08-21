@@ -238,47 +238,76 @@ abort "Dozzle contract failed: deployment inputs do not validate the alert relay
 abort "Dozzle contract failed: immutable release does not include the alert relay" unless
   deployment_bundle.include?("services/dozzle/alert_relay.py") &&
     deployment_bundle.include?("alert_relay.py")
+# Parsed rather than substring-matched: byte offsets do not track task order once
+# a task name appears in a comment or a when: expression, and a field found by
+# slicing the file between two names is not necessarily on the task that needs it.
+role_tasks = YAML.safe_load_file(ARGV.fetch(2), aliases: false)
+role_task = lambda { |name| role_tasks.find { |task| task["name"] == name } }
+role_at = lambda { |name| role_tasks.index { |task| task["name"] == name } }
+
+revalidate = role_task.call("Revalidate deployment paths before Dozzle runtime use")
+relay_inspect = role_task.call("Inspect the tracked Dozzle alert relay and selected state root")
 abort "Dozzle contract failed: role does not validate the tracked relay script" unless
-  role.include?("{{ platform_current_dir }}/services/dozzle/alert_relay.py")
+  Array(revalidate&.dig("vars", "deployment_target_extra_paths"))
+    .include?("{{ platform_current_dir }}/services/dozzle/alert_relay.py") &&
+  Array(relay_inspect&.dig("loop"))
+    .include?("{{ platform_current_dir }}/services/dozzle/alert_relay.py")
+
+parent_gate = role_task.call("Require a safe Dozzle state parent before child creation")
+prepare = role_task.call("Prepare the isolated Dozzle alert relay state directory")
+paths_gate = role_task.call("Require safe Dozzle alert relay deployment paths")
 abort "Dozzle contract failed: role does not prepare an isolated private relay state directory" unless
-  role.include?("Inspect the selected Dozzle state parent before child creation") &&
-  role.include?("Require a safe Dozzle state parent before child creation") &&
-  role.include?('path: "{{ dozzle_state_root }}/alert-relay"') &&
-  role.include?("state: directory") && role.include?('mode: "0700"') &&
-  role.include?("dozzle_alert_relay_state_root_stat") &&
-  role.include?("dozzle_alert_relay_state_root_stat.stat.mode == '0700'") &&
-  role.index("Require a safe Dozzle state parent before child creation") <
-    role.index("Prepare the isolated Dozzle alert relay state directory")
-child_inspect = role.index("Inspect the Dozzle alert relay state child before mutation")
-child_gate = role.index("Require a safe Dozzle alert relay state child before mutation")
-child_prepare = role.index("Prepare the isolated Dozzle alert relay state directory")
-legacy_inspect = role.index("Inspect legacy and isolated Dozzle alert relay state files")
+  role_task.call("Inspect the selected Dozzle state parent before child creation") &&
+  parent_gate && prepare && paths_gate &&
+  prepare.dig("ansible.builtin.file", "path") == "{{ dozzle_state_root }}/alert-relay" &&
+  prepare.dig("ansible.builtin.file", "state") == "directory" &&
+  prepare.dig("ansible.builtin.file", "mode") == "0700" &&
+  Array(paths_gate.dig("ansible.builtin.assert", "that"))
+    .include?("dozzle_alert_relay_state_root_stat.stat.mode == '0700'") &&
+  role_at.call("Require a safe Dozzle state parent before child creation") <
+    role_at.call("Prepare the isolated Dozzle alert relay state directory")
+
+child_inspect = role_task.call("Inspect the Dozzle alert relay state child before mutation")
+child_gate = role_task.call("Require a safe Dozzle alert relay state child before mutation")
+legacy_inspect = role_task.call("Inspect legacy and isolated Dozzle alert relay state files")
+child_gate_conditions = Array(child_gate&.dig("ansible.builtin.assert", "that")).join(" ")
 abort "Dozzle contract failed: role can mutate an unsafe relay state child" unless
-  child_inspect && child_gate && child_prepare && legacy_inspect &&
-  child_inspect < child_gate && child_gate < child_prepare && child_prepare < legacy_inspect &&
-  role[child_inspect...child_gate].include?('path: "{{ dozzle_state_root }}/alert-relay"') &&
-  role[child_inspect...child_gate].include?("follow: false") &&
-  role[child_inspect...child_gate].include?("dozzle_alert_relay_state_child_before_prepare") &&
-  role[child_gate...child_prepare].include?("stat.exists") &&
-  role[child_gate...child_prepare].include?("stat.isdir") &&
-  role[child_gate...child_prepare].include?("stat.islnk") &&
-  role[child_gate...child_prepare].include?("stat.mode") &&
-  role[child_gate...child_prepare].include?("stat.uid") &&
-  role[child_gate...child_prepare].include?("stat.gid") &&
-  role[child_prepare...legacy_inspect].include?("follow: false")
+  child_inspect && child_gate && prepare && legacy_inspect &&
+  role_at.call("Inspect the Dozzle alert relay state child before mutation") <
+    role_at.call("Require a safe Dozzle alert relay state child before mutation") &&
+  role_at.call("Require a safe Dozzle alert relay state child before mutation") <
+    role_at.call("Prepare the isolated Dozzle alert relay state directory") &&
+  role_at.call("Prepare the isolated Dozzle alert relay state directory") <
+    role_at.call("Inspect legacy and isolated Dozzle alert relay state files") &&
+  child_inspect.dig("ansible.builtin.stat", "path") == "{{ dozzle_state_root }}/alert-relay" &&
+  child_inspect.dig("ansible.builtin.stat", "follow") == false &&
+  child_inspect["register"] == "dozzle_alert_relay_state_child_before_prepare" &&
+  %w[exists isdir islnk mode uid gid]
+    .all? { |field| child_gate_conditions.include?("stat.#{field}") } &&
+  prepare.dig("ansible.builtin.file", "follow") == false
+
+relocation_gate = role_task.call("Refuse ambiguous or unsafe Dozzle alert relay state relocation")
+stop = role_task.call("Stop Dozzle alert delivery before legacy relay state relocation")
+relocate = role_task.call("Relocate the legacy Dozzle alert relay state file")
+relocate_argv = Array(relocate&.dig("ansible.builtin.command", "argv"))
 abort "Dozzle contract failed: role does not safely relocate the legacy relay state file" unless
-  role.include?("Inspect legacy and isolated Dozzle alert relay state files") &&
-  role.include?('"{{ dozzle_state_root }}/alert-relay.json"') &&
-  role.include?('"{{ dozzle_state_root }}/alert-relay/alert-relay.json"') &&
-  role.include?("Refuse ambiguous or unsafe Dozzle alert relay state relocation") &&
-  role.include?("Stop Dozzle alert delivery before legacy relay state relocation") &&
-  role.include?("services: [dozzle, alert-relay]") &&
-  role.include?("state: stopped") &&
-  role.include?("Relocate the legacy Dozzle alert relay state file") &&
-  role.include?("ansible.builtin.command:") && role.include?("- mv") &&
-  role.include?("dozzle_alert_relay_legacy_state.stat.exists and") &&
-  role.index("Stop Dozzle alert delivery before legacy relay state relocation") <
-    role.index("Relocate the legacy Dozzle alert relay state file")
+  legacy_inspect && relocation_gate && stop && relocate &&
+  Array(legacy_inspect.dig("loop")) ==
+    ["{{ dozzle_state_root }}/alert-relay.json",
+     "{{ dozzle_state_root }}/alert-relay/alert-relay.json"] &&
+  stop.dig("community.docker.docker_compose_v2", "services") == %w[dozzle alert-relay] &&
+  stop.dig("community.docker.docker_compose_v2", "state") == "stopped" &&
+  relocate_argv.first == "mv" && relocate_argv[1] == "--" &&
+  relocate_argv[2] == "{{ dozzle_state_root }}/alert-relay.json" &&
+  relocate_argv[3] == "{{ dozzle_state_root }}/alert-relay/alert-relay.json" &&
+  relocate.dig("ansible.builtin.command", "creates") ==
+    "{{ dozzle_state_root }}/alert-relay/alert-relay.json" &&
+  relocate.dig("ansible.builtin.command", "removes") ==
+    "{{ dozzle_state_root }}/alert-relay.json" &&
+  stop["when"].to_s.include?("dozzle_alert_relay_legacy_state.stat.exists") &&
+  relocate["when"].to_s.include?("dozzle_alert_relay_legacy_state.stat.exists") &&
+  role_at.call("Stop Dozzle alert delivery before legacy relay state relocation") <
+    role_at.call("Relocate the legacy Dozzle alert relay state file")
 abort "Dozzle contract failed: environment does not render the selected state and script roots" unless
   env_template.include?("PLATFORM_CURRENT_DIR={{ platform_current_dir }}") &&
   env_template.include?("DOZZLE_STATE_ROOT={{ dozzle_state_root }}")
@@ -289,7 +318,7 @@ RUBY
 ruby -ryaml - "$defaults" "$role" "$integration" "$mac_drift" "$mac_verify" "$mode" <<'RUBY'
 defaults_path = ARGV.fetch(0)
 defaults = YAML.safe_load_file(defaults_path)
-role = File.read(ARGV.fetch(1))
+role_tasks = YAML.safe_load_file(ARGV.fetch(1), aliases: false)
 integration = File.read(ARGV.fetch(2))
 mac_drift = File.read(ARGV.fetch(3))
 mac_verify = File.read(ARGV.fetch(4))
@@ -330,7 +359,7 @@ expected_template_fields.each do |field, expression|
     template_source.include?("'#{field}':") && template_source.include?(expression)
 end
 abort "Dozzle contract failed: role does not reconcile enabled state through PATCH" unless
-  role.include?("method: PATCH")
+  role_tasks.any? { |task| task.dig("ansible.builtin.uri", "method") == "PATCH" }
 planned_tasks = [
   "Report planned managed Dozzle dispatcher creation",
   "Report planned managed Dozzle dispatcher repair",
@@ -349,7 +378,8 @@ markers = %w[
 ]
 if ARGV.fetch(5) == "static"
   planned_tasks.each do |name|
-    abort "Dozzle contract failed: missing #{name}" unless role.include?("- name: #{name}")
+    abort "Dozzle contract failed: missing #{name}" unless
+      role_tasks.any? { |task| task["name"] == name }
   end
   markers.each do |marker|
     abort "Dozzle contract failed: integration is missing #{marker}" unless integration.include?(marker)
