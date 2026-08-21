@@ -138,13 +138,25 @@ against the production deployment without exercising external integrations; for
 ntfy, use only an agreed disposable topic when verifying alerts from Beszel and
 Dozzle.
 
-The platform provisions two ntfy topics and routes by severity, not by source.
-`nas-critical` carries anything that should get you out of your chair: out of
-memory, an unexpected container exit, an unhealthy container, a Beszel threshold
-breach, and a failed deployment. `nas-containers` carries the record of what
-happened: container recoveries and successful deployments. Each publisher may
-write only to the topics it needs, so a leaked Beszel token cannot reach
-`nas-containers` at all.
+The platform provisions three ntfy topics: severity first, then subject.
+
+`nas-critical` cuts across every publisher and carries only what should get you
+out of your chair: out of memory, an unexpected container exit, an unhealthy
+container, a Beszel threshold breach, a failed deployment, and a deployment
+poller that has gone blind. The other two are the routine record, one per
+subject, so deployment chatter can be muted without also muting container
+events: `nas-deployment` for successful deployments and poller recovery, and
+`nas-containers` for container recoveries.
+
+Each publisher may write only to the topics it reports on, so a leaked Beszel
+token cannot reach either record topic, and a leaked deploy token cannot post
+container events.
+
+ntfy runs `deny-all`, so a reading account sees only the topics named in its
+own `vault_managed_users.ntfy[].access` list, and the role subscribes it to
+exactly those. Adding a topic to the platform therefore does not reach a phone
+until that account's ACL names it; a topic left out is a 403, not a quiet
+omission.
 
 ## Automatic deployment from the NAS
 
