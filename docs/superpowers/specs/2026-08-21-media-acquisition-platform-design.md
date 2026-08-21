@@ -53,7 +53,7 @@ independent projects.
 
 ```text
 services/
-├── arr/             Radarr, Sonarr, Prowlarr, Bazarr, Configarr
+├── arr/             Radarr, Sonarr, Prowlarr, Bazarr; Configarr job definition
 ├── downloaders/     SABnzbd, Unpackerr; later Gluetun and qBittorrent
 ├── bindery/         Bindery
 ├── kapowarr/        Kapowarr
@@ -62,10 +62,12 @@ services/
 └── seerr/           Seerr
 ```
 
-Each directory has one manifest entry, one Ansible role, one Compose project,
-one platform verification tag, and one service-owned CI suite. This produces
-seven new manifest entries rather than one entry per container or one
-all-encompassing media stack.
+Each directory has one manifest entry, one Ansible role, one long-running
+Compose project, one platform verification tag, and one service-owned CI suite.
+This produces seven new manifest entries rather than one entry per container or
+one all-encompassing media stack. `arr/compose.jobs.yml` additionally defines
+Configarr as a synchronous job container; it is not part of the long-running
+service set.
 
 One project per container would create unnecessary role, CI, and networking
 overhead. One project for the entire subsystem would couple independent
@@ -73,10 +75,12 @@ writers, upgrades, health, and recovery. The selected boundaries keep the
 functional `arr` and downloader units together while preserving independent
 lifecycle control for the remaining services.
 
-`community.docker.docker_compose_v2` remains the only deployment mechanism.
-Every role consumes `platform_service_compose_files`, uses a project name
-derived from `platform_project_name`, revalidates its deployed release and
-runtime paths, and verifies its effective container CPU policy.
+`community.docker.docker_compose_v2` remains the deployment mechanism for
+long-running projects. Every role consumes `platform_service_compose_files`,
+uses a project name derived from `platform_project_name`, revalidates its
+deployed release and runtime paths, and verifies its effective container CPU
+policy. The sole job-container exception is Configarr, which Ansible runs with
+`community.docker.docker_compose_v2_run`, waits for, captures, and removes.
 
 ## Shared control network
 
@@ -111,13 +115,14 @@ host ports.
 
 ## Storage and ownership
 
-The existing `/volume2/Media` and `/volume2/Books` NAS shares remain separate.
+The existing `{{ nas_media_root }}/Media` and `{{ nas_media_root }}/Books` NAS
+shares remain separate.
 That boundary allows different users to receive different share permissions.
 The acquisition layout preserves it while keeping each import source on the
 same filesystem and in the same container mount as its destination.
 
 ```text
-/volume2/
+{{ nas_media_root }}/
 ├── Media/
 │   ├── .acquisition/
 │   │   ├── usenet/{movies,series,audiobooks}/
@@ -134,21 +139,23 @@ same filesystem and in the same container mount as its destination.
     └── Comics/
 ```
 
-The `.acquisition` trees are hidden from SMB clients or denied through NAS
-ACLs. They are regenerable working state and have `recovery: cache`. Final
-libraries remain NAS-owned user data with `recovery: user`; Ansible creates
-their directories without claiming owner or group.
+NAS ACLs deny ordinary SMB users access to the `.acquisition` trees. Their dot
+prefix is a convenience, not the security boundary. Because CI cannot prove a
+NAS ACL, the denial is a manual NAS acceptance check. These trees are
+regenerable working state and have `recovery: cache`. Final libraries remain
+NAS-owned user data with `recovery: user`; Ansible creates their directories
+without claiming owner or group.
 
 Writers see a parent that contains both their source and destination:
 
 | Writer | Writable view |
 |---|---|
-| Radarr and Sonarr | `/volume2/Media:/data/media` |
+| Radarr and Sonarr | `{{ nas_media_root }}/Media:/data/media` |
 | Bazarr | Movies and Series through the same `/data/media` namespace |
 | Trailarr | Movies and Series; writes only `Trailers/` children |
-| Pinchflat | `/volume2/Media/YouTube` |
-| Bindery | `/volume2/Books` and `/volume2/Media/Audiobooks` |
-| Kapowarr | `/volume2/Books` |
+| Pinchflat | `{{ nas_media_root }}/Media/YouTube` |
+| Bindery | `{{ nas_media_root }}/Books` and `{{ nas_media_root }}/Media/Audiobooks` |
+| Kapowarr | `{{ nas_media_root }}/Books` |
 
 Download clients see only `.acquisition` bind sources, mounted at the exact
 paths reported to importing applications. For example, SABnzbd may see the host
@@ -159,6 +166,30 @@ entire host Books share as `/data/books`. Both therefore refer to an ebook as
 
 Jellyfin, Komga, and Audiobookshelf retain read-only media mounts. No reader
 becomes a second library writer.
+
+### Shared filesystem identity
+
+Every container that exchanges acquisition or library files uses the shared
+filesystem identity UID `1000`, GID `100`, with an effective umask of `022`.
+The implementation selects the mechanism supported by each image:
+
+| Containers | Identity mechanism |
+|---|---|
+| Radarr, Sonarr, Prowlarr, Bazarr, SABnzbd, qBittorrent | `PUID=1000`, `PGID=100`, `UMASK=022`; do not override the s6 init user |
+| Trailarr and Kapowarr | Image-supported `PUID=1000` and `PGID=100`; set an image-supported umask when available, otherwise verify created modes |
+| Unpackerr | `user: "1000:100"` plus explicit file mode `0644` and directory mode `0755` |
+| Bindery | `user: "1000:100"`; `BINDERY_PUID` and `BINDERY_PGID` are sanity checks, not privilege switching |
+| Pinchflat | `user: "1000:100"` |
+| Configarr job | `user: "1000:100"` |
+
+Seerr writes only its critical configuration and uses the selected image's
+supported non-root mechanism; it is not part of the hardlink contract. Gluetun
+mounts no download or library path and is exempt from the shared media identity;
+qBittorrent owns the files. Integration and NAS acceptance read back effective
+UID/GID, inspect representative `0644` files and `0755` directories, and prove
+that the importing application can create, modify, and remove client-created
+files. NAS ACLs grant UID `1000`/GID `100` the required rights; `host_prep` does
+not recursively chown NAS-owned media.
 
 ## Stateful application contract
 
@@ -172,11 +203,21 @@ Configarr narrows this exception for Radarr, Sonarr, and Prowlarr by applying
 naming, quality, and custom-format configuration from repository-owned files.
 It does not make the applications' SQLite databases disposable.
 
-Every application config directory is stored below `/volume1/Docker/<service>`
-and classified `recovery: critical`. A role refuses silent fresh
-initialization when its critical state is absent while the corresponding final
-library is nonempty. Recovery then requires an explicit state restore or
-adoption choice.
+Every application config directory is stored below
+`{{ nas_docker_root }}/<service>` and classified `recovery: critical`. A role
+refuses silent fresh initialization when its critical state is absent while the
+corresponding final library is nonempty. Recovery then requires an explicit
+state restore or a controlled adoption run with
+`media_acquisition_adopt_existing_libraries: true`.
+
+That input defaults to `false`, is never stored as a permanent host setting,
+and bypasses the guard for one convergence only. During adoption, automatic
+monitoring and renaming remain disabled until existing items have been matched
+and reviewed. Phase 1 deliberately uses this lane for the existing Movies and
+Series libraries; later Bindery or Kapowarr adoption uses the same contract.
+The Mac fresh lane starts with empty libraries and keeps the input false, while
+a separate adoption lane seeds representative existing files, proves the guard
+fails without the input, then proves the controlled adoption path.
 
 This includes the later qBittorrent configuration. Download payloads,
 incomplete work, unpack directories, and client caches remain under the
@@ -186,10 +227,19 @@ per-share `.acquisition` trees and are not critical state.
 
 ### `arr`
 
-The `arr` project contains Radarr, Sonarr, Prowlarr, Bazarr, and Configarr.
-Radarr owns Movies, Sonarr owns Series, Bazarr owns subtitle sidecars, and
-Configarr owns the repository-declared profile inputs. Prowlarr synchronizes
-indexers to Radarr and Sonarr and supplies indexers to Bindery.
+The long-running `arr` project contains Radarr, Sonarr, Prowlarr, and Bazarr.
+Radarr owns Movies, Sonarr owns Series, Bazarr owns subtitle sidecars, and the
+repository owns Configarr's profile inputs. Prowlarr synchronizes indexers to
+Radarr and Sonarr and supplies indexers to Bindery.
+
+Configarr is a one-shot job, not a daemon. Its separate Compose job definition
+has no restart policy, health check, Dozzle event expectation, or published
+port. The role invokes it synchronously with cleanup enabled, treats a nonzero
+exit as deployment failure, captures bounded redacted output, and then reads
+the arr APIs to verify the desired profiles. This explicit job-container class
+has its own policy checks for a digest-pinned image, required CPU set, explicit
+CPU ceiling, no ports, no restart, cleanup, and synchronous execution; it is
+excluded from assertions that apply only to long-running services.
 
 Bazarr is part of the initial deployment rather than an optional later phase.
 It replaces the unreliable Jellyfin Open Subtitles plugin and removes that
@@ -200,10 +250,18 @@ Bazarr language profiles and provider credentials are declared inventory and
 vault inputs. Their exact values are operator content preferences rather than
 Compose or storage architecture; changing them does not alter this design.
 
-During the tinyMediaManager handoff, Radarr may temporarily publish a
-non-default host port because tinyMediaManager currently occupies 7878. Both
-applications must never write the same library concurrently. The handoff stops
-tinyMediaManager before Radarr or Sonarr receives write access.
+tinyMediaManager is retired because its useful automation requires a recurring
+license and overlaps the declarative arr workflow. During its handoff, Radarr
+may temporarily publish a non-default host port because tinyMediaManager
+currently occupies 7878; that conflict is a migration detail, not the reason
+for retirement. Both applications must never write the same library
+concurrently. The handoff stops tinyMediaManager before Radarr or Sonarr
+receives write access.
+
+Posterizarr is rejected because it duplicates artwork and metadata ownership
+already assigned to the library managers. Tdarr is rejected because transcoding
+is not an acquisition requirement and rewriting imported media could break the
+hardlink between a torrent payload and its seeded library file.
 
 The initial Configarr quality policy is HD Bluray + WEB at 1080p for both
 Radarr and Sonarr. UHD is a per-item Radarr exception rather than a second
@@ -216,18 +274,27 @@ time-sensitive strings into this document.
 The initial project contains SABnzbd and Unpackerr. Categories are `movies`,
 `series`, `ebooks`, `audiobooks`, and `comics`, with completed paths matching
 the `.acquisition/usenet` layout. Incomplete work remains under an acquisition
-tree and never uses `/volume1`, whose failure would affect application
-databases.
+tree and never uses `{{ nas_docker_root }}`, whose failure would affect
+application databases.
 
 SABnzbd cache and concurrent-job settings are explicitly bounded. Unpackerr
 uses vault-authored Radarr and Sonarr API keys and has no published port.
 
-The later torrent change adds Gluetun and qBittorrent to the same project.
-qBittorrent uses `network_mode: service:gluetun`; Gluetun publishes its Web UI
-and peer ports and joins `media-control`. Torrent categories write beneath the
-per-share `.acquisition/torrents` paths. Prowlarr can retain Usenet and torrent
-indexers simultaneously, and importing applications can retain both download
-clients during the proving period.
+The host-scoped booleans `media_usenet_enabled` and `media_torrent_enabled`
+select transports. Initially Usenet is true and torrent is false. The later
+torrent change adds Gluetun and qBittorrent to the same project under the
+`torrent` Compose profile. qBittorrent uses
+`network_mode: service:gluetun`; Gluetun publishes its Web UI and peer ports and
+joins `media-control`. Torrent categories write beneath the per-share
+`.acquisition/torrents` paths. Prowlarr can retain Usenet and torrent indexers
+simultaneously, and importing applications can retain both download clients
+during the proving period.
+
+Mac and integration runs leave the `torrent` profile disabled and therefore
+need no fake VPN credentials; their CPU and service-set checks receive the
+active service list. Static tests still validate the profiled Compose
+definition. VPN routing and containment remain NAS-only acceptance because the
+disposable Mac lane cannot establish the production tunnel.
 
 This is a client cutover, not a library migration. Usenet is retired only after
 the torrent path has passed representative import, permission, and hardlink
@@ -241,6 +308,12 @@ manage only a `Trailers/` subdirectory beneath each Radarr- or Sonarr-owned item
 directory. It does not rename media, rewrite primary metadata, or manage other
 extras.
 
+Because Trailarr runs as the same filesystem identity and needs a writable
+Movies/Series bind, the bind mount cannot enforce that subdirectory boundary.
+It is a logical application boundary, verified through Trailarr configuration
+and representative behavior; Trailarr technically has write access to the
+mounted libraries.
+
 Initial monitoring is restricted to one selected title. General monitoring is
 enabled only after Jellyfin recognizes the resulting local trailer correctly.
 
@@ -248,8 +321,8 @@ enabled only after Jellyfin recognizes the resulting local trailer correctly.
 
 Pinchflat is a self-contained project with a writable YouTube library and no
 Jellyfin API dependency. It writes media-center-compatible files and local
-metadata beneath `/volume2/Media/YouTube`; Jellyfin reads them through a
-dedicated library.
+metadata beneath `{{ nas_media_root }}/Media/YouTube`; Jellyfin reads them
+through a dedicated library.
 
 The initial source is one channel or playlist with an explicit cutoff date and
 defined policies for Shorts, livestreams, retention, subtitles, and
@@ -258,10 +331,10 @@ verified in Jellyfin.
 
 ### Kapowarr
 
-Kapowarr owns `/volume2/Books/Comics` and its comic metadata and filenames.
-Komga retains read-only access. Its ComicVine credential is authored in vault.
-Kapowarr may use direct downloads initially and joins `media-control` for any
-configured Prowlarr or download-client integration.
+Kapowarr owns `{{ nas_media_root }}/Books/Comics` and its comic metadata and
+filenames. Komga retains read-only access. Its ComicVine credential is authored
+in vault. Kapowarr may use direct downloads initially and joins `media-control`
+for any configured Prowlarr or download-client integration.
 
 Monitoring starts with one selected series or volume. Komga must discover the
 result before general monitoring is enabled.
@@ -272,11 +345,21 @@ Bindery is the single acquisition manager for ebooks and audiobooks. It uses
 SQLite, Prowlarr, SABnzbd initially, and qBittorrent later. Ebook and audiobook
 formats have separate destination roots and download categories.
 
-Bindery writes ebooks to `/volume2/Books/Ebooks` and audiobooks to
-`/volume2/Media/Audiobooks`. It requests an Audiobookshelf library scan after
-an audiobook import. Komga's current disabled scan schedule changes to a
-conservative six-hour interval so runtime ebook and comic imports appear
-without an Ansible run.
+Bindery writes ebooks to `{{ nas_media_root }}/Books/Ebooks` and audiobooks to
+`{{ nas_media_root }}/Media/Audiobooks`. It requests an Audiobookshelf library
+scan after an audiobook import. Komga changes from its current single `/data`
+library to two exactly reconciled libraries: Comics rooted at `/data/Comics`
+and Ebooks rooted at `/data/Ebooks`. Both receive a conservative six-hour scan
+schedule. The sibling `/data/.acquisition` tree therefore sits outside both
+library roots; a `.acquisition` scan exclusion is also declared as
+defense-in-depth. The Komga reconciliation contract changes from one pinned
+library to this exact two-library model.
+
+Bindery uses its image's built-in `/bindery healthcheck`, which verifies
+`/api/v1/health`; its role also reads the API during integration verification.
+Because one single-maintainer application holds critical acquisition state for
+two library types, its state is backed up before every upgrade and an upgrade
+does not proceed unless that backup succeeds.
 
 Unattended auto-grab is disabled initially. One ebook and one audiobook must
 complete search, download, import, naming, reader discovery, and playback
@@ -305,6 +388,10 @@ The published host port is reached through the existing mesh VPN in the same
 way as other platform services. This work adds no reverse proxy, router port
 forward, public DNS, TLS termination, or Internet ingress.
 
+Seerr receives an explicit service-owned integration check: its role verifies
+the declared Jellyfin server, both arr connections, and the two-user permission
+split through the API rather than stopping at HTTP health.
+
 ## Secrets and identities
 
 Credentials are authored in Ansible Vault and flow one way into applications.
@@ -327,10 +414,11 @@ local bootstrap API that accepts the declared value.
 
 ## Resource policy
 
-Every container has a digest-pinned image with a human-readable version tag,
-`cpuset: ${PLATFORM_CONTAINER_CPUSET:?}`, an explicit `cpus` ceiling,
-`restart: unless-stopped`, bounded `json-file` logging, a Dozzle display label,
-and a meaningful health check.
+Every long-running container has a digest-pinned image with a human-readable
+version tag, `cpuset: ${PLATFORM_CONTAINER_CPUSET:?}`, an explicit `cpus`
+ceiling, `restart: unless-stopped`, bounded `json-file` logging, a Dozzle
+display label, and a meaningful health check. The Configarr job follows the
+separate one-shot policy defined under `arr`.
 
 Initial CPU ceilings are:
 
@@ -340,7 +428,6 @@ Initial CPU ceilings are:
 | Sonarr | 1.0 |
 | Prowlarr | 0.5 |
 | Bazarr | 1.0 |
-| Configarr | 0.5 |
 | SABnzbd | 2.0 |
 | Unpackerr | 1.0 |
 | Bindery | 1.0 |
@@ -350,6 +437,8 @@ Initial CPU ceilings are:
 | Seerr | 1.0 |
 | Gluetun, later | 0.5 |
 | qBittorrent, later | 1.5 |
+
+The Configarr job has a separate 0.5 CPU ceiling while it runs.
 
 These are ceilings rather than reservations. The implementation adds the exact
 container map to the platform CPU contract and verifies the effective runtime
@@ -380,7 +469,7 @@ The steady-state role order is:
 1. preflight, vault contract, host preparation, deployment bundle;
 2. ntfy, Beszel, and Dozzle;
 3. Audiobookshelf and Komga readers;
-4. `arr`;
+4. `arr`, followed by its synchronous Configarr job;
 5. `downloaders`;
 6. Bindery, Kapowarr, and Pinchflat;
 7. Trailarr;
@@ -402,10 +491,12 @@ service-owned CI suites. No acquisition is enabled.
 
 ### Phase 1: movies, series, and subtitles over Usenet
 
-Deploy `arr` plus SABnzbd and Unpackerr. Add the existing Movies and Series
-roots with renaming disabled. Match and review existing items, stop
-tinyMediaManager, then grant Radarr and Sonarr write access. Apply naming and
-quality configuration through Configarr and perform a controlled rename.
+Deploy `arr` plus SABnzbd and Unpackerr with
+`media_acquisition_adopt_existing_libraries: true` for this convergence only.
+Add the existing Movies and Series roots with renaming and automatic monitoring
+disabled. Match and review existing items, stop tinyMediaManager, then grant
+Radarr and Sonarr write access. Apply naming and quality configuration through
+the synchronous Configarr job and perform a controlled rename.
 
 Prove one new movie and episode end to end. Prove Bazarr sidecar subtitles in
 the required languages, then remove the Jellyfin Open Subtitles plugin. Keep
@@ -430,10 +521,37 @@ and prove an automatically approved movie and series request end to end.
 
 ### Phase 5: torrent cutover
 
-Add Gluetun and qBittorrent without removing SABnzbd. Add torrent indexers and
-client categories, then prove routing, VPN containment, permissions, imports,
-and hardlinks for each applicable library. Retire Usenet only through a later
-explicit decision; leaving both transports enabled is supported.
+Enable `media_torrent_enabled` for a selected location and add Gluetun and
+qBittorrent without removing SABnzbd. Add torrent indexers and client
+categories, then prove routing, VPN containment, permissions, imports, and
+hardlinks for each applicable library. After this phase, each location may
+select Usenet, torrent, or both through its host-scoped inputs. A torrent-only
+location intentionally waits for Phase 5; this preserves the Usenet-first
+delivery order. Retire Usenet only through a later explicit per-location
+decision.
+
+## Repository integration and retirement impact
+
+Each service slice must account for more than its Compose and role files:
+
+- every published port updates the hardcoded publication allow-list in
+  `tests/policy_test.rb`, service defaults, inventory, Mac variables, and the
+  nested `allocate_service_port` call chain in `tests/mac/run.sh`;
+- every long-running container updates the exact service and CPU maps in
+  `tests/policy_test.rb`, while profiled torrent services are checked against
+  the active host service set;
+- every service is added to `site.yml` and `verify.yml` with an asserted tag,
+  manifest and storage entries, vault plumbing where needed, a contract, and a
+  selective CI suite;
+- selective routing updates `tests/ci/classify_changes.rb`, its tests, the fixed
+  tags in `tests/integration.sh`, `tests/integration_suite_test.sh`, and the
+  authoritative `INTEGRATION_SUITES` constant in `tests/ci/workflow_test.rb`;
+- retiring Open Subtitles removes its complete vault key chain, Jellyfin role
+  inputs and reconciliation tasks, managed-user and plugin contracts, runtime
+  probes, and documentation only after Bazarr passes acceptance; and
+- retiring tinyMediaManager removes its manifest/storage entries, role,
+  Compose definitions, ports, contract, CI routing and suite, Mac lifecycle and
+  isolation coverage, and documentation only after the arr handoff is accepted.
 
 ## Verification
 
@@ -447,20 +565,22 @@ tests/integration.sh --suite <service> site.yml
 tests/mac/run.sh --lane fresh --vault-file <path> --vault-password-file <path>
 ```
 
-The new CI lanes update all four current routing contracts:
+The new CI lanes update every current routing contract:
 
 - `tests/ci/classify_changes.rb`;
 - `tests/ci/classify_changes_test.rb`;
 - the fixed suite tags in `tests/integration.sh`;
-- `tests/integration_suite_test.sh` and the workflow's pinned suite list.
+- `tests/integration_suite_test.sh`;
+- `tests/ci/workflow_test.rb` and its `INTEGRATION_SUITES` constant.
 
 Each service receives either structural tagged verification or a registered
 workflow contract under `tests/contracts/registry.yml`. Workflow contracts
 cover real API behavior rather than only returning HTTP 200.
 
-The complete Mac lifecycle proves first converge, clean reconverge, check mode,
-owned drift repair, critical-state persistence, service recreation, credential
-redaction, and sanitized reporting. NAS-only acceptance additionally proves:
+The complete Mac lifecycle, with torrent disabled, proves first converge, clean
+reconverge, check mode, owned drift repair, critical-state persistence, service
+recreation, credential redaction, sanitized reporting, and the separate
+existing-library adoption lane. NAS-only acceptance additionally proves:
 
 - the two NAS shares and their ACL boundary remain intact;
 - `.acquisition` is not exposed to ordinary share users;
