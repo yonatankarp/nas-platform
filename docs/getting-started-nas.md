@@ -138,6 +138,14 @@ against the production deployment without exercising external integrations; for
 ntfy, use only an agreed disposable topic when verifying alerts from Beszel and
 Dozzle.
 
+The platform provisions two ntfy topics and routes by severity, not by source.
+`nas-critical` carries anything that should get you out of your chair: out of
+memory, an unexpected container exit, an unhealthy container, a Beszel threshold
+breach, and a failed deployment. `nas-events` carries the record of what
+happened: container recoveries and successful deployments. Each publisher may
+write only to the topics it needs, so a leaked Beszel token cannot reach
+`nas-events` at all.
+
 ## Automatic deployment from the NAS
 
 Automatic deployment is a second step after the first manual deployment and
@@ -275,10 +283,13 @@ $HOME/.local/bin/nas-platform-deploy --retry-failed "$FAILED_SHA"
 Attempt logs are protected mode-0600 files under
 `$HOME/.local/share/nas-platform/logs`, retained for 30 days. The controller
 checkout, the installed poller, and the deployment state live under the same
-private root. Success and failure outcomes are sent to ntfy using the protected
-publisher token. Secrets stay out of the logs because the tasks that handle them
-set `no_log`, and the vault password is passed to Ansible as a file path rather
-than a value.
+private root. Success and failure outcomes are sent to ntfy using the
+deployer's own protected publisher token, as rendered Markdown rather than a
+raw document. A failed deployment publishes to `nas-critical` at priority 5; a
+successful one publishes to `nas-events` at priority 3, so a routine deploy
+does not compete with a real problem for attention. Secrets stay out of the
+logs because the tasks that handle them set `no_log`, and the vault password is
+passed to Ansible as a file path rather than a value.
 
 Once a local poll, cron inspection, and at least one automatic no-op have been
 verified, you may optionally disable SSH for this account if the NAS has an

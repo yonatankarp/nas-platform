@@ -728,6 +728,45 @@ check(failures,
         ["read-writer", "GET", "/v1/account"]
       ], "ntfy mutated an earlier user before rejecting a later duplicate subscription")
 
+# Two provisioned topics, and an account that may read both. Each topic is a
+# separate subscription, and a topic the account cannot read is never created.
+both_topics_user = [
+  {
+    "username" => "reader", "password" => "reader-password", "role" => "user",
+    "access" => [
+      { "topic" => "nas-critical", "permission" => "read-only" },
+      { "topic" => "nas-events", "permission" => "read-only" }
+    ]
+  },
+  {
+    "username" => "critical-only", "password" => "critical-password", "role" => "user",
+    "access" => [{ "topic" => "nas-critical", "permission" => "read-only" }]
+  }
+]
+both_state, _requests, both_calls, both_outputs, both_statuses, both_base =
+  run_ntfy_subscription_fixture(
+    users: both_topics_user,
+    subscriptions: { "reader" => [], "critical-only" => [] },
+    expected_requests: 8
+  )
+check(failures, both_statuses.all?(&:success?),
+      "ntfy multi-topic subscription synchronization failed: " \
+      "#{both_outputs.last&.lines&.last&.strip}")
+check(failures,
+      both_state.fetch("reader") == [
+        { "base_url" => both_base, "topic" => "nas-critical", "display_name" => nil },
+        { "base_url" => both_base, "topic" => "nas-events", "display_name" => nil }
+      ],
+      "ntfy did not subscribe a both-topic reader to both topics")
+check(failures,
+      both_state.fetch("critical-only") == [
+        { "base_url" => both_base, "topic" => "nas-critical", "display_name" => nil }
+      ],
+      "ntfy subscribed an account to a topic it may not read")
+check(failures,
+      both_calls.count { |call| call[0] == "critical-only" && call[1] == "POST" } == 1,
+      "ntfy did not create exactly one subscription for the critical-only reader")
+
 malformed_account = {
   "username" => "read-writer", "role" => "user", "subscriptions" => "invalid"
 }
