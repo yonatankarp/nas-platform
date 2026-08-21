@@ -1190,8 +1190,19 @@ vault_contract_tasks = File.file?(vault_contract_tasks_path) ?
   YAML.safe_load_file(vault_contract_tasks_path) : []
 check(failures, !vault_contract_tasks.empty? && vault_contract_tasks.all? { |task| task["no_log"] == true },
       "every vault contract task must use no_log")
+# A key is inspected either by a condition or by a set_fact expression, because
+# the structured keys are validated by a filter that returns a list of violations
+# rather than by one Jinja condition per field. For the scalar credentials this
+# stays a real guard: deleting vault_tinymediamanager_password's condition fails
+# here, and mutation-checked as such. For vault_managed_users it is only a
+# presence check, since the pass-through facts in "Resolve validated managed-user
+# service lists" name it too. That key's real pin is
+# tests/managed_users_vault_test.rb, which requires the schema filter by name and
+# runs some fifty rejection cases through the role; replacing the filter call
+# with a literal passes here and fails forty checks there.
 shape_conditions = vault_contract_tasks.flat_map do |task|
-  Array(task.dig("ansible.builtin.assert", "that"))
+  Array(task.dig("ansible.builtin.assert", "that")) +
+    Array(task["ansible.builtin.set_fact"]&.values)
 end.join(" ")
 EXPECTED_VAULT_KEYS.each do |key|
   check(failures, shape_conditions.match?(/\b#{Regexp.escape(key)}\b/),
