@@ -441,8 +441,8 @@ unset platform_ntfy_image
 unset -f resolve_ntfy_image
 ```
 
-For a fresh platform, run the recipe twice: once for the Dozzle integration and
-once for the Beszel integration. The two tokens must be distinct. The command
+For a fresh platform, run the recipe three times: once each for the Dozzle,
+Beszel, and deployment-poller integrations. All three tokens must be distinct. The command
 displays each token, so transfer its output immediately to the encrypted editor
 and password manager without putting it in shell history, logs, or chat.
 Existing deployments must recover both deployed tokens from their authoritative
@@ -762,7 +762,7 @@ wildcards, URL separators, whitespace, commas, and colons are not supported by
 this exact verifier. Usernames follow ntfy's native letters, digits, `_`, `-`,
 `.`, `+`, and `@` contract. Publisher and administrator identities remain under
 their separate noninteractive and primary-credential contracts. Managed
-identities cannot duplicate the administrator or the Dozzle and Beszel
+identities cannot duplicate the administrator or the Dozzle, Beszel, and deploy
 publishers. The role treats the
 prior rendered ntfy `.env` as the declarative ownership record and confirms
 database identities with the pinned `ntfy user list` command before rendering a
