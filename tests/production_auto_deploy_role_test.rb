@@ -20,7 +20,8 @@ PUBLIC_HOST = "100.64.0.1"
 TIMEOUT_SECONDS = 300
 
 CONFIG_KEYS = %w[
-  branch checkout curl_path git_path github_api_base log_retention_days log_root
+  ansible_locale branch checkout curl_path git_path github_api_base
+  log_retention_days log_root
   ntfy_curl_config platform_callback_host platform_nas_address
   platform_public_host repository repository_url state_root tool_path vault_file
   vault_password_file verify_tags workflow workflow_name
@@ -223,6 +224,9 @@ Dir.mktmpdir("auto-deploy-role") do |root|
           "deployer.json keys must match the poller's Config exactly; " \
           "extra=#{(config.keys - CONFIG_KEYS).inspect} " \
           "missing=#{(CONFIG_KEYS - config.keys).inspect}")
+    check(failures, config["ansible_locale"].to_s.downcase.include?("utf"),
+          "ansible_locale must be a UTF-8 locale, got #{config['ansible_locale'].inspect}")
+
     # The poller runs with a narrow PATH from cron, so the installer must record
     # where the tools really are rather than assuming /usr/bin.
     %w[git_path curl_path].each do |key|

@@ -53,6 +53,10 @@ argument_specs:
       production_auto_deploy_external_scheduler:
         description: Poll is scheduled outside cron; the role installs no entry.
         type: bool
+      production_auto_deploy_locale_candidates:
+        description: UTF-8 locales to try, in order, for running Ansible.
+        type: list
+        elements: str
       production_auto_deploy_verify_tags:
         description: Exact verification tag list passed to verify.yml.
         type: str

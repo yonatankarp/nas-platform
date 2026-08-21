@@ -118,6 +118,39 @@
       {{ (production_auto_deploy_tools.values() | map('dirname') | list
           + ['/usr/bin', '/bin']) | unique | join(':') }}
 
+# Ansible checks locale.getlocale() and refuses to run when it reports None,
+# which is what a scheduler's empty environment produces. Probe each candidate
+# with the real interpreter rather than trusting locale -a, which is not
+# functional on every firmware.
+- name: Find a locale the installed Ansible accepts
+  ansible.builtin.shell:
+    cmd: >-
+      env -i PATH={{ production_auto_deploy_tool_path | quote }}
+      LANG={{ item | quote }}
+      {{ (production_auto_deploy_checkout ~ '/.venv/bin/ansible-playbook') | quote }}
+      --version
+    executable: /bin/sh
+  register: production_auto_deploy_locale_probe
+  loop: "{{ production_auto_deploy_locale_candidates }}"
+  changed_when: false
+  failed_when: false
+
+- name: Record the first locale that worked
+  ansible.builtin.set_fact:
+    production_auto_deploy_locale: >-
+      {{ (production_auto_deploy_locale_probe.results
+          | selectattr('rc', 'equalto', 0) | map(attribute='item') | list
+          + ['']) | first }}
+
+- name: Require a locale Ansible accepts
+  ansible.builtin.assert:
+    that:
+      - production_auto_deploy_locale | length > 0
+    fail_msg: >-
+      None of {{ production_auto_deploy_locale_candidates | join(', ') }} is a
+      usable UTF-8 locale on this host, and Ansible refuses to run without one.
+      Add a working locale to production_auto_deploy_locale_candidates.
+
 # Some NAS firmwares ship BusyBox crontab without the setuid bit and keep the
 # spool root-owned, so an unprivileged account cannot schedule anything. Probe
 # here rather than discovering it at the final task, after everything else has

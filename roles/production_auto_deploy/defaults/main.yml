@@ -19,6 +19,14 @@ production_auto_deploy_cron_name: NAS platform production auto-deploy
 # this when the poll is driven by an external scheduler instead, which the role
 # then leaves alone rather than failing at its last task.
 production_auto_deploy_external_scheduler: false
+# Ansible refuses to run unless locale.getlocale() reports UTF-8, and a
+# scheduler supplies no locale at all. Which UTF-8 locale exists varies by
+# firmware: C.UTF-8 is absent on some, en_US.UTF-8 on others. Tried in order.
+production_auto_deploy_locale_candidates:
+  - en_US.UTF-8
+  - C.UTF-8
+  - en_US.utf8
+  - C.utf8
 production_auto_deploy_verify_tags: >-
   platform_verify_ntfy,platform_verify_beszel,platform_verify_dozzle,platform_verify_audiobookshelf,platform_verify_komga,platform_verify_tinymediamanager,platform_verify_jellyfin,platform_verify_immich,platform_verify_paperless
 production_auto_deploy_vault_password_file: ""

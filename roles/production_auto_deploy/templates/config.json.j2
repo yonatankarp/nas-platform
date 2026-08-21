@@ -18,5 +18,6 @@
   'verify_tags': production_auto_deploy_verify_tags | trim,
   'git_path': production_auto_deploy_tools['git'],
   'curl_path': production_auto_deploy_tools['curl'],
-  'tool_path': production_auto_deploy_tool_path
+  'tool_path': production_auto_deploy_tool_path,
+  'ansible_locale': production_auto_deploy_locale
 } | to_nice_json }}

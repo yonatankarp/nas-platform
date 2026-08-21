@@ -75,6 +75,10 @@ class Config:
     git_path: Path
     curl_path: Path
     tool_path: str
+    # Ansible refuses to run unless locale.getlocale() reports UTF-8, and cron
+    # supplies no locale at all. Which UTF-8 locale exists varies by firmware,
+    # so the installer discovers a working one rather than assuming.
+    ansible_locale: str
 
 
 _PATH_FIELDS = frozenset(
@@ -429,8 +433,9 @@ def _ansible_environment(config: Config) -> dict[str, str]:
         # guide, so the system path alone cannot find ansible-playbook.
         "PATH": f"{_tooling_bin(config)}{os.pathsep}{config.tool_path}",
         "HOME": str(config.checkout.parent),
-        "LC_ALL": "C",
-        "LANG": "C",
+        # Only LANG: setting LC_ALL and LANG to the same value is rejected as
+        # an unsupported locale setting on some platforms.
+        "LANG": config.ansible_locale,
         "GIT_TERMINAL_PROMPT": "0",
         "PLATFORM_NAS_ADDRESS": config.platform_nas_address,
         "PLATFORM_PUBLIC_HOST": config.platform_public_host,

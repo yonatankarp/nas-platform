@@ -65,6 +65,7 @@ class PollerTestCase(unittest.TestCase):
             "git_path": "/usr/local/bin/git",
             "curl_path": "/usr/bin/curl",
             "tool_path": "/usr/local/bin:/usr/bin:/bin",
+            "ansible_locale": "en_US.UTF-8",
         }
         payload.update(overrides)
         return payload
@@ -498,6 +499,19 @@ class DeployTest(PollerTestCase):
             with self.subTest(play=call[-1]):
                 self.assertEqual(entries[0], expected)
                 self.assertIn("/usr/bin", entries)
+
+    def test_ansible_runs_under_a_utf8_locale_without_lc_all(self):
+        """Ansible refuses to run unless locale.getlocale() reports UTF-8, and
+        setting LC_ALL alongside LANG is rejected on some platforms."""
+
+        config = self.loaded_config()
+        _outcome, calls, kwargs = self.deploy_with(config)
+        for call, options in zip(calls, kwargs):
+            if call[0] != "ansible-playbook":
+                continue
+            with self.subTest(play=call[-1]):
+                self.assertEqual(options["env"]["LANG"], "en_US.UTF-8")
+                self.assertNotIn("LC_ALL", options["env"])
 
     def test_no_command_receives_a_secret_through_its_environment(self):
         config = self.loaded_config()
