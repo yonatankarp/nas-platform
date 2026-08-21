@@ -200,6 +200,11 @@ Dir.mktmpdir("auto-deploy-role") do |root|
     # The cron tag is skipped so the suite never writes a developer's crontab;
     # declare external scheduling so the matching precondition is skipped too.
     "-e", "production_auto_deploy_external_scheduler=true",
+    # --status now reports what the next poll would do, which reaches the
+    # network. Point it at a closed port so the suite stays hermetic and is not
+    # exposed to GitHub rate limits; both values must still be https.
+    "-e", "production_auto_deploy_repository_url=https://127.0.0.1:1/nas-platform.git",
+    "-e", "production_auto_deploy_github_api_base=https://127.0.0.1:1",
   ]
   output, status = Open3.capture2e(environment, *arguments)
   check(failures, status.success?, "the role must converge: #{output.lines.last(12).join}")
@@ -287,6 +292,13 @@ Dir.mktmpdir("auto-deploy-role") do |root|
           "the installed launcher must run --status: #{status_output}")
     check(failures, status_output.include?("last successful: none"),
           "a fresh installation must report no successful deployment")
+    # The point of the addition: an idle poller must explain itself rather than
+    # leaving silence to be interpreted.
+    check(failures, status_output.include?("next poll:"),
+          "--status must report what the next poll would do: #{status_output}")
+    check(failures, status_output.include?("could not resolve"),
+          "--status must degrade gracefully when the branch cannot be reached: " \
+          "#{status_output}")
   end
 end
 

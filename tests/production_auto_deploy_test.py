@@ -954,6 +954,64 @@ class CliTest(PollerTestCase):
         self.assertEqual(code, 0)
         self.assertIn(MAIN_SHA, buffer.getvalue())
 
+    def status_text(self, sha=MAIN_SHA, runs=None, resolve_error=None):
+        buffer = io.StringIO()
+        resolve = (
+            mock.patch.object(
+                production_auto_deploy, "resolve_main_sha", side_effect=resolve_error
+            )
+            if resolve_error
+            else mock.patch.object(
+                production_auto_deploy, "resolve_main_sha", return_value=sha
+            )
+        )
+        with resolve, mock.patch.object(
+            production_auto_deploy, "fetch_ci_runs", return_value=runs or ()
+        ), contextlib.redirect_stdout(buffer):
+            production_auto_deploy.main(["--config", str(self.config_path), "--status"])
+        return buffer.getvalue()
+
+    GREEN_RUN = EligibilityTest.GREEN_RUN
+
+    def test_status_says_it_would_deploy_a_green_unattempted_head(self):
+        text = self.status_text(runs=(self.GREEN_RUN,))
+        self.assertIn(f"current main: {MAIN_SHA}", text)
+        self.assertIn("would deploy", text)
+
+    def test_status_distinguishes_waiting_for_ci_from_broken(self):
+        """Silence is the normal outcome of a poll, so an idle poller and a
+        broken one must not look the same."""
+
+        text = self.status_text(runs=())
+        self.assertIn("waiting", text)
+        self.assertIn("no completed successful CI push run", text)
+
+    def test_status_reports_a_deployed_head_as_nothing_to_do(self):
+        config = self.loaded_config()
+        production_auto_deploy.record_attempt(config, MAIN_SHA)
+        production_auto_deploy.record_success(config, MAIN_SHA, "2026-08-21T10:00:00Z")
+        text = self.status_text(runs=(self.GREEN_RUN,))
+        self.assertIn("is deployed", text)
+
+    def test_status_tells_you_how_to_retry_a_quarantined_head(self):
+        config = self.loaded_config()
+        production_auto_deploy.record_attempt(config, MAIN_SHA)
+        text = self.status_text(runs=(self.GREEN_RUN,))
+        self.assertIn("already attempted and failed", text)
+        self.assertIn(f"--retry-failed {MAIN_SHA}", text)
+
+    def test_status_names_the_ambiguous_run_trap(self):
+        text = self.status_text(runs=(self.GREEN_RUN, self.GREEN_RUN))
+        self.assertIn("2 successful push runs", text)
+        self.assertIn("exactly one is required", text)
+
+    def test_status_survives_being_offline(self):
+        text = self.status_text(
+            resolve_error=production_auto_deploy.EligibilityError("git query failed")
+        )
+        self.assertIn("could not resolve main", text)
+        self.assertIn("last successful:", text)
+
     def test_invalid_arguments_exit_two(self):
         for argv in (
             [],

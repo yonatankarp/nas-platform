@@ -276,10 +276,10 @@ def fetch_ci_runs(config: Config, sha: str) -> tuple[dict, ...]:
     return tuple(run for run in runs if isinstance(run, dict))
 
 
-def is_ci_green(config: Config, sha: str, runs) -> bool:
-    """Accept exactly one completed successful push run of the CI workflow."""
+def matching_ci_runs(config: Config, sha: str, runs) -> list[dict]:
+    """Completed successful push runs of the gating workflow for this SHA."""
 
-    matching = [
+    return [
         run
         for run in runs
         if run.get("head_sha") == sha
@@ -289,7 +289,12 @@ def is_ci_green(config: Config, sha: str, runs) -> bool:
         and run.get("head_branch") == config.branch
         and run.get("name") == config.workflow_name
     ]
-    return len(matching) == 1
+
+
+def is_ci_green(config: Config, sha: str, runs) -> bool:
+    """Accept exactly one such run. More than one is ambiguity, not success."""
+
+    return len(matching_ci_runs(config, sha, runs)) == 1
 
 
 def _write_private(path: Path, payload: bytes) -> None:
@@ -744,8 +749,45 @@ def poll(config: Config, retry_sha: str | None = None) -> bool | None:
         return succeeded
 
 
+def _next_poll_verdict(config: Config, state: dict) -> tuple[str, str]:
+    """Explain what the next poll would do, without doing any of it.
+
+    Silence is the normal outcome of a poll, so an operator otherwise cannot
+    tell a healthy idle poller from a broken one.
+    """
+
+    try:
+        head = resolve_main_sha(config)
+    except EligibilityError as error:
+        return "unknown", f"could not resolve {config.branch}: {error}"
+    short = head[:9]
+    if head in set(state["attempted"]):
+        successful = state["last_successful"]
+        if successful is not None and successful["sha"] == head:
+            return head, f"nothing to do: {short} is deployed"
+        return head, (
+            f"nothing to do: {short} was already attempted and failed. "
+            f"Retry it explicitly with --retry-failed {head}"
+        )
+    try:
+        runs = matching_ci_runs(config, head, fetch_ci_runs(config, head))
+    except EligibilityError as error:
+        return head, f"could not query CI for {short}: {error}"
+    if len(runs) == 1:
+        return head, f"would deploy {short}"
+    if not runs:
+        return head, (
+            f"waiting: no completed successful {config.workflow_name} push run "
+            f"for {short} yet"
+        )
+    return head, (
+        f"blocked: {len(runs)} successful push runs exist for {short}, and "
+        "exactly one is required. Re-run only failed jobs rather than all of them"
+    )
+
+
 def print_status(config: Config) -> None:
-    """Print the recorded, non-secret deployment state."""
+    """Print the recorded state and what the next poll would do."""
 
     state = read_state(config)
     successful = state["last_successful"]
@@ -758,6 +800,9 @@ def print_status(config: Config) -> None:
     for sha in attempted:
         marker = " (successful)" if successful and successful["sha"] == sha else ""
         print(f"  {sha}{marker}")
+    head, verdict = _next_poll_verdict(config, state)
+    print(f"current {config.branch}: {head}")
+    print(f"next poll: {verdict}")
 
 
 def _parse_arguments(argv):

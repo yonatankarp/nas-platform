@@ -168,6 +168,21 @@ the signal that work has started:
 watch -n 30 "$HOME/.local/bin/nas-platform-deploy --status"
 ```
 
+`--status` also reports the current branch head and what the next poll would do,
+so an idle poller can be told apart from a broken one without leaving the NAS:
+
+```
+last successful: <sha> at 2026-08-21T12:33:13Z
+attempted revisions: 4
+current main: <sha>
+next poll: nothing to do: <sha> is deployed
+```
+
+The `next poll` line distinguishes the cases that otherwise all look like
+silence: waiting on CI, a revision already attempted and quarantined with the
+exact retry command, more than one successful run for the same commit, and a
+branch or API that cannot be reached.
+
 `logs/latest` is a symlink repointed at each attempt. Note that it survives a
 failed attempt, so tailing it after a fix can show the previous failure and look
 like the fix did nothing. Trust the attempt count, not the file's presence.
