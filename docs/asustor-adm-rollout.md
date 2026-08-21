@@ -3,10 +3,13 @@
 The [physical NAS walkthrough](getting-started-nas.md#automatic-deployment-from-the-nas)
 describes the general installation. This page records what ADM does differently,
 because four of its choices each break the poller in a way that is not obvious
-from the failure message. It was written from a real first rollout on an AS6704T
-running ADM with BusyBox userland.
+from the failure message. It was written from a real first rollout on ADM with a BusyBox userland.
 
 Read this before installing, not after a failure.
+
+Placeholders below: `<account>` is the dedicated non-root deployment account,
+`<nas-lan-address>` its address on the local network, and
+`<nas-hostname>.<tailnet>.ts.net` the machine's Tailscale domain name.
 
 ## What ADM does differently
 
@@ -17,8 +20,8 @@ BusyBox without the setuid bit, and `/var/spool/cron/crontabs` is a symlink into
 to come from root, which is what `production_auto_deploy_external_scheduler`
 exists for.
 
-**Tools are not in `/usr/bin`.** On this hardware `git` and `docker` are in
-`/usr/local/bin` and only `curl` is in `/usr/bin`. The login `PATH` spans eleven
+**Tools are not in `/usr/bin`.** On the host this was written from, `git` and
+`docker` were in `/usr/local/bin` and only `curl` was in `/usr/bin`. The login `PATH` spans eleven
 directories including `/usr/builtin` and `/opt`. The installer discovers each
 tool and records its absolute path, so nothing needs to be configured, but a
 missing tool fails the install with its name rather than a confusing error later.
@@ -76,12 +79,16 @@ ansible-vault view --vault-password-file "$HOME/.config/nas-platform/vault-passw
 
 Export the environment. `inventory/local.yml` reads these through `lookup('env')`,
 so they are required rather than convenient. `PLATFORM_PUBLIC_HOST` is the
-address your devices use, which is normally not the LAN address:
+address your devices use to reach published services. On a Tailscale network
+that is the machine's tailnet domain name, not an address: ntfy hashes this value
+into the topic it registers for mobile push, and the domain is what the devices
+resolve. Setting it to a LAN or tailnet IP publishes to a topic nothing is
+subscribed to, and nothing reports an error:
 
 ```sh
-export PLATFORM_NAS_ADDRESS=192.168.0.139
-export PLATFORM_PUBLIC_HOST=100.102.136.50
-export PLATFORM_CALLBACK_HOST=192.168.0.139
+export PLATFORM_NAS_ADDRESS=<nas-lan-address>
+export PLATFORM_PUBLIC_HOST=<nas-hostname>.<tailnet>.ts.net
+export PLATFORM_CALLBACK_HOST=<nas-lan-address>
 export PLATFORM_VAULT_FILE="$HOME/.config/nas-platform/vault.yml"
 export PLATFORM_VAULT_PASSWORD_FILE="$HOME/.config/nas-platform/vault-password"
 ```
@@ -119,7 +126,7 @@ Confirm the invocation works before installing it, because BusyBox `su` differs
 from the GNU one:
 
 ```sh
-sudo su - yonatankarp -c '/home/yonatankarp/.local/bin/nas-platform-deploy --status'
+sudo su - <account> -c '/home/<account>/.local/bin/nas-platform-deploy --status'
 ```
 
 Build the line, review it, then append it. Do this in separate commands: a
@@ -127,7 +134,7 @@ multi-line paste over SSH is easy to truncate into something that runs
 partially:
 
 ```sh
-printf '%s\n' "*/5 * * * * su - yonatankarp -c '/home/yonatankarp/.local/bin/nas-platform-deploy --poll' > /home/yonatankarp/.local/share/nas-platform/logs/cron.out 2>&1" > /tmp/nas-cron.line
+printf '%s\n' "*/5 * * * * su - <account> -c '/home/<account>/.local/bin/nas-platform-deploy --poll' > /home/<account>/.local/share/nas-platform/logs/cron.out 2>&1" > /tmp/nas-cron.line
 ```
 
 ```sh

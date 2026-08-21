@@ -190,8 +190,9 @@ python -m pip install -r controller-requirements.txt
 ansible-galaxy collection install -r requirements.yml
 ```
 
-`PLATFORM_PUBLIC_HOST` is the address your devices actually use to reach
-published services, which is normally not the LAN address. ntfy hashes it into
+`PLATFORM_PUBLIC_HOST` is the name your devices actually use to reach published
+services. On a Tailscale network that is the machine's tailnet domain name rather
+than an address. ntfy hashes it into
 the mobile push topic, so setting it to the LAN address publishes where nothing
 is subscribed and reports no error. The installer requires it explicitly rather
 than defaulting it.
@@ -203,7 +204,7 @@ The following values match the production contract for this NAS:
 
 ```sh
 export PLATFORM_NAS_ADDRESS=192.168.0.139
-export PLATFORM_PUBLIC_HOST=100.102.136.50
+export PLATFORM_PUBLIC_HOST=nas.example.ts.net
 export PLATFORM_CALLBACK_HOST=192.168.0.139
 export PLATFORM_VAULT_FILE="$HOME/.config/nas-platform/vault.yml"
 export PLATFORM_VAULT_PASSWORD_FILE="$HOME/.config/nas-platform/vault-password"
