@@ -29,11 +29,13 @@ case "$*" in
     [ ! -f "$token_count_file" ] || token_count=$(cat "$token_count_file")
     token_count=$((token_count + 1))
     printf '%s\n' "$token_count" > "$token_count_file"
-    if [ "$token_count" -eq 1 ]; then
-      printf 'tk_aaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n'
-    else
-      printf 'tk_bbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n'
-    fi
+    # A distinct token per invocation: the playbook now asserts that every
+    # generated publisher token is unique, so repeating one fails the run.
+    case "$token_count" in
+      1) printf 'tk_aaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n' ;;
+      2) printf 'tk_bbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n' ;;
+      *) printf '%s\n' "tk_ccccccccccccccccccccccccccccc" ;;
+    esac
     ;;
   *)
     printf 'unexpected fake docker invocation\n' >&2
@@ -47,6 +49,7 @@ assert_no_sentinel() {
   output=$1
   if grep -F -e SENTINEL_GENERATED_PASSWORD -e SENTINEL_GENERATED_TOKEN \
       -e tk_aaaaaaaaaaaaaaaaaaaaaaaaaaaaa -e tk_bbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+      -e tk_ccccccccccccccccccccccccccccc \
       "$output" >/dev/null; then
     printf 'generated credential appeared in Ansible output\n' >&2
     exit 1
