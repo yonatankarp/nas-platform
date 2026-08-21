@@ -76,16 +76,20 @@ if [ "${1:-}" = --tags ]; then
 fi
 
 case "$suite" in
+  # Every service suite converges ntfy: each service role reports its own
+  # deployment to it, so a suite that left the sink out would fail at the report
+  # rather than at anything the suite is about. These must stay equal to
+  # SERVICE_TAGS in tests/ci/classify_changes.rb, which the policy test checks.
   foundation) fixed_tags=deployment_bundle ;;
   smoke) fixed_tags= ;;
   beszel) fixed_tags=host_prep,deployment_bundle,ntfy,beszel ;;
   dozzle) fixed_tags=host_prep,deployment_bundle,ntfy,dozzle ;;
-  audiobookshelf) fixed_tags=host_prep,deployment_bundle,audiobookshelf ;;
-  komga) fixed_tags=host_prep,deployment_bundle,komga ;;
-  tinymediamanager) fixed_tags=host_prep,deployment_bundle,tinymediamanager ;;
-  jellyfin) fixed_tags=host_prep,deployment_bundle,jellyfin ;;
-  immich) fixed_tags=host_prep,deployment_bundle,immich ;;
-  paperless) fixed_tags=host_prep,deployment_bundle,paperless ;;
+  audiobookshelf) fixed_tags=host_prep,deployment_bundle,ntfy,audiobookshelf ;;
+  komga) fixed_tags=host_prep,deployment_bundle,ntfy,komga ;;
+  tinymediamanager) fixed_tags=host_prep,deployment_bundle,ntfy,tinymediamanager ;;
+  jellyfin) fixed_tags=host_prep,deployment_bundle,ntfy,jellyfin ;;
+  immich) fixed_tags=host_prep,deployment_bundle,ntfy,immich ;;
+  paperless) fixed_tags=host_prep,deployment_bundle,ntfy,paperless ;;
   idempotence-check) fixed_tags= ;;
   full) fixed_tags= ;;
   *)

@@ -1040,6 +1040,30 @@ if report_task
         "deployment report must not publish under --check")
 end
 
+# Two tables decide which roles a service suite converges: the integration
+# runner's own and the CI classifier's. They must agree, and both must name the
+# alerting sink, because a suite that leaves ntfy out now fails at the service's
+# deployment report rather than at anything the suite is about.
+integration_path = File.join(ROOT, "tests", "integration.sh")
+classifier_path = File.join(ROOT, "tests", "ci", "classify_changes.rb")
+if File.file?(integration_path) && File.file?(classifier_path)
+  suite_tags = File.read(integration_path)
+                   .scan(/^\s*([a-z][a-z0-9-]*)\)\s+fixed_tags=([a-z0-9_,-]*)\s*;;/)
+                   .to_h { |suite, tags| [suite, tags.split(",")] }
+  classifier_tags = File.read(classifier_path)[/SERVICE_TAGS = \{(.*?)\}\.freeze/m].to_s
+                        .scan(/"([a-z0-9_-]+)"\s*=>\s*%w\[([^\]]*)\]/)
+                        .to_h { |lane, tags| [lane, tags.split] }
+  check(failures, !classifier_tags.empty?,
+        "tests/ci/classify_changes.rb: SERVICE_TAGS could not be read")
+  classifier_tags.each do |lane, tags|
+    check(failures, suite_tags[lane] == tags,
+          "integration suite #{lane} converges #{suite_tags[lane].inspect}, " \
+          "CI selects #{tags.inspect}")
+    check(failures, tags.include?("ntfy"),
+          "service lane #{lane} must converge ntfy: its role reports its deployment there")
+  end
+end
+
 # Collections are pinned like every image.
 requirements = YAML.safe_load_file(File.join(ROOT, "requirements.yml"))
 requirements.fetch("collections").each do |collection|
