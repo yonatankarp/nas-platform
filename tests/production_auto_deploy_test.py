@@ -53,7 +53,6 @@ class PollerTestCase(unittest.TestCase):
             "checkout": str(self.root / ".local/share/nas-platform/controller"),
             "state_root": str(self.root / ".local/share/nas-platform/state"),
             "log_root": str(self.root / ".local/share/nas-platform/logs"),
-            "vault_file": str(self.vault),
             "vault_password_file": str(self.password),
             "ntfy_curl_config": str(self.notifier),
             "ntfy_topic_critical": "nas-critical",
@@ -533,7 +532,7 @@ class DeployTest(PollerTestCase):
             "platform_verify_ntfy,platform_verify_beszel",
         )
 
-    def test_every_play_carries_the_vault_arguments(self):
+    def test_every_play_carries_the_vault_password_provider(self):
         config = self.loaded_config()
         _outcome, calls, _kwargs = self.deploy_with(config)
         for call in calls:
@@ -542,7 +541,44 @@ class DeployTest(PollerTestCase):
             with self.subTest(play=" ".join(call[-1:])):
                 self.assertIn("--vault-password-file", call)
                 self.assertIn(str(config.vault_password_file), call)
-                self.assertIn(f"@{config.vault_file}", call)
+
+    def test_no_play_supplies_vault_values_outside_the_checkout(self):
+        """Credentials come from the candidate's own committed group_vars.
+
+        An out-of-checkout copy passed as extra vars outranks group_vars, so a
+        stale one silently shadows the revision being deployed while every
+        play still reports success. Only the password provider, which cannot
+        be committed, stays outside.
+        """
+
+        config = self.loaded_config()
+        _outcome, calls, _kwargs = self.deploy_with(config)
+        for call in calls:
+            if call[0] != "ansible-playbook":
+                continue
+            extra_vars = [
+                call[index + 1] for index, item in enumerate(call) if item == "-e"
+            ]
+            with self.subTest(play=" ".join(call[-1:])):
+                self.assertFalse(
+                    [value for value in extra_vars if value.startswith("@")],
+                    f"a play loaded an out-of-checkout vault: {extra_vars}",
+                )
+                self.assertFalse(
+                    [
+                        value
+                        for value in extra_vars
+                        if value.startswith("platform_vault_file=")
+                    ],
+                    f"a play overrode the vault identity: {extra_vars}",
+                )
+
+    def test_the_environment_does_not_redirect_the_vault_identity(self):
+        config = self.loaded_config()
+        _outcome, _calls, kwargs = self.deploy_with(config)
+        for call_kwargs in kwargs:
+            environment = (call_kwargs or {}).get("env") or {}
+            self.assertNotIn("PLATFORM_VAULT_FILE", environment)
 
     def test_a_failed_checkout_stops_before_touching_tooling(self):
         config = self.loaded_config()

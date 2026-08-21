@@ -1236,20 +1236,23 @@ reviewed. Do not transfer a password through a shell command or write it with
 
 ### Production auto-deployment inputs
 
-The NAS poller requires the reviewed encrypted vault at
-`$HOME/.config/nas-platform/vault.yml` and its provider at
-`$HOME/.config/nas-platform/vault-password`. Both live outside the controller
-checkout, because the poller rewrites that checkout on every deployment. Copy
-the encrypted vault there from the checkout's
-`inventory/group_vars/all/vault.yml`, which is committed. The password provider
-is never committed, and both inputs are never logged.
-The containing `$HOME/.config/nas-platform` directory must be mode `0700`.
+The NAS poller requires the vault password provider at
+`$HOME/.config/nas-platform/vault-password`. It lives outside the controller
+checkout because it is never committed, and the poller rewrites that checkout on
+every deployment. It is never logged. The containing
+`$HOME/.config/nas-platform` directory must be mode `0700`.
 
-Each input must be a mode-0600 regular, non-symlink file owned by the dedicated
-deployment account. The password input may be the protected one-line password
-file used during bootstrap. Do not pass either value through argv, an
-environment variable, cron source, or notification. The installer validates
-the paths before activation, and the poller reads them only for the local
+The encrypted vault needs no copy there. It is committed, so `git checkout` of
+the candidate revision puts that revision's own vault in the checkout and
+`group_vars` loads it. A second copy passed from outside as extra vars would
+outrank `group_vars`, so a stale one would silently shadow the revision being
+deployed while every play still reported success.
+
+The password input must be a mode-0600 regular, non-symlink file owned by the
+dedicated deployment account. It may be the protected one-line password file
+used during bootstrap. Do not pass it through argv, an environment variable,
+cron source, or notification. The installer validates the path before
+activation, and the poller reads it only for the local
 Ansible runs described in the
 [physical NAS walkthrough](getting-started-nas.md#automatic-deployment-from-the-nas).
 

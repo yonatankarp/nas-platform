@@ -25,7 +25,7 @@ CONFIG_KEYS = %w[
   log_retention_days log_root
   ntfy_curl_config ntfy_topic_critical ntfy_topic_deployment
   platform_callback_host platform_nas_address
-  platform_public_host repository repository_url state_root tool_path vault_file
+  platform_public_host repository repository_url state_root tool_path
   vault_password_file verify_tags workflow workflow_name
 ].freeze
 
@@ -176,11 +176,12 @@ Dir.mktmpdir("auto-deploy-role") do |root|
     File.write(path, "#!/bin/sh\nexit 0\n")
     File.chmod(0o700, path)
   end
-  %w[vault.yml vault-password].each do |name|
-    path = File.join(config_root, name)
-    File.write(path, "placeholder\n")
-    File.chmod(0o600, path)
-  end
+  # Only the password provider is planted. The role must converge without a
+  # vault copy outside the checkout, because the committed vault travels with
+  # the revision and a second copy would outrank it.
+  path = File.join(config_root, "vault-password")
+  File.write(path, "placeholder\n")
+  File.chmod(0o600, path)
 
   inventory = File.join(root, "inventory.yml")
   File.write(inventory, <<~YAML)

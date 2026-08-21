@@ -30,12 +30,14 @@
       production auto-deployment requires Python 3.12 or newer, found
       {{ ansible_facts.python_version }}.
 
-- name: Require the reviewed vault and its password provider
+# The encrypted vault is committed, so the checkout carries the candidate's own
+# copy and group_vars loads it. Only the password provider, which is never
+# committed, has to be placed outside the checkout the poller rewrites.
+- name: Require the vault password provider
   ansible.builtin.stat:
     path: "{{ item }}"
   register: production_auto_deploy_protected_inputs
   loop:
-    - "{{ production_auto_deploy_vault_path }}"
     - "{{ production_auto_deploy_password_path }}"
 
 - name: Reject missing or world-readable protected inputs
