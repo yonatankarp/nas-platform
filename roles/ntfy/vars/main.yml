@@ -3,6 +3,12 @@
 # lazily where used, are not persisted as host facts, and keep the task list
 # describing actions instead of computing strings.
 #
+# CAUTION: managed_users.yml's provision phase set_facts all three of these
+# before env.j2 is rendered, and set_fact outranks role vars, so the values
+# below are shadowed at render time. They are kept in step with that
+# accumulator deliberately; change both or neither. Consolidating the two is
+# tracked separately, in issue #21.
+#
 # ntfy's provisioning formats are <user>:<hash>:<role>, <user>:<topic>:<access>
 # and <user>:<token>[:<label>], each a comma-separated list.
 ntfy_auth_users: >-
