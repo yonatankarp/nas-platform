@@ -53,7 +53,7 @@ independent projects.
 
 ```text
 services/
-├── arr/             Radarr, Sonarr, Prowlarr, Bazarr; Configarr job definition
+├── arr/             Radarr, Sonarr, Prowlarr, Bazarr, and the Configarr job
 ├── downloaders/     SABnzbd, Unpackerr; later Gluetun and qBittorrent
 ├── bindery/         Bindery
 ├── kapowarr/        Kapowarr
@@ -65,9 +65,21 @@ services/
 Each directory has one manifest entry, one Ansible role, one long-running
 Compose project, one platform verification tag, and one service-owned CI suite.
 This produces seven new manifest entries rather than one entry per container or
-one all-encompassing media stack. `arr/compose.jobs.yml` additionally defines
-Configarr as a synchronous job container; it is not part of the long-running
-service set.
+one all-encompassing media stack. Configarr is declared in
+`services/arr/compose.yml` under a `jobs` Compose profile. A profiled service is
+never started by the project deployment, so the job stays out of the
+long-running service set while remaining inside the file the static contracts
+actually read.
+
+A separate `arr/compose.jobs.yml` was considered and rejected.
+`roles/deployment_bundle/tasks/main.yml` ships exactly `compose.yml` and
+`compose.{{ platform_compose_kind }}.yml` for each service, plus two named
+per-file exceptions, so a third Compose file would never reach the deployed
+release and the job could not run on the NAS at all. The compose policy block in
+`tests/policy_test.rb` also opens `compose.yml` alone, so the job would silently
+escape digest pinning, `cpuset`, its CPU ceiling, bounded logging, and
+volume-source parameterization, while the `services/*/compose.*.yml` override
+loop would fail it for having no canonical image to match.
 
 One project per container would create unnecessary role, CI, and networking
 overhead. One project for the entire subsystem would couple independent
@@ -80,7 +92,8 @@ long-running projects. Every role consumes `platform_service_compose_files`,
 uses a project name derived from `platform_project_name`, revalidates its
 deployed release and runtime paths, and verifies its effective container CPU
 policy. The sole job-container exception is Configarr, which Ansible runs with
-`community.docker.docker_compose_v2_run`, waits for, captures, and removes.
+`community.docker.docker_compose_v2_run` following the existing one-shot
+precedent in `roles/ntfy/tasks/main.yml`.
 
 ## Shared control network
 
@@ -146,16 +159,22 @@ regenerable working state and have `recovery: cache`. Final libraries remain
 NAS-owned user data with `recovery: user`; Ansible creates their directories
 without claiming owner or group.
 
+Two spellings of the same root appear in this document by design. Compose
+volume sources must use `${NAS_MEDIA_ROOT:?}` and `${NAS_DOCKER_ROOT:?}`, which
+the compose policy enforces by rejecting any hardcoded `/volume<n>` source; the
+Jinja `{{ nas_media_root }}` form belongs in the storage inventory, role
+variables, and prose about host paths.
+
 Writers see a parent that contains both their source and destination:
 
-| Writer | Writable view |
+| Writer | Writable Compose mount |
 |---|---|
-| Radarr and Sonarr | `{{ nas_media_root }}/Media:/data/media` |
+| Radarr and Sonarr | `${NAS_MEDIA_ROOT:?}/Media:/data/media` |
 | Bazarr | Movies and Series through the same `/data/media` namespace |
 | Trailarr | Movies and Series; writes only `Trailers/` children |
-| Pinchflat | `{{ nas_media_root }}/Media/YouTube` |
-| Bindery | `{{ nas_media_root }}/Books` and `{{ nas_media_root }}/Media/Audiobooks` |
-| Kapowarr | `{{ nas_media_root }}/Books` |
+| Pinchflat | `${NAS_MEDIA_ROOT:?}/Media/YouTube` |
+| Bindery | `${NAS_MEDIA_ROOT:?}/Books` and `${NAS_MEDIA_ROOT:?}/Media/Audiobooks` |
+| Kapowarr | `${NAS_MEDIA_ROOT:?}/Books` |
 
 Download clients see only `.acquisition` bind sources, mounted at the exact
 paths reported to importing applications. For example, SABnzbd may see the host
@@ -169,18 +188,26 @@ becomes a second library writer.
 
 ### Shared filesystem identity
 
-Every container that exchanges acquisition or library files uses the shared
-filesystem identity UID `1000`, GID `100`, with an effective umask of `022`.
+Every container that exchanges acquisition or library files runs as the
+platform's already-declared filesystem identity, `nas_uid` and `nas_gid` from
+`inventory/group_vars/all/main.yml`, currently `1000` and `100`, with an
+effective umask of `022`. This design does not introduce a media-specific
+identity constant. The numbers are not written into Compose files: they reach a
+container as `${NAS_UID:?}` and `${NAS_GID:?}`, which `services/ntfy/compose.yml`
+and `services/dozzle/compose.yml` already do. The reasoning is the same one that
+forbids hardcoded `/volume<n>` volume sources, and it is what keeps the Mac lane
+and the NAS reading one source of truth.
+
 The implementation selects the mechanism supported by each image:
 
 | Containers | Identity mechanism |
 |---|---|
-| Radarr, Sonarr, Prowlarr, Bazarr, SABnzbd, qBittorrent | `PUID=1000`, `PGID=100`, `UMASK=022`; do not override the s6 init user |
-| Trailarr and Kapowarr | Image-supported `PUID=1000` and `PGID=100`; set an image-supported umask when available, otherwise verify created modes |
-| Unpackerr | `user: "1000:100"` plus explicit file mode `0644` and directory mode `0755` |
-| Bindery | `user: "1000:100"`; `BINDERY_PUID` and `BINDERY_PGID` are sanity checks, not privilege switching |
-| Pinchflat | `user: "1000:100"` |
-| Configarr job | `user: "1000:100"` |
+| Radarr, Sonarr, Prowlarr, Bazarr, SABnzbd, qBittorrent | `PUID=${NAS_UID:?}`, `PGID=${NAS_GID:?}`, `UMASK=022`; do not override the s6 init user |
+| Trailarr and Kapowarr | Image-supported `PUID` and `PGID` from the same variables; set an image-supported umask when available, otherwise verify created modes |
+| Unpackerr | `user: "${NAS_UID:?}:${NAS_GID:?}"` plus explicit file mode `0644` and directory mode `0755` |
+| Bindery | `user: "${NAS_UID:?}:${NAS_GID:?}"`; `BINDERY_PUID` and `BINDERY_PGID` are sanity checks, not privilege switching |
+| Pinchflat | `user: "${NAS_UID:?}:${NAS_GID:?}"` |
+| Configarr job | `user: "${NAS_UID:?}:${NAS_GID:?}"` |
 
 Seerr writes only its critical configuration and uses the selected image's
 supported non-root mechanism; it is not part of the hardlink contract. Gluetun
@@ -188,7 +215,7 @@ mounts no download or library path and is exempt from the shared media identity;
 qBittorrent owns the files. Integration and NAS acceptance read back effective
 UID/GID, inspect representative `0644` files and `0755` directories, and prove
 that the importing application can create, modify, and remove client-created
-files. NAS ACLs grant UID `1000`/GID `100` the required rights; `host_prep` does
+files. NAS ACLs grant `nas_uid`/`nas_gid` the required rights; `host_prep` does
 not recursively chown NAS-owned media.
 
 ## Stateful application contract
@@ -232,14 +259,34 @@ Radarr owns Movies, Sonarr owns Series, Bazarr owns subtitle sidecars, and the
 repository owns Configarr's profile inputs. Prowlarr synchronizes indexers to
 Radarr and Sonarr and supplies indexers to Bindery.
 
-Configarr is a one-shot job, not a daemon. Its separate Compose job definition
-has no restart policy, health check, Dozzle event expectation, or published
-port. The role invokes it synchronously with cleanup enabled, treats a nonzero
-exit as deployment failure, captures bounded redacted output, and then reads
-the arr APIs to verify the desired profiles. This explicit job-container class
-has its own policy checks for a digest-pinned image, required CPU set, explicit
-CPU ceiling, no ports, no restart, cleanup, and synchronous execution; it is
-excluded from assertions that apply only to long-running services.
+Configarr is a one-shot job, not a daemon. It is declared in the `arr` Compose
+file under the `jobs` profile with no restart policy, health check, Dozzle event
+expectation, or published port, and the role invokes it with
+`community.docker.docker_compose_v2_run`. The invocation mirrors the repository's
+existing one-shot precedent at `roles/ntfy/tasks/main.yml`: `service: configarr`,
+the role's `platform_service_compose_files` entry, `cleanup: true`,
+`no_deps: true`, `service_ports: false`, and `interactive: true` with
+`tty: false`, because the pinned Compose version does not accept the
+`--no-interactive` flag that `interactive: false` produces.
+
+Two properties of that module drive the rest of the contract. It does not
+support check mode, so Ansible skips the task under `--check`; the role therefore
+guards it with `not ansible_check_mode` and reports the predicted change through
+the repository's existing planned-change idiom so the Mac check-mode lane still
+proves something. And Compose interpolation runs against the newly published
+bundle while the on-disk `.env` can still be the previous deployment's, so the
+task supplies `PLATFORM_CONTAINER_CPUSET` in its own environment rather than
+relying on the rendered file, exactly as the ntfy listing does.
+
+The role treats a nonzero exit as deployment failure, captures bounded output
+redacted of the arr API keys Configarr echoes, and then reads the arr APIs to
+verify the desired profiles. The one-shot class is exempt only from the
+long-running assertions that cannot apply to it: `restart: unless-stopped`, the
+health check, and the Dozzle event expectation. It keeps the digest-pinned
+image, `cpuset`, an explicit CPU ceiling, bounded `json-file` logging, and
+parameterized volume sources, because it sits in the same Compose file those
+checks already read. The exemption is keyed on a declared job set rather than on
+a filename, so adding a second job cannot widen it by accident.
 
 Bazarr is part of the initial deployment rather than an optional later phase.
 It replaces the unreliable Jellyfin Open Subtitles plugin and removes that
@@ -355,6 +402,30 @@ library roots; a `.acquisition` scan exclusion is also declared as
 defense-in-depth. The Komga reconciliation contract changes from one pinned
 library to this exact two-library model.
 
+That change cannot be reached by converging the new desired state, and the
+migration is part of this design rather than an implementation detail. The
+deployed library is named `Comics` and rooted at `/data`. Komga's reconciliation
+refuses to proceed when a library matching the desired name has a different
+root, and its repair payload can only patch a library that was resolved by root,
+which is impossible when the root is the thing that changed. A plain converge
+therefore aborts with nothing mutated.
+
+The role gains a one-convergence input, `komga_library_root_migration_allowed`,
+defaulting to `false` and never stored as a permanent host setting, matching the
+adoption input used for the existing Movies and Series libraries. With the input
+set, reconciliation may repair the root of a library matched by name; the Ebooks
+library is created new in the same run. The comic files keep their absolute
+paths, so this is a narrowing of the library root rather than a file move, but
+whether Komga preserves read progress across a root change is not established
+here. The migration therefore backs up Komga's critical state first, runs before
+Bindery is granted write access, and treats read progress on a known-partial
+series as an explicit post-migration check; if it is lost, the fallback is to
+restore the backup and keep one library scoped to `/data` with a `.acquisition`
+scan exclusion. The Mac lane proves both halves: that the guard refuses the root
+move without the input, and that the migration completes with it.
+`tests/komga_library_reconciliation_test.rb` is rewritten against the
+two-library model as part of this slice.
+
 Bindery uses its image's built-in `/bindery healthcheck`, which verifies
 `/api/v1/health`; its role also reads the API during integration verification.
 Because one single-maintainer application holds critical acquisition state for
@@ -435,10 +506,14 @@ Initial CPU ceilings are:
 | Pinchflat | 1.0 |
 | Trailarr | 1.0 |
 | Seerr | 1.0 |
+| Configarr, job | 0.5 |
 | Gluetun, later | 0.5 |
 | qBittorrent, later | 1.5 |
 
-The Configarr job has a separate 0.5 CPU ceiling while it runs.
+The Configarr row is not optional. The CPU contract asserts that its map covers
+the exact Compose service set of each file, and a profiled service is still a
+service in that file, so the job is listed here rather than described in
+prose.
 
 These are ceilings rather than reservations. The implementation adds the exact
 container map to the platform CPU contract and verifies the effective runtime
@@ -505,9 +580,12 @@ stops Radarr/Sonarr writers before restarting tinyMediaManager.
 
 ### Phase 2: additional libraries
 
-Deploy Bindery, Kapowarr, and Pinchflat. Prove one ebook, audiobook, comic, and
-YouTube item before enabling unattended monitoring. Enable the Komga scan
-interval and verify the Audiobookshelf scan integration.
+Migrate Komga to the two-library model with
+`komga_library_root_migration_allowed: true` for that convergence only, before
+Bindery receives write access, and confirm both libraries and their read
+progress. Then deploy Bindery, Kapowarr, and Pinchflat. Prove one ebook,
+audiobook, comic, and YouTube item before enabling unattended monitoring. Enable
+the Komga scan interval and verify the Audiobookshelf scan integration.
 
 ### Phase 3: local trailers
 
@@ -543,6 +621,17 @@ Each service slice must account for more than its Compose and role files:
 - every service is added to `site.yml` and `verify.yml` with an asserted tag,
   manifest and storage entries, vault plumbing where needed, a contract, and a
   selective CI suite;
+- every new host-scoped input, including `media_usenet_enabled` and
+  `media_torrent_enabled`, is added to `HOST_SCOPED_VARS` in
+  `tests/policy_test.rb`, since a host group's variables may not contain a key
+  outside that list; declaring either as a platform capability additionally
+  requires both host groups to define it and
+  `roles/preflight/meta/argument_specs.yml` to mark it required;
+- the one-shot job class adds its own exemption and checks to
+  `tests/policy_test.rb`, keyed on a declared job set rather than a filename;
+- per-service reconciliation unit tests change with the contracts they pin,
+  including `tests/komga_library_reconciliation_test.rb` for the two-library
+  Komga model;
 - selective routing updates `tests/ci/classify_changes.rb`, its tests, the fixed
   tags in `tests/integration.sh`, `tests/integration_suite_test.sh`, and the
   authoritative `INTEGRATION_SUITES` constant in `tests/ci/workflow_test.rb`;
@@ -579,8 +668,11 @@ cover real API behavior rather than only returning HTTP 200.
 
 The complete Mac lifecycle, with torrent disabled, proves first converge, clean
 reconverge, check mode, owned drift repair, critical-state persistence, service
-recreation, credential redaction, sanitized reporting, and the separate
-existing-library adoption lane. NAS-only acceptance additionally proves:
+recreation, credential redaction, sanitized reporting, the separate
+existing-library adoption lane, and the Komga library root migration in both its
+refused and permitted forms. Check mode additionally asserts that the Configarr
+job, which its module cannot run under `--check`, still reports its predicted
+change rather than passing silently. NAS-only acceptance additionally proves:
 
 - the two NAS shares and their ACL boundary remain intact;
 - `.acquisition` is not exposed to ordinary share users;
