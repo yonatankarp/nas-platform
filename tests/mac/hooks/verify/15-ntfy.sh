@@ -5,12 +5,14 @@ set +x
 : "${PLATFORM_MAC_VAULT_FILE:?PLATFORM_MAC_VAULT_FILE is required}"
 : "${PLATFORM_MAC_VAULT_PASSWORD_FILE:?PLATFORM_MAC_VAULT_PASSWORD_FILE is required}"
 : "${PLATFORM_NTFY_PORT:?PLATFORM_NTFY_PORT is required}"
+: "${PLATFORM_NTFY_TOPICS:=nas-critical nas-events}"
 
 ntfy_hook_base_url=http://127.0.0.1:$PLATFORM_NTFY_PORT
 ansible-vault view \
   --vault-password-file "$PLATFORM_MAC_VAULT_PASSWORD_FILE" \
   "$PLATFORM_MAC_VAULT_FILE" 2>/dev/null |
   PLATFORM_NTFY_BASE_URL=$ntfy_hook_base_url \
+  PLATFORM_NTFY_TOPICS="$PLATFORM_NTFY_TOPICS" \
     ruby -rjson -rnet/http -ruri -ryaml /dev/fd/3 3<<'RUBY'
 vault = YAML.safe_load($stdin.read, aliases: false)
 abort "ntfy verification vault is not a mapping" unless vault.is_a?(Hash)
@@ -19,16 +21,26 @@ managed = vault.dig("vault_managed_users", "ntfy")
 abort "ntfy managed-user vault shape is invalid" unless managed.is_a?(Array)
 
 base_url = ENV.fetch("PLATFORM_NTFY_BASE_URL")
+topics = ENV.fetch("PLATFORM_NTFY_TOPICS").split
 account_uri = URI("#{base_url}/v1/account")
+
+# A managed account must be subscribed to exactly the provisioned topics it may
+# read, and to no provisioned topic it may not.
+def readable_topics(user, topics)
+  topics.select do |topic|
+    user.fetch("access").any? do |rule|
+      rule.is_a?(Hash) && rule["topic"] == topic &&
+        %w[read-only read-write].include?(rule["permission"])
+    end
+  end
+end
+
 eligible = managed.select do |user|
   abort "ntfy managed-user shape is invalid" unless user.is_a?(Hash)
   abort "ntfy managed users must be nonadministrative" unless user["role"] == "user"
   access = user["access"]
   abort "ntfy managed-user ACL shape is invalid" unless access.is_a?(Array)
-  access.any? do |rule|
-    rule.is_a?(Hash) && rule["topic"] == "nas-critical" &&
-      %w[read-only read-write].include?(rule["permission"])
-  end
+  !readable_topics(user, topics).empty?
 end
 
 eligible.each do |user|
@@ -50,10 +62,13 @@ eligible.each do |user|
         subscription["base_url"].is_a?(String) && subscription["topic"].is_a?(String) &&
         (subscription["display_name"].nil? || subscription["display_name"].is_a?(String))
   end
-  matches = subscriptions.count do |subscription|
-    subscription["base_url"] == base_url &&
-      subscription["topic"] == "nas-critical"
+  readable = readable_topics(user, topics)
+  topics.each do |topic|
+    matches = subscriptions.count do |subscription|
+      subscription["base_url"] == base_url && subscription["topic"] == topic
+    end
+    expected = readable.include?(topic) ? 1 : 0
+    abort "ntfy synchronized #{topic} subscription differs" unless matches == expected
   end
-  abort "ntfy synchronized nas-critical subscription differs" unless matches == 1
 end
 RUBY

@@ -56,6 +56,8 @@ class PollerTestCase(unittest.TestCase):
             "vault_file": str(self.vault),
             "vault_password_file": str(self.password),
             "ntfy_curl_config": str(self.notifier),
+            "ntfy_topic_critical": "nas-critical",
+            "ntfy_topic_events": "nas-events",
             "platform_nas_address": "192.168.0.139",
             "platform_public_host": "192.168.0.139",
             "platform_callback_host": "192.168.0.139",
@@ -705,7 +707,98 @@ class LogTest(PollerTestCase):
 
 
 class NotifyTest(PollerTestCase):
-    def test_notify_posts_the_outcome_through_the_protected_config(self):
+    def published(self, config, outcome):
+        """Return the ntfy publish body notify() would send for one outcome."""
+
+        seen = {}
+
+        def run(arguments, **kwargs):
+            seen["arguments"] = [str(a) for a in arguments]
+            return subprocess.CompletedProcess(arguments, 0, b"", b"")
+
+        with mock.patch.object(production_auto_deploy, "_run", side_effect=run):
+            delivered = production_auto_deploy.notify(
+                config, outcome, MAIN_SHA,
+                "2026-08-21T15:00:00Z", "2026-08-21T15:04:30Z",
+                config.log_root / "20260821T150000Z-deploy.log",
+            )
+        arguments = seen["arguments"]
+        body = json.loads(arguments[arguments.index("--data-binary") + 1])
+        return delivered, arguments, body
+
+    def test_notify_posts_through_the_protected_config(self):
+        config = self.loaded_config()
+        delivered, arguments, _body = self.published(config, "success")
+
+        self.assertTrue(delivered)
+        self.assertEqual(arguments[0], "/usr/bin/curl")
+        self.assertIn("--config", arguments)
+        self.assertEqual(
+            arguments[arguments.index("--config") + 1], str(config.ntfy_curl_config)
+        )
+
+    def test_notify_publishes_ntfy_structured_json_not_a_raw_outcome_dict(self):
+        """The body must be ntfy's publish schema, addressed to the root URL.
+
+        Posting a JSON document to /<topic> makes ntfy treat it as literal
+        message text, which is how deploy alerts arrived as unreadable JSON.
+        """
+
+        config = self.loaded_config()
+        _delivered, _arguments, body = self.published(config, "success")
+
+        self.assertEqual(
+            sorted(body),
+            ["markdown", "message", "priority", "tags", "title", "topic"],
+        )
+        self.assertTrue(body["markdown"])
+        self.assertNotIn("outcome", body)
+        self.assertNotIn("log_path", body)
+
+    def test_notify_routes_success_to_the_events_topic_quietly(self):
+        config = self.loaded_config()
+        _delivered, _arguments, body = self.published(config, "success")
+
+        self.assertEqual(body["topic"], "nas-events")
+        self.assertEqual(body["priority"], 3)
+        self.assertEqual(body["tags"], ["white_check_mark"])
+        self.assertEqual(body["title"], f"Deployed \u00b7 {MAIN_SHA[:9]}")
+
+    def test_notify_routes_failure_to_the_critical_topic_loudly(self):
+        """Severity, not source, picks the topic: a failed deploy is critical."""
+
+        config = self.loaded_config()
+        _delivered, _arguments, body = self.published(config, "failed")
+
+        self.assertEqual(body["topic"], "nas-critical")
+        self.assertEqual(body["priority"], 5)
+        self.assertEqual(body["tags"], ["warning", "skull"])
+        self.assertEqual(body["title"], f"Deploy failed \u00b7 {MAIN_SHA[:9]}")
+
+    def test_notify_message_states_commit_duration_and_log(self):
+        config = self.loaded_config()
+        _delivered, _arguments, body = self.published(config, "success")
+
+        self.assertEqual(
+            body["message"],
+            "\n".join(
+                (
+                    f"**Commit:** `{MAIN_SHA}`",
+                    "**Started:** `2026-08-21T15:00:00Z`",
+                    "**Finished:** `2026-08-21T15:04:30Z`",
+                    "**Duration:** `4m 30s`",
+                    "**Log:** `"
+                    + production_auto_deploy.markdown_escape(
+                        str(config.log_root / "20260821T150000Z-deploy.log")
+                    )
+                    + "`",
+                )
+            ),
+        )
+
+    def test_notify_states_an_unknown_duration_rather_than_guessing(self):
+        """Timestamps come from the poller, but a corrupt one must not crash it."""
+
         config = self.loaded_config()
         seen = {}
 
@@ -714,22 +807,46 @@ class NotifyTest(PollerTestCase):
             return subprocess.CompletedProcess(arguments, 0, b"", b"")
 
         with mock.patch.object(production_auto_deploy, "_run", side_effect=run):
-            self.assertTrue(
-                production_auto_deploy.notify(
-                    config, "success", MAIN_SHA, "start", "finish",
-                    config.log_root / "latest",
-                )
+            production_auto_deploy.notify(
+                config, "success", MAIN_SHA, "start", "finish",
+                config.log_root / "latest",
             )
 
         arguments = seen["arguments"]
-        self.assertEqual(arguments[0], "/usr/bin/curl")
-        self.assertIn("--config", arguments)
-        self.assertEqual(
-            arguments[arguments.index("--config") + 1], str(config.ntfy_curl_config)
-        )
-        payload = json.loads(arguments[arguments.index("--data-binary") + 1])
-        self.assertEqual(payload["outcome"], "success")
-        self.assertEqual(payload["sha"], MAIN_SHA)
+        body = json.loads(arguments[arguments.index("--data-binary") + 1])
+        self.assertIn("**Duration:** `unknown`", body["message"])
+
+    def test_notify_escapes_markdown_in_the_log_path(self):
+        """The path is operator-controlled, but it lands inside markdown."""
+
+        config = self.loaded_config()
+        seen = {}
+
+        def run(arguments, **kwargs):
+            seen["arguments"] = [str(a) for a in arguments]
+            return subprocess.CompletedProcess(arguments, 0, b"", b"")
+
+        with mock.patch.object(production_auto_deploy, "_run", side_effect=run):
+            production_auto_deploy.notify(
+                config, "success", MAIN_SHA, "s", "f",
+                config.log_root / "we*ird_[name].log",
+            )
+
+        arguments = seen["arguments"]
+        body = json.loads(arguments[arguments.index("--data-binary") + 1])
+        self.assertIn(r"we\*ird", body["message"])
+        self.assertIn(r"\[name\]", body["message"])
+
+    def test_notify_refuses_an_unknown_outcome(self):
+        config = self.loaded_config()
+
+        with mock.patch.object(production_auto_deploy, "_run") as run:
+            with self.assertRaises(ValueError):
+                production_auto_deploy.notify(
+                    config, "partially", MAIN_SHA, "s", "f",
+                    config.log_root / "latest",
+                )
+        run.assert_not_called()
 
     def test_notify_never_places_a_token_on_the_command_line(self):
         config = self.loaded_config()

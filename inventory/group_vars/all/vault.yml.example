@@ -34,6 +34,8 @@ vault_ntfy_dozzle_password_hash: $2b$12$0000000000000000000000000000000000000000
 vault_ntfy_dozzle_token: tk_00000000000000000000000000000
 vault_ntfy_beszel_password_hash: $2b$12$00000000000000000000000000000000000000000000000000000
 vault_ntfy_beszel_token: tk_11111111111111111111111111111
+vault_ntfy_deploy_password_hash: $2b$12$00000000000000000000000000000000000000000000000000000
+vault_ntfy_deploy_token: tk_01010101010101010101010101010
 
 # The Beszel hub keypair is authored before first start. The agent key contains
 # only the key type and public key, without a trailing comment.

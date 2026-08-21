@@ -69,8 +69,8 @@ vault_keys = if vault_example.is_a?(Hash)
                []
              end
 
-check(failures, vault_keys.length == 43,
-      "vault example must contain exactly 43 vault_* keys (found #{vault_keys.length})")
+check(failures, vault_keys.length == 45,
+      "vault example must contain exactly 45 vault_* keys (found #{vault_keys.length})")
 
 secrets_guide_path = File.join(ROOT, "docs", "secrets.md")
 secrets_guide = File.file?(secrets_guide_path) ? File.read(secrets_guide_path) : ""

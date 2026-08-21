@@ -33,6 +33,8 @@ argument_specs:
       vault_ntfy_dozzle_token: {type: str, required: true}
       vault_ntfy_beszel_password_hash: {type: str, required: true}
       vault_ntfy_beszel_token: {type: str, required: true}
+      vault_ntfy_deploy_password_hash: {type: str, required: true}
+      vault_ntfy_deploy_token: {type: str, required: true}
       vault_paperless_admin_username: {type: str, required: true}
       vault_paperless_admin_password: {type: str, required: true}
       vault_paperless_admin_email: {type: str, required: true}

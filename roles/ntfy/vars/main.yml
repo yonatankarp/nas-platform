@@ -14,10 +14,14 @@ ntfy_auth_users: >-
         | map('regex_replace', '^(.*)$', '\1:user')
         | list) | join(',') }}
 
+# One entry per publisher and topic it declares, rather than one topic for
+# everybody: a publisher must not be able to write to a topic it has no reason
+# to reach.
 ntfy_auth_access: >-
-  {{ ntfy_publishers
-     | map(attribute='name')
-     | map('regex_replace', '^(.*)$', '\1:' ~ ntfy_topic ~ ':write-only')
+  {{ (ntfy_publishers | subelements('topics') | map(attribute='0.name') | list)
+     | zip(ntfy_publishers | subelements('topics') | map(attribute='1') | list)
+     | map('join', ':')
+     | map('regex_replace', '^(.*)$', '\1:write-only')
      | list | join(',') }}
 
 ntfy_auth_tokens: >-

@@ -35,6 +35,8 @@ READ_SIZE = 64 * 1024
 NETWORK_TIMEOUT_SECONDS = 10
 GIT_TIMEOUT_SECONDS = 10
 NOTIFICATION_TIMEOUT_SECONDS = 10
+# Mirrors services/dozzle/alert_relay.py so both publishers escape alike.
+MARKDOWN_PATTERN = re.compile(r"([\\`*_{}\[\]()#+\-.!|>])")
 COMMAND_TIMEOUT_SECONDS = 60 * 60
 TOOLING_TIMEOUT_SECONDS = 15 * 60
 
@@ -64,6 +66,10 @@ class Config:
     vault_file: Path
     vault_password_file: Path
     ntfy_curl_config: Path
+    # Addressed in the publish body, not the URL: ntfy only parses a JSON
+    # publish document when the POST goes to the server root.
+    ntfy_topic_critical: str
+    ntfy_topic_events: str
     platform_nas_address: str
     platform_public_host: str
     platform_callback_host: str
@@ -655,6 +661,79 @@ def rotate_logs(config: Config, now: datetime) -> None:
                 entry.unlink()
 
 
+OUTCOMES = {
+    # topic attribute, title prefix, priority, tags. Severity picks the topic:
+    # a failed deployment belongs on the critical topic, a successful one does
+    # not, which is the whole point of having two.
+    "success": ("ntfy_topic_events", "Deployed", 3, ("white_check_mark",)),
+    "failed": ("ntfy_topic_critical", "Deploy failed", 5, ("warning", "skull")),
+}
+
+
+def markdown_escape(value: str, maximum: int = 256) -> str:
+    """Escape one value for ntfy's markdown rendering, bounded like the relay.
+
+    Only the log path needs this. The SHA is validated hex and the timestamps
+    come from strftime, so escaping those would only make them unreadable.
+    """
+
+    return MARKDOWN_PATTERN.sub(lambda match: f"\\{match.group(1)}", value[:maximum])
+
+
+def format_duration(started: str, finished: str) -> str:
+    """Render the elapsed deployment time, or admit that it is not derivable."""
+
+    try:
+        span = datetime.strptime(finished, "%Y-%m-%dT%H:%M:%SZ") - datetime.strptime(
+            started, "%Y-%m-%dT%H:%M:%SZ"
+        )
+    except ValueError:
+        return "unknown"
+    seconds = int(span.total_seconds())
+    if seconds < 0:
+        return "unknown"
+    minutes, seconds = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h {minutes}m {seconds}s"
+    if minutes:
+        return f"{minutes}m {seconds}s"
+    return f"{seconds}s"
+
+
+def render_notification(
+    config: Config,
+    outcome: str,
+    sha: str,
+    started: str,
+    finished: str,
+    log_path: Path,
+) -> dict:
+    """Build ntfy's structured publish document for one deployment outcome."""
+
+    try:
+        topic_attribute, title_prefix, priority, tags = OUTCOMES[outcome]
+    except KeyError:
+        raise ValueError(f"unknown deployment outcome: {outcome}") from None
+    message = "\n".join(
+        (
+            f"**Commit:** `{sha}`",
+            f"**Started:** `{started}`",
+            f"**Finished:** `{finished}`",
+            f"**Duration:** `{format_duration(started, finished)}`",
+            f"**Log:** `{markdown_escape(str(log_path))}`",
+        )
+    )
+    return {
+        "topic": getattr(config, topic_attribute),
+        "title": f"{title_prefix} \u00b7 {sha[:9]}",
+        "message": message,
+        "priority": priority,
+        "tags": list(tags),
+        "markdown": True,
+    }
+
+
 def notify(
     config: Config,
     outcome: str,
@@ -663,18 +742,17 @@ def notify(
     finished: str,
     log_path: Path,
 ) -> bool:
-    """Publish a secret-free outcome through the operator's protected curl config."""
+    """Publish a secret-free outcome through the operator's protected curl config.
+
+    The curl config addresses the ntfy server root, so the topic travels in the
+    body. Posting this document to /<topic> instead would deliver it as literal
+    JSON text rather than a rendered notification.
+    """
 
     body = json.dumps(
-        {
-            "outcome": outcome,
-            "sha": sha,
-            "started": started,
-            "finished": finished,
-            "log_path": str(log_path),
-        },
+        render_notification(config, outcome, sha, started, finished, log_path),
+        ensure_ascii=False,
         separators=(",", ":"),
-        sort_keys=True,
     )
     try:
         result = _run(

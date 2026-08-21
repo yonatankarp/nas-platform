@@ -10,8 +10,8 @@ argument_specs:
         description: Platform discriminator; the role accepts only nas.
         type: str
         required: true
-      vault_ntfy_dozzle_token:
-        description: Existing least-privilege write-only ntfy publisher token.
+      vault_ntfy_deploy_token:
+        description: The deployer's own least-privilege write-only ntfy token.
         type: str
         required: true
       production_auto_deploy_home:

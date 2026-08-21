@@ -111,6 +111,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
                 "ALERT_RELAY_TOKEN": RELAY_TOKEN,
                 "NTFY_PUBLISH_URL": f"http://127.0.0.1:{self.ntfy.server_port}/",
                 "NTFY_TOPIC": "nas-critical",
+                "NTFY_EVENTS_TOPIC": "nas-events",
                 "NTFY_TOKEN": NTFY_TOKEN,
                 "ALERT_STATE_PATH": str(self.state_path),
             }
@@ -501,7 +502,8 @@ class DozzleAlertRelayTest(unittest.TestCase):
         self.assertEqual(
             self.ntfy.requests[-1]["json"],
             {
-                "topic": "nas-critical",
+                # A recovery is a record, not an emergency: events topic.
+                "topic": "nas-events",
                 "title": "Recovered · immich_server",
                 "message": "**Host:** `nas`\n**Container:** `immich_server`\n**Status:** `healthy`",
                 "priority": 3,
