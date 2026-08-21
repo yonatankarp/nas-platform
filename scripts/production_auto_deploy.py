@@ -427,6 +427,16 @@ def _tooling_bin(config: Config) -> Path:
     return config.checkout / ".venv" / "bin"
 
 
+def _collections_path(config: Config) -> Path:
+    """Collections live beside the virtualenv, not under a shared HOME.
+
+    pip installs ansible-core but not Galaxy collections, and HOME is pinned
+    below, so an operator's ~/.ansible is deliberately not consulted.
+    """
+
+    return _tooling_bin(config).parent / "collections"
+
+
 def _ansible_environment(config: Config) -> dict[str, str]:
     return {
         # ansible-core lives in the checkout's virtualenv, per the operator
@@ -442,6 +452,7 @@ def _ansible_environment(config: Config) -> dict[str, str]:
         "PLATFORM_CALLBACK_HOST": config.platform_callback_host,
         "PLATFORM_VAULT_FILE": str(config.vault_file),
         "ANSIBLE_CONFIG": str(config.checkout / "ansible.cfg"),
+        "ANSIBLE_COLLECTIONS_PATH": str(_collections_path(config)),
     }
 
 
@@ -505,6 +516,31 @@ def sync_tooling(config: Config, log=None) -> None:
     )
     if result.returncode != 0:
         raise DeploymentError("controller tooling could not be synchronised")
+
+    # Collections are a separate dependency set from the Python pins, and the
+    # modules the playbooks call live in them.
+    result = _run(
+        [
+            _tooling_bin(config) / "ansible-galaxy",
+            "collection",
+            "install",
+            "--force",
+            "--requirements-file",
+            str(config.checkout / "requirements.yml"),
+            "--collections-path",
+            str(_collections_path(config)),
+        ],
+        timeout=TOOLING_TIMEOUT_SECONDS,
+        cwd=config.checkout,
+        env={
+            "PATH": config.tool_path,
+            "LANG": config.ansible_locale,
+            "HOME": str(config.checkout.parent),
+        },
+        log=log,
+    )
+    if result.returncode != 0:
+        raise DeploymentError("controller collections could not be synchronised")
 
 
 def _deploy_invocations(config: Config):

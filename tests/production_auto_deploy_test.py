@@ -406,7 +406,7 @@ class DeployTest(PollerTestCase):
         outcome, calls, _kwargs = self.deploy_with(config)
 
         self.assertTrue(outcome)
-        self.assertEqual(len(calls), 7)
+        self.assertEqual(len(calls), 8)
 
         self.assertEqual([calls[0][0], calls[0][1]], ["/usr/local/bin/git", "fetch"])
         self.assertEqual(calls[1][:3], ["/usr/local/bin/git", "checkout", "--detach"])
@@ -416,7 +416,8 @@ class DeployTest(PollerTestCase):
         self.assertIn("--requirement", calls[2])
         self.assertTrue(calls[2][-1].endswith("controller-requirements.txt"))
 
-        playbooks = [call[-1] if "--tags" not in call else call[-3] for call in calls[3:]]
+        self.assertTrue(calls[3][0].endswith("ansible-galaxy"))
+        playbooks = [call[-1] if "--tags" not in call else call[-3] for call in calls[4:]]
         self.assertEqual(
             playbooks,
             [
@@ -426,6 +427,40 @@ class DeployTest(PollerTestCase):
                 "install-production-auto-deploy.yml",
             ],
         )
+
+    def test_collections_are_installed_and_pointed_at_explicitly(self):
+        """pip installs ansible-core but not Galaxy collections, and HOME is
+        pinned, so an operator's ~/.ansible is deliberately not consulted."""
+
+        config = self.loaded_config()
+        _outcome, calls, kwargs = self.deploy_with(config)
+        expected = str(config.checkout / ".venv" / "collections")
+
+        galaxy = [c for c in calls if c[0].endswith("ansible-galaxy")]
+        self.assertEqual(len(galaxy), 1)
+        self.assertEqual(galaxy[0][1:3], ["collection", "install"])
+        self.assertIn("--collections-path", galaxy[0])
+        self.assertEqual(galaxy[0][galaxy[0].index("--collections-path") + 1], expected)
+        self.assertTrue(galaxy[0][-3].endswith("requirements.yml"))
+
+        for call, options in zip(calls, kwargs):
+            if call[0] != "ansible-playbook":
+                continue
+            with self.subTest(play=call[-1]):
+                self.assertEqual(options["env"]["ANSIBLE_COLLECTIONS_PATH"], expected)
+
+    def test_collections_install_before_any_play_runs(self):
+        config = self.loaded_config()
+        _outcome, calls, _kwargs = self.deploy_with(config)
+        galaxy_index = next(i for i, c in enumerate(calls) if c[0].endswith("ansible-galaxy"))
+        first_play = next(i for i, c in enumerate(calls) if c[0] == "ansible-playbook")
+        self.assertLess(galaxy_index, first_play)
+
+    def test_a_failed_collection_sync_stops_before_any_play(self):
+        config = self.loaded_config()
+        outcome, calls, _kwargs = self.deploy_with(config, fail_on="ansible-galaxy")
+        self.assertFalse(outcome)
+        self.assertTrue(all(c[0] != "ansible-playbook" for c in calls))
 
     def test_tooling_is_synchronised_before_any_ansible_process_starts(self):
         """The pins being installed are the ones ansible itself will run under."""
