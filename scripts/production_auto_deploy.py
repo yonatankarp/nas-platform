@@ -67,7 +67,6 @@ class Config:
     checkout: Path
     state_root: Path
     log_root: Path
-    vault_file: Path
     vault_password_file: Path
     ntfy_curl_config: Path
     # Addressed in the publish body, not the URL: ntfy only parses a JSON
@@ -99,7 +98,6 @@ _PATH_FIELDS = frozenset(
         "checkout",
         "state_root",
         "log_root",
-        "vault_file",
         "vault_password_file",
         "ntfy_curl_config",
         "git_path",
@@ -472,22 +470,27 @@ def _ansible_environment(config: Config) -> dict[str, str]:
         "PLATFORM_NAS_ADDRESS": config.platform_nas_address,
         "PLATFORM_PUBLIC_HOST": config.platform_public_host,
         "PLATFORM_CALLBACK_HOST": config.platform_callback_host,
-        "PLATFORM_VAULT_FILE": str(config.vault_file),
         "ANSIBLE_CONFIG": str(config.checkout / "ansible.cfg"),
         "ANSIBLE_COLLECTIONS_PATH": str(_collections_path(config)),
     }
 
 
 def _vault_arguments(config: Config) -> list[str]:
+    """Only the password provider. Credentials belong to the revision.
+
+    The encrypted vault is committed, so `git checkout` puts the candidate's
+    own copy in the checkout and group_vars loads it. Passing a second copy
+    from outside as extra vars would outrank that, letting a stale artifact
+    silently shadow the revision being deployed while every play still
+    reports success. The password provider cannot be committed, so it is the
+    one input that stays outside.
+    """
+
     return [
         "-i",
         "inventory/local.yml",
         "--vault-password-file",
         str(config.vault_password_file),
-        "-e",
-        f"@{config.vault_file}",
-        "-e",
-        f"platform_vault_file={config.vault_file}",
     ]
 
 

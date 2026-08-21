@@ -217,16 +217,16 @@ the mobile push topic, so setting it to the LAN address publishes where nothing
 is subscribed and reports no error. The installer requires it explicitly rather
 than defaulting it.
 
-Place the already reviewed encrypted vault and its password provider at the
-fixed protected paths described in
+Place the vault password provider at the fixed protected path described in
 [Production auto-deployment inputs](secrets.md#production-auto-deployment-inputs).
-The following values match the production contract for this NAS:
+The encrypted vault itself needs no copy: it is committed, so the checkout
+carries the candidate revision's own. The following values match the production
+contract for this NAS:
 
 ```sh
 export PLATFORM_NAS_ADDRESS=192.168.0.139
 export PLATFORM_PUBLIC_HOST=nas.example.ts.net
 export PLATFORM_CALLBACK_HOST=192.168.0.139
-export PLATFORM_VAULT_FILE="$HOME/.config/nas-platform/vault.yml"
 export PLATFORM_VAULT_PASSWORD_FILE="$HOME/.config/nas-platform/vault-password"
 ```
 
@@ -236,20 +236,14 @@ with `failed=0` and `unreachable=0`:
 
 ```sh
 ansible-playbook -i inventory/local.yml validate-vault.yml \
-  --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE" \
-  -e @"$PLATFORM_VAULT_FILE" \
-  -e platform_vault_file="$PLATFORM_VAULT_FILE"
+  --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE"
 
 ansible-playbook -i inventory/local.yml site.yml \
-  --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE" \
-  -e @"$PLATFORM_VAULT_FILE" \
-  -e platform_vault_file="$PLATFORM_VAULT_FILE"
+  --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE"
 
 ansible-playbook -i inventory/local.yml verify.yml \
   --tags platform_verify_ntfy,platform_verify_beszel,platform_verify_dozzle,platform_verify_audiobookshelf,platform_verify_komga,platform_verify_tinymediamanager,platform_verify_jellyfin,platform_verify_immich,platform_verify_paperless \
-  --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE" \
-  -e @"$PLATFORM_VAULT_FILE" \
-  -e platform_vault_file="$PLATFORM_VAULT_FILE"
+  --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE"
 ```
 
 Only after those three commands pass, install the poller and its single
@@ -258,8 +252,6 @@ five-minute cron entry:
 ```sh
 ansible-playbook -i inventory/local.yml install-production-auto-deploy.yml \
   --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE" \
-  -e @"$PLATFORM_VAULT_FILE" \
-  -e platform_vault_file="$PLATFORM_VAULT_FILE" \
   -e production_auto_deploy_vault_password_file="$PLATFORM_VAULT_PASSWORD_FILE" \
   -e production_auto_deploy_public_host="$PLATFORM_PUBLIC_HOST"
 
