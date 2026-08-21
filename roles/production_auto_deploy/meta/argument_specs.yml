@@ -50,6 +50,9 @@ argument_specs:
       production_auto_deploy_cron_name:
         description: Comment identifying the managed cron entry.
         type: str
+      production_auto_deploy_external_scheduler:
+        description: Poll is scheduled outside cron; the role installs no entry.
+        type: bool
       production_auto_deploy_verify_tags:
         description: Exact verification tag list passed to verify.yml.
         type: str

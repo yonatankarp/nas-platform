@@ -79,6 +79,42 @@
       controller-requirements.txt before installing the poller. Without it the
       first automatic poll fails and records the revision as attempted.
 
+# Some NAS firmwares ship BusyBox crontab without the setuid bit and keep the
+# spool root-owned, so an unprivileged account cannot schedule anything. Probe
+# here rather than discovering it at the final task, after everything else has
+# already been installed. An empty crontab is a success: the implementations
+# differ on exit status but say so on stderr.
+- name: Check whether this account can manage its own crontab
+  ansible.builtin.command:
+    argv: [crontab, -l]
+  register: production_auto_deploy_crontab_probe
+  failed_when: false
+  changed_when: false
+  when: not production_auto_deploy_external_scheduler | bool
+
+- name: Require a usable crontab or an acknowledged external scheduler
+  ansible.builtin.assert:
+    that:
+      - >-
+        production_auto_deploy_crontab_probe.rc | default(1) | int == 0 or
+        'no crontab' in
+        (production_auto_deploy_crontab_probe.stderr | default('') | lower)
+    fail_msg: >-
+      This account cannot manage its own crontab:
+      {{ production_auto_deploy_crontab_probe.stderr | default('crontab failed') | trim }}.
+      Schedule {{ production_auto_deploy_launcher_path }} --poll every five
+      minutes with the firmware's own scheduler, running as this account, then
+      re-run with -e production_auto_deploy_external_scheduler=true.
+  when: not production_auto_deploy_external_scheduler | bool
+
+- name: Report the external polling schedule this installation relies on
+  ansible.builtin.debug:
+    msg: >-
+      Cron is managed externally. Ensure
+      {{ production_auto_deploy_launcher_path }} --poll runs every five minutes
+      as this account.
+  when: production_auto_deploy_external_scheduler | bool
+
 - name: Create the private runtime directories
   ansible.builtin.file:
     path: "{{ item }}"
@@ -119,6 +155,7 @@
   no_log: true
 
 - name: Install one polling cron entry
+  when: not production_auto_deploy_external_scheduler | bool
   ansible.builtin.cron:
     name: "{{ production_auto_deploy_cron_name }}"
     minute: "*/5"

@@ -145,9 +145,18 @@ verification above. It uses a dedicated non-root deployment account on the NAS;
 do not install it as `root` or reuse a general interactive administrator. The
 account's real home must be owned by that account, and the
 account needs Docker access. The NAS must provide trusted, root-owned
-`/usr/bin/git` and `/usr/bin/curl`, Python 3.12 or newer with pip, and working
-effective-user `crontab` support. The installer fails closed when any of these
-prerequisites is absent or unsafe.
+`/usr/bin/git` and `/usr/bin/curl`, and Python 3.12 or newer with pip. The
+installer fails closed when any of these prerequisites is absent or unsafe, and
+it checks them before creating anything.
+
+The poller prefers working effective-user `crontab` support, but that is not
+universal: some firmwares ship BusyBox `crontab` without the setuid bit and keep
+the spool root-owned, so an unprivileged account cannot schedule anything. The installer detects this and
+stops with an explanation. Schedule
+`$HOME/.local/bin/nas-platform-deploy --poll` every five minutes with the
+firmware's own task scheduler, running as the deployment account, then re-run
+the installer with `-e production_auto_deploy_external_scheduler=true` so it
+installs everything except the cron entry.
 
 Clone anonymously over HTTPS. Keep the controller outside
 `/volume1/Docker/nas-platform`, which is service state rather than deployment

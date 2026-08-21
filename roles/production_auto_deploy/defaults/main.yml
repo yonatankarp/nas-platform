@@ -14,6 +14,11 @@ production_auto_deploy_public_host: ""
 production_auto_deploy_callback_host: "{{ production_auto_deploy_nas_address }}"
 production_auto_deploy_log_retention_days: 30
 production_auto_deploy_cron_name: NAS platform production auto-deploy
+# Some NAS firmwares ship BusyBox crontab without the setuid bit and keep the
+# spool root-owned, so an unprivileged account cannot schedule anything. Set
+# this when the poll is driven by an external scheduler instead, which the role
+# then leaves alone rather than failing at its last task.
+production_auto_deploy_external_scheduler: false
 production_auto_deploy_verify_tags: >-
   platform_verify_ntfy,platform_verify_beszel,platform_verify_dozzle,platform_verify_audiobookshelf,platform_verify_komga,platform_verify_tinymediamanager,platform_verify_jellyfin,platform_verify_immich,platform_verify_paperless
 production_auto_deploy_vault_password_file: ""

@@ -74,6 +74,19 @@ check(failures, python_floor,
 check(failures, File.read(ROLE_TASKS).scan(/\bmode:\s*"0[0-7]{3}"/).length >= 5,
       "every managed path must declare an explicit mode")
 
+# An unprivileged account cannot always manage its own crontab. The role must
+# say so before installing anything, not at its final task.
+task_names = tasks.map { |task| task["name"] }
+probe_index = task_names.index { |name| name.to_s.include?("manage its own crontab") }
+first_mutation = task_names.index { |name| name.to_s.start_with?("Create the private") }
+check(failures, !probe_index.nil?, "the role must probe crontab usability")
+check(failures, probe_index.nil? || first_mutation.nil? || probe_index < first_mutation,
+      "the crontab probe must run before the role creates anything")
+
+cron_task = tasks.find { |task| task.key?("ansible.builtin.cron") }
+check(failures, cron_task&.dig("when").to_s.include?("production_auto_deploy_external_scheduler"),
+      "cron installation must be skipped when scheduling is external")
+
 # --- drift screens: values duplicated across artifacts -----------------------
 
 # The poller passes a fixed tag list to verify.yml. If a service role gains a
@@ -182,6 +195,9 @@ Dir.mktmpdir("auto-deploy-role") do |root|
     "-e", "production_auto_deploy_home=#{home}",
     "-e", "vault_ntfy_dozzle_token=#{TOKEN}",
     "-e", "production_auto_deploy_public_host=#{PUBLIC_HOST}",
+    # The cron tag is skipped so the suite never writes a developer's crontab;
+    # declare external scheduling so the matching precondition is skipped too.
+    "-e", "production_auto_deploy_external_scheduler=true",
   ]
   output, status = Open3.capture2e(environment, *arguments)
   check(failures, status.success?, "the role must converge: #{output.lines.last(12).join}")
