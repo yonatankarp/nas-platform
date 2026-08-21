@@ -15,7 +15,11 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "filter_plugins"))
 
-from vault_managed_user_schema import vault_managed_user_errors  # noqa: E402
+from vault_managed_user_schema import (  # noqa: E402
+    IDENTITY_FIELDS,
+    SERVICES,
+    vault_managed_user_errors,
+)
 
 HASH = "$2b$10$" + "A" * 53
 TOKEN = "tk_" + "a" * 29
@@ -102,6 +106,19 @@ REJECTED = {
     "service value not a list": lambda v: v.update(komga={}),
 }
 
+# The administrator identity of each service, plus the two usernames the platform
+# publishes under. None of these collides with the valid fixture.
+RESERVED_IDENTITIES = {
+    "audiobookshelf": ["abs-admin"],
+    "beszel": ["hub@example.invalid", "agent@example.invalid"],
+    "dozzle": ["dozzle-admin"],
+    "immich": ["immich-admin@example.invalid"],
+    "jellyfin": ["Yonatan"],
+    "komga": ["komga-admin@example.invalid"],
+    "ntfy": ["ntfy-admin", "dozzle", "beszel"],
+    "paperless_ngx": ["paperless-admin"],
+}
+
 
 class VaultManagedUserSchemaTest(unittest.TestCase):
     def test_the_valid_contract_is_accepted(self):
@@ -178,6 +195,71 @@ class VaultManagedUserSchemaTest(unittest.TestCase):
 
     def test_a_non_mapping_root_is_rejected(self):
         self.assertTrue(vault_managed_user_errors([], RESERVED))
+
+    def test_the_valid_contract_is_accepted_against_reserved_identities(self):
+        self.assertEqual(
+            vault_managed_user_errors(VALID, RESERVED, RESERVED_IDENTITIES), [])
+
+    def test_a_duplicate_identity_is_rejected_per_service(self):
+        for service, field in IDENTITY_FIELDS.items():
+            with self.subTest(service):
+                candidate = copy.deepcopy(VALID)
+                candidate[service].append(copy.deepcopy(candidate[service][0]))
+                errors = vault_managed_user_errors(candidate, RESERVED,
+                                                   RESERVED_IDENTITIES)
+                self.assertIn(f"vault_managed_users.{service}: {field} must be "
+                              f"unique after normalization", errors)
+
+    def test_identities_collide_after_trimming_and_lowercasing(self):
+        for service, field in IDENTITY_FIELDS.items():
+            with self.subTest(service):
+                candidate = copy.deepcopy(VALID)
+                twin = copy.deepcopy(candidate[service][0])
+                twin[field] = f"  {twin[field].upper()}  "
+                candidate[service].append(twin)
+                self.assertTrue(vault_managed_user_errors(candidate, RESERVED,
+                                                          RESERVED_IDENTITIES))
+
+    def test_a_reserved_identity_may_not_be_claimed(self):
+        for service, field in IDENTITY_FIELDS.items():
+            for reserved in RESERVED_IDENTITIES[service]:
+                with self.subTest(f"{service}={reserved}"):
+                    candidate = copy.deepcopy(VALID)
+                    candidate[service][0][field] = reserved
+                    errors = vault_managed_user_errors(candidate, RESERVED,
+                                                       RESERVED_IDENTITIES)
+                    self.assertTrue(any("platform-owned identity" in error
+                                        for error in errors),
+                                    f"{service} accepted the reserved {field}")
+
+    def test_a_reserved_identity_is_matched_after_normalization(self):
+        candidate = copy.deepcopy(VALID)
+        candidate["ntfy"][0]["username"] = "DOZZLE"
+        self.assertTrue(any("platform-owned identity" in error for error in
+                            vault_managed_user_errors(candidate, RESERVED,
+                                                      RESERVED_IDENTITIES)))
+
+    def test_no_identity_message_carries_a_value(self):
+        # `dozzle` and `beszel` are excluded: they are public literals in the
+        # role, not vault values, and they are also service names, so they appear
+        # legitimately in the `vault_managed_users.<service>` path prefix.
+        secrets = [name for names in RESERVED_IDENTITIES.values() for name in names
+                   if name not in SERVICES]
+        for service, field in IDENTITY_FIELDS.items():
+            for reserved in RESERVED_IDENTITIES[service]:
+                with self.subTest(f"{service}={reserved}"):
+                    candidate = copy.deepcopy(VALID)
+                    candidate[service][0][field] = reserved
+                    joined = " ".join(
+                        vault_managed_user_errors(candidate, RESERVED,
+                                                  RESERVED_IDENTITIES))
+                    for secret in secrets:
+                        self.assertNotIn(secret, joined,
+                                         f"{service} disclosed {secret!r}")
+
+    def test_identity_rules_cover_every_service(self):
+        self.assertEqual(sorted(IDENTITY_FIELDS), sorted(SERVICES))
+        self.assertEqual(sorted(RESERVED_IDENTITIES), sorted(SERVICES))
 
 
 if __name__ == "__main__":

@@ -403,7 +403,6 @@ ENTRY_FIELDS.each_key do |service|
         "#{service} validation must use a value-free field diagnostic")
 end
 required_validation_fragments = [
-  "map('trim') | map('lower') | list | unique",
   "vault_audiobookshelf_admin_username",
   "vault_beszel_superuser_email",
   "vault_beszel_app_user_email",
@@ -412,13 +411,29 @@ required_validation_fragments = [
   "vault_jellyfin_admin_username",
   "vault_komga_admin_email",
   "vault_ntfy_admin_user",
-  "vault_paperless_admin_username",
-  "'dozzle' not in vault_managed_users.ntfy",
-  "'beszel' not in vault_managed_users.ntfy"
+  "vault_paperless_admin_username"
 ]
 required_validation_fragments.each do |fragment|
   check(failures, tasks.include?(fragment),
         "vault contract validation is missing #{fragment}")
+end
+# Identity uniqueness and separation moved into the same schema filter, so the
+# trim-and-lower normalization is asserted where it now lives. The role no longer
+# repeats one uniqueness condition per service; it declares which identities the
+# platform owns and the filter applies the rule.
+check(failures, schema_filter_source.include?("strip().lower()"),
+      "identity comparison must normalize by trimming and lowercasing")
+IDENTITY_FIELDS.each do |service, field|
+  check(failures, schema_filter_source.match?(/^\s*"#{Regexp.escape(service)}": "#{Regexp.escape(field)}",$/),
+        "#{service} identity uniqueness must key on #{field}")
+end
+reserved_identities = parsed_tasks.filter_map { |task| task.dig("vars", "vault_contract_reserved_identities") }.first
+check(failures, reserved_identities.is_a?(Hash) &&
+                  reserved_identities.keys.sort == ENTRY_FIELDS.keys.sort,
+      "vault contract must reserve identities for every managed service")
+%w[dozzle beszel].each do |published|
+  check(failures, Array(reserved_identities&.fetch("ntfy", nil)).include?(published),
+        "ntfy must reserve the #{published} publisher username")
 end
 # Field-level guards moved from Jinja conditions into the schema filter, so they
 # are asserted where they now live. The exhaustive per-field type coverage is in

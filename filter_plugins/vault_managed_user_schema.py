@@ -31,6 +31,20 @@ SERVICES = ("audiobookshelf", "beszel", "dozzle", "immich", "jellyfin",
             "komga", "ntfy", "paperless_ngx")
 NONEMPTY_SERVICES = ("immich",)
 
+# Which field carries the identity a service uniques on. The role previously
+# spelled out one uniqueness condition per service, and each one repeated the
+# same trim-and-lower normalization.
+IDENTITY_FIELDS = {
+    "audiobookshelf": "username",
+    "beszel": "email",
+    "dozzle": "username",
+    "immich": "email",
+    "jellyfin": "username",
+    "komga": "email",
+    "ntfy": "username",
+    "paperless_ngx": "username",
+}
+
 AUDIOBOOKSHELF_FLAGS = ("download", "update", "delete", "upload", "createEreader",
                         "accessAllLibraries", "accessAllTags", "accessExplicitContent",
                         "selectedTagsNotAccessible")
@@ -303,11 +317,15 @@ ENTRY_VALIDATORS = {
 }
 
 
-def vault_managed_user_errors(value, reserved_ntfy_tokens=None):
+def vault_managed_user_errors(value, reserved_ntfy_tokens=None,
+                              reserved_identities=None):
     """Return every schema violation in `vault_managed_users`, as field paths.
 
     Never includes a value, so the result is safe to print from a `fail_msg`.
     An empty list means the structure satisfies the contract.
+
+    `reserved_identities` maps a service to the identities a managed user may not
+    claim: the service administrator, plus any name the platform owns itself.
     """
     errors = []
     if not _is_mapping(value):
@@ -336,6 +354,40 @@ def vault_managed_user_errors(value, reserved_ntfy_tokens=None):
             validate(errors, f"{service}[{index}]", entry)
 
     errors.extend(_ntfy_token_ownership(value, reserved_ntfy_tokens))
+    errors.extend(_identity_ownership(value, reserved_identities))
+    return errors
+
+
+def _normalized_identities(entries, field):
+    return [entry[field].strip().lower() for entry in entries
+            if _is_mapping(entry) and _is_string(entry.get(field))]
+
+
+def _identity_ownership(value, reserved_identities):
+    """Require identities to be unique per service and not platform-owned.
+
+    Normalization is trim-and-lower, matching the `map('trim') | map('lower')`
+    chain the role used. Neither the duplicate nor the reserved identity is
+    named: both are credential material.
+    """
+    errors = []
+    reserved_identities = reserved_identities or {}
+    for service, field in IDENTITY_FIELDS.items():
+        entries = value.get(service)
+        if not _is_list(entries):
+            continue
+        identities = _normalized_identities(entries, field)
+        if len(set(identities)) != len(identities):
+            errors.append(f"vault_managed_users.{service}: {field} must be "
+                          f"unique after normalization")
+        reserved = {name.strip().lower()
+                    for name in reserved_identities.get(service, [])
+                    if _is_string(name)}
+        claimed = reserved & set(identities)
+        if claimed:
+            errors.append(f"vault_managed_users.{service}: {len(claimed)} "
+                          f"{field} value{'' if len(claimed) == 1 else 's'} "
+                          f"reuse a platform-owned identity")
     return errors
 
 
