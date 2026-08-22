@@ -5,6 +5,7 @@
 # The source-platform inventory is the exception: pinning that finite set keeps
 # an omitted service from silently disappearing from the platform scope.
 
+require "find"
 require "open3"
 require "rbconfig"
 require "set"
@@ -570,13 +571,53 @@ def task_list_document?(tasks)
   end
 end
 
-def role_task_paths(role_root)
-  Dir[File.join(role_root, "tasks", "*.{yml,yaml}")].sort
+def recursive_role_yaml_paths(tree_root, failures)
+  begin
+    root_stat = File.lstat(tree_root)
+  rescue Errno::ENOENT
+    return []
+  rescue SystemCallError => e
+    check(failures, false, "#{tree_root}: cannot inspect role YAML tree: #{e.class}")
+    return []
+  end
+  unless root_stat.directory? && !root_stat.symlink? &&
+         owned_directory?(tree_root, File.dirname(tree_root))
+    check(failures, false, "#{tree_root}: role YAML tree must be a regular owned directory")
+    return []
+  end
+
+  paths = []
+  begin
+    Find.find(tree_root) do |path|
+      next if path == tree_root
+
+      relative_path = path.delete_prefix("#{ROOT}/")
+      entry_stat = File.lstat(path)
+      if entry_stat.symlink?
+        check(failures, false, "#{relative_path}: role YAML tree must not contain symlinks")
+        Find.prune
+      elsif entry_stat.directory?
+        unless owned_directory?(path, File.dirname(path))
+          check(failures, false, "#{relative_path}: role YAML directory must be owned")
+          Find.prune
+        end
+      elsif %w[.yml .yaml].include?(File.extname(path))
+        if entry_stat.file? && owned_file?(path, tree_root)
+          paths << path
+        else
+          check(failures, false, "#{relative_path}: role YAML file must be a regular owned file")
+        end
+      end
+    end
+  rescue SystemCallError => e
+    check(failures, false, "#{tree_root}: cannot enumerate role YAML tree: #{e.class}")
+  end
+  paths.sort
 end
 
 def load_role_tasks(role_root, failures)
   tasks_root = File.join(role_root, "tasks")
-  role_task_paths(role_root).flat_map do |path|
+  recursive_role_yaml_paths(tasks_root, failures).flat_map do |path|
     relative_path = path.delete_prefix("#{ROOT}/")
     unless owned_file?(path, tasks_root)
       check(failures, false, "#{relative_path}: role task file must be a regular owned file")
@@ -875,7 +916,11 @@ manifest_entries.each do |service|
           "PLATFORM_CONTAINER_CPUSET={{ platform_effective_container_cpuset }}"
         ) == 1,
         "#{name}: environment must render the effective container CPU set exactly once")
-  task_paths = role_root_owned ? role_task_paths(role_root) : []
+  task_paths = if role_root_owned
+                 recursive_role_yaml_paths(File.join(role_root, "tasks"), failures)
+               else
+                 []
+               end
   tasks_source = task_paths.select { |path| owned_file?(path, File.join(role_root, "tasks")) }
                            .map { |path| File.read(path) }.join("\n")
   role_tasks = role_root_owned ? load_role_tasks(role_root, failures) : []
@@ -1030,7 +1075,11 @@ end
 
 # Deployment goes through the module. A shell-out always claims a change and
 # cannot run under --check, which the converge-every-run model depends on.
-role_task_files = Dir[File.join(ROOT, "roles", "*", "{tasks,handlers}", "*.{yml,yaml}")]
+role_task_files = Dir[File.join(ROOT, "roles", "*")].sort.flat_map do |role_root|
+  %w[tasks handlers].flat_map do |tree|
+    recursive_role_yaml_paths(File.join(role_root, tree), failures)
+  end
+end
 role_task_files.each do |path|
   body = File.read(path)
   check(failures, !body.match?(/(command|shell):[\s\S]{0,120}docker\s+compose/),

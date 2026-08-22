@@ -644,10 +644,13 @@ expect_failure(failures, "included tinyMediaManager Compose task added",
   mutate_yaml_file(root, "roles/tinymediamanager/tasks/main.yml") do |tasks|
     tasks << {
       "name" => "Include an unexpected tinyMediaManager Compose removal",
-      "ansible.builtin.include_tasks" => "unexpected_removal.yml"
+      "ansible.builtin.include_tasks" => "nested/unexpected_removal.yml"
     }
   end
-  helper_path = File.join(root, "roles", "tinymediamanager", "tasks", "unexpected_removal.yml")
+  helper_path = File.join(
+    root, "roles", "tinymediamanager", "tasks", "nested", "unexpected_removal.yml"
+  )
+  FileUtils.mkdir_p(File.dirname(helper_path))
   File.write(helper_path, YAML.dump([
     {
       "name" => "Unexpected included tinyMediaManager Compose removal",
