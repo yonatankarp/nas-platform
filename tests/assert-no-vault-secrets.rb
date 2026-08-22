@@ -28,7 +28,7 @@ end
 
 def remove_controller_repository_paths!(evidence, repository_root)
   evidence.gsub!(
-    /(?<![[:alnum:]_.-])#{Regexp.escape(repository_root)}(?=\/|\z)/,
+    /(?<![[:alnum:]_.\/-])#{Regexp.escape(repository_root)}(?=\/(?:[^\/]|\z)|\z)/,
     ""
   )
 end

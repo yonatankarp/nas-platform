@@ -1,6 +1,7 @@
 #!/usr/bin/env ruby
 
 require "fileutils"
+require "digest"
 require "open3"
 require "tmpdir"
 
@@ -25,10 +26,12 @@ def run_scanner(vault, evidence, scanner: SCANNER)
     File.write(vault_file, "synthetic encrypted vault placeholder")
     File.write(password_file, "synthetic password placeholder")
     File.write(evidence_file, evidence)
-    Open3.capture3(
+    result = Open3.capture3(
       { "PATH" => "#{fake_bin}:#{ENV.fetch("PATH")}", "SYNTHETIC_VAULT" => vault },
       scanner, vault_file, password_file, evidence_file
     )
+    inspection = yield(evidence_file) if block_given?
+    result + [inspection]
   end
 end
 
@@ -137,23 +140,37 @@ Dir.mktmpdir("assert-no-vault-controller-path") do |directory|
   FileUtils.cp(SCANNER, synthetic_scanner, preserve: true)
   vault = "vault_service_username: #{synthetic_identity}\n"
 
-  stdout, stderr, status = run_scanner(
+  exact_evidence = "Origin: #{synthetic_root}/roles/service/tasks/main.yml\n"
+  exact_digest = Digest::SHA256.hexdigest(exact_evidence)
+  stdout, stderr, status, exact_inspection = run_scanner(
     vault,
-    "Origin: #{synthetic_root}/roles/service/tasks/main.yml\n",
+    exact_evidence,
     scanner: synthetic_scanner
-  )
+  ) do |evidence_file|
+    bytes = File.binread(evidence_file)
+    [bytes, Digest::SHA256.hexdigest(bytes)]
+  end
   failures << "trusted controller repository path produced a false positive" unless
     status.success? && stdout.empty? && stderr.empty?
+  failures << "successful scan changed the evidence artifact" unless
+    exact_inspection == [exact_evidence, exact_digest]
 
-  stdout, stderr, status = run_scanner(
+  outside_evidence = "diagnostic disclosed #{synthetic_identity}\n"
+  outside_digest = Digest::SHA256.hexdigest(outside_evidence)
+  stdout, stderr, status, outside_inspection = run_scanner(
     vault,
-    "diagnostic disclosed #{synthetic_identity}\n",
+    outside_evidence,
     scanner: synthetic_scanner
-  )
+  ) do |evidence_file|
+    bytes = File.binread(evidence_file)
+    [bytes, Digest::SHA256.hexdigest(bytes)]
+  end
   failures << "controller-path identity was ignored outside the trusted path" if status.success?
   failures << "controller-path identity rejection disclosed evidence" unless stdout.empty?
   failures << "controller-path identity rejection changed the fixed diagnostic" unless
     stderr == "failure evidence contains a vault value\n"
+  failures << "failed scan changed the evidence artifact" unless
+    outside_inspection == [outside_evidence, outside_digest]
 
   stdout, stderr, status = run_scanner(
     vault,
@@ -168,7 +185,11 @@ Dir.mktmpdir("assert-no-vault-controller-path") do |directory|
 
   near_paths = [
     "prefix#{synthetic_root}/roles/service/tasks/main.yml",
+    "/#{synthetic_root}/roles/service/tasks/main.yml",
+    "file://#{synthetic_root}/roles/service/tasks/main.yml",
     "#{synthetic_root}-suffix/roles/service/tasks/main.yml",
+    "#{synthetic_root}//roles/service/tasks/main.yml",
+    "#{synthetic_root}://roles/service/tasks/main.yml",
     "#{File.dirname(synthetic_root)}/repository-near/roles/service/tasks/main.yml"
   ]
   near_paths.each do |near_path|
