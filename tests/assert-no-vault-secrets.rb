@@ -11,11 +11,21 @@ vault_yaml, _error, status = Open3.capture3(
 )
 abort "encrypted vault could not be read" unless status.success?
 
-def strings(value)
+PUBLIC_DATABASE_IDENTITY_KEYS = %w[
+  vault_immich_db_name
+  vault_immich_db_username
+  vault_paperless_db_name
+  vault_paperless_db_username
+].freeze
+
+def strings(value, path = [])
   case value
-  when Hash then value.values.flat_map { |entry| strings(entry) }
-  when Array then value.flat_map { |entry| strings(entry) }
-  when String then [value]
+  when Hash
+    value.flat_map { |key, entry| strings(entry, path + [key.to_s]) }
+  when Array
+    value.each_with_index.flat_map { |entry, index| strings(entry, path + [index.to_s]) }
+  when String
+    PUBLIC_DATABASE_IDENTITY_KEYS.include?(path.join(".")) ? [] : [value]
   else []
   end
 end

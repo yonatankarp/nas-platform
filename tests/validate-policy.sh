@@ -45,6 +45,7 @@ ruby tests/ci/classify_changes_test.rb
 ruby tests/ci/validate_results_test.rb
 ruby tests/ci/workflow_test.rb
 ruby tests/secrets_docs_test.rb
+ruby tests/assert_no_vault_secrets_test.rb
 tests/mac/integration-context-test.sh
 tests/mac/snapshot-paperless-context-test.sh
 ruby tests/policy_manifest_test.rb
