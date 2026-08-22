@@ -10,6 +10,7 @@ require "uri"
 ROOT = File.expand_path("..", __dir__)
 CONTRACT = File.join(ROOT, "tests", "contracts", "immich.sh")
 FIXTURE_IDS = %w[photo-fixture video-fixture].freeze
+SLEEP_DURATIONS = []
 
 class ContractFailure < StandardError; end
 class TestFailure < StandardError; end
@@ -24,7 +25,9 @@ def fail_contract(message)
 end
 
 module Kernel
-  def sleep(_duration); end
+  def sleep(duration)
+    SLEEP_DURATIONS << duration
+  end
 end
 
 def json_response(status, body)
@@ -175,10 +178,20 @@ def monotonic_clock(*times)
   -> { times.shift || last }
 end
 
+def with_captured_sleeps
+  SLEEP_DURATIONS.clear
+  yield SLEEP_DURATIONS
+ensure
+  SLEEP_DURATIONS.clear
+end
+
 source = File.read(CONTRACT)
 eval(extract_method(source, "request", "multipart_body"), binding, CONTRACT)
+smart_search_source = extract_method(
+  source, "assert_cpu_machine_learning", "assert_originals_open"
+)
 eval(
-  extract_method(source, "assert_cpu_machine_learning", "assert_originals_open"),
+  smart_search_source,
   binding,
   CONTRACT
 )
@@ -390,6 +403,45 @@ run.call("deadline expiry before requeue prevents PUT") do
   ) do |requests|
     raise TestFailure, "expired pre-PUT budget performed a PUT" if
       requests.any? { |request| request.fetch(:method) == "PUT" }
+  end
+end
+
+run.call("deadline expiry during successful requeue fails at the post-PUT checkpoint") do
+  raise TestFailure, "post-PUT deadline checkpoint is not immediate" unless
+    smart_search_source.match?(
+      /timeout: remaining_budget\.call\n\s+\)\n\s+remaining_budget\.call\n\s+recovery_requested = true/
+    )
+
+  epoch = 1_700_000_000.0
+  empty = json_response(200, { "assets" => { "items" => [] } })
+  clock = monotonic_clock(epoch, epoch, epoch, epoch, epoch, epoch, epoch + 601)
+  with_captured_sleeps do |sleeps|
+    expect_contract_failure(
+      [empty, idle_smart_search_response(failed: 1), requeue_response, complete_response],
+      expected_requests: 3, clock: clock
+    ) do |requests|
+      raise TestFailure, "post-PUT expiry request sequence was not bounded" unless
+        requests.map { |request| request.fetch(:method) } == %w[POST GET PUT]
+      raise TestFailure, "post-PUT expiry requested a sleep" unless sleeps.empty?
+    end
+  end
+end
+
+run.call("near-deadline sleep is capped to the remaining budget") do
+  raise TestFailure, "sleep no longer uses the remaining deadline budget" unless
+    smart_search_source.include?("sleep [5, remaining_budget.call].min")
+
+  epoch = 1_700_000_000.0
+  clock = monotonic_clock(epoch, epoch, epoch + 598, epoch + 598, epoch + 601)
+  with_captured_sleeps do |sleeps|
+    expect_contract_failure(
+      [json_response(503, { "message" => "not ready" })],
+      expected_status: 503, expected_requests: 1, clock: clock
+    )
+    raise TestFailure, "near-deadline contract did not request exactly one sleep" unless
+      sleeps.length == 1
+    raise TestFailure, "sleep exceeded the remaining deadline budget: #{sleeps.first}" unless
+      (sleeps.first - 2.0).abs < 0.001
   end
 end
 
