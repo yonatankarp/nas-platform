@@ -246,10 +246,10 @@ check_name_mutation(
 
 relay_mutations = [
   ["direct ntfy topic publishing", "roles/dozzle/defaults/main.yml",
-   "  url: http://alert-relay:8081/alerts\n", "  url: http://ntfy:80/nas-critical\n",
+   "  url: \"http://alert-relay:{{ dozzle_alert_relay_port }}/alerts\"\n", "  url: http://ntfy:80/nas-critical\n",
    "managed dispatcher must target only the private alert relay"],
   ["direct ntfy root publishing", "roles/dozzle/defaults/main.yml",
-   "  url: http://alert-relay:8081/alerts\n", "  url: http://ntfy:80/\n",
+   "  url: \"http://alert-relay:{{ dozzle_alert_relay_port }}/alerts\"\n", "  url: http://ntfy:80/\n",
    "managed dispatcher must target only the private alert relay"],
   ["missing relay authorization", "roles/dozzle/defaults/main.yml",
    "  headers:\n    Authorization: \"Bearer {{ vault_ntfy_dozzle_token }}\"\n",
@@ -267,8 +267,8 @@ relay_mutations = [
    "    command: [python, /app/alert_relay.py]\n    ports:\n      - \"8081:8081\"\n",
    "alert relay must not publish a port"],
   ["writable relay root", "services/dozzle/compose.yml",
-   "      test: [CMD, python, -c, \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/healthz', timeout=3).read()\"]\n      interval: 30s\n      timeout: 5s\n      retries: 4\n      start_period: 5s\n    read_only: true\n",
-   "      test: [CMD, python, -c, \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/healthz', timeout=3).read()\"]\n      interval: 30s\n      timeout: 5s\n      retries: 4\n      start_period: 5s\n    read_only: false\n",
+   "      test: [CMD, python, -c, \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:${ALERT_RELAY_PORT:?}/healthz', timeout=3).read()\"]\n      interval: 30s\n      timeout: 5s\n      retries: 4\n      start_period: 5s\n    read_only: true\n",
+   "      test: [CMD, python, -c, \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:${ALERT_RELAY_PORT:?}/healthz', timeout=3).read()\"]\n      interval: 30s\n      timeout: 5s\n      retries: 4\n      start_period: 5s\n    read_only: false\n",
    "alert relay hardening differs"],
   ["relay Docker socket", "services/dozzle/compose.yml",
    "      - ${DOZZLE_STATE_ROOT:?}/alert-relay:/state\n",
@@ -281,7 +281,21 @@ relay_mutations = [
   ["parent-root relay state", "services/dozzle/compose.yml",
    "      - ${DOZZLE_STATE_ROOT:?}/alert-relay:/state\n",
    "      - ${DOZZLE_STATE_ROOT:?}:/state\n",
-   "alert relay mounts differ"]
+   "alert relay mounts differ"],
+  # The listener port has one home, roles/dozzle/defaults/main.yml. These three
+  # mutations put a literal back into each consumer in turn and require the
+  # contract to reject it, so a second copy cannot reappear unnoticed.
+  ["literal relay healthcheck port", "services/dozzle/compose.yml",
+   "urlopen('http://127.0.0.1:${ALERT_RELAY_PORT:?}/healthz'",
+   "urlopen('http://127.0.0.1:8081/healthz'",
+   "dozzle base alert relay does not take its listener port from one variable"],
+  ["literal relay dispatcher port", "roles/dozzle/defaults/main.yml",
+   "  url: \"http://alert-relay:{{ dozzle_alert_relay_port }}/alerts\"\n",
+   "  url: http://alert-relay:8081/alerts\n",
+   "managed dispatcher must target only the private alert relay"],
+  ["unrendered relay listener port", "roles/dozzle/templates/env.j2",
+   "ALERT_RELAY_PORT={{ dozzle_alert_relay_port }}\n", "",
+   "environment does not render the single relay listener port"]
 ].freeze
 relay_mutations.each do |name, path, original, replacement, diagnostic|
   check_static_mutation(failures, name, path, original, replacement, diagnostic)

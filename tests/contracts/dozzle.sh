@@ -35,6 +35,12 @@ fail_contract() {
   exit 1
 }
 
+# Deliberately not the deployed 8081: rendering with a value the repo never
+# contains is what proves the relay's listener port really is read from one
+# variable. A copy left behind anywhere in the alert-relay service renders as
+# 8081 and disagrees with this probe.
+relay_probe_port=53081
+
 [ -f "$compose" ] || fail_contract 'services/dozzle/compose.yml is absent'
 [ -f "$relay_script" ] || fail_contract 'services/dozzle/alert_relay.py is absent'
 [ -f "$role" ] || fail_contract 'roles/dozzle/tasks/main.yml is absent'
@@ -55,7 +61,8 @@ render_group_contract() {
     BESZEL_AGENT_KEY=contract BESZEL_AGENT_TOKEN=contract BESZEL_HOST_PORT=38090 \
     DOZZLE_HOST_PORT=38080 NTFY_HOST_PORT=32586 NTFY_BASE_URL=http://127.0.0.1:32586 \
     ALERT_RELAY_SCRIPT_SHA256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
-    ALERT_RELAY_TOKEN=contract-relay-token NTFY_PUBLISH_URL=http://host.docker.internal:32586/ \
+    ALERT_RELAY_TOKEN=contract-relay-token ALERT_RELAY_PORT="$relay_probe_port" \
+    NTFY_PUBLISH_URL=http://host.docker.internal:32586/ \
     NTFY_TOPIC=nas-critical NTFY_CONTAINERS_TOPIC=nas-containers NTFY_TOKEN=contract-ntfy-token \
     NTFY_AUTH_USERS= NTFY_AUTH_ACCESS= NTFY_AUTH_TOKENS= \
     AUDIOBOOKSHELF_HOST_PORT=33378 \
@@ -92,9 +99,22 @@ render_group_contract() {
     docker compose --project-name "dozzle-contract-$stack-$variant" "$@" config --format json) ||
     fail_contract "$stack $variant Compose render failed"
 
-  DOZZLE_RENDERED_COMPOSE=$rendered ruby -rjson - "$stack" "$variant" "$expected_group" <<'RUBY'
-stack, variant, expected_group = ARGV
+  DOZZLE_RENDERED_COMPOSE=$rendered ruby -rjson - \
+    "$stack" "$variant" "$expected_group" "$relay_probe_port" <<'RUBY'
+stack, variant, expected_group, relay_probe_port = ARGV
 services = JSON.parse(ENV.fetch("DOZZLE_RENDERED_COMPOSE")).fetch("services")
+if stack == "dozzle"
+  # Behavioural in the only sense available to a rendered document: both
+  # container-internal consumers of the listener port are read back from a render
+  # driven by a port the repository never mentions. Asserting the Python source
+  # text instead would pin whatever literal it happened to contain.
+  relay = services.fetch("alert-relay")
+  probed = relay.fetch("environment", {})["ALERT_RELAY_PORT"]
+  healthcheck = Array(relay.dig("healthcheck", "test")).join(" ")
+  abort "Dozzle contract failed: #{stack} #{variant} alert relay does not take its listener port from one variable" unless
+    probed == relay_probe_port &&
+    healthcheck.include?("http://127.0.0.1:#{relay_probe_port}/healthz")
+end
 services.each do |service, definition|
   matches = definition.fetch("labels", {}).select { |name, _value| name == "dev.dozzle.name" }
   abort "Dozzle contract failed: #{stack} #{variant} #{service} name label is absent" if matches.empty?
@@ -170,7 +190,7 @@ RUBY
   done
 fi
 
-ruby -ryaml - "$compose" "$relay_script" "$role" "$env_template" \
+ruby -ryaml - "$compose" "$role" "$env_template" \
   "$deployment_inputs" "$deployment_bundle" <<'RUBY'
 compose = YAML.safe_load_file(ARGV.fetch(0), aliases: true)
 services = compose.fetch("services")
@@ -208,6 +228,7 @@ abort "Dozzle contract failed: alert relay runtime identity differs" unless
 abort "Dozzle contract failed: alert relay environment differs" unless
   relay["environment"] == {
     "ALERT_RELAY_TOKEN" => "${ALERT_RELAY_TOKEN:?}",
+    "ALERT_RELAY_PORT" => "${ALERT_RELAY_PORT:?}",
     "NTFY_PUBLISH_URL" => "${NTFY_PUBLISH_URL:?}",
     "NTFY_TOPIC" => "${NTFY_TOPIC:?}",
     "NTFY_CONTAINERS_TOPIC" => "${NTFY_CONTAINERS_TOPIC:?}",
@@ -229,11 +250,9 @@ abort "Dozzle contract failed: Dozzle dependency health gates differ" unless
     "socket-proxy" => {"condition" => "service_healthy"},
     "alert-relay" => {"condition" => "service_healthy"}
   }
-relay_source = File.read(ARGV.fetch(1))
-role = File.read(ARGV.fetch(2))
-env_template = File.read(ARGV.fetch(3))
-deployment_inputs = File.read(ARGV.fetch(4))
-deployment_bundle = File.read(ARGV.fetch(5))
+env_template = File.read(ARGV.fetch(2))
+deployment_inputs = File.read(ARGV.fetch(3))
+deployment_bundle = File.read(ARGV.fetch(4))
 abort "Dozzle contract failed: deployment inputs do not validate the alert relay" unless
   deployment_inputs.include?("services/dozzle/alert_relay.py")
 abort "Dozzle contract failed: immutable release does not include the alert relay" unless
@@ -242,7 +261,7 @@ abort "Dozzle contract failed: immutable release does not include the alert rela
 # Parsed rather than substring-matched: byte offsets do not track task order once
 # a task name appears in a comment or a when: expression, and a field found by
 # slicing the file between two names is not necessarily on the task that needs it.
-role_tasks = YAML.safe_load_file(ARGV.fetch(2), aliases: false)
+role_tasks = YAML.safe_load_file(ARGV.fetch(1), aliases: false)
 role_task = lambda { |name| role_tasks.find { |task| task["name"] == name } }
 role_at = lambda { |name| role_tasks.index { |task| task["name"] == name } }
 
@@ -312,8 +331,12 @@ abort "Dozzle contract failed: role does not safely relocate the legacy relay st
 abort "Dozzle contract failed: environment does not render the selected state and script roots" unless
   env_template.include?("PLATFORM_CURRENT_DIR={{ platform_current_dir }}") &&
   env_template.include?("DOZZLE_STATE_ROOT={{ dozzle_state_root }}")
-abort "Dozzle contract failed: relay source does not bind the private listener" unless
-  relay_source.include?('create_server(("0.0.0.0", 8081), config)')
+# The third leg of the single listener port: the rendered environment file is how
+# the value in roles/dozzle/defaults/main.yml reaches both consumers inside the
+# container. The rendered Compose document is checked against a probe port above,
+# and the live modes below dispatch through the URL built from the same default.
+abort "Dozzle contract failed: environment does not render the single relay listener port" unless
+  env_template.include?("ALERT_RELAY_PORT={{ dozzle_alert_relay_port }}")
 RUBY
 
 ruby -ryaml - "$defaults" "$role" "$integration" "$mac_drift" "$mac_verify" "$mode" <<'RUBY'
@@ -334,9 +357,14 @@ actual = alerts.to_h { |alert| [alert.fetch("name"), [alert.fetch("eventExpressi
 abort "Dozzle contract failed: exact alert definitions differ" unless actual == expected
 abort "Dozzle contract failed: alerts must be enabled event-only rules over all containers" unless
   alerts.all? { |alert| alert.fetch("enabled") == true && alert.fetch("containerExpression") == "true" && alert.fetch("logExpression") == "" }
+relay_port = defaults.fetch("dozzle_alert_relay_port", nil)
+abort "Dozzle contract failed: relay listener port is not a single declared TCP port" unless
+  relay_port.is_a?(Integer) && relay_port.between?(1, 65535)
 dispatcher = defaults.fetch("dozzle_dispatcher")
+# The URL interpolates the declared port rather than repeating it, so the
+# dispatcher cannot drift away from the port the relay is told to listen on.
 abort "Dozzle contract failed: managed dispatcher must target only the private alert relay" unless
-  dispatcher.fetch("url") == "http://alert-relay:8081/alerts"
+  dispatcher.fetch("url") == "http://alert-relay:{{ dozzle_alert_relay_port }}/alerts"
 abort "Dozzle contract failed: managed dispatcher authorization differs" unless
   dispatcher.fetch("headers") == {"Authorization" => "Bearer {{ vault_ntfy_dozzle_token }}"}
 abort "Dozzle contract failed: role does not wire the write-only ntfy token" unless
@@ -436,7 +464,8 @@ esac
 : "${PLATFORM_REPORT_ROOT:?}"
 : "${PLATFORM_DOZZLE_PORT:=8080}"
 : "${PLATFORM_NTFY_PORT:=2586}"
-export PLATFORM_DOZZLE_PORT PLATFORM_NTFY_PORT
+PLATFORM_CONTRACT_DOZZLE_DEFAULTS=$defaults
+export PLATFORM_DOZZLE_PORT PLATFORM_NTFY_PORT PLATFORM_CONTRACT_DOZZLE_DEFAULTS
 
 exec ruby - "$mode" "$@" <<'RUBY'
 require "json"
@@ -458,6 +487,13 @@ NTFY = URI("http://127.0.0.1:#{Integer(ENV.fetch('PLATFORM_NTFY_PORT'), 10)}")
 CALLBACK_HOST = [ENV["PLATFORM_CALLBACK_HOST"], ENV["PLATFORM_NAS_ADDRESS"]]
                 .compact.reject(&:empty?).first || "host.docker.internal"
 REPORT_ROOT = ENV.fetch("PLATFORM_REPORT_ROOT")
+# The dispatcher URL Dozzle reports back is the rendered form of the role
+# default, so build the expectation from the one place the listener port is
+# declared instead of repeating the number in this contract.
+RELAY_ALERTS_URL = "http://alert-relay:#{Integer(
+  YAML.safe_load_file(ENV.fetch('PLATFORM_CONTRACT_DOZZLE_DEFAULTS'))
+      .fetch('dozzle_alert_relay_port')
+)}/alerts".freeze
 SAFE_ID = /\A[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\z/
 ALERTS = {
   "OOM" => ['name == "oom"', 300],
@@ -931,7 +967,7 @@ end
 
 fail_contract("expected exactly one dispatcher") unless dispatchers.length == 1
 dispatcher = dispatchers.first
-expected_url = "http://alert-relay:8081/alerts"
+expected_url = RELAY_ALERTS_URL
 expected_template = JSON.generate(
   version: 1,
   rule: "{{ .Subscription.Name }}",

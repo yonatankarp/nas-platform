@@ -12,6 +12,7 @@ import io
 import json
 import os
 from pathlib import Path
+import socket
 import stat
 import tempfile
 import threading
@@ -26,6 +27,21 @@ RELAY_PATH = ROOT / "services" / "dozzle" / "alert_relay.py"
 RELAY_TOKEN = "relay-secret-that-must-not-leak"
 NTFY_TOKEN = "ntfy-secret-that-must-not-leak"
 CONTAINER_ID = "a" * 64
+# The listener port the deployment declares today, in roles/dozzle/defaults.
+# Nothing here depends on the number staying current: these tests only need a
+# port that differs from any literal the relay itself could have kept, so a
+# stale value would still select a usable one.
+DEPLOYED_PORT = 8081
+
+
+def reserve_local_port():
+    """Return a free local TCP port, deliberately never the deployed default."""
+    while True:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        if port != DEPLOYED_PORT:
+            return port
 
 
 def load_relay_module():
@@ -109,6 +125,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
         self.config = self.relay_module.Config.from_mapping(
             {
                 "ALERT_RELAY_TOKEN": RELAY_TOKEN,
+                "ALERT_RELAY_PORT": str(DEPLOYED_PORT),
                 "NTFY_PUBLISH_URL": f"http://127.0.0.1:{self.ntfy.server_port}/",
                 "NTFY_TOPIC": "nas-critical",
                 "NTFY_CONTAINERS_TOPIC": "nas-containers",
@@ -475,6 +492,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
     def test_config_requires_two_distinct_topics(self):
         base = {
             "ALERT_RELAY_TOKEN": RELAY_TOKEN,
+            "ALERT_RELAY_PORT": str(DEPLOYED_PORT),
             "NTFY_PUBLISH_URL": "http://127.0.0.1:1/",
             "NTFY_TOPIC": "nas-critical",
             "NTFY_CONTAINERS_TOPIC": "nas-containers",
@@ -492,6 +510,85 @@ class DozzleAlertRelayTest(unittest.TestCase):
             with self.subTest(label=label):
                 with self.assertRaises(self.relay_module.ConfigurationError):
                     self.relay_module.Config.from_mapping({**base, **mutation})
+
+    def test_config_requires_a_usable_listener_port(self):
+        base = {
+            "ALERT_RELAY_TOKEN": RELAY_TOKEN,
+            "ALERT_RELAY_PORT": str(DEPLOYED_PORT),
+            "NTFY_PUBLISH_URL": "http://127.0.0.1:1/",
+            "NTFY_TOPIC": "nas-critical",
+            "NTFY_CONTAINERS_TOPIC": "nas-containers",
+            "NTFY_TOKEN": NTFY_TOKEN,
+            "ALERT_STATE_PATH": str(self.state_path),
+        }
+        self.assertEqual(
+            self.relay_module.Config.from_mapping(base).alert_relay_port, DEPLOYED_PORT
+        )
+
+        for label, value in (
+            # There is no fallback on purpose: a default here would be a second
+            # copy of a value that has exactly one home in the Ansible defaults.
+            ("missing", None),
+            ("empty", ""),
+            ("zero", "0"),
+            ("padded", f" {DEPLOYED_PORT}"),
+            ("leading zero", f"0{DEPLOYED_PORT}"),
+            ("out of range", "65536"),
+            ("not a number", "eighty-eighty-one"),
+        ):
+            with self.subTest(label=label):
+                mutated = dict(base)
+                if value is None:
+                    del mutated["ALERT_RELAY_PORT"]
+                else:
+                    mutated["ALERT_RELAY_PORT"] = value
+                with self.assertRaises(self.relay_module.ConfigurationError):
+                    self.relay_module.Config.from_mapping(mutated)
+
+    def test_entry_point_serves_on_the_configured_listener_port(self):
+        # The port is read back from a live listener rather than from the relay's
+        # source text: a main() that ignored ALERT_RELAY_PORT and bound its own
+        # number would leave nothing answering here.
+        port = reserve_local_port()
+        self.assertNotEqual(port, DEPLOYED_PORT)
+        created = []
+        real_create_server = self.relay_module.create_server
+
+        def capture(address, config):
+            server = real_create_server(address, config)
+            created.append(server)
+            return server
+
+        environment = {
+            "ALERT_RELAY_TOKEN": RELAY_TOKEN,
+            "ALERT_RELAY_PORT": str(port),
+            "NTFY_PUBLISH_URL": f"http://127.0.0.1:{self.ntfy.server_port}/",
+            "NTFY_TOPIC": "nas-critical",
+            "NTFY_CONTAINERS_TOPIC": "nas-containers",
+            "NTFY_TOKEN": NTFY_TOKEN,
+            "ALERT_STATE_PATH": str(self.state_path),
+        }
+        with mock.patch.object(self.relay_module, "create_server", capture), \
+                mock.patch.dict(os.environ, environment):
+            thread = threading.Thread(target=self.relay_module.main, daemon=True)
+            thread.start()
+            try:
+                deadline = time.monotonic() + 5
+                while not created and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(created, "the entry point started no listener")
+                self.assertEqual(created[0].server_address[1], port)
+                connection = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+                connection.request("GET", "/healthz")
+                response = connection.getresponse()
+                body = response.read()
+                connection.close()
+                self.assertEqual((response.status, body), (200, b"ok\n"))
+            finally:
+                if created:
+                    created[0].shutdown()
+                thread.join(timeout=5)
+        self.assertFalse(thread.is_alive())
 
     def test_unhealthy_recovery_transition_and_duplicate_suppression(self):
         healthy = self.envelope(
