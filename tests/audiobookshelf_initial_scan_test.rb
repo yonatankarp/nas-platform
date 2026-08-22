@@ -32,6 +32,8 @@ VERIFY_TASK = "Authenticate to Audiobookshelf for exact verification"
 CURRENT_LIBRARY_TASK = "Resolve the current managed Audiobookshelf library"
 CURRENT_LIBRARY_ID_TASK = "Require safe current managed Audiobookshelf library ID"
 SAFE_ID_PATTERN = "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+LINUX_OWNERSHIP_GUARD =
+  "platform_kind == 'nas' or (platform_manage_linux_ownership | bool)"
 
 def task_named(tasks, name)
   matches = tasks.each_with_index.select { |task, _index| task["name"] == name }
@@ -56,6 +58,10 @@ end
 
 def require_condition(condition, message)
   raise message unless condition
+end
+
+def normalized_expression(value)
+  value.to_s.gsub(/\s+/, " ")
 end
 
 def validate_initial_scan!(tasks, defaults)
@@ -371,6 +377,10 @@ def validate_initial_scan!(tasks, defaults)
   require_condition(
     precreate_copy["content"].to_s.include?("audiobookshelf_initial_scan_precreate_state") &&
       precreate_copy["dest"] == "{{ audiobookshelf_initial_scan_marker_path }}" &&
+      normalized_expression(precreate_copy["owner"]) ==
+        "{{ nas_uid if #{LINUX_OWNERSHIP_GUARD} else omit }}" &&
+      normalized_expression(precreate_copy["group"]) ==
+        "{{ nas_gid if #{LINUX_OWNERSHIP_GUARD} else omit }}" &&
       precreate_copy["mode"] == "0600" && precreate_copy["follow"] == false &&
       precreate_copy["unsafe_writes"] == false && precreate_pending["no_log"] == true &&
       Array(precreate_pending["when"]) == [
@@ -395,11 +405,27 @@ def validate_initial_scan!(tasks, defaults)
       bound_state["library_id"].to_s.include?("audiobookshelf_current_library.id") &&
       bound_copy["content"].to_s.include?("audiobookshelf_initial_scan_bound_state") &&
       bound_copy["dest"] == "{{ audiobookshelf_initial_scan_marker_path }}" &&
+      normalized_expression(bound_copy["owner"]) ==
+        "{{ nas_uid if #{LINUX_OWNERSHIP_GUARD} else omit }}" &&
+      normalized_expression(bound_copy["group"]) ==
+        "{{ nas_gid if #{LINUX_OWNERSHIP_GUARD} else omit }}" &&
       bound_copy["mode"] == "0600" && bound_copy["follow"] == false &&
       bound_copy["unsafe_writes"] == false && bound_pending["no_log"] == true &&
       Array(bound_pending["when"]).join(" ").include?("audiobookshelf_initial_scan_required") &&
       Array(bound_pending["when"]).join(" ").include?("!= audiobookshelf_initial_scan_bound_state"),
     "validated current ID must be durably bound before folder repair or scan"
+  )
+  marker_file_gate = nested_task_named(
+    tasks, "Require private regular Audiobookshelf initial scan marker"
+  )
+  marker_file_assertions = Array(
+    marker_file_gate.dig("ansible.builtin.assert", "that")
+  ).join(" ")
+  require_condition(
+    marker_file_assertions.scan(LINUX_OWNERSHIP_GUARD).length == 2 &&
+      marker_file_assertions.include?("audiobookshelf_initial_scan_marker_stat.stat.uid") &&
+      marker_file_assertions.include?("audiobookshelf_initial_scan_marker_stat.stat.gid"),
+    "native Mac marker validation must preserve host ownership while NAS and integration enforce Linux IDs"
   )
   clear_pending, clear_pending_index = task_named(tasks, CLEAR_PENDING_TASK)
   clear_file = clear_pending.fetch("ansible.builtin.file", {})

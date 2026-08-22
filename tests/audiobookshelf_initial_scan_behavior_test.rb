@@ -253,7 +253,10 @@ class ScanFixture
   end
 end
 
-def run_scan(fixture, config_root, stop_after: nil, stop_before: nil)
+def run_scan(
+  fixture, config_root, stop_after: nil, stop_before: nil, platform_kind: "nas",
+  manage_linux_ownership: false, nas_uid: Process.uid, nas_gid: Process.gid
+)
   fixture.marker_path = File.join(config_root, MARKER_NAME)
   existing_library = fixture.library || {}
   variables = DEFAULTS.merge(
@@ -267,8 +270,10 @@ def run_scan(fixture, config_root, stop_after: nil, stop_before: nil)
     end,
     "audiobookshelf_initial_scan_retries" => 2,
     "audiobookshelf_initial_scan_delay" => 0,
-    "nas_uid" => Process.uid,
-    "nas_gid" => Process.gid
+    "platform_kind" => platform_kind,
+    "platform_manage_linux_ownership" => manage_linux_ownership,
+    "nas_uid" => nas_uid,
+    "nas_gid" => nas_gid
   )
   playbook = [{
     "hosts" => "localhost", "gather_facts" => false,
@@ -326,6 +331,39 @@ def pending_marker_failure(config_root)
 end
 
 failures = []
+
+Dir.mktmpdir("audiobookshelf-native-mac-marker-") do |config_root|
+  fixture = ScanFixture.new(advance_last_scan: true, library: nil)
+  begin
+    _stdout, _stderr, interrupted = run_scan(
+      fixture, config_root,
+      stop_after: "Bind Audiobookshelf initial scan intent to current library",
+      platform_kind: "mac", manage_linux_ownership: false, nas_uid: 1000, nas_gid: 100
+    )
+    marker = File.join(config_root, MARKER_NAME)
+    failures << "native Mac marker fixture was not interrupted" if interrupted.success?
+    failures << "native Mac marker fixture did not create exactly once" unless fixture.create_requests == 1
+    failures << "native Mac marker fixture scanned before resume" unless fixture.scan_requests.zero?
+    failures << "native Mac marker was not created" unless File.file?(marker)
+    if File.file?(marker)
+      failures << "native Mac marker did not preserve host UID" unless File.stat(marker).uid == Process.uid
+      failures << "native Mac marker did not preserve host GID" unless File.stat(marker).gid == Process.gid
+      failures << "native Mac marker mode differs" unless (File.stat(marker).mode & 0o777) == 0o600
+    end
+
+    stdout, stderr, resumed = run_scan(
+      fixture, config_root,
+      platform_kind: "mac", manage_linux_ownership: false, nas_uid: 1000, nas_gid: 100
+    )
+    failures << "native Mac host-owned marker did not resume: #{failure_tail(stdout + stderr)}" unless
+      resumed.success?
+    failures << "native Mac marker resume recreated the library" unless fixture.create_requests == 1
+    failures << "native Mac marker resume did not scan exactly once" unless fixture.scan_requests == 1
+    failures << "native Mac marker resume retained pending intent" if File.exist?(marker)
+  ensure
+    fixture.close
+  end
+end
 
 [
   ["normal", ->(root) { root }],
