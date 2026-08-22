@@ -179,6 +179,18 @@ if [ "$explicit_suite" = true ]; then
   done
 fi
 
+if [ "$observe_lifecycle" = true ] &&
+   [ "${INTEGRATION_RUN_SERVICE_SCENARIOS+x}" = x ]; then
+  case "$INTEGRATION_RUN_SERVICE_SCENARIOS" in
+    true|false) run_service_scenarios=$INTEGRATION_RUN_SERVICE_SCENARIOS ;;
+    *)
+      printf 'invalid integration service-scenario decision: %s\n' \
+        "$INTEGRATION_RUN_SERVICE_SCENARIOS" >&2
+      exit 2
+      ;;
+  esac
+fi
+
 if [ "$describe_suite" = true ] || [ "${INTEGRATION_DESCRIBE_ONLY:-0}" = 1 ]; then
   printf 'suite=%s tags=%s playbook=%s scenarios=%s\n' \
     "$suite" "$suite_tags" "$playbook" "$run_service_scenarios"

@@ -123,6 +123,45 @@ for unrelated_suite in foundation smoke beszel jellyfin; do
 success' "$unrelated_suite"
 done
 
+status=0
+invalid_controller_plan=$(INTEGRATION_RUN_SERVICE_SCENARIOS=invalid \
+  run_integration --observe-lifecycle --suite full 2>&1) || status=$?
+[ "$status" -eq 2 ] || {
+  printf 'invalid controller lifecycle decision exited %s instead of 2: %s\n' \
+    "$status" "$invalid_controller_plan" >&2
+  exit 1
+}
+printf '%s\n' "$invalid_controller_plan" |
+  grep -qF 'invalid integration service-scenario decision: invalid' || {
+    printf 'invalid controller lifecycle decision did not fail closed: %s\n' \
+      "$invalid_controller_plan" >&2
+    exit 1
+  }
+
+host_plan=$(run_integration --observe-lifecycle site.yml --check --diff)
+controller_plan=$(INTEGRATION_RUN_SERVICE_SCENARIOS=false \
+  run_integration --observe-lifecycle --suite full)
+[ "$controller_plan" = "$host_plan" ] || {
+  printf 'controller lifecycle differs from host-derived lifecycle:\n' >&2
+  printf 'host:\n%s\ncontroller:\n%s\n' "$host_plan" "$controller_plan" >&2
+  exit 1
+}
+[ "$host_plan" = 'converge
+success' ] || {
+  printf 'check/diff lifecycle unexpectedly includes service scenarios:\n%s\n' \
+    "$host_plan" >&2
+  exit 1
+}
+explicit_host_plan=$(run_integration --observe-lifecycle --suite full)
+explicit_controller_plan=$(INTEGRATION_RUN_SERVICE_SCENARIOS=true \
+  run_integration --observe-lifecycle --suite full)
+[ "$explicit_controller_plan" = "$explicit_host_plan" ] || {
+  printf 'explicit controller lifecycle differs from host-derived lifecycle:\n' >&2
+  printf 'host:\n%s\ncontroller:\n%s\n' \
+    "$explicit_host_plan" "$explicit_controller_plan" >&2
+  exit 1
+}
+
 contract_docker_root=$fake_bin/contract-docker
 contract_media_root=$fake_bin/contract-media
 contract_report_root=$fake_bin/contract-report
