@@ -189,6 +189,7 @@ if [ "$mode" = assert-retired ]; then
 else
   : "${PLATFORM_KIND:?}"
   : "${PLATFORM_CONTRACT_SANDBOX_ROOT:?}"
+  : "${PLATFORM_CONTRACT_SANDBOX_OWNER_UID:?}"
   : "${PLATFORM_MEDIA_ROOT:?}"
   : "${PLATFORM_COMPOSE_KIND:?}"
   : "${PLATFORM_PROJECT_NAME:?}"
@@ -302,6 +303,14 @@ def with_validated_fixture_roots
   media_path = canonical_absolute_path("PLATFORM_MEDIA_ROOT")
   report_path = canonical_absolute_path("PLATFORM_REPORT_ROOT")
   sandbox = open_verified_absolute_directory(sandbox_path, "contract sandbox root")
+  owner_uid = ENV.fetch("PLATFORM_CONTRACT_SANDBOX_OWNER_UID")
+  fail_contract("PLATFORM_CONTRACT_SANDBOX_OWNER_UID is unsafe") unless
+    owner_uid.match?(/\A[0-9]+\z/)
+  sandbox_stat = sandbox.stat
+  fail_contract("contract sandbox root owner differs") unless
+    sandbox_stat.uid == owner_uid.to_i
+  fail_contract("contract sandbox root mode differs") unless
+    (sandbox_stat.mode & 0o777) == 0o700
   docker_root = open_verified_descendant(sandbox, sandbox_path, docker_path, "Docker root")
   media_root = open_verified_descendant(sandbox, sandbox_path, media_path, "media root")
   report_root = open_verified_descendant(sandbox, sandbox_path, report_path, "report root")

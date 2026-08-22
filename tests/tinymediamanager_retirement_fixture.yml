@@ -4,16 +4,32 @@
   connection: local
   gather_facts: false
   tasks:
+    - name: Require the retained repository identity to match the fixture playbook
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_playbook_python }}"
+          - -c
+          - >-
+            import os, pathlib, sys;
+            expected = pathlib.Path(sys.argv[1]).resolve(strict=True);
+            supplied = os.environ.get('PLATFORM_CONTRACT_REPO_DIR');
+            sys.exit(0 if supplied and
+                     pathlib.Path(supplied).resolve(strict=True) == expected else 1)
+          - "{{ playbook_dir }}/.."
+      changed_when: false
+
     - name: Validate the disposable test-only retirement fixture context
       ansible.builtin.command:
         argv:
-          - "{{ lookup('env', 'PLATFORM_CONTRACT_REPO_DIR') }}/tests/contracts/tinymediamanager.sh"
+          - "{{ playbook_dir }}/contracts/tinymediamanager.sh"
           - validate-retirement-fixture
+      environment:
+        PLATFORM_CONTRACT_REPO_DIR: "{{ playbook_dir }}/.."
       changed_when: false
 
     - name: Start the legacy tinyMediaManager fixture
       community.docker.docker_compose_v2:
-        project_src: "{{ lookup('env', 'PLATFORM_CONTRACT_REPO_DIR') }}/services/tinymediamanager"
+        project_src: "{{ playbook_dir }}/../services/tinymediamanager"
         project_name: "{{ lookup('env', 'PLATFORM_PROJECT_NAME') }}-tinymediamanager"
         files: >-
           {{ ['compose.yml',

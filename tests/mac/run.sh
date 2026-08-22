@@ -767,6 +767,7 @@ fi
 
 export PLATFORM_MAC_SANDBOX=$sandbox
 export PLATFORM_CONTRACT_SANDBOX_ROOT=$sandbox
+export PLATFORM_CONTRACT_SANDBOX_OWNER_UID=$(id -u)
 export PLATFORM_DOCKER_ROOT=$sandbox/service-data/docker
 export PLATFORM_MEDIA_ROOT=$sandbox/service-data/media
 export PLATFORM_FIXTURE_ROOT=$sandbox/fixtures

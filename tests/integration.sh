@@ -35,6 +35,35 @@ describe_suite=false
 explicit_suite=false
 observe_lifecycle=false
 consume_lifecycle=false
+lifecycle_mode_count=0
+lifecycle_list_requested=false
+lifecycle_describe_requested=false
+
+for integration_argument in "$@"; do
+  case $integration_argument in
+    --observe-lifecycle|--consume-lifecycle)
+      lifecycle_mode_count=$((lifecycle_mode_count + 1))
+      ;;
+    --list-suites) lifecycle_list_requested=true ;;
+    --describe-suite) lifecycle_describe_requested=true ;;
+  esac
+done
+
+if [ "$lifecycle_mode_count" -gt 1 ]; then
+  printf '%s\n' 'integration lifecycle modes conflict' >&2
+  exit 2
+fi
+if [ "$lifecycle_mode_count" -eq 1 ]; then
+  if [ "$lifecycle_list_requested" = true ]; then
+    printf '%s\n' 'integration lifecycle mode conflicts with suite listing' >&2
+    exit 2
+  fi
+  if [ "$lifecycle_describe_requested" = true ] ||
+     [ "${INTEGRATION_DESCRIBE_ONLY:-0}" = 1 ]; then
+    printf '%s\n' 'integration lifecycle mode conflicts with describe-only' >&2
+    exit 2
+  fi
+fi
 
 case "${1:-}" in
   --observe-lifecycle) observe_lifecycle=true; shift ;;
@@ -250,11 +279,21 @@ cleanup_integration_on_exit() {
 trap cleanup_integration_on_exit EXIT
 trap 'exit 130' HUP INT TERM
 sandbox=$(mktemp -d "$temporary_parent/nas-platform-integration.XXXXXX")
-chmod 0777 "$sandbox"
+chmod 0700 "$sandbox"
+sandbox_host_owner_uid=$(id -u)
+ruby -e '
+  sandbox = File.stat(ARGV.fetch(0))
+  expected_uid = Integer(ARGV.fetch(1), 10)
+  abort "integration sandbox owner differs" unless sandbox.uid == expected_uid
+  abort "integration sandbox mode differs" unless (sandbox.mode & 0o777) == 0o700
+' "$sandbox" "$sandbox_host_owner_uid"
 
 mkdir -p "$sandbox/volume1/Docker" "$sandbox/volume2" "$sandbox/repo" \
   "$sandbox/fixtures" "$sandbox/reports" \
   "$sandbox/private/var/folders/path fixture"
+# Only the two directories bind-mounted for arbitrary service fixture UIDs are
+# writable across identities. The namespace root remains owner-only, so other
+# host users cannot traverse or rename any validated child.
 chmod 0777 "$sandbox/fixtures" "$sandbox/reports"
 ln -s "$sandbox/private/var" "$sandbox/var"
 
@@ -559,6 +598,8 @@ docker run --rm \
   -w /repo \
   "$runner_image" \
   sh -eu -c "
+    PLATFORM_CONTRACT_SANDBOX_OWNER_UID=\$(stat -c '%u' '$sandbox')
+    export PLATFORM_CONTRACT_SANDBOX_OWNER_UID
     apk add --no-cache --quiet docker-cli docker-cli-compose git tar openssl \
       apache2-utils openssh-client '$ruby_package' '$curl_package' >/dev/null
     pip install --quiet --no-input 'ansible-core==$ansible_core_version' \
@@ -781,6 +822,7 @@ docker run --rm \
       env \
         PLATFORM_KIND=integration \
         PLATFORM_CONTRACT_SANDBOX_ROOT='$sandbox' \
+        PLATFORM_CONTRACT_SANDBOX_OWNER_UID="\$PLATFORM_CONTRACT_SANDBOX_OWNER_UID" \
         PLATFORM_CONTRACT_REPO_DIR=/repo \
         PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\" \
         PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=\"\$vault_password_file\" \
@@ -1348,6 +1390,7 @@ docker run --rm \
           env \
             PLATFORM_KIND=integration \
             PLATFORM_CONTRACT_SANDBOX_ROOT='$sandbox' \
+            PLATFORM_CONTRACT_SANDBOX_OWNER_UID="\$PLATFORM_CONTRACT_SANDBOX_OWNER_UID" \
             PLATFORM_CONTRACT_REPO_DIR=/repo \
             PLATFORM_COMPOSE_KIND=integration \
             PLATFORM_PROJECT_NAME=integration \

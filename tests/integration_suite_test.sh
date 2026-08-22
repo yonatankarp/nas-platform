@@ -8,7 +8,8 @@ fake_bin=$(CDPATH= cd -P "$fake_bin" && pwd -P)
 docker_log=$fake_bin/docker.log
 
 cleanup() {
-  for case_root in "$fake_bin/contract-cases" "$fake_bin/boundary-cases"; do
+  for case_root in "$fake_bin/contract-cases" "$fake_bin/boundary-cases" \
+      "$fake_bin/hostile-repository" "$fake_bin/playbook-sandbox"; do
     if [ -d "$case_root" ] && [ ! -L "$case_root" ]; then
       find "$case_root" -depth -mindepth 1 -delete 2>/dev/null || true
       rmdir "$case_root" 2>/dev/null || true
@@ -26,6 +27,7 @@ cleanup() {
     "$fake_bin/contract-media/Media" "$fake_bin/contract-media" \
     "$fake_bin/contract-report" 2>/dev/null || true
   rm -f "$fake_bin/docker" "$fake_bin/mktemp" "$docker_log"
+  rm -f "$fake_bin/hostile-validator-ran"
   rmdir "$fake_bin"
 }
 trap cleanup EXIT HUP INT TERM
@@ -147,6 +149,73 @@ assert_rejected() {
   }
 }
 
+assert_lifecycle_mode_rejected() {
+  expected=$1
+  shift
+  rm -f "$docker_log"
+  rejected_status=0
+  rejected_output=$(run_integration "$@" 2>&1) || rejected_status=$?
+  [ "$rejected_status" -eq 2 ] || {
+    printf 'lifecycle conflict exited %s instead of 2: %s\n' \
+      "$rejected_status" "$rejected_output" >&2
+    exit 1
+  }
+  printf '%s\n' "$rejected_output" | grep -qF "$expected" || {
+    printf 'lifecycle conflict did not report %s: %s\n' \
+      "$expected" "$rejected_output" >&2
+    exit 1
+  }
+  [ ! -e "$docker_log" ] || {
+    printf 'lifecycle conflict caused a side effect: %s\n' \
+      "$(cat "$docker_log")" >&2
+    exit 1
+  }
+}
+
+assert_lifecycle_mode_rejected 'integration lifecycle mode conflicts with describe-only' \
+  --consume-lifecycle --describe-suite full
+assert_lifecycle_mode_rejected 'integration lifecycle mode conflicts with describe-only' \
+  --observe-lifecycle --describe-suite full
+assert_lifecycle_mode_rejected 'integration lifecycle mode conflicts with describe-only' \
+  --describe-suite full --consume-lifecycle
+assert_lifecycle_mode_rejected 'integration lifecycle mode conflicts with describe-only' \
+  --describe-suite full --observe-lifecycle
+assert_lifecycle_mode_rejected 'integration lifecycle mode conflicts with suite listing' \
+  --consume-lifecycle --list-suites
+assert_lifecycle_mode_rejected 'integration lifecycle mode conflicts with suite listing' \
+  --observe-lifecycle --list-suites
+assert_lifecycle_mode_rejected 'integration lifecycle modes conflict' \
+  --consume-lifecycle --observe-lifecycle --suite full
+assert_lifecycle_mode_rejected 'integration lifecycle modes conflict' \
+  --observe-lifecycle --consume-lifecycle --suite full
+assert_lifecycle_mode_rejected 'integration lifecycle mode conflicts with suite listing' \
+  --list-suites --consume-lifecycle
+assert_lifecycle_mode_rejected 'integration lifecycle mode conflicts with suite listing' \
+  --list-suites --observe-lifecycle
+
+describe_conflict_status=0
+describe_conflict_output=$(INTEGRATION_DESCRIBE_ONLY=1 \
+  run_integration --consume-lifecycle --suite full 2>&1) ||
+  describe_conflict_status=$?
+[ "$describe_conflict_status" -eq 2 ] &&
+  printf '%s\n' "$describe_conflict_output" |
+    grep -qF 'integration lifecycle mode conflicts with describe-only' || {
+      printf 'environment describe-only bypassed lifecycle mode: %s\n' \
+        "$describe_conflict_output" >&2
+      exit 1
+    }
+describe_conflict_status=0
+describe_conflict_output=$(INTEGRATION_DESCRIBE_ONLY=1 \
+  run_integration --observe-lifecycle --suite full 2>&1) ||
+  describe_conflict_status=$?
+[ "$describe_conflict_status" -eq 2 ] &&
+  printf '%s\n' "$describe_conflict_output" |
+    grep -qF 'integration lifecycle mode conflicts with describe-only' || {
+      printf 'environment describe-only bypassed lifecycle observation: %s\n' \
+        "$describe_conflict_output" >&2
+      exit 1
+    }
+
 assert_lifecycle() {
   expected=$1
   suite_name=$2
@@ -239,6 +308,7 @@ assert_retirement_seed_refused() {
   boundary_docker=$4
   boundary_media=$5
   boundary_report=$6
+  boundary_owner_uid=${7:-$(id -u)}
   boundary_status=0
   (
     if [ "$boundary_kind" = __unset__ ]; then
@@ -252,6 +322,7 @@ assert_retirement_seed_refused() {
       export PLATFORM_CONTRACT_SANDBOX_ROOT=$boundary_sandbox
     fi
     export PLATFORM_CONTRACT_REPO_DIR=$repo_dir
+    export PLATFORM_CONTRACT_SANDBOX_OWNER_UID=$boundary_owner_uid
     export PLATFORM_DOCKER_ROOT=$boundary_docker
     export PLATFORM_MEDIA_ROOT=$boundary_media
     export PLATFORM_REPORT_ROOT=$boundary_report
@@ -277,6 +348,7 @@ mkdir -p "$boundary_cases"
 for boundary_name in nas-kind absent-kind unknown-kind missing-sandbox; do
   boundary_root=$boundary_cases/$boundary_name
   mkdir -p "$boundary_root/docker" "$boundary_root/media" "$boundary_root/report"
+  chmod 0700 "$boundary_root"
   case $boundary_name in
     nas-kind) boundary_kind=nas; boundary_sandbox=$boundary_root ;;
     absent-kind) boundary_kind=__unset__; boundary_sandbox=$boundary_root ;;
@@ -291,12 +363,14 @@ done
 outside_case=$boundary_cases/outside-root
 outside_target=$boundary_cases/outside-target
 mkdir -p "$outside_case/media" "$outside_case/report" "$outside_target/docker"
+chmod 0700 "$outside_case"
 assert_retirement_seed_refused out-of-sandbox-root test "$outside_case" \
   "$outside_target/docker" "$outside_case/media" "$outside_case/report"
 
 symlink_case=$boundary_cases/symlink-component
 symlink_target=$boundary_cases/symlink-target
 mkdir -p "$symlink_case/media" "$symlink_case/report" "$symlink_target/docker"
+chmod 0700 "$symlink_case"
 ln -s "$symlink_target" "$symlink_case/linked"
 assert_retirement_seed_refused symlinked-component integration "$symlink_case" \
   "$symlink_case/linked/docker" "$symlink_case/media" "$symlink_case/report"
@@ -304,13 +378,29 @@ assert_retirement_seed_refused symlinked-component integration "$symlink_case" \
 mismatch_case=$boundary_cases/mismatched-roots
 mismatch_other=$boundary_cases/mismatched-other
 mkdir -p "$mismatch_case/docker" "$mismatch_case/report" "$mismatch_other/media"
+chmod 0700 "$mismatch_case"
 assert_retirement_seed_refused mismatched-roots mac "$mismatch_case" \
   "$mismatch_case/docker" "$mismatch_other/media" "$mismatch_case/report"
+
+wrong_mode_case=$boundary_cases/wrong-mode-sandbox
+mkdir -p "$wrong_mode_case/docker" "$wrong_mode_case/media" "$wrong_mode_case/report"
+chmod 0777 "$wrong_mode_case"
+assert_retirement_seed_refused wrong-sandbox-mode test "$wrong_mode_case" \
+  "$wrong_mode_case/docker" "$wrong_mode_case/media" "$wrong_mode_case/report"
+
+wrong_owner_case=$boundary_cases/wrong-owner-sandbox
+mkdir -p "$wrong_owner_case/docker" "$wrong_owner_case/media" "$wrong_owner_case/report"
+chmod 0700 "$wrong_owner_case"
+wrong_owner_uid=$(($(id -u) + 1))
+assert_retirement_seed_refused wrong-sandbox-owner test "$wrong_owner_case" \
+  "$wrong_owner_case/docker" "$wrong_owner_case/media" "$wrong_owner_case/report" \
+  "$wrong_owner_uid"
 
 env \
   PLATFORM_CONTRACT_REPO_DIR="$repo_dir" \
   PLATFORM_KIND=test \
   PLATFORM_CONTRACT_SANDBOX_ROOT="$fake_bin" \
+  PLATFORM_CONTRACT_SANDBOX_OWNER_UID="$(id -u)" \
   PLATFORM_DOCKER_ROOT="$contract_docker_root" \
   PLATFORM_MEDIA_ROOT="$contract_media_root" \
   PLATFORM_REPORT_ROOT="$contract_report_root" \
@@ -356,6 +446,7 @@ env \
   PLATFORM_CONTRACT_REPO_DIR="$repo_dir" \
   PLATFORM_KIND=test \
   PLATFORM_CONTRACT_SANDBOX_ROOT="$fake_bin" \
+  PLATFORM_CONTRACT_SANDBOX_OWNER_UID="$(id -u)" \
   PLATFORM_DOCKER_ROOT="$contract_docker_root" \
   PLATFORM_MEDIA_ROOT="$contract_media_root" \
   PLATFORM_REPORT_ROOT="$contract_report_root" \
@@ -376,6 +467,7 @@ contract_cases=$fake_bin/contract-cases
 safe_case=$contract_cases/safe
 mkdir -p "$safe_case/docker/tinymediamanager/data/data" \
   "$safe_case/media/Media/Movies" "$safe_case/media/Media/Series" "$safe_case/reports"
+chmod 0700 "$safe_case"
 printf '%s\n' 'opaque-existing-state-that-must-not-be-parsed' \
   > "$safe_case/docker/tinymediamanager/data/data/tmm.json"
 chmod 0600 "$safe_case/docker/tinymediamanager/data/data/tmm.json"
@@ -383,6 +475,7 @@ safe_settings_before=$(shasum -a 256 \
   "$safe_case/docker/tinymediamanager/data/data/tmm.json" | awk '{print $1}')
 env PLATFORM_CONTRACT_REPO_DIR="$repo_dir" \
   PLATFORM_KIND=test PLATFORM_CONTRACT_SANDBOX_ROOT="$safe_case" \
+  PLATFORM_CONTRACT_SANDBOX_OWNER_UID="$(id -u)" \
   PLATFORM_DOCKER_ROOT="$safe_case/docker" PLATFORM_MEDIA_ROOT="$safe_case/media" \
   PLATFORM_REPORT_ROOT="$safe_case/reports" PLATFORM_COMPOSE_KIND=integration \
   PLATFORM_PROJECT_NAME=integration PLATFORM_TINYMEDIAMANAGER_WEB_PORT=4000 \
@@ -400,6 +493,7 @@ for unsafe_kind in symlink directory wrong-mode; do
   unsafe_settings=$unsafe_case/docker/tinymediamanager/data/data/tmm.json
   mkdir -p "$(dirname "$unsafe_settings")" "$unsafe_case/media/Media/Movies" \
     "$unsafe_case/media/Media/Series" "$unsafe_case/reports"
+  chmod 0700 "$unsafe_case"
   case $unsafe_kind in
     symlink)
       printf '%s\n' outside > "$unsafe_case/outside-settings"
@@ -415,6 +509,7 @@ for unsafe_kind in symlink directory wrong-mode; do
   unsafe_status=0
   env PLATFORM_CONTRACT_REPO_DIR="$repo_dir" \
     PLATFORM_KIND=test PLATFORM_CONTRACT_SANDBOX_ROOT="$unsafe_case" \
+    PLATFORM_CONTRACT_SANDBOX_OWNER_UID="$(id -u)" \
     PLATFORM_DOCKER_ROOT="$unsafe_case/docker" PLATFORM_MEDIA_ROOT="$unsafe_case/media" \
     PLATFORM_REPORT_ROOT="$unsafe_case/reports" PLATFORM_COMPOSE_KIND=integration \
     PLATFORM_PROJECT_NAME=integration PLATFORM_TINYMEDIAMANAGER_WEB_PORT=4000 \
@@ -454,16 +549,27 @@ abort "retirement fixture play differs" unless fixture.slice(
   "connection" => "local",
   "gather_facts" => false
 }
-validation = fixture.fetch("tasks").fetch(0)
+identity = fixture.fetch("tasks").fetch(0)
+identity_command = identity.fetch("ansible.builtin.command").fetch("argv")
+abort "retirement fixture does not bind the retained repository identity" unless
+  identity_command.first == "{{ ansible_playbook_python }}" &&
+    identity_command.last == "{{ playbook_dir }}/.." &&
+    identity.fetch("changed_when") == false
+validation = fixture.fetch("tasks").fetch(1)
 validation_command = validation.fetch("ansible.builtin.command").fetch("argv")
 abort "retirement fixture does not validate its disposable context" unless
-  validation_command.last == "validate-retirement-fixture" &&
+  validation_command == [
+    "{{ playbook_dir }}/contracts/tinymediamanager.sh",
+    "validate-retirement-fixture"
+  ] && validation.fetch("environment") == {
+    "PLATFORM_CONTRACT_REPO_DIR" => "{{ playbook_dir }}/.."
+  } &&
     validation.fetch("changed_when") == false
-task = fixture.fetch("tasks").fetch(1)
+task = fixture.fetch("tasks").fetch(2)
 compose = task.fetch("community.docker.docker_compose_v2")
 abort "retirement fixture project source differs" unless
   compose.fetch("project_src") ==
-    "{{ lookup('env', 'PLATFORM_CONTRACT_REPO_DIR') }}/services/tinymediamanager"
+    "{{ playbook_dir }}/../services/tinymediamanager"
 abort "retirement fixture project identity differs" unless
   compose.fetch("project_name") ==
     "{{ lookup('env', 'PLATFORM_PROJECT_NAME') }}-tinymediamanager"
@@ -479,6 +585,59 @@ abort "retirement fixture does not wait for startup" unless
 abort "retirement fixture contaminates converge accounting" unless
   task.fetch("changed_when") == false
 RUBY
+
+hostile_repo=$fake_bin/hostile-repository
+hostile_marker=$fake_bin/hostile-validator-ran
+mkdir -p "$hostile_repo/tests/contracts" "$hostile_repo/services/tinymediamanager"
+cat > "$hostile_repo/tests/contracts/tinymediamanager.sh" <<'SH'
+#!/bin/sh
+: > "${HOSTILE_VALIDATOR_MARKER:?}"
+exit 0
+SH
+chmod 0700 "$hostile_repo/tests/contracts/tinymediamanager.sh"
+cat > "$hostile_repo/services/tinymediamanager/compose.yml" <<'YAML'
+services:
+  hostile:
+    image: hostile.invalid/arbitrary:latest
+YAML
+cp "$hostile_repo/services/tinymediamanager/compose.yml" \
+  "$hostile_repo/services/tinymediamanager/compose.integration.yml"
+playbook_sandbox=$fake_bin/playbook-sandbox
+mkdir -p "$playbook_sandbox/docker" "$playbook_sandbox/media" \
+  "$playbook_sandbox/report"
+chmod 0700 "$playbook_sandbox"
+rm -f "$docker_log" "$hostile_marker"
+hostile_playbook_status=0
+env \
+  PATH="$fake_bin:$PATH" DOCKER_LOG="$docker_log" \
+  HOSTILE_VALIDATOR_MARKER="$hostile_marker" \
+  ANSIBLE_CONFIG="$repo_dir/ansible.cfg" \
+  PLATFORM_CONTRACT_REPO_DIR="$hostile_repo" \
+  PLATFORM_KIND=test \
+  PLATFORM_CONTRACT_SANDBOX_ROOT="$playbook_sandbox" \
+  PLATFORM_CONTRACT_SANDBOX_OWNER_UID="$(id -u)" \
+  PLATFORM_DOCKER_ROOT="$playbook_sandbox/docker" \
+  PLATFORM_MEDIA_ROOT="$playbook_sandbox/media" \
+  PLATFORM_REPORT_ROOT="$playbook_sandbox/report" \
+  PLATFORM_COMPOSE_KIND=integration PLATFORM_PROJECT_NAME=integration \
+  PLATFORM_TINYMEDIAMANAGER_WEB_PORT=4000 \
+  PLATFORM_TINYMEDIAMANAGER_API_PORT=7878 \
+  "$repo_dir/.venv/bin/ansible-playbook" -i localhost, \
+    "$repo_dir/tests/tinymediamanager_retirement_fixture.yml" \
+    >/dev/null 2>&1 || hostile_playbook_status=$?
+[ "$hostile_playbook_status" -ne 0 ] || {
+  printf '%s\n' 'hostile retirement fixture repository was accepted' >&2
+  exit 1
+}
+[ ! -e "$hostile_marker" ] || {
+  printf '%s\n' 'hostile retirement fixture validator executed' >&2
+  exit 1
+}
+[ ! -e "$docker_log" ] || {
+  printf 'hostile retirement fixture reached Docker: %s\n' \
+    "$(cat "$docker_log")" >&2
+  exit 1
+}
 
 assert_output 'suite=foundation tags=deployment_bundle playbook=site.yml scenarios=true' \
   --describe-suite foundation
@@ -527,6 +686,14 @@ grep -qF -- '-e INTEGRATION_SUITE="$suite"' "$integration"
 grep -qF -- '-e INTEGRATION_TAGS="$suite_tags"' "$integration"
 grep -qF "PLATFORM_CONTRACT_SANDBOX_ROOT='\$sandbox'" "$integration" || {
   printf '%s\n' 'integration retirement fixture lacks its sandbox boundary' >&2
+  exit 1
+}
+grep -qF 'chmod 0700 "$sandbox"' "$integration" || {
+  printf '%s\n' 'integration sandbox is not owner-only' >&2
+  exit 1
+}
+grep -qF "stat -c '%u' '\$sandbox'" "$integration" || {
+  printf '%s\n' 'integration controller does not bind sandbox ownership' >&2
   exit 1
 }
 grep -qF -- '" integration-run "$playbook" "$@"' "$integration"
