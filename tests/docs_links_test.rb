@@ -187,19 +187,6 @@ def markdown_section(document, heading)
   end.join
 end
 
-def markdown_without_section(document, heading)
-  lines = document.lines
-  heading_index = lines.index { |line| line.rstrip == heading }
-  return document unless heading_index
-
-  heading_level = heading[/\A#+/].length
-  section_end = (heading_index + 1...lines.length).find do |index|
-    next_heading = lines[index].rstrip.match(/\A(#+)(?:\s|\z)/)
-    next_heading && next_heading[1].length <= heading_level
-  end || lines.length
-  (lines.take(heading_index) + lines.drop(section_end)).join
-end
-
 def normalized_checklist_items(markdown)
   items = []
   current = nil
@@ -218,162 +205,303 @@ def normalized_checklist_items(markdown)
   items.map { |item| item.gsub(/\s+/, " ") }
 end
 
-def normalized_document_blocks(markdown)
+def normalize_block_text(text)
+  text.gsub(/\s+/, " ").strip
+end
+
+def markdown_semantic_blocks(markdown)
   blocks = []
   current = nil
-  current_kind = nil
+  heading_path = []
   flush = lambda do
-    blocks << current.gsub(/\s+/, " ").strip if current && !current.strip.empty?
+    if current && !current[:parts].empty?
+      blocks << current.merge(text: normalize_block_text(current.delete(:parts).join(" ")))
+    end
     current = nil
-    current_kind = nil
   end
 
-  mask_block_contexts(markdown).each_line do |line|
-    stripped = line.strip
-    if stripped.empty? || stripped.start_with?("#")
+  raw_lines = markdown.lines
+  masked_lines = mask_block_contexts(markdown).lines
+  raw_lines.zip(masked_lines).each do |raw_line, masked_line|
+    stripped = masked_line.to_s.strip
+    if (heading = stripped.match(/\A(#+)\s+(.+?)\s*\z/))
       flush.call
-    elsif (match = line.match(/\A\s*(?:[-+*]|\d+[.)])\s+(.*)/))
+      level = heading[1].length
+      heading_path = heading_path.take(level - 1)
+      heading_path[level - 1] = "#{heading[1]} #{heading[2]}"
+    elsif (item = masked_line.to_s.match(/\A(\s*)([-+*]|(\d+)[.)])\s+(\[[ xX]\]\s+)?(.*)/))
       flush.call
-      current = match[1]
-      current_kind = :list
-    elsif current_kind == :list && line.match?(/\A\s{2,}\S/)
-      current = "#{current} #{stripped}"
+      current = {
+        heading_path: heading_path.compact.dup,
+        kind: :list_item,
+        number: item[3]&.to_i,
+        checklist: !item[4].nil?,
+        indent: item[1].length,
+        parts: [item[5]]
+      }
+    elsif stripped.empty?
+      # Blank lines and fenced-code lines do not end a list item. This keeps
+      # wrapped/nested numbered procedures as one semantic step. Preserve the
+      # fenced command text in that step so rollback mutations also fail closed.
+      if current&.dig(:kind) == :list_item && !raw_line.to_s.strip.empty?
+        current[:parts] << raw_line.strip
+      elsif current&.dig(:kind) == :paragraph
+        flush.call
+      end
+    elsif current&.dig(:kind) == :list_item &&
+          masked_line.match?(/\A\s{#{current[:indent] + 1},}\S/)
+      current[:parts] << stripped
     else
-      flush.call if current_kind == :list
-      current = [current, stripped].compact.join(" ")
-      current_kind = :paragraph
+      flush.call if current&.dig(:kind) == :list_item
+      current ||= {
+        heading_path: heading_path.compact.dup,
+        kind: :paragraph,
+        number: nil,
+        checklist: false,
+        indent: 0,
+        parts: []
+      }
+      current[:parts] << stripped
     end
   end
   flush.call
   blocks
 end
 
+def normalized_document_blocks(markdown)
+  markdown_semantic_blocks(markdown).map { |block| block[:text] }
+end
+
+def markdown_heading_paths(markdown)
+  path = []
+  mask_block_contexts(markdown).each_line.filter_map do |line|
+    heading = line.strip.match(/\A(#+)\s+(.+?)\s*\z/)
+    next unless heading
+
+    level = heading[1].length
+    path = path.take(level - 1)
+    path[level - 1] = "#{heading[1]} #{heading[2]}"
+    path.compact.dup
+  end
+end
+
 def normalized_prose(markdown)
   normalized_document_blocks(markdown).join(" ")
 end
 
-def instruction_tokens(clause)
-  clause.to_enum(:scan, /[[:alnum:]][[:alnum:]_-]*/).map do
-    match = Regexp.last_match
-    { word: match[0].downcase, start: match.begin(0) }
-  end
+def visible_tinymediamanager_mention?(text)
+  visible_text = text.gsub(/\[([^\]]+)\]\([^)]*\)/, '\\1')
+  visible_text.match?(/tinymediamanager/i)
 end
 
-def locally_negated_action?(tokens, action_index)
-  preceding = tokens[[action_index - 5, 0].max...action_index].map { |token| token[:word] }
-  return true if preceding.last(3).any? { |word| %w[not never without].include?(word) }
-
-  preceding.include?("rather") && preceding.include?("than")
+def retirement_block(path:, kind:, text:, number: nil, checklist: false)
+  {
+    heading_path: path,
+    kind: kind,
+    number: number,
+    checklist: checklist,
+    text: normalize_block_text(text)
+  }
 end
 
-def tinymediamanager_target_indices(clause, tokens)
-  clause.to_enum(:scan, /(?<![#\/])\btinyMediaManager\b/i).filter_map do
-    target_start = Regexp.last_match.begin(0)
-    tokens.index { |token| token[:start] == target_start }
-  end
+def retirement_block_contracts
+  # These exact blocks are a fail-closed operator-safety contract. Editorial
+  # changes involving tinyMediaManager require a deliberate review and matching
+  # update here; free-form prose is intentionally not interpreted as English.
+  @retirement_block_contracts ||= {
+    "README" => [
+      retirement_block(
+        path: ["# NAS platform", "## New to Ansible?"], kind: :paragraph,
+        text: <<~TEXT
+          The service stacks in [`services/manifest.yml`](services/manifest.yml) are implemented. tinyMediaManager is now a transitional retirement role rather than an active service. Prove the complete platform on the Mac before preparing a fresh production NAS installation.
+        TEXT
+      ),
+      retirement_block(
+        path: ["# NAS platform", "## tinyMediaManager retirement checkpoint"], kind: :paragraph,
+        text: <<~TEXT
+          tinyMediaManager is retired and must remain stopped. Its bind-mounted state is preserved through this transitional release. The Movies and Series libraries are neither deleted nor moved by retirement. The `vault_tinymediamanager_password` key remains until the cleanup release so the preserved deployment can support a deliberate rollback.
+        TEXT
+      ),
+      retirement_block(
+        path: ["# NAS platform", "## tinyMediaManager retirement checkpoint"], kind: :paragraph,
+        text: <<~TEXT
+          Permanent removal of the role, Compose definitions, vault key, ports, CI coverage, and preserved storage declaration waits for the NAS verification checkpoint and a separate cleanup release. That cleanup release removes repository declarations only; it must not delete `{{ nas_docker_root }}/tinymediamanager/data` or its contents. Any later data deletion requires a separate, backed-up, explicit operator decision and is not part of this retirement.
+        TEXT
+      ),
+      retirement_block(
+        path: ["# NAS platform", "## Testing"], kind: :paragraph,
+        text: <<~TEXT
+          The current Mac proof covers ntfy, Beszel, Dozzle, Audiobookshelf, Komga, Jellyfin, Immich, Paperless-ngx, and the tinyMediaManager retirement state. NAS-only GPU, host-networking, native-mount and production-scale behavior remain outside the Mac proof.
+        TEXT
+      )
+    ],
+    "NAS guide" => [
+      retirement_block(
+        path: ["# Physical NAS walkthrough"], kind: :paragraph,
+        text: <<~TEXT
+          This path targets a fresh production installation. Complete the [disposable Mac proof](getting-started-mac.md), protect any media already on the NAS, and confirm every required service is `implemented` or `accepted` in [`services/manifest.yml`](../services/manifest.yml) before installation. The active services are Audiobookshelf, Beszel, Dozzle, Immich, Jellyfin, Komga, ntfy, and Paperless-ngx. tinyMediaManager remains in the manifest only for its transitional retirement lifecycle.
+        TEXT
+      ),
+      retirement_block(
+        path: ["# Physical NAS walkthrough", "## tinyMediaManager retirement checkpoint"], kind: :paragraph,
+        text: <<~TEXT
+          tinyMediaManager is retired and must remain stopped. Its bind-mounted state is preserved through this transitional release. The Movies and Series libraries are neither deleted nor moved by retirement. The `vault_tinymediamanager_password` key remains until the cleanup release so a deliberate rollback can reuse the preserved configuration.
+        TEXT
+      ),
+      retirement_block(
+        path: ["# Physical NAS walkthrough", "## tinyMediaManager retirement checkpoint"], kind: :paragraph,
+        text: <<~TEXT
+          Permanent cleanup of the role, Compose definitions, vault key, published ports, CI coverage, and preserved storage declaration waits for the NAS verification checkpoint and a separate cleanup release. The cleanup release removes repository declarations only; it must not delete `{{ nas_docker_root }}/tinymediamanager/data` or its contents. Any later data deletion requires a separate, backed-up, explicit operator decision and is not part of this retirement. This release does not deploy Radarr, Sonarr, or Bazarr. Open Subtitles remains configured in Jellyfin until Bazarr is proven.
+        TEXT
+      ),
+      retirement_block(
+        path: ["# Physical NAS walkthrough", "## tinyMediaManager retirement checkpoint", "### What the retirement verification proves"], kind: :paragraph,
+        text: <<~TEXT
+          `platform_verify_tinymediamanager` proves container absence and that the state root exists, is a directory, and is not a symlink. It does not inspect or verify the state contents. Before declaring the application state preserved, make a read-only comparison against a prior inventory or snapshot and confirm a small set of representative expected files or backup records. Do not recursively hash the state, print configuration contents, or expose credentials in evidence.
+        TEXT
+      ),
+      retirement_block(
+        path: ["# Physical NAS walkthrough", "## 7. Verify and prove idempotence"], kind: :paragraph,
+        text: <<~TEXT
+          Record the Git commit, encrypted vault checksum, recap, application checks, and operator decision without recording secrets. Existing NAS credentials must work unchanged for all eight active services. Keep the retired tinyMediaManager credential unchanged, but do not authenticate to or start the retired service. Repeat the service-specific credential checks from the [Mac manual review](getting-started-mac.md#4-perform-the-manual-review) against the production deployment without exercising external integrations; for ntfy, use only an agreed disposable topic when verifying alerts from Beszel and Dozzle.
+        TEXT
+      ),
+      retirement_block(
+        path: ["# Physical NAS walkthrough", "## Automatic deployment from the NAS"], kind: :paragraph,
+        text: <<~TEXT
+          The `platform_verify_tinymediamanager` tag applies the bounded checks described in [What the retirement verification proves](#what-the-retirement-verification-proves); it does not verify configuration contents or a live UI or API.
+        TEXT
+      ),
+      retirement_block(
+        path: ["# Physical NAS walkthrough", "## Recover after loss of `/volume1`", "### Converge in recovery stages"], kind: :paragraph,
+        text: <<~TEXT
+          Do not interpret a clean play recap as proof that old application records were restored. Verify representative photos, users, albums, documents, metadata, and search results in each active application. Keep tinyMediaManager stopped and follow the [retirement checkpoint](#tinymediamanager-retirement-checkpoint) rather than attempting an application check.
+        TEXT
+      )
+    ],
+    "Mac guide" => [
+      retirement_block(
+        path: ["# Disposable Mac proof"], kind: :paragraph,
+        text: <<~TEXT
+          This proof covers the eight active services in [`services/manifest.yml`](../services/manifest.yml)—Audiobookshelf, Beszel, Dozzle, Immich, Jellyfin, Komga, ntfy, and Paperless-ngx—plus the tinyMediaManager retirement proof. tinyMediaManager is retired and must remain stopped; its bind-mounted state is preserved for the transitional checkpoint. The harness creates a disposable legacy fixture, converges its retirement, and requires both container absence and a preserved safe bind-state checkpoint. It sends test alerts to the sandbox's own ntfy instance. Mobile delivery is outside scope.
+        TEXT
+      ),
+      retirement_block(
+        path: ["# Disposable Mac proof", "## 4. Perform the manual review"], kind: :paragraph,
+        text: <<~TEXT
+          Proceed only when the block prints `All automated phases passed`. Use [`tests/mac/manual-review.md`](../tests/mac/manual-review.md) while the eight active services are running and the retired tinyMediaManager container is absent. The retirement contract also checks that its representative non-secret fixture remains unchanged in the safe bind-mounted state. Record the reviewer, manifest commit, decision, and non-secret notes. Credential continuity requires a private check for every active service:
+        TEXT
+      ),
+      retirement_block(
+        path: ["# Disposable Mac proof", "## 4. Perform the manual review"], kind: :paragraph,
+        text: <<~TEXT
+          For tinyMediaManager, perform only the retirement checkpoint: confirm the container remains absent and the bind-mounted state remains preserved. Do not open its UI or API, authenticate, scan a library, or write metadata.
+        TEXT
+      )
+    ],
+    "secrets guide" => [
+      retirement_block(
+        path: ["# Secrets and encrypted vault", "## Existing deployment recovery", "### Vault contract inventory"], kind: :list_item,
+        text: <<~TEXT
+          tinyMediaManager: `vault_tinymediamanager_password` remains until the cleanup release. tinyMediaManager is retired and must remain stopped, but this transitional key is preserved with its bind-mounted state for a deliberate rollback. Recover the deployed API password from the password manager or preserved configuration if it is not already in the vault; do not start the service merely to confirm it and do not rotate it.
+        TEXT
+      ),
+      retirement_block(
+        path: ["# Secrets and encrypted vault", "## Existing deployment recovery", "### Vault contract inventory"], kind: :list_item,
+        text: <<~TEXT
+          Managed application users: `vault_managed_users`. This mapping has exactly the eight service lists documented below. Identity comparisons trim surrounding whitespace and ignore case. Every list entry needs a non-empty preserved password, must be unique within its service, and must not duplicate that service's primary administrator. Beszel entries also differ from the primary Beszel application user; ntfy entries differ from the Dozzle and Beszel publishers. Do not add retired tinyMediaManager here; its preserved rollback contract retains the single shared login.
+        TEXT
+      )
+    ],
+    "Mac manual review" => [
+      retirement_block(
+        path: ["# Mac platform proof manual review", "## Application checks"], kind: :list_item, checklist: true,
+        text: <<~TEXT
+          tinyMediaManager: confirm it is retired, its container is absent, it must remain stopped, and its bind-mounted state remains preserved.
+        TEXT
+      )
+    ]
+  }
 end
 
-def lifecycle_action_indices(tokens)
-  lifecycle_words = %w[
-    run running deploy deployed deploying enable enabled enabling start started
-    starting restart restarted restarting launch launched launching
+def nas_rollback_contract
+  path = [
+    "# Physical NAS walkthrough",
+    "## tinyMediaManager retirement checkpoint",
+    "### Temporary rollback procedure"
   ]
-  tokens.each_index.select do |index|
-    word = tokens[index][:word]
-    lifecycle_words.include?(word) ||
-      (%w[bring bringing brought].include?(word) && tokens[index + 1]&.dig(:word) == "up")
-  end
-end
-
-def unsafe_tinymediamanager_lifecycle?(tokens, targets)
-  action_before_target = %w[run deploy enable start restart launch bring]
-  target_before_auxiliaries = %w[be can is may must remains should was were will]
-  target_references = %w[container it service]
-  lifecycle_action_indices(tokens).any? do |action_index|
-    next false if locally_negated_action?(tokens, action_index)
-    next false if other_service_after_action?(tokens, action_index)
-
-    targets.any? do |target_index|
-      if action_index < target_index
-        next false unless target_index - action_index <= 3
-
-        action_before_target.include?(tokens[action_index][:word])
-      else
-        next false unless action_index - target_index <= 8
-
-        action_word = tokens[action_index][:word]
-        between_words = tokens[(target_index + 1)...action_index].map { |token| token[:word] }
-        following_words = tokens[(action_index + 1)..(action_index + 4)].to_a.map do |token|
-          token[:word]
-        end
-        !action_before_target.include?(action_word) ||
-          !(between_words & target_before_auxiliaries).empty? ||
-          !(following_words & target_references).empty?
-      end
-    end
-  end
-end
-
-def other_service_after_action?(tokens, action_index)
-  other_services = %w[
-    audiobookshelf bazarr beszel dozzle immich jellyfin komga ntfy paperless
-    paperless-ngx radarr sonarr
+  [
+    retirement_block(path: path, kind: :paragraph, text: <<~TEXT),
+      The reviewed pre-retirement revision `ca15db3` is the source of the active tinyMediaManager definitions. It is not a platform rollback target. Do not roll the entire platform back to that revision or blindly restore its complete inventory. Use this mutual-exclusion procedure:
+    TEXT
+    retirement_block(path: path, kind: :list_item, number: 1, text: <<~TEXT),
+      Record the intended current platform revision. Pause or disable the five-minute production auto-deployer using the procedure under [Automatic deployment from the NAS](#automatic-deployment-from-the-nas): save `crontab -l`, remove only the `NAS platform production auto-deploy` entry with `crontab -e`, and verify that entry is absent. Leave automation disabled throughout the temporary rollback.
+    TEXT
+    retirement_block(path: path, kind: :list_item, number: 2, text: <<~TEXT),
+      From the intended current revision, create a temporary rollback branch. Restore only the tinyMediaManager role and Compose trees from `ca15db3`, then review the matching tinyMediaManager storage declaration so the active role can manage that already-preserved directory. Do not replace the complete inventory file. Review the diff and place this narrow change in a temporary rollback commit: ```sh git switch -c ops/tinymediamanager-temporary-rollback git restore --source=ca15db3 -- \\ roles/tinymediamanager services/tinymediamanager git diff -- roles/tinymediamanager services/tinymediamanager \\ inventory/group_vars/all/main.yml ``` Edit only the matching tinyMediaManager storage declaration. The reviewed storage edit removes `preserve_only` only from the existing `{{ nas_docker_root }}/tinymediamanager/data` declaration; it does not add, move, recreate, or delete that directory.
+    TEXT
+    retirement_block(path: path, kind: :list_item, number: 3, text: <<~TEXT),
+      Before Radarr or Sonarr is deployed, the simpler rollback may now check and converge this reviewed temporary commit; there is no arr writer to stop. If Radarr or Sonarr has written Movies or Series, first stop both Radarr and Sonarr using their reviewed orchestration and verify both containers are absent. Keep Radarr and Sonarr stopped for the entire period tinyMediaManager can run. Do not proceed merely because an application UI looks idle.
+    TEXT
+    retirement_block(path: path, kind: :list_item, number: 4, text: <<~TEXT),
+      Check the temporary commit with `--check --diff`, review every change, and then converge it. Confirm that Movies and Series still point to their existing paths. The invariant is one media writer at a time.
+    TEXT
+    retirement_block(path: path, kind: :list_item, number: 5, text: <<~TEXT),
+      Before restarting any arr writer, restore or check out the intended current platform revision and converge it. Its tinyMediaManager retirement role is the mechanism that stops and removes the container without volumes; do not substitute an unbounded manual Compose command. Verify the tinyMediaManager container is absent and the retirement checks pass. Only then restart Radarr and Sonarr and re-enable the auto-deployer.
+    TEXT
+    retirement_block(path: path, kind: :paragraph, text: <<~TEXT)
+      The temporary branch and commit are rollback evidence, not a new deployment baseline. If any container-absence or path check is ambiguous, stop the procedure instead of allowing concurrent writers.
+    TEXT
   ]
-  tokens[(action_index + 1)..(action_index + 10)].to_a.any? do |token|
-    other_services.include?(token[:word])
-  end
 end
 
-def unsafe_tinymediamanager_service_action?(tokens, targets)
-  action_contracts = [
-    [%w[authenticate authenticated authenticating access], nil],
-    [%w[open call query], %w[ui api]],
-    [%w[scan edit write], %w[media metadata nfo library settings state]],
-    [%w[confirm verify check test exercise], %w[ui api login password active]]
-  ]
-  reference_words = %w[it its service ui api media metadata nfo library settings state]
+def contract_signature(block)
+  block.slice(:heading_path, :kind, :number, :checklist, :text)
+end
 
-  tokens.each_index.any? do |action_index|
-    contract = action_contracts.find { |words, _objects| words.include?(tokens[action_index][:word]) }
-    sign_in = %w[sign log].include?(tokens[action_index][:word]) &&
-      tokens[action_index + 1]&.dig(:word) == "in"
-    next false unless contract || sign_in
-    next false if locally_negated_action?(tokens, action_index)
+def retirement_contract_violations(label, markdown)
+  contracts = retirement_block_contracts.fetch(label)
+  blocks = markdown_semantic_blocks(markdown)
+  rollback_path = nas_rollback_contract.first[:heading_path]
+  mentioned_blocks = blocks.select { |block| visible_tinymediamanager_mention?(block[:text]) }
+  mentioned_blocks.reject! { |block| block[:heading_path] == rollback_path } if label == "NAS guide"
 
-    objects = contract&.last
-    target_after = targets.any? do |target_index|
-      target_index > action_index && target_index - action_index <= 8
-    end
-    target_before = targets.any? do |target_index|
-      target_index < action_index && action_index - target_index <= 8
-    end
-    next false unless target_after || target_before
-    next false if other_service_after_action?(tokens, action_index)
-
-    following_words = tokens[(action_index + 1)..(action_index + 10)].to_a.map do |token|
-      token[:word]
-    end
-    if objects
-      !(following_words & objects).empty?
+  remaining = contracts.map(&:dup)
+  failures = []
+  mentioned_blocks.each do |block|
+    match_index = remaining.index { |contract| contract_signature(contract) == contract_signature(block) }
+    if match_index
+      remaining.delete_at(match_index)
     else
-      target_after || !(following_words & reference_words).empty?
+      failures << "unexpected tinyMediaManager block under #{block[:heading_path].last.inspect}: #{block[:text]}"
     end
   end
-end
-
-def tinymediamanager_instruction_violations(markdown)
-  normalized_document_blocks(markdown).flat_map do |block|
-    block.split(/(?<=[.!?;])\s+/)
-  end.flat_map do |sentence|
-    sentence.split(/;\s+|,\s+(?:but|then)\s+|\s+and\s+then\s+/i)
-  end.filter_map do |clause|
-    tokens = instruction_tokens(clause)
-    targets = tinymediamanager_target_indices(clause, tokens)
-    next if targets.empty?
-
-    clause if unsafe_tinymediamanager_lifecycle?(tokens, targets) ||
-              unsafe_tinymediamanager_service_action?(tokens, targets)
+  remaining.each do |contract|
+    failures << "missing approved tinyMediaManager block under #{contract[:heading_path].last.inspect}"
   end
+
+  allowed_tinymediamanager_heading_paths = contracts.map { |contract| contract.fetch(:heading_path) }.select do |path|
+    visible_tinymediamanager_mention?(path.last)
+  end
+  if label == "NAS guide"
+    allowed_tinymediamanager_heading_paths << rollback_path.take(2)
+  end
+  allowed_tinymediamanager_heading_paths.uniq!
+  actual_tinymediamanager_heading_paths = markdown_heading_paths(markdown).select do |path|
+    visible_tinymediamanager_mention?(path.last)
+  end
+  unless actual_tinymediamanager_heading_paths == allowed_tinymediamanager_heading_paths
+    failures << "tinyMediaManager headings differ from their approved structural locations"
+  end
+
+  if label == "NAS guide"
+    rollback_blocks = blocks.select { |block| block[:heading_path] == rollback_path }
+    unless rollback_blocks.map { |block| contract_signature(block) } ==
+           nas_rollback_contract.map { |block| contract_signature(block) }
+      failures << "temporary rollback procedure differs from its approved ordered block contract"
+    end
+  end
+  failures
 end
 
 def mask_block_contexts(text)
@@ -678,78 +806,113 @@ def self_test
     warn "docs links wrapped-checklist self-test failed"
     exit 1
   end
-  wrapped_affirmative = <<~MARKDOWN
-    tinyMediaManager: confirm the deployed API
-    password still authorizes the client.
+  nested_steps = <<~MARKDOWN
+    # Procedure
+
+    1. First wrapped
+       step.
+       - Nested wrapped
+         check.
+    2. Second step.
   MARKDOWN
-  if tinymediamanager_instruction_violations(wrapped_affirmative).empty?
-    warn "docs links wrapped tinyMediaManager instruction self-test failed"
+  nested_blocks = markdown_semantic_blocks(nested_steps)
+  unless nested_blocks.map { |block| [block[:kind], block[:number], block[:text]] } == [
+    [:list_item, 1, "First wrapped step."],
+    [:list_item, nil, "Nested wrapped check."],
+    [:list_item, 2, "Second step."]
+  ]
+    warn "docs links nested semantic-block self-test failed"
     exit 1
   end
-  safe_negation = "For tinyMediaManager, do not open its UI or API.\n"
-  unless tinymediamanager_instruction_violations(safe_negation).empty?
-    warn "docs links negated tinyMediaManager instruction self-test failed"
+  retirement_documents = {
+    "README" => ROOT.join("README.md").read,
+    "NAS guide" => ROOT.join("docs/getting-started-nas.md").read,
+    "Mac guide" => ROOT.join("docs/getting-started-mac.md").read,
+    "secrets guide" => ROOT.join("docs/secrets.md").read,
+    "Mac manual review" => ROOT.join("tests/mac/manual-review.md").read
+  }
+  canonical_failures = retirement_documents.flat_map do |label, document|
+    retirement_contract_violations(label, document).map { |failure| "#{label}: #{failure}" }
+  end
+  unless canonical_failures.empty?
+    warn "docs links canonical retirement contract self-test failed: #{canonical_failures.inspect}"
     exit 1
   end
+
+  # Every historical false-negative is rejected by placement and exact block
+  # shape, not by trying to infer its grammar. Test both a new block and prose
+  # appended to an otherwise approved block.
   unsafe_instructions = [
-    "Run tinyMediaManager now.\n",
-    "Deploy tinyMediaManager.\n",
-    "Enable tinyMediaManager.\n",
-    "Bring up tinyMediaManager.\n",
-    "Confirm tinyMediaManager is running.\n",
-    "Authenticate to tinyMediaManager.\n",
-    "Access tinyMediaManager.\n",
-    "Do not delete media; start tinyMediaManager.\n",
-    "Do not delete media and then start tinyMediaManager.\n",
-    "For tinyMediaManager, enable the service.\n",
-    "tinyMediaManager should be deployed temporarily.\n",
-    "Start tinyMediaManager.\n",
-    "tinyMediaManager can run now.\n",
-    "For tinyMediaManager, open its UI.\n",
-    "For tinyMediaManager, authenticate to it.\n",
-    "For tinyMediaManager, scan its library.\n"
+    "Run tinyMediaManager now.",
+    "Deploy tinyMediaManager.",
+    "Enable tinyMediaManager.",
+    "Bring up tinyMediaManager.",
+    "Confirm tinyMediaManager is running.",
+    "Authenticate to tinyMediaManager.",
+    "Access tinyMediaManager.",
+    "Do not delete media; start tinyMediaManager.",
+    "Do not delete media and then start tinyMediaManager.",
+    "For tinyMediaManager, enable the service.",
+    "tinyMediaManager should be deployed temporarily.",
+    "Start tinyMediaManager.",
+    "tinyMediaManager can run now.",
+    "For tinyMediaManager, open its UI.",
+    "For tinyMediaManager, authenticate to it.",
+    "For tinyMediaManager, scan its library.",
+    "tinyMediaManager should start now.",
+    "tinyMediaManager should run now.",
+    "Deploying tinyMediaManager is recommended.",
+    "Start tinyMediaManager before opening Jellyfin.",
+    "Open tinyMediaManager before Jellyfin.",
+    "Do not delete media, start tinyMediaManager.",
+    "Do not delete media and start tinyMediaManager."
   ]
-  missed_instructions = unsafe_instructions.select do |instruction|
-    tinymediamanager_instruction_violations(instruction).empty?
+  readme = retirement_documents.fetch("README")
+  missed_new_blocks = unsafe_instructions.select do |instruction|
+    retirement_contract_violations("README", "#{readme}\n#{instruction}\n").empty?
   end
-  safe_instructions = [
-    "Do not start tinyMediaManager.\n",
-    "Never authenticate to tinyMediaManager.\n",
-    "Confirm tinyMediaManager is not running.\n",
-    "tinyMediaManager is not enabled.\n",
-    "After retiring tinyMediaManager, enable Jellyfin.\n",
-    "After retiring tinyMediaManager, open the Jellyfin UI.\n",
-    "After retiring tinyMediaManager, scan the Jellyfin library.\n"
-  ]
-  rejected_safe_instructions = safe_instructions.reject do |instruction|
-    tinymediamanager_instruction_violations(instruction).empty?
+  approved_block_ending = "fresh production NAS installation."
+  missed_appended_prose = unsafe_instructions.select do |instruction|
+    mutation = readme.sub(approved_block_ending, "#{approved_block_ending} #{instruction}")
+    retirement_contract_violations("README", mutation).empty?
   end
-  unless missed_instructions.empty? && rejected_safe_instructions.empty?
-    warn "docs links missed tinyMediaManager instructions: #{missed_instructions.inspect}" unless
-      missed_instructions.empty?
-    warn "docs links rejected safe tinyMediaManager instructions: #{rejected_safe_instructions.inspect}" unless
-      rejected_safe_instructions.empty?
+  unless missed_new_blocks.empty? && missed_appended_prose.empty?
+    warn "docs links structural retirement mutation self-test failed"
+    warn "new blocks accepted: #{missed_new_blocks.inspect}" unless missed_new_blocks.empty?
+    warn "appended prose accepted: #{missed_appended_prose.inspect}" unless missed_appended_prose.empty?
     exit 1
   end
-  rollback_exclusion = <<~MARKDOWN
-    Run tinyMediaManager outside the rollback section.
+  heading_mutation = "#{readme}\n## Run tinyMediaManager now\n"
+  if retirement_contract_violations("README", heading_mutation).empty?
+    warn "docs links retirement heading-placement self-test failed"
+    exit 1
+  end
 
-    ### Temporary rollback procedure
-
-    Run tinyMediaManager only within this approved procedure.
-
-    ### Following section
-
-    Do not start tinyMediaManager here.
-  MARKDOWN
-  scannable_rollback_probe = markdown_without_section(
-    rollback_exclusion,
-    "### Temporary rollback procedure"
-  )
-  unless tinymediamanager_instruction_violations(scannable_rollback_probe) == [
-    "Run tinyMediaManager outside the rollback section."
+  mac_guide = retirement_documents.fetch("Mac guide")
+  safe_current_phrases = [
+    "retired tinyMediaManager container is absent",
+    "Audiobookshelf, Jellyfin, and Komga: sign in",
+    "Do not open its UI or API"
   ]
-    warn "docs links tinyMediaManager rollback exclusion self-test failed"
+  mac_guide_prose = normalized_prose(mac_guide)
+  unless safe_current_phrases.all? { |phrase| mac_guide_prose.include?(phrase) }
+    warn "docs links canonical negative-state/Jellyfin-action self-test failed"
+    exit 1
+  end
+
+  nas_guide = retirement_documents.fetch("NAS guide")
+  rollback_mutations = [
+    nas_guide.sub(
+      "Use this mutual-exclusion procedure:",
+      "Use this mutual-exclusion procedure: Run tinyMediaManager without the writer checks."
+    ),
+    nas_guide.sub(
+      "\nThe temporary branch and commit are rollback evidence",
+      "\nRun tinyMediaManager without review.\n\nThe temporary branch and commit are rollback evidence"
+    )
+  ]
+  if rollback_mutations.any? { |mutation| retirement_contract_violations("NAS guide", mutation).empty? }
+    warn "docs links rollback block contract mutation self-test failed"
     exit 1
   end
   Dir.mktmpdir("docs-links-test") do |directory|
@@ -1125,16 +1288,8 @@ else
       prose.match?(/tinyMediaManager.*retired.*(?:must remain|remains) stopped/im)
     failures << "#{label} must identify tinyMediaManager bind-mounted state as preserved" unless
       prose.match?(/tinyMediaManager.*bind-mounted state.*preserv/im)
-    scannable_document = if label == "NAS guide"
-                           markdown_without_section(
-                             document,
-                             "### Temporary rollback procedure"
-                           )
-                         else
-                           document
-                         end
-    tinymediamanager_instruction_violations(scannable_document).each do |instruction|
-      failures << "#{label} contains an affirmative tinyMediaManager instruction: #{instruction}"
+    retirement_contract_violations(label, document).each do |violation|
+      failures << "#{label} retirement documentation contract: #{violation}"
     end
   end
 
