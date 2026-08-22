@@ -133,6 +133,12 @@ grep -qF 'verify.yml' "$tinymediamanager_verify"
 grep -qF 'platform_verify_tinymediamanager' "$tinymediamanager_verify"
 grep -qF 'assert-retired' "$tinymediamanager_verify"
 
+dozzle_verify=$script_dir/hooks/verify/20-dozzle.sh
+if grep -qF 'tinymediamanager' "$dozzle_verify"; then
+  printf '%s\n' 'integration-context-error: retired service remains in generic Dozzle inspection' >&2
+  exit 1
+fi
+
 ruby - "$script_dir/run.sh" <<'RUBY'
 runner = File.read(ARGV.fetch(0))
 preconverge = runner.index('mac_run_hooks pre-converge')

@@ -133,7 +133,10 @@ case " $* " in
       *-paperless-webserver) expected_name=webserver; expected_group=paperless ;;
       *-paperless-gotenberg) expected_name=gotenberg; expected_group=paperless ;;
       *-paperless-tika) expected_name=tika; expected_group=paperless ;;
-      *-tinymediamanager) expected_name=tinymediamanager; expected_group= ;;
+      *-tinymediamanager)
+        printf 'Error: No such container: %s\n' "$container" >&2
+        exit 1
+        ;;
       *) exit 2 ;;
     esac
     label_state=$(cat "${PLATFORM_HOOK_LABEL_STATE:?}")
@@ -322,13 +325,16 @@ for container in \
   dozzle-hook-test-paperless-postgres \
   dozzle-hook-test-paperless-webserver \
   dozzle-hook-test-paperless-gotenberg \
-  dozzle-hook-test-paperless-tika \
-  dozzle-hook-test-tinymediamanager; do
+  dozzle-hook-test-paperless-tika; do
   grep -Fqx "INSPECT $container" "$success_root/events" || {
     printf 'Dozzle runtime verification omitted %s\n' "$container" >&2
     exit 1
   }
 done
+! grep -Fqx 'INSPECT dozzle-hook-test-tinymediamanager' "$success_root/events" || {
+  printf '%s\n' 'Dozzle runtime verification inspected retired tinyMediaManager' >&2
+  exit 1
+}
 ! grep -q '^VERIFY_ALL$' "$success_root/events" || {
   printf '%s\n' 'Dozzle drift hook used all-service verification' >&2
   exit 1
