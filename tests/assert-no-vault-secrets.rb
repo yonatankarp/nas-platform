@@ -4,8 +4,9 @@ require "open3"
 require "yaml"
 
 # These exact four paths are public database identifiers, not credentials, and
-# normal Dozzle Ansible evidence emits them. Every other vault String remains
-# fail-closed so a new field cannot silently weaken the evidence scan.
+# normal Dozzle Ansible evidence emits them. Every other vault String of at
+# least eight bytes remains fail-closed, so a new field cannot silently weaken
+# the evidence scan.
 PUBLIC_DATABASE_IDENTITY_KEYS = %w[
   vault_immich_db_name
   vault_immich_db_username
