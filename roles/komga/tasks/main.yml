@@ -157,8 +157,6 @@
     komga_library_inventory: >-
       {{ komga_libraries_before.json
          if (not ansible_check_mode or komga_claim_status.json.isClaimed | bool) else [] }}
-    komga_managed_root_matches: []
-    komga_desired_name_matches: []
   no_log: true
 
 - name: Require a valid Komga library target
@@ -171,30 +169,43 @@
       - komga_library_normalized_root == komga_library_root
     fail_msg: The managed Komga library name and exact normalized API root are invalid.
 
+# Every Komga root match below selects the same way, and the regex is not the
+# obvious one, so the reasoning lives here once.
+#
+# The predicate being reproduced is `root | regex_replace('/+$', '') == needle`,
+# evaluated per candidate by a loop that appended one match at a time. Three
+# parts of the pattern carry that predicate exactly, and each was chosen because
+# a differential against the old accumulator disagreed without it:
+#
+#   regex_escape  a root containing `.` must not behave as a wildcard.
+#   (?<!/)        a needle that itself ends in a slash matched nothing under the
+#                 accumulator, because the left side never ends in one. The
+#                 lookbehind keeps that closed. It matters on the
+#                 platform_verify_komga path, where the normalizing task and its
+#                 assert are untagged and so never run.
+#   \A and \Z     Python's `$` also matches before a trailing newline, so `^..$`
+#                 accepted a root of "/data\n" that the accumulator rejected.
+#
+# The dropped `item is mapping` condition needs no replacement: a non-mapping
+# candidate has no `root` attribute, so `selectattr('root', 'defined')` discards
+# it exactly as the loop did.
 - name: Resolve normalized Komga managed-root matches
   ansible.builtin.set_fact:
-    komga_managed_root_matches: "{{ komga_managed_root_matches + [item] }}"
-  when:
-    - item is mapping
-    - item.root is defined
-    - item.root is string
-    - item.root | regex_replace('/+$', '') == komga_library_normalized_root
-  loop: "{{ komga_library_inventory }}"
-  loop_control:
-    label: komga-library-candidate
+    komga_managed_root_matches: >-
+      {{ komga_library_inventory
+         | selectattr('root', 'defined') | selectattr('root', 'string')
+         | selectattr('root', 'regex',
+                      '\A' ~ (komga_library_normalized_root | regex_escape) ~ '(?<!/)/*\Z')
+         | list }}
   no_log: true
 
 - name: Resolve exact Komga desired-name matches
   ansible.builtin.set_fact:
-    komga_desired_name_matches: "{{ komga_desired_name_matches + [item] }}"
-  when:
-    - item is mapping
-    - item.name is defined
-    - item.name is string
-    - item.name == komga_library_name
-  loop: "{{ komga_library_inventory }}"
-  loop_control:
-    label: komga-library-candidate
+    komga_desired_name_matches: >-
+      {{ komga_library_inventory
+         | selectattr('name', 'defined') | selectattr('name', 'string')
+         | selectattr('name', 'equalto', komga_library_name)
+         | list }}
   no_log: true
 
 - name: Require valid Komga library candidate schemas
@@ -337,39 +348,25 @@
   check_mode: false
   no_log: true
 
-- name: Initialize authoritative Komga library read-back
-  ansible.builtin.set_fact:
-    komga_reconciled_root_matches: []
-    komga_reconciled_name_matches: []
-  when: not ansible_check_mode
-  no_log: true
-
 - name: Resolve authoritative Komga managed-root read-back
   ansible.builtin.set_fact:
-    komga_reconciled_root_matches: "{{ komga_reconciled_root_matches + [item] }}"
-  when:
-    - not ansible_check_mode
-    - item is mapping
-    - item.root is defined
-    - item.root is string
-    - item.root | regex_replace('/+$', '') == komga_library_normalized_root
-  loop: "{{ komga_libraries_after.json | default([]) }}"
-  loop_control:
-    label: komga-library-read-back
+    komga_reconciled_root_matches: >-
+      {{ komga_libraries_after.json | default([])
+         | selectattr('root', 'defined') | selectattr('root', 'string')
+         | selectattr('root', 'regex',
+                      '\A' ~ (komga_library_normalized_root | regex_escape) ~ '(?<!/)/*\Z')
+         | list }}
+  when: not ansible_check_mode
   no_log: true
 
 - name: Resolve authoritative Komga desired-name read-back
   ansible.builtin.set_fact:
-    komga_reconciled_name_matches: "{{ komga_reconciled_name_matches + [item] }}"
-  when:
-    - not ansible_check_mode
-    - item is mapping
-    - item.name is defined
-    - item.name is string
-    - item.name == komga_library_name
-  loop: "{{ komga_libraries_after.json | default([]) }}"
-  loop_control:
-    label: komga-library-read-back
+    komga_reconciled_name_matches: >-
+      {{ komga_libraries_after.json | default([])
+         | selectattr('name', 'defined') | selectattr('name', 'string')
+         | selectattr('name', 'equalto', komga_library_name)
+         | list }}
+  when: not ansible_check_mode
   no_log: true
 
 - name: Require exact reconciled Komga library
@@ -414,36 +411,32 @@
   ansible.builtin.set_fact:
     komga_verified_admin: "{{ komga_verify_state.results[0].json }}"
     komga_verified_libraries: "{{ komga_verify_state.results[1].json }}"
-    komga_verified_root_library: []
-    komga_verified_named_library: []
   no_log: true
 
+# These two match against komga_library_root rather than the normalized fact,
+# because this tagged path runs without the untagged task that computes it. That
+# is also why the (?<!/) lookbehind documented above is not decoration here: a
+# komga_library_root carrying a trailing slash reaches this point unasserted, and
+# the accumulator these replace matched nothing at all in that case.
 - name: Resolve normalized Komga verification root matches
   tags: [platform_verify_komga]
   ansible.builtin.set_fact:
-    komga_verified_root_library: "{{ komga_verified_root_library + [item] }}"
-  when:
-    - item is mapping
-    - item.root is defined
-    - item.root is string
-    - item.root | regex_replace('/+$', '') == komga_library_root
-  loop: "{{ komga_verified_libraries }}"
-  loop_control:
-    label: komga-library-verification
+    komga_verified_root_library: >-
+      {{ komga_verified_libraries
+         | selectattr('root', 'defined') | selectattr('root', 'string')
+         | selectattr('root', 'regex',
+                      '\A' ~ (komga_library_root | regex_escape) ~ '(?<!/)/*\Z')
+         | list }}
   no_log: true
 
 - name: Resolve exact Komga verification name matches
   tags: [platform_verify_komga]
   ansible.builtin.set_fact:
-    komga_verified_named_library: "{{ komga_verified_named_library + [item] }}"
-  when:
-    - item is mapping
-    - item.name is defined
-    - item.name is string
-    - item.name == komga_library_name
-  loop: "{{ komga_verified_libraries }}"
-  loop_control:
-    label: komga-library-verification
+    komga_verified_named_library: >-
+      {{ komga_verified_libraries
+         | selectattr('name', 'defined') | selectattr('name', 'string')
+         | selectattr('name', 'equalto', komga_library_name)
+         | list }}
   no_log: true
 
 - name: Require the vault Komga administrator during exact verification
