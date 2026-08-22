@@ -1946,9 +1946,14 @@ def jellyfin_identity_contract_failures
   drift_options = drift_block&.index('"post", "/Library/VirtualFolders/LibraryOptions"')
   drift_extra_path = drift_block&.index("add_library_path(token")
   drift_rename = drift_block&.index("rename_library(token")
+  drift_wait = drift_block&.index("wait_for_complete_library(")
   failures << "Jellyfin drift fixture can use a library ID after renaming invalidates it" unless
     drift_options && drift_extra_path && drift_rename &&
       drift_options < drift_extra_path && drift_extra_path < drift_rename
+  failures << "Jellyfin drift fixture does not wait for the renamed library's complete API shape" unless
+    drift_wait && drift_rename < drift_wait &&
+      contract.match?(/def rename_library.*?"refreshLibrary" => true.*?^end$/m) &&
+      contract.match?(/def wait_for_complete_library.*?folder\["LibraryOptions"\]\.is_a\?\(Hash\).*?safe_id\(folder\["ItemId"\]\).*?^end$/m)
 
   failures
 end

@@ -559,6 +559,27 @@ def library_by_path(folders, definition)
   matches.fetch(0)
 end
 
+def wait_for_complete_library(token, definition, name:, timeout:)
+  # Jellyfin 10.11 returns from a virtual-folder rename before its in-memory
+  # CollectionFolder has adopted the new directory and API identity.
+  deadline = Time.now + timeout
+  loop do
+    folders = libraries(token)
+    matches = folders.select do |folder|
+      Array(folder["Locations"]).map { |path| normalize_path(path) }.include?(definition.fetch("Path"))
+    end
+    fail_contract("library path #{definition.fetch('Path')} is duplicated after rename") if matches.length > 1
+    folder = matches.fetch(0, nil)
+    if folder && folder["Name"] == name && folder["LibraryOptions"].is_a?(Hash) && folder["ItemId"]
+      safe_id(folder["ItemId"])
+      return folder
+    end
+
+    fail_contract("renamed library did not regain its complete API shape") if Time.now >= deadline
+    sleep 1
+  end
+end
+
 def assert_managed_library(folder, definition)
   fail_contract("managed library name differs") unless folder.fetch("Name") == definition.fetch("Name")
   fail_contract("managed library collection type differs") unless
@@ -675,7 +696,7 @@ def rename_user(token, user, new_name)
 end
 
 def rename_library(token, old_name, new_name)
-  query = URI.encode_www_form("name" => old_name, "newName" => new_name, "refreshLibrary" => false)
+  query = URI.encode_www_form("name" => old_name, "newName" => new_name, "refreshLibrary" => true)
   request("post", "/Library/VirtualFolders/Name?#{query}", token: token, expected: [204])
 end
 
@@ -1053,6 +1074,9 @@ if MODE == "drift"
   JELLYFIN_MEDIA_ROOT.join("Movies-Drift-Extra").mkpath
   add_library_path(token, movies.fetch("Name"), DRIFT_EXTRA_PATH)
   rename_library(token, movies.fetch("Name"), "Movies Drifted")
+  wait_for_complete_library(
+    token, LIBRARIES.fetch(0), name: "Movies Drifted", timeout: 120
+  )
   encoding["EnableHardwareEncoding"] =
     !ENCODING_POLICIES.fetch(PLATFORM).fetch("EnableHardwareEncoding")
   request("post", "/System/Configuration/encoding", token: token, body: encoding, expected: [204])
