@@ -7,14 +7,14 @@ container_cpus:
   gotenberg: 2.0
   tika: 2.0
 vault_keys:
-- vault_paperless_admin_email
-- vault_paperless_admin_password
-- vault_paperless_admin_username
-- vault_paperless_db_name
-- vault_paperless_db_password
-- vault_paperless_db_username
-- vault_paperless_django_secret_key
-- vault_paperless_gmail_account
-- vault_paperless_gmail_app_password
-- vault_paperless_mail_account_name
-- vault_paperless_mail_rule_name
+  - vault_paperless_admin_email
+  - vault_paperless_admin_password
+  - vault_paperless_admin_username
+  - vault_paperless_db_name
+  - vault_paperless_db_password
+  - vault_paperless_db_username
+  - vault_paperless_django_secret_key
+  - vault_paperless_gmail_account
+  - vault_paperless_gmail_app_password
+  - vault_paperless_mail_account_name
+  - vault_paperless_mail_rule_name

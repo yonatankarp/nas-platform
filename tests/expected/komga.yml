@@ -3,5 +3,5 @@ role: komga
 container_cpus:
   komga: 1.5
 vault_keys:
-- vault_komga_admin_email
-- vault_komga_admin_password
+  - vault_komga_admin_email
+  - vault_komga_admin_password
