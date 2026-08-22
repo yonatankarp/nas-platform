@@ -31,6 +31,10 @@ def json_response(status, body)
   [status, JSON.generate(body)]
 end
 
+def duplicate_json(value)
+  JSON.parse(JSON.generate(value))
+end
+
 def complete_response
   json_response(
     200,
@@ -39,15 +43,20 @@ def complete_response
 end
 
 def idle_smart_search_response(failed: 0)
+  smart_search_response(failed: failed)
+end
+
+def smart_search_response(is_active: false, is_paused: false, **counts)
+  job_counts = {
+    "active" => 0, "completed" => 0, "failed" => 0,
+    "delayed" => 0, "waiting" => 0, "paused" => 0
+  }.merge(counts.transform_keys(&:to_s))
   json_response(
     200,
     {
       "smartSearch" => {
-        "queueStatus" => { "isActive" => false, "isPaused" => false },
-        "jobCounts" => {
-          "active" => 0, "completed" => 0, "failed" => failed,
-          "delayed" => 0, "waiting" => 0, "paused" => 0
-        }
+        "queueStatus" => { "isActive" => is_active, "isPaused" => is_paused },
+        "jobCounts" => job_counts
       }
     }
   )
@@ -88,7 +97,7 @@ def with_http_responses(responses)
       end
       body = socket.read(headers.fetch("content-length", "0").to_i)
       method, path, = request_line.split
-      requests << { method: method, path: path, body: body }
+      requests << { method: method, path: path, headers: headers, body: body }
       socket.write("HTTP/1.1 #{status} Test\r\nContent-Type: application/json\r\n" \
                    "Content-Length: #{payload.bytesize}\r\nConnection: close\r\n\r\n#{payload}")
       socket.close
@@ -184,11 +193,146 @@ run.call("missing embeddings are requeued once") do
     [empty, idle_smart_search_response(failed: 1), requeue_response, complete_response],
     expected_requests: 4
   ) do |requests|
+    queue_read = requests.fetch(1)
     requeue = requests.fetch(2)
+    [queue_read, requeue].each do |request|
+      raise TestFailure, "recovery request omitted bearer authentication" unless
+        request[:headers].to_h["authorization"] == "Bearer test-token"
+    end
     raise TestFailure, "recovery did not use PUT /api/jobs/smartSearch" unless
       requeue.values_at(:method, :path) == ["PUT", "/api/jobs/smartSearch"]
     raise TestFailure, "recovery did not select only missing embeddings" unless
       JSON.parse(requeue.fetch(:body)) == { "command" => "start", "force" => false }
+  end
+end
+
+run.call("malformed jobs JSON") do
+  empty = json_response(200, { "assets" => { "items" => [] } })
+  error = expect_contract_failure([empty, [200, "not-json"]], expected_requests: 2)
+  raise TestFailure, "malformed jobs JSON failure was not attributed to GET /api/jobs" unless
+    error.message.include?("GET /api/jobs returned malformed JSON")
+end
+
+valid_queue = JSON.parse(idle_smart_search_response.last)
+malformed_job_payloads = {
+  "non-mapping jobs root" => [],
+  "missing smartSearch queue" => {},
+  "non-mapping smartSearch queue" => { "smartSearch" => [] },
+  "missing queue status" => {
+    "smartSearch" => valid_queue.fetch("smartSearch").reject { |key, _value| key == "queueStatus" }
+  },
+  "missing job counts" => {
+    "smartSearch" => valid_queue.fetch("smartSearch").reject { |key, _value| key == "jobCounts" }
+  },
+  "non-mapping queue status" => duplicate_json(valid_queue).tap do |payload|
+    payload.fetch("smartSearch")["queueStatus"] = []
+  end,
+  "non-mapping job counts" => duplicate_json(valid_queue).tap do |payload|
+    payload.fetch("smartSearch")["jobCounts"] = []
+  end,
+  "missing active status" => duplicate_json(valid_queue).tap do |payload|
+    payload.dig("smartSearch", "queueStatus").delete("isActive")
+  end,
+  "missing paused status" => duplicate_json(valid_queue).tap do |payload|
+    payload.dig("smartSearch", "queueStatus").delete("isPaused")
+  end,
+  "non-boolean active status" => duplicate_json(valid_queue).tap do |payload|
+    payload.dig("smartSearch", "queueStatus")["isActive"] = "false"
+  end,
+  "non-boolean paused status" => duplicate_json(valid_queue).tap do |payload|
+    payload.dig("smartSearch", "queueStatus")["isPaused"] = nil
+  end
+}
+%w[active waiting delayed paused].each do |name|
+  malformed_job_payloads["missing #{name} count"] =
+    duplicate_json(valid_queue).tap do |payload|
+      payload.dig("smartSearch", "jobCounts").delete(name)
+    end
+  malformed_job_payloads["negative #{name} count"] =
+    duplicate_json(valid_queue).tap do |payload|
+      payload.dig("smartSearch", "jobCounts")[name] = -1
+    end
+  malformed_job_payloads["non-integer #{name} count"] =
+    duplicate_json(valid_queue).tap do |payload|
+      payload.dig("smartSearch", "jobCounts")[name] = "0"
+    end
+end
+malformed_job_payloads.each do |label, payload|
+  run.call(label) do
+    empty = json_response(200, { "assets" => { "items" => [] } })
+    error = expect_contract_failure([empty, json_response(200, payload)], expected_requests: 2)
+    raise TestFailure, "malformed jobs schema failure was not fail-closed" unless
+      error.message.include?("unsupported smartSearch schema")
+  end
+end
+
+run.call("paused smart search queue") do
+  empty = json_response(200, { "assets" => { "items" => [] } })
+  error = expect_contract_failure(
+    [empty, smart_search_response(is_paused: true, paused: 1)], expected_requests: 2
+  ) do |requests|
+    raise TestFailure, "paused queue was mutated" if
+      requests.any? { |request| request.fetch(:method) == "PUT" }
+  end
+  raise TestFailure, "paused queue failure omitted its state" unless
+    error.message.include?("smartSearch queue is paused")
+end
+
+%w[active waiting delayed paused].each do |count_name|
+  run.call("busy #{count_name} queue waits until idle") do
+    empty = json_response(200, { "assets" => { "items" => [] } })
+    busy = smart_search_response(
+      is_active: count_name == "active", **{ count_name.to_sym => 1 }
+    )
+    expect_success(
+      [empty, busy, empty, idle_smart_search_response(failed: 1),
+       requeue_response, complete_response],
+      expected_requests: 6
+    ) do |requests|
+      puts_before_idle = requests.first(4).count do |request|
+        request.values_at(:method, :path) == ["PUT", "/api/jobs/smartSearch"]
+      end
+      raise TestFailure, "busy queue was requeued before it became idle" unless puts_before_idle.zero?
+      raise TestFailure, "idle queue did not receive exactly one requeue" unless
+        requests.count { |request| request.fetch(:method) == "PUT" } == 1
+    end
+  end
+end
+
+run.call("persistently busy queue deadline") do
+  epoch = Time.at(1_700_000_000)
+  empty = json_response(200, { "assets" => { "items" => [] } })
+  with_times(epoch, epoch + 601) do
+    expect_contract_failure(
+      [empty, smart_search_response(is_active: true, active: 1)], expected_requests: 2
+    ) do |requests|
+      raise TestFailure, "persistently busy queue was mutated" if
+        requests.any? { |request| request.fetch(:method) == "PUT" }
+    end
+  end
+end
+
+{ "unexpected jobs status" => 503, "jobs authentication status" => 401 }.each do |label, status|
+  run.call(label) do
+    empty = json_response(200, { "assets" => { "items" => [] } })
+    expect_contract_failure(
+      [empty, json_response(status, { "message" => "refused" })],
+      expected_status: status, expected_requests: 2
+    )
+  end
+end
+
+{
+  "unexpected requeue status" => 409,
+  "requeue authentication status" => 403
+}.each do |label, status|
+  run.call(label) do
+    empty = json_response(200, { "assets" => { "items" => [] } })
+    expect_contract_failure(
+      [empty, idle_smart_search_response(failed: 1),
+       json_response(status, { "message" => "refused" })],
+      expected_status: status, expected_requests: 3
+    )
   end
 end
 
