@@ -185,6 +185,13 @@ esac
 : "${PLATFORM_DOCKER_ROOT:?}"
 : "${PLATFORM_REPORT_ROOT:?}"
 : "${PLATFORM_TINYMEDIAMANAGER_CONTAINER:=tinymediamanager}"
+if [ "$mode" = seed-retirement-fixture ]; then
+  : "${PLATFORM_MEDIA_ROOT:?}"
+  : "${PLATFORM_COMPOSE_KIND:?}"
+  : "${PLATFORM_PROJECT_NAME:?}"
+  : "${PLATFORM_TINYMEDIAMANAGER_WEB_PORT:?}"
+  : "${PLATFORM_TINYMEDIAMANAGER_API_PORT:?}"
+fi
 export PLATFORM_DOCKER_ROOT PLATFORM_REPORT_ROOT PLATFORM_TINYMEDIAMANAGER_CONTAINER
 
 exec ruby - "$mode" <<'RUBY'
@@ -197,9 +204,20 @@ MODE = ARGV.fetch(0)
 DOCKER_ROOT = Pathname.new(ENV.fetch("PLATFORM_DOCKER_ROOT")).expand_path
 REPORT_ROOT = Pathname.new(ENV.fetch("PLATFORM_REPORT_ROOT")).expand_path
 CONTAINER = ENV.fetch("PLATFORM_TINYMEDIAMANAGER_CONTAINER")
-SENTINEL_NAME = ".nas-platform-retirement-sentinel"
+SENTINEL_NAME = "retirement-contract.txt"
 DIGEST_ARTIFACT_NAME = "tinymediamanager-retirement.sha256"
+ENV_ARTIFACT_NAME = "tinymediamanager-retirement.env"
 MARKER = "tinyMediaManager retirement state preserved\n".freeze
+# The retained Compose health check waits for the legacy API port. A fresh
+# disposable state root has no legacy settings to enable it, so fixture setup
+# adds only this fixed non-secret bootstrap. Existing safe settings are left
+# opaque and untouched; assert-retired proves preservation from the sentinel.
+FIXTURE_SETTINGS_NAME = "tmm.json"
+FIXTURE_SETTINGS = JSON.generate(
+  "enableHttpServer" => true,
+  "httpServerPort" => 7878,
+  "httpApiKey" => "retirement-fixture-only"
+) + "\n"
 NOFOLLOW = File.const_defined?(:NOFOLLOW) ? File::NOFOLLOW : 0
 DIRECTORY_OPEN_FLAGS = File::RDONLY | File::NONBLOCK | NOFOLLOW
 FILE_READ_FLAGS = File::RDONLY | File::NONBLOCK | NOFOLLOW
@@ -277,6 +295,18 @@ def refuse_existing_target(directory, name, label)
   fail_contract("refusing to replace #{label}") if path_entry_exists?(directory, name)
 end
 
+def require_safe_existing_file(directory, name, label)
+  in_directory(directory) do
+    File.open(name, FILE_READ_FLAGS) do |file|
+      stat = file.stat
+      fail_contract("#{label} is unavailable or unsafe") unless stat.file?
+      fail_contract("#{label} mode differs") unless (stat.mode & 0o777) == 0o600
+    end
+  end
+rescue Errno::ENOENT, Errno::ELOOP, Errno::ENOTDIR, Errno::EISDIR, Errno::ENXIO
+  fail_contract("#{label} is unavailable or unsafe")
+end
+
 def create_exclusive(directory, name, contents, label)
   refuse_existing_target(directory, name, label)
   in_directory(directory) do
@@ -289,6 +319,12 @@ def create_exclusive(directory, name, contents, label)
   end
 rescue Errno::EEXIST, Errno::ELOOP
   fail_contract("refusing to replace #{label}")
+end
+
+def dotenv_value(name)
+  value = ENV.fetch(name)
+  fail_contract("#{name} is unsafe for the retirement environment") if value.match?(/[\r\n]/)
+  value
 end
 
 def run_docker(*arguments)
@@ -307,15 +343,72 @@ end
 case MODE
 when "seed-retirement-fixture"
   with_contract_directories(create: true) do |state_root, report_root|
-    refuse_existing_target(state_root, SENTINEL_NAME, "retirement sentinel")
-    refuse_existing_target(report_root, DIGEST_ARTIFACT_NAME, "retirement digest artifact")
-    create_exclusive(state_root, SENTINEL_NAME, MARKER, "retirement sentinel")
-    create_exclusive(
-      report_root,
-      DIGEST_ARTIFACT_NAME,
-      "#{Digest::SHA256.hexdigest(MARKER)}\n",
-      "retirement digest artifact"
+    settings_root = open_safe_child_directory(
+      state_root, "data", "retirement fixture settings directory", create: true
     )
+    settings_exist = path_entry_exists?(settings_root, FIXTURE_SETTINGS_NAME)
+    if settings_exist
+      require_safe_existing_file(
+        settings_root, FIXTURE_SETTINGS_NAME, "existing tinyMediaManager settings"
+      )
+    end
+    retirement_environment = {
+      "TZ" => "UTC",
+      "PLATFORM_CONTAINER_CPUSET" => "0",
+      "USER_ID" => "1000",
+      "GROUP_ID" => "100",
+      "TINYMEDIAMANAGER_PASSWORD" => "retirement-fixture-only",
+      "TINYMEDIAMANAGER_DATA_PATH" => File.join(
+        dotenv_value("PLATFORM_DOCKER_ROOT"), "tinymediamanager", "data"
+      ),
+      "TINYMEDIAMANAGER_MOVIES_PATH" => File.join(
+        dotenv_value("PLATFORM_MEDIA_ROOT"), "Media", "Movies"
+      ),
+      "TINYMEDIAMANAGER_SERIES_PATH" => File.join(
+        dotenv_value("PLATFORM_MEDIA_ROOT"), "Media", "Series"
+      ),
+      "TINYMEDIAMANAGER_WEB_HOST_PORT" => dotenv_value(
+        "PLATFORM_TINYMEDIAMANAGER_WEB_PORT"
+      ),
+      "TINYMEDIAMANAGER_API_HOST_PORT" => dotenv_value(
+        "PLATFORM_TINYMEDIAMANAGER_API_PORT"
+      ),
+      "PLATFORM_PROJECT_NAME" => dotenv_value("PLATFORM_PROJECT_NAME")
+    }
+    environment_contents = retirement_environment.map { |key, value| "#{key}=#{value}" }.join("\n")
+    artifacts = [
+      [state_root, SENTINEL_NAME, MARKER, "retirement sentinel"],
+      [
+        report_root,
+        DIGEST_ARTIFACT_NAME,
+        "#{Digest::SHA256.hexdigest(MARKER)}\n",
+        "retirement digest artifact"
+      ],
+      [report_root, ENV_ARTIFACT_NAME, "#{environment_contents}\n", "retirement environment"]
+    ]
+    artifact_presence = artifacts.map do |directory, name, _contents, _label|
+      path_entry_exists?(directory, name)
+    end
+    if artifact_presence.any?
+      fail_contract("retirement fixture artifacts are incomplete") unless artifact_presence.all?
+      artifacts.each do |directory, name, contents, label|
+        fail_contract("#{label} contents differ") unless
+          read_safe_file(directory, name, label) == contents
+      end
+    else
+      artifacts.each do |directory, name, contents, label|
+        create_exclusive(directory, name, contents, label)
+      end
+    end
+    unless settings_exist
+      create_exclusive(
+        settings_root,
+        FIXTURE_SETTINGS_NAME,
+        FIXTURE_SETTINGS,
+        "retirement fixture settings"
+      )
+    end
+    settings_root.close
   end
   puts "tinyMediaManager retirement fixture prepared"
 when "assert-retired"

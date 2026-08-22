@@ -10,8 +10,17 @@ mac_repo_dir=$(CDPATH= cd -- "$mac_script_dir/../.." && pwd -P)
 : "${PLATFORM_DOCKER_ROOT:?PLATFORM_DOCKER_ROOT is required}"
 : "${PLATFORM_MEDIA_ROOT:?PLATFORM_MEDIA_ROOT is required}"
 : "${PLATFORM_REPORT_ROOT:?PLATFORM_REPORT_ROOT is required}"
+: "${PLATFORM_COMPOSE_KIND:?PLATFORM_COMPOSE_KIND is required}"
 : "${PLATFORM_PROJECT_NAME:?PLATFORM_PROJECT_NAME is required}"
+: "${PLATFORM_TINYMEDIAMANAGER_WEB_PORT:?PLATFORM_TINYMEDIAMANAGER_WEB_PORT is required}"
 : "${PLATFORM_TINYMEDIAMANAGER_API_PORT:?PLATFORM_TINYMEDIAMANAGER_API_PORT is required}"
+case ${1-} in
+  seed-retirement-fixture|assert-retired) ;;
+  *)
+    printf '%s\n' 'usage: run-tinymediamanager-contract.sh seed-retirement-fixture|assert-retired' >&2
+    exit 2
+    ;;
+esac
 case ${PLATFORM_PROOF_PLATFORM:-mac} in
   integration) PLATFORM_TINYMEDIAMANAGER_CONTAINER=tinymediamanager ;;
   mac) PLATFORM_TINYMEDIAMANAGER_CONTAINER=$PLATFORM_PROJECT_NAME-tinymediamanager ;;
@@ -21,4 +30,5 @@ export PLATFORM_TINYMEDIAMANAGER_CONTAINER
 
 PLATFORM_CONTRACT_VAULT_FILE=$PLATFORM_MAC_VAULT_FILE \
 PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=$PLATFORM_MAC_VAULT_PASSWORD_FILE \
+PLATFORM_CONTRACT_REPO_DIR=$mac_repo_dir \
   exec "$mac_repo_dir/tests/contracts/tinymediamanager.sh" "$@"

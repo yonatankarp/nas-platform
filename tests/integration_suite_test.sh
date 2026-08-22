@@ -7,6 +7,21 @@ fake_bin=$(mktemp -d "${TMPDIR:-/tmp}/nas-platform-suite-test.XXXXXX")
 docker_log=$fake_bin/docker.log
 
 cleanup() {
+  if [ -d "$fake_bin/contract-cases" ] && [ ! -L "$fake_bin/contract-cases" ]; then
+    find "$fake_bin/contract-cases" -depth -mindepth 1 -delete 2>/dev/null || true
+    rmdir "$fake_bin/contract-cases" 2>/dev/null || true
+  fi
+  rm -f "$fake_bin/contract-docker/tinymediamanager/data/retirement-contract.txt" \
+    "$fake_bin/contract-docker/tinymediamanager/data/.nas-platform-retirement-sentinel" \
+    "$fake_bin/contract-docker/tinymediamanager/data/data/tmm.json" \
+    "$fake_bin/contract-report/tinymediamanager-retirement.sha256" \
+    "$fake_bin/contract-report/tinymediamanager-retirement.env"
+  rmdir "$fake_bin/contract-docker/tinymediamanager/data/data" \
+    "$fake_bin/contract-docker/tinymediamanager/data" \
+    "$fake_bin/contract-docker/tinymediamanager" "$fake_bin/contract-docker" \
+    "$fake_bin/contract-media/Media/Movies" "$fake_bin/contract-media/Media/Series" \
+    "$fake_bin/contract-media/Media" "$fake_bin/contract-media" \
+    "$fake_bin/contract-report" 2>/dev/null || true
   rm -f "$fake_bin/docker" "$fake_bin/mktemp" "$docker_log"
   rmdir "$fake_bin"
 }
@@ -15,6 +30,15 @@ trap cleanup EXIT HUP INT TERM
 cat > "$fake_bin/docker" <<'EOF'
 #!/bin/sh
 printf 'docker invoked: %s\n' "$*" >> "$DOCKER_LOG"
+if [ "${FAKE_DOCKER_ASSERT_ABSENT:-false}" = true ]; then
+  case $1:$2 in
+    info:--format) exit 0 ;;
+    container:inspect)
+      printf 'Error: No such container: %s\n' "$3" >&2
+      exit 1
+      ;;
+  esac
+fi
 exit 99
 EOF
 chmod +x "$fake_bin/docker"
@@ -59,9 +83,212 @@ assert_rejected() {
   }
 }
 
+assert_lifecycle() {
+  expected=$1
+  suite_name=$2
+  rm -f "$docker_log"
+  actual=$(run_integration --observe-lifecycle --suite "$suite_name")
+  [ "$actual" = "$expected" ] || {
+    printf 'expected lifecycle for %s:\n%s\nactual lifecycle:\n%s\n' \
+      "$suite_name" "$expected" "$actual" >&2
+    exit 1
+  }
+  [ "$(printf '%s\n' "$actual" | tail -n 1)" = success ] || {
+    printf 'lifecycle for %s did not terminate in success\n' "$suite_name" >&2
+    exit 1
+  }
+  if printf '%s\n' "$actual" | grep -Eq \
+      '^(seed|run|assert-persistence|api-readiness|metadata-readiness)$'; then
+    printf 'lifecycle for %s retained active-service behavior\n' "$suite_name" >&2
+    exit 1
+  fi
+  [ ! -e "$docker_log" ] || {
+    printf 'lifecycle observation caused a side effect: %s\n' "$(cat "$docker_log")" >&2
+    exit 1
+  }
+}
+
 assert_output \
   'foundation smoke beszel dozzle audiobookshelf komga tinymediamanager jellyfin immich paperless idempotence-check full' \
   --list-suites
+
+retirement_lifecycle='seed-retirement-fixture
+converge
+assert-retired
+success'
+assert_lifecycle "$retirement_lifecycle" tinymediamanager
+assert_lifecycle "$retirement_lifecycle" full
+for unrelated_suite in foundation smoke beszel jellyfin; do
+  assert_lifecycle 'converge
+success' "$unrelated_suite"
+done
+
+contract_docker_root=$fake_bin/contract-docker
+contract_media_root=$fake_bin/contract-media
+contract_report_root=$fake_bin/contract-report
+mkdir -p "$contract_docker_root" "$contract_media_root/Media/Movies" \
+  "$contract_media_root/Media/Series" "$contract_report_root"
+env \
+  PLATFORM_CONTRACT_REPO_DIR="$repo_dir" \
+  PLATFORM_DOCKER_ROOT="$contract_docker_root" \
+  PLATFORM_MEDIA_ROOT="$contract_media_root" \
+  PLATFORM_REPORT_ROOT="$contract_report_root" \
+  PLATFORM_COMPOSE_KIND=integration \
+  PLATFORM_PROJECT_NAME=integration \
+  PLATFORM_TINYMEDIAMANAGER_WEB_PORT=4000 \
+  PLATFORM_TINYMEDIAMANAGER_API_PORT=7878 \
+  "$repo_dir/tests/contracts/tinymediamanager.sh" seed-retirement-fixture >/dev/null
+
+sentinel=$contract_docker_root/tinymediamanager/data/retirement-contract.txt
+digest=$contract_report_root/tinymediamanager-retirement.sha256
+retirement_env=$contract_report_root/tinymediamanager-retirement.env
+fixture_settings=$contract_docker_root/tinymediamanager/data/data/tmm.json
+[ "$(cat "$sentinel")" = 'tinyMediaManager retirement state preserved' ]
+[ "$(cat "$digest")" = "$(printf '%s\n' \
+  'tinyMediaManager retirement state preserved' | shasum -a 256 | awk '{print $1}')" ]
+expected_retirement_env="TZ=UTC
+PLATFORM_CONTAINER_CPUSET=0
+USER_ID=1000
+GROUP_ID=100
+TINYMEDIAMANAGER_PASSWORD=retirement-fixture-only
+TINYMEDIAMANAGER_DATA_PATH=$contract_docker_root/tinymediamanager/data
+TINYMEDIAMANAGER_MOVIES_PATH=$contract_media_root/Media/Movies
+TINYMEDIAMANAGER_SERIES_PATH=$contract_media_root/Media/Series
+TINYMEDIAMANAGER_WEB_HOST_PORT=4000
+TINYMEDIAMANAGER_API_HOST_PORT=7878
+PLATFORM_PROJECT_NAME=integration"
+[ "$(cat "$retirement_env")" = "$expected_retirement_env" ]
+[ "$(cat "$fixture_settings")" = \
+  '{"enableHttpServer":true,"httpServerPort":7878,"httpApiKey":"retirement-fixture-only"}' ]
+for protected_file in "$sentinel" "$digest" "$retirement_env" "$fixture_settings"; do
+  case $(uname -s) in
+    Darwin) protected_mode=$(stat -f '%Lp' "$protected_file") ;;
+    *) protected_mode=$(stat -c '%a' "$protected_file") ;;
+  esac
+  [ "$protected_mode" = 600 ] || {
+    printf 'retirement fixture file mode differs: %s is %s\n' \
+      "$protected_file" "$protected_mode" >&2
+    exit 1
+  }
+done
+env \
+  PLATFORM_CONTRACT_REPO_DIR="$repo_dir" \
+  PLATFORM_DOCKER_ROOT="$contract_docker_root" \
+  PLATFORM_MEDIA_ROOT="$contract_media_root" \
+  PLATFORM_REPORT_ROOT="$contract_report_root" \
+  PLATFORM_COMPOSE_KIND=integration \
+  PLATFORM_PROJECT_NAME=integration \
+  PLATFORM_TINYMEDIAMANAGER_WEB_PORT=4000 \
+  PLATFORM_TINYMEDIAMANAGER_API_PORT=7878 \
+  "$repo_dir/tests/contracts/tinymediamanager.sh" seed-retirement-fixture >/dev/null
+DOCKER_LOG=$docker_log FAKE_DOCKER_ASSERT_ABSENT=true PATH="$fake_bin:$PATH" \
+  PLATFORM_CONTRACT_REPO_DIR="$repo_dir" \
+  PLATFORM_DOCKER_ROOT="$contract_docker_root" \
+  PLATFORM_REPORT_ROOT="$contract_report_root" \
+  PLATFORM_TINYMEDIAMANAGER_CONTAINER=tinymediamanager \
+  "$repo_dir/tests/contracts/tinymediamanager.sh" assert-retired >/dev/null
+rm -f "$docker_log"
+
+contract_cases=$fake_bin/contract-cases
+safe_case=$contract_cases/safe
+mkdir -p "$safe_case/docker/tinymediamanager/data/data" \
+  "$safe_case/media/Media/Movies" "$safe_case/media/Media/Series" "$safe_case/reports"
+printf '%s\n' 'opaque-existing-state-that-must-not-be-parsed' \
+  > "$safe_case/docker/tinymediamanager/data/data/tmm.json"
+chmod 0600 "$safe_case/docker/tinymediamanager/data/data/tmm.json"
+safe_settings_before=$(shasum -a 256 \
+  "$safe_case/docker/tinymediamanager/data/data/tmm.json" | awk '{print $1}')
+env PLATFORM_CONTRACT_REPO_DIR="$repo_dir" \
+  PLATFORM_DOCKER_ROOT="$safe_case/docker" PLATFORM_MEDIA_ROOT="$safe_case/media" \
+  PLATFORM_REPORT_ROOT="$safe_case/reports" PLATFORM_COMPOSE_KIND=integration \
+  PLATFORM_PROJECT_NAME=integration PLATFORM_TINYMEDIAMANAGER_WEB_PORT=4000 \
+  PLATFORM_TINYMEDIAMANAGER_API_PORT=7878 \
+  "$repo_dir/tests/contracts/tinymediamanager.sh" seed-retirement-fixture >/dev/null
+safe_settings_after=$(shasum -a 256 \
+  "$safe_case/docker/tinymediamanager/data/data/tmm.json" | awk '{print $1}')
+[ "$safe_settings_after" = "$safe_settings_before" ] || {
+  printf '%s\n' 'retirement fixture replaced existing tinyMediaManager settings' >&2
+  exit 1
+}
+
+for unsafe_kind in symlink directory wrong-mode; do
+  unsafe_case=$contract_cases/$unsafe_kind
+  unsafe_settings=$unsafe_case/docker/tinymediamanager/data/data/tmm.json
+  mkdir -p "$(dirname "$unsafe_settings")" "$unsafe_case/media/Media/Movies" \
+    "$unsafe_case/media/Media/Series" "$unsafe_case/reports"
+  case $unsafe_kind in
+    symlink)
+      printf '%s\n' outside > "$unsafe_case/outside-settings"
+      chmod 0600 "$unsafe_case/outside-settings"
+      ln -s "$unsafe_case/outside-settings" "$unsafe_settings"
+      ;;
+    directory) mkdir "$unsafe_settings" ;;
+    wrong-mode)
+      printf '%s\n' unsafe > "$unsafe_settings"
+      chmod 0644 "$unsafe_settings"
+      ;;
+  esac
+  unsafe_status=0
+  env PLATFORM_CONTRACT_REPO_DIR="$repo_dir" \
+    PLATFORM_DOCKER_ROOT="$unsafe_case/docker" PLATFORM_MEDIA_ROOT="$unsafe_case/media" \
+    PLATFORM_REPORT_ROOT="$unsafe_case/reports" PLATFORM_COMPOSE_KIND=integration \
+    PLATFORM_PROJECT_NAME=integration PLATFORM_TINYMEDIAMANAGER_WEB_PORT=4000 \
+    PLATFORM_TINYMEDIAMANAGER_API_PORT=7878 \
+    "$repo_dir/tests/contracts/tinymediamanager.sh" seed-retirement-fixture \
+    >/dev/null 2>&1 || unsafe_status=$?
+  [ "$unsafe_status" -ne 0 ] || {
+    printf 'unsafe existing tinyMediaManager settings accepted: %s\n' "$unsafe_kind" >&2
+    exit 1
+  }
+  [ ! -e "$unsafe_case/docker/tinymediamanager/data/retirement-contract.txt" ] && \
+    [ ! -e "$unsafe_case/reports/tinymediamanager-retirement.sha256" ] && \
+    [ ! -e "$unsafe_case/reports/tinymediamanager-retirement.env" ] || {
+      printf 'unsafe tinyMediaManager settings caused partial seed: %s\n' "$unsafe_kind" >&2
+      exit 1
+    }
+done
+
+ruby - "$repo_dir/tests/contracts/tinymediamanager.sh" <<'RUBY'
+contract = File.read(ARGV.fetch(0))
+exclusive_create = contract[/def create_exclusive.*?^end$/m]
+abort "retirement fixture creation is not exclusive and no-follow" unless
+  exclusive_create&.include?("File::EXCL | NOFOLLOW")
+existing_inspection = contract[/def require_safe_existing_file.*?^end$/m]
+abort "existing tinyMediaManager settings are read or hashed" if
+  !existing_inspection || existing_inspection.match?(/\.read|Digest/)
+RUBY
+
+ruby -ryaml - "$repo_dir/tests/tinymediamanager_retirement_fixture.yml" <<'RUBY'
+fixture_path = ARGV.fetch(0)
+fixture = YAML.safe_load_file(fixture_path, aliases: true).fetch(0)
+abort "retirement fixture play differs" unless fixture.slice(
+  "name", "hosts", "connection", "gather_facts"
+) == {
+  "name" => "Start a legacy tinyMediaManager fixture for retirement proof",
+  "hosts" => "localhost",
+  "connection" => "local",
+  "gather_facts" => false
+}
+task = fixture.fetch("tasks").fetch(0)
+compose = task.fetch("community.docker.docker_compose_v2")
+abort "retirement fixture project source differs" unless
+  compose.fetch("project_src") ==
+    "{{ lookup('env', 'PLATFORM_CONTRACT_REPO_DIR') }}/services/tinymediamanager"
+abort "retirement fixture project identity differs" unless
+  compose.fetch("project_name") ==
+    "{{ lookup('env', 'PLATFORM_PROJECT_NAME') }}-tinymediamanager"
+abort "retirement fixture Compose files differ" unless compose.fetch("files").include?(
+  "'compose.' ~ lookup('env', 'PLATFORM_COMPOSE_KIND') ~ '.yml'"
+)
+abort "retirement fixture environment differs" unless compose.fetch("env_files") == [
+  "{{ lookup('env', 'PLATFORM_REPORT_ROOT') }}/tinymediamanager-retirement.env"
+]
+abort "retirement fixture does not wait for startup" unless
+  compose.fetch("state") == "present" && compose.fetch("wait") == true &&
+    compose.fetch("wait_timeout") == 240
+abort "retirement fixture contaminates converge accounting" unless
+  task.fetch("changed_when") == false
+RUBY
 
 assert_output 'suite=foundation tags=deployment_bundle playbook=site.yml scenarios=true' \
   --describe-suite foundation
@@ -112,6 +339,14 @@ grep -qF -- '" integration-run "$playbook" "$@"' "$integration"
 grep -qF -- '\"\$playbook\" \"\$@\"' "$integration"
 grep -qF -- 'run_play --tags \"\$INTEGRATION_TAGS\" \"\$@\"' "$integration"
 grep -qF -- 'run_play \"\$@\"' "$integration"
+grep -qF 'requests_version=2.34.2' "$integration" || {
+  printf '%s\n' 'integration controller does not pin docker_container_info runtime support' >&2
+  exit 1
+}
+grep -qF "'requests==\$requests_version'" "$integration" || {
+  printf '%s\n' 'integration controller does not install docker_container_info runtime support' >&2
+  exit 1
+}
 
 # Service fixtures consumed through nested Docker bind mounts must exist on the
 # daemon host before the controller container establishes its sandbox mount.
@@ -124,7 +359,7 @@ controller_line=$(grep -nF 'docker run --rm' "$integration" | head -1 | cut -d: 
 }
 grep -qF 'paperless:true|full:true)' "$integration"
 grep -qF -- '-e PLATFORM_PAPERLESS_FIXTURE_PRESEEDED="$paperless_fixture_preseeded"' "$integration"
-for contract in komga tinymediamanager jellyfin; do
+for contract in komga jellyfin; do
   preseed_line=$(grep -nF \
     '"$repo_dir/tests/contracts/'"$contract"'.sh" seed-fixture-only' \
     "$integration" | cut -d: -f1)
@@ -134,15 +369,12 @@ for contract in komga tinymediamanager jellyfin; do
   }
 done
 grep -qF 'komga:true|full:true)' "$integration"
-grep -qF 'tinymediamanager:true|full:true)' "$integration"
 grep -qF 'jellyfin:true|full:true)' "$integration"
 grep -qF -- '-e PLATFORM_KOMGA_FIXTURE_PRESEEDED="$komga_fixture_preseeded"' "$integration"
-grep -qF -- '-e PLATFORM_TINYMEDIAMANAGER_FIXTURE_PRESEEDED="$tinymediamanager_fixture_preseeded"' \
-  "$integration"
 grep -qF -- '-e PLATFORM_JELLYFIN_FIXTURE_PRESEEDED="$jellyfin_fixture_preseeded"' \
   "$integration"
 
-for suite in komga tinymediamanager jellyfin immich; do
+for suite in komga jellyfin immich; do
   grep -qF "suite_is $suite" "$integration" || {
     printf '%s\n' "$suite has no independent scenario dispatch" >&2
     exit 1

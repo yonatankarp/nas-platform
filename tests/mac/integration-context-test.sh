@@ -87,4 +87,51 @@ for hook in "$script_dir"/hooks/drift/*.sh; do
   fi
 done
 
+tinymediamanager_runner=$script_dir/run-tinymediamanager-contract.sh
+grep -qF 'seed-retirement-fixture|assert-retired)' "$tinymediamanager_runner" || {
+  printf '%s\n' 'integration-context-error: retirement runner accepts the wrong modes' >&2
+  exit 1
+}
+if grep -Eq '(^|[[:space:]|])(seed|run|assert-persistence)([[:space:]|)])' \
+    "$tinymediamanager_runner"; then
+  printf '%s\n' 'integration-context-error: retirement runner retains an active mode' >&2
+  exit 1
+fi
+
+tinymediamanager_preconverge=$script_dir/hooks/pre-converge/50-tinymediamanager.sh
+tinymediamanager_seed=$script_dir/hooks/fixtures-seed/50-tinymediamanager.sh
+tinymediamanager_persistence=$script_dir/hooks/fixtures-persistence/50-tinymediamanager.sh
+tinymediamanager_recreate=$script_dir/hooks/fixtures-recreate/50-tinymediamanager.sh
+tinymediamanager_drift=$script_dir/hooks/drift/50-tinymediamanager.sh
+tinymediamanager_verify=$script_dir/hooks/verify/50-tinymediamanager.sh
+grep -qF 'seed-retirement-fixture' "$tinymediamanager_preconverge"
+grep -qF 'tinymediamanager_retirement_fixture.yml' "$tinymediamanager_preconverge"
+if [ -e "$tinymediamanager_seed" ] || [ -L "$tinymediamanager_seed" ]; then
+  printf '%s\n' 'integration-context-error: retirement fixture remains in post-deploy seeding' >&2
+  exit 1
+fi
+grep -qF 'assert-retired' "$tinymediamanager_persistence"
+grep -qF 'assert-retired' "$tinymediamanager_recreate"
+if grep -Eq 'up[[:space:]].*force-recreate|[[:space:]]run([[:space:]]|$)' \
+    "$tinymediamanager_recreate"; then
+  printf '%s\n' 'integration-context-error: recreate hook restarts tinyMediaManager' >&2
+  exit 1
+fi
+grep -qF 'tinymediamanager_retirement_fixture.yml' "$tinymediamanager_drift"
+grep -qF 'TINYMEDIAMANAGER_RETIREMENT_DRIFT_INSTALLED' "$tinymediamanager_drift"
+grep -qF 'verify.yml' "$tinymediamanager_verify"
+grep -qF 'platform_verify_tinymediamanager' "$tinymediamanager_verify"
+grep -qF 'assert-retired' "$tinymediamanager_verify"
+
+ruby - "$script_dir/run.sh" <<'RUBY'
+runner = File.read(ARGV.fetch(0))
+preconverge = runner.index('mac_run_hooks pre-converge')
+converge = runner.index('run_site', preconverge || 0)
+ordinary_seed = runner.index('seed) ensure_immich_fixture_vars && "$mac_script_dir/fixtures.sh" seed')
+abort "integration-context-error: retirement fixture is not dispatched before convergence" unless
+  preconverge && converge && preconverge < converge
+abort "integration-context-error: ordinary fixtures no longer seed after deploy" unless
+  ordinary_seed && converge < ordinary_seed
+RUBY
+
 printf '%s\n' 'integration context: centralized Ansible capability holds'

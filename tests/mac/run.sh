@@ -946,6 +946,7 @@ execute_phase() {
       ;;
     deploy)
       [ "$lane" = fresh ] || mac_die 'deploy phase is available only in the fresh lane'
+      mac_run_hooks pre-converge
       run_site
       ;;
     seed) ensure_immich_fixture_vars && "$mac_script_dir/fixtures.sh" seed ;;

@@ -1,0 +1,19 @@
+---
+- name: Start a legacy tinyMediaManager fixture for retirement proof
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Start the legacy tinyMediaManager fixture
+      community.docker.docker_compose_v2:
+        project_src: "{{ lookup('env', 'PLATFORM_CONTRACT_REPO_DIR') }}/services/tinymediamanager"
+        project_name: "{{ lookup('env', 'PLATFORM_PROJECT_NAME') }}-tinymediamanager"
+        files: >-
+          {{ ['compose.yml',
+              'compose.' ~ lookup('env', 'PLATFORM_COMPOSE_KIND') ~ '.yml'] }}
+        env_files:
+          - "{{ lookup('env', 'PLATFORM_REPORT_ROOT') }}/tinymediamanager-retirement.env"
+        state: present
+        wait: true
+        wait_timeout: 240
+      changed_when: false

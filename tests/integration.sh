@@ -15,6 +15,9 @@
 set -eu
 
 ansible_core_version=2.21.3
+# community.docker.docker_container_info imports requests on the managed host;
+# the disposable controller is that host for the local inventory.
+requests_version=2.34.2
 runner_image=docker.io/library/python:3.14-alpine@sha256:05b2b8b732ecd268fee8727a369f936f022d1321b59befd13c30ede22769dcdc
 # Fuzzy `~` rather than `=`: apk's `=` requires the distro revision, so a
 # packaging-only bump from -r0 to -r1 drops the pinned version out of the index
@@ -30,6 +33,12 @@ suite_tags=
 tags_explicit=false
 describe_suite=false
 explicit_suite=false
+observe_lifecycle=false
+
+if [ "${1:-}" = --observe-lifecycle ]; then
+  observe_lifecycle=true
+  shift
+fi
 
 if [ "${1:-}" = --list-suites ]; then
   printf '%s\n' 'foundation smoke beszel dozzle audiobookshelf komga tinymediamanager jellyfin immich paperless idempotence-check full'
@@ -173,6 +182,22 @@ fi
 if [ "$describe_suite" = true ] || [ "${INTEGRATION_DESCRIBE_ONLY:-0}" = 1 ]; then
   printf 'suite=%s tags=%s playbook=%s scenarios=%s\n' \
     "$suite" "$suite_tags" "$playbook" "$run_service_scenarios"
+  exit 0
+fi
+
+emit_lifecycle_plan() {
+  case "$suite:$run_service_scenarios" in
+    tinymediamanager:true|full:true) printf '%s\n' seed-retirement-fixture ;;
+  esac
+  printf '%s\n' converge
+  case "$suite:$run_service_scenarios" in
+    tinymediamanager:true|full:true) printf '%s\n' assert-retired ;;
+  esac
+  printf '%s\n' success
+}
+
+if [ "$observe_lifecycle" = true ]; then
+  emit_lifecycle_plan
   exit 0
 fi
 
@@ -450,7 +475,6 @@ printf 'host address: %s\n' "$nas_address"
 
 paperless_fixture_preseeded=false
 komga_fixture_preseeded=false
-tinymediamanager_fixture_preseeded=false
 jellyfin_fixture_preseeded=false
 case "$suite:$run_service_scenarios" in
   audiobookshelf:true|full:true)
@@ -478,16 +502,6 @@ case "$suite:$run_service_scenarios" in
       PLATFORM_REPORT_ROOT="$sandbox/reports" \
       "$repo_dir/tests/contracts/komga.sh" seed-fixture-only
     komga_fixture_preseeded=true
-    ;;
-esac
-case "$suite:$run_service_scenarios" in
-  tinymediamanager:true|full:true)
-    env \
-      PLATFORM_DOCKER_ROOT="$sandbox/volume1/Docker" \
-      PLATFORM_MEDIA_ROOT="$sandbox/volume2" \
-      PLATFORM_REPORT_ROOT="$sandbox/reports" \
-      "$repo_dir/tests/contracts/tinymediamanager.sh" seed-fixture-only
-    tinymediamanager_fixture_preseeded=true
     ;;
 esac
 case "$suite:$run_service_scenarios" in
@@ -520,14 +534,14 @@ docker run --rm \
   -e INTEGRATION_RUN_SERVICE_SCENARIOS="$run_service_scenarios" \
   -e PLATFORM_PAPERLESS_FIXTURE_PRESEEDED="$paperless_fixture_preseeded" \
   -e PLATFORM_KOMGA_FIXTURE_PRESEEDED="$komga_fixture_preseeded" \
-  -e PLATFORM_TINYMEDIAMANAGER_FIXTURE_PRESEEDED="$tinymediamanager_fixture_preseeded" \
   -e PLATFORM_JELLYFIN_FIXTURE_PRESEEDED="$jellyfin_fixture_preseeded" \
   -w /repo \
   "$runner_image" \
   sh -eu -c "
     apk add --no-cache --quiet docker-cli docker-cli-compose git tar openssl \
       apache2-utils openssh-client '$ruby_package' '$curl_package' >/dev/null
-    pip install --quiet --no-input 'ansible-core==$ansible_core_version'
+    pip install --quiet --no-input 'ansible-core==$ansible_core_version' \
+      'requests==$requests_version'
     ansible-galaxy collection install -r /repo/requirements.yml >/dev/null
 
     # This container runs as root while the sandbox belongs to whoever started
@@ -686,6 +700,7 @@ docker run --rm \
         -e nas_docker_root=$sandbox/volume1/Docker \
         -e nas_media_root=$sandbox/volume2 \
         -e platform_compose_kind=integration \
+        -e tinymediamanager_compose_project_name=integration-tinymediamanager \
         -e platform_beszel_agent_kind=portable \
         -e deployment_bundle_test_mode=true \
         -e deployment_bundle_allow_dirty_controller=true \
@@ -744,11 +759,16 @@ docker run --rm \
     run_tinymediamanager_contract() {
       env \
         PLATFORM_KIND=integration \
+        PLATFORM_CONTRACT_REPO_DIR=/repo \
         PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\" \
         PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=\"\$vault_password_file\" \
         PLATFORM_DOCKER_ROOT='$sandbox/volume1/Docker' \
         PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
         PLATFORM_REPORT_ROOT='$sandbox/reports' \
+        PLATFORM_COMPOSE_KIND=integration \
+        PLATFORM_PROJECT_NAME=integration \
+        PLATFORM_TINYMEDIAMANAGER_WEB_PORT=4000 \
+        PLATFORM_TINYMEDIAMANAGER_API_PORT=7878 \
         PLATFORM_TINYMEDIAMANAGER_CONTAINER=tinymediamanager \
         /repo/tests/contracts/tinymediamanager.sh \"\$@\"
     }
@@ -1279,11 +1299,49 @@ docker run --rm \
       fi
     }
 
-    if [ -z "\$INTEGRATION_TAGS" ] && [ "\$#" -eq 0 ]; then
+    perform_initial_converge() {
+      if [ -z "\$INTEGRATION_TAGS" ] && [ "\$#" -eq 0 ]; then
     run_play
-    else
-      run_selected_play "\$@"
-    fi
+      else
+        run_selected_play "\$@"
+      fi
+    }
+
+    lifecycle_success=false
+    while IFS= read -r lifecycle_event; do
+      case \$lifecycle_event in
+        seed-retirement-fixture)
+          run_tinymediamanager_contract seed-retirement-fixture
+          env \
+            PLATFORM_CONTRACT_REPO_DIR=/repo \
+            PLATFORM_COMPOSE_KIND=integration \
+            PLATFORM_PROJECT_NAME=integration \
+            PLATFORM_REPORT_ROOT='$sandbox/reports' \
+            ansible-playbook -i localhost, \
+              /repo/tests/tinymediamanager_retirement_fixture.yml
+          ;;
+        converge)
+          perform_initial_converge "\$@"
+          ;;
+        assert-retired)
+          run_tinymediamanager_contract assert-retired
+          ;;
+        success)
+          lifecycle_success=true
+          ;;
+        *)
+          printf 'unexpected integration lifecycle event: %s\n' \
+            "\$lifecycle_event" >&2
+          exit 1
+          ;;
+      esac
+    done <<EOF
+\$(/repo/tests/integration.sh --observe-lifecycle --suite "\$INTEGRATION_SUITE")
+EOF
+    [ "\$lifecycle_success" = true ] || {
+      printf '%s\n' 'integration lifecycle ended before success' >&2
+      exit 1
+    }
     printf 'FRESH_ROOT_OK: clean deployment root converged\n'
 
     if cmp -s \
@@ -1728,13 +1786,6 @@ docker run --rm \
       fi
     fi
 
-    if [ "\$INTEGRATION_RUN_SERVICE_SCENARIOS" = true ] && suite_is tinymediamanager; then
-      run_tinymediamanager_contract seed
-      if [ "\$INTEGRATION_SUITE" = tinymediamanager ]; then
-        run_tinymediamanager_contract run
-      fi
-    fi
-
     if [ "\$INTEGRATION_RUN_SERVICE_SCENARIOS" = true ] && suite_is jellyfin; then
       run_jellyfin_contract seed
       if [ "\$INTEGRATION_SUITE" = jellyfin ]; then
@@ -1767,8 +1818,19 @@ docker run --rm \
       # narrower upload/backup fixture that proves database recovery without
       # waiting for generated assets or inference.
 
+    if [ "\$INTEGRATION_SUITE" = tinymediamanager ]; then
+      printf '\n=== phase 2: asserting tinyMediaManager retirement idempotence ===\n'
+      run_selected_play "\$@" | tee /tmp/tinymediamanager-second.txt
+      grep -qE 'changed=0 .*failed=0 ' /tmp/tinymediamanager-second.txt || {
+        printf '%s\n' 'tinyMediaManager retirement reconverge was not clean' >&2
+        exit 1
+      }
+      run_tinymediamanager_contract assert-retired
+    fi
+
     if [ "\$INTEGRATION_SUITE" = full ] && \
        [ "\$INTEGRATION_RUN_SERVICE_SCENARIOS" = true ]; then
+      run_tinymediamanager_contract assert-retired
       env \
         PLATFORM_KIND=integration \
         PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\" \
@@ -1793,6 +1855,9 @@ docker run --rm \
     else
       printf 'NOT IDEMPOTENT: second run reported changes\n' >&2
       exit 1
+    fi
+    if [ "\$INTEGRATION_SUITE" = full ]; then
+      run_tinymediamanager_contract assert-retired
     fi
 
     printf '\n=== phase 3: asserting --check --diff works ===\n'
