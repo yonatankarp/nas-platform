@@ -153,8 +153,18 @@ end
 
 inspect_task = role_tasks.find { |task| task["name"] == "Inspect the retired tinyMediaManager container" }
 refuse("missing Inspect the retired tinyMediaManager container") unless inspect_task
-container_info = inspect_task["community.docker.docker_container_info"]
-refuse("retirement inspection does not use docker_container_info") unless container_info.is_a?(Hash)
+refuse("retirement inspection retains a managed-host Python dependency") if
+  inspect_task.key?("community.docker.docker_container_info")
+container_inspection = inspect_task["ansible.builtin.command"]
+refuse("retirement inspection does not use the guaranteed Docker CLI") unless
+  container_inspection.is_a?(Hash)
+refuse("retirement inspection does not select only the exact container name") unless
+  container_inspection["argv"] == [
+    "docker", "container", "ls", "--all", "--quiet", "--filter",
+    "name=^/{{ tinymediamanager_container_name }}$"
+  ]
+refuse("retirement inspection can report a change") unless inspect_task["changed_when"] == false
+refuse("retirement inspection is skipped in check mode") unless inspect_task["check_mode"] == false
 inspect_register = inspect_task["register"]
 refuse("retirement inspection does not register container state") unless inspect_register.is_a?(String)
 
@@ -164,7 +174,9 @@ assertion = absence_task["ansible.builtin.assert"]
 refuse("retirement assertion is absent") unless assertion.is_a?(Hash)
 conditions = Array(assertion["that"]).map(&:to_s)
 refuse("retirement assertion does not inspect the retired container") unless
-  conditions.any? { |condition| condition.include?(inspect_register) }
+  conditions.any? do |condition|
+    condition.include?("#{inspect_register}.stdout") && condition.include?("length == 0")
+  end
 refuse("retirement assertion does not use fresh preserved state") unless
   conditions.count { |condition| condition.include?(post_retirement_state_register) } == 3
 refuse("retirement assertion reuses stale preserved state") if
