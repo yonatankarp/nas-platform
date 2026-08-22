@@ -1856,6 +1856,7 @@ def jellyfin_identity_contract_failures
   identity_path = File.join(ROOT, "roles", "jellyfin", "tasks", "primary_identity.yml")
   identity = File.file?(identity_path) ? File.read(identity_path) : ""
   role = File.read(role_path) + identity
+  contract = File.read(File.join(ROOT, "tests", "contracts", "jellyfin.sh"))
   main_tasks = YAML.safe_load_file(role_path, aliases: false)
   names = nested_task_names(main_tasks)
   names += nested_task_names(YAML.safe_load_file(identity_path, aliases: false)) if
@@ -1940,6 +1941,14 @@ def jellyfin_identity_contract_failures
     role.include?("jellyfin_server_configuration_before.json | combine")
   failures << "Jellyfin role has no authoritative image byte verification" unless
     role.include?("jellyfin_admin_avatar_sha256") && role.include?("checksum_algorithm: sha256")
+
+  drift_block = contract[/if MODE == "drift"\n.*?\nend\n\nif MODE == "run"/m]
+  drift_options = drift_block&.index('"post", "/Library/VirtualFolders/LibraryOptions"')
+  drift_extra_path = drift_block&.index("add_library_path(token")
+  drift_rename = drift_block&.index("rename_library(token")
+  failures << "Jellyfin drift fixture can use a library ID after renaming invalidates it" unless
+    drift_options && drift_extra_path && drift_rename &&
+      drift_options < drift_extra_path && drift_extra_path < drift_rename
 
   failures
 end

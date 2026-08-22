@@ -1043,14 +1043,16 @@ if MODE == "drift"
   configuration["ServerName"] = "Yonflix Drifted"
   request("post", "/System/Configuration", token: token, body: configuration, expected: [204])
   upload_user_image(token, user_id, DRIFT_IMAGE)
-  JELLYFIN_MEDIA_ROOT.join("Movies-Drift-Extra").mkpath
-  add_library_path(token, movies.fetch("Name"), DRIFT_EXTRA_PATH)
-  rename_library(token, movies.fetch("Name"), "Movies Drifted")
+  # Jellyfin derives collection identity from the library directory. Install
+  # every ItemId-scoped mutation before the rename can replace that identity.
   options = movies.fetch("LibraryOptions").merge("EnableRealtimeMonitor" => true)
   request(
     "post", "/Library/VirtualFolders/LibraryOptions", token: token,
     body: { "Id" => movies.fetch("ItemId"), "LibraryOptions" => options }, expected: [204]
   )
+  JELLYFIN_MEDIA_ROOT.join("Movies-Drift-Extra").mkpath
+  add_library_path(token, movies.fetch("Name"), DRIFT_EXTRA_PATH)
+  rename_library(token, movies.fetch("Name"), "Movies Drifted")
   encoding["EnableHardwareEncoding"] =
     !ENCODING_POLICIES.fetch(PLATFORM).fetch("EnableHardwareEncoding")
   request("post", "/System/Configuration/encoding", token: token, body: encoding, expected: [204])
