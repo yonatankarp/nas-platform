@@ -110,9 +110,35 @@ ensure
   server_thread&.join(1)
 end
 
-def expect_success(responses, expected_requests:, expected_ids: FIXTURE_IDS)
+def with_stalled_http_server
+  server = TCPServer.new("127.0.0.1", 0)
+  Object.send(:remove_const, :BASE) if Object.const_defined?(:BASE)
+  Object.const_set(:BASE, URI("http://127.0.0.1:#{server.local_address.ip_port}"))
+  requests = 0
+  server_thread = Thread.new do
+    socket = server.accept
+    requests += 1
+    IO.select([socket], nil, nil, 0.5)
+    while (line = socket.gets)
+      break if line == "\r\n"
+    end
+    IO.select(nil, nil, nil, 0.5)
+  rescue IOError
+    nil
+  ensure
+    socket&.close
+  end
+
+  yield -> { requests }
+ensure
+  server&.close
+  server_thread&.join(1)
+end
+
+def expect_success(responses, expected_requests:, expected_ids: FIXTURE_IDS, clock: nil)
   with_http_responses(responses) do |requests|
-    assert_cpu_machine_learning("test-token", expected_ids)
+    arguments = clock ? { clock: clock } : {}
+    assert_cpu_machine_learning("test-token", expected_ids, **arguments)
     actual_requests = requests.call
     raise TestFailure, "made #{actual_requests.length} requests, expected #{expected_requests}" unless
       actual_requests.length == expected_requests
@@ -121,11 +147,12 @@ def expect_success(responses, expected_requests:, expected_ids: FIXTURE_IDS)
 end
 
 def expect_contract_failure(responses, expected_status: nil, expected_requests: 1,
-                            expected_ids: FIXTURE_IDS)
+                            expected_ids: FIXTURE_IDS, clock: nil)
   error = nil
   with_http_responses(responses) do |requests|
     begin
-      assert_cpu_machine_learning("test-token", expected_ids)
+      arguments = clock ? { clock: clock } : {}
+      assert_cpu_machine_learning("test-token", expected_ids, **arguments)
     rescue ContractFailure => caught
       error = caught
     rescue StandardError => caught
@@ -143,13 +170,9 @@ def expect_contract_failure(responses, expected_status: nil, expected_requests: 
   error
 end
 
-def with_times(*times)
-  real_now = Time.method(:now)
+def monotonic_clock(*times)
   last = times.last
-  Time.define_singleton_method(:now) { times.shift || last }
-  yield
-ensure
-  Time.define_singleton_method(:now, &real_now)
+  -> { times.shift || last }
 end
 
 source = File.read(CONTRACT)
@@ -182,9 +205,28 @@ end
   end
 end
 
-run.call("partial semantic result") do
+run.call("partial semantic result is requeued") do
   partial = json_response(200, { "assets" => { "items" => [{ "id" => FIXTURE_IDS.first }] } })
-  expect_success([partial, complete_response], expected_requests: 2)
+  expect_success(
+    [partial, idle_smart_search_response(failed: 1), requeue_response, complete_response],
+    expected_requests: 4
+  ) do |requests|
+    raise TestFailure, "partial result did not receive exactly one requeue" unless
+      requests.count { |request| request.fetch(:method) == "PUT" } == 1
+  end
+end
+
+run.call("unrelated semantic result is requeued") do
+  unrelated = json_response(
+    200, { "assets" => { "items" => [{ "id" => "unrelated-asset" }] } }
+  )
+  expect_success(
+    [unrelated, idle_smart_search_response(failed: 1), requeue_response, complete_response],
+    expected_requests: 4
+  ) do |requests|
+    raise TestFailure, "unrelated result did not receive exactly one requeue" unless
+      requests.count { |request| request.fetch(:method) == "PUT" } == 1
+  end
 end
 
 run.call("missing embeddings are requeued once") do
@@ -300,15 +342,74 @@ end
 end
 
 run.call("persistently busy queue deadline") do
-  epoch = Time.at(1_700_000_000)
+  epoch = 1_700_000_000.0
   empty = json_response(200, { "assets" => { "items" => [] } })
-  with_times(epoch, epoch + 601) do
-    expect_contract_failure(
-      [empty, smart_search_response(is_active: true, active: 1)], expected_requests: 2
-    ) do |requests|
-      raise TestFailure, "persistently busy queue was mutated" if
-        requests.any? { |request| request.fetch(:method) == "PUT" }
+  clock = monotonic_clock(epoch, epoch, epoch, epoch, epoch, epoch + 601)
+  expect_contract_failure(
+    [empty, smart_search_response(is_active: true, active: 1)],
+    expected_requests: 2, clock: clock
+  ) do |requests|
+    raise TestFailure, "persistently busy queue was mutated" if
+      requests.any? { |request| request.fetch(:method) == "PUT" }
+  end
+end
+
+run.call("deadline expiry after smart search prevents queue inspection") do
+  epoch = 1_700_000_000.0
+  empty = json_response(200, { "assets" => { "items" => [] } })
+  clock = monotonic_clock(epoch, epoch, epoch + 601)
+  expect_contract_failure(
+    [empty, idle_smart_search_response(failed: 1), requeue_response],
+    expected_requests: 1, clock: clock
+  ) do |requests|
+    raise TestFailure, "expired search inspected or mutated the queue" unless
+      requests.none? { |request| request.fetch(:path).start_with?("/api/jobs") }
+  end
+end
+
+run.call("deadline expiry during jobs read prevents requeue") do
+  epoch = 1_700_000_000.0
+  empty = json_response(200, { "assets" => { "items" => [] } })
+  clock = monotonic_clock(epoch, epoch, epoch, epoch, epoch + 601)
+  expect_contract_failure(
+    [empty, idle_smart_search_response(failed: 1), requeue_response],
+    expected_requests: 2, clock: clock
+  ) do |requests|
+    raise TestFailure, "expired jobs read performed a PUT" if
+      requests.any? { |request| request.fetch(:method) == "PUT" }
+  end
+end
+
+run.call("deadline expiry before requeue prevents PUT") do
+  epoch = 1_700_000_000.0
+  empty = json_response(200, { "assets" => { "items" => [] } })
+  clock = monotonic_clock(epoch, epoch, epoch, epoch, epoch, epoch + 601)
+  expect_contract_failure(
+    [empty, idle_smart_search_response(failed: 1), requeue_response],
+    expected_requests: 2, clock: clock
+  ) do |requests|
+    raise TestFailure, "expired pre-PUT budget performed a PUT" if
+      requests.any? { |request| request.fetch(:method) == "PUT" }
+  end
+end
+
+run.call("smart search request timeout is capped to the remaining budget") do
+  epoch = 1_700_000_000.0
+  clock = monotonic_clock(epoch, epoch + 599.95)
+  with_stalled_http_server do |requests|
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    error = begin
+      assert_cpu_machine_learning("test-token", FIXTURE_IDS, clock: clock)
+      nil
+    rescue ContractFailure => caught
+      caught
     end
+    elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+    raise TestFailure, "stalled request unexpectedly satisfied the contract" unless error
+    raise TestFailure, "stalled request did not use the remaining deadline budget" unless
+      error.message.match?(%r{POST /api/search/smart failed: (?:Net::ReadTimeout|Timeout::Error)})
+    raise TestFailure, "stalled request exceeded its remaining budget" unless elapsed < 0.5
+    raise TestFailure, "stalled request was attempted more than once" unless requests.call == 1
   end
 end
 
@@ -354,35 +455,72 @@ end
 end
 
 run.call("persistent transient deadline") do
-  epoch = Time.at(1_700_000_000)
-  with_times(epoch, epoch, epoch + 601) do
-    error = expect_contract_failure(
-      [json_response(503, {}), json_response(503, {})],
-      expected_status: 503,
-      expected_requests: 2
-    )
-    raise TestFailure, "deadline failure omitted the semantic result count" unless
-      error.message.include?("0 embedded asset(s)")
-  end
+  epoch = 1_700_000_000.0
+  clock = monotonic_clock(epoch, epoch, epoch, epoch, epoch, epoch + 601)
+  error = expect_contract_failure(
+    [json_response(503, {}), json_response(503, {})],
+    expected_status: 503, expected_requests: 2, clock: clock
+  )
+  raise TestFailure, "deadline failure omitted the semantic result count" unless
+    error.message.include?("0 embedded asset(s)")
 end
 
 run.call("persistent missing embeddings requeue only once") do
-  epoch = Time.at(1_700_000_000)
+  epoch = 1_700_000_000.0
   empty = json_response(200, { "assets" => { "items" => [] } })
-  with_times(epoch, epoch, epoch + 601) do
-    error = expect_contract_failure(
-      [empty, idle_smart_search_response(failed: 1), requeue_response, empty],
-      expected_requests: 4
-    ) do |requests|
-      requeues = requests.select do |entry|
-        entry.values_at(:method, :path) == ["PUT", "/api/jobs/smartSearch"]
-      end
-      raise TestFailure, "made #{requeues.length} recovery requests, expected one" unless
-        requeues.length == 1
+  clock = monotonic_clock(
+    epoch, epoch, epoch, epoch, epoch, epoch, epoch, epoch, epoch, epoch + 601
+  )
+  error = expect_contract_failure(
+    [empty, idle_smart_search_response(failed: 1), requeue_response, empty],
+    expected_requests: 4, clock: clock
+  ) do |requests|
+    requeues = requests.select do |entry|
+      entry.values_at(:method, :path) == ["PUT", "/api/jobs/smartSearch"]
     end
-    raise TestFailure, "deadline failure omitted the semantic result count" unless
-      error.message.include?("0 embedded asset(s)")
+    raise TestFailure, "made #{requeues.length} recovery requests, expected one" unless
+      requeues.length == 1
   end
+  raise TestFailure, "deadline failure omitted the semantic result count" unless
+    error.message.include?("0 embedded asset(s)")
+end
+
+run.call("persistent partial embeddings requeue only once") do
+  epoch = 1_700_000_000.0
+  partial = json_response(
+    200, { "assets" => { "items" => [{ "id" => FIXTURE_IDS.first }] } }
+  )
+  clock = monotonic_clock(
+    epoch, epoch, epoch, epoch, epoch, epoch, epoch, epoch, epoch, epoch + 601
+  )
+  error = expect_contract_failure(
+    [partial, idle_smart_search_response(failed: 1), requeue_response, partial],
+    expected_requests: 4, clock: clock
+  ) do |requests|
+    raise TestFailure, "persistent partial result did not requeue exactly once" unless
+      requests.count { |request| request.fetch(:method) == "PUT" } == 1
+  end
+  raise TestFailure, "partial deadline failure omitted the semantic result count" unless
+    error.message.include?("1 embedded asset(s)")
+end
+
+run.call("persistent unrelated embeddings requeue only once") do
+  epoch = 1_700_000_000.0
+  unrelated = json_response(
+    200, { "assets" => { "items" => [{ "id" => "unrelated-asset" }] } }
+  )
+  clock = monotonic_clock(
+    epoch, epoch, epoch, epoch, epoch, epoch, epoch, epoch, epoch, epoch + 601
+  )
+  error = expect_contract_failure(
+    [unrelated, idle_smart_search_response(failed: 1), requeue_response, unrelated],
+    expected_requests: 4, clock: clock
+  ) do |requests|
+    raise TestFailure, "persistent unrelated result did not requeue exactly once" unless
+      requests.count { |request| request.fetch(:method) == "PUT" } == 1
+  end
+  raise TestFailure, "unrelated deadline failure omitted the semantic result count" unless
+    error.message.include?("1 embedded asset(s)")
 end
 
 unless failures.empty?
