@@ -127,6 +127,18 @@
       "datasourceTemplate": "pypi"
     },
     {
+      "description": "Requests pinned by the integration harness.",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^tests/integration\\.sh$/"
+      ],
+      "matchStrings": [
+        "requests_version=(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)"
+      ],
+      "depNameTemplate": "requests",
+      "datasourceTemplate": "pypi"
+    },
+    {
       "description": "Python image used by the integration sandbox and its cleanup helper. All three files must move together or cleanup pulls a second image.",
       "customType": "regex",
       "managerFilePatterns": [
