@@ -1451,7 +1451,13 @@ def assert_cpu_machine_learning(token, expected_ids)
       rescue JSON::ParserError
         fail_contract("POST /api/search/smart returned malformed JSON")
       end
-      found = payload.fetch("assets").fetch("items").map { |item| item["id"] }
+      items = payload.is_a?(Hash) && payload["assets"].is_a?(Hash) &&
+              payload["assets"]["items"]
+      fail_contract("POST /api/search/smart returned an unsupported schema") unless
+        items.is_a?(Array) && items.all? do |item|
+          item.is_a?(Hash) && item["id"].is_a?(String)
+        end
+      found = items.map { |item| item.fetch("id") }
       return if (expected_ids - found).empty?
     end
 
