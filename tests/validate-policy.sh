@@ -6,7 +6,7 @@
 # 15m28s, which made `static` the second-longest job in CI and made a full local
 # run impractical enough to skip.
 #
-# Each check stays one bare command per line. tests/policy_test.rb asserts that
+# Each check stays one bare command per line. tests/policy_ci_test.rb asserts that
 # every check appears exactly once as a stripped line of this file, and
 # tests/policy_manifest_test.rb proves that deleting a line is caught. Wrapping
 # these lines in a helper, or prefixing them, silently disables those guards
@@ -24,6 +24,13 @@ set -eu
 policy_checks() {
   cat <<'POLICY_CHECKS'
 ruby tests/policy_test.rb
+ruby tests/policy_platform_test.rb
+ruby tests/policy_ci_test.rb
+ruby tests/policy_beszel_test.rb
+ruby tests/policy_integration_test.rb
+ruby tests/policy_deployment_test.rb
+ruby tests/policy_mac_test.rb
+ruby tests/policy_vault_test.rb
 ruby tests/renovate_policy_test.rb
 tests/policy_runner_test.sh
 ruby tests/paperless_mail_reconciliation_test.rb

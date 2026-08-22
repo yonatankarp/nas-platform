@@ -373,20 +373,37 @@ all_uses.group_by { |uses| uses.split("@", 2).first }.each do |name, uses|
 end
 
 # The ansible-core pin is restated outside ci.yml: the integration sandbox builds its
-# runner image from it, and the Beszel telemetry test refuses to run against any other
-# version. Renovate maintains all three, so assert they agree rather than pinning a
-# version here. A bump that updates only some of them fails immediately and by name,
-# instead of surfacing later as a confusing suite failure.
+# runner image from it, the Beszel telemetry test refuses to run against any other
+# version, and controller-requirements.txt is what an operator actually installs from.
+# Assert they agree rather than pinning a version here. A bump that updates only some
+# of them fails immediately and by name, instead of surfacing later as a confusing
+# suite failure.
+#
+# controller-requirements.txt is the one that needs asserting most: unlike the other
+# mirrors it has no Renovate manager, so nothing bumps it automatically and a stale
+# pin there means the documented install produces a different ansible-core than CI
+# validates against, on the machine that runs production deployments.
 if ansible_pin
   expected_core = ansible_pin[1]
   {
     "tests/integration.sh" => /^ansible_core_version=(\d+\.\d+\.\d+)$/,
-    "tests/beszel_telemetry_ansible_test.rb" => /^REQUIRED_ANSIBLE_CORE = "(\d+\.\d+\.\d+)"/
+    "tests/beszel_telemetry_ansible_test.rb" => /^REQUIRED_ANSIBLE_CORE = "(\d+\.\d+\.\d+)"/,
+    "controller-requirements.txt" => /^ansible-core==(\d+\.\d+\.\d+)$/
   }.each do |relative, pattern|
     mirrored = File.read(File.expand_path("../../#{relative}", __dir__))[pattern, 1]
     check(failures, mirrored == expected_core,
           "#{relative} must pin ansible-core #{expected_core} to match ci.yml, got #{mirrored.inspect}")
   end
+
+  # ansible-lint is pinned in both places too, and lint results depend on the core it
+  # runs against, so the pair must move together.
+  expected_lint = ansible_pin[2]
+  controller_lint = File.read(File.expand_path("../../controller-requirements.txt", __dir__))[
+    /^ansible-lint==(\d+\.\d+\.\d+)$/, 1
+  ]
+  check(failures, controller_lint == expected_lint,
+        "controller-requirements.txt must pin ansible-lint #{expected_lint} to match ci.yml, " \
+        "got #{controller_lint.inspect}")
 end
 
 unless failures.empty?

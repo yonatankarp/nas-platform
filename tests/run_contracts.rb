@@ -2,6 +2,7 @@
 # Validate and execute every registered service contract.
 
 require "open3"
+require "rbconfig"
 require "pathname"
 require "timeout"
 require "yaml"
@@ -129,11 +130,47 @@ unless failures.empty?
   abort "#{failures.length} contract registry violation(s)"
 end
 
+# A contract is a thin shell wrapper around embedded Ruby: across the registered
+# contracts the Ruby outweighs the shell roughly twenty to one. `sh -n` treats a
+# quoted heredoc as opaque text, so on its own it proves only that the wrapper
+# parses, and a Ruby syntax error inside a heredoc survived validation entirely
+# until it was reached by an actual integration run. Each heredoc body is therefore
+# parsed as Ruby here too, which is the only static check that ever sees it.
+def ruby_heredoc_bodies(source)
+  bodies = []
+  current = nil
+  source.each_line do |line|
+    if current
+      if line.chomp == "RUBY"
+        bodies << current
+        current = nil
+      else
+        current << line
+      end
+    elsif line.include?("<<'RUBY'")
+      current = +""
+    end
+  end
+  # An unterminated heredoc is itself a defect worth reporting rather than dropping.
+  bodies << current if current
+  bodies
+end
+
 entries.each do |entry|
   path = File.expand_path(entry.fetch("path"), ROOT)
   _stdout, _stderr, syntax = Open3.capture3("sh", "-n", path)
   unless syntax.success?
     warn "FAIL #{entry.fetch('service')} #{entry.fetch('path')}: contract shell syntax is invalid"
+    exit 1
+  end
+
+  ruby_heredoc_bodies(File.read(path)).each_with_index do |body, index|
+    _out, err, ruby_syntax = Open3.capture3(RbConfig.ruby, "-c", stdin_data: body)
+    next if ruby_syntax.success?
+
+    warn "FAIL #{entry.fetch('service')} #{entry.fetch('path')}: " \
+         "embedded Ruby block #{index + 1} has invalid syntax"
+    warn err.lines.first(3).map { |l| "  #{l.rstrip}" }.join("\n")
     exit 1
   end
 end

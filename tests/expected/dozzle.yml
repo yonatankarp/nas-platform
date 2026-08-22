@@ -1,0 +1,10 @@
+---
+role: dozzle
+container_cpus:
+  alert-relay: 0.5
+  dozzle: 1.0
+  socket-proxy: 0.5
+vault_keys:
+  - vault_dozzle_admin_password
+  - vault_dozzle_admin_password_hash
+  - vault_dozzle_admin_username

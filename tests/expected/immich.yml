@@ -1,0 +1,13 @@
+---
+role: immich
+container_cpus:
+  immich-server: 3.0
+  immich-machine-learning: 3.0
+  redis: 0.5
+  database: 2.0
+vault_keys:
+  - vault_immich_admin_email
+  - vault_immich_admin_password
+  - vault_immich_db_name
+  - vault_immich_db_password
+  - vault_immich_db_username
