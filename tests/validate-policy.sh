@@ -62,6 +62,7 @@ ruby tests/audiobookshelf_initial_scan_test.rb
 ruby tests/audiobookshelf_initial_scan_behavior_test.rb
 ruby tests/immich_user_onboarding_test.rb
 ruby tests/immich_configured_password_test.rb
+ruby tests/immich_smart_search_retry_test.rb
 ruby tests/database_managed_users_test.rb
 ruby tests/database_managed_users_test.rb --self-test
 ruby tests/ntfy_verify_execution_test.rb

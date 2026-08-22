@@ -1440,15 +1440,25 @@ end
 def assert_cpu_machine_learning(token, expected_ids)
   deadline = Time.now + 600
   loop do
-    _response, payload = request(
-      "post", "/api/search/smart", token: token, body: { "query" => "a photograph" }
+    response = request(
+      "post", "/api/search/smart", token: token, body: { "query" => "a photograph" },
+      expected: [200, 500, 502, 503, 504], raw: true
     )
-    found = payload.fetch("assets").fetch("items").map { |item| item["id"] }
-    return if (expected_ids - found).empty?
+    found = []
+    if response.code.to_i == 200
+      begin
+        payload = JSON.parse(response.body)
+      rescue JSON::ParserError
+        fail_contract("POST /api/search/smart returned malformed JSON")
+      end
+      found = payload.fetch("assets").fetch("items").map { |item| item["id"] }
+      return if (expected_ids - found).empty?
+    end
 
     if Time.now >= deadline
       fail_contract("smart search never returned the fixtures; " \
-                    "machine learning produced #{found.length} embedded asset(s)")
+                    "last HTTP status was #{response.code} and machine learning produced " \
+                    "#{found.length} embedded asset(s)")
     end
     sleep 5
   end
