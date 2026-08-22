@@ -206,9 +206,19 @@ def require_portable_restore_identity_defaults
       "expected_gid" => 4243
     },
     {
-      "name" => "factless NAS deployment",
+      "name" => "factful production NAS deployment",
       "platform_kind" => "nas",
+      "platform_manage_linux_ownership" => false,
+      "ansible_facts" => { "user_uid" => 5252, "user_gid" => 5353 },
+      "expected_uid" => 0,
+      "expected_gid" => 0
+    },
+    {
+      "name" => "factful managed-Linux integration deployment",
+      "platform_kind" => "mac",
+      "platform_compose_kind" => "integration",
       "platform_manage_linux_ownership" => true,
+      "ansible_facts" => { "user_uid" => 6262, "user_gid" => 6363 },
       "expected_uid" => 0,
       "expected_gid" => 0
     }
@@ -223,7 +233,9 @@ def require_portable_restore_identity_defaults
         "gather_facts" => false,
         "vars" => required_secrets.merge(
           fixture.reject { |key, _value| key == "name" },
-          "platform_compose_kind" => fixture.fetch("platform_kind"),
+          "platform_compose_kind" => fixture.fetch(
+            "platform_compose_kind", fixture.fetch("platform_kind")
+          ),
           "nas_docker_root" => File.join(directory, "docker")
         ),
         "roles" => [{ "role" => "immich", "tags" => ["never"] }],
