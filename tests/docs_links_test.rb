@@ -252,60 +252,127 @@ def normalized_prose(markdown)
   normalized_document_blocks(markdown).join(" ")
 end
 
-def tinymediamanager_instruction_violations(markdown)
-  tinymediamanager = /(?<![#\/])\btinyMediaManager\b/i
-  lifecycle_action = /\b(?:
-    run |
-    deploy(?:ed|s|ing)? |
-    enable(?:d|s|ing)? |
-    start(?:ed|s|ing)? |
-    restart(?:ed|s|ing)? |
-    launch(?:ed|es|ing)?
-  )\b/ix
-  bring_up_action = /\b(?:bring|bringing|brought)\s+up\b/i
-  authentication_action = /\b(?:authenticate|authenticated|authenticating|access)\b/i
-  sign_in_action = /\b(?:sign|log)\s+in\b/i
-  before_tinymediamanager = lambda do |action|
-    Regexp.new(
-      "#{action.source}.{0,60}#{tinymediamanager.source}",
-      Regexp::IGNORECASE | Regexp::EXTENDED
-    )
+def instruction_tokens(clause)
+  clause.to_enum(:scan, /[[:alnum:]][[:alnum:]_-]*/).map do
+    match = Regexp.last_match
+    { word: match[0].downcase, start: match.begin(0) }
   end
-  active_instruction = Regexp.union(
-    before_tinymediamanager.call(lifecycle_action),
-    before_tinymediamanager.call(bring_up_action),
-    before_tinymediamanager.call(authentication_action),
-    before_tinymediamanager.call(sign_in_action),
-    /(?<![#\/])\btinyMediaManager\b.{0,60}\b(?:is|remains?|can)\s+run(?:ning)?\b/i,
-    /\b(?:open|call|query)\b.*\b(?:UI|API)\b/i,
-    /\b(?:confirm|verify|check|test|exercise)\b.*\b(?:UI|API|login|password|running|active)\b/i,
-    /\bAPI password\b.*\b(?:authoriz|authenticat)/i,
-    /\b(?:scan|edit|write)\b.*\b(?:media|metadata|NFO|library|settings)\b/i
-  )
-  local_negation = /(?:
-    \bdo\s+not |
-    \bdon't |
-    \bmust\s+not |
-    \bnever |
-    \bdoes\s+not |
-    \bwithout |
-    \b(?:is|are|was|were)\s+not
-  )\s*\z/ix
-  local_alternative = /\brather than attempting (?:an?\s+)?(?:\w+\s+){0,2}\z/i
+end
 
+def locally_negated_action?(tokens, action_index)
+  preceding = tokens[[action_index - 5, 0].max...action_index].map { |token| token[:word] }
+  return true if preceding.last(3).any? { |word| %w[not never without].include?(word) }
+
+  preceding.include?("rather") && preceding.include?("than")
+end
+
+def tinymediamanager_target_indices(clause, tokens)
+  clause.to_enum(:scan, /(?<![#\/])\btinyMediaManager\b/i).filter_map do
+    target_start = Regexp.last_match.begin(0)
+    tokens.index { |token| token[:start] == target_start }
+  end
+end
+
+def lifecycle_action_indices(tokens)
+  lifecycle_words = %w[
+    run running deploy deployed deploying enable enabled enabling start started
+    starting restart restarted restarting launch launched launching
+  ]
+  tokens.each_index.select do |index|
+    word = tokens[index][:word]
+    lifecycle_words.include?(word) ||
+      (%w[bring bringing brought].include?(word) && tokens[index + 1]&.dig(:word) == "up")
+  end
+end
+
+def unsafe_tinymediamanager_lifecycle?(tokens, targets)
+  action_before_target = %w[run deploy enable start restart launch bring]
+  target_before_auxiliaries = %w[be can is may must remains should was were will]
+  target_references = %w[container it service]
+  lifecycle_action_indices(tokens).any? do |action_index|
+    next false if locally_negated_action?(tokens, action_index)
+    next false if other_service_after_action?(tokens, action_index)
+
+    targets.any? do |target_index|
+      if action_index < target_index
+        next false unless target_index - action_index <= 3
+
+        action_before_target.include?(tokens[action_index][:word])
+      else
+        next false unless action_index - target_index <= 8
+
+        action_word = tokens[action_index][:word]
+        between_words = tokens[(target_index + 1)...action_index].map { |token| token[:word] }
+        following_words = tokens[(action_index + 1)..(action_index + 4)].to_a.map do |token|
+          token[:word]
+        end
+        !action_before_target.include?(action_word) ||
+          !(between_words & target_before_auxiliaries).empty? ||
+          !(following_words & target_references).empty?
+      end
+    end
+  end
+end
+
+def other_service_after_action?(tokens, action_index)
+  other_services = %w[
+    audiobookshelf bazarr beszel dozzle immich jellyfin komga ntfy paperless
+    paperless-ngx radarr sonarr
+  ]
+  tokens[(action_index + 1)..(action_index + 10)].to_a.any? do |token|
+    other_services.include?(token[:word])
+  end
+end
+
+def unsafe_tinymediamanager_service_action?(tokens, targets)
+  action_contracts = [
+    [%w[authenticate authenticated authenticating access], nil],
+    [%w[open call query], %w[ui api]],
+    [%w[scan edit write], %w[media metadata nfo library settings state]],
+    [%w[confirm verify check test exercise], %w[ui api login password active]]
+  ]
+  reference_words = %w[it its service ui api media metadata nfo library settings state]
+
+  tokens.each_index.any? do |action_index|
+    contract = action_contracts.find { |words, _objects| words.include?(tokens[action_index][:word]) }
+    sign_in = %w[sign log].include?(tokens[action_index][:word]) &&
+      tokens[action_index + 1]&.dig(:word) == "in"
+    next false unless contract || sign_in
+    next false if locally_negated_action?(tokens, action_index)
+
+    objects = contract&.last
+    target_after = targets.any? do |target_index|
+      target_index > action_index && target_index - action_index <= 8
+    end
+    target_before = targets.any? do |target_index|
+      target_index < action_index && action_index - target_index <= 8
+    end
+    next false unless target_after || target_before
+    next false if other_service_after_action?(tokens, action_index)
+
+    following_words = tokens[(action_index + 1)..(action_index + 10)].to_a.map do |token|
+      token[:word]
+    end
+    if objects
+      !(following_words & objects).empty?
+    else
+      target_after || !(following_words & reference_words).empty?
+    end
+  end
+end
+
+def tinymediamanager_instruction_violations(markdown)
   normalized_document_blocks(markdown).flat_map do |block|
     block.split(/(?<=[.!?;])\s+/)
   end.flat_map do |sentence|
-    sentence.split(/;\s+|,\s+(?:but|then)\s+/i)
+    sentence.split(/;\s+|,\s+(?:but|then)\s+|\s+and\s+then\s+/i)
   end.filter_map do |clause|
-    next unless clause.match?(tinymediamanager)
+    tokens = instruction_tokens(clause)
+    targets = tinymediamanager_target_indices(clause, tokens)
+    next if targets.empty?
 
-    unsafe = clause.to_enum(:scan, active_instruction).any? do
-      match = Regexp.last_match
-      prefix = clause[0...match.begin(0)]
-      !prefix.match?(local_negation) && !prefix.match?(local_alternative)
-    end
-    clause if unsafe
+    clause if unsafe_tinymediamanager_lifecycle?(tokens, targets) ||
+              unsafe_tinymediamanager_service_action?(tokens, targets)
   end
 end
 
@@ -633,21 +700,35 @@ def self_test
     "Authenticate to tinyMediaManager.\n",
     "Access tinyMediaManager.\n",
     "Do not delete media; start tinyMediaManager.\n",
-    "Do not delete media and then start tinyMediaManager.\n"
+    "Do not delete media and then start tinyMediaManager.\n",
+    "For tinyMediaManager, enable the service.\n",
+    "tinyMediaManager should be deployed temporarily.\n",
+    "Start tinyMediaManager.\n",
+    "tinyMediaManager can run now.\n",
+    "For tinyMediaManager, open its UI.\n",
+    "For tinyMediaManager, authenticate to it.\n",
+    "For tinyMediaManager, scan its library.\n"
   ]
   missed_instructions = unsafe_instructions.select do |instruction|
     tinymediamanager_instruction_violations(instruction).empty?
   end
-  unless missed_instructions.empty?
-    warn "docs links missed tinyMediaManager instructions: #{missed_instructions.inspect}"
-    exit 1
-  end
   safe_instructions = [
     "Do not start tinyMediaManager.\n",
-    "Never authenticate to tinyMediaManager.\n"
+    "Never authenticate to tinyMediaManager.\n",
+    "Confirm tinyMediaManager is not running.\n",
+    "tinyMediaManager is not enabled.\n",
+    "After retiring tinyMediaManager, enable Jellyfin.\n",
+    "After retiring tinyMediaManager, open the Jellyfin UI.\n",
+    "After retiring tinyMediaManager, scan the Jellyfin library.\n"
   ]
-  unless safe_instructions.all? { |instruction| tinymediamanager_instruction_violations(instruction).empty? }
-    warn "docs links local tinyMediaManager negation self-test failed"
+  rejected_safe_instructions = safe_instructions.reject do |instruction|
+    tinymediamanager_instruction_violations(instruction).empty?
+  end
+  unless missed_instructions.empty? && rejected_safe_instructions.empty?
+    warn "docs links missed tinyMediaManager instructions: #{missed_instructions.inspect}" unless
+      missed_instructions.empty?
+    warn "docs links rejected safe tinyMediaManager instructions: #{rejected_safe_instructions.inspect}" unless
+      rejected_safe_instructions.empty?
     exit 1
   end
   rollback_exclusion = <<~MARKDOWN
