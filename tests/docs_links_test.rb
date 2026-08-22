@@ -581,6 +581,186 @@ def retirement_section_contracts
   end
 end
 
+def approved_retirement_block(label, text_prefix)
+  prefix = normalize_block_text(text_prefix)
+  retirement_block_contracts.fetch(label).find do |block|
+    block[:text].start_with?(prefix)
+  end || raise("missing retirement block contract for #{label}: #{prefix}")
+end
+
+def retirement_context_windows
+  @retirement_context_windows ||= [
+    {
+      label: "README", path: ["# NAS platform", "## New to Ansible?"], size: 6, index: 5,
+      blocks: [
+        approved_retirement_block("README", "The service stacks"),
+        retirement_block(
+          path: ["# NAS platform", "## Design", "### Container CPU policy"], kind: :paragraph,
+          text: "Production containers are restricted to logical CPUs `0-2` on the four-core AS6704T, leaving one logical CPU free of container processes. Every Compose service also has a workload-specific hard ceiling between 0.5 and 3.0 CPUs. Compute-heavy services may use the full three-CPU container set when it is idle; lighter services cannot monopolize it. Docker's default equal CPU shares remain unchanged."
+        )
+      ]
+    },
+    {
+      label: "README", path: ["# NAS platform", "## Testing"], size: 3, index: 2,
+      blocks: [
+        approved_retirement_block("README", "The current Mac proof"),
+        retirement_block(
+          path: ["# NAS platform", "## Testing", "### Disposable Mac platform proof"], kind: :paragraph,
+          text: "The Mac lifecycle harness creates a unique Docker Desktop sandbox, reuses an encrypted portable vault without decrypting it on disk, and records sanitized JSON and Markdown evidence outside the service-data tree. Run a fresh proof with:"
+        )
+      ]
+    },
+    {
+      label: "beginner guide",
+      path: ["# Getting started with NAS platform", "## Before running anything"], size: 5, index: 1,
+      blocks: [
+        approved_retirement_block("beginner guide", "The migration is still in progress"),
+        retirement_block(
+          path: ["# Getting started with NAS platform", "## Before running anything"], kind: :paragraph,
+          text: "The two supported routes are deliberately separate:"
+        )
+      ]
+    },
+    {
+      label: "NAS guide", path: ["# Physical NAS walkthrough"], size: 2, index: 0,
+      blocks: [
+        approved_retirement_block("NAS guide", "This path targets"),
+        retirement_block(
+          path: ["# Physical NAS walkthrough"], kind: :paragraph,
+          text: "Commands are labelled **read-only**, **check mode**, or **changes production**."
+        )
+      ]
+    },
+    {
+      label: "NAS guide", path: ["# Physical NAS walkthrough", "## 7. Verify and prove idempotence"],
+      size: 10, index: 4,
+      blocks: [
+        approved_retirement_block("NAS guide", "Record the Git commit"),
+        retirement_block(
+          path: ["# Physical NAS walkthrough", "## 7. Verify and prove idempotence"], kind: :paragraph,
+          text: "The platform provisions three ntfy topics: severity first, then subject."
+        )
+      ]
+    },
+    {
+      label: "NAS guide", path: ["# Physical NAS walkthrough", "## Automatic deployment from the NAS"],
+      size: 23, index: 11,
+      blocks: [
+        approved_retirement_block("NAS guide", "ansible-playbook -i inventory/local.yml validate-vault.yml"),
+        approved_retirement_block("NAS guide", "The `platform_verify_tinymediamanager` tag")
+      ]
+    },
+    {
+      label: "NAS guide", path: ["# Physical NAS walkthrough", "## Automatic deployment from the NAS"],
+      size: 23, index: 12,
+      blocks: [
+        approved_retirement_block("NAS guide", "The `platform_verify_tinymediamanager` tag"),
+        retirement_block(
+          path: ["# Physical NAS walkthrough", "## Automatic deployment from the NAS"], kind: :paragraph,
+          text: "Only after those three commands pass, install the poller and its single five-minute cron entry:"
+        )
+      ]
+    },
+    {
+      label: "NAS guide",
+      path: ["# Physical NAS walkthrough", "## Recover after loss of `/volume1`", "### Converge in recovery stages"],
+      size: 9, index: 8,
+      blocks: [
+        approved_retirement_block("NAS guide", "Do not interpret a clean play recap"),
+        retirement_block(
+          path: ["# Physical NAS walkthrough", "## Recovery and rollback boundary"], kind: :paragraph,
+          text: "Ansible converges configuration; it is not a database rollback tool. A failed deployment does not authorize deleting volumes, regenerating credentials, decrypting the vault into the repository, or broadly removing Docker data. When only the service-state volume is lost, follow the bounded [`/volume1` recovery procedure](#recover-after-loss-of-volume1) above instead of treating surviving `/volume2` data as a fresh installation."
+        )
+      ]
+    },
+    {
+      label: "Mac guide", path: ["# Disposable Mac proof"], size: 2, index: 1,
+      blocks: [
+        approved_retirement_block("Mac guide", "This proof covers the eight active services"),
+        retirement_block(
+          path: ["# Disposable Mac proof", "## 1. Install and verify prerequisites"], kind: :paragraph,
+          text: "Install [Docker Desktop for Mac](https://docs.docker.com/desktop/setup/install/mac-install/) and start it. From the repository root, install the pinned Ansible tools:"
+        )
+      ]
+    },
+    {
+      label: "Mac guide", path: ["# Disposable Mac proof", "## 4. Perform the manual review"],
+      size: 14, index: 4,
+      blocks: [
+        approved_retirement_block("Mac guide", "Proceed only when the block prints"),
+        retirement_block(
+          path: ["# Disposable Mac proof", "## 4. Perform the manual review"], kind: :list_item,
+          text: "Audiobookshelf, Jellyfin, and Komga: sign in with each deployed administrator identity and confirm the disposable libraries remain usable after recreation."
+        )
+      ]
+    },
+    {
+      label: "Mac guide", path: ["# Disposable Mac proof", "## 4. Perform the manual review"],
+      size: 14, index: 11,
+      blocks: [
+        approved_retirement_block("Mac guide", "For tinyMediaManager"),
+        retirement_block(
+          path: ["# Disposable Mac proof", "## 4. Perform the manual review"], kind: :paragraph,
+          text: "After the review, produce the report and clean only the validated sandbox:"
+        )
+      ]
+    },
+    {
+      label: "secrets guide",
+      path: ["# Secrets and encrypted vault", "## Existing deployment recovery", "### Vault contract inventory"],
+      size: 11, index: 9,
+      blocks: [
+        approved_retirement_block("secrets guide", "tinyMediaManager:"),
+        approved_retirement_block("secrets guide", "Managed application users:")
+      ]
+    },
+    {
+      label: "secrets guide",
+      path: ["# Secrets and encrypted vault", "## Existing deployment recovery", "### Vault contract inventory"],
+      size: 11, index: 10,
+      blocks: [
+        approved_retirement_block("secrets guide", "Managed application users:"),
+        retirement_block(
+          path: ["# Secrets and encrypted vault", "## Existing deployment recovery", "### Managed application-user fields"],
+          kind: :paragraph,
+          text: "These lists declare only identities the platform owns. They do not authorize deleting users outside the lists, and they do not authorize replacing the password of an existing identity. During migration, recover each existing identity and matching password from its authoritative source. The examples are synthetic schema illustrations, not deployable credentials."
+        )
+      ]
+    },
+    {
+      label: "Mac manual review",
+      path: ["# Mac platform proof manual review", "## Application checks"], size: 10, index: 3,
+      blocks: [
+        approved_retirement_block("Mac manual review", "tinyMediaManager:"),
+        retirement_block(
+          path: ["# Mac platform proof manual review", "## Application checks"],
+          kind: :list_item, checklist: true,
+          text: "Retired media manager: perform no active UI, API, or metadata-write verification."
+        )
+      ]
+    }
+  ]
+end
+
+def consecutive_block_sequence?(blocks, expected)
+  expected_signatures = expected.map { |block| contract_signature(block) }
+  blocks.each_cons(expected.length).any? do |window|
+    window.map { |block| contract_signature(block) } == expected_signatures
+  end
+end
+
+def retirement_sequence_coverage_failures(label)
+  protected_blocks = retirement_section_contracts.fetch(label, []).flat_map { |section| section[:blocks] }
+  protected_blocks.concat(
+    retirement_context_windows.select { |window| window[:label] == label }.flat_map { |window| window[:blocks] }
+  )
+  retirement_block_contracts.fetch(label).filter_map do |contract|
+    next if protected_blocks.any? { |block| contract_signature(block) == contract_signature(contract) }
+
+    "approved block under #{contract[:heading_path].last.inspect} has no ordered sequence protection"
+  end
+end
+
 def retirement_contract_violations(label, markdown)
   contracts = retirement_block_contracts.fetch(label)
   blocks = markdown_semantic_blocks(markdown)
@@ -625,6 +805,17 @@ def retirement_contract_violations(label, markdown)
       failures << "retirement section differs from its approved complete block sequence"
     end
   end
+
+  retirement_context_windows.select { |window| window[:label] == label }.each do |window|
+    path_blocks = blocks.select { |block| block[:heading_path] == window[:path] }
+    protected_block = window[:blocks].first
+    unless path_blocks.length == window[:size] &&
+           contract_signature(path_blocks[window[:index]] || {}) == contract_signature(protected_block) &&
+           consecutive_block_sequence?(blocks, window[:blocks])
+      failures << "ordered retirement context under #{window[:path].last.inspect} differs from its approved window"
+    end
+  end
+  failures.concat(retirement_sequence_coverage_failures(label))
 
   if label == "NAS guide"
     rollback_blocks = blocks.select { |block| block[:heading_path] == rollback_path }
@@ -1027,6 +1218,60 @@ def self_test
       discovered.key?("docs/getting-started-future.md")
     structural_gap_failures << "future guide lacks explicit-contract failure" if
       operator_retirement_contract_violations(operator_root).empty?
+  end
+
+  adjacency_mutations = {
+    "README introduction" => [
+      "README",
+      readme.sub("\n## Design", "\nStart it now.\n\n## Design")
+    ],
+    "beginner guide" => [
+      "beginner guide",
+      beginner_guide.sub(
+        "\nThe two supported routes are deliberately separate:",
+        "\nStart the retired service now.\n\nThe two supported routes are deliberately separate:"
+      )
+    ],
+    "Mac manual-review guide section" => [
+      "Mac guide",
+      retirement_documents.fetch("Mac guide").sub(
+        "\nAfter the review, produce the report",
+        "\nStart it now.\n\nAfter the review, produce the report"
+      )
+    ],
+    "secrets vault inventory" => [
+      "secrets guide",
+      retirement_documents.fetch("secrets guide").sub(
+        "\n- Managed application users:",
+        "\n- Start the retired service now.\n- Managed application users:"
+      )
+    ],
+    "Mac manual-review checklist" => [
+      "Mac manual review",
+      retirement_documents.fetch("Mac manual review").sub(
+        "\n- [ ] Retired media manager:",
+        "\n- [ ] Start it now.\n- [ ] Retired media manager:"
+      )
+    ]
+  }
+  accepted_adjacency_mutations = adjacency_mutations.filter_map do |context, (label, mutation)|
+    context if retirement_contract_violations(label, mutation).empty?
+  end
+  unless accepted_adjacency_mutations.empty?
+    structural_gap_failures <<
+      "adjacent retirement blocks accepted: #{accepted_adjacency_mutations.join(', ')}"
+  end
+  coverage_probe = retirement_block(
+    path: ["# NAS platform", "## New to Ansible?"], kind: :paragraph,
+    text: "tinyMediaManager future approved context."
+  )
+  retirement_block_contracts.fetch("README") << coverage_probe
+  begin
+    if retirement_sequence_coverage_failures("README").empty?
+      structural_gap_failures << "unprotected future contract entry accepted"
+    end
+  ensure
+    retirement_block_contracts.fetch("README").delete(coverage_probe)
   end
 
   unless structural_gap_failures.empty?
