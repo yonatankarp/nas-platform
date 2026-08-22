@@ -139,6 +139,18 @@ if grep -qF 'tinymediamanager' "$dozzle_verify"; then
   exit 1
 fi
 
+jellyfin_drift=$script_dir/hooks/drift/60-jellyfin.sh
+ruby - "$jellyfin_drift" <<'RUBY'
+hook = File.read(ARGV.fetch(0))
+matcher = hook.index("grep -Eq")
+diagnostic = hook.index("Jellyfin verification refused drift without its fixed diagnostic")
+guard = hook.index("|| {", matcher || 0)
+abort "integration-context-error: Jellyfin drift matcher omits the administrator drift diagnostic" unless
+  hook.include?("The Jellyfin primary administrator is absent, drifted, or has no image\\.")
+abort "integration-context-error: Jellyfin drift matcher can fail silently" unless
+  matcher && guard && diagnostic && matcher < guard && guard < diagnostic
+RUBY
+
 ruby - "$script_dir/run.sh" <<'RUBY'
 runner = File.read(ARGV.fetch(0))
 preconverge = runner.index('mac_run_hooks pre-converge')
