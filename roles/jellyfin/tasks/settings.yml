@@ -145,10 +145,7 @@
     label: jellyfin-plugin-repository
   when:
     - jellyfin_settings_phase == 'preflight'
-    - >-
-      item.normalized_url not in
-      (jellyfin_retired_plugin_repository_urls |
-       default(['https://repo.jellyfin.org/releases/plugin/manifest-stable.json']))
+    - item.normalized_url not in jellyfin_retired_plugin_repository_urls
   no_log: true
 
 - name: Append absent Jellyfin plugin repositories

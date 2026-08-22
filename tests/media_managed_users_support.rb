@@ -173,6 +173,12 @@ def includes_for(service, token_variable = nil)
   ]
 end
 
+# The probes include the role task file directly, so Ansible never loads
+# roles/jellyfin/defaults/main.yml. Every role default the task file reads has to
+# be declared here, the way the per-probe fixtures already declare the encoding
+# policy and the plugin inventory. jellyfin_retired_plugin_repository_urls is
+# pinned to the same retired URL the role asserts, so the probes exercise the
+# production value instead of a harness-only substitute.
 def jellyfin_settings_includes(*phases)
   settings = File.join(ROOT, "roles", "jellyfin", "tasks", "settings.yml")
   phases.flat_map do |phase|
@@ -180,6 +186,8 @@ def jellyfin_settings_includes(*phases)
     scopes.map do |scope|
       label = [phase.capitalize, scope&.capitalize].compact.join(" ")
       variables = { "jellyfin_settings_phase" => phase,
+                    "jellyfin_retired_plugin_repository_urls" =>
+                      [JELLYFIN_RETIRED_STABLE_REPOSITORY],
                     "jellyfin_settings_token" => "{{ jellyfin_reconcile_token | default('admin-token') }}" }
       variables["jellyfin_activation_scope"] = scope if scope
       { "name" => "#{label} fixture Jellyfin settings",
