@@ -9,7 +9,8 @@ docker_log=$fake_bin/docker.log
 
 cleanup() {
   for case_root in "$fake_bin/contract-cases" "$fake_bin/boundary-cases" \
-      "$fake_bin/hostile-repository" "$fake_bin/playbook-sandbox"; do
+      "$fake_bin/hostile-repository" "$fake_bin/playbook-sandbox" \
+      "$fake_bin/check-mode-sandbox"; do
     if [ -d "$case_root" ] && [ ! -L "$case_root" ]; then
       find "$case_root" -depth -mindepth 1 -delete 2>/dev/null || true
       rmdir "$case_root" 2>/dev/null || true
@@ -188,6 +189,14 @@ assert_lifecycle_mode_rejected 'integration lifecycle modes conflict' \
   --consume-lifecycle --observe-lifecycle --suite full
 assert_lifecycle_mode_rejected 'integration lifecycle modes conflict' \
   --observe-lifecycle --consume-lifecycle --suite full
+assert_lifecycle_mode_rejected 'integration lifecycle mode must be the first argument' \
+  site.yml --observe-lifecycle
+assert_lifecycle_mode_rejected 'integration lifecycle mode must be the first argument' \
+  site.yml --consume-lifecycle
+assert_lifecycle_mode_rejected 'integration lifecycle mode must be the first argument' \
+  site.yml --check --observe-lifecycle
+assert_lifecycle_mode_rejected 'integration lifecycle mode must be the first argument' \
+  site.yml --check --consume-lifecycle
 assert_lifecycle_mode_rejected 'integration lifecycle mode conflicts with suite listing' \
   --list-suites --consume-lifecycle
 assert_lifecycle_mode_rejected 'integration lifecycle mode conflicts with suite listing' \
@@ -554,7 +563,7 @@ identity_command = identity.fetch("ansible.builtin.command").fetch("argv")
 abort "retirement fixture does not bind the retained repository identity" unless
   identity_command.first == "{{ ansible_playbook_python }}" &&
     identity_command.last == "{{ playbook_dir }}/.." &&
-    identity.fetch("changed_when") == false
+    identity.fetch("changed_when") == false && identity.fetch("check_mode") == false
 validation = fixture.fetch("tasks").fetch(1)
 validation_command = validation.fetch("ansible.builtin.command").fetch("argv")
 abort "retirement fixture does not validate its disposable context" unless
@@ -564,7 +573,7 @@ abort "retirement fixture does not validate its disposable context" unless
   ] && validation.fetch("environment") == {
     "PLATFORM_CONTRACT_REPO_DIR" => "{{ playbook_dir }}/.."
   } &&
-    validation.fetch("changed_when") == false
+    validation.fetch("changed_when") == false && validation.fetch("check_mode") == false
 task = fixture.fetch("tasks").fetch(2)
 compose = task.fetch("community.docker.docker_compose_v2")
 abort "retirement fixture project source differs" unless
@@ -635,6 +644,52 @@ env \
 }
 [ ! -e "$docker_log" ] || {
   printf 'hostile retirement fixture reached Docker: %s\n' \
+    "$(cat "$docker_log")" >&2
+  exit 1
+}
+
+check_sandbox=$fake_bin/check-mode-sandbox
+mkdir -p "$check_sandbox/docker" "$check_sandbox/media/Media/Movies" \
+  "$check_sandbox/media/Media/Series" "$check_sandbox/report"
+chmod 0700 "$check_sandbox"
+cat > "$check_sandbox/report/tinymediamanager-retirement.env" <<EOF
+TZ=UTC
+PLATFORM_CONTAINER_CPUSET=0
+USER_ID=1000
+GROUP_ID=100
+TINYMEDIAMANAGER_PASSWORD=retirement-fixture-only
+TINYMEDIAMANAGER_DATA_PATH=$check_sandbox/docker/tinymediamanager/data
+TINYMEDIAMANAGER_MOVIES_PATH=$check_sandbox/media/Media/Movies
+TINYMEDIAMANAGER_SERIES_PATH=$check_sandbox/media/Media/Series
+TINYMEDIAMANAGER_WEB_HOST_PORT=4000
+TINYMEDIAMANAGER_API_HOST_PORT=7878
+PLATFORM_PROJECT_NAME=integration
+EOF
+chmod 0600 "$check_sandbox/report/tinymediamanager-retirement.env"
+rm -f "$docker_log"
+check_playbook_status=0
+env \
+  PATH="$fake_bin:$PATH" DOCKER_LOG="$docker_log" \
+  ANSIBLE_CONFIG="$repo_dir/ansible.cfg" \
+  PLATFORM_CONTRACT_REPO_DIR="$repo_dir" \
+  PLATFORM_KIND=nas \
+  PLATFORM_CONTRACT_SANDBOX_ROOT="$check_sandbox" \
+  PLATFORM_CONTRACT_SANDBOX_OWNER_UID="$(id -u)" \
+  PLATFORM_DOCKER_ROOT="$check_sandbox/docker" \
+  PLATFORM_MEDIA_ROOT="$check_sandbox/media" \
+  PLATFORM_REPORT_ROOT="$check_sandbox/report" \
+  PLATFORM_COMPOSE_KIND=integration PLATFORM_PROJECT_NAME=integration \
+  PLATFORM_TINYMEDIAMANAGER_WEB_PORT=4000 \
+  PLATFORM_TINYMEDIAMANAGER_API_PORT=7878 \
+  "$repo_dir/.venv/bin/ansible-playbook" -i localhost, \
+    "$repo_dir/tests/tinymediamanager_retirement_fixture.yml" --check \
+    >/dev/null 2>&1 || check_playbook_status=$?
+[ "$check_playbook_status" -ne 0 ] || {
+  printf '%s\n' 'NAS retirement fixture context passed check mode' >&2
+  exit 1
+}
+[ ! -e "$docker_log" ] || {
+  printf 'check mode skipped fixture validation and reached Docker: %s\n' \
     "$(cat "$docker_log")" >&2
   exit 1
 }

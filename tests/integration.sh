@@ -63,6 +63,13 @@ if [ "$lifecycle_mode_count" -eq 1 ]; then
     printf '%s\n' 'integration lifecycle mode conflicts with describe-only' >&2
     exit 2
   fi
+  case "${1:-}" in
+    --observe-lifecycle|--consume-lifecycle) ;;
+    *)
+      printf '%s\n' 'integration lifecycle mode must be the first argument' >&2
+      exit 2
+      ;;
+  esac
 fi
 
 case "${1:-}" in

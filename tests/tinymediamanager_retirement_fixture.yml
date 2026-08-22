@@ -17,6 +17,7 @@
                      pathlib.Path(supplied).resolve(strict=True) == expected else 1)
           - "{{ playbook_dir }}/.."
       changed_when: false
+      check_mode: false
 
     - name: Validate the disposable test-only retirement fixture context
       ansible.builtin.command:
@@ -26,6 +27,7 @@
       environment:
         PLATFORM_CONTRACT_REPO_DIR: "{{ playbook_dir }}/.."
       changed_when: false
+      check_mode: false
 
     - name: Start the legacy tinyMediaManager fixture
       community.docker.docker_compose_v2:
