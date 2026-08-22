@@ -1953,7 +1953,7 @@ def jellyfin_identity_contract_failures
   failures << "Jellyfin drift fixture does not wait for the renamed library's complete API shape" unless
     drift_wait && drift_rename < drift_wait &&
       contract.match?(/def rename_library.*?"refreshLibrary" => true.*?^end$/m) &&
-      contract.match?(/def wait_for_complete_library.*?folder\["LibraryOptions"\]\.is_a\?\(Hash\).*?safe_id\(folder\["ItemId"\]\).*?^end$/m)
+      contract.match?(/def wait_for_complete_library.*?libraries\(token, deadline: deadline\).*?folder\["LibraryOptions"\].*?safe_id\(item_id\).*?^end$/m)
 
   failures
 end

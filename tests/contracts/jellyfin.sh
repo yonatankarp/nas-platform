@@ -452,6 +452,7 @@ VIDEO_FIXTURE = (
 CLIENT = 'MediaBrowser Client="nas-platform-contract", Device="contract", ' \
          'DeviceId="nas-platform-jellyfin-contract", Version="1.0.0"'
 TRANSCODE_PROOF_TIMEOUT_SECONDS = 60
+LIBRARY_RENAME_POLL_INTERVAL_SECONDS = 1
 
 def fail_contract(message)
   warn "Jellyfin contract failed: #{message}"
@@ -541,8 +542,11 @@ def authenticate(username, password)
   payload
 end
 
-def libraries(token)
-  _response, folders = request("get", "/Library/VirtualFolders", token: token)
+def libraries(token, deadline: nil)
+  _response, folders = request(
+    "get", "/Library/VirtualFolders", token: token, deadline: deadline,
+    timeout_message: deadline && "renamed library did not regain its complete API shape"
+  )
   fail_contract("library response is not complete") unless folders.is_a?(Array)
   folders
 end
@@ -562,21 +566,34 @@ end
 def wait_for_complete_library(token, definition, name:, timeout:)
   # Jellyfin 10.11 returns from a virtual-folder rename before its in-memory
   # CollectionFolder has adopted the new directory and API identity.
-  deadline = Time.now + timeout
+  deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
   loop do
-    folders = libraries(token)
+    remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    fail_contract("renamed library did not regain its complete API shape") if remaining <= 0
+    folders = libraries(token, deadline: deadline)
+    remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    fail_contract("renamed library did not regain its complete API shape") if remaining <= 0
+    fail_contract("renamed library response is malformed") unless folders.all? do |folder|
+      folder.is_a?(Hash) && folder["Locations"].is_a?(Array) &&
+        folder["Locations"].all? { |path| path.is_a?(String) }
+    end
     matches = folders.select do |folder|
-      Array(folder["Locations"]).map { |path| normalize_path(path) }.include?(definition.fetch("Path"))
+      folder.fetch("Locations").map { |path| normalize_path(path) }.include?(definition.fetch("Path"))
     end
     fail_contract("library path #{definition.fetch('Path')} is duplicated after rename") if matches.length > 1
     folder = matches.fetch(0, nil)
-    if folder && folder["Name"] == name && folder["LibraryOptions"].is_a?(Hash) && folder["ItemId"]
-      safe_id(folder["ItemId"])
+    if folder
+      options = folder["LibraryOptions"]
+      fail_contract("renamed library response is malformed") unless
+        options.nil? || options.is_a?(Hash)
+      item_id = folder["ItemId"]
+      safe_id(item_id) unless item_id.nil?
+    end
+    if folder && folder["Name"] == name && options.is_a?(Hash) && item_id
       return folder
     end
 
-    fail_contract("renamed library did not regain its complete API shape") if Time.now >= deadline
-    sleep 1
+    sleep [LIBRARY_RENAME_POLL_INTERVAL_SECONDS, remaining].min
   end
 end
 
