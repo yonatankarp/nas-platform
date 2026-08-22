@@ -187,6 +187,19 @@ def markdown_section(document, heading)
   end.join
 end
 
+def markdown_without_section(document, heading)
+  lines = document.lines
+  heading_index = lines.index { |line| line.rstrip == heading }
+  return document unless heading_index
+
+  heading_level = heading[/\A#+/].length
+  section_end = (heading_index + 1...lines.length).find do |index|
+    next_heading = lines[index].rstrip.match(/\A(#+)(?:\s|\z)/)
+    next_heading && next_heading[1].length <= heading_level
+  end || lines.length
+  (lines.take(heading_index) + lines.drop(section_end)).join
+end
+
 def normalized_checklist_items(markdown)
   items = []
   current = nil
@@ -240,32 +253,59 @@ def normalized_prose(markdown)
 end
 
 def tinymediamanager_instruction_violations(markdown)
+  tinymediamanager = /(?<![#\/])\btinyMediaManager\b/i
+  lifecycle_action = /\b(?:
+    run |
+    deploy(?:ed|s|ing)? |
+    enable(?:d|s|ing)? |
+    start(?:ed|s|ing)? |
+    restart(?:ed|s|ing)? |
+    launch(?:ed|es|ing)?
+  )\b/ix
+  bring_up_action = /\b(?:bring|bringing|brought)\s+up\b/i
+  authentication_action = /\b(?:authenticate|authenticated|authenticating|access)\b/i
+  sign_in_action = /\b(?:sign|log)\s+in\b/i
+  before_tinymediamanager = lambda do |action|
+    Regexp.new(
+      "#{action.source}.{0,60}#{tinymediamanager.source}",
+      Regexp::IGNORECASE | Regexp::EXTENDED
+    )
+  end
   active_instruction = Regexp.union(
-    /\b(?:start|restart|launch)\b/i,
-    /\b(?:sign|log)\s+in\b/i,
+    before_tinymediamanager.call(lifecycle_action),
+    before_tinymediamanager.call(bring_up_action),
+    before_tinymediamanager.call(authentication_action),
+    before_tinymediamanager.call(sign_in_action),
+    /(?<![#\/])\btinyMediaManager\b.{0,60}\b(?:is|remains?|can)\s+run(?:ning)?\b/i,
     /\b(?:open|call|query)\b.*\b(?:UI|API)\b/i,
-    /\b(?:confirm|verify|check|test|exercise)\b.*\b(?:UI|API|login|password)\b/i,
+    /\b(?:confirm|verify|check|test|exercise)\b.*\b(?:UI|API|login|password|running|active)\b/i,
     /\bAPI password\b.*\b(?:authoriz|authenticat)/i,
     /\b(?:scan|edit|write)\b.*\b(?:media|metadata|NFO|library|settings)\b/i
   )
-  negated_instruction = Regexp.union(
-    /\bdo not\b/i,
-    /\bdon't\b/i,
-    /\bmust not\b/i,
-    /\bnever\b/i,
-    /\bno active\b/i,
-    /\bdoes not\b/i,
-    /\bwithout (?:starting|opening|calling|querying|authenticating)\b/i,
-    /\brather than\b/i
-  )
+  local_negation = /(?:
+    \bdo\s+not |
+    \bdon't |
+    \bmust\s+not |
+    \bnever |
+    \bdoes\s+not |
+    \bwithout |
+    \b(?:is|are|was|were)\s+not
+  )\s*\z/ix
+  local_alternative = /\brather than attempting (?:an?\s+)?(?:\w+\s+){0,2}\z/i
 
-  normalized_document_blocks(markdown).select do |block|
-    block.match?(/tinyMediaManager/i)
-  end.flat_map do |block|
+  normalized_document_blocks(markdown).flat_map do |block|
     block.split(/(?<=[.!?;])\s+/)
-  end.select do |sentence|
-    sentence.match?(active_instruction) &&
-      !sentence.match?(negated_instruction)
+  end.flat_map do |sentence|
+    sentence.split(/;\s+|,\s+(?:but|then)\s+/i)
+  end.filter_map do |clause|
+    next unless clause.match?(tinymediamanager)
+
+    unsafe = clause.to_enum(:scan, active_instruction).any? do
+      match = Regexp.last_match
+      prefix = clause[0...match.begin(0)]
+      !prefix.match?(local_negation) && !prefix.match?(local_alternative)
+    end
+    clause if unsafe
   end
 end
 
@@ -582,6 +622,53 @@ def self_test
   safe_negation = "For tinyMediaManager, do not open its UI or API.\n"
   unless tinymediamanager_instruction_violations(safe_negation).empty?
     warn "docs links negated tinyMediaManager instruction self-test failed"
+    exit 1
+  end
+  unsafe_instructions = [
+    "Run tinyMediaManager now.\n",
+    "Deploy tinyMediaManager.\n",
+    "Enable tinyMediaManager.\n",
+    "Bring up tinyMediaManager.\n",
+    "Confirm tinyMediaManager is running.\n",
+    "Authenticate to tinyMediaManager.\n",
+    "Access tinyMediaManager.\n",
+    "Do not delete media; start tinyMediaManager.\n",
+    "Do not delete media and then start tinyMediaManager.\n"
+  ]
+  missed_instructions = unsafe_instructions.select do |instruction|
+    tinymediamanager_instruction_violations(instruction).empty?
+  end
+  unless missed_instructions.empty?
+    warn "docs links missed tinyMediaManager instructions: #{missed_instructions.inspect}"
+    exit 1
+  end
+  safe_instructions = [
+    "Do not start tinyMediaManager.\n",
+    "Never authenticate to tinyMediaManager.\n"
+  ]
+  unless safe_instructions.all? { |instruction| tinymediamanager_instruction_violations(instruction).empty? }
+    warn "docs links local tinyMediaManager negation self-test failed"
+    exit 1
+  end
+  rollback_exclusion = <<~MARKDOWN
+    Run tinyMediaManager outside the rollback section.
+
+    ### Temporary rollback procedure
+
+    Run tinyMediaManager only within this approved procedure.
+
+    ### Following section
+
+    Do not start tinyMediaManager here.
+  MARKDOWN
+  scannable_rollback_probe = markdown_without_section(
+    rollback_exclusion,
+    "### Temporary rollback procedure"
+  )
+  unless tinymediamanager_instruction_violations(scannable_rollback_probe) == [
+    "Run tinyMediaManager outside the rollback section."
+  ]
+    warn "docs links tinyMediaManager rollback exclusion self-test failed"
     exit 1
   end
   Dir.mktmpdir("docs-links-test") do |directory|
@@ -957,7 +1044,15 @@ else
       prose.match?(/tinyMediaManager.*retired.*(?:must remain|remains) stopped/im)
     failures << "#{label} must identify tinyMediaManager bind-mounted state as preserved" unless
       prose.match?(/tinyMediaManager.*bind-mounted state.*preserv/im)
-    tinymediamanager_instruction_violations(document).each do |instruction|
+    scannable_document = if label == "NAS guide"
+                           markdown_without_section(
+                             document,
+                             "### Temporary rollback procedure"
+                           )
+                         else
+                           document
+                         end
+    tinymediamanager_instruction_violations(scannable_document).each do |instruction|
       failures << "#{label} contains an affirmative tinyMediaManager instruction: #{instruction}"
     end
   end
@@ -999,10 +1094,12 @@ else
       "stop Radarr and Sonarr and verify both containers absent",
     /keep.*Radarr.*Sonarr.*stopped.*entire.*tinyMediaManager.*run/im =>
       "keep arr writers stopped for the entire tinyMediaManager run",
-    /before.*restart.*arr.*stop.*remove.*tinyMediaManager.*verify.*container.*absent/im =>
-      "remove tinyMediaManager before restarting arr writers",
     /restore.*intended current.*revision.*converge.*re-enable.*auto-deploy/im =>
-      "restore the intended current platform before re-enabling deployment automation"
+      "restore the intended current platform before re-enabling deployment automation",
+    /restore.*intended current platform revision.*converge.*retirement role.*stop.*remove.*without volumes/im =>
+      "use the intended current retirement role for bounded container removal",
+    /verify.*tinyMediaManager.*container.*absent.*only then.*restart.*Radarr.*Sonarr.*re-enable.*auto-deploy/im =>
+      "verify retirement before restarting arr writers and deployment automation"
   }
   required_rollback_guidance.each do |pattern, requirement|
     failures << "NAS retirement checkpoint must #{requirement}" unless nas_retirement.match?(pattern)

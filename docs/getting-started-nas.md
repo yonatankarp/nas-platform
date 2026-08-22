@@ -77,11 +77,12 @@ inventory. Use this mutual-exclusion procedure:
 4. Check the temporary commit with `--check --diff`, review every change, and
    then converge it. Confirm that Movies and Series still point to their
    existing paths. The invariant is one media writer at a time.
-5. Before restarting any arr writer, stop and remove tinyMediaManager without
-   volumes and verify its container is absent. Restore the intended current
-   platform revision and converge it, confirm the retirement verification
-   passes, and only then re-enable the auto-deployer. Radarr and Sonarr must
-   remain stopped until this step is complete.
+5. Before restarting any arr writer, restore or check out the intended current
+   platform revision and converge it. Its tinyMediaManager retirement role is
+   the mechanism that stops and removes the container without volumes; do not
+   substitute an unbounded manual Compose command. Verify the tinyMediaManager
+   container is absent and the retirement checks pass. Only then restart Radarr
+   and Sonarr and re-enable the auto-deployer.
 
 The temporary branch and commit are rollback evidence, not a new deployment
 baseline. If any container-absence or path check is ambiguous, stop the
