@@ -116,6 +116,7 @@ BASE_FIXTURE_PATHS = %w[
   tests/mac/verify.sh
   tests/policy_test.rb
   tests/policy_support.rb
+  tests/policy_vault_test.rb
   tests/run_contracts.rb
   tests/verify_deployment_manifest.rb
   tests/validate-policy.sh
@@ -230,14 +231,26 @@ def service(manifest, name)
   manifest.fetch("services").find { |entry| entry["name"] == name }
 end
 
-def run_policy
+# Every policy script the suite is split across. A mutation may be caught by any of
+# them, so all of them run against one sandbox and their output is concatenated: a
+# check that moved to another file must still report, not silently stop mattering.
+POLICY_SCRIPTS = %w[
+  tests/policy_test.rb
+  tests/policy_vault_test.rb
+].freeze
+
+def run_policy(scripts = POLICY_SCRIPTS)
   Dir.mktmpdir("nas-platform-policy-") do |sandbox|
     copy_fixture(ROOT, sandbox)
     yield sandbox
-    stdout, stderr, status = Open3.capture3(
-      RbConfig.ruby, "tests/policy_test.rb", chdir: sandbox
-    )
-    [stdout + stderr, status]
+    output = ""
+    succeeded = true
+    scripts.each do |script|
+      stdout, stderr, status = Open3.capture3(RbConfig.ruby, script, chdir: sandbox)
+      output += stdout + stderr
+      succeeded &&= status.success?
+    end
+    [output, succeeded]
   end
 end
 
@@ -254,15 +267,15 @@ def run_compose_metadata_behavior
 end
 
 def expect_failure(failures, label, message)
-  output, status = run_policy { |root| yield root }
-  failures << "#{label}: policy unexpectedly passed" if status.success?
+  output, succeeded = run_policy { |root| yield root }
+  failures << "#{label}: policy unexpectedly passed" if succeeded
   failures << "#{label}: missing failure message #{message.inspect}" unless output.include?(message)
   failures << "#{label}: emitted a Ruby stack trace" if output.match?(/\.rb:\d+:in [`']/)
 end
 
 def expect_success(failures, label)
-  output, status = run_policy { |root| yield root }
-  failures << "#{label}: #{output.lines.first&.strip || 'policy failed'}" unless status.success?
+  output, succeeded = run_policy { |root| yield root }
+  failures << "#{label}: #{output.lines.first&.strip || 'policy failed'}" unless succeeded
 end
 
 def replace_last(body, source, replacement)
