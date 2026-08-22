@@ -12,8 +12,12 @@ ROLE = File.join(ROOT, "roles/komga/tasks/main.yml")
 COMPOSE = File.join(ROOT, "services/komga/compose.yml")
 ARGUMENT_SPECS = File.join(ROOT, "roles/komga/meta/argument_specs.yml")
 CONTRACT = File.join(ROOT, "tests/contracts/komga.sh")
-MAC_CONTRACT_WRAPPER = File.join(ROOT, "tests/mac/run-komga-contract.sh")
-SEED_HOOK = File.join(ROOT, "tests/mac/hooks/fixtures-seed/40-komga.sh")
+# The Mac wrapper and the Mac seed hook are both shared across services now: one
+# runner resolves every contract through tests/contracts/registry.yml, and one
+# hook seeds every service from a table of phases. The properties asserted below
+# are unchanged, they just live in the shared files.
+MAC_CONTRACT_WRAPPER = File.join(ROOT, "tests/mac/run-contract.sh")
+SEED_HOOK = File.join(ROOT, "tests/mac/hooks/fixtures-seed/00-services.sh")
 INTEGRATION_HARNESS = File.join(ROOT, "tests/integration.sh")
 DEFAULTS = YAML.safe_load_file(File.join(ROOT, "roles/komga/defaults/main.yml"), aliases: false)
 START_TASK = "List Komga libraries for reconciliation"
@@ -147,8 +151,9 @@ def validate_runtime_health_paths!(sources)
       wrapper.include?('if [ "${PLATFORM_KIND:-}" = integration ]; then') &&
       wrapper.include?('PLATFORM_KOMGA_RUNTIME_CONTEXT=base') &&
       wrapper.include?('PLATFORM_KOMGA_RUNTIME_CONTEXT=mac-managed') &&
-      wrapper.include?('exec "$mac_repo_dir/tests/contracts/komga.sh" "$@"') &&
-      seed_hook.scan('"$mac_hook_dir/../../run-komga-contract.sh" seed').length == 1
+      wrapper.include?('mac_contract_path=$(mac_registry_contract_path "$mac_service")') &&
+      wrapper.include?('exec "$mac_repo_dir/$mac_contract_path" "$@"') &&
+      seed_hook.scan(" komga:seed ").length == 1
 end
 
 def runtime_health_mutation_rejected!(sources, label)
@@ -329,7 +334,7 @@ runtime_health_mutation_rejected!(integration_accepts_mac, "integration Mac cont
 integration_wrapper_uses_mac = runtime_sources.dup
 integration_wrapper_base = [
   'if [ "${PLATFORM_KIND:-}" = integration ]; then',
-  "  PLATFORM_KOMGA_RUNTIME_CONTEXT=base"
+  "      PLATFORM_KOMGA_RUNTIME_CONTEXT=base"
 ].join("\n")
 integration_wrapper_uses_mac[1] = mac_contract_wrapper.sub(
   integration_wrapper_base,
@@ -337,7 +342,7 @@ integration_wrapper_uses_mac[1] = mac_contract_wrapper.sub(
 )
 runtime_health_mutation_rejected!(integration_wrapper_uses_mac, "integration wrapper context")
 
-wrong_seed_invocation = seed_hook.sub("run-komga-contract.sh\" seed", "run-komga-contract.sh\" run")
+wrong_seed_invocation = seed_hook.sub(" komga:seed ", " komga:run ")
 wrong_seed_invocation_sources = runtime_sources.dup
 wrong_seed_invocation_sources[2] = wrong_seed_invocation
 runtime_health_mutation_rejected!(wrong_seed_invocation_sources, "seed fixture invocation")
