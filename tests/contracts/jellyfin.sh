@@ -121,13 +121,61 @@ refuse("Collections must remain application-managed") if
 refuse("managed library must not write metadata into read-only media") unless
   defaults.fetch("jellyfin_library_options").fetch("SaveLocalMetadata") == false
 
-identity_path = File.join(root, "roles", "jellyfin", "tasks", "primary_identity.yml")
-identity = File.file?(identity_path) ? File.read(identity_path) : ""
-settings_path = File.join(root, "roles", "jellyfin", "tasks", "settings.yml")
+# The role is asserted as parsed task structure rather than as source text. A
+# task name that also occurs in a comment or a when: expression is not a task,
+# and a byte offset into concatenated files is not a task position, so both the
+# presence and the ordering checks below were previously approximations.
+def load_tasks(path)
+  File.file?(path) ? Array(YAML.safe_load_file(path, aliases: true)) : []
+end
+
+# block/rescue/always nest their tasks one level deeper. primary_identity.yml is
+# entirely a block/rescue pair, so flattening is required rather than optional:
+# a plain load would silently hide every task the recovery path declares.
+def flatten_tasks(tasks)
+  Array(tasks).flat_map do |task|
+    [task] + %w[block rescue always].flat_map do |section|
+      flatten_tasks(task.is_a?(Hash) ? task[section] : nil)
+    end
+  end
+end
+
+# The absence invariants further down must stay scoped to a whole file: a
+# forbidden primitive introduced in some task other than the one an assertion
+# names has to trip them too. Harvesting every string in the parsed tree keeps
+# that whole-file reach while dropping the source-text false positives, since a
+# comment that merely mentions the primitive is no longer a violation.
+def deep_strings(node)
+  case node
+  when Hash then node.flat_map { |key, value| [key.to_s] + deep_strings(value) }
+  when Array then node.flat_map { |value| deep_strings(value) }
+  when String then [node]
+  when nil then []
+  else [node.to_s]
+  end
+end
+
+tasks_dir = File.join(root, "roles", "jellyfin", "tasks")
+identity_top = load_tasks(File.join(tasks_dir, "primary_identity.yml"))
+settings_top = load_tasks(File.join(tasks_dir, "settings.yml"))
+settings_path = File.join(tasks_dir, "settings.yml")
 settings = File.file?(settings_path) ? File.read(settings_path) : ""
-qsv_path = File.join(root, "roles", "jellyfin", "tasks", "qsv_probe.yml")
-qsv = File.file?(qsv_path) ? File.read(qsv_path) : ""
-role = File.read(File.join(root, "roles", "jellyfin", "tasks", "main.yml")) + identity + settings + qsv
+# The concatenation order mirrors the order main.yml declares its includes in.
+# It is deliberately not execution order: main.yml includes settings.yml from
+# the middle of its own body, so resolving includes would interleave the
+# settings phases with the identity and library phases that the preflight
+# before mutation ordering assertion exists to keep apart.
+role_tasks = flatten_tasks(load_tasks(File.join(tasks_dir, "main.yml"))) +
+  flatten_tasks(identity_top) + flatten_tasks(settings_top) +
+  flatten_tasks(load_tasks(File.join(tasks_dir, "qsv_probe.yml")))
+settings_tasks = flatten_tasks(settings_top)
+role_names = role_tasks.filter_map { |task| task["name"] }
+role_at = lambda { |name| role_tasks.index { |task| task["name"] == name } }
+role_task = lambda { |name| role_tasks.find { |task| task["name"] == name } || {} }
+settings_task = lambda { |name| settings_tasks.find { |task| task["name"] == name } || {} }
+uri_urls = lambda { |tasks| tasks.filter_map { |task| task.dig("ansible.builtin.uri", "url") } }
+role_urls = uri_urls.call(role_tasks)
+settings_urls = uri_urls.call(settings_tasks)
 contract = File.read(File.join(root, "tests", "contracts", "jellyfin.sh"))
 runtime_query = ["fields=Path,MediaSources", "RunTimeTicks"].join(",")
 refuse("fixture query does not request its runtime field") unless contract.include?(runtime_query)
@@ -162,7 +210,7 @@ required_tasks = [
   "Verify exact Jellyfin owned state"
 ]
 required_tasks.each do |name|
-  refuse("missing #{name}") unless role.include?("- name: #{name}")
+  refuse("missing #{name}") unless role_names.include?(name)
 end
 preflight_names = [
   "Preflight Jellyfin managed users",
@@ -182,25 +230,46 @@ mutation_names = [
   "Remove extra paths from Jellyfin managed libraries",
   "Repair Jellyfin managed library options"
 ]
-preflight = preflight_names.map { |name| role.index("- name: #{name}") }
-mutations = mutation_names.map { |name| role.index("- name: #{name}") }
+preflight = preflight_names.map(&role_at)
+mutations = mutation_names.map(&role_at)
 refuse("all identity/library preflight must precede mutation") unless
   preflight.none?(&:nil?) && mutations.none?(&:nil?) && preflight.max < mutations.min
-refuse("current user update API is absent") unless role.include?("/Users?userId=")
-refuse("current user image API is absent") unless role.include?("/UserImage?userId=")
+refuse("current user update API is absent") unless
+  role_urls.any? { |url| url.include?("/Users?userId=") }
+refuse("current user image API is absent") unless
+  role_urls.any? { |url| url.include?("/UserImage?userId=") }
+# Both halves must belong to the same request. Asserting the path and the verb
+# independently over the source accepted a DELETE declared by any other task.
+extra_path_removal = role_task.call("Remove extra paths from Jellyfin managed libraries")
+  .fetch("ansible.builtin.uri", {})
 refuse("current path removal API is absent") unless
-  role.include?("/Library/VirtualFolders/Paths?name=") && role.include?("method: DELETE")
-refuse("primary identity rename lacks recovery") unless identity.include?("rescue:")
+  extra_path_removal["url"].to_s.include?("/Library/VirtualFolders/Paths?name=") &&
+    extra_path_removal["method"] == "DELETE"
+primary_rename = identity_top.find do |task|
+  task["name"] == "Reconcile the Jellyfin primary administrator name safely"
+end || {}
+refuse("primary identity rename lacks recovery") unless
+  Array(primary_rename["block"]).any? && Array(primary_rename["rescue"]).any?
 refuse("temporary recovery name match is not byte-exact") unless
-  role.include?("if item.Name == jellyfin_primary_temporary_name else")
+  role_task.call("Resolve Jellyfin primary administrator matches")
+    .dig("ansible.builtin.set_fact", "jellyfin_primary_temporary_matches").to_s
+    .include?("if item.Name == jellyfin_primary_temporary_name else")
+marker_guard_name = "Require safe Jellyfin primary administrator recovery marker file"
+marker_guard_at = role_at.call(marker_guard_name)
+marker_read_at = role_at.call("Read Jellyfin primary administrator recovery marker")
+marker_conditions = Array(
+  role_task.call(marker_guard_name).dig("ansible.builtin.assert", "that")
+).map(&:to_s)
 refuse("recovery marker privacy is not checked before reading") unless
-  role.index("stat.mode == '0600'") < role.index("Read Jellyfin primary administrator recovery marker") &&
-    role.index("stat.pw_name == ansible_facts.user_id") <
-      role.index("Read Jellyfin primary administrator recovery marker")
+  marker_guard_at && marker_read_at && marker_guard_at < marker_read_at &&
+    marker_conditions.any? { |that| that.include?("stat.mode == '0600'") } &&
+    marker_conditions.any? { |that| that.include?("stat.pw_name == ansible_facts.user_id") }
 refuse("server configuration update does not preserve unrelated fields") unless
-  role.include?("jellyfin_server_configuration_before.json | combine")
+  role_task.call("Update the Jellyfin server name").dig("ansible.builtin.uri", "body").to_s
+    .include?("jellyfin_server_configuration_before.json | combine")
 refuse("avatar upload is unconditional") unless
-  role.include?("jellyfin_admin_avatar_upload_required")
+  Array(role_task.call("Upload the Jellyfin primary administrator image")["when"])
+    .map(&:to_s).any? { |that| that.include?("jellyfin_admin_avatar_upload_required") }
 expected_nas_encoding = {
   "HardwareAccelerationType" => "qsv",
   "QsvDevice" => "/dev/dri/renderD128",
@@ -257,36 +326,51 @@ refuse("managed plugin package identities differ") unless defaults["jellyfin_plu
   "Update Open Subtitles plugin configuration",
   "Verify exact Jellyfin acceleration and plugins"
 ].each do |name|
-  refuse("missing #{name}") unless role.include?("- name: #{name}")
+  refuse("missing #{name}") unless role_names.include?(name)
 end
+settings_strings = deep_strings(settings_top)
 refuse("encoding update does not preserve unrelated fields") unless
-  settings.include?("jellyfin_encoding_before.json | combine(jellyfin_encoding_policy)")
+  settings_task.call("Resolve Jellyfin encoding repair requirement")
+    .dig("ansible.builtin.set_fact", "jellyfin_encoding_reconciled_document").to_s
+    .include?("jellyfin_encoding_before.json | combine(jellyfin_encoding_policy)")
+# A folded URL expression keeps its line breaks, so both this absence check and
+# the enable-endpoint check below need the multiline flag to span one URL.
 refuse("plugin install must not supply a version") if
-  settings.match?(%r{Packages/Installed/.*[?&]version=})
+  settings_strings.any? { |value| value.match?(%r{Packages/Installed/.*[?&]version=}m) }
+plugin_install_url = settings_task
+  .call("Install absent Jellyfin plugins without a version pin")
+  .dig("ansible.builtin.uri", "url").to_s
 refuse("plugin install is not assembly and repository scoped") unless
-  settings.include?("?assemblyGuid=") && settings.include?("&repositoryUrl=")
+  plugin_install_url.include?("?assemblyGuid=") &&
+    plugin_install_url.include?("&repositoryUrl=")
 refuse("compatible package catalog preflight is absent") unless
-  settings.include?("url: \"{{ jellyfin_api }}/Packages\"")
+  settings_urls.include?("{{ jellyfin_api }}/Packages")
 refuse("disabled plugin enable endpoint is absent") unless
-  settings.match?(%r{/Plugins/.*Version.*?/Enable}m)
+  settings_task.call("Enable a uniquely disabled installed Jellyfin plugin version")
+    .dig("ansible.builtin.uri", "url").to_s.match?(%r{/Plugins/.*Version.*?/Enable}m)
 refuse("global pending restart must not trigger a container restart") if
-  settings.include?("jellyfin_system_after_install")
+  settings_strings.any? { |value| value.include?("jellyfin_system_after_install") }
 refuse("Open Subtitles configuration API GUID differs") unless
-  settings.include?("/Plugins/{{ jellyfin_opensubtitles_plugin_id }}/Configuration") &&
-    defaults["jellyfin_opensubtitles_plugin_id"] == "4b9ed42f-5185-48b5-9803-6ff2989014c4"
+  settings_urls.any? { |url|
+    url.include?("/Plugins/{{ jellyfin_opensubtitles_plugin_id }}/Configuration")
+  } && defaults["jellyfin_opensubtitles_plugin_id"] == "4b9ed42f-5185-48b5-9803-6ff2989014c4"
 refuse("Open Subtitles validation endpoint differs") unless
-  settings.include?("/Jellyfin.Plugin.OpenSubtitles/ValidateLoginInfo")
+  settings_urls.any? { |url| url.include?("/Jellyfin.Plugin.OpenSubtitles/ValidateLoginInfo") }
 refuse("integration contract does not isolate synthetic Open Subtitles credentials") unless
   contract.include?('VALIDATE_EXTERNAL_OPENSUBTITLES = PLATFORM != "integration"') &&
     contract.include?("if VALIDATE_EXTERNAL_OPENSUBTITLES\n    _response, validation = request(")
 refuse("runtime Open Subtitles identity verification does not normalize GUID representation") unless
   contract.include?('opensubtitles.fetch("Id").delete("-").casecmp?(OPENSUBTITLES_ID.delete("-"))')
+# Deliberately a source-text count. no_log is a per-task directive with no
+# runtime observable in a static contract, and counting parsed keys would not
+# distinguish the credential-carrying tasks from the rest, so the cheap
+# redaction floor stays as it is.
 refuse("Open Subtitles secret operations are not suppressed") unless
   settings.scan(/no_log: true/).length >= 5
 refuse("seed does not verify that owned plugin and encoding policy survived") unless
   contract.include?("assert_acceleration_and_plugins(token, opensubtitles_username, opensubtitles_password)")
 refuse("role must not edit an opaque database") if
-  role.match?(/sqlite|library\.db|jellyfin\.db/i)
+  deep_strings(role_tasks).any? { |value| value.match?(/sqlite|library\.db|jellyfin\.db/i) }
 puts "Jellyfin static contract passed (#{platform})"
 RUBY
 
