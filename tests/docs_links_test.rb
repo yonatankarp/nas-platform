@@ -1,6 +1,7 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require "cgi"
 require "pathname"
 require "tmpdir"
 require "uri"
@@ -206,12 +207,13 @@ def normalized_checklist_items(markdown)
 end
 
 def normalize_block_text(text)
-  text.gsub(/\s+/, " ").strip
+  CGI.unescapeHTML(text).gsub(/\s+/, " ").strip
 end
 
 def markdown_semantic_blocks(markdown)
   blocks = []
   current = nil
+  standalone_fence = nil
   heading_path = []
   flush = lambda do
     if current && !current[:parts].empty?
@@ -220,9 +222,40 @@ def markdown_semantic_blocks(markdown)
     current = nil
   end
 
-  raw_lines = markdown.lines
+  context_lines = mask_block_contexts(markdown, preserve_fences: true).lines
   masked_lines = mask_block_contexts(markdown).lines
-  raw_lines.zip(masked_lines).each do |raw_line, masked_line|
+  context_lines.zip(masked_lines).each do |context_line, masked_line|
+    if standalone_fence
+      _, closing_marker, closing_suffix = fence_parts(context_line)
+      if closing_marker && closing_marker[0] == standalone_fence[:marker][0] &&
+         closing_marker.length >= standalone_fence[:marker].length &&
+         closing_suffix.match?(/\A[ \t]*(?:\r?\n)?\z/)
+        blocks << standalone_fence.except(:marker, :parts).merge(
+          text: normalize_block_text(standalone_fence[:parts].join(" "))
+        )
+        standalone_fence = nil
+      else
+        standalone_fence[:parts] << context_line.strip
+      end
+      next
+    end
+
+    _, opening_marker, opening_suffix = fence_parts(context_line)
+    if opening_marker && current&.dig(:kind) != :list_item
+      flush.call
+      standalone_fence = {
+        heading_path: heading_path.compact.dup,
+        kind: :fenced_code,
+        number: nil,
+        checklist: false,
+        indent: 0,
+        language: opening_suffix.strip,
+        marker: opening_marker,
+        parts: []
+      }
+      next
+    end
+
     stripped = masked_line.to_s.strip
     if (heading = stripped.match(/\A(#+)\s+(.+?)\s*\z/))
       flush.call
@@ -243,8 +276,8 @@ def markdown_semantic_blocks(markdown)
       # Blank lines and fenced-code lines do not end a list item. This keeps
       # wrapped/nested numbered procedures as one semantic step. Preserve the
       # fenced command text in that step so rollback mutations also fail closed.
-      if current&.dig(:kind) == :list_item && !raw_line.to_s.strip.empty?
-        current[:parts] << raw_line.strip
+      if current&.dig(:kind) == :list_item && !context_line.to_s.strip.empty?
+        current[:parts] << context_line.strip
       elsif current&.dig(:kind) == :paragraph
         flush.call
       end
@@ -263,6 +296,11 @@ def markdown_semantic_blocks(markdown)
       }
       current[:parts] << stripped
     end
+  end
+  if standalone_fence
+    blocks << standalone_fence.except(:marker, :parts).merge(
+      text: normalize_block_text(standalone_fence[:parts].join(" "))
+    )
   end
   flush.call
   blocks
@@ -290,16 +328,17 @@ def normalized_prose(markdown)
 end
 
 def visible_tinymediamanager_mention?(text)
-  visible_text = text.gsub(/\[([^\]]+)\]\([^)]*\)/, '\\1')
+  visible_text = CGI.unescapeHTML(text).gsub(/\[([^\]]+)\]\([^)]*\)/, '\\1')
   visible_text.match?(/tinymediamanager/i)
 end
 
-def retirement_block(path:, kind:, text:, number: nil, checklist: false)
+def retirement_block(path:, kind:, text:, number: nil, checklist: false, language: nil)
   {
     heading_path: path,
     kind: kind,
     number: number,
     checklist: checklist,
+    language: language,
     text: normalize_block_text(text)
   }
 end
@@ -332,6 +371,14 @@ def retirement_block_contracts
         path: ["# NAS platform", "## Testing"], kind: :paragraph,
         text: <<~TEXT
           The current Mac proof covers ntfy, Beszel, Dozzle, Audiobookshelf, Komga, Jellyfin, Immich, Paperless-ngx, and the tinyMediaManager retirement state. NAS-only GPU, host-networking, native-mount and production-scale behavior remain outside the Mac proof.
+        TEXT
+      )
+    ],
+    "beginner guide" => [
+      retirement_block(
+        path: ["# Getting started with NAS platform", "## Before running anything"], kind: :paragraph,
+        text: <<~TEXT
+          The migration is still in progress. The eight active services are ntfy, Beszel, Dozzle, Audiobookshelf, Komga, Jellyfin, Immich, and Paperless-ngx. tinyMediaManager remains implemented only as a transitional retirement role: it is retired, must remain stopped, and its bind-mounted state remains preserved. The authoritative status is [`services/manifest.yml`](../services/manifest.yml).
         TEXT
       )
     ],
@@ -371,6 +418,11 @@ def retirement_block_contracts
         text: <<~TEXT
           The `platform_verify_tinymediamanager` tag applies the bounded checks described in [What the retirement verification proves](#what-the-retirement-verification-proves); it does not verify configuration contents or a live UI or API.
         TEXT
+      ),
+      retirement_block(
+        path: ["# Physical NAS walkthrough", "## Automatic deployment from the NAS"],
+        kind: :fenced_code, language: "sh",
+        text: %q{ansible-playbook -i inventory/local.yml validate-vault.yml \ --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE" ansible-playbook -i inventory/local.yml site.yml \ --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE" ansible-playbook -i inventory/local.yml verify.yml \ --tags platform_verify_ntfy,platform_verify_beszel,platform_verify_dozzle,platform_verify_audiobookshelf,platform_verify_komga,platform_verify_tinymediamanager,platform_verify_jellyfin,platform_verify_immich,platform_verify_paperless \ --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE"}
       ),
       retirement_block(
         path: ["# Physical NAS walkthrough", "## Recover after loss of `/volume1`", "### Converge in recovery stages"], kind: :paragraph,
@@ -455,8 +507,78 @@ def nas_rollback_contract
   ]
 end
 
+OPERATOR_RETIREMENT_CONTRACT_LABELS = {
+  "README.md" => "README",
+  "docs/getting-started.md" => "beginner guide",
+  "docs/getting-started-mac.md" => "Mac guide",
+  "docs/getting-started-nas.md" => "NAS guide",
+  "docs/secrets.md" => "secrets guide",
+  "tests/mac/manual-review.md" => "Mac manual review"
+}.freeze
+
+def operator_retirement_documents(root)
+  candidates = [
+    root.join("README.md"),
+    *root.join("docs").glob("getting-started*.md"),
+    root.join("docs/secrets.md"),
+    root.join("tests/mac/manual-review.md")
+  ]
+  candidates.select(&:file?).uniq.sort.to_h do |path|
+    [path.relative_path_from(root).to_s, path.read]
+  end
+end
+
+def document_has_visible_tinymediamanager_mention?(markdown)
+  markdown_heading_paths(markdown).any? do |path|
+    visible_tinymediamanager_mention?(path.last)
+  end || markdown_semantic_blocks(markdown).any? do |block|
+    visible_tinymediamanager_mention?(block[:text])
+  end
+end
+
+def operator_retirement_contract_violations(root)
+  operator_retirement_documents(root).flat_map do |relative_path, document|
+    label = OPERATOR_RETIREMENT_CONTRACT_LABELS[relative_path]
+    if label
+      retirement_contract_violations(label, document).map do |violation|
+        "#{relative_path}: #{violation}"
+      end
+    elsif document_has_visible_tinymediamanager_mention?(document)
+      ["#{relative_path}: visible tinyMediaManager mention has no explicit structural contract"]
+    else
+      []
+    end
+  end
+end
+
 def contract_signature(block)
-  block.slice(:heading_path, :kind, :number, :checklist, :text)
+  %i[heading_path kind number checklist language text].to_h do |key|
+    [key, block[key]]
+  end
+end
+
+def retirement_section_contracts
+  @retirement_section_contracts ||= begin
+    readme_path = ["# NAS platform", "## tinyMediaManager retirement checkpoint"]
+    nas_path = ["# Physical NAS walkthrough", "## tinyMediaManager retirement checkpoint"]
+    readme_blocks = retirement_block_contracts.fetch("README").select do |block|
+      block[:heading_path] == readme_path
+    end
+    readme_blocks << retirement_block(
+      path: readme_path, kind: :paragraph,
+      text: <<~TEXT
+        Radarr, Sonarr, and Bazarr are not deployed by this release. Open Subtitles remains configured in Jellyfin until Bazarr is proven. See the [NAS retirement and rollback procedure](docs/getting-started-nas.md#tinymediamanager-retirement-checkpoint) before changing any media writer.
+      TEXT
+    )
+
+    nas_blocks = retirement_block_contracts.fetch("NAS guide").select do |block|
+      block[:heading_path].take(nas_path.length) == nas_path
+    end
+    {
+      "README" => [{ path: readme_path, blocks: readme_blocks }],
+      "NAS guide" => [{ path: nas_path, blocks: nas_blocks + nas_rollback_contract }]
+    }
+  end
 end
 
 def retirement_contract_violations(label, markdown)
@@ -494,6 +616,16 @@ def retirement_contract_violations(label, markdown)
     failures << "tinyMediaManager headings differ from their approved structural locations"
   end
 
+  retirement_section_contracts.fetch(label, []).each do |section|
+    section_blocks = blocks.select do |block|
+      block[:heading_path].take(section[:path].length) == section[:path]
+    end
+    unless section_blocks.map { |block| contract_signature(block) } ==
+           section[:blocks].map { |block| contract_signature(block) }
+      failures << "retirement section differs from its approved complete block sequence"
+    end
+  end
+
   if label == "NAS guide"
     rollback_blocks = blocks.select { |block| block[:heading_path] == rollback_path }
     unless rollback_blocks.map { |block| contract_signature(block) } ==
@@ -504,7 +636,7 @@ def retirement_contract_violations(label, markdown)
   failures
 end
 
-def mask_block_contexts(text)
+def mask_block_contexts(text, preserve_fences: false)
   fence_masked, = mask_code(text)
   protected_ranges = inline_partners(fence_masked).filter_map do |opening, closing|
     (opening...closing) if opening < closing
@@ -517,7 +649,7 @@ def mask_block_contexts(text)
     if fence
       _, marker, suffix = fence_parts(line)
       fence = nil if marker && marker[0] == fence[0] && marker.length >= fence[1] && suffix.match?(/\A[ \t]*(?:\r?\n)?\z/)
-      masked = line.gsub(/[^\n]/, " ")
+      masked = preserve_fences ? line : line.gsub(/[^\n]/, " ")
       offset += line.length
       next masked
     end
@@ -526,7 +658,7 @@ def mask_block_contexts(text)
       _, marker, = fence_parts(line)
       if marker
         fence = [marker[0], marker.length]
-        masked = line.gsub(/[^\n]/, " ")
+        masked = preserve_fences ? line : line.gsub(/[^\n]/, " ")
         offset += line.length
         next masked
       end
@@ -824,18 +956,81 @@ def self_test
     warn "docs links nested semantic-block self-test failed"
     exit 1
   end
-  retirement_documents = {
-    "README" => ROOT.join("README.md").read,
-    "NAS guide" => ROOT.join("docs/getting-started-nas.md").read,
-    "Mac guide" => ROOT.join("docs/getting-started-mac.md").read,
-    "secrets guide" => ROOT.join("docs/secrets.md").read,
-    "Mac manual review" => ROOT.join("tests/mac/manual-review.md").read
-  }
-  canonical_failures = retirement_documents.flat_map do |label, document|
-    retirement_contract_violations(label, document).map { |failure| "#{label}: #{failure}" }
-  end
+  operator_documents = operator_retirement_documents(ROOT)
+  retirement_documents = operator_documents.filter_map do |relative_path, document|
+    label = OPERATOR_RETIREMENT_CONTRACT_LABELS[relative_path]
+    [label, document] if label
+  end.to_h
+  canonical_failures = operator_retirement_contract_violations(ROOT)
   unless canonical_failures.empty?
     warn "docs links canonical retirement contract self-test failed: #{canonical_failures.inspect}"
+    exit 1
+  end
+
+  structural_gap_failures = []
+  beginner_guide = ROOT.join("docs/getting-started.md").read
+  unless beginner_guide.match?(/eight active services.*tinyMediaManager.*retirement role/im)
+    structural_gap_failures << "stale beginner guide service count"
+  end
+
+  readme = retirement_documents.fetch("README")
+  standalone_fence_mutations = [
+    "docker start tinymediamanager",
+    "docker start tinyMediaManager&apos;s retired service"
+  ].map do |command|
+    "#{readme}\n```sh\n#{command}\n```\n"
+  end
+  accepted_standalone_fence = standalone_fence_mutations.any? do |mutation|
+    retirement_contract_violations("README", mutation).empty?
+  end
+  if accepted_standalone_fence
+    structural_gap_failures << "standalone fenced tinyMediaManager command accepted"
+  end
+  hidden_fence = <<~MARKDOWN
+    #{readme}
+    <!--
+    ```sh
+    docker start tinymediamanager
+    ```
+    -->
+  MARKDOWN
+  unless retirement_contract_violations("README", hidden_fence).empty?
+    structural_gap_failures << "HTML-commented fenced command treated as visible"
+  end
+
+  separate_block_mutations = ["Start it now.", "Start the retired service now."].map do |instruction|
+    readme.sub("\n## Testing", "\n#{instruction}\n\n## Testing")
+  end
+  accepted_separate_block = separate_block_mutations.any? do |mutation|
+    retirement_contract_violations("README", mutation).empty?
+  end
+  if accepted_separate_block
+    structural_gap_failures << "separate retirement instruction block accepted"
+  end
+
+  numeric_entity_mutation = "#{readme}\nRun tinyMedia&#77;anager now.\n"
+  if retirement_contract_violations("README", numeric_entity_mutation).empty?
+    structural_gap_failures << "numeric HTML entity tinyMediaManager mention accepted"
+  end
+  mac_entity_variant = retirement_documents.fetch("Mac guide").sub("sandbox's", "sandbox&apos;s")
+  unless retirement_contract_violations("Mac guide", mac_entity_variant).empty?
+    structural_gap_failures << "equivalent named HTML entity rejected"
+  end
+
+  Dir.mktmpdir("retirement-operator-docs") do |directory|
+    operator_root = Pathname.new(directory)
+    operator_root.join("docs").mkpath
+    future_guide = operator_root.join("docs/getting-started-future.md")
+    future_guide.write("# Future guide\n\nRun tinyMedia&#77;anager now.\n")
+    discovered = operator_retirement_documents(operator_root)
+    structural_gap_failures << "future getting-started guide omitted" unless
+      discovered.key?("docs/getting-started-future.md")
+    structural_gap_failures << "future guide lacks explicit-contract failure" if
+      operator_retirement_contract_violations(operator_root).empty?
+  end
+
+  unless structural_gap_failures.empty?
+    warn "docs links retirement structural gaps: #{structural_gap_failures.inspect}"
     exit 1
   end
 
@@ -867,7 +1062,6 @@ def self_test
     "Do not delete media, start tinyMediaManager.",
     "Do not delete media and start tinyMediaManager."
   ]
-  readme = retirement_documents.fetch("README")
   missed_new_blocks = unsafe_instructions.select do |instruction|
     retirement_contract_violations("README", "#{readme}\n#{instruction}\n").empty?
   end
@@ -1275,22 +1469,18 @@ else
       section.match?(/vault_tinymediamanager_password.*remains.*cleanup release/im)
   end
 
-  retirement_documents = {
-    "README" => ROOT.join("README.md").read,
-    "NAS guide" => ROOT.join("docs/getting-started-nas.md").read,
-    "Mac guide" => ROOT.join("docs/getting-started-mac.md").read,
-    "secrets guide" => ROOT.join("docs/secrets.md").read,
-    "Mac manual review" => ROOT.join("tests/mac/manual-review.md").read
-  }
+  operator_documents = operator_retirement_documents(ROOT)
+  retirement_documents = operator_documents.filter_map do |relative_path, document|
+    label = OPERATOR_RETIREMENT_CONTRACT_LABELS[relative_path]
+    [label, document] if label
+  end.to_h
+  failures.concat(operator_retirement_contract_violations(ROOT))
   retirement_documents.each do |label, document|
     prose = normalized_prose(document)
     failures << "#{label} must identify tinyMediaManager as retired and stopped" unless
       prose.match?(/tinyMediaManager.*retired.*(?:must remain|remains) stopped/im)
     failures << "#{label} must identify tinyMediaManager bind-mounted state as preserved" unless
       prose.match?(/tinyMediaManager.*bind-mounted state.*preserv/im)
-    retirement_contract_violations(label, document).each do |violation|
-      failures << "#{label} retirement documentation contract: #{violation}"
-    end
   end
 
   mac_guide = normalized_prose(ROOT.join("docs/getting-started-mac.md").read)
