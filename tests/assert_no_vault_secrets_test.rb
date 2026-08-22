@@ -128,6 +128,73 @@ failures << "rejected YAML tag changed the fixed diagnostic" unless
 failures << "rejected YAML tag disclosed its synthetic sentinel" if
   (stdout + stderr).include?(malformed_tag_sentinel)
 
+Dir.mktmpdir("assert-no-vault-controller-path") do |directory|
+  synthetic_identity = "synthetic-controller-identity"
+  synthetic_root = File.join(directory, synthetic_identity, "repository")
+  FileUtils.mkdir_p(File.join(synthetic_root, "tests"))
+  synthetic_root = File.realpath(synthetic_root)
+  synthetic_scanner = File.join(synthetic_root, "tests", "assert-no-vault-secrets.rb")
+  FileUtils.cp(SCANNER, synthetic_scanner, preserve: true)
+  vault = "vault_service_username: #{synthetic_identity}\n"
+
+  stdout, stderr, status = run_scanner(
+    vault,
+    "Origin: #{synthetic_root}/roles/service/tasks/main.yml\n",
+    scanner: synthetic_scanner
+  )
+  failures << "trusted controller repository path produced a false positive" unless
+    status.success? && stdout.empty? && stderr.empty?
+
+  stdout, stderr, status = run_scanner(
+    vault,
+    "diagnostic disclosed #{synthetic_identity}\n",
+    scanner: synthetic_scanner
+  )
+  failures << "controller-path identity was ignored outside the trusted path" if status.success?
+  failures << "controller-path identity rejection disclosed evidence" unless stdout.empty?
+  failures << "controller-path identity rejection changed the fixed diagnostic" unless
+    stderr == "failure evidence contains a vault value\n"
+
+  stdout, stderr, status = run_scanner(
+    vault,
+    "Origin: #{synthetic_root}/roles/service/tasks/main.yml\n" \
+      "diagnostic disclosed #{synthetic_identity}\n",
+    scanner: synthetic_scanner
+  )
+  failures << "controller-path normalization hid a second identity occurrence" if status.success?
+  failures << "second identity occurrence rejection disclosed evidence" unless stdout.empty?
+  failures << "second identity occurrence changed the fixed diagnostic" unless
+    stderr == "failure evidence contains a vault value\n"
+
+  near_paths = [
+    "prefix#{synthetic_root}/roles/service/tasks/main.yml",
+    "#{synthetic_root}-suffix/roles/service/tasks/main.yml",
+    "#{File.dirname(synthetic_root)}/repository-near/roles/service/tasks/main.yml"
+  ]
+  near_paths.each do |near_path|
+    stdout, stderr, status = run_scanner(
+      vault,
+      "Origin: #{near_path}\n",
+      scanner: synthetic_scanner
+    )
+    failures << "near controller path was normalized: #{File.basename(near_path)}" if status.success?
+    failures << "near controller path rejection disclosed evidence" unless stdout.empty?
+    failures << "near controller path changed the fixed diagnostic" unless
+      stderr == "failure evidence contains a vault value\n"
+  end
+
+  credential = "synthetic-credential-must-fail"
+  stdout, stderr, status = run_scanner(
+    "#{vault}vault_service_password: #{credential}\n",
+    "Origin: #{synthetic_root}/roles/service/tasks/main.yml\ncredential=#{credential}\n",
+    scanner: synthetic_scanner
+  )
+  failures << "controller-path normalization hid a credential" if status.success?
+  failures << "credential rejection disclosed evidence" unless stdout.empty?
+  failures << "credential rejection changed the fixed diagnostic" unless
+    stderr == "failure evidence contains a vault value\n"
+end
+
 stdout, stderr, status = allowlist_contract(SCANNER)
 failures << "scanner does not expose exactly the four approved public database identities" unless
   status.success? && stdout.empty? && stderr.empty?

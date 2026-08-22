@@ -26,6 +26,13 @@ def strings(value, path = [])
   end
 end
 
+def remove_controller_repository_paths!(evidence, repository_root)
+  evidence.gsub!(
+    /(?<![[:alnum:]_.-])#{Regexp.escape(repository_root)}(?=\/|\z)/,
+    ""
+  )
+end
+
 def assert_no_vault_secrets(argv)
   vault_file, password_file, *evidence_files = argv
   abort "usage: #{$PROGRAM_NAME} VAULT PASSWORD_FILE EVIDENCE..." if evidence_files.empty?
@@ -43,8 +50,12 @@ def assert_no_vault_secrets(argv)
     vault_yaml.replace("\0" * vault_yaml.bytesize)
   end
   secrets = strings(vault).select { |value| value.bytesize >= 8 }
+  # Ansible Origin diagnostics contain this trusted controller path. Remove
+  # only its canonical, path-token form from the in-memory comparison copy.
+  repository_root = File.realpath(File.expand_path("..", __dir__))
   evidence_files.each do |evidence_file|
     evidence = File.binread(evidence_file)
+    remove_controller_repository_paths!(evidence, repository_root)
     leaked = secrets.any? { |secret| evidence.include?(secret) }
     evidence.replace("\0" * evidence.bytesize)
     abort "failure evidence contains a vault value" if leaked
