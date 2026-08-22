@@ -49,6 +49,7 @@ TIMESTAMP_PATTERN = re.compile(
 )
 TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%S"
 EXIT_CODE_PATTERN = re.compile(r"(?:0|[1-9][0-9]{0,2})\Z")
+PORT_PATTERN = re.compile(r"[1-9][0-9]{0,4}\Z")
 MARKDOWN_PATTERN = re.compile(r"([\\`*_{}\[\]()#+\-.!|>])")
 
 
@@ -83,6 +84,7 @@ class Config:
 
     __slots__ = (
         "alert_relay_token",
+        "alert_relay_port",
         "ntfy_publish_url",
         "ntfy_topic",
         "ntfy_containers_topic",
@@ -91,9 +93,17 @@ class Config:
     )
 
     def __init__(
-        self, relay_token, publish_url, topic, events_topic, ntfy_token, state_path
+        self,
+        relay_token,
+        relay_port,
+        publish_url,
+        topic,
+        events_topic,
+        ntfy_token,
+        state_path,
     ):
         self.alert_relay_token = relay_token
+        self.alert_relay_port = relay_port
         self.ntfy_publish_url = publish_url
         self.ntfy_topic = topic
         self.ntfy_containers_topic = events_topic
@@ -104,6 +114,7 @@ class Config:
     def from_mapping(cls, values):
         names = (
             "ALERT_RELAY_TOKEN",
+            "ALERT_RELAY_PORT",
             "NTFY_PUBLISH_URL",
             "NTFY_TOPIC",
             "NTFY_CONTAINERS_TOPIC",
@@ -116,6 +127,16 @@ class Config:
             if not isinstance(value, str) or not value or contains_control(value):
                 raise ConfigurationError(f"{name} is required")
             resolved[name] = value
+
+        # Deliberately without a fallback: the listener port has exactly one home,
+        # dozzle_alert_relay_port in roles/dozzle/defaults/main.yml, and it reaches
+        # this process through ALERT_RELAY_PORT in the rendered environment file.
+        # A default here would be a second copy that could silently disagree with
+        # the Compose healthcheck and the dispatcher URL built from the same home.
+        port = resolved["ALERT_RELAY_PORT"]
+        if not PORT_PATTERN.fullmatch(port) or int(port) > 65535:
+            raise ConfigurationError("ALERT_RELAY_PORT must be a TCP port number")
+        relay_port = int(port)
 
         parsed = urllib.parse.urlsplit(resolved["NTFY_PUBLISH_URL"])
         if (
@@ -145,6 +166,7 @@ class Config:
 
         return cls(
             resolved["ALERT_RELAY_TOKEN"],
+            relay_port,
             publish_url,
             topic,
             events_topic,
@@ -819,7 +841,13 @@ def main():
         config = Config.from_mapping(os.environ)
     except ConfigurationError:
         raise SystemExit("alert relay configuration is invalid") from None
-    server = create_server(("0.0.0.0", 8081), config)
+    # All interfaces, but only inside this container's network namespace: the relay
+    # publishes no host port (services/dozzle/compose.yml gives it no ports mapping,
+    # which tests/contracts/dozzle.sh enforces), so the only addresses in reach are
+    # the Compose-network address Dozzle dials by service name and the loopback the
+    # healthcheck probes. Narrowing to loopback would break the first of those, and
+    # the container address is assigned at start time rather than known here.
+    server = create_server(("0.0.0.0", config.alert_relay_port), config)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

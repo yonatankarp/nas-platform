@@ -15,6 +15,9 @@ argument_specs:
       dozzle_port:
         type: int
         required: false
+      dozzle_alert_relay_port:
+        type: int
+        required: false
       dozzle_alerts:
         type: list
         elements: dict

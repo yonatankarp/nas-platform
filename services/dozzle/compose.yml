@@ -21,13 +21,14 @@ services:
       - ${DOZZLE_STATE_ROOT:?}/alert-relay:/state
     environment:
       ALERT_RELAY_TOKEN: ${ALERT_RELAY_TOKEN:?}
+      ALERT_RELAY_PORT: ${ALERT_RELAY_PORT:?}
       NTFY_PUBLISH_URL: ${NTFY_PUBLISH_URL:?}
       NTFY_TOPIC: ${NTFY_TOPIC:?}
       NTFY_CONTAINERS_TOPIC: ${NTFY_CONTAINERS_TOPIC:?}
       NTFY_TOKEN: ${NTFY_TOKEN:?}
       ALERT_STATE_PATH: /state/alert-relay.json
     healthcheck:
-      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/healthz', timeout=3).read()"]
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:${ALERT_RELAY_PORT:?}/healthz', timeout=3).read()"]
       interval: 30s
       timeout: 5s
       retries: 4

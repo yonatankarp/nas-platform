@@ -43,7 +43,8 @@ render() {
     NAS_DOCKER_ROOT="$temporary_dir/$label" NAS_UID=1000 NAS_GID=100 TZ=UTC \
     PLATFORM_CURRENT_DIR="$repo_dir" DOZZLE_STATE_ROOT="$temporary_dir/$label/dozzle/data" \
     ALERT_RELAY_SCRIPT_SHA256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
-    ALERT_RELAY_TOKEN=test-relay-token NTFY_PUBLISH_URL="http://127.0.0.1:$ntfy_port/" \
+    ALERT_RELAY_TOKEN=test-relay-token ALERT_RELAY_PORT=8081 \
+    NTFY_PUBLISH_URL="http://127.0.0.1:$ntfy_port/" \
     NTFY_TOPIC=nas-critical NTFY_CONTAINERS_TOPIC=nas-containers NTFY_TOKEN=test-ntfy-token \
     docker compose --project-name "$base_name-dozzle" \
       -f "$repo_dir/services/dozzle/compose.yml" \
