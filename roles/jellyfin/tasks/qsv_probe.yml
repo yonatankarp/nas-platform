@@ -39,7 +39,11 @@
       - -loglevel
       - error
       - -init_hw_device
-      - vaapi=va:/dev/dri/renderD128,driver=iHD
+      # This runs inside the container, but the host variable is still the right
+      # source: services/jellyfin/compose.yml maps the render device onto itself
+      # rather than renaming it, and tests/contracts/jellyfin.sh pins that exact
+      # identity mapping, so the container path is the host path.
+      - vaapi=va:{{ platform_render_device_path }},driver=iHD
       - -init_hw_device
       - qsv=qs@va
       - -filter_hw_device

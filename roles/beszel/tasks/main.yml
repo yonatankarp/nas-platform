@@ -69,6 +69,11 @@
          beszel_effective_required_telemetry_categories | sort == ['containers', 'core', 'disk'] and
          not (beszel_effective_require_gpu_telemetry | bool) and
          platform_beszel_agent_kind == 'portable')
+      # The renderD128 literal in the Intel branch below is deliberate. NAS
+      # hosts are pinned to that device by design, and this disjunct only
+      # applies on a NAS with a real Intel GPU, so it never constrains a Mac
+      # host where platform_render_device_path is /dev/dri/card0 and the agent
+      # kind is portable.
       - >-
         platform_kind != 'nas' or
         ((beszel_integration_test_capability | bool) and

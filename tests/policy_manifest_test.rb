@@ -1070,6 +1070,42 @@ expect_failure(failures, "pinned expectations gain an unknown field",
   mutate_yaml_file(root, "tests/expected/komga.yml") { |e| e["unexpected"] = true }
 end
 
+# The media library path is written once in a service template and once in
+# nas_storage, and Compose passes the template's copy through as a bind source.
+# Nothing used to compare the two, so these mutations are what keep the new
+# comparison honest: a rename on either side has to be reported, and the one
+# relaxation the comparison makes has to be earned rather than blanket.
+expect_failure(failures, "service template mounts an undeclared library",
+               "roles/komga/templates/env.j2: {{ nas_media_root }}/Comics is not declared in nas_storage") do |root|
+  path = File.join(root, "roles", "komga", "templates", "env.j2")
+  File.write(path, File.read(path).sub(
+    "KOMGA_LIBRARY_PATH={{ nas_media_root }}/Books",
+    "KOMGA_LIBRARY_PATH={{ nas_media_root }}/Comics"
+  ))
+end
+
+# Jellyfin mounts the media tree itself, which nas_storage never declares as an
+# entry of its own: it is accepted only because the libraries beneath it are
+# declared and host_prep creates it as their parent. Removing those leaves must
+# therefore stop the parent mount being accepted, or the relaxation would be a
+# blanket pass for any path with a declared entry somewhere below it.
+expect_failure(failures, "media library leaves removed from storage",
+               "roles/jellyfin/templates/env.j2: {{ nas_media_root }}/Media is not declared in nas_storage") do |root|
+  mutate_yaml_file(root, "inventory/group_vars/all/main.yml") do |inventory|
+    inventory.fetch("nas_storage").reject! do |entry|
+      entry.fetch("path").start_with?("{{ nas_media_root }}/Media/")
+    end
+  end
+end
+
+expect_failure(failures, "media Compose bind source undeclared",
+               "immich/immich-server: ${NAS_MEDIA_ROOT:?}/Immich is not declared in nas_storage") do |root|
+  mutate_yaml_file(root, "inventory/group_vars/all/main.yml") do |inventory|
+    entry = inventory.fetch("nas_storage").find { |item| item.fetch("path") == "{{ nas_media_root }}/Immich" }
+    entry["path"] = "{{ nas_media_root }}/Immich-renamed"
+  end
+end
+
 if failures.empty?
   puts "policy manifest: all mutation checks hold"
 else
