@@ -2,13 +2,17 @@
 set -eu
 
 repo_dir=$(CDPATH= cd -P "$(dirname "$0")/.." && pwd -P)
-integration=$repo_dir/tests/integration.sh
+integration=${INTEGRATION_SUITE_RUNNER:-$repo_dir/tests/integration.sh}
 fake_bin=$(mktemp -d "${TMPDIR:-/tmp}/nas-platform-suite-test.XXXXXX")
 docker_log=$fake_bin/docker.log
 
 cleanup() {
-  rm -f "$fake_bin/docker" "$fake_bin/mktemp" "$docker_log"
-  rmdir "$fake_bin"
+  case $fake_bin in
+    */nas-platform-suite-test.??????) ;;
+    *) printf 'refusing to remove unexpected suite test root: %s\n' "$fake_bin" >&2; return 1 ;;
+  esac
+  [ -d "$fake_bin" ] && [ ! -L "$fake_bin" ] || return 1
+  rm -rf -- "$fake_bin"
 }
 trap cleanup EXIT HUP INT TERM
 
@@ -124,7 +128,7 @@ controller_line=$(grep -nF 'docker run --rm' "$integration" | head -1 | cut -d: 
 }
 grep -qF 'paperless:true|full:true)' "$integration"
 grep -qF -- '-e PLATFORM_PAPERLESS_FIXTURE_PRESEEDED="$paperless_fixture_preseeded"' "$integration"
-for contract in komga tinymediamanager jellyfin; do
+for contract in komga jellyfin; do
   preseed_line=$(grep -nF \
     '"$repo_dir/tests/contracts/'"$contract"'.sh" seed-fixture-only' \
     "$integration" | cut -d: -f1)
@@ -137,11 +141,217 @@ grep -qF 'komga:true|full:true)' "$integration"
 grep -qF 'tinymediamanager:true|full:true)' "$integration"
 grep -qF 'jellyfin:true|full:true)' "$integration"
 grep -qF -- '-e PLATFORM_KOMGA_FIXTURE_PRESEEDED="$komga_fixture_preseeded"' "$integration"
-grep -qF -- '-e PLATFORM_TINYMEDIAMANAGER_FIXTURE_PRESEEDED="$tinymediamanager_fixture_preseeded"' \
-  "$integration"
 grep -qF -- '-e PLATFORM_JELLYFIN_FIXTURE_PRESEEDED="$jellyfin_fixture_preseeded"' \
   "$integration"
 
+# Exercise the actual shell routing with a disposable Git checkout. Docker is
+# replaced at the process boundary: the host runner executes normally, while
+# the controller command it submits is run locally with Docker/Ansible/package
+# commands stubbed. Only executed contract calls reach the event log.
+routing_root=$fake_bin/routing
+routing_repo=$routing_root/repo
+routing_host_bin=$routing_root/host-bin
+routing_controller_bin=$routing_root/controller-bin
+routing_tmp_parent=$routing_root/tmp
+routing_events=$routing_root/events.log
+routing_payload=$routing_root/controller.sh
+routing_output=$routing_root/output.log
+mkdir -p "$routing_host_bin" "$routing_controller_bin" "$routing_tmp_parent"
+routing_tmp_parent=$(CDPATH= cd -P "$routing_tmp_parent" && pwd -P)
+git clone --quiet --no-local "$repo_dir" "$routing_repo"
+cp "$integration" "$routing_repo/tests/integration.sh"
+chmod +x "$routing_repo/tests/integration.sh"
+
+cat > "$routing_repo/tests/contracts/tinymediamanager.sh" <<'EOF'
+#!/bin/sh
+set -eu
+printf '%s:%s\n' "$ROUTING_PHASE" "${1:-<missing>}" >> "$ROUTING_EVENTS"
+EOF
+chmod +x "$routing_repo/tests/contracts/tinymediamanager.sh"
+
+cat > "$routing_root/noop-contract" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+chmod +x "$routing_root/noop-contract"
+for contract in "$routing_repo"/tests/contracts/*.sh; do
+  [ "${contract##*/}" = tinymediamanager.sh ] || cp "$routing_root/noop-contract" "$contract"
+done
+
+cat > "$routing_repo/tests/generate-ephemeral-vault.sh" <<'EOF'
+#!/bin/sh
+set -eu
+[ "${1:-}" != --cleanup ] || exit 0
+output=
+password=
+while [ "$#" -gt 0 ]; do
+  case $1 in
+    --output) output=$2; shift 2 ;;
+    --password-file) password=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+mkdir -p "${output%/*}" "${password%/*}"
+: > "$output"
+: > "$password"
+EOF
+chmod +x "$routing_repo/tests/generate-ephemeral-vault.sh"
+
+cat > "$routing_controller_bin/noop" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+chmod +x "$routing_controller_bin/noop"
+for command in apk pip ansible-galaxy ansible-playbook ruby git cmp docker; do
+  ln -s noop "$routing_controller_bin/$command"
+done
+cat > "$routing_controller_bin/network-probe" <<'EOF'
+#!/bin/sh
+set -eu
+printf 'controller:network-probe:%s\n' "$*" >> "$ROUTING_EVENTS"
+EOF
+chmod +x "$routing_controller_bin/network-probe"
+for command in curl wget; do
+  ln -s network-probe "$routing_controller_bin/$command"
+done
+cat > "$routing_controller_bin/ansible-vault" <<'EOF'
+#!/bin/sh
+[ "${1:-}" = view ] && printf '%s\n' '---'
+exit 0
+EOF
+chmod +x "$routing_controller_bin/ansible-vault"
+
+cat > "$routing_host_bin/docker" <<'EOF'
+#!/bin/sh
+set -eu
+
+case ${1:-} in
+  info)
+    printf '%s\n' 'Docker Desktop routing harness'
+    exit 0
+    ;;
+  network)
+    printf '%s\n' '127.0.0.1'
+    exit 0
+    ;;
+  ps|rm)
+    exit 0
+    ;;
+  run) ;;
+  *)
+    printf 'unexpected routing Docker command: %s\n' "$*" >&2
+    exit 97
+    ;;
+esac
+
+for argument in "$@"; do
+  if [ "$argument" = -i ]; then
+    cleanup_parent=
+    cleanup_name=
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = -v ]; then
+        shift
+        case $1 in
+          *:/sandbox-parent) cleanup_parent=${1%:/sandbox-parent} ;;
+        esac
+      elif [ "$1" = python ] && [ "${2:-}" = - ]; then
+        cleanup_name=${3:-}
+        break
+      fi
+      shift
+    done
+    [ "$cleanup_parent" = "$ROUTING_TMP_PARENT" ] || exit 96
+    case $cleanup_name in
+      nas-platform-integration.??????) ;;
+      *) exit 95 ;;
+    esac
+    find "$cleanup_parent/$cleanup_name" -depth -mindepth 1 -delete
+    exit 0
+  fi
+done
+
+controller_repo=
+controller_program=
+controller_zero=integration-run
+while [ "$#" -gt 0 ]; do
+  case $1 in
+    -v)
+      shift
+      case $1 in
+        *:/repo) controller_repo=${1%:/repo} ;;
+      esac
+      ;;
+    -e)
+      shift
+      export "$1"
+      ;;
+    -c)
+      shift
+      controller_program=$1
+      shift
+      controller_zero=${1:-integration-run}
+      [ "$#" -eq 0 ] || shift
+      break
+      ;;
+  esac
+  shift
+done
+[ -n "$controller_repo" ] && [ -n "$controller_program" ] || exit 94
+printf '%s' "$controller_program" > "$ROUTING_PAYLOAD.raw"
+"$ROUTING_REAL_RUBY" - "$ROUTING_PAYLOAD.raw" "$ROUTING_PAYLOAD" "$controller_repo" <<'RUBY'
+input, output, repository = ARGV
+File.write(output, File.read(input).gsub(%r{/repo(?=/)}, repository))
+RUBY
+ROUTING_PHASE=controller PATH="$ROUTING_CONTROLLER_BIN:$PATH" \
+  sh -eu -c "$(cat "$ROUTING_PAYLOAD")" "$controller_zero" "$@"
+EOF
+chmod +x "$routing_host_bin/docker"
+ln -s "$(command -v mktemp)" "$routing_host_bin/mktemp"
+
+run_routing_suite() {
+  routing_status=0
+  : > "$routing_events"
+  PATH="$routing_host_bin:$PATH" \
+  DOCKER_LOG=$docker_log \
+  ROUTING_EVENTS=$routing_events \
+  ROUTING_PHASE=host \
+  ROUTING_PAYLOAD=$routing_payload \
+  ROUTING_REAL_RUBY=$(command -v ruby) \
+  ROUTING_CONTROLLER_BIN=$routing_controller_bin \
+  ROUTING_TMP_PARENT=$routing_tmp_parent \
+  TMPDIR=$routing_tmp_parent \
+    "$routing_repo/tests/integration.sh" --suite "$1" \
+    >"$routing_output" 2>&1 || routing_status=$?
+}
+
+run_routing_suite tinymediamanager
+
+host_events=$(sed -n '/^host:/p' "$routing_events" 2>/dev/null || true)
+[ "$host_events" = 'host:seed-retirement-fixture' ] || {
+  printf '%s\n' 'tinyMediaManager retirement fixture is not prepared before convergence' >&2
+  exit 1
+}
+[ "$routing_status" -eq 0 ] || {
+  cat "$routing_output" >&2
+  printf '%s\n' 'tinyMediaManager retirement routing did not complete' >&2
+  exit 1
+}
+controller_events=$(sed -n '/^controller:/p' "$routing_events" 2>/dev/null || true)
+[ "$controller_events" = 'controller:assert-retired' ] || {
+  printf '%s\n' 'tinyMediaManager retirement is not asserted after convergence' >&2
+  exit 1
+}
+[ "$(wc -l < "$routing_events" | tr -d ' ')" -eq 2 ] || {
+  printf '%s\n' 'tinyMediaManager integration still invokes active-service modes' >&2
+  exit 1
+}
+for routing_suite in foundation beszel dozzle audiobookshelf komga jellyfin immich paperless; do
+  run_routing_suite "$routing_suite"
+  [ ! -s "$routing_events" ] || {
+    printf '%s\n' 'tinyMediaManager integration still invokes active-service modes' >&2
+    exit 1
+  }
+done
 for suite in komga tinymediamanager jellyfin immich; do
   grep -qF "suite_is $suite" "$integration" || {
     printf '%s\n' "$suite has no independent scenario dispatch" >&2

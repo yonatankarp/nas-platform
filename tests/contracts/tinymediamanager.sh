@@ -2,13 +2,10 @@
 set -eu
 set +x
 
-mode=${1:-run}
+mode=${1:-static}
 repo_dir=${PLATFORM_CONTRACT_REPO_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)}
 compose=$repo_dir/services/tinymediamanager/compose.yml
-mac_compose=$repo_dir/services/tinymediamanager/compose.mac.yml
-integration_compose=$repo_dir/services/tinymediamanager/compose.integration.yml
 role=$repo_dir/roles/tinymediamanager/tasks/main.yml
-defaults=$repo_dir/roles/tinymediamanager/defaults/main.yml
 
 fail_contract() {
   printf 'tinyMediaManager contract failed: %s\n' "$1" >&2
@@ -16,387 +13,254 @@ fail_contract() {
 }
 
 [ -f "$role" ] || fail_contract 'roles/tinymediamanager/tasks/main.yml is absent'
-[ -f "$defaults" ] || fail_contract 'roles/tinymediamanager/defaults/main.yml is absent'
 [ -f "$compose" ] || fail_contract 'services/tinymediamanager/compose.yml is absent'
-[ -f "$mac_compose" ] || fail_contract 'services/tinymediamanager/compose.mac.yml is absent'
-[ -f "$integration_compose" ] || fail_contract 'services/tinymediamanager/compose.integration.yml is absent'
 
-ruby -ryaml - "$compose" "$mac_compose" "$integration_compose" "$role" "$defaults" <<'RUBY'
-compose_path, mac_path, integration_path, role_path, defaults_path = ARGV
+ruby -ryaml - "$compose" "$role" <<'RUBY'
+compose_path, role_path = ARGV
 compose = YAML.safe_load_file(compose_path, aliases: true)
-mac = YAML.safe_load_file(mac_path, aliases: true)
-integration = YAML.safe_load_file(integration_path, aliases: true)
-role = File.read(role_path)
 role_tasks = YAML.safe_load_file(role_path, aliases: true)
-defaults = YAML.safe_load_file(defaults_path)
 service = compose.fetch("services").fetch("tinymediamanager")
-abort "tinyMediaManager contract failed: NAS host networking differs" unless service.fetch("network_mode") == "host"
-abort "tinyMediaManager contract failed: NAS storage contract differs" unless service.fetch("volumes") == [
+
+def refuse(message)
+  abort "tinyMediaManager contract failed: #{message}"
+end
+
+def state_root_reference?(value)
+  case value
+  when Hash then value.any? { |key, child| state_root_reference?(key) || state_root_reference?(child) }
+  when Array then value.any? { |child| state_root_reference?(child) }
+  else value.to_s.include?("tinymediamanager_state_root")
+  end
+end
+
+refuse("canonical storage contract differs") unless service.fetch("volumes") == [
   "${TINYMEDIAMANAGER_DATA_PATH:?}:/data",
   "${TINYMEDIAMANAGER_MOVIES_PATH:?}:/media/Movies",
   "${TINYMEDIAMANAGER_SERIES_PATH:?}:/media/Series"
 ]
-environment = service.fetch("environment")
-abort "tinyMediaManager contract failed: direct VNC must remain disabled" unless environment.fetch("ALLOW_DIRECT_VNC") == "false"
-abort "tinyMediaManager contract failed: vault password is not passed to the container" unless
-  environment.fetch("PASSWORD") == "${TINYMEDIAMANAGER_PASSWORD:?}"
-abort "tinyMediaManager contract failed: restart policy differs" unless service.fetch("restart") == "unless-stopped"
-abort "tinyMediaManager contract failed: logging policy differs" unless service.fetch("logging") == {
+refuse("canonical logging policy differs") unless service.fetch("logging") == {
   "driver" => "json-file", "options" => { "max-size" => "10m", "max-file" => "3" }
 }
-mac_service = mac.fetch("services").fetch("tinymediamanager")
-abort "tinyMediaManager contract failed: Mac override must replace host networking" unless
-  mac_service.fetch("network_mode") == "bridge" &&
-    mac_service.fetch("platform") == "linux/amd64" && mac_service.fetch("ports").sort == [
-    "${TINYMEDIAMANAGER_API_HOST_PORT:?}:7878",
-    "${TINYMEDIAMANAGER_WEB_HOST_PORT:?}:4000"
-  ].sort
-abort "tinyMediaManager contract failed: Mac override must not publish direct VNC" if
-  mac_service.fetch("ports").any? { |port| port.end_with?(":5900") }
-integration_service = integration.fetch("services").fetch("tinymediamanager")
-abort "tinyMediaManager contract failed: integration must select linux/amd64" unless
-  integration_service.fetch("platform") == "linux/amd64"
-# The application binds the container side of the published mapping. If the role
-# instead wrote the host port into httpServerPort, the mapping would forward to a
-# port nothing listens on and every API call would be reset.
-mac_api_container_port = mac_service.fetch("ports")
-  .find { |port| port.start_with?("${TINYMEDIAMANAGER_API_HOST_PORT:?}:") }.to_s.split(":").last
-abort "tinyMediaManager contract failed: bound API port must be the published container port" unless
-  defaults.fetch("tinymediamanager_api_container_port").to_s == mac_api_container_port
-abort "tinyMediaManager contract failed: movie source differs" unless
-  defaults.fetch("tinymediamanager_movie_source") == "/media/Movies"
-abort "tinyMediaManager contract failed: series source differs" unless
-  defaults.fetch("tinymediamanager_series_source") == "/media/Series"
-video_file_types = defaults.fetch("tinymediamanager_video_file_types")
-abort "tinyMediaManager contract failed: first-run video types omit MP4 or MKV" unless
-  %w[.mp4 .mkv].all? { |extension| video_file_types.include?(extension) }
 
-required_tasks = [
-  "Provision stable tinyMediaManager first-run settings",
-  "Require the installed tinyMediaManager VNC password",
-  "Require tinyMediaManager movie and series data sources",
-  "Require tinyMediaManager metadata writing settings"
-]
-required_tasks.each do |name|
-  abort "tinyMediaManager contract failed: missing #{name}" unless role.include?("- name: #{name}")
+retirement_task = role_tasks.find { |task| task["name"] == "Retire tinyMediaManager without deleting state" }
+abort "tinyMediaManager retirement contract failed: retirement task is absent" unless retirement_task
+retirement_compose = retirement_task["community.docker.docker_compose_v2"]
+refuse("retirement task does not use docker_compose_v2") unless retirement_compose.is_a?(Hash)
+expected_compose = {
+  "project_src" => "{{ platform_current_dir }}/services/tinymediamanager",
+  "project_name" => "{{ tinymediamanager_compose_project_name }}",
+  "files" => "{{ platform_service_compose_files['tinymediamanager'] }}",
+  "state" => "absent",
+  "remove_volumes" => false,
+  "remove_orphans" => false
+}
+expected_compose.each do |key, value|
+  refuse("retirement Compose #{key} differs") unless retirement_compose[key] == value
 end
-settings_task = role_tasks.find do |task|
-  task["name"] == "Provision stable tinyMediaManager first-run settings"
+
+if role_tasks.any? do |task|
+     compose_task = task["community.docker.docker_compose_v2"]
+     compose_task.is_a?(Hash) && compose_task["state"] == "present"
+   end
+  refuse("role must not start tinyMediaManager")
 end
-semantic_guard = "tinymediamanager_existing_settings.get(item.key, {}) != item.value"
-abort "tinyMediaManager contract failed: semantically stable settings must not be rewritten" unless
-  Array(settings_task&.fetch("when", nil)).include?(semantic_guard)
-abort "tinyMediaManager contract failed: role must not edit an opaque database" if
-  role.match?(/execute.*sql|sqlite3|\.db\b|mviedb|tvshowdb/i)
+
+if role_tasks.any? do |task|
+     %w[ansible.builtin.copy ansible.builtin.file ansible.builtin.template].any? do |module_name|
+       task.key?(module_name) && state_root_reference?(task.fetch(module_name))
+     end
+   end
+  refuse("retirement role must not mutate tinymediamanager_state_root")
+end
+
+inspect_task = role_tasks.find { |task| task["name"] == "Inspect the retired tinyMediaManager container" }
+refuse("missing Inspect the retired tinyMediaManager container") unless inspect_task
+container_info = inspect_task["community.docker.docker_container_info"]
+refuse("retirement inspection does not use docker_container_info") unless container_info.is_a?(Hash)
+inspect_register = inspect_task["register"]
+refuse("retirement inspection does not register container state") unless inspect_register.is_a?(String)
+
+absence_task = role_tasks.find { |task| task["name"] == "Require tinyMediaManager to remain retired" }
+refuse("missing Require tinyMediaManager to remain retired") unless absence_task
+assertion = absence_task["ansible.builtin.assert"]
+refuse("retirement assertion is absent") unless assertion.is_a?(Hash)
+conditions = Array(assertion["that"]).map(&:to_s)
+refuse("retirement assertion does not inspect the retired container") unless
+  conditions.any? { |condition| condition.include?(inspect_register) }
+refuse("retirement assertion must tolerate check mode") unless
+  conditions.any? { |condition| condition.include?("ansible_check_mode") && condition.match?(/\bor\b/) }
 RUBY
 
-[ "$mode" = static ] && { printf '%s\n' 'tinyMediaManager static contract passed'; exit 0; }
+case $mode in
+  static)
+    printf '%s\n' 'tinyMediaManager static contract passed'
+    exit 0
+    ;;
+  seed-retirement-fixture|assert-retired) ;;
+  *) fail_contract "unknown mode: $mode" ;;
+esac
 
-: "${PLATFORM_CONTRACT_VAULT_FILE:=${PLATFORM_MAC_VAULT_FILE:-}}"
-: "${PLATFORM_CONTRACT_VAULT_PASSWORD_FILE:=${PLATFORM_MAC_VAULT_PASSWORD_FILE:-}}"
-: "${PLATFORM_MEDIA_ROOT:?}"
-: "${PLATFORM_REPORT_ROOT:?}"
 : "${PLATFORM_DOCKER_ROOT:?}"
-: "${PLATFORM_TINYMEDIAMANAGER_API_PORT:=7878}"
-: "${PLATFORM_TINYMEDIAMANAGER_FIXTURE_PRESEEDED:=false}"
-if [ -z "${PLATFORM_TINYMEDIAMANAGER_CONTAINER:-}" ]; then
-  PLATFORM_TINYMEDIAMANAGER_CONTAINER=${PLATFORM_PROJECT_NAME:+$PLATFORM_PROJECT_NAME-}tinymediamanager
-fi
-export PLATFORM_CONTRACT_VAULT_FILE PLATFORM_CONTRACT_VAULT_PASSWORD_FILE
-export PLATFORM_MEDIA_ROOT PLATFORM_REPORT_ROOT PLATFORM_DOCKER_ROOT
-export PLATFORM_TINYMEDIAMANAGER_API_PORT PLATFORM_TINYMEDIAMANAGER_CONTAINER
-export PLATFORM_TINYMEDIAMANAGER_FIXTURE_PRESEEDED
+: "${PLATFORM_REPORT_ROOT:?}"
+: "${PLATFORM_TINYMEDIAMANAGER_CONTAINER:=tinymediamanager}"
+export PLATFORM_DOCKER_ROOT PLATFORM_REPORT_ROOT PLATFORM_TINYMEDIAMANAGER_CONTAINER
 
-shift || true
-exec ruby - "$mode" "$@" <<'RUBY'
+exec ruby - "$mode" <<'RUBY'
 require "digest"
 require "json"
-require "net/http"
 require "open3"
 require "pathname"
-require "timeout"
-require "uri"
-require "yaml"
 
 MODE = ARGV.fetch(0)
-MEDIA_ROOT = Pathname.new(ENV.fetch("PLATFORM_MEDIA_ROOT")).expand_path
+DOCKER_ROOT = Pathname.new(ENV.fetch("PLATFORM_DOCKER_ROOT")).expand_path
 REPORT_ROOT = Pathname.new(ENV.fetch("PLATFORM_REPORT_ROOT")).expand_path
 CONTAINER = ENV.fetch("PLATFORM_TINYMEDIAMANAGER_CONTAINER")
-MOVIES_ROOT = Pathname.new(
-  ENV.fetch("PLATFORM_TINYMEDIAMANAGER_MOVIES_ROOT", MEDIA_ROOT.join("Media", "Movies").to_s)
-).expand_path
-SERIES_ROOT = Pathname.new(
-  ENV.fetch("PLATFORM_TINYMEDIAMANAGER_SERIES_ROOT", MEDIA_ROOT.join("Media", "Series").to_s)
-).expand_path
-MOVIE_DIRECTORY = MOVIES_ROOT.join("Task 10 Contract Movie (2024)")
-MOVIE_FILE = MOVIE_DIRECTORY.join("Task 10 Contract Movie (2024).mp4")
-SERIES_DIRECTORY = SERIES_ROOT.join("Task 10 Contract Series", "Season 01")
-SERIES_FILE = SERIES_DIRECTORY.join("Task 10 Contract Series - S01E01.mp4")
-STATE_PATH = REPORT_ROOT.join("tinymediamanager-persistence.sha256")
-SETTINGS_ROOT = Pathname.new(
-  ENV.fetch(
-    "PLATFORM_TINYMEDIAMANAGER_SETTINGS_ROOT",
-    Pathname.new(ENV.fetch("PLATFORM_DOCKER_ROOT")).expand_path.join("tinymediamanager", "data", "data").to_s
-  )
-).expand_path
-API = URI("http://127.0.0.1:#{Integer(ENV.fetch('PLATFORM_TINYMEDIAMANAGER_API_PORT'), 10)}")
-VIDEO_FIXTURE = (
-  "AAAAJGZ0eXBpc29tAAACAGlzb21pc282aXNvMmF2YzFtcDQxAAAC7W1vb3YAAABsbXZoZAAAAAAA" \
-  "AAAAAAAAAAAAA+gAAAAAAAEAAAEAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAA" \
-  "AAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIAAAHvdHJhawAAAFx0a2hkAAAA" \
-  "AwAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAQAA" \
-  "AAAAAAAAAAAAAAAAQAAAAAAQAAAAEAAAAAABi21kaWEAAAAgbWRoZAAAAAAAAAAAAAAAAAAAMgAAAAAA" \
-  "VcQAAAAAAC1oZGxyAAAAAAAAAAB2aWRlAAAAAAAAAAAAAAAAVmlkZW9IYW5kbGVyAAAAATZtaW5m" \
-  "AAAAFHZtaGQAAAABAAAAAAAAAAAAAAAkZGluZgAAABxkcmVmAAAAAAAAAAEAAAAMdXJsIAAAAAEA" \
-  "AAD2c3RibAAAAKpzdHNkAAAAAAAAAAEAAACaYXZjMQAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAQ" \
-  "ABAASAAAAEgAAAAAAAAAARVMYXZjNjIuMjguMTAyIGxpYngyNjQAAAAAAAAAAAAAABj//wAAADRh" \
-  "dmNDAWQACv/hABdnZAAKrNlewEQAAAMABAAAAwDIPEiWWAEABmjr48siwP34+AAAAAAQcGFzcAAA" \
-  "AAEAAAABAAAAEHN0dHMAAAAAAAAAAAAAABBzdHNjAAAAAAAAAAAAAAAUc3RzegAAAAAAAAAAAAAA" \
-  "AAAAABBzdGNvAAAAAAAAAAAAAAAobXZleAAAACB0cmV4AAAAAAAAAAEAAAABAAAAAAAAAAAAAAAA" \
-  "AAAAYnVkdGEAAABabWV0YQAAAAAAAAAhaGRscgAAAAAAAAAAbWRpcmFwcGwAAAAAAAAAAAAAAAAt" \
-  "aWxzdAAAACWpdG9vAAAAHWRhdGEAAAABAAAAAExhdmY2Mi4xMi4xMDIAAABwbW9vZgAAABBtZmhk" \
-  "AAAAAAAAAAEAAABYdHJhZgAAACR0ZmhkAAAAOQAAAAEAAAAAAAADEQAAAgAAAALFAQEAAAAAABR0" \
-  "ZmR0AQAAAAAAAAAAAAAAAAAAGHRydW4AAAAFAAAAAQAAAHgCAAAAAAACzW1kYXQAAAKuBgX//6rc" \
-  "Rem95tlIt5Ys2CDZI+7veDI2NCAtIGNvcmUgMTY1IHIzMjIyIGIzNTYwNWEgLSBILjI2NC9NUEVH" \
-  "LTQgQVZDIGNvZGVjIC0gQ29weWxlZnQgMjAwMy0yMDI1IC0gaHR0cDovL3d3dy52aWRlb2xhbi5v" \
-  "cmcveDI2NC5odG1sIC0gb3B0aW9uczogY2FiYWM9MSByZWY9MyBkZWJsb2NrPTE6MDowIGFuYWx5" \
-  "c2U9MHgzOjB4MTEzIG1lPWhleCBzdWJtZT03IHBzeT0xIHBzeV9yZD0xLjAwOjAuMDAgbWl4ZWRf" \
-  "cmVmPTEgbWVfcmFuZ2U9MTYgY2hyb21hX21lPTEgdHJlbGxpcz0xIDh4OGRjdD0xIGNxbT0wIGRl" \
-  "YWR6b25lPTIxLDExIGZhc3RfcHNraXA9MSBjaHJvbWFfcXBfb2Zmc2V0PS0yIHRocmVhZHM9MSBs" \
-  "b29rYWhlYWRfdGhyZWFkcz0xIHNsaWNlZF90aHJlYWRzPTAgbnI9MCBkZWNpbWF0ZT0xIGludGVy" \
-  "bGFjZWQ9MCBibHVyYXlfY29tcGF0PTAgY29uc3RyYWluZWRfaW50cmE9MCBiZnJhbWVzPTMgYl9w" \
-  "eXJhbWlkPTIgYl9hZGFwdD0xIGJfYmlhcz0wIGRpcmVjdD0xIHdlaWdodGI9MSBvcGVuX2dvcD0w" \
-  "IHdlaWdodHA9MiBrZXlpbnQ9MjUwIGtleWludF9taW49MjUgc2NlbmVjdXQ9NDAgaW50cmFfcmVm" \
-  "cmVzaD0wIHJjX2xvb2thaGVhZD00MCByYz1jcmYgbWJ0cmVlPTEgY3JmPTIzLjAgcWNvbXA9MC42" \
-  "MCBxcG1pbj0wIHFwbWF4PTY5IHFwc3RlcD00IGlwX3JhdGlvPTEuNDAgYXE9MToxLjAwAIAAAAAP" \
-  "ZYiEACv//vZzfAprbbGBAAAAQ21mcmEAAAArdGZyYQEAAAAAAAABAAAAAAAAAAEAAAAAAAAAAAAA" \
-  "AAAAAAMRAQEBAAAAEG1mcm8AAAAAAAAAQw=="
-).unpack1("m0").freeze
+SENTINEL_NAME = ".nas-platform-retirement-sentinel"
+DIGEST_ARTIFACT_NAME = "tinymediamanager-retirement.sha256"
+MARKER = "tinyMediaManager retirement state preserved\n".freeze
+NOFOLLOW = File.const_defined?(:NOFOLLOW) ? File::NOFOLLOW : 0
+DIRECTORY_OPEN_FLAGS = File::RDONLY | File::NONBLOCK | NOFOLLOW
+FILE_READ_FLAGS = File::RDONLY | File::NONBLOCK | NOFOLLOW
 
 def fail_contract(message)
   warn "tinyMediaManager contract failed: #{message}"
   exit 1
 end
 
-def docker_exec(*arguments)
-  stdout, stderr, status = Open3.capture3("docker", "exec", CONTAINER, *arguments)
-  fail_contract("tinyMediaManager command failed") unless status.success?
-  [stdout, stderr]
+def open_safe_directory(path, label)
+  directory = File.open(path, DIRECTORY_OPEN_FLAGS)
+  fail_contract("#{label} is unavailable or unsafe") unless directory.stat.directory?
+  directory
+rescue Errno::ENOENT, Errno::ELOOP, Errno::ENOTDIR, Errno::EACCES
+  fail_contract("#{label} is unavailable or unsafe")
 end
 
-def seed_file(path, contents)
-  path.dirname.mkpath
-  # tinyMediaManager writes its metadata next to the media, as an unprivileged
-  # user. On the NAS that is permitted by the NAS's own permission controls: the
-  # play is explicitly forbidden from declaring ownership under the media root,
-  # so nothing in the deployment grants it. A sandbox created by whoever ran the
-  # harness has no such controls and the directory ends up unwritable, which
-  # Docker Desktop hides by remapping bind-mount ownership. Grant it here, where
-  # the fixture is made, rather than teaching the play to claim media it does not
-  # own.
-  path.dirname.chmod(0o777)
-  if path.exist?
-    fail_contract("fixture file drifted: #{path.basename}") unless path.file? && path.binread == contents
-  else
-    path.open(File::WRONLY | File::CREAT | File::EXCL, 0o644) { |file| file.write(contents) }
+def in_directory(directory, &block)
+  Dir.fchdir(directory.fileno, &block)
+end
+
+def open_safe_child_directory(parent, name, label, create: false)
+  if create
+    begin
+      in_directory(parent) { Dir.mkdir(name, 0o755) }
+    rescue Errno::EEXIST
+      nil
+    end
   end
+  directory = in_directory(parent) { File.open(name, DIRECTORY_OPEN_FLAGS) }
+  fail_contract("#{label} is unavailable or unsafe") unless directory.stat.directory?
+  directory
+rescue Errno::ENOENT, Errno::ELOOP, Errno::ENOTDIR, Errno::EACCES
+  fail_contract("#{label} is unavailable or unsafe")
 end
 
-def post_api(path, password, body, expected: [200], allow_closed_connection: false)
-  uri = URI.join(API.to_s, path)
-  request = Net::HTTP::Post.new(uri)
-  request["api-key"] = password
-  request["Content-Type"] = "application/json"
-  request.body = JSON.generate(body)
-  response = Net::HTTP.start(uri.host, uri.port, open_timeout: 5, read_timeout: 30) do |http|
-    http.request(request)
-  end
-  fail_contract("tinyMediaManager API #{path} returned HTTP #{response.code}") unless
-    expected.include?(response.code.to_i)
-  response
-rescue EOFError
-  fail_contract("tinyMediaManager API #{path} closed the connection") unless allow_closed_connection
-  nil
-rescue SystemCallError, Timeout::Error => error
-  fail_contract("tinyMediaManager API #{path} failed: #{error.class}")
-end
-
-def deep_sorted(value)
-  case value
-  when Hash then value.keys.sort.to_h { |key| [key, deep_sorted(value.fetch(key))] }
-  when Array then value.map { |element| deep_sorted(element) }
-  else value
-  end
-end
-
-def metadata_paths
-  # Pinned 5.3.1 reloadMediaInfo writes NFOs for entities that own video files,
-  # and its HTTP API exposes no action that writes a series-root tvshow.nfo.
-  [
-    MOVIE_FILE.sub_ext(".nfo"),
-    SERIES_DIRECTORY.join("Task 10 Contract Series - S01E01.nfo")
-  ]
-end
-
-if MODE == "seed-fixture-only"
-  seed_file(MOVIE_FILE, VIDEO_FIXTURE)
-  seed_file(SERIES_FILE, VIDEO_FIXTURE)
-  puts "tinyMediaManager video fixtures prepared before deployment"
-  exit 0
-end
-
-vault_yaml, vault_error, vault_status = Open3.capture3(
-  "ansible-vault", "view", "--vault-password-file",
-  ENV.fetch("PLATFORM_CONTRACT_VAULT_PASSWORD_FILE"),
-  ENV.fetch("PLATFORM_CONTRACT_VAULT_FILE")
-)
-fail_contract("encrypted vault could not be read") unless vault_status.success?
-vault = YAML.safe_load(vault_yaml)
-vault_yaml.replace("\0" * vault_yaml.bytesize)
-vault_error.replace("\0" * vault_error.bytesize)
-password = vault.fetch("vault_tinymediamanager_password")
-
-installed_password, installed_error, installed_status = Open3.capture3(
-  "docker", "exec", CONTAINER, "cat", "/app/.vnc/passwd"
-)
-expected_password, expected_error, expected_status = Open3.capture3(
-  "docker", "exec", "-i", CONTAINER, "tigervncpasswd", "-f",
-  stdin_data: "#{password}\n"
-)
-wrong_password, wrong_error, wrong_status = Open3.capture3(
-  "docker", "exec", "-i", CONTAINER, "tigervncpasswd", "-f",
-  stdin_data: "contract-wrong-password\n"
-)
-fail_contract("installed VNC password could not be inspected") unless installed_status.success?
-fail_contract("vault VNC password could not be encoded") unless expected_status.success?
-fail_contract("wrong VNC password could not be encoded") unless wrong_status.success?
-fail_contract("vault password was not installed for VNC") unless
-  installed_password == expected_password && installed_password != wrong_password
-[installed_password, installed_error, expected_password, expected_error, wrong_password, wrong_error].each do |value|
-  value.replace("\0" * value.bytesize)
-end
-
-inspect_json, inspect_error, inspect_status = Open3.capture3("docker", "inspect", CONTAINER)
-fail_contract("container network state could not be inspected") unless inspect_status.success?
-inspect = JSON.parse(inspect_json).fetch(0)
-inspect_json.replace("\0" * inspect_json.bytesize)
-inspect_error.replace("\0" * inspect_error.bytesize)
-ports = inspect.dig("NetworkSettings", "Ports") || {}
-fail_contract("direct VNC was published") if ports.fetch("5900/tcp", []).to_a.any?
-processes, process_error, process_status = Open3.capture3("docker", "exec", CONTAINER, "ps", "ww", "-eo", "args")
-fail_contract("VNC process state could not be inspected") unless process_status.success?
-fail_contract("direct VNC is not restricted to localhost") unless
-  processes.lines.any? { |line| line.include?("Xtigervnc") && line.include?("-localhost") }
-processes.replace("\0" * processes.bytesize)
-process_error.replace("\0" * process_error.bytesize)
-
-tmm_settings = JSON.parse(SETTINGS_ROOT.join("tmm.json").binread)
-fail_contract("MP4 or MKV scanning is disabled") unless
-  %w[.mp4 .mkv].all? { |extension| tmm_settings.fetch("videoFileType").include?(extension) }
-
-if MODE == "drift" || MODE == "drift-verify"
-  movies_path = SETTINGS_ROOT.join("movies.json")
-  fail_contract("stable movie settings are unavailable or unsafe") unless movies_path.file? && !movies_path.symlink?
-  movies = JSON.parse(movies_path.binread)
-  if MODE == "drift"
-    fail_contract("movie source was already drifted") unless movies.fetch("movieDataSource") == ["/media/Movies"]
-    movies["movieDataSource"] = ["/media/Drifted"]
-    movies_path.open(File::WRONLY | File::TRUNC) { |file| file.write(JSON.pretty_generate(movies) + "\n") }
-    puts "tinyMediaManager source drift installed"
-  else
-    fail_contract("tinyMediaManager drift fixture was not installed") unless
-      movies.fetch("movieDataSource") == ["/media/Drifted"]
-    puts "tinyMediaManager source drift is present"
-  end
-  exit
-end
-
-if MODE == "run"
-  puts "tinyMediaManager vault password, sources, and metadata settings contract passed"
-  exit
-end
-fail_contract("unknown mode: #{MODE}") unless %w[seed assert-persistence].include?(MODE)
-
-if MODE == "seed"
-  unless ENV.fetch("PLATFORM_TINYMEDIAMANAGER_FIXTURE_PRESEEDED") == "true"
-    seed_file(MOVIE_FILE, VIDEO_FIXTURE)
-    seed_file(SERIES_FILE, VIDEO_FIXTURE)
-  end
-  authentication_deadline = Time.now + 120
-  authentication_response = nil
-  until authentication_response
-    authentication_response = post_api(
-      "/api/movie", "contract-wrong-password", { "action" => "update" },
-      expected: [403], allow_closed_connection: true
-    )
-    fail_contract("tinyMediaManager API contexts did not become ready") if
-      !authentication_response && Time.now >= authentication_deadline
-    sleep 2 unless authentication_response
-  end
-  commands = [
-    { "action" => "update", "scope" => { "name" => "all" } },
-    { "action" => "reloadMediaInfo", "scope" => { "name" => "all" } }
-  ]
-  post_api("/api/movie", password, commands)
-  post_api("/api/tvshow", password, commands)
-end
-
-# How long the scan takes is a property of the machine, not of the deployment, so
-# allow generous time and make it tunable. Both documents are written at the end of
-# the scan, so their absence alone cannot separate a slow scan from one that never
-# saw the fixtures. On timeout, report what the application actually sees: whether
-# the media is readable to the user it runs as, and whether the scan produced any
-# entities at all. Diagnostics must never fail the run themselves.
-metadata_timeout = Integer(ENV.fetch("PLATFORM_TINYMEDIAMANAGER_METADATA_TIMEOUT", "600"), 10)
-
-def scan_diagnostics
-  report, = Open3.capture3(
-    "docker", "exec", CONTAINER, "sh", "-c",
-    "echo '# application processes'; ps -eo user,args | grep -i '[t]inyMediaManager' | head -3; " \
-    "echo '# mount ownership and modes'; ls -lnd /media /media/Movies /media/Series; " \
-    "echo '# fixtures the container can see'; find /media -maxdepth 5 -type f -exec ls -ln {} + 2>&1 | head"
+def with_contract_directories(create: false)
+  docker_root = open_safe_directory(DOCKER_ROOT, "Docker root")
+  state_parent = open_safe_child_directory(
+    docker_root, "tinymediamanager", "retirement state parent", create: create
   )
-  warn "tinyMediaManager scan diagnostics:\n#{report.gsub(/^/, '  ')}"
-rescue StandardError => error
-  warn "tinyMediaManager scan diagnostics unavailable: #{error.class}"
+  state_root = open_safe_child_directory(
+    state_parent, "data", "retirement state directory", create: create
+  )
+  report_root = open_safe_directory(REPORT_ROOT, "report root")
+  yield state_root, report_root
+ensure
+  [report_root, state_root, state_parent, docker_root].compact.each(&:close)
 end
 
-deadline = Time.now + metadata_timeout
-until metadata_paths.all? { |path| path.file? && path.size.positive? }
-  if Time.now >= deadline
-    missing = metadata_paths.reject { |path| path.file? && path.size.positive? }
-    scan_diagnostics
-    fail_contract("tinyMediaManager did not write all fixture metadata within " \
-                  "#{metadata_timeout}s; still missing: #{missing.map(&:basename).join(', ')}")
+def read_safe_file(directory, name, label)
+  in_directory(directory) do
+    File.open(name, FILE_READ_FLAGS) do |file|
+      stat = file.stat
+      fail_contract("#{label} is unavailable or unsafe") unless stat.file?
+      fail_contract("#{label} mode differs") unless (stat.mode & 0o777) == 0o600
+      file.binmode
+      file.read
+    end
   end
-  sleep 2
+rescue Errno::ENOENT, Errno::ELOOP, Errno::ENOTDIR, Errno::EISDIR, Errno::ENXIO
+  fail_contract("#{label} is unavailable or unsafe")
 end
-metadata = metadata_paths.map { |path| [path.to_s, Digest::SHA256.file(path).hexdigest] }
-# Metadata stays byte-exact because only the application writes it. Settings do
-# not: the application writes them in its own format, and the role rewrites them
-# with to_nice_json when it repairs drift, so between seeding and this assertion
-# the same values legitimately change indentation. Compare the parsed documents
-# instead, which still fails if a value is lost across recreation. Array order is
-# preserved because it carries meaning for the data sources and video types.
-settings_paths = docker_exec(
-  "sh", "-c", "find /data -maxdepth 2 -type f -name '*.json' -print"
-).first.split("\n").reject(&:empty?).sort
-fail_contract("stable tinyMediaManager settings were not found") if settings_paths.empty?
-settings = settings_paths.map do |path|
-  document = JSON.parse(docker_exec("cat", path).first)
-  [path, JSON.generate(deep_sorted(document))]
+
+def path_entry_exists?(directory, name)
+  in_directory(directory) do
+    File.lstat(name)
+    true
+  end
+rescue Errno::ENOENT, Errno::ENOTDIR
+  false
 end
-fingerprint = Digest::SHA256.hexdigest(Marshal.dump([metadata, settings]))
+
+def refuse_existing_target(directory, name, label)
+  fail_contract("refusing to replace #{label}") if path_entry_exists?(directory, name)
+end
+
+def create_exclusive(directory, name, contents, label)
+  refuse_existing_target(directory, name, label)
+  in_directory(directory) do
+    File.open(name, File::WRONLY | File::CREAT | File::EXCL | NOFOLLOW, 0o600) do |file|
+      stat = file.stat
+      fail_contract("#{label} is unavailable or unsafe") unless stat.file?
+      fail_contract("#{label} mode differs") unless (stat.mode & 0o777) == 0o600
+      file.write(contents)
+    end
+  end
+rescue Errno::EEXIST, Errno::ELOOP
+  fail_contract("refusing to replace #{label}")
+end
+
+def run_docker(*arguments)
+  Open3.capture3("docker", *arguments)
+rescue Errno::ENOENT, Errno::EACCES
+  fail_contract("Docker CLI is unavailable")
+end
+
+def empty_inspect_result?(stdout)
+  return true if stdout.empty?
+  JSON.parse(stdout) == []
+rescue JSON::ParserError
+  false
+end
 
 case MODE
-when "seed"
-  fail_contract("report root is unavailable or unsafe") unless REPORT_ROOT.directory? && !REPORT_ROOT.symlink?
-  fail_contract("refusing to replace tinyMediaManager persistence artifact") if STATE_PATH.exist? || STATE_PATH.symlink?
-  STATE_PATH.open(File::WRONLY | File::CREAT | File::EXCL, 0o600) { |file| file.write(fingerprint) }
-  puts "tinyMediaManager Movies and Series fixtures scanned and metadata written"
-when "assert-persistence"
-  fail_contract("tinyMediaManager persistence artifact is unavailable or unsafe") unless STATE_PATH.file? && !STATE_PATH.symlink?
-  fail_contract("tinyMediaManager settings or metadata changed across recreation") unless STATE_PATH.binread == fingerprint
-  puts "tinyMediaManager settings and written metadata persisted"
+when "seed-retirement-fixture"
+  with_contract_directories(create: true) do |state_root, report_root|
+    refuse_existing_target(state_root, SENTINEL_NAME, "retirement sentinel")
+    refuse_existing_target(report_root, DIGEST_ARTIFACT_NAME, "retirement digest artifact")
+    create_exclusive(state_root, SENTINEL_NAME, MARKER, "retirement sentinel")
+    create_exclusive(
+      report_root,
+      DIGEST_ARTIFACT_NAME,
+      "#{Digest::SHA256.hexdigest(MARKER)}\n",
+      "retirement digest artifact"
+    )
+  end
+  puts "tinyMediaManager retirement fixture prepared"
+when "assert-retired"
+  with_contract_directories do |state_root, report_root|
+    _info_stdout, _info_stderr, info_status = run_docker("info", "--format", "{{.ServerVersion}}")
+    fail_contract("Docker daemon is unavailable") unless info_status.success?
+    inspect_stdout, inspect_stderr, inspect_status = run_docker("container", "inspect", CONTAINER)
+    fail_contract("retired tinyMediaManager container still exists") if inspect_status.success?
+    expected_not_found = [
+      "Error: No such container: #{CONTAINER}",
+      "Error response from daemon: No such container: #{CONTAINER}"
+    ]
+    expected_status = inspect_status.exited? && inspect_status.exitstatus == 1
+    unless expected_status && empty_inspect_result?(inspect_stdout) &&
+           expected_not_found.include?(inspect_stderr.strip)
+      fail_contract("could not establish that the retired tinyMediaManager container is absent")
+    end
+    sentinel_contents = read_safe_file(state_root, SENTINEL_NAME, "retirement sentinel")
+    digest_contents = read_safe_file(
+      report_root, DIGEST_ARTIFACT_NAME, "retirement digest artifact"
+    )
+    fail_contract("retirement sentinel contents differ") unless sentinel_contents == MARKER
+    expected_digest = "#{Digest::SHA256.hexdigest(sentinel_contents)}\n"
+    fail_contract("retirement digest artifact differs") unless digest_contents == expected_digest
+  end
+  puts "tinyMediaManager remains retired and its state is preserved"
+else
+  fail_contract("unknown mode: #{MODE}")
 end
 RUBY
