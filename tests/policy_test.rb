@@ -834,8 +834,16 @@ manifest_entries.each do |service|
         "#{name}: environment must render the effective container CPU set exactly once")
   tasks_source = tasks_owned ? File.read(tasks_path) : ""
   deploys_compose = tasks_source.include?("community.docker.docker_compose_v2:")
+  role_tasks = tasks_owned ? Array(YAML.safe_load_file(tasks_path, aliases: true)) : []
+  retires_tinymediamanager =
+    name == "tinymediamanager" &&
+    role_tasks.any? do |task|
+      task.is_a?(Hash) &&
+        task["name"] == "Retire tinyMediaManager without deleting state" &&
+        task.dig("community.docker.docker_compose_v2", "state") == "absent"
+    end
   check(failures,
-        !deploys_compose ||
+        !deploys_compose || retires_tinymediamanager ||
           (tasks_source.scan(/name:\s*container_cpu\b/).length == 1 &&
            tasks_source.include?("container_cpu_service_name: #{name}")),
         "#{name}: role must verify its effective container CPU policy exactly once")
@@ -988,8 +996,13 @@ Dir[File.join(ROOT, "roles", "*")].select { |p| File.directory?(p) }.each do |ro
     parsed.is_a?(Array) ? parsed.select { |task| task.is_a?(Hash) } : []
   end
   deployments = tasks.select do |task|
-    task["community.docker.docker_compose_v2"].is_a?(Hash) &&
-      task.dig("community.docker.docker_compose_v2", "state") == "present"
+    compose = task["community.docker.docker_compose_v2"]
+    next false unless compose.is_a?(Hash)
+
+    compose["state"] == "present" ||
+      (name == "tinymediamanager" &&
+       task["name"] == "Retire tinyMediaManager without deleting state" &&
+       compose["state"] == "absent")
   end
   next if deployments.empty?
 
@@ -2308,7 +2321,7 @@ tinymediamanager_tasks = flatten_tasks(
   YAML.safe_load_file(File.join(ROOT, "roles", "tinymediamanager", "tasks", "main.yml"))
 )
 tinymediamanager_state_root = tinymediamanager_tasks.find do |task|
-  task["name"] == "Select the tinyMediaManager mounted state root"
+  task["name"] == "Select the tinyMediaManager preserved state root"
 end
 check(failures,
       tinymediamanager_state_root&.key?("ansible.builtin.set_fact") &&
