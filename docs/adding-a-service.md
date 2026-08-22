@@ -36,7 +36,7 @@ copying the line above yours.
 Do not try to memorise the checklist below. Make a change, then run:
 
 ```sh
-ruby tests/policy_test.rb
+bash tests/validate-policy.sh
 ```
 
 It accumulates every violation and prints them all at once, in the repository's
@@ -51,14 +51,14 @@ A half-added service leaves edits in tracked files and two new directories, so
 example:
 
 ```sh
-git checkout -- services/manifest.yml tests/policy_test.rb \
-  tests/policy_manifest_test.rb inventory/group_vars/all/main.yml \
+git checkout -- services/manifest.yml tests/policy_support.rb \
+  tests/expected tests/policy_manifest_test.rb inventory/group_vars/all/main.yml \
   site.yml verify.yml
 rm -rf services/navidrome roles/navidrome
 ```
 
 Then confirm you are back to a passing baseline with `git status --porcelain`
-and `ruby tests/policy_test.rb`. Do this freely; the edit loop is cheap and
+and `bash tests/validate-policy.sh`. Do this freely; the edit loop is cheap and
 nothing outside the repository has changed yet.
 
 ## Anatomy of a service
@@ -84,11 +84,39 @@ services/manifest.yml                  the service and its role
 inventory/group_vars/all/main.yml      its directories, under nas_storage
 site.yml                               the role, with tags
 verify.yml                             the role, with tags: [never]
-tests/policy_test.rb                   EXPECTED_SERVICES, the roster
+tests/policy_support.rb                EXPECTED_SERVICES, the roster
 tests/expected/<service>.yml           its role, CPU ceilings and vault keys
 tests/policy_manifest_test.rb          EXPECTED_FIXTURE_ROLES
 tests/ci/classify_changes.rb           the CI lane that owns it
 ```
+
+Add a Mac verify hook too, at `tests/mac/hooks/verify/<NN>-<service>.sh`. The
+runner discovers hooks by globbing and only fails when a directory is empty, so a
+missing hook means the Mac lane verifies one service fewer without saying so. The
+`drift`, `fixtures-seed` and `fixtures-persistence` groups are deliberately
+incomplete: ntfy is the alerting sink and has no user data to seed or drift.
+
+## Where policy checks live
+
+The policy suite is several scripts rather than one, each policing the artifact it
+changes with. Add a check to the script that owns the thing it checks:
+
+```
+tests/policy_support.rb           the roster, the expectations loader, shared helpers
+tests/policy_test.rb              docs, services, the manifest, image and digest pinning
+tests/policy_platform_test.rb     inventory, host-scoped facts, preflight, storage
+tests/policy_vault_test.rb        the vault contract and secret containment
+tests/policy_deployment_test.rb   roles/deployment_bundle
+tests/policy_beszel_test.rb       beszel identity and host_prep
+tests/policy_integration_test.rb  tests/integration.sh, locking, sandboxing
+tests/policy_mac_test.rb          the tests/mac/ orchestration contract
+tests/policy_ci_test.rb           runner registration, ci.yml, the classifier tables
+```
+
+A new script must be added to `tests/validate-policy.sh`, to `POLICY_SCRIPTS` in
+`tests/policy_manifest_test.rb`, and to that file's fixture list.
+`tests/policy_ci_test.rb` asserts the runner runs every one of them, which is what
+stops a check from being written and then never run.
 
 The service name and the role name may differ. Paperless is `paperless-ngx` as a
 service and `paperless_ngx` as a role, because directory names use hyphens and
@@ -106,7 +134,7 @@ Add to `services/manifest.yml`:
     status: implemented
 ```
 
-Then run `ruby tests/policy_test.rb`:
+Then run `bash tests/validate-policy.sh`:
 
 ```
 FAIL service manifest must list the complete source platform
@@ -126,11 +154,11 @@ That is the whole remaining task list.
 ### 2. Register the name in the two Ruby lists and pin its expectations
 
 The first two failures come from a pinned list. The comment at the top of
-`tests/policy_test.rb` explains why the list is pinned rather than derived:
+`tests/policy_support.rb` explains why the list is pinned rather than derived:
 deriving it from the manifest would let a service silently disappear from the
 platform scope without any test noticing.
 
-In `tests/policy_test.rb`, add the name to `EXPECTED_SERVICES`:
+In `tests/policy_support.rb`, add the name to `EXPECTED_SERVICES`:
 
 ```ruby
 EXPECTED_SERVICES = %w[
@@ -442,8 +470,8 @@ is a claim the first upload falsifies.
 At this point:
 
 ```
-$ ruby tests/policy_test.rb
-policy: all properties hold
+$ bash tests/validate-policy.sh
+policy validation: all 71 checks passed
 ```
 
 ## What the policy test does not catch
@@ -549,8 +577,7 @@ laptop.
 
 ```sh
 # seconds
-ruby tests/policy_test.rb
-ruby tests/policy_manifest_test.rb
+bash tests/validate-policy.sh
 ansible-playbook -i inventory/local.yml site.yml --syntax-check
 ansible-playbook -i inventory/local.yml verify.yml \
   --tags platform_verify_<name> --list-tasks
