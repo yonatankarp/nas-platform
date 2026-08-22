@@ -1,0 +1,9 @@
+---
+role: jellyfin
+container_cpus:
+  jellyfin: 3.0
+vault_keys:
+- vault_jellyfin_admin_password
+- vault_jellyfin_admin_username
+- vault_jellyfin_opensubtitles_password
+- vault_jellyfin_opensubtitles_username

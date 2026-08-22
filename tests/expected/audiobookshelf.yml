@@ -1,0 +1,7 @@
+---
+role: audiobookshelf
+container_cpus:
+  audiobookshelf: 1.5
+vault_keys:
+- vault_audiobookshelf_admin_password
+- vault_audiobookshelf_admin_username

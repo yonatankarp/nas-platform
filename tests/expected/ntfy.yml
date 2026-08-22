@@ -1,0 +1,14 @@
+---
+role: ntfy
+container_cpus:
+  ntfy: 1.0
+vault_keys:
+- vault_ntfy_admin_password
+- vault_ntfy_admin_password_hash
+- vault_ntfy_admin_user
+- vault_ntfy_beszel_password_hash
+- vault_ntfy_beszel_token
+- vault_ntfy_deploy_password_hash
+- vault_ntfy_deploy_token
+- vault_ntfy_dozzle_password_hash
+- vault_ntfy_dozzle_token

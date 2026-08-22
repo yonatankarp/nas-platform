@@ -484,7 +484,11 @@ ENTRY_FIELDS.each_key do |service|
 end
 
 policy = File.file?(POLICY_PATH) ? File.read(POLICY_PATH) : ""
-check(failures, policy.match?(/EXPECTED_VAULT_KEYS = %w\[.*?vault_managed_users.*?\]\.sort\.freeze/m),
+# vault_managed_users is platform-wide rather than owned by one service, so it is the
+# one pinned key that stayed in the policy source when the per-service keys moved out
+# to tests/expected/<service>.yml. GLOBAL_VAULT_KEYS is concatenated into
+# EXPECTED_VAULT_KEYS, so pinning it here still pins the full expected set.
+check(failures, policy.match?(/GLOBAL_VAULT_KEYS = %w\[[^\]]*vault_managed_users[^\]]*\]\.freeze/m),
       "policy expected vault keys must include vault_managed_users")
 plain_template = File.file?(PLAIN_TEMPLATE_PATH) ? File.read(PLAIN_TEMPLATE_PATH) : ""
 empty_lists = ENTRY_FIELDS.keys.map { |service| "  #{service}: []" }.join("\n")

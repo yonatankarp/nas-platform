@@ -84,7 +84,8 @@ services/manifest.yml                  the service and its role
 inventory/group_vars/all/main.yml      its directories, under nas_storage
 site.yml                               the role, with tags
 verify.yml                             the role, with tags: [never]
-tests/policy_test.rb                   EXPECTED_SERVICES, EXPECTED_SERVICE_MAPPINGS
+tests/policy_test.rb                   EXPECTED_SERVICES, the roster
+tests/expected/<service>.yml           its role, CPU ceilings and vault keys
 tests/policy_manifest_test.rb          EXPECTED_FIXTURE_ROLES
 tests/ci/classify_changes.rb           the CI lane that owns it
 ```
@@ -122,15 +123,14 @@ FAIL navidrome: implemented service has no automated verification or service con
 
 That is the whole remaining task list.
 
-### 2. Register the name in the two Ruby lists
+### 2. Register the name in the two Ruby lists and pin its expectations
 
 The first two failures come from a pinned list. The comment at the top of
 `tests/policy_test.rb` explains why the list is pinned rather than derived:
 deriving it from the manifest would let a service silently disappear from the
 platform scope without any test noticing.
 
-In `tests/policy_test.rb`, add the name to `EXPECTED_SERVICES` and the mapping to
-`EXPECTED_SERVICE_MAPPINGS`:
+In `tests/policy_test.rb`, add the name to `EXPECTED_SERVICES`:
 
 ```ruby
 EXPECTED_SERVICES = %w[
@@ -139,9 +139,28 @@ EXPECTED_SERVICES = %w[
 ].freeze
 ```
 
-```ruby
-  "navidrome" => { "role" => "navidrome" },
+Then create `tests/expected/navidrome.yml` with everything the policy checks pin
+about this one service. The roster stays in Ruby because it is the authorization
+tripwire, and a roster derived from whichever files exist under `tests/expected/`
+would let a new service approve itself by the arrival of its own file. Everything
+the roster authorizes lives in the per-service file, so adding a service edits its
+own file rather than four tables shared with every other service:
+
+```yaml
+---
+role: navidrome
+container_cpus:
+  navidrome: 1.5
+vault_keys:
+- vault_navidrome_admin_password
+- vault_navidrome_admin_username
 ```
+
+All three fields are required and are checked for type, so a mistyped CPU ceiling
+is reported against this file rather than surfacing later as a Compose mismatch.
+The `container_cpus` values must equal the `cpus:` keys in the service's
+`compose.yml`, and `vault_keys` must be prefixed for this service and must list
+every key the service adds to the vault.
 
 There is a second list in `tests/policy_manifest_test.rb`, `EXPECTED_FIXTURE_ROLES`.
 It is easy to miss because `policy_test.rb` will pass without it, and
@@ -501,7 +520,7 @@ Adding one credential touches:
 inventory/group_vars/all/vault.yml.example    a sanitized placeholder
 roles/vault_contract/meta/argument_specs.yml  {type: str, required: true}
 roles/<role>/meta/argument_specs.yml          required: true
-tests/policy_test.rb                          EXPECTED_VAULT_KEYS
+tests/expected/<service>.yml                  vault_keys
 generate-secrets.yml                          brand-new-platform generation
 docs/secrets.md                               enforced by secrets_docs_test.rb
 ```

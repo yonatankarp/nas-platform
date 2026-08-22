@@ -104,95 +104,90 @@ check(failures,
       end,
       "Mac runner must export dynamic project/port facts and isolate every Compose project")
 
+# The roster is the authorization tripwire and stays stated here. Deriving it from
+# whichever files exist under tests/expected/ would make adding a service approve
+# itself: drop in an expectations file and the arrival of that file is the only
+# authorization the new service ever needs. So the roster is stated, and the
+# per-service values it authorizes live one file per service, which is why adding
+# a service now edits its own file instead of four tables shared by all nine.
 EXPECTED_SERVICES = %w[
   audiobookshelf beszel dozzle immich jellyfin komga ntfy paperless-ngx
   tinymediamanager
 ].freeze
-EXPECTED_SERVICE_MAPPINGS = {
-  "audiobookshelf" => { "role" => "audiobookshelf" },
-  "beszel" => { "role" => "beszel" },
-  "dozzle" => { "role" => "dozzle" },
-  "immich" => { "role" => "immich" },
-  "jellyfin" => { "role" => "jellyfin" },
-  "komga" => { "role" => "komga" },
-  "ntfy" => { "role" => "ntfy" },
-  "paperless-ngx" => { "role" => "paperless_ngx" },
-  "tinymediamanager" => { "role" => "tinymediamanager" }
-}.freeze
-EXPECTED_CONTAINER_CPUS = {
-  "audiobookshelf" => { "audiobookshelf" => 1.5 },
-  "beszel" => {
-    "hub" => 1.0,
-    "agent-portable" => 0.5,
-    "agent-intel" => 0.5,
-    "socket-proxy" => 0.5
-  },
-  "dozzle" => { "alert-relay" => 0.5, "dozzle" => 1.0, "socket-proxy" => 0.5 },
-  "immich" => {
-    "immich-server" => 3.0,
-    "immich-machine-learning" => 3.0,
-    "redis" => 0.5,
-    "database" => 2.0
-  },
-  "jellyfin" => { "jellyfin" => 3.0 },
-  "komga" => { "komga" => 1.5 },
-  "ntfy" => { "ntfy" => 1.0 },
-  "paperless-ngx" => {
-    "broker" => 0.5,
-    "db" => 2.0,
-    "webserver" => 3.0,
-    "gotenberg" => 2.0,
-    "tika" => 2.0
-  },
-  "tinymediamanager" => { "tinymediamanager" => 3.0 }
-}.freeze
-EXPECTED_VAULT_KEYS = %w[
-  vault_audiobookshelf_admin_username
-  vault_audiobookshelf_admin_password
-  vault_beszel_superuser_email
-  vault_beszel_superuser_password
-  vault_beszel_app_user_email
-  vault_beszel_app_user_password
-  vault_beszel_agent_key
-  vault_beszel_universal_token
-  vault_beszel_hub_private_key
-  vault_dozzle_admin_username
-  vault_dozzle_admin_password
-  vault_dozzle_admin_password_hash
-  vault_immich_admin_email
-  vault_immich_admin_password
-  vault_immich_db_name
-  vault_immich_db_username
-  vault_immich_db_password
-  vault_jellyfin_admin_username
-  vault_jellyfin_admin_password
-  vault_jellyfin_opensubtitles_username
-  vault_jellyfin_opensubtitles_password
-  vault_komga_admin_email
-  vault_komga_admin_password
-  vault_ntfy_admin_user
-  vault_ntfy_admin_password
-  vault_ntfy_admin_password_hash
-  vault_ntfy_dozzle_password_hash
-  vault_ntfy_dozzle_token
-  vault_ntfy_beszel_password_hash
-  vault_ntfy_beszel_token
-  vault_ntfy_deploy_password_hash
-  vault_ntfy_deploy_token
-  vault_paperless_admin_username
-  vault_paperless_admin_password
-  vault_paperless_admin_email
-  vault_paperless_db_name
-  vault_paperless_db_username
-  vault_paperless_db_password
-  vault_paperless_django_secret_key
-  vault_paperless_gmail_account
-  vault_paperless_gmail_app_password
-  vault_paperless_mail_account_name
-  vault_paperless_mail_rule_name
-  vault_managed_users
-  vault_tinymediamanager_password
-].sort.freeze
+# Not every vault key belongs to a service; this one is platform-wide.
+GLOBAL_VAULT_KEYS = %w[vault_managed_users].freeze
+EMPTY_EXPECTATION = { "role" => nil, "container_cpus" => {}, "vault_keys" => [] }.freeze
+EXPECTATION_FIELDS = %w[container_cpus role vault_keys].freeze
+
+SERVICE_EXPECTATIONS = EXPECTED_SERVICES.to_h do |service_name|
+  relative_path = File.join("tests", "expected", "#{service_name}.yml")
+  path = File.join(ROOT, relative_path)
+  document = begin
+    duplicate_yaml_keys(Psych.parse_stream(File.read(path))).uniq.each do |key|
+      check(failures, false, "#{relative_path} contains duplicate mapping key #{key}")
+    end
+    YAML.safe_load_file(path)
+  rescue Errno::ENOENT
+    check(failures, false, "pinned service expectations are missing: #{relative_path}")
+    nil
+  rescue Psych::Exception => e
+    check(failures, false, "#{relative_path} is malformed: #{e.message.lines.first.strip}")
+    nil
+  end
+
+  unless document.nil?
+    well_shaped = document.is_a?(Hash) && document.keys.sort == EXPECTATION_FIELDS
+    check(failures, well_shaped,
+          "#{relative_path} must define exactly #{EXPECTATION_FIELDS.join(', ')}")
+    document = nil unless well_shaped
+  end
+  [service_name, document || EMPTY_EXPECTATION]
+end.freeze
+
+# These values used to be Ruby literals, where a typo was a NameError at load time.
+# As YAML a mistyped CPU limit parses as a string instead, and a check comparing it
+# against the Compose file would report a mismatch that reads like a Compose bug, so
+# the pinned data is type-checked where it enters rather than where it is consumed.
+SERVICE_EXPECTATIONS.each do |service_name, expectation|
+  relative_path = "tests/expected/#{service_name}.yml"
+  role = expectation.fetch("role")
+  check(failures, role.is_a?(String) && !role.empty?,
+        "#{relative_path} role must be a nonempty string")
+  container_cpus = expectation.fetch("container_cpus")
+  check(failures, container_cpus.is_a?(Hash) && !container_cpus.empty?,
+        "#{relative_path} container_cpus must be a nonempty mapping")
+  Hash(container_cpus.is_a?(Hash) ? container_cpus : {}).each do |container, limit|
+    check(failures, limit.is_a?(Numeric),
+          "#{relative_path} container_cpus.#{container} must be numeric, got #{limit.class}")
+  end
+  vault_keys = expectation.fetch("vault_keys")
+  check(failures, vault_keys.is_a?(Array) && !vault_keys.empty?,
+        "#{relative_path} vault_keys must be a nonempty list")
+  # contract_basename is reused for the vault prefix because paperless-ngx is the one
+  # service whose keys drop the suffix, and it is the same alias. The two namings are
+  # independent concepts that happen to agree, so a change there must be checked here.
+  Array(vault_keys.is_a?(Array) ? vault_keys : []).each do |key|
+    check(failures, key.is_a?(String) && key.start_with?("vault_#{contract_basename(service_name)}_"),
+          "#{relative_path} vault_keys entries must be prefixed for this service, got #{key.inspect}")
+  end
+end
+
+# A file for a service the roster does not name would pin expectations nothing reads,
+# so an extra file is rejected rather than ignored.
+pinned_expectation_names = Dir.glob(File.join(ROOT, "tests", "expected", "*.yml"))
+                              .map { |path| File.basename(path, ".yml") }.sort
+check(failures, pinned_expectation_names == EXPECTED_SERVICES.sort,
+      "tests/expected must hold exactly one file per rostered service " \
+      "(missing: #{(EXPECTED_SERVICES - pinned_expectation_names).join(', ')}; " \
+      "unknown: #{(pinned_expectation_names - EXPECTED_SERVICES).join(', ')})")
+
+EXPECTED_SERVICE_MAPPINGS =
+  SERVICE_EXPECTATIONS.transform_values { |expectation| { "role" => expectation.fetch("role") } }.freeze
+EXPECTED_CONTAINER_CPUS =
+  SERVICE_EXPECTATIONS.transform_values { |expectation| expectation.fetch("container_cpus") }.freeze
+EXPECTED_VAULT_KEYS = (
+  GLOBAL_VAULT_KEYS + SERVICE_EXPECTATIONS.values.flat_map { |expectation| expectation.fetch("vault_keys") }
+).sort.freeze
 REQUIRED_MANIFEST_FIELDS = %w[name role status].freeze
 ALLOWED_SERVICE_STATUSES = %w[planned implemented accepted].freeze
 IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
@@ -724,6 +719,33 @@ check(failures, manifest_names.sort == EXPECTED_SERVICES.sort,
       "service manifest must list the complete source platform")
 check(failures, (manifest_names - EXPECTED_SERVICES).empty?,
       "service manifest contains unknown services: #{(manifest_names - EXPECTED_SERVICES).uniq.join(', ')}")
+
+# The service roster is restated in two independent artifacts: services/manifest.yml
+# declares what gets deployed, and config/managed-user-capabilities.yml declares the
+# managed-user contract each service honours. Both are pinned, but until now each was
+# pinned only against its own test's hardcoded list, so a service could be added to the
+# manifest and this roster while never gaining a capability contract: this file would
+# pass because the manifest matched, and managed_user_capabilities_test.rb would pass
+# because the matrix still matched its own untouched list. Drift between the two is only
+# visible from a check that reads both, so the matrix is pinned to the roster here.
+capabilities_path = File.join(ROOT, "config", "managed-user-capabilities.yml")
+capabilities = begin
+  YAML.safe_load_file(capabilities_path)
+rescue Errno::ENOENT
+  check(failures, false, "managed-user capability matrix is missing: config/managed-user-capabilities.yml")
+  {}
+rescue Psych::Exception => e
+  check(failures, false,
+        "managed-user capability matrix is malformed: #{e.message.lines.first.strip}")
+  {}
+end
+capability_names = capabilities.is_a?(Hash) && capabilities["services"].is_a?(Hash) ? capabilities["services"].keys : []
+check(failures, capabilities.is_a?(Hash) && capabilities["services"].is_a?(Hash),
+      "managed-user capability matrix must contain a services mapping")
+check(failures, capability_names.sort == EXPECTED_SERVICES.sort,
+      "managed-user capability matrix must cover the complete source platform " \
+      "(missing: #{(EXPECTED_SERVICES - capability_names).join(', ')}; " \
+      "unknown: #{(capability_names - EXPECTED_SERVICES).join(', ')})")
 
 %w[ntfy beszel].each do |name|
   entry = manifest_entries.find { |service| service.is_a?(Hash) && service["name"] == name }

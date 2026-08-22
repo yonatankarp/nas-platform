@@ -17,6 +17,7 @@ BASE_FIXTURE_PATHS = %w[
   .github/workflows/ci.yml
   README.md
   ansible.cfg
+  config/managed-user-capabilities.yml
   controller-requirements.txt
   docs/ansible-basics.md
   docs/getting-started.md
@@ -150,6 +151,17 @@ def fixture_paths(root = ROOT)
     paths << env_template if File.file?(File.join(root, env_template))
   end
 
+
+  # policy_test.rb reads one pinned expectations file per rostered service, so the
+  # sandbox needs every one of them regardless of deployment status: a planned service
+  # is still on the roster, and a missing file would fail every mutation below for the
+  # wrong reason instead of the one under test.
+  manifest.fetch("services").each do |entry|
+    name = entry.fetch("name")
+    raise "unsafe expectation fixture identity" unless EXPECTED_FIXTURE_ROLES.key?(name)
+
+    paths << File.join("tests", "expected", "#{name}.yml")
+  end
   statuses = manifest.fetch("services").to_h { |entry| [entry.fetch("name"), entry.fetch("status")] }
   registry = YAML.safe_load_file(registry_path)
   registry.fetch("contracts").each do |entry|
@@ -1379,6 +1391,60 @@ expect_failure(failures, "Mac raw log body retained",
   path = File.join(root, "tests", "mac", "sanitize-logs.rb")
   leaked_body = 'line.encode(Encoding::UTF_8, invalid: :replace, undef: :replace, replace: "")'
   File.write(path, File.read(path).sub('"message" => REDACTION', "\"message\" => #{leaked_body}"))
+end
+
+# The per-service expectations moved out of policy_test.rb into one file each, so the
+# properties that used to be protected by Ruby's own load-time errors now need stating:
+# a deleted file must not read as a service with nothing to check, and a value that
+# drifts from the Compose file must still be caught from its new home.
+expect_failure(failures, "pinned service expectations deleted",
+               "pinned service expectations are missing: tests/expected/komga.yml") do |root|
+  FileUtils.rm(File.join(root, "tests", "expected", "komga.yml"))
+end
+
+expect_failure(failures, "pinned expectations for an unrostered service",
+               "tests/expected must hold exactly one file per rostered service") do |root|
+  File.write(File.join(root, "tests", "expected", "plex.yml"), <<~YAML)
+    ---
+    role: plex
+    container_cpus:
+      plex: 1.0
+    vault_keys:
+    - vault_plex_token
+  YAML
+end
+
+expect_failure(failures, "pinned CPU ceiling drifts from Compose",
+               "jellyfin/jellyfin: CPU ceiling must match the pinned service policy") do |root|
+  mutate_yaml_file(root, "tests/expected/jellyfin.yml") do |expectation|
+    expectation["container_cpus"]["jellyfin"] = 9.9
+  end
+end
+
+expect_failure(failures, "pinned CPU ceiling is not a number",
+               "tests/expected/jellyfin.yml container_cpus.jellyfin must be numeric") do |root|
+  mutate_yaml_file(root, "tests/expected/jellyfin.yml") do |expectation|
+    expectation["container_cpus"]["jellyfin"] = "3.O"
+  end
+end
+
+expect_failure(failures, "pinned vault key dropped",
+               "vault key vault_jellyfin_opensubtitles_password") do |root|
+  mutate_yaml_file(root, "tests/expected/jellyfin.yml") do |expectation|
+    expectation["vault_keys"].delete("vault_jellyfin_opensubtitles_password")
+  end
+end
+
+expect_failure(failures, "pinned role drifts from the manifest",
+               "jellyfin: role must equal") do |root|
+  mutate_yaml_file(root, "tests/expected/jellyfin.yml") do |expectation|
+    expectation["role"] = "jellyfin_wrong"
+  end
+end
+
+expect_failure(failures, "pinned expectations gain an unknown field",
+               "tests/expected/komga.yml must define exactly") do |root|
+  mutate_yaml_file(root, "tests/expected/komga.yml") { |e| e["unexpected"] = true }
 end
 
 if failures.empty?
