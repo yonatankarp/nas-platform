@@ -3,11 +3,33 @@
 This path targets a fresh production installation. Complete the
 [disposable Mac proof](getting-started-mac.md), protect any media already on the
 NAS, and confirm every required service is `implemented` or `accepted` in
-[`services/manifest.yml`](../services/manifest.yml) before installation. All nine
-current services are implemented: Audiobookshelf, Beszel, Dozzle, Immich,
-Jellyfin, Komga, ntfy, Paperless-ngx, and tinyMediaManager.
+[`services/manifest.yml`](../services/manifest.yml) before installation. The
+active services are Audiobookshelf, Beszel, Dozzle, Immich, Jellyfin, Komga,
+ntfy, and Paperless-ngx. tinyMediaManager remains in the manifest only for its
+transitional retirement lifecycle.
 
 Commands are labelled **read-only**, **check mode**, or **changes production**.
+
+## tinyMediaManager retirement checkpoint
+
+tinyMediaManager is retired and must remain stopped. Its bind-mounted state is
+preserved through this transitional release. The Movies and Series libraries
+are neither deleted nor moved by retirement. The
+`vault_tinymediamanager_password` key remains until the cleanup release so a
+deliberate rollback can reuse the preserved configuration.
+
+Before Radarr or Sonarr is deployed, rollback may restore the preserved
+tinyMediaManager role and Compose definitions and reconverge the platform. After
+an arr service has written Movies or Series, first stop all arr writers before
+restoring and reconverging tinyMediaManager; this prevents concurrent writers
+from changing a library at the same time. Record the rollback decision and
+verify the writer state before reconverging.
+
+Permanent cleanup of the role, Compose definitions, vault key, published ports,
+CI coverage, and preserved storage declaration waits for the NAS verification
+checkpoint and a separate cleanup release. This release does not deploy Radarr,
+Sonarr, or Bazarr. Open Subtitles remains configured in Jellyfin until Bazarr is
+proven.
 
 ## 1. Prepare the NAS and workstation
 
@@ -132,7 +154,9 @@ ansible-playbook -i inventory/remote.yml site.yml --ask-vault-pass
 
 Record the Git commit, encrypted vault checksum, recap, application checks, and
 operator decision without recording secrets. Existing NAS credentials must work
-unchanged for all nine services. Repeat the service-specific credential checks
+unchanged for all eight active services. Keep the retired tinyMediaManager
+credential unchanged, but do not authenticate to or start the retired service.
+Repeat the service-specific credential checks
 from the [Mac manual review](getting-started-mac.md#4-perform-the-manual-review)
 against the production deployment without exercising external integrations; for
 ntfy, use only an agreed disposable topic when verifying alerts from Beszel and
@@ -253,6 +277,9 @@ ansible-playbook -i inventory/local.yml verify.yml \
   --tags platform_verify_ntfy,platform_verify_beszel,platform_verify_dozzle,platform_verify_audiobookshelf,platform_verify_komga,platform_verify_tinymediamanager,platform_verify_jellyfin,platform_verify_immich,platform_verify_paperless \
   --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE"
 ```
+
+The `platform_verify_tinymediamanager` tag verifies the retirement boundary and
+preserved state; it does not verify a live UI or API.
 
 Only after those three commands pass, install the poller and its single
 five-minute cron entry:
@@ -482,9 +509,9 @@ ansible-playbook -i inventory/local.yml site.yml \
 
 Do not interpret a clean play recap as proof that old application records were
 restored. Verify representative photos, users, albums, documents, metadata, and
-search results in each application. tinyMediaManager's web UI is on port `4000`
-and its API is on port `7878`; these are useful independent media-service checks
-during the same recovery window.
+search results in each active application. Keep tinyMediaManager stopped and
+follow the [retirement checkpoint](#tinymediamanager-retirement-checkpoint)
+rather than attempting an application check.
 
 ## Recovery and rollback boundary
 

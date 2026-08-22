@@ -23,8 +23,8 @@ services:
     volumes:
       - ${JELLYFIN_CONFIG_PATH:?}:/config
       - ${JELLYFIN_CACHE_PATH:?}:/cache
-      # Read-only on purpose: tinyMediaManager owns metadata writes into this
-      # tree, and Jellyfin is configured never to write alongside the media.
+      # Read-only on purpose: media writers own adjacent metadata while
+      # Jellyfin remains read-only alongside the media.
       - ${JELLYFIN_MEDIA_PATH:?}:/media:ro
     environment:
       TZ: ${TZ:?}

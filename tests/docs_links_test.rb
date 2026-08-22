@@ -174,6 +174,19 @@ def sanitize(value)
   value.gsub(/[[:cntrl:]]/, "?")
 end
 
+def markdown_section(document, heading)
+  heading = "## #{heading}" unless heading.start_with?("#")
+  lines = document.lines
+  heading_index = lines.index { |line| line.rstrip == heading }
+  return "" unless heading_index
+
+  heading_level = heading[/\A#+/].length
+  lines.drop(heading_index + 1).take_while do |line|
+    next_heading = line.rstrip.match(/\A(#+)(?:\s|\z)/)
+    !next_heading || next_heading[1].length > heading_level
+  end.join
+end
+
 def mask_block_contexts(text)
   fence_masked, = mask_code(text)
   protected_ranges = inline_partners(fence_masked).filter_map do |opening, closing|
@@ -804,6 +817,48 @@ if ARGV == ["--self-test"]
   self_test
 else
   failures = check_sources(ROOT, SOURCES)
+  readme_retirement = markdown_section(
+    mask_block_contexts(ROOT.join("README.md").read),
+    "## tinyMediaManager retirement checkpoint"
+  )
+  nas_retirement = markdown_section(
+    mask_block_contexts(ROOT.join("docs/getting-started-nas.md").read),
+    "## tinyMediaManager retirement checkpoint"
+  )
+  {
+    "README retirement checkpoint" => readme_retirement,
+    "NAS retirement checkpoint" => nas_retirement
+  }.each do |label, section|
+    failures << "#{label} must say tinyMediaManager is retired and must remain stopped" unless
+      section.match?(/tinyMediaManager.*retired.*must remain stopped/im)
+    failures << "#{label} must preserve tinyMediaManager bind-mounted state through the transitional release" unless
+      section.match?(/bind-mounted state.*preserved.*transitional release/im)
+    failures << "#{label} must say Movies and Series are neither deleted nor moved by retirement" unless
+      section.match?(/Movies.*Series.*neither deleted nor moved.*retirement/im)
+    failures << "#{label} must retain the tinyMediaManager vault key until the cleanup release" unless
+      section.match?(/vault_tinymediamanager_password.*remains.*cleanup release/im)
+  end
+
+  failures << "NAS retirement checkpoint must document rollback before Radarr and Sonarr deployment" unless
+    nas_retirement.match?(/Before Radarr or Sonarr is deployed.*restore.*role and Compose definitions.*reconverge/im)
+  failures << "NAS retirement checkpoint must stop arr writers before post-write rollback" unless
+    nas_retirement.match?(/After.*arr.*written.*Movies or Series.*first stop.*arr writers.*before.*restor.*reconverg.*tinyMediaManager.*concurrent writers/im)
+  failures << "NAS retirement checkpoint must defer permanent cleanup until the NAS checkpoint" unless
+    nas_retirement.match?(/Permanent cleanup.*waits.*NAS.*verif/im)
+  failures << "NAS retirement checkpoint must retain Open Subtitles until Bazarr is proven" unless
+    nas_retirement.match?(/Open Subtitles remains.*until Bazarr is\s+proven/im)
+
+  manual_review = mask_block_contexts(ROOT.join("tests/mac/manual-review.md").read)
+  failures << "Mac manual review must treat tinyMediaManager as retired and stopped" unless
+    manual_review.match?(/tinyMediaManager.*retired.*remains? stopped/im)
+  failures << "Mac manual review must not request active tinyMediaManager UI, API, scan, or metadata-write checks" if
+    manual_review.match?(/tinyMediaManager.*(?:UI|API|scan|edit metadata|write metadata)/i)
+
+  jellyfin_compose = ROOT.join("services/jellyfin/compose.yml").read
+  failures << "Jellyfin media-mount comment must assign adjacent metadata to neutral media writers" unless
+    jellyfin_compose.match?(/media writers own adjacent metadata.*Jellyfin remains read-only/im)
+  failures << "Jellyfin media-mount comment must not assign metadata ownership to tinyMediaManager" if
+    jellyfin_compose.match?(/tinyMediaManager owns metadata/i)
   if failures.empty?
     puts "docs links: all local targets exist"
   else
