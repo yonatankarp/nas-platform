@@ -8,9 +8,13 @@ argument_specs:
       paperless_port: {type: int, required: false}
       paperless_task_workers: {type: int, required: false}
       paperless_threads_per_worker: {type: int, required: false}
-      paperless_ai_enabled: {type: bool, required: false}
-      paperless_ai_llm_endpoint: {type: str, required: false}
-      paperless_ai_llm_model: {type: str, required: false}
+      # The AI settings live only in inventory group_vars, so the role has no
+      # default to fall back on and templates/env.j2 reads all three
+      # unconditionally. Requiring them here fails naming the missing key instead
+      # of midway with an undefined-variable trace.
+      paperless_ai_enabled: {type: bool, required: true}
+      paperless_ai_llm_endpoint: {type: str, required: true}
+      paperless_ai_llm_model: {type: str, required: true}
       paperless_archive_host_path:
         type: str
         required: false
