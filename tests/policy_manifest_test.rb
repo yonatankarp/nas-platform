@@ -779,17 +779,20 @@ expect_failure(failures, "vault validation disclosure",
   File.write(path, YAML.dump(tasks))
 end
 
+# The shape rules moved into filter_plugins/vault_credential_schema.py, so what a
+# credential can now lose is its entry in the mapping the role passes to the
+# filter rather than a Jinja condition. Dropping the entry is the mutation that
+# corresponds to dropping the old condition: the key stops being inspected, and
+# nothing else in the role names it.
 expect_failure(failures, "vault shape validation omitted",
                "vault contract shape validation must inspect vault_immich_db_password") do |root|
   path = File.join(root, "roles", "vault_contract", "tasks", "main.yml")
-  tasks = YAML.safe_load_file(path)
-  shape_task = tasks.find do |task|
-    task["name"] == "Validate credential shapes without disclosing credential material"
-  end
-  shape_task.fetch("ansible.builtin.assert").fetch("that").reject! do |condition|
-    condition.include?("vault_immich_db_password")
-  end
-  File.write(path, YAML.dump(tasks))
+  body = File.read(path)
+  File.write(path, replace_last(
+                     body,
+                     "\n          'vault_immich_db_password': vault_immich_db_password,",
+                     ""
+                   ))
 end
 
 expect_failure(failures, "vault checksum moved before encryption guard",
