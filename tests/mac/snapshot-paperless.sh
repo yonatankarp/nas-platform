@@ -108,6 +108,11 @@ fi
 : "${PLATFORM_DOCKER_ROOT:?}"
 : "${PLATFORM_MEDIA_ROOT:?}"
 : "${PLATFORM_PAPERLESS_PORT:=8000}"
+# How long recovery waits for valkey to answer after its container is started.
+# Declared here rather than buried in the Ruby body so the recovery regression
+# test can reach the timeout branch in a second instead of a minute; the Ruby
+# side floors it, so no setting can turn the wait off.
+: "${PLATFORM_PAPERLESS_RECOVERY_DEADLINE:=60}"
 if [ "$mode" = drill ] && [ "${paperless_integration_drill:-false}" = true ]; then
   : "${PLATFORM_MAC_SANDBOX:?}"
   paperless_drill_root=$(CDPATH= cd -- "$PLATFORM_MAC_SANDBOX" && pwd -P)
@@ -169,6 +174,7 @@ else
 fi
 export PLATFORM_CONTRACT_VAULT_FILE PLATFORM_CONTRACT_VAULT_PASSWORD_FILE
 export PLATFORM_DOCKER_ROOT PLATFORM_MEDIA_ROOT PLATFORM_PAPERLESS_PORT
+export PLATFORM_PAPERLESS_RECOVERY_DEADLINE
 export PLATFORM_PAPERLESS_WEBSERVER_CONTAINER PLATFORM_PAPERLESS_POSTGRES_CONTAINER
 export PLATFORM_PAPERLESS_REDIS_CONTAINER
 
@@ -193,6 +199,13 @@ REDIS = ENV.fetch("PLATFORM_PAPERLESS_REDIS_CONTAINER")
 BASE = URI("http://127.0.0.1:#{Integer(ENV.fetch('PLATFORM_PAPERLESS_PORT'), 10)}")
 MEMBERS = %w[archive.tar application.tar database.sql inbox.tar].freeze
 MANIFEST = "manifest.json"
+# Floored at one second so a zero or negative setting still leaves a retry in
+# place: the wait it guards is the only thing standing between recovery and the
+# start race, and a knob that can switch it off is a knob that can restore the
+# defect while every check still reports a pass.
+RECOVERY_DEADLINE = [
+  Integer(ENV.fetch("PLATFORM_PAPERLESS_RECOVERY_DEADLINE"), 10), 1
+].max
 
 def die(message)
   warn "Paperless snapshot failed: #{message}"
@@ -273,6 +286,34 @@ def wait_healthy(*containers)
       die("#{container} did not become healthy") if Time.now >= deadline
       sleep 2
     end
+  end
+end
+
+# Retries one command until it succeeds or the deadline passes, and hands the
+# caller the last attempt's result instead of raising.
+#
+# docker start returns once the container process has been launched, not once the
+# server inside it has bound its port, so a command aimed at that port straight
+# after a start can lose the race and fail with a connection refusal. Waiting on
+# the command itself is what closes the window, and it is strictly better here
+# than waiting on {{.State.Health.Status}}: health only refreshes at the
+# container's healthcheck interval, so it can still report the pre-restart state
+# long after the socket is live, and it answers "did the healthcheck pass" rather
+# than "can this exec reach the port".
+#
+# The sleep is this loop's poll interval, in the same shape as wait_healthy's,
+# not a fixed wait standing in for a readiness signal: a redis that is already
+# up costs one attempt and no sleep at all.
+#
+# Returning rather than calling die matters. The only caller is an ensure block
+# unwinding a restore that may have already failed, and it has to record a
+# recovery failure rather than raise one over the failure it is unwinding.
+def capture_until_ready(*argv, deadline: RECOVERY_DEADLINE)
+  limit = Time.now + deadline
+  loop do
+    stdout, stderr, status = Open3.capture3(*argv)
+    return [stdout, stderr, status] if status.success? || Time.now >= limit
+    sleep 1
   end
 end
 
@@ -385,12 +426,23 @@ if MODE == "restore" || MODE == "drill"
   ensure
     restore_failure = $!
     recovery_failures = []
+    # The flushall is the only step that has to wait, and it must: it reaches
+    # valkey over 127.0.0.1:6379 immediately after the start above, so as a
+    # one-shot exec it raced the socket and intermittently reported a connection
+    # refusal on a restore that had in fact succeeded. Repeating it is free
+    # because discarding an already-discarded queue discards the same queue.
+    # The two starts speak to the docker daemon rather than to a service port, so
+    # they cannot lose that race and retrying them would only delay the report.
     [
-      ["docker", "start", REDIS],
-      ["docker", "exec", REDIS, "valkey-cli", "flushall"],
-      ["docker", "start", WEBSERVER]
-    ].each do |argv|
-      _stdout, stderr, status = Open3.capture3(*argv)
+      [["docker", "start", REDIS], :once],
+      [["docker", "exec", REDIS, "valkey-cli", "flushall"], :until_ready],
+      [["docker", "start", WEBSERVER], :once]
+    ].each do |argv, attempts|
+      _stdout, stderr, status = if attempts == :until_ready
+                                  capture_until_ready(*argv)
+                                else
+                                  Open3.capture3(*argv)
+                                end
       recovery_failures << "#{argv[1..].join(' ')}: #{stderr.lines.last.to_s.strip}" unless status.success?
     end
     begin
