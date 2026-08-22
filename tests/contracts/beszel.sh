@@ -396,6 +396,13 @@ when "notify"
   )
   expected_url = "ntfy://:#{vault.fetch('vault_ntfy_beszel_token')}@#{CALLBACK_HOST}:#{NTFY.port}/nas-critical?scheme=http"
   ntfy_auth = [vault.fetch("vault_ntfy_admin_user"), vault.fetch("vault_ntfy_admin_password")]
+  # The anti-replay poll below anchors on an existing message. It used to get one by
+  # accident: the ntfy role publisher verification left "provisioning verified for
+  # beszel" in this topic history. That publish now refuses caching so a healthy
+  # converge leaves nas-critical empty, which left this contract with no anchor. The
+  # baseline is established here instead of depending on another role side effect.
+  request("post", endpoint(NTFY, "/"), basic: ntfy_auth,
+          body: { topic: "nas-critical", message: "beszel contract anti-replay baseline" })
   latest = request_text("get", endpoint(NTFY, "/nas-critical/json?poll=1&since=latest"), basic: ntfy_auth)
   latest_messages = latest.lines.filter_map do |line|
     JSON.parse(line)
