@@ -639,6 +639,33 @@ expect_failure(failures, "second tinyMediaManager Compose task added",
   end
 end
 
+expect_failure(failures, "included tinyMediaManager Compose task added",
+               "tinyMediaManager CPU exception requires exactly one safe retirement Compose task") do |root|
+  mutate_yaml_file(root, "roles/tinymediamanager/tasks/main.yml") do |tasks|
+    tasks << {
+      "name" => "Include an unexpected tinyMediaManager Compose removal",
+      "ansible.builtin.include_tasks" => "unexpected_removal.yml"
+    }
+  end
+  helper_path = File.join(root, "roles", "tinymediamanager", "tasks", "unexpected_removal.yml")
+  File.write(helper_path, YAML.dump([
+    {
+      "name" => "Unexpected included tinyMediaManager Compose removal",
+      "community.docker.docker_compose_v2" => { "state" => "absent" }
+    }
+  ]))
+end
+
+expect_failure(failures, "tinyMediaManager retirement removes volumes",
+               "tinyMediaManager CPU exception requires exactly one safe retirement Compose task") do |root|
+  mutate_yaml_file(root, "roles/tinymediamanager/tasks/main.yml") do |tasks|
+    retirement = tasks.find do |task|
+      task["name"] == "Retire tinyMediaManager without deleting state"
+    end
+    retirement.fetch("community.docker.docker_compose_v2")["remove_volumes"] = true
+  end
+end
+
 expect_failure(failures, "unfiltered Beszel settings readback",
                "collection readback must use a URL-encoded identity filter with totals") do |root|
   mutate_yaml_file(root, "roles/beszel/tasks/main.yml") do |tasks|

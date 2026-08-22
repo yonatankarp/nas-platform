@@ -562,6 +562,42 @@ def flatten_tasks(tasks, flattened = [])
   flattened
 end
 
+def task_list_document?(tasks)
+  tasks.is_a?(Array) && tasks.all? do |task|
+    task.is_a?(Hash) && %w[block rescue always].all? do |section|
+      !task.key?(section) || task_list_document?(task[section])
+    end
+  end
+end
+
+def role_task_paths(role_root)
+  Dir[File.join(role_root, "tasks", "*.{yml,yaml}")].sort
+end
+
+def load_role_tasks(role_root, failures)
+  tasks_root = File.join(role_root, "tasks")
+  role_task_paths(role_root).flat_map do |path|
+    relative_path = path.delete_prefix("#{ROOT}/")
+    unless owned_file?(path, tasks_root)
+      check(failures, false, "#{relative_path}: role task file must be a regular owned file")
+      next []
+    end
+
+    begin
+      parsed = YAML.safe_load_file(path, aliases: true)
+    rescue Psych::Exception => e
+      check(failures, false, "#{relative_path}: role task file is malformed: #{e.message.lines.first.strip}")
+      next []
+    end
+    unless task_list_document?(parsed)
+      check(failures, false, "#{relative_path}: role task file must contain an array of task mappings")
+      next []
+    end
+
+    flatten_tasks(parsed)
+  end
+end
+
 # These checks prove that verification is structurally wired to an observable,
 # service-specific result. The integration run supplies runtime semantic proof;
 # static policy intentionally does not interpret arbitrary Jinja expressions.
@@ -839,12 +875,14 @@ manifest_entries.each do |service|
           "PLATFORM_CONTAINER_CPUSET={{ platform_effective_container_cpuset }}"
         ) == 1,
         "#{name}: environment must render the effective container CPU set exactly once")
-  tasks_source = tasks_owned ? File.read(tasks_path) : ""
-  deploys_compose = tasks_source.include?("community.docker.docker_compose_v2:")
-  role_tasks = tasks_owned ? Array(YAML.safe_load_file(tasks_path, aliases: true)) : []
+  task_paths = role_root_owned ? role_task_paths(role_root) : []
+  tasks_source = task_paths.select { |path| owned_file?(path, File.join(role_root, "tasks")) }
+                           .map { |path| File.read(path) }.join("\n")
+  role_tasks = role_root_owned ? load_role_tasks(role_root, failures) : []
   compose_tasks = role_tasks.select do |task|
     task.is_a?(Hash) && task["community.docker.docker_compose_v2"].is_a?(Hash)
   end
+  deploys_compose = compose_tasks.any?
   expected_tinymediamanager_retirement = {
     "project_src" => "{{ platform_current_dir }}/services/tinymediamanager",
     "project_name" => "{{ tinymediamanager_compose_project_name }}",
@@ -992,7 +1030,7 @@ end
 
 # Deployment goes through the module. A shell-out always claims a change and
 # cannot run under --check, which the converge-every-run model depends on.
-role_task_files = Dir[File.join(ROOT, "roles", "*", "{tasks,handlers}", "*.yml")]
+role_task_files = Dir[File.join(ROOT, "roles", "*", "{tasks,handlers}", "*.{yml,yaml}")]
 role_task_files.each do |path|
   body = File.read(path)
   check(failures, !body.match?(/(command|shell):[\s\S]{0,120}docker\s+compose/),
@@ -1010,18 +1048,13 @@ check(failures,
 deployment_reports_declared = false
 Dir[File.join(ROOT, "roles", "*")].select { |p| File.directory?(p) }.each do |role|
   name = File.basename(role)
-  task_files = Dir[File.join(role, "tasks", "*.yml")]
-  tasks = task_files.flat_map do |path|
-    parsed = YAML.safe_load_file(path, aliases: true)
-    parsed.is_a?(Array) ? parsed.select { |task| task.is_a?(Hash) } : []
-  end
+  tasks = load_role_tasks(role, failures)
   deployments = tasks.select do |task|
     compose = task["community.docker.docker_compose_v2"]
     next false unless compose.is_a?(Hash)
 
     compose["state"] == "present" ||
       (name == "tinymediamanager" &&
-       task["name"] == "Retire tinyMediaManager without deleting state" &&
        compose["state"] == "absent")
   end
   next if deployments.empty?
