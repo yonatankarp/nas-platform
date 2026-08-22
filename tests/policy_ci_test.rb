@@ -89,6 +89,65 @@ check(failures, registry_login&.dig("with", "password") == "${{ secrets.GITHUB_T
 check(failures, suites_job.fetch("permissions", {}) == { "contents" => "read", "packages" => "read" },
       "the CI suites job must scope its token to contents and packages reads only")
 
+# Authentication lowers the odds of a refusal; it does not make a registry
+# reliable, and it does nothing at all for Docker Hub or lscr.io, which the repo
+# has no credentials for. So the harness pulls the images itself, ahead of the
+# converge and under a bounded retry, keyed by the site.yml tag that converges
+# each service. That map is a third table alongside the two reconciled above, so
+# it is held to the manifest here: a service the map forgets would be pulled
+# without a retry inside community.docker.docker_compose_v2, which is exactly the
+# failure mode the retry exists for.
+integration_body = File.file?(integration_path) ? File.read(integration_path) : ""
+image_source_block = integration_body[/^service_image_sources='\n(.*?)'$/m].to_s
+service_image_sources = image_source_block.scan(/^([a-z0-9_-]+) ([a-z0-9-]+)$/)
+check(failures, !service_image_sources.empty?,
+      "tests/integration.sh: service_image_sources could not be read")
+check(failures, integration_body.include?('pull_image "$runner_image"'),
+      "tests/integration.sh must retry the controller image pull: Docker Hub is anonymous here")
+check(failures, integration_body.include?("prepull_images\n"),
+      "tests/integration.sh must pre-pull the suite's images before the converge")
+
+# The manifest's own shape is policed elsewhere, which reports a malformed
+# document or a non-string service name by name. Read it tolerantly here and skip
+# the cross-check when it is unusable rather than raising a second time on the same
+# input: a stack trace out of this suite would bury that diagnosis.
+manifest = begin
+  YAML.safe_load_file(File.join(ROOT, "services", "manifest.yml"))
+rescue Psych::Exception
+  nil
+end
+implemented_services = Array(manifest.is_a?(Hash) ? manifest["services"] : nil)
+                       .select { |service| service.is_a?(Hash) && service["status"] == "implemented" }
+                       .map { |service| service["name"] }
+if !implemented_services.empty? && implemented_services.all?(String)
+  mapped_directories = service_image_sources.map(&:last)
+  check(failures, mapped_directories.sort == implemented_services.sort,
+        "tests/integration.sh service_image_sources must cover every implemented service exactly " \
+        "once: maps #{mapped_directories.sort.inspect}, " \
+        "manifest has #{implemented_services.sort.inspect}")
+end
+
+site_play = begin
+  Array(YAML.safe_load_file(File.join(ROOT, "site.yml"))).first
+rescue Psych::Exception
+  nil
+end
+site_tags = Array(site_play.is_a?(Hash) ? site_play["roles"] : nil)
+            .select { |role| role.is_a?(Hash) }
+            .flat_map { |role| Array(role["tags"]) }.uniq
+service_image_sources.each do |service_tag, service_directory|
+  # site.yml's own shape is policed elsewhere, so cross-check only against a roster
+  # that read, for the same reason the manifest read above is tolerant.
+  unless site_tags.empty?
+    check(failures, site_tags.include?(service_tag),
+          "tests/integration.sh maps image source #{service_directory} to #{service_tag}, " \
+          "which is not a site.yml role tag")
+  end
+  check(failures, File.file?(File.join(ROOT, "services", service_directory, "compose.yml")),
+        "tests/integration.sh maps #{service_tag} to services/#{service_directory}, " \
+        "which has no compose.yml")
+end
+
 
 validation_script_path = File.join(ROOT, "tests", "validate-policy.sh")
 validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "tests"))
@@ -123,6 +182,7 @@ validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "te
   python3\ -m\ unittest\ -v\ tests/dozzle_alert_relay_test.py
   tests/dozzle_alert_state_symlink_test.sh
   tests/integration_lock_test.sh
+  tests/integration_suite_test.sh
   tests/mac/manual-validation-runner-test.sh
   tests/mac/audiobookshelf-drift-hook-test.sh
   tests/contracts/audiobookshelf-audio-test.sh
