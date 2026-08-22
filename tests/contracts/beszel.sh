@@ -14,9 +14,8 @@ if [ "$mode" = static ]; then
   ruby -ryaml - "$repo_dir" <<'RUBY'
 root = ARGV.fetch(0)
 defaults = YAML.safe_load_file(File.join(root, "roles/beszel/defaults/main.yml"))
-vars = File.read(File.join(root, "roles/beszel/vars/main.yml"))
+vars = YAML.safe_load_file(File.join(root, "roles/beszel/vars/main.yml"))
 role_path = File.join(root, "roles/beszel/tasks/main.yml")
-role = File.read(role_path)
 contract = File.read(File.join(root, "tests/contracts/beszel.sh"))
 probe_path = File.join(root, "library/beszel_telemetry_probe.py")
 probe = File.file?(probe_path) ? File.read(probe_path) : ""
@@ -30,6 +29,20 @@ def flatten_tasks(tasks)
   end
 end
 role_tasks = flatten_tasks(YAML.safe_load_file(role_path))
+role_task_names = role_tasks.filter_map { |task| task["name"] if task.is_a?(Hash) }
+# Assertions about what the role does read the parsed structure rather than the
+# file's bytes: a task name or a registered variable that survives only inside a
+# comment is not something the role executes. role_strings collects the strings
+# one at a time rather than joining them, because a pattern matched against a
+# joined blob spans two unrelated tasks and reports a violation neither contains.
+def role_strings(node)
+  case node
+  when Hash then node.flat_map { |key, value| [key.to_s] + role_strings(value) }
+  when Array then node.flat_map { |value| role_strings(value) }
+  when String then [node]
+  else []
+  end
+end
 specs = YAML.safe_load_file(File.join(root, "roles/beszel/meta/argument_specs.yml"))
 compose = YAML.safe_load_file(File.join(root, "services/beszel/compose.yml"), aliases: true)
 nas_inventory = YAML.safe_load_file(File.join(root, "inventory/group_vars/nas_hosts/main.yml"))
@@ -50,11 +63,17 @@ refuse("freshness must cover exactly three one-minute samples") unless
   defaults["beszel_telemetry_freshness_seconds"] == 180
 refuse("telemetry polling timeout differs") unless
   defaults["beszel_telemetry_poll_timeout_seconds"] == 90
+# Scoped to the one variable rather than to the whole file: naming the required
+# categories anywhere else, including in a comment, is not the same as deriving
+# them, and matching a literal expression would miss the same inference written
+# with different spacing.
+effective_categories = vars["beszel_effective_required_telemetry_categories"].to_s
 refuse("effective categories must use explicit inventory policy") unless
-  vars.include?("beszel_effective_required_telemetry_categories") &&
-    !vars.include?("['gpu'] if beszel_require_gpu_telemetry")
+  vars.key?("beszel_effective_required_telemetry_categories") &&
+    !effective_categories.include?("beszel_require_gpu_telemetry")
 refuse("telemetry polling must not use derived retry arithmetic") if
-  vars.include?("beszel_telemetry_poll_retries")
+  vars.key?("beszel_telemetry_poll_retries") ||
+    vars.values.any? { |value| value.to_s.include?("beszel_telemetry_poll_retries") }
 
 options = specs.dig("argument_specs", "main", "options")
 {
@@ -75,7 +94,7 @@ required_tasks = [
   "Verify persisted Beszel telemetry categories"
 ]
 required_tasks.each do |name|
-  refuse("missing #{name}") unless role.include?("- name: #{name}")
+  refuse("missing #{name}") unless role_task_names.include?(name)
 end
 collection_poll = role_tasks.find { |task| task["name"] == "Poll persisted Beszel telemetry collections" }
 refuse("persisted telemetry poll must suppress authenticated results") unless
@@ -89,7 +108,15 @@ refuse("persisted telemetry probe does not receive the total deadline") unless
 refuse("deadline probe implementation is absent") unless
   probe.include?("poll_telemetry") && probe_support.include?('fetcher("system_stats"') &&
     probe_support.include?('fetcher("container_stats"')
-refuse("role treats live health as persisted telemetry") unless role.include?("beszel_telemetry_probe_result")
+# The persisted-telemetry evidence has to come out of the probe's own registered
+# result. Naming the variable somewhere in the file proved nothing about which
+# task produced it or whether anything consumed it.
+refuse("role treats live health as persisted telemetry") unless
+  collection_poll && collection_poll["register"] == "beszel_telemetry_probe_result" &&
+    role_tasks.any? do |task|
+      task != collection_poll &&
+        role_strings(task).any? { |value| value.include?("beszel_telemetry_probe_result.evidence") }
+    end
 
 intel = compose.fetch("services").fetch("agent-intel")
 portable = compose.fetch("services").fetch("agent-portable")

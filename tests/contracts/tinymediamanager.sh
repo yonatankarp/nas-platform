@@ -26,9 +26,24 @@ compose_path, mac_path, integration_path, role_path, defaults_path = ARGV
 compose = YAML.safe_load_file(compose_path, aliases: true)
 mac = YAML.safe_load_file(mac_path, aliases: true)
 integration = YAML.safe_load_file(integration_path, aliases: true)
-role = File.read(role_path)
 role_tasks = YAML.safe_load_file(role_path, aliases: true)
 defaults = YAML.safe_load_file(defaults_path)
+
+# What the role does is its parsed task list, not the file's bytes. A task name
+# that survives only inside a comment is not a task, and a database primitive a
+# comment merely mentions is not one the role executes. role_strings collects the
+# strings one at a time rather than joining them, because a pattern matched
+# against a joined blob spans two unrelated tasks and reports a violation that
+# neither of them contains.
+def role_strings(node)
+  case node
+  when Hash then node.flat_map { |key, value| [key.to_s] + role_strings(value) }
+  when Array then node.flat_map { |value| role_strings(value) }
+  when String then [node]
+  else []
+  end
+end
+role_task_names = role_tasks.map { |task| task["name"] }
 service = compose.fetch("services").fetch("tinymediamanager")
 abort "tinyMediaManager contract failed: NAS host networking differs" unless service.fetch("network_mode") == "host"
 abort "tinyMediaManager contract failed: NAS storage contract differs" unless service.fetch("volumes") == [
@@ -78,7 +93,7 @@ required_tasks = [
   "Require tinyMediaManager metadata writing settings"
 ]
 required_tasks.each do |name|
-  abort "tinyMediaManager contract failed: missing #{name}" unless role.include?("- name: #{name}")
+  abort "tinyMediaManager contract failed: missing #{name}" unless role_task_names.include?(name)
 end
 settings_task = role_tasks.find do |task|
   task["name"] == "Provision stable tinyMediaManager first-run settings"
@@ -87,7 +102,7 @@ semantic_guard = "tinymediamanager_existing_settings.get(item.key, {}) != item.v
 abort "tinyMediaManager contract failed: semantically stable settings must not be rewritten" unless
   Array(settings_task&.fetch("when", nil)).include?(semantic_guard)
 abort "tinyMediaManager contract failed: role must not edit an opaque database" if
-  role.match?(/execute.*sql|sqlite3|\.db\b|mviedb|tvshowdb/i)
+  role_strings(role_tasks).any? { |value| value.match?(/execute.*sql|sqlite3|\.db\b|mviedb|tvshowdb/i) }
 RUBY
 
 [ "$mode" = static ] && { printf '%s\n' 'tinyMediaManager static contract passed'; exit 0; }
