@@ -78,61 +78,71 @@
     vault_managed_paperless_ngx_users: "{{ vault_managed_users.paperless_ngx }}"
   no_log: true
 
+# The mapping states the key set being validated: the filter rejects a candidate
+# whose keys differ from its rule table, so dropping a credential here is an
+# error rather than a silently skipped rule. It is also what
+# tests/policy_vault_test.rb reads to prove every portable credential is
+# inspected.
+- name: Resolve portable vault credential shape violations
+  ansible.builtin.set_fact:
+    vault_contract_credential_errors: >-
+      {{ {'vault_audiobookshelf_admin_username': vault_audiobookshelf_admin_username,
+          'vault_audiobookshelf_admin_password': vault_audiobookshelf_admin_password,
+          'vault_dozzle_admin_username': vault_dozzle_admin_username,
+          'vault_dozzle_admin_password': vault_dozzle_admin_password,
+          'vault_dozzle_admin_password_hash': vault_dozzle_admin_password_hash,
+          'vault_immich_admin_email': vault_immich_admin_email,
+          'vault_immich_admin_password': vault_immich_admin_password,
+          'vault_immich_db_name': vault_immich_db_name,
+          'vault_immich_db_username': vault_immich_db_username,
+          'vault_immich_db_password': vault_immich_db_password,
+          'vault_jellyfin_admin_username': vault_jellyfin_admin_username,
+          'vault_jellyfin_admin_password': vault_jellyfin_admin_password,
+          'vault_jellyfin_opensubtitles_username': vault_jellyfin_opensubtitles_username,
+          'vault_jellyfin_opensubtitles_password': vault_jellyfin_opensubtitles_password,
+          'vault_komga_admin_email': vault_komga_admin_email,
+          'vault_komga_admin_password': vault_komga_admin_password,
+          'vault_ntfy_admin_user': vault_ntfy_admin_user,
+          'vault_ntfy_admin_password': vault_ntfy_admin_password,
+          'vault_ntfy_admin_password_hash': vault_ntfy_admin_password_hash,
+          'vault_ntfy_dozzle_password_hash': vault_ntfy_dozzle_password_hash,
+          'vault_ntfy_beszel_password_hash': vault_ntfy_beszel_password_hash,
+          'vault_ntfy_deploy_password_hash': vault_ntfy_deploy_password_hash,
+          'vault_ntfy_dozzle_token': vault_ntfy_dozzle_token,
+          'vault_ntfy_beszel_token': vault_ntfy_beszel_token,
+          'vault_ntfy_deploy_token': vault_ntfy_deploy_token,
+          'vault_beszel_superuser_email': vault_beszel_superuser_email,
+          'vault_beszel_superuser_password': vault_beszel_superuser_password,
+          'vault_beszel_app_user_email': vault_beszel_app_user_email,
+          'vault_beszel_app_user_password': vault_beszel_app_user_password,
+          'vault_beszel_agent_key': vault_beszel_agent_key,
+          'vault_beszel_universal_token': vault_beszel_universal_token,
+          'vault_beszel_hub_private_key': vault_beszel_hub_private_key,
+          'vault_paperless_admin_username': vault_paperless_admin_username,
+          'vault_paperless_admin_password': vault_paperless_admin_password,
+          'vault_paperless_admin_email': vault_paperless_admin_email,
+          'vault_paperless_db_name': vault_paperless_db_name,
+          'vault_paperless_db_username': vault_paperless_db_username,
+          'vault_paperless_db_password': vault_paperless_db_password,
+          'vault_paperless_django_secret_key': vault_paperless_django_secret_key,
+          'vault_paperless_gmail_account': vault_paperless_gmail_account,
+          'vault_paperless_gmail_app_password': vault_paperless_gmail_app_password,
+          'vault_paperless_mail_account_name': vault_paperless_mail_account_name,
+          'vault_paperless_mail_rule_name': vault_paperless_mail_rule_name,
+          'vault_tinymediamanager_password': vault_tinymediamanager_password}
+         | vault_credential_errors }}
+  no_log: true
+
+# The filter emits variable names with no values, so this names the credential
+# that is wrong instead of reporting that one of 49 conditions failed on a task
+# whose result dict no_log censors.
 - name: Validate credential shapes without disclosing credential material
   ansible.builtin.assert:
     that:
-      - vault_audiobookshelf_admin_username | length > 0
-      - vault_audiobookshelf_admin_password | length > 0
-      - vault_dozzle_admin_username | length > 0
-      - vault_dozzle_admin_password | length > 0
-      - vault_dozzle_admin_password_hash is match('^\\$2[aby]\\$[0-9]{2}\\$[./A-Za-z0-9]{53}$')
-      - vault_immich_admin_email is match('^[^@ ]+@[^@ ]+$')
-      - vault_immich_admin_password | length > 0
-      - vault_immich_db_name is match('^[A-Za-z_][A-Za-z0-9_-]*$')
-      - vault_immich_db_username is match('^[A-Za-z_][A-Za-z0-9_-]*$')
-      - vault_immich_db_password | length > 0
-      - vault_jellyfin_admin_username == 'Yonatan'
-      - vault_jellyfin_admin_password | length > 0
-      - vault_jellyfin_opensubtitles_username | length > 0
-      - vault_jellyfin_opensubtitles_username != 'example-opensubtitles-username'
-      - vault_jellyfin_opensubtitles_username != 'replace-with-opensubtitles-username'
-      - vault_jellyfin_opensubtitles_password | length > 0
-      - vault_jellyfin_opensubtitles_password != 'example-opensubtitles-password'
-      - vault_jellyfin_opensubtitles_password != 'replace-with-opensubtitles-password'
-      - vault_komga_admin_email is match('^[^@ ]+@[^@ ]+$')
-      - vault_komga_admin_password | length > 0
-      - vault_ntfy_admin_user | length > 0
-      - vault_ntfy_admin_password | length > 0
-      - vault_ntfy_admin_password_hash is match('^\\$2[aby]\\$[0-9]{2}\\$[./A-Za-z0-9]{53}$')
-      - vault_ntfy_dozzle_password_hash is match('^\\$2[aby]\\$[0-9]{2}\\$[./A-Za-z0-9]{53}$')
-      - vault_ntfy_beszel_password_hash is match('^\\$2[aby]\\$[0-9]{2}\\$[./A-Za-z0-9]{53}$')
-      - vault_ntfy_deploy_password_hash is match('^\\$2[aby]\\$[0-9]{2}\\$[./A-Za-z0-9]{53}$')
-      - vault_ntfy_dozzle_token is match('^tk_[a-z0-9]{29}$')
-      - vault_ntfy_beszel_token is match('^tk_[a-z0-9]{29}$')
-      - vault_ntfy_deploy_token is match('^tk_[a-z0-9]{29}$')
-      - >-
-        [vault_ntfy_dozzle_token, vault_ntfy_beszel_token, vault_ntfy_deploy_token]
-        | unique | length == 3
-      - vault_beszel_superuser_email is match('^[^@ ]+@[^@ ]+$')
-      - vault_beszel_superuser_password | length > 0
-      - vault_beszel_app_user_email is match('^[^@ ]+@[^@ ]+$')
-      - vault_beszel_app_user_password | length > 0
-      - vault_beszel_agent_key is match('^ssh-ed25519 [A-Za-z0-9+/]+={0,3}$')
-      - vault_beszel_universal_token is match('^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$')
-      - vault_beszel_hub_private_key is search('BEGIN OPENSSH PRIVATE KEY')
-      - vault_paperless_admin_username | length > 0
-      - vault_paperless_admin_password | length > 0
-      - vault_paperless_admin_email is match('^[^@ ]+@[^@ ]+$')
-      - vault_paperless_db_name is match('^[A-Za-z_][A-Za-z0-9_-]*$')
-      - vault_paperless_db_username is match('^[A-Za-z_][A-Za-z0-9_-]*$')
-      - vault_paperless_db_password | length > 0
-      - vault_paperless_django_secret_key | length > 0
-      - vault_paperless_gmail_account is match('^[^@ ]+@[^@ ]+$')
-      - vault_paperless_gmail_app_password | length > 0
-      - vault_paperless_mail_account_name | length > 0
-      - vault_paperless_mail_rule_name | length > 0
-      - vault_tinymediamanager_password | length > 0
-    fail_msg: Portable vault credentials are missing or malformed; values are redacted.
+      - vault_contract_credential_errors | length == 0
+    fail_msg: >-
+      Portable vault credentials are missing or malformed. Offending keys, values
+      not shown: {{ vault_contract_credential_errors | join('; ') }}
     success_msg: Portable vault credential shapes are valid; values are redacted.
   no_log: true
 

@@ -1112,8 +1112,11 @@ contract before editing the encrypted value:
 
 - Add the field and safe placeholder to
   `inventory/group_vars/all/vault.yml.example`.
-- Declare and validate it in `roles/vault_contract/meta/argument_specs.yml` and
-  `roles/vault_contract/tasks/main.yml`.
+- Declare it in `roles/vault_contract/meta/argument_specs.yml`, add it to the
+  mapping `roles/vault_contract/tasks/main.yml` hands the shape filter, and give
+  it a rule in `filter_plugins/vault_credential_schema.py`. The role and the rule
+  table must agree: a credential in one but not the other is reported as a schema
+  violation rather than validated.
 - Wire it through the consuming role's `meta/argument_specs.yml`, templates,
   and tasks. Update the service contract and policy tests that prove the value
   reaches its intended protected destination without disclosure.

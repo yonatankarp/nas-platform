@@ -466,12 +466,42 @@ check(failures, schema_filter_source.match?(/in JELLYFIN_FORBIDDEN_POLICY_FIELDS
 check(failures, schema_filter_source.include?("_ntfy_token_ownership") &&
                 tasks.include?("vault_ntfy_dozzle_token") && tasks.include?("vault_ntfy_beszel_token"),
       "vault contract must enforce global ntfy token uniqueness and publisher separation")
-check(failures, tasks.include?("vault_jellyfin_admin_username == 'Yonatan'"),
+# The scalar credential shape rules moved into
+# filter_plugins/vault_credential_schema.py, which reports the offending variable
+# name rather than one generic message for all 49 of them. The role still names
+# every credential, in the mapping it hands the filter; the pinned literals are
+# asserted where they now live. tests/vault_credential_schema_test.py runs the
+# rejection cases, and the role-level backstop is the placeholder rejection below,
+# which drives the real role over the documented vault.
+credential_filter_path = File.join(ROOT, "filter_plugins", "vault_credential_schema.py")
+credential_filter_source = File.file?(credential_filter_path) ? File.read(credential_filter_path) : ""
+check(failures, tasks.include?("vault_credential_errors"),
+      "vault contract must validate portable credentials with the shape filter")
+check(failures, tasks.include?("Offending keys, values"),
+      "credential shape failure must state that values are not shown")
+check(failures, credential_filter_source.include?('JELLYFIN_ADMIN_USERNAME = "Yonatan"') &&
+                credential_filter_source.match?(
+                  /^\s*"vault_jellyfin_admin_username": \(\(EXACT, JELLYFIN_ADMIN_USERNAME\),\),$/
+                ),
       "vault contract must require the exact Jellyfin administrator username")
+# The scalar rule table must cover every scalar the role declares. A credential
+# the table forgets is one the filter reports as unexpected rather than one it
+# validates, and the role would fail closed for the wrong reason.
+scalar_vault_keys = vault_options.keys.grep(/\Avault_/) - ["vault_managed_users"]
+scalar_vault_keys.each do |key|
+  check(failures, credential_filter_source.match?(/^\s*"#{Regexp.escape(key)}": \(/),
+        "credential shape filter must carry a rule for #{key}")
+  check(failures, tasks.include?("'#{key}': #{key}"),
+        "vault contract must submit #{key} for shape validation")
+end
 %w[vault_jellyfin_opensubtitles_username vault_jellyfin_opensubtitles_password].each do |key|
-  check(failures, tasks.include?("#{key} | length > 0"),
+  suffix = key.end_with?("username") ? "username" : "password"
+  check(failures, credential_filter_source.match?(/"#{Regexp.escape(key)}": \(\n\s*\(NONEMPTY, None\),/),
         "vault contract must reject empty #{key}")
-  check(failures, tasks.include?("#{key} != 'example-opensubtitles-#{key.end_with?('username') ? 'username' : 'password'}'"),
+  check(failures, credential_filter_source.include?("\"example-opensubtitles-#{suffix}\"") &&
+                  credential_filter_source.include?(
+                    "(NOT_PLACEHOLDER, OPENSUBTITLES_#{suffix.upcase}_PLACEHOLDERS)"
+                  ),
         "vault contract must reject the documented #{key} placeholder")
 end
 
