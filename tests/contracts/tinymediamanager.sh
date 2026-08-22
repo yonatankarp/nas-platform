@@ -93,7 +93,7 @@ RUBY
 
 case $mode in
   static)
-    printf '%s\n' 'tinyMediaManager static contract passed'
+    printf '%s\n' 'tinyMediaManager retirement static contract passed'
     exit 0
     ;;
   seed-retirement-fixture|assert-retired) ;;
