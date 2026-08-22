@@ -116,9 +116,6 @@ EXPECTED_SERVICE_MAPPINGS =
 EXPECTED_CONTAINER_CPUS =
   SERVICE_EXPECTATIONS.transform_values { |expectation| expectation.fetch("container_cpus") }.freeze
 EXPECTED_VAULT_KEYS = pinned_vault_keys(SERVICE_EXPECTATIONS)
-REQUIRED_MANIFEST_FIELDS = %w[name role status].freeze
-ALLOWED_SERVICE_STATUSES = %w[planned implemented accepted].freeze
-IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
 PLATFORM_INVENTORIES = {
   "local.yml" => ["nas_hosts", "nas", "local", "nas"],
   "remote.yml" => ["nas_hosts", "nas", "ssh", "nas"],
@@ -181,129 +178,6 @@ PLATFORM_INVENTORIES.each do |inventory_name, (host_group, host_name, connection
         "explicitly, not derived from another coordinate (found #{borrowed.inspect})")
 end
 
-shared_vars = YAML.safe_load_file(File.join(ROOT, "inventory", "group_vars", "all", "main.yml"))
-shared_machine_facts = shared_vars.keys & HOST_SCOPED_VARS
-check(failures, shared_machine_facts.empty?,
-      "machine facts must not be all-group variables: #{shared_machine_facts.join(', ')}")
-
-PLATFORM_INVENTORIES.values.map { |values| [values[0], values[3]] }.uniq.each do |host_group, platform_kind|
-  relative_path = File.join("inventory", "group_vars", host_group, "main.yml")
-  path = File.join(ROOT, relative_path)
-  host_vars = begin
-    YAML.safe_load_file(path)
-  rescue Errno::ENOENT
-    check(failures, false, "#{relative_path} is missing")
-    {}
-  rescue Psych::Exception => e
-    check(failures, false, "#{relative_path} is malformed: #{e.message.lines.first.strip}")
-    {}
-  end
-
-  check(failures, host_vars["platform_kind"] == platform_kind,
-        "#{relative_path} platform_kind must be #{platform_kind}")
-  PLATFORM_CAPABILITIES.each do |capability|
-    check(failures, host_vars.key?(capability),
-          "#{relative_path} must define #{capability}")
-  end
-  expected_cpu_budget = platform_kind == "nas" ? 3 : 0
-  check(failures, host_vars["platform_container_cpu_budget"] == expected_cpu_budget,
-        "#{relative_path} platform_container_cpu_budget must be #{expected_cpu_budget}")
-  PLATFORM_TELEMETRY_POLICY.each do |policy|
-    check(failures, host_vars.key?(policy),
-          "#{relative_path} must define #{policy}")
-  end
-  %w[platform_render_device_available platform_beszel_agent_available].each do |capability|
-    check(failures, [true, false].include?(host_vars[capability]),
-          "#{relative_path} #{capability} must be boolean")
-  end
-  check(failures, host_vars["platform_render_device_path"].is_a?(String) &&
-                  !host_vars["platform_render_device_path"].empty?,
-        "#{relative_path} platform_render_device_path must be a nonempty path")
-  mac_runtime_facts = if platform_kind == "mac"
-                        %w[
-                          platform_project_name beszel_port ntfy_port dozzle_port
-                          audiobookshelf_port komga_port tinymediamanager_web_port
-                          tinymediamanager_api_port jellyfin_port immich_port paperless_port
-                        ]
-                      else
-                        []
-                      end
-  unexpected_vars = host_vars.keys - HOST_SCOPED_VARS - mac_runtime_facts
-  check(failures, unexpected_vars.empty?,
-        "#{relative_path} contains portable configuration: #{unexpected_vars.join(', ')}")
-end
-
-site_play = YAML.safe_load_file(File.join(ROOT, "site.yml")).first
-check(failures, site_play["hosts"] == "platform_hosts",
-      "site.yml must target platform_hosts")
-check(failures, site_play.dig("vars", "platform_vault_file").to_s.include?(
-  "inventory/group_vars/all/vault.yml"
-), "site.yml must identify the encrypted deployment vault for SHA-256 reporting")
-
-preflight_options = YAML.safe_load_file(
-  File.join(ROOT, "roles", "preflight", "meta", "argument_specs.yml")
-).dig("argument_specs", "main", "options")
-(PLATFORM_CAPABILITIES + %w[platform_kind platform_public_host platform_callback_host]).each do |option|
-  check(failures, preflight_options.is_a?(Hash) && preflight_options[option].is_a?(Hash) &&
-                  preflight_options[option]["required"] == true,
-        "preflight argument specs must require #{option}")
-end
-
-check(failures, preflight_options.dig("platform_kind", "choices") == %w[nas mac],
-      "preflight platform_kind must allow only nas or mac")
-preflight_tasks = YAML.safe_load_file(
-  File.join(ROOT, "roles", "preflight", "tasks", "main.yml")
-)
-endpoint_guard = preflight_tasks.first
-endpoint_conditions = Array(endpoint_guard&.dig("ansible.builtin.assert", "that")).join(" ")
-check(failures, endpoint_guard&.dig("name") ==
-                "Require explicit nonempty application endpoint coordinates" &&
-                endpoint_conditions.include?("platform_public_host | length > 0") &&
-                endpoint_conditions.include?("platform_callback_host | length > 0"),
-      "preflight must reject empty public and callback host coordinates first")
-mount_table_task = preflight_tasks.find { |task| task["name"] == "Read the kernel mount table" }
-mount_guard_task = preflight_tasks.find do |task|
-  task["name"] == "Require the NAS volumes to be mounted"
-end
-mount_guard_argv = Array(mount_guard_task&.dig("ansible.builtin.command", "argv"))
-mount_guard_conditions = Array(mount_guard_task&.fetch("when", []))
-check(failures,
-      mount_table_task.nil? &&
-        mount_guard_argv.first == "awk" &&
-        mount_guard_argv.include?("target={{ item }}") &&
-        mount_guard_argv.include?("/proc/mounts") &&
-        mount_guard_argv.any? { |argument| argument.include?("$2 == target") } &&
-        mount_guard_conditions.include?("platform_kind == 'nas'") &&
-        mount_guard_conditions.include?("item is match('^/volume')") &&
-        mount_guard_task["changed_when"] == false &&
-        mount_guard_task["check_mode"] == false,
-      "preflight must check mounts by command exit status, including in check mode")
-# The detection moved into a shared task file so verify.yml can establish the
-# same fact without running all of preflight.
-preflight_gpu_tasks = YAML.safe_load_file(
-  File.join(ROOT, "roles", "preflight", "tasks", "gpu.yml")
-)
-gpu_fact_task = preflight_gpu_tasks.find do |task|
-  task["name"] == "Record whether hardware acceleration is available"
-end
-gpu_expression = gpu_fact_task&.dig("ansible.builtin.set_fact", "preflight_gpu_available").to_s
-check(failures, gpu_expression.include?("platform_render_device_available") &&
-                gpu_expression.include?("preflight_render_device.stat.exists") &&
-                gpu_expression.include?("preflight_render_device.stat.ischr"),
-      "GPU availability must require declared capability and an existing character device")
-
-mac_vars = YAML.safe_load_file(
-  File.join(ROOT, "inventory", "group_vars", "mac_hosts", "main.yml")
-)
-{
-  "nas_docker_root" => "PLATFORM_DOCKER_ROOT",
-  "nas_media_root" => "PLATFORM_MEDIA_ROOT"
-}.each do |variable, environment_variable|
-  expression = mac_vars[variable].to_s
-  check(failures, expression.include?("lookup('env', '#{environment_variable}')") &&
-                  expression.include?("| platform_physical_path"),
-        "Mac #{variable} must canonicalize #{environment_variable} before export")
-end
 ansible_config_source = File.read(File.join(ROOT, "ansible.cfg"))
 filter_probe = <<~'PYTHON'
   import sys
@@ -438,6 +312,7 @@ immich_preference_keys = %w[
   immich_managed_user_preference_profiles
 ]
 immich_defaults = YAML.safe_load_file(File.join(ROOT, "roles", "immich", "defaults", "main.yml"))
+shared_vars = YAML.safe_load_file(File.join(ROOT, "inventory", "group_vars", "all", "main.yml"))
 [shared_vars, immich_defaults].each_with_index do |variables, index|
   source = index.zero? ? "normal inventory" : "Immich role defaults"
   check(failures, variables["immich_managed_user_preference_profile_default"] == "standard",
@@ -476,84 +351,6 @@ paperless_env_lines = File.readlines(
 end
 
 
-# These checks prove that verification is structurally wired to an observable,
-# service-specific result. The integration run supplies runtime semantic proof;
-# static policy intentionally does not interpret arbitrary Jinja expressions.
-def service_specific_uri?(task, prefixes, service_names)
-  uri = task["ansible.builtin.uri"]
-  return false unless uri.is_a?(Hash) && uri["url"].is_a?(String)
-
-  url = uri.fetch("url")
-  variable_reference = prefixes.any? { |prefix| url.match?(/\b#{Regexp.escape(prefix)}_[A-Za-z0-9_]+\b/) }
-  literal_endpoint = service_names.any? do |name|
-    url.match?(/(?<![A-Za-z0-9_-])#{Regexp.escape(name)}(?![A-Za-z0-9_-])/)
-  end
-  variable_reference || literal_endpoint
-end
-
-def uri_verifies_service?(task, prefixes, service_names)
-  uri = task["ansible.builtin.uri"]
-  return false unless service_specific_uri?(task, prefixes, service_names)
-
-  return true if uri.key?("status_code")
-
-  register = task["register"]
-  register.is_a?(String) && %w[until failed_when].any? do |condition|
-    task[condition].to_s.match?(/\b#{Regexp.escape(register)}\b/)
-  end
-end
-
-def assert_verifies_service?(task, validated_registers)
-  assertion = task["ansible.builtin.assert"]
-  conditions = assertion.is_a?(Hash) ? Array(assertion["that"]) : []
-  return false if conditions.empty?
-
-  conditions.all? do |condition|
-    next false unless condition.is_a?(String)
-
-    producer = validated_registers.find do |register|
-      condition.match?(/\b#{Regexp.escape(register)}(?:\.[A-Za-z_][A-Za-z0-9_]*|\[['"][^'"]+['"]\])/)
-    end
-    comparison = condition.match(/\A\s*(.+?)\s*(==|!=|>=|<=|>|<|\bin\b|\bis\b)\s*(.+?)\s*\z/m)
-    producer && comparison && comparison[1].strip != comparison[3].strip
-  end
-end
-
-def role_has_verification?(tasks_path, service_name, role_name)
-  tasks = flatten_tasks(YAML.safe_load_file(tasks_path))
-  canonical_name = contract_basename(service_name)
-  prefixes = [service_name.tr("-", "_"), role_name, canonical_name.tr("-", "_")].uniq
-  service_names = [service_name, role_name, canonical_name].uniq
-  expected_tag = "platform_verify_#{canonical_name}"
-  validated_registers = Set.new
-  verified = false
-
-  tasks.each do |task|
-    named = task["name"].is_a?(String) && task["name"].match?(/\b(?:verify|verification)\b/i)
-    tagged = Array(task["tags"]).include?(expected_tag)
-    evidence = uri_verifies_service?(task, prefixes, service_names) ||
-               assert_verifies_service?(task, validated_registers)
-    verified ||= named && tagged && evidence
-    register = task["register"]
-    if register.is_a?(String) && prefixes.any? { |prefix| register.start_with?("#{prefix}_") } &&
-       service_specific_uri?(task, prefixes, service_names)
-      validated_registers << register
-    end
-  end
-  verified
-rescue Psych::Exception
-  false
-end
-
-def contract_has_verification?(contract_path, contract_root, service_name, relative_contract_path, registry_entries)
-  expected_entry = { "service" => service_name, "path" => relative_contract_path }
-  return false unless registry_entries.include?(expected_entry)
-  return false unless owned_file?(contract_path, contract_root)
-  return false unless File.executable?(contract_path) && File.size?(contract_path)
-
-  _stdout, _stderr, status = Open3.capture3("sh", "-n", contract_path)
-  status.success?
-end
 
 registry_path = File.join(ROOT, "tests", "contracts", "registry.yml")
 registry = begin
@@ -684,123 +481,14 @@ undeclared_dirs = service_dir_names - manifest_names
 check(failures, undeclared_dirs.empty?,
       "service directories must be declared in the manifest: #{undeclared_dirs.join(', ')}")
 
-storage = YAML.safe_load_file(File.join(ROOT, "inventory", "group_vars", "all", "main.yml"))
-declared_paths = storage.fetch("nas_storage").map { |entry| entry.fetch("path") }
-paperless_postgres_storage = storage.fetch("nas_storage").find do |entry|
-  entry["path"] == "{{ nas_docker_root }}/paperless-ngx/postgres"
-end
-check(failures,
-      paperless_postgres_storage && paperless_postgres_storage["mode"] == "0755",
-      "Paperless PostgreSQL 18 mount parent must be traversable by the postgres user")
-paperless_contract = File.read(File.join(ROOT, "tests", "contracts", "paperless.sh"))
-paperless_snapshot = File.read(File.join(ROOT, "tests", "mac", "snapshot-paperless.sh"))
-root_version_checksum = %r{
-  document\.fetch\("versions"\)\.find\s*\{\s*\|version\|\s*
-  version\.fetch\("is_root"\)\s*\}.*?
-  root_version&?\.fetch\("checksum"\)
-}mx
-check(failures,
-      paperless_contract.include?("PDF_MARKER = \"paperlesscontractenglish\""),
-      "Paperless contract must define the PDF fixture marker")
-check(failures,
-      paperless_contract.include?("def request(method, path, token: nil, body: nil, expected: [200], parse_json: true, read_timeout: 60)") &&
-      paperless_contract.match?(%r{/preview/.*, token: token, parse_json: false}),
-      "Paperless binary preview responses must bypass JSON parsing")
-check(failures,
-      paperless_contract.include?("MAIL_PROBE_READ_TIMEOUT = 180") &&
-      paperless_contract.match?(%r{/api/mail_accounts/test/.*?read_timeout:\s*MAIL_PROBE_READ_TIMEOUT}m),
-      "Paperless synchronous Gmail probe must use its explicit bounded timeout")
-check(failures,
-      paperless_contract.match?(root_version_checksum),
-      "Paperless checksum verification must select the API v3 root-version checksum")
-check(failures,
-      paperless_contract.match?(/EXPORT_PATH\.mkdir\(0o700\).*?document_exporter/m),
-      "Paperless portable export must create the required empty target directory")
-check(failures,
-      paperless_contract.match?(%r{
-        document_ids\s*=\s*\[.*?
-        request\(\s*"post",\s*"/api/trash/".*?
-        "action"\s*=>\s*"empty".*?
-        "documents"\s*=>\s*document_ids.*?
-        document_importer
-      }mx),
-      "Paperless portable import must empty its exported fixtures from trash first")
-check(failures,
-      paperless_contract.match?(%r{
-        document_importer.*?
-        "docker",\s*"restart",\s*WEBSERVER.*?
-        wait_healthy\(WEBSERVER.*?
-        document_for
-      }mx),
-      "Paperless portable import must reload and health-check the webserver search index")
-check(failures,
-      paperless_snapshot.match?(root_version_checksum) &&
-      paperless_snapshot.match?(/def catalogue.*?"checksum" => document_checksum\(document\)/m),
-      "Paperless snapshot catalogue must use API v3 root-version checksums")
-check(failures,
-      paperless_contract.match?(/diagnostic_bytes = stderr\.read.*?bytesize > 4096.*?else\s+diagnostic_bytes/m),
-      "Paperless exporter diagnostics must preserve short stderr output")
-
-manifest_entries.each do |service|
-  next unless service.is_a?(Hash)
-  next unless IMPLEMENTED_STATUSES.include?(service["status"])
-
-  name = service["name"]
-  role = service["role"]
-  next unless name.is_a?(String) && role.is_a?(String)
-
-  services_root = File.join(ROOT, "services")
-  service_root = File.join(services_root, name)
-  compose_path = File.join(service_root, "compose.yml")
-  roles_root = File.join(ROOT, "roles")
-  role_root = File.join(ROOT, "roles", role)
-  spec_path = File.join(role_root, "meta", "argument_specs.yml")
-  tasks_path = File.join(role_root, "tasks", "main.yml")
-  service_root_owned = owned_directory?(service_root, services_root)
-  role_root_owned = owned_directory?(role_root, roles_root)
-  compose_owned = service_root_owned && owned_file?(compose_path, service_root)
-  spec_owned = role_root_owned && owned_file?(spec_path, role_root)
-  tasks_owned = role_root_owned && owned_file?(tasks_path, role_root)
-  check(failures, service_root_owned, "#{name}: service must be a real directory within services")
-  check(failures, compose_owned, "#{name}: compose.yml must be a regular file within its service root")
-  check(failures, role_root_owned, "#{name}: role must be a real directory within roles")
-  check(failures, spec_owned, "#{name}: argument_specs.yml must be a regular file within its role root")
-  check(failures, tasks_owned, "#{name}: tasks/main.yml must be a regular file within its role root")
-  env_path = File.join(role_root, "templates", "env.j2")
-  env_source = File.file?(env_path) ? File.read(env_path) : ""
-  check(failures,
-        env_source.lines.map(&:strip).count(
-          "PLATFORM_CONTAINER_CPUSET={{ platform_effective_container_cpuset }}"
-        ) == 1,
-        "#{name}: environment must render the effective container CPU set exactly once")
-  tasks_source = tasks_owned ? File.read(tasks_path) : ""
-  deploys_compose = tasks_source.include?("community.docker.docker_compose_v2:")
-  check(failures,
-        !deploys_compose ||
-          (tasks_source.scan(/name:\s*container_cpu\b/).length == 1 &&
-           tasks_source.include?("container_cpu_service_name: #{name}")),
-        "#{name}: role must verify its effective container CPU policy exactly once")
-  check(failures, declared_paths.any? { |path| path.include?("/#{name}/") || path.end_with?("/#{name}") },
-        "#{name}: implemented service has no storage declaration")
-
-  relative_contract_path = "tests/contracts/#{contract_basename(name)}.sh"
-  contract_root = File.join(ROOT, "tests", "contracts")
-  contract_path = File.join(ROOT, relative_contract_path)
-  role_verification = tasks_owned && role_has_verification?(tasks_path, name, role)
-  contract_verification = contract_has_verification?(
-    contract_path, contract_root, name, relative_contract_path, contract_registry_entries
-  )
-  verifies_service = role_verification || contract_verification
-  check(failures, verifies_service,
-        "#{name}: implemented service has no automated verification or service contract")
-end
-
 # Digest pinning with a human-readable version tag, so an update bot can propose
 # a bump and a reader can tell what is deployed. The approved version is whatever
 # compose.yml declares; pinning a copy of it here would mean every image update
 # had to edit this file too, which is what a property check exists to avoid.
 IMAGE = %r{\A\S+:[^@\s]+@sha256:[0-9a-f]{64}\z}
 
+declared_paths = YAML.safe_load_file(File.join(ROOT, "inventory", "group_vars", "all", "main.yml"))
+                     .fetch("nas_storage").map { |entry| entry.fetch("path") }
 service_dirs.each do |dir|
   name = File.basename(dir)
   compose_path = File.join(dir, "compose.yml")
@@ -981,55 +669,6 @@ if report_task
         "deployment report must not publish under --check")
 end
 
-# Two tables decide which roles a service suite converges: the integration
-# runner's own and the CI classifier's. They must agree, and both must name the
-# alerting sink, because a suite that leaves ntfy out now fails at the service's
-# deployment report rather than at anything the suite is about.
-integration_path = File.join(ROOT, "tests", "integration.sh")
-classifier_path = File.join(ROOT, "tests", "ci", "classify_changes.rb")
-if File.file?(integration_path) && File.file?(classifier_path)
-  suite_tags = File.read(integration_path)
-                   .scan(/^\s*([a-z][a-z0-9-]*)\)\s+fixed_tags=([a-z0-9_,-]*)\s*;;/)
-                   .to_h { |suite, tags| [suite, tags.split(",")] }
-  classifier_tags = File.read(classifier_path)[/SERVICE_TAGS = \{(.*?)\}\.freeze/m].to_s
-                        .scan(/"([a-z0-9_-]+)"\s*=>\s*%w\[([^\]]*)\]/)
-                        .to_h { |lane, tags| [lane, tags.split] }
-  check(failures, !classifier_tags.empty?,
-        "tests/ci/classify_changes.rb: SERVICE_TAGS could not be read")
-  classifier_tags.each do |lane, tags|
-    check(failures, suite_tags[lane] == tags,
-          "integration suite #{lane} converges #{suite_tags[lane].inspect}, " \
-          "CI selects #{tags.inspect}")
-    check(failures, tags.include?("ntfy"),
-          "service lane #{lane} must converge ntfy: its role reports its deployment there")
-  end
-end
-
-# Collections are pinned like every image.
-requirements = YAML.safe_load_file(File.join(ROOT, "requirements.yml"))
-requirements.fetch("collections").each do |collection|
-  check(failures, collection["version"].to_s.match?(/\A\d+\.\d+\.\d+\z/),
-        "collection #{collection['name']} must be version-pinned")
-end
-
-config = File.read(File.join(ROOT, "ansible.cfg"))
-check(failures, config.match?(/^inject_facts_as_vars\s*=\s*False/i),
-      "ansible.cfg must disable fact injection, removed in ansible-core 2.24")
-
-ci = YAML.safe_load_file(File.join(ROOT, ".github", "workflows", "ci.yml"))
-ci_commands = ci.fetch("jobs", {}).values.flat_map do |job|
-  Array(job["steps"]).filter_map { |step| step["run"] if step.is_a?(Hash) }
-end.flat_map { |run| run.to_s.lines.map(&:strip) }
-check(failures, ci_commands.include?("tests/validate-policy.sh"),
-      "CI must run tests/validate-policy.sh")
-check(
-  failures,
-  ci_commands.include?(
-    "ansible-playbook -i inventory/local.yml install-production-auto-deploy.yml --syntax-check"
-  ),
-  "CI must syntax-check install-production-auto-deploy.yml"
-)
-
 # Compose interpolation runs against the newly published bundle while the
 # on-disk .env can still be the previous deployment's. Any compose invocation
 # that precedes its role's env render must supply the required variables itself.
@@ -1058,406 +697,113 @@ check(failures,
         (jellyfin_startup.key?("until") && jellyfin_startup["retries"].to_i > 0),
       "reading Jellyfin startup state must retry until the server finishes loading")
 
-validation_script_path = File.join(ROOT, "tests", "validate-policy.sh")
-validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "tests"))
-                        File.readlines(validation_script_path).map(&:strip)
-                      else
-                        []
-                      end
-%w[
-  ruby\ tests/policy_test.rb
-  ruby\ tests/policy_deployment_test.rb
-  ruby\ tests/policy_mac_test.rb
-  ruby\ tests/policy_vault_test.rb
-  ruby\ tests/renovate_policy_test.rb
-  ruby\ tests/policy_manifest_test.rb
-  ruby\ tests/run_contracts_test.rb
-  ruby\ tests/run_contracts.rb\ --validate-only
-  ruby\ tests/database_managed_users_test.rb
-  ruby\ tests/database_managed_users_test.rb\ --self-test
-  ruby\ tests/immich_configured_password_test.rb
-  ruby\ tests/immich_user_onboarding_test.rb
-  ruby\ tests/immich_selective_helper_integrity_test.rb
-  ruby\ tests/komga_library_reconciliation_test.rb
-  ruby\ tests/audiobookshelf_initial_scan_test.rb
-  ruby\ tests/audiobookshelf_initial_scan_behavior_test.rb
-  ruby\ tests/paperless_mail_reconciliation_test.rb
-  PYTHONDONTWRITEBYTECODE=1\ "$ansible_python"\ -m\ unittest\ -v\ tests.production_auto_deploy_test
-  ruby\ tests/production_auto_deploy_role_test.rb
-  python3\ -m\ unittest\ -v\ tests/dozzle_alert_relay_test.py
-  tests/dozzle_alert_state_symlink_test.sh
-  tests/integration_lock_test.sh
-  tests/mac/manual-validation-runner-test.sh
-  tests/mac/audiobookshelf-drift-hook-test.sh
-  tests/contracts/audiobookshelf-audio-test.sh
-  ruby\ tests/mac/report.rb\ --self-test
-  tests/mac/cleanup.sh\ --self-test
-  ruby\ tests/mac/sanitize-logs.rb\ --self-test
-].each do |command|
-  check(failures, validation_commands.include?(command),
-        "validate-policy.sh must run #{command}")
-end
-{
-  'PYTHONDONTWRITEBYTECODE=1 "$ansible_python" -m unittest -v tests.production_auto_deploy_test' =>
-    "the production auto-deploy poller suite",
-  "ruby tests/production_auto_deploy_role_test.rb" =>
-    "the production auto-deploy installer suite"
-}.each do |command, description|
-  check(failures, validation_commands.count(command) == 1,
-        "validate-policy.sh must run #{description} exactly once")
-end
+paperless_contract = File.read(File.join(ROOT, "tests", "contracts", "paperless.sh"))
+paperless_snapshot = File.read(File.join(ROOT, "tests", "mac", "snapshot-paperless.sh"))
+root_version_checksum = %r{
+  document\.fetch\("versions"\)\.find\s*\{\s*\|version\|\s*
+  version\.fetch\("is_root"\)\s*\}.*?
+  root_version&?\.fetch\("checksum"\)
+}mx
 check(failures,
-      validation_commands.count("ruby tests/immich_configured_password_test.rb") == 1,
-      "validate-policy.sh must run ruby tests/immich_configured_password_test.rb exactly once")
+      paperless_contract.include?("PDF_MARKER = \"paperlesscontractenglish\""),
+      "Paperless contract must define the PDF fixture marker")
 check(failures,
-      validation_commands.count("ruby tests/audiobookshelf_initial_scan_test.rb") == 1,
-      "validate-policy.sh must run ruby tests/audiobookshelf_initial_scan_test.rb exactly once")
+      paperless_contract.include?("def request(method, path, token: nil, body: nil, expected: [200], parse_json: true, read_timeout: 60)") &&
+      paperless_contract.match?(%r{/preview/.*, token: token, parse_json: false}),
+      "Paperless binary preview responses must bypass JSON parsing")
 check(failures,
-      validation_commands.count("ruby tests/audiobookshelf_initial_scan_behavior_test.rb") == 1,
-      "validate-policy.sh must run ruby tests/audiobookshelf_initial_scan_behavior_test.rb exactly once")
+      paperless_contract.include?("MAIL_PROBE_READ_TIMEOUT = 180") &&
+      paperless_contract.match?(%r{/api/mail_accounts/test/.*?read_timeout:\s*MAIL_PROBE_READ_TIMEOUT}m),
+      "Paperless synchronous Gmail probe must use its explicit bounded timeout")
 check(failures,
-      validation_commands.count("python3 -m unittest -v tests/dozzle_alert_relay_test.py") == 1,
-      "validate-policy.sh must run the Dozzle alert relay unit test exactly once")
+      paperless_contract.match?(root_version_checksum),
+      "Paperless checksum verification must select the API v3 root-version checksum")
 check(failures,
-      validation_commands.count("tests/dozzle_alert_state_symlink_test.sh") == 1,
-      "validate-policy.sh must run the Dozzle alert state symlink test exactly once")
+      paperless_contract.match?(/EXPORT_PATH\.mkdir\(0o700\).*?document_exporter/m),
+      "Paperless portable export must create the required empty target directory")
 check(failures,
-      validation_commands.count(
-        "python3 -m unittest -v tests/immich_restore_classifier_test.py"
-      ) == 1,
-      "validate-policy.sh must run the Immich restore classifier test exactly once")
+      paperless_contract.match?(%r{
+        document_ids\s*=\s*\[.*?
+        request\(\s*"post",\s*"/api/trash/".*?
+        "action"\s*=>\s*"empty".*?
+        "documents"\s*=>\s*document_ids.*?
+        document_importer
+      }mx),
+      "Paperless portable import must empty its exported fixtures from trash first")
 check(failures,
-      validation_commands.count("ruby tests/immich_restore_quality_test.rb") == 1,
-      "validate-policy.sh must run the Immich restore quality test exactly once")
+      paperless_contract.match?(%r{
+        document_importer.*?
+        "docker",\s*"restart",\s*WEBSERVER.*?
+        wait_healthy\(WEBSERVER.*?
+        document_for
+      }mx),
+      "Paperless portable import must reload and health-check the webserver search index")
 check(failures,
-      validation_commands.count("ruby tests/immich_restore_lifecycle_test.rb") == 1,
-      "validate-policy.sh must run the Immich restore lifecycle test exactly once")
+      paperless_snapshot.match?(root_version_checksum) &&
+      paperless_snapshot.match?(/def catalogue.*?"checksum" => document_checksum\(document\)/m),
+      "Paperless snapshot catalogue must use API v3 root-version checksums")
 check(failures,
-      validation_commands.count("ruby tests/immich_release_helper_test.rb") == 1,
-      "validate-policy.sh must run the Immich release helper test exactly once")
-check(failures,
-      validation_commands.count("ruby tests/immich_selective_helper_integrity_test.rb") == 1,
-      "validate-policy.sh must run the Immich selective helper integrity test exactly once")
-check(failures,
-      owned_file?(File.join(ROOT, "tests", "immich_release_helper_test.rb"),
-                  File.join(ROOT, "tests")),
-      "Immich release helper test must be a regular non-symlink file")
-check(failures,
-      owned_file?(File.join(ROOT, "tests", "immich_selective_helper_integrity_test.rb"),
-                  File.join(ROOT, "tests")),
-      "Immich selective helper integrity test must be a regular non-symlink file")
+      paperless_contract.match?(/diagnostic_bytes = stderr\.read.*?bytesize > 4096.*?else\s+diagnostic_bytes/m),
+      "Paperless exporter diagnostics must preserve short stderr output")
 
-# The plays must be exercised, not merely parsed: the two worst bugs so far, a
-# Darwin-only fact and command being skipped under --check, both survived syntax
-# checking and were caught by running.
-harness = File.read(File.join(ROOT, "tests", "integration.sh"))
-dozzle_contract = File.read(File.join(ROOT, "tests", "contracts", "dozzle.sh"))
-check(failures, dozzle_contract.include?('exec ruby - "$mode" "$@"'),
-      "Dozzle contract must pass its default verify mode to the dynamic probe")
-integration_lock_path = File.join(ROOT, "tests", "integration_lock.sh")
-integration_lock = File.file?(integration_lock_path) ? File.read(integration_lock_path) : ""
-mac_path_fixture = File.read(File.join(ROOT, "tests", "mac_inventory_path_test.yml"))
-check(failures, harness.include?("MAC_PATH_CANONICAL") &&
-                harness.include?("MAC_PATH_LEXICAL_REFUSED") &&
-                harness.include?("mac_inventory_path_test.yml") &&
-                mac_path_fixture.include?("tasks_from: target") &&
-                mac_path_fixture.include?("EXPECTED_PLATFORM_DOCKER_ROOT"),
-      "integration must prove canonical Mac paths pass target validation")
-["IDEMPOTENT", "CHECK MODE"].each do |property|
-  check(failures, harness.include?(property), "integration harness must assert #{property}")
-end
-first_converge = harness.index("\n    run_play\n")
-contract_execution = harness.index("ruby /repo/tests/run_contracts.rb --execute")
-idempotence_phase = harness.index("=== phase 2: asserting idempotence ===")
-check(failures, first_converge && contract_execution && idempotence_phase &&
-                first_converge < contract_execution && contract_execution < idempotence_phase,
-      "integration must execute registered contracts after converge and before idempotence")
-contract_abi_names = %w[
-  PLATFORM_KIND PLATFORM_CONTRACT_VAULT_FILE PLATFORM_DOCKER_ROOT
-  PLATFORM_MEDIA_ROOT PLATFORM_FIXTURE_ROOT PLATFORM_REPORT_ROOT
-]
-contract_environment_start = contract_execution && harness.rindex("\n      env \\", contract_execution)
-contract_environment = if contract_environment_start && contract_execution
-                         harness[contract_environment_start..contract_execution]
-                       else
-                         ""
-                       end
-check(failures, contract_execution && contract_abi_names.all? do |name|
-  contract_environment.include?("#{name}=")
-end, "integration must set the contract environment ABI before execution")
-run_play_body = harness[/^    run_play\(\) \{.*?^    \}/m].to_s
-check(failures, harness.match?(/^ruby_package='ruby~\d+\.\d+\.\d+'$/) &&
-                harness.match?(/^curl_package='curl~\d+\.\d+\.\d+'$/),
-      "integration must pin distro ruby and curl packages")
-check(failures,
-      harness.include?("/repo/tests/generate-ephemeral-vault.sh") &&
-      harness.include?("--output \\\"\\$vault_file\\\"") &&
-        harness.include?("--password-file") &&
-        run_play_body.include?("--vault-password-file \\\"\\$vault_password_file\\\"") &&
-        run_play_body.include?("-e @\\\"\\$vault_file\\\"") &&
-        run_play_body.include?("-e platform_vault_file=\\\"\\$vault_file\\\"") &&
-        harness.include?("TMPDIR='$sandbox' /repo/tests/generate-ephemeral-vault.sh --cleanup") &&
-        contract_environment.include?("PLATFORM_CONTRACT_VAULT_FILE=\\\"\\$vault_file\\\"") &&
-        !harness.include?("sandbox-vault.yml") &&
-        !harness.include?("random_password()") &&
-        !harness.include?("ntfy_token()"),
-      "integration must consume the ephemeral encrypted vault without duplicate secret authoring")
-check(failures,
-      harness.include?('/repo/tests/mac/generate-immich-fixture-vars.rb') &&
-        harness.include?('ANSIBLE_VAULT_PASSWORD_FILE=\"\$vault_password_file\" ansible-vault view') &&
-        harness.include?('fixture_vars_file=\"\$fixture_input_directory/immich-fixture-vars.yml\"') &&
-        harness.include?('PLATFORM_MAC_FIXTURE_VARS_FILE=\"\$fixture_vars_file\"') &&
-        harness.include?('install -m 0600 /dev/null \"\$fixture_vars_file\"') &&
-        harness.include?('chmod 0600 \"\$fixture_vars_file\"') &&
-        harness.include?('rm -f \"\$fixture_vault_view\"') &&
-        harness.include?('trap cleanup_fixture_vault_view EXIT'),
-      "integration must generate and protect the Immich fixture policy")
-check(failures,
-      harness.include?('controller_mount=$sandbox/repo') &&
-        harness.include?('git clone --quiet --no-local --no-checkout "$repo_dir" "$controller_mount"') &&
-        harness.include?('git -C "$controller_mount" checkout -q --detach "$expected_release_id"') &&
-        harness.include?('-v "$controller_mount":/repo') &&
-        harness.include?('install -m 0600 \"\$vault_file\" /repo/inventory/group_vars/all/vault.yml') &&
-        !harness.include?('controller_mount=$repo_dir'),
-      "integration must isolate normal and linked-worktree controllers before installing its ephemeral vault")
-lock_acquire_index = harness.index("acquire_integration_lock")
-sandbox_create_index = harness.index('sandbox=$(mktemp -d')
-check(failures,
-      harness.include?('. "$repo_dir/tests/integration_lock.sh"') &&
-        lock_acquire_index && sandbox_create_index && lock_acquire_index < sandbox_create_index &&
-        harness.include?("cleanup_sandbox") && harness.include?("release_integration_lock") &&
-        integration_lock.include?('mkdir "$lock_candidate"') &&
-        integration_lock.include?('rmdir "$integration_lock_path"') &&
-        !integration_lock.match?(/rm\s+-rf/),
-      "integration must serialize fixed-name containers with an atomic empty-directory lock")
+# The declared storage is checked against what the manifest says is deployed, so
+# the manifest is re-read here rather than shared across scripts.
+manifest_entries = Array(YAML.safe_load_file(File.join(ROOT, "services", "manifest.yml"))["services"])
+manifest_entries.each do |service|
+  next unless service.is_a?(Hash)
+  next unless IMPLEMENTED_STATUSES.include?(service["status"])
 
-preflight_body = File.read(File.join(ROOT, "roles", "preflight", "tasks", "main.yml"))
-check(failures,
-      preflight_body.include?("docker, info, --format, json") &&
-        preflight_body.include?("platform_container_cpuset") &&
-        preflight_body.include?("platform_effective_container_cpuset"),
-      "preflight must derive the effective container CPU set from Docker capacity")
-check(failures, preflight_body.include?("{{ nas_docker_root }}/.nas-platform-preflight-probe") &&
-                !preflight_body.include?("{{ platform_deploy_root }}/.preflight-probe"),
-      "fresh-install preflight must probe the existing validated nas_docker_root")
-preflight_probe_tasks = flatten_tasks(YAML.safe_load(preflight_body))
-probe_inspection = preflight_probe_tasks.index { |task| task["name"] == "Inspect the deterministic write probe path" }
-probe_refusal = preflight_probe_tasks.index { |task| task["name"] == "Refuse to remove a pre-existing write probe path" }
-probe_reclaim = preflight_probe_tasks.index do |task|
-  task["name"] == "Reclaim the empty write probe directory left by an interrupted run"
-end
-probe_creation = preflight_probe_tasks.index { |task| task["name"] == "Confirm the service state root is writable" }
-probe_conditions = Array(
-  probe_refusal ? preflight_probe_tasks.fetch(probe_refusal).dig("ansible.builtin.assert", "that") : nil
-).join(" ")
-check(failures, probe_inspection && probe_refusal && probe_reclaim && probe_creation &&
-                probe_inspection < probe_refusal && probe_refusal < probe_reclaim &&
-                probe_reclaim < probe_creation,
-      "preflight must inspect and adjudicate a pre-existing deterministic probe before creating it")
-# The probe path is the role's own debris after an interrupted run, so an empty
-# directory self-heals while anything that could be real data still refuses.
-check(failures, probe_inspection &&
-                preflight_probe_tasks.fetch(probe_inspection).dig("ansible.builtin.stat", "follow") == false,
-      "preflight must inspect the deterministic probe path without following symlinks")
-check(failures, probe_conditions.include?("preflight_write_probe.stat.isdir") &&
-                probe_conditions.include?("not preflight_write_probe.stat.islnk") &&
-                probe_conditions.include?("preflight_write_probe_contents.files"),
-      "preflight must refuse a pre-existing probe that is not an empty non-symlink directory")
-probe_emptiness = preflight_probe_tasks.find do |task|
-  task.dig("ansible.builtin.find", "paths") == "{{ nas_docker_root }}/.nas-platform-preflight-probe"
-end
-check(failures, probe_emptiness&.dig("ansible.builtin.find", "hidden") == true &&
-                probe_emptiness&.dig("ansible.builtin.find", "file_type") == "any",
-      "preflight must count hidden and non-file probe children when testing emptiness")
-check(failures, probe_reclaim &&
-                preflight_probe_tasks.fetch(probe_reclaim).dig("ansible.builtin.file", "state") == "absent" &&
-                preflight_probe_tasks.fetch(probe_reclaim)["changed_when"] == false,
-      "preflight must reclaim the stale probe directory without reporting a change")
+  name = service["name"]
+  role = service["role"]
+  next unless name.is_a?(String) && role.is_a?(String)
 
-# Identity reads must be server-filtered and retain totals so the role can refuse
-# an identity result that exceeds the complete 500-record response page.
-beszel_tasks = flatten_tasks(
-  YAML.safe_load_file(File.join(ROOT, "roles", "beszel", "tasks", "main.yml"))
-)
+  services_root = File.join(ROOT, "services")
+  service_root = File.join(services_root, name)
+  compose_path = File.join(service_root, "compose.yml")
+  roles_root = File.join(ROOT, "roles")
+  role_root = File.join(ROOT, "roles", role)
+  spec_path = File.join(role_root, "meta", "argument_specs.yml")
+  tasks_path = File.join(role_root, "tasks", "main.yml")
+  service_root_owned = owned_directory?(service_root, services_root)
+  role_root_owned = owned_directory?(role_root, roles_root)
+  compose_owned = service_root_owned && owned_file?(compose_path, service_root)
+  spec_owned = role_root_owned && owned_file?(spec_path, role_root)
+  tasks_owned = role_root_owned && owned_file?(tasks_path, role_root)
+  check(failures, service_root_owned, "#{name}: service must be a real directory within services")
+  check(failures, compose_owned, "#{name}: compose.yml must be a regular file within its service root")
+  check(failures, role_root_owned, "#{name}: role must be a real directory within roles")
+  check(failures, spec_owned, "#{name}: argument_specs.yml must be a regular file within its role root")
+  check(failures, tasks_owned, "#{name}: tasks/main.yml must be a regular file within its role root")
+  env_path = File.join(role_root, "templates", "env.j2")
+  env_source = File.file?(env_path) ? File.read(env_path) : ""
+  check(failures,
+        env_source.lines.map(&:strip).count(
+          "PLATFORM_CONTAINER_CPUSET={{ platform_effective_container_cpuset }}"
+        ) == 1,
+        "#{name}: environment must render the effective container CPU set exactly once")
+  tasks_source = tasks_owned ? File.read(tasks_path) : ""
+  deploys_compose = tasks_source.include?("community.docker.docker_compose_v2:")
+  check(failures,
+        !deploys_compose ||
+          (tasks_source.scan(/name:\s*container_cpu\b/).length == 1 &&
+           tasks_source.include?("container_cpu_service_name: #{name}")),
+        "#{name}: role must verify its effective container CPU policy exactly once")
+  check(failures, declared_paths.any? { |path| path.include?("/#{name}/") || path.end_with?("/#{name}") },
+        "#{name}: implemented service has no storage declaration")
 
-host_prep_tasks = YAML.safe_load_file(File.join(ROOT, "roles", "host_prep", "tasks", "main.yml"))
-host_prep_create = host_prep_tasks.find do |task|
-  task["name"] == "Create service state directories"
-end
-host_prep_file = host_prep_create&.fetch("ansible.builtin.file", {})
-check(failures, host_prep_file["owner"].to_s.include?("platform_kind == 'nas'") &&
-                host_prep_file["owner"].to_s.include?("platform_manage_linux_ownership | bool") &&
-                host_prep_file["group"].to_s.include?("platform_kind == 'nas'") &&
-                host_prep_file["group"].to_s.include?("platform_manage_linux_ownership | bool") &&
-                host_prep_file["owner"].to_s.include?("else omit") &&
-                host_prep_file["group"].to_s.include?("else omit"),
-      "host preparation must restrict Linux ownership to the explicit integration capability")
-# nas_media_root is an env-derived temp path on Mac hosts and reliably contains a
-# dot, so feeding it to a regex test unescaped makes it match sibling directories.
-media_ownership_conditions = Array(
-  host_prep_tasks.find do |task|
-    task["name"] == "Refuse to claim ownership of NAS-managed user files"
-  end&.dig("ansible.builtin.assert", "that")
-).join(" ")
-check(failures, media_ownership_conditions.include?("nas_media_root | regex_escape"),
-      "NAS-managed ownership refusal must escape nas_media_root before matching it as a regex")
-
-preflight_tasks = YAML.safe_load_file(File.join(ROOT, "roles", "preflight", "tasks", "main.yml"))
-ownership_guard = preflight_tasks.find do |task|
-  task["name"] == "Restrict synthetic Linux ownership correction"
-end&.dig("ansible.builtin.assert", "that")&.join(" ").to_s
-%w[platform_manage_linux_ownership platform_compose_kind deployment_bundle_test_mode
-   ansible_facts.system nas_docker_root nas_media_root].each do |token|
-  check(failures, ownership_guard.include?(token),
-        "integration Linux ownership guard must bind #{token}")
+  relative_contract_path = "tests/contracts/#{contract_basename(name)}.sh"
+  contract_root = File.join(ROOT, "tests", "contracts")
+  contract_path = File.join(ROOT, relative_contract_path)
+  role_verification = tasks_owned && role_has_verification?(tasks_path, name, role)
+  contract_verification = contract_has_verification?(
+    contract_path, contract_root, name, relative_contract_path, contract_registry_entries
+  )
+  verifies_service = role_verification || contract_verification
+  check(failures, verifies_service,
+        "#{name}: implemented service has no automated verification or service contract")
 end
 
-beszel_user_lists = beszel_tasks.select do |task|
-  task["name"].to_s.start_with?("List application users") &&
-    task["ansible.builtin.uri"].is_a?(Hash)
-end
-check(failures, beszel_user_lists.length == 2,
-      "Beszel role must contain both application-user list operations")
-beszel_user_lists.each do |task|
-  url = task.dig("ansible.builtin.uri", "url")
-  check(failures, url.is_a?(String) && url.include?("filter={{") && url.include?("urlencode") &&
-                  !url.include?("skipTotal=1"),
-        "#{task['name']}: must use a complete URL-encoded server identity filter")
-end
-check(failures,
-      beszel_contract.include?('body: { role: "user" })') &&
-        beszel_contract.include?('user["role"] == "user" && user["verified"] == true') &&
-        !beszel_contract.include?('body: { role: "user", verified: false }'),
-      "Beszel drift fixture must preserve the verified authentication prerequisite while drifting role")
 
-beszel_complete_user_read = beszel_tasks.find do |task|
-  task["name"] == "Read the complete PocketBase users collection for managed users"
-end
-check(failures,
-      beszel_complete_user_read&.dig("ansible.builtin.uri", "url") ==
-        "{{ beszel_api }}/api/collections/users/records?perPage=500",
-      "Beszel managed users must reuse one explicitly bounded complete users collection")
-beszel_complete_user_assert = beszel_tasks.find do |task|
-  task["name"] == "Require a complete PocketBase users collection"
-end
-complete_user_conditions = Array(
-  beszel_complete_user_assert&.dig("ansible.builtin.assert", "that")
-).join(" ")
-check(failures, complete_user_conditions.include?("totalPages") &&
-                complete_user_conditions.include?("totalItems"),
-      "Beszel complete users collection must prove pagination and item-count completeness")
-
-beszel_alert_tasks = flatten_tasks(
-  YAML.safe_load_file(File.join(ROOT, "roles", "beszel", "tasks", "alert.yml"))
-)
-identity_reads = (beszel_tasks + beszel_alert_tasks).select do |task|
-  uri = task["ansible.builtin.uri"]
-  uri.is_a?(Hash) && uri["method"].nil? && uri["url"].to_s.match?(%r{/collections/(users|universal_tokens|user_settings|systems|alerts)/records\?})
-end
-check(failures, identity_reads.length >= 11,
-      "Beszel reconciliation must retain all filtered collection readbacks")
-identity_reads.each do |task|
-  next if task["name"] == "Read the complete PocketBase users collection for managed users"
-
-  url = task.dig("ansible.builtin.uri", "url").to_s
-  check(failures, url.include?("filter={{") && url.include?("urlencode") && !url.include?("skipTotal=1"),
-        "#{task['name']}: collection readback must use a URL-encoded identity filter with totals")
-end
-
-beszel_create_user = beszel_tasks.find { |task| task["name"] == "Create the application user" }
-beszel_plan_user = beszel_tasks.find { |task| task["name"] == "Report planned application user creation" }
-check(failures, beszel_create_user && beszel_create_user["changed_when"] == true &&
-                beszel_plan_user && beszel_plan_user["changed_when"] == true &&
-                Array(beszel_plan_user["when"]).include?("ansible_check_mode"),
-      "Beszel user creation must report real and check-mode predicted changes")
-
-webhook_assert = beszel_tasks.find { |task| task["name"] == "Verify the managed ntfy webhook" }
-webhook_failure = webhook_assert&.dig("ansible.builtin.assert", "fail_msg").to_s
-webhook_summary = beszel_tasks.find do |task|
-  task["name"] == "Summarize the managed ntfy webhook without URL bodies"
-end
-check(failures, webhook_failure.include?("scheme=") && webhook_failure.include?("[REDACTED]") &&
-                !webhook_failure.match?(/actual=|expected=|webhooks/) &&
-                webhook_summary && webhook_summary["no_log"] == true &&
-                Array(webhook_assert&.dig("ansible.builtin.assert", "that")).all? do |condition|
-                  !condition.match?(/notification|webhook.*url|webhooks/)
-                end,
-      "Beszel webhook mismatch diagnostics must never include URL bodies")
-wrong_owner_assert = beszel_tasks.find do |task|
-  task["name"] == "Refuse same-name systems outside the managed user relation"
-end
-check(failures, wrong_owner_assert && wrong_owner_assert.dig("ansible.builtin.assert", "that").to_s.include?("beszel_wrong_owner_systems"),
-      "Beszel must reject same-name systems outside the managed user relation")
-check(failures, beszel_contract.include?("URI.encode_www_form") &&
-                beszel_contract.include?("same-name wrong-owner system IDs") &&
-                !beszel_contract.include?("skipTotal=1"),
-      "Beszel contract must use complete encoded identity filters and enforce system ownership")
-%w[sentinel-user sentinel-password sentinel-query-key].each do |sentinel|
-  check(failures, harness.include?(sentinel),
-        "integration must test redaction of arbitrary webhook sentinel #{sentinel}")
-end
-
-# PocketBase validates relations through a separate SQLite connection. Refresh
-# that pool exactly once after the one-time user insert and before relation writes.
-beszel_create_index = beszel_tasks.index do |task|
-  task["name"] == "Create the application user"
-end
-beszel_refresh_indexes = beszel_tasks.each_index.select do |index|
-  beszel_tasks[index]["name"] ==
-    "Refresh Beszel database connections after creating the application user"
-end
-beszel_second_list_index = beszel_tasks.index do |task|
-  task["name"] == "List application users again to resolve the id"
-end
-check(failures, beszel_refresh_indexes.length == 1,
-      "Beszel must refresh database connections exactly once after creating its user")
-unless beszel_refresh_indexes.empty?
-  refresh_index = beszel_refresh_indexes.first
-  refresh = beszel_tasks[refresh_index]
-  compose = refresh["community.docker.docker_compose_v2"]
-  check(failures, beszel_create_index && beszel_second_list_index &&
-                  beszel_create_index < refresh_index && refresh_index < beszel_second_list_index,
-        "Beszel database refresh must follow user creation and precede relation setup")
-  check(failures, compose.is_a?(Hash) && compose["services"] == ["hub"] &&
-                  compose["state"] == "restarted" && compose["wait"] == true,
-        "Beszel database refresh must restart and wait for only the hub")
-  check(failures, refresh["when"] == "beszel_matching_users | length == 0",
-        "Beszel database refresh must run only when the application user is created")
-end
-
-readme = File.read(File.join(ROOT, "README.md"))
-gitignore = File.read(File.join(ROOT, ".gitignore"))
-check(failures, readme.include?("tests/mac/run.sh") &&
-                readme.include?("--lane fresh") &&
-                readme.include?("--keep-on-failure"),
-      "README must document the Mac proof lane and failure preservation")
-check(failures, gitignore.include?("mac-proof-reports"),
-      "gitignore must exclude local Mac proof report copies")
-
-beszel_verification_prerequisites = {
-  "Select the Beszel mounted state root" => "ansible.builtin.set_fact",
-  "Authenticate as the superuser" => "ansible.builtin.uri",
-  "Read the public key the hub advertises" => "ansible.builtin.uri",
-  "Verify the advertised key matches vault, proving no read-back is needed" =>
-    "ansible.builtin.assert"
-}
-beszel_verification_prerequisites.each do |name, module_name|
-  task = beszel_tasks.find { |candidate| candidate["name"] == name }
-  check(failures, task && task.key?(module_name) &&
-                  Array(task["tags"]).include?("platform_verify_beszel"),
-        "Beszel verification-only run must include #{name.downcase}")
-end
-
-tinymediamanager_tasks = flatten_tasks(
-  YAML.safe_load_file(File.join(ROOT, "roles", "tinymediamanager", "tasks", "main.yml"))
-)
-tinymediamanager_state_root = tinymediamanager_tasks.find do |task|
-  task["name"] == "Select the tinyMediaManager mounted state root"
-end
-check(failures,
-      tinymediamanager_state_root&.key?("ansible.builtin.set_fact") &&
-        Array(tinymediamanager_state_root["tags"]).include?("platform_verify_tinymediamanager"),
-      "tinyMediaManager verification-only run must derive its mounted state root")
 
 if failures.empty?
   puts "policy: all properties hold"

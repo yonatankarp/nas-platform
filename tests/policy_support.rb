@@ -18,6 +18,11 @@ module PolicySupport
   # Not every vault key belongs to a service; this one is platform-wide.
   GLOBAL_VAULT_KEYS = %w[vault_managed_users].freeze
   EXPECTATION_FIELDS = %w[container_cpus role vault_keys].freeze
+# The manifest's status vocabulary. Shared because more than one script decides
+# what to check based on whether a service is actually deployed.
+REQUIRED_MANIFEST_FIELDS = %w[name role status].freeze
+ALLOWED_SERVICE_STATUSES = %w[planned implemented accepted].freeze
+IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
   EMPTY_EXPECTATION = { "role" => nil, "container_cpus" => {}, "vault_keys" => [] }.freeze
 
   module_function
@@ -175,5 +180,83 @@ module PolicySupport
       %w[block rescue always].each { |section| flatten_tasks(task[section], flattened) }
     end
     flattened
+  end
+  # These checks prove that verification is structurally wired to an observable,
+  # service-specific result. The integration run supplies runtime semantic proof;
+  # static policy intentionally does not interpret arbitrary Jinja expressions.
+  def service_specific_uri?(task, prefixes, service_names)
+    uri = task["ansible.builtin.uri"]
+    return false unless uri.is_a?(Hash) && uri["url"].is_a?(String)
+
+    url = uri.fetch("url")
+    variable_reference = prefixes.any? { |prefix| url.match?(/\b#{Regexp.escape(prefix)}_[A-Za-z0-9_]+\b/) }
+    literal_endpoint = service_names.any? do |name|
+      url.match?(/(?<![A-Za-z0-9_-])#{Regexp.escape(name)}(?![A-Za-z0-9_-])/)
+    end
+    variable_reference || literal_endpoint
+  end
+
+  def uri_verifies_service?(task, prefixes, service_names)
+    uri = task["ansible.builtin.uri"]
+    return false unless service_specific_uri?(task, prefixes, service_names)
+
+    return true if uri.key?("status_code")
+
+    register = task["register"]
+    register.is_a?(String) && %w[until failed_when].any? do |condition|
+      task[condition].to_s.match?(/\b#{Regexp.escape(register)}\b/)
+    end
+  end
+
+  def assert_verifies_service?(task, validated_registers)
+    assertion = task["ansible.builtin.assert"]
+    conditions = assertion.is_a?(Hash) ? Array(assertion["that"]) : []
+    return false if conditions.empty?
+
+    conditions.all? do |condition|
+      next false unless condition.is_a?(String)
+
+      producer = validated_registers.find do |register|
+        condition.match?(/\b#{Regexp.escape(register)}(?:\.[A-Za-z_][A-Za-z0-9_]*|\[['"][^'"]+['"]\])/)
+      end
+      comparison = condition.match(/\A\s*(.+?)\s*(==|!=|>=|<=|>|<|\bin\b|\bis\b)\s*(.+?)\s*\z/m)
+      producer && comparison && comparison[1].strip != comparison[3].strip
+    end
+  end
+
+  def role_has_verification?(tasks_path, service_name, role_name)
+    tasks = flatten_tasks(YAML.safe_load_file(tasks_path))
+    canonical_name = contract_basename(service_name)
+    prefixes = [service_name.tr("-", "_"), role_name, canonical_name.tr("-", "_")].uniq
+    service_names = [service_name, role_name, canonical_name].uniq
+    expected_tag = "platform_verify_#{canonical_name}"
+    validated_registers = Set.new
+    verified = false
+
+    tasks.each do |task|
+      named = task["name"].is_a?(String) && task["name"].match?(/\b(?:verify|verification)\b/i)
+      tagged = Array(task["tags"]).include?(expected_tag)
+      evidence = uri_verifies_service?(task, prefixes, service_names) ||
+                 assert_verifies_service?(task, validated_registers)
+      verified ||= named && tagged && evidence
+      register = task["register"]
+      if register.is_a?(String) && prefixes.any? { |prefix| register.start_with?("#{prefix}_") } &&
+         service_specific_uri?(task, prefixes, service_names)
+        validated_registers << register
+      end
+    end
+    verified
+  rescue Psych::Exception
+    false
+  end
+
+  def contract_has_verification?(contract_path, contract_root, service_name, relative_contract_path, registry_entries)
+    expected_entry = { "service" => service_name, "path" => relative_contract_path }
+    return false unless registry_entries.include?(expected_entry)
+    return false unless owned_file?(contract_path, contract_root)
+    return false unless File.executable?(contract_path) && File.size?(contract_path)
+
+    _stdout, _stderr, status = Open3.capture3("sh", "-n", contract_path)
+    status.success?
   end
 end
