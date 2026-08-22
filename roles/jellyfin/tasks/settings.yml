@@ -15,6 +15,11 @@
   check_mode: false
   no_log: true
 
+# Deliberately not redacted. Unlooped, so the result dict carries only the source
+# text of the failing condition, and every condition reads the encoding document
+# Jellyfin returned, which holds no credential material. Hiding it would leave the
+# operator with a fail_msg that says the document is incomplete without saying which
+# of the 13 pinned encoding keys is missing or mistyped.
 - name: Require complete Jellyfin encoding configuration
   ansible.builtin.assert:
     that:
@@ -35,7 +40,6 @@
       Jellyfin returned an incomplete pinned encoding document; no encoding,
       repository, or plugin state was changed.
   when: jellyfin_settings_phase == 'preflight'
-  no_log: true
 
 - name: Resolve Jellyfin encoding repair requirement
   ansible.builtin.set_fact:

@@ -369,6 +369,10 @@
   when: not ansible_check_mode
   no_log: true
 
+# Deliberately not redacted. Unlooped, so the result dict adds only the source text of
+# the failing condition, and the conditions read the library listing Komga returned plus
+# the owned name, root and settings, none of which is credential material. The fail_msg
+# lists four alternatives and redaction would hide which one applied.
 - name: Require exact reconciled Komga library
   ansible.builtin.assert:
     that:
@@ -389,7 +393,6 @@
       Komga did not authoritatively return one exact Comics library at the managed root with the
       preserved identifier and owned settings.
   when: not ansible_check_mode
-  no_log: true
 
 - name: Verify exact Komga administrator and libraries
   tags: [platform_verify_komga]

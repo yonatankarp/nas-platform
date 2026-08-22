@@ -712,6 +712,15 @@
     fail_msg: Dozzle ntfy dispatcher is absent or drifted.
   when: not ansible_check_mode
 
+# Deliberately not redacted, and the only looped assert in the platform that is. A
+# looped assert echoes the whole item into its result dict, and loop_control.label
+# narrows the task header only, so a loop over anything credential-bearing has to stay
+# hidden. Two things make this one safe. The loop is over dozzle_alerts, a static
+# literal in the role defaults with no interpolation and no inventory override, so the
+# echoed item is an alert rule. And task-level vars do not reach the result dict, so
+# dozzle_verified_rule below discloses nothing of the rule listing the server returned.
+# The assert carries no fail_msg at all, so redaction reduces a failure to "censored"
+# with no indication of which of the eight rule fields drifted.
 - name: Require exactly the four managed enabled Dozzle event alerts
   tags: [platform_verify_dozzle]
   ansible.builtin.assert:
@@ -731,4 +740,3 @@
   loop_control:
     label: "{{ item.name }}"
   when: not ansible_check_mode
-  no_log: true
