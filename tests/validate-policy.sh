@@ -54,6 +54,7 @@ ruby tests/ci/workflow_test.rb
 ruby tests/secrets_docs_test.rb
 tests/mac/integration-context-test.sh
 tests/mac/snapshot-paperless-context-test.sh
+tests/mac/snapshot-paperless-recovery-test.sh
 ruby tests/policy_manifest_test.rb
 python3 tests/deployment_target_validator_test.py
 python3 tests/deployment_release_compare_test.py

@@ -222,6 +222,14 @@ mac_policy_runner_path = File.join(ROOT, "tests", "validate-policy.sh")
 mac_policy_runner = File.file?(mac_policy_runner_path) ? File.read(mac_policy_runner_path) : ""
 check(failures, mac_policy_runner.lines.map(&:strip).include?("tests/mac/hook-coverage-test.sh"),
       "validate-policy.sh must run tests/mac/hook-coverage-test.sh")
+# The Paperless restore recovery path used to start redis and flush the valkey
+# queue in one breath, which raced the socket and failed a clean restore about
+# once in eight CI runs. The wait that fixes it is only provable behaviourally,
+# so the proof has to stay wired in: a race that is no longer exercised is a
+# race that comes back without any check going red.
+check(failures,
+      mac_policy_runner.lines.map(&:strip).include?("tests/mac/snapshot-paperless-recovery-test.sh"),
+      "validate-policy.sh must run tests/mac/snapshot-paperless-recovery-test.sh")
 
 if failures.empty?
   puts "mac policy: all properties hold"
