@@ -104,90 +104,18 @@ check(failures,
       end,
       "Mac runner must export dynamic project/port facts and isolate every Compose project")
 
-# The roster is the authorization tripwire and stays stated here. Deriving it from
-# whichever files exist under tests/expected/ would make adding a service approve
-# itself: drop in an expectations file and the arrival of that file is the only
-# authorization the new service ever needs. So the roster is stated, and the
-# per-service values it authorizes live one file per service, which is why adding
-# a service now edits its own file instead of four tables shared by all nine.
-EXPECTED_SERVICES = %w[
-  audiobookshelf beszel dozzle immich jellyfin komga ntfy paperless-ngx
-  tinymediamanager
-].freeze
-# Not every vault key belongs to a service; this one is platform-wide.
-GLOBAL_VAULT_KEYS = %w[vault_managed_users].freeze
-EMPTY_EXPECTATION = { "role" => nil, "container_cpus" => {}, "vault_keys" => [] }.freeze
-EXPECTATION_FIELDS = %w[container_cpus role vault_keys].freeze
-
-SERVICE_EXPECTATIONS = EXPECTED_SERVICES.to_h do |service_name|
-  relative_path = File.join("tests", "expected", "#{service_name}.yml")
-  path = File.join(ROOT, relative_path)
-  document = begin
-    duplicate_yaml_keys(Psych.parse_stream(File.read(path))).uniq.each do |key|
-      check(failures, false, "#{relative_path} contains duplicate mapping key #{key}")
-    end
-    YAML.safe_load_file(path)
-  rescue Errno::ENOENT
-    check(failures, false, "pinned service expectations are missing: #{relative_path}")
-    nil
-  rescue Psych::Exception => e
-    check(failures, false, "#{relative_path} is malformed: #{e.message.lines.first.strip}")
-    nil
-  end
-
-  unless document.nil?
-    well_shaped = document.is_a?(Hash) && document.keys.sort == EXPECTATION_FIELDS
-    check(failures, well_shaped,
-          "#{relative_path} must define exactly #{EXPECTATION_FIELDS.join(', ')}")
-    document = nil unless well_shaped
-  end
-  [service_name, document || EMPTY_EXPECTATION]
-end.freeze
-
-# These values used to be Ruby literals, where a typo was a NameError at load time.
-# As YAML a mistyped CPU limit parses as a string instead, and a check comparing it
-# against the Compose file would report a mismatch that reads like a Compose bug, so
-# the pinned data is type-checked where it enters rather than where it is consumed.
-SERVICE_EXPECTATIONS.each do |service_name, expectation|
-  relative_path = "tests/expected/#{service_name}.yml"
-  role = expectation.fetch("role")
-  check(failures, role.is_a?(String) && !role.empty?,
-        "#{relative_path} role must be a nonempty string")
-  container_cpus = expectation.fetch("container_cpus")
-  check(failures, container_cpus.is_a?(Hash) && !container_cpus.empty?,
-        "#{relative_path} container_cpus must be a nonempty mapping")
-  Hash(container_cpus.is_a?(Hash) ? container_cpus : {}).each do |container, limit|
-    check(failures, limit.is_a?(Numeric),
-          "#{relative_path} container_cpus.#{container} must be numeric, got #{limit.class}")
-  end
-  vault_keys = expectation.fetch("vault_keys")
-  check(failures, vault_keys.is_a?(Array) && !vault_keys.empty?,
-        "#{relative_path} vault_keys must be a nonempty list")
-  # contract_basename is reused for the vault prefix because paperless-ngx is the one
-  # service whose keys drop the suffix, and it is the same alias. The two namings are
-  # independent concepts that happen to agree, so a change there must be checked here.
-  Array(vault_keys.is_a?(Array) ? vault_keys : []).each do |key|
-    check(failures, key.is_a?(String) && key.start_with?("vault_#{contract_basename(service_name)}_"),
-          "#{relative_path} vault_keys entries must be prefixed for this service, got #{key.inspect}")
-  end
-end
-
-# A file for a service the roster does not name would pin expectations nothing reads,
-# so an extra file is rejected rather than ignored.
-pinned_expectation_names = Dir.glob(File.join(ROOT, "tests", "expected", "*.yml"))
-                              .map { |path| File.basename(path, ".yml") }.sort
-check(failures, pinned_expectation_names == EXPECTED_SERVICES.sort,
-      "tests/expected must hold exactly one file per rostered service " \
-      "(missing: #{(EXPECTED_SERVICES - pinned_expectation_names).join(', ')}; " \
-      "unknown: #{(pinned_expectation_names - EXPECTED_SERVICES).join(', ')})")
+# The roster and the pinned per-service expectations live in PolicySupport because
+# several policy scripts check different properties of the same data. The roster is
+# stated there rather than derived from the filesystem, so a new service still
+# cannot authorize itself by the arrival of its own expectations file.
+SERVICE_EXPECTATIONS, expectation_problems = pinned_service_expectations(ROOT)
+expectation_problems.each { |problem| check(failures, false, problem) }
 
 EXPECTED_SERVICE_MAPPINGS =
   SERVICE_EXPECTATIONS.transform_values { |expectation| { "role" => expectation.fetch("role") } }.freeze
 EXPECTED_CONTAINER_CPUS =
   SERVICE_EXPECTATIONS.transform_values { |expectation| expectation.fetch("container_cpus") }.freeze
-EXPECTED_VAULT_KEYS = (
-  GLOBAL_VAULT_KEYS + SERVICE_EXPECTATIONS.values.flat_map { |expectation| expectation.fetch("vault_keys") }
-).sort.freeze
+EXPECTED_VAULT_KEYS = pinned_vault_keys(SERVICE_EXPECTATIONS)
 REQUIRED_MANIFEST_FIELDS = %w[name role status].freeze
 ALLOWED_SERVICE_STATUSES = %w[planned implemented accepted].freeze
 IMPLEMENTED_STATUSES = %w[implemented accepted].freeze

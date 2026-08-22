@@ -12,7 +12,7 @@ SPEC_PATH = File.join(ROOT, "roles", "vault_contract", "meta", "argument_specs.y
 TASKS_PATH = File.join(ROOT, "roles", "vault_contract", "tasks", "main.yml")
 GENERATOR_PATH = File.join(ROOT, "tests", "generate-ephemeral-vault.sh")
 DOCS_PATH = File.join(ROOT, "docs", "secrets.md")
-POLICY_PATH = File.join(ROOT, "tests", "policy_test.rb")
+POLICY_SUPPORT_PATH = File.join(ROOT, "tests", "policy_support.rb")
 VALIDATE_POLICY_PATH = File.join(ROOT, "tests", "validate-policy.sh")
 PLAIN_TEMPLATE_PATH = File.join(ROOT, "templates", "vault-plain.yml.j2")
 SHARED_VARS_PATH = File.join(ROOT, "inventory", "group_vars", "all", "main.yml")
@@ -483,7 +483,7 @@ ENTRY_FIELDS.each_key do |service|
         "ephemeral generator must include a synthetic #{service} entry")
 end
 
-policy = File.file?(POLICY_PATH) ? File.read(POLICY_PATH) : ""
+policy = File.file?(POLICY_SUPPORT_PATH) ? File.read(POLICY_SUPPORT_PATH) : ""
 # vault_managed_users is platform-wide rather than owned by one service, so it is the
 # one pinned key that stayed in the policy source when the per-service keys moved out
 # to tests/expected/<service>.yml. GLOBAL_VAULT_KEYS is concatenated into
