@@ -54,6 +54,13 @@
     remove_orphans: false
   register: tinymediamanager_retirement
 
+- name: Inspect preserved tinyMediaManager state after retirement
+  tags: [platform_verify_tinymediamanager]
+  ansible.builtin.stat:
+    path: "{{ tinymediamanager_state_root }}"
+    follow: false
+  register: tinymediamanager_post_retirement_state
+
 - name: Report the tinyMediaManager retirement
   ansible.builtin.include_role:
     name: ntfy
@@ -73,9 +80,9 @@
   ansible.builtin.assert:
     that:
       - ansible_check_mode or not tinymediamanager_retired_container.exists
-      - tinymediamanager_preserved_state.stat.exists
-      - tinymediamanager_preserved_state.stat.isdir
-      - not tinymediamanager_preserved_state.stat.islnk
+      - tinymediamanager_post_retirement_state.stat.exists
+      - tinymediamanager_post_retirement_state.stat.isdir
+      - not tinymediamanager_post_retirement_state.stat.islnk
     fail_msg: >-
       tinyMediaManager retirement did not leave the container absent with its
       critical bind-mounted state preserved.

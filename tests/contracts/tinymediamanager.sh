@@ -6,6 +6,8 @@ mode=${1:-static}
 repo_dir=${PLATFORM_CONTRACT_REPO_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)}
 compose=$repo_dir/services/tinymediamanager/compose.yml
 role=$repo_dir/roles/tinymediamanager/tasks/main.yml
+storage=$repo_dir/inventory/group_vars/all/main.yml
+host_prep=$repo_dir/roles/host_prep/tasks/main.yml
 
 fail_contract() {
   printf 'tinyMediaManager contract failed: %s\n' "$1" >&2
@@ -14,11 +16,15 @@ fail_contract() {
 
 [ -f "$role" ] || fail_contract 'roles/tinymediamanager/tasks/main.yml is absent'
 [ -f "$compose" ] || fail_contract 'services/tinymediamanager/compose.yml is absent'
+[ -f "$storage" ] || fail_contract 'inventory/group_vars/all/main.yml is absent'
+[ -f "$host_prep" ] || fail_contract 'roles/host_prep/tasks/main.yml is absent'
 
-ruby -ryaml - "$compose" "$role" <<'RUBY'
-compose_path, role_path = ARGV
+ruby -ryaml - "$compose" "$role" "$storage" "$host_prep" <<'RUBY'
+compose_path, role_path, storage_path, host_prep_path = ARGV
 compose = YAML.safe_load_file(compose_path, aliases: true)
 role_tasks = YAML.safe_load_file(role_path, aliases: true)
+storage_entries = YAML.safe_load_file(storage_path, aliases: true).fetch("nas_storage")
+host_prep_tasks = YAML.safe_load_file(host_prep_path, aliases: true)
 service = compose.fetch("services").fetch("tinymediamanager")
 
 def refuse(message)
@@ -42,6 +48,59 @@ refuse("canonical logging policy differs") unless service.fetch("logging") == {
   "driver" => "json-file", "options" => { "max-size" => "10m", "max-file" => "3" }
 }
 
+preserved_path = "{{ nas_docker_root }}/tinymediamanager/data"
+preserved_entries = storage_entries.select { |entry| entry["path"] == preserved_path }
+refuse("preserved state storage must be declared exactly once") unless preserved_entries.length == 1
+refuse("preserved state storage must be preservation-only") unless
+  preserved_entries.first["preserve_only"] == true
+
+marker_index = host_prep_tasks.index do |task|
+  task["name"] == "Validate preservation-only storage declarations"
+end
+inspect_index = host_prep_tasks.index do |task|
+  task["name"] == "Inspect preservation-only service state directories"
+end
+require_index = host_prep_tasks.index do |task|
+  task["name"] == "Require safe preservation-only service state directories"
+end
+create_index = host_prep_tasks.index { |task| task["name"] == "Create service state directories" }
+refuse("preservation-only state is not validated before ordinary storage creation") unless
+  marker_index && inspect_index && require_index && create_index &&
+  marker_index < inspect_index && inspect_index < require_index && require_index < create_index
+
+marker_assert = host_prep_tasks.fetch(marker_index).fetch("ansible.builtin.assert")
+marker_conditions = Array(marker_assert["that"]).map(&:to_s)
+refuse("preservation-only marker does not fail closed") unless
+  marker_conditions.any? do |condition|
+    condition.include?("item.preserve_only is not defined") && condition.include?("item.preserve_only")
+  end
+
+preservation_inspect = host_prep_tasks.fetch(inspect_index)
+preservation_stat = preservation_inspect.fetch("ansible.builtin.stat")
+refuse("preservation-only inspection path differs") unless preservation_stat["path"] == "{{ item.path }}"
+refuse("preservation-only inspection follows symlinks") unless preservation_stat["follow"] == false
+refuse("preservation-only inspection does not select marked entries") unless
+  preservation_inspect["loop"].to_s.include?("selectattr('preserve_only', 'defined')")
+preservation_register = preservation_inspect["register"]
+refuse("preservation-only inspection is not registered") unless preservation_register.is_a?(String)
+
+preservation_require = host_prep_tasks.fetch(require_index)
+preservation_conditions = Array(
+  preservation_require.dig("ansible.builtin.assert", "that")
+).map(&:to_s)
+%w[exists isdir islnk].each do |property|
+  refuse("preservation-only state does not validate #{property}") unless
+    preservation_conditions.any? { |condition| condition.include?("item.stat.#{property}") }
+end
+refuse("preservation-only state does not reject symlinks") unless
+  preservation_conditions.any? { |condition| condition.include?("not item.stat.islnk") }
+refuse("preservation-only assertion does not consume the fresh inspection") unless
+  preservation_require["loop"].to_s.include?("#{preservation_register}.results")
+
+ordinary_creation = host_prep_tasks.fetch(create_index)
+refuse("ordinary storage creation can create preservation-only paths") unless
+  ordinary_creation["loop"].to_s.include?("rejectattr('preserve_only', 'defined')")
+
 retirement_task = role_tasks.find { |task| task["name"] == "Retire tinyMediaManager without deleting state" }
 abort "tinyMediaManager retirement contract failed: retirement task is absent" unless retirement_task
 retirement_compose = retirement_task["community.docker.docker_compose_v2"]
@@ -57,6 +116,25 @@ expected_compose = {
 expected_compose.each do |key, value|
   refuse("retirement Compose #{key} differs") unless retirement_compose[key] == value
 end
+retirement_index = role_tasks.index(retirement_task)
+
+post_retirement_state_task = role_tasks.find do |task|
+  task["name"] == "Inspect preserved tinyMediaManager state after retirement"
+end
+refuse("fresh post-retirement state inspection is absent") unless post_retirement_state_task
+post_retirement_state_index = role_tasks.index(post_retirement_state_task)
+refuse("preserved state is not inspected after Compose retirement") unless
+  retirement_index < post_retirement_state_index
+post_retirement_stat = post_retirement_state_task["ansible.builtin.stat"]
+refuse("post-retirement state inspection does not use stat") unless post_retirement_stat.is_a?(Hash)
+refuse("post-retirement state inspection path differs") unless
+  post_retirement_stat["path"] == "{{ tinymediamanager_state_root }}"
+refuse("post-retirement state inspection follows symlinks") unless
+  post_retirement_stat["follow"] == false
+post_retirement_state_register = post_retirement_state_task["register"]
+refuse("post-retirement state inspection is not distinctly registered") unless
+  post_retirement_state_register.is_a?(String) &&
+    post_retirement_state_register != "tinymediamanager_preserved_state"
 
 if role_tasks.any? do |task|
      compose_task = task["community.docker.docker_compose_v2"]
@@ -87,6 +165,10 @@ refuse("retirement assertion is absent") unless assertion.is_a?(Hash)
 conditions = Array(assertion["that"]).map(&:to_s)
 refuse("retirement assertion does not inspect the retired container") unless
   conditions.any? { |condition| condition.include?(inspect_register) }
+refuse("retirement assertion does not use fresh preserved state") unless
+  conditions.count { |condition| condition.include?(post_retirement_state_register) } == 3
+refuse("retirement assertion reuses stale preserved state") if
+  conditions.any? { |condition| condition.include?("tinymediamanager_preserved_state") }
 refuse("retirement assertion must tolerate check mode") unless
   conditions.any? { |condition| condition.include?("ansible_check_mode") && condition.match?(/\bor\b/) }
 RUBY

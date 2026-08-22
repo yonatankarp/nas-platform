@@ -304,10 +304,11 @@ end
 def register_contract(root, basename)
   registry = File.join(root, "tests", "contracts", "registry.yml")
   FileUtils.mkdir_p(File.dirname(registry))
-  File.write(registry, YAML.dump(
-    "contracts" => [{ "service" => basename == "paperless" ? "paperless-ngx" : basename,
-                       "path" => "tests/contracts/#{basename}.sh" }]
-  ))
+  service_name = basename == "paperless" ? "paperless-ngx" : basename
+  contracts = File.file?(registry) ? YAML.safe_load_file(registry).fetch("contracts") : []
+  contracts.reject! { |entry| entry["service"] == service_name }
+  contracts << { "service" => service_name, "path" => "tests/contracts/#{basename}.sh" }
+  File.write(registry, YAML.dump("contracts" => contracts))
 end
 
 def implement_paperless(root)
@@ -576,6 +577,65 @@ expect_failure(failures, "Mac storage claims Linux ownership",
   mutate_yaml_file(root, "roles/host_prep/tasks/main.yml") do |tasks|
     task = tasks.find { |entry| entry["name"] == "Create service state directories" }
     task.fetch("ansible.builtin.file")["owner"] = "{{ item.owner | default(omit) }}"
+  end
+end
+
+expect_failure(failures, "tinyMediaManager preservation-only marker removed",
+               "tinyMediaManager storage must remain preservation-only") do |root|
+  mutate_yaml_file(root, "inventory/group_vars/all/main.yml") do |inventory|
+    entry = inventory.fetch("nas_storage").find do |storage|
+      storage["path"] == "{{ nas_docker_root }}/tinymediamanager/data"
+    end
+    entry.delete("preserve_only")
+  end
+end
+
+expect_failure(failures, "preservation-only storage inspected after creation",
+               "host preparation must validate preservation-only storage before ordinary creation") do |root|
+  mutate_yaml_file(root, "roles/host_prep/tasks/main.yml") do |tasks|
+    inspect = tasks.delete_at(tasks.index do |task|
+      task["name"] == "Inspect preservation-only service state directories"
+    end)
+    create_index = tasks.index { |task| task["name"] == "Create service state directories" }
+    tasks.insert(create_index + 1, inspect)
+  end
+end
+
+expect_failure(failures, "preservation-only storage follows symlinks",
+               "host preparation must inspect preservation-only storage without following symlinks") do |root|
+  mutate_yaml_file(root, "roles/host_prep/tasks/main.yml") do |tasks|
+    task = tasks.find do |entry|
+      entry["name"] == "Inspect preservation-only service state directories"
+    end
+    task.fetch("ansible.builtin.stat")["follow"] = true
+  end
+end
+
+expect_failure(failures, "preservation-only directory refusal removed",
+               "host preparation must refuse missing, non-directory, or symlink preservation-only storage") do |root|
+  mutate_yaml_file(root, "roles/host_prep/tasks/main.yml") do |tasks|
+    task = tasks.find do |entry|
+      entry["name"] == "Require safe preservation-only service state directories"
+    end
+    task.fetch("ansible.builtin.assert").fetch("that").delete("not item.stat.islnk")
+  end
+end
+
+expect_failure(failures, "preservation-only storage recreated",
+               "ordinary storage creation must include unmarked entries and exclude preservation-only storage") do |root|
+  mutate_yaml_file(root, "roles/host_prep/tasks/main.yml") do |tasks|
+    task = tasks.find { |entry| entry["name"] == "Create service state directories" }
+    task["loop"] = "{{ nas_storage }}"
+  end
+end
+
+expect_failure(failures, "second tinyMediaManager Compose task added",
+               "tinyMediaManager CPU exception requires exactly one safe retirement Compose task") do |root|
+  mutate_yaml_file(root, "roles/tinymediamanager/tasks/main.yml") do |tasks|
+    tasks << {
+      "name" => "Unexpected second tinyMediaManager Compose removal",
+      "community.docker.docker_compose_v2" => { "state" => "absent" }
+    }
   end
 end
 

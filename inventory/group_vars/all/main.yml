@@ -73,10 +73,11 @@ nas_python_minimum: "3.8"
 # community.docker.docker_compose_v2 documents this floor.
 nas_compose_minimum: "2.18.0"
 
-# Single declarative storage inventory. host_prep creates these, the policy test
-# cross-checks them against the Compose volume sources, and the recovery class
-# drives the disaster-recovery documentation. One source of truth replaces a
-# directory list, a set of chown instructions and a hand-maintained recovery table.
+# Single declarative storage inventory. host_prep creates ordinary entries and
+# validates preservation-only entries, the policy test cross-checks them against
+# Compose volume sources, and the recovery class drives the disaster-recovery
+# documentation. One source of truth replaces a directory list, a set of chown
+# instructions and a hand-maintained recovery table.
 #
 # recovery: critical  irreplaceable service state, must be backed up
 #           user      NAS-managed user files, owned outside this repository
@@ -127,6 +128,7 @@ nas_storage:
     group: "{{ nas_gid }}"
     mode: "0755"
     recovery: critical
+    preserve_only: true
   - path: "{{ nas_media_root }}/Media/Movies"
     mode: "0755"
     recovery: user

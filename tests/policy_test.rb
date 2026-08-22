@@ -745,6 +745,13 @@ check(failures, undeclared_dirs.empty?,
 
 storage = YAML.safe_load_file(File.join(ROOT, "inventory", "group_vars", "all", "main.yml"))
 declared_paths = storage.fetch("nas_storage").map { |entry| entry.fetch("path") }
+tinymediamanager_preserved_storage = storage.fetch("nas_storage").select do |entry|
+  entry["path"] == "{{ nas_docker_root }}/tinymediamanager/data"
+end
+check(failures,
+      tinymediamanager_preserved_storage.length == 1 &&
+        tinymediamanager_preserved_storage.first["preserve_only"] == true,
+      "tinyMediaManager storage must remain preservation-only")
 paperless_postgres_storage = storage.fetch("nas_storage").find do |entry|
   entry["path"] == "{{ nas_docker_root }}/paperless-ngx/postgres"
 end
@@ -835,18 +842,31 @@ manifest_entries.each do |service|
   tasks_source = tasks_owned ? File.read(tasks_path) : ""
   deploys_compose = tasks_source.include?("community.docker.docker_compose_v2:")
   role_tasks = tasks_owned ? Array(YAML.safe_load_file(tasks_path, aliases: true)) : []
+  compose_tasks = role_tasks.select do |task|
+    task.is_a?(Hash) && task["community.docker.docker_compose_v2"].is_a?(Hash)
+  end
+  expected_tinymediamanager_retirement = {
+    "project_src" => "{{ platform_current_dir }}/services/tinymediamanager",
+    "project_name" => "{{ tinymediamanager_compose_project_name }}",
+    "files" => "{{ platform_service_compose_files['tinymediamanager'] }}",
+    "env_files" => ["{{ platform_runtime_dir }}/services/tinymediamanager/.env"],
+    "state" => "absent",
+    "remove_volumes" => false,
+    "remove_orphans" => false
+  }
   retires_tinymediamanager =
     name == "tinymediamanager" &&
-    role_tasks.any? do |task|
-      task.is_a?(Hash) &&
-        task["name"] == "Retire tinyMediaManager without deleting state" &&
-        task.dig("community.docker.docker_compose_v2", "state") == "absent"
-    end
+    compose_tasks.length == 1 &&
+    compose_tasks.first["name"] == "Retire tinyMediaManager without deleting state" &&
+    compose_tasks.first["community.docker.docker_compose_v2"] ==
+      expected_tinymediamanager_retirement
   check(failures,
         !deploys_compose || retires_tinymediamanager ||
           (tasks_source.scan(/name:\s*container_cpu\b/).length == 1 &&
            tasks_source.include?("container_cpu_service_name: #{name}")),
-        "#{name}: role must verify its effective container CPU policy exactly once")
+        name == "tinymediamanager" ?
+          "tinyMediaManager CPU exception requires exactly one safe retirement Compose task" :
+          "#{name}: role must verify its effective container CPU policy exactly once")
   check(failures, declared_paths.any? { |path| path.include?("/#{name}/") || path.end_with?("/#{name}") },
         "#{name}: implemented service has no storage declaration")
 
@@ -1996,6 +2016,60 @@ check(failures, host_prep_file["owner"].to_s.include?("platform_kind == 'nas'") 
                 host_prep_file["owner"].to_s.include?("else omit") &&
                 host_prep_file["group"].to_s.include?("else omit"),
       "host preparation must restrict Linux ownership to the explicit integration capability")
+host_prep_marker_index = host_prep_tasks.index do |task|
+  task["name"] == "Validate preservation-only storage declarations"
+end
+host_prep_inspect_index = host_prep_tasks.index do |task|
+  task["name"] == "Inspect preservation-only service state directories"
+end
+host_prep_require_index = host_prep_tasks.index do |task|
+  task["name"] == "Require safe preservation-only service state directories"
+end
+host_prep_create_index = host_prep_tasks.index do |task|
+  task["name"] == "Create service state directories"
+end
+check(failures,
+      host_prep_marker_index && host_prep_inspect_index && host_prep_require_index &&
+        host_prep_create_index && host_prep_marker_index < host_prep_inspect_index &&
+        host_prep_inspect_index < host_prep_require_index &&
+        host_prep_require_index < host_prep_create_index,
+      "host preparation must validate preservation-only storage before ordinary creation")
+host_prep_marker_conditions = Array(
+  host_prep_marker_index &&
+    host_prep_tasks.fetch(host_prep_marker_index).dig("ansible.builtin.assert", "that")
+).join(" ")
+check(failures,
+      host_prep_marker_conditions.include?("item.preserve_only is not defined") &&
+        host_prep_marker_conditions.include?("item.preserve_only"),
+      "host preparation must reject false preservation-only declarations")
+host_prep_preservation_inspect =
+  host_prep_inspect_index && host_prep_tasks.fetch(host_prep_inspect_index)
+check(failures,
+      host_prep_preservation_inspect&.dig("ansible.builtin.stat", "path") == "{{ item.path }}" &&
+        host_prep_preservation_inspect&.dig("ansible.builtin.stat", "follow") == false &&
+        host_prep_preservation_inspect&.fetch("loop", "").include?(
+          "selectattr('preserve_only', 'defined')"
+        ),
+      "host preparation must inspect preservation-only storage without following symlinks")
+host_prep_preservation_register = host_prep_preservation_inspect&.fetch("register", nil)
+host_prep_preservation_require =
+  host_prep_require_index && host_prep_tasks.fetch(host_prep_require_index)
+host_prep_preservation_conditions = Array(
+  host_prep_preservation_require&.dig("ansible.builtin.assert", "that")
+).join(" ")
+check(failures,
+      %w[item.stat.exists item.stat.isdir not\ item.stat.islnk].all? do |condition|
+        host_prep_preservation_conditions.include?(condition)
+      end &&
+        host_prep_preservation_require&.fetch("loop", "").include?(
+          "#{host_prep_preservation_register}.results"
+        ),
+      "host preparation must refuse missing, non-directory, or symlink preservation-only storage")
+check(failures,
+      host_prep_create&.fetch("loop", "").include?(
+        "rejectattr('preserve_only', 'defined')"
+      ),
+      "ordinary storage creation must include unmarked entries and exclude preservation-only storage")
 # nas_media_root is an env-derived temp path on Mac hosts and reliably contains a
 # dot, so feeding it to a regex test unescaped makes it match sibling directories.
 media_ownership_conditions = Array(

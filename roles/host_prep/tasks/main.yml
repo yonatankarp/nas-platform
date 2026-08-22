@@ -26,6 +26,40 @@
   loop_control:
     label: "{{ item.path }}"
 
+- name: Validate preservation-only storage declarations
+  ansible.builtin.assert:
+    that:
+      - item.preserve_only is not defined or item.preserve_only
+    fail_msg: >-
+      {{ item.path }} has an invalid preservation-only declaration. Omit
+      preserve_only for ordinary storage or set it to true for retained state.
+  loop: "{{ nas_storage }}"
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Inspect preservation-only service state directories
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+    follow: false
+  loop: "{{ nas_storage | selectattr('preserve_only', 'defined') | list }}"
+  loop_control:
+    label: "{{ item.path }}"
+  register: host_prep_preservation_only_storage
+
+- name: Require safe preservation-only service state directories
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isdir
+      - not item.stat.islnk
+    fail_msg: >-
+      Refusing storage preparation because preservation-only state at
+      {{ item.item.path }} is absent or unsafe. Restore the real directory
+      before retrying.
+  loop: "{{ host_prep_preservation_only_storage.results }}"
+  loop_control:
+    label: "{{ item.item.path }}"
+
 - name: Create service state directories
   ansible.builtin.file:
     path: "{{ item.path }}"
@@ -40,6 +74,6 @@
          if (platform_kind == 'nas' or (platform_manage_linux_ownership | bool)) and item.group is defined
          else omit }}
     mode: "{{ item.mode }}"
-  loop: "{{ nas_storage }}"
+  loop: "{{ nas_storage | rejectattr('preserve_only', 'defined') | list }}"
   loop_control:
     label: "{{ item.path }}"
