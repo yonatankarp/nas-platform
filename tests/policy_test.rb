@@ -746,9 +746,6 @@ check(failures,
       paperless_contract.match?(/diagnostic_bytes = stderr\.read.*?bytesize > 4096.*?else\s+diagnostic_bytes/m),
       "Paperless exporter diagnostics must preserve short stderr output")
 
-# The declared storage is checked against what the manifest says is deployed, so
-# the manifest is re-read here rather than shared across scripts.
-manifest_entries = Array(YAML.safe_load_file(File.join(ROOT, "services", "manifest.yml"))["services"])
 manifest_entries.each do |service|
   next unless service.is_a?(Hash)
   next unless IMPLEMENTED_STATUSES.include?(service["status"])
