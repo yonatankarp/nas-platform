@@ -1,6 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require "open3"
+require "tmpdir"
 require "yaml"
 
 ROOT = File.expand_path("..", __dir__)
@@ -176,6 +178,78 @@ def safe_marker_copy?(candidate, expected_owner, expected_group)
     copy.fetch("group", "").to_s.split.join(" ") == expected_group
 end
 
+def require_portable_restore_identity_defaults
+  ansible = File.join(ROOT, ".venv", "bin", "ansible-playbook")
+  refuse("pinned ansible-playbook is unavailable") unless File.executable?(ansible)
+
+  required_secrets = {
+    "vault_immich_admin_email" => "admin@example.invalid",
+    "vault_immich_admin_password" => "fixture-password",
+    "vault_immich_db_name" => "immich",
+    "vault_immich_db_username" => "immich",
+    "vault_immich_db_password" => "fixture-password"
+  }
+  cases = [
+    {
+      "name" => "factless native Mac verification",
+      "platform_kind" => "mac",
+      "platform_manage_linux_ownership" => false,
+      "expected_uid" => 0,
+      "expected_gid" => 0
+    },
+    {
+      "name" => "factful native Mac deployment",
+      "platform_kind" => "mac",
+      "platform_manage_linux_ownership" => false,
+      "ansible_facts" => { "user_uid" => 4242, "user_gid" => 4243 },
+      "expected_uid" => 4242,
+      "expected_gid" => 4243
+    },
+    {
+      "name" => "factless NAS deployment",
+      "platform_kind" => "nas",
+      "platform_manage_linux_ownership" => true,
+      "expected_uid" => 0,
+      "expected_gid" => 0
+    }
+  ]
+
+  Dir.mktmpdir("nas-platform-immich-identity-") do |directory|
+    playbook = cases.map do |fixture|
+      {
+        "name" => fixture.fetch("name"),
+        "hosts" => "localhost",
+        "connection" => "local",
+        "gather_facts" => false,
+        "vars" => required_secrets.merge(
+          fixture.reject { |key, _value| key == "name" },
+          "platform_compose_kind" => fixture.fetch("platform_kind"),
+          "nas_docker_root" => File.join(directory, "docker")
+        ),
+        "roles" => [{ "role" => "immich", "tags" => ["never"] }],
+        "tasks" => [{
+          "name" => "Require the portable Immich restore identity",
+          "ansible.builtin.assert" => {
+            "that" => [
+              "immich_restore_backup_uid | int == expected_uid | int",
+              "immich_restore_backup_gid | int == expected_gid | int"
+            ]
+          },
+          "tags" => ["immich_identity_probe"]
+        }]
+      }
+    end
+    path = File.join(directory, "playbook.yml")
+    File.write(path, YAML.dump(playbook), mode: "w", perm: 0o600)
+    stdout, stderr, status = Open3.capture3(
+      { "ANSIBLE_NOCOLOR" => "1" }, ansible, "-i", "localhost,", path,
+      "--tags", "immich_identity_probe", chdir: ROOT
+    )
+    refuse("portable restore identity defaults failed argument validation:\n#{stdout}#{stderr}") unless
+      status.success?
+  end
+end
+
 classifier_path = File.join(ROOT, "services", "immich", "classify_restore.py")
 restore_path = File.join(ROOT, "roles", "immich", "tasks", "restore.yml")
 integrity_path = File.join(ROOT, "roles", "immich", "tasks", "verify_classifier.yml")
@@ -190,10 +264,10 @@ expected_defaults = {
   "immich_restore_failure_marker" => "{{ nas_docker_root }}/immich/.restore-failed",
   "immich_restore_backup_container_path" => "/immich-backups",
   "immich_restore_backup_uid" =>
-    "{{ ansible_facts.user_uid if platform_kind == 'mac' and not " \
+    "{{ ansible_facts.get('user_uid', 0) if platform_kind == 'mac' and not " \
     "(platform_manage_linux_ownership | bool) else 0 }}",
   "immich_restore_backup_gid" =>
-    "{{ ansible_facts.user_gid if platform_kind == 'mac' and not " \
+    "{{ ansible_facts.get('user_gid', 0) if platform_kind == 'mac' and not " \
     "(platform_manage_linux_ownership | bool) else 0 }}",
   "immich_restore_expected_immich_version" => "3.1.0",
   "immich_restore_expected_postgres_major" => 14,
@@ -205,6 +279,7 @@ expected_defaults.each do |key, value|
   actual = actual.split.join(" ") if actual.is_a?(String) && actual.include?("{{")
   refuse("#{key} default differs") unless actual == value
 end
+require_portable_restore_identity_defaults
 
 argument_specs = YAML.safe_load_file(
   File.join(ROOT, "roles", "immich", "meta", "argument_specs.yml")
