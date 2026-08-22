@@ -187,6 +187,88 @@ def markdown_section(document, heading)
   end.join
 end
 
+def normalized_checklist_items(markdown)
+  items = []
+  current = nil
+  mask_block_contexts(markdown).each_line do |line|
+    if (match = line.match(/\A\s*-\s+\[[ xX]\]\s+(.*)/))
+      items << current if current
+      current = match[1].strip
+    elsif current && line.match?(/\A\s{2,}\S/)
+      current = "#{current} #{line.strip}"
+    elsif !line.strip.empty?
+      items << current if current
+      current = nil
+    end
+  end
+  items << current if current
+  items.map { |item| item.gsub(/\s+/, " ") }
+end
+
+def normalized_document_blocks(markdown)
+  blocks = []
+  current = nil
+  current_kind = nil
+  flush = lambda do
+    blocks << current.gsub(/\s+/, " ").strip if current && !current.strip.empty?
+    current = nil
+    current_kind = nil
+  end
+
+  mask_block_contexts(markdown).each_line do |line|
+    stripped = line.strip
+    if stripped.empty? || stripped.start_with?("#")
+      flush.call
+    elsif (match = line.match(/\A\s*(?:[-+*]|\d+[.)])\s+(.*)/))
+      flush.call
+      current = match[1]
+      current_kind = :list
+    elsif current_kind == :list && line.match?(/\A\s{2,}\S/)
+      current = "#{current} #{stripped}"
+    else
+      flush.call if current_kind == :list
+      current = [current, stripped].compact.join(" ")
+      current_kind = :paragraph
+    end
+  end
+  flush.call
+  blocks
+end
+
+def normalized_prose(markdown)
+  normalized_document_blocks(markdown).join(" ")
+end
+
+def tinymediamanager_instruction_violations(markdown)
+  active_instruction = Regexp.union(
+    /\b(?:start|restart|launch)\b/i,
+    /\b(?:sign|log)\s+in\b/i,
+    /\b(?:open|call|query)\b.*\b(?:UI|API)\b/i,
+    /\b(?:confirm|verify|check|test|exercise)\b.*\b(?:UI|API|login|password)\b/i,
+    /\bAPI password\b.*\b(?:authoriz|authenticat)/i,
+    /\b(?:scan|edit|write)\b.*\b(?:media|metadata|NFO|library|settings)\b/i
+  )
+  negated_instruction = Regexp.union(
+    /\bdo not\b/i,
+    /\bdon't\b/i,
+    /\bmust not\b/i,
+    /\bnever\b/i,
+    /\bno active\b/i,
+    /\bdoes not\b/i,
+    /\bwithout (?:starting|opening|calling|querying|authenticating)\b/i,
+    /\brather than\b/i
+  )
+
+  normalized_document_blocks(markdown).select do |block|
+    block.match?(/tinyMediaManager/i)
+  end.flat_map do |block|
+    block.split(/(?<=[.!?;])\s+/)
+  end.select do |sentence|
+    sentence.match?(active_instruction) &&
+      !sentence.match?(negated_instruction)
+  end
+end
+
 def mask_block_contexts(text)
   fence_masked, = mask_code(text)
   protected_ranges = inline_partners(fence_masked).filter_map do |opening, closing|
@@ -477,6 +559,29 @@ def self_test
   paired_probe = inline_partners("` hidden `")
   unless !escaped_probe.key?(0) && paired_probe[0] == 9
     warn "docs links inline partner self-test failed"
+    exit 1
+  end
+  wrapped_checklist = <<~MARKDOWN
+    - [ ] tinyMediaManager: confirm the container is absent and the bind-mounted
+          state remains preserved.
+  MARKDOWN
+  unless normalized_checklist_items(wrapped_checklist) == [
+    "tinyMediaManager: confirm the container is absent and the bind-mounted state remains preserved."
+  ]
+    warn "docs links wrapped-checklist self-test failed"
+    exit 1
+  end
+  wrapped_affirmative = <<~MARKDOWN
+    tinyMediaManager: confirm the deployed API
+    password still authorizes the client.
+  MARKDOWN
+  if tinymediamanager_instruction_violations(wrapped_affirmative).empty?
+    warn "docs links wrapped tinyMediaManager instruction self-test failed"
+    exit 1
+  end
+  safe_negation = "For tinyMediaManager, do not open its UI or API.\n"
+  unless tinymediamanager_instruction_violations(safe_negation).empty?
+    warn "docs links negated tinyMediaManager instruction self-test failed"
     exit 1
   end
   Dir.mktmpdir("docs-links-test") do |directory|
@@ -817,14 +922,14 @@ if ARGV == ["--self-test"]
   self_test
 else
   failures = check_sources(ROOT, SOURCES)
-  readme_retirement = markdown_section(
-    mask_block_contexts(ROOT.join("README.md").read),
+  readme_retirement = normalized_prose(markdown_section(
+    ROOT.join("README.md").read,
     "## tinyMediaManager retirement checkpoint"
-  )
-  nas_retirement = markdown_section(
-    mask_block_contexts(ROOT.join("docs/getting-started-nas.md").read),
+  ))
+  nas_retirement = normalized_prose(markdown_section(
+    ROOT.join("docs/getting-started-nas.md").read,
     "## tinyMediaManager retirement checkpoint"
-  )
+  ))
   {
     "README retirement checkpoint" => readme_retirement,
     "NAS retirement checkpoint" => nas_retirement
@@ -839,26 +944,101 @@ else
       section.match?(/vault_tinymediamanager_password.*remains.*cleanup release/im)
   end
 
+  retirement_documents = {
+    "README" => ROOT.join("README.md").read,
+    "NAS guide" => ROOT.join("docs/getting-started-nas.md").read,
+    "Mac guide" => ROOT.join("docs/getting-started-mac.md").read,
+    "secrets guide" => ROOT.join("docs/secrets.md").read,
+    "Mac manual review" => ROOT.join("tests/mac/manual-review.md").read
+  }
+  retirement_documents.each do |label, document|
+    prose = normalized_prose(document)
+    failures << "#{label} must identify tinyMediaManager as retired and stopped" unless
+      prose.match?(/tinyMediaManager.*retired.*(?:must remain|remains) stopped/im)
+    failures << "#{label} must identify tinyMediaManager bind-mounted state as preserved" unless
+      prose.match?(/tinyMediaManager.*bind-mounted state.*preserv/im)
+    tinymediamanager_instruction_violations(document).each do |instruction|
+      failures << "#{label} contains an affirmative tinyMediaManager instruction: #{instruction}"
+    end
+  end
+
+  mac_guide = normalized_prose(ROOT.join("docs/getting-started-mac.md").read)
+  failures << "Mac guide must describe eight active services plus the tinyMediaManager retirement proof" unless
+    mac_guide.match?(/eight active services.*tinyMediaManager retirement proof/im)
+  failures << "Mac guide must not claim all nine services run during manual review" if
+    mac_guide.match?(/all nine.*services.*running/im)
+
+  manual_items = normalized_checklist_items(ROOT.join("tests/mac/manual-review.md").read)
+  retirement_item = manual_items.find { |item| item.match?(/tinyMediaManager/i) }
+  failures << "Mac manual review must structurally require the retired container to be absent" unless
+    retirement_item&.match?(/retired.*container.*absent/i)
+  failures << "Mac manual review must structurally require preserved bind-mounted state" unless
+    retirement_item&.match?(/bind-mounted state.*preserv/i)
+
   failures << "NAS retirement checkpoint must document rollback before Radarr and Sonarr deployment" unless
-    nas_retirement.match?(/Before Radarr or Sonarr is deployed.*restore.*role and Compose definitions.*reconverge/im)
+    nas_retirement.match?(/Before Radarr or Sonarr is deployed.*simpler rollback.*converge/im)
   failures << "NAS retirement checkpoint must stop arr writers before post-write rollback" unless
-    nas_retirement.match?(/After.*arr.*written.*Movies or Series.*first stop.*arr writers.*before.*restor.*reconverg.*tinyMediaManager.*concurrent writers/im)
+    nas_retirement.match?(/(?:Radarr|Sonarr).*written.*Movies or Series.*stop both Radarr and Sonarr.*one media writer at a time/im)
   failures << "NAS retirement checkpoint must defer permanent cleanup until the NAS checkpoint" unless
     nas_retirement.match?(/Permanent cleanup.*waits.*NAS.*verif/im)
   failures << "NAS retirement checkpoint must retain Open Subtitles until Bazarr is proven" unless
     nas_retirement.match?(/Open Subtitles remains.*until Bazarr is\s+proven/im)
 
-  manual_review = mask_block_contexts(ROOT.join("tests/mac/manual-review.md").read)
-  failures << "Mac manual review must treat tinyMediaManager as retired and stopped" unless
-    manual_review.match?(/tinyMediaManager.*retired.*remains? stopped/im)
-  failures << "Mac manual review must not request active tinyMediaManager UI, API, scan, or metadata-write checks" if
-    manual_review.match?(/tinyMediaManager.*(?:UI|API|scan|edit metadata|write metadata)/i)
+  required_rollback_guidance = {
+    /ca15db3/ => "name the reviewed pre-retirement source revision",
+    /restore only.*tinyMediaManager role and Compose/im =>
+      "restore only the required tinyMediaManager role and Compose files",
+    /edit only.*tinyMediaManager.*storage declaration/im =>
+      "limit the storage change to the tinyMediaManager declaration",
+    /temporary.*(?:branch|commit)/i => "use a reviewed temporary rollback branch or commit",
+    /(?:do not|must not).*entire platform.*(?:rollback|revision)/im =>
+      "forbid blindly rolling back the entire platform",
+    /(?:pause|disable).*five-minute.*auto-deploy/im =>
+      "pause the five-minute production auto-deployer",
+    /stop.*Radarr.*Sonarr.*verify.*containers.*absent/im =>
+      "stop Radarr and Sonarr and verify both containers absent",
+    /keep.*Radarr.*Sonarr.*stopped.*entire.*tinyMediaManager.*run/im =>
+      "keep arr writers stopped for the entire tinyMediaManager run",
+    /before.*restart.*arr.*stop.*remove.*tinyMediaManager.*verify.*container.*absent/im =>
+      "remove tinyMediaManager before restarting arr writers",
+    /restore.*intended current.*revision.*converge.*re-enable.*auto-deploy/im =>
+      "restore the intended current platform before re-enabling deployment automation"
+  }
+  required_rollback_guidance.each do |pattern, requirement|
+    failures << "NAS retirement checkpoint must #{requirement}" unless nas_retirement.match?(pattern)
+  end
+
+  failures << "NAS guide must scope platform_verify_tinymediamanager to container and state-root safety" unless
+    nas_retirement.match?(/platform_verify_tinymediamanager.*container absence.*state root.*exists.*directory.*not a symlink/im)
+  failures << "NAS guide must say retirement verification does not inspect state contents" unless
+    nas_retirement.match?(/does not.*(?:inspect|verify).*state.*contents/im)
+  failures << "NAS guide must require a read-only prior inventory or snapshot comparison" unless
+    nas_retirement.match?(/read-only.*(?:prior inventory|snapshot).*representative.*(?:expected files|backup)/im)
+  failures << "NAS guide must prohibit recursive hashing of preserved state" unless
+    nas_retirement.match?(/do not recursively hash.*state/im)
+
+  {
+    "README retirement checkpoint" => readme_retirement,
+    "NAS retirement checkpoint" => nas_retirement
+  }.each do |label, section|
+    failures << "#{label} must limit cleanup to repository declarations" unless
+      section.match?(/cleanup release.*repository declarations only/im)
+    failures << "#{label} must prohibit deleting the tinyMediaManager data root or contents" unless
+      section.match?(%r{must not delete.*\{\{ nas_docker_root \}\}/tinymediamanager/data.*contents}im)
+    failures << "#{label} must require a separate backed-up operator decision for later data deletion" unless
+      section.match?(/later data deletion.*separate.*backed-up.*operator decision.*not part of.*retirement/im)
+  end
 
   jellyfin_compose = ROOT.join("services/jellyfin/compose.yml").read
   failures << "Jellyfin media-mount comment must assign adjacent metadata to neutral media writers" unless
     jellyfin_compose.match?(/media writers own adjacent metadata.*Jellyfin remains read-only/im)
   failures << "Jellyfin media-mount comment must not assign metadata ownership to tinyMediaManager" if
     jellyfin_compose.match?(/tinyMediaManager owns metadata/i)
+  jellyfin_defaults = ROOT.join("roles/jellyfin/defaults/main.yml").read
+  failures << "Jellyfin defaults comments must use a neutral external-writer metadata rationale" unless
+    jellyfin_defaults.match?(/preserved adjacent metadata.*external media writers/im)
+  failures << "Jellyfin defaults comments must not assign metadata ownership to tinyMediaManager" if
+    jellyfin_defaults.match?(/tinyMediaManager.*(?:own|fetch|write).*metadata/i)
   if failures.empty?
     puts "docs links: all local targets exist"
   else

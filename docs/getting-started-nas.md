@@ -18,18 +18,74 @@ are neither deleted nor moved by retirement. The
 `vault_tinymediamanager_password` key remains until the cleanup release so a
 deliberate rollback can reuse the preserved configuration.
 
-Before Radarr or Sonarr is deployed, rollback may restore the preserved
-tinyMediaManager role and Compose definitions and reconverge the platform. After
-an arr service has written Movies or Series, first stop all arr writers before
-restoring and reconverging tinyMediaManager; this prevents concurrent writers
-from changing a library at the same time. Record the rollback decision and
-verify the writer state before reconverging.
-
 Permanent cleanup of the role, Compose definitions, vault key, published ports,
 CI coverage, and preserved storage declaration waits for the NAS verification
-checkpoint and a separate cleanup release. This release does not deploy Radarr,
-Sonarr, or Bazarr. Open Subtitles remains configured in Jellyfin until Bazarr is
-proven.
+checkpoint and a separate cleanup release. The cleanup release removes
+repository declarations only; it must not delete
+`{{ nas_docker_root }}/tinymediamanager/data` or its contents. Any later data
+deletion requires a separate, backed-up, explicit operator decision and is not
+part of this retirement. This release does not deploy Radarr, Sonarr, or Bazarr.
+Open Subtitles remains configured in Jellyfin until Bazarr is proven.
+
+### What the retirement verification proves
+
+`platform_verify_tinymediamanager` proves container absence and that the state
+root exists, is a directory, and is not a symlink. It does not inspect or verify
+the state contents. Before declaring the application state preserved, make a
+read-only comparison against a prior inventory or snapshot and confirm a small
+set of representative expected files or backup records. Do not recursively hash
+the state, print configuration contents, or expose credentials in evidence.
+
+### Temporary rollback procedure
+
+The reviewed pre-retirement revision `ca15db3` is the source of the active
+tinyMediaManager definitions. It is not a platform rollback target. Do not roll
+the entire platform back to that revision or blindly restore its complete
+inventory. Use this mutual-exclusion procedure:
+
+1. Record the intended current platform revision. Pause or disable the
+   five-minute production auto-deployer using the procedure under
+   [Automatic deployment from the NAS](#automatic-deployment-from-the-nas):
+   save `crontab -l`, remove only the `NAS platform production auto-deploy`
+   entry with `crontab -e`, and verify that entry is absent. Leave automation
+   disabled throughout the temporary rollback.
+2. From the intended current revision, create a temporary rollback branch.
+   Restore only the tinyMediaManager role and Compose trees from `ca15db3`, then
+   review the matching tinyMediaManager storage declaration so the active role
+   can manage that already-preserved directory. Do not replace the complete
+   inventory file. Review the diff and place this narrow change in a temporary
+   rollback commit:
+
+   ```sh
+   git switch -c ops/tinymediamanager-temporary-rollback
+   git restore --source=ca15db3 -- \
+     roles/tinymediamanager services/tinymediamanager
+   git diff -- roles/tinymediamanager services/tinymediamanager \
+     inventory/group_vars/all/main.yml
+   ```
+
+   Edit only the matching tinyMediaManager storage declaration. The reviewed
+   storage edit removes `preserve_only` only from the existing
+   `{{ nas_docker_root }}/tinymediamanager/data` declaration; it does not add,
+   move, recreate, or delete that directory.
+3. Before Radarr or Sonarr is deployed, the simpler rollback may now check and
+   converge this reviewed temporary commit; there is no arr writer to stop. If
+   Radarr or Sonarr has written Movies or Series, first stop both Radarr and
+   Sonarr using their reviewed orchestration and verify both containers are
+   absent. Keep Radarr and Sonarr stopped for the entire period tinyMediaManager
+   can run. Do not proceed merely because an application UI looks idle.
+4. Check the temporary commit with `--check --diff`, review every change, and
+   then converge it. Confirm that Movies and Series still point to their
+   existing paths. The invariant is one media writer at a time.
+5. Before restarting any arr writer, stop and remove tinyMediaManager without
+   volumes and verify its container is absent. Restore the intended current
+   platform revision and converge it, confirm the retirement verification
+   passes, and only then re-enable the auto-deployer. Radarr and Sonarr must
+   remain stopped until this step is complete.
+
+The temporary branch and commit are rollback evidence, not a new deployment
+baseline. If any container-absence or path check is ambiguous, stop the
+procedure instead of allowing concurrent writers.
 
 ## 1. Prepare the NAS and workstation
 
@@ -278,8 +334,9 @@ ansible-playbook -i inventory/local.yml verify.yml \
   --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE"
 ```
 
-The `platform_verify_tinymediamanager` tag verifies the retirement boundary and
-preserved state; it does not verify a live UI or API.
+The `platform_verify_tinymediamanager` tag applies the bounded checks described
+in [What the retirement verification proves](#what-the-retirement-verification-proves);
+it does not verify configuration contents or a live UI or API.
 
 Only after those three commands pass, install the poller and its single
 five-minute cron entry:

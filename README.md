@@ -170,9 +170,14 @@ preserved deployment can support a deliberate rollback.
 
 Permanent removal of the role, Compose definitions, vault key, ports, CI
 coverage, and preserved storage declaration waits for the NAS verification
-checkpoint and a separate cleanup release. Radarr, Sonarr, and Bazarr are not
-deployed by this release. Open Subtitles remains configured in Jellyfin until
-Bazarr is proven. See the
+checkpoint and a separate cleanup release. That cleanup release removes
+repository declarations only; it must not delete
+`{{ nas_docker_root }}/tinymediamanager/data` or its contents. Any later data
+deletion requires a separate, backed-up, explicit operator decision and is not
+part of this retirement.
+
+Radarr, Sonarr, and Bazarr are not deployed by this release. Open Subtitles
+remains configured in Jellyfin until Bazarr is proven. See the
 [NAS retirement and rollback procedure](docs/getting-started-nas.md#tinymediamanager-retirement-checkpoint)
 before changing any media writer.
 
