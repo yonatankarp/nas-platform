@@ -80,34 +80,17 @@
   when: jellyfin_settings_phase == 'preflight'
   no_log: true
 
-- name: Initialize normalized Jellyfin plugin repository inventory
-  ansible.builtin.set_fact:
-    jellyfin_repository_inventory: []
-    jellyfin_repository_by_normalized_url: {}
-  when: jellyfin_settings_phase == 'preflight'
-  no_log: true
-
-- name: Resolve normalized desired Jellyfin plugin repositories
-  ansible.builtin.set_fact:
-    jellyfin_repository_by_normalized_url: >-
-      {{ jellyfin_repository_by_normalized_url |
-         combine({(item.Url | trim | lower | regex_replace('/+$', '')): item}) }}
-  loop: "{{ jellyfin_plugin_repositories }}"
-  loop_control:
-    label: "{{ item.Name }}"
-  when: jellyfin_settings_phase == 'preflight'
-  no_log: true
-
-- name: Resolve normalized current Jellyfin plugin repositories
+# Normalization and the merge below live in filter_plugins/jellyfin_plugin_repositories.py.
+# The merge is a dictionary lookup with a fallback over a list, which Jinja can
+# only express as a nested loop, and the accumulators that expressed it here left
+# the POST ordering as an accident of task order. The module docstring records
+# the parity rules the loops had, including which of them are deliberate warts.
+- name: Resolve normalized Jellyfin plugin repositories
   ansible.builtin.set_fact:
     jellyfin_repository_inventory: >-
-      {{ jellyfin_repository_inventory + [{
-        'raw': item,
-        'normalized_url': item.Url | trim | lower | regex_replace('/+$', '')
-      }] }}
-  loop: "{{ jellyfin_repositories_before.json | default([]) }}"
-  loop_control:
-    label: jellyfin-plugin-repository
+      {{ jellyfin_repositories_before.json | default([]) | jellyfin_normalized_repositories }}
+    jellyfin_repository_by_normalized_url: >-
+      {{ jellyfin_plugin_repositories | jellyfin_repositories_by_url }}
   when: jellyfin_settings_phase == 'preflight'
   no_log: true
 
@@ -126,41 +109,16 @@
   when: jellyfin_settings_phase == 'preflight'
   no_log: true
 
-- name: Initialize merged Jellyfin plugin repositories
-  ansible.builtin.set_fact:
-    jellyfin_repositories_merged: []
-  when: jellyfin_settings_phase == 'preflight'
-  no_log: true
-
+# Deliberately after the duplicate refusal, not folded into the task above it:
+# the merge is only meaningful once the URLs are known to be distinct, and
+# keeping the order means a duplicate still aborts with the message above.
 - name: Preserve and merge current Jellyfin plugin repositories
   ansible.builtin.set_fact:
     jellyfin_repositories_merged: >-
-      {{ jellyfin_repositories_merged + [
-        item.raw | combine(
-          jellyfin_repository_by_normalized_url[item.normalized_url]
-          if item.normalized_url in jellyfin_repository_by_normalized_url else {})
-      ] }}
-  loop: "{{ jellyfin_repository_inventory }}"
-  loop_control:
-    label: jellyfin-plugin-repository
-  when:
-    - jellyfin_settings_phase == 'preflight'
-    - item.normalized_url not in jellyfin_retired_plugin_repository_urls
-  no_log: true
-
-- name: Append absent Jellyfin plugin repositories
-  ansible.builtin.set_fact:
-    jellyfin_repositories_merged: "{{ jellyfin_repositories_merged + [item] }}"
-  loop: "{{ jellyfin_plugin_repositories }}"
-  loop_control:
-    label: "{{ item.Name }}"
-  vars:
-    jellyfin_desired_repository_url: "{{ item.Url | trim | lower | regex_replace('/+$', '') }}"
-  when:
-    - jellyfin_settings_phase == 'preflight'
-    - >-
-      jellyfin_desired_repository_url not in
-      (jellyfin_repository_inventory | map(attribute='normalized_url') | list)
+      {{ jellyfin_repository_inventory
+         | jellyfin_merged_repositories(jellyfin_plugin_repositories,
+                                       jellyfin_retired_plugin_repository_urls) }}
+  when: jellyfin_settings_phase == 'preflight'
   no_log: true
 
 - name: Resolve Jellyfin repository repair requirement
