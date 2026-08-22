@@ -242,6 +242,15 @@
     state: present
     wait: true
     wait_timeout: 180
+  register: dozzle_deploy
+
+- name: Report the Dozzle deployment
+  ansible.builtin.include_role:
+    name: ntfy
+    tasks_from: deployment_report
+  vars:
+    ntfy_deployment_report_service: Dozzle
+    ntfy_deployment_report_changed: "{{ dozzle_deploy is changed }}"
 
 # Not a handler: handlers run at the end of the play, but the health check and
 # API reconciliation immediately below require the restarted container. Deferring

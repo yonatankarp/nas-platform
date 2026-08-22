@@ -27,6 +27,15 @@
     state: present
     wait: true
     wait_timeout: 180
+  register: komga_deploy
+
+- name: Report the Komga deployment
+  ansible.builtin.include_role:
+    name: ntfy
+    tasks_from: deployment_report
+  vars:
+    ntfy_deployment_report_service: Komga
+    ntfy_deployment_report_changed: "{{ komga_deploy is changed }}"
 
 - name: Verify Komga effective container CPU policy
   ansible.builtin.include_role:

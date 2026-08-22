@@ -43,6 +43,15 @@
     state: present
     wait: true
     wait_timeout: 180
+  register: audiobookshelf_deploy
+
+- name: Report the Audiobookshelf deployment
+  ansible.builtin.include_role:
+    name: ntfy
+    tasks_from: deployment_report
+  vars:
+    ntfy_deployment_report_service: Audiobookshelf
+    ntfy_deployment_report_changed: "{{ audiobookshelf_deploy is changed }}"
 
 - name: Verify Audiobookshelf effective container CPU policy
   ansible.builtin.include_role:

@@ -193,6 +193,15 @@
     state: present
     wait: true
     wait_timeout: 300
+  register: jellyfin_deploy
+
+- name: Report the Jellyfin deployment
+  ansible.builtin.include_role:
+    name: ntfy
+    tasks_from: deployment_report
+  vars:
+    ntfy_deployment_report_service: Jellyfin
+    ntfy_deployment_report_changed: "{{ jellyfin_deploy is changed }}"
 
 - name: Verify Jellyfin effective container CPU policy
   ansible.builtin.include_role:

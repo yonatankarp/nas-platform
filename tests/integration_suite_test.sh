@@ -69,17 +69,17 @@ assert_output 'suite=beszel tags=host_prep,deployment_bundle,ntfy,beszel playboo
   --describe-suite beszel
 assert_output 'suite=dozzle tags=host_prep,deployment_bundle,ntfy,dozzle playbook=site.yml scenarios=true' \
   --describe-suite dozzle
-assert_output 'suite=audiobookshelf tags=host_prep,deployment_bundle,audiobookshelf playbook=site.yml scenarios=true' \
+assert_output 'suite=audiobookshelf tags=host_prep,deployment_bundle,ntfy,audiobookshelf playbook=site.yml scenarios=true' \
   --describe-suite audiobookshelf
-assert_output 'suite=komga tags=host_prep,deployment_bundle,komga playbook=site.yml scenarios=true' \
+assert_output 'suite=komga tags=host_prep,deployment_bundle,ntfy,komga playbook=site.yml scenarios=true' \
   --describe-suite komga
-assert_output 'suite=tinymediamanager tags=host_prep,deployment_bundle,tinymediamanager playbook=site.yml scenarios=true' \
+assert_output 'suite=tinymediamanager tags=host_prep,deployment_bundle,ntfy,tinymediamanager playbook=site.yml scenarios=true' \
   --describe-suite tinymediamanager
-assert_output 'suite=jellyfin tags=host_prep,deployment_bundle,jellyfin playbook=site.yml scenarios=true' \
+assert_output 'suite=jellyfin tags=host_prep,deployment_bundle,ntfy,jellyfin playbook=site.yml scenarios=true' \
   --describe-suite jellyfin
-assert_output 'suite=immich tags=host_prep,deployment_bundle,immich playbook=site.yml scenarios=true' \
+assert_output 'suite=immich tags=host_prep,deployment_bundle,ntfy,immich playbook=site.yml scenarios=true' \
   --describe-suite immich
-assert_output 'suite=paperless tags=host_prep,deployment_bundle,paperless playbook=site.yml scenarios=true' \
+assert_output 'suite=paperless tags=host_prep,deployment_bundle,ntfy,paperless playbook=site.yml scenarios=true' \
   --describe-suite paperless
 assert_output 'suite=full tags= playbook=site.yml scenarios=true' --describe-suite full
 

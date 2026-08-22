@@ -91,13 +91,13 @@ if defined?(ClassifyChanges)
   {
     "roles/beszel/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,beszel",
     "roles/dozzle/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,dozzle",
-    "roles/audiobookshelf/tasks/main.yml" => "host_prep,deployment_bundle,audiobookshelf",
-    "roles/komga/tasks/main.yml" => "host_prep,deployment_bundle,komga",
+    "roles/audiobookshelf/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,audiobookshelf",
+    "roles/komga/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,komga",
     "roles/tinymediamanager/tasks/main.yml" =>
-      "host_prep,deployment_bundle,tinymediamanager",
-    "roles/jellyfin/tasks/main.yml" => "host_prep,deployment_bundle,jellyfin",
-    "roles/immich/tasks/main.yml" => "host_prep,deployment_bundle,immich",
-    "roles/paperless_ngx/tasks/main.yml" => "host_prep,deployment_bundle,paperless"
+      "host_prep,deployment_bundle,ntfy,tinymediamanager",
+    "roles/jellyfin/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,jellyfin",
+    "roles/immich/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,immich",
+    "roles/paperless_ngx/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,paperless"
   }.each do |path, expected_tags|
     service_output = StringIO.new
     ClassifyChanges.write_github_outputs(ClassifyChanges.classify([path]), service_output)
@@ -184,7 +184,7 @@ if defined?(ClassifyChanges)
     idempotence_check=true
     suites=["smoke","paperless","idempotence-check"]
     run_ci=true
-    selected_tags=host_prep,deployment_bundle,paperless
+    selected_tags=host_prep,deployment_bundle,ntfy,paperless
   OUTPUT
         "Paperless-only output must retain its exact tag plan: #{paperless_output.string.inspect}")
 

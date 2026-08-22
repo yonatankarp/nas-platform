@@ -1,0 +1,39 @@
+---
+# One message per service whose containers were actually recreated. The report is
+# published by the controller rather than from inside the container, so a service
+# reports its own deployment without needing a token baked into its image: only
+# dozzle and beszel hold tokens, and only because they alert while nothing else
+# is running.
+#
+# A converge that leaves a service untouched publishes nothing. "Deployed" means
+# Compose replaced something, which is also what keeps a no-op converge silent
+# instead of sending one message per service every run.
+- name: Publish the service deployment report
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ ntfy_port }}/"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ vault_ntfy_deploy_token }}"
+    body_format: json
+    body:
+      topic: "{{ ntfy_deployment_topic }}"
+      title: "{{ ntfy_deployment_report_service }} deployed"
+      message: >-
+        Compose recreated {{ ntfy_deployment_report_service }} at release
+        {{ platform_release_id[:12] }}.
+      # Low, because this is the per-service detail behind the deployment
+      # summary the poller sends at default priority.
+      priority: 2
+      tags: [package]
+    status_code: [200]
+  # A refused publish fails the converge on purpose. It costs nothing: ntfy is
+  # deployed and its publish path verified before any service role runs, so a
+  # sink this task cannot reach has already aborted the play.
+  #
+  # Publishing is not host state, and the converge-every-run model asserts a
+  # second run reports no changes.
+  changed_when: false
+  no_log: true
+  when:
+    - ntfy_deployment_report_changed | bool
+    - not ansible_check_mode

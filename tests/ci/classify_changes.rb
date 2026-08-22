@@ -26,15 +26,18 @@ module ClassifyChanges
   SERVICE_LANES = %w[
     beszel dozzle audiobookshelf komga tinymediamanager jellyfin immich paperless
   ].freeze
+  # ntfy is in every service's tag set because every service role publishes its
+  # own deployment report to it. A converge that leaves the sink out would fail
+  # at the report, after the service itself deployed correctly.
   SERVICE_TAGS = {
     "beszel" => %w[host_prep deployment_bundle ntfy beszel],
     "dozzle" => %w[host_prep deployment_bundle ntfy dozzle],
-    "audiobookshelf" => %w[host_prep deployment_bundle audiobookshelf],
-    "komga" => %w[host_prep deployment_bundle komga],
-    "tinymediamanager" => %w[host_prep deployment_bundle tinymediamanager],
-    "jellyfin" => %w[host_prep deployment_bundle jellyfin],
-    "immich" => %w[host_prep deployment_bundle immich],
-    "paperless" => %w[host_prep deployment_bundle paperless]
+    "audiobookshelf" => %w[host_prep deployment_bundle ntfy audiobookshelf],
+    "komga" => %w[host_prep deployment_bundle ntfy komga],
+    "tinymediamanager" => %w[host_prep deployment_bundle ntfy tinymediamanager],
+    "jellyfin" => %w[host_prep deployment_bundle ntfy jellyfin],
+    "immich" => %w[host_prep deployment_bundle ntfy immich],
+    "paperless" => %w[host_prep deployment_bundle ntfy paperless]
   }.freeze
   SERVICE_NAMES = {
     "beszel" => %w[beszel],

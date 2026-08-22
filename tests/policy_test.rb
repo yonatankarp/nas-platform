@@ -974,6 +974,96 @@ check(failures,
       role_task_files.any? { |p| File.read(p).include?("community.docker.docker_compose_v2") },
       "no role deploys anything through docker_compose_v2")
 
+# Every deployed service reports its own deployment, so adding a tenth service
+# cannot silently ship without one. The report is gated on the Compose result,
+# which is why each deploying task must register: an ungated report would send
+# one message per service on every converge, including the ones that changed
+# nothing.
+deployment_reports_declared = false
+Dir[File.join(ROOT, "roles", "*")].select { |p| File.directory?(p) }.each do |role|
+  name = File.basename(role)
+  task_files = Dir[File.join(role, "tasks", "*.yml")]
+  tasks = task_files.flat_map do |path|
+    parsed = YAML.safe_load_file(path, aliases: true)
+    parsed.is_a?(Array) ? parsed.select { |task| task.is_a?(Hash) } : []
+  end
+  deployments = tasks.select do |task|
+    task["community.docker.docker_compose_v2"].is_a?(Hash) &&
+      task.dig("community.docker.docker_compose_v2", "state") == "present"
+  end
+  next if deployments.empty?
+
+  registers = deployments.map { |task| task["register"] }
+  check(failures, registers.all? { |register| register.is_a?(String) },
+        "role #{name}: every Compose deployment must register its result for the deployment report")
+
+  reports = tasks.select do |task|
+    task.dig("ansible.builtin.include_role", "tasks_from") == "deployment_report" ||
+      task["ansible.builtin.include_tasks"] == "deployment_report.yml"
+  end
+  check(failures, reports.length == 1,
+        "role #{name}: deploys Compose services but declares #{reports.length} deployment reports, not one")
+  next unless reports.length == 1
+
+  deployment_reports_declared = true
+
+  report_vars = reports.first["vars"] || {}
+  check(failures, report_vars["ntfy_deployment_report_service"].to_s.strip != "",
+        "role #{name}: deployment report names no service")
+  gate = report_vars["ntfy_deployment_report_changed"].to_s
+  check(failures, registers.compact.all? { |register| gate.include?(register) },
+        "role #{name}: deployment report ignores a registered Compose deployment")
+end
+
+# The report itself must stay a report: it publishes with the deploy publisher's
+# write-only token to the deployment topic, and claims no host change.
+report_path = File.join(ROOT, "roles/ntfy/tasks/deployment_report.yml")
+if deployment_reports_declared
+  check(failures, File.file?(report_path),
+        "roles/ntfy/tasks/deployment_report.yml is missing but roles report deployments")
+end
+report_tasks = File.file?(report_path) ? YAML.safe_load_file(report_path, aliases: true) : []
+report_task = Array(report_tasks).find { |task| task.is_a?(Hash) && task.key?("ansible.builtin.uri") }
+check(failures, report_task || !deployment_reports_declared,
+      "roles/ntfy/tasks/deployment_report.yml: no uri task publishes the report")
+if report_task
+  request = report_task.fetch("ansible.builtin.uri")
+  check(failures, request["body"].is_a?(Hash) && request["body"]["topic"] == "{{ ntfy_deployment_topic }}",
+        "deployment report must publish to the deployment topic")
+  check(failures, request["url"].to_s.end_with?("/"),
+        "deployment report must POST JSON to the ntfy root, not to a topic path")
+  check(failures, request.dig("headers", "Authorization").to_s.include?("vault_ntfy_deploy_token"),
+        "deployment report must publish with the deploy publisher token")
+  check(failures, report_task["changed_when"] == false && report_task["no_log"] == true,
+        "deployment report must claim no change and must not log its token")
+  check(failures, Array(report_task["when"]).any? { |c| c.to_s.include?("not ansible_check_mode") },
+        "deployment report must not publish under --check")
+end
+
+# Two tables decide which roles a service suite converges: the integration
+# runner's own and the CI classifier's. They must agree, and both must name the
+# alerting sink, because a suite that leaves ntfy out now fails at the service's
+# deployment report rather than at anything the suite is about.
+integration_path = File.join(ROOT, "tests", "integration.sh")
+classifier_path = File.join(ROOT, "tests", "ci", "classify_changes.rb")
+if File.file?(integration_path) && File.file?(classifier_path)
+  suite_tags = File.read(integration_path)
+                   .scan(/^\s*([a-z][a-z0-9-]*)\)\s+fixed_tags=([a-z0-9_,-]*)\s*;;/)
+                   .to_h { |suite, tags| [suite, tags.split(",")] }
+  classifier_tags = File.read(classifier_path)[/SERVICE_TAGS = \{(.*?)\}\.freeze/m].to_s
+                        .scan(/"([a-z0-9_-]+)"\s*=>\s*%w\[([^\]]*)\]/)
+                        .to_h { |lane, tags| [lane, tags.split] }
+  check(failures, !classifier_tags.empty?,
+        "tests/ci/classify_changes.rb: SERVICE_TAGS could not be read")
+  classifier_tags.each do |lane, tags|
+    check(failures, suite_tags[lane] == tags,
+          "integration suite #{lane} converges #{suite_tags[lane].inspect}, " \
+          "CI selects #{tags.inspect}")
+    check(failures, tags.include?("ntfy"),
+          "service lane #{lane} must converge ntfy: its role reports its deployment there")
+  end
+end
+
 # Collections are pinned like every image.
 requirements = YAML.safe_load_file(File.join(ROOT, "requirements.yml"))
 requirements.fetch("collections").each do |collection|

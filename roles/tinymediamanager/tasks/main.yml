@@ -127,6 +127,15 @@
          | selectattr('changed') | list | length > 0 else 'auto' }}
     wait: true
     wait_timeout: 240
+  register: tinymediamanager_deploy
+
+- name: Report the tinyMediaManager deployment
+  ansible.builtin.include_role:
+    name: ntfy
+    tasks_from: deployment_report
+  vars:
+    ntfy_deployment_report_service: tinyMediaManager
+    ntfy_deployment_report_changed: "{{ tinymediamanager_deploy is changed }}"
 
 - name: Verify tinyMediaManager effective container CPU policy
   ansible.builtin.include_role:
