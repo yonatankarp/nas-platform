@@ -1,24 +1,6 @@
 #!/bin/sh
+# Name-only wrapper: the shared plumbing lives in run-contract.sh. The path is
+# kept because the drift hooks and the Mac hook regression tests address it by
+# name, the latter by replacing it with a stub of their own.
 set -eu
-set +x
-
-mac_script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
-mac_repo_dir=$(CDPATH= cd -- "$mac_script_dir/../.." && pwd -P)
-
-: "${PLATFORM_MAC_VAULT_FILE:?PLATFORM_MAC_VAULT_FILE is required}"
-: "${PLATFORM_MAC_VAULT_PASSWORD_FILE:?PLATFORM_MAC_VAULT_PASSWORD_FILE is required}"
-: "${PLATFORM_MEDIA_ROOT:?PLATFORM_MEDIA_ROOT is required}"
-: "${PLATFORM_REPORT_ROOT:?PLATFORM_REPORT_ROOT is required}"
-: "${PLATFORM_PROJECT_NAME:?PLATFORM_PROJECT_NAME is required}"
-: "${PLATFORM_PAPERLESS_PORT:?PLATFORM_PAPERLESS_PORT is required}"
-
-PLATFORM_CONTRACT_VAULT_FILE=$PLATFORM_MAC_VAULT_FILE
-PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=$PLATFORM_MAC_VAULT_PASSWORD_FILE
-case ${PLATFORM_PROOF_PLATFORM:-mac} in
-  integration) PLATFORM_PAPERLESS_WEBSERVER_CONTAINER=paperless_webserver ;;
-  mac) PLATFORM_PAPERLESS_WEBSERVER_CONTAINER=$PLATFORM_PROJECT_NAME-paperless-webserver ;;
-  *) exit 1 ;;
-esac
-export PLATFORM_PAPERLESS_WEBSERVER_CONTAINER
-export PLATFORM_CONTRACT_VAULT_FILE PLATFORM_CONTRACT_VAULT_PASSWORD_FILE
-exec "$mac_repo_dir/tests/contracts/paperless.sh" "$@"
+exec "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)/run-contract.sh" paperless "$@"

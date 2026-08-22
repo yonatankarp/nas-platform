@@ -110,6 +110,11 @@ BASE_FIXTURE_PATHS = %w[
   tests/mac/drift.sh
   tests/mac/fixtures.sh
   tests/mac/lib.sh
+  tests/mac/run-contract.sh
+  tests/mac/hooks/fixtures-seed/00-services.sh
+  tests/mac/hooks/fixtures-persistence/00-services.sh
+  tests/mac/hooks/fixtures-recreate/00-services.sh
+  tests/mac/hooks/verify/30-services.sh
   tests/mac/manual-review.md
   tests/mac/manual-validation-handoff.rb
   tests/mac/manual-validation-runner-test.sh

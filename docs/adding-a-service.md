@@ -90,11 +90,37 @@ tests/policy_manifest_test.rb          EXPECTED_FIXTURE_ROLES
 tests/ci/classify_changes.rb           the CI lane that owns it
 ```
 
-Add a Mac verify hook too, at `tests/mac/hooks/verify/<NN>-<service>.sh`. The
-runner discovers hooks by globbing and only fails when a directory is empty, so a
-missing hook means the Mac lane verifies one service fewer without saying so. The
-`drift`, `fixtures-seed` and `fixtures-persistence` groups are deliberately
-incomplete: ntfy is the alerting sink and has no user data to seed or drift.
+Give the service a Mac hook too. Four of the five hook groups are now one
+table-driven file each, driven from the same registry:
+
+```
+tests/mac/hooks/verify/30-services.sh                one line per service
+tests/mac/hooks/fixtures-seed/00-services.sh         one line per service
+tests/mac/hooks/fixtures-persistence/00-services.sh  one line per service
+tests/mac/hooks/fixtures-recreate/00-services.sh     one line per service
+```
+
+Add the service to each table, or, if its behaviour does not fit the table, give
+it its own `tests/mac/hooks/<group>/<NN>-<service>.sh` and the collapsed hook
+will credit it automatically from the filename. `tests/mac/hooks/drift/` is still
+one file per service throughout, because no two services drift alike.
+
+The runner discovers hooks by globbing and only fails when a group is empty, so
+the collapsed hooks assert their own coverage against
+`tests/contracts/registry.yml` and print an `N of M` line: a service the registry
+knows and no hook runs fails the group instead of being verified one fewer
+without saying so. A service that genuinely has no work in a group needs a named
+exemption in the hook's `mac_assert_service_coverage` call, which is how ntfy,
+the alerting sink with no user data to seed, is accounted for. The Mac lane also
+covers ntfy, which the registry does not list because it has no contract of its
+own; `MAC_UNREGISTERED_SERVICES` in `tests/mac/lib.sh` is where such a service is
+named.
+
+The Mac wrapper for a contract needs no new file: `tests/mac/run-contract.sh`
+resolves any registered service through the registry. Give it the service's port
+variable and any container identities the contract reads, in the table at the
+bottom of that script. A registered service with no row there is refused rather
+than run with an incomplete environment.
 
 ## Where policy checks live
 

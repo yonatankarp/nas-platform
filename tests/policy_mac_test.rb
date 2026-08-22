@@ -24,7 +24,7 @@ end
 # The Mac proof harness is an orchestration contract: each service plugs its
 # fixture, drift, and verification behavior into these stable phases.
 mac_harness_files = %w[
-  lib.sh run.sh cleanup.sh fixtures.sh verify.sh drift.sh report.rb
+  lib.sh run.sh cleanup.sh fixtures.sh verify.sh drift.sh run-contract.sh report.rb
   sanitize-logs.rb manual-review.md manual-validation-handoff.rb
 ]
 mac_harness_files.each do |name|
@@ -186,6 +186,42 @@ check(failures, mac_report.include?("when Hash") && mac_report.include?("when Ar
                 mac_report.include?("diagnostic_locations"),
       "Mac reporter must recursively sanitize structured input into JSON and Markdown")
 
+# The Mac contract wrapper and four of the five hook groups were one file per
+# service until they were driven from tests/contracts/registry.yml. What that
+# collapse can lose is a whole suite, quietly: mac_run_hooks refuses a group with
+# no hook files at all, not a group whose single hook forgot a service. These
+# checks police the guards that replaced the missing-file signal.
+mac_runner_path = File.join(ROOT, "tests", "mac", "run-contract.sh")
+mac_runner = File.file?(mac_runner_path) ? File.read(mac_runner_path) : ""
+check(failures, mac_runner.include?('mac_contract_path=$(mac_registry_contract_path "$mac_service")') &&
+                mac_runner.include?('exec "$mac_repo_dir/$mac_contract_path" "$@"') &&
+                !mac_runner.match?(%r{tests/contracts/\w+\.sh}),
+      "Mac contract runner must resolve every contract through the registry")
+check(failures, mac_runner.include?("usage: run-contract.sh SERVICE PHASE") &&
+                mac_runner.include?('mac_die "Mac contract phase is invalid: $mac_phase"') &&
+                mac_runner.include?(
+                  'mac_die "registered service has no Mac contract environment: $mac_service"'
+                ),
+      "Mac contract runner must refuse an unknown service or phase rather than dispatch nothing")
+check(failures, mac_lib.include?("mac_assert_service_coverage()") &&
+                mac_lib.include?("mac_registry_services()") &&
+                mac_lib.include?("MAC_UNREGISTERED_SERVICES='ntfy'"),
+      "Mac lifecycle must be able to hold a hook group to the contract registry")
+{
+  "fixtures-seed" => "00-services.sh",
+  "fixtures-persistence" => "00-services.sh",
+  "fixtures-recreate" => "00-services.sh",
+  "verify" => "30-services.sh"
+}.each do |group, hook|
+  hook_path = File.join(ROOT, "tests", "mac", "hooks", group, hook)
+  hook_source = File.file?(hook_path) ? File.read(hook_path) : ""
+  check(failures, hook_source.include?("mac_assert_service_coverage #{group} #{hook} "),
+        "Mac #{group} hook must account for every registered service")
+end
+mac_policy_runner_path = File.join(ROOT, "tests", "validate-policy.sh")
+mac_policy_runner = File.file?(mac_policy_runner_path) ? File.read(mac_policy_runner_path) : ""
+check(failures, mac_policy_runner.lines.map(&:strip).include?("tests/mac/hook-coverage-test.sh"),
+      "validate-policy.sh must run tests/mac/hook-coverage-test.sh")
 
 if failures.empty?
   puts "mac policy: all properties hold"

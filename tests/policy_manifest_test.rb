@@ -977,7 +977,8 @@ end
   "Paperless mail reconciliation regression" => "ruby tests/paperless_mail_reconciliation_test.rb",
   "Immich selective helper integrity regression" =>
     "ruby tests/immich_selective_helper_integrity_test.rb",
-  "Mac manual-validation runner regression" => "tests/mac/manual-validation-runner-test.sh"
+  "Mac manual-validation runner regression" => "tests/mac/manual-validation-runner-test.sh",
+  "Mac hook coverage regression" => "tests/mac/hook-coverage-test.sh"
 }.each do |name, command|
   expect_failure(failures, "#{name} removed from policy validation",
                  "validate-policy.sh must run #{command}") do |root|
