@@ -116,6 +116,18 @@ failures << "eight-byte scalar rejection disclosed evidence" unless stdout.empty
 failures << "eight-byte scalar rejection changed the fixed diagnostic" unless
   stderr == "failure evidence contains a vault value\n"
 
+malformed_tag_sentinel = "SyntheticVaultTagMustRemainPrivate"
+stdout, stderr, status = run_scanner(
+  "--- !ruby/object:#{malformed_tag_sentinel} {}\n",
+  "unrelated evidence\n"
+)
+failures << "rejected YAML tag was accepted" if status.success?
+failures << "rejected YAML tag wrote to stdout" unless stdout.empty?
+failures << "rejected YAML tag changed the fixed diagnostic" unless
+  stderr == "encrypted vault contents are invalid\n"
+failures << "rejected YAML tag disclosed its synthetic sentinel" if
+  (stdout + stderr).include?(malformed_tag_sentinel)
+
 stdout, stderr, status = allowlist_contract(SCANNER)
 failures << "scanner does not expose exactly the four approved public database identities" unless
   status.success? && stdout.empty? && stderr.empty?

@@ -35,8 +35,14 @@ def assert_no_vault_secrets(argv)
   )
   abort "encrypted vault could not be read" unless status.success?
 
-  secrets = strings(YAML.safe_load(vault_yaml)).select { |value| value.bytesize >= 8 }
-  vault_yaml.replace("\0" * vault_yaml.bytesize)
+  begin
+    vault = YAML.safe_load(vault_yaml)
+  rescue Psych::Exception
+    abort "encrypted vault contents are invalid"
+  ensure
+    vault_yaml.replace("\0" * vault_yaml.bytesize)
+  end
+  secrets = strings(vault).select { |value| value.bytesize >= 8 }
   evidence_files.each do |evidence_file|
     evidence = File.binread(evidence_file)
     leaked = secrets.any? { |secret| evidence.include?(secret) }
