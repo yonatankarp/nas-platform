@@ -37,6 +37,11 @@ SUITES = {
     environment: ->(repo) { { "PLATFORM_CONTRACT_REPO_DIR" => repo } },
     diagnostic: ->(message) { "Komga contract failed: #{message}" }
   },
+  paperless: {
+    command: ->(repo) { [File.join(repo, "tests", "contracts", "paperless.sh"), "static"] },
+    environment: ->(repo) { { "PLATFORM_CONTRACT_REPO_DIR" => repo } },
+    diagnostic: ->(message) { "Paperless contract failed: #{message}" }
+  },
   media_probes: {
     command: ->(repo) { [RbConfig.ruby, File.join(repo, "tests", "media_managed_users_test.rb")] },
     environment: ->(_repo) { { "MEDIA_MANAGED_USERS_PROBES" => "none" } },
@@ -108,6 +113,7 @@ JELLYFIN_ROLE = "roles/jellyfin/tasks/main.yml"
 JELLYFIN_IDENTITY = "roles/jellyfin/tasks/primary_identity.yml"
 JELLYFIN_SETTINGS = "roles/jellyfin/tasks/settings.yml"
 KOMGA_ROLE = "roles/komga/tasks/main.yml"
+PAPERLESS_SNAPSHOT = "tests/mac/snapshot-paperless.sh"
 
 SUITES.each_key do |suite|
   with_copied_repo do |repo|
@@ -290,6 +296,18 @@ check_rejected(
   failures, :komga, "an opaque database reference in an unscoped task",
   [[KOMGA_ROLE, "    msg: KOMGA_PLAN_CLAIM\n", "    msg: KOMGA_PLAN_CLAIM database.sqlite\n"]],
   "role must not edit an opaque database"
+)
+
+# The exact line the drill carried before the login budget was fixed. The
+# behavioural proof of the budget is tests/mac/snapshot-paperless-drill-throttle-test.sh;
+# this row proves the cheap static half of the pair still rejects the shape, so the
+# assertion cannot rot into one that passes against the broken form too.
+check_rejected(
+  failures, :paperless, "a deletion poll that logs in again on every pass",
+  [[PAPERLESS_SNAPSHOT,
+    "    break if catalogue(drill_token).empty?\n",
+    "    break if catalogue(authenticate(admin_username, admin_password)).empty?\n"]],
+  "Paperless drill poll must reuse the drill token rather than log in again"
 )
 
 check_rejected(

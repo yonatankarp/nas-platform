@@ -369,6 +369,29 @@ refuse("Paperless recovery deadline must not be configurable down to no retry") 
 # arriving again months later with a green suite behind it.
 refuse("Paperless recovery deadline default differs") unless
   snapshot_text.include?(': "${PLATFORM_PAPERLESS_RECOVERY_DEADLINE:=60}"')
+# The drill waits for its deletion to settle by re-reading the catalogue every two
+# seconds for up to two minutes. Authenticating on every pass is thirty POSTs to
+# /api/token/ a minute from inside one loop, and Paperless throttles that endpoint
+# at five a minute by default, so the drill aborted the suite with "POST
+# /api/token/ returned HTTP 429" about ten seconds into the loop, before it
+# reached the restore it exists to prove.
+#
+# The poll is asserted as a whole rather than by looking for a login it must not
+# contain, because the absence of one spelling is satisfied by any rewrite that
+# spells the login differently, and a guard that both the broken and the fixed
+# form satisfy is not a guard. The budget itself is proved behaviourally by
+# tests/mac/snapshot-paperless-drill-throttle-test.sh, which drives the real
+# script against a stub that throttles the way Paperless does; this assertion
+# keeps the shape from being edited back between runs of that proof.
+drill_mutation = snapshot_text.scan(/^if MODE == "drill"\n.*?^end$/m).find do |block|
+  block.include?('request("delete", "/api/documents/')
+end.to_s
+refuse("Paperless drill mutation block is absent") if drill_mutation.empty?
+drill_poll = drill_mutation[/^  loop do\n.*?^  end$/m].to_s
+refuse("Paperless drill deletion poll is absent") if drill_poll.empty?
+refuse("Paperless drill poll must reuse the drill token rather than log in again") unless
+  drill_poll.include?("break if catalogue(drill_token).empty?") &&
+    !drill_poll.include?("authenticate")
 admin_create = role.find { |task| task["name"] == "Create the absent vault Paperless administrator" }
 admin_argv = admin_create.dig("community.docker.docker_compose_v2_exec", "argv")
 refuse("Paperless administrator creation must use the container password environment") unless

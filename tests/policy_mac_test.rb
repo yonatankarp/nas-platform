@@ -230,6 +230,16 @@ check(failures, mac_policy_runner.lines.map(&:strip).include?("tests/mac/hook-co
 check(failures,
       mac_policy_runner.lines.map(&:strip).include?("tests/mac/snapshot-paperless-recovery-test.sh"),
       "validate-policy.sh must run tests/mac/snapshot-paperless-recovery-test.sh")
+# The Paperless rollback drill used to log in on every pass of the poll that waits
+# for its deletion to settle, which is about sixty logins against an endpoint
+# Paperless throttles, and it failed the suite on a 429 rather than on anything
+# about the restore. Whether the throttle is reached depends on what the run
+# before it spent, so the same code passes cold and fails warm; only a stub with a
+# fixed login allowance turns that into something a check can see.
+check(failures,
+      mac_policy_runner.lines.map(&:strip)
+        .include?("tests/mac/snapshot-paperless-drill-throttle-test.sh"),
+      "validate-policy.sh must run tests/mac/snapshot-paperless-drill-throttle-test.sh")
 
 if failures.empty?
   puts "mac policy: all properties hold"
