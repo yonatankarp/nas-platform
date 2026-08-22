@@ -27,8 +27,36 @@ ruby -ryaml - "$compose" "$mac_compose" "$role" "$defaults" "$argument_specs" <<
 compose_path, mac_path, role_path, defaults_path, argument_specs_path = ARGV
 compose = YAML.safe_load_file(compose_path, aliases: true)
 mac = YAML.safe_load_file(mac_path, aliases: true)
-role = File.read(role_path)
-role_tasks = YAML.safe_load_file(role_path, aliases: false)
+
+# block/rescue/always nest their tasks one level deeper, so the task list is
+# flattened before anything looks a name up: an unflattened load would report a
+# required task as missing the moment it moved inside a block.
+def flatten_tasks(tasks)
+  Array(tasks).flat_map do |task|
+    [task] + %w[block rescue always].flat_map do |section|
+      flatten_tasks(task.is_a?(Hash) ? task[section] : nil)
+    end
+  end
+end
+
+# Whole-file string harvest for the absence invariant at the end of this
+# contract. It has to stay unscoped, since a forbidden primitive introduced by
+# any task is a violation, but it no longer trips on a comment that merely
+# names the primitive.
+def deep_strings(node)
+  case node
+  when Hash then node.flat_map { |key, value| [key.to_s] + deep_strings(value) }
+  when Array then node.flat_map { |value| deep_strings(value) }
+  when String then [node]
+  when nil then []
+  else [node.to_s]
+  end
+end
+
+role_tasks = flatten_tasks(YAML.safe_load_file(role_path, aliases: false))
+role_names = role_tasks.filter_map { |task| task["name"] }
+role_at = lambda { |name| role_tasks.index { |task| task["name"] == name } }
+role_task = lambda { |name| role_tasks.find { |task| task["name"] == name } || {} }
 defaults = YAML.safe_load_file(defaults_path)
 argument_specs = YAML.safe_load_file(argument_specs_path)
 service = compose.fetch("services").fetch("komga")
@@ -113,7 +141,7 @@ required_tasks = [
   "Require exactly the managed Komga library"
 ]
 required_tasks.each do |name|
-  abort "Komga contract failed: missing #{name}" unless role.include?("- name: #{name}")
+  abort "Komga contract failed: missing #{name}" unless role_names.include?(name)
 end
 preflight_names = [
   "List Komga libraries for reconciliation",
@@ -121,20 +149,23 @@ preflight_names = [
   "Require valid Komga library candidate schemas"
 ]
 mutation_names = ["Create the managed Komga library", "Repair the managed Komga library"]
-preflight = preflight_names.map { |name| role.index("- name: #{name}") }
-mutations = mutation_names.map { |name| role.index("- name: #{name}") }
+preflight = preflight_names.map(&role_at)
+mutations = mutation_names.map(&role_at)
 abort "Komga contract failed: library preflight must precede every mutation" unless
   preflight.none?(&:nil?) && mutations.none?(&:nil?) && preflight.max < mutations.min
 abort "Komga contract failed: managed root matching is not trailing-slash normalized" unless
-  role.include?("regex_replace('/+$', '')")
+  role_task.call("Resolve normalized Komga library target")
+    .dig("ansible.builtin.set_fact", "komga_library_normalized_root").to_s
+    .include?("regex_replace('/+$', '')")
 abort "Komga contract failed: library updates must preserve the selected identifier" unless
-  role.include?("komga_existing_library.id | urlencode")
-user_mutation = role.index("- name: Reconcile managed Komga users")
+  role_task.call("Repair the managed Komga library").dig("ansible.builtin.uri", "url").to_s
+    .include?("komga_existing_library.id | urlencode")
+user_mutation = role_at.call("Reconcile managed Komga users")
 abort "Komga contract failed: complete library preflight must precede managed-user mutation" unless
   user_mutation && preflight.none?(&:nil?) && preflight.max < user_mutation &&
     user_mutation < mutations.min
 abort "Komga contract failed: role must not edit an opaque database" if
-  role.match?(/sqlite|database\.sqlite|tasks\.sqlite/i)
+  deep_strings(role_tasks).any? { |value| value.match?(/sqlite|database\.sqlite|tasks\.sqlite/i) }
 RUBY
 
 grep -q '^UNRELATED_LIBRARY_ROOT = "/config/\.nas-platform-unmanaged"$' "$0" ||

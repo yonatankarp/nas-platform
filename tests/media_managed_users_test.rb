@@ -28,9 +28,14 @@ SERVICES.each do |service|
     failures << "#{service} managed-user tasks are invalid YAML: #{error.message.lines.first.strip}"
   end
 
-  main = File.read(main_path)
+  # An include has to be declared by a task, not merely mentioned. The source-text
+  # form accepted a commented-out include and a task file named in prose.
+  included_files = nested_tasks(YAML.safe_load_file(main_path, aliases: false)).filter_map do |task|
+    include = task["ansible.builtin.include_tasks"]
+    include.is_a?(Hash) ? include["file"] : include
+  end
   failures << "#{service} main tasks omit managed-user reconciliation" unless
-    main.include?("managed_users.yml")
+    included_files.include?("managed_users.yml")
 end
 
 policy = File.read(VALIDATE_POLICY)

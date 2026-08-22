@@ -80,9 +80,30 @@ def task_name(task)
   task.fetch("name", "")
 end
 
-def nested_task_names(tasks)
+def nested_tasks(tasks)
   Array(tasks).flat_map do |task|
-    [task_name(task)] + %w[block rescue always].flat_map { |key| nested_task_names(task[key]) }
+    [task] + %w[block rescue always].flat_map { |key| nested_tasks(task[key]) }
+  end
+end
+
+def nested_task_names(tasks)
+  nested_tasks(tasks).map { |task| task_name(task) }
+end
+
+# Every scalar mapping entry the parsed task tree carries, at any depth. The
+# absence invariants below need whole-file reach, because a forbidden shape
+# introduced by any task is a violation, but reading the source text instead made
+# a comment that merely mentions the shape indistinguishable from the shape
+# itself, and made an unrelated key that happens to end in the same word match.
+def nested_task_entries(node)
+  case node
+  when Hash
+    node.flat_map do |key, value|
+      (value.is_a?(Hash) || value.is_a?(Array) ? [] : [[key.to_s, value.to_s]]) +
+        nested_task_entries(value)
+    end
+  when Array then node.flat_map { |value| nested_task_entries(value) }
+  else []
   end
 end
 
@@ -291,12 +312,17 @@ def jellyfin_identity_contract_failures
   )
   role_path = File.join(ROOT, "roles", "jellyfin", "tasks", "main.yml")
   identity_path = File.join(ROOT, "roles", "jellyfin", "tasks", "primary_identity.yml")
-  identity = File.file?(identity_path) ? File.read(identity_path) : ""
-  role = File.read(role_path) + identity
   main_tasks = YAML.safe_load_file(role_path, aliases: false)
-  names = nested_task_names(main_tasks)
-  names += nested_task_names(YAML.safe_load_file(identity_path, aliases: false)) if
-    File.file?(identity_path)
+  identity_tasks = File.file?(identity_path) ?
+    YAML.safe_load_file(identity_path, aliases: false) : []
+  # The whole role as parsed task structure, in the same order the two files were
+  # previously concatenated as text. Every assertion below reads this rather than
+  # the source, so a task name in a comment is no longer a task and a byte offset
+  # is no longer a position.
+  role_tasks = nested_tasks(main_tasks) + nested_tasks(identity_tasks)
+  role_urls = role_tasks.filter_map { |task| task.dig("ansible.builtin.uri", "url") }
+  role_task = ->(name) { role_tasks.find { |task| task_name(task) == name } || {} }
+  names = nested_task_names(main_tasks) + nested_task_names(identity_tasks)
   avatar = File.join(ROOT, "roles", "jellyfin", "files", "yonatan-avatar.jpeg")
 
   failures << "Jellyfin primary administrator is not exact" unless
@@ -310,7 +336,9 @@ def jellyfin_identity_contract_failures
     ]
   failures << "Jellyfin must not explicitly manage Collections" if
     defaults.fetch("jellyfin_libraries", []).any? { |library| library["name"] == "Collections" } ||
-      role.match?(/(?:name|collection_type|path):\s*Collections/i)
+      nested_task_entries(role_tasks).any? do |key, value|
+        %w[name collection_type path].include?(key) && value.match?(/\ACollections/i)
+      end
   failures << "Jellyfin approved administrator avatar is absent" unless File.file?(avatar)
   if File.file?(avatar)
     require "digest"
@@ -351,14 +379,25 @@ def jellyfin_identity_contract_failures
   failures << "Jellyfin identity/library preflight does not precede every mutation" unless
     preflight.length == 7 && first_mutation && preflight.max < first_mutation
   failures << "Jellyfin primary rename does not use the supported current endpoint" unless
-    role.include?("/Users?userId=")
+    role_urls.any? { |url| url.include?("/Users?userId=") }
+  primary_rename = Array(identity_tasks).find do |task|
+    task_name(task) == "Reconcile the Jellyfin primary administrator name safely"
+  end || {}
   failures << "Jellyfin primary rename is not guarded by block/rescue recovery" unless
-    role.include?("primary_identity.yml") &&
-      identity.include?("rescue:")
+    nested_tasks(main_tasks).any? do |task|
+      task["ansible.builtin.include_tasks"].to_s.include?("primary_identity.yml")
+    end && Array(primary_rename["block"]).any? && Array(primary_rename["rescue"]).any?
   failures << "Jellyfin temporary recovery match is not byte-exact" unless
-    role.include?("if item.Name == jellyfin_primary_temporary_name else")
+    role_task.call("Resolve Jellyfin primary administrator matches")
+             .dig("ansible.builtin.set_fact", "jellyfin_primary_temporary_matches").to_s
+             .include?("if item.Name == jellyfin_primary_temporary_name else")
+  # The endpoint and the verb have to belong to the same request. Asserting them
+  # independently over the source accepted a DELETE declared by any other task.
+  extra_path_removal = role_task.call("Remove extra paths from Jellyfin managed libraries")
+                                .fetch("ansible.builtin.uri", {})
   failures << "Jellyfin extra library paths do not use the supported removal endpoint" unless
-    role.include?("/Library/VirtualFolders/Paths?name=") && role.include?("method: DELETE")
+    extra_path_removal["url"].to_s.include?("/Library/VirtualFolders/Paths?name=") &&
+      extra_path_removal["method"] == "DELETE"
   create_library = main_tasks.find do |task|
     task_name(task) == "Create absent Jellyfin managed libraries"
   end
@@ -372,11 +411,19 @@ def jellyfin_identity_contract_failures
       refresh_library&.dig("ansible.builtin.uri", "method") == "POST" &&
       refresh_library&.fetch("when", []).any? { |condition| condition.to_s.include?("is changed") }
   failures << "Jellyfin image upload does not use the supported current endpoint" unless
-    role.include?("/UserImage?userId=")
+    role_urls.any? { |url| url.include?("/UserImage?userId=") }
   failures << "Jellyfin server update does not preserve the full configuration" unless
-    role.include?("jellyfin_server_configuration_before.json | combine")
+    role_task.call("Update the Jellyfin server name").dig("ansible.builtin.uri", "body").to_s
+             .include?("jellyfin_server_configuration_before.json | combine")
+  # The digest has to be computed by a stat and compared by an assertion. Two
+  # loose substrings could be satisfied by an unrelated stat and a stray mention.
   failures << "Jellyfin role has no authoritative image byte verification" unless
-    role.include?("jellyfin_admin_avatar_sha256") && role.include?("checksum_algorithm: sha256")
+    role_tasks.any? { |task| task.dig("ansible.builtin.stat", "checksum_algorithm") == "sha256" } &&
+      role_tasks.any? do |task|
+        Array(task.dig("ansible.builtin.assert", "that")).any? do |condition|
+          condition.to_s.match?(/stat\.checksum == jellyfin_admin_avatar_sha256/)
+        end
+      end
 
   failures
 end
