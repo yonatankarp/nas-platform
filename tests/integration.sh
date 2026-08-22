@@ -34,11 +34,12 @@ tags_explicit=false
 describe_suite=false
 explicit_suite=false
 observe_lifecycle=false
+consume_lifecycle=false
 
-if [ "${1:-}" = --observe-lifecycle ]; then
-  observe_lifecycle=true
-  shift
-fi
+case "${1:-}" in
+  --observe-lifecycle) observe_lifecycle=true; shift ;;
+  --consume-lifecycle) consume_lifecycle=true; shift ;;
+esac
 
 if [ "${1:-}" = --list-suites ]; then
   printf '%s\n' 'foundation smoke beszel dozzle audiobookshelf komga tinymediamanager jellyfin immich paperless idempotence-check full'
@@ -211,6 +212,14 @@ emit_lifecycle_plan() {
 if [ "$observe_lifecycle" = true ]; then
   emit_lifecycle_plan
   exit 0
+fi
+
+if [ "$consume_lifecycle" = true ]; then
+  lifecycle_script_dir=$(CDPATH= cd -P "$(dirname "$0")" && pwd -P)
+  . "$lifecycle_script_dir/integration_lifecycle.sh"
+  consume_integration_lifecycle_plan \
+    "$0" --observe-lifecycle --suite "$suite"
+  exit $?
 fi
 
 repo_dir=$(CDPATH= cd -P "$(dirname "$0")/.." && pwd -P)
@@ -771,6 +780,7 @@ docker run --rm \
     run_tinymediamanager_contract() {
       env \
         PLATFORM_KIND=integration \
+        PLATFORM_CONTRACT_SANDBOX_ROOT='$sandbox' \
         PLATFORM_CONTRACT_REPO_DIR=/repo \
         PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\" \
         PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=\"\$vault_password_file\" \
@@ -1319,16 +1329,33 @@ docker run --rm \
       fi
     }
 
+    if lifecycle_plan=\$(
+      /repo/tests/integration.sh --consume-lifecycle --suite "\$INTEGRATION_SUITE"
+    ); then
+      :
+    else
+      lifecycle_status=\$?
+      printf 'integration lifecycle validation failed with status %s\n' \
+        "\$lifecycle_status" >&2
+      exit "\$lifecycle_status"
+    fi
+
     lifecycle_success=false
     while IFS= read -r lifecycle_event; do
       case \$lifecycle_event in
         seed-retirement-fixture)
           run_tinymediamanager_contract seed-retirement-fixture
           env \
+            PLATFORM_KIND=integration \
+            PLATFORM_CONTRACT_SANDBOX_ROOT='$sandbox' \
             PLATFORM_CONTRACT_REPO_DIR=/repo \
             PLATFORM_COMPOSE_KIND=integration \
             PLATFORM_PROJECT_NAME=integration \
+            PLATFORM_DOCKER_ROOT='$sandbox/volume1/Docker' \
+            PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
             PLATFORM_REPORT_ROOT='$sandbox/reports' \
+            PLATFORM_TINYMEDIAMANAGER_WEB_PORT=4000 \
+            PLATFORM_TINYMEDIAMANAGER_API_PORT=7878 \
             ansible-playbook -i localhost, \
               /repo/tests/tinymediamanager_retirement_fixture.yml
           ;;
@@ -1348,7 +1375,7 @@ docker run --rm \
           ;;
       esac
     done <<EOF
-\$(/repo/tests/integration.sh --observe-lifecycle --suite "\$INTEGRATION_SUITE")
+\$lifecycle_plan
 EOF
     [ "\$lifecycle_success" = true ] || {
       printf '%s\n' 'integration lifecycle ended before success' >&2

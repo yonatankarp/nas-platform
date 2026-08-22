@@ -178,21 +178,25 @@ case $mode in
     printf '%s\n' 'tinyMediaManager retirement static contract passed'
     exit 0
     ;;
-  seed-retirement-fixture|assert-retired) ;;
+  seed-retirement-fixture|validate-retirement-fixture|assert-retired) ;;
   *) fail_contract "unknown mode: $mode" ;;
 esac
 
 : "${PLATFORM_DOCKER_ROOT:?}"
 : "${PLATFORM_REPORT_ROOT:?}"
-: "${PLATFORM_TINYMEDIAMANAGER_CONTAINER:=tinymediamanager}"
-if [ "$mode" = seed-retirement-fixture ]; then
+if [ "$mode" = assert-retired ]; then
+  : "${PLATFORM_TINYMEDIAMANAGER_CONTAINER:=tinymediamanager}"
+else
+  : "${PLATFORM_KIND:?}"
+  : "${PLATFORM_CONTRACT_SANDBOX_ROOT:?}"
   : "${PLATFORM_MEDIA_ROOT:?}"
   : "${PLATFORM_COMPOSE_KIND:?}"
   : "${PLATFORM_PROJECT_NAME:?}"
   : "${PLATFORM_TINYMEDIAMANAGER_WEB_PORT:?}"
   : "${PLATFORM_TINYMEDIAMANAGER_API_PORT:?}"
 fi
-export PLATFORM_DOCKER_ROOT PLATFORM_REPORT_ROOT PLATFORM_TINYMEDIAMANAGER_CONTAINER
+export PLATFORM_DOCKER_ROOT PLATFORM_REPORT_ROOT
+export PLATFORM_TINYMEDIAMANAGER_CONTAINER="${PLATFORM_TINYMEDIAMANAGER_CONTAINER:-tinymediamanager}"
 
 exec ruby - "$mode" <<'RUBY'
 require "digest"
@@ -233,6 +237,77 @@ def open_safe_directory(path, label)
   directory
 rescue Errno::ENOENT, Errno::ELOOP, Errno::ENOTDIR, Errno::EACCES
   fail_contract("#{label} is unavailable or unsafe")
+end
+
+def canonical_absolute_path(environment_name)
+  raw_path = ENV.fetch(environment_name)
+  path = Pathname.new(raw_path)
+  fail_contract("#{environment_name} must be a canonical absolute path") unless
+    path.absolute? && path.cleanpath.to_s == raw_path && raw_path != "/"
+  path
+end
+
+def open_verified_absolute_directory(path, label)
+  current = File.open("/", DIRECTORY_OPEN_FLAGS)
+  path.each_filename do |component|
+    child = open_safe_child_directory(current, component, label)
+    current.close
+    current = child
+  end
+  current
+rescue Errno::ENOENT, Errno::ELOOP, Errno::ENOTDIR, Errno::EACCES
+  current&.close
+  fail_contract("#{label} is unavailable or unsafe")
+end
+
+def open_verified_descendant(sandbox, sandbox_path, candidate_path, label)
+  prefix = "#{sandbox_path}#{File::SEPARATOR}"
+  fail_contract("#{label} is outside the disposable sandbox") unless
+    candidate_path.to_s.start_with?(prefix)
+  relative_path = candidate_path.to_s.delete_prefix(prefix)
+  fail_contract("#{label} is not a sandbox descendant") if relative_path.empty?
+  current = sandbox.dup
+  Pathname.new(relative_path).each_filename do |component|
+    child = open_safe_child_directory(current, component, label)
+    current.close
+    current = child
+  end
+  current
+rescue Errno::ENOENT, Errno::ELOOP, Errno::ENOTDIR, Errno::EACCES
+  current&.close
+  fail_contract("#{label} is unavailable or unsafe")
+end
+
+def validate_fixture_identity
+  fail_contract("safe descriptor flags are unavailable") unless
+    File.const_defined?(:NOFOLLOW) && File.const_defined?(:NONBLOCK)
+  fail_contract("PLATFORM_KIND is not disposable") unless
+    %w[test integration mac].include?(ENV.fetch("PLATFORM_KIND"))
+  fail_contract("PLATFORM_COMPOSE_KIND is not disposable") unless
+    %w[integration mac].include?(ENV.fetch("PLATFORM_COMPOSE_KIND"))
+  project_name = ENV.fetch("PLATFORM_PROJECT_NAME")
+  fail_contract("PLATFORM_PROJECT_NAME is unsafe") unless
+    project_name.match?(/\A[A-Za-z0-9][A-Za-z0-9_.-]*\z/)
+  %w[PLATFORM_TINYMEDIAMANAGER_WEB_PORT PLATFORM_TINYMEDIAMANAGER_API_PORT].each do |name|
+    value = ENV.fetch(name)
+    fail_contract("#{name} is unsafe") unless value.match?(/\A[0-9]+\z/) &&
+      value.to_i.between?(1, 65_535)
+  end
+end
+
+def with_validated_fixture_roots
+  validate_fixture_identity
+  sandbox_path = canonical_absolute_path("PLATFORM_CONTRACT_SANDBOX_ROOT")
+  docker_path = canonical_absolute_path("PLATFORM_DOCKER_ROOT")
+  media_path = canonical_absolute_path("PLATFORM_MEDIA_ROOT")
+  report_path = canonical_absolute_path("PLATFORM_REPORT_ROOT")
+  sandbox = open_verified_absolute_directory(sandbox_path, "contract sandbox root")
+  docker_root = open_verified_descendant(sandbox, sandbox_path, docker_path, "Docker root")
+  media_root = open_verified_descendant(sandbox, sandbox_path, media_path, "media root")
+  report_root = open_verified_descendant(sandbox, sandbox_path, report_path, "report root")
+  yield docker_root, media_root, report_root
+ensure
+  [report_root, media_root, docker_root, sandbox].compact.each(&:close)
 end
 
 def in_directory(directory, &block)
@@ -342,7 +417,36 @@ end
 
 case MODE
 when "seed-retirement-fixture"
-  with_contract_directories(create: true) do |state_root, report_root|
+  retirement_environment = {
+    "TZ" => "UTC",
+    "PLATFORM_CONTAINER_CPUSET" => "0",
+    "USER_ID" => "1000",
+    "GROUP_ID" => "100",
+    "TINYMEDIAMANAGER_PASSWORD" => "retirement-fixture-only",
+    "TINYMEDIAMANAGER_DATA_PATH" => File.join(
+      dotenv_value("PLATFORM_DOCKER_ROOT"), "tinymediamanager", "data"
+    ),
+    "TINYMEDIAMANAGER_MOVIES_PATH" => File.join(
+      dotenv_value("PLATFORM_MEDIA_ROOT"), "Media", "Movies"
+    ),
+    "TINYMEDIAMANAGER_SERIES_PATH" => File.join(
+      dotenv_value("PLATFORM_MEDIA_ROOT"), "Media", "Series"
+    ),
+    "TINYMEDIAMANAGER_WEB_HOST_PORT" => dotenv_value(
+      "PLATFORM_TINYMEDIAMANAGER_WEB_PORT"
+    ),
+    "TINYMEDIAMANAGER_API_HOST_PORT" => dotenv_value(
+      "PLATFORM_TINYMEDIAMANAGER_API_PORT"
+    ),
+    "PLATFORM_PROJECT_NAME" => dotenv_value("PLATFORM_PROJECT_NAME")
+  }
+  with_validated_fixture_roots do |docker_root, _media_root, report_root|
+    state_parent = open_safe_child_directory(
+      docker_root, "tinymediamanager", "retirement state parent", create: true
+    )
+    state_root = open_safe_child_directory(
+      state_parent, "data", "retirement state directory", create: true
+    )
     settings_root = open_safe_child_directory(
       state_root, "data", "retirement fixture settings directory", create: true
     )
@@ -352,29 +456,6 @@ when "seed-retirement-fixture"
         settings_root, FIXTURE_SETTINGS_NAME, "existing tinyMediaManager settings"
       )
     end
-    retirement_environment = {
-      "TZ" => "UTC",
-      "PLATFORM_CONTAINER_CPUSET" => "0",
-      "USER_ID" => "1000",
-      "GROUP_ID" => "100",
-      "TINYMEDIAMANAGER_PASSWORD" => "retirement-fixture-only",
-      "TINYMEDIAMANAGER_DATA_PATH" => File.join(
-        dotenv_value("PLATFORM_DOCKER_ROOT"), "tinymediamanager", "data"
-      ),
-      "TINYMEDIAMANAGER_MOVIES_PATH" => File.join(
-        dotenv_value("PLATFORM_MEDIA_ROOT"), "Media", "Movies"
-      ),
-      "TINYMEDIAMANAGER_SERIES_PATH" => File.join(
-        dotenv_value("PLATFORM_MEDIA_ROOT"), "Media", "Series"
-      ),
-      "TINYMEDIAMANAGER_WEB_HOST_PORT" => dotenv_value(
-        "PLATFORM_TINYMEDIAMANAGER_WEB_PORT"
-      ),
-      "TINYMEDIAMANAGER_API_HOST_PORT" => dotenv_value(
-        "PLATFORM_TINYMEDIAMANAGER_API_PORT"
-      ),
-      "PLATFORM_PROJECT_NAME" => dotenv_value("PLATFORM_PROJECT_NAME")
-    }
     environment_contents = retirement_environment.map { |key, value| "#{key}=#{value}" }.join("\n")
     artifacts = [
       [state_root, SENTINEL_NAME, MARKER, "retirement sentinel"],
@@ -409,8 +490,13 @@ when "seed-retirement-fixture"
       )
     end
     settings_root.close
+    state_root.close
+    state_parent.close
   end
   puts "tinyMediaManager retirement fixture prepared"
+when "validate-retirement-fixture"
+  with_validated_fixture_roots { |_docker_root, _media_root, _report_root| nil }
+  puts "tinyMediaManager retirement fixture context is disposable"
 when "assert-retired"
   with_contract_directories do |state_root, report_root|
     _info_stdout, _info_stderr, info_status = run_docker("info", "--format", "{{.ServerVersion}}")

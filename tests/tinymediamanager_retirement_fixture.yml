@@ -4,6 +4,13 @@
   connection: local
   gather_facts: false
   tasks:
+    - name: Validate the disposable test-only retirement fixture context
+      ansible.builtin.command:
+        argv:
+          - "{{ lookup('env', 'PLATFORM_CONTRACT_REPO_DIR') }}/tests/contracts/tinymediamanager.sh"
+          - validate-retirement-fixture
+      changed_when: false
+
     - name: Start the legacy tinyMediaManager fixture
       community.docker.docker_compose_v2:
         project_src: "{{ lookup('env', 'PLATFORM_CONTRACT_REPO_DIR') }}/services/tinymediamanager"

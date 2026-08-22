@@ -88,6 +88,14 @@ for hook in "$script_dir"/hooks/drift/*.sh; do
 done
 
 tinymediamanager_runner=$script_dir/run-tinymediamanager-contract.sh
+grep -qF 'PLATFORM_CONTRACT_SANDBOX_ROOT' "$tinymediamanager_runner" || {
+  printf '%s\n' 'integration-context-error: retirement runner lacks sandbox context' >&2
+  exit 1
+}
+grep -qF 'PLATFORM_TINYMEDIAMANAGER_REPORT_ROOT' "$tinymediamanager_runner" || {
+  printf '%s\n' 'integration-context-error: retirement runner uses the external report root' >&2
+  exit 1
+}
 grep -qF 'seed-retirement-fixture|assert-retired)' "$tinymediamanager_runner" || {
   printf '%s\n' 'integration-context-error: retirement runner accepts the wrong modes' >&2
   exit 1
@@ -106,6 +114,7 @@ tinymediamanager_drift=$script_dir/hooks/drift/50-tinymediamanager.sh
 tinymediamanager_verify=$script_dir/hooks/verify/50-tinymediamanager.sh
 grep -qF 'seed-retirement-fixture' "$tinymediamanager_preconverge"
 grep -qF 'tinymediamanager_retirement_fixture.yml' "$tinymediamanager_preconverge"
+grep -qF 'PLATFORM_CONTRACT_REPO_DIR' "$tinymediamanager_preconverge"
 if [ -e "$tinymediamanager_seed" ] || [ -L "$tinymediamanager_seed" ]; then
   printf '%s\n' 'integration-context-error: retirement fixture remains in post-deploy seeding' >&2
   exit 1
@@ -118,6 +127,7 @@ if grep -Eq 'up[[:space:]].*force-recreate|[[:space:]]run([[:space:]]|$)' \
   exit 1
 fi
 grep -qF 'tinymediamanager_retirement_fixture.yml' "$tinymediamanager_drift"
+grep -qF 'PLATFORM_CONTRACT_REPO_DIR' "$tinymediamanager_drift"
 grep -qF 'TINYMEDIAMANAGER_RETIREMENT_DRIFT_INSTALLED' "$tinymediamanager_drift"
 grep -qF 'verify.yml' "$tinymediamanager_verify"
 grep -qF 'platform_verify_tinymediamanager' "$tinymediamanager_verify"
