@@ -164,4 +164,16 @@ module PolicySupport
   def pinned_vault_keys(documents, global_keys = GLOBAL_VAULT_KEYS)
     (global_keys + documents.values.flat_map { |expectation| expectation.fetch("vault_keys") }).sort.freeze
   end
+
+  # Ansible task lists nest through block/rescue/always, so a policy check that
+  # looks for a task by name has to see through those sections.
+  def flatten_tasks(tasks, flattened = [])
+    Array(tasks).each do |task|
+      next unless task.is_a?(Hash)
+
+      flattened << task
+      %w[block rescue always].each { |section| flatten_tasks(task[section], flattened) }
+    end
+    flattened
+  end
 end

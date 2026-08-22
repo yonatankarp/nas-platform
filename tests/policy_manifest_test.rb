@@ -116,6 +116,8 @@ BASE_FIXTURE_PATHS = %w[
   tests/mac/verify.sh
   tests/policy_test.rb
   tests/policy_support.rb
+  tests/policy_deployment_test.rb
+  tests/policy_mac_test.rb
   tests/policy_vault_test.rb
   tests/run_contracts.rb
   tests/verify_deployment_manifest.rb
@@ -236,6 +238,8 @@ end
 # check that moved to another file must still report, not silently stop mattering.
 POLICY_SCRIPTS = %w[
   tests/policy_test.rb
+  tests/policy_deployment_test.rb
+  tests/policy_mac_test.rb
   tests/policy_vault_test.rb
 ].freeze
 

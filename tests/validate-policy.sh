@@ -24,6 +24,8 @@ set -eu
 policy_checks() {
   cat <<'POLICY_CHECKS'
 ruby tests/policy_test.rb
+ruby tests/policy_deployment_test.rb
+ruby tests/policy_mac_test.rb
 ruby tests/policy_vault_test.rb
 ruby tests/renovate_policy_test.rb
 tests/policy_runner_test.sh
