@@ -1439,6 +1439,7 @@ end
 # matched against embeddings the same stack produced for the fixtures.
 def assert_cpu_machine_learning(token, expected_ids)
   deadline = Time.now + 600
+  recovery_requested = false
   loop do
     response = request(
       "post", "/api/search/smart", token: token, body: { "query" => "a photograph" },
@@ -1459,6 +1460,32 @@ def assert_cpu_machine_learning(token, expected_ids)
         end
       found = items.map { |item| item.fetch("id") }
       return if (expected_ids - found).empty?
+
+      if found.empty? && !recovery_requested
+        _queue_response, queues = request("get", "/api/jobs", token: token)
+        smart_search = queues.is_a?(Hash) && queues["smartSearch"]
+        queue_status = smart_search.is_a?(Hash) && smart_search["queueStatus"]
+        job_counts = smart_search.is_a?(Hash) && smart_search["jobCounts"]
+        count_names = %w[active waiting delayed paused]
+        fail_contract("GET /api/jobs returned an unsupported smartSearch schema") unless
+          queue_status.is_a?(Hash) && job_counts.is_a?(Hash) &&
+          [true, false].include?(queue_status["isActive"]) &&
+          [true, false].include?(queue_status["isPaused"]) &&
+          count_names.all? do |name|
+            job_counts[name].is_a?(Integer) && job_counts[name] >= 0
+          end
+        fail_contract("Immich smartSearch queue is paused") if queue_status["isPaused"]
+
+        queue_idle = !queue_status["isActive"] &&
+                     count_names.sum { |name| job_counts.fetch(name) }.zero?
+        if queue_idle
+          request(
+            "put", "/api/jobs/smartSearch", token: token,
+            body: { "command" => "start", "force" => false }
+          )
+          recovery_requested = true
+        end
+      end
     end
 
     if Time.now >= deadline

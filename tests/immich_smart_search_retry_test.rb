@@ -38,11 +38,39 @@ def complete_response
   )
 end
 
+def idle_smart_search_response(failed: 0)
+  json_response(
+    200,
+    {
+      "smartSearch" => {
+        "queueStatus" => { "isActive" => false, "isPaused" => false },
+        "jobCounts" => {
+          "active" => 0, "completed" => 0, "failed" => failed,
+          "delayed" => 0, "waiting" => 0, "paused" => 0
+        }
+      }
+    }
+  )
+end
+
+def requeue_response
+  json_response(
+    200,
+    {
+      "queueStatus" => { "isActive" => false, "isPaused" => false },
+      "jobCounts" => {
+        "active" => 0, "completed" => 0, "failed" => 1,
+        "delayed" => 0, "waiting" => 1, "paused" => 0
+      }
+    }
+  )
+end
+
 def with_http_responses(responses)
   server = TCPServer.new("127.0.0.1", 0)
   Object.send(:remove_const, :BASE) if Object.const_defined?(:BASE)
   Object.const_set(:BASE, URI("http://127.0.0.1:#{server.local_address.ip_port}"))
-  requests = 0
+  requests = []
   server_thread = Thread.new do
     responses.each do |status, payload|
       begin
@@ -50,34 +78,43 @@ def with_http_responses(responses)
       rescue IOError
         break
       end
+      request_line = socket.gets
+      headers = {}
       while (line = socket.gets)
         break if line == "\r\n"
+
+        name, value = line.split(":", 2)
+        headers[name.downcase] = value.strip if value
       end
-      requests += 1
+      body = socket.read(headers.fetch("content-length", "0").to_i)
+      method, path, = request_line.split
+      requests << { method: method, path: path, body: body }
       socket.write("HTTP/1.1 #{status} Test\r\nContent-Type: application/json\r\n" \
                    "Content-Length: #{payload.bytesize}\r\nConnection: close\r\n\r\n#{payload}")
       socket.close
     end
   end
 
-  yield -> { requests }
+  yield -> { requests.dup }
 ensure
   server&.close
   server_thread&.join(1)
 end
 
 def expect_success(responses, expected_requests:, expected_ids: FIXTURE_IDS)
-  with_http_responses(responses) do |request_count|
+  with_http_responses(responses) do |requests|
     assert_cpu_machine_learning("test-token", expected_ids)
-    raise TestFailure, "made #{request_count.call} requests, expected #{expected_requests}" unless
-      request_count.call == expected_requests
+    actual_requests = requests.call
+    raise TestFailure, "made #{actual_requests.length} requests, expected #{expected_requests}" unless
+      actual_requests.length == expected_requests
+    yield actual_requests if block_given?
   end
 end
 
 def expect_contract_failure(responses, expected_status: nil, expected_requests: 1,
                             expected_ids: FIXTURE_IDS)
   error = nil
-  with_http_responses(responses) do |request_count|
+  with_http_responses(responses) do |requests|
     begin
       assert_cpu_machine_learning("test-token", expected_ids)
     rescue ContractFailure => caught
@@ -89,8 +126,10 @@ def expect_contract_failure(responses, expected_status: nil, expected_requests: 
     if expected_status && !error.message.include?(expected_status.to_s)
       raise TestFailure, "failure omitted HTTP #{expected_status}: #{error.message}"
     end
-    raise TestFailure, "made #{request_count.call} requests, expected #{expected_requests}" unless
-      request_count.call == expected_requests
+    actual_requests = requests.call
+    raise TestFailure, "made #{actual_requests.length} requests, expected #{expected_requests}" unless
+      actual_requests.length == expected_requests
+    yield actual_requests if block_given?
   end
   error
 end
@@ -139,6 +178,20 @@ run.call("partial semantic result") do
   expect_success([partial, complete_response], expected_requests: 2)
 end
 
+run.call("missing embeddings are requeued once") do
+  empty = json_response(200, { "assets" => { "items" => [] } })
+  expect_success(
+    [empty, idle_smart_search_response(failed: 1), requeue_response, complete_response],
+    expected_requests: 4
+  ) do |requests|
+    requeue = requests.fetch(2)
+    raise TestFailure, "recovery did not use PUT /api/jobs/smartSearch" unless
+      requeue.values_at(:method, :path) == ["PUT", "/api/jobs/smartSearch"]
+    raise TestFailure, "recovery did not select only missing embeddings" unless
+      JSON.parse(requeue.fetch(:body)) == { "command" => "start", "force" => false }
+  end
+end
+
 run.call("malformed JSON") do
   expect_contract_failure([[200, "not-json"]])
 end
@@ -164,6 +217,25 @@ run.call("persistent transient deadline") do
       expected_status: 503,
       expected_requests: 2
     )
+    raise TestFailure, "deadline failure omitted the semantic result count" unless
+      error.message.include?("0 embedded asset(s)")
+  end
+end
+
+run.call("persistent missing embeddings requeue only once") do
+  epoch = Time.at(1_700_000_000)
+  empty = json_response(200, { "assets" => { "items" => [] } })
+  with_times(epoch, epoch, epoch + 601) do
+    error = expect_contract_failure(
+      [empty, idle_smart_search_response(failed: 1), requeue_response, empty],
+      expected_requests: 4
+    ) do |requests|
+      requeues = requests.select do |entry|
+        entry.values_at(:method, :path) == ["PUT", "/api/jobs/smartSearch"]
+      end
+      raise TestFailure, "made #{requeues.length} recovery requests, expected one" unless
+        requeues.length == 1
+    end
     raise TestFailure, "deadline failure omitted the semantic result count" unless
       error.message.include?("0 embedded asset(s)")
   end
