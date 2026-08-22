@@ -25,7 +25,6 @@ The follow-up cleanup release removes those declarations only after the NAS has 
 
 **Files:**
 - Modify: `tests/contracts/tinymediamanager.sh`
-- Modify: `tests/integration_suite_test.sh`
 
 - [ ] **Step 1: Replace the static assertions with retirement assertions**
 
@@ -99,24 +98,10 @@ tests/contracts/tinymediamanager.sh static
 
 Expected: FAIL with `retirement task is absent` because the role still deploys tinyMediaManager.
 
-- [ ] **Step 4: Pin the renamed runtime modes in the integration-suite test**
-
-Update `tests/integration_suite_test.sh` so its tinyMediaManager assertions require `seed-retirement-fixture` before convergence and `assert-retired` afterward, and reject the former `seed`, `assert-persistence`, and API-ready flow.
-
-- [ ] **Step 5: Run the routing test and confirm it fails against the old runner**
-
-Run:
+- [ ] **Step 4: Commit the red contract**
 
 ```sh
-tests/integration_suite_test.sh
-```
-
-Expected: FAIL because `tests/integration.sh` still invokes the active-service modes.
-
-- [ ] **Step 6: Commit the red contract**
-
-```sh
-git add -- tests/contracts/tinymediamanager.sh tests/integration_suite_test.sh
+git add -- tests/contracts/tinymediamanager.sh
 git commit -m "test: define tinymediamanager retirement contract"
 ```
 
@@ -281,6 +266,7 @@ git commit -m "feat: retire tinymediamanager without deleting state"
 
 **Files:**
 - Modify: `tests/integration.sh`
+- Modify: `tests/integration_suite_test.sh`
 - Modify: `tests/contracts/tinymediamanager.sh`
 - Create: `tests/tinymediamanager_retirement_fixture.yml`
 - Modify: `tests/mac/hooks/fixtures-seed/50-tinymediamanager.sh`
@@ -290,7 +276,52 @@ git commit -m "feat: retire tinymediamanager without deleting state"
 - Modify: `tests/mac/hooks/verify/50-tinymediamanager.sh`
 - Modify: `tests/mac/run-tinymediamanager-contract.sh`
 
-- [ ] **Step 1: Seed preserved state before convergence**
+- [ ] **Step 1: Write a strict failing lifecycle-routing observation test**
+
+Update `tests/integration_suite_test.sh` to execute a narrow, side-effect-free
+routing-observation mode in `tests/integration.sh`. The test must observe the
+same lifecycle routing plan that production execution uses; it must not parse
+the shell source or emulate Docker, Ansible, controller, or hook behavior.
+
+Require the observation mode to emit an ordered, terminal event stream. For
+the `tinymediamanager` and `full` suites, project the relevant events and
+require this exact order:
+
+```text
+seed-retirement-fixture
+converge
+assert-retired
+success
+```
+
+For unrelated suites, require no tinyMediaManager events and require `success`
+as the terminal event. Reject the legacy `seed`, `run`, and
+`assert-persistence` modes, plus active API-readiness and metadata-readiness
+behavior.
+
+Run:
+
+```sh
+tests/integration_suite_test.sh
+```
+
+Expected: FAIL because the observation seam and retirement routing do not yet
+exist.
+
+- [ ] **Step 2: Add a shared lifecycle dispatch and safe observation mode**
+
+Refactor `tests/integration.sh` so real execution and routing observation both
+consume the same lifecycle dispatch plan. Add only the narrow observation mode
+required by the test: it emits the ordered events that production would
+dispatch, performs none of them, and ends with an explicit `success` event so
+an early exit cannot satisfy the contract.
+
+The observation mode must perform no Docker, Ansible, network, media/state,
+fixed-/tmp, or controller-payload side effects. Any unexpected operation while
+observing must fail closed. Do not maintain a second routing model solely for
+the test.
+
+- [ ] **Step 3: Seed preserved state before convergence**
 
 Change the tinyMediaManager pre-converge fixture call in `tests/integration.sh` to:
 
@@ -303,7 +334,7 @@ PLATFORM_REPORT_ROOT=$report_root \
 
 The seed mode creates `retirement-contract.txt` containing a fixed non-secret marker and stores its digest in the report root.
 
-- [ ] **Step 2: Start the legacy Compose project before the site converge**
+- [ ] **Step 4: Start the legacy Compose project before the site converge**
 
 In the same fixture phase, have `seed-retirement-fixture` create a mode-0600 environment file at `$PLATFORM_REPORT_ROOT/tinymediamanager-retirement.env` with the exact keys required by the current Compose definition:
 
@@ -351,7 +382,7 @@ Invoke the playbook with the repository's pinned Ansible and collection environm
 
 Use the exact project name and environment file that the role will later use. This proves `state: absent` removes a real Compose-owned container rather than merely accepting an already-absent state.
 
-- [ ] **Step 3: Assert retirement after convergence**
+- [ ] **Step 5: Assert retirement after convergence**
 
 Replace active runtime calls with:
 
@@ -365,7 +396,7 @@ PLATFORM_TINYMEDIAMANAGER_CONTAINER=$tinymediamanager_container \
 
 The assertion must run after first converge, clean reconverge, and service recreation phases.
 
-- [ ] **Step 4: Replace active-service Mac hooks**
+- [ ] **Step 6: Replace active-service Mac hooks**
 
 Make the hook responsibilities exact:
 
@@ -378,7 +409,7 @@ Make the hook responsibilities exact:
 
 No hook may remove `{{ nas_docker_root }}/tinymediamanager/data` or Movies/Series fixtures.
 
-- [ ] **Step 5: Run the focused static harness tests**
+- [ ] **Step 7: Run the focused static harness tests**
 
 Run:
 
@@ -391,7 +422,7 @@ ruby tests/policy_test.rb
 
 Expected: all pass.
 
-- [ ] **Step 6: Run the tinyMediaManager integration suite**
+- [ ] **Step 8: Run the tinyMediaManager integration suite**
 
 Run:
 
@@ -401,10 +432,11 @@ tests/integration.sh --suite tinymediamanager site.yml
 
 Expected: fixture starts the old container; first converge removes it; second converge is clean; the sentinel digest remains exact.
 
-- [ ] **Step 7: Commit the lifecycle proof**
+- [ ] **Step 9: Commit the lifecycle proof**
 
 ```sh
-git add -- tests/integration.sh tests/contracts/tinymediamanager.sh \
+git add -- tests/integration.sh tests/integration_suite_test.sh \
+  tests/contracts/tinymediamanager.sh \
   tests/tinymediamanager_retirement_fixture.yml tests/mac
 git commit -m "test: prove tinymediamanager retirement lifecycle"
 ```
