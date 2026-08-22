@@ -55,6 +55,16 @@ if [ -z "$preseed_line" ] || [ -z "$deploy_line" ] || [ "$preseed_line" -ge "$de
   exit 1
 fi
 
+mac_preconverge_hook=$repo_dir/tests/mac/hooks/pre-converge/30-audiobookshelf.sh
+test -x "$mac_preconverge_hook" || {
+  printf '%s\n' 'Audiobookshelf audio test failed: Mac pre-deployment fixture hook is absent' >&2
+  exit 1
+}
+grep -Fq 'run-audiobookshelf-contract.sh" seed-fixture-only' "$mac_preconverge_hook" || {
+  printf '%s\n' 'Audiobookshelf audio test failed: Mac fixture is not prepared before deployment' >&2
+  exit 1
+}
+
 if grep -Eq 'request\([[:space:]]*"post",[[:space:]]*"/api/libraries/.*/scan"' \
     "$repo_dir/tests/contracts/audiobookshelf.sh"; then
   printf '%s\n' 'Audiobookshelf audio test failed: contract still owns a library scan' >&2
