@@ -70,6 +70,25 @@ check(
   "CI must syntax-check install-production-auto-deploy.yml"
 )
 
+# Every service image is digest-pinned in services/*/compose.yml, so the suites job
+# is the only thing in CI that reads a registry. Anonymous ghcr.io pulls are metered
+# per runner IP against a bucket shared with unrelated jobs, which is how a converge
+# that changed nothing gets "toomanyrequests" mid-play. The login is asserted here as
+# well as in tests/ci/workflow_test.rb because this is the suite that runs on a
+# mutated copy of the tree: removing the step has to fail as a policy violation, not
+# merely as a workflow contract edit.
+suites_job = ci.fetch("jobs", {}).fetch("suites", {})
+suites_steps = Array(suites_job["steps"]).select { |step| step.is_a?(Hash) }
+registry_login = suites_steps.find { |step| step["uses"].to_s.start_with?("docker/login-action@") }
+check(failures, !registry_login.nil?,
+      "CI must authenticate to the container registry before pulling service images")
+check(failures, registry_login&.dig("with", "registry") == "ghcr.io",
+      "the CI registry login must target ghcr.io")
+check(failures, registry_login&.dig("with", "password") == "${{ secrets.GITHUB_TOKEN }}",
+      "the CI registry login must use the job's own GITHUB_TOKEN")
+check(failures, suites_job.fetch("permissions", {}) == { "contents" => "read", "packages" => "read" },
+      "the CI suites job must scope its token to contents and packages reads only")
+
 
 validation_script_path = File.join(ROOT, "tests", "validate-policy.sh")
 validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "tests"))
