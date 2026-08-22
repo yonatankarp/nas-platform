@@ -12,6 +12,13 @@
       - "{{ platform_runtime_dir }}/services/jellyfin"
       - "{{ platform_runtime_dir }}/services/jellyfin/.env"
 
+# Deliberately not redacted. On ansible-core 2.21.3 no_log on an assert hides only
+# the result dict; fail_msg prints from the error header either way. Hiding the dict
+# here costs the name of whichever of these 68 conditions failed, under a fail_msg
+# that lists four unrelated causes. The dict cannot carry credential material: the
+# assert is unlooped, so there is no item to echo, and the reported "assertion" field
+# is the source text of the condition rather than its rendered value, so the two
+# vault_jellyfin_opensubtitles_* presence checks disclose their variable names only.
 - name: Require explicit Jellyfin acceleration and plugin policy
   ansible.builtin.assert:
     that:
@@ -112,7 +119,6 @@
     fail_msg: >-
       Jellyfin requires an explicit pinned platform encoding policy, unique managed
       repositories, exact plugin identities, and nonempty Open Subtitles credentials.
-  no_log: true
   vars:
     jellyfin_required_nas_encoding_policy:
       HardwareAccelerationType: qsv
@@ -327,6 +333,11 @@
     - not jellyfin_wizard_completed | bool
   changed_when: true
 
+# Deliberately not redacted, on the same reasoning as the acceleration policy assert
+# above: unlooped, so nothing but condition source text reaches the result dict, and
+# the fail_msg names four unrelated causes without saying which one fired. The only
+# vault reference is the administrator username, which this same task pins to the
+# repository literal 'Yonatan' and so is not secret.
 - name: Require the fixed Jellyfin ownership declaration
   ansible.builtin.assert:
     that:
@@ -341,7 +352,6 @@
       - jellyfin_libraries | map(attribute='path') | list == ['/media/Movies', '/media/Series']
       - jellyfin_libraries | selectattr('name', 'equalto', 'Collections') | list | length == 0
     fail_msg: The fixed Jellyfin identity, branding, avatar, or library declaration differs.
-  no_log: true
 
 - name: Report planned Jellyfin administrator image upload after startup
   ansible.builtin.debug:

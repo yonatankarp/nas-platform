@@ -99,6 +99,13 @@
       {{ immich_restore_classification_command.stdout | from_json }}
   no_log: true
 
+# Deliberately not redacted, matching the treatment the Immich contract already
+# requires of "Require the managed Immich database credential": the credential-bearing
+# probe stays redacted and only its classified category is asserted in the open. This
+# assert reads nothing but that category, whose four keys are a filename, a fresh or
+# existing marker, and two booleans. Unlooped, so no item reaches the result dict, and
+# without it the fail_msg reports an invalid classification without saying which of the
+# ten shape and consistency rules the classifier broke.
 - name: Require exact Immich storage classification
   ansible.builtin.assert:
     that:
@@ -115,7 +122,6 @@
     fail_msg: >-
       Immich restore preflight returned an invalid classification. The
       application server was not started.
-  no_log: true
 
 - name: Resolve the Immich database restore decision
   ansible.builtin.set_fact:
