@@ -2293,6 +2293,92 @@ def exercise_jellyfin_extra_path_recovery(failures)
   end
 end
 
+def exercise_jellyfin_library_rename_identity_refresh(failures)
+  main = YAML.safe_load_file(
+    File.join(ROOT, "roles", "jellyfin", "tasks", "main.yml"), aliases: false
+  )
+  selected_names = [
+    "Initialize normalized Jellyfin library inventory",
+    "Resolve normalized Jellyfin library inventory",
+    "Initialize Jellyfin managed library targets",
+    "Resolve Jellyfin managed library targets",
+    "Refuse unsafe Jellyfin managed library path representation",
+    "Refuse ambiguous Jellyfin managed library ownership",
+    "Rename adopted Jellyfin managed libraries",
+    "Wait for renamed Jellyfin managed library identities",
+    "Refresh Jellyfin managed library targets after renames",
+    "Refuse unsafe refreshed Jellyfin managed library identity",
+    "Repair Jellyfin managed library options"
+  ]
+  tasks = main.select { |task| selected_names.include?(task_name(task)) }
+  old_id = "1" * 32
+  new_id = "2" * 32
+  old_library = {
+    "Name" => "Movies Drifted", "ItemId" => old_id, "CollectionType" => "movies",
+    "Locations" => ["/media/Movies"],
+    "LibraryOptions" => {
+      "PathInfos" => [{ "Path" => "/media/Movies" }], "EnableRealtimeMonitor" => false
+    }
+  }
+  new_library = Marshal.load(Marshal.dump(old_library)).merge(
+    "Name" => "Movies", "ItemId" => new_id
+  )
+  state = { renamed: false, observations: 0, malformed: false }
+  responder = lambda do |request|
+    uri = URI("http://fixture#{request.fetch('target')}")
+    case [request["method"], uri.path]
+    when ["POST", "/Library/VirtualFolders/Name"]
+      state[:renamed] = true
+      [204, nil]
+    when ["GET", "/Library/VirtualFolders"]
+      state[:observations] += 1
+      observed = Marshal.load(Marshal.dump(new_library))
+      if state[:malformed]
+        observed["LibraryOptions"]["PathInfos"] = [
+          { "Path" => "/media/Movies" }, { "Path" => "/media/Movies/" }
+        ]
+      end
+      [200, [state[:observations] == 1 ? old_library : observed]]
+    when ["POST", "/Library/VirtualFolders/LibraryOptions"]
+      if request.dig("json", "Id") == new_id
+        new_library["LibraryOptions"] = request.fetch("json").fetch("LibraryOptions")
+        [204, nil]
+      else
+        [404, {}]
+      end
+    else
+      [500, {}]
+    end
+  end
+  with_http_service(responder) do |port, requests|
+    variables = {
+      "jellyfin_api" => "http://127.0.0.1:#{port}",
+      "jellyfin_client_header" => "MediaBrowser Fixture",
+      "jellyfin_reconcile_token" => "admin-token",
+      "jellyfin_libraries_before" => { "json" => [old_library] },
+      "jellyfin_libraries" => [
+        { "name" => "Movies", "collection_type" => "movies", "path" => "/media/Movies" }
+      ],
+      "jellyfin_library_options" => { "EnableRealtimeMonitor" => true }
+    }
+    stdout, stderr, status = run_playbook(tasks, variables)
+    failures << "Jellyfin renamed-library identity refresh failed: #{failure_tail(stdout + stderr)}" unless
+      status.success?
+    option_ids = requests.filter_map do |request|
+      request.dig("json", "Id") if
+        request["method"] == "POST" && request["target"] == "/Library/VirtualFolders/LibraryOptions"
+    end
+    failures << "Jellyfin renamed-library repair reused its stale ItemId" unless option_ids == [new_id]
+    failures << "Jellyfin renamed-library identity was not polled to completion" unless
+      state[:renamed] && state[:observations] >= 2
+
+    state.update(renamed: false, observations: 0, malformed: true)
+    malformed_stdout, malformed_stderr, malformed_status = run_playbook(tasks, variables)
+    failures << "Jellyfin malformed refreshed library identity was accepted: #{failure_tail(malformed_stdout + malformed_stderr)}" if
+      malformed_status.success?
+  end
+end
+
 failures = []
 failures.concat(jellyfin_identity_contract_failures)
 
@@ -2385,6 +2471,8 @@ if ARGV.empty?
     exercise_jellyfin_primary_preflight(failures) if
       selected_probes.intersect?(%w[all jellyfin_identity])
     exercise_jellyfin_extra_path_recovery(failures) if
+      selected_probes.intersect?(%w[all jellyfin_libraries])
+    exercise_jellyfin_library_rename_identity_refresh(failures) if
       selected_probes.intersect?(%w[all jellyfin_libraries])
     exercise_jellyfin_library_shape_preflight(failures) if
       selected_probes.intersect?(%w[all jellyfin_libraries])

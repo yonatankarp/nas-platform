@@ -1026,6 +1026,155 @@
   changed_when: true
   no_log: true
 
+# Jellyfin 10.11 can return from a virtual-folder rename before the replacement
+# CollectionFolder (and its path-derived ItemId) is visible. Do not carry the
+# pre-rename identity into an ItemId-scoped mutation.
+- name: Wait for renamed Jellyfin managed library identities
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Library/VirtualFolders"
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_reconcile_token }}"'
+    status_code: [200]
+    return_content: true
+    timeout: 5
+  loop: "{{ jellyfin_library_targets | default([]) }}"
+  loop_control:
+    label: "{{ item.desired.name }}"
+  when:
+    - not ansible_check_mode
+    - item.path_matches | length == 1
+    - item.path_matches[0].raw.Name != item.desired.name
+  register: jellyfin_library_identity_observations
+  until:
+    - jellyfin_library_identity_observation.json | default(none) | type_debug == 'list'
+    - jellyfin_library_identity_path_matches | length == 1
+    - jellyfin_library_identity_name_matches | length == 1
+    - >-
+      jellyfin_library_identity_name_matches[0].ItemId | default('') | string ==
+      jellyfin_library_identity_match.ItemId | default('') | string
+    - jellyfin_library_identity_match.Name | default(none) is string
+    - jellyfin_library_identity_match.Name == item.desired.name
+    - jellyfin_library_identity_match.CollectionType | default(none) is string
+    - jellyfin_library_identity_match.CollectionType == item.desired.collection_type
+    - >-
+      jellyfin_library_identity_match.ItemId | default('') | string
+      is match('^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$')
+    - jellyfin_library_identity_match.Locations | default(none) | type_debug == 'list'
+    - >-
+      jellyfin_library_identity_match.Locations | select('string') | list | length ==
+      jellyfin_library_identity_match.Locations | length
+    - jellyfin_library_identity_match.LibraryOptions | default(none) is mapping
+    - >-
+      jellyfin_library_identity_match.LibraryOptions.PathInfos |
+      default(none) | type_debug == 'list'
+  retries: 20
+  delay: 1
+  vars:
+    jellyfin_library_identity_observation: "{{ jellyfin_library_identity_observations }}"
+    jellyfin_library_identity_path_matches: >-
+      {{ jellyfin_library_identity_observation.json | default([]) |
+         select('mapping') | selectattr('Locations', 'defined') |
+         selectattr('Locations', 'contains', item.desired.path) | list }}
+    jellyfin_library_identity_name_matches: >-
+      {{ jellyfin_library_identity_observation.json | default([]) |
+         select('mapping') | selectattr('Name', 'defined') |
+         selectattr('Name', 'equalto', item.desired.name) | list }}
+    jellyfin_library_identity_match: >-
+      {{ jellyfin_library_identity_path_matches | first | default({}) }}
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Refresh Jellyfin managed library targets after renames
+  ansible.builtin.set_fact:
+    jellyfin_library_targets: >-
+      {{ jellyfin_library_targets[:ansible_loop.index0] +
+         [item | combine({
+           'path_matches': [jellyfin_refreshed_library_inventory],
+           'name_matches': [jellyfin_refreshed_library_inventory],
+           'candidate_matches': [jellyfin_refreshed_library_inventory],
+           'renamed_identity_refreshed': true,
+           'extra_paths': jellyfin_refreshed_library_inventory.location_paths |
+             unique | reject('match', '^' ~ (item.desired.path | regex_escape) ~ '/*$') | list
+         })] + jellyfin_library_targets[ansible_loop.index:] }}
+  loop: "{{ jellyfin_library_targets | default([]) }}"
+  loop_control:
+    label: "{{ item.desired.name }}"
+    extended: true
+  when:
+    - not ansible_check_mode
+    - item.path_matches | length == 1
+    - item.path_matches[0].raw.Name != item.desired.name
+  vars:
+    jellyfin_refreshed_observation: >-
+      {{ jellyfin_library_identity_observations.results |
+         selectattr('item.desired.name', 'equalto', item.desired.name) |
+         selectattr('json', 'defined') | first }}
+    jellyfin_refreshed_raw: >-
+      {{ jellyfin_refreshed_observation.json | select('mapping') |
+         selectattr('Locations', 'defined') |
+         selectattr('Locations', 'contains', item.desired.path) | first }}
+    jellyfin_refreshed_location_paths: >-
+      {{ jellyfin_refreshed_raw.Locations | select('string') | list }}
+    jellyfin_refreshed_path_info_paths: >-
+      {{ jellyfin_refreshed_raw.LibraryOptions.PathInfos |
+         select('mapping') | selectattr('Path', 'defined') |
+         map(attribute='Path') | select('string') | list }}
+    jellyfin_refreshed_library_inventory:
+      raw: "{{ jellyfin_refreshed_raw }}"
+      location_paths: "{{ jellyfin_refreshed_location_paths }}"
+      path_info_paths: "{{ jellyfin_refreshed_path_info_paths }}"
+      normalized_paths: >-
+        {{ (jellyfin_refreshed_location_paths + jellyfin_refreshed_path_info_paths) |
+           map('regex_replace', '/+$', '') | unique | list }}
+  no_log: true
+
+- name: Refuse unsafe refreshed Jellyfin managed library identity
+  ansible.builtin.assert:
+    that:
+      - item.path_matches | length == 1
+      - item.name_matches | length == 1
+      - item.path_matches[0].raw.Name == item.desired.name
+      - item.path_matches[0].raw.CollectionType == item.desired.collection_type
+      - >-
+        item.path_matches[0].raw.ItemId | default('') | string
+        is match('^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$')
+      - item.path_matches[0].raw.Locations | default(none) | type_debug == 'list'
+      - item.path_matches[0].raw.LibraryOptions | default(none) is mapping
+      - >-
+        item.path_matches[0].raw.LibraryOptions.PathInfos |
+        default(none) | type_debug == 'list'
+      - >-
+        item.path_matches[0].location_paths | length ==
+        item.path_matches[0].raw.Locations | length
+      - >-
+        item.path_matches[0].path_info_paths | length ==
+        item.path_matches[0].raw.LibraryOptions.PathInfos | length
+      - >-
+        item.path_matches[0].location_paths |
+        map('regex_replace', '/+$', '') | list | length ==
+        item.path_matches[0].location_paths |
+        map('regex_replace', '/+$', '') | unique | list | length
+      - >-
+        item.path_matches[0].path_info_paths |
+        map('regex_replace', '/+$', '') | list | length ==
+        item.path_matches[0].path_info_paths |
+        map('regex_replace', '/+$', '') | unique | list | length
+      - item.path_matches[0].location_paths | sort == item.path_matches[0].path_info_paths | sort
+      - >-
+        item.path_matches[0].normalized_paths |
+        select('equalto', item.normalized_path) | list | length == 1
+    fail_msg: >-
+      Jellyfin returned a malformed, duplicated, or inconsistent replacement library
+      identity after rename; no ItemId-scoped library mutation was attempted.
+  loop: "{{ jellyfin_library_targets | default([]) }}"
+  loop_control:
+    label: "{{ item.desired.name }}"
+  when:
+    - not ansible_check_mode
+    - item.renamed_identity_refreshed | default(false) | bool
+  no_log: true
+
 - name: Report planned Jellyfin managed library creation
   ansible.builtin.debug:
     msg: "JELLYFIN_PLAN_LIBRARY_CREATE {{ item.desired.name }}"
