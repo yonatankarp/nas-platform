@@ -32,6 +32,13 @@ VERIFY_SECRET_SENTINELS = [
   "fixture-admin-secret", "fixture-reader-secret", "fixture-db-secret",
   "fixture gmail secret", "fixturegmailsecret", "fixture-django-secret"
 ].freeze
+MAIL_ITEM_IDENTITY_SENTINELS = [
+  ACCOUNT.fetch("name"), ACCOUNT.fetch("username"), RULE.fetch("name")
+].freeze
+MAIL_ITEM_VALIDATION_TASKS = [
+  "Validate every existing Paperless mail account before mutation",
+  "Validate every existing Paperless mail rule before mutation"
+].freeze
 PYTHON = ENV.fetch("PATH").split(File::PATH_SEPARATOR).map do |directory|
   File.join(directory, "python3")
 end.find { |path| File.executable?(path) }.freeze
@@ -45,6 +52,12 @@ def selected_mail_tasks
   raise "Paperless mail task block is unavailable" unless first && last && first < last
 
   Marshal.load(Marshal.dump(tasks[first..last]))
+end
+
+def missing_mail_item_output_guards(tasks)
+  MAIL_ITEM_VALIDATION_TASKS.reject do |name|
+    tasks.find { |task| task["name"] == name }&.fetch("no_log", false) == true
+  end
 end
 
 def response(client, status, body, content_type: "application/json")
@@ -306,6 +319,18 @@ end
 
 failures = []
 
+mail_tasks = selected_mail_tasks
+missing_mail_item_output_guards(mail_tasks).each do |name|
+  failures << "Paperless per-item validation can disclose its loop record: #{name}"
+end
+MAIL_ITEM_VALIDATION_TASKS.each do |name|
+  mutant = Marshal.load(Marshal.dump(mail_tasks))
+  task = mutant.find { |candidate| candidate["name"] == name }
+  task["no_log"] = false if task
+  failures << "Paperless mail output-guard mutation survived: #{name}" if
+    missing_mail_item_output_guards(mutant).empty?
+end
+
 with_paperless_api(probe: :success, initial_accounts: [ACCOUNT.dup], initial_rules: [RULE.dup]) do |port, requests|
   stdout, stderr, status = run_fixture(port)
   failures << "concurrent global activity fixture failed: #{stderr.lines.last&.strip}" unless status.success?
@@ -314,6 +339,8 @@ with_paperless_api(probe: :success, initial_accounts: [ACCOUNT.dup], initial_rul
   failures << "idempotent mail reconciliation persisted managed state" if
     requests.any? { |method, target, _body| %w[POST PATCH DELETE].include?(method) && target != "/api/mail_accounts/test/" }
   failures << "mail reconciliation disclosed the credential" if (stdout + stderr).include?("fixture-secret")
+  failures << "mail reconciliation disclosed a synthetic mail identity" if
+    MAIL_ITEM_IDENTITY_SENTINELS.any? { |identity| (stdout + stderr).include?(identity) }
 end
 
 with_paperless_api(probe: :managed_alteration,
@@ -423,6 +450,8 @@ with_paperless_api(probe: :success, initial_accounts: [ACCOUNT.dup], initial_rul
     VERIFY_SECRET_SENTINELS.any? do |secret|
       (stdout + stderr).include?(secret)
     end
+  failures << "tagged Paperless verification disclosed a synthetic mail identity" if
+    MAIL_ITEM_IDENTITY_SENTINELS.any? { |identity| (stdout + stderr).include?(identity) }
 end
 
 with_paperless_api(probe: :success, initial_accounts: [ACCOUNT.dup], initial_rules: [RULE.dup]) do |port, requests|

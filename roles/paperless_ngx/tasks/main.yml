@@ -563,6 +563,7 @@
   loop: "{{ paperless_mail_accounts_before.json.results }}"
   loop_control:
     label: "{{ item.id | default('invalid') }}"
+  no_log: true
 
 - name: Validate every existing Paperless mail rule before mutation
   tags: [platform_verify_paperless]
@@ -579,6 +580,7 @@
   loop: "{{ paperless_mail_rules_before.json.results }}"
   loop_control:
     label: "{{ item.id | default('invalid') }}"
+  no_log: true
 
 - name: Resolve managed Paperless mail accounts
   tags: [platform_verify_paperless]
