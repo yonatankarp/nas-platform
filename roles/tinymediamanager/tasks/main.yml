@@ -77,9 +77,8 @@
       - container
       - ls
       - --all
-      - --quiet
-      - --filter
-      - "name=^/{{ tinymediamanager_container_name }}$"
+      - --format
+      - "{{ '{{.Names}}' }}"
   register: tinymediamanager_retired_container
   changed_when: false
   check_mode: false
@@ -90,7 +89,8 @@
     that:
       - >-
         ansible_check_mode or
-        tinymediamanager_retired_container.stdout | trim | length == 0
+        tinymediamanager_container_name not in
+        tinymediamanager_retired_container.stdout_lines
       - tinymediamanager_post_retirement_state.stat.exists
       - tinymediamanager_post_retirement_state.stat.isdir
       - not tinymediamanager_post_retirement_state.stat.islnk

@@ -847,4 +847,6 @@ assert_rejected 'unexpected integration suite argument: --check' \
   exit 1
 }
 
+ruby "$repo_dir/tests/tinymediamanager_retirement_inspection_test.rb"
+
 printf 'integration suite dispatch tests passed\n'

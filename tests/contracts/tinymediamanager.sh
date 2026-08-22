@@ -158,10 +158,9 @@ refuse("retirement inspection retains a managed-host Python dependency") if
 container_inspection = inspect_task["ansible.builtin.command"]
 refuse("retirement inspection does not use the guaranteed Docker CLI") unless
   container_inspection.is_a?(Hash)
-refuse("retirement inspection does not select only the exact container name") unless
+refuse("retirement inspection does not enumerate container names literally") unless
   container_inspection["argv"] == [
-    "docker", "container", "ls", "--all", "--quiet", "--filter",
-    "name=^/{{ tinymediamanager_container_name }}$"
+    "docker", "container", "ls", "--all", "--format", "{{ '{{.Names}}' }}"
   ]
 refuse("retirement inspection can report a change") unless inspect_task["changed_when"] == false
 refuse("retirement inspection is skipped in check mode") unless inspect_task["check_mode"] == false
@@ -175,7 +174,8 @@ refuse("retirement assertion is absent") unless assertion.is_a?(Hash)
 conditions = Array(assertion["that"]).map(&:to_s)
 refuse("retirement assertion does not inspect the retired container") unless
   conditions.any? do |condition|
-    condition.include?("#{inspect_register}.stdout") && condition.include?("length == 0")
+    condition.include?("tinymediamanager_container_name not in") &&
+      condition.include?("#{inspect_register}.stdout_lines")
   end
 refuse("retirement assertion does not use fresh preserved state") unless
   conditions.count { |condition| condition.include?(post_retirement_state_register) } == 3
