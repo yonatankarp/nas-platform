@@ -156,7 +156,7 @@
 
 - name: Inspect the exact NAS Jellyfin render device
   ansible.builtin.stat:
-    path: /dev/dri/renderD128
+    path: "{{ platform_render_device_path }}"
     follow: false
   register: jellyfin_render_device
   when:
@@ -167,6 +167,12 @@
   changed_when: false
   check_mode: false
 
+# The literal here is deliberate, not a missed substitution. NAS hosts are
+# pinned to renderD128 by design: the Compose definition passes that exact
+# device through by name, and the encoding policy above names it as QsvDevice.
+# This assert is what makes that pinning explicit rather than accidental, and it
+# is gated on platform_kind so it never constrains a Mac host, where the
+# variable is /dev/dri/card0 and no QSV device is expected at all.
 - name: Require the exact NAS Jellyfin render device
   ansible.builtin.assert:
     that:

@@ -489,6 +489,17 @@ IMAGE = %r{\A\S+:[^@\s]+@sha256:[0-9a-f]{64}\z}
 
 declared_paths = YAML.safe_load_file(File.join(ROOT, "inventory", "group_vars", "all", "main.yml"))
                      .fetch("nas_storage").map { |entry| entry.fetch("path") }
+
+# A mounted path is accounted for when nas_storage declares it, or declares an
+# entry it sits under: host_prep creates that entry with the right ownership and
+# recovery class, and anything beneath it comes into existence with it. This is
+# the relation the Compose volume check has always applied, stated once here now
+# that a second caller needs it.
+storage_declared = lambda do |path|
+  declared_paths.include?(path) ||
+    declared_paths.any? { |declared| path.start_with?("#{declared}/") }
+end
+
 service_dirs.each do |dir|
   name = File.basename(dir)
   compose_path = File.join(dir, "compose.yml")
@@ -543,6 +554,8 @@ service_dirs.each do |dir|
 
       inventory_source = if source.include?("NAS_DOCKER_ROOT")
                            source.sub(/\A\$\{NAS_DOCKER_ROOT:\?\}/, "{{ nas_docker_root }}")
+                         elsif source.include?("NAS_MEDIA_ROOT")
+                           source.sub(/\A\$\{NAS_MEDIA_ROOT:\?\}/, "{{ nas_media_root }}")
                          elsif source == "${AUDIOBOOKSHELF_BACKUP_PATH:?}"
                            "{{ nas_docker_root }}/audiobookshelf/backups"
                          end
@@ -551,11 +564,41 @@ service_dirs.each do |dir|
       # Service state must be declared in the storage inventory so host_prep
       # creates it with the right ownership and it gets a recovery class.
       expected = inventory_source
-      declared = declared_paths.include?(expected) ||
-                 declared_paths.any? { |p| expected.start_with?(p + "/") }
-      check(failures, declared,
+      check(failures, storage_declared.call(expected),
             "#{label}: #{source} is not declared in nas_storage (expected #{expected})")
     end
+  end
+end
+
+# Service templates write their media library paths as literals, and Compose
+# takes those rendered values straight through as bind sources. That makes the
+# library path a second declaration of what nas_storage already declares, with
+# nothing comparing the two: renaming one side leaves host_prep creating one
+# directory while the service mounts another. Compose volume sources cannot
+# reach these, because they arrive as an opaque ${SERVICE_..._PATH:?} the
+# template supplies, so the templates are read directly here.
+#
+# Only a literal with a path suffix is a library path. Several templates export
+# the volume root itself (NAS_MEDIA_ROOT, PLATFORM_MEDIA_ROOT) for a service to
+# join onto, and requiring the suffix is what keeps those out of this check.
+#
+# A library root may also sit above the declared entries rather than at or below
+# one, which is how Jellyfin mounts the whole media tree while nas_storage
+# declares only the three libraries tinyMediaManager curates: Ansible's file
+# module creates the parent, and the leaves are where a mode and a recovery
+# class belong. Demanding an exact entry would reject that legitimate parent
+# mount. Accepting it is confined to these templates on purpose, because letting
+# a Compose volume source name an ancestor would let a container see a whole
+# service state tree where the declared entry gave it one subdirectory.
+MEDIA_ROOT_LITERAL = %r{\{\{\s*nas_media_root\s*\}\}(/[A-Za-z0-9._/-]+)}
+Dir[File.join(ROOT, "roles", "*", "templates", "*.j2")].sort.each do |template_path|
+  relative_template = template_path.delete_prefix("#{ROOT}/")
+  File.read(template_path).scan(MEDIA_ROOT_LITERAL).each do |(suffix)|
+    expected = "{{ nas_media_root }}#{suffix}"
+    covered = storage_declared.call(expected) ||
+              declared_paths.any? { |declared| declared.start_with?("#{expected}/") }
+    check(failures, covered,
+          "#{relative_template}: #{expected} is not declared in nas_storage")
   end
 end
 

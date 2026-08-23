@@ -145,7 +145,13 @@ def exercise_jellyfin_policy_preflight(failures)
     "vault_jellyfin_opensubtitles_password" => "subtitle-secret",
     "platform_kind" => "mac",
     "platform_compose_kind" => "mac",
-    "deployment_bundle_test_mode" => false
+    "deployment_bundle_test_mode" => false,
+    # The render-device inspection below stats this path. Without it the stat
+    # itself would fail on an undefined variable and the production-NAS case
+    # would report a failure without ever reaching the assert it exists to
+    # exercise. platform_render_device_available is deliberately left undefined,
+    # because that is the capability the assert must refuse to assume.
+    "platform_render_device_path" => "/dev/dri/renderD128"
   )
   base["jellyfin_encoding_policy"] = base.dig("jellyfin_encoding_profiles", "mac")
 
