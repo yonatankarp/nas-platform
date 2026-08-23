@@ -117,6 +117,20 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.suites != '[]' }}
     runs-on: ubuntu-latest
+    # This is the only job that talks to a container registry, so the extra scope
+    # is granted here rather than at the top level. A job-level block REPLACES the
+    # workflow-level one instead of merging with it, which is why contents: read
+    # is restated: without it actions/checkout loses the scope it needs.
+    #
+    # packages: read is the narrowest scope that names a registry read. Every
+    # ghcr.io image the plays pull is a third-party public package (immich-app,
+    # henrygd, advplyr, paperless-ngx), and public packages need no token scope at
+    # all, so this is a statement of intent rather than a functional requirement
+    # today. It is what keeps a future move to a package this repository owns from
+    # failing with a permissions error instead of working.
+    permissions:
+      contents: read
+      packages: read
     strategy:
       fail-fast: false
       matrix:
@@ -124,6 +138,20 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Anonymous ghcr.io pulls draw on an allowance scoped to the runner's IP,
+      # which is shared with every other GitHub Actions job on that address. That
+      # is why a converge that pulls nothing unusual can still be told
+      # "toomanyrequests: retry-after: 218.093us, allowed: 44000/minute" and fail,
+      # as PR #84's smoke and idempotence-check legs were on 2026-08-21 while
+      # pulling ghcr.io/immich-app/immich-server. Authenticating with the job's own
+      # GITHUB_TOKEN moves the pulls onto a per-account allowance this repository
+      # is the only consumer of.
+      - name: Authenticate to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Run integration suite
         env:
           SUITE: ${{ matrix.suite }}
