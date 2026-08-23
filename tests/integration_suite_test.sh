@@ -5,10 +5,14 @@ repo_dir=$(CDPATH= cd -P "$(dirname "$0")/.." && pwd -P)
 integration=$repo_dir/tests/integration.sh
 fake_bin=$(mktemp -d "${TMPDIR:-/tmp}/nas-platform-suite-test.XXXXXX")
 docker_log=$fake_bin/docker.log
+prepull_bin=$(mktemp -d "${TMPDIR:-/tmp}/nas-platform-prepull-test.XXXXXX")
+pull_log=$prepull_bin/pull.log
 
 cleanup() {
   rm -f "$fake_bin/docker" "$fake_bin/mktemp" "$docker_log"
   rmdir "$fake_bin"
+  rm -f "$prepull_bin/docker" "$pull_log"
+  rmdir "$prepull_bin"
 }
 trap cleanup EXIT HUP INT TERM
 
@@ -199,4 +203,148 @@ assert_rejected 'unexpected integration suite argument: --check' \
   exit 1
 }
 
-printf 'integration suite dispatch tests passed\n'
+# Image pre-pull and its retry.
+#
+# The plays pull digest-pinned images through community.docker.docker_compose_v2,
+# which reports a registry refusal as a module failure that aborts the converge:
+# PR #84's smoke and idempotence-check legs died that way on
+# "toomanyrequests: retry-after: 218.093us, allowed: 44000/minute" and passed on a
+# re-run of the same commits. The harness therefore pulls the images itself first,
+# with a bounded retry, and once a digest-pinned layer set is local the play's own
+# `docker compose up` reaches no registry at all.
+#
+# That retry is proven here by driving the real script against a stub docker whose
+# registry refuses a chosen number of times per image. Pull-only mode needs no
+# sandbox, so each case costs about a second.
+
+prepull_fail() {
+  printf 'prepull: %s\n' "$1" >&2
+  exit 1
+}
+
+cat > "$prepull_bin/docker" <<'EOF'
+#!/bin/sh
+set -eu
+if [ "${1:-}" = pull ]; then
+  printf '%s\n' "$2" >> "${STUB_PULL_LOG:?}"
+  attempt=$(grep -Fxc -- "$2" "$STUB_PULL_LOG" || true)
+  if [ "$attempt" -le "${STUB_PULL_REFUSALS:-0}" ]; then
+    printf 'toomanyrequests: retry-after: 218.093us, allowed: 44000/minute\n' >&2
+    exit 1
+  fi
+  exit 0
+fi
+# Pull-only mode must reach the registry and nothing else; anything else here
+# would mean the mode had started building a sandbox.
+printf 'unexpected docker invocation: %s\n' "$*" >&2
+exit 97
+EOF
+chmod +x "$prepull_bin/docker"
+
+# Read back rather than restated: Renovate bumps every one of these digests.
+runner_image=$(sed -n 's/^runner_image=//p' "$integration")
+[ -n "$runner_image" ] || prepull_fail 'could not read the controller image pin'
+
+compose_images() {
+  sed -n 's/^[[:space:]]*image:[[:space:]]*//p' "$repo_dir/services/$1/compose.yml"
+}
+
+run_prepull() {
+  prepull_refusals=$1
+  prepull_attempts=$2
+  shift 2
+  : > "$pull_log"
+  prepull_status=0
+  PATH="$prepull_bin:$PATH" \
+    STUB_PULL_LOG=$pull_log \
+    STUB_PULL_REFUSALS=$prepull_refusals \
+    INTEGRATION_PREPULL_ONLY=1 \
+    INTEGRATION_IMAGE_PULL_ATTEMPTS=$prepull_attempts \
+    INTEGRATION_IMAGE_PULL_DELAY=1 \
+    "$integration" "$@" >/dev/null 2>&1 || prepull_status=$?
+}
+
+assert_pull_set() {
+  expected=$1
+  actual=$(sort -u "$pull_log")
+  [ "$expected" = "$actual" ] || {
+    printf 'expected pulls:\n%s\nactual pulls:\n%s\n' "$expected" "$actual" >&2
+    exit 1
+  }
+}
+
+assert_pull_count() {
+  observed=$(grep -Fxc -- "$1" "$pull_log" || true)
+  [ "$observed" -eq "$2" ] ||
+    prepull_fail "expected $2 attempt(s) at $1, saw $observed"
+}
+
+# A suite pulls the controller image plus the images of the services its tags
+# converge, and nothing else. Pulling the whole tree for a one-service suite would
+# cost gigabytes of runner disk for images the run never starts.
+run_prepull 0 4 --suite beszel
+[ "$prepull_status" -eq 0 ] || prepull_fail "an answering registry failed the pre-pull ($prepull_status)"
+assert_pull_set "$({ printf '%s\n' "$runner_image"; compose_images ntfy; compose_images beszel; } | sort -u)"
+if grep -q 'immich' "$pull_log"; then
+  prepull_fail 'the beszel suite pulled images it never converges'
+fi
+
+# The paperless suite is the one whose tag and service directory differ, so it is
+# the case that proves the map rather than the naming coincidence.
+run_prepull 0 4 --suite paperless
+[ "$prepull_status" -eq 0 ] || prepull_fail "the paperless pre-pull failed ($prepull_status)"
+assert_pull_set \
+  "$({ printf '%s\n' "$runner_image"; compose_images ntfy; compose_images paperless-ngx; } | sort -u)"
+
+# An untagged smoke run converges everything, so every service directory in the
+# tree must be reachable from the harness map. A directory the map forgot shows up
+# here as a missing pull.
+run_prepull 0 4 --suite smoke
+[ "$prepull_status" -eq 0 ] || prepull_fail "the untagged smoke pre-pull failed ($prepull_status)"
+all_service_images=$(printf '%s\n' "$runner_image"
+                     for compose in "$repo_dir"/services/*/compose.yml; do
+                       sed -n 's/^[[:space:]]*image:[[:space:]]*//p' "$compose"
+                     done)
+assert_pull_set "$(printf '%s\n' "$all_service_images" | sort -u)"
+
+# CI narrows smoke to the changed service, and the pre-pull has to narrow with it.
+run_prepull 0 4 --suite smoke --tags host_prep,deployment_bundle,ntfy,immich
+[ "$prepull_status" -eq 0 ] || prepull_fail "the tagged smoke pre-pull failed ($prepull_status)"
+assert_pull_set "$({ printf '%s\n' "$runner_image"; compose_images ntfy; compose_images immich; } | sort -u)"
+
+# A registry that refuses twice and then answers must still produce a successful
+# pre-pull, with the pull retried rather than the suite failed. foundation
+# converges no service, so this costs one image and two backoffs.
+run_prepull 2 4 --suite foundation
+[ "$prepull_status" -eq 0 ] || prepull_fail "two refusals failed the pre-pull ($prepull_status)"
+assert_pull_count "$runner_image" 3
+[ "$(wc -l < "$pull_log" | tr -d " ")" -eq 3 ] ||
+  prepull_fail "foundation pulled service images it never converges: $(sort -u "$pull_log")"
+
+# A registry that refuses more times than the budget allows must fail, and must
+# not go on pulling the rest: under a rate limit the remaining pulls would only
+# extend the outage, and the diagnosis belongs at the first refusal.
+#
+# Three refusals against a two-attempt budget rather than a registry that never
+# answers, deliberately: a retry that lost its bound would answer on the fourth
+# attempt and fail this assertion, where against a permanent refusal it would
+# instead spin until the job timeout and prove nothing.
+run_prepull 3 2 --suite beszel
+[ "$prepull_status" -ne 0 ] || prepull_fail 'refusals past the budget produced a successful pre-pull'
+assert_pull_count "$runner_image" 2
+[ "$(wc -l < "$pull_log" | tr -d " ")" -eq 2 ] ||
+  prepull_fail "the pre-pull continued past an exhausted budget: $(cat "$pull_log")"
+
+# The retry cannot be configured away: a zero budget is floored, so one refusal is
+# still survived.
+run_prepull 1 0 --suite foundation
+[ "$prepull_status" -eq 0 ] ||
+  prepull_fail "a zero attempt budget removed the retry instead of being floored ($prepull_status)"
+assert_pull_count "$runner_image" 2
+
+# Counterexample: the stub must be able to fail a pre-pull at all, otherwise every
+# assertion above is vacuous.
+run_prepull 3 2 --suite foundation
+[ "$prepull_status" -ne 0 ] || prepull_fail 'the stub registry cannot refuse'
+
+printf 'integration suite dispatch and image pre-pull tests passed\n'

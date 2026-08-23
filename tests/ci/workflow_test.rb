@@ -13,8 +13,9 @@ ANSIBLE_LINT_PATH = File.expand_path("../../.ansible-lint", __dir__)
 # are used and that every use is pinned to a full commit SHA rather than a mutable tag;
 # which commit is current is Renovate's job, and restating it here only guarantees that
 # routine action bumps fail this test.
-ALLOWED_ACTION_NAMES = %w[actions/checkout actions/upload-artifact].freeze
+ALLOWED_ACTION_NAMES = %w[actions/checkout actions/upload-artifact docker/login-action].freeze
 CHECKOUT_ACTION_NAME = "actions/checkout"
+LOGIN_ACTION_NAME = "docker/login-action"
 EXPECTED_JOBS = %w[changes static suites validate].freeze
 # The suites the matrix dispatches, in the order a full run enumerates them.
 INTEGRATION_SUITES = %w[
@@ -144,6 +145,12 @@ check(
 )
 check(failures, concurrency["cancel-in-progress"] == true, "concurrency cancellation must be enabled")
 check(failures, workflow.dig("permissions", "contents") == "read", "contents permission must be read-only")
+# Registry access is granted to the one job that pulls images, not to the workflow.
+# Asserting the top-level block stays a single key is what stops the narrow grant
+# below from being "simplified" upwards into every job.
+check(failures, workflow.fetch("permissions", {}).keys == ["contents"],
+      "workflow-level permissions must grant nothing beyond contents: " \
+      "#{workflow.fetch('permissions', {}).keys.inspect}")
 
 check(failures, jobs.keys.sort == EXPECTED_JOBS.sort,
       "workflow jobs differ: got #{jobs.keys.sort.inspect}, expected #{EXPECTED_JOBS.sort.inspect}")
@@ -216,6 +223,46 @@ check(failures, ClassifyChanges.suites(ClassifyChanges.classify(["README.md"])) 
 suites_checkout = Array(suites_job["steps"]).find { |step| step["uses"]&.start_with?("actions/checkout@") }
 check(failures, suites_checkout&.fetch("uses", nil).to_s.split("@").first == CHECKOUT_ACTION_NAME,
       "suites must check out the repository with the pinned action")
+
+# The suites job pulls every service image, and an anonymous ghcr.io pull draws on
+# an allowance scoped to the runner's IP and shared with unrelated jobs. That is
+# what failed PR #84's smoke and idempotence-check legs with "toomanyrequests" on a
+# converge that had changed nothing. Pin the login here so removing it is a test
+# failure rather than a rate limit reappearing weeks later.
+#
+# Job-level permissions replace the workflow-level block rather than merging with
+# it, so both keys are asserted: dropping contents: read would break checkout, and
+# adding anything beyond packages: read would widen the token past a registry read.
+check(failures, suites_job.fetch("permissions", {}) == { "contents" => "read", "packages" => "read" },
+      "suites must grant exactly contents: read and packages: read, " \
+      "found #{suites_job.fetch('permissions', {}).inspect}")
+login_steps = Array(suites_job["steps"]).select do |step|
+  step["uses"]&.start_with?("#{LOGIN_ACTION_NAME}@")
+end
+check(failures, login_steps.length == 1,
+      "suites must authenticate to the registry exactly once, found #{login_steps.length}")
+login_step = login_steps.first || {}
+check(failures, login_step.dig("with", "registry") == "ghcr.io",
+      "the registry login must target ghcr.io, found #{login_step.dig('with', 'registry').inspect}")
+check(failures, login_step.dig("with", "username") == "${{ github.actor }}",
+      "the registry login must authenticate as the acting account")
+check(failures, login_step.dig("with", "password") == "${{ secrets.GITHUB_TOKEN }}",
+      "the registry login must use the job's own GITHUB_TOKEN, not a stored credential")
+# Order matters: a login after the harness has already run buys nothing.
+suites_steps = Array(suites_job["steps"])
+login_index = suites_steps.index(login_step)
+harness_index = suites_steps.index { |step| step["run"]&.include?("tests/integration.sh") }
+check(failures, !login_index.nil? && !harness_index.nil? && login_index < harness_index,
+      "the registry login must precede the integration harness: " \
+      "#{suites_steps.map { |step| step['name'] }.inspect}")
+# Only the job that pulls images may hold the registry scope.
+jobs.each do |job_name, job|
+  next if job_name == "suites"
+
+  check(failures, !job.fetch("permissions", {}).key?("packages"),
+        "job #{job_name} must not request the registry scope: it pulls no images")
+end
+
 integration_steps = Array(suites_job["steps"]).select { |step| step["run"]&.include?("tests/integration.sh") }
 check(failures, integration_steps.length == 1, "suites must have exactly one integration harness step")
 integration_step = integration_steps.first || {}

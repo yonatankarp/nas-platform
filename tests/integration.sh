@@ -177,6 +177,124 @@ if [ "$describe_suite" = true ] || [ "${INTEGRATION_DESCRIBE_ONLY:-0}" = 1 ]; th
 fi
 
 repo_dir=$(CDPATH= cd -P "$(dirname "$0")/.." && pwd -P)
+
+# Service images the suite will need, keyed by the site.yml role tag that
+# converges them.
+#
+# The keys are the role tags from site.yml and the values the service directories
+# from services/manifest.yml. They coincide everywhere except paperless, whose
+# role is paperless_ngx and whose directory is paperless-ngx. Keyed by tag rather
+# than by suite because smoke and idempotence-check accept --tags, and CI narrows
+# them to the changed service: pulling the whole tree for a one-service run would
+# cost several gigabytes of runner disk and download for nothing.
+#
+# tests/policy_ci_test.rb asserts this covers every implemented service exactly
+# once and names only real site.yml tags, so it cannot drift from the manifest.
+service_image_sources='
+ntfy ntfy
+beszel beszel
+dozzle dozzle
+audiobookshelf audiobookshelf
+komga komga
+tinymediamanager tinymediamanager
+jellyfin jellyfin
+immich immich
+paperless paperless-ngx
+'
+
+# Retry budget for a registry that refuses. Both values are floored rather than
+# validated, so a mistyped or hostile setting cannot configure the retry away,
+# which is the only reason the wrapper exists.
+image_pull_attempts=${INTEGRATION_IMAGE_PULL_ATTEMPTS:-4}
+case $image_pull_attempts in
+  ''|*[!0123456789]*) image_pull_attempts=4 ;;
+esac
+[ "$image_pull_attempts" -ge 2 ] || image_pull_attempts=2
+image_pull_delay=${INTEGRATION_IMAGE_PULL_DELAY:-5}
+case $image_pull_delay in
+  ''|*[!0123456789]*) image_pull_delay=5 ;;
+esac
+[ "$image_pull_delay" -ge 1 ] || image_pull_delay=1
+
+pull_image() {
+  pull_target=$1
+  pull_attempt=1
+  pull_delay=$image_pull_delay
+  while :; do
+    if docker pull "$pull_target"; then
+      return 0
+    fi
+    if [ "$pull_attempt" -ge "$image_pull_attempts" ]; then
+      printf 'could not pull %s in %s attempt(s)\n' "$pull_target" "$pull_attempt" >&2
+      return 1
+    fi
+    printf 'pull of %s failed, retrying in %ss (attempt %s of %s)\n' \
+      "$pull_target" "$pull_delay" "$pull_attempt" "$image_pull_attempts" >&2
+    sleep "$pull_delay"
+    pull_attempt=$((pull_attempt + 1))
+    pull_delay=$((pull_delay * 2))
+  done
+}
+
+suite_pull_images() {
+  printf '%s\n' "$service_image_sources" | while read -r service_tag service_dir; do
+    [ -n "$service_tag" ] || continue
+    # An empty tag list means the whole play runs, so every implemented service
+    # converges and every image is needed.
+    if [ -n "$suite_tags" ]; then
+      case ",$suite_tags," in
+        *",$service_tag,"*) ;;
+        *) continue ;;
+      esac
+    fi
+    sed -n 's/^[[:space:]]*image:[[:space:]]*//p' \
+      "$repo_dir/services/$service_dir/compose.yml"
+  done
+}
+
+# Warms the daemon's image cache before anything converges.
+#
+# Every image in services/*/compose.yml is digest-pinned, so once a layer set is
+# local the play's own `docker compose up` reaches no registry at all. That is
+# what makes this the honest retry point: the pull otherwise happens inside
+# community.docker.docker_compose_v2, which reports a registry refusal as a
+# module failure that aborts the play, and no Ansible retry keyword reaches into
+# the module's own pull. Observed on PR #84, where ghcr.io answered
+# "toomanyrequests: retry-after: 218.093us, allowed: 44000/minute" during
+# "Deploy Immich" and failed two suites that a re-run passed unchanged.
+#
+# Pulling from here is also what lets a registry login matter at all. The Docker
+# CLI reads its own credentials and sends them to the daemon per request rather
+# than the daemon holding them, and the plays run in a throwaway controller
+# container whose CLI has no credential store, so a pull issued from in there is
+# anonymous however the runner logged in. This one is issued by the runner's own
+# CLI, and every later pull finds the layers already local.
+#
+# Failing here fails the suite, deliberately: the point is to survive a transient
+# refusal, not to hide a registry that is genuinely unreachable.
+prepull_images() {
+  # The controller image is a Docker Hub pull every suite makes, and Docker Hub's
+  # anonymous allowance is the stricter of the two. No login covers it, so the
+  # retry is all this pull gets.
+  pull_image "$runner_image" || return 1
+  for pull_candidate in $(suite_pull_images | sort -u); do
+    # Dozzle's alert relay runs on the same image as the controller, so skipping
+    # it here saves a second registry round trip on every suite that includes it.
+    if [ "$pull_candidate" != "$runner_image" ]; then
+      pull_image "$pull_candidate" || return 1
+    fi
+  done
+}
+
+# Pull-only mode exists so tests/integration_suite_test.sh can drive the retry
+# against a stub docker without building a sandbox. It shares the code path the
+# real run uses rather than re-implementing it.
+if [ "${INTEGRATION_PREPULL_ONLY:-0}" = 1 ]; then
+  prepull_status=0
+  prepull_images || prepull_status=$?
+  exit "$prepull_status"
+fi
+
 . "$repo_dir/tests/sandbox_cleanup.sh"
 . "$repo_dir/tests/integration_lock.sh"
 
@@ -447,6 +565,10 @@ else
     { printf 'Docker host address resolved empty\n' >&2; exit 1; }
 fi
 printf 'host address: %s\n' "$nas_address"
+
+# Ahead of the fixture seeding and the controller container, so every registry
+# read the run makes happens under the retry rather than half of them.
+prepull_images
 
 paperless_fixture_preseeded=false
 komga_fixture_preseeded=false
