@@ -12,6 +12,13 @@
       - "{{ platform_runtime_dir }}/services/jellyfin"
       - "{{ platform_runtime_dir }}/services/jellyfin/.env"
 
+# Deliberately not redacted. On ansible-core 2.21.3 no_log on an assert hides only
+# the result dict; fail_msg prints from the error header either way. Hiding the dict
+# here costs the name of whichever of these 68 conditions failed, under a fail_msg
+# that lists four unrelated causes. The dict cannot carry credential material: the
+# assert is unlooped, so there is no item to echo, and the reported "assertion" field
+# is the source text of the condition rather than its rendered value, so the two
+# vault_jellyfin_opensubtitles_* presence checks disclose their variable names only.
 - name: Require explicit Jellyfin acceleration and plugin policy
   ansible.builtin.assert:
     that:
@@ -112,7 +119,6 @@
     fail_msg: >-
       Jellyfin requires an explicit pinned platform encoding policy, unique managed
       repositories, exact plugin identities, and nonempty Open Subtitles credentials.
-  no_log: true
   vars:
     jellyfin_required_nas_encoding_policy:
       HardwareAccelerationType: qsv
@@ -150,7 +156,7 @@
 
 - name: Inspect the exact NAS Jellyfin render device
   ansible.builtin.stat:
-    path: /dev/dri/renderD128
+    path: "{{ platform_render_device_path }}"
     follow: false
   register: jellyfin_render_device
   when:
@@ -161,6 +167,12 @@
   changed_when: false
   check_mode: false
 
+# The literal here is deliberate, not a missed substitution. NAS hosts are
+# pinned to renderD128 by design: the Compose definition passes that exact
+# device through by name, and the encoding policy above names it as QsvDevice.
+# This assert is what makes that pinning explicit rather than accidental, and it
+# is gated on platform_kind so it never constrains a Mac host, where the
+# variable is /dev/dri/card0 and no QSV device is expected at all.
 - name: Require the exact NAS Jellyfin render device
   ansible.builtin.assert:
     that:
@@ -327,6 +339,11 @@
     - not jellyfin_wizard_completed | bool
   changed_when: true
 
+# Deliberately not redacted, on the same reasoning as the acceleration policy assert
+# above: unlooped, so nothing but condition source text reaches the result dict, and
+# the fail_msg names four unrelated causes without saying which one fired. The only
+# vault reference is the administrator username, which this same task pins to the
+# repository literal 'Yonatan' and so is not secret.
 - name: Require the fixed Jellyfin ownership declaration
   ansible.builtin.assert:
     that:
@@ -341,7 +358,6 @@
       - jellyfin_libraries | map(attribute='path') | list == ['/media/Movies', '/media/Series']
       - jellyfin_libraries | selectattr('name', 'equalto', 'Collections') | list | length == 0
     fail_msg: The fixed Jellyfin identity, branding, avatar, or library declaration differs.
-  no_log: true
 
 - name: Report planned Jellyfin administrator image upload after startup
   ansible.builtin.debug:

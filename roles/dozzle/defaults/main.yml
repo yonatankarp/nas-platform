@@ -1,6 +1,12 @@
 ---
 dozzle_port: 8080
 dozzle_api: "http://127.0.0.1:{{ dozzle_port }}/api"
+# The one home for the alert relay's listener port. It has three consumers and
+# none of them may carry their own copy: the relay process and the Compose
+# healthcheck both read it as ALERT_RELAY_PORT out of the rendered environment
+# file, and the managed dispatcher URL below interpolates it directly. The relay
+# publishes no host port, so this is a container-internal port only.
+dozzle_alert_relay_port: 8081
 dozzle_compose_project_name: >-
   {{ (platform_project_name ~ '-dozzle')
      if platform_project_name | default('') | length > 0 else 'dozzle' }}
@@ -8,7 +14,7 @@ dozzle_compose_project_name: >-
 dozzle_dispatcher:
   name: ntfy nas-critical
   type: webhook
-  url: http://alert-relay:8081/alerts
+  url: "http://alert-relay:{{ dozzle_alert_relay_port }}/alerts"
   template: >-
     {{ {'version': 1,
         'rule': '{{ .Subscription.Name }}',

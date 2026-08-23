@@ -6,7 +6,7 @@
 # 15m28s, which made `static` the second-longest job in CI and made a full local
 # run impractical enough to skip.
 #
-# Each check stays one bare command per line. tests/policy_test.rb asserts that
+# Each check stays one bare command per line. tests/policy_ci_test.rb asserts that
 # every check appears exactly once as a stripped line of this file, and
 # tests/policy_manifest_test.rb proves that deleting a line is caught. Wrapping
 # these lines in a helper, or prefixing them, silently disables those guards
@@ -24,6 +24,13 @@ set -eu
 policy_checks() {
   cat <<'POLICY_CHECKS'
 ruby tests/policy_test.rb
+ruby tests/policy_platform_test.rb
+ruby tests/policy_ci_test.rb
+ruby tests/policy_beszel_test.rb
+ruby tests/policy_integration_test.rb
+ruby tests/policy_deployment_test.rb
+ruby tests/policy_mac_test.rb
+ruby tests/policy_vault_test.rb
 ruby tests/renovate_policy_test.rb
 tests/policy_runner_test.sh
 ruby tests/paperless_mail_reconciliation_test.rb
@@ -48,6 +55,8 @@ ruby tests/secrets_docs_test.rb
 ruby tests/assert_no_vault_secrets_test.rb
 tests/mac/integration-context-test.sh
 tests/mac/snapshot-paperless-context-test.sh
+tests/mac/snapshot-paperless-recovery-test.sh
+tests/mac/snapshot-paperless-drill-throttle-test.sh
 ruby tests/policy_manifest_test.rb
 python3 tests/deployment_target_validator_test.py
 python3 tests/deployment_release_compare_test.py
@@ -69,14 +78,17 @@ ruby tests/database_managed_users_test.rb --self-test
 ruby tests/ntfy_verify_execution_test.rb
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/managed_user_state_filter_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/vault_managed_user_schema_test.py
+PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/vault_credential_schema_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/immich_preference_schema_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/container_cpu_filter_test.py
+PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/jellyfin_plugin_repositories_filter_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/safe_slurp_test.py
 ansible-playbook -i localhost, -c local tests/compose_metadata_filter_test.yml
 ruby tests/run_contracts_test.rb
 ruby tests/run_contracts.rb --validate-only
 ruby tests/dozzle_quality_test.rb
 ruby tests/jellyfin_transcode_contract_test.rb
+ruby tests/contract_structure_mutation_test.rb
 tests/integration_lock_test.sh
 tests/integration_suite_test.sh
 tests/mac/config-isolation.sh
@@ -84,6 +96,7 @@ tests/mac/run-phase-status-test.sh
 tests/mac/manual-validation-runner-test.sh
 tests/mac/dozzle-drift-hook-test.sh
 tests/mac/audiobookshelf-drift-hook-test.sh
+tests/mac/hook-coverage-test.sh
 tests/contracts/audiobookshelf-audio-test.sh
 ruby tests/mac/report.rb --self-test
 tests/mac/cleanup.sh --self-test

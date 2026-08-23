@@ -184,7 +184,7 @@ before changing any media writer.
 ## Testing
 
 ```sh
-ruby tests/policy_test.rb      # property checks, no service-specific literals
+bash tests/validate-policy.sh # every policy script, run concurrently
 ansible-lint --strict          # production profile
 tests/integration.sh site.yml  # converge, re-converge, then --check --diff
 ```

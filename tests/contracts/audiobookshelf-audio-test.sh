@@ -17,7 +17,7 @@ cleanup() {
 
 trap cleanup EXIT HUP INT TERM
 
-mkdir -p "$test_root/media" "$test_root/reports"
+mkdir -p "$test_root/docker" "$test_root/fixtures" "$test_root/media" "$test_root/reports"
 
 mac_preconverge_hook=$repo_dir/tests/mac/hooks/pre-converge/30-audiobookshelf.sh
 test -x "$mac_preconverge_hook" || {
@@ -29,8 +29,12 @@ preseed_status=0
 preseed_output=$(
   PLATFORM_MAC_VAULT_FILE="$test_root/unused-vault.yml" \
   PLATFORM_MAC_VAULT_PASSWORD_FILE="$test_root/unused-vault-password" \
+  PLATFORM_DOCKER_ROOT="$test_root/docker" \
   PLATFORM_MEDIA_ROOT="$test_root/media" \
+  PLATFORM_FIXTURE_ROOT="$test_root/fixtures" \
   PLATFORM_REPORT_ROOT="$test_root/reports" \
+  PLATFORM_PROJECT_NAME=audiobookshelf-audio-test \
+  PLATFORM_NTFY_PORT=18080 \
   PLATFORM_AUDIOBOOKSHELF_PORT=13378 \
     "$mac_preconverge_hook" 2>&1
 ) || preseed_status=$?
@@ -75,8 +79,12 @@ test "$first_fixture_digest" = 8c26df165039d50a36a4bfa7306a053b889a7582128ad318e
 second_preseed_output=$(
   PLATFORM_MAC_VAULT_FILE="$test_root/unused-vault.yml" \
   PLATFORM_MAC_VAULT_PASSWORD_FILE="$test_root/unused-vault-password" \
+  PLATFORM_DOCKER_ROOT="$test_root/docker" \
   PLATFORM_MEDIA_ROOT="$test_root/media" \
+  PLATFORM_FIXTURE_ROOT="$test_root/fixtures" \
   PLATFORM_REPORT_ROOT="$test_root/reports" \
+  PLATFORM_PROJECT_NAME=audiobookshelf-audio-test \
+  PLATFORM_NTFY_PORT=18080 \
   PLATFORM_AUDIOBOOKSHELF_PORT=13378 \
     "$mac_preconverge_hook" 2>&1
 )

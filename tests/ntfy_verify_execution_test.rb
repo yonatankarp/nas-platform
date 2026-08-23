@@ -13,7 +13,10 @@ ROOT = File.expand_path("..", __dir__)
 NTFY_MAIN = File.join(ROOT, "roles", "ntfy", "tasks", "main.yml")
 NTFY_MANAGED = File.join(ROOT, "roles", "ntfy", "tasks", "managed_users.yml")
 NTFY_VERIFY_HOOK = File.join(ROOT, "tests", "mac", "hooks", "verify", "15-ntfy.sh")
-NTFY_RECREATE_HOOK = File.join(ROOT, "tests", "mac", "hooks", "fixtures-recreate", "15-ntfy.sh")
+# The recreate group is one table-driven hook for every service now. ntfy is the
+# one entry in that table with no contract suite behind it, so the table
+# dispatches to the verify hook below, and that is still what this asserts.
+NTFY_RECREATE_HOOK = File.join(ROOT, "tests", "mac", "hooks", "fixtures-recreate", "00-services.sh")
 
 class FixtureTimeout < StandardError; end
 

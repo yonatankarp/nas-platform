@@ -336,6 +336,62 @@ end
 end
 refuse("Paperless restore must recover both services from an ensure block") unless
   snapshot_text.match?(/if MODE == "restore".*?begin.*?ensure.*?\["docker", "start", REDIS\].*?\["docker", "start", WEBSERVER\].*?wait_healthy\(REDIS, WEBSERVER\)/m)
+# The ordering above is necessary but was not sufficient: it matched equally well
+# when the flushall between the two starts was a one-shot exec, and a one-shot
+# exec there races the socket. docker start returns once the container process
+# has been launched, not once valkey has bound 127.0.0.1:6379, which is how CI
+# run 32590260858 reported "Connection refused" and then "application recovery
+# failed" on a restore that had succeeded, after seven clean runs.
+#
+# So the flushall has to carry the retried marker, and the wait it selects has to
+# hand a timeout back to its caller: the caller is an ensure block that may
+# already be unwinding a restore failure, and a die there would replace the real
+# diagnosis with a recovery one. Both properties are proved behaviourally by
+# tests/mac/snapshot-paperless-recovery-test.sh, which drives the real script
+# against a valkey that refuses a chosen number of connections. These assertions
+# exist so the mechanism cannot be deleted between runs of that proof.
+refuse("Paperless recovery must wait for valkey rather than one-shot the flushall") unless
+  snapshot_text.include?('[["docker", "exec", REDIS, "valkey-cli", "flushall"], :until_ready]')
+readiness_wait = snapshot_text[/^def capture_until_ready\b.*?^end$/m].to_s
+refuse("Paperless recovery readiness wait is absent") if readiness_wait.empty?
+refuse("Paperless recovery readiness wait must be bounded and must not die") unless
+  readiness_wait.include?("limit = Time.now + deadline") &&
+    readiness_wait.include?("return [stdout, stderr, status] if status.success? || Time.now >= limit") &&
+    !readiness_wait.include?("die")
+refuse("Paperless recovery deadline must not be configurable down to no retry") unless
+  snapshot_text.match?(
+    /Integer\(ENV\.fetch\("PLATFORM_PAPERLESS_RECOVERY_DEADLINE"\), 10\), 1\s*\n\]\.max/
+  )
+# The default is pinned as well as the floor, because shortening it is the silent
+# half of this failure mode. Deleting the assignment is loud: ENV.fetch raises
+# and every invocation dies. Changing 60 to 2 breaks nothing any check can see,
+# and leaves a wait too short to survive a loaded runner, which is the same race
+# arriving again months later with a green suite behind it.
+refuse("Paperless recovery deadline default differs") unless
+  snapshot_text.include?(': "${PLATFORM_PAPERLESS_RECOVERY_DEADLINE:=60}"')
+# The drill waits for its deletion to settle by re-reading the catalogue every two
+# seconds for up to two minutes. Authenticating on every pass is thirty POSTs to
+# /api/token/ a minute from inside one loop, and Paperless throttles that endpoint
+# at five a minute by default, so the drill aborted the suite with "POST
+# /api/token/ returned HTTP 429" about ten seconds into the loop, before it
+# reached the restore it exists to prove.
+#
+# The poll is asserted as a whole rather than by looking for a login it must not
+# contain, because the absence of one spelling is satisfied by any rewrite that
+# spells the login differently, and a guard that both the broken and the fixed
+# form satisfy is not a guard. The budget itself is proved behaviourally by
+# tests/mac/snapshot-paperless-drill-throttle-test.sh, which drives the real
+# script against a stub that throttles the way Paperless does; this assertion
+# keeps the shape from being edited back between runs of that proof.
+drill_mutation = snapshot_text.scan(/^if MODE == "drill"\n.*?^end$/m).find do |block|
+  block.include?('request("delete", "/api/documents/')
+end.to_s
+refuse("Paperless drill mutation block is absent") if drill_mutation.empty?
+drill_poll = drill_mutation[/^  loop do\n.*?^  end$/m].to_s
+refuse("Paperless drill deletion poll is absent") if drill_poll.empty?
+refuse("Paperless drill poll must reuse the drill token rather than log in again") unless
+  drill_poll.include?("break if catalogue(drill_token).empty?") &&
+    !drill_poll.include?("authenticate")
 admin_create = role.find { |task| task["name"] == "Create the absent vault Paperless administrator" }
 admin_argv = admin_create.dig("community.docker.docker_compose_v2_exec", "argv")
 refuse("Paperless administrator creation must use the container password environment") unless

@@ -6,7 +6,9 @@ nas_uid: 1000
 nas_gid: 100
 
 # Optional Paperless AI integration. Enable only after replacing the documentation
-# address with the reachable Ollama endpoint used by the NAS.
+# address with the reachable Ollama endpoint used by the NAS. This is the only home
+# for the three values; the role declares them required rather than defaulting them
+# a second time where group_vars would always win.
 paperless_ai_enabled: false
 paperless_ai_llm_endpoint: http://192.0.2.1:11434
 paperless_ai_llm_model: gemma3:4b

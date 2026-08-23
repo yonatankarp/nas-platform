@@ -284,6 +284,12 @@ def run_full_verify_tag_fixture(port, fingerprint: true)
       # verify.yml resolves this in pre_tasks; this play stands in for that.
       "platform_service_compose_files" => { "paperless-ngx" => ["compose.yml"] },
       "paperless_port" => port,
+      # The AI settings live only in inventory group_vars, which this synthetic play
+      # does not load, so the fixture supplies them the way it supplies every other
+      # argument the role declares required.
+      "paperless_ai_enabled" => false,
+      "paperless_ai_llm_endpoint" => "http://ollama.example.invalid:11434",
+      "paperless_ai_llm_model" => "fixture-model",
       "vault_paperless_admin_username" => "admin",
       "vault_paperless_admin_password" => "fixture-admin-secret",
       "vault_paperless_admin_email" => "admin@example.invalid",

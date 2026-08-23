@@ -87,7 +87,7 @@ for hook in "$script_dir"/hooks/drift/*.sh; do
   fi
 done
 
-tinymediamanager_runner=$script_dir/run-tinymediamanager-contract.sh
+tinymediamanager_runner=$script_dir/run-contract.sh
 grep -qF 'PLATFORM_CONTRACT_SANDBOX_ROOT' "$tinymediamanager_runner" || {
   printf '%s\n' 'integration-context-error: retirement runner lacks sandbox context' >&2
   exit 1
@@ -100,15 +100,14 @@ grep -qF 'seed-retirement-fixture|assert-retired)' "$tinymediamanager_runner" ||
   printf '%s\n' 'integration-context-error: retirement runner accepts the wrong modes' >&2
   exit 1
 }
-if grep -Eq '(^|[[:space:]|])(seed|run|assert-persistence)([[:space:]|)])' \
-    "$tinymediamanager_runner"; then
+if grep -Eq 'tinymediamanager.*([: ]seed|[: ]run|assert-persistence)' "$tinymediamanager_runner"; then
   printf '%s\n' 'integration-context-error: retirement runner retains an active mode' >&2
   exit 1
 fi
 
 tinymediamanager_preconverge=$script_dir/hooks/pre-converge/50-tinymediamanager.sh
 tinymediamanager_seed=$script_dir/hooks/fixtures-seed/50-tinymediamanager.sh
-tinymediamanager_persistence=$script_dir/hooks/fixtures-persistence/50-tinymediamanager.sh
+tinymediamanager_persistence=$script_dir/hooks/fixtures-persistence/00-services.sh
 tinymediamanager_recreate=$script_dir/hooks/fixtures-recreate/50-tinymediamanager.sh
 tinymediamanager_drift=$script_dir/hooks/drift/50-tinymediamanager.sh
 tinymediamanager_verify=$script_dir/hooks/verify/50-tinymediamanager.sh

@@ -145,6 +145,26 @@ output, status = run_registry(
 check(failures, !status.success? && output.include?("shell syntax"),
       "syntax-invalid contract was not rejected clearly")
 
+# A contract is mostly Ruby inside a quoted heredoc, and `sh -n` treats that body as
+# opaque text, so the wrapper parsing proves nothing about the code that does the work.
+# This is the only static check that reads it; without it a broken contract surfaces
+# only when an integration run reaches it.
+output, status = run_registry(
+  registry: registry,
+  contracts: { "ntfy.sh" => "#!/bin/sh\nruby - <<'RUBY'\ndef broken(\nRUBY\n" }
+)
+check(failures, !status.success? && output.include?("embedded Ruby block 1 has invalid syntax"),
+      "contract with syntax-invalid embedded Ruby was not rejected clearly")
+
+# The wrapper is valid shell and the Ruby is valid Ruby, so this must pass: the check
+# has to reject broken bodies without rejecting working contracts.
+output, status = run_registry(
+  registry: registry,
+  contracts: { "ntfy.sh" => "#!/bin/sh\nruby - <<'RUBY'\nputs \"ok\"\nRUBY\n" }
+)
+check(failures, status.success?,
+      "contract with valid embedded Ruby was rejected: #{output.lines.first&.strip}")
+
 output, status = run_registry(
   registry: registry,
   contracts: { "ntfy.sh" => "#!/bin/sh\necho SECRET_STDOUT\necho SECRET_STDERR >&2\nexit 7\n" },

@@ -228,6 +228,21 @@
     url: "http://127.0.0.1:{{ ntfy_port }}/{{ ntfy_topic }}/json?poll=1"
     status_code: [403]
 
+# Publishing is the only proof a publisher token actually works: the write-only
+# check below reads with the same token and expects 403, which an invalid token
+# also returns once anonymous reads are denied, so it cannot tell a working
+# write-only token from a broken one. The token that matters most here is
+# dozzle's, which nothing else exercises end to end; beszel proves its own
+# webhook and the deploy publisher is proven by the deployment report failing
+# the converge when publishing is refused.
+#
+# Cache and Firebase are refused so the proof leaves no trace for a human: the
+# message is neither stored in the topic's history nor pushed to a device, which
+# keeps nas-critical to things that are actually wrong. It is the only publish to
+# that topic that happens on every converge regardless of state; everything else
+# there is event driven. A client with the topic already open still sees it live,
+# which is the cost of proving write access to the real topic rather than a
+# throwaway one.
 - name: Verify each provisioned token can publish
   tags: [platform_verify_ntfy]
   ansible.builtin.uri:
@@ -235,6 +250,8 @@
     method: POST
     headers:
       Authorization: "Bearer {{ item.token }}"
+      Cache: "no"
+      Firebase: "no"
     body: "provisioning verified for {{ item.name }}"
     status_code: [200]
   loop: "{{ ntfy_publishers }}"

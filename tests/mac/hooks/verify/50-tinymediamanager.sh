@@ -13,4 +13,4 @@ mac_ansible_playbook -i "$mac_repo_dir/inventory/mac.yml" "$mac_repo_dir/verify.
   -e @"$PLATFORM_MAC_FIXTURE_VARS_FILE" \
   -e "platform_vault_file=$PLATFORM_MAC_VAULT_FILE" \
   --tags platform_verify_tinymediamanager
-"$mac_script_dir/run-tinymediamanager-contract.sh" assert-retired
+"$mac_script_dir/run-contract.sh" tinymediamanager assert-retired

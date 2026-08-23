@@ -74,7 +74,13 @@ end
 check(failures, python_floor,
       "the role must gate on a Python floor with >=, never an exact version")
 
-check(failures, File.read(ROLE_TASKS).scan(/\bmode:\s*"0[0-7]{3}"/).length >= 5,
+# Counted off the module arguments rather than the file's bytes: scanning the
+# text counted a mode written in a comment or handed to an included role as a
+# variable, neither of which declares a permission on anything.
+declared_modes = tasks.flat_map do |task|
+  task.values.filter_map { |arguments| arguments["mode"] if arguments.is_a?(Hash) }
+end
+check(failures, declared_modes.count { |mode| mode.to_s.match?(/\A0[0-7]{3}\z/) } >= 5,
       "every managed path must declare an explicit mode")
 
 # An unprivileged account cannot always manage its own crontab. The role must
@@ -97,8 +103,25 @@ check(failures, cron_task&.dig("when").to_s.include?("production_auto_deploy_ext
 # verify less than the documented manual command does.
 defaults = YAML.safe_load_file(File.join(ROOT, "roles/production_auto_deploy/defaults/main.yml"))
 declared_tags = defaults.fetch("production_auto_deploy_verify_tags").split(",").map(&:strip).reject(&:empty?)
-existing_tags = Dir.glob(File.join(ROOT, "roles/**/*.yml")).flat_map do |path|
-  File.read(path).scan(/platform_verify_[a-z_]+/)
+# Tags the roles actually declare, read off the parsed tasks. Scanning the text
+# of every YAML file under roles/ counted three things that are not tags: a tag
+# named in a komga comment, one named inside a paperless `when:` expression, and
+# every tag in this role's own defaults, which the glob also matched. That last
+# one made the comparison partly self-satisfying, because the declared list was
+# being checked against a set it belonged to.
+def declared_verify_tags(node)
+  case node
+  when Hash
+    node.flat_map do |key, value|
+      declared = key == "tags" ? Array(value).grep(/\Aplatform_verify_[a-z_]+\z/) : []
+      declared + declared_verify_tags(value)
+    end
+  when Array then node.flat_map { |value| declared_verify_tags(value) }
+  else []
+  end
+end
+existing_tags = Dir.glob(File.join(ROOT, "roles/*/{tasks,handlers}/*.yml")).flat_map do |path|
+  declared_verify_tags(YAML.safe_load_file(path, aliases: true))
 end.uniq
 check(failures, declared_tags.sort == existing_tags.sort,
       "the poller's verify tags must match the service roles exactly; " \
@@ -319,9 +342,25 @@ Dir.mktmpdir("auto-deploy-role") do |root|
 end
 
 # The role must refuse to install when the virtualenv the poller needs is absent,
-# so the operator learns at install time instead of via a failed poll later.
-tasks_source = File.read(ROLE_TASKS)
-check(failures, tasks_source.include?(".venv/bin/ansible-playbook"),
+# so the operator learns at install time instead of via a failed poll later. The
+# path appears in the poller's own command line and in a fail_msg as well, so a
+# whole-file substring said nothing about whether the role ever probed it: the
+# probe has to register a result and an assertion has to consume that result
+# before the cron entry goes in.
+tooling_probe = tasks.find do |task|
+  task.dig("ansible.builtin.stat", "path").to_s.end_with?("/.venv/bin/ansible-playbook")
+end
+tooling_register = tooling_probe.to_h["register"].to_s
+tooling_refusal = tasks.index do |task|
+  !tooling_register.empty? &&
+    Array(task.dig("ansible.builtin.assert", "that")).any? do |clause|
+      clause.to_s.include?("#{tooling_register}.stat.exists")
+    end
+end
+cron_installation = tasks.index { |task| task.key?("ansible.builtin.cron") }
+check(failures,
+      !tooling_probe.nil? && !tooling_refusal.nil? && !cron_installation.nil? &&
+        tooling_refusal < cron_installation,
       "the role must verify the controller virtualenv before installing")
 
 if failures.empty?

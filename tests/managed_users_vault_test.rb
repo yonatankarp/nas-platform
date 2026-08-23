@@ -12,7 +12,7 @@ SPEC_PATH = File.join(ROOT, "roles", "vault_contract", "meta", "argument_specs.y
 TASKS_PATH = File.join(ROOT, "roles", "vault_contract", "tasks", "main.yml")
 GENERATOR_PATH = File.join(ROOT, "tests", "generate-ephemeral-vault.sh")
 DOCS_PATH = File.join(ROOT, "docs", "secrets.md")
-POLICY_PATH = File.join(ROOT, "tests", "policy_test.rb")
+POLICY_SUPPORT_PATH = File.join(ROOT, "tests", "policy_support.rb")
 VALIDATE_POLICY_PATH = File.join(ROOT, "tests", "validate-policy.sh")
 PLAIN_TEMPLATE_PATH = File.join(ROOT, "templates", "vault-plain.yml.j2")
 SHARED_VARS_PATH = File.join(ROOT, "inventory", "group_vars", "all", "main.yml")
@@ -466,12 +466,42 @@ check(failures, schema_filter_source.match?(/in JELLYFIN_FORBIDDEN_POLICY_FIELDS
 check(failures, schema_filter_source.include?("_ntfy_token_ownership") &&
                 tasks.include?("vault_ntfy_dozzle_token") && tasks.include?("vault_ntfy_beszel_token"),
       "vault contract must enforce global ntfy token uniqueness and publisher separation")
-check(failures, tasks.include?("vault_jellyfin_admin_username == 'Yonatan'"),
+# The scalar credential shape rules moved into
+# filter_plugins/vault_credential_schema.py, which reports the offending variable
+# name rather than one generic message for all 49 of them. The role still names
+# every credential, in the mapping it hands the filter; the pinned literals are
+# asserted where they now live. tests/vault_credential_schema_test.py runs the
+# rejection cases, and the role-level backstop is the placeholder rejection below,
+# which drives the real role over the documented vault.
+credential_filter_path = File.join(ROOT, "filter_plugins", "vault_credential_schema.py")
+credential_filter_source = File.file?(credential_filter_path) ? File.read(credential_filter_path) : ""
+check(failures, tasks.include?("vault_credential_errors"),
+      "vault contract must validate portable credentials with the shape filter")
+check(failures, tasks.include?("Offending keys, values"),
+      "credential shape failure must state that values are not shown")
+check(failures, credential_filter_source.include?('JELLYFIN_ADMIN_USERNAME = "Yonatan"') &&
+                credential_filter_source.match?(
+                  /^\s*"vault_jellyfin_admin_username": \(\(EXACT, JELLYFIN_ADMIN_USERNAME\),\),$/
+                ),
       "vault contract must require the exact Jellyfin administrator username")
+# The scalar rule table must cover every scalar the role declares. A credential
+# the table forgets is one the filter reports as unexpected rather than one it
+# validates, and the role would fail closed for the wrong reason.
+scalar_vault_keys = vault_options.keys.grep(/\Avault_/) - ["vault_managed_users"]
+scalar_vault_keys.each do |key|
+  check(failures, credential_filter_source.match?(/^\s*"#{Regexp.escape(key)}": \(/),
+        "credential shape filter must carry a rule for #{key}")
+  check(failures, tasks.include?("'#{key}': #{key}"),
+        "vault contract must submit #{key} for shape validation")
+end
 %w[vault_jellyfin_opensubtitles_username vault_jellyfin_opensubtitles_password].each do |key|
-  check(failures, tasks.include?("#{key} | length > 0"),
+  suffix = key.end_with?("username") ? "username" : "password"
+  check(failures, credential_filter_source.match?(/"#{Regexp.escape(key)}": \(\n\s*\(NONEMPTY, None\),/),
         "vault contract must reject empty #{key}")
-  check(failures, tasks.include?("#{key} != 'example-opensubtitles-#{key.end_with?('username') ? 'username' : 'password'}'"),
+  check(failures, credential_filter_source.include?("\"example-opensubtitles-#{suffix}\"") &&
+                  credential_filter_source.include?(
+                    "(NOT_PLACEHOLDER, OPENSUBTITLES_#{suffix.upcase}_PLACEHOLDERS)"
+                  ),
         "vault contract must reject the documented #{key} placeholder")
 end
 
@@ -483,8 +513,12 @@ ENTRY_FIELDS.each_key do |service|
         "ephemeral generator must include a synthetic #{service} entry")
 end
 
-policy = File.file?(POLICY_PATH) ? File.read(POLICY_PATH) : ""
-check(failures, policy.match?(/EXPECTED_VAULT_KEYS = %w\[.*?vault_managed_users.*?\]\.sort\.freeze/m),
+policy = File.file?(POLICY_SUPPORT_PATH) ? File.read(POLICY_SUPPORT_PATH) : ""
+# vault_managed_users is platform-wide rather than owned by one service, so it is the
+# one pinned key that stayed in the policy source when the per-service keys moved out
+# to tests/expected/<service>.yml. GLOBAL_VAULT_KEYS is concatenated into
+# EXPECTED_VAULT_KEYS, so pinning it here still pins the full expected set.
+check(failures, policy.match?(/GLOBAL_VAULT_KEYS = %w\[[^\]]*vault_managed_users[^\]]*\]\.freeze/m),
       "policy expected vault keys must include vault_managed_users")
 plain_template = File.file?(PLAIN_TEMPLATE_PATH) ? File.read(PLAIN_TEMPLATE_PATH) : ""
 empty_lists = ENTRY_FIELDS.keys.map { |service| "  #{service}: []" }.join("\n")
