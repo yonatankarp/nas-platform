@@ -61,6 +61,13 @@
     label: jellyfin-library
   no_log: true
 
+# Deliberately not redacted. Unlooped, so the result dict adds only the source text of
+# the failing condition, and both conditions read the library inventory Jellyfin
+# returned, comparing counts of ItemId and Name. This file is included from main.yml
+# without no_log on either include site, and it handles library identifiers and media
+# paths, not credentials. The fail_msg names "identifiers or names" as one alternative;
+# duplicate ItemIds mean a broken Jellyfin database while duplicate Names mean two
+# libraries a human can rename, so which one failed decides who fixes it.
 - name: Refuse ambiguous Jellyfin library identities
   ansible.builtin.assert:
     that:
@@ -72,7 +79,6 @@
         jellyfin_library_inventory_response | map(attribute='Name') | unique | list | length
     fail_msg: >-
       Jellyfin returned duplicate library identifiers or names; no library state was changed.
-  no_log: true
 
 - name: Initialize normalized Jellyfin library inventory
   ansible.builtin.set_fact:
