@@ -340,8 +340,7 @@ abort "Dozzle contract failed: environment does not render the single relay list
 RUBY
 
 ruby -ryaml - "$defaults" "$role" "$integration" "$mac_drift" "$mac_verify" "$mode" <<'RUBY'
-defaults_path = ARGV.fetch(0)
-defaults = YAML.safe_load_file(defaults_path)
+defaults = YAML.safe_load_file(ARGV.fetch(0))
 role_tasks = YAML.safe_load_file(ARGV.fetch(1), aliases: false)
 integration = File.read(ARGV.fetch(2))
 mac_drift = File.read(ARGV.fetch(3))
@@ -365,10 +364,12 @@ dispatcher = defaults.fetch("dozzle_dispatcher")
 # dispatcher cannot drift away from the port the relay is told to listen on.
 abort "Dozzle contract failed: managed dispatcher must target only the private alert relay" unless
   dispatcher.fetch("url") == "http://alert-relay:{{ dozzle_alert_relay_port }}/alerts"
+# This is the whole of "the role wires the write-only ntfy token": the equality
+# above names the variable, in the header, on the dispatcher the relay posts to.
+# A second check for the same variable anywhere in the defaults file could only
+# ever pass when this one already had.
 abort "Dozzle contract failed: managed dispatcher authorization differs" unless
   dispatcher.fetch("headers") == {"Authorization" => "Bearer {{ vault_ntfy_dozzle_token }}"}
-abort "Dozzle contract failed: role does not wire the write-only ntfy token" unless
-  File.read(defaults_path).include?("vault_ntfy_dozzle_token")
 expected_template_fields = {
   "version" => "1",
   "rule" => ".Subscription.Name",

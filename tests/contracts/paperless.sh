@@ -60,6 +60,21 @@ render_paperless_mounts() {
   PAPERLESS_RENDERED_COMPOSE=$rendered ruby -rjson -rpathname - "$variant" <<'RUBY'
 variant = ARGV.fetch(0)
 services = JSON.parse(ENV.fetch("PAPERLESS_RENDERED_COMPOSE")).fetch("services")
+# Networking is asserted on the merged effective config rather than on the
+# override's source text. `network_mode: !reset null` and `network_mode: null`
+# parse to the same nil through YAML.safe_load, but they do not merge the same
+# way: with the tag the key is gone from the effective config, and without it the
+# NAS `network_mode: host` survives into the Mac render, which is the failure the
+# override exists to prevent. Only the render can tell the two apart.
+webserver_networking = services.fetch("webserver")
+case variant
+when "nas"
+  abort "Paperless contract failed: nas effective config must use host networking" unless
+    webserver_networking["network_mode"] == "host"
+when "mac"
+  abort "Paperless contract failed: mac effective config did not reset NAS host networking" if
+    webserver_networking.key?("network_mode")
+end
 mounts = services.fetch("webserver").fetch("volumes")
 by_target = mounts.group_by { |mount| mount.fetch("target") }
 expected_targets = %w[
@@ -122,14 +137,58 @@ compose_path, mac_path, role_path, defaults_path, argument_specs_path,
   storage_inventory_path, host_prep_path, generator_path, environment_template_path, snapshot_path = ARGV
 compose = YAML.safe_load_file(compose_path, aliases: true)
 mac = YAML.safe_load_file(mac_path, aliases: true)
-role = YAML.safe_load_file(role_path, aliases: true)
-role_text = File.read(role_path)
+
+# Task files are flattened so a task on a block's rescue or always path is still
+# a task the role executes. main.yml is flat today; an unflattened load would
+# quietly stop seeing whole phases the first time it is not.
+def flatten_tasks(tasks)
+  Array(tasks).flat_map do |task|
+    next [] unless task.is_a?(Hash)
+
+    [task] + flatten_tasks(task["block"]) + flatten_tasks(task["rescue"]) +
+      flatten_tasks(task["always"])
+  end
+end
+
+# Assertions about what the role does read the parsed structure rather than the
+# file's bytes: a task name that survives only inside a comment is not a task,
+# and a module argument found anywhere in the file does not belong to the request
+# the assertion names. role_strings collects the strings one at a time rather than
+# joining them, because a pattern matched against a joined blob spans two
+# unrelated tasks and reports a violation neither of them contains.
+def role_strings(node)
+  case node
+  when Hash then node.flat_map { |key, value| [key.to_s] + role_strings(value) }
+  when Array then node.flat_map { |value| role_strings(value) }
+  when String then [node]
+  else []
+  end
+end
+
+# A folded or literal scalar carries its line breaks into the parsed value, so a
+# URL written across two lines does not match a pattern for the single-line form.
+# Absence invariants are matched against the whitespace-stripped scalar as well,
+# so folding a forbidden endpoint no longer hides it.
+def scalar_forms(value)
+  [value, value.gsub(/[[:space:]]+/, "")].uniq
+end
+
+role_tasks = flatten_tasks(YAML.safe_load_file(role_path, aliases: true))
+role_task_names = role_tasks.filter_map { |task| task["name"] }
+role_scalars = role_strings(role_tasks)
 defaults = YAML.safe_load_file(defaults_path)
 argument_specs = YAML.safe_load_file(argument_specs_path)
 storage_inventory = YAML.safe_load_file(storage_inventory_path)
 host_prep = YAML.safe_load_file(host_prep_path)
-generator = File.read(generator_path)
-environment_template = File.read(environment_template_path)
+generator_vars = YAML.safe_load_file(generator_path).fetch(0).fetch("vars")
+# The environment file has its own grammar, so it is read as the assignments it
+# declares rather than as a substring of the template. A commented-out sample of
+# the right assignment satisfies a substring check while the live line exports
+# something else, and an appended duplicate silently wins on the last one.
+environment_assignments = File.readlines(environment_template_path).filter_map do |line|
+  name, _separator, value = line.strip.partition("=")
+  [name, value] if line.strip.match?(/\A[A-Z][A-Z0-9_]*=/)
+end
 snapshot_text = File.read(snapshot_path)
 
 def refuse(message)
@@ -194,8 +253,7 @@ override_services = mac.fetch("services")
 refuse("Mac override must provide all services") unless override_services.keys.sort == services.keys.sort
 refuse("Mac webserver must reset NAS host networking") unless
   override_services.fetch("webserver").key?("network_mode") &&
-  override_services.fetch("webserver")["network_mode"].nil? &&
-  File.read(mac_path).match?(/^\s+network_mode: !reset null$/)
+  override_services.fetch("webserver")["network_mode"].nil?
 refuse("Mac webserver must publish only its configured port") unless
   override_services.fetch("webserver").fetch("ports") == ["${PAPERLESS_HOST_PORT:?}:8000"]
 %w[broker db gotenberg tika].each do |name|
@@ -203,8 +261,8 @@ refuse("Mac webserver must publish only its configured port") unless
 end
 
 refuse("mail probe must not inspect global processed-mail or task counts") if
-  role_text.match?(%r{/api/(?:processed_mail|tasks)/}) ||
-    role.any? { |task| Array(task["loop"]).sort == %w[processed_mail tasks] }
+  role_scalars.any? { |value| scalar_forms(value).any? { |form| form.match?(%r{/api/(?:processed_mail|tasks)/}) } } ||
+    role_tasks.any? { |task| Array(task["loop"]).sort == %w[processed_mail tasks] }
 
 expected_storage_defaults = {
   "paperless_archive_host_path" => "/volume2/Documents/archive",
@@ -248,44 +306,78 @@ refuse("central storage targets are not validated before mkdir") unless
     storage_validation.dig("ansible.builtin.include_role", "tasks_from") == "target" &&
     storage_validation.dig("vars", "deployment_target_extra_paths").include?("nas_storage")
 
-probe = role.find { |task| task["name"] == "Test the candidate Paperless Gmail credential before persistence" }
+probe = role_tasks.find { |task| task["name"] == "Test the candidate Paperless Gmail credential before persistence" }
 refuse("pinned Paperless 3.0.5 synchronous mail test endpoint differs") unless
   probe&.dig("ansible.builtin.uri", "url") == "{{ paperless_api }}/api/mail_accounts/test/" &&
     probe.dig("ansible.builtin.uri", "method") == "POST" &&
     probe.dig("ansible.builtin.uri", "timeout") == 180 &&
     probe.dig("ansible.builtin.uri", "status_code").to_s.include?("range(100, 600)") &&
     probe["failed_when"] == false
-probe_assertion_index = role.index do |task|
+probe_assertion_index = role_tasks.index do |task|
   task["name"] == "Require the exact synchronous Paperless Gmail credential response"
 end
-probe_index = role.index(probe)
-account_create_index = role.index do |task|
+probe_index = role_tasks.index(probe)
+account_create_index = role_tasks.index do |task|
   task["name"] == "Create the managed Paperless mail account"
 end
-rule_create_index = role.index do |task|
+rule_create_index = role_tasks.index do |task|
   task["name"] == "Create the managed Paperless mail rule"
 end
 refuse("credential response is not required before managed persistence") unless
   probe_index && probe_assertion_index && account_create_index && rule_create_index &&
     probe_index < probe_assertion_index && probe_assertion_index < account_create_index &&
     probe_assertion_index < rule_create_index
-probe_assertion = role.fetch(probe_assertion_index).fetch("ansible.builtin.assert")
+probe_assertion = role_tasks.fetch(probe_assertion_index).fetch("ansible.builtin.assert")
 refuse("credential success signal is not the exact synchronous response") unless
   Array(probe_assertion["that"]).any? do |condition|
     condition.to_s.include?("paperless_candidate_mail_test.json == {'success': true}")
   end
+# The point of the snapshot pair is that both halves straddle the probe and that
+# something compares them afterwards. Three whole-file substrings could not say
+# that: they passed with the two facts set in either order, with the comparison
+# ahead of the probe, or with all three living in a comment.
+def set_fact_index(tasks, name)
+  tasks.index { |task| Hash(task["ansible.builtin.set_fact"]).key?(name) }
+end
+
+probe_state_before_index = set_fact_index(role_tasks, "paperless_managed_mail_probe_state_before")
+probe_state_after_index = set_fact_index(role_tasks, "paperless_managed_mail_probe_state_after")
+probe_state_comparison_index = role_tasks.index do |task|
+  Array(task.dig("ansible.builtin.assert", "that")).any? do |condition|
+    condition.to_s.split.join(" ") ==
+      "paperless_managed_mail_probe_state_before == paperless_managed_mail_probe_state_after"
+  end
+end
 refuse("managed account/rule state is not snapshotted around the credential probe") unless
-  role_text.include?("paperless_managed_mail_probe_state_before") &&
-    role_text.include?("paperless_managed_mail_probe_state_after") &&
-    role_text.include?("paperless_managed_mail_probe_state_before == paperless_managed_mail_probe_state_after")
+  probe_state_before_index && probe_state_after_index && probe_state_comparison_index &&
+    probe_state_before_index < probe_index && probe_index < probe_state_after_index &&
+    probe_state_after_index < probe_state_comparison_index
+schema_validation_index = role_tasks.index do |task|
+  task["name"] == "Validate Paperless mail account and rule schemas before mutation"
+end
 refuse("managed mail schema is not validated globally before mutation") unless
-  role_text.include?("Validate Paperless mail account and rule schemas before mutation")
+  schema_validation_index && schema_validation_index < account_create_index &&
+    schema_validation_index < rule_create_index
+# The five state roots are read off the fact that declares them, so an appended
+# sixth source or a renamed root is a difference rather than extra text the old
+# ordered regex skipped over on its way to the next landmark.
+state_paths_task = role_tasks.find do |task|
+  Hash(task["ansible.builtin.set_fact"]).key?("paperless_effective_state_host_paths")
+end
 refuse("Paperless effective state sources do not match the five Compose/env state roots") unless
-  role_text.match?(/paperless_effective_state_host_paths:.*?\/postgres.*?\/redis.*?\/data.*?\/cache.*?\/tessdata/m)
-storage_layout_index = role.index do |task|
+  state_paths_task &&
+    state_paths_task.fetch("ansible.builtin.set_fact")
+                    .fetch("paperless_effective_state_host_paths") == [
+                      "{{ paperless_effective_state_host_path }}/postgres",
+                      "{{ paperless_effective_state_host_path }}/redis",
+                      "{{ paperless_effective_state_host_path }}/data",
+                      "{{ paperless_effective_cache_host_path }}",
+                      "{{ paperless_effective_state_host_path }}/tessdata"
+                    ]
+storage_layout_index = role_tasks.index do |task|
   task["name"] == "Validate canonical Paperless storage source separation"
 end
-first_storage_mutation_index = role.index do |task|
+first_storage_mutation_index = role_tasks.index do |task|
   task["name"] == "Install the pinned Hebrew OCR model"
 end
 refuse("canonical Paperless storage separation is not validated before mutation") unless
@@ -313,10 +405,11 @@ required_tasks = [
   "Require exact Paperless administrator, mail account, and mail rule",
   "Record the verified Paperless Gmail credential fingerprint"
 ]
-required_tasks.each { |name| refuse("missing #{name}") unless role_text.include?("- name: #{name}") }
-refuse("role must never invoke the consuming mail endpoint") if role_text.match?(%r{/mail_accounts/.+/process/})
+required_tasks.each { |name| refuse("missing #{name}") unless role_task_names.include?(name) }
+refuse("role must never invoke the consuming mail endpoint") if
+  role_scalars.any? { |value| scalar_forms(value).any? { |form| form.match?(%r{/mail_accounts/.+/process/}) } }
 
-secret_tasks = role.reject { |task| task.key?("ansible.builtin.assert") }.select do |task|
+secret_tasks = role_tasks.reject { |task| task.key?("ansible.builtin.assert") }.select do |task|
   task.to_s.match?(/vault_paperless_|paperless_api_token|paperless_mail_account_payload/)
 end
 secret_tasks.each do |task|
@@ -330,7 +423,7 @@ end
   "Require credential testing to preserve managed Paperless mail state",
   "Require exact Paperless administrator, mail account, and mail rule"
 ].each do |name|
-  task = role.find { |candidate| candidate["name"] == name }
+  task = role_tasks.find { |candidate| candidate["name"] == name }
   refuse("missing visible Paperless assertion #{name}") unless task
   refuse("Paperless assertion #{name} must keep static failures visible") if task["no_log"] == true
 end
@@ -392,7 +485,7 @@ refuse("Paperless drill deletion poll is absent") if drill_poll.empty?
 refuse("Paperless drill poll must reuse the drill token rather than log in again") unless
   drill_poll.include?("break if catalogue(drill_token).empty?") &&
     !drill_poll.include?("authenticate")
-admin_create = role.find { |task| task["name"] == "Create the absent vault Paperless administrator" }
+admin_create = role_tasks.find { |task| task["name"] == "Create the absent vault Paperless administrator" }
 admin_argv = admin_create.dig("community.docker.docker_compose_v2_exec", "argv")
 refuse("Paperless administrator creation must use the container password environment") unless
   admin_argv.join(" ").include?('DJANGO_SUPERUSER_PASSWORD="$PAPERLESS_ADMIN_PASSWORD"')
@@ -412,11 +505,11 @@ refuse("Paperless administrator password must not be copied into docker exec arg
   "Read the exact reconciled Paperless mail rule",
   "Require complete reconciled Paperless mail rule listing"
 ].each do |name|
-  task = role.find { |candidate| candidate["name"] == name }
+  task = role_tasks.find { |candidate| candidate["name"] == name }
   refuse("#{name} must run during tagged Paperless verification") unless
     Array(task && task["tags"]).include?("platform_verify_paperless")
 end
-fingerprint_assertion = role.find do |task|
+fingerprint_assertion = role_tasks.find do |task|
   task["name"] == "Require the installed Paperless Gmail credential fingerprint"
 end
 refuse("Paperless credential fingerprint verification must remain redacted") unless
@@ -424,20 +517,50 @@ refuse("Paperless credential fingerprint verification must remain redacted") unl
 refuse("Paperless credential fingerprint assertion must remain verify-only") unless
   Array(fingerprint_assertion["tags"]).sort == %w[never platform_verify_paperless] &&
     fingerprint_assertion["when"] == "'platform_verify_paperless' in ansible_run_tags"
+# The sentinel is read off the play variable the generator actually resolves, so
+# a commented-out sample no longer satisfies it and a value that resolves a
+# template is a difference rather than one spelling of one regex.
 refuse("Gmail app password must be a visible sentinel in the new-platform generator") unless
-  generator.include?("paperless_gmail_app_password: replace-with-google-app-password")
+  generator_vars["paperless_gmail_app_password"] == "replace-with-google-app-password"
 refuse("generator must not synthesize a Gmail app password") if
-  generator.match?(/paperless_gmail_app_password:\s*[\"']?\{\{/)
+  generator_vars["paperless_gmail_app_password"].to_s.include?("{{")
+# Google displays the app password in four groups of four. The role has to strip
+# the spaces, and it has to do it in the payload it sends and in the fingerprint
+# it records, which is what the whole-file substring could not say.
+gmail_password_expression = "vault_paperless_gmail_app_password | replace(' ', '')"
+payload_task = role_tasks.find do |task|
+  Hash(task["ansible.builtin.set_fact"]).key?("paperless_mail_account_payload")
+end
+payload_facts = Hash(payload_task && payload_task["ansible.builtin.set_fact"])
 refuse("role must accept Google's grouped app-password display") unless
-  role_text.include?("vault_paperless_gmail_app_password | replace(' ', '')")
-refuse("host-network endpoint selection must cover NAS and integration") unless
-  environment_template.include?("platform_compose_kind in ['nas', 'integration']")
-%w[
-  vault_paperless_db_password vault_paperless_django_secret_key
-  vault_paperless_admin_username vault_paperless_admin_password vault_paperless_admin_email
-].each do |variable|
+  payload_facts.fetch("paperless_mail_account_payload", "").split.join(" ")
+              .include?("'password': #{gmail_password_expression}") &&
+    payload_facts.fetch("paperless_mail_account_credential_fingerprint", "").split.join(" ")
+                 .include?("(#{gmail_password_expression})")
+# The env file is asserted as the assignments it declares. Every host-network
+# endpoint has to carry the selector, not just the first one a substring found,
+# and every secret-bearing assignment has to be the escaped form exactly once, so
+# an appended unescaped duplicate is rejected rather than shadowed.
+host_network_selector = "{{ '127.0.0.1' if platform_compose_kind in ['nas', 'integration'] else"
+{
+  "PAPERLESS_DBHOST" => "#{host_network_selector} 'db' }}",
+  "PAPERLESS_REDIS" => "redis://#{host_network_selector} 'broker' }}:6379",
+  "PAPERLESS_TIKA_ENDPOINT" => "http://#{host_network_selector} 'tika' }}:9998",
+  "PAPERLESS_GOTENBERG_ENDPOINT" => "http://#{host_network_selector} 'gotenberg' }}:3000"
+}.each do |name, value|
+  refuse("host-network endpoint selection must cover NAS and integration for #{name}") unless
+    environment_assignments.select { |assignment, _| assignment == name } == [[name, value]]
+end
+{
+  "DB_PASSWORD" => "vault_paperless_db_password",
+  "PAPERLESS_SECRET_KEY" => "vault_paperless_django_secret_key",
+  "PAPERLESS_ADMIN_USER" => "vault_paperless_admin_username",
+  "PAPERLESS_ADMIN_PASSWORD" => "vault_paperless_admin_password",
+  "PAPERLESS_ADMIN_MAIL" => "vault_paperless_admin_email"
+}.each do |name, variable|
   refuse("#{variable} is not protected from Compose interpolation") unless
-    environment_template.include?("#{variable} | replace('$', '$$')")
+    environment_assignments.select { |assignment, _| assignment == name } ==
+      [[name, "{{ #{variable} | replace('$', '$$') }}"]]
 end
 
 account = defaults.fetch("paperless_mail_account")
