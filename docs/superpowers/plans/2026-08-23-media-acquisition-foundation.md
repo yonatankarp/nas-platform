@@ -44,8 +44,10 @@ immutable bundle → static contracts → CI → docs/final verification.
 - Modify every active manifest, inventory, vault, playbook, CI, integration, Mac, monitoring, policy, and current operator-documentation reference. Historical superpowers plans/specs remain unchanged.
 - Create `config/media-acquisition.yml`, `tests/media_acquisition_foundation_test.rb`, seven planned expectation files, and seven foundation-only contract scripts.
 - Create `scripts/migrate-media-acquisition-vault.py` and
-  `tests/media_acquisition_vault_migration_test.py`; update only the ciphertext
-  in the tracked `inventory/group_vars/all/vault.yml`.
+  `tests/media_acquisition_vault_migration_test.py` temporarily; test and use
+  them, commit the audited migration, then delete both and their validation
+  registration/current instructions in the same task's follow-up commit.
+  Only the ciphertext in tracked `inventory/group_vars/all/vault.yml` survives.
 - Keep the fifteen-key contract identical in
   `filter_plugins/vault_credential_schema.py`,
   `roles/vault_contract/meta/argument_specs.yml`,
@@ -123,21 +125,75 @@ selection and live configuration in their later phases:
 Add to `tests/policy_test.rb`:
 
 ```ruby
-active_tmm_files = Dir.glob(File.join(ROOT, "**", "*"), File::FNM_DOTMATCH).filter_map do |path|
-  next unless File.file?(path)
-  relative = path.delete_prefix("#{ROOT}/")
-  next if relative.start_with?("docs/superpowers/plans/", "docs/superpowers/specs/")
-  relative if File.binread(path).match?(/tinymediamanager/i)
+retired_token = %w[tiny media manager].join
+active_prefixes = %w[
+  .github/workflows/ config/ filter_plugins/ inventory/ roles/ services/
+  templates/ tests/ scripts/
+].freeze
+active_root_files = %w[
+  README.md site.yml verify.yml generate-secrets.yml validate-vault.yml
+].freeze
+
+listed, status = Open3.capture2(
+  "git", "-C", ROOT, "ls-files", "--cached", "--others",
+  "--exclude-standard", "-z"
+)
+raise "could not enumerate controlled current sources" unless status.success?
+
+active_sources = listed.split("\0").select do |relative|
+  active_prefixes.any? { |prefix| relative.start_with?(prefix) } ||
+    active_root_files.include?(relative) ||
+    (relative.start_with?("docs/") &&
+     !relative.start_with?("docs/superpowers/") &&
+     File.extname(relative) == ".md")
 end
-check(failures, active_tmm_files.empty?,
-      "active repository declarations still mention tinyMediaManager: #{active_tmm_files.join(', ')}")
-check(failures, !File.exist?(File.join(ROOT, "roles", "tinymediamanager")) &&
-                !File.exist?(File.join(ROOT, "services", "tinymediamanager")),
-      "tinyMediaManager role and Compose sources must be deleted after the NAS checkpoint")
+
+# Encrypted bytes cannot be searched semantically. Task 4 decrypts, validates,
+# and atomically replaces this exact tracked file through its audited utility.
+active_sources.delete("inventory/group_vars/all/vault.yml")
+
+migration_audit_paths = %w[
+  scripts/migrate-media-acquisition-vault.py
+  tests/media_acquisition_vault_migration_test.py
+].freeze
+migration_present = migration_audit_paths.select do |relative|
+  File.file?(File.join(ROOT, relative))
+end
+if migration_present.any?
+  runner = File.read(File.join(ROOT, "tests/validate-policy.sh"))
+  registered = runner.lines.map(&:strip).include?(
+    'PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/media_acquisition_vault_migration_test.py'
+  )
+  check(failures, migration_present == migration_audit_paths && registered,
+        "the temporary encrypted-vault migration audit is incomplete")
+  active_sources -= migration_audit_paths if migration_present == migration_audit_paths && registered
+end
+
+retired_declarations = active_sources.filter_map do |relative|
+  path = File.join(ROOT, relative)
+  next unless File.file?(path) && !File.symlink?(path)
+  relative if File.binread(path).downcase.include?(retired_token)
+end
+check(failures, retired_declarations.empty?,
+      "active sources still mention the retired metadata-manager token: " \
+      "#{retired_declarations.join(', ')}")
+check(failures, !File.directory?(File.join(ROOT, "roles", retired_token)) &&
+                !File.directory?(File.join(ROOT, "services", retired_token)),
+      "retired metadata-manager role and Compose sources must be deleted")
 ```
 
-Mutation-test a recreated role and a current README mention. Exempt only the
-historical decision-record trees, not all docs.
+Require `open3` in the test. The forbidden token never appears contiguously in
+the policy source or diagnostics; it is constructed only at runtime. Enumerate
+tracked plus non-ignored untracked source with `git ls-files`, never ignored
+caches or an unrestricted filesystem glob. Mutation-test a recreated role, a
+current README mention, a current operator-doc mention, a deceptive migration
+neighbor, a lone migration file, and missing validation registration.
+
+The exact two migration paths are a temporary audited exception only while
+both exist and the migration behavior test is registered. Historical material
+under `docs/superpowers/` remains outside the active declaration scan so the
+approved design/spec and this implementation plan retain traceability. No
+other docs tree, test, source root, or current declaration is exempt.
 
 - [ ] **Step 2: Run RED**
 
@@ -170,13 +226,21 @@ ruby tests/policy_vault_test.rb
 ruby tests/managed_user_capabilities_test.rb
 ruby tests/secrets_docs_test.rb
 tests/integration_suite_test.sh
-git grep -inE 'tinymediamanager|tinyMediaManager' -- \
-  ':(exclude)docs/superpowers/plans/**' \
-  ':(exclude)docs/superpowers/specs/**'
+tests/validate-policy.sh
+retired_token=$(printf '%s%s%s' tiny media manager)
+if git grep -inF "$retired_token" -- \
+  README.md .github/workflows config filter_plugins inventory roles services \
+  templates tests scripts site.yml verify.yml generate-secrets.yml \
+  validate-vault.yml docs \
+  ':(exclude)inventory/group_vars/all/vault.yml' \
+  ':(exclude)docs/superpowers/**'; then
+  exit 1
+fi
 git diff --check
 ```
 
-Expected: tests pass; grep prints nothing/exits 1; no destructive state/media task.
+Expected: tests pass; grep prints nothing/exits 1; the approved historical
+design remains tracked; no destructive state/media task.
 
 - [ ] **Step 6: Commit**
 
@@ -306,7 +370,10 @@ source.
 
 The Phase 5 VPN provider and any provider-assigned dynamic forwarded peer port
 remain undecided. `lan_mesh` never means router/WAN forwarding; this platform
-adds no router rule or public ingress.
+adds no router rule or public ingress. For qBittorrent, the TCP/UDP 6881 objects
+describe only the local Docker host publication through Gluetun's shared
+namespace. They do not promise that a VPN provider forwards the same peer port;
+provider-side forwarding and any dynamic value remain Phase 5 decisions.
 
 - [ ] **Step 2: Run RED**
 
@@ -331,19 +398,7 @@ container_cpus:
   prowlarr: 0.5
   bazarr: 1.0
   configarr: 0.5
-vault_keys:
-  - vault_arr_radarr_api_key
-  - vault_arr_radarr_admin_username
-  - vault_arr_radarr_admin_password
-  - vault_arr_sonarr_api_key
-  - vault_arr_sonarr_admin_username
-  - vault_arr_sonarr_admin_password
-  - vault_arr_prowlarr_api_key
-  - vault_arr_prowlarr_admin_username
-  - vault_arr_prowlarr_admin_password
-  - vault_arr_bazarr_api_key
-  - vault_arr_bazarr_admin_username
-  - vault_arr_bazarr_admin_password
+vault_keys: []
 ```
 
 `tests/expected/downloaders.yml`:
@@ -356,13 +411,14 @@ container_cpus:
   unpackerr: 1.0
   gluetun: 0.5
   qbittorrent: 1.5
-vault_keys:
-  - vault_downloaders_sabnzbd_api_key
-  - vault_downloaders_sabnzbd_admin_username
-  - vault_downloaders_sabnzbd_admin_password
+vault_keys: []
 ```
 
-The other five files use their exact single-container CPU and `vault_keys: []`. Pass status into `pinned_service_expectations`; empty vault arrays are valid only for planned entries. Mutation-test an implemented empty list.
+The other five files use their exact single-container CPU and `vault_keys: []`. Pass status
+into `pinned_service_expectations`; empty vault arrays are valid only for
+planned entries. Mutation-test an implemented empty list. Task 2 must finish
+with all seven planned expectations empty so its full policy run is green
+before any credential schema exists.
 
 - [ ] **Step 5: Register and verify**
 
@@ -372,6 +428,7 @@ Add `ruby tests/media_acquisition_foundation_test.rb` to `tests/validate-policy.
 ruby tests/media_acquisition_foundation_test.rb
 ruby tests/policy_test.rb
 ruby tests/policy_manifest_test.rb
+tests/validate-policy.sh
 ```
 
 Expected: pass; seven planned entries; no acquisition source tree.
@@ -390,6 +447,7 @@ git commit -m "test: define media acquisition foundation contract"
 - Modify: `inventory/group_vars/all/vault.yml.example`
 - Modify: `roles/vault_contract/meta/argument_specs.yml`, `roles/vault_contract/tasks/main.yml`
 - Modify: `templates/vault-plain.yml.j2`, `generate-secrets.yml`, `tests/generate-ephemeral-vault.sh`
+- Modify: `tests/expected/arr.yml`, `tests/expected/downloaders.yml`
 - Modify: `tests/policy_vault_test.rb`, `tests/vault_credential_schema_test.py`, `tests/secrets_docs_test.rb`, `docs/secrets.md`
 
 - [ ] **Step 1: Write RED key/shape mutations**
@@ -414,6 +472,13 @@ distinct lowercase hexadecimal length
 unsupported fixed lexical shape on passwords. Mutate short/uppercase/nonhex,
 duplicate API keys, duplicate passwords, empty usernames/passwords,
 missing/extra keys, and removal from the `no_log` mapping.
+In the same RED change, replace the two Task 2 empty expectation arrays with
+the exact ordered keys: the first twelve `FOUNDATION_KEYS` in
+`tests/expected/arr.yml` and the final three in
+`tests/expected/downloaders.yml`. Require every expectation key to exist in
+`CREDENTIAL_RULES`, the role arguments/mapping, example, template, generator,
+ephemeral generator, and docs. Mutate a missing, extra, reordered, or
+expectation-only key. The other five planned expectations remain empty.
 
 - [ ] **Step 2: Run RED**
 
@@ -457,6 +522,10 @@ values `00000000000000000000000000000000`,
 and these distinct values: `example-radarr-password`,
 `example-sonarr-password`, `example-prowlarr-password`,
 `example-bazarr-password`, and `example-sabnzbd-password`.
+Populate `tests/expected/arr.yml` and `tests/expected/downloaders.yml` in this
+same implementation step, not in an earlier or later commit, so no committed
+tree can advertise vault inputs absent from the schema or hide schema inputs
+from service expectations.
 
 - [ ] **Step 4: Generate distinct values**
 
@@ -494,6 +563,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 tests/vault_credential_schema_test.py
 ruby tests/secrets_docs_test.rb
 tests/generate-ephemeral-vault.sh --self-test
 ansible-playbook generate-secrets.yml --syntax-check
+tests/validate-policy.sh
 ```
 
 Expected: pass; self-test silent.
@@ -504,16 +574,17 @@ Expected: pass; self-test silent.
 git add filter_plugins inventory/group_vars/all/vault.yml.example roles/vault_contract \
   templates generate-secrets.yml tests/generate-ephemeral-vault.sh \
   tests/policy_vault_test.rb tests/vault_credential_schema_test.py \
-  tests/secrets_docs_test.rb docs/secrets.md
+  tests/secrets_docs_test.rb tests/expected/arr.yml \
+  tests/expected/downloaders.yml docs/secrets.md
 git commit -m "feat: add acquisition foundation credential schema"
 ```
 
 ### Task 4: Migrate the tracked encrypted vault without plaintext artifacts
 
 **Files:**
-- Create: `scripts/migrate-media-acquisition-vault.py`
-- Create: `tests/media_acquisition_vault_migration_test.py`
-- Modify: `tests/validate-policy.sh`
+- Create temporarily, then delete: `scripts/migrate-media-acquisition-vault.py`
+- Create temporarily, then delete: `tests/media_acquisition_vault_migration_test.py`
+- Modify twice: `tests/validate-policy.sh`, `tests/policy_test.rb`
 - Modify: `inventory/group_vars/all/vault.yml` (ciphertext only)
 - Modify: `docs/secrets.md`
 
@@ -670,11 +741,9 @@ guaranteed by the runtime.
 - [ ] **Step 3: Prove migration behavior GREEN**
 
 ```sh
-ansible_python=$(ansible-playbook --version |
-  sed -n 's/^  python version = .* (\(\/[^()]*\))$/\1/p')
-[ -x "$ansible_python" ]
-PYTHONDONTWRITEBYTECODE=1 "$ansible_python" \
-  tests/media_acquisition_vault_migration_test.py
+: "${PLATFORM_VAULT_PASSWORD_FILE:?set the protected vault password file}"
+ansible-playbook -i inventory/local.yml validate-vault.yml \
+  --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE"
 ```
 
 Expected: all duplicate-key, exact-extraction, migration, mode-preservation,
@@ -721,15 +790,24 @@ tests/mac/run.sh --lane fresh \
 
 The Mac runner's existing protected-input copy remains ciphertext and its
 private manual-validation scratch is cleaned by its existing trap. Add a policy
-assertion that the migration test is in `tests/validate-policy.sh`; add docs
-that this one reviewed migration supersedes the ordinary editor workflow.
+assertion that this exact bare command is in `tests/validate-policy.sh` while
+the audited utility exists:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/media_acquisition_vault_migration_test.py
+```
+
+Add temporary docs stating that this one reviewed migration supersedes the
+ordinary editor workflow. Refer to the removed input only as the retired
+credential field; the temporary current docs must not contain the forbidden
+token that is permitted only in the two audited migration source files.
 
 - [ ] **Step 6: Commit only code, tests, docs, and ciphertext**
 
 ```sh
 git add scripts/migrate-media-acquisition-vault.py \
   tests/media_acquisition_vault_migration_test.py tests/validate-policy.sh \
-  docs/secrets.md inventory/group_vars/all/vault.yml
+  tests/policy_test.rb docs/secrets.md inventory/group_vars/all/vault.yml
 git diff --cached --numstat -- inventory/group_vars/all/vault.yml
 git commit -m "chore: migrate encrypted acquisition credentials"
 ```
@@ -738,6 +816,76 @@ Expected: the vault diff is opaque ciphertext, no plaintext secret appears in
 `git diff`, the legacy tMM key is absent after in-memory validation, and no
 password/decrypted/temp file is tracked. This deletes no preserved tMM state or
 media on the NAS.
+
+- [ ] **Step 7: Remove the temporary policy exception and prove RED**
+
+After the audited migration commit exists and the real ciphertext has passed
+validation, remove `migration_audit_paths`, `migration_present`, and their
+registration exception from `tests/policy_test.rb`. Keep the runtime-constructed
+token and controlled source enumeration unchanged.
+
+Run independently while the two audited files still exist:
+
+```sh
+ruby tests/policy_test.rb
+```
+
+Expected: FAIL naming only the two temporary migration source files. This is
+the RED proof that they cannot survive in the final tree.
+
+- [ ] **Step 8: Delete the migration utility, test, registration, and current instructions**
+
+Use `apply_patch` deletion patches for
+`scripts/migrate-media-acquisition-vault.py` and
+`tests/media_acquisition_vault_migration_test.py`. Remove its exact bare command
+from `tests/validate-policy.sh`. Replace the temporary `docs/secrets.md`
+instructions with a value-free statement that the encrypted credential
+migration completed and its one-use utility was removed; do not retain the
+legacy forbidden token in current prose. The implementation and tests remain
+auditable in the preceding Git commit.
+
+- [ ] **Step 9: Prove the final tree GREEN**
+
+Run independently:
+
+```sh
+ruby tests/policy_test.rb
+```
+
+```sh
+ruby tests/policy_manifest_test.rb
+```
+
+```sh
+tests/validate-policy.sh
+```
+
+```sh
+: "${PLATFORM_VAULT_PASSWORD_FILE:?set the protected vault password file}"
+ansible-playbook -i inventory/local.yml validate-vault.yml \
+  --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE"
+```
+
+```sh
+git ls-files scripts/migrate-media-acquisition-vault.py \
+  tests/media_acquisition_vault_migration_test.py
+```
+
+Expected: all tests pass; `git ls-files` prints nothing; current controlled
+sources contain no forbidden token; ciphertext remains valid and unchanged
+from the audited migration commit.
+
+- [ ] **Step 10: Commit the one-use migration cleanup**
+
+```sh
+git add -A -- scripts/migrate-media-acquisition-vault.py \
+  tests/media_acquisition_vault_migration_test.py tests/validate-policy.sh \
+  tests/policy_test.rb docs/secrets.md
+git commit -m "chore: retire acquisition vault migrator"
+```
+
+Expected: this follow-up commit deletes the utility and behavior test while the
+preceding commit preserves their complete reviewed audit trail.
 
 ### Task 5: Create the control network and classified storage
 
@@ -748,7 +896,7 @@ media on the NAS.
 - Modify: `roles/host_prep/meta/argument_specs.yml`, `roles/host_prep/tasks/main.yml`
 - Modify: `services/audiobookshelf/compose.yml`, `roles/audiobookshelf/meta/argument_specs.yml`, `roles/audiobookshelf/templates/env.j2`, `tests/contracts/audiobookshelf.sh`
 - Modify: `services/jellyfin/compose.yml`, `roles/jellyfin/meta/argument_specs.yml`, `roles/jellyfin/templates/env.j2`, `tests/contracts/jellyfin.sh`
-- Modify: `tests/media_acquisition_foundation_test.rb`, `tests/policy_platform_test.rb`, `tests/policy_manifest_test.rb`
+- Modify: `tests/media_acquisition_foundation_test.rb`, `tests/policy_test.rb`, `tests/policy_platform_test.rb`, `tests/policy_manifest_test.rb`
 - Modify: `site.yml`
 
 - [ ] **Step 1: Add failing host assertions**
@@ -907,7 +1055,7 @@ ruby tests/policy_manifest_test.rb
 ansible-playbook -i inventory/local.yml site.yml --syntax-check
 ansible-playbook -i inventory/mac.yml site.yml --syntax-check
 ansible-lint --strict roles/host_prep site.yml
-git add inventory roles/host_prep roles/audiobookshelf roles/jellyfin \
+git add inventory roles/preflight roles/host_prep roles/audiobookshelf roles/jellyfin \
   services/audiobookshelf services/jellyfin site.yml tests
 git commit -m "feat: add inert media acquisition host foundation"
 ```
@@ -934,6 +1082,12 @@ storage/classification, stat, transport, network-driver, and reader-membership
 assertions, then mutation-tests a missing leaf, either reader absent from the
 external network, either reader absent from its Compose default network, and a
 deceptive reader name/service/project label.
+It also extracts the real play-level include into a temporary Ansible probe
+whose shadow `host_prep/tasks/main.yml` fails with a fixed mutation sentinel
+and whose `tasks/verify_media_acquisition.yml` succeeds. Running only
+`--tags platform_verify_media_acquisition_foundation` must succeed without the
+sentinel. Removing or changing `tasks_from`, or replacing `include_role` with a
+plain role entry, must make the probe fail by loading mutating main.
 The hook test requires the Mac runner to execute that verifier and models
 Docker network/container inspection. Before any mutation it requires the exact
 network name plus `nas.platform.purpose=media-control` and
@@ -951,12 +1105,44 @@ Add failure/signal cases after the first disconnect and after bridge removal.
 They require the hook's trap to recreate the exact labeled bridge if necessary,
 reconnect only readers already disconnected by this invocation, verify both
 memberships, preserve the original nonzero/signal status, and leave unrelated
-containers/networks untouched. The report test
+containers/networks untouched. Add forced-failure, HUP, INT, and TERM cases
+immediately after the acquisition leaf is removed; every case must also
+recreate that one exact validated empty leaf with mode `0755` and the original
+Mac proof owner before returning nonzero. The report test
 requires the four bounded fields and rejects vault values, recursive listings,
 or a claim that NAS ACLs were proved. The cleanup test accepts only
 `$PLATFORM_PROJECT_NAME-media-control`, and rejects an empty project name,
 `media-control`, prefix/suffix deception, symlinked state, an unrelated network,
 or any broad Docker prune command.
+
+Create both hook paths before RED as semantic failing stubs:
+
+```sh
+#!/bin/sh
+set -eu
+printf '%s\n' 'media acquisition foundation hook is not implemented' >&2
+exit 1
+```
+
+Create the two directly invoked shell behavior tests with their complete RED
+fixtures, then set every new directly invoked shell file executable before
+running it:
+
+```sh
+chmod 0755 \
+  tests/mac/media-acquisition-foundation-hook-test.sh \
+  tests/mac/media-acquisition-foundation-cleanup-test.sh \
+  tests/mac/hooks/drift/15-media-acquisition-foundation.sh \
+  tests/mac/hooks/verify/15-media-acquisition-foundation.sh
+test -x tests/mac/media-acquisition-foundation-hook-test.sh
+test -x tests/mac/media-acquisition-foundation-cleanup-test.sh
+test -x tests/mac/hooks/drift/15-media-acquisition-foundation.sh
+test -x tests/mac/hooks/verify/15-media-acquisition-foundation.sh
+```
+
+The focused tests and `tests/mac/hook-coverage-test.sh` assert each hook/test
+has Git mode `100755`; mutation-test mode `100644`. RED must therefore reach
+the fixed semantic stub diagnostic, never `Permission denied`.
 
 Run each RED command independently:
 
@@ -1030,15 +1216,24 @@ reader containers exist; and each reader's
 control-network membership in addition to its own Compose default network.
 Require the keys to equal the exact two expected network names, not merely
 contain the control network. Assert both transports false. No task in this file may mutate or use a planned
-service role. `verify.yml` includes only this `tasks_from` file under
-`platform_verify_media_acquisition_foundation`, never host_prep main.
+service role. `verify.yml` dynamically includes only this `tasks_from` file
+under `platform_verify_media_acquisition_foundation`, never host_prep main.
 
-Append this read-only role entry to `verify.yml`:
+Append this play-level `tasks` entry to `verify.yml` (a `roles:` item does not
+support `tasks_from` and is forbidden by the mutation test):
 
 ```yaml
-    - role: host_prep
-      tasks_from: verify_media_acquisition
-      tags: [never, platform_verify_media_acquisition_foundation]
+  tasks:
+    - name: Verify the media acquisition host foundation without converging it
+      ansible.builtin.include_role:
+        name: host_prep
+        tasks_from: verify_media_acquisition
+        apply:
+          tags:
+            - platform_verify_media_acquisition_foundation
+      tags:
+        - never
+        - platform_verify_media_acquisition_foundation
 ```
 
 Use these bounded assertions after the inspection tasks (the static foundation
@@ -1104,6 +1299,7 @@ audiobookshelf=$PLATFORM_PROJECT_NAME-audiobookshelf
 jellyfin=$PLATFORM_PROJECT_NAME-jellyfin
 audiobookshelf_project=$PLATFORM_PROJECT_NAME-audiobookshelf
 jellyfin_project=$PLATFORM_PROJECT_NAME-jellyfin
+leaf=$PLATFORM_MEDIA_ROOT/Media/.acquisition/usenet/movies
 ```
 
 Validate the disposable project syntax first. Inspect the bridge and require
@@ -1117,7 +1313,12 @@ closed.
 
 Install EXIT/HUP/INT/TERM traps before the first disconnect. Track
 `audiobookshelf_disconnect_started`, `jellyfin_disconnect_started`, and
-`network_removal_started` as literal false/true flags, setting each flag
+`network_removal_started` as literal false/true flags. Also validate `$leaf`
+before mutation: every parent component is a real directory below the
+canonical `PLATFORM_MEDIA_ROOT`, the leaf is a real non-symlink directory,
+empty without following links, mode `0755`, owned by `id -u`, and its inventory
+entry omits owner/group as required for NAS-owned media. Track
+`leaf_removal_started` as a fourth literal flag. Set every flag
 **before** its corresponding Docker mutation so a signal cannot land between a
 successful mutation and recovery bookkeeping. Recovery validates any surviving
 network; if removal started and the bridge is absent, recreate only `$network`
@@ -1126,7 +1327,11 @@ with `driver=bridge`,
 `nas.platform.project=$PLATFORM_PROJECT_NAME`. Reconnect only flags set by this
 invocation and only when inspection says that reader is detached, then inspect
 and require both exact endpoint identities plus each reader's unchanged Compose
-default membership. Disable
+default membership. If leaf removal started and the exact leaf is absent,
+revalidate its real parent chain, create only that leaf, set mode `0755`
+without chowning, and verify it is empty, non-symlink, and owned by the same
+recorded proof UID. If it still exists, require the original validated
+properties rather than replacing it. Disable
 the recovery traps only after successful drift installation; on failure or
 signal, recovery runs and the original nonzero/signal exit remains nonzero.
 Never use forced disconnect, a glob, a user/catalog-provided name, or Docker
@@ -1134,10 +1339,10 @@ prune.
 
 After validation, run exactly one non-forced `docker network disconnect` for
 each reader, remove only the now-empty exact bridge, and remove only the seeded
-`$PLATFORM_MEDIA_ROOT/Media/.acquisition/usenet/movies` leaf after proving it is
-an owned real empty directory. The runner's existing next `reconcile` phase
-runs full `run_site`, so the Jellyfin and Audiobookshelf Compose roles recreate
-their exact two-network memberships; its verification must prove reattachment.
+`$leaf` with `rmdir` after setting `leaf_removal_started=true`. The runner's
+existing next `reconcile` phase runs full `run_site`, so the Jellyfin and
+Audiobookshelf Compose roles recreate their exact two-network memberships; its
+verification must prove reattachment.
 
 The verify hook runs the standalone Ansible tag, checks both readers have
 exactly their derived Compose default network and `$network` through
@@ -1213,6 +1418,12 @@ git add roles/host_prep/tasks/verify_media_acquisition.yml verify.yml \
   tests/mac tests/media_acquisition_foundation_test.rb \
   tests/media_acquisition_foundation_verifier_test.rb tests/policy_mac_test.rb \
   tests/policy_manifest_test.rb tests/validate-policy.sh
+test "$(git ls-files -s \
+  tests/mac/media-acquisition-foundation-hook-test.sh \
+  tests/mac/media-acquisition-foundation-cleanup-test.sh \
+  tests/mac/hooks/drift/15-media-acquisition-foundation.sh \
+  tests/mac/hooks/verify/15-media-acquisition-foundation.sh | \
+  awk '$1 != "100755" { bad = 1 } END { print bad + 0 }')" = 0
 git commit -m "test: prove media acquisition foundation lifecycle"
 ```
 
@@ -1314,7 +1525,27 @@ repo_dir=${PLATFORM_CONTRACT_REPO_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/../..
 ruby "$repo_dir/tests/media_acquisition_foundation_test.rb" --project "$project"
 ```
 
-Add strict `--project NAME` parsing/exact selected checks. Do not register planned scripts in runtime registry.
+Before any RED invocation, set every new directly invoked contract executable:
+
+```sh
+chmod 0755 \
+  tests/contracts/arr-foundation.sh \
+  tests/contracts/downloaders-foundation.sh \
+  tests/contracts/bindery-foundation.sh \
+  tests/contracts/kapowarr-foundation.sh \
+  tests/contracts/pinchflat-foundation.sh \
+  tests/contracts/trailarr-foundation.sh \
+  tests/contracts/seerr-foundation.sh
+for contract in tests/contracts/*-foundation.sh; do
+  test -x "$contract"
+done
+```
+
+Add strict `--project NAME` parsing/exact selected checks. Require filesystem
+mode `0755` in `tests/media_acquisition_foundation_test.rb` and staged Git mode
+`100755` before commit; mutation-test `0644`. Do not register planned scripts
+in the runtime registry. The first RED must reach the missing CLI/selection
+diagnostic, never fail with `Permission denied`.
 
 - [ ] **Step 2: Pin job set**
 
@@ -1344,6 +1575,7 @@ Expected: seven passes; premature source/promotion rejected.
 ```sh
 git add tests/contracts/*-foundation.sh tests/media_acquisition_foundation_test.rb \
   tests/policy_test.rb tests/policy_manifest_test.rb
+test "$(git ls-files -s tests/contracts/*-foundation.sh | awk '$1 != "100755" { bad = 1 } END { print bad + 0 }')" = 0
 git commit -m "test: enforce inert acquisition service contracts"
 ```
 
@@ -1414,6 +1646,7 @@ git commit -m "ci: add media acquisition foundation suites"
 **Files:**
 - Modify: `README.md`, `docs/getting-started.md`, `docs/getting-started-mac.md`, `docs/getting-started-nas.md`, `docs/adding-a-service.md`
 - Modify: `tests/docs_links_test.rb`, `tests/secrets_docs_test.rb`
+- Modify: `tests/media_acquisition_foundation_test.rb`
 - Modify: `tests/mac/manual-review.md`, `tests/mac/run.sh`, `tests/mac/verify.sh`, `tests/mac/report.rb`
 
 - [ ] **Step 1: Write RED documentation contracts**
@@ -1433,7 +1666,10 @@ Require NAS manual ACL acceptance: ordinary SMB users cannot access either
 `.acquisition` tree. Mac docs say Docker Desktop cannot prove ACLs. Extend
 `tests/media_acquisition_foundation_test.rb` to parse
 `roles/jellyfin/defaults/main.yml`, require `Open Subtitles` in
-`jellyfin_plugins`, and mutation-test deleting that list item. Also require all
+`jellyfin_plugins`, and run an in-memory removal mutant that must increment the
+test's rejection counter. This is a passing characterization of the current
+tree, not a RED expectation: the real plugin already exists and must remain.
+Also require all
 seven planned role and Compose directories to remain absent and mutation-test
 creating one, so documentation cannot mask premature implementation.
 
@@ -1453,9 +1689,10 @@ ruby tests/docs_links_test.rb
 ruby tests/secrets_docs_test.rb
 ```
 
-Expected: the foundation mutation test fails until the Open Subtitles retention
-guard is added; the documentation tests fail on transitional/missing
-foundation prose.
+Expected: the foundation characterization passes immediately and reports that
+its removal mutant was rejected; the documentation tests alone fail on
+transitional/missing foundation prose. A real current-tree Open Subtitles
+failure means implementation drift, not an expected RED state.
 
 - [ ] **Step 3: Update docs without scope creep**
 
@@ -1484,11 +1721,9 @@ git diff --check origin/main...HEAD
 ```
 
 ```sh
-ansible_python=$(ansible-playbook --version |
-  sed -n 's/^  python version = .* (\(\/[^()]*\))$/\1/p')
-[ -x "$ansible_python" ]
-PYTHONDONTWRITEBYTECODE=1 "$ansible_python" \
-  tests/media_acquisition_vault_migration_test.py
+: "${PLATFORM_VAULT_PASSWORD_FILE:?set the protected vault password file}"
+ansible-playbook -i inventory/local.yml validate-vault.yml \
+  --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE"
 ```
 
 ```sh
@@ -1564,9 +1799,16 @@ git status --short
 git diff --stat origin/main...HEAD
 git log --oneline origin/main..HEAD
 git log --format='%h %s%n%b' origin/main..HEAD | grep -i 'Co-Authored-By' && exit 1 || true
-git grep -inE 'tinymediamanager|tinyMediaManager' -- \
-  ':(exclude)docs/superpowers/plans/**' \
-  ':(exclude)docs/superpowers/specs/**'
+retired_token=$(printf '%s%s%s' tiny media manager)
+if git grep -inF "$retired_token" -- \
+  README.md .github/workflows config filter_plugins inventory roles services \
+  templates tests scripts site.yml verify.yml generate-secrets.yml \
+  validate-vault.yml docs \
+  ':(exclude)inventory/group_vars/all/vault.yml' \
+  ':(exclude)docs/superpowers/**'; then
+  exit 1
+fi
+ruby tests/policy_test.rb
 ```
 
 Expected: clean; no trailers; grep empty.
