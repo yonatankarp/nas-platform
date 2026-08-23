@@ -1,0 +1,208 @@
+---
+schema: 1
+enabled: false
+network:
+  logical_name: media-control
+  driver: bridge
+filesystem_identity:
+  uid_environment: NAS_UID
+  gid_environment: NAS_GID
+  umask: "022"
+configuration_ownership:
+  configarr:
+    - radarr_naming
+    - sonarr_naming
+    - radarr_quality
+    - sonarr_quality
+    - radarr_custom_formats
+    - sonarr_custom_formats
+  ansible:
+    prowlarr:
+      - authentication
+      - radarr_application
+      - sonarr_application
+      - full_sync
+      - operator_selected_indexers
+      - verification
+    radarr_sonarr:
+      - sabnzbd_download_client
+    prowlarr_download_clients: []
+projects:
+  arr:
+    role: arr
+    status: planned
+    services:
+      radarr:
+        class: long_running
+        cpus: 1.0
+        host_ports:
+          - purpose: web_ui
+            protocol: tcp
+            bind_address: 0.0.0.0
+            exposure: lan_mesh
+            host_port: 7878
+            container_port: 7878
+            published_by: radarr
+      sonarr:
+        class: long_running
+        cpus: 1.0
+        host_ports:
+          - purpose: web_ui
+            protocol: tcp
+            bind_address: 0.0.0.0
+            exposure: lan_mesh
+            host_port: 8989
+            container_port: 8989
+            published_by: sonarr
+      prowlarr:
+        class: long_running
+        cpus: 0.5
+        host_ports:
+          - purpose: web_ui
+            protocol: tcp
+            bind_address: 0.0.0.0
+            exposure: lan_mesh
+            host_port: 9696
+            container_port: 9696
+            published_by: prowlarr
+      bazarr:
+        class: long_running
+        cpus: 1.0
+        host_ports:
+          - purpose: web_ui
+            protocol: tcp
+            bind_address: 0.0.0.0
+            exposure: lan_mesh
+            host_port: 6767
+            container_port: 6767
+            published_by: bazarr
+      configarr:
+        class: one_shot
+        cpus: 0.5
+        host_ports: []
+        compose_profile: jobs
+  downloaders:
+    role: downloaders
+    status: planned
+    services:
+      sabnzbd:
+        class: long_running
+        cpus: 2.0
+        host_ports:
+          - purpose: web_ui
+            protocol: tcp
+            bind_address: 0.0.0.0
+            exposure: lan_mesh
+            host_port: 8085
+            container_port: 8080
+            published_by: sabnzbd
+      unpackerr:
+        class: long_running
+        cpus: 1.0
+        host_ports: []
+      gluetun:
+        class: long_running
+        cpus: 0.5
+        host_ports: []
+        compose_profile: torrent
+      qbittorrent:
+        class: long_running
+        cpus: 1.5
+        host_ports:
+          - purpose: web_ui
+            protocol: tcp
+            bind_address: 0.0.0.0
+            exposure: lan_mesh
+            host_port: 8082
+            container_port: 8082
+            published_by: gluetun
+          - purpose: peer
+            protocol: tcp
+            bind_address: 0.0.0.0
+            exposure: lan_mesh
+            host_port: 6881
+            container_port: 6881
+            published_by: gluetun
+          - purpose: peer
+            protocol: udp
+            bind_address: 0.0.0.0
+            exposure: lan_mesh
+            host_port: 6881
+            container_port: 6881
+            published_by: gluetun
+        compose_profile: torrent
+  bindery:
+    role: bindery
+    status: planned
+    services:
+      bindery:
+        class: long_running
+        cpus: 1.0
+        host_ports:
+          - purpose: web_ui
+            protocol: tcp
+            bind_address: 0.0.0.0
+            exposure: lan_mesh
+            host_port: 8787
+            container_port: 8787
+            published_by: bindery
+  kapowarr:
+    role: kapowarr
+    status: planned
+    services:
+      kapowarr:
+        class: long_running
+        cpus: 1.0
+        host_ports:
+          - purpose: web_ui
+            protocol: tcp
+            bind_address: 0.0.0.0
+            exposure: lan_mesh
+            host_port: 5656
+            container_port: 5656
+            published_by: kapowarr
+  pinchflat:
+    role: pinchflat
+    status: planned
+    services:
+      pinchflat:
+        class: long_running
+        cpus: 1.0
+        host_ports:
+          - purpose: web_ui
+            protocol: tcp
+            bind_address: 0.0.0.0
+            exposure: lan_mesh
+            host_port: 8945
+            container_port: 8945
+            published_by: pinchflat
+  trailarr:
+    role: trailarr
+    status: planned
+    services:
+      trailarr:
+        class: long_running
+        cpus: 1.0
+        host_ports:
+          - purpose: web_ui
+            protocol: tcp
+            bind_address: 0.0.0.0
+            exposure: lan_mesh
+            host_port: 7889
+            container_port: 7889
+            published_by: trailarr
+  seerr:
+    role: seerr
+    status: planned
+    services:
+      seerr:
+        class: long_running
+        cpus: 1.0
+        host_ports:
+          - purpose: web_ui
+            protocol: tcp
+            bind_address: 0.0.0.0
+            exposure: lan_mesh
+            host_port: 5055
+            container_port: 5055
+            published_by: seerr

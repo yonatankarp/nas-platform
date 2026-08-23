@@ -1,0 +1,8 @@
+---
+role: downloaders
+container_cpus:
+  sabnzbd: 2.0
+  unpackerr: 1.0
+  gluetun: 0.5
+  qbittorrent: 1.5
+vault_keys: []

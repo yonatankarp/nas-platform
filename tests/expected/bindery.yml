@@ -1,0 +1,5 @@
+---
+role: bindery
+container_cpus:
+  bindery: 1.0
+vault_keys: []

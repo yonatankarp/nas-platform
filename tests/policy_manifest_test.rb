@@ -12,6 +12,31 @@ check_fixture_index_containment(failures)
 check_fixture_index_hostile_environment(failures)
 check_direct_policy_hostile_environment(failures, retired_token)
 
+manifest = YAML.safe_load_file(File.join(ROOT, "services", "manifest.yml"))
+valid_statuses = manifest.fetch("services").to_h do |entry|
+  [entry.fetch("name"), entry.fetch("status")]
+end
+{
+  "missing status-map entry" => [valid_statuses.reject { |name, _status| name == "arr" },
+                                  "exactly the rostered service names"],
+  "extra status-map entry" => [valid_statuses.merge("unknown" => "planned"),
+                                "exactly the rostered service names"],
+  "wrong status-map type" => [[], "service statuses must be a mapping"],
+  "invalid status-map value" => [valid_statuses.merge("arr" => ["planned"]),
+                                 "must be planned, implemented, or accepted"],
+  "implemented service with empty vault list" => [valid_statuses.merge("arr" => "implemented"),
+                                                   "vault_keys must be a nonempty list"]
+}.each do |label, (statuses, diagnostic)|
+  _expectations, problems = pinned_service_expectations(ROOT, statuses)
+  failures << "#{label}: missing #{diagnostic.inspect}" unless problems.any? { |problem| problem.include?(diagnostic) }
+end
+begin
+  pinned_service_expectations(ROOT)
+  failures << "status-aware expectation helper accepts an omitted status mapping"
+rescue ArgumentError
+  nil
+end
+
 expect_failure(failures, "recreated retired role",
                "retired role directory must be absent") do |root|
   path = File.join(root, "roles", retired_token, "tasks", "main.yml")
@@ -145,6 +170,29 @@ end
 
 expect_failure(failures, "heterogeneous services", "each service manifest entry must be a mapping") do |root|
   mutate_manifest(root) { |manifest| manifest.fetch("services")[0] = "audiobookshelf" }
+end
+
+expect_failure(failures, "duplicate manifest service", "service manifest name values must be unique") do |root|
+  mutate_manifest(root) do |document|
+    document.fetch("services") << service(document, "arr").dup
+  end
+end
+
+expect_failure(failures, "planned service promoted without vault contract",
+               "tests/expected/arr.yml vault_keys must be a nonempty list") do |root|
+  mutate_manifest(root) { |document| service(document, "arr")["status"] = "implemented" }
+end
+
+%w[policy_test.rb policy_vault_test.rb].each do |caller|
+  expect_failure(failures, "#{caller} substitutes the manifest status mapping",
+                 "service statuses must have exactly the rostered service names") do |root|
+    path = File.join(root, "tests", caller)
+    source = File.read(path)
+    expected = "pinned_service_expectations(ROOT, service_statuses)"
+    raise "status-aware caller source is absent" unless source.include?(expected)
+
+    File.write(path, source.sub(expected, "pinned_service_expectations(ROOT, {})"))
+  end
 end
 
 expect_failure(failures, "malformed YAML", "service manifest is malformed") do |root|

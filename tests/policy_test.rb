@@ -285,18 +285,6 @@ check(failures,
       end,
       "Mac runner must export dynamic project/port facts and isolate every Compose project")
 
-# The roster and the pinned per-service expectations live in PolicySupport because
-# several policy scripts check different properties of the same data. The roster is
-# stated there rather than derived from the filesystem, so a new service still
-# cannot authorize itself by the arrival of its own expectations file.
-SERVICE_EXPECTATIONS, expectation_problems = pinned_service_expectations(ROOT)
-expectation_problems.each { |problem| check(failures, false, problem) }
-
-EXPECTED_SERVICE_MAPPINGS =
-  SERVICE_EXPECTATIONS.transform_values { |expectation| { "role" => expectation.fetch("role") } }.freeze
-EXPECTED_CONTAINER_CPUS =
-  SERVICE_EXPECTATIONS.transform_values { |expectation| expectation.fetch("container_cpus") }.freeze
-EXPECTED_VAULT_KEYS = pinned_vault_keys(SERVICE_EXPECTATIONS)
 PLATFORM_INVENTORIES = {
   "local.yml" => ["nas_hosts", "nas", "local", "nas"],
   "remote.yml" => ["nas_hosts", "nas", "ssh", "nas"],
@@ -588,6 +576,27 @@ unless manifest_entries.is_a?(Array)
   manifest_entries = []
 end
 
+service_statuses = if manifest["services"].is_a?(Array) && manifest_entries.all? do |entry|
+                        entry.is_a?(Hash) && entry.key?("name") && entry.key?("status")
+                      end
+                     manifest.fetch("services").to_h do |entry|
+                       [entry.fetch("name"), entry.fetch("status")]
+                     end
+                   else
+                     {}
+                   end
+
+# The roster and pinned expectations are loaded only after the strict manifest
+# parse, so status-dependent contracts cannot consult a divergent second copy.
+SERVICE_EXPECTATIONS, expectation_problems =
+  pinned_service_expectations(ROOT, service_statuses)
+expectation_problems.each { |problem| check(failures, false, problem) }
+EXPECTED_SERVICE_MAPPINGS =
+  SERVICE_EXPECTATIONS.transform_values { |expectation| { "role" => expectation.fetch("role") } }.freeze
+EXPECTED_CONTAINER_CPUS =
+  SERVICE_EXPECTATIONS.transform_values { |expectation| expectation.fetch("container_cpus") }.freeze
+EXPECTED_VAULT_KEYS = pinned_vault_keys(SERVICE_EXPECTATIONS)
+
 manifest_names = manifest_entries.filter_map do |service|
   unless service.is_a?(Hash)
     check(failures, false, "each service manifest entry must be a mapping")
@@ -637,12 +646,15 @@ rescue Psych::Exception => e
   {}
 end
 capability_names = capabilities.is_a?(Hash) && capabilities["services"].is_a?(Hash) ? capabilities["services"].keys : []
+managed_user_service_names = service_statuses.filter_map do |name, status|
+  name if name.is_a?(String) && IMPLEMENTED_STATUSES.include?(status)
+end
 check(failures, capabilities.is_a?(Hash) && capabilities["services"].is_a?(Hash),
       "managed-user capability matrix must contain a services mapping")
-check(failures, capability_names.sort == EXPECTED_SERVICES.sort,
+check(failures, capability_names.sort == managed_user_service_names.sort,
       "managed-user capability matrix must cover the complete source platform " \
-      "(missing: #{(EXPECTED_SERVICES - capability_names).join(', ')}; " \
-      "unknown: #{(capability_names - EXPECTED_SERVICES).join(', ')})")
+      "(missing: #{(managed_user_service_names - capability_names).join(', ')}; " \
+      "unknown: #{(capability_names - managed_user_service_names).join(', ')})")
 
 %w[ntfy beszel].each do |name|
   entry = manifest_entries.find { |service| service.is_a?(Hash) && service["name"] == name }

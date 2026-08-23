@@ -22,11 +22,41 @@ def check(failures, condition, message)
   failures << message unless condition
 end
 
-# The expected key set is assembled from the roster's pinned per-service files.
-# Problems with that data are reported here as well as by policy_services_test.rb,
-# because a script that silently proceeds on an empty expectation would report a
-# vault missing every key rather than the file that failed to load.
-SERVICE_EXPECTATIONS, expectation_problems = pinned_service_expectations(ROOT)
+manifest_path = File.join(ROOT, "services", "manifest.yml")
+manifest = begin
+  stream = Psych.parse_stream(File.read(manifest_path))
+  check(failures, stream.children.length == 1,
+        "service manifest must contain exactly one YAML document")
+  duplicate_yaml_keys(stream).uniq.each do |key|
+    check(failures, false, "service manifest contains duplicate mapping key #{key}")
+  end
+  YAML.safe_load_file(manifest_path)
+rescue Errno::ENOENT
+  check(failures, false, "service manifest is missing: services/manifest.yml")
+  {}
+rescue Psych::Exception => e
+  check(failures, false, "service manifest is malformed: #{e.message.lines.first.strip}")
+  {}
+end
+manifest_entries = manifest.is_a?(Hash) && manifest["services"].is_a?(Array) ? manifest["services"] : []
+manifest_names = manifest_entries.filter_map { |entry| entry["name"] if entry.is_a?(Hash) }
+duplicates = manifest_names.tally.select { |_name, count| count > 1 }.keys
+check(failures, duplicates.empty?,
+      "service manifest name values must be unique: #{duplicates.join(', ')}")
+service_statuses = if manifest.is_a?(Hash) && manifest["services"].is_a?(Array) &&
+                      manifest_entries.all? do |entry|
+                        entry.is_a?(Hash) && entry.key?("name") && entry.key?("status")
+                      end
+                     manifest.fetch("services").to_h do |entry|
+                       [entry.fetch("name"), entry.fetch("status")]
+                     end
+                   else
+                     {}
+                   end
+
+# The expected key set is assembled from status-aware pinned per-service files.
+SERVICE_EXPECTATIONS, expectation_problems =
+  pinned_service_expectations(ROOT, service_statuses)
 expectation_problems.each { |problem| check(failures, false, problem) }
 EXPECTED_VAULT_KEYS = pinned_vault_keys(SERVICE_EXPECTATIONS)
 

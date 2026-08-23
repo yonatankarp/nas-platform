@@ -1,0 +1,5 @@
+---
+role: seerr
+container_cpus:
+  seerr: 1.0
+vault_keys: []

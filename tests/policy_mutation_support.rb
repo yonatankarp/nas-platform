@@ -26,6 +26,7 @@ BASE_FIXTURE_PATHS = %w[
   README.md
   ansible.cfg
   config/managed-user-capabilities.yml
+  config/media-acquisition.yml
   controller-requirements.txt
   docs/ansible-basics.md
   docs/adding-a-service.md
@@ -97,6 +98,7 @@ BASE_FIXTURE_PATHS = %w[
   tests/generate-ephemeral-vault.sh
   tests/generate-secrets-redaction-test.sh
   tests/mac_inventory_path_test.yml
+  tests/media_acquisition_foundation_test.rb
   tests/managed_user_state_filter_test.py
   tests/ntfy_verify_execution_test.rb
   tests/komga_library_reconciliation_test.rb
@@ -143,7 +145,9 @@ BASE_FIXTURE_PATHS = %w[
 EXPECTED_FIXTURE_ROLES = {
   "audiobookshelf" => "audiobookshelf", "beszel" => "beszel", "dozzle" => "dozzle",
   "immich" => "immich", "jellyfin" => "jellyfin", "komga" => "komga", "ntfy" => "ntfy",
-  "paperless-ngx" => "paperless_ngx"
+  "paperless-ngx" => "paperless_ngx", "arr" => "arr", "downloaders" => "downloaders",
+  "bindery" => "bindery", "kapowarr" => "kapowarr", "pinchflat" => "pinchflat",
+  "trailarr" => "trailarr", "seerr" => "seerr"
 }.freeze
 
 def fixture_paths(root = ROOT)

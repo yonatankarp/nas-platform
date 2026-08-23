@@ -1,0 +1,9 @@
+---
+role: arr
+container_cpus:
+  radarr: 1.0
+  sonarr: 1.0
+  prowlarr: 0.5
+  bazarr: 1.0
+  configarr: 0.5
+vault_keys: []
