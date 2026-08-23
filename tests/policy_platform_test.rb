@@ -175,15 +175,29 @@ check(failures,
 # leftovers after an interrupted run, so an empty directory self-heals while
 # anything that could be real data still refuses.
 preflight_body = File.read(File.join(ROOT, "roles", "preflight", "tasks", "main.yml"))
-check(failures,
-      preflight_body.include?("docker, info, --format, json") &&
-        preflight_body.include?("platform_container_cpuset") &&
-        preflight_body.include?("platform_effective_container_cpuset"),
-      "preflight must derive the effective container CPU set from Docker capacity")
-check(failures, preflight_body.include?("{{ nas_docker_root }}/.nas-platform-preflight-probe") &&
-                !preflight_body.include?("{{ platform_deploy_root }}/.preflight-probe"),
-      "fresh-install preflight must probe the existing validated nas_docker_root")
 preflight_probe_tasks = flatten_tasks(YAML.safe_load(preflight_body))
+# Read from the parsed tasks rather than the file's bytes. The three names below
+# all appear in the role's own explanatory comments, so a whole-file substring
+# check was satisfied by the commentary alone, and it never said that the derived
+# fact came from the capacity the docker info task actually registered.
+docker_capacity = preflight_probe_tasks.find do |task|
+  Array(task.dig("ansible.builtin.command", "argv")) == %w[docker info --format json]
+end
+effective_cpuset = preflight_probe_tasks.filter_map do |task|
+  task.dig("ansible.builtin.set_fact", "platform_effective_container_cpuset")
+end.first.to_s
+check(failures,
+      docker_capacity && !docker_capacity["register"].to_s.empty? &&
+        effective_cpuset.include?("platform_container_cpuset") &&
+        effective_cpuset.include?(docker_capacity["register"].to_s),
+      "preflight must derive the effective container CPU set from Docker capacity")
+# Every task that touches the probe has to touch the same validated path. Read as
+# text this was two substring checks, one of which only ruled out the single
+# wrong path that happened to have been used before.
+probe_path = "{{ nas_docker_root }}/.nas-platform-preflight-probe"
+probe_targets = task_path_arguments(preflight_probe_tasks).grep(/preflight-probe/)
+check(failures, probe_targets.length >= 4 && probe_targets.uniq == [probe_path],
+      "fresh-install preflight must probe the existing validated nas_docker_root")
 probe_inspection = preflight_probe_tasks.index { |task| task["name"] == "Inspect the deterministic write probe path" }
 probe_refusal = preflight_probe_tasks.index { |task| task["name"] == "Refuse to remove a pre-existing write probe path" }
 probe_reclaim = preflight_probe_tasks.index do |task|

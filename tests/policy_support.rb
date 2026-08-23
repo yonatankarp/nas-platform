@@ -181,6 +181,36 @@ IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
     end
     flattened
   end
+
+  # Every string a parsed task actually carries, keys included, each one on its
+  # own. Policy checks that used to match a pattern against a whole task file
+  # read this instead: a module name or a variable that survives only inside a
+  # comment is not something the role runs, and a pattern matched against the
+  # joined text of a file can span two unrelated tasks and report a violation
+  # that neither of them contains.
+  def task_strings(node)
+    case node
+    when Hash then node.flat_map { |key, value| [key.to_s] + task_strings(value) }
+    when Array then node.flat_map { |value| task_strings(value) }
+    when String then [node]
+    else []
+    end
+  end
+
+  # The paths tasks act on, wherever the module spells them. Used to check that
+  # a set of tasks all address the same location, which a substring search over
+  # the file cannot say.
+  def task_path_arguments(node)
+    case node
+    when Hash
+      node.flat_map do |key, value|
+        named = %w[path paths dest].include?(key) && value.is_a?(String) ? [value] : []
+        named + task_path_arguments(value)
+      end
+    when Array then node.flat_map { |value| task_path_arguments(value) }
+    else []
+    end
+  end
   # These checks prove that verification is structurally wired to an observable,
   # service-specific result. The integration run supplies runtime semantic proof;
   # static policy intentionally does not interpret arbitrary Jinja expressions.

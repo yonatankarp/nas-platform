@@ -34,13 +34,41 @@ compose_path, mac_path, role_path, defaults_path, argument_specs_path,
   contract_source_path, mode = ARGV
 compose = YAML.safe_load_file(compose_path, aliases: true)
 mac = YAML.safe_load_file(mac_path, aliases: true)
-role = File.read(role_path)
 role_tasks = YAML.safe_load_file(role_path)
 defaults = YAML.safe_load_file(defaults_path)
 argument_specs = YAML.safe_load_file(argument_specs_path)
-environment_template = File.read(environment_template_path)
 integration = File.read(integration_path)
 storage = YAML.safe_load_file(storage_inventory_path)
+
+# What the role does is its parsed task list, not the file's bytes. A task name
+# or a repaired field that survives only inside a comment is not something the
+# role executes. role_strings collects the strings one at a time rather than
+# joining them, so a pattern cannot match across two unrelated tasks.
+def role_strings(node)
+  case node
+  when Hash then node.flat_map { |key, value| [key.to_s] + role_strings(value) }
+  when Array then node.flat_map { |value| role_strings(value) }
+  when String then [node]
+  else []
+  end
+end
+# The role wraps its marker handling in a block, whose children are tasks too.
+def flatten_tasks(tasks)
+  Array(tasks).flat_map do |task|
+    next [] unless task.is_a?(Hash)
+    [task] + %w[block rescue always].flat_map { |key| flatten_tasks(task[key]) }
+  end
+end
+all_role_tasks = flatten_tasks(role_tasks)
+role_task_names = all_role_tasks.filter_map { |task| task["name"] }
+# The environment file has its own grammar, so it is read as the assignments it
+# declares rather than as a substring of the template. A commented-out sample of
+# the right assignment satisfies a substring check while the live line exports
+# something else, and a duplicated assignment silently wins on the last one.
+environment_assignments = File.readlines(environment_template_path).filter_map do |line|
+  name, _separator, value = line.strip.partition("=")
+  [name, value] if line.strip.match?(/\A[A-Z][A-Z0-9_]*=/)
+end
 service = compose.fetch("services").fetch("audiobookshelf")
 abort "Audiobookshelf contract failed: NAS UID/GID differs" unless service.fetch("user") == "1000:100"
 abort "Audiobookshelf contract failed: NAS port differs" unless service.fetch("ports") == ["13378:80"]
@@ -94,9 +122,8 @@ abort "Audiobookshelf contract failed: backup policy defaults differ" unless
     "audiobookshelf_backup_container_path", "audiobookshelf_backup_host_path"
   ) == ["0 3 * * *", 7, "/metadata/backups", "/volume1/Docker/audiobookshelf/backups"]
 abort "Audiobookshelf contract failed: backup environment is absent" unless
-  environment_template.include?(
-    "AUDIOBOOKSHELF_BACKUP_PATH={{ audiobookshelf_effective_backup_host_path }}"
-  )
+  environment_assignments.select { |name, _value| name == "AUDIOBOOKSHELF_BACKUP_PATH" } ==
+    [["AUDIOBOOKSHELF_BACKUP_PATH", "{{ audiobookshelf_effective_backup_host_path }}"]]
 backup_storage = storage.fetch("nas_storage").find do |entry|
   entry["path"] == "{{ nas_docker_root }}/audiobookshelf/backups"
 end
@@ -147,7 +174,7 @@ if mode == "static"
     "Require exactly the managed Audiobookshelf library"
   ]
   required_tasks.each do |name|
-    abort "Audiobookshelf contract failed: missing #{name}" unless role.include?("- name: #{name}")
+    abort "Audiobookshelf contract failed: missing #{name}" unless role_task_names.include?(name)
   end
   settings_reads = role_tasks.each_with_index.filter_map do |task, index|
     uri = task.is_a?(Hash) ? task["ansible.builtin.uri"] : nil
@@ -186,9 +213,16 @@ if mode == "static"
                             .partition(%q{when "check-repair-unchanged"}).first
   abort "Audiobookshelf contract failed: drift commit consumes reconciliation evidence" if
     drift_commit_branch.include?("remove_drift_snapshot")
+  # Repair is a type change, never a reactivation. Read from the structure this
+  # holds however the role is formatted, where the old two-literal check only
+  # recognized the one layout the role happened to have when it was written.
+  repair_bodies = all_role_tasks.filter_map do |task|
+    uri = task["ansible.builtin.uri"]
+    uri["body"] if uri.is_a?(Hash) && uri["body"].is_a?(Hash)
+  end
   abort "Audiobookshelf contract failed: role still claims inactive administrator repair" if
-    role.include?("not audiobookshelf_existing_admin.isActive") ||
-      role.include?("isActive: true\n    status_code: [200]\n  when:\n    - not ansible_check_mode\n    - audiobookshelf_admin_repair_required")
+    role_strings(all_role_tasks).any? { |value| value.include?("audiobookshelf_existing_admin.isActive") } ||
+      repair_bodies.any? { |body| body.key?("isActive") }
   markers = %w[
     AUDIOBOOKSHELF_INACTIVE_ADMIN_REFUSED_AND_RECOVERED
     AUDIOBOOKSHELF_DUPLICATE_ADMIN_REFUSED

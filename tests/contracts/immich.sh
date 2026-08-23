@@ -59,6 +59,24 @@ def refuse(message)
   abort "Immich contract failed: #{message}"
 end
 
+# What a role does is its parsed task list, not the file's bytes. A task name, a
+# module, or a variable that survives only inside a comment is not something the
+# role executes, and every role assertion below that reads text is negative: it
+# says the role does not reach into PostgreSQL. Read from source text those were
+# satisfied by the comments explaining why it does not.
+#
+# role_strings yields the strings one at a time rather than joining them, because
+# a pattern matched against a joined blob spans two unrelated tasks and reports a
+# violation that neither of them contains.
+def role_strings(node)
+  case node
+  when Hash then node.flat_map { |key, value| [key.to_s] + role_strings(value) }
+  when Array then node.flat_map { |value| role_strings(value) }
+  when String then [node]
+  else []
+  end
+end
+
 # The complete pinned stack. Immich is one application spread across four
 # containers, so a partial migration is a broken migration.
 EXPECTED_CONTAINERS = %w[
@@ -246,8 +264,9 @@ refuse("configured Immich onboarding must use only the supported self API") unle
     onboarding_update.dig("ansible.builtin.uri", "body") == { "isOnboarded" => true } &&
     Array(onboarding_update["when"]).include?("immich_user_onboarding_phase == 'reconcile'")
 refuse("Immich user onboarding role contains a database write path") if
-  File.read(File.join(root, "roles", "immich", "tasks", "user_onboarding.yml"))
-      .match?(/\bpsql\b|\buser_metadata\b|community\.postgresql|docker_compose_v2_exec/i)
+  role_strings(onboarding_tasks).any? do |value|
+    value.match?(/\bpsql\b|\buser_metadata\b|community\.postgresql|docker_compose_v2_exec/i)
+  end
 managed_task = lambda do |name|
   managed_user_tasks.find { |task| task["name"] == name }
 end
@@ -314,7 +333,28 @@ managed_user_tasks.select { |task| task.key?("ansible.builtin.uri") }.each do |t
     task["no_log"] == true
 end
 
-role = File.read(File.join(root, "roles", "immich", "tasks", "main.yml"))
+role_tasks = YAML.safe_load_file(
+  File.join(root, "roles", "immich", "tasks", "main.yml"),
+  aliases: true
+)
+# What the role does is its parsed task list, not the file's bytes. A task name,
+# a module, or a variable that survives only inside a comment is not something
+# the role executes, and this file's remaining role assertions are all negative:
+# they say the role no longer reaches into PostgreSQL. Read from source text they
+# were satisfied by the comment that explains why it does not.
+#
+# role_strings yields the strings one at a time rather than joining them, because
+# a pattern matched against a joined blob spans two unrelated tasks and reports a
+# violation neither of them contains.
+def role_strings(node)
+  case node
+  when Hash then node.flat_map { |key, value| [key.to_s] + role_strings(value) }
+  when Array then node.flat_map { |value| role_strings(value) }
+  when String then [node]
+  else []
+  end
+end
+role_task_names = role_tasks.filter_map { |task| task["name"] if task.is_a?(Hash) }
 required_tasks = [
   "Read Immich initialization state",
   "Refuse a rotated Immich database credential",
@@ -329,13 +369,8 @@ required_tasks = [
   "Require the managed Immich settings"
 ]
 required_tasks.each do |name|
-  refuse("missing #{name}") unless role.include?("- name: #{name}")
+  refuse("missing #{name}") unless role_task_names.include?(name)
 end
-
-role_tasks = YAML.safe_load_file(
-  File.join(root, "roles", "immich", "tasks", "main.yml"),
-  aliases: true
-)
 
 role_task = lambda do |name|
   role_tasks.find { |task| task["name"] == name }
@@ -890,7 +925,7 @@ probe = role_tasks.find do |task|
 end
 refuse("database credential probe is absent") unless probe
 refuse("role must not use the Docker API exec module") if
-  role.include?("community.docker.docker_container_exec")
+  role_tasks.any? { |task| task.is_a?(Hash) && task.key?("community.docker.docker_container_exec") }
 compose_probe = probe["community.docker.docker_compose_v2_exec"]
 refuse("database credential probe must use Compose exec") unless compose_probe
 {
@@ -938,13 +973,14 @@ refuse("database credential assertion must identify the Compose service") unless
   assertion_text.include?("Compose service database")
 refuse("database credential assertion still identifies a container variable") if
   assertion_text.include?("immich_postgres_container")
+role_values = role_strings(role_tasks)
 refuse("role still references immich_postgres_container") if
-  role.include?("immich_postgres_container")
+  role_values.any? { |value| value.include?("immich_postgres_container") }
 
 # Immich owns its schema through its own migrations. A role that reaches into
 # PostgreSQL to fix application state is editing an opaque database.
 refuse("role must not mutate the application schema") if
-  role.match?(/\b(?:INSERT|UPDATE|DELETE|ALTER|DROP)\s+(?:INTO|FROM|TABLE)?/i)
+  role_values.any? { |value| value.match?(/\b(?:INSERT|UPDATE|DELETE|ALTER|DROP)\s+(?:INTO|FROM|TABLE)?/i) }
 puts "Immich static contract passed (#{platform})"
 RUBY
 
