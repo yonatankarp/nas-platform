@@ -654,10 +654,46 @@ git commit -m "feat: add acquisition foundation credential schema"
 
 - [ ] **Step 1: Write the failing in-memory migration tests**
 
-Create encrypted temporary fixtures. Use the real CLI as a captured subprocess
-only for argument parsing, real encrypted files, path containment, permissions,
-symlink refusal, success silence, and real second-invocation idempotence. Test
-all of these independently: safe full migration; all
+The production migrator derives its repository root and only permitted vault
+target from `__file__`; the behavior suite must exercise that containment, not
+bypass it. For each case, create this synthetic repository below a fresh
+temporary parent:
+
+```text
+synthetic-repo/
+  scripts/migrate-media-acquisition-vault.py
+  filter_plugins/vault_credential_schema.py
+  inventory/group_vars/all/vault.yml
+```
+
+Read the real `scripts/migrate-media-acquisition-vault.py` and
+`filter_plugins/vault_credential_schema.py` as bytes, reject symlink/non-regular
+sources, byte-copy them to those exact synthetic paths with `shutil.copyfile`,
+then require each destination's bytes and SHA-256 digest to equal its production
+source. Create the encrypted fixture only at the synthetic repository's exact
+`inventory/group_vars/all/vault.yml`, mode `0644`; create its mode-`0600`
+password file under the temporary parent, outside the synthetic repository.
+Snapshot the bytes and mode of the real tracked
+`inventory/group_vars/all/vault.yml` before the suite and require them unchanged
+in a suite-level `finally`. No behavior-test call may pass that production vault
+path.
+
+Use the copied CLI as a captured subprocess with the Ansible Python interpreter,
+`cwd=synthetic_repo`, and exactly these arguments:
+
+```python
+[
+    ansible_python,
+    str(synthetic_repo / "scripts/migrate-media-acquisition-vault.py"),
+    "--vault", "inventory/group_vars/all/vault.yml",
+    "--vault-password-file", str(password_file.resolve()),
+]
+```
+
+This direct CLI covers argument parsing, real encrypted files, normal
+`__file__`-derived repository/target containment, credential-filter import,
+permissions, symlink refusal, success silence, and real second-invocation
+idempotence. Test all of these independently: safe full migration; all
 fifteen keys already present, with the legacy
 `vault_tinymediamanager_password` absent, is an idempotent no-op; partial new
 key set, both legacy and new keys, or neither legacy nor new keys fails without
@@ -670,23 +706,53 @@ mode-change failure; and atomic replacement failure. Every duplicate-key case
 must leave the original ciphertext byte-identical. Prove a migrated output is
 mode `0644`, a second invocation accepts that output as an idempotent no-op,
 and its bytes and mode remain unchanged. Snapshot the temporary directory
-before/after and require that every created regular file starts with
-`$ANSIBLE_VAULT;`; scan captured stdout/stderr and filenames for all fixture
-secrets.
+before/after; any migration-created regular file beside the exact synthetic
+vault must start with `$ANSIBLE_VAULT;`. The copied Python sources and external
+password fixture are the only other expected regular files. Scan captured
+stdout/stderr and filenames for all fixture secrets.
+
+Add a containment mutation that writes a valid encrypted fixture to
+`temporary_parent/outside/inventory/group_vars/all/vault.yml`, invokes the
+copied CLI with that absolute path, and requires safe rejection while the
+outside ciphertext/mode, the synthetic exact-target ciphertext/mode, and the
+real tracked vault all remain unchanged.
 
 For deterministic failure injection, the behavior test launches an isolated
-child Python test harness. Inside that child, load the migrator from its exact
-path with `importlib.util.spec_from_file_location`, import it as a module, and
-use `unittest.mock.patch.object` in-process to replace only the relevant
-`secrets` generation call, `VaultLib.encrypt`/`decrypt`, `os.fchmod`,
-`os.fsync`, or `os.replace` call for that case. The child invokes the module's
-real `main([...])` boundary against encrypted temporary fixtures and exits;
+child Python test harness as
+`[ansible_python, "-c", CHILD_HARNESS, str(synthetic_repo),
+str(password_file.resolve())]` with `cwd=synthetic_repo`; neither argument is a
+secret value. The child sets `synthetic_repo = Path(sys.argv[1]).resolve()` and
+refuses any root other than its current physical working directory. Inside that
+child, load the copied migrator from its exact synthetic path with
+`importlib.util.spec_from_file_location`, register the resulting module in
+`sys.modules`, and execute the non-null loader before patching it:
+
+```python
+module_path = synthetic_repo / "scripts/migrate-media-acquisition-vault.py"
+spec = importlib.util.spec_from_file_location(
+    "synthetic_media_acquisition_vault_migrator", module_path
+)
+if spec is None or spec.loader is None:
+    raise AssertionError("copied migrator is not importable")
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+```
+
+The copied module must resolve and load the copied credential filter below the
+same synthetic root. Use `unittest.mock.patch.object` in-process to replace
+only the relevant `secrets` generation call, `VaultLib.encrypt`/`decrypt`,
+`os.fchmod`, `os.fsync`, or `os.replace` call for that case. The child invokes
+the module's real `main([...])` boundary against encrypted temporary fixtures and exits;
 the parent captures and scans its output. This keeps monkeypatches isolated
 without adding any production seam. The production migrator must not inspect a
 test environment variable, accept a hidden test flag, branch on caller/module
-identity, or expose any other failure-injection backdoor. Direct CLI subprocess
-cases never monkeypatch and therefore exercise real argument/filesystem
-boundaries.
+identity, accept a repository/target override, or expose any other
+failure-injection backdoor. Direct CLI subprocess cases never monkeypatch and
+therefore exercise real argument/filesystem boundaries. Both child and direct
+CLI use the copied migrator and copied filter; the behavior suite never invokes
+the production migrator path and never passes, decrypts, or writes the real
+tracked vault.
 
 Run RED independently:
 
@@ -724,9 +790,35 @@ The `if __name__ == "__main__"` entry point exits with `main()`. The isolated
 failure-injection child calls `main([...])` after patching the imported module;
 the direct subprocess invokes this same entry point without patches.
 
+Derive both repository-owned inputs only from the migrator's physical source
+location, before parsing caller paths:
+
+```python
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+EXPECTED_VAULT_PATH = REPOSITORY_ROOT / "inventory/group_vars/all/vault.yml"
+CREDENTIAL_FILTER_PATH = REPOSITORY_ROOT / "filter_plugins/vault_credential_schema.py"
+```
+
+Load `CREDENTIAL_FILTER_PATH` with a fixed internal
+`importlib.util.spec_from_file_location` module name, reject a null spec/loader,
+and first `lstat` its repository-relative parent chain and source as
+non-symlink directories/a regular file. Register it in `sys.modules`, execute
+it, and extract exactly
+`CREDENTIAL_RULES` and `vault_credential_errors`. Do not import a filter from
+the current working directory, ambient `PYTHONPATH`, or an installed package.
+There is no environment variable, CLI option, global setter, or alternate
+function argument for `REPOSITORY_ROOT`, `EXPECTED_VAULT_PATH`, or
+`CREDENTIAL_FILTER_PATH`. Consequently, the production copy binds to the real
+repository and the byte-identical synthetic copy binds to the synthetic
+repository without a test-only path seam.
+
 Use `lstat`, reject symlinks/non-regular files, require vault mode `0644` and
 password-file mode `0600`, and
-require the vault's resolved path to equal the tracked repository path. Read the
+normalize the caller's vault argument with `os.path.abspath` (not
+`realpath`/`Path.resolve`) before requiring exact lexical equality with
+`EXPECTED_VAULT_PATH`. Then `lstat` every repository-relative parent and the
+file itself before opening, so a symlink cannot redefine either side of the
+containment comparison. Read the
 password and ciphertext into byte arrays, then use Ansible's in-process vault
 API so plaintext never becomes a command argument, environment value, pipe,
 stdout, stderr, or filesystem entry:
@@ -844,7 +936,10 @@ PYTHONDONTWRITEBYTECODE=1 "$ansible_python" \
 ```
 
 Expected: all duplicate-key, exact-extraction, migration, mode-preservation,
-no-disclosure, atomicity, and second-invocation idempotence cases pass.
+no-disclosure, atomicity, and second-invocation idempotence cases pass; copied
+source digests and both copied-module import paths match; the outside synthetic
+target is rejected unchanged; and the real tracked vault's bytes/mode are
+unchanged.
 
 - [ ] **Step 4: Migrate the real protected ciphertext**
 
