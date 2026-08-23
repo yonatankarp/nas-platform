@@ -178,8 +178,33 @@ def safe_marker_copy?(candidate, expected_owner, expected_group)
     copy.fetch("group", "").to_s.split.join(" ") == expected_group
 end
 
+def resolve_ansible_playbook(path, fallback)
+  path.split(File::PATH_SEPARATOR).each do |directory|
+    candidate = File.join(directory, "ansible-playbook")
+    return candidate if File.executable?(candidate)
+  end
+  fallback
+end
+
+def require_path_first_ansible_resolution
+  Dir.mktmpdir("nas-platform-ansible-path-") do |directory|
+    path_ansible = File.join(directory, "ansible-playbook")
+    File.write(path_ansible, "#!/bin/sh\nexit 0\n", mode: "w", perm: 0o700)
+    missing_fallback = File.join(directory, "missing", "ansible-playbook")
+    resolved = resolve_ansible_playbook(directory, missing_fallback)
+    refuse("ansible-playbook on PATH was ignored") unless resolved == path_ansible
+  end
+end
+
 def require_portable_restore_identity_defaults
-  ansible = File.join(ROOT, ".venv", "bin", "ansible-playbook")
+  git_common_dir = File.expand_path(
+    Open3.capture2("git", "rev-parse", "--git-common-dir", chdir: ROOT).first.strip,
+    ROOT
+  )
+  local_ansible = File.join(
+    File.dirname(git_common_dir), ".venv", "bin", "ansible-playbook"
+  )
+  ansible = resolve_ansible_playbook(ENV.fetch("PATH", ""), local_ansible)
   refuse("pinned ansible-playbook is unavailable") unless File.executable?(ansible)
 
   required_secrets = {
@@ -291,6 +316,7 @@ expected_defaults.each do |key, value|
   actual = actual.split.join(" ") if actual.is_a?(String) && actual.include?("{{")
   refuse("#{key} default differs") unless actual == value
 end
+require_path_first_ansible_resolution
 require_portable_restore_identity_defaults
 
 argument_specs = YAML.safe_load_file(

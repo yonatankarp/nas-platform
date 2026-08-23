@@ -18,7 +18,9 @@ consume_integration_lifecycle_plan() {
     case "$lifecycle_state:$lifecycle_event" in
       start:seed-retirement-fixture) lifecycle_state=seeded ;;
       start:converge) lifecycle_state=converged ;;
-      seeded:converge) lifecycle_state=retirement-converged ;;
+      seeded:start-retirement-fixture) lifecycle_state=fixture-started ;;
+      seeded:converge) lifecycle_state=converged ;;
+      fixture-started:converge) lifecycle_state=retirement-converged ;;
       retirement-converged:assert-retired) lifecycle_state=retirement-asserted ;;
       converged:success|retirement-asserted:success) lifecycle_state=succeeded ;;
       *)

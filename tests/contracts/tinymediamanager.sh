@@ -213,6 +213,7 @@ export PLATFORM_TINYMEDIAMANAGER_CONTAINER="${PLATFORM_TINYMEDIAMANAGER_CONTAINE
 
 exec ruby - "$mode" <<'RUBY'
 require "digest"
+require "fiddle"
 require "json"
 require "open3"
 require "pathname"
@@ -238,6 +239,11 @@ FIXTURE_SETTINGS = JSON.generate(
 NOFOLLOW = File.const_defined?(:NOFOLLOW) ? File::NOFOLLOW : 0
 DIRECTORY_OPEN_FLAGS = File::RDONLY | File::NONBLOCK | NOFOLLOW
 FILE_READ_FLAGS = File::RDONLY | File::NONBLOCK | NOFOLLOW
+FCHDIR = Fiddle::Function.new(
+  Fiddle::Handle::DEFAULT["fchdir"],
+  [Fiddle::TYPE_INT],
+  Fiddle::TYPE_INT
+)
 
 def fail_contract(message)
   warn "tinyMediaManager contract failed: #{message}"
@@ -332,7 +338,19 @@ ensure
 end
 
 def in_directory(directory, &block)
-  Dir.fchdir(directory.fileno, &block)
+  previous = File.open(".", DIRECTORY_OPEN_FLAGS)
+  result = FCHDIR.call(directory.fileno)
+  raise SystemCallError.new("fchdir", Fiddle.last_error) unless result.zero?
+  block.call
+ensure
+  if previous
+    begin
+      result = FCHDIR.call(previous.fileno)
+      raise SystemCallError.new("fchdir", Fiddle.last_error) unless result.zero?
+    ensure
+      previous.close
+    end
+  end
 end
 
 def open_safe_child_directory(parent, name, label, create: false)

@@ -107,14 +107,16 @@ assert_lifecycle_consumer_rejected 'known event after success' produce_event_aft
   'converge
 success' ]
 [ "$(consume_integration_lifecycle_plan printf '%s\n' \
-  seed-retirement-fixture converge assert-retired success)" = \
+  seed-retirement-fixture start-retirement-fixture converge assert-retired success)" = \
   'seed-retirement-fixture
+start-retirement-fixture
 converge
 assert-retired
 success' ]
 consumed_controller_plan=$(INTEGRATION_RUN_SERVICE_SCENARIOS=false \
   run_integration --consume-lifecycle --suite full)
-[ "$consumed_controller_plan" = 'converge
+[ "$consumed_controller_plan" = 'seed-retirement-fixture
+converge
 success' ] || {
   printf 'controller did not consume the validated lifecycle plan:\n%s\n' \
     "$consumed_controller_plan" >&2
@@ -255,14 +257,18 @@ assert_output \
   --list-suites
 
 retirement_lifecycle='seed-retirement-fixture
+start-retirement-fixture
 converge
 assert-retired
 success'
 assert_lifecycle "$retirement_lifecycle" tinymediamanager
 assert_lifecycle "$retirement_lifecycle" full
-for unrelated_suite in foundation smoke beszel jellyfin; do
-  assert_lifecycle 'converge
-success' "$unrelated_suite"
+assert_lifecycle 'converge
+success' foundation
+for preservation_suite in smoke beszel jellyfin; do
+  assert_lifecycle 'seed-retirement-fixture
+converge
+success' "$preservation_suite"
 done
 
 status=0
@@ -288,7 +294,8 @@ controller_plan=$(INTEGRATION_RUN_SERVICE_SCENARIOS=false \
   printf 'host:\n%s\ncontroller:\n%s\n' "$host_plan" "$controller_plan" >&2
   exit 1
 }
-[ "$host_plan" = 'converge
+[ "$host_plan" = 'seed-retirement-fixture
+converge
 success' ] || {
   printf 'check/diff lifecycle unexpectedly includes service scenarios:\n%s\n' \
     "$host_plan" >&2
@@ -539,6 +546,9 @@ done
 
 ruby - "$repo_dir/tests/contracts/tinymediamanager.sh" <<'RUBY'
 contract = File.read(ARGV.fetch(0))
+abort "retirement fixture requires Ruby 4 Dir.fchdir" if contract.include?("Dir.fchdir")
+abort "retirement fixture lacks descriptor-safe portable fchdir" unless
+  contract.include?('Fiddle::Handle::DEFAULT["fchdir"]')
 exclusive_create = contract[/def create_exclusive.*?^end$/m]
 abort "retirement fixture creation is not exclusive and no-follow" unless
   exclusive_create&.include?("File::EXCL | NOFOLLOW")

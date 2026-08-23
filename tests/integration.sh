@@ -235,8 +235,15 @@ if [ "$describe_suite" = true ] || [ "${INTEGRATION_DESCRIBE_ONLY:-0}" = 1 ]; th
 fi
 
 emit_lifecycle_plan() {
+  if [ -z "$suite_tags" ]; then
+    printf '%s\n' seed-retirement-fixture
+  else
+    case ",$suite_tags," in
+      *,host_prep,*) printf '%s\n' seed-retirement-fixture ;;
+    esac
+  fi
   case "$suite:$run_service_scenarios" in
-    tinymediamanager:true|full:true) printf '%s\n' seed-retirement-fixture ;;
+    tinymediamanager:true|full:true) printf '%s\n' start-retirement-fixture ;;
   esac
   printf '%s\n' converge
   case "$suite:$run_service_scenarios" in
@@ -1394,6 +1401,8 @@ docker run --rm \
       case \$lifecycle_event in
         seed-retirement-fixture)
           run_tinymediamanager_contract seed-retirement-fixture
+          ;;
+        start-retirement-fixture)
           env \
             PLATFORM_KIND=integration \
             PLATFORM_CONTRACT_SANDBOX_ROOT='$sandbox' \
