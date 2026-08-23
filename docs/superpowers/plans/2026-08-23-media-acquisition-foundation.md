@@ -189,6 +189,42 @@ caches or an unrestricted filesystem glob. Mutation-test a recreated role, a
 current README mention, a current operator-doc mention, a deceptive migration
 neighbor, a lone migration file, and missing validation registration.
 
+`policy_mutation_support.rb` deliberately copies a controlled fixture without
+the source repository's `.git`. Add this exact helper and invoke it in both
+`run_policy` and `run_compose_metadata_behavior` immediately after
+`copy_fixture(ROOT, sandbox)` and before yielding the sandbox to any mutation:
+
+```ruby
+def initialize_fixture_index(sandbox)
+  commands = [
+    %w[git init -q],
+    ["git", "config", "user.name", "Policy Fixture"],
+    %w[git config user.email policy-fixture@invalid.example],
+    %w[git add -A]
+  ]
+  commands.each do |command|
+    _stdout, stderr, status = Open3.capture3(*command, chdir: sandbox)
+    raise "could not initialize policy fixture index: #{stderr.lines.first&.strip}" unless status.success?
+  end
+end
+```
+
+The local identity is deterministic and never inherited from the operator.
+Do not commit the fixture: the baseline index must contain every copied source,
+while mutations remain visible as tracked worktree changes or relevant
+untracked files. Keep the policy enumeration exactly
+`git ls-files --cached --others --exclude-standard -z`; `--cached` keeps tracked
+files visible after modification, and `--others --exclude-standard` adds only
+non-ignored current files. Add behavior mutations proving that (1) changing a
+tracked README is detected, (2) creating a new untracked forbidden role/source
+after index initialization is detected, and (3) an ignored
+`tests/__pycache__/retired-policy.pyc` containing the token is not enumerated.
+Put these end-to-end cases in `tests/policy_manifest_test.rb`; keep the helper's
+own initialization/containment assertions in
+`tests/policy_mutation_support.rb`. Also assert the copied fixture had no `.git`
+before initialization and that no parent/source repository index changes.
+Never scan `.git`, ignored caches, or the unrestricted temporary directory.
+
 The exact two migration paths are a temporary audited exception only while
 both exist and the migration behavior test is registered. Historical material
 under `docs/superpowers/` remains outside the active declaration scan so the
@@ -256,7 +292,7 @@ git commit -m "chore: remove retired tinymediamanager declarations"
 - Create: `tests/media_acquisition_foundation_test.rb`
 - Create: `tests/expected/arr.yml`, `tests/expected/downloaders.yml`, `tests/expected/bindery.yml`, `tests/expected/kapowarr.yml`, `tests/expected/pinchflat.yml`, `tests/expected/trailarr.yml`, `tests/expected/seerr.yml`
 - Modify: `services/manifest.yml`
-- Modify: `tests/policy_support.rb`, `tests/policy_test.rb`, `tests/policy_manifest_test.rb`, `tests/policy_mutation_support.rb`, `tests/validate-policy.sh`
+- Modify: `tests/policy_support.rb`, `tests/policy_test.rb`, `tests/policy_vault_test.rb`, `tests/policy_manifest_test.rb`, `tests/policy_mutation_support.rb`, `tests/validate-policy.sh`
 
 - [ ] **Step 1: Write the failing strict catalog test**
 
@@ -414,11 +450,38 @@ container_cpus:
 vault_keys: []
 ```
 
-The other five files use their exact single-container CPU and `vault_keys: []`. Pass status
-into `pinned_service_expectations`; empty vault arrays are valid only for
-planned entries. Mutation-test an implemented empty list. Task 2 must finish
-with all seven planned expectations empty so its full policy run is green
-before any credential schema exists.
+The other five files use their exact single-container CPU and `vault_keys: []`.
+Change the shared signature to:
+
+```ruby
+def pinned_service_expectations(root, service_statuses,
+                                service_names = EXPECTED_SERVICES)
+```
+
+Require `service_statuses` to be a scalar mapping whose keys equal
+`service_names` and whose values belong to `ALLOWED_SERVICE_STATUSES`. For each
+expectation, an empty `vault_keys` array is valid only when
+`service_statuses.fetch(service_name) == "planned"`; a planned entry may gain
+keys later without changing this signature. In both `policy_test.rb` and
+`policy_vault_test.rb`, strictly parse `services/manifest.yml`, reject duplicate
+names/keys, derive exactly:
+
+```ruby
+service_statuses = manifest.fetch("services").to_h do |entry|
+  [entry.fetch("name"), entry.fetch("status")]
+end
+SERVICE_EXPECTATIONS, expectation_problems =
+  pinned_service_expectations(ROOT, service_statuses)
+```
+
+In `policy_test.rb`, move expectation loading after the existing strict
+manifest parse rather than parsing a second divergent copy. In
+`policy_vault_test.rb`, add the same duplicate-safe manifest load before calling
+the helper. Mutation-test a missing/extra/wrong-type status mapping, a duplicate
+manifest service, a planned-to-implemented status change with an empty vault
+list, and either caller omitting or substituting the mapping. Task 2 must finish
+with all seven planned expectations empty so both policy callers and the full
+policy run are independently green before any credential schema exists.
 
 - [ ] **Step 5: Register and verify**
 
@@ -427,6 +490,7 @@ Add `ruby tests/media_acquisition_foundation_test.rb` to `tests/validate-policy.
 ```sh
 ruby tests/media_acquisition_foundation_test.rb
 ruby tests/policy_test.rb
+ruby tests/policy_vault_test.rb
 ruby tests/policy_manifest_test.rb
 tests/validate-policy.sh
 ```
@@ -590,8 +654,10 @@ git commit -m "feat: add acquisition foundation credential schema"
 
 - [ ] **Step 1: Write the failing in-memory migration tests**
 
-Create encrypted temporary fixtures and run the migrator as a subprocess with
-captured output. Test all of these independently: safe full migration; all
+Create encrypted temporary fixtures. Use the real CLI as a captured subprocess
+only for argument parsing, real encrypted files, path containment, permissions,
+symlink refusal, success silence, and real second-invocation idempotence. Test
+all of these independently: safe full migration; all
 fifteen keys already present, with the legacy
 `vault_tinymediamanager_password` absent, is an idempotent no-op; partial new
 key set, both legacy and new keys, or neither legacy nor new keys fails without
@@ -607,6 +673,20 @@ and its bytes and mode remain unchanged. Snapshot the temporary directory
 before/after and require that every created regular file starts with
 `$ANSIBLE_VAULT;`; scan captured stdout/stderr and filenames for all fixture
 secrets.
+
+For deterministic failure injection, the behavior test launches an isolated
+child Python test harness. Inside that child, load the migrator from its exact
+path with `importlib.util.spec_from_file_location`, import it as a module, and
+use `unittest.mock.patch.object` in-process to replace only the relevant
+`secrets` generation call, `VaultLib.encrypt`/`decrypt`, `os.fchmod`,
+`os.fsync`, or `os.replace` call for that case. The child invokes the module's
+real `main([...])` boundary against encrypted temporary fixtures and exits;
+the parent captures and scans its output. This keeps monkeypatches isolated
+without adding any production seam. The production migrator must not inspect a
+test environment variable, accept a hidden test flag, branch on caller/module
+identity, or expose any other failure-injection backdoor. Direct CLI subprocess
+cases never monkeypatch and therefore exercise real argument/filesystem
+boundaries.
 
 Run RED independently:
 
@@ -628,6 +708,21 @@ The script accepts only:
 --vault inventory/group_vars/all/vault.yml
 --vault-password-file ABSOLUTE_PATH
 ```
+
+Keep the importable and CLI boundaries explicit:
+
+```python
+def migrate(vault_argument: str, password_argument: str) -> None:
+    """Validate and migrate one exact encrypted vault, or raise MigrationError."""
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Parse the two public arguments, call migrate, and emit safe diagnostics."""
+```
+
+The `if __name__ == "__main__"` entry point exits with `main()`. The isolated
+failure-injection child calls `main([...])` after patching the imported module;
+the direct subprocess invokes this same entry point without patches.
 
 Use `lstat`, reject symlinks/non-regular files, require vault mode `0644` and
 password-file mode `0600`, and
@@ -741,9 +836,11 @@ guaranteed by the runtime.
 - [ ] **Step 3: Prove migration behavior GREEN**
 
 ```sh
-: "${PLATFORM_VAULT_PASSWORD_FILE:?set the protected vault password file}"
-ansible-playbook -i inventory/local.yml validate-vault.yml \
-  --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE"
+ansible_python=$(ansible-playbook --version |
+  sed -n 's/^  python version = .* (\(\/[^()]*\))$/\1/p')
+[ -x "$ansible_python" ]
+PYTHONDONTWRITEBYTECODE=1 "$ansible_python" \
+  tests/media_acquisition_vault_migration_test.py
 ```
 
 Expected: all duplicate-key, exact-extraction, migration, mode-preservation,
@@ -842,11 +939,33 @@ from `tests/validate-policy.sh`. Replace the temporary `docs/secrets.md`
 instructions with a value-free statement that the encrypted credential
 migration completed and its one-use utility was removed; do not retain the
 legacy forbidden token in current prose. The implementation and tests remain
-auditable in the preceding Git commit.
+auditable in the preceding Git commit. Before staging, prove the worktree files
+are physically absent:
+
+```sh
+test ! -e scripts/migrate-media-acquisition-vault.py
+test ! -e tests/media_acquisition_vault_migration_test.py
+```
 
 - [ ] **Step 9: Prove the final tree GREEN**
 
-Run independently:
+Stage the complete cleanup first so index-based absence checks observe the
+deletions rather than the preceding commit:
+
+```sh
+git add -A -- scripts/migrate-media-acquisition-vault.py \
+  tests/media_acquisition_vault_migration_test.py tests/validate-policy.sh \
+  tests/policy_test.rb docs/secrets.md
+```
+
+Then run independently:
+
+```sh
+if git ls-files --cached -- scripts/migrate-media-acquisition-vault.py \
+  tests/media_acquisition_vault_migration_test.py | grep -q .; then
+  exit 1
+fi
+```
 
 ```sh
 ruby tests/policy_test.rb
@@ -866,26 +985,24 @@ ansible-playbook -i inventory/local.yml validate-vault.yml \
   --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE"
 ```
 
-```sh
-git ls-files scripts/migrate-media-acquisition-vault.py \
-  tests/media_acquisition_vault_migration_test.py
-```
-
-Expected: all tests pass; `git ls-files` prints nothing; current controlled
+Expected: all tests pass; the cached/index query prints nothing; current controlled
 sources contain no forbidden token; ciphertext remains valid and unchanged
 from the audited migration commit.
 
 - [ ] **Step 10: Commit the one-use migration cleanup**
 
 ```sh
-git add -A -- scripts/migrate-media-acquisition-vault.py \
-  tests/media_acquisition_vault_migration_test.py tests/validate-policy.sh \
-  tests/policy_test.rb docs/secrets.md
+git diff --cached --check
+git diff --cached --name-status
 git commit -m "chore: retire acquisition vault migrator"
 ```
 
-Expected: this follow-up commit deletes the utility and behavior test while the
-preceding commit preserves their complete reviewed audit trail.
+Expected: the staged name/status list contains exactly modified
+`docs/secrets.md`, deleted `scripts/migrate-media-acquisition-vault.py`, deleted
+`tests/media_acquisition_vault_migration_test.py`, modified
+`tests/policy_test.rb`, and modified `tests/validate-policy.sh`; this follow-up
+commit deletes the utility and behavior test while the preceding commit
+preserves their complete reviewed audit trail.
 
 ### Task 5: Create the control network and classified storage
 
@@ -1557,7 +1674,9 @@ Require equality with parsed one-shot services. Mutation-test filename/project e
 
 - [ ] **Step 3: Verify RED then GREEN**
 
-First `tests/contracts/arr-foundation.sh static` fails before CLI/executable support. Then:
+With executable mode already set in Step 1, first run
+`tests/contracts/arr-foundation.sh static`; it fails only because the Ruby
+foundation test lacks the required CLI/selection support. Then:
 
 ```sh
 for project in arr downloaders bindery kapowarr pinchflat trailarr seerr; do
