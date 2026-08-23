@@ -219,6 +219,18 @@
     - not ansible_check_mode
   no_log: true
 
+# The four tasks below append to these three lists one declaration at a time,
+# which is the accumulator shape replaced elsewhere in this file. They keep it
+# deliberately: none of them filters anything, they project every declaration
+# into one auth-file record, and the record interleaves two or three fields of
+# the same declaration. Jinja has no per-item format expression, so the loop-free
+# form has to rebuild each record from parallel map(attribute=) passes zipped
+# back together, which is correct only while those passes stay aligned. That is a
+# silent-misalignment hazard over password hashes and access tokens that the loop
+# cannot have, because the loop keeps one declaration's fields together. The
+# order the records accumulate in is also load-bearing: the administrator leads,
+# then publishers, then managed accounts, and the joined strings below depend on
+# it.
 - name: Initialize ntfy declarative provisioning entries
   ansible.builtin.set_fact:
     ntfy_auth_user_entries:
@@ -327,27 +339,30 @@
     - not ansible_check_mode
   no_log: true
 
-- name: Initialize eligible managed ntfy subscription accounts
-  ansible.builtin.set_fact:
-    ntfy_subscription_eligible_users: []
-  when:
-    - ntfy_managed_users_phase in ['subscription_sync', 'verify']
-    - not ansible_check_mode
-  no_log: true
-
 - name: Select eligible managed ntfy subscription accounts
   ansible.builtin.set_fact:
-    ntfy_subscription_eligible_users: "{{ ntfy_subscription_eligible_users + [item] }}"
-  loop: "{{ vault_managed_ntfy_users }}"
-  loop_control:
-    label: ntfy-managed-user:subscription
+    # An account is eligible when any of its declared access entries names a
+    # configured topic it may read. subelements flattens the user-and-access
+    # pairs so both halves of that predicate are one select each, and unique
+    # collapses an account with several readable topics back to a single entry.
+    # Two different accounts cannot be collapsed by unique: only byte-identical
+    # mappings compare equal, which needs a repeated username, and the
+    # eligibility assert above already refuses those.
+    #
+    # selectattr('access', 'sequence') is not decoration. The accumulator this
+    # replaces fed a null access list straight into selectattr, which yields an
+    # empty list and quietly skipped the account, whereas subelements raises on
+    # it. The guard keeps that verdict rather than turning a skip into a failure.
+    ntfy_subscription_eligible_users: >-
+      {{ vault_managed_ntfy_users | selectattr('role', 'equalto', 'user')
+         | selectattr('access', 'sequence')
+         | subelements('access')
+         | selectattr('1.topic', 'in', ntfy_topics)
+         | selectattr('1.permission', 'in', ['read-only', 'read-write'])
+         | map(attribute='0') | unique | list }}
   when:
     - ntfy_managed_users_phase in ['subscription_sync', 'verify']
     - not ansible_check_mode
-    - item.role == 'user'
-    - >-
-      item.access | selectattr('topic', 'in', ntfy_topics) |
-      selectattr('permission', 'in', ['read-only', 'read-write']) | list | length > 0
   no_log: true
 
 - name: Read all eligible managed ntfy accounts before subscription mutation
@@ -426,6 +441,15 @@
   when: ntfy_managed_users_phase == 'subscription_sync'
   no_log: true
 
+# This accumulator stays a loop where the eligibility one above became a filter
+# expression. Its predicate compares one half of each pair against the other:
+# whether this account may read this topic, and whether it is already subscribed
+# to this topic. selectattr can only compare an attribute against a constant, so
+# no filter chain expresses it. The remaining options are a Python plugin reading
+# item.0.item and item.0.json, which would couple it to the internals of a
+# registered uri result and unlike every plugin in filter_plugins/ would not take
+# plain data, or an imperative Jinja {% for %} block, which is less readable than
+# the declarative loop it would replace. Both cost more than the loop.
 - name: Select missing managed ntfy account subscriptions
   ansible.builtin.set_fact:
     ntfy_missing_subscriptions: >-
