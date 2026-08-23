@@ -108,6 +108,8 @@ vault_immich_admin_email: immich-admin@example.invalid
 vault_immich_admin_password: IMMICH-PASSWORD-DO-NOT-LEAK
 vault_jellyfin_admin_username: jellyfin-admin
 vault_jellyfin_admin_password: JELLYFIN-PASSWORD-DO-NOT-LEAK
+vault_jellyfin_opensubtitles_username: opensubtitles-user
+vault_jellyfin_opensubtitles_password: OPENSUBTITLES-PASSWORD-DO-NOT-LEAK
 vault_komga_admin_email: komga-admin@example.invalid
 vault_komga_admin_password: KOMGA-PASSWORD-DO-NOT-LEAK
 vault_ntfy_admin_user: ntfy-admin
@@ -431,7 +433,7 @@ for secret in \
   DOZZLE-PASSWORD-DO-NOT-LEAK IMMICH-PASSWORD-DO-NOT-LEAK \
   JELLYFIN-PASSWORD-DO-NOT-LEAK KOMGA-PASSWORD-DO-NOT-LEAK \
   NTFY-PASSWORD-DO-NOT-LEAK tk_DO_NOT_LEAK_DOZZLE PAPERLESS-PASSWORD-DO-NOT-LEAK \
-  TMM-PASSWORD-DO-NOT-LEAK READER-PASSWORD-DO-NOT-LEAK; do
+  OPENSUBTITLES-PASSWORD-DO-NOT-LEAK READER-PASSWORD-DO-NOT-LEAK; do
   if grep -R -F "$secret" "$manual_output" "$report_root" "$fixture_repo/services/manifest.yml" \
       >/dev/null 2>&1; then
     fail "manual validation leaked recognizable secret $secret"

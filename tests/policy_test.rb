@@ -174,6 +174,7 @@ migration_sources = %w[
   tests/media_acquisition_vault_migration_test.py
 ].freeze
 existing_migration_sources = migration_sources.select { |path| File.exist?(File.join(ROOT, path)) }
+migration_audit_complete = false
 unless existing_migration_sources.empty?
   validation_line = 'PYTHONDONTWRITEBYTECODE=1 "$ansible_python" ' \
                     'tests/media_acquisition_vault_migration_test.py'
@@ -181,20 +182,40 @@ unless existing_migration_sources.empty?
                              policy_runner.lines.map(&:strip).include?(validation_line)
   check(failures, migration_audit_complete,
         "the temporary encrypted-vault migration audit is incomplete")
-  active_sources -= migration_sources if migration_audit_complete
 end
 
 active_sources.sort.each do |relative_path|
-  path = File.join(ROOT, relative_path)
-  next unless File.exist?(path) || File.symlink?(path)
-
-  begin
-    stat = File.lstat(path)
-  rescue SystemCallError => e
-    check(failures, false, "#{relative_path}: cannot inspect active source: #{e.class}")
+  components = relative_path.split("/")
+  unless !components.empty? && components.none? { |component| component.empty? || %w[. ..].include?(component) }
+    check(failures, false, "#{relative_path}: active source path is unsafe")
     next
   end
-  next if stat.symlink? || !stat.file?
+
+  current = ROOT
+  valid_source = components.each_with_index.all? do |component, index|
+    current = File.join(current, component)
+    begin
+      stat = File.lstat(current)
+    rescue SystemCallError => e
+      check(failures, false, "#{relative_path}: cannot inspect active source: #{e.class}")
+      break false
+    end
+
+    if index == components.length - 1
+      regular = stat.file? && !stat.symlink?
+      check(failures, regular, "#{relative_path}: active source must be a regular file")
+      regular
+    else
+      safe_ancestor = stat.directory? && !stat.symlink?
+      check(failures, safe_ancestor,
+            "#{relative_path}: active source path must not contain symlinks")
+      safe_ancestor
+    end
+  end
+  next unless valid_source
+  next if migration_audit_complete && migration_sources.include?(relative_path)
+
+  path = File.join(ROOT, relative_path)
 
   begin
     contains_retired_token = File.binread(path).downcase.include?(retired_token)

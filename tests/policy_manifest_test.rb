@@ -9,6 +9,7 @@ failures = []
 retired_token = %w[tiny media manager].join
 
 check_fixture_index_containment(failures)
+check_fixture_index_hostile_environment(failures)
 
 expect_failure(failures, "recreated retired role",
                "retired role directory must be absent") do |root|
@@ -67,13 +68,38 @@ expect_failure(failures, "changed tracked README detection",
                "retired declaration remains: README.md") do |root|
   path = File.join(root, "README.md")
   File.open(path, "a") { |file| file.puts(retired_token) }
-  _stdout, stderr, status = Open3.capture3("git", "add", "README.md", chdir: root)
+  _stdout, stderr, status = capture3_without_git_routing("git", "add", "README.md", chdir: root)
   raise "could not stage tracked README mutation: #{stderr.lines.first&.strip}" unless status.success?
 end
 
 expect_failure(failures, "new untracked forbidden source",
                "retired declaration remains: tests/retired-policy.rb") do |root|
   File.write(File.join(root, "tests", "retired-policy.rb"), retired_token)
+end
+
+expect_failure(failures, "selected current-source leaf symlink",
+               "tests/retired-policy.rb: active source must be a regular file") do |root|
+  target = File.join(root, "retired-policy-target")
+  File.write(target, retired_token)
+  File.symlink(target, File.join(root, "tests", "retired-policy.rb"))
+end
+
+expect_failure(failures, "selected current-source symlinked ancestor",
+               "tests/operator/guide.rb: active source path must not contain symlinks") do |root|
+  tracked_directory = File.join(root, "tests", "operator")
+  tracked_source = File.join(tracked_directory, "guide.rb")
+  FileUtils.mkdir_p(tracked_directory)
+  File.write(tracked_source, "current source\n")
+  _stdout, stderr, status = capture3_without_git_routing(
+    "git", "add", "tests/operator/guide.rb", chdir: root
+  )
+  raise "could not stage symlink-ancestor fixture: #{stderr.lines.first&.strip}" unless status.success?
+
+  outside = File.join(File.dirname(root), "outside-active-sources")
+  FileUtils.mkdir_p(outside)
+  File.write(File.join(outside, "guide.rb"), retired_token)
+  FileUtils.rm_rf(tracked_directory)
+  File.symlink(outside, tracked_directory)
 end
 
 expect_success(failures, "ignored bytecode containing retired token") do |root|

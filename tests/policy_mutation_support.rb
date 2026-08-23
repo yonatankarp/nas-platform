@@ -224,6 +224,11 @@ def copy_fixture(source_root, sandbox)
   end
 end
 
+def capture3_without_git_routing(*command, **options)
+  clean_environment = ENV.each_key.grep(/\AGIT_/).to_h { |name| [name, nil] }
+  Open3.capture3(clean_environment, *command, **options)
+end
+
 def initialize_fixture_index(sandbox)
   commands = [
     %w[git init -q],
@@ -232,13 +237,57 @@ def initialize_fixture_index(sandbox)
     %w[git add -A]
   ]
   commands.each do |command|
-    _stdout, stderr, status = Open3.capture3(*command, chdir: sandbox)
+    _stdout, stderr, status = capture3_without_git_routing(*command, chdir: sandbox)
     raise "could not initialize policy fixture index: #{stderr.lines.first&.strip}" unless status.success?
   end
 end
 
+def check_fixture_index_hostile_environment(failures)
+  Dir.mktmpdir("nas-platform-hostile-git-") do |parent|
+    sandbox = File.join(parent, "sandbox")
+    unrelated = File.join(parent, "unrelated")
+    FileUtils.mkdir_p(unrelated)
+    copy_fixture(ROOT, sandbox)
+
+    hostile = {
+      "GIT_DIR" => File.join(unrelated, ".git"),
+      "GIT_WORK_TREE" => unrelated,
+      "GIT_INDEX_FILE" => File.join(unrelated, ".git", "index")
+    }
+    clean_environment = ENV.each_key.grep(/\AGIT_/).to_h { |name| [name, nil] }
+    _stdout, stderr, status = Open3.capture3(clean_environment, "git", "init", "-q", unrelated)
+    raise "could not initialize unrelated policy repository: #{stderr.lines.first&.strip}" unless status.success?
+    File.write(File.join(unrelated, "unrelated.txt"), "must remain untracked\n")
+    before_config, = Open3.capture3(clean_environment, "git", "-C", unrelated,
+                                    "config", "--local", "--list")
+    before_index, = Open3.capture3(clean_environment, "git", "-C", unrelated,
+                                   "diff", "--cached", "--binary")
+
+    previous = hostile.to_h { |name, _value| [name, ENV.key?(name) ? ENV[name] : nil] }
+    absent = hostile.keys.reject { |name| ENV.key?(name) }
+    hostile.each { |name, value| ENV[name] = value }
+    begin
+      initialize_fixture_index(sandbox)
+    ensure
+      previous.each { |name, value| ENV[name] = value }
+      absent.each { |name| ENV.delete(name) }
+    end
+
+    after_config, = Open3.capture3(clean_environment, "git", "-C", unrelated,
+                                   "config", "--local", "--list")
+    after_index, = Open3.capture3(clean_environment, "git", "-C", unrelated,
+                                  "diff", "--cached", "--binary")
+    failures << "hostile git routing: fixture repository was not initialized" unless
+      File.directory?(File.join(sandbox, ".git"))
+    failures << "hostile git routing: unrelated repository configuration changed" unless
+      after_config == before_config
+    failures << "hostile git routing: unrelated repository index changed" unless
+      after_index == before_index
+  end
+end
+
 def check_fixture_index_containment(failures)
-  source_index_before, source_error, source_status = Open3.capture3(
+  source_index_before, source_error, source_status = capture3_without_git_routing(
     "git", "diff", "--cached", "--binary", chdir: ROOT
   )
   unless source_status.success?
@@ -252,11 +301,11 @@ def check_fixture_index_containment(failures)
       File.exist?(File.join(sandbox, ".git"))
     initialize_fixture_index(sandbox)
 
-    _head, _head_error, head_status = Open3.capture3(
+    _head, _head_error, head_status = capture3_without_git_routing(
       "git", "rev-parse", "--verify", "HEAD", chdir: sandbox
     )
     failures << "fixture index containment: fixture must not contain a commit" if head_status.success?
-    staged, staged_error, staged_status = Open3.capture3(
+    staged, staged_error, staged_status = capture3_without_git_routing(
       "git", "diff", "--cached", "--name-only", "-z", chdir: sandbox
     )
     unless staged_status.success?
@@ -266,7 +315,7 @@ def check_fixture_index_containment(failures)
       staged_status.success? && staged.split("\0").empty?
   end
 
-  source_index_after, source_error, source_status = Open3.capture3(
+  source_index_after, source_error, source_status = capture3_without_git_routing(
     "git", "diff", "--cached", "--binary", chdir: ROOT
   )
   unless source_status.success?
@@ -328,7 +377,7 @@ def run_policy(scripts = POLICY_SCRIPTS)
     output = ""
     succeeded = true
     scripts.each do |script|
-      stdout, stderr, status = Open3.capture3(RbConfig.ruby, script, chdir: sandbox)
+      stdout, stderr, status = capture3_without_git_routing(RbConfig.ruby, script, chdir: sandbox)
       output += stdout + stderr
       succeeded &&= status.success?
     end
@@ -341,7 +390,7 @@ def run_compose_metadata_behavior
     copy_fixture(ROOT, sandbox)
     initialize_fixture_index(sandbox)
     yield sandbox
-    stdout, stderr, status = Open3.capture3(
+    stdout, stderr, status = capture3_without_git_routing(
       "ansible-playbook", "-i", "localhost,", "-c", "local",
       "tests/compose_metadata_filter_test.yml", chdir: sandbox
     )
