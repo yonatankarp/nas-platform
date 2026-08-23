@@ -29,6 +29,13 @@ expect_failure(failures, "current operator documentation mention",
   end
 end
 
+expect_failure(failures, "nested current operator documentation mention",
+               "retired declaration remains: docs/operator/guide.md") do |root|
+  path = File.join(root, "docs", "operator", "guide.md")
+  FileUtils.mkdir_p(File.dirname(path))
+  File.write(path, retired_token)
+end
+
 expect_failure(failures, "deceptive migration neighbor",
                "retired declaration remains: scripts/migrate-media-acquisition-vault.py.bak") do |root|
   path = File.join(root, "scripts", "migrate-media-acquisition-vault.py.bak")

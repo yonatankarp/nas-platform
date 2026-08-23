@@ -160,7 +160,8 @@ active_sources = if enumeration_status.success?
                    tracked_and_untracked.split("\0").select do |path|
                      active_prefixes.any? { |prefix| path.start_with?(prefix) } ||
                        active_root_files.include?(path) ||
-                       (path.start_with?("docs/") && File.dirname(path) == "docs" &&
+                       (path.start_with?("docs/") &&
+                        !path.start_with?("docs/superpowers/") &&
                         File.extname(path) == ".md")
                    end
                  else
