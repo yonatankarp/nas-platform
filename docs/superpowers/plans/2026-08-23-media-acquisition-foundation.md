@@ -284,17 +284,25 @@ EXPECTED = {
 Require Configarr as sole one-shot and all future role/service directories
 absent. Internal dependencies use control-network names; host publications are
 only LAN/mesh UI access. The qBittorrent logical endpoints are published by the
-shared Gluetun network namespace; Gluetun itself owns no logical port. A host
-collision is the tuple `[bind_address, host_port, protocol]`, so TCP and UDP
-6881 coexist but a second TCP 6881 does not. Exhaustively compare against every
-literal existing canonical host publication after Task 1: 13378, 8090, 8080,
-8081, 2283, 8096, 25600, 2586, and 8000 on `0.0.0.0`, plus the loopback-only
-2375, 3000, 5432, 6379, and 9998 publications. Parse these from canonical
-Compose/default inputs and fail if a new existing publication is not included
-in the comparison. Mutate enabled, every field of
+shared Gluetun network namespace; Gluetun itself owns no logical port.
+
+Parse publications only from each implemented canonical Compose service's
+actual `ports` entries—never from defaults, health endpoints, environment
+variables, comments, or unexposed internal listeners. Normalize a missing bind
+address and IPv4 wildcard to `0.0.0.0`; normalize `::` and `[::]` as IPv6
+wildcards. Two publications collide when protocol and host port match and
+their bind addresses are equal **or either address is an IPv4/IPv6 wildcard**.
+Specific unequal addresses do not collide. Thus TCP and UDP 6881 coexist, but
+`0.0.0.0:3000/tcp` conflicts with the existing
+`127.0.0.1:3000/tcp`. The Dozzle alert relay's internal 8081 listener is not a
+Compose `ports` publication and must not enter this set. Require the parser to
+cover every actual canonical `ports` entry and fail if a new entry is silently
+unexamined. Mutate enabled, every field of
 every port object, missing/extra ports, TCP/UDP collisions, collision with an
-existing publication, ownership lists, Configarr class/profile, manifest
-status, extra project, duplicate YAML key, and premature Compose source.
+existing publication, wildcard-versus-loopback collision, IPv6 wildcard
+collision, allowed TCP/UDP reuse, ownership lists, Configarr class/profile,
+manifest status, extra project, duplicate YAML key, and premature Compose
+source.
 
 The Phase 5 VPN provider and any provider-assigned dynamic forwarded peer port
 remain undecided. `lan_mesh` never means router/WAN forwarding; this platform
@@ -520,10 +528,14 @@ changing ciphertext; malformed YAML; wrong password; symlinked vault;
 symlinked password; vault mode other than `0644`; password mode other than
 `0600`; vault outside
 the repository target; duplicate generated API/password values injected by a
-test seam; encryption failure; and atomic replacement failure. Snapshot the
-temporary directory before/after and require that every created regular file
-starts with `$ANSIBLE_VAULT;`; scan captured stdout/stderr and filenames for all
-fixture secrets.
+test seam; duplicate legacy, new, and unrelated YAML keys; encryption failure;
+mode-change failure; and atomic replacement failure. Every duplicate-key case
+must leave the original ciphertext byte-identical. Prove a migrated output is
+mode `0644`, a second invocation accepts that output as an idempotent no-op,
+and its bytes and mode remain unchanged. Snapshot the temporary directory
+before/after and require that every created regular file starts with
+`$ANSIBLE_VAULT;`; scan captured stdout/stderr and filenames for all fixture
+secrets.
 
 Run RED independently:
 
@@ -560,8 +572,44 @@ from ansible.parsing.vault import VaultLib, VaultSecret
 secret = VaultSecret(password_bytes.rstrip(b"\r\n"))
 vault = VaultLib([(DEFAULT_VAULT_ID_MATCH, secret)])
 plain_bytes = vault.decrypt(ciphertext)
-document = yaml.safe_load(plain_bytes)
+document = yaml.load(plain_bytes, Loader=UniqueKeyLoader)
 ```
+
+Use this loader for both the initial decrypt and the post-encryption
+verification decrypt:
+
+```python
+class UniqueKeyLoader(yaml.SafeLoader):
+    pass
+
+
+def construct_unique_mapping(loader, node, deep=False):
+    if not isinstance(node, yaml.MappingNode):
+        raise MigrationError("YAML mapping is invalid")
+    mapping = {}
+    for key_node, value_node in node.value:
+        if not isinstance(key_node, yaml.ScalarNode):
+            raise MigrationError("YAML mapping key must be scalar")
+        key = loader.construct_object(key_node, deep=deep)
+        try:
+            duplicate = key in mapping
+        except TypeError as error:
+            raise MigrationError("YAML mapping key must be scalar") from error
+        if duplicate:
+            raise MigrationError("duplicate YAML key")
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+UniqueKeyLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    construct_unique_mapping,
+)
+```
+
+The duplicate-key tests cover the legacy tMM key, each new credential family,
+and an unrelated managed-user/root key so the loader cannot protect only the
+fields this migration edits.
 
 Reject a non-mapping or any ambiguous key state. The only migratable state has
 `vault_tinymediamanager_password` present and all fifteen new keys absent; the
@@ -570,9 +618,33 @@ absent. For the migratable state, remove only the legacy tMM vault key in
 memory, add the shared username `nasadmin`, five independently generated
 `secrets.token_hex(16)` API keys, and five independently generated
 `secrets.token_urlsafe(32)` passwords.
-Loop until both distinct groups have exact cardinality five. Validate the
-result through the repository's `vault_credential_errors` filter before
-encryption. Serialize only in memory, then encrypt in memory:
+Loop until both distinct groups have exact cardinality five. For both the
+migrated document and an already-migrated document, perform the exact scalar
+extraction and schema validation below. An already-migrated valid document
+returns silently without creating a temporary file or changing ciphertext or
+mode. Validate the
+document through the repository's credential filter without passing the full
+vault document (which also contains `vault_managed_users`). Import both
+`CREDENTIAL_RULES` and `vault_credential_errors`, build exactly this scalar
+candidate, fail closed on a missing key, and pass only the extracted mapping:
+
+```python
+try:
+    credential_candidate = {
+        key: document[key]
+        for key in CREDENTIAL_RULES
+    }
+except KeyError:
+    raise MigrationError("portable scalar credential is missing") from None
+credential_errors = vault_credential_errors(credential_candidate)
+if credential_errors:
+    raise MigrationError("generated credential schema is invalid")
+```
+
+Tests inject an unrelated valid mapping and prove it is preserved but never
+submitted to `vault_credential_errors`; they also delete one scalar credential
+and prove extraction fails without rewriting ciphertext. Serialize only in
+memory, then encrypt in memory:
 
 ```python
 new_ciphertext = vault.encrypt(
@@ -583,12 +655,16 @@ new_ciphertext = vault.encrypt(
 ```
 
 Create a mode-0600 temporary file beside the tracked vault with
-`O_CREAT|O_EXCL|O_NOFOLLOW`, write **only** `new_ciphertext`, `fsync` the file,
-re-open and decrypt it in memory, compare the full parsed document, atomically
-`os.replace`, then `fsync` the parent. On any failure unlink only the validated
-temporary ciphertext path. Success is silent; failures name only a field or
-safety property, never a value. Zero/delete plaintext byte buffers in `finally`
-where Python permits, while documenting that process-memory erasure cannot be
+`O_CREAT|O_EXCL|O_NOFOLLOW` and keep its descriptor open. Write **only**
+`new_ciphertext`, `fsync` the file, re-open and decrypt it in memory with
+`UniqueKeyLoader`, and compare the full parsed document. Only after ciphertext
+and schema verification, call `os.fchmod(temp_fd, 0o644)`, verify the held
+descriptor reports `0644`, and `fsync` it again. Then atomically `os.replace`
+and `fsync` the parent. This makes the migrator's required `0644` input mode
+equal its output mode. On any failure unlink only the validated temporary
+ciphertext path. Success is silent; failures name only a field or safety
+property, never a value. Zero/delete plaintext byte buffers in `finally` where
+Python permits, while documenting that process-memory erasure cannot be
 guaranteed by the runtime.
 
 - [ ] **Step 3: Prove migration behavior GREEN**
@@ -601,7 +677,8 @@ PYTHONDONTWRITEBYTECODE=1 "$ansible_python" \
   tests/media_acquisition_vault_migration_test.py
 ```
 
-Expected: all migration, no-disclosure, atomicity, and idempotence cases pass.
+Expected: all duplicate-key, exact-extraction, migration, mode-preservation,
+no-disclosure, atomicity, and second-invocation idempotence cases pass.
 
 - [ ] **Step 4: Migrate the real protected ciphertext**
 
@@ -713,9 +790,12 @@ EXPECTED_STORAGE = {
 ```
 
 Require literal false transports in both host groups, derived network identity,
-and parsed bridge creation. Media paths have no owner/group;
+parsed bridge creation, and each canonical Jellyfin/Audiobookshelf service's
+exact `[default, media-control]` network list plus the exact external-network
+declaration. Media paths have no owner/group;
 critical Docker paths use `nas_uid`/`nas_gid`. Mutate recovery/ownership/missing
-leaf/foundation marker/true flag/constant Mac name/driver/broad deletion.
+leaf/foundation marker/true flag/constant Mac name/driver/broad deletion and
+removal of either reader membership independently.
 
 - [ ] **Step 2: Run RED**
 
@@ -784,22 +864,34 @@ second directory list.
 
 - [ ] **Step 6: Join the existing API readers to the bridge**
 
-Add this exact network to both canonical Compose files:
+Declare both networks explicitly in each canonical Compose file. For
+`services/jellyfin/compose.yml`:
 
 ```yaml
+services:
+  jellyfin:
+    networks:
+      - default
+      - media-control
+
 networks:
+  default: {}
   media-control:
     external: true
     name: ${PLATFORM_MEDIA_NETWORK:?}
 ```
 
-Add `networks: [media-control]` to Jellyfin and Audiobookshelf without changing
-ports or read-only mounts. Render exactly
+For `services/audiobookshelf/compose.yml`, use the same declaration with the
+service key changed to `audiobookshelf`; its list is also exactly
+`[default, media-control]`. Do not rely on Compose's implicit default-network
+membership, because an explicit service network list replaces it. Do not
+change ports or read-only mounts. Render exactly
 `PLATFORM_MEDIA_NETWORK={{ platform_media_control_network }}` in each env
 template and require the input in both role argument specs. Extend each
 service-owned contract to require the external network and environment
-assignment. Mutation-test an internal network, a constant NAS-only name, and a
-writable reader media mount.
+assignment. Mutation-test removal of either `default` or `media-control` from
+each reader, an internal network, a constant NAS-only name, and a writable
+reader media mount.
 
 - [ ] **Step 7: Add the site foundation tag**
 
@@ -839,10 +931,27 @@ git commit -m "feat: add inert media acquisition host foundation"
 Create all four focused tests first. The Ruby verifier test parses
 `verify.yml` and the new tasks file, requires a read-only include and exact
 storage/classification, stat, transport, network-driver, and reader-membership
-assertions, then mutation-tests a missing leaf and either reader absent from the
-exact network. The hook test requires the Mac runner to execute that verifier,
-requires drift to remove/recreate only the project-derived bridge and one empty
-acquisition leaf, and requires a second verification to pass. The report test
+assertions, then mutation-tests a missing leaf, either reader absent from the
+external network, either reader absent from its Compose default network, and a
+deceptive reader name/service/project label.
+The hook test requires the Mac runner to execute that verifier and models
+Docker network/container inspection. Before any mutation it requires the exact
+network name plus `nas.platform.purpose=media-control` and
+`nas.platform.project=$PLATFORM_PROJECT_NAME`; the only external-network
+endpoints must be the exact Mac containers
+`$PLATFORM_PROJECT_NAME-audiobookshelf` and
+`$PLATFORM_PROJECT_NAME-jellyfin`, with exact Compose service/project labels.
+It rejects deceptive names/labels and a third endpoint without issuing a
+disconnect. It proves the hook disconnects only those two identities, removes
+and recreates only the project-derived bridge and one empty acquisition leaf,
+and that the normal reconcile phase reattaches both readers to both `default`
+and `media-control` before a second verification passes.
+
+Add failure/signal cases after the first disconnect and after bridge removal.
+They require the hook's trap to recreate the exact labeled bridge if necessary,
+reconnect only readers already disconnected by this invocation, verify both
+memberships, preserve the original nonzero/signal status, and leave unrelated
+containers/networks untouched. The report test
 requires the four bounded fields and rejects vault values, recursive listings,
 or a claim that NAS ACLs were proved. The cleanup test accepts only
 `$PLATFORM_PROJECT_NAME-media-control`, and rejects an empty project name,
@@ -966,6 +1075,12 @@ that exact marked inventory reached the host):
       - media_acquisition_reader_info.results | length == 2
       - media_acquisition_reader_info.results[0].exists
       - media_acquisition_reader_info.results[1].exists
+      - (media_acquisition_reader_info.results[0].container.Name | regex_replace('^/', '')) == audiobookshelf_container_name
+      - (media_acquisition_reader_info.results[1].container.Name | regex_replace('^/', '')) == jellyfin_container_name
+      - media_acquisition_reader_info.results[0].container.Config.Labels['com.docker.compose.service'] == 'audiobookshelf'
+      - media_acquisition_reader_info.results[1].container.Config.Labels['com.docker.compose.service'] == 'jellyfin'
+      - media_acquisition_reader_info.results[0].container.Config.Labels['com.docker.compose.project'] == audiobookshelf_compose_project_name
+      - media_acquisition_reader_info.results[1].container.Config.Labels['com.docker.compose.project'] == jellyfin_compose_project_name
       - (media_acquisition_reader_info.results[0].container.NetworkSettings.Networks.keys() | list | sort) == ([audiobookshelf_compose_project_name ~ '_default', platform_media_control_network] | sort)
       - (media_acquisition_reader_info.results[1].container.NetworkSettings.Networks.keys() | list | sort) == ([jellyfin_compose_project_name ~ '_default', platform_media_control_network] | sort)
   changed_when: false
@@ -981,20 +1096,61 @@ tests/mac/hooks/drift/15-media-acquisition-foundation.sh
 tests/mac/hooks/verify/15-media-acquisition-foundation.sh
 ```
 
-The drift hook validates the disposable namespace, removes only
-`$PLATFORM_PROJECT_NAME-media-control`, and removes only the seeded empty
+The drift hook derives these values and accepts no caller-supplied alternatives:
+
+```sh
+network=$PLATFORM_PROJECT_NAME-media-control
+audiobookshelf=$PLATFORM_PROJECT_NAME-audiobookshelf
+jellyfin=$PLATFORM_PROJECT_NAME-jellyfin
+audiobookshelf_project=$PLATFORM_PROJECT_NAME-audiobookshelf
+jellyfin_project=$PLATFORM_PROJECT_NAME-jellyfin
+```
+
+Validate the disposable project syntax first. Inspect the bridge and require
+its exact name, `bridge` driver, and exact project/purpose labels. Inspect each
+reader and require exact container name plus
+`com.docker.compose.service=audiobookshelf` /
+`com.docker.compose.service=jellyfin` and the corresponding exact Compose
+project above. Inspect the bridge endpoint set and require equality with those
+two container IDs before mutation; an unexpected or missing endpoint fails
+closed.
+
+Install EXIT/HUP/INT/TERM traps before the first disconnect. Track
+`audiobookshelf_disconnect_started`, `jellyfin_disconnect_started`, and
+`network_removal_started` as literal false/true flags, setting each flag
+**before** its corresponding Docker mutation so a signal cannot land between a
+successful mutation and recovery bookkeeping. Recovery validates any surviving
+network; if removal started and the bridge is absent, recreate only `$network`
+with `driver=bridge`,
+`nas.platform.purpose=media-control`, and
+`nas.platform.project=$PLATFORM_PROJECT_NAME`. Reconnect only flags set by this
+invocation and only when inspection says that reader is detached, then inspect
+and require both exact endpoint identities plus each reader's unchanged Compose
+default membership. Disable
+the recovery traps only after successful drift installation; on failure or
+signal, recovery runs and the original nonzero/signal exit remains nonzero.
+Never use forced disconnect, a glob, a user/catalog-provided name, or Docker
+prune.
+
+After validation, run exactly one non-forced `docker network disconnect` for
+each reader, remove only the now-empty exact bridge, and remove only the seeded
 `$PLATFORM_MEDIA_ROOT/Media/.acquisition/usenet/movies` leaf after proving it is
-an owned real empty directory. The verify hook runs the standalone Ansible tag,
-checks reader membership through `docker inspect`, verifies all 28 classified
-paths without enumerating contents, and proves no catalog container name
-exists. Register both with hook coverage.
+an owned real empty directory. The runner's existing next `reconcile` phase
+runs full `run_site`, so the Jellyfin and Audiobookshelf Compose roles recreate
+their exact two-network memberships; its verification must prove reattachment.
+
+The verify hook runs the standalone Ansible tag, checks both readers have
+exactly their derived Compose default network and `$network` through
+`docker inspect`, verifies all 28 classified paths without enumerating
+contents, and proves no catalog container name exists. Register both hooks with
+hook coverage.
 
 - [ ] **Step 4: Implement bounded reporting and cleanup**
 
 Emit exactly:
 
 ```text
-MEDIA_ACQUISITION_FOUNDATION: network present, bridge driver, isolated project name
+MEDIA_ACQUISITION_FOUNDATION: network present, bridge driver, isolated project name, Jellyfin and Audiobookshelf attached to default and media-control
 MEDIA_ACQUISITION_STORAGE: 28 exact classified paths present
 MEDIA_ACQUISITION_TRANSPORTS: usenet=false torrent=false
 MEDIA_ACQUISITION_CONTAINERS: none declared or started
@@ -1035,7 +1191,8 @@ ruby tests/policy_mac_test.rb
 ```
 
 Expected: all pass, including missing-leaf, reader-membership, drift-repair,
-report-redaction, exact cleanup, and deceptive-name refusal cases.
+abort/signal restoration, reconciliation reattachment, report-redaction, exact
+cleanup, and deceptive-name/label/identity refusal cases.
 
 - [ ] **Step 6: Run syntax/lint and commit**
 
@@ -1307,13 +1464,17 @@ Document planned projects, false flags, network naming, recovery classes, ACL ch
 - [ ] **Step 4: Add bounded Mac evidence**
 
 ```text
-MEDIA_ACQUISITION_FOUNDATION: network present, bridge driver, isolated project name
+MEDIA_ACQUISITION_FOUNDATION: network present, bridge driver, isolated project name, Jellyfin and Audiobookshelf attached to default and media-control
 MEDIA_ACQUISITION_STORAGE: 28 exact classified paths present
 MEDIA_ACQUISITION_TRANSPORTS: usenet=false torrent=false
 MEDIA_ACQUISITION_CONTAINERS: none declared or started
 ```
 
-No secrets/recursive listing. Drift recreates one missing network/empty leaf. Cleanup proves zero owned containers/networks.
+No secrets/recursive listing. Drift removes the exact labeled bridge only after
+safely disconnecting the two exact readers; reconciliation recreates it and
+reattaches both readers to their default and media-control networks. Abort
+traps restore any reader disconnected by the hook. Cleanup proves zero owned
+containers/networks.
 
 - [ ] **Step 5: Focused verification**
 
