@@ -46,6 +46,59 @@ SUITES = {
     command: ->(repo) { [RbConfig.ruby, File.join(repo, "tests", "media_managed_users_test.rb")] },
     environment: ->(_repo) { { "MEDIA_MANAGED_USERS_PROBES" => "none" } },
     diagnostic: ->(message) { "FAIL #{message}" }
+  },
+  beszel: {
+    command: ->(repo) { [File.join(repo, "tests", "contracts", "beszel.sh"), "static"] },
+    environment: ->(repo) { { "PLATFORM_CONTRACT_REPO_DIR" => repo } },
+    diagnostic: ->(message) { "Beszel contract failed: #{message}" }
+  },
+  audiobookshelf: {
+    command: ->(repo) { [File.join(repo, "tests", "contracts", "audiobookshelf.sh"), "static"] },
+    environment: ->(repo) { { "PLATFORM_CONTRACT_REPO_DIR" => repo } },
+    diagnostic: ->(message) { "Audiobookshelf contract failed: #{message}" }
+  },
+  immich: {
+    command: ->(repo) { [File.join(repo, "tests", "contracts", "immich.sh"), "--platform", "nas", "static"] },
+    environment: ->(repo) { { "PLATFORM_CONTRACT_REPO_DIR" => repo } },
+    diagnostic: ->(message) { "Immich contract failed: #{message}" }
+  },
+  tinymediamanager: {
+    command: ->(repo) { [File.join(repo, "tests", "contracts", "tinymediamanager.sh"), "static"] },
+    environment: ->(repo) { { "PLATFORM_CONTRACT_REPO_DIR" => repo } },
+    diagnostic: ->(message) { "tinyMediaManager contract failed: #{message}" }
+  },
+  dozzle: {
+    command: ->(repo) { [File.join(repo, "tests", "contracts", "dozzle.sh"), "static"] },
+    environment: ->(repo) { { "PLATFORM_CONTRACT_REPO_DIR" => repo } },
+    diagnostic: ->(message) { "Dozzle contract failed: #{message}" }
+  },
+  # The policy scripts resolve the repository from their own location, so a copy
+  # under a temporary directory checks the copy. They report every violation they
+  # found rather than aborting on the first, so the expected line has to be
+  # present among them rather than be the only one.
+  policy: {
+    command: ->(repo) { [RbConfig.ruby, File.join(repo, "tests", "policy_test.rb")] },
+    environment: ->(_repo) { {} },
+    diagnostic: ->(message) { "FAIL #{message}" }
+  },
+  policy_platform: {
+    command: ->(repo) { [RbConfig.ruby, File.join(repo, "tests", "policy_platform_test.rb")] },
+    environment: ->(_repo) { {} },
+    diagnostic: ->(message) { "FAIL #{message}" }
+  },
+  # This suite installs the role into a temporary home and runs it, so it is the
+  # slowest row here at roughly ten seconds. That is the price of proving the
+  # assertions that read the installed artifacts alongside the parsed ones.
+  auto_deploy: {
+    command: ->(repo) { [RbConfig.ruby, File.join(repo, "tests", "production_auto_deploy_role_test.rb")] },
+    environment: ->(_repo) { {} },
+    diagnostic: ->(message) { "FAIL #{message}" },
+    stream: :stdout
+  },
+  immich_restore: {
+    command: ->(repo) { [RbConfig.ruby, File.join(repo, "tests", "immich_restore_quality_test.rb")] },
+    environment: ->(_repo) { {} },
+    diagnostic: ->(message) { "Immich restore quality failed: #{message}" }
   }
 }.freeze
 
@@ -85,14 +138,23 @@ end
 # The contract suites abort on the first violation, so their whole diagnostic is
 # one line. The probe suite reports every violation it found, so the expected line
 # has to be present among them rather than be the only one.
+# Most suites diagnose on stderr; production_auto_deploy_role_test.rb reports on
+# stdout, so the stream is part of the suite definition rather than assumed.
+def diagnostics(suite, stdout, stderr)
+  SUITES.fetch(suite)[:stream] == :stdout ? stdout : stderr
+end
+
+# A few diagnostics name the file they are about, which lives under the copy, so
+# %REPO% in an expected diagnostic is replaced with the copy's root.
 def check_rejected(failures, suite, name, substitutions, diagnostic)
-  expected = SUITES.fetch(suite).fetch(:diagnostic).call(diagnostic)
   with_copied_repo do |repo|
+    expected = SUITES.fetch(suite).fetch(:diagnostic).call(diagnostic).gsub("%REPO%", File.realpath(repo))
     apply_substitutions(repo, substitutions)
-    _stdout, stderr, status = run_static(suite, repo)
+    stdout, stderr, status = run_static(suite, repo)
+    reported = diagnostics(suite, stdout, stderr)
     check(failures, !status.success?, "#{suite} contract accepted #{name}")
-    check(failures, stderr.lines.map(&:chomp).include?(expected),
-          "#{suite} contract #{name} diagnostic differs: #{stderr.lines.first&.strip}")
+    check(failures, reported.lines.map(&:chomp).include?(expected),
+          "#{suite} contract #{name} diagnostic differs: #{reported.lines.first&.strip}")
   end
 rescue RuntimeError, SystemCallError => error
   failures << "#{suite} #{name} mutation fixture failed: #{error.message}"
@@ -101,9 +163,9 @@ end
 def check_accepted(failures, suite, name, substitutions)
   with_copied_repo do |repo|
     apply_substitutions(repo, substitutions)
-    _stdout, stderr, status = run_static(suite, repo)
+    stdout, stderr, status = run_static(suite, repo)
     check(failures, status.success?,
-          "#{suite} contract rejected #{name}: #{stderr.lines.first&.strip}")
+          "#{suite} contract rejected #{name}: #{diagnostics(suite, stdout, stderr).lines.first&.strip}")
   end
 rescue RuntimeError, SystemCallError => error
   failures << "#{suite} #{name} fixture failed: #{error.message}"
@@ -114,12 +176,30 @@ JELLYFIN_IDENTITY = "roles/jellyfin/tasks/primary_identity.yml"
 JELLYFIN_SETTINGS = "roles/jellyfin/tasks/settings.yml"
 KOMGA_ROLE = "roles/komga/tasks/main.yml"
 PAPERLESS_SNAPSHOT = "tests/mac/snapshot-paperless.sh"
+PAPERLESS_ROLE = "roles/paperless_ngx/tasks/main.yml"
+PAPERLESS_ENVIRONMENT = "roles/paperless_ngx/templates/env.j2"
+PAPERLESS_MAC_COMPOSE = "services/paperless-ngx/compose.mac.yml"
+GENERATOR = "generate-secrets.yml"
+BESZEL_VARS = "roles/beszel/vars/main.yml"
+BESZEL_ROLE = "roles/beszel/tasks/main.yml"
+AUDIOBOOKSHELF_ROLE = "roles/audiobookshelf/tasks/main.yml"
+AUDIOBOOKSHELF_ENVIRONMENT = "roles/audiobookshelf/templates/env.j2"
+IMMICH_ROLE = "roles/immich/tasks/main.yml"
+IMMICH_RESTORE = "roles/immich/tasks/restore.yml"
+IMMICH_ONBOARDING = "roles/immich/tasks/user_onboarding.yml"
+TINYMEDIAMANAGER_ROLE = "roles/tinymediamanager/tasks/main.yml"
+DOZZLE_ROLE = "roles/dozzle/tasks/main.yml"
+DOZZLE_DEFAULTS = "roles/dozzle/defaults/main.yml"
+PREFLIGHT = "roles/preflight/tasks/main.yml"
+AUTO_DEPLOY_ROLE = "roles/production_auto_deploy/tasks/main.yml"
+AUTO_DEPLOY_NOTIFIER = "roles/production_auto_deploy/templates/ntfy.curl.j2"
 
 SUITES.each_key do |suite|
   with_copied_repo do |repo|
-    _stdout, stderr, status = run_static(suite, repo)
+    stdout, stderr, status = run_static(suite, repo)
     check(failures, status.success?,
-          "#{suite} static contract failed on a pristine copy: #{stderr.lines.first&.strip}")
+          "#{suite} static contract failed on a pristine copy: " \
+          "#{diagnostics(suite, stdout, stderr).lines.first&.strip}")
   end
 end
 
@@ -407,6 +487,465 @@ check_rejected(
     "      - jellyfin_verified_admin_avatar_state.stat.checksum == jellyfin_admin_avatar_sha256\n",
     "      - true\n"]],
   "Jellyfin role has no authoritative image byte verification"
+)
+
+# --- Paperless contract -------------------------------------------------------
+#
+# `network_mode: !reset null` and `network_mode: null` parse to the same nil, so
+# the override's own structure cannot tell them apart. Only the merged effective
+# config can, and without the tag the NAS host networking survives into the Mac
+# render, which is the one thing the override exists to prevent.
+check_rejected(
+  failures, :paperless, "a Mac override that lost its reset tag",
+  [[PAPERLESS_MAC_COMPOSE, "network_mode: !reset null", "network_mode: null"]],
+  "mac effective config did not reset NAS host networking"
+)
+
+check_rejected(
+  failures, :paperless, "a required task that survives only as a comment",
+  [[PAPERLESS_ROLE,
+    "- name: Repair the managed Paperless mail rule\n",
+    "# - name: Repair the managed Paperless mail rule\n" \
+    "- name: Repair the managed Paperless mail rule again\n"]],
+  "missing Repair the managed Paperless mail rule"
+)
+
+# The snapshot pair has to straddle the probe. Renaming the first half leaves the
+# old whole-file substring satisfied twice over, once by the longer name that
+# contains it and once by the comparison that still spells both operands.
+check_rejected(
+  failures, :paperless, "a probe-state snapshot the probe no longer sits between",
+  [[PAPERLESS_ROLE,
+    "    paperless_managed_mail_probe_state_before:\n",
+    "    paperless_managed_mail_probe_state_before_disabled:\n"]],
+  "managed account/rule state is not snapshotted around the credential probe"
+)
+
+check_rejected(
+  failures, :paperless, "a probe-state comparison replaced by a tautology",
+  [[PAPERLESS_ROLE,
+    "      - paperless_managed_mail_probe_state_before == paperless_managed_mail_probe_state_after\n",
+    "      - true\n"]],
+  "managed account/rule state is not snapshotted around the credential probe"
+)
+
+check_rejected(
+  failures, :paperless, "a renamed schema validation task",
+  [[PAPERLESS_ROLE,
+    "- name: Validate Paperless mail account and rule schemas before mutation\n",
+    "- name: Validate Paperless mail account and rule schemas after mutation\n"]],
+  "managed mail schema is not validated globally before mutation"
+)
+
+check_rejected(
+  failures, :paperless, "a schema validation task named only in a comment",
+  [[PAPERLESS_ROLE,
+    "- name: Validate Paperless mail account and rule schemas before mutation\n",
+    "# - name: Validate Paperless mail account and rule schemas before mutation\n" \
+    "- name: Validate Paperless mail schemas before mutation\n"]],
+  "managed mail schema is not validated globally before mutation"
+)
+
+check_rejected(
+  failures, :paperless, "a sixth effective state source",
+  [[PAPERLESS_ROLE,
+    "    paperless_effective_state_host_paths:\n" \
+    "      - \"{{ paperless_effective_state_host_path }}/postgres\"\n",
+    "    paperless_effective_state_host_paths:\n" \
+    "      - \"{{ paperless_effective_state_host_path }}/extra\"\n" \
+    "      - \"{{ paperless_effective_state_host_path }}/postgres\"\n"]],
+  "Paperless effective state sources do not match the five Compose/env state roots"
+)
+
+# A folded scalar carries its line breaks into the parsed value, so a forbidden
+# endpoint written across two lines does not match a pattern for the single-line
+# form. These two rows are the reason the absence invariants match the
+# whitespace-stripped scalar as well: read as source text, both were accepted.
+check_rejected(
+  failures, :paperless, "a consuming mail endpoint folded across two lines",
+  [[PAPERLESS_ROLE,
+    "- name: Refuse duplicate managed Paperless mail rules\n",
+    "- name: Consume the managed Paperless mail account\n" \
+    "  ansible.builtin.uri:\n" \
+    "    url: >-\n" \
+    "      {{ paperless_api }}/api/mail_accounts/9/\n" \
+    "      process/\n" \
+    "    method: POST\n" \
+    "\n" \
+    "- name: Refuse duplicate managed Paperless mail rules\n"]],
+  "role must never invoke the consuming mail endpoint"
+)
+
+check_rejected(
+  failures, :paperless, "a global task-count endpoint folded across two lines",
+  [[PAPERLESS_ROLE,
+    "- name: Refuse duplicate managed Paperless mail accounts\n",
+    "- name: Count global Paperless tasks\n" \
+    "  ansible.builtin.uri:\n" \
+    "    url: >-\n" \
+    "      {{ paperless_api }}/api/\n" \
+    "      tasks/\n" \
+    "    method: GET\n" \
+    "\n" \
+    "- name: Refuse duplicate managed Paperless mail accounts\n"]],
+  "mail probe must not inspect global processed-mail or task counts"
+)
+
+check_rejected(
+  failures, :paperless, "a generator that synthesizes the Gmail app password",
+  [[GENERATOR,
+    "    paperless_gmail_app_password: replace-with-google-app-password\n",
+    "    paperless_gmail_app_password: \"{{ lookup('password', password_spec) }}\"\n"]],
+  "Gmail app password must be a visible sentinel in the new-platform generator"
+)
+
+check_rejected(
+  failures, :paperless, "a generator sentinel that survives only as a comment",
+  [[GENERATOR,
+    "    paperless_gmail_app_password: replace-with-google-app-password\n",
+    "    # paperless_gmail_app_password: replace-with-google-app-password\n" \
+    "    paperless_gmail_app_password: hunter2hunter2\n"]],
+  "Gmail app password must be a visible sentinel in the new-platform generator"
+)
+
+# Google displays the app password in groups of four. Stripping the spaces in one
+# of the two places it is consumed and not the other left the old whole-file
+# substring satisfied by whichever one still did it.
+check_rejected(
+  failures, :paperless, "grouped app-password spacing kept out of the payload only",
+  [[PAPERLESS_ROLE,
+    "           'password': vault_paperless_gmail_app_password | replace(' ', ''),\n",
+    "           'password': vault_paperless_gmail_app_password,\n"]],
+  "role must accept Google's grouped app-password display"
+)
+
+check_rejected(
+  failures, :paperless, "grouped app-password spacing kept out of the fingerprint only",
+  [[PAPERLESS_ROLE,
+    "          (vault_paperless_gmail_app_password | replace(' ', ''))) | hash('sha256') }}\n",
+    "          vault_paperless_gmail_app_password) | hash('sha256') }}\n"]],
+  "role must accept Google's grouped app-password display"
+)
+
+check_rejected(
+  failures, :paperless, "one host-network endpoint that stops covering integration",
+  [[PAPERLESS_ENVIRONMENT,
+    "PAPERLESS_TIKA_ENDPOINT=http://{{ '127.0.0.1' if platform_compose_kind in " \
+    "['nas', 'integration'] else 'tika' }}:9998\n",
+    "PAPERLESS_TIKA_ENDPOINT=http://{{ '127.0.0.1' if platform_compose_kind == " \
+    "'nas' else 'tika' }}:9998\n"]],
+  "host-network endpoint selection must cover NAS and integration for PAPERLESS_TIKA_ENDPOINT"
+)
+
+# Compose reads the last assignment of a name, so an appended unescaped duplicate
+# is the live one. A substring check for the escaped form still found the earlier
+# line and passed.
+check_rejected(
+  failures, :paperless, "an unescaped secret assignment appended after the escaped one",
+  [[PAPERLESS_ENVIRONMENT,
+    "PAPERLESS_AI_LLM_MODEL={{ paperless_ai_llm_model }}\n",
+    "PAPERLESS_AI_LLM_MODEL={{ paperless_ai_llm_model }}\n" \
+    "PAPERLESS_ADMIN_PASSWORD={{ vault_paperless_admin_password }}\n"]],
+  "vault_paperless_admin_password is not protected from Compose interpolation"
+)
+
+check_rejected(
+  failures, :paperless, "an escaping filter dropped from the admin password",
+  [[PAPERLESS_ENVIRONMENT,
+    "PAPERLESS_ADMIN_PASSWORD={{ vault_paperless_admin_password | replace('$', '$$') }}\n",
+    "PAPERLESS_ADMIN_PASSWORD={{ vault_paperless_admin_password }}\n"]],
+  "vault_paperless_admin_password is not protected from Compose interpolation"
+)
+
+# --- Immich restore quality ---------------------------------------------------
+
+check_rejected(
+  failures, :immich_restore, "a sanitized refusal code that survives only as a comment",
+  [[IMMICH_ROLE,
+    "             'incompatible-newest-backup',\n",
+    "             # 'incompatible-newest-backup',\n"]],
+  "incompatible newest backup diagnostic is not sanitized"
+)
+
+check_rejected(
+  failures, :immich_restore, "a different refusal code dropped from the sanitized list",
+  [[IMMICH_ROLE,
+    "             ['unsafe-storage', 'unsafe-originals', 'missing-safe-backup',\n",
+    "             ['unsafe-storage', 'missing-safe-backup',\n"]],
+  "incompatible newest backup diagnostic is not sanitized"
+)
+
+check_rejected(
+  failures, :immich_restore, "a real DELETE folded across two lines",
+  [[IMMICH_RESTORE,
+    "            SELECT json_build_object(\n",
+    "            DELETE\n            FROM asset;\n            SELECT json_build_object(\n"]],
+  "restore verification mutates an application table"
+)
+
+check_rejected(
+  failures, :immich_restore, "a task that removes the restore provenance marker",
+  [[IMMICH_RESTORE,
+    "  rescue:\n",
+    "  always:\n" \
+    "    - name: Remove the Immich restore failure marker\n" \
+    "      ansible.builtin.file:\n" \
+    "        path: \"{{ immich_restore_effective_failure_marker }}\"\n" \
+    "        state: absent\n" \
+    "\n" \
+    "  rescue:\n"]],
+  "restore removes provenance before server initialization"
+)
+
+check_rejected(
+  failures, :immich_restore, "a migration marker check deleted but kept in a comment",
+  [[IMMICH_RESTORE,
+    "            'schemaMarker', to_regclass('public.kysely_migrations') IS NOT NULL,\n",
+    "            # public.kysely_migrations\n            'schemaMarker', true,\n"]],
+  "restore does not verify the pinned v3 migration marker"
+)
+
+# Two stages sharing one label makes the marker ambiguous about which phase
+# failed, which is the whole point of recording it. Both labels were still
+# present as substrings, so the old form could not see it.
+check_rejected(
+  failures, :immich_restore, "two failure stages collapsed onto one label",
+  [[IMMICH_RESTORE,
+    "        immich_restore_stage: database-verification\n",
+    "        immich_restore_stage: database-restore\n"]],
+  "restore failures do not preserve a sanitized marker stage"
+)
+
+check_rejected(
+  failures, :immich_restore, "a rescue marker that stops recording the stage it reached",
+  [[IMMICH_RESTORE,
+    "          {{ {'version': 1, 'stage': (immich_restore_stage | default('restore'))} | to_json }}\n",
+    "          {{ {'version': 1, 'stage': 'restore'} | to_json }}\n"]],
+  "restore failures do not preserve a sanitized marker stage"
+)
+
+# The other direction. Both of these are shapes the source-text form rejected as
+# violations that did not exist: a comment is not a statement and not a task.
+check_accepted(
+  failures, :immich_restore, "a comment warning against DELETE",
+  [[IMMICH_RESTORE,
+    "  rescue:\n",
+    "  # The restore never issues DELETE or TRUNCATE against an application table.\n  rescue:\n"]]
+)
+
+check_accepted(
+  failures, :immich_restore, "the provenance-removal task named only in a comment",
+  [[IMMICH_RESTORE,
+    "  rescue:\n",
+    "  # Deliberately no 'Remove the Immich restore failure marker' task here.\n  rescue:\n"]]
+)
+
+# --- Beszel contract ----------------------------------------------------------
+
+check_rejected(
+  failures, :beszel, "a required task that survives only as a comment",
+  [[BESZEL_ROLE,
+    "    - name: Poll persisted Beszel telemetry collections\n",
+    "    # - name: Poll persisted Beszel telemetry collections\n" \
+    "    - name: Poll persisted Beszel telemetry collections twice\n"]],
+  "missing Poll persisted Beszel telemetry collections"
+)
+
+# #85's headline for this contract: the old form passed with the register deleted,
+# because the variable's name still appeared elsewhere in the file.
+check_rejected(
+  failures, :beszel, "a telemetry poll that no longer registers its probe result",
+  [[BESZEL_ROLE,
+    "      register: beszel_telemetry_probe_result\n",
+    "      changed_when: false\n"]],
+  "role treats live health as persisted telemetry"
+)
+
+check_rejected(
+  failures, :beszel, "a GPU inference reintroduced with different spacing",
+  [[BESZEL_VARS,
+    "beszel_effective_required_telemetry_categories: >-\n" \
+    "  {{ ['core', 'disk', 'containers']\n",
+    "beszel_effective_required_telemetry_categories: >-\n" \
+    "  {{ (['gpu'] if beszel_require_gpu_telemetry|bool else []) + ['core', 'disk', 'containers']\n"]],
+  "effective categories must use explicit inventory policy"
+)
+
+# --- Audiobookshelf contract --------------------------------------------------
+
+check_rejected(
+  failures, :audiobookshelf, "a duplicate backup path assignment appended to the env file",
+  [[AUDIOBOOKSHELF_ENVIRONMENT,
+    "AUDIOBOOKSHELF_BACKUP_PATH={{ audiobookshelf_effective_backup_host_path }}\n",
+    "AUDIOBOOKSHELF_BACKUP_PATH={{ audiobookshelf_effective_backup_host_path }}\n" \
+    "AUDIOBOOKSHELF_BACKUP_PATH=/volume1/Docker/audiobookshelf/backups\n"]],
+  "backup environment is absent"
+)
+
+check_rejected(
+  failures, :audiobookshelf, "a required task that survives only as a comment",
+  [[AUDIOBOOKSHELF_ROLE,
+    "- name: Require exactly the managed Audiobookshelf library\n",
+    "# - name: Require exactly the managed Audiobookshelf library\n" \
+    "- name: Require exactly the managed Audiobookshelf libraries\n"]],
+  "missing Require exactly the managed Audiobookshelf library"
+)
+
+# --- Immich contract ----------------------------------------------------------
+
+check_rejected(
+  failures, :immich, "a required task that survives only as a comment",
+  [[IMMICH_ROLE,
+    "- name: Read Immich initialization state\n",
+    "# - name: Read Immich initialization state\n" \
+    "- name: Read Immich initialization states\n"]],
+  "missing Read Immich initialization state"
+)
+
+check_rejected(
+  failures, :immich, "a Docker API exec reintroduced as a task module",
+  [[IMMICH_ROLE,
+    "- name: Read Immich initialization state\n",
+    "- name: Reach into the Immich database directly\n" \
+    "  community.docker.docker_container_exec:\n" \
+    "    container: immich_postgres\n" \
+    "    command: /bin/true\n" \
+    "\n" \
+    "- name: Read Immich initialization state\n"]],
+  "role must not use the Docker API exec module"
+)
+
+check_rejected(
+  failures, :immich, "an opaque container variable reintroduced in a task",
+  [[IMMICH_ROLE,
+    "- name: Read Immich initialization state\n",
+    "- name: Report the opaque Immich container\n" \
+    "  ansible.builtin.debug:\n" \
+    "    msg: \"{{ immich_postgres_container }}\"\n" \
+    "\n" \
+    "- name: Read Immich initialization state\n"]],
+  "role still references immich_postgres_container"
+)
+
+check_rejected(
+  failures, :immich, "an onboarding task that shells into psql",
+  [[IMMICH_ONBOARDING,
+    "- name: Initialize configured Immich onboarding accounts\n",
+    "- name: Patch the Immich onboarding rows\n" \
+    "  ansible.builtin.command:\n" \
+    "    argv: [psql, --command, 'SELECT 1']\n" \
+    "  changed_when: false\n" \
+    "\n" \
+    "- name: Initialize configured Immich onboarding accounts\n"]],
+  "Immich user onboarding role contains a database write path"
+)
+
+# --- Dozzle contract ----------------------------------------------------------
+#
+# The dispatcher header is the whole of "the role wires the write-only ntfy
+# token", so this row is what the deleted second substring check was pretending
+# to prove.
+check_rejected(
+  failures, :dozzle, "a dispatcher header that borrows another publisher's token",
+  [[DOZZLE_DEFAULTS,
+    "Bearer {{ vault_ntfy_dozzle_token }}",
+    "Bearer {{ vault_ntfy_deploy_token }}"]],
+  "managed dispatcher authorization differs"
+)
+
+# --- Repository policy --------------------------------------------------------
+
+check_rejected(
+  failures, :policy, "a planned-change task that survives only as a comment",
+  [[DOZZLE_ROLE,
+    "- name: Report planned managed Dozzle dispatcher creation\n",
+    "# - name: Report planned managed Dozzle dispatcher creation\n" \
+    "- name: Report planned managed Dozzle dispatcher creations\n"]],
+  "Dozzle must expose every REST mutation category as a check-mode planned change"
+)
+
+# The old pair of substring checks never had to describe the same task: the count
+# matched any line spelling the include, and the service name could come from
+# anywhere else in the file.
+check_rejected(
+  failures, :policy, "a container CPU include that names another service",
+  [[BESZEL_ROLE,
+    "    container_cpu_service_name: beszel\n",
+    "    container_cpu_service_name: dozzle\n"]],
+  "beszel: role must verify its effective container CPU policy exactly once"
+)
+
+# The window this replaced was 120 characters wide, so a shell-out that named the
+# module further down its own argument list was past the end of it.
+check_rejected(
+  failures, :policy, "a Compose shell-out past the end of the old scan window",
+  [[BESZEL_ROLE,
+    "- name: Wait for the hub to report healthy\n",
+    "- name: Restart the Beszel stack by hand\n" \
+    "  ansible.builtin.command:\n" \
+    "    argv:\n" \
+    "      - /bin/sh\n" \
+    "      - -c\n" \
+    "      - >-\n" \
+    "        cd /volume1/Docker/beszel && printf '%s\\n' 'padding padding padding padding' &&\n" \
+    "        printf '%s\\n' 'padding padding padding padding' && docker compose up -d\n" \
+    "  changed_when: false\n" \
+    "\n" \
+    "- name: Wait for the hub to report healthy\n"]],
+  "%REPO%/roles/beszel/tasks/main.yml: shells out to Compose; use community.docker.docker_compose_v2"
+)
+
+# --- Platform policy ----------------------------------------------------------
+
+check_rejected(
+  failures, :policy_platform, "a capacity probe whose result nothing is derived from",
+  [[PREFLIGHT,
+    "  register: preflight_docker_info\n",
+    "  register: preflight_docker_capacity_unused\n"]],
+  "preflight must derive the effective container CPU set from Docker capacity"
+)
+
+# The old pair only ruled out the one wrong path that had been used before, so any
+# other divergent path satisfied it.
+check_rejected(
+  failures, :policy_platform, "one probe task pointed at a divergent path",
+  [[PREFLIGHT,
+    "    paths: \"{{ nas_docker_root }}/.nas-platform-preflight-probe\"\n",
+    "    paths: \"{{ platform_deploy_root }}/.nas-platform-preflight-probe\"\n"]],
+  "fresh-install preflight must probe the existing validated nas_docker_root"
+)
+
+# --- Production auto-deploy role ----------------------------------------------
+#
+# These two rows install and run the role, so they are the slowest here at about
+# ten seconds each. The first is #85's headline find: the probe could be deleted
+# outright and the old whole-file substring still passed, because the same path
+# appears in the poller's own command line and in a fail_msg.
+check_rejected(
+  failures, :auto_deploy, "a virtualenv probe deleted while its path stays in the command line",
+  [[AUTO_DEPLOY_ROLE,
+    "- name: Require the controller virtualenv the poller runs Ansible from\n" \
+    "  ansible.builtin.stat:\n" \
+    "    path: \"{{ production_auto_deploy_checkout }}/.venv/bin/ansible-playbook\"\n" \
+    "  register: production_auto_deploy_tooling\n",
+    "- name: Assume the controller virtualenv is present\n" \
+    "  ansible.builtin.set_fact:\n" \
+    "    production_auto_deploy_tooling: {stat: {exists: true}}\n"]],
+  "the role must verify the controller virtualenv before installing"
+)
+
+# curl sends every header directive it is given, so two Authorization directives
+# are two credentials presented on one request. The old pair named one variable to
+# require and one to forbid, and neither said anything about how many times the
+# required one appears; the rendered-artifact check two dozen lines below cannot
+# see it either, because a file carrying the token twice still contains it.
+check_rejected(
+  failures, :auto_deploy, "a duplicated Authorization directive",
+  [[AUTO_DEPLOY_NOTIFIER,
+    "header = \"Authorization: Bearer {{ vault_ntfy_deploy_token }}\"\n",
+    "header = \"Authorization: Bearer {{ vault_ntfy_deploy_token }}\"\n" \
+    "header = \"Authorization: Bearer {{ vault_ntfy_deploy_token }}\"\n"]],
+  "the ntfy.curl config must present exactly the deploy publisher's own bearer token"
 )
 
 check(failures,
