@@ -200,7 +200,8 @@ refuse("recovery marker privacy is not checked before reading") unless
     role.index("stat.pw_name == ansible_facts.user_id") <
       role.index("Read Jellyfin primary administrator recovery marker")
 refuse("server configuration update does not preserve unrelated fields") unless
-  role.include?("jellyfin_server_configuration_before.json | combine")
+  role.include?("jellyfin_server_configuration_for_update.json |") &&
+    role.include?("combine({'ServerName': jellyfin_server_name})")
 refuse("avatar upload is unconditional") unless
   role.include?("jellyfin_admin_avatar_upload_required")
 expected_nas_encoding = {

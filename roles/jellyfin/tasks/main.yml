@@ -788,6 +788,35 @@
     - jellyfin_server_name_update_required | default(false) | bool
   changed_when: true
 
+- name: Refresh Jellyfin server configuration before name update
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/System/Configuration"
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_reconcile_token }}"'
+    status_code: [200]
+    return_content: true
+  register: jellyfin_server_configuration_for_update
+  when:
+    - not ansible_check_mode
+    - jellyfin_server_name_update_required | default(false) | bool
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require complete refreshed Jellyfin server configuration
+  ansible.builtin.assert:
+    that:
+      - jellyfin_server_configuration_for_update.json is mapping
+      - jellyfin_server_configuration_for_update.json.ServerName is defined
+      - jellyfin_server_configuration_for_update.json.ServerName is string
+    fail_msg: >-
+      Jellyfin returned an incomplete refreshed server configuration; the server
+      name was not changed.
+  when:
+    - not ansible_check_mode
+    - jellyfin_server_name_update_required | default(false) | bool
+  no_log: true
+
 - name: Update the Jellyfin server name
   ansible.builtin.uri:
     url: "{{ jellyfin_api }}/System/Configuration"
@@ -796,7 +825,8 @@
       Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_reconcile_token }}"'
     body_format: json
     body: >-
-      {{ jellyfin_server_configuration_before.json | combine({'ServerName': jellyfin_server_name}) }}
+      {{ jellyfin_server_configuration_for_update.json |
+         combine({'ServerName': jellyfin_server_name}) }}
     status_code: [204]
   when:
     - not ansible_check_mode
