@@ -286,6 +286,70 @@ def check_fixture_index_hostile_environment(failures)
   end
 end
 
+def check_direct_policy_hostile_environment(failures, retired_token)
+  Dir.mktmpdir("nas-platform-direct-hostile-git-") do |parent|
+    sandbox = File.join(parent, "sandbox")
+    unrelated = File.join(parent, "unrelated")
+    FileUtils.mkdir_p(unrelated)
+    copy_fixture(ROOT, sandbox)
+    initialize_fixture_index(sandbox)
+    File.open(File.join(sandbox, "README.md"), "a") { |file| file.puts(retired_token) }
+
+    clean_environment = ENV.each_key.grep(/\AGIT_/).to_h { |name| [name, nil] }
+    [
+      ["git", "init", "-q", unrelated],
+      ["git", "-C", unrelated, "config", "user.name", "Unrelated Repository"],
+      ["git", "-C", unrelated, "config", "user.email", "unrelated@invalid.example"]
+    ].each do |command|
+      _stdout, stderr, status = Open3.capture3(clean_environment, *command)
+      raise "could not prepare unrelated policy repository: #{stderr.lines.first&.strip}" unless status.success?
+    end
+    unrelated_file = File.join(unrelated, "unrelated.txt")
+    File.write(unrelated_file, "staged unrelated content\n")
+    _stdout, stderr, status = Open3.capture3(
+      clean_environment, "git", "-C", unrelated, "add", "unrelated.txt"
+    )
+    raise "could not stage unrelated policy fixture: #{stderr.lines.first&.strip}" unless status.success?
+    File.write(unrelated_file, "modified unrelated content\n")
+
+    inspect_unrelated = lambda do
+      commands = {
+        "configuration" => %w[config --local --list],
+        "index" => %w[ls-files --stage -z],
+        "worktree status" => %w[status --porcelain=v2 -z --untracked-files=all]
+      }
+      state = commands.to_h do |label, arguments|
+        stdout, inspection_error, inspection_status = Open3.capture3(
+          clean_environment, "git", "-C", unrelated, *arguments
+        )
+        raise "could not inspect unrelated policy repository: #{inspection_error.lines.first&.strip}" unless
+          inspection_status.success?
+
+        [label, stdout]
+      end
+      state.merge("worktree content" => File.binread(unrelated_file))
+    end
+    before = inspect_unrelated.call
+
+    hostile_environment = clean_environment.merge(
+      "GIT_DIR" => File.join(unrelated, ".git"),
+      "GIT_WORK_TREE" => unrelated,
+      "GIT_INDEX_FILE" => File.join(unrelated, ".git", "index")
+    )
+    stdout, stderr, status = Open3.capture3(
+      hostile_environment, RbConfig.ruby, "tests/policy_test.rb", chdir: sandbox
+    )
+    output = stdout + stderr
+    failures << "direct hostile git routing: policy unexpectedly passed" if status.success?
+    failures << "direct hostile git routing: missing retired README diagnostic" unless
+      output.include?("retired declaration remains: README.md")
+    after = inspect_unrelated.call
+    before.each do |label, value|
+      failures << "direct hostile git routing: unrelated #{label} changed" unless after.fetch(label) == value
+    end
+  end
+end
+
 def check_fixture_index_containment(failures)
   source_index_before, source_error, source_status = capture3_without_git_routing(
     "git", "diff", "--cached", "--binary", chdir: ROOT

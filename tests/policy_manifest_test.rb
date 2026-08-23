@@ -10,6 +10,7 @@ retired_token = %w[tiny media manager].join
 
 check_fixture_index_containment(failures)
 check_fixture_index_hostile_environment(failures)
+check_direct_policy_hostile_environment(failures, retired_token)
 
 expect_failure(failures, "recreated retired role",
                "retired role directory must be absent") do |root|

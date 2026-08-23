@@ -151,7 +151,9 @@ active_root_files = %w[
   generate-secrets.yml
   validate-vault.yml
 ].freeze
+clean_git_environment = ENV.each_key.grep(/\AGIT_/).to_h { |name| [name, nil] }
 tracked_and_untracked, enumeration_error, enumeration_status = Open3.capture3(
+  clean_git_environment,
   "git", "-C", ROOT, "ls-files", "--cached", "--others", "--exclude-standard", "-z"
 )
 check(failures, enumeration_status.success?,
