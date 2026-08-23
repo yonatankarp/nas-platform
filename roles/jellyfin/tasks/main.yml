@@ -661,144 +661,11 @@
   when: not ansible_check_mode or jellyfin_wizard_completed | bool
   no_log: true
 
-- name: Initialize normalized Jellyfin library inventory
-  ansible.builtin.set_fact:
-    jellyfin_library_inventory: []
+- name: Validate and resolve Jellyfin managed library inventory
+  ansible.builtin.include_tasks: library_inventory.yml
+  vars:
+    jellyfin_library_inventory_response: "{{ jellyfin_libraries_before.json }}"
   when: not ansible_check_mode or jellyfin_wizard_completed | bool
-  no_log: true
-
-- name: Resolve normalized Jellyfin library inventory
-  ansible.builtin.set_fact:
-    jellyfin_library_inventory: >-
-      {{ jellyfin_library_inventory + [{
-        'raw': item,
-        'location_paths':
-          ((item.Locations if item.Locations | default(none) | type_debug == 'list' else []) |
-           select('string') | list),
-        'path_info_paths':
-          ((item.LibraryOptions.PathInfos
-            if (item.LibraryOptions | default(none) is mapping and
-                item.LibraryOptions.PathInfos | default(none) | type_debug == 'list')
-            else []) |
-           select('mapping') | selectattr('Path', 'defined') |
-           map(attribute='Path') | select('string') | list),
-        'normalized_paths':
-          ((((item.Locations
-              if item.Locations | default(none) | type_debug == 'list' else []) |
-             select('string') | map('regex_replace', '/+$', '') | list) +
-            ((item.LibraryOptions.PathInfos
-              if (item.LibraryOptions | default(none) is mapping and
-                  item.LibraryOptions.PathInfos | default(none) | type_debug == 'list')
-              else []) |
-             select('mapping') | selectattr('Path', 'defined') |
-             map(attribute='Path') | select('string') |
-             map('regex_replace', '/+$', '') | list)) | unique)
-      }] }}
-  loop: "{{ jellyfin_libraries_before.json | default([]) }}"
-  loop_control:
-    label: jellyfin-library
-  when: not ansible_check_mode or jellyfin_wizard_completed | bool
-  no_log: true
-
-- name: Initialize Jellyfin managed library targets
-  ansible.builtin.set_fact:
-    jellyfin_library_targets: []
-  when: not ansible_check_mode or jellyfin_wizard_completed | bool
-  no_log: true
-
-- name: Resolve Jellyfin managed library targets
-  ansible.builtin.set_fact:
-    jellyfin_library_targets: >-
-      {{ jellyfin_library_targets + [{
-        'desired': item,
-        'normalized_path': item.path | regex_replace('/+$', ''),
-        'path_matches': jellyfin_library_inventory |
-          selectattr('normalized_paths', 'contains', item.path | regex_replace('/+$', '')) | list,
-        'name_matches': jellyfin_library_inventory |
-          selectattr('raw.Name', 'equalto', item.name) | list,
-        'candidate_matches':
-          ((jellyfin_library_inventory |
-            selectattr('normalized_paths', 'contains', item.path | regex_replace('/+$', '')) |
-            list) +
-           (jellyfin_library_inventory |
-            selectattr('raw.Name', 'equalto', item.name) | list)) | unique,
-        'extra_paths':
-          (jellyfin_library_inventory |
-           selectattr('normalized_paths', 'contains', item.path | regex_replace('/+$', '')) |
-           map(attribute='location_paths') | flatten | unique |
-           reject('match', '^' ~ (item.path | regex_escape) ~ '/*$') | list)
-      }] }}
-  loop: "{{ jellyfin_libraries }}"
-  loop_control:
-    label: "{{ item.name }}"
-  when: not ansible_check_mode or jellyfin_wizard_completed | bool
-  no_log: true
-
-- name: Refuse unsafe Jellyfin managed library path representation
-  ansible.builtin.assert:
-    that:
-      - item.1.raw.ItemId | default('') | string is match('^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$')
-      - item.1.raw.CollectionType is string
-      - item.1.raw.Locations | default(none) | type_debug == 'list'
-      - item.1.location_paths | length == item.1.raw.Locations | length
-      - item.1.raw.LibraryOptions | default(none) is mapping
-      - item.1.raw.LibraryOptions.PathInfos | default(none) | type_debug == 'list'
-      - item.1.path_info_paths | length == item.1.raw.LibraryOptions.PathInfos | length
-      - item.1.location_paths | reject('match', '^.+$') | list | length == 0
-      - item.1.path_info_paths | reject('match', '^.+$') | list | length == 0
-      - >-
-        item.1.location_paths | map('regex_replace', '/+$', '') |
-        select('equalto', '') | list | length == 0
-      - >-
-        item.1.path_info_paths | map('regex_replace', '/+$', '') |
-        select('equalto', '') | list | length == 0
-      - >-
-        item.1.location_paths | map('regex_replace', '/+$', '') | list | length ==
-        item.1.location_paths | map('regex_replace', '/+$', '') | unique | list | length
-      - >-
-        item.1.path_info_paths | map('regex_replace', '/+$', '') | list | length ==
-        item.1.path_info_paths | map('regex_replace', '/+$', '') | unique | list | length
-      - item.1.location_paths | sort == item.1.path_info_paths | sort
-      - >-
-        item.1.location_paths |
-        map('regex_replace', '/+$', '') |
-        select('equalto', item.0.normalized_path) | list | length in [0, 1]
-      - >-
-        item.1.location_paths |
-        map('regex_replace', '/+$', '') |
-        select('equalto', item.0.normalized_path) | list | length ==
-        item.1.path_info_paths |
-        map('regex_replace', '/+$', '') |
-        select('equalto', item.0.normalized_path) | list | length
-    fail_msg: >-
-      A candidate Jellyfin managed library has malformed, duplicated, or inconsistent
-      Locations and PathInfos. Resolve it manually; no owned state was changed.
-  loop: "{{ jellyfin_library_targets | subelements('candidate_matches', skip_missing=True) }}"
-  loop_control:
-    label: "{{ item.0.desired.name }} candidate"
-  when: not ansible_check_mode or jellyfin_wizard_completed | bool
-  no_log: true
-
-- name: Refuse ambiguous Jellyfin managed library ownership
-  ansible.builtin.assert:
-    that:
-      - item.path_matches | length <= 1
-      - item.name_matches | length <= 1
-      - >-
-        item.name_matches | length == 0 or
-        (item.path_matches | length == 1 and
-         item.name_matches[0].raw.ItemId == item.path_matches[0].raw.ItemId)
-      - >-
-        item.path_matches | length == 0 or
-        item.path_matches[0].raw.CollectionType == item.desired.collection_type
-    fail_msg: >-
-      A Jellyfin managed path is duplicated, or its desired name is bound to another
-      path or collection type. Resolve the conflict manually; no library was changed.
-  loop: "{{ jellyfin_library_targets | default([]) }}"
-  loop_control:
-    label: "{{ item.desired.name }}"
-  when: not ansible_check_mode or jellyfin_wizard_completed | bool
-  no_log: true
 
 - name: Inspect the approved Jellyfin administrator image
   ansible.builtin.stat:
@@ -1047,11 +914,7 @@
   register: jellyfin_library_identity_observations
   until:
     - jellyfin_library_identity_observation.json | default(none) | type_debug == 'list'
-    - jellyfin_library_identity_path_matches | length == 1
     - jellyfin_library_identity_name_matches | length == 1
-    - >-
-      jellyfin_library_identity_name_matches[0].ItemId | default('') | string ==
-      jellyfin_library_identity_match.ItemId | default('') | string
     - jellyfin_library_identity_match.Name | default(none) is string
     - jellyfin_library_identity_match.Name == item.desired.name
     - jellyfin_library_identity_match.CollectionType | default(none) is string
@@ -1067,113 +930,41 @@
     - >-
       jellyfin_library_identity_match.LibraryOptions.PathInfos |
       default(none) | type_debug == 'list'
+    - item.normalized_path in jellyfin_library_identity_normalized_paths
   retries: 20
   delay: 1
   vars:
     jellyfin_library_identity_observation: "{{ jellyfin_library_identity_observations }}"
-    jellyfin_library_identity_path_matches: >-
-      {{ jellyfin_library_identity_observation.json | default([]) |
-         select('mapping') | selectattr('Locations', 'defined') |
-         selectattr('Locations', 'contains', item.desired.path) | list }}
     jellyfin_library_identity_name_matches: >-
       {{ jellyfin_library_identity_observation.json | default([]) |
          select('mapping') | selectattr('Name', 'defined') |
          selectattr('Name', 'equalto', item.desired.name) | list }}
     jellyfin_library_identity_match: >-
-      {{ jellyfin_library_identity_path_matches | first | default({}) }}
+      {{ jellyfin_library_identity_name_matches | first | default({}) }}
+    jellyfin_library_identity_normalized_paths: >-
+      {{ (((jellyfin_library_identity_match.Locations
+            if jellyfin_library_identity_match.Locations | default(none) |
+              type_debug == 'list' else []) | select('string') | list) +
+          ((jellyfin_library_identity_match.LibraryOptions.PathInfos
+            if jellyfin_library_identity_match.LibraryOptions | default(none) is mapping and
+               jellyfin_library_identity_match.LibraryOptions.PathInfos |
+                 default(none) | type_debug == 'list' else []) |
+           select('mapping') | selectattr('Path', 'defined') |
+           map(attribute='Path') | select('string') | list)) |
+         map('regex_replace', '/+$', '') | list }}
   changed_when: false
   check_mode: false
   no_log: true
 
-- name: Refresh Jellyfin managed library targets after renames
-  ansible.builtin.set_fact:
-    jellyfin_library_targets: >-
-      {{ jellyfin_library_targets[:ansible_loop.index0] +
-         [item | combine({
-           'path_matches': [jellyfin_refreshed_library_inventory],
-           'name_matches': [jellyfin_refreshed_library_inventory],
-           'candidate_matches': [jellyfin_refreshed_library_inventory],
-           'renamed_identity_refreshed': true,
-           'extra_paths': jellyfin_refreshed_library_inventory.location_paths |
-             unique | reject('match', '^' ~ (item.desired.path | regex_escape) ~ '/*$') | list
-         })] + jellyfin_library_targets[ansible_loop.index:] }}
-  loop: "{{ jellyfin_library_targets | default([]) }}"
-  loop_control:
-    label: "{{ item.desired.name }}"
-    extended: true
-  when:
-    - not ansible_check_mode
-    - item.path_matches | length == 1
-    - item.path_matches[0].raw.Name != item.desired.name
+- name: Revalidate complete Jellyfin library inventory after renames
+  ansible.builtin.include_tasks: library_inventory.yml
   vars:
-    jellyfin_refreshed_observation: >-
+    jellyfin_library_inventory_response: >-
       {{ jellyfin_library_identity_observations.results |
-         selectattr('item.desired.name', 'equalto', item.desired.name) |
-         selectattr('json', 'defined') | first }}
-    jellyfin_refreshed_raw: >-
-      {{ jellyfin_refreshed_observation.json | select('mapping') |
-         selectattr('Locations', 'defined') |
-         selectattr('Locations', 'contains', item.desired.path) | first }}
-    jellyfin_refreshed_location_paths: >-
-      {{ jellyfin_refreshed_raw.Locations | select('string') | list }}
-    jellyfin_refreshed_path_info_paths: >-
-      {{ jellyfin_refreshed_raw.LibraryOptions.PathInfos |
-         select('mapping') | selectattr('Path', 'defined') |
-         map(attribute='Path') | select('string') | list }}
-    jellyfin_refreshed_library_inventory:
-      raw: "{{ jellyfin_refreshed_raw }}"
-      location_paths: "{{ jellyfin_refreshed_location_paths }}"
-      path_info_paths: "{{ jellyfin_refreshed_path_info_paths }}"
-      normalized_paths: >-
-        {{ (jellyfin_refreshed_location_paths + jellyfin_refreshed_path_info_paths) |
-           map('regex_replace', '/+$', '') | unique | list }}
-  no_log: true
-
-- name: Refuse unsafe refreshed Jellyfin managed library identity
-  ansible.builtin.assert:
-    that:
-      - item.path_matches | length == 1
-      - item.name_matches | length == 1
-      - item.path_matches[0].raw.Name == item.desired.name
-      - item.path_matches[0].raw.CollectionType == item.desired.collection_type
-      - >-
-        item.path_matches[0].raw.ItemId | default('') | string
-        is match('^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$')
-      - item.path_matches[0].raw.Locations | default(none) | type_debug == 'list'
-      - item.path_matches[0].raw.LibraryOptions | default(none) is mapping
-      - >-
-        item.path_matches[0].raw.LibraryOptions.PathInfos |
-        default(none) | type_debug == 'list'
-      - >-
-        item.path_matches[0].location_paths | length ==
-        item.path_matches[0].raw.Locations | length
-      - >-
-        item.path_matches[0].path_info_paths | length ==
-        item.path_matches[0].raw.LibraryOptions.PathInfos | length
-      - >-
-        item.path_matches[0].location_paths |
-        map('regex_replace', '/+$', '') | list | length ==
-        item.path_matches[0].location_paths |
-        map('regex_replace', '/+$', '') | unique | list | length
-      - >-
-        item.path_matches[0].path_info_paths |
-        map('regex_replace', '/+$', '') | list | length ==
-        item.path_matches[0].path_info_paths |
-        map('regex_replace', '/+$', '') | unique | list | length
-      - item.path_matches[0].location_paths | sort == item.path_matches[0].path_info_paths | sort
-      - >-
-        item.path_matches[0].normalized_paths |
-        select('equalto', item.normalized_path) | list | length == 1
-    fail_msg: >-
-      Jellyfin returned a malformed, duplicated, or inconsistent replacement library
-      identity after rename; no ItemId-scoped library mutation was attempted.
-  loop: "{{ jellyfin_library_targets | default([]) }}"
-  loop_control:
-    label: "{{ item.desired.name }}"
+         selectattr('json', 'defined') | map(attribute='json') | last }}
   when:
     - not ansible_check_mode
-    - item.renamed_identity_refreshed | default(false) | bool
-  no_log: true
+    - jellyfin_library_renames is changed
 
 - name: Report planned Jellyfin managed library creation
   ansible.builtin.debug:

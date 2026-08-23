@@ -180,6 +180,15 @@ def jellyfin_settings_includes(*phases)
   end
 end
 
+def jellyfin_library_inventory_include(name, response)
+  {
+    "name" => name,
+    "ansible.builtin.include_tasks" =>
+      File.join(ROOT, "roles", "jellyfin", "tasks", "library_inventory.yml"),
+    "vars" => { "jellyfin_library_inventory_response" => response }
+  }
+end
+
 def basic_credentials(request)
   encoded = request.fetch("headers").fetch("authorization", "").delete_prefix("Basic ")
   Base64.decode64(encoded).split(":", 2)
@@ -1854,13 +1863,15 @@ def jellyfin_identity_contract_failures
   )
   role_path = File.join(ROOT, "roles", "jellyfin", "tasks", "main.yml")
   identity_path = File.join(ROOT, "roles", "jellyfin", "tasks", "primary_identity.yml")
+  inventory_path = File.join(ROOT, "roles", "jellyfin", "tasks", "library_inventory.yml")
   identity = File.file?(identity_path) ? File.read(identity_path) : ""
-  role = File.read(role_path) + identity
+  role = File.read(role_path) + identity + File.read(inventory_path)
   contract = File.read(File.join(ROOT, "tests", "contracts", "jellyfin.sh"))
   main_tasks = YAML.safe_load_file(role_path, aliases: false)
   names = nested_task_names(main_tasks)
   names += nested_task_names(YAML.safe_load_file(identity_path, aliases: false)) if
     File.file?(identity_path)
+  names += nested_task_names(YAML.safe_load_file(inventory_path, aliases: false))
   avatar = File.join(ROOT, "roles", "jellyfin", "files", "yonatan-avatar.jpeg")
 
   failures << "Jellyfin primary administrator is not exact" unless
@@ -1910,10 +1921,11 @@ def jellyfin_identity_contract_failures
     "Report planned Jellyfin managed library creation after startup"
   ]
   check_plans.each { |name| failures << "Jellyfin main role omits #{name}" unless names.include?(name) }
-  preflight = required.first(7).filter_map { |name| names.index(name) }
+  preflight_names = required.first(5) + ["Validate and resolve Jellyfin managed library inventory"]
+  preflight = preflight_names.filter_map { |name| names.index(name) }
   first_mutation = required.drop(7).filter_map { |name| names.index(name) }.min
   failures << "Jellyfin identity/library preflight does not precede every mutation" unless
-    preflight.length == 7 && first_mutation && preflight.max < first_mutation
+    preflight.length == preflight_names.length && first_mutation && preflight.max < first_mutation
   failures << "Jellyfin primary rename does not use the supported current endpoint" unless
     role.include?("/Users?userId=")
   failures << "Jellyfin primary rename is not guarded by block/rescue recovery" unless
@@ -2113,6 +2125,15 @@ def exercise_jellyfin_library_shape_preflight(failures)
     "Update the Jellyfin server name"
   ]
   tasks = main.select { |task| selected_names.include?(task_name(task)) }
+  inventory_index = tasks.index do |task|
+    task_name(task) == "Reconcile Jellyfin primary administrator identity"
+  end
+  tasks.insert(
+    inventory_index,
+    jellyfin_library_inventory_include(
+      "Validate fixture Jellyfin library inventory", "{{ jellyfin_libraries_before.json }}"
+    )
+  )
   tasks.find { |task| task_name(task) == "Reconcile Jellyfin primary administrator identity" }
        .fetch("ansible.builtin.include_tasks")
        .replace(File.join(ROOT, "roles", "jellyfin", "tasks", "primary_identity.yml"))
@@ -2142,7 +2163,7 @@ def exercise_jellyfin_library_shape_preflight(failures)
     ],
     "fresh missing managed library" => [nil, nil, true],
     "valid managed shape with malformed unrelated library" => [
-      ["/media/Movies"], [path_info.call("/media/Movies")], true
+      ["/media/Movies"], [path_info.call("/media/Movies")], false
     ]
   }
   shapes.each do |label, (locations, path_infos, expected_success)|
@@ -2232,6 +2253,11 @@ def exercise_jellyfin_extra_path_recovery(failures)
     "Repair Jellyfin managed library options"
   ]
   tasks = main.select { |task| selected_names.include?(task_name(task)) }
+  tasks.unshift(
+    jellyfin_library_inventory_include(
+      "Validate fixture Jellyfin library inventory", "{{ jellyfin_libraries_before.json }}"
+    )
+  )
   library_id = "1" * 32
   unmanaged_id = "2" * 32
   state = {
@@ -2308,9 +2334,19 @@ def exercise_jellyfin_library_rename_identity_refresh(failures)
     "Wait for renamed Jellyfin managed library identities",
     "Refresh Jellyfin managed library targets after renames",
     "Refuse unsafe refreshed Jellyfin managed library identity",
+    "Revalidate complete Jellyfin library inventory after renames",
+    "Remove extra paths from Jellyfin managed libraries",
     "Repair Jellyfin managed library options"
   ]
   tasks = main.select { |task| selected_names.include?(task_name(task)) }
+  tasks.find { |task| task_name(task) == "Revalidate complete Jellyfin library inventory after renames" }
+       .fetch("ansible.builtin.include_tasks")
+       .replace(File.join(ROOT, "roles", "jellyfin", "tasks", "library_inventory.yml"))
+  tasks.unshift(
+    jellyfin_library_inventory_include(
+      "Validate fixture Jellyfin library inventory", "{{ jellyfin_libraries_before.json }}"
+    )
+  )
   old_id = "1" * 32
   new_id = "2" * 32
   old_library = {
@@ -2323,7 +2359,7 @@ def exercise_jellyfin_library_rename_identity_refresh(failures)
   new_library = Marshal.load(Marshal.dump(old_library)).merge(
     "Name" => "Movies", "ItemId" => new_id
   )
-  state = { renamed: false, observations: 0, malformed: false }
+  state = { renamed: false, observations: 0, refreshed_libraries: nil }
   responder = lambda do |request|
     uri = URI("http://fixture#{request.fetch('target')}")
     case [request["method"], uri.path]
@@ -2332,13 +2368,8 @@ def exercise_jellyfin_library_rename_identity_refresh(failures)
       [204, nil]
     when ["GET", "/Library/VirtualFolders"]
       state[:observations] += 1
-      observed = Marshal.load(Marshal.dump(new_library))
-      if state[:malformed]
-        observed["LibraryOptions"]["PathInfos"] = [
-          { "Path" => "/media/Movies" }, { "Path" => "/media/Movies/" }
-        ]
-      end
-      [200, [state[:observations] == 1 ? old_library : observed]]
+      observed = state[:refreshed_libraries] || [new_library]
+      [200, state[:observations] == 1 ? [old_library] : observed]
     when ["POST", "/Library/VirtualFolders/LibraryOptions"]
       if request.dig("json", "Id") == new_id
         new_library["LibraryOptions"] = request.fetch("json").fetch("LibraryOptions")
@@ -2372,10 +2403,61 @@ def exercise_jellyfin_library_rename_identity_refresh(failures)
     failures << "Jellyfin renamed-library identity was not polled to completion" unless
       state[:renamed] && state[:observations] >= 2
 
-    state.update(renamed: false, observations: 0, malformed: true)
-    malformed_stdout, malformed_stderr, malformed_status = run_playbook(tasks, variables)
-    failures << "Jellyfin malformed refreshed library identity was accepted: #{failure_tail(malformed_stdout + malformed_stderr)}" if
-      malformed_status.success?
+    unsafe_libraries = {
+      "empty path" => {
+        "Name" => "Unmanaged", "ItemId" => "3" * 32, "CollectionType" => "books",
+        "Locations" => [""], "LibraryOptions" => { "PathInfos" => [{ "Path" => "" }] }
+      },
+      "slash-only path" => {
+        "Name" => "Unmanaged", "ItemId" => "3" * 32, "CollectionType" => "books",
+        "Locations" => ["/"], "LibraryOptions" => { "PathInfos" => [{ "Path" => "/" }] }
+      },
+      "non-string path" => {
+        "Name" => "Unmanaged", "ItemId" => "3" * 32, "CollectionType" => "books",
+        "Locations" => [7], "LibraryOptions" => { "PathInfos" => [{ "Path" => 7 }] }
+      },
+      "malformed unrelated entry" => {
+        "Name" => "Unmanaged", "ItemId" => "3" * 32, "CollectionType" => "books",
+        "Locations" => "opaque", "LibraryOptions" => nil
+      },
+      "normalized cross-library duplicate" => {
+        "Name" => "Unmanaged", "ItemId" => "3" * 32, "CollectionType" => "books",
+        "Locations" => ["/media/Movies/"],
+        "LibraryOptions" => { "PathInfos" => [{ "Path" => "/media/Movies/" }] }
+      },
+      "inconsistent PathInfos" => {
+        "Name" => "Unmanaged", "ItemId" => "3" * 32, "CollectionType" => "books",
+        "Locations" => ["/media/Unmanaged"],
+        "LibraryOptions" => { "PathInfos" => [{ "Path" => "/media/Different" }] }
+      }
+    }
+    unsafe_tasks = Marshal.load(Marshal.dump(tasks))
+    rename_index = unsafe_tasks.index do |task|
+      task_name(task) == "Rename adopted Jellyfin managed libraries"
+    end
+    unsafe_tasks[rename_index] = {
+      "name" => "Record fixture Jellyfin library rename",
+      "ansible.builtin.debug" => { "msg" => "fixture rename already completed" },
+      "changed_when" => true,
+      "register" => "jellyfin_library_renames"
+    }
+    unsafe_libraries.each do |label, unsafe_library|
+      drifted_target = Marshal.load(Marshal.dump(new_library))
+      drifted_target["LibraryOptions"]["EnableRealtimeMonitor"] = false
+      state.update(
+        renamed: false,
+        observations: 0,
+        refreshed_libraries: [drifted_target, unsafe_library]
+      )
+      request_boundary = requests.length
+      unsafe_stdout, unsafe_stderr, unsafe_status = run_playbook(unsafe_tasks, variables)
+      failures << "Jellyfin refreshed #{label} was accepted: #{failure_tail(unsafe_stdout + unsafe_stderr)}" if
+        unsafe_status.success?
+      unsafe_mutations = requests.drop(request_boundary).select do |request|
+        %w[POST PUT PATCH DELETE].include?(request["method"])
+      end
+      failures << "Jellyfin refreshed #{label} reached mutation" unless unsafe_mutations.empty?
+    end
   end
 end
 

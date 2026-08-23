@@ -127,7 +127,10 @@ settings_path = File.join(root, "roles", "jellyfin", "tasks", "settings.yml")
 settings = File.file?(settings_path) ? File.read(settings_path) : ""
 qsv_path = File.join(root, "roles", "jellyfin", "tasks", "qsv_probe.yml")
 qsv = File.file?(qsv_path) ? File.read(qsv_path) : ""
-role = File.read(File.join(root, "roles", "jellyfin", "tasks", "main.yml")) + identity + settings + qsv
+inventory_path = File.join(root, "roles", "jellyfin", "tasks", "library_inventory.yml")
+inventory = File.file?(inventory_path) ? File.read(inventory_path) : ""
+role = File.read(File.join(root, "roles", "jellyfin", "tasks", "main.yml")) +
+       identity + settings + qsv + inventory
 contract = File.read(File.join(root, "tests", "contracts", "jellyfin.sh"))
 runtime_query = ["fields=Path,MediaSources", "RunTimeTicks"].join(",")
 refuse("fixture query does not request its runtime field") unless contract.include?(runtime_query)
@@ -170,8 +173,7 @@ preflight_names = [
   "Refuse ambiguous Jellyfin primary administrator identity",
   "Read Jellyfin server configuration for preflight",
   "List Jellyfin libraries for preflight",
-  "Refuse unsafe Jellyfin managed library path representation",
-  "Refuse ambiguous Jellyfin managed library ownership"
+  "Validate and resolve Jellyfin managed library inventory"
 ]
 mutation_names = [
   "Reconcile the Jellyfin primary administrator name safely",

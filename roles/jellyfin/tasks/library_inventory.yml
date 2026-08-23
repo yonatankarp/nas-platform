@@ -1,0 +1,150 @@
+---
+- name: Refuse unsafe complete Jellyfin library inventory
+  ansible.builtin.assert:
+    that:
+      - item is mapping
+      - item.Name | default(none) is string
+      - item.ItemId | default('') | string is match('^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$')
+      - item.CollectionType | default(none) is string
+      - item.Locations | default(none) | type_debug == 'list'
+      - item.Locations | select('string') | list | length == item.Locations | length
+      - item.LibraryOptions | default(none) is mapping
+      - item.LibraryOptions.PathInfos | default(none) | type_debug == 'list'
+      - >-
+        item.LibraryOptions.PathInfos | select('mapping') | list | length ==
+        item.LibraryOptions.PathInfos | length
+      - >-
+        item.LibraryOptions.PathInfos | selectattr('Path', 'defined') | list | length ==
+        item.LibraryOptions.PathInfos | length
+      - >-
+        item.LibraryOptions.PathInfos | map(attribute='Path') |
+        select('string') | list | length == item.LibraryOptions.PathInfos | length
+      - >-
+        item.Locations | map('regex_replace', '/+$', '') |
+        reject('match', '^.+$') | list | length == 0
+      - >-
+        item.LibraryOptions.PathInfos | map(attribute='Path') |
+        map('regex_replace', '/+$', '') |
+        reject('match', '^.+$') | list | length == 0
+      - >-
+        item.Locations | map('regex_replace', '/+$', '') | list | length ==
+        item.Locations | map('regex_replace', '/+$', '') | unique | list | length
+      - >-
+        item.LibraryOptions.PathInfos | map(attribute='Path') |
+        map('regex_replace', '/+$', '') | list | length ==
+        item.LibraryOptions.PathInfos | map(attribute='Path') |
+        map('regex_replace', '/+$', '') | unique | list | length
+      - >-
+        item.Locations | map('regex_replace', '/+$', '') | sort ==
+        item.LibraryOptions.PathInfos | map(attribute='Path') |
+        map('regex_replace', '/+$', '') | sort
+    fail_msg: >-
+      Jellyfin returned a malformed, duplicated, or inconsistent complete library
+      inventory; no library state was changed.
+  loop: "{{ jellyfin_library_inventory_response | default([]) }}"
+  loop_control:
+    label: jellyfin-library
+  no_log: true
+
+- name: Initialize normalized Jellyfin library inventory
+  ansible.builtin.set_fact:
+    jellyfin_library_inventory: []
+  no_log: true
+
+- name: Resolve normalized Jellyfin library inventory
+  ansible.builtin.set_fact:
+    jellyfin_library_inventory: >-
+      {{ jellyfin_library_inventory + [{
+        'raw': item,
+        'location_paths': item.Locations,
+        'path_info_paths': item.LibraryOptions.PathInfos | map(attribute='Path') | list,
+        'normalized_paths':
+          ((item.Locations +
+            (item.LibraryOptions.PathInfos | map(attribute='Path') | list)) |
+           map('regex_replace', '/+$', '') | unique | list)
+      }] }}
+  loop: "{{ jellyfin_library_inventory_response | default([]) }}"
+  loop_control:
+    label: jellyfin-library
+  no_log: true
+
+- name: Refuse cross-library Jellyfin path ownership conflicts
+  ansible.builtin.assert:
+    that:
+      - >-
+        jellyfin_library_inventory | map(attribute='normalized_paths') | flatten | list | length ==
+        jellyfin_library_inventory | map(attribute='normalized_paths') | flatten | unique | list | length
+    fail_msg: >-
+      Two Jellyfin libraries claim the same normalized path; no library state was changed.
+  no_log: true
+
+- name: Initialize Jellyfin managed library targets
+  ansible.builtin.set_fact:
+    jellyfin_library_targets: []
+  no_log: true
+
+- name: Resolve Jellyfin managed library targets
+  ansible.builtin.set_fact:
+    jellyfin_library_targets: >-
+      {{ jellyfin_library_targets + [{
+        'desired': item,
+        'normalized_path': item.path | regex_replace('/+$', ''),
+        'path_matches': jellyfin_library_inventory |
+          selectattr('normalized_paths', 'contains', item.path | regex_replace('/+$', '')) | list,
+        'name_matches': jellyfin_library_inventory |
+          selectattr('raw.Name', 'equalto', item.name) | list,
+        'candidate_matches':
+          ((jellyfin_library_inventory |
+            selectattr('normalized_paths', 'contains', item.path | regex_replace('/+$', '')) |
+            list) +
+           (jellyfin_library_inventory |
+            selectattr('raw.Name', 'equalto', item.name) | list)) | unique,
+        'extra_paths':
+          (jellyfin_library_inventory |
+           selectattr('normalized_paths', 'contains', item.path | regex_replace('/+$', '')) |
+           map(attribute='location_paths') | flatten | unique |
+           reject('match', '^' ~ (item.path | regex_escape) ~ '/*$') | list)
+      }] }}
+  loop: "{{ jellyfin_libraries }}"
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+
+- name: Refuse unsafe Jellyfin managed library path representation
+  ansible.builtin.assert:
+    that:
+      - >-
+        item.1.location_paths | map('regex_replace', '/+$', '') |
+        select('equalto', item.0.normalized_path) | list | length in [0, 1]
+      - >-
+        item.1.location_paths | map('regex_replace', '/+$', '') |
+        select('equalto', item.0.normalized_path) | list | length ==
+        item.1.path_info_paths | map('regex_replace', '/+$', '') |
+        select('equalto', item.0.normalized_path) | list | length
+    fail_msg: >-
+      A candidate Jellyfin managed library has an inconsistent desired path.
+      Resolve it manually; no owned state was changed.
+  loop: "{{ jellyfin_library_targets | subelements('candidate_matches', skip_missing=True) }}"
+  loop_control:
+    label: "{{ item.0.desired.name }} candidate"
+  no_log: true
+
+- name: Refuse ambiguous Jellyfin managed library ownership
+  ansible.builtin.assert:
+    that:
+      - item.path_matches | length <= 1
+      - item.name_matches | length <= 1
+      - >-
+        item.name_matches | length == 0 or
+        (item.path_matches | length == 1 and
+         item.name_matches[0].raw.ItemId == item.path_matches[0].raw.ItemId)
+      - >-
+        item.path_matches | length == 0 or
+        item.path_matches[0].raw.CollectionType == item.desired.collection_type
+    fail_msg: >-
+      A Jellyfin managed path is duplicated, or its desired name is bound to another
+      path or collection type. Resolve the conflict manually; no library was changed.
+  loop: "{{ jellyfin_library_targets | default([]) }}"
+  loop_control:
+    label: "{{ item.desired.name }}"
+  no_log: true
