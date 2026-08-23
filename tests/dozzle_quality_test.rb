@@ -21,7 +21,6 @@ BASE_COMPOSE_FILES = %w[
   services/komga/compose.yml
   services/ntfy/compose.yml
   services/paperless-ngx/compose.yml
-  services/tinymediamanager/compose.yml
 ].freeze
 failures = []
 

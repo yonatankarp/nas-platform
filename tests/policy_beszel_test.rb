@@ -255,18 +255,6 @@ beszel_verification_prerequisites.each do |name, module_name|
         "Beszel verification-only run must include #{name.downcase}")
 end
 
-tinymediamanager_tasks = flatten_tasks(
-  YAML.safe_load_file(File.join(ROOT, "roles", "tinymediamanager", "tasks", "main.yml"))
-)
-tinymediamanager_state_root = tinymediamanager_tasks.find do |task|
-  task["name"] == "Select the tinyMediaManager preserved state root"
-end
-check(failures,
-      tinymediamanager_state_root&.key?("ansible.builtin.set_fact") &&
-        Array(tinymediamanager_state_root["tags"]).include?("platform_verify_tinymediamanager"),
-      "tinyMediaManager verification-only run must derive its preserved state root")
-
-
 if failures.empty?
   puts "beszel policy: all properties hold"
 else

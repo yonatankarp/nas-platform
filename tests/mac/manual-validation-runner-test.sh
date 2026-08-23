@@ -115,7 +115,6 @@ vault_ntfy_admin_password: NTFY-PASSWORD-DO-NOT-LEAK
 vault_ntfy_dozzle_token: tk_DO_NOT_LEAK_DOZZLE
 vault_paperless_admin_username: paperless-admin
 vault_paperless_admin_password: PAPERLESS-PASSWORD-DO-NOT-LEAK
-vault_tinymediamanager_password: TMM-PASSWORD-DO-NOT-LEAK
 vault_managed_users:
   audiobookshelf:
     - username: audio-reader
@@ -155,9 +154,6 @@ services:
     compose_files: []
     images: {}
   - name: audiobookshelf
-    compose_files: []
-    images: {}
-  - name: tinymediamanager
     compose_files: []
     images: {}
   - name: beszel
@@ -335,7 +331,7 @@ if grep -Eq 'idempotence|drift|recreate|persistence|cleanup' "$phase_log"; then
   fail 'manual run executed a phase after verify'
 fi
 
-service_port_fields='audiobookshelf:audiobookshelf_port beszel:beszel_port dozzle:dozzle_port immich:immich_port jellyfin:jellyfin_port komga:komga_port ntfy:ntfy_port paperless-ngx:paperless_port tinymediamanager:tinymediamanager_web_port'
+service_port_fields='audiobookshelf:audiobookshelf_port beszel:beszel_port dozzle:dozzle_port immich:immich_port jellyfin:jellyfin_port komga:komga_port ntfy:ntfy_port paperless-ngx:paperless_port'
 for service_field in $service_port_fields; do
   service=${service_field%%:*}
   field=${service_field#*:}
@@ -373,7 +369,7 @@ PLATFORM_TEST_VAULT_VIEW_FAILURE=false
 active_deployment_root=$sandbox/service-data/docker/nas-platform
 active_manifest=$active_deployment_root/current/manifest.yml
 for missing_service in \
-    audiobookshelf beszel dozzle immich jellyfin komga ntfy paperless-ngx tinymediamanager; do
+    audiobookshelf beszel dozzle immich jellyfin komga ntfy paperless-ngx; do
   ruby -ryaml - "$deployed_manifest" "$active_manifest" "$missing_service" <<'RUBY'
 source, destination, missing = ARGV
 manifest = YAML.safe_load_file(source, aliases: false)
@@ -407,8 +403,6 @@ for username in \
   grep -F "$username" "$manual_output" >/dev/null ||
     fail "handoff omitted username $username"
 done
-grep -F 'tinymediamanager primary username: not applicable (password-only login)' \
-  "$manual_output" >/dev/null || fail 'handoff omitted tinyMediaManager login guidance'
 grep -F 'Passwords remain in the encrypted vault source.' "$manual_output" >/dev/null ||
   fail 'handoff omitted encrypted-password guidance'
 

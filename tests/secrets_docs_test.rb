@@ -69,8 +69,8 @@ vault_keys = if vault_example.is_a?(Hash)
                []
              end
 
-check(failures, vault_keys.length == 45,
-      "vault example must contain exactly 45 vault_* keys (found #{vault_keys.length})")
+check(failures, vault_keys.length == 44,
+      "vault example must contain exactly 44 vault_* keys (found #{vault_keys.length})")
 
 secrets_guide_path = File.join(ROOT, "docs", "secrets.md")
 secrets_guide = File.file?(secrets_guide_path) ? File.read(secrets_guide_path) : ""
@@ -292,8 +292,7 @@ auto_deploy_section = markdown_section(nas_guide, "## Automatic deployment from 
 auto_deploy_shell_blocks = shell_code_fences(auto_deploy_section)
 verify_tags = %w[
   platform_verify_ntfy platform_verify_beszel platform_verify_dozzle
-  platform_verify_audiobookshelf platform_verify_komga
-  platform_verify_tinymediamanager platform_verify_jellyfin
+  platform_verify_audiobookshelf platform_verify_komga platform_verify_jellyfin
   platform_verify_immich platform_verify_paperless
 ].join(",")
 
@@ -479,15 +478,6 @@ check(failures,
 
 recovery = markdown_section(secrets_guide, "## Existing deployment recovery")
 recovery_shell_blocks = shell_code_fences(recovery)
-tinymediamanager_recovery = recovery.lines.find do |line|
-  line.start_with?("- tinyMediaManager:")
-end.to_s
-check(failures,
-      tinymediamanager_recovery.match?(/`vault_tinymediamanager_password`.*remains.*cleanup release/i),
-      "tinyMediaManager recovery entry must retain its vault key until the cleanup release")
-check(failures,
-      tinymediamanager_recovery.match?(/retired.*must remain stopped/i),
-      "tinyMediaManager recovery entry must identify the service as retired and stopped")
 check(failures,
       recovery_shell_blocks.any? do |block|
         block.include?('[ -L "$PLATFORM_VAULT_DIR" ]') &&

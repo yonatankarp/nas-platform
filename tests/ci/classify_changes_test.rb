@@ -8,7 +8,7 @@ require "tmpdir"
 
 SCRIPT = File.expand_path("classify_changes.rb", __dir__)
 LANES = %w[
-  static foundation smoke beszel dozzle audiobookshelf komga tinymediamanager jellyfin immich
+  static foundation smoke beszel dozzle audiobookshelf komga jellyfin immich
   paperless idempotence_check
 ].freeze
 failures = []
@@ -49,7 +49,6 @@ if defined?(ClassifyChanges)
     "dozzle" => %w[dozzle],
     "audiobookshelf" => %w[audiobookshelf],
     "komga" => %w[komga],
-    "tinymediamanager" => %w[tinymediamanager],
     "jellyfin" => %w[jellyfin],
     "immich" => %w[immich],
     "paperless-ngx" => %w[paperless]
@@ -93,8 +92,6 @@ if defined?(ClassifyChanges)
     "roles/dozzle/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,dozzle",
     "roles/audiobookshelf/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,audiobookshelf",
     "roles/komga/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,komga",
-    "roles/tinymediamanager/tasks/main.yml" =>
-      "host_prep,deployment_bundle,ntfy,tinymediamanager",
     "roles/jellyfin/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,jellyfin",
     "roles/immich/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,immich",
     "roles/paperless_ngx/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,paperless"
@@ -117,7 +114,6 @@ if defined?(ClassifyChanges)
     dozzle=true
     audiobookshelf=false
     komga=false
-    tinymediamanager=false
     jellyfin=false
     immich=false
     paperless=false
@@ -139,12 +135,11 @@ if defined?(ClassifyChanges)
     dozzle=true
     audiobookshelf=true
     komga=true
-    tinymediamanager=true
     jellyfin=true
     immich=true
     paperless=true
     idempotence_check=true
-    suites=["foundation","smoke","beszel","dozzle","audiobookshelf","komga","tinymediamanager","jellyfin","immich","paperless","idempotence-check"]
+    suites=["foundation","smoke","beszel","dozzle","audiobookshelf","komga","jellyfin","immich","paperless","idempotence-check"]
     run_ci=true
     selected_tags=
   OUTPUT
@@ -177,7 +172,6 @@ if defined?(ClassifyChanges)
     dozzle=false
     audiobookshelf=false
     komga=false
-    tinymediamanager=false
     jellyfin=false
     immich=false
     paperless=true

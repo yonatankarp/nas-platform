@@ -1,6 +1,0 @@
----
-role: tinymediamanager
-container_cpus:
-  tinymediamanager: 3.0
-vault_keys:
-  - vault_tinymediamanager_password

@@ -256,7 +256,7 @@ end
 # comment or a when: expression is not evidence of task ordering. The validating task's own
 # deployment_target_extra_paths necessarily name the runtime roots, so it is excluded from
 # the first-use search rather than compared against itself.
-%w[ntfy beszel dozzle audiobookshelf komga tinymediamanager jellyfin immich
+%w[ntfy beszel dozzle audiobookshelf komga jellyfin immich
    paperless_ngx].each do |service_name|
   service_tasks = YAML.safe_load_file(
     File.join(ROOT, "roles", service_name, "tasks", "main.yml"), aliases: true

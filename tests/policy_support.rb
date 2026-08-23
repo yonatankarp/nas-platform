@@ -13,7 +13,6 @@ module PolicySupport
   # of them check different properties of the same roster.
   EXPECTED_SERVICES = %w[
     audiobookshelf beszel dozzle immich jellyfin komga ntfy paperless-ngx
-    tinymediamanager
   ].freeze
   # Not every vault key belongs to a service; this one is platform-wide.
   GLOBAL_VAULT_KEYS = %w[vault_managed_users].freeze

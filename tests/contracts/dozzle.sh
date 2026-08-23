@@ -90,11 +90,6 @@ render_group_contract() {
     PAPERLESS_GOTENBERG_ENDPOINT=http://gotenberg:3000 PAPERLESS_AI_ENABLED=false \
     PAPERLESS_AI_LLM_ENDPOINT=http://example.invalid:11434 PAPERLESS_AI_LLM_MODEL=contract \
     PAPERLESS_SECRET_KEY=contract DB_NAME=contract DB_USER=contract DB_PASSWORD=contract \
-    TINYMEDIAMANAGER_WEB_HOST_PORT=34000 TINYMEDIAMANAGER_API_HOST_PORT=37878 \
-    TINYMEDIAMANAGER_DATA_PATH=/tmp/dozzle-contract/tinymediamanager-data \
-    TINYMEDIAMANAGER_MOVIES_PATH=/tmp/dozzle-contract/movies \
-    TINYMEDIAMANAGER_SERIES_PATH=/tmp/dozzle-contract/series \
-    TINYMEDIAMANAGER_PASSWORD=contract \
     USER_ID=1000 GROUP_ID=100 TZ=UTC \
     docker compose --project-name "dozzle-contract-$stack-$variant" "$@" config --format json) ||
     fail_contract "$stack $variant Compose render failed"
@@ -159,8 +154,7 @@ if [ "$mode" = static ]; then
     "$repo_dir/services/jellyfin/compose.yml" \
     "$repo_dir/services/komga/compose.yml" \
     "$repo_dir/services/ntfy/compose.yml" \
-    "$repo_dir/services/paperless-ngx/compose.yml" \
-    "$repo_dir/services/tinymediamanager/compose.yml" <<'RUBY'
+    "$repo_dir/services/paperless-ngx/compose.yml" <<'RUBY'
 begin
   ARGV.each do |path|
     document = Psych.parse_stream(File.read(path))
@@ -182,12 +176,9 @@ RUBY
   render_group_variants jellyfin ""
   render_group_variants komga ""
   render_group_variants ntfy ""
-  render_group_variants tinymediamanager ""
-  for stack in jellyfin tinymediamanager; do
-    render_group_contract "$stack" "" integration \
-      -f "$repo_dir/services/$stack/compose.yml" \
-      -f "$repo_dir/services/$stack/compose.integration.yml"
-  done
+  render_group_contract jellyfin "" integration \
+    -f "$repo_dir/services/jellyfin/compose.yml" \
+    -f "$repo_dir/services/jellyfin/compose.integration.yml"
 fi
 
 ruby -ryaml - "$compose" "$role" "$env_template" \

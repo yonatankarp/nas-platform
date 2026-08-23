@@ -20,8 +20,7 @@ PORT_FIELDS = {
   "jellyfin" => "jellyfin_port",
   "komga" => "komga_port",
   "ntfy" => "ntfy_port",
-  "paperless-ngx" => "paperless_port",
-  "tinymediamanager" => "tinymediamanager_web_port"
+  "paperless-ngx" => "paperless_port"
 }.freeze
 PRIMARY_IDENTITIES = {
   "audiobookshelf" => "vault_audiobookshelf_admin_username",
@@ -31,8 +30,7 @@ PRIMARY_IDENTITIES = {
   "jellyfin" => "vault_jellyfin_admin_username",
   "komga" => "vault_komga_admin_email",
   "ntfy" => "vault_ntfy_admin_user",
-  "paperless-ngx" => "vault_paperless_admin_username",
-  "tinymediamanager" => nil
+  "paperless-ngx" => "vault_paperless_admin_username"
 }.freeze
 MANAGED_KEYS = {
   "paperless-ngx" => "paperless_ngx"

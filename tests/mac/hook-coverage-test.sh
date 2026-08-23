@@ -66,8 +66,7 @@ set -eu
 printf '%s\n' 'ntfy verify-hook' >> "${HOOK_LOG:?}"
 STUB
   for delegate in verify/10-beszel.sh verify/20-dozzle.sh \
-      verify/50-tinymediamanager.sh fixtures-persistence/80-paperless.sh \
-      fixtures-recreate/50-tinymediamanager.sh; do
+      fixtures-persistence/80-paperless.sh; do
     printf '%s\n' '#!/bin/sh' 'exit 0' > "$tree/tests/mac/hooks/$delegate"
   done
 
@@ -95,8 +94,6 @@ STUB
   chmod 0755 "$tree/tests/mac/run-contract.sh" "$tree/bin/docker" \
     "$tree/tests/mac/hooks/verify/15-ntfy.sh" "$tree/tests/mac/hooks/verify/10-beszel.sh" \
     "$tree/tests/mac/hooks/verify/20-dozzle.sh" \
-    "$tree/tests/mac/hooks/verify/50-tinymediamanager.sh" \
-    "$tree/tests/mac/hooks/fixtures-recreate/50-tinymediamanager.sh" \
     "$tree/tests/mac/hooks/fixtures-persistence/80-paperless.sh"
 }
 
@@ -135,11 +132,11 @@ expect_log() {
 tree=$fixture/accepted
 build_tree "$tree"
 
-# Every group must account for all nine services: the eight registered contracts
+# Every group must account for all eight services: the seven registered contracts
 # plus ntfy, which has no contract of its own and so is never in the registry.
 summary=$(run_group "$tree" fixtures-seed 00-services.sh)
 expect_summary "$summary" \
-  'mac fixtures-seed hooks: covered 9 of 9 registered services (ran 7, delegated 0, exempt 2)'
+  'mac fixtures-seed hooks: covered 8 of 8 registered services (ran 7, delegated 0, exempt 1)'
 expect_log "$(cat "$tree/log/hooks")" 'beszel verify
 dozzle verify
 audiobookshelf seed-progress
@@ -150,18 +147,17 @@ paperless seed' 'fixtures-seed'
 
 summary=$(run_group "$tree" fixtures-persistence 00-services.sh)
 expect_summary "$summary" \
-  'mac fixtures-persistence hooks: covered 9 of 9 registered services (ran 7, delegated 1, exempt 1)'
+  'mac fixtures-persistence hooks: covered 8 of 8 registered services (ran 6, delegated 1, exempt 1)'
 expect_log "$(cat "$tree/log/hooks")" 'beszel verify
 dozzle verify
 audiobookshelf assert-persistence
 komga assert-persistence
-tinymediamanager assert-retired
 jellyfin assert-persistence
 immich assert-persistence' 'fixtures-persistence'
 
 summary=$(run_group "$tree" verify 30-services.sh)
 expect_summary "$summary" \
-  'mac verify hooks: covered 9 of 9 registered services (ran 5, delegated 4, exempt 0)'
+  'mac verify hooks: covered 8 of 8 registered services (ran 5, delegated 3, exempt 0)'
 expect_log "$(cat "$tree/log/hooks")" 'audiobookshelf run
 komga run
 jellyfin run
@@ -170,7 +166,7 @@ paperless run' 'verify'
 
 summary=$(run_group "$tree" fixtures-recreate 00-services.sh)
 expect_summary "$summary" \
-  'mac fixtures-recreate hooks: covered 9 of 9 registered services (ran 8, delegated 1, exempt 0)'
+  'mac fixtures-recreate hooks: covered 8 of 8 registered services (ran 8, delegated 0, exempt 0)'
 expect_log "$(cat "$tree/log/hooks")" 'beszel verify
 ntfy verify-hook
 dozzle verify

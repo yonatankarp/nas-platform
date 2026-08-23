@@ -11,11 +11,11 @@ mac_repo_dir=$(CDPATH= cd -- "$mac_script_dir/../.." && pwd -P)
 mac_owned_project_labels() {
   mac_label_project=$1
   for mac_label_suffix in \
-    beszel ntfy dozzle audiobookshelf komga tinymediamanager jellyfin immich paperless; do
+    beszel ntfy dozzle audiobookshelf komga jellyfin immich paperless; do
     printf '%s-%s\n' "$mac_label_project" "$mac_label_suffix"
   done
   for mac_label_suffix in \
-    audiobookshelf beszel dozzle immich jellyfin komga ntfy paperless-ngx tinymediamanager; do
+    audiobookshelf beszel dozzle immich jellyfin komga ntfy paperless-ngx; do
     printf '%s-legacy-%s\n' "$mac_label_project" "$mac_label_suffix"
   done
 }

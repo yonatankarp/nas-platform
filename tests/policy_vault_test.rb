@@ -113,8 +113,7 @@ check(failures, !vault_contract_tasks.empty? && vault_contract_tasks.all? { |tas
 # because both the structured keys and the scalar credentials are validated by
 # filters that return a list of violations. For the scalar credentials this stays
 # a real guard: the role passes them to the filter as a mapping of variable name
-# to value, so deleting vault_tinymediamanager_password's entry stops it being
-# inspected and fails here, and is mutation-checked as such. For
+# to value, so deleting a scalar entry stops it being inspected. For
 # vault_managed_users it is only a presence check, since the pass-through facts in
 # "Resolve validated managed-user service lists" name it too. That key's real pin
 # is tests/managed_users_vault_test.rb, which requires the schema filter by name

@@ -62,8 +62,6 @@ vault_paperless_gmail_app_password: example-app-password
 vault_paperless_mail_account_name: example-mail-account
 vault_paperless_mail_rule_name: example-mail-rule
 
-vault_tinymediamanager_password: example-password
-
 # Synthetic examples only. Recover deployed identities and their matching
 # credentials during migration; do not use these placeholders in production.
 vault_managed_users:

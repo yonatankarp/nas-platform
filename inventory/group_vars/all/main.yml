@@ -122,15 +122,7 @@ nas_storage:
     mode: "0755"
     recovery: user
 
-  # tinyMediaManager. Its stable settings and indexes are critical state. The
-  # media directories are intentionally writable because metadata writing is a
-  # core service function, while ownership remains under NAS control.
-  - path: "{{ nas_docker_root }}/tinymediamanager/data"
-    owner: "{{ nas_uid }}"
-    group: "{{ nas_gid }}"
-    mode: "0755"
-    recovery: critical
-    preserve_only: true
+  # Shared movie and series libraries remain NAS-owned user media.
   - path: "{{ nas_media_root }}/Media/Movies"
     mode: "0755"
     recovery: user
@@ -140,8 +132,7 @@ nas_storage:
 
   # Jellyfin. Its configuration holds users, libraries and playback state and is
   # critical; the transcode cache is regenerable working space. The media tree
-  # itself is the same NAS-owned user media tinyMediaManager curates, mounted
-  # read-only here.
+  # itself is NAS-owned user media mounted read-only here.
   - path: "{{ nas_docker_root }}/jellyfin/config"
     owner: "{{ nas_uid }}"
     group: "{{ nas_gid }}"

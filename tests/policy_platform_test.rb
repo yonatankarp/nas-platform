@@ -80,8 +80,7 @@ PLATFORM_INVENTORIES.values.map { |values| [values[0], values[3]] }.uniq.each do
   mac_runtime_facts = if platform_kind == "mac"
                         %w[
                           platform_project_name beszel_port ntfy_port dozzle_port
-                          audiobookshelf_port komga_port tinymediamanager_web_port
-                          tinymediamanager_api_port jellyfin_port immich_port paperless_port
+                          audiobookshelf_port komga_port jellyfin_port immich_port paperless_port
                         ]
                       else
                         []
@@ -165,13 +164,6 @@ end
 
 storage = YAML.safe_load_file(File.join(ROOT, "inventory", "group_vars", "all", "main.yml"))
 declared_paths = storage.fetch("nas_storage").map { |entry| entry.fetch("path") }
-tinymediamanager_preserved_storage = storage.fetch("nas_storage").select do |entry|
-  entry["path"] == "{{ nas_docker_root }}/tinymediamanager/data"
-end
-check(failures,
-      tinymediamanager_preserved_storage.length == 1 &&
-        tinymediamanager_preserved_storage.first["preserve_only"] == true,
-      "tinyMediaManager storage must remain preservation-only")
 paperless_postgres_storage = storage.fetch("nas_storage").find do |entry|
   entry["path"] == "{{ nas_docker_root }}/paperless-ngx/postgres"
 end

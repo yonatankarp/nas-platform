@@ -16,7 +16,7 @@ mac_script_dir=$(CDPATH= cd -- "$mac_hook_dir/../.." && pwd -P)
 mac_persisted=
 for mac_persistence_entry in beszel:verify dozzle:verify \
     audiobookshelf:assert-persistence komga:assert-persistence \
-    tinymediamanager:assert-retired jellyfin:assert-persistence \
+    jellyfin:assert-persistence \
     immich:assert-persistence; do
   mac_persistence_service=${mac_persistence_entry%%:*}
   "$mac_script_dir/run-contract.sh" "$mac_persistence_service" "${mac_persistence_entry#*:}"

@@ -28,6 +28,7 @@ BASE_FIXTURE_PATHS = %w[
   config/managed-user-capabilities.yml
   controller-requirements.txt
   docs/ansible-basics.md
+  docs/adding-a-service.md
   docs/getting-started.md
   docs/getting-started-mac.md
   docs/asustor-adm-rollout.md
@@ -84,8 +85,6 @@ BASE_FIXTURE_PATHS = %w[
   services/dozzle/alert_relay.py
   services/immich/classify_restore.py
   scripts/production_auto_deploy.py
-  services/tinymediamanager/compose.integration.yml
-  services/tinymediamanager/compose.mac.yml
   templates/vault-plain.yml.j2
   tests/contracts/registry.yml
   tests/compose_metadata_filter_test.yml
@@ -144,11 +143,15 @@ BASE_FIXTURE_PATHS = %w[
 EXPECTED_FIXTURE_ROLES = {
   "audiobookshelf" => "audiobookshelf", "beszel" => "beszel", "dozzle" => "dozzle",
   "immich" => "immich", "jellyfin" => "jellyfin", "komga" => "komga", "ntfy" => "ntfy",
-  "paperless-ngx" => "paperless_ngx", "tinymediamanager" => "tinymediamanager"
+  "paperless-ngx" => "paperless_ngx"
 }.freeze
 
 def fixture_paths(root = ROOT)
   paths = BASE_FIXTURE_PATHS.dup
+  paths.concat(%w[
+    scripts/migrate-media-acquisition-vault.py
+    tests/media_acquisition_vault_migration_test.py
+  ].select { |relative_path| File.file?(File.join(root, relative_path)) })
   manifest_path = File.join(root, "services", "manifest.yml")
   registry_path = File.join(root, "tests", "contracts", "registry.yml")
   raise "duplicate manifest fixture key" unless duplicate_yaml_keys(Psych.parse_stream(File.read(manifest_path))).empty?
@@ -221,6 +224,58 @@ def copy_fixture(source_root, sandbox)
   end
 end
 
+def initialize_fixture_index(sandbox)
+  commands = [
+    %w[git init -q],
+    ["git", "config", "user.name", "Policy Fixture"],
+    %w[git config user.email policy-fixture@invalid.example],
+    %w[git add -A]
+  ]
+  commands.each do |command|
+    _stdout, stderr, status = Open3.capture3(*command, chdir: sandbox)
+    raise "could not initialize policy fixture index: #{stderr.lines.first&.strip}" unless status.success?
+  end
+end
+
+def check_fixture_index_containment(failures)
+  source_index_before, source_error, source_status = Open3.capture3(
+    "git", "diff", "--cached", "--binary", chdir: ROOT
+  )
+  unless source_status.success?
+    failures << "fixture index containment: could not inspect source index: #{source_error.lines.first&.strip}"
+    return
+  end
+
+  Dir.mktmpdir("nas-platform-index-containment-") do |sandbox|
+    copy_fixture(ROOT, sandbox)
+    failures << "fixture index containment: copied fixture unexpectedly contains .git" if
+      File.exist?(File.join(sandbox, ".git"))
+    initialize_fixture_index(sandbox)
+
+    _head, _head_error, head_status = Open3.capture3(
+      "git", "rev-parse", "--verify", "HEAD", chdir: sandbox
+    )
+    failures << "fixture index containment: fixture must not contain a commit" if head_status.success?
+    staged, staged_error, staged_status = Open3.capture3(
+      "git", "diff", "--cached", "--name-only", "-z", chdir: sandbox
+    )
+    unless staged_status.success?
+      failures << "fixture index containment: could not inspect fixture index: #{staged_error.lines.first&.strip}"
+    end
+    failures << "fixture index containment: fixture files were not staged" if
+      staged_status.success? && staged.split("\0").empty?
+  end
+
+  source_index_after, source_error, source_status = Open3.capture3(
+    "git", "diff", "--cached", "--binary", chdir: ROOT
+  )
+  unless source_status.success?
+    failures << "fixture index containment: could not re-inspect source index: #{source_error.lines.first&.strip}"
+  end
+  failures << "fixture index containment: source repository index changed" if
+    source_status.success? && source_index_after != source_index_before
+end
+
 def mutate_manifest(root)
   path = File.join(root, "services", "manifest.yml")
   manifest = YAML.safe_load_file(path)
@@ -268,6 +323,7 @@ POLICY_SCRIPTS = %w[
 def run_policy(scripts = POLICY_SCRIPTS)
   Dir.mktmpdir("nas-platform-policy-") do |sandbox|
     copy_fixture(ROOT, sandbox)
+    initialize_fixture_index(sandbox)
     yield sandbox
     output = ""
     succeeded = true
@@ -283,6 +339,7 @@ end
 def run_compose_metadata_behavior
   Dir.mktmpdir("nas-platform-compose-metadata-") do |sandbox|
     copy_fixture(ROOT, sandbox)
+    initialize_fixture_index(sandbox)
     yield sandbox
     stdout, stderr, status = Open3.capture3(
       "ansible-playbook", "-i", "localhost,", "-c", "local",

@@ -81,7 +81,3 @@ services:
       create: get_user_model
       authenticate: api/token
       reconcile: get_user_model
-  tinymediamanager:
-    mode: single_shared_login
-    shared_credential_contract: vault_tinymediamanager_password
-    allowlist: false

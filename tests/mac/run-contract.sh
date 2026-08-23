@@ -127,24 +127,6 @@ case $mac_service in
     PLATFORM_PAPERLESS_WEBSERVER_CONTAINER=$(mac_container_name paperless-webserver)
     export PLATFORM_PAPERLESS_WEBSERVER_CONTAINER
     ;;
-  tinymediamanager)
-    # tinyMediaManager is the one service whose contract port is not
-    # PLATFORM_<SERVICE>_PORT: it exposes a web port and an API port, and the
-    # contract drives the API.
-    case $mac_phase in
-      seed-retirement-fixture|assert-retired) ;;
-      *) mac_die "tinyMediaManager retirement phase is invalid: $mac_phase" ;;
-    esac
-    : "${PLATFORM_TINYMEDIAMANAGER_API_PORT:?PLATFORM_TINYMEDIAMANAGER_API_PORT is required}"
-    : "${PLATFORM_TINYMEDIAMANAGER_WEB_PORT:?PLATFORM_TINYMEDIAMANAGER_WEB_PORT is required}"
-    : "${PLATFORM_TINYMEDIAMANAGER_REPORT_ROOT:?PLATFORM_TINYMEDIAMANAGER_REPORT_ROOT is required}"
-    : "${PLATFORM_CONTRACT_SANDBOX_ROOT:?PLATFORM_CONTRACT_SANDBOX_ROOT is required}"
-    : "${PLATFORM_CONTRACT_SANDBOX_OWNER_UID:?PLATFORM_CONTRACT_SANDBOX_OWNER_UID is required}"
-    : "${PLATFORM_COMPOSE_KIND:?PLATFORM_COMPOSE_KIND is required}"
-    PLATFORM_REPORT_ROOT=$PLATFORM_TINYMEDIAMANAGER_REPORT_ROOT
-    PLATFORM_TINYMEDIAMANAGER_CONTAINER=$(mac_container_name tinymediamanager)
-    export PLATFORM_REPORT_ROOT PLATFORM_TINYMEDIAMANAGER_CONTAINER
-    ;;
   *) mac_die "registered service has no Mac contract environment: $mac_service" ;;
 esac
 

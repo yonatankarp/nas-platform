@@ -77,8 +77,6 @@ PATTERN_SAMPLES = {
 # the same vault documents; see the module docstring for why the accepted half is
 # preserved rather than fixed.
 LEGACY_ACCEPTED = (
-    ("vault_tinymediamanager_password", ["sentinel"]),
-    ("vault_tinymediamanager_password", {"sentinel": 1}),
     ("vault_paperless_mail_rule_name", ["sentinel"]),
     ("vault_paperless_mail_rule_name", {"sentinel": 1}),
     ("vault_immich_db_name", True),
@@ -90,11 +88,6 @@ LEGACY_ACCEPTED = (
     ("vault_beszel_hub_private_key", {"id_ed25519": HUB_KEY}),
 )
 LEGACY_REJECTED = (
-    ("vault_tinymediamanager_password", 42),
-    ("vault_tinymediamanager_password", True),
-    ("vault_tinymediamanager_password", None),
-    ("vault_tinymediamanager_password", []),
-    ("vault_tinymediamanager_password", {}),
     ("vault_immich_db_name", ["sentinel"]),
     ("vault_immich_db_name", {"sentinel": 1}),
     ("vault_immich_db_name", 42),
@@ -196,15 +189,6 @@ class VaultCredentialSchemaTest(unittest.TestCase):
         for key, value in LEGACY_REJECTED:
             with self.subTest(f"rejected {key}={value!r}"):
                 self.assertIn(key, keys_named(errors_for(**{key: value})))
-
-    def test_a_credential_with_no_length_is_named(self):
-        # `| length > 0` raised for these, which failed the assert without saying
-        # which credential raised. The rule reports the same verdict by name.
-        for value in (None, 42, True):
-            with self.subTest(repr(value)):
-                self.assertIn(
-                    "vault_tinymediamanager_password: has no length to measure",
-                    errors_for(vault_tinymediamanager_password=value))
 
     def test_every_credential_rejects_a_value_its_own_rules_reject(self):
         for key, rules in CREDENTIAL_RULES.items():

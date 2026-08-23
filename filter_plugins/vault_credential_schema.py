@@ -133,7 +133,6 @@ CREDENTIAL_RULES = {
     "vault_paperless_gmail_app_password": ((NONEMPTY, None),),
     "vault_paperless_mail_account_name": ((NONEMPTY, None),),
     "vault_paperless_mail_rule_name": ((NONEMPTY, None),),
-    "vault_tinymediamanager_password": ((NONEMPTY, None),),
 }
 
 # The three publisher tokens authenticate three different ntfy identities. A

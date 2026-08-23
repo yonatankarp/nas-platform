@@ -131,6 +131,86 @@ check(failures,
 service_dirs = Dir[File.join(ROOT, "services", "*")].select { |p| File.directory?(p) }
 check(failures, service_dirs.any?, "no services defined")
 
+policy_runner = File.read(File.join(ROOT, "tests", "validate-policy.sh"))
+retired_token = %w[tiny media manager].join
+active_prefixes = %w[
+  .github/workflows/
+  config/
+  filter_plugins/
+  inventory/
+  roles/
+  services/
+  templates/
+  tests/
+  scripts/
+].freeze
+active_root_files = %w[
+  README.md
+  site.yml
+  verify.yml
+  generate-secrets.yml
+  validate-vault.yml
+].freeze
+tracked_and_untracked, enumeration_error, enumeration_status = Open3.capture3(
+  "git", "-C", ROOT, "ls-files", "--cached", "--others", "--exclude-standard", "-z"
+)
+check(failures, enumeration_status.success?,
+      "could not enumerate active policy sources: #{enumeration_error.lines.first&.strip}")
+active_sources = if enumeration_status.success?
+                   tracked_and_untracked.split("\0").select do |path|
+                     active_prefixes.any? { |prefix| path.start_with?(prefix) } ||
+                       active_root_files.include?(path) ||
+                       (path.start_with?("docs/") && File.dirname(path) == "docs" &&
+                        File.extname(path) == ".md")
+                   end
+                 else
+                   []
+                 end
+active_sources.delete("inventory/group_vars/all/vault.yml")
+
+migration_sources = %w[
+  scripts/migrate-media-acquisition-vault.py
+  tests/media_acquisition_vault_migration_test.py
+].freeze
+existing_migration_sources = migration_sources.select { |path| File.exist?(File.join(ROOT, path)) }
+unless existing_migration_sources.empty?
+  validation_line = 'PYTHONDONTWRITEBYTECODE=1 "$ansible_python" ' \
+                    'tests/media_acquisition_vault_migration_test.py'
+  migration_audit_complete = existing_migration_sources == migration_sources &&
+                             policy_runner.lines.map(&:strip).include?(validation_line)
+  check(failures, migration_audit_complete,
+        "the temporary encrypted-vault migration audit is incomplete")
+  active_sources -= migration_sources if migration_audit_complete
+end
+
+active_sources.sort.each do |relative_path|
+  path = File.join(ROOT, relative_path)
+  next unless File.exist?(path) || File.symlink?(path)
+
+  begin
+    stat = File.lstat(path)
+  rescue SystemCallError => e
+    check(failures, false, "#{relative_path}: cannot inspect active source: #{e.class}")
+    next
+  end
+  next if stat.symlink? || !stat.file?
+
+  begin
+    contains_retired_token = File.binread(path).downcase.include?(retired_token)
+  rescue SystemCallError => e
+    check(failures, false, "#{relative_path}: cannot read active source: #{e.class}")
+    next
+  end
+  check(failures, !contains_retired_token, "retired declaration remains: #{relative_path}")
+end
+
+retired_role = File.join(ROOT, "roles", retired_token)
+retired_service = File.join(ROOT, "services", retired_token)
+check(failures, !File.exist?(retired_role) && !File.symlink?(retired_role),
+      "retired role directory must be absent")
+check(failures, !File.exist?(retired_service) && !File.symlink?(retired_service),
+      "retired service directory must be absent")
+
 beszel_contract_path = File.join(ROOT, "tests", "contracts", "beszel.sh")
 beszel_contract = File.file?(beszel_contract_path) ? File.read(beszel_contract_path) : ""
 check(failures,
@@ -139,7 +219,6 @@ check(failures,
         !beszel_contract.include?("iso8601"),
       "Beszel notification proof must poll after a captured ntfy message ID")
 
-policy_runner = File.read(File.join(ROOT, "tests", "validate-policy.sh"))
 %w[
   ruby\ tests/beszel_telemetry_probe_test.rb
   ruby\ tests/beszel_telemetry_timeout_test.rb
@@ -662,7 +741,7 @@ end
 #
 # A library root may also sit above the declared entries rather than at or below
 # one, which is how Jellyfin mounts the whole media tree while nas_storage
-# declares only the three libraries tinyMediaManager curates: Ansible's file
+# declares only the libraries below it: Ansible's file
 # module creates the parent, and the leaves are where a mode and a recovery
 # class belong. Demanding an exact entry would reject that legitimate parent
 # mount. Accepting it is confined to these templates on purpose, because letting
@@ -682,8 +761,7 @@ end
 
 # Platform Compose files may add capabilities (devices, mounts, profiles, and
 # similar host-specific wiring). An override may restate an image only so that
-# platform keys sit beside it, as tinyMediaManager does to select linux/amd64
-# out of a multi-platform manifest, never to deploy something different. The
+# platform keys sit beside it, never to deploy something different. The
 # relationship is the invariant, so the canonical file stays the only place a
 # version is written and a nil canonical value fails the same way a mismatch does.
 Dir[File.join(ROOT, "services", "*", "compose.*.yml")].sort.each do |override_path|
@@ -756,8 +834,7 @@ Dir[File.join(ROOT, "roles", "*")].select { |p| File.directory?(p) }.each do |ro
     compose = task["community.docker.docker_compose_v2"]
     next false unless compose.is_a?(Hash)
 
-    compose["state"] == "present" ||
-      (name == "tinymediamanager" && compose["state"] == "absent")
+    compose["state"] == "present"
   end
   next if deployments.empty?
 
@@ -922,21 +999,6 @@ manifest_entries.each do |service|
     task["community.docker.docker_compose_v2"].is_a?(Hash)
   end
   deploys_compose = compose_tasks.any?
-  expected_tinymediamanager_retirement = {
-    "project_src" => "{{ platform_current_dir }}/services/tinymediamanager",
-    "project_name" => "{{ tinymediamanager_compose_project_name }}",
-    "files" => "{{ platform_service_compose_files['tinymediamanager'] }}",
-    "env_files" => ["{{ platform_runtime_dir }}/services/tinymediamanager/.env"],
-    "state" => "absent",
-    "remove_volumes" => false,
-    "remove_orphans" => false
-  }
-  retires_tinymediamanager =
-    name == "tinymediamanager" &&
-    compose_tasks.length == 1 &&
-    compose_tasks.first["name"] == "Retire tinyMediaManager without deleting state" &&
-    compose_tasks.first["community.docker.docker_compose_v2"] ==
-      expected_tinymediamanager_retirement
   # One include, carrying this service's own name. Counted from the source text
   # this was two independent substring checks that never had to describe the same
   # task: the count matched any line spelling "name: container_cpu", including a
@@ -947,12 +1009,10 @@ manifest_entries.each do |service|
     end
   end
   check(failures,
-        !deploys_compose || retires_tinymediamanager ||
+        !deploys_compose ||
           (container_cpu_includes.length == 1 &&
            container_cpu_includes.fetch(0).dig("vars", "container_cpu_service_name") == name),
-        name == "tinymediamanager" ?
-          "tinyMediaManager CPU exception requires exactly one safe retirement Compose task" :
-          "#{name}: role must verify its effective container CPU policy exactly once")
+        "#{name}: role must verify its effective container CPU policy exactly once")
   check(failures, declared_paths.any? { |path| path.include?("/#{name}/") || path.end_with?("/#{name}") },
         "#{name}: implemented service has no storage declaration")
 

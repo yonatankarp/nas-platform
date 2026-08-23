@@ -6,6 +6,74 @@
 require_relative "policy_mutation_support"
 
 failures = []
+retired_token = %w[tiny media manager].join
+
+check_fixture_index_containment(failures)
+
+expect_failure(failures, "recreated retired role",
+               "retired role directory must be absent") do |root|
+  path = File.join(root, "roles", retired_token, "tasks", "main.yml")
+  FileUtils.mkdir_p(File.dirname(path))
+  File.write(path, "---\n[]\n")
+end
+
+expect_failure(failures, "current README mention",
+               "retired declaration remains: README.md") do |root|
+  File.open(File.join(root, "README.md"), "a") { |file| file.puts(retired_token) }
+end
+
+expect_failure(failures, "current operator documentation mention",
+               "retired declaration remains: docs/adding-a-service.md") do |root|
+  File.open(File.join(root, "docs", "adding-a-service.md"), "a") do |file|
+    file.puts(retired_token.upcase)
+  end
+end
+
+expect_failure(failures, "deceptive migration neighbor",
+               "retired declaration remains: scripts/migrate-media-acquisition-vault.py.bak") do |root|
+  path = File.join(root, "scripts", "migrate-media-acquisition-vault.py.bak")
+  FileUtils.mkdir_p(File.dirname(path))
+  File.write(path, retired_token)
+end
+
+expect_failure(failures, "lone migration file",
+               "the temporary encrypted-vault migration audit is incomplete") do |root|
+  path = File.join(root, "scripts", "migrate-media-acquisition-vault.py")
+  FileUtils.mkdir_p(File.dirname(path))
+  File.write(path, "#!/usr/bin/env python3\n")
+end
+
+expect_failure(failures, "missing validation registration",
+               "the temporary encrypted-vault migration audit is incomplete") do |root|
+  migration_paths = %w[
+    scripts/migrate-media-acquisition-vault.py
+    tests/media_acquisition_vault_migration_test.py
+  ]
+  migration_paths.each do |relative_path|
+    path = File.join(root, relative_path)
+    FileUtils.mkdir_p(File.dirname(path))
+    File.write(path, "# temporary migration audit\n")
+  end
+end
+
+expect_failure(failures, "changed tracked README detection",
+               "retired declaration remains: README.md") do |root|
+  path = File.join(root, "README.md")
+  File.open(path, "a") { |file| file.puts(retired_token) }
+  _stdout, stderr, status = Open3.capture3("git", "add", "README.md", chdir: root)
+  raise "could not stage tracked README mutation: #{stderr.lines.first&.strip}" unless status.success?
+end
+
+expect_failure(failures, "new untracked forbidden source",
+               "retired declaration remains: tests/retired-policy.rb") do |root|
+  File.write(File.join(root, "tests", "retired-policy.rb"), retired_token)
+end
+
+expect_success(failures, "ignored bytecode containing retired token") do |root|
+  cache = File.join(root, "tests", "__pycache__")
+  FileUtils.mkdir_p(cache)
+  File.binwrite(File.join(cache, "retired-policy.pyc"), retired_token)
+end
 
 # The harness's own guards come first: if the fixture builder can be talked into
 # reading or writing outside the sandbox, nothing below proves anything.
@@ -209,16 +277,6 @@ expect_failure(failures, "Mac storage claims Linux ownership",
   end
 end
 
-expect_failure(failures, "tinyMediaManager preservation-only marker removed",
-               "tinyMediaManager storage must remain preservation-only") do |root|
-  mutate_yaml_file(root, "inventory/group_vars/all/main.yml") do |inventory|
-    entry = inventory.fetch("nas_storage").find do |storage|
-      storage["path"] == "{{ nas_docker_root }}/tinymediamanager/data"
-    end
-    entry.delete("preserve_only")
-  end
-end
-
 expect_failure(failures, "preservation-only storage inspected after creation",
                "host preparation must validate preservation-only storage before ordinary creation") do |root|
   mutate_yaml_file(root, "roles/host_prep/tasks/main.yml") do |tasks|
@@ -255,46 +313,6 @@ expect_failure(failures, "preservation-only storage recreated",
   mutate_yaml_file(root, "roles/host_prep/tasks/main.yml") do |tasks|
     task = tasks.find { |entry| entry["name"] == "Create service state directories" }
     task["loop"] = "{{ nas_storage }}"
-  end
-end
-
-expect_failure(failures, "second tinyMediaManager Compose task added",
-               "tinyMediaManager CPU exception requires exactly one safe retirement Compose task") do |root|
-  mutate_yaml_file(root, "roles/tinymediamanager/tasks/main.yml") do |tasks|
-    tasks << {
-      "name" => "Unexpected second tinyMediaManager Compose removal",
-      "community.docker.docker_compose_v2" => { "state" => "absent" }
-    }
-  end
-end
-
-expect_failure(failures, "included tinyMediaManager Compose task added",
-               "tinyMediaManager CPU exception requires exactly one safe retirement Compose task") do |root|
-  mutate_yaml_file(root, "roles/tinymediamanager/tasks/main.yml") do |tasks|
-    tasks << {
-      "name" => "Include an unexpected tinyMediaManager Compose removal",
-      "ansible.builtin.include_tasks" => "nested/unexpected_removal.yml"
-    }
-  end
-  helper_path = File.join(
-    root, "roles", "tinymediamanager", "tasks", "nested", "unexpected_removal.yml"
-  )
-  FileUtils.mkdir_p(File.dirname(helper_path))
-  File.write(helper_path, YAML.dump([
-    {
-      "name" => "Unexpected included tinyMediaManager Compose removal",
-      "community.docker.docker_compose_v2" => { "state" => "absent" }
-    }
-  ]))
-end
-
-expect_failure(failures, "tinyMediaManager retirement removes volumes",
-               "tinyMediaManager CPU exception requires exactly one safe retirement Compose task") do |root|
-  mutate_yaml_file(root, "roles/tinymediamanager/tasks/main.yml") do |tasks|
-    retirement = tasks.find do |task|
-      task["name"] == "Retire tinyMediaManager without deleting state"
-    end
-    retirement.fetch("community.docker.docker_compose_v2")["remove_volumes"] = true
   end
 end
 

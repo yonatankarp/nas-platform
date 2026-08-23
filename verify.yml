@@ -45,8 +45,6 @@
       tags: [never]
     - role: komga
       tags: [never]
-    - role: tinymediamanager
-      tags: [never]
     - role: jellyfin
       tags: [never]
     - role: immich

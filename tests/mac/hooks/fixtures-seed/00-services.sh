@@ -32,5 +32,4 @@ for mac_seed_entry in beszel:verify dozzle:verify audiobookshelf:seed-progress \
 done
 
 mac_assert_service_coverage fixtures-seed 00-services.sh "$mac_seeded" \
-  'ntfy=it has no contract suite of its own; its fixtures are the provisioned topics
-tinymediamanager=its preservation sentinel and legacy container are seeded before convergence'
+  'ntfy=it has no contract suite of its own; its fixtures are the provisioned topics'

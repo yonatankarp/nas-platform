@@ -189,7 +189,6 @@ vault_paperless_gmail_account: ephemeral@example.invalid
 vault_paperless_gmail_app_password: '$(random_password)'
 vault_paperless_mail_account_name: ephemeral-gmail
 vault_paperless_mail_rule_name: ephemeral-inbox
-vault_tinymediamanager_password: '$(random_password)'
 vault_managed_users:
   audiobookshelf:
     - username: reader-ephemeral-example-invalid

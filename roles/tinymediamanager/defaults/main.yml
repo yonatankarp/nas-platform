@@ -1,9 +1,0 @@
----
-tinymediamanager_compose_project_name: >-
-  {{ (platform_project_name ~ '-tinymediamanager')
-     if platform_project_name | default('') | length > 0 else 'tinymediamanager' }}
-tinymediamanager_container_name: >-
-  {{ (platform_project_name ~ '-tinymediamanager')
-     if platform_compose_kind == 'mac' else 'tinymediamanager' }}
-tinymediamanager_web_port: 4000
-tinymediamanager_api_port: 7878

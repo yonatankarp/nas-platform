@@ -14,5 +14,3 @@ contracts:
     path: tests/contracts/komga.sh
   - service: paperless-ngx
     path: tests/contracts/paperless.sh
-  - service: tinymediamanager
-    path: tests/contracts/tinymediamanager.sh

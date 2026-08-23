@@ -7,13 +7,10 @@ logins, ntfy tokens, Beszel keys, and future integrations are proven portable.
 
 This proof covers the eight active services in
 [`services/manifest.yml`](../services/manifest.yml)—Audiobookshelf, Beszel,
-Dozzle, Immich, Jellyfin, Komga, ntfy, and Paperless-ngx—plus the
-tinyMediaManager retirement proof. tinyMediaManager is retired and must remain
-stopped; its bind-mounted state is preserved for the transitional checkpoint.
-The harness creates a disposable legacy fixture, converges its retirement, and
-requires both container absence and a preserved safe bind-state checkpoint. It
-sends test alerts to the sandbox's own ntfy instance. Mobile delivery is outside
-scope.
+Dozzle, Immich, Jellyfin, Komga, ntfy, and Paperless-ngx. The retired
+media-manager cleanup checkpoint is complete and its declarations have been
+removed. The harness sends test alerts to the sandbox's own ntfy instance.
+Mobile delivery is outside scope.
 
 ## 1. Install and verify prerequisites
 
@@ -127,11 +124,9 @@ unset proof_status
 
 Proceed only when the block prints `All automated phases passed`. Use
 [`tests/mac/manual-review.md`](../tests/mac/manual-review.md) while the eight
-active services are running and the retired tinyMediaManager container is
-absent. The retirement contract also checks that its representative non-secret
-fixture remains unchanged in the safe bind-mounted state. Record the reviewer,
-manifest commit, decision, and non-secret notes. Credential continuity requires
-a private check for every active service:
+active services are running. Record the reviewer, manifest commit, decision,
+and non-secret notes. Credential continuity requires a private check for every
+active service:
 
 - Audiobookshelf, Jellyfin, and Komga: sign in with each deployed administrator
   identity and confirm the disposable libraries remain usable after recreation.
@@ -148,10 +143,6 @@ a private check for every active service:
 - Paperless-ngx: sign in with the deployed administrator identity, confirm its
   database-backed fixtures survive recreation, and inspect the existing Gmail
   account and mail rule without fetching mail.
-
-For tinyMediaManager, perform only the retirement checkpoint: confirm the
-container remains absent and the bind-mounted state remains preserved. Do not
-open its UI or API, authenticate, scan a library, or write metadata.
 
 After the review, produce the report and clean only the validated sandbox:
 

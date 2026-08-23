@@ -24,6 +24,3 @@ services:
   - name: paperless-ngx
     role: paperless_ngx
     status: implemented
-  - name: tinymediamanager
-    role: tinymediamanager
-    status: implemented

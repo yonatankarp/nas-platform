@@ -5,7 +5,7 @@ require "open3"
 
 module ClassifyChanges
   LANES = %w[
-    static foundation smoke beszel dozzle audiobookshelf komga tinymediamanager jellyfin immich
+    static foundation smoke beszel dozzle audiobookshelf komga jellyfin immich
     paperless idempotence_check
   ].freeze
   # The integration suite each lane dispatches, in the order the CI matrix runs
@@ -17,14 +17,13 @@ module ClassifyChanges
     "dozzle" => "dozzle",
     "audiobookshelf" => "audiobookshelf",
     "komga" => "komga",
-    "tinymediamanager" => "tinymediamanager",
     "jellyfin" => "jellyfin",
     "immich" => "immich",
     "paperless" => "paperless",
     "idempotence_check" => "idempotence-check"
   }.freeze
   SERVICE_LANES = %w[
-    beszel dozzle audiobookshelf komga tinymediamanager jellyfin immich paperless
+    beszel dozzle audiobookshelf komga jellyfin immich paperless
   ].freeze
   # ntfy is in every service's tag set because every service role publishes its
   # own deployment report to it. A converge that leaves the sink out would fail
@@ -34,7 +33,6 @@ module ClassifyChanges
     "dozzle" => %w[host_prep deployment_bundle ntfy dozzle],
     "audiobookshelf" => %w[host_prep deployment_bundle ntfy audiobookshelf],
     "komga" => %w[host_prep deployment_bundle ntfy komga],
-    "tinymediamanager" => %w[host_prep deployment_bundle ntfy tinymediamanager],
     "jellyfin" => %w[host_prep deployment_bundle ntfy jellyfin],
     "immich" => %w[host_prep deployment_bundle ntfy immich],
     "paperless" => %w[host_prep deployment_bundle ntfy paperless]
@@ -44,7 +42,6 @@ module ClassifyChanges
     "dozzle" => %w[dozzle],
     "audiobookshelf" => %w[audiobookshelf],
     "komga" => %w[komga],
-    "tinymediamanager" => %w[tinymediamanager],
     "jellyfin" => %w[jellyfin],
     "immich" => %w[immich],
     "paperless" => %w[paperless paperless-ngx paperless_ngx]

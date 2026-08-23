@@ -189,7 +189,7 @@ In `tests/policy_support.rb`, add the name to `EXPECTED_SERVICES`:
 ```ruby
 EXPECTED_SERVICES = %w[
   audiobookshelf beszel dozzle immich jellyfin komga navidrome ntfy
-  paperless-ngx tinymediamanager
+  paperless-ngx
 ].freeze
 ```
 
@@ -285,9 +285,7 @@ The policy test enforces every one of these properties:
 
 If you need a platform override, add `services/<name>/compose.mac.yml`. Overrides
 may add host-specific wiring such as devices, mounts and per-project container
-names, but they **must not contain an `image:` key**. The allowlist of overrides
-that may restate an image is exact and currently holds only tinyMediaManager,
-which pins a platform out of a multi-platform manifest.
+names, but they **must not contain an `image:` key**.
 
 You do not select the override yourself. `deployment_bundle` stats every manifest
 service against the deployed release once per run and publishes the result as
@@ -538,8 +536,8 @@ unrecognised path makes `service_lane` return nil, which runs every lane:
 
 ```
 roles/navidrome/... unmapped -> static, foundation, smoke, beszel, dozzle,
-                                audiobookshelf, komga, tinymediamanager,
-                                jellyfin, immich, paperless, idempotence-check
+                                audiobookshelf, komga, jellyfin, immich,
+                                paperless, idempotence-check
 roles/komga/...     mapped   -> static, smoke, komga, idempotence-check
 ```
 

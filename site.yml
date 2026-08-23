@@ -76,9 +76,6 @@
     - role: komga
       tags: [komga, media]
 
-    - role: tinymediamanager
-      tags: [tinymediamanager, media]
-
     - role: jellyfin
       tags: [jellyfin, media]
 
