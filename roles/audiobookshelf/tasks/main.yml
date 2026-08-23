@@ -493,8 +493,10 @@
           - not audiobookshelf_initial_scan_marker_stat.stat.exists or
             audiobookshelf_initial_scan_marker_stat.stat.mode == '0600'
           - not audiobookshelf_initial_scan_marker_stat.stat.exists or
+            not (platform_kind == 'nas' or (platform_manage_linux_ownership | bool)) or
             audiobookshelf_initial_scan_marker_stat.stat.uid | int == nas_uid | int
           - not audiobookshelf_initial_scan_marker_stat.stat.exists or
+            not (platform_kind == 'nas' or (platform_manage_linux_ownership | bool)) or
             audiobookshelf_initial_scan_marker_stat.stat.gid | int == nas_gid | int
         fail_msg: The Audiobookshelf initial scan marker is not a private regular platform file.
 
@@ -599,8 +601,14 @@
   ansible.builtin.copy:
     content: "{{ audiobookshelf_initial_scan_precreate_state | to_json }}\n"
     dest: "{{ audiobookshelf_initial_scan_marker_path }}"
-    owner: "{{ nas_uid }}"
-    group: "{{ nas_gid }}"
+    owner: >-
+      {{ nas_uid
+         if platform_kind == 'nas' or (platform_manage_linux_ownership | bool)
+         else omit }}
+    group: >-
+      {{ nas_gid
+         if platform_kind == 'nas' or (platform_manage_linux_ownership | bool)
+         else omit }}
     mode: "0600"
     follow: false
     unsafe_writes: false
@@ -672,8 +680,14 @@
   ansible.builtin.copy:
     content: "{{ audiobookshelf_initial_scan_bound_state | to_json }}\n"
     dest: "{{ audiobookshelf_initial_scan_marker_path }}"
-    owner: "{{ nas_uid }}"
-    group: "{{ nas_gid }}"
+    owner: >-
+      {{ nas_uid
+         if platform_kind == 'nas' or (platform_manage_linux_ownership | bool)
+         else omit }}
+    group: >-
+      {{ nas_gid
+         if platform_kind == 'nas' or (platform_manage_linux_ownership | bool)
+         else omit }}
     mode: "0600"
     follow: false
     unsafe_writes: false

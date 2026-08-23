@@ -20,7 +20,7 @@ mac_script_dir=$(CDPATH= cd -- "$mac_hook_dir/../.." && pwd -P)
 # seeded supported unowned leaf, in addition to login, assets, settings and
 # containment.
 mac_verified=
-for mac_verify_service in audiobookshelf komga tinymediamanager jellyfin immich paperless; do
+for mac_verify_service in audiobookshelf komga jellyfin immich paperless; do
   "$mac_script_dir/run-contract.sh" "$mac_verify_service" run
   mac_verified="$mac_verified$mac_verify_service
 "

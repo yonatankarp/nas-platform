@@ -10,10 +10,12 @@ This repository manages service configuration and containers. It does **not**
 back up photos, media, databases, or other application data. Back up the NAS
 and confirm that the backup can be restored before a production migration.
 
-The migration is still in progress. Every service currently listed in the
-manifest is implemented and automated: ntfy, Beszel, Dozzle, Audiobookshelf,
-Komga, Jellyfin, tinyMediaManager, Immich, and Paperless-ngx. The authoritative
-status is [`services/manifest.yml`](../services/manifest.yml).
+The migration is still in progress. The eight active services are ntfy, Beszel,
+Dozzle, Audiobookshelf, Komga, Jellyfin, Immich, and Paperless-ngx.
+tinyMediaManager remains implemented only as a transitional retirement role: it
+is retired, must remain stopped, and its bind-mounted state remains preserved.
+The authoritative status is
+[`services/manifest.yml`](../services/manifest.yml).
 
 The two supported routes are deliberately separate:
 

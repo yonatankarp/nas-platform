@@ -5,6 +5,7 @@
 # The source-platform inventory is the exception: pinning that finite set keeps
 # an omitted service from silently disappearing from the platform scope.
 
+require "find"
 require "open3"
 require "rbconfig"
 require "set"
@@ -18,6 +19,78 @@ failures = []
 
 def check(failures, condition, message)
   failures << message unless condition
+end
+
+def task_list_document?(tasks)
+  tasks.is_a?(Array) && tasks.all? do |task|
+    task.is_a?(Hash) && %w[block rescue always].all? do |section|
+      !task.key?(section) || task_list_document?(task[section])
+    end
+  end
+end
+
+def recursive_role_yaml_paths(tree_root, failures)
+  begin
+    root_stat = File.lstat(tree_root)
+  rescue Errno::ENOENT
+    return []
+  rescue SystemCallError => e
+    check(failures, false, "#{tree_root}: cannot inspect role YAML tree: #{e.class}")
+    return []
+  end
+  unless root_stat.directory? && !root_stat.symlink? &&
+         owned_directory?(tree_root, File.dirname(tree_root))
+    check(failures, false, "#{tree_root}: role YAML tree must be a regular owned directory")
+    return []
+  end
+
+  paths = []
+  begin
+    Find.find(tree_root) do |path|
+      next if path == tree_root
+
+      relative_path = path.delete_prefix("#{ROOT}/")
+      entry_stat = File.lstat(path)
+      if entry_stat.symlink?
+        check(failures, false, "#{relative_path}: role YAML tree must not contain symlinks")
+        Find.prune
+      elsif entry_stat.directory?
+        unless owned_directory?(path, File.dirname(path))
+          check(failures, false, "#{relative_path}: role YAML directory must be owned")
+          Find.prune
+        end
+      elsif %w[.yml .yaml].include?(File.extname(path))
+        if entry_stat.file? && owned_file?(path, tree_root)
+          paths << path
+        else
+          check(failures, false, "#{relative_path}: role YAML file must be a regular owned file")
+        end
+      end
+    end
+  rescue SystemCallError => e
+    check(failures, false, "#{tree_root}: cannot enumerate role YAML tree: #{e.class}")
+  end
+  paths.sort
+end
+
+def load_role_tasks(role_root, failures)
+  tasks_root = File.join(role_root, "tasks")
+  recursive_role_yaml_paths(tasks_root, failures).flat_map do |path|
+    relative_path = path.delete_prefix("#{ROOT}/")
+    begin
+      parsed = YAML.safe_load_file(path, aliases: true)
+    rescue Psych::Exception => e
+      check(failures, false,
+            "#{relative_path}: role task file is malformed: #{e.message.lines.first.strip}")
+      next []
+    end
+    unless task_list_document?(parsed)
+      check(failures, false, "#{relative_path}: role task file must contain an array of task mappings")
+      next []
+    end
+
+    flatten_tasks(parsed)
+  end
 end
 
 beginner_guides = %w[
@@ -649,7 +722,11 @@ end
 shell_modules = %w[
   ansible.builtin.command ansible.builtin.shell command shell raw
 ].freeze
-role_task_files = Dir[File.join(ROOT, "roles", "*", "{tasks,handlers}", "*.yml")]
+role_task_files = Dir[File.join(ROOT, "roles", "*")].sort.flat_map do |role_root|
+  %w[tasks handlers].flat_map do |tree|
+    recursive_role_yaml_paths(File.join(role_root, tree), failures)
+  end
+end
 deploys_through_module = false
 role_task_files.each do |path|
   tasks = flatten_tasks(YAML.safe_load_file(path, aliases: true))
@@ -674,14 +751,13 @@ check(failures, deploys_through_module,
 deployment_reports_declared = false
 Dir[File.join(ROOT, "roles", "*")].select { |p| File.directory?(p) }.each do |role|
   name = File.basename(role)
-  task_files = Dir[File.join(role, "tasks", "*.yml")]
-  tasks = task_files.flat_map do |path|
-    parsed = YAML.safe_load_file(path, aliases: true)
-    parsed.is_a?(Array) ? parsed.select { |task| task.is_a?(Hash) } : []
-  end
+  tasks = load_role_tasks(role, failures)
   deployments = tasks.select do |task|
-    task["community.docker.docker_compose_v2"].is_a?(Hash) &&
-      task.dig("community.docker.docker_compose_v2", "state") == "present"
+    compose = task["community.docker.docker_compose_v2"]
+    next false unless compose.is_a?(Hash)
+
+    compose["state"] == "present" ||
+      (name == "tinymediamanager" && compose["state"] == "absent")
   end
   next if deployments.empty?
 
@@ -841,8 +917,26 @@ manifest_entries.each do |service|
           "PLATFORM_CONTAINER_CPUSET={{ platform_effective_container_cpuset }}"
         ) == 1,
         "#{name}: environment must render the effective container CPU set exactly once")
-  service_tasks = tasks_owned ? flatten_tasks(YAML.safe_load_file(tasks_path, aliases: true)) : []
-  deploys_compose = service_tasks.any? { |task| task.key?("community.docker.docker_compose_v2") }
+  service_tasks = role_root_owned ? load_role_tasks(role_root, failures) : []
+  compose_tasks = service_tasks.select do |task|
+    task["community.docker.docker_compose_v2"].is_a?(Hash)
+  end
+  deploys_compose = compose_tasks.any?
+  expected_tinymediamanager_retirement = {
+    "project_src" => "{{ platform_current_dir }}/services/tinymediamanager",
+    "project_name" => "{{ tinymediamanager_compose_project_name }}",
+    "files" => "{{ platform_service_compose_files['tinymediamanager'] }}",
+    "env_files" => ["{{ platform_runtime_dir }}/services/tinymediamanager/.env"],
+    "state" => "absent",
+    "remove_volumes" => false,
+    "remove_orphans" => false
+  }
+  retires_tinymediamanager =
+    name == "tinymediamanager" &&
+    compose_tasks.length == 1 &&
+    compose_tasks.first["name"] == "Retire tinyMediaManager without deleting state" &&
+    compose_tasks.first["community.docker.docker_compose_v2"] ==
+      expected_tinymediamanager_retirement
   # One include, carrying this service's own name. Counted from the source text
   # this was two independent substring checks that never had to describe the same
   # task: the count matched any line spelling "name: container_cpu", including a
@@ -853,10 +947,12 @@ manifest_entries.each do |service|
     end
   end
   check(failures,
-        !deploys_compose ||
+        !deploys_compose || retires_tinymediamanager ||
           (container_cpu_includes.length == 1 &&
            container_cpu_includes.fetch(0).dig("vars", "container_cpu_service_name") == name),
-        "#{name}: role must verify its effective container CPU policy exactly once")
+        name == "tinymediamanager" ?
+          "tinyMediaManager CPU exception requires exactly one safe retirement Compose task" :
+          "#{name}: role must verify its effective container CPU policy exactly once")
   check(failures, declared_paths.any? { |path| path.include?("/#{name}/") || path.end_with?("/#{name}") },
         "#{name}: implemented service has no storage declaration")
 

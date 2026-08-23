@@ -123,6 +123,62 @@ def exercise_jellyfin_settings(failures)
   end
 end
 
+def exercise_jellyfin_server_configuration_refresh(failures)
+  main = YAML.safe_load_file(
+    File.join(ROOT, "roles", "jellyfin", "tasks", "main.yml"), aliases: false
+  )
+  selected_names = [
+    "Refresh Jellyfin server configuration before name update",
+    "Require complete refreshed Jellyfin server configuration",
+    "Update the Jellyfin server name"
+  ]
+  tasks = main.select { |task| selected_names.include?(task_name(task)) }
+  desired_repositories = [
+    { "Name" => "Jellyfin Stable",
+      "Url" => "https://repo.jellyfin.org/files/plugin/manifest.json", "Enabled" => true },
+    { "Name" => "Intro Skipper", "Url" => "https://intro-skipper.org/manifest.json",
+      "Enabled" => true }
+  ]
+  current_configuration = {
+    "ServerName" => "Yonflix Drifted", "PluginRepositories" => desired_repositories,
+    "UnmanagedSentinel" => true
+  }
+  stale_configuration = Marshal.load(Marshal.dump(current_configuration))
+  stale_configuration.fetch("PluginRepositories").last["Enabled"] = false
+  responder = lambda do |request|
+    case [request["method"], request["target"]]
+    when ["GET", "/System/Configuration"]
+      [200, current_configuration]
+    when ["POST", "/System/Configuration"]
+      current_configuration.replace(request.fetch("json"))
+      [204, nil]
+    else
+      [500, {}]
+    end
+  end
+  with_http_service(responder) do |port, requests|
+    variables = {
+      "jellyfin_api" => "http://127.0.0.1:#{port}",
+      "jellyfin_client_header" => "MediaBrowser Fixture",
+      "jellyfin_reconcile_token" => "admin-token",
+      "jellyfin_server_configuration_before" => { "json" => stale_configuration },
+      "jellyfin_server_name_update_required" => true,
+      "jellyfin_server_name" => "Yonflix 2.0"
+    }
+    stdout, stderr, status = run_playbook(tasks, variables)
+    failures << "Jellyfin refreshed server-name update failed: #{failure_tail(stdout + stderr)}" unless
+      status.success?
+    failures << "Jellyfin server-name update overwrote a freshly repaired plugin repository" unless
+      current_configuration.fetch("PluginRepositories") == desired_repositories
+    failures << "Jellyfin server-name update did not preserve unrelated fresh configuration" unless
+      current_configuration["UnmanagedSentinel"] == true
+    failures << "Jellyfin server-name update did not refresh immediately before mutation" unless
+      requests.map { |request| request.values_at("method", "target") } == [
+        ["GET", "/System/Configuration"], ["POST", "/System/Configuration"]
+      ]
+  end
+end
+
 def exercise_jellyfin_policy_preflight(failures)
   main = YAML.safe_load_file(
     File.join(ROOT, "roles", "jellyfin", "tasks", "main.yml"), aliases: false

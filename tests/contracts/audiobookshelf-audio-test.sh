@@ -17,14 +17,26 @@ cleanup() {
 
 trap cleanup EXIT HUP INT TERM
 
-mkdir -p "$test_root/media" "$test_root/reports"
+mkdir -p "$test_root/docker" "$test_root/fixtures" "$test_root/media" "$test_root/reports"
+
+mac_preconverge_hook=$repo_dir/tests/mac/hooks/pre-converge/30-audiobookshelf.sh
+test -x "$mac_preconverge_hook" || {
+  printf '%s\n' 'Audiobookshelf audio test failed: Mac pre-deployment fixture hook is absent' >&2
+  exit 1
+}
 
 preseed_status=0
 preseed_output=$(
+  PLATFORM_MAC_VAULT_FILE="$test_root/unused-vault.yml" \
+  PLATFORM_MAC_VAULT_PASSWORD_FILE="$test_root/unused-vault-password" \
+  PLATFORM_DOCKER_ROOT="$test_root/docker" \
   PLATFORM_MEDIA_ROOT="$test_root/media" \
+  PLATFORM_FIXTURE_ROOT="$test_root/fixtures" \
   PLATFORM_REPORT_ROOT="$test_root/reports" \
+  PLATFORM_PROJECT_NAME=audiobookshelf-audio-test \
+  PLATFORM_NTFY_PORT=18080 \
   PLATFORM_AUDIOBOOKSHELF_PORT=13378 \
-    "$repo_dir/tests/contracts/audiobookshelf.sh" seed-fixture-only 2>&1
+    "$mac_preconverge_hook" 2>&1
 ) || preseed_status=$?
 
 if [ "$preseed_status" -ne 0 ]; then
@@ -38,12 +50,54 @@ grep -Fqx 'Audiobookshelf media fixture prepared before deployment' <<<"$preseed
   exit 1
 }
 
-test -f "$test_root/media/Media/Audiobooks/task-9-contract-book/task-9-contract-book.wav" || {
+fixture_directory=$test_root/media/Media/Audiobooks/task-9-contract-book
+fixture_path=$fixture_directory/task-9-contract-book.wav
+cover_path=$fixture_directory/cover.png
+test -f "$fixture_path" && test ! -L "$fixture_path" || {
   printf '%s\n' 'Audiobookshelf audio test failed: pre-deployment fixture is absent' >&2
   exit 1
 }
-test -f "$test_root/media/Media/Audiobooks/task-9-contract-book/cover.png" || {
+test -f "$cover_path" && test ! -L "$cover_path" || {
   printf '%s\n' 'Audiobookshelf audio test failed: deterministic local cover is absent' >&2
+  exit 1
+}
+ruby -rpathname - "$test_root/media" "$fixture_directory" "$fixture_path" "$cover_path" <<'RUBY'
+media_root, fixture_directory, fixture_path, cover_path = ARGV.map { |path| Pathname.new(path).realpath }
+expected_directory = media_root.join("Media/Audiobooks/task-9-contract-book")
+abort "Audiobookshelf audio test failed: Mac fixture escaped its media root" unless
+  fixture_directory == expected_directory &&
+    [fixture_path, cover_path].all? { |path| path.dirname == expected_directory }
+RUBY
+first_fixture_digest=$(ruby -rdigest -e 'print Digest::SHA256.file(ARGV.fetch(0)).hexdigest' "$fixture_path")
+first_cover_digest=$(ruby -rdigest -e 'print Digest::SHA256.file(ARGV.fetch(0)).hexdigest' "$cover_path")
+test "$first_fixture_digest" = 8c26df165039d50a36a4bfa7306a053b889a7582128ad318ec5b19ab5eb04f4a &&
+  test "$first_cover_digest" = 431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460 || {
+  printf '%s\n' 'Audiobookshelf audio test failed: Mac pre-deployment fixture bytes differ' >&2
+  exit 1
+}
+
+second_preseed_output=$(
+  PLATFORM_MAC_VAULT_FILE="$test_root/unused-vault.yml" \
+  PLATFORM_MAC_VAULT_PASSWORD_FILE="$test_root/unused-vault-password" \
+  PLATFORM_DOCKER_ROOT="$test_root/docker" \
+  PLATFORM_MEDIA_ROOT="$test_root/media" \
+  PLATFORM_FIXTURE_ROOT="$test_root/fixtures" \
+  PLATFORM_REPORT_ROOT="$test_root/reports" \
+  PLATFORM_PROJECT_NAME=audiobookshelf-audio-test \
+  PLATFORM_NTFY_PORT=18080 \
+  PLATFORM_AUDIOBOOKSHELF_PORT=13378 \
+    "$mac_preconverge_hook" 2>&1
+)
+grep -Fqx 'Audiobookshelf media fixture prepared before deployment' <<<"$second_preseed_output" || {
+  printf '%s\n' "$second_preseed_output" >&2
+  printf '%s\n' 'Audiobookshelf audio test failed: repeated Mac pre-deployment hook omitted its marker' >&2
+  exit 1
+}
+test "$first_fixture_digest" = \
+  "$(ruby -rdigest -e 'print Digest::SHA256.file(ARGV.fetch(0)).hexdigest' "$fixture_path")" &&
+  test "$first_cover_digest" = \
+    "$(ruby -rdigest -e 'print Digest::SHA256.file(ARGV.fetch(0)).hexdigest' "$cover_path")" || {
+  printf '%s\n' 'Audiobookshelf audio test failed: repeated Mac pre-deployment hook changed fixture bytes' >&2
   exit 1
 }
 

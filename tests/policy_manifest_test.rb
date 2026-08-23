@@ -209,6 +209,95 @@ expect_failure(failures, "Mac storage claims Linux ownership",
   end
 end
 
+expect_failure(failures, "tinyMediaManager preservation-only marker removed",
+               "tinyMediaManager storage must remain preservation-only") do |root|
+  mutate_yaml_file(root, "inventory/group_vars/all/main.yml") do |inventory|
+    entry = inventory.fetch("nas_storage").find do |storage|
+      storage["path"] == "{{ nas_docker_root }}/tinymediamanager/data"
+    end
+    entry.delete("preserve_only")
+  end
+end
+
+expect_failure(failures, "preservation-only storage inspected after creation",
+               "host preparation must validate preservation-only storage before ordinary creation") do |root|
+  mutate_yaml_file(root, "roles/host_prep/tasks/main.yml") do |tasks|
+    inspect = tasks.delete_at(tasks.index do |task|
+      task["name"] == "Inspect preservation-only service state directories"
+    end)
+    create_index = tasks.index { |task| task["name"] == "Create service state directories" }
+    tasks.insert(create_index + 1, inspect)
+  end
+end
+
+expect_failure(failures, "preservation-only storage follows symlinks",
+               "host preparation must inspect preservation-only storage without following symlinks") do |root|
+  mutate_yaml_file(root, "roles/host_prep/tasks/main.yml") do |tasks|
+    task = tasks.find do |entry|
+      entry["name"] == "Inspect preservation-only service state directories"
+    end
+    task.fetch("ansible.builtin.stat")["follow"] = true
+  end
+end
+
+expect_failure(failures, "preservation-only directory refusal removed",
+               "host preparation must refuse missing, non-directory, or symlink preservation-only storage") do |root|
+  mutate_yaml_file(root, "roles/host_prep/tasks/main.yml") do |tasks|
+    task = tasks.find do |entry|
+      entry["name"] == "Require safe preservation-only service state directories"
+    end
+    task.fetch("ansible.builtin.assert").fetch("that").delete("not item.stat.islnk")
+  end
+end
+
+expect_failure(failures, "preservation-only storage recreated",
+               "ordinary storage creation must include unmarked entries and exclude preservation-only storage") do |root|
+  mutate_yaml_file(root, "roles/host_prep/tasks/main.yml") do |tasks|
+    task = tasks.find { |entry| entry["name"] == "Create service state directories" }
+    task["loop"] = "{{ nas_storage }}"
+  end
+end
+
+expect_failure(failures, "second tinyMediaManager Compose task added",
+               "tinyMediaManager CPU exception requires exactly one safe retirement Compose task") do |root|
+  mutate_yaml_file(root, "roles/tinymediamanager/tasks/main.yml") do |tasks|
+    tasks << {
+      "name" => "Unexpected second tinyMediaManager Compose removal",
+      "community.docker.docker_compose_v2" => { "state" => "absent" }
+    }
+  end
+end
+
+expect_failure(failures, "included tinyMediaManager Compose task added",
+               "tinyMediaManager CPU exception requires exactly one safe retirement Compose task") do |root|
+  mutate_yaml_file(root, "roles/tinymediamanager/tasks/main.yml") do |tasks|
+    tasks << {
+      "name" => "Include an unexpected tinyMediaManager Compose removal",
+      "ansible.builtin.include_tasks" => "nested/unexpected_removal.yml"
+    }
+  end
+  helper_path = File.join(
+    root, "roles", "tinymediamanager", "tasks", "nested", "unexpected_removal.yml"
+  )
+  FileUtils.mkdir_p(File.dirname(helper_path))
+  File.write(helper_path, YAML.dump([
+    {
+      "name" => "Unexpected included tinyMediaManager Compose removal",
+      "community.docker.docker_compose_v2" => { "state" => "absent" }
+    }
+  ]))
+end
+
+expect_failure(failures, "tinyMediaManager retirement removes volumes",
+               "tinyMediaManager CPU exception requires exactly one safe retirement Compose task") do |root|
+  mutate_yaml_file(root, "roles/tinymediamanager/tasks/main.yml") do |tasks|
+    retirement = tasks.find do |task|
+      task["name"] == "Retire tinyMediaManager without deleting state"
+    end
+    retirement.fetch("community.docker.docker_compose_v2")["remove_volumes"] = true
+  end
+end
+
 expect_failure(failures, "unfiltered Beszel settings readback",
                "collection readback must use a URL-encoded identity filter with totals") do |root|
   mutate_yaml_file(root, "roles/beszel/tasks/main.yml") do |tasks|

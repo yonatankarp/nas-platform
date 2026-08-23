@@ -218,6 +218,15 @@ def jellyfin_settings_includes(*phases)
   end
 end
 
+def jellyfin_library_inventory_include(name, response)
+  {
+    "name" => name,
+    "ansible.builtin.include_tasks" =>
+      File.join(ROOT, "roles", "jellyfin", "tasks", "library_inventory.yml"),
+    "vars" => { "jellyfin_library_inventory_response" => response }
+  }
+end
+
 def basic_credentials(request)
   encoded = request.fetch("headers").fetch("authorization", "").delete_prefix("Basic ")
   Base64.decode64(encoded).split(":", 2)
@@ -312,17 +321,21 @@ def jellyfin_identity_contract_failures
   )
   role_path = File.join(ROOT, "roles", "jellyfin", "tasks", "main.yml")
   identity_path = File.join(ROOT, "roles", "jellyfin", "tasks", "primary_identity.yml")
+  inventory_path = File.join(ROOT, "roles", "jellyfin", "tasks", "library_inventory.yml")
   main_tasks = YAML.safe_load_file(role_path, aliases: false)
   identity_tasks = File.file?(identity_path) ?
     YAML.safe_load_file(identity_path, aliases: false) : []
+  inventory_tasks = YAML.safe_load_file(inventory_path, aliases: false)
   # The whole role as parsed task structure, in the same order the two files were
   # previously concatenated as text. Every assertion below reads this rather than
   # the source, so a task name in a comment is no longer a task and a byte offset
   # is no longer a position.
-  role_tasks = nested_tasks(main_tasks) + nested_tasks(identity_tasks)
+  role_tasks = nested_tasks(main_tasks) + nested_tasks(identity_tasks) +
+    nested_tasks(inventory_tasks)
   role_urls = role_tasks.filter_map { |task| task.dig("ansible.builtin.uri", "url") }
   role_task = ->(name) { role_tasks.find { |task| task_name(task) == name } || {} }
-  names = nested_task_names(main_tasks) + nested_task_names(identity_tasks)
+  names = nested_task_names(main_tasks) + nested_task_names(identity_tasks) +
+    nested_task_names(inventory_tasks)
   avatar = File.join(ROOT, "roles", "jellyfin", "files", "yonatan-avatar.jpeg")
 
   failures << "Jellyfin primary administrator is not exact" unless
@@ -347,6 +360,13 @@ def jellyfin_identity_contract_failures
   end
   failures << "Jellyfin avatar hash contract differs" unless
     defaults["jellyfin_admin_avatar_sha256"] == JELLYFIN_AVATAR_SHA256
+  inventory_response_gate = inventory_tasks.first
+  failures << "Jellyfin library inventory response type is not gated before iteration" unless
+    task_name(inventory_response_gate) == "Require complete Jellyfin library inventory response" &&
+      !inventory_response_gate.key?("loop") &&
+      inventory_response_gate.dig("ansible.builtin.assert", "that")&.include?(
+        "jellyfin_library_inventory_response | type_debug == 'list'"
+      )
 
   required = [
     "Preflight Jellyfin managed users",
@@ -374,10 +394,11 @@ def jellyfin_identity_contract_failures
     "Report planned Jellyfin managed library creation after startup"
   ]
   check_plans.each { |name| failures << "Jellyfin main role omits #{name}" unless names.include?(name) }
-  preflight = required.first(7).filter_map { |name| names.index(name) }
+  preflight_names = required.first(5) + ["Validate and resolve Jellyfin managed library inventory"]
+  preflight = preflight_names.filter_map { |name| names.index(name) }
   first_mutation = required.drop(7).filter_map { |name| names.index(name) }.min
   failures << "Jellyfin identity/library preflight does not precede every mutation" unless
-    preflight.length == 7 && first_mutation && preflight.max < first_mutation
+    preflight.length == preflight_names.length && first_mutation && preflight.max < first_mutation
   failures << "Jellyfin primary rename does not use the supported current endpoint" unless
     role_urls.any? { |url| url.include?("/Users?userId=") }
   primary_rename = Array(identity_tasks).find do |task|
@@ -412,9 +433,11 @@ def jellyfin_identity_contract_failures
       refresh_library&.fetch("when", []).any? { |condition| condition.to_s.include?("is changed") }
   failures << "Jellyfin image upload does not use the supported current endpoint" unless
     role_urls.any? { |url| url.include?("/UserImage?userId=") }
-  failures << "Jellyfin server update does not preserve the full configuration" unless
+  server_name_update_body =
     role_task.call("Update the Jellyfin server name").dig("ansible.builtin.uri", "body").to_s
-             .include?("jellyfin_server_configuration_before.json | combine")
+  failures << "Jellyfin server update does not preserve the full configuration" unless
+    server_name_update_body.include?("jellyfin_server_configuration_for_update.json") &&
+      server_name_update_body.include?("combine({'ServerName': jellyfin_server_name})")
   # The digest has to be computed by a stat and compared by an assertion. Two
   # loose substrings could be satisfied by an unrelated stat and a stray mention.
   failures << "Jellyfin role has no authoritative image byte verification" unless
@@ -427,4 +450,3 @@ def jellyfin_identity_contract_failures
 
   failures
 end
-

@@ -1107,7 +1107,7 @@ def fail_contract(message)
 end
 
 def request(method, path, token: nil, body: nil, expected: [200], raw: false,
-            headers: {}, form: nil)
+            headers: {}, form: nil, timeout: nil)
   uri = URI.join(BASE.to_s, path)
   request = Net::HTTP.const_get(method.capitalize).new(uri)
   request["Authorization"] = "Bearer #{token}" if token
@@ -1120,9 +1120,20 @@ def request(method, path, token: nil, body: nil, expected: [200], raw: false,
     request["Content-Type"] = "application/json"
     request.body = JSON.generate(body)
   end
-  response = Net::HTTP.start(uri.host, uri.port, open_timeout: 5, read_timeout: 180) do |http|
-    http.request(request)
+  open_timeout = timeout ? [5, timeout].min : 5
+  read_timeout = timeout ? [180, timeout].min : 180
+  send_request = lambda do
+    Net::HTTP.start(
+      uri.host, uri.port, open_timeout: open_timeout, read_timeout: read_timeout
+    ) do |http|
+      http.request(request)
+    end
   end
+  response = if timeout
+               Timeout.timeout(timeout, Timeout::Error) { send_request.call }
+             else
+               send_request.call
+             end
   fail_contract("#{method.upcase} #{uri.path} returned HTTP #{response.code}") unless
     expected.include?(response.code.to_i)
   return response if raw
@@ -1473,20 +1484,79 @@ end
 # Smart search is the only assertion that proves the machine learning container
 # actually ran an inference: the query text is embedded by CLIP on the CPU and
 # matched against embeddings the same stack produced for the fixtures.
-def assert_cpu_machine_learning(token, expected_ids)
-  deadline = Time.now + 600
-  loop do
-    _response, payload = request(
-      "post", "/api/search/smart", token: token, body: { "query" => "a photograph" }
-    )
-    found = payload.fetch("assets").fetch("items").map { |item| item["id"] }
-    return if (expected_ids - found).empty?
-
-    if Time.now >= deadline
+def assert_cpu_machine_learning(
+  token, expected_ids,
+  clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }
+)
+  deadline = clock.call + 600
+  recovery_requested = false
+  last_status = "none"
+  found = []
+  remaining_budget = lambda do
+    remaining = deadline - clock.call
+    if remaining <= 0
       fail_contract("smart search never returned the fixtures; " \
-                    "machine learning produced #{found.length} embedded asset(s)")
+                    "last HTTP status was #{last_status} and machine learning produced " \
+                    "#{found.length} embedded asset(s)")
     end
-    sleep 5
+    remaining
+  end
+  loop do
+    response = request(
+      "post", "/api/search/smart", token: token, body: { "query" => "a photograph" },
+      expected: [200, 500, 502, 503, 504], raw: true,
+      timeout: remaining_budget.call
+    )
+    last_status = response.code
+    remaining_budget.call
+    found = []
+    if response.code.to_i == 200
+      begin
+        payload = JSON.parse(response.body)
+      rescue JSON::ParserError
+        fail_contract("POST /api/search/smart returned malformed JSON")
+      end
+      items = payload.is_a?(Hash) && payload["assets"].is_a?(Hash) &&
+              payload["assets"]["items"]
+      fail_contract("POST /api/search/smart returned an unsupported schema") unless
+        items.is_a?(Array) && items.all? do |item|
+          item.is_a?(Hash) && item["id"].is_a?(String)
+        end
+      found = items.map { |item| item.fetch("id") }
+      return if (expected_ids - found).empty?
+
+      unless recovery_requested
+        _queue_response, queues = request(
+          "get", "/api/jobs", token: token, timeout: remaining_budget.call
+        )
+        remaining_budget.call
+        smart_search = queues.is_a?(Hash) && queues["smartSearch"]
+        queue_status = smart_search.is_a?(Hash) && smart_search["queueStatus"]
+        job_counts = smart_search.is_a?(Hash) && smart_search["jobCounts"]
+        count_names = %w[active waiting delayed paused]
+        fail_contract("GET /api/jobs returned an unsupported smartSearch schema") unless
+          queue_status.is_a?(Hash) && job_counts.is_a?(Hash) &&
+          [true, false].include?(queue_status["isActive"]) &&
+          [true, false].include?(queue_status["isPaused"]) &&
+          count_names.all? do |name|
+            job_counts[name].is_a?(Integer) && job_counts[name] >= 0
+          end
+        fail_contract("Immich smartSearch queue is paused") if queue_status["isPaused"]
+
+        queue_idle = !queue_status["isActive"] &&
+                     count_names.sum { |name| job_counts.fetch(name) }.zero?
+        if queue_idle
+          request(
+            "put", "/api/jobs/smartSearch", token: token,
+            body: { "command" => "start", "force" => false },
+            timeout: remaining_budget.call
+          )
+          remaining_budget.call
+          recovery_requested = true
+        end
+      end
+    end
+    sleep [5, remaining_budget.call].min
   end
 end
 

@@ -23,5 +23,8 @@ fi
 "$mac_repo_dir/tests/assert-no-vault-secrets.rb" \
   "$PLATFORM_MAC_VAULT_FILE" "$PLATFORM_MAC_VAULT_PASSWORD_FILE" "$expected_failure"
 grep -Eq \
-  'The Jellyfin (platform encoding policy|plugin or Open Subtitles state) is drifted\.|A managed Jellyfin plugin repository is absent, duplicated, renamed, or disabled\.|The Jellyfin primary identity, branding, image, or managed library is drifted\.' \
-  "$expected_failure"
+  'The Jellyfin (platform encoding policy|plugin or Open Subtitles state) is drifted\.|A managed Jellyfin plugin repository is absent, duplicated, renamed, or disabled\.|The Jellyfin primary administrator is absent, drifted, or has no image\.|The Jellyfin primary identity, branding, image, or managed library is drifted\.' \
+  "$expected_failure" || {
+  printf '%s\n' 'Jellyfin verification refused drift without its fixed diagnostic' >&2
+  exit 1
+}

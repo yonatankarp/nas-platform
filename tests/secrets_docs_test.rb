@@ -479,6 +479,15 @@ check(failures,
 
 recovery = markdown_section(secrets_guide, "## Existing deployment recovery")
 recovery_shell_blocks = shell_code_fences(recovery)
+tinymediamanager_recovery = recovery.lines.find do |line|
+  line.start_with?("- tinyMediaManager:")
+end.to_s
+check(failures,
+      tinymediamanager_recovery.match?(/`vault_tinymediamanager_password`.*remains.*cleanup release/i),
+      "tinyMediaManager recovery entry must retain its vault key until the cleanup release")
+check(failures,
+      tinymediamanager_recovery.match?(/retired.*must remain stopped/i),
+      "tinyMediaManager recovery entry must identify the service as retired and stopped")
 check(failures,
       recovery_shell_blocks.any? do |block|
         block.include?('[ -L "$PLATFORM_VAULT_DIR" ]') &&

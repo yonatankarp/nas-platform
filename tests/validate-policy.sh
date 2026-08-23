@@ -52,6 +52,7 @@ ruby tests/ci/classify_changes_test.rb
 ruby tests/ci/validate_results_test.rb
 ruby tests/ci/workflow_test.rb
 ruby tests/secrets_docs_test.rb
+ruby tests/assert_no_vault_secrets_test.rb
 tests/mac/integration-context-test.sh
 tests/mac/snapshot-paperless-context-test.sh
 tests/mac/snapshot-paperless-recovery-test.sh
@@ -71,6 +72,7 @@ ruby tests/audiobookshelf_initial_scan_test.rb
 ruby tests/audiobookshelf_initial_scan_behavior_test.rb
 ruby tests/immich_user_onboarding_test.rb
 ruby tests/immich_configured_password_test.rb
+ruby tests/immich_smart_search_retry_test.rb
 ruby tests/database_managed_users_test.rb
 ruby tests/database_managed_users_test.rb --self-test
 ruby tests/ntfy_verify_execution_test.rb

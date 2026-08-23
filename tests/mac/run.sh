@@ -200,6 +200,15 @@ report_marker=$report_root/.nas-platform-mac-report-owned
   grep -qx "sandbox=$(basename -- "$sandbox")" "$report_marker" ||
   mac_die 'report root ownership marker is missing or invalid'
 
+tinymediamanager_report_root=$sandbox/tinymediamanager-report
+if [ ! -e "$tinymediamanager_report_root" ]; then
+  mkdir -m 0700 "$tinymediamanager_report_root"
+fi
+[ -d "$tinymediamanager_report_root" ] && [ ! -L "$tinymediamanager_report_root" ] &&
+  [ "$(mac_owner_id "$tinymediamanager_report_root")" = "$(id -u)" ] &&
+  [ "$(mac_file_mode "$tinymediamanager_report_root")" = 700 ] ||
+  mac_die 'tinyMediaManager report root is unavailable or unsafe'
+
 protected_input_root=$sandbox/protected-inputs
 if [ ! -e "$protected_input_root" ]; then
   mkdir -m 0700 "$protected_input_root"
@@ -757,10 +766,13 @@ else
 fi
 
 export PLATFORM_MAC_SANDBOX=$sandbox
+export PLATFORM_CONTRACT_SANDBOX_ROOT=$sandbox
+export PLATFORM_CONTRACT_SANDBOX_OWNER_UID=$(id -u)
 export PLATFORM_DOCKER_ROOT=$sandbox/service-data/docker
 export PLATFORM_MEDIA_ROOT=$sandbox/service-data/media
 export PLATFORM_FIXTURE_ROOT=$sandbox/fixtures
 export PLATFORM_REPORT_ROOT=$report_root
+export PLATFORM_TINYMEDIAMANAGER_REPORT_ROOT=$tinymediamanager_report_root
 export PLATFORM_PROOF_LANE=$lane
 export PLATFORM_CALLBACK_HOST=$callback_host
 export PLATFORM_COMPOSE_KIND=$proof_platform
@@ -946,6 +958,7 @@ execute_phase() {
       ;;
     deploy)
       [ "$lane" = fresh ] || mac_die 'deploy phase is available only in the fresh lane'
+      mac_run_hooks pre-converge
       run_site
       ;;
     seed) ensure_immich_fixture_vars && "$mac_script_dir/fixtures.sh" seed ;;

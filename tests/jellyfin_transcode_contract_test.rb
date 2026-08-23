@@ -1,5 +1,5 @@
 #!/usr/bin/env ruby
-# Focused behavioral regressions for the rerunnable Jellyfin transcode proof.
+# Focused behavioral regressions for Jellyfin runtime proofs.
 
 require "fileutils"
 require "json"
@@ -162,6 +162,51 @@ class TranscodeScenario
   end
 end
 
+class LibraryWaitScenario
+  attr_reader :calls, :deadlines, :responses
+
+  def initialize(responses, delay: 0)
+    @responses = responses
+    @delay = delay
+    @calls = 0
+    @deadlines = []
+  end
+
+  def libraries(_token, deadline: nil)
+    @calls += 1
+    @deadlines << deadline
+    sleep @delay if @delay.positive?
+    @responses.fetch([@calls - 1, @responses.length - 1].min)
+  end
+
+  def fail_contract(message)
+    raise ContractFailure, message
+  end
+end
+
+def complete_library(name: "Movies Drifted", path: "/media/Movies", item_id: "a" * 32)
+  {
+    "Name" => name,
+    "Locations" => [path],
+    "LibraryOptions" => { "EnableRealtimeMonitor" => true },
+    "ItemId" => item_id
+  }
+end
+
+def exercise_library_wait(scenario, timeout: 0.04)
+  scenario.send(
+    :wait_for_complete_library, "token", { "Path" => "/media/Movies" },
+    name: "Movies Drifted", timeout: timeout
+  )
+end
+
+def library_wait_failure(scenario, timeout: 0.04)
+  exercise_library_wait(scenario, timeout: timeout)
+  nil
+rescue ContractFailure => error
+  error
+end
+
 Dir.mktmpdir("nas-platform-jellyfin-transcode-") do |directory|
   transcodes = File.join(directory, "transcodes")
   FileUtils.mkdir_p(transcodes)
@@ -180,6 +225,168 @@ Dir.mktmpdir("nas-platform-jellyfin-transcode-") do |directory|
   runtime = File.read(CONTRACT).split(runtime_marker, 2).fetch(1)
   library = runtime.split(/^vault_yaml, vault_error, vault_status = /, 2).fetch(0)
   eval(library, TOPLEVEL_BINDING, CONTRACT)
+  Object.send(:remove_const, :LIBRARY_RENAME_POLL_INTERVAL_SECONDS)
+  Object.const_set(:LIBRARY_RENAME_POLL_INTERVAL_SECONDS, 0.01)
+  wait_source = library[/^def wait_for_complete_library.*?(?=^def assert_managed_library)/m]
+  check(failures, !wait_source.nil?, "renamed-library wait helper cannot be extracted from production")
+
+  immediate_started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+  immediate = LibraryWaitScenario.new([[complete_library]])
+  check(failures, exercise_library_wait(immediate) == complete_library,
+        "complete renamed-library state was not accepted")
+  check(failures,
+        immediate.deadlines.one? &&
+          immediate.deadlines.first.is_a?(Numeric) &&
+          immediate.deadlines.first.between?(immediate_started, immediate_started + 0.2),
+        "renamed-library polling did not propagate one monotonic absolute deadline")
+
+  eventually_complete = LibraryWaitScenario.new([
+    [],
+    [{ "Name" => "Movies Drifted", "Locations" => ["/media/Movies"] }],
+    [complete_library]
+  ])
+  check(failures, exercise_library_wait(eventually_complete, timeout: 0.2) == complete_library,
+        "absent and incomplete renamed-library states were not polled to completion")
+  check(failures, eventually_complete.deadlines.uniq.one?,
+        "renamed-library polls did not share one absolute deadline")
+
+  expired = LibraryWaitScenario.new([[complete_library]])
+  expired_error = library_wait_failure(expired, timeout: 0)
+  check(failures, expired_error&.message == "renamed library did not regain its complete API shape" &&
+                  expired.calls.zero?,
+        "an expired renamed-library deadline reached the blocking API call")
+
+  delayed_complete = LibraryWaitScenario.new([[complete_library]], delay: 0.06)
+  delayed_error = library_wait_failure(delayed_complete, timeout: 0.04)
+  check(failures, delayed_error&.message == "renamed library did not regain its complete API shape",
+        "state returned after the deadline bypassed the post-request deadline guard")
+
+  duplicate_error = library_wait_failure(
+    LibraryWaitScenario.new([[complete_library, complete_library(item_id: "b" * 32)]])
+  )
+  check(failures, duplicate_error&.message&.include?("duplicated after rename"),
+        "duplicate expected-path libraries did not fail closed")
+
+  mismatch_started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+  mismatch_error = library_wait_failure(
+    LibraryWaitScenario.new([[complete_library(name: "Movies")]])
+  )
+  mismatch_elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - mismatch_started
+  check(failures, mismatch_error&.message == "renamed library did not regain its complete API shape",
+        "an exact-name mismatch did not reach the controlled timeout")
+  check(failures, mismatch_elapsed < 0.2, "exact-name mismatch timeout was not bounded")
+
+  wrong_path_error = library_wait_failure(
+    LibraryWaitScenario.new([[complete_library(path: "/media/Series")]])
+  )
+  check(failures, wrong_path_error&.message == "renamed library did not regain its complete API shape",
+        "a different library path satisfied the renamed-library wait")
+
+  malformed_error = begin
+    library_wait_failure(LibraryWaitScenario.new([[{ "Locations" => "/media/Movies" }]]))
+  rescue StandardError => error
+    error
+  end
+  check(failures, malformed_error.is_a?(ContractFailure) &&
+                  malformed_error.message == "renamed library response is malformed",
+        "malformed renamed-library schema did not fail with a controlled diagnostic")
+
+  unsafe_id_error = library_wait_failure(
+    LibraryWaitScenario.new([[complete_library(item_id: "unsafe/id")]])
+  )
+  check(failures, unsafe_id_error&.message == "Jellyfin returned an unsafe API identifier",
+        "an unsafe renamed-library ItemId did not fail closed")
+
+  unless wait_source.nil?
+    mutation_cases = {
+      "duplicate guard" => [
+        wait_source.sub(/^\s*fail_contract\("library path .*?duplicated after rename.*\n/, ""),
+        LibraryWaitScenario.new([[complete_library, complete_library(item_id: "b" * 32)]])
+      ],
+      "exact-name guard" => [
+        wait_source.sub('folder["Name"] == name && ', ""),
+        LibraryWaitScenario.new([[complete_library(name: "Movies")]])
+      ],
+      "expected-path guard" => [
+        wait_source.sub('folder.fetch("Locations").map { |path| normalize_path(path) }.include?(definition.fetch("Path"))', "true"),
+        LibraryWaitScenario.new([[complete_library(path: "/media/Series")]])
+      ]
+    }
+    mutation_cases.each do |label, (mutant_source, scenario)|
+      check(failures, mutant_source != wait_source,
+            "renamed-library #{label} mutation did not alter production source")
+      mutant = Class.new(LibraryWaitScenario)
+      mutant.class_eval(mutant_source, CONTRACT)
+      mutant_scenario = mutant.new(scenario.responses)
+      check(failures, library_wait_failure(mutant_scenario).nil?,
+            "removing the renamed-library #{label} survived behavioral tests")
+    end
+
+    deadline_mutant_source = wait_source.sub(
+      "libraries(token, deadline: deadline)", "libraries(token)"
+    )
+    check(failures, deadline_mutant_source != wait_source,
+          "renamed-library deadline-propagation mutation did not alter production source")
+    deadline_mutant = Class.new(LibraryWaitScenario)
+    deadline_mutant.class_eval(deadline_mutant_source, CONTRACT)
+    delayed = deadline_mutant.new([[complete_library]], delay: 0.15)
+    deadline_started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    library_wait_failure(delayed, timeout: 0.04)
+    deadline_elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - deadline_started
+    check(failures, deadline_elapsed >= 0.1,
+          "removing renamed-library deadline propagation survived behavioral tests")
+
+    deadline_guard_source = wait_source.gsub(
+      /^\s*fail_contract\("renamed library did not regain its complete API shape"\) if remaining <= 0\n/,
+      ""
+    )
+    check(failures, deadline_guard_source != wait_source,
+          "renamed-library deadline-guard mutation did not alter production source")
+    deadline_guard_mutant = Class.new(LibraryWaitScenario)
+    deadline_guard_mutant.class_eval(deadline_guard_source, CONTRACT)
+    late_success = deadline_guard_mutant.new([[complete_library]], delay: 0.06)
+    check(failures, library_wait_failure(late_success, timeout: 0.04).nil?,
+          "removing renamed-library deadline guards survived behavioral tests")
+  end
+
+  original_base = BASE
+  server = TCPServer.new("127.0.0.1", 0)
+  server_thread = Thread.new do
+    Thread.current.report_on_exception = false
+    client = server.accept
+    client.gets
+    sleep 2
+  rescue IOError, Errno::EBADF
+    nil
+  ensure
+    client&.close
+  end
+  Object.send(:remove_const, :BASE)
+  Object.const_set(:BASE, URI("http://127.0.0.1:#{server.addr.fetch(1)}"))
+  stalled_probe = Object.new
+  stalled_probe.define_singleton_method(:fail_contract) { |message| raise ContractFailure, message }
+  stalled_started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+  stalled_error = begin
+    stalled_probe.send(
+      :wait_for_complete_library, "token", { "Path" => "/media/Movies" },
+      name: "Movies Drifted", timeout: 0.1
+    )
+    nil
+  rescue ContractFailure => error
+    error
+  ensure
+    stalled_elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - stalled_started
+    server.close
+    server_thread.kill
+    server_thread.join
+    Object.send(:remove_const, :BASE)
+    Object.const_set(:BASE, original_base)
+  end
+  check(failures, stalled_error&.message == "renamed library did not regain its complete API shape",
+        "stalled renamed-library request emitted an uncontrolled timeout diagnostic")
+  check(failures, stalled_elapsed < 0.5,
+        "stalled renamed-library HTTP request exceeded the absolute deadline")
+
   original_request = Object.instance_method(:request)
 
   Object.send(:define_method, :fail_contract) { |message| raise ContractFailure, message }

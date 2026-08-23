@@ -45,6 +45,60 @@ check(failures, host_prep_file["owner"].to_s.include?("platform_kind == 'nas'") 
                 host_prep_file["owner"].to_s.include?("else omit") &&
                 host_prep_file["group"].to_s.include?("else omit"),
       "host preparation must restrict Linux ownership to the explicit integration capability")
+host_prep_marker_index = host_prep_tasks.index do |task|
+  task["name"] == "Validate preservation-only storage declarations"
+end
+host_prep_inspect_index = host_prep_tasks.index do |task|
+  task["name"] == "Inspect preservation-only service state directories"
+end
+host_prep_require_index = host_prep_tasks.index do |task|
+  task["name"] == "Require safe preservation-only service state directories"
+end
+host_prep_create_index = host_prep_tasks.index do |task|
+  task["name"] == "Create service state directories"
+end
+check(failures,
+      host_prep_marker_index && host_prep_inspect_index && host_prep_require_index &&
+        host_prep_create_index && host_prep_marker_index < host_prep_inspect_index &&
+        host_prep_inspect_index < host_prep_require_index &&
+        host_prep_require_index < host_prep_create_index,
+      "host preparation must validate preservation-only storage before ordinary creation")
+host_prep_marker_conditions = Array(
+  host_prep_marker_index &&
+    host_prep_tasks.fetch(host_prep_marker_index).dig("ansible.builtin.assert", "that")
+).join(" ")
+check(failures,
+      host_prep_marker_conditions.include?("item.preserve_only is not defined") &&
+        host_prep_marker_conditions.include?("item.preserve_only"),
+      "host preparation must reject false preservation-only declarations")
+host_prep_preservation_inspect =
+  host_prep_inspect_index && host_prep_tasks.fetch(host_prep_inspect_index)
+check(failures,
+      host_prep_preservation_inspect&.dig("ansible.builtin.stat", "path") == "{{ item.path }}" &&
+        host_prep_preservation_inspect&.dig("ansible.builtin.stat", "follow") == false &&
+        host_prep_preservation_inspect&.fetch("loop", "").include?(
+          "selectattr('preserve_only', 'defined')"
+        ),
+      "host preparation must inspect preservation-only storage without following symlinks")
+host_prep_preservation_register = host_prep_preservation_inspect&.fetch("register", nil)
+host_prep_preservation_require =
+  host_prep_require_index && host_prep_tasks.fetch(host_prep_require_index)
+host_prep_preservation_conditions = Array(
+  host_prep_preservation_require&.dig("ansible.builtin.assert", "that")
+).join(" ")
+check(failures,
+      %w[item.stat.exists item.stat.isdir not\ item.stat.islnk].all? do |condition|
+        host_prep_preservation_conditions.include?(condition)
+      end &&
+        host_prep_preservation_require&.fetch("loop", "").include?(
+          "#{host_prep_preservation_register}.results"
+        ),
+      "host preparation must refuse missing, non-directory, or symlink preservation-only storage")
+check(failures,
+      host_prep_create&.fetch("loop", "").include?(
+        "rejectattr('preserve_only', 'defined')"
+      ),
+      "ordinary storage creation must include unmarked entries and exclude preservation-only storage")
 # nas_media_root is an env-derived temp path on Mac hosts and reliably contains a
 # dot, so feeding it to a regex test unescaped makes it match sibling directories.
 media_ownership_conditions = Array(
@@ -205,12 +259,12 @@ tinymediamanager_tasks = flatten_tasks(
   YAML.safe_load_file(File.join(ROOT, "roles", "tinymediamanager", "tasks", "main.yml"))
 )
 tinymediamanager_state_root = tinymediamanager_tasks.find do |task|
-  task["name"] == "Select the tinyMediaManager mounted state root"
+  task["name"] == "Select the tinyMediaManager preserved state root"
 end
 check(failures,
       tinymediamanager_state_root&.key?("ansible.builtin.set_fact") &&
         Array(tinymediamanager_state_root["tags"]).include?("platform_verify_tinymediamanager"),
-      "tinyMediaManager verification-only run must derive its mounted state root")
+      "tinyMediaManager verification-only run must derive its preserved state root")
 
 
 if failures.empty?

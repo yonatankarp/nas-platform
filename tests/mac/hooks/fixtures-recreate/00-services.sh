@@ -57,7 +57,6 @@ mac_recreate_and_reassert ntfy ntfy ntfy ntfy ''
 mac_recreate_and_reassert dozzle dozzle dozzle 'alert-relay dozzle socket-proxy' verify
 mac_recreate_and_reassert audiobookshelf audiobookshelf audiobookshelf audiobookshelf run
 mac_recreate_and_reassert komga komga komga komga run
-mac_recreate_and_reassert tinymediamanager tinymediamanager tinymediamanager tinymediamanager run
 mac_recreate_and_reassert jellyfin jellyfin jellyfin jellyfin run
 mac_recreate_and_reassert immich immich immich \
   'immich-server immich-machine-learning redis database' run

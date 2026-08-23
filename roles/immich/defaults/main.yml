@@ -10,11 +10,11 @@ immich_compose_project_name: >-
 immich_restore_failure_marker: "{{ nas_docker_root }}/immich/.restore-failed"
 immich_restore_backup_container_path: /immich-backups
 immich_restore_backup_uid: >-
-  {{ ansible_facts.user_uid
+  {{ ansible_facts.get('user_uid', 0)
      if platform_kind == 'mac' and not (platform_manage_linux_ownership | bool)
      else 0 }}
 immich_restore_backup_gid: >-
-  {{ ansible_facts.user_gid
+  {{ ansible_facts.get('user_gid', 0)
      if platform_kind == 'mac' and not (platform_manage_linux_ownership | bool)
      else 0 }}
 immich_restore_expected_immich_version: "3.1.0"

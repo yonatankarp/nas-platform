@@ -346,10 +346,11 @@ end
 def register_contract(root, basename)
   registry = File.join(root, "tests", "contracts", "registry.yml")
   FileUtils.mkdir_p(File.dirname(registry))
-  File.write(registry, YAML.dump(
-    "contracts" => [{ "service" => basename == "paperless" ? "paperless-ngx" : basename,
-                       "path" => "tests/contracts/#{basename}.sh" }]
-  ))
+  service_name = basename == "paperless" ? "paperless-ngx" : basename
+  contracts = File.file?(registry) ? YAML.safe_load_file(registry).fetch("contracts") : []
+  contracts.reject! { |entry| entry["service"] == service_name }
+  contracts << { "service" => service_name, "path" => "tests/contracts/#{basename}.sh" }
+  File.write(registry, YAML.dump("contracts" => contracts))
 end
 
 def implement_paperless(root)
@@ -429,4 +430,3 @@ def implement_paperless(root)
   }
   File.write(storage_path, YAML.dump(storage))
 end
-

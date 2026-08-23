@@ -85,12 +85,12 @@ jellyfin_libraries:
     collection_type: tvshows
     path: /media/Series
 
-# Deliberately small and explicit. Everything here is either forced by the
-# read-only media mount or by tinyMediaManager owning metadata for this tree.
+# Deliberately small and explicit. Everything here is forced by the read-only
+# media mount or by preserved adjacent metadata from external media writers.
 jellyfin_library_options:
   # /media is mounted read-only, so writing NFOs beside the media would fail.
   SaveLocalMetadata: false
-  # tinyMediaManager fetches and writes the metadata this library reads.
+  # External media writers own the adjacent metadata that Jellyfin reads.
   EnableInternetProviders: false
   # Watching a large NAS share for changes costs inotify handles for no gain;
   # the library is refreshed explicitly instead.

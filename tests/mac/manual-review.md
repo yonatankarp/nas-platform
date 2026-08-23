@@ -9,7 +9,10 @@ private keys, password hashes, rendered environment files, or application logs.
 - [ ] Audiobookshelf: scan, browse, play, and retain progress after recreation.
 - [ ] Komga: scan and open a disposable book; retain library settings.
 - [ ] Jellyfin: scan, direct-stream, CPU-transcode, and retain users/libraries.
-- [ ] tinyMediaManager: scan, edit metadata, write it, and retain settings.
+- [ ] tinyMediaManager: confirm it is retired, its container is absent, it must
+      remain stopped, and its bind-mounted state remains preserved.
+- [ ] Retired media manager: perform no active UI, API, or metadata-write
+      verification.
 - [ ] Immich: upload, thumbnail, search, exercise CPU ML, and retain assets.
 - [ ] Paperless-ngx: ingest German/English/Hebrew fixtures, preview, search,
       convert, export, and inspect Gmail configuration without fetching mail.

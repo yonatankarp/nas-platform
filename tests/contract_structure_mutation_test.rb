@@ -175,9 +175,9 @@ check_rejected(
   failures, :jellyfin, "a server configuration overwrite whose merge moved into a comment",
   [[JELLYFIN_ROLE,
     "    body: >-\n" \
-    "      {{ jellyfin_server_configuration_before.json | " \
-    "combine({'ServerName': jellyfin_server_name}) }}\n",
-    "    # {{ jellyfin_server_configuration_before.json | combine(...) }}\n" \
+    "      {{ jellyfin_server_configuration_for_update.json |\n" \
+    "         combine({'ServerName': jellyfin_server_name}) }}\n",
+    "    # {{ jellyfin_server_configuration_for_update.json | combine(...) }}\n" \
     "    body: >-\n" \
     "      {{ {'ServerName': jellyfin_server_name} }}\n"]],
   "server configuration update does not preserve unrelated fields"
@@ -371,9 +371,9 @@ check_rejected(
   failures, :media_probes, "a server configuration overwrite whose merge moved into a comment",
   [[JELLYFIN_ROLE,
     "    body: >-\n" \
-    "      {{ jellyfin_server_configuration_before.json | " \
-    "combine({'ServerName': jellyfin_server_name}) }}\n",
-    "    # {{ jellyfin_server_configuration_before.json | combine(...) }}\n" \
+    "      {{ jellyfin_server_configuration_for_update.json |\n" \
+    "         combine({'ServerName': jellyfin_server_name}) }}\n",
+    "    # {{ jellyfin_server_configuration_for_update.json | combine(...) }}\n" \
     "    body: >-\n" \
     "      {{ {'ServerName': jellyfin_server_name} }}\n"]],
   "Jellyfin server update does not preserve the full configuration"

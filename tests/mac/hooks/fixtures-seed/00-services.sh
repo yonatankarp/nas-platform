@@ -24,7 +24,7 @@ mac_script_dir=$(CDPATH= cd -- "$mac_hook_dir/../.." && pwd -P)
 # prove Ansible preserves all of it.
 mac_seeded=
 for mac_seed_entry in beszel:verify dozzle:verify audiobookshelf:seed-progress \
-    komga:seed tinymediamanager:seed jellyfin:seed immich:seed paperless:seed; do
+    komga:seed jellyfin:seed immich:seed paperless:seed; do
   mac_seed_service=${mac_seed_entry%%:*}
   "$mac_script_dir/run-contract.sh" "$mac_seed_service" "${mac_seed_entry#*:}"
   mac_seeded="$mac_seeded$mac_seed_service
@@ -32,4 +32,5 @@ for mac_seed_entry in beszel:verify dozzle:verify audiobookshelf:seed-progress \
 done
 
 mac_assert_service_coverage fixtures-seed 00-services.sh "$mac_seeded" \
-  'ntfy=it has no contract suite of its own; its fixtures are the provisioned topics'
+  'ntfy=it has no contract suite of its own; its fixtures are the provisioned topics
+tinymediamanager=its preservation sentinel and legacy container are seeded before convergence'

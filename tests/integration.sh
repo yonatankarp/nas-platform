@@ -15,6 +15,9 @@
 set -eu
 
 ansible_core_version=2.21.3
+# community.docker.docker_container_info imports requests on the managed host;
+# the disposable controller is that host for the local inventory.
+requests_version=2.34.2
 runner_image=docker.io/library/python:3.14-alpine@sha256:05b2b8b732ecd268fee8727a369f936f022d1321b59befd13c30ede22769dcdc
 # Fuzzy `~` rather than `=`: apk's `=` requires the distro revision, so a
 # packaging-only bump from -r0 to -r1 drops the pinned version out of the index
@@ -30,6 +33,49 @@ suite_tags=
 tags_explicit=false
 describe_suite=false
 explicit_suite=false
+observe_lifecycle=false
+consume_lifecycle=false
+lifecycle_mode_count=0
+lifecycle_list_requested=false
+lifecycle_describe_requested=false
+
+for integration_argument in "$@"; do
+  case $integration_argument in
+    --observe-lifecycle|--consume-lifecycle)
+      lifecycle_mode_count=$((lifecycle_mode_count + 1))
+      ;;
+    --list-suites) lifecycle_list_requested=true ;;
+    --describe-suite) lifecycle_describe_requested=true ;;
+  esac
+done
+
+if [ "$lifecycle_mode_count" -gt 1 ]; then
+  printf '%s\n' 'integration lifecycle modes conflict' >&2
+  exit 2
+fi
+if [ "$lifecycle_mode_count" -eq 1 ]; then
+  if [ "$lifecycle_list_requested" = true ]; then
+    printf '%s\n' 'integration lifecycle mode conflicts with suite listing' >&2
+    exit 2
+  fi
+  if [ "$lifecycle_describe_requested" = true ] ||
+     [ "${INTEGRATION_DESCRIBE_ONLY:-0}" = 1 ]; then
+    printf '%s\n' 'integration lifecycle mode conflicts with describe-only' >&2
+    exit 2
+  fi
+  case "${1:-}" in
+    --observe-lifecycle|--consume-lifecycle) ;;
+    *)
+      printf '%s\n' 'integration lifecycle mode must be the first argument' >&2
+      exit 2
+      ;;
+  esac
+fi
+
+case "${1:-}" in
+  --observe-lifecycle) observe_lifecycle=true; shift ;;
+  --consume-lifecycle) consume_lifecycle=true; shift ;;
+esac
 
 if [ "${1:-}" = --list-suites ]; then
   printf '%s\n' 'foundation smoke beszel dozzle audiobookshelf komga tinymediamanager jellyfin immich paperless idempotence-check full'
@@ -170,10 +216,53 @@ if [ "$explicit_suite" = true ]; then
   done
 fi
 
+if [ "$observe_lifecycle" = true ] &&
+   [ "${INTEGRATION_RUN_SERVICE_SCENARIOS+x}" = x ]; then
+  case "$INTEGRATION_RUN_SERVICE_SCENARIOS" in
+    true|false) run_service_scenarios=$INTEGRATION_RUN_SERVICE_SCENARIOS ;;
+    *)
+      printf 'invalid integration service-scenario decision: %s\n' \
+        "$INTEGRATION_RUN_SERVICE_SCENARIOS" >&2
+      exit 2
+      ;;
+  esac
+fi
+
 if [ "$describe_suite" = true ] || [ "${INTEGRATION_DESCRIBE_ONLY:-0}" = 1 ]; then
   printf 'suite=%s tags=%s playbook=%s scenarios=%s\n' \
     "$suite" "$suite_tags" "$playbook" "$run_service_scenarios"
   exit 0
+fi
+
+emit_lifecycle_plan() {
+  if [ -z "$suite_tags" ]; then
+    printf '%s\n' seed-retirement-fixture
+  else
+    case ",$suite_tags," in
+      *,host_prep,*) printf '%s\n' seed-retirement-fixture ;;
+    esac
+  fi
+  case "$suite:$run_service_scenarios" in
+    tinymediamanager:true|full:true) printf '%s\n' start-retirement-fixture ;;
+  esac
+  printf '%s\n' converge
+  case "$suite:$run_service_scenarios" in
+    tinymediamanager:true|full:true) printf '%s\n' assert-retired ;;
+  esac
+  printf '%s\n' success
+}
+
+if [ "$observe_lifecycle" = true ]; then
+  emit_lifecycle_plan
+  exit 0
+fi
+
+if [ "$consume_lifecycle" = true ]; then
+  lifecycle_script_dir=$(CDPATH= cd -P "$(dirname "$0")" && pwd -P)
+  . "$lifecycle_script_dir/integration_lifecycle.sh"
+  consume_integration_lifecycle_plan \
+    "$0" --observe-lifecycle --suite "$suite"
+  exit $?
 fi
 
 repo_dir=$(CDPATH= cd -P "$(dirname "$0")/.." && pwd -P)
@@ -322,11 +411,21 @@ cleanup_integration_on_exit() {
 trap cleanup_integration_on_exit EXIT
 trap 'exit 130' HUP INT TERM
 sandbox=$(mktemp -d "$temporary_parent/nas-platform-integration.XXXXXX")
-chmod 0777 "$sandbox"
+chmod 0700 "$sandbox"
+sandbox_host_owner_uid=$(id -u)
+ruby -e '
+  sandbox = File.stat(ARGV.fetch(0))
+  expected_uid = Integer(ARGV.fetch(1), 10)
+  abort "integration sandbox owner differs" unless sandbox.uid == expected_uid
+  abort "integration sandbox mode differs" unless (sandbox.mode & 0o777) == 0o700
+' "$sandbox" "$sandbox_host_owner_uid"
 
 mkdir -p "$sandbox/volume1/Docker" "$sandbox/volume2" "$sandbox/repo" \
   "$sandbox/fixtures" "$sandbox/reports" \
   "$sandbox/private/var/folders/path fixture"
+# Only the two directories bind-mounted for arbitrary service fixture UIDs are
+# writable across identities. The namespace root remains owner-only, so other
+# host users cannot traverse or rename any validated child.
 chmod 0777 "$sandbox/fixtures" "$sandbox/reports"
 ln -s "$sandbox/private/var" "$sandbox/var"
 
@@ -572,7 +671,6 @@ prepull_images
 
 paperless_fixture_preseeded=false
 komga_fixture_preseeded=false
-tinymediamanager_fixture_preseeded=false
 jellyfin_fixture_preseeded=false
 case "$suite:$run_service_scenarios" in
   audiobookshelf:true|full:true)
@@ -600,16 +698,6 @@ case "$suite:$run_service_scenarios" in
       PLATFORM_REPORT_ROOT="$sandbox/reports" \
       "$repo_dir/tests/contracts/komga.sh" seed-fixture-only
     komga_fixture_preseeded=true
-    ;;
-esac
-case "$suite:$run_service_scenarios" in
-  tinymediamanager:true|full:true)
-    env \
-      PLATFORM_DOCKER_ROOT="$sandbox/volume1/Docker" \
-      PLATFORM_MEDIA_ROOT="$sandbox/volume2" \
-      PLATFORM_REPORT_ROOT="$sandbox/reports" \
-      "$repo_dir/tests/contracts/tinymediamanager.sh" seed-fixture-only
-    tinymediamanager_fixture_preseeded=true
     ;;
 esac
 case "$suite:$run_service_scenarios" in
@@ -642,14 +730,16 @@ docker run --rm \
   -e INTEGRATION_RUN_SERVICE_SCENARIOS="$run_service_scenarios" \
   -e PLATFORM_PAPERLESS_FIXTURE_PRESEEDED="$paperless_fixture_preseeded" \
   -e PLATFORM_KOMGA_FIXTURE_PRESEEDED="$komga_fixture_preseeded" \
-  -e PLATFORM_TINYMEDIAMANAGER_FIXTURE_PRESEEDED="$tinymediamanager_fixture_preseeded" \
   -e PLATFORM_JELLYFIN_FIXTURE_PRESEEDED="$jellyfin_fixture_preseeded" \
   -w /repo \
   "$runner_image" \
   sh -eu -c "
+    PLATFORM_CONTRACT_SANDBOX_OWNER_UID=\$(stat -c '%u' '$sandbox')
+    export PLATFORM_CONTRACT_SANDBOX_OWNER_UID
     apk add --no-cache --quiet docker-cli docker-cli-compose git tar openssl \
       apache2-utils openssh-client '$ruby_package' '$curl_package' >/dev/null
-    pip install --quiet --no-input 'ansible-core==$ansible_core_version'
+    pip install --quiet --no-input 'ansible-core==$ansible_core_version' \
+      'requests==$requests_version'
     ansible-galaxy collection install -r /repo/requirements.yml >/dev/null
 
     # This container runs as root while the sandbox belongs to whoever started
@@ -808,6 +898,7 @@ docker run --rm \
         -e nas_docker_root=$sandbox/volume1/Docker \
         -e nas_media_root=$sandbox/volume2 \
         -e platform_compose_kind=integration \
+        -e tinymediamanager_compose_project_name=integration-tinymediamanager \
         -e platform_beszel_agent_kind=portable \
         -e deployment_bundle_test_mode=true \
         -e deployment_bundle_allow_dirty_controller=true \
@@ -866,11 +957,18 @@ docker run --rm \
     run_tinymediamanager_contract() {
       env \
         PLATFORM_KIND=integration \
+        PLATFORM_CONTRACT_SANDBOX_ROOT='$sandbox' \
+        PLATFORM_CONTRACT_SANDBOX_OWNER_UID="\$PLATFORM_CONTRACT_SANDBOX_OWNER_UID" \
+        PLATFORM_CONTRACT_REPO_DIR=/repo \
         PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\" \
         PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=\"\$vault_password_file\" \
         PLATFORM_DOCKER_ROOT='$sandbox/volume1/Docker' \
         PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
         PLATFORM_REPORT_ROOT='$sandbox/reports' \
+        PLATFORM_COMPOSE_KIND=integration \
+        PLATFORM_PROJECT_NAME=integration \
+        PLATFORM_TINYMEDIAMANAGER_WEB_PORT=4000 \
+        PLATFORM_TINYMEDIAMANAGER_API_PORT=7878 \
         PLATFORM_TINYMEDIAMANAGER_CONTAINER=tinymediamanager \
         /repo/tests/contracts/tinymediamanager.sh \"\$@\"
     }
@@ -956,6 +1054,8 @@ docker run --rm \
       test ! -e \"\$scenario_root\"
       mkdir -m 0755 \"\$scenario_root\"
       mkdir -m 0755 \"\$scenario_root/docker\" \"\$scenario_root/media\"
+      mkdir -m 0755 \"\$scenario_root/docker/tinymediamanager\" \
+        \"\$scenario_root/docker/tinymediamanager/data\"
 
       run_play \
         -e nas_docker_root=\"\$scenario_root/docker\" \
@@ -1401,11 +1501,69 @@ docker run --rm \
       fi
     }
 
-    if [ -z "\$INTEGRATION_TAGS" ] && [ "\$#" -eq 0 ]; then
+    perform_initial_converge() {
+      if [ -z "\$INTEGRATION_TAGS" ] && [ "\$#" -eq 0 ]; then
     run_play
+      else
+        run_selected_play "\$@"
+      fi
+    }
+
+    if lifecycle_plan=\$(
+      /repo/tests/integration.sh --consume-lifecycle --suite "\$INTEGRATION_SUITE"
+    ); then
+      :
     else
-      run_selected_play "\$@"
+      lifecycle_status=\$?
+      printf 'integration lifecycle validation failed with status %s\n' \
+        "\$lifecycle_status" >&2
+      exit "\$lifecycle_status"
     fi
+
+    lifecycle_success=false
+    while IFS= read -r lifecycle_event; do
+      case \$lifecycle_event in
+        seed-retirement-fixture)
+          run_tinymediamanager_contract seed-retirement-fixture
+          ;;
+        start-retirement-fixture)
+          env \
+            PLATFORM_KIND=integration \
+            PLATFORM_CONTRACT_SANDBOX_ROOT='$sandbox' \
+            PLATFORM_CONTRACT_SANDBOX_OWNER_UID="\$PLATFORM_CONTRACT_SANDBOX_OWNER_UID" \
+            PLATFORM_CONTRACT_REPO_DIR=/repo \
+            PLATFORM_COMPOSE_KIND=integration \
+            PLATFORM_PROJECT_NAME=integration \
+            PLATFORM_DOCKER_ROOT='$sandbox/volume1/Docker' \
+            PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
+            PLATFORM_REPORT_ROOT='$sandbox/reports' \
+            PLATFORM_TINYMEDIAMANAGER_WEB_PORT=4000 \
+            PLATFORM_TINYMEDIAMANAGER_API_PORT=7878 \
+            ansible-playbook -i localhost, \
+              /repo/tests/tinymediamanager_retirement_fixture.yml
+          ;;
+        converge)
+          perform_initial_converge "\$@"
+          ;;
+        assert-retired)
+          run_tinymediamanager_contract assert-retired
+          ;;
+        success)
+          lifecycle_success=true
+          ;;
+        *)
+          printf 'unexpected integration lifecycle event: %s\n' \
+            "\$lifecycle_event" >&2
+          exit 1
+          ;;
+      esac
+    done <<EOF
+\$lifecycle_plan
+EOF
+    [ "\$lifecycle_success" = true ] || {
+      printf '%s\n' 'integration lifecycle ended before success' >&2
+      exit 1
+    }
     printf 'FRESH_ROOT_OK: clean deployment root converged\n'
 
     if cmp -s \
@@ -1850,13 +2008,6 @@ docker run --rm \
       fi
     fi
 
-    if [ "\$INTEGRATION_RUN_SERVICE_SCENARIOS" = true ] && suite_is tinymediamanager; then
-      run_tinymediamanager_contract seed
-      if [ "\$INTEGRATION_SUITE" = tinymediamanager ]; then
-        run_tinymediamanager_contract run
-      fi
-    fi
-
     if [ "\$INTEGRATION_RUN_SERVICE_SCENARIOS" = true ] && suite_is jellyfin; then
       run_jellyfin_contract seed
       if [ "\$INTEGRATION_SUITE" = jellyfin ]; then
@@ -1889,8 +2040,19 @@ docker run --rm \
       # narrower upload/backup fixture that proves database recovery without
       # waiting for generated assets or inference.
 
+    if [ "\$INTEGRATION_SUITE" = tinymediamanager ]; then
+      printf '\n=== phase 2: asserting tinyMediaManager retirement idempotence ===\n'
+      run_selected_play "\$@" | tee /tmp/tinymediamanager-second.txt
+      grep -qE 'changed=0 .*failed=0 ' /tmp/tinymediamanager-second.txt || {
+        printf '%s\n' 'tinyMediaManager retirement reconverge was not clean' >&2
+        exit 1
+      }
+      run_tinymediamanager_contract assert-retired
+    fi
+
     if [ "\$INTEGRATION_SUITE" = full ] && \
        [ "\$INTEGRATION_RUN_SERVICE_SCENARIOS" = true ]; then
+      run_tinymediamanager_contract assert-retired
       env \
         PLATFORM_KIND=integration \
         PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\" \
@@ -1915,6 +2077,9 @@ docker run --rm \
     else
       printf 'NOT IDEMPOTENT: second run reported changes\n' >&2
       exit 1
+    fi
+    if [ "\$INTEGRATION_SUITE" = full ]; then
+      run_tinymediamanager_contract assert-retired
     fi
 
     printf '\n=== phase 3: asserting --check --diff works ===\n'

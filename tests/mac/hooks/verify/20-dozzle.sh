@@ -53,7 +53,6 @@ case ${PLATFORM_PROOF_PLATFORM:-mac} in
     verify_dozzle_labels '' ntfy ntfy
     verify_dozzle_labels paperless broker paperless_redis db paperless_postgres \
       webserver paperless_webserver gotenberg paperless_gotenberg tika paperless_tika
-    verify_dozzle_labels '' tinymediamanager tinymediamanager
     ;;
   mac)
     verify_dozzle_labels '' audiobookshelf "$PLATFORM_PROJECT_NAME-audiobookshelf"
@@ -74,7 +73,6 @@ case ${PLATFORM_PROOF_PLATFORM:-mac} in
       webserver "$PLATFORM_PROJECT_NAME-paperless-webserver" \
       gotenberg "$PLATFORM_PROJECT_NAME-paperless-gotenberg" \
       tika "$PLATFORM_PROJECT_NAME-paperless-tika"
-    verify_dozzle_labels '' tinymediamanager "$PLATFORM_PROJECT_NAME-tinymediamanager"
     ;;
   *) mac_die 'proof platform is invalid' ;;
 esac

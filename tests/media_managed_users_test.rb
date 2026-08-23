@@ -90,6 +90,8 @@ if ARGV.empty?
     exercise_audiobookshelf(failures) if selected_probes.intersect?(%w[all audiobookshelf])
     exercise_jellyfin(failures) if selected_probes.intersect?(%w[all jellyfin])
     exercise_jellyfin_settings(failures) if selected_probes.intersect?(%w[all jellyfin_settings])
+    exercise_jellyfin_server_configuration_refresh(failures) if
+      selected_probes.intersect?(%w[all jellyfin_settings])
     exercise_jellyfin_policy_preflight(failures) if
       selected_probes.intersect?(%w[all jellyfin_settings])
     exercise_jellyfin_plugin_versions(failures) if
@@ -107,6 +109,10 @@ if ARGV.empty?
     exercise_jellyfin_primary_preflight(failures) if
       selected_probes.intersect?(%w[all jellyfin_identity])
     exercise_jellyfin_extra_path_recovery(failures) if
+      selected_probes.intersect?(%w[all jellyfin_libraries])
+    exercise_jellyfin_library_inventory_global_gate(failures) if
+      selected_probes.intersect?(%w[all jellyfin_libraries])
+    exercise_jellyfin_library_rename_identity_refresh(failures) if
       selected_probes.intersect?(%w[all jellyfin_libraries])
     exercise_jellyfin_library_shape_preflight(failures) if
       selected_probes.intersect?(%w[all jellyfin_libraries])

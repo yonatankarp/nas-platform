@@ -165,6 +165,13 @@ end
 
 storage = YAML.safe_load_file(File.join(ROOT, "inventory", "group_vars", "all", "main.yml"))
 declared_paths = storage.fetch("nas_storage").map { |entry| entry.fetch("path") }
+tinymediamanager_preserved_storage = storage.fetch("nas_storage").select do |entry|
+  entry["path"] == "{{ nas_docker_root }}/tinymediamanager/data"
+end
+check(failures,
+      tinymediamanager_preserved_storage.length == 1 &&
+        tinymediamanager_preserved_storage.first["preserve_only"] == true,
+      "tinyMediaManager storage must remain preservation-only")
 paperless_postgres_storage = storage.fetch("nas_storage").find do |entry|
   entry["path"] == "{{ nas_docker_root }}/paperless-ngx/postgres"
 end

@@ -1,0 +1,44 @@
+---
+- name: Start a legacy tinyMediaManager fixture for retirement proof
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Require the retained repository identity to match the fixture playbook
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_playbook_python }}"
+          - -c
+          - >-
+            import os, pathlib, sys;
+            expected = pathlib.Path(sys.argv[1]).resolve(strict=True);
+            supplied = os.environ.get('PLATFORM_CONTRACT_REPO_DIR');
+            sys.exit(0 if supplied and
+                     pathlib.Path(supplied).resolve(strict=True) == expected else 1)
+          - "{{ playbook_dir }}/.."
+      changed_when: false
+      check_mode: false
+
+    - name: Validate the disposable test-only retirement fixture context
+      ansible.builtin.command:
+        argv:
+          - "{{ playbook_dir }}/contracts/tinymediamanager.sh"
+          - validate-retirement-fixture
+      environment:
+        PLATFORM_CONTRACT_REPO_DIR: "{{ playbook_dir }}/.."
+      changed_when: false
+      check_mode: false
+
+    - name: Start the legacy tinyMediaManager fixture
+      community.docker.docker_compose_v2:
+        project_src: "{{ playbook_dir }}/../services/tinymediamanager"
+        project_name: "{{ lookup('env', 'PLATFORM_PROJECT_NAME') }}-tinymediamanager"
+        files: >-
+          {{ ['compose.yml',
+              'compose.' ~ lookup('env', 'PLATFORM_COMPOSE_KIND') ~ '.yml'] }}
+        env_files:
+          - "{{ lookup('env', 'PLATFORM_REPORT_ROOT') }}/tinymediamanager-retirement.env"
+        state: present
+        wait: true
+        wait_timeout: 240
+      changed_when: false

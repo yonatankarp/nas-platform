@@ -160,6 +160,7 @@ identity_top = load_tasks(File.join(tasks_dir, "primary_identity.yml"))
 settings_top = load_tasks(File.join(tasks_dir, "settings.yml"))
 settings_path = File.join(tasks_dir, "settings.yml")
 settings = File.file?(settings_path) ? File.read(settings_path) : ""
+inventory_top = load_tasks(File.join(tasks_dir, "library_inventory.yml"))
 # The concatenation order mirrors the order main.yml declares its includes in.
 # It is deliberately not execution order: main.yml includes settings.yml from
 # the middle of its own body, so resolving includes would interleave the
@@ -167,7 +168,8 @@ settings = File.file?(settings_path) ? File.read(settings_path) : ""
 # before mutation ordering assertion exists to keep apart.
 role_tasks = flatten_tasks(load_tasks(File.join(tasks_dir, "main.yml"))) +
   flatten_tasks(identity_top) + flatten_tasks(settings_top) +
-  flatten_tasks(load_tasks(File.join(tasks_dir, "qsv_probe.yml")))
+  flatten_tasks(load_tasks(File.join(tasks_dir, "qsv_probe.yml"))) +
+  flatten_tasks(inventory_top)
 settings_tasks = flatten_tasks(settings_top)
 role_names = role_tasks.filter_map { |task| task["name"] }
 role_at = lambda { |name| role_tasks.index { |task| task["name"] == name } }
@@ -218,8 +220,7 @@ preflight_names = [
   "Refuse ambiguous Jellyfin primary administrator identity",
   "Read Jellyfin server configuration for preflight",
   "List Jellyfin libraries for preflight",
-  "Refuse unsafe Jellyfin managed library path representation",
-  "Refuse ambiguous Jellyfin managed library ownership"
+  "Validate and resolve Jellyfin managed library inventory"
 ]
 mutation_names = [
   "Reconcile the Jellyfin primary administrator name safely",
@@ -264,9 +265,11 @@ refuse("recovery marker privacy is not checked before reading") unless
   marker_guard_at && marker_read_at && marker_guard_at < marker_read_at &&
     marker_conditions.any? { |that| that.include?("stat.mode == '0600'") } &&
     marker_conditions.any? { |that| that.include?("stat.pw_name == ansible_facts.user_id") }
-refuse("server configuration update does not preserve unrelated fields") unless
+server_name_update_body =
   role_task.call("Update the Jellyfin server name").dig("ansible.builtin.uri", "body").to_s
-    .include?("jellyfin_server_configuration_before.json | combine")
+refuse("server configuration update does not preserve unrelated fields") unless
+  server_name_update_body.include?("jellyfin_server_configuration_for_update.json") &&
+    server_name_update_body.include?("combine({'ServerName': jellyfin_server_name})")
 refuse("avatar upload is unconditional") unless
   Array(role_task.call("Upload the Jellyfin primary administrator image")["when"])
     .map(&:to_s).any? { |that| that.include?("jellyfin_admin_avatar_upload_required") }
@@ -536,6 +539,7 @@ VIDEO_FIXTURE = (
 CLIENT = 'MediaBrowser Client="nas-platform-contract", Device="contract", ' \
          'DeviceId="nas-platform-jellyfin-contract", Version="1.0.0"'
 TRANSCODE_PROOF_TIMEOUT_SECONDS = 60
+LIBRARY_RENAME_POLL_INTERVAL_SECONDS = 1
 
 def fail_contract(message)
   warn "Jellyfin contract failed: #{message}"
@@ -625,8 +629,11 @@ def authenticate(username, password)
   payload
 end
 
-def libraries(token)
-  _response, folders = request("get", "/Library/VirtualFolders", token: token)
+def libraries(token, deadline: nil)
+  _response, folders = request(
+    "get", "/Library/VirtualFolders", token: token, deadline: deadline,
+    timeout_message: deadline && "renamed library did not regain its complete API shape"
+  )
   fail_contract("library response is not complete") unless folders.is_a?(Array)
   folders
 end
@@ -641,6 +648,40 @@ def library_by_path(folders, definition)
   end
   fail_contract("library path #{definition.fetch('Path')} is absent or duplicated") unless matches.length == 1
   matches.fetch(0)
+end
+
+def wait_for_complete_library(token, definition, name:, timeout:)
+  # Jellyfin 10.11 returns from a virtual-folder rename before its in-memory
+  # CollectionFolder has adopted the new directory and API identity.
+  deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+  loop do
+    remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    fail_contract("renamed library did not regain its complete API shape") if remaining <= 0
+    folders = libraries(token, deadline: deadline)
+    remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    fail_contract("renamed library did not regain its complete API shape") if remaining <= 0
+    fail_contract("renamed library response is malformed") unless folders.all? do |folder|
+      folder.is_a?(Hash) && folder["Locations"].is_a?(Array) &&
+        folder["Locations"].all? { |path| path.is_a?(String) }
+    end
+    matches = folders.select do |folder|
+      folder.fetch("Locations").map { |path| normalize_path(path) }.include?(definition.fetch("Path"))
+    end
+    fail_contract("library path #{definition.fetch('Path')} is duplicated after rename") if matches.length > 1
+    folder = matches.fetch(0, nil)
+    if folder
+      options = folder["LibraryOptions"]
+      fail_contract("renamed library response is malformed") unless
+        options.nil? || options.is_a?(Hash)
+      item_id = folder["ItemId"]
+      safe_id(item_id) unless item_id.nil?
+    end
+    if folder && folder["Name"] == name && options.is_a?(Hash) && item_id
+      return folder
+    end
+
+    sleep [LIBRARY_RENAME_POLL_INTERVAL_SECONDS, remaining].min
+  end
 end
 
 def assert_managed_library(folder, definition)
@@ -759,7 +800,7 @@ def rename_user(token, user, new_name)
 end
 
 def rename_library(token, old_name, new_name)
-  query = URI.encode_www_form("name" => old_name, "newName" => new_name, "refreshLibrary" => false)
+  query = URI.encode_www_form("name" => old_name, "newName" => new_name, "refreshLibrary" => true)
   request("post", "/Library/VirtualFolders/Name?#{query}", token: token, expected: [204])
 end
 
@@ -1127,13 +1168,18 @@ if MODE == "drift"
   configuration["ServerName"] = "Yonflix Drifted"
   request("post", "/System/Configuration", token: token, body: configuration, expected: [204])
   upload_user_image(token, user_id, DRIFT_IMAGE)
-  JELLYFIN_MEDIA_ROOT.join("Movies-Drift-Extra").mkpath
-  add_library_path(token, movies.fetch("Name"), DRIFT_EXTRA_PATH)
-  rename_library(token, movies.fetch("Name"), "Movies Drifted")
+  # Jellyfin derives collection identity from the library directory. Install
+  # every ItemId-scoped mutation before the rename can replace that identity.
   options = movies.fetch("LibraryOptions").merge("EnableRealtimeMonitor" => true)
   request(
     "post", "/Library/VirtualFolders/LibraryOptions", token: token,
     body: { "Id" => movies.fetch("ItemId"), "LibraryOptions" => options }, expected: [204]
+  )
+  JELLYFIN_MEDIA_ROOT.join("Movies-Drift-Extra").mkpath
+  add_library_path(token, movies.fetch("Name"), DRIFT_EXTRA_PATH)
+  rename_library(token, movies.fetch("Name"), "Movies Drifted")
+  wait_for_complete_library(
+    token, LIBRARIES.fetch(0), name: "Movies Drifted", timeout: 120
   )
   encoding["EnableHardwareEncoding"] =
     !ENCODING_POLICIES.fetch(PLATFORM).fetch("EnableHardwareEncoding")

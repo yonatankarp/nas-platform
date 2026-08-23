@@ -66,7 +66,8 @@ set -eu
 printf '%s\n' 'ntfy verify-hook' >> "${HOOK_LOG:?}"
 STUB
   for delegate in verify/10-beszel.sh verify/20-dozzle.sh \
-      fixtures-persistence/80-paperless.sh; do
+      verify/50-tinymediamanager.sh fixtures-persistence/80-paperless.sh \
+      fixtures-recreate/50-tinymediamanager.sh; do
     printf '%s\n' '#!/bin/sh' 'exit 0' > "$tree/tests/mac/hooks/$delegate"
   done
 
@@ -94,6 +95,8 @@ STUB
   chmod 0755 "$tree/tests/mac/run-contract.sh" "$tree/bin/docker" \
     "$tree/tests/mac/hooks/verify/15-ntfy.sh" "$tree/tests/mac/hooks/verify/10-beszel.sh" \
     "$tree/tests/mac/hooks/verify/20-dozzle.sh" \
+    "$tree/tests/mac/hooks/verify/50-tinymediamanager.sh" \
+    "$tree/tests/mac/hooks/fixtures-recreate/50-tinymediamanager.sh" \
     "$tree/tests/mac/hooks/fixtures-persistence/80-paperless.sh"
 }
 
@@ -136,12 +139,11 @@ build_tree "$tree"
 # plus ntfy, which has no contract of its own and so is never in the registry.
 summary=$(run_group "$tree" fixtures-seed 00-services.sh)
 expect_summary "$summary" \
-  'mac fixtures-seed hooks: covered 9 of 9 registered services (ran 8, delegated 0, exempt 1)'
+  'mac fixtures-seed hooks: covered 9 of 9 registered services (ran 7, delegated 0, exempt 2)'
 expect_log "$(cat "$tree/log/hooks")" 'beszel verify
 dozzle verify
 audiobookshelf seed-progress
 komga seed
-tinymediamanager seed
 jellyfin seed
 immich seed
 paperless seed' 'fixtures-seed'
@@ -153,29 +155,27 @@ expect_log "$(cat "$tree/log/hooks")" 'beszel verify
 dozzle verify
 audiobookshelf assert-persistence
 komga assert-persistence
-tinymediamanager assert-persistence
+tinymediamanager assert-retired
 jellyfin assert-persistence
 immich assert-persistence' 'fixtures-persistence'
 
 summary=$(run_group "$tree" verify 30-services.sh)
 expect_summary "$summary" \
-  'mac verify hooks: covered 9 of 9 registered services (ran 6, delegated 3, exempt 0)'
+  'mac verify hooks: covered 9 of 9 registered services (ran 5, delegated 4, exempt 0)'
 expect_log "$(cat "$tree/log/hooks")" 'audiobookshelf run
 komga run
-tinymediamanager run
 jellyfin run
 immich run
 paperless run' 'verify'
 
 summary=$(run_group "$tree" fixtures-recreate 00-services.sh)
 expect_summary "$summary" \
-  'mac fixtures-recreate hooks: covered 9 of 9 registered services (ran 9, delegated 0, exempt 0)'
+  'mac fixtures-recreate hooks: covered 9 of 9 registered services (ran 8, delegated 1, exempt 0)'
 expect_log "$(cat "$tree/log/hooks")" 'beszel verify
 ntfy verify-hook
 dozzle verify
 audiobookshelf run
 komga run
-tinymediamanager run
 jellyfin run
 immich run
 paperless run' 'fixtures-recreate'
@@ -187,7 +187,6 @@ proof-ntfy |runtime/services/ntfy/.env |current/services/ntfy/compose.yml |ntfy
 proof-dozzle |runtime/services/dozzle/.env |current/services/dozzle/compose.yml |alert-relay dozzle socket-proxy
 proof-audiobookshelf |runtime/services/audiobookshelf/.env |current/services/audiobookshelf/compose.yml |audiobookshelf
 proof-komga |runtime/services/komga/.env |current/services/komga/compose.yml |komga
-proof-tinymediamanager |runtime/services/tinymediamanager/.env |current/services/tinymediamanager/compose.yml |tinymediamanager
 proof-jellyfin |runtime/services/jellyfin/.env |current/services/jellyfin/compose.yml |jellyfin
 proof-immich |runtime/services/immich/.env |current/services/immich/compose.yml |immich-server immich-machine-learning redis database
 proof-paperless |runtime/services/paperless-ngx/.env |current/services/paperless-ngx/compose.yml |broker db webserver gotenberg tika' \
