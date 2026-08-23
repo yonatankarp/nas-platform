@@ -442,9 +442,13 @@ when "drill"
   ids = before.map { |record| record.fetch("id") }
   request("delete", "/api/assets", token: token, expected: [204],
           body: { "ids" => ids, "force" => true })
+  # The poll reuses the session the deletion was authorized with, for the reason
+  # the Paperless drill does: a login on every pass is about forty logins against
+  # an endpoint whose rate limit no test controls, and nothing inside the loop
+  # invalidates the session it would be replacing.
   deadline = Time.now + 120
   loop do
-    break if catalogue(authenticate).empty?
+    break if catalogue(token).empty?
 
     die("the mutation did not remove the assets") if Time.now >= deadline
     sleep 3

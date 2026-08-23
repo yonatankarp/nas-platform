@@ -1304,8 +1304,16 @@ SERVICES.each do |service|
   tasks = YAML.safe_load_file(path, aliases: false)
   failures << "#{service} managed-user tasks must be a task list" unless tasks.is_a?(Array)
   failures.concat(contract_failures(service, tasks)) if tasks.is_a?(Array)
-  main = File.read(File.join(ROOT, "roles", service, "tasks", "main.yml"))
-  failures << "#{service} main tasks omit managed-user reconciliation" unless main.include?("managed_users.yml")
+  # An include, not a mention. The file name appears in this role's comments and
+  # in its own tags, so a substring of main.yml was satisfied by a role that had
+  # stopped including the task file at all.
+  main_tasks = YAML.safe_load_file(File.join(ROOT, "roles", service, "tasks", "main.yml"), aliases: true)
+  managed_user_includes = Array(main_tasks).count do |task|
+    include_argument = task.is_a?(Hash) ? task["ansible.builtin.include_tasks"] : nil
+    included = include_argument.is_a?(Hash) ? include_argument["file"] : include_argument
+    included == "managed_users.yml"
+  end
+  failures << "#{service} main tasks omit managed-user reconciliation" if managed_user_includes.zero?
 end
 
 policy = File.read(File.join(ROOT, "tests", "validate-policy.sh"))

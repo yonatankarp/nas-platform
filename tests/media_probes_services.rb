@@ -307,6 +307,12 @@ def exercise_jellyfin_fresh_check_mode(failures)
         "vault_jellyfin_opensubtitles_password" => "subtitle-secret",
         "vault_managed_jellyfin_users" => [],
         "platform_kind" => "nas",
+        # The QSV probe this fixture includes reads the render device path into
+        # its FFmpeg arguments. Those arguments only template when a jellyfin
+        # container happens to exist on the machine running the fixture, so
+        # leaving the variable out would make the fixture pass or fail by
+        # accident of the local Docker state.
+        "platform_render_device_path" => "/dev/dri/renderD128",
         "platform_current_dir" => ROOT,
         "platform_runtime_dir" => directory,
         "jellyfin_compose_project_name" => "fresh-check-fixture",

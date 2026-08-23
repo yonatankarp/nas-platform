@@ -403,9 +403,26 @@ if MODE == "drill"
   drill_before.each do |document|
     request("delete", "/api/documents/#{document.fetch('id')}/", token: drill_token, expected: [204])
   end
+  # The poll reuses the token the deletion was authorized with instead of logging
+  # in again on every pass. Paperless throttles /api/token/ at five requests a
+  # minute by default (PAPERLESS_TOKEN_THROTTLE_RATE), and a pass every two
+  # seconds is thirty a minute, so a login per pass exhausted the allowance about
+  # ten seconds into the loop and request died on "POST /api/token/ returned HTTP
+  # 429" before the drill could prove anything about the restore. The phases
+  # before the drill have already spent part of that window, which is why it
+  # failed sooner on a warm sandbox than the arithmetic alone suggests.
+  #
+  # Reusing that token is correct whatever /api/token/ does with existing ones:
+  # it was issued at the top of this block, and nothing between there and here
+  # restarts a container or restores the database, so it is the freshest
+  # credential the drill holds.
+  #
+  # The timing is unchanged on purpose. The wait is what proves the asynchronous
+  # deletion settles, so a longer sleep or a shorter deadline would weaken what
+  # the drill demonstrates rather than fix the login budget.
   deadline = Time.now + 120
   loop do
-    break if catalogue(authenticate(admin_username, admin_password)).empty?
+    break if catalogue(drill_token).empty?
     die("the rollback mutation did not remove the documents") if Time.now >= deadline
     sleep 2
   end

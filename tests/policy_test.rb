@@ -81,7 +81,12 @@ end
 mac_run_path = File.join(ROOT, "tests", "mac", "run.sh")
 mac_run = File.file?(mac_run_path) ? File.read(mac_run_path) : ""
 dozzle_tasks_path = File.join(ROOT, "roles", "dozzle", "tasks", "main.yml")
-dozzle_tasks = File.file?(dozzle_tasks_path) ? File.read(dozzle_tasks_path) : ""
+dozzle_task_names = if File.file?(dozzle_tasks_path)
+                      flatten_tasks(YAML.safe_load_file(dozzle_tasks_path, aliases: true))
+                        .filter_map { |task| task["name"] }
+                    else
+                      []
+                    end
 dozzle_planned_tasks = [
   "Report planned managed Dozzle dispatcher creation",
   "Report planned managed Dozzle dispatcher repair",
@@ -91,7 +96,7 @@ dozzle_planned_tasks = [
   "Report planned unmanaged Dozzle alert rule removal",
   "Report planned unmanaged Dozzle dispatcher removal"
 ]
-check(failures, dozzle_planned_tasks.all? { |name| dozzle_tasks.include?("- name: #{name}") },
+check(failures, dozzle_planned_tasks.all? { |name| dozzle_task_names.include?(name) },
       "Dozzle must expose every REST mutation category as a check-mode planned change")
 check(failures,
       %w[
@@ -489,6 +494,17 @@ IMAGE = %r{\A\S+:[^@\s]+@sha256:[0-9a-f]{64}\z}
 
 declared_paths = YAML.safe_load_file(File.join(ROOT, "inventory", "group_vars", "all", "main.yml"))
                      .fetch("nas_storage").map { |entry| entry.fetch("path") }
+
+# A mounted path is accounted for when nas_storage declares it, or declares an
+# entry it sits under: host_prep creates that entry with the right ownership and
+# recovery class, and anything beneath it comes into existence with it. This is
+# the relation the Compose volume check has always applied, stated once here now
+# that a second caller needs it.
+storage_declared = lambda do |path|
+  declared_paths.include?(path) ||
+    declared_paths.any? { |declared| path.start_with?("#{declared}/") }
+end
+
 service_dirs.each do |dir|
   name = File.basename(dir)
   compose_path = File.join(dir, "compose.yml")
@@ -543,6 +559,8 @@ service_dirs.each do |dir|
 
       inventory_source = if source.include?("NAS_DOCKER_ROOT")
                            source.sub(/\A\$\{NAS_DOCKER_ROOT:\?\}/, "{{ nas_docker_root }}")
+                         elsif source.include?("NAS_MEDIA_ROOT")
+                           source.sub(/\A\$\{NAS_MEDIA_ROOT:\?\}/, "{{ nas_media_root }}")
                          elsif source == "${AUDIOBOOKSHELF_BACKUP_PATH:?}"
                            "{{ nas_docker_root }}/audiobookshelf/backups"
                          end
@@ -551,11 +569,41 @@ service_dirs.each do |dir|
       # Service state must be declared in the storage inventory so host_prep
       # creates it with the right ownership and it gets a recovery class.
       expected = inventory_source
-      declared = declared_paths.include?(expected) ||
-                 declared_paths.any? { |p| expected.start_with?(p + "/") }
-      check(failures, declared,
+      check(failures, storage_declared.call(expected),
             "#{label}: #{source} is not declared in nas_storage (expected #{expected})")
     end
+  end
+end
+
+# Service templates write their media library paths as literals, and Compose
+# takes those rendered values straight through as bind sources. That makes the
+# library path a second declaration of what nas_storage already declares, with
+# nothing comparing the two: renaming one side leaves host_prep creating one
+# directory while the service mounts another. Compose volume sources cannot
+# reach these, because they arrive as an opaque ${SERVICE_..._PATH:?} the
+# template supplies, so the templates are read directly here.
+#
+# Only a literal with a path suffix is a library path. Several templates export
+# the volume root itself (NAS_MEDIA_ROOT, PLATFORM_MEDIA_ROOT) for a service to
+# join onto, and requiring the suffix is what keeps those out of this check.
+#
+# A library root may also sit above the declared entries rather than at or below
+# one, which is how Jellyfin mounts the whole media tree while nas_storage
+# declares only the three libraries tinyMediaManager curates: Ansible's file
+# module creates the parent, and the leaves are where a mode and a recovery
+# class belong. Demanding an exact entry would reject that legitimate parent
+# mount. Accepting it is confined to these templates on purpose, because letting
+# a Compose volume source name an ancestor would let a container see a whole
+# service state tree where the declared entry gave it one subdirectory.
+MEDIA_ROOT_LITERAL = %r{\{\{\s*nas_media_root\s*\}\}(/[A-Za-z0-9._/-]+)}
+Dir[File.join(ROOT, "roles", "*", "templates", "*.j2")].sort.each do |template_path|
+  relative_template = template_path.delete_prefix("#{ROOT}/")
+  File.read(template_path).scan(MEDIA_ROOT_LITERAL).each do |(suffix)|
+    expected = "{{ nas_media_root }}#{suffix}"
+    covered = storage_declared.call(expected) ||
+              declared_paths.any? { |declared| declared.start_with?("#{expected}/") }
+    check(failures, covered,
+          "#{relative_template}: #{expected} is not declared in nas_storage")
   end
 end
 
@@ -593,14 +641,29 @@ end
 
 # Deployment goes through the module. A shell-out always claims a change and
 # cannot run under --check, which the converge-every-run model depends on.
+#
+# Read from the parsed tasks. The 120-character window this used to scan was
+# neither a task nor a whole one: a shell-out that named the module further down
+# its own arguments slipped past, and a comment naming Compose next to any
+# command task was reported as a violation that did not exist.
+shell_modules = %w[
+  ansible.builtin.command ansible.builtin.shell command shell raw
+].freeze
 role_task_files = Dir[File.join(ROOT, "roles", "*", "{tasks,handlers}", "*.yml")]
+deploys_through_module = false
 role_task_files.each do |path|
-  body = File.read(path)
-  check(failures, !body.match?(/(command|shell):[\s\S]{0,120}docker\s+compose/),
+  tasks = flatten_tasks(YAML.safe_load_file(path, aliases: true))
+  deploys_through_module ||= tasks.any? { |task| task.key?("community.docker.docker_compose_v2") }
+  shells_out = tasks.any? do |task|
+    shell_modules.any? do |module_name|
+      task.key?(module_name) &&
+        task_strings(task[module_name]).any? { |value| value.match?(/docker[[:space:]]+compose/) }
+    end
+  end
+  check(failures, !shells_out,
         "#{path}: shells out to Compose; use community.docker.docker_compose_v2")
 end
-check(failures,
-      role_task_files.any? { |p| File.read(p).include?("community.docker.docker_compose_v2") },
+check(failures, deploys_through_module,
       "no role deploys anything through docker_compose_v2")
 
 # Every deployed service reports its own deployment, so adding a tenth service
@@ -778,12 +841,21 @@ manifest_entries.each do |service|
           "PLATFORM_CONTAINER_CPUSET={{ platform_effective_container_cpuset }}"
         ) == 1,
         "#{name}: environment must render the effective container CPU set exactly once")
-  tasks_source = tasks_owned ? File.read(tasks_path) : ""
-  deploys_compose = tasks_source.include?("community.docker.docker_compose_v2:")
+  service_tasks = tasks_owned ? flatten_tasks(YAML.safe_load_file(tasks_path, aliases: true)) : []
+  deploys_compose = service_tasks.any? { |task| task.key?("community.docker.docker_compose_v2") }
+  # One include, carrying this service's own name. Counted from the source text
+  # this was two independent substring checks that never had to describe the same
+  # task: the count matched any line spelling "name: container_cpu", including a
+  # commented-out one, and the service name could be supplied by anything else.
+  container_cpu_includes = service_tasks.select do |task|
+    %w[ansible.builtin.include_role ansible.builtin.import_role].any? do |module_name|
+      task[module_name].is_a?(Hash) && task[module_name]["name"] == "container_cpu"
+    end
+  end
   check(failures,
         !deploys_compose ||
-          (tasks_source.scan(/name:\s*container_cpu\b/).length == 1 &&
-           tasks_source.include?("container_cpu_service_name: #{name}")),
+          (container_cpu_includes.length == 1 &&
+           container_cpu_includes.fetch(0).dig("vars", "container_cpu_service_name") == name),
         "#{name}: role must verify its effective container CPU policy exactly once")
   check(failures, declared_paths.any? { |path| path.include?("/#{name}/") || path.end_with?("/#{name}") },
         "#{name}: implemented service has no storage declaration")
