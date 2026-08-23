@@ -834,6 +834,41 @@ if grep -qF -- 'controller_mount=$repo_dir' "$integration"; then
   exit 1
 fi
 
+# The Immich restore failure matrix renders into a fresh, isolated Docker root.
+# host_prep intentionally refuses to create preservation-only service state, so
+# that root must contain a real tinyMediaManager state directory before the
+# matrix runs host_prep. This fixture must remain passive: the negative matrix
+# does not need a legacy tinyMediaManager container.
+ruby - "$integration" <<'RUBY'
+integration = File.read(ARGV.fetch(0))
+matrix = integration[/run_immich_restore_negative_matrix\(\) \{(.*?)\n    \}/m, 1]
+abort "Immich restore negative matrix is absent" unless matrix
+
+parent_index = matrix.index(
+  'mkdir -m 0755 \"\\$scenario_root/docker/tinymediamanager\"'
+)
+seed_index = matrix.index(
+  '\"\\$scenario_root/docker/tinymediamanager/data\"'
+)
+host_prep_index = matrix.index(
+  '-e nas_docker_root=\"\\$scenario_root/docker\"'
+)
+scenario_index = matrix.index('for scenario in no-backup corrupt-newest')
+abort "Immich negative matrix does not seed preservation-only tinyMediaManager state" unless
+  parent_index && seed_index && parent_index < seed_index
+abort "Immich negative matrix seeds tinyMediaManager state after host_prep" unless
+  host_prep_index && seed_index < host_prep_index
+abort "Immich negative scenarios begin before their isolated root is prepared" unless
+  scenario_index && host_prep_index < scenario_index
+
+fixture_setup = matrix[0...host_prep_index]
+if fixture_setup.include?('run_tinymediamanager_contract') ||
+   fixture_setup.include?('tinymediamanager_retirement_fixture.yml') ||
+   fixture_setup.match?(/docker(?: compose)? .*tinymediamanager/)
+  abort "Immich negative matrix starts a legacy tinyMediaManager fixture"
+end
+RUBY
+
 assert_rejected 'unknown integration suite: unknown' --suite unknown
 assert_rejected 'unknown integration suite: media' --suite media
 assert_rejected 'unknown integration suite: <missing>' --suite

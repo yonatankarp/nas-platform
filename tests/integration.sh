@@ -1054,6 +1054,8 @@ docker run --rm \
       test ! -e \"\$scenario_root\"
       mkdir -m 0755 \"\$scenario_root\"
       mkdir -m 0755 \"\$scenario_root/docker\" \"\$scenario_root/media\"
+      mkdir -m 0755 \"\$scenario_root/docker/tinymediamanager\" \
+        \"\$scenario_root/docker/tinymediamanager/data\"
 
       run_play \
         -e nas_docker_root=\"\$scenario_root/docker\" \
