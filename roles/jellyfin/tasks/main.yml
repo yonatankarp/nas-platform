@@ -648,19 +648,6 @@
   check_mode: false
   no_log: true
 
-- name: Require complete Jellyfin library preflight response
-  ansible.builtin.assert:
-    that:
-      - jellyfin_libraries_before.json | type_debug == 'list'
-      - item is mapping
-      - item.Name is string
-    fail_msg: Jellyfin returned an incomplete library listing; no owned state was changed.
-  loop: "{{ jellyfin_libraries_before.json | default([]) }}"
-  loop_control:
-    label: jellyfin-library
-  when: not ansible_check_mode or jellyfin_wizard_completed | bool
-  no_log: true
-
 - name: Validate and resolve Jellyfin managed library inventory
   ansible.builtin.include_tasks: library_inventory.yml
   vars:

@@ -1,9 +1,21 @@
 ---
+- name: Require complete Jellyfin library inventory response
+  ansible.builtin.assert:
+    that:
+      - jellyfin_library_inventory_response | type_debug == 'list'
+    fail_msg: >-
+      Jellyfin returned a non-list library inventory; no library state was changed.
+  no_log: true
+
 - name: Refuse unsafe complete Jellyfin library inventory
   ansible.builtin.assert:
     that:
       - item is mapping
       - item.Name | default(none) is string
+      - item.Name | length > 0
+      - item.Name | length <= 255
+      - item.Name is not search('[\x00-\x1f\x7f]')
+      - item.ItemId | default(none) is string
       - item.ItemId | default('') | string is match('^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$')
       - item.CollectionType | default(none) is string
       - item.Locations | default(none) | type_debug == 'list'
@@ -47,6 +59,19 @@
   loop: "{{ jellyfin_library_inventory_response | default([]) }}"
   loop_control:
     label: jellyfin-library
+  no_log: true
+
+- name: Refuse ambiguous Jellyfin library identities
+  ansible.builtin.assert:
+    that:
+      - >-
+        jellyfin_library_inventory_response | map(attribute='ItemId') | list | length ==
+        jellyfin_library_inventory_response | map(attribute='ItemId') | unique | list | length
+      - >-
+        jellyfin_library_inventory_response | map(attribute='Name') | list | length ==
+        jellyfin_library_inventory_response | map(attribute='Name') | unique | list | length
+    fail_msg: >-
+      Jellyfin returned duplicate library identifiers or names; no library state was changed.
   no_log: true
 
 - name: Initialize normalized Jellyfin library inventory

@@ -1868,6 +1868,7 @@ def jellyfin_identity_contract_failures
   role = File.read(role_path) + identity + File.read(inventory_path)
   contract = File.read(File.join(ROOT, "tests", "contracts", "jellyfin.sh"))
   main_tasks = YAML.safe_load_file(role_path, aliases: false)
+  inventory_tasks = YAML.safe_load_file(inventory_path, aliases: false)
   names = nested_task_names(main_tasks)
   names += nested_task_names(YAML.safe_load_file(identity_path, aliases: false)) if
     File.file?(identity_path)
@@ -1894,6 +1895,13 @@ def jellyfin_identity_contract_failures
   end
   failures << "Jellyfin avatar hash contract differs" unless
     defaults["jellyfin_admin_avatar_sha256"] == JELLYFIN_AVATAR_SHA256
+  inventory_response_gate = inventory_tasks.first
+  failures << "Jellyfin library inventory response type is not gated before iteration" unless
+    task_name(inventory_response_gate) == "Require complete Jellyfin library inventory response" &&
+      !inventory_response_gate.key?("loop") &&
+      inventory_response_gate.dig("ansible.builtin.assert", "that")&.include?(
+        "jellyfin_library_inventory_response | type_debug == 'list'"
+      )
 
   required = [
     "Preflight Jellyfin managed users",
@@ -2142,12 +2150,6 @@ def exercise_jellyfin_library_shape_preflight(failures)
                 "Policy" => { "IsAdministrator" => true } }
   desired = { "Name" => "Movies", "ItemId" => "1" * 32, "CollectionType" => "movies" }
   path_info = ->(path) { { "Path" => path } }
-  verification_names = [
-    "Initialize exact Jellyfin library inventory",
-    "Resolve exact Jellyfin library inventory",
-    "Verify exact Jellyfin owned state"
-  ]
-  verification_tasks = main.select { |task| verification_names.include?(task_name(task)) }
   shapes = {
     "Locations-only desired path" => [["/media/Movies"], [], false],
     "PathInfos-only desired path" => [[], [path_info.call("/media/Movies")], false],
@@ -2215,22 +2217,6 @@ def exercise_jellyfin_library_shape_preflight(failures)
         mutations = requests.select { |request| %w[POST PUT PATCH DELETE].include?(request["method"]) }
         failures << "Jellyfin #{label} reached mutation before global preflight" if
           !expected_success && !mutations.empty?
-        next unless label == "valid managed shape with malformed unrelated library" && status.success?
-
-        verification_variables = variables.merge(
-          "jellyfin_verified_libraries" => { "json" => libraries },
-          "jellyfin_verified_users" => { "json" => [base_user.merge("Name" => "Yonatan")] },
-          "jellyfin_verified_primary_user" => base_user.merge("Name" => "Yonatan"),
-          "jellyfin_verified_server_configuration" => { "json" => { "ServerName" => "Yonflix 2.0" } },
-          "jellyfin_verified_admin_avatar_state" => { "stat" => { "checksum" => JELLYFIN_AVATAR_SHA256 } },
-          "jellyfin_admin_avatar_sha256" => JELLYFIN_AVATAR_SHA256,
-          "jellyfin_library_options" => {}
-        )
-        verify_stdout, verify_stderr, verify_status = run_playbook(
-          verification_tasks, verification_variables
-        )
-        failures << "Jellyfin malformed unrelated library broke exact verification: #{failure_tail(verify_stdout + verify_stderr)}" unless
-          verify_status.success?
       end
     end
   end
@@ -2319,6 +2305,72 @@ def exercise_jellyfin_extra_path_recovery(failures)
   end
 end
 
+def exercise_jellyfin_library_inventory_global_gate(failures)
+  main = YAML.safe_load_file(
+    File.join(ROOT, "roles", "jellyfin", "tasks", "main.yml"), aliases: false
+  )
+  mutation_names = [
+    "Rename adopted Jellyfin managed libraries",
+    "Create absent Jellyfin managed libraries",
+    "Remove extra paths from Jellyfin managed libraries",
+    "Repair Jellyfin managed library options"
+  ]
+  tasks = [
+    jellyfin_library_inventory_include(
+      "Validate fixture Jellyfin library inventory", "{{ jellyfin_libraries_before.json }}"
+    )
+  ] + main.select { |task| mutation_names.include?(task_name(task)) }
+  library = lambda do |name:, id:, collection_type:, path:|
+    {
+      "Name" => name, "ItemId" => id, "CollectionType" => collection_type,
+      "Locations" => [path],
+      "LibraryOptions" => {
+        "PathInfos" => [{ "Path" => path }], "EnableRealtimeMonitor" => false
+      }
+    }
+  end
+  movies = library.call(
+    name: "Movies Drifted", id: "1" * 32, collection_type: "movies", path: "/media/Movies"
+  )
+  shows = library.call(
+    name: "Shows", id: "2" * 32, collection_type: "tvshows", path: "/media/Series"
+  )
+  cases = {
+    "mapping response" => {},
+    "string response" => "opaque",
+    "duplicate ItemId" => [movies, shows.merge("ItemId" => movies.fetch("ItemId"))],
+    "non-string ItemId" => [movies.merge("ItemId" => 7), shows],
+    "duplicate current name" => [movies.merge("Name" => "Legacy"), shows.merge("Name" => "Legacy")],
+    "empty current name" => [movies.merge("Name" => ""), shows],
+    "non-string current name" => [movies.merge("Name" => 7), shows],
+    "unsafe current name" => [movies.merge("Name" => "Movies\u0001Drifted"), shows]
+  }
+  responder = ->(_request) { [204, nil] }
+  with_http_service(responder) do |port, requests|
+    cases.each do |label, inventory|
+      boundary = requests.length
+      variables = {
+        "jellyfin_api" => "http://127.0.0.1:#{port}",
+        "jellyfin_client_header" => "MediaBrowser Fixture",
+        "jellyfin_reconcile_token" => "admin-token",
+        "jellyfin_libraries_before" => { "json" => inventory },
+        "jellyfin_libraries" => [
+          { "name" => "Movies", "collection_type" => "movies", "path" => "/media/Movies" },
+          { "name" => "Shows", "collection_type" => "tvshows", "path" => "/media/Series" }
+        ],
+        "jellyfin_library_options" => { "EnableRealtimeMonitor" => true }
+      }
+      stdout, stderr, status = run_playbook(tasks, variables)
+      failures << "Jellyfin #{label} inventory was accepted: #{failure_tail(stdout + stderr)}" if
+        status.success?
+      mutations = requests.drop(boundary).select do |request|
+        %w[POST PUT PATCH DELETE].include?(request["method"])
+      end
+      failures << "Jellyfin #{label} inventory reached mutation" unless mutations.empty?
+    end
+  end
+end
+
 def exercise_jellyfin_library_rename_identity_refresh(failures)
   main = YAML.safe_load_file(
     File.join(ROOT, "roles", "jellyfin", "tasks", "main.yml"), aliases: false
@@ -2335,6 +2387,7 @@ def exercise_jellyfin_library_rename_identity_refresh(failures)
     "Refresh Jellyfin managed library targets after renames",
     "Refuse unsafe refreshed Jellyfin managed library identity",
     "Revalidate complete Jellyfin library inventory after renames",
+    "Create absent Jellyfin managed libraries",
     "Remove extra paths from Jellyfin managed libraries",
     "Repair Jellyfin managed library options"
   ]
@@ -2349,6 +2402,7 @@ def exercise_jellyfin_library_rename_identity_refresh(failures)
   )
   old_id = "1" * 32
   new_id = "2" * 32
+  shows_id = "3" * 32
   old_library = {
     "Name" => "Movies Drifted", "ItemId" => old_id, "CollectionType" => "movies",
     "Locations" => ["/media/Movies"],
@@ -2359,6 +2413,13 @@ def exercise_jellyfin_library_rename_identity_refresh(failures)
   new_library = Marshal.load(Marshal.dump(old_library)).merge(
     "Name" => "Movies", "ItemId" => new_id
   )
+  shows_library = {
+    "Name" => "Shows", "ItemId" => shows_id, "CollectionType" => "tvshows",
+    "Locations" => ["/media/Series"],
+    "LibraryOptions" => {
+      "PathInfos" => [{ "Path" => "/media/Series" }], "EnableRealtimeMonitor" => false
+    }
+  }
   state = { renamed: false, observations: 0, refreshed_libraries: nil }
   responder = lambda do |request|
     uri = URI("http://fixture#{request.fetch('target')}")
@@ -2368,11 +2429,12 @@ def exercise_jellyfin_library_rename_identity_refresh(failures)
       [204, nil]
     when ["GET", "/Library/VirtualFolders"]
       state[:observations] += 1
-      observed = state[:refreshed_libraries] || [new_library]
-      [200, state[:observations] == 1 ? [old_library] : observed]
+      observed = state[:refreshed_libraries] || [new_library, shows_library]
+      [200, state[:observations] == 1 ? [old_library, shows_library] : observed]
     when ["POST", "/Library/VirtualFolders/LibraryOptions"]
-      if request.dig("json", "Id") == new_id
-        new_library["LibraryOptions"] = request.fetch("json").fetch("LibraryOptions")
+      repaired = { new_id => new_library, shows_id => shows_library }[request.dig("json", "Id")]
+      if repaired
+        repaired["LibraryOptions"] = request.fetch("json").fetch("LibraryOptions")
         [204, nil]
       else
         [404, {}]
@@ -2386,9 +2448,10 @@ def exercise_jellyfin_library_rename_identity_refresh(failures)
       "jellyfin_api" => "http://127.0.0.1:#{port}",
       "jellyfin_client_header" => "MediaBrowser Fixture",
       "jellyfin_reconcile_token" => "admin-token",
-      "jellyfin_libraries_before" => { "json" => [old_library] },
+      "jellyfin_libraries_before" => { "json" => [old_library, shows_library] },
       "jellyfin_libraries" => [
-        { "name" => "Movies", "collection_type" => "movies", "path" => "/media/Movies" }
+        { "name" => "Movies", "collection_type" => "movies", "path" => "/media/Movies" },
+        { "name" => "Shows", "collection_type" => "tvshows", "path" => "/media/Series" }
       ],
       "jellyfin_library_options" => { "EnableRealtimeMonitor" => true }
     }
@@ -2399,7 +2462,11 @@ def exercise_jellyfin_library_rename_identity_refresh(failures)
       request.dig("json", "Id") if
         request["method"] == "POST" && request["target"] == "/Library/VirtualFolders/LibraryOptions"
     end
-    failures << "Jellyfin renamed-library repair reused its stale ItemId" unless option_ids == [new_id]
+    failures << "Jellyfin renamed/skipped target rebuilding used wrong ItemIds" unless
+      option_ids == [new_id, shows_id]
+    failures << "Jellyfin mixed renamed/skipped inventory recreated an existing library" if
+      requests.any? { |request| request["method"] == "POST" &&
+        URI("http://fixture#{request.fetch('target')}").path == "/Library/VirtualFolders" }
     failures << "Jellyfin renamed-library identity was not polled to completion" unless
       state[:renamed] && state[:observations] >= 2
 
@@ -2452,7 +2519,7 @@ def exercise_jellyfin_library_rename_identity_refresh(failures)
       state.update(
         renamed: false,
         observations: 0,
-        refreshed_libraries: [drifted_target, unsafe_library]
+        refreshed_libraries: [drifted_target, shows_library, unsafe_library]
       )
       request_boundary = requests.length
       unsafe_stdout, unsafe_stderr, unsafe_status = run_playbook(unsafe_tasks, variables)
@@ -2558,6 +2625,8 @@ if ARGV.empty?
     exercise_jellyfin_primary_preflight(failures) if
       selected_probes.intersect?(%w[all jellyfin_identity])
     exercise_jellyfin_extra_path_recovery(failures) if
+      selected_probes.intersect?(%w[all jellyfin_libraries])
+    exercise_jellyfin_library_inventory_global_gate(failures) if
       selected_probes.intersect?(%w[all jellyfin_libraries])
     exercise_jellyfin_library_rename_identity_refresh(failures) if
       selected_probes.intersect?(%w[all jellyfin_libraries])
