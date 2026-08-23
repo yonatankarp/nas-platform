@@ -35,6 +35,9 @@
         item.LibraryOptions.PathInfos | map(attribute='Path') |
         map('regex_replace', '/+$', '') | unique | list | length
       - >-
+        item.Locations | sort ==
+        item.LibraryOptions.PathInfos | map(attribute='Path') | sort
+      - >-
         item.Locations | map('regex_replace', '/+$', '') | sort ==
         item.LibraryOptions.PathInfos | map(attribute='Path') |
         map('regex_replace', '/+$', '') | sort

@@ -2429,6 +2429,11 @@ def exercise_jellyfin_library_rename_identity_refresh(failures)
         "Name" => "Unmanaged", "ItemId" => "3" * 32, "CollectionType" => "books",
         "Locations" => ["/media/Unmanaged"],
         "LibraryOptions" => { "PathInfos" => [{ "Path" => "/media/Different" }] }
+      },
+      "raw trailing-slash representation mismatch" => {
+        "Name" => "Unmanaged", "ItemId" => "3" * 32, "CollectionType" => "books",
+        "Locations" => ["/media/Unmanaged"],
+        "LibraryOptions" => { "PathInfos" => [{ "Path" => "/media/Unmanaged/" }] }
       }
     }
     unsafe_tasks = Marshal.load(Marshal.dump(tasks))
