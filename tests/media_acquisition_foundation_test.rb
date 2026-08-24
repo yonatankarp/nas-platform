@@ -219,6 +219,11 @@ end
 failures = []
 catalog, catalog_load_problems = strict_yaml_file(CATALOG_PATH)
 catalog_load_problems.each { |problem| failures << "config/media-acquisition.yml #{problem}" }
+if catalog && !catalog.is_a?(Hash)
+  failures.concat(catalog_contract_problems(catalog))
+  failures << "config/media-acquisition.yml must be a mapping"
+  catalog = nil
+end
 if catalog
   failures.concat(catalog_contract_problems(catalog))
 
@@ -264,7 +269,7 @@ if manifest
 
   actual_ports = implemented_ports(manifest)
   failures << "canonical Compose ports changed without catalog collision review" unless
-    actual_ports == EXPECTED_IMPLEMENTED_PORTS
+    actual_ports.sort == EXPECTED_IMPLEMENTED_PORTS.sort
   existing = actual_ports.map do |_project, _container, bind_address, host_port, _container_port, protocol|
     { "protocol" => protocol, "bind_address" => bind_address, "host_port" => host_port }
   end

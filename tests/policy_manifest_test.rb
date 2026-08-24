@@ -37,6 +37,23 @@ rescue ArgumentError
   nil
 end
 
+output, succeeded = run_policy(["tests/media_acquisition_foundation_test.rb"]) do |root|
+  File.write(File.join(root, "config", "media-acquisition.yml"), "---\n[]\n")
+end
+failures << "non-mapping acquisition catalog unexpectedly passed" if succeeded
+unless output.include?("config/media-acquisition.yml must be a mapping")
+  failures << "non-mapping acquisition catalog omitted controlled shape diagnostic"
+end
+failures << "non-mapping acquisition catalog emitted a Ruby stack trace" if
+  output.match?(/\.rb:\d+:in [`']/)
+
+output, succeeded = run_policy(["tests/media_acquisition_foundation_test.rb"]) do |root|
+  mutate_manifest(root) { |document| document.fetch("services").reverse! }
+end
+unless succeeded
+  failures << "manifest reorder changed acquisition publication policy: #{output.lines.first&.strip}"
+end
+
 expect_failure(failures, "recreated retired role",
                "retired role directory must be absent") do |root|
   path = File.join(root, "roles", retired_token, "tasks", "main.yml")
