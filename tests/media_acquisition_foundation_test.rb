@@ -219,7 +219,7 @@ end
 failures = []
 catalog, catalog_load_problems = strict_yaml_file(CATALOG_PATH)
 catalog_load_problems.each { |problem| failures << "config/media-acquisition.yml #{problem}" }
-if catalog && !catalog.is_a?(Hash)
+if catalog_load_problems.empty? && !catalog.is_a?(Hash)
   failures.concat(catalog_contract_problems(catalog))
   failures << "config/media-acquisition.yml must be a mapping"
   catalog = nil

@@ -37,15 +37,21 @@ rescue ArgumentError
   nil
 end
 
-output, succeeded = run_policy(["tests/media_acquisition_foundation_test.rb"]) do |root|
-  File.write(File.join(root, "config", "media-acquisition.yml"), "---\n[]\n")
+{
+  "sequence" => "---\n[]\n",
+  "null" => "---\nnull\n",
+  "false" => "---\nfalse\n"
+}.each do |label, document|
+  output, succeeded = run_policy(["tests/media_acquisition_foundation_test.rb"]) do |root|
+    File.write(File.join(root, "config", "media-acquisition.yml"), document)
+  end
+  failures << "#{label} acquisition catalog unexpectedly passed" if succeeded
+  unless output.include?("config/media-acquisition.yml must be a mapping")
+    failures << "#{label} acquisition catalog omitted controlled shape diagnostic"
+  end
+  failures << "#{label} acquisition catalog emitted a Ruby stack trace" if
+    output.match?(/\.rb:\d+:in [`']/)
 end
-failures << "non-mapping acquisition catalog unexpectedly passed" if succeeded
-unless output.include?("config/media-acquisition.yml must be a mapping")
-  failures << "non-mapping acquisition catalog omitted controlled shape diagnostic"
-end
-failures << "non-mapping acquisition catalog emitted a Ruby stack trace" if
-  output.match?(/\.rb:\d+:in [`']/)
 
 output, succeeded = run_policy(["tests/media_acquisition_foundation_test.rb"]) do |root|
   mutate_manifest(root) { |document| document.fetch("services").reverse! }
