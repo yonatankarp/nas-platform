@@ -1079,6 +1079,22 @@ expect_failure(failures, "Immich classifier controller validation removed",
   ))
 end
 
+expect_failure(failures, "acquisition catalog controller validation moved after parsing",
+               "controller inputs must validate the required acquisition catalog before parsing inputs") do |root|
+  path = File.join(root, "roles", "deployment_bundle", "tasks", "inputs.yml")
+  tasks = YAML.safe_load_file(path)
+  validation_index = tasks.index do |task|
+    task.dig("vars", "deployment_controller_input_path") ==
+      "{{ playbook_dir }}/config/media-acquisition.yml"
+  end
+  validation = tasks.delete_at(validation_index)
+  parse_index = tasks.index do |task|
+    task["name"] == "Resolve implemented services from the validated controller manifest"
+  end
+  tasks.insert(parse_index + 1, validation)
+  File.write(path, YAML.dump(tasks))
+end
+
 expect_failure(failures, "Immich classifier release copy removed",
                "deployment bundle must package the exact Immich classifier with mode 0644") do |root|
   path = File.join(root, "roles", "deployment_bundle", "tasks", "main.yml")
@@ -1086,6 +1102,26 @@ expect_failure(failures, "Immich classifier release copy removed",
   tasks.reject! do |task|
     task["name"] == "Copy the tracked Immich restore classifier from the controller"
   end
+  File.write(path, YAML.dump(tasks))
+end
+
+expect_failure(failures, "acquisition catalog release destination changed",
+               "deployment bundle must stage the exact acquisition catalog bytes with mode 0644") do |root|
+  path = File.join(root, "roles", "deployment_bundle", "tasks", "main.yml")
+  File.write(path, File.read(path).gsub(
+    "{{ deployment_bundle_staging_dir }}/config/media-acquisition.yml",
+    "{{ deployment_bundle_staging_dir }}/media-acquisition.yml"
+  ))
+end
+
+expect_failure(failures, "acquisition catalog release mode changed",
+               "deployment bundle must stage the exact acquisition catalog bytes with mode 0644") do |root|
+  path = File.join(root, "roles", "deployment_bundle", "tasks", "main.yml")
+  tasks = YAML.safe_load_file(path)
+  copy = tasks.find do |task|
+    task["name"] == "Copy the media acquisition catalog from the controller"
+  end
+  copy.fetch("ansible.builtin.copy")["mode"] = "0600"
   File.write(path, YAML.dump(tasks))
 end
 
@@ -1097,12 +1133,27 @@ expect_failure(failures, "Immich classifier manifest integrity removed",
   ))
 end
 
+expect_failure(failures, "acquisition catalog manifest checksum removed",
+               "deployment manifest must bind the exact acquisition catalog path, mode, and checksum") do |root|
+  path = File.join(root, "roles", "deployment_bundle", "templates", "manifest.yml.j2")
+  File.write(path, File.read(path).gsub(
+    "lookup('file', playbook_dir ~ '/config/media-acquisition.yml', rstrip=false)",
+    "'unbound-catalog'"
+  ))
+end
+
 expect_failure(failures, "Immich classifier manifest verifier removed",
                "deployment manifest verifier must reproduce runtime helper integrity") do |root|
   path = File.join(root, "tests", "verify_deployment_manifest.rb")
   File.write(path, File.read(path).gsub(
     '"immich" => ["classify_restore.py"]', '"immich" => []'
   ))
+end
+
+expect_failure(failures, "acquisition staged-byte verification removed",
+               "deployment manifest verifier must require the exact catalog digest and detect staged-byte mutation") do |root|
+  path = File.join(root, "tests", "verify_deployment_manifest.rb")
+  File.write(path, File.read(path).gsub("File.dirname(manifest_path)", "repository_root"))
 end
 
 expect_failure(failures, "deployment sha unquoted",

@@ -183,6 +183,21 @@ check(failures, inputs_body.include?("services/manifest.yml") &&
 check(failures, inputs_body.include?("services/dozzle/alert_relay.py") &&
                 inputs_body.include?("services/immich/classify_restore.py"),
       "controller inputs must validate every tracked runtime helper")
+input_tasks = flatten_tasks(YAML.safe_load(inputs_body))
+catalog_validation_index = input_tasks.index do |task|
+  task.dig("vars", "deployment_controller_input_path") ==
+    "{{ playbook_dir }}/config/media-acquisition.yml"
+end
+manifest_parse_index = input_tasks.index do |task|
+  task["name"] == "Resolve implemented services from the validated controller manifest"
+end
+catalog_validation = catalog_validation_index && input_tasks[catalog_validation_index]
+check(failures,
+      !catalog_validation.nil? &&
+        catalog_validation["ansible.builtin.include_tasks"] == "controller_input.yml" &&
+        catalog_validation.dig("vars", "deployment_controller_input_allow_missing") == false &&
+        !manifest_parse_index.nil? && catalog_validation_index < manifest_parse_index,
+      "controller inputs must validate the required acquisition catalog before parsing inputs")
 
 target_preflight_index = Array(site_play["pre_tasks"]).index do |task|
   include_role = task["ansible.builtin.include_role"]
@@ -196,7 +211,6 @@ check(failures, !target_preflight_index.nil?,
 
 deployment_body = File.read(File.join(ROOT, "roles", "deployment_bundle", "tasks", "main.yml"))
 deployment_tasks = flatten_tasks(YAML.safe_load(deployment_body))
-input_tasks = flatten_tasks(YAML.safe_load(inputs_body))
 manifest_path_validation = input_tasks.find do |task|
   task["name"] == "Validate manifest service path components before interpolation"
 end
@@ -222,6 +236,26 @@ check(failures,
           "{{ deployment_bundle_staging_dir }}/services/immich/classify_restore.py" &&
         immich_helper_copy&.dig("ansible.builtin.copy", "mode") == "0644",
       "deployment bundle must package the exact Immich classifier with mode 0644")
+staging_directory_task = deployment_tasks.find do |task|
+  task["name"] == "Create the clean staging release"
+end
+staging_directories = Array(staging_directory_task&.dig("loop"))
+check(failures,
+      staging_directories.include?("{{ deployment_bundle_staging_dir }}/config") &&
+        staging_directory_task&.dig("ansible.builtin.file", "mode") == "0755",
+      "deployment bundle must create the acquisition catalog staging directory with mode 0755")
+catalog_copy = deployment_tasks.find do |task|
+  task["name"] == "Copy the media acquisition catalog from the controller"
+end
+check(failures,
+      catalog_copy&.dig("ansible.builtin.copy", "src") ==
+        "{{ playbook_dir }}/config/media-acquisition.yml" &&
+        catalog_copy&.dig("ansible.builtin.copy", "dest") ==
+          "{{ deployment_bundle_staging_dir }}/config/media-acquisition.yml" &&
+        catalog_copy&.dig("ansible.builtin.copy", "mode") == "0644" &&
+        catalog_copy&.dig("changed_when") == false &&
+        catalog_copy&.dig("when") == "not ansible_check_mode",
+      "deployment bundle must stage the exact acquisition catalog bytes with mode 0644")
 %w[
   Revalidate_before_removing_the_staging_release
   Revalidate_before_replacing_an_inactive_release
@@ -345,6 +379,17 @@ check(failures, deployment_manifest_template.include?("runtime_files:") &&
                 deployment_manifest_template.include?("runtime_file") &&
                 deployment_manifest_template.include?("hash('sha256')"),
       "deployment manifest must bind runtime helper paths, modes, and checksums")
+platform_inputs_index = deployment_manifest_template.index("platform_inputs:")
+services_index = deployment_manifest_template.index("services:")
+check(failures,
+      !platform_inputs_index.nil? && !services_index.nil? && platform_inputs_index < services_index &&
+        deployment_manifest_template.include?("- path: config/media-acquisition.yml") &&
+        deployment_manifest_template.include?("mode: \"0644\"") &&
+        deployment_manifest_template.include?(
+          "lookup('file', playbook_dir ~ '/config/media-acquisition.yml', rstrip=false)"
+        ) && deployment_manifest_template.include?("hash('sha256')") &&
+        deployment_manifest_template.include?("| to_json"),
+      "deployment manifest must bind the exact acquisition catalog path, mode, and checksum")
 compose_metadata_filter = File.read(
   File.join(ROOT, "filter_plugins", "compose_metadata.py")
 )
@@ -401,6 +446,13 @@ check(failures, manifest_verifier.include?("RUNTIME_FILES") &&
                 manifest_verifier.include?('"immich" => ["classify_restore.py"]') &&
                 manifest_verifier.include?('"mode" => "0644"'),
       "deployment manifest verifier must reproduce runtime helper integrity")
+check(failures,
+      manifest_verifier.include?('"platform_inputs"') &&
+        manifest_verifier.include?('"path" => "config/media-acquisition.yml"') &&
+        manifest_verifier.include?('"mode" => "0644"') &&
+        manifest_verifier.include?("Digest::SHA256.file") &&
+        manifest_verifier.include?("File.dirname(manifest_path)"),
+      "deployment manifest verifier must require the exact catalog digest and detect staged-byte mutation")
 
 immich_classifier = File.join(ROOT, "services", "immich", "classify_restore.py")
 check(failures, owned_file?(immich_classifier, File.join(ROOT, "services", "immich")) &&

@@ -116,7 +116,16 @@
     mode: "0755"
   loop:
     - "{{ deployment_bundle_staging_dir }}"
+    - "{{ deployment_bundle_staging_dir }}/config"
     - "{{ deployment_bundle_staging_dir }}/services"
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Copy the media acquisition catalog from the controller
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/config/media-acquisition.yml"
+    dest: "{{ deployment_bundle_staging_dir }}/config/media-acquisition.yml"
+    mode: "0644"
   changed_when: false
   when: not ansible_check_mode
 

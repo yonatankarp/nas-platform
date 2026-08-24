@@ -18,6 +18,13 @@ source_manifest = load_yaml.call(source_manifest_path)
 implemented = source_manifest.fetch("services").select do |service|
   %w[implemented accepted].include?(service.fetch("status"))
 end
+catalog_relative_path = "config/media-acquisition.yml"
+catalog_source_path = File.join(repository_root, catalog_relative_path)
+expected_platform_inputs = [{
+  "path" => "config/media-acquisition.yml",
+  "mode" => "0644",
+  "checksum_sha256" => Digest::SHA256.file(catalog_source_path).hexdigest
+}]
 
 override_changed_image = false
 override_added_image = false
@@ -64,10 +71,16 @@ expected = {
   "git_sha" => git_sha,
   "platform_kind" => platform_kind,
   "platform_compose_kind" => compose_kind,
+  "platform_inputs" => expected_platform_inputs,
   "services" => expected_services
 }
 actual = load_yaml.call(manifest_path)
 abort "deployment manifest differs from exact controller inputs" unless actual == expected
+staged_catalog_path = File.join(File.dirname(manifest_path), catalog_relative_path)
+abort "staged acquisition catalog is missing" unless File.file?(staged_catalog_path)
+staged_catalog_checksum = Digest::SHA256.file(staged_catalog_path).hexdigest
+abort "staged acquisition catalog differs from manifest checksum" unless
+  staged_catalog_checksum == expected_platform_inputs.first.fetch("checksum_sha256")
 if require_image_merge
   abort "platform fixture did not replace an image" unless override_changed_image
   abort "platform fixture did not add an image" unless override_added_image

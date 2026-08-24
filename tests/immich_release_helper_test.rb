@@ -75,6 +75,11 @@ Dir.mktmpdir("nas-platform-immich-release-helper-") do |temporary|
   FileUtils.mkdir_p(storage_root)
   FileUtils.mkdir_p(media_root)
   FileUtils.cp_r(File.join(ROOT, "services"), controller)
+  FileUtils.mkdir_p(File.join(controller, "config"))
+  FileUtils.cp(
+    File.join(ROOT, "config", "media-acquisition.yml"),
+    File.join(controller, "config", "media-acquisition.yml")
+  )
   run_command("git", "init", "-q", chdir: controller)
   run_command("git", "config", "user.name", "NAS platform test", chdir: controller)
   run_command("git", "config", "user.email", "test@example.invalid", chdir: controller)
@@ -110,6 +115,14 @@ Dir.mktmpdir("nas-platform-immich-release-helper-") do |temporary|
     File.realpath(current) == release_root
 
   manifest = YAML.safe_load_file(File.join(release_root, "manifest.yml"))
+  catalog_source = File.join(controller, "config", "media-acquisition.yml")
+  expected_platform_inputs = [{
+    "path" => "config/media-acquisition.yml",
+    "mode" => "0644",
+    "checksum_sha256" => Digest::SHA256.file(catalog_source).hexdigest
+  }]
+  fail_test("manifest omits exact platform input integrity") unless
+    manifest.fetch("platform_inputs") == expected_platform_inputs
   immich = manifest.fetch("services").find { |service| service.fetch("name") == "immich" }
   expected_runtime_files = [{
     "path" => "classify_restore.py",

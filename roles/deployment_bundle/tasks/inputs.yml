@@ -5,6 +5,12 @@
     deployment_controller_input_path: "{{ playbook_dir }}/services/manifest.yml"
     deployment_controller_input_allow_missing: false
 
+- name: Validate the media acquisition catalog before parsing inputs
+  ansible.builtin.include_tasks: controller_input.yml
+  vars:
+    deployment_controller_input_path: "{{ playbook_dir }}/config/media-acquisition.yml"
+    deployment_controller_input_allow_missing: false
+
 - name: Resolve implemented services from the validated controller manifest
   ansible.builtin.set_fact:
     deployment_bundle_services: >-

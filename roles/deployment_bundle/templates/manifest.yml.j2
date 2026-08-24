@@ -2,6 +2,10 @@
 git_sha: {{ platform_release_id | to_json }}
 platform_kind: {{ platform_kind | to_json }}
 platform_compose_kind: {{ platform_compose_kind | to_json }}
+platform_inputs:
+  - path: config/media-acquisition.yml
+    mode: "0644"
+    checksum_sha256: {{ (lookup('file', playbook_dir ~ '/config/media-acquisition.yml', rstrip=false) | hash('sha256')) | to_json }}
 services:
 {% for service in deployment_bundle_services %}
   - name: {{ service.name | to_json }}
