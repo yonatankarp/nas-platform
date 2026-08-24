@@ -157,6 +157,14 @@ def deep_copy(value)
   Marshal.load(Marshal.dump(value))
 end
 
+def flatten_tasks(tasks)
+  Array(tasks).flat_map do |task|
+    next [] unless task.is_a?(Hash)
+
+    [task] + %w[block rescue always].flat_map { |section| flatten_tasks(task[section]) }
+  end
+end
+
 def yaml_structure_problems(source)
   stream = Psych.parse_stream(source)
   problems = []
@@ -377,6 +385,7 @@ failures << "media control network identity must be derived from the project nam
   shared_vars["platform_media_control_network"] == expected_network_expression
 
 host_prep = YAML.safe_load_file(File.join(ROOT, "roles", "host_prep", "tasks", "main.yml"))
+all_host_prep_tasks = flatten_tasks(host_prep)
 network_task = host_prep.find do |task|
   task["name"] == "Create the external media control network"
 end
@@ -398,9 +407,11 @@ network_index = host_prep.index(network_task)
 failures << "media control network creation must follow target containment" unless
   containment_index && network_index && containment_index < network_index
 failures << "host preparation must never delete Docker networks" if
-  host_prep.any? { |task| task.dig("community.docker.docker_network", "state") == "absent" }
+  all_host_prep_tasks.any? do |task|
+    task.dig("community.docker.docker_network", "state") == "absent"
+  end
 failures << "host preparation must never recursively change storage ownership" if
-  host_prep.any? { |task| task.dig("ansible.builtin.file", "recurse") == true }
+  all_host_prep_tasks.any? { |task| task.dig("ansible.builtin.file", "recurse") == true }
 
 %w[audiobookshelf jellyfin].each do |reader|
   compose = YAML.safe_load_file(File.join(ROOT, "services", reader, "compose.yml"), aliases: true)
@@ -416,9 +427,16 @@ failures << "host preparation must never recursively change storage ownership" i
     "${JELLYFIN_MEDIA_PATH:?}:/media:ro"
   failures << "#{reader} media mount must remain read-only" unless
     compose.dig("services", reader, "volumes").include?(read_only_mount)
-  env_lines = File.readlines(File.join(ROOT, "roles", reader, "templates", "env.j2"), chomp: true)
+  environment_assignments = File.readlines(
+    File.join(ROOT, "roles", reader, "templates", "env.j2")
+  ).filter_map do |line|
+    name, _separator, value = line.strip.partition("=")
+    [name, value] if line.strip.match?(/\A[A-Z][A-Z0-9_]*=/)
+  end
   failures << "#{reader} must export the derived media control network exactly once" unless
-    env_lines.count { |line| line == "PLATFORM_MEDIA_NETWORK={{ platform_media_control_network }}" } == 1
+    environment_assignments.select { |name, _value| name == "PLATFORM_MEDIA_NETWORK" } == [
+      ["PLATFORM_MEDIA_NETWORK", "{{ platform_media_control_network }}"]
+    ]
   options = YAML.safe_load_file(
     File.join(ROOT, "roles", reader, "meta", "argument_specs.yml")
   ).dig("argument_specs", "main", "options")

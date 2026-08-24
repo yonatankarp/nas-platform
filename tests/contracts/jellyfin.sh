@@ -53,9 +53,12 @@ compose_path = File.join(root, "services", "jellyfin", "compose.yml")
 compose = YAML.safe_load_file(compose_path, aliases: true)
 service = compose.fetch("services").fetch("jellyfin")
 argument_specs = YAML.safe_load_file(File.join(root, "roles", "jellyfin", "meta", "argument_specs.yml"))
-environment_lines = File.readlines(
-  File.join(root, "roles", "jellyfin", "templates", "env.j2"), chomp: true
-)
+environment_assignments = File.readlines(
+  File.join(root, "roles", "jellyfin", "templates", "env.j2")
+).filter_map do |line|
+  name, _separator, value = line.strip.partition("=")
+  [name, value] if line.strip.match?(/\A[A-Z][A-Z0-9_]*=/)
+end
 
 def refuse(message)
   abort "Jellyfin contract failed: #{message}"
@@ -78,7 +81,9 @@ refuse("media control network membership differs") unless
     "media-control" => { "external" => true, "name" => "${PLATFORM_MEDIA_NETWORK:?}" }
   }
 refuse("media network environment is absent") unless
-  environment_lines.count { |line| line == "PLATFORM_MEDIA_NETWORK={{ platform_media_control_network }}" } == 1
+  environment_assignments.select { |name, _value| name == "PLATFORM_MEDIA_NETWORK" } == [
+    ["PLATFORM_MEDIA_NETWORK", "{{ platform_media_control_network }}"]
+  ]
 refuse("media control network argument validation is absent") unless
   argument_specs.dig("argument_specs", "main", "options", "platform_media_control_network") == {
     "type" => "str", "required" => true

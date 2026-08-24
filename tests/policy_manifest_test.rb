@@ -186,6 +186,22 @@ expect_acquisition_failure.call(
   end
 end
 expect_acquisition_failure.call(
+  "nested media control network deletion",
+  "host preparation must never delete Docker networks"
+) do |root|
+  mutate_yaml_file(root, "roles/host_prep/tasks/main.yml") do |tasks|
+    tasks << {
+      "name" => "Nested media network deletion",
+      "block" => [{
+        "name" => "Delete a nested media network",
+        "community.docker.docker_network" => {
+          "name" => "media-control", "state" => "absent"
+        }
+      }]
+    }
+  end
+end
+expect_acquisition_failure.call(
   "recursive media state ownership",
   "host preparation must never recursively change storage ownership"
 ) do |root|
@@ -193,6 +209,30 @@ expect_acquisition_failure.call(
     task = tasks.find { |entry| entry["name"] == "Create service state directories" }
     task.fetch("ansible.builtin.file")["recurse"] = true
   end
+end
+expect_acquisition_failure.call(
+  "nested recursive media state ownership",
+  "host preparation must never recursively change storage ownership"
+) do |root|
+  mutate_yaml_file(root, "roles/host_prep/tasks/main.yml") do |tasks|
+    tasks << {
+      "name" => "Nested recursive ownership",
+      "rescue" => [{
+        "name" => "Recursively claim nested media state",
+        "ansible.builtin.file" => {
+          "path" => "{{ nas_media_root }}/Media", "recurse" => true
+        }
+      }]
+    }
+  end
+end
+
+expect_acquisition_failure.call(
+  "conflicting Jellyfin media network environment",
+  "jellyfin must export the derived media control network exactly once"
+) do |root|
+  path = File.join(root, "roles", "jellyfin", "templates", "env.j2")
+  File.open(path, "a") { |file| file.puts("PLATFORM_MEDIA_NETWORK=wrong-network") }
 end
 
 %w[audiobookshelf jellyfin].each do |reader|
