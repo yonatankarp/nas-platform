@@ -661,6 +661,34 @@ condition: recover it or resolve the migration source before proceeding.
 that will not match existing applications, databases, agents, or integrations;
 do not run the generator.
 
+### Reviewed encrypted acquisition-credential migration
+
+The repository vault's retired credential field is migrated only by the
+temporary, reviewed one-use utility. The utility accepts the exact repository
+vault and an absolute protected password-file path, decrypts only in process,
+validates the complete document, and atomically publishes ciphertext. Do not
+substitute an encrypted editor, a shell pipeline, or a plaintext temporary file.
+
+From the repository root, first run the synthetic behavior audit. Then run the
+same audited utility against the encrypted repository vault. Both commands use
+Ansible's Python interpreter:
+
+```sh
+ansible_python=$(
+  ansible-playbook --version |
+    sed -n 's/^  python version = .* (\(\/[^()]*\))$/\1/p'
+)
+[ -x "$ansible_python" ]
+PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/media_acquisition_vault_migration_test.py
+PYTHONDONTWRITEBYTECODE=1 "$ansible_python" scripts/migrate-media-acquisition-vault.py \
+  --vault inventory/group_vars/all/vault.yml \
+  --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE"
+```
+
+Success is silent. Stop on any diagnostic. Review only the opaque ciphertext
+change, run the redacted vault contract and the complete policy suite, and
+remove the one-use utility and its audit after the migration commit is secured.
+
 ### Vault contract inventory
 
 Use `inventory/group_vars/all/vault.yml.example` as the schema, never as a

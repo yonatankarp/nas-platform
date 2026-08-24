@@ -181,7 +181,11 @@ unless existing_migration_sources.empty?
   validation_line = 'PYTHONDONTWRITEBYTECODE=1 "$ansible_python" ' \
                     'tests/media_acquisition_vault_migration_test.py'
   migration_audit_complete = existing_migration_sources == migration_sources &&
-                             policy_runner.lines.map(&:strip).include?(validation_line)
+                             policy_runner.lines.map(&:strip).include?(validation_line) &&
+                             migration_sources.all? do |relative_path|
+                               File.binread(File.join(ROOT, relative_path))
+                                 .downcase.include?(retired_token)
+                             end
   check(failures, migration_audit_complete,
         "the temporary encrypted-vault migration audit is incomplete")
 end
