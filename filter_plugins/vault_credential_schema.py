@@ -22,8 +22,8 @@ comparands, and they stay out of the output.
 
 Semantics are matched to Ansible's Jinja tests, verified on ansible-core 2.21.3:
 `is match` anchors at the start only, so patterns needing a full match carry
-their own `$`; `is search` is unanchored; `| length > 0` accepted whitespace, so
-these rules reject only a zero length.
+their own end anchor; `is search` is unanchored; `| length > 0` accepted
+whitespace, so these rules reject only a zero length.
 
 **The rules here are deliberately no stricter than the conditions they replace,
 including where those conditions were accidentally lax.** Role argument
