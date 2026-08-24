@@ -24,19 +24,19 @@ vault_jellyfin_opensubtitles_password: replace-with-opensubtitles-password
 vault_komga_admin_email: {{ komga_admin_email }}
 vault_komga_admin_password: {{ komga_admin_password }}
 
-vault_arr_radarr_api_key: {{ arr_radarr_api_key }}
+vault_arr_radarr_api_key: {{ arr_radarr_api_key | to_json }}
 vault_arr_radarr_admin_username: {{ arr_radarr_admin_username }}
 vault_arr_radarr_admin_password: {{ arr_radarr_admin_password }}
-vault_arr_sonarr_api_key: {{ arr_sonarr_api_key }}
+vault_arr_sonarr_api_key: {{ arr_sonarr_api_key | to_json }}
 vault_arr_sonarr_admin_username: {{ arr_sonarr_admin_username }}
 vault_arr_sonarr_admin_password: {{ arr_sonarr_admin_password }}
-vault_arr_prowlarr_api_key: {{ arr_prowlarr_api_key }}
+vault_arr_prowlarr_api_key: {{ arr_prowlarr_api_key | to_json }}
 vault_arr_prowlarr_admin_username: {{ arr_prowlarr_admin_username }}
 vault_arr_prowlarr_admin_password: {{ arr_prowlarr_admin_password }}
-vault_arr_bazarr_api_key: {{ arr_bazarr_api_key }}
+vault_arr_bazarr_api_key: {{ arr_bazarr_api_key | to_json }}
 vault_arr_bazarr_admin_username: {{ arr_bazarr_admin_username }}
 vault_arr_bazarr_admin_password: {{ arr_bazarr_admin_password }}
-vault_downloaders_sabnzbd_api_key: {{ downloaders_sabnzbd_api_key }}
+vault_downloaders_sabnzbd_api_key: {{ downloaders_sabnzbd_api_key | to_json }}
 vault_downloaders_sabnzbd_admin_username: {{ downloaders_sabnzbd_admin_username }}
 vault_downloaders_sabnzbd_admin_password: {{ downloaders_sabnzbd_admin_password }}
 

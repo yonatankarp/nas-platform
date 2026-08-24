@@ -51,7 +51,7 @@ import re
 BCRYPT_HASH = re.compile(r"^\$2[aby]\$[0-9]{2}\$[./A-Za-z0-9]{53}$")
 DATABASE_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
 EMAIL = re.compile(r"^[^@ ]+@[^@ ]+$")
-HEX_32 = re.compile(r"^[0-9a-f]{32}$")
+HEX_32 = re.compile(r"^[0-9a-f]{32}\Z")
 NTFY_TOKEN = re.compile(r"^tk_[a-z0-9]{29}$")
 SSH_ED25519_PUBLIC_KEY = re.compile(r"^ssh-ed25519 [A-Za-z0-9+/]+={0,3}$")
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}"

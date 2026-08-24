@@ -14,9 +14,9 @@ the tempting mistake in this port is to tighten a rule while moving it:
 * `| length > 0` accepted a whitespace-only value, so whitespace is still
   accepted. Rejecting it would be a new rule, not a migrated one.
 * `is match` anchors at the start only, so every pattern needing a full match
-  carries its own `$`. A pattern that lost that `$` would accept a valid prefix
-  followed by anything, which is exactly how a truncated bcrypt hash or a token
-  with trailing junk would get through.
+  carries its own end anchor. API keys use `\\Z` because `$` also matches just
+  before a terminal newline; losing an end anchor would accept a valid prefix
+  followed by junk.
 * `LEGACY_ACCEPTED` carries the non-string values the original conditions let
   through, measured by running the role's old and new tasks over the same
   documents. They are latent gaps, not endorsements. They are pinned because a
@@ -26,7 +26,11 @@ the tempting mistake in this port is to tighten a rule while moving it:
 """
 
 from pathlib import Path
+import json
+import re
+import subprocess
 import sys
+import tempfile
 import unittest
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -40,6 +44,7 @@ from vault_credential_schema import (  # noqa: E402
     DISTINCT_KEY_GROUPS,
     EMAIL,
     EXACT,
+    HEX_32,
     JELLYFIN_ADMIN_USERNAME,
     NONEMPTY,
     NOT_PLACEHOLDER,
@@ -54,6 +59,8 @@ from vault_credential_schema import (  # noqa: E402
 )
 
 ROLE_TASKS = REPOSITORY_ROOT / "roles" / "vault_contract" / "tasks" / "main.yml"
+SECRET_GENERATOR = REPOSITORY_ROOT / "generate-secrets.yml"
+VAULT_TEMPLATE = REPOSITORY_ROOT / "templates" / "vault-plain.yml.j2"
 
 HASH = "$2b$10$" + "A" * 53
 UUID_VALUE = "00000000-0000-4000-a000-000000000000"
@@ -61,8 +68,8 @@ AGENT_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA=="
 HUB_KEY = f"-----{OPENSSH_PRIVATE_KEY_MARKER}-----\nAAAA\n"
 
 # One accepted value per pattern, and one rejected value that differs from it
-# only after the point the pattern's `$` anchors. Together they are the anchoring
-# guard: without the `$` the second value is accepted.
+# only after the point the pattern's end anchor. Together they are the anchoring
+# guard: without that anchor the second value is accepted.
 PATTERN_SAMPLES = {
     BCRYPT_HASH.pattern: (HASH, HASH + "x"),
     DATABASE_IDENTIFIER.pattern: ("platform_db", "platform_db;drop"),
@@ -70,7 +77,7 @@ PATTERN_SAMPLES = {
     NTFY_TOKEN.pattern: ("tk_" + "a" * 29, "tk_" + "a" * 29 + "x"),
     SSH_ED25519_PUBLIC_KEY.pattern: (AGENT_KEY, AGENT_KEY + " comment"),
     UUID.pattern: (UUID_VALUE, UUID_VALUE + "-extra"),
-    r"^[0-9a-f]{32}$": ("0" * 32, "0" * 32 + "x"),
+    HEX_32.pattern: ("0" * 32, "0" * 32 + "x"),
 }
 
 # The non-string values the original conditions accepted, and the ones they
@@ -115,7 +122,7 @@ MALFORMED = {
     NTFY_TOKEN.pattern: "tk_" + "A" * 29,
     SSH_ED25519_PUBLIC_KEY.pattern: "ssh-rsa AAAAC3NzaC1lZDI1NTE5AAAAIA==",
     UUID.pattern: "00000000-0000-9000-a000-000000000000",
-    r"^[0-9a-f]{32}$": "A" * 32,
+    HEX_32.pattern: "A" * 32,
 }
 
 FOUNDATION_KEYS = (
@@ -193,6 +200,22 @@ def keys_named(errors):
     return {error.split(":", 1)[0] for error in errors}
 
 
+def run_ansible_playbook(document):
+    with tempfile.TemporaryDirectory(prefix="vault-credential-schema-") as directory:
+        directory = Path(directory)
+        if callable(document):
+            document = document(directory)
+        playbook = directory / "playbook.yml"
+        playbook.write_text(json.dumps(document))
+        return subprocess.run(
+            ["ansible-playbook", "-i", "localhost,", "-c", "local", str(playbook)],
+            cwd=REPOSITORY_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+
 class VaultCredentialSchemaTest(unittest.TestCase):
     def test_foundation_credentials_are_present_in_the_exact_contract_order(self):
         for key in FOUNDATION_KEYS:
@@ -214,6 +237,101 @@ class VaultCredentialSchemaTest(unittest.TestCase):
             for malformed in ("a" * 31, "A" * 32, "g" * 32):
                 with self.subTest(f"{key}={malformed[:4]}"):
                     self.assertIn(key, keys_named(errors_for(**{key: malformed})))
+
+    def test_foundation_api_keys_reject_a_terminal_newline(self):
+        malformed = "a" * 32 + "\n"
+        for key in FOUNDATION_API_KEYS:
+            with self.subTest(key):
+                self.assertIn(key, keys_named(errors_for(**{key: malformed})))
+
+    def test_generator_api_patterns_reject_a_terminal_newline_under_ansible(self):
+        source = SECRET_GENERATOR.read_text()
+        patterns = re.findall(
+            r"(?:arr_(?:radarr|sonarr|prowlarr|bazarr)|downloaders_sabnzbd)_api_key "
+            r"is match\('([^']+)'\)",
+            source,
+        )
+        self.assertEqual(len(patterns), 5)
+        result = run_ansible_playbook([
+            {
+                "name": "Reject a terminal newline with each generated API-key pattern",
+                "hosts": "localhost",
+                "gather_facts": False,
+                "vars": {
+                    "malformed_api_key": "a" * 32 + "\n",
+                    "foundation_api_patterns": patterns,
+                },
+                "tasks": [{
+                    "ansible.builtin.assert": {
+                        "that": ["malformed_api_key is not match(item)"],
+                        "quiet": True,
+                    },
+                    "loop": "{{ foundation_api_patterns }}",
+                    "no_log": True,
+                }],
+            }
+        ])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_rendered_foundation_api_keys_remain_yaml_strings(self):
+        template_lines = [
+            line for line in VAULT_TEMPLATE.read_text().splitlines()
+            if re.match(
+                r"vault_(?:arr_(?:radarr|sonarr|prowlarr|bazarr)|"
+                r"downloaders_sabnzbd)_api_key:",
+                line,
+            )
+        ]
+        self.assertEqual(len(template_lines), 5)
+        variables = {
+            key.removeprefix("vault_"): str(index) * 32
+            for index, key in enumerate(FOUNDATION_API_KEYS)
+        }
+
+        def rendering_playbook(directory):
+            source = directory / "foundation.yml.j2"
+            rendered = directory / "foundation.yml"
+            source.write_text("\n".join(template_lines) + "\n")
+            assertions = []
+            for key in FOUNDATION_API_KEYS:
+                variable = key.removeprefix("vault_")
+                assertions.extend([
+                    f"rendered_foundation.{key} is string",
+                    f"rendered_foundation.{key} == {variable}",
+                ])
+            return [{
+                "name": "Render and parse foundation API keys",
+                "hosts": "localhost",
+                "gather_facts": False,
+                "vars": variables,
+                "tasks": [
+                    {
+                        "ansible.builtin.template": {
+                            "src": str(source),
+                            "dest": str(rendered),
+                            "mode": "0600",
+                        },
+                        "no_log": True,
+                    },
+                    {
+                        "ansible.builtin.set_fact": {
+                            "rendered_foundation":
+                                f"{{{{ lookup('file', '{rendered}') | from_yaml }}}}",
+                        },
+                        "no_log": True,
+                    },
+                    {
+                        "ansible.builtin.assert": {
+                            "that": assertions,
+                            "quiet": True,
+                        },
+                        "no_log": True,
+                    },
+                ],
+            }]
+
+        result = run_ansible_playbook(rendering_playbook)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_foundation_usernames_and_passwords_have_only_the_nonempty_rule(self):
         keys = FOUNDATION_USERNAMES + FOUNDATION_PASSWORDS
