@@ -171,24 +171,12 @@ active_sources = if enumeration_status.success?
                  end
 active_sources.delete("inventory/group_vars/all/vault.yml")
 
-migration_sources = %w[
+retired_migration_sources = %w[
   scripts/migrate-media-acquisition-vault.py
   tests/media_acquisition_vault_migration_test.py
 ].freeze
-existing_migration_sources = migration_sources.select { |path| File.exist?(File.join(ROOT, path)) }
-migration_audit_complete = false
-unless existing_migration_sources.empty?
-  validation_line = 'PYTHONDONTWRITEBYTECODE=1 "$ansible_python" ' \
-                    'tests/media_acquisition_vault_migration_test.py'
-  migration_audit_complete = existing_migration_sources == migration_sources &&
-                             policy_runner.lines.map(&:strip).include?(validation_line) &&
-                             migration_sources.all? do |relative_path|
-                               File.binread(File.join(ROOT, relative_path))
-                                 .downcase.include?(retired_token)
-                             end
-  check(failures, migration_audit_complete,
-        "the temporary encrypted-vault migration audit is incomplete")
-end
+check(failures, retired_migration_sources.none? { |path| File.exist?(File.join(ROOT, path)) },
+      "the temporary encrypted-vault migration audit is incomplete")
 
 active_sources.sort.each do |relative_path|
   components = relative_path.split("/")
@@ -219,8 +207,6 @@ active_sources.sort.each do |relative_path|
     end
   end
   next unless valid_source
-  next if migration_audit_complete && migration_sources.include?(relative_path)
-
   path = File.join(ROOT, relative_path)
 
   begin
