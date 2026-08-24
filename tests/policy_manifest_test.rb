@@ -76,6 +76,27 @@ mutate_compose = lambda do |root, relative_path, &mutation|
   mutation.call(document)
   File.write(path, YAML.dump(document))
 end
+require_valid_site_syntax = lambda do |root, label|
+  syntax_path = File.join(root, ".host-prep-mutation-syntax.yml")
+  File.write(syntax_path, <<~YAML)
+    ---
+    - name: Validate mutated host preparation syntax
+      hosts: localhost
+      gather_facts: false
+      roles:
+        - role: host_prep
+  YAML
+  begin
+    _stdout, stderr, status = capture3_without_git_routing(
+      "ansible-playbook", "-i", "localhost,", syntax_path, "--syntax-check", chdir: root
+    )
+  ensure
+    FileUtils.rm_f(syntax_path)
+  end
+  next if status.success?
+
+  raise "#{label} produced invalid Ansible syntax: #{stderr.lines.first&.strip}"
+end
 
 expect_acquisition_failure.call(
   "media acquisition recovery changed",
@@ -217,6 +238,10 @@ expect_acquisition_failure.call(
   mutate_yaml_file(root, "roles/host_prep/tasks/main.yml") do |tasks|
     tasks << {
       "name" => "Nested recursive ownership",
+      "block" => [{
+        "name" => "Exercise the guarded ownership block",
+        "ansible.builtin.debug" => { "msg" => "valid mutation fixture" }
+      }],
       "rescue" => [{
         "name" => "Recursively claim nested media state",
         "ansible.builtin.file" => {
@@ -225,6 +250,28 @@ expect_acquisition_failure.call(
       }]
     }
   end
+  require_valid_site_syntax.call(root, "nested recursive ownership")
+end
+expect_acquisition_failure.call(
+  "always-branch media control network deletion",
+  "host preparation must never delete Docker networks"
+) do |root|
+  mutate_yaml_file(root, "roles/host_prep/tasks/main.yml") do |tasks|
+    tasks << {
+      "name" => "Always delete a media network",
+      "block" => [{
+        "name" => "Exercise the guarded network block",
+        "ansible.builtin.debug" => { "msg" => "valid mutation fixture" }
+      }],
+      "always" => [{
+        "name" => "Delete a media network from always",
+        "community.docker.docker_network" => {
+          "name" => "media-control", "state" => "absent"
+        }
+      }]
+    }
+  end
+  require_valid_site_syntax.call(root, "always-branch network deletion")
 end
 
 expect_acquisition_failure.call(
