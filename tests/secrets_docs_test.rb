@@ -324,6 +324,12 @@ verify_tags = %w[
 check(failures,
       auto_deploy_section.include?("the installed\npoller cannot select a verification tag that exists only in the candidate until\nthat candidate has been activated"),
       "NAS automatic deployment guide must require manual verification for first foundation rollout")
+check(failures,
+      nas_guide.match?(/ordinary SMB users cannot access either.*Media\/\.acquisition.*Books\/\.acquisition/im),
+      "NAS guide must reserve acquisition ACL acceptance for both hidden trees")
+check(failures,
+      nas_guide.match?(/Docker Desktop cannot prove.*NAS ACL/im),
+      "NAS guide must not treat the Mac proof as NAS ACL evidence")
 
 required_auto_deploy_commands = {
   "anonymous controller clone" => [

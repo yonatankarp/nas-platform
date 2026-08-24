@@ -5,16 +5,20 @@ This path targets a fresh production installation. Complete the
 NAS, and confirm every required service is `implemented` or `accepted` in
 [`services/manifest.yml`](../services/manifest.yml) before installation. The
 active services are Audiobookshelf, Beszel, Dozzle, Immich, Jellyfin, Komga,
-ntfy, and Paperless-ngx. The retired media-manager cleanup checkpoint is
-complete and its repository declarations have been removed.
+ntfy, and Paperless-ngx. The production retirement checkpoint has passed and
+the retired metadata manager declarations have been removed from the repository.
 
 Commands are labelled **read-only**, **check mode**, or **changes production**.
 
-## Retired media-manager cleanup checkpoint
+## Retired metadata manager cleanup checkpoint
 
-The checkpoint is complete and the retired service declarations have been
-removed. This repository cleanup did not delete application state or media.
-Open Subtitles remains configured in Jellyfin until Bazarr is proven.
+Former metadata manager application state remains preserved outside repository
+management; the repository cleanup did not delete it or any media. Phase 0
+creates only the derived bridge network, classified acquisition/final paths,
+immutable contracts, generated vault keys, and CI scaffolding. All seven
+projects remain `planned`, both acquisition flags remain `false`, and no
+acquisition container or download starts. Open Subtitles remains configured in
+Jellyfin until Bazarr is proven in Phase 1.
 
 ## 1. Prepare the NAS and workstation
 
@@ -144,6 +148,13 @@ from the [Mac manual review](getting-started-mac.md#4-perform-the-manual-review)
 against the production deployment without exercising external integrations; for
 ntfy, use only an agreed disposable topic when verifying alerts from Beszel and
 Dozzle.
+
+Phase 0 also requires a NAS-only ACL acceptance check: using an ordinary SMB
+account, confirm that ordinary SMB users cannot access either
+`Media/.acquisition` or `Books/.acquisition`, while the intended service identity
+can traverse the required directories. Record only pass/fail and the tested
+identity class—never directory listings, ACL dumps containing private account
+details, or secrets. Docker Desktop cannot prove this NAS ACL boundary.
 
 The platform provisions three ntfy topics: severity first, then subject.
 

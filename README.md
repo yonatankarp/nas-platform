@@ -159,14 +159,22 @@ The complete bootstrap, status, manual retry, protected-log, ntfy, SSH, and
 disable/removal procedures are in the
 [physical NAS walkthrough](docs/getting-started-nas.md#automatic-deployment-from-the-nas).
 
-## Retired media-manager cleanup checkpoint
+## Media acquisition foundation
 
-The checkpoint is complete and the retired service declarations have been
-removed from this repository. The cleanup changed repository declarations only;
-it did not delete application state or media.
+The production retirement checkpoint has passed, and the retired metadata
+manager declarations have been removed from this repository. Former metadata
+manager application state is preserved outside repository management and was
+not deleted.
 
-Radarr, Sonarr, and Bazarr are not deployed by this release. Open Subtitles
-remains configured in Jellyfin until Bazarr is proven. See the
+Phase 0 creates only the derived `media-control` bridge network, acquisition
+and final directories, generated vault keys, immutable contracts, and CI
+scaffolding. The directories retain their declared `cache`, `user`, or
+`critical` recovery classes. All seven acquisition projects remain `planned`,
+and both enablement flags remain false. This phase does not start any
+acquisition container or download media.
+
+Open Subtitles remains configured in Jellyfin until Bazarr is proven in Phase 1.
+See the
 [physical NAS walkthrough](docs/getting-started-nas.md) before changing any
 media writer.
 

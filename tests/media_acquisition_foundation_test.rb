@@ -184,6 +184,22 @@ def catalog_contract_problems(catalog)
   catalog == EXPECTED ? [] : ["media acquisition catalog differs from the pinned inert contract"]
 end
 
+def jellyfin_defaults_contract_problems(defaults)
+  plugins = defaults.is_a?(Hash) ? defaults["jellyfin_plugins"] : nil
+  plugins.is_a?(Array) && plugins.include?("Open Subtitles") ? [] :
+    ["Jellyfin Open Subtitles must remain until Bazarr is proven in Phase 1"]
+end
+
+def planned_tree_problems(existing_paths)
+  expected_paths = EXPECTED_PROJECTS.flat_map do |project_name, project|
+    ["roles/#{project.fetch('role')}", "services/#{project_name}"]
+  end
+  (existing_paths & expected_paths).map do |path|
+    tree_kind = path.start_with?("roles/") ? "role" : "service"
+    "planned #{tree_kind} tree exists prematurely: #{path}"
+  end
+end
+
 def deep_copy(value)
   Marshal.load(Marshal.dump(value))
 end
@@ -361,13 +377,29 @@ if catalog
     failures << "planned host publications collide" if collides?(left, right)
   end
 
-  catalog.fetch("projects").each do |project_name, project|
-    role_path = File.join(ROOT, "roles", project.fetch("role"))
-    service_path = File.join(ROOT, "services", project_name)
-    failures << "planned role tree exists prematurely: #{role_path.delete_prefix("#{ROOT}/")}" if
-      path_entry_exists?(role_path)
-    failures << "planned service tree exists prematurely: #{service_path.delete_prefix("#{ROOT}/")}" if
-      path_entry_exists?(service_path)
+  planned_paths = catalog.fetch("projects").flat_map do |project_name, project|
+    ["roles/#{project.fetch('role')}", "services/#{project_name}"]
+  end
+  existing_planned_paths = planned_paths.select { |path| path_entry_exists?(File.join(ROOT, path)) }
+  failures.concat(planned_tree_problems(existing_planned_paths))
+
+  premature_tree_rejections = planned_tree_problems([planned_paths.first]).length
+  failures << "planned tree guard accepts a premature project directory" unless
+    premature_tree_rejections == 1
+end
+
+jellyfin_defaults_path = File.join(ROOT, "roles", "jellyfin", "defaults", "main.yml")
+jellyfin_defaults, jellyfin_defaults_problems = strict_yaml_file(jellyfin_defaults_path)
+jellyfin_defaults_problems.each do |problem|
+  failures << "roles/jellyfin/defaults/main.yml #{problem}"
+end
+if jellyfin_defaults_problems.empty?
+  failures.concat(jellyfin_defaults_contract_problems(jellyfin_defaults))
+  if jellyfin_defaults.is_a?(Hash)
+    jellyfin_without_open_subtitles = deep_copy(jellyfin_defaults)
+    jellyfin_without_open_subtitles.fetch("jellyfin_plugins", []).delete("Open Subtitles")
+    removal_rejections = jellyfin_defaults_contract_problems(jellyfin_without_open_subtitles).length
+    failures << "Jellyfin Open Subtitles removal mutant was not rejected" unless removal_rejections == 1
   end
 end
 
@@ -551,6 +583,18 @@ end
 failures << "verify.yml must select the standalone media acquisition verifier by explicit tag" unless
   verifier_include&.dig("ansible.builtin.include_role", "tasks_from") == "verify_media_acquisition" &&
     Array(verifier_include["tags"]) == %w[never platform_verify_media_acquisition_foundation]
+
+mac_verify_source = File.read(File.join(ROOT, "tests", "mac", "verify.sh"))
+expected_mac_verify_hooks = %w[
+  10-beszel.sh 15-media-acquisition-foundation.sh 15-ntfy.sh 20-dozzle.sh
+]
+expected_mac_contract_services = %w[audiobookshelf komga jellyfin immich paperless]
+failures << "Mac verification must dispatch the exact infrastructure hook roster" unless
+  expected_mac_verify_hooks.all? { |hook| mac_verify_source.include?(hook) }
+failures << "Mac verification must dispatch every contract-backed service run" unless
+  expected_mac_contract_services.all? { |service| mac_verify_source.include?(service) }
+failures << "Mac verification must not pass the foundation hook through service coverage" if
+  mac_verify_source.include?("mac_run_hooks verify")
 
 
 # Exercise the exact-shape guard against every port field and the contract's

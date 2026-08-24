@@ -804,6 +804,40 @@ if ARGV == ["--self-test"]
   self_test
 else
   failures = check_sources(ROOT, SOURCES)
+  documentation_contracts = {
+    "README.md" => {
+      /production retirement checkpoint has passed/i => "state that the production retirement checkpoint passed",
+      /former metadata manager.*outside repository management.*not deleted/im =>
+        "preserve former metadata-manager state outside repository management without claiming deletion",
+      /Phase 0 creates only.*media-control.*acquisition.*final.*immutable contracts.*CI scaffolding/im =>
+        "bound Phase 0 to the network, directories, contracts, and CI scaffolding",
+      /all seven acquisition projects.*planned.*enablement flags remain false/im =>
+        "state that all seven acquisition projects remain planned and disabled",
+      /does not.*acquisition container.*download/im =>
+        "state that Phase 0 starts no acquisition containers or downloads",
+      /Open Subtitles.*Jellyfin.*Bazarr.*Phase 1/im =>
+        "retain Jellyfin Open Subtitles through the Phase 1 Bazarr proof"
+    },
+    "docs/getting-started-mac.md" => {
+      /Docker Desktop cannot prove.*ACL/im => "identify the NAS ACL proof boundary",
+      /four labeled.*MEDIA_ACQUISITION_FOUNDATION.*MEDIA_ACQUISITION_STORAGE.*MEDIA_ACQUISITION_TRANSPORTS.*MEDIA_ACQUISITION_CONTAINERS/im =>
+        "describe the bounded four-line acquisition evidence"
+    },
+    "docs/getting-started-nas.md" => {
+      /ordinary SMB users cannot access either.*\.acquisition/im =>
+        "require ordinary-user denial for both acquisition trees"
+    },
+    "docs/adding-a-service.md" => {
+      /planned acquisition projects.*role.*Compose directories.*must remain absent/im =>
+        "keep planned acquisition role and Compose directories absent"
+    }
+  }
+  documentation_contracts.each do |path, contracts|
+    document = ROOT.join(path).read.gsub("`", "").gsub(/\s+/, " ")
+    contracts.each do |pattern, description|
+      failures << "#{path} must #{description}" unless document.match?(pattern)
+    end
+  end
   jellyfin_compose = ROOT.join("services/jellyfin/compose.yml").read
   failures << "Jellyfin media-mount comment must assign adjacent metadata to neutral media writers" unless
     jellyfin_compose.match?(/media writers own adjacent metadata.*Jellyfin remains read-only/im)

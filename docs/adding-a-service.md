@@ -148,6 +148,12 @@ The service name and the role name may differ. Paperless is `paperless-ngx` as a
 service and `paperless_ngx` as a role, because directory names use hyphens and
 Ansible role names cannot. Keep them identical unless you have that problem.
 
+The media-acquisition catalog is an exception to this implementation workflow.
+While its entries are `planned`, planned acquisition projects' role and Compose
+directories must remain absent. Moving one project to implementation requires a
+separate phase with its own failing contracts and manifest transition; do not
+create a placeholder role or `services/<project>/` directory during Phase 0.
+
 ## Worked example: Navidrome
 
 ### 1. Declare it

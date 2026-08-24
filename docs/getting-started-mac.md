@@ -7,10 +7,18 @@ logins, ntfy tokens, Beszel keys, and future integrations are proven portable.
 
 This proof covers the eight active services in
 [`services/manifest.yml`](../services/manifest.yml)—Audiobookshelf, Beszel,
-Dozzle, Immich, Jellyfin, Komga, ntfy, and Paperless-ngx. The retired
-media-manager cleanup checkpoint is complete and its declarations have been
-removed. The harness sends test alerts to the sandbox's own ntfy instance.
-Mobile delivery is outside scope.
+Dozzle, Immich, Jellyfin, Komga, ntfy, and Paperless-ngx. The production
+retirement checkpoint has passed and its repository declarations have been
+removed without deleting the former metadata manager's preserved state. The
+harness sends test alerts to the sandbox's own ntfy instance. Mobile delivery
+is outside scope.
+
+For the inert Phase 0 foundation, the report contains exactly four labeled,
+bounded summary lines: `MEDIA_ACQUISITION_FOUNDATION`,
+`MEDIA_ACQUISITION_STORAGE`, `MEDIA_ACQUISITION_TRANSPORTS`, and
+`MEDIA_ACQUISITION_CONTAINERS`. They report the derived bridge network, the
+classified paths, false transport flags, and the absence of acquisition
+containers without exposing directory listings or secrets.
 
 ## 1. Install and verify prerequisites
 
@@ -82,6 +90,11 @@ Success means all phases pass, the idempotence phase reports `changed=0`, and
 cleanup removes the service-data sandbox. The sibling `.reports` directory is
 retained and contains `report.md` and `report.json`; the harness prints its
 absolute path. Reports are sanitized and contain no application log bodies.
+The drift phase removes the exact labeled bridge, disconnects only the two
+readers, and removes one empty cache leaf; reconcile must restore that exact
+state. An abort during drift must restore the original bridge, attachments, and
+leaf before preserving the failure status. Cleanup must leave zero resources
+owned by the proof while preserving unrelated Docker resources.
 
 ## 4. Perform the manual review
 
@@ -184,7 +197,9 @@ rejected so evidence from different deployments cannot be mixed.
 
 ## What this does not prove
 
-Docker Desktop cannot prove NAS GPU access, host networking, ADM Defender,
-native NAS mounts, Tailscale behavior, production-scale performance, mobile
-push, or a full NAS outage. It also does not consume Gmail or copy production
+Docker Desktop cannot prove NAS ACL enforcement, NAS GPU access, host
+networking, ADM Defender, native NAS mounts, Tailscale behavior,
+production-scale performance, mobile push, or a full NAS outage. In particular,
+the Mac proof cannot establish that ordinary SMB users are denied the hidden
+acquisition trees. It also does not consume Gmail or copy production
 media/application data. These boundaries are recorded in the manual review.

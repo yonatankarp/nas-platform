@@ -20,4 +20,18 @@ mac_ansible_playbook -i "$mac_repo_dir/inventory/mac.yml" \
   -e "platform_vault_file=$PLATFORM_MAC_VAULT_FILE" \
   --tags platform_verify_media_acquisition_foundation,platform_verify_ntfy,platform_verify_beszel,platform_verify_dozzle,platform_verify_audiobookshelf,platform_verify_komga,platform_verify_jellyfin,platform_verify_immich,platform_verify_paperless
 
-mac_run_hooks verify
+for mac_verify_hook in \
+  10-beszel.sh \
+  15-media-acquisition-foundation.sh \
+  15-ntfy.sh \
+  20-dozzle.sh; do
+  mac_verify_hook_path=$mac_script_dir/hooks/verify/$mac_verify_hook
+  [ -f "$mac_verify_hook_path" ] && [ ! -L "$mac_verify_hook_path" ] &&
+    [ -x "$mac_verify_hook_path" ] ||
+    mac_die "unsafe or non-executable Mac verify hook: $mac_verify_hook_path"
+  "$mac_verify_hook_path"
+done
+
+for mac_verify_service in audiobookshelf komga jellyfin immich paperless; do
+  "$mac_script_dir/run-contract.sh" "$mac_verify_service" run
+done
