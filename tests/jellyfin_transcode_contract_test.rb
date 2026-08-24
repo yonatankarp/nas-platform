@@ -187,8 +187,11 @@ end
 def complete_library(name: "Movies Drifted", path: "/media/Movies", item_id: "a" * 32)
   {
     "Name" => name,
+    "CollectionType" => "movies",
     "Locations" => [path],
-    "LibraryOptions" => { "EnableRealtimeMonitor" => true },
+    "LibraryOptions" => {
+      "PathInfos" => [{ "Path" => path }], "EnableRealtimeMonitor" => true
+    },
     "ItemId" => item_id
   }
 end
@@ -250,6 +253,28 @@ Dir.mktmpdir("nas-platform-jellyfin-transcode-") do |directory|
   check(failures, eventually_complete.deadlines.uniq.one?,
         "renamed-library polls did not share one absolute deadline")
 
+  incomplete_sibling = {
+    "Name" => "Shows", "CollectionType" => "tvshows", "Locations" => ["/media/Series"]
+  }
+  complete_sibling = complete_library(
+    name: "Shows", path: "/media/Series", item_id: "b" * 32
+  ).merge("CollectionType" => "tvshows")
+  globally_eventual = LibraryWaitScenario.new([
+    [complete_library, incomplete_sibling],
+    [complete_library, complete_sibling]
+  ])
+  check(failures, exercise_library_wait(globally_eventual, timeout: 0.2) == complete_library,
+        "a complete renamed target bypassed an incomplete sibling")
+  check(failures, globally_eventual.calls == 2,
+        "renamed-library polling did not wait for the complete folder array")
+
+  persistent_incomplete = LibraryWaitScenario.new([[complete_library, incomplete_sibling]])
+  persistent_error = library_wait_failure(persistent_incomplete)
+  check(failures,
+        persistent_error&.message == "renamed library did not regain its complete API shape" &&
+          persistent_incomplete.calls > 1,
+        "a persistently incomplete sibling did not reach the bounded controlled timeout")
+
   expired = LibraryWaitScenario.new([[complete_library]])
   expired_error = library_wait_failure(expired, timeout: 0)
   check(failures, expired_error&.message == "renamed library did not regain its complete API shape" &&
@@ -288,14 +313,15 @@ Dir.mktmpdir("nas-platform-jellyfin-transcode-") do |directory|
     error
   end
   check(failures, malformed_error.is_a?(ContractFailure) &&
-                  malformed_error.message == "renamed library response is malformed",
-        "malformed renamed-library schema did not fail with a controlled diagnostic")
+                  malformed_error.message == "renamed library did not regain its complete API shape",
+        "persistently malformed renamed-library schema did not reach the controlled timeout")
 
   unsafe_id_error = library_wait_failure(
     LibraryWaitScenario.new([[complete_library(item_id: "unsafe/id")]])
   )
-  check(failures, unsafe_id_error&.message == "Jellyfin returned an unsafe API identifier",
-        "an unsafe renamed-library ItemId did not fail closed")
+  check(failures,
+        unsafe_id_error&.message == "renamed library did not regain its complete API shape",
+        "a persistently unsafe renamed-library ItemId did not reach the controlled timeout")
 
   unless wait_source.nil?
     mutation_cases = {

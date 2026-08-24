@@ -664,6 +664,23 @@ def normalize_path(path)
   path.sub(%r{/+\z}, "")
 end
 
+def complete_library_inventory_shape?(folders)
+  folders.all? do |folder|
+    next false unless folder.is_a?(Hash) &&
+      folder["Name"].is_a?(String) && !folder["Name"].empty? &&
+      folder["CollectionType"].is_a?(String) &&
+      folder["ItemId"].is_a?(String) &&
+      folder["ItemId"].match?(/\A[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\z/) &&
+      folder["Locations"].is_a?(Array) &&
+      folder["Locations"].all? { |path| path.is_a?(String) } &&
+      folder["LibraryOptions"].is_a?(Hash) &&
+      folder.dig("LibraryOptions", "PathInfos").is_a?(Array)
+
+    path_infos = folder.dig("LibraryOptions", "PathInfos")
+    path_infos.all? { |info| info.is_a?(Hash) && info["Path"].is_a?(String) }
+  end
+end
+
 def library_by_path(folders, definition)
   matches = folders.select do |folder|
     Array(folder["Locations"]).map { |path| normalize_path(path) }.include?(definition.fetch("Path"))
@@ -682,9 +699,9 @@ def wait_for_complete_library(token, definition, name:, timeout:)
     folders = libraries(token, deadline: deadline)
     remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
     fail_contract("renamed library did not regain its complete API shape") if remaining <= 0
-    fail_contract("renamed library response is malformed") unless folders.all? do |folder|
-      folder.is_a?(Hash) && folder["Locations"].is_a?(Array) &&
-        folder["Locations"].all? { |path| path.is_a?(String) }
+    unless complete_library_inventory_shape?(folders)
+      sleep [LIBRARY_RENAME_POLL_INTERVAL_SECONDS, remaining].min
+      next
     end
     matches = folders.select do |folder|
       folder.fetch("Locations").map { |path| normalize_path(path) }.include?(definition.fetch("Path"))

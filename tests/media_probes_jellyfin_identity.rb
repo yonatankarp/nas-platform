@@ -179,9 +179,19 @@ def exercise_jellyfin_library_rename_identity_refresh(failures)
       "PathInfos" => [{ "Path" => "/media/Series" }], "EnableRealtimeMonitor" => false
     }
   }
-  state = { renamed: false, observations: 0, refreshed_libraries: nil }
+  incomplete_shows_library = {
+    "Name" => "Shows", "CollectionType" => "tvshows", "Locations" => ["/media/Series"]
+  }
+  state = {
+    renamed: false, observations: 0, refreshed_libraries: nil,
+    premature_post_rename_mutation: false
+  }
   responder = lambda do |request|
     uri = URI("http://fixture#{request.fetch('target')}")
+    if state[:renamed] && state[:observations] == 1 &&
+       %w[POST PUT PATCH DELETE].include?(request["method"])
+      state[:premature_post_rename_mutation] = true
+    end
     case [request["method"], uri.path]
     when ["POST", "/Library/VirtualFolders/Name"]
       state[:renamed] = true
@@ -189,7 +199,7 @@ def exercise_jellyfin_library_rename_identity_refresh(failures)
     when ["GET", "/Library/VirtualFolders"]
       state[:observations] += 1
       observed = state[:refreshed_libraries] || [new_library, shows_library]
-      [200, state[:observations] == 1 ? [old_library, shows_library] : observed]
+      [200, state[:observations] == 1 ? [new_library, incomplete_shows_library] : observed]
     when ["POST", "/Library/VirtualFolders/LibraryOptions"]
       repaired = { new_id => new_library, shows_id => shows_library }[request.dig("json", "Id")]
       if repaired
@@ -228,6 +238,32 @@ def exercise_jellyfin_library_rename_identity_refresh(failures)
         URI("http://fixture#{request.fetch('target')}").path == "/Library/VirtualFolders" }
     failures << "Jellyfin renamed-library identity was not polled to completion" unless
       state[:renamed] && state[:observations] >= 2
+    failures << "Jellyfin mutated library state before the full rename inventory settled" if
+      state[:premature_post_rename_mutation]
+
+    persistent_tasks = Marshal.load(Marshal.dump(tasks))
+    persistent_wait = persistent_tasks.find do |task|
+      task_name(task) == "Wait for renamed Jellyfin managed library identities"
+    end
+    persistent_wait["retries"] = 2
+    persistent_wait["delay"] = 0
+    state.update(
+      renamed: false,
+      observations: 0,
+      refreshed_libraries: [new_library, incomplete_shows_library],
+      premature_post_rename_mutation: false
+    )
+    persistent_boundary = requests.length
+    persistent_stdout, persistent_stderr, persistent_status =
+      run_playbook(persistent_tasks, variables)
+    failures << "Jellyfin persistent incomplete sibling did not time out: #{failure_tail(persistent_stdout + persistent_stderr)}" if
+      persistent_status.success?
+    persistent_mutations = requests.drop(persistent_boundary).select do |request|
+      %w[POST PUT PATCH DELETE].include?(request["method"]) &&
+        URI("http://fixture#{request.fetch('target')}").path != "/Library/VirtualFolders/Name"
+    end
+    failures << "Jellyfin persistent incomplete sibling reached a post-rename mutation" unless
+      persistent_mutations.empty?
 
     unsafe_libraries = {
       "empty path" => {
@@ -272,13 +308,19 @@ def exercise_jellyfin_library_rename_identity_refresh(failures)
       "changed_when" => true,
       "register" => "jellyfin_library_renames"
     }
+    unsafe_wait = unsafe_tasks.find do |task|
+      task_name(task) == "Wait for renamed Jellyfin managed library identities"
+    end
+    unsafe_wait["retries"] = 2
+    unsafe_wait["delay"] = 0
     unsafe_libraries.each do |label, unsafe_library|
       drifted_target = Marshal.load(Marshal.dump(new_library))
       drifted_target["LibraryOptions"]["EnableRealtimeMonitor"] = false
       state.update(
         renamed: false,
         observations: 0,
-        refreshed_libraries: [drifted_target, shows_library, unsafe_library]
+        refreshed_libraries: [drifted_target, shows_library, unsafe_library],
+        premature_post_rename_mutation: false
       )
       request_boundary = requests.length
       unsafe_stdout, unsafe_stderr, unsafe_status = run_playbook(unsafe_tasks, variables)
