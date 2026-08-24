@@ -7,6 +7,8 @@ compose=$repo_dir/services/jellyfin/compose.yml
 role=$repo_dir/roles/jellyfin/tasks/main.yml
 defaults=$repo_dir/roles/jellyfin/defaults/main.yml
 avatar=$repo_dir/roles/jellyfin/files/yonatan-avatar.jpeg
+argument_specs=$repo_dir/roles/jellyfin/meta/argument_specs.yml
+environment_template=$repo_dir/roles/jellyfin/templates/env.j2
 
 fail_contract() {
   printf 'Jellyfin contract failed: %s\n' "$1" >&2
@@ -50,6 +52,10 @@ root, platform = ARGV
 compose_path = File.join(root, "services", "jellyfin", "compose.yml")
 compose = YAML.safe_load_file(compose_path, aliases: true)
 service = compose.fetch("services").fetch("jellyfin")
+argument_specs = YAML.safe_load_file(File.join(root, "roles", "jellyfin", "meta", "argument_specs.yml"))
+environment_lines = File.readlines(
+  File.join(root, "roles", "jellyfin", "templates", "env.j2"), chomp: true
+)
 
 def refuse(message)
   abort "Jellyfin contract failed: #{message}"
@@ -66,6 +72,17 @@ refuse("storage contract differs") unless service.fetch("volumes") == [
   "${JELLYFIN_CACHE_PATH:?}:/cache",
   "${JELLYFIN_MEDIA_PATH:?}:/media:ro"
 ]
+refuse("media control network membership differs") unless
+  service.fetch("networks") == %w[default media-control] && compose.fetch("networks") == {
+    "default" => {},
+    "media-control" => { "external" => true, "name" => "${PLATFORM_MEDIA_NETWORK:?}" }
+  }
+refuse("media network environment is absent") unless
+  environment_lines.count { |line| line == "PLATFORM_MEDIA_NETWORK={{ platform_media_control_network }}" } == 1
+refuse("media control network argument validation is absent") unless
+  argument_specs.dig("argument_specs", "main", "options", "platform_media_control_network") == {
+    "type" => "str", "required" => true
+  }
 refuse("restart policy differs") unless service.fetch("restart") == "unless-stopped"
 refuse("logging policy differs") unless service.fetch("logging") == {
   "driver" => "json-file", "options" => { "max-size" => "10m", "max-file" => "3" }

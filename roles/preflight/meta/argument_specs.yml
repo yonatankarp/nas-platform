@@ -29,6 +29,12 @@ argument_specs:
         type: str
         required: true
         description: Hostname containers use to reach host-published callbacks.
+      media_usenet_enabled:
+        type: bool
+        required: true
+      media_torrent_enabled:
+        type: bool
+        required: true
       platform_render_device_available:
         type: bool
         required: true

@@ -2,6 +2,8 @@
 # Docker Desktop capabilities. The lifecycle harness exports isolated roots;
 # no production data path or published port is inherited from the NAS.
 platform_kind: mac
+media_usenet_enabled: false
+media_torrent_enabled: false
 # Docker Desktop already isolates its VM from macOS; use all CPUs assigned to the VM.
 platform_container_cpu_budget: 0
 platform_project_name: "{{ lookup('env', 'PLATFORM_PROJECT_NAME') }}"

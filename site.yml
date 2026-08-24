@@ -54,7 +54,7 @@
       tags: [preflight, always]
 
     - role: host_prep
-      tags: [host_prep, storage]
+      tags: [host_prep, storage, media_acquisition_foundation]
 
     - role: deployment_bundle
       tags: [deployment_bundle]

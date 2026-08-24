@@ -60,6 +60,135 @@ unless succeeded
   failures << "manifest reorder changed acquisition publication policy: #{output.lines.first&.strip}"
 end
 
+expect_acquisition_failure = lambda do |label, diagnostic, &mutation|
+  output, succeeded = run_policy(["tests/media_acquisition_foundation_test.rb"], &mutation)
+  failures << "#{label}: acquisition policy unexpectedly passed" if succeeded
+  failures << "#{label}: missing failure message #{diagnostic.inspect}" unless output.include?(diagnostic)
+  failures << "#{label}: emitted a Ruby stack trace" if output.match?(/\.rb:\d+:in [`']/)
+end
+
+storage_path = lambda do |inventory, path|
+  inventory.fetch("nas_storage").find { |entry| entry.fetch("path") == path }
+end
+mutate_compose = lambda do |root, relative_path, &mutation|
+  path = File.join(root, relative_path)
+  document = YAML.safe_load_file(path, aliases: true)
+  mutation.call(document)
+  File.write(path, YAML.dump(document))
+end
+
+expect_acquisition_failure.call(
+  "media acquisition recovery changed",
+  "media acquisition storage differs from the exact classified foundation"
+) do |root|
+  mutate_yaml_file(root, "inventory/group_vars/all/main.yml") do |inventory|
+    storage_path.call(inventory, "{{ nas_docker_root }}/radarr/config")["recovery"] = "cache"
+  end
+end
+expect_acquisition_failure.call(
+  "media acquisition ownership claimed",
+  "media acquisition user/cache paths must not claim ownership"
+) do |root|
+  mutate_yaml_file(root, "inventory/group_vars/all/main.yml") do |inventory|
+    storage_path.call(inventory, "{{ nas_media_root }}/Media/Movies")["owner"] = "{{ nas_uid }}"
+  end
+end
+expect_acquisition_failure.call(
+  "media acquisition leaf removed",
+  "media acquisition storage differs from the exact classified foundation"
+) do |root|
+  mutate_yaml_file(root, "inventory/group_vars/all/main.yml") do |inventory|
+    inventory.fetch("nas_storage").reject! do |entry|
+      entry.fetch("path") == "{{ nas_media_root }}/Media/YouTube"
+    end
+  end
+end
+expect_acquisition_failure.call(
+  "media acquisition marker removed",
+  "media acquisition storage differs from the exact classified foundation"
+) do |root|
+  mutate_yaml_file(root, "inventory/group_vars/all/main.yml") do |inventory|
+    storage_path.call(inventory, "{{ nas_docker_root }}/seerr/config")
+                .delete("media_acquisition_foundation")
+  end
+end
+
+%w[nas_hosts mac_hosts].product(%w[media_usenet_enabled media_torrent_enabled]).each do |host_group, flag|
+  expect_acquisition_failure.call("#{host_group} #{flag} enabled", "#{flag} must be literal false") do |root|
+    mutate_yaml_file(root, "inventory/group_vars/#{host_group}/main.yml") do |vars|
+      vars[flag] = true
+    end
+  end
+end
+expect_acquisition_failure.call(
+  "constant Mac media network name",
+  "media control network identity must be derived from the project namespace"
+) do |root|
+  mutate_yaml_file(root, "inventory/group_vars/all/main.yml") do |vars|
+    vars["platform_media_control_network"] = "media-control"
+  end
+end
+expect_acquisition_failure.call(
+  "media control network driver changed",
+  "host preparation must create the derived bridge media control network"
+) do |root|
+  mutate_yaml_file(root, "roles/host_prep/tasks/main.yml") do |tasks|
+    task = tasks.find { |entry| entry["name"] == "Create the media control network" }
+    task.fetch("community.docker.docker_network")["driver"] = "overlay"
+  end
+end
+expect_acquisition_failure.call(
+  "broad media control network deletion",
+  "host preparation must never delete Docker networks"
+) do |root|
+  mutate_yaml_file(root, "roles/host_prep/tasks/main.yml") do |tasks|
+    tasks << {
+      "name" => "Delete all media networks",
+      "community.docker.docker_network" => { "name" => "media-control", "state" => "absent" }
+    }
+  end
+end
+expect_acquisition_failure.call(
+  "recursive media state ownership",
+  "host preparation must never recursively change storage ownership"
+) do |root|
+  mutate_yaml_file(root, "roles/host_prep/tasks/main.yml") do |tasks|
+    task = tasks.find { |entry| entry["name"] == "Create service state directories" }
+    task.fetch("ansible.builtin.file")["recurse"] = true
+  end
+end
+
+%w[audiobookshelf jellyfin].each do |reader|
+  %w[default media-control].each do |membership|
+    expect_acquisition_failure.call(
+      "#{reader} missing #{membership} membership",
+      "#{reader} must join default and media-control explicitly"
+    ) do |root|
+      mutate_compose.call(root, "services/#{reader}/compose.yml") do |compose|
+        compose.fetch("services").fetch(reader).fetch("networks").delete(membership)
+      end
+    end
+  end
+  expect_acquisition_failure.call(
+    "#{reader} internal media control network",
+    "#{reader} must declare only canonical default and external media-control networks"
+  ) do |root|
+    mutate_compose.call(root, "services/#{reader}/compose.yml") do |compose|
+      compose.fetch("networks").fetch("media-control")["external"] = false
+    end
+  end
+  expect_acquisition_failure.call(
+    "#{reader} writable media mount",
+    "#{reader} media mount must remain read-only"
+  ) do |root|
+    mutate_compose.call(root, "services/#{reader}/compose.yml") do |compose|
+      volumes = compose.fetch("services").fetch(reader).fetch("volumes")
+      index = volumes.index { |volume| volume.end_with?(reader == "jellyfin" ? "/media:ro" : "/audiobooks:ro") }
+      volumes[index] = volumes.fetch(index).delete_suffix(":ro")
+    end
+  end
+end
+
 expect_failure(failures, "recreated retired role",
                "retired role directory must be absent") do |root|
   path = File.join(root, "roles", retired_token, "tasks", "main.yml")

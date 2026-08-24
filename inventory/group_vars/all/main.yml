@@ -68,6 +68,8 @@ platform_deploy_root: "{{ nas_docker_root }}/nas-platform"
 platform_release_dir: "{{ platform_deploy_root }}/releases/{{ platform_release_id }}"
 platform_current_dir: "{{ platform_deploy_root }}/current"
 platform_runtime_dir: "{{ platform_deploy_root }}/runtime"
+platform_media_control_network: >-
+  {{ (platform_project_name ~ '-media-control') if platform_project_name | default('') | length > 0 else 'media-control' }}
 
 # Lowest interpreter the plays are known to work on.
 nas_python_minimum: "3.8"
@@ -110,6 +112,7 @@ nas_storage:
   - path: "{{ nas_media_root }}/Media/Audiobooks"
     mode: "0755"
     recovery: user
+    media_acquisition_foundation: true
 
   # Komga. Application configuration is critical state; books remain NAS-owned
   # user media and are mounted read-only by the service.
@@ -121,14 +124,139 @@ nas_storage:
   - path: "{{ nas_media_root }}/Books"
     mode: "0755"
     recovery: user
+    media_acquisition_foundation: true
 
   # Shared movie and series libraries remain NAS-owned user media.
   - path: "{{ nas_media_root }}/Media/Movies"
     mode: "0755"
     recovery: user
+    media_acquisition_foundation: true
   - path: "{{ nas_media_root }}/Media/Series"
     mode: "0755"
     recovery: user
+    media_acquisition_foundation: true
+
+  # Inert media acquisition foundation. Transport activation remains explicitly
+  # disabled per host class; these paths and service state are prepared so a
+  # later role can start without changing the storage or recovery contract.
+  - path: "{{ nas_media_root }}/Media/YouTube"
+    mode: "0755"
+    recovery: user
+    media_acquisition_foundation: true
+  - path: "{{ nas_media_root }}/Books/Ebooks"
+    mode: "0755"
+    recovery: user
+    media_acquisition_foundation: true
+  - path: "{{ nas_media_root }}/Books/Comics"
+    mode: "0755"
+    recovery: user
+    media_acquisition_foundation: true
+  - path: "{{ nas_media_root }}/Media/.acquisition/usenet/movies"
+    mode: "0755"
+    recovery: cache
+    media_acquisition_foundation: true
+  - path: "{{ nas_media_root }}/Media/.acquisition/usenet/series"
+    mode: "0755"
+    recovery: cache
+    media_acquisition_foundation: true
+  - path: "{{ nas_media_root }}/Media/.acquisition/usenet/audiobooks"
+    mode: "0755"
+    recovery: cache
+    media_acquisition_foundation: true
+  - path: "{{ nas_media_root }}/Media/.acquisition/torrents/movies"
+    mode: "0755"
+    recovery: cache
+    media_acquisition_foundation: true
+  - path: "{{ nas_media_root }}/Media/.acquisition/torrents/series"
+    mode: "0755"
+    recovery: cache
+    media_acquisition_foundation: true
+  - path: "{{ nas_media_root }}/Media/.acquisition/torrents/audiobooks"
+    mode: "0755"
+    recovery: cache
+    media_acquisition_foundation: true
+  - path: "{{ nas_media_root }}/Books/.acquisition/usenet/ebooks"
+    mode: "0755"
+    recovery: cache
+    media_acquisition_foundation: true
+  - path: "{{ nas_media_root }}/Books/.acquisition/usenet/comics"
+    mode: "0755"
+    recovery: cache
+    media_acquisition_foundation: true
+  - path: "{{ nas_media_root }}/Books/.acquisition/torrents/ebooks"
+    mode: "0755"
+    recovery: cache
+    media_acquisition_foundation: true
+  - path: "{{ nas_media_root }}/Books/.acquisition/torrents/comics"
+    mode: "0755"
+    recovery: cache
+    media_acquisition_foundation: true
+  - path: "{{ nas_docker_root }}/radarr/config"
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0755"
+    recovery: critical
+    media_acquisition_foundation: true
+  - path: "{{ nas_docker_root }}/sonarr/config"
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0755"
+    recovery: critical
+    media_acquisition_foundation: true
+  - path: "{{ nas_docker_root }}/prowlarr/config"
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0755"
+    recovery: critical
+    media_acquisition_foundation: true
+  - path: "{{ nas_docker_root }}/bazarr/config"
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0755"
+    recovery: critical
+    media_acquisition_foundation: true
+  - path: "{{ nas_docker_root }}/sabnzbd/config"
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0755"
+    recovery: critical
+    media_acquisition_foundation: true
+  - path: "{{ nas_docker_root }}/qbittorrent/config"
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0755"
+    recovery: critical
+    media_acquisition_foundation: true
+  - path: "{{ nas_docker_root }}/bindery/config"
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0755"
+    recovery: critical
+    media_acquisition_foundation: true
+  - path: "{{ nas_docker_root }}/kapowarr/config"
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0755"
+    recovery: critical
+    media_acquisition_foundation: true
+  - path: "{{ nas_docker_root }}/pinchflat/config"
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0755"
+    recovery: critical
+    media_acquisition_foundation: true
+  - path: "{{ nas_docker_root }}/trailarr/config"
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0755"
+    recovery: critical
+    media_acquisition_foundation: true
+  - path: "{{ nas_docker_root }}/seerr/config"
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0755"
+    recovery: critical
+    media_acquisition_foundation: true
 
   # Jellyfin. Its configuration holds users, libraries and playback state and is
   # critical; the transcode cache is regenerable working space. The media tree

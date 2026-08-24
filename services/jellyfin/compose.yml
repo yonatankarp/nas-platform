@@ -28,6 +28,9 @@ services:
       - ${JELLYFIN_MEDIA_PATH:?}:/media:ro
     environment:
       TZ: ${TZ:?}
+    networks:
+      - default
+      - media-control
     # Intel Quick Sync on the NAS. This is the production capability; platforms
     # without a render node remove it in their override and transcode on CPU.
     devices:
@@ -43,3 +46,9 @@ services:
     # database instead of being killed mid-write.
     stop_grace_period: 1m
     logging: *default-logging
+
+networks:
+  default: {}
+  media-control:
+    external: true
+    name: ${PLATFORM_MEDIA_NETWORK:?}

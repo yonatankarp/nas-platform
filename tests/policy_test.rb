@@ -289,7 +289,7 @@ PLATFORM_TELEMETRY_POLICY = %w[
   beszel_required_telemetry_categories beszel_require_gpu_telemetry
 ].freeze
 HOST_SCOPED_VARS = (
-  %w[platform_kind nas_docker_root nas_media_root] + PLATFORM_CAPABILITIES +
+  %w[platform_kind nas_docker_root nas_media_root media_usenet_enabled media_torrent_enabled] + PLATFORM_CAPABILITIES +
     PLATFORM_TELEMETRY_POLICY
 ).freeze
 

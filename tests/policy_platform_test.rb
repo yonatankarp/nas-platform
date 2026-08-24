@@ -35,7 +35,7 @@ PLATFORM_INVENTORIES = {
   "mac.yml" => ["mac_hosts", "mac", "local", "mac"]
 }.freeze
 HOST_SCOPED_VARS = (
-  %w[platform_kind nas_docker_root nas_media_root] + PLATFORM_CAPABILITIES +
+  %w[platform_kind nas_docker_root nas_media_root media_usenet_enabled media_torrent_enabled] + PLATFORM_CAPABILITIES +
     PLATFORM_TELEMETRY_POLICY
 ).freeze
 
@@ -70,6 +70,10 @@ PLATFORM_INVENTORIES.values.map { |values| [values[0], values[3]] }.uniq.each do
     check(failures, host_vars.key?(policy),
           "#{relative_path} must define #{policy}")
   end
+  %w[media_usenet_enabled media_torrent_enabled].each do |transport|
+    check(failures, host_vars[transport] == false,
+          "#{relative_path} #{transport} must be literal false")
+  end
   %w[platform_render_device_available platform_beszel_agent_available].each do |capability|
     check(failures, [true, false].include?(host_vars[capability]),
           "#{relative_path} #{capability} must be boolean")
@@ -100,7 +104,10 @@ check(failures, site_play.dig("vars", "platform_vault_file").to_s.include?(
 preflight_options = YAML.safe_load_file(
   File.join(ROOT, "roles", "preflight", "meta", "argument_specs.yml")
 ).dig("argument_specs", "main", "options")
-(PLATFORM_CAPABILITIES + %w[platform_kind platform_public_host platform_callback_host]).each do |option|
+(PLATFORM_CAPABILITIES + %w[
+  platform_kind platform_public_host platform_callback_host
+  media_usenet_enabled media_torrent_enabled
+]).each do |option|
   check(failures, preflight_options.is_a?(Hash) && preflight_options[option].is_a?(Hash) &&
                   preflight_options[option]["required"] == true,
         "preflight argument specs must require #{option}")

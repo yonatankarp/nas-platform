@@ -118,6 +118,37 @@ EXPECTED_IMPLEMENTED_PORTS = [
   ["paperless-ngx", "tika", "127.0.0.1", 9998, 9998, "tcp"]
 ].freeze
 
+EXPECTED_STORAGE = {
+  "{{ nas_media_root }}/Media/.acquisition/usenet/movies" => "cache",
+  "{{ nas_media_root }}/Media/.acquisition/usenet/series" => "cache",
+  "{{ nas_media_root }}/Media/.acquisition/usenet/audiobooks" => "cache",
+  "{{ nas_media_root }}/Media/.acquisition/torrents/movies" => "cache",
+  "{{ nas_media_root }}/Media/.acquisition/torrents/series" => "cache",
+  "{{ nas_media_root }}/Media/.acquisition/torrents/audiobooks" => "cache",
+  "{{ nas_media_root }}/Books/.acquisition/usenet/ebooks" => "cache",
+  "{{ nas_media_root }}/Books/.acquisition/usenet/comics" => "cache",
+  "{{ nas_media_root }}/Books/.acquisition/torrents/ebooks" => "cache",
+  "{{ nas_media_root }}/Books/.acquisition/torrents/comics" => "cache",
+  "{{ nas_media_root }}/Media/Movies" => "user",
+  "{{ nas_media_root }}/Media/Series" => "user",
+  "{{ nas_media_root }}/Media/Audiobooks" => "user",
+  "{{ nas_media_root }}/Media/YouTube" => "user",
+  "{{ nas_media_root }}/Books" => "user",
+  "{{ nas_media_root }}/Books/Ebooks" => "user",
+  "{{ nas_media_root }}/Books/Comics" => "user",
+  "{{ nas_docker_root }}/radarr/config" => "critical",
+  "{{ nas_docker_root }}/sonarr/config" => "critical",
+  "{{ nas_docker_root }}/prowlarr/config" => "critical",
+  "{{ nas_docker_root }}/bazarr/config" => "critical",
+  "{{ nas_docker_root }}/sabnzbd/config" => "critical",
+  "{{ nas_docker_root }}/qbittorrent/config" => "critical",
+  "{{ nas_docker_root }}/bindery/config" => "critical",
+  "{{ nas_docker_root }}/kapowarr/config" => "critical",
+  "{{ nas_docker_root }}/pinchflat/config" => "critical",
+  "{{ nas_docker_root }}/trailarr/config" => "critical",
+  "{{ nas_docker_root }}/seerr/config" => "critical"
+}.freeze
+
 def catalog_contract_problems(catalog)
   catalog == EXPECTED ? [] : ["media acquisition catalog differs from the pinned inert contract"]
 end
@@ -309,6 +340,111 @@ failures << "unbracketed IPv6 wildcard must normalize" unless
   _stream, problems = yaml_structure_problems(source)
   failures << "strict catalog loader accepts #{label}" if problems.empty?
 end
+
+shared_vars = YAML.safe_load_file(File.join(ROOT, "inventory", "group_vars", "all", "main.yml"))
+acquisition_storage = shared_vars.fetch("nas_storage").select do |entry|
+  entry["media_acquisition_foundation"] == true
+end
+actual_storage = acquisition_storage.to_h { |entry| [entry.fetch("path"), entry.fetch("recovery")] }
+failures << "media acquisition storage differs from the exact classified foundation" unless
+  actual_storage == EXPECTED_STORAGE && acquisition_storage.length == EXPECTED_STORAGE.length
+failures << "every media acquisition storage entry must use mode 0755" unless
+  acquisition_storage.all? { |entry| entry["mode"] == "0755" }
+acquisition_storage.each do |entry|
+  if entry.fetch("path").start_with?("{{ nas_media_root }}/")
+    failures << "media acquisition user/cache paths must not claim ownership" if
+      entry.key?("owner") || entry.key?("group")
+  else
+    failures << "media acquisition critical state must use the NAS identity" unless
+      entry["owner"] == "{{ nas_uid }}" && entry["group"] == "{{ nas_gid }}"
+  end
+end
+%w[configarr unpackerr gluetun].each do |stateless_service|
+  failures << "#{stateless_service} must not gain critical host state" if
+    shared_vars.fetch("nas_storage").any? do |entry|
+      entry.fetch("path").start_with?("{{ nas_docker_root }}/#{stateless_service}/")
+    end
+end
+
+%w[nas_hosts mac_hosts].each do |host_group|
+  vars = YAML.safe_load_file(File.join(ROOT, "inventory", "group_vars", host_group, "main.yml"))
+  %w[media_usenet_enabled media_torrent_enabled].each do |flag|
+    failures << "#{host_group} #{flag} must be literal false" unless vars[flag] == false
+  end
+end
+expected_network_expression = "{{ (platform_project_name ~ '-media-control') if platform_project_name | default('') | length > 0 else 'media-control' }}"
+failures << "media control network identity must be derived from the project namespace" unless
+  shared_vars["platform_media_control_network"] == expected_network_expression
+
+host_prep = YAML.safe_load_file(File.join(ROOT, "roles", "host_prep", "tasks", "main.yml"))
+network_task = host_prep.find { |task| task["name"] == "Create the media control network" }
+network_definition = network_task&.fetch("community.docker.docker_network", nil)
+failures << "host preparation must create the derived bridge media control network" unless
+  network_definition == {
+    "name" => "{{ platform_media_control_network }}",
+    "driver" => "bridge",
+    "labels" => {
+      "purpose" => "media-control",
+      "project" => "{{ platform_project_name | default('nas-platform', true) }}"
+    },
+    "state" => "present"
+  }
+containment_index = host_prep.index do |task|
+  task["name"] == "Validate central storage targets before directory creation"
+end
+network_index = host_prep.index(network_task)
+failures << "media control network creation must follow target containment" unless
+  containment_index && network_index && containment_index < network_index
+failures << "host preparation must never delete Docker networks" if
+  host_prep.any? { |task| task.dig("community.docker.docker_network", "state") == "absent" }
+failures << "host preparation must never recursively change storage ownership" if
+  host_prep.any? { |task| task.dig("ansible.builtin.file", "recurse") == true }
+
+%w[audiobookshelf jellyfin].each do |reader|
+  compose = YAML.safe_load_file(File.join(ROOT, "services", reader, "compose.yml"), aliases: true)
+  failures << "#{reader} must join default and media-control explicitly" unless
+    compose.dig("services", reader, "networks") == %w[default media-control]
+  failures << "#{reader} must declare only canonical default and external media-control networks" unless
+    compose["networks"] == {
+      "default" => {},
+      "media-control" => { "external" => true, "name" => "${PLATFORM_MEDIA_NETWORK:?}" }
+    }
+  read_only_mount = reader == "audiobookshelf" ?
+    "${AUDIOBOOKSHELF_MEDIA_PATH:?}:/audiobooks:ro" :
+    "${JELLYFIN_MEDIA_PATH:?}:/media:ro"
+  failures << "#{reader} media mount must remain read-only" unless
+    compose.dig("services", reader, "volumes").include?(read_only_mount)
+  env_lines = File.readlines(File.join(ROOT, "roles", reader, "templates", "env.j2"), chomp: true)
+  failures << "#{reader} must export the derived media control network exactly once" unless
+    env_lines.count { |line| line == "PLATFORM_MEDIA_NETWORK={{ platform_media_control_network }}" } == 1
+  options = YAML.safe_load_file(
+    File.join(ROOT, "roles", reader, "meta", "argument_specs.yml")
+  ).dig("argument_specs", "main", "options")
+  failures << "#{reader} must require its media control network input" unless
+    options["platform_media_control_network"] == { "type" => "str", "required" => true }
+end
+
+preflight_options = YAML.safe_load_file(
+  File.join(ROOT, "roles", "preflight", "meta", "argument_specs.yml")
+).dig("argument_specs", "main", "options")
+%w[media_usenet_enabled media_torrent_enabled].each do |flag|
+  failures << "preflight must require boolean #{flag}" unless
+    preflight_options[flag] == { "type" => "bool", "required" => true }
+end
+host_prep_options = YAML.safe_load_file(
+  File.join(ROOT, "roles", "host_prep", "meta", "argument_specs.yml")
+).dig("argument_specs", "main", "options")
+failures << "host_prep must require a string media control network" unless
+  host_prep_options["platform_media_control_network"] == { "type" => "str", "required" => true }
+failures << "host_prep must accept the acquisition foundation marker" unless
+  host_prep_options.dig("nas_storage", "options", "media_acquisition_foundation") == {
+    "type" => "bool", "required" => false
+  }
+
+site = YAML.safe_load_file(File.join(ROOT, "site.yml")).first
+host_prep_role = site.fetch("roles").find { |role| role["role"] == "host_prep" }
+failures << "host_prep must expose the media_acquisition_foundation convergence tag" unless
+  host_prep_role && host_prep_role.fetch("tags").include?("media_acquisition_foundation")
 
 
 # Exercise the exact-shape guard against every port field and the contract's

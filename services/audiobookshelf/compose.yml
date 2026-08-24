@@ -23,6 +23,9 @@ services:
       - ${AUDIOBOOKSHELF_BACKUP_PATH:?}:/metadata/backups
     environment:
       TZ: ${TZ:?}
+    networks:
+      - default
+      - media-control
     healthcheck:
       test: [CMD, wget, --no-verbose, --tries=1, --spider, http://localhost:80/healthcheck]
       interval: 30s
@@ -31,3 +34,9 @@ services:
       start_period: 30s
     restart: unless-stopped
     logging: *default-logging
+
+networks:
+  default: {}
+  media-control:
+    external: true
+    name: ${PLATFORM_MEDIA_NETWORK:?}
