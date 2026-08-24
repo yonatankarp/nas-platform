@@ -131,13 +131,38 @@ Dir.mktmpdir("nas-platform-immich-release-helper-") do |temporary|
   }]
   fail_test("manifest omits exact classifier integrity") unless
     immich.fetch("runtime_files") == expected_runtime_files
-  verify_output, verify_error, verify_status = Open3.capture3(
+  verifier_argv = [
     RbConfig.ruby, File.join(ROOT, "tests", "verify_deployment_manifest.rb"),
     File.join(release_root, "manifest.yml"), controller,
     File.join(controller, "services", "manifest.yml"), "nas", "fixture", release_id
-  )
+  ]
+  verify_output, verify_error, verify_status = Open3.capture3(*verifier_argv)
   fail_test("deployment manifest verifier rejected the release: #{verify_output}#{verify_error}") unless
     verify_status.success?
+
+  deployed_catalog = File.join(release_root, "config", "media-acquisition.yml")
+  catalog_bytes = File.binread(catalog_source)
+  fail_test("catalog fixture is unexpectedly empty") if catalog_bytes.empty?
+  tampered_catalog_bytes = catalog_bytes.dup
+  tampered_catalog_bytes.setbyte(0, tampered_catalog_bytes.getbyte(0) ^ 0x01)
+  begin
+    File.binwrite(deployed_catalog, tampered_catalog_bytes)
+    File.chmod(0o644, deployed_catalog)
+    catalog_output, catalog_error, catalog_status = Open3.capture3(*verifier_argv)
+  ensure
+    File.binwrite(deployed_catalog, catalog_bytes)
+    File.chmod(0o644, deployed_catalog)
+  end
+  catalog_diagnostic = catalog_output + catalog_error
+  fail_test("one-byte staged catalog mutation was accepted") if catalog_status.success?
+  fail_test("staged catalog mutation omitted its controlled checksum diagnostic") unless
+    catalog_diagnostic.include?("staged acquisition catalog differs from manifest checksum")
+  fail_test("staged catalog mutation emitted a Ruby stack trace") if
+    catalog_diagnostic.match?(/\.rb:\d+:in [`']/)
+  fail_test("staged catalog bytes were not restored") unless
+    File.binread(deployed_catalog) == catalog_bytes
+  fail_test("staged catalog mode was not restored") unless
+    File.stat(deployed_catalog).mode & 0o777 == 0o644
 
   File.binwrite(deployed_helper, "tampered-release-helper\n")
   File.chmod(0o644, deployed_helper)
