@@ -479,6 +479,12 @@ check_rejected(
 )
 
 check_rejected(
+  failures, :media_probes, "a library rename that suppresses its identity refresh",
+  [[JELLYFIN_ROLE, "'&refreshLibrary=true' }}\n", "'&refreshLibrary=false' }}\n"]],
+  "Jellyfin library rename does not request identity refresh"
+)
+
+check_rejected(
   failures, :media_probes, "image digest comparisons removed from both assertions",
   [[JELLYFIN_ROLE,
     "      - jellyfin_admin_avatar_source_state.stat.checksum == jellyfin_admin_avatar_sha256\n",

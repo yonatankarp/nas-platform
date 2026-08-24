@@ -183,7 +183,7 @@ def exercise_jellyfin_library_rename_identity_refresh(failures)
     "Name" => "Shows", "CollectionType" => "tvshows", "Locations" => ["/media/Series"]
   }
   state = {
-    renamed: false, observations: 0, refreshed_libraries: nil,
+    renamed: false, rename_refresh: false, observations: 0, refreshed_libraries: nil,
     premature_post_rename_mutation: false
   }
   responder = lambda do |request|
@@ -195,11 +195,18 @@ def exercise_jellyfin_library_rename_identity_refresh(failures)
     case [request["method"], uri.path]
     when ["POST", "/Library/VirtualFolders/Name"]
       state[:renamed] = true
+      state[:rename_refresh] = URI.decode_www_form(uri.query).to_h["refreshLibrary"] == "true"
       [204, nil]
     when ["GET", "/Library/VirtualFolders"]
       state[:observations] += 1
-      observed = state[:refreshed_libraries] || [new_library, shows_library]
-      [200, state[:observations] == 1 ? [new_library, incomplete_shows_library] : observed]
+      observed = if state[:refreshed_libraries]
+                   state[:refreshed_libraries]
+                 elsif state[:rename_refresh] && state[:observations] > 1
+                   [new_library, shows_library]
+                 else
+                   [new_library, incomplete_shows_library]
+                 end
+      [200, observed]
     when ["POST", "/Library/VirtualFolders/LibraryOptions"]
       repaired = { new_id => new_library, shows_id => shows_library }[request.dig("json", "Id")]
       if repaired
@@ -237,7 +244,7 @@ def exercise_jellyfin_library_rename_identity_refresh(failures)
       requests.any? { |request| request["method"] == "POST" &&
         URI("http://fixture#{request.fetch('target')}").path == "/Library/VirtualFolders" }
     failures << "Jellyfin renamed-library identity was not polled to completion" unless
-      state[:renamed] && state[:observations] >= 2
+      state[:renamed] && state[:rename_refresh] && state[:observations] >= 2
     failures << "Jellyfin mutated library state before the full rename inventory settled" if
       state[:premature_post_rename_mutation]
 
@@ -247,10 +254,16 @@ def exercise_jellyfin_library_rename_identity_refresh(failures)
     end
     persistent_wait["retries"] = 2
     persistent_wait["delay"] = 0
+    persistent_rename = persistent_tasks.find do |task|
+      task_name(task) == "Rename adopted Jellyfin managed libraries"
+    end
+    persistent_rename.fetch("ansible.builtin.uri")["url"] =
+      persistent_rename.dig("ansible.builtin.uri", "url").sub("refreshLibrary=true", "refreshLibrary=false")
     state.update(
       renamed: false,
+      rename_refresh: false,
       observations: 0,
-      refreshed_libraries: [new_library, incomplete_shows_library],
+      refreshed_libraries: nil,
       premature_post_rename_mutation: false
     )
     persistent_boundary = requests.length
@@ -318,6 +331,7 @@ def exercise_jellyfin_library_rename_identity_refresh(failures)
       drifted_target["LibraryOptions"]["EnableRealtimeMonitor"] = false
       state.update(
         renamed: false,
+        rename_refresh: false,
         observations: 0,
         refreshed_libraries: [drifted_target, shows_library, unsafe_library],
         premature_post_rename_mutation: false

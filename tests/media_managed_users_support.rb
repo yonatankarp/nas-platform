@@ -422,9 +422,14 @@ def jellyfin_identity_contract_failures
   create_library = main_tasks.find do |task|
     task_name(task) == "Create absent Jellyfin managed libraries"
   end
+  rename_library = main_tasks.find do |task|
+    task_name(task) == "Rename adopted Jellyfin managed libraries"
+  end
   refresh_library = main_tasks.find do |task|
     task_name(task) == "Refresh Jellyfin after managed library changes"
   end
+  failures << "Jellyfin library rename does not request identity refresh" unless
+    rename_library&.dig("ansible.builtin.uri", "url").to_s.include?("refreshLibrary=true")
   failures << "Jellyfin library creation starts a scan before reconciliation completes" unless
     create_library&.dig("ansible.builtin.uri", "url").to_s.include?("refreshLibrary=false")
   failures << "Jellyfin managed library reconciliation does not trigger one deferred refresh" unless

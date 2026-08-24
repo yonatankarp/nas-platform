@@ -919,7 +919,7 @@
     url: >-
       {{ jellyfin_api ~ '/Library/VirtualFolders/Name?name=' ~
          (item.path_matches[0].raw.Name | urlencode) ~ '&newName=' ~
-         (item.desired.name | urlencode) ~ '&refreshLibrary=false' }}
+         (item.desired.name | urlencode) ~ '&refreshLibrary=true' }}
     method: POST
     headers:
       Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_reconcile_token }}"'
