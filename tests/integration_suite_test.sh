@@ -243,10 +243,10 @@ assert_lifecycle() {
 }
 
 assert_output \
-  'foundation smoke beszel dozzle audiobookshelf komga jellyfin immich paperless idempotence-check full' \
+  'foundation arr downloaders bindery kapowarr pinchflat trailarr seerr smoke beszel dozzle audiobookshelf komga jellyfin immich paperless idempotence-check full' \
   --list-suites
 
-for suite_name in foundation smoke beszel dozzle audiobookshelf komga jellyfin immich paperless idempotence-check full; do
+for suite_name in foundation arr downloaders bindery kapowarr pinchflat trailarr seerr smoke beszel dozzle audiobookshelf komga jellyfin immich paperless idempotence-check full; do
   assert_lifecycle 'converge
 success' "$suite_name"
 done
@@ -292,6 +292,19 @@ explicit_controller_plan=$(INTEGRATION_RUN_SERVICE_SCENARIOS=true \
 
 assert_output 'suite=foundation tags=deployment_bundle playbook=site.yml scenarios=true' \
   --describe-suite foundation
+for project in arr downloaders bindery kapowarr pinchflat trailarr seerr; do
+  assert_output \
+    "suite=$project tags=host_prep,deployment_bundle,media_acquisition_foundation playbook=site.yml scenarios=true" \
+    --describe-suite "$project"
+done
+grep -qF 'arr|downloaders|bindery|kapowarr|pinchflat|trailarr|seerr)' "$integration" || {
+  printf '%s\n' 'integration runner has no closed acquisition foundation dispatch' >&2
+  exit 1
+}
+grep -qF '/repo/tests/contracts/"\$INTEGRATION_SUITE"-foundation.sh static' "$integration" || {
+  printf '%s\n' 'acquisition foundation suites do not run their matching static contract' >&2
+  exit 1
+}
 assert_output 'suite=beszel tags=host_prep,deployment_bundle,ntfy,beszel playbook=site.yml scenarios=true' \
   --describe-suite beszel
 assert_output 'suite=dozzle tags=host_prep,deployment_bundle,ntfy,dozzle playbook=site.yml scenarios=true' \
@@ -410,7 +423,7 @@ assert_rejected 'missing value for --tags' --suite smoke --tags
 assert_rejected 'invalid integration tags: Bad' --suite smoke --tags Bad
 assert_rejected 'invalid integration tags: ntfy,,beszel' \
   --suite smoke --tags ntfy,,beszel
-for suite in foundation beszel dozzle audiobookshelf komga jellyfin immich paperless full; do
+for suite in foundation arr downloaders bindery kapowarr pinchflat trailarr seerr beszel dozzle audiobookshelf komga jellyfin immich paperless full; do
   assert_rejected "integration suite $suite does not accept --tags" \
     --suite "$suite" --tags ntfy
 done
@@ -545,6 +558,14 @@ run_prepull 2 4 --suite foundation
 assert_pull_count "$runner_image" 3
 [ "$(wc -l < "$pull_log" | tr -d " ")" -eq 3 ] ||
   prepull_fail "foundation pulled service images it never converges: $(sort -u "$pull_log")"
+
+for project in arr downloaders bindery kapowarr pinchflat trailarr seerr; do
+  run_prepull 0 4 --suite "$project"
+  [ "$prepull_status" -eq 0 ] || prepull_fail "$project foundation pre-pull failed ($prepull_status)"
+  assert_pull_set "$runner_image"
+  [ "$(wc -l < "$pull_log" | tr -d " ")" -eq 1 ] ||
+    prepull_fail "$project pulled service images it never converges: $(sort -u "$pull_log")"
+done
 
 # A registry that refuses more times than the budget allows must fail, and must
 # not go on pulling the rest: under a rate limit the remaining pulls would only

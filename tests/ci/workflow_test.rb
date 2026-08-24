@@ -19,8 +19,8 @@ LOGIN_ACTION_NAME = "docker/login-action"
 EXPECTED_JOBS = %w[changes static suites validate].freeze
 # The suites the matrix dispatches, in the order a full run enumerates them.
 INTEGRATION_SUITES = %w[
-  foundation smoke beszel dozzle audiobookshelf komga jellyfin immich paperless
-  idempotence-check
+  foundation arr downloaders bindery kapowarr pinchflat trailarr seerr smoke beszel
+  dozzle audiobookshelf komga jellyfin immich paperless idempotence-check
 ].freeze
 TAGGED_SUITES = %w[smoke idempotence-check].freeze
 CLASSIFIER_OUTPUTS = %w[static suites selected_tags].freeze

@@ -8,9 +8,10 @@ require "tmpdir"
 
 SCRIPT = File.expand_path("classify_changes.rb", __dir__)
 LANES = %w[
-  static foundation smoke beszel dozzle audiobookshelf komga jellyfin immich
-  paperless idempotence_check
+  static foundation arr downloaders bindery kapowarr pinchflat trailarr seerr
+  smoke beszel dozzle audiobookshelf komga jellyfin immich paperless idempotence_check
 ].freeze
+ACQUISITION_LANES = %w[arr downloaders bindery kapowarr pinchflat trailarr seerr].freeze
 failures = []
 
 def check(failures, condition, message)
@@ -37,11 +38,40 @@ if defined?(ClassifyChanges)
     ["roles/paperless_ngx/tasks/main.yml"] => %w[static smoke paperless idempotence_check],
     ["services/dozzle/compose.yml"] => %w[static smoke dozzle idempotence_check],
     ["tests/contracts/jellyfin.sh"] => %w[static smoke jellyfin idempotence_check],
+    ["roles/arr/tasks/main.yml"] => %w[static arr idempotence_check],
+    ["services/downloaders/compose.yml"] => %w[static downloaders idempotence_check],
+    ["tests/expected/bindery.yml"] => %w[static bindery idempotence_check],
+    ["tests/contracts/kapowarr-foundation.sh"] => %w[static kapowarr idempotence_check],
+    ["config/media-acquisition.yml"] => %w[static arr downloaders bindery kapowarr pinchflat trailarr seerr idempotence_check],
+    ["roles/host_prep/tasks/verify_media_acquisition.yml"] => %w[static arr downloaders bindery kapowarr pinchflat trailarr seerr idempotence_check],
     ["roles/deployment_bundle/tasks/main.yml"] => LANES,
     ["unexpected/new-runtime-file"] => LANES
   }.each do |paths, expected|
     check(failures, selected_lanes(paths) == expected,
           "#{paths.join(', ')} selected #{selected_lanes(paths).inspect}, expected #{expected.inspect}")
+  end
+
+  ACQUISITION_LANES.each do |project|
+    [
+      "roles/#{project}/tasks/main.yml",
+      "services/#{project}/compose.yml",
+      "tests/expected/#{project}.yml",
+      "tests/contracts/#{project}-foundation.sh"
+    ].each do |path|
+      expected = ["static", project, "idempotence_check"]
+      check(failures, selected_lanes([path]) == expected,
+            "#{path} selected #{selected_lanes([path]).inspect}, expected #{expected.inspect}")
+    end
+  end
+
+  %w[
+    config/media-acquisition.yml
+    roles/host_prep/tasks/verify_media_acquisition.yml
+    tests/media_acquisition_foundation_verifier_test.rb
+  ].each do |path|
+    expected = ["static", *ACQUISITION_LANES, "idempotence_check"]
+    check(failures, selected_lanes([path]) == expected,
+          "#{path} must select every acquisition foundation lane")
   end
 
   {
@@ -109,6 +139,13 @@ if defined?(ClassifyChanges)
   expected_output = <<~OUTPUT
     static=true
     foundation=false
+    arr=false
+    downloaders=false
+    bindery=false
+    kapowarr=false
+    pinchflat=false
+    trailarr=false
+    seerr=false
     smoke=true
     beszel=true
     dozzle=true
@@ -130,6 +167,13 @@ if defined?(ClassifyChanges)
   expected_full_output = <<~OUTPUT
     static=true
     foundation=true
+    arr=true
+    downloaders=true
+    bindery=true
+    kapowarr=true
+    pinchflat=true
+    trailarr=true
+    seerr=true
     smoke=true
     beszel=true
     dozzle=true
@@ -139,7 +183,7 @@ if defined?(ClassifyChanges)
     immich=true
     paperless=true
     idempotence_check=true
-    suites=["foundation","smoke","beszel","dozzle","audiobookshelf","komga","jellyfin","immich","paperless","idempotence-check"]
+    suites=["foundation","arr","downloaders","bindery","kapowarr","pinchflat","trailarr","seerr","smoke","beszel","dozzle","audiobookshelf","komga","jellyfin","immich","paperless","idempotence-check"]
     run_ci=true
     selected_tags=
   OUTPUT
@@ -167,6 +211,13 @@ if defined?(ClassifyChanges)
   check(failures, paperless_output.string == <<~OUTPUT,
     static=true
     foundation=false
+    arr=false
+    downloaders=false
+    bindery=false
+    kapowarr=false
+    pinchflat=false
+    trailarr=false
+    seerr=false
     smoke=true
     beszel=false
     dozzle=false
@@ -196,6 +247,22 @@ if defined?(ClassifyChanges)
         ClassifyChanges.suites(ClassifyChanges.classify(["roles/beszel/tasks/main.yml"])) ==
           %w[smoke beszel idempotence-check],
         "a Beszel-only change must dispatch smoke, beszel and idempotence-check")
+  check(failures,
+        ClassifyChanges.suites(ClassifyChanges.classify(["roles/arr/tasks/main.yml"])) ==
+          %w[arr idempotence-check],
+        "an Arr-only change must dispatch its foundation suite without smoke")
+
+  acquisition_output = StringIO.new
+  ClassifyChanges.write_github_outputs(
+    ClassifyChanges.classify(["tests/contracts/seerr-foundation.sh"]), acquisition_output
+  )
+  check(failures,
+        acquisition_output.string.end_with?(
+          "selected_tags=host_prep,deployment_bundle,media_acquisition_foundation\n"
+        ),
+        "acquisition foundation lanes must emit only the fixed foundation tag plan")
+  check(failures, !acquisition_output.string.downcase.include?("tmm"),
+        "classifier outputs must not resurrect the retired tMM project")
 
   Dir.mktmpdir("classify-changes-git-") do |root|
     system("git", "init", "-q", root, exception: true)

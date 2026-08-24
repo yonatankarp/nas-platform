@@ -78,7 +78,7 @@ case "${1:-}" in
 esac
 
 if [ "${1:-}" = --list-suites ]; then
-  printf '%s\n' 'foundation smoke beszel dozzle audiobookshelf komga jellyfin immich paperless idempotence-check full'
+  printf '%s\n' 'foundation arr downloaders bindery kapowarr pinchflat trailarr seerr smoke beszel dozzle audiobookshelf komga jellyfin immich paperless idempotence-check full'
   exit 0
 fi
 
@@ -127,6 +127,13 @@ case "$suite" in
   # rather than at anything the suite is about. These must stay equal to
   # SERVICE_TAGS in tests/ci/classify_changes.rb, which the policy test checks.
   foundation) fixed_tags=deployment_bundle ;;
+  arr) fixed_tags=host_prep,deployment_bundle,media_acquisition_foundation ;;
+  downloaders) fixed_tags=host_prep,deployment_bundle,media_acquisition_foundation ;;
+  bindery) fixed_tags=host_prep,deployment_bundle,media_acquisition_foundation ;;
+  kapowarr) fixed_tags=host_prep,deployment_bundle,media_acquisition_foundation ;;
+  pinchflat) fixed_tags=host_prep,deployment_bundle,media_acquisition_foundation ;;
+  trailarr) fixed_tags=host_prep,deployment_bundle,media_acquisition_foundation ;;
+  seerr) fixed_tags=host_prep,deployment_bundle,media_acquisition_foundation ;;
   smoke) fixed_tags= ;;
   beszel) fixed_tags=host_prep,deployment_bundle,ntfy,beszel ;;
   dozzle) fixed_tags=host_prep,deployment_bundle,ntfy,dozzle ;;
@@ -1517,6 +1524,14 @@ EOF
     ruby /repo/tests/verify_deployment_manifest.rb \
       '$sandbox/volume1/Docker/nas-platform/current/manifest.yml' \
       /repo /repo/services/manifest.yml nas integration '$expected_release_id'
+
+    case "\$INTEGRATION_SUITE" in
+      arr|downloaders|bindery|kapowarr|pinchflat|trailarr|seerr)
+        /repo/tests/contracts/"\$INTEGRATION_SUITE"-foundation.sh static
+        cleanup_vault
+        exit 0
+        ;;
+    esac
 
     if [ "\$INTEGRATION_SUITE" = smoke ]; then
       cleanup_vault
