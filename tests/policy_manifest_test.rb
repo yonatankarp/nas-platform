@@ -459,6 +459,159 @@ expect_failure(failures, "planned service promoted without vault contract",
   mutate_manifest(root) { |document| service(document, "bindery")["status"] = "implemented" }
 end
 
+expect_failure(failures, "second acquisition job",
+               "Configarr must be the sole one-shot acquisition service") do |root|
+  mutate_yaml_file(root, "config/media-acquisition.yml") do |catalog|
+    catalog.dig("projects", "arr", "services", "radarr")["class"] = "one_shot"
+  end
+end
+
+promote_arr_with_compose = lambda do |root|
+  logging = {
+    "driver" => "json-file",
+    "options" => { "max-size" => "10m", "max-file" => "3" }
+  }
+  daemon = lambda do |cpus|
+    {
+      "image" => "example.invalid/service:1.0@sha256:#{'a' * 64}",
+      "cpuset" => "${PLATFORM_CONTAINER_CPUSET:?}",
+      "cpus" => cpus,
+      "labels" => { "dev.dozzle.name" => "service" },
+      "healthcheck" => { "test" => ["CMD", "true"] },
+      "restart" => "unless-stopped",
+      "logging" => logging,
+      "volumes" => []
+    }
+  end
+  configarr = {
+    "image" => "example.invalid/configarr:1.0@sha256:#{'b' * 64}",
+    "cpuset" => "${PLATFORM_CONTAINER_CPUSET:?}",
+    "cpus" => 0.5,
+    "profiles" => ["jobs"],
+    "logging" => logging,
+    "volumes" => []
+  }
+  compose = {
+    "services" => {
+      "radarr" => daemon.call(1.0),
+      "sonarr" => daemon.call(1.0),
+      "prowlarr" => daemon.call(0.5),
+      "bazarr" => daemon.call(1.0),
+      "configarr" => configarr
+    }
+  }
+  service_root = File.join(root, "services", "arr")
+  FileUtils.mkdir_p(service_root)
+  File.write(File.join(service_root, "compose.yml"), YAML.dump(compose))
+  mutate_manifest(root) { |document| service(document, "arr")["status"] = "implemented" }
+  compose
+end
+
+expect_failure(failures, "acquisition job missing jobs profile",
+               "arr/configarr: one-shot acquisition service must use only the jobs profile") do |root|
+  compose = promote_arr_with_compose.call(root)
+  compose.dig("services", "configarr").delete("profiles")
+  File.write(File.join(root, "services", "arr", "compose.yml"), YAML.dump(compose))
+end
+
+expect_failure(failures, "acquisition job publishes a port",
+               "arr/configarr: one-shot acquisition service must not publish ports") do |root|
+  compose = promote_arr_with_compose.call(root)
+  compose.dig("services", "configarr")["ports"] = ["9999:9999"]
+  File.write(File.join(root, "services", "arr", "compose.yml"), YAML.dump(compose))
+end
+
+expect_failure(failures, "acquisition daemon claims job exemptions",
+               "arr/radarr: long-running services must restart unless-stopped") do |root|
+  compose = promote_arr_with_compose.call(root)
+  radarr = compose.dig("services", "radarr")
+  radarr["profiles"] = ["jobs"]
+  radarr.delete("restart")
+  radarr.delete("healthcheck")
+  radarr.delete("labels")
+  File.write(File.join(root, "services", "arr", "compose.yml"), YAML.dump(compose))
+end
+
+expect_acquisition_failure.call(
+  "planned acquisition source published prematurely",
+  "planned service tree exists prematurely: services/arr"
+) do |root|
+  FileUtils.mkdir_p(File.join(root, "services", "arr"))
+end
+
+expect_acquisition_failure.call(
+  "planned acquisition project promoted prematurely",
+  "arr must be planned in the service manifest"
+) do |root|
+  mutate_manifest(root) { |document| service(document, "arr")["status"] = "implemented" }
+end
+
+run_foundation_wrapper = lambda do |filename:, mode: 0o755, mutate: nil, ruby_selection: nil|
+  Dir.mktmpdir("nas-platform-foundation-wrapper-") do |root|
+    copy_fixture(ROOT, root)
+    initialize_fixture_index(root)
+    contracts = File.join(root, "tests", "contracts")
+    FileUtils.mkdir_p(contracts)
+    source = File.binread(File.join(ROOT, "tests", "contracts", "arr-foundation.sh"))
+    source = mutate.call(source) if mutate
+    relative_path = File.join("tests", "contracts", filename)
+    wrapper = File.join(root, relative_path)
+    File.binwrite(wrapper, source)
+    File.chmod(mode, wrapper)
+    _add_output, add_error, add_status = capture3_without_git_routing(
+      "git", "add", "--", relative_path, chdir: root
+    )
+    raise "could not stage foundation wrapper fixture: #{add_error.lines.first&.strip}" unless
+      add_status.success?
+
+    command = if ruby_selection
+                [RbConfig.ruby, "tests/media_acquisition_foundation_test.rb", "--project", ruby_selection]
+              else
+                [wrapper, "static"]
+              end
+    clean_environment = ENV.each_key.grep(/\AGIT_/).to_h { |name| [name, nil] }
+    stdout, stderr, status = Open3.capture3(
+      clean_environment.merge("PLATFORM_CONTRACT_REPO_DIR" => root), *command, chdir: root
+    )
+    [stdout + stderr, status.success?]
+  end
+end
+
+{
+  "foundation wrapper filename exemption" => [
+    { filename: "arr-renamed-foundation.sh" },
+    "unknown media acquisition foundation project"
+  ],
+  "foundation wrapper project exemption" => [
+    { filename: "arr-foundation.sh", mutate: ->(source) { source.sub("arr|downloaders", "downloaders") } },
+    "unknown media acquisition foundation project"
+  ]
+}.each do |label, (arguments, diagnostic)|
+  output, succeeded = run_foundation_wrapper.call(**arguments)
+  failures << "#{label}: unexpectedly passed" if succeeded
+  failures << "#{label}: missing #{diagnostic.inspect}" unless output.include?(diagnostic)
+end
+
+output, succeeded = run_foundation_wrapper.call(
+  filename: "arr-foundation.sh", mode: 0o644, ruby_selection: "arr"
+)
+failures << "foundation wrapper mode mutation: unexpectedly passed" if succeeded
+[
+  "tests/contracts/arr-foundation.sh must be a regular executable file",
+  "tests/contracts/arr-foundation.sh must be staged with Git mode 100755"
+].each do |diagnostic|
+  failures << "foundation wrapper mode mutation: missing #{diagnostic.inspect}" unless
+    output.include?(diagnostic)
+end
+
+stdout, stderr, status = capture3_without_git_routing(
+  RbConfig.ruby, "tests/media_acquisition_foundation_test.rb", "--project", "arr", "extra",
+  chdir: ROOT
+)
+failures << "foundation strict CLI: malformed selection unexpectedly passed" if status.success?
+failures << "foundation strict CLI: missing usage diagnostic" unless
+  (stdout + stderr).include?("usage: ruby tests/media_acquisition_foundation_test.rb [--project NAME]")
+
 %w[policy_test.rb policy_vault_test.rb].each do |caller|
   expect_failure(failures, "#{caller} substitutes the manifest status mapping",
                  "service statuses must have exactly the rostered service names") do |root|

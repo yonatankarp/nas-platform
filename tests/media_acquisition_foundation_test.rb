@@ -1,9 +1,39 @@
 #!/usr/bin/env ruby
 
+require "open3"
+require "set"
 require "yaml"
 
 ROOT = File.expand_path("..", __dir__)
 CATALOG_PATH = File.join(ROOT, "config", "media-acquisition.yml")
+ACQUISITION_PROJECTS = Set[
+  "arr", "downloaders", "bindery", "kapowarr", "pinchflat", "trailarr", "seerr"
+].freeze
+ACQUISITION_JOB_SERVICES = Set["configarr"].freeze
+FOUNDATION_WRAPPER_SOURCE = <<~'SH'.freeze
+  #!/bin/sh
+  set -eu
+
+  project=$(basename -- "$0" -foundation.sh)
+  case $project in
+    arr|downloaders|bindery|kapowarr|pinchflat|trailarr|seerr) ;;
+    *) printf '%s\n' 'unknown media acquisition foundation project' >&2; exit 2 ;;
+  esac
+  mode=${1:-static}
+  repo_dir=${PLATFORM_CONTRACT_REPO_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)}
+  [ "$mode" = static ] || { printf '%s\n' "$project foundation contract accepts only static" >&2; exit 2; }
+  ruby "$repo_dir/tests/media_acquisition_foundation_test.rb" --project "$project"
+SH
+
+def parse_project_selection(arguments)
+  return nil if arguments.empty?
+  return arguments.fetch(1) if arguments.length == 2 && arguments.first == "--project" &&
+                               ACQUISITION_PROJECTS.include?(arguments.fetch(1))
+
+  abort "usage: ruby tests/media_acquisition_foundation_test.rb [--project NAME]"
+end
+
+SELECTED_PROJECT = parse_project_selection(ARGV).freeze
 
 def ui_port(port, container_port: port, published_by:)
   [{
@@ -234,9 +264,10 @@ def implemented_ports(manifest)
   manifest.fetch("services").flat_map do |entry|
     next [] unless %w[implemented accepted].include?(entry.fetch("status"))
 
-    compose = YAML.safe_load_file(
-      File.join(ROOT, "services", entry.fetch("name"), "compose.yml"), aliases: true
-    )
+    compose_path = File.join(ROOT, "services", entry.fetch("name"), "compose.yml")
+    next [] unless File.file?(compose_path)
+
+    compose = YAML.safe_load_file(compose_path, aliases: true)
     compose.fetch("services").flat_map do |container, definition|
       Array(definition["ports"]).map do |publication|
         [entry.fetch("name"), container, *parse_port(publication)]
@@ -256,6 +287,33 @@ def collides?(left, right)
 end
 
 failures = []
+if SELECTED_PROJECT
+  relative_wrapper_path = "tests/contracts/#{SELECTED_PROJECT}-foundation.sh"
+  wrapper_path = File.join(ROOT, relative_wrapper_path)
+  begin
+    wrapper_stat = File.lstat(wrapper_path)
+    failures << "#{relative_wrapper_path} must be a regular executable file" unless
+      wrapper_stat.file? && !wrapper_stat.symlink? && (wrapper_stat.mode & 0o7777) == 0o755
+    failures << "#{relative_wrapper_path} differs from the exact foundation wrapper" unless
+      File.binread(wrapper_path) == FOUNDATION_WRAPPER_SOURCE
+  rescue SystemCallError => e
+    failures << "#{relative_wrapper_path} cannot be inspected: #{e.class}"
+  end
+
+  clean_git_environment = ENV.each_key.grep(/\AGIT_/).to_h { |name| [name, nil] }
+  staged, staged_error, staged_status = Open3.capture3(
+    clean_git_environment,
+    "git", "-C", ROOT, "ls-files", "--stage", "--", relative_wrapper_path
+  )
+  unless staged_status.success?
+    failures << "#{relative_wrapper_path} staged mode cannot be inspected: #{staged_error.lines.first&.strip}"
+  end
+  staged_lines = staged.lines
+  staged_mode = staged_lines.fetch(0, "").split.fetch(0, nil)
+  failures << "#{relative_wrapper_path} must be staged with Git mode 100755" unless
+    staged_status.success? && staged_lines.length == 1 && staged_mode == "100755"
+end
+
 catalog, catalog_load_problems = strict_yaml_file(CATALOG_PATH)
 catalog_load_problems.each { |problem| failures << "config/media-acquisition.yml #{problem}" }
 if catalog_load_problems.empty? && !catalog.is_a?(Hash)
@@ -277,8 +335,14 @@ if catalog
 
   one_shots = catalog.fetch("projects").values.flat_map do |project|
     project.fetch("services").select { |_name, definition| definition["class"] == "one_shot" }.keys
+  end.to_set
+  failures << "Configarr must be the sole one-shot service" unless
+    one_shots == ACQUISITION_JOB_SERVICES
+
+  if SELECTED_PROJECT
+    failures << "selected acquisition project differs from its exact pinned contract" unless
+      catalog.fetch("projects")[SELECTED_PROJECT] == EXPECTED_PROJECTS.fetch(SELECTED_PROJECT)
   end
-  failures << "Configarr must be the sole one-shot service" unless one_shots == ["configarr"]
 
   planned_publications = ports.map do |port|
     port.slice("protocol", "bind_address", "host_port")

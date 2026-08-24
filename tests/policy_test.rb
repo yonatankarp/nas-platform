@@ -16,6 +16,7 @@ include PolicySupport
 
 ROOT = File.expand_path("..", __dir__)
 failures = []
+ACQUISITION_JOB_SERVICES = Set["configarr"].freeze
 
 def check(failures, condition, message)
   failures << message unless condition
@@ -570,6 +571,31 @@ unless manifest_entries.is_a?(Array)
   manifest_entries = []
 end
 
+acquisition_catalog = begin
+  YAML.safe_load_file(File.join(ROOT, "config", "media-acquisition.yml"), aliases: false)
+rescue Errno::ENOENT
+  check(failures, false, "media acquisition catalog is missing")
+  {}
+rescue Psych::Exception => e
+  check(failures, false,
+        "media acquisition catalog is malformed: #{e.message.lines.first.strip}")
+  {}
+end
+acquisition_projects = if acquisition_catalog.is_a?(Hash) &&
+                          acquisition_catalog["projects"].is_a?(Hash)
+                         acquisition_catalog["projects"]
+                       else
+                         {}
+                       end
+parsed_acquisition_jobs = acquisition_projects.values.flat_map do |project|
+  services = project.is_a?(Hash) && project["services"].is_a?(Hash) ? project["services"] : {}
+  services.filter_map do |service_name, definition|
+    service_name if definition.is_a?(Hash) && definition["class"] == "one_shot"
+  end
+end.to_set
+check(failures, parsed_acquisition_jobs == ACQUISITION_JOB_SERVICES,
+      "Configarr must be the sole one-shot acquisition service")
+
 service_statuses = if manifest["services"].is_a?(Array) && manifest_entries.all? do |entry|
                         entry.is_a?(Hash) && entry.key?("name") && entry.key?("status")
                       end
@@ -702,6 +728,17 @@ service_dirs.each do |dir|
   containers.each do |container, spec|
     label = "#{name}/#{container}"
     expected_cpu = expected_cpus[container]
+    acquisition_job = ACQUISITION_JOB_SERVICES.include?(container)
+
+    if acquisition_job
+      check(failures, spec["profiles"] == ["jobs"],
+            "#{label}: one-shot acquisition service must use only the jobs profile")
+      check(failures, Array(spec["ports"]).empty?,
+            "#{label}: one-shot acquisition service must not publish ports")
+    else
+      check(failures, !Array(spec["profiles"]).include?("jobs"),
+            "#{label}: long-running service must not claim the jobs profile")
+    end
 
     check(failures, spec["cpuset"] == "${PLATFORM_CONTAINER_CPUSET:?}",
           "#{label}: must require the Ansible-rendered platform CPU set")
@@ -716,8 +753,10 @@ service_dirs.each do |dir|
           "#{label}: must use a published image, not build")
     check(failures, spec["privileged"] != true,
           "#{label}: privileged mode is not allowed")
-    check(failures, spec["restart"] == "unless-stopped",
-          "#{label}: long-running services must restart unless-stopped")
+    unless acquisition_job
+      check(failures, spec["restart"] == "unless-stopped",
+            "#{label}: long-running services must restart unless-stopped")
+    end
 
     logging = spec["logging"] || {}
     check(failures, logging["driver"] == "json-file",
