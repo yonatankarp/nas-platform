@@ -3,6 +3,7 @@
   ansible.builtin.set_fact:
     host_prep_media_acquisition_storage: >-
       {{ nas_storage |
+         selectattr('media_acquisition_foundation', 'defined') |
          selectattr('media_acquisition_foundation', 'equalto', true) |
          list }}
     host_prep_media_acquisition_readers:

@@ -143,6 +143,7 @@ else
     }
     log.call("MUTATE create #{network_name}")
     save(path, state)
+    Process.kill("HUP", Process.ppid) if ENV["INJECT"] == "recovery_create_HUP"
     puts network_name
   elsif args[0, 2] == ["network", "connect"]
     network_name, container_name = args[2], args[3]
@@ -152,6 +153,9 @@ else
     container.fetch("networks") << network_name unless container.fetch("networks").include?(network_name)
     log.call("MUTATE connect #{network_name} #{container_name}")
     save(path, state)
+    if ENV["INJECT"] == "recovery_connect_INT" && container_name.end_with?("-audiobookshelf")
+      Process.kill("INT", Process.ppid)
+    end
   else
     warn "unsupported fake docker command: #{args.inspect}"
     exit 64
@@ -167,9 +171,16 @@ case ${INJECT:-} in
   after_leaf_HUP) kill -HUP "$PPID" ;;
   after_leaf_INT) kill -INT "$PPID" ;;
   after_leaf_TERM) kill -TERM "$PPID" ;;
+  recovery_create_HUP|recovery_connect_INT|recovery_leaf_TERM) exit 42 ;;
 esac
 SH
-chmod 0755 "$fixture/bin/docker" "$fixture/bin/rmdir"
+cat > "$fixture/bin/mkdir" <<'SH'
+#!/bin/sh
+/bin/mkdir "$@" || exit $?
+[ "${INJECT:-}" = recovery_leaf_TERM ] && kill -TERM "$PPID"
+exit 0
+SH
+chmod 0755 "$fixture/bin/docker" "$fixture/bin/rmdir" "$fixture/bin/mkdir"
 
 initialize_case() {
   case_root=$1
@@ -299,6 +310,23 @@ for inject in after_first_disconnect after_network_removal \
     after_leaf_TERM)
       [ "$status" -eq 143 ] || fail 'TERM status was not preserved'
       grep -qx "MUTATE create $network" "$log" || fail 'post-leaf TERM recovery did not recreate the bridge'
+      ;;
+  esac
+done
+
+for inject in recovery_create_HUP recovery_connect_INT recovery_leaf_TERM; do
+  run_drift_case "$inject"
+  [ "$status" -eq 42 ] || fail "$inject did not preserve the original recovery status"
+  assert_restored
+  case $inject in
+    recovery_create_HUP)
+      grep -qx "MUTATE create $network" "$log" || fail 'recovery HUP did not reach network creation'
+      ;;
+    recovery_connect_INT)
+      grep -qx "MUTATE connect $network $audio" "$log" || fail 'recovery INT did not reach reader reconnect'
+      ;;
+    recovery_leaf_TERM)
+      [ -d "$leaf" ] || fail 'recovery TERM did not reach leaf restoration'
       ;;
   esac
 done

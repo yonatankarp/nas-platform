@@ -25,7 +25,8 @@ def verifier_problems(tasks, verify_play)
   selector = flat.find { |task| task["name"] == "Select media acquisition foundation storage" }
   selected = selector&.dig("ansible.builtin.set_fact", "host_prep_media_acquisition_storage")
   problems << "verifier must select only entries with the literal foundation marker" unless
-    selected.to_s.include?("selectattr('media_acquisition_foundation', 'equalto', true)")
+    selected.to_s.include?("selectattr('media_acquisition_foundation', 'defined') |") &&
+      selected.to_s.include?("selectattr('media_acquisition_foundation', 'equalto', true)")
 
   stat = flat.find { |task| task["ansible.builtin.stat"] }
   problems << "verifier must inspect every selected path without following symlinks" unless
@@ -98,6 +99,60 @@ def verifier_problems(tasks, verify_play)
   problems
 end
 
+def run_selector_probe(tasks, directory)
+  selector = deep_copy(Array(tasks).find { |task| task["name"] == "Select media acquisition foundation storage" })
+  play = {
+    "name" => "Evaluate mixed media acquisition storage selection",
+    "hosts" => "localhost",
+    "gather_facts" => false,
+    "vars" => {
+      "platform_project_name" => "probe",
+      "platform_media_control_network" => "probe-media-control",
+      "nas_storage" => [
+        { "path" => "/marked", "media_acquisition_foundation" => true },
+        { "path" => "/unmarked" },
+        { "path" => "/false", "media_acquisition_foundation" => false }
+      ]
+    },
+    "tasks" => [
+      selector,
+      {
+        "name" => "Require only the marked entry",
+        "ansible.builtin.assert" => {
+          "that" => [
+            "host_prep_media_acquisition_storage | length == 1",
+            "host_prep_media_acquisition_storage[0].path == '/marked'"
+          ]
+        }
+      }
+    ]
+  }
+  path = File.join(directory, "selector-probe.yml")
+  File.write(path, YAML.dump([play]))
+  Open3.capture3("ansible-playbook", "-i", "localhost,", "-c", "local", path)
+end
+
+def selector_probe_problems(tasks)
+  Dir.mktmpdir("media-acquisition-selector.") do |directory|
+    stdout, stderr, status = run_selector_probe(tasks, directory)
+    problems = []
+    problems << "mixed marked/unmarked selector fails real Ansible evaluation: #{(stdout + stderr).lines.last}" unless status.success?
+
+    mutation = deep_copy(tasks)
+    selector = mutation.find { |task| task["name"] == "Select media acquisition foundation storage" }
+    expression = selector.dig("ansible.builtin.set_fact", "host_prep_media_acquisition_storage")
+    selector["ansible.builtin.set_fact"]["host_prep_media_acquisition_storage"] =
+      expression.gsub(/\s*selectattr\('media_acquisition_foundation', 'defined'\) \|/, "")
+    mutant_stdout, mutant_stderr, mutant_status = run_selector_probe(mutation, directory)
+    if mutant_status.success? || !(mutant_stdout + mutant_stderr).match?(/undefined|has no attribute/i)
+      problems << "selector accepts removal of the defined-attribute guard"
+    end
+    problems
+  end
+rescue Errno::ENOENT
+  ["ansible-playbook is required for the selector evaluation probe"]
+end
+
 def load_yaml(path)
   YAML.safe_load_file(path, aliases: true)
 rescue Errno::ENOENT
@@ -168,6 +223,7 @@ end
 tasks = load_yaml(TASKS_PATH)
 verify_play = load_yaml(VERIFY_PATH)
 failures = verifier_problems(tasks, verify_play)
+failures.concat(selector_probe_problems(tasks)) if tasks
 failures.concat(include_probe_problems(verify_play)) if failures.empty?
 
 unless failures.any?

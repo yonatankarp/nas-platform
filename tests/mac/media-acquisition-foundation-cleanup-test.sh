@@ -54,7 +54,15 @@ elsif args[0, 2] == ["network", "ls"]
 elsif args[0] == "volume"
   # No volumes are present in this focused model.
 elsif args[0, 2] == ["network", "inspect"]
-  item = state.fetch("networks")[args[2]] or exit 1
+  item = state.fetch("networks")[args[2]]
+  unless item
+    pending = state.delete("recreate_network")
+    if pending && pending.fetch("name") == args[2]
+      state.fetch("networks")[args[2]] = pending
+      save.call
+    end
+    exit 1
+  end
   if args.include?("--format")
     format = args.fetch(args.index("--format") + 1)
     if format.include?("range $key")
@@ -68,7 +76,8 @@ elsif args[0, 2] == ["network", "inspect"]
   end
 elsif args[0, 2] == ["network", "rm"]
   name = args[2]
-  state.fetch("networks").delete(name) or exit 1
+  removed = state.fetch("networks").delete(name) or exit 1
+  state["recreate_network"] = removed if ENV["INJECT"] == "recreate_media_control"
   log.call("MUTATE network-rm #{name}")
   save.call
 elsif args[0, 2] == ["rm", "-f"]
@@ -105,6 +114,7 @@ new_case() {
   state=$fixture/$label.json
   log=$fixture/$label.log
   : > "$log"
+  inject=none
   ruby -rjson -e '
     path, project, variant = ARGV
     exact = "#{project}-media-control"
@@ -140,6 +150,7 @@ run_cleanup() {
   set +e
   env PATH="$fixture/bin:$PATH" PLATFORM_MAC_TMPDIR="$fixture/sandboxes" \
     FAKE_DOCKER_STATE="$state" FAKE_DOCKER_LOG="$log" \
+    INJECT="$inject" \
     "$cleanup" "$sandbox" >/dev/null 2>"$fixture/$label.err"
   status=$?
   set -e
@@ -161,6 +172,24 @@ run_cleanup
   fail 'valid exact cleanup failed'
 }
 [ ! -e "$sandbox" ] && [ ! -L "$sandbox" ] || fail 'valid exact cleanup retained its sandbox'
+assert_unrelated_preserved
+
+label=recreated_media_control
+new_case "$label" exact
+inject=recreate_media_control
+run_cleanup
+[ "$status" -ne 0 ] || fail 'recreated media-control network passed cleanup stability'
+[ -d "$sandbox" ] && [ ! -L "$sandbox" ] || fail 'recreated media-control network removed cleanup state'
+ruby -rjson -e '
+  state = JSON.parse(File.read(ARGV.fetch(0)))
+  project = ARGV.fetch(1)
+  network = state.fetch("networks").fetch("#{project}-media-control")
+  abort unless network.fetch("name") == "#{project}-media-control"
+  abort unless network.fetch("driver") == "bridge"
+  abort unless network.fetch("labels") == {
+    "nas.platform.purpose" => "media-control", "nas.platform.project" => project
+  }
+' "$state" "$project" || fail 'recreated exact media-control network escaped stability inspection'
 assert_unrelated_preserved
 
 for variant in wrong_driver wrong_purpose wrong_project bare prefix suffix; do

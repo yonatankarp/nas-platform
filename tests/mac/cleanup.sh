@@ -73,6 +73,18 @@ remove_media_acquisition_network() {
   ! docker network inspect "$media_acquisition_cleanup_network" >/dev/null 2>&1
 }
 
+remaining_media_acquisition_network() {
+  mac_project=$1
+  validate_media_acquisition_network "$mac_project" || return 1
+  media_acquisition_cleanup_network=$mac_project-media-control
+  if docker network inspect "$media_acquisition_cleanup_network" >/dev/null 2>&1; then
+    # The first inspect establishes presence; repeat the complete identity
+    # validation before exposing this exact network as removable state.
+    validate_media_acquisition_network "$mac_project" || return 1
+    printf 'media-control-network:%s\n' "$media_acquisition_cleanup_network"
+  fi
+}
+
 related_rollback_sandboxes() {
   mac_source_sandbox=$1
   mac_source_project=$2
@@ -147,7 +159,8 @@ cleanup_one_mac_sandbox() {
       [ -z "$mac_ids" ] || printf '%s\n' "$mac_ids" | sed 's/^/network:/'
       mac_ids=$(docker volume ls -q --filter "label=com.docker.compose.project=$mac_service_project") || exit 1
       [ -z "$mac_ids" ] || printf '%s\n' "$mac_ids" | sed 's/^/volume:/'
-    done) || return 1
+    done
+      remaining_media_acquisition_network "$mac_project") || return 1
     if [ -z "$mac_remaining" ]; then
       mac_empty_rounds=$((mac_empty_rounds + 1))
     else
@@ -157,6 +170,10 @@ cleanup_one_mac_sandbox() {
         case $mac_remaining_id in
           container:*) docker rm -f "${mac_remaining_id#container:}" >/dev/null || return 1 ;;
           network:*) docker network rm "${mac_remaining_id#network:}" >/dev/null || return 1 ;;
+          media-control-network:*)
+            [ "${mac_remaining_id#media-control-network:}" = "$mac_project-media-control" ] || return 1
+            remove_media_acquisition_network "$mac_project" || return 1
+            ;;
           volume:*) docker volume rm "${mac_remaining_id#volume:}" >/dev/null || return 1 ;;
           *) return 1 ;;
         esac
@@ -173,7 +190,8 @@ cleanup_one_mac_sandbox() {
     [ -z "$mac_ids" ] || printf '%s\n' "$mac_ids"
     mac_ids=$(docker volume ls -q --filter "label=com.docker.compose.project=$mac_service_project") || exit 1
     [ -z "$mac_ids" ] || printf '%s\n' "$mac_ids"
-  done) || return 1
+  done
+    remaining_media_acquisition_network "$mac_project") || return 1
   [ -z "$mac_final_remaining" ] || return 1
 
   # Revalidate immediately before the descriptor-relative removal. The shared
@@ -181,6 +199,8 @@ cleanup_one_mac_sandbox() {
   # cleanup image, so a concurrent symlink swap cannot redirect traversal.
   [ "$(mac_validate_sandbox "$mac_cleanup_target")" = "$mac_cleanup_target" ] || return 1
   preflight_mac_resources "$mac_cleanup_target" || return 1
+  mac_final_media_network=$(remaining_media_acquisition_network "$mac_project") || return 1
+  [ -z "$mac_final_media_network" ] || return 1
   cleanup_sandbox_contents "$(dirname -- "$mac_cleanup_target")" \
     "$(basename -- "$mac_cleanup_target")" ".nas-platform-mac-owned" || return 1
   [ ! -e "$mac_cleanup_target" ] && [ ! -L "$mac_cleanup_target" ]

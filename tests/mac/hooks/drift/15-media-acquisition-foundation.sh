@@ -105,7 +105,10 @@ reader_on_network() {
 
 media_acquisition_recover() {
   media_acquisition_status=$?
-  trap - EXIT HUP INT TERM
+  trap - EXIT
+  # Recovery is a critical section. A second terminating signal must not abort
+  # the restoration that the first failure or signal already initiated.
+  trap '' HUP INT TERM
   if [ "$network_removal_started" = true ] || ! docker network inspect "$network" >/dev/null 2>&1; then
     docker network inspect "$network" >/dev/null 2>&1 || recreate_network || media_acquisition_recovery_failed=true
   fi
@@ -128,8 +131,10 @@ media_acquisition_recover() {
   require_leaf || media_acquisition_recovery_failed=true
   [ "$media_acquisition_recovery_failed" = false ] || [ "$media_acquisition_status" -ne 0 ] || media_acquisition_status=1
   if [ -n "$media_acquisition_signal" ]; then
+    trap - HUP INT TERM
     kill -s "$media_acquisition_signal" "$$"
   fi
+  trap - HUP INT TERM
   exit "$media_acquisition_status"
 }
 
