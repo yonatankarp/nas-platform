@@ -287,6 +287,15 @@ def collides?(left, right)
   left_bind == right_bind || wildcards.include?(left_bind) || wildcards.include?(right_bind)
 end
 
+def path_entry_exists?(path)
+  File.lstat(path)
+  true
+rescue Errno::ENOENT
+  false
+rescue SystemCallError
+  true
+end
+
 failures = []
 if SELECTED_PROJECT
   relative_wrapper_path = "tests/contracts/#{SELECTED_PROJECT}-foundation.sh"
@@ -355,8 +364,10 @@ if catalog
   catalog.fetch("projects").each do |project_name, project|
     role_path = File.join(ROOT, "roles", project.fetch("role"))
     service_path = File.join(ROOT, "services", project_name)
-    failures << "planned role tree exists prematurely: #{role_path.delete_prefix("#{ROOT}/")}" if File.exist?(role_path)
-    failures << "planned service tree exists prematurely: #{service_path.delete_prefix("#{ROOT}/")}" if File.exist?(service_path)
+    failures << "planned role tree exists prematurely: #{role_path.delete_prefix("#{ROOT}/")}" if
+      path_entry_exists?(role_path)
+    failures << "planned service tree exists prematurely: #{service_path.delete_prefix("#{ROOT}/")}" if
+      path_entry_exists?(service_path)
   end
 end
 

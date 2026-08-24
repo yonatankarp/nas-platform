@@ -756,6 +756,12 @@ service_dirs.each do |dir|
     unless acquisition_job
       check(failures, spec["restart"] == "unless-stopped",
             "#{label}: long-running services must restart unless-stopped")
+      check(failures, spec["healthcheck"].is_a?(Hash) && !spec["healthcheck"].empty?,
+            "#{label}: long-running services must define a health check")
+      labels = spec["labels"]
+      dozzle_name = labels.is_a?(Hash) ? labels["dev.dozzle.name"] : nil
+      check(failures, dozzle_name.is_a?(String) && !dozzle_name.empty?,
+            "#{label}: long-running services must declare a Dozzle event identity")
     end
 
     logging = spec["logging"] || {}

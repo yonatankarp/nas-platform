@@ -521,14 +521,24 @@ expect_failure(failures, "acquisition job publishes a port",
   File.write(File.join(root, "services", "arr", "compose.yml"), YAML.dump(compose))
 end
 
-expect_failure(failures, "acquisition daemon claims job exemptions",
+expect_failure(failures, "acquisition daemon claims restart exemption",
                "arr/radarr: long-running services must restart unless-stopped") do |root|
   compose = promote_arr_with_compose.call(root)
-  radarr = compose.dig("services", "radarr")
-  radarr["profiles"] = ["jobs"]
-  radarr.delete("restart")
-  radarr.delete("healthcheck")
-  radarr.delete("labels")
+  compose.dig("services", "radarr").delete("restart")
+  File.write(File.join(root, "services", "arr", "compose.yml"), YAML.dump(compose))
+end
+
+expect_failure(failures, "acquisition daemon claims healthcheck exemption",
+               "arr/radarr: long-running services must define a health check") do |root|
+  compose = promote_arr_with_compose.call(root)
+  compose.dig("services", "radarr").delete("healthcheck")
+  File.write(File.join(root, "services", "arr", "compose.yml"), YAML.dump(compose))
+end
+
+expect_failure(failures, "acquisition daemon claims Dozzle exemption",
+               "arr/radarr: long-running services must declare a Dozzle event identity") do |root|
+  compose = promote_arr_with_compose.call(root)
+  compose.dig("services", "radarr", "labels").delete("dev.dozzle.name")
   File.write(File.join(root, "services", "arr", "compose.yml"), YAML.dump(compose))
 end
 
@@ -537,6 +547,21 @@ expect_acquisition_failure.call(
   "planned service tree exists prematurely: services/arr"
 ) do |root|
   FileUtils.mkdir_p(File.join(root, "services", "arr"))
+end
+
+{
+  "dangling planned acquisition role" => [
+    "roles/arr", "planned role tree exists prematurely: roles/arr"
+  ],
+  "dangling planned acquisition service" => [
+    "services/arr", "planned service tree exists prematurely: services/arr"
+  ]
+}.each do |label, (relative_path, diagnostic)|
+  expect_acquisition_failure.call(label, diagnostic) do |root|
+    path = File.join(root, relative_path)
+    FileUtils.mkdir_p(File.dirname(path))
+    File.symlink("missing-foundation-target", path)
+  end
 end
 
 expect_acquisition_failure.call(
@@ -1138,6 +1163,12 @@ end
 
 expect_success(failures, "paperless contract alias") do |root|
   implement_paperless(root)
+  mutate_yaml_file(root, "services/paperless-ngx/compose.yml") do |compose|
+    compose.fetch("services").each do |container, spec|
+      spec["healthcheck"] = { "test" => ["CMD", "true"] }
+      spec["labels"] = { "dev.dozzle.name" => container }
+    end
+  end
   register_contract(root, "paperless")
 end
 
