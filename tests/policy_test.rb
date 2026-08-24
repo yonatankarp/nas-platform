@@ -550,10 +550,14 @@ end
 manifest_path = File.join(ROOT, "services", "manifest.yml")
 manifest_loaded = true
 manifest = begin
-  duplicate_yaml_keys(Psych.parse_stream(File.read(manifest_path))).uniq.each do |key|
+  manifest_source = File.read(manifest_path)
+  manifest_stream = Psych.parse_stream(manifest_source)
+  check(failures, manifest_stream.children.length == 1,
+        "service manifest must contain exactly one YAML document")
+  duplicate_yaml_keys(manifest_stream).uniq.each do |key|
     check(failures, false, "service manifest contains duplicate mapping key #{key}")
   end
-  YAML.safe_load_file(manifest_path)
+  YAML.safe_load(manifest_source)
 rescue Errno::ENOENT
   check(failures, false, "service manifest is missing: services/manifest.yml")
   manifest_loaded = false

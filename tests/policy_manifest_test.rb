@@ -199,6 +199,18 @@ expect_failure(failures, "malformed YAML", "service manifest is malformed") do |
   File.write(File.join(root, "services", "manifest.yml"), "services: [unterminated")
 end
 
+output, succeeded = run_policy(["tests/policy_test.rb"]) do |root|
+  File.open(File.join(root, "services", "manifest.yml"), "a") do |file|
+    file.write("---\nservices: []\n")
+  end
+end
+failures << "multiple manifest documents: policy_test.rb unexpectedly passed" if succeeded
+unless output.include?("service manifest must contain exactly one YAML document")
+  failures << "multiple manifest documents: policy_test.rb missing strict document-count diagnostic"
+end
+failures << "multiple manifest documents: policy_test.rb emitted a Ruby stack trace" if
+  output.match?(/\.rb:\d+:in [`']/)
+
 expect_failure(failures, "missing platform hierarchy",
                "inventory/local.yml must expose nas_hosts as a child of platform_hosts") do |root|
   mutate_yaml_file(root, "inventory/local.yml") { |inventory| inventory.delete("platform_hosts") }
