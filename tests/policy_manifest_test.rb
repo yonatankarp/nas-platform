@@ -546,7 +546,8 @@ expect_acquisition_failure.call(
   mutate_manifest(root) { |document| service(document, "arr")["status"] = "implemented" }
 end
 
-run_foundation_wrapper = lambda do |filename:, mode: 0o755, mutate: nil, ruby_selection: nil|
+run_foundation_wrapper = lambda do |filename:, mode: 0o755, mutate: nil, ruby_selection: nil,
+                                   invocation_mode: "static", trace: false|
   Dir.mktmpdir("nas-platform-foundation-wrapper-") do |root|
     copy_fixture(ROOT, root)
     initialize_fixture_index(root)
@@ -567,7 +568,7 @@ run_foundation_wrapper = lambda do |filename:, mode: 0o755, mutate: nil, ruby_se
     command = if ruby_selection
                 [RbConfig.ruby, "tests/media_acquisition_foundation_test.rb", "--project", ruby_selection]
               else
-                [wrapper, "static"]
+                [*(trace ? ["sh", "-x"] : []), wrapper, invocation_mode]
               end
     clean_environment = ENV.each_key.grep(/\AGIT_/).to_h { |name| [name, nil] }
     stdout, stderr, status = Open3.capture3(
@@ -580,16 +581,37 @@ end
 {
   "foundation wrapper filename exemption" => [
     { filename: "arr-renamed-foundation.sh" },
-    "unknown media acquisition foundation project"
+    "unknown acquisition foundation contract"
   ],
   "foundation wrapper project exemption" => [
     { filename: "arr-foundation.sh", mutate: ->(source) { source.sub("arr|downloaders", "downloaders") } },
-    "unknown media acquisition foundation project"
+    "unknown acquisition foundation contract"
   ]
 }.each do |label, (arguments, diagnostic)|
   output, succeeded = run_foundation_wrapper.call(**arguments)
   failures << "#{label}: unexpectedly passed" if succeeded
   failures << "#{label}: missing #{diagnostic.inspect}" unless output.include?(diagnostic)
+end
+
+{
+  "unknown filename" => [
+    { filename: "arr-renamed-foundation.sh", trace: true },
+    "unknown acquisition foundation contract"
+  ],
+  "invalid mode" => [
+    { filename: "arr-foundation.sh", invocation_mode: "secret-mode", trace: true },
+    "arr foundation contract accepts only static"
+  ]
+}.each do |label, (arguments, diagnostic)|
+  output, succeeded = run_foundation_wrapper.call(**arguments)
+  lines = output.lines(chomp: true)
+  initial_trace = lines.take_while { |line| line.match?(/\A\+ set (?:-eu|\+x)\z/) }
+  remaining = lines.drop(initial_trace.length)
+  failures << "foundation #{label} trace probe: unexpectedly passed" if succeeded
+  failures << "foundation #{label} trace probe: set +x was not the final initial trace" unless
+    initial_trace.last == "+ set +x"
+  failures << "foundation #{label} trace probe: leaked commands, paths, or assignments" unless
+    remaining == [diagnostic]
 end
 
 output, succeeded = run_foundation_wrapper.call(
