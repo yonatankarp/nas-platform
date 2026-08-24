@@ -18,6 +18,6 @@ mac_ansible_playbook -i "$mac_repo_dir/inventory/mac.yml" \
   -e @"$PLATFORM_MAC_VAULT_FILE" \
   -e @"$PLATFORM_MAC_FIXTURE_VARS_FILE" \
   -e "platform_vault_file=$PLATFORM_MAC_VAULT_FILE" \
-  --tags platform_verify_ntfy,platform_verify_beszel,platform_verify_dozzle,platform_verify_audiobookshelf,platform_verify_komga,platform_verify_jellyfin,platform_verify_immich,platform_verify_paperless
+  --tags platform_verify_media_acquisition_foundation,platform_verify_ntfy,platform_verify_beszel,platform_verify_dozzle,platform_verify_audiobookshelf,platform_verify_komga,platform_verify_jellyfin,platform_verify_immich,platform_verify_paperless
 
 mac_run_hooks verify

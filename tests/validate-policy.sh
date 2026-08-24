@@ -32,6 +32,10 @@ ruby tests/policy_deployment_test.rb
 ruby tests/policy_mac_test.rb
 ruby tests/policy_vault_test.rb
 ruby tests/media_acquisition_foundation_test.rb
+ruby tests/media_acquisition_foundation_verifier_test.rb
+tests/mac/media-acquisition-foundation-hook-test.sh
+ruby tests/mac/media-acquisition-foundation-report-test.rb
+tests/mac/media-acquisition-foundation-cleanup-test.sh
 ruby tests/renovate_policy_test.rb
 tests/policy_runner_test.sh
 ruby tests/paperless_mail_reconciliation_test.rb

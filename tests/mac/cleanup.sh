@@ -33,6 +33,25 @@ mac_projects_are_owned() {
   done
 }
 
+cleanup_media_acquisition_network() {
+  mac_project=$1
+  [ -n "$mac_project" ] || return 1
+  media_acquisition_cleanup_network=$mac_project-media-control
+  if ! docker network inspect "$media_acquisition_cleanup_network" >/dev/null 2>&1; then
+    return 0
+  fi
+  media_acquisition_cleanup_record=$(docker network inspect "$media_acquisition_cleanup_network" --format \
+    '{{.Name}}|{{.Driver}}|nas.platform.purpose={{index .Labels "nas.platform.purpose"}}|nas.platform.project={{index .Labels "nas.platform.project"}}') || return 1
+  [ "$media_acquisition_cleanup_record" = "$media_acquisition_cleanup_network|bridge|nas.platform.purpose=media-control|nas.platform.project=$mac_project" ] || return 1
+  media_acquisition_cleanup_labels=$(docker network inspect "$media_acquisition_cleanup_network" --format \
+    '{{range $key, $value := .Labels}}{{$key}}={{$value}}|{{end}}' |
+    tr '|' '\n' | sed '/^$/d' | LC_ALL=C sort) || return 1
+  [ "$media_acquisition_cleanup_labels" = "$(printf '%s\n%s\n' \
+    "nas.platform.project=$mac_project" 'nas.platform.purpose=media-control' | LC_ALL=C sort)" ] || return 1
+  docker network rm "$media_acquisition_cleanup_network" >/dev/null || return 1
+  ! docker network inspect "$media_acquisition_cleanup_network" >/dev/null 2>&1
+}
+
 related_rollback_sandboxes() {
   mac_source_sandbox=$1
   mac_source_project=$2
@@ -84,6 +103,7 @@ cleanup_one_mac_sandbox() {
   for mac_container_id in $mac_container_ids; do
     docker rm -f "$mac_container_id" >/dev/null || return 1
   done
+  cleanup_media_acquisition_network "$mac_project" || return 1
   for mac_network_id in $mac_network_ids; do
     docker network rm "$mac_network_id" >/dev/null || return 1
   done

@@ -34,6 +34,14 @@
         apply:
           tags: [always]
       tags: [always]
+  tasks:
+    - name: Verify the inert media acquisition foundation
+      ansible.builtin.include_role:
+        name: host_prep
+        tasks_from: verify_media_acquisition
+        apply:
+          tags: [platform_verify_media_acquisition_foundation]
+      tags: [never, platform_verify_media_acquisition_foundation]
   roles:
     - role: ntfy
       tags: [never]

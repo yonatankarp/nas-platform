@@ -56,6 +56,7 @@ BASE_FIXTURE_PATHS = %w[
   verify.yml
   roles/host_prep/meta/argument_specs.yml
   roles/host_prep/tasks/main.yml
+  roles/host_prep/tasks/verify_media_acquisition.yml
   roles/deployment_bundle/defaults/main.yml
   roles/deployment_bundle/meta/argument_specs.yml
   roles/deployment_bundle/files/validate_target.py
@@ -99,6 +100,7 @@ BASE_FIXTURE_PATHS = %w[
   tests/generate-secrets-redaction-test.sh
   tests/mac_inventory_path_test.yml
   tests/media_acquisition_foundation_test.rb
+  tests/media_acquisition_foundation_verifier_test.rb
   tests/managed_user_state_filter_test.py
   tests/ntfy_verify_execution_test.rb
   tests/komga_library_reconciliation_test.rb
@@ -116,10 +118,15 @@ BASE_FIXTURE_PATHS = %w[
   tests/mac/hooks/fixtures-persistence/00-services.sh
   tests/mac/hooks/fixtures-recreate/00-services.sh
   tests/mac/hooks/verify/30-services.sh
+  tests/mac/hooks/drift/15-media-acquisition-foundation.sh
+  tests/mac/hooks/verify/15-media-acquisition-foundation.sh
   tests/mac/manual-review.md
   tests/mac/manual-validation-handoff.rb
   tests/mac/manual-validation-runner-test.sh
   tests/mac/report.rb
+  tests/mac/media-acquisition-foundation-hook-test.sh
+  tests/mac/media-acquisition-foundation-report-test.rb
+  tests/mac/media-acquisition-foundation-cleanup-test.sh
   tests/mac/run.sh
   tests/mac/run-phase-status-test.sh
   tests/mac/snapshot-paperless.sh

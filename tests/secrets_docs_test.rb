@@ -316,10 +316,14 @@ nas_guide = File.file?(nas_guide_path) ? File.read(nas_guide_path) : ""
 auto_deploy_section = markdown_section(nas_guide, "## Automatic deployment from the NAS")
 auto_deploy_shell_blocks = shell_code_fences(auto_deploy_section)
 verify_tags = %w[
-  platform_verify_ntfy platform_verify_beszel platform_verify_dozzle
+  platform_verify_media_acquisition_foundation platform_verify_ntfy
+  platform_verify_beszel platform_verify_dozzle
   platform_verify_audiobookshelf platform_verify_komga platform_verify_jellyfin
   platform_verify_immich platform_verify_paperless
 ].join(",")
+check(failures,
+      auto_deploy_section.include?("the installed\npoller cannot select a verification tag that exists only in the candidate until\nthat candidate has been activated"),
+      "NAS automatic deployment guide must require manual verification for first foundation rollout")
 
 required_auto_deploy_commands = {
   "anonymous controller clone" => [

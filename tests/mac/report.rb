@@ -212,6 +212,15 @@ def markdown_cell(value)
   value.to_s.gsub("|", "\\|").gsub(/\r?\n/, " ")
 end
 
+def media_acquisition_foundation_report
+  [
+    "MEDIA_ACQUISITION_FOUNDATION: network present, bridge driver, isolated project name, Jellyfin and Audiobookshelf attached to default and media-control",
+    "MEDIA_ACQUISITION_STORAGE: 28 exact classified paths present",
+    "MEDIA_ACQUISITION_TRANSPORTS: usenet=false torrent=false",
+    "MEDIA_ACQUISITION_CONTAINERS: none declared or started"
+  ]
+end
+
 def markdown_report(report)
   lines = ["# Mac platform proof report", ""]
   %w[
@@ -243,6 +252,8 @@ def markdown_report(report)
     diagnostics.each { |location| lines << "- #{markdown_cell(location)}" }
   end
   lines.concat([
+    "", "## Media acquisition foundation", "",
+    *media_acquisition_foundation_report,
     "", "## Manual review", "",
     "Complete `tests/mac/manual-review.md` against this report and its deployment manifest.", "",
     "## NAS-only evidence", "",

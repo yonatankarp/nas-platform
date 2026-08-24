@@ -752,6 +752,7 @@ export PLATFORM_CALLBACK_HOST=$callback_host
 export PLATFORM_COMPOSE_KIND=$proof_platform
 export PLATFORM_KIND=$proof_platform
 export PLATFORM_PROJECT_NAME=$project_name
+export PLATFORM_MEDIA_NETWORK=$project_name-media-control
 export PLATFORM_BESZEL_PORT=$beszel_port
 export PLATFORM_NTFY_PORT=$ntfy_port
 export PLATFORM_DOZZLE_PORT=$dozzle_port

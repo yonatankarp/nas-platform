@@ -1456,6 +1456,14 @@ end
     "ruby tests/immich_selective_helper_integrity_test.rb",
   "Mac manual-validation runner regression" => "tests/mac/manual-validation-runner-test.sh",
   "Mac hook coverage regression" => "tests/mac/hook-coverage-test.sh",
+  "media acquisition verifier regression" =>
+    "ruby tests/media_acquisition_foundation_verifier_test.rb",
+  "media acquisition hook regression" =>
+    "tests/mac/media-acquisition-foundation-hook-test.sh",
+  "media acquisition report regression" =>
+    "ruby tests/mac/media-acquisition-foundation-report-test.rb",
+  "media acquisition cleanup regression" =>
+    "tests/mac/media-acquisition-foundation-cleanup-test.sh",
   "Paperless snapshot recovery regression" => "tests/mac/snapshot-paperless-recovery-test.sh",
   "Paperless drill login budget regression" =>
     "tests/mac/snapshot-paperless-drill-throttle-test.sh"

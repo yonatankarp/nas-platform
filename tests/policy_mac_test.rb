@@ -116,6 +116,9 @@ check(failures, mac_run.include?('mktemp -d "$temporary_parent/nas-platform-mac.
                 mac_run.include?('report_root=$sandbox.reports') &&
                 mac_run.include?(".nas-platform-mac-report-owned"),
       "Mac lifecycle must use a locked unique sandbox with reports outside service data")
+check(failures, mac_run.include?('export PLATFORM_MEDIA_NETWORK=$project_name-media-control') &&
+                mac_verify.include?("platform_verify_media_acquisition_foundation"),
+      "Mac lifecycle must export and select the derived media acquisition network verifier")
 %w[
   PLATFORM_MAC_SANDBOX PLATFORM_DOCKER_ROOT PLATFORM_MEDIA_ROOT
   PLATFORM_FIXTURE_ROOT PLATFORM_REPORT_ROOT PLATFORM_PROOF_LANE
@@ -185,6 +188,15 @@ check(failures, mac_report.include?("when Hash") && mac_report.include?("when Ar
                 mac_report.include?("deployment_manifest") &&
                 mac_report.include?("diagnostic_locations"),
       "Mac reporter must recursively sanitize structured input into JSON and Markdown")
+media_report_fields = mac_report.scan(/MEDIA_ACQUISITION_[A-Z]+:/)
+check(failures, media_report_fields.length == 4 && media_report_fields.uniq.length == 4,
+      "Mac report must contain exactly four bounded media acquisition fields")
+
+%w[drift verify].each do |group|
+  path = File.join(ROOT, "tests", "mac", "hooks", group, "15-media-acquisition-foundation.sh")
+  check(failures, File.file?(path) && File.executable?(path),
+        "Mac #{group} must register an executable media acquisition foundation hook")
+end
 
 # The Mac contract wrapper and four of the five hook groups were one file per
 # service until they were driven from tests/contracts/registry.yml. What that
@@ -222,6 +234,15 @@ mac_policy_runner_path = File.join(ROOT, "tests", "validate-policy.sh")
 mac_policy_runner = File.file?(mac_policy_runner_path) ? File.read(mac_policy_runner_path) : ""
 check(failures, mac_policy_runner.lines.map(&:strip).include?("tests/mac/hook-coverage-test.sh"),
       "validate-policy.sh must run tests/mac/hook-coverage-test.sh")
+[
+  "ruby tests/media_acquisition_foundation_verifier_test.rb",
+  "tests/mac/media-acquisition-foundation-hook-test.sh",
+  "ruby tests/mac/media-acquisition-foundation-report-test.rb",
+  "tests/mac/media-acquisition-foundation-cleanup-test.sh"
+].each do |command|
+  check(failures, mac_policy_runner.lines.map(&:strip).include?(command),
+        "validate-policy.sh must run #{command}")
+end
 # The Paperless restore recovery path used to start redis and flush the valkey
 # queue in one breath, which raced the socket and failed a clean restore about
 # once in eight CI runs. The wait that fixes it is only provable behaviourally,

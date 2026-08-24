@@ -164,6 +164,10 @@ validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "te
   ruby\ tests/policy_deployment_test.rb
   ruby\ tests/policy_mac_test.rb
   ruby\ tests/policy_vault_test.rb
+  ruby\ tests/media_acquisition_foundation_verifier_test.rb
+  tests/mac/media-acquisition-foundation-hook-test.sh
+  ruby\ tests/mac/media-acquisition-foundation-report-test.rb
+  tests/mac/media-acquisition-foundation-cleanup-test.sh
   ruby\ tests/renovate_policy_test.rb
   ruby\ tests/policy_manifest_test.rb
   ruby\ tests/run_contracts_test.rb

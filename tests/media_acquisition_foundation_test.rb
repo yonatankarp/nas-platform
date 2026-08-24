@@ -466,6 +466,16 @@ host_prep_role = site.fetch("roles").find { |role| role["role"] == "host_prep" }
 failures << "host_prep must expose the media_acquisition_foundation convergence tag" unless
   host_prep_role && host_prep_role.fetch("tags").include?("media_acquisition_foundation")
 
+verifier_path = File.join(ROOT, "roles", "host_prep", "tasks", "verify_media_acquisition.yml")
+failures << "host_prep must provide the standalone media acquisition verifier" unless File.file?(verifier_path)
+verify_play = YAML.safe_load_file(File.join(ROOT, "verify.yml")).first
+verifier_include = Array(verify_play["tasks"]).find do |task|
+  task.dig("ansible.builtin.include_role", "name") == "host_prep"
+end
+failures << "verify.yml must select the standalone media acquisition verifier by explicit tag" unless
+  verifier_include&.dig("ansible.builtin.include_role", "tasks_from") == "verify_media_acquisition" &&
+    Array(verifier_include["tags"]) == %w[never platform_verify_media_acquisition_foundation]
+
 
 # Exercise the exact-shape guard against every port field and the contract's
 # security-sensitive structural boundaries. These mutations never touch disk.

@@ -255,6 +255,11 @@ fi
 # The runner's own refusals. These stop before any environment is read, so they
 # need no sandbox.
 runner=$repo_dir/tests/mac/run-contract.sh
+for lifecycle_hook in \
+    tests/mac/hooks/drift/15-media-acquisition-foundation.sh \
+    tests/mac/hooks/verify/15-media-acquisition-foundation.sh; do
+  [ -x "$repo_dir/$lifecycle_hook" ] || fail "$lifecycle_hook is absent or not executable"
+done
 if "$runner" >/dev/null 2>&1; then
   fail 'contract runner accepted no arguments'
 fi
