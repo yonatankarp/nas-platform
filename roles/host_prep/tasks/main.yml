@@ -12,13 +12,13 @@
     deployment_target_require_current_release: false
     deployment_target_extra_paths: "{{ nas_storage | map(attribute='path') | list }}"
 
-- name: Create the media control network
+- name: Create the external media control network
   community.docker.docker_network:
     name: "{{ platform_media_control_network }}"
     driver: bridge
     labels:
-      purpose: media-control
-      project: "{{ platform_project_name | default('nas-platform', true) }}"
+      nas.platform.purpose: media-control
+      nas.platform.project: "{{ platform_project_name | default('nas-platform', true) }}"
     state: present
 
 - name: Refuse to claim ownership of NAS-managed user files

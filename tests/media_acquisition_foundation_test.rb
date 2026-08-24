@@ -377,15 +377,17 @@ failures << "media control network identity must be derived from the project nam
   shared_vars["platform_media_control_network"] == expected_network_expression
 
 host_prep = YAML.safe_load_file(File.join(ROOT, "roles", "host_prep", "tasks", "main.yml"))
-network_task = host_prep.find { |task| task["name"] == "Create the media control network" }
+network_task = host_prep.find do |task|
+  task["name"] == "Create the external media control network"
+end
 network_definition = network_task&.fetch("community.docker.docker_network", nil)
 failures << "host preparation must create the derived bridge media control network" unless
   network_definition == {
     "name" => "{{ platform_media_control_network }}",
     "driver" => "bridge",
     "labels" => {
-      "purpose" => "media-control",
-      "project" => "{{ platform_project_name | default('nas-platform', true) }}"
+      "nas.platform.purpose" => "media-control",
+      "nas.platform.project" => "{{ platform_project_name | default('nas-platform', true) }}"
     },
     "state" => "present"
   }

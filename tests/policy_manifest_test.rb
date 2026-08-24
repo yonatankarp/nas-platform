@@ -104,6 +104,16 @@ expect_acquisition_failure.call(
   end
 end
 expect_acquisition_failure.call(
+  "Komga Books parent removed",
+  "media acquisition storage differs from the exact classified foundation"
+) do |root|
+  mutate_yaml_file(root, "inventory/group_vars/all/main.yml") do |inventory|
+    inventory.fetch("nas_storage").reject! do |entry|
+      entry.fetch("path") == "{{ nas_media_root }}/Books"
+    end
+  end
+end
+expect_acquisition_failure.call(
   "media acquisition marker removed",
   "media acquisition storage differs from the exact classified foundation"
 ) do |root|
@@ -133,8 +143,35 @@ expect_acquisition_failure.call(
   "host preparation must create the derived bridge media control network"
 ) do |root|
   mutate_yaml_file(root, "roles/host_prep/tasks/main.yml") do |tasks|
-    task = tasks.find { |entry| entry["name"] == "Create the media control network" }
+    task = tasks.find do |entry|
+      entry["name"] == "Create the external media control network"
+    end
     task.fetch("community.docker.docker_network")["driver"] = "overlay"
+  end
+end
+{
+  "nas.platform.purpose" => "media-control",
+  "nas.platform.project" => "{{ platform_project_name | default('nas-platform', true) }}"
+}.each do |label_name, label_value|
+  short_name = label_name.delete_prefix("nas.platform.")
+  {
+    "deleted" => proc { |labels| labels.delete(label_name) },
+    "renamed" => proc do |labels|
+      labels["renamed.#{label_name}"] = labels.delete(label_name)
+    end,
+    "wrong value" => proc { |labels| labels[label_name] = "wrong-#{label_value}" }
+  }.each do |mutation_name, mutation|
+    expect_acquisition_failure.call(
+      "media control #{short_name} label #{mutation_name}",
+      "host preparation must create the derived bridge media control network"
+    ) do |root|
+      mutate_yaml_file(root, "roles/host_prep/tasks/main.yml") do |tasks|
+        task = tasks.find do |entry|
+          entry["name"] == "Create the external media control network"
+        end
+        mutation.call(task.fetch("community.docker.docker_network").fetch("labels"))
+      end
+    end
   end
 end
 expect_acquisition_failure.call(
