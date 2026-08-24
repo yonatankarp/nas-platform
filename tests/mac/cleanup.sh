@@ -33,12 +33,24 @@ mac_projects_are_owned() {
   done
 }
 
-cleanup_media_acquisition_network() {
+validate_media_acquisition_network() {
   mac_project=$1
   [ -n "$mac_project" ] || return 1
+  case $mac_project in
+    [-_]*|*[!abcdefghijklmnopqrstuvwxyz0123456789_-]*) return 1 ;;
+  esac
   media_acquisition_cleanup_network=$mac_project-media-control
+  media_acquisition_cleanup_candidates=$(docker network ls \
+    --filter label=nas.platform.purpose=media-control \
+    --filter "label=nas.platform.project=$mac_project" \
+    --format '{{.Name}}') || return 1
+  case $media_acquisition_cleanup_candidates in
+    ''|"$media_acquisition_cleanup_network") ;;
+    *) return 1 ;;
+  esac
   if ! docker network inspect "$media_acquisition_cleanup_network" >/dev/null 2>&1; then
-    return 0
+    [ -z "$media_acquisition_cleanup_candidates" ]
+    return
   fi
   media_acquisition_cleanup_record=$(docker network inspect "$media_acquisition_cleanup_network" --format \
     '{{.Name}}|{{.Driver}}|nas.platform.purpose={{index .Labels "nas.platform.purpose"}}|nas.platform.project={{index .Labels "nas.platform.project"}}') || return 1
@@ -48,6 +60,15 @@ cleanup_media_acquisition_network() {
     tr '|' '\n' | sed '/^$/d' | LC_ALL=C sort) || return 1
   [ "$media_acquisition_cleanup_labels" = "$(printf '%s\n%s\n' \
     "nas.platform.project=$mac_project" 'nas.platform.purpose=media-control' | LC_ALL=C sort)" ] || return 1
+}
+
+remove_media_acquisition_network() {
+  mac_project=$1
+  validate_media_acquisition_network "$mac_project" || return 1
+  media_acquisition_cleanup_network=$mac_project-media-control
+  if ! docker network inspect "$media_acquisition_cleanup_network" >/dev/null 2>&1; then
+    return 0
+  fi
   docker network rm "$media_acquisition_cleanup_network" >/dev/null || return 1
   ! docker network inspect "$media_acquisition_cleanup_network" >/dev/null 2>&1
 }
@@ -86,6 +107,7 @@ cleanup_one_mac_sandbox() {
   mac_cleanup_target=$(mac_validate_sandbox "$1") || return 1
   mac_marker=$mac_cleanup_target/.nas-platform-mac-owned
   mac_project=$(sed -n 's/^project=//p' "$mac_marker")
+  validate_media_acquisition_network "$mac_project" || return 1
 
   mac_container_ids=$(for mac_service_project in $(mac_owned_project_labels "$mac_project"); do
     docker ps -aq --filter "label=com.docker.compose.project=$mac_service_project" || exit 1
@@ -103,7 +125,7 @@ cleanup_one_mac_sandbox() {
   for mac_container_id in $mac_container_ids; do
     docker rm -f "$mac_container_id" >/dev/null || return 1
   done
-  cleanup_media_acquisition_network "$mac_project" || return 1
+  remove_media_acquisition_network "$mac_project" || return 1
   for mac_network_id in $mac_network_ids; do
     docker network rm "$mac_network_id" >/dev/null || return 1
   done
