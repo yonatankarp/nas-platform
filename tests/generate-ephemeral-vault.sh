@@ -23,6 +23,11 @@ validate_lexical_path() {
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 repo_dir=$(CDPATH= cd -- "$script_dir/.." && pwd -P)
 temporary_parent_input=${TMPDIR:-/tmp}
+case $temporary_parent_input in
+  /) ;;
+  *//) die 'temporary parent must be lexically normalized' ;;
+  */) temporary_parent_input=${temporary_parent_input%/} ;;
+esac
 validate_lexical_path "$temporary_parent_input" 'temporary parent'
 [ -d "$temporary_parent_input" ] || die 'temporary parent is unavailable'
 [ ! -L "$temporary_parent_input" ] || die 'refusing symlink temporary parent'
@@ -169,6 +174,21 @@ vault_jellyfin_opensubtitles_username: ephemeral-opensubtitles-user
 vault_jellyfin_opensubtitles_password: '$(random_password)'
 vault_komga_admin_email: ephemeral-admin@example.invalid
 vault_komga_admin_password: '$(random_password)'
+vault_arr_radarr_api_key: '$(openssl rand -hex 16 2>/dev/null)'
+vault_arr_radarr_admin_username: nasadmin
+vault_arr_radarr_admin_password: '$(random_password)'
+vault_arr_sonarr_api_key: '$(openssl rand -hex 16 2>/dev/null)'
+vault_arr_sonarr_admin_username: nasadmin
+vault_arr_sonarr_admin_password: '$(random_password)'
+vault_arr_prowlarr_api_key: '$(openssl rand -hex 16 2>/dev/null)'
+vault_arr_prowlarr_admin_username: nasadmin
+vault_arr_prowlarr_admin_password: '$(random_password)'
+vault_arr_bazarr_api_key: '$(openssl rand -hex 16 2>/dev/null)'
+vault_arr_bazarr_admin_username: nasadmin
+vault_arr_bazarr_admin_password: '$(random_password)'
+vault_downloaders_sabnzbd_api_key: '$(openssl rand -hex 16 2>/dev/null)'
+vault_downloaders_sabnzbd_admin_username: nasadmin
+vault_downloaders_sabnzbd_admin_password: '$(random_password)'
 vault_ntfy_admin_user: ephemeral-admin
 vault_ntfy_admin_password: '$ntfy_admin_password'
 vault_ntfy_admin_password_hash: '$(bcrypt_password "$ntfy_admin_password")'
@@ -430,6 +450,15 @@ self_test() {
   done
   rmdir -- "$lexical_component"
   cleanup_vault "$canonical_directory"
+
+  trailing_slash_parent=$(mktemp -d "$temporary_parent/nas-platform-vault-tmp-parent.XXXXXX")
+  trailing_slash_directory=$(mktemp -d "$trailing_slash_parent/nas-platform-vault.XXXXXX")
+  if ! TMPDIR="$trailing_slash_parent/" "$0" --cleanup "$trailing_slash_directory" \
+      >/dev/null 2>&1; then
+    rmdir -- "$trailing_slash_directory" "$trailing_slash_parent"
+    die 'self-test rejected an ordinary temporary parent with one trailing slash'
+  fi
+  rmdir -- "$trailing_slash_parent"
 
   tmpdir_alias="$temporary_parent/nas-platform-vault.tmpalias.$$"
   ln -s "$temporary_parent" "$tmpdir_alias"

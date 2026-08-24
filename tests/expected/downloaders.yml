@@ -5,4 +5,7 @@ container_cpus:
   unpackerr: 1.0
   gluetun: 0.5
   qbittorrent: 1.5
-vault_keys: []
+vault_keys:
+  - vault_downloaders_sabnzbd_api_key
+  - vault_downloaders_sabnzbd_admin_username
+  - vault_downloaders_sabnzbd_admin_password

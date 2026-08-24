@@ -69,8 +69,8 @@ vault_keys = if vault_example.is_a?(Hash)
                []
              end
 
-check(failures, vault_keys.length == 44,
-      "vault example must contain exactly 44 vault_* keys (found #{vault_keys.length})")
+check(failures, vault_keys.length == 59,
+      "vault example must contain exactly 59 vault_* keys (found #{vault_keys.length})")
 
 secrets_guide_path = File.join(ROOT, "docs", "secrets.md")
 secrets_guide = File.file?(secrets_guide_path) ? File.read(secrets_guide_path) : ""
@@ -92,6 +92,31 @@ unless unexpected_keys.empty?
 end
 check(failures, missing_keys.empty? && duplicate_keys.empty? && unexpected_keys.empty?,
       "canonical secrets guide vault keys differ (#{schema_diagnostic.join('; ')})")
+
+foundation_keys = %w[
+  vault_arr_radarr_api_key
+  vault_arr_radarr_admin_username
+  vault_arr_radarr_admin_password
+  vault_arr_sonarr_api_key
+  vault_arr_sonarr_admin_username
+  vault_arr_sonarr_admin_password
+  vault_arr_prowlarr_api_key
+  vault_arr_prowlarr_admin_username
+  vault_arr_prowlarr_admin_password
+  vault_arr_bazarr_api_key
+  vault_arr_bazarr_admin_username
+  vault_arr_bazarr_admin_password
+  vault_downloaders_sabnzbd_api_key
+  vault_downloaders_sabnzbd_admin_username
+  vault_downloaders_sabnzbd_admin_password
+]
+check(failures, snippets_in_order?(secrets_guide, *foundation_keys),
+      "canonical secrets guide must document foundation credentials in contract order")
+check(failures,
+      secrets_guide.match?(/API keys are distinct 32-character lowercase hexadecimal strings/) &&
+        secrets_guide.match?(/four administrator passwords are distinct/) &&
+        secrets_guide.match?(/administrator password is distinct from the four Arr administrator passwords/),
+      "canonical secrets guide must document foundation shape and uniqueness")
 
 managed_user_services = %w[
   audiobookshelf beszel dozzle immich jellyfin komga ntfy paperless_ngx

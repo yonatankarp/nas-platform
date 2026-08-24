@@ -6,4 +6,16 @@ container_cpus:
   prowlarr: 0.5
   bazarr: 1.0
   configarr: 0.5
-vault_keys: []
+vault_keys:
+  - vault_arr_radarr_api_key
+  - vault_arr_radarr_admin_username
+  - vault_arr_radarr_admin_password
+  - vault_arr_sonarr_api_key
+  - vault_arr_sonarr_admin_username
+  - vault_arr_sonarr_admin_password
+  - vault_arr_prowlarr_api_key
+  - vault_arr_prowlarr_admin_username
+  - vault_arr_prowlarr_admin_password
+  - vault_arr_bazarr_api_key
+  - vault_arr_bazarr_admin_username
+  - vault_arr_bazarr_admin_password

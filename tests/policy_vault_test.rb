@@ -60,6 +60,30 @@ SERVICE_EXPECTATIONS, expectation_problems =
 expectation_problems.each { |problem| check(failures, false, problem) }
 EXPECTED_VAULT_KEYS = pinned_vault_keys(SERVICE_EXPECTATIONS)
 
+FOUNDATION_KEYS = %w[
+  vault_arr_radarr_api_key
+  vault_arr_radarr_admin_username
+  vault_arr_radarr_admin_password
+  vault_arr_sonarr_api_key
+  vault_arr_sonarr_admin_username
+  vault_arr_sonarr_admin_password
+  vault_arr_prowlarr_api_key
+  vault_arr_prowlarr_admin_username
+  vault_arr_prowlarr_admin_password
+  vault_arr_bazarr_api_key
+  vault_arr_bazarr_admin_username
+  vault_arr_bazarr_admin_password
+  vault_downloaders_sabnzbd_api_key
+  vault_downloaders_sabnzbd_admin_username
+  vault_downloaders_sabnzbd_admin_password
+].freeze
+
+actual_foundation_expectations =
+  SERVICE_EXPECTATIONS.fetch("arr").fetch("vault_keys") +
+  SERVICE_EXPECTATIONS.fetch("downloaders").fetch("vault_keys")
+check(failures, actual_foundation_expectations == FOUNDATION_KEYS,
+      "arr and downloaders expectations must carry the exact ordered foundation key set")
+
 site_play = YAML.safe_load_file(File.join(ROOT, "site.yml")).first
 
 # Compose interpolates $ in env files and silently truncates an unescaped bcrypt
@@ -76,6 +100,19 @@ end
 # and ends up with a vault missing keys the roles require.
 example_path = File.join(ROOT, "inventory", "group_vars", "all", "vault.yml.example")
 example = YAML.safe_load_file(example_path)
+foundation_example = FOUNDATION_KEYS.to_h do |key|
+  value = if key.end_with?("_api_key")
+            (FOUNDATION_KEYS.index(key) / 3).to_s * 32
+          elsif key.end_with?("_admin_username")
+            "nasadmin"
+          else
+            service = key[/vault_(?:arr_)?(?:downloaders_)?([^_]+)_admin_password/, 1]
+            "example-#{service}-password"
+          end
+  [key, value]
+end
+check(failures, foundation_example.all? { |key, value| example[key] == value },
+      "vault example must use the exact sanitized foundation values")
 example.each do |key, value|
   next unless value.is_a?(String)
   next if key == "vault_jellyfin_admin_username" && value == "Yonatan"
@@ -85,6 +122,7 @@ example.each do |key, value|
   next if value == "ssh-ed25519 AAAA"
   next if value == "00000000-0000-4000-a000-000000000000"
   next if value.include?("example-only-not-a-real-private-key")
+  next if foundation_example[key] == value
 
   check(failures, false, "#{example_path}: #{key} looks like a real value, not a placeholder")
 end
@@ -116,6 +154,25 @@ vault_contract_sources.each do |label, path|
   (keys.uniq - EXPECTED_VAULT_KEYS).each do |key|
     check(failures, false, "#{label} has unexpected or non-portable vault key #{key}")
   end
+end
+
+foundation_parity_sources = vault_contract_sources.merge(
+  "credential rules" => File.join(ROOT, "filter_plugins", "vault_credential_schema.py"),
+  "vault contract mapping" => File.join(ROOT, "roles", "vault_contract", "tasks", "main.yml"),
+  "secret generator" => File.join(ROOT, "generate-secrets.yml")
+)
+foundation_parity_sources.each do |label, path|
+  body = File.read(path)
+  positions = FOUNDATION_KEYS.map do |key|
+    generator_key = key.delete_prefix("vault_")
+    body.index(key) || (label == "secret generator" ? body.index(generator_key) : nil)
+  end
+  FOUNDATION_KEYS.zip(positions).each do |key, position|
+    check(failures, !position.nil?, "#{label} is missing foundation credential #{key}")
+  end
+  check(failures,
+        positions.none?(&:nil?) && positions.each_cons(2).all? { |left, right| left < right },
+        "#{label} must carry foundation credentials in contract order")
 end
 
 check(failures, vault_contract_sources.values.map { |path| vault_keys(path) }.uniq.length == 1,

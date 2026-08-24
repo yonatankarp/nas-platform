@@ -24,7 +24,7 @@ end
   "wrong status-map type" => [[], "service statuses must be a mapping"],
   "invalid status-map value" => [valid_statuses.merge("arr" => ["planned"]),
                                  "must be planned, implemented, or accepted"],
-  "implemented service with empty vault list" => [valid_statuses.merge("arr" => "implemented"),
+  "implemented service with empty vault list" => [valid_statuses.merge("bindery" => "implemented"),
                                                    "vault_keys must be a nonempty list"]
 }.each do |label, (statuses, diagnostic)|
   _expectations, problems = pinned_service_expectations(ROOT, statuses)
@@ -202,8 +202,8 @@ expect_failure(failures, "duplicate manifest service", "service manifest name va
 end
 
 expect_failure(failures, "planned service promoted without vault contract",
-               "tests/expected/arr.yml vault_keys must be a nonempty list") do |root|
-  mutate_manifest(root) { |document| service(document, "arr")["status"] = "implemented" }
+               "tests/expected/bindery.yml vault_keys must be a nonempty list") do |root|
+  mutate_manifest(root) { |document| service(document, "bindery")["status"] = "implemented" }
 end
 
 %w[policy_test.rb policy_vault_test.rb].each do |caller|
