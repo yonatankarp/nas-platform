@@ -76,9 +76,66 @@ expected = {
 }
 actual = load_yaml.call(manifest_path)
 abort "deployment manifest differs from exact controller inputs" unless actual == expected
-staged_catalog_path = File.join(File.dirname(manifest_path), catalog_relative_path)
-abort "staged acquisition catalog is missing" unless File.file?(staged_catalog_path)
-staged_catalog_checksum = Digest::SHA256.file(staged_catalog_path).hexdigest
+
+begin
+  release_root = File.realpath(File.dirname(manifest_path))
+rescue SystemCallError
+  abort "deployment release root cannot be resolved safely"
+end
+catalog_parent_path = File.join(release_root, "config")
+staged_catalog_path = File.join(catalog_parent_path, "media-acquisition.yml")
+safe_lstat = lambda do |path, diagnostic|
+  File.lstat(path)
+rescue SystemCallError
+  abort diagnostic
+end
+stat_identity = ->(stat) { [stat.dev, stat.ino, stat.mode] }
+release_root_stat = safe_lstat.call(
+  release_root, "deployment release root must be a real directory"
+)
+abort "deployment release root must be a real directory" unless
+  release_root_stat.directory? && !release_root_stat.symlink?
+catalog_parent_stat = safe_lstat.call(
+  catalog_parent_path, "staged acquisition catalog parent must be a real directory"
+)
+abort "staged acquisition catalog parent must be a real directory" unless
+  catalog_parent_stat.directory? && !catalog_parent_stat.symlink?
+staged_catalog_stat = safe_lstat.call(
+  staged_catalog_path, "staged acquisition catalog is missing"
+)
+abort "staged acquisition catalog must be a regular non-symlink file" unless
+  staged_catalog_stat.file? && !staged_catalog_stat.symlink?
+abort "staged acquisition catalog mode must be 0644" unless
+  staged_catalog_stat.mode & 0o7777 == 0o644
+
+staged_catalog_digest = Digest::SHA256.new
+begin
+  File.open(staged_catalog_path, File::RDONLY | File::NOFOLLOW) do |file|
+    opened_stat = file.stat
+    abort "staged acquisition catalog changed before hashing" unless
+      opened_stat.file? && stat_identity.call(opened_stat) == stat_identity.call(staged_catalog_stat)
+    while (chunk = file.read(16 * 1024))
+      staged_catalog_digest << chunk
+    end
+  end
+rescue SystemCallError
+  abort "staged acquisition catalog could not be read safely"
+end
+
+release_root_after = safe_lstat.call(
+  release_root, "deployment release root changed during verification"
+)
+catalog_parent_after = safe_lstat.call(
+  catalog_parent_path, "staged acquisition catalog path changed during verification"
+)
+staged_catalog_after = safe_lstat.call(
+  staged_catalog_path, "staged acquisition catalog path changed during verification"
+)
+abort "staged acquisition catalog path changed during verification" unless
+  stat_identity.call(release_root_after) == stat_identity.call(release_root_stat) &&
+    stat_identity.call(catalog_parent_after) == stat_identity.call(catalog_parent_stat) &&
+    stat_identity.call(staged_catalog_after) == stat_identity.call(staged_catalog_stat)
+staged_catalog_checksum = staged_catalog_digest.hexdigest
 abort "staged acquisition catalog differs from manifest checksum" unless
   staged_catalog_checksum == expected_platform_inputs.first.fetch("checksum_sha256")
 if require_image_merge

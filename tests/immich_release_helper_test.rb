@@ -136,11 +136,16 @@ Dir.mktmpdir("nas-platform-immich-release-helper-") do |temporary|
     File.join(release_root, "manifest.yml"), controller,
     File.join(controller, "services", "manifest.yml"), "nas", "fixture", release_id
   ]
+  deployed_catalog = File.join(release_root, "config", "media-acquisition.yml")
+  deployed_catalog_stat = File.lstat(deployed_catalog)
+  fail_test("deployed catalog is not a regular non-symlink file") unless
+    deployed_catalog_stat.file? && !deployed_catalog_stat.symlink?
+  fail_test("deployed catalog mode differs") unless
+    deployed_catalog_stat.mode & 0o7777 == 0o644
   verify_output, verify_error, verify_status = Open3.capture3(*verifier_argv)
   fail_test("deployment manifest verifier rejected the release: #{verify_output}#{verify_error}") unless
     verify_status.success?
 
-  deployed_catalog = File.join(release_root, "config", "media-acquisition.yml")
   catalog_bytes = File.binread(catalog_source)
   fail_test("catalog fixture is unexpectedly empty") if catalog_bytes.empty?
   tampered_catalog_bytes = catalog_bytes.dup
@@ -163,6 +168,63 @@ Dir.mktmpdir("nas-platform-immich-release-helper-") do |temporary|
     File.binread(deployed_catalog) == catalog_bytes
   fail_test("staged catalog mode was not restored") unless
     File.stat(deployed_catalog).mode & 0o777 == 0o644
+
+  begin
+    File.chmod(0o600, deployed_catalog)
+    mode_output, mode_error, mode_status = Open3.capture3(*verifier_argv)
+  ensure
+    File.chmod(0o644, deployed_catalog)
+  end
+  mode_diagnostic = mode_output + mode_error
+  fail_test("mode-0600 staged catalog was accepted") if mode_status.success?
+  fail_test("staged catalog mode drift omitted its controlled diagnostic") unless
+    mode_diagnostic.include?("staged acquisition catalog mode must be 0644")
+  fail_test("staged catalog mode drift emitted a Ruby stack trace") if
+    mode_diagnostic.match?(/\.rb:\d+:in [`']/)
+
+  external_catalog = File.join(root, "external-media-acquisition.yml")
+  File.binwrite(external_catalog, catalog_bytes)
+  File.chmod(0o644, external_catalog)
+  begin
+    FileUtils.rm(deployed_catalog)
+    File.symlink(external_catalog, deployed_catalog)
+    symlink_output, symlink_error, symlink_status = Open3.capture3(*verifier_argv)
+  ensure
+    FileUtils.rm_f(deployed_catalog)
+    File.binwrite(deployed_catalog, catalog_bytes)
+    File.chmod(0o644, deployed_catalog)
+  end
+  symlink_diagnostic = symlink_output + symlink_error
+  fail_test("symlinked staged catalog was accepted") if symlink_status.success?
+  fail_test("staged catalog symlink omitted its controlled diagnostic") unless
+    symlink_diagnostic.include?("staged acquisition catalog must be a regular non-symlink file")
+  fail_test("staged catalog symlink emitted a Ruby stack trace") if
+    symlink_diagnostic.match?(/\.rb:\d+:in [`']/)
+
+  deployed_config = File.dirname(deployed_catalog)
+  external_config = File.join(root, "external-config")
+  held_config = File.join(root, "held-release-config")
+  FileUtils.mkdir_p(external_config)
+  File.binwrite(File.join(external_config, "media-acquisition.yml"), catalog_bytes)
+  begin
+    FileUtils.mv(deployed_config, held_config)
+    File.symlink(external_config, deployed_config)
+    parent_output, parent_error, parent_status = Open3.capture3(*verifier_argv)
+  ensure
+    FileUtils.rm_f(deployed_config)
+    FileUtils.mv(held_config, deployed_config)
+  end
+  parent_diagnostic = parent_output + parent_error
+  fail_test("symlinked staged catalog parent was accepted") if parent_status.success?
+  fail_test("staged catalog parent symlink omitted its controlled diagnostic") unless
+    parent_diagnostic.include?("staged acquisition catalog parent must be a real directory")
+  fail_test("staged catalog parent symlink emitted a Ruby stack trace") if
+    parent_diagnostic.match?(/\.rb:\d+:in [`']/)
+  restored_catalog_stat = File.lstat(deployed_catalog)
+  fail_test("staged catalog did not remain a restored regular file") unless
+    restored_catalog_stat.file? && !restored_catalog_stat.symlink? &&
+      restored_catalog_stat.mode & 0o7777 == 0o644 &&
+      File.binread(deployed_catalog) == catalog_bytes
 
   File.binwrite(deployed_helper, "tampered-release-helper\n")
   File.chmod(0o644, deployed_helper)
