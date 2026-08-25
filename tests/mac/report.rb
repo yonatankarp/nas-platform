@@ -212,7 +212,12 @@ def markdown_cell(value)
   value.to_s.gsub("|", "\\|").gsub(/\r?\n/, " ")
 end
 
-def media_acquisition_foundation_report
+def media_acquisition_foundation_report(report)
+  verification_passed = report.fetch("phases", []).any? do |phase|
+    phase["name"] == "verify" && phase["status"] == "passed"
+  end
+  return [] unless verification_passed
+
   [
     "MEDIA_ACQUISITION_FOUNDATION: network present, bridge driver, isolated project name, Jellyfin and Audiobookshelf attached to default and media-control",
     "MEDIA_ACQUISITION_STORAGE: 28 exact classified paths present",
@@ -253,7 +258,7 @@ def markdown_report(report)
   end
   lines.concat([
     "", "## Media acquisition foundation", "",
-    *media_acquisition_foundation_report,
+    *media_acquisition_foundation_report(report),
     "", "## Manual review", "",
     "Complete `tests/mac/manual-review.md` against this report and its deployment manifest.", "",
     "## NAS-only evidence", "",

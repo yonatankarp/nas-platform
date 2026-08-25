@@ -11,6 +11,14 @@
       {{ lookup('env', 'PLATFORM_VAULT_FILE') |
          default(playbook_dir ~ '/inventory/group_vars/all/vault.yml', true) }}
   pre_tasks:
+    - name: Validate target Docker module dependencies for verification
+      ansible.builtin.include_role:
+        name: preflight
+        tasks_from: target_docker_dependencies
+        apply:
+          tags: [always]
+      tags: [always]
+
     - name: Validate portable credentials for verification
       ansible.builtin.include_role:
         name: vault_contract

@@ -325,7 +325,18 @@ suite_pull_images() {
     if [ -n "$suite_tags" ]; then
       case ",$suite_tags," in
         *",$service_tag,"*) ;;
-        *) continue ;;
+        *)
+          case "$suite:$service_tag" in
+            arr:ntfy|arr:audiobookshelf|arr:jellyfin|\
+            downloaders:ntfy|downloaders:audiobookshelf|downloaders:jellyfin|\
+            bindery:ntfy|bindery:audiobookshelf|bindery:jellyfin|\
+            kapowarr:ntfy|kapowarr:audiobookshelf|kapowarr:jellyfin|\
+            pinchflat:ntfy|pinchflat:audiobookshelf|pinchflat:jellyfin|\
+            trailarr:ntfy|trailarr:audiobookshelf|trailarr:jellyfin|\
+            seerr:ntfy|seerr:audiobookshelf|seerr:jellyfin) ;;
+            *) continue ;;
+          esac
+          ;;
       esac
     fi
     sed -n 's/^[[:space:]]*image:[[:space:]]*//p' \
@@ -665,7 +676,8 @@ paperless_fixture_preseeded=false
 komga_fixture_preseeded=false
 jellyfin_fixture_preseeded=false
 case "$suite:$run_service_scenarios" in
-  audiobookshelf:true|full:true)
+  audiobookshelf:true|arr:true|downloaders:true|bindery:true|kapowarr:true|\
+  pinchflat:true|trailarr:true|seerr:true|full:true)
     env \
       PLATFORM_MEDIA_ROOT="$sandbox/volume2" \
       PLATFORM_REPORT_ROOT="$sandbox/reports" \
@@ -693,7 +705,8 @@ case "$suite:$run_service_scenarios" in
     ;;
 esac
 case "$suite:$run_service_scenarios" in
-  jellyfin:true|full:true)
+  jellyfin:true|arr:true|downloaders:true|bindery:true|kapowarr:true|\
+  pinchflat:true|trailarr:true|seerr:true|full:true)
     env \
       PLATFORM_KIND=integration \
       PLATFORM_DOCKER_ROOT="$sandbox/volume1/Docker" \
@@ -1202,6 +1215,26 @@ docker run --rm \
         --tags platform_verify_audiobookshelf
     }
 
+    converge_media_acquisition_reader_prerequisites() {
+      run_play --tags host_prep,deployment_bundle,ntfy,audiobookshelf,jellyfin
+    }
+
+    run_media_acquisition_foundation_verify() {
+      PLATFORM_VAULT_FILE="\$vault_file" ansible-playbook \
+        -i inventory/local.yml \
+        --vault-password-file "\$vault_password_file" \
+        -e @"\$vault_file" \
+        -e platform_vault_file="\$vault_file" \
+        -e nas_docker_root=$sandbox/volume1/Docker \
+        -e nas_media_root=$sandbox/volume2 \
+        -e platform_compose_kind=integration \
+        -e platform_beszel_agent_kind=portable \
+        -e deployment_bundle_test_mode=true \
+        -e deployment_bundle_allow_dirty_controller=true \
+        /repo/verify.yml \
+        --tags platform_verify_media_acquisition_foundation
+    }
+
     assert_controller_symlink_refused() {
       evidence=\$1
       fixture_name=\$2
@@ -1528,6 +1561,9 @@ EOF
     case "\$INTEGRATION_SUITE" in
       arr|downloaders|bindery|kapowarr|pinchflat|trailarr|seerr)
         /repo/tests/contracts/"\$INTEGRATION_SUITE"-foundation.sh static
+        converge_media_acquisition_reader_prerequisites
+        run_media_acquisition_foundation_verify
+        printf 'MEDIA_ACQUISITION_FOUNDATION_RUNTIME_VERIFIED\n'
         cleanup_vault
         exit 0
         ;;

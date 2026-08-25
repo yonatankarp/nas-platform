@@ -12,6 +12,25 @@
     deployment_target_require_current_release: false
     deployment_target_extra_paths: "{{ nas_storage | map(attribute='path') | list }}"
 
+- name: Inspect an existing exact-name media control network
+  community.docker.docker_network_info:
+    name: "{{ platform_media_control_network }}"
+  register: host_prep_media_control_existing
+  changed_when: false
+
+- name: Refuse an existing media control network owned by another project
+  ansible.builtin.assert:
+    that:
+      - host_prep_media_control_existing.network.Driver == 'bridge'
+      - host_prep_media_control_existing.network.Labels | default(none) is mapping
+      - host_prep_media_control_existing.network.Labels.get('nas.platform.purpose') == 'media-control'
+      - host_prep_media_control_existing.network.Labels.get('nas.platform.project') == (platform_project_name | default('nas-platform', true))
+      - host_prep_media_control_existing.network.Labels.keys() | sort == ['nas.platform.project', 'nas.platform.purpose']
+    fail_msg: >-
+      Refusing to modify the existing {{ platform_media_control_network }} network
+      because its driver or complete ownership label set differs from this project.
+  when: host_prep_media_control_existing.exists
+
 - name: Create the external media control network
   community.docker.docker_network:
     name: "{{ platform_media_control_network }}"

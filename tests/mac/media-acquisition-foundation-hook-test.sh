@@ -24,6 +24,7 @@ for token in \
   'jellyfin_disconnect_started=false' \
   'network_removal_started=false' \
   'leaf_removal_started=false' \
+  'leaf_removal_succeeded=false' \
   'trap media_acquisition_recover EXIT' \
   'trap media_acquisition_handle_hup HUP' \
   'trap media_acquisition_handle_int INT' \
@@ -135,6 +136,7 @@ else
     exit 42 if ENV["INJECT"] == "after_network_removal"
   elsif args[0, 2] == ["network", "create"]
     network_name = args.last
+    exit 43 if ENV["INJECT"] == "leaf_removed_network_recovery_failure"
     project_label = args.find { |item| item.start_with?("nas.platform.project=") }.to_s.split("=", 2).last
     state.fetch("networks")[network_name] = {
       "name" => network_name, "driver" => "bridge",
@@ -165,9 +167,11 @@ RUBY
 
 cat > "$fixture/bin/rmdir" <<'SH'
 #!/bin/sh
+[ "${INJECT:-}" = before_leaf_removal_failure ] && exit 42
 /bin/rmdir "$@" || exit $?
 case ${INJECT:-} in
   after_leaf_forced) exit 42 ;;
+  leaf_removed_network_recovery_failure) exit 42 ;;
   after_leaf_HUP) kill -HUP "$PPID" ;;
   after_leaf_INT) kill -INT "$PPID" ;;
   after_leaf_TERM) kill -TERM "$PPID" ;;
@@ -176,6 +180,7 @@ esac
 SH
 cat > "$fixture/bin/mkdir" <<'SH'
 #!/bin/sh
+printf 'MUTATE mkdir %s\n' "$*" >> "$FAKE_DOCKER_LOG"
 /bin/mkdir "$@" || exit $?
 [ "${INJECT:-}" = recovery_leaf_TERM ] && kill -TERM "$PPID"
 exit 0
@@ -313,6 +318,20 @@ for inject in after_first_disconnect after_network_removal \
       ;;
   esac
 done
+
+run_drift_case leaf_removed_network_recovery_failure
+[ "$status" -eq 42 ] || fail 'leaf/network recovery case changed the original status'
+[ -d "$leaf" ] && [ ! -L "$leaf" ] ||
+  fail 'leaf restoration depended on successful network recovery'
+grep -q "^MUTATE mkdir $leaf$" "$log" ||
+  fail 'removed leaf was not independently restored after network recovery failure'
+
+run_drift_case before_leaf_removal_failure
+[ "$status" -eq 42 ] || fail 'pre-removal failure status changed'
+assert_restored
+if grep -q '^MUTATE mkdir ' "$log"; then
+  fail 'failed rmdir caused an unnecessary mkdir for the existing leaf'
+fi
 
 for inject in recovery_create_HUP recovery_connect_INT recovery_leaf_TERM; do
   run_drift_case "$inject"

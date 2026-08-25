@@ -368,6 +368,11 @@ def jellyfin_identity_contract_failures
         "jellyfin_library_inventory_response | type_debug == 'list'"
       )
 
+  rename_wait = role_task.call("Wait for renamed Jellyfin managed library identities")
+  item_id_gate = rename_wait.dig("vars", "jellyfin_library_identity_inventory_globally_settled").to_s
+  failures << "Jellyfin renamed-library ItemId validation must type-filter before regex matching" unless
+    item_id_gate.match?(/map\(attribute='ItemId'\)\s*\|\s*select\('string'\)\s*\|\s*select\('match'/m)
+
   required = [
     "Preflight Jellyfin managed users",
     "List Jellyfin users for primary administrator preflight",

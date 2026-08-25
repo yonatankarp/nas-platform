@@ -245,14 +245,20 @@ check(failures,
       "vault contract must verify encryption header before computing SHA-256")
 
 site_pre_tasks = Array(site_play["pre_tasks"])
+target_dependency_index = site_pre_tasks.index do |task|
+  task.dig("ansible.builtin.include_role", "name") == "preflight" &&
+    task.dig("ansible.builtin.include_role", "tasks_from") == "target_docker_dependencies"
+end
 vault_contract_index = site_pre_tasks.index do |task|
   task.dig("ansible.builtin.include_role", "name") == "vault_contract"
 end
 first_mutation_guard = site_pre_tasks.index do |task|
   task.dig("ansible.builtin.include_role", "name") == "deployment_bundle"
 end
-check(failures, vault_contract_index == 0 && first_mutation_guard && vault_contract_index < first_mutation_guard,
-      "site.yml must validate the vault contract before every target pre-task")
+check(failures,
+      target_dependency_index == 0 && vault_contract_index == 1 &&
+        first_mutation_guard && vault_contract_index < first_mutation_guard,
+      "site.yml must validate target dependencies, then the vault contract, before mutation")
 site_vault_contract = vault_contract_index && site_pre_tasks[vault_contract_index]
 check(failures, site_vault_contract&.dig("ansible.builtin.include_role", "apply", "no_log") == true,
       "site.yml must redact vault role argument validation")

@@ -15,6 +15,14 @@
          default(playbook_dir ~ '/inventory/group_vars/all/vault.yml', true) }}
 
   pre_tasks:
+    - name: Validate target Docker module dependencies before target mutation
+      ansible.builtin.include_role:
+        name: preflight
+        tasks_from: target_docker_dependencies
+        apply:
+          tags: [always]
+      tags: [always]
+
     - name: Validate portable credentials before target mutation
       ansible.builtin.include_role:
         name: vault_contract

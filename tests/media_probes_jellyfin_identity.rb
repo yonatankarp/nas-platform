@@ -180,7 +180,8 @@ def exercise_jellyfin_library_rename_identity_refresh(failures)
     }
   }
   incomplete_shows_library = {
-    "Name" => "Shows", "CollectionType" => "tvshows", "Locations" => ["/media/Series"]
+    "Name" => "Shows", "ItemId" => 7, "CollectionType" => "tvshows",
+    "Locations" => ["/media/Series"]
   }
   state = {
     renamed: false, rename_refresh: false, observations: 0, refreshed_libraries: nil,
@@ -271,6 +272,11 @@ def exercise_jellyfin_library_rename_identity_refresh(failures)
       run_playbook(persistent_tasks, variables)
     failures << "Jellyfin persistent incomplete sibling did not time out: #{failure_tail(persistent_stdout + persistent_stderr)}" if
       persistent_status.success?
+    persistent_output = persistent_stdout + persistent_stderr
+    failures << "Jellyfin persistent malformed ItemId raised a template exception instead of timing out" if
+      persistent_output.match?(/template error|object of type|unhandled exception|unexpected templating type/i)
+    failures << "Jellyfin persistent malformed ItemId did not exercise bounded retries" unless
+      persistent_output.include?("FAILED - RETRYING")
     persistent_mutations = requests.drop(persistent_boundary).select do |request|
       %w[POST PUT PATCH DELETE].include?(request["method"]) &&
         URI("http://fixture#{request.fetch('target')}").path != "/Library/VirtualFolders/Name"

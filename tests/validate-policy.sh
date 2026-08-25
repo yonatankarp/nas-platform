@@ -31,6 +31,9 @@ ruby tests/policy_integration_test.rb
 ruby tests/policy_deployment_test.rb
 ruby tests/policy_mac_test.rb
 ruby tests/policy_vault_test.rb
+"$ansible_python" tests/generate_secrets_jinja_regex_test.py
+tests/target_docker_dependency_preflight_test.sh
+tests/media_control_network_collision_test.sh
 ruby tests/media_acquisition_foundation_test.rb
 ruby tests/media_acquisition_foundation_verifier_test.rb
 tests/mac/media-acquisition-foundation-hook-test.sh

@@ -52,12 +52,12 @@ def report_input
   }
 end
 
-def rendered_media_fields(report_path, expected)
+def rendered_media_fields(report_path, expected, phases: [])
   Dir.mktmpdir("media-acquisition-report.") do |directory|
     input = File.join(directory, "input.json")
     json = File.join(directory, "report.json")
     markdown = File.join(directory, "report.md")
-    File.write(input, JSON.generate(report_input))
+    File.write(input, JSON.generate(report_input.merge("phases" => phases)))
     stdout, stderr, status = Open3.capture3(
       RbConfig.ruby, report_path, "--input", input, "--json", json, "--markdown", markdown
     )
@@ -68,14 +68,28 @@ def rendered_media_fields(report_path, expected)
   end
 end
 
-failures.concat(rendered_media_fields(REPORT, expected))
+finished_at = "2026-08-25T12:00:00Z"
+passed_verify = [{ "name" => "verify", "status" => "passed", "finished_at" => finished_at }]
+failed_verify = [{ "name" => "verify", "status" => "failed", "finished_at" => finished_at }]
+failures.concat(rendered_media_fields(REPORT, expected, phases: passed_verify))
+failures.concat(
+  rendered_media_fields(REPORT, [], phases: []).map do |failure|
+    "absent verification emitted observed-state claims: #{failure}"
+  end
+)
+failures.concat(
+  rendered_media_fields(REPORT, [], phases: failed_verify).map do |failure|
+    "failed verification emitted observed-state claims: #{failure}"
+  end
+)
 
 Dir.mktmpdir("media-acquisition-report-mutant.") do |directory|
   mutant = File.join(directory, "report.rb")
-  mutated = source.sub("    *media_acquisition_foundation_report,\n", "")
+  mutated = source.sub("    *media_acquisition_foundation_report(report),\n", "")
   failures << "report mutation did not remove the markdown call site" if mutated == source
   File.write(mutant, mutated)
-  failures << "report test accepts removal of the markdown call site" if rendered_media_fields(mutant, expected).empty?
+  failures << "report test accepts removal of the markdown call site" if
+    rendered_media_fields(mutant, expected, phases: passed_verify).empty?
 end
 
 if failures.empty?

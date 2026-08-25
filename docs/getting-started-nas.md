@@ -22,8 +22,9 @@ Jellyfin until Bazarr is proven in Phase 1.
 
 ## 1. Prepare the NAS and workstation
 
-The NAS needs Docker, the Docker Compose plugin 2.18.0 or newer, Python 3, SSH
-access, and enough space under the configured storage roots. From your
+The NAS needs Docker, the Docker Compose plugin 2.18.0 or newer, Python 3 with
+the `requests` package available to Ansible's managed interpreter, SSH access,
+and enough space under the configured storage roots. From your
 workstation, confirm ordinary SSH access first. These are read-only checks:
 
 ```sh
@@ -37,6 +38,7 @@ key checking. On the NAS, verify:
 
 ```sh
 python3 --version
+python3 -c 'import requests'
 docker version
 docker compose version
 ```
@@ -120,6 +122,10 @@ backup and a service-specific rollback decision already written down:
 ```sh
 ansible-playbook -i inventory/remote.yml site.yml --ask-vault-pass
 ```
+
+Direct Jellyfin-only or Audiobookshelf-only runs require a completed foundation
+or full-site converge that created the external `media-control` network. This
+prerequisite applies only to those two reader services.
 
 Success requires `failed=0` and `unreachable=0`. Do not start manual repairs
 after a failure. Preserve the first failing task and its message, check the

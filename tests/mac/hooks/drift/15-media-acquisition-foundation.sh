@@ -28,6 +28,7 @@ audiobook_disconnect_started=false
 jellyfin_disconnect_started=false
 network_removal_started=false
 leaf_removal_started=false
+leaf_removal_succeeded=false
 media_acquisition_signal=
 media_acquisition_recovery_failed=false
 
@@ -122,10 +123,11 @@ media_acquisition_recover() {
   require_exact_endpoints || media_acquisition_recovery_failed=true
   [ "$(network_keys "$audiobookshelf")" = "$audiobookshelf_default_networks" ] || media_acquisition_recovery_failed=true
   [ "$(network_keys "$jellyfin")" = "$jellyfin_default_networks" ] || media_acquisition_recovery_failed=true
-  if [ "$leaf_removal_started" = true ] || [ ! -d "$leaf" ]; then
-    require_leaf_parent || media_acquisition_recovery_failed=true
-    if [ "$media_acquisition_recovery_failed" = false ]; then
+  if [ "$leaf_removal_succeeded" = true ] || [ ! -d "$leaf" ]; then
+    if require_leaf_parent; then
       mkdir "$leaf" && chmod 0755 "$leaf" || media_acquisition_recovery_failed=true
+    else
+      media_acquisition_recovery_failed=true
     fi
   fi
   require_leaf || media_acquisition_recovery_failed=true
@@ -172,6 +174,7 @@ network_removal_started=true
 docker network rm "$network"
 leaf_removal_started=true
 rmdir -- "$leaf"
+leaf_removal_succeeded=true
 
 trap - EXIT HUP INT TERM
 printf '%s\n' 'media acquisition drift: exact isolated network and empty cache leaf removed'

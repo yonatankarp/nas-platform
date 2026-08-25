@@ -994,6 +994,7 @@
         jellyfin_library_identity_folders | selectattr('ItemId', 'defined') | list | length ==
           jellyfin_library_identity_folder_count | int and
         jellyfin_library_identity_folders | map(attribute='ItemId') |
+          select('string') |
           select('match', '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$') | list | length ==
           jellyfin_library_identity_folder_count | int and
         jellyfin_library_identity_folders | selectattr('CollectionType', 'defined') |

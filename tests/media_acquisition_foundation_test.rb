@@ -492,6 +492,11 @@ expected_network_expression = "{{ (platform_project_name ~ '-media-control') if 
 failures << "media control network identity must be derived from the project namespace" unless
   shared_vars["platform_media_control_network"] == expected_network_expression
 
+nas_guide = File.read(File.join(ROOT, "docs", "getting-started-nas.md"))
+reader_prerequisite = "Direct Jellyfin-only or Audiobookshelf-only runs require a completed foundation or full-site converge that created the external `media-control` network."
+failures << "NAS guide omits the reader-only external network prerequisite" unless
+  nas_guide.gsub(/\s+/, " ").include?(reader_prerequisite)
+
 host_prep = YAML.safe_load_file(File.join(ROOT, "roles", "host_prep", "tasks", "main.yml"))
 all_host_prep_tasks = flatten_tasks(host_prep)
 network_task = host_prep.find do |task|
@@ -508,12 +513,33 @@ failures << "host preparation must create the derived bridge media control netwo
     },
     "state" => "present"
   }
+network_inspection = host_prep.find do |task|
+  task["name"] == "Inspect an existing exact-name media control network"
+end
+network_refusal = host_prep.find do |task|
+  task["name"] == "Refuse an existing media control network owned by another project"
+end
+network_refusal_conditions = Array(network_refusal&.dig("ansible.builtin.assert", "that"))
+failures << "host preparation must inspect and fail closed on exact-name network collisions" unless
+  network_inspection&.dig("community.docker.docker_network_info", "name") ==
+    "{{ platform_media_control_network }}" &&
+    network_inspection["changed_when"] == false &&
+    network_refusal_conditions.include?("host_prep_media_control_existing.network.Driver == 'bridge'") &&
+    network_refusal_conditions.include?("host_prep_media_control_existing.network.Labels | default(none) is mapping") &&
+    network_refusal_conditions.include?("host_prep_media_control_existing.network.Labels.get('nas.platform.purpose') == 'media-control'") &&
+    network_refusal_conditions.include?("host_prep_media_control_existing.network.Labels.get('nas.platform.project') == (platform_project_name | default('nas-platform', true))") &&
+    network_refusal_conditions.include?("host_prep_media_control_existing.network.Labels.keys() | sort == ['nas.platform.project', 'nas.platform.purpose']") &&
+    Array(network_refusal&.fetch("when", [])).include?("host_prep_media_control_existing.exists")
 containment_index = host_prep.index do |task|
   task["name"] == "Validate central storage targets before directory creation"
 end
 network_index = host_prep.index(network_task)
+network_inspection_index = host_prep.index(network_inspection)
+network_refusal_index = host_prep.index(network_refusal)
 failures << "media control network creation must follow target containment" unless
-  containment_index && network_index && containment_index < network_index
+  containment_index && network_inspection_index && network_refusal_index && network_index &&
+    containment_index < network_inspection_index && network_inspection_index < network_refusal_index &&
+    network_refusal_index < network_index
 failures << "host preparation must never delete Docker networks" if
   all_host_prep_tasks.any? do |task|
     task.dig("community.docker.docker_network", "state") == "absent"

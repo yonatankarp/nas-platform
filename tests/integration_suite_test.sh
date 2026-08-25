@@ -8,6 +8,8 @@ fake_bin=$(CDPATH= cd -P "$fake_bin" && pwd -P)
 docker_log=$fake_bin/docker.log
 prepull_bin=$(mktemp -d "${TMPDIR:-/tmp}/nas-platform-prepull-test.XXXXXX")
 pull_log=$prepull_bin/pull.log
+immich_order_mutant=$fake_bin/immich-order-mutant.sh
+acquisition_runtime_mutant=$fake_bin/acquisition-runtime-mutant.sh
 
 cleanup() {
   for case_root in "$fake_bin/contract-cases" "$fake_bin/boundary-cases" \
@@ -19,6 +21,8 @@ cleanup() {
     fi
   done
   rm -f "$fake_bin/docker" "$fake_bin/mktemp" "$docker_log"
+  rm -f "$immich_order_mutant"
+  rm -f "$acquisition_runtime_mutant"
   rm -f "$fake_bin/hostile-validator-ran"
   rmdir "$fake_bin"
   rm -f "$prepull_bin/docker" "$pull_log"
@@ -305,6 +309,32 @@ grep -qF '/repo/tests/contracts/"\$INTEGRATION_SUITE"-foundation.sh static' "$in
   printf '%s\n' 'acquisition foundation suites do not run their matching static contract' >&2
   exit 1
 }
+acquisition_runtime_contract_holds() {
+  source_path=$1
+  reader_converge=$(sed -n '/converge_media_acquisition_reader_prerequisites() {/,/^    }$/p' "$source_path")
+  foundation_verify=$(sed -n '/run_media_acquisition_foundation_verify() {/,/^    }$/p' "$source_path")
+  acquisition_dispatch=$(sed -n '/arr|downloaders|bindery|kapowarr|pinchflat|trailarr|seerr)/,/;;/p' "$source_path" | tail -n 12)
+  printf '%s\n' "$reader_converge" |
+    grep -qF -- '--tags host_prep,deployment_bundle,ntfy,audiobookshelf,jellyfin' &&
+    printf '%s\n' "$foundation_verify" | grep -qF '/repo/verify.yml' &&
+    printf '%s\n' "$foundation_verify" |
+      grep -qF -- '--tags platform_verify_media_acquisition_foundation' &&
+    ! printf '%s\n' "$foundation_verify" |
+      grep -Eq -- '-e (platform_media_control_network|media_usenet_enabled|media_torrent_enabled)=' &&
+    printf '%s\n' "$acquisition_dispatch" |
+      grep -qF 'converge_media_acquisition_reader_prerequisites' &&
+    printf '%s\n' "$acquisition_dispatch" |
+      grep -qF 'run_media_acquisition_foundation_verify'
+}
+acquisition_runtime_contract_holds "$integration" || {
+  printf '%s\n' 'acquisition suites omit the shared inventory-derived Linux runtime verifier path' >&2
+  exit 1
+}
+sed '/run_media_acquisition_foundation_verify$/d' "$integration" > "$acquisition_runtime_mutant"
+if acquisition_runtime_contract_holds "$acquisition_runtime_mutant"; then
+  printf '%s\n' 'acquisition runtime contract accepts removal of real verifier execution' >&2
+  exit 1
+fi
 assert_output 'suite=beszel tags=host_prep,deployment_bundle,ntfy,beszel playbook=site.yml scenarios=true' \
   --describe-suite beszel
 assert_output 'suite=dozzle tags=host_prep,deployment_bundle,ntfy,dozzle playbook=site.yml scenarios=true' \
@@ -384,10 +414,50 @@ for contract in komga jellyfin; do
   }
 done
 grep -qF 'komga:true|full:true)' "$integration"
-grep -qF 'jellyfin:true|full:true)' "$integration"
+grep -qF 'jellyfin:true|arr:true|downloaders:true' "$integration"
+grep -qF 'audiobookshelf:true|arr:true|downloaders:true' "$integration"
+grep -qF 'pinchflat:true|trailarr:true|seerr:true|full:true)' "$integration"
 grep -qF -- '-e PLATFORM_KOMGA_FIXTURE_PRESEEDED="$komga_fixture_preseeded"' "$integration"
 grep -qF -- '-e PLATFORM_JELLYFIN_FIXTURE_PRESEEDED="$jellyfin_fixture_preseeded"' \
   "$integration"
+
+immich_negative_order_holds() {
+  source_path=$1
+  function_body=$(sed -n '/run_immich_restore_negative_matrix() {/,/^    }$/p' "$source_path")
+  host_prep_line=$(printf '%s\n' "$function_body" |
+    grep -nF -- '--tags host_prep,deployment_bundle' | head -1 | cut -d: -f1)
+  scenario_loop_line=$(printf '%s\n' "$function_body" |
+    grep -nF 'for scenario in no-backup corrupt-newest ambiguous-newest unsafe-permissions prior-marker' |
+    head -1 | cut -d: -f1)
+  [ -n "$host_prep_line" ] && [ -n "$scenario_loop_line" ] &&
+    [ "$host_prep_line" -lt "$scenario_loop_line" ]
+}
+immich_negative_order_holds "$integration" || {
+  printf '%s\n' 'Immich isolated-root host preparation does not precede the negative matrix' >&2
+  exit 1
+}
+ruby -e '
+  source = File.readlines(ARGV.fetch(0))
+  function_start = source.index { |line| line.include?("run_immich_restore_negative_matrix()") }
+  host_start = (function_start...source.length).find do |index|
+    source[index].include?("run_play \\") && source[index + 1]&.include?("scenario_root/docker")
+  end
+  host_end = (host_start...source.length).find do |index|
+    source[index].include?("--tags host_prep,deployment_bundle")
+  end
+  abort "cannot extract isolated-root host preparation" unless host_start && host_end
+  block = source.slice!(host_start..host_end)
+  loop_index = source.index do |line|
+    line.include?("for scenario in no-backup corrupt-newest ambiguous-newest unsafe-permissions prior-marker")
+  end
+  abort "cannot extract negative matrix loop" unless loop_index
+  source.insert(loop_index + 1, *block)
+  File.write(ARGV.fetch(1), source.join)
+' "$integration" "$immich_order_mutant"
+if immich_negative_order_holds "$immich_order_mutant"; then
+  printf '%s\n' 'Immich negative-matrix order guard accepts the loop-before-host-prep mutant' >&2
+  exit 1
+fi
 
 for suite in komga jellyfin immich; do
   grep -qF "suite_is $suite" "$integration" || {
@@ -562,9 +632,8 @@ assert_pull_count "$runner_image" 3
 for project in arr downloaders bindery kapowarr pinchflat trailarr seerr; do
   run_prepull 0 4 --suite "$project"
   [ "$prepull_status" -eq 0 ] || prepull_fail "$project foundation pre-pull failed ($prepull_status)"
-  assert_pull_set "$runner_image"
-  [ "$(wc -l < "$pull_log" | tr -d " ")" -eq 1 ] ||
-    prepull_fail "$project pulled service images it never converges: $(sort -u "$pull_log")"
+  assert_pull_set \
+    "$({ printf '%s\n' "$runner_image"; compose_images ntfy; compose_images audiobookshelf; compose_images jellyfin; } | sort -u)"
 done
 
 # A registry that refuses more times than the budget allows must fail, and must
