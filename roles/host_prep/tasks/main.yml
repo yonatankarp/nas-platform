@@ -149,14 +149,14 @@
     owner: >-
       {{ nas_uid
          if (host_prep_integration_writer_enabled | bool) and
-            (item.media_acquisition_writer | default(false) | bool)
+            (item.media_acquisition_writer | default(false)) == true
          else item.owner
          if (platform_kind == 'nas' or (platform_manage_linux_ownership | bool)) and item.owner is defined
          else omit }}
     group: >-
       {{ nas_gid
          if (host_prep_integration_writer_enabled | bool) and
-            (item.media_acquisition_writer | default(false) | bool)
+            (item.media_acquisition_writer | default(false)) == true
          else item.group
          if (platform_kind == 'nas' or (platform_manage_linux_ownership | bool)) and item.group is defined
          else omit }}

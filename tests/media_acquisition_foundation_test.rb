@@ -671,23 +671,33 @@ directory_owner = directory_task&.dig("ansible.builtin.file", "owner").to_s.gsub
 directory_group = directory_task&.dig("ansible.builtin.file", "group").to_s.gsub(/\s+/, " ")
 failures << "host preparation must scope synthetic ownership to marked integration writer directories" unless
   directory_owner.include?("host_prep_integration_writer_enabled | bool") &&
-    directory_owner.include?("item.media_acquisition_writer | default(false) | bool") &&
+    directory_owner.include?("(item.media_acquisition_writer | default(false)) == true") &&
+    !directory_owner.include?("item.media_acquisition_writer | default(false) | bool") &&
     directory_owner.include?("nas_uid") &&
     directory_owner.include?("else item.owner") &&
     directory_owner.include?("platform_kind == 'nas' or (platform_manage_linux_ownership | bool)") &&
     directory_owner.include?("item.owner is defined") &&
     directory_group.include?("host_prep_integration_writer_enabled | bool") &&
-    directory_group.include?("item.media_acquisition_writer | default(false) | bool") &&
+    directory_group.include?("(item.media_acquisition_writer | default(false)) == true") &&
+    !directory_group.include?("item.media_acquisition_writer | default(false) | bool") &&
     directory_group.include?("nas_gid") &&
     directory_group.include?("else item.group") &&
     directory_group.include?("platform_kind == 'nas' or (platform_manage_linux_ownership | bool)") &&
     directory_group.include?("item.group is defined")
 
+writer_inspection_loop = writer_inspection&.fetch("loop", "").to_s
+writer_inspection_index = host_prep.index(writer_inspection)
+writer_assertion_index = host_prep.index(writer_assertion)
 writer_assertion_conditions = Array(writer_assertion&.dig("ansible.builtin.assert", "that"))
 failures << "host preparation must verify synthetic integration writer ownership after convergence" unless
   writer_inspection&.dig("ansible.builtin.stat", "follow") == false &&
+    writer_inspection_loop.include?("selectattr('media_acquisition_writer', 'defined')") &&
+    writer_inspection_loop.include?("selectattr('media_acquisition_writer', 'equalto', true)") &&
     writer_inspection&.fetch("when", nil) == "host_prep_integration_writer_enabled | bool" &&
     writer_assertion&.fetch("when", nil) == "host_prep_integration_writer_enabled | bool" &&
+    directory_index && writer_inspection_index && writer_assertion_index &&
+    writer_inspection_index == directory_index + 1 &&
+    writer_assertion_index == writer_inspection_index + 1 &&
     writer_assertion_conditions.include?("item.stat.exists") &&
     writer_assertion_conditions.include?("item.stat.isdir") &&
     writer_assertion_conditions.include?("not item.stat.islnk") &&
