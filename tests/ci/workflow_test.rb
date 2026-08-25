@@ -15,6 +15,11 @@ BROAD_ARR_LINT_EXCLUSIONS = %w[
   roles/arr/files/
   roles/arr/files/configarr/
 ].freeze
+ARR_LINT_EXCLUSION_MUTATIONS = (BROAD_ARR_LINT_EXCLUSIONS + %w[
+  roles/arr
+  ./roles/arr/
+  roles/arr/**
+]).uniq.freeze
 # Approved by name, not by commit. The security properties are that only these actions
 # are used and that every use is pinned to a full commit SHA rather than a mutable tag;
 # which commit is current is Renovate's job, and restating it here only guarantees that
@@ -57,13 +62,24 @@ def check(failures, condition, message)
   failures << message unless condition
 end
 
+def broad_arr_lint_exclusion?(path)
+  normalized = path.to_s.sub(%r{\A\./}, "").sub(%r{/+\z}, "")
+  normalized == "roles/arr" ||
+    (normalized.start_with?("roles/arr/") && normalized != CONFIGARR_APPLICATION_YAML)
+end
+
+ARR_LINT_EXCLUSION_MUTATIONS.each do |path|
+  check(failures, broad_arr_lint_exclusion?(path),
+        "Arr lint exclusion policy must reject #{path.inspect}")
+end
+
 ansible_lint = YAML.safe_load_file(ANSIBLE_LINT_PATH)
 ansible_lint_excludes = Array(ansible_lint["exclude_paths"])
 check(failures, ansible_lint_excludes.include?("services/"),
       "ansible-lint must exclude Docker Compose definitions with custom loader tags")
 check(failures, ansible_lint_excludes.include?(CONFIGARR_APPLICATION_YAML),
       "ansible-lint must exclude only the Configarr application YAML with !secret tags")
-check(failures, (ansible_lint_excludes & BROAD_ARR_LINT_EXCLUSIONS).empty?,
+check(failures, ansible_lint_excludes.none? { |path| broad_arr_lint_exclusion?(path) },
       "ansible-lint must not exclude an Arr directory: #{ansible_lint_excludes.inspect}")
 
 def expression(value)
