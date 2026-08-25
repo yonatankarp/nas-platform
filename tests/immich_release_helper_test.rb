@@ -75,6 +75,10 @@ Dir.mktmpdir("nas-platform-immich-release-helper-") do |temporary|
   FileUtils.mkdir_p(storage_root)
   FileUtils.mkdir_p(media_root)
   FileUtils.cp_r(File.join(ROOT, "services"), controller)
+  controller_configarr = File.join(controller, "roles", "arr", "files", "configarr", "config.yml")
+  FileUtils.mkdir_p(File.dirname(controller_configarr))
+  FileUtils.cp(File.join(ROOT, "roles", "arr", "files", "configarr", "config.yml"),
+               controller_configarr)
   FileUtils.mkdir_p(File.join(controller, "config"))
   FileUtils.cp(
     File.join(ROOT, "config", "media-acquisition.yml"),
@@ -131,6 +135,14 @@ Dir.mktmpdir("nas-platform-immich-release-helper-") do |temporary|
   }]
   fail_test("manifest omits exact classifier integrity") unless
     immich.fetch("runtime_files") == expected_runtime_files
+  arr = manifest.fetch("services").find { |service| service.fetch("name") == "arr" }
+  expected_configarr_file = [{
+    "path" => "configarr.yml",
+    "mode" => "0644",
+    "checksum_sha256" => Digest::SHA256.file(controller_configarr).hexdigest
+  }]
+  fail_test("manifest omits exact Configarr integrity") unless
+    arr.fetch("runtime_files") == expected_configarr_file
   verifier_argv = [
     RbConfig.ruby, File.join(ROOT, "tests", "verify_deployment_manifest.rb"),
     File.join(release_root, "manifest.yml"), controller,
