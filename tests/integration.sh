@@ -463,8 +463,11 @@ printf '%s\n' undeclared-service > \
 manifest_controller="$sandbox/manifest-controller"
 manifest_docker_root="$sandbox/manifest-root/Docker"
 manifest_media_root="$sandbox/manifest-root/media"
-mkdir -p "$manifest_controller/roles" "$manifest_controller/services/demo" \
+mkdir -p "$manifest_controller/config" "$manifest_controller/roles" \
+  "$manifest_controller/services/demo" \
   "$manifest_docker_root" "$manifest_media_root"
+cp "$repo_dir/config/media-acquisition.yml" \
+  "$manifest_controller/config/media-acquisition.yml"
 cp -R "$repo_dir/roles/deployment_bundle" "$manifest_controller/roles/"
 mkdir -p "$manifest_controller/services/dozzle" "$manifest_controller/services/immich"
 cp "$repo_dir/services/dozzle/alert_relay.py" \
@@ -528,7 +531,10 @@ create_controller_symlink_fixture() {
   symlink_kind=$2
   fixture_root="$sandbox/controller-$fixture_name"
   outside_root="$sandbox/controller-$fixture_name-outside"
-  mkdir -p "$fixture_root/roles" "$fixture_root/services/demo" "$outside_root"
+  mkdir -p "$fixture_root/config" "$fixture_root/roles" \
+    "$fixture_root/services/demo" "$outside_root"
+  cp "$repo_dir/config/media-acquisition.yml" \
+    "$fixture_root/config/media-acquisition.yml"
   cp -R "$repo_dir/roles/deployment_bundle" "$fixture_root/roles/"
 
   if [ "$symlink_kind" = manifest ]; then
@@ -1239,9 +1245,12 @@ docker run --rm \
     assert_controller_symlink_refused() {
       evidence=\$1
       fixture_name=\$2
+      expected_path=\$3
+      expected_reason=\$4
       fixture_root='$sandbox/controller-'\$fixture_name
       outside_root='$sandbox/controller-'\$fixture_name'-outside'
       target='$sandbox/controller-'\$fixture_name'-target'
+      expected_refusal=\"Unsafe controller bundle input \$fixture_root/\$expected_path: \$expected_reason\"
       before_outside=\$(tar -C \"\$outside_root\" -cf - . | sha256sum | cut -d' ' -f1)
       rm -f \"\$target\"
 
@@ -1252,7 +1261,7 @@ docker run --rm \
         printf 'UNSAFE CONTROLLER INPUT ACCEPTED: %s\n' \"\$evidence\" >&2
         exit 1
       fi
-      if ! grep -qF 'Unsafe controller bundle input' /tmp/controller-input-refusal.txt || \
+      if ! grep -qF \"\$expected_refusal\" /tmp/controller-input-refusal.txt || \
          [ -e \"\$target\" ] || \
          [ \"\$(tar -C \"\$outside_root\" -cf - . | sha256sum | cut -d' ' -f1)\" != \
            \"\$before_outside\" ]; then
@@ -1265,8 +1274,10 @@ docker run --rm \
     }
 
     if suite_is foundation; then
-    assert_controller_symlink_refused CONTROLLER_MANIFEST_SYMLINK_REFUSED manifest
-    assert_controller_symlink_refused CONTROLLER_OVERRIDE_SYMLINK_REFUSED override
+    assert_controller_symlink_refused CONTROLLER_MANIFEST_SYMLINK_REFUSED \
+      manifest services/manifest.yml 'must be a regular non-symlink file'
+    assert_controller_symlink_refused CONTROLLER_OVERRIDE_SYMLINK_REFUSED \
+      override services/demo/compose.fixture.yml 'must be a regular non-symlink file'
 
     assert_symlink_refused() {
       evidence=\$1
