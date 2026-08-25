@@ -12,6 +12,22 @@ VERIFY_PATH = File.join(ROOT, "verify.yml")
 EXPECTED_CLASSES = { "cache" => 10, "user" => 7, "critical" => 11 }.freeze
 EXPECTED_READERS = %w[audiobookshelf jellyfin].freeze
 
+def reader_name_expression(reader)
+  "{{ #{reader}_container_name | default((platform_project_name ~ '-#{reader}') if platform_project_name | default('') | length > 0 else '#{reader}', true) }}"
+end
+
+def reader_project_expression(reader)
+  "{{ #{reader}_compose_project_name | default((platform_project_name ~ '-#{reader}') if platform_project_name | default('') | length > 0 else '#{reader}', true) }}"
+end
+
+def reader_default_network_expression(reader)
+  "{{ (#{reader}_compose_project_name | default((platform_project_name ~ '-#{reader}') if platform_project_name | default('') | length > 0 else '#{reader}', true)) ~ '_default' }}"
+end
+
+def normalize_expression(value)
+  value.to_s.gsub(/\s+/, " ").strip
+end
+
 def flatten(tasks)
   Array(tasks).flat_map do |task|
     next [] unless task.is_a?(Hash)
@@ -66,20 +82,21 @@ def verifier_problems(tasks, verify_play)
       readers.first.dig("community.docker.docker_container_info", "name") == "{{ item.name }}"
   declared_readers = selector&.dig("ansible.builtin.set_fact", "host_prep_media_acquisition_readers")
   EXPECTED_READERS.each do |reader|
-    expected_reader = {
-      "name" => "{{ platform_project_name }}-#{reader}",
-      "service" => reader,
-      "project" => "{{ platform_project_name }}-#{reader}",
-      "networks" => [
-        "{{ platform_project_name }}-#{reader}_default",
+    declared_reader = Array(declared_readers).find { |item| item["service"] == reader }
+    exact_identity = declared_reader &&
+      normalize_expression(declared_reader["name"]) == reader_name_expression(reader) &&
+      normalize_expression(declared_reader["project"]) == reader_project_expression(reader) &&
+      Array(declared_reader["networks"]).map { |network| normalize_expression(network) } == [
+        reader_default_network_expression(reader),
         "{{ platform_media_control_network }}"
       ]
-    }
     problems << "verifier must pin reader #{reader} name, service, project and two network keys" unless
-      Array(declared_readers).include?(expected_reader)
+      exact_identity
   end
   problems << "verifier must compare reader network keys exactly" unless
     conditions.any? { |item| item.include?("NetworkSettings.Networks.keys() | sort") && item.include?("item.item.networks | sort") }
+  problems << "verifier must use the production project-label fallback" unless
+    conditions.include?("host_prep_media_acquisition_network.network.Labels['nas.platform.project'] == (platform_project_name | default('nas-platform', true))")
 
   mutating_modules = %w[ansible.builtin.file community.docker.docker_network community.docker.docker_container community.docker.docker_compose_v2]
   problems << "verifier tasks must remain read-only" if flat.any? { |task| mutating_modules.any? { |mod| task.key?(mod) } }
@@ -153,6 +170,63 @@ rescue Errno::ENOENT
   ["ansible-playbook is required for the selector evaluation probe"]
 end
 
+def run_identity_probe(tasks, directory, namespace)
+  selector = deep_copy(Array(tasks).find { |task| task["name"] == "Select media acquisition foundation storage" })
+  network_assertion = Array(tasks).find { |task| task["name"] == "Require the exact isolated media control bridge" }
+  network_project_condition = Array(network_assertion&.dig("ansible.builtin.assert", "that")).find do |condition|
+    condition.include?("Labels['nas.platform.project']")
+  end
+  prefix = namespace == :mac ? "probe" : nil
+  expected_project_label = prefix || "nas-platform"
+  vars = {
+    "platform_media_control_network" => prefix ? "#{prefix}-media-control" : "media-control",
+    "host_prep_media_acquisition_network" => {
+      "network" => { "Labels" => { "nas.platform.project" => expected_project_label } }
+    },
+    "nas_storage" => []
+  }
+  vars["platform_project_name"] = prefix if prefix
+  assertions = EXPECTED_READERS.flat_map do |reader|
+    expected = prefix ? "#{prefix}-#{reader}" : reader
+    index = EXPECTED_READERS.index(reader)
+    [
+      "host_prep_media_acquisition_readers[#{index}].name == '#{expected}'",
+      "host_prep_media_acquisition_readers[#{index}].project == '#{expected}'",
+      "host_prep_media_acquisition_readers[#{index}].networks == ['#{expected}_default', '#{vars.fetch('platform_media_control_network')}']"
+    ]
+  end
+  assertions << network_project_condition
+  play = {
+    "name" => "Evaluate #{namespace} media reader identities",
+    "hosts" => "localhost",
+    "gather_facts" => false,
+    "vars" => vars,
+    "tasks" => [
+      selector,
+      {
+        "name" => "Require exact #{namespace} media reader identities",
+        "ansible.builtin.assert" => { "that" => assertions }
+      }
+    ]
+  }
+  path = File.join(directory, "#{namespace}-identity-probe.yml")
+  File.write(path, YAML.dump([play]))
+  Open3.capture3("ansible-playbook", "-i", "localhost,", "-c", "local", path)
+end
+
+def identity_probe_problems(tasks)
+  Dir.mktmpdir("media-acquisition-identities.") do |directory|
+    problems = []
+    %i[nas mac].each do |namespace|
+      stdout, stderr, status = run_identity_probe(tasks, directory, namespace)
+      problems << "#{namespace} identity probe fails real Ansible evaluation: #{(stdout + stderr).lines.last}" unless status.success?
+    end
+    problems
+  end
+rescue Errno::ENOENT
+  ["ansible-playbook is required for the identity evaluation probes"]
+end
+
 def load_yaml(path)
   YAML.safe_load_file(path, aliases: true)
 rescue Errno::ENOENT
@@ -224,6 +298,7 @@ tasks = load_yaml(TASKS_PATH)
 verify_play = load_yaml(VERIFY_PATH)
 failures = verifier_problems(tasks, verify_play)
 failures.concat(selector_probe_problems(tasks)) if tasks
+failures.concat(identity_probe_problems(tasks)) if tasks
 failures.concat(include_probe_problems(verify_play)) if failures.empty?
 
 unless failures.any?
@@ -254,6 +329,14 @@ unless failures.any?
     end,
     "deceptive reader project" => proc do |copy|
       copy.first.dig("ansible.builtin.set_fact", "host_prep_media_acquisition_readers").first["project"] += "-lookalike"
+    end,
+    "direct Mac-only reader identity assumption" => proc do |copy|
+      copy.first.dig("ansible.builtin.set_fact", "host_prep_media_acquisition_readers").each do |reader|
+        service = reader.fetch("service")
+        reader["name"] = "{{ platform_project_name }}-#{service}"
+        reader["project"] = "{{ platform_project_name }}-#{service}"
+        reader["networks"][0] = "{{ platform_project_name }}-#{service}_default"
+      end
     end
   }
   mutation_cases.each do |label, mutate|

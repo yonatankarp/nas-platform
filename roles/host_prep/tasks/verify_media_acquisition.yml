@@ -7,17 +7,41 @@
          selectattr('media_acquisition_foundation', 'equalto', true) |
          list }}
     host_prep_media_acquisition_readers:
-      - name: "{{ platform_project_name }}-audiobookshelf"
+      - name: >-
+          {{ audiobookshelf_container_name |
+             default((platform_project_name ~ '-audiobookshelf')
+                     if platform_project_name | default('') | length > 0
+                     else 'audiobookshelf', true) }}
         service: audiobookshelf
-        project: "{{ platform_project_name }}-audiobookshelf"
+        project: >-
+          {{ audiobookshelf_compose_project_name |
+             default((platform_project_name ~ '-audiobookshelf')
+                     if platform_project_name | default('') | length > 0
+                     else 'audiobookshelf', true) }}
         networks:
-          - "{{ platform_project_name }}-audiobookshelf_default"
+          - >-
+              {{ (audiobookshelf_compose_project_name |
+                  default((platform_project_name ~ '-audiobookshelf')
+                          if platform_project_name | default('') | length > 0
+                          else 'audiobookshelf', true)) ~ '_default' }}
           - "{{ platform_media_control_network }}"
-      - name: "{{ platform_project_name }}-jellyfin"
+      - name: >-
+          {{ jellyfin_container_name |
+             default((platform_project_name ~ '-jellyfin')
+                     if platform_project_name | default('') | length > 0
+                     else 'jellyfin', true) }}
         service: jellyfin
-        project: "{{ platform_project_name }}-jellyfin"
+        project: >-
+          {{ jellyfin_compose_project_name |
+             default((platform_project_name ~ '-jellyfin')
+                     if platform_project_name | default('') | length > 0
+                     else 'jellyfin', true) }}
         networks:
-          - "{{ platform_project_name }}-jellyfin_default"
+          - >-
+              {{ (jellyfin_compose_project_name |
+                  default((platform_project_name ~ '-jellyfin')
+                          if platform_project_name | default('') | length > 0
+                          else 'jellyfin', true)) ~ '_default' }}
           - "{{ platform_media_control_network }}"
   changed_when: false
   tags: [platform_verify_media_acquisition_foundation]
@@ -77,7 +101,7 @@
       - host_prep_media_acquisition_network.network.Name == platform_media_control_network
       - host_prep_media_acquisition_network.network.Driver == 'bridge'
       - host_prep_media_acquisition_network.network.Labels['nas.platform.purpose'] == 'media-control'
-      - host_prep_media_acquisition_network.network.Labels['nas.platform.project'] == platform_project_name
+      - host_prep_media_acquisition_network.network.Labels['nas.platform.project'] == (platform_project_name | default('nas-platform', true))
       - host_prep_media_acquisition_network.network.Labels.keys() | sort == ['nas.platform.project', 'nas.platform.purpose']
     fail_msg: The derived media-control network identity, driver, or labels differ.
   changed_when: false
