@@ -146,10 +146,12 @@ nas_storage:
     mode: "0755"
     recovery: user
     media_acquisition_foundation: true
+    media_acquisition_writer: true
   - path: "{{ nas_media_root }}/Media/Series"
     mode: "0755"
     recovery: user
     media_acquisition_foundation: true
+    media_acquisition_writer: true
 
   # Inert media acquisition foundation. Transport activation remains explicitly
   # disabled per host class; these paths and service state are prepared so a
@@ -170,42 +172,52 @@ nas_storage:
     mode: "0755"
     recovery: cache
     media_acquisition_foundation: true
+    media_acquisition_writer: true
   - path: "{{ nas_media_root }}/Media/.acquisition/usenet/series"
     mode: "0755"
     recovery: cache
     media_acquisition_foundation: true
+    media_acquisition_writer: true
   - path: "{{ nas_media_root }}/Media/.acquisition/usenet/audiobooks"
     mode: "0755"
     recovery: cache
     media_acquisition_foundation: true
+    media_acquisition_writer: true
   - path: "{{ nas_media_root }}/Media/.acquisition/torrents/movies"
     mode: "0755"
     recovery: cache
     media_acquisition_foundation: true
+    media_acquisition_writer: true
   - path: "{{ nas_media_root }}/Media/.acquisition/torrents/series"
     mode: "0755"
     recovery: cache
     media_acquisition_foundation: true
+    media_acquisition_writer: true
   - path: "{{ nas_media_root }}/Media/.acquisition/torrents/audiobooks"
     mode: "0755"
     recovery: cache
     media_acquisition_foundation: true
+    media_acquisition_writer: true
   - path: "{{ nas_media_root }}/Books/.acquisition/usenet/ebooks"
     mode: "0755"
     recovery: cache
     media_acquisition_foundation: true
+    media_acquisition_writer: true
   - path: "{{ nas_media_root }}/Books/.acquisition/usenet/comics"
     mode: "0755"
     recovery: cache
     media_acquisition_foundation: true
+    media_acquisition_writer: true
   - path: "{{ nas_media_root }}/Books/.acquisition/torrents/ebooks"
     mode: "0755"
     recovery: cache
     media_acquisition_foundation: true
+    media_acquisition_writer: true
   - path: "{{ nas_media_root }}/Books/.acquisition/torrents/comics"
     mode: "0755"
     recovery: cache
     media_acquisition_foundation: true
+    media_acquisition_writer: true
   - path: "{{ nas_docker_root }}/radarr/config"
     owner: "{{ nas_uid }}"
     group: "{{ nas_gid }}"

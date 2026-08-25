@@ -185,6 +185,21 @@ EXPECTED_STORAGE = {
   "{{ nas_docker_root }}/seerr/config" => "critical"
 }.freeze
 
+EXPECTED_INTEGRATION_WRITERS = Set[
+  "{{ nas_media_root }}/Media/Movies",
+  "{{ nas_media_root }}/Media/Series",
+  "{{ nas_media_root }}/Media/.acquisition/usenet/movies",
+  "{{ nas_media_root }}/Media/.acquisition/usenet/series",
+  "{{ nas_media_root }}/Media/.acquisition/usenet/audiobooks",
+  "{{ nas_media_root }}/Media/.acquisition/torrents/movies",
+  "{{ nas_media_root }}/Media/.acquisition/torrents/series",
+  "{{ nas_media_root }}/Media/.acquisition/torrents/audiobooks",
+  "{{ nas_media_root }}/Books/.acquisition/usenet/ebooks",
+  "{{ nas_media_root }}/Books/.acquisition/usenet/comics",
+  "{{ nas_media_root }}/Books/.acquisition/torrents/ebooks",
+  "{{ nas_media_root }}/Books/.acquisition/torrents/comics"
+].freeze
+
 def catalog_contract_problems(catalog)
   catalog == EXPECTED ? [] : ["media acquisition catalog differs from the pinned inert contract"]
 end
@@ -473,6 +488,14 @@ shared_vars = YAML.safe_load_file(File.join(ROOT, "inventory", "group_vars", "al
 acquisition_storage = shared_vars.fetch("nas_storage").select do |entry|
   entry["media_acquisition_foundation"] == true
 end
+integration_writers = acquisition_storage.select do |entry|
+  entry["media_acquisition_writer"] == true
+end
+actual_integration_writers = integration_writers.map { |entry| entry.fetch("path") }.to_set
+failures << "media acquisition integration writers differ from the exact writable set" unless
+  actual_integration_writers == EXPECTED_INTEGRATION_WRITERS
+failures << "integration writer declarations must remain ownerless for production NAS storage" if
+  integration_writers.any? { |entry| entry.key?("owner") || entry.key?("group") }
 actual_storage = acquisition_storage.to_h { |entry| [entry.fetch("path"), entry.fetch("recovery")] }
 failures << "media acquisition storage differs from the exact classified foundation" unless
   actual_storage == EXPECTED_STORAGE && acquisition_storage.length == EXPECTED_STORAGE.length
