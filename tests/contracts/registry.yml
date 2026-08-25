@@ -1,5 +1,7 @@
 ---
 contracts:
+  - service: arr
+    path: tests/contracts/arr.sh
   - service: audiobookshelf
     path: tests/contracts/audiobookshelf.sh
   - service: beszel

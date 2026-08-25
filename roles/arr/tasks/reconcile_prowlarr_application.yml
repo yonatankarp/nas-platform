@@ -1,0 +1,71 @@
+---
+- name: Find the Prowlarr application by name
+  ansible.builtin.set_fact:
+    arr_prowlarr_application_matches: >-
+      {{ arr_prowlarr_applications_before.json |
+         selectattr('name', 'equalto', arr_prowlarr_application.name) | list }}
+  changed_when: false
+  no_log: true
+
+- name: Refuse an ambiguous Prowlarr application name
+  ansible.builtin.assert:
+    that:
+      - arr_prowlarr_applications_before.json is sequence
+      - arr_prowlarr_application_matches | length <= 1
+    fail_msg: "Prowlarr has duplicate {{ arr_prowlarr_application.name }} applications."
+  no_log: true
+
+- name: Build the owned Prowlarr full-sync application
+  ansible.builtin.set_fact:
+    arr_prowlarr_application_body:
+      syncLevel: "{{ arr_prowlarr_application_sync_level }}"
+      enable: true
+      name: "{{ arr_prowlarr_application.name }}"
+      fields:
+        - {name: prowlarrUrl, value: "{{ arr_prowlarr_internal_url }}"}
+        - {name: baseUrl, value: "{{ arr_prowlarr_application.base_url }}"}
+        - {name: apiKey, value: "{{ arr_prowlarr_application.api_key }}"}
+        - {name: authUsername, value: ""}
+        - {name: authPassword, value: ""}
+        - {name: syncCategories, value: "{{ arr_prowlarr_application.sync_categories }}"}
+      implementationName: "{{ arr_prowlarr_application.implementation }}"
+      implementation: "{{ arr_prowlarr_application.implementation }}"
+      configContract: "{{ arr_prowlarr_application.config_contract }}"
+      tags: []
+  changed_when: false
+  no_log: true
+
+- name: Determine whether the Prowlarr application differs
+  ansible.builtin.set_fact:
+    arr_prowlarr_application_needs_update: >-
+      {{ arr_prowlarr_application_matches | length == 0 or
+         arr_prowlarr_application_matches[0].syncLevel | default('') != 'fullSync' or
+         not arr_prowlarr_application_matches[0].enable | default(false) | bool or
+         (arr_prowlarr_application_matches[0].fields |
+          selectattr('name', 'equalto', 'prowlarrUrl') |
+          map(attribute='value') | first | default('')) != arr_prowlarr_internal_url or
+         (arr_prowlarr_application_matches[0].fields |
+          selectattr('name', 'equalto', 'baseUrl') |
+          map(attribute='value') | first | default('')) != arr_prowlarr_application.base_url }}
+  changed_when: false
+  no_log: true
+
+- name: Reconcile the Prowlarr application with fullSync
+  ansible.builtin.uri:
+    url: >-
+      {{ arr_prowlarr_api }}/applications{{
+         '/' ~ arr_prowlarr_application_matches[0].id
+         if arr_prowlarr_application_matches | length == 1 else '' }}
+    method: "{{ 'PUT' if arr_prowlarr_application_matches | length == 1 else 'POST' }}"
+    headers:
+      X-Api-Key: "{{ vault_arr_prowlarr_api_key }}"
+    body_format: json
+    body: >-
+      {{ (arr_prowlarr_application_matches[0]
+          if arr_prowlarr_application_matches | length == 1 else {}) |
+         combine(arr_prowlarr_application_body, recursive=True) }}
+    status_code: [200, 201, 202]
+    return_content: true
+  when: arr_prowlarr_application_needs_update | bool
+  changed_when: true
+  no_log: true

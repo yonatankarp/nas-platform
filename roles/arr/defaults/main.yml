@@ -11,6 +11,16 @@ arr_sonarr_api: "http://127.0.0.1:{{ arr_sonarr_port }}/api/v3"
 arr_prowlarr_api: "http://127.0.0.1:{{ arr_prowlarr_port }}/api/v1"
 arr_bazarr_api: "http://127.0.0.1:{{ arr_bazarr_port }}/api"
 
+arr_radarr_root_folder: /data/media/Movies
+arr_sonarr_root_folder: /data/media/Series
+arr_sabnzbd_host: sabnzbd
+arr_sabnzbd_port: 8080
+arr_sabnzbd_client_name: SABnzbd
+arr_prowlarr_application_sync_level: fullSync
+arr_prowlarr_internal_url: http://prowlarr:9696
+arr_radarr_internal_url: http://radarr:7878
+arr_sonarr_internal_url: http://sonarr:8989
+
 arr_movies_host_path: "{{ nas_media_root }}/Media/Movies"
 arr_series_host_path: "{{ nas_media_root }}/Media/Series"
 arr_radarr_config_host_path: "{{ nas_docker_root }}/radarr/config"
@@ -20,3 +30,40 @@ arr_bazarr_config_host_path: "{{ nas_docker_root }}/bazarr/config"
 
 media_usenet_enabled: false
 media_acquisition_adopt_existing_libraries: false
+media_arr_automatic_monitoring_enabled: false
+media_arr_automatic_rename_enabled: false
+media_arr_indexers: []
+media_bazarr_languages: []
+media_bazarr_providers: []
+
+arr_servarr_instances:
+  - name: radarr
+    api: "{{ arr_radarr_api }}"
+    api_key: "{{ vault_arr_radarr_api_key }}"
+    admin_username: "{{ vault_arr_radarr_admin_username }}"
+    admin_password: "{{ vault_arr_radarr_admin_password }}"
+    root_folder: "{{ arr_radarr_root_folder }}"
+    category: movies
+    rename_field: renameMovies
+  - name: sonarr
+    api: "{{ arr_sonarr_api }}"
+    api_key: "{{ vault_arr_sonarr_api_key }}"
+    admin_username: "{{ vault_arr_sonarr_admin_username }}"
+    admin_password: "{{ vault_arr_sonarr_admin_password }}"
+    root_folder: "{{ arr_sonarr_root_folder }}"
+    category: series
+    rename_field: renameEpisodes
+
+arr_prowlarr_applications:
+  - name: Radarr
+    implementation: Radarr
+    config_contract: RadarrSettings
+    base_url: "{{ arr_radarr_internal_url }}"
+    api_key: "{{ vault_arr_radarr_api_key }}"
+    sync_categories: [2000, 2010, 2020, 2030, 2040, 2045, 2050, 2060, 2070, 2080, 2090]
+  - name: Sonarr
+    implementation: Sonarr
+    config_contract: SonarrSettings
+    base_url: "{{ arr_sonarr_internal_url }}"
+    api_key: "{{ vault_arr_sonarr_api_key }}"
+    sync_categories: [5000, 5010, 5020, 5030, 5040, 5045, 5050, 5090]

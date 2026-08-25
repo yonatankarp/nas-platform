@@ -1,0 +1,251 @@
+---
+- name: Read Servarr host configuration
+  ansible.builtin.uri:
+    url: "{{ arr_servarr_instance.api }}/config/host"
+    method: GET
+    headers:
+      X-Api-Key: "{{ arr_servarr_instance.api_key }}"
+    status_code: [200]
+    return_content: true
+  register: arr_servarr_host_before
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require the supported Servarr host schema
+  ansible.builtin.assert:
+    that:
+      - arr_servarr_host_before.json is mapping
+      - arr_servarr_host_before.json.id is number
+      - arr_servarr_host_before.json.authenticationMethod is defined
+      - arr_servarr_host_before.json.authenticationRequired is defined
+    fail_msg: "{{ arr_servarr_instance.name }} returned an unsupported host configuration schema."
+  no_log: true
+
+- name: Reconcile Servarr administrator authentication
+  ansible.builtin.uri:
+    url: >-
+      {{ arr_servarr_instance.api }}/config/host/{{ arr_servarr_host_before.json.id }}
+    method: PUT
+    headers:
+      X-Api-Key: "{{ arr_servarr_instance.api_key }}"
+    body_format: json
+    body: >-
+      {{ arr_servarr_host_before.json | combine({
+           'authenticationMethod': 'forms',
+           'authenticationRequired': 'enabled',
+           'username': arr_servarr_instance.admin_username,
+           'password': arr_servarr_instance.admin_password,
+           'passwordConfirmation': arr_servarr_instance.admin_password,
+           'launchBrowser': false
+         }, recursive=True) }}
+    status_code: [200, 202]
+    return_content: true
+  changed_when: >-
+    arr_servarr_host_before.json.authenticationMethod | lower != 'forms' or
+    arr_servarr_host_before.json.authenticationRequired | lower != 'enabled' or
+    arr_servarr_host_before.json.username != arr_servarr_instance.admin_username or
+    arr_servarr_host_before.json.launchBrowser | bool
+  no_log: true
+
+- name: Read Servarr media management configuration
+  ansible.builtin.uri:
+    url: "{{ arr_servarr_instance.api }}/config/mediamanagement"
+    method: GET
+    headers:
+      X-Api-Key: "{{ arr_servarr_instance.api_key }}"
+    status_code: [200]
+    return_content: true
+  register: arr_servarr_media_before
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require the supported Servarr media management schema
+  ansible.builtin.assert:
+    that:
+      - arr_servarr_media_before.json is mapping
+      - arr_servarr_media_before.json.id is number
+      - arr_servarr_media_before.json[arr_servarr_instance.rename_field] is defined
+    fail_msg: "{{ arr_servarr_instance.name }} returned an unsupported media management schema."
+  no_log: true
+
+- name: Reconcile the safe automatic rename setting
+  ansible.builtin.uri:
+    url: >-
+      {{ arr_servarr_instance.api }}/config/mediamanagement/{{ arr_servarr_media_before.json.id }}
+    method: PUT
+    headers:
+      X-Api-Key: "{{ arr_servarr_instance.api_key }}"
+    body_format: json
+    body: >-
+      {{ arr_servarr_media_before.json | combine({
+           arr_servarr_instance.rename_field: media_arr_automatic_rename_enabled | bool
+         }, recursive=True) }}
+    status_code: [200, 202]
+    return_content: true
+  when: >-
+    arr_servarr_media_before.json[arr_servarr_instance.rename_field] | bool !=
+    media_arr_automatic_rename_enabled | bool
+  changed_when: true
+  no_log: true
+
+- name: Read Servarr root folders
+  ansible.builtin.uri:
+    url: "{{ arr_servarr_instance.api }}/rootfolder"
+    method: GET
+    headers:
+      X-Api-Key: "{{ arr_servarr_instance.api_key }}"
+    status_code: [200]
+    return_content: true
+  register: arr_servarr_roots_before
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Find the declared Servarr root folder
+  ansible.builtin.set_fact:
+    arr_servarr_root_matches: >-
+      {{ arr_servarr_roots_before.json |
+         selectattr('path', 'equalto', arr_servarr_instance.root_folder) | list }}
+  changed_when: false
+  no_log: true
+
+- name: Refuse ambiguous Servarr root folders
+  ansible.builtin.assert:
+    that:
+      - arr_servarr_roots_before.json is sequence
+      - arr_servarr_root_matches | length <= 1
+    fail_msg: "{{ arr_servarr_instance.name }} has an ambiguous declared root folder."
+  no_log: true
+
+- name: Create the declared Servarr root without import or search
+  ansible.builtin.uri:
+    url: "{{ arr_servarr_instance.api }}/rootfolder"
+    method: POST
+    headers:
+      X-Api-Key: "{{ arr_servarr_instance.api_key }}"
+    body_format: json
+    body:
+      path: "{{ arr_servarr_instance.root_folder }}"
+    status_code: [200, 201]
+    return_content: true
+  when: arr_servarr_root_matches | length == 0
+  changed_when: true
+  no_log: true
+
+- name: Read Servarr download clients
+  ansible.builtin.uri:
+    url: "{{ arr_servarr_instance.api }}/downloadclient"
+    method: GET
+    headers:
+      X-Api-Key: "{{ arr_servarr_instance.api_key }}"
+    status_code: [200]
+    return_content: true
+  register: arr_servarr_clients_before
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Find named Servarr SABnzbd clients
+  ansible.builtin.set_fact:
+    arr_servarr_sab_name_matches: >-
+      {{ arr_servarr_clients_before.json |
+         selectattr('name', 'equalto', arr_sabnzbd_client_name) | list }}
+    arr_servarr_sab_host_matches: []
+  changed_when: false
+  no_log: true
+
+- name: Find Servarr clients using the owned SABnzbd URL
+  ansible.builtin.set_fact:
+    arr_servarr_sab_host_matches: "{{ arr_servarr_sab_host_matches + [item] }}"
+  loop: "{{ arr_servarr_clients_before.json }}"
+  loop_control:
+    label: servarr-download-client-url
+  vars:
+    arr_client_host: >-
+      {{ item.fields | default([]) | selectattr('name', 'equalto', 'host') |
+         map(attribute='value') | first | default('') }}
+    arr_client_port: >-
+      {{ item.fields | default([]) | selectattr('name', 'equalto', 'port') |
+         map(attribute='value') | first | default(0) }}
+  when:
+    - arr_client_host == arr_sabnzbd_host
+    - arr_client_port | int == arr_sabnzbd_port | int
+  changed_when: false
+  no_log: true
+
+- name: Refuse ambiguous Servarr SABnzbd ownership
+  ansible.builtin.assert:
+    that:
+      - arr_servarr_clients_before.json is sequence
+      - arr_servarr_sab_name_matches | length <= 1
+      - arr_servarr_sab_host_matches | length <= 1
+      - >-
+        arr_servarr_sab_name_matches | length == 0 or
+        arr_servarr_sab_host_matches | length == 0 or
+        arr_servarr_sab_name_matches[0].id == arr_servarr_sab_host_matches[0].id
+    fail_msg: "{{ arr_servarr_instance.name }} has duplicate SABnzbd names or URLs."
+  no_log: true
+
+- name: Build the owned Servarr SABnzbd client
+  ansible.builtin.set_fact:
+    arr_servarr_sab_client:
+      enable: true
+      protocol: usenet
+      priority: 1
+      removeCompletedDownloads: true
+      removeFailedDownloads: true
+      name: "{{ arr_sabnzbd_client_name }}"
+      fields:
+        - {name: host, value: "{{ arr_sabnzbd_host }}"}
+        - {name: port, value: "{{ arr_sabnzbd_port }}"}
+        - {name: useSsl, value: false}
+        - {name: urlBase, value: ""}
+        - {name: apiKey, value: "{{ vault_downloaders_sabnzbd_api_key }}"}
+        - {name: username, value: "{{ vault_downloaders_sabnzbd_admin_username }}"}
+        - {name: password, value: "{{ vault_downloaders_sabnzbd_admin_password }}"}
+        - name: "{{ 'movieCategory' if arr_servarr_instance.name == 'radarr' else 'tvCategory' }}"
+          value: "{{ arr_servarr_instance.category }}"
+      implementationName: SABnzbd
+      implementation: Sabnzbd
+      configContract: SabnzbdSettings
+      tags: []
+  changed_when: false
+  no_log: true
+
+- name: Determine whether the Servarr SABnzbd client differs
+  ansible.builtin.set_fact:
+    arr_servarr_sab_client_needs_update: >-
+      {{ arr_servarr_sab_name_matches | length == 0 or
+         (arr_servarr_sab_name_matches[0].enable | default(false) | bool != true) or
+         (arr_servarr_sab_name_matches[0].fields | selectattr('name', 'equalto', 'host') |
+          map(attribute='value') | first | default('')) != arr_sabnzbd_host or
+         (arr_servarr_sab_name_matches[0].fields | selectattr('name', 'equalto', 'port') |
+          map(attribute='value') | first | default(0) | int) != arr_sabnzbd_port | int or
+         (arr_servarr_sab_name_matches[0].fields |
+          selectattr('name', 'equalto',
+                     ('movieCategory' if arr_servarr_instance.name == 'radarr' else 'tvCategory')) |
+          map(attribute='value') | first | default('')) != arr_servarr_instance.category }}
+  changed_when: false
+  no_log: true
+
+- name: Reconcile the owned Servarr SABnzbd client
+  ansible.builtin.uri:
+    url: >-
+      {{ arr_servarr_instance.api }}/downloadclient{{
+         '/' ~ arr_servarr_sab_name_matches[0].id
+         if arr_servarr_sab_name_matches | length == 1 else '' }}
+    method: "{{ 'PUT' if arr_servarr_sab_name_matches | length == 1 else 'POST' }}"
+    headers:
+      X-Api-Key: "{{ arr_servarr_instance.api_key }}"
+    body_format: json
+    body: >-
+      {{ (arr_servarr_sab_name_matches[0]
+          if arr_servarr_sab_name_matches | length == 1 else {}) |
+         combine(arr_servarr_sab_client, recursive=True) }}
+    status_code: [200, 201, 202]
+    return_content: true
+  when: arr_servarr_sab_client_needs_update | bool
+  changed_when: true
+  no_log: true

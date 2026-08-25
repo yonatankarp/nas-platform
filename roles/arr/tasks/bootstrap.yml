@@ -1,0 +1,51 @@
+---
+- name: Seed absent Servarr configuration with deterministic API keys
+  ansible.builtin.template:
+    src: config.xml.j2
+    dest: "{{ item.path }}/config.xml"
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0600"
+    force: false
+  vars:
+    arr_bootstrap_api_key: "{{ item.api_key }}"
+    arr_bootstrap_port: "{{ item.port }}"
+    arr_bootstrap_ssl_port: "{{ item.ssl_port }}"
+    arr_bootstrap_instance_name: "{{ item.instance_name }}"
+  loop:
+    - path: "{{ arr_radarr_config_host_path }}"
+      api_key: "{{ vault_arr_radarr_api_key }}"
+      port: 7878
+      ssl_port: 9898
+      instance_name: Radarr
+    - path: "{{ arr_sonarr_config_host_path }}"
+      api_key: "{{ vault_arr_sonarr_api_key }}"
+      port: 8989
+      ssl_port: 9898
+      instance_name: Sonarr
+    - path: "{{ arr_prowlarr_config_host_path }}"
+      api_key: "{{ vault_arr_prowlarr_api_key }}"
+      port: 9696
+      ssl_port: 6969
+      instance_name: Prowlarr
+  loop_control:
+    label: "{{ item.instance_name }}"
+  no_log: true
+
+- name: Ensure Bazarr nested configuration directory exists
+  ansible.builtin.file:
+    path: "{{ arr_bazarr_config_host_path }}/config"
+    state: directory
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0755"
+
+- name: Seed absent Bazarr configuration with deterministic authentication
+  ansible.builtin.template:
+    src: bazarr-config.yml.j2
+    dest: "{{ arr_bazarr_config_host_path }}/config/config.yaml"
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0600"
+    force: false
+  no_log: true

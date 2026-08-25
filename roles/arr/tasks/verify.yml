@@ -1,0 +1,135 @@
+---
+- name: Read Servarr resources for verification
+  ansible.builtin.uri:
+    url: "{{ item.0.api }}/{{ item.1 }}"
+    method: GET
+    headers:
+      X-Api-Key: "{{ item.0.api_key }}"
+    status_code: [200]
+    return_content: true
+  loop: "{{ arr_servarr_instances | product(['config/host', 'config/mediamanagement', 'rootfolder', 'downloadclient']) | list }}"
+  loop_control:
+    label: "{{ item.0.name }}-{{ item.1 }}"
+  register: arr_servarr_verification
+  changed_when: false
+  check_mode: false
+  no_log: true
+  tags: [platform_verify_arr]
+
+- name: Verify Servarr authentication, roots, rename, and SABnzbd
+  ansible.builtin.assert:
+    that:
+      - >-
+        (arr_servarr_verification.results |
+         selectattr('item.0.name', 'equalto', item.name) |
+         selectattr('item.1', 'equalto', 'config/host') |
+         map(attribute='json.authenticationMethod') | first | lower) == 'forms'
+      - >-
+        (arr_servarr_verification.results |
+         selectattr('item.0.name', 'equalto', item.name) |
+         selectattr('item.1', 'equalto', 'config/host') |
+         map(attribute='json.authenticationRequired') | first | lower) == 'enabled'
+      - >-
+        (arr_servarr_verification.results |
+         selectattr('item.0.name', 'equalto', item.name) |
+         selectattr('item.1', 'equalto', 'config/mediamanagement') |
+         map(attribute='json') | first)[item.rename_field] | bool ==
+        media_arr_automatic_rename_enabled | bool
+      - >-
+        (arr_servarr_verification.results |
+         selectattr('item.0.name', 'equalto', item.name) |
+         selectattr('item.1', 'equalto', 'rootfolder') |
+         map(attribute='json') | first |
+         selectattr('path', 'equalto', item.root_folder) | list | length) == 1
+      - >-
+        (arr_servarr_verification.results |
+         selectattr('item.0.name', 'equalto', item.name) |
+         selectattr('item.1', 'equalto', 'downloadclient') |
+         map(attribute='json') | first |
+         selectattr('name', 'equalto', arr_sabnzbd_client_name) | list | length) == 1
+    fail_msg: A Servarr instance differs from the declared Phase 1 state.
+  loop: "{{ arr_servarr_instances }}"
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+  tags: [platform_verify_arr]
+
+- name: Read Prowlarr applications and indexers for verification
+  ansible.builtin.uri:
+    url: "{{ arr_prowlarr_api }}/{{ item }}"
+    method: GET
+    headers:
+      X-Api-Key: "{{ vault_arr_prowlarr_api_key }}"
+    status_code: [200]
+    return_content: true
+  loop: [applications, indexer]
+  loop_control:
+    label: "prowlarr-{{ item }}"
+  register: arr_prowlarr_verification
+  changed_when: false
+  check_mode: false
+  no_log: true
+  tags: [platform_verify_arr]
+
+- name: Verify both Prowlarr applications use fullSync
+  ansible.builtin.assert:
+    that:
+      - >-
+        (arr_prowlarr_verification.results |
+         selectattr('item', 'equalto', 'applications') |
+         map(attribute='json') | first |
+         selectattr('name', 'equalto', item.name) |
+         selectattr('syncLevel', 'equalto', 'fullSync') | list | length) == 1
+    fail_msg: A Prowlarr application is absent or not configured for full sync.
+  loop: "{{ arr_prowlarr_applications }}"
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+  tags: [platform_verify_arr]
+
+- name: Verify operator-owned Prowlarr indexers exist exactly once
+  ansible.builtin.assert:
+    that:
+      - >-
+        (arr_prowlarr_verification.results |
+         selectattr('item', 'equalto', 'indexer') |
+         map(attribute='json') | first |
+         selectattr('name', 'equalto', item.name) | list | length) == 1
+    fail_msg: An operator-owned Prowlarr indexer is absent or ambiguous.
+  loop: "{{ media_arr_indexers }}"
+  loop_control:
+    label: prowlarr-operator-indexer
+  no_log: true
+  tags: [platform_verify_arr]
+
+- name: Read Bazarr settings for verification
+  ansible.builtin.uri:
+    url: "{{ arr_bazarr_api }}/system/settings"
+    method: GET
+    headers:
+      X-API-KEY: "{{ vault_arr_bazarr_api_key }}"
+    status_code: [200]
+    return_content: true
+  register: arr_bazarr_verification
+  changed_when: false
+  check_mode: false
+  no_log: true
+  tags: [platform_verify_arr]
+
+- name: Verify Bazarr authentication and identical-path connections
+  ansible.builtin.assert:
+    that:
+      - arr_bazarr_verification.json.auth.type == 'form'
+      - arr_bazarr_verification.json.auth.username == vault_arr_bazarr_admin_username
+      - arr_bazarr_verification.json.general.use_radarr | bool
+      - arr_bazarr_verification.json.general.use_sonarr | bool
+      - arr_bazarr_verification.json.radarr.ip == 'radarr'
+      - arr_bazarr_verification.json.sonarr.ip == 'sonarr'
+      - arr_bazarr_verification.json.general.path_mappings | length == 0
+      - arr_bazarr_verification.json.general.path_mappings_movie | length == 0
+      - >-
+        arr_bazarr_verification.json.general.enabled_providers | sort ==
+        media_bazarr_providers | map(attribute='name') | list | sort
+    fail_msg: Bazarr differs from the declared Phase 1 connection state.
+  no_log: true
+  tags: [platform_verify_arr]

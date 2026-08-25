@@ -1,0 +1,105 @@
+---
+- name: Validate operator-owned Bazarr declarations
+  ansible.builtin.assert:
+    that:
+      - media_bazarr_languages | length == media_bazarr_languages | unique | length
+      - >-
+        media_bazarr_providers | map(attribute='name') | list | length ==
+        media_bazarr_providers | map(attribute='name') | unique | list | length
+      - item.name is match('^[a-z0-9_-]+$')
+      - item.settings is mapping
+      - >-
+        item.settings.keys() | select('match', '^settings-' ~ item.name ~ '-') |
+        list | length == item.settings | length
+    fail_msg: Bazarr providers require unique stable names and explicitly scoped settings.
+  loop: "{{ media_bazarr_providers }}"
+  loop_control:
+    label: bazarr-operator-provider
+  no_log: true
+
+- name: Read Bazarr settings before reconciliation
+  ansible.builtin.uri:
+    url: "{{ arr_bazarr_api }}/system/settings"
+    method: GET
+    headers:
+      X-API-KEY: "{{ vault_arr_bazarr_api_key }}"
+    status_code: [200]
+    return_content: true
+  register: arr_bazarr_settings_before
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require the supported Bazarr settings schema
+  ansible.builtin.assert:
+    that:
+      - arr_bazarr_settings_before.json is mapping
+      - arr_bazarr_settings_before.json.auth is mapping
+      - arr_bazarr_settings_before.json.general is mapping
+      - arr_bazarr_settings_before.json.radarr is mapping
+      - arr_bazarr_settings_before.json.sonarr is mapping
+      - arr_bazarr_settings_before.json.general.path_mappings is sequence
+      - arr_bazarr_settings_before.json.general.path_mappings_movie is sequence
+    fail_msg: Bazarr returned an unsupported settings schema.
+  no_log: true
+
+- name: Reconcile Bazarr authentication and identical-path Arr connections
+  ansible.builtin.uri:
+    url: "{{ arr_bazarr_api }}/system/settings"
+    method: POST
+    headers:
+      X-API-KEY: "{{ vault_arr_bazarr_api_key }}"
+    body_format: form-urlencoded
+    body:
+      settings-auth-type: form
+      settings-auth-username: "{{ vault_arr_bazarr_admin_username }}"
+      settings-auth-password: "{{ vault_arr_bazarr_admin_password }}"
+      settings-general-use_radarr: "true"
+      settings-general-use_sonarr: "true"
+      settings-radarr-ip: radarr
+      settings-radarr-port: "7878"
+      settings-radarr-base_url: ""
+      settings-radarr-ssl: "false"
+      settings-radarr-apikey: "{{ vault_arr_radarr_api_key }}"
+      settings-sonarr-ip: sonarr
+      settings-sonarr-port: "8989"
+      settings-sonarr-base_url: ""
+      settings-sonarr-ssl: "false"
+      settings-sonarr-apikey: "{{ vault_arr_sonarr_api_key }}"
+      settings-general-path_mappings: ["null"]
+      settings-general-path_mappings_movie: ["null"]
+      languages-enabled: >-
+        {{ media_bazarr_languages if media_bazarr_languages | length > 0 else ['null'] }}
+      settings-general-enabled_providers: >-
+        {{ media_bazarr_providers | map(attribute='name') | list
+           if media_bazarr_providers | length > 0 else ['null'] }}
+    status_code: [204]
+  changed_when: >-
+    arr_bazarr_settings_before.json.auth.type | default('') != 'form' or
+    arr_bazarr_settings_before.json.auth.username != vault_arr_bazarr_admin_username or
+    not arr_bazarr_settings_before.json.general.use_radarr | bool or
+    not arr_bazarr_settings_before.json.general.use_sonarr | bool or
+    arr_bazarr_settings_before.json.radarr.ip != 'radarr' or
+    arr_bazarr_settings_before.json.radarr.port | int != 7878 or
+    arr_bazarr_settings_before.json.sonarr.ip != 'sonarr' or
+    arr_bazarr_settings_before.json.sonarr.port | int != 8989 or
+    arr_bazarr_settings_before.json.general.path_mappings | length > 0 or
+    arr_bazarr_settings_before.json.general.path_mappings_movie | length > 0 or
+    arr_bazarr_settings_before.json.general.enabled_providers | sort !=
+      media_bazarr_providers | map(attribute='name') | list | sort
+  no_log: true
+
+- name: Reconcile operator-owned Bazarr provider settings
+  ansible.builtin.uri:
+    url: "{{ arr_bazarr_api }}/system/settings"
+    method: POST
+    headers:
+      X-API-KEY: "{{ vault_arr_bazarr_api_key }}"
+    body_format: form-urlencoded
+    body: "{{ item.settings }}"
+    status_code: [204]
+  loop: "{{ media_bazarr_providers }}"
+  loop_control:
+    label: bazarr-operator-provider
+  changed_when: true
+  no_log: true

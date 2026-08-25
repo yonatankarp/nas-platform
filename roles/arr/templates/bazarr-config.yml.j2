@@ -1,0 +1,11 @@
+---
+auth:
+  apikey: "{{ vault_arr_bazarr_api_key }}"
+  type: form
+  username: "{{ vault_arr_bazarr_admin_username }}"
+  password: "{{ vault_arr_bazarr_admin_password | hash('md5') }}"
+general:
+  ip: "*"
+  port: 6767
+  use_radarr: false
+  use_sonarr: false

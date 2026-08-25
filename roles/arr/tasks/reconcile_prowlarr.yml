@@ -1,0 +1,154 @@
+---
+- name: Read Prowlarr host configuration
+  ansible.builtin.uri:
+    url: "{{ arr_prowlarr_api }}/config/host"
+    method: GET
+    headers:
+      X-Api-Key: "{{ vault_arr_prowlarr_api_key }}"
+    status_code: [200]
+    return_content: true
+  register: arr_prowlarr_host_before
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require the supported Prowlarr host schema
+  ansible.builtin.assert:
+    that:
+      - arr_prowlarr_host_before.json is mapping
+      - arr_prowlarr_host_before.json.id is number
+      - arr_prowlarr_host_before.json.authenticationMethod is defined
+      - arr_prowlarr_host_before.json.authenticationRequired is defined
+    fail_msg: Prowlarr returned an unsupported host configuration schema.
+  no_log: true
+
+- name: Reconcile Prowlarr administrator authentication
+  ansible.builtin.uri:
+    url: "{{ arr_prowlarr_api }}/config/host/{{ arr_prowlarr_host_before.json.id }}"
+    method: PUT
+    headers:
+      X-Api-Key: "{{ vault_arr_prowlarr_api_key }}"
+    body_format: json
+    body: >-
+      {{ arr_prowlarr_host_before.json | combine({
+           'authenticationMethod': 'forms',
+           'authenticationRequired': 'enabled',
+           'username': vault_arr_prowlarr_admin_username,
+           'password': vault_arr_prowlarr_admin_password,
+           'passwordConfirmation': vault_arr_prowlarr_admin_password,
+           'launchBrowser': false
+         }, recursive=True) }}
+    status_code: [200, 202]
+    return_content: true
+  changed_when: >-
+    arr_prowlarr_host_before.json.authenticationMethod | lower != 'forms' or
+    arr_prowlarr_host_before.json.authenticationRequired | lower != 'enabled' or
+    arr_prowlarr_host_before.json.username != vault_arr_prowlarr_admin_username or
+    arr_prowlarr_host_before.json.launchBrowser | bool
+  no_log: true
+
+- name: Read Prowlarr applications
+  ansible.builtin.uri:
+    url: "{{ arr_prowlarr_api }}/applications"
+    method: GET
+    headers:
+      X-Api-Key: "{{ vault_arr_prowlarr_api_key }}"
+    status_code: [200]
+    return_content: true
+  register: arr_prowlarr_applications_before
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Reconcile each Prowlarr full-sync application
+  ansible.builtin.include_tasks: reconcile_prowlarr_application.yml
+  loop: "{{ arr_prowlarr_applications }}"
+  loop_control:
+    loop_var: arr_prowlarr_application
+    label: "{{ arr_prowlarr_application.name }}"
+
+- name: Validate operator-owned Prowlarr indexer declarations
+  ansible.builtin.assert:
+    that:
+      - >-
+        media_arr_indexers | map(attribute='name') | list | length ==
+        media_arr_indexers | map(attribute='name') | unique | list | length
+      - item.name is match('^[^\r\n]+$')
+      - item.implementation is match('^[^\r\n]+$')
+      - item.config_contract is match('^[^\r\n]+$')
+      - item.fields is sequence
+    fail_msg: Prowlarr indexers require unique names and explicit implementation schemas.
+  loop: "{{ media_arr_indexers }}"
+  loop_control:
+    label: prowlarr-operator-indexer
+  no_log: true
+
+- name: Read operator-owned Prowlarr indexers
+  ansible.builtin.uri:
+    url: "{{ arr_prowlarr_api }}/indexer"
+    method: GET
+    headers:
+      X-Api-Key: "{{ vault_arr_prowlarr_api_key }}"
+    status_code: [200]
+    return_content: true
+  register: arr_prowlarr_indexers_before
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Reconcile operator-owned Prowlarr indexers
+  ansible.builtin.uri:
+    url: >-
+      {{ arr_prowlarr_api }}/indexer{{
+         '/' ~ (arr_prowlarr_indexers_before.json |
+                 selectattr('name', 'equalto', item.name) |
+                 map(attribute='id') | first)
+         if (arr_prowlarr_indexers_before.json |
+             selectattr('name', 'equalto', item.name) | list | length) == 1 else '' }}
+    method: >-
+      {{ 'PUT'
+         if (arr_prowlarr_indexers_before.json |
+             selectattr('name', 'equalto', item.name) | list | length) == 1
+         else 'POST' }}
+    headers:
+      X-Api-Key: "{{ vault_arr_prowlarr_api_key }}"
+    body_format: json
+    body: >-
+      {{ ((arr_prowlarr_indexers_before.json |
+           selectattr('name', 'equalto', item.name) | first)
+          if (arr_prowlarr_indexers_before.json |
+              selectattr('name', 'equalto', item.name) | list | length) == 1 else {}) |
+         combine({
+           'name': item.name,
+           'implementation': item.implementation,
+           'implementationName': item.implementation_name | default(item.implementation),
+           'configContract': item.config_contract,
+           'enable': item.enable | default(true) | bool,
+           'priority': item.priority | default(25) | int,
+           'fields': item.fields,
+           'tags': item.tags | default([])
+         }, recursive=True) }}
+    status_code: [200, 201, 202]
+    return_content: true
+  loop: "{{ media_arr_indexers }}"
+  loop_control:
+    label: prowlarr-operator-indexer
+  vars:
+    arr_indexer_name_matches: >-
+      {{ arr_prowlarr_indexers_before.json |
+         selectattr('name', 'equalto', item.name) | list }}
+  when: arr_indexer_name_matches | length <= 1
+  changed_when: true
+  no_log: true
+
+- name: Refuse duplicate Prowlarr indexer names
+  ansible.builtin.assert:
+    that:
+      - >-
+        arr_prowlarr_indexers_before.json |
+        selectattr('name', 'equalto', item.name) | list | length <= 1
+    fail_msg: Prowlarr has an ambiguous operator-owned indexer name.
+  loop: "{{ media_arr_indexers }}"
+  loop_control:
+    label: prowlarr-operator-indexer
+  no_log: true
