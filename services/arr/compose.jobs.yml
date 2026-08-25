@@ -1,0 +1,18 @@
+---
+services:
+  configarr:
+    profiles: [jobs]
+    image: ghcr.io/raydak-labs/configarr:1.28.0@sha256:008d8659ff35f63fbcc20b860b33ba7cc49e8d7458a6ec446810ec4d783ef017
+    user: "1000:100"
+    cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
+    cpus: 0.5
+    volumes:
+      - ${CONFIGARR_CONFIG_PATH:?}:/app/config/config.yml:ro
+      - ${CONFIGARR_SECRETS_PATH:?}:/app/config/secrets.yml:ro
+    networks:
+      - media-control
+
+networks:
+  media-control:
+    external: true
+    name: ${PLATFORM_MEDIA_NETWORK:?}

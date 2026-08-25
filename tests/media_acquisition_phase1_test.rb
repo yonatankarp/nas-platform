@@ -37,6 +37,19 @@ def strict_yaml(relative_path)
   YAML.safe_load(source, aliases: false)
 end
 
+def compose_yaml(relative_path, failures)
+  path = File.join(ROOT, relative_path)
+  unless File.file?(path)
+    failures << "#{relative_path} must exist"
+    return {}
+  end
+
+  YAML.safe_load_file(path, aliases: true)
+rescue Psych::Exception => e
+  failures << "#{relative_path} must be valid Compose YAML: #{e.message.lines.first.strip}"
+  {}
+end
+
 failures = []
 catalog = strict_yaml("config/media-acquisition.yml")
 manifest = strict_yaml("services/manifest.yml")
@@ -80,6 +93,98 @@ end
     check(failures, vars[flag] == false,
           "#{host_group} #{flag} must remain literal false")
   end
+end
+
+arr_compose = compose_yaml("services/arr/compose.yml", failures)
+downloaders_compose = compose_yaml("services/downloaders/compose.yml", failures)
+jobs_compose = compose_yaml("services/arr/compose.jobs.yml", failures)
+
+arr_services = arr_compose.fetch("services", {})
+downloader_services = downloaders_compose.fetch("services", {})
+job_services = jobs_compose.fetch("services", {})
+check(failures, arr_services.keys.sort == %w[bazarr prowlarr radarr sonarr],
+      "arr long-running service set must be exact")
+check(failures, downloader_services.keys.sort == %w[sabnzbd unpackerr],
+      "Phase 1 downloader service set must be exact")
+check(failures, job_services.keys == ["configarr"],
+      "Configarr must be the only job service")
+
+expected_cpus = {
+  "radarr" => 1.0, "sonarr" => 1.0, "prowlarr" => 0.5, "bazarr" => 1.0,
+  "sabnzbd" => 2.0, "unpackerr" => 1.0
+}
+(arr_services.merge(downloader_services)).each do |name, definition|
+  image = definition["image"]
+  check(failures,
+        image.is_a?(String) && image.match?(/:[A-Za-z0-9][A-Za-z0-9_.-]*@sha256:[0-9a-f]{64}\z/),
+        "#{name} image must carry a readable tag and sha256 digest")
+  check(failures, definition["cpuset"] == "${PLATFORM_CONTAINER_CPUSET:?}",
+        "#{name} must require the platform CPU set")
+  check(failures, definition["cpus"] == expected_cpus[name],
+        "#{name} CPU ceiling must be #{expected_cpus[name]}")
+  check(failures, definition["restart"] == "unless-stopped",
+        "#{name} must restart unless stopped")
+  check(failures, definition.dig("logging", "driver") == "json-file" &&
+                  definition.dig("logging", "options", "max-size") == "10m" &&
+                  definition.dig("logging", "options", "max-file") == "3",
+        "#{name} logging must be bounded")
+  check(failures, definition.dig("labels", "dev.dozzle.name") == name,
+        "#{name} must have its Dozzle display name")
+  check(failures, definition["healthcheck"].is_a?(Hash) &&
+                  Array(definition.dig("healthcheck", "test")).length >= 2,
+        "#{name} must have a meaningful healthcheck")
+end
+
+%w[radarr sonarr prowlarr bazarr].each do |name|
+  check(failures, Array(arr_services.dig(name, "networks")).include?("media-control"),
+        "#{name} must join media-control")
+end
+check(failures, arr_compose.dig("networks", "media-control") == {
+        "external" => true, "name" => "${PLATFORM_MEDIA_NETWORK:?}"
+      }, "arr must use the external media-control network")
+check(failures, downloaders_compose.dig("networks", "media-control") == {
+        "external" => true, "name" => "${PLATFORM_MEDIA_NETWORK:?}"
+      }, "downloaders must use the external media-control network")
+
+%w[radarr sonarr bazarr].each do |name|
+  check(failures,
+        Array(arr_services.dig(name, "volumes")).include?("${MEDIA_ROOT:?}/Media:/data/media"),
+        "#{name} must see the full Media share at /data/media")
+end
+check(failures,
+      Array(downloader_services.dig("sabnzbd", "volumes")).sort == [
+        "${BOOKS_ACQUISITION_PATH:?}:/data/books/.acquisition",
+        "${MEDIA_ACQUISITION_PATH:?}:/data/media/.acquisition",
+        "${SABNZBD_CONFIG_PATH:?}:/config"
+      ].sort,
+      "SABnzbd mounts must be limited to config and acquisition parents")
+check(failures,
+      Array(downloader_services.dig("unpackerr", "volumes")).sort == [
+        "${BOOKS_ACQUISITION_PATH:?}:/data/books/.acquisition",
+        "${MEDIA_ACQUISITION_PATH:?}:/data/media/.acquisition"
+      ].sort,
+      "Unpackerr mounts must match the acquisition parents")
+check(failures, downloader_services.dig("unpackerr", "user") == "1000:100",
+      "Unpackerr must run as the shared filesystem identity")
+check(failures, !downloader_services.fetch("unpackerr", {}).key?("ports"),
+      "Unpackerr must publish no ports")
+
+configarr = job_services.fetch("configarr", {})
+check(failures, configarr["profiles"] == ["jobs"],
+      "Configarr must stay behind the jobs profile")
+check(failures, configarr["user"] == "1000:100",
+      "Configarr must run as the shared filesystem identity")
+check(failures, configarr["cpuset"] == "${PLATFORM_CONTAINER_CPUSET:?}" &&
+                configarr["cpus"] == 0.5,
+      "Configarr must use its exact CPU policy")
+check(failures, !configarr.key?("restart"), "Configarr must not restart")
+check(failures, !configarr.key?("ports"), "Configarr must publish no ports")
+
+%w[
+  services/arr/compose.mac.yml services/arr/compose.integration.yml
+  services/downloaders/compose.mac.yml services/downloaders/compose.integration.yml
+].each do |relative_path|
+  check(failures, File.file?(File.join(ROOT, relative_path)), "#{relative_path} must exist")
 end
 
 if failures.empty?
