@@ -583,6 +583,21 @@ end
 network_post_assertion = host_prep.find do |task|
   task["name"] == "Require the exact media control network after create-only handling"
 end
+writer_mode = host_prep.find do |task|
+  task["name"] == "Select synthetic integration writer ownership"
+end
+writer_boundary = host_prep.find do |task|
+  task["name"] == "Require the exact integration media sandbox"
+end
+directory_task = host_prep.find do |task|
+  task["name"] == "Create service state directories"
+end
+writer_inspection = host_prep.find do |task|
+  task["name"] == "Inspect synthetic integration writer directories"
+end
+writer_assertion = host_prep.find do |task|
+  task["name"] == "Require synthetic integration writer ownership"
+end
 network_refusal_conditions = Array(network_refusal&.dig("ansible.builtin.assert", "that"))
 network_post_conditions = Array(network_post_assertion&.dig("ansible.builtin.assert", "that"))
 failures << "host preparation must inspect and fail closed on exact-name network collisions" unless
@@ -626,6 +641,59 @@ failures << "host preparation must never delete Docker networks" if
   end
 failures << "host preparation must never recursively change storage ownership" if
   all_host_prep_tasks.any? { |task| task.dig("ansible.builtin.file", "recurse") == true }
+
+writer_requested = writer_mode&.dig(
+  "ansible.builtin.set_fact", "host_prep_integration_writer_requested"
+).to_s
+writer_enabled = writer_mode&.dig(
+  "ansible.builtin.set_fact", "host_prep_integration_writer_enabled"
+).to_s
+failures << "host preparation must select synthetic writer mode only for explicit NAS integration tests" unless
+    writer_requested.include?("platform_kind == 'nas'") &&
+    writer_requested.include?("platform_compose_kind == 'integration'") &&
+    writer_requested.include?("deployment_bundle_test_mode | bool") &&
+    writer_enabled.include?("platform_kind == 'nas'") &&
+    writer_enabled.include?("platform_compose_kind == 'integration'") &&
+    writer_enabled.include?("deployment_bundle_test_mode | bool") &&
+    writer_enabled.include?("nas_media_root is match('^.*/nas-platform-integration[.][A-Za-z0-9]{6}/volume2$')")
+
+writer_boundary_conditions = Array(writer_boundary&.dig("ansible.builtin.assert", "that"))
+writer_mode_index = host_prep.index(writer_mode)
+writer_boundary_index = host_prep.index(writer_boundary)
+directory_index = host_prep.index(directory_task)
+failures << "host preparation must fail closed on the exact integration media sandbox before directory creation" unless
+  writer_boundary&.fetch("when", nil) == "host_prep_integration_writer_requested | bool" &&
+    writer_boundary_conditions.include?("host_prep_integration_writer_enabled | bool") &&
+    writer_mode_index && writer_boundary_index && directory_index &&
+    writer_mode_index < writer_boundary_index && writer_boundary_index < directory_index
+
+directory_owner = directory_task&.dig("ansible.builtin.file", "owner").to_s.gsub(/\s+/, " ")
+directory_group = directory_task&.dig("ansible.builtin.file", "group").to_s.gsub(/\s+/, " ")
+failures << "host preparation must scope synthetic ownership to marked integration writer directories" unless
+  directory_owner.include?("host_prep_integration_writer_enabled | bool") &&
+    directory_owner.include?("item.media_acquisition_writer | default(false) | bool") &&
+    directory_owner.include?("nas_uid") &&
+    directory_owner.include?("else item.owner") &&
+    directory_owner.include?("platform_kind == 'nas' or (platform_manage_linux_ownership | bool)") &&
+    directory_owner.include?("item.owner is defined") &&
+    directory_group.include?("host_prep_integration_writer_enabled | bool") &&
+    directory_group.include?("item.media_acquisition_writer | default(false) | bool") &&
+    directory_group.include?("nas_gid") &&
+    directory_group.include?("else item.group") &&
+    directory_group.include?("platform_kind == 'nas' or (platform_manage_linux_ownership | bool)") &&
+    directory_group.include?("item.group is defined")
+
+writer_assertion_conditions = Array(writer_assertion&.dig("ansible.builtin.assert", "that"))
+failures << "host preparation must verify synthetic integration writer ownership after convergence" unless
+  writer_inspection&.dig("ansible.builtin.stat", "follow") == false &&
+    writer_inspection&.fetch("when", nil) == "host_prep_integration_writer_enabled | bool" &&
+    writer_assertion&.fetch("when", nil) == "host_prep_integration_writer_enabled | bool" &&
+    writer_assertion_conditions.include?("item.stat.exists") &&
+    writer_assertion_conditions.include?("item.stat.isdir") &&
+    writer_assertion_conditions.include?("not item.stat.islnk") &&
+    writer_assertion_conditions.include?("item.stat.uid == (nas_uid | int)") &&
+    writer_assertion_conditions.include?("item.stat.gid == (nas_gid | int)") &&
+    writer_assertion_conditions.include?("item.stat.mode == item.item.mode")
 
 %w[audiobookshelf jellyfin].each do |reader|
   compose = YAML.safe_load_file(File.join(ROOT, "services", reader, "compose.yml"), aliases: true)
@@ -672,6 +740,18 @@ failures << "host_prep must require a string media control network" unless
   host_prep_options["platform_media_control_network"] == { "type" => "str", "required" => true }
 failures << "host_prep must accept the acquisition foundation marker" unless
   host_prep_options.dig("nas_storage", "options", "media_acquisition_foundation") == {
+    "type" => "bool", "required" => false
+  }
+failures << "host_prep must require the integration compose kind" unless
+  host_prep_options["platform_compose_kind"] == { "type" => "str", "required" => true }
+failures << "host_prep must default deployment bundle test mode off" unless
+  host_prep_options["deployment_bundle_test_mode"] == { "type" => "bool", "default" => false }
+failures << "host_prep must require the raw NAS user identity" unless
+  host_prep_options["nas_uid"] == { "type" => "raw", "required" => true }
+failures << "host_prep must require the raw NAS group identity" unless
+  host_prep_options["nas_gid"] == { "type" => "raw", "required" => true }
+failures << "host_prep must accept the synthetic integration writer marker" unless
+  host_prep_options.dig("nas_storage", "options", "media_acquisition_writer")&.slice("type", "required") == {
     "type" => "bool", "required" => false
   }
 

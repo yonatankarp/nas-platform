@@ -11,6 +11,18 @@ argument_specs:
         type: str
         required: true
         choices: [nas, mac]
+      deployment_bundle_test_mode:
+        type: bool
+        default: false
+      platform_compose_kind:
+        type: str
+        required: true
+      nas_uid:
+        type: raw
+        required: true
+      nas_gid:
+        type: raw
+        required: true
       platform_media_control_network:
         type: str
         required: true
@@ -47,6 +59,10 @@ argument_specs:
           media_acquisition_foundation:
             type: bool
             required: false
+          media_acquisition_writer:
+            type: bool
+            required: false
+            description: Marks a path writable only in the disposable integration sandbox.
       nas_media_root:
         type: str
         required: true
