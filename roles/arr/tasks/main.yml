@@ -13,6 +13,8 @@
       - "{{ platform_current_dir }}/services/arr"
       - "{{ platform_current_dir }}/services/arr/compose.yml"
       - "{{ platform_current_dir }}/services/arr/compose.{{ platform_compose_kind }}.yml"
+      - "{{ platform_current_dir }}/services/arr/compose.jobs.yml"
+      - "{{ platform_current_dir }}/roles/arr/files/configarr/config.yml"
       - "{{ platform_runtime_dir }}/services/arr"
       - "{{ platform_runtime_dir }}/services/arr/.env"
       - "{{ arr_radarr_config_host_path }}"
@@ -87,6 +89,10 @@
 
 - name: Reconcile Bazarr connections and operator settings
   ansible.builtin.include_tasks: reconcile_bazarr.yml
+  when: media_usenet_enabled | bool
+
+- name: Apply declarative Arr profiles with Configarr
+  ansible.builtin.include_tasks: configarr.yml
   when: media_usenet_enabled | bool
 
 - name: Report the Arr deployment

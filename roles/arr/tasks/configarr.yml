@@ -1,0 +1,90 @@
+---
+- name: Render private Configarr secrets
+  ansible.builtin.template:
+    src: configarr-secrets.yml.j2
+    dest: "{{ platform_runtime_dir }}/services/arr/configarr-secrets.yml"
+    mode: "0600"
+  no_log: true
+
+- name: Apply Configarr profiles synchronously
+  community.docker.docker_compose_v2_run:
+    project_src: "{{ platform_current_dir }}/services/arr"
+    project_name: "{{ arr_compose_project_name }}"
+    files: "{{ platform_service_compose_files['arr'] + ['compose.jobs.yml'] }}"
+    env_files: ["{{ platform_runtime_dir }}/services/arr/.env"]
+    profiles: [jobs]
+    service: configarr
+    cleanup: true
+    no_deps: true
+    detach: false
+    service_ports: false
+    interactive: true
+    tty: false
+  register: arr_configarr_run
+  when: not ansible_check_mode
+  failed_when: >-
+    arr_configarr_run.rc | default(1) | int != 0 or
+    'Failure during configuring:' in arr_configarr_run.stdout | default('') or
+    'Failure during configuring:' in arr_configarr_run.stderr | default('')
+  changed_when: arr_configarr_run.rc | default(1) | int == 0
+  no_log: true
+
+- name: Record a bounded Configarr execution summary
+  ansible.builtin.set_fact:
+    arr_configarr_status:
+      rc: "{{ arr_configarr_run.rc | int }}"
+      stdout_lines: "{{ [arr_configarr_run.stdout_lines | default([]) | length, 1000] | min }}"
+      stderr_lines: "{{ [arr_configarr_run.stderr_lines | default([]) | length, 1000] | min }}"
+  when: not ansible_check_mode
+  changed_when: false
+
+- name: Read Configarr-owned Arr resources
+  ansible.builtin.uri:
+    url: "{{ item.0.api }}/{{ item.1 }}"
+    method: GET
+    headers:
+      X-Api-Key: "{{ item.0.api_key }}"
+    status_code: [200]
+    return_content: true
+  loop: >-
+    {{ arr_servarr_instances |
+       product(['qualityprofile', 'qualitydefinition', 'customformat', 'config/mediamanagement']) |
+       list }}
+  loop_control:
+    label: "configarr-{{ item.0.name }}-{{ item.1 }}"
+  register: arr_configarr_verification
+  when: not ansible_check_mode
+  changed_when: false
+  no_log: true
+
+- name: Verify Configarr-owned profiles, definitions, formats, and naming
+  ansible.builtin.assert:
+    that:
+      - >-
+        (arr_configarr_verification.results |
+         selectattr('item.0.name', 'equalto', item.name) |
+         selectattr('item.1', 'equalto', 'qualityprofile') |
+         map(attribute='json') | first |
+         selectattr('name', 'equalto', 'HD Bluray + WEB 1080p') | list | length) == 1
+      - >-
+        (arr_configarr_verification.results |
+         selectattr('item.0.name', 'equalto', item.name) |
+         selectattr('item.1', 'equalto', 'qualitydefinition') |
+         map(attribute='json') | first | length) > 0
+      - >-
+        (arr_configarr_verification.results |
+         selectattr('item.0.name', 'equalto', item.name) |
+         selectattr('item.1', 'equalto', 'customformat') |
+         map(attribute='json') | first |
+         selectattr('name', 'equalto', 'NAS Repack or Proper') | list | length) == 1
+      - >-
+        not (arr_configarr_verification.results |
+             selectattr('item.0.name', 'equalto', item.name) |
+             selectattr('item.1', 'equalto', 'config/mediamanagement') |
+             map(attribute='json') | first)[item.rename_field] | bool
+    fail_msg: Configarr did not converge the declared Phase 1 profile contract.
+  loop: "{{ arr_servarr_instances }}"
+  loop_control:
+    label: "configarr-{{ item.name }}"
+  when: not ansible_check_mode
+  no_log: true

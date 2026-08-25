@@ -1,0 +1,86 @@
+---
+telemetry: false
+
+customFormatDefinitions:
+  - trash_id: nas-repack-proper
+    trash_scores:
+      default: 10
+    trash_description: Prefer corrected releases without enabling automatic searches.
+    name: NAS Repack or Proper
+    includeCustomFormatWhenRenaming: false
+    specifications:
+      - name: Repack or Proper release title
+        implementation: ReleaseTitleSpecification
+        negate: false
+        required: false
+        fields:
+          value: '(?i)\b(repack|proper)\b'
+
+radarr:
+  phase1:
+    base_url: http://radarr:7878
+    api_key: !secret RADARR_API_KEY
+    quality_definition:
+      type: movie
+    quality_profiles:
+      - name: HD Bluray + WEB 1080p
+        reset_unmatched_scores:
+          enabled: true
+        upgrade:
+          allowed: false
+        min_format_score: 0
+        quality_sort: top
+        qualities:
+          - name: Bluray-1080p
+          - name: WEB 1080p
+            qualities: [WEBDL-1080p, WEBRip-1080p]
+    custom_formats:
+      - trash_ids: [nas-repack-proper]
+        assign_scores_to:
+          - name: HD Bluray + WEB 1080p
+            score: 10
+    media_naming:
+      folder: '{Movie CleanTitle} ({Release Year}) {tmdb-{TmdbId}}'
+      movie:
+        rename: false
+        standard: >-
+          {Movie CleanTitle} ({Release Year}) {tmdb-{TmdbId}}
+          [{Quality Full}]{[MediaInfo VideoDynamicRangeType]}{[MediaInfo AudioCodec]}
+
+sonarr:
+  phase1:
+    base_url: http://sonarr:8989
+    api_key: !secret SONARR_API_KEY
+    quality_definition:
+      type: series
+    quality_profiles:
+      - name: HD Bluray + WEB 1080p
+        reset_unmatched_scores:
+          enabled: true
+        upgrade:
+          allowed: false
+        min_format_score: 0
+        quality_sort: top
+        qualities:
+          - name: Bluray-1080p
+          - name: WEB 1080p
+            qualities: [WEBDL-1080p, WEBRip-1080p]
+    custom_formats:
+      - trash_ids: [nas-repack-proper]
+        assign_scores_to:
+          - name: HD Bluray + WEB 1080p
+            score: 10
+    media_naming:
+      series: '{Series TitleYear} {tvdb-{TvdbId}}'
+      season: 'Season {season:00}'
+      episodes:
+        rename: false
+        standard: >-
+          {Series TitleYear} - S{season:00}E{episode:00} - {Episode CleanTitle}
+          [{Quality Full}]{[MediaInfo VideoDynamicRangeType]}{[MediaInfo AudioCodec]}
+        daily: >-
+          {Series TitleYear} - {Air-Date} - {Episode CleanTitle}
+          [{Quality Full}]{[MediaInfo VideoDynamicRangeType]}{[MediaInfo AudioCodec]}
+        anime: >-
+          {Series TitleYear} - S{season:00}E{episode:00} - {absolute:000} - {Episode CleanTitle}
+          [{Quality Full}]{[MediaInfo VideoDynamicRangeType]}{[MediaInfo AudioCodec]}
