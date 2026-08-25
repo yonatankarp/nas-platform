@@ -226,6 +226,23 @@ def deep_copy(value)
   Marshal.load(Marshal.dump(value))
 end
 
+def integration_writer_contract_problems(storage)
+  integration_writers = storage.select do |entry|
+    entry.key?("media_acquisition_writer")
+  end
+  actual_integration_writers = integration_writers.map { |entry| entry.fetch("path") }.to_set
+  problems = []
+  problems << "media acquisition integration writers differ from the exact writable set" unless
+    actual_integration_writers == EXPECTED_INTEGRATION_WRITERS
+  problems << "integration writer declarations must use literal true" if
+    integration_writers.any? { |entry| entry["media_acquisition_writer"] != true }
+  problems << "integration writer declarations must remain acquisition foundation storage" if
+    integration_writers.any? { |entry| entry["media_acquisition_foundation"] != true }
+  problems << "integration writer declarations must remain ownerless for production NAS storage" if
+    integration_writers.any? { |entry| entry.key?("owner") || entry.key?("group") }
+  problems
+end
+
 def flatten_tasks(tasks)
   Array(tasks).flat_map do |task|
     next [] unless task.is_a?(Hash)
@@ -485,17 +502,23 @@ failures << "unbracketed IPv6 wildcard must normalize" unless
 end
 
 shared_vars = YAML.safe_load_file(File.join(ROOT, "inventory", "group_vars", "all", "main.yml"))
+all_storage = shared_vars.fetch("nas_storage")
 acquisition_storage = shared_vars.fetch("nas_storage").select do |entry|
   entry["media_acquisition_foundation"] == true
 end
-integration_writers = acquisition_storage.select do |entry|
-  entry["media_acquisition_writer"] == true
-end
-actual_integration_writers = integration_writers.map { |entry| entry.fetch("path") }.to_set
-failures << "media acquisition integration writers differ from the exact writable set" unless
-  actual_integration_writers == EXPECTED_INTEGRATION_WRITERS
-failures << "integration writer declarations must remain ownerless for production NAS storage" if
-  integration_writers.any? { |entry| entry.key?("owner") || entry.key?("group") }
+failures.concat(integration_writer_contract_problems(all_storage))
+
+extra_writer_mutation = deep_copy(all_storage)
+extra_writer_mutation.find { |entry| entry.fetch("path").end_with?("/audiobookshelf/config") }["media_acquisition_writer"] = true
+failures << "integration writer guard misses extra service-config marker" if
+  integration_writer_contract_problems(extra_writer_mutation).empty?
+
+non_true_writer_mutation = deep_copy(all_storage)
+non_true_writer_mutation.find do |entry|
+  entry.fetch("path") == "{{ nas_media_root }}/Media/Movies"
+end["media_acquisition_writer"] = false
+failures << "integration writer guard misses non-true declaration" if
+  integration_writer_contract_problems(non_true_writer_mutation).empty?
 actual_storage = acquisition_storage.to_h { |entry| [entry.fetch("path"), entry.fetch("recovery")] }
 failures << "media acquisition storage differs from the exact classified foundation" unless
   actual_storage == EXPECTED_STORAGE && acquisition_storage.length == EXPECTED_STORAGE.length
