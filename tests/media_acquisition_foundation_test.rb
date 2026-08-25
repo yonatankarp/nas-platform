@@ -585,14 +585,15 @@ failures << "verify.yml must select the standalone media acquisition verifier by
     Array(verifier_include["tags"]) == %w[never platform_verify_media_acquisition_foundation]
 
 mac_verify_source = File.read(File.join(ROOT, "tests", "mac", "verify.sh"))
+mac_lib_source = File.read(File.join(ROOT, "tests", "mac", "lib.sh"))
 expected_mac_verify_hooks = %w[
   10-beszel.sh 15-media-acquisition-foundation.sh 15-ntfy.sh 20-dozzle.sh
 ]
-expected_mac_contract_services = %w[audiobookshelf komga jellyfin immich paperless]
 failures << "Mac verification must dispatch the exact infrastructure hook roster" unless
-  expected_mac_verify_hooks.all? { |hook| mac_verify_source.include?(hook) }
-failures << "Mac verification must dispatch every contract-backed service run" unless
-  expected_mac_contract_services.all? { |service| mac_verify_source.include?(service) }
+  expected_mac_verify_hooks.all? { |hook| mac_lib_source.include?(hook) } &&
+    mac_verify_source.include?("MAC_VERIFY_INFRASTRUCTURE_HOOKS")
+failures << "Mac verification must dispatch contract-backed services through coverage" unless
+  mac_verify_source.include?("hooks/verify/30-services.sh")
 failures << "Mac verification must not pass the foundation hook through service coverage" if
   mac_verify_source.include?("mac_run_hooks verify")
 

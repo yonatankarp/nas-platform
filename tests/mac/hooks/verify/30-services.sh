@@ -26,4 +26,5 @@ for mac_verify_service in audiobookshelf komga jellyfin immich paperless; do
 "
 done
 
-mac_assert_service_coverage verify 30-services.sh "$mac_verified" ''
+mac_assert_service_coverage verify 30-services.sh "$mac_verified" '' \
+  "$MAC_VERIFY_INFRASTRUCTURE_HOOKS" "$MAC_VERIFY_COVERAGE_NEUTRAL_HOOKS"
