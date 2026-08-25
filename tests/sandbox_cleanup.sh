@@ -7,6 +7,7 @@ cleanup_sandbox_containers="$cleanup_sandbox_containers audiobookshelf komga jel
 cleanup_sandbox_containers="$cleanup_sandbox_containers immich_server immich_machine_learning immich_redis immich_postgres"
 cleanup_sandbox_containers="$cleanup_sandbox_containers paperless_redis paperless_postgres paperless_webserver paperless_gotenberg paperless_tika"
 cleanup_sandbox_containers="$cleanup_sandbox_containers radarr sonarr prowlarr bazarr sabnzbd unpackerr"
+cleanup_sandbox_networks='arr_default downloaders_default'
 
 cleanup_sandbox_program() {
   cat <<'PY'
@@ -150,6 +151,13 @@ cleanup_sandbox() {
     cleanup_container_ids=$(docker ps -aq --filter "name=^${cleanup_container}$") || return 1
     for cleanup_container_id in $cleanup_container_ids; do
       docker rm -f "$cleanup_container_id" >/dev/null || return 1
+    done
+  done
+
+  for cleanup_network in $cleanup_sandbox_networks; do
+    cleanup_network_ids=$(docker network ls -q --filter "name=^${cleanup_network}$") || return 1
+    for cleanup_network_id in $cleanup_network_ids; do
+      docker network rm "$cleanup_network_id" >/dev/null || return 1
     done
   done
 

@@ -34,6 +34,18 @@ test_cleanup_service_registry() {
       exit 1
     }
   done
+
+  for expected_cleanup_network in arr_default downloaders_default; do
+    cleanup_network_registered=false
+    for registered_cleanup_network in $cleanup_sandbox_networks; do
+      [ "$registered_cleanup_network" != "$expected_cleanup_network" ] ||
+        cleanup_network_registered=true
+    done
+    [ "$cleanup_network_registered" = true ] || {
+      printf 'sandbox cleanup network is not registered: %s\n' "$expected_cleanup_network" >&2
+      exit 1
+    }
+  done
 }
 
 assert_cleanup_rejected() {
@@ -108,6 +120,15 @@ test_docker_failure() {
         ps:list) return 41 ;;
         ps:rm) printf '%s\n' fake-container-id ;;
         rm:rm) return 42 ;;
+        network:network-list)
+          [ "$2" != ls ] || return 43
+          ;;
+        network:network-rm)
+          case $2 in
+            ls) printf '%s\n' fake-network-id ;;
+            rm) return 44 ;;
+          esac
+          ;;
       esac
       return 0
     }
@@ -224,6 +245,8 @@ case "$test_case" in
   invalid-suffix) test_invalid_suffix_alphabet; exit 0 ;;
   docker-list) test_docker_failure list; exit 0 ;;
   docker-rm) test_docker_failure rm; exit 0 ;;
+  docker-network-list) test_docker_failure network-list; exit 0 ;;
+  docker-network-rm) test_docker_failure network-rm; exit 0 ;;
   symlink-swap) test_symlink_swap; exit 0 ;;
   trap-statuses) test_trap_statuses; exit 0 ;;
   python-root-symlink) test_python_rejects_root_symlink; exit 0 ;;
@@ -237,6 +260,8 @@ test_cleanup_service_registry
 test_invalid_suffix_alphabet
 test_docker_failure list
 test_docker_failure rm
+test_docker_failure network-list
+test_docker_failure network-rm
 test_symlink_swap
 test_trap_statuses
 test_python_rejects_root_symlink
