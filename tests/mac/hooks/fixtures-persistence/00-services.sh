@@ -25,4 +25,6 @@ for mac_persistence_entry in beszel:verify dozzle:verify \
 done
 
 mac_assert_service_coverage fixtures-persistence 00-services.sh "$mac_persisted" \
-  'ntfy=it has no contract suite of its own to reassert persistence with'
+  'arr=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite
+downloaders=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite
+ntfy=it has no contract suite of its own to reassert persistence with'

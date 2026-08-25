@@ -32,4 +32,6 @@ for mac_seed_entry in beszel:verify dozzle:verify audiobookshelf:seed-progress \
 done
 
 mac_assert_service_coverage fixtures-seed 00-services.sh "$mac_seeded" \
-  'ntfy=it has no contract suite of its own; its fixtures are the provisioned topics'
+  'arr=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite
+downloaders=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite
+ntfy=it has no contract suite of its own; its fixtures are the provisioned topics'

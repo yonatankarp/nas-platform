@@ -176,11 +176,11 @@ expect_log() {
 tree=$fixture/accepted
 build_tree "$tree"
 
-# Every group must account for all eight services: the seven registered contracts
+# Every group must account for all ten services: the nine registered contracts
 # plus ntfy, which has no contract of its own and so is never in the registry.
 summary=$(run_group "$tree" fixtures-seed 00-services.sh)
 expect_summary "$summary" \
-  'mac fixtures-seed hooks: covered 8 of 8 registered services (ran 7, delegated 0, exempt 1)'
+  'mac fixtures-seed hooks: covered 10 of 10 registered services (ran 7, delegated 0, exempt 3)'
 expect_log "$(cat "$tree/log/hooks")" 'beszel verify
 dozzle verify
 audiobookshelf seed-progress
@@ -191,7 +191,7 @@ paperless seed' 'fixtures-seed'
 
 summary=$(run_group "$tree" fixtures-persistence 00-services.sh)
 expect_summary "$summary" \
-  'mac fixtures-persistence hooks: covered 8 of 8 registered services (ran 6, delegated 1, exempt 1)'
+  'mac fixtures-persistence hooks: covered 10 of 10 registered services (ran 6, delegated 1, exempt 3)'
 expect_log "$(cat "$tree/log/hooks")" 'beszel verify
 dozzle verify
 audiobookshelf assert-persistence
@@ -201,7 +201,7 @@ immich assert-persistence' 'fixtures-persistence'
 
 summary=$(run_group "$tree" verify 30-services.sh)
 expect_summary "$summary" \
-  'mac verify hooks: covered 8 of 8 registered services (ran 5, delegated 3, exempt 0)'
+  'mac verify hooks: covered 10 of 10 registered services (ran 5, delegated 3, exempt 2)'
 expect_log "$(cat "$tree/log/hooks")" 'audiobookshelf run
 komga run
 jellyfin run
@@ -210,7 +210,7 @@ paperless run' 'verify'
 
 summary=$(run_group "$tree" fixtures-recreate 00-services.sh)
 expect_summary "$summary" \
-  'mac fixtures-recreate hooks: covered 8 of 8 registered services (ran 8, delegated 0, exempt 0)'
+  'mac fixtures-recreate hooks: covered 10 of 10 registered services (ran 8, delegated 0, exempt 2)'
 expect_log "$(cat "$tree/log/hooks")" 'beszel verify
 ntfy verify-hook
 dozzle verify
@@ -239,7 +239,7 @@ tree=$fixture/verify-wrapper
 build_verify_tree "$tree"
 summary=$(run_verify_wrapper "$tree")
 expect_summary "$summary" \
-  'mac verify hooks: covered 8 of 8 registered services (ran 5, delegated 3, exempt 0)'
+  'mac verify hooks: covered 10 of 10 registered services (ran 5, delegated 3, exempt 2)'
 expect_log "$(cat "$tree/log/hooks")" 'beszel verify-hook
 media-acquisition-foundation verify-hook
 ntfy verify-hook
