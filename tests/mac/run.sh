@@ -200,15 +200,6 @@ report_marker=$report_root/.nas-platform-mac-report-owned
   grep -qx "sandbox=$(basename -- "$sandbox")" "$report_marker" ||
   mac_die 'report root ownership marker is missing or invalid'
 
-tinymediamanager_report_root=$sandbox/tinymediamanager-report
-if [ ! -e "$tinymediamanager_report_root" ]; then
-  mkdir -m 0700 "$tinymediamanager_report_root"
-fi
-[ -d "$tinymediamanager_report_root" ] && [ ! -L "$tinymediamanager_report_root" ] &&
-  [ "$(mac_owner_id "$tinymediamanager_report_root")" = "$(id -u)" ] &&
-  [ "$(mac_file_mode "$tinymediamanager_report_root")" = 700 ] ||
-  mac_die 'tinyMediaManager report root is unavailable or unsafe'
-
 protected_input_root=$sandbox/protected-inputs
 if [ ! -e "$protected_input_root" ]; then
   mkdir -m 0700 "$protected_input_root"
@@ -626,7 +617,7 @@ read_integration_ports() {
 path, repository = ARGV
 expected = %w[
   audiobookshelf_port beszel_port dozzle_port immich_port jellyfin_port komga_port
-  ntfy_port paperless_port tinymediamanager_api_port tinymediamanager_web_port
+  ntfy_port paperless_port
 ]
 flags = File::RDONLY
 flags |= File::NOFOLLOW if File.const_defined?(:NOFOLLOW)
@@ -660,14 +651,12 @@ RUBY
 
 if [ "$proof_platform" = integration ]; then
   integration_ports=$(read_integration_ports) || mac_die 'integration ports input is invalid'
-  # The validated representation contains exactly ten decimal integers.
+  # The validated representation contains exactly eight decimal integers.
   set -- $integration_ports
-  [ "$#" -eq 10 ] || mac_die 'integration ports input is invalid'
+  [ "$#" -eq 8 ] || mac_die 'integration ports input is invalid'
   expected_audiobookshelf_port=$1 expected_beszel_port=$2 expected_dozzle_port=$3
   expected_immich_port=$4 expected_jellyfin_port=$5 expected_komga_port=$6
-  expected_ntfy_port=$7 expected_paperless_port=$8 expected_tinymediamanager_api_port=$9
-  shift 9
-  expected_tinymediamanager_web_port=$1
+  expected_ntfy_port=$7 expected_paperless_port=$8
   callback_host=$(mac_integration_gateway) || mac_die 'integration callback host is invalid'
 else
   callback_host=host.docker.internal
@@ -681,8 +670,6 @@ initialize_report_input() {
     --vault-checksum "$vault_checksum" --project-name "$project_name" \
     --beszel-port "$beszel_port" --ntfy-port "$ntfy_port" --dozzle-port "$dozzle_port" \
     --audiobookshelf-port "$audiobookshelf_port" --komga-port "$komga_port" \
-    --tinymediamanager-web-port "$tinymediamanager_web_port" \
-    --tinymediamanager-api-port "$tinymediamanager_api_port" \
     --jellyfin-port "$jellyfin_port" --immich-port "$immich_port" \
     --paperless-port "$paperless_port" "$@"
 }
@@ -693,8 +680,6 @@ if [ ! -f "$state_input" ]; then
     dozzle_port=$expected_dozzle_port immich_port=$expected_immich_port
     jellyfin_port=$expected_jellyfin_port komga_port=$expected_komga_port
     ntfy_port=$expected_ntfy_port paperless_port=$expected_paperless_port
-    tinymediamanager_api_port=$expected_tinymediamanager_api_port
-    tinymediamanager_web_port=$expected_tinymediamanager_web_port
   else
     beszel_port=$(allocate_service_port)
     ntfy_port=$(allocate_service_port "$beszel_port")
@@ -702,20 +687,14 @@ if [ ! -f "$state_input" ]; then
     audiobookshelf_port=$(allocate_service_port "$beszel_port" "$ntfy_port" "$dozzle_port")
     komga_port=$(allocate_service_port \
       "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port")
-    tinymediamanager_web_port=$(allocate_service_port \
-      "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port" "$komga_port")
-    tinymediamanager_api_port=$(allocate_service_port \
-      "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port" "$komga_port" \
-      "$tinymediamanager_web_port")
     jellyfin_port=$(allocate_service_port \
-      "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port" "$komga_port" \
-      "$tinymediamanager_web_port" "$tinymediamanager_api_port")
+      "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port" "$komga_port")
     immich_port=$(allocate_service_port \
       "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port" "$komga_port" \
-      "$tinymediamanager_web_port" "$tinymediamanager_api_port" "$jellyfin_port")
+      "$jellyfin_port")
     paperless_port=$(allocate_service_port \
       "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port" "$komga_port" \
-      "$tinymediamanager_web_port" "$tinymediamanager_api_port" "$jellyfin_port" "$immich_port")
+      "$jellyfin_port" "$immich_port")
   fi
   initialize_report_input
 else
@@ -732,8 +711,6 @@ else
   dozzle_port=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("dozzle_port")' "$state_input")
   audiobookshelf_port=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("audiobookshelf_port")' "$state_input")
   komga_port=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("komga_port")' "$state_input")
-  tinymediamanager_web_port=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("tinymediamanager_web_port")' "$state_input")
-  tinymediamanager_api_port=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("tinymediamanager_api_port")' "$state_input")
   jellyfin_port=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("jellyfin_port")' "$state_input")
   immich_port=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("immich_port")' "$state_input")
   paperless_port=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("paperless_port")' "$state_input")
@@ -758,9 +735,7 @@ else
       [ "$jellyfin_port" = "$expected_jellyfin_port" ] &&
       [ "$komga_port" = "$expected_komga_port" ] &&
       [ "$ntfy_port" = "$expected_ntfy_port" ] &&
-      [ "$paperless_port" = "$expected_paperless_port" ] &&
-      [ "$tinymediamanager_api_port" = "$expected_tinymediamanager_api_port" ] &&
-      [ "$tinymediamanager_web_port" = "$expected_tinymediamanager_web_port" ] ||
+      [ "$paperless_port" = "$expected_paperless_port" ] ||
       mac_die 'resume integration ports do not match the recorded run'
   fi
 fi
@@ -772,19 +747,17 @@ export PLATFORM_DOCKER_ROOT=$sandbox/service-data/docker
 export PLATFORM_MEDIA_ROOT=$sandbox/service-data/media
 export PLATFORM_FIXTURE_ROOT=$sandbox/fixtures
 export PLATFORM_REPORT_ROOT=$report_root
-export PLATFORM_TINYMEDIAMANAGER_REPORT_ROOT=$tinymediamanager_report_root
 export PLATFORM_PROOF_LANE=$lane
 export PLATFORM_CALLBACK_HOST=$callback_host
 export PLATFORM_COMPOSE_KIND=$proof_platform
 export PLATFORM_KIND=$proof_platform
 export PLATFORM_PROJECT_NAME=$project_name
+export PLATFORM_MEDIA_NETWORK=$project_name-media-control
 export PLATFORM_BESZEL_PORT=$beszel_port
 export PLATFORM_NTFY_PORT=$ntfy_port
 export PLATFORM_DOZZLE_PORT=$dozzle_port
 export PLATFORM_AUDIOBOOKSHELF_PORT=$audiobookshelf_port
 export PLATFORM_KOMGA_PORT=$komga_port
-export PLATFORM_TINYMEDIAMANAGER_WEB_PORT=$tinymediamanager_web_port
-export PLATFORM_TINYMEDIAMANAGER_API_PORT=$tinymediamanager_api_port
 export PLATFORM_JELLYFIN_PORT=$jellyfin_port
 export PLATFORM_IMMICH_PORT=$immich_port
 export PLATFORM_PAPERLESS_PORT=$paperless_port
@@ -852,7 +825,7 @@ capture_diagnostics() {
   : > "$diagnostic_temporary"
   if for diagnostic_project in \
       "$project_name-beszel" "$project_name-ntfy" "$project_name-dozzle" \
-      "$project_name-audiobookshelf" "$project_name-komga" "$project_name-tinymediamanager" \
+      "$project_name-audiobookshelf" "$project_name-komga" \
       "$project_name-jellyfin" "$project_name-immich" "$project_name-paperless"; do
       docker ps -a --filter "label=com.docker.compose.project=$diagnostic_project" \
         --format '{"id":"{{.ID}}","image":"{{.Image}}","name":"{{.Names}}","status":"{{.Status}}"}' \
@@ -867,7 +840,7 @@ capture_diagnostics() {
 
     diagnostic_container_ids=$(for diagnostic_project in \
         "$project_name-beszel" "$project_name-ntfy" "$project_name-dozzle" \
-        "$project_name-audiobookshelf" "$project_name-komga" "$project_name-tinymediamanager" \
+        "$project_name-audiobookshelf" "$project_name-komga" \
         "$project_name-jellyfin" "$project_name-immich" "$project_name-paperless"; do
       docker ps -aq --filter "label=com.docker.compose.project=$diagnostic_project" || exit 1
     done) || return 1
@@ -928,7 +901,7 @@ execute_phase() {
       done
       for reserved_port in \
         "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port" "$komga_port" \
-        "$tinymediamanager_web_port" "$tinymediamanager_api_port" "$jellyfin_port" \
+        "$jellyfin_port" \
         "$immich_port" "$paperless_port"; do
         reserved_port_container_ids=$(docker ps -q --filter "publish=$reserved_port") || {
           mac_die "could not inspect reserved host port: $reserved_port"
@@ -948,7 +921,7 @@ execute_phase() {
           exit 1
         end
       ' "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port" "$komga_port" \
-        "$tinymediamanager_web_port" "$tinymediamanager_api_port" "$jellyfin_port" \
+        "$jellyfin_port" \
         "$immich_port" "$paperless_port" || return 1
       ensure_immich_fixture_vars || return $?
       ansible-playbook "$mac_repo_dir/validate-vault.yml" \

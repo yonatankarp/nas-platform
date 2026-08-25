@@ -1,0 +1,5 @@
+---
+role: kapowarr
+container_cpus:
+  kapowarr: 1.0
+vault_keys: []

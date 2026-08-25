@@ -22,8 +22,8 @@ comparands, and they stay out of the output.
 
 Semantics are matched to Ansible's Jinja tests, verified on ansible-core 2.21.3:
 `is match` anchors at the start only, so patterns needing a full match carry
-their own `$`; `is search` is unanchored; `| length > 0` accepted whitespace, so
-these rules reject only a zero length.
+their own end anchor; `is search` is unanchored; `| length > 0` accepted
+whitespace, so these rules reject only a zero length.
 
 **The rules here are deliberately no stricter than the conditions they replace,
 including where those conditions were accidentally lax.** Role argument
@@ -51,6 +51,7 @@ import re
 BCRYPT_HASH = re.compile(r"^\$2[aby]\$[0-9]{2}\$[./A-Za-z0-9]{53}$")
 DATABASE_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
 EMAIL = re.compile(r"^[^@ ]+@[^@ ]+$")
+HEX_32 = re.compile(r"^[0-9a-f]{32}\Z")
 NTFY_TOKEN = re.compile(r"^tk_[a-z0-9]{29}$")
 SSH_ED25519_PUBLIC_KEY = re.compile(r"^ssh-ed25519 [A-Za-z0-9+/]+={0,3}$")
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}"
@@ -133,15 +134,37 @@ CREDENTIAL_RULES = {
     "vault_paperless_gmail_app_password": ((NONEMPTY, None),),
     "vault_paperless_mail_account_name": ((NONEMPTY, None),),
     "vault_paperless_mail_rule_name": ((NONEMPTY, None),),
-    "vault_tinymediamanager_password": ((NONEMPTY, None),),
+    "vault_arr_radarr_api_key": ((PATTERN, HEX_32),),
+    "vault_arr_radarr_admin_username": ((NONEMPTY, None),),
+    "vault_arr_radarr_admin_password": ((NONEMPTY, None),),
+    "vault_arr_sonarr_api_key": ((PATTERN, HEX_32),),
+    "vault_arr_sonarr_admin_username": ((NONEMPTY, None),),
+    "vault_arr_sonarr_admin_password": ((NONEMPTY, None),),
+    "vault_arr_prowlarr_api_key": ((PATTERN, HEX_32),),
+    "vault_arr_prowlarr_admin_username": ((NONEMPTY, None),),
+    "vault_arr_prowlarr_admin_password": ((NONEMPTY, None),),
+    "vault_arr_bazarr_api_key": ((PATTERN, HEX_32),),
+    "vault_arr_bazarr_admin_username": ((NONEMPTY, None),),
+    "vault_arr_bazarr_admin_password": ((NONEMPTY, None),),
+    "vault_downloaders_sabnzbd_api_key": ((PATTERN, HEX_32),),
+    "vault_downloaders_sabnzbd_admin_username": ((NONEMPTY, None),),
+    "vault_downloaders_sabnzbd_admin_password": ((NONEMPTY, None),),
 }
 
 # The three publisher tokens authenticate three different ntfy identities. A
 # duplicate would authorize one publisher as another, and the role's own
 # publisher separation rule for managed users would then have nothing to
 # separate.
-DISTINCT_KEYS = ("vault_ntfy_dozzle_token", "vault_ntfy_beszel_token",
-                 "vault_ntfy_deploy_token")
+DISTINCT_KEY_GROUPS = (
+    ("vault_ntfy_dozzle_token", "vault_ntfy_beszel_token",
+     "vault_ntfy_deploy_token"),
+    ("vault_arr_radarr_api_key", "vault_arr_sonarr_api_key",
+     "vault_arr_prowlarr_api_key", "vault_arr_bazarr_api_key",
+     "vault_downloaders_sabnzbd_api_key"),
+    ("vault_arr_radarr_admin_password", "vault_arr_sonarr_admin_password",
+     "vault_arr_prowlarr_admin_password", "vault_arr_bazarr_admin_password",
+     "vault_downloaders_sabnzbd_admin_password"),
+)
 
 
 def _text(value):
@@ -210,14 +233,16 @@ def vault_credential_errors(value):
 
     # `| unique` deduplicates by equality rather than by hash, so this does too:
     # an unhashable value was compared, not rejected.
-    if all(key in value for key in DISTINCT_KEYS):
+    for key_group in DISTINCT_KEY_GROUPS:
+        if not all(key in value for key in key_group):
+            continue
         distinct = []
-        for token in (value[key] for key in DISTINCT_KEYS):
-            if token not in distinct:
-                distinct.append(token)
-        if len(distinct) != len(DISTINCT_KEYS):
+        for credential in (value[key] for key in key_group):
+            if credential not in distinct:
+                distinct.append(credential)
+        if len(distinct) != len(key_group):
             errors.append("vault credentials: "
-                          f"{', '.join(DISTINCT_KEYS)} must all differ")
+                          f"{', '.join(key_group)} must all differ")
     return errors
 
 

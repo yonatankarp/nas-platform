@@ -1,0 +1,5 @@
+---
+role: trailarr
+container_cpus:
+  trailarr: 1.0
+vault_keys: []

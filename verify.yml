@@ -11,6 +11,14 @@
       {{ lookup('env', 'PLATFORM_VAULT_FILE') |
          default(playbook_dir ~ '/inventory/group_vars/all/vault.yml', true) }}
   pre_tasks:
+    - name: Validate target Docker module dependencies for verification
+      ansible.builtin.include_role:
+        name: preflight
+        tasks_from: target_docker_dependencies
+        apply:
+          tags: [always]
+      tags: [always]
+
     - name: Validate portable credentials for verification
       ansible.builtin.include_role:
         name: vault_contract
@@ -34,6 +42,14 @@
         apply:
           tags: [always]
       tags: [always]
+  tasks:
+    - name: Verify the inert media acquisition foundation
+      ansible.builtin.include_role:
+        name: host_prep
+        tasks_from: verify_media_acquisition
+        apply:
+          tags: [platform_verify_media_acquisition_foundation]
+      tags: [never, platform_verify_media_acquisition_foundation]
   roles:
     - role: ntfy
       tags: [never]
@@ -44,8 +60,6 @@
     - role: audiobookshelf
       tags: [never]
     - role: komga
-      tags: [never]
-    - role: tinymediamanager
       tags: [never]
     - role: jellyfin
       tags: [never]

@@ -28,6 +28,7 @@ end
 integration_path = File.join(ROOT, "tests", "integration.sh")
 classifier_path = File.join(ROOT, "tests", "ci", "classify_changes.rb")
 if File.file?(integration_path) && File.file?(classifier_path)
+  acquisition_lanes = %w[arr downloaders bindery kapowarr pinchflat trailarr seerr]
   suite_tags = File.read(integration_path)
                    .scan(/^\s*([a-z][a-z0-9-]*)\)\s+fixed_tags=([a-z0-9_,-]*)\s*;;/)
                    .to_h { |suite, tags| [suite, tags.split(",")] }
@@ -40,9 +41,25 @@ if File.file?(integration_path) && File.file?(classifier_path)
     check(failures, suite_tags[lane] == tags,
           "integration suite #{lane} converges #{suite_tags[lane].inspect}, " \
           "CI selects #{tags.inspect}")
-    check(failures, tags.include?("ntfy"),
-          "service lane #{lane} must converge ntfy: its role reports its deployment there")
+    unless acquisition_lanes.include?(lane)
+      check(failures, tags.include?("ntfy"),
+            "service lane #{lane} must converge ntfy: its role reports its deployment there")
+    end
   end
+
+  acquisition_lanes.each do |lane|
+    check(failures,
+          suite_tags[lane] == %w[host_prep deployment_bundle media_acquisition_foundation],
+          "acquisition foundation suite #{lane} must converge only shared inert foundation tags")
+    contract = File.join(ROOT, "tests", "contracts", "#{lane}-foundation.sh")
+    check(failures, File.file?(contract),
+          "acquisition foundation suite #{lane} has no matching static contract")
+  end
+  check(failures,
+        File.read(integration_path).include?(
+          '/repo/tests/contracts/"\$INTEGRATION_SUITE"-foundation.sh static'
+        ),
+        "acquisition foundation suites must execute their matching static contract")
 end
 
 # Collections are pinned like every image.
@@ -148,6 +165,10 @@ service_image_sources.each do |service_tag, service_directory|
         "which has no compose.yml")
 end
 
+acquisition_image_tags = %w[arr downloaders bindery kapowarr pinchflat trailarr seerr]
+check(failures, (service_image_sources.map(&:first) & acquisition_image_tags).empty?,
+      "planned acquisition foundation suites must have zero service image sources")
+
 
 validation_script_path = File.join(ROOT, "tests", "validate-policy.sh")
 validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "tests"))
@@ -164,6 +185,10 @@ validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "te
   ruby\ tests/policy_deployment_test.rb
   ruby\ tests/policy_mac_test.rb
   ruby\ tests/policy_vault_test.rb
+  ruby\ tests/media_acquisition_foundation_verifier_test.rb
+  tests/mac/media-acquisition-foundation-hook-test.sh
+  ruby\ tests/mac/media-acquisition-foundation-report-test.rb
+  tests/mac/media-acquisition-foundation-cleanup-test.sh
   ruby\ tests/renovate_policy_test.rb
   ruby\ tests/policy_manifest_test.rb
   ruby\ tests/run_contracts_test.rb

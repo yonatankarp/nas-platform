@@ -173,11 +173,13 @@ unset -f generate_brand_new_secrets
 ```
 
 The generator creates independent passwords, matching clear-password/bcrypt
-pairs where both forms are required, distinct ntfy integration tokens, a
-permanent Beszel universal token, an Ed25519 public/private keypair, and a
-Paperless Django secret key. Its output is temporary mode-0600 plaintext. Do
-not inspect that plaintext in a terminal, attach it anywhere, or leave it in
-the checkout.
+pairs where both forms are required, distinct ntfy integration tokens, distinct
+32-character lowercase hexadecimal acquisition-service API keys, a permanent
+Beszel universal token, an Ed25519 public/private keypair, and a Paperless
+Django secret key. The Radarr, Sonarr, Prowlarr, Bazarr, and SABnzbd
+administrator passwords are generated independently. Its output is temporary
+mode-0600 plaintext. Do not inspect that plaintext in a terminal, attach it
+anywhere, or leave it in the checkout.
 
 In the same shell, move that plaintext into a protected temporary directory,
 encrypt its task-specific child file, and only then publish it at the external
@@ -659,6 +661,14 @@ condition: recover it or resolve the migration source before proceeding.
 that will not match existing applications, databases, agents, or integrations;
 do not run the generator.
 
+### Completed encrypted acquisition-credential migration
+
+The encrypted repository vault migration is complete. Its reviewed one-use
+utility and synthetic behavior audit were removed after the ciphertext-only
+change was validated and committed. Future credential changes must follow the
+normal encrypted-vault workflow described above; do not recreate or reuse the
+retired migration path.
+
 ### Vault contract inventory
 
 Use `inventory/group_vars/all/vault.yml.example` as the schema, never as a
@@ -669,11 +679,12 @@ source of values. Every key below is required.
 - Immich: `vault_immich_admin_email`, `vault_immich_admin_password`, `vault_immich_db_name`, `vault_immich_db_username`, `vault_immich_db_password`. Recover the administrator identity from the current application and password manager. Recover the database name, user, and password together from the deployed Compose environment and database stack, checking them against the database that owns the existing data. The email must contain a nonempty local and domain part. Database identifiers must start with a letter or underscore and then contain only letters, digits, underscores, or hyphens.
 - Jellyfin: `vault_jellyfin_admin_username`, `vault_jellyfin_admin_password`, `vault_jellyfin_opensubtitles_username`, `vault_jellyfin_opensubtitles_password`. The managed administrator username is exactly `Yonatan`; recover its matching password from the password manager. Recover the existing OpenSubtitles account credentials from the password manager or deployed Jellyfin plugin configuration. Preserve both credential pairs unchanged; the example and generated plaintext placeholders are not valid deployment values.
 - Komga: `vault_komga_admin_email`, `vault_komga_admin_password`. Recover the deployed administrator identity from the current application and its matching password from the password manager. The email must contain a nonempty local and domain part.
+- Arr services: `vault_arr_radarr_api_key`, `vault_arr_radarr_admin_username`, `vault_arr_radarr_admin_password`, `vault_arr_sonarr_api_key`, `vault_arr_sonarr_admin_username`, `vault_arr_sonarr_admin_password`, `vault_arr_prowlarr_api_key`, `vault_arr_prowlarr_admin_username`, `vault_arr_prowlarr_admin_password`, `vault_arr_bazarr_api_key`, `vault_arr_bazarr_admin_username`, `vault_arr_bazarr_admin_password`. Recover each deployed administrator identity, its matching password, and the service-owned API key from the password manager and deployed application configuration. Preserve each triple unchanged. API keys are distinct 32-character lowercase hexadecimal strings, and the four administrator passwords are distinct.
+- Downloaders: `vault_downloaders_sabnzbd_api_key`, `vault_downloaders_sabnzbd_admin_username`, `vault_downloaders_sabnzbd_admin_password`. Recover the deployed SABnzbd administrator identity, its matching password, and the service-owned API key from the password manager and deployed application configuration. Preserve the triple unchanged. The API key is a 32-character lowercase hexadecimal string distinct from the four Arr API keys; the administrator password is distinct from the four Arr administrator passwords.
 - ntfy: `vault_ntfy_admin_user`, `vault_ntfy_admin_password`, `vault_ntfy_admin_password_hash`, `vault_ntfy_dozzle_password_hash`, `vault_ntfy_dozzle_token`, `vault_ntfy_beszel_password_hash`, `vault_ntfy_beszel_token`, `vault_ntfy_deploy_password_hash`, `vault_ntfy_deploy_token`. Recover the administrator name and clear password from the password manager/current login, and recover the administrator hash, integration-user hashes, and access tokens from the deployed ntfy configuration and authentication data. The administrator password and hash must be the matching deployed pair. Preserve each Dozzle, Beszel or deploy hash with that same integration identity's token; do not infer a clear password from a hash or create a replacement token. Each hash has the bcrypt shape described above. Each access token is `tk_` followed by 29 lowercase letters or digits, and the Dozzle, Beszel and deploy tokens must all be distinct.
 - Beszel: `vault_beszel_superuser_email`, `vault_beszel_superuser_password`, `vault_beszel_app_user_email`, `vault_beszel_app_user_password`, `vault_beszel_agent_key`, `vault_beszel_universal_token`, `vault_beszel_hub_private_key`. Recover both deployed hub identities from the current Beszel hub and their matching passwords from the password manager. Recover the universal token and public agent key from the deployed agent configuration, and recover the matching OpenSSH Ed25519 private key from the hub's protected key file. If the agent's public value is unavailable, derive its public half from the recovered private key as described above; if both sources exist, compare them. Never regenerate or replace the pair. Both emails need nonempty local and domain parts. The universal token must be a lowercase RFC 4122 UUID. The agent key contains exactly two whitespace-separated fields, the `ssh-ed25519` type and its base64 public key, with no comment.
 - Paperless: `vault_paperless_admin_username`, `vault_paperless_admin_password`, `vault_paperless_admin_email`, `vault_paperless_db_name`, `vault_paperless_db_username`, `vault_paperless_db_password`, `vault_paperless_django_secret_key`, `vault_paperless_gmail_account`, `vault_paperless_gmail_app_password`, `vault_paperless_mail_account_name`, `vault_paperless_mail_rule_name`. Recover the administrator identity from the current Paperless application and its password from the password manager. Recover the database name, user, and password together from the deployed Compose environment and database stack; recover the Django signing key from the deployed application/Compose environment. Recover the mail account and rule names plus Gmail account from current Paperless mail configuration, and recover the matching Gmail app password from the password manager or protected deployed mail configuration. Use the Google account only to confirm the named account and existing app-password registration; do not create a replacement. Preserve these as one deployed identity set. The email fields need nonempty local and domain parts; database identifiers follow the Immich rules. The Gmail credential must be an app password for the named account, handled according to [Google's app-password guidance](https://support.google.com/accounts/answer/185833), not the normal account password.
-- tinyMediaManager: `vault_tinymediamanager_password` remains until the cleanup release. tinyMediaManager is retired and must remain stopped, but this transitional key is preserved with its bind-mounted state for a deliberate rollback. Recover the deployed API password from the password manager or preserved configuration if it is not already in the vault; do not start the service merely to confirm it and do not rotate it.
-- Managed application users: `vault_managed_users`. This mapping has exactly the eight service lists documented below. Identity comparisons trim surrounding whitespace and ignore case. Every list entry needs a non-empty preserved password, must be unique within its service, and must not duplicate that service's primary administrator. Beszel entries also differ from the primary Beszel application user; ntfy entries differ from the Dozzle and Beszel publishers. Do not add retired tinyMediaManager here; its preserved rollback contract retains the single shared login.
+- Managed application users: `vault_managed_users`. This mapping has exactly the eight service lists documented below. Identity comparisons trim surrounding whitespace and ignore case. Every list entry needs a non-empty preserved password, must be unique within its service, and must not duplicate that service's primary administrator. Beszel entries also differ from the primary Beszel application user; ntfy entries differ from the Dozzle and Beszel publishers.
 
 ### Managed application-user fields
 

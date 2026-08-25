@@ -165,7 +165,7 @@ mac_target_container_names() {
   case ${PLATFORM_PROOF_PLATFORM:-mac} in
     integration)
       printf '%s\n' ntfy beszel beszel_agent beszel_agent_portable beszel_socket_proxy \
-        dozzle_alert_relay dozzle dozzle_socket_proxy audiobookshelf komga tinymediamanager jellyfin \
+        dozzle_alert_relay dozzle dozzle_socket_proxy audiobookshelf komga jellyfin \
         immich_server immich_machine_learning immich_redis immich_postgres \
         paperless_redis paperless_postgres paperless_webserver paperless_gotenberg paperless_tika
       ;;
@@ -174,8 +174,7 @@ mac_target_container_names() {
         "$mac_project-beszel-agent-portable" "$mac_project-beszel-socket-proxy" \
         "$mac_project-ntfy" "$mac_project-dozzle-alert-relay" \
         "$mac_project-dozzle" "$mac_project-dozzle-socket-proxy" \
-        "$mac_project-audiobookshelf" "$mac_project-komga" \
-        "$mac_project-tinymediamanager" "$mac_project-jellyfin" \
+        "$mac_project-audiobookshelf" "$mac_project-komga" "$mac_project-jellyfin" \
         "$mac_project-immich-server" "$mac_project-immich-machine-learning" \
         "$mac_project-immich-redis" "$mac_project-immich-postgres" \
         "$mac_project-paperless-redis" "$mac_project-paperless-postgres" \
@@ -207,6 +206,17 @@ mac_container_name() {
 # the registry would report a clean full pass while silently skipping the service
 # whose push-routing bug the contract suites caught, so the addition is named.
 MAC_UNREGISTERED_SERVICES='ntfy'
+
+# Verification keeps four infrastructure-specific hooks ahead of the shared
+# contract runner. This is the one canonical roster used both by verify.sh for
+# dispatch and by 30-services.sh for exact coverage accounting. The foundation
+# hook verifies infrastructure rather than a registered service, so it is named
+# separately as coverage-neutral instead of being disguised as an exemption.
+MAC_VERIFY_INFRASTRUCTURE_HOOKS='10-beszel.sh
+15-media-acquisition-foundation.sh
+15-ntfy.sh
+20-dozzle.sh'
+MAC_VERIFY_COVERAGE_NEUTRAL_HOOKS='15-media-acquisition-foundation.sh'
 
 # The Mac aliases of every service in tests/contracts/registry.yml. The registry
 # is the platform's authoritative roster, and it is deliberately not extended
@@ -274,6 +284,8 @@ mac_registry_contract_path() {
 #   self    this hook's own basename, excluded from the sibling scan
 #   ran     the services this hook executed, one per line
 #   exempt  service=reason lines for services this group deliberately skips
+#   infrastructure  optional exact sibling-hook basename roster
+#   coverage-neutral optional infrastructure hooks that do not represent a service
 #
 # Services still handled by their own NN-service.sh file in the same group are
 # credited automatically from the sibling filenames, so delegating one service
@@ -283,11 +295,15 @@ mac_assert_service_coverage() {
   mac_coverage_self=$2
   mac_coverage_ran=$3
   mac_coverage_exempt=$4
+  mac_coverage_infrastructure=${5-}
+  mac_coverage_neutral=${6-}
   mac_coverage_registry=$(mac_registry_services) || return 1
   MAC_COVERAGE_REGISTRY=$mac_coverage_registry \
   MAC_COVERAGE_UNREGISTERED=$MAC_UNREGISTERED_SERVICES \
   MAC_COVERAGE_RAN=$mac_coverage_ran \
   MAC_COVERAGE_EXEMPT=$mac_coverage_exempt \
+  MAC_COVERAGE_INFRASTRUCTURE=$mac_coverage_infrastructure \
+  MAC_COVERAGE_NEUTRAL=$mac_coverage_neutral \
     ruby -e '
       group, group_dir, self_basename = ARGV
       registry = ENV.fetch("MAC_COVERAGE_REGISTRY").split
@@ -298,13 +314,34 @@ mac_assert_service_coverage() {
         abort "mac #{group} hook exemption has no reason: #{line}" if reason.nil? || reason.empty?
         [service, reason]
       end
+      infrastructure = ENV.fetch("MAC_COVERAGE_INFRASTRUCTURE").split
+      neutral = ENV.fetch("MAC_COVERAGE_NEUTRAL").split
 
       expected = (registry + unregistered).uniq.sort
-      delegated = Dir.children(group_dir).sort.reject { |name| name == self_basename }
-                     .select { |name| name.end_with?(".sh") }.map do |name|
+      siblings = Dir.children(group_dir).sort.reject { |name| name == self_basename }
+                    .select { |name| name.end_with?(".sh") }
+      unless infrastructure.empty?
+        abort "mac #{group} infrastructure hook roster contains duplicates" unless
+          infrastructure.uniq.length == infrastructure.length
+        abort "mac #{group} coverage-neutral hook roster contains duplicates" unless
+          neutral.uniq.length == neutral.length
+        unknown_neutral = neutral - infrastructure
+        abort "mac #{group} coverage-neutral hooks are not infrastructure hooks: #{unknown_neutral.join(", ")}" unless
+          unknown_neutral.empty?
+        missing_infrastructure = infrastructure - siblings
+        extra_infrastructure = siblings - infrastructure
+        abort "mac #{group} infrastructure hook roster differs (missing: #{missing_infrastructure.join(", ")}; extra: #{extra_infrastructure.join(", ")})" unless
+          missing_infrastructure.empty? && extra_infrastructure.empty?
+      end
+      delegated_hooks = infrastructure.empty? ? siblings : infrastructure - neutral
+      delegated = delegated_hooks.map do |name|
         match = /\A\d+-(?<service>[a-z0-9-]+)\.sh\z/.match(name)
         abort "mac #{group} hook is not named NN-service.sh: #{name}" unless match
         match[:service]
+      end
+      neutral.each do |name|
+        abort "mac #{group} coverage-neutral hook is not named NN-service.sh: #{name}" unless
+          /\A\d+-[a-z0-9-]+\.sh\z/.match?(name)
       end
 
       abort "mac #{group} hooks ran a service twice: #{(ran.tally.select { |_s, n| n > 1 }.keys).join(", ")}" unless

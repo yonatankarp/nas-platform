@@ -7,7 +7,7 @@ require_relative "policy_support"
 
 ROOT = File.expand_path("..", __dir__)
 CAPABILITIES_PATH = File.join(ROOT, "config", "managed-user-capabilities.yml")
-SUCCESS = "Managed-user capabilities: all nine service contracts are pinned"
+SUCCESS = "Managed-user capabilities: all eight service contracts are pinned"
 
 MULTI_USER_DEFAULTS = {
   "preserves_unmanaged_users" => true,
@@ -87,12 +87,7 @@ EXPECTED_SERVICES = {
       "authenticate" => "api/token",
       "reconcile" => "get_user_model"
     }
-  ),
-  "tinymediamanager" => {
-    "mode" => "single_shared_login",
-    "shared_credential_contract" => "vault_tinymediamanager_password",
-    "allowlist" => false
-  }
+  )
 }.freeze
 
 def fail_contract(message)
@@ -177,8 +172,6 @@ def self_test
   assert_failure("unmanaged deletion", mutate_matrix { |matrix| matrix["services"]["immich"]["preserves_unmanaged_users"] = false }, "immich contract differs")
   assert_failure("password rotation", mutate_matrix { |matrix| matrix["services"]["paperless-ngx"]["password_rotation"] = "replace" }, "paperless-ngx contract differs")
   assert_failure("password update enabled", mutate_matrix { |matrix| matrix["services"]["audiobookshelf"]["existing_identity_password_update"] = "allowed" }, "audiobookshelf contract differs")
-  assert_failure("shared login allowlist", mutate_matrix { |matrix| matrix["services"]["tinymediamanager"]["allowlist"] = true }, "tinymediamanager contract differs")
-  assert_failure("shared credential changed", mutate_matrix { |matrix| matrix["services"]["tinymediamanager"]["shared_credential_contract"] = "other" }, "tinymediamanager contract differs")
   assert_failure("wrong schema", mutate_matrix { |matrix| matrix["schema"] = 2 }, "schema must equal 1")
   assert_failure("extra field", mutate_matrix { |matrix| matrix["services"]["beszel"]["extra"] = true }, "beszel contract differs")
   assert_failure("malformed root", "[]\n", "matrix must be a mapping")

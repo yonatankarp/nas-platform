@@ -1,9 +1,0 @@
----
-services:
-  tinymediamanager:
-    container_name: ${PLATFORM_PROJECT_NAME:?}-tinymediamanager
-    platform: linux/amd64
-    network_mode: bridge
-    ports: !override
-      - "${TINYMEDIAMANAGER_WEB_HOST_PORT:?}:4000"
-      - "${TINYMEDIAMANAGER_API_HOST_PORT:?}:7878"

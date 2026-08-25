@@ -17,10 +17,12 @@ off-site backup. RAID is not a backup.
 - [Ansible concepts used here](docs/ansible-basics.md)
 - [Adding a service](docs/adding-a-service.md)
 
-The service stacks in [`services/manifest.yml`](services/manifest.yml) are
-implemented. tinyMediaManager is now a transitional retirement role rather than
-an active service. Prove the complete platform on the Mac before preparing a
-fresh production NAS installation.
+The [`services/manifest.yml`](services/manifest.yml) catalog distinguishes eight
+implemented service stacks from seven planned media-acquisition projects. Runtime
+role and service directories exist only for the implemented stacks; the planned
+entries remain inert and intentionally have no runtime role or Compose directory.
+Prove the implemented platform on the Mac before preparing a fresh production NAS
+installation.
 
 ## Design
 
@@ -160,26 +162,24 @@ The complete bootstrap, status, manual retry, protected-log, ntfy, SSH, and
 disable/removal procedures are in the
 [physical NAS walkthrough](docs/getting-started-nas.md#automatic-deployment-from-the-nas).
 
-## tinyMediaManager retirement checkpoint
+## Media acquisition foundation
 
-tinyMediaManager is retired and must remain stopped. Its bind-mounted state is
-preserved through this transitional release. The Movies and Series libraries
-are neither deleted nor moved by retirement. The
-`vault_tinymediamanager_password` key remains until the cleanup release so the
-preserved deployment can support a deliberate rollback.
+The production retirement checkpoint has passed, and the retired metadata
+manager declarations have been removed from this repository. Former metadata
+manager application state is preserved outside repository management and was
+not deleted.
 
-Permanent removal of the role, Compose definitions, vault key, ports, CI
-coverage, and preserved storage declaration waits for the NAS verification
-checkpoint and a separate cleanup release. That cleanup release removes
-repository declarations only; it must not delete
-`{{ nas_docker_root }}/tinymediamanager/data` or its contents. Any later data
-deletion requires a separate, backed-up, explicit operator decision and is not
-part of this retirement.
+Phase 0 creates only the derived `media-control` bridge network, acquisition
+and final directories, generated vault keys, immutable contracts, and CI
+scaffolding. The directories retain their declared `cache`, `user`, or
+`critical` recovery classes. All seven acquisition projects remain `planned`,
+and both enablement flags remain false. This phase does not start any
+acquisition container or download media.
 
-Radarr, Sonarr, and Bazarr are not deployed by this release. Open Subtitles
-remains configured in Jellyfin until Bazarr is proven. See the
-[NAS retirement and rollback procedure](docs/getting-started-nas.md#tinymediamanager-retirement-checkpoint)
-before changing any media writer.
+Open Subtitles remains configured in Jellyfin until Bazarr is proven in Phase 1.
+See the
+[physical NAS walkthrough](docs/getting-started-nas.md) before changing any
+media writer.
 
 ## Testing
 
@@ -197,7 +197,7 @@ that exists only on Linux and `command` being skipped under `--check`, both pass
 syntax checking and were caught only by running.
 
 The current Mac proof covers ntfy, Beszel, Dozzle, Audiobookshelf, Komga,
-Jellyfin, Immich, Paperless-ngx, and the tinyMediaManager retirement state.
+Jellyfin, Immich, and Paperless-ngx.
 NAS-only GPU, host-networking, native-mount and production-scale behavior remain
 outside the Mac proof.
 

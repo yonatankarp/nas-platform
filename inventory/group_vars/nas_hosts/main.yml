@@ -4,6 +4,8 @@
 platform_kind: nas
 nas_docker_root: /volume1/Docker
 nas_media_root: /volume2
+media_usenet_enabled: false
+media_torrent_enabled: false
 
 # Three of four logical CPUs are available to containers; one stays container-free.
 platform_container_cpu_budget: 3

@@ -65,11 +65,22 @@ STUB
 set -eu
 printf '%s\n' 'ntfy verify-hook' >> "${HOOK_LOG:?}"
 STUB
-  for delegate in verify/10-beszel.sh verify/20-dozzle.sh \
-      verify/50-tinymediamanager.sh fixtures-persistence/80-paperless.sh \
-      fixtures-recreate/50-tinymediamanager.sh; do
-    printf '%s\n' '#!/bin/sh' 'exit 0' > "$tree/tests/mac/hooks/$delegate"
-  done
+  cat > "$tree/tests/mac/hooks/verify/15-media-acquisition-foundation.sh" <<'STUB'
+#!/bin/sh
+exit 0
+STUB
+  cat > "$tree/tests/mac/hooks/verify/10-beszel.sh" <<'STUB'
+#!/bin/sh
+set -eu
+printf '%s\n' 'beszel verify-hook' >> "${HOOK_LOG:?}"
+STUB
+  cat > "$tree/tests/mac/hooks/verify/20-dozzle.sh" <<'STUB'
+#!/bin/sh
+set -eu
+printf '%s\n' 'dozzle verify-hook' >> "${HOOK_LOG:?}"
+STUB
+  printf '%s\n' '#!/bin/sh' 'exit 0' > \
+    "$tree/tests/mac/hooks/fixtures-persistence/80-paperless.sh"
 
   cat > "$tree/bin/docker" <<'STUB'
 #!/bin/sh
@@ -95,9 +106,39 @@ STUB
   chmod 0755 "$tree/tests/mac/run-contract.sh" "$tree/bin/docker" \
     "$tree/tests/mac/hooks/verify/15-ntfy.sh" "$tree/tests/mac/hooks/verify/10-beszel.sh" \
     "$tree/tests/mac/hooks/verify/20-dozzle.sh" \
-    "$tree/tests/mac/hooks/verify/50-tinymediamanager.sh" \
-    "$tree/tests/mac/hooks/fixtures-recreate/50-tinymediamanager.sh" \
+    "$tree/tests/mac/hooks/verify/15-media-acquisition-foundation.sh" \
     "$tree/tests/mac/hooks/fixtures-persistence/80-paperless.sh"
+}
+
+# A runnable copy of the real verify wrapper. Its infrastructure hooks and
+# Ansible are stubbed because this test is about dispatch and coverage, not
+# service behaviour, but verify.sh itself and the coverage-bearing services hook
+# are the repository versions.
+build_verify_tree() {
+  tree=$1
+  build_tree "$tree"
+  cp "$repo_dir/tests/mac/verify.sh" "$tree/tests/mac/verify.sh"
+  cat > "$tree/tests/mac/hooks/verify/15-media-acquisition-foundation.sh" <<'STUB'
+#!/bin/sh
+set -eu
+printf '%s\n' 'media-acquisition-foundation verify-hook' >> "${HOOK_LOG:?}"
+STUB
+  cat > "$tree/bin/ansible-playbook" <<'STUB'
+#!/bin/sh
+exit 0
+STUB
+  chmod 0755 "$tree/tests/mac/verify.sh" "$tree/bin/ansible-playbook" \
+    "$tree/tests/mac/hooks/verify/15-media-acquisition-foundation.sh"
+}
+
+run_verify_wrapper() {
+  tree=$1
+  : > "$tree/log/hooks"
+  env PATH="$tree/bin:$PATH" HOOK_LOG="$tree/log/hooks" \
+    PLATFORM_MAC_VAULT_FILE="$tree/vault.yml" \
+    PLATFORM_MAC_VAULT_PASSWORD_FILE="$tree/vault-password" \
+    PLATFORM_MAC_FIXTURE_VARS_FILE="$tree/fixture-vars.yml" \
+    "$tree/tests/mac/verify.sh"
 }
 
 # Run one collapsed hook out of $1, with the stub logs reset.
@@ -135,11 +176,11 @@ expect_log() {
 tree=$fixture/accepted
 build_tree "$tree"
 
-# Every group must account for all nine services: the eight registered contracts
+# Every group must account for all eight services: the seven registered contracts
 # plus ntfy, which has no contract of its own and so is never in the registry.
 summary=$(run_group "$tree" fixtures-seed 00-services.sh)
 expect_summary "$summary" \
-  'mac fixtures-seed hooks: covered 9 of 9 registered services (ran 7, delegated 0, exempt 2)'
+  'mac fixtures-seed hooks: covered 8 of 8 registered services (ran 7, delegated 0, exempt 1)'
 expect_log "$(cat "$tree/log/hooks")" 'beszel verify
 dozzle verify
 audiobookshelf seed-progress
@@ -150,18 +191,17 @@ paperless seed' 'fixtures-seed'
 
 summary=$(run_group "$tree" fixtures-persistence 00-services.sh)
 expect_summary "$summary" \
-  'mac fixtures-persistence hooks: covered 9 of 9 registered services (ran 7, delegated 1, exempt 1)'
+  'mac fixtures-persistence hooks: covered 8 of 8 registered services (ran 6, delegated 1, exempt 1)'
 expect_log "$(cat "$tree/log/hooks")" 'beszel verify
 dozzle verify
 audiobookshelf assert-persistence
 komga assert-persistence
-tinymediamanager assert-retired
 jellyfin assert-persistence
 immich assert-persistence' 'fixtures-persistence'
 
 summary=$(run_group "$tree" verify 30-services.sh)
 expect_summary "$summary" \
-  'mac verify hooks: covered 9 of 9 registered services (ran 5, delegated 4, exempt 0)'
+  'mac verify hooks: covered 8 of 8 registered services (ran 5, delegated 3, exempt 0)'
 expect_log "$(cat "$tree/log/hooks")" 'audiobookshelf run
 komga run
 jellyfin run
@@ -170,7 +210,7 @@ paperless run' 'verify'
 
 summary=$(run_group "$tree" fixtures-recreate 00-services.sh)
 expect_summary "$summary" \
-  'mac fixtures-recreate hooks: covered 9 of 9 registered services (ran 8, delegated 1, exempt 0)'
+  'mac fixtures-recreate hooks: covered 8 of 8 registered services (ran 8, delegated 0, exempt 0)'
 expect_log "$(cat "$tree/log/hooks")" 'beszel verify
 ntfy verify-hook
 dozzle verify
@@ -191,6 +231,61 @@ proof-jellyfin |runtime/services/jellyfin/.env |current/services/jellyfin/compos
 proof-immich |runtime/services/immich/.env |current/services/immich/compose.yml |immich-server immich-machine-learning redis database
 proof-paperless |runtime/services/paperless-ngx/.env |current/services/paperless-ngx/compose.yml |broker db webserver gotenberg tika' \
   'fixtures-recreate compose'
+
+# The lifecycle calls verify.sh, not the collapsed hook directly. Keep that
+# wrapper on the same coverage-asserting path so its explicit infrastructure
+# hooks cannot accidentally replace registry-backed service accounting.
+tree=$fixture/verify-wrapper
+build_verify_tree "$tree"
+summary=$(run_verify_wrapper "$tree")
+expect_summary "$summary" \
+  'mac verify hooks: covered 8 of 8 registered services (ran 5, delegated 3, exempt 0)'
+expect_log "$(cat "$tree/log/hooks")" 'beszel verify-hook
+media-acquisition-foundation verify-hook
+ntfy verify-hook
+dozzle verify-hook
+audiobookshelf run
+komga run
+jellyfin run
+immich run
+paperless run' 'verify wrapper'
+
+tree=$fixture/verify-wrapper-registered-surplus
+build_verify_tree "$tree"
+printf '%s\n' '  - service: newcomer' '    path: tests/contracts/newcomer.sh' >> \
+  "$tree/tests/contracts/registry.yml"
+if run_verify_wrapper "$tree" >/dev/null 2>&1; then
+  fail 'verify wrapper accepted a registered service it never ran'
+fi
+
+tree=$fixture/verify-wrapper-registered-removal
+build_verify_tree "$tree"
+ruby -e 'path = ARGV.fetch(0)
+source = File.read(path)
+entry = "  - service: beszel\n    path: tests/contracts/beszel.sh\n"
+abort "beszel registry entry is absent" unless source.include?(entry)
+File.write(path, source.sub(entry, ""))' "$tree/tests/contracts/registry.yml"
+if run_verify_wrapper "$tree" >/dev/null 2>&1; then
+  fail 'verify wrapper accepted a service hook whose registry entry was removed'
+fi
+
+tree=$fixture/verify-wrapper-extra-infrastructure
+build_verify_tree "$tree"
+cat > "$tree/tests/mac/hooks/verify/25-unexpected-infrastructure.sh" <<'STUB'
+#!/bin/sh
+exit 0
+STUB
+chmod 0755 "$tree/tests/mac/hooks/verify/25-unexpected-infrastructure.sh"
+if run_verify_wrapper "$tree" >/dev/null 2>&1; then
+  fail 'verify wrapper accepted an infrastructure hook outside its exact roster'
+fi
+
+tree=$fixture/verify-wrapper-missing-foundation
+build_verify_tree "$tree"
+unlink "$tree/tests/mac/hooks/verify/15-media-acquisition-foundation.sh"
+if run_verify_wrapper "$tree" >/dev/null 2>&1; then
+  fail 'verify wrapper accepted a missing media acquisition foundation hook'
+fi
 
 # A service registered after a table was written must fail every group rather
 # than be silently skipped, which is the whole point of asserting against the
@@ -259,6 +354,11 @@ fi
 # The runner's own refusals. These stop before any environment is read, so they
 # need no sandbox.
 runner=$repo_dir/tests/mac/run-contract.sh
+for lifecycle_hook in \
+    tests/mac/hooks/drift/15-media-acquisition-foundation.sh \
+    tests/mac/hooks/verify/15-media-acquisition-foundation.sh; do
+  [ -x "$repo_dir/$lifecycle_hook" ] || fail "$lifecycle_hook is absent or not executable"
+done
 if "$runner" >/dev/null 2>&1; then
   fail 'contract runner accepted no arguments'
 fi

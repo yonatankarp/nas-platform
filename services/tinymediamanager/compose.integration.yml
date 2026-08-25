@@ -1,4 +1,0 @@
----
-services:
-  tinymediamanager:
-    platform: linux/amd64

@@ -1,0 +1,26 @@
+---
+- name: Gather the managed Python interpreter identity
+  ansible.builtin.setup:
+    gather_subset: ["!all", min]
+  when: ansible_facts.python.executable is not defined
+
+- name: Check the managed Python Docker module dependency
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_facts.python.executable }}"
+      - -c
+      - import requests
+  register: preflight_target_requests
+  changed_when: false
+  check_mode: false
+  failed_when: false
+
+- name: Require requests in the managed Python interpreter
+  ansible.builtin.assert:
+    that:
+      - preflight_target_requests.rc == 0
+    fail_msg: >-
+      The managed Python interpreter must be able to import requests before
+      host preparation. Install requests for {{ ansible_facts.python.executable }}
+      and retry.
+    success_msg: The managed Python interpreter can load Docker API dependencies.

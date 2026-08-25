@@ -22,7 +22,7 @@ REDACTION = "[REDACTED]"
 SAFE_DIAGNOSTIC = /\A[A-Za-z0-9][A-Za-z0-9_.-]*\z/
 ROOT_KEYS = %w[
   schema lane proof_platform platform_kind platform_compose_kind callback_host sandbox_id project_name beszel_port ntfy_port dozzle_port audiobookshelf_port komga_port
-  tinymediamanager_web_port tinymediamanager_api_port jellyfin_port immich_port paperless_port
+  jellyfin_port immich_port paperless_port
   git_revision vault_checksum diagnostic_locations phases
 ].freeze
 IDENTITY_KEYS = %w[git_sha platform_kind platform_compose_kind].freeze
@@ -110,7 +110,7 @@ def validate_input(input)
   raise "input project_name is unsafe" unless input["project_name"].match?(/\Anas-platform-mac-[a-z0-9.-]+\z/)
   service_port_fields = %w[
     beszel_port ntfy_port dozzle_port audiobookshelf_port komga_port
-    tinymediamanager_web_port tinymediamanager_api_port jellyfin_port immich_port paperless_port
+    jellyfin_port immich_port paperless_port
   ]
   service_port_fields.each do |field|
     port = input[field]
@@ -212,11 +212,25 @@ def markdown_cell(value)
   value.to_s.gsub("|", "\\|").gsub(/\r?\n/, " ")
 end
 
+def media_acquisition_foundation_report(report)
+  verification_passed = report.fetch("phases", []).any? do |phase|
+    phase["name"] == "verify" && phase["status"] == "passed"
+  end
+  return [] unless verification_passed
+
+  [
+    "MEDIA_ACQUISITION_FOUNDATION: network present, bridge driver, isolated project name, Jellyfin and Audiobookshelf attached to default and media-control",
+    "MEDIA_ACQUISITION_STORAGE: 28 exact classified paths present",
+    "MEDIA_ACQUISITION_TRANSPORTS: usenet=false torrent=false",
+    "MEDIA_ACQUISITION_CONTAINERS: none declared or started"
+  ]
+end
+
 def markdown_report(report)
   lines = ["# Mac platform proof report", ""]
   %w[
     lane proof_platform platform_kind platform_compose_kind callback_host sandbox_id project_name beszel_port ntfy_port dozzle_port audiobookshelf_port komga_port
-    tinymediamanager_web_port tinymediamanager_api_port jellyfin_port immich_port paperless_port
+    jellyfin_port immich_port paperless_port
     git_revision vault_checksum generated_at
   ].each do |key|
     next unless report.key?(key)
@@ -243,6 +257,8 @@ def markdown_report(report)
     diagnostics.each { |location| lines << "- #{markdown_cell(location)}" }
   end
   lines.concat([
+    "", "## Media acquisition foundation", "",
+    *media_acquisition_foundation_report(report),
     "", "## Manual review", "",
     "Complete `tests/mac/manual-review.md` against this report and its deployment manifest.", "",
     "## NAS-only evidence", "",
@@ -329,8 +345,6 @@ def initialize_input(path, options)
     "dozzle_port" => options.fetch(:dozzle_port),
     "audiobookshelf_port" => options.fetch(:audiobookshelf_port),
     "komga_port" => options.fetch(:komga_port),
-    "tinymediamanager_web_port" => options.fetch(:tinymediamanager_web_port),
-    "tinymediamanager_api_port" => options.fetch(:tinymediamanager_api_port),
     "jellyfin_port" => options.fetch(:jellyfin_port),
     "immich_port" => options.fetch(:immich_port),
     "paperless_port" => options.fetch(:paperless_port),
@@ -412,8 +426,6 @@ def self_test
       "dozzle_port" => 38_080,
       "audiobookshelf_port" => 33_378,
       "komga_port" => 35_600,
-      "tinymediamanager_web_port" => 34_000,
-      "tinymediamanager_api_port" => 37_878,
       "jellyfin_port" => 38_096,
       "immich_port" => 32_283,
       "paperless_port" => 38_000,
@@ -634,8 +646,6 @@ parser = OptionParser.new do |opts|
   opts.on("--dozzle-port PORT", Integer) { |value| options[:dozzle_port] = value }
   opts.on("--audiobookshelf-port PORT", Integer) { |value| options[:audiobookshelf_port] = value }
   opts.on("--komga-port PORT", Integer) { |value| options[:komga_port] = value }
-  opts.on("--tinymediamanager-web-port PORT", Integer) { |value| options[:tinymediamanager_web_port] = value }
-  opts.on("--tinymediamanager-api-port PORT", Integer) { |value| options[:tinymediamanager_api_port] = value }
   opts.on("--jellyfin-port PORT", Integer) { |value| options[:jellyfin_port] = value }
   opts.on("--immich-port PORT", Integer) { |value| options[:immich_port] = value }
   opts.on("--paperless-port PORT", Integer) { |value| options[:paperless_port] = value }

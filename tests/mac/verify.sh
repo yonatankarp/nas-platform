@@ -18,6 +18,18 @@ mac_ansible_playbook -i "$mac_repo_dir/inventory/mac.yml" \
   -e @"$PLATFORM_MAC_VAULT_FILE" \
   -e @"$PLATFORM_MAC_FIXTURE_VARS_FILE" \
   -e "platform_vault_file=$PLATFORM_MAC_VAULT_FILE" \
-  --tags platform_verify_ntfy,platform_verify_beszel,platform_verify_dozzle,platform_verify_audiobookshelf,platform_verify_komga,platform_verify_tinymediamanager,platform_verify_jellyfin,platform_verify_immich,platform_verify_paperless
+  --tags platform_verify_media_acquisition_foundation,platform_verify_ntfy,platform_verify_beszel,platform_verify_dozzle,platform_verify_audiobookshelf,platform_verify_komga,platform_verify_jellyfin,platform_verify_immich,platform_verify_paperless
 
-mac_run_hooks verify
+for mac_verify_hook in $MAC_VERIFY_INFRASTRUCTURE_HOOKS; do
+  mac_verify_hook_path=$mac_script_dir/hooks/verify/$mac_verify_hook
+  [ -f "$mac_verify_hook_path" ] && [ ! -L "$mac_verify_hook_path" ] &&
+    [ -x "$mac_verify_hook_path" ] ||
+    mac_die "unsafe or non-executable Mac verify hook: $mac_verify_hook_path"
+  "$mac_verify_hook_path"
+done
+
+mac_verify_services_hook=$mac_script_dir/hooks/verify/30-services.sh
+[ -f "$mac_verify_services_hook" ] && [ ! -L "$mac_verify_services_hook" ] &&
+  [ -x "$mac_verify_services_hook" ] ||
+  mac_die "unsafe or non-executable Mac verify hook: $mac_verify_services_hook"
+"$mac_verify_services_hook"

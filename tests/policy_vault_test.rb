@@ -22,13 +22,67 @@ def check(failures, condition, message)
   failures << message unless condition
 end
 
-# The expected key set is assembled from the roster's pinned per-service files.
-# Problems with that data are reported here as well as by policy_services_test.rb,
-# because a script that silently proceeds on an empty expectation would report a
-# vault missing every key rather than the file that failed to load.
-SERVICE_EXPECTATIONS, expectation_problems = pinned_service_expectations(ROOT)
+manifest_path = File.join(ROOT, "services", "manifest.yml")
+manifest = begin
+  stream = Psych.parse_stream(File.read(manifest_path))
+  check(failures, stream.children.length == 1,
+        "service manifest must contain exactly one YAML document")
+  duplicate_yaml_keys(stream).uniq.each do |key|
+    check(failures, false, "service manifest contains duplicate mapping key #{key}")
+  end
+  YAML.safe_load_file(manifest_path)
+rescue Errno::ENOENT
+  check(failures, false, "service manifest is missing: services/manifest.yml")
+  {}
+rescue Psych::Exception => e
+  check(failures, false, "service manifest is malformed: #{e.message.lines.first.strip}")
+  {}
+end
+manifest_entries = manifest.is_a?(Hash) && manifest["services"].is_a?(Array) ? manifest["services"] : []
+manifest_names = manifest_entries.filter_map { |entry| entry["name"] if entry.is_a?(Hash) }
+duplicates = manifest_names.tally.select { |_name, count| count > 1 }.keys
+check(failures, duplicates.empty?,
+      "service manifest name values must be unique: #{duplicates.join(', ')}")
+service_statuses = if manifest.is_a?(Hash) && manifest["services"].is_a?(Array) &&
+                      manifest_entries.all? do |entry|
+                        entry.is_a?(Hash) && entry.key?("name") && entry.key?("status")
+                      end
+                     manifest.fetch("services").to_h do |entry|
+                       [entry.fetch("name"), entry.fetch("status")]
+                     end
+                   else
+                     {}
+                   end
+
+# The expected key set is assembled from status-aware pinned per-service files.
+SERVICE_EXPECTATIONS, expectation_problems =
+  pinned_service_expectations(ROOT, service_statuses)
 expectation_problems.each { |problem| check(failures, false, problem) }
 EXPECTED_VAULT_KEYS = pinned_vault_keys(SERVICE_EXPECTATIONS)
+
+FOUNDATION_KEYS = %w[
+  vault_arr_radarr_api_key
+  vault_arr_radarr_admin_username
+  vault_arr_radarr_admin_password
+  vault_arr_sonarr_api_key
+  vault_arr_sonarr_admin_username
+  vault_arr_sonarr_admin_password
+  vault_arr_prowlarr_api_key
+  vault_arr_prowlarr_admin_username
+  vault_arr_prowlarr_admin_password
+  vault_arr_bazarr_api_key
+  vault_arr_bazarr_admin_username
+  vault_arr_bazarr_admin_password
+  vault_downloaders_sabnzbd_api_key
+  vault_downloaders_sabnzbd_admin_username
+  vault_downloaders_sabnzbd_admin_password
+].freeze
+
+actual_foundation_expectations =
+  SERVICE_EXPECTATIONS.fetch("arr").fetch("vault_keys") +
+  SERVICE_EXPECTATIONS.fetch("downloaders").fetch("vault_keys")
+check(failures, actual_foundation_expectations == FOUNDATION_KEYS,
+      "arr and downloaders expectations must carry the exact ordered foundation key set")
 
 site_play = YAML.safe_load_file(File.join(ROOT, "site.yml")).first
 
@@ -46,6 +100,19 @@ end
 # and ends up with a vault missing keys the roles require.
 example_path = File.join(ROOT, "inventory", "group_vars", "all", "vault.yml.example")
 example = YAML.safe_load_file(example_path)
+foundation_example = FOUNDATION_KEYS.to_h do |key|
+  value = if key.end_with?("_api_key")
+            (FOUNDATION_KEYS.index(key) / 3).to_s * 32
+          elsif key.end_with?("_admin_username")
+            "nasadmin"
+          else
+            service = key[/vault_(?:arr_)?(?:downloaders_)?([^_]+)_admin_password/, 1]
+            "example-#{service}-password"
+          end
+  [key, value]
+end
+check(failures, foundation_example.all? { |key, value| example[key] == value },
+      "vault example must use the exact sanitized foundation values")
 example.each do |key, value|
   next unless value.is_a?(String)
   next if key == "vault_jellyfin_admin_username" && value == "Yonatan"
@@ -55,6 +122,7 @@ example.each do |key, value|
   next if value == "ssh-ed25519 AAAA"
   next if value == "00000000-0000-4000-a000-000000000000"
   next if value.include?("example-only-not-a-real-private-key")
+  next if foundation_example[key] == value
 
   check(failures, false, "#{example_path}: #{key} looks like a real value, not a placeholder")
 end
@@ -88,6 +156,25 @@ vault_contract_sources.each do |label, path|
   end
 end
 
+foundation_parity_sources = vault_contract_sources.merge(
+  "credential rules" => File.join(ROOT, "filter_plugins", "vault_credential_schema.py"),
+  "vault contract mapping" => File.join(ROOT, "roles", "vault_contract", "tasks", "main.yml"),
+  "secret generator" => File.join(ROOT, "generate-secrets.yml")
+)
+foundation_parity_sources.each do |label, path|
+  body = File.read(path)
+  positions = FOUNDATION_KEYS.map do |key|
+    generator_key = key.delete_prefix("vault_")
+    body.index(key) || (label == "secret generator" ? body.index(generator_key) : nil)
+  end
+  FOUNDATION_KEYS.zip(positions).each do |key, position|
+    check(failures, !position.nil?, "#{label} is missing foundation credential #{key}")
+  end
+  check(failures,
+        positions.none?(&:nil?) && positions.each_cons(2).all? { |left, right| left < right },
+        "#{label} must carry foundation credentials in contract order")
+end
+
 check(failures, vault_contract_sources.values.map { |path| vault_keys(path) }.uniq.length == 1,
       "vault example, template, validation role, and ephemeral generator must have exact schema parity")
 
@@ -113,8 +200,7 @@ check(failures, !vault_contract_tasks.empty? && vault_contract_tasks.all? { |tas
 # because both the structured keys and the scalar credentials are validated by
 # filters that return a list of violations. For the scalar credentials this stays
 # a real guard: the role passes them to the filter as a mapping of variable name
-# to value, so deleting vault_tinymediamanager_password's entry stops it being
-# inspected and fails here, and is mutation-checked as such. For
+# to value, so deleting a scalar entry stops it being inspected. For
 # vault_managed_users it is only a presence check, since the pass-through facts in
 # "Resolve validated managed-user service lists" name it too. That key's real pin
 # is tests/managed_users_vault_test.rb, which requires the schema filter by name
@@ -159,14 +245,20 @@ check(failures,
       "vault contract must verify encryption header before computing SHA-256")
 
 site_pre_tasks = Array(site_play["pre_tasks"])
+target_dependency_index = site_pre_tasks.index do |task|
+  task.dig("ansible.builtin.include_role", "name") == "preflight" &&
+    task.dig("ansible.builtin.include_role", "tasks_from") == "target_docker_dependencies"
+end
 vault_contract_index = site_pre_tasks.index do |task|
   task.dig("ansible.builtin.include_role", "name") == "vault_contract"
 end
 first_mutation_guard = site_pre_tasks.index do |task|
   task.dig("ansible.builtin.include_role", "name") == "deployment_bundle"
 end
-check(failures, vault_contract_index == 0 && first_mutation_guard && vault_contract_index < first_mutation_guard,
-      "site.yml must validate the vault contract before every target pre-task")
+check(failures,
+      target_dependency_index == 0 && vault_contract_index == 1 &&
+        first_mutation_guard && vault_contract_index < first_mutation_guard,
+      "site.yml must validate target dependencies, then the vault contract, before mutation")
 site_vault_contract = vault_contract_index && site_pre_tasks[vault_contract_index]
 check(failures, site_vault_contract&.dig("ansible.builtin.include_role", "apply", "no_log") == true,
       "site.yml must redact vault role argument validation")

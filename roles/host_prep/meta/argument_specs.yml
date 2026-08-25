@@ -11,6 +11,9 @@ argument_specs:
         type: str
         required: true
         choices: [nas, mac]
+      platform_media_control_network:
+        type: str
+        required: true
       nas_storage:
         type: list
         elements: dict
@@ -41,6 +44,9 @@ argument_specs:
             type: bool
             required: false
             description: Require an existing safe directory without creating it.
+          media_acquisition_foundation:
+            type: bool
+            required: false
       nas_media_root:
         type: str
         required: true

@@ -11,11 +11,11 @@ mac_repo_dir=$(CDPATH= cd -- "$mac_script_dir/../.." && pwd -P)
 mac_owned_project_labels() {
   mac_label_project=$1
   for mac_label_suffix in \
-    beszel ntfy dozzle audiobookshelf komga tinymediamanager jellyfin immich paperless; do
+    beszel ntfy dozzle audiobookshelf komga jellyfin immich paperless; do
     printf '%s-%s\n' "$mac_label_project" "$mac_label_suffix"
   done
   for mac_label_suffix in \
-    audiobookshelf beszel dozzle immich jellyfin komga ntfy paperless-ngx tinymediamanager; do
+    audiobookshelf beszel dozzle immich jellyfin komga ntfy paperless-ngx; do
     printf '%s-legacy-%s\n' "$mac_label_project" "$mac_label_suffix"
   done
 }
@@ -31,6 +31,58 @@ mac_projects_are_owned() {
         ;;
     esac
   done
+}
+
+validate_media_acquisition_network() {
+  mac_project=$1
+  [ -n "$mac_project" ] || return 1
+  case $mac_project in
+    [-_]*|*[!abcdefghijklmnopqrstuvwxyz0123456789_-]*) return 1 ;;
+  esac
+  media_acquisition_cleanup_network=$mac_project-media-control
+  media_acquisition_cleanup_candidates=$(docker network ls \
+    --filter label=nas.platform.purpose=media-control \
+    --filter "label=nas.platform.project=$mac_project" \
+    --format '{{.Name}}') || return 1
+  case $media_acquisition_cleanup_candidates in
+    ''|"$media_acquisition_cleanup_network") ;;
+    *) return 1 ;;
+  esac
+  if ! docker network inspect "$media_acquisition_cleanup_network" >/dev/null 2>&1; then
+    [ -z "$media_acquisition_cleanup_candidates" ]
+    return
+  fi
+  media_acquisition_cleanup_record=$(docker network inspect "$media_acquisition_cleanup_network" --format \
+    '{{.Name}}|{{.Driver}}|nas.platform.purpose={{index .Labels "nas.platform.purpose"}}|nas.platform.project={{index .Labels "nas.platform.project"}}') || return 1
+  [ "$media_acquisition_cleanup_record" = "$media_acquisition_cleanup_network|bridge|nas.platform.purpose=media-control|nas.platform.project=$mac_project" ] || return 1
+  media_acquisition_cleanup_labels=$(docker network inspect "$media_acquisition_cleanup_network" --format \
+    '{{range $key, $value := .Labels}}{{$key}}={{$value}}|{{end}}' |
+    tr '|' '\n' | sed '/^$/d' | LC_ALL=C sort) || return 1
+  [ "$media_acquisition_cleanup_labels" = "$(printf '%s\n%s\n' \
+    "nas.platform.project=$mac_project" 'nas.platform.purpose=media-control' | LC_ALL=C sort)" ] || return 1
+}
+
+remove_media_acquisition_network() {
+  mac_project=$1
+  validate_media_acquisition_network "$mac_project" || return 1
+  media_acquisition_cleanup_network=$mac_project-media-control
+  if ! docker network inspect "$media_acquisition_cleanup_network" >/dev/null 2>&1; then
+    return 0
+  fi
+  docker network rm "$media_acquisition_cleanup_network" >/dev/null || return 1
+  ! docker network inspect "$media_acquisition_cleanup_network" >/dev/null 2>&1
+}
+
+remaining_media_acquisition_network() {
+  mac_project=$1
+  validate_media_acquisition_network "$mac_project" || return 1
+  media_acquisition_cleanup_network=$mac_project-media-control
+  if docker network inspect "$media_acquisition_cleanup_network" >/dev/null 2>&1; then
+    # The first inspect establishes presence; repeat the complete identity
+    # validation before exposing this exact network as removable state.
+    validate_media_acquisition_network "$mac_project" || return 1
+    printf 'media-control-network:%s\n' "$media_acquisition_cleanup_network"
+  fi
 }
 
 related_rollback_sandboxes() {
@@ -67,6 +119,7 @@ cleanup_one_mac_sandbox() {
   mac_cleanup_target=$(mac_validate_sandbox "$1") || return 1
   mac_marker=$mac_cleanup_target/.nas-platform-mac-owned
   mac_project=$(sed -n 's/^project=//p' "$mac_marker")
+  validate_media_acquisition_network "$mac_project" || return 1
 
   mac_container_ids=$(for mac_service_project in $(mac_owned_project_labels "$mac_project"); do
     docker ps -aq --filter "label=com.docker.compose.project=$mac_service_project" || exit 1
@@ -84,6 +137,7 @@ cleanup_one_mac_sandbox() {
   for mac_container_id in $mac_container_ids; do
     docker rm -f "$mac_container_id" >/dev/null || return 1
   done
+  remove_media_acquisition_network "$mac_project" || return 1
   for mac_network_id in $mac_network_ids; do
     docker network rm "$mac_network_id" >/dev/null || return 1
   done
@@ -105,7 +159,8 @@ cleanup_one_mac_sandbox() {
       [ -z "$mac_ids" ] || printf '%s\n' "$mac_ids" | sed 's/^/network:/'
       mac_ids=$(docker volume ls -q --filter "label=com.docker.compose.project=$mac_service_project") || exit 1
       [ -z "$mac_ids" ] || printf '%s\n' "$mac_ids" | sed 's/^/volume:/'
-    done) || return 1
+    done
+      remaining_media_acquisition_network "$mac_project") || return 1
     if [ -z "$mac_remaining" ]; then
       mac_empty_rounds=$((mac_empty_rounds + 1))
     else
@@ -115,6 +170,10 @@ cleanup_one_mac_sandbox() {
         case $mac_remaining_id in
           container:*) docker rm -f "${mac_remaining_id#container:}" >/dev/null || return 1 ;;
           network:*) docker network rm "${mac_remaining_id#network:}" >/dev/null || return 1 ;;
+          media-control-network:*)
+            [ "${mac_remaining_id#media-control-network:}" = "$mac_project-media-control" ] || return 1
+            remove_media_acquisition_network "$mac_project" || return 1
+            ;;
           volume:*) docker volume rm "${mac_remaining_id#volume:}" >/dev/null || return 1 ;;
           *) return 1 ;;
         esac
@@ -131,7 +190,8 @@ cleanup_one_mac_sandbox() {
     [ -z "$mac_ids" ] || printf '%s\n' "$mac_ids"
     mac_ids=$(docker volume ls -q --filter "label=com.docker.compose.project=$mac_service_project") || exit 1
     [ -z "$mac_ids" ] || printf '%s\n' "$mac_ids"
-  done) || return 1
+  done
+    remaining_media_acquisition_network "$mac_project") || return 1
   [ -z "$mac_final_remaining" ] || return 1
 
   # Revalidate immediately before the descriptor-relative removal. The shared
@@ -139,6 +199,8 @@ cleanup_one_mac_sandbox() {
   # cleanup image, so a concurrent symlink swap cannot redirect traversal.
   [ "$(mac_validate_sandbox "$mac_cleanup_target")" = "$mac_cleanup_target" ] || return 1
   preflight_mac_resources "$mac_cleanup_target" || return 1
+  mac_final_media_network=$(remaining_media_acquisition_network "$mac_project") || return 1
+  [ -z "$mac_final_media_network" ] || return 1
   cleanup_sandbox_contents "$(dirname -- "$mac_cleanup_target")" \
     "$(basename -- "$mac_cleanup_target")" ".nas-platform-mac-owned" || return 1
   [ ! -e "$mac_cleanup_target" ] && [ ! -L "$mac_cleanup_target" ]

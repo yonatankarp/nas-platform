@@ -5,36 +5,52 @@ require "open3"
 
 module ClassifyChanges
   LANES = %w[
-    static foundation smoke beszel dozzle audiobookshelf komga tinymediamanager jellyfin immich
-    paperless idempotence_check
+    static foundation arr downloaders bindery kapowarr pinchflat trailarr seerr
+    smoke beszel dozzle audiobookshelf komga jellyfin immich paperless idempotence_check
   ].freeze
   # The integration suite each lane dispatches, in the order the CI matrix runs
   # them. `static` is not a suite.
   SUITES = {
     "foundation" => "foundation",
+    "arr" => "arr",
+    "downloaders" => "downloaders",
+    "bindery" => "bindery",
+    "kapowarr" => "kapowarr",
+    "pinchflat" => "pinchflat",
+    "trailarr" => "trailarr",
+    "seerr" => "seerr",
     "smoke" => "smoke",
     "beszel" => "beszel",
     "dozzle" => "dozzle",
     "audiobookshelf" => "audiobookshelf",
     "komga" => "komga",
-    "tinymediamanager" => "tinymediamanager",
     "jellyfin" => "jellyfin",
     "immich" => "immich",
     "paperless" => "paperless",
     "idempotence_check" => "idempotence-check"
   }.freeze
   SERVICE_LANES = %w[
-    beszel dozzle audiobookshelf komga tinymediamanager jellyfin immich paperless
+    beszel dozzle audiobookshelf komga jellyfin immich paperless
   ].freeze
-  # ntfy is in every service's tag set because every service role publishes its
-  # own deployment report to it. A converge that leaves the sink out would fail
-  # at the report, after the service itself deployed correctly.
+  ACQUISITION_LANES = %w[
+    arr downloaders bindery kapowarr pinchflat trailarr seerr
+  ].freeze
+  TAGGED_LANES = (ACQUISITION_LANES + SERVICE_LANES).freeze
+  # Active services include ntfy because each role publishes its deployment
+  # report there. Planned acquisition suites instead converge only the shared
+  # inert foundation and validate it with their static contract.
   SERVICE_TAGS = {
+    "arr" => %w[host_prep deployment_bundle media_acquisition_foundation],
+    "downloaders" => %w[host_prep deployment_bundle media_acquisition_foundation],
+    "bindery" => %w[host_prep deployment_bundle media_acquisition_foundation],
+    "kapowarr" => %w[host_prep deployment_bundle media_acquisition_foundation],
+    "pinchflat" => %w[host_prep deployment_bundle media_acquisition_foundation],
+    "trailarr" => %w[host_prep deployment_bundle media_acquisition_foundation],
+    "seerr" => %w[host_prep deployment_bundle media_acquisition_foundation],
     "beszel" => %w[host_prep deployment_bundle ntfy beszel],
     "dozzle" => %w[host_prep deployment_bundle ntfy dozzle],
     "audiobookshelf" => %w[host_prep deployment_bundle ntfy audiobookshelf],
     "komga" => %w[host_prep deployment_bundle ntfy komga],
-    "tinymediamanager" => %w[host_prep deployment_bundle ntfy tinymediamanager],
     "jellyfin" => %w[host_prep deployment_bundle ntfy jellyfin],
     "immich" => %w[host_prep deployment_bundle ntfy immich],
     "paperless" => %w[host_prep deployment_bundle ntfy paperless]
@@ -44,7 +60,6 @@ module ClassifyChanges
     "dozzle" => %w[dozzle],
     "audiobookshelf" => %w[audiobookshelf],
     "komga" => %w[komga],
-    "tinymediamanager" => %w[tinymediamanager],
     "jellyfin" => %w[jellyfin],
     "immich" => %w[immich],
     "paperless" => %w[paperless paperless-ngx paperless_ngx]
@@ -54,6 +69,14 @@ module ClassifyChanges
     docs/getting-started-nas.md
     docs/secrets.md
   ].freeze
+  ACQUISITION_SHARED_PATHS = %w[
+    config/media-acquisition.yml
+    roles/host_prep/tasks/verify_media_acquisition.yml
+    tests/media_acquisition_foundation_verifier_test.rb
+  ].freeze
+  ACQUISITION_OWNED_PATHS = {
+    "tests/media_control_network_collision_test.sh" => "arr"
+  }.freeze
 
   module_function
 
@@ -61,7 +84,7 @@ module ClassifyChanges
     selection = LANES.to_h { |lane| [lane, false] }
     return selection.transform_values { true } if full
 
-    service_lanes = []
+    tagged_lanes = []
     paths.each do |raw_path|
       path = raw_path.to_s.sub(%r{\A\./}, "")
       if STATIC_ONLY_PATHS.include?(path)
@@ -70,15 +93,26 @@ module ClassifyChanges
       end
       next if inert_path?(path)
 
-      lane = service_lane(path)
+      if ACQUISITION_SHARED_PATHS.include?(path)
+        tagged_lanes.concat(ACQUISITION_LANES)
+        next
+      end
+
+      if (owner = ACQUISITION_OWNED_PATHS[path])
+        tagged_lanes << owner
+        next
+      end
+
+      lane = acquisition_lane(path) || service_lane(path)
       return selection.transform_values { true } unless lane
 
-      service_lanes << lane
+      tagged_lanes << lane
     end
 
-    unless service_lanes.empty?
-      %w[static smoke idempotence_check].each { |lane| selection[lane] = true }
-      service_lanes.each { |lane| selection[lane] = true }
+    unless tagged_lanes.empty?
+      %w[static idempotence_check].each { |lane| selection[lane] = true }
+      selection["smoke"] = true if (tagged_lanes & SERVICE_LANES).any?
+      tagged_lanes.each { |lane| selection[lane] = true }
     end
     selection
   end
@@ -115,7 +149,7 @@ module ClassifyChanges
     tags = if selection.fetch("foundation")
              []
            else
-             SERVICE_LANES.filter { |lane| selection.fetch(lane) }
+             TAGGED_LANES.filter { |lane| selection.fetch(lane) }
                           .flat_map { |lane| SERVICE_TAGS.fetch(lane) }
                           .uniq
            end
@@ -143,6 +177,14 @@ module ClassifyChanges
       end
     end
     nil
+  end
+
+  def acquisition_lane(path)
+    ACQUISITION_LANES.find do |lane|
+      path.start_with?("roles/#{lane}/", "services/#{lane}/") ||
+        path == "tests/expected/#{lane}.yml" ||
+        path == "tests/contracts/#{lane}-foundation.sh"
+    end
   end
 
   def parse_cli(arguments)

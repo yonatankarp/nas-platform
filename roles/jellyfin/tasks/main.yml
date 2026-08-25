@@ -919,7 +919,7 @@
     url: >-
       {{ jellyfin_api ~ '/Library/VirtualFolders/Name?name=' ~
          (item.path_matches[0].raw.Name | urlencode) ~ '&newName=' ~
-         (item.desired.name | urlencode) ~ '&refreshLibrary=false' }}
+         (item.desired.name | urlencode) ~ '&refreshLibrary=true' }}
     method: POST
     headers:
       Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_reconcile_token }}"'
@@ -956,6 +956,7 @@
   register: jellyfin_library_identity_observations
   until:
     - jellyfin_library_identity_observation.json | default(none) | type_debug == 'list'
+    - jellyfin_library_identity_inventory_globally_settled | bool
     - jellyfin_library_identity_name_matches | length == 1
     - jellyfin_library_identity_match.Name | default(none) is string
     - jellyfin_library_identity_match.Name == item.desired.name
@@ -977,6 +978,59 @@
   delay: 1
   vars:
     jellyfin_library_identity_observation: "{{ jellyfin_library_identity_observations }}"
+    jellyfin_library_identity_folders: >-
+      {{ jellyfin_library_identity_observation.json
+         if jellyfin_library_identity_observation.json | default(none) |
+           type_debug == 'list' else [] }}
+    jellyfin_library_identity_folder_count: "{{ jellyfin_library_identity_folders | length }}"
+    jellyfin_library_identity_inventory_globally_settled: >-
+      {{
+        jellyfin_library_identity_folders | select('mapping') | list | length ==
+          jellyfin_library_identity_folder_count | int and
+        jellyfin_library_identity_folders | selectattr('Name', 'defined') | list | length ==
+          jellyfin_library_identity_folder_count | int and
+        jellyfin_library_identity_folders | map(attribute='Name') |
+          select('string') | list | length == jellyfin_library_identity_folder_count | int and
+        jellyfin_library_identity_folders | selectattr('ItemId', 'defined') | list | length ==
+          jellyfin_library_identity_folder_count | int and
+        jellyfin_library_identity_folders | map(attribute='ItemId') |
+          select('string') |
+          select('match', '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$') | list | length ==
+          jellyfin_library_identity_folder_count | int and
+        jellyfin_library_identity_folders | selectattr('CollectionType', 'defined') |
+          list | length == jellyfin_library_identity_folder_count | int and
+        jellyfin_library_identity_folders | map(attribute='CollectionType') |
+          select('string') | list | length == jellyfin_library_identity_folder_count | int and
+        jellyfin_library_identity_folders | selectattr('Locations', 'defined') | list | length ==
+          jellyfin_library_identity_folder_count | int and
+        jellyfin_library_identity_folders | map(attribute='Locations') | map('type_debug') |
+          select('equalto', 'list') | list | length == jellyfin_library_identity_folder_count | int and
+        jellyfin_library_identity_folders | map(attribute='Locations') | flatten |
+          select('string') | list | length ==
+          jellyfin_library_identity_folders | map(attribute='Locations') | flatten | list | length and
+        jellyfin_library_identity_folders | selectattr('LibraryOptions', 'defined') |
+          list | length == jellyfin_library_identity_folder_count | int and
+        jellyfin_library_identity_folders | map(attribute='LibraryOptions') |
+          select('mapping') | list | length == jellyfin_library_identity_folder_count | int and
+        jellyfin_library_identity_folders |
+          selectattr('LibraryOptions.PathInfos', 'defined') | list | length ==
+          jellyfin_library_identity_folder_count | int and
+        jellyfin_library_identity_folders | map(attribute='LibraryOptions.PathInfos') |
+          map('type_debug') | select('equalto', 'list') | list | length ==
+          jellyfin_library_identity_folder_count | int and
+        jellyfin_library_identity_folders | map(attribute='LibraryOptions.PathInfos') | flatten |
+          select('mapping') | list | length ==
+          jellyfin_library_identity_folders | map(attribute='LibraryOptions.PathInfos') |
+            flatten | list | length and
+        jellyfin_library_identity_folders | map(attribute='LibraryOptions.PathInfos') | flatten |
+          selectattr('Path', 'defined') | list | length ==
+          jellyfin_library_identity_folders | map(attribute='LibraryOptions.PathInfos') |
+            flatten | list | length and
+        jellyfin_library_identity_folders | map(attribute='LibraryOptions.PathInfos') | flatten |
+          map(attribute='Path') | select('string') | list | length ==
+          jellyfin_library_identity_folders | map(attribute='LibraryOptions.PathInfos') |
+            flatten | list | length
+      }}
     jellyfin_library_identity_name_matches: >-
       {{ jellyfin_library_identity_observation.json | default([]) |
          select('mapping') | selectattr('Name', 'defined') |

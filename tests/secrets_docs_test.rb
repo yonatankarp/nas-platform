@@ -69,8 +69,8 @@ vault_keys = if vault_example.is_a?(Hash)
                []
              end
 
-check(failures, vault_keys.length == 45,
-      "vault example must contain exactly 45 vault_* keys (found #{vault_keys.length})")
+check(failures, vault_keys.length == 59,
+      "vault example must contain exactly 59 vault_* keys (found #{vault_keys.length})")
 
 secrets_guide_path = File.join(ROOT, "docs", "secrets.md")
 secrets_guide = File.file?(secrets_guide_path) ? File.read(secrets_guide_path) : ""
@@ -92,6 +92,31 @@ unless unexpected_keys.empty?
 end
 check(failures, missing_keys.empty? && duplicate_keys.empty? && unexpected_keys.empty?,
       "canonical secrets guide vault keys differ (#{schema_diagnostic.join('; ')})")
+
+foundation_keys = %w[
+  vault_arr_radarr_api_key
+  vault_arr_radarr_admin_username
+  vault_arr_radarr_admin_password
+  vault_arr_sonarr_api_key
+  vault_arr_sonarr_admin_username
+  vault_arr_sonarr_admin_password
+  vault_arr_prowlarr_api_key
+  vault_arr_prowlarr_admin_username
+  vault_arr_prowlarr_admin_password
+  vault_arr_bazarr_api_key
+  vault_arr_bazarr_admin_username
+  vault_arr_bazarr_admin_password
+  vault_downloaders_sabnzbd_api_key
+  vault_downloaders_sabnzbd_admin_username
+  vault_downloaders_sabnzbd_admin_password
+]
+check(failures, snippets_in_order?(secrets_guide, *foundation_keys),
+      "canonical secrets guide must document foundation credentials in contract order")
+check(failures,
+      secrets_guide.match?(/API keys are distinct 32-character lowercase hexadecimal strings/) &&
+        secrets_guide.match?(/four administrator passwords are distinct/) &&
+        secrets_guide.match?(/administrator password is distinct from the four Arr administrator passwords/),
+      "canonical secrets guide must document foundation shape and uniqueness")
 
 managed_user_services = %w[
   audiobookshelf beszel dozzle immich jellyfin komga ntfy paperless_ngx
@@ -291,11 +316,20 @@ nas_guide = File.file?(nas_guide_path) ? File.read(nas_guide_path) : ""
 auto_deploy_section = markdown_section(nas_guide, "## Automatic deployment from the NAS")
 auto_deploy_shell_blocks = shell_code_fences(auto_deploy_section)
 verify_tags = %w[
-  platform_verify_ntfy platform_verify_beszel platform_verify_dozzle
-  platform_verify_audiobookshelf platform_verify_komga
-  platform_verify_tinymediamanager platform_verify_jellyfin
+  platform_verify_media_acquisition_foundation platform_verify_ntfy
+  platform_verify_beszel platform_verify_dozzle
+  platform_verify_audiobookshelf platform_verify_komga platform_verify_jellyfin
   platform_verify_immich platform_verify_paperless
 ].join(",")
+check(failures,
+      auto_deploy_section.include?("the installed\npoller cannot select a verification tag that exists only in the candidate until\nthat candidate has been activated"),
+      "NAS automatic deployment guide must require manual verification for first foundation rollout")
+check(failures,
+      nas_guide.match?(/ordinary SMB users cannot access either.*Media\/\.acquisition.*Books\/\.acquisition/im),
+      "NAS guide must reserve acquisition ACL acceptance for both hidden trees")
+check(failures,
+      nas_guide.match?(/Docker Desktop cannot prove.*NAS ACL/im),
+      "NAS guide must not treat the Mac proof as NAS ACL evidence")
 
 required_auto_deploy_commands = {
   "anonymous controller clone" => [
@@ -479,15 +513,6 @@ check(failures,
 
 recovery = markdown_section(secrets_guide, "## Existing deployment recovery")
 recovery_shell_blocks = shell_code_fences(recovery)
-tinymediamanager_recovery = recovery.lines.find do |line|
-  line.start_with?("- tinyMediaManager:")
-end.to_s
-check(failures,
-      tinymediamanager_recovery.match?(/`vault_tinymediamanager_password`.*remains.*cleanup release/i),
-      "tinyMediaManager recovery entry must retain its vault key until the cleanup release")
-check(failures,
-      tinymediamanager_recovery.match?(/retired.*must remain stopped/i),
-      "tinyMediaManager recovery entry must identify the service as retired and stopped")
 check(failures,
       recovery_shell_blocks.any? do |block|
         block.include?('[ -L "$PLATFORM_VAULT_DIR" ]') &&

@@ -2,6 +2,8 @@
 # Docker Desktop capabilities. The lifecycle harness exports isolated roots;
 # no production data path or published port is inherited from the NAS.
 platform_kind: mac
+media_usenet_enabled: false
+media_torrent_enabled: false
 # Docker Desktop already isolates its VM from macOS; use all CPUs assigned to the VM.
 platform_container_cpu_budget: 0
 platform_project_name: "{{ lookup('env', 'PLATFORM_PROJECT_NAME') }}"
@@ -10,8 +12,6 @@ ntfy_port: "{{ lookup('env', 'PLATFORM_NTFY_PORT') | int }}"
 dozzle_port: "{{ lookup('env', 'PLATFORM_DOZZLE_PORT') | int }}"
 audiobookshelf_port: "{{ lookup('env', 'PLATFORM_AUDIOBOOKSHELF_PORT') | int }}"
 komga_port: "{{ lookup('env', 'PLATFORM_KOMGA_PORT') | int }}"
-tinymediamanager_web_port: "{{ lookup('env', 'PLATFORM_TINYMEDIAMANAGER_WEB_PORT') | int }}"
-tinymediamanager_api_port: "{{ lookup('env', 'PLATFORM_TINYMEDIAMANAGER_API_PORT') | int }}"
 jellyfin_port: "{{ lookup('env', 'PLATFORM_JELLYFIN_PORT') | int }}"
 immich_port: "{{ lookup('env', 'PLATFORM_IMMICH_PORT') | int }}"
 paperless_port: "{{ lookup('env', 'PLATFORM_PAPERLESS_PORT') | int }}"

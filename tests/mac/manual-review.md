@@ -9,10 +9,6 @@ private keys, password hashes, rendered environment files, or application logs.
 - [ ] Audiobookshelf: scan, browse, play, and retain progress after recreation.
 - [ ] Komga: scan and open a disposable book; retain library settings.
 - [ ] Jellyfin: scan, direct-stream, CPU-transcode, and retain users/libraries.
-- [ ] tinyMediaManager: confirm it is retired, its container is absent, it must
-      remain stopped, and its bind-mounted state remains preserved.
-- [ ] Retired media manager: perform no active UI, API, or metadata-write
-      verification.
 - [ ] Immich: upload, thumbnail, search, exercise CPU ML, and retain assets.
 - [ ] Paperless-ngx: ingest German/English/Hebrew fixtures, preview, search,
       convert, export, and inspect Gmail configuration without fetching mail.
@@ -22,6 +18,17 @@ private keys, password hashes, rendered environment files, or application logs.
 
 ## NAS-only limitations
 
+- [ ] Confirm the generated report has exactly the four bounded foundation
+      lines: `MEDIA_ACQUISITION_FOUNDATION`, `MEDIA_ACQUISITION_STORAGE`,
+      `MEDIA_ACQUISITION_TRANSPORTS`, and `MEDIA_ACQUISITION_CONTAINERS`; do not
+      attach secrets, logs, or directory listings.
+- [ ] Record that drift removed the exact labeled bridge, disconnected only
+      Jellyfin and Audiobookshelf, and that reconcile restored the exact state;
+      abort-path tests restore state before preserving the failure status.
+- [ ] Confirm cleanup leaves zero proof-owned containers and networks while
+      preserving unrelated Docker resources.
+- [ ] Docker Desktop cannot prove NAS ACL enforcement. On the NAS, ordinary SMB
+      users must be denied both `Media/.acquisition` and `Books/.acquisition`.
 - [ ] Intel GPU access and hardware transcoding remain unproved.
 - [ ] Linux performance capabilities and Intel GPU metrics remain unproved.
 - [ ] ADM Defender, host networking, native NAS mounts, and Tailscale remain unproved.

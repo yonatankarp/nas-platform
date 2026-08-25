@@ -10,12 +10,19 @@ This repository manages service configuration and containers. It does **not**
 back up photos, media, databases, or other application data. Back up the NAS
 and confirm that the backup can be restored before a production migration.
 
-The migration is still in progress. The eight active services are ntfy, Beszel,
-Dozzle, Audiobookshelf, Komga, Jellyfin, Immich, and Paperless-ngx.
-tinyMediaManager remains implemented only as a transitional retirement role: it
-is retired, must remain stopped, and its bind-mounted state remains preserved.
-The authoritative status is
+The eight active services are ntfy, Beszel, Dozzle, Audiobookshelf, Komga,
+Jellyfin, Immich, and Paperless-ngx. The production retirement checkpoint has
+passed and the former metadata manager's repository declarations are gone; its
+preserved application state remains outside repository management and was not
+deleted. The authoritative status is
 [`services/manifest.yml`](../services/manifest.yml).
+
+Phase 0 is an inert media-acquisition foundation. It creates the derived
+`media-control` bridge network and the classified acquisition/final directory
+tree, extends generated-vault and immutable validation contracts, and adds CI
+scaffolding. All seven acquisition projects remain `planned`, both acquisition
+enablement flags are literal `false`, and no acquisition container or download
+is started. Jellyfin keeps Open Subtitles until Bazarr is proven in Phase 1.
 
 The two supported routes are deliberately separate:
 

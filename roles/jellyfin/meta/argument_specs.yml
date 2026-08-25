@@ -9,6 +9,9 @@ argument_specs:
       platform_project_name:
         type: str
         required: false
+      platform_media_control_network:
+        type: str
+        required: true
       jellyfin_port:
         type: int
         required: false

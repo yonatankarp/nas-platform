@@ -13,7 +13,7 @@ module PolicySupport
   # of them check different properties of the same roster.
   EXPECTED_SERVICES = %w[
     audiobookshelf beszel dozzle immich jellyfin komga ntfy paperless-ngx
-    tinymediamanager
+    arr downloaders bindery kapowarr pinchflat trailarr seerr
   ].freeze
   # Not every vault key belongs to a service; this one is platform-wide.
   GLOBAL_VAULT_KEYS = %w[vault_managed_users].freeze
@@ -89,8 +89,22 @@ IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
   # YAML a mistyped CPU limit parses as a string instead, and a check comparing it
   # against the Compose file would report a mismatch that reads like a Compose bug,
   # so the data is type-checked where it enters rather than where it is consumed.
-  def pinned_service_expectations(root, service_names = EXPECTED_SERVICES)
+  def pinned_service_expectations(root, service_statuses, service_names = EXPECTED_SERVICES)
     problems = []
+    unless service_statuses.is_a?(Hash)
+      problems << "service statuses must be a mapping"
+      service_statuses = {}
+    end
+    status_keys = service_statuses.keys
+    unless status_keys.all? { |key| key.is_a?(String) } && status_keys.sort == service_names.sort
+      problems << "service statuses must have exactly the rostered service names"
+    end
+    service_statuses.each do |name, status|
+      unless ALLOWED_SERVICE_STATUSES.include?(status)
+        problems << "service status for #{name.inspect} must be planned, implemented, or accepted"
+      end
+    end
+
     documents = service_names.to_h do |service_name|
       relative_path = File.join("tests", "expected", "#{service_name}.yml")
       path = File.join(root, relative_path)
@@ -116,7 +130,9 @@ IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
       [service_name, document || EMPTY_EXPECTATION]
     end
 
-    documents.each { |name, expectation| problems.concat(expectation_problems(name, expectation)) }
+    documents.each do |name, expectation|
+      problems.concat(expectation_problems(name, expectation, service_statuses[name]))
+    end
 
     # A file for a service the roster does not name would pin expectations nothing
     # reads, so an extra file is rejected rather than ignored.
@@ -131,7 +147,7 @@ IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
     [documents.freeze, problems]
   end
 
-  def expectation_problems(service_name, expectation)
+  def expectation_problems(service_name, expectation, service_status)
     relative_path = "tests/expected/#{service_name}.yml"
     problems = []
     role = expectation.fetch("role")
@@ -149,7 +165,7 @@ IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
     end
 
     vault_keys = expectation.fetch("vault_keys")
-    if vault_keys.is_a?(Array) && !vault_keys.empty?
+    if vault_keys.is_a?(Array) && (!vault_keys.empty? || service_status == "planned")
       # contract_basename is reused for the vault prefix because paperless-ngx is the
       # one service whose keys drop the suffix, and it is the same alias. The two
       # namings are independent concepts that happen to agree, so a change to one must
@@ -161,7 +177,7 @@ IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
         end
       end
     else
-      problems << "#{relative_path} vault_keys must be a nonempty list"
+      problems << "#{relative_path} vault_keys must be a nonempty list unless the service is planned"
     end
     problems
   end

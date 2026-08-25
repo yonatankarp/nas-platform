@@ -1,0 +1,133 @@
+---
+- name: Select media acquisition foundation storage
+  ansible.builtin.set_fact:
+    host_prep_media_acquisition_storage: >-
+      {{ nas_storage |
+         selectattr('media_acquisition_foundation', 'defined') |
+         selectattr('media_acquisition_foundation', 'equalto', true) |
+         list }}
+    host_prep_media_acquisition_readers:
+      - name: >-
+          {{ audiobookshelf_container_name |
+             default((platform_project_name ~ '-audiobookshelf')
+                     if platform_project_name | default('') | length > 0
+                     else 'audiobookshelf', true) }}
+        service: audiobookshelf
+        project: >-
+          {{ audiobookshelf_compose_project_name |
+             default((platform_project_name ~ '-audiobookshelf')
+                     if platform_project_name | default('') | length > 0
+                     else 'audiobookshelf', true) }}
+        networks:
+          - >-
+              {{ (audiobookshelf_compose_project_name |
+                  default((platform_project_name ~ '-audiobookshelf')
+                          if platform_project_name | default('') | length > 0
+                          else 'audiobookshelf', true)) ~ '_default' }}
+          - "{{ platform_media_control_network }}"
+      - name: >-
+          {{ jellyfin_container_name |
+             default((platform_project_name ~ '-jellyfin')
+                     if platform_project_name | default('') | length > 0
+                     else 'jellyfin', true) }}
+        service: jellyfin
+        project: >-
+          {{ jellyfin_compose_project_name |
+             default((platform_project_name ~ '-jellyfin')
+                     if platform_project_name | default('') | length > 0
+                     else 'jellyfin', true) }}
+        networks:
+          - >-
+              {{ (jellyfin_compose_project_name |
+                  default((platform_project_name ~ '-jellyfin')
+                          if platform_project_name | default('') | length > 0
+                          else 'jellyfin', true)) ~ '_default' }}
+          - "{{ platform_media_control_network }}"
+  changed_when: false
+  tags: [platform_verify_media_acquisition_foundation]
+
+- name: Require the exact classified media acquisition storage declaration
+  ansible.builtin.assert:
+    that:
+      - host_prep_media_acquisition_storage | length == 28
+      - host_prep_media_acquisition_storage | map(attribute='path') | unique | length == 28
+      - host_prep_media_acquisition_storage | selectattr('recovery', 'equalto', 'cache') | list | length == 10
+      - host_prep_media_acquisition_storage | selectattr('recovery', 'equalto', 'user') | list | length == 7
+      - host_prep_media_acquisition_storage | selectattr('recovery', 'equalto', 'critical') | list | length == 11
+      - host_prep_media_acquisition_storage | map(attribute='mode') | unique | list == ['0755']
+      - not (media_usenet_enabled | bool)
+      - not (media_torrent_enabled | bool)
+    fail_msg: Media acquisition storage or transport policy differs from the inert foundation.
+  changed_when: false
+  tags: [platform_verify_media_acquisition_foundation]
+
+- name: Inspect every media acquisition foundation path
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+    follow: false
+  loop: "{{ host_prep_media_acquisition_storage }}"
+  loop_control:
+    label: "{{ item.path }}"
+  register: host_prep_media_acquisition_storage_stats
+  changed_when: false
+  tags: [platform_verify_media_acquisition_foundation]
+
+- name: Require every media acquisition path to be a real mode 0755 directory
+  ansible.builtin.assert:
+    that:
+      - host_prep_media_acquisition_storage_stats.results | length == 28
+      - item.stat.exists
+      - item.stat.isdir
+      - not item.stat.islnk
+      - item.stat.mode == '0755'
+    fail_msg: "Media acquisition foundation path is absent or unsafe: {{ item.item.path }}"
+  loop: "{{ host_prep_media_acquisition_storage_stats.results }}"
+  loop_control:
+    label: "{{ item.item.path }}"
+  changed_when: false
+  tags: [platform_verify_media_acquisition_foundation]
+
+- name: Inspect the derived media control network
+  community.docker.docker_network_info:
+    name: "{{ platform_media_control_network }}"
+  register: host_prep_media_acquisition_network
+  changed_when: false
+  tags: [platform_verify_media_acquisition_foundation]
+
+- name: Require the exact isolated media control bridge
+  ansible.builtin.assert:
+    that:
+      - host_prep_media_acquisition_network.exists
+      - host_prep_media_acquisition_network.network.Name == platform_media_control_network
+      - host_prep_media_acquisition_network.network.Driver == 'bridge'
+      - host_prep_media_acquisition_network.network.Labels['nas.platform.purpose'] == 'media-control'
+      - host_prep_media_acquisition_network.network.Labels['nas.platform.project'] == (platform_project_name | default('nas-platform', true))
+      - host_prep_media_acquisition_network.network.Labels.keys() | sort == ['nas.platform.project', 'nas.platform.purpose']
+    fail_msg: The derived media-control network identity, driver, or labels differ.
+  changed_when: false
+  tags: [platform_verify_media_acquisition_foundation]
+
+- name: Inspect the exact media reader containers
+  community.docker.docker_container_info:
+    name: "{{ item.name }}"
+  loop: "{{ host_prep_media_acquisition_readers }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: host_prep_media_acquisition_reader_info
+  changed_when: false
+  tags: [platform_verify_media_acquisition_foundation]
+
+- name: Require exact reader identities and network memberships
+  ansible.builtin.assert:
+    that:
+      - item.exists
+      - item.container.Name == '/' ~ item.item.name
+      - item.container.Config.Labels['com.docker.compose.service'] == item.item.service
+      - item.container.Config.Labels['com.docker.compose.project'] == item.item.project
+      - item.container.NetworkSettings.Networks.keys() | sort == item.item.networks | sort
+    fail_msg: "Media reader identity or network membership differs: {{ item.item.name }}"
+  loop: "{{ host_prep_media_acquisition_reader_info.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  changed_when: false
+  tags: [platform_verify_media_acquisition_foundation]

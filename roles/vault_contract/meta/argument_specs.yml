@@ -26,6 +26,21 @@ argument_specs:
       vault_jellyfin_opensubtitles_password: {type: str, required: true}
       vault_komga_admin_email: {type: str, required: true}
       vault_komga_admin_password: {type: str, required: true}
+      vault_arr_radarr_api_key: {type: str, required: true}
+      vault_arr_radarr_admin_username: {type: str, required: true}
+      vault_arr_radarr_admin_password: {type: str, required: true}
+      vault_arr_sonarr_api_key: {type: str, required: true}
+      vault_arr_sonarr_admin_username: {type: str, required: true}
+      vault_arr_sonarr_admin_password: {type: str, required: true}
+      vault_arr_prowlarr_api_key: {type: str, required: true}
+      vault_arr_prowlarr_admin_username: {type: str, required: true}
+      vault_arr_prowlarr_admin_password: {type: str, required: true}
+      vault_arr_bazarr_api_key: {type: str, required: true}
+      vault_arr_bazarr_admin_username: {type: str, required: true}
+      vault_arr_bazarr_admin_password: {type: str, required: true}
+      vault_downloaders_sabnzbd_api_key: {type: str, required: true}
+      vault_downloaders_sabnzbd_admin_username: {type: str, required: true}
+      vault_downloaders_sabnzbd_admin_password: {type: str, required: true}
       vault_ntfy_admin_user: {type: str, required: true}
       vault_ntfy_admin_password: {type: str, required: true}
       vault_ntfy_admin_password_hash: {type: str, required: true}
@@ -46,7 +61,6 @@ argument_specs:
       vault_paperless_gmail_app_password: {type: str, required: true}
       vault_paperless_mail_account_name: {type: str, required: true}
       vault_paperless_mail_rule_name: {type: str, required: true}
-      vault_tinymediamanager_password: {type: str, required: true}
       vault_managed_users:
         type: dict
         required: true

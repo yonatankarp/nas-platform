@@ -5,93 +5,26 @@ This path targets a fresh production installation. Complete the
 NAS, and confirm every required service is `implemented` or `accepted` in
 [`services/manifest.yml`](../services/manifest.yml) before installation. The
 active services are Audiobookshelf, Beszel, Dozzle, Immich, Jellyfin, Komga,
-ntfy, and Paperless-ngx. tinyMediaManager remains in the manifest only for its
-transitional retirement lifecycle.
+ntfy, and Paperless-ngx. The production retirement checkpoint has passed and
+the retired metadata manager declarations have been removed from the repository.
 
 Commands are labelled **read-only**, **check mode**, or **changes production**.
 
-## tinyMediaManager retirement checkpoint
+## Retired metadata manager cleanup checkpoint
 
-tinyMediaManager is retired and must remain stopped. Its bind-mounted state is
-preserved through this transitional release. The Movies and Series libraries
-are neither deleted nor moved by retirement. The
-`vault_tinymediamanager_password` key remains until the cleanup release so a
-deliberate rollback can reuse the preserved configuration.
-
-Permanent cleanup of the role, Compose definitions, vault key, published ports,
-CI coverage, and preserved storage declaration waits for the NAS verification
-checkpoint and a separate cleanup release. The cleanup release removes
-repository declarations only; it must not delete
-`{{ nas_docker_root }}/tinymediamanager/data` or its contents. Any later data
-deletion requires a separate, backed-up, explicit operator decision and is not
-part of this retirement. This release does not deploy Radarr, Sonarr, or Bazarr.
-Open Subtitles remains configured in Jellyfin until Bazarr is proven.
-
-### What the retirement verification proves
-
-`platform_verify_tinymediamanager` proves container absence and that the state
-root exists, is a directory, and is not a symlink. It does not inspect or verify
-the state contents. Before declaring the application state preserved, make a
-read-only comparison against a prior inventory or snapshot and confirm a small
-set of representative expected files or backup records. Do not recursively hash
-the state, print configuration contents, or expose credentials in evidence.
-
-### Temporary rollback procedure
-
-The reviewed pre-retirement revision `ca15db3` is the source of the active
-tinyMediaManager definitions. It is not a platform rollback target. Do not roll
-the entire platform back to that revision or blindly restore its complete
-inventory. Use this mutual-exclusion procedure:
-
-1. Record the intended current platform revision. Pause or disable the
-   five-minute production auto-deployer using the procedure under
-   [Automatic deployment from the NAS](#automatic-deployment-from-the-nas):
-   save `crontab -l`, remove only the `NAS platform production auto-deploy`
-   entry with `crontab -e`, and verify that entry is absent. Leave automation
-   disabled throughout the temporary rollback.
-2. From the intended current revision, create a temporary rollback branch.
-   Restore only the tinyMediaManager role and Compose trees from `ca15db3`, then
-   review the matching tinyMediaManager storage declaration so the active role
-   can manage that already-preserved directory. Do not replace the complete
-   inventory file. Review the diff and place this narrow change in a temporary
-   rollback commit:
-
-   ```sh
-   git switch -c ops/tinymediamanager-temporary-rollback
-   git restore --source=ca15db3 -- \
-     roles/tinymediamanager services/tinymediamanager
-   git diff -- roles/tinymediamanager services/tinymediamanager \
-     inventory/group_vars/all/main.yml
-   ```
-
-   Edit only the matching tinyMediaManager storage declaration. The reviewed
-   storage edit removes `preserve_only` only from the existing
-   `{{ nas_docker_root }}/tinymediamanager/data` declaration; it does not add,
-   move, recreate, or delete that directory.
-3. Before Radarr or Sonarr is deployed, the simpler rollback may now check and
-   converge this reviewed temporary commit; there is no arr writer to stop. If
-   Radarr or Sonarr has written Movies or Series, first stop both Radarr and
-   Sonarr using their reviewed orchestration and verify both containers are
-   absent. Keep Radarr and Sonarr stopped for the entire period tinyMediaManager
-   can run. Do not proceed merely because an application UI looks idle.
-4. Check the temporary commit with `--check --diff`, review every change, and
-   then converge it. Confirm that Movies and Series still point to their
-   existing paths. The invariant is one media writer at a time.
-5. Before restarting any arr writer, restore or check out the intended current
-   platform revision and converge it. Its tinyMediaManager retirement role is
-   the mechanism that stops and removes the container without volumes; do not
-   substitute an unbounded manual Compose command. Verify the tinyMediaManager
-   container is absent and the retirement checks pass. Only then restart Radarr
-   and Sonarr and re-enable the auto-deployer.
-
-The temporary branch and commit are rollback evidence, not a new deployment
-baseline. If any container-absence or path check is ambiguous, stop the
-procedure instead of allowing concurrent writers.
+Former metadata manager application state remains preserved outside repository
+management; the repository cleanup did not delete it or any media. Phase 0
+creates only the derived bridge network, classified acquisition/final paths,
+immutable contracts, generated vault keys, and CI scaffolding. All seven
+projects remain `planned`, both acquisition flags remain `false`, and no
+acquisition container or download starts. Open Subtitles remains configured in
+Jellyfin until Bazarr is proven in Phase 1.
 
 ## 1. Prepare the NAS and workstation
 
-The NAS needs Docker, the Docker Compose plugin 2.18.0 or newer, Python 3, SSH
-access, and enough space under the configured storage roots. From your
+The NAS needs Docker, the Docker Compose plugin 2.18.0 or newer, Python 3 with
+the `requests` package available to Ansible's managed interpreter, SSH access,
+and enough space under the configured storage roots. From your
 workstation, confirm ordinary SSH access first. These are read-only checks:
 
 ```sh
@@ -105,6 +38,7 @@ key checking. On the NAS, verify:
 
 ```sh
 python3 --version
+python3 -c 'import requests'
 docker version
 docker compose version
 ```
@@ -189,6 +123,10 @@ backup and a service-specific rollback decision already written down:
 ansible-playbook -i inventory/remote.yml site.yml --ask-vault-pass
 ```
 
+Direct Jellyfin-only or Audiobookshelf-only runs require a completed foundation
+or full-site converge that created the external `media-control` network. This
+prerequisite applies only to those two reader services.
+
 Success requires `failed=0` and `unreachable=0`. Do not start manual repairs
 after a failure. Preserve the first failing task and its message, check the
 affected container without exposing secrets, and decide whether to fix forward
@@ -211,13 +149,18 @@ ansible-playbook -i inventory/remote.yml site.yml --ask-vault-pass
 
 Record the Git commit, encrypted vault checksum, recap, application checks, and
 operator decision without recording secrets. Existing NAS credentials must work
-unchanged for all eight active services. Keep the retired tinyMediaManager
-credential unchanged, but do not authenticate to or start the retired service.
-Repeat the service-specific credential checks
+unchanged for all eight active services. Repeat the service-specific credential checks
 from the [Mac manual review](getting-started-mac.md#4-perform-the-manual-review)
 against the production deployment without exercising external integrations; for
 ntfy, use only an agreed disposable topic when verifying alerts from Beszel and
 Dozzle.
+
+Phase 0 also requires a NAS-only ACL acceptance check: using an ordinary SMB
+account, confirm that ordinary SMB users cannot access either
+`Media/.acquisition` or `Books/.acquisition`, while the intended service identity
+can traverse the required directories. Record only pass/fail and the tested
+identity class—never directory listings, ACL dumps containing private account
+details, or secrets. Docker Desktop cannot prove this NAS ACL boundary.
 
 The platform provisions three ntfy topics: severity first, then subject.
 
@@ -331,13 +274,13 @@ ansible-playbook -i inventory/local.yml site.yml \
   --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE"
 
 ansible-playbook -i inventory/local.yml verify.yml \
-  --tags platform_verify_ntfy,platform_verify_beszel,platform_verify_dozzle,platform_verify_audiobookshelf,platform_verify_komga,platform_verify_tinymediamanager,platform_verify_jellyfin,platform_verify_immich,platform_verify_paperless \
+  --tags platform_verify_media_acquisition_foundation,platform_verify_ntfy,platform_verify_beszel,platform_verify_dozzle,platform_verify_audiobookshelf,platform_verify_komga,platform_verify_jellyfin,platform_verify_immich,platform_verify_paperless \
   --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE"
 ```
 
-The `platform_verify_tinymediamanager` tag applies the bounded checks described
-in [What the retirement verification proves](#what-the-retirement-verification-proves);
-it does not verify configuration contents or a live UI or API.
+Run this manual verification for the first foundation deployment: the installed
+poller cannot select a verification tag that exists only in the candidate until
+that candidate has been activated.
 
 Only after those three commands pass, install the poller and its single
 five-minute cron entry:
@@ -567,9 +510,7 @@ ansible-playbook -i inventory/local.yml site.yml \
 
 Do not interpret a clean play recap as proof that old application records were
 restored. Verify representative photos, users, albums, documents, metadata, and
-search results in each active application. Keep tinyMediaManager stopped and
-follow the [retirement checkpoint](#tinymediamanager-retirement-checkpoint)
-rather than attempting an application check.
+search results in each active application.
 
 ## Recovery and rollback boundary
 

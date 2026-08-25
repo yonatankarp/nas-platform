@@ -1,0 +1,5 @@
+---
+role: pinchflat
+container_cpus:
+  pinchflat: 1.0
+vault_keys: []

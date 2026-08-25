@@ -26,8 +26,10 @@ BASE_FIXTURE_PATHS = %w[
   README.md
   ansible.cfg
   config/managed-user-capabilities.yml
+  config/media-acquisition.yml
   controller-requirements.txt
   docs/ansible-basics.md
+  docs/adding-a-service.md
   docs/getting-started.md
   docs/getting-started-mac.md
   docs/asustor-adm-rollout.md
@@ -54,6 +56,7 @@ BASE_FIXTURE_PATHS = %w[
   verify.yml
   roles/host_prep/meta/argument_specs.yml
   roles/host_prep/tasks/main.yml
+  roles/host_prep/tasks/verify_media_acquisition.yml
   roles/deployment_bundle/defaults/main.yml
   roles/deployment_bundle/meta/argument_specs.yml
   roles/deployment_bundle/files/validate_target.py
@@ -84,8 +87,6 @@ BASE_FIXTURE_PATHS = %w[
   services/dozzle/alert_relay.py
   services/immich/classify_restore.py
   scripts/production_auto_deploy.py
-  services/tinymediamanager/compose.integration.yml
-  services/tinymediamanager/compose.mac.yml
   templates/vault-plain.yml.j2
   tests/contracts/registry.yml
   tests/compose_metadata_filter_test.yml
@@ -98,6 +99,8 @@ BASE_FIXTURE_PATHS = %w[
   tests/generate-ephemeral-vault.sh
   tests/generate-secrets-redaction-test.sh
   tests/mac_inventory_path_test.yml
+  tests/media_acquisition_foundation_test.rb
+  tests/media_acquisition_foundation_verifier_test.rb
   tests/managed_user_state_filter_test.py
   tests/ntfy_verify_execution_test.rb
   tests/komga_library_reconciliation_test.rb
@@ -115,10 +118,15 @@ BASE_FIXTURE_PATHS = %w[
   tests/mac/hooks/fixtures-persistence/00-services.sh
   tests/mac/hooks/fixtures-recreate/00-services.sh
   tests/mac/hooks/verify/30-services.sh
+  tests/mac/hooks/drift/15-media-acquisition-foundation.sh
+  tests/mac/hooks/verify/15-media-acquisition-foundation.sh
   tests/mac/manual-review.md
   tests/mac/manual-validation-handoff.rb
   tests/mac/manual-validation-runner-test.sh
   tests/mac/report.rb
+  tests/mac/media-acquisition-foundation-hook-test.sh
+  tests/mac/media-acquisition-foundation-report-test.rb
+  tests/mac/media-acquisition-foundation-cleanup-test.sh
   tests/mac/run.sh
   tests/mac/run-phase-status-test.sh
   tests/mac/snapshot-paperless.sh
@@ -144,11 +152,17 @@ BASE_FIXTURE_PATHS = %w[
 EXPECTED_FIXTURE_ROLES = {
   "audiobookshelf" => "audiobookshelf", "beszel" => "beszel", "dozzle" => "dozzle",
   "immich" => "immich", "jellyfin" => "jellyfin", "komga" => "komga", "ntfy" => "ntfy",
-  "paperless-ngx" => "paperless_ngx", "tinymediamanager" => "tinymediamanager"
+  "paperless-ngx" => "paperless_ngx", "arr" => "arr", "downloaders" => "downloaders",
+  "bindery" => "bindery", "kapowarr" => "kapowarr", "pinchflat" => "pinchflat",
+  "trailarr" => "trailarr", "seerr" => "seerr"
 }.freeze
 
 def fixture_paths(root = ROOT)
   paths = BASE_FIXTURE_PATHS.dup
+  paths.concat(%w[
+    scripts/migrate-media-acquisition-vault.py
+    tests/media_acquisition_vault_migration_test.py
+  ].select { |relative_path| File.file?(File.join(root, relative_path)) })
   manifest_path = File.join(root, "services", "manifest.yml")
   registry_path = File.join(root, "tests", "contracts", "registry.yml")
   raise "duplicate manifest fixture key" unless duplicate_yaml_keys(Psych.parse_stream(File.read(manifest_path))).empty?
@@ -221,6 +235,171 @@ def copy_fixture(source_root, sandbox)
   end
 end
 
+def capture3_without_git_routing(*command, **options)
+  clean_environment = ENV.each_key.grep(/\AGIT_/).to_h { |name| [name, nil] }
+  Open3.capture3(clean_environment, *command, **options)
+end
+
+def initialize_fixture_index(sandbox)
+  commands = [
+    %w[git init -q],
+    ["git", "config", "user.name", "Policy Fixture"],
+    %w[git config user.email policy-fixture@invalid.example],
+    %w[git add -A]
+  ]
+  commands.each do |command|
+    _stdout, stderr, status = capture3_without_git_routing(*command, chdir: sandbox)
+    raise "could not initialize policy fixture index: #{stderr.lines.first&.strip}" unless status.success?
+  end
+end
+
+def check_fixture_index_hostile_environment(failures)
+  Dir.mktmpdir("nas-platform-hostile-git-") do |parent|
+    sandbox = File.join(parent, "sandbox")
+    unrelated = File.join(parent, "unrelated")
+    FileUtils.mkdir_p(unrelated)
+    copy_fixture(ROOT, sandbox)
+
+    hostile = {
+      "GIT_DIR" => File.join(unrelated, ".git"),
+      "GIT_WORK_TREE" => unrelated,
+      "GIT_INDEX_FILE" => File.join(unrelated, ".git", "index")
+    }
+    clean_environment = ENV.each_key.grep(/\AGIT_/).to_h { |name| [name, nil] }
+    _stdout, stderr, status = Open3.capture3(clean_environment, "git", "init", "-q", unrelated)
+    raise "could not initialize unrelated policy repository: #{stderr.lines.first&.strip}" unless status.success?
+    File.write(File.join(unrelated, "unrelated.txt"), "must remain untracked\n")
+    before_config, = Open3.capture3(clean_environment, "git", "-C", unrelated,
+                                    "config", "--local", "--list")
+    before_index, = Open3.capture3(clean_environment, "git", "-C", unrelated,
+                                   "diff", "--cached", "--binary")
+
+    previous = hostile.to_h { |name, _value| [name, ENV.key?(name) ? ENV[name] : nil] }
+    absent = hostile.keys.reject { |name| ENV.key?(name) }
+    hostile.each { |name, value| ENV[name] = value }
+    begin
+      initialize_fixture_index(sandbox)
+    ensure
+      previous.each { |name, value| ENV[name] = value }
+      absent.each { |name| ENV.delete(name) }
+    end
+
+    after_config, = Open3.capture3(clean_environment, "git", "-C", unrelated,
+                                   "config", "--local", "--list")
+    after_index, = Open3.capture3(clean_environment, "git", "-C", unrelated,
+                                  "diff", "--cached", "--binary")
+    failures << "hostile git routing: fixture repository was not initialized" unless
+      File.directory?(File.join(sandbox, ".git"))
+    failures << "hostile git routing: unrelated repository configuration changed" unless
+      after_config == before_config
+    failures << "hostile git routing: unrelated repository index changed" unless
+      after_index == before_index
+  end
+end
+
+def check_direct_policy_hostile_environment(failures, retired_token)
+  Dir.mktmpdir("nas-platform-direct-hostile-git-") do |parent|
+    sandbox = File.join(parent, "sandbox")
+    unrelated = File.join(parent, "unrelated")
+    FileUtils.mkdir_p(unrelated)
+    copy_fixture(ROOT, sandbox)
+    initialize_fixture_index(sandbox)
+    File.open(File.join(sandbox, "README.md"), "a") { |file| file.puts(retired_token) }
+
+    clean_environment = ENV.each_key.grep(/\AGIT_/).to_h { |name| [name, nil] }
+    [
+      ["git", "init", "-q", unrelated],
+      ["git", "-C", unrelated, "config", "user.name", "Unrelated Repository"],
+      ["git", "-C", unrelated, "config", "user.email", "unrelated@invalid.example"]
+    ].each do |command|
+      _stdout, stderr, status = Open3.capture3(clean_environment, *command)
+      raise "could not prepare unrelated policy repository: #{stderr.lines.first&.strip}" unless status.success?
+    end
+    unrelated_file = File.join(unrelated, "unrelated.txt")
+    File.write(unrelated_file, "staged unrelated content\n")
+    _stdout, stderr, status = Open3.capture3(
+      clean_environment, "git", "-C", unrelated, "add", "unrelated.txt"
+    )
+    raise "could not stage unrelated policy fixture: #{stderr.lines.first&.strip}" unless status.success?
+    File.write(unrelated_file, "modified unrelated content\n")
+
+    inspect_unrelated = lambda do
+      commands = {
+        "configuration" => %w[config --local --list],
+        "index" => %w[ls-files --stage -z],
+        "worktree status" => %w[status --porcelain=v2 -z --untracked-files=all]
+      }
+      state = commands.to_h do |label, arguments|
+        stdout, inspection_error, inspection_status = Open3.capture3(
+          clean_environment, "git", "-C", unrelated, *arguments
+        )
+        raise "could not inspect unrelated policy repository: #{inspection_error.lines.first&.strip}" unless
+          inspection_status.success?
+
+        [label, stdout]
+      end
+      state.merge("worktree content" => File.binread(unrelated_file))
+    end
+    before = inspect_unrelated.call
+
+    hostile_environment = clean_environment.merge(
+      "GIT_DIR" => File.join(unrelated, ".git"),
+      "GIT_WORK_TREE" => unrelated,
+      "GIT_INDEX_FILE" => File.join(unrelated, ".git", "index")
+    )
+    stdout, stderr, status = Open3.capture3(
+      hostile_environment, RbConfig.ruby, "tests/policy_test.rb", chdir: sandbox
+    )
+    output = stdout + stderr
+    failures << "direct hostile git routing: policy unexpectedly passed" if status.success?
+    failures << "direct hostile git routing: missing retired README diagnostic" unless
+      output.include?("retired declaration remains: README.md")
+    after = inspect_unrelated.call
+    before.each do |label, value|
+      failures << "direct hostile git routing: unrelated #{label} changed" unless after.fetch(label) == value
+    end
+  end
+end
+
+def check_fixture_index_containment(failures)
+  source_index_before, source_error, source_status = capture3_without_git_routing(
+    "git", "diff", "--cached", "--binary", chdir: ROOT
+  )
+  unless source_status.success?
+    failures << "fixture index containment: could not inspect source index: #{source_error.lines.first&.strip}"
+    return
+  end
+
+  Dir.mktmpdir("nas-platform-index-containment-") do |sandbox|
+    copy_fixture(ROOT, sandbox)
+    failures << "fixture index containment: copied fixture unexpectedly contains .git" if
+      File.exist?(File.join(sandbox, ".git"))
+    initialize_fixture_index(sandbox)
+
+    _head, _head_error, head_status = capture3_without_git_routing(
+      "git", "rev-parse", "--verify", "HEAD", chdir: sandbox
+    )
+    failures << "fixture index containment: fixture must not contain a commit" if head_status.success?
+    staged, staged_error, staged_status = capture3_without_git_routing(
+      "git", "diff", "--cached", "--name-only", "-z", chdir: sandbox
+    )
+    unless staged_status.success?
+      failures << "fixture index containment: could not inspect fixture index: #{staged_error.lines.first&.strip}"
+    end
+    failures << "fixture index containment: fixture files were not staged" if
+      staged_status.success? && staged.split("\0").empty?
+  end
+
+  source_index_after, source_error, source_status = capture3_without_git_routing(
+    "git", "diff", "--cached", "--binary", chdir: ROOT
+  )
+  unless source_status.success?
+    failures << "fixture index containment: could not re-inspect source index: #{source_error.lines.first&.strip}"
+  end
+  failures << "fixture index containment: source repository index changed" if
+    source_status.success? && source_index_after != source_index_before
+end
+
 def mutate_manifest(root)
   path = File.join(root, "services", "manifest.yml")
   manifest = YAML.safe_load_file(path)
@@ -268,11 +447,12 @@ POLICY_SCRIPTS = %w[
 def run_policy(scripts = POLICY_SCRIPTS)
   Dir.mktmpdir("nas-platform-policy-") do |sandbox|
     copy_fixture(ROOT, sandbox)
+    initialize_fixture_index(sandbox)
     yield sandbox
     output = ""
     succeeded = true
     scripts.each do |script|
-      stdout, stderr, status = Open3.capture3(RbConfig.ruby, script, chdir: sandbox)
+      stdout, stderr, status = capture3_without_git_routing(RbConfig.ruby, script, chdir: sandbox)
       output += stdout + stderr
       succeeded &&= status.success?
     end
@@ -283,8 +463,9 @@ end
 def run_compose_metadata_behavior
   Dir.mktmpdir("nas-platform-compose-metadata-") do |sandbox|
     copy_fixture(ROOT, sandbox)
+    initialize_fixture_index(sandbox)
     yield sandbox
-    stdout, stderr, status = Open3.capture3(
+    stdout, stderr, status = capture3_without_git_routing(
       "ansible-playbook", "-i", "localhost,", "-c", "local",
       "tests/compose_metadata_filter_test.yml", chdir: sandbox
     )

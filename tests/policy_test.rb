@@ -16,6 +16,7 @@ include PolicySupport
 
 ROOT = File.expand_path("..", __dir__)
 failures = []
+ACQUISITION_JOB_SERVICES = Set["configarr"].freeze
 
 def check(failures, condition, message)
   failures << message unless condition
@@ -131,6 +132,100 @@ check(failures,
 service_dirs = Dir[File.join(ROOT, "services", "*")].select { |p| File.directory?(p) }
 check(failures, service_dirs.any?, "no services defined")
 
+policy_runner = File.read(File.join(ROOT, "tests", "validate-policy.sh"))
+retired_token = %w[tiny media manager].join
+active_prefixes = %w[
+  .github/workflows/
+  config/
+  filter_plugins/
+  inventory/
+  roles/
+  services/
+  templates/
+  tests/
+  scripts/
+].freeze
+active_root_files = %w[
+  README.md
+  site.yml
+  verify.yml
+  generate-secrets.yml
+  validate-vault.yml
+].freeze
+clean_git_environment = ENV.each_key.grep(/\AGIT_/).to_h { |name| [name, nil] }
+tracked_and_untracked, enumeration_error, enumeration_status = Open3.capture3(
+  clean_git_environment,
+  "git", "-C", ROOT, "ls-files", "--cached", "--others", "--exclude-standard", "-z"
+)
+check(failures, enumeration_status.success?,
+      "could not enumerate active policy sources: #{enumeration_error.lines.first&.strip}")
+active_sources = if enumeration_status.success?
+                   tracked_and_untracked.split("\0").select do |path|
+                     active_prefixes.any? { |prefix| path.start_with?(prefix) } ||
+                       active_root_files.include?(path) ||
+                       (path.start_with?("docs/") &&
+                        !path.start_with?("docs/superpowers/") &&
+                        File.extname(path) == ".md")
+                   end
+                 else
+                   []
+                 end
+active_sources.delete("inventory/group_vars/all/vault.yml")
+
+retired_migration_sources = %w[
+  scripts/migrate-media-acquisition-vault.py
+  tests/media_acquisition_vault_migration_test.py
+].freeze
+check(failures, retired_migration_sources.none? { |path| File.exist?(File.join(ROOT, path)) },
+      "the temporary encrypted-vault migration audit is incomplete")
+
+active_sources.sort.each do |relative_path|
+  components = relative_path.split("/")
+  unless !components.empty? && components.none? { |component| component.empty? || %w[. ..].include?(component) }
+    check(failures, false, "#{relative_path}: active source path is unsafe")
+    next
+  end
+
+  current = ROOT
+  valid_source = components.each_with_index.all? do |component, index|
+    current = File.join(current, component)
+    begin
+      stat = File.lstat(current)
+    rescue SystemCallError => e
+      check(failures, false, "#{relative_path}: cannot inspect active source: #{e.class}")
+      break false
+    end
+
+    if index == components.length - 1
+      regular = stat.file? && !stat.symlink?
+      check(failures, regular, "#{relative_path}: active source must be a regular file")
+      regular
+    else
+      safe_ancestor = stat.directory? && !stat.symlink?
+      check(failures, safe_ancestor,
+            "#{relative_path}: active source path must not contain symlinks")
+      safe_ancestor
+    end
+  end
+  next unless valid_source
+  path = File.join(ROOT, relative_path)
+
+  begin
+    contains_retired_token = File.binread(path).downcase.include?(retired_token)
+  rescue SystemCallError => e
+    check(failures, false, "#{relative_path}: cannot read active source: #{e.class}")
+    next
+  end
+  check(failures, !contains_retired_token, "retired declaration remains: #{relative_path}")
+end
+
+retired_role = File.join(ROOT, "roles", retired_token)
+retired_service = File.join(ROOT, "services", retired_token)
+check(failures, !File.exist?(retired_role) && !File.symlink?(retired_role),
+      "retired role directory must be absent")
+check(failures, !File.exist?(retired_service) && !File.symlink?(retired_service),
+      "retired service directory must be absent")
+
 beszel_contract_path = File.join(ROOT, "tests", "contracts", "beszel.sh")
 beszel_contract = File.file?(beszel_contract_path) ? File.read(beszel_contract_path) : ""
 check(failures,
@@ -139,7 +234,6 @@ check(failures,
         !beszel_contract.include?("iso8601"),
       "Beszel notification proof must poll after a captured ntfy message ID")
 
-policy_runner = File.read(File.join(ROOT, "tests", "validate-policy.sh"))
 %w[
   ruby\ tests/beszel_telemetry_probe_test.rb
   ruby\ tests/beszel_telemetry_timeout_test.rb
@@ -182,18 +276,6 @@ check(failures,
       end,
       "Mac runner must export dynamic project/port facts and isolate every Compose project")
 
-# The roster and the pinned per-service expectations live in PolicySupport because
-# several policy scripts check different properties of the same data. The roster is
-# stated there rather than derived from the filesystem, so a new service still
-# cannot authorize itself by the arrival of its own expectations file.
-SERVICE_EXPECTATIONS, expectation_problems = pinned_service_expectations(ROOT)
-expectation_problems.each { |problem| check(failures, false, problem) }
-
-EXPECTED_SERVICE_MAPPINGS =
-  SERVICE_EXPECTATIONS.transform_values { |expectation| { "role" => expectation.fetch("role") } }.freeze
-EXPECTED_CONTAINER_CPUS =
-  SERVICE_EXPECTATIONS.transform_values { |expectation| expectation.fetch("container_cpus") }.freeze
-EXPECTED_VAULT_KEYS = pinned_vault_keys(SERVICE_EXPECTATIONS)
 PLATFORM_INVENTORIES = {
   "local.yml" => ["nas_hosts", "nas", "local", "nas"],
   "remote.yml" => ["nas_hosts", "nas", "ssh", "nas"],
@@ -208,7 +290,7 @@ PLATFORM_TELEMETRY_POLICY = %w[
   beszel_required_telemetry_categories beszel_require_gpu_telemetry
 ].freeze
 HOST_SCOPED_VARS = (
-  %w[platform_kind nas_docker_root nas_media_root] + PLATFORM_CAPABILITIES +
+  %w[platform_kind nas_docker_root nas_media_root media_usenet_enabled media_torrent_enabled] + PLATFORM_CAPABILITIES +
     PLATFORM_TELEMETRY_POLICY
 ).freeze
 
@@ -459,10 +541,14 @@ end
 manifest_path = File.join(ROOT, "services", "manifest.yml")
 manifest_loaded = true
 manifest = begin
-  duplicate_yaml_keys(Psych.parse_stream(File.read(manifest_path))).uniq.each do |key|
+  manifest_source = File.read(manifest_path)
+  manifest_stream = Psych.parse_stream(manifest_source)
+  check(failures, manifest_stream.children.length == 1,
+        "service manifest must contain exactly one YAML document")
+  duplicate_yaml_keys(manifest_stream).uniq.each do |key|
     check(failures, false, "service manifest contains duplicate mapping key #{key}")
   end
-  YAML.safe_load_file(manifest_path)
+  YAML.safe_load(manifest_source)
 rescue Errno::ENOENT
   check(failures, false, "service manifest is missing: services/manifest.yml")
   manifest_loaded = false
@@ -484,6 +570,52 @@ unless manifest_entries.is_a?(Array)
   check(failures, false, "service manifest must contain a services list") if manifest_loaded
   manifest_entries = []
 end
+
+acquisition_catalog = begin
+  YAML.safe_load_file(File.join(ROOT, "config", "media-acquisition.yml"), aliases: false)
+rescue Errno::ENOENT
+  check(failures, false, "media acquisition catalog is missing")
+  {}
+rescue Psych::Exception => e
+  check(failures, false,
+        "media acquisition catalog is malformed: #{e.message.lines.first.strip}")
+  {}
+end
+acquisition_projects = if acquisition_catalog.is_a?(Hash) &&
+                          acquisition_catalog["projects"].is_a?(Hash)
+                         acquisition_catalog["projects"]
+                       else
+                         {}
+                       end
+parsed_acquisition_jobs = acquisition_projects.values.flat_map do |project|
+  services = project.is_a?(Hash) && project["services"].is_a?(Hash) ? project["services"] : {}
+  services.filter_map do |service_name, definition|
+    service_name if definition.is_a?(Hash) && definition["class"] == "one_shot"
+  end
+end.to_set
+check(failures, parsed_acquisition_jobs == ACQUISITION_JOB_SERVICES,
+      "Configarr must be the sole one-shot acquisition service")
+
+service_statuses = if manifest["services"].is_a?(Array) && manifest_entries.all? do |entry|
+                        entry.is_a?(Hash) && entry.key?("name") && entry.key?("status")
+                      end
+                     manifest.fetch("services").to_h do |entry|
+                       [entry.fetch("name"), entry.fetch("status")]
+                     end
+                   else
+                     {}
+                   end
+
+# The roster and pinned expectations are loaded only after the strict manifest
+# parse, so status-dependent contracts cannot consult a divergent second copy.
+SERVICE_EXPECTATIONS, expectation_problems =
+  pinned_service_expectations(ROOT, service_statuses)
+expectation_problems.each { |problem| check(failures, false, problem) }
+EXPECTED_SERVICE_MAPPINGS =
+  SERVICE_EXPECTATIONS.transform_values { |expectation| { "role" => expectation.fetch("role") } }.freeze
+EXPECTED_CONTAINER_CPUS =
+  SERVICE_EXPECTATIONS.transform_values { |expectation| expectation.fetch("container_cpus") }.freeze
+EXPECTED_VAULT_KEYS = pinned_vault_keys(SERVICE_EXPECTATIONS)
 
 manifest_names = manifest_entries.filter_map do |service|
   unless service.is_a?(Hash)
@@ -534,12 +666,15 @@ rescue Psych::Exception => e
   {}
 end
 capability_names = capabilities.is_a?(Hash) && capabilities["services"].is_a?(Hash) ? capabilities["services"].keys : []
+managed_user_service_names = service_statuses.filter_map do |name, status|
+  name if name.is_a?(String) && IMPLEMENTED_STATUSES.include?(status)
+end
 check(failures, capabilities.is_a?(Hash) && capabilities["services"].is_a?(Hash),
       "managed-user capability matrix must contain a services mapping")
-check(failures, capability_names.sort == EXPECTED_SERVICES.sort,
+check(failures, capability_names.sort == managed_user_service_names.sort,
       "managed-user capability matrix must cover the complete source platform " \
-      "(missing: #{(EXPECTED_SERVICES - capability_names).join(', ')}; " \
-      "unknown: #{(capability_names - EXPECTED_SERVICES).join(', ')})")
+      "(missing: #{(managed_user_service_names - capability_names).join(', ')}; " \
+      "unknown: #{(capability_names - managed_user_service_names).join(', ')})")
 
 %w[ntfy beszel].each do |name|
   entry = manifest_entries.find { |service| service.is_a?(Hash) && service["name"] == name }
@@ -593,6 +728,17 @@ service_dirs.each do |dir|
   containers.each do |container, spec|
     label = "#{name}/#{container}"
     expected_cpu = expected_cpus[container]
+    acquisition_job = ACQUISITION_JOB_SERVICES.include?(container)
+
+    if acquisition_job
+      check(failures, spec["profiles"] == ["jobs"],
+            "#{label}: one-shot acquisition service must use only the jobs profile")
+      check(failures, Array(spec["ports"]).empty?,
+            "#{label}: one-shot acquisition service must not publish ports")
+    else
+      check(failures, !Array(spec["profiles"]).include?("jobs"),
+            "#{label}: long-running service must not claim the jobs profile")
+    end
 
     check(failures, spec["cpuset"] == "${PLATFORM_CONTAINER_CPUSET:?}",
           "#{label}: must require the Ansible-rendered platform CPU set")
@@ -607,8 +753,16 @@ service_dirs.each do |dir|
           "#{label}: must use a published image, not build")
     check(failures, spec["privileged"] != true,
           "#{label}: privileged mode is not allowed")
-    check(failures, spec["restart"] == "unless-stopped",
-          "#{label}: long-running services must restart unless-stopped")
+    unless acquisition_job
+      check(failures, spec["restart"] == "unless-stopped",
+            "#{label}: long-running services must restart unless-stopped")
+      check(failures, spec["healthcheck"].is_a?(Hash) && !spec["healthcheck"].empty?,
+            "#{label}: long-running services must define a health check")
+      labels = spec["labels"]
+      dozzle_name = labels.is_a?(Hash) ? labels["dev.dozzle.name"] : nil
+      check(failures, dozzle_name.is_a?(String) && !dozzle_name.empty?,
+            "#{label}: long-running services must declare a Dozzle event identity")
+    end
 
     logging = spec["logging"] || {}
     check(failures, logging["driver"] == "json-file",
@@ -662,7 +816,7 @@ end
 #
 # A library root may also sit above the declared entries rather than at or below
 # one, which is how Jellyfin mounts the whole media tree while nas_storage
-# declares only the three libraries tinyMediaManager curates: Ansible's file
+# declares only the libraries below it: Ansible's file
 # module creates the parent, and the leaves are where a mode and a recovery
 # class belong. Demanding an exact entry would reject that legitimate parent
 # mount. Accepting it is confined to these templates on purpose, because letting
@@ -682,8 +836,7 @@ end
 
 # Platform Compose files may add capabilities (devices, mounts, profiles, and
 # similar host-specific wiring). An override may restate an image only so that
-# platform keys sit beside it, as tinyMediaManager does to select linux/amd64
-# out of a multi-platform manifest, never to deploy something different. The
+# platform keys sit beside it, never to deploy something different. The
 # relationship is the invariant, so the canonical file stays the only place a
 # version is written and a nil canonical value fails the same way a mismatch does.
 Dir[File.join(ROOT, "services", "*", "compose.*.yml")].sort.each do |override_path|
@@ -756,8 +909,7 @@ Dir[File.join(ROOT, "roles", "*")].select { |p| File.directory?(p) }.each do |ro
     compose = task["community.docker.docker_compose_v2"]
     next false unless compose.is_a?(Hash)
 
-    compose["state"] == "present" ||
-      (name == "tinymediamanager" && compose["state"] == "absent")
+    compose["state"] == "present"
   end
   next if deployments.empty?
 
@@ -922,21 +1074,6 @@ manifest_entries.each do |service|
     task["community.docker.docker_compose_v2"].is_a?(Hash)
   end
   deploys_compose = compose_tasks.any?
-  expected_tinymediamanager_retirement = {
-    "project_src" => "{{ platform_current_dir }}/services/tinymediamanager",
-    "project_name" => "{{ tinymediamanager_compose_project_name }}",
-    "files" => "{{ platform_service_compose_files['tinymediamanager'] }}",
-    "env_files" => ["{{ platform_runtime_dir }}/services/tinymediamanager/.env"],
-    "state" => "absent",
-    "remove_volumes" => false,
-    "remove_orphans" => false
-  }
-  retires_tinymediamanager =
-    name == "tinymediamanager" &&
-    compose_tasks.length == 1 &&
-    compose_tasks.first["name"] == "Retire tinyMediaManager without deleting state" &&
-    compose_tasks.first["community.docker.docker_compose_v2"] ==
-      expected_tinymediamanager_retirement
   # One include, carrying this service's own name. Counted from the source text
   # this was two independent substring checks that never had to describe the same
   # task: the count matched any line spelling "name: container_cpu", including a
@@ -947,12 +1084,10 @@ manifest_entries.each do |service|
     end
   end
   check(failures,
-        !deploys_compose || retires_tinymediamanager ||
+        !deploys_compose ||
           (container_cpu_includes.length == 1 &&
            container_cpu_includes.fetch(0).dig("vars", "container_cpu_service_name") == name),
-        name == "tinymediamanager" ?
-          "tinyMediaManager CPU exception requires exactly one safe retirement Compose task" :
-          "#{name}: role must verify its effective container CPU policy exactly once")
+        "#{name}: role must verify its effective container CPU policy exactly once")
   check(failures, declared_paths.any? { |path| path.include?("/#{name}/") || path.end_with?("/#{name}") },
         "#{name}: implemented service has no storage declaration")
 

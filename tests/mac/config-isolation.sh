@@ -15,11 +15,9 @@ render() {
   dozzle_port=$5
   audiobookshelf_port=$6
   komga_port=$7
-  tinymediamanager_web_port=$8
-  tinymediamanager_api_port=$9
-  jellyfin_port=${10}
-  immich_port=${11}
-  paperless_port=${12}
+  jellyfin_port=$8
+  immich_port=$9
+  paperless_port=${10}
 
   env PLATFORM_PROJECT_NAME="$base_name" BESZEL_HOST_PORT="$beszel_port" \
     NAS_DOCKER_ROOT="$temporary_dir/$label" NAS_MEDIA_ROOT="$temporary_dir/$label-media" \
@@ -52,6 +50,7 @@ render() {
       > "$temporary_dir/$label-dozzle.json"
 
   env PLATFORM_PROJECT_NAME="$base_name" AUDIOBOOKSHELF_HOST_PORT="$audiobookshelf_port" \
+    PLATFORM_MEDIA_NETWORK="$base_name-media-control" \
     PLATFORM_DOCKER_ROOT="$temporary_dir/$label" \
     AUDIOBOOKSHELF_CONFIG_PATH="$temporary_dir/$label-audiobookshelf-config" \
     AUDIOBOOKSHELF_METADATA_PATH="$temporary_dir/$label-audiobookshelf-metadata" \
@@ -70,19 +69,8 @@ render() {
       -f "$repo_dir/services/komga/compose.mac.yml" config --format json \
       > "$temporary_dir/$label-komga.json"
 
-  env PLATFORM_PROJECT_NAME="$base_name" \
-    TINYMEDIAMANAGER_WEB_HOST_PORT="$tinymediamanager_web_port" \
-    TINYMEDIAMANAGER_API_HOST_PORT="$tinymediamanager_api_port" \
-    TINYMEDIAMANAGER_DATA_PATH="$temporary_dir/$label-tinymediamanager-data" \
-    TINYMEDIAMANAGER_MOVIES_PATH="$temporary_dir/$label-movies" \
-    TINYMEDIAMANAGER_SERIES_PATH="$temporary_dir/$label-series" \
-    TINYMEDIAMANAGER_PASSWORD=test USER_ID=1000 GROUP_ID=100 TZ=UTC \
-    docker compose --project-name "$base_name-tinymediamanager" \
-      -f "$repo_dir/services/tinymediamanager/compose.yml" \
-      -f "$repo_dir/services/tinymediamanager/compose.mac.yml" config --format json \
-      > "$temporary_dir/$label-tinymediamanager.json"
-
   env PLATFORM_PROJECT_NAME="$base_name" JELLYFIN_HOST_PORT="$jellyfin_port" \
+    PLATFORM_MEDIA_NETWORK="$base_name-media-control" \
     JELLYFIN_CONFIG_PATH="$temporary_dir/$label-jellyfin-config" \
     JELLYFIN_CACHE_PATH="$temporary_dir/$label-jellyfin-cache" \
     JELLYFIN_MEDIA_PATH="$temporary_dir/$label-media" TZ=UTC \
@@ -121,8 +109,8 @@ render() {
       > "$temporary_dir/$label-paperless.json"
 }
 
-render first nas-platform-mac-first 38090 32586 38080 33378 35600 34000 37878 38096 32283 38000
-render second nas-platform-mac-second 38091 32587 38081 33379 35601 34001 37879 38097 32284 38001
+render first nas-platform-mac-first 38090 32586 38080 33378 35600 38096 32283 38000
+render second nas-platform-mac-second 38091 32587 38081 33379 35601 38097 32284 38001
 
 ruby -rjson - "$temporary_dir" <<'RUBY'
 directory = ARGV.fetch(0)
@@ -136,8 +124,6 @@ first_audiobookshelf = JSON.parse(File.read(File.join(directory, "first-audioboo
 second_audiobookshelf = JSON.parse(File.read(File.join(directory, "second-audiobookshelf.json")))
 first_komga = JSON.parse(File.read(File.join(directory, "first-komga.json")))
 second_komga = JSON.parse(File.read(File.join(directory, "second-komga.json")))
-first_tinymediamanager = JSON.parse(File.read(File.join(directory, "first-tinymediamanager.json")))
-second_tinymediamanager = JSON.parse(File.read(File.join(directory, "second-tinymediamanager.json")))
 first_jellyfin = JSON.parse(File.read(File.join(directory, "first-jellyfin.json")))
 second_jellyfin = JSON.parse(File.read(File.join(directory, "second-jellyfin.json")))
 first_immich = JSON.parse(File.read(File.join(directory, "first-immich.json")))
@@ -177,7 +163,6 @@ end
   [first_dozzle, second_dozzle, "Dozzle"],
   [first_audiobookshelf, second_audiobookshelf, "Audiobookshelf"],
   [first_komga, second_komga, "Komga"],
-  [first_tinymediamanager, second_tinymediamanager, "tinyMediaManager"],
   [first_jellyfin, second_jellyfin, "Jellyfin"],
   [first_immich, second_immich, "Immich"],
   [first_paperless, second_paperless, "Paperless"]
@@ -190,8 +175,6 @@ raise "ntfy project namespaces collide" if first_ntfy["name"] == second_ntfy["na
 raise "Dozzle project namespaces collide" if first_dozzle["name"] == second_dozzle["name"]
 raise "Audiobookshelf project namespaces collide" if first_audiobookshelf["name"] == second_audiobookshelf["name"]
 raise "Komga project namespaces collide" if first_komga["name"] == second_komga["name"]
-raise "tinyMediaManager project namespaces collide" if
-  first_tinymediamanager["name"] == second_tinymediamanager["name"]
 raise "Jellyfin project namespaces collide" if first_jellyfin["name"] == second_jellyfin["name"]
 first_beszel.fetch("services").each_key do |service|
   first_name = first_beszel.dig("services", service, "container_name")
@@ -224,14 +207,6 @@ raise "second Audiobookshelf backup bind escaped its Docker state root" unless
 raise "Komga container names collide" if first_komga.dig("services", "komga", "container_name") ==
                                          second_komga.dig("services", "komga", "container_name")
 raise "Komga published ports collide" if published(first_komga, "komga") == published(second_komga, "komga")
-raise "tinyMediaManager container names collide" if
-  first_tinymediamanager.dig("services", "tinymediamanager", "container_name") ==
-    second_tinymediamanager.dig("services", "tinymediamanager", "container_name")
-tmm_first_ports = first_tinymediamanager.dig("services", "tinymediamanager", "ports").map { |port| port["published"].to_s }.sort
-tmm_second_ports = second_tinymediamanager.dig("services", "tinymediamanager", "ports").map { |port| port["published"].to_s }.sort
-raise "tinyMediaManager published ports collide" unless (tmm_first_ports & tmm_second_ports).empty?
-raise "tinyMediaManager Mac runtime did not replace host networking" unless
-  first_tinymediamanager.dig("services", "tinymediamanager", "network_mode") == "bridge"
 raise "Jellyfin container names collide" if
   first_jellyfin.dig("services", "jellyfin", "container_name") ==
     second_jellyfin.dig("services", "jellyfin", "container_name")

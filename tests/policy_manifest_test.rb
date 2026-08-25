@@ -6,6 +6,414 @@
 require_relative "policy_mutation_support"
 
 failures = []
+retired_token = %w[tiny media manager].join
+
+check_fixture_index_containment(failures)
+check_fixture_index_hostile_environment(failures)
+check_direct_policy_hostile_environment(failures, retired_token)
+
+manifest = YAML.safe_load_file(File.join(ROOT, "services", "manifest.yml"))
+valid_statuses = manifest.fetch("services").to_h do |entry|
+  [entry.fetch("name"), entry.fetch("status")]
+end
+{
+  "missing status-map entry" => [valid_statuses.reject { |name, _status| name == "arr" },
+                                  "exactly the rostered service names"],
+  "extra status-map entry" => [valid_statuses.merge("unknown" => "planned"),
+                                "exactly the rostered service names"],
+  "wrong status-map type" => [[], "service statuses must be a mapping"],
+  "invalid status-map value" => [valid_statuses.merge("arr" => ["planned"]),
+                                 "must be planned, implemented, or accepted"],
+  "implemented service with empty vault list" => [valid_statuses.merge("bindery" => "implemented"),
+                                                   "vault_keys must be a nonempty list"]
+}.each do |label, (statuses, diagnostic)|
+  _expectations, problems = pinned_service_expectations(ROOT, statuses)
+  failures << "#{label}: missing #{diagnostic.inspect}" unless problems.any? { |problem| problem.include?(diagnostic) }
+end
+begin
+  pinned_service_expectations(ROOT)
+  failures << "status-aware expectation helper accepts an omitted status mapping"
+rescue ArgumentError
+  nil
+end
+
+{
+  "sequence" => "---\n[]\n",
+  "null" => "---\nnull\n",
+  "false" => "---\nfalse\n"
+}.each do |label, document|
+  output, succeeded = run_policy(["tests/media_acquisition_foundation_test.rb"]) do |root|
+    File.write(File.join(root, "config", "media-acquisition.yml"), document)
+  end
+  failures << "#{label} acquisition catalog unexpectedly passed" if succeeded
+  unless output.include?("config/media-acquisition.yml must be a mapping")
+    failures << "#{label} acquisition catalog omitted controlled shape diagnostic"
+  end
+  failures << "#{label} acquisition catalog emitted a Ruby stack trace" if
+    output.match?(/\.rb:\d+:in [`']/)
+end
+
+output, succeeded = run_policy(["tests/media_acquisition_foundation_test.rb"]) do |root|
+  mutate_manifest(root) { |document| document.fetch("services").reverse! }
+end
+unless succeeded
+  failures << "manifest reorder changed acquisition publication policy: #{output.lines.first&.strip}"
+end
+
+expect_acquisition_failure = lambda do |label, diagnostic, &mutation|
+  output, succeeded = run_policy(["tests/media_acquisition_foundation_test.rb"], &mutation)
+  failures << "#{label}: acquisition policy unexpectedly passed" if succeeded
+  failures << "#{label}: missing failure message #{diagnostic.inspect}" unless output.include?(diagnostic)
+  failures << "#{label}: emitted a Ruby stack trace" if output.match?(/\.rb:\d+:in [`']/)
+end
+
+storage_path = lambda do |inventory, path|
+  inventory.fetch("nas_storage").find { |entry| entry.fetch("path") == path }
+end
+mutate_compose = lambda do |root, relative_path, &mutation|
+  path = File.join(root, relative_path)
+  document = YAML.safe_load_file(path, aliases: true)
+  mutation.call(document)
+  File.write(path, YAML.dump(document))
+end
+require_valid_site_syntax = lambda do |root, label|
+  syntax_path = File.join(root, ".host-prep-mutation-syntax.yml")
+  File.write(syntax_path, <<~YAML)
+    ---
+    - name: Validate mutated host preparation syntax
+      hosts: localhost
+      gather_facts: false
+      roles:
+        - role: host_prep
+  YAML
+  begin
+    _stdout, stderr, status = capture3_without_git_routing(
+      "ansible-playbook", "-i", "localhost,", syntax_path, "--syntax-check", chdir: root
+    )
+  ensure
+    FileUtils.rm_f(syntax_path)
+  end
+  next if status.success?
+
+  raise "#{label} produced invalid Ansible syntax: #{stderr.lines.first&.strip}"
+end
+
+expect_acquisition_failure.call(
+  "media acquisition recovery changed",
+  "media acquisition storage differs from the exact classified foundation"
+) do |root|
+  mutate_yaml_file(root, "inventory/group_vars/all/main.yml") do |inventory|
+    storage_path.call(inventory, "{{ nas_docker_root }}/radarr/config")["recovery"] = "cache"
+  end
+end
+expect_acquisition_failure.call(
+  "media acquisition ownership claimed",
+  "media acquisition user/cache paths must not claim ownership"
+) do |root|
+  mutate_yaml_file(root, "inventory/group_vars/all/main.yml") do |inventory|
+    storage_path.call(inventory, "{{ nas_media_root }}/Media/Movies")["owner"] = "{{ nas_uid }}"
+  end
+end
+expect_acquisition_failure.call(
+  "media acquisition leaf removed",
+  "media acquisition storage differs from the exact classified foundation"
+) do |root|
+  mutate_yaml_file(root, "inventory/group_vars/all/main.yml") do |inventory|
+    inventory.fetch("nas_storage").reject! do |entry|
+      entry.fetch("path") == "{{ nas_media_root }}/Media/YouTube"
+    end
+  end
+end
+expect_acquisition_failure.call(
+  "Komga Books parent removed",
+  "media acquisition storage differs from the exact classified foundation"
+) do |root|
+  mutate_yaml_file(root, "inventory/group_vars/all/main.yml") do |inventory|
+    inventory.fetch("nas_storage").reject! do |entry|
+      entry.fetch("path") == "{{ nas_media_root }}/Books"
+    end
+  end
+end
+expect_acquisition_failure.call(
+  "media acquisition marker removed",
+  "media acquisition storage differs from the exact classified foundation"
+) do |root|
+  mutate_yaml_file(root, "inventory/group_vars/all/main.yml") do |inventory|
+    storage_path.call(inventory, "{{ nas_docker_root }}/seerr/config")
+                .delete("media_acquisition_foundation")
+  end
+end
+
+%w[nas_hosts mac_hosts].product(%w[media_usenet_enabled media_torrent_enabled]).each do |host_group, flag|
+  expect_acquisition_failure.call("#{host_group} #{flag} enabled", "#{flag} must be literal false") do |root|
+    mutate_yaml_file(root, "inventory/group_vars/#{host_group}/main.yml") do |vars|
+      vars[flag] = true
+    end
+  end
+end
+expect_acquisition_failure.call(
+  "constant Mac media network name",
+  "media control network identity must be derived from the project namespace"
+) do |root|
+  mutate_yaml_file(root, "inventory/group_vars/all/main.yml") do |vars|
+    vars["platform_media_control_network"] = "media-control"
+  end
+end
+expect_acquisition_failure.call(
+  "media control network driver changed",
+  "host preparation must create the derived bridge media control network atomically"
+) do |root|
+  mutate_yaml_file(root, "roles/host_prep/tasks/main.yml") do |tasks|
+    task = tasks.find do |entry|
+      entry["name"] == "Create the external media control network"
+    end
+    argv = task.fetch("ansible.builtin.command").fetch("argv")
+    argv[argv.index("bridge")] = "overlay"
+  end
+end
+{
+  "nas.platform.purpose" => "media-control",
+  "nas.platform.project" => "{{ platform_project_name | default('nas-platform', true) }}"
+}.each do |label_name, label_value|
+  short_name = label_name.delete_prefix("nas.platform.")
+  {
+    "deleted" => proc { |argv| argv.delete("#{label_name}=#{label_value}") },
+    "renamed" => proc do |argv|
+      index = argv.index("#{label_name}=#{label_value}")
+      argv[index] = "renamed.#{label_name}=#{label_value}"
+    end,
+    "wrong value" => proc do |argv|
+      index = argv.index("#{label_name}=#{label_value}")
+      argv[index] = "#{label_name}=wrong-#{label_value}"
+    end
+  }.each do |mutation_name, mutation|
+    expect_acquisition_failure.call(
+      "media control #{short_name} label #{mutation_name}",
+      "host preparation must create the derived bridge media control network atomically"
+    ) do |root|
+      mutate_yaml_file(root, "roles/host_prep/tasks/main.yml") do |tasks|
+        task = tasks.find do |entry|
+          entry["name"] == "Create the external media control network"
+        end
+        mutation.call(task.fetch("ansible.builtin.command").fetch("argv"))
+      end
+    end
+  end
+end
+expect_acquisition_failure.call(
+  "broad media control network deletion",
+  "host preparation must never delete Docker networks"
+) do |root|
+  mutate_yaml_file(root, "roles/host_prep/tasks/main.yml") do |tasks|
+    tasks << {
+      "name" => "Delete all media networks",
+      "community.docker.docker_network" => { "name" => "media-control", "state" => "absent" }
+    }
+  end
+end
+expect_acquisition_failure.call(
+  "nested media control network deletion",
+  "host preparation must never delete Docker networks"
+) do |root|
+  mutate_yaml_file(root, "roles/host_prep/tasks/main.yml") do |tasks|
+    tasks << {
+      "name" => "Nested media network deletion",
+      "block" => [{
+        "name" => "Delete a nested media network",
+        "community.docker.docker_network" => {
+          "name" => "media-control", "state" => "absent"
+        }
+      }]
+    }
+  end
+end
+expect_acquisition_failure.call(
+  "recursive media state ownership",
+  "host preparation must never recursively change storage ownership"
+) do |root|
+  mutate_yaml_file(root, "roles/host_prep/tasks/main.yml") do |tasks|
+    task = tasks.find { |entry| entry["name"] == "Create service state directories" }
+    task.fetch("ansible.builtin.file")["recurse"] = true
+  end
+end
+expect_acquisition_failure.call(
+  "nested recursive media state ownership",
+  "host preparation must never recursively change storage ownership"
+) do |root|
+  mutate_yaml_file(root, "roles/host_prep/tasks/main.yml") do |tasks|
+    tasks << {
+      "name" => "Nested recursive ownership",
+      "block" => [{
+        "name" => "Exercise the guarded ownership block",
+        "ansible.builtin.debug" => { "msg" => "valid mutation fixture" }
+      }],
+      "rescue" => [{
+        "name" => "Recursively claim nested media state",
+        "ansible.builtin.file" => {
+          "path" => "{{ nas_media_root }}/Media", "recurse" => true
+        }
+      }]
+    }
+  end
+  require_valid_site_syntax.call(root, "nested recursive ownership")
+end
+expect_acquisition_failure.call(
+  "always-branch media control network deletion",
+  "host preparation must never delete Docker networks"
+) do |root|
+  mutate_yaml_file(root, "roles/host_prep/tasks/main.yml") do |tasks|
+    tasks << {
+      "name" => "Always delete a media network",
+      "block" => [{
+        "name" => "Exercise the guarded network block",
+        "ansible.builtin.debug" => { "msg" => "valid mutation fixture" }
+      }],
+      "always" => [{
+        "name" => "Delete a media network from always",
+        "community.docker.docker_network" => {
+          "name" => "media-control", "state" => "absent"
+        }
+      }]
+    }
+  end
+  require_valid_site_syntax.call(root, "always-branch network deletion")
+end
+
+expect_acquisition_failure.call(
+  "conflicting Jellyfin media network environment",
+  "jellyfin must export the derived media control network exactly once"
+) do |root|
+  path = File.join(root, "roles", "jellyfin", "templates", "env.j2")
+  File.open(path, "a") { |file| file.puts("PLATFORM_MEDIA_NETWORK=wrong-network") }
+end
+
+%w[audiobookshelf jellyfin].each do |reader|
+  %w[default media-control].each do |membership|
+    expect_acquisition_failure.call(
+      "#{reader} missing #{membership} membership",
+      "#{reader} must join default and media-control explicitly"
+    ) do |root|
+      mutate_compose.call(root, "services/#{reader}/compose.yml") do |compose|
+        compose.fetch("services").fetch(reader).fetch("networks").delete(membership)
+      end
+    end
+  end
+  expect_acquisition_failure.call(
+    "#{reader} internal media control network",
+    "#{reader} must declare only canonical default and external media-control networks"
+  ) do |root|
+    mutate_compose.call(root, "services/#{reader}/compose.yml") do |compose|
+      compose.fetch("networks").fetch("media-control")["external"] = false
+    end
+  end
+  expect_acquisition_failure.call(
+    "#{reader} writable media mount",
+    "#{reader} media mount must remain read-only"
+  ) do |root|
+    mutate_compose.call(root, "services/#{reader}/compose.yml") do |compose|
+      volumes = compose.fetch("services").fetch(reader).fetch("volumes")
+      index = volumes.index { |volume| volume.end_with?(reader == "jellyfin" ? "/media:ro" : "/audiobooks:ro") }
+      volumes[index] = volumes.fetch(index).delete_suffix(":ro")
+    end
+  end
+end
+
+expect_failure(failures, "recreated retired role",
+               "retired role directory must be absent") do |root|
+  path = File.join(root, "roles", retired_token, "tasks", "main.yml")
+  FileUtils.mkdir_p(File.dirname(path))
+  File.write(path, "---\n[]\n")
+end
+
+expect_failure(failures, "current README mention",
+               "retired declaration remains: README.md") do |root|
+  File.open(File.join(root, "README.md"), "a") { |file| file.puts(retired_token) }
+end
+
+expect_failure(failures, "current operator documentation mention",
+               "retired declaration remains: docs/adding-a-service.md") do |root|
+  File.open(File.join(root, "docs", "adding-a-service.md"), "a") do |file|
+    file.puts(retired_token.upcase)
+  end
+end
+
+expect_failure(failures, "nested current operator documentation mention",
+               "retired declaration remains: docs/operator/guide.md") do |root|
+  path = File.join(root, "docs", "operator", "guide.md")
+  FileUtils.mkdir_p(File.dirname(path))
+  File.write(path, retired_token)
+end
+
+expect_failure(failures, "deceptive migration neighbor",
+               "retired declaration remains: scripts/migrate-media-acquisition-vault.py.bak") do |root|
+  path = File.join(root, "scripts", "migrate-media-acquisition-vault.py.bak")
+  FileUtils.mkdir_p(File.dirname(path))
+  File.write(path, retired_token)
+end
+
+expect_failure(failures, "lone migration file",
+               "the temporary encrypted-vault migration audit is incomplete") do |root|
+  path = File.join(root, "scripts", "migrate-media-acquisition-vault.py")
+  FileUtils.mkdir_p(File.dirname(path))
+  File.write(path, "#!/usr/bin/env python3\n")
+end
+
+expect_failure(failures, "missing validation registration",
+               "the temporary encrypted-vault migration audit is incomplete") do |root|
+  migration_paths = %w[
+    scripts/migrate-media-acquisition-vault.py
+    tests/media_acquisition_vault_migration_test.py
+  ]
+  migration_paths.each do |relative_path|
+    path = File.join(root, relative_path)
+    FileUtils.mkdir_p(File.dirname(path))
+    File.write(path, "# temporary migration audit\n")
+  end
+end
+
+expect_failure(failures, "changed tracked README detection",
+               "retired declaration remains: README.md") do |root|
+  path = File.join(root, "README.md")
+  File.open(path, "a") { |file| file.puts(retired_token) }
+  _stdout, stderr, status = capture3_without_git_routing("git", "add", "README.md", chdir: root)
+  raise "could not stage tracked README mutation: #{stderr.lines.first&.strip}" unless status.success?
+end
+
+expect_failure(failures, "new untracked forbidden source",
+               "retired declaration remains: tests/retired-policy.rb") do |root|
+  File.write(File.join(root, "tests", "retired-policy.rb"), retired_token)
+end
+
+expect_failure(failures, "selected current-source leaf symlink",
+               "tests/retired-policy.rb: active source must be a regular file") do |root|
+  target = File.join(root, "retired-policy-target")
+  File.write(target, retired_token)
+  File.symlink(target, File.join(root, "tests", "retired-policy.rb"))
+end
+
+expect_failure(failures, "selected current-source symlinked ancestor",
+               "tests/operator/guide.rb: active source path must not contain symlinks") do |root|
+  tracked_directory = File.join(root, "tests", "operator")
+  tracked_source = File.join(tracked_directory, "guide.rb")
+  FileUtils.mkdir_p(tracked_directory)
+  File.write(tracked_source, "current source\n")
+  _stdout, stderr, status = capture3_without_git_routing(
+    "git", "add", "tests/operator/guide.rb", chdir: root
+  )
+  raise "could not stage symlink-ancestor fixture: #{stderr.lines.first&.strip}" unless status.success?
+
+  outside = File.join(File.dirname(root), "outside-active-sources")
+  FileUtils.mkdir_p(outside)
+  File.write(File.join(outside, "guide.rb"), retired_token)
+  FileUtils.rm_rf(tracked_directory)
+  File.symlink(outside, tracked_directory)
+end
+
+expect_success(failures, "ignored bytecode containing retired token") do |root|
+  cache = File.join(root, "tests", "__pycache__")
+  FileUtils.mkdir_p(cache)
+  File.binwrite(File.join(cache, "retired-policy.pyc"), retired_token)
+end
 
 # The harness's own guards come first: if the fixture builder can be talked into
 # reading or writing outside the sandbox, nothing below proves anything.
@@ -45,9 +453,244 @@ expect_failure(failures, "heterogeneous services", "each service manifest entry 
   mutate_manifest(root) { |manifest| manifest.fetch("services")[0] = "audiobookshelf" }
 end
 
+expect_failure(failures, "duplicate manifest service", "service manifest name values must be unique") do |root|
+  mutate_manifest(root) do |document|
+    document.fetch("services") << service(document, "arr").dup
+  end
+end
+
+expect_failure(failures, "planned service promoted without vault contract",
+               "tests/expected/bindery.yml vault_keys must be a nonempty list") do |root|
+  mutate_manifest(root) { |document| service(document, "bindery")["status"] = "implemented" }
+end
+
+expect_failure(failures, "second acquisition job",
+               "Configarr must be the sole one-shot acquisition service") do |root|
+  mutate_yaml_file(root, "config/media-acquisition.yml") do |catalog|
+    catalog.dig("projects", "arr", "services", "radarr")["class"] = "one_shot"
+  end
+end
+
+promote_arr_with_compose = lambda do |root|
+  logging = {
+    "driver" => "json-file",
+    "options" => { "max-size" => "10m", "max-file" => "3" }
+  }
+  daemon = lambda do |cpus|
+    {
+      "image" => "example.invalid/service:1.0@sha256:#{'a' * 64}",
+      "cpuset" => "${PLATFORM_CONTAINER_CPUSET:?}",
+      "cpus" => cpus,
+      "labels" => { "dev.dozzle.name" => "service" },
+      "healthcheck" => { "test" => ["CMD", "true"] },
+      "restart" => "unless-stopped",
+      "logging" => logging,
+      "volumes" => []
+    }
+  end
+  configarr = {
+    "image" => "example.invalid/configarr:1.0@sha256:#{'b' * 64}",
+    "cpuset" => "${PLATFORM_CONTAINER_CPUSET:?}",
+    "cpus" => 0.5,
+    "profiles" => ["jobs"],
+    "logging" => logging,
+    "volumes" => []
+  }
+  compose = {
+    "services" => {
+      "radarr" => daemon.call(1.0),
+      "sonarr" => daemon.call(1.0),
+      "prowlarr" => daemon.call(0.5),
+      "bazarr" => daemon.call(1.0),
+      "configarr" => configarr
+    }
+  }
+  service_root = File.join(root, "services", "arr")
+  FileUtils.mkdir_p(service_root)
+  File.write(File.join(service_root, "compose.yml"), YAML.dump(compose))
+  mutate_manifest(root) { |document| service(document, "arr")["status"] = "implemented" }
+  compose
+end
+
+expect_failure(failures, "acquisition job missing jobs profile",
+               "arr/configarr: one-shot acquisition service must use only the jobs profile") do |root|
+  compose = promote_arr_with_compose.call(root)
+  compose.dig("services", "configarr").delete("profiles")
+  File.write(File.join(root, "services", "arr", "compose.yml"), YAML.dump(compose))
+end
+
+expect_failure(failures, "acquisition job publishes a port",
+               "arr/configarr: one-shot acquisition service must not publish ports") do |root|
+  compose = promote_arr_with_compose.call(root)
+  compose.dig("services", "configarr")["ports"] = ["9999:9999"]
+  File.write(File.join(root, "services", "arr", "compose.yml"), YAML.dump(compose))
+end
+
+expect_failure(failures, "acquisition daemon claims restart exemption",
+               "arr/radarr: long-running services must restart unless-stopped") do |root|
+  compose = promote_arr_with_compose.call(root)
+  compose.dig("services", "radarr").delete("restart")
+  File.write(File.join(root, "services", "arr", "compose.yml"), YAML.dump(compose))
+end
+
+expect_failure(failures, "acquisition daemon claims healthcheck exemption",
+               "arr/radarr: long-running services must define a health check") do |root|
+  compose = promote_arr_with_compose.call(root)
+  compose.dig("services", "radarr").delete("healthcheck")
+  File.write(File.join(root, "services", "arr", "compose.yml"), YAML.dump(compose))
+end
+
+expect_failure(failures, "acquisition daemon claims Dozzle exemption",
+               "arr/radarr: long-running services must declare a Dozzle event identity") do |root|
+  compose = promote_arr_with_compose.call(root)
+  compose.dig("services", "radarr", "labels").delete("dev.dozzle.name")
+  File.write(File.join(root, "services", "arr", "compose.yml"), YAML.dump(compose))
+end
+
+expect_acquisition_failure.call(
+  "planned acquisition source published prematurely",
+  "planned service tree exists prematurely: services/arr"
+) do |root|
+  FileUtils.mkdir_p(File.join(root, "services", "arr"))
+end
+
+{
+  "dangling planned acquisition role" => [
+    "roles/arr", "planned role tree exists prematurely: roles/arr"
+  ],
+  "dangling planned acquisition service" => [
+    "services/arr", "planned service tree exists prematurely: services/arr"
+  ]
+}.each do |label, (relative_path, diagnostic)|
+  expect_acquisition_failure.call(label, diagnostic) do |root|
+    path = File.join(root, relative_path)
+    FileUtils.mkdir_p(File.dirname(path))
+    File.symlink("missing-foundation-target", path)
+  end
+end
+
+expect_acquisition_failure.call(
+  "planned acquisition project promoted prematurely",
+  "arr must be planned in the service manifest"
+) do |root|
+  mutate_manifest(root) { |document| service(document, "arr")["status"] = "implemented" }
+end
+
+run_foundation_wrapper = lambda do |filename:, mode: 0o755, mutate: nil, ruby_selection: nil,
+                                   invocation_mode: "static", trace: false|
+  Dir.mktmpdir("nas-platform-foundation-wrapper-") do |root|
+    copy_fixture(ROOT, root)
+    initialize_fixture_index(root)
+    contracts = File.join(root, "tests", "contracts")
+    FileUtils.mkdir_p(contracts)
+    source = File.binread(File.join(ROOT, "tests", "contracts", "arr-foundation.sh"))
+    source = mutate.call(source) if mutate
+    relative_path = File.join("tests", "contracts", filename)
+    wrapper = File.join(root, relative_path)
+    File.binwrite(wrapper, source)
+    File.chmod(mode, wrapper)
+    _add_output, add_error, add_status = capture3_without_git_routing(
+      "git", "add", "--", relative_path, chdir: root
+    )
+    raise "could not stage foundation wrapper fixture: #{add_error.lines.first&.strip}" unless
+      add_status.success?
+
+    command = if ruby_selection
+                [RbConfig.ruby, "tests/media_acquisition_foundation_test.rb", "--project", ruby_selection]
+              else
+                [*(trace ? ["sh", "-x"] : []), wrapper, invocation_mode]
+              end
+    clean_environment = ENV.each_key.grep(/\AGIT_/).to_h { |name| [name, nil] }
+    stdout, stderr, status = Open3.capture3(
+      clean_environment.merge("PLATFORM_CONTRACT_REPO_DIR" => root), *command, chdir: root
+    )
+    [stdout + stderr, status.success?]
+  end
+end
+
+{
+  "foundation wrapper filename exemption" => [
+    { filename: "arr-renamed-foundation.sh" },
+    "unknown acquisition foundation contract"
+  ],
+  "foundation wrapper project exemption" => [
+    { filename: "arr-foundation.sh", mutate: ->(source) { source.sub("arr|downloaders", "downloaders") } },
+    "unknown acquisition foundation contract"
+  ]
+}.each do |label, (arguments, diagnostic)|
+  output, succeeded = run_foundation_wrapper.call(**arguments)
+  failures << "#{label}: unexpectedly passed" if succeeded
+  failures << "#{label}: missing #{diagnostic.inspect}" unless output.include?(diagnostic)
+end
+
+{
+  "unknown filename" => [
+    { filename: "arr-renamed-foundation.sh", trace: true },
+    "unknown acquisition foundation contract"
+  ],
+  "invalid mode" => [
+    { filename: "arr-foundation.sh", invocation_mode: "secret-mode", trace: true },
+    "arr foundation contract accepts only static"
+  ]
+}.each do |label, (arguments, diagnostic)|
+  output, succeeded = run_foundation_wrapper.call(**arguments)
+  lines = output.lines(chomp: true)
+  initial_trace = lines.take_while { |line| line.match?(/\A\+ set (?:-eu|\+x)\z/) }
+  remaining = lines.drop(initial_trace.length)
+  failures << "foundation #{label} trace probe: unexpectedly passed" if succeeded
+  failures << "foundation #{label} trace probe: set +x was not the final initial trace" unless
+    initial_trace.last == "+ set +x"
+  failures << "foundation #{label} trace probe: leaked commands, paths, or assignments" unless
+    remaining == [diagnostic]
+end
+
+output, succeeded = run_foundation_wrapper.call(
+  filename: "arr-foundation.sh", mode: 0o644, ruby_selection: "arr"
+)
+failures << "foundation wrapper mode mutation: unexpectedly passed" if succeeded
+[
+  "tests/contracts/arr-foundation.sh must be a regular executable file",
+  "tests/contracts/arr-foundation.sh must be staged with Git mode 100755"
+].each do |diagnostic|
+  failures << "foundation wrapper mode mutation: missing #{diagnostic.inspect}" unless
+    output.include?(diagnostic)
+end
+
+stdout, stderr, status = capture3_without_git_routing(
+  RbConfig.ruby, "tests/media_acquisition_foundation_test.rb", "--project", "arr", "extra",
+  chdir: ROOT
+)
+failures << "foundation strict CLI: malformed selection unexpectedly passed" if status.success?
+failures << "foundation strict CLI: missing usage diagnostic" unless
+  (stdout + stderr).include?("usage: ruby tests/media_acquisition_foundation_test.rb [--project NAME]")
+
+%w[policy_test.rb policy_vault_test.rb].each do |caller|
+  expect_failure(failures, "#{caller} substitutes the manifest status mapping",
+                 "service statuses must have exactly the rostered service names") do |root|
+    path = File.join(root, "tests", caller)
+    source = File.read(path)
+    expected = "pinned_service_expectations(ROOT, service_statuses)"
+    raise "status-aware caller source is absent" unless source.include?(expected)
+
+    File.write(path, source.sub(expected, "pinned_service_expectations(ROOT, {})"))
+  end
+end
+
 expect_failure(failures, "malformed YAML", "service manifest is malformed") do |root|
   File.write(File.join(root, "services", "manifest.yml"), "services: [unterminated")
 end
+
+output, succeeded = run_policy(["tests/policy_test.rb"]) do |root|
+  File.open(File.join(root, "services", "manifest.yml"), "a") do |file|
+    file.write("---\nservices: []\n")
+  end
+end
+failures << "multiple manifest documents: policy_test.rb unexpectedly passed" if succeeded
+unless output.include?("service manifest must contain exactly one YAML document")
+  failures << "multiple manifest documents: policy_test.rb missing strict document-count diagnostic"
+end
+failures << "multiple manifest documents: policy_test.rb emitted a Ruby stack trace" if
+  output.match?(/\.rb:\d+:in [`']/)
 
 expect_failure(failures, "missing platform hierarchy",
                "inventory/local.yml must expose nas_hosts as a child of platform_hosts") do |root|
@@ -209,16 +852,6 @@ expect_failure(failures, "Mac storage claims Linux ownership",
   end
 end
 
-expect_failure(failures, "tinyMediaManager preservation-only marker removed",
-               "tinyMediaManager storage must remain preservation-only") do |root|
-  mutate_yaml_file(root, "inventory/group_vars/all/main.yml") do |inventory|
-    entry = inventory.fetch("nas_storage").find do |storage|
-      storage["path"] == "{{ nas_docker_root }}/tinymediamanager/data"
-    end
-    entry.delete("preserve_only")
-  end
-end
-
 expect_failure(failures, "preservation-only storage inspected after creation",
                "host preparation must validate preservation-only storage before ordinary creation") do |root|
   mutate_yaml_file(root, "roles/host_prep/tasks/main.yml") do |tasks|
@@ -255,46 +888,6 @@ expect_failure(failures, "preservation-only storage recreated",
   mutate_yaml_file(root, "roles/host_prep/tasks/main.yml") do |tasks|
     task = tasks.find { |entry| entry["name"] == "Create service state directories" }
     task["loop"] = "{{ nas_storage }}"
-  end
-end
-
-expect_failure(failures, "second tinyMediaManager Compose task added",
-               "tinyMediaManager CPU exception requires exactly one safe retirement Compose task") do |root|
-  mutate_yaml_file(root, "roles/tinymediamanager/tasks/main.yml") do |tasks|
-    tasks << {
-      "name" => "Unexpected second tinyMediaManager Compose removal",
-      "community.docker.docker_compose_v2" => { "state" => "absent" }
-    }
-  end
-end
-
-expect_failure(failures, "included tinyMediaManager Compose task added",
-               "tinyMediaManager CPU exception requires exactly one safe retirement Compose task") do |root|
-  mutate_yaml_file(root, "roles/tinymediamanager/tasks/main.yml") do |tasks|
-    tasks << {
-      "name" => "Include an unexpected tinyMediaManager Compose removal",
-      "ansible.builtin.include_tasks" => "nested/unexpected_removal.yml"
-    }
-  end
-  helper_path = File.join(
-    root, "roles", "tinymediamanager", "tasks", "nested", "unexpected_removal.yml"
-  )
-  FileUtils.mkdir_p(File.dirname(helper_path))
-  File.write(helper_path, YAML.dump([
-    {
-      "name" => "Unexpected included tinyMediaManager Compose removal",
-      "community.docker.docker_compose_v2" => { "state" => "absent" }
-    }
-  ]))
-end
-
-expect_failure(failures, "tinyMediaManager retirement removes volumes",
-               "tinyMediaManager CPU exception requires exactly one safe retirement Compose task") do |root|
-  mutate_yaml_file(root, "roles/tinymediamanager/tasks/main.yml") do |tasks|
-    retirement = tasks.find do |task|
-      task["name"] == "Retire tinyMediaManager without deleting state"
-    end
-    retirement.fetch("community.docker.docker_compose_v2")["remove_volumes"] = true
   end
 end
 
@@ -575,6 +1168,12 @@ end
 
 expect_success(failures, "paperless contract alias") do |root|
   implement_paperless(root)
+  mutate_yaml_file(root, "services/paperless-ngx/compose.yml") do |compose|
+    compose.fetch("services").each do |container, spec|
+      spec["healthcheck"] = { "test" => ["CMD", "true"] }
+      spec["labels"] = { "dev.dozzle.name" => container }
+    end
+  end
   register_contract(root, "paperless")
 end
 
@@ -691,6 +1290,22 @@ expect_failure(failures, "Immich classifier controller validation removed",
   ))
 end
 
+expect_failure(failures, "acquisition catalog controller validation moved after parsing",
+               "controller inputs must validate the required acquisition catalog before parsing inputs") do |root|
+  path = File.join(root, "roles", "deployment_bundle", "tasks", "inputs.yml")
+  tasks = YAML.safe_load_file(path)
+  validation_index = tasks.index do |task|
+    task.dig("vars", "deployment_controller_input_path") ==
+      "{{ playbook_dir }}/config/media-acquisition.yml"
+  end
+  validation = tasks.delete_at(validation_index)
+  parse_index = tasks.index do |task|
+    task["name"] == "Resolve implemented services from the validated controller manifest"
+  end
+  tasks.insert(parse_index + 1, validation)
+  File.write(path, YAML.dump(tasks))
+end
+
 expect_failure(failures, "Immich classifier release copy removed",
                "deployment bundle must package the exact Immich classifier with mode 0644") do |root|
   path = File.join(root, "roles", "deployment_bundle", "tasks", "main.yml")
@@ -698,6 +1313,26 @@ expect_failure(failures, "Immich classifier release copy removed",
   tasks.reject! do |task|
     task["name"] == "Copy the tracked Immich restore classifier from the controller"
   end
+  File.write(path, YAML.dump(tasks))
+end
+
+expect_failure(failures, "acquisition catalog release destination changed",
+               "deployment bundle must stage the exact acquisition catalog bytes with mode 0644") do |root|
+  path = File.join(root, "roles", "deployment_bundle", "tasks", "main.yml")
+  File.write(path, File.read(path).gsub(
+    "{{ deployment_bundle_staging_dir }}/config/media-acquisition.yml",
+    "{{ deployment_bundle_staging_dir }}/media-acquisition.yml"
+  ))
+end
+
+expect_failure(failures, "acquisition catalog release mode changed",
+               "deployment bundle must stage the exact acquisition catalog bytes with mode 0644") do |root|
+  path = File.join(root, "roles", "deployment_bundle", "tasks", "main.yml")
+  tasks = YAML.safe_load_file(path)
+  copy = tasks.find do |task|
+    task["name"] == "Copy the media acquisition catalog from the controller"
+  end
+  copy.fetch("ansible.builtin.copy")["mode"] = "0600"
   File.write(path, YAML.dump(tasks))
 end
 
@@ -709,12 +1344,27 @@ expect_failure(failures, "Immich classifier manifest integrity removed",
   ))
 end
 
+expect_failure(failures, "acquisition catalog manifest checksum removed",
+               "deployment manifest must bind the exact acquisition catalog path, mode, and checksum") do |root|
+  path = File.join(root, "roles", "deployment_bundle", "templates", "manifest.yml.j2")
+  File.write(path, File.read(path).gsub(
+    "lookup('file', playbook_dir ~ '/config/media-acquisition.yml', rstrip=false)",
+    "'unbound-catalog'"
+  ))
+end
+
 expect_failure(failures, "Immich classifier manifest verifier removed",
                "deployment manifest verifier must reproduce runtime helper integrity") do |root|
   path = File.join(root, "tests", "verify_deployment_manifest.rb")
   File.write(path, File.read(path).gsub(
     '"immich" => ["classify_restore.py"]', '"immich" => []'
   ))
+end
+
+expect_failure(failures, "acquisition staged-byte verification removed",
+               "deployment manifest verifier must require the exact catalog digest and detect staged-byte mutation") do |root|
+  path = File.join(root, "tests", "verify_deployment_manifest.rb")
+  File.write(path, File.read(path).gsub("File.dirname(manifest_path)", "repository_root"))
 end
 
 expect_failure(failures, "deployment sha unquoted",
@@ -1068,6 +1718,14 @@ end
     "ruby tests/immich_selective_helper_integrity_test.rb",
   "Mac manual-validation runner regression" => "tests/mac/manual-validation-runner-test.sh",
   "Mac hook coverage regression" => "tests/mac/hook-coverage-test.sh",
+  "media acquisition verifier regression" =>
+    "ruby tests/media_acquisition_foundation_verifier_test.rb",
+  "media acquisition hook regression" =>
+    "tests/mac/media-acquisition-foundation-hook-test.sh",
+  "media acquisition report regression" =>
+    "ruby tests/mac/media-acquisition-foundation-report-test.rb",
+  "media acquisition cleanup regression" =>
+    "tests/mac/media-acquisition-foundation-cleanup-test.sh",
   "Paperless snapshot recovery regression" => "tests/mac/snapshot-paperless-recovery-test.sh",
   "Paperless drill login budget regression" =>
     "tests/mac/snapshot-paperless-drill-throttle-test.sh"

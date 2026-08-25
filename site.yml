@@ -15,6 +15,14 @@
          default(playbook_dir ~ '/inventory/group_vars/all/vault.yml', true) }}
 
   pre_tasks:
+    - name: Validate target Docker module dependencies before target mutation
+      ansible.builtin.include_role:
+        name: preflight
+        tasks_from: target_docker_dependencies
+        apply:
+          tags: [always]
+      tags: [always]
+
     - name: Validate portable credentials before target mutation
       ansible.builtin.include_role:
         name: vault_contract
@@ -54,7 +62,7 @@
       tags: [preflight, always]
 
     - role: host_prep
-      tags: [host_prep, storage]
+      tags: [host_prep, storage, media_acquisition_foundation]
 
     - role: deployment_bundle
       tags: [deployment_bundle]
@@ -75,9 +83,6 @@
 
     - role: komga
       tags: [komga, media]
-
-    - role: tinymediamanager
-      tags: [tinymediamanager, media]
 
     - role: jellyfin
       tags: [jellyfin, media]

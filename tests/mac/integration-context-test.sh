@@ -62,7 +62,7 @@ fi
 
 integration_names=$(PLATFORM_PROOF_PLATFORM=integration mac_target_container_names proof)
 for expected_name in ntfy beszel beszel_agent beszel_agent_portable beszel_socket_proxy \
-    dozzle_alert_relay dozzle dozzle_socket_proxy audiobookshelf komga tinymediamanager jellyfin \
+    dozzle_alert_relay dozzle dozzle_socket_proxy audiobookshelf komga jellyfin \
     immich_server immich_machine_learning immich_redis immich_postgres \
     paperless_redis paperless_postgres paperless_webserver paperless_gotenberg paperless_tika; do
   printf '%s\n' "$integration_names" | grep -qx "$expected_name" || {
@@ -70,7 +70,7 @@ for expected_name in ntfy beszel beszel_agent beszel_agent_portable beszel_socke
     exit 1
   }
 done
-[ "$(printf '%s\n' "$integration_names" | wc -l | tr -d ' ')" -eq 21 ] || {
+[ "$(printf '%s\n' "$integration_names" | wc -l | tr -d ' ')" -eq 20 ] || {
   printf '%s\n' 'integration-context-error: integration target identity set differs' >&2
   exit 1
 }
@@ -86,57 +86,6 @@ for hook in "$script_dir"/hooks/drift/*.sh; do
     exit 1
   fi
 done
-
-tinymediamanager_runner=$script_dir/run-contract.sh
-grep -qF 'PLATFORM_CONTRACT_SANDBOX_ROOT' "$tinymediamanager_runner" || {
-  printf '%s\n' 'integration-context-error: retirement runner lacks sandbox context' >&2
-  exit 1
-}
-grep -qF 'PLATFORM_TINYMEDIAMANAGER_REPORT_ROOT' "$tinymediamanager_runner" || {
-  printf '%s\n' 'integration-context-error: retirement runner uses the external report root' >&2
-  exit 1
-}
-grep -qF 'seed-retirement-fixture|assert-retired)' "$tinymediamanager_runner" || {
-  printf '%s\n' 'integration-context-error: retirement runner accepts the wrong modes' >&2
-  exit 1
-}
-if grep -Eq 'tinymediamanager.*([: ]seed|[: ]run|assert-persistence)' "$tinymediamanager_runner"; then
-  printf '%s\n' 'integration-context-error: retirement runner retains an active mode' >&2
-  exit 1
-fi
-
-tinymediamanager_preconverge=$script_dir/hooks/pre-converge/50-tinymediamanager.sh
-tinymediamanager_seed=$script_dir/hooks/fixtures-seed/50-tinymediamanager.sh
-tinymediamanager_persistence=$script_dir/hooks/fixtures-persistence/00-services.sh
-tinymediamanager_recreate=$script_dir/hooks/fixtures-recreate/50-tinymediamanager.sh
-tinymediamanager_drift=$script_dir/hooks/drift/50-tinymediamanager.sh
-tinymediamanager_verify=$script_dir/hooks/verify/50-tinymediamanager.sh
-grep -qF 'seed-retirement-fixture' "$tinymediamanager_preconverge"
-grep -qF 'tinymediamanager_retirement_fixture.yml' "$tinymediamanager_preconverge"
-grep -qF 'PLATFORM_CONTRACT_REPO_DIR' "$tinymediamanager_preconverge"
-if [ -e "$tinymediamanager_seed" ] || [ -L "$tinymediamanager_seed" ]; then
-  printf '%s\n' 'integration-context-error: retirement fixture remains in post-deploy seeding' >&2
-  exit 1
-fi
-grep -qF 'assert-retired' "$tinymediamanager_persistence"
-grep -qF 'assert-retired' "$tinymediamanager_recreate"
-if grep -Eq 'up[[:space:]].*force-recreate|[[:space:]]run([[:space:]]|$)' \
-    "$tinymediamanager_recreate"; then
-  printf '%s\n' 'integration-context-error: recreate hook restarts tinyMediaManager' >&2
-  exit 1
-fi
-grep -qF 'tinymediamanager_retirement_fixture.yml' "$tinymediamanager_drift"
-grep -qF 'PLATFORM_CONTRACT_REPO_DIR' "$tinymediamanager_drift"
-grep -qF 'TINYMEDIAMANAGER_RETIREMENT_DRIFT_INSTALLED' "$tinymediamanager_drift"
-grep -qF 'verify.yml' "$tinymediamanager_verify"
-grep -qF 'platform_verify_tinymediamanager' "$tinymediamanager_verify"
-grep -qF 'assert-retired' "$tinymediamanager_verify"
-
-dozzle_verify=$script_dir/hooks/verify/20-dozzle.sh
-if grep -qF 'tinymediamanager' "$dozzle_verify"; then
-  printf '%s\n' 'integration-context-error: retired service remains in generic Dozzle inspection' >&2
-  exit 1
-fi
 
 jellyfin_fixture=$fixture/jellyfin-hook
 jellyfin_repo=$jellyfin_fixture/repo

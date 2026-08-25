@@ -87,7 +87,6 @@ vault_checksum=$(shasum -a 256 "$vault_file" | awk '{print $1}')
   --vault-checksum "$vault_checksum" --project-name "$project_name" \
   --beszel-port 38090 --ntfy-port 32586 --dozzle-port 38080 \
   --audiobookshelf-port 33378 --komga-port 35600 \
-  --tinymediamanager-web-port 34000 --tinymediamanager-api-port 37878 \
   --jellyfin-port 38096 \
   --immich-port 32283 --paperless-port 38000
 ruby -rjson -e '

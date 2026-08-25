@@ -62,11 +62,6 @@ SUITES = {
     environment: ->(repo) { { "PLATFORM_CONTRACT_REPO_DIR" => repo } },
     diagnostic: ->(message) { "Immich contract failed: #{message}" }
   },
-  tinymediamanager: {
-    command: ->(repo) { [File.join(repo, "tests", "contracts", "tinymediamanager.sh"), "static"] },
-    environment: ->(repo) { { "PLATFORM_CONTRACT_REPO_DIR" => repo } },
-    diagnostic: ->(message) { "tinyMediaManager contract failed: #{message}" }
-  },
   dozzle: {
     command: ->(repo) { [File.join(repo, "tests", "contracts", "dozzle.sh"), "static"] },
     environment: ->(repo) { { "PLATFORM_CONTRACT_REPO_DIR" => repo } },
@@ -187,7 +182,6 @@ AUDIOBOOKSHELF_ENVIRONMENT = "roles/audiobookshelf/templates/env.j2"
 IMMICH_ROLE = "roles/immich/tasks/main.yml"
 IMMICH_RESTORE = "roles/immich/tasks/restore.yml"
 IMMICH_ONBOARDING = "roles/immich/tasks/user_onboarding.yml"
-TINYMEDIAMANAGER_ROLE = "roles/tinymediamanager/tasks/main.yml"
 DOZZLE_ROLE = "roles/dozzle/tasks/main.yml"
 DOZZLE_DEFAULTS = "roles/dozzle/defaults/main.yml"
 PREFLIGHT = "roles/preflight/tasks/main.yml"
@@ -476,6 +470,12 @@ check_rejected(
   failures, :media_probes, "a primary identity rename with no recovery path",
   [[JELLYFIN_IDENTITY, "  rescue:\n", "  always:\n"]],
   "Jellyfin primary rename is not guarded by block/rescue recovery"
+)
+
+check_rejected(
+  failures, :media_probes, "a library rename that suppresses its identity refresh",
+  [[JELLYFIN_ROLE, "'&refreshLibrary=true' }}\n", "'&refreshLibrary=false' }}\n"]],
+  "Jellyfin library rename does not request identity refresh"
 )
 
 check_rejected(

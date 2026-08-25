@@ -78,7 +78,7 @@ case "${1:-}" in
 esac
 
 if [ "${1:-}" = --list-suites ]; then
-  printf '%s\n' 'foundation smoke beszel dozzle audiobookshelf komga tinymediamanager jellyfin immich paperless idempotence-check full'
+  printf '%s\n' 'foundation arr downloaders bindery kapowarr pinchflat trailarr seerr smoke beszel dozzle audiobookshelf komga jellyfin immich paperless idempotence-check full'
   exit 0
 fi
 
@@ -127,12 +127,18 @@ case "$suite" in
   # rather than at anything the suite is about. These must stay equal to
   # SERVICE_TAGS in tests/ci/classify_changes.rb, which the policy test checks.
   foundation) fixed_tags=deployment_bundle ;;
+  arr) fixed_tags=host_prep,deployment_bundle,media_acquisition_foundation ;;
+  downloaders) fixed_tags=host_prep,deployment_bundle,media_acquisition_foundation ;;
+  bindery) fixed_tags=host_prep,deployment_bundle,media_acquisition_foundation ;;
+  kapowarr) fixed_tags=host_prep,deployment_bundle,media_acquisition_foundation ;;
+  pinchflat) fixed_tags=host_prep,deployment_bundle,media_acquisition_foundation ;;
+  trailarr) fixed_tags=host_prep,deployment_bundle,media_acquisition_foundation ;;
+  seerr) fixed_tags=host_prep,deployment_bundle,media_acquisition_foundation ;;
   smoke) fixed_tags= ;;
   beszel) fixed_tags=host_prep,deployment_bundle,ntfy,beszel ;;
   dozzle) fixed_tags=host_prep,deployment_bundle,ntfy,dozzle ;;
   audiobookshelf) fixed_tags=host_prep,deployment_bundle,ntfy,audiobookshelf ;;
   komga) fixed_tags=host_prep,deployment_bundle,ntfy,komga ;;
-  tinymediamanager) fixed_tags=host_prep,deployment_bundle,ntfy,tinymediamanager ;;
   jellyfin) fixed_tags=host_prep,deployment_bundle,ntfy,jellyfin ;;
   immich) fixed_tags=host_prep,deployment_bundle,ntfy,immich ;;
   paperless) fixed_tags=host_prep,deployment_bundle,ntfy,paperless ;;
@@ -235,20 +241,7 @@ if [ "$describe_suite" = true ] || [ "${INTEGRATION_DESCRIBE_ONLY:-0}" = 1 ]; th
 fi
 
 emit_lifecycle_plan() {
-  if [ -z "$suite_tags" ]; then
-    printf '%s\n' seed-retirement-fixture
-  else
-    case ",$suite_tags," in
-      *,host_prep,*) printf '%s\n' seed-retirement-fixture ;;
-    esac
-  fi
-  case "$suite:$run_service_scenarios" in
-    tinymediamanager:true|full:true) printf '%s\n' start-retirement-fixture ;;
-  esac
   printf '%s\n' converge
-  case "$suite:$run_service_scenarios" in
-    tinymediamanager:true|full:true) printf '%s\n' assert-retired ;;
-  esac
   printf '%s\n' success
 }
 
@@ -285,7 +278,6 @@ beszel beszel
 dozzle dozzle
 audiobookshelf audiobookshelf
 komga komga
-tinymediamanager tinymediamanager
 jellyfin jellyfin
 immich immich
 paperless paperless-ngx
@@ -333,7 +325,18 @@ suite_pull_images() {
     if [ -n "$suite_tags" ]; then
       case ",$suite_tags," in
         *",$service_tag,"*) ;;
-        *) continue ;;
+        *)
+          case "$suite:$service_tag" in
+            arr:ntfy|arr:audiobookshelf|arr:jellyfin|\
+            downloaders:ntfy|downloaders:audiobookshelf|downloaders:jellyfin|\
+            bindery:ntfy|bindery:audiobookshelf|bindery:jellyfin|\
+            kapowarr:ntfy|kapowarr:audiobookshelf|kapowarr:jellyfin|\
+            pinchflat:ntfy|pinchflat:audiobookshelf|pinchflat:jellyfin|\
+            trailarr:ntfy|trailarr:audiobookshelf|trailarr:jellyfin|\
+            seerr:ntfy|seerr:audiobookshelf|seerr:jellyfin) ;;
+            *) continue ;;
+          esac
+          ;;
       esac
     fi
     sed -n 's/^[[:space:]]*image:[[:space:]]*//p' \
@@ -460,8 +463,11 @@ printf '%s\n' undeclared-service > \
 manifest_controller="$sandbox/manifest-controller"
 manifest_docker_root="$sandbox/manifest-root/Docker"
 manifest_media_root="$sandbox/manifest-root/media"
-mkdir -p "$manifest_controller/roles" "$manifest_controller/services/demo" \
+mkdir -p "$manifest_controller/config" "$manifest_controller/roles" \
+  "$manifest_controller/services/demo" \
   "$manifest_docker_root" "$manifest_media_root"
+cp "$repo_dir/config/media-acquisition.yml" \
+  "$manifest_controller/config/media-acquisition.yml"
 cp -R "$repo_dir/roles/deployment_bundle" "$manifest_controller/roles/"
 mkdir -p "$manifest_controller/services/dozzle" "$manifest_controller/services/immich"
 cp "$repo_dir/services/dozzle/alert_relay.py" \
@@ -525,7 +531,10 @@ create_controller_symlink_fixture() {
   symlink_kind=$2
   fixture_root="$sandbox/controller-$fixture_name"
   outside_root="$sandbox/controller-$fixture_name-outside"
-  mkdir -p "$fixture_root/roles" "$fixture_root/services/demo" "$outside_root"
+  mkdir -p "$fixture_root/config" "$fixture_root/roles" \
+    "$fixture_root/services/demo" "$outside_root"
+  cp "$repo_dir/config/media-acquisition.yml" \
+    "$fixture_root/config/media-acquisition.yml"
   cp -R "$repo_dir/roles/deployment_bundle" "$fixture_root/roles/"
 
   if [ "$symlink_kind" = manifest ]; then
@@ -673,7 +682,8 @@ paperless_fixture_preseeded=false
 komga_fixture_preseeded=false
 jellyfin_fixture_preseeded=false
 case "$suite:$run_service_scenarios" in
-  audiobookshelf:true|full:true)
+  audiobookshelf:true|arr:true|downloaders:true|bindery:true|kapowarr:true|\
+  pinchflat:true|trailarr:true|seerr:true|full:true)
     env \
       PLATFORM_MEDIA_ROOT="$sandbox/volume2" \
       PLATFORM_REPORT_ROOT="$sandbox/reports" \
@@ -701,7 +711,8 @@ case "$suite:$run_service_scenarios" in
     ;;
 esac
 case "$suite:$run_service_scenarios" in
-  jellyfin:true|full:true)
+  jellyfin:true|arr:true|downloaders:true|bindery:true|kapowarr:true|\
+  pinchflat:true|trailarr:true|seerr:true|full:true)
     env \
       PLATFORM_KIND=integration \
       PLATFORM_DOCKER_ROOT="$sandbox/volume1/Docker" \
@@ -728,14 +739,13 @@ docker run --rm \
   -e INTEGRATION_SUITE="$suite" \
   -e INTEGRATION_TAGS="$suite_tags" \
   -e INTEGRATION_RUN_SERVICE_SCENARIOS="$run_service_scenarios" \
+  -e MEDIA_CONTROL_COLLISION_IMAGE="$runner_image" \
   -e PLATFORM_PAPERLESS_FIXTURE_PRESEEDED="$paperless_fixture_preseeded" \
   -e PLATFORM_KOMGA_FIXTURE_PRESEEDED="$komga_fixture_preseeded" \
   -e PLATFORM_JELLYFIN_FIXTURE_PRESEEDED="$jellyfin_fixture_preseeded" \
   -w /repo \
   "$runner_image" \
   sh -eu -c "
-    PLATFORM_CONTRACT_SANDBOX_OWNER_UID=\$(stat -c '%u' '$sandbox')
-    export PLATFORM_CONTRACT_SANDBOX_OWNER_UID
     apk add --no-cache --quiet docker-cli docker-cli-compose git tar openssl \
       apache2-utils openssh-client '$ruby_package' '$curl_package' >/dev/null
     pip install --quiet --no-input 'ansible-core==$ansible_core_version' \
@@ -898,7 +908,6 @@ docker run --rm \
         -e nas_docker_root=$sandbox/volume1/Docker \
         -e nas_media_root=$sandbox/volume2 \
         -e platform_compose_kind=integration \
-        -e tinymediamanager_compose_project_name=integration-tinymediamanager \
         -e platform_beszel_agent_kind=portable \
         -e deployment_bundle_test_mode=true \
         -e deployment_bundle_allow_dirty_controller=true \
@@ -952,25 +961,6 @@ docker run --rm \
         PLATFORM_REPORT_ROOT='$sandbox/reports' \
         PLATFORM_KOMGA_RUNTIME_CONTEXT=base \
         /repo/tests/contracts/komga.sh \"\$@\"
-    }
-
-    run_tinymediamanager_contract() {
-      env \
-        PLATFORM_KIND=integration \
-        PLATFORM_CONTRACT_SANDBOX_ROOT='$sandbox' \
-        PLATFORM_CONTRACT_SANDBOX_OWNER_UID="\$PLATFORM_CONTRACT_SANDBOX_OWNER_UID" \
-        PLATFORM_CONTRACT_REPO_DIR=/repo \
-        PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\" \
-        PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=\"\$vault_password_file\" \
-        PLATFORM_DOCKER_ROOT='$sandbox/volume1/Docker' \
-        PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
-        PLATFORM_REPORT_ROOT='$sandbox/reports' \
-        PLATFORM_COMPOSE_KIND=integration \
-        PLATFORM_PROJECT_NAME=integration \
-        PLATFORM_TINYMEDIAMANAGER_WEB_PORT=4000 \
-        PLATFORM_TINYMEDIAMANAGER_API_PORT=7878 \
-        PLATFORM_TINYMEDIAMANAGER_CONTAINER=tinymediamanager \
-        /repo/tests/contracts/tinymediamanager.sh \"\$@\"
     }
 
     run_jellyfin_contract() {
@@ -1054,8 +1044,6 @@ docker run --rm \
       test ! -e \"\$scenario_root\"
       mkdir -m 0755 \"\$scenario_root\"
       mkdir -m 0755 \"\$scenario_root/docker\" \"\$scenario_root/media\"
-      mkdir -m 0755 \"\$scenario_root/docker/tinymediamanager\" \
-        \"\$scenario_root/docker/tinymediamanager/data\"
 
       run_play \
         -e nas_docker_root=\"\$scenario_root/docker\" \
@@ -1234,12 +1222,35 @@ docker run --rm \
         --tags platform_verify_audiobookshelf
     }
 
+    converge_media_acquisition_reader_prerequisites() {
+      run_play --tags host_prep,deployment_bundle,ntfy,audiobookshelf,jellyfin
+    }
+
+    run_media_acquisition_foundation_verify() {
+      PLATFORM_VAULT_FILE="\$vault_file" ansible-playbook \
+        -i inventory/local.yml \
+        --vault-password-file "\$vault_password_file" \
+        -e @"\$vault_file" \
+        -e platform_vault_file="\$vault_file" \
+        -e nas_docker_root=$sandbox/volume1/Docker \
+        -e nas_media_root=$sandbox/volume2 \
+        -e platform_compose_kind=integration \
+        -e platform_beszel_agent_kind=portable \
+        -e deployment_bundle_test_mode=true \
+        -e deployment_bundle_allow_dirty_controller=true \
+        /repo/verify.yml \
+        --tags platform_verify_media_acquisition_foundation
+    }
+
     assert_controller_symlink_refused() {
       evidence=\$1
       fixture_name=\$2
+      expected_path=\$3
+      expected_reason=\$4
       fixture_root='$sandbox/controller-'\$fixture_name
       outside_root='$sandbox/controller-'\$fixture_name'-outside'
       target='$sandbox/controller-'\$fixture_name'-target'
+      expected_refusal=\"Unsafe controller bundle input \$fixture_root/\$expected_path: \$expected_reason\"
       before_outside=\$(tar -C \"\$outside_root\" -cf - . | sha256sum | cut -d' ' -f1)
       rm -f \"\$target\"
 
@@ -1250,7 +1261,7 @@ docker run --rm \
         printf 'UNSAFE CONTROLLER INPUT ACCEPTED: %s\n' \"\$evidence\" >&2
         exit 1
       fi
-      if ! grep -qF 'Unsafe controller bundle input' /tmp/controller-input-refusal.txt || \
+      if ! grep -qF \"\$expected_refusal\" /tmp/controller-input-refusal.txt || \
          [ -e \"\$target\" ] || \
          [ \"\$(tar -C \"\$outside_root\" -cf - . | sha256sum | cut -d' ' -f1)\" != \
            \"\$before_outside\" ]; then
@@ -1263,8 +1274,10 @@ docker run --rm \
     }
 
     if suite_is foundation; then
-    assert_controller_symlink_refused CONTROLLER_MANIFEST_SYMLINK_REFUSED manifest
-    assert_controller_symlink_refused CONTROLLER_OVERRIDE_SYMLINK_REFUSED override
+    assert_controller_symlink_refused CONTROLLER_MANIFEST_SYMLINK_REFUSED \
+      manifest services/manifest.yml 'must be a regular non-symlink file'
+    assert_controller_symlink_refused CONTROLLER_OVERRIDE_SYMLINK_REFUSED \
+      override services/demo/compose.fixture.yml 'must be a regular non-symlink file'
 
     assert_symlink_refused() {
       evidence=\$1
@@ -1523,30 +1536,8 @@ docker run --rm \
     lifecycle_success=false
     while IFS= read -r lifecycle_event; do
       case \$lifecycle_event in
-        seed-retirement-fixture)
-          run_tinymediamanager_contract seed-retirement-fixture
-          ;;
-        start-retirement-fixture)
-          env \
-            PLATFORM_KIND=integration \
-            PLATFORM_CONTRACT_SANDBOX_ROOT='$sandbox' \
-            PLATFORM_CONTRACT_SANDBOX_OWNER_UID="\$PLATFORM_CONTRACT_SANDBOX_OWNER_UID" \
-            PLATFORM_CONTRACT_REPO_DIR=/repo \
-            PLATFORM_COMPOSE_KIND=integration \
-            PLATFORM_PROJECT_NAME=integration \
-            PLATFORM_DOCKER_ROOT='$sandbox/volume1/Docker' \
-            PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
-            PLATFORM_REPORT_ROOT='$sandbox/reports' \
-            PLATFORM_TINYMEDIAMANAGER_WEB_PORT=4000 \
-            PLATFORM_TINYMEDIAMANAGER_API_PORT=7878 \
-            ansible-playbook -i localhost, \
-              /repo/tests/tinymediamanager_retirement_fixture.yml
-          ;;
         converge)
           perform_initial_converge "\$@"
-          ;;
-        assert-retired)
-          run_tinymediamanager_contract assert-retired
           ;;
         success)
           lifecycle_success=true
@@ -1578,6 +1569,20 @@ EOF
     ruby /repo/tests/verify_deployment_manifest.rb \
       '$sandbox/volume1/Docker/nas-platform/current/manifest.yml' \
       /repo /repo/services/manifest.yml nas integration '$expected_release_id'
+
+    case "\$INTEGRATION_SUITE" in
+      arr|downloaders|bindery|kapowarr|pinchflat|trailarr|seerr)
+        if [ "\$INTEGRATION_SUITE" = arr ]; then
+          /repo/tests/media_control_network_collision_test.sh live
+        fi
+        /repo/tests/contracts/"\$INTEGRATION_SUITE"-foundation.sh static
+        converge_media_acquisition_reader_prerequisites
+        run_media_acquisition_foundation_verify
+        printf 'MEDIA_ACQUISITION_FOUNDATION_RUNTIME_VERIFIED\n'
+        cleanup_vault
+        exit 0
+        ;;
+    esac
 
     if [ "\$INTEGRATION_SUITE" = smoke ]; then
       cleanup_vault
@@ -2040,19 +2045,8 @@ EOF
       # narrower upload/backup fixture that proves database recovery without
       # waiting for generated assets or inference.
 
-    if [ "\$INTEGRATION_SUITE" = tinymediamanager ]; then
-      printf '\n=== phase 2: asserting tinyMediaManager retirement idempotence ===\n'
-      run_selected_play "\$@" | tee /tmp/tinymediamanager-second.txt
-      grep -qE 'changed=0 .*failed=0 ' /tmp/tinymediamanager-second.txt || {
-        printf '%s\n' 'tinyMediaManager retirement reconverge was not clean' >&2
-        exit 1
-      }
-      run_tinymediamanager_contract assert-retired
-    fi
-
     if [ "\$INTEGRATION_SUITE" = full ] && \
        [ "\$INTEGRATION_RUN_SERVICE_SCENARIOS" = true ]; then
-      run_tinymediamanager_contract assert-retired
       env \
         PLATFORM_KIND=integration \
         PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\" \
@@ -2061,7 +2055,6 @@ EOF
         PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
         PLATFORM_FIXTURE_ROOT='$sandbox/fixtures' \
         PLATFORM_REPORT_ROOT='$sandbox/reports' \
-        PLATFORM_TINYMEDIAMANAGER_CONTAINER=tinymediamanager \
         PLATFORM_JELLYFIN_CONTAINER=jellyfin \
         ruby /repo/tests/run_contracts.rb --execute
       run_audiobookshelf_contract authentication-session-cleanup
@@ -2078,10 +2071,6 @@ EOF
       printf 'NOT IDEMPOTENT: second run reported changes\n' >&2
       exit 1
     fi
-    if [ "\$INTEGRATION_SUITE" = full ]; then
-      run_tinymediamanager_contract assert-retired
-    fi
-
     printf '\n=== phase 3: asserting --check --diff works ===\n'
     if run_selected_play "\$@" --check --diff; then
       printf 'CHECK MODE OK: dry run completed\n'

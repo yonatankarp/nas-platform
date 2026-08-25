@@ -78,6 +78,11 @@ abort "Audiobookshelf contract failed: storage contract differs" unless service.
   "${AUDIOBOOKSHELF_MEDIA_PATH:?}:/audiobooks:ro",
   "${AUDIOBOOKSHELF_BACKUP_PATH:?}:/metadata/backups"
 ]
+abort "Audiobookshelf contract failed: media control network membership differs" unless
+  service.fetch("networks") == %w[default media-control] && compose.fetch("networks") == {
+    "default" => {},
+    "media-control" => { "external" => true, "name" => "${PLATFORM_MEDIA_NETWORK:?}" }
+  }
 health = service.fetch("healthcheck")
 abort "Audiobookshelf contract failed: legacy health check differs" unless
   health == {
@@ -124,6 +129,9 @@ abort "Audiobookshelf contract failed: backup policy defaults differ" unless
 abort "Audiobookshelf contract failed: backup environment is absent" unless
   environment_assignments.select { |name, _value| name == "AUDIOBOOKSHELF_BACKUP_PATH" } ==
     [["AUDIOBOOKSHELF_BACKUP_PATH", "{{ audiobookshelf_effective_backup_host_path }}"]]
+abort "Audiobookshelf contract failed: media network environment is absent" unless
+  environment_assignments.select { |name, _value| name == "PLATFORM_MEDIA_NETWORK" } ==
+    [["PLATFORM_MEDIA_NETWORK", "{{ platform_media_control_network }}"]]
 backup_storage = storage.fetch("nas_storage").find do |entry|
   entry["path"] == "{{ nas_docker_root }}/audiobookshelf/backups"
 end
@@ -136,6 +144,8 @@ abort "Audiobookshelf contract failed: backup storage inventory differs" unless
 
 argument_options = argument_specs.dig("argument_specs", "main", "options")
 abort "Audiobookshelf contract failed: server settings argument validation is absent" unless
+  argument_options.dig("platform_media_control_network", "type") == "str" &&
+    argument_options.dig("platform_media_control_network", "required") == true &&
   argument_options.dig("audiobookshelf_owned_server_settings", "type") == "dict" &&
     argument_options.dig("audiobookshelf_backup_cron", "type") == "str" &&
     argument_options.dig("audiobookshelf_backup_retention", "type") == "int" &&

@@ -25,6 +25,24 @@ vault_jellyfin_opensubtitles_password: example-opensubtitles-password
 vault_komga_admin_email: admin@example.invalid
 vault_komga_admin_password: example-password
 
+# Acquisition-service API keys are distinct 32-character lowercase hexadecimal
+# values. Administrator passwords are also distinct across these five services.
+vault_arr_radarr_api_key: "00000000000000000000000000000000"
+vault_arr_radarr_admin_username: nasadmin
+vault_arr_radarr_admin_password: example-radarr-password
+vault_arr_sonarr_api_key: "11111111111111111111111111111111"
+vault_arr_sonarr_admin_username: nasadmin
+vault_arr_sonarr_admin_password: example-sonarr-password
+vault_arr_prowlarr_api_key: "22222222222222222222222222222222"
+vault_arr_prowlarr_admin_username: nasadmin
+vault_arr_prowlarr_admin_password: example-prowlarr-password
+vault_arr_bazarr_api_key: "33333333333333333333333333333333"
+vault_arr_bazarr_admin_username: nasadmin
+vault_arr_bazarr_admin_password: example-bazarr-password
+vault_downloaders_sabnzbd_api_key: "44444444444444444444444444444444"
+vault_downloaders_sabnzbd_admin_username: nasadmin
+vault_downloaders_sabnzbd_admin_password: example-sabnzbd-password
+
 # ntfy tokens are tk_ plus 29 lowercase alphanumeric characters. Password
 # hashes are bcrypt values produced by the pinned ntfy image.
 vault_ntfy_admin_user: example-admin
@@ -61,8 +79,6 @@ vault_paperless_gmail_account: gmail@example.invalid
 vault_paperless_gmail_app_password: example-app-password
 vault_paperless_mail_account_name: example-mail-account
 vault_paperless_mail_rule_name: example-mail-rule
-
-vault_tinymediamanager_password: example-password
 
 # Synthetic examples only. Recover deployed identities and their matching
 # credentials during migration; do not use these placeholders in production.

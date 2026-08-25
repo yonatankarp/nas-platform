@@ -368,6 +368,11 @@ def jellyfin_identity_contract_failures
         "jellyfin_library_inventory_response | type_debug == 'list'"
       )
 
+  rename_wait = role_task.call("Wait for renamed Jellyfin managed library identities")
+  item_id_gate = rename_wait.dig("vars", "jellyfin_library_identity_inventory_globally_settled").to_s
+  failures << "Jellyfin renamed-library ItemId validation must type-filter before regex matching" unless
+    item_id_gate.match?(/map\(attribute='ItemId'\)\s*\|\s*select\('string'\)\s*\|\s*select\('match'/m)
+
   required = [
     "Preflight Jellyfin managed users",
     "List Jellyfin users for primary administrator preflight",
@@ -422,9 +427,14 @@ def jellyfin_identity_contract_failures
   create_library = main_tasks.find do |task|
     task_name(task) == "Create absent Jellyfin managed libraries"
   end
+  rename_library = main_tasks.find do |task|
+    task_name(task) == "Rename adopted Jellyfin managed libraries"
+  end
   refresh_library = main_tasks.find do |task|
     task_name(task) == "Refresh Jellyfin after managed library changes"
   end
+  failures << "Jellyfin library rename does not request identity refresh" unless
+    rename_library&.dig("ansible.builtin.uri", "url").to_s.include?("refreshLibrary=true")
   failures << "Jellyfin library creation starts a scan before reconciliation completes" unless
     create_library&.dig("ansible.builtin.uri", "url").to_s.include?("refreshLibrary=false")
   failures << "Jellyfin managed library reconciliation does not trigger one deferred refresh" unless

@@ -24,6 +24,24 @@ services:
   - name: paperless-ngx
     role: paperless_ngx
     status: implemented
-  - name: tinymediamanager
-    role: tinymediamanager
-    status: implemented
+  - name: arr
+    role: arr
+    status: planned
+  - name: downloaders
+    role: downloaders
+    status: planned
+  - name: bindery
+    role: bindery
+    status: planned
+  - name: kapowarr
+    role: kapowarr
+    status: planned
+  - name: pinchflat
+    role: pinchflat
+    status: planned
+  - name: trailarr
+    role: trailarr
+    status: planned
+  - name: seerr
+    role: seerr
+    status: planned

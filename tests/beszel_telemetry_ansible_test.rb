@@ -213,7 +213,7 @@ record_mutations = {
   "naive container timestamp" => ->(_system, container) { container["created"] = "2026-08-12T11:59:00" },
   "typed system timestamp" => ->(system, _container) { system["created"] = 123 },
   "typed container timestamp" => ->(_system, container) { container["created"] = 123 },
-  "future timestamp" => ->(system, _container) { system["created"] = (Time.now.utc + 60).strftime("%Y-%m-%d %H:%M:%S.%LZ") },
+  "future timestamp" => ->(system, _container) { system["created"] = "9999-12-31 23:59:59.999Z" },
   "whitespace GPU name" => ->(system, _container) { system.fetch("stats").fetch("g").fetch("0")["n"] = "  " },
   "whitespace container name" => ->(_system, container) { container.fetch("stats").fetch(0)["n"] = "  " }
 }

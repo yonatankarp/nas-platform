@@ -1,5 +1,5 @@
 #!/bin/sh
-# Container recreation for every deployed service, in the order the nine
+# Container recreation for every deployed service, in the order the eight
 # NN-service.sh hooks this replaces ran in. Each of those hooks was the same
 # fifteen lines: force-recreate the service's containers from the deployed
 # Compose bundle, then reassert the service's contract against the fresh
