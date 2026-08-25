@@ -7,7 +7,7 @@
       X-Api-Key: "{{ item.0.api_key }}"
     status_code: [200]
     return_content: true
-  loop: "{{ arr_servarr_instances | product(['config/host', 'config/mediamanagement', 'rootfolder', 'downloadclient']) | list }}"
+  loop: "{{ arr_servarr_instances | product(['config/host', 'config/mediamanagement', 'rootfolder']) | list }}"
   loop_control:
     label: "{{ item.0.name }}-{{ item.1 }}"
   register: arr_servarr_verification
@@ -41,12 +41,6 @@
          selectattr('item.1', 'equalto', 'rootfolder') |
          map(attribute='json') | first |
          selectattr('path', 'equalto', item.root_folder) | list | length) == 1
-      - >-
-        (arr_servarr_verification.results |
-         selectattr('item.0.name', 'equalto', item.name) |
-         selectattr('item.1', 'equalto', 'downloadclient') |
-         map(attribute='json') | first |
-         selectattr('name', 'equalto', arr_sabnzbd_client_name) | list | length) == 1
     fail_msg: A Servarr instance differs from the declared Phase 1 state.
   loop: "{{ arr_servarr_instances }}"
   loop_control:

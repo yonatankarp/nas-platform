@@ -61,6 +61,10 @@
       tags: [never]
     - role: komga
       tags: [never]
+    - role: arr
+      tags: [never]
+    - role: downloaders
+      tags: [never]
     - role: jellyfin
       tags: [never]
     - role: immich

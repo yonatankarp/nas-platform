@@ -1,0 +1,7 @@
+---
+- name: Reconcile each Servarr SABnzbd client after downloader startup
+  ansible.builtin.include_tasks: reconcile_servarr_download_client.yml
+  loop: "{{ arr_servarr_instances }}"
+  loop_control:
+    loop_var: arr_servarr_instance
+    label: "{{ arr_servarr_instance.name }}"

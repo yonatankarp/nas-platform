@@ -88,7 +88,9 @@ vault_checksum=$(shasum -a 256 "$vault_file" | awk '{print $1}')
   --beszel-port 38090 --ntfy-port 32586 --dozzle-port 38080 \
   --audiobookshelf-port 33378 --komga-port 35600 \
   --jellyfin-port 38096 \
-  --immich-port 32283 --paperless-port 38000
+  --immich-port 32283 --paperless-port 38000 \
+  --radarr-port 37878 --sonarr-port 38989 --prowlarr-port 36969 \
+  --bazarr-port 36767 --sabnzbd-port 38082
 ruby -rjson -e '
   input = JSON.parse(File.read(ARGV.fetch(0)))
   abort "report retained retired migration identity" if

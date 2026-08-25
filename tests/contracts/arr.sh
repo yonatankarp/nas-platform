@@ -19,6 +19,7 @@ required = %w[
   roles/arr/tasks/main.yml
   roles/arr/tasks/bootstrap.yml
   roles/arr/tasks/reconcile_servarr.yml
+  roles/arr/tasks/reconcile_servarr_download_client.yml
   roles/arr/tasks/reconcile_prowlarr.yml
   roles/arr/tasks/reconcile_bazarr.yml
   roles/arr/tasks/verify.yml
@@ -48,9 +49,8 @@ if failures.empty?
     main_source.include?("community.docker.docker_compose_v2")
   failures << "Arr role must gate activation on media_usenet_enabled" unless
     main_source.include?("media_usenet_enabled | bool")
-  failures << "Arr role must verify each daemon CPU policy" unless
-    main_source.include?("container_cpu_service_name: \"{{ item }}\"") &&
-      main_source.include?("loop: [radarr, sonarr, prowlarr, bazarr]")
+  failures << "Arr role must verify the complete project CPU policy once" unless
+    main_source.scan("container_cpu_service_name: arr").length == 1
 
   bootstrap = File.read(File.join(root, "roles/arr/tasks/bootstrap.yml"))
   failures << "Servarr bootstrap must preserve existing config.xml" unless
@@ -72,7 +72,8 @@ if failures.empty?
     %w[radarr sonarr prowlarr bazarr].all? { |name| env.include?("vault_arr_#{name}_api_key") }
 
   defaults_source = File.read(File.join(root, "roles/arr/defaults/main.yml"))
-  servarr = File.read(File.join(root, "roles/arr/tasks/reconcile_servarr.yml"))
+  servarr = File.read(File.join(root, "roles/arr/tasks/reconcile_servarr.yml")) +
+    File.read(File.join(root, "roles/arr/tasks/reconcile_servarr_download_client.yml"))
   failures << "Servarr reconciliation must own only the SABnzbd clients" unless
     servarr.include?("Sabnzbd") && defaults_source.include?("category: movies") &&
       defaults_source.include?("category: series")

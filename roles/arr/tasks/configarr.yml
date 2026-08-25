@@ -3,6 +3,8 @@
   ansible.builtin.template:
     src: configarr-secrets.yml.j2
     dest: "{{ platform_runtime_dir }}/services/arr/configarr-secrets.yml"
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
     mode: "0600"
   no_log: true
 

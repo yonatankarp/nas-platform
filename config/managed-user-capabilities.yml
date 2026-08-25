@@ -1,6 +1,16 @@
 ---
 schema: 1
 services:
+  arr:
+    preserves_unmanaged_users: true
+    password_rotation: refuse
+    existing_identity_password_update: forbidden
+    mode: api
+    interfaces:
+      list: Servarr config/host and Bazarr system/settings
+      create: deterministic first-start configuration
+      authenticate: X-Api-Key
+      reconcile: Servarr config/host and Bazarr system/settings
   audiobookshelf:
     preserves_unmanaged_users: true
     password_rotation: refuse
@@ -31,6 +41,16 @@ services:
       create: data/users.yml
       authenticate: api/token
       reconcile: data/users.yml
+  downloaders:
+    preserves_unmanaged_users: true
+    password_rotation: refuse
+    existing_identity_password_update: forbidden
+    mode: api
+    interfaces:
+      list: SABnzbd get_config
+      create: deterministic first-start configuration
+      authenticate: SABnzbd API key
+      reconcile: SABnzbd set_config
   immich:
     preserves_unmanaged_users: true
     password_rotation: refuse

@@ -79,6 +79,12 @@
   ansible.builtin.include_tasks: reconcile_sabnzbd.yml
   when: media_usenet_enabled | bool
 
+- name: Reconcile Arr download clients after SABnzbd startup
+  ansible.builtin.include_role:
+    name: arr
+    tasks_from: reconcile_download_clients
+  when: media_usenet_enabled | bool
+
 - name: Report the downloader deployment
   ansible.builtin.include_role:
     name: ntfy

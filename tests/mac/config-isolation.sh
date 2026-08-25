@@ -18,6 +18,11 @@ render() {
   jellyfin_port=$8
   immich_port=$9
   paperless_port=${10}
+  radarr_port=${11}
+  sonarr_port=${12}
+  prowlarr_port=${13}
+  bazarr_port=${14}
+  sabnzbd_port=${15}
 
   env PLATFORM_PROJECT_NAME="$base_name" BESZEL_HOST_PORT="$beszel_port" \
     NAS_DOCKER_ROOT="$temporary_dir/$label" NAS_MEDIA_ROOT="$temporary_dir/$label-media" \
@@ -107,10 +112,36 @@ render() {
       -f "$repo_dir/services/paperless-ngx/compose.yml" \
       -f "$repo_dir/services/paperless-ngx/compose.mac.yml" config --format json \
       > "$temporary_dir/$label-paperless.json"
+
+  env PLATFORM_PROJECT_NAME="$base_name" PLATFORM_MEDIA_NETWORK="$base_name-media-control" \
+    PLATFORM_CONTAINER_CPUSET=0-2 NAS_UID=1000 NAS_GID=100 TZ=UTC \
+    MEDIA_ROOT="$temporary_dir/$label-media" \
+    RADARR_CONFIG_PATH="$temporary_dir/$label-radarr-config" RADARR_HOST_PORT="$radarr_port" \
+    SONARR_CONFIG_PATH="$temporary_dir/$label-sonarr-config" SONARR_HOST_PORT="$sonarr_port" \
+    PROWLARR_CONFIG_PATH="$temporary_dir/$label-prowlarr-config" PROWLARR_HOST_PORT="$prowlarr_port" \
+    BAZARR_CONFIG_PATH="$temporary_dir/$label-bazarr-config" BAZARR_HOST_PORT="$bazarr_port" \
+    docker compose --project-name "$base_name-arr" \
+      -f "$repo_dir/services/arr/compose.yml" \
+      -f "$repo_dir/services/arr/compose.mac.yml" config --format json \
+      > "$temporary_dir/$label-arr.json"
+
+  env PLATFORM_PROJECT_NAME="$base_name" PLATFORM_MEDIA_NETWORK="$base_name-media-control" \
+    PLATFORM_CONTAINER_CPUSET=0-2 NAS_UID=1000 NAS_GID=100 TZ=UTC \
+    SABNZBD_CONFIG_PATH="$temporary_dir/$label-sabnzbd-config" \
+    MEDIA_ACQUISITION_PATH="$temporary_dir/$label-media/Media/.acquisition" \
+    BOOKS_ACQUISITION_PATH="$temporary_dir/$label-media/Books/.acquisition" \
+    SABNZBD_HOST_PORT="$sabnzbd_port" SABNZBD_API_KEY=test \
+    RADARR_API_KEY=test SONARR_API_KEY=test \
+    docker compose --project-name "$base_name-downloaders" \
+      -f "$repo_dir/services/downloaders/compose.yml" \
+      -f "$repo_dir/services/downloaders/compose.mac.yml" config --format json \
+      > "$temporary_dir/$label-downloaders.json"
 }
 
-render first nas-platform-mac-first 38090 32586 38080 33378 35600 38096 32283 38000
-render second nas-platform-mac-second 38091 32587 38081 33379 35601 38097 32284 38001
+render first nas-platform-mac-first 38090 32586 38080 33378 35600 38096 32283 38000 \
+  37878 38989 36969 36767 38082
+render second nas-platform-mac-second 38091 32587 38081 33379 35601 38097 32284 38001 \
+  37879 38990 36970 36768 38083
 
 ruby -rjson - "$temporary_dir" <<'RUBY'
 directory = ARGV.fetch(0)
@@ -130,6 +161,10 @@ first_immich = JSON.parse(File.read(File.join(directory, "first-immich.json")))
 second_immich = JSON.parse(File.read(File.join(directory, "second-immich.json")))
 first_paperless = JSON.parse(File.read(File.join(directory, "first-paperless.json")))
 second_paperless = JSON.parse(File.read(File.join(directory, "second-paperless.json")))
+first_arr = JSON.parse(File.read(File.join(directory, "first-arr.json")))
+second_arr = JSON.parse(File.read(File.join(directory, "second-arr.json")))
+first_downloaders = JSON.parse(File.read(File.join(directory, "first-downloaders.json")))
+second_downloaders = JSON.parse(File.read(File.join(directory, "second-downloaders.json")))
 
 def published(config, service)
   config.dig("services", service, "ports", 0, "published").to_s
@@ -165,7 +200,9 @@ end
   [first_komga, second_komga, "Komga"],
   [first_jellyfin, second_jellyfin, "Jellyfin"],
   [first_immich, second_immich, "Immich"],
-  [first_paperless, second_paperless, "Paperless"]
+  [first_paperless, second_paperless, "Paperless"],
+  [first_arr, second_arr, "Arr"],
+  [first_downloaders, second_downloaders, "downloaders"]
 ].each do |first, second, stack|
   assert_dozzle_aliases_and_distinct_names(first, second, stack)
 end
@@ -251,6 +288,15 @@ raise "Paperless Mac runtime left the Compose network" if
   raise "Paperless #{service} publishes a host port" if
     first_paperless.dig("services", service).key?("ports")
 end
+
+%w[radarr sonarr prowlarr bazarr].each do |service|
+  raise "Arr #{service} published ports collide" if
+    published(first_arr, service) == published(second_arr, service)
+end
+raise "SABnzbd published ports collide" if
+  published(first_downloaders, "sabnzbd") == published(second_downloaders, "sabnzbd")
+raise "Unpackerr publishes a host port" if
+  first_downloaders.dig("services", "unpackerr").key?("ports")
 
 raise "Mac socket proxy publishes a host port" if first_beszel.dig("services", "socket-proxy").key?("ports")
 raise "Dozzle socket proxy publishes a host port" if first_dozzle.dig("services", "socket-proxy").key?("ports")

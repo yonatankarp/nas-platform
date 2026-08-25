@@ -127,8 +127,8 @@ case "$suite" in
   # rather than at anything the suite is about. These must stay equal to
   # SERVICE_TAGS in tests/ci/classify_changes.rb, which the policy test checks.
   foundation) fixed_tags=deployment_bundle ;;
-  arr) fixed_tags=host_prep,deployment_bundle,media_acquisition_foundation ;;
-  downloaders) fixed_tags=host_prep,deployment_bundle,media_acquisition_foundation ;;
+  arr) fixed_tags=host_prep,deployment_bundle,ntfy,arr ;;
+  downloaders) fixed_tags=host_prep,deployment_bundle,ntfy,arr,downloaders ;;
   bindery) fixed_tags=host_prep,deployment_bundle,media_acquisition_foundation ;;
   kapowarr) fixed_tags=host_prep,deployment_bundle,media_acquisition_foundation ;;
   pinchflat) fixed_tags=host_prep,deployment_bundle,media_acquisition_foundation ;;
@@ -281,6 +281,8 @@ komga komga
 jellyfin jellyfin
 immich immich
 paperless paperless-ngx
+arr arr
+downloaders downloaders
 '
 
 # Retry budget for a registry that refuses. Both values are floored rather than
@@ -327,8 +329,6 @@ suite_pull_images() {
         *",$service_tag,"*) ;;
         *)
           case "$suite:$service_tag" in
-            arr:ntfy|arr:audiobookshelf|arr:jellyfin|\
-            downloaders:ntfy|downloaders:audiobookshelf|downloaders:jellyfin|\
             bindery:ntfy|bindery:audiobookshelf|bindery:jellyfin|\
             kapowarr:ntfy|kapowarr:audiobookshelf|kapowarr:jellyfin|\
             pinchflat:ntfy|pinchflat:audiobookshelf|pinchflat:jellyfin|\
@@ -339,8 +339,12 @@ suite_pull_images() {
           ;;
       esac
     fi
-    sed -n 's/^[[:space:]]*image:[[:space:]]*//p' \
-      "$repo_dir/services/$service_dir/compose.yml"
+    for compose_source in \
+      "$repo_dir/services/$service_dir/compose.yml" \
+      "$repo_dir/services/$service_dir/compose.jobs.yml"; do
+      [ -f "$compose_source" ] || continue
+      sed -n 's/^[[:space:]]*image:[[:space:]]*//p' "$compose_source"
+    done
   done
 }
 
@@ -898,6 +902,15 @@ docker run --rm \
     git -C '$controller_test_dir' checkout -q -- .
     fi
 
+    integration_media_usenet_enabled=false
+    integration_media_adopt_existing=false
+    case "\$INTEGRATION_SUITE" in
+      arr|downloaders)
+        integration_media_usenet_enabled=true
+        integration_media_adopt_existing=true
+        ;;
+    esac
+
     run_play() {
       ansible-playbook \
         -i inventory/local.yml \
@@ -909,6 +922,8 @@ docker run --rm \
         -e nas_media_root=$sandbox/volume2 \
         -e platform_compose_kind=integration \
         -e platform_beszel_agent_kind=portable \
+        -e media_usenet_enabled="\$integration_media_usenet_enabled" \
+        -e media_acquisition_adopt_existing_libraries="\$integration_media_adopt_existing" \
         -e deployment_bundle_test_mode=true \
         -e deployment_bundle_allow_dirty_controller=true \
         \"\$playbook\" \"\$@\"
@@ -1220,6 +1235,40 @@ docker run --rm \
         -e deployment_bundle_allow_dirty_controller=true \
         /repo/verify.yml \
         --tags platform_verify_audiobookshelf
+    }
+
+    run_arr_verify_only() {
+      PLATFORM_VAULT_FILE="\$vault_file" ansible-playbook \
+        -i inventory/local.yml \
+        --vault-password-file "\$vault_password_file" \
+        -e @"\$vault_file" \
+        -e platform_vault_file="\$vault_file" \
+        -e nas_docker_root=$sandbox/volume1/Docker \
+        -e nas_media_root=$sandbox/volume2 \
+        -e platform_compose_kind=integration \
+        -e platform_beszel_agent_kind=portable \
+        -e deployment_bundle_test_mode=true \
+        -e deployment_bundle_allow_dirty_controller=true \
+        -e media_usenet_enabled=true \
+        /repo/verify.yml \
+        --tags platform_verify_arr
+    }
+
+    run_downloaders_verify_only() {
+      PLATFORM_VAULT_FILE="\$vault_file" ansible-playbook \
+        -i inventory/local.yml \
+        --vault-password-file "\$vault_password_file" \
+        -e @"\$vault_file" \
+        -e platform_vault_file="\$vault_file" \
+        -e nas_docker_root=$sandbox/volume1/Docker \
+        -e nas_media_root=$sandbox/volume2 \
+        -e platform_compose_kind=integration \
+        -e platform_beszel_agent_kind=portable \
+        -e deployment_bundle_test_mode=true \
+        -e deployment_bundle_allow_dirty_controller=true \
+        -e media_usenet_enabled=true \
+        /repo/verify.yml \
+        --tags platform_verify_downloaders
     }
 
     converge_media_acquisition_reader_prerequisites() {
@@ -1538,6 +1587,7 @@ docker run --rm \
       case \$lifecycle_event in
         converge)
           perform_initial_converge "\$@"
+          integration_media_adopt_existing=false
           ;;
         success)
           lifecycle_success=true
@@ -1571,10 +1621,7 @@ EOF
       /repo /repo/services/manifest.yml nas integration '$expected_release_id'
 
     case "\$INTEGRATION_SUITE" in
-      arr|downloaders|bindery|kapowarr|pinchflat|trailarr|seerr)
-        if [ "\$INTEGRATION_SUITE" = arr ]; then
-          /repo/tests/media_control_network_collision_test.sh live
-        fi
+      bindery|kapowarr|pinchflat|trailarr|seerr)
         /repo/tests/contracts/"\$INTEGRATION_SUITE"-foundation.sh static
         converge_media_acquisition_reader_prerequisites
         run_media_acquisition_foundation_verify
@@ -1583,6 +1630,27 @@ EOF
         exit 0
         ;;
     esac
+
+    if [ "\$INTEGRATION_SUITE" = arr ]; then
+      /repo/tests/media_control_network_collision_test.sh live
+      /repo/tests/contracts/arr.sh static
+      run_arr_verify_only
+      run_play --tags arr --check --diff
+      printf 'ARR_PHASE1_RUNTIME_VERIFIED\n'
+      cleanup_vault
+      exit 0
+    fi
+
+    if [ "\$INTEGRATION_SUITE" = downloaders ]; then
+      /repo/tests/contracts/arr.sh static
+      /repo/tests/contracts/downloaders.sh static
+      run_arr_verify_only
+      run_downloaders_verify_only
+      run_play --tags arr,downloaders --check --diff
+      printf 'DOWNLOADERS_PHASE1_RUNTIME_VERIFIED\n'
+      cleanup_vault
+      exit 0
+    fi
 
     if [ "\$INTEGRATION_SUITE" = smoke ]; then
       cleanup_vault

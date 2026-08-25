@@ -1,0 +1,116 @@
+---
+- name: Read Servarr download clients
+  ansible.builtin.uri:
+    url: "{{ arr_servarr_instance.api }}/downloadclient"
+    method: GET
+    headers:
+      X-Api-Key: "{{ arr_servarr_instance.api_key }}"
+    status_code: [200]
+    return_content: true
+  register: arr_servarr_clients_before
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Find named Servarr SABnzbd clients
+  ansible.builtin.set_fact:
+    arr_servarr_sab_name_matches: >-
+      {{ arr_servarr_clients_before.json |
+         selectattr('name', 'equalto', arr_sabnzbd_client_name) | list }}
+    arr_servarr_sab_host_matches: []
+  changed_when: false
+  no_log: true
+
+- name: Find Servarr clients using the owned SABnzbd URL
+  ansible.builtin.set_fact:
+    arr_servarr_sab_host_matches: "{{ arr_servarr_sab_host_matches + [item] }}"
+  loop: "{{ arr_servarr_clients_before.json }}"
+  loop_control:
+    label: servarr-download-client-url
+  vars:
+    arr_client_host: >-
+      {{ item.fields | default([]) | selectattr('name', 'equalto', 'host') |
+         map(attribute='value') | first | default('') }}
+    arr_client_port: >-
+      {{ item.fields | default([]) | selectattr('name', 'equalto', 'port') |
+         map(attribute='value') | first | default(0) }}
+  when:
+    - arr_client_host == arr_sabnzbd_host
+    - arr_client_port | int == arr_sabnzbd_port | int
+  changed_when: false
+  no_log: true
+
+- name: Refuse ambiguous Servarr SABnzbd ownership
+  ansible.builtin.assert:
+    that:
+      - arr_servarr_clients_before.json is sequence
+      - arr_servarr_sab_name_matches | length <= 1
+      - arr_servarr_sab_host_matches | length <= 1
+      - >-
+        arr_servarr_sab_name_matches | length == 0 or
+        arr_servarr_sab_host_matches | length == 0 or
+        arr_servarr_sab_name_matches[0].id == arr_servarr_sab_host_matches[0].id
+    fail_msg: "{{ arr_servarr_instance.name }} has duplicate SABnzbd names or URLs."
+  no_log: true
+
+- name: Build the owned Servarr SABnzbd client
+  ansible.builtin.set_fact:
+    arr_servarr_sab_client:
+      enable: true
+      protocol: usenet
+      priority: 1
+      removeCompletedDownloads: true
+      removeFailedDownloads: true
+      name: "{{ arr_sabnzbd_client_name }}"
+      fields:
+        - {name: host, value: "{{ arr_sabnzbd_host }}"}
+        - {name: port, value: "{{ arr_sabnzbd_port }}"}
+        - {name: useSsl, value: false}
+        - {name: urlBase, value: ""}
+        - {name: apiKey, value: "{{ vault_downloaders_sabnzbd_api_key }}"}
+        - {name: username, value: "{{ vault_downloaders_sabnzbd_admin_username }}"}
+        - {name: password, value: "{{ vault_downloaders_sabnzbd_admin_password }}"}
+        - name: "{{ 'movieCategory' if arr_servarr_instance.name == 'radarr' else 'tvCategory' }}"
+          value: "{{ arr_servarr_instance.category }}"
+      implementationName: SABnzbd
+      implementation: Sabnzbd
+      configContract: SabnzbdSettings
+      tags: []
+  changed_when: false
+  no_log: true
+
+- name: Determine whether the Servarr SABnzbd client differs
+  ansible.builtin.set_fact:
+    arr_servarr_sab_client_needs_update: >-
+      {{ arr_servarr_sab_name_matches | length == 0 or
+         (arr_servarr_sab_name_matches[0].enable | default(false) | bool != true) or
+         (arr_servarr_sab_name_matches[0].fields | selectattr('name', 'equalto', 'host') |
+          map(attribute='value') | first | default('')) != arr_sabnzbd_host or
+         (arr_servarr_sab_name_matches[0].fields | selectattr('name', 'equalto', 'port') |
+          map(attribute='value') | first | default(0) | int) != arr_sabnzbd_port | int or
+         (arr_servarr_sab_name_matches[0].fields |
+          selectattr('name', 'equalto',
+                     ('movieCategory' if arr_servarr_instance.name == 'radarr' else 'tvCategory')) |
+          map(attribute='value') | first | default('')) != arr_servarr_instance.category }}
+  changed_when: false
+  no_log: true
+
+- name: Reconcile the owned Servarr SABnzbd client
+  ansible.builtin.uri:
+    url: >-
+      {{ arr_servarr_instance.api }}/downloadclient{{
+         '/' ~ arr_servarr_sab_name_matches[0].id
+         if arr_servarr_sab_name_matches | length == 1 else '' }}
+    method: "{{ 'PUT' if arr_servarr_sab_name_matches | length == 1 else 'POST' }}"
+    headers:
+      X-Api-Key: "{{ arr_servarr_instance.api_key }}"
+    body_format: json
+    body: >-
+      {{ (arr_servarr_sab_name_matches[0]
+          if arr_servarr_sab_name_matches | length == 1 else {}) |
+         combine(arr_servarr_sab_client, recursive=True) }}
+    status_code: [200, 201, 202]
+    return_content: true
+  when: arr_servarr_sab_client_needs_update | bool
+  changed_when: true
+  no_log: true

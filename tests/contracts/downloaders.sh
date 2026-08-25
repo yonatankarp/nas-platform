@@ -54,6 +54,10 @@ if failures.empty?
     main_source.scan("container_cpu_service_name: downloaders").length == 1
   failures << "downloaders role must gate activation on media_usenet_enabled" unless
     main_source.include?("media_usenet_enabled | bool")
+  failures << "downloaders must reconcile Arr clients only after SABnzbd" unless
+    main_source.index("reconcile_sabnzbd.yml") &&
+      main_source.index("reconcile_download_clients") &&
+      main_source.index("reconcile_sabnzbd.yml") < main_source.index("reconcile_download_clients")
 
   env = File.read(File.join(root, "roles/downloaders/templates/env.j2"))
   failures << "downloaders env must render CPU set exactly once" unless

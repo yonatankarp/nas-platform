@@ -14,7 +14,7 @@
       - "{{ platform_current_dir }}/services/arr/compose.yml"
       - "{{ platform_current_dir }}/services/arr/compose.{{ platform_compose_kind }}.yml"
       - "{{ platform_current_dir }}/services/arr/compose.jobs.yml"
-      - "{{ platform_current_dir }}/roles/arr/files/configarr/config.yml"
+      - "{{ platform_current_dir }}/services/arr/configarr.yml"
       - "{{ platform_runtime_dir }}/services/arr"
       - "{{ platform_runtime_dir }}/services/arr/.env"
       - "{{ arr_radarr_config_host_path }}"
@@ -104,13 +104,12 @@
     ntfy_deployment_report_changed: "{{ arr_deploy is changed }}"
   when: media_usenet_enabled | bool
 
-- name: Verify each Arr daemon effective container CPU policy
+- name: Verify the Arr project effective container CPU policy
   ansible.builtin.include_role:
     name: container_cpu
   vars:
-    container_cpu_service_name: "{{ item }}"
+    container_cpu_service_name: arr
     container_cpu_project_name: "{{ arr_compose_project_name }}"
-  loop: [radarr, sonarr, prowlarr, bazarr]
   when:
     - media_usenet_enabled | bool
     - not ansible_check_mode

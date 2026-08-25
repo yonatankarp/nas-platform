@@ -84,6 +84,14 @@
     - role: komga
       tags: [komga, media]
 
+    # Acquisition writers follow the existing read-only library services. Arr
+    # converges first because downloader reconciliation consumes its API keys.
+    - role: arr
+      tags: [arr, media, media_acquisition_phase1]
+
+    - role: downloaders
+      tags: [downloaders, media, media_acquisition_phase1]
+
     - role: jellyfin
       tags: [jellyfin, media]
 

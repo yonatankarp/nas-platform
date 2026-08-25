@@ -64,6 +64,15 @@
   register: deployment_bundle_platform_sources
   delegate_to: localhost
 
+- name: Inspect one-shot job controller Compose definitions
+  ansible.builtin.stat:
+    path: "{{ playbook_dir }}/services/{{ item.name }}/compose.jobs.yml"
+  loop: "{{ deployment_bundle_services }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: deployment_bundle_job_sources
+  delegate_to: localhost
+
 - name: Revalidate before creating deployment and runtime directories
   ansible.builtin.include_tasks: target.yml
   vars:
@@ -178,6 +187,18 @@
   changed_when: false
   when: not ansible_check_mode
 
+- name: Copy the tracked Configarr declaration from the controller
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/roles/arr/files/configarr/config.yml"
+    dest: "{{ deployment_bundle_staging_dir }}/services/arr/configarr.yml"
+    mode: "0644"
+  changed_when: false
+  when:
+    - not ansible_check_mode
+    - >-
+      deployment_bundle_services |
+      selectattr('name', 'equalto', 'arr') | list | length == 1
+
 - name: Copy present platform-specific Compose definitions from the controller
   ansible.builtin.copy:
     src: "{{ item.stat.path }}"
@@ -185,6 +206,20 @@
       {{ deployment_bundle_staging_dir }}/services/{{ item.item.name }}/compose.{{ platform_compose_kind }}.yml
     mode: "0644"
   loop: "{{ deployment_bundle_platform_sources.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  changed_when: false
+  when:
+    - not ansible_check_mode
+    - item.stat.exists
+
+- name: Copy present one-shot job Compose definitions from the controller
+  ansible.builtin.copy:
+    src: "{{ item.stat.path }}"
+    dest: >-
+      {{ deployment_bundle_staging_dir }}/services/{{ item.item.name }}/compose.jobs.yml
+    mode: "0644"
+  loop: "{{ deployment_bundle_job_sources.results }}"
   loop_control:
     label: "{{ item.item.name }}"
   changed_when: false

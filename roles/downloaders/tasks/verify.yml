@@ -51,3 +51,39 @@
     label: sabnzbd-owned-misc-setting
   no_log: true
   tags: [platform_verify_downloaders]
+
+- name: Read Arr download clients for downloader verification
+  ansible.builtin.uri:
+    url: "{{ item.api }}/downloadclient"
+    method: GET
+    headers:
+      X-Api-Key: "{{ item.api_key }}"
+    status_code: [200]
+    return_content: true
+  loop: "{{ arr_servarr_instances }}"
+  loop_control:
+    label: "{{ item.name }}-sabnzbd-client"
+  register: downloaders_arr_clients_verification
+  changed_when: false
+  check_mode: false
+  no_log: true
+  tags: [platform_verify_downloaders]
+
+- name: Verify each Arr instance has one owned SABnzbd client
+  ansible.builtin.assert:
+    that:
+      - >-
+        item.json | selectattr('name', 'equalto', arr_sabnzbd_client_name) |
+        list | length == 1
+      - >-
+        (item.json | selectattr('name', 'equalto', arr_sabnzbd_client_name) |
+         first).fields |
+        selectattr('name', 'equalto',
+                   ('movieCategory' if item.item.name == 'radarr' else 'tvCategory')) |
+        map(attribute='value') | first == item.item.category
+    fail_msg: An Arr SABnzbd client differs from the downloader-owned connection state.
+  loop: "{{ downloaders_arr_clients_verification.results }}"
+  loop_control:
+    label: "{{ item.item.name }}-sabnzbd-client"
+  no_log: true
+  tags: [platform_verify_downloaders]
