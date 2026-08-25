@@ -733,6 +733,7 @@ docker run --rm \
   -e INTEGRATION_SUITE="$suite" \
   -e INTEGRATION_TAGS="$suite_tags" \
   -e INTEGRATION_RUN_SERVICE_SCENARIOS="$run_service_scenarios" \
+  -e MEDIA_CONTROL_COLLISION_IMAGE="$runner_image" \
   -e PLATFORM_PAPERLESS_FIXTURE_PRESEEDED="$paperless_fixture_preseeded" \
   -e PLATFORM_KOMGA_FIXTURE_PRESEEDED="$komga_fixture_preseeded" \
   -e PLATFORM_JELLYFIN_FIXTURE_PRESEEDED="$jellyfin_fixture_preseeded" \
@@ -1560,6 +1561,9 @@ EOF
 
     case "\$INTEGRATION_SUITE" in
       arr|downloaders|bindery|kapowarr|pinchflat|trailarr|seerr)
+        if [ "\$INTEGRATION_SUITE" = arr ]; then
+          /repo/tests/media_control_network_collision_test.sh live
+        fi
         /repo/tests/contracts/"\$INTEGRATION_SUITE"-foundation.sh static
         converge_media_acquisition_reader_prerequisites
         run_media_acquisition_foundation_verify

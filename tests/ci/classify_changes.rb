@@ -74,6 +74,9 @@ module ClassifyChanges
     roles/host_prep/tasks/verify_media_acquisition.yml
     tests/media_acquisition_foundation_verifier_test.rb
   ].freeze
+  ACQUISITION_OWNED_PATHS = {
+    "tests/media_control_network_collision_test.sh" => "arr"
+  }.freeze
 
   module_function
 
@@ -92,6 +95,11 @@ module ClassifyChanges
 
       if ACQUISITION_SHARED_PATHS.include?(path)
         tagged_lanes.concat(ACQUISITION_LANES)
+        next
+      end
+
+      if (owner = ACQUISITION_OWNED_PATHS[path])
+        tagged_lanes << owner
         next
       end
 

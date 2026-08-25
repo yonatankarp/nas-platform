@@ -2,6 +2,42 @@
 set -eu
 
 repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+mode=${1:-live}
+
+case $mode in
+  static)
+    ruby -ryaml -e '
+      root = ARGV.fetch(0)
+      required = [
+        "Inspect an existing exact-name media control network",
+        "Refuse an existing media control network owned by another project",
+        "Create the external media control network",
+        "Inspect the exact media control network after create-only handling",
+        "Require the exact media control network after create-only handling"
+      ]
+      tasks = YAML.safe_load_file(File.join(root, "roles/host_prep/tasks/main.yml"))
+      names = tasks.filter_map { |task| task["name"] }
+      missing = required - names
+      abort "media control network task extraction is incomplete: #{missing.join(", ")}" unless
+        missing.empty?
+    ' "$repo_dir"
+    printf '%s\n' 'media control network collision: static create-only contract present'
+    exit 0
+    ;;
+  live) ;;
+  *)
+    printf 'unknown media control collision test mode: %s\n' "$mode" >&2
+    exit 2
+    ;;
+esac
+
+collision_image=${MEDIA_CONTROL_COLLISION_IMAGE:-}
+printf '%s' "$collision_image" | ruby -e '
+  image = STDIN.read
+  abort "MEDIA_CONTROL_COLLISION_IMAGE must be digest-pinned" unless
+    image.match?(/\A[^[:space:]@]+@sha256:[0-9a-f]{64}\z/)
+'
+
 fixture=$(mktemp -d "${TMPDIR:-/tmp}/media-control-collision.XXXXXX")
 suffix=$(basename "$fixture" | tr '[:upper:].' '[:lower:]-')
 network=nas-platform-$suffix-media-control
@@ -49,8 +85,9 @@ ruby -ryaml -e '
       "name" => "Attach an unrelated endpoint to the late collision",
       "ansible.builtin.command" => {
         "argv" => ["docker", "create", "--name", "{{ collision_container }}",
+                   "--pull=never",
                    "--network", "{{ platform_media_control_network }}",
-                   "ruby:3.2-alpine", "sleep", "300"]
+                   "{{ collision_image }}", "sleep", "300"]
       },
       "changed_when" => true
     },
@@ -96,7 +133,8 @@ for collision in unlabeled wrong_labels; do
         --label nas.platform.project=somebody-else "$network" >/dev/null
       ;;
   esac
-  docker create --name "$container" --network "$network" ruby:3.2-alpine sleep 300 >/dev/null
+  docker create --pull=never --name "$container" --network "$network" \
+    "$collision_image" sleep 300 >/dev/null
   docker start "$container" >/dev/null
   before_id=$(docker network inspect "$network" --format '{{.Id}}')
   endpoint_id=$(docker inspect "$container" --format '{{.Id}}')
@@ -164,6 +202,7 @@ output=$(ANSIBLE_ROLES_PATH="$repo_dir/roles" ansible-playbook -i localhost, \
   -e platform_media_control_network="$network" \
   -e platform_project_name=nas-platform-collision-owner \
   -e collision_container="$container" \
+  -e collision_image="$collision_image" \
   -e race_network_id_file="$fixture/race-network-id" \
   -e ansible_python_interpreter="$ansible_python" 2>&1) || status=$?
 [ "$status" -ne 0 ] || {

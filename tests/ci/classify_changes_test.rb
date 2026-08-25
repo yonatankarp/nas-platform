@@ -42,6 +42,7 @@ if defined?(ClassifyChanges)
     ["services/downloaders/compose.yml"] => %w[static downloaders idempotence_check],
     ["tests/expected/bindery.yml"] => %w[static bindery idempotence_check],
     ["tests/contracts/kapowarr-foundation.sh"] => %w[static kapowarr idempotence_check],
+    ["tests/media_control_network_collision_test.sh"] => %w[static arr idempotence_check],
     ["config/media-acquisition.yml"] => %w[static arr downloaders bindery kapowarr pinchflat trailarr seerr idempotence_check],
     ["roles/host_prep/tasks/verify_media_acquisition.yml"] => %w[static arr downloaders bindery kapowarr pinchflat trailarr seerr idempotence_check],
     ["roles/deployment_bundle/tasks/main.yml"] => LANES,

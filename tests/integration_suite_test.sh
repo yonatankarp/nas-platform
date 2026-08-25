@@ -553,6 +553,20 @@ chmod +x "$prepull_bin/docker"
 runner_image=$(sed -n 's/^runner_image=//p' "$integration")
 [ -n "$runner_image" ] || prepull_fail 'could not read the controller image pin'
 
+collision_test=$repo_dir/tests/media_control_network_collision_test.sh
+grep -qxF 'tests/media_control_network_collision_test.sh static' \
+  "$repo_dir/tests/validate-policy.sh" ||
+  prepull_fail 'static policy does not select the registry-free collision contract'
+if grep -qF 'ruby:3.2-alpine' "$collision_test"; then
+  prepull_fail 'collision runtime still uses a mutable Docker Hub fixture image'
+fi
+[ "$(grep -Fc -- '--pull=never' "$collision_test")" -eq 2 ] ||
+  prepull_fail 'both collision endpoints must explicitly refuse implicit pulls'
+grep -qF 'MEDIA_CONTROL_COLLISION_IMAGE="$runner_image"' "$integration" ||
+  prepull_fail 'the owning integration lane does not pass its pre-pulled controller image'
+grep -qF '/repo/tests/media_control_network_collision_test.sh live' "$integration" ||
+  prepull_fail 'the owning integration lane does not execute the live collision test'
+
 compose_images() {
   sed -n 's/^[[:space:]]*image:[[:space:]]*//p' "$repo_dir/services/$1/compose.yml"
 }
