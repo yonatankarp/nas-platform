@@ -19,10 +19,11 @@
       - downloaders_sabnzbd_verification.json is mapping
       - downloaders_sabnzbd_verification.json.config is mapping
       - downloaders_sabnzbd_verification.json.config.misc is mapping
-      - downloaders_sabnzbd_verification.json.config.categories is mapping
+      - downloaders_sabnzbd_verification.json.config.categories is sequence
       - >-
         downloaders_sabnzbd_categories | dict2items |
-        selectattr('key', 'in', downloaders_sabnzbd_verification.json.config.categories.keys()) |
+        selectattr('key', 'in', downloaders_sabnzbd_verification.json.config.categories |
+                   map(attribute='name') | list) |
         list | length == downloaders_sabnzbd_categories | length
     fail_msg: SABnzbd verification did not observe the complete owned configuration.
   no_log: true
@@ -31,7 +32,10 @@
 - name: Verify each SABnzbd category destination
   ansible.builtin.assert:
     that:
-      - downloaders_sabnzbd_verification.json.config.categories[item.key].dir == item.value
+      - >-
+        downloaders_sabnzbd_verification.json.config.categories |
+        selectattr('name', 'equalto', item.key) | map(attribute='dir') |
+        first == item.value
     fail_msg: A SABnzbd category destination differs from the declared acquisition path.
   loop: "{{ downloaders_sabnzbd_categories | dict2items }}"
   loop_control:

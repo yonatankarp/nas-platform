@@ -18,7 +18,7 @@
       - downloaders_sabnzbd_config_before.json is mapping
       - downloaders_sabnzbd_config_before.json.config is mapping
       - downloaders_sabnzbd_config_before.json.config.misc is mapping
-      - downloaders_sabnzbd_config_before.json.config.categories is mapping
+      - downloaders_sabnzbd_config_before.json.config.categories is sequence
     fail_msg: SABnzbd returned an unsupported configuration schema before reconciliation.
   no_log: true
 
@@ -53,7 +53,8 @@
   loop_control:
     label: sabnzbd-category
   when: >-
-    item.key not in downloaders_sabnzbd_config_before.json.config.categories or
-    downloaders_sabnzbd_config_before.json.config.categories[item.key].dir | default('') != item.value
+    downloaders_sabnzbd_config_before.json.config.categories |
+    selectattr('name', 'equalto', item.key) | map(attribute='dir') |
+    first | default('') != item.value
   changed_when: true
   no_log: true

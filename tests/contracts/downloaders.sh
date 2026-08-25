@@ -73,6 +73,14 @@ if failures.empty?
   end
   failures << "every SABnzbd credential-bearing API task must use no_log" unless
     !secret_tasks.empty? && secret_tasks.all? { |task| task["no_log"] == true }
+  reconcile_source = File.read(File.join(root, "roles/downloaders/tasks/reconcile_sabnzbd.yml"))
+  verify_source = File.read(File.join(root, "roles/downloaders/tasks/verify.yml"))
+  failures << "SABnzbd categories must be reconciled from the API list schema" unless
+    [reconcile_source, verify_source].all? do |source|
+      source.include?("config.categories is sequence") && source.include?("selectattr('name'")
+    end
+  failures << "SABnzbd categories must not be treated as a mapping" if
+    [reconcile_source, verify_source].any? { |source| source.include?("config.categories is mapping") }
 
   template = File.read(File.join(root, "roles/downloaders/templates/sabnzbd.ini.j2"))
   failures << "bootstrap must bind SABnzbd on all container interfaces" unless
