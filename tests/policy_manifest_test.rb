@@ -161,13 +161,14 @@ expect_acquisition_failure.call(
 end
 expect_acquisition_failure.call(
   "media control network driver changed",
-  "host preparation must create the derived bridge media control network"
+  "host preparation must create the derived bridge media control network atomically"
 ) do |root|
   mutate_yaml_file(root, "roles/host_prep/tasks/main.yml") do |tasks|
     task = tasks.find do |entry|
       entry["name"] == "Create the external media control network"
     end
-    task.fetch("community.docker.docker_network")["driver"] = "overlay"
+    argv = task.fetch("ansible.builtin.command").fetch("argv")
+    argv[argv.index("bridge")] = "overlay"
   end
 end
 {
@@ -176,21 +177,25 @@ end
 }.each do |label_name, label_value|
   short_name = label_name.delete_prefix("nas.platform.")
   {
-    "deleted" => proc { |labels| labels.delete(label_name) },
-    "renamed" => proc do |labels|
-      labels["renamed.#{label_name}"] = labels.delete(label_name)
+    "deleted" => proc { |argv| argv.delete("#{label_name}=#{label_value}") },
+    "renamed" => proc do |argv|
+      index = argv.index("#{label_name}=#{label_value}")
+      argv[index] = "renamed.#{label_name}=#{label_value}"
     end,
-    "wrong value" => proc { |labels| labels[label_name] = "wrong-#{label_value}" }
+    "wrong value" => proc do |argv|
+      index = argv.index("#{label_name}=#{label_value}")
+      argv[index] = "#{label_name}=wrong-#{label_value}"
+    end
   }.each do |mutation_name, mutation|
     expect_acquisition_failure.call(
       "media control #{short_name} label #{mutation_name}",
-      "host preparation must create the derived bridge media control network"
+      "host preparation must create the derived bridge media control network atomically"
     ) do |root|
       mutate_yaml_file(root, "roles/host_prep/tasks/main.yml") do |tasks|
         task = tasks.find do |entry|
           entry["name"] == "Create the external media control network"
         end
-        mutation.call(task.fetch("community.docker.docker_network").fetch("labels"))
+        mutation.call(task.fetch("ansible.builtin.command").fetch("argv"))
       end
     end
   end
