@@ -1720,6 +1720,8 @@ end
   "Mac hook coverage regression" => "tests/mac/hook-coverage-test.sh",
   "media acquisition verifier regression" =>
     "ruby tests/media_acquisition_foundation_verifier_test.rb",
+  "host preparation integration writer regression" =>
+    "ruby tests/host_prep_integration_writer_test.rb",
   "media acquisition hook regression" =>
     "tests/mac/media-acquisition-foundation-hook-test.sh",
   "media acquisition report regression" =>

@@ -100,6 +100,7 @@ BASE_FIXTURE_PATHS = %w[
   tests/generate-secrets-redaction-test.sh
   tests/mac_inventory_path_test.yml
   tests/media_acquisition_foundation_test.rb
+  tests/host_prep_integration_writer_test.rb
   tests/media_acquisition_foundation_verifier_test.rb
   tests/managed_user_state_filter_test.py
   tests/ntfy_verify_execution_test.rb
