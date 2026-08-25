@@ -98,6 +98,13 @@
   when: jellyfin_settings_phase == 'preflight'
   no_log: true
 
+# Deliberately not redacted. Unlooped, so the result dict adds only the source text of
+# the failing condition, and both conditions read plugin repository URLs: the live
+# inventory and jellyfin_plugin_repositories, a static literal in the role defaults. No
+# Open Subtitles credential is in reach here, unlike the plugin-configuration asserts
+# further down this file, which stay redacted. The fail_msg only ever says "duplicated",
+# but the second condition is not a duplicate at all: it catches the normalized-URL index
+# losing an entry, which is a bug in this role rather than something to resolve manually.
 - name: Refuse duplicate Jellyfin plugin repository URLs
   ansible.builtin.assert:
     that:
@@ -111,7 +118,6 @@
       Jellyfin plugin repository URLs are duplicated after case, whitespace, and
       trailing-slash normalization; resolve them manually before mutation.
   when: jellyfin_settings_phase == 'preflight'
-  no_log: true
 
 # Deliberately after the duplicate refusal, not folded into the task above it:
 # the merge is only meaningful once the URLs are known to be distinct, and

@@ -634,6 +634,13 @@
   check_mode: false
   no_log: true
 
+# Deliberately not redacted. Unlooped, so the result dict adds only the source text of
+# the failing condition, and the three conditions read the server-configuration document
+# Jellyfin returned, reaching one field, ServerName. The registered response above stays
+# redacted because it was fetched with the reconcile token. "Incomplete" covered three
+# faults that need different responses: Jellyfin answered with something that is not a
+# document at all, answered without a ServerName, or answered with a ServerName that is
+# not a string.
 - name: Require complete Jellyfin server configuration
   ansible.builtin.assert:
     that:
@@ -642,7 +649,6 @@
       - jellyfin_server_configuration_before.json.ServerName is string
     fail_msg: Jellyfin returned an incomplete server configuration; no owned state was changed.
   when: not ansible_check_mode or jellyfin_wizard_completed | bool
-  no_log: true
 
 - name: Resolve Jellyfin server name repair requirement
   ansible.builtin.set_fact:
@@ -819,6 +825,10 @@
   check_mode: false
   no_log: true
 
+# Deliberately not redacted, for the same reasons as the preflight read of the same
+# document above. This one guards the write: it runs immediately before the server name
+# is POSTed back, so knowing which of the three shape checks failed is what distinguishes
+# a Jellyfin that lost the document from one that changed the field's type.
 - name: Require complete refreshed Jellyfin server configuration
   ansible.builtin.assert:
     that:
@@ -831,7 +841,6 @@
   when:
     - not ansible_check_mode
     - jellyfin_server_name_update_required | default(false) | bool
-  no_log: true
 
 - name: Update the Jellyfin server name
   ansible.builtin.uri:
