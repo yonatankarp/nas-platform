@@ -6,8 +6,50 @@ require "tmpdir"
 require "yaml"
 
 ROOT = File.expand_path("..", __dir__)
-ANSIBLE_PLAYBOOK = File.expand_path("../../.venv/bin/ansible-playbook", ROOT)
-ANSIBLE_PYTHON = File.expand_path("../../.venv/bin/python", ROOT)
+
+def executable_on_path(name, path)
+  path.to_s.split(File::PATH_SEPARATOR).each do |directory|
+    next if directory.empty?
+
+    candidate = File.expand_path(File.join(directory, name))
+    return candidate if File.file?(candidate) && File.executable?(candidate)
+  end
+  nil
+end
+
+def resolve_ansible_runtime(path:, exported_python:)
+  playbook = executable_on_path("ansible-playbook", path)
+  raise "ansible-playbook is unavailable on PATH" unless playbook
+
+  if exported_python && File.file?(exported_python) && File.executable?(exported_python)
+    return [playbook, File.expand_path(exported_python)]
+  end
+
+  stdout, stderr, status = Open3.capture3({ "PATH" => path }, playbook, "--version")
+  unless status.success?
+    detail = stderr.lines.first&.strip
+    message = "ansible-playbook --version failed"
+    message += ": #{detail}" unless detail.to_s.empty?
+    raise message
+  end
+  managed_python = stdout.lines.filter_map do |line|
+    line[/ \((\/[^()\r\n]+)\)\s*\z/, 1] if line.start_with?("  python version = ")
+  end.first
+  unless managed_python && File.file?(managed_python) && File.executable?(managed_python)
+    detail = managed_python || "ansible-playbook --version did not report an executable path"
+    raise "Ansible managed Python interpreter is unavailable: #{detail}"
+  end
+
+  [playbook, managed_python]
+end
+
+begin
+  ANSIBLE_PLAYBOOK, ANSIBLE_PYTHON = resolve_ansible_runtime(
+    path: ENV.fetch("PATH", ""), exported_python: ENV["ansible_python"]
+  )
+rescue RuntimeError => e
+  abort e.message
+end
 TASKS = YAML.safe_load_file(File.join(ROOT, "roles", "host_prep", "tasks", "main.yml"))
 
 def deep_copy(value)
@@ -60,10 +102,73 @@ def expect_failure(failures, label, output, status)
   failures << "#{label}: unexpectedly passed"
 end
 
-failures = []
-unless File.executable?(ANSIBLE_PLAYBOOK) && File.executable?(ANSIBLE_PYTHON)
-  abort "pinned Ansible environment is unavailable"
+def resolver_contract_problems
+  problems = []
+  parent_venv_assumption = %w[.. .. .venv bin].join("/")
+  problems << "Ansible resolution must not assume a parent repository virtualenv" if
+    File.read(__FILE__).include?(parent_venv_assumption)
+  unless respond_to?(:resolve_ansible_runtime, true)
+    problems << "Ansible runtime resolver is unavailable"
+    return problems
+  end
+
+  Dir.mktmpdir("host-prep-writer-resolver-") do |fixture|
+    bin = File.join(fixture, "bin")
+    FileUtils.mkdir_p(bin)
+    exported_python = File.join(fixture, "exported-python")
+    derived_python = File.join(fixture, "derived-python")
+    [exported_python, derived_python].each do |path|
+      File.write(path, "#!/bin/sh\nexit 0\n")
+      File.chmod(0o755, path)
+    end
+    playbook = File.join(bin, "ansible-playbook")
+    File.write(playbook, <<~SH)
+      #!/bin/sh
+      printf '%s\n' 'ansible-playbook [core test]' \
+        '  python version = 3.14.0 (test build) (#{derived_python})'
+    SH
+    File.chmod(0o755, playbook)
+
+    exported_resolution = resolve_ansible_runtime(
+      path: bin, exported_python: exported_python
+    )
+    problems << "resolver did not select ansible-playbook from PATH" unless
+      exported_resolution.first == playbook
+    problems << "resolver did not prefer the exported managed Python" unless
+      exported_resolution.last == exported_python
+
+    derived_resolution = resolve_ansible_runtime(
+      path: bin, exported_python: File.join(fixture, "missing-exported-python")
+    )
+    problems << "resolver did not derive managed Python from ansible-playbook --version" unless
+      derived_resolution == [playbook, derived_python]
+
+    File.chmod(0o644, derived_python)
+    begin
+      resolve_ansible_runtime(path: bin, exported_python: nil)
+      problems << "resolver accepted a non-executable managed Python"
+    rescue RuntimeError => e
+      problems << "resolver gave an imprecise managed-Python diagnostic" unless
+        e.message == "Ansible managed Python interpreter is unavailable: #{derived_python}"
+    ensure
+      File.chmod(0o755, derived_python)
+    end
+
+    empty_path = File.join(fixture, "empty-path")
+    FileUtils.mkdir_p(empty_path)
+    begin
+      resolve_ansible_runtime(path: empty_path, exported_python: exported_python)
+      problems << "resolver accepted PATH without ansible-playbook"
+    rescue RuntimeError => e
+      problems << "resolver gave an imprecise missing-playbook diagnostic" unless
+        e.message == "ansible-playbook is unavailable on PATH"
+    end
+  end
+  problems
 end
+
+failures = []
+failures.concat(resolver_contract_problems)
 
 writer_mode = production_task("Select synthetic integration writer ownership")
 writer_boundary = production_task("Require the exact integration media sandbox")
