@@ -17,9 +17,12 @@ off-site backup. RAID is not a backup.
 - [Ansible concepts used here](docs/ansible-basics.md)
 - [Adding a service](docs/adding-a-service.md)
 
-The service stacks in [`services/manifest.yml`](services/manifest.yml) are
-implemented. Prove the complete platform on the Mac before preparing a fresh
-production NAS installation.
+The [`services/manifest.yml`](services/manifest.yml) catalog distinguishes eight
+implemented service stacks from seven planned media-acquisition projects. Runtime
+role and service directories exist only for the implemented stacks; the planned
+entries remain inert and intentionally have no runtime role or Compose directory.
+Prove the implemented platform on the Mac before preparing a fresh production NAS
+installation.
 
 ## Design
 

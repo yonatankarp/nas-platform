@@ -806,6 +806,8 @@ else
   failures = check_sources(ROOT, SOURCES)
   documentation_contracts = {
     "README.md" => {
+      /manifest.*eight implemented service stacks.*seven planned (?:media-)?acquisition projects/im =>
+        "distinguish the eight implemented service stacks from the seven planned acquisition projects",
       /production retirement checkpoint has passed/i => "state that the production retirement checkpoint passed",
       /former metadata manager.*outside repository management.*not deleted/im =>
         "preserve former metadata-manager state outside repository management without claiming deletion",
@@ -838,6 +840,9 @@ else
       failures << "#{path} must #{description}" unless document.match?(pattern)
     end
   end
+  readme = ROOT.join("README.md").read.gsub("`", "").gsub(/\s+/, " ")
+  failures << "README.md must not describe every manifest service stack as implemented" if
+    readme.match?(/service stacks in .*services\/manifest\.yml.* are implemented/i)
   jellyfin_compose = ROOT.join("services/jellyfin/compose.yml").read
   failures << "Jellyfin media-mount comment must assign adjacent metadata to neutral media writers" unless
     jellyfin_compose.match?(/media writers own adjacent metadata.*Jellyfin remains read-only/im)
