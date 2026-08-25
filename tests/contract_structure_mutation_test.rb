@@ -62,11 +62,6 @@ SUITES = {
     environment: ->(repo) { { "PLATFORM_CONTRACT_REPO_DIR" => repo } },
     diagnostic: ->(message) { "Immich contract failed: #{message}" }
   },
-  tinymediamanager: {
-    command: ->(repo) { [File.join(repo, "tests", "contracts", "tinymediamanager.sh"), "static"] },
-    environment: ->(repo) { { "PLATFORM_CONTRACT_REPO_DIR" => repo } },
-    diagnostic: ->(message) { "tinyMediaManager contract failed: #{message}" }
-  },
   dozzle: {
     command: ->(repo) { [File.join(repo, "tests", "contracts", "dozzle.sh"), "static"] },
     environment: ->(repo) { { "PLATFORM_CONTRACT_REPO_DIR" => repo } },
@@ -187,7 +182,6 @@ AUDIOBOOKSHELF_ENVIRONMENT = "roles/audiobookshelf/templates/env.j2"
 IMMICH_ROLE = "roles/immich/tasks/main.yml"
 IMMICH_RESTORE = "roles/immich/tasks/restore.yml"
 IMMICH_ONBOARDING = "roles/immich/tasks/user_onboarding.yml"
-TINYMEDIAMANAGER_ROLE = "roles/tinymediamanager/tasks/main.yml"
 DOZZLE_ROLE = "roles/dozzle/tasks/main.yml"
 DOZZLE_DEFAULTS = "roles/dozzle/defaults/main.yml"
 PREFLIGHT = "roles/preflight/tasks/main.yml"
