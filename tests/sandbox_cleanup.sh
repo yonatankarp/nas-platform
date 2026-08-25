@@ -1,6 +1,12 @@
 #!/bin/sh
 
 cleanup_sandbox_image=docker.io/library/python:3.14-alpine@sha256:05b2b8b732ecd268fee8727a369f936f022d1321b59befd13c30ede22769dcdc
+cleanup_sandbox_containers='ntfy beszel beszel_agent beszel_agent_portable beszel_socket_proxy'
+cleanup_sandbox_containers="$cleanup_sandbox_containers dozzle_alert_relay dozzle dozzle_socket_proxy"
+cleanup_sandbox_containers="$cleanup_sandbox_containers audiobookshelf komga jellyfin"
+cleanup_sandbox_containers="$cleanup_sandbox_containers immich_server immich_machine_learning immich_redis immich_postgres"
+cleanup_sandbox_containers="$cleanup_sandbox_containers paperless_redis paperless_postgres paperless_webserver paperless_gotenberg paperless_tika"
+cleanup_sandbox_containers="$cleanup_sandbox_containers radarr sonarr prowlarr bazarr sabnzbd unpackerr"
 
 cleanup_sandbox_program() {
   cat <<'PY'
@@ -140,10 +146,7 @@ cleanup_sandbox() {
     return 1
   fi
 
-  for cleanup_container in ntfy beszel beszel_agent beszel_agent_portable beszel_socket_proxy \
-      dozzle_alert_relay dozzle dozzle_socket_proxy audiobookshelf komga jellyfin \
-      immich_server immich_machine_learning immich_redis immich_postgres \
-      paperless_redis paperless_postgres paperless_webserver paperless_gotenberg paperless_tika; do
+  for cleanup_container in $cleanup_sandbox_containers; do
     cleanup_container_ids=$(docker ps -aq --filter "name=^${cleanup_container}$") || return 1
     for cleanup_container_id in $cleanup_container_ids; do
       docker rm -f "$cleanup_container_id" >/dev/null || return 1

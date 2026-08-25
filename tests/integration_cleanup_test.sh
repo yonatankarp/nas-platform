@@ -22,6 +22,20 @@ python_root_symlink=
 python_victim=
 runner_image=docker.io/library/python:3.14-alpine@sha256:05b2b8b732ecd268fee8727a369f936f022d1321b59befd13c30ede22769dcdc
 
+test_cleanup_service_registry() {
+  for expected_cleanup_container in radarr sonarr prowlarr bazarr sabnzbd unpackerr; do
+    cleanup_container_registered=false
+    for registered_cleanup_container in $cleanup_sandbox_containers; do
+      [ "$registered_cleanup_container" != "$expected_cleanup_container" ] ||
+        cleanup_container_registered=true
+    done
+    [ "$cleanup_container_registered" = true ] || {
+      printf 'sandbox cleanup service is not registered: %s\n' "$expected_cleanup_container" >&2
+      exit 1
+    }
+  done
+}
+
 assert_cleanup_rejected() {
   rejected_path=$1
   if cleanup_sandbox "$rejected_path" 2>/dev/null; then
@@ -205,6 +219,7 @@ test_python_deletes_nested_entries() {
 }
 
 case "$test_case" in
+  service-registry) test_cleanup_service_registry; exit 0 ;;
   unsupported-stem) test_unsupported_stem; exit 0 ;;
   invalid-suffix) test_invalid_suffix_alphabet; exit 0 ;;
   docker-list) test_docker_failure list; exit 0 ;;
@@ -218,6 +233,7 @@ case "$test_case" in
 esac
 
 test_unsupported_stem
+test_cleanup_service_registry
 test_invalid_suffix_alphabet
 test_docker_failure list
 test_docker_failure rm
