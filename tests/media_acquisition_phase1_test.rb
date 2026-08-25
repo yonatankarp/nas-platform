@@ -187,6 +187,30 @@ check(failures, !configarr.key?("ports"), "Configarr must publish no ports")
   check(failures, File.file?(File.join(ROOT, relative_path)), "#{relative_path} must exist")
 end
 
+operator_guide_path = File.join(ROOT, "docs", "media-acquisition-phase1.md")
+operator_guide = File.file?(operator_guide_path) ? File.read(operator_guide_path) : ""
+check(failures, !operator_guide.empty?, "Phase 1 operator guide must exist")
+{
+  /media_usenet_enabled:\s*true/ => "guide must enable Usenet for one target",
+  /outside source control/i => "guide must keep provider and preference choices outside source control",
+  /media_acquisition_adopt_existing_libraries=true.*one convergence/im =>
+    "guide must bound the adoption override to one convergence",
+  /match.*Movies.*Series.*before.*rename.*monitor/im =>
+    "guide must review existing libraries before enabling rename or monitoring",
+  /one movie.*one episode.*required-language.*sidecar/im =>
+    "guide must require movie, episode, and subtitle-sidecar proof",
+  /media_bazarr_handoff_accepted.*Open Subtitles/im =>
+    "guide must record the Bazarr handoff before Open Subtitles removal",
+  /stop Radarr and Sonarr.*before.*legacy writer/im =>
+    "guide must stop acquisition writers before restoring a legacy writer"
+}.each do |pattern, message|
+  check(failures, operator_guide.match?(pattern), message)
+end
+%w[provider\ connectivity content\ acquisition NAS\ ACL\ correctness Open\ Subtitles\ retirement].each do |claim|
+  check(failures, operator_guide.match?(/does not claim.*#{claim}/im),
+        "guide must disclaim #{claim.tr('\\', '')}")
+end
+
 if failures.empty?
   puts "media acquisition phase 1: activation contract holds"
 else

@@ -9,6 +9,13 @@ editor. Do not put credentials in chat, command-line `-e` arguments, shell
 history, logs, tickets, or pull requests. Do not paste them into diagnostic
 output.
 
+Phase 1 provider/indexer fields and Bazarr preferences are target-owned inputs,
+not repository defaults. Keep them in the encrypted external extra-vars file
+described by the
+[media acquisition Phase 1 handoff](media-acquisition-phase1.md); never commit a
+plaintext provider configuration or place its fields directly on the command
+line.
+
 ## Start here: choose fresh or recovery
 
 A fresh platform has no deployed users, databases, agents, tokens, keys, or

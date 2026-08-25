@@ -14,12 +14,13 @@ off-site backup. RAID is not a backup.
 - [Beginner starting point](docs/getting-started.md)
 - [Disposable Mac walkthrough](docs/getting-started-mac.md)
 - [Physical NAS walkthrough](docs/getting-started-nas.md)
+- [Media acquisition Phase 1 handoff](docs/media-acquisition-phase1.md)
 - [Ansible concepts used here](docs/ansible-basics.md)
 - [Adding a service](docs/adding-a-service.md)
 
-The [`services/manifest.yml`](services/manifest.yml) catalog distinguishes eight
-implemented service stacks from seven planned media-acquisition projects. Runtime
-role and service directories exist only for the implemented stacks; the planned
+The [`services/manifest.yml`](services/manifest.yml) catalog distinguishes ten
+implemented service projects from five planned media-acquisition projects. Runtime
+role and service directories exist only for the implemented projects; the planned
 entries remain inert and intentionally have no runtime role or Compose directory.
 Prove the implemented platform on the Mac before preparing a fresh production NAS
 installation.
@@ -169,17 +170,18 @@ manager declarations have been removed from this repository. Former metadata
 manager application state is preserved outside repository management and was
 not deleted.
 
-Phase 0 creates only the derived `media-control` bridge network, acquisition
-and final directories, generated vault keys, immutable contracts, and CI
-scaffolding. The directories retain their declared `cache`, `user`, or
-`critical` recovery classes. All seven acquisition projects remain `planned`,
-and both enablement flags remain false. This phase does not start any
-acquisition container or download media.
+Phase 1 implements the `arr` and `downloaders` projects for Radarr, Sonarr,
+Prowlarr, Bazarr, Configarr, SABnzbd, and Unpackerr. The remaining five
+acquisition projects stay planned. Usenet and torrent enablement still default
+to false, as do automatic monitoring, rename, and the Bazarr handoff. Provider,
+indexer, and subtitle preferences default to empty operator-owned lists.
+With the default false transport flags, a normal deployment starts no
+acquisition containers or downloads.
 
-Open Subtitles remains configured in Jellyfin until Bazarr is proven in Phase 1.
-See the
-[physical NAS walkthrough](docs/getting-started-nas.md) before changing any
-media writer.
+Open Subtitles remains configured in Jellyfin until Bazarr is proven on the
+physical NAS. Follow the
+[Phase 1 operator handoff](docs/media-acquisition-phase1.md) before enabling a
+transport or changing any media writer.
 
 ## Testing
 

@@ -806,17 +806,17 @@ else
   failures = check_sources(ROOT, SOURCES)
   documentation_contracts = {
     "README.md" => {
-      /manifest.*eight implemented service stacks.*seven planned (?:media-)?acquisition projects/im =>
-        "distinguish the eight implemented service stacks from the seven planned acquisition projects",
+      /manifest.*ten implemented service projects.*five planned (?:media-)?acquisition projects/im =>
+        "distinguish the ten implemented service projects from the five planned acquisition projects",
       /production retirement checkpoint has passed/i => "state that the production retirement checkpoint passed",
       /former metadata manager.*outside repository management.*not deleted/im =>
         "preserve former metadata-manager state outside repository management without claiming deletion",
-      /Phase 0 creates only.*media-control.*acquisition.*final.*immutable contracts.*CI scaffolding/im =>
-        "bound Phase 0 to the network, directories, contracts, and CI scaffolding",
-      /all seven acquisition projects.*planned.*enablement flags remain false/im =>
-        "state that all seven acquisition projects remain planned and disabled",
-      /does not.*acquisition container.*download/im =>
-        "state that Phase 0 starts no acquisition containers or downloads",
+      /Phase 1 implements.*arr.*downloaders.*Radarr.*Sonarr.*Prowlarr.*Bazarr.*Configarr.*SABnzbd.*Unpackerr/im =>
+        "name the implemented Phase 1 acquisition projects and components",
+      /remaining five acquisition projects stay planned.*enablement still default.*false/im =>
+        "state that five acquisition projects remain planned and transports default disabled",
+      /default false transport flags.*starts no acquisition containers or downloads/im =>
+        "state that the default deployment starts no acquisition containers or downloads",
       /Open Subtitles.*Jellyfin.*Bazarr.*Phase 1/im =>
         "retain Jellyfin Open Subtitles through the Phase 1 Bazarr proof"
     },
