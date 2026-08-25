@@ -1,0 +1,4 @@
+---
+- name: Guard Arr critical state before Phase 1 activation
+  ansible.builtin.include_tasks: state_guard.yml
+  when: media_usenet_enabled | bool

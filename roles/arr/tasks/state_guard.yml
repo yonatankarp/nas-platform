@@ -1,0 +1,88 @@
+---
+- name: Detect existing movie library content
+  ansible.builtin.find:
+    paths: "{{ arr_movies_host_path }}"
+    recurse: true
+    hidden: true
+    file_type: any
+    limit: 1
+  register: arr_movies_content
+  changed_when: false
+
+- name: Detect existing series library content
+  ansible.builtin.find:
+    paths: "{{ arr_series_host_path }}"
+    recurse: true
+    hidden: true
+    file_type: any
+    limit: 1
+  register: arr_series_content
+  changed_when: false
+
+- name: Inspect Radarr critical state
+  ansible.builtin.stat:
+    path: "{{ arr_radarr_config_host_path }}/radarr.db"
+  register: arr_radarr_state
+  changed_when: false
+
+- name: Inspect Sonarr critical state
+  ansible.builtin.stat:
+    path: "{{ arr_sonarr_config_host_path }}/sonarr.db"
+  register: arr_sonarr_state
+  changed_when: false
+
+- name: Inspect Prowlarr critical state
+  ansible.builtin.stat:
+    path: "{{ arr_prowlarr_config_host_path }}/prowlarr.db"
+  register: arr_prowlarr_state
+  changed_when: false
+
+- name: Inspect Bazarr critical state
+  ansible.builtin.stat:
+    path: "{{ arr_bazarr_config_host_path }}/db/bazarr.db"
+  register: arr_bazarr_state
+  changed_when: false
+
+- name: Resolve existing-library and critical-state facts
+  ansible.builtin.set_fact:
+    arr_movies_nonempty: "{{ arr_movies_content.matched | int > 0 }}"
+    arr_series_nonempty: "{{ arr_series_content.matched | int > 0 }}"
+    arr_radarr_state_present: "{{ arr_radarr_state.stat.exists | bool }}"
+    arr_sonarr_state_present: "{{ arr_sonarr_state.stat.exists | bool }}"
+    arr_prowlarr_state_present: "{{ arr_prowlarr_state.stat.exists | bool }}"
+    arr_bazarr_state_present: "{{ arr_bazarr_state.stat.exists | bool }}"
+
+- name: Refuse silent Radarr initialization beside existing movies
+  ansible.builtin.assert:
+    that:
+      - >-
+        not arr_movies_nonempty or
+        arr_radarr_state_present or
+        media_acquisition_adopt_existing_libraries | bool
+    fail_msg: >-
+      Existing Movies content was found without preserved Radarr critical state.
+      Restore state or rerun this convergence once with
+      media_acquisition_adopt_existing_libraries=true.
+
+- name: Refuse silent Sonarr initialization beside existing series
+  ansible.builtin.assert:
+    that:
+      - >-
+        not arr_series_nonempty or
+        arr_sonarr_state_present or
+        media_acquisition_adopt_existing_libraries | bool
+    fail_msg: >-
+      Existing Series content was found without preserved Sonarr critical state.
+      Restore state or rerun this convergence once with
+      media_acquisition_adopt_existing_libraries=true.
+
+- name: Refuse silent shared Arr initialization beside existing libraries
+  ansible.builtin.assert:
+    that:
+      - >-
+        not (arr_movies_nonempty or arr_series_nonempty) or
+        (arr_prowlarr_state_present and arr_bazarr_state_present) or
+        media_acquisition_adopt_existing_libraries | bool
+    fail_msg: >-
+      Existing Movies or Series content was found without preserved Prowlarr and
+      Bazarr critical state. Restore state or use the one-run adoption input.

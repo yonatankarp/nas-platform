@@ -1,0 +1,29 @@
+---
+argument_specs:
+  main:
+    short_description: Deploy and reconcile the Phase 1 Arr project
+    options:
+      media_usenet_enabled:
+        type: bool
+        required: false
+      media_acquisition_adopt_existing_libraries:
+        type: bool
+        required: false
+      arr_movies_host_path:
+        type: path
+        required: false
+      arr_series_host_path:
+        type: path
+        required: false
+      arr_radarr_config_host_path:
+        type: path
+        required: false
+      arr_sonarr_config_host_path:
+        type: path
+        required: false
+      arr_prowlarr_config_host_path:
+        type: path
+        required: false
+      arr_bazarr_config_host_path:
+        type: path
+        required: false

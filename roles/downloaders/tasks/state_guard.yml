@@ -1,0 +1,38 @@
+---
+- name: Detect existing movie library content for downloader adoption
+  ansible.builtin.find:
+    paths: "{{ downloaders_movies_host_path }}"
+    recurse: true
+    hidden: true
+    file_type: any
+    limit: 1
+  register: downloaders_movies_content
+  changed_when: false
+
+- name: Detect existing series library content for downloader adoption
+  ansible.builtin.find:
+    paths: "{{ downloaders_series_host_path }}"
+    recurse: true
+    hidden: true
+    file_type: any
+    limit: 1
+  register: downloaders_series_content
+  changed_when: false
+
+- name: Inspect SABnzbd critical state
+  ansible.builtin.stat:
+    path: "{{ downloaders_sabnzbd_config_host_path }}/sabnzbd.ini"
+  register: downloaders_sabnzbd_state
+  changed_when: false
+
+- name: Refuse silent SABnzbd initialization beside existing libraries
+  ansible.builtin.assert:
+    that:
+      - >-
+        (downloaders_movies_content.matched | int == 0 and
+         downloaders_series_content.matched | int == 0) or
+        downloaders_sabnzbd_state.stat.exists | bool or
+        media_acquisition_adopt_existing_libraries | bool
+    fail_msg: >-
+      Existing Movies or Series content was found without preserved SABnzbd critical
+      state. Restore state or use the one-run adoption input.

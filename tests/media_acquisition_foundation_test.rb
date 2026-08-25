@@ -135,10 +135,15 @@ EXPECTED = {
 }.freeze
 
 EXPECTED_IMPLEMENTED_PORTS = [
+  ["arr", "bazarr", "0.0.0.0", 6767, 6767, "tcp"],
+  ["arr", "prowlarr", "0.0.0.0", 9696, 9696, "tcp"],
+  ["arr", "radarr", "0.0.0.0", 7878, 7878, "tcp"],
+  ["arr", "sonarr", "0.0.0.0", 8989, 8989, "tcp"],
   ["audiobookshelf", "audiobookshelf", "0.0.0.0", 13_378, 80, "tcp"],
   ["beszel", "hub", "0.0.0.0", 8090, 8090, "tcp"],
   ["beszel", "socket-proxy", "127.0.0.1", 2375, 2375, "tcp"],
   ["dozzle", "dozzle", "0.0.0.0", 8080, 8080, "tcp"],
+  ["downloaders", "sabnzbd", "0.0.0.0", 8085, 8080, "tcp"],
   ["immich", "immich-server", "0.0.0.0", 2283, 2283, "tcp"],
   ["jellyfin", "jellyfin", "0.0.0.0", 8096, 8096, "tcp"],
   ["komga", "komga", "0.0.0.0", 25_600, 25_600, "tcp"],
@@ -191,9 +196,11 @@ def jellyfin_defaults_contract_problems(defaults)
 end
 
 def planned_tree_problems(existing_paths)
-  expected_paths = EXPECTED_PROJECTS.flat_map do |project_name, project|
+  expected_paths = EXPECTED_PROJECTS.filter_map do |project_name, project|
+    next unless project.fetch("status") == "planned"
+
     ["roles/#{project.fetch('role')}", "services/#{project_name}"]
-  end
+  end.flatten
   (existing_paths & expected_paths).map do |path|
     tree_kind = path.start_with?("roles/") ? "role" : "service"
     "planned #{tree_kind} tree exists prematurely: #{path}"
@@ -377,7 +384,10 @@ if catalog
     failures << "planned host publications collide" if collides?(left, right)
   end
 
-  planned_paths = catalog.fetch("projects").flat_map do |project_name, project|
+  planned_projects = catalog.fetch("projects").select do |_project_name, project|
+    project.fetch("status") == "planned"
+  end
+  planned_paths = planned_projects.flat_map do |project_name, project|
     ["roles/#{project.fetch('role')}", "services/#{project_name}"]
   end
   existing_planned_paths = planned_paths.select { |path| path_entry_exists?(File.join(ROOT, path)) }
@@ -422,7 +432,8 @@ if manifest
     { "protocol" => protocol, "bind_address" => bind_address, "host_port" => host_port }
   end
   if catalog
-    catalog.fetch("projects").values.flat_map { |project| project.fetch("services").values }
+    catalog.fetch("projects").values.select { |project| project.fetch("status") == "planned" }
+           .flat_map { |project| project.fetch("services").values }
            .flat_map { |definition| definition.fetch("host_ports") }.each do |planned|
       failures << "planned publication collides with an implemented Compose publication" if
         existing.any? { |publication| collides?(planned, publication) }

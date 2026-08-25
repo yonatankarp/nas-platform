@@ -1,0 +1,12 @@
+---
+downloaders_compose_project_name: >-
+  {{ (platform_project_name ~ '-downloaders')
+     if platform_project_name | default('') | length > 0 else 'downloaders' }}
+downloaders_sabnzbd_port: 8085
+downloaders_sabnzbd_api: "http://127.0.0.1:{{ downloaders_sabnzbd_port }}/api"
+downloaders_sabnzbd_config_host_path: "{{ nas_docker_root }}/sabnzbd/config"
+downloaders_movies_host_path: "{{ nas_media_root }}/Media/Movies"
+downloaders_series_host_path: "{{ nas_media_root }}/Media/Series"
+
+media_usenet_enabled: false
+media_acquisition_adopt_existing_libraries: false

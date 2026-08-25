@@ -1,0 +1,22 @@
+---
+arr_compose_project_name: >-
+  {{ (platform_project_name ~ '-arr')
+     if platform_project_name | default('') | length > 0 else 'arr' }}
+arr_radarr_port: 7878
+arr_sonarr_port: 8989
+arr_prowlarr_port: 9696
+arr_bazarr_port: 6767
+arr_radarr_api: "http://127.0.0.1:{{ arr_radarr_port }}/api/v3"
+arr_sonarr_api: "http://127.0.0.1:{{ arr_sonarr_port }}/api/v3"
+arr_prowlarr_api: "http://127.0.0.1:{{ arr_prowlarr_port }}/api/v1"
+arr_bazarr_api: "http://127.0.0.1:{{ arr_bazarr_port }}/api"
+
+arr_movies_host_path: "{{ nas_media_root }}/Media/Movies"
+arr_series_host_path: "{{ nas_media_root }}/Media/Series"
+arr_radarr_config_host_path: "{{ nas_docker_root }}/radarr/config"
+arr_sonarr_config_host_path: "{{ nas_docker_root }}/sonarr/config"
+arr_prowlarr_config_host_path: "{{ nas_docker_root }}/prowlarr/config"
+arr_bazarr_config_host_path: "{{ nas_docker_root }}/bazarr/config"
+
+media_usenet_enabled: false
+media_acquisition_adopt_existing_libraries: false

@@ -1,0 +1,20 @@
+---
+argument_specs:
+  main:
+    short_description: Deploy and reconcile the Phase 1 Usenet downloader project
+    options:
+      media_usenet_enabled:
+        type: bool
+        required: false
+      media_acquisition_adopt_existing_libraries:
+        type: bool
+        required: false
+      downloaders_sabnzbd_config_host_path:
+        type: path
+        required: false
+      downloaders_movies_host_path:
+        type: path
+        required: false
+      downloaders_series_host_path:
+        type: path
+        required: false
