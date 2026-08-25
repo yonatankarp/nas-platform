@@ -56,7 +56,7 @@ end
 
 EXPECTED_PROJECTS = {
   "arr" => {
-    "role" => "arr", "status" => "planned", "services" => {
+    "role" => "arr", "status" => "implemented", "services" => {
       "radarr" => service("long_running", 1.0, ui_port(7878, published_by: "radarr")),
       "sonarr" => service("long_running", 1.0, ui_port(8989, published_by: "sonarr")),
       "prowlarr" => service("long_running", 0.5, ui_port(9696, published_by: "prowlarr")),
@@ -65,7 +65,7 @@ EXPECTED_PROJECTS = {
     }
   },
   "downloaders" => {
-    "role" => "downloaders", "status" => "planned", "services" => {
+    "role" => "downloaders", "status" => "implemented", "services" => {
       "sabnzbd" => service("long_running", 2.0,
                            ui_port(8085, container_port: 8080, published_by: "sabnzbd")),
       "unpackerr" => service("long_running", 1.0),
@@ -410,8 +410,9 @@ if manifest
   names = entries.map { |entry| entry.fetch("name") }
   failures << "service manifest names must be unique" unless names.uniq == names
   EXPECTED_PROJECTS.each do |name, project|
-    failures << "#{name} must be planned in the service manifest" unless
-      entries.include?({ "name" => name, "role" => project.fetch("role"), "status" => "planned" })
+    status = project.fetch("status")
+    failures << "#{name} must be #{status} in the service manifest" unless
+      entries.include?({ "name" => name, "role" => project.fetch("role"), "status" => status })
   end
 
   actual_ports = implemented_ports(manifest)

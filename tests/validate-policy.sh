@@ -36,6 +36,7 @@ tests/target_docker_dependency_preflight_test.sh
 tests/media_control_network_collision_test.sh static
 ruby tests/media_acquisition_foundation_test.rb
 ruby tests/media_acquisition_foundation_verifier_test.rb
+ruby tests/media_acquisition_phase1_test.rb
 tests/mac/media-acquisition-foundation-hook-test.sh
 ruby tests/mac/media-acquisition-foundation-report-test.rb
 tests/mac/media-acquisition-foundation-cleanup-test.sh

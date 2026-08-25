@@ -30,7 +30,7 @@ configuration_ownership:
 projects:
   arr:
     role: arr
-    status: planned
+    status: implemented
     services:
       radarr:
         class: long_running
@@ -83,7 +83,7 @@ projects:
         compose_profile: jobs
   downloaders:
     role: downloaders
-    status: planned
+    status: implemented
     services:
       sabnzbd:
         class: long_running

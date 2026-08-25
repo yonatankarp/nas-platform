@@ -26,10 +26,10 @@ services:
     status: implemented
   - name: arr
     role: arr
-    status: planned
+    status: implemented
   - name: downloaders
     role: downloaders
-    status: planned
+    status: implemented
   - name: bindery
     role: bindery
     status: planned
