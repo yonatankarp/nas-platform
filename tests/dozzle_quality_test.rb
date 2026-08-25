@@ -6,6 +6,8 @@ require "fileutils"
 require "tmpdir"
 require "yaml"
 
+require_relative "policy_support"
+
 ROOT = File.expand_path("..", __dir__)
 CONTRACT = File.join(ROOT, "tests", "contracts", "dozzle.sh")
 ROLE = File.join(ROOT, "roles", "dozzle", "tasks", "main.yml")
@@ -338,8 +340,14 @@ role_safety_mutations.each do |name, original, replacement|
   )
 end
 
-role = File.read(ROLE)
-check(failures, !role.include?("dispatcher.id | int"),
+# An absence invariant over the whole role still has to reach every task, but it
+# reads the parsed scalars one at a time: a comment explaining why the role must
+# not coerce an opaque identifier is not a coercion, and a folded expression that
+# breaks the pipe onto its own line is one. Each scalar is offered with its
+# whitespace removed as well, so neither spelling escapes.
+role_scalars = PolicySupport.task_strings(YAML.safe_load_file(ROLE, aliases: true))
+                            .map { |value| value.gsub(/[[:space:]]+/, "") }
+check(failures, role_scalars.none? { |value| value.include?("dispatcher.id|int") },
       "Dozzle verification coerces opaque dispatcher IDs to integers")
 
 if failures.empty?

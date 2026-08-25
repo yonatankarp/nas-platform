@@ -5,7 +5,22 @@ require "open3"
 require "tmpdir"
 require "yaml"
 
+require_relative "policy_support"
+
 ROOT = File.expand_path("..", __dir__)
+
+# Absence and presence invariants over a whole task file reach every task, but
+# they read the parsed scalars one at a time rather than the file's bytes: a SQL
+# keyword a comment warns against is not a statement the restore runs, and a
+# pattern matched against the joined file spans two unrelated tasks. A folded or
+# literal scalar carries its line breaks into the parsed value, so each scalar is
+# also offered with its whitespace removed, and a forbidden statement wrapped
+# across two lines still trips the guard.
+def scalar_forms(tasks)
+  PolicySupport.task_strings(tasks).flat_map do |value|
+    [value, value.gsub(/[[:space:]]+/, "")].uniq
+  end
+end
 
 def refuse(message)
   abort "Immich restore quality failed: #{message}"
@@ -410,8 +425,20 @@ classifier_argv = classifier.dig("ansible.builtin.command", "argv")
     option_index && classifier_argv.fetch(option_index + 1, nil) == value
 end
 refuse("classifier can bypass effective roots") if classifier_argv.include?("--media-root")
+# The sanitized status is an allow-list on one fact. Asserting the whole list off
+# that fact says what the check means: a refusal code the classifier can emit and
+# the list does not carry is reported as classification-failed, and a code added
+# to the list without the classifier emitting it is drift. A substring anywhere in
+# main.yml said neither, and was satisfied by a comment.
+SANITIZED_REFUSALS = %w[
+  unsafe-storage unsafe-originals missing-safe-backup ambiguous-newest-backup
+  unsafe-newest-backup incompatible-newest-backup previous-failed-restore
+].freeze
+sanitized_status = task(main_tasks, "Resolve sanitized Immich storage classification status")
+                   &.dig("ansible.builtin.set_fact", "immich_restore_classification_status")
+                   .to_s.split.join(" ")
 refuse("incompatible newest backup diagnostic is not sanitized") unless
-  File.read(main_path).include?("'incompatible-newest-backup'")
+  sanitized_status.include?("in [#{SANITIZED_REFUSALS.map { |code| "'#{code}'" }.join(', ')}]")
 
 refuse("classification failure is ignored or reversed") unless
   classifier_failure_guarded?(main_tasks)
@@ -457,7 +484,6 @@ initialized_guard = task(main_tasks, "Require initialized Immich after database 
 refuse("restored path can create a new administrator") unless
   initialized_guard&.dig("ansible.builtin.assert", "that").to_s.include?("immich_initialized")
 
-restore_text = File.read(restore_path)
 restore_tasks = flatten_tasks(YAML.safe_load_file(restore_path, aliases: true))
 integrity_tasks = flatten_tasks(YAML.safe_load_file(integrity_path, aliases: true))
 refuse("classifier is not executed from the immutable release") unless
@@ -621,16 +647,27 @@ require_mutation_rejected("Redis reset after SQL restore") do
     ["Clear stale Immich Redis state", "Restore the selected Immich database backup"]
   )
 end
+restore_scalars = scalar_forms(restore_tasks)
+restore_task_names = restore_tasks.filter_map { |candidate| candidate["name"] }
 refuse("restore verification mutates an application table") if
-  restore_text.match?(/\b(?:insert|update|delete|truncate)\b/i)
+  restore_scalars.any? { |value| value.match?(/\b(?:insert|update|delete|truncate)\b/i) }
 refuse("restore removes provenance before server initialization") if
-  restore_text.include?("Remove the Immich restore failure marker")
+  restore_task_names.include?("Remove the Immich restore failure marker")
 refuse("restore does not verify the pinned v3 migration marker") unless
-  restore_text.include?("public.kysely_migrations")
-refuse("restore failures do not preserve a sanitized marker stage") unless
-  restore_text.include?("Record sanitized Immich restore failure stage") &&
-  restore_text.include?("immich_restore_stage")
+  restore_scalars.any? { |value| value.include?("to_regclass('public.kysely_migrations')") }
+# Every stage the restore can fail in has to name itself, and the rescue has to
+# record whichever one was reached. Two substrings could not say that: they were
+# satisfied by one stage assignment anywhere in the file, including one the rescue
+# never sees.
 rescue_marker = task(restore_tasks, "Record sanitized Immich restore failure stage")
+recorded_stages = restore_tasks.filter_map do |candidate|
+  Hash(candidate["ansible.builtin.set_fact"])["immich_restore_stage"]
+end
+refuse("restore failures do not preserve a sanitized marker stage") unless
+  rescue_marker &&
+  recorded_stages.uniq.length == recorded_stages.length && recorded_stages.length >= 4 &&
+  rescue_marker.dig("ansible.builtin.copy", "content").to_s.split.join(" ")
+               .include?("'stage': (immich_restore_stage | default('restore'))")
 refuse("rescue marker is not JSON-serialized with a real newline") unless
   safe_marker_copy?(rescue_marker, expected_owner, expected_group)
 

@@ -177,10 +177,20 @@ check(failures, notifier_url.include?("127.0.0.1"),
 # The deployer is its own publisher. Borrowing dozzle's token would give a
 # leaked deploy token dozzle's rights, which is exactly what per-publisher
 # identities exist to prevent.
-check(failures, notifier.include?("vault_ntfy_deploy_token"),
-      "the ntfy.curl config must use the deploy publisher's own token")
-check(failures, !notifier.include?("vault_ntfy_dozzle_token"),
-      "the ntfy.curl config must not borrow dozzle's token")
+#
+# A curl config has its own grammar, so it is read as the directives it declares
+# rather than as substrings of the file. curl sends every header directive it is
+# given, so "carries the deploy token" and "does not carry dozzle's" were both
+# satisfied by a file that presented two Authorization headers; and both were
+# satisfied by a token named only in the comment block above.
+notifier_directives = notifier.lines.filter_map do |line|
+  key, separator, value = line.strip.partition(" = ")
+  [key, value] unless separator.empty?
+end
+check(failures,
+      notifier_directives.select { |key, value| key == "header" && value.start_with?('"Authorization:') } ==
+        [["header", '"Authorization: Bearer {{ vault_ntfy_deploy_token }}"']],
+      "the ntfy.curl config must present exactly the deploy publisher's own bearer token")
 
 # --- real role run -----------------------------------------------------------
 
