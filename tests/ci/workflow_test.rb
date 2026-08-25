@@ -9,6 +9,12 @@ require_relative "classify_changes"
 WORKFLOW_PATH = File.expand_path("../../.github/workflows/ci.yml", __dir__)
 POLICY_PATH = File.expand_path("../validate-policy.sh", __dir__)
 ANSIBLE_LINT_PATH = File.expand_path("../../.ansible-lint", __dir__)
+CONFIGARR_APPLICATION_YAML = "roles/arr/files/configarr/config.yml"
+BROAD_ARR_LINT_EXCLUSIONS = %w[
+  roles/arr/
+  roles/arr/files/
+  roles/arr/files/configarr/
+].freeze
 # Approved by name, not by commit. The security properties are that only these actions
 # are used and that every use is pinned to a full commit SHA rather than a mutable tag;
 # which commit is current is Renovate's job, and restating it here only guarantees that
@@ -55,6 +61,10 @@ ansible_lint = YAML.safe_load_file(ANSIBLE_LINT_PATH)
 ansible_lint_excludes = Array(ansible_lint["exclude_paths"])
 check(failures, ansible_lint_excludes.include?("services/"),
       "ansible-lint must exclude Docker Compose definitions with custom loader tags")
+check(failures, ansible_lint_excludes.include?(CONFIGARR_APPLICATION_YAML),
+      "ansible-lint must exclude only the Configarr application YAML with !secret tags")
+check(failures, (ansible_lint_excludes & BROAD_ARR_LINT_EXCLUSIONS).empty?,
+      "ansible-lint must not exclude an Arr directory: #{ansible_lint_excludes.inspect}")
 
 def expression(value)
   value.to_s.gsub(/\s+/, " ").strip

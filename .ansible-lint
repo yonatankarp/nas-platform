@@ -4,6 +4,9 @@
 # integration overrides depend on to replace list values rather than merge them.
 exclude_paths:
   - services/
+  # Configarr application YAML uses Configarr's !secret loader tag. Its exact
+  # payload contract is validated by tests/configarr_job_test.rb.
+  - roles/arr/files/configarr/config.yml
 
 skip_list:
   # Variables passed to include_role carry the prefix of the role that consumes
