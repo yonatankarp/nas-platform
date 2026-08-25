@@ -2,3 +2,106 @@
 - name: Guard downloader critical state before Phase 1 activation
   ansible.builtin.include_tasks: state_guard.yml
   when: media_usenet_enabled | bool
+
+- name: Revalidate deployment paths before downloader runtime use
+  ansible.builtin.include_role:
+    name: deployment_bundle
+    tasks_from: target
+  vars:
+    deployment_target_require_current_release: true
+    deployment_target_extra_paths:
+      - "{{ platform_current_dir }}/services/downloaders"
+      - "{{ platform_current_dir }}/services/downloaders/compose.yml"
+      - "{{ platform_current_dir }}/services/downloaders/compose.{{ platform_compose_kind }}.yml"
+      - "{{ platform_runtime_dir }}/services/downloaders"
+      - "{{ platform_runtime_dir }}/services/downloaders/.env"
+      - "{{ downloaders_sabnzbd_config_host_path }}"
+
+- name: Require INI-safe SABnzbd administrator credentials
+  ansible.builtin.assert:
+    that:
+      - vault_downloaders_sabnzbd_admin_username is match('^[^\r\n]+$')
+      - vault_downloaders_sabnzbd_admin_password is match('^[^\r\n]+$')
+    fail_msg: SABnzbd administrator credentials must be nonempty single-line values.
+  no_log: true
+
+- name: Render the private downloader environment
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ platform_runtime_dir }}/services/downloaders/.env"
+    mode: "0600"
+  no_log: true
+
+- name: Stop the disabled downloader project
+  community.docker.docker_compose_v2:
+    project_src: "{{ platform_current_dir }}/services/downloaders"
+    project_name: "{{ downloaders_compose_project_name }}"
+    files: "{{ platform_service_compose_files['downloaders'] }}"
+    env_files: ["{{ platform_runtime_dir }}/services/downloaders/.env"]
+    state: absent
+    remove_orphans: true
+  when: not media_usenet_enabled | bool
+  register: downloaders_stop
+
+- name: Inspect SABnzbd bootstrap state
+  ansible.builtin.stat:
+    path: "{{ downloaders_sabnzbd_config_host_path }}/sabnzbd.ini"
+  register: downloaders_sabnzbd_bootstrap_state
+  when: media_usenet_enabled | bool
+  changed_when: false
+
+- name: Bootstrap SABnzbd from vault-authored credentials
+  ansible.builtin.template:
+    src: sabnzbd.ini.j2
+    dest: "{{ downloaders_sabnzbd_config_host_path }}/sabnzbd.ini"
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0600"
+    force: false
+  when:
+    - media_usenet_enabled | bool
+    - not downloaders_sabnzbd_bootstrap_state.stat.exists | bool
+  no_log: true
+
+- name: Deploy the Phase 1 downloader project
+  community.docker.docker_compose_v2:
+    project_src: "{{ platform_current_dir }}/services/downloaders"
+    project_name: "{{ downloaders_compose_project_name }}"
+    files: "{{ platform_service_compose_files['downloaders'] }}"
+    env_files: ["{{ platform_runtime_dir }}/services/downloaders/.env"]
+    state: present
+    wait: true
+    wait_timeout: 180
+  when: media_usenet_enabled | bool
+  register: downloaders_deploy
+
+- name: Reconcile SABnzbd owned settings
+  ansible.builtin.include_tasks: reconcile_sabnzbd.yml
+  when: media_usenet_enabled | bool
+
+- name: Report the downloader deployment
+  ansible.builtin.include_role:
+    name: ntfy
+    tasks_from: deployment_report
+  vars:
+    ntfy_deployment_report_service: Downloaders
+    ntfy_deployment_report_changed: "{{ downloaders_deploy is changed }}"
+  when: media_usenet_enabled | bool
+
+- name: Verify downloader effective container CPU policy
+  ansible.builtin.include_role:
+    name: container_cpu
+  vars:
+    container_cpu_service_name: downloaders
+    container_cpu_project_name: "{{ downloaders_compose_project_name }}"
+  when:
+    - media_usenet_enabled | bool
+    - not ansible_check_mode
+
+- name: Run downloader service verification
+  ansible.builtin.include_tasks:
+    file: verify.yml
+    apply:
+      tags: [platform_verify_downloaders]
+  when: media_usenet_enabled | bool
+  tags: [platform_verify_downloaders]

@@ -1,0 +1,28 @@
+__version__ = 19
+__encoding__ = utf-8
+
+[misc]
+host = 0.0.0.0
+port = 8080
+auto_browser = 0
+api_key = {{ vault_downloaders_sabnzbd_api_key }}
+username = {{ vault_downloaders_sabnzbd_admin_username }}
+password = {{ vault_downloaders_sabnzbd_admin_password }}
+download_dir = /data/media/.acquisition/usenet/incomplete
+complete_dir = /data/media/.acquisition/usenet
+cache_limit = {{ downloaders_sabnzbd_owned_misc.cache_limit }}
+direct_unpack = {{ downloaders_sabnzbd_owned_misc.direct_unpack }}
+direct_unpack_threads = {{ downloaders_sabnzbd_owned_misc.direct_unpack_threads }}
+direct_write = {{ downloaders_sabnzbd_owned_misc.direct_write }}
+max_art_tries = {{ downloaders_sabnzbd_owned_misc.max_art_tries }}
+
+[categories]
+{% for category, directory in downloaders_sabnzbd_categories.items() %}
+[[{{ category }}]]
+name = {{ category }}
+dir = {{ directory }}
+priority = -100
+pp = 0
+script = None
+
+{% endfor %}

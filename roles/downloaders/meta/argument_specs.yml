@@ -18,3 +18,33 @@ argument_specs:
       downloaders_series_host_path:
         type: path
         required: false
+      platform_compose_kind:
+        type: str
+        required: true
+      platform_media_control_network:
+        type: str
+        required: true
+      platform_project_name:
+        type: str
+        required: false
+      downloaders_sabnzbd_categories:
+        type: dict
+        required: false
+      downloaders_sabnzbd_owned_misc:
+        type: dict
+        required: false
+      vault_downloaders_sabnzbd_api_key:
+        type: str
+        required: true
+      vault_downloaders_sabnzbd_admin_username:
+        type: str
+        required: true
+      vault_downloaders_sabnzbd_admin_password:
+        type: str
+        required: true
+      vault_arr_radarr_api_key:
+        type: str
+        required: true
+      vault_arr_sonarr_api_key:
+        type: str
+        required: true

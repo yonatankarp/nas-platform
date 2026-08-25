@@ -6,6 +6,8 @@ contracts:
     path: tests/contracts/beszel.sh
   - service: dozzle
     path: tests/contracts/dozzle.sh
+  - service: downloaders
+    path: tests/contracts/downloaders.sh
   - service: immich
     path: tests/contracts/immich.sh
   - service: jellyfin

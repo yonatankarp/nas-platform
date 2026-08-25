@@ -10,3 +10,17 @@ downloaders_series_host_path: "{{ nas_media_root }}/Media/Series"
 
 media_usenet_enabled: false
 media_acquisition_adopt_existing_libraries: false
+
+downloaders_sabnzbd_categories:
+  movies: /data/media/.acquisition/usenet/movies
+  series: /data/media/.acquisition/usenet/series
+  ebooks: /data/books/.acquisition/usenet/ebooks
+  audiobooks: /data/media/.acquisition/usenet/audiobooks
+  comics: /data/books/.acquisition/usenet/comics
+
+downloaders_sabnzbd_owned_misc:
+  cache_limit: 256M
+  direct_unpack: 0
+  direct_unpack_threads: 1
+  direct_write: 1
+  max_art_tries: 3
