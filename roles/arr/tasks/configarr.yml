@@ -50,7 +50,7 @@
     return_content: true
   loop: >-
     {{ arr_servarr_instances |
-       product(['qualityprofile', 'qualitydefinition', 'customformat', 'config/mediamanagement']) |
+       product(['qualityprofile', 'qualitydefinition', 'customformat', 'config/naming']) |
        list }}
   loop_control:
     label: "configarr-{{ item.0.name }}-{{ item.1 }}"
@@ -82,7 +82,7 @@
       - >-
         not (arr_configarr_verification.results |
              selectattr('item.0.name', 'equalto', item.name) |
-             selectattr('item.1', 'equalto', 'config/mediamanagement') |
+             selectattr('item.1', 'equalto', 'config/naming') |
              map(attribute='json') | first)[item.rename_field] | bool
     fail_msg: Configarr did not converge the declared Phase 1 profile contract.
   loop: "{{ arr_servarr_instances }}"

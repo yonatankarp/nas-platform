@@ -1,5 +1,7 @@
 ---
 telemetry: false
+trashRevision: cbfee0205cdcf2b492135edd00e059f3b7c84675
+recyclarrRevision: 4ae377bb704fc7fd69a544ad04e91357e0b09f62
 
 customFormatDefinitions:
   - trash_id: nas-repack-proper

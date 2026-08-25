@@ -28,7 +28,7 @@ end
 integration_path = File.join(ROOT, "tests", "integration.sh")
 classifier_path = File.join(ROOT, "tests", "ci", "classify_changes.rb")
 if File.file?(integration_path) && File.file?(classifier_path)
-  acquisition_lanes = %w[arr downloaders bindery kapowarr pinchflat trailarr seerr]
+  planned_acquisition_lanes = %w[bindery kapowarr pinchflat trailarr seerr]
   suite_tags = File.read(integration_path)
                    .scan(/^\s*([a-z][a-z0-9-]*)\)\s+fixed_tags=([a-z0-9_,-]*)\s*;;/)
                    .to_h { |suite, tags| [suite, tags.split(",")] }
@@ -41,13 +41,13 @@ if File.file?(integration_path) && File.file?(classifier_path)
     check(failures, suite_tags[lane] == tags,
           "integration suite #{lane} converges #{suite_tags[lane].inspect}, " \
           "CI selects #{tags.inspect}")
-    unless acquisition_lanes.include?(lane)
+    unless planned_acquisition_lanes.include?(lane)
       check(failures, tags.include?("ntfy"),
             "service lane #{lane} must converge ntfy: its role reports its deployment there")
     end
   end
 
-  acquisition_lanes.each do |lane|
+  planned_acquisition_lanes.each do |lane|
     check(failures,
           suite_tags[lane] == %w[host_prep deployment_bundle media_acquisition_foundation],
           "acquisition foundation suite #{lane} must converge only shared inert foundation tags")
@@ -165,7 +165,7 @@ service_image_sources.each do |service_tag, service_directory|
         "which has no compose.yml")
 end
 
-acquisition_image_tags = %w[arr downloaders bindery kapowarr pinchflat trailarr seerr]
+acquisition_image_tags = %w[bindery kapowarr pinchflat trailarr seerr]
 check(failures, (service_image_sources.map(&:first) & acquisition_image_tags).empty?,
       "planned acquisition foundation suites must have zero service image sources")
 

@@ -16,6 +16,7 @@
       - "{{ platform_current_dir }}/services/arr/compose.jobs.yml"
       - "{{ platform_current_dir }}/services/arr/configarr.yml"
       - "{{ platform_runtime_dir }}/services/arr"
+      - "{{ platform_runtime_dir }}/services/arr/configarr-repos"
       - "{{ platform_runtime_dir }}/services/arr/.env"
       - "{{ arr_radarr_config_host_path }}"
       - "{{ arr_sonarr_config_host_path }}"
@@ -40,6 +41,15 @@
   loop_control:
     label: arr-administrator-credential
   no_log: true
+
+- name: Create the Configarr repository cache
+  ansible.builtin.file:
+    path: "{{ platform_runtime_dir }}/services/arr/configarr-repos"
+    state: directory
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0755"
+  when: media_usenet_enabled | bool
 
 - name: Render the private Arr environment
   ansible.builtin.template:

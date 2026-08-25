@@ -6,9 +6,16 @@ services:
     user: "1000:100"
     cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
     cpus: 0.5
+    environment:
+      GIT_CONFIG_COUNT: "2"
+      GIT_CONFIG_KEY_0: safe.directory
+      GIT_CONFIG_VALUE_0: /app/repos/trash-guides
+      GIT_CONFIG_KEY_1: safe.directory
+      GIT_CONFIG_VALUE_1: /app/repos/recyclarr-config
     volumes:
       - ${CONFIGARR_CONFIG_PATH:?}:/app/config/config.yml:ro
       - ${CONFIGARR_SECRETS_PATH:?}:/app/config/secrets.yml:ro
+      - ${CONFIGARR_REPOS_PATH:?}:/app/repos
     networks:
       - media-control
 

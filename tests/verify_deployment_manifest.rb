@@ -9,8 +9,12 @@ end
 abort "unknown manifest verification mode #{merge_mode}" if merge_mode && merge_mode != "require-image-merge"
 require_image_merge = merge_mode == "require-image-merge"
 RUNTIME_FILES = {
+  "arr" => ["configarr.yml"],
   "dozzle" => ["alert_relay.py"],
   "immich" => ["classify_restore.py"]
+}.freeze
+RUNTIME_FILE_SOURCES = {
+  ["arr", "configarr.yml"] => "roles/arr/files/configarr/config.yml"
 }.freeze
 
 load_yaml = ->(path) { YAML.safe_load_file(path, aliases: true) }
@@ -33,15 +37,25 @@ expected_services = implemented.map do |service|
   service_root = File.join(repository_root, "services", name)
   canonical_path = File.join(service_root, "compose.yml")
   override_path = File.join(service_root, "compose.#{compose_kind}.yml")
+  jobs_path = File.join(service_root, "compose.jobs.yml")
   compose_paths = [canonical_path]
   compose_paths << override_path if File.file?(override_path)
+  compose_paths << jobs_path if File.file?(jobs_path)
 
   canonical_services = load_yaml.call(canonical_path).fetch("services")
   override_services = File.file?(override_path) ? load_yaml.call(override_path).fetch("services", {}) : {}
-  images = (canonical_services.keys | override_services.keys).sort.each_with_object({}) do |compose_name, result|
+  job_services = File.file?(jobs_path) ? load_yaml.call(jobs_path).fetch("services", {}) : {}
+  images = (canonical_services.keys | override_services.keys | job_services.keys).sort.each_with_object({}) do |compose_name, result|
     canonical = canonical_services.fetch(compose_name, {})
     override = override_services.fetch(compose_name, {})
-    effective_image = override.key?("image") ? override["image"] : canonical["image"]
+    job = job_services.fetch(compose_name, {})
+    effective_image = if override.key?("image")
+                        override["image"]
+                      elsif job.key?("image")
+                        job["image"]
+                      else
+                        canonical["image"]
+                      end
     result[compose_name] = effective_image if effective_image
     override_changed_image ||= override.key?("image") && canonical["image"] != override["image"]
     override_added_image ||= override.key?("image") && !canonical_services.key?(compose_name)
@@ -56,7 +70,8 @@ expected_services = implemented.map do |service|
       }
     end,
     "runtime_files" => RUNTIME_FILES.fetch(name, []).map do |runtime_file|
-      path = File.join(service_root, runtime_file)
+      source = RUNTIME_FILE_SOURCES.fetch([name, runtime_file], File.join("services", name, runtime_file))
+      path = File.join(repository_root, source)
       {
         "path" => runtime_file,
         "mode" => "0644",

@@ -549,17 +549,17 @@ end
 
 expect_acquisition_failure.call(
   "planned acquisition source published prematurely",
-  "planned service tree exists prematurely: services/arr"
+  "planned service tree exists prematurely: services/bindery"
 ) do |root|
-  FileUtils.mkdir_p(File.join(root, "services", "arr"))
+  FileUtils.mkdir_p(File.join(root, "services", "bindery"))
 end
 
 {
   "dangling planned acquisition role" => [
-    "roles/arr", "planned role tree exists prematurely: roles/arr"
+    "roles/bindery", "planned role tree exists prematurely: roles/bindery"
   ],
   "dangling planned acquisition service" => [
-    "services/arr", "planned service tree exists prematurely: services/arr"
+    "services/bindery", "planned service tree exists prematurely: services/bindery"
   ]
 }.each do |label, (relative_path, diagnostic)|
   expect_acquisition_failure.call(label, diagnostic) do |root|
@@ -571,9 +571,9 @@ end
 
 expect_acquisition_failure.call(
   "planned acquisition project promoted prematurely",
-  "arr must be planned in the service manifest"
+  "bindery must be planned in the service manifest"
 ) do |root|
-  mutate_manifest(root) { |document| service(document, "arr")["status"] = "implemented" }
+  mutate_manifest(root) { |document| service(document, "bindery")["status"] = "implemented" }
 end
 
 run_foundation_wrapper = lambda do |filename:, mode: 0o755, mutate: nil, ruby_selection: nil,

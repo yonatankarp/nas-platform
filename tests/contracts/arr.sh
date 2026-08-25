@@ -81,6 +81,11 @@ if failures.empty?
     servarr.include?("rootfolder") && !servarr.match?(/command.*(import|search)/i)
   failures << "Servarr reconciliation must preserve unowned host fields" unless
     servarr.include?("combine(") && servarr.include?("config/host")
+  naming_sources = servarr +
+    File.read(File.join(root, "roles/arr/tasks/configarr.yml")) +
+    File.read(File.join(root, "roles/arr/tasks/verify.yml"))
+  failures << "Servarr rename policy must use the naming configuration API" unless
+    naming_sources.include?("config/naming") && !naming_sources.include?("config/mediamanagement")
 
   prowlarr = File.read(File.join(root, "roles/arr/tasks/reconcile_prowlarr.yml")) +
     File.read(File.join(root, "roles/arr/tasks/reconcile_prowlarr_application.yml")) +

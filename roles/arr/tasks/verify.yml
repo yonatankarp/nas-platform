@@ -7,7 +7,7 @@
       X-Api-Key: "{{ item.0.api_key }}"
     status_code: [200]
     return_content: true
-  loop: "{{ arr_servarr_instances | product(['config/host', 'config/mediamanagement', 'rootfolder']) | list }}"
+  loop: "{{ arr_servarr_instances | product(['config/host', 'config/naming', 'rootfolder']) | list }}"
   loop_control:
     label: "{{ item.0.name }}-{{ item.1 }}"
   register: arr_servarr_verification
@@ -32,7 +32,7 @@
       - >-
         (arr_servarr_verification.results |
          selectattr('item.0.name', 'equalto', item.name) |
-         selectattr('item.1', 'equalto', 'config/mediamanagement') |
+         selectattr('item.1', 'equalto', 'config/naming') |
          map(attribute='json') | first)[item.rename_field] | bool ==
         media_arr_automatic_rename_enabled | bool
       - >-
