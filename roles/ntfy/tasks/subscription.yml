@@ -34,6 +34,17 @@
   when: ntfy_subscription_create.status == 200
   no_log: true
 
+# Deliberately not redacted, and the only task in this file that can be. Every sibling
+# here reaches ntfy_subscription_pair, the include_tasks loop variable that carries a
+# managed-user record with its password; this assert reaches nothing but the 409 error
+# body, whose key set it pins to exactly code, error and http. It is also unlooped: the
+# loop lives on the include_tasks in managed_users.yml, so no item reaches this result
+# dict, and no_log on that include does not propagate to the tasks it includes (verified
+# on ansible-core 2.21.3), which is why each task in this file carries its own.
+# The fail_msg says only "unsupported conflict" while the eight conditions separate a
+# non-mapping body, an unexpected key set, three wrong field types, a changed ntfy error
+# code, a mismatched HTTP field and a reworded error string. That last one is the likely
+# one after an ntfy upgrade, and it was indistinguishable from the rest under redaction.
 - name: Validate provisional managed ntfy duplicate-subscription conflicts
   ansible.builtin.assert:
     that:
@@ -51,7 +62,6 @@
         'conflict: topic subscription already exists'
     fail_msg: ntfy returned an unsupported account-subscription conflict.
   when: ntfy_subscription_create.status == 409
-  no_log: true
 
 - name: Re-read managed ntfy accounts after subscription creation
   ansible.builtin.uri:

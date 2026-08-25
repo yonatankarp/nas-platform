@@ -868,6 +868,13 @@
   check_mode: false
   no_log: true
 
+# Deliberately not redacted. Unlooped, so the result dict adds only the source text of
+# the failing condition, and the conditions read the HTTP status and the shape of the
+# library listing Audiobookshelf returned, never a credential. The registered response
+# above stays redacted because a uri result dict does print the real body. The fail_msg
+# says only "malformed", so redaction hid which of the four shape checks failed: a
+# non-200 status, a non-mapping body, a missing libraries key and a non-list libraries
+# value are four different faults with four different fixes.
 - name: Require strict authoritative Audiobookshelf library baseline response
   ansible.builtin.assert:
     that:
@@ -879,7 +886,6 @@
   when:
     - not ansible_check_mode
     - audiobookshelf_initial_scan_required | bool
-  no_log: true
 
 - name: Resolve authoritative Audiobookshelf library baseline
   ansible.builtin.set_fact:
@@ -893,6 +899,15 @@
     - audiobookshelf_initial_scan_required | bool
   no_log: true
 
+# Deliberately not redacted, and the most informative conversion in the role. Unlooped,
+# so the result dict adds only the source text of the failing condition, and every
+# condition reads the managed library's lastScan timestamp, an integer or none. The
+# fail_msg says only "malformed" while the six conditions separate six distinct faults:
+# the selectattr chain above returned a non-list, matched no library, matched more than
+# one, matched a non-mapping, produced a library with no lastScan at all, or produced one
+# whose lastScan is neither none nor a non-negative integer. Redaction collapsed all six
+# into the same line, and the last two are the ones that mean the scan-drain proof
+# downstream cannot be trusted.
 - name: Require safe authoritative Audiobookshelf last scan baseline
   ansible.builtin.assert:
     that:
@@ -908,7 +923,6 @@
   when:
     - not ansible_check_mode
     - audiobookshelf_initial_scan_required | bool
-  no_log: true
 
 - name: Capture Audiobookshelf last scan before initial scan request
   ansible.builtin.set_fact:
