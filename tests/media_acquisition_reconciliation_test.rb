@@ -666,10 +666,17 @@ def reconciliation_tasks(kind)
     )
     tasks
   when :indexer
-    task_slice(
+    tasks = task_slice(
       "reconcile_prowlarr.yml", "Validate operator-owned Prowlarr indexer declarations",
       "Refuse duplicate Prowlarr indexer names"
     )
+    include_task = tasks.find do |task|
+      task["name"] == "Reconcile operator-owned Prowlarr indexers"
+    end
+    include_task["ansible.builtin.include_tasks"] = File.join(
+      ARR_TASKS, "reconcile_prowlarr_indexer.yml"
+    )
+    tasks
   when :download_client
     task_slice(
       "reconcile_servarr_download_client.yml", "Read Servarr download clients",
@@ -1100,6 +1107,11 @@ class AcquisitionApi
           raise "fixture SABnzbd verification query differs"
         end
         send_json(client, 200, @state.fetch("sabnzbd", SABNZBD))
+      elsif method == "GET" && (match = target.match(
+        %r{\A/(radarr|sonarr)/api/v3/downloadclient\z}
+      ))
+        client_state = match[1] == "radarr" ? DOWNLOAD_CLIENT : SONARR_DOWNLOAD_CLIENT
+        send_json(client, 200, [public_item(client_state, :client)])
       elsif method == "GET" && (match = target.match(
         %r{\A/(radarr|sonarr)/api/v3/(config/host|rootfolder)\z}
       ))
@@ -2355,7 +2367,10 @@ application_mutations = {
   "fields.baseUrl" => ->(state) { set_field!(state.fetch("applications").first, "baseUrl", "http://legacy:7878") },
   "fields.username" => ->(state) { set_field!(state.fetch("applications").first, "username", "legacy-user") },
   "fields.password" => ->(state) { set_field!(state.fetch("applications").first, "password", "legacy-readable-value") },
-  "fields.syncCategories" => ->(state) { set_field!(state.fetch("applications").first, "syncCategories", [9999]) }
+  "fields.syncCategories" => ->(state) { set_field!(state.fetch("applications").first, "syncCategories", [9999]) },
+  "fields.apiKey missing readable value" => lambda do |state|
+    remove_field!(state.fetch("applications").first, "apiKey")
+  end
 }
 application_write = ->(request) { request["target"].match?(%r{\A/api/v1/applications(?:/\d+)?\z}) }
 application_current = lambda do |state|
@@ -2411,6 +2426,15 @@ client_mutations = {
   "fields.port" => ->(state) { set_field!(state.fetch("download_clients").first, "port", "9999") },
   "fields.useSsl" => ->(state) { set_field!(state.fetch("download_clients").first, "useSsl", true) },
   "fields.urlBase" => ->(state) { set_field!(state.fetch("download_clients").first, "urlBase", "/legacy") },
+  "fields.apiKey missing readable value" => lambda do |state|
+    remove_field!(state.fetch("download_clients").first, "apiKey")
+  end,
+  "fields.username missing readable value" => lambda do |state|
+    remove_field!(state.fetch("download_clients").first, "username")
+  end,
+  "fields.password missing readable value" => lambda do |state|
+    remove_field!(state.fetch("download_clients").first, "password")
+  end,
   "fields.movieCategory" => ->(state) { set_field!(state.fetch("download_clients").first, "movieCategory", "legacy") },
   "fields.movieCategory wrong key" => lambda do |state|
     client = state.fetch("download_clients").first
@@ -2551,7 +2575,10 @@ indexer_mutations = {
   "fields.baseUrl" => ->(state) { set_field!(state.fetch("indexers").first, "baseUrl", "https://legacy.invalid") },
   "fields.apiPath" => ->(state) { set_field!(state.fetch("indexers").first, "apiPath", "/legacy") },
   "fields.categories" => ->(state) { set_field!(state.fetch("indexers").first, "categories", [9999]) },
-  "fields.minimumSeeders" => ->(state) { set_field!(state.fetch("indexers").first, "minimumSeeders", 99) }
+  "fields.minimumSeeders" => ->(state) { set_field!(state.fetch("indexers").first, "minimumSeeders", 99) },
+  "fields.apiKey missing readable value" => lambda do |state|
+    remove_field!(state.fetch("indexers").first, "apiKey")
+  end
 }
 indexer_write = ->(request) { request["target"].match?(%r{\A/api/v1/indexer(?:/\d+)?\z}) }
 indexer_current = lambda do |state|
@@ -2588,6 +2615,12 @@ exercise_duplicate(
   failures, relationship: "Prowlarr indexer", kind: :indexer,
   state: duplicate_indexers, variables: {}, write_matcher: indexer_write
 )
+
+if ENV["ACQUISITION_RELATIONSHIPS_TARGETED_ONLY"] == "1"
+  abort failures.join("\n") unless failures.empty?
+  puts "media acquisition relationship reconciliation behavior holds"
+  exit
+end
 
 bazarr_state = { "bazarr" => deep_copy(BAZARR) }
 bazarr_mutations = {

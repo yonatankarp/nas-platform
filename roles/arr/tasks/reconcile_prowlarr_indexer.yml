@@ -1,0 +1,79 @@
+---
+- name: Find the operator-owned Prowlarr indexer
+  ansible.builtin.set_fact:
+    arr_prowlarr_indexer_matches: >-
+      {{ arr_prowlarr_indexers_before.json |
+         selectattr('name', 'equalto', arr_prowlarr_indexer.name) | list }}
+  changed_when: false
+  no_log: true
+
+- name: Build the owned Prowlarr indexer
+  ansible.builtin.set_fact:
+    arr_prowlarr_indexer_current: >-
+      {{ arr_prowlarr_indexer_matches | first | default({}) }}
+    arr_prowlarr_indexer_desired: >-
+      {{ arr_prowlarr_indexer | acquisition_indexer_body }}
+  changed_when: false
+  no_log: true
+
+- name: Build the complete Prowlarr indexer projections and body
+  ansible.builtin.set_fact:
+    arr_prowlarr_indexer_masked_fields: >-
+      {{ arr_prowlarr_indexer_current |
+         acquisition_indexer_masked_fields(arr_prowlarr_indexer) }}
+  changed_when: false
+  no_log: true
+
+- name: Finish the complete Prowlarr indexer projections and body
+  ansible.builtin.set_fact:
+    arr_prowlarr_indexer_current_projection: >-
+      {{ arr_prowlarr_indexer_current |
+         acquisition_indexer_projection(
+           arr_prowlarr_indexer,
+           arr_prowlarr_indexer_masked_fields
+         ) }}
+    arr_prowlarr_indexer_desired_projection: >-
+      {{ arr_prowlarr_indexer_desired |
+         acquisition_indexer_projection(
+           arr_prowlarr_indexer,
+           arr_prowlarr_indexer_masked_fields
+         ) }}
+    arr_prowlarr_indexer_body: >-
+      {{ arr_prowlarr_indexer_current |
+         combine(arr_prowlarr_indexer_desired, recursive=True) |
+         combine({
+           'fields': arr_prowlarr_indexer_current.fields | default([]) |
+                     acquisition_merge_owned_fields(
+                       arr_prowlarr_indexer_desired.fields
+                     )
+         }, recursive=True) }}
+  changed_when: false
+  no_log: true
+
+- name: Determine whether the Prowlarr indexer differs
+  ansible.builtin.set_fact:
+    arr_prowlarr_indexer_needs_update: >-
+      {{ arr_prowlarr_indexer_matches | length == 0 or
+         arr_prowlarr_indexer_current_projection !=
+           arr_prowlarr_indexer_desired_projection or
+         arr_installed_reconciliation_fingerprints.prowlarr_indexers !=
+           arr_desired_reconciliation_fingerprints.prowlarr_indexers }}
+  changed_when: false
+  no_log: true
+
+- name: Reconcile the operator-owned Prowlarr indexer
+  ansible.builtin.uri:
+    url: >-
+      {{ arr_prowlarr_api }}/indexer{{
+         '/' ~ arr_prowlarr_indexer_matches[0].id
+         if arr_prowlarr_indexer_matches | length == 1 else '' }}
+    method: "{{ 'PUT' if arr_prowlarr_indexer_matches | length == 1 else 'POST' }}"
+    headers:
+      X-Api-Key: "{{ vault_arr_prowlarr_api_key }}"
+    body_format: json
+    body: "{{ arr_prowlarr_indexer_body }}"
+    status_code: [200, 201, 202]
+    return_content: true
+  when: arr_prowlarr_indexer_needs_update | bool
+  changed_when: true
+  no_log: true

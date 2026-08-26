@@ -76,18 +76,50 @@
 - name: Verify each Arr instance has one owned SABnzbd client
   ansible.builtin.assert:
     that:
+      - item.json is sequence
+      - item.json is not mapping
+      - item.json is not string
+      - downloaders_verify_arr_sab_name_matches | length == 1
+      - downloaders_verify_arr_sab_url_matches | length == 1
       - >-
-        item.json | selectattr('name', 'equalto', arr_sabnzbd_client_name) |
-        list | length == 1
+        downloaders_verify_arr_sab_name_matches[0].id ==
+        downloaders_verify_arr_sab_url_matches[0].id
       - >-
-        (item.json | selectattr('name', 'equalto', arr_sabnzbd_client_name) |
-         first).fields |
-        selectattr('name', 'equalto',
-                   ('movieCategory' if item.item.name == 'radarr' else 'tvCategory')) |
-        map(attribute='value') | first == item.item.category
+        downloaders_verify_arr_sab_name_matches[0] |
+        acquisition_servarr_client_projection(
+          downloaders_verify_arr_sab_masked_fields
+        ) ==
+        downloaders_verify_arr_sab_desired |
+        acquisition_servarr_client_projection(
+          downloaders_verify_arr_sab_masked_fields
+        )
     fail_msg: An Arr SABnzbd client differs from the downloader-owned connection state.
   loop: "{{ downloaders_arr_clients_verification.results }}"
   loop_control:
     label: "{{ item.item.name }}-sabnzbd-client"
+  vars:
+    downloaders_verify_arr_clients: >-
+      {{ item.json
+         if item.json is sequence and item.json is not mapping and item.json is not string
+         else [] }}
+    downloaders_verify_arr_sab_name_matches: >-
+      {{ downloaders_verify_arr_clients |
+         selectattr('name', 'equalto', arr_sabnzbd_client_name) | list }}
+    downloaders_verify_arr_sab_url_matches: >-
+      {{ downloaders_verify_arr_clients |
+         acquisition_servarr_client_url_matches(arr_sabnzbd_host, arr_sabnzbd_port) }}
+    downloaders_verify_arr_sab_desired: >-
+      {{ item.item |
+         acquisition_servarr_client_body(
+           arr_sabnzbd_client_name,
+           arr_sabnzbd_host,
+           arr_sabnzbd_port,
+           vault_downloaders_sabnzbd_api_key,
+           vault_downloaders_sabnzbd_admin_username,
+           vault_downloaders_sabnzbd_admin_password
+         ) }}
+    downloaders_verify_arr_sab_masked_fields: >-
+      {{ downloaders_verify_arr_sab_name_matches | first | default({}) |
+         acquisition_servarr_client_masked_fields }}
   no_log: true
   tags: [platform_verify_downloaders]
