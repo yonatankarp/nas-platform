@@ -52,6 +52,8 @@ FINGERPRINT_RECORD_TASK_NAME = "Record verified Arr desired-input fingerprints"
 FINGERPRINT_READER_TASK_NAME = "Atomically read private Arr desired-input fingerprints"
 VERIFICATION_GATE_INIT_TASK_NAME = "Initialize Arr reconciliation verification gate"
 VERIFICATION_GATE_SUCCESS_TASK_NAME = "Mark Arr reconciliation verification successful"
+DOWNLOADER_GATE_INIT_TASK_NAME = "Initialize downloader relationship verification gate"
+DOWNLOADER_GATE_SUCCESS_TASK_NAME = "Mark downloader relationship verification successful"
 FINGERPRINT_STAT_RESULTS = "{{ arr_reconciliation_fingerprint_stats.results }}"
 FINGERPRINT_FILE_SAFETY_PREDICATES = {
   "regular" => "not item.stat.exists or item.stat.isreg",
@@ -71,6 +73,7 @@ FINGERPRINT_FILES = %w[
 FINGERPRINT_FILE_BY_KIND = {
   application: ".prowlarr-applications-input.sha256",
   download_client: ".servarr-sabnzbd-input.sha256",
+  download_client_production: ".servarr-sabnzbd-input.sha256",
   indexer: ".prowlarr-indexers-input.sha256",
   bazarr: ".bazarr-providers-input.sha256",
   configarr: ".configarr-input.sha256"
@@ -79,6 +82,7 @@ FINGERPRINT_KIND_BY_FILE = FINGERPRINT_FILE_BY_KIND.invert.freeze
 FINGERPRINT_INPUT_BY_KIND = {
   application: "prowlarr_applications",
   download_client: "servarr_sabnzbd",
+  download_client_production: "servarr_sabnzbd",
   indexer: "prowlarr_indexers",
   bazarr: "bazarr_providers",
   configarr: "configarr"
@@ -651,37 +655,126 @@ def check_verification_gate_contract(failures, main_tasks, verify_tasks)
     verification_gate_contract_failures(recorder_mutant, verify_tasks).include?("gate.recorder")
 end
 
+def production_order_contract_failures(site, arr_main, arr_verify, downloader_main,
+                                       downloader_verify, loader_tasks, recorder_tasks)
+  failures = []
+  site_roles = Array(site.first&.fetch("roles", nil))
+  arr_role_index = site_roles.index { |role| role.fetch("role", nil) == "arr" }
+  downloader_role_index = site_roles.index { |role| role.fetch("role", nil) == "downloaders" }
+  failures << "site.role_order" unless
+    arr_role_index && downloader_role_index && arr_role_index < downloader_role_index
+
+  arr_client_read = task_named(arr_verify, "Read Servarr resources for verification")
+  failures << "arr.verify.clients" if arr_client_read.to_s.include?("downloadclient")
+
+  arr_subset = %w[configarr prowlarr_applications prowlarr_indexers bazarr_providers]
+  arr_loader = task_named(arr_main, "Load private Arr desired-input fingerprints")
+  arr_recorder = task_named(arr_main, "Persist verified Arr desired-input fingerprints")
+  failures << "arr.loader.subset" unless
+    Array(arr_loader&.dig("vars", "arr_reconciliation_fingerprint_subset")) == arr_subset
+  failures << "arr.recorder.subset" unless
+    Array(arr_recorder&.dig("vars", "arr_reconciliation_fingerprint_subset")) == arr_subset
+
+  load = task_named(downloader_main, "Load private Servarr desired-input fingerprint")
+  init = task_named(downloader_main, DOWNLOADER_GATE_INIT_TASK_NAME)
+  reconcile = task_named(downloader_main, "Reconcile Arr download clients after SABnzbd startup")
+  verify = task_named(downloader_main, "Run downloader service verification")
+  record = task_named(downloader_main, "Persist verified Servarr desired-input fingerprint")
+  indexes = [load, init, reconcile, verify, record].map { |task| downloader_main.index(task) }
+  failures << "downloaders.order" unless indexes.none?(&:nil?) && indexes == indexes.sort
+  failures << "downloaders.loader" unless
+    load&.dig("ansible.builtin.include_role", "name") == "arr" &&
+    load&.dig("ansible.builtin.include_role", "tasks_from") == "reconciliation_fingerprints" &&
+    Array(load&.dig("vars", "arr_reconciliation_fingerprint_subset")) == ["servarr_sabnzbd"]
+  failures << "downloaders.initialize" unless
+    init&.dig("ansible.builtin.set_fact", "downloaders_relationship_verification_succeeded") == false &&
+    init["changed_when"] == false
+  record_when = Array(record&.fetch("when", nil)).map { |entry| normalized_ansible_expression(entry) }
+  failures << "downloaders.recorder" unless
+    record&.dig("ansible.builtin.include_role", "name") == "arr" &&
+    record&.dig("ansible.builtin.include_role", "tasks_from") ==
+      "record_reconciliation_fingerprints" &&
+    Array(record&.dig("vars", "arr_reconciliation_fingerprint_subset")) ==
+      ["servarr_sabnzbd"] &&
+    record_when.include?(normalized_ansible_expression(
+      "downloaders_relationship_verification_succeeded is sameas true"
+    ))
+
+  success_matches = downloader_verify.select do |task|
+    task["name"] == DOWNLOADER_GATE_SUCCESS_TASK_NAME
+  end
+  success = success_matches.first
+  failures << "downloaders.success" unless
+    success_matches.length == 1 && downloader_verify.last.equal?(success) &&
+    success&.dig("ansible.builtin.set_fact", "downloaders_relationship_verification_succeeded") ==
+      true && success["changed_when"] == false &&
+    Array(success["tags"]).include?("platform_verify_downloaders")
+
+  stat_loop = fingerprint_loader_stat_task(loader_tasks)&.fetch("loop", nil).to_s
+  failures << "loader.subset" unless stat_loop.include?("arr_reconciliation_fingerprint_subset")
+  recorder_loop = task_named(recorder_tasks, FINGERPRINT_RECORD_TASK_NAME)&.fetch("loop", nil).to_s
+  failures << "recorder.subset" unless
+    recorder_loop.include?("arr_reconciliation_fingerprint_subset")
+  failures
+end
+
 def reconciliation_tasks(kind)
   case kind
   when :application
     tasks = task_slice(
-      "reconcile_prowlarr.yml", "Read Prowlarr applications",
+      "reconcile_prowlarr.yml", "Validate operator-owned Prowlarr application declarations",
+      "Refuse duplicate Prowlarr application names before mutation"
+    )
+    include_task = task_named(
+      YAML.safe_load_file(File.join(ARR_TASKS, "reconcile_prowlarr.yml"), aliases: true),
       "Reconcile each Prowlarr full-sync application"
     )
-    include_task = tasks.find do |task|
-      task["name"] == "Reconcile each Prowlarr full-sync application"
-    end
     include_task["ansible.builtin.include_tasks"] = File.join(
       ARR_TASKS, "reconcile_prowlarr_application.yml"
     )
-    tasks
+    tasks + [include_task]
   when :indexer
     tasks = task_slice(
       "reconcile_prowlarr.yml", "Validate operator-owned Prowlarr indexer declarations",
-      "Refuse duplicate Prowlarr indexer names"
+      "Refuse ambiguous Prowlarr indexer names before mutation"
     )
-    include_task = tasks.find do |task|
-      task["name"] == "Reconcile operator-owned Prowlarr indexers"
-    end
+    include_task = task_named(
+      YAML.safe_load_file(File.join(ARR_TASKS, "reconcile_prowlarr.yml"), aliases: true),
+      "Reconcile operator-owned Prowlarr indexers"
+    )
     include_task["ansible.builtin.include_tasks"] = File.join(
       ARR_TASKS, "reconcile_prowlarr_indexer.yml"
     )
-    tasks
+    tasks + [include_task]
   when :download_client
     task_slice(
       "reconcile_servarr_download_client.yml", "Read Servarr download clients",
       "Reconcile the owned Servarr SABnzbd client"
     )
+  when :download_client_production
+    tasks = YAML.safe_load_file(
+      File.join(ARR_TASKS, "reconcile_download_clients.yml"), aliases: true
+    )
+    include_task = tasks.find do |task|
+      task["name"] == "Reconcile each Servarr SABnzbd client after downloader startup"
+    end
+    include_task["ansible.builtin.include_tasks"] = File.join(
+      ARR_TASKS, "reconcile_servarr_download_client.yml"
+    )
+    deep_copy(tasks)
+  when :prowlarr_preflight
+    tasks = YAML.safe_load_file(
+      File.join(ARR_TASKS, "reconcile_prowlarr.yml"), aliases: true
+    )
+    {
+      "Reconcile each Prowlarr full-sync application" =>
+        File.join(ARR_TASKS, "reconcile_prowlarr_application.yml"),
+      "Reconcile operator-owned Prowlarr indexers" =>
+        File.join(ARR_TASKS, "reconcile_prowlarr_indexer.yml")
+    }.each do |name, path|
+      task_named(tasks, name)["ansible.builtin.include_tasks"] = path
+    end
+    deep_copy(tasks)
   when :bazarr
     task_slice(
       "reconcile_bazarr.yml", "Validate operator-owned Bazarr declarations",
@@ -715,7 +808,7 @@ def verification_tasks(kind)
       "verify.yml", "Verify operator-owned Prowlarr indexers exist exactly once",
       "Verify operator-owned Prowlarr indexers exist exactly once"
     )
-  when :download_client
+  when :download_client, :download_client_production
     task_slice(
       "verify.yml", "Read SABnzbd configuration for verification",
       "Verify each Arr instance has one owned SABnzbd client", root: DOWNLOADER_TASKS
@@ -728,7 +821,7 @@ def verification_tasks(kind)
   when :configarr
     task_slice(
       "verify.yml", "Read Servarr resources for verification",
-      "Verify Servarr authentication, roots, rename, and SABnzbd"
+      "Verify Servarr authentication, roots, and rename state"
     )
   else
     raise "unknown verification fixture #{kind}"
@@ -750,9 +843,22 @@ def verification_gate_initialization_tasks
   [deep_copy(tasks.fetch(init_index))]
 end
 
+def downloader_verification_gate_initialization_tasks
+  tasks = YAML.safe_load_file(File.join(DOWNLOADER_TASKS, "main.yml"), aliases: true)
+  task = task_named(tasks, DOWNLOADER_GATE_INIT_TASK_NAME)
+  task ? [deep_copy(task)] : []
+end
+
 def verification_success_tasks
   tasks = YAML.safe_load_file(File.join(ARR_TASKS, "verify.yml"), aliases: true)
   return [] unless tasks.last&.fetch("name", nil) == VERIFICATION_GATE_SUCCESS_TASK_NAME
+
+  [deep_copy(tasks.last)]
+end
+
+def downloader_verification_success_tasks
+  tasks = YAML.safe_load_file(File.join(DOWNLOADER_TASKS, "verify.yml"), aliases: true)
+  return [] unless tasks.last&.fetch("name", nil) == DOWNLOADER_GATE_SUCCESS_TASK_NAME
 
   [deep_copy(tasks.last)]
 end
@@ -777,7 +883,7 @@ def fingerprint_record_tasks
   tasks = YAML.safe_load_file(
     File.join(ARR_TASKS, "record_reconciliation_fingerprints.yml"), aliases: true
   )
-  unless tasks.first&.fetch("name", nil) == "Record verified Arr desired-input fingerprints"
+  unless tasks.any? { |task| task["name"] == "Record verified Arr desired-input fingerprints" }
     raise "verified Arr fingerprint recording boundary is unavailable"
   end
 
@@ -785,6 +891,14 @@ def fingerprint_record_tasks
 end
 
 def selected_tasks(kind)
+  return reconciliation_tasks(kind) if kind == :prowlarr_preflight
+
+  if %i[download_client download_client_production].include?(kind)
+    return fingerprint_load_tasks + downloader_verification_gate_initialization_tasks +
+      reconciliation_tasks(kind) + verification_tasks(kind) +
+      downloader_verification_success_tasks + fingerprint_record_tasks
+  end
+
   owned_tasks = verification_gate_initialization_tasks + reconciliation_tasks(kind) +
     verification_tasks(kind) + verification_success_tasks
   return owned_tasks unless fingerprint_tasks_available?
@@ -805,6 +919,34 @@ def tag_filtered_fingerprint_tasks
     "file" => include_file,
     "apply" => { "tags" => ["arr"] }
   }
+  tasks
+end
+
+def tag_filtered_downloader_relationship_tasks
+  main_tasks = YAML.safe_load_file(File.join(DOWNLOADER_TASKS, "main.yml"), aliases: true)
+  names = [
+    "Load private Servarr desired-input fingerprint",
+    DOWNLOADER_GATE_INIT_TASK_NAME,
+    "Reconcile Arr download clients after SABnzbd startup",
+    "Run downloader service verification",
+    "Persist verified Servarr desired-input fingerprint"
+  ]
+  tasks = names.map { |name| deep_copy(task_named(main_tasks, name)) }
+  raise "downloader production-order tag boundary is unavailable" if tasks.any?(&:nil?)
+
+  tasks.each do |task|
+    task["tags"] = (Array(task["tags"]) + ["downloaders"]).uniq
+    if (include_role = task["ansible.builtin.include_role"])
+      include_role["apply"] = { "tags" => ["downloaders"] }
+    elsif (include_tasks = task["ansible.builtin.include_tasks"])
+      include_tasks = { "file" => include_tasks } if include_tasks.is_a?(String)
+      include_tasks["apply"] ||= {}
+      include_tasks["apply"]["tags"] = (
+        Array(include_tasks.dig("apply", "tags")) + ["downloaders"]
+      ).uniq
+      task["ansible.builtin.include_tasks"] = include_tasks
+    end
+  end
   tasks
 end
 
@@ -994,9 +1136,13 @@ class AcquisitionApi
 
   class SocketDeadlineExceeded < StandardError; end
 
-  def initialize(state, fail_configarr: false)
+  def initialize(state, fail_configarr: false, fail_client_service: nil,
+                 corrupt_client_verification: false)
     @state = state
     @fail_configarr = fail_configarr
+    @fail_client_service = fail_client_service
+    @corrupt_client_verification = corrupt_client_verification
+    @client_get_counts = Hash.new(0)
     @requests = []
     @unexpected_requests = []
     @server = TCPServer.new("127.0.0.1", 0)
@@ -1063,6 +1209,14 @@ class AcquisitionApi
     @requests << request
 
     case [method, target]
+    when ["GET", "/api/v1/config/host"]
+      send_json(client, 200, @state.fetch("prowlarr_host", {
+        "id" => 1,
+        "authenticationMethod" => "forms",
+        "authenticationRequired" => "enabled",
+        "username" => "fixture-prowlarr-admin",
+        "launchBrowser" => false
+      }))
     when ["GET", "/api/v1/applications"]
       send_json(client, 200, @state.fetch("applications", []).map { |item| public_item(item, :application) })
     when ["POST", "/api/v1/applications"]
@@ -1110,8 +1264,16 @@ class AcquisitionApi
       elsif method == "GET" && (match = target.match(
         %r{\A/(radarr|sonarr)/api/v3/downloadclient\z}
       ))
-        client_state = match[1] == "radarr" ? DOWNLOAD_CLIENT : SONARR_DOWNLOAD_CLIENT
-        send_json(client, 200, [public_item(client_state, :client)])
+        service = match[1]
+        collection = "#{service}_download_clients"
+        fallback = service == "radarr" ? DOWNLOAD_CLIENT : SONARR_DOWNLOAD_CLIENT
+        items = @state.fetch(collection, [fallback])
+        @client_get_counts[service] += 1
+        if @corrupt_client_verification && @client_get_counts[service] >= 2
+          items = deep_copy(items)
+          items.first["enable"] = false if items.first
+        end
+        send_json(client, 200, items.map { |item| public_item(item, :client) })
       elsif method == "GET" && (match = target.match(
         %r{\A/(radarr|sonarr)/api/v3/(config/host|rootfolder)\z}
       ))
@@ -1126,6 +1288,24 @@ class AcquisitionApi
         %r{\A/(radarr|sonarr)/api/v3/(qualityprofile|qualitydefinition|customformat|config/naming)\z}
       ))
         send_json(client, 200, @state.fetch("configarr").fetch(match[1]).fetch(match[2]))
+      elsif method == "POST" && (match = target.match(
+        %r{\A/(radarr|sonarr)/api/v3/downloadclient\z}
+      ))
+        if @fail_client_service == match[1]
+          send_json(client, 500, { "error" => "fixture client write failure" })
+          return
+        end
+        item = create_item("#{match[1]}_download_clients", body)
+        send_json(client, 201, public_item(item, :client))
+      elsif method == "PUT" && (match = target.match(
+        %r{\A/(radarr|sonarr)/api/v3/downloadclient/\d+\z}
+      ))
+        if @fail_client_service == match[1]
+          send_json(client, 500, { "error" => "fixture client write failure" })
+          return
+        end
+        item = update_item("#{match[1]}_download_clients", target, body)
+        send_json(client, 200, public_item(item, :client))
       else
         @unexpected_requests << [method, target]
         send_json(client, 400, { "error" => "unexpected fixture request" })
@@ -1393,6 +1573,30 @@ def canonical_application_secret_writes?(requests)
       fields_hash(body).keys.sort == fields_hash(expected).keys.sort &&
       application_projection(body) == application_projection(expected) &&
       fields_hash(body).fetch("apiKey") == fields_hash(expected).fetch("apiKey")
+  end
+rescue JSON::ParserError, KeyError
+  false
+end
+
+def canonical_production_client_writes?(requests)
+  expected_by_service = {
+    "radarr" => DOWNLOAD_CLIENT, "sonarr" => SONARR_DOWNLOAD_CLIENT
+  }
+  return false unless requests.length == expected_by_service.length
+
+  requests.all? do |request|
+    service = request.fetch("target")[%r{\A/(radarr|sonarr)/api/v3/downloadclient}, 1]
+    next false unless service
+
+    body = JSON.parse(request.fetch("body"))
+    expected = expected_by_service.fetch(service)
+    body.keys.reject { |key| key == "id" }.sort ==
+      expected.keys.reject { |key| key == "id" }.sort &&
+      fields_hash(body).keys.sort == fields_hash(expected).keys.sort &&
+      download_client_projection(body) == download_client_projection(expected) &&
+      %w[apiKey username password].all? do |field|
+        fields_hash(body).fetch(field) == fields_hash(expected).fetch(field)
+      end
   end
 rescue JSON::ParserError, KeyError
   false
@@ -1702,7 +1906,7 @@ end
 
 def reconciliation_phase(result)
   events = result.fetch("task_events")
-  recorder_task = fingerprint_tasks_available? ? fingerprint_record_tasks.first.fetch("name") : nil
+  recorder_task = fingerprint_tasks_available? ? FINGERPRINT_RECORD_TASK_NAME : nil
   recorder_index = recorder_task && events.index { |event| event.fetch("task") == recorder_task }
   phase_events = recorder_index ? events.take(recorder_index) : events
   result.merge(
@@ -1725,6 +1929,19 @@ def run_tasks(kind, api, extra_variables = {}, runtime: nil, prepare_fingerprint
       )
     end
     variables["arr_servarr_instances"] = [deep_copy(variables.fetch("arr_servarr_instance"))]
+    variables["arr_reconciliation_fingerprint_subset"] =
+      if %i[download_client download_client_production].include?(kind)
+        ["servarr_sabnzbd"]
+      else
+        %w[configarr prowlarr_applications prowlarr_indexers bazarr_providers]
+      end
+    if kind == :download_client_production
+      variables["arr_servarr_instances"] = [SERVARR_INSTANCE, SONARR_INSTANCE].map do |instance|
+        deep_copy(instance).merge(
+          "api" => "http://127.0.0.1:#{api.port}/#{instance.fetch('name')}/api/v3"
+        )
+      end
+    end
     variables["platform_runtime_dir"] = runtime
     callback_directory = write_event_callback(directory)
     env = {
@@ -1772,8 +1989,14 @@ def run_tasks(kind, api, extra_variables = {}, runtime: nil, prepare_fingerprint
   end
 end
 
-def with_api(state, fail_configarr: false)
-  api = AcquisitionApi.new(state, fail_configarr: fail_configarr)
+def with_api(state, fail_configarr: false, fail_client_service: nil,
+             corrupt_client_verification: false)
+  api = AcquisitionApi.new(
+    state,
+    fail_configarr: fail_configarr,
+    fail_client_service: fail_client_service,
+    corrupt_client_verification: corrupt_client_verification
+  )
   yield api
 ensure
   api&.close
@@ -1823,6 +2046,10 @@ def verification_observed?(kind, requests)
   when :download_client
     get_targets.count("/api/v3/downloadclient") >= 2 &&
       get_targets.any? { |target| target.start_with?("/sabnzbd/api?") }
+  when :download_client_production
+    %w[radarr sonarr].all? do |service|
+      get_targets.count("/#{service}/api/v3/downloadclient") >= 2
+    end && get_targets.any? { |target| target.start_with?("/sabnzbd/api?") }
   when :bazarr
     get_targets.count("/api/system/settings") >= 2
   when :configarr
@@ -2194,6 +2421,48 @@ check_verification_gate_contract(
   YAML.safe_load_file(File.join(ARR_TASKS, "main.yml"), aliases: true),
   YAML.safe_load_file(File.join(ARR_TASKS, "verify.yml"), aliases: true)
 )
+production_order_contract_failures(
+  YAML.safe_load_file(File.join(ROOT, "site.yml"), aliases: true),
+  YAML.safe_load_file(File.join(ARR_TASKS, "main.yml"), aliases: true),
+  YAML.safe_load_file(File.join(ARR_TASKS, "verify.yml"), aliases: true),
+  YAML.safe_load_file(File.join(DOWNLOADER_TASKS, "main.yml"), aliases: true),
+  YAML.safe_load_file(File.join(DOWNLOADER_TASKS, "verify.yml"), aliases: true),
+  fingerprint_load_tasks,
+  fingerprint_record_tasks
+).each do |violation|
+  failures << "production-order relationship contract violates #{violation}"
+end
+
+cross_resource_malformed_indexer = deep_copy(INDEXER_DECLARATION).merge(
+  "name" => "Malformed Later Indexer"
+)
+cross_resource_malformed_indexer.fetch("fields").last.delete("value")
+cross_resource_preflight_state = {
+  "applications" => [
+    deep_copy(APPLICATION).merge("enable" => false),
+    deep_copy(SONARR_APPLICATION)
+  ],
+  "indexers" => [deep_copy(INDEXER)]
+}
+with_api(cross_resource_preflight_state) do |api|
+  result = run_tasks(
+    :prowlarr_preflight,
+    api,
+    {
+      "media_arr_indexers" => [
+        deep_copy(INDEXER_DECLARATION), cross_resource_malformed_indexer
+      ]
+    },
+    prepare_fingerprints: false
+  )
+  sane = check_sanity(failures, "global Prowlarr preflight", result, api)
+  if sane
+    failures << "global Prowlarr preflight accepted a malformed later indexer" if
+      result.fetch("status").success?
+    failures << "global Prowlarr preflight reached a mutation" unless
+      mutation_requests(api, ->(_request) { true }).empty?
+  end
+end
 
 application_state = {
   "applications" => [
@@ -2211,13 +2480,18 @@ if fingerprint_tasks_available?
       failures << "dedicated fingerprint loader and recorder failed: #{sanitized_tail(result)}" unless
         result.fetch("status").success?
       expected = result.fetch("expected_fingerprints")
-      valid = FINGERPRINT_FILE_BY_KIND.all? do |kind, filename|
+      valid = FINGERPRINT_FILE_BY_KIND.reject do |kind, _filename|
+        %i[download_client download_client_production].include?(kind)
+      end.all? do |kind, filename|
         entry = result.fetch("fingerprints").fetch(filename)
         entry && entry.fetch("type") == "regular" && entry.fetch("mode") == 0o600 &&
           entry.fetch("uid") == Process.uid && entry.fetch("gid") == Process.gid &&
           entry.fetch("content") ==
             "#{expected.fetch(FINGERPRINT_INPUT_BY_KIND.fetch(kind))}\n"
       end
+      valid &&= result.fetch("fingerprints").fetch(
+        FINGERPRINT_FILE_BY_KIND.fetch(:download_client)
+      ).nil?
       failures << "dedicated loader/recorder did not create exact private owned fingerprints" unless valid
     end
   end
@@ -2225,6 +2499,167 @@ if fingerprint_tasks_available?
   # can seed equivalent private baselines without running another setup playbook
   # before every scenario.
   FINGERPRINT_BASELINE_CACHE["enabled"] = true
+end
+
+production_client_write = lambda do |request|
+  request["target"].match?(%r{\A/(radarr|sonarr)/api/v3/downloadclient(?:/\d+)?\z})
+end
+clean_production_client_state = {
+  "radarr_download_clients" => [], "sonarr_download_clients" => []
+}
+with_api(deep_copy(clean_production_client_state)) do |api|
+  result = run_tasks(
+    :download_client_production, api, {}, prepare_fingerprints: false
+  )
+  sane = check_sanity(
+    failures, "clean production-order Servarr clients", result, api,
+    kind: :download_client_production
+  )
+  if sane
+    failures << "clean production-order Servarr clients failed" unless
+      result.fetch("status").success?
+    writes = mutation_requests(api, production_client_write)
+    failures << "clean production-order Servarr clients did not create both clients" unless
+      writes.length == 2 && writes.all? { |request| request["method"] == "POST" } &&
+      canonical_production_client_writes?(writes)
+    failures << "clean production-order Servarr clients reported an unexpected change count" unless
+      result.fetch("reconciliation_changed") == 2
+    failures << "clean production-order Servarr clients did not converge Radarr" unless
+      download_client_projection(api.state.fetch("radarr_download_clients").first) ==
+      download_client_projection(DOWNLOAD_CLIENT)
+    failures << "clean production-order Servarr clients did not converge Sonarr" unless
+      download_client_projection(api.state.fetch("sonarr_download_clients").first) ==
+      download_client_projection(SONARR_DOWNLOAD_CLIENT)
+    servarr_file = FINGERPRINT_FILE_BY_KIND.fetch(:download_client)
+    entry = result.fetch("fingerprints").fetch(servarr_file)
+    expected = result.fetch("expected_fingerprints").fetch("servarr_sabnzbd")
+    failures << "clean production-order Servarr clients did not record only the Servarr digest" unless
+      entry && entry.fetch("content") == "#{expected}\n" &&
+      (FINGERPRINT_FILES - [servarr_file]).all? do |filename|
+        result.fetch("fingerprints").fetch(filename).nil?
+      end
+    success_index = result.fetch("task_events").index do |event|
+      event.fetch("task") == DOWNLOADER_GATE_SUCCESS_TASK_NAME
+    end
+    record_index = result.fetch("task_events").index do |event|
+      event.fetch("task") == FINGERPRINT_RECORD_TASK_NAME
+    end
+    failures << "clean production-order Servarr digest was recorded before downloader verification" unless
+      success_index && record_index && success_index < record_index
+  end
+end
+
+
+with_api(
+  deep_copy(clean_production_client_state), fail_client_service: "sonarr"
+) do |api|
+  result = run_tasks(
+    :download_client_production, api, {}, prepare_fingerprints: false
+  )
+  sane = check_sanity(
+    failures, "failed production-order Servarr client write", result, api,
+    kind: :download_client_production
+  )
+  if sane
+    failures << "failed production-order Servarr client write was accepted" if
+      result.fetch("status").success?
+    failures << "failed production-order Servarr client write reached downloader success" if
+      result.fetch("task_events").any? do |event|
+        event.fetch("task") == DOWNLOADER_GATE_SUCCESS_TASK_NAME
+      end
+    failures << "failed production-order Servarr client write reached fingerprint recording" if
+      result.fetch("task_events").any? do |event|
+        event.fetch("task") == FINGERPRINT_RECORD_TASK_NAME
+      end
+    failures << "failed production-order Servarr client write advanced a fingerprint" unless
+      result.fetch("fingerprints").values.compact.empty?
+  end
+end
+
+stable_production_client_state = {
+  "radarr_download_clients" => [deep_copy(DOWNLOAD_CLIENT)],
+  "sonarr_download_clients" => [deep_copy(SONARR_DOWNLOAD_CLIENT)]
+}
+with_api(
+  deep_copy(stable_production_client_state), corrupt_client_verification: true
+) do |api|
+  result = run_tasks(
+    :download_client_production, api, {}, prepare_fingerprints: false
+  )
+  sane = check_sanity(
+    failures, "failed production-order downloader verification", result, api,
+    kind: :download_client_production
+  )
+  if sane
+    failures << "failed production-order downloader verification was accepted" if
+      result.fetch("status").success?
+    failures << "failed production-order downloader verification reached success" if
+      result.fetch("task_events").any? do |event|
+        event.fetch("task") == DOWNLOADER_GATE_SUCCESS_TASK_NAME
+      end
+    failures << "failed production-order downloader verification reached fingerprint recording" if
+      result.fetch("task_events").any? do |event|
+        event.fetch("task") == FINGERPRINT_RECORD_TASK_NAME
+      end
+    failures << "failed production-order downloader verification advanced a fingerprint" unless
+      result.fetch("fingerprints").values.compact.empty?
+  end
+end
+
+production_secret_state = deep_copy(stable_production_client_state)
+%w[radarr_download_clients sonarr_download_clients].each do |collection|
+  set_field!(
+    production_secret_state.fetch(collection).first,
+    "apiKey",
+    "private-stale-apiKey"
+  )
+end
+Dir.mktmpdir("media-acquisition-production-client-secret-") do |runtime|
+  with_api(production_secret_state) do |api|
+    baseline = run_tasks(
+      :download_client_production,
+      api,
+      { "vault_downloaders_sabnzbd_api_key" => "private-stale-apiKey" },
+      runtime: runtime,
+      prepare_fingerprints: false
+    )
+    sane = check_sanity(
+      failures, "old production-order Servarr secret", baseline, api,
+      kind: :download_client_production
+    )
+    if sane && baseline.fetch("status").success?
+      api.requests.clear
+      result = run_tasks(
+        :download_client_production, api, {}, runtime: runtime,
+        prepare_fingerprints: false
+      )
+      sane = check_sanity(
+        failures, "shared production-order Servarr secret transition", result, api,
+        kind: :download_client_production
+      )
+      if sane
+        writes = mutation_requests(api, production_client_write)
+        failures << "shared production-order Servarr secret did not update both exact clients" unless
+          result.fetch("status").success? && writes.length == 2 &&
+          writes.all? { |request| request["method"] == "PUT" } &&
+          canonical_production_client_writes?(writes)
+        failures << "shared production-order Servarr secret reported an unexpected change count" unless
+          result.fetch("reconciliation_changed") == 2
+        failures << "shared production-order Servarr secret did not record one digest transition" unless
+          result.fetch("fingerprint_changes") == 1
+        success_index = result.fetch("task_events").index do |event|
+          event.fetch("task") == DOWNLOADER_GATE_SUCCESS_TASK_NAME
+        end
+        record_index = result.fetch("task_events").index do |event|
+          event.fetch("task") == FINGERPRINT_RECORD_TASK_NAME
+        end
+        failures << "shared production-order Servarr secret recorded before both clients verified" unless
+          success_index && record_index && success_index < record_index
+      end
+    else
+      failures << "could not establish old production-order Servarr secret fingerprint"
+    end
+  end
 end
 
 Dir.mktmpdir("media-acquisition-fingerprint-tags-") do |directory|
@@ -2261,6 +2696,51 @@ Dir.mktmpdir("media-acquisition-fingerprint-tags-") do |directory|
   failures << "tag-filtered verification skip reached fingerprint recording" if recorder_started
   failures << "tag-filtered verification skip changed fingerprint files" unless
     fingerprint_snapshot(runtime) == fingerprints_before
+end
+
+
+Dir.mktmpdir("media-acquisition-downloader-tags-") do |directory|
+  runtime = File.join(directory, "runtime")
+  FileUtils.mkdir_p(File.join(runtime, "services", "arr"))
+  with_api(deep_copy(clean_production_client_state)) do |api|
+    variables = base_variables(api.port).merge(
+      "media_usenet_enabled" => true,
+      "platform_runtime_dir" => runtime,
+      "arr_servarr_instances" => [SERVARR_INSTANCE, SONARR_INSTANCE].map do |instance|
+        deep_copy(instance).merge(
+          "api" => "http://127.0.0.1:#{api.port}/#{instance.fetch('name')}/api/v3"
+        )
+      end
+    )
+    callback_directory = write_event_callback(directory)
+    env = {
+      "ANSIBLE_NOCOLOR" => "1",
+      "ANSIBLE_CALLBACK_PLUGINS" => callback_directory,
+      "ANSIBLE_CALLBACKS_ENABLED" => "acquisition_fixture_events",
+      "ACQUISITION_FIXTURE_EVENT_LOG" => File.join(directory, "ansible-events.jsonl")
+    }
+    playbook = File.join(directory, "playbook.yml")
+    write_playbook(playbook, variables, tag_filtered_downloader_relationship_tasks)
+    result = run_playbook(
+      playbook, env, "--tags", "downloaders", "--skip-tags", "platform_verify_downloaders"
+    )
+    failures << "HARNESS downloader tag-filtered gate produced no task events" if
+      result.fetch("task_events").empty?
+    failures << "downloader tag-filtered verification skip failed: #{sanitized_tail(result)}" unless
+      result.fetch("status")&.success?
+    failures << "downloader tag-filtered verification skip did not reconcile both clients" unless
+      mutation_requests(api, production_client_write).length == 2
+    failures << "downloader tag-filtered verification skip reached its success marker" if
+      result.fetch("task_events").any? do |event|
+        event.fetch("task") == DOWNLOADER_GATE_SUCCESS_TASK_NAME && event.fetch("event") == "ok"
+      end
+    failures << "downloader tag-filtered verification skip reached fingerprint recording" if
+      result.fetch("task_events").any? do |event|
+        event.fetch("task") == FINGERPRINT_RECORD_TASK_NAME
+      end
+    failures << "downloader tag-filtered verification skip changed fingerprint files" unless
+      fingerprint_snapshot(runtime).values.compact.empty?
+  end
 end
 
 Dir.mktmpdir("media-acquisition-fingerprint-oversized-") do |runtime|
@@ -2353,6 +2833,12 @@ if ENV["ACQUISITION_FINGERPRINT_TARGETED_ONLY"] == "1"
   exit
 end
 
+if ENV["ACQUISITION_PRODUCTION_ORDER_TARGETED_ONLY"] == "1"
+  abort failures.join("\n") unless failures.empty?
+  puts "media acquisition production-order relationship behavior holds"
+  exit
+end
+
 application_mutations = {
   "name" => ->(state) { state.fetch("applications").first["name"] = "Legacy Radarr" },
   "enable" => ->(state) { state.fetch("applications").first["enable"] = false },
@@ -2408,6 +2894,29 @@ duplicate_applications.fetch("applications") << deep_copy(APPLICATION).merge("id
 exercise_duplicate(
   failures, relationship: "Prowlarr application", kind: :application,
   state: duplicate_applications, variables: {}, write_matcher: application_write
+)
+duplicate_application_declarations = [
+  deep_copy(APPLICATION_DECLARATION), deep_copy(APPLICATION_DECLARATION)
+]
+application_declaration_preflight_state = deep_copy(application_state)
+application_declaration_preflight_state.fetch("applications").first["enable"] = false
+exercise_duplicate(
+  failures, relationship: "Prowlarr application declaration", kind: :application,
+  state: application_declaration_preflight_state,
+  variables: { "arr_prowlarr_applications" => duplicate_application_declarations },
+  write_matcher: application_write
+)
+malformed_application_declaration = deep_copy(SONARR_APPLICATION_DECLARATION)
+malformed_application_declaration.delete("base_url")
+exercise_duplicate(
+  failures, relationship: "Prowlarr malformed later application declaration",
+  kind: :application, state: application_declaration_preflight_state,
+  variables: {
+    "arr_prowlarr_applications" => [
+      deep_copy(APPLICATION_DECLARATION), malformed_application_declaration
+    ]
+  },
+  write_matcher: application_write
 )
 
 client_state = { "download_clients" => [deep_copy(DOWNLOAD_CLIENT)] }
@@ -2614,6 +3123,33 @@ duplicate_indexers.fetch("indexers") << deep_copy(INDEXER).merge("id" => 32)
 exercise_duplicate(
   failures, relationship: "Prowlarr indexer", kind: :indexer,
   state: duplicate_indexers, variables: {}, write_matcher: indexer_write
+)
+malformed_indexer_declaration = deep_copy(INDEXER_DECLARATION)
+malformed_indexer_declaration.fetch("fields").last.delete("value")
+indexer_declaration_preflight_state = deep_copy(indexer_state)
+indexer_declaration_preflight_state.fetch("indexers").first["priority"] = 50
+exercise_duplicate(
+  failures, relationship: "Prowlarr malformed later indexer declaration", kind: :indexer,
+  state: indexer_declaration_preflight_state,
+  variables: {
+    "media_arr_indexers" => [
+      deep_copy(INDEXER_DECLARATION), malformed_indexer_declaration.merge(
+        "name" => "Malformed Later Indexer"
+      )
+    ]
+  },
+  write_matcher: indexer_write
+)
+malformed_later_current_indexer_state = deep_copy(indexer_declaration_preflight_state)
+malformed_later_current_indexer_state.fetch("indexers") << {
+  "id" => 33,
+  "name" => "Malformed Later Current Indexer",
+  "fields" => [{ "name" => "baseUrl" }]
+}
+exercise_duplicate(
+  failures, relationship: "Prowlarr malformed later current indexer", kind: :indexer,
+  state: malformed_later_current_indexer_state,
+  variables: {}, write_matcher: indexer_write
 )
 
 if ENV["ACQUISITION_RELATIONSHIPS_TARGETED_ONLY"] == "1"

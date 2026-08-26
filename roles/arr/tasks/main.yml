@@ -86,6 +86,12 @@
 
 - name: Load private Arr desired-input fingerprints
   ansible.builtin.include_tasks: reconciliation_fingerprints.yml
+  vars:
+    arr_reconciliation_fingerprint_subset:
+      - configarr
+      - prowlarr_applications
+      - prowlarr_indexers
+      - bazarr_providers
   when: media_usenet_enabled | bool
 
 - name: Initialize Arr reconciliation verification gate
@@ -143,6 +149,12 @@
 
 - name: Persist verified Arr desired-input fingerprints
   ansible.builtin.include_tasks: record_reconciliation_fingerprints.yml
+  vars:
+    arr_reconciliation_fingerprint_subset:
+      - configarr
+      - prowlarr_applications
+      - prowlarr_indexers
+      - bazarr_providers
   when:
     - media_usenet_enabled | bool
     - not ansible_check_mode

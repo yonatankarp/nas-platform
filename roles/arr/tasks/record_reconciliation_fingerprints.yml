@@ -1,4 +1,24 @@
 ---
+- name: Validate the recorded Arr desired-input fingerprint subset
+  ansible.builtin.assert:
+    that:
+      - arr_reconciliation_fingerprint_subset_effective is sequence
+      - arr_reconciliation_fingerprint_subset_effective is not mapping
+      - arr_reconciliation_fingerprint_subset_effective is not string
+      - >-
+        arr_reconciliation_fingerprint_subset_effective | length ==
+        arr_reconciliation_fingerprint_subset_effective | unique | list | length
+      - >-
+        arr_reconciliation_fingerprint_subset_effective |
+        difference(arr_desired_reconciliation_fingerprints.keys() | list) |
+        length == 0
+    fail_msg: The recorded Arr desired-input fingerprint subset is invalid.
+  vars:
+    arr_reconciliation_fingerprint_subset_effective: >-
+      {{ arr_reconciliation_fingerprint_subset |
+         default(arr_desired_reconciliation_fingerprints.keys() | list) }}
+  no_log: true
+
 - name: Record verified Arr desired-input fingerprints
   ansible.builtin.copy:
     content: "{{ item.value }}\n"
@@ -8,7 +28,14 @@
     group: "{{ nas_gid }}"
     mode: "0600"
     follow: false
-  loop: "{{ arr_desired_reconciliation_fingerprints | dict2items }}"
+  loop: >-
+    {{ arr_desired_reconciliation_fingerprints | dict2items |
+       selectattr('key', 'in', arr_reconciliation_fingerprint_subset_effective) |
+       list }}
   loop_control:
     label: "{{ item.key }}"
+  vars:
+    arr_reconciliation_fingerprint_subset_effective: >-
+      {{ arr_reconciliation_fingerprint_subset |
+         default(arr_desired_reconciliation_fingerprints.keys() | list) }}
   no_log: true

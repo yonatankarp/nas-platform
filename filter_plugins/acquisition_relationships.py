@@ -128,7 +128,6 @@ def acquisition_application_projection(
     if not isinstance(masked_fields, (list, tuple)):
         raise AnsibleFilterError("masked Prowlarr application fields must be a sequence")
     masked_names = set(masked_fields)
-    password = _string(fields.get("password"))
     projection = {
         "name": _string(value.get("name")),
         "enable": _boolean(value.get("enable")),
@@ -141,7 +140,7 @@ def acquisition_application_projection(
             "prowlarrUrl": _string(fields.get("prowlarrUrl")),
             "baseUrl": _string(fields.get("baseUrl")),
             "username": _string(fields.get("username")),
-            "passwordPresence": "" if not password else "configured",
+            "password": _string(fields.get("password")),
             "syncCategories": _sorted_integers(fields.get("syncCategories", [])),
         },
     }

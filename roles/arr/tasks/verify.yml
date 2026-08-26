@@ -7,10 +7,7 @@
       X-Api-Key: "{{ item.0.api_key }}"
     status_code: [200]
     return_content: true
-  loop: >-
-    {{ arr_servarr_instances |
-       product(['config/host', 'config/naming', 'rootfolder', 'downloadclient']) |
-       list }}
+  loop: "{{ arr_servarr_instances | product(['config/host', 'config/naming', 'rootfolder']) | list }}"
   loop_control:
     label: "{{ item.0.name }}-{{ item.1 }}"
   register: arr_servarr_verification
@@ -19,7 +16,7 @@
   no_log: true
   tags: [platform_verify_arr]
 
-- name: Verify Servarr authentication, roots, rename, and SABnzbd
+- name: Verify Servarr authentication, roots, and rename state
   ansible.builtin.assert:
     that:
       - >-
@@ -44,58 +41,10 @@
          selectattr('item.1', 'equalto', 'rootfolder') |
          map(attribute='json') | first |
          selectattr('path', 'equalto', item.root_folder) | list | length) == 1
-      - arr_verify_servarr_clients_raw is sequence
-      - arr_verify_servarr_clients_raw is not mapping
-      - arr_verify_servarr_clients_raw is not string
-      - arr_verify_servarr_sab_name_matches | length == 1
-      - arr_verify_servarr_sab_url_matches | length == 1
-      - >-
-        arr_verify_servarr_sab_name_matches[0].id ==
-        arr_verify_servarr_sab_url_matches[0].id
-      - >-
-        arr_verify_servarr_sab_name_matches[0] |
-        acquisition_servarr_client_projection(
-          arr_verify_servarr_sab_masked_fields
-        ) ==
-        arr_verify_servarr_sab_desired |
-        acquisition_servarr_client_projection(
-          arr_verify_servarr_sab_masked_fields
-        )
     fail_msg: A Servarr instance differs from the declared Phase 1 state.
   loop: "{{ arr_servarr_instances }}"
   loop_control:
     label: "{{ item.name }}"
-  vars:
-    arr_verify_servarr_clients_raw: >-
-      {{ arr_servarr_verification.results |
-         selectattr('item.0.name', 'equalto', item.name) |
-         selectattr('item.1', 'equalto', 'downloadclient') |
-         map(attribute='json') | first | default([]) }}
-    arr_verify_servarr_clients: >-
-      {{ arr_verify_servarr_clients_raw
-         if arr_verify_servarr_clients_raw is sequence and
-            arr_verify_servarr_clients_raw is not mapping and
-            arr_verify_servarr_clients_raw is not string
-         else [] }}
-    arr_verify_servarr_sab_name_matches: >-
-      {{ arr_verify_servarr_clients |
-         selectattr('name', 'equalto', arr_sabnzbd_client_name) | list }}
-    arr_verify_servarr_sab_url_matches: >-
-      {{ arr_verify_servarr_clients |
-         acquisition_servarr_client_url_matches(arr_sabnzbd_host, arr_sabnzbd_port) }}
-    arr_verify_servarr_sab_desired: >-
-      {{ item |
-         acquisition_servarr_client_body(
-           arr_sabnzbd_client_name,
-           arr_sabnzbd_host,
-           arr_sabnzbd_port,
-           vault_downloaders_sabnzbd_api_key,
-           vault_downloaders_sabnzbd_admin_username,
-           vault_downloaders_sabnzbd_admin_password
-         ) }}
-    arr_verify_servarr_sab_masked_fields: >-
-      {{ arr_verify_servarr_sab_name_matches | first | default({}) |
-         acquisition_servarr_client_masked_fields }}
   no_log: true
   tags: [platform_verify_arr]
 
@@ -123,6 +72,16 @@
       - arr_verify_prowlarr_applications_raw is not mapping
       - arr_verify_prowlarr_applications_raw is not string
       - arr_verify_prowlarr_application_matches | length == 1
+      - >-
+        (arr_verify_prowlarr_application_desired |
+         acquisition_application_projection([])).keys() | sort ==
+        ['configContract', 'enable', 'fields', 'implementation',
+         'implementationName', 'name', 'syncLevel', 'tags']
+      - >-
+        (arr_verify_prowlarr_application_desired |
+         acquisition_application_projection([])).fields.keys() | sort ==
+        ['apiKey', 'baseUrl', 'password', 'prowlarrUrl',
+         'syncCategories', 'username']
       - >-
         arr_verify_prowlarr_application_matches[0] |
         acquisition_application_projection(

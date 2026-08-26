@@ -75,6 +75,20 @@
   when: media_usenet_enabled | bool
   register: downloaders_deploy
 
+- name: Load private Servarr desired-input fingerprint
+  ansible.builtin.include_role:
+    name: arr
+    tasks_from: reconciliation_fingerprints
+  vars:
+    arr_reconciliation_fingerprint_subset: [servarr_sabnzbd]
+  when: media_usenet_enabled | bool
+
+- name: Initialize downloader relationship verification gate
+  ansible.builtin.set_fact:
+    downloaders_relationship_verification_succeeded: false
+  changed_when: false
+  when: media_usenet_enabled | bool
+
 - name: Reconcile SABnzbd owned settings
   ansible.builtin.include_tasks: reconcile_sabnzbd.yml
   when: media_usenet_enabled | bool
@@ -111,3 +125,14 @@
       tags: [platform_verify_downloaders]
   when: media_usenet_enabled | bool
   tags: [platform_verify_downloaders]
+
+- name: Persist verified Servarr desired-input fingerprint
+  ansible.builtin.include_role:
+    name: arr
+    tasks_from: record_reconciliation_fingerprints
+  vars:
+    arr_reconciliation_fingerprint_subset: [servarr_sabnzbd]
+  when:
+    - media_usenet_enabled | bool
+    - not ansible_check_mode
+    - downloaders_relationship_verification_succeeded is sameas true

@@ -123,3 +123,10 @@
          acquisition_servarr_client_masked_fields }}
   no_log: true
   tags: [platform_verify_downloaders]
+
+- name: Mark downloader relationship verification successful
+  ansible.builtin.set_fact:
+    downloaders_relationship_verification_succeeded: true
+  changed_when: false
+  no_log: true
+  tags: [platform_verify_downloaders]

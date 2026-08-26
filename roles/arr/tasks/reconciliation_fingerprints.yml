@@ -7,6 +7,15 @@
       servarr_sabnzbd: .servarr-sabnzbd-input.sha256
       prowlarr_indexers: .prowlarr-indexers-input.sha256
       bazarr_providers: .bazarr-providers-input.sha256
+    arr_reconciliation_fingerprint_subset_effective: >-
+      {{ arr_reconciliation_fingerprint_subset |
+         default([
+           'configarr',
+           'prowlarr_applications',
+           'servarr_sabnzbd',
+           'prowlarr_indexers',
+           'bazarr_providers'
+         ]) }}
     arr_desired_reconciliation_fingerprints:
       prowlarr_applications: >-
         {{ arr_prowlarr_applications | to_json | hash('sha256') }}
@@ -38,6 +47,22 @@
   changed_when: false
   no_log: true
 
+- name: Validate the selected Arr desired-input fingerprint subset
+  ansible.builtin.assert:
+    that:
+      - arr_reconciliation_fingerprint_subset_effective is sequence
+      - arr_reconciliation_fingerprint_subset_effective is not mapping
+      - arr_reconciliation_fingerprint_subset_effective is not string
+      - >-
+        arr_reconciliation_fingerprint_subset_effective | length ==
+        arr_reconciliation_fingerprint_subset_effective | unique | list | length
+      - >-
+        arr_reconciliation_fingerprint_subset_effective |
+        difference(arr_reconciliation_fingerprint_filenames.keys() | list) |
+        length == 0
+    fail_msg: The selected Arr desired-input fingerprint subset is invalid.
+  no_log: true
+
 - name: Inspect private Arr desired-input fingerprint files
   ansible.builtin.stat:
     path: >-
@@ -46,7 +71,10 @@
     get_checksum: false
     get_mime: false
     get_attributes: false
-  loop: "{{ arr_reconciliation_fingerprint_filenames | dict2items }}"
+  loop: >-
+    {{ arr_reconciliation_fingerprint_filenames | dict2items |
+       selectattr('key', 'in', arr_reconciliation_fingerprint_subset_effective) |
+       list }}
   loop_control:
     label: "{{ item.key }}"
   register: arr_reconciliation_fingerprint_stats
