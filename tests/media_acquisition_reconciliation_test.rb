@@ -987,13 +987,59 @@ def write_playbook(path, variables, tasks)
   )
 end
 
+def write_event_callback(root)
+  callback_directory = File.join(root, "callback_plugins")
+  FileUtils.mkdir_p(callback_directory)
+  File.write(
+    File.join(callback_directory, "acquisition_fixture_events.py"),
+    <<~PYTHON,
+      import json
+      import os
+      from ansible.plugins.callback import CallbackBase
+
+      class CallbackModule(CallbackBase):
+          CALLBACK_VERSION = 2.0
+          CALLBACK_TYPE = "aggregate"
+          CALLBACK_NAME = "acquisition_fixture_events"
+          CALLBACK_NEEDS_ENABLED = True
+
+          def _record(self, event, result):
+              payload = {
+                  "event": event,
+                  "task": result.task.name,
+                  "changed": bool(result.result.get("changed", False)),
+              }
+              with open(os.environ["ACQUISITION_FIXTURE_EVENT_LOG"], "a", encoding="utf-8") as log:
+                  log.write(json.dumps(payload) + "\\n")
+
+          def v2_runner_on_ok(self, result):
+              self._record("ok", result)
+
+          def v2_runner_on_failed(self, result, ignore_errors=False):
+              self._record("failed", result)
+
+          def v2_runner_on_unreachable(self, result):
+              self._record("unreachable", result)
+
+          def v2_runner_on_skipped(self, result):
+              self._record("skipped", result)
+    PYTHON
+    mode: "w", perm: 0o600
+  )
+  callback_directory
+end
+
 def run_playbook(path, env)
+  event_log = env.fetch("ACQUISITION_FIXTURE_EVENT_LOG")
+  File.write(event_log, "", mode: "w", perm: 0o600)
   stdout, stderr, status = Open3.capture3(
     env, ANSIBLE_PLAYBOOK, "-i", "localhost,", "-c", "local", path, chdir: ROOT
   )
+  events = File.readlines(event_log, chomp: true).map { |line| JSON.parse(line) }
   {
     "stdout" => stdout, "stderr" => stderr, "status" => status,
-    "changed" => stdout.scan(/changed=(\d+)/).flatten.last&.to_i
+    "changed" => stdout.scan(/changed=(\d+)/).flatten.last&.to_i,
+    "task_events" => events
   }
 end
 
@@ -1012,6 +1058,19 @@ def fingerprint_change_count(before, after)
   FINGERPRINT_FILES.count { |filename| before[filename] != after[filename] }
 end
 
+def reconciliation_phase(result)
+  events = result.fetch("task_events")
+  recorder_task = fingerprint_tasks_available? ? fingerprint_record_tasks.first.fetch("name") : nil
+  recorder_index = recorder_task && events.index { |event| event.fetch("task") == recorder_task }
+  phase_events = recorder_index ? events.take(recorder_index) : events
+  result.merge(
+    "reconciliation_changed" => phase_events.count do |event|
+      event.fetch("event") == "ok" && event.fetch("changed")
+    end,
+    "recorder_started" => !recorder_index.nil?
+  )
+end
+
 def run_tasks(kind, api, extra_variables = {}, runtime: nil, prepare_fingerprints: true,
               fingerprint_overrides: {})
   Dir.mktmpdir("media-acquisition-reconciliation-") do |directory|
@@ -1025,7 +1084,13 @@ def run_tasks(kind, api, extra_variables = {}, runtime: nil, prepare_fingerprint
     end
     variables["arr_servarr_instances"] = [deep_copy(variables.fetch("arr_servarr_instance"))]
     variables["platform_runtime_dir"] = runtime
-    env = { "ANSIBLE_NOCOLOR" => "1" }
+    callback_directory = write_event_callback(directory)
+    env = {
+      "ANSIBLE_NOCOLOR" => "1",
+      "ANSIBLE_CALLBACK_PLUGINS" => callback_directory,
+      "ANSIBLE_CALLBACKS_ENABLED" => "acquisition_fixture_events",
+      "ACQUISITION_FIXTURE_EVENT_LOG" => File.join(directory, "ansible-events.jsonl")
+    }
     if kind == :configarr
       collection_root = File.join(directory, "collections")
       write_fake_configarr_module(collection_root)
@@ -1068,7 +1133,7 @@ def run_tasks(kind, api, extra_variables = {}, runtime: nil, prepare_fingerprint
     fingerprints_before_play = fingerprint_snapshot(runtime)
     playbook = File.join(directory, "playbook.yml")
     write_playbook(playbook, variables, selected_tasks(kind))
-    result = run_playbook(playbook, env)
+    result = reconciliation_phase(run_playbook(playbook, env))
     fingerprints_after_play = fingerprint_snapshot(runtime)
     result.merge(
       "fingerprints" => fingerprints_after_play,
@@ -1100,6 +1165,7 @@ end
 def harness_problem(result, api)
   return result.fetch("harness_error") if result["harness_error"]
   return "fixture server raised #{api.error.class}" if api.error
+  return "Ansible task event callback produced no events" if result.fetch("task_events", []).empty?
   unless api.unexpected_requests.empty?
     method, target = api.unexpected_requests.first
     return "fixture route is missing for #{method} #{redact_secrets(target)}"
@@ -1179,16 +1245,16 @@ def exercise_mutations(failures, relationship:, kind:, baseline:, mutations:, va
       unless writes.length == 1
         failures << "#{relationship} owned field #{field} did not produce exactly one applicable write"
       end
+      unless result.fetch("reconciliation_changed") == 1
+        failures << "#{relationship} owned field #{field} reported " \
+                    "reconciliation changed=#{result['reconciliation_changed'].inspect}, expected 1"
+      end
       if fingerprint_tasks_available?
-        if result["changed"].to_i < 1
-          failures << "#{relationship} owned field #{field} did not report a reconciliation change"
-        end
+        failures << "#{relationship} owned field #{field} did not reach fingerprint recording" unless
+          result.fetch("recorder_started")
         unless result.fetch("fingerprint_changes").zero?
           failures << "#{relationship} non-secret field #{field} rewrote a desired-input fingerprint"
         end
-      elsif result["changed"] != 1
-        failures << "#{relationship} owned field #{field} reported changed=#{result['changed'].inspect}, " \
-                    "expected 1 before fingerprint recording is available"
       end
       actual = current.call(api.state)
       unless projection.call(actual) == projection.call(desired)
@@ -1215,9 +1281,12 @@ def exercise_stable(failures, relationship:, kind:, state:, variables: {}, write
     unless result.fetch("fingerprint_changes").zero?
       failures << "#{relationship} stable state rewrote a recorded desired-input fingerprint"
     end
-    unless result["changed"] == 0
-      failures << "#{relationship} stable state reported changed=#{result['changed'].inspect}, " \
-                  "expected changed=0"
+    if fingerprint_tasks_available? && !result.fetch("recorder_started")
+      failures << "#{relationship} stable state did not reach fingerprint recording"
+    end
+    unless result.fetch("reconciliation_changed").zero?
+      failures << "#{relationship} stable reconciliation reported " \
+                  "changed=#{result['reconciliation_changed'].inspect}, expected 0"
     end
     if safe_request_body
       failures << "#{relationship} stable masked state submitted more than one safe write" if writes.length > 1
@@ -1258,9 +1327,8 @@ def exercise_secret_change(failures, relationship:, kind:, state:, field:, varia
       failures << "#{relationship} masked secret #{field} did not produce exactly one applicable write"
     end
     if fingerprint_tasks_available?
-      if result["changed"].to_i < 1
-        failures << "#{relationship} masked secret #{field} did not report a reconciliation change"
-      end
+      failures << "#{relationship} masked secret #{field} did not reach fingerprint recording" unless
+        result.fetch("recorder_started")
       unless result.fetch("fingerprint_changes") == 1
         failures << "#{relationship} masked secret #{field} recorded an unexpected fingerprint set"
       end
@@ -1269,9 +1337,10 @@ def exercise_secret_change(failures, relationship:, kind:, state:, field:, varia
         fingerprint.fetch("content").match?(/\A[0-9a-f]{64}\n\z/) &&
         fingerprint.fetch("content") != "#{'0' * 64}\n"
       failures << "#{relationship} masked secret #{field} did not record the expected digest" unless recorded
-    elsif result["changed"] != 1
-      failures << "#{relationship} masked secret #{field} reported changed=#{result['changed'].inspect}, " \
-                  "expected 1 before fingerprint recording is available"
+    end
+    unless result.fetch("reconciliation_changed") == 1
+      failures << "#{relationship} masked secret #{field} reported " \
+                  "reconciliation changed=#{result['reconciliation_changed'].inspect}, expected 1"
     end
     actual = current.call(api.state)
     unless projection.call(actual) == projection.call(desired)
@@ -1837,6 +1906,8 @@ Dir.mktmpdir("media-acquisition-fingerprint-failure-") do |runtime|
         [filename, File.file?(path) ? File.binread(path) : nil]
       end
       failures << "failed reconciliation advanced future fingerprint files" unless after == before
+      failures << "failed reconciliation reached future fingerprint recording" if
+        result.fetch("recorder_started")
     end
   end
 end
@@ -1857,9 +1928,12 @@ if fingerprint_tasks_available?
       unless mutation_requests(api, configarr_write).length == 1
         failures << "successful reconciliation did not perform exactly one applicable API mutation"
       end
-      if result["changed"].to_i < 1
-        failures << "successful reconciliation did not report a reconciliation change"
+      unless result.fetch("reconciliation_changed") == 1
+        failures << "successful reconciliation reported " \
+                    "reconciliation changed=#{result['reconciliation_changed'].inspect}, expected 1"
       end
+      failures << "successful reconciliation did not execute fingerprint recording" unless
+        result.fetch("recorder_started")
       unless result.fetch("fingerprint_changes") == 1
         failures << "successful reconciliation recorded an unexpected fingerprint set"
       end
