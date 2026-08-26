@@ -203,6 +203,7 @@ validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "te
   ruby\ tests/audiobookshelf_initial_scan_test.rb
   ruby\ tests/audiobookshelf_initial_scan_behavior_test.rb
   ruby\ tests/paperless_mail_reconciliation_test.rb
+  ruby\ tests/media_acquisition_reconciliation_test.rb
   PYTHONDONTWRITEBYTECODE=1\ "$ansible_python"\ -m\ unittest\ -v\ tests.production_auto_deploy_test
   ruby\ tests/production_auto_deploy_role_test.rb
   python3\ -m\ unittest\ -v\ tests/dozzle_alert_relay_test.py
@@ -237,6 +238,9 @@ check(failures,
 check(failures,
       validation_commands.count("ruby tests/audiobookshelf_initial_scan_behavior_test.rb") == 1,
       "validate-policy.sh must run ruby tests/audiobookshelf_initial_scan_behavior_test.rb exactly once")
+check(failures,
+      validation_commands.count("ruby tests/media_acquisition_reconciliation_test.rb") == 1,
+      "validate-policy.sh must run ruby tests/media_acquisition_reconciliation_test.rb exactly once")
 check(failures,
       validation_commands.count("python3 -m unittest -v tests/dozzle_alert_relay_test.py") == 1,
       "validate-policy.sh must run the Dozzle alert relay unit test exactly once")

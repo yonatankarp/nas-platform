@@ -106,6 +106,7 @@ BASE_FIXTURE_PATHS = %w[
   tests/ntfy_verify_execution_test.rb
   tests/komga_library_reconciliation_test.rb
   tests/paperless_mail_reconciliation_test.rb
+  tests/media_acquisition_reconciliation_test.rb
   tests/production_auto_deploy_test.py
   tests/production_auto_deploy_role_test.rb
   tests/safe_slurp_test.py
