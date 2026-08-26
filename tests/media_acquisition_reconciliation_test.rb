@@ -466,16 +466,30 @@ def indexer_projection(object)
   }
 end
 
-def bazarr_projection(settings)
+def bazarr_projection(settings, provider_declarations = [])
+  provider_names = provider_declarations.map { |provider| provider.fetch("name") }
+  declared_providers = provider_declarations.to_h do |provider|
+    name = provider.fetch("name")
+    prefix = "settings-#{name}-"
+    keys = provider.fetch("settings").keys.map { |key| key.delete_prefix(prefix) }
+    current = settings.fetch("providers", {}).fetch(name, {})
+    [name, current.slice(*keys)]
+  end
   {
     "auth" => settings.fetch("auth").slice("type", "username", "password"),
     "general" => settings.fetch("general").slice(
       "use_radarr", "use_sonarr", "path_mappings", "path_mappings_movie"
-    ).merge("enabled_providers" => normalized_list(settings.dig("general", "enabled_providers"))),
+    ).merge(
+      "enabled_providers" => normalized_list(
+        Array(settings.dig("general", "enabled_providers")).select do |name|
+          provider_names.include?(name)
+        end
+      )
+    ),
     "radarr" => settings.fetch("radarr").slice("ip", "port", "base_url", "ssl", "apikey"),
     "sonarr" => settings.fetch("sonarr").slice("ip", "port", "base_url", "ssl", "apikey"),
     "languages" => normalized_list(settings.dig("languages", "enabled")),
-    "providers" => settings.fetch("providers", {}).sort.to_h
+    "providers" => declared_providers.sort.to_h
   }
 end
 
@@ -512,9 +526,11 @@ def configarr_projection(settings)
     custom_format = format_matches.length == 1 ? format_matches.first : formats.first
     specification = Array(custom_format&.fetch("specifications", nil)).first || {}
     specification_fields = fields_hash(specification)
-    score_matches = Array(profile&.fetch("formatItems", nil)).select do |format_item|
+    format_items = Array(profile&.fetch("formatItems", nil))
+    score_matches = format_items.select do |format_item|
       format_item["name"] == CONFIGARR_FORMAT_NAME
     end
+    format_item = score_matches.length == 1 ? score_matches.first : format_items.first
     naming_fields = service == "radarr" ?
       %w[renameMovies standardMovieFormat movieFolderFormat] :
       %w[renameEpisodes standardEpisodeFormat dailyEpisodeFormat animeEpisodeFormat
@@ -530,12 +546,15 @@ def configarr_projection(settings)
         "items" => Array(profile&.fetch("items", nil)).map do |item|
           quality_item_projection(item)
         end,
-        "custom_format_score_identity_count" => score_matches.length,
-        "custom_format_score" => score_matches.first&.fetch("score", nil)
+        "format_assignment" => {
+          "identity_count" => score_matches.length,
+          "name" => format_item&.fetch("name", nil),
+          "score" => format_item&.fetch("score", nil)
+        }
       },
-      "quality_definitions" => resources.fetch("qualitydefinition").map do |definition|
-        quality_definition_projection(definition)
-      end,
+      "quality_definitions" => resources.fetch("qualitydefinition")
+        .map { |definition| quality_definition_projection(definition) }
+        .sort_by { |definition| definition.fetch("quality").to_s },
       "custom_format_identity_count" => format_matches.length,
       "custom_format" => {
         "name" => custom_format&.fetch("name", nil),
@@ -989,6 +1008,10 @@ def fingerprint_snapshot(runtime)
   end
 end
 
+def fingerprint_change_count(before, after)
+  FINGERPRINT_FILES.count { |filename| before[filename] != after[filename] }
+end
+
 def run_tasks(kind, api, extra_variables = {}, runtime: nil, prepare_fingerprints: true,
               fingerprint_overrides: {})
   Dir.mktmpdir("media-acquisition-reconciliation-") do |directory|
@@ -1042,9 +1065,17 @@ def run_tasks(kind, api, extra_variables = {}, runtime: nil, prepare_fingerprint
         mode: "w", perm: 0o600
       )
     end
+    fingerprints_before_play = fingerprint_snapshot(runtime)
     playbook = File.join(directory, "playbook.yml")
     write_playbook(playbook, variables, selected_tasks(kind))
-    run_playbook(playbook, env).merge("fingerprints" => fingerprint_snapshot(runtime))
+    result = run_playbook(playbook, env)
+    fingerprints_after_play = fingerprint_snapshot(runtime)
+    result.merge(
+      "fingerprints" => fingerprints_after_play,
+      "fingerprint_changes" => fingerprint_change_count(
+        fingerprints_before_play, fingerprints_after_play
+      )
+    )
   end
 end
 
@@ -1148,7 +1179,17 @@ def exercise_mutations(failures, relationship:, kind:, baseline:, mutations:, va
       unless writes.length == 1
         failures << "#{relationship} owned field #{field} did not produce exactly one applicable write"
       end
-      failures << "#{relationship} owned field #{field} did not report changed=1" unless result["changed"] == 1
+      if fingerprint_tasks_available?
+        if result["changed"].to_i < 1
+          failures << "#{relationship} owned field #{field} did not report a reconciliation change"
+        end
+        unless result.fetch("fingerprint_changes").zero?
+          failures << "#{relationship} non-secret field #{field} rewrote a desired-input fingerprint"
+        end
+      elsif result["changed"] != 1
+        failures << "#{relationship} owned field #{field} reported changed=#{result['changed'].inspect}, " \
+                    "expected 1 before fingerprint recording is available"
+      end
       actual = current.call(api.state)
       unless projection.call(actual) == projection.call(desired)
         failures << "#{relationship} full owned projection did not converge after #{field} mutant"
@@ -1158,7 +1199,7 @@ def exercise_mutations(failures, relationship:, kind:, baseline:, mutations:, va
 end
 
 def exercise_stable(failures, relationship:, kind:, state:, variables: {}, write_matcher:,
-                    projection:, desired:, current:, safe_request_body: nil)
+                    projection:, desired:, current:, safe_request_body: nil, preserved: nil)
   with_api(deep_copy(state)) do |api|
     result = run_tasks(kind, api, variables)
     sane = check_sanity(
@@ -1171,6 +1212,9 @@ def exercise_stable(failures, relationship:, kind:, state:, variables: {}, write
       next
     end
     writes = mutation_requests(api, write_matcher)
+    unless result.fetch("fingerprint_changes").zero?
+      failures << "#{relationship} stable state rewrote a recorded desired-input fingerprint"
+    end
     unless result["changed"] == 0
       failures << "#{relationship} stable state reported changed=#{result['changed'].inspect}, " \
                   "expected changed=0"
@@ -1186,6 +1230,9 @@ def exercise_stable(failures, relationship:, kind:, state:, variables: {}, write
     actual = current.call(api.state)
     unless projection.call(actual) == projection.call(desired)
       failures << "#{relationship} stable state no longer matches the owned projection"
+    end
+    if preserved && !preserved.call(api.state)
+      failures << "#{relationship} stable reconciliation modified unmanaged state"
     end
   end
 end
@@ -1210,7 +1257,22 @@ def exercise_secret_change(failures, relationship:, kind:, state:, field:, varia
     unless writes.length == 1
       failures << "#{relationship} masked secret #{field} did not produce exactly one applicable write"
     end
-    failures << "#{relationship} masked secret #{field} did not report changed=1" unless result["changed"] == 1
+    if fingerprint_tasks_available?
+      if result["changed"].to_i < 1
+        failures << "#{relationship} masked secret #{field} did not report a reconciliation change"
+      end
+      unless result.fetch("fingerprint_changes") == 1
+        failures << "#{relationship} masked secret #{field} recorded an unexpected fingerprint set"
+      end
+      fingerprint = result.fetch("fingerprints").fetch(FINGERPRINT_FILE_BY_KIND.fetch(kind))
+      recorded = fingerprint && fingerprint.fetch("mode") == 0o600 &&
+        fingerprint.fetch("content").match?(/\A[0-9a-f]{64}\n\z/) &&
+        fingerprint.fetch("content") != "#{'0' * 64}\n"
+      failures << "#{relationship} masked secret #{field} did not record the expected digest" unless recorded
+    elsif result["changed"] != 1
+      failures << "#{relationship} masked secret #{field} reported changed=#{result['changed'].inspect}, " \
+                  "expected 1 before fingerprint recording is available"
+    end
     actual = current.call(api.state)
     unless projection.call(actual) == projection.call(desired)
       failures << "#{relationship} full owned projection did not converge after masked #{field} drift"
@@ -1463,8 +1525,7 @@ bazarr_mutations = {
   "sonarr.ssl" => ->(state) { state.dig("bazarr", "sonarr")["ssl"] = true },
   "identical series paths" => ->(state) { state.dig("bazarr", "general")["path_mappings"] = [["/old", "/new"]] },
   "identical movie paths" => ->(state) { state.dig("bazarr", "general")["path_mappings_movie"] = [["/old", "/new"]] },
-  "sorted languages" => ->(state) { state.dig("bazarr", "languages")["enabled"] = ["fr"] },
-  "sorted enabled providers" => ->(state) { state.dig("bazarr", "general")["enabled_providers"] = ["legacy"] }
+  "sorted languages" => ->(state) { state.dig("bazarr", "languages")["enabled"] = ["fr"] }
 }
 bazarr_connection_write = lambda do |request|
   request["method"] == "POST" && request["target"] == "/api/system/settings" &&
@@ -1517,11 +1578,25 @@ provider_write = lambda do |request|
   request["method"] == "POST" && request["target"] == "/api/system/settings" &&
     Array(request["form"]).any? { |key, _value| key.start_with?("settings-opensubtitlescom-") }
 end
+provider_projection = lambda do |settings|
+  bazarr_projection(settings, [BAZARR_PROVIDER])
+end
 exercise_mutations(
   failures, relationship: "Bazarr provider", kind: :bazarr,
   baseline: provider_state, mutations: provider_mutations, variables: provider_variables,
-  write_matcher: provider_write, projection: method(:bazarr_projection),
+  write_matcher: provider_write, projection: provider_projection,
   desired: BAZARR_WITH_PROVIDER, current: bazarr_current
+)
+provider_enablement_mutation = {
+  "declared provider enablement" => lambda do |state|
+    state.dig("bazarr", "general")["enabled_providers"] = []
+  end
+}
+exercise_mutations(
+  failures, relationship: "Bazarr provider", kind: :bazarr,
+  baseline: provider_state, mutations: provider_enablement_mutation,
+  variables: provider_variables, write_matcher: bazarr_connection_write,
+  projection: provider_projection, desired: BAZARR_WITH_PROVIDER, current: bazarr_current
 )
 duplicate_provider_variables = {
   "media_bazarr_providers" => [deep_copy(BAZARR_PROVIDER), deep_copy(BAZARR_PROVIDER)]
@@ -1534,7 +1609,7 @@ exercise_duplicate(
 exercise_stable(
   failures, relationship: "Bazarr provider", kind: :bazarr,
   state: provider_state, variables: provider_variables, write_matcher: provider_write,
-  projection: method(:bazarr_projection), desired: BAZARR_WITH_PROVIDER,
+  projection: provider_projection, desired: BAZARR_WITH_PROVIDER,
   current: bazarr_current,
   safe_request_body: ->(request) { canonical_bazarr_provider_body?(request) }
 )
@@ -1546,8 +1621,32 @@ exercise_secret_change(
   variables: provider_variables.merge(
     "arr_installed_reconciliation_fingerprints" => { "bazarr_providers" => "stale" },
     "arr_desired_reconciliation_fingerprints" => { "bazarr_providers" => "desired" }
-  ), write_matcher: provider_write, projection: method(:bazarr_projection),
+  ), write_matcher: provider_write, projection: provider_projection,
   desired: BAZARR_WITH_PROVIDER, current: bazarr_current
+)
+unmanaged_provider_state = deep_copy(provider_state)
+unmanaged_provider_state.dig("bazarr", "general", "enabled_providers") << "unmanaged-provider"
+unmanaged_provider_state.dig("bazarr", "providers")["unmanaged-provider"] = {
+  "username" => "unmanaged-user", "unmanaged_option" => "preserve-unmanaged-provider"
+}
+unmanaged_provider_state.dig("bazarr", "providers", BAZARR_PROVIDER.fetch("name"))[
+  "unmanaged_option"
+] = "preserve-declared-provider-extra"
+exercise_stable(
+  failures, relationship: "Bazarr declared provider with unmanaged state", kind: :bazarr,
+  state: unmanaged_provider_state, variables: provider_variables,
+  write_matcher: ->(request) { request["target"] == "/api/system/settings" },
+  projection: provider_projection,
+  desired: BAZARR_WITH_PROVIDER, current: bazarr_current,
+  preserved: lambda do |state|
+    settings = state.fetch("bazarr")
+    settings.dig("providers", "unmanaged-provider") == {
+      "username" => "unmanaged-user", "unmanaged_option" => "preserve-unmanaged-provider"
+    } &&
+      settings.dig("providers", BAZARR_PROVIDER.fetch("name"), "unmanaged_option") ==
+        "preserve-declared-provider-extra" &&
+      settings.dig("general", "enabled_providers").include?("unmanaged-provider")
+  end
 )
 exercise_duplicate(
   failures, relationship: "Bazarr language declaration", kind: :bazarr,
@@ -1567,7 +1666,8 @@ configarr_mutations = {}
     "qualitySort" => ->(profile) { profile["qualitySort"] = "bottom" },
     "quality order" => ->(profile) { profile["items"].reverse! },
     "quality structure" => ->(profile) { profile["items"].last["items"].pop },
-    "custom format score" => ->(profile) { profile["formatItems"].first["score"] = 0 }
+    "format assignment name" => ->(profile) { profile["formatItems"].first["name"] = "Legacy Format" },
+    "format assignment score" => ->(profile) { profile["formatItems"].first["score"] = 0 }
   }
   profile_mutations.each do |field, mutate_profile|
     configarr_mutations["#{service_name}.quality_profile.#{field}"] = lambda do |state|
@@ -1578,6 +1678,15 @@ configarr_mutations = {}
     ["Bluray-1080p", 0], ["WEB 1080p", 1],
     ["WEBDL-1080p", 1, 0], ["WEBRip-1080p", 1, 1]
   ].each do |quality_name, item_index, child_index|
+    configarr_mutations["#{service_name}.quality_profile.#{quality_name}.name"] = lambda do |state|
+      item = state.dig("configarr", service_name, "qualityprofile").first.fetch("items")[item_index]
+      item = item.fetch("items")[child_index] unless child_index.nil?
+      if item["quality"].is_a?(Hash)
+        item.fetch("quality")["name"] = "Legacy Quality"
+      else
+        item["name"] = "Legacy Quality Group"
+      end
+    end
     configarr_mutations["#{service_name}.quality_profile.#{quality_name}.allowed"] = lambda do |state|
       item = state.dig("configarr", service_name, "qualityprofile").first.fetch("items")[item_index]
       item = item.fetch("items")[child_index] unless child_index.nil?
@@ -1652,6 +1761,16 @@ exercise_stable(
   projection: method(:configarr_projection), desired: CONFIGARR,
   current: configarr_current
 )
+reordered_definition_state = deep_copy(configarr_state)
+%w[radarr sonarr].each do |service|
+  reordered_definition_state.dig("configarr", service, "qualitydefinition").reverse!
+end
+exercise_stable(
+  failures, relationship: "Configarr quality-definition API ordering", kind: :configarr,
+  state: reordered_definition_state, write_matcher: configarr_write,
+  projection: method(:configarr_projection), desired: CONFIGARR,
+  current: configarr_current
+)
 configarr_secret_variables = {
   "arr_installed_reconciliation_fingerprints" => { "configarr" => "stale" },
   "arr_desired_reconciliation_fingerprints" => { "configarr" => "desired" }
@@ -1675,6 +1794,21 @@ exercise_secret_change(
       state: duplicate_state, variables: {}, write_matcher: configarr_write
     )
   end
+  duplicate_definition_state = deep_copy(configarr_state)
+  duplicate_definition_state.dig("configarr", service, "qualitydefinition") <<
+    deep_copy(CONFIGARR.dig(service, "qualitydefinition").first)
+  exercise_duplicate(
+    failures, relationship: "Configarr #{service} quality definition", kind: :configarr,
+    state: duplicate_definition_state, variables: {}, write_matcher: configarr_write
+  )
+
+  duplicate_score_state = deep_copy(configarr_state)
+  profile = duplicate_score_state.dig("configarr", service, "qualityprofile").first
+  profile.fetch("formatItems") << deep_copy(profile.fetch("formatItems").first)
+  exercise_duplicate(
+    failures, relationship: "Configarr #{service} format-score assignment", kind: :configarr,
+    state: duplicate_score_state, variables: {}, write_matcher: configarr_write
+  )
 end
 
 Dir.mktmpdir("media-acquisition-fingerprint-failure-") do |runtime|
@@ -1720,6 +1854,15 @@ if fingerprint_tasks_available?
     if sane
       failures << "successful reconciliation did not reach fingerprint recording" unless
         result.fetch("status").success?
+      unless mutation_requests(api, configarr_write).length == 1
+        failures << "successful reconciliation did not perform exactly one applicable API mutation"
+      end
+      if result["changed"].to_i < 1
+        failures << "successful reconciliation did not report a reconciliation change"
+      end
+      unless result.fetch("fingerprint_changes") == 1
+        failures << "successful reconciliation recorded an unexpected fingerprint set"
+      end
       fingerprints = result.fetch("fingerprints")
       valid = fingerprints.values.all? do |entry|
         entry && entry.fetch("mode") == 0o600 &&
