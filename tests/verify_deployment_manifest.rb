@@ -28,7 +28,7 @@ if ARGV == ["--self-test"]
     File.write(source_manifest_path, YAML.dump("services" => [{
       "name" => "arr", "role" => "arr", "status" => "implemented"
     }]))
-    FileUtils.cp(catalog_path, File.join(release, "config/media-acquisition.yml"))
+    FileUtils.install(catalog_path, File.join(release, "config/media-acquisition.yml"), mode: 0o644)
 
     git_sha = "b" * 40
     manifest_path = File.join(release, "manifest.yml")
