@@ -84,6 +84,10 @@
   when: media_usenet_enabled | bool
   register: arr_deploy
 
+- name: Load private Arr desired-input fingerprints
+  ansible.builtin.include_tasks: reconciliation_fingerprints.yml
+  when: media_usenet_enabled | bool
+
 - name: Reconcile each Servarr instance
   ansible.builtin.include_tasks: reconcile_servarr.yml
   loop: "{{ arr_servarr_instances }}"
@@ -130,3 +134,9 @@
       tags: [platform_verify_arr]
   when: media_usenet_enabled | bool
   tags: [platform_verify_arr]
+
+- name: Persist verified Arr desired-input fingerprints
+  ansible.builtin.include_tasks: record_reconciliation_fingerprints.yml
+  when:
+    - media_usenet_enabled | bool
+    - not ansible_check_mode

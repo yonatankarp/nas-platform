@@ -1,0 +1,116 @@
+---
+- name: Compute private Arr desired-input fingerprints
+  ansible.builtin.set_fact:
+    arr_reconciliation_fingerprint_filenames:
+      configarr: .configarr-input.sha256
+      prowlarr_applications: .prowlarr-applications-input.sha256
+      servarr_sabnzbd: .servarr-sabnzbd-input.sha256
+      prowlarr_indexers: .prowlarr-indexers-input.sha256
+      bazarr_providers: .bazarr-providers-input.sha256
+    arr_desired_reconciliation_fingerprints:
+      prowlarr_applications: >-
+        {{ arr_prowlarr_applications | to_json | hash('sha256') }}
+      servarr_sabnzbd: >-
+        {{
+          {
+            'instances': arr_servarr_instances,
+            'name': arr_sabnzbd_client_name,
+            'host': arr_sabnzbd_host,
+            'port': arr_sabnzbd_port,
+            'api_key': vault_downloaders_sabnzbd_api_key,
+            'username': vault_downloaders_sabnzbd_admin_username,
+            'password': vault_downloaders_sabnzbd_admin_password
+          } | to_json | hash('sha256')
+        }}
+      prowlarr_indexers: >-
+        {{ media_arr_indexers | to_json | hash('sha256') }}
+      bazarr_providers: >-
+        {{ media_bazarr_providers | to_json | hash('sha256') }}
+      configarr: >-
+        {{
+          {
+            'config': lookup('file', role_path ~ '/files/configarr/config.yml'),
+            'radarr_api_key': vault_arr_radarr_api_key,
+            'sonarr_api_key': vault_arr_sonarr_api_key,
+            'image': 'ghcr.io/raydak-labs/configarr:1.28.0@sha256:008d8659ff35f63fbcc20b860b33ba7cc49e8d7458a6ec446810ec4d783ef017'
+          } | to_json | hash('sha256')
+        }}
+  changed_when: false
+  no_log: true
+
+- name: Inspect private Arr desired-input fingerprint files
+  ansible.builtin.stat:
+    path: >-
+      {{ platform_runtime_dir }}/services/arr/{{ item.value }}
+    follow: false
+  loop: "{{ arr_reconciliation_fingerprint_filenames | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  register: arr_reconciliation_fingerprint_stats
+  changed_when: false
+  no_log: true
+
+- name: Validate private Arr desired-input fingerprints
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists or item.stat.isreg
+      - not item.stat.exists or not item.stat.islnk
+      - not item.stat.exists or item.stat.mode == '0600'
+      - not item.stat.exists or item.stat.uid | int == nas_uid | int
+      - not item.stat.exists or item.stat.gid | int == nas_gid | int
+    fail_msg: A private Arr desired-input fingerprint file is unsafe.
+  loop: "{{ arr_reconciliation_fingerprint_stats.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+  no_log: true
+
+- name: Read existing private Arr desired-input fingerprints
+  ansible.builtin.slurp:
+    src: >-
+      {{ platform_runtime_dir }}/services/arr/{{ item.value }}
+  loop: >-
+    {{
+      arr_reconciliation_fingerprint_stats.results
+      | selectattr('stat.exists')
+      | map(attribute='item')
+      | list
+    }}
+  loop_control:
+    label: "{{ item.key }}"
+  register: arr_reconciliation_fingerprint_contents
+  changed_when: false
+  no_log: true
+
+- name: Validate existing private Arr desired-input fingerprint contents
+  ansible.builtin.assert:
+    that:
+      - (item.content | b64decode) is match('^[0-9a-f]{64}\n\Z')
+    fail_msg: A private Arr desired-input fingerprint has invalid content.
+  loop: "{{ arr_reconciliation_fingerprint_contents.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+  no_log: true
+
+- name: Initialize installed Arr desired-input fingerprints
+  ansible.builtin.set_fact:
+    arr_installed_reconciliation_fingerprints:
+      prowlarr_applications: ""
+      servarr_sabnzbd: ""
+      prowlarr_indexers: ""
+      bazarr_providers: ""
+      configarr: ""
+  changed_when: false
+  no_log: true
+
+- name: Load installed Arr desired-input fingerprints
+  ansible.builtin.set_fact:
+    arr_installed_reconciliation_fingerprints: >-
+      {{
+        arr_installed_reconciliation_fingerprints
+        | combine({item.item.key: item.content | b64decode | trim})
+      }}
+  loop: "{{ arr_reconciliation_fingerprint_contents.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+  changed_when: false
+  no_log: true

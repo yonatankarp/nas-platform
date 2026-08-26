@@ -2587,6 +2587,17 @@ if fingerprint_tasks_available?
         next unless sane && baseline.fetch("status").success?
 
         path = File.join(runtime, "services", "arr", filename)
+        if kind == :application
+          baseline_content = baseline.fetch("fingerprints").fetch(filename).fetch("content")
+          File.write(path, "#{baseline_content}\n", mode: "w", perm: 0o600)
+          before_content = fingerprint_snapshot(runtime)
+          assert_unsafe_fingerprint_rejected(
+            failures, "invalid-content fingerprint", kind, api, variables, runtime,
+            before_content
+          )
+          File.write(path, baseline_content, mode: "w", perm: 0o600)
+        end
+
         File.chmod(0o644, path)
         before_mode = fingerprint_snapshot(runtime)
         assert_unsafe_fingerprint_rejected(
