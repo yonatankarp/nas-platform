@@ -52,7 +52,7 @@ services:
     cpus: 1.0
     labels:
       dev.dozzle.name: unpackerr
-    user: "1000:100"
+    user: "${NAS_UID:?}:${NAS_GID:?}"
     volumes:
       - ${MEDIA_ACQUISITION_PATH:?}:/data/media/.acquisition
       - ${BOOKS_ACQUISITION_PATH:?}:/data/books/.acquisition

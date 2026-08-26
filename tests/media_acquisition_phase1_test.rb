@@ -1,5 +1,7 @@
 #!/usr/bin/env ruby
 
+require "json"
+require "open3"
 require "yaml"
 
 ROOT = File.expand_path("..", __dir__)
@@ -50,6 +52,15 @@ rescue Psych::Exception => e
   {}
 end
 
+def effective_compose(relative, environment)
+  stdout, stderr, status = Open3.capture3(
+    environment, "docker", "compose", "-f", relative, "config", "--format", "json", chdir: ROOT
+  )
+  raise stderr.lines.first.to_s.strip unless status.success?
+
+  JSON.parse(stdout)
+end
+
 failures = []
 catalog = strict_yaml("config/media-acquisition.yml")
 manifest = strict_yaml("services/manifest.yml")
@@ -98,6 +109,27 @@ end
 arr_compose = compose_yaml("services/arr/compose.yml", failures)
 downloaders_compose = compose_yaml("services/downloaders/compose.yml", failures)
 jobs_compose = compose_yaml("services/arr/compose.jobs.yml", failures)
+downloaders_source = File.read(File.join(ROOT, "services/downloaders/compose.yml"))
+check(failures,
+      downloaders_source.match?(/^\s+user:\s*"\$\{NAS_UID:\?\}:\$\{NAS_GID:\?\}"\s*$/),
+      "Unpackerr source must derive its user from NAS_UID and NAS_GID")
+check(failures, !downloaders_source.include?('user: "1000:100"'),
+      "downloaders Compose must not contain the hard-coded 1000:100 user")
+effective_downloaders = effective_compose("services/downloaders/compose.yml", {
+  "NAS_UID" => "2345",
+  "NAS_GID" => "3456",
+  "TZ" => "UTC",
+  "PLATFORM_CONTAINER_CPUSET" => "0",
+  "PLATFORM_MEDIA_NETWORK" => "fixture-media",
+  "SABNZBD_CONFIG_PATH" => "/tmp/sabnzbd",
+  "MEDIA_ACQUISITION_PATH" => "/tmp/media",
+  "BOOKS_ACQUISITION_PATH" => "/tmp/books",
+  "SABNZBD_API_KEY" => "fixture",
+  "RADARR_API_KEY" => "fixture",
+  "SONARR_API_KEY" => "fixture"
+})
+check(failures, effective_downloaders.dig("services", "unpackerr", "user") == "2345:3456",
+      "effective Unpackerr user must resolve from NAS_UID and NAS_GID")
 
 arr_services = arr_compose.fetch("services", {})
 downloader_services = downloaders_compose.fetch("services", {})
@@ -164,8 +196,6 @@ check(failures,
         "${MEDIA_ACQUISITION_PATH:?}:/data/media/.acquisition"
       ].sort,
       "Unpackerr mounts must match the acquisition parents")
-check(failures, downloader_services.dig("unpackerr", "user") == "1000:100",
-      "Unpackerr must run as the shared filesystem identity")
 check(failures, !downloader_services.fetch("unpackerr", {}).key?("ports"),
       "Unpackerr must publish no ports")
 
