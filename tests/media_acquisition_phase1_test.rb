@@ -52,9 +52,12 @@ rescue Psych::Exception => e
   {}
 end
 
-def effective_compose(relative, environment)
+def effective_compose(relative, environment, profile: nil)
+  command = ["docker", "compose", "-f", relative]
+  command.concat(["--profile", profile]) if profile
+  command.concat(["config", "--format", "json"])
   stdout, stderr, status = Open3.capture3(
-    environment, "docker", "compose", "-f", relative, "config", "--format", "json", chdir: ROOT
+    environment, *command, chdir: ROOT
   )
   raise "#{relative} effective Compose failed: #{stderr.lines.first&.strip}" unless status.success?
 
@@ -131,6 +134,30 @@ effective_downloaders = effective_compose("services/downloaders/compose.yml", {
 })
 check(failures, effective_downloaders.dig("services", "unpackerr", "user") == "2345:3456",
       "effective Unpackerr user must resolve from NAS_UID and NAS_GID")
+
+arr_environment = {
+  "NAS_UID" => "2345",
+  "NAS_GID" => "3456",
+  "TZ" => "UTC",
+  "PLATFORM_CONTAINER_CPUSET" => "0",
+  "PLATFORM_MEDIA_NETWORK" => "fixture-media",
+  "MEDIA_ROOT" => "/tmp/media",
+  "RADARR_CONFIG_PATH" => "/tmp/radarr",
+  "SONARR_CONFIG_PATH" => "/tmp/sonarr",
+  "PROWLARR_CONFIG_PATH" => "/tmp/prowlarr",
+  "BAZARR_CONFIG_PATH" => "/tmp/bazarr",
+  "CONFIGARR_CONFIG_PATH" => "/tmp/configarr.yml",
+  "CONFIGARR_SECRETS_PATH" => "/tmp/configarr-secrets.yml",
+  "CONFIGARR_REPOS_PATH" => "/tmp/configarr-repos"
+}
+effective_arr_without_jobs = effective_compose("services/arr/compose.yml", arr_environment)
+check(failures, !effective_arr_without_jobs.dig("services", "configarr"),
+      "effective Configarr must remain absent without the jobs profile")
+effective_arr = effective_compose("services/arr/compose.yml", arr_environment, profile: "jobs")
+check(failures, effective_arr.dig("services", "configarr"),
+      "effective Configarr must be present with the jobs profile")
+check(failures, effective_arr.dig("services", "configarr", "user") == "2345:3456",
+      "effective Configarr user must resolve from NAS_UID and NAS_GID")
 
 arr_services = arr_compose.fetch("services", {})
 downloader_services = downloaders_compose.fetch("services", {})
