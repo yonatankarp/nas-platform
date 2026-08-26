@@ -630,9 +630,7 @@ assert_pull_set \
 run_prepull 0 4 --suite smoke
 [ "$prepull_status" -eq 0 ] || prepull_fail "the untagged smoke pre-pull failed ($prepull_status)"
 all_service_images=$(printf '%s\n' "$runner_image"
-                     for compose in "$repo_dir"/services/*/compose.yml \
-                       "$repo_dir"/services/*/compose.jobs.yml; do
-                       [ -f "$compose" ] || continue
+                     for compose in "$repo_dir"/services/*/compose.yml; do
                        sed -n 's/^[[:space:]]*image:[[:space:]]*//p' "$compose"
                      done)
 assert_pull_set "$(printf '%s\n' "$all_service_images" | sort -u)"
@@ -661,12 +659,12 @@ done
 run_prepull 0 4 --suite arr
 [ "$prepull_status" -eq 0 ] || prepull_fail "arr pre-pull failed ($prepull_status)"
 assert_pull_set \
-  "$({ printf '%s\n' "$runner_image"; compose_images ntfy; compose_images arr; sed -n 's/^[[:space:]]*image:[[:space:]]*//p' "$repo_dir/services/arr/compose.jobs.yml"; } | sort -u)"
+  "$({ printf '%s\n' "$runner_image"; compose_images ntfy; compose_images arr; } | sort -u)"
 
 run_prepull 0 4 --suite downloaders
 [ "$prepull_status" -eq 0 ] || prepull_fail "downloaders pre-pull failed ($prepull_status)"
 assert_pull_set \
-  "$({ printf '%s\n' "$runner_image"; compose_images ntfy; compose_images arr; compose_images downloaders; sed -n 's/^[[:space:]]*image:[[:space:]]*//p' "$repo_dir/services/arr/compose.jobs.yml"; } | sort -u)"
+  "$({ printf '%s\n' "$runner_image"; compose_images ntfy; compose_images arr; compose_images downloaders; } | sort -u)"
 
 # A registry that refuses more times than the budget allows must fail, and must
 # not go on pulling the rest: under a rate limit the remaining pulls would only

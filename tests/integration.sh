@@ -339,12 +339,8 @@ suite_pull_images() {
           ;;
       esac
     fi
-    for compose_source in \
-      "$repo_dir/services/$service_dir/compose.yml" \
-      "$repo_dir/services/$service_dir/compose.jobs.yml"; do
-      [ -f "$compose_source" ] || continue
-      sed -n 's/^[[:space:]]*image:[[:space:]]*//p' "$compose_source"
-    done
+    sed -n 's/^[[:space:]]*image:[[:space:]]*//p' \
+      "$repo_dir/services/$service_dir/compose.yml"
   done
 }
 

@@ -1,6 +1,77 @@
 #!/usr/bin/env ruby
 require "digest"
+require "fileutils"
+require "open3"
+require "rbconfig"
+require "tmpdir"
 require "yaml"
+
+if ARGV == ["--self-test"]
+  Dir.mktmpdir("deployment-manifest-self-test") do |root|
+    repository = File.join(root, "repository")
+    release = File.join(root, "release")
+    %w[config services/arr roles/arr/files/configarr].each do |relative|
+      FileUtils.mkdir_p(File.join(repository, relative))
+    end
+    FileUtils.mkdir_p(File.join(release, "config"))
+
+    image = "example.invalid/configarr:1.0@sha256:#{'a' * 64}"
+    compose_path = File.join(repository, "services/arr/compose.yml")
+    catalog_path = File.join(repository, "config/media-acquisition.yml")
+    runtime_path = File.join(repository, "roles/arr/files/configarr/config.yml")
+    source_manifest_path = File.join(repository, "services/manifest.yml")
+    File.write(compose_path, YAML.dump("services" => {
+      "configarr" => { "profiles" => ["jobs"], "image" => image }
+    }))
+    File.write(catalog_path, YAML.dump("projects" => {}))
+    File.write(runtime_path, YAML.dump("config" => true))
+    File.write(source_manifest_path, YAML.dump("services" => [{
+      "name" => "arr", "role" => "arr", "status" => "implemented"
+    }]))
+    FileUtils.cp(catalog_path, File.join(release, "config/media-acquisition.yml"))
+
+    git_sha = "b" * 40
+    manifest_path = File.join(release, "manifest.yml")
+    manifest = {
+      "git_sha" => git_sha,
+      "platform_kind" => "nas",
+      "platform_compose_kind" => "nas",
+      "platform_inputs" => [{
+        "path" => "config/media-acquisition.yml",
+        "mode" => "0644",
+        "checksum_sha256" => Digest::SHA256.file(catalog_path).hexdigest
+      }],
+      "services" => [{
+        "name" => "arr",
+        "compose_files" => [{
+          "path" => "compose.yml",
+          "checksum_sha256" => Digest::SHA256.file(compose_path).hexdigest
+        }],
+        "runtime_files" => [{
+          "path" => "configarr.yml",
+          "mode" => "0644",
+          "checksum_sha256" => Digest::SHA256.file(runtime_path).hexdigest
+        }],
+        "images" => { "configarr" => image }
+      }]
+    }
+    File.write(manifest_path, YAML.dump(manifest))
+
+    command = [RbConfig.ruby, __FILE__, manifest_path, repository,
+               source_manifest_path, "nas", "nas", git_sha]
+    _stdout, stderr, status = Open3.capture3(*command)
+    abort "manifest self-test baseline failed: #{stderr.lines.first&.strip}" unless status.success?
+
+    manifest.dig("services", 0, "images").delete("configarr")
+    File.write(manifest_path, YAML.dump(manifest))
+    _stdout, stderr, status = Open3.capture3(*command)
+    abort "manifest self-test accepted missing canonical Configarr image" if status.success?
+    abort "manifest self-test mutation failed imprecisely" unless
+      stderr.include?("deployment manifest differs from exact controller inputs")
+  end
+  puts "deployment manifest self-test: canonical Configarr discovery holds"
+  exit 0
+end
 
 manifest_path, repository_root, source_manifest_path, platform_kind, compose_kind, git_sha, merge_mode = ARGV
 unless git_sha
@@ -37,22 +108,16 @@ expected_services = implemented.map do |service|
   service_root = File.join(repository_root, "services", name)
   canonical_path = File.join(service_root, "compose.yml")
   override_path = File.join(service_root, "compose.#{compose_kind}.yml")
-  jobs_path = File.join(service_root, "compose.jobs.yml")
   compose_paths = [canonical_path]
   compose_paths << override_path if File.file?(override_path)
-  compose_paths << jobs_path if File.file?(jobs_path)
 
   canonical_services = load_yaml.call(canonical_path).fetch("services")
   override_services = File.file?(override_path) ? load_yaml.call(override_path).fetch("services", {}) : {}
-  job_services = File.file?(jobs_path) ? load_yaml.call(jobs_path).fetch("services", {}) : {}
-  images = (canonical_services.keys | override_services.keys | job_services.keys).sort.each_with_object({}) do |compose_name, result|
+  images = (canonical_services.keys | override_services.keys).sort.each_with_object({}) do |compose_name, result|
     canonical = canonical_services.fetch(compose_name, {})
     override = override_services.fetch(compose_name, {})
-    job = job_services.fetch(compose_name, {})
     effective_image = if override.key?("image")
                         override["image"]
-                      elsif job.key?("image")
-                        job["image"]
                       else
                         canonical["image"]
                       end

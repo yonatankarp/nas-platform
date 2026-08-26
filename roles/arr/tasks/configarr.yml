@@ -12,7 +12,7 @@
   community.docker.docker_compose_v2_run:
     project_src: "{{ platform_current_dir }}/services/arr"
     project_name: "{{ arr_compose_project_name }}"
-    files: "{{ platform_service_compose_files['arr'] + ['compose.jobs.yml'] }}"
+    files: "{{ platform_service_compose_files['arr'] }}"
     env_files: ["{{ platform_runtime_dir }}/services/arr/.env"]
     profiles: [jobs]
     service: configarr

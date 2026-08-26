@@ -53,17 +53,6 @@
     loop_var: deployment_controller_service
     label: "{{ deployment_controller_service.name }}"
 
-- name: Validate optional one-shot job Compose inputs
-  ansible.builtin.include_tasks: controller_input.yml
-  vars:
-    deployment_controller_input_path: >-
-      {{ playbook_dir }}/services/{{ deployment_controller_service.name }}/compose.jobs.yml
-    deployment_controller_input_allow_missing: true
-  loop: "{{ deployment_bundle_services }}"
-  loop_control:
-    loop_var: deployment_controller_service
-    label: "{{ deployment_controller_service.name }}"
-
 - name: Validate the tracked Configarr declaration
   ansible.builtin.include_tasks: controller_input.yml
   vars:

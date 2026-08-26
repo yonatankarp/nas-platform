@@ -19,6 +19,12 @@ x-service-defaults: &service-defaults
     - default
     - media-control
 
+x-job-defaults: &job-defaults
+  cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
+  logging: *default-logging
+  networks:
+    - media-control
+
 services:
   radarr:
     <<: *service-defaults
@@ -98,6 +104,23 @@ services:
       timeout: 10s
       retries: 5
       start_period: 60s
+
+  configarr:
+    <<: *job-defaults
+    profiles: [jobs]
+    image: ghcr.io/raydak-labs/configarr:1.28.0@sha256:008d8659ff35f63fbcc20b860b33ba7cc49e8d7458a6ec446810ec4d783ef017
+    user: "${NAS_UID:?}:${NAS_GID:?}"
+    cpus: 0.5
+    environment:
+      GIT_CONFIG_COUNT: "2"
+      GIT_CONFIG_KEY_0: safe.directory
+      GIT_CONFIG_VALUE_0: /app/repos/trash-guides
+      GIT_CONFIG_KEY_1: safe.directory
+      GIT_CONFIG_VALUE_1: /app/repos/recyclarr-config
+    volumes:
+      - ${CONFIGARR_CONFIG_PATH:?}:/app/config/config.yml:ro
+      - ${CONFIGARR_SECRETS_PATH:?}:/app/config/secrets.yml:ro
+      - ${CONFIGARR_REPOS_PATH:?}:/app/repos
 
 networks:
   default: {}

@@ -13,7 +13,7 @@ required = %w[
   roles/arr/files/configarr/config.yml
   roles/arr/templates/configarr-secrets.yml.j2
   roles/arr/tasks/configarr.yml
-  services/arr/compose.jobs.yml
+  services/arr/compose.yml
 ]
 required.each do |relative|
   check(failures, File.file?(File.join(ROOT, relative)), "#{relative} must exist")
@@ -65,8 +65,8 @@ if failures.empty?
           "Configarr job must remove its container and avoid dependency startup")
     check(failures, run["detach"] == false && run["service_ports"] == false,
           "Configarr job must run synchronously without published ports")
-    check(failures, run["files"].to_s.include?("compose.jobs.yml"),
-          "Configarr job must include the jobs Compose file")
+    check(failures, run["files"] == "{{ platform_service_compose_files['arr'] }}",
+          "Configarr job must use only the canonical Arr Compose files")
   end
   check(failures, run_task&.fetch("failed_when", "").to_s.include?("rc"),
         "Configarr job must fail on a nonzero result")
@@ -78,12 +78,39 @@ if failures.empty?
   secrets = File.read(File.join(ROOT, "roles/arr/templates/configarr-secrets.yml.j2"))
   check(failures, secrets.lines.grep(/API_KEY:/).length == 2,
         "Configarr secrets file must contain exactly two keys")
-  jobs = YAML.safe_load_file(File.join(ROOT, "services/arr/compose.jobs.yml"), aliases: true)
+  check(failures, !File.exist?(File.join(ROOT, "services/arr/compose.jobs.yml")),
+        "services/arr/compose.jobs.yml must be absent")
+  compose = YAML.safe_load_file(File.join(ROOT, "services/arr/compose.yml"), aliases: true)
+  configarr = compose.dig("services", "configarr") || {}
+  check(failures, configarr["profiles"] == ["jobs"],
+        "Configarr must use only the jobs profile")
+  check(failures, configarr["user"] == "${NAS_UID:?}:${NAS_GID:?}",
+        "Configarr must derive its user from NAS_UID and NAS_GID")
   check(failures,
-        Array(jobs.dig("services", "configarr", "volumes")).include?(
+        configarr["image"].to_s.match?(/:[A-Za-z0-9][A-Za-z0-9_.-]*@sha256:[0-9a-f]{64}\z/),
+        "Configarr image must carry a readable tag and sha256 digest")
+  check(failures, configarr["cpuset"] == "${PLATFORM_CONTAINER_CPUSET:?}" &&
+                  configarr["cpus"] == 0.5,
+        "Configarr must use the platform CPU set and a 0.5 CPU ceiling")
+  check(failures, configarr["logging"] == {
+          "driver" => "json-file",
+          "options" => { "max-size" => "10m", "max-file" => "3" }
+        }, "Configarr logging must use the exact bounded json-file policy")
+  check(failures, configarr["networks"] == ["media-control"],
+        "Configarr must join only media-control")
+  %w[restart ports healthcheck].each do |key|
+    check(failures, !configarr.key?(key), "Configarr must not define #{key}")
+  end
+  check(failures,
+        Array(configarr["volumes"]).include?(
           "${CONFIGARR_REPOS_PATH:?}:/app/repos"
         ), "Configarr must mount a writable repository cache at /app/repos")
-  check(failures, jobs.dig("services", "configarr", "environment") == {
+  check(failures, configarr["volumes"] == [
+          "${CONFIGARR_CONFIG_PATH:?}:/app/config/config.yml:ro",
+          "${CONFIGARR_SECRETS_PATH:?}:/app/config/secrets.yml:ro",
+          "${CONFIGARR_REPOS_PATH:?}:/app/repos"
+        ], "Configarr must mount only its declaration, secrets, and repository cache")
+  check(failures, configarr["environment"] == {
           "GIT_CONFIG_COUNT" => "2",
           "GIT_CONFIG_KEY_0" => "safe.directory",
           "GIT_CONFIG_VALUE_0" => "/app/repos/trash-guides",
@@ -93,8 +120,8 @@ if failures.empty?
   manifest_verifier = File.read(File.join(ROOT, "tests/verify_deployment_manifest.rb"))
   check(failures,
         manifest_verifier.include?('"arr" => ["configarr.yml"]') &&
-          manifest_verifier.include?('compose.jobs.yml'),
-        "deployment manifest verification must cover Configarr inputs")
+          !manifest_verifier.include?('compose.jobs.yml'),
+        "deployment manifest verification must discover Configarr from canonical Compose")
 end
 
 if failures.empty?

@@ -17,11 +17,6 @@ services:
       - path: compose.{{ platform_compose_kind }}.yml
         checksum_sha256: {{ (lookup('file', platform_source.stat.path, rstrip=false) | hash('sha256')) | to_json }}
 {% endif %}
-{% set job_source = deployment_bundle_job_sources.results[loop.index0] %}
-{% if job_source.stat.exists %}
-      - path: compose.jobs.yml
-        checksum_sha256: {{ (lookup('file', job_source.stat.path, rstrip=false) | hash('sha256')) | to_json }}
-{% endif %}
 {% set runtime_files = {'arr': ['configarr.yml'], 'dozzle': ['alert_relay.py'], 'immich': ['classify_restore.py']}.get(service.name, []) %}
 {% if runtime_files %}
     runtime_files:
@@ -37,19 +32,14 @@ services:
     images:
 {% set canonical_compose = lookup('file', playbook_dir ~ '/services/' ~ service.name ~ '/compose.yml') | from_yaml %}
 {% set platform_compose = (lookup('file', platform_source.stat.path) | platform_compose_metadata) if platform_source.stat.exists else {'services': {}} %}
-{% set job_compose = (lookup('file', job_source.stat.path) | from_yaml) if job_source.stat.exists else {'services': {}} %}
 {% set canonical_services = canonical_compose.services | default({}) %}
 {% set platform_services = platform_compose.services | default({}) %}
-{% set job_services = job_compose.services | default({}) %}
-{% set compose_service_names = ((canonical_services.keys() | list) + (platform_services.keys() | list) + (job_services.keys() | list)) | unique | sort %}
+{% set compose_service_names = ((canonical_services.keys() | list) + (platform_services.keys() | list)) | unique | sort %}
 {% for compose_service_name in compose_service_names %}
 {% set canonical_definition = canonical_services.get(compose_service_name, {}) %}
 {% set platform_definition = platform_services.get(compose_service_name, {}) %}
-{% set job_definition = job_services.get(compose_service_name, {}) %}
 {% if platform_definition.image is defined %}
       {{ compose_service_name | to_json }}: {{ platform_definition.image | to_json }}
-{% elif job_definition.image is defined %}
-      {{ compose_service_name | to_json }}: {{ job_definition.image | to_json }}
 {% elif canonical_definition.image is defined %}
       {{ compose_service_name | to_json }}: {{ canonical_definition.image | to_json }}
 {% endif %}

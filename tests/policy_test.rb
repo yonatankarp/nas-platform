@@ -725,8 +725,9 @@ service_dirs.each do |dir|
   acquisition_services = acquisition_projects.dig(name, "services")
   expected_compose_services = if acquisition_services.is_a?(Hash)
                                 acquisition_services.filter_map do |service_name, definition|
-                                  service_name unless definition.is_a?(Hash) &&
-                                                      definition.key?("compose_profile")
+                                  service_name if !definition.is_a?(Hash) ||
+                                                  !definition.key?("compose_profile") ||
+                                                  ACQUISITION_JOB_SERVICES.include?(service_name)
                                 end
                               else
                                 expected_cpus.keys

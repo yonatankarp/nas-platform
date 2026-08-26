@@ -108,7 +108,8 @@ end
 
 arr_compose = compose_yaml("services/arr/compose.yml", failures)
 downloaders_compose = compose_yaml("services/downloaders/compose.yml", failures)
-jobs_compose = compose_yaml("services/arr/compose.jobs.yml", failures)
+check(failures, !File.exist?(File.join(ROOT, "services/arr/compose.jobs.yml")),
+      "services/arr/compose.jobs.yml must be absent")
 downloaders_source = File.read(File.join(ROOT, "services/downloaders/compose.yml"))
 check(failures,
       downloaders_source.match?(/^\s+user:\s*"\$\{NAS_UID:\?\}:\$\{NAS_GID:\?\}"\s*$/),
@@ -133,19 +134,19 @@ check(failures, effective_downloaders.dig("services", "unpackerr", "user") == "2
 
 arr_services = arr_compose.fetch("services", {})
 downloader_services = downloaders_compose.fetch("services", {})
-job_services = jobs_compose.fetch("services", {})
-check(failures, arr_services.keys.sort == %w[bazarr prowlarr radarr sonarr],
-      "arr long-running service set must be exact")
+check(failures, arr_services.keys.sort == %w[bazarr configarr prowlarr radarr sonarr],
+      "arr canonical service set must include long-running and profiled services")
 check(failures, downloader_services.keys.sort == %w[sabnzbd unpackerr],
       "Phase 1 downloader service set must be exact")
-check(failures, job_services.keys == ["configarr"],
-      "Configarr must be the only job service")
+check(failures,
+      arr_services.select { |_name, definition| definition["profiles"] == ["jobs"] }.keys == ["configarr"],
+      "Configarr must be the only profiled job service")
 check(failures, downloader_services.dig("unpackerr", "user") == "${NAS_UID:?}:${NAS_GID:?}",
       "Unpackerr must run as the NAS_UID/NAS_GID identity")
 
 expected_cpus = {
   "radarr" => 1.0, "sonarr" => 1.0, "prowlarr" => 0.5, "bazarr" => 1.0,
-  "sabnzbd" => 2.0, "unpackerr" => 1.0
+  "configarr" => 0.5, "sabnzbd" => 2.0, "unpackerr" => 1.0
 }
 (arr_services.merge(downloader_services)).each do |name, definition|
   image = definition["image"]
@@ -156,12 +157,14 @@ expected_cpus = {
         "#{name} must require the platform CPU set")
   check(failures, definition["cpus"] == expected_cpus[name],
         "#{name} CPU ceiling must be #{expected_cpus[name]}")
-  check(failures, definition["restart"] == "unless-stopped",
-        "#{name} must restart unless stopped")
   check(failures, definition.dig("logging", "driver") == "json-file" &&
                   definition.dig("logging", "options", "max-size") == "10m" &&
                   definition.dig("logging", "options", "max-file") == "3",
         "#{name} logging must be bounded")
+  next if name == "configarr"
+
+  check(failures, definition["restart"] == "unless-stopped",
+        "#{name} must restart unless stopped")
   check(failures, definition.dig("labels", "dev.dozzle.name") == name,
         "#{name} must have its Dozzle display name")
   check(failures, definition["healthcheck"].is_a?(Hash) &&
@@ -201,16 +204,23 @@ check(failures,
 check(failures, !downloader_services.fetch("unpackerr", {}).key?("ports"),
       "Unpackerr must publish no ports")
 
-configarr = job_services.fetch("configarr", {})
+configarr = arr_services.fetch("configarr", {})
 check(failures, configarr["profiles"] == ["jobs"],
       "Configarr must stay behind the jobs profile")
-check(failures, configarr["user"] == "1000:100",
-      "Configarr must run as the shared filesystem identity")
+check(failures, configarr["user"] == "${NAS_UID:?}:${NAS_GID:?}",
+      "Configarr must derive its user from NAS_UID and NAS_GID")
 check(failures, configarr["cpuset"] == "${PLATFORM_CONTAINER_CPUSET:?}" &&
                 configarr["cpus"] == 0.5,
       "Configarr must use its exact CPU policy")
 check(failures, !configarr.key?("restart"), "Configarr must not restart")
 check(failures, !configarr.key?("ports"), "Configarr must publish no ports")
+check(failures, !configarr.key?("healthcheck"), "Configarr must define no healthcheck")
+check(failures, configarr["networks"] == ["media-control"],
+      "Configarr must join only media-control")
+check(failures, configarr.dig("logging", "driver") == "json-file" &&
+                configarr.dig("logging", "options") == {
+                  "max-size" => "10m", "max-file" => "3"
+                }, "Configarr logging must be bounded")
 
 %w[
   services/arr/compose.mac.yml services/arr/compose.integration.yml

@@ -13,7 +13,6 @@
       - "{{ platform_current_dir }}/services/arr"
       - "{{ platform_current_dir }}/services/arr/compose.yml"
       - "{{ platform_current_dir }}/services/arr/compose.{{ platform_compose_kind }}.yml"
-      - "{{ platform_current_dir }}/services/arr/compose.jobs.yml"
       - "{{ platform_current_dir }}/services/arr/configarr.yml"
       - "{{ platform_runtime_dir }}/services/arr"
       - "{{ platform_runtime_dir }}/services/arr/configarr-repos"
