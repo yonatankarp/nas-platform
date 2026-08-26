@@ -2,18 +2,52 @@
 # frozen_string_literal: true
 
 require "fileutils"
+require "digest"
 require "json"
 require "open3"
+require "rbconfig"
 require "socket"
 require "tmpdir"
 require "uri"
 require "yaml"
 
 ROOT = File.expand_path("..", __dir__)
-ANSIBLE_PLAYBOOK = File.expand_path("../../.venv/bin/ansible-playbook", ROOT)
+
+def resolve_ansible_playbook(root: ROOT, path: ENV.fetch("PATH", ""))
+  path.split(File::PATH_SEPARATOR).each do |directory|
+    candidate = File.join(directory, "ansible-playbook")
+    return candidate if File.executable?(candidate)
+  end
+
+  common_dir, status = Open3.capture2(
+    "git", "rev-parse", "--git-common-dir", chdir: root
+  )
+  return "" unless status.success?
+
+  common_dir = File.expand_path(common_dir.strip, root)
+  File.join(File.dirname(common_dir), ".venv", "bin", "ansible-playbook")
+end
+
+ANSIBLE_PLAYBOOK = resolve_ansible_playbook.freeze
 ARR_TASKS = File.join(ROOT, "roles", "arr", "tasks")
 DOWNLOADER_TASKS = File.join(ROOT, "roles", "downloaders", "tasks")
 CONFIGARR_SOURCE = File.join(ROOT, "roles", "arr", "files", "configarr", "config.yml")
+PLAYBOOK_TIMEOUT_SECONDS = Float(ENV.fetch("ACQUISITION_PLAYBOOK_TIMEOUT", "30"))
+PROCESS_TERM_GRACE_SECONDS = 1.0
+SOCKET_DEADLINE_SECONDS = 2.0
+SECRET_TASK_FILES = [
+  [ARR_TASKS, "reconcile_prowlarr.yml"],
+  [ARR_TASKS, "reconcile_prowlarr_application.yml"],
+  [ARR_TASKS, "reconcile_servarr_download_client.yml"],
+  [ARR_TASKS, "reconcile_bazarr.yml"],
+  [ARR_TASKS, "configarr.yml"],
+  [ARR_TASKS, "verify.yml"],
+  [DOWNLOADER_TASKS, "verify.yml"]
+].freeze
+NON_SECRET_TASK_NAMES = [
+  "Reconcile each Prowlarr full-sync application",
+  "Record a bounded Configarr execution summary"
+].freeze
 
 FINGERPRINT_FILES = %w[
   .configarr-input.sha256
@@ -29,6 +63,17 @@ FINGERPRINT_FILE_BY_KIND = {
   bazarr: ".bazarr-providers-input.sha256",
   configarr: ".configarr-input.sha256"
 }.freeze
+FINGERPRINT_KIND_BY_FILE = FINGERPRINT_FILE_BY_KIND.invert.freeze
+FINGERPRINT_INPUT_BY_KIND = {
+  application: "prowlarr_applications",
+  download_client: "servarr_sabnzbd",
+  indexer: "prowlarr_indexers",
+  bazarr: "bazarr_providers",
+  configarr: "configarr"
+}.freeze
+FINGERPRINT_BASELINE_CACHE = { "enabled" => false }
+CONFIGARR_IMAGE = "ghcr.io/raydak-labs/configarr:1.28.0@sha256:" \
+                  "008d8659ff35f63fbcc20b860b33ba7cc49e8d7458a6ec446810ec4d783ef017"
 
 SECRETS = {
   "application" => "fixture-application-api-secret",
@@ -293,6 +338,34 @@ def task_slice(filename, first_name, last_name, root: ARR_TASKS)
   deep_copy(tasks[first_matches.first..last_matches.first])
 end
 
+def secret_task_sets
+  sets = SECRET_TASK_FILES.to_h do |root, filename|
+    path = File.join(root, filename)
+    [path, YAML.safe_load_file(path, aliases: true)]
+  end
+  %w[reconciliation_fingerprints.yml record_reconciliation_fingerprints.yml].each do |filename|
+    path = File.join(ARR_TASKS, filename)
+    if File.file?(path)
+      sets[path] = YAML.safe_load_file(path, aliases: true)
+    end
+  end
+  sets
+end
+
+def secret_task_protected?(path, task)
+  File.basename(path).include?("fingerprint") ||
+    !NON_SECRET_TASK_NAMES.include?(task.fetch("name"))
+end
+
+def missing_secret_output_guards(task_sets)
+  task_sets.flat_map do |path, tasks|
+    tasks.filter_map do |task|
+      File.join(File.basename(path), task.fetch("name")) if
+        secret_task_protected?(path, task) && task.fetch("no_log", false) != true
+    end
+  end
+end
+
 def reconciliation_tasks(kind)
   case kind
   when :application
@@ -446,7 +519,8 @@ def download_client_projection(object)
       "useSsl" => fields["useSsl"], "urlBase" => fields["urlBase"],
       "apiKey" => fields["apiKey"], "username" => fields["username"],
       "password" => fields["password"],
-      "category" => fields["movieCategory"] || fields["tvCategory"]
+      "movieCategory" => fields["movieCategory"].to_s,
+      "tvCategory" => fields["tvCategory"].to_s
     }
   }
 end
@@ -578,8 +652,16 @@ def set_field!(object, name, value)
   field["value"] = value
 end
 
+def remove_field!(object, name)
+  before = object.fetch("fields").length
+  object.fetch("fields").reject! { |field| field["name"] == name }
+  raise "fixture field #{name} is unavailable" if object.fetch("fields").length == before
+end
+
 class AcquisitionApi
   attr_reader :port, :requests, :state, :error, :unexpected_requests
+
+  class SocketDeadlineExceeded < StandardError; end
 
   def initialize(state, fail_configarr: false)
     @state = state
@@ -589,15 +671,38 @@ class AcquisitionApi
     @server = TCPServer.new("127.0.0.1", 0)
     @port = @server.addr.fetch(1)
     @stopped = false
+    @clients = []
+    @clients_mutex = Mutex.new
     @thread = Thread.new { serve }
   end
 
   def close
     @stopped = true
-    @server.close
-    @thread.join
+    @server.close unless @server.closed?
+    @clients_mutex.synchronize do
+      @clients.each do |client|
+        begin
+          client.close unless client.closed?
+        rescue IOError, Errno::EBADF
+          nil
+        end
+      end
+    end
+    return if @thread&.join(SOCKET_DEADLINE_SECONDS)
+
+    @thread.kill
+    @thread.join(SOCKET_DEADLINE_SECONDS)
+    @error ||= SocketDeadlineExceeded.new("fixture server thread did not stop")
   rescue IOError, Errno::EBADF
-    @thread&.join
+    unless @thread&.join(SOCKET_DEADLINE_SECONDS)
+      @thread&.kill
+      @thread&.join(SOCKET_DEADLINE_SECONDS)
+      @error ||= SocketDeadlineExceeded.new("fixture server thread did not stop")
+    end
+  end
+
+  def accepted_client_count
+    @clients_mutex.synchronize { @clients.length }
   end
 
   private
@@ -607,8 +712,13 @@ class AcquisitionApi
       next unless IO.select([@server], nil, nil, 0.05)
 
       client = @server.accept
-      handle(client)
-      client.close
+      @clients_mutex.synchronize { @clients << client }
+      begin
+        handle(client)
+      ensure
+        @clients_mutex.synchronize { @clients.delete(client) }
+        client.close unless client.closed?
+      end
     end
   rescue IOError, Errno::EBADF
     nil
@@ -617,16 +727,7 @@ class AcquisitionApi
   end
 
   def handle(client)
-    method, target, = client.gets.to_s.strip.split(" ", 3)
-    headers = {}
-    while (line = client.gets)
-      line = line.chomp
-      break if line == "\r" || line.empty?
-
-      key, value = line.split(":", 2)
-      headers[key.downcase] = value.to_s.strip
-    end
-    body = client.read(headers.fetch("content-length", "0").to_i)
+    method, target, body = read_request(client)
     request = { "method" => method, "target" => target, "body" => body }
     @requests << request
 
@@ -693,6 +794,60 @@ class AcquisitionApi
         @unexpected_requests << [method, target]
         send_json(client, 400, { "error" => "unexpected fixture request" })
       end
+    end
+  end
+
+  def read_request(client)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + SOCKET_DEADLINE_SECONDS
+    bytes = +""
+    until (boundary = bytes.index("\r\n\r\n") || bytes.index("\n\n"))
+      bytes << read_chunk(client, deadline)
+      raise "fixture request headers are too large" if bytes.bytesize > 64 * 1024
+    end
+    separator_length = bytes[boundary, 4] == "\r\n\r\n" ? 4 : 2
+    header_bytes = bytes.byteslice(0, boundary)
+    body = bytes.byteslice(boundary + separator_length..) || +""
+    lines = header_bytes.split(/\r?\n/)
+    method, target, = lines.shift.to_s.split(" ", 3)
+    headers = lines.to_h do |line|
+      key, value = line.split(":", 2)
+      [key.to_s.downcase, value.to_s.strip]
+    end
+    length = Integer(headers.fetch("content-length", "0"), 10)
+    raise "fixture request body is too large" if length > 1024 * 1024
+
+    body << read_chunk(client, deadline) while body.bytesize < length
+    [method, target, body.byteslice(0, length)]
+  end
+
+  def read_chunk(client, deadline)
+    remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    raise SocketDeadlineExceeded, "fixture client read exceeded deadline" if remaining <= 0
+    unless IO.select([client], nil, nil, remaining)
+      raise SocketDeadlineExceeded, "fixture client read exceeded deadline"
+    end
+
+    chunk = client.read_nonblock(16 * 1024, exception: false)
+    raise EOFError, "fixture client closed an incomplete request" if chunk.nil?
+    return read_chunk(client, deadline) if chunk == :wait_readable
+
+    chunk
+  end
+
+  def write_response(client, bytes)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + SOCKET_DEADLINE_SECONDS
+    offset = 0
+    while offset < bytes.bytesize
+      remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      raise SocketDeadlineExceeded, "fixture client write exceeded deadline" if remaining <= 0
+      unless IO.select(nil, [client], nil, remaining)
+        raise SocketDeadlineExceeded, "fixture client write exceeded deadline"
+      end
+
+      written = client.write_nonblock(bytes.byteslice(offset..), exception: false)
+      next if written == :wait_writable
+
+      offset += written
     end
   end
 
@@ -831,7 +986,8 @@ class AcquisitionApi
       200 => "OK", 201 => "Created", 202 => "Accepted", 204 => "No Content",
       400 => "Bad Request", 500 => "Internal Server Error"
     }.fetch(status)
-    client.write(
+    write_response(
+      client,
       "HTTP/1.1 #{status} #{reason}\r\nContent-Type: #{content_type}\r\n" \
       "Content-Length: #{body.bytesize}\r\nConnection: close\r\n\r\n#{body}"
     )
@@ -1029,26 +1185,107 @@ def write_event_callback(root)
   callback_directory
 end
 
+def capture_process(env, *argv, chdir:, timeout:)
+  started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+  timed_out = false
+  stdin, stdout, stderr, wait_thread = Open3.popen3(
+    env, *argv, chdir: chdir, pgroup: true
+  )
+  stdin.close
+  stdout_thread = Thread.new do
+    stdout.read
+  rescue IOError
+    ""
+  end
+  stderr_thread = Thread.new do
+    stderr.read
+  rescue IOError
+    ""
+  end
+  reaped = wait_thread.join(timeout)
+  unless reaped
+    timed_out = true
+    begin
+      Process.kill("TERM", -wait_thread.pid)
+    rescue Errno::ESRCH
+      nil
+    end
+    reaped = wait_thread.join(PROCESS_TERM_GRACE_SECONDS)
+    unless reaped
+      begin
+        Process.kill("KILL", -wait_thread.pid)
+      rescue Errno::ESRCH
+        nil
+      end
+      reaped = wait_thread.join(PROCESS_TERM_GRACE_SECONDS)
+    end
+  end
+  unless reaped
+    stdout.close unless stdout.closed?
+    stderr.close unless stderr.closed?
+  end
+  readers = [stdout_thread, stderr_thread]
+  readers.each do |reader|
+    next if reader.join(PROCESS_TERM_GRACE_SECONDS)
+
+    begin
+      Process.kill("KILL", -wait_thread.pid)
+    rescue Errno::ESRCH
+      nil
+    end
+    reader.kill
+    reader.join(PROCESS_TERM_GRACE_SECONDS)
+  end
+  {
+    "stdout" => (stdout_thread.value.to_s unless stdout_thread.alive?).to_s,
+    "stderr" => (stderr_thread.value.to_s unless stderr_thread.alive?).to_s,
+    "status" => (wait_thread.value if reaped), "timed_out" => timed_out,
+    "reaped" => !reaped.nil?,
+    "elapsed" => Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+  }
+ensure
+  stdin&.close unless stdin&.closed?
+  stdout&.close unless stdout&.closed?
+  stderr&.close unless stderr&.closed?
+end
+
 def run_playbook(path, env)
   event_log = env.fetch("ACQUISITION_FIXTURE_EVENT_LOG")
   File.write(event_log, "", mode: "w", perm: 0o600)
-  stdout, stderr, status = Open3.capture3(
-    env, ANSIBLE_PLAYBOOK, "-i", "localhost,", "-c", "local", path, chdir: ROOT
+  process = capture_process(
+    env, ANSIBLE_PLAYBOOK, "-i", "localhost,", "-c", "local", path,
+    chdir: ROOT, timeout: PLAYBOOK_TIMEOUT_SECONDS
   )
   events = File.readlines(event_log, chomp: true).map { |line| JSON.parse(line) }
-  {
-    "stdout" => stdout, "stderr" => stderr, "status" => status,
-    "changed" => stdout.scan(/changed=(\d+)/).flatten.last&.to_i,
-    "task_events" => events
-  }
+  process.merge(
+    "changed" => process.fetch("stdout").scan(/changed=(\d+)/).flatten.last&.to_i,
+    "task_events" => events,
+    "harness_error" => if process.fetch("timed_out") || !process.fetch("reaped")
+                         "Ansible playbook exceeded #{PLAYBOOK_TIMEOUT_SECONDS}s deadline"
+                       end
+  )
 end
 
 def fingerprint_snapshot(runtime)
   directory = File.join(runtime, "services", "arr")
   FINGERPRINT_FILES.to_h do |filename|
     path = File.join(directory, filename)
-    value = if File.file?(path)
-              { "content" => File.binread(path), "mode" => File.stat(path).mode & 0o777 }
+    stat = File.lstat(path) if File.exist?(path) || File.symlink?(path)
+    value = if stat
+              type = if stat.symlink?
+                       "symlink"
+                     elsif stat.file?
+                       "regular"
+                     elsif stat.directory?
+                       "directory"
+                     else
+                       "other"
+                     end
+              {
+                "type" => type, "mode" => stat.mode & 0o7777,
+                "uid" => stat.uid, "gid" => stat.gid,
+                "content" => (File.binread(path) if type == "regular")
+              }
             end
     [filename, value]
   end
@@ -1056,6 +1293,56 @@ end
 
 def fingerprint_change_count(before, after)
   FINGERPRINT_FILES.count { |filename| before[filename] != after[filename] }
+end
+
+def ansible_json(value)
+  case value
+  when Hash
+    "{" + value.map { |key, item| "#{JSON.generate(key.to_s)}: #{ansible_json(item)}" }.join(", ") + "}"
+  when Array
+    "[" + value.map { |item| ansible_json(item) }.join(", ") + "]"
+  when String
+    JSON.generate(value)
+  when true then "true"
+  when false then "false"
+  when nil then "null"
+  else value.to_s
+  end
+end
+
+def desired_fingerprint_values(variables)
+  {
+    "prowlarr_applications" => variables.fetch("arr_prowlarr_applications"),
+    "servarr_sabnzbd" => {
+      "instances" => variables.fetch("arr_servarr_instances"),
+      "name" => variables.fetch("arr_sabnzbd_client_name"),
+      "host" => variables.fetch("arr_sabnzbd_host"),
+      "port" => variables.fetch("arr_sabnzbd_port"),
+      "api_key" => variables.fetch("vault_downloaders_sabnzbd_api_key"),
+      "username" => variables.fetch("vault_downloaders_sabnzbd_admin_username"),
+      "password" => variables.fetch("vault_downloaders_sabnzbd_admin_password")
+    },
+    "prowlarr_indexers" => variables.fetch("media_arr_indexers"),
+    "bazarr_providers" => variables.fetch("media_bazarr_providers"),
+    "configarr" => {
+      # Ansible's file lookup strips trailing whitespace by default.
+      "config" => File.read(CONFIGARR_SOURCE).rstrip,
+      "radarr_api_key" => variables.fetch("vault_arr_radarr_api_key"),
+      "sonarr_api_key" => variables.fetch("vault_arr_sonarr_api_key"),
+      "image" => CONFIGARR_IMAGE
+    }
+  }.transform_values { |value| Digest::SHA256.hexdigest(ansible_json(value)) }
+end
+
+def seed_fingerprint_baseline(runtime, variables)
+  directory = File.join(runtime, "services", "arr")
+  desired = desired_fingerprint_values(variables)
+  FINGERPRINT_FILE_BY_KIND.each do |kind, filename|
+    File.write(
+      File.join(directory, filename), "#{desired.fetch(FINGERPRINT_INPUT_BY_KIND.fetch(kind))}\n",
+      mode: "w", perm: 0o600
+    )
+  end
 end
 
 def reconciliation_phase(result)
@@ -1071,8 +1358,7 @@ def reconciliation_phase(result)
   )
 end
 
-def run_tasks(kind, api, extra_variables = {}, runtime: nil, prepare_fingerprints: true,
-              fingerprint_overrides: {})
+def run_tasks(kind, api, extra_variables = {}, runtime: nil, prepare_fingerprints: true)
   Dir.mktmpdir("media-acquisition-reconciliation-") do |directory|
     runtime ||= File.join(directory, "runtime")
     FileUtils.mkdir_p(File.join(runtime, "services", "arr"))
@@ -1110,25 +1396,21 @@ def run_tasks(kind, api, extra_variables = {}, runtime: nil, prepare_fingerprint
       )
     end
     if fingerprint_tasks_available? && prepare_fingerprints
-      setup_playbook = File.join(directory, "fingerprint-setup.yml")
-      write_playbook(
-        setup_playbook, variables, fingerprint_load_tasks + fingerprint_record_tasks
-      )
-      setup_result = run_playbook(setup_playbook, env)
-      unless setup_result.fetch("status").success?
-        return setup_result.merge(
-          "harness_error" => "private fingerprint baseline setup failed",
-          "fingerprints" => fingerprint_snapshot(runtime)
+      if FINGERPRINT_BASELINE_CACHE.fetch("enabled")
+        seed_fingerprint_baseline(runtime, variables)
+      else
+        setup_playbook = File.join(directory, "fingerprint-setup.yml")
+        write_playbook(
+          setup_playbook, variables, fingerprint_load_tasks + fingerprint_record_tasks
         )
+        setup_result = run_playbook(setup_playbook, env)
+        unless setup_result["status"]&.success?
+          return setup_result.merge(
+            "harness_error" => "private fingerprint baseline setup failed",
+            "fingerprints" => fingerprint_snapshot(runtime)
+          )
+        end
       end
-    end
-    fingerprint_overrides.each do |filename, content|
-      raise "unknown fixture fingerprint #{filename}" unless FINGERPRINT_FILES.include?(filename)
-
-      File.write(
-        File.join(runtime, "services", "arr", filename), content,
-        mode: "w", perm: 0o600
-      )
     end
     fingerprints_before_play = fingerprint_snapshot(runtime)
     playbook = File.join(directory, "playbook.yml")
@@ -1137,6 +1419,7 @@ def run_tasks(kind, api, extra_variables = {}, runtime: nil, prepare_fingerprint
     fingerprints_after_play = fingerprint_snapshot(runtime)
     result.merge(
       "fingerprints" => fingerprints_after_play,
+      "expected_fingerprints" => desired_fingerprint_values(variables),
       "fingerprint_changes" => fingerprint_change_count(
         fingerprints_before_play, fingerprints_after_play
       )
@@ -1307,11 +1590,41 @@ def exercise_stable(failures, relationship:, kind:, state:, variables: {}, write
 end
 
 def exercise_secret_change(failures, relationship:, kind:, state:, field:, variables:,
-                           write_matcher:, projection:, desired:, current:)
+                           old_variables:, write_matcher:, projection:, desired:, current:,
+                           fingerprint_transition: true, expected_changed: 1,
+                           safe_request_body: nil)
   with_api(deep_copy(state)) do |api|
+    old_fingerprint = nil
+    runtime = nil
+    if fingerprint_tasks_available? && fingerprint_transition
+      runtime = Dir.mktmpdir("media-acquisition-secret-transition-")
+      baseline = run_tasks(
+        kind, api, old_variables, runtime: runtime, prepare_fingerprints: false
+      )
+      baseline_sane = check_sanity(
+        failures, "#{relationship} old desired secret #{field}", baseline, api, kind: kind
+      )
+      unless baseline_sane && baseline.fetch("status").success?
+        failures << "#{relationship} could not establish old desired secret #{field}"
+        next
+      end
+      old_fingerprint = baseline.fetch("fingerprints").fetch(FINGERPRINT_FILE_BY_KIND.fetch(kind))
+      old_expected = baseline.fetch("expected_fingerprints").fetch(
+        FINGERPRINT_INPUT_BY_KIND.fetch(kind)
+      )
+      old_recorded = old_fingerprint && old_fingerprint.fetch("type") == "regular" &&
+        old_fingerprint.fetch("mode") == 0o600 &&
+        old_fingerprint.fetch("content") == "#{old_expected}\n" &&
+        old_fingerprint.fetch("content").match?(/\A[0-9a-f]{64}\n\z/)
+      unless old_recorded
+        failures << "#{relationship} did not record the exact old desired digest for #{field}"
+        next
+      end
+      api.requests.clear
+    end
     result = run_tasks(
-      kind, api, variables,
-      fingerprint_overrides: { FINGERPRINT_FILE_BY_KIND.fetch(kind) => "#{'0' * 64}\n" }
+      kind, api, variables, runtime: runtime,
+      prepare_fingerprints: !fingerprint_transition
     )
     sane = check_sanity(
       failures, "#{relationship} masked secret #{field}", result, api, kind: kind
@@ -1326,26 +1639,41 @@ def exercise_secret_change(failures, relationship:, kind:, state:, field:, varia
     unless writes.length == 1
       failures << "#{relationship} masked secret #{field} did not produce exactly one applicable write"
     end
-    if fingerprint_tasks_available?
+    if safe_request_body && !writes.all? { |request| safe_request_body.call(request) }
+      failures << "#{relationship} masked secret #{field} submitted a non-canonical request body"
+    end
+    if fingerprint_tasks_available? && fingerprint_transition
       failures << "#{relationship} masked secret #{field} did not reach fingerprint recording" unless
         result.fetch("recorder_started")
       unless result.fetch("fingerprint_changes") == 1
         failures << "#{relationship} masked secret #{field} recorded an unexpected fingerprint set"
       end
       fingerprint = result.fetch("fingerprints").fetch(FINGERPRINT_FILE_BY_KIND.fetch(kind))
-      recorded = fingerprint && fingerprint.fetch("mode") == 0o600 &&
+      expected = result.fetch("expected_fingerprints").fetch(
+        FINGERPRINT_INPUT_BY_KIND.fetch(kind)
+      )
+      recorded = fingerprint && fingerprint.fetch("type") == "regular" &&
+        fingerprint.fetch("mode") == 0o600 &&
+        fingerprint.fetch("uid") == Process.uid && fingerprint.fetch("gid") == Process.gid &&
+        fingerprint.fetch("content") == "#{expected}\n" &&
         fingerprint.fetch("content").match?(/\A[0-9a-f]{64}\n\z/) &&
-        fingerprint.fetch("content") != "#{'0' * 64}\n"
+        fingerprint.fetch("content") != old_fingerprint&.fetch("content")
       failures << "#{relationship} masked secret #{field} did not record the expected digest" unless recorded
+    elsif fingerprint_tasks_available?
+      failures << "#{relationship} masked secret #{field} rewrote an unrelated fingerprint" unless
+        result.fetch("fingerprint_changes").zero?
     end
-    unless result.fetch("reconciliation_changed") == 1
+    unless result.fetch("reconciliation_changed") == expected_changed
       failures << "#{relationship} masked secret #{field} reported " \
-                  "reconciliation changed=#{result['reconciliation_changed'].inspect}, expected 1"
+                  "reconciliation changed=#{result['reconciliation_changed'].inspect}, " \
+                  "expected #{expected_changed}"
     end
     actual = current.call(api.state)
     unless projection.call(actual) == projection.call(desired)
       failures << "#{relationship} full owned projection did not converge after masked #{field} drift"
     end
+  ensure
+    FileUtils.remove_entry(runtime) if runtime && File.directory?(runtime)
   end
 end
 
@@ -1364,6 +1692,22 @@ def exercise_duplicate(failures, relationship:, kind:, state:, variables:, write
   end
 end
 
+def assert_unsafe_fingerprint_rejected(failures, label, kind, api, variables, runtime, before)
+  api.requests.clear
+  result = run_tasks(
+    kind, api, variables, runtime: runtime, prepare_fingerprints: false
+  )
+  sane = check_sanity(failures, label, result, api, kind: kind)
+  return unless sane
+
+  failures << "#{label} was accepted" if result.fetch("status").success?
+  writes = mutation_requests(api, ->(_request) { true })
+  failures << "#{label} reached an API mutation" unless writes.empty?
+  failures << "#{label} reached fingerprint recording" if result.fetch("recorder_started")
+  failures << "#{label} changed fingerprint filesystem state" unless
+    result.fetch("fingerprints") == before
+end
+
 abort "media acquisition reconciliation fixture requires #{ANSIBLE_PLAYBOOK}" unless File.executable?(ANSIBLE_PLAYBOOK)
 
 # Force every exact production boundary to load before starting the HTTP fixture. A
@@ -1371,6 +1715,71 @@ abort "media acquisition reconciliation fixture requires #{ANSIBLE_PLAYBOOK}" un
 %i[application indexer download_client bazarr configarr].each { |kind| selected_tasks(kind) }
 
 failures = []
+
+Dir.mktmpdir("media-acquisition-ansible-resolution-") do |temporary|
+  path_bin = File.join(temporary, "path-bin")
+  FileUtils.mkdir_p(path_bin)
+  path_ansible = File.join(path_bin, "ansible-playbook")
+  File.write(path_ansible, "#!/bin/sh\nexit 0\n", mode: "w", perm: 0o700)
+  failures << "PATH-first Ansible resolver ignored an executable ansible-playbook" unless
+    resolve_ansible_playbook(path: path_bin) == path_ansible
+
+  normal_root = File.join(temporary, "normal-repository")
+  FileUtils.mkdir_p(normal_root)
+  _output, git_status = Open3.capture2("git", "init", "-q", normal_root)
+  if git_status.success?
+    fallback = File.join(normal_root, ".venv", "bin", "ansible-playbook")
+    FileUtils.mkdir_p(File.dirname(fallback))
+    File.write(fallback, "#!/bin/sh\nexit 0\n", mode: "w", perm: 0o700)
+    failures << "normal-layout Ansible fallback did not follow the Git common directory" unless
+      resolve_ansible_playbook(root: normal_root, path: "") == fallback
+  else
+    failures << "HARNESS normal-layout Ansible resolver simulation could not initialize Git"
+  end
+end
+failures << "current-worktree Ansible resolution is not executable" unless
+  File.executable?(ANSIBLE_PLAYBOOK)
+
+deadline_probe = capture_process(
+  {}, RbConfig.ruby, "-e", "sleep 30", chdir: ROOT, timeout: 0.1
+)
+unless deadline_probe.fetch("timed_out") && deadline_probe.fetch("reaped") &&
+       !deadline_probe.fetch("status").success? && deadline_probe.fetch("elapsed") < 4
+  failures << "HARNESS wedged-command deadline did not terminate and reap its process group"
+end
+
+partial_api = AcquisitionApi.new({})
+partial_client = TCPSocket.new("127.0.0.1", partial_api.port)
+partial_client.write("POST /api/system/settings HTTP/1.1\r\nContent-Length: 100\r\n")
+accept_deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 1
+while partial_api.accepted_client_count.zero? &&
+      Process.clock_gettime(Process::CLOCK_MONOTONIC) < accept_deadline
+  Thread.pass
+end
+partial_started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+partial_api.close
+partial_elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - partial_started
+failures << "HARNESS partial-client shutdown exceeded its deadline" if
+  partial_elapsed >= SOCKET_DEADLINE_SECONDS + 1 || partial_api.error
+partial_client.close unless partial_client.closed?
+
+secret_sets = secret_task_sets
+missing_secret_output_guards(secret_sets).each do |name|
+  failures << "secret-bearing acquisition task can disclose private data: #{name}"
+end
+secret_sets.each do |path, tasks|
+  tasks.each do |task|
+    next unless secret_task_protected?(path, task)
+
+    mutant_sets = deep_copy(secret_sets)
+    mutant = mutant_sets.fetch(path).find { |candidate| candidate.fetch("name") == task.fetch("name") }
+    mutant["no_log"] = false
+    guard_name = File.join(File.basename(path), task.fetch("name"))
+    failures << "acquisition output-guard mutation survived: #{File.basename(path)}/#{task.fetch('name')}" if
+      !missing_secret_output_guards(mutant_sets).include?(guard_name)
+  end
+end
+
 fingerprint_loader = File.join(ARR_TASKS, "reconciliation_fingerprints.yml")
 fingerprint_recorder = File.join(ARR_TASKS, "record_reconciliation_fingerprints.yml")
 failures << "private desired-input fingerprint loading is unavailable" unless File.file?(fingerprint_loader)
@@ -1382,6 +1791,31 @@ application_state = {
     { "id" => 12, "name" => "Unmanaged", "fields" => [], "tags" => [] }
   ]
 }
+if fingerprint_tasks_available?
+  with_api(deep_copy(application_state)) do |api|
+    result = run_tasks(:application, api)
+    sane = check_sanity(
+      failures, "dedicated fingerprint loader and recorder", result, api, kind: :application
+    )
+    if sane
+      failures << "dedicated fingerprint loader and recorder failed" unless
+        result.fetch("status").success?
+      expected = result.fetch("expected_fingerprints")
+      valid = FINGERPRINT_FILE_BY_KIND.all? do |kind, filename|
+        entry = result.fetch("fingerprints").fetch(filename)
+        entry && entry.fetch("type") == "regular" && entry.fetch("mode") == 0o600 &&
+          entry.fetch("uid") == Process.uid && entry.fetch("gid") == Process.gid &&
+          entry.fetch("content") ==
+            "#{expected.fetch(FINGERPRINT_INPUT_BY_KIND.fetch(kind))}\n"
+      end
+      failures << "dedicated loader/recorder did not create exact private owned fingerprints" unless valid
+    end
+  end
+  # The dedicated production probe above establishes the algorithm. The matrix
+  # can seed equivalent private baselines without running another setup playbook
+  # before every scenario.
+  FINGERPRINT_BASELINE_CACHE["enabled"] = true
+end
 application_mutations = {
   "name" => ->(state) { state.fetch("applications").first["name"] = "Legacy Radarr" },
   "enable" => ->(state) { state.fetch("applications").first["enable"] = false },
@@ -1416,12 +1850,14 @@ exercise_stable(
 )
 application_secret_state = deep_copy(application_state)
 set_field!(application_secret_state.fetch("applications").first, "apiKey", "private-stale-application-secret")
+old_application_declaration = deep_copy(APPLICATION_DECLARATION)
+old_application_declaration["api_key"] = "private-stale-application-secret"
 exercise_secret_change(
   failures, relationship: "Prowlarr application", kind: :application,
   state: application_secret_state, field: "fields.apiKey",
-  variables: {
-    "arr_installed_reconciliation_fingerprints" => { "prowlarr_applications" => "stale" },
-    "arr_desired_reconciliation_fingerprints" => { "prowlarr_applications" => "desired" }
+  variables: {},
+  old_variables: {
+    "arr_prowlarr_applications" => [old_application_declaration, SONARR_APPLICATION_DECLARATION]
   }, write_matcher: application_write, projection: method(:application_projection),
   desired: APPLICATION, current: application_current
 )
@@ -1448,7 +1884,15 @@ client_mutations = {
   "fields.port" => ->(state) { set_field!(state.fetch("download_clients").first, "port", "9999") },
   "fields.useSsl" => ->(state) { set_field!(state.fetch("download_clients").first, "useSsl", true) },
   "fields.urlBase" => ->(state) { set_field!(state.fetch("download_clients").first, "urlBase", "/legacy") },
-  "fields.movieCategory" => ->(state) { set_field!(state.fetch("download_clients").first, "movieCategory", "legacy") }
+  "fields.movieCategory" => ->(state) { set_field!(state.fetch("download_clients").first, "movieCategory", "legacy") },
+  "fields.movieCategory wrong key" => lambda do |state|
+    client = state.fetch("download_clients").first
+    remove_field!(client, "movieCategory")
+    client.fetch("fields") << { "name" => "tvCategory", "value" => "movies" }
+  end,
+  "fields.movieCategory missing key" => lambda do |state|
+    remove_field!(state.fetch("download_clients").first, "movieCategory")
+  end
 }
 client_write = ->(request) { request["target"].match?(%r{\A/api/v3/downloadclient(?:/\d+)?\z}) }
 client_current = lambda do |state|
@@ -1466,16 +1910,29 @@ exercise_stable(
   projection: method(:download_client_projection), desired: DOWNLOAD_CLIENT,
   current: client_current
 )
+radarr_blank_category_state = deep_copy(client_state)
+radarr_blank_category_state.fetch("download_clients").first.fetch("fields") <<
+  { "name" => "tvCategory", "value" => "" }
+exercise_stable(
+  failures, relationship: "Radarr SABnzbd client blank non-applicable category",
+  kind: :download_client, state: radarr_blank_category_state,
+  write_matcher: client_write, projection: method(:download_client_projection),
+  desired: DOWNLOAD_CLIENT, current: client_current
+)
 %w[apiKey username password].each do |secret_field|
   secret_state = deep_copy(client_state)
-  set_field!(secret_state.fetch("download_clients").first, secret_field, "private-stale-#{secret_field}")
+  old_secret = "private-stale-#{secret_field}"
+  set_field!(secret_state.fetch("download_clients").first, secret_field, old_secret)
+  variable = {
+    "apiKey" => "vault_downloaders_sabnzbd_api_key",
+    "username" => "vault_downloaders_sabnzbd_admin_username",
+    "password" => "vault_downloaders_sabnzbd_admin_password"
+  }.fetch(secret_field)
   exercise_secret_change(
     failures, relationship: "Servarr SABnzbd client", kind: :download_client,
     state: secret_state, field: "fields.#{secret_field}",
-    variables: {
-      "arr_installed_reconciliation_fingerprints" => { "servarr_sabnzbd" => "stale" },
-      "arr_desired_reconciliation_fingerprints" => { "servarr_sabnzbd" => "desired" }
-    }, write_matcher: client_write, projection: method(:download_client_projection),
+    variables: {}, old_variables: { variable => old_secret },
+    write_matcher: client_write, projection: method(:download_client_projection),
     desired: DOWNLOAD_CLIENT, current: client_current
   )
 end
@@ -1487,9 +1944,19 @@ exercise_duplicate(
 )
 
 sonarr_client_state = { "download_clients" => [deep_copy(SONARR_DOWNLOAD_CLIENT)] }
-sonarr_client_mutations = client_mutations.reject { |field, _mutate| field == "fields.movieCategory" }
+sonarr_client_mutations = client_mutations.reject do |field, _mutate|
+  field.start_with?("fields.movieCategory")
+end
 sonarr_client_mutations["fields.tvCategory"] = lambda do |state|
   set_field!(state.fetch("download_clients").first, "tvCategory", "legacy")
+end
+sonarr_client_mutations["fields.tvCategory wrong key"] = lambda do |state|
+  client = state.fetch("download_clients").first
+  remove_field!(client, "tvCategory")
+  client.fetch("fields") << { "name" => "movieCategory", "value" => "series" }
+end
+sonarr_client_mutations["fields.tvCategory missing key"] = lambda do |state|
+  remove_field!(state.fetch("download_clients").first, "tvCategory")
 end
 sonarr_variables = { "fixture_servarr_instance" => deep_copy(SONARR_INSTANCE) }
 sonarr_client_current = lambda do |state|
@@ -1510,16 +1977,31 @@ exercise_stable(
   projection: method(:download_client_projection), desired: SONARR_DOWNLOAD_CLIENT,
   current: sonarr_client_current
 )
+sonarr_blank_category_state = deep_copy(sonarr_client_state)
+sonarr_blank_category_state.fetch("download_clients").first.fetch("fields") <<
+  { "name" => "movieCategory", "value" => "" }
+exercise_stable(
+  failures, relationship: "Sonarr SABnzbd client blank non-applicable category",
+  kind: :download_client, state: sonarr_blank_category_state,
+  variables: sonarr_variables, write_matcher: client_write,
+  projection: method(:download_client_projection), desired: SONARR_DOWNLOAD_CLIENT,
+  current: sonarr_client_current
+)
 %w[apiKey username password].each do |secret_field|
   secret_state = deep_copy(sonarr_client_state)
-  set_field!(secret_state.fetch("download_clients").first, secret_field, "private-stale-sonarr-#{secret_field}")
+  old_secret = "private-stale-sonarr-#{secret_field}"
+  set_field!(secret_state.fetch("download_clients").first, secret_field, old_secret)
+  variable = {
+    "apiKey" => "vault_downloaders_sabnzbd_api_key",
+    "username" => "vault_downloaders_sabnzbd_admin_username",
+    "password" => "vault_downloaders_sabnzbd_admin_password"
+  }.fetch(secret_field)
   exercise_secret_change(
     failures, relationship: "Sonarr SABnzbd client", kind: :download_client,
     state: secret_state, field: "fields.#{secret_field}",
-    variables: sonarr_variables.merge(
-      "arr_installed_reconciliation_fingerprints" => { "servarr_sabnzbd" => "stale" },
-      "arr_desired_reconciliation_fingerprints" => { "servarr_sabnzbd" => "desired" }
-    ), write_matcher: client_write, projection: method(:download_client_projection),
+    variables: sonarr_variables,
+    old_variables: sonarr_variables.merge(variable => old_secret),
+    write_matcher: client_write, projection: method(:download_client_projection),
     desired: SONARR_DOWNLOAD_CLIENT, current: sonarr_client_current
   )
 end
@@ -1565,9 +2047,11 @@ set_field!(indexer_secret_state.fetch("indexers").first, "apiKey", "private-stal
 exercise_secret_change(
   failures, relationship: "Prowlarr indexer", kind: :indexer,
   state: indexer_secret_state, field: "fields.apiKey",
-  variables: {
-    "arr_installed_reconciliation_fingerprints" => { "prowlarr_indexers" => "stale" },
-    "arr_desired_reconciliation_fingerprints" => { "prowlarr_indexers" => "desired" }
+  variables: {},
+  old_variables: {
+    "media_arr_indexers" => [deep_copy(INDEXER_DECLARATION).tap do |declaration|
+      set_field!(declaration, "apiKey", "private-stale-indexer-secret")
+    end]
   }, write_matcher: indexer_write, projection: method(:indexer_projection),
   desired: INDEXER, current: indexer_current
 )
@@ -1620,15 +2104,21 @@ exercise_stable(
   "sonarr.apikey" => ["sonarr", "apikey"]
 }.each do |label, (section, field)|
   secret_state = deep_copy(bazarr_state)
-  secret_state.dig("bazarr", section)[field] = "private-stale-#{section}-#{field}"
+  old_secret = "private-stale-#{section}-#{field}"
+  secret_state.dig("bazarr", section)[field] = old_secret
+  variable = {
+    "auth.password" => "vault_arr_bazarr_admin_password",
+    "radarr.apikey" => "vault_arr_radarr_api_key",
+    "sonarr.apikey" => "vault_arr_sonarr_api_key"
+  }.fetch(label)
   exercise_secret_change(
     failures, relationship: "Bazarr connection", kind: :bazarr,
     state: secret_state, field: label,
-    variables: {
-      "arr_installed_reconciliation_fingerprints" => { "bazarr_providers" => "stale" },
-      "arr_desired_reconciliation_fingerprints" => { "bazarr_providers" => "desired" }
-    }, write_matcher: bazarr_connection_write, projection: method(:bazarr_projection),
-    desired: BAZARR, current: bazarr_current
+    variables: {}, old_variables: { variable => old_secret },
+    write_matcher: bazarr_connection_write, projection: method(:bazarr_projection),
+    desired: BAZARR, current: bazarr_current,
+    fingerprint_transition: false, expected_changed: 0,
+    safe_request_body: ->(request) { canonical_bazarr_connection_body?(request, []) }
   )
 end
 
@@ -1684,14 +2174,16 @@ exercise_stable(
 )
 provider_secret_state = deep_copy(provider_state)
 provider_secret_state.dig("bazarr", "providers", "opensubtitlescom")["password"] = "private-stale-provider-secret"
+old_provider = deep_copy(BAZARR_PROVIDER)
+old_provider.fetch("settings")["settings-opensubtitlescom-password"] = "private-stale-provider-secret"
 exercise_secret_change(
   failures, relationship: "Bazarr provider", kind: :bazarr,
   state: provider_secret_state, field: "provider.password",
-  variables: provider_variables.merge(
-    "arr_installed_reconciliation_fingerprints" => { "bazarr_providers" => "stale" },
-    "arr_desired_reconciliation_fingerprints" => { "bazarr_providers" => "desired" }
-  ), write_matcher: provider_write, projection: provider_projection,
-  desired: BAZARR_WITH_PROVIDER, current: bazarr_current
+  variables: provider_variables,
+  old_variables: { "media_bazarr_providers" => [old_provider] },
+  write_matcher: provider_write, projection: provider_projection,
+  desired: BAZARR_WITH_PROVIDER, current: bazarr_current,
+  safe_request_body: ->(request) { canonical_bazarr_provider_body?(request) }
 )
 unmanaged_provider_state = deep_copy(provider_state)
 unmanaged_provider_state.dig("bazarr", "general", "enabled_providers") << "unmanaged-provider"
@@ -1840,14 +2332,15 @@ exercise_stable(
   projection: method(:configarr_projection), desired: CONFIGARR,
   current: configarr_current
 )
-configarr_secret_variables = {
-  "arr_installed_reconciliation_fingerprints" => { "configarr" => "stale" },
-  "arr_desired_reconciliation_fingerprints" => { "configarr" => "desired" }
-}
+configarr_secret_variables = {}
 exercise_secret_change(
   failures, relationship: "Configarr", kind: :configarr,
   state: configarr_state, field: "API key input fingerprint",
-  variables: configarr_secret_variables, write_matcher: configarr_write,
+  variables: configarr_secret_variables,
+  old_variables: {
+    "vault_arr_radarr_api_key" => "private-stale-radarr-apikey",
+    "vault_arr_sonarr_api_key" => "private-stale-sonarr-apikey"
+  }, write_matcher: configarr_write,
   projection: method(:configarr_projection), desired: CONFIGARR, current: configarr_current
 )
 %w[radarr sonarr].each do |service|
@@ -1883,11 +2376,11 @@ end
 Dir.mktmpdir("media-acquisition-fingerprint-failure-") do |runtime|
   fingerprint_directory = File.join(runtime, "services", "arr")
   FileUtils.mkdir_p(fingerprint_directory)
-  before = FINGERPRINT_FILES.to_h do |filename|
+  FINGERPRINT_FILES.each do |filename|
     path = File.join(fingerprint_directory, filename)
     File.write(path, "#{'0' * 64}\n", mode: "w", perm: 0o600)
-    [filename, File.binread(path)]
   end
+  before = fingerprint_snapshot(runtime)
   with_api(deep_copy(configarr_state), fail_configarr: true) do |api|
     result = run_tasks(
       :configarr, api, configarr_secret_variables, runtime: runtime,
@@ -1901,10 +2394,7 @@ Dir.mktmpdir("media-acquisition-fingerprint-failure-") do |runtime|
       unless mutation_requests(api, configarr_write).length == 1
         failures << "failed reconciliation did not attempt exactly one applicable write"
       end
-      after = FINGERPRINT_FILES.to_h do |filename|
-        path = File.join(fingerprint_directory, filename)
-        [filename, File.file?(path) ? File.binread(path) : nil]
-      end
+      after = fingerprint_snapshot(runtime)
       failures << "failed reconciliation advanced future fingerprint files" unless after == before
       failures << "failed reconciliation reached future fingerprint recording" if
         result.fetch("recorder_started")
@@ -1913,38 +2403,48 @@ Dir.mktmpdir("media-acquisition-fingerprint-failure-") do |runtime|
 end
 
 if fingerprint_tasks_available?
-  with_api(deep_copy(configarr_state)) do |api|
-    stale = "#{'0' * 64}\n"
-    result = run_tasks(
-      :configarr, api, configarr_secret_variables,
-      fingerprint_overrides: { ".configarr-input.sha256" => stale }
-    )
-    sane = check_sanity(
-      failures, "successful reconciliation fingerprint recording", result, api, kind: :configarr
-    )
-    if sane
-      failures << "successful reconciliation did not reach fingerprint recording" unless
-        result.fetch("status").success?
-      unless mutation_requests(api, configarr_write).length == 1
-        failures << "successful reconciliation did not perform exactly one applicable API mutation"
+  fingerprint_safety_cases = {
+    application: [application_state, {}],
+    download_client: [client_state, {}],
+    indexer: [indexer_state, {}],
+    bazarr: [provider_state, provider_variables],
+    configarr: [configarr_state, configarr_secret_variables]
+  }
+  fingerprint_safety_cases.each do |kind, (state, variables)|
+    filename = FINGERPRINT_FILE_BY_KIND.fetch(kind)
+    Dir.mktmpdir("media-acquisition-fingerprint-safety-") do |runtime|
+      with_api(deep_copy(state)) do |api|
+        baseline = run_tasks(kind, api, variables, runtime: runtime)
+        sane = check_sanity(
+          failures, "#{kind} fingerprint safety baseline", baseline, api, kind: kind
+        )
+        if sane && !baseline.fetch("status").success?
+          failures << "#{kind} fingerprint safety baseline failed"
+        end
+        next unless sane && baseline.fetch("status").success?
+
+        path = File.join(runtime, "services", "arr", filename)
+        File.chmod(0o644, path)
+        before_mode = fingerprint_snapshot(runtime)
+        assert_unsafe_fingerprint_rejected(
+          failures, "#{kind} unsafe-mode fingerprint", kind, api, variables, runtime,
+          before_mode
+        )
+
+        File.chmod(0o600, path)
+        File.unlink(path)
+        symlink_target = File.join(runtime, "#{kind}-unsafe-target")
+        File.write(symlink_target, "#{'f' * 64}\n", mode: "w", perm: 0o600)
+        File.symlink(symlink_target, path)
+        before_symlink = fingerprint_snapshot(runtime)
+        target_before = File.binread(symlink_target)
+        assert_unsafe_fingerprint_rejected(
+          failures, "#{kind} symlink fingerprint", kind, api, variables, runtime,
+          before_symlink
+        )
+        failures << "#{kind} symlink fingerprint modified its target" unless
+          File.binread(symlink_target) == target_before
       end
-      unless result.fetch("reconciliation_changed") == 1
-        failures << "successful reconciliation reported " \
-                    "reconciliation changed=#{result['reconciliation_changed'].inspect}, expected 1"
-      end
-      failures << "successful reconciliation did not execute fingerprint recording" unless
-        result.fetch("recorder_started")
-      unless result.fetch("fingerprint_changes") == 1
-        failures << "successful reconciliation recorded an unexpected fingerprint set"
-      end
-      fingerprints = result.fetch("fingerprints")
-      valid = fingerprints.values.all? do |entry|
-        entry && entry.fetch("mode") == 0o600 &&
-          entry.fetch("content").match?(/\A[0-9a-f]{64}\n\z/)
-      end
-      failures << "verified reconciliation did not record all private fingerprints at mode 0600" unless valid
-      failures << "verified reconciliation left the changed Configarr fingerprint stale" if
-        fingerprints.dig(".configarr-input.sha256", "content") == stale
     end
   end
 end
