@@ -57,7 +57,7 @@ def effective_compose(relative, environment, profile: nil)
   command.concat(["--profile", profile]) if profile
   command.concat(["config", "--format", "json"])
   stdout, stderr, status = Open3.capture3(
-    environment, *command, chdir: ROOT
+    environment.merge("COMPOSE_PROFILES" => nil), *command, chdir: ROOT
   )
   raise "#{relative} effective Compose failed: #{stderr.lines.first&.strip}" unless status.success?
 
