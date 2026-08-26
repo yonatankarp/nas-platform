@@ -3,6 +3,9 @@
   ansible.builtin.set_fact:
     arr_reconciliation_fingerprint_filenames:
       configarr: .configarr-input.sha256
+      # This is verified API state, not a desired-input or secret digest. It
+      # shares the same atomic loader and private filesystem protections.
+      configarr_owned_state: .configarr-owned-state.sha256
       prowlarr_applications: .prowlarr-applications-input.sha256
       servarr_sabnzbd: .servarr-sabnzbd-input.sha256
       prowlarr_indexers: .prowlarr-indexers-input.sha256
@@ -11,6 +14,7 @@
       {{ arr_reconciliation_fingerprint_subset |
          default([
            'configarr',
+           'configarr_owned_state',
            'prowlarr_applications',
            'servarr_sabnzbd',
            'prowlarr_indexers',
@@ -34,7 +38,35 @@
       prowlarr_indexers: >-
         {{ media_arr_indexers | to_json | hash('sha256') }}
       bazarr_providers: >-
-        {{ media_bazarr_providers | to_json | hash('sha256') }}
+        {{
+          {
+            'providers': media_bazarr_providers,
+            'languages': media_bazarr_languages,
+            'auth': {
+              'type': 'form',
+              'username': vault_arr_bazarr_admin_username,
+              'password': vault_arr_bazarr_admin_password
+            },
+            'radarr': {
+              'enabled': true,
+              'host': 'radarr',
+              'port': 7878,
+              'base_url': '',
+              'ssl': false,
+              'api_key': vault_arr_radarr_api_key
+            },
+            'sonarr': {
+              'enabled': true,
+              'host': 'sonarr',
+              'port': 8989,
+              'base_url': '',
+              'ssl': false,
+              'api_key': vault_arr_sonarr_api_key
+            },
+            'path_mappings': [],
+            'path_mappings_movie': []
+          } | to_json | hash('sha256')
+        }}
       configarr: >-
         {{
           {
@@ -114,7 +146,9 @@
         path = sys.argv[1]
         expected_uid = int(sys.argv[2])
         expected_gid = int(sys.argv[3])
-        flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+        # O_NONBLOCK prevents a validated path swapped to a FIFO from hanging
+        # before fstat can reject the non-regular descriptor.
+        flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
         fd = os.open(path, flags)
         try:
             before = os.fstat(fd)
@@ -177,6 +211,7 @@
       prowlarr_indexers: ""
       bazarr_providers: ""
       configarr: ""
+      configarr_owned_state: ""
   changed_when: false
   no_log: true
 

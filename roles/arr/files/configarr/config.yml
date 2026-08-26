@@ -41,13 +41,15 @@ radarr:
         assign_scores_to:
           - name: HD Bluray + WEB 1080p
             score: 10
-    media_naming:
-      folder: '{Movie CleanTitle} ({Release Year}) {tmdb-{TmdbId}}'
-      movie:
-        rename: false
-        standard: >-
-          {Movie CleanTitle} ({Release Year}) {tmdb-{TmdbId}}
-          [{Quality Full}]{[MediaInfo VideoDynamicRangeType]}{[MediaInfo AudioCodec]}
+    # Configarr's media_naming values are TRaSH preset keys. These are literal
+    # Servarr formats, so use the pinned v1.28.0 raw-API escape hatch instead:
+    # https://github.com/raydak-labs/configarr/blob/v1.28.0/src/config.ts#L1086-L1162
+    media_naming_api:
+      renameMovies: false
+      standardMovieFormat: >-
+        {Movie CleanTitle} ({Release Year}) {tmdb-{TmdbId}}
+        [{Quality Full}]{[MediaInfo VideoDynamicRangeType]}{[MediaInfo AudioCodec]}
+      movieFolderFormat: '{Movie CleanTitle} ({Release Year}) {tmdb-{TmdbId}}'
 
 sonarr:
   phase1:
@@ -72,17 +74,16 @@ sonarr:
         assign_scores_to:
           - name: HD Bluray + WEB 1080p
             score: 10
-    media_naming:
-      series: '{Series TitleYear} {tvdb-{TvdbId}}'
-      season: 'Season {season:00}'
-      episodes:
-        rename: false
-        standard: >-
-          {Series TitleYear} - S{season:00}E{episode:00} - {Episode CleanTitle}
-          [{Quality Full}]{[MediaInfo VideoDynamicRangeType]}{[MediaInfo AudioCodec]}
-        daily: >-
-          {Series TitleYear} - {Air-Date} - {Episode CleanTitle}
-          [{Quality Full}]{[MediaInfo VideoDynamicRangeType]}{[MediaInfo AudioCodec]}
-        anime: >-
-          {Series TitleYear} - S{season:00}E{episode:00} - {absolute:000} - {Episode CleanTitle}
-          [{Quality Full}]{[MediaInfo VideoDynamicRangeType]}{[MediaInfo AudioCodec]}
+    media_naming_api:
+      renameEpisodes: false
+      standardEpisodeFormat: >-
+        {Series TitleYear} - S{season:00}E{episode:00} - {Episode CleanTitle}
+        [{Quality Full}]{[MediaInfo VideoDynamicRangeType]}{[MediaInfo AudioCodec]}
+      dailyEpisodeFormat: >-
+        {Series TitleYear} - {Air-Date} - {Episode CleanTitle}
+        [{Quality Full}]{[MediaInfo VideoDynamicRangeType]}{[MediaInfo AudioCodec]}
+      animeEpisodeFormat: >-
+        {Series TitleYear} - S{season:00}E{episode:00} - {absolute:000} - {Episode CleanTitle}
+        [{Quality Full}]{[MediaInfo VideoDynamicRangeType]}{[MediaInfo AudioCodec]}
+      seriesFolderFormat: '{Series TitleYear} {tvdb-{TvdbId}}'
+      seasonFolderFormat: 'Season {season:00}'

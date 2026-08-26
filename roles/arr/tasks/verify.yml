@@ -23,12 +23,76 @@
       X-Api-Key: "{{ item.0.api_key }}"
     status_code: [200]
     return_content: true
-  loop: "{{ arr_servarr_instances | product(['config/host', 'config/naming', 'rootfolder']) | list }}"
+  loop: >-
+    {{ arr_servarr_instances |
+       product([
+         'config/host', 'config/naming', 'rootfolder', 'qualityprofile',
+         'qualitydefinition', 'customformat'
+       ]) | list }}
   loop_control:
     label: "{{ item.0.name }}-{{ item.1 }}"
   register: arr_servarr_verification
   changed_when: false
   check_mode: false
+  no_log: true
+  tags: [platform_verify_arr]
+
+- name: Build the complete Configarr owned-state verification projection
+  ansible.builtin.set_fact:
+    arr_verify_configarr_owned_state: >-
+      {{ arr_servarr_verification.results | acquisition_configarr_owned_projection }}
+  changed_when: false
+  no_log: true
+  tags: [platform_verify_arr]
+
+- name: Build the desired Configarr verification projection
+  ansible.builtin.set_fact:
+    arr_verify_configarr_desired_state: >-
+      {{ lookup('file', role_path ~ '/files/configarr/config.yml') |
+         acquisition_configarr_desired_projection(
+           arr_verify_configarr_owned_state
+         ) }}
+  changed_when: false
+  no_log: true
+  tags: [platform_verify_arr]
+
+- name: Compute the Configarr owned-state verification hash
+  ansible.builtin.set_fact:
+    arr_verify_configarr_owned_state_sha256: >-
+      {{ arr_verify_configarr_owned_state | to_json | hash('sha256') }}
+    arr_verify_configarr_expected_state_sha256: >-
+      {{
+        (arr_verified_reconciliation_state_fingerprints | default({})).get(
+          'configarr_owned_state',
+          arr_installed_reconciliation_fingerprints.configarr_owned_state
+        )
+      }}
+  changed_when: false
+  no_log: true
+  tags: [platform_verify_arr]
+
+- name: Stage the independently verified Configarr owned-state hash
+  ansible.builtin.set_fact:
+    arr_verified_reconciliation_state_fingerprints: >-
+      {{ arr_verified_reconciliation_state_fingerprints | default({}) |
+         combine({
+           'configarr_owned_state': arr_verify_configarr_owned_state_sha256
+         }) }}
+  changed_when: false
+  no_log: true
+  tags: [platform_verify_arr]
+
+- name: Verify Configarr complete owned state
+  ansible.builtin.assert:
+    that:
+      - >-
+        arr_verify_configarr_owned_state |
+        acquisition_configarr_declared_projection ==
+        arr_verify_configarr_desired_state
+      - >-
+        arr_verify_configarr_owned_state_sha256 ==
+        arr_verify_configarr_expected_state_sha256
+    fail_msg: Configarr verification found incomplete or unverified owned state.
   no_log: true
   tags: [platform_verify_arr]
 
@@ -195,20 +259,43 @@
   no_log: true
   tags: [platform_verify_arr]
 
+- name: Read Bazarr languages for verification
+  ansible.builtin.uri:
+    url: "{{ arr_bazarr_api }}/system/languages"
+    method: GET
+    headers:
+      X-API-KEY: "{{ vault_arr_bazarr_api_key }}"
+    status_code: [200]
+    return_content: true
+  register: arr_bazarr_languages_verification
+  changed_when: false
+  check_mode: false
+  no_log: true
+  tags: [platform_verify_arr]
+
+- name: Rebuild complete Bazarr owned projections for verification
+  ansible.builtin.set_fact:
+    arr_verify_bazarr_owned_projections: >-
+      {{ arr_bazarr_verification.json |
+         acquisition_bazarr_owned_projections(
+           arr_bazarr_languages_verification.json,
+           media_bazarr_languages |
+             acquisition_bazarr_declarations(media_bazarr_providers),
+           vault_arr_bazarr_admin_username,
+           vault_arr_bazarr_admin_password,
+           vault_arr_radarr_api_key,
+           vault_arr_sonarr_api_key
+         ) }}
+  changed_when: false
+  no_log: true
+  tags: [platform_verify_arr]
+
 - name: Verify Bazarr authentication and identical-path connections
   ansible.builtin.assert:
     that:
-      - arr_bazarr_verification.json.auth.type == 'form'
-      - arr_bazarr_verification.json.auth.username == vault_arr_bazarr_admin_username
-      - arr_bazarr_verification.json.general.use_radarr | bool
-      - arr_bazarr_verification.json.general.use_sonarr | bool
-      - arr_bazarr_verification.json.radarr.ip == 'radarr'
-      - arr_bazarr_verification.json.sonarr.ip == 'sonarr'
-      - arr_bazarr_verification.json.general.path_mappings | length == 0
-      - arr_bazarr_verification.json.general.path_mappings_movie | length == 0
       - >-
-        arr_bazarr_verification.json.general.enabled_providers | sort ==
-        media_bazarr_providers | map(attribute='name') | list | sort
+        arr_verify_bazarr_owned_projections.current ==
+        arr_verify_bazarr_owned_projections.desired
     fail_msg: Bazarr differs from the declared Phase 1 connection state.
   no_log: true
   tags: [platform_verify_arr]

@@ -3,6 +3,7 @@
 
 require "fileutils"
 require "digest"
+require "digest/md5"
 require "json"
 require "open3"
 require "rbconfig"
@@ -35,6 +36,7 @@ CONFIGARR_SOURCE = File.join(ROOT, "roles", "arr", "files", "configarr", "config
 PLAYBOOK_TIMEOUT_SECONDS = Float(ENV.fetch("ACQUISITION_PLAYBOOK_TIMEOUT", "30"))
 PROCESS_TERM_GRACE_SECONDS = 1.0
 SOCKET_DEADLINE_SECONDS = 2.0
+OPAQUE_TARGETED_ONLY = ENV["ACQUISITION_OPAQUE_TARGETED_ONLY"] == "1"
 SECRET_TASK_FILES = [
   [ARR_TASKS, "reconcile_prowlarr.yml"],
   [ARR_TASKS, "reconcile_prowlarr_application.yml"],
@@ -66,11 +68,13 @@ FINGERPRINT_FILE_SAFETY_PREDICATES = {
 
 FINGERPRINT_FILES = %w[
   .configarr-input.sha256
+  .configarr-owned-state.sha256
   .prowlarr-applications-input.sha256
   .servarr-sabnzbd-input.sha256
   .prowlarr-indexers-input.sha256
   .bazarr-providers-input.sha256
 ].freeze
+CONFIGARR_STATE_FINGERPRINT_FILE = ".configarr-owned-state.sha256"
 FINGERPRINT_FILE_BY_KIND = {
   application: ".prowlarr-applications-input.sha256",
   download_client: ".servarr-sabnzbd-input.sha256",
@@ -225,8 +229,16 @@ BAZARR_PROVIDER = {
   "settings" => {
     "settings-opensubtitlescom-username" => "fixture-provider-user",
     "settings-opensubtitlescom-password" => SECRETS.fetch("provider"),
-    "settings-opensubtitlescom-use_tag_search" => "true",
-    "settings-opensubtitlescom-hearing_impaired" => "false"
+    "settings-opensubtitlescom-use_hash" => "true",
+    "settings-opensubtitlescom-include_ai_translated" => "false",
+    "settings-opensubtitlescom-include_machine_translated" => "false"
+  }
+}.freeze
+BAZARR_TYPED_PROVIDER = {
+  "name" => "animetosho",
+  "settings" => {
+    "settings-animetosho-search_threshold" => "6",
+    "settings-animetosho-exclude" => []
   }
 }.freeze
 BAZARR = {
@@ -254,8 +266,9 @@ BAZARR_WITH_PROVIDER = Marshal.load(Marshal.dump(BAZARR)).tap do |settings|
   settings.fetch("providers")[BAZARR_PROVIDER.fetch("name")] = {
     "username" => "fixture-provider-user",
     "password" => SECRETS.fetch("provider"),
-    "use_tag_search" => true,
-    "hearing_impaired" => false
+    "use_hash" => true,
+    "include_ai_translated" => false,
+    "include_machine_translated" => false
   }
 end.freeze
 
@@ -265,29 +278,87 @@ CONFIGARR_CUSTOM_FORMAT = CONFIGARR_POLICY.fetch("customFormatDefinitions").fetc
 CONFIGARR_PROFILE_NAME = "HD Bluray + WEB 1080p"
 CONFIGARR_FORMAT_NAME = CONFIGARR_CUSTOM_FORMAT.fetch("name")
 
-quality_items = lambda do |profile|
-  profile.fetch("qualities").map do |quality|
+# Exact pinned TRaSH outputs used by Configarr v1.28.0. Raw-HD is intentionally
+# absent from both pinned definitions so its nullable values remain verified
+# server context rather than synthetic desired values.
+# https://github.com/TRaSH-Guides/Guides/blob/cbfee0205cdcf2b492135edd00e059f3b7c84675/docs/json/radarr/quality-size/movie.json
+# https://github.com/TRaSH-Guides/Guides/blob/cbfee0205cdcf2b492135edd00e059f3b7c84675/docs/json/sonarr/quality-size/series.json
+quality_sizes = {
+  "radarr" => {
+    "Bluray-1080p" => [50.8, 1999, 2000], "WEBDL-1080p" => [12.5, 1999, 2000],
+    "WEBRip-1080p" => [12.5, 1999, 2000], "HDTV-1080p" => [33.8, 1999, 2000]
+  },
+  "sonarr" => {
+    "Bluray-1080p" => [50.4, 995, 1000], "WEBDL-1080p" => [15, 995, 1000],
+    "WEBRip-1080p" => [15, 995, 1000], "HDTV-1080p" => [15, 995, 1000]
+  }
+}.freeze
+quality_metadata = [
+  [7, "Bluray-1080p", 1080], [3, "WEBDL-1080p", 1080],
+  [15, "WEBRip-1080p", 1080], [9, "HDTV-1080p", 1080],
+  [10, "Raw-HD", 1080]
+].freeze
+quality_sources = {
+  "radarr" => {
+    "Bluray-1080p" => "bluray", "WEBDL-1080p" => "webdl",
+    "WEBRip-1080p" => "webrip", "HDTV-1080p" => "tv", "Raw-HD" => "tv"
+  },
+  "sonarr" => {
+    "Bluray-1080p" => "bluray", "WEBDL-1080p" => "web",
+    "WEBRip-1080p" => "webRip", "HDTV-1080p" => "television",
+    "Raw-HD" => "televisionRaw"
+  }
+}.freeze
+
+quality_items = lambda do |profile, service_quality_definitions|
+  definitions_by_name = service_quality_definitions.to_h do |definition|
+    [definition.dig("quality", "name"), definition.fetch("quality")]
+  end
+  allowed = profile.fetch("qualities").map.with_index do |quality, index|
     if quality.key?("qualities")
       {
-        "name" => quality.fetch("name"), "allowed" => true,
-        "items" => quality.fetch("qualities").map do |name|
-          { "quality" => { "name" => name }, "allowed" => true }
+        "id" => 1000 + index, "name" => quality.fetch("name"), "allowed" => true,
+        "items" => quality.fetch("qualities").reverse.map do |name|
+          {
+            "quality" => definitions_by_name.fetch(name).dup,
+            "allowed" => true,
+            "items" => []
+          }
         end
       }
     else
-      { "quality" => { "name" => quality.fetch("name") }, "allowed" => true }
+      {
+        "quality" => definitions_by_name.fetch(quality.fetch("name")).dup,
+        "allowed" => true, "items" => []
+      }
     end
   end
+  selected_names = profile.fetch("qualities").flat_map do |quality|
+    quality.fetch("qualities", [quality.fetch("name")])
+  end
+  disabled = service_quality_definitions.filter_map do |definition|
+    quality = definition.fetch("quality")
+    next if selected_names.include?(quality.fetch("name"))
+
+    { "quality" => quality.dup, "allowed" => false, "items" => [] }
+  end
+  disabled + allowed.reverse
 end
 
-quality_definitions = [
-  { "quality" => { "name" => "Bluray-1080p" }, "title" => "Bluray-1080p",
-    "weight" => 1, "minSize" => 0, "preferredSize" => 50, "maxSize" => 100 },
-  { "quality" => { "name" => "WEBDL-1080p" }, "title" => "WEBDL-1080p",
-    "weight" => 2, "minSize" => 0, "preferredSize" => 45, "maxSize" => 90 }
-].freeze
-
 CONFIGARR = %w[radarr sonarr].each_with_index.to_h do |service, index|
+  service_quality_definitions = quality_metadata.each_with_index.map do |(quality_id, name, resolution), qd_index|
+    sizes = quality_sizes.fetch(service)[name] || [4, nil, nil]
+    quality = {
+      "id" => quality_id, "name" => name,
+      "source" => quality_sources.fetch(service).fetch(name), "resolution" => resolution
+    }
+    quality["modifier"] = name == "Raw-HD" ? "rawhd" : "none" if service == "radarr"
+    {
+      "quality" => quality, "id" => 51 + qd_index, "title" => name,
+      "weight" => qd_index + 1, "minSize" => sizes[0],
+      "preferredSize" => sizes[1], "maxSize" => sizes[2]
+    }
+  end
   policy = CONFIGARR_POLICY.fetch(service).fetch("phase1")
   profile = policy.fetch("quality_profiles").find do |candidate|
     candidate.fetch("name") == CONFIGARR_PROFILE_NAME
@@ -296,35 +367,34 @@ CONFIGARR = %w[radarr sonarr].each_with_index.to_h do |service, index|
   score = format_assignment.fetch("assign_scores_to").find do |assignment|
     assignment.fetch("name") == CONFIGARR_PROFILE_NAME
   end.fetch("score")
-  media_naming = policy.fetch("media_naming")
-  naming = if service == "radarr"
-             {
-               "id" => 301, "renameMovies" => media_naming.dig("movie", "rename"),
-               "standardMovieFormat" => media_naming.dig("movie", "standard"),
-               "movieFolderFormat" => media_naming.fetch("folder")
-             }
-           else
-             {
-               "id" => 302, "renameEpisodes" => media_naming.dig("episodes", "rename"),
-               "standardEpisodeFormat" => media_naming.dig("episodes", "standard"),
-               "dailyEpisodeFormat" => media_naming.dig("episodes", "daily"),
-               "animeEpisodeFormat" => media_naming.dig("episodes", "anime"),
-               "seriesFolderFormat" => media_naming.fetch("series"),
-               "seasonFolderFormat" => media_naming.fetch("season")
-             }
-           end
+  naming = { "id" => 301 + index }.merge(policy.fetch("media_naming_api"))
   specification = CONFIGARR_CUSTOM_FORMAT.fetch("specifications").fetch(0)
   [service, {
     "qualityprofile" => [{
       "id" => 101 + index, "name" => profile.fetch("name"),
       "upgradeAllowed" => profile.dig("upgrade", "allowed"),
+      "cutoff" => 7,
       "minFormatScore" => profile.fetch("min_format_score"),
-      "resetUnmatchedScores" => profile.dig("reset_unmatched_scores", "enabled"),
-      "qualitySort" => profile.fetch("quality_sort"),
-      "items" => quality_items.call(profile),
-      "formatItems" => [{ "name" => CONFIGARR_FORMAT_NAME, "score" => score }]
+      "cutoffFormatScore" => 1,
+      "minUpgradeFormatScore" => 1,
+      "items" => quality_items.call(profile, service_quality_definitions),
+      "formatItems" => [
+        { "format" => 201 + index, "name" => CONFIGARR_FORMAT_NAME, "score" => score },
+        { "format" => 291 + index, "name" => "Unmanaged Format", "score" => 0 }
+      ],
+      "unmanagedProfileField" => "preserve-#{service}-profile"
+    }.merge(service == "radarr" ? {
+      "language" => { "id" => 1, "name" => "Original" }
+    } : {}), {
+      "id" => 111 + index, "name" => "Unmanaged HD", "upgradeAllowed" => false,
+      "cutoff" => 4, "minFormatScore" => 0, "cutoffFormatScore" => 1,
+      "minUpgradeFormatScore" => 1, "items" => [], "formatItems" => []
+    }, {
+      "id" => 121 + index, "name" => "Unmanaged UHD", "upgradeAllowed" => false,
+      "cutoff" => 4, "minFormatScore" => 0, "cutoffFormatScore" => 1,
+      "minUpgradeFormatScore" => 1, "items" => [], "formatItems" => []
     }],
-    "qualitydefinition" => Marshal.load(Marshal.dump(quality_definitions)),
+    "qualitydefinition" => service_quality_definitions,
     "customformat" => [{
       "id" => 201 + index, "name" => CONFIGARR_FORMAT_NAME,
       "includeCustomFormatWhenRenaming" =>
@@ -336,6 +406,9 @@ CONFIGARR = %w[radarr sonarr].each_with_index.to_h do |service, index|
         "required" => specification.fetch("required"),
         "fields" => [{ "name" => "value", "value" => specification.dig("fields", "value") }]
       }]
+    }, {
+      "id" => 291 + index, "name" => "Unmanaged Format",
+      "includeCustomFormatWhenRenaming" => false, "specifications" => []
     }],
     "config/naming" => naming
   }]
@@ -670,7 +743,9 @@ def production_order_contract_failures(site, arr_main, arr_verify, downloader_ma
   arr_client_read = task_named(arr_verify, "Read Servarr resources for verification")
   failures << "arr.verify.clients" if arr_client_read.to_s.include?("downloadclient")
 
-  arr_subset = %w[configarr prowlarr_applications prowlarr_indexers bazarr_providers]
+  arr_subset = %w[
+    configarr configarr_owned_state prowlarr_applications prowlarr_indexers bazarr_providers
+  ]
   arr_loader = task_named(arr_main, "Load private Arr desired-input fingerprints")
   arr_recorder = task_named(arr_main, "Persist verified Arr desired-input fingerprints")
   failures << "arr.loader.subset" unless
@@ -796,8 +871,8 @@ def reconciliation_tasks(kind)
     )
   when :configarr
     task_slice(
-      "configarr.yml", "Apply Configarr profiles synchronously",
-      "Verify Configarr-owned profiles, definitions, formats, and naming"
+      "configarr.yml", "Read Configarr-owned Arr resources before reconciliation",
+      "Verify Configarr-owned Arr resources after reconciliation"
     )
   else
     raise "unknown reconciliation fixture #{kind}"
@@ -835,7 +910,7 @@ def verification_tasks(kind)
   when :configarr
     task_slice(
       "verify.yml", "Read Servarr resources for verification",
-      "Verify Servarr authentication, roots, and rename state"
+      "Verify Configarr complete owned state"
     )
   else
     raise "unknown verification fixture #{kind}"
@@ -980,6 +1055,18 @@ def arr_verify_only_tasks
   ))] + verification_tasks(:indexer) + [recorder]
 end
 
+def configarr_verify_only_tasks
+  main = YAML.safe_load_file(File.join(ARR_TASKS, "main.yml"), aliases: true)
+  verify = YAML.safe_load_file(File.join(ARR_TASKS, "verify.yml"), aliases: true)
+  loader = deep_copy(task_named(main, "Load private Arr desired-input fingerprints"))
+  loader["ansible.builtin.include_tasks"]["file"] = File.join(
+    ARR_TASKS, "reconciliation_fingerprints.yml"
+  )
+  [loader, deep_copy(task_named(
+    verify, "Require current opaque Arr desired-input fingerprints in verify-only runs"
+  ))] + verification_tasks(:configarr)
+end
+
 def downloader_verify_only_tasks
   main = YAML.safe_load_file(File.join(DOWNLOADER_TASKS, "main.yml"), aliases: true)
   verify = YAML.safe_load_file(File.join(DOWNLOADER_TASKS, "verify.yml"), aliases: true)
@@ -1099,12 +1186,24 @@ def quality_item_projection(item)
   end
 end
 
-def quality_definition_projection(definition)
+def quality_definition_projection(definition, service)
+  quality_fields = %w[id name source resolution]
+  quality_fields << "modifier" if service == "radarr"
   {
-    "quality" => definition.dig("quality", "name"), "title" => definition["title"],
+    "id" => definition["id"],
+    "quality" => definition.fetch("quality").slice(*quality_fields),
+    "title" => definition["title"],
     "weight" => definition["weight"], "minSize" => definition["minSize"],
     "preferredSize" => definition["preferredSize"], "maxSize" => definition["maxSize"]
   }
+end
+
+def quality_item_identities(items)
+  Array(items).each_with_object({}) do |item, identities|
+    identity = item["quality"].is_a?(Hash) ? item.fetch("quality") : item
+    identities[identity.fetch("id")] = identity.fetch("name")
+    identities.merge!(quality_item_identities(item.fetch("items", [])))
+  end
 end
 
 def configarr_projection(settings)
@@ -1112,51 +1211,56 @@ def configarr_projection(settings)
     resources = settings.fetch(service)
     profiles = resources.fetch("qualityprofile")
     profile_matches = profiles.select { |profile| profile["name"] == CONFIGARR_PROFILE_NAME }
-    profile = profile_matches.length == 1 ? profile_matches.first : profiles.first
+    profile = profile_matches.first if profile_matches.length == 1
     formats = resources.fetch("customformat")
     format_matches = formats.select { |format| format["name"] == CONFIGARR_FORMAT_NAME }
-    custom_format = format_matches.length == 1 ? format_matches.first : formats.first
-    specification = Array(custom_format&.fetch("specifications", nil)).first || {}
-    specification_fields = fields_hash(specification)
-    format_items = Array(profile&.fetch("formatItems", nil))
-    score_matches = format_items.select do |format_item|
+    custom_format = format_matches.first if format_matches.length == 1
+    specifications = Array(custom_format&.fetch("specifications", nil)).map do |specification|
+      {
+        "name" => specification["name"],
+        "implementation" => specification["implementation"],
+        "negate" => specification["negate"],
+        "required" => specification["required"],
+        "fields" => fields_hash(specification).sort.to_h
+      }
+    end.sort_by { |specification| [specification["name"].to_s, specification["implementation"].to_s] }
+    format_assignments = Array(profile&.fetch("formatItems", nil)).map do |format_item|
+      { "name" => format_item["name"], "score" => format_item["score"] }
+    end.sort_by { |format_item| format_item.fetch("name").to_s }
+    score_matches = format_assignments.select do |format_item|
       format_item["name"] == CONFIGARR_FORMAT_NAME
     end
-    format_item = score_matches.length == 1 ? score_matches.first : format_items.first
+    cutoff_identity = quality_item_identities(profile&.fetch("items", [])).fetch(
+      profile&.fetch("cutoff", nil), nil
+    )
     naming_fields = service == "radarr" ?
       %w[renameMovies standardMovieFormat movieFolderFormat] :
       %w[renameEpisodes standardEpisodeFormat dailyEpisodeFormat animeEpisodeFormat
          seriesFolderFormat seasonFolderFormat]
     [service, {
       "quality_profile_identity_count" => profile_matches.length,
-      "quality_profile" => {
+      "quality_profile" => profile && {
         "name" => profile&.fetch("name", nil),
         "upgradeAllowed" => profile&.fetch("upgradeAllowed", nil),
+        "cutoff" => cutoff_identity,
         "minFormatScore" => profile&.fetch("minFormatScore", nil),
-        "resetUnmatchedScores" => profile&.fetch("resetUnmatchedScores", nil),
-        "qualitySort" => profile&.fetch("qualitySort", nil),
+        "cutoffFormatScore" => profile&.fetch("cutoffFormatScore", nil),
+        "minUpgradeFormatScore" => profile&.fetch("minUpgradeFormatScore", nil),
         "items" => Array(profile&.fetch("items", nil)).map do |item|
           quality_item_projection(item)
         end,
-        "format_assignment" => {
-          "identity_count" => score_matches.length,
-          "name" => format_item&.fetch("name", nil),
-          "score" => format_item&.fetch("score", nil)
-        }
+        "format_assignment_identity_count" => score_matches.length,
+        "format_assignments" => format_assignments
       },
       "quality_definitions" => resources.fetch("qualitydefinition")
-        .map { |definition| quality_definition_projection(definition) }
-        .sort_by { |definition| definition.fetch("quality").to_s },
+        .map { |definition| quality_definition_projection(definition, service) }
+        .sort_by { |definition| definition.dig("quality", "name").to_s },
       "custom_format_identity_count" => format_matches.length,
-      "custom_format" => {
+      "custom_format" => custom_format && {
         "name" => custom_format&.fetch("name", nil),
         "includeCustomFormatWhenRenaming" =>
           custom_format&.fetch("includeCustomFormatWhenRenaming", nil),
-        "specification" => {
-          "name" => specification["name"], "implementation" => specification["implementation"],
-          "negate" => specification["negate"], "required" => specification["required"],
-          "regex" => specification_fields["value"]
-        }
+        "specifications" => specifications
       },
       "naming" => resources.fetch("config/naming").slice(*naming_fields)
     }]
@@ -1181,12 +1285,17 @@ class AcquisitionApi
 
   class SocketDeadlineExceeded < StandardError; end
 
-  def initialize(state, fail_configarr: false, fail_client_service: nil,
-                 corrupt_client_verification: false)
+  def initialize(state, fail_configarr: false, partial_configarr: false, fail_client_service: nil,
+                 corrupt_client_verification: false, mask_bazarr_provider_secrets: false,
+                 fail_custom_format_service: nil, malformed_custom_format_service: nil)
     @state = state
     @fail_configarr = fail_configarr
+    @partial_configarr = partial_configarr
     @fail_client_service = fail_client_service
     @corrupt_client_verification = corrupt_client_verification
+    @mask_bazarr_provider_secrets = mask_bazarr_provider_secrets
+    @fail_custom_format_service = fail_custom_format_service
+    @malformed_custom_format_service = malformed_custom_format_service
     @client_get_counts = Hash.new(0)
     @requests = []
     @unexpected_requests = []
@@ -1221,6 +1330,119 @@ class AcquisitionApi
       @thread&.join(SOCKET_DEADLINE_SECONDS)
       @error ||= SocketDeadlineExceeded.new("fixture server thread did not stop")
     end
+  end
+
+  def apply_configarr
+    desired_state = @state.fetch("configarr_desired")
+    %w[radarr sonarr].each do |service|
+      resources = @state.fetch("configarr").fetch(service)
+      desired = desired_state.fetch(service)
+      profile = resources.fetch("qualityprofile").find do |item|
+        item["name"] == CONFIGARR_PROFILE_NAME
+      end
+      if profile && profile.fetch("formatItems").none? { |item| item["name"] == CONFIGARR_FORMAT_NAME }
+        # Configarr v1.28.0 spreads an absent item and submits only {score};
+        # pinned Servarr rejects the resulting profile body.
+        return false
+      end
+
+      desired_format = desired.fetch("customformat").find do |item|
+        item["name"] == CONFIGARR_FORMAT_NAME
+      end
+      format = resources.fetch("customformat").find do |item|
+        item["name"] == CONFIGARR_FORMAT_NAME
+      end
+      if format
+        format_id = format.fetch("id")
+        format.replace(deep_copy(desired_format).merge("id" => format_id))
+      else
+        format = deep_copy(desired_format)
+        format["id"] = resources.fetch("customformat").map { |item| item.fetch("id", 0) }.max + 1
+        resources.fetch("customformat") << format
+      end
+
+      desired_definitions = desired.fetch("qualitydefinition").to_h do |definition|
+        [definition.dig("quality", "name"), definition]
+      end
+      resources.fetch("qualitydefinition").each do |definition|
+        name = definition.dig("quality", "name")
+        next unless quality_sizes_for(service).key?(name)
+
+        expected = desired_definitions.fetch(name)
+        %w[minSize preferredSize maxSize].each { |field| definition[field] = expected[field] }
+      end
+
+      resources.fetch("config/naming").merge!(desired.fetch("config/naming").reject do |field, _value|
+        field == "id"
+      end)
+
+      desired_profile = desired.fetch("qualityprofile").find do |item|
+        item["name"] == CONFIGARR_PROFILE_NAME
+      end
+      if profile.nil?
+        profile = deep_copy(desired_profile)
+        profile["id"] = resources.fetch("qualityprofile").map { |item| item.fetch("id", 0) }.max + 1
+        current_formats = resources.fetch("customformat").to_h { |item| [item.fetch("name"), item] }
+        profile.fetch("formatItems").each do |item|
+          item["format"] = current_formats.fetch(item.fetch("name")).fetch("id")
+        end
+        resources.fetch("qualityprofile") << profile
+        next
+      end
+
+      if profile_quality_shape(profile.fetch("items")) !=
+         profile_quality_shape(desired_profile.fetch("items"))
+        profile["items"] = deep_copy(desired_profile.fetch("items"))
+      end
+      %w[upgradeAllowed cutoff minFormatScore cutoffFormatScore minUpgradeFormatScore].each do |field|
+        profile[field] = desired_profile.fetch(field)
+      end
+      profile.fetch("formatItems").each do |item|
+        item["score"] = item["name"] == CONFIGARR_FORMAT_NAME ? 10 : 0
+      end
+    end
+    true
+  end
+
+  def quality_sizes_for(service)
+    # Keep the fake tied to the exact pinned source constants used to build the
+    # expected response rather than replacing entire resources synthetically.
+    CONFIGARR.fetch(service).fetch("qualitydefinition").filter_map do |definition|
+      name = definition.dig("quality", "name")
+      [name, true] unless name == "Raw-HD"
+    end.to_h
+  end
+
+  def profile_quality_shape(items)
+    items.map do |item|
+      if item["quality"].is_a?(Hash)
+        ["quality", item.dig("quality", "name")]
+      else
+        ["group", item["name"], profile_quality_shape(item.fetch("items"))]
+      end
+    end
+  end
+
+  def update_configarr_profile(service, id, body)
+    profile = JSON.parse(body)
+    raise "fixture profile body id differs" unless profile.fetch("id") == id
+
+    formats = @state.dig("configarr", service, "customformat")
+    expected_ids = formats.map { |item| item.fetch("id") }.sort
+    actual_ids = profile.fetch("formatItems").map { |item| item.fetch("format") }.sort
+    raise "fixture profile body does not preserve every custom format" unless actual_ids == expected_ids
+
+    profiles = @state.dig("configarr", service, "qualityprofile")
+    index = profiles.index { |item| item.fetch("id") == id }
+    raise "fixture profile repair target is unavailable" unless index
+    existing = profiles.fetch(index)
+    %w[unmanagedProfileField language].each do |field|
+      next unless existing.key?(field)
+      raise "fixture profile repair changed unrelated field #{field}" unless
+        profile[field] == existing[field]
+    end
+
+    profiles[index] = profile
   end
 
   def accepted_client_count
@@ -1282,6 +1504,8 @@ class AcquisitionApi
       send_json(client, 201, public_item(item, :client))
     when ["GET", "/api/system/settings"]
       send_json(client, 200, public_bazarr)
+    when ["GET", "/api/system/languages"]
+      send_json(client, 200, public_bazarr_languages)
     when ["POST", "/api/system/settings"]
       request["form"] = URI.decode_www_form(body)
       apply_bazarr(request.fetch("form"))
@@ -1289,9 +1513,14 @@ class AcquisitionApi
     when ["POST", "/_fixture/configarr/apply"]
       if @fail_configarr
         send_json(client, 500, { "error" => "fixture Configarr failure" })
-      else
-        @state["configarr"] = deep_copy(@state.fetch("configarr_desired"))
+      elsif @partial_configarr
         send_empty(client, 204)
+      else
+        if apply_configarr
+          send_empty(client, 204)
+        else
+          send_json(client, 500, { "error" => "pinned Configarr profile update failed" })
+        end
       end
     else
       if method == "PUT" && target.match?(%r{\A/api/v1/applications/\d+\z})
@@ -1345,6 +1574,28 @@ class AcquisitionApi
         end
         item = create_item("#{match[1]}_download_clients", body)
         send_json(client, 201, public_item(item, :client))
+      elsif method == "POST" && (match = target.match(
+        %r{\A/(radarr|sonarr)/api/v3/customformat\z}
+      ))
+        if @fail_custom_format_service == match[1]
+          send_json(client, 500, { "error" => "fixture custom-format create failure" })
+          return
+        end
+        item = JSON.parse(body)
+        formats = @state.dig("configarr", match[1], "customformat")
+        raise "fixture duplicate custom-format create" if formats.any? { |entry| entry["name"] == item["name"] }
+        expected = @state.dig("configarr_desired", match[1], "customformat").find do |entry|
+          entry["name"] == CONFIGARR_FORMAT_NAME
+        end.reject { |field, _value| field == "id" }
+        raise "fixture custom-format create body differs" unless item == expected
+
+        item["id"] = if @malformed_custom_format_service == match[1]
+                       formats.first.fetch("id")
+                     else
+                       formats.map { |entry| entry.fetch("id", 0) }.max + 1
+                     end
+        formats << item
+        send_json(client, 201, item)
       elsif method == "PUT" && (match = target.match(
         %r{\A/(radarr|sonarr)/api/v3/downloadclient/\d+\z}
       ))
@@ -1354,6 +1605,11 @@ class AcquisitionApi
         end
         item = update_item("#{match[1]}_download_clients", target, body)
         send_json(client, 200, public_item(item, :client))
+      elsif method == "PUT" && (match = target.match(
+        %r{\A/(radarr|sonarr)/api/v3/qualityprofile/(\d+)\z}
+      ))
+        update_configarr_profile(match[1], match[2].to_i, body)
+        send_empty(client, 202)
       else
         @unexpected_requests << [method, target]
         send_json(client, 400, { "error" => "unexpected fixture request" })
@@ -1453,15 +1709,27 @@ class AcquisitionApi
 
   def public_bazarr
     copy = deep_copy(@state.fetch("bazarr"))
-    copy.dig("auth")["password"] = "********"
-    copy.dig("radarr")["apikey"] = "********"
-    copy.dig("sonarr")["apikey"] = "********"
-    copy.fetch("providers", {}).each_value do |settings|
+    copy.dig("auth")["password"] = Digest::MD5.hexdigest(copy.dig("auth", "password")) if
+      copy.dig("auth").key?("password")
+    copy.delete("languages")
+    providers = copy.delete("providers") || {}
+    providers.each do |provider_name, settings|
       settings.each_key do |name|
-        settings[name] = "********" if name.match?(/(?:api.?key|password|token|secret)/i)
+        if @mask_bazarr_provider_secrets && name.match?(/(?:api.?key|password|token|secret)/i)
+          settings[name] = "********"
+        end
       end
+      copy[provider_name] = settings
     end
     copy
+  end
+
+  def public_bazarr_languages
+    enabled = Array(@state.dig("bazarr", "languages", "enabled"))
+    (enabled | %w[de en fr]).sort.map do |code|
+      { "name" => "Fixture #{code}", "code2" => code, "code3" => "#{code}x",
+        "enabled" => enabled.include?(code) }
+    end
   end
 
   def apply_bazarr(pairs)
@@ -1511,11 +1779,22 @@ class AcquisitionApi
     raise "fixture provider payload has no declared owner" unless name
 
     prefix = "settings-#{name}-"
-    @state.fetch("bazarr").fetch("providers")[name] = values.to_h do |key, value|
+    submitted = values.to_h do |key, value|
       setting = key.delete_prefix(prefix)
-      normalized = %w[use_tag_search hearing_impaired].include?(setting) ? boolean(value) : value
+      normalized = if %w[exclude].include?(setting)
+                     list_value(value)
+                   elsif %w[use_hash include_ai_translated include_machine_translated].include?(setting)
+                     boolean(value)
+                   elsif value.is_a?(String) && value.match?(/\A[+-]?\d+\z/) &&
+                         !%w[password f_password hashed_password].include?(setting)
+                     value.to_i
+                   else
+                     value
+                   end
       [setting, normalized]
     end
+    current = @state.fetch("bazarr").fetch("providers").fetch(name, {})
+    @state.fetch("bazarr").fetch("providers")[name] = current.merge(submitted)
   end
 
   def boolean(value)
@@ -1606,6 +1885,15 @@ end
 
 def canonical_bazarr_provider_body?(request)
   decoded_form(request) == BAZARR_PROVIDER.fetch("settings")
+end
+
+def canonical_bazarr_complete_write_set?(requests, providers)
+  connection_requests = requests.select do |request|
+    canonical_bazarr_connection_body?(request, providers.map { |provider| provider.fetch("name") })
+  end
+  provider_requests = requests.select { |request| canonical_bazarr_provider_body?(request) }
+  connection_requests.length == 1 && provider_requests.length == providers.length &&
+    requests.length == connection_requests.length + provider_requests.length
 end
 
 def canonical_application_secret_writes?(requests)
@@ -1932,7 +2220,26 @@ def desired_fingerprint_values(variables)
       "password" => variables.fetch("vault_downloaders_sabnzbd_admin_password")
     },
     "prowlarr_indexers" => variables.fetch("media_arr_indexers"),
-    "bazarr_providers" => variables.fetch("media_bazarr_providers"),
+    "bazarr_providers" => {
+      "providers" => variables.fetch("media_bazarr_providers"),
+      "languages" => variables.fetch("media_bazarr_languages"),
+      "auth" => {
+        "type" => "form",
+        "username" => variables.fetch("vault_arr_bazarr_admin_username"),
+        "password" => variables.fetch("vault_arr_bazarr_admin_password")
+      },
+      "radarr" => {
+        "enabled" => true, "host" => "radarr", "port" => 7878,
+        "base_url" => "", "ssl" => false,
+        "api_key" => variables.fetch("vault_arr_radarr_api_key")
+      },
+      "sonarr" => {
+        "enabled" => true, "host" => "sonarr", "port" => 8989,
+        "base_url" => "", "ssl" => false,
+        "api_key" => variables.fetch("vault_arr_sonarr_api_key")
+      },
+      "path_mappings" => [], "path_mappings_movie" => []
+    },
     "configarr" => {
       # Ansible's file lookup strips trailing whitespace by default.
       "config" => File.read(CONFIGARR_SOURCE).rstrip,
@@ -1943,7 +2250,11 @@ def desired_fingerprint_values(variables)
   }.transform_values { |value| Digest::SHA256.hexdigest(ansible_json(value)) }
 end
 
-def seed_fingerprint_baseline(runtime, variables)
+def configarr_state_fingerprint(settings)
+  Digest::SHA256.hexdigest(ansible_json(configarr_projection(settings)))
+end
+
+def seed_fingerprint_baseline(runtime, variables, kind:, state:)
   directory = File.join(runtime, "services", "arr")
   desired = desired_fingerprint_values(variables)
   FINGERPRINT_FILE_BY_KIND.each do |kind, filename|
@@ -1952,6 +2263,13 @@ def seed_fingerprint_baseline(runtime, variables)
       mode: "w", perm: 0o600
     )
   end
+  return unless kind == :configarr
+
+  verified_state = state.fetch("configarr_desired", state.fetch("configarr"))
+  File.write(
+    File.join(directory, CONFIGARR_STATE_FINGERPRINT_FILE),
+    "#{configarr_state_fingerprint(verified_state)}\n", mode: "w", perm: 0o600
+  )
 end
 
 def reconciliation_phase(result)
@@ -1982,6 +2300,8 @@ def run_tasks(kind, api, extra_variables = {}, runtime: nil, prepare_fingerprint
     variables["arr_reconciliation_fingerprint_subset"] =
       if %i[download_client download_client_production].include?(kind)
         ["servarr_sabnzbd"]
+      elsif kind == :configarr
+        %w[configarr configarr_owned_state prowlarr_applications prowlarr_indexers bazarr_providers]
       else
         %w[configarr prowlarr_applications prowlarr_indexers bazarr_providers]
       end
@@ -2020,7 +2340,7 @@ def run_tasks(kind, api, extra_variables = {}, runtime: nil, prepare_fingerprint
     end
     if fingerprint_tasks_available? && prepare_fingerprints &&
        FINGERPRINT_BASELINE_CACHE.fetch("enabled")
-      seed_fingerprint_baseline(runtime, variables)
+      seed_fingerprint_baseline(runtime, variables, kind: kind, state: api.state)
     end
     fingerprints_before_play = fingerprint_snapshot(runtime)
     playbook = File.join(directory, "playbook.yml")
@@ -2029,9 +2349,15 @@ def run_tasks(kind, api, extra_variables = {}, runtime: nil, prepare_fingerprint
     write_playbook(playbook, variables, tasks)
     result = reconciliation_phase(run_playbook(playbook, env))
     fingerprints_after_play = fingerprint_snapshot(runtime)
+    expected_fingerprints = desired_fingerprint_values(variables)
+    if kind == :configarr && api.state.key?("configarr")
+      expected_state = api.state.fetch("configarr_desired", api.state.fetch("configarr"))
+      expected_fingerprints["configarr_owned_state"] =
+        configarr_state_fingerprint(expected_state)
+    end
     result.merge(
       "fingerprints" => fingerprints_after_play,
-      "expected_fingerprints" => desired_fingerprint_values(variables),
+      "expected_fingerprints" => expected_fingerprints,
       "fingerprint_changes" => fingerprint_change_count(
         fingerprints_before_play, fingerprints_after_play
       )
@@ -2039,13 +2365,18 @@ def run_tasks(kind, api, extra_variables = {}, runtime: nil, prepare_fingerprint
   end
 end
 
-def with_api(state, fail_configarr: false, fail_client_service: nil,
-             corrupt_client_verification: false)
+def with_api(state, fail_configarr: false, partial_configarr: false, fail_client_service: nil,
+             corrupt_client_verification: false, mask_bazarr_provider_secrets: false,
+             fail_custom_format_service: nil, malformed_custom_format_service: nil)
   api = AcquisitionApi.new(
     state,
     fail_configarr: fail_configarr,
+    partial_configarr: partial_configarr,
     fail_client_service: fail_client_service,
-    corrupt_client_verification: corrupt_client_verification
+    corrupt_client_verification: corrupt_client_verification,
+    mask_bazarr_provider_secrets: mask_bazarr_provider_secrets,
+    fail_custom_format_service: fail_custom_format_service,
+    malformed_custom_format_service: malformed_custom_format_service
   )
   yield api
 ensure
@@ -2101,7 +2432,8 @@ def verification_observed?(kind, requests)
       get_targets.count("/#{service}/api/v3/downloadclient") >= 2
     end && get_targets.any? { |target| target.start_with?("/sabnzbd/api?") }
   when :bazarr
-    get_targets.count("/api/system/settings") >= 2
+    get_targets.count("/api/system/settings") >= 2 &&
+      get_targets.count("/api/system/languages") >= 2
   when :configarr
     %w[radarr sonarr].all? do |service|
       %w[config/host rootfolder qualityprofile qualitydefinition customformat config/naming].all? do |resource|
@@ -2133,7 +2465,7 @@ def mutation_requests(api, matcher)
 end
 
 def exercise_mutations(failures, relationship:, kind:, baseline:, mutations:, variables: {},
-                       write_matcher:, projection:, desired:, current:)
+                       write_matcher:, projection:, desired:, current:, preserved: nil)
   mutations.each do |field, mutate|
     state = deep_copy(baseline)
     mutate.call(state)
@@ -2164,6 +2496,9 @@ def exercise_mutations(failures, relationship:, kind:, baseline:, mutations:, va
       actual = current.call(api.state)
       unless projection.call(actual) == projection.call(desired)
         failures << "#{relationship} full owned projection did not converge after #{field} mutant"
+      end
+      if preserved && !preserved.call(api.state)
+        failures << "#{relationship} modified unmanaged state while repairing #{field}"
       end
     end
   end
@@ -2215,9 +2550,11 @@ def exercise_secret_change(failures, relationship:, kind:, state:, field:, varia
                            old_variables:, write_matcher:, projection:, desired:, current:,
                            fingerprint_transition: true, expected_changed: 1,
                            expected_writes: 1, safe_request_body: nil,
-                           write_set_validator: nil)
-  with_api(deep_copy(state)) do |api|
-    old_fingerprint = nil
+                           write_set_validator: nil, expected_fingerprint_kinds: nil,
+                           api_options: {})
+  with_api(deep_copy(state), **api_options) do |api|
+    transition_kinds = expected_fingerprint_kinds || [kind]
+    old_fingerprints = {}
     runtime = nil
     if fingerprint_tasks_available? && fingerprint_transition
       runtime = Dir.mktmpdir("media-acquisition-secret-transition-")
@@ -2231,14 +2568,19 @@ def exercise_secret_change(failures, relationship:, kind:, state:, field:, varia
         failures << "#{relationship} could not establish old desired secret #{field}"
         next
       end
-      old_fingerprint = baseline.fetch("fingerprints").fetch(FINGERPRINT_FILE_BY_KIND.fetch(kind))
-      old_expected = baseline.fetch("expected_fingerprints").fetch(
-        FINGERPRINT_INPUT_BY_KIND.fetch(kind)
-      )
-      old_recorded = old_fingerprint && old_fingerprint.fetch("type") == "regular" &&
-        old_fingerprint.fetch("mode") == 0o600 &&
-        old_fingerprint.fetch("content") == "#{old_expected}\n" &&
-        old_fingerprint.fetch("content").match?(/\A[0-9a-f]{64}\n\z/)
+      old_recorded = transition_kinds.all? do |fingerprint_kind|
+        fingerprint = baseline.fetch("fingerprints").fetch(
+          FINGERPRINT_FILE_BY_KIND.fetch(fingerprint_kind)
+        )
+        old_fingerprints[fingerprint_kind] = fingerprint
+        expected = baseline.fetch("expected_fingerprints").fetch(
+          FINGERPRINT_INPUT_BY_KIND.fetch(fingerprint_kind)
+        )
+        fingerprint && fingerprint.fetch("type") == "regular" &&
+          fingerprint.fetch("mode") == 0o600 &&
+          fingerprint.fetch("content") == "#{expected}\n" &&
+          fingerprint.fetch("content").match?(/\A[0-9a-f]{64}\n\z/)
+      end
       unless old_recorded
         failures << "#{relationship} did not record the exact old desired digest for #{field}"
         next
@@ -2272,19 +2614,23 @@ def exercise_secret_change(failures, relationship:, kind:, state:, field:, varia
     if fingerprint_tasks_available? && fingerprint_transition
       failures << "#{relationship} masked secret #{field} did not reach fingerprint recording" unless
         result.fetch("recorder_started")
-      unless result.fetch("fingerprint_changes") == 1
+      unless result.fetch("fingerprint_changes") == transition_kinds.length
         failures << "#{relationship} masked secret #{field} recorded an unexpected fingerprint set"
       end
-      fingerprint = result.fetch("fingerprints").fetch(FINGERPRINT_FILE_BY_KIND.fetch(kind))
-      expected = result.fetch("expected_fingerprints").fetch(
-        FINGERPRINT_INPUT_BY_KIND.fetch(kind)
-      )
-      recorded = fingerprint && fingerprint.fetch("type") == "regular" &&
-        fingerprint.fetch("mode") == 0o600 &&
-        fingerprint.fetch("uid") == Process.uid && fingerprint.fetch("gid") == Process.gid &&
-        fingerprint.fetch("content") == "#{expected}\n" &&
-        fingerprint.fetch("content").match?(/\A[0-9a-f]{64}\n\z/) &&
-        fingerprint.fetch("content") != old_fingerprint&.fetch("content")
+      recorded = transition_kinds.all? do |fingerprint_kind|
+        fingerprint = result.fetch("fingerprints").fetch(
+          FINGERPRINT_FILE_BY_KIND.fetch(fingerprint_kind)
+        )
+        expected = result.fetch("expected_fingerprints").fetch(
+          FINGERPRINT_INPUT_BY_KIND.fetch(fingerprint_kind)
+        )
+        fingerprint && fingerprint.fetch("type") == "regular" &&
+          fingerprint.fetch("mode") == 0o600 &&
+          fingerprint.fetch("uid") == Process.uid && fingerprint.fetch("gid") == Process.gid &&
+          fingerprint.fetch("content") == "#{expected}\n" &&
+          fingerprint.fetch("content").match?(/\A[0-9a-f]{64}\n\z/) &&
+          fingerprint.fetch("content") != old_fingerprints.fetch(fingerprint_kind).fetch("content")
+      end
       failures << "#{relationship} masked secret #{field} did not record the expected digest" unless recorded
     elsif fingerprint_tasks_available?
       failures << "#{relationship} masked secret #{field} rewrote an unrelated fingerprint" unless
@@ -2455,16 +2801,28 @@ fingerprint_recorder = File.join(ARR_TASKS, "record_reconciliation_fingerprints.
 failures << "private desired-input fingerprint loading is unavailable" unless File.file?(fingerprint_loader)
 failures << "verified desired-input fingerprint recording is unavailable" unless File.file?(fingerprint_recorder)
 if File.file?(fingerprint_loader)
+  loader_tasks = YAML.safe_load_file(fingerprint_loader, aliases: true)
   check_fingerprint_loader_contract(
     failures, File.basename(fingerprint_loader),
-    YAML.safe_load_file(fingerprint_loader, aliases: true)
+    loader_tasks
   )
+  computed = loader_tasks.first&.fetch("ansible.builtin.set_fact", {}) || {}
+  filenames = computed.fetch("arr_reconciliation_fingerprint_filenames", {})
+  failures << "Configarr verified owned-state hash path is unavailable" unless
+    filenames["configarr_owned_state"] == CONFIGARR_STATE_FINGERPRINT_FILE
+  desired_inputs = computed.fetch("arr_desired_reconciliation_fingerprints", {})
+  failures << "Configarr verified state was mislabeled as a desired-input digest" if
+    desired_inputs.key?("configarr_owned_state")
 end
 if File.file?(fingerprint_recorder)
+  recorder_tasks = YAML.safe_load_file(fingerprint_recorder, aliases: true)
   check_fingerprint_record_contract(
     failures, File.basename(fingerprint_recorder),
-    YAML.safe_load_file(fingerprint_recorder, aliases: true)
+    recorder_tasks
   )
+  recorder_source = recorder_tasks.to_s
+  failures << "Configarr verified state is not recorded from a distinct verified-state fact" unless
+    recorder_source.include?("arr_verified_reconciliation_state_fingerprints")
 end
 check_verification_gate_contract(
   failures,
@@ -2483,6 +2841,7 @@ production_order_contract_failures(
   failures << "production-order relationship contract violates #{violation}"
 end
 
+unless OPAQUE_TARGETED_ONLY
 cross_resource_malformed_indexer = deep_copy(INDEXER_DECLARATION).merge(
   "name" => "Malformed Later Indexer"
 )
@@ -2935,7 +3294,9 @@ end
           "apiKey", "private-stale-indexer-secret"
         )
       end
-      seed_fingerprint_baseline(runtime, fingerprint_variables)
+      seed_fingerprint_baseline(
+        runtime, fingerprint_variables, kind: :indexer, state: state
+      )
       before = fingerprint_snapshot(runtime)
       callback_directory = write_event_callback(directory)
       env = {
@@ -2977,7 +3338,10 @@ end
         fingerprint_variables["vault_downloaders_sabnzbd_admin_password"] =
           "private-stale-password"
       end
-      seed_fingerprint_baseline(runtime, fingerprint_variables)
+      seed_fingerprint_baseline(
+        runtime, fingerprint_variables, kind: :download_client_production,
+        state: api.state
+      )
       before = fingerprint_snapshot(runtime)
       callback_directory = write_event_callback(directory)
       env = {
@@ -3004,7 +3368,9 @@ Dir.mktmpdir("media-acquisition-fingerprint-oversized-") do |runtime|
   FileUtils.mkdir_p(File.join(runtime, "services", "arr"))
   with_api(deep_copy(application_state)) do |api|
     variables = base_variables(api.port)
-    seed_fingerprint_baseline(runtime, variables)
+    seed_fingerprint_baseline(
+      runtime, variables, kind: :application, state: api.state
+    )
     path = File.join(
       runtime, "services", "arr", FINGERPRINT_FILE_BY_KIND.fetch(:application)
     )
@@ -3040,7 +3406,9 @@ Dir.mktmpdir("media-acquisition-fingerprint-race-") do |runtime|
   FileUtils.mkdir_p(fingerprint_directory)
   with_api(deep_copy(application_state)) do |api|
     variables = base_variables(api.port)
-    seed_fingerprint_baseline(runtime, variables)
+    seed_fingerprint_baseline(
+      runtime, variables, kind: :application, state: api.state
+    )
     path = File.join(fingerprint_directory, FINGERPRINT_FILE_BY_KIND.fetch(:application))
     target = File.join(runtime, "replacement-target")
     File.write(target, "#{'f' * 64}\n", mode: "w", perm: 0o600)
@@ -3081,6 +3449,51 @@ Dir.mktmpdir("media-acquisition-fingerprint-race-") do |runtime|
       result.dig("fingerprints", FINGERPRINT_FILE_BY_KIND.fetch(:application), "type") == "symlink"
     failures << "replacement-symlink fingerprint race changed its target" unless
       File.binread(target) == target_before
+  end
+end
+
+Dir.mktmpdir("media-acquisition-fingerprint-fifo-race-") do |runtime|
+  fingerprint_directory = File.join(runtime, "services", "arr")
+  FileUtils.mkdir_p(fingerprint_directory)
+  with_api(deep_copy(application_state)) do |api|
+    variables = base_variables(api.port)
+    seed_fingerprint_baseline(
+      runtime, variables, kind: :application, state: api.state
+    )
+    path = File.join(fingerprint_directory, FINGERPRINT_FILE_BY_KIND.fetch(:application))
+    inject_fifo = lambda do |tasks|
+      assertion_index = tasks.index do |task|
+        task["name"] == "Validate private Arr desired-input fingerprints"
+      end
+      raise "fingerprint FIFO race injection boundary is unavailable" unless assertion_index
+
+      tasks.insert(
+        assertion_index + 1,
+        {
+          "name" => "Remove the inspected fingerprint for FIFO race injection",
+          "ansible.builtin.file" => { "path" => path, "state" => "absent" },
+          "no_log" => true
+        },
+        {
+          "name" => "Replace the inspected fingerprint with a FIFO",
+          "ansible.builtin.command" => { "argv" => ["/usr/bin/mkfifo", path] },
+          "changed_when" => false,
+          "no_log" => true
+        }
+      )
+    end
+    result = run_tasks(
+      :application, api, {}, runtime: runtime, prepare_fingerprints: false,
+      task_mutator: inject_fifo
+    )
+    failures << "replacement-FIFO fingerprint race was accepted" if
+      result.fetch("status").success?
+    failures << "replacement-FIFO fingerprint race reached an API request" unless
+      api.requests.empty?
+    failures << "replacement-FIFO fingerprint race reached fingerprint recording" if
+      result.fetch("recorder_started")
+    failures << "replacement-FIFO fingerprint race did not execute" unless
+      result.dig("fingerprints", FINGERPRINT_FILE_BY_KIND.fetch(:application), "type") == "other"
   end
 end
 
@@ -3447,19 +3860,75 @@ if ENV["ACQUISITION_RELATIONSHIPS_TARGETED_ONLY"] == "1"
   puts "media acquisition relationship reconciliation behavior holds"
   exit
 end
+end
+
+FINGERPRINT_BASELINE_CACHE["enabled"] = true if OPAQUE_TARGETED_ONLY
+
+%w[matching stale_input stale_state].each do |scenario|
+  Dir.mktmpdir("media-acquisition-configarr-verify-only-") do |directory|
+    runtime = File.join(directory, "runtime")
+    FileUtils.mkdir_p(File.join(runtime, "services", "arr"))
+    state = {
+      "configarr" => deep_copy(CONFIGARR),
+      "configarr_desired" => deep_copy(CONFIGARR)
+    }
+    if scenario == "stale_state"
+      state.dig("configarr", "radarr", "qualityprofile").first["minFormatScore"] = 999
+    end
+    with_api(state) do |api|
+      instances = [SERVARR_INSTANCE, SONARR_INSTANCE].map do |instance|
+        deep_copy(instance).merge(
+          "api" => "http://127.0.0.1:#{api.port}/#{instance.fetch('name')}/api/v3"
+        )
+      end
+      variables = base_variables(api.port).merge(
+        "platform_runtime_dir" => runtime,
+        "arr_servarr_instances" => instances
+      )
+      fingerprint_variables = deep_copy(variables)
+      if scenario == "stale_input"
+        fingerprint_variables["vault_arr_radarr_api_key"] = "private-stale-radarr-apikey"
+      end
+      seed_fingerprint_baseline(
+        runtime, fingerprint_variables, kind: :configarr, state: state
+      )
+      before = fingerprint_snapshot(runtime)
+      callback_directory = write_event_callback(directory)
+      env = {
+        "ANSIBLE_NOCOLOR" => "1", "ANSIBLE_CALLBACK_PLUGINS" => callback_directory,
+        "ANSIBLE_CALLBACKS_ENABLED" => "acquisition_fixture_events",
+        "ACQUISITION_FIXTURE_EVENT_LOG" => File.join(directory, "ansible-events.jsonl")
+      }
+      playbook = File.join(directory, "playbook.yml")
+      write_playbook(playbook, variables, configarr_verify_only_tasks)
+      result = run_playbook(playbook, env, "--tags", "platform_verify_arr")
+      if scenario == "matching"
+        failures << "Configarr verify-only matching state failed: #{sanitized_tail(result)}" unless
+          result.fetch("status").success?
+      elsif result.fetch("status").success?
+        failures << "Configarr verify-only #{scenario.tr('_', ' ')} was accepted"
+      end
+      failures << "Configarr verify-only #{scenario} reached a mutation" unless
+        mutation_requests(api, ->(_request) { true }).empty?
+      failures << "Configarr verify-only #{scenario} changed reconciliation hashes" unless
+        fingerprint_snapshot(runtime) == before
+    end
+  end
+end
 
 bazarr_state = { "bazarr" => deep_copy(BAZARR) }
 bazarr_mutations = {
   "auth.type" => ->(state) { state.dig("bazarr", "auth")["type"] = "basic" },
+  "auth.type nullable default" => ->(state) { state.dig("bazarr", "auth")["type"] = nil },
   "auth.username" => ->(state) { state.dig("bazarr", "auth")["username"] = "legacy" },
   "general.use_radarr" => ->(state) { state.dig("bazarr", "general")["use_radarr"] = false },
   "general.use_sonarr" => ->(state) { state.dig("bazarr", "general")["use_sonarr"] = false },
   "radarr.ip" => ->(state) { state.dig("bazarr", "radarr")["ip"] = "legacy-radarr" },
-  "radarr.port" => ->(state) { state.dig("bazarr", "radarr")["port"] = "9999" },
+  "radarr.port" => ->(state) { state.dig("bazarr", "radarr")["port"] = 9999 },
   "radarr.base_url" => ->(state) { state.dig("bazarr", "radarr")["base_url"] = "/legacy" },
   "radarr.ssl" => ->(state) { state.dig("bazarr", "radarr")["ssl"] = true },
   "sonarr.ip" => ->(state) { state.dig("bazarr", "sonarr")["ip"] = "legacy-sonarr" },
-  "sonarr.port" => ->(state) { state.dig("bazarr", "sonarr")["port"] = "9999" },
+  "sonarr.port" => ->(state) { state.dig("bazarr", "sonarr")["port"] = 9999 },
   "sonarr.base_url" => ->(state) { state.dig("bazarr", "sonarr")["base_url"] = "/legacy" },
   "sonarr.ssl" => ->(state) { state.dig("bazarr", "sonarr")["ssl"] = true },
   "identical series paths" => ->(state) { state.dig("bazarr", "general")["path_mappings"] = [["/old", "/new"]] },
@@ -3503,20 +3972,35 @@ exercise_stable(
     variables: {}, old_variables: { variable => old_secret },
     write_matcher: bazarr_connection_write, projection: method(:bazarr_projection),
     desired: BAZARR, current: bazarr_current,
-    fingerprint_transition: false, expected_changed: 0,
-    safe_request_body: ->(request) { canonical_bazarr_connection_body?(request, []) }
+    safe_request_body: ->(request) { canonical_bazarr_connection_body?(request, []) },
+    expected_fingerprint_kinds:
+      (%w[radarr.apikey sonarr.apikey].include?(label) ? %i[bazarr configarr] : nil)
   )
 end
+
+language_input_state = deep_copy(bazarr_state)
+language_input_state.dig("bazarr", "languages")["enabled"] = ["fr"]
+exercise_secret_change(
+  failures, relationship: "Bazarr connection", kind: :bazarr,
+  state: language_input_state, field: "language desired input",
+  variables: {}, old_variables: { "media_bazarr_languages" => ["fr"] },
+  write_matcher: bazarr_connection_write, projection: method(:bazarr_projection),
+  desired: BAZARR, current: bazarr_current,
+  safe_request_body: ->(request) { canonical_bazarr_connection_body?(request, []) }
+)
 
 provider_state = { "bazarr" => deep_copy(BAZARR_WITH_PROVIDER) }
 provider_variables = { "media_bazarr_providers" => [deep_copy(BAZARR_PROVIDER)] }
 provider_mutations = {
   "provider.username" => ->(state) { state.dig("bazarr", "providers", "opensubtitlescom")["username"] = "legacy" },
-  "provider.use_tag_search" => lambda do |state|
-    state.dig("bazarr", "providers", "opensubtitlescom")["use_tag_search"] = false
+  "provider.use_hash" => lambda do |state|
+    state.dig("bazarr", "providers", "opensubtitlescom")["use_hash"] = false
   end,
-  "provider.hearing_impaired" => lambda do |state|
-    state.dig("bazarr", "providers", "opensubtitlescom")["hearing_impaired"] = true
+  "provider.include_ai_translated" => lambda do |state|
+    state.dig("bazarr", "providers", "opensubtitlescom")["include_ai_translated"] = true
+  end,
+  "provider.include_machine_translated" => lambda do |state|
+    state.dig("bazarr", "providers", "opensubtitlescom")["include_machine_translated"] = true
   end
 }
 provider_write = lambda do |request|
@@ -3567,9 +4051,27 @@ exercise_secret_change(
   state: provider_secret_state, field: "provider.password",
   variables: provider_variables,
   old_variables: { "media_bazarr_providers" => [old_provider] },
-  write_matcher: provider_write, projection: provider_projection,
+  write_matcher: ->(request) { request["target"] == "/api/system/settings" },
+  projection: provider_projection,
   desired: BAZARR_WITH_PROVIDER, current: bazarr_current,
-  safe_request_body: ->(request) { canonical_bazarr_provider_body?(request) }
+  expected_writes: 2, expected_changed: 2,
+  write_set_validator: lambda do |requests|
+    canonical_bazarr_complete_write_set?(requests, [BAZARR_PROVIDER])
+  end
+)
+exercise_secret_change(
+  failures, relationship: "Bazarr masked provider compatibility", kind: :bazarr,
+  state: provider_secret_state, field: "provider.password",
+  variables: provider_variables,
+  old_variables: { "media_bazarr_providers" => [old_provider] },
+  write_matcher: ->(request) { request["target"] == "/api/system/settings" },
+  projection: provider_projection,
+  desired: BAZARR_WITH_PROVIDER, current: bazarr_current,
+  expected_writes: 2, expected_changed: 2,
+  write_set_validator: lambda do |requests|
+    canonical_bazarr_complete_write_set?(requests, [BAZARR_PROVIDER])
+  end,
+  api_options: { mask_bazarr_provider_secrets: true }
 )
 unmanaged_provider_state = deep_copy(provider_state)
 unmanaged_provider_state.dig("bazarr", "general", "enabled_providers") << "unmanaged-provider"
@@ -3595,11 +4097,149 @@ exercise_stable(
       settings.dig("general", "enabled_providers").include?("unmanaged-provider")
   end
 )
+exercise_mutations(
+  failures, relationship: "Bazarr declared provider with unmanaged state", kind: :bazarr,
+  baseline: unmanaged_provider_state,
+  mutations: {
+    "declared readable setting" => lambda do |state|
+      state.dig("bazarr", "providers", BAZARR_PROVIDER.fetch("name"))["username"] = "legacy"
+    end
+  },
+  variables: provider_variables, write_matcher: provider_write,
+  projection: provider_projection, desired: BAZARR_WITH_PROVIDER, current: bazarr_current,
+  preserved: lambda do |state|
+    settings = state.fetch("bazarr")
+    settings.dig("providers", "unmanaged-provider") == {
+      "username" => "unmanaged-user", "unmanaged_option" => "preserve-unmanaged-provider"
+    } &&
+      settings.dig("providers", BAZARR_PROVIDER.fetch("name"), "unmanaged_option") ==
+        "preserve-declared-provider-extra" &&
+      settings.dig("general", "enabled_providers").include?("unmanaged-provider")
+  end
+)
+exercise_mutations(
+  failures, relationship: "Bazarr declared provider enablement with unmanaged state", kind: :bazarr,
+  baseline: unmanaged_provider_state,
+  mutations: {
+    "declared enablement" => lambda do |state|
+      state.dig("bazarr", "general", "enabled_providers").delete(BAZARR_PROVIDER.fetch("name"))
+    end
+  },
+  variables: provider_variables, write_matcher: bazarr_connection_write,
+  projection: provider_projection, desired: BAZARR_WITH_PROVIDER, current: bazarr_current,
+  preserved: lambda do |state|
+    state.dig("bazarr", "general", "enabled_providers").include?("unmanaged-provider") &&
+      state.dig("bazarr", "providers", "unmanaged-provider", "unmanaged_option") ==
+        "preserve-unmanaged-provider"
+  end
+)
+
+typed_provider_settings = deep_copy(BAZARR)
+typed_provider_settings.dig("general", "enabled_providers") << "animetosho"
+typed_provider_settings.fetch("providers")["animetosho"] = {
+  "search_threshold" => 6, "exclude" => []
+}
+typed_provider_state = { "bazarr" => typed_provider_settings }
+typed_provider_variables = {
+  "media_bazarr_providers" => [deep_copy(BAZARR_TYPED_PROVIDER)]
+}
+typed_provider_write = lambda do |request|
+  request["method"] == "POST" && request["target"] == "/api/system/settings" &&
+    Array(request["form"]).any? { |key, _value| key.start_with?("settings-animetosho-") }
+end
+exercise_mutations(
+  failures, relationship: "Bazarr typed provider", kind: :bazarr,
+  baseline: typed_provider_state,
+  mutations: {
+    "numeric string canonicalization" => lambda do |state|
+      state.dig("bazarr", "providers", "animetosho")["search_threshold"] = 7
+    end,
+    "empty array sentinel" => lambda do |state|
+      state.dig("bazarr", "providers", "animetosho")["exclude"] = ["legacy"]
+    end
+  },
+  variables: typed_provider_variables, write_matcher: typed_provider_write,
+  projection: lambda { |settings| bazarr_projection(settings, [BAZARR_TYPED_PROVIDER]) },
+  desired: typed_provider_settings, current: bazarr_current
+)
+exercise_stable(
+  failures, relationship: "Bazarr typed provider", kind: :bazarr,
+  state: typed_provider_state, variables: typed_provider_variables,
+  write_matcher: typed_provider_write,
+  projection: lambda { |settings| bazarr_projection(settings, [BAZARR_TYPED_PROVIDER]) },
+  desired: typed_provider_settings, current: bazarr_current
+)
 exercise_duplicate(
   failures, relationship: "Bazarr language declaration", kind: :bazarr,
   state: bazarr_state, variables: { "media_bazarr_languages" => %w[en en] },
   write_matcher: ->(request) { request["target"] == "/api/system/settings" }
 )
+{
+  "missing auth password" => lambda do |state|
+    state.dig("bazarr", "auth").delete("password")
+  end,
+  "non-string Radarr host" => lambda do |state|
+    state.dig("bazarr", "radarr")["ip"] = 1
+  end,
+  "non-integer Radarr port" => lambda do |state|
+    state.dig("bazarr", "radarr")["port"] = "7878"
+  end,
+  "non-boolean Sonarr SSL" => lambda do |state|
+    state.dig("bazarr", "sonarr")["ssl"] = "false"
+  end
+}.each do |label, mutate|
+  invalid_state = deep_copy(bazarr_state)
+  mutate.call(invalid_state)
+  exercise_duplicate(
+    failures, relationship: "Bazarr invalid current #{label}", kind: :bazarr,
+    state: invalid_state, variables: {},
+    write_matcher: ->(request) { request["target"] == "/api/system/settings" }
+  )
+end
+{
+  "language mapping" => { "media_bazarr_languages" => { "en" => true } },
+  "language scalar" => { "media_bazarr_languages" => "en" },
+  "language non-string" => { "media_bazarr_languages" => ["en", 1] },
+  "language non-canonical" => { "media_bazarr_languages" => ["EN"] },
+  "provider mapping" => { "media_bazarr_providers" => { "name" => "opensubtitlescom" } },
+  "provider non-mapping" => { "media_bazarr_providers" => ["opensubtitlescom"] },
+  "provider empty name" => {
+    "media_bazarr_providers" => [{ "name" => "", "settings" => {} }]
+  },
+  "provider empty settings" => {
+    "media_bazarr_providers" => [{ "name" => "opensubtitlescom", "settings" => {} }]
+  },
+  "provider wrong setting prefix" => {
+    "media_bazarr_providers" => [{
+      "name" => "opensubtitlescom",
+      "settings" => { "settings-other-password" => "unsafe" }
+    }]
+  },
+  "provider empty setting suffix" => {
+    "media_bazarr_providers" => [{
+      "name" => "opensubtitlescom",
+      "settings" => { "settings-opensubtitlescom-" => "unsafe" }
+    }]
+  },
+  "provider unsafe setting mapping" => {
+    "media_bazarr_providers" => [{
+      "name" => "opensubtitlescom",
+      "settings" => { "settings-opensubtitlescom-password" => { "unsafe" => true } }
+    }]
+  },
+  "provider unsafe nested list" => {
+    "media_bazarr_providers" => [{
+      "name" => "opensubtitlescom",
+      "settings" => { "settings-opensubtitlescom-options" => [["unsafe"]] }
+    }]
+  }
+}.each do |label, variables|
+  exercise_duplicate(
+    failures, relationship: "Bazarr invalid #{label}", kind: :bazarr,
+    state: provider_state, variables: variables,
+    write_matcher: ->(request) { request["target"] == "/api/system/settings" }
+  )
+end
 
 configarr_state = { "configarr" => deep_copy(CONFIGARR), "configarr_desired" => deep_copy(CONFIGARR) }
 configarr_mutations = {}
@@ -3608,11 +4248,15 @@ configarr_mutations = {}
   profile_mutations = {
     "name" => ->(profile) { profile["name"] = "Legacy Profile" },
     "upgradeAllowed" => ->(profile) { profile["upgradeAllowed"] = true },
+    "cutoff" => ->(profile) { profile["cutoff"] = 9 },
     "minFormatScore" => ->(profile) { profile["minFormatScore"] = 100 },
-    "resetUnmatchedScores" => ->(profile) { profile["resetUnmatchedScores"] = false },
-    "qualitySort" => ->(profile) { profile["qualitySort"] = "bottom" },
-    "quality order" => ->(profile) { profile["items"].reverse! },
-    "quality structure" => ->(profile) { profile["items"].last["items"].pop },
+    "cutoffFormatScore" => ->(profile) { profile["cutoffFormatScore"] = 100 },
+    "minUpgradeFormatScore" => ->(profile) { profile["minUpgradeFormatScore"] = 100 },
+    "reset unmatched scores outcome" => ->(profile) { profile["formatItems"].last["score"] = 99 },
+    "quality sort/order outcome" => ->(profile) { profile["items"].reverse! },
+    "quality structure" => lambda do |profile|
+      profile.fetch("items").find { |item| item["name"] == "WEB 1080p" }.fetch("items").pop
+    end,
     "format assignment name" => ->(profile) { profile["formatItems"].first["name"] = "Legacy Format" },
     "format assignment score" => ->(profile) { profile["formatItems"].first["score"] = 0 }
   }
@@ -3622,8 +4266,8 @@ configarr_mutations = {}
     end
   end
   [
-    ["Bluray-1080p", 0], ["WEB 1080p", 1],
-    ["WEBDL-1080p", 1, 0], ["WEBRip-1080p", 1, 1]
+    ["HDTV-1080p", 0], ["Raw-HD", 1], ["Bluray-1080p", 3],
+    ["WEB 1080p", 2], ["WEBRip-1080p", 2, 0], ["WEBDL-1080p", 2, 1]
   ].each do |quality_name, item_index, child_index|
     configarr_mutations["#{service_name}.quality_profile.#{quality_name}.name"] = lambda do |state|
       item = state.dig("configarr", service_name, "qualityprofile").first.fetch("items")[item_index]
@@ -3637,20 +4281,27 @@ configarr_mutations = {}
     configarr_mutations["#{service_name}.quality_profile.#{quality_name}.allowed"] = lambda do |state|
       item = state.dig("configarr", service_name, "qualityprofile").first.fetch("items")[item_index]
       item = item.fetch("items")[child_index] unless child_index.nil?
-      item["allowed"] = false
+      item["allowed"] = !item.fetch("allowed")
     end
   end
 
   CONFIGARR.dig(service_name, "qualitydefinition").each_with_index do |definition, index|
     quality_name = definition.dig("quality", "name")
-    {
-      "quality" => ->(item) { item.fetch("quality")["name"] = "Legacy Quality" },
-      "title" => ->(item) { item["title"] = "Legacy Title" },
-      "weight" => ->(item) { item["weight"] += 100 },
-      "minSize" => ->(item) { item["minSize"] += 1 },
-      "preferredSize" => ->(item) { item["preferredSize"] += 1 },
-      "maxSize" => ->(item) { item["maxSize"] += 1 }
-    }.each do |field, mutate_definition|
+    # Configarr v1.28.0 only applies the three numeric TRaSH leaves in this
+    # bundled configuration. Identity metadata, title and weight are retained
+    # in the verified state hash and fail closed if they drift.
+    definition_mutations = if quality_sizes.fetch(service_name).key?(quality_name)
+      {
+      "minSize" => ->(item) { item["minSize"] = item["minSize"].nil? ? 1 : item["minSize"] + 1 },
+      "preferredSize" => lambda do |item|
+        item["preferredSize"] = item["preferredSize"].nil? ? 1 : item["preferredSize"] + 1
+      end,
+      "maxSize" => ->(item) { item["maxSize"] = item["maxSize"].nil? ? 1 : item["maxSize"] + 1 }
+      }
+    else
+      {}
+    end
+    definition_mutations.each do |field, mutate_definition|
       label = "#{service_name}.quality_definition.#{quality_name}.#{field}"
       configarr_mutations[label] = lambda do |state|
         item = state.dig("configarr", service_name, "qualitydefinition").fetch(index)
@@ -3692,21 +4343,117 @@ end
     state.dig("configarr", service, "config/naming")[field] = value
   end
 end
+{
+  "radarr.naming.nullable standard format" => ["radarr", "standardMovieFormat"],
+  "sonarr.naming.nullable daily format" => ["sonarr", "dailyEpisodeFormat"]
+}.each do |label, (service, field)|
+  configarr_mutations[label] = lambda do |state|
+    state.dig("configarr", service, "config/naming")[field] = nil
+  end
+end
 configarr_write = lambda do |request|
   request["method"] == "POST" && request["target"] == "/_fixture/configarr/apply"
 end
+configarr_any_write = ->(_request) { true }
 configarr_current = ->(state) { state.fetch("configarr") }
+configarr_unmanaged_preserved = lambda do |state|
+  %w[radarr sonarr].all? do |service|
+    current = state.dig("configarr", service)
+    desired = CONFIGARR.fetch(service)
+    desired.fetch("qualityprofile").reject { |item| item["name"] == CONFIGARR_PROFILE_NAME }
+      .all? { |item| current.fetch("qualityprofile").include?(item) } &&
+      desired.fetch("customformat").reject { |item| item["name"] == CONFIGARR_FORMAT_NAME }
+        .all? { |item| current.fetch("customformat").include?(item) } &&
+      current.fetch("qualityprofile").find { |item| item["name"] == CONFIGARR_PROFILE_NAME }
+        .fetch("formatItems").reject { |item| item["name"] == CONFIGARR_FORMAT_NAME } ==
+        desired.fetch("qualityprofile").find { |item| item["name"] == CONFIGARR_PROFILE_NAME }
+          .fetch("formatItems").reject { |item| item["name"] == CONFIGARR_FORMAT_NAME }
+  end
+end
+%w[radarr sonarr].each do |service|
+  configarr_mutations["#{service}.missing quality profile among unrelated profiles"] = lambda do |state|
+    state.dig("configarr", service, "qualityprofile").reject! do |profile|
+      profile["name"] == CONFIGARR_PROFILE_NAME
+    end
+  end
+  configarr_mutations["#{service}.missing custom format among unrelated formats"] = lambda do |state|
+    state.dig("configarr", service, "customformat").reject! do |format|
+      format["name"] == CONFIGARR_FORMAT_NAME
+    end
+  end
+  configarr_mutations["#{service}.missing format assignment among unrelated assignments"] = lambda do |state|
+    profile = state.dig("configarr", service, "qualityprofile").find do |candidate|
+      candidate["name"] == CONFIGARR_PROFILE_NAME
+    end
+    profile.fetch("formatItems").reject! { |item| item["name"] == CONFIGARR_FORMAT_NAME }
+  end
+  configarr_mutations["#{service}.empty format-score assignments"] = lambda do |state|
+    profile = state.dig("configarr", service, "qualityprofile").find do |candidate|
+      candidate["name"] == CONFIGARR_PROFILE_NAME
+    end
+    profile["formatItems"] = []
+  end
+end
 exercise_mutations(
   failures, relationship: "Configarr", kind: :configarr,
   baseline: configarr_state, mutations: configarr_mutations,
   write_matcher: configarr_write, projection: method(:configarr_projection),
-  desired: CONFIGARR, current: configarr_current
+  desired: CONFIGARR, current: configarr_current,
+  preserved: configarr_unmanaged_preserved
 )
+
+# Configarr cannot restore server-owned qdef identity metadata, weight, title,
+# or values for definitions absent from the pinned TRaSH input. They remain in
+# the complete verified-state hash and must fail closed without recording a new
+# input or state hash.
+%w[radarr sonarr].each do |service|
+  context_state = deep_copy(configarr_state)
+  definition = context_state.dig("configarr", service, "qualitydefinition").find do |item|
+    item.dig("quality", "name") == "Raw-HD"
+  end
+  definition["id"] += 100
+  definition.fetch("quality")["id"] += 100
+  definition.fetch("quality")["source"] = "legacy"
+  definition.fetch("quality")["resolution"] = 720
+  definition.fetch("quality")["modifier"] = "legacy" if service == "radarr"
+  definition["title"] = "Legacy Raw-HD"
+  definition["weight"] += 100
+  definition["minSize"] = 1
+  definition["preferredSize"] = 2
+  definition["maxSize"] = 3
+  Dir.mktmpdir("media-acquisition-configarr-context-") do |runtime|
+    FileUtils.mkdir_p(File.join(runtime, "services", "arr"))
+    with_api(context_state) do |api|
+      variables = base_variables(api.port)
+      seed_fingerprint_baseline(runtime, variables, kind: :configarr, state: context_state)
+      before = fingerprint_snapshot(runtime)
+      result = run_tasks(
+        :configarr, api, {}, runtime: runtime, prepare_fingerprints: false
+      )
+      sane = check_sanity(
+        failures, "Configarr #{service} non-repairable qdef context", result, api,
+        kind: :configarr
+      )
+      next unless sane
+
+      failures << "Configarr #{service} accepted non-repairable qdef context drift" if
+        result.fetch("status").success?
+      unless mutation_requests(api, configarr_write).length == 1
+        failures << "Configarr #{service} context drift did not run exactly one job"
+      end
+      failures << "Configarr #{service} context drift advanced a reconciliation hash" unless
+        fingerprint_snapshot(runtime) == before
+      failures << "Configarr #{service} context drift reached fingerprint recording" if
+        result.fetch("recorder_started")
+    end
+  end
+end
+
 exercise_stable(
   failures, relationship: "Configarr", kind: :configarr,
-  state: configarr_state, write_matcher: configarr_write,
+  state: configarr_state, write_matcher: configarr_any_write,
   projection: method(:configarr_projection), desired: CONFIGARR,
-  current: configarr_current
+  current: configarr_current, preserved: configarr_unmanaged_preserved
 )
 reordered_definition_state = deep_copy(configarr_state)
 %w[radarr sonarr].each do |service|
@@ -3714,7 +4461,7 @@ reordered_definition_state = deep_copy(configarr_state)
 end
 exercise_stable(
   failures, relationship: "Configarr quality-definition API ordering", kind: :configarr,
-  state: reordered_definition_state, write_matcher: configarr_write,
+  state: reordered_definition_state, write_matcher: configarr_any_write,
   projection: method(:configarr_projection), desired: CONFIGARR,
   current: configarr_current
 )
@@ -3726,8 +4473,9 @@ exercise_secret_change(
   old_variables: {
     "vault_arr_radarr_api_key" => "private-stale-radarr-apikey",
     "vault_arr_sonarr_api_key" => "private-stale-sonarr-apikey"
-  }, write_matcher: configarr_write,
-  projection: method(:configarr_projection), desired: CONFIGARR, current: configarr_current
+  }, write_matcher: configarr_any_write,
+  projection: method(:configarr_projection), desired: CONFIGARR, current: configarr_current,
+  expected_fingerprint_kinds: %i[configarr bazarr]
 )
 %w[radarr sonarr].each do |service|
   {
@@ -3739,7 +4487,7 @@ exercise_secret_change(
       deep_copy(CONFIGARR.dig(service, resource).first).merge("id" => duplicate_id)
     exercise_duplicate(
       failures, relationship: "Configarr #{service} #{identity}", kind: :configarr,
-      state: duplicate_state, variables: {}, write_matcher: configarr_write
+      state: duplicate_state, variables: {}, write_matcher: configarr_any_write
     )
   end
   duplicate_definition_state = deep_copy(configarr_state)
@@ -3747,7 +4495,7 @@ exercise_secret_change(
     deep_copy(CONFIGARR.dig(service, "qualitydefinition").first)
   exercise_duplicate(
     failures, relationship: "Configarr #{service} quality definition", kind: :configarr,
-    state: duplicate_definition_state, variables: {}, write_matcher: configarr_write
+    state: duplicate_definition_state, variables: {}, write_matcher: configarr_any_write
   )
 
   duplicate_score_state = deep_copy(configarr_state)
@@ -3755,8 +4503,94 @@ exercise_secret_change(
   profile.fetch("formatItems") << deep_copy(profile.fetch("formatItems").first)
   exercise_duplicate(
     failures, relationship: "Configarr #{service} format-score assignment", kind: :configarr,
-    state: duplicate_score_state, variables: {}, write_matcher: configarr_write
+    state: duplicate_score_state, variables: {}, write_matcher: configarr_any_write
   )
+end
+
+{
+  "HTTP failure" => { fail_custom_format_service: "radarr" },
+  "malformed duplicate numeric identity" => { malformed_custom_format_service: "radarr" }
+}.each do |label, api_options|
+  missing_state = deep_copy(configarr_state)
+  missing_state.dig("configarr", "radarr", "customformat").reject! do |format|
+    format["name"] == CONFIGARR_FORMAT_NAME
+  end
+  missing_state.dig("configarr", "radarr", "qualityprofile").first
+    .fetch("formatItems").reject! { |item| item["name"] == CONFIGARR_FORMAT_NAME }
+  Dir.mktmpdir("media-acquisition-configarr-create-failure-") do |runtime|
+    FileUtils.mkdir_p(File.join(runtime, "services", "arr"))
+    with_api(missing_state, **api_options) do |api|
+      variables = base_variables(api.port)
+      seed_fingerprint_baseline(runtime, variables, kind: :configarr, state: missing_state)
+      before = fingerprint_snapshot(runtime)
+      result = run_tasks(
+        :configarr, api, {}, runtime: runtime, prepare_fingerprints: false
+      )
+      sane = check_sanity(
+        failures, "Configarr absent custom format #{label}", result, api,
+        kind: :configarr
+      )
+      next unless sane
+
+      failures << "Configarr absent custom format #{label} was accepted" if
+        result.fetch("status").success?
+      creates = mutation_requests(api, lambda do |request|
+        request["method"] == "POST" &&
+          request["target"] == "/radarr/api/v3/customformat"
+      end)
+      failures << "Configarr absent custom format #{label} did not attempt one exact create" unless
+        creates.length == 1
+      failures << "Configarr absent custom format #{label} reached the job" unless
+        mutation_requests(api, configarr_write).empty?
+      failures << "Configarr absent custom format #{label} advanced reconciliation hashes" unless
+        fingerprint_snapshot(runtime) == before
+      failures << "Configarr absent custom format #{label} reached fingerprint recording" if
+        result.fetch("recorder_started")
+    end
+  end
+end
+
+{
+  "quality-profile collection" => lambda do |state|
+    state.dig("configarr", "radarr")["qualityprofile"] = {}
+  end,
+  "quality-definition object" => lambda do |state|
+    state.dig("configarr", "sonarr", "qualitydefinition")[0] = "invalid"
+  end,
+  "custom-format collection" => lambda do |state|
+    state.dig("configarr", "radarr")["customformat"] = nil
+  end,
+  "naming object" => lambda do |state|
+    state.dig("configarr", "sonarr")["config/naming"] = []
+  end,
+  "quality item boolean" => lambda do |state|
+    state.dig("configarr", "radarr", "qualityprofile", 0, "items", 0)["allowed"] = "false"
+  end
+}.each do |label, mutate|
+  malformed_state = deep_copy(configarr_state)
+  mutate.call(malformed_state)
+  exercise_duplicate(
+    failures, relationship: "Configarr malformed #{label}", kind: :configarr,
+    state: malformed_state, variables: {}, write_matcher: configarr_any_write
+  )
+end
+
+%w[radarr sonarr].each do |service|
+  {
+    "quality-profile collection" => "qualityprofile",
+    "custom-format collection" => "customformat"
+  }.each do |label, resource|
+    empty_state = deep_copy(configarr_state)
+    empty_state.dig("configarr", service)[resource] = []
+    exercise_duplicate(
+      failures,
+      relationship: "Configarr #{service} empty #{label}",
+      kind: :configarr,
+      state: empty_state,
+      variables: {},
+      write_matcher: configarr_any_write
+    )
+  end
 end
 
 Dir.mktmpdir("media-acquisition-fingerprint-failure-") do |runtime|
@@ -3788,16 +4622,54 @@ Dir.mktmpdir("media-acquisition-fingerprint-failure-") do |runtime|
   end
 end
 
+partial_configarr_state = deep_copy(configarr_state)
+partial_configarr_state.dig("configarr", "radarr", "qualitydefinition").first[
+  "minSize"
+] += 1
+Dir.mktmpdir("media-acquisition-configarr-partial-") do |runtime|
+  FileUtils.mkdir_p(File.join(runtime, "services", "arr"))
+  with_api(deep_copy(partial_configarr_state), partial_configarr: true) do |api|
+    variables = base_variables(api.port)
+    seed_fingerprint_baseline(
+      runtime, variables, kind: :configarr, state: partial_configarr_state
+    )
+    before = fingerprint_snapshot(runtime)
+    result = run_tasks(
+      :configarr, api, configarr_secret_variables, runtime: runtime,
+      prepare_fingerprints: false
+    )
+    sane = check_sanity(
+      failures, "partial Configarr success without repair", result, api, kind: :configarr
+    )
+    if sane
+      failures << "partial Configarr success without repair was accepted" if
+        result.fetch("status").success?
+      unless mutation_requests(api, configarr_write).length == 1
+        failures << "partial Configarr success did not run exactly one job"
+      end
+      failures << "partial Configarr success advanced verified hashes" unless
+        fingerprint_snapshot(runtime) == before
+      failures << "partial Configarr success reached fingerprint recording" if
+        result.fetch("recorder_started")
+    end
+  end
+end
+
 if fingerprint_tasks_available?
-  fingerprint_safety_cases = {
-    application: [application_state, {}],
-    download_client: [client_state, {}],
-    indexer: [indexer_state, {}],
-    bazarr: [provider_state, provider_variables],
-    configarr: [configarr_state, configarr_secret_variables]
-  }
-  fingerprint_safety_cases.each do |kind, (state, variables)|
-    filename = FINGERPRINT_FILE_BY_KIND.fetch(kind)
+  fingerprint_safety_cases = [
+    [:bazarr, provider_state, provider_variables, FINGERPRINT_FILE_BY_KIND.fetch(:bazarr)],
+    [:configarr, configarr_state, configarr_secret_variables,
+     FINGERPRINT_FILE_BY_KIND.fetch(:configarr)],
+    [:configarr, configarr_state, configarr_secret_variables, CONFIGARR_STATE_FINGERPRINT_FILE]
+  ]
+  unless OPAQUE_TARGETED_ONLY
+    fingerprint_safety_cases = [
+      [:application, application_state, {}, FINGERPRINT_FILE_BY_KIND.fetch(:application)],
+      [:download_client, client_state, {}, FINGERPRINT_FILE_BY_KIND.fetch(:download_client)],
+      [:indexer, indexer_state, {}, FINGERPRINT_FILE_BY_KIND.fetch(:indexer)]
+    ] + fingerprint_safety_cases
+  end
+  fingerprint_safety_cases.each do |kind, state, variables, filename|
     Dir.mktmpdir("media-acquisition-fingerprint-safety-") do |runtime|
       with_api(deep_copy(state)) do |api|
         baseline = run_tasks(kind, api, variables, runtime: runtime)

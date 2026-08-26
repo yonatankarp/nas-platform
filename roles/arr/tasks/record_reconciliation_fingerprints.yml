@@ -1,5 +1,18 @@
 ---
-- name: Validate the recorded Arr desired-input fingerprint subset
+- name: Build verified Arr reconciliation hash values
+  ansible.builtin.set_fact:
+    arr_reconciliation_record_values: >-
+      {{ arr_desired_reconciliation_fingerprints |
+         combine({
+           'configarr_owned_state':
+             (arr_verified_reconciliation_state_fingerprints | default({})).get(
+               'configarr_owned_state', ''
+             )
+         }) }}
+  changed_when: false
+  no_log: true
+
+- name: Validate the recorded Arr reconciliation hash subset
   ansible.builtin.assert:
     that:
       - arr_reconciliation_fingerprint_subset_effective is sequence
@@ -10,13 +23,18 @@
         arr_reconciliation_fingerprint_subset_effective | unique | list | length
       - >-
         arr_reconciliation_fingerprint_subset_effective |
-        difference(arr_desired_reconciliation_fingerprints.keys() | list) |
+        difference(arr_reconciliation_record_values.keys() | list) |
         length == 0
-    fail_msg: The recorded Arr desired-input fingerprint subset is invalid.
+      - >-
+        arr_reconciliation_fingerprint_subset_effective |
+        map('extract', arr_reconciliation_record_values) |
+        select('match', '^[0-9a-f]{64}$') | list | length ==
+        arr_reconciliation_fingerprint_subset_effective | length
+    fail_msg: The recorded Arr reconciliation hash subset is invalid.
   vars:
     arr_reconciliation_fingerprint_subset_effective: >-
       {{ arr_reconciliation_fingerprint_subset |
-         default(arr_desired_reconciliation_fingerprints.keys() | list) }}
+         default(arr_reconciliation_record_values.keys() | list) }}
   no_log: true
 
 - name: Record verified Arr desired-input fingerprints
@@ -29,7 +47,7 @@
     mode: "0600"
     follow: false
   loop: >-
-    {{ arr_desired_reconciliation_fingerprints | dict2items |
+    {{ arr_reconciliation_record_values | dict2items |
        selectattr('key', 'in', arr_reconciliation_fingerprint_subset_effective) |
        list }}
   loop_control:
@@ -37,5 +55,5 @@
   vars:
     arr_reconciliation_fingerprint_subset_effective: >-
       {{ arr_reconciliation_fingerprint_subset |
-         default(arr_desired_reconciliation_fingerprints.keys() | list) }}
+         default(arr_reconciliation_record_values.keys() | list) }}
   no_log: true

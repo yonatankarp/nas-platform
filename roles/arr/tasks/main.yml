@@ -92,6 +92,7 @@
   vars:
     arr_reconciliation_fingerprint_subset:
       - configarr
+      - configarr_owned_state
       - prowlarr_applications
       - prowlarr_indexers
       - bazarr_providers
@@ -162,6 +163,7 @@
   vars:
     arr_reconciliation_fingerprint_subset:
       - configarr
+      - configarr_owned_state
       - prowlarr_applications
       - prowlarr_indexers
       - bazarr_providers

@@ -1,11 +1,176 @@
 ---
-- name: Render private Configarr secrets
+- name: Read Configarr-owned Arr resources before reconciliation
+  ansible.builtin.uri:
+    url: "{{ item.0.api }}/{{ item.1 }}"
+    method: GET
+    headers:
+      X-Api-Key: "{{ item.0.api_key }}"
+    status_code: [200]
+    return_content: true
+  loop: >-
+    {{ arr_servarr_instances |
+       product(['qualityprofile', 'qualitydefinition', 'customformat', 'config/naming']) |
+       list }}
+  loop_control:
+    label: "configarr-before-{{ item.0.name }}-{{ item.1 }}"
+  register: arr_configarr_before
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Build the current Configarr owned projection
+  ansible.builtin.set_fact:
+    arr_configarr_owned_state_current: >-
+      {{ arr_configarr_before.results | acquisition_configarr_owned_projection }}
+  changed_when: false
+  no_log: true
+
+- name: Validate the Configarr materialized projection inputs
+  ansible.builtin.set_fact:
+    arr_configarr_owned_state_preflight: >-
+      {{ lookup('file', role_path ~ '/files/configarr/config.yml') |
+         acquisition_configarr_desired_projection(
+           arr_configarr_owned_state_current
+         ) }}
+  changed_when: false
+  no_log: true
+
+- name: Decide whether Configarr must run
+  ansible.builtin.set_fact:
+    arr_configarr_owned_state_current_sha256: >-
+      {{ arr_configarr_owned_state_current | to_json | hash('sha256') }}
+    arr_configarr_run_required: >-
+      {{
+        (arr_configarr_owned_state_current | to_json | hash('sha256')) !=
+          arr_installed_reconciliation_fingerprints.configarr_owned_state or
+        arr_installed_reconciliation_fingerprints.configarr !=
+          arr_desired_reconciliation_fingerprints.configarr
+      }}
+  changed_when: false
+  no_log: true
+
+- name: Build exact missing Configarr custom-format create bodies
+  ansible.builtin.set_fact:
+    arr_configarr_missing_custom_format_bodies: >-
+      {{ lookup('file', role_path ~ '/files/configarr/config.yml') |
+         acquisition_configarr_missing_custom_format_bodies(
+           arr_configarr_owned_state_current
+         ) }}
+  changed_when: false
+  no_log: true
+
+- name: Render private Configarr secrets after global API preflight
   ansible.builtin.template:
-    src: configarr-secrets.yml.j2
+    src: "{{ role_path }}/templates/configarr-secrets.yml.j2"
     dest: "{{ platform_runtime_dir }}/services/arr/configarr-secrets.yml"
     owner: "{{ nas_uid }}"
     group: "{{ nas_gid }}"
     mode: "0600"
+  no_log: true
+  changed_when: false
+
+- name: Create an absent declared custom format before profile repair
+  ansible.builtin.uri:
+    url: "{{ item.api }}/customformat"
+    method: POST
+    headers:
+      X-Api-Key: "{{ item.api_key }}"
+    body_format: json
+    body: "{{ arr_configarr_missing_custom_format_bodies[item.name] }}"
+    status_code: [201]
+    return_content: true
+  loop: >-
+    {{ arr_servarr_instances |
+       selectattr('name', 'in', arr_configarr_missing_custom_format_bodies.keys()) |
+       list }}
+  loop_control:
+    label: "configarr-create-{{ item.name }}-custom-format"
+  when:
+    - not ansible_check_mode
+    - arr_configarr_run_required | bool
+    - arr_configarr_missing_custom_format_bodies | length > 0
+  changed_when: false
+  no_log: true
+
+- name: Select the globally preflighted profile repair readback
+  ansible.builtin.set_fact:
+    arr_configarr_profile_readback_results: "{{ arr_configarr_before.results }}"
+  changed_when: false
+  no_log: true
+
+- name: Re-read Configarr resources after custom-format creation
+  ansible.builtin.uri:
+    url: "{{ item.0.api }}/{{ item.1 }}"
+    method: GET
+    headers:
+      X-Api-Key: "{{ item.0.api_key }}"
+    status_code: [200]
+    return_content: true
+  loop: >-
+    {{ arr_servarr_instances |
+       product(['qualityprofile', 'qualitydefinition', 'customformat', 'config/naming']) |
+       list }}
+  loop_control:
+    label: "configarr-created-{{ item.0.name }}-{{ item.1 }}"
+  register: arr_configarr_after_custom_format_create
+  when:
+    - not ansible_check_mode
+    - arr_configarr_run_required | bool
+    - arr_configarr_missing_custom_format_bodies | length > 0
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Initialize guarded Configarr profile repairs
+  ansible.builtin.set_fact:
+    arr_configarr_profile_repair_bodies: {}
+  changed_when: false
+  no_log: true
+
+- name: Select the immediate custom-format creation readback
+  ansible.builtin.set_fact:
+    arr_configarr_profile_readback_results: >-
+      {{ arr_configarr_after_custom_format_create.results }}
+  when:
+    - not ansible_check_mode
+    - arr_configarr_run_required | bool
+    - arr_configarr_missing_custom_format_bodies | length > 0
+  changed_when: false
+  no_log: true
+
+- name: Build guarded full Configarr profile repair bodies
+  ansible.builtin.set_fact:
+    arr_configarr_profile_repair_bodies: >-
+      {{ lookup('file', role_path ~ '/files/configarr/config.yml') |
+         acquisition_configarr_profile_repair_bodies(
+           arr_configarr_profile_readback_results
+         ) }}
+  when:
+    - not ansible_check_mode
+    - arr_configarr_run_required | bool
+  changed_when: false
+  no_log: true
+
+- name: Repair declared Configarr quality-profile fields safely
+  ansible.builtin.uri:
+    url: "{{ item.api }}/qualityprofile/{{ arr_configarr_profile_repair_bodies[item.name].id }}"
+    method: PUT
+    headers:
+      X-Api-Key: "{{ item.api_key }}"
+    body_format: json
+    body: "{{ arr_configarr_profile_repair_bodies[item.name].body }}"
+    status_code: [202]
+  loop: >-
+    {{ arr_servarr_instances |
+       selectattr('name', 'in', arr_configarr_profile_repair_bodies.keys()) |
+       list }}
+  loop_control:
+    label: "configarr-repair-{{ item.name }}-profile"
+  when:
+    - not ansible_check_mode
+    - arr_configarr_run_required | bool
+    - arr_configarr_profile_repair_bodies | length > 0
+  changed_when: false
   no_log: true
 
 - name: Apply Configarr profiles synchronously
@@ -23,12 +188,14 @@
     interactive: true
     tty: false
   register: arr_configarr_run
-  when: not ansible_check_mode
+  when:
+    - not ansible_check_mode
+    - arr_configarr_run_required | bool
   failed_when: >-
     arr_configarr_run.rc | default(1) | int != 0 or
     'Failure during configuring:' in arr_configarr_run.stdout | default('') or
     'Failure during configuring:' in arr_configarr_run.stderr | default('')
-  changed_when: arr_configarr_run.rc | default(1) | int == 0
+  changed_when: true
   no_log: true
 
 - name: Record a bounded Configarr execution summary
@@ -37,10 +204,12 @@
       rc: "{{ arr_configarr_run.rc | int }}"
       stdout_lines: "{{ [arr_configarr_run.stdout_lines | default([]) | length, 1000] | min }}"
       stderr_lines: "{{ [arr_configarr_run.stderr_lines | default([]) | length, 1000] | min }}"
-  when: not ansible_check_mode
+  when:
+    - not ansible_check_mode
+    - arr_configarr_run_required | bool
   changed_when: false
 
-- name: Read Configarr-owned Arr resources
+- name: Read Configarr-owned Arr resources after reconciliation
   ansible.builtin.uri:
     url: "{{ item.0.api }}/{{ item.1 }}"
     method: GET
@@ -53,40 +222,58 @@
        product(['qualityprofile', 'qualitydefinition', 'customformat', 'config/naming']) |
        list }}
   loop_control:
-    label: "configarr-{{ item.0.name }}-{{ item.1 }}"
-  register: arr_configarr_verification
-  when: not ansible_check_mode
+    label: "configarr-after-{{ item.0.name }}-{{ item.1 }}"
+  register: arr_configarr_after
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Build verified Configarr owned state
+  ansible.builtin.set_fact:
+    arr_configarr_owned_state_after: >-
+      {{ arr_configarr_after.results | acquisition_configarr_owned_projection }}
   changed_when: false
   no_log: true
 
-- name: Verify Configarr-owned profiles, definitions, formats, and naming
+- name: Build the verified Configarr materialized projection
+  ansible.builtin.set_fact:
+    arr_configarr_owned_state_desired: >-
+      {{ lookup('file', role_path ~ '/files/configarr/config.yml') |
+         acquisition_configarr_desired_projection(
+           arr_configarr_owned_state_after
+         ) }}
+  changed_when: false
+  no_log: true
+
+- name: Stage the verified Configarr owned-state hash
+  ansible.builtin.set_fact:
+    arr_configarr_owned_state_after_sha256: >-
+      {{ arr_configarr_owned_state_after | to_json | hash('sha256') }}
+    arr_verified_reconciliation_state_fingerprints: >-
+      {{ arr_verified_reconciliation_state_fingerprints | default({}) |
+         combine({
+           'configarr_owned_state':
+             (arr_configarr_owned_state_after | to_json | hash('sha256'))
+         }) }}
+  changed_when: false
+  no_log: true
+
+- name: Verify Configarr-owned Arr resources after reconciliation
   ansible.builtin.assert:
     that:
       - >-
-        (arr_configarr_verification.results |
-         selectattr('item.0.name', 'equalto', item.name) |
-         selectattr('item.1', 'equalto', 'qualityprofile') |
-         map(attribute='json') | first |
-         selectattr('name', 'equalto', 'HD Bluray + WEB 1080p') | list | length) == 1
+        arr_configarr_owned_state_after |
+        acquisition_configarr_declared_projection ==
+        arr_configarr_owned_state_desired
       - >-
-        (arr_configarr_verification.results |
-         selectattr('item.0.name', 'equalto', item.name) |
-         selectattr('item.1', 'equalto', 'qualitydefinition') |
-         map(attribute='json') | first | length) > 0
+        arr_installed_reconciliation_fingerprints.configarr !=
+          arr_desired_reconciliation_fingerprints.configarr or
+        arr_installed_reconciliation_fingerprints.configarr_owned_state | length == 0 or
+        arr_configarr_owned_state_after_sha256 ==
+          arr_installed_reconciliation_fingerprints.configarr_owned_state
       - >-
-        (arr_configarr_verification.results |
-         selectattr('item.0.name', 'equalto', item.name) |
-         selectattr('item.1', 'equalto', 'customformat') |
-         map(attribute='json') | first |
-         selectattr('name', 'equalto', 'NAS Repack or Proper') | list | length) == 1
-      - >-
-        not (arr_configarr_verification.results |
-             selectattr('item.0.name', 'equalto', item.name) |
-             selectattr('item.1', 'equalto', 'config/naming') |
-             map(attribute='json') | first)[item.rename_field] | bool
-    fail_msg: Configarr did not converge the declared Phase 1 profile contract.
-  loop: "{{ arr_servarr_instances }}"
-  loop_control:
-    label: "configarr-{{ item.name }}"
-  when: not ansible_check_mode
+        arr_configarr_run_required | bool or
+        arr_configarr_owned_state_after_sha256 ==
+          arr_installed_reconciliation_fingerprints.configarr_owned_state
+    fail_msg: Configarr did not converge its complete declared and verified owned state.
   no_log: true

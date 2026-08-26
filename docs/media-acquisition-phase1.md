@@ -45,6 +45,14 @@ automatic-deployment poller does not load this external artifact; keep automatic
 deployment disabled for this target until its protected-input procedure is
 extended and reviewed.
 
+The Arr runtime directory stores private SHA-256 digests for opaque desired
+inputs. It also stores `.configarr-owned-state.sha256`, which is different: it
+is the hash of the last completely read back and verified Configarr-owned API
+state. It contains no desired secret, but uses the same owner-only mode and
+atomic, non-symlink loader protections. Never copy either class of hash between
+targets or edit one to force convergence; a missing hash deliberately causes a
+fresh verified reconciliation.
+
 ## 2. Adopt existing Movies and Series once
 
 Back up the media and application state and test the restore first. On the first

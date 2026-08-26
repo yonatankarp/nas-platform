@@ -1,20 +1,10 @@
 ---
 - name: Validate operator-owned Bazarr declarations
-  ansible.builtin.assert:
-    that:
-      - media_bazarr_languages | length == media_bazarr_languages | unique | length
-      - >-
-        media_bazarr_providers | map(attribute='name') | list | length ==
-        media_bazarr_providers | map(attribute='name') | unique | list | length
-      - item.name is match('^[a-z0-9_-]+$')
-      - item.settings is mapping
-      - >-
-        item.settings.keys() | select('match', '^settings-' ~ item.name ~ '-') |
-        list | length == item.settings | length
-    fail_msg: Bazarr providers require unique stable names and explicitly scoped settings.
-  loop: "{{ media_bazarr_providers }}"
-  loop_control:
-    label: bazarr-operator-provider
+  ansible.builtin.set_fact:
+    arr_bazarr_declarations: >-
+      {{ media_bazarr_languages |
+         acquisition_bazarr_declarations(media_bazarr_providers) }}
+  changed_when: false
   no_log: true
 
 - name: Read Bazarr settings before reconciliation
@@ -30,17 +20,46 @@
   check_mode: false
   no_log: true
 
-- name: Require the supported Bazarr settings schema
-  ansible.builtin.assert:
-    that:
-      - arr_bazarr_settings_before.json is mapping
-      - arr_bazarr_settings_before.json.auth is mapping
-      - arr_bazarr_settings_before.json.general is mapping
-      - arr_bazarr_settings_before.json.radarr is mapping
-      - arr_bazarr_settings_before.json.sonarr is mapping
-      - arr_bazarr_settings_before.json.general.path_mappings is sequence
-      - arr_bazarr_settings_before.json.general.path_mappings_movie is sequence
-    fail_msg: Bazarr returned an unsupported settings schema.
+- name: Read Bazarr languages before reconciliation
+  ansible.builtin.uri:
+    url: "{{ arr_bazarr_api }}/system/languages"
+    method: GET
+    headers:
+      X-API-KEY: "{{ vault_arr_bazarr_api_key }}"
+    status_code: [200]
+    return_content: true
+  register: arr_bazarr_languages_before
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Build complete Bazarr owned projections
+  ansible.builtin.set_fact:
+    arr_bazarr_owned_projections: >-
+      {{ arr_bazarr_settings_before.json |
+         acquisition_bazarr_owned_projections(
+           arr_bazarr_languages_before.json,
+           arr_bazarr_declarations,
+           vault_arr_bazarr_admin_username,
+           vault_arr_bazarr_admin_password,
+           vault_arr_radarr_api_key,
+           vault_arr_sonarr_api_key
+         ) }}
+  changed_when: false
+  no_log: true
+
+- name: Build the exact Bazarr connection request
+  ansible.builtin.set_fact:
+    arr_bazarr_connection_body: >-
+      {{ arr_bazarr_declarations |
+         acquisition_bazarr_connection_body(
+           vault_arr_bazarr_admin_username,
+           vault_arr_bazarr_admin_password,
+           vault_arr_radarr_api_key,
+           vault_arr_sonarr_api_key,
+           arr_bazarr_owned_projections.unmanaged_enabled_providers
+         ) }}
+  changed_when: false
   no_log: true
 
 - name: Reconcile Bazarr authentication and identical-path Arr connections
@@ -50,43 +69,14 @@
     headers:
       X-API-KEY: "{{ vault_arr_bazarr_api_key }}"
     body_format: form-urlencoded
-    body:
-      settings-auth-type: form
-      settings-auth-username: "{{ vault_arr_bazarr_admin_username }}"
-      settings-auth-password: "{{ vault_arr_bazarr_admin_password }}"
-      settings-general-use_radarr: "true"
-      settings-general-use_sonarr: "true"
-      settings-radarr-ip: radarr
-      settings-radarr-port: "7878"
-      settings-radarr-base_url: ""
-      settings-radarr-ssl: "false"
-      settings-radarr-apikey: "{{ vault_arr_radarr_api_key }}"
-      settings-sonarr-ip: sonarr
-      settings-sonarr-port: "8989"
-      settings-sonarr-base_url: ""
-      settings-sonarr-ssl: "false"
-      settings-sonarr-apikey: "{{ vault_arr_sonarr_api_key }}"
-      settings-general-path_mappings: ["null"]
-      settings-general-path_mappings_movie: ["null"]
-      languages-enabled: >-
-        {{ media_bazarr_languages if media_bazarr_languages | length > 0 else ['null'] }}
-      settings-general-enabled_providers: >-
-        {{ media_bazarr_providers | map(attribute='name') | list
-           if media_bazarr_providers | length > 0 else ['null'] }}
+    body: "{{ arr_bazarr_connection_body }}"
     status_code: [204]
-  changed_when: >-
-    arr_bazarr_settings_before.json.auth.type | default('') != 'form' or
-    arr_bazarr_settings_before.json.auth.username != vault_arr_bazarr_admin_username or
-    not arr_bazarr_settings_before.json.general.use_radarr | bool or
-    not arr_bazarr_settings_before.json.general.use_sonarr | bool or
-    arr_bazarr_settings_before.json.radarr.ip != 'radarr' or
-    arr_bazarr_settings_before.json.radarr.port | int != 7878 or
-    arr_bazarr_settings_before.json.sonarr.ip != 'sonarr' or
-    arr_bazarr_settings_before.json.sonarr.port | int != 8989 or
-    arr_bazarr_settings_before.json.general.path_mappings | length > 0 or
-    arr_bazarr_settings_before.json.general.path_mappings_movie | length > 0 or
-    arr_bazarr_settings_before.json.general.enabled_providers | sort !=
-      media_bazarr_providers | map(attribute='name') | list | sort
+  when: >-
+    arr_bazarr_owned_projections.current.connection !=
+      arr_bazarr_owned_projections.desired.connection or
+    arr_installed_reconciliation_fingerprints.bazarr_providers !=
+      arr_desired_reconciliation_fingerprints.bazarr_providers
+  changed_when: true
   no_log: true
 
 - name: Reconcile operator-owned Bazarr provider settings
@@ -96,10 +86,15 @@
     headers:
       X-API-KEY: "{{ vault_arr_bazarr_api_key }}"
     body_format: form-urlencoded
-    body: "{{ item.settings }}"
+    body: "{{ item.value }}"
     status_code: [204]
-  loop: "{{ media_bazarr_providers }}"
+  loop: "{{ arr_bazarr_declarations.provider_bodies | dict2items }}"
   loop_control:
     label: bazarr-operator-provider
+  when: >-
+    arr_bazarr_owned_projections.current.providers[item.key] !=
+      arr_bazarr_owned_projections.desired.providers[item.key] or
+    arr_installed_reconciliation_fingerprints.bazarr_providers !=
+      arr_desired_reconciliation_fingerprints.bazarr_providers
   changed_when: true
   no_log: true

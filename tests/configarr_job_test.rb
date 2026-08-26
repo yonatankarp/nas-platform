@@ -38,8 +38,9 @@ if failures.empty?
     profiles = Array(instance["quality_profiles"])
     check(failures, profiles.map { |profile| profile["name"] } == ["HD Bluray + WEB 1080p"],
           "#{application} must declare the one Phase 1 1080p profile")
-    check(failures, instance["media_naming"].is_a?(Hash),
-          "#{application} must declare media naming")
+    check(failures, instance["media_naming_api"].is_a?(Hash) &&
+                    !instance.key?("media_naming"),
+          "#{application} must declare literal naming through media_naming_api")
     check(failures, Array(instance["custom_formats"]).any?,
           "#{application} must assign custom formats")
   end
@@ -74,6 +75,23 @@ if failures.empty?
         "Configarr job must reject upstream instance failures even when Configarr exits zero")
   check(failures, run_task&.fetch("no_log", false) == true,
         "Configarr captured output must remain redacted")
+  read_before = tasks.find do |task|
+    task["name"] == "Read Configarr-owned Arr resources before reconciliation"
+  end
+  read_after = tasks.find do |task|
+    task["name"] == "Read Configarr-owned Arr resources after reconciliation"
+  end
+  run_index = tasks.index(run_task)
+  check(failures,
+        read_before && read_after && run_index &&
+          tasks.index(read_before) < run_index && run_index < tasks.index(read_after),
+        "Configarr must read complete owned state before and after its job")
+  check(failures, Array(run_task&.fetch("when", nil)).join(" ").include?("arr_configarr_run_required"),
+        "Configarr job must run only when input or verified owned state drifts")
+  check(failures,
+        tasks.to_s.include?("arr_verified_reconciliation_state_fingerprints") &&
+          tasks.to_s.include?("configarr_owned_state"),
+        "Configarr must expose a distinct verified owned-state hash after complete readback")
 
   secrets = File.read(File.join(ROOT, "roles/arr/templates/configarr-secrets.yml.j2"))
   check(failures, secrets.lines.grep(/API_KEY:/).length == 2,
