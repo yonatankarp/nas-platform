@@ -110,7 +110,8 @@ SECRET_SENTINELS = (SECRETS.values + [
   "private-stale-sonarr-apiKey", "private-stale-sonarr-username",
   "private-stale-sonarr-password", "private-stale-auth-password",
   "private-stale-radarr-apikey", "private-stale-sonarr-apikey",
-  "fixture-radarr-admin-password", "fixture-sonarr-admin-password"
+  "fixture-radarr-admin-password", "fixture-sonarr-admin-password",
+  "fixture-prowlarr-admin-password"
 ]).freeze
 
 APPLICATION_DECLARATION = {
@@ -1217,6 +1218,9 @@ class AcquisitionApi
         "username" => "fixture-prowlarr-admin",
         "launchBrowser" => false
       }))
+    when ["PUT", "/api/v1/config/host/1"]
+      @state["prowlarr_host"] = JSON.parse(body)
+      send_json(client, 200, @state.fetch("prowlarr_host"))
     when ["GET", "/api/v1/applications"]
       send_json(client, 200, @state.fetch("applications", []).map { |item| public_item(item, :application) })
     when ["POST", "/api/v1/applications"]
@@ -1611,6 +1615,8 @@ def base_variables(port)
       deep_copy(APPLICATION_DECLARATION), deep_copy(SONARR_APPLICATION_DECLARATION)
     ],
     "vault_arr_prowlarr_api_key" => "fixture-prowlarr-control-key",
+    "vault_arr_prowlarr_admin_username" => "fixture-prowlarr-admin",
+    "vault_arr_prowlarr_admin_password" => "fixture-prowlarr-admin-password",
     "media_arr_indexers" => [deep_copy(INDEXER_DECLARATION)],
     "arr_servarr_instance" => deep_copy(SERVARR_INSTANCE).merge(
       "api" => "http://127.0.0.1:#{port}/api/v3"
@@ -2460,6 +2466,31 @@ with_api(cross_resource_preflight_state) do |api|
     failures << "global Prowlarr preflight accepted a malformed later indexer" if
       result.fetch("status").success?
     failures << "global Prowlarr preflight reached a mutation" unless
+      mutation_requests(api, ->(_request) { true }).empty?
+  end
+end
+
+malformed_later_current_application_state = {
+  "applications" => [
+    deep_copy(APPLICATION).merge("enable" => false),
+    deep_copy(SONARR_APPLICATION),
+    {
+      "id" => 12,
+      "name" => "Malformed Later Current Application",
+      "fields" => [{ "name" => "baseUrl" }]
+    }
+  ],
+  "indexers" => [deep_copy(INDEXER)]
+}
+with_api(malformed_later_current_application_state) do |api|
+  result = run_tasks(
+    :prowlarr_preflight, api, {}, prepare_fingerprints: false
+  )
+  sane = check_sanity(failures, "malformed later current Prowlarr application", result, api)
+  if sane
+    failures << "malformed later current Prowlarr application was accepted" if
+      result.fetch("status").success?
+    failures << "malformed later current Prowlarr application reached a mutation" unless
       mutation_requests(api, ->(_request) { true }).empty?
   end
 end

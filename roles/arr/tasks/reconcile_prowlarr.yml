@@ -111,13 +111,39 @@
   ansible.builtin.assert:
     that:
       - item is mapping
-      - item.id is number
+      - item.id is integer
       - item.name is string
-      - item.fields | default([]) is sequence
-      - >-
-        item.fields | default([]) | map(attribute='name') | list | length ==
-        item.fields | default([]) | map(attribute='name') | unique | list | length
+      - item.name is match('^[^\r\n]+$')
+      - item.fields is defined
+      - item.fields is sequence
+      - item.fields is not mapping
+      - item.fields is not string
     fail_msg: Prowlarr returned an unsupported application object schema.
+  loop: "{{ arr_prowlarr_applications_before.json }}"
+  loop_control:
+    label: prowlarr-application-schema
+  no_log: true
+
+- name: Validate every Prowlarr application response field
+  ansible.builtin.assert:
+    that:
+      - item.1 is mapping
+      - item.1.name is string
+      - item.1.name is match('^[^\r\n]+$')
+      - item.1.value is defined
+    fail_msg: Prowlarr returned an unsupported application field schema.
+  loop: "{{ arr_prowlarr_applications_before.json | subelements('fields') }}"
+  loop_control:
+    label: prowlarr-application-field-schema
+  no_log: true
+
+- name: Refuse duplicate Prowlarr application response field names
+  ansible.builtin.assert:
+    that:
+      - >-
+        item.fields | map(attribute='name') | list | length ==
+        item.fields | map(attribute='name') | unique | list | length
+    fail_msg: Prowlarr returned duplicate application field names.
   loop: "{{ arr_prowlarr_applications_before.json }}"
   loop_control:
     label: prowlarr-application-schema
