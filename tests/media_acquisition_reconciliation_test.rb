@@ -2539,6 +2539,40 @@ with_api(malformed_later_current_application_state) do |api|
   end
 end
 
+{
+  "later application syncCategories" => lambda do
+    state = {
+      "applications" => [
+        deep_copy(APPLICATION).merge("enable" => false), deep_copy(SONARR_APPLICATION)
+      ],
+      "indexers" => [deep_copy(INDEXER)]
+    }
+    set_field!(state.fetch("applications").last, "syncCategories", nil)
+    state
+  end,
+  "later indexer minimumSeeders" => lambda do
+    state = {
+      "applications" => [
+        deep_copy(APPLICATION).merge("enable" => false), deep_copy(SONARR_APPLICATION)
+      ],
+      "indexers" => [deep_copy(INDEXER)]
+    }
+    set_field!(state.fetch("indexers").first, "minimumSeeders", nil)
+    state
+  end
+}.each do |label, build_state|
+  with_api(build_state.call) do |api|
+    result = run_tasks(:prowlarr_preflight, api, {}, prepare_fingerprints: false)
+    sane = check_sanity(failures, "malformed typed Prowlarr #{label}", result, api)
+    if sane
+      failures << "malformed typed Prowlarr #{label} was accepted" if
+        result.fetch("status").success?
+      failures << "malformed typed Prowlarr #{label} reached a mutation" unless
+        mutation_requests(api, ->(_request) { true }).empty?
+    end
+  end
+end
+
 application_state = {
   "applications" => [
     deep_copy(APPLICATION), deep_copy(SONARR_APPLICATION),
@@ -2646,6 +2680,48 @@ with_api(malformed_later_production_client_state) do |api|
       result.fetch("status").success?
     failures << "malformed later production-order Servarr client reached mutation" unless
       mutation_requests(api, production_client_write).empty?
+  end
+end
+
+servarr_global_ownership_cases = {}
+servarr_url_duplicate_state = {
+  "radarr_download_clients" => [deep_copy(DOWNLOAD_CLIENT).merge("enable" => false)],
+  "sonarr_download_clients" => [
+    deep_copy(SONARR_DOWNLOAD_CLIENT),
+    deep_copy(SONARR_DOWNLOAD_CLIENT).merge("id" => 91, "name" => "URL Duplicate")
+  ]
+}
+servarr_global_ownership_cases["later Sonarr URL duplicate"] = servarr_url_duplicate_state
+servarr_conflicting_identity_state = {
+  "radarr_download_clients" => [deep_copy(DOWNLOAD_CLIENT).merge("enable" => false)],
+  "sonarr_download_clients" => [
+    deep_copy(SONARR_DOWNLOAD_CLIENT).tap do |client|
+      set_field!(client, "host", "legacy-sab")
+    end,
+    deep_copy(SONARR_DOWNLOAD_CLIENT).merge("id" => 92, "name" => "URL Owner")
+  ]
+}
+servarr_global_ownership_cases["later Sonarr conflicting name and URL"] =
+  servarr_conflicting_identity_state
+servarr_incomplete_adoption = deep_copy(SONARR_DOWNLOAD_CLIENT).merge(
+  "id" => 93, "name" => "URL Adoption"
+)
+remove_field!(servarr_incomplete_adoption, "useSsl")
+servarr_global_ownership_cases["later Sonarr incomplete URL adoption"] = {
+  "radarr_download_clients" => [deep_copy(DOWNLOAD_CLIENT).merge("enable" => false)],
+  "sonarr_download_clients" => [servarr_incomplete_adoption]
+}
+servarr_global_ownership_cases.each do |label, state|
+  with_api(state) do |api|
+    result = run_tasks(
+      :download_client_production, api, {}, prepare_fingerprints: false
+    )
+    sane = check_sanity(failures, label, result, api, kind: :download_client_production)
+    if sane
+      failures << "#{label} was accepted" if result.fetch("status").success?
+      failures << "#{label} reached mutation" unless
+        mutation_requests(api, production_client_write).empty?
+    end
   end
 end
 
@@ -3281,10 +3357,7 @@ indexer_mutations = {
     set_field!(state.fetch("indexers").first, "orderedValues", [2, { "nested" => 1 }, "first"])
   end,
   "fields.categories" => ->(state) { set_field!(state.fetch("indexers").first, "categories", [9999]) },
-  "fields.minimumSeeders" => ->(state) { set_field!(state.fetch("indexers").first, "minimumSeeders", 99) },
-  "fields.apiKey missing readable value" => lambda do |state|
-    remove_field!(state.fetch("indexers").first, "apiKey")
-  end
+  "fields.minimumSeeders" => ->(state) { set_field!(state.fetch("indexers").first, "minimumSeeders", 99) }
 }
 indexer_write = ->(request) { request["target"].match?(%r{\A/api/v1/indexer(?:/\d+)?\z}) }
 indexer_current = lambda do |state|
@@ -3315,6 +3388,12 @@ set_field!(malformed_category_state.fetch("indexers").first, "categories", [5000
 exercise_duplicate(
   failures, relationship: "Prowlarr malformed indexer categories", kind: :indexer,
   state: malformed_category_state, variables: {}, write_matcher: indexer_write
+)
+missing_indexer_api_key_state = deep_copy(indexer_state)
+remove_field!(missing_indexer_api_key_state.fetch("indexers").first, "apiKey")
+exercise_duplicate(
+  failures, relationship: "Prowlarr missing readable indexer API key", kind: :indexer,
+  state: missing_indexer_api_key_state, variables: {}, write_matcher: indexer_write
 )
 indexer_secret_state = deep_copy(indexer_state)
 set_field!(indexer_secret_state.fetch("indexers").first, "apiKey", "private-stale-indexer-secret")

@@ -29,6 +29,7 @@
     loop_var: arr_servarr_clients_validation_result
   vars:
     arr_servarr_clients_validation_collection: "{{ arr_servarr_clients_validation_result.json }}"
+    arr_servarr_clients_validation_instance: "{{ arr_servarr_clients_validation_result.item }}"
   no_log: true
 
 - name: Reconcile each Servarr SABnzbd client after downloader startup

@@ -61,18 +61,78 @@
     label: servarr-download-client-schema
   no_log: true
 
-- name: Require complete owned Servarr SABnzbd client fields before mutation
+- name: Resolve Servarr SABnzbd name and URL ownership before mutation
   ansible.builtin.assert:
     that:
-      - arr_servarr_validation_owned_matches | length <= 1
+      - arr_servarr_validation_name_matches | length <= 1
+      - arr_servarr_validation_url_matches | length <= 1
       - >-
-        arr_servarr_validation_owned_matches | length == 0 or
-        (arr_servarr_validation_owned_matches[0].fields |
-         selectattr('name', 'equalto', item) | list | length) == 1
-    fail_msg: The owned Servarr SABnzbd client has an incomplete field schema.
-  loop: [host, port, useSsl, urlBase]
+        arr_servarr_validation_name_matches | length == 0 or
+        arr_servarr_validation_url_matches | length == 0 or
+        arr_servarr_validation_name_matches[0].id ==
+        arr_servarr_validation_url_matches[0].id
+    fail_msg: Servarr returned ambiguous SABnzbd name or URL ownership.
   vars:
-    arr_servarr_validation_owned_matches: >-
+    arr_servarr_validation_name_matches: >-
       {{ arr_servarr_clients_validation_collection |
          selectattr('name', 'equalto', arr_sabnzbd_client_name) | list }}
+    arr_servarr_validation_url_matches: >-
+      {{ arr_servarr_clients_validation_collection |
+         acquisition_servarr_client_url_matches(arr_sabnzbd_host, arr_sabnzbd_port) }}
+  no_log: true
+
+- name: Require complete selected Servarr SABnzbd client fields before mutation
+  ansible.builtin.assert:
+    that:
+      - >-
+        arr_servarr_validation_selected_matches | length == 0 or
+        (arr_servarr_validation_selected_matches[0].fields |
+         selectattr('name', 'equalto', item) | list | length) == 1
+    fail_msg: The selected Servarr SABnzbd client has an incomplete field schema.
+  loop: [host, port, useSsl, urlBase]
+  vars:
+    arr_servarr_validation_name_matches: >-
+      {{ arr_servarr_clients_validation_collection |
+         selectattr('name', 'equalto', arr_sabnzbd_client_name) | list }}
+    arr_servarr_validation_url_matches: >-
+      {{ arr_servarr_clients_validation_collection |
+         acquisition_servarr_client_url_matches(arr_sabnzbd_host, arr_sabnzbd_port) }}
+    arr_servarr_validation_selected_matches: >-
+      {{ arr_servarr_validation_name_matches
+         if arr_servarr_validation_name_matches | length == 1
+         else arr_servarr_validation_url_matches }}
+  no_log: true
+
+- name: Evaluate the selected Servarr SABnzbd projection before mutation
+  ansible.builtin.set_fact:
+    arr_servarr_validation_selected_projection: >-
+      {{ (arr_servarr_validation_selected_matches[0] |
+          acquisition_servarr_client_projection(arr_servarr_validation_masked_fields))
+         if arr_servarr_validation_selected_matches | length == 1 else {} }}
+    arr_servarr_validation_desired_projection: >-
+      {{ (arr_servarr_clients_validation_instance |
+          acquisition_servarr_client_body(
+            arr_sabnzbd_client_name,
+            arr_sabnzbd_host,
+            arr_sabnzbd_port,
+            vault_downloaders_sabnzbd_api_key,
+            vault_downloaders_sabnzbd_admin_username,
+            vault_downloaders_sabnzbd_admin_password
+          )) |
+         acquisition_servarr_client_projection(arr_servarr_validation_masked_fields) }}
+  vars:
+    arr_servarr_validation_name_matches: >-
+      {{ arr_servarr_clients_validation_collection |
+         selectattr('name', 'equalto', arr_sabnzbd_client_name) | list }}
+    arr_servarr_validation_url_matches: >-
+      {{ arr_servarr_clients_validation_collection |
+         acquisition_servarr_client_url_matches(arr_sabnzbd_host, arr_sabnzbd_port) }}
+    arr_servarr_validation_selected_matches: >-
+      {{ arr_servarr_validation_name_matches
+         if arr_servarr_validation_name_matches | length == 1
+         else arr_servarr_validation_url_matches }}
+    arr_servarr_validation_masked_fields: >-
+      {{ arr_servarr_validation_selected_matches | first | default({}) |
+         acquisition_servarr_client_masked_fields }}
+  changed_when: false
   no_log: true

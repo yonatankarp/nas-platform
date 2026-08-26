@@ -358,6 +358,58 @@
     label: prowlarr-operator-indexer
   no_log: true
 
+- name: Evaluate every owned Prowlarr application projection before mutation
+  ansible.builtin.set_fact:
+    arr_prowlarr_preflight_application_current_projection: >-
+      {{ (arr_prowlarr_preflight_application_matches[0] |
+          acquisition_application_projection(
+            arr_prowlarr_preflight_application_masked_fields
+          )) if arr_prowlarr_preflight_application_matches | length == 1 else {} }}
+    arr_prowlarr_preflight_application_desired_projection: >-
+      {{ (item |
+          acquisition_application_body(
+            arr_prowlarr_internal_url,
+            arr_prowlarr_application_sync_level
+          )) |
+         acquisition_application_projection(
+           arr_prowlarr_preflight_application_masked_fields
+         ) }}
+  loop: "{{ arr_prowlarr_applications }}"
+  vars:
+    arr_prowlarr_preflight_application_matches: >-
+      {{ arr_prowlarr_applications_before.json |
+         selectattr('name', 'equalto', item.name) | list }}
+    arr_prowlarr_preflight_application_masked_fields: >-
+      {{ arr_prowlarr_preflight_application_matches | first | default({}) |
+         acquisition_application_masked_fields }}
+  changed_when: false
+  no_log: true
+
+- name: Evaluate every owned Prowlarr indexer projection before mutation
+  ansible.builtin.set_fact:
+    arr_prowlarr_preflight_indexer_current_projection: >-
+      {{ (arr_prowlarr_preflight_indexer_matches[0] |
+          acquisition_indexer_projection(
+            item,
+            arr_prowlarr_preflight_indexer_masked_fields
+          )) if arr_prowlarr_preflight_indexer_matches | length == 1 else {} }}
+    arr_prowlarr_preflight_indexer_desired_projection: >-
+      {{ (item | acquisition_indexer_body) |
+         acquisition_indexer_projection(
+           item,
+           arr_prowlarr_preflight_indexer_masked_fields
+         ) }}
+  loop: "{{ media_arr_indexers }}"
+  vars:
+    arr_prowlarr_preflight_indexer_matches: >-
+      {{ arr_prowlarr_indexers_before.json |
+         selectattr('name', 'equalto', item.name) | list }}
+    arr_prowlarr_preflight_indexer_masked_fields: >-
+      {{ arr_prowlarr_preflight_indexer_matches | first | default({}) |
+         acquisition_indexer_masked_fields(item) }}
+  changed_when: false
+  no_log: true
+
 - name: Reconcile Prowlarr administrator authentication
   ansible.builtin.uri:
     url: "{{ arr_prowlarr_api }}/config/host/{{ arr_prowlarr_host_before.json.id }}"

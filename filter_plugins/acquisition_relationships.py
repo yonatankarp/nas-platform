@@ -144,7 +144,7 @@ def acquisition_application_projection(
             "baseUrl": _string(fields.get("baseUrl")),
             "username": _string(fields.get("username")),
             "password": _string(fields.get("password")),
-            "syncCategories": _sorted_integers(fields.get("syncCategories", [])),
+            "syncCategories": _sorted_integers(fields.get("syncCategories")),
         },
     }
     if "apiKey" not in masked_names:
@@ -244,6 +244,8 @@ def acquisition_servarr_client_url_matches(
     for client in collection:
         client = _mapping(client, "Servarr download client")
         fields = _fields(client.get("fields", []))
+        if "host" not in fields or "port" not in fields:
+            continue
         if (
             _string(fields.get("host")) == expected_host
             and _integer(fields.get("port")) == expected_port
@@ -301,7 +303,9 @@ def acquisition_indexer_projection(
         if name in masked_names:
             continue
         if name not in current_fields:
-            continue
+            raise AnsibleFilterError(
+                f"Prowlarr indexer field {name!r} is missing from readable state"
+            )
         current = current_fields[name]
         readable_fields[name] = _normalized_like(name, current, desired)
     return {

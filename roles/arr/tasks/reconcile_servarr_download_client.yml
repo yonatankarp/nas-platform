@@ -25,6 +25,7 @@
   ansible.builtin.include_tasks: validate_servarr_download_clients.yml
   vars:
     arr_servarr_clients_validation_collection: "{{ arr_servarr_clients_before.json }}"
+    arr_servarr_clients_validation_instance: "{{ arr_servarr_instance }}"
   no_log: true
 
 - name: Find named Servarr SABnzbd clients
