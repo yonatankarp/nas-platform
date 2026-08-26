@@ -49,6 +49,9 @@ NON_SECRET_TASK_NAMES = [
   "Record a bounded Configarr execution summary"
 ].freeze
 FINGERPRINT_RECORD_TASK_NAME = "Record verified Arr desired-input fingerprints"
+FINGERPRINT_READER_TASK_NAME = "Atomically read private Arr desired-input fingerprints"
+VERIFICATION_GATE_INIT_TASK_NAME = "Initialize Arr reconciliation verification gate"
+VERIFICATION_GATE_SUCCESS_TASK_NAME = "Mark Arr reconciliation verification successful"
 FINGERPRINT_STAT_RESULTS = "{{ arr_reconciliation_fingerprint_stats.results }}"
 FINGERPRINT_FILE_SAFETY_PREDICATES = {
   "regular" => "not item.stat.exists or item.stat.isreg",
@@ -416,6 +419,74 @@ def fingerprint_loader_contract_failures(tasks)
   failures
 end
 
+def fingerprint_atomic_reader_contract_failures(tasks)
+  reader = tasks.find { |task| task["name"] == FINGERPRINT_READER_TASK_NAME }
+  command = reader&.fetch("ansible.builtin.command", nil)
+  argv = command&.fetch("argv", nil)
+  script = Array(argv)[2].to_s
+  failures = []
+  failures << "reader.command" unless command.is_a?(Hash) && argv.is_a?(Array)
+  failures << "reader.interpreter" unless Array(argv)[0].to_s.include?("ansible_facts")
+  failures << "reader.no_slurp" if tasks.any? { |task| task.key?("ansible.builtin.slurp") }
+  {
+    "readonly" => "os.O_RDONLY",
+    "nofollow" => "os.O_NOFOLLOW",
+    "cloexec" => "os.O_CLOEXEC",
+    "regular" => "stat.S_ISREG(before.st_mode)",
+    "mode" => "stat.S_IMODE(before.st_mode) != 0o600",
+    "uid" => "before.st_uid != expected_uid",
+    "gid" => "before.st_gid != expected_gid",
+    "size" => "before.st_size != 65",
+    "bounded" => "os.read(fd, 65)",
+    "extra" => "os.read(fd, 1)",
+    "newline" => "content[64:] != b\"\\n\"",
+    "lowercase" => "byte not in b\"0123456789abcdef\"",
+    "fstat.before" => "before = os.fstat(fd)",
+    "fstat.after" => "after = os.fstat(fd)",
+    "identity" => "before_identity != after_identity",
+    "stdout" => "sys.stdout.write(content[:64].decode(\"ascii\"))"
+  }.each do |label, token|
+    failures << "reader.#{label}" unless script.include?(token)
+  end
+  failures
+end
+
+def task_named(tasks, name)
+  tasks.find { |task| task["name"] == name }
+end
+
+def verification_gate_contract_failures(main_tasks, verify_tasks)
+  init = task_named(main_tasks, VERIFICATION_GATE_INIT_TASK_NAME)
+  success_matches = verify_tasks.select do |task|
+    task["name"] == VERIFICATION_GATE_SUCCESS_TASK_NAME
+  end
+  success = success_matches.first
+  recorder = task_named(main_tasks, "Persist verified Arr desired-input fingerprints")
+  reconciliation = task_named(main_tasks, "Reconcile each Servarr instance")
+  verification = task_named(main_tasks, "Run Arr service verification")
+  init_index = main_tasks.index(init)
+  reconciliation_index = main_tasks.index(reconciliation)
+  verification_index = main_tasks.index(verification)
+  recorder_index = main_tasks.index(recorder)
+  recorder_when = Array(recorder&.fetch("when", nil)).map { |condition| normalized_ansible_expression(condition) }
+  failures = []
+  failures << "gate.initialize" unless
+    init_index && reconciliation_index && recorder_index &&
+    init_index < reconciliation_index && init_index < recorder_index &&
+    init&.dig("ansible.builtin.set_fact", "arr_reconciliation_verification_succeeded") == false &&
+    init["changed_when"] == false
+  failures << "gate.success" unless
+    success_matches.length == 1 && verify_tasks.last.equal?(success) &&
+    success&.dig("ansible.builtin.set_fact", "arr_reconciliation_verification_succeeded") == true &&
+    success["changed_when"] == false && Array(success["tags"]).include?("platform_verify_arr")
+  failures << "gate.recorder" unless
+    verification_index && recorder_index && verification_index < recorder_index &&
+    recorder_when.include?(
+      normalized_ansible_expression("arr_reconciliation_verification_succeeded is sameas true")
+    )
+  failures
+end
+
 def check_fingerprint_record_contract(failures, label, tasks)
   fingerprint_record_contract_failures(tasks).each do |violation|
     failures << "#{label} fingerprint recorder violates #{violation}"
@@ -472,6 +543,88 @@ def check_fingerprint_loader_contract(failures, label, tasks)
     failures << "#{label} fingerprint loader #{predicate_label} alteration mutation survived" unless
       fingerprint_loader_contract_failures(altered).include?(contract_label)
   end
+
+  fingerprint_atomic_reader_contract_failures(tasks).each do |violation|
+    failures << "#{label} fingerprint loader violates #{violation}"
+  end
+  reader = task_named(tasks, FINGERPRINT_READER_TASK_NAME)
+  return unless reader&.dig("ansible.builtin.command", "argv").is_a?(Array)
+
+  {
+    "readonly" => "os.O_RDONLY",
+    "nofollow" => "os.O_NOFOLLOW",
+    "regular" => "stat.S_ISREG(before.st_mode)",
+    "mode" => "stat.S_IMODE(before.st_mode) != 0o600",
+    "uid" => "before.st_uid != expected_uid",
+    "gid" => "before.st_gid != expected_gid",
+    "size" => "before.st_size != 65",
+    "bounded" => "os.read(fd, 65)",
+    "newline" => "content[64:] != b\"\\n\"",
+    "lowercase" => "byte not in b\"0123456789abcdef\"",
+    "fstat.before" => "before = os.fstat(fd)",
+    "fstat.after" => "after = os.fstat(fd)",
+    "identity" => "before_identity != after_identity",
+    "stdout" => "sys.stdout.write(content[:64].decode(\"ascii\"))"
+  }.each do |label_suffix, token|
+    mutant = deep_copy(tasks)
+    mutant_reader = task_named(mutant, FINGERPRINT_READER_TASK_NAME)
+    mutant_script = mutant_reader.dig("ansible.builtin.command", "argv", 2)
+    mutant_reader["ansible.builtin.command"]["argv"][2] = mutant_script.sub(token, "")
+    failures << "#{label} fingerprint loader #{label_suffix} mutation survived" unless
+      fingerprint_atomic_reader_contract_failures(mutant).include?("reader.#{label_suffix}")
+  end
+end
+
+def check_verification_gate_contract(failures, main_tasks, verify_tasks)
+  verification_gate_contract_failures(main_tasks, verify_tasks).each do |violation|
+    failures << "Arr fingerprint recorder violates #{violation}"
+  end
+  return unless task_named(main_tasks, VERIFICATION_GATE_INIT_TASK_NAME) &&
+                task_named(verify_tasks, VERIFICATION_GATE_SUCCESS_TASK_NAME)
+
+  init_mutant = deep_copy(main_tasks)
+  task_named(init_mutant, VERIFICATION_GATE_INIT_TASK_NAME)
+    .fetch("ansible.builtin.set_fact")["arr_reconciliation_verification_succeeded"] = true
+  failures << "Arr fingerprint recorder initialization mutation survived" unless
+    verification_gate_contract_failures(init_mutant, verify_tasks).include?("gate.initialize")
+
+  init_relocation_mutant = deep_copy(main_tasks)
+  relocated_init = task_named(init_relocation_mutant, VERIFICATION_GATE_INIT_TASK_NAME)
+  init_relocation_mutant.delete(relocated_init)
+  reconciliation_index = init_relocation_mutant.index do |task|
+    task["name"] == "Reconcile each Servarr instance"
+  end
+  init_relocation_mutant.insert(reconciliation_index + 1, relocated_init)
+  failures << "Arr fingerprint recorder initialization-relocation mutation survived" unless
+    verification_gate_contract_failures(init_relocation_mutant, verify_tasks).include?("gate.initialize")
+
+  success_mutant = deep_copy(verify_tasks)
+  task_named(success_mutant, VERIFICATION_GATE_SUCCESS_TASK_NAME)
+    .fetch("ansible.builtin.set_fact")["arr_reconciliation_verification_succeeded"] = false
+  failures << "Arr fingerprint recorder success mutation survived" unless
+    verification_gate_contract_failures(main_tasks, success_mutant).include?("gate.success")
+
+  removal_mutant = deep_copy(verify_tasks)
+  removal_mutant.reject! { |task| task["name"] == VERIFICATION_GATE_SUCCESS_TASK_NAME }
+  failures << "Arr fingerprint recorder success-removal mutation survived" unless
+    verification_gate_contract_failures(main_tasks, removal_mutant).include?("gate.success")
+
+  relocation_mutant = deep_copy(verify_tasks)
+  relocated = relocation_mutant.pop
+  relocation_mutant.unshift(relocated)
+  failures << "Arr fingerprint recorder success-relocation mutation survived" unless
+    verification_gate_contract_failures(main_tasks, relocation_mutant).include?("gate.success")
+
+  recorder_mutant = deep_copy(main_tasks)
+  recorder_when = task_named(recorder_mutant, "Persist verified Arr desired-input fingerprints")
+                  .fetch("when")
+  recorder_when.reject! do |condition|
+    normalized_ansible_expression(condition) == normalized_ansible_expression(
+      "arr_reconciliation_verification_succeeded is sameas true"
+    )
+  end
+  failures << "Arr fingerprint recorder gate-removal mutation survived" unless
+    verification_gate_contract_failures(recorder_mutant, verify_tasks).include?("gate.recorder")
 end
 
 def reconciliation_tasks(kind)
@@ -551,6 +704,28 @@ def verification_tasks(kind)
   end
 end
 
+def optional_task(filename, name, root: ARR_TASKS)
+  tasks = YAML.safe_load_file(File.join(root, filename), aliases: true)
+  matches = tasks.select { |task| task["name"] == name }
+  matches.length == 1 ? deep_copy(matches) : []
+end
+
+def verification_gate_initialization_tasks
+  tasks = YAML.safe_load_file(File.join(ARR_TASKS, "main.yml"), aliases: true)
+  init_index = tasks.index { |task| task["name"] == VERIFICATION_GATE_INIT_TASK_NAME }
+  reconciliation_index = tasks.index { |task| task["name"] == "Reconcile each Servarr instance" }
+  return [] unless init_index && reconciliation_index && init_index < reconciliation_index
+
+  [deep_copy(tasks.fetch(init_index))]
+end
+
+def verification_success_tasks
+  tasks = YAML.safe_load_file(File.join(ARR_TASKS, "verify.yml"), aliases: true)
+  return [] unless tasks.last&.fetch("name", nil) == VERIFICATION_GATE_SUCCESS_TASK_NAME
+
+  [deep_copy(tasks.last)]
+end
+
 def fingerprint_tasks_available?
   File.file?(File.join(ARR_TASKS, "reconciliation_fingerprints.yml")) &&
     File.file?(File.join(ARR_TASKS, "record_reconciliation_fingerprints.yml"))
@@ -579,10 +754,27 @@ def fingerprint_record_tasks
 end
 
 def selected_tasks(kind)
-  owned_tasks = reconciliation_tasks(kind) + verification_tasks(kind)
+  owned_tasks = verification_gate_initialization_tasks + reconciliation_tasks(kind) +
+    verification_tasks(kind) + verification_success_tasks
   return owned_tasks unless fingerprint_tasks_available?
 
   fingerprint_load_tasks + owned_tasks + fingerprint_record_tasks
+end
+
+def tag_filtered_fingerprint_tasks
+  tasks = fingerprint_load_tasks + verification_gate_initialization_tasks +
+    optional_task("main.yml", "Run Arr service verification") +
+    optional_task("main.yml", "Persist verified Arr desired-input fingerprints")
+  tasks.each do |task|
+    task["tags"] = (Array(task["tags"]) + ["arr"]).uniq
+  end
+  recorder = task_named(tasks, "Persist verified Arr desired-input fingerprints")
+  include_file = recorder.fetch("ansible.builtin.include_tasks")
+  recorder["ansible.builtin.include_tasks"] = {
+    "file" => include_file,
+    "apply" => { "tags" => ["arr"] }
+  }
+  tasks
 end
 
 def fields_hash(object)
@@ -1201,6 +1393,7 @@ def base_variables(port)
     "vault_arr_sonarr_api_key" => SECRETS.fetch("sonarr"),
     "media_bazarr_languages" => %w[en de], "media_bazarr_providers" => [],
     "media_arr_automatic_rename_enabled" => false,
+    "media_usenet_enabled" => true,
     "platform_runtime_dir" => nil, "role_path" => File.join(ROOT, "roles", "arr"),
     "nas_uid" => Process.uid, "nas_gid" => Process.gid,
     "arr_installed_reconciliation_fingerprints" => {
@@ -1375,11 +1568,11 @@ ensure
   stderr&.close unless stderr&.closed?
 end
 
-def run_playbook(path, env)
+def run_playbook(path, env, *arguments)
   event_log = env.fetch("ACQUISITION_FIXTURE_EVENT_LOG")
   File.write(event_log, "", mode: "w", perm: 0o600)
   process = capture_process(
-    env, ANSIBLE_PLAYBOOK, "-i", "localhost,", "-c", "local", path,
+    env, ANSIBLE_PLAYBOOK, "-i", "localhost,", "-c", "local", path, *arguments,
     chdir: ROOT, timeout: PLAYBOOK_TIMEOUT_SECONDS
   )
   events = File.readlines(event_log, chomp: true).map { |line| JSON.parse(line) }
@@ -1484,7 +1677,8 @@ def reconciliation_phase(result)
   )
 end
 
-def run_tasks(kind, api, extra_variables = {}, runtime: nil, prepare_fingerprints: true)
+def run_tasks(kind, api, extra_variables = {}, runtime: nil, prepare_fingerprints: true,
+              task_mutator: nil)
   Dir.mktmpdir("media-acquisition-reconciliation-") do |directory|
     runtime ||= File.join(directory, "runtime")
     FileUtils.mkdir_p(File.join(runtime, "services", "arr"))
@@ -1521,26 +1715,15 @@ def run_tasks(kind, api, extra_variables = {}, runtime: nil, prepare_fingerprint
         end
       )
     end
-    if fingerprint_tasks_available? && prepare_fingerprints
-      if FINGERPRINT_BASELINE_CACHE.fetch("enabled")
-        seed_fingerprint_baseline(runtime, variables)
-      else
-        setup_playbook = File.join(directory, "fingerprint-setup.yml")
-        write_playbook(
-          setup_playbook, variables, fingerprint_load_tasks + fingerprint_record_tasks
-        )
-        setup_result = run_playbook(setup_playbook, env)
-        unless setup_result["status"]&.success?
-          return setup_result.merge(
-            "harness_error" => "private fingerprint baseline setup failed",
-            "fingerprints" => fingerprint_snapshot(runtime)
-          )
-        end
-      end
+    if fingerprint_tasks_available? && prepare_fingerprints &&
+       FINGERPRINT_BASELINE_CACHE.fetch("enabled")
+      seed_fingerprint_baseline(runtime, variables)
     end
     fingerprints_before_play = fingerprint_snapshot(runtime)
     playbook = File.join(directory, "playbook.yml")
-    write_playbook(playbook, variables, selected_tasks(kind))
+    tasks = selected_tasks(kind)
+    task_mutator&.call(tasks)
+    write_playbook(playbook, variables, tasks)
     result = reconciliation_phase(run_playbook(playbook, env))
     fingerprints_after_play = fingerprint_snapshot(runtime)
     result.merge(
@@ -1921,6 +2104,26 @@ synthetic_loader_tasks = [{
   "name" => "Validate private Arr desired-input fingerprints",
   "ansible.builtin.assert" => { "that" => FINGERPRINT_FILE_SAFETY_PREDICATES.values },
   "loop" => FINGERPRINT_STAT_RESULTS
+}, {
+  "name" => FINGERPRINT_READER_TASK_NAME,
+  "ansible.builtin.command" => {
+    "argv" => ["{{ ansible_facts.python.executable }}", "-c", <<~PYTHON]
+      flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+      before = os.fstat(fd)
+      raise RuntimeError unless stat.S_ISREG(before.st_mode)
+      raise RuntimeError if stat.S_IMODE(before.st_mode) != 0o600
+      raise RuntimeError if before.st_uid != expected_uid
+      raise RuntimeError if before.st_gid != expected_gid
+      raise RuntimeError if before.st_size != 65
+      content = os.read(fd, 65)
+      raise RuntimeError if os.read(fd, 1)
+      raise RuntimeError if content[64:] != b"\\n"
+      raise RuntimeError if byte not in b"0123456789abcdef"
+      after = os.fstat(fd)
+      raise RuntimeError if before_identity != after_identity
+      sys.stdout.write(content[:64].decode("ascii"))
+    PYTHON
+  }
 }]
 check_fingerprint_record_contract(
   failures, "synthetic mutation sanity", synthetic_recorder_tasks
@@ -1945,6 +2148,11 @@ if File.file?(fingerprint_recorder)
     YAML.safe_load_file(fingerprint_recorder, aliases: true)
   )
 end
+check_verification_gate_contract(
+  failures,
+  YAML.safe_load_file(File.join(ARR_TASKS, "main.yml"), aliases: true),
+  YAML.safe_load_file(File.join(ARR_TASKS, "verify.yml"), aliases: true)
+)
 
 application_state = {
   "applications" => [
@@ -1959,7 +2167,7 @@ if fingerprint_tasks_available?
       failures, "dedicated fingerprint loader and recorder", result, api, kind: :application
     )
     if sane
-      failures << "dedicated fingerprint loader and recorder failed" unless
+      failures << "dedicated fingerprint loader and recorder failed: #{sanitized_tail(result)}" unless
         result.fetch("status").success?
       expected = result.fetch("expected_fingerprints")
       valid = FINGERPRINT_FILE_BY_KIND.all? do |kind, filename|
@@ -1977,6 +2185,133 @@ if fingerprint_tasks_available?
   # before every scenario.
   FINGERPRINT_BASELINE_CACHE["enabled"] = true
 end
+
+Dir.mktmpdir("media-acquisition-fingerprint-tags-") do |directory|
+  runtime = File.join(directory, "runtime")
+  FileUtils.mkdir_p(File.join(runtime, "services", "arr"))
+  File.write(
+    File.join(runtime, "services", "arr", FINGERPRINT_FILE_BY_KIND.fetch(:configarr)),
+    "#{'0' * 64}\n", mode: "w", perm: 0o600
+  )
+  fingerprints_before = fingerprint_snapshot(runtime)
+  variables = base_variables(1).merge(
+    "media_usenet_enabled" => true,
+    "platform_runtime_dir" => runtime
+  )
+  callback_directory = write_event_callback(directory)
+  env = {
+    "ANSIBLE_NOCOLOR" => "1",
+    "ANSIBLE_CALLBACK_PLUGINS" => callback_directory,
+    "ANSIBLE_CALLBACKS_ENABLED" => "acquisition_fixture_events",
+    "ACQUISITION_FIXTURE_EVENT_LOG" => File.join(directory, "ansible-events.jsonl")
+  }
+  playbook = File.join(directory, "playbook.yml")
+  write_playbook(playbook, variables, tag_filtered_fingerprint_tasks)
+  result = run_playbook(
+    playbook, env, "--tags", "arr", "--skip-tags", "platform_verify_arr"
+  )
+  failures << "HARNESS tag-filtered fingerprint gate produced no task events" if
+    result.fetch("task_events").empty?
+  failures << "tag-filtered verification skip failed: #{sanitized_tail(result)}" unless
+    result.fetch("status")&.success?
+  recorder_started = result.fetch("task_events").any? do |event|
+    event.fetch("task") == FINGERPRINT_RECORD_TASK_NAME
+  end
+  failures << "tag-filtered verification skip reached fingerprint recording" if recorder_started
+  failures << "tag-filtered verification skip changed fingerprint files" unless
+    fingerprint_snapshot(runtime) == fingerprints_before
+end
+
+Dir.mktmpdir("media-acquisition-fingerprint-oversized-") do |runtime|
+  FileUtils.mkdir_p(File.join(runtime, "services", "arr"))
+  with_api(deep_copy(application_state)) do |api|
+    variables = base_variables(api.port)
+    seed_fingerprint_baseline(runtime, variables)
+    path = File.join(
+      runtime, "services", "arr", FINGERPRINT_FILE_BY_KIND.fetch(:application)
+    )
+    File.write(path, "a" * (1024 * 1024), mode: "w", perm: 0o600)
+    before = fingerprint_snapshot(runtime)
+    result = run_tasks(
+      :application, api, {}, runtime: runtime, prepare_fingerprints: false
+    )
+    failures << "oversized fingerprint was accepted" if result.fetch("status").success?
+    failures << "oversized fingerprint reached an API request" unless api.requests.empty?
+    failures << "oversized fingerprint reached fingerprint recording" if
+      result.fetch("recorder_started")
+    failures << "oversized fingerprint changed filesystem state" unless
+      result.fetch("fingerprints") == before
+
+    File.write(path, "#{'A' * 64}\n", mode: "w", perm: 0o600)
+    before = fingerprint_snapshot(runtime)
+    api.requests.clear
+    result = run_tasks(
+      :application, api, {}, runtime: runtime, prepare_fingerprints: false
+    )
+    failures << "uppercase fingerprint was accepted" if result.fetch("status").success?
+    failures << "uppercase fingerprint reached an API request" unless api.requests.empty?
+    failures << "uppercase fingerprint reached fingerprint recording" if
+      result.fetch("recorder_started")
+    failures << "uppercase fingerprint changed filesystem state" unless
+      result.fetch("fingerprints") == before
+  end
+end
+
+Dir.mktmpdir("media-acquisition-fingerprint-race-") do |runtime|
+  fingerprint_directory = File.join(runtime, "services", "arr")
+  FileUtils.mkdir_p(fingerprint_directory)
+  with_api(deep_copy(application_state)) do |api|
+    variables = base_variables(api.port)
+    seed_fingerprint_baseline(runtime, variables)
+    path = File.join(fingerprint_directory, FINGERPRINT_FILE_BY_KIND.fetch(:application))
+    target = File.join(runtime, "replacement-target")
+    File.write(target, "#{'f' * 64}\n", mode: "w", perm: 0o600)
+    target_before = File.binread(target)
+    inject_replacement = lambda do |tasks|
+      assertion_index = tasks.index do |task|
+        task["name"] == "Validate private Arr desired-input fingerprints"
+      end
+      raise "fingerprint race injection boundary is unavailable" unless assertion_index
+
+      tasks.insert(
+        assertion_index + 1,
+        {
+          "name" => "Remove the inspected fingerprint for race injection",
+          "ansible.builtin.file" => { "path" => path, "state" => "absent" },
+          "no_log" => true
+        },
+        {
+          "name" => "Replace the inspected fingerprint with a symlink",
+          "ansible.builtin.file" => {
+            "src" => target, "dest" => path, "state" => "link"
+          },
+          "no_log" => true
+        }
+      )
+    end
+    result = run_tasks(
+      :application, api, {}, runtime: runtime, prepare_fingerprints: false,
+      task_mutator: inject_replacement
+    )
+    failures << "replacement-symlink fingerprint race was accepted" if
+      result.fetch("status").success?
+    failures << "replacement-symlink fingerprint race reached an API request" unless
+      api.requests.empty?
+    failures << "replacement-symlink fingerprint race reached fingerprint recording" if
+      result.fetch("recorder_started")
+    failures << "replacement-symlink fingerprint race did not execute" unless
+      result.dig("fingerprints", FINGERPRINT_FILE_BY_KIND.fetch(:application), "type") == "symlink"
+    failures << "replacement-symlink fingerprint race changed its target" unless
+      File.binread(target) == target_before
+  end
+end
+
+if ENV["ACQUISITION_FINGERPRINT_TARGETED_ONLY"] == "1"
+  abort failures.join("\n") unless failures.empty?
+  puts "media acquisition fingerprint safety behavior holds"
+  exit
+end
+
 application_mutations = {
   "name" => ->(state) { state.fetch("applications").first["name"] = "Legacy Radarr" },
   "enable" => ->(state) { state.fetch("applications").first["enable"] = false },

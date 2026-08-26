@@ -88,6 +88,12 @@
   ansible.builtin.include_tasks: reconciliation_fingerprints.yml
   when: media_usenet_enabled | bool
 
+- name: Initialize Arr reconciliation verification gate
+  ansible.builtin.set_fact:
+    arr_reconciliation_verification_succeeded: false
+  changed_when: false
+  when: media_usenet_enabled | bool
+
 - name: Reconcile each Servarr instance
   ansible.builtin.include_tasks: reconcile_servarr.yml
   loop: "{{ arr_servarr_instances }}"
@@ -140,3 +146,4 @@
   when:
     - media_usenet_enabled | bool
     - not ansible_check_mode
+    - arr_reconciliation_verification_succeeded is sameas true

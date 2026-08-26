@@ -64,10 +64,66 @@
     label: "{{ item.item.key }}"
   no_log: true
 
-- name: Read existing private Arr desired-input fingerprints
-  ansible.builtin.slurp:
-    src: >-
-      {{ platform_runtime_dir }}/services/arr/{{ item.value }}
+- name: Atomically read private Arr desired-input fingerprints
+  ansible.builtin.command:
+    argv:
+      - >-
+        {{
+          ansible_facts.get('python', {}).get(
+            'executable',
+            ansible_facts.get('discovered_interpreter_python', ansible_playbook_python)
+          )
+        }}
+      - -c
+      - |
+        import os
+        import stat
+        import sys
+
+        path = sys.argv[1]
+        expected_uid = int(sys.argv[2])
+        expected_gid = int(sys.argv[3])
+        flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+        fd = os.open(path, flags)
+        try:
+            before = os.fstat(fd)
+            before_identity = (
+                before.st_dev, before.st_ino, before.st_mode, before.st_uid,
+                before.st_gid, before.st_size, before.st_mtime_ns,
+                before.st_ctime_ns,
+            )
+            if not stat.S_ISREG(before.st_mode):
+                raise RuntimeError("fingerprint is not a regular file")
+            if stat.S_IMODE(before.st_mode) != 0o600:
+                raise RuntimeError("fingerprint mode is not 0600")
+            if before.st_uid != expected_uid or before.st_gid != expected_gid:
+                raise RuntimeError("fingerprint ownership differs")
+            if before.st_size != 65:
+                raise RuntimeError("fingerprint size is not exactly 65 bytes")
+
+            content = os.read(fd, 65)
+            if len(content) != 65 or os.read(fd, 1) != b"":
+                raise RuntimeError("fingerprint read is not exactly 65 bytes")
+            if content[64:] != b"\n" or any(
+                byte not in b"0123456789abcdef" for byte in content[:64]
+            ):
+                raise RuntimeError("fingerprint content is invalid")
+
+            after = os.fstat(fd)
+            after_identity = (
+                after.st_dev, after.st_ino, after.st_mode, after.st_uid,
+                after.st_gid, after.st_size, after.st_mtime_ns,
+                after.st_ctime_ns,
+            )
+            if before_identity != after_identity:
+                raise RuntimeError("fingerprint changed while being read")
+            sys.stdout.write(content[:64].decode("ascii"))
+        finally:
+            os.close(fd)
+      - >-
+        {{ platform_runtime_dir }}/services/arr/{{ item.value }}
+      - "{{ nas_uid }}"
+      - "{{ nas_gid }}"
   loop: >-
     {{
       arr_reconciliation_fingerprint_stats.results
@@ -77,18 +133,9 @@
     }}
   loop_control:
     label: "{{ item.key }}"
-  register: arr_reconciliation_fingerprint_contents
+  register: arr_reconciliation_fingerprint_reads
   changed_when: false
-  no_log: true
-
-- name: Validate existing private Arr desired-input fingerprint contents
-  ansible.builtin.assert:
-    that:
-      - (item.content | b64decode) is match('^[0-9a-f]{64}\n\Z')
-    fail_msg: A private Arr desired-input fingerprint has invalid content.
-  loop: "{{ arr_reconciliation_fingerprint_contents.results }}"
-  loop_control:
-    label: "{{ item.item.key }}"
+  check_mode: false
   no_log: true
 
 - name: Initialize installed Arr desired-input fingerprints
@@ -107,9 +154,9 @@
     arr_installed_reconciliation_fingerprints: >-
       {{
         arr_installed_reconciliation_fingerprints
-        | combine({item.item.key: item.content | b64decode | trim})
+        | combine({item.item.key: item.stdout})
       }}
-  loop: "{{ arr_reconciliation_fingerprint_contents.results }}"
+  loop: "{{ arr_reconciliation_fingerprint_reads.results }}"
   loop_control:
     label: "{{ item.item.key }}"
   changed_when: false

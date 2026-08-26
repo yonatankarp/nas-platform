@@ -127,3 +127,10 @@
     fail_msg: Bazarr differs from the declared Phase 1 connection state.
   no_log: true
   tags: [platform_verify_arr]
+
+- name: Mark Arr reconciliation verification successful
+  ansible.builtin.set_fact:
+    arr_reconciliation_verification_succeeded: true
+  changed_when: false
+  no_log: true
+  tags: [platform_verify_arr]
