@@ -85,7 +85,10 @@
   register: arr_deploy
 
 - name: Load private Arr desired-input fingerprints
-  ansible.builtin.include_tasks: reconciliation_fingerprints.yml
+  ansible.builtin.include_tasks:
+    file: reconciliation_fingerprints.yml
+    apply:
+      tags: [platform_verify_arr]
   vars:
     arr_reconciliation_fingerprint_subset:
       - configarr
@@ -93,10 +96,17 @@
       - prowlarr_indexers
       - bazarr_providers
   when: media_usenet_enabled | bool
+  tags: [platform_verify_arr]
 
 - name: Initialize Arr reconciliation verification gate
   ansible.builtin.set_fact:
     arr_reconciliation_verification_succeeded: false
+  changed_when: false
+  when: media_usenet_enabled | bool
+
+- name: Mark the ordinary Arr reconciliation cycle started
+  ansible.builtin.set_fact:
+    arr_reconciliation_cycle_started: true
   changed_when: false
   when: media_usenet_enabled | bool
 

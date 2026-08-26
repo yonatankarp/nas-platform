@@ -1,0 +1,78 @@
+---
+- name: Validate every Servarr download client response object before mutation
+  ansible.builtin.assert:
+    that:
+      - item is mapping
+      - item.id is integer
+      - item.name is string
+      - item.name is match('^[^\r\n]+$')
+      - >-
+        item.enable is boolean or
+        (item.enable is string and item.enable | lower in ['true', 'false'])
+      - >-
+        (item.priority is integer and item.priority is not boolean) or
+        (item.priority is string and item.priority is match('^-?[0-9]+$'))
+      - >-
+        item.removeCompletedDownloads is boolean or
+        (item.removeCompletedDownloads is string and
+         item.removeCompletedDownloads | lower in ['true', 'false'])
+      - >-
+        item.removeFailedDownloads is boolean or
+        (item.removeFailedDownloads is string and
+         item.removeFailedDownloads | lower in ['true', 'false'])
+      - item.fields is sequence
+      - item.fields is not mapping
+      - item.fields is not string
+    fail_msg: A Servarr instance returned an unsupported download client object.
+  loop: "{{ arr_servarr_clients_validation_collection }}"
+  loop_control:
+    label: servarr-download-client-schema
+  no_log: true
+
+- name: Validate every Servarr download client response field before mutation
+  ansible.builtin.assert:
+    that:
+      - item.1 is mapping
+      - item.1.name is string
+      - item.1.name is match('^[^\r\n]+$')
+      - item.1.value is defined
+      - >-
+        item.1.name != 'port' or
+        (item.1.value is integer and item.1.value is not boolean) or
+        (item.1.value is string and item.1.value is match('^-?[0-9]+$'))
+      - >-
+        item.1.name != 'useSsl' or item.1.value is boolean or
+        (item.1.value is string and item.1.value | lower in ['true', 'false'])
+    fail_msg: A Servarr instance returned an unsupported download client field.
+  loop: "{{ arr_servarr_clients_validation_collection | subelements('fields') }}"
+  loop_control:
+    label: servarr-download-client-field-schema
+  no_log: true
+
+- name: Refuse duplicate Servarr download client response field names before mutation
+  ansible.builtin.assert:
+    that:
+      - >-
+        item.fields | map(attribute='name') | list | length ==
+        item.fields | map(attribute='name') | unique | list | length
+    fail_msg: A Servarr instance returned duplicate download client fields.
+  loop: "{{ arr_servarr_clients_validation_collection }}"
+  loop_control:
+    label: servarr-download-client-schema
+  no_log: true
+
+- name: Require complete owned Servarr SABnzbd client fields before mutation
+  ansible.builtin.assert:
+    that:
+      - arr_servarr_validation_owned_matches | length <= 1
+      - >-
+        arr_servarr_validation_owned_matches | length == 0 or
+        (arr_servarr_validation_owned_matches[0].fields |
+         selectattr('name', 'equalto', item) | list | length) == 1
+    fail_msg: The owned Servarr SABnzbd client has an incomplete field schema.
+  loop: [host, port, useSsl, urlBase]
+  vars:
+    arr_servarr_validation_owned_matches: >-
+      {{ arr_servarr_clients_validation_collection |
+         selectattr('name', 'equalto', arr_sabnzbd_client_name) | list }}
+  no_log: true

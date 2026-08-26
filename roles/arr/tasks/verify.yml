@@ -1,4 +1,20 @@
 ---
+- name: Require current opaque Arr desired-input fingerprints in verify-only runs
+  ansible.builtin.assert:
+    that:
+      - >-
+        arr_reconciliation_cycle_started | default(false) | bool or
+        arr_installed_reconciliation_fingerprints[item] ==
+        arr_desired_reconciliation_fingerprints[item]
+    fail_msg: Verify-only Arr execution found stale opaque desired-input state.
+  loop:
+    - configarr
+    - prowlarr_applications
+    - prowlarr_indexers
+    - bazarr_providers
+  no_log: true
+  tags: [platform_verify_arr]
+
 - name: Read Servarr resources for verification
   ansible.builtin.uri:
     url: "{{ item.0.api }}/{{ item.1 }}"

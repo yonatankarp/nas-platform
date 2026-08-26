@@ -21,20 +21,10 @@
     fail_msg: "{{ arr_servarr_instance.name }} returned an unsupported download client collection."
   no_log: true
 
-- name: Validate each Servarr download client response object
-  ansible.builtin.assert:
-    that:
-      - item is mapping
-      - item.id is number
-      - item.name is string
-      - item.fields | default([]) is sequence
-      - >-
-        item.fields | default([]) | map(attribute='name') | list | length ==
-        item.fields | default([]) | map(attribute='name') | unique | list | length
-    fail_msg: "{{ arr_servarr_instance.name }} returned an unsupported download client object."
-  loop: "{{ arr_servarr_clients_before.json }}"
-  loop_control:
-    label: servarr-download-client-schema
+- name: Validate every Servarr download client object
+  ansible.builtin.include_tasks: validate_servarr_download_clients.yml
+  vars:
+    arr_servarr_clients_validation_collection: "{{ arr_servarr_clients_before.json }}"
   no_log: true
 
 - name: Find named Servarr SABnzbd clients
@@ -114,8 +104,9 @@
 - name: Finish the complete Servarr SABnzbd projections and body
   ansible.builtin.set_fact:
     arr_servarr_sab_current_projection: >-
-      {{ arr_servarr_sab_current |
-         acquisition_servarr_client_projection(arr_servarr_sab_masked_fields) }}
+      {{ (arr_servarr_sab_current |
+          acquisition_servarr_client_projection(arr_servarr_sab_masked_fields))
+         if arr_servarr_sab_matches | length == 1 else {} }}
     arr_servarr_sab_desired_projection: >-
       {{ arr_servarr_sab_desired |
          acquisition_servarr_client_projection(arr_servarr_sab_masked_fields) }}

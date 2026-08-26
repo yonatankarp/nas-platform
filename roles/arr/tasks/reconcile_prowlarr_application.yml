@@ -47,10 +47,10 @@
 - name: Finish the complete Prowlarr application projections and body
   ansible.builtin.set_fact:
     arr_prowlarr_application_current_projection: >-
-      {{ arr_prowlarr_application_current |
-         acquisition_application_projection(
-           arr_prowlarr_application_masked_fields
-         ) }}
+      {{ (arr_prowlarr_application_current |
+          acquisition_application_projection(
+            arr_prowlarr_application_masked_fields
+          )) if arr_prowlarr_application_matches | length == 1 else {} }}
     arr_prowlarr_application_desired_projection: >-
       {{ arr_prowlarr_application_desired |
          acquisition_application_projection(

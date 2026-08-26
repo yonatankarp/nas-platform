@@ -41,41 +41,44 @@ def _string(value: Any) -> str:
 
 
 def _boolean(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
     if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "on"}
-    return bool(value)
+        normalized = value.strip().lower()
+        if normalized in {"true", "false"}:
+            return normalized == "true"
+    raise AnsibleFilterError("relationship boolean values must be true or false")
 
 
 def _integer(value: Any) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return 0
+    if isinstance(value, bool):
+        raise AnsibleFilterError("relationship integer values cannot be booleans")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and re.fullmatch(r"-?\d+", value.strip()):
+        return int(value.strip())
+    raise AnsibleFilterError("relationship integer values must be canonical integers")
 
 
 def _sorted_integers(value: Any) -> list[int]:
     if not isinstance(value, (list, tuple)):
-        return []
+        raise AnsibleFilterError("relationship integer lists must be sequences")
     return sorted(_integer(item) for item in value)
 
 
-def _sorted_like(value: Any, desired: list[Any]) -> list[Any]:
-    if not isinstance(value, (list, tuple)):
-        return []
-    if desired and isinstance(desired[0], bool):
-        return sorted((_boolean(item) for item in value), key=str)
-    if desired and isinstance(desired[0], int):
-        return sorted(_integer(item) for item in value)
-    return sorted((_string(item) for item in value), key=str)
-
-
-def _normalized_like(value: Any, desired: Any) -> Any:
+def _normalized_like(name: str, value: Any, desired: Any) -> Any:
     if isinstance(desired, bool):
         return _boolean(value)
     if isinstance(desired, int):
         return _integer(value)
     if isinstance(desired, list):
-        return _sorted_like(value, desired)
+        if not isinstance(value, list):
+            raise AnsibleFilterError(f"relationship field {name!r} must be a list")
+        # Prowlarr category IDs are explicitly unordered; every other list is
+        # API-contract data whose order and nested structure are significant.
+        if name == "categories":
+            return _sorted_integers(value)
+        return deepcopy(value)
     return _string(value)
 
 
@@ -300,7 +303,7 @@ def acquisition_indexer_projection(
         if name not in current_fields:
             continue
         current = current_fields[name]
-        readable_fields[name] = _normalized_like(current, desired)
+        readable_fields[name] = _normalized_like(name, current, desired)
     return {
         "name": _string(value.get("name")),
         "enable": _boolean(value.get("enable")),

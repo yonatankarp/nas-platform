@@ -27,11 +27,11 @@
 - name: Finish the complete Prowlarr indexer projections and body
   ansible.builtin.set_fact:
     arr_prowlarr_indexer_current_projection: >-
-      {{ arr_prowlarr_indexer_current |
-         acquisition_indexer_projection(
-           arr_prowlarr_indexer,
-           arr_prowlarr_indexer_masked_fields
-         ) }}
+      {{ (arr_prowlarr_indexer_current |
+          acquisition_indexer_projection(
+            arr_prowlarr_indexer,
+            arr_prowlarr_indexer_masked_fields
+          )) if arr_prowlarr_indexer_matches | length == 1 else {} }}
     arr_prowlarr_indexer_desired_projection: >-
       {{ arr_prowlarr_indexer_desired |
          acquisition_indexer_projection(

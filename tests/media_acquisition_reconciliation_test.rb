@@ -39,6 +39,7 @@ SECRET_TASK_FILES = [
   [ARR_TASKS, "reconcile_prowlarr.yml"],
   [ARR_TASKS, "reconcile_prowlarr_application.yml"],
   [ARR_TASKS, "reconcile_servarr_download_client.yml"],
+  [ARR_TASKS, "validate_servarr_download_clients.yml"],
   [ARR_TASKS, "reconcile_bazarr.yml"],
   [ARR_TASKS, "configarr.yml"],
   [ARR_TASKS, "verify.yml"],
@@ -207,6 +208,7 @@ INDEXER_DECLARATION = {
     { "name" => "baseUrl", "value" => "https://indexer.example.invalid" },
     { "name" => "apiPath", "value" => "/api" },
     { "name" => "categories", "value" => [5000, 2000] },
+    { "name" => "orderedValues", "value" => ["first", { "nested" => 1 }, 2] },
     { "name" => "minimumSeeders", "value" => 0 },
     { "name" => "apiKey", "value" => SECRETS.fetch("indexer") }
   ]
@@ -748,10 +750,15 @@ def reconciliation_tasks(kind)
     )
     tasks + [include_task]
   when :download_client
-    task_slice(
+    tasks = task_slice(
       "reconcile_servarr_download_client.yml", "Read Servarr download clients",
       "Reconcile the owned Servarr SABnzbd client"
     )
+    validation = task_named(tasks, "Validate every Servarr download client object")
+    validation["ansible.builtin.include_tasks"] = File.join(
+      ARR_TASKS, "validate_servarr_download_clients.yml"
+    )
+    tasks
   when :download_client_production
     tasks = YAML.safe_load_file(
       File.join(ARR_TASKS, "reconcile_download_clients.yml"), aliases: true
@@ -761,6 +768,12 @@ def reconciliation_tasks(kind)
     end
     include_task["ansible.builtin.include_tasks"] = File.join(
       ARR_TASKS, "reconcile_servarr_download_client.yml"
+    )
+    preflight = task_named(
+      tasks, "Validate every Servarr download client object before shared mutation"
+    )
+    preflight["ansible.builtin.include_tasks"] = File.join(
+      ARR_TASKS, "validate_servarr_download_clients.yml"
     )
     deep_copy(tasks)
   when :prowlarr_preflight
@@ -951,6 +964,35 @@ def tag_filtered_downloader_relationship_tasks
   tasks
 end
 
+def arr_verify_only_tasks
+  main = YAML.safe_load_file(File.join(ARR_TASKS, "main.yml"), aliases: true)
+  verify = YAML.safe_load_file(File.join(ARR_TASKS, "verify.yml"), aliases: true)
+  loader = deep_copy(task_named(main, "Load private Arr desired-input fingerprints"))
+  loader["ansible.builtin.include_tasks"]["file"] = File.join(
+    ARR_TASKS, "reconciliation_fingerprints.yml"
+  )
+  recorder = deep_copy(task_named(main, "Persist verified Arr desired-input fingerprints"))
+  recorder["ansible.builtin.include_tasks"] = File.join(
+    ARR_TASKS, "record_reconciliation_fingerprints.yml"
+  )
+  [loader, deep_copy(task_named(
+    verify, "Require current opaque Arr desired-input fingerprints in verify-only runs"
+  ))] + verification_tasks(:indexer) + [recorder]
+end
+
+def downloader_verify_only_tasks
+  main = YAML.safe_load_file(File.join(DOWNLOADER_TASKS, "main.yml"), aliases: true)
+  verify = YAML.safe_load_file(File.join(DOWNLOADER_TASKS, "verify.yml"), aliases: true)
+  [
+    deep_copy(task_named(main, "Load private Servarr desired-input fingerprint")),
+    deep_copy(task_named(
+      verify, "Require current opaque Servarr desired-input fingerprint in verify-only runs"
+    ))
+  ] + verification_tasks(:download_client_production) +
+    downloader_verification_success_tasks +
+    [deep_copy(task_named(main, "Persist verified Servarr desired-input fingerprint"))]
+end
+
 def fields_hash(object)
   Array(object&.fetch("fields", nil)).to_h { |field| [field.fetch("name"), field["value"]] }
 end
@@ -1002,7 +1044,9 @@ end
 def indexer_projection(object)
   fields = fields_hash(object)
   declared_fields = INDEXER_DECLARATION.fetch("fields").to_h do |field|
-    [field.fetch("name"), fields[field.fetch("name")]]
+    name = field.fetch("name")
+    value = fields[name]
+    [name, name == "categories" ? normalized_list(value) : value]
   end
   {
     "name" => object&.fetch("name", nil), "enable" => object&.fetch("enable", nil),
@@ -2498,7 +2542,12 @@ end
 application_state = {
   "applications" => [
     deep_copy(APPLICATION), deep_copy(SONARR_APPLICATION),
-    { "id" => 12, "name" => "Unmanaged", "fields" => [], "tags" => [] }
+    {
+      "id" => 12, "name" => "Unmanaged", "enable" => true,
+      "syncLevel" => "fullSync", "implementation" => "Unmanaged",
+      "implementationName" => "Unmanaged", "configContract" => "UnmanagedSettings",
+      "fields" => [], "tags" => []
+    }
   ]
 }
 if fingerprint_tasks_available?
@@ -2577,6 +2626,26 @@ with_api(deep_copy(clean_production_client_state)) do |api|
     end
     failures << "clean production-order Servarr digest was recorded before downloader verification" unless
       success_index && record_index && success_index < record_index
+  end
+end
+
+malformed_later_production_client_state = {
+  "radarr_download_clients" => [deep_copy(DOWNLOAD_CLIENT).merge("enable" => false)],
+  "sonarr_download_clients" => [deep_copy(SONARR_DOWNLOAD_CLIENT).merge("priority" => nil)]
+}
+with_api(malformed_later_production_client_state) do |api|
+  result = run_tasks(
+    :download_client_production, api, {}, prepare_fingerprints: false
+  )
+  sane = check_sanity(
+    failures, "malformed later production-order Servarr client", result, api,
+    kind: :download_client_production
+  )
+  if sane
+    failures << "malformed later production-order Servarr client was accepted" if
+      result.fetch("status").success?
+    failures << "malformed later production-order Servarr client reached mutation" unless
+      mutation_requests(api, production_client_write).empty?
   end
 end
 
@@ -2771,6 +2840,87 @@ Dir.mktmpdir("media-acquisition-downloader-tags-") do |directory|
       end
     failures << "downloader tag-filtered verification skip changed fingerprint files" unless
       fingerprint_snapshot(runtime).values.compact.empty?
+  end
+end
+
+
+[true, false].each do |stale|
+  Dir.mktmpdir("media-acquisition-arr-verify-only-") do |directory|
+    runtime = File.join(directory, "runtime")
+    FileUtils.mkdir_p(File.join(runtime, "services", "arr"))
+    state = { "applications" => [deep_copy(APPLICATION), deep_copy(SONARR_APPLICATION)],
+              "indexers" => [deep_copy(INDEXER)] }
+    with_api(state) do |api|
+      variables = base_variables(api.port).merge("platform_runtime_dir" => runtime)
+      fingerprint_variables = deep_copy(variables)
+      if stale
+        set_field!(
+          fingerprint_variables.fetch("media_arr_indexers").first,
+          "apiKey", "private-stale-indexer-secret"
+        )
+      end
+      seed_fingerprint_baseline(runtime, fingerprint_variables)
+      before = fingerprint_snapshot(runtime)
+      callback_directory = write_event_callback(directory)
+      env = {
+        "ANSIBLE_NOCOLOR" => "1", "ANSIBLE_CALLBACK_PLUGINS" => callback_directory,
+        "ANSIBLE_CALLBACKS_ENABLED" => "acquisition_fixture_events",
+        "ACQUISITION_FIXTURE_EVENT_LOG" => File.join(directory, "ansible-events.jsonl")
+      }
+      playbook = File.join(directory, "playbook.yml")
+      write_playbook(playbook, variables, arr_verify_only_tasks)
+      result = run_playbook(playbook, env, "--tags", "platform_verify_arr")
+      failures << "Arr verify-only stale digest was accepted" if stale && result.fetch("status").success?
+      failures << "Arr verify-only matching digest failed: #{sanitized_tail(result)}" if
+        !stale && !result.fetch("status").success?
+      failures << "Arr verify-only execution reached an API mutation" unless
+        mutation_requests(api, ->(_request) { true }).empty?
+      failures << "Arr verify-only execution changed fingerprint state" unless
+        fingerprint_snapshot(runtime) == before
+    end
+  end
+end
+
+[true, false].each do |stale|
+  Dir.mktmpdir("media-acquisition-downloader-verify-only-") do |directory|
+    runtime = File.join(directory, "runtime")
+    FileUtils.mkdir_p(File.join(runtime, "services", "arr"))
+    with_api(deep_copy(stable_production_client_state)) do |api|
+      variables = base_variables(api.port).merge(
+        "platform_runtime_dir" => runtime,
+        "arr_servarr_instances" => [SERVARR_INSTANCE, SONARR_INSTANCE].map do |instance|
+          deep_copy(instance).merge(
+            "api" => "http://127.0.0.1:#{api.port}/#{instance.fetch('name')}/api/v3"
+          )
+        end
+      )
+      fingerprint_variables = deep_copy(variables)
+      if stale
+        fingerprint_variables["vault_downloaders_sabnzbd_admin_username"] =
+          "private-stale-username"
+        fingerprint_variables["vault_downloaders_sabnzbd_admin_password"] =
+          "private-stale-password"
+      end
+      seed_fingerprint_baseline(runtime, fingerprint_variables)
+      before = fingerprint_snapshot(runtime)
+      callback_directory = write_event_callback(directory)
+      env = {
+        "ANSIBLE_NOCOLOR" => "1", "ANSIBLE_CALLBACK_PLUGINS" => callback_directory,
+        "ANSIBLE_CALLBACKS_ENABLED" => "acquisition_fixture_events",
+        "ACQUISITION_FIXTURE_EVENT_LOG" => File.join(directory, "ansible-events.jsonl")
+      }
+      playbook = File.join(directory, "playbook.yml")
+      write_playbook(playbook, variables, downloader_verify_only_tasks)
+      result = run_playbook(playbook, env, "--tags", "platform_verify_downloaders")
+      failures << "downloader verify-only stale digest was accepted" if
+        stale && result.fetch("status").success?
+      failures << "downloader verify-only matching digest failed: #{sanitized_tail(result)}" if
+        !stale && !result.fetch("status").success?
+      failures << "downloader verify-only execution reached an API mutation" unless
+        mutation_requests(api, ->(_request) { true }).empty?
+      failures << "downloader verify-only execution changed fingerprint state" unless
+        fingerprint_snapshot(runtime) == before
+    end
   end
 end
 
@@ -3033,6 +3183,19 @@ exercise_duplicate(
   failures, relationship: "Servarr SABnzbd client", kind: :download_client,
   state: duplicate_clients, variables: {}, write_matcher: client_write
 )
+{
+  "missing port" => ->(client) { remove_field!(client, "port") },
+  "null port" => ->(client) { set_field!(client, "port", nil) },
+  "invalid useSsl" => ->(client) { set_field!(client, "useSsl", "sometimes") },
+  "null priority" => ->(client) { client["priority"] = nil }
+}.each do |label, mutate|
+  malformed = deep_copy(client_state)
+  mutate.call(malformed.fetch("download_clients").first)
+  exercise_duplicate(
+    failures, relationship: "Servarr SABnzbd client #{label}", kind: :download_client,
+    state: malformed, variables: {}, write_matcher: client_write
+  )
+end
 
 sonarr_client_state = { "download_clients" => [deep_copy(SONARR_DOWNLOAD_CLIENT)] }
 sonarr_client_mutations = client_mutations.reject do |field, _mutate|
@@ -3114,6 +3277,9 @@ indexer_mutations = {
   "sorted tags" => ->(state) { state.fetch("indexers").first["tags"] = [44] },
   "fields.baseUrl" => ->(state) { set_field!(state.fetch("indexers").first, "baseUrl", "https://legacy.invalid") },
   "fields.apiPath" => ->(state) { set_field!(state.fetch("indexers").first, "apiPath", "/legacy") },
+  "fields.orderedValues" => lambda do |state|
+    set_field!(state.fetch("indexers").first, "orderedValues", [2, { "nested" => 1 }, "first"])
+  end,
   "fields.categories" => ->(state) { set_field!(state.fetch("indexers").first, "categories", [9999]) },
   "fields.minimumSeeders" => ->(state) { set_field!(state.fetch("indexers").first, "minimumSeeders", 99) },
   "fields.apiKey missing readable value" => lambda do |state|
@@ -3135,6 +3301,20 @@ exercise_stable(
   state: indexer_state, write_matcher: indexer_write,
   projection: method(:indexer_projection), desired: INDEXER,
   current: indexer_current
+)
+category_order_state = deep_copy(indexer_state)
+set_field!(category_order_state.fetch("indexers").first, "categories", [2000, 5000])
+exercise_stable(
+  failures, relationship: "Prowlarr unordered indexer categories", kind: :indexer,
+  state: category_order_state, write_matcher: indexer_write,
+  projection: method(:indexer_projection), desired: INDEXER,
+  current: indexer_current
+)
+malformed_category_state = deep_copy(indexer_state)
+set_field!(malformed_category_state.fetch("indexers").first, "categories", [5000, [2000]])
+exercise_duplicate(
+  failures, relationship: "Prowlarr malformed indexer categories", kind: :indexer,
+  state: malformed_category_state, variables: {}, write_matcher: indexer_write
 )
 indexer_secret_state = deep_copy(indexer_state)
 set_field!(indexer_secret_state.fetch("indexers").first, "apiKey", "private-stale-indexer-secret")

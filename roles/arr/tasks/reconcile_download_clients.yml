@@ -1,4 +1,36 @@
 ---
+- name: Read every Servarr download client collection before shared mutation
+  ansible.builtin.uri:
+    url: "{{ item.api }}/downloadclient"
+    method: GET
+    headers:
+      X-Api-Key: "{{ item.api_key }}"
+    status_code: [200]
+    return_content: true
+  loop: "{{ arr_servarr_instances }}"
+  register: arr_servarr_clients_global_preflight
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Validate every Servarr download client collection before shared mutation
+  ansible.builtin.assert:
+    that:
+      - item.json is sequence
+      - item.json is not mapping
+      - item.json is not string
+  loop: "{{ arr_servarr_clients_global_preflight.results }}"
+  no_log: true
+
+- name: Validate every Servarr download client object before shared mutation
+  ansible.builtin.include_tasks: validate_servarr_download_clients.yml
+  loop: "{{ arr_servarr_clients_global_preflight.results }}"
+  loop_control:
+    loop_var: arr_servarr_clients_validation_result
+  vars:
+    arr_servarr_clients_validation_collection: "{{ arr_servarr_clients_validation_result.json }}"
+  no_log: true
+
 - name: Reconcile each Servarr SABnzbd client after downloader startup
   ansible.builtin.include_tasks: reconcile_servarr_download_client.yml
   loop: "{{ arr_servarr_instances }}"

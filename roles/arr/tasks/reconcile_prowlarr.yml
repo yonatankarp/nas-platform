@@ -114,6 +114,21 @@
       - item.id is integer
       - item.name is string
       - item.name is match('^[^\r\n]+$')
+      - >-
+        item.enable is boolean or
+        (item.enable is string and item.enable | lower in ['true', 'false'])
+      - item.syncLevel is string
+      - item.syncLevel is match('^[^\r\n]+$')
+      - item.implementation is string
+      - item.implementation is match('^[^\r\n]+$')
+      - item.implementationName is string
+      - item.implementationName is match('^[^\r\n]+$')
+      - item.configContract is string
+      - item.configContract is match('^[^\r\n]+$')
+      - item.tags is sequence
+      - item.tags is not mapping
+      - item.tags is not string
+      - item.tags | select('integer') | list | length == item.tags | length
       - item.fields is defined
       - item.fields is sequence
       - item.fields is not mapping
@@ -218,6 +233,11 @@
       - item.1.name is string
       - item.1.name is match('^[^\r\n]+$')
       - item.1.value is defined
+      - >-
+        item.1.name != 'categories' or
+        (item.1.value is sequence and item.1.value is not mapping and
+         item.1.value is not string and
+         item.1.value | select('integer') | list | length == item.1.value | length)
     fail_msg: Every Prowlarr indexer field requires a name and value.
   loop: "{{ media_arr_indexers | subelements('fields', skip_missing=True) }}"
   loop_control:
@@ -268,9 +288,25 @@
       - item.id is integer
       - item.name is string
       - item.name is match('^[^\r\n]+$')
-      - item.fields | default([]) is sequence
-      - item.fields | default([]) is not mapping
-      - item.fields | default([]) is not string
+      - >-
+        item.enable is boolean or
+        (item.enable is string and item.enable | lower in ['true', 'false'])
+      - >-
+        (item.priority is integer and item.priority is not boolean) or
+        (item.priority is string and item.priority is match('^-?[0-9]+$'))
+      - item.implementation is string
+      - item.implementation is match('^[^\r\n]+$')
+      - item.implementationName is string
+      - item.implementationName is match('^[^\r\n]+$')
+      - item.configContract is string
+      - item.configContract is match('^[^\r\n]+$')
+      - item.tags is sequence
+      - item.tags is not mapping
+      - item.tags is not string
+      - item.tags | select('integer') | list | length == item.tags | length
+      - item.fields is sequence
+      - item.fields is not mapping
+      - item.fields is not string
     fail_msg: Prowlarr returned an unsupported indexer object schema.
   loop: "{{ arr_prowlarr_indexers_before.json }}"
   loop_control:
@@ -284,8 +320,13 @@
       - item.1.name is string
       - item.1.name is match('^[^\r\n]+$')
       - item.1.value is defined
+      - >-
+        item.1.name != 'categories' or
+        (item.1.value is sequence and item.1.value is not mapping and
+         item.1.value is not string and
+         item.1.value | select('integer') | list | length == item.1.value | length)
     fail_msg: Prowlarr returned an unsupported indexer field schema.
-  loop: "{{ arr_prowlarr_indexers_before.json | subelements('fields', skip_missing=True) }}"
+  loop: "{{ arr_prowlarr_indexers_before.json | subelements('fields') }}"
   loop_control:
     label: prowlarr-indexer-field-schema
   no_log: true
@@ -354,17 +395,5 @@
   loop: "{{ media_arr_indexers }}"
   loop_control:
     loop_var: arr_prowlarr_indexer
-    label: prowlarr-operator-indexer
-  no_log: true
-
-- name: Refuse duplicate Prowlarr indexer names
-  ansible.builtin.assert:
-    that:
-      - >-
-        arr_prowlarr_indexers_before.json |
-        selectattr('name', 'equalto', item.name) | list | length <= 1
-    fail_msg: Prowlarr has an ambiguous operator-owned indexer name.
-  loop: "{{ media_arr_indexers }}"
-  loop_control:
     label: prowlarr-operator-indexer
   no_log: true

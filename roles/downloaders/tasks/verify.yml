@@ -1,4 +1,15 @@
 ---
+- name: Require current opaque Servarr desired-input fingerprint in verify-only runs
+  ansible.builtin.assert:
+    that:
+      - >-
+        downloaders_reconciliation_cycle_started | default(false) | bool or
+        arr_installed_reconciliation_fingerprints.servarr_sabnzbd ==
+        arr_desired_reconciliation_fingerprints.servarr_sabnzbd
+    fail_msg: Verify-only downloader execution found stale opaque desired-input state.
+  no_log: true
+  tags: [platform_verify_downloaders]
+
 - name: Read SABnzbd configuration for verification
   ansible.builtin.uri:
     url: >-
