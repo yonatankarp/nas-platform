@@ -48,6 +48,15 @@ NON_SECRET_TASK_NAMES = [
   "Reconcile each Prowlarr full-sync application",
   "Record a bounded Configarr execution summary"
 ].freeze
+FINGERPRINT_RECORD_TASK_NAME = "Record verified Arr desired-input fingerprints"
+FINGERPRINT_STAT_RESULTS = "{{ arr_reconciliation_fingerprint_stats.results }}"
+FINGERPRINT_FILE_SAFETY_PREDICATES = {
+  "regular" => "not item.stat.exists or item.stat.isreg",
+  "symlink" => "not item.stat.exists or not item.stat.islnk",
+  "mode" => "not item.stat.exists or item.stat.mode == '0600'",
+  "owner" => "not item.stat.exists or item.stat.uid | int == nas_uid | int",
+  "group" => "not item.stat.exists or item.stat.gid | int == nas_gid | int"
+}.freeze
 
 FINGERPRINT_FILES = %w[
   .configarr-input.sha256
@@ -363,6 +372,105 @@ def missing_secret_output_guards(task_sets)
       File.join(File.basename(path), task.fetch("name")) if
         secret_task_protected?(path, task) && task.fetch("no_log", false) != true
     end
+  end
+end
+
+def normalized_ansible_expression(value)
+  value.to_s.delete("()").gsub(/\s+/, " ").strip
+end
+
+def fingerprint_record_contract_failures(tasks)
+  task = tasks.find { |candidate| candidate["name"] == FINGERPRINT_RECORD_TASK_NAME }
+  copy = task&.fetch("ansible.builtin.copy", nil)
+  expected = {
+    "copy.owner" => "{{ nas_uid }}",
+    "copy.group" => "{{ nas_gid }}",
+    "copy.mode" => "0600"
+  }
+  expected.filter_map do |label, value|
+    label unless copy.is_a?(Hash) && copy[label.delete_prefix("copy.")] == value
+  end
+end
+
+def fingerprint_loader_assertion_task(tasks)
+  tasks.find do |candidate|
+    assertion = candidate["ansible.builtin.assert"]
+    Array(assertion&.fetch("that", nil)).any? do |condition|
+      normalized_ansible_expression(condition).include?("item.stat.exists")
+    end
+  end
+end
+
+def fingerprint_loader_contract_failures(tasks)
+  task = fingerprint_loader_assertion_task(tasks)
+  conditions = Array(task&.dig("ansible.builtin.assert", "that")).map do |condition|
+    normalized_ansible_expression(condition)
+  end
+  failures = []
+  failures << "assert.loop" unless
+    normalized_ansible_expression(task&.fetch("loop", nil)) == FINGERPRINT_STAT_RESULTS
+  FINGERPRINT_FILE_SAFETY_PREDICATES.each do |label, predicate|
+    failures << "assert.#{label}" unless
+      conditions.include?(normalized_ansible_expression(predicate))
+  end
+  failures
+end
+
+def check_fingerprint_record_contract(failures, label, tasks)
+  fingerprint_record_contract_failures(tasks).each do |violation|
+    failures << "#{label} fingerprint recorder violates #{violation}"
+  end
+  task = tasks.find { |candidate| candidate["name"] == FINGERPRINT_RECORD_TASK_NAME }
+  return unless task&.fetch("ansible.builtin.copy", nil).is_a?(Hash)
+
+  { "owner" => "wrong-owner", "group" => "wrong-group", "mode" => "0644" }.each do |field, wrong|
+    contract_label = "copy.#{field}"
+    removed = deep_copy(tasks)
+    removed.find { |candidate| candidate["name"] == FINGERPRINT_RECORD_TASK_NAME }
+           .fetch("ansible.builtin.copy").delete(field)
+    failures << "#{label} fingerprint recorder #{field} removal mutation survived" unless
+      fingerprint_record_contract_failures(removed).include?(contract_label)
+
+    altered = deep_copy(tasks)
+    altered.find { |candidate| candidate["name"] == FINGERPRINT_RECORD_TASK_NAME }
+           .fetch("ansible.builtin.copy")[field] = wrong
+    failures << "#{label} fingerprint recorder #{field} alteration mutation survived" unless
+      fingerprint_record_contract_failures(altered).include?(contract_label)
+  end
+end
+
+def check_fingerprint_loader_contract(failures, label, tasks)
+  fingerprint_loader_contract_failures(tasks).each do |violation|
+    failures << "#{label} fingerprint loader violates #{violation}"
+  end
+  task = fingerprint_loader_assertion_task(tasks)
+  return unless task
+
+  loop_mutant = deep_copy(tasks)
+  fingerprint_loader_assertion_task(loop_mutant)["loop"] = []
+  failures << "#{label} fingerprint loader per-file loop mutation survived" unless
+    fingerprint_loader_contract_failures(loop_mutant).include?("assert.loop")
+
+  FINGERPRINT_FILE_SAFETY_PREDICATES.each do |predicate_label, predicate|
+    contract_label = "assert.#{predicate_label}"
+    removed = deep_copy(tasks)
+    removed_conditions = fingerprint_loader_assertion_task(removed)
+                         .fetch("ansible.builtin.assert").fetch("that")
+    removed_conditions.reject! do |condition|
+      normalized_ansible_expression(condition) == normalized_ansible_expression(predicate)
+    end
+    failures << "#{label} fingerprint loader #{predicate_label} removal mutation survived" unless
+      fingerprint_loader_contract_failures(removed).include?(contract_label)
+
+    altered = deep_copy(tasks)
+    altered_conditions = fingerprint_loader_assertion_task(altered)
+                         .fetch("ansible.builtin.assert").fetch("that")
+    index = altered_conditions.index do |condition|
+      normalized_ansible_expression(condition) == normalized_ansible_expression(predicate)
+    end
+    altered_conditions[index] = "#{predicate} and false" if index
+    failures << "#{label} fingerprint loader #{predicate_label} alteration mutation survived" unless
+      fingerprint_loader_contract_failures(altered).include?(contract_label)
   end
 end
 
@@ -1044,6 +1152,24 @@ def canonical_bazarr_provider_body?(request)
   decoded_form(request) == BAZARR_PROVIDER.fetch("settings")
 end
 
+def canonical_application_secret_writes?(requests)
+  expected_by_name = [APPLICATION, SONARR_APPLICATION].to_h do |application|
+    [application.fetch("name"), application]
+  end
+  bodies = requests.map { |request| JSON.parse(request.fetch("body")) }
+  return false unless bodies.map { |body| body["name"] }.sort == expected_by_name.keys.sort
+
+  bodies.all? do |body|
+    expected = expected_by_name.fetch(body.fetch("name"))
+    body.keys.sort == expected.keys.sort &&
+      fields_hash(body).keys.sort == fields_hash(expected).keys.sort &&
+      application_projection(body) == application_projection(expected) &&
+      fields_hash(body).fetch("apiKey") == fields_hash(expected).fetch("apiKey")
+  end
+rescue JSON::ParserError, KeyError
+  false
+end
+
 def base_variables(port)
   variables = {
     "arr_prowlarr_api" => "http://127.0.0.1:#{port}/api/v1",
@@ -1592,7 +1718,8 @@ end
 def exercise_secret_change(failures, relationship:, kind:, state:, field:, variables:,
                            old_variables:, write_matcher:, projection:, desired:, current:,
                            fingerprint_transition: true, expected_changed: 1,
-                           safe_request_body: nil)
+                           expected_writes: 1, safe_request_body: nil,
+                           write_set_validator: nil)
   with_api(deep_copy(state)) do |api|
     old_fingerprint = nil
     runtime = nil
@@ -1636,11 +1763,15 @@ def exercise_secret_change(failures, relationship:, kind:, state:, field:, varia
       next
     end
     writes = mutation_requests(api, write_matcher)
-    unless writes.length == 1
-      failures << "#{relationship} masked secret #{field} did not produce exactly one applicable write"
+    unless writes.length == expected_writes
+      failures << "#{relationship} masked secret #{field} produced #{writes.length} applicable " \
+                  "writes, expected #{expected_writes}"
     end
     if safe_request_body && !writes.all? { |request| safe_request_body.call(request) }
       failures << "#{relationship} masked secret #{field} submitted a non-canonical request body"
+    end
+    if write_set_validator && !write_set_validator.call(writes)
+      failures << "#{relationship} masked secret #{field} did not submit the complete desired write set"
     end
     if fingerprint_tasks_available? && fingerprint_transition
       failures << "#{relationship} masked secret #{field} did not reach fingerprint recording" unless
@@ -1780,10 +1911,40 @@ secret_sets.each do |path, tasks|
   end
 end
 
+synthetic_recorder_tasks = [{
+  "name" => FINGERPRINT_RECORD_TASK_NAME,
+  "ansible.builtin.copy" => {
+    "owner" => "{{ nas_uid }}", "group" => "{{ nas_gid }}", "mode" => "0600"
+  }
+}]
+synthetic_loader_tasks = [{
+  "name" => "Validate private Arr desired-input fingerprints",
+  "ansible.builtin.assert" => { "that" => FINGERPRINT_FILE_SAFETY_PREDICATES.values },
+  "loop" => FINGERPRINT_STAT_RESULTS
+}]
+check_fingerprint_record_contract(
+  failures, "synthetic mutation sanity", synthetic_recorder_tasks
+)
+check_fingerprint_loader_contract(
+  failures, "synthetic mutation sanity", synthetic_loader_tasks
+)
+
 fingerprint_loader = File.join(ARR_TASKS, "reconciliation_fingerprints.yml")
 fingerprint_recorder = File.join(ARR_TASKS, "record_reconciliation_fingerprints.yml")
 failures << "private desired-input fingerprint loading is unavailable" unless File.file?(fingerprint_loader)
 failures << "verified desired-input fingerprint recording is unavailable" unless File.file?(fingerprint_recorder)
+if File.file?(fingerprint_loader)
+  check_fingerprint_loader_contract(
+    failures, File.basename(fingerprint_loader),
+    YAML.safe_load_file(fingerprint_loader, aliases: true)
+  )
+end
+if File.file?(fingerprint_recorder)
+  check_fingerprint_record_contract(
+    failures, File.basename(fingerprint_recorder),
+    YAML.safe_load_file(fingerprint_recorder, aliases: true)
+  )
+end
 
 application_state = {
   "applications" => [
@@ -1859,7 +2020,9 @@ exercise_secret_change(
   old_variables: {
     "arr_prowlarr_applications" => [old_application_declaration, SONARR_APPLICATION_DECLARATION]
   }, write_matcher: application_write, projection: method(:application_projection),
-  desired: APPLICATION, current: application_current
+  desired: APPLICATION, current: application_current,
+  expected_writes: 2, expected_changed: 2,
+  write_set_validator: method(:canonical_application_secret_writes?)
 )
 duplicate_applications = deep_copy(application_state)
 duplicate_applications.fetch("applications") << deep_copy(APPLICATION).merge("id" => 14)
