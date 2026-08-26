@@ -56,7 +56,7 @@ def effective_compose(relative, environment)
   stdout, stderr, status = Open3.capture3(
     environment, "docker", "compose", "-f", relative, "config", "--format", "json", chdir: ROOT
   )
-  raise stderr.lines.first.to_s.strip unless status.success?
+  raise "#{relative} effective Compose failed: #{stderr.lines.first&.strip}" unless status.success?
 
   JSON.parse(stdout)
 end
@@ -140,6 +140,8 @@ check(failures, downloader_services.keys.sort == %w[sabnzbd unpackerr],
       "Phase 1 downloader service set must be exact")
 check(failures, job_services.keys == ["configarr"],
       "Configarr must be the only job service")
+check(failures, downloader_services.dig("unpackerr", "user") == "${NAS_UID:?}:${NAS_GID:?}",
+      "Unpackerr must run as the NAS_UID/NAS_GID identity")
 
 expected_cpus = {
   "radarr" => 1.0, "sonarr" => 1.0, "prowlarr" => 0.5, "bazarr" => 1.0,
