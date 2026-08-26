@@ -43,6 +43,9 @@
     path: >-
       {{ platform_runtime_dir }}/services/arr/{{ item.value }}
     follow: false
+    get_checksum: false
+    get_mime: false
+    get_attributes: false
   loop: "{{ arr_reconciliation_fingerprint_filenames | dict2items }}"
   loop_control:
     label: "{{ item.key }}"

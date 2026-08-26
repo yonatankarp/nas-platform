@@ -404,12 +404,24 @@ def fingerprint_loader_assertion_task(tasks)
   end
 end
 
+def fingerprint_loader_stat_task(tasks)
+  tasks.find do |task|
+    task["name"] == "Inspect private Arr desired-input fingerprint files" &&
+      task["ansible.builtin.stat"].is_a?(Hash)
+  end
+end
+
 def fingerprint_loader_contract_failures(tasks)
+  stat_task = fingerprint_loader_stat_task(tasks)
+  stat_options = stat_task&.fetch("ansible.builtin.stat", nil)
   task = fingerprint_loader_assertion_task(tasks)
   conditions = Array(task&.dig("ansible.builtin.assert", "that")).map do |condition|
     normalized_ansible_expression(condition)
   end
   failures = []
+  %w[get_checksum get_mime get_attributes].each do |option|
+    failures << "stat.#{option}" unless stat_options.is_a?(Hash) && stat_options[option] == false
+  end
   failures << "assert.loop" unless
     normalized_ansible_expression(task&.fetch("loop", nil)) == FINGERPRINT_STAT_RESULTS
   FINGERPRINT_FILE_SAFETY_PREDICATES.each do |label, predicate|
@@ -516,6 +528,18 @@ def check_fingerprint_loader_contract(failures, label, tasks)
   end
   task = fingerprint_loader_assertion_task(tasks)
   return unless task
+
+  %w[get_checksum get_mime get_attributes].each do |option|
+    removed = deep_copy(tasks)
+    fingerprint_loader_stat_task(removed).fetch("ansible.builtin.stat").delete(option)
+    failures << "#{label} fingerprint loader #{option} removal mutation survived" unless
+      fingerprint_loader_contract_failures(removed).include?("stat.#{option}")
+
+    altered = deep_copy(tasks)
+    fingerprint_loader_stat_task(altered).fetch("ansible.builtin.stat")[option] = true
+    failures << "#{label} fingerprint loader #{option} alteration mutation survived" unless
+      fingerprint_loader_contract_failures(altered).include?("stat.#{option}")
+  end
 
   loop_mutant = deep_copy(tasks)
   fingerprint_loader_assertion_task(loop_mutant)["loop"] = []
@@ -2101,6 +2125,11 @@ synthetic_recorder_tasks = [{
   }
 }]
 synthetic_loader_tasks = [{
+  "name" => "Inspect private Arr desired-input fingerprint files",
+  "ansible.builtin.stat" => {
+    "get_checksum" => false, "get_mime" => false, "get_attributes" => false
+  }
+}, {
   "name" => "Validate private Arr desired-input fingerprints",
   "ansible.builtin.assert" => { "that" => FINGERPRINT_FILE_SAFETY_PREDICATES.values },
   "loop" => FINGERPRINT_STAT_RESULTS
