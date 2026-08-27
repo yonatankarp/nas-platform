@@ -47,13 +47,13 @@ jobs:
           fi
 
   static:
-    # The policy gate's wall time is bounded by its slowest single check, and
-    # tests/media_acquisition_reconciliation_test.rb spawns a fresh sandbox and
-    # Ansible run per scenario. It overran the previous 45-minute budget and was
-    # cancelled mid-run, which fails the whole workflow for no code reason.
-    # 90 is the ceiling tests/ci/workflow_test.rb allows; splitting that check
-    # into its own job is the real fix.
-    timeout-minutes: 90
+    # The policy gate's wall time is bounded by its slowest single check. The
+    # media acquisition reconciliation contract is now three checks that the
+    # gate runs concurrently, and its cases run through a worker pool, so the
+    # gate costs the slowest relationship rather than the sum of all of them.
+    # This stays well above the observed runtime so a slow runner cannot cancel
+    # a passing gate the way the previous budget did.
+    timeout-minutes: 45
     needs: changes
     if: ${{ needs.changes.outputs.static == 'true' }}
     runs-on: ubuntu-latest
