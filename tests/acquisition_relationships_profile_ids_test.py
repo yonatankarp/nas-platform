@@ -173,6 +173,40 @@ valid_declarations = plugin.acquisition_bazarr_declarations(
     [{"name": "provider_name", "settings": {"settings-provider_name-api_key": "secret"}}],
 )
 assert valid_declarations["provider_names"] == ["provider_name"]
+for declared, expected in [
+    (True, "true"),
+    (False, "false"),
+    (" TRUE ", "true"),
+    (" false ", "false"),
+]:
+    boolean_declarations = plugin.acquisition_bazarr_declarations(
+        ["en"],
+        [{"name": "provider_name", "settings": {"settings-provider_name-enabled": declared}}],
+    )
+    assert boolean_declarations["provider_bodies"]["provider_name"][
+        "settings-provider_name-enabled"
+    ] == expected
+    assert boolean_declarations["provider_settings"]["provider_name"]["enabled"] is (
+        expected == "true"
+    )
+non_boolean_declarations = plugin.acquisition_bazarr_declarations(
+    ["en"],
+    [{"name": "provider_name", "settings": {"settings-provider_name-label": " truth "}}],
+)
+assert non_boolean_declarations["provider_bodies"]["provider_name"][
+    "settings-provider_name-label"
+] == " truth "
+assert non_boolean_declarations["provider_settings"]["provider_name"]["label"] == " truth "
+
+nullable_quality_group = dict(valid_items[0], quality=None)
+assert profile_tree(
+    [nullable_quality_group], "Configarr nullable group discriminator"
+)["items"][0]["kind"] == "group"
+for invalid_quality_value in ["corrupt", True, [], 7]:
+    malformed_item = dict(valid_items[0], quality=invalid_quality_value)
+    require_tree_rejected(
+        [malformed_item], f"non-mapping quality {invalid_quality_value!r}"
+    )
 for label, providers in {
     "hyphenated provider": [
         {"name": "provider-name", "settings": {"settings-provider-name-api_key": "secret"}}

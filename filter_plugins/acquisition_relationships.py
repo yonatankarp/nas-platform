@@ -441,6 +441,10 @@ def _provider_desired_value(value: Any, label: str, setting_name: str) -> Any:
 
 def _provider_request_value(value: Any, setting_name: str, label: str) -> Any:
     value = _safe_setting_value(value, label)
+    if isinstance(value, bool):
+        return str(value).lower()
+    if isinstance(value, str) and value.strip().lower() in {"true", "false"}:
+        return value.strip().lower()
     if not isinstance(value, list):
         return value
     if setting_name not in BAZARR_ARRAY_SETTINGS:
@@ -489,7 +493,7 @@ def acquisition_bazarr_declarations(languages: Any, providers: Any) -> dict[str,
         # Bazarr v1.6.0 splits form keys on hyphens before indexing settings.
         # Provider/input identifiers in the pinned provider registry therefore
         # use lowercase identifier tokens, never additional delimiters:
-        # https://github.com/morpheus65535/bazarr/blob/v1.6.0/bazarr/app/config.py#L701
+        # https://github.com/morpheus65535/bazarr/blob/v1.6.0/bazarr/app/config.py#L641
         if not re.fullmatch(r"[a-z][a-z0-9_]*", name):
             raise AnsibleFilterError("Bazarr provider names must use canonical lowercase values")
         settings = _mapping(provider.get("settings"), f"Bazarr provider {name!r} settings")
@@ -836,6 +840,10 @@ def _configarr_profile_tree(items: Any, label: str) -> dict[str, Any]:
         allowed = _strict_boolean(item.get("allowed"), f"{label} item allowed")
         children = _sequence(item.get("items", []), f"{label} item children")
         quality = item.get("quality")
+        if "quality" in item and quality is not None and not isinstance(quality, dict):
+            raise AnsibleFilterError(
+                f"{label} item quality must be a mapping when present"
+            )
         if isinstance(quality, dict):
             kind = "quality"
             name = _required_string(quality.get("name"), f"{label} quality name")

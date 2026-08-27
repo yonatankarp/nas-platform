@@ -53,10 +53,13 @@ PROFILE_TREE_ID_TARGETED_ONLY =
   ENV["ACQUISITION_PROFILE_TREE_ID_TARGETED_ONLY"] == "1"
 COMPLETE_PROFILE_TREE_TARGETED_ONLY =
   ENV["ACQUISITION_COMPLETE_PROFILE_TREE_TARGETED_ONLY"] == "1"
+API_BOUNDARY_TARGETED_ONLY =
+  ENV["ACQUISITION_API_BOUNDARY_TARGETED_ONLY"] == "1"
 OPAQUE_TARGETED_ONLY = ENV["ACQUISITION_OPAQUE_TARGETED_ONLY"] == "1" ||
                        !CONFIGARR_MUTATION_PATTERN.nil? ||
                        PROFILE_TREE_ID_TARGETED_ONLY ||
-                       COMPLETE_PROFILE_TREE_TARGETED_ONLY
+                       COMPLETE_PROFILE_TREE_TARGETED_ONLY ||
+                       API_BOUNDARY_TARGETED_ONLY
 SECRET_TASK_FILES = [
   [ARR_TASKS, "reconcile_prowlarr.yml"],
   [ARR_TASKS, "reconcile_prowlarr_application.yml"],
@@ -1219,8 +1222,12 @@ def quality_item_tree_projection(items, label)
     node_count += 1
     raise "#{label} exceeds maximum node count 512" if node_count > 512
 
-    identity = item["quality"].is_a?(Hash) ? item.fetch("quality") : item
-    kind = item["quality"].is_a?(Hash) ? "quality" : "group"
+    quality = item["quality"]
+    if item.key?("quality") && !quality.nil? && !quality.is_a?(Hash)
+      raise "#{label} item quality must be a mapping when present"
+    end
+    identity = quality.is_a?(Hash) ? quality : item
+    kind = quality.is_a?(Hash) ? "quality" : "group"
     name = identity.fetch("name")
     identifier = identity.fetch("id")
     unless identifier.is_a?(Integer) && identifier.positive?
@@ -4283,6 +4290,71 @@ exercise_stable(
   current: bazarr_current,
   safe_request_body: ->(request) { canonical_bazarr_provider_body?(request) }
 )
+boolean_provider = deep_copy(BAZARR_PROVIDER)
+boolean_provider.fetch("settings").merge!(
+  "settings-opensubtitlescom-use_hash" => true,
+  "settings-opensubtitlescom-include_ai_translated" => false,
+  "settings-opensubtitlescom-include_machine_translated" => false
+)
+boolean_variables = { "media_bazarr_providers" => [boolean_provider] }
+boolean_state = deep_copy(provider_state)
+boolean_state.dig("bazarr", "providers", "opensubtitlescom")["use_hash"] = false
+
+Dir.mktmpdir("media-acquisition-bazarr-boolean-boundary-") do |runtime|
+  FileUtils.mkdir_p(File.join(runtime, "services", "arr"))
+  with_api(boolean_state) do |api|
+    variables = base_variables(api.port).merge(boolean_variables)
+    seed_fingerprint_baseline(runtime, variables, kind: :bazarr, state: boolean_state)
+    first = run_tasks(
+      :bazarr, api, boolean_variables,
+      runtime: runtime, prepare_fingerprints: false
+    )
+    sane = check_sanity(
+      failures, "Bazarr actual boolean provider declaration", first, api, kind: :bazarr
+    )
+    if sane
+      failures << "Bazarr actual boolean provider declaration did not converge" unless
+        first.fetch("status").success?
+      writes = mutation_requests(api, provider_write)
+      failures << "Bazarr actual boolean provider declaration did not write exactly once" unless
+        writes.length == 1
+      expected_values = {
+        "settings-opensubtitlescom-use_hash" => "true",
+        "settings-opensubtitlescom-include_ai_translated" => "false",
+        "settings-opensubtitlescom-include_machine_translated" => "false"
+      }
+      submitted = Array(writes.first&.fetch("form", nil)).to_h
+      failures << "Bazarr actual boolean provider declaration was not serialized canonically" unless
+        submitted.slice(*expected_values.keys) == expected_values
+      after_first = fingerprint_snapshot(runtime)
+      failures << "Bazarr actual boolean provider declaration did not record fingerprints" unless
+        first.fetch("recorder_started")
+      failures << "Bazarr actual boolean provider declaration did not apply true" unless
+        api.state.dig("bazarr", "providers", "opensubtitlescom", "use_hash") == true
+
+      request_count = api.requests.length
+      second = run_tasks(
+        :bazarr, api, boolean_variables,
+        runtime: runtime, prepare_fingerprints: false
+      )
+      sane = check_sanity(
+        failures, "Bazarr stable actual boolean provider declaration",
+        second, api, kind: :bazarr
+      )
+      if sane
+        second_mutations = api.requests.drop(request_count).select do |request|
+          %w[POST PUT PATCH DELETE].include?(request.fetch("method"))
+        end
+        failures << "Bazarr stable actual boolean provider declaration mutated again" unless
+          second_mutations.empty?
+        failures << "Bazarr stable actual boolean provider declaration reported changed" unless
+          second.fetch("reconciliation_changed") == 0
+        failures << "Bazarr stable actual boolean provider declaration rewrote fingerprints" unless
+          fingerprint_snapshot(runtime) == after_first
+      end
+    end
+  end
+end
 provider_secret_state = deep_copy(provider_state)
 provider_secret_state.dig("bazarr", "providers", "opensubtitlescom")["password"] = "private-stale-provider-secret"
 old_provider = deep_copy(BAZARR_PROVIDER)
@@ -4544,6 +4616,55 @@ configarr_state = { "configarr" => deep_copy(CONFIGARR), "configarr_desired" => 
         fingerprint_snapshot(runtime) == before
     end
   end
+end
+[
+  ["radarr", "string", "corrupt"],
+  ["sonarr", "boolean", true],
+  ["radarr", "list", []],
+  ["sonarr", "number", 7]
+].each do |service, label, invalid_quality|
+  malformed_quality_state = deep_copy(configarr_state)
+  profile_group = malformed_quality_state.dig(
+    "configarr", service, "qualityprofile", 0, "items"
+  ).find { |item| item["name"] == "WEB 1080p" }
+  profile_group["quality"] = invalid_quality
+  other_service = service == "radarr" ? "sonarr" : "radarr"
+  malformed_quality_state.dig(
+    "configarr", other_service, "customformat"
+  ).reject! { |format| format["name"] == CONFIGARR_FORMAT_NAME }
+
+  Dir.mktmpdir("media-acquisition-configarr-quality-discriminator-") do |runtime|
+    FileUtils.mkdir_p(File.join(runtime, "services", "arr"))
+    with_api(malformed_quality_state) do |api|
+      variables = base_variables(api.port)
+      seed_fingerprint_baseline(
+        runtime, variables, kind: :configarr, state: configarr_state
+      )
+      before = fingerprint_snapshot(runtime)
+      result = run_tasks(
+        :configarr, api, {}, runtime: runtime, prepare_fingerprints: false
+      )
+      sane = check_sanity(
+        failures, "Configarr #{service} non-mapping quality #{label}",
+        result, api, kind: :configarr
+      )
+      next unless sane
+
+      failures << "Configarr #{service} non-mapping quality #{label} was accepted" if
+        result.fetch("status").success?
+      failures << "Configarr #{service} non-mapping quality #{label} reached mutation" unless
+        mutation_requests(api, ->(_request) { true }).empty?
+      failures << "Configarr #{service} non-mapping quality #{label} reached fingerprint recording" if
+        result.fetch("recorder_started")
+      failures << "Configarr #{service} non-mapping quality #{label} advanced a fingerprint" unless
+        fingerprint_snapshot(runtime) == before
+    end
+  end
+end
+if API_BOUNDARY_TARGETED_ONLY
+  abort failures.join("\n") unless failures.empty?
+  puts "acquisition API boundary behavior holds"
+  exit
 end
 if PROFILE_TREE_ID_TARGETED_ONLY
   abort failures.join("\n") unless failures.empty?
