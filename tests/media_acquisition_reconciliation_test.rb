@@ -33,10 +33,24 @@ ANSIBLE_PLAYBOOK = resolve_ansible_playbook.freeze
 ARR_TASKS = File.join(ROOT, "roles", "arr", "tasks")
 DOWNLOADER_TASKS = File.join(ROOT, "roles", "downloaders", "tasks")
 CONFIGARR_SOURCE = File.join(ROOT, "roles", "arr", "files", "configarr", "config.yml")
+CONFIGARR_QUALITY_DEFINITION_SOURCES = {
+  "radarr" => File.join(
+    ROOT, "roles", "arr", "files", "configarr", "quality-definition-movie.json"
+  ),
+  "sonarr" => File.join(
+    ROOT, "roles", "arr", "files", "configarr", "quality-definition-series.json"
+  )
+}.freeze
+CONFIGARR_QUALITY_DEFINITION_SHA256 = {
+  "radarr" => "bca0755668a9f55fa512a7e5d2d0e8000ed4339ac4ccd996bb8be0efa6dbef3c",
+  "sonarr" => "2e2c0fe9dcbf148d9282cee4ff76c1e56e096d10965aafaa12f39890a063782b"
+}.freeze
 PLAYBOOK_TIMEOUT_SECONDS = Float(ENV.fetch("ACQUISITION_PLAYBOOK_TIMEOUT", "30"))
 PROCESS_TERM_GRACE_SECONDS = 1.0
 SOCKET_DEADLINE_SECONDS = 2.0
-OPAQUE_TARGETED_ONLY = ENV["ACQUISITION_OPAQUE_TARGETED_ONLY"] == "1"
+CONFIGARR_MUTATION_PATTERN = ENV["ACQUISITION_CONFIGARR_MUTATION_PATTERN"]
+OPAQUE_TARGETED_ONLY = ENV["ACQUISITION_OPAQUE_TARGETED_ONLY"] == "1" ||
+                       !CONFIGARR_MUTATION_PATTERN.nil?
 SECRET_TASK_FILES = [
   [ARR_TASKS, "reconcile_prowlarr.yml"],
   [ARR_TASKS, "reconcile_prowlarr_application.yml"],
@@ -69,12 +83,14 @@ FINGERPRINT_FILE_SAFETY_PREDICATES = {
 FINGERPRINT_FILES = %w[
   .configarr-input.sha256
   .configarr-owned-state.sha256
+  .configarr-opaque-context.sha256
   .prowlarr-applications-input.sha256
   .servarr-sabnzbd-input.sha256
   .prowlarr-indexers-input.sha256
   .bazarr-providers-input.sha256
 ].freeze
 CONFIGARR_STATE_FINGERPRINT_FILE = ".configarr-owned-state.sha256"
+CONFIGARR_OPAQUE_FINGERPRINT_FILE = ".configarr-opaque-context.sha256"
 FINGERPRINT_FILE_BY_KIND = {
   application: ".prowlarr-applications-input.sha256",
   download_client: ".servarr-sabnzbd-input.sha256",
@@ -95,6 +111,10 @@ FINGERPRINT_INPUT_BY_KIND = {
 FINGERPRINT_BASELINE_CACHE = { "enabled" => false }
 CONFIGARR_IMAGE = "ghcr.io/raydak-labs/configarr:1.28.0@sha256:" \
                   "008d8659ff35f63fbcc20b860b33ba7cc49e8d7458a6ec446810ec4d783ef017"
+CONFIGARR_QUALITY_DEFINITION_DOCUMENTS =
+  CONFIGARR_QUALITY_DEFINITION_SOURCES.transform_values do |path|
+    JSON.parse(File.read(path))
+  end.freeze
 
 SECRETS = {
   "application" => "fixture-application-api-secret",
@@ -283,16 +303,11 @@ CONFIGARR_FORMAT_NAME = CONFIGARR_CUSTOM_FORMAT.fetch("name")
 # server context rather than synthetic desired values.
 # https://github.com/TRaSH-Guides/Guides/blob/cbfee0205cdcf2b492135edd00e059f3b7c84675/docs/json/radarr/quality-size/movie.json
 # https://github.com/TRaSH-Guides/Guides/blob/cbfee0205cdcf2b492135edd00e059f3b7c84675/docs/json/sonarr/quality-size/series.json
-quality_sizes = {
-  "radarr" => {
-    "Bluray-1080p" => [50.8, 1999, 2000], "WEBDL-1080p" => [12.5, 1999, 2000],
-    "WEBRip-1080p" => [12.5, 1999, 2000], "HDTV-1080p" => [33.8, 1999, 2000]
-  },
-  "sonarr" => {
-    "Bluray-1080p" => [50.4, 995, 1000], "WEBDL-1080p" => [15, 995, 1000],
-    "WEBRip-1080p" => [15, 995, 1000], "HDTV-1080p" => [15, 995, 1000]
-  }
-}.freeze
+quality_sizes = CONFIGARR_QUALITY_DEFINITION_DOCUMENTS.transform_values do |document|
+  document.fetch("qualities").to_h do |quality|
+    [quality.fetch("quality"), quality.values_at("min", "preferred", "max")]
+  end
+end.freeze
 quality_metadata = [
   [7, "Bluray-1080p", 1080], [3, "WEBDL-1080p", 1080],
   [15, "WEBRip-1080p", 1080], [9, "HDTV-1080p", 1080],
@@ -744,7 +759,8 @@ def production_order_contract_failures(site, arr_main, arr_verify, downloader_ma
   failures << "arr.verify.clients" if arr_client_read.to_s.include?("downloadclient")
 
   arr_subset = %w[
-    configarr configarr_owned_state prowlarr_applications prowlarr_indexers bazarr_providers
+    configarr configarr_owned_state configarr_opaque_context
+    prowlarr_applications prowlarr_indexers bazarr_providers
   ]
   arr_loader = task_named(arr_main, "Load private Arr desired-input fingerprints")
   arr_recorder = task_named(arr_main, "Persist verified Arr desired-input fingerprints")
@@ -872,7 +888,7 @@ def reconciliation_tasks(kind)
   when :configarr
     task_slice(
       "configarr.yml", "Read Configarr-owned Arr resources before reconciliation",
-      "Verify Configarr-owned Arr resources after reconciliation"
+      "Stage verified Configarr owned-state and opaque-context hashes"
     )
   else
     raise "unknown reconciliation fixture #{kind}"
@@ -910,7 +926,7 @@ def verification_tasks(kind)
   when :configarr
     task_slice(
       "verify.yml", "Read Servarr resources for verification",
-      "Verify Configarr complete owned state"
+      "Stage independently verified Configarr state hashes"
     )
   else
     raise "unknown verification fixture #{kind}"
@@ -1225,7 +1241,10 @@ def configarr_projection(settings)
       }
     end.sort_by { |specification| [specification["name"].to_s, specification["implementation"].to_s] }
     format_assignments = Array(profile&.fetch("formatItems", nil)).map do |format_item|
-      { "name" => format_item["name"], "score" => format_item["score"] }
+      {
+        "format" => format_item["format"],
+        "name" => format_item["name"], "score" => format_item["score"]
+      }
     end.sort_by { |format_item| format_item.fetch("name").to_s }
     score_matches = format_assignments.select do |format_item|
       format_item["name"] == CONFIGARR_FORMAT_NAME
@@ -1239,6 +1258,7 @@ def configarr_projection(settings)
          seriesFolderFormat seasonFolderFormat]
     [service, {
       "quality_profile_identity_count" => profile_matches.length,
+      "quality_profile_id" => profile&.fetch("id", nil),
       "quality_profile" => profile && {
         "name" => profile&.fetch("name", nil),
         "upgradeAllowed" => profile&.fetch("upgradeAllowed", nil),
@@ -1256,6 +1276,7 @@ def configarr_projection(settings)
         .map { |definition| quality_definition_projection(definition, service) }
         .sort_by { |definition| definition.dig("quality", "name").to_s },
       "custom_format_identity_count" => format_matches.length,
+      "custom_format_id" => custom_format&.fetch("id", nil),
       "custom_format" => custom_format && {
         "name" => custom_format&.fetch("name", nil),
         "includeCustomFormatWhenRenaming" =>
@@ -1265,6 +1286,102 @@ def configarr_projection(settings)
       "naming" => resources.fetch("config/naming").slice(*naming_fields)
     }]
   end
+end
+
+def configarr_expected_with_server_ids(settings, desired)
+  expected = deep_copy(desired)
+  %w[radarr sonarr].each do |service|
+    current_profile = settings.fetch(service).fetch("qualityprofile").find do |profile|
+      profile["name"] == CONFIGARR_PROFILE_NAME
+    end
+    current_format = settings.fetch(service).fetch("customformat").find do |format|
+      format["name"] == CONFIGARR_FORMAT_NAME
+    end
+    [current_profile, current_format].each do |resource|
+      raise "Configarr #{service} strict generated identity is unavailable" unless
+        resource && resource["id"].is_a?(Integer)
+    end
+    %w[qualityprofile customformat].each do |resource_name|
+      identifiers = settings.fetch(service).fetch(resource_name).map { |item| item["id"] }
+      raise "Configarr #{service} generated identities are ambiguous" unless
+        identifiers.all? { |identifier| identifier.is_a?(Integer) } &&
+        identifiers.uniq.length == identifiers.length
+    end
+    expected_profile = expected.fetch(service).fetch("qualityprofile").find do |profile|
+      profile["name"] == CONFIGARR_PROFILE_NAME
+    end
+    expected_format = expected.fetch(service).fetch("customformat").find do |format|
+      format["name"] == CONFIGARR_FORMAT_NAME
+    end
+    expected_profile["id"] = current_profile.fetch("id")
+    expected_format["id"] = current_format.fetch("id")
+    expected_assignment = expected_profile.fetch("formatItems").find do |assignment|
+      assignment["name"] == CONFIGARR_FORMAT_NAME
+    end
+    expected_assignment["format"] = current_format.fetch("id")
+    # reset_unmatched_scores is enabled in the pinned Configarr policy. The
+    # resulting score relationship therefore owns one assignment for every
+    # current custom-format identity, with zero for every unmatched format.
+    expected_profile["formatItems"] = settings.fetch(service).fetch("customformat").map do |format|
+      if format["name"] == CONFIGARR_FORMAT_NAME
+        deep_copy(expected_assignment)
+      else
+        { "format" => format.fetch("id"), "name" => format.fetch("name"), "score" => 0 }
+      end
+    end
+  end
+  expected
+end
+
+def configarr_quality_definition_invariants(settings)
+  source_current = {}
+  source_desired = {}
+  opaque_context = {}
+  %w[radarr sonarr].each do |service|
+    source_by_name = CONFIGARR_QUALITY_DEFINITION_DOCUMENTS.fetch(service)
+      .fetch("qualities").to_h { |item| [item.fetch("quality"), item] }
+    source_current[service] = []
+    source_desired[service] = []
+    opaque_context[service] = []
+    settings.fetch(service).fetch("qualitydefinition").each do |definition|
+      projected = quality_definition_projection(definition, service)
+      name = projected.dig("quality", "name")
+      opaque = projected.slice("id", "quality", "title", "weight")
+      source = source_by_name[name]
+      if source
+        source_current[service] << {
+          "quality" => name,
+          "minSize" => projected.fetch("minSize"),
+          "preferredSize" => projected.fetch("preferredSize"),
+          "maxSize" => projected.fetch("maxSize")
+        }
+        source_desired[service] << {
+          "quality" => name,
+          "minSize" => source.fetch("min"),
+          "preferredSize" => source.fetch("preferred"),
+          "maxSize" => source.fetch("max")
+        }
+      else
+        opaque.merge!(projected.slice("minSize", "preferredSize", "maxSize"))
+      end
+      opaque_context[service] << opaque
+    end
+    source_current[service].sort_by! { |item| item.fetch("quality") }
+    source_desired[service].sort_by! { |item| item.fetch("quality") }
+    opaque_context[service].sort_by! do |item|
+      [item.dig("quality", "name").to_s, item.fetch("id")]
+    end
+  end
+  {
+    "source_current" => source_current,
+    "source_desired" => source_desired,
+    "opaque_context" => opaque_context
+  }
+end
+
+def configarr_opaque_fingerprint(settings)
+  projection = configarr_quality_definition_invariants(settings).fetch("opaque_context")
+  Digest::SHA256.hexdigest(ansible_json(projection))
 end
 
 def set_field!(object, name, value)
@@ -1590,9 +1707,9 @@ class AcquisitionApi
         raise "fixture custom-format create body differs" unless item == expected
 
         item["id"] = if @malformed_custom_format_service == match[1]
-                       formats.first.fetch("id")
+                       formats.first&.fetch("id", nil)
                      else
-                       formats.map { |entry| entry.fetch("id", 0) }.max + 1
+                       formats.map { |entry| entry.fetch("id", 0) }.max.to_i + 1
                      end
         formats << item
         send_json(client, 201, item)
@@ -2243,6 +2360,9 @@ def desired_fingerprint_values(variables)
     "configarr" => {
       # Ansible's file lookup strips trailing whitespace by default.
       "config" => File.read(CONFIGARR_SOURCE).rstrip,
+      "quality_definitions" => CONFIGARR_QUALITY_DEFINITION_SOURCES.transform_values do |path|
+        File.read(path).rstrip
+      end,
       "radarr_api_key" => variables.fetch("vault_arr_radarr_api_key"),
       "sonarr_api_key" => variables.fetch("vault_arr_sonarr_api_key"),
       "image" => CONFIGARR_IMAGE
@@ -2269,6 +2389,10 @@ def seed_fingerprint_baseline(runtime, variables, kind:, state:)
   File.write(
     File.join(directory, CONFIGARR_STATE_FINGERPRINT_FILE),
     "#{configarr_state_fingerprint(verified_state)}\n", mode: "w", perm: 0o600
+  )
+  File.write(
+    File.join(directory, CONFIGARR_OPAQUE_FINGERPRINT_FILE),
+    "#{configarr_opaque_fingerprint(verified_state)}\n", mode: "w", perm: 0o600
   )
 end
 
@@ -2301,7 +2425,8 @@ def run_tasks(kind, api, extra_variables = {}, runtime: nil, prepare_fingerprint
       if %i[download_client download_client_production].include?(kind)
         ["servarr_sabnzbd"]
       elsif kind == :configarr
-        %w[configarr configarr_owned_state prowlarr_applications prowlarr_indexers bazarr_providers]
+        %w[configarr configarr_owned_state configarr_opaque_context
+           prowlarr_applications prowlarr_indexers bazarr_providers]
       else
         %w[configarr prowlarr_applications prowlarr_indexers bazarr_providers]
       end
@@ -2354,8 +2479,11 @@ def run_tasks(kind, api, extra_variables = {}, runtime: nil, prepare_fingerprint
       expected_state = api.state.fetch("configarr_desired", api.state.fetch("configarr"))
       expected_fingerprints["configarr_owned_state"] =
         configarr_state_fingerprint(expected_state)
+      expected_fingerprints["configarr_opaque_context"] =
+        configarr_opaque_fingerprint(expected_state)
     end
     result.merge(
+      "fingerprints_before" => fingerprints_before_play,
       "fingerprints" => fingerprints_after_play,
       "expected_fingerprints" => expected_fingerprints,
       "fingerprint_changes" => fingerprint_change_count(
@@ -2489,15 +2617,45 @@ def exercise_mutations(failures, relationship:, kind:, baseline:, mutations:, va
       if fingerprint_tasks_available?
         failures << "#{relationship} owned field #{field} did not reach fingerprint recording" unless
           result.fetch("recorder_started")
-        unless result.fetch("fingerprint_changes").zero?
+        input_filename = FINGERPRINT_FILE_BY_KIND.fetch(kind)
+        unless result.fetch("fingerprints_before").fetch(input_filename) ==
+               result.fetch("fingerprints").fetch(input_filename)
           failures << "#{relationship} non-secret field #{field} rewrote a desired-input fingerprint"
+        end
+        if kind == :configarr
+          before = result.fetch("fingerprints_before")
+          after = result.fetch("fingerprints")
+          unless before.fetch(CONFIGARR_OPAQUE_FINGERPRINT_FILE) ==
+                 after.fetch(CONFIGARR_OPAQUE_FINGERPRINT_FILE)
+            failures << "#{relationship} field #{field} changed opaque context continuity"
+          end
+          generated_identity = field.match?(
+            /(?:quality_profile|custom_format)\.name|missing (?:quality profile|custom format)/
+          )
+          if generated_identity &&
+             before.fetch(CONFIGARR_STATE_FINGERPRINT_FILE) ==
+               after.fetch(CONFIGARR_STATE_FINGERPRINT_FILE)
+            failures << "#{relationship} field #{field} did not advance verified owned state"
+          end
         end
       end
       actual = current.call(api.state)
-      unless projection.call(actual) == projection.call(desired)
+      expected = if kind == :configarr
+                   configarr_expected_with_server_ids(actual, desired)
+                 else
+                   desired
+                 end
+      unless projection.call(actual) == projection.call(expected)
         failures << "#{relationship} full owned projection did not converge after #{field} mutant"
       end
-      if preserved && !preserved.call(api.state)
+      if fingerprint_tasks_available? && kind == :configarr
+        state_hash = result.fetch("fingerprints").fetch(CONFIGARR_STATE_FINGERPRINT_FILE)
+        unless state_hash&.fetch("content", nil) ==
+               "#{configarr_state_fingerprint(actual)}\n"
+          failures << "#{relationship} field #{field} recorded a stale owned-state hash"
+        end
+      end
+      if preserved && !preserved.call(api.state, state)
         failures << "#{relationship} modified unmanaged state while repairing #{field}"
       end
     end
@@ -2540,7 +2698,7 @@ def exercise_stable(failures, relationship:, kind:, state:, variables: {}, write
     unless projection.call(actual) == projection.call(desired)
       failures << "#{relationship} stable state no longer matches the owned projection"
     end
-    if preserved && !preserved.call(api.state)
+    if preserved && !preserved.call(api.state, state)
       failures << "#{relationship} stable reconciliation modified unmanaged state"
     end
   end
@@ -2688,6 +2846,10 @@ abort "media acquisition reconciliation fixture requires #{ANSIBLE_PLAYBOOK}" un
 %i[application indexer download_client bazarr configarr].each { |kind| selected_tasks(kind) }
 
 failures = []
+CONFIGARR_QUALITY_DEFINITION_SOURCES.each do |service, path|
+  failures << "Configarr #{service} pinned quality-definition source differs" unless
+    Digest::SHA256.file(path).hexdigest == CONFIGARR_QUALITY_DEFINITION_SHA256.fetch(service)
+end
 
 Dir.mktmpdir("media-acquisition-ansible-resolution-") do |temporary|
   path_bin = File.join(temporary, "path-bin")
@@ -2810,9 +2972,13 @@ if File.file?(fingerprint_loader)
   filenames = computed.fetch("arr_reconciliation_fingerprint_filenames", {})
   failures << "Configarr verified owned-state hash path is unavailable" unless
     filenames["configarr_owned_state"] == CONFIGARR_STATE_FINGERPRINT_FILE
+  failures << "Configarr opaque-context hash path is unavailable" unless
+    filenames["configarr_opaque_context"] == CONFIGARR_OPAQUE_FINGERPRINT_FILE
   desired_inputs = computed.fetch("arr_desired_reconciliation_fingerprints", {})
   failures << "Configarr verified state was mislabeled as a desired-input digest" if
     desired_inputs.key?("configarr_owned_state")
+  failures << "Configarr opaque context was mislabeled as a desired-input digest" if
+    desired_inputs.key?("configarr_opaque_context")
 end
 if File.file?(fingerprint_recorder)
   recorder_tasks = YAML.safe_load_file(fingerprint_recorder, aliases: true)
@@ -3864,7 +4030,7 @@ end
 
 FINGERPRINT_BASELINE_CACHE["enabled"] = true if OPAQUE_TARGETED_ONLY
 
-%w[matching stale_input stale_state].each do |scenario|
+%w[matching stale_input stale_state stale_opaque].each do |scenario|
   Dir.mktmpdir("media-acquisition-configarr-verify-only-") do |directory|
     runtime = File.join(directory, "runtime")
     FileUtils.mkdir_p(File.join(runtime, "services", "arr"))
@@ -3874,6 +4040,11 @@ FINGERPRINT_BASELINE_CACHE["enabled"] = true if OPAQUE_TARGETED_ONLY
     }
     if scenario == "stale_state"
       state.dig("configarr", "radarr", "qualityprofile").first["minFormatScore"] = 999
+    elsif scenario == "stale_opaque"
+      definition = state.dig("configarr", "sonarr", "qualitydefinition").find do |item|
+        item.dig("quality", "name") == "Raw-HD"
+      end
+      definition["id"] += 100
     end
     with_api(state) do |api|
       instances = [SERVARR_INSTANCE, SONARR_INSTANCE].map do |instance|
@@ -3953,6 +4124,28 @@ exercise_stable(
   current: bazarr_current,
   safe_request_body: ->(request) { canonical_bazarr_connection_body?(request, []) }
 )
+{
+  "series mapping entry is not a pair" => ["path_mappings", ["/old"]],
+  "movie mapping entry has extra fields" => [
+    "path_mappings_movie", ["/old", "/new", "/extra"]
+  ],
+  "series mapping entry is not a sequence" => [
+    "path_mappings", { "from" => "/old", "to" => "/new" }
+  ],
+  "movie mapping source is not a string" => ["path_mappings_movie", [7, "/new"]],
+  "series mapping target is not a string" => ["path_mappings", ["/old", false]]
+}.each do |label, (field, entry)|
+  malformed_mapping_state = deep_copy(bazarr_state)
+  malformed_mapping_state.dig("bazarr", "general")[field] = [entry]
+  exercise_duplicate(
+    failures,
+    relationship: "Bazarr malformed #{label}",
+    kind: :bazarr,
+    state: malformed_mapping_state,
+    variables: {},
+    write_matcher: ->(request) { request["target"] == "/api/system/settings" }
+  )
+end
 {
   "auth.password" => ["auth", "password"],
   "radarr.apikey" => ["radarr", "apikey"],
@@ -4087,7 +4280,7 @@ exercise_stable(
   write_matcher: ->(request) { request["target"] == "/api/system/settings" },
   projection: provider_projection,
   desired: BAZARR_WITH_PROVIDER, current: bazarr_current,
-  preserved: lambda do |state|
+  preserved: lambda do |state, _before|
     settings = state.fetch("bazarr")
     settings.dig("providers", "unmanaged-provider") == {
       "username" => "unmanaged-user", "unmanaged_option" => "preserve-unmanaged-provider"
@@ -4107,7 +4300,7 @@ exercise_mutations(
   },
   variables: provider_variables, write_matcher: provider_write,
   projection: provider_projection, desired: BAZARR_WITH_PROVIDER, current: bazarr_current,
-  preserved: lambda do |state|
+  preserved: lambda do |state, _before|
     settings = state.fetch("bazarr")
     settings.dig("providers", "unmanaged-provider") == {
       "username" => "unmanaged-user", "unmanaged_option" => "preserve-unmanaged-provider"
@@ -4127,7 +4320,7 @@ exercise_mutations(
   },
   variables: provider_variables, write_matcher: bazarr_connection_write,
   projection: provider_projection, desired: BAZARR_WITH_PROVIDER, current: bazarr_current,
-  preserved: lambda do |state|
+  preserved: lambda do |state, _before|
     state.dig("bazarr", "general", "enabled_providers").include?("unmanaged-provider") &&
       state.dig("bazarr", "providers", "unmanaged-provider", "unmanaged_option") ==
         "preserve-unmanaged-provider"
@@ -4356,18 +4549,28 @@ configarr_write = lambda do |request|
 end
 configarr_any_write = ->(_request) { true }
 configarr_current = ->(state) { state.fetch("configarr") }
-configarr_unmanaged_preserved = lambda do |state|
+configarr_unmanaged_preserved = lambda do |state, before|
   %w[radarr sonarr].all? do |service|
     current = state.dig("configarr", service)
-    desired = CONFIGARR.fetch(service)
-    desired.fetch("qualityprofile").reject { |item| item["name"] == CONFIGARR_PROFILE_NAME }
+    previous = before.dig("configarr", service)
+    previous_profile = previous.fetch("qualityprofile").find do |item|
+      item["name"] == CONFIGARR_PROFILE_NAME
+    end
+    current_profile = current.fetch("qualityprofile").find do |item|
+      item["name"] == CONFIGARR_PROFILE_NAME
+    end
+    unrelated_profile_fields_preserved = previous_profile.nil? ||
+      %w[unmanagedProfileField language].all? do |field|
+        !previous_profile.key?(field) || current_profile&.fetch(field, nil) == previous_profile[field]
+      end
+
+    previous.fetch("qualityprofile")
+      .reject { |item| item["name"] == CONFIGARR_PROFILE_NAME }
       .all? { |item| current.fetch("qualityprofile").include?(item) } &&
-      desired.fetch("customformat").reject { |item| item["name"] == CONFIGARR_FORMAT_NAME }
+      previous.fetch("customformat")
+        .reject { |item| item["name"] == CONFIGARR_FORMAT_NAME }
         .all? { |item| current.fetch("customformat").include?(item) } &&
-      current.fetch("qualityprofile").find { |item| item["name"] == CONFIGARR_PROFILE_NAME }
-        .fetch("formatItems").reject { |item| item["name"] == CONFIGARR_FORMAT_NAME } ==
-        desired.fetch("qualityprofile").find { |item| item["name"] == CONFIGARR_PROFILE_NAME }
-          .fetch("formatItems").reject { |item| item["name"] == CONFIGARR_FORMAT_NAME }
+      unrelated_profile_fields_preserved
   end
 end
 %w[radarr sonarr].each do |service|
@@ -4394,6 +4597,11 @@ end
     profile["formatItems"] = []
   end
 end
+if CONFIGARR_MUTATION_PATTERN
+  selector = Regexp.new(CONFIGARR_MUTATION_PATTERN)
+  configarr_mutations.select! { |field, _mutation| field.match?(selector) }
+  abort "Configarr mutation selector matched no scenarios" if configarr_mutations.empty?
+end
 exercise_mutations(
   failures, relationship: "Configarr", kind: :configarr,
   baseline: configarr_state, mutations: configarr_mutations,
@@ -4401,13 +4609,18 @@ exercise_mutations(
   desired: CONFIGARR, current: configarr_current,
   preserved: configarr_unmanaged_preserved
 )
+if CONFIGARR_MUTATION_PATTERN
+  abort failures.join("\n") unless failures.empty?
+  puts "selected Configarr mutation reconciliation behavior holds"
+  exit
+end
 
 # Configarr cannot restore server-owned qdef identity metadata, weight, title,
-# or values for definitions absent from the pinned TRaSH input. They remain in
-# the complete verified-state hash and must fail closed without recording a new
-# input or state hash.
+# or values for definitions absent from the pinned TRaSH input. An independent
+# continuity hash must reject that drift before any mutation, even if a desired
+# input changed or the broader owned-state hash is absent.
+context_state = deep_copy(configarr_state)
 %w[radarr sonarr].each do |service|
-  context_state = deep_copy(configarr_state)
   definition = context_state.dig("configarr", service, "qualitydefinition").find do |item|
     item.dig("quality", "name") == "Raw-HD"
   end
@@ -4421,30 +4634,77 @@ exercise_mutations(
   definition["minSize"] = 1
   definition["preferredSize"] = 2
   definition["maxSize"] = 3
+end
+{
+  "existing opaque continuity" => {},
+  "desired input transition plus opaque drift" => {
+    "vault_arr_radarr_api_key" => "private-stale-radarr-apikey",
+    "vault_arr_sonarr_api_key" => "private-stale-sonarr-apikey"
+  },
+  "missing full state plus opaque drift" => :remove_full_state
+}.each do |label, seed_input|
   Dir.mktmpdir("media-acquisition-configarr-context-") do |runtime|
     FileUtils.mkdir_p(File.join(runtime, "services", "arr"))
-    with_api(context_state) do |api|
+    with_api(deep_copy(context_state)) do |api|
       variables = base_variables(api.port)
-      seed_fingerprint_baseline(runtime, variables, kind: :configarr, state: context_state)
+      fingerprint_variables = deep_copy(variables)
+      fingerprint_variables.merge!(seed_input) if seed_input.is_a?(Hash)
+      seed_fingerprint_baseline(
+        runtime, fingerprint_variables, kind: :configarr, state: context_state
+      )
+      if seed_input == :remove_full_state
+        File.unlink(File.join(runtime, "services", "arr", CONFIGARR_STATE_FINGERPRINT_FILE))
+      end
       before = fingerprint_snapshot(runtime)
       result = run_tasks(
         :configarr, api, {}, runtime: runtime, prepare_fingerprints: false
       )
       sane = check_sanity(
-        failures, "Configarr #{service} non-repairable qdef context", result, api,
+        failures, "Configarr #{label}", result, api,
         kind: :configarr
       )
       next unless sane
 
-      failures << "Configarr #{service} accepted non-repairable qdef context drift" if
+      failures << "Configarr #{label} accepted non-repairable qdef context drift" if
         result.fetch("status").success?
-      unless mutation_requests(api, configarr_write).length == 1
-        failures << "Configarr #{service} context drift did not run exactly one job"
-      end
-      failures << "Configarr #{service} context drift advanced a reconciliation hash" unless
+      failures << "Configarr #{label} reached a mutation" unless
+        mutation_requests(api, configarr_any_write).empty?
+      failures << "Configarr #{label} advanced a reconciliation hash" unless
         fingerprint_snapshot(runtime) == before
-      failures << "Configarr #{service} context drift reached fingerprint recording" if
+      failures << "Configarr #{label} reached fingerprint recording" if
         result.fetch("recorder_started")
+    end
+  end
+end
+
+{
+  "clean first opaque baseline" => nil,
+  "repairable source qdef drift before first opaque baseline" => lambda do |state|
+    state.dig("configarr", "radarr", "qualitydefinition").first["minSize"] += 1
+  end
+}.each do |label, mutate|
+  baseline_state = deep_copy(configarr_state)
+  mutate&.call(baseline_state)
+  Dir.mktmpdir("media-acquisition-configarr-first-opaque-") do |runtime|
+    FileUtils.mkdir_p(File.join(runtime, "services", "arr"))
+    with_api(baseline_state) do |api|
+      variables = base_variables(api.port)
+      seed_fingerprint_baseline(runtime, variables, kind: :configarr, state: baseline_state)
+      File.unlink(File.join(runtime, "services", "arr", CONFIGARR_OPAQUE_FINGERPRINT_FILE))
+      result = run_tasks(
+        :configarr, api, {}, runtime: runtime, prepare_fingerprints: false
+      )
+      sane = check_sanity(failures, "Configarr #{label}", result, api, kind: :configarr)
+      next unless sane
+
+      failures << "Configarr #{label} failed" unless result.fetch("status").success?
+      failures << "Configarr #{label} did not run exactly one job" unless
+        mutation_requests(api, configarr_write).length == 1
+      failures << "Configarr #{label} did not converge" unless
+        configarr_projection(api.state.fetch("configarr")) == configarr_projection(CONFIGARR)
+      opaque_file = result.fetch("fingerprints").fetch(CONFIGARR_OPAQUE_FINGERPRINT_FILE, {})
+      failures << "Configarr #{label} did not record opaque continuity" unless
+        opaque_file["content"] == "#{configarr_opaque_fingerprint(CONFIGARR)}\n"
     end
   end
 end
@@ -4504,6 +4764,68 @@ exercise_secret_change(
   exercise_duplicate(
     failures, relationship: "Configarr #{service} format-score assignment", kind: :configarr,
     state: duplicate_score_state, variables: {}, write_matcher: configarr_any_write
+  )
+
+  duplicate_score_id_state = deep_copy(configarr_state)
+  score_items = duplicate_score_id_state.dig(
+    "configarr", service, "qualityprofile", 0, "formatItems"
+  )
+  score_items.last["format"] = score_items.first.fetch("format")
+  other_service = service == "radarr" ? "sonarr" : "radarr"
+  duplicate_score_id_state.dig("configarr", other_service, "customformat").reject! do |format|
+    format["name"] == CONFIGARR_FORMAT_NAME
+  end
+  exercise_duplicate(
+    failures,
+    relationship: "Configarr #{service} format-score numeric identity",
+    kind: :configarr,
+    state: duplicate_score_id_state,
+    variables: {},
+    write_matcher: configarr_any_write
+  )
+
+  {
+    "quality-profile numeric identity" => ["qualityprofile", 0, 1, "id"],
+    "custom-format numeric identity" => ["customformat", 0, 1, "id"],
+    "quality-definition numeric identity" => ["qualitydefinition", 0, -1, "id"]
+  }.each do |identity, (resource, source_index, target_index, field)|
+    duplicate_numeric_state = deep_copy(configarr_state)
+    collection = duplicate_numeric_state.dig("configarr", service, resource)
+    collection.fetch(target_index)[field] = collection.fetch(source_index).fetch(field)
+    other_service = service == "radarr" ? "sonarr" : "radarr"
+    duplicate_numeric_state.dig("configarr", other_service, "customformat").reject! do |format|
+      format["name"] == CONFIGARR_FORMAT_NAME
+    end
+    duplicate_numeric_state.dig(
+      "configarr", other_service, "qualityprofile", 0, "formatItems"
+    ).reject! do |assignment|
+      assignment["name"] == CONFIGARR_FORMAT_NAME
+    end
+    exercise_duplicate(
+      failures,
+      relationship: "Configarr #{service} #{identity}",
+      kind: :configarr,
+      state: duplicate_numeric_state,
+      variables: {},
+      write_matcher: configarr_any_write
+    )
+  end
+  duplicate_quality_id_state = deep_copy(configarr_state)
+  definitions = duplicate_quality_id_state.dig(
+    "configarr", service, "qualitydefinition"
+  )
+  definitions.last.fetch("quality")["id"] = definitions.first.dig("quality", "id")
+  other_service = service == "radarr" ? "sonarr" : "radarr"
+  duplicate_quality_id_state.dig("configarr", other_service, "customformat").reject! do |format|
+    format["name"] == CONFIGARR_FORMAT_NAME
+  end
+  exercise_duplicate(
+    failures,
+    relationship: "Configarr #{service} quality-definition quality numeric identity",
+    kind: :configarr,
+    state: duplicate_quality_id_state,
+    variables: {},
+    write_matcher: configarr_any_write
   )
 end
 
@@ -4575,33 +4897,143 @@ end
   )
 end
 
+invalid_source_documents = {
+  "unparseable pinned document" => "{\"qualities\":",
+  "non-numeric pinned size" => JSON.generate(
+    deep_copy(CONFIGARR_QUALITY_DEFINITION_DOCUMENTS.fetch("radarr")).tap do |document|
+      document.fetch("qualities").first["min"] = true
+    end
+  )
+}
+invalid_source_documents.each do |label, invalid_source|
+  Dir.mktmpdir("media-acquisition-configarr-source-") do |runtime|
+    FileUtils.mkdir_p(File.join(runtime, "services", "arr"))
+    with_api(deep_copy(configarr_state)) do |api|
+      variables = base_variables(api.port)
+      seed_fingerprint_baseline(runtime, variables, kind: :configarr, state: configarr_state)
+      before = fingerprint_snapshot(runtime)
+      task_mutator = lambda do |tasks|
+        source_task = tasks.find do |task|
+          task["name"] == "Load pinned Configarr quality-definition source documents"
+        end
+        source_task.fetch("ansible.builtin.set_fact")
+          .fetch("arr_configarr_quality_definition_sources")["radarr"] = invalid_source
+      end
+      result = run_tasks(
+        :configarr, api, {}, runtime: runtime, prepare_fingerprints: false,
+        task_mutator: task_mutator
+      )
+      sane = check_sanity(
+        failures, "Configarr #{label}", result, api, kind: :configarr
+      )
+      next unless sane
+
+      failures << "Configarr #{label} was accepted" if result.fetch("status").success?
+      failures << "Configarr #{label} reached a mutation" unless
+        mutation_requests(api, configarr_any_write).empty?
+      failures << "Configarr #{label} changed reconciliation hashes" unless
+        fingerprint_snapshot(runtime) == before
+      failures << "Configarr #{label} reached fingerprint recording" if
+        result.fetch("recorder_started")
+    end
+  end
+end
+
 %w[radarr sonarr].each do |service|
-  {
-    "quality-profile collection" => "qualityprofile",
-    "custom-format collection" => "customformat"
-  }.each do |label, resource|
-    empty_state = deep_copy(configarr_state)
-    empty_state.dig("configarr", service)[resource] = []
-    exercise_duplicate(
-      failures,
-      relationship: "Configarr #{service} empty #{label}",
-      kind: :configarr,
-      state: empty_state,
-      variables: {},
-      write_matcher: configarr_any_write
+  empty_profile_state = deep_copy(configarr_state)
+  empty_profile_state.dig("configarr", service)["qualityprofile"] = []
+  exercise_duplicate(
+    failures,
+    relationship: "Configarr #{service} empty quality-profile collection",
+    kind: :configarr,
+    state: empty_profile_state,
+    variables: {},
+    write_matcher: configarr_any_write
+  )
+
+  expected_state = deep_copy(CONFIGARR)
+  expected_state.dig(service, "customformat").select! do |format|
+    format["name"] == CONFIGARR_FORMAT_NAME
+  end
+  expected_profile = expected_state.dig(service, "qualityprofile").find do |profile|
+    profile["name"] == CONFIGARR_PROFILE_NAME
+  end
+  expected_profile.fetch("formatItems").select! do |assignment|
+    assignment["name"] == CONFIGARR_FORMAT_NAME
+  end
+  bootstrap_state = {
+    "configarr" => deep_copy(CONFIGARR),
+    "configarr_desired" => expected_state
+  }
+  bootstrap_state.dig("configarr", service)["customformat"] = []
+  bootstrap_profile = bootstrap_state.dig("configarr", service, "qualityprofile").find do |profile|
+    profile["name"] == CONFIGARR_PROFILE_NAME
+  end
+  bootstrap_profile["formatItems"] = []
+  with_api(bootstrap_state) do |api|
+    result = run_tasks(:configarr, api, {}, prepare_fingerprints: false)
+    sane = check_sanity(
+      failures, "Configarr #{service} empty custom-format bootstrap", result, api,
+      kind: :configarr
     )
+    next unless sane
+
+    failures << "Configarr #{service} empty custom-format bootstrap failed" unless
+      result.fetch("status").success?
+    writes = mutation_requests(api, configarr_any_write)
+    expected_writes = [
+      ["POST", "/#{service}/api/v3/customformat"],
+      ["PUT", "/#{service}/api/v3/qualityprofile/#{101 + %w[radarr sonarr].index(service)}"],
+      ["POST", "/_fixture/configarr/apply"]
+    ]
+    failures << "Configarr #{service} empty custom-format bootstrap write set differs" unless
+      writes.map { |request| [request["method"], request["target"]] } == expected_writes
+    create_index = api.requests.index do |request|
+      request["method"] == "POST" &&
+        request["target"] == "/#{service}/api/v3/customformat"
+    end
+    profile_put_index = api.requests.index do |request|
+      request["method"] == "PUT" &&
+        request["target"].start_with?("/#{service}/api/v3/qualityprofile/")
+    end
+    immediate_reads = api.requests.each_index.count do |index|
+      request = api.requests[index]
+      create_index && profile_put_index && index > create_index && index < profile_put_index &&
+        request["method"] == "GET" && request["target"].match?(
+          %r{\A/(radarr|sonarr)/api/v3/(qualityprofile|qualitydefinition|customformat|config/naming)\z}
+        )
+    end
+    failures << "Configarr #{service} empty custom-format bootstrap skipped immediate reread" unless
+      immediate_reads == 8
+    created_format = api.state.dig("configarr", service, "customformat").find do |format|
+      format["name"] == CONFIGARR_FORMAT_NAME
+    end
+    expected_state.dig(service, "customformat").first["id"] = created_format.fetch("id")
+    expected_profile.fetch("formatItems").first["format"] = created_format.fetch("id")
+    failures << "Configarr #{service} empty custom-format bootstrap did not converge" unless
+      configarr_projection(api.state.fetch("configarr")) == configarr_projection(expected_state)
+    unrelated_resources = %w[qualitydefinition config/naming]
+    unrelated_resources.each do |resource|
+      failures << "Configarr #{service} empty custom-format bootstrap changed #{resource}" unless
+        api.state.dig("configarr", service, resource) == expected_state.dig(service, resource)
+    end
+    failures << "Configarr #{service} empty custom-format bootstrap did not record verified hashes" unless
+      result.fetch("recorder_started")
   end
 end
 
 Dir.mktmpdir("media-acquisition-fingerprint-failure-") do |runtime|
   fingerprint_directory = File.join(runtime, "services", "arr")
   FileUtils.mkdir_p(fingerprint_directory)
-  FINGERPRINT_FILES.each do |filename|
-    path = File.join(fingerprint_directory, filename)
-    File.write(path, "#{'0' * 64}\n", mode: "w", perm: 0o600)
-  end
-  before = fingerprint_snapshot(runtime)
   with_api(deep_copy(configarr_state), fail_configarr: true) do |api|
+    stale_variables = base_variables(api.port).merge(
+      "vault_arr_radarr_api_key" => "private-stale-radarr-apikey",
+      "vault_arr_sonarr_api_key" => "private-stale-sonarr-apikey"
+    )
+    seed_fingerprint_baseline(
+      runtime, stale_variables, kind: :configarr, state: configarr_state
+    )
+    before = fingerprint_snapshot(runtime)
     result = run_tasks(
       :configarr, api, configarr_secret_variables, runtime: runtime,
       prepare_fingerprints: false
@@ -4660,7 +5092,8 @@ if fingerprint_tasks_available?
     [:bazarr, provider_state, provider_variables, FINGERPRINT_FILE_BY_KIND.fetch(:bazarr)],
     [:configarr, configarr_state, configarr_secret_variables,
      FINGERPRINT_FILE_BY_KIND.fetch(:configarr)],
-    [:configarr, configarr_state, configarr_secret_variables, CONFIGARR_STATE_FINGERPRINT_FILE]
+    [:configarr, configarr_state, configarr_secret_variables, CONFIGARR_STATE_FINGERPRINT_FILE],
+    [:configarr, configarr_state, configarr_secret_variables, CONFIGARR_OPAQUE_FINGERPRINT_FILE]
   ]
   unless OPAQUE_TARGETED_ONLY
     fingerprint_safety_cases = [

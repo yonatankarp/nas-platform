@@ -45,6 +45,34 @@
   no_log: true
   tags: [platform_verify_arr]
 
+- name: Load pinned Configarr quality-definition sources for verification
+  ansible.builtin.set_fact:
+    arr_verify_configarr_quality_definition_sources:
+      radarr: >-
+        {{ lookup(
+             'file',
+             role_path ~ '/files/configarr/quality-definition-movie.json'
+           ) }}
+      sonarr: >-
+        {{ lookup(
+             'file',
+             role_path ~ '/files/configarr/quality-definition-series.json'
+           ) }}
+  changed_when: false
+  no_log: true
+  tags: [platform_verify_arr]
+
+- name: Build Configarr quality-definition verification invariants
+  ansible.builtin.set_fact:
+    arr_verify_configarr_quality_definition_invariants: >-
+      {{ arr_verify_configarr_owned_state |
+         acquisition_configarr_quality_definition_invariants(
+           arr_verify_configarr_quality_definition_sources
+         ) }}
+  changed_when: false
+  no_log: true
+  tags: [platform_verify_arr]
+
 - name: Build the desired Configarr verification projection
   ansible.builtin.set_fact:
     arr_verify_configarr_desired_state: >-
@@ -67,17 +95,16 @@
           arr_installed_reconciliation_fingerprints.configarr_owned_state
         )
       }}
-  changed_when: false
-  no_log: true
-  tags: [platform_verify_arr]
-
-- name: Stage the independently verified Configarr owned-state hash
-  ansible.builtin.set_fact:
-    arr_verified_reconciliation_state_fingerprints: >-
-      {{ arr_verified_reconciliation_state_fingerprints | default({}) |
-         combine({
-           'configarr_owned_state': arr_verify_configarr_owned_state_sha256
-         }) }}
+    arr_verify_configarr_opaque_context_sha256: >-
+      {{ arr_verify_configarr_quality_definition_invariants.opaque_context |
+         to_json | hash('sha256') }}
+    arr_verify_configarr_expected_opaque_context_sha256: >-
+      {{
+        (arr_verified_reconciliation_state_fingerprints | default({})).get(
+          'configarr_opaque_context',
+          arr_installed_reconciliation_fingerprints.configarr_opaque_context
+        )
+      }}
   changed_when: false
   no_log: true
   tags: [platform_verify_arr]
@@ -90,9 +117,27 @@
         acquisition_configarr_declared_projection ==
         arr_verify_configarr_desired_state
       - >-
+        arr_verify_configarr_quality_definition_invariants.source_current ==
+        arr_verify_configarr_quality_definition_invariants.source_desired
+      - >-
         arr_verify_configarr_owned_state_sha256 ==
         arr_verify_configarr_expected_state_sha256
+      - >-
+        arr_verify_configarr_opaque_context_sha256 ==
+        arr_verify_configarr_expected_opaque_context_sha256
     fail_msg: Configarr verification found incomplete or unverified owned state.
+  no_log: true
+  tags: [platform_verify_arr]
+
+- name: Stage independently verified Configarr state hashes
+  ansible.builtin.set_fact:
+    arr_verified_reconciliation_state_fingerprints: >-
+      {{ arr_verified_reconciliation_state_fingerprints | default({}) |
+         combine({
+           'configarr_owned_state': arr_verify_configarr_owned_state_sha256,
+           'configarr_opaque_context': arr_verify_configarr_opaque_context_sha256
+         }) }}
+  changed_when: false
   no_log: true
   tags: [platform_verify_arr]
 

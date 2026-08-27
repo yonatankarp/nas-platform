@@ -25,6 +25,35 @@
   changed_when: false
   no_log: true
 
+# Exact Configarr v1.28.0 inputs pinned at TRaSH Guides cbfee0205cdcf2b492135edd00e059f3b7c84675:
+# docs/json/radarr/quality-size/movie.json
+# docs/json/sonarr/quality-size/series.json
+- name: Load pinned Configarr quality-definition source documents
+  ansible.builtin.set_fact:
+    arr_configarr_quality_definition_sources:
+      radarr: >-
+        {{ lookup(
+             'file',
+             role_path ~ '/files/configarr/quality-definition-movie.json'
+           ) }}
+      sonarr: >-
+        {{ lookup(
+             'file',
+             role_path ~ '/files/configarr/quality-definition-series.json'
+           ) }}
+  changed_when: false
+  no_log: true
+
+- name: Build current Configarr quality-definition invariants
+  ansible.builtin.set_fact:
+    arr_configarr_quality_definition_invariants_current: >-
+      {{ arr_configarr_owned_state_current |
+         acquisition_configarr_quality_definition_invariants(
+           arr_configarr_quality_definition_sources
+         ) }}
+  changed_when: false
+  no_log: true
+
 - name: Validate the Configarr materialized projection inputs
   ansible.builtin.set_fact:
     arr_configarr_owned_state_preflight: >-
@@ -35,6 +64,18 @@
   changed_when: false
   no_log: true
 
+- name: Require Configarr opaque context continuity before mutation
+  ansible.builtin.assert:
+    that:
+      - >-
+        arr_installed_reconciliation_fingerprints.configarr_opaque_context |
+          length == 0 or
+        (arr_configarr_quality_definition_invariants_current.opaque_context |
+         to_json | hash('sha256')) ==
+          arr_installed_reconciliation_fingerprints.configarr_opaque_context
+    fail_msg: Configarr non-repairable API context changed outside reconciliation.
+  no_log: true
+
 - name: Decide whether Configarr must run
   ansible.builtin.set_fact:
     arr_configarr_owned_state_current_sha256: >-
@@ -43,6 +84,8 @@
       {{
         (arr_configarr_owned_state_current | to_json | hash('sha256')) !=
           arr_installed_reconciliation_fingerprints.configarr_owned_state or
+        arr_installed_reconciliation_fingerprints.configarr_opaque_context |
+          length == 0 or
         arr_installed_reconciliation_fingerprints.configarr !=
           arr_desired_reconciliation_fingerprints.configarr
       }}
@@ -245,16 +288,15 @@
   changed_when: false
   no_log: true
 
-- name: Stage the verified Configarr owned-state hash
+- name: Build verified Configarr quality-definition invariants
   ansible.builtin.set_fact:
     arr_configarr_owned_state_after_sha256: >-
       {{ arr_configarr_owned_state_after | to_json | hash('sha256') }}
-    arr_verified_reconciliation_state_fingerprints: >-
-      {{ arr_verified_reconciliation_state_fingerprints | default({}) |
-         combine({
-           'configarr_owned_state':
-             (arr_configarr_owned_state_after | to_json | hash('sha256'))
-         }) }}
+    arr_configarr_quality_definition_invariants_after: >-
+      {{ arr_configarr_owned_state_after |
+         acquisition_configarr_quality_definition_invariants(
+           arr_configarr_quality_definition_sources
+         ) }}
   changed_when: false
   no_log: true
 
@@ -266,9 +308,22 @@
         acquisition_configarr_declared_projection ==
         arr_configarr_owned_state_desired
       - >-
+        arr_configarr_quality_definition_invariants_after.source_current ==
+        arr_configarr_quality_definition_invariants_after.source_desired
+      - >-
+        arr_installed_reconciliation_fingerprints.configarr_opaque_context |
+          length == 0 or
+        (arr_configarr_quality_definition_invariants_after.opaque_context |
+         to_json | hash('sha256')) ==
+          arr_installed_reconciliation_fingerprints.configarr_opaque_context
+      - >-
         arr_installed_reconciliation_fingerprints.configarr !=
           arr_desired_reconciliation_fingerprints.configarr or
         arr_installed_reconciliation_fingerprints.configarr_owned_state | length == 0 or
+        arr_configarr_owned_state_current.radarr.quality_profile_identity_count == 0 or
+        arr_configarr_owned_state_current.radarr.custom_format_identity_count == 0 or
+        arr_configarr_owned_state_current.sonarr.quality_profile_identity_count == 0 or
+        arr_configarr_owned_state_current.sonarr.custom_format_identity_count == 0 or
         arr_configarr_owned_state_after_sha256 ==
           arr_installed_reconciliation_fingerprints.configarr_owned_state
       - >-
@@ -276,4 +331,18 @@
         arr_configarr_owned_state_after_sha256 ==
           arr_installed_reconciliation_fingerprints.configarr_owned_state
     fail_msg: Configarr did not converge its complete declared and verified owned state.
+  no_log: true
+
+- name: Stage verified Configarr owned-state and opaque-context hashes
+  ansible.builtin.set_fact:
+    arr_verified_reconciliation_state_fingerprints: >-
+      {{ arr_verified_reconciliation_state_fingerprints | default({}) |
+         combine({
+           'configarr_owned_state':
+             (arr_configarr_owned_state_after | to_json | hash('sha256')),
+           'configarr_opaque_context':
+             (arr_configarr_quality_definition_invariants_after.opaque_context |
+              to_json | hash('sha256'))
+         }) }}
+  changed_when: false
   no_log: true

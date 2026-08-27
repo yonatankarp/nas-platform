@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from copy import deepcopy
 from typing import Any
@@ -522,6 +523,22 @@ def acquisition_bazarr_declarations(languages: Any, providers: Any) -> dict[str,
     }
 
 
+def _bazarr_path_mappings(value: Any, label: str) -> list[list[str]]:
+    """Normalize Bazarr's pinned list-of-two-paths settings representation."""
+    mappings = []
+    for index, entry in enumerate(_sequence(value, label)):
+        pair = _sequence(entry, f"{label} entry {index}")
+        if len(pair) != 2:
+            raise AnsibleFilterError(f"{label} entries must contain exactly two paths")
+        mappings.append(
+            [
+                _required_string(pair[0], f"{label} entry {index} source path"),
+                _required_string(pair[1], f"{label} entry {index} target path"),
+            ]
+        )
+    return mappings
+
+
 def acquisition_bazarr_owned_projections(
     settings: Any,
     language_state: Any,
@@ -611,11 +628,11 @@ def acquisition_bazarr_owned_projections(
             "use_sonarr": _strict_boolean(
                 general.get("use_sonarr"), "Bazarr Sonarr enablement"
             ),
-            "path_mappings": deepcopy(
-                _sequence(general.get("path_mappings"), "Bazarr series path mappings")
+            "path_mappings": _bazarr_path_mappings(
+                general.get("path_mappings"), "Bazarr series path mappings"
             ),
-            "path_mappings_movie": deepcopy(
-                _sequence(general.get("path_mappings_movie"), "Bazarr movie path mappings")
+            "path_mappings_movie": _bazarr_path_mappings(
+                general.get("path_mappings_movie"), "Bazarr movie path mappings"
             ),
             "enabled_providers": sorted(
                 name for name in enabled_providers if name in declared_names
@@ -771,6 +788,19 @@ def _unique_named(collection: Any, label: str) -> list[dict[str, Any]]:
     return normalized
 
 
+def _validate_unique_numeric_identities(
+    collection: Any, label: str, field: str = "id"
+) -> None:
+    identifiers = []
+    for item in _sequence(collection, label):
+        item = _mapping(item, f"{label} item")
+        identifiers.append(
+            _strict_integer(item.get(field), f"{label} item {field}")
+        )
+    if len(identifiers) != len(set(identifiers)):
+        raise AnsibleFilterError(f"{label} contains duplicate numeric identities")
+
+
 def _quality_item_projection(item: Any, label: str) -> dict[str, Any]:
     item = _mapping(item, label)
     allowed = _strict_boolean(item.get("allowed"), f"{label} allowed")
@@ -920,6 +950,9 @@ def acquisition_configarr_owned_projection(results: Any) -> dict[str, Any]:
         profiles = _unique_named(resources["qualityprofile"], f"Configarr {service} profiles")
         if not profiles:
             raise AnsibleFilterError(f"Configarr {service} profiles are empty")
+        _validate_unique_numeric_identities(
+            profiles, f"Configarr {service} profiles"
+        )
         profile_matches = [item for item in profiles if item["name"] == profile_name]
         if len(profile_matches) > 1:
             raise AnsibleFilterError(f"Configarr {service} owned profile identity is ambiguous")
@@ -939,12 +972,21 @@ def acquisition_configarr_owned_projection(results: Any) -> dict[str, Any]:
             raise AnsibleFilterError(
                 f"Configarr {service} quality definitions contain duplicate identities"
             )
+        _validate_unique_numeric_identities(
+            definitions, f"Configarr {service} quality definitions"
+        )
+        quality_identifiers = [item["quality"]["id"] for item in definitions]
+        if len(quality_identifiers) != len(set(quality_identifiers)):
+            raise AnsibleFilterError(
+                f"Configarr {service} quality definitions contain duplicate quality IDs"
+            )
 
         formats = _unique_named(
             resources["customformat"], f"Configarr {service} custom formats"
         )
-        if not formats:
-            raise AnsibleFilterError(f"Configarr {service} custom formats are empty")
+        _validate_unique_numeric_identities(
+            formats, f"Configarr {service} custom formats"
+        )
         format_matches = [item for item in formats if item["name"] == format_name]
         if len(format_matches) > 1:
             raise AnsibleFilterError(
@@ -971,6 +1013,11 @@ def acquisition_configarr_owned_projection(results: Any) -> dict[str, Any]:
                 profile.get("formatItems"),
                 f"Configarr {service} format-score assignments",
             )
+            _validate_unique_numeric_identities(
+                format_items,
+                f"Configarr {service} format-score assignments",
+                "format",
+            )
             score_matches = [item for item in format_items if item["name"] == format_name]
             if len(score_matches) > 1:
                 raise AnsibleFilterError(
@@ -978,6 +1025,10 @@ def acquisition_configarr_owned_projection(results: Any) -> dict[str, Any]:
                 )
             format_assignments = [
                 {
+                    "format": _strict_integer(
+                        item.get("format"),
+                        f"Configarr {service} format identity for {item['name']!r}",
+                    ),
                     "name": item["name"],
                     "score": _strict_integer(
                         item.get("score"),
@@ -1069,15 +1120,245 @@ def acquisition_configarr_owned_projection(results: Any) -> dict[str, Any]:
 
         projection[service] = {
             "quality_profile_identity_count": len(profile_matches),
+            "quality_profile_id": (
+                _strict_integer(
+                    profile_matches[0].get("id"),
+                    f"Configarr {service} owned profile id",
+                )
+                if profile_matches
+                else None
+            ),
             "quality_profile": profile_projection,
             "quality_definitions": sorted(
                 definitions, key=lambda item: item["quality"]["name"]
             ),
             "custom_format_identity_count": len(format_matches),
+            "custom_format_id": (
+                _strict_integer(
+                    format_matches[0].get("id"),
+                    f"Configarr {service} owned custom-format id",
+                )
+                if format_matches
+                else None
+            ),
             "custom_format": custom_format_projection,
             "naming": normalized_naming,
         }
     return projection
+
+
+def _configarr_quality_definition_source(
+    source: Any, service: str
+) -> dict[str, dict[str, Any]]:
+    if not isinstance(source, str) or not source:
+        raise AnsibleFilterError(
+            f"Configarr {service} quality-definition source must be a non-empty string"
+        )
+    if "\x00" in source:
+        raise AnsibleFilterError(
+            f"Configarr {service} quality-definition source contains a NUL byte"
+        )
+
+    def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise AnsibleFilterError(
+                    f"Configarr {service} quality-definition source has duplicate keys"
+                )
+            value[key] = item
+        return value
+
+    try:
+        document = _mapping(
+            json.loads(source, object_pairs_hook=reject_duplicate_keys),
+            f"Configarr {service} quality-definition source",
+        )
+    except json.JSONDecodeError as error:
+        raise AnsibleFilterError(
+            f"Configarr {service} quality-definition source cannot be parsed"
+        ) from error
+
+    expected_metadata = {
+        "radarr": {
+            "trash_id": "aed34b9f60ee115dfa7918b742336277",
+            "type": "movie",
+        },
+        "sonarr": {
+            "trash_id": "bef99584217af744e404ed44a33af589",
+            "type": "series",
+        },
+    }
+    if service not in expected_metadata:
+        raise AnsibleFilterError("Configarr quality-definition service is invalid")
+    expected = expected_metadata[service]
+    if document.get("trash_id") != expected["trash_id"]:
+        raise AnsibleFilterError(
+            f"Configarr {service} quality-definition source identity differs"
+        )
+    if document.get("type") != expected["type"]:
+        raise AnsibleFilterError(
+            f"Configarr {service} quality-definition source type differs"
+        )
+
+    normalized = {}
+    for entry in _sequence(
+        document.get("qualities"),
+        f"Configarr {service} quality-definition source qualities",
+    ):
+        entry = _mapping(
+            entry, f"Configarr {service} quality-definition source entry"
+        )
+        name = _required_string(
+            entry.get("quality"),
+            f"Configarr {service} source quality identity",
+        )
+        if name in normalized:
+            raise AnsibleFilterError(
+                f"Configarr {service} quality-definition source identities are ambiguous"
+            )
+        value = {
+            "quality": name,
+            "minSize": _number(
+                entry.get("min"), f"Configarr {service} source {name!r} min"
+            ),
+            "preferredSize": _number(
+                entry.get("preferred"),
+                f"Configarr {service} source {name!r} preferred",
+            ),
+            "maxSize": _number(
+                entry.get("max"), f"Configarr {service} source {name!r} max"
+            ),
+        }
+        if "title" in entry:
+            value["title"] = _required_string(
+                entry.get("title"), f"Configarr {service} source {name!r} title"
+            )
+        normalized[name] = value
+    if not normalized:
+        raise AnsibleFilterError(
+            f"Configarr {service} quality-definition source is empty"
+        )
+    return normalized
+
+
+def acquisition_configarr_quality_definition_invariants(
+    projection: Any, sources: Any
+) -> dict[str, Any]:
+    """Separate pinned Configarr outputs from irreducible Servarr context.
+
+    Configarr v1.28.0 owns minSize/maxSize/preferredSize (and title only when
+    present in its source document). Servarr owns the remaining identities and
+    metadata. The latter therefore needs continuity, not synthetic desired data.
+    https://github.com/raydak-labs/configarr/blob/v1.28.0/src/quality-definitions.ts
+    """
+    projection = _mapping(projection, "Configarr owned projection")
+    sources = _mapping(sources, "Configarr quality-definition sources")
+    if set(sources) != {"radarr", "sonarr"}:
+        raise AnsibleFilterError(
+            "Configarr quality-definition sources must contain exactly Radarr and Sonarr"
+        )
+
+    source_current = {}
+    source_desired = {}
+    opaque_context = {}
+    for service in ["radarr", "sonarr"]:
+        expected_by_name = _configarr_quality_definition_source(
+            sources[service], service
+        )
+        service_projection = _mapping(
+            projection.get(service), f"Configarr {service} owned projection"
+        )
+        current_items = []
+        desired_items = []
+        opaque_items = []
+        for definition in _sequence(
+            service_projection.get("quality_definitions"),
+            f"Configarr {service} projected quality definitions",
+        ):
+            definition = _mapping(
+                definition, f"Configarr {service} projected quality definition"
+            )
+            quality = _mapping(
+                definition.get("quality"),
+                f"Configarr {service} projected quality identity",
+            )
+            name = _required_string(
+                quality.get("name"), f"Configarr {service} projected quality name"
+            )
+            opaque = {
+                "id": _strict_integer(
+                    definition.get("id"), f"Configarr {service} projected definition id"
+                ),
+                "quality": deepcopy(quality),
+                "title": _required_string(
+                    definition.get("title"),
+                    f"Configarr {service} projected definition title",
+                ),
+                "weight": _strict_integer(
+                    definition.get("weight"),
+                    f"Configarr {service} projected definition weight",
+                ),
+            }
+            expected = expected_by_name.get(name)
+            if expected is None:
+                opaque.update(
+                    {
+                        "minSize": _nullable_number(
+                            definition.get("minSize"),
+                            f"Configarr {service} projected {name!r} minSize",
+                        ),
+                        "preferredSize": _nullable_number(
+                            definition.get("preferredSize"),
+                            f"Configarr {service} projected {name!r} preferredSize",
+                        ),
+                        "maxSize": _nullable_number(
+                            definition.get("maxSize"),
+                            f"Configarr {service} projected {name!r} maxSize",
+                        ),
+                    }
+                )
+            else:
+                current = {
+                    "quality": name,
+                    "minSize": _nullable_number(
+                        definition.get("minSize"),
+                        f"Configarr {service} projected {name!r} minSize",
+                    ),
+                    "preferredSize": _nullable_number(
+                        definition.get("preferredSize"),
+                        f"Configarr {service} projected {name!r} preferredSize",
+                    ),
+                    "maxSize": _nullable_number(
+                        definition.get("maxSize"),
+                        f"Configarr {service} projected {name!r} maxSize",
+                    ),
+                }
+                desired = {
+                    key: deepcopy(value)
+                    for key, value in expected.items()
+                    if key != "title"
+                }
+                if "title" in expected:
+                    current["title"] = opaque["title"]
+                    desired["title"] = expected["title"]
+                    opaque.pop("title")
+                current_items.append(current)
+                desired_items.append(desired)
+            opaque_items.append(opaque)
+
+        current_items.sort(key=lambda item: item["quality"])
+        desired_items.sort(key=lambda item: item["quality"])
+        opaque_items.sort(key=lambda item: (item["quality"]["name"], item["id"]))
+        source_current[service] = current_items
+        source_desired[service] = desired_items
+        opaque_context[service] = opaque_items
+
+    return {
+        "source_current": source_current,
+        "source_desired": source_desired,
+        "opaque_context": opaque_context,
+    }
 
 
 def acquisition_configarr_declared_projection(projection: Any) -> dict[str, Any]:
@@ -1127,7 +1408,15 @@ def acquisition_configarr_declared_projection(projection: Any) -> dict[str, Any]
                 if _mapping(item, "Configarr projected format assignment").get("name")
                 == format_name
             ]
-            assignment = deepcopy(assignment_matches[0]) if len(assignment_matches) == 1 else None
+            assignment = (
+                {
+                    "format": assignment_matches[0]["format"],
+                    "name": assignment_matches[0]["name"],
+                    "score": assignment_matches[0]["score"],
+                }
+                if len(assignment_matches) == 1
+                else None
+            )
             unmatched_scores_reset = all(
                 item.get("name") == format_name
                 or _strict_integer(
@@ -1414,6 +1703,7 @@ def acquisition_configarr_desired_projection(
                 "format_assignment": {
                     "identity_count": 1,
                     "value": {
+                        "format": current_service.get("custom_format_id"),
                         "name": "NAS Repack or Proper",
                         "score": _strict_integer(
                             score_matches[0].get("score"),
@@ -1804,6 +2094,7 @@ class FilterModule:
             "acquisition_bazarr_owned_projections": acquisition_bazarr_owned_projections,
             "acquisition_bazarr_connection_body": acquisition_bazarr_connection_body,
             "acquisition_configarr_owned_projection": acquisition_configarr_owned_projection,
+            "acquisition_configarr_quality_definition_invariants": acquisition_configarr_quality_definition_invariants,
             "acquisition_configarr_declared_projection": acquisition_configarr_declared_projection,
             "acquisition_configarr_desired_projection": acquisition_configarr_desired_projection,
             "acquisition_configarr_missing_custom_format_bodies": acquisition_configarr_missing_custom_format_bodies,

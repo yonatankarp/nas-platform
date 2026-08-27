@@ -7,6 +7,10 @@
            'configarr_owned_state':
              (arr_verified_reconciliation_state_fingerprints | default({})).get(
                'configarr_owned_state', ''
+             ),
+           'configarr_opaque_context':
+             (arr_verified_reconciliation_state_fingerprints | default({})).get(
+               'configarr_opaque_context', ''
              )
          }) }}
   changed_when: false
