@@ -949,8 +949,8 @@ docker run --rm \
     enabled_idempotence_recap_is_clean() {
       idempotence_recap_file=\$1
       idempotence_escape=\$(printf '\033')
-      sed "s/\${idempotence_escape}\\[[0-9;]*[[:alpha:]]//g" \
-        "\$idempotence_recap_file" |
+      sed \"s/\${idempotence_escape}\\[[0-9;]*[[:alpha:]]//g\" \
+        \"\$idempotence_recap_file\" |
         awk '
           /^PLAY RECAP[[:space:]]+\*+[[:space:]]*$/ {
             recap_count++
