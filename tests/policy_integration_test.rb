@@ -25,6 +25,56 @@ end
 # Darwin-only fact and command being skipped under --check, both survived syntax
 # checking and were caught by running.
 harness = File.read(File.join(ROOT, "tests", "integration.sh"))
+
+# The controller script is one double-quoted argument to `sh -eu -c`, built by
+# a shell that is still parsing. An unescaped quote inside it closes the
+# argument, and the next shell metacharacter then terminates the whole
+# `docker run` — silently truncating the script and starting the container with
+# no operands. That is invisible to `sh -n` and to every static read of the
+# file, and it broke every suite once before, so walk the quoting the way the
+# shell does and require that nothing escapes the argument.
+controller_regions = []
+controller_state = "DQ"
+controller_offset = harness.index('sh -eu -c "')
+check(failures, !controller_offset.nil?,
+      "tests/integration.sh must invoke the controller through sh -eu -c")
+if controller_offset
+  controller_offset += 'sh -eu -c "'.length
+  controller_line = harness[0, controller_offset].count("\n") + 1
+  controller_region = nil
+  while controller_offset < harness.length
+    character = harness[controller_offset]
+    if controller_state != "SQ" && character == "\\"
+      controller_line += 1 if harness[controller_offset + 1] == "\n"
+      controller_offset += 2
+      next
+    end
+    case [controller_state, character]
+    in ["DQ", '"'] then controller_state = "OUT"
+                        controller_region = [controller_line, +""]
+    in ["OUT", '"'] then controller_state = "DQ"
+                         controller_regions << controller_region if controller_region
+                         controller_region = nil
+    in ["OUT", "'"] then controller_state = "SQ"
+    in ["SQ", "'"] then controller_state = "OUT"
+    else
+      controller_region[1] << character if controller_state != "DQ" && controller_region
+    end
+    controller_line += 1 if character == "\n"
+    controller_offset += 1
+  end
+  # Only the final line may leave the quoted argument: that is where the
+  # operands `integration-run "$playbook" "$@"` are appended.
+  final_line = harness.count("\n") + (harness.end_with?("\n") ? 0 : 1)
+  escaped = controller_regions.reject { |line, _text| line >= final_line }
+                              .select { |_line, text| text.match?(/[\s;&|()<>]/) }
+  check(failures, escaped.empty?,
+        "controller script escapes its quoted argument at " \
+        "#{escaped.map { |line, text| "line #{line}: #{text.inspect}" }.join(', ')}; " \
+        "escape the inner quotes so the whole script stays one argument")
+  check(failures, controller_state == "OUT",
+        "controller script argument is never closed")
+end
 dozzle_contract = File.read(File.join(ROOT, "tests", "contracts", "dozzle.sh"))
 check(failures, dozzle_contract.include?('exec ruby - "$mode" "$@"'),
       "Dozzle contract must pass its default verify mode to the dynamic probe")

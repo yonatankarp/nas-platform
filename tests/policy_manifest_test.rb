@@ -968,6 +968,19 @@ expect_failure(failures, "integration omits contract execution", "integration mu
   File.write(path, File.read(path).sub(/^\s*ruby \/repo\/tests\/run_contracts\.rb --execute\n/, ""))
 end
 
+expect_failure(failures, "controller script loses its quoting",
+               "controller script escapes its quoted argument") do |root|
+  # Unescape the inner quotes of the recap helper exactly as the regression did:
+  # the argument closes early and the `;` in the character class terminates the
+  # whole `docker run`, so the container starts with no operands at all.
+  path = File.join(root, "tests", "integration.sh")
+  body = File.read(path)
+  broken = body.sub('sed \\"s/', 'sed "s/').sub('//g\\" \\', '//g" \\')
+  raise "controller quoting mutation did not apply" if broken == body
+
+  File.write(path, broken)
+end
+
 expect_failure(failures, "integration omits contract ABI", "integration must set the contract environment ABI") do |root|
   path = File.join(root, "tests", "integration.sh")
   body = File.read(path)
