@@ -96,6 +96,7 @@ BASE_FIXTURE_PATHS = %w[
   tests/immich_release_helper_test.rb
   tests/immich_selective_helper_integrity_test.rb
   tests/sandbox_cleanup.sh
+  tests/sandbox_cleanup_acquisition_ownership_test.sh
   tests/generate-ephemeral-vault.sh
   tests/generate-secrets-redaction-test.sh
   tests/mac_inventory_path_test.yml

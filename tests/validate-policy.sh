@@ -105,6 +105,7 @@ ruby tests/jellyfin_transcode_contract_test.rb
 ruby tests/contract_structure_mutation_test.rb
 tests/integration_lock_test.sh
 tests/integration_suite_test.sh
+tests/sandbox_cleanup_acquisition_ownership_test.sh
 tests/mac/config-isolation.sh
 tests/mac/run-phase-status-test.sh
 tests/mac/manual-validation-runner-test.sh

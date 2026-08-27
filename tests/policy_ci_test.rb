@@ -233,6 +233,7 @@ validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "te
   tests/dozzle_alert_state_symlink_test.sh
   tests/integration_lock_test.sh
   tests/integration_suite_test.sh
+  tests/sandbox_cleanup_acquisition_ownership_test.sh
   tests/mac/manual-validation-runner-test.sh
   tests/mac/audiobookshelf-drift-hook-test.sh
   tests/contracts/audiobookshelf-audio-test.sh
@@ -270,6 +271,9 @@ check(failures,
 check(failures,
       validation_commands.count("tests/dozzle_alert_state_symlink_test.sh") == 1,
       "validate-policy.sh must run the Dozzle alert state symlink test exactly once")
+check(failures,
+      validation_commands.count("tests/sandbox_cleanup_acquisition_ownership_test.sh") == 1,
+      "validate-policy.sh must run the acquisition cleanup ownership test exactly once")
 check(failures,
       validation_commands.count(
         "python3 -m unittest -v tests/immich_restore_classifier_test.py"
