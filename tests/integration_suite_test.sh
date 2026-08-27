@@ -457,7 +457,7 @@ fi
 # not infer it from check mode. Exercise the production recap parser directly so
 # task output cannot satisfy the gate and malformed or partial recaps fail closed.
 sed -n '/^    enabled_idempotence_recap_is_clean() {/,/^    }$/p' \
-  "$integration" | sed 's/\\\$/\$/g' > "$idempotence_helper"
+  "$integration" | sed -e 's/\\\$/\$/g' -e 's/\\"/"/g' > "$idempotence_helper"
 [ -s "$idempotence_helper" ] || {
   printf '%s\n' 'integration runner has no enabled idempotence recap parser' >&2
   exit 1
