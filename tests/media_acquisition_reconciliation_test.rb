@@ -3,6 +3,7 @@
 
 require "fileutils"
 require "digest"
+require "etc"
 require "digest/md5"
 require "json"
 require "open3"
@@ -2658,9 +2659,48 @@ def mutation_requests(api, matcher)
   end
 end
 
+# Every case builds its own stub server on an OS-assigned port and its own
+# mktmpdir sandbox, so cases share nothing but the failure list. The work is
+# almost entirely spent waiting on an ansible-playbook subprocess, which
+# releases the GVL, so a bounded pool of threads turns a queue of independent
+# Ansible runs into real parallelism. Failures are collected per case and
+# concatenated in the original order, so the report stays deterministic.
+# Never more workers than cores: tests/validate-policy.sh already runs its
+# checks concurrently, and oversubscribing a small CI runner trades wall time
+# for the contention that made the harness deadlines fire in the first place.
+CASE_WORKER_LIMIT = Integer(
+  ENV.fetch("ACQUISITION_CASE_WORKERS") { [Etc.nprocessors, 8].min.to_s }
+)
+
+def in_parallel_cases(failures, items)
+  items = items.to_a
+  workers = [CASE_WORKER_LIMIT, items.length].min
+  return items.each { |item| yield item, failures } if workers <= 1
+
+  pending = Queue.new
+  items.each_with_index { |item, index| pending << [index, item] }
+  collected = {}
+  lock = Mutex.new
+  Array.new(workers) do
+    Thread.new do
+      loop do
+        index, item = begin
+                        pending.pop(true)
+                      rescue ThreadError
+                        break
+                      end
+        local = []
+        yield item, local
+        lock.synchronize { collected[index] = local }
+      end
+    end
+  end.each(&:join)
+  collected.keys.sort.each { |index| failures.concat(collected.fetch(index)) }
+end
+
 def exercise_mutations(failures, relationship:, kind:, baseline:, mutations:, variables: {},
                        write_matcher:, projection:, desired:, current:, preserved: nil)
-  mutations.each do |field, mutate|
+  in_parallel_cases(failures, mutations) do |(field, mutate), failures|
     state = deep_copy(baseline)
     mutate.call(state)
     with_api(state) do |api|
