@@ -2698,6 +2698,21 @@ def in_parallel_cases(failures, items)
   collected.keys.sort.each { |index| failures.concat(collected.fetch(index)) }
 end
 
+
+module CaseIteration
+  # Drives independent cases through the same worker pool. Defined on the
+  # collection so a loop becomes parallel by changing `each` to `each_case`,
+  # without relocating a receiver that is often a multi-line literal. The block
+  # takes the case, its own failure list, and declares as block-locals every
+  # name the body assigns that also exists in the enclosing scope — otherwise
+  # the workers would share those temporaries.
+  def each_case(failures, &block)
+    in_parallel_cases(failures, to_a, &block)
+  end
+end
+Array.include(CaseIteration)
+Hash.include(CaseIteration)
+
 def exercise_mutations(failures, relationship:, kind:, baseline:, mutations:, variables: {},
                        write_matcher:, projection:, desired:, current:, preserved: nil)
   in_parallel_cases(failures, mutations) do |(field, mutate), failures|
@@ -4139,7 +4154,7 @@ end
 
 FINGERPRINT_BASELINE_CACHE["enabled"] = true if OPAQUE_TARGETED_ONLY
 
-%w[matching stale_input stale_state stale_opaque].each do |scenario|
+%w[matching stale_input stale_state stale_opaque].each_case(failures) do |scenario, failures; before, callback_directory, env, fingerprint_variables, playbook, result, runtime, state, variables|
   Dir.mktmpdir("media-acquisition-configarr-verify-only-") do |directory|
     runtime = File.join(directory, "runtime")
     FileUtils.mkdir_p(File.join(runtime, "services", "arr"))
@@ -4243,7 +4258,7 @@ exercise_stable(
   ],
   "movie mapping source is not a string" => ["path_mappings_movie", [7, "/new"]],
   "series mapping target is not a string" => ["path_mappings", ["/old", false]]
-}.each do |label, (field, entry)|
+}.each_case(failures) do |(label, (field, entry)), failures|
   malformed_mapping_state = deep_copy(bazarr_state)
   malformed_mapping_state.dig("bazarr", "general")[field] = [entry]
   exercise_duplicate(
@@ -4259,7 +4274,7 @@ end
   "auth.password" => ["auth", "password"],
   "radarr.apikey" => ["radarr", "apikey"],
   "sonarr.apikey" => ["sonarr", "apikey"]
-}.each do |label, (section, field)|
+}.each_case(failures) do |(label, (section, field)), failures; old_secret, secret_state, variable|
   secret_state = deep_copy(bazarr_state)
   old_secret = "private-stale-#{section}-#{field}"
   secret_state.dig("bazarr", section)[field] = old_secret
@@ -4554,7 +4569,7 @@ exercise_duplicate(
   "non-boolean Sonarr SSL" => lambda do |state|
     state.dig("bazarr", "sonarr")["ssl"] = "false"
   end
-}.each do |label, mutate|
+}.each_case(failures) do |(label, mutate), failures|
   invalid_state = deep_copy(bazarr_state)
   mutate.call(invalid_state)
   exercise_duplicate(
@@ -4612,7 +4627,7 @@ end
       "settings" => { "settings-opensubtitlescom-options" => [["unsafe"]] }
     }]
   }
-}.each do |label, variables|
+}.each_case(failures) do |(label, variables), failures|
   exercise_duplicate(
     failures, relationship: "Bazarr invalid #{label}", kind: :bazarr,
     state: provider_state, variables: variables,
@@ -4621,7 +4636,7 @@ end
 end
 
 configarr_state = { "configarr" => deep_copy(CONFIGARR), "configarr_desired" => deep_copy(CONFIGARR) }
-%w[radarr sonarr].each do |service|
+%w[radarr sonarr].each_case(failures) do |service, failures; before, result, sane, variables|
   colliding_profile_tree_state = deep_copy(configarr_state)
   colliding_definition = colliding_profile_tree_state.dig(
     "configarr", service, "qualitydefinition"
@@ -4676,7 +4691,7 @@ end
   ["sonarr", "boolean", true],
   ["radarr", "list", []],
   ["sonarr", "number", 7]
-].each do |service, label, invalid_quality|
+].each_case(failures) do |(service, label, invalid_quality), failures; before, other_service, result, sane, variables|
   malformed_quality_state = deep_copy(configarr_state)
   profile_group = malformed_quality_state.dig(
     "configarr", service, "qualityprofile", 0, "items"
@@ -4978,7 +4993,7 @@ if COMPLETE_PROFILE_TREE_TARGETED_ONLY
       profile["cutoff"] = 3000
     end
   }
-  invalid_profile_trees.each do |label, mutate|
+  invalid_profile_trees.each_case(failures) do |(label, mutate), failures; before, invalid_state, result, sane, variables|
     invalid_state = deep_copy(configarr_state)
     mutate.call(invalid_state.dig("configarr", "radarr", "qualityprofile").first)
     invalid_state.dig("configarr", "sonarr", "customformat").reject! do |format|
@@ -5086,7 +5101,7 @@ end
     "vault_arr_sonarr_api_key" => "private-stale-sonarr-apikey"
   },
   "missing full state plus opaque drift" => :remove_full_state
-}.each do |label, seed_input|
+}.each_case(failures) do |(label, seed_input), failures; before, fingerprint_variables, result, sane, variables|
   Dir.mktmpdir("media-acquisition-configarr-context-") do |runtime|
     FileUtils.mkdir_p(File.join(runtime, "services", "arr"))
     with_api(deep_copy(context_state)) do |api|
@@ -5126,7 +5141,7 @@ end
   "repairable source qdef drift before first opaque baseline" => lambda do |state|
     state.dig("configarr", "radarr", "qualitydefinition").first["minSize"] += 1
   end
-}.each do |label, mutate|
+}.each_case(failures) do |(label, mutate), failures; result, sane, variables|
   baseline_state = deep_copy(configarr_state)
   mutate&.call(baseline_state)
   Dir.mktmpdir("media-acquisition-configarr-first-opaque-") do |runtime|
@@ -5185,7 +5200,7 @@ exercise_secret_change(
   {
     "quality profile" => ["qualityprofile", 900],
     "custom format" => ["customformat", 901]
-  }.each do |identity, (resource, duplicate_id)|
+  }.each_case(failures) do |(identity, (resource, duplicate_id)), failures|
     duplicate_state = deep_copy(configarr_state)
     duplicate_state.dig("configarr", service, resource) <<
       deep_copy(CONFIGARR.dig(service, resource).first).merge("id" => duplicate_id)
@@ -5232,7 +5247,7 @@ exercise_secret_change(
     "quality-profile numeric identity" => ["qualityprofile", 0, 1, "id"],
     "custom-format numeric identity" => ["customformat", 0, 1, "id"],
     "quality-definition numeric identity" => ["qualitydefinition", 0, -1, "id"]
-  }.each do |identity, (resource, source_index, target_index, field)|
+  }.each_case(failures) do |(identity, (resource, source_index, target_index, field)), failures; other_service|
     duplicate_numeric_state = deep_copy(configarr_state)
     collection = duplicate_numeric_state.dig("configarr", service, resource)
     collection.fetch(target_index)[field] = collection.fetch(source_index).fetch(field)
@@ -5276,7 +5291,7 @@ end
 {
   "HTTP failure" => { fail_custom_format_service: "radarr" },
   "malformed duplicate numeric identity" => { malformed_custom_format_service: "radarr" }
-}.each do |label, api_options|
+}.each_case(failures) do |(label, api_options), failures; before, result, sane, variables|
   missing_state = deep_copy(configarr_state)
   missing_state.dig("configarr", "radarr", "customformat").reject! do |format|
     format["name"] == CONFIGARR_FORMAT_NAME
@@ -5332,7 +5347,7 @@ end
   "quality item boolean" => lambda do |state|
     state.dig("configarr", "radarr", "qualityprofile", 0, "items", 0)["allowed"] = "false"
   end
-}.each do |label, mutate|
+}.each_case(failures) do |(label, mutate), failures|
   malformed_state = deep_copy(configarr_state)
   mutate.call(malformed_state)
   exercise_duplicate(
@@ -5349,7 +5364,7 @@ invalid_source_documents = {
     end
   )
 }
-invalid_source_documents.each do |label, invalid_source|
+invalid_source_documents.each_case(failures) do |(label, invalid_source), failures; before, result, sane, variables|
   Dir.mktmpdir("media-acquisition-configarr-source-") do |runtime|
     FileUtils.mkdir_p(File.join(runtime, "services", "arr"))
     with_api(deep_copy(configarr_state)) do |api|
@@ -5383,7 +5398,7 @@ invalid_source_documents.each do |label, invalid_source|
   end
 end
 
-%w[radarr sonarr].each do |service|
+%w[radarr sonarr].each_case(failures) do |service, failures; result, sane, writes|
   empty_profile_state = deep_copy(configarr_state)
   empty_profile_state.dig("configarr", service)["qualityprofile"] = []
   exercise_duplicate(
@@ -5546,7 +5561,7 @@ if fingerprint_tasks_available?
       [:indexer, indexer_state, {}, FINGERPRINT_FILE_BY_KIND.fetch(:indexer)]
     ] + fingerprint_safety_cases
   end
-  fingerprint_safety_cases.each do |kind, state, variables, filename|
+  fingerprint_safety_cases.each_case(failures) do |(kind, state, variables, filename), failures; baseline, path, sane, target_before|
     Dir.mktmpdir("media-acquisition-fingerprint-safety-") do |runtime|
       with_api(deep_copy(state)) do |api|
         baseline = run_tasks(kind, api, variables, runtime: runtime)
