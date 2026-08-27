@@ -30,10 +30,22 @@ fixture_parent=$(CDPATH= cd -P "$fixture_parent" && pwd -P)
 created_container_records=
 created_network_records=
 active_sandbox=
+active_sandbox_owned=0
+active_sandbox_identity=
 preflight_mode=live
 preflight_seen_containers=
 preflight_seen_networks=
 docker_backend_mode=live
+
+sandbox_path_identity() {
+  ruby -e '
+    path = ARGV.fetch(0)
+    entry = File.lstat(path)
+    abort "sandbox identity target is not a real directory" unless
+      entry.directory? && !entry.symlink?
+    print "#{entry.dev}:#{entry.ino}"
+  ' "$1"
+}
 
 cleanup_fixture_on_signal() {
   trap - HUP INT TERM
@@ -62,7 +74,8 @@ cleanup_fixture() {
     "$real_docker" network rm "$cleanup_fixture_id" >/dev/null 2>&1 || true
   done
 
-  if [ -n "$active_sandbox" ]; then
+  if [ "$active_sandbox_owned" -eq 1 ] &&
+     [ -n "$active_sandbox" ] && [ -n "$active_sandbox_identity" ]; then
     cleanup_fixture_parent=${active_sandbox%/*}
     cleanup_fixture_name=${active_sandbox##*/}
     case $cleanup_fixture_name in
@@ -71,7 +84,11 @@ cleanup_fixture() {
     esac
     if [ "$cleanup_fixture_parent" = "$fixture_parent" ] &&
        [ -d "$active_sandbox" ] && [ ! -L "$active_sandbox" ]; then
-      rmdir "$active_sandbox" >/dev/null 2>&1 || true
+      cleanup_fixture_identity=$(sandbox_path_identity "$active_sandbox" 2>/dev/null) ||
+        cleanup_fixture_identity=
+      if [ "$cleanup_fixture_identity" = "$active_sandbox_identity" ]; then
+        rmdir "$active_sandbox" >/dev/null 2>&1 || true
+      fi
     fi
   fi
 
@@ -106,6 +123,9 @@ fake_docker() {
     *"container inspect $fake_fixed_old_id --format {{.Name}}"*)
       printf '/%s\n' "$fake_fixed_name"
       ;;
+    *"container inspect $fake_label_container_old_id --format {{.Name}}"*)
+      printf '/%s\n' "$fake_label_container_name"
+      ;;
     *"network inspect $fake_label_old_id --format {{.Name}}"*)
       printf '%s\n' "$fake_label_network_name"
       ;;
@@ -114,6 +134,10 @@ fake_docker() {
       ;;
     *"container inspect $fake_fixed_name --format {{.Id}} {{.Name}}"*)
       printf '%s /%s\n' "$fake_fixed_replacement_id" "$fake_fixed_name"
+      ;;
+    *"container inspect $fake_label_container_name --format {{.Id}} {{.Name}}"*)
+      printf '%s /%s\n' \
+        "$fake_label_container_replacement_id" "$fake_label_container_name"
       ;;
     *"network inspect $fake_label_network_name --format {{.Id}} {{.Name}}"*)
       printf '%s %s\n' "$fake_label_replacement_id" "$fake_label_network_name"
@@ -124,6 +148,12 @@ fake_docker() {
       ;;
     *"ps -aq --no-trunc --filter name=^${fake_fixed_name}$"*)
       printf '%s\n' "$fake_fixed_old_id"
+      ;;
+    *"ps -aq --no-trunc --filter name=^${fake_label_container_name}$"*)
+      printf '%s\n' "$fake_label_container_old_id"
+      ;;
+    *"ps -aq --no-trunc --filter label=com.docker.compose.project=$fixture_arr_project"*)
+      printf '%s\n' "$fake_label_container_old_id"
       ;;
     *"network ls -q --no-trunc --filter name=^${fake_label_network_name}$"*)
       printf '%s\n' "$fake_label_old_id"
@@ -343,6 +373,9 @@ run_cleanup() {
 new_sandbox() {
   [ -z "$active_sandbox" ] || fail "fixture sandbox was not released: $active_sandbox"
   active_sandbox=$(mktemp -d "$fixture_parent/nas-platform-integration.XXXXXX")
+  active_sandbox_owned=1
+  active_sandbox_identity=$(sandbox_path_identity "$active_sandbox") ||
+    fail "could not record the integration sandbox identity"
   fixture_suffix=${active_sandbox##*.}
   case $fixture_suffix in
     ??????) ;;
@@ -363,6 +396,20 @@ new_sandbox() {
 release_sandbox_after_cleanup() {
   [ ! -e "$active_sandbox" ] || fail "cleanup left the integration sandbox behind"
   active_sandbox=
+  active_sandbox_owned=0
+  active_sandbox_identity=
+}
+
+release_owned_refused_sandbox() {
+  [ "$active_sandbox_owned" -eq 1 ] || fail "refused sandbox is not fixture-owned"
+  current_sandbox_identity=$(sandbox_path_identity "$active_sandbox") ||
+    fail "could not revalidate the refused sandbox identity"
+  [ "$current_sandbox_identity" = "$active_sandbox_identity" ] ||
+    fail "refused sandbox identity changed before release"
+  rmdir "$active_sandbox" || fail "could not release the refused sandbox"
+  active_sandbox=
+  active_sandbox_owned=0
+  active_sandbox_identity=
 }
 
 require_container_name_available() {
@@ -485,6 +532,9 @@ verify_execution_guard() {
   fixture_namespace=nas-platform-integration-a1b2c3
   fixture_arr_project=$fixture_namespace-arr
   fixture_downloaders_project=$fixture_namespace-downloaders
+  fake_label_container_name=$fixture_namespace-radarr
+  fake_label_container_old_id=fake-label-container-old-id
+  fake_label_container_replacement_id=fake-label-container-replacement-id
   fake_label_network_name=${fixture_arr_project}_default
   fake_label_old_id=fake-label-network-old-id
   fake_label_replacement_id=fake-label-network-replacement-id
@@ -492,6 +542,8 @@ verify_execution_guard() {
   cleanup_sandbox_containers="$cleanup_sandbox_containers $fake_fixed_name"
   cleanup_sandbox_networks="$cleanup_sandbox_networks $fake_fixed_network_name"
   created_container_records=" $fake_fixed_old_id:$fake_fixed_name"
+  created_container_records="$created_container_records \
+    $fake_label_container_old_id:$fake_label_container_name"
   created_network_records=" $fake_fixed_network_old_id:$fake_fixed_network_name"
   created_network_records="$created_network_records $fake_label_old_id:$fake_label_network_name"
 
@@ -524,6 +576,16 @@ verify_execution_guard() {
   }
   verify_fake_guard_refusal label-owned-network \
     "refusing unrecorded cleanup network at execution time: $fake_label_network_name"
+
+  cleanup_sandbox() {
+    docker rm "$fake_label_container_name"
+  }
+  verify_fake_guard_refusal label-owned-container \
+    "refusing unrecorded cleanup container at execution time: $fake_label_container_name"
+
+  active_sandbox=
+  active_sandbox_owned=0
+  active_sandbox_identity=
 }
 
 verify_cleanup_uses_guarded_docker() {
@@ -560,12 +622,55 @@ verify_signal_statuses() {
   done
 }
 
+verify_unowned_sandbox_preservation() {
+  (
+    probe_parent=$(mktemp -d "$fixture_parent/acquisition-cleanup-self-test.XXXXXX")
+    probe_unowned=$probe_parent/nas-platform-integration.a1b2c3
+    mkdir "$probe_unowned"
+    probe_identity=$(sandbox_path_identity "$probe_unowned")
+    cleanup_probe() {
+      trap - EXIT HUP INT TERM
+      if [ -d "$probe_unowned" ] && [ ! -L "$probe_unowned" ]; then
+        current_probe_identity=$(sandbox_path_identity "$probe_unowned" 2>/dev/null) ||
+          current_probe_identity=
+        if [ "$current_probe_identity" = "$probe_identity" ]; then
+          rmdir "$probe_unowned" >/dev/null 2>&1 || true
+        fi
+      fi
+      rmdir "$probe_parent" >/dev/null 2>&1 || true
+    }
+    trap cleanup_probe EXIT HUP INT TERM
+
+    guard_status=0
+    guard_output=$(TMPDIR="$probe_parent" \
+      "$repo_dir/tests/sandbox_cleanup_acquisition_ownership_test.sh" \
+      --guard-self-test 2>&1) || guard_status=$?
+    [ "$guard_status" -eq 0 ] || {
+      printf '%s\n' "$guard_output" >&2
+      exit 1
+    }
+    [ -d "$probe_unowned" ] && [ ! -L "$probe_unowned" ] || {
+      printf '%s\n' 'guard self-test deleted an unowned predictable sandbox path' >&2
+      exit 1
+    }
+    [ "$(sandbox_path_identity "$probe_unowned")" = "$probe_identity" ] || {
+      printf '%s\n' 'guard self-test replaced an unowned predictable sandbox path' >&2
+      exit 1
+    }
+  ) || fail "unowned predictable sandbox preservation regression failed"
+}
+
 case ${1-} in
   '')
     "$repo_dir/tests/sandbox_cleanup_acquisition_ownership_test.sh" \
       --self-test >/dev/null || fail "cleanup execution guard self-test failed"
     ;;
   --self-test)
+    verify_unowned_sandbox_preservation
+    printf '%s\n' 'acquisition cleanup fixture: unowned sandbox preservation holds'
+    exit 0
+    ;;
+  --guard-self-test)
     verify_cleanup_uses_guarded_docker
     verify_execution_guard
     verify_signal_statuses
@@ -671,8 +776,7 @@ for negative_kind in arr downloaders; do
       "$mismatched_id" "$negative_kind $project_mismatch-label service"
     require_container_unchanged "$atomic_peer_id" "$negative_kind atomic-peer service"
     "$real_docker" rm -f "$mismatched_id" "$atomic_peer_id" >/dev/null
-    rmdir "$active_sandbox"
-    active_sandbox=
+    release_owned_refused_sandbox
   done
 
   new_sandbox
@@ -689,8 +793,7 @@ for negative_kind in arr downloaders; do
   require_container_unchanged "$unexpected_name_id" "$negative_kind unexpected-name"
   require_container_unchanged "$atomic_peer_id" "$negative_kind atomic-peer service"
   "$real_docker" rm -f "$unexpected_name_id" "$atomic_peer_id" >/dev/null
-  rmdir "$active_sandbox"
-  active_sandbox=
+  release_owned_refused_sandbox
 done
 
 # Network project, name, and default-network-label mismatches are independently
@@ -728,8 +831,7 @@ for negative_kind in arr downloaders; do
     "$real_docker" rm -f "$atomic_peer_container_id" >/dev/null
     "$real_docker" network rm \
       "$mismatched_network_id" "$atomic_peer_network_id" >/dev/null
-    rmdir "$active_sandbox"
-    active_sandbox=
+    release_owned_refused_sandbox
   done
 
   new_sandbox
@@ -756,8 +858,7 @@ for negative_kind in arr downloaders; do
   "$real_docker" rm -f "$atomic_peer_container_id" >/dev/null
   "$real_docker" network rm \
     "$unexpected_network_id" "$atomic_peer_network_id" >/dev/null
-  rmdir "$active_sandbox"
-  active_sandbox=
+  release_owned_refused_sandbox
 
   for network_label_mismatch in missing wrong; do
     new_sandbox
@@ -790,8 +891,7 @@ for negative_kind in arr downloaders; do
     "$real_docker" rm -f "$atomic_peer_container_id" >/dev/null
     "$real_docker" network rm \
       "$mismatched_network_id" "$atomic_peer_network_id" >/dev/null
-    rmdir "$active_sandbox"
-    active_sandbox=
+    release_owned_refused_sandbox
   done
 done
 
@@ -863,8 +963,7 @@ for configarr_mismatch in name service-missing service-wrong oneoff-missing oneo
   require_container_unchanged "$mismatched_id" "Configarr $configarr_mismatch"
   require_container_unchanged "$atomic_peer_id" atomic-peer-radarr
   "$real_docker" rm -f "$mismatched_id" "$atomic_peer_id" >/dev/null
-  rmdir "$active_sandbox"
-  active_sandbox=
+  release_owned_refused_sandbox
 done
 
 printf '%s\n' 'acquisition cleanup: exact Compose ownership controls deletion'
