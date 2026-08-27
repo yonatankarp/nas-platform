@@ -1538,6 +1538,18 @@ def acquisition_configarr_desired_projection(
         if len(service_config) != 1:
             raise AnsibleFilterError(f"Configarr {service} instance identity is ambiguous")
         policy = _mapping(next(iter(service_config.values())), f"Configarr {service} policy")
+        materialized_items = _configarr_materialized_profile_items(
+            policy,
+            _sequence(
+                current_service.get("quality_definitions"),
+                f"Configarr {service} current quality definitions",
+            ),
+            service,
+        )
+        _configarr_profile_item_ids(
+            materialized_items,
+            f"Configarr {service} materialized quality items",
+        )
         profiles = _unique_named(
             policy.get("quality_profiles"), f"Configarr {service} declared profiles"
         )
@@ -1936,24 +1948,43 @@ def _configarr_materialized_profile_items(
 
 def _configarr_profile_item_ids(items: Any, label: str) -> dict[str, int]:
     identities = {}
-    for item in _sequence(items, label):
-        item = _mapping(item, f"{label} item")
-        quality = item.get("quality")
-        if isinstance(quality, dict):
-            name = _required_string(quality.get("name"), f"{label} quality name")
-            identifier = _strict_integer(quality.get("id"), f"{label} quality id")
-        else:
-            name = _required_string(item.get("name"), f"{label} group name")
-            identifier = _strict_integer(item.get("id"), f"{label} group id")
-        if name in identities:
-            raise AnsibleFilterError(f"{label} contains duplicate named identities")
-        identities[name] = identifier
-        children = _configarr_profile_item_ids(
-            item.get("items", []), f"{label} child"
-        )
-        if set(identities).intersection(children):
-            raise AnsibleFilterError(f"{label} contains duplicate named identities")
-        identities.update(children)
+    numeric_identities = set()
+
+    def collect(nodes: Any, node_label: str) -> None:
+        for item in _sequence(nodes, node_label):
+            item = _mapping(item, f"{node_label} item")
+            quality = item.get("quality")
+            if isinstance(quality, dict):
+                name = _required_string(
+                    quality.get("name"), f"{node_label} quality name"
+                )
+                identifier = _strict_integer(
+                    quality.get("id"), f"{node_label} quality id"
+                )
+            else:
+                name = _required_string(
+                    item.get("name"), f"{node_label} group name"
+                )
+                identifier = _strict_integer(
+                    item.get("id"), f"{node_label} group id"
+                )
+            if identifier <= 0:
+                raise AnsibleFilterError(
+                    f"{node_label} numeric identities must be positive"
+                )
+            if name in identities:
+                raise AnsibleFilterError(
+                    f"{label} contains duplicate named identities"
+                )
+            if identifier in numeric_identities:
+                raise AnsibleFilterError(
+                    f"{label} contains duplicate numeric identities"
+                )
+            identities[name] = identifier
+            numeric_identities.add(identifier)
+            collect(item.get("items", []), f"{node_label} child")
+
+    collect(items, label)
     return identities
 
 

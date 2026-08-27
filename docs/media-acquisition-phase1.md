@@ -48,10 +48,17 @@ extended and reviewed.
 The Arr runtime directory stores private SHA-256 digests for opaque desired
 inputs. It also stores `.configarr-owned-state.sha256`, which is different: it
 is the hash of the last completely read back and verified Configarr-owned API
-state. It contains no desired secret, but uses the same owner-only mode and
-atomic, non-symlink loader protections. Never copy either class of hash between
-targets or edit one to force convergence; a missing hash deliberately causes a
-fresh verified reconciliation.
+state. `.configarr-opaque-context.sha256` is different again: it preserves
+continuity for strictly validated Servarr-generated quality-definition
+identities and metadata that cannot be derived from the pinned Configarr
+inputs. Neither state hash contains a desired secret, but both use the same
+owner-only mode and atomic, non-symlink loader protections.
+
+Never copy any hash between targets or edit one to force convergence. A missing
+opaque-context hash permits a one-time baseline only after all source-derived
+invariants and the complete API type, shape, and identity checks pass. Once
+installed, opaque-context continuity is enforced independently of desired-input
+changes; a mismatch fails closed instead of establishing a new baseline.
 
 ## 2. Adopt existing Movies and Series once
 

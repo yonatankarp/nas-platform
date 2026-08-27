@@ -49,8 +49,11 @@ PLAYBOOK_TIMEOUT_SECONDS = Float(ENV.fetch("ACQUISITION_PLAYBOOK_TIMEOUT", "30")
 PROCESS_TERM_GRACE_SECONDS = 1.0
 SOCKET_DEADLINE_SECONDS = 2.0
 CONFIGARR_MUTATION_PATTERN = ENV["ACQUISITION_CONFIGARR_MUTATION_PATTERN"]
+PROFILE_TREE_ID_TARGETED_ONLY =
+  ENV["ACQUISITION_PROFILE_TREE_ID_TARGETED_ONLY"] == "1"
 OPAQUE_TARGETED_ONLY = ENV["ACQUISITION_OPAQUE_TARGETED_ONLY"] == "1" ||
-                       !CONFIGARR_MUTATION_PATTERN.nil?
+                       !CONFIGARR_MUTATION_PATTERN.nil? ||
+                       PROFILE_TREE_ID_TARGETED_ONLY
 SECRET_TASK_FILES = [
   [ARR_TASKS, "reconcile_prowlarr.yml"],
   [ARR_TASKS, "reconcile_prowlarr_application.yml"],
@@ -2820,6 +2823,8 @@ def exercise_duplicate(failures, relationship:, kind:, state:, variables:, write
     unless mutation_requests(api, write_matcher).empty?
       failures << "#{relationship} duplicate identity reached mutation"
     end
+    failures << "#{relationship} duplicate identity reached fingerprint recording" if
+      result.fetch("recorder_started")
   end
 end
 
@@ -4435,6 +4440,61 @@ end
 end
 
 configarr_state = { "configarr" => deep_copy(CONFIGARR), "configarr_desired" => deep_copy(CONFIGARR) }
+%w[radarr sonarr].each do |service|
+  colliding_profile_tree_state = deep_copy(configarr_state)
+  colliding_definition = colliding_profile_tree_state.dig(
+    "configarr", service, "qualitydefinition"
+  ).find { |definition| definition.dig("quality", "name") == "WEBDL-1080p" }
+  colliding_definition.fetch("quality")["id"] = 1001
+  colliding_profile_tree_state.dig(
+    "configarr", service, "qualityprofile", 0
+  )["minFormatScore"] = 99
+
+  other_service = service == "radarr" ? "sonarr" : "radarr"
+  colliding_profile_tree_state.dig("configarr", other_service, "customformat").reject! do |format|
+    format["name"] == CONFIGARR_FORMAT_NAME
+  end
+  colliding_profile_tree_state.dig(
+    "configarr", other_service, "qualityprofile", 0, "formatItems"
+  ).reject! { |assignment| assignment["name"] == CONFIGARR_FORMAT_NAME }
+
+  Dir.mktmpdir("media-acquisition-configarr-profile-tree-id-") do |runtime|
+    FileUtils.mkdir_p(File.join(runtime, "services", "arr"))
+    with_api(colliding_profile_tree_state) do |api|
+      variables = base_variables(api.port)
+      seed_fingerprint_baseline(
+        runtime, variables, kind: :configarr, state: configarr_state
+      )
+      File.unlink(File.join(runtime, "services", "arr", CONFIGARR_OPAQUE_FINGERPRINT_FILE))
+      before = fingerprint_snapshot(runtime)
+      result = run_tasks(
+        :configarr, api, {}, runtime: runtime, prepare_fingerprints: false
+      )
+      sane = check_sanity(
+        failures,
+        "Configarr #{service} recursive profile-tree numeric identity",
+        result,
+        api,
+        kind: :configarr
+      )
+      next unless sane
+
+      failures << "Configarr #{service} recursive profile-tree numeric identity was accepted" if
+        result.fetch("status").success?
+      failures << "Configarr #{service} recursive profile-tree numeric identity reached mutation" unless
+        mutation_requests(api, ->(_request) { true }).empty?
+      failures << "Configarr #{service} recursive profile-tree numeric identity reached fingerprint recording" if
+        result.fetch("recorder_started")
+      failures << "Configarr #{service} recursive profile-tree numeric identity advanced a fingerprint" unless
+        fingerprint_snapshot(runtime) == before
+    end
+  end
+end
+if PROFILE_TREE_ID_TARGETED_ONLY
+  abort failures.join("\n") unless failures.empty?
+  puts "Configarr recursive profile-tree identity preflight behavior holds"
+  exit
+end
 configarr_mutations = {}
 %w[radarr sonarr].each do |service|
   service_name = service.dup
