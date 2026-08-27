@@ -925,6 +925,62 @@ docker run --rm \
         \"\$playbook\" \"\$@\"
     }
 
+    enabled_idempotence_recap_is_clean() {
+      idempotence_recap_file=\$1
+      idempotence_escape=\$(printf '\033')
+      sed "s/\${idempotence_escape}\\[[0-9;]*[[:alpha:]]//g" \
+        "\$idempotence_recap_file" |
+        awk '
+          /^PLAY RECAP[[:space:]]+\*+[[:space:]]*$/ {
+            recap_count++
+            in_recap = 1
+            next
+          }
+          in_recap && \$1 == "nas" && \$2 == ":" {
+            target_count++
+            valid = 1
+            delete seen
+            delete value
+            for (field = 3; field <= NF; field++) {
+              parts = split(\$field, pair, "=")
+              if (parts != 2 || pair[1] == "" || pair[2] !~ /^[0-9]+\$/) {
+                valid = 0
+                continue
+              }
+              if (seen[pair[1]]++) {
+                valid = 0
+              }
+              value[pair[1]] = pair[2]
+            }
+            target_clean = valid &&
+              seen["changed"] == 1 && value["changed"] == "0" &&
+              seen["unreachable"] == 1 && value["unreachable"] == "0" &&
+              seen["failed"] == 1 && value["failed"] == "0"
+          }
+          END {
+            exit !(recap_count == 1 && target_count == 1 && target_clean)
+          }
+        '
+    }
+
+    run_enabled_idempotence() {
+      idempotence_tags=\$1
+      idempotence_output=/tmp/media-acquisition-idempotence.txt
+      if ! run_play --tags "\$idempotence_tags" \
+          >"\$idempotence_output" 2>&1; then
+        cat "\$idempotence_output" >&2
+        printf '%s\n' \
+          'enabled media acquisition convergence did not complete' >&2
+        exit 1
+      fi
+      if ! enabled_idempotence_recap_is_clean "\$idempotence_output"; then
+        cat "\$idempotence_output" >&2
+        printf '%s\n' \
+          'enabled media acquisition convergence was not idempotent' >&2
+        exit 1
+      fi
+    }
+
     run_beszel_contract() {
       env \
         PLATFORM_KIND=integration \
@@ -1631,6 +1687,7 @@ EOF
       /repo/tests/media_control_network_collision_test.sh live
       /repo/tests/contracts/arr.sh static
       run_arr_verify_only
+      run_enabled_idempotence arr
       run_play --tags arr --check --diff
       printf 'ARR_PHASE1_RUNTIME_VERIFIED\n'
       cleanup_vault
@@ -1642,6 +1699,7 @@ EOF
       /repo/tests/contracts/downloaders.sh static
       run_arr_verify_only
       run_downloaders_verify_only
+      run_enabled_idempotence arr,downloaders
       run_play --tags arr,downloaders --check --diff
       printf 'DOWNLOADERS_PHASE1_RUNTIME_VERIFIED\n'
       cleanup_vault

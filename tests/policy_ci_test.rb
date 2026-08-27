@@ -124,6 +124,29 @@ check(failures, integration_body.include?('pull_image "$runner_image"'),
 check(failures, integration_body.include?("prepull_images\n"),
       "tests/integration.sh must pre-pull the suite's images before the converge")
 
+enabled_idempotence_contracts = {
+  "arr" => ["run_enabled_idempotence arr", "run_play --tags arr --check --diff"],
+  "downloaders" => [
+    "run_enabled_idempotence arr,downloaders",
+    "run_play --tags arr,downloaders --check --diff"
+  ]
+}
+enabled_idempotence_contracts.each do |suite, (idempotence_call, check_call)|
+  suite_body = integration_body[
+    /if \[ "\\\$INTEGRATION_SUITE" = #{Regexp.escape(suite)} \]; then(.*?)^    fi$/m,
+    1
+  ].to_s
+  check(failures, suite_body.include?(idempotence_call),
+        "the #{suite} suite must run a second normal enabled convergence")
+  check(failures,
+        suite_body.include?(check_call) &&
+          suite_body.index(idempotence_call).to_i < suite_body.index(check_call).to_i,
+        "the #{suite} suite must run enabled idempotence before check mode")
+end
+check(failures,
+      integration_body.scan(/^    enabled_idempotence_recap_is_clean\(\) \{/).length == 1,
+      "tests/integration.sh must define one enabled idempotence recap parser")
+
 # The manifest's own shape is policed elsewhere, which reports a malformed
 # document or a non-string service name by name. Read it tolerantly here and skip
 # the cross-check when it is unusable rather than raising a second time on the same

@@ -10,6 +10,8 @@ prepull_bin=$(mktemp -d "${TMPDIR:-/tmp}/nas-platform-prepull-test.XXXXXX")
 pull_log=$prepull_bin/pull.log
 immich_order_mutant=$fake_bin/immich-order-mutant.sh
 acquisition_runtime_mutant=$fake_bin/acquisition-runtime-mutant.sh
+idempotence_helper=$fake_bin/enabled-idempotence-helper.sh
+idempotence_recap=$fake_bin/enabled-idempotence-recap.txt
 
 cleanup() {
   for case_root in "$fake_bin/contract-cases" "$fake_bin/boundary-cases" \
@@ -23,6 +25,7 @@ cleanup() {
   rm -f "$fake_bin/docker" "$fake_bin/mktemp" "$docker_log"
   rm -f "$immich_order_mutant"
   rm -f "$acquisition_runtime_mutant"
+  rm -f "$idempotence_helper" "$idempotence_recap"
   rm -f "$fake_bin/hostile-validator-ran"
   rmdir "$fake_bin"
   rm -f "$prepull_bin/docker" "$pull_log"
@@ -390,6 +393,95 @@ grep -qF -- '" integration-run "$playbook" "$@"' "$integration"
 grep -qF -- '\"\$playbook\" \"\$@\"' "$integration"
 grep -qF -- 'run_play --tags \"\$INTEGRATION_TAGS\" \"\$@\"' "$integration"
 grep -qF -- 'run_play \"\$@\"' "$integration"
+
+# Enabled acquisition suites must prove idempotence with a second normal play,
+# not infer it from check mode. Exercise the production recap parser directly so
+# task output cannot satisfy the gate and malformed or partial recaps fail closed.
+sed -n '/^    enabled_idempotence_recap_is_clean() {/,/^    }$/p' \
+  "$integration" | sed 's/\\\$/\$/g' > "$idempotence_helper"
+[ -s "$idempotence_helper" ] || {
+  printf '%s\n' 'integration runner has no enabled idempotence recap parser' >&2
+  exit 1
+}
+. "$idempotence_helper"
+
+enabled_idempotence_runner=$(sed -n \
+  '/^    run_enabled_idempotence() {/,/^    }$/p' "$integration")
+printf '%s\n' "$enabled_idempotence_runner" |
+  grep -qF 'run_play --tags "\$idempotence_tags"' || {
+    printf '%s\n' 'enabled idempotence gate does not run a tagged play' >&2
+    exit 1
+  }
+if printf '%s\n' "$enabled_idempotence_runner" | grep -qF -- '--check'; then
+  printf '%s\n' 'enabled idempotence gate substitutes check mode for convergence' >&2
+  exit 1
+fi
+
+assert_idempotence_recap_accepted() {
+  case_name=$1
+  shift
+  printf '%b' "$*" > "$idempotence_recap"
+  enabled_idempotence_recap_is_clean "$idempotence_recap" || {
+    printf 'enabled idempotence parser rejected %s\n' "$case_name" >&2
+    exit 1
+  }
+}
+
+assert_idempotence_recap_rejected() {
+  case_name=$1
+  shift
+  printf '%b' "$*" > "$idempotence_recap"
+  if enabled_idempotence_recap_is_clean "$idempotence_recap"; then
+    printf 'enabled idempotence parser accepted %s\n' "$case_name" >&2
+    exit 1
+  fi
+}
+
+assert_idempotence_recap_accepted 'clean target recap' \
+  'PLAY RECAP *********************************************************************\nnas : ok=37 changed=0 unreachable=0 failed=0 skipped=2 rescued=0 ignored=0\n'
+assert_idempotence_recap_accepted 'ANSI-colored clean target recap' \
+  '\033[0;36mPLAY RECAP *********************************************************************\033[0m\n\033[0;32mnas : ok=5 changed=0 unreachable=0 failed=0 skipped=0 rescued=0 ignored=0\033[0m\n'
+assert_idempotence_recap_rejected 'changed target recap' \
+  'PLAY RECAP *********************************************************************\nnas : ok=37 changed=1 unreachable=0 failed=0 skipped=2 rescued=0 ignored=0\n'
+assert_idempotence_recap_rejected 'unreachable target recap' \
+  'PLAY RECAP *********************************************************************\nnas : ok=3 changed=0 unreachable=1 failed=0 skipped=0 rescued=0 ignored=0\n'
+assert_idempotence_recap_rejected 'failed target recap' \
+  'PLAY RECAP *********************************************************************\nnas : ok=3 changed=0 unreachable=0 failed=1 skipped=0 rescued=0 ignored=0\n'
+assert_idempotence_recap_rejected 'missing recap marker' \
+  'nas : ok=37 changed=0 unreachable=0 failed=0 skipped=2 rescued=0 ignored=0\n'
+assert_idempotence_recap_rejected 'missing target recap' \
+  'PLAY RECAP *********************************************************************\nlocalhost : ok=3 changed=0 unreachable=0 failed=0 skipped=0 rescued=0 ignored=0\n'
+assert_idempotence_recap_rejected 'malformed target recap' \
+  'PLAY RECAP *********************************************************************\nnas : ok=3 changed=zero unreachable=0 failed=0 skipped=0 rescued=0 ignored=0\n'
+assert_idempotence_recap_rejected 'duplicate target recap' \
+  'PLAY RECAP *********************************************************************\nnas : ok=3 changed=0 unreachable=0 failed=0 skipped=0 rescued=0 ignored=0\nnas : ok=3 changed=0 unreachable=0 failed=0 skipped=0 rescued=0 ignored=0\n'
+assert_idempotence_recap_rejected 'task-output false match before failed recap' \
+  'TASK [debug] ********************************************************************\nok: [nas] => {"msg":"changed=0 unreachable=0 failed=0"}\nPLAY RECAP *********************************************************************\nnas : ok=3 changed=1 unreachable=0 failed=0 skipped=0 rescued=0 ignored=0\n'
+
+arr_enabled_block=$(sed -n '/if \[ "\\\$INTEGRATION_SUITE" = arr \]; then/,/^    fi$/p' \
+  "$integration")
+downloaders_enabled_block=$(sed -n \
+  '/if \[ "\\\$INTEGRATION_SUITE" = downloaders \]; then/,/^    fi$/p' \
+  "$integration")
+printf '%s\n' "$arr_enabled_block" | grep -qF 'run_enabled_idempotence arr'
+printf '%s\n' "$downloaders_enabled_block" |
+  grep -qF 'run_enabled_idempotence arr,downloaders'
+arr_idempotence_line=$(printf '%s\n' "$arr_enabled_block" |
+  grep -nF 'run_enabled_idempotence arr' | cut -d: -f1)
+arr_check_line=$(printf '%s\n' "$arr_enabled_block" |
+  grep -nF 'run_play --tags arr --check --diff' | cut -d: -f1)
+downloaders_idempotence_line=$(printf '%s\n' "$downloaders_enabled_block" |
+  grep -nF 'run_enabled_idempotence arr,downloaders' | cut -d: -f1)
+downloaders_check_line=$(printf '%s\n' "$downloaders_enabled_block" |
+  grep -nF 'run_play --tags arr,downloaders --check --diff' | cut -d: -f1)
+[ "$arr_idempotence_line" -lt "$arr_check_line" ] || {
+  printf '%s\n' 'Arr enabled idempotence play does not precede check mode' >&2
+  exit 1
+}
+[ "$downloaders_idempotence_line" -lt "$downloaders_check_line" ] || {
+  printf '%s\n' 'downloaders enabled idempotence play does not precede check mode' >&2
+  exit 1
+}
 grep -qF 'requests_version=2.34.2' "$integration" || {
   printf '%s\n' 'integration controller does not pin docker_container_info runtime support' >&2
   exit 1
