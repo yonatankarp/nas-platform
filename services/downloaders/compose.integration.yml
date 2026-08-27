@@ -1,4 +1,6 @@
 ---
 services:
-  sabnzbd: {}
-  unpackerr: {}
+  sabnzbd:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-sabnzbd
+  unpackerr:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-unpackerr

@@ -60,6 +60,43 @@ check(failures, contract_execution && contract_abi_names.all? do |name|
   contract_environment.include?("#{name}=")
 end, "integration must set the contract environment ABI before execution")
 run_play_body = harness[/^    run_play\(\) \{.*?^    \}/m].to_s
+namespace_derivation = harness[/^derive_integration_project_namespace\(\) \{.*?^\}/m].to_s
+namespace_call = harness.index('integration_project_namespace=$(derive_integration_project_namespace "$sandbox")')
+controller_run = harness.index("docker run --rm")
+check(failures,
+      namespace_derivation.include?('integration_suffix=${integration_namespace_sandbox##*.}') &&
+        namespace_derivation.include?("tr '[:upper:]' '[:lower:]'") &&
+        namespace_derivation.include?('nas-platform-integration-[a-z0-9][a-z0-9][a-z0-9][a-z0-9][a-z0-9][a-z0-9]') &&
+        namespace_call && controller_run && namespace_call < controller_run,
+      "integration must derive and validate a lowercase six-character sandbox namespace before the controller starts")
+check(failures,
+      run_play_body.include?('-e platform_project_name=\\"$integration_project_namespace\\"'),
+      "every integration play must receive the validated disposable project namespace")
+
+arr_integration = YAML.safe_load(
+  File.read(File.join(ROOT, "services", "arr", "compose.integration.yml"))
+).fetch("services")
+downloaders_integration = YAML.safe_load(
+  File.read(File.join(ROOT, "services", "downloaders", "compose.integration.yml"))
+).fetch("services")
+expected_arr_names = %w[radarr sonarr prowlarr bazarr].to_h do |service|
+  [service, "${PLATFORM_PROJECT_NAME:?}-#{service}"]
+end
+check(failures,
+      expected_arr_names.all? do |service, name|
+        arr_integration.fetch(service, {}).fetch("container_name", nil) == name
+      end,
+      "Arr integration containers must use the disposable platform namespace")
+check(failures, arr_integration.fetch("configarr", nil) == {},
+      "Configarr integration must keep its project-derived one-off name")
+expected_downloader_names = %w[sabnzbd unpackerr].to_h do |service|
+  [service, "${PLATFORM_PROJECT_NAME:?}-#{service}"]
+end
+check(failures,
+      expected_downloader_names.all? do |service, name|
+        downloaders_integration.fetch(service, {}).fetch("container_name", nil) == name
+      end,
+      "downloader integration containers must use the disposable platform namespace")
 check(failures, harness.match?(/^ruby_package='ruby~\d+\.\d+\.\d+'$/) &&
                 harness.match?(/^curl_package='curl~\d+\.\d+\.\d+'$/),
       "integration must pin distro ruby and curl packages")

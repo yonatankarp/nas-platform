@@ -12,6 +12,9 @@ immich_order_mutant=$fake_bin/immich-order-mutant.sh
 acquisition_runtime_mutant=$fake_bin/acquisition-runtime-mutant.sh
 idempotence_helper=$fake_bin/enabled-idempotence-helper.sh
 idempotence_recap=$fake_bin/enabled-idempotence-recap.txt
+namespace_helper=$fake_bin/integration-namespace-helper.sh
+arr_compose=$fake_bin/arr-compose.json
+downloaders_compose=$fake_bin/downloaders-compose.json
 
 cleanup() {
   for case_root in "$fake_bin/contract-cases" "$fake_bin/boundary-cases" \
@@ -26,6 +29,7 @@ cleanup() {
   rm -f "$immich_order_mutant"
   rm -f "$acquisition_runtime_mutant"
   rm -f "$idempotence_helper" "$idempotence_recap"
+  rm -f "$namespace_helper" "$arr_compose" "$downloaders_compose"
   rm -f "$fake_bin/hostile-validator-ran"
   rmdir "$fake_bin"
   rm -f "$prepull_bin/docker" "$pull_log"
@@ -393,6 +397,101 @@ grep -qF -- '" integration-run "$playbook" "$@"' "$integration"
 grep -qF -- '\"\$playbook\" \"\$@\"' "$integration"
 grep -qF -- 'run_play --tags \"\$INTEGRATION_TAGS\" \"\$@\"' "$integration"
 grep -qF -- 'run_play \"\$@\"' "$integration"
+
+# The controller and every acquisition resource share one strict namespace
+# derived from the disposable directory. Exercise the production derivation so
+# case normalization and exact-length rejection cannot drift from the harness.
+sed -n '/^derive_integration_project_namespace() {/,/^}$/p' \
+  "$integration" > "$namespace_helper"
+[ -s "$namespace_helper" ] || {
+  printf '%s\n' 'integration runner has no project namespace derivation' >&2
+  exit 1
+}
+. "$namespace_helper"
+[ "$(derive_integration_project_namespace \
+  /tmp/nas-platform-integration.A1B2C3)" = \
+  nas-platform-integration-a1b2c3 ] || {
+  printf '%s\n' 'integration namespace does not lowercase its sandbox suffix' >&2
+  exit 1
+}
+for invalid_sandbox in \
+  /tmp/nas-platform-integration.a1b2c \
+  /tmp/nas-platform-integration.a1b2c34 \
+  /tmp/nas-platform-integration.a1b-2c \
+  /tmp/nas-platform-integration.a1b2_c; do
+  invalid_namespace_status=0
+  derive_integration_project_namespace "$invalid_sandbox" \
+    >/dev/null 2>&1 || invalid_namespace_status=$?
+  [ "$invalid_namespace_status" -eq 2 ] || {
+    printf 'integration namespace accepted invalid sandbox: %s\n' \
+      "$invalid_sandbox" >&2
+    exit 1
+  }
+done
+namespace_call_line=$(grep -nF \
+  'integration_project_namespace=$(derive_integration_project_namespace "$sandbox")' \
+  "$integration" | cut -d: -f1)
+controller_run_line=$(grep -nF 'docker run --rm' "$integration" |
+  head -1 | cut -d: -f1)
+[ -n "$namespace_call_line" ] && [ -n "$controller_run_line" ] &&
+  [ "$namespace_call_line" -lt "$controller_run_line" ] || {
+  printf '%s\n' 'invalid integration namespaces are not refused before the play' >&2
+  exit 1
+}
+run_play_namespace=$(sed -n '/^    run_play() {/,/^    }$/p' "$integration")
+printf '%s\n' "$run_play_namespace" |
+  grep -qF -- '-e platform_project_name=\"$integration_project_namespace\"' || {
+  printf '%s\n' 'integration plays omit the disposable project namespace' >&2
+  exit 1
+}
+
+# Compose must render only namespace-derived acquisition container names. The
+# Configarr job deliberately has no fixed name so Compose can generate a
+# project-owned one-off name for each run.
+env PLATFORM_PROJECT_NAME=nas-platform-integration-a1b2c3 \
+  PLATFORM_MEDIA_NETWORK=nas-platform-integration-a1b2c3-media-control \
+  PLATFORM_CONTAINER_CPUSET=0 NAS_UID=2345 NAS_GID=3456 TZ=UTC \
+  MEDIA_ROOT=/tmp/media RADARR_CONFIG_PATH=/tmp/radarr \
+  SONARR_CONFIG_PATH=/tmp/sonarr PROWLARR_CONFIG_PATH=/tmp/prowlarr \
+  BAZARR_CONFIG_PATH=/tmp/bazarr CONFIGARR_CONFIG_PATH=/tmp/configarr.yml \
+  CONFIGARR_SECRETS_PATH=/tmp/configarr-secrets.yml \
+  CONFIGARR_REPOS_PATH=/tmp/configarr-repos \
+  docker compose --project-name nas-platform-integration-a1b2c3-arr \
+    --profile jobs \
+    -f "$repo_dir/services/arr/compose.yml" \
+    -f "$repo_dir/services/arr/compose.integration.yml" \
+    config --format json > "$arr_compose"
+env PLATFORM_PROJECT_NAME=nas-platform-integration-a1b2c3 \
+  PLATFORM_MEDIA_NETWORK=nas-platform-integration-a1b2c3-media-control \
+  PLATFORM_CONTAINER_CPUSET=0 NAS_UID=2345 NAS_GID=3456 TZ=UTC \
+  SABNZBD_CONFIG_PATH=/tmp/sabnzbd MEDIA_ACQUISITION_PATH=/tmp/media \
+  BOOKS_ACQUISITION_PATH=/tmp/books SABNZBD_API_KEY=fixture \
+  RADARR_API_KEY=fixture SONARR_API_KEY=fixture \
+  docker compose --project-name nas-platform-integration-a1b2c3-downloaders \
+    -f "$repo_dir/services/downloaders/compose.yml" \
+    -f "$repo_dir/services/downloaders/compose.integration.yml" \
+    config --format json > "$downloaders_compose"
+ruby -rjson -e '
+  namespace = "nas-platform-integration-a1b2c3"
+  arr = JSON.parse(File.read(ARGV.fetch(0))).fetch("services")
+  downloaders = JSON.parse(File.read(ARGV.fetch(1))).fetch("services")
+  %w[radarr sonarr prowlarr bazarr].each do |service|
+    abort "unexpected #{service} name" unless
+      arr.fetch(service).fetch("container_name") == "#{namespace}-#{service}"
+  end
+  abort "Configarr acquired a fixed container name" if
+    arr.fetch("configarr").key?("container_name")
+  %w[sabnzbd unpackerr].each do |service|
+    abort "unexpected #{service} name" unless
+      downloaders.fetch(service).fetch("container_name") == "#{namespace}-#{service}"
+  end
+  production_names = %w[radarr sonarr prowlarr bazarr sabnzbd unpackerr]
+  effective_names = (arr.values + downloaders.values).filter_map do |service|
+    service["container_name"]
+  end
+  abort "production acquisition name leaked" unless
+    (effective_names & production_names).empty?
+' "$arr_compose" "$downloaders_compose"
 
 # Enabled acquisition suites must prove idempotence with a second normal play,
 # not infer it from check mode. Exercise the production recap parser directly so

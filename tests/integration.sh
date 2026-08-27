@@ -397,6 +397,24 @@ temporary_parent=${TMPDIR:-/tmp}
 temporary_parent=${temporary_parent%/}
 temporary_parent=$(CDPATH= cd -P "$temporary_parent" && pwd -P)
 sandbox=
+
+derive_integration_project_namespace() {
+  integration_namespace_sandbox=$1
+  integration_suffix=${integration_namespace_sandbox##*.}
+  integration_suffix=$(printf '%s' "$integration_suffix" |
+    tr '[:upper:]' '[:lower:]')
+  integration_project_namespace=nas-platform-integration-$integration_suffix
+  case $integration_project_namespace in
+    nas-platform-integration-[a-z0-9][a-z0-9][a-z0-9][a-z0-9][a-z0-9][a-z0-9]) ;;
+    *)
+      printf 'invalid integration sandbox suffix: %s\n' \
+        "$integration_suffix" >&2
+      return 2
+      ;;
+  esac
+  printf '%s\n' "$integration_project_namespace"
+}
+
 acquire_integration_lock "$temporary_parent"
 
 cleanup_integration_on_exit() {
@@ -422,6 +440,7 @@ ruby -e '
   abort "integration sandbox owner differs" unless sandbox.uid == expected_uid
   abort "integration sandbox mode differs" unless (sandbox.mode & 0o777) == 0o700
 ' "$sandbox" "$sandbox_host_owner_uid"
+integration_project_namespace=$(derive_integration_project_namespace "$sandbox")
 
 mkdir -p "$sandbox/volume1/Docker" "$sandbox/volume2" "$sandbox/repo" \
   "$sandbox/fixtures" "$sandbox/reports" \
@@ -917,6 +936,7 @@ docker run --rm \
         -e nas_docker_root=$sandbox/volume1/Docker \
         -e nas_media_root=$sandbox/volume2 \
         -e platform_compose_kind=integration \
+        -e platform_project_name=\"$integration_project_namespace\" \
         -e platform_beszel_agent_kind=portable \
         -e media_usenet_enabled="\$integration_media_usenet_enabled" \
         -e media_acquisition_adopt_existing_libraries="\$integration_media_adopt_existing" \
