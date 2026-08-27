@@ -1,7 +1,8 @@
 ---
+arr_platform_project_name: "{{ platform_project_name | default('') }}"
 arr_compose_project_name: >-
-  {{ (platform_project_name ~ '-arr')
-     if platform_project_name | default('') | length > 0 else 'arr' }}
+  {{ (arr_platform_project_name ~ '-arr')
+     if arr_platform_project_name | length > 0 else 'arr' }}
 arr_radarr_port: 7878
 arr_sonarr_port: 8989
 arr_prowlarr_port: 9696

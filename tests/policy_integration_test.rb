@@ -69,9 +69,12 @@ check(failures,
         namespace_derivation.include?('nas-platform-integration-[a-z0-9][a-z0-9][a-z0-9][a-z0-9][a-z0-9][a-z0-9]') &&
         namespace_call && controller_run && namespace_call < controller_run,
       "integration must derive and validate a lowercase six-character sandbox namespace before the controller starts")
+scoped_project_variables = %w[arr_platform_project_name downloaders_platform_project_name]
 check(failures,
-      run_play_body.include?('-e platform_project_name=\\"$integration_project_namespace\\"'),
-      "every integration play must receive the validated disposable project namespace")
+      scoped_project_variables.all? do |variable|
+        run_play_body.include?("-e #{variable}=\\\"$integration_project_namespace\\\"")
+      end && !run_play_body.include?("-e platform_project_name="),
+      "integration must scope the disposable namespace to Arr and downloaders")
 
 arr_integration = YAML.safe_load(
   File.read(File.join(ROOT, "services", "arr", "compose.integration.yml"))
@@ -97,6 +100,75 @@ check(failures,
         downloaders_integration.fetch(service, {}).fetch("container_name", nil) == name
       end,
       "downloader integration containers must use the disposable platform namespace")
+
+arr_defaults = YAML.safe_load_file(File.join(ROOT, "roles", "arr", "defaults", "main.yml"))
+downloaders_defaults = YAML.safe_load_file(
+  File.join(ROOT, "roles", "downloaders", "defaults", "main.yml")
+)
+arr_argument_options = YAML.safe_load_file(
+  File.join(ROOT, "roles", "arr", "meta", "argument_specs.yml")
+).dig("argument_specs", "main", "options")
+downloaders_argument_options = YAML.safe_load_file(
+  File.join(ROOT, "roles", "downloaders", "meta", "argument_specs.yml")
+).dig("argument_specs", "main", "options")
+arr_environment = File.read(File.join(ROOT, "roles", "arr", "templates", "env.j2"))
+downloaders_environment = File.read(
+  File.join(ROOT, "roles", "downloaders", "templates", "env.j2")
+)
+check(failures,
+      arr_defaults.fetch("arr_platform_project_name", "").include?("platform_project_name | default('')") &&
+        arr_defaults.fetch("arr_compose_project_name", "").include?("arr_platform_project_name ~ '-arr'") &&
+        arr_argument_options.fetch("arr_platform_project_name", nil) == {
+          "type" => "str", "required" => false
+        } &&
+        arr_environment.include?("PLATFORM_PROJECT_NAME={{ arr_platform_project_name }}"),
+      "Arr must derive its Compose project and container prefix through its role-scoped namespace")
+check(failures,
+      downloaders_defaults.fetch("downloaders_platform_project_name", "")
+                           .include?("platform_project_name | default('')") &&
+        downloaders_defaults.fetch("downloaders_compose_project_name", "")
+                            .include?("downloaders_platform_project_name ~ '-downloaders'") &&
+        downloaders_argument_options.fetch("downloaders_platform_project_name", nil) == {
+          "type" => "str", "required" => false
+        } &&
+        downloaders_environment.include?(
+          "PLATFORM_PROJECT_NAME={{ downloaders_platform_project_name }}"
+        ),
+      "downloaders must derive their Compose project and container prefix through their role-scoped namespace")
+
+inventory_defaults = File.read(File.join(ROOT, "inventory", "group_vars", "all", "main.yml"))
+host_prep = File.read(File.join(ROOT, "roles", "host_prep", "tasks", "main.yml"))
+legacy_defaults = File.read(
+  File.join(ROOT, "roles", "audiobookshelf", "defaults", "main.yml")
+)
+legacy_project_sources = inventory_defaults + host_prep + legacy_defaults
+check(failures,
+      inventory_defaults.include?("platform_project_name ~ '-media-control'") &&
+        host_prep.include?("platform_project_name | default('nas-platform', true)") &&
+        legacy_defaults.include?("platform_project_name ~ '-audiobookshelf'") &&
+        scoped_project_variables.none? do |variable|
+          legacy_project_sources.include?(variable)
+        end,
+      "acquisition namespacing must not alter the media-control or legacy project defaults")
+namespace = "nas-platform-integration-a1b2c3"
+effective_projects, effective_projects_error, effective_projects_status = Open3.capture3(
+  "ansible", "localhost", "-i", "localhost,", "-c", "local", "-m", "debug",
+  "-a", "msg={{ platform_media_control_network }}|{{ audiobookshelf_compose_project_name }}|" \
+        "{{ arr_compose_project_name }}|{{ downloaders_compose_project_name }}",
+  "-e", "@inventory/group_vars/all/main.yml",
+  "-e", "@roles/audiobookshelf/defaults/main.yml",
+  "-e", "@roles/arr/defaults/main.yml",
+  "-e", "@roles/downloaders/defaults/main.yml",
+  "-e", "arr_platform_project_name=#{namespace}",
+  "-e", "downloaders_platform_project_name=#{namespace}",
+  chdir: ROOT
+)
+check(failures,
+      effective_projects_status.success? &&
+        effective_projects.include?(
+          %Q{"msg": "media-control|audiobookshelf|#{namespace}-arr|#{namespace}-downloaders"}
+        ),
+      "effective scoped project defaults differ: #{effective_projects_error.strip}")
 check(failures, harness.match?(/^ruby_package='ruby~\d+\.\d+\.\d+'$/) &&
                 harness.match?(/^curl_package='curl~\d+\.\d+\.\d+'$/),
       "integration must pin distro ruby and curl packages")

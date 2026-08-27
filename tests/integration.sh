@@ -936,7 +936,8 @@ docker run --rm \
         -e nas_docker_root=$sandbox/volume1/Docker \
         -e nas_media_root=$sandbox/volume2 \
         -e platform_compose_kind=integration \
-        -e platform_project_name=\"$integration_project_namespace\" \
+        -e arr_platform_project_name=\"$integration_project_namespace\" \
+        -e downloaders_platform_project_name=\"$integration_project_namespace\" \
         -e platform_beszel_agent_kind=portable \
         -e media_usenet_enabled="\$integration_media_usenet_enabled" \
         -e media_acquisition_adopt_existing_libraries="\$integration_media_adopt_existing" \

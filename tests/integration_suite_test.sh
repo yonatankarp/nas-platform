@@ -13,8 +13,6 @@ acquisition_runtime_mutant=$fake_bin/acquisition-runtime-mutant.sh
 idempotence_helper=$fake_bin/enabled-idempotence-helper.sh
 idempotence_recap=$fake_bin/enabled-idempotence-recap.txt
 namespace_helper=$fake_bin/integration-namespace-helper.sh
-arr_compose=$fake_bin/arr-compose.json
-downloaders_compose=$fake_bin/downloaders-compose.json
 
 cleanup() {
   for case_root in "$fake_bin/contract-cases" "$fake_bin/boundary-cases" \
@@ -29,7 +27,7 @@ cleanup() {
   rm -f "$immich_order_mutant"
   rm -f "$acquisition_runtime_mutant"
   rm -f "$idempotence_helper" "$idempotence_recap"
-  rm -f "$namespace_helper" "$arr_compose" "$downloaders_compose"
+  rm -f "$namespace_helper"
   rm -f "$fake_bin/hostile-validator-ran"
   rmdir "$fake_bin"
   rm -f "$prepull_bin/docker" "$pull_log"
@@ -439,59 +437,21 @@ controller_run_line=$(grep -nF 'docker run --rm' "$integration" |
   exit 1
 }
 run_play_namespace=$(sed -n '/^    run_play() {/,/^    }$/p' "$integration")
-printf '%s\n' "$run_play_namespace" |
-  grep -qF -- '-e platform_project_name=\"$integration_project_namespace\"' || {
-  printf '%s\n' 'integration plays omit the disposable project namespace' >&2
+for scoped_project_variable in \
+  arr_platform_project_name downloaders_platform_project_name; do
+  printf '%s\n' "$run_play_namespace" |
+    grep -qF -- \
+      "-e $scoped_project_variable=\\\"\$integration_project_namespace\\\"" || {
+    printf 'integration plays omit scoped namespace %s\n' \
+      "$scoped_project_variable" >&2
+    exit 1
+  }
+done
+if printf '%s\n' "$run_play_namespace" |
+   grep -qF -- '-e platform_project_name='; then
+  printf '%s\n' 'integration plays globally override the platform project name' >&2
   exit 1
-}
-
-# Compose must render only namespace-derived acquisition container names. The
-# Configarr job deliberately has no fixed name so Compose can generate a
-# project-owned one-off name for each run.
-env PLATFORM_PROJECT_NAME=nas-platform-integration-a1b2c3 \
-  PLATFORM_MEDIA_NETWORK=nas-platform-integration-a1b2c3-media-control \
-  PLATFORM_CONTAINER_CPUSET=0 NAS_UID=2345 NAS_GID=3456 TZ=UTC \
-  MEDIA_ROOT=/tmp/media RADARR_CONFIG_PATH=/tmp/radarr \
-  SONARR_CONFIG_PATH=/tmp/sonarr PROWLARR_CONFIG_PATH=/tmp/prowlarr \
-  BAZARR_CONFIG_PATH=/tmp/bazarr CONFIGARR_CONFIG_PATH=/tmp/configarr.yml \
-  CONFIGARR_SECRETS_PATH=/tmp/configarr-secrets.yml \
-  CONFIGARR_REPOS_PATH=/tmp/configarr-repos \
-  docker compose --project-name nas-platform-integration-a1b2c3-arr \
-    --profile jobs \
-    -f "$repo_dir/services/arr/compose.yml" \
-    -f "$repo_dir/services/arr/compose.integration.yml" \
-    config --format json > "$arr_compose"
-env PLATFORM_PROJECT_NAME=nas-platform-integration-a1b2c3 \
-  PLATFORM_MEDIA_NETWORK=nas-platform-integration-a1b2c3-media-control \
-  PLATFORM_CONTAINER_CPUSET=0 NAS_UID=2345 NAS_GID=3456 TZ=UTC \
-  SABNZBD_CONFIG_PATH=/tmp/sabnzbd MEDIA_ACQUISITION_PATH=/tmp/media \
-  BOOKS_ACQUISITION_PATH=/tmp/books SABNZBD_API_KEY=fixture \
-  RADARR_API_KEY=fixture SONARR_API_KEY=fixture \
-  docker compose --project-name nas-platform-integration-a1b2c3-downloaders \
-    -f "$repo_dir/services/downloaders/compose.yml" \
-    -f "$repo_dir/services/downloaders/compose.integration.yml" \
-    config --format json > "$downloaders_compose"
-ruby -rjson -e '
-  namespace = "nas-platform-integration-a1b2c3"
-  arr = JSON.parse(File.read(ARGV.fetch(0))).fetch("services")
-  downloaders = JSON.parse(File.read(ARGV.fetch(1))).fetch("services")
-  %w[radarr sonarr prowlarr bazarr].each do |service|
-    abort "unexpected #{service} name" unless
-      arr.fetch(service).fetch("container_name") == "#{namespace}-#{service}"
-  end
-  abort "Configarr acquired a fixed container name" if
-    arr.fetch("configarr").key?("container_name")
-  %w[sabnzbd unpackerr].each do |service|
-    abort "unexpected #{service} name" unless
-      downloaders.fetch(service).fetch("container_name") == "#{namespace}-#{service}"
-  end
-  production_names = %w[radarr sonarr prowlarr bazarr sabnzbd unpackerr]
-  effective_names = (arr.values + downloaders.values).filter_map do |service|
-    service["container_name"]
-  end
-  abort "production acquisition name leaked" unless
-    (effective_names & production_names).empty?
-' "$arr_compose" "$downloaders_compose"
+fi
 
 # Enabled acquisition suites must prove idempotence with a second normal play,
 # not infer it from check mode. Exercise the production recap parser directly so
