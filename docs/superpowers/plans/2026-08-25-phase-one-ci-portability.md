@@ -446,8 +446,8 @@ Expected: every command exits 0; lint reports no Configarr loader failure.
 Run:
 
 ```bash
-tests/integration.sh arr
-tests/integration.sh downloaders
+tests/integration.sh --suite arr site.yml
+tests/integration.sh --suite downloaders site.yml
 ```
 
 Expected: both suites exit 0; Radarr and Sonarr root-folder creation returns success, and downloader convergence completes.
