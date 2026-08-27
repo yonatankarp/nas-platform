@@ -1230,8 +1230,13 @@ def quality_item_tree_projection(items, label)
     kind = quality.is_a?(Hash) ? "quality" : "group"
     name = identity.fetch("name")
     identifier = identity.fetch("id")
-    unless identifier.is_a?(Integer) && identifier.positive?
-      raise "#{label} #{kind} #{name.inspect} ID must be a positive integer"
+    # Radarr and Sonarr number the built-in "Unknown" quality 0 and start
+    # generated quality groups at 1000, so a quality may legitimately be 0
+    # while a group may not.
+    minimum_identifier = kind == "quality" ? 0 : 1
+    unless identifier.is_a?(Integer) && identifier >= minimum_identifier
+      raise "#{label} #{kind} #{name.inspect} ID must be " \
+            "#{kind == 'quality' ? 'a non-negative' : 'a positive'} integer"
     end
     raise "#{label} contains duplicate numeric identities" if numeric_ids.key?(identifier)
     raise "#{label} contains duplicate named identities" if names.key?(name)

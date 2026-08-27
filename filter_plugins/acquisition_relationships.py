@@ -860,9 +860,14 @@ def _configarr_profile_tree(items: Any, label: str) -> dict[str, Any]:
                 raise AnsibleFilterError(
                     f"{label} quality group {name!r} must contain child items"
                 )
-        if identifier <= 0:
+        # Radarr and Sonarr number the built-in "Unknown" quality 0 and start
+        # generated quality groups at 1000, so a quality may legitimately be 0
+        # while a group may not.
+        minimum_identifier = 0 if kind == "quality" else 1
+        if identifier < minimum_identifier:
             raise AnsibleFilterError(
-                f"{label} {kind} {name!r} ID must be a positive integer"
+                f"{label} {kind} {name!r} ID must be "
+                f"{'a non-negative' if kind == 'quality' else 'a positive'} integer"
             )
         if identifier in names_by_id:
             raise AnsibleFilterError(f"{label} contains duplicate numeric identities")
