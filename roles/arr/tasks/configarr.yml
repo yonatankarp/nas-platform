@@ -15,14 +15,22 @@
 - name: Require the deployed Configarr declaration to match the role
   ansible.builtin.assert:
     that:
+      # The file lookup drops a single trailing newline and slurp does not, so
+      # the comparison is on the declaration rather than on how each was read.
       - >-
-        (arr_configarr_deployed_declaration.content | b64decode) ==
-        lookup('file', role_path ~ '/files/configarr/config.yml')
+        (arr_configarr_deployed_declaration.content | b64decode | trim) ==
+        (lookup('file', role_path ~ '/files/configarr/config.yml') | trim)
     fail_msg: >-
       The deployed Configarr declaration differs from the one this role
       verifies against. Configarr applies
-      {{ platform_current_dir }}/services/arr/configarr.yml while every
-      assertion here is built from the role's own copy.
+      {{ platform_current_dir }}/services/arr/configarr.yml
+      ({{ arr_configarr_deployed_declaration.content | b64decode | trim | length }}
+      bytes, sha256
+      {{ arr_configarr_deployed_declaration.content | b64decode | trim | hash('sha256') }})
+      while this role verifies against its own copy
+      ({{ lookup('file', role_path ~ '/files/configarr/config.yml') | trim | length }}
+      bytes, sha256
+      {{ lookup('file', role_path ~ '/files/configarr/config.yml') | trim | hash('sha256') }}).
   no_log: true
 
 - name: Read Configarr-owned Arr resources before reconciliation
