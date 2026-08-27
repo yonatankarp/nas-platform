@@ -36,6 +36,7 @@ preflight_mode=live
 preflight_seen_containers=
 preflight_seen_networks=
 docker_backend_mode=live
+creation_backend_mode=live
 
 sandbox_path_identity() {
   ruby -e '
@@ -174,6 +175,26 @@ fake_docker() {
 docker_backend() {
   if [ "$docker_backend_mode" = fake ]; then
     fake_docker "$@"
+  else
+    "$real_docker" "$@"
+  fi
+}
+
+fake_creation_docker() {
+  case ${1-}:${2-} in
+    container:inspect | network:inspect)
+      printf '%s\n' 'FAKE_CREATION_PROBE' >&2
+      return 1
+      ;;
+    create:*) printf '%s\n' fake-created-container-id ;;
+    network:create) printf '%s\n' fake-created-network-id ;;
+    *) fail "unexpected fake creation Docker command: $*" ;;
+  esac
+}
+
+fixture_docker() {
+  if [ "$creation_backend_mode" = fake ]; then
+    fake_creation_docker "$@"
   else
     "$real_docker" "$@"
   fi
@@ -400,6 +421,11 @@ release_sandbox_after_cleanup() {
   active_sandbox_identity=
 }
 
+clear_active_records() {
+  created_container_records=
+  created_network_records=
+}
+
 release_owned_refused_sandbox() {
   [ "$active_sandbox_owned" -eq 1 ] || fail "refused sandbox is not fixture-owned"
   current_sandbox_identity=$(sandbox_path_identity "$active_sandbox") ||
@@ -410,18 +436,35 @@ release_owned_refused_sandbox() {
   active_sandbox=
   active_sandbox_owned=0
   active_sandbox_identity=
+  clear_active_records
 }
 
 require_container_name_available() {
   cleanup_name=$1
-  if "$real_docker" container inspect "$cleanup_name" >/dev/null 2>&1; then
+  if [ "$creation_backend_mode" = fake ]; then
+    fixture_collision=0
+    fixture_docker container inspect "$cleanup_name" >/dev/null || fixture_collision=$?
+  elif "$real_docker" container inspect "$cleanup_name" >/dev/null 2>&1; then
+    fixture_collision=0
+  else
+    fixture_collision=$?
+  fi
+  if [ "$fixture_collision" -eq 0 ]; then
     fail "refusing to collide with existing container: $cleanup_name"
   fi
 }
 
 require_network_name_available() {
   cleanup_name=$1
-  if "$real_docker" network inspect "$cleanup_name" >/dev/null 2>&1; then
+  if [ "$creation_backend_mode" = fake ]; then
+    fixture_collision=0
+    fixture_docker network inspect "$cleanup_name" >/dev/null || fixture_collision=$?
+  elif "$real_docker" network inspect "$cleanup_name" >/dev/null 2>&1; then
+    fixture_collision=0
+  else
+    fixture_collision=$?
+  fi
+  if [ "$fixture_collision" -eq 0 ]; then
     fail "refusing to collide with existing network: $cleanup_name"
   fi
 }
@@ -429,9 +472,8 @@ require_network_name_available() {
 create_container() {
   create_name=$1
   shift
-  preflight_cleanup_call
   require_container_name_available "$create_name"
-  created_container_id=$("$real_docker" create --pull=never --name "$create_name" "$@" \
+  created_container_id=$(fixture_docker create --pull=never --name "$create_name" "$@" \
     "$cleanup_sandbox_image" sleep 300)
   created_container_records="$created_container_records $created_container_id:$create_name"
 }
@@ -439,9 +481,8 @@ create_container() {
 create_network() {
   create_name=$1
   shift
-  preflight_cleanup_call
   require_network_name_available "$create_name"
-  created_network_id=$("$real_docker" network create --driver bridge "$@" "$create_name")
+  created_network_id=$(fixture_docker network create --driver bridge "$@" "$create_name")
   created_network_records="$created_network_records $created_network_id:$create_name"
 }
 
@@ -499,9 +540,24 @@ select_negative_project() {
 
 expect_cleanup_refusal() {
   refusal_description=$1
-  if run_cleanup >/dev/null 2>&1; then
+  refusal_target=$2
+  refusal_status=0
+  refusal_output=$(run_cleanup 2>&1) || refusal_status=$?
+  if [ "$refusal_status" -eq 0 ]; then
     fail "cleanup accepted $refusal_description ownership mismatch"
   fi
+  refusal_output_lower=$(printf '%s' "$refusal_output" | tr '[:upper:]' '[:lower:]')
+  case $refusal_output_lower in
+    *refus*) ;;
+    *)
+      printf '%s\n' "$refusal_output" >&2
+      fail "cleanup failed without a refusal diagnostic for $refusal_description"
+      ;;
+  esac
+  printf '%s\n' "$refusal_output" | grep -qF "$refusal_target" || {
+    printf '%s\n' "$refusal_output" >&2
+    fail "cleanup refusal did not name $refusal_target"
+  }
   [ -d "$active_sandbox" ] && [ ! -L "$active_sandbox" ] ||
     fail "cleanup mutated the sandbox before refusing $refusal_description"
 }
@@ -586,6 +642,62 @@ verify_execution_guard() {
   active_sandbox=
   active_sandbox_owned=0
   active_sandbox_identity=
+  clear_active_records
+}
+
+verify_linear_creation_probes() {
+  creation_backend_mode=fake
+  creation_count=24
+  creation_status=0
+  creation_output=$(
+    (
+      created_container_records=
+      created_network_records=
+      creation_index=0
+      while [ "$creation_index" -lt "$creation_count" ]; do
+        creation_index=$((creation_index + 1))
+        create_container "linear-container-$creation_index"
+        create_network "linear-network-$creation_index"
+      done
+    ) 2>&1
+  ) || creation_status=$?
+  creation_backend_mode=live
+  [ "$creation_status" -eq 0 ] || {
+    printf '%s\n' "$creation_output" >&2
+    fail "fake linear creation probe failed"
+  }
+  creation_probe_count=$(printf '%s\n' "$creation_output" |
+    grep -c '^FAKE_CREATION_PROBE$' || true)
+  creation_probe_limit=$((creation_count * 2))
+  [ "$creation_probe_count" -eq "$creation_probe_limit" ] ||
+    fail "creation used $creation_probe_count probes for $creation_probe_limit resources"
+}
+
+verify_refusal_diagnostic_gate() {
+  unrelated_status=0
+  unrelated_output=$(
+    (
+      run_cleanup() {
+        printf '%s\n' 'daemon connection failed'
+        return 1
+      }
+      expect_cleanup_refusal unrelated-failure fixture-target
+    ) 2>&1
+  ) || unrelated_status=$?
+  [ "$unrelated_status" -ne 0 ] ||
+    fail "refusal diagnostic gate accepted an unrelated cleanup error"
+  printf '%s\n' "$unrelated_output" | grep -qF \
+    'cleanup failed without a refusal diagnostic' ||
+    fail "refusal diagnostic gate omitted the unrelated-error diagnostic"
+
+  (
+    active_sandbox=$fixture_parent
+    run_cleanup() {
+      printf '%s\n' 'Refusing ownership mismatch for fixture-target'
+      return 1
+    }
+    expect_cleanup_refusal expected-refusal fixture-target
+  ) || fail "refusal diagnostic gate rejected an explicit target refusal"
 }
 
 verify_cleanup_uses_guarded_docker() {
@@ -672,6 +784,8 @@ case ${1-} in
     ;;
   --guard-self-test)
     verify_cleanup_uses_guarded_docker
+    verify_linear_creation_probes
+    verify_refusal_diagnostic_gate
     verify_execution_guard
     verify_signal_statuses
     printf '%s\n' 'acquisition cleanup fixture: execution guard and signal handling hold'
@@ -711,6 +825,7 @@ require_network_unchanged "$unrelated_downloaders_network_id" downloaders_defaul
 "$real_docker" rm -f "$unrelated_radarr_id" "$unrelated_sabnzbd_id" >/dev/null
 "$real_docker" network rm \
   "$unrelated_arr_network_id" "$unrelated_downloaders_network_id" >/dev/null
+clear_active_records
 
 # Exact namespace-derived permanent resources and a strict Configarr one-shot
 # are owned by this disposable Compose namespace and must be removed.
@@ -750,6 +865,7 @@ done
 require_container_absent "$owned_configarr_id" configarr
 require_network_absent "$owned_arr_network_id" arr-default
 require_network_absent "$owned_downloaders_network_id" downloaders-default
+clear_active_records
 
 # Exact names with missing/wrong project labels and project labels on unexpected
 # names must refuse atomically for both acquisition Compose projects.
@@ -771,7 +887,8 @@ for negative_kind in arr downloaders; do
       --label "com.docker.compose.service=$peer_service"
     atomic_peer_id=$created_container_id
 
-    expect_cleanup_refusal "$negative_kind $project_mismatch project-label"
+    expect_cleanup_refusal "$negative_kind $project_mismatch project-label" \
+      "$fixture_namespace-$negative_service"
     require_container_unchanged \
       "$mismatched_id" "$negative_kind $project_mismatch-label service"
     require_container_unchanged "$atomic_peer_id" "$negative_kind atomic-peer service"
@@ -789,7 +906,8 @@ for negative_kind in arr downloaders; do
     --label "com.docker.compose.project=$negative_project" \
     --label "com.docker.compose.service=$negative_service"
   atomic_peer_id=$created_container_id
-  expect_cleanup_refusal "$negative_kind unexpected-name"
+  expect_cleanup_refusal "$negative_kind unexpected-name" \
+    "$fixture_namespace-$negative_kind-impostor"
   require_container_unchanged "$unexpected_name_id" "$negative_kind unexpected-name"
   require_container_unchanged "$atomic_peer_id" "$negative_kind atomic-peer service"
   "$real_docker" rm -f "$unexpected_name_id" "$atomic_peer_id" >/dev/null
@@ -821,7 +939,8 @@ for negative_kind in arr downloaders; do
     atomic_peer_container_id=$created_container_id
 
     expect_cleanup_refusal \
-      "$negative_kind $network_project_mismatch network project-label"
+      "$negative_kind $network_project_mismatch network project-label" \
+      "${negative_project}_default"
     require_network_unchanged "$mismatched_network_id" \
       "$negative_kind $network_project_mismatch-project default"
     require_network_unchanged \
@@ -848,7 +967,8 @@ for negative_kind in arr downloaders; do
     --label "com.docker.compose.project=$negative_project" \
     --label "com.docker.compose.service=$negative_service"
   atomic_peer_container_id=$created_container_id
-  expect_cleanup_refusal "$negative_kind unexpected-network-name"
+  expect_cleanup_refusal "$negative_kind unexpected-network-name" \
+    "${negative_project}_unexpected"
   require_network_unchanged \
     "$unexpected_network_id" "$negative_kind unexpected-network-name"
   require_network_unchanged \
@@ -881,7 +1001,8 @@ for negative_kind in arr downloaders; do
       --label "com.docker.compose.service=$peer_service"
     atomic_peer_container_id=$created_container_id
 
-    expect_cleanup_refusal "$negative_kind $network_label_mismatch network label"
+    expect_cleanup_refusal "$negative_kind $network_label_mismatch network label" \
+      "${negative_project}_default"
     require_network_unchanged "$mismatched_network_id" \
       "$negative_kind $network_label_mismatch-label default"
     require_network_unchanged \
@@ -916,6 +1037,7 @@ for configarr_project_mismatch in missing wrong; do
   require_container_unchanged \
     "$unrelated_configarr_id" "Configarr $configarr_project_mismatch-project"
   "$real_docker" rm -f "$unrelated_configarr_id" >/dev/null
+  clear_active_records
 done
 
 # Configarr ownership requires the generated name, service label, and one-off
@@ -923,9 +1045,11 @@ done
 for configarr_mismatch in name service-missing service-wrong oneoff-missing oneoff-wrong; do
   new_sandbox
   configarr_name=$fixture_namespace-arr-configarr-run-a1b2c3
+  configarr_refusal_target=$configarr_name
   case $configarr_mismatch in
     name)
-      create_container "$fixture_namespace-arr-configarr-task-a1b2c3" \
+      configarr_refusal_target=$fixture_namespace-arr-configarr-task-a1b2c3
+      create_container "$configarr_refusal_target" \
         --label "com.docker.compose.project=$fixture_arr_project" \
         --label com.docker.compose.service=configarr \
         --label com.docker.compose.oneoff=True
@@ -959,7 +1083,7 @@ for configarr_mismatch in name service-missing service-wrong oneoff-missing oneo
     --label com.docker.compose.service=radarr
   atomic_peer_id=$created_container_id
 
-  expect_cleanup_refusal "Configarr $configarr_mismatch"
+  expect_cleanup_refusal "Configarr $configarr_mismatch" "$configarr_refusal_target"
   require_container_unchanged "$mismatched_id" "Configarr $configarr_mismatch"
   require_container_unchanged "$atomic_peer_id" atomic-peer-radarr
   "$real_docker" rm -f "$mismatched_id" "$atomic_peer_id" >/dev/null
