@@ -324,7 +324,9 @@
         arr_configarr_quality_definition_invariants_after.source_desired
     fail_msg: >-
       Configarr left the Arr quality definitions different from their declared
-      source.
+      source:
+      {{ arr_configarr_quality_definition_invariants_after |
+         acquisition_configarr_quality_definition_difference }}
   no_log: true
 
 - name: Verify the Configarr opaque context is unchanged

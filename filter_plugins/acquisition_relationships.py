@@ -1298,6 +1298,49 @@ def _configarr_quality_definition_source(
     return normalized
 
 
+def acquisition_configarr_quality_definition_difference(invariants: Any) -> dict[str, Any]:
+    """Name the quality definitions whose live values differ from their source.
+
+    The convergence assert carries no_log because the surrounding tasks handle
+    API keys, so a mismatch reported only that something differed. Quality names
+    and TRaSH sizes are public guide data and carry no credential, so naming the
+    exact entries is what makes a red run diagnosable.
+    """
+    invariants = _mapping(invariants, "Configarr quality-definition invariants")
+    current = _mapping(
+        invariants.get("source_current"), "Configarr current quality definitions"
+    )
+    desired = _mapping(
+        invariants.get("source_desired"), "Configarr desired quality definitions"
+    )
+    difference: dict[str, Any] = {}
+    for service in sorted(set(current) | set(desired)):
+        current_by_name = {
+            _required_string(item.get("quality"), "Configarr current quality name"): item
+            for item in _sequence(
+                current.get(service, []), f"Configarr {service} current definitions"
+            )
+        }
+        desired_by_name = {
+            _required_string(item.get("quality"), "Configarr desired quality name"): item
+            for item in _sequence(
+                desired.get(service, []), f"Configarr {service} desired definitions"
+            )
+        }
+        entries = [
+            {
+                "quality": name,
+                "current": current_by_name.get(name),
+                "desired": desired_by_name.get(name),
+            }
+            for name in sorted(set(current_by_name) | set(desired_by_name))
+            if current_by_name.get(name) != desired_by_name.get(name)
+        ]
+        if entries:
+            difference[service] = entries
+    return difference
+
+
 def acquisition_configarr_quality_definition_invariants(
     projection: Any, sources: Any
 ) -> dict[str, Any]:
@@ -2145,6 +2188,8 @@ class FilterModule:
             "acquisition_bazarr_owned_projections": acquisition_bazarr_owned_projections,
             "acquisition_bazarr_connection_body": acquisition_bazarr_connection_body,
             "acquisition_configarr_owned_projection": acquisition_configarr_owned_projection,
+            "acquisition_configarr_quality_definition_difference":
+                acquisition_configarr_quality_definition_difference,
             "acquisition_configarr_quality_definition_invariants": acquisition_configarr_quality_definition_invariants,
             "acquisition_configarr_declared_projection": acquisition_configarr_declared_projection,
             "acquisition_configarr_desired_projection": acquisition_configarr_desired_projection,
