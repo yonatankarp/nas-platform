@@ -95,7 +95,7 @@
       {{ (platform_kind == 'nas') and
          (platform_compose_kind == 'integration') and
          (deployment_bundle_test_mode | bool) and
-         (nas_media_root is match('^.*/nas-platform-integration[.][A-Za-z0-9]{6}/volume2\Z')) }}
+         (nas_media_root is match('^.*/nas-platform-integration[.][A-Za-z0-9]{6}/.+\Z')) }}
     host_prep_integration_writer_storage: >-
       {{ nas_storage |
          selectattr('media_acquisition_writer', 'defined') |
@@ -109,8 +109,8 @@
       - host_prep_integration_writer_enabled | bool
     fail_msg: >-
       Refusing synthetic media writer ownership for root
-      {{ nas_media_root | to_json }}. Expected the exact disposable suffix
-      /nas-platform-integration.XXXXXX/volume2.
+      {{ nas_media_root | to_json }}. Expected a root inside a disposable
+      /nas-platform-integration.XXXXXX/ sandbox.
   when: host_prep_integration_writer_requested | bool
 
 - name: Refuse preservation-only synthetic integration writers

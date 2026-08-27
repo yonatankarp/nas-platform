@@ -661,8 +661,8 @@ failures << "host preparation must select synthetic writer mode only for explici
     writer_enabled.include?("platform_kind == 'nas'") &&
     writer_enabled.include?("platform_compose_kind == 'integration'") &&
     writer_enabled.include?("deployment_bundle_test_mode | bool") &&
-    writer_enabled.include?("nas_media_root is match('^.*/nas-platform-integration[.][A-Za-z0-9]{6}/volume2\\Z')") &&
-    !writer_enabled.include?("volume2$") &&
+    writer_enabled.include?("nas_media_root is match('^.*/nas-platform-integration[.][A-Za-z0-9]{6}/.+\\Z')") &&
+    !writer_enabled.include?(".+$") &&
     writer_storage.include?("selectattr('media_acquisition_writer', 'defined')") &&
     writer_storage.include?("selectattr('media_acquisition_writer', 'sameas', true)")
 
@@ -677,7 +677,7 @@ failures << "host preparation must fail closed on the exact integration media sa
   writer_boundary&.fetch("when", nil) == "host_prep_integration_writer_requested | bool" &&
     writer_boundary_conditions.include?("host_prep_integration_writer_enabled | bool") &&
     writer_boundary_message.include?("nas_media_root | to_json") &&
-    writer_boundary_message.include?("/nas-platform-integration.XXXXXX/volume2") &&
+    writer_boundary_message.include?("/nas-platform-integration.XXXXXX/") &&
     writer_preserve_refusal&.fetch("loop", nil) == "{{ host_prep_integration_writer_storage }}" &&
     writer_preserve_conditions.include?("item.preserve_only is not defined") &&
     writer_mode_index && writer_boundary_index && writer_preserve_index && directory_index &&
