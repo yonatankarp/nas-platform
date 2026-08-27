@@ -247,6 +247,14 @@
       rc: "{{ arr_configarr_run.rc | int }}"
       stdout_lines: "{{ [arr_configarr_run.stdout_lines | default([]) | length, 1000] | min }}"
       stderr_lines: "{{ [arr_configarr_run.stderr_lines | default([]) | length, 1000] | min }}"
+      # Configarr names what it did with the quality definitions on its own
+      # output. Those lines carry no credential and are the difference between
+      # "applied them" and "decided they needed no update", which is otherwise
+      # invisible behind this task's no_log.
+      quality_definition_lines: >-
+        {{ arr_configarr_run.stdout_lines | default([]) |
+           select('search', 'QualityDefinition') | list |
+           map('regex_replace', '^(.{0,160}).*$', '\1') | list }}
   when:
     - not ansible_check_mode
     - arr_configarr_run_required | bool
@@ -324,7 +332,9 @@
         arr_configarr_quality_definition_invariants_after.source_desired
     fail_msg: >-
       Configarr left the Arr quality definitions different from their declared
-      source:
+      source. Configarr reported
+      {{ arr_configarr_status.quality_definition_lines | default('nothing') }};
+      the differing entries are
       {{ arr_configarr_quality_definition_invariants_after |
          acquisition_configarr_quality_definition_difference }}
   no_log: true
