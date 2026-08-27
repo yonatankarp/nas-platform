@@ -47,7 +47,13 @@ jobs:
           fi
 
   static:
-    timeout-minutes: 45
+    # The policy gate's wall time is bounded by its slowest single check, and
+    # tests/media_acquisition_reconciliation_test.rb spawns a fresh sandbox and
+    # Ansible run per scenario. It overran the previous 45-minute budget and was
+    # cancelled mid-run, which fails the whole workflow for no code reason.
+    # 90 is the ceiling tests/ci/workflow_test.rb allows; splitting that check
+    # into its own job is the real fix.
+    timeout-minutes: 90
     needs: changes
     if: ${{ needs.changes.outputs.static == 'true' }}
     runs-on: ubuntu-latest
