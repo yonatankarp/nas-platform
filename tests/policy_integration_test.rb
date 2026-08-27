@@ -101,6 +101,34 @@ check(failures,
       end,
       "downloader integration containers must use the disposable platform namespace")
 
+# Sandbox cleanup deletes acquisition resources only when they carry the
+# disposable namespace, so a base service left with its fixed production name
+# is not cleaned up at all: it survives the run and collides with the next one.
+# Derive the requirement from the base Compose rather than a second hand-kept
+# list, so adding a service to a stack cannot skip its override.
+{
+  "arr" => arr_integration,
+  "downloaders" => downloaders_integration
+}.each do |stack, override|
+  base = YAML.safe_load_file(
+    File.join(ROOT, "services", stack, "compose.yml"), aliases: true
+  ).fetch("services")
+  production_named = base.select do |_service, definition|
+    definition.is_a?(Hash) && definition["container_name"].is_a?(String) &&
+      !definition.fetch("container_name").include?("${")
+  end.keys
+  check(failures, !production_named.empty?,
+        "#{stack} base Compose declares no fixed container name to override")
+  unnamespaced = production_named.reject do |service|
+    definition = override.fetch(service, nil)
+    definition.is_a?(Hash) &&
+      definition.fetch("container_name", nil) == "${PLATFORM_PROJECT_NAME:?}-#{service}"
+  end
+  check(failures, unnamespaced.empty?,
+        "#{stack} integration override leaves production container names " \
+        "#{unnamespaced.sort.inspect}, which sandbox cleanup cannot remove")
+end
+
 arr_defaults = YAML.safe_load_file(File.join(ROOT, "roles", "arr", "defaults", "main.yml"))
 downloaders_defaults = YAML.safe_load_file(
   File.join(ROOT, "roles", "downloaders", "defaults", "main.yml")
