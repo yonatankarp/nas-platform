@@ -3,6 +3,21 @@ set -eu
 
 repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
 . "$repo_dir/tests/sandbox_cleanup.sh"
+real_docker=$(command -v docker) || {
+  printf '%s\n' 'docker is required for the acquisition cleanup fixture' >&2
+  exit 1
+}
+case $real_docker in
+  /*) ;;
+  *)
+    printf 'docker did not resolve to an absolute executable: %s\n' "$real_docker" >&2
+    exit 1
+    ;;
+esac
+[ -x "$real_docker" ] || {
+  printf 'docker executable is unavailable: %s\n' "$real_docker" >&2
+  exit 1
+}
 
 printf '%s' "$cleanup_sandbox_image" | ruby -e '
   image = STDIN.read
@@ -18,6 +33,12 @@ active_sandbox=
 preflight_mode=live
 preflight_seen_containers=
 preflight_seen_networks=
+docker_backend_mode=live
+
+cleanup_fixture_on_signal() {
+  trap - HUP INT TERM
+  exit "$1"
+}
 
 cleanup_fixture() {
   cleanup_status=$?
@@ -26,19 +47,19 @@ cleanup_fixture() {
   for cleanup_fixture_record in $created_container_records; do
     cleanup_fixture_id=${cleanup_fixture_record%%:*}
     cleanup_fixture_name=${cleanup_fixture_record#*:}
-    cleanup_fixture_actual=$(docker container inspect "$cleanup_fixture_id" \
+    cleanup_fixture_actual=$("$real_docker" container inspect "$cleanup_fixture_id" \
       --format '{{.Name}}' 2>/dev/null) || continue
     cleanup_fixture_actual=${cleanup_fixture_actual#/}
     [ "$cleanup_fixture_actual" = "$cleanup_fixture_name" ] || continue
-    docker rm -f "$cleanup_fixture_id" >/dev/null 2>&1 || true
+    "$real_docker" rm -f "$cleanup_fixture_id" >/dev/null 2>&1 || true
   done
   for cleanup_fixture_record in $created_network_records; do
     cleanup_fixture_id=${cleanup_fixture_record%%:*}
     cleanup_fixture_name=${cleanup_fixture_record#*:}
-    cleanup_fixture_actual=$(docker network inspect "$cleanup_fixture_id" \
+    cleanup_fixture_actual=$("$real_docker" network inspect "$cleanup_fixture_id" \
       --format '{{.Name}}' 2>/dev/null) || continue
     [ "$cleanup_fixture_actual" = "$cleanup_fixture_name" ] || continue
-    docker network rm "$cleanup_fixture_id" >/dev/null 2>&1 || true
+    "$real_docker" network rm "$cleanup_fixture_id" >/dev/null 2>&1 || true
   done
 
   if [ -n "$active_sandbox" ]; then
@@ -54,9 +75,15 @@ cleanup_fixture() {
     fi
   fi
 
+  if [ "${ACQUISITION_CLEANUP_SIGNAL_PROBE:-}" = 1 ]; then
+    printf 'cleanup fixture exit status=%s\n' "$cleanup_status"
+  fi
   exit "$cleanup_status"
 }
-trap cleanup_fixture EXIT HUP INT TERM
+trap cleanup_fixture EXIT
+trap 'cleanup_fixture_on_signal 129' HUP
+trap 'cleanup_fixture_on_signal 130' INT
+trap 'cleanup_fixture_on_signal 143' TERM
 
 fail() {
   printf '%s\n' "$*" >&2
@@ -73,6 +100,108 @@ record_contains() {
   return 1
 }
 
+fake_docker() {
+  fake_command=$*
+  case $fake_command in
+    *"container inspect $fake_fixed_old_id --format {{.Name}}"*)
+      printf '/%s\n' "$fake_fixed_name"
+      ;;
+    *"network inspect $fake_label_old_id --format {{.Name}}"*)
+      printf '%s\n' "$fake_label_network_name"
+      ;;
+    *"network inspect $fake_fixed_network_old_id --format {{.Name}}"*)
+      printf '%s\n' "$fake_fixed_network_name"
+      ;;
+    *"container inspect $fake_fixed_name --format {{.Id}} {{.Name}}"*)
+      printf '%s /%s\n' "$fake_fixed_replacement_id" "$fake_fixed_name"
+      ;;
+    *"network inspect $fake_label_network_name --format {{.Id}} {{.Name}}"*)
+      printf '%s %s\n' "$fake_label_replacement_id" "$fake_label_network_name"
+      ;;
+    *"network inspect $fake_fixed_network_name --format {{.Id}} {{.Name}}"*)
+      printf '%s %s\n' \
+        "$fake_fixed_network_replacement_id" "$fake_fixed_network_name"
+      ;;
+    *"ps -aq --no-trunc --filter name=^${fake_fixed_name}$"*)
+      printf '%s\n' "$fake_fixed_old_id"
+      ;;
+    *"network ls -q --no-trunc --filter name=^${fake_label_network_name}$"*)
+      printf '%s\n' "$fake_label_old_id"
+      ;;
+    *"network ls -q --no-trunc --filter name=^${fake_fixed_network_name}$"*)
+      printf '%s\n' "$fake_fixed_network_old_id"
+      ;;
+    *"network ls -q --no-trunc --filter label=com.docker.compose.project=$fixture_arr_project"*)
+      printf '%s\n' "$fake_label_old_id"
+      ;;
+    "rm -f "* | "network rm "*)
+      printf '%s\n' 'FAKE_DESTRUCTIVE_CALL'
+      ;;
+    *) ;;
+  esac
+}
+
+docker_backend() {
+  if [ "$docker_backend_mode" = fake ]; then
+    fake_docker "$@"
+  else
+    "$real_docker" "$@"
+  fi
+}
+
+guard_container_removal() {
+  shift
+  guard_ids=
+  for guard_target in "$@"; do
+    case $guard_target in
+      -f | --force) continue ;;
+      -*) fail "cleanup requested unsupported docker rm option: $guard_target" ;;
+    esac
+    guard_identity=$(docker_backend container inspect "$guard_target" \
+      --format '{{.Id}} {{.Name}}') ||
+      fail "cleanup container target disappeared before guarded removal: $guard_target"
+    guard_id=${guard_identity%% *}
+    guard_name=${guard_identity#* }
+    guard_name=${guard_name#/}
+    record_contains "$created_container_records" "$guard_id" "$guard_name" ||
+      fail "refusing unrecorded cleanup container at execution time: $guard_name"
+    guard_ids="$guard_ids $guard_id"
+  done
+  [ -n "$guard_ids" ] || fail "cleanup requested docker rm without a target"
+  # shellcheck disable=SC2086 # IDs are whitespace-free Docker identifiers.
+  docker_backend rm -f $guard_ids
+}
+
+guard_network_removal() {
+  shift
+  shift
+  guard_ids=
+  for guard_target in "$@"; do
+    case $guard_target in
+      -*) fail "cleanup requested unsupported docker network rm option: $guard_target" ;;
+    esac
+    guard_identity=$(docker_backend network inspect "$guard_target" \
+      --format '{{.Id}} {{.Name}}') ||
+      fail "cleanup network target disappeared before guarded removal: $guard_target"
+    guard_id=${guard_identity%% *}
+    guard_name=${guard_identity#* }
+    record_contains "$created_network_records" "$guard_id" "$guard_name" ||
+      fail "refusing unrecorded cleanup network at execution time: $guard_name"
+    guard_ids="$guard_ids $guard_id"
+  done
+  [ -n "$guard_ids" ] || fail "cleanup requested docker network rm without a target"
+  # shellcheck disable=SC2086 # IDs are whitespace-free Docker identifiers.
+  docker_backend network rm $guard_ids
+}
+
+docker() {
+  case ${1-}:${2-} in
+    rm:*) guard_container_removal "$@" ;;
+    network:rm) guard_network_removal "$@" ;;
+    *) docker_backend "$@" ;;
+  esac
+}
+
 preflight_fixed_cleanup_targets() {
   for preflight_name in $cleanup_sandbox_containers; do
     case $preflight_name in
@@ -82,7 +211,7 @@ preflight_fixed_cleanup_targets() {
     esac
     preflight_seen_containers="$preflight_seen_containers $preflight_name"
     [ "$preflight_mode" = live ] || continue
-    preflight_ids=$(docker ps -aq --no-trunc --filter "name=^${preflight_name}$") ||
+    preflight_ids=$(docker_backend ps -aq --no-trunc --filter "name=^${preflight_name}$") ||
       fail "could not inspect cleanup target container: $preflight_name"
     for preflight_id in $preflight_ids; do
       record_contains "$created_container_records" "$preflight_id" "$preflight_name" ||
@@ -98,7 +227,8 @@ preflight_fixed_cleanup_targets() {
     esac
     preflight_seen_networks="$preflight_seen_networks $preflight_name"
     [ "$preflight_mode" = live ] || continue
-    preflight_ids=$(docker network ls -q --no-trunc --filter "name=^${preflight_name}$") ||
+    preflight_ids=$(docker_backend network ls -q --no-trunc \
+      --filter "name=^${preflight_name}$") ||
       fail "could not inspect cleanup target network: $preflight_name"
     for preflight_id in $preflight_ids; do
       record_contains "$created_network_records" "$preflight_id" "$preflight_name" ||
@@ -107,49 +237,20 @@ preflight_fixed_cleanup_targets() {
   done
 }
 
-verify_fixed_preflight_coverage() {
-  original_containers=$cleanup_sandbox_containers
-  original_networks=$cleanup_sandbox_networks
-  cleanup_sandbox_containers="$cleanup_sandbox_containers fixture_future_cleanup_container"
-  cleanup_sandbox_networks="$cleanup_sandbox_networks fixture_future_cleanup_network"
-  expected_containers=
-  expected_networks=
-  for preflight_name in $cleanup_sandbox_containers; do
-    expected_containers="$expected_containers $preflight_name"
-  done
-  for preflight_name in $cleanup_sandbox_networks; do
-    expected_networks="$expected_networks $preflight_name"
-  done
-
-  preflight_mode=record
-  preflight_seen_containers=
-  preflight_seen_networks=
-  preflight_fixed_cleanup_targets
-  [ "$preflight_seen_containers" = "$expected_containers" ] ||
-    fail "fixed-container collision preflight does not cover the sourced cleanup list"
-  [ "$preflight_seen_networks" = "$expected_networks" ] ||
-    fail "fixed-network collision preflight does not cover the sourced cleanup list"
-
-  cleanup_sandbox_containers=$original_containers
-  cleanup_sandbox_networks=$original_networks
-  preflight_mode=live
-  preflight_seen_containers=
-  preflight_seen_networks=
-}
-
 ensure_cleanup_image() {
-  if ! docker image inspect "$cleanup_sandbox_image" >/dev/null 2>&1; then
-    docker pull "$cleanup_sandbox_image" >/dev/null ||
+  if ! "$real_docker" image inspect "$cleanup_sandbox_image" >/dev/null 2>&1; then
+    "$real_docker" pull "$cleanup_sandbox_image" >/dev/null ||
       fail "could not pull the exact pinned cleanup image: $cleanup_sandbox_image"
   fi
-  cleanup_image_id=$(docker image inspect "$cleanup_sandbox_image" --format '{{.Id}}') ||
+  cleanup_image_id=$("$real_docker" image inspect "$cleanup_sandbox_image" \
+    --format '{{.Id}}') ||
     fail "could not inspect the exact pinned cleanup image"
   printf '%s' "$cleanup_image_id" | ruby -e '
     abort "pinned cleanup image has an invalid image ID" unless
       STDIN.read.match?(/\Asha256:[0-9a-f]{64}\z/)
   ' || fail "pinned cleanup image has an invalid image ID: $cleanup_image_id"
   cleanup_image_digest=${cleanup_sandbox_image##*@}
-  cleanup_image_repo_digests=$(docker image inspect "$cleanup_sandbox_image" \
+  cleanup_image_repo_digests=$("$real_docker" image inspect "$cleanup_sandbox_image" \
     --format '{{json .RepoDigests}}') || fail "could not inspect cleanup image digests"
   case $cleanup_image_repo_digests in
     *"@$cleanup_image_digest"*) ;;
@@ -161,7 +262,7 @@ revalidate_recorded_resources() {
   for preflight_record in $created_container_records; do
     preflight_id=${preflight_record%%:*}
     preflight_name=${preflight_record#*:}
-    preflight_actual=$(docker container inspect "$preflight_id" \
+    preflight_actual=$(docker_backend container inspect "$preflight_id" \
       --format '{{.Name}}' 2>/dev/null) || continue
     preflight_actual=${preflight_actual#/}
     [ "$preflight_actual" = "$preflight_name" ] ||
@@ -170,7 +271,7 @@ revalidate_recorded_resources() {
   for preflight_record in $created_network_records; do
     preflight_id=${preflight_record%%:*}
     preflight_name=${preflight_record#*:}
-    preflight_actual=$(docker network inspect "$preflight_id" \
+    preflight_actual=$(docker_backend network inspect "$preflight_id" \
       --format '{{.Name}}' 2>/dev/null) || continue
     [ "$preflight_actual" = "$preflight_name" ] ||
       fail "recorded network ID changed name before cleanup: $preflight_id"
@@ -185,7 +286,8 @@ preflight_project_cleanup_targets() {
     preflight_expected_containers="$preflight_expected_containers $fixture_namespace-$preflight_service"
   done
   for preflight_name in $preflight_expected_containers; do
-    preflight_ids=$(docker ps -aq --no-trunc --filter "name=^${preflight_name}$") ||
+    preflight_ids=$(docker_backend ps -aq --no-trunc \
+      --filter "name=^${preflight_name}$") ||
       fail "could not inspect namespace container: $preflight_name"
     for preflight_id in $preflight_ids; do
       record_contains "$created_container_records" "$preflight_id" "$preflight_name" ||
@@ -194,11 +296,12 @@ preflight_project_cleanup_targets() {
   done
 
   for preflight_project in "$fixture_arr_project" "$fixture_downloaders_project"; do
-    preflight_ids=$(docker ps -aq --no-trunc \
+    preflight_ids=$(docker_backend ps -aq --no-trunc \
       --filter "label=com.docker.compose.project=$preflight_project") ||
       fail "could not inspect project containers: $preflight_project"
     for preflight_id in $preflight_ids; do
-      preflight_name=$(docker container inspect "$preflight_id" --format '{{.Name}}') ||
+      preflight_name=$(docker_backend container inspect "$preflight_id" \
+        --format '{{.Name}}') ||
         fail "could not inspect project container ID: $preflight_id"
       preflight_name=${preflight_name#/}
       record_contains "$created_container_records" "$preflight_id" "$preflight_name" ||
@@ -206,18 +309,19 @@ preflight_project_cleanup_targets() {
     done
 
     preflight_network_name=${preflight_project}_default
-    preflight_ids=$(docker network ls -q --no-trunc \
+    preflight_ids=$(docker_backend network ls -q --no-trunc \
       --filter "name=^${preflight_network_name}$") ||
       fail "could not inspect namespace network: $preflight_network_name"
     for preflight_id in $preflight_ids; do
       record_contains "$created_network_records" "$preflight_id" "$preflight_network_name" ||
         fail "refusing to collide with namespace network: $preflight_network_name"
     done
-    preflight_ids=$(docker network ls -q --no-trunc \
+    preflight_ids=$(docker_backend network ls -q --no-trunc \
       --filter "label=com.docker.compose.project=$preflight_project") ||
       fail "could not inspect project networks: $preflight_project"
     for preflight_id in $preflight_ids; do
-      preflight_name=$(docker network inspect "$preflight_id" --format '{{.Name}}') ||
+      preflight_name=$(docker_backend network inspect "$preflight_id" \
+        --format '{{.Name}}') ||
         fail "could not inspect project network ID: $preflight_id"
       record_contains "$created_network_records" "$preflight_id" "$preflight_name" ||
         fail "refusing to collide with project network: $preflight_name"
@@ -263,14 +367,14 @@ release_sandbox_after_cleanup() {
 
 require_container_name_available() {
   cleanup_name=$1
-  if docker container inspect "$cleanup_name" >/dev/null 2>&1; then
+  if "$real_docker" container inspect "$cleanup_name" >/dev/null 2>&1; then
     fail "refusing to collide with existing container: $cleanup_name"
   fi
 }
 
 require_network_name_available() {
   cleanup_name=$1
-  if docker network inspect "$cleanup_name" >/dev/null 2>&1; then
+  if "$real_docker" network inspect "$cleanup_name" >/dev/null 2>&1; then
     fail "refusing to collide with existing network: $cleanup_name"
   fi
 }
@@ -280,7 +384,7 @@ create_container() {
   shift
   preflight_cleanup_call
   require_container_name_available "$create_name"
-  created_container_id=$(docker create --pull=never --name "$create_name" "$@" \
+  created_container_id=$("$real_docker" create --pull=never --name "$create_name" "$@" \
     "$cleanup_sandbox_image" sleep 300)
   created_container_records="$created_container_records $created_container_id:$create_name"
 }
@@ -290,14 +394,15 @@ create_network() {
   shift
   preflight_cleanup_call
   require_network_name_available "$create_name"
-  created_network_id=$(docker network create --driver bridge "$@" "$create_name")
+  created_network_id=$("$real_docker" network create --driver bridge "$@" "$create_name")
   created_network_records="$created_network_records $created_network_id:$create_name"
 }
 
 require_container_unchanged() {
   expected_id=$1
   description=$2
-  actual_id=$(docker container inspect "$expected_id" --format '{{.Id}}' 2>/dev/null) ||
+  actual_id=$("$real_docker" container inspect "$expected_id" \
+    --format '{{.Id}}' 2>/dev/null) ||
     fail "cleanup deleted unrelated $description container"
   [ "$actual_id" = "$expected_id" ] || fail "cleanup replaced unrelated $description container"
 }
@@ -305,7 +410,8 @@ require_container_unchanged() {
 require_network_unchanged() {
   expected_id=$1
   description=$2
-  actual_id=$(docker network inspect "$expected_id" --format '{{.Id}}' 2>/dev/null) ||
+  actual_id=$("$real_docker" network inspect "$expected_id" \
+    --format '{{.Id}}' 2>/dev/null) ||
     fail "cleanup deleted unrelated $description network"
   [ "$actual_id" = "$expected_id" ] || fail "cleanup replaced unrelated $description network"
 }
@@ -313,7 +419,7 @@ require_network_unchanged() {
 require_container_absent() {
   removed_id=$1
   description=$2
-  if docker container inspect "$removed_id" >/dev/null 2>&1; then
+  if "$real_docker" container inspect "$removed_id" >/dev/null 2>&1; then
     fail "cleanup retained owned $description container"
   fi
 }
@@ -321,9 +427,27 @@ require_container_absent() {
 require_network_absent() {
   removed_id=$1
   description=$2
-  if docker network inspect "$removed_id" >/dev/null 2>&1; then
+  if "$real_docker" network inspect "$removed_id" >/dev/null 2>&1; then
     fail "cleanup retained owned $description network"
   fi
+}
+
+select_negative_project() {
+  case $1 in
+    arr)
+      negative_project=$fixture_arr_project
+      negative_service=radarr
+      peer_project=$fixture_downloaders_project
+      peer_service=sabnzbd
+      ;;
+    downloaders)
+      negative_project=$fixture_downloaders_project
+      negative_service=sabnzbd
+      peer_project=$fixture_arr_project
+      peer_service=radarr
+      ;;
+    *) fail "unknown negative ownership project: $1" ;;
+  esac
 }
 
 expect_cleanup_refusal() {
@@ -335,12 +459,125 @@ expect_cleanup_refusal() {
     fail "cleanup mutated the sandbox before refusing $refusal_description"
 }
 
-verify_fixed_preflight_coverage
+verify_fake_guard_refusal() {
+  guard_description=$1
+  guard_expected=$2
+  guard_status=0
+  guard_output=$( (run_cleanup) 2>&1) || guard_status=$?
+  [ "$guard_status" -ne 0 ] || fail "fake guard accepted $guard_description replacement"
+  printf '%s\n' "$guard_output" | grep -qF "$guard_expected" ||
+    fail "fake guard omitted $guard_description execution-time refusal"
+  case $guard_output in
+    *FAKE_DESTRUCTIVE_CALL*)
+      fail "fake guard issued a destructive call for $guard_description"
+      ;;
+  esac
+}
+
+verify_execution_guard() {
+  docker_backend_mode=fake
+  fake_fixed_name=fixture_future_cleanup_container
+  fake_fixed_old_id=fake-fixed-container-old-id
+  fake_fixed_replacement_id=fake-fixed-container-replacement-id
+  fake_fixed_network_name=fixture_future_cleanup_network
+  fake_fixed_network_old_id=fake-fixed-network-old-id
+  fake_fixed_network_replacement_id=fake-fixed-network-replacement-id
+  fixture_namespace=nas-platform-integration-a1b2c3
+  fixture_arr_project=$fixture_namespace-arr
+  fixture_downloaders_project=$fixture_namespace-downloaders
+  fake_label_network_name=${fixture_arr_project}_default
+  fake_label_old_id=fake-label-network-old-id
+  fake_label_replacement_id=fake-label-network-replacement-id
+  active_sandbox=$fixture_parent/nas-platform-integration.a1b2c3
+  cleanup_sandbox_containers="$cleanup_sandbox_containers $fake_fixed_name"
+  cleanup_sandbox_networks="$cleanup_sandbox_networks $fake_fixed_network_name"
+  created_container_records=" $fake_fixed_old_id:$fake_fixed_name"
+  created_network_records=" $fake_fixed_network_old_id:$fake_fixed_network_name"
+  created_network_records="$created_network_records $fake_label_old_id:$fake_label_network_name"
+
+  preflight_seen_containers=
+  preflight_seen_networks=
+  preflight_cleanup_call
+  case $preflight_seen_containers in
+    *" $fake_fixed_name"*) ;;
+    *) fail "fake guard preflight did not consume a future sourced container target" ;;
+  esac
+  case $preflight_seen_networks in
+    *" $fake_fixed_network_name"*) ;;
+    *) fail "fake guard preflight did not consume a future sourced network target" ;;
+  esac
+
+  cleanup_sandbox() {
+    docker rm "$fake_fixed_name"
+  }
+  verify_fake_guard_refusal fixed-container \
+    "refusing unrecorded cleanup container at execution time: $fake_fixed_name"
+
+  cleanup_sandbox() {
+    docker network rm "$fake_fixed_network_name"
+  }
+  verify_fake_guard_refusal fixed-network \
+    "refusing unrecorded cleanup network at execution time: $fake_fixed_network_name"
+
+  cleanup_sandbox() {
+    docker network rm "$fake_label_network_name"
+  }
+  verify_fake_guard_refusal label-owned-network \
+    "refusing unrecorded cleanup network at execution time: $fake_label_network_name"
+}
+
+verify_cleanup_uses_guarded_docker() {
+  ruby -e '
+    source = File.read(ARGV.fetch(0))
+    destructive = source.lines.select do |line|
+      line.match?(/\bdocker\s+(?:network\s+)?rm(?:\s|$)/)
+    end
+    abort "cleanup source has no destructive Docker calls to guard" if destructive.empty?
+    unless destructive.all? { |line| line.match?(/^\s*docker\s+(?:network\s+)?rm(?:\s|$)/) }
+      abort "cleanup source bypasses the fixture Docker function"
+    end
+    if source.match?(/\bcommand\s+docker\b/) ||
+       source.match?(%r{(?:^|\s)/(?:[^\s]*/)*docker\s+(?:network\s+)?rm\b})
+      abort "cleanup source bypasses the fixture Docker function"
+    end
+  ' "$repo_dir/tests/sandbox_cleanup.sh" ||
+    fail "cleanup source cannot be protected by the execution-time Docker guard"
+}
+
+verify_signal_statuses() {
+  for signal_expectation in HUP:129 INT:130 TERM:143; do
+    signal_name=${signal_expectation%%:*}
+    expected_status=${signal_expectation#*:}
+    signal_status=0
+    signal_output=$(ACQUISITION_CLEANUP_SIGNAL_PROBE=1 \
+      "$repo_dir/tests/sandbox_cleanup_acquisition_ownership_test.sh" \
+      --signal-self-test "$signal_name" 2>&1) || signal_status=$?
+    [ "$signal_status" -eq "$expected_status" ] ||
+      fail "$signal_name handler exited $signal_status instead of $expected_status"
+    printf '%s\n' "$signal_output" | grep -qF \
+      "cleanup fixture exit status=$expected_status" ||
+      fail "$signal_name did not reach the EXIT cleanup trap"
+  done
+}
+
 case ${1-} in
-  '') ;;
+  '')
+    "$repo_dir/tests/sandbox_cleanup_acquisition_ownership_test.sh" \
+      --self-test >/dev/null || fail "cleanup execution guard self-test failed"
+    ;;
   --self-test)
-    printf '%s\n' 'acquisition cleanup fixture: sourced fixed-target preflight coverage holds'
+    verify_cleanup_uses_guarded_docker
+    verify_execution_guard
+    verify_signal_statuses
+    printf '%s\n' 'acquisition cleanup fixture: execution guard and signal handling hold'
     exit 0
+    ;;
+  --signal-self-test)
+    case ${2-} in
+      HUP | INT | TERM) kill -"$2" "$$" ;;
+      *) fail "unknown acquisition cleanup fixture signal: ${2-}" ;;
+    esac
+    fail "signal handler returned unexpectedly: $2"
     ;;
   *) fail "unknown acquisition cleanup fixture mode: ${1-}" ;;
 esac
@@ -366,8 +603,9 @@ require_container_unchanged "$unrelated_sabnzbd_id" sabnzbd
 require_network_unchanged "$unrelated_arr_network_id" arr_default
 require_network_unchanged "$unrelated_downloaders_network_id" downloaders_default
 
-docker rm -f "$unrelated_radarr_id" "$unrelated_sabnzbd_id" >/dev/null
-docker network rm "$unrelated_arr_network_id" "$unrelated_downloaders_network_id" >/dev/null
+"$real_docker" rm -f "$unrelated_radarr_id" "$unrelated_sabnzbd_id" >/dev/null
+"$real_docker" network rm \
+  "$unrelated_arr_network_id" "$unrelated_downloaders_network_id" >/dev/null
 
 # Exact namespace-derived permanent resources and a strict Configarr one-shot
 # are owned by this disposable Compose namespace and must be removed.
@@ -408,137 +646,153 @@ require_container_absent "$owned_configarr_id" configarr
 require_network_absent "$owned_arr_network_id" arr-default
 require_network_absent "$owned_downloaders_network_id" downloaders-default
 
-# An exact permanent name with a missing or wrong project label must refuse
-# before deleting a second, correctly owned resource.
-for project_mismatch in missing wrong; do
+# Exact names with missing/wrong project labels and project labels on unexpected
+# names must refuse atomically for both acquisition Compose projects.
+for negative_kind in arr downloaders; do
+  for project_mismatch in missing wrong; do
+    new_sandbox
+    select_negative_project "$negative_kind"
+    if [ "$project_mismatch" = missing ]; then
+      create_container "$fixture_namespace-$negative_service" \
+        --label "com.docker.compose.service=$negative_service"
+    else
+      create_container "$fixture_namespace-$negative_service" \
+        --label com.docker.compose.project=somebody-else \
+        --label "com.docker.compose.service=$negative_service"
+    fi
+    mismatched_id=$created_container_id
+    create_container "$fixture_namespace-$peer_service" \
+      --label "com.docker.compose.project=$peer_project" \
+      --label "com.docker.compose.service=$peer_service"
+    atomic_peer_id=$created_container_id
+
+    expect_cleanup_refusal "$negative_kind $project_mismatch project-label"
+    require_container_unchanged \
+      "$mismatched_id" "$negative_kind $project_mismatch-label service"
+    require_container_unchanged "$atomic_peer_id" "$negative_kind atomic-peer service"
+    "$real_docker" rm -f "$mismatched_id" "$atomic_peer_id" >/dev/null
+    rmdir "$active_sandbox"
+    active_sandbox=
+  done
+
   new_sandbox
-  if [ "$project_mismatch" = missing ]; then
-    create_container "$fixture_namespace-radarr" \
-      --label com.docker.compose.service=radarr
-  else
-    create_container "$fixture_namespace-radarr" \
-      --label com.docker.compose.project=somebody-else \
-      --label com.docker.compose.service=radarr
-  fi
-  mismatched_id=$created_container_id
-  create_container "$fixture_namespace-sonarr" \
-    --label "com.docker.compose.project=$fixture_arr_project" \
-    --label com.docker.compose.service=sonarr
+  select_negative_project "$negative_kind"
+  create_container "$fixture_namespace-$negative_kind-impostor" \
+    --label "com.docker.compose.project=$negative_project" \
+    --label "com.docker.compose.service=$negative_service"
+  unexpected_name_id=$created_container_id
+  create_container "$fixture_namespace-$negative_service" \
+    --label "com.docker.compose.project=$negative_project" \
+    --label "com.docker.compose.service=$negative_service"
   atomic_peer_id=$created_container_id
-
-  expect_cleanup_refusal "$project_mismatch project-label"
-  require_container_unchanged "$mismatched_id" "$project_mismatch-label radarr"
-  require_container_unchanged "$atomic_peer_id" atomic-peer-sonarr
-  docker rm -f "$mismatched_id" "$atomic_peer_id" >/dev/null
+  expect_cleanup_refusal "$negative_kind unexpected-name"
+  require_container_unchanged "$unexpected_name_id" "$negative_kind unexpected-name"
+  require_container_unchanged "$atomic_peer_id" "$negative_kind atomic-peer service"
+  "$real_docker" rm -f "$unexpected_name_id" "$atomic_peer_id" >/dev/null
   rmdir "$active_sandbox"
   active_sandbox=
 done
 
-# A project label on an unexpected permanent name is likewise an atomic refusal.
-new_sandbox
-create_container "$fixture_namespace-arr-impostor" \
-  --label "com.docker.compose.project=$fixture_arr_project" \
-  --label com.docker.compose.service=radarr
-unexpected_name_id=$created_container_id
-create_container "$fixture_namespace-radarr" \
-  --label "com.docker.compose.project=$fixture_arr_project" \
-  --label com.docker.compose.service=radarr
-atomic_peer_id=$created_container_id
-expect_cleanup_refusal unexpected-name
-require_container_unchanged "$unexpected_name_id" unexpected-name
-require_container_unchanged "$atomic_peer_id" atomic-peer-radarr
-docker rm -f "$unexpected_name_id" "$atomic_peer_id" >/dev/null
-rmdir "$active_sandbox"
-active_sandbox=
+# Network project, name, and default-network-label mismatches are independently
+# table-driven across Arr and downloader ownership, with collected peers intact.
+for negative_kind in arr downloaders; do
+  for network_project_mismatch in missing wrong; do
+    new_sandbox
+    select_negative_project "$negative_kind"
+    if [ "$network_project_mismatch" = missing ]; then
+      create_network "${negative_project}_default" \
+        --label com.docker.compose.network=default
+    else
+      create_network "${negative_project}_default" \
+        --label com.docker.compose.project=somebody-else \
+        --label com.docker.compose.network=default
+    fi
+    mismatched_network_id=$created_network_id
+    create_network "${peer_project}_default" \
+      --label "com.docker.compose.project=$peer_project" \
+      --label com.docker.compose.network=default
+    atomic_peer_network_id=$created_network_id
+    create_container "$fixture_namespace-$peer_service" \
+      --label "com.docker.compose.project=$peer_project" \
+      --label "com.docker.compose.service=$peer_service"
+    atomic_peer_container_id=$created_container_id
 
-# An exact default-network name with a missing or wrong project label must
-# refuse before deleting correctly collected container and network peers.
-for network_project_mismatch in missing wrong; do
+    expect_cleanup_refusal \
+      "$negative_kind $network_project_mismatch network project-label"
+    require_network_unchanged "$mismatched_network_id" \
+      "$negative_kind $network_project_mismatch-project default"
+    require_network_unchanged \
+      "$atomic_peer_network_id" "$negative_kind atomic-peer default"
+    require_container_unchanged \
+      "$atomic_peer_container_id" "$negative_kind atomic-peer service"
+    "$real_docker" rm -f "$atomic_peer_container_id" >/dev/null
+    "$real_docker" network rm \
+      "$mismatched_network_id" "$atomic_peer_network_id" >/dev/null
+    rmdir "$active_sandbox"
+    active_sandbox=
+  done
+
   new_sandbox
-  if [ "$network_project_mismatch" = missing ]; then
-    create_network "${fixture_arr_project}_default" \
-      --label com.docker.compose.network=default
-  else
-    create_network "${fixture_arr_project}_default" \
-      --label com.docker.compose.project=somebody-else \
-      --label com.docker.compose.network=default
-  fi
-  mismatched_network_id=$created_network_id
-  create_network "${fixture_downloaders_project}_default" \
-    --label "com.docker.compose.project=$fixture_downloaders_project" \
+  select_negative_project "$negative_kind"
+  create_network "${negative_project}_unexpected" \
+    --label "com.docker.compose.project=$negative_project" \
+    --label com.docker.compose.network=default
+  unexpected_network_id=$created_network_id
+  create_network "${negative_project}_default" \
+    --label "com.docker.compose.project=$negative_project" \
     --label com.docker.compose.network=default
   atomic_peer_network_id=$created_network_id
-  create_container "$fixture_namespace-sabnzbd" \
-    --label "com.docker.compose.project=$fixture_downloaders_project" \
-    --label com.docker.compose.service=sabnzbd
+  create_container "$fixture_namespace-$negative_service" \
+    --label "com.docker.compose.project=$negative_project" \
+    --label "com.docker.compose.service=$negative_service"
   atomic_peer_container_id=$created_container_id
-
-  expect_cleanup_refusal "$network_project_mismatch network project-label"
+  expect_cleanup_refusal "$negative_kind unexpected-network-name"
   require_network_unchanged \
-    "$mismatched_network_id" "$network_project_mismatch-project arr-default"
-  require_network_unchanged "$atomic_peer_network_id" atomic-peer-downloaders-default
-  require_container_unchanged "$atomic_peer_container_id" atomic-peer-sabnzbd
-  docker rm -f "$atomic_peer_container_id" >/dev/null
-  docker network rm "$mismatched_network_id" "$atomic_peer_network_id" >/dev/null
+    "$unexpected_network_id" "$negative_kind unexpected-network-name"
+  require_network_unchanged \
+    "$atomic_peer_network_id" "$negative_kind atomic-peer default"
+  require_container_unchanged \
+    "$atomic_peer_container_id" "$negative_kind atomic-peer service"
+  "$real_docker" rm -f "$atomic_peer_container_id" >/dev/null
+  "$real_docker" network rm \
+    "$unexpected_network_id" "$atomic_peer_network_id" >/dev/null
   rmdir "$active_sandbox"
   active_sandbox=
-done
 
-# A project label on an unexpected network name must refuse atomically across
-# every network and container collected for that project.
-new_sandbox
-create_network "${fixture_arr_project}_unexpected" \
-  --label "com.docker.compose.project=$fixture_arr_project" \
-  --label com.docker.compose.network=default
-unexpected_network_id=$created_network_id
-create_network "${fixture_arr_project}_default" \
-  --label "com.docker.compose.project=$fixture_arr_project" \
-  --label com.docker.compose.network=default
-atomic_peer_network_id=$created_network_id
-create_container "$fixture_namespace-radarr" \
-  --label "com.docker.compose.project=$fixture_arr_project" \
-  --label com.docker.compose.service=radarr
-atomic_peer_container_id=$created_container_id
-expect_cleanup_refusal unexpected-network-name
-require_network_unchanged "$unexpected_network_id" unexpected-network-name
-require_network_unchanged "$atomic_peer_network_id" atomic-peer-arr-default
-require_container_unchanged "$atomic_peer_container_id" atomic-peer-radarr
-docker rm -f "$atomic_peer_container_id" >/dev/null
-docker network rm "$unexpected_network_id" "$atomic_peer_network_id" >/dev/null
-rmdir "$active_sandbox"
-active_sandbox=
+  for network_label_mismatch in missing wrong; do
+    new_sandbox
+    select_negative_project "$negative_kind"
+    if [ "$network_label_mismatch" = missing ]; then
+      create_network "${negative_project}_default" \
+        --label "com.docker.compose.project=$negative_project"
+    else
+      create_network "${negative_project}_default" \
+        --label "com.docker.compose.project=$negative_project" \
+        --label com.docker.compose.network=wrong
+    fi
+    mismatched_network_id=$created_network_id
+    create_network "${peer_project}_default" \
+      --label "com.docker.compose.project=$peer_project" \
+      --label com.docker.compose.network=default
+    atomic_peer_network_id=$created_network_id
+    create_container "$fixture_namespace-$peer_service" \
+      --label "com.docker.compose.project=$peer_project" \
+      --label "com.docker.compose.service=$peer_service"
+    atomic_peer_container_id=$created_container_id
 
-# The default-network ownership label is mandatory; missing and wrong values
-# both refuse before any collected peer is deleted.
-for network_label_mismatch in missing wrong; do
-  new_sandbox
-  if [ "$network_label_mismatch" = missing ]; then
-    create_network "${fixture_arr_project}_default" \
-      --label "com.docker.compose.project=$fixture_arr_project"
-  else
-    create_network "${fixture_arr_project}_default" \
-      --label "com.docker.compose.project=$fixture_arr_project" \
-      --label com.docker.compose.network=wrong
-  fi
-  mismatched_network_id=$created_network_id
-  create_network "${fixture_downloaders_project}_default" \
-    --label "com.docker.compose.project=$fixture_downloaders_project" \
-    --label com.docker.compose.network=default
-  atomic_peer_network_id=$created_network_id
-  create_container "$fixture_namespace-radarr" \
-    --label "com.docker.compose.project=$fixture_arr_project" \
-    --label com.docker.compose.service=radarr
-  atomic_peer_container_id=$created_container_id
-
-  expect_cleanup_refusal "$network_label_mismatch compose-network label"
-  require_network_unchanged \
-    "$mismatched_network_id" "$network_label_mismatch-label arr-default"
-  require_network_unchanged "$atomic_peer_network_id" atomic-peer-downloaders-default
-  require_container_unchanged "$atomic_peer_container_id" atomic-peer-radarr
-  docker rm -f "$atomic_peer_container_id" >/dev/null
-  docker network rm "$mismatched_network_id" "$atomic_peer_network_id" >/dev/null
-  rmdir "$active_sandbox"
-  active_sandbox=
+    expect_cleanup_refusal "$negative_kind $network_label_mismatch network label"
+    require_network_unchanged "$mismatched_network_id" \
+      "$negative_kind $network_label_mismatch-label default"
+    require_network_unchanged \
+      "$atomic_peer_network_id" "$negative_kind atomic-peer default"
+    require_container_unchanged \
+      "$atomic_peer_container_id" "$negative_kind atomic-peer service"
+    "$real_docker" rm -f "$atomic_peer_container_id" >/dev/null
+    "$real_docker" network rm \
+      "$mismatched_network_id" "$atomic_peer_network_id" >/dev/null
+    rmdir "$active_sandbox"
+    active_sandbox=
+  done
 done
 
 # A generated Configarr name outside the exact project is not owned by this
@@ -561,25 +815,44 @@ for configarr_project_mismatch in missing wrong; do
   release_sandbox_after_cleanup
   require_container_unchanged \
     "$unrelated_configarr_id" "Configarr $configarr_project_mismatch-project"
-  docker rm -f "$unrelated_configarr_id" >/dev/null
+  "$real_docker" rm -f "$unrelated_configarr_id" >/dev/null
 done
 
 # Configarr ownership requires the generated name, service label, and one-off
-# label together. Each individual mismatch must refuse before any deletion.
-for configarr_mismatch in name service oneoff; do
+# label together. Missing and wrong labels independently refuse before deletion.
+for configarr_mismatch in name service-missing service-wrong oneoff-missing oneoff-wrong; do
   new_sandbox
   configarr_name=$fixture_namespace-arr-configarr-run-a1b2c3
-  configarr_service=configarr
-  configarr_oneoff=True
   case $configarr_mismatch in
-    name) configarr_name=$fixture_namespace-arr-configarr-task-a1b2c3 ;;
-    service) configarr_service=radarr ;;
-    oneoff) configarr_oneoff=False ;;
+    name)
+      create_container "$fixture_namespace-arr-configarr-task-a1b2c3" \
+        --label "com.docker.compose.project=$fixture_arr_project" \
+        --label com.docker.compose.service=configarr \
+        --label com.docker.compose.oneoff=True
+      ;;
+    service-missing)
+      create_container "$configarr_name" \
+        --label "com.docker.compose.project=$fixture_arr_project" \
+        --label com.docker.compose.oneoff=True
+      ;;
+    service-wrong)
+      create_container "$configarr_name" \
+        --label "com.docker.compose.project=$fixture_arr_project" \
+        --label com.docker.compose.service=radarr \
+        --label com.docker.compose.oneoff=True
+      ;;
+    oneoff-missing)
+      create_container "$configarr_name" \
+        --label "com.docker.compose.project=$fixture_arr_project" \
+        --label com.docker.compose.service=configarr
+      ;;
+    oneoff-wrong)
+      create_container "$configarr_name" \
+        --label "com.docker.compose.project=$fixture_arr_project" \
+        --label com.docker.compose.service=configarr \
+        --label com.docker.compose.oneoff=False
+      ;;
   esac
-  create_container "$configarr_name" \
-    --label "com.docker.compose.project=$fixture_arr_project" \
-    --label "com.docker.compose.service=$configarr_service" \
-    --label "com.docker.compose.oneoff=$configarr_oneoff"
   mismatched_id=$created_container_id
   create_container "$fixture_namespace-radarr" \
     --label "com.docker.compose.project=$fixture_arr_project" \
@@ -589,7 +862,7 @@ for configarr_mismatch in name service oneoff; do
   expect_cleanup_refusal "Configarr $configarr_mismatch"
   require_container_unchanged "$mismatched_id" "Configarr $configarr_mismatch"
   require_container_unchanged "$atomic_peer_id" atomic-peer-radarr
-  docker rm -f "$mismatched_id" "$atomic_peer_id" >/dev/null
+  "$real_docker" rm -f "$mismatched_id" "$atomic_peer_id" >/dev/null
   rmdir "$active_sandbox"
   active_sandbox=
 done
