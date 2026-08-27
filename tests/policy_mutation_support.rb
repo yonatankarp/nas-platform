@@ -187,6 +187,11 @@ def fixture_paths(root = ROOT)
     paths << defaults if File.file?(File.join(root, defaults))
     env_template = File.join(role_root, "templates", "env.j2")
     paths << env_template if File.file?(File.join(root, env_template))
+    # policy_integration_test.rb reads the integration override of every service
+    # that has one, so a sandbox without them fails every mutation with a Ruby
+    # stack trace instead of the failure under test.
+    integration_override = File.join("services", name, "compose.integration.yml")
+    paths << integration_override if File.file?(File.join(root, integration_override))
   end
 
 
