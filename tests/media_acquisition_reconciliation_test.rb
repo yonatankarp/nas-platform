@@ -45,9 +45,17 @@ CONFIGARR_QUALITY_DEFINITION_SHA256 = {
   "radarr" => "bca0755668a9f55fa512a7e5d2d0e8000ed4339ac4ccd996bb8be0efa6dbef3c",
   "sonarr" => "2e2c0fe9dcbf148d9282cee4ff76c1e56e096d10965aafaa12f39890a063782b"
 }.freeze
-PLAYBOOK_TIMEOUT_SECONDS = Float(ENV.fetch("ACQUISITION_PLAYBOOK_TIMEOUT", "30"))
-PROCESS_TERM_GRACE_SECONDS = 1.0
-SOCKET_DEADLINE_SECONDS = 2.0
+# These three bound how long the harness waits before calling something hung.
+# They are not performance assertions: every behavioural property has its own
+# check. tests/validate-policy.sh runs its checks concurrently, so on a
+# four-core CI runner a play that takes four seconds unloaded can take far
+# longer, and deadlines tuned on an idle workstation reported
+# "Ansible playbook exceeded 30.0s deadline" for work that was merely waiting
+# for a core. They are generous enough that only a genuine hang trips them, and
+# overridable for anyone who wants them strict.
+PLAYBOOK_TIMEOUT_SECONDS = Float(ENV.fetch("ACQUISITION_PLAYBOOK_TIMEOUT", "120"))
+PROCESS_TERM_GRACE_SECONDS = Float(ENV.fetch("ACQUISITION_PROCESS_TERM_GRACE", "5"))
+SOCKET_DEADLINE_SECONDS = Float(ENV.fetch("ACQUISITION_SOCKET_DEADLINE", "10"))
 CONFIGARR_MUTATION_PATTERN = ENV["ACQUISITION_CONFIGARR_MUTATION_PATTERN"]
 PROFILE_TREE_ID_TARGETED_ONLY =
   ENV["ACQUISITION_PROFILE_TREE_ID_TARGETED_ONLY"] == "1"
@@ -2946,7 +2954,8 @@ end
 partial_api = AcquisitionApi.new({})
 partial_client = TCPSocket.new("127.0.0.1", partial_api.port)
 partial_client.write("POST /api/system/settings HTTP/1.1\r\nContent-Length: 100\r\n")
-accept_deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 1
+accept_deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) +
+                  SOCKET_DEADLINE_SECONDS
 while partial_api.accepted_client_count.zero? &&
       Process.clock_gettime(Process::CLOCK_MONOTONIC) < accept_deadline
   Thread.pass
