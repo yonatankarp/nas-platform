@@ -32,8 +32,19 @@ def require_rejected(items, label: str) -> None:
     raise AssertionError(f"accepted unsafe profile-tree identity: {label}")
 
 
+def require_tree_rejected(items, label: str, expected_message: str | None = None) -> None:
+    try:
+        profile_tree(items, f"Configarr test {label}")
+    except AnsibleFilterError as error:
+        if expected_message is not None:
+            assert expected_message in str(error), str(error)
+        return
+    raise AssertionError(f"accepted unsafe complete profile tree: {label}")
+
+
 plugin = load_plugin()
 profile_item_ids = plugin._configarr_profile_item_ids
+profile_tree = plugin._configarr_profile_tree
 
 valid_items = [
     {
@@ -66,6 +77,37 @@ assert profile_item_ids(valid_items, "Configarr test profile items") == {
     "Bluray-1080p": 7,
 }
 
+tree = profile_tree(valid_items, "Configarr test profile items")
+assert tree["items"] == [plugin._quality_item_projection(item, "test") for item in valid_items]
+assert tree["item_identities"] == [
+    {"path": ["group:WEB 1080p"], "kind": "group", "name": "WEB 1080p", "id": 1001},
+    {
+        "path": ["group:WEB 1080p", "quality:WEBDL-1080p"],
+        "kind": "quality",
+        "name": "WEBDL-1080p",
+        "id": 3,
+    },
+    {
+        "path": ["group:WEB 1080p", "quality:WEBRip-1080p"],
+        "kind": "quality",
+        "name": "WEBRip-1080p",
+        "id": 15,
+    },
+    {
+        "path": ["quality:Bluray-1080p"],
+        "kind": "quality",
+        "name": "Bluray-1080p",
+        "id": 7,
+    },
+]
+
+changed_id_items = [dict(valid_items[1], quality=dict(valid_items[1]["quality"], id=999))]
+assert profile_tree(
+    [valid_items[1]], "Configarr current quality items"
+)["item_identities"] != profile_tree(
+    changed_id_items, "Configarr current quality items"
+)["item_identities"]
+
 colliding_items = [
     {
         "id": 1001,
@@ -82,7 +124,7 @@ colliding_items = [
 ]
 require_rejected(colliding_items, "generated group and nested quality ID collision")
 
-for invalid_id in [True, 0, -1, 1.5]:
+for invalid_id in [True, 0, -1, "7", 1.5]:
     invalid_group = [
         {"id": invalid_id, "name": "WEB 1080p", "allowed": True, "items": []}
     ]
@@ -103,5 +145,46 @@ for invalid_id in [True, 0, -1, 1.5]:
         }
     ]
     require_rejected(invalid_quality, f"nested quality ID {invalid_id!r}")
+    require_tree_rejected(invalid_group, f"group ID {invalid_id!r}")
+    require_tree_rejected(invalid_quality, f"nested quality ID {invalid_id!r}")
+
+deep_items = [
+    {"id": 2000, "name": "level-1", "allowed": True, "items": []}
+]
+cursor = deep_items[0]
+for depth in range(2, 18):
+    child = {"id": 2000 + depth, "name": f"level-{depth}", "allowed": True, "items": []}
+    cursor["items"] = [child]
+    cursor = child
+require_tree_rejected(deep_items, "over-depth tree", "maximum depth 16")
+
+wide_items = [
+    {
+        "quality": {"id": index + 1, "name": f"quality-{index + 1}"},
+        "allowed": True,
+        "items": [],
+    }
+    for index in range(513)
+]
+require_tree_rejected(wide_items, "over-count tree", "maximum node count 512")
+
+valid_declarations = plugin.acquisition_bazarr_declarations(
+    ["en"],
+    [{"name": "provider_name", "settings": {"settings-provider_name-api_key": "secret"}}],
+)
+assert valid_declarations["provider_names"] == ["provider_name"]
+for label, providers in {
+    "hyphenated provider": [
+        {"name": "provider-name", "settings": {"settings-provider-name-api_key": "secret"}}
+    ],
+    "hyphenated setting suffix": [
+        {"name": "provider_name", "settings": {"settings-provider_name-api-key": "secret"}}
+    ],
+}.items():
+    try:
+        plugin.acquisition_bazarr_declarations(["en"], providers)
+    except AnsibleFilterError:
+        continue
+    raise AssertionError(f"accepted ambiguous Bazarr {label}")
 
 print("Configarr materialized profile-tree identity behavior holds")

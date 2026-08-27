@@ -486,7 +486,11 @@ def acquisition_bazarr_declarations(languages: Any, providers: Any) -> dict[str,
     for provider in _sequence(providers, "Bazarr provider declarations"):
         provider = _mapping(provider, "Bazarr provider declaration")
         name = _required_string(provider.get("name"), "Bazarr provider name")
-        if not re.fullmatch(r"[a-z0-9_-]+", name):
+        # Bazarr v1.6.0 splits form keys on hyphens before indexing settings.
+        # Provider/input identifiers in the pinned provider registry therefore
+        # use lowercase identifier tokens, never additional delimiters:
+        # https://github.com/morpheus65535/bazarr/blob/v1.6.0/bazarr/app/config.py#L701
+        if not re.fullmatch(r"[a-z][a-z0-9_]*", name):
             raise AnsibleFilterError("Bazarr provider names must use canonical lowercase values")
         settings = _mapping(provider.get("settings"), f"Bazarr provider {name!r} settings")
         if not settings:
@@ -501,6 +505,10 @@ def acquisition_bazarr_declarations(languages: Any, providers: Any) -> dict[str,
                     f"Bazarr provider {name!r} setting keys require the exact provider prefix"
                 )
             setting_name = key[len(prefix) :]
+            if not re.fullmatch(r"[a-z][a-z0-9_]*", setting_name):
+                raise AnsibleFilterError(
+                    f"Bazarr provider {name!r} setting suffixes must use canonical identifiers"
+                )
             safe_body[key] = _provider_request_value(
                 value, setting_name, f"Bazarr provider setting {key!r}"
             )
@@ -801,53 +809,89 @@ def _validate_unique_numeric_identities(
         raise AnsibleFilterError(f"{label} contains duplicate numeric identities")
 
 
-def _quality_item_projection(item: Any, label: str) -> dict[str, Any]:
-    item = _mapping(item, label)
-    allowed = _strict_boolean(item.get("allowed"), f"{label} allowed")
-    children = _sequence(item.get("items", []), f"{label} items")
-    if isinstance(item.get("quality"), dict):
-        if children:
-            raise AnsibleFilterError(f"{label} quality item cannot contain child items")
-        return {
-            "kind": "quality",
-            "name": _required_string(item["quality"].get("name"), f"{label} quality name"),
-            "allowed": allowed,
-        }
-    name = _required_string(item.get("name"), f"{label} group name")
-    if not children:
-        raise AnsibleFilterError(f"{label} quality group must contain child items")
+CONFIGARR_PROFILE_TREE_MAX_DEPTH = 16
+CONFIGARR_PROFILE_TREE_MAX_NODES = 512
+
+
+def _configarr_profile_tree(items: Any, label: str) -> dict[str, Any]:
+    """Strictly project a complete Servarr profile tree and all node identities."""
+    identities = []
+    names_by_id: dict[int, str] = {}
+    ids_by_name: dict[str, int] = {}
+    node_count = 0
+
+    def project(item: Any, path: list[str], depth: int) -> dict[str, Any]:
+        nonlocal node_count
+        if depth > CONFIGARR_PROFILE_TREE_MAX_DEPTH:
+            raise AnsibleFilterError(
+                f"{label} exceeds maximum depth {CONFIGARR_PROFILE_TREE_MAX_DEPTH}"
+            )
+        node_count += 1
+        if node_count > CONFIGARR_PROFILE_TREE_MAX_NODES:
+            raise AnsibleFilterError(
+                f"{label} exceeds maximum node count {CONFIGARR_PROFILE_TREE_MAX_NODES}"
+            )
+
+        item = _mapping(item, f"{label} item")
+        allowed = _strict_boolean(item.get("allowed"), f"{label} item allowed")
+        children = _sequence(item.get("items", []), f"{label} item children")
+        quality = item.get("quality")
+        if isinstance(quality, dict):
+            kind = "quality"
+            name = _required_string(quality.get("name"), f"{label} quality name")
+            identifier = _strict_integer(quality.get("id"), f"{label} quality id")
+            if children:
+                raise AnsibleFilterError(
+                    f"{label} quality item {name!r} cannot contain child items"
+                )
+        else:
+            kind = "group"
+            name = _required_string(item.get("name"), f"{label} group name")
+            identifier = _strict_integer(item.get("id"), f"{label} group id")
+            if not children:
+                raise AnsibleFilterError(
+                    f"{label} quality group {name!r} must contain child items"
+                )
+        if identifier <= 0:
+            raise AnsibleFilterError(
+                f"{label} {kind} {name!r} ID must be a positive integer"
+            )
+        if identifier in names_by_id:
+            raise AnsibleFilterError(f"{label} contains duplicate numeric identities")
+        if name in ids_by_name:
+            raise AnsibleFilterError(f"{label} contains duplicate named identities")
+
+        names_by_id[identifier] = name
+        ids_by_name[name] = identifier
+        identity_path = path + [f"{kind}:{name}"]
+        identities.append(
+            {"path": identity_path, "kind": kind, "name": name, "id": identifier}
+        )
+        projected = {"kind": kind, "name": name, "allowed": allowed}
+        if kind == "group":
+            projected["items"] = [
+                project(child, identity_path, depth + 1) for child in children
+            ]
+        return projected
+
+    projected_items = [
+        project(item, [], 1) for item in _sequence(items, label)
+    ]
+    identities.sort(key=lambda item: tuple(item["path"]))
     return {
-        "kind": "group",
-        "name": name,
-        "allowed": allowed,
-        "items": [
-            _quality_item_projection(child, f"{label} group {name!r} item")
-            for child in children
-        ],
+        "items": projected_items,
+        "item_identities": identities,
+        "names_by_id": names_by_id,
+        "ids_by_name": ids_by_name,
     }
 
 
+def _quality_item_projection(item: Any, label: str) -> dict[str, Any]:
+    return _configarr_profile_tree([item], label)["items"][0]
+
+
 def _quality_item_identities(items: Any, label: str) -> dict[int, str]:
-    identities: dict[int, str] = {}
-
-    def collect(item: Any, item_label: str) -> None:
-        item = _mapping(item, item_label)
-        quality = item.get("quality")
-        if isinstance(quality, dict):
-            identifier = _strict_integer(quality.get("id"), f"{item_label} quality id")
-            name = _required_string(quality.get("name"), f"{item_label} quality name")
-        else:
-            identifier = _strict_integer(item.get("id"), f"{item_label} group id")
-            name = _required_string(item.get("name"), f"{item_label} group name")
-        if identifier in identities:
-            raise AnsibleFilterError(f"{label} contains duplicate numeric identities")
-        identities[identifier] = name
-        for child in _sequence(item.get("items", []), f"{item_label} items"):
-            collect(child, f"{item_label} child")
-
-    for item in _sequence(items, label):
-        collect(item, f"{label} item")
-    return identities
+    return _configarr_profile_tree(items, label)["names_by_id"]
 
 
 def _projected_quality_names(item: Any) -> list[str]:
@@ -999,9 +1043,10 @@ def acquisition_configarr_owned_projection(results: Any) -> dict[str, Any]:
             raw_items = _sequence(
                 profile.get("items"), f"Configarr {service} quality items"
             )
-            quality_identities = _quality_item_identities(
+            quality_tree = _configarr_profile_tree(
                 raw_items, f"Configarr {service} quality items"
             )
+            quality_identities = quality_tree["names_by_id"]
             cutoff = _strict_integer(
                 profile.get("cutoff"), f"Configarr {service} quality-profile cutoff"
             )
@@ -1057,10 +1102,8 @@ def acquisition_configarr_owned_projection(results: Any) -> dict[str, Any]:
                     profile.get("minUpgradeFormatScore"),
                     f"Configarr {service} minUpgradeFormatScore",
                 ),
-                "items": [
-                    _quality_item_projection(item, f"Configarr {service} quality item")
-                    for item in raw_items
-                ],
+                "items": quality_tree["items"],
+                "item_identities": quality_tree["item_identities"],
                 "format_assignment_identity_count": len(score_matches),
                 "format_assignments": format_assignments,
             }
@@ -1444,6 +1487,7 @@ def acquisition_configarr_declared_projection(projection: Any) -> dict[str, Any]
                     "disabled_quality_names": disabled_quality_names,
                     "enabled": enabled_items,
                 },
+                "item_identities": deepcopy(profile.get("item_identities")),
                 "format_assignment": {
                     "identity_count": len(assignment_matches),
                     "value": assignment,
@@ -1546,7 +1590,7 @@ def acquisition_configarr_desired_projection(
             ),
             service,
         )
-        _configarr_profile_item_ids(
+        materialized_tree = _configarr_profile_tree(
             materialized_items,
             f"Configarr {service} materialized quality items",
         )
@@ -1712,6 +1756,7 @@ def acquisition_configarr_desired_projection(
                     "disabled_quality_names": disabled_quality_names,
                     "enabled": enabled_quality_items,
                 },
+                "item_identities": materialized_tree["item_identities"],
                 "format_assignment": {
                     "identity_count": 1,
                     "value": {
@@ -1947,45 +1992,7 @@ def _configarr_materialized_profile_items(
 
 
 def _configarr_profile_item_ids(items: Any, label: str) -> dict[str, int]:
-    identities = {}
-    numeric_identities = set()
-
-    def collect(nodes: Any, node_label: str) -> None:
-        for item in _sequence(nodes, node_label):
-            item = _mapping(item, f"{node_label} item")
-            quality = item.get("quality")
-            if isinstance(quality, dict):
-                name = _required_string(
-                    quality.get("name"), f"{node_label} quality name"
-                )
-                identifier = _strict_integer(
-                    quality.get("id"), f"{node_label} quality id"
-                )
-            else:
-                name = _required_string(
-                    item.get("name"), f"{node_label} group name"
-                )
-                identifier = _strict_integer(
-                    item.get("id"), f"{node_label} group id"
-                )
-            if identifier <= 0:
-                raise AnsibleFilterError(
-                    f"{node_label} numeric identities must be positive"
-                )
-            if name in identities:
-                raise AnsibleFilterError(
-                    f"{label} contains duplicate named identities"
-                )
-            if identifier in numeric_identities:
-                raise AnsibleFilterError(
-                    f"{label} contains duplicate numeric identities"
-                )
-            identities[name] = identifier
-            numeric_identities.add(identifier)
-            collect(item.get("items", []), f"{node_label} child")
-
-    collect(items, label)
-    return identities
+    return _configarr_profile_tree(items, label)["ids_by_name"]
 
 
 def acquisition_configarr_profile_repair_bodies(

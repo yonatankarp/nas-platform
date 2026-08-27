@@ -51,9 +51,12 @@ SOCKET_DEADLINE_SECONDS = 2.0
 CONFIGARR_MUTATION_PATTERN = ENV["ACQUISITION_CONFIGARR_MUTATION_PATTERN"]
 PROFILE_TREE_ID_TARGETED_ONLY =
   ENV["ACQUISITION_PROFILE_TREE_ID_TARGETED_ONLY"] == "1"
+COMPLETE_PROFILE_TREE_TARGETED_ONLY =
+  ENV["ACQUISITION_COMPLETE_PROFILE_TREE_TARGETED_ONLY"] == "1"
 OPAQUE_TARGETED_ONLY = ENV["ACQUISITION_OPAQUE_TARGETED_ONLY"] == "1" ||
                        !CONFIGARR_MUTATION_PATTERN.nil? ||
-                       PROFILE_TREE_ID_TARGETED_ONLY
+                       PROFILE_TREE_ID_TARGETED_ONLY ||
+                       COMPLETE_PROFILE_TREE_TARGETED_ONLY
 SECRET_TASK_FILES = [
   [ARR_TASKS, "reconcile_prowlarr.yml"],
   [ARR_TASKS, "reconcile_prowlarr_application.yml"],
@@ -1205,6 +1208,44 @@ def quality_item_projection(item)
   end
 end
 
+def quality_item_tree_projection(items, label)
+  identities = []
+  numeric_ids = {}
+  names = {}
+  node_count = 0
+  walk = lambda do |item, path, depth|
+    raise "#{label} exceeds maximum depth 16" if depth > 16
+
+    node_count += 1
+    raise "#{label} exceeds maximum node count 512" if node_count > 512
+
+    identity = item["quality"].is_a?(Hash) ? item.fetch("quality") : item
+    kind = item["quality"].is_a?(Hash) ? "quality" : "group"
+    name = identity.fetch("name")
+    identifier = identity.fetch("id")
+    unless identifier.is_a?(Integer) && identifier.positive?
+      raise "#{label} #{kind} #{name.inspect} ID must be a positive integer"
+    end
+    raise "#{label} contains duplicate numeric identities" if numeric_ids.key?(identifier)
+    raise "#{label} contains duplicate named identities" if names.key?(name)
+
+    numeric_ids[identifier] = name
+    names[name] = identifier
+    identity_path = path + ["#{kind}:#{name}"]
+    identities << {
+      "path" => identity_path, "kind" => kind, "name" => name, "id" => identifier
+    }
+    Array(item["items"]).each do |child|
+      walk.call(child, identity_path, depth + 1)
+    end
+  end
+  Array(items).each { |item| walk.call(item, [], 1) }
+  {
+    "items" => Array(items).map { |item| quality_item_projection(item) },
+    "item_identities" => identities.sort_by { |item| item.fetch("path") }
+  }
+end
+
 def quality_definition_projection(definition, service)
   quality_fields = %w[id name source resolution]
   quality_fields << "modifier" if service == "radarr"
@@ -1252,6 +1293,9 @@ def configarr_projection(settings)
     score_matches = format_assignments.select do |format_item|
       format_item["name"] == CONFIGARR_FORMAT_NAME
     end
+    profile_tree = quality_item_tree_projection(
+      profile&.fetch("items", []), "Configarr #{service} quality items"
+    )
     cutoff_identity = quality_item_identities(profile&.fetch("items", [])).fetch(
       profile&.fetch("cutoff", nil), nil
     )
@@ -1269,9 +1313,8 @@ def configarr_projection(settings)
         "minFormatScore" => profile&.fetch("minFormatScore", nil),
         "cutoffFormatScore" => profile&.fetch("cutoffFormatScore", nil),
         "minUpgradeFormatScore" => profile&.fetch("minUpgradeFormatScore", nil),
-        "items" => Array(profile&.fetch("items", nil)).map do |item|
-          quality_item_projection(item)
-        end,
+        "items" => profile_tree.fetch("items"),
+        "item_identities" => profile_tree.fetch("item_identities"),
         "format_assignment_identity_count" => score_matches.length,
         "format_assignments" => format_assignments
       },
@@ -4419,6 +4462,18 @@ end
       "settings" => { "settings-opensubtitlescom-" => "unsafe" }
     }]
   },
+  "provider ambiguous hyphenated name" => {
+    "media_bazarr_providers" => [{
+      "name" => "open-subtitles",
+      "settings" => { "settings-open-subtitles-password" => "unsafe" }
+    }]
+  },
+  "provider ambiguous hyphenated setting suffix" => {
+    "media_bazarr_providers" => [{
+      "name" => "opensubtitlescom",
+      "settings" => { "settings-opensubtitlescom-api-key" => "unsafe" }
+    }]
+  },
   "provider unsafe setting mapping" => {
     "media_bazarr_providers" => [{
       "name" => "opensubtitlescom",
@@ -4509,6 +4564,11 @@ configarr_mutations = {}
     "quality sort/order outcome" => ->(profile) { profile["items"].reverse! },
     "quality structure" => lambda do |profile|
       profile.fetch("items").find { |item| item["name"] == "WEB 1080p" }.fetch("items").pop
+    end,
+    "non-cutoff nested item id" => lambda do |profile|
+      profile.fetch("items").find { |item| item["name"] == "WEB 1080p" }
+        .fetch("items").find { |item| item.dig("quality", "name") == "WEBDL-1080p" }
+        .fetch("quality")["id"] = 999
     end,
     "format assignment name" => ->(profile) { profile["formatItems"].first["name"] = "Legacy Format" },
     "format assignment score" => ->(profile) { profile["formatItems"].first["score"] = 0 }
@@ -4632,6 +4692,155 @@ configarr_unmanaged_preserved = lambda do |state, before|
         .all? { |item| current.fetch("customformat").include?(item) } &&
       unrelated_profile_fields_preserved
   end
+end
+if COMPLETE_PROFILE_TREE_TARGETED_ONLY
+  %w[radarr sonarr].each do |service|
+    id_drift_state = deep_copy(configarr_state)
+    profile = id_drift_state.dig("configarr", service, "qualityprofile").first
+    profile.fetch("items").find { |item| item["name"] == "WEB 1080p" }
+      .fetch("items").find { |item| item.dig("quality", "name") == "WEBDL-1080p" }
+      .fetch("quality")["id"] = 999
+
+    Dir.mktmpdir("media-acquisition-configarr-complete-profile-tree-") do |runtime|
+      FileUtils.mkdir_p(File.join(runtime, "services", "arr"))
+      with_api(id_drift_state) do |api|
+        variables = base_variables(api.port)
+        seed_fingerprint_baseline(
+          runtime, variables, kind: :configarr, state: configarr_state
+        )
+        before = fingerprint_snapshot(runtime)
+        first = run_tasks(
+          :configarr, api, {}, runtime: runtime, prepare_fingerprints: false
+        )
+        sane = check_sanity(
+          failures, "Configarr #{service} non-cutoff profile-tree ID drift",
+          first, api, kind: :configarr
+        )
+        next unless sane
+
+        failures << "Configarr #{service} non-cutoff profile-tree ID drift did not converge" unless
+          first.fetch("status").success?
+        profile_puts = mutation_requests(
+          api,
+          ->(request) do
+            request["method"] == "PUT" &&
+              request["target"].start_with?("/#{service}/api/v3/qualityprofile/")
+          end
+        )
+        failures << "Configarr #{service} non-cutoff profile-tree ID drift was not repaired exactly once" unless
+          profile_puts.length == 1
+        jobs = mutation_requests(api, configarr_write)
+        failures << "Configarr #{service} non-cutoff profile-tree ID drift did not run Configarr exactly once" unless
+          jobs.length == 1
+        after_first = fingerprint_snapshot(runtime)
+        failures << "Configarr #{service} non-cutoff profile-tree ID drift changed desired input bytes" unless
+          before.fetch(FINGERPRINT_FILE_BY_KIND.fetch(:configarr)) ==
+            after_first.fetch(FINGERPRINT_FILE_BY_KIND.fetch(:configarr))
+        failures << "Configarr #{service} non-cutoff profile-tree ID drift changed opaque continuity" unless
+          before.fetch(CONFIGARR_OPAQUE_FINGERPRINT_FILE) ==
+            after_first.fetch(CONFIGARR_OPAQUE_FINGERPRINT_FILE)
+        failures << "Configarr #{service} non-cutoff profile-tree repair recorded stale full state" unless
+          after_first.fetch(CONFIGARR_STATE_FINGERPRINT_FILE)&.fetch("content", nil) ==
+            "#{configarr_state_fingerprint(api.state.fetch('configarr'))}\n"
+
+        request_count = api.requests.length
+        second = run_tasks(
+          :configarr, api, {}, runtime: runtime, prepare_fingerprints: false
+        )
+        sane = check_sanity(
+          failures, "Configarr #{service} stable repaired profile-tree IDs",
+          second, api, kind: :configarr
+        )
+        next unless sane
+
+        second_mutations = api.requests.drop(request_count).select do |request|
+          %w[POST PUT PATCH DELETE].include?(request.fetch("method"))
+        end
+        failures << "Configarr #{service} stable repaired profile-tree IDs mutated again" unless
+          second_mutations.empty?
+        failures << "Configarr #{service} stable repaired profile-tree IDs reported changed" unless
+          second.fetch("reconciliation_changed") == 0
+        failures << "Configarr #{service} stable repaired profile-tree IDs rewrote fingerprints" unless
+          fingerprint_snapshot(runtime) == after_first
+      end
+    end
+  end
+
+  invalid_profile_trees = {
+    "zero ID" => lambda do |profile|
+      profile.fetch("items").first.fetch("quality")["id"] = 0
+    end,
+    "negative ID" => lambda do |profile|
+      profile.fetch("items").first.fetch("quality")["id"] = -1
+    end,
+    "boolean ID" => lambda do |profile|
+      profile.fetch("items").first.fetch("quality")["id"] = true
+    end,
+    "string ID" => lambda do |profile|
+      profile.fetch("items").first.fetch("quality")["id"] = "4"
+    end,
+    "over-depth tree" => lambda do |profile|
+      leaf = {
+        "quality" => { "id" => 3, "name" => "WEBDL-1080p" },
+        "allowed" => true, "items" => []
+      }
+      16.downto(1) do |depth|
+        leaf = {
+          "id" => 2000 + depth, "name" => "level-#{depth}",
+          "allowed" => true, "items" => [leaf]
+        }
+      end
+      profile["items"] = [leaf]
+      profile["cutoff"] = 3
+    end,
+    "over-count tree" => lambda do |profile|
+      profile["items"] = 513.times.map do |index|
+        {
+          "quality" => { "id" => 3000 + index, "name" => "quality-#{index}" },
+          "allowed" => true, "items" => []
+        }
+      end
+      profile["cutoff"] = 3000
+    end
+  }
+  invalid_profile_trees.each do |label, mutate|
+    invalid_state = deep_copy(configarr_state)
+    mutate.call(invalid_state.dig("configarr", "radarr", "qualityprofile").first)
+    invalid_state.dig("configarr", "sonarr", "customformat").reject! do |format|
+      format["name"] == CONFIGARR_FORMAT_NAME
+    end
+
+    Dir.mktmpdir("media-acquisition-configarr-invalid-profile-tree-") do |runtime|
+      FileUtils.mkdir_p(File.join(runtime, "services", "arr"))
+      with_api(invalid_state) do |api|
+        variables = base_variables(api.port)
+        seed_fingerprint_baseline(
+          runtime, variables, kind: :configarr, state: configarr_state
+        )
+        before = fingerprint_snapshot(runtime)
+        result = run_tasks(
+          :configarr, api, {}, runtime: runtime, prepare_fingerprints: false
+        )
+        sane = check_sanity(
+          failures, "Configarr invalid #{label}", result, api, kind: :configarr
+        )
+        next unless sane
+
+        failures << "Configarr invalid #{label} was accepted" if
+          result.fetch("status").success?
+        failures << "Configarr invalid #{label} reached mutation" unless
+          mutation_requests(api, ->(_request) { true }).empty?
+        failures << "Configarr invalid #{label} reached fingerprint recording" if
+          result.fetch("recorder_started")
+        failures << "Configarr invalid #{label} advanced a fingerprint" unless
+          fingerprint_snapshot(runtime) == before
+      end
+    end
+  end
+
+  abort failures.join("\n") unless failures.empty?
+  puts "complete Configarr profile-tree identity behavior holds"
+  exit
 end
 %w[radarr sonarr].each do |service|
   configarr_mutations["#{service}.missing quality profile among unrelated profiles"] = lambda do |state|
