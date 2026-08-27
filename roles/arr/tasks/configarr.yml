@@ -1,4 +1,30 @@
 ---
+# Configarr reads the declaration from the deployed release, while every
+# assertion in this file is built from the copy in the role. Nothing proved
+# those were the same file, so a release carrying a different declaration would
+# apply one thing and be verified against another — which looks exactly like
+# Configarr ignoring its own configuration.
+- name: Read the deployed Configarr declaration
+  ansible.builtin.slurp:
+    src: "{{ platform_current_dir }}/services/arr/configarr.yml"
+  register: arr_configarr_deployed_declaration
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require the deployed Configarr declaration to match the role
+  ansible.builtin.assert:
+    that:
+      - >-
+        (arr_configarr_deployed_declaration.content | b64decode) ==
+        lookup('file', role_path ~ '/files/configarr/config.yml')
+    fail_msg: >-
+      The deployed Configarr declaration differs from the one this role
+      verifies against. Configarr applies
+      {{ platform_current_dir }}/services/arr/configarr.yml while every
+      assertion here is built from the role's own copy.
+  no_log: true
+
 - name: Read Configarr-owned Arr resources before reconciliation
   ansible.builtin.uri:
     url: "{{ item.0.api }}/{{ item.1 }}"
