@@ -27,7 +27,7 @@ ARR_LINT_EXCLUSION_MUTATIONS = (BROAD_ARR_LINT_EXCLUSIONS + %w[
 ALLOWED_ACTION_NAMES = %w[actions/checkout actions/upload-artifact docker/login-action].freeze
 CHECKOUT_ACTION_NAME = "actions/checkout"
 LOGIN_ACTION_NAME = "docker/login-action"
-EXPECTED_JOBS = %w[changes static suites validate].freeze
+EXPECTED_JOBS = %w[changes static reconciliation suites validate].freeze
 # The suites the matrix dispatches, in the order a full run enumerates them.
 INTEGRATION_SUITES = %w[
   foundation arr downloaders bindery kapowarr pinchflat trailarr seerr smoke beszel
@@ -219,6 +219,18 @@ check(failures, !classifier_run.include?("github.event.pull_request"),
       "event payload expressions must not be interpolated into shell source")
 
 check(failures, jobs.dig("static", "needs") == "changes", "static must depend only on changes")
+# The reconciliation contract is the workflow's heaviest single check. It runs
+# on its own runner so it neither serialises behind the policy gate nor starves
+# it, and every one of its three files must run there or the contract silently
+# stops being enforced.
+check(failures, jobs.dig("reconciliation", "needs") == "changes",
+      "reconciliation must depend only on changes")
+reconciliation_steps = Array(jobs.dig("reconciliation", "steps")).map { |step| step["run"].to_s }.join("\n")
+check(failures,
+      %w[core bazarr configarr].all? do |part|
+        reconciliation_steps.include?("media_acquisition_reconciliation_#{part}_test.rb")
+      end,
+      "the reconciliation job must run every media acquisition reconciliation file")
 check(failures, expression(jobs.dig("static", "if")) == "${{ needs.changes.outputs.static == 'true' }}",
       "static condition must match its classifier output")
 
@@ -406,9 +418,9 @@ end
 validate = jobs.fetch("validate", {})
 check(failures, validate["name"] == "validate", "aggregate check name must remain validate")
 check(failures, expression(validate["if"]) == "${{ always() }}", "validate must always run")
-expected_needs = %w[changes static suites]
+expected_needs = %w[changes static reconciliation suites]
 check(failures, Array(validate["needs"]) == expected_needs,
-      "validate must need changes, static and the suite matrix in canonical order")
+      "validate must need changes, static, reconciliation and the suite matrix in canonical order")
 validate_checkout = Array(validate["steps"]).find { |step| step["uses"]&.start_with?("actions/checkout@") }
 check(failures, validate_checkout&.fetch("uses", nil).to_s.split("@").first == CHECKOUT_ACTION_NAME,
       "validate must check out the repository with the pinned action")

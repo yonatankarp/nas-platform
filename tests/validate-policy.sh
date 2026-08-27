@@ -39,9 +39,6 @@ ruby tests/media_acquisition_foundation_test.rb
 ruby tests/media_acquisition_foundation_verifier_test.rb
 ruby tests/media_acquisition_phase1_test.rb
 ruby tests/configarr_job_test.rb
-ruby tests/media_acquisition_reconciliation_core_test.rb
-ruby tests/media_acquisition_reconciliation_bazarr_test.rb
-ruby tests/media_acquisition_reconciliation_configarr_test.rb
 ruby tests/media_acquisition_adoption_test.rb
 tests/mac/media-acquisition-foundation-hook-test.sh
 ruby tests/mac/media-acquisition-foundation-report-test.rb

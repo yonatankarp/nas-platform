@@ -1728,7 +1728,7 @@ end
   "Komga library reconciliation regression" => "ruby tests/komga_library_reconciliation_test.rb",
   "Paperless mail reconciliation regression" => "ruby tests/paperless_mail_reconciliation_test.rb",
   "media acquisition reconciliation regression" =>
-    "ruby tests/media_acquisition_reconciliation_configarr_test.rb",
+    "ruby tests/media_acquisition_foundation_verifier_test.rb",
   "Immich selective helper integrity regression" =>
     "ruby tests/immich_selective_helper_integrity_test.rb",
   "Mac manual-validation runner regression" => "tests/mac/manual-validation-runner-test.sh",
