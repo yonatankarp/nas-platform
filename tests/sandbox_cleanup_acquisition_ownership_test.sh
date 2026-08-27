@@ -541,22 +541,22 @@ select_negative_project() {
 expect_cleanup_refusal() {
   refusal_description=$1
   refusal_target=$2
+  refusal_kind=$3
+  case $refusal_kind in
+    container | network) ;;
+    *) fail "unknown cleanup refusal resource kind: $refusal_kind" ;;
+  esac
   refusal_status=0
   refusal_output=$(run_cleanup 2>&1) || refusal_status=$?
   if [ "$refusal_status" -eq 0 ]; then
     fail "cleanup accepted $refusal_description ownership mismatch"
   fi
-  refusal_output_lower=$(printf '%s' "$refusal_output" | tr '[:upper:]' '[:lower:]')
-  case $refusal_output_lower in
-    *refus*) ;;
-    *)
-      printf '%s\n' "$refusal_output" >&2
-      fail "cleanup failed without a refusal diagnostic for $refusal_description"
-      ;;
-  esac
-  printf '%s\n' "$refusal_output" | grep -qF "$refusal_target" || {
+  expected_refusal="Refusing cleanup ownership for $refusal_kind $refusal_target"
+  refusal_line_count=$(printf '%s\n' "$refusal_output" |
+    grep -Fxc "$expected_refusal" || true)
+  [ "$refusal_line_count" -eq 1 ] || {
     printf '%s\n' "$refusal_output" >&2
-    fail "cleanup refusal did not name $refusal_target"
+    fail "cleanup omitted the exact $refusal_kind ownership refusal for $refusal_target"
   }
   [ -d "$active_sandbox" ] && [ ! -L "$active_sandbox" ] ||
     fail "cleanup mutated the sandbox before refusing $refusal_description"
@@ -678,25 +678,25 @@ verify_refusal_diagnostic_gate() {
   unrelated_output=$(
     (
       run_cleanup() {
-        printf '%s\n' 'daemon connection failed'
+        printf '%s\n' 'daemon connection refused' fixture-target
         return 1
       }
-      expect_cleanup_refusal unrelated-failure fixture-target
+      expect_cleanup_refusal unrelated-failure fixture-target container
     ) 2>&1
   ) || unrelated_status=$?
   [ "$unrelated_status" -ne 0 ] ||
     fail "refusal diagnostic gate accepted an unrelated cleanup error"
   printf '%s\n' "$unrelated_output" | grep -qF \
-    'cleanup failed without a refusal diagnostic' ||
+    'cleanup omitted the exact container ownership refusal' ||
     fail "refusal diagnostic gate omitted the unrelated-error diagnostic"
 
   (
     active_sandbox=$fixture_parent
     run_cleanup() {
-      printf '%s\n' 'Refusing ownership mismatch for fixture-target'
+      printf '%s\n' 'Refusing cleanup ownership for container fixture-target'
       return 1
     }
-    expect_cleanup_refusal expected-refusal fixture-target
+    expect_cleanup_refusal expected-refusal fixture-target container
   ) || fail "refusal diagnostic gate rejected an explicit target refusal"
 }
 
@@ -888,7 +888,7 @@ for negative_kind in arr downloaders; do
     atomic_peer_id=$created_container_id
 
     expect_cleanup_refusal "$negative_kind $project_mismatch project-label" \
-      "$fixture_namespace-$negative_service"
+      "$fixture_namespace-$negative_service" container
     require_container_unchanged \
       "$mismatched_id" "$negative_kind $project_mismatch-label service"
     require_container_unchanged "$atomic_peer_id" "$negative_kind atomic-peer service"
@@ -907,7 +907,7 @@ for negative_kind in arr downloaders; do
     --label "com.docker.compose.service=$negative_service"
   atomic_peer_id=$created_container_id
   expect_cleanup_refusal "$negative_kind unexpected-name" \
-    "$fixture_namespace-$negative_kind-impostor"
+    "$fixture_namespace-$negative_kind-impostor" container
   require_container_unchanged "$unexpected_name_id" "$negative_kind unexpected-name"
   require_container_unchanged "$atomic_peer_id" "$negative_kind atomic-peer service"
   "$real_docker" rm -f "$unexpected_name_id" "$atomic_peer_id" >/dev/null
@@ -940,7 +940,7 @@ for negative_kind in arr downloaders; do
 
     expect_cleanup_refusal \
       "$negative_kind $network_project_mismatch network project-label" \
-      "${negative_project}_default"
+      "${negative_project}_default" network
     require_network_unchanged "$mismatched_network_id" \
       "$negative_kind $network_project_mismatch-project default"
     require_network_unchanged \
@@ -968,7 +968,7 @@ for negative_kind in arr downloaders; do
     --label "com.docker.compose.service=$negative_service"
   atomic_peer_container_id=$created_container_id
   expect_cleanup_refusal "$negative_kind unexpected-network-name" \
-    "${negative_project}_unexpected"
+    "${negative_project}_unexpected" network
   require_network_unchanged \
     "$unexpected_network_id" "$negative_kind unexpected-network-name"
   require_network_unchanged \
@@ -1002,7 +1002,7 @@ for negative_kind in arr downloaders; do
     atomic_peer_container_id=$created_container_id
 
     expect_cleanup_refusal "$negative_kind $network_label_mismatch network label" \
-      "${negative_project}_default"
+      "${negative_project}_default" network
     require_network_unchanged "$mismatched_network_id" \
       "$negative_kind $network_label_mismatch-label default"
     require_network_unchanged \
@@ -1083,7 +1083,8 @@ for configarr_mismatch in name service-missing service-wrong oneoff-missing oneo
     --label com.docker.compose.service=radarr
   atomic_peer_id=$created_container_id
 
-  expect_cleanup_refusal "Configarr $configarr_mismatch" "$configarr_refusal_target"
+  expect_cleanup_refusal \
+    "Configarr $configarr_mismatch" "$configarr_refusal_target" container
   require_container_unchanged "$mismatched_id" "Configarr $configarr_mismatch"
   require_container_unchanged "$atomic_peer_id" atomic-peer-radarr
   "$real_docker" rm -f "$mismatched_id" "$atomic_peer_id" >/dev/null
