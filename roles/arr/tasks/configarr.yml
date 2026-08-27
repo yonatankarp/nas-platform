@@ -252,9 +252,11 @@
       # "applied them" and "decided they needed no update", which is otherwise
       # invisible behind this task's no_log.
       quality_definition_lines: >-
-        {{ arr_configarr_run.stdout_lines | default([]) |
-           select('search', 'QualityDefinition') | list |
-           map('regex_replace', '^(.{0,160}).*$', '\1') | list }}
+        {{ (arr_configarr_run.stdout_lines | default([]) +
+            arr_configarr_run.stderr_lines | default([])) |
+           select('search',
+                  'QualityDefinition|Cloned repository|Checking TRaSH|rror|arning') |
+           list | map('regex_replace', '^(.{0,160}).*$', '\1') | list }}
   when:
     - not ansible_check_mode
     - arr_configarr_run_required | bool

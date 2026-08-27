@@ -2677,8 +2677,13 @@ end
 # Never more workers than cores: tests/validate-policy.sh already runs its
 # checks concurrently, and oversubscribing a small CI runner trades wall time
 # for the contention that made the harness deadlines fire in the first place.
+# validate-policy.sh runs its checks concurrently and three of them are now
+# reconciliation files, so a pool sized to the whole machine multiplies rather
+# than shares it: on a four-core runner that is twelve Ansible processes over
+# four cores, and the thrashing costs more than the parallelism wins. Half the
+# cores per file keeps total concurrency near the core count.
 CASE_WORKER_LIMIT = Integer(
-  ENV.fetch("ACQUISITION_CASE_WORKERS") { [Etc.nprocessors, 8].min.to_s }
+  ENV.fetch("ACQUISITION_CASE_WORKERS") { [[Etc.nprocessors / 2, 2].max, 8].min.to_s }
 )
 
 def in_parallel_cases(failures, items)
