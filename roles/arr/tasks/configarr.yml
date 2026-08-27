@@ -300,22 +300,49 @@
   changed_when: false
   no_log: true
 
-- name: Verify Configarr-owned Arr resources after reconciliation
+# One assert over five invariants reported a single sentence with every value
+# censored, so a CI failure said only that something had not converged. Each
+# invariant now fails under its own name, which is what narrows a red run to a
+# cause without leaking any readback.
+- name: Verify the Configarr declared projection matches the desired projection
   ansible.builtin.assert:
     that:
       - >-
         arr_configarr_owned_state_after |
         acquisition_configarr_declared_projection ==
         arr_configarr_owned_state_desired
+    fail_msg: >-
+      Configarr left its declared Arr projection different from the desired
+      projection built from the repository configuration.
+  no_log: true
+
+- name: Verify Configarr quality definitions match their declared source
+  ansible.builtin.assert:
+    that:
       - >-
         arr_configarr_quality_definition_invariants_after.source_current ==
         arr_configarr_quality_definition_invariants_after.source_desired
+    fail_msg: >-
+      Configarr left the Arr quality definitions different from their declared
+      source.
+  no_log: true
+
+- name: Verify the Configarr opaque context is unchanged
+  ansible.builtin.assert:
+    that:
       - >-
         arr_installed_reconciliation_fingerprints.configarr_opaque_context |
           length == 0 or
         (arr_configarr_quality_definition_invariants_after.opaque_context |
          to_json | hash('sha256')) ==
           arr_installed_reconciliation_fingerprints.configarr_opaque_context
+    fail_msg: >-
+      Configarr changed Arr state this run does not own.
+  no_log: true
+
+- name: Verify the Configarr owned state matches its installed fingerprint
+  ansible.builtin.assert:
+    that:
       - >-
         arr_installed_reconciliation_fingerprints.configarr !=
           arr_desired_reconciliation_fingerprints.configarr or
@@ -326,11 +353,20 @@
         arr_configarr_owned_state_current.sonarr.custom_format_identity_count == 0 or
         arr_configarr_owned_state_after_sha256 ==
           arr_installed_reconciliation_fingerprints.configarr_owned_state
+    fail_msg: >-
+      Configarr owned state drifted from the fingerprint recorded for an
+      unchanged declared configuration.
+  no_log: true
+
+- name: Verify a skipped Configarr run left its owned state untouched
+  ansible.builtin.assert:
+    that:
       - >-
         arr_configarr_run_required | bool or
         arr_configarr_owned_state_after_sha256 ==
           arr_installed_reconciliation_fingerprints.configarr_owned_state
-    fail_msg: Configarr did not converge its complete declared and verified owned state.
+    fail_msg: >-
+      Configarr owned state changed without a run being required.
   no_log: true
 
 - name: Stage verified Configarr owned-state and opaque-context hashes
