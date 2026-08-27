@@ -120,6 +120,9 @@ render() {
     SONARR_CONFIG_PATH="$temporary_dir/$label-sonarr-config" SONARR_HOST_PORT="$sonarr_port" \
     PROWLARR_CONFIG_PATH="$temporary_dir/$label-prowlarr-config" PROWLARR_HOST_PORT="$prowlarr_port" \
     BAZARR_CONFIG_PATH="$temporary_dir/$label-bazarr-config" BAZARR_HOST_PORT="$bazarr_port" \
+    CONFIGARR_CONFIG_PATH="$temporary_dir/$label-configarr.yml" \
+    CONFIGARR_SECRETS_PATH="$temporary_dir/$label-configarr-secrets.yml" \
+    CONFIGARR_REPOS_PATH="$temporary_dir/$label-configarr-repos" \
     docker compose --project-name "$base_name-arr" \
       -f "$repo_dir/services/arr/compose.yml" \
       -f "$repo_dir/services/arr/compose.mac.yml" config --format json \
