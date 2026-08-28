@@ -76,6 +76,11 @@ SUITES = {
     environment: ->(_repo) { {} },
     diagnostic: ->(message) { "FAIL #{message}" }
   },
+  policy_deployment: {
+    command: ->(repo) { [RbConfig.ruby, File.join(repo, "tests", "policy_deployment_test.rb")] },
+    environment: ->(_repo) { {} },
+    diagnostic: ->(message) { "FAIL #{message}" }
+  },
   policy_platform: {
     command: ->(repo) { [RbConfig.ruby, File.join(repo, "tests", "policy_platform_test.rb")] },
     environment: ->(_repo) { {} },
@@ -103,10 +108,27 @@ def check(failures, condition, message)
   failures << message unless condition
 end
 
+# Every row copies the repository, so the copy is the cost of a proof. Ignored
+# paths — the Python virtualenv, worktrees, editor caches — are build artifacts,
+# never contract inputs, and copying them costs ten times what copying the
+# repository does. `.git` is kept: policy_test.rb enumerates its own sources with
+# git and fails without it. If git cannot answer, the whole tree is copied, which
+# is only slower.
+def ignored_children(children)
+  stdout, _stderr, status = Open3.capture3("git", "-C", ROOT, "check-ignore", "--", *children)
+  status.exitstatus == 128 ? [] : stdout.lines.map(&:chomp)
+rescue SystemCallError
+  []
+end
+
 def with_copied_repo
   Dir.mktmpdir("nas-platform-contract-structure-") do |directory|
     repo = File.join(directory, "repo")
-    FileUtils.cp_r(ROOT, repo)
+    FileUtils.mkdir_p(repo)
+    children = Dir.children(ROOT)
+    (children - ignored_children(children)).each do |entry|
+      FileUtils.cp_r(File.join(ROOT, entry), File.join(repo, entry))
+    end
     yield repo
   end
 end
@@ -185,6 +207,10 @@ IMMICH_ONBOARDING = "roles/immich/tasks/user_onboarding.yml"
 DOZZLE_ROLE = "roles/dozzle/tasks/main.yml"
 DOZZLE_DEFAULTS = "roles/dozzle/defaults/main.yml"
 PREFLIGHT = "roles/preflight/tasks/main.yml"
+BUNDLE_INPUTS = "roles/deployment_bundle/tasks/inputs.yml"
+BUNDLE_TARGET = "roles/deployment_bundle/tasks/target.yml"
+BUNDLE_MANIFEST_TEMPLATE = "roles/deployment_bundle/templates/manifest.yml.j2"
+COMPOSE_METADATA_BEHAVIOR = "tests/compose_metadata_filter_test.yml"
 AUTO_DEPLOY_ROLE = "roles/production_auto_deploy/tasks/main.yml"
 AUTO_DEPLOY_NOTIFIER = "roles/production_auto_deploy/templates/ntfy.curl.j2"
 
@@ -893,6 +919,87 @@ check_rejected(
     "\n" \
     "- name: Wait for the hub to report healthy\n"]],
   "%REPO%/roles/beszel/tasks/main.yml: shells out to Compose; use community.docker.docker_compose_v2"
+)
+
+# --- Deployment bundle policy -------------------------------------------------
+#
+# The inputs the role validates are the paths its controller_input.yml inclusions
+# name. The old whole-file substring could not tell a validated path from a path
+# mentioned in a comment, so deleting the canonical Compose validation outright
+# left the check passing as long as the words survived somewhere in the file.
+check_rejected(
+  failures, :policy_deployment, "canonical Compose validation deleted with its path left in a comment",
+  [[BUNDLE_INPUTS,
+    "- name: Validate canonical controller Compose inputs\n" \
+    "  ansible.builtin.include_tasks: controller_input.yml\n" \
+    "  vars:\n" \
+    "    deployment_controller_input_path: >-\n" \
+    "      {{ playbook_dir }}/services/{{ deployment_controller_service.name }}/compose.yml\n" \
+    "    deployment_controller_input_allow_missing: false\n",
+    "# deployment_controller_input_path: services/<name>/compose.yml\n" \
+    "- name: Assume canonical controller Compose inputs are fine\n" \
+    "  ansible.builtin.debug:\n" \
+    "    msg: canonical compose validation removed\n"]],
+  "controller inputs must validate manifest, canonical Compose, and platform overrides"
+)
+
+check_rejected(
+  failures, :policy_deployment, "a runtime helper input no longer handed to the validator",
+  [[BUNDLE_INPUTS,
+    "    deployment_controller_input_path: \"{{ playbook_dir }}/services/dozzle/alert_relay.py\"\n",
+    "    deployment_controller_input_path: \"{{ playbook_dir }}/services/dozzle/alert_relay.py.bak\"\n"]],
+  "controller inputs must validate every tracked runtime helper"
+)
+
+# The leaf moves out of the expression the command evaluates and into a comment
+# beside it. The file still contains the words; the validator no longer sees the
+# path.
+check_rejected(
+  failures, :policy_deployment, "a guarded leaf demoted to a comment beside the batch",
+  [[BUNDLE_TARGET,
+    "    deployment_target_paths: >-\n" \
+    "      {{ [nas_docker_root,\n" \
+    "          nas_docker_root ~ '/.nas-platform-preflight-probe',\n",
+    "    # nas_docker_root ~ '/.nas-platform-preflight-probe' is no longer guarded\n" \
+    "    deployment_target_paths: >-\n" \
+    "      {{ [nas_docker_root,\n"]],
+  "target validator must guard the exact preflight probe leaf"
+)
+
+check_rejected(
+  failures, :policy_deployment, "the runtime service leaves dropped from the batch",
+  [[BUNDLE_TARGET,
+    "         + (deployment_bundle_services | default([])\n" \
+    "            | map(attribute='name')\n" \
+    "            | map('regex_replace', '^', platform_runtime_dir ~ '/services/')\n" \
+    "            | list) }}\n",
+    "         }}\n"]],
+  "target validator must guard every implemented runtime service leaf"
+)
+
+check_rejected(
+  failures, :policy_deployment, "a behavior proof renamed while its old name stays in a comment",
+  [[COMPOSE_METADATA_BEHAVIOR,
+    "    - name: Require unknown YAML tags to fail closed\n",
+    "    # Require unknown YAML tags to fail closed\n" \
+    "    - name: Tolerate unknown YAML tags\n"]],
+  "policy validation must execute Compose metadata parser behavior tests"
+)
+
+check_rejected(
+  failures, :policy_deployment, "the manifest's platform inputs key renamed",
+  [[BUNDLE_MANIFEST_TEMPLATE, "platform_inputs:\n", "platform_input:\n"]],
+  "deployment manifest must bind the exact acquisition catalog path, mode, and checksum"
+)
+
+# The byte-offset form this replaced compared the first occurrence of each key
+# anywhere in the file, so a comment naming the later key sorted ahead of the key
+# itself and failed a template that renders in exactly the required order.
+check_accepted(
+  failures, :policy_deployment, "a template comment naming a key that renders later",
+  [[BUNDLE_MANIFEST_TEMPLATE,
+    "---\n",
+    "---\n{# platform_inputs is rendered before services: below #}\n"]]
 )
 
 # --- Platform policy ----------------------------------------------------------

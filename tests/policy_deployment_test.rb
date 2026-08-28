@@ -142,6 +142,9 @@ check(failures, !target_validation.key?("loop") && !target_validation.key?("loop
   check(failures, target_validator_body.include?(primitive),
         "target validator must use #{primitive} for symlink-safe canonical containment")
 end
+# Deliberately source text. The subject is the wording of a comment explaining
+# why validation is not repeated beside each mutation, and YAML parsing erases
+# comments, so there is no parsed structure to read this from.
 check(failures, target_tasks_body.include?("concurrent privileged filesystem mutation"),
       "target validator must document the race its containment check cannot close")
 target_record = Array(target_tasks).find do |task|
@@ -152,11 +155,15 @@ check(failures, !target_record.nil?,
 check(failures, target_validator_body.include?("os.path.abspath(os.sep)") &&
                 target_validator_body.include?("root_relative_parts"),
       "target validator must lstat every existing ancestor from filesystem root to nas_docker_root")
-check(failures, target_tasks_body.include?("nas_docker_root ~ '/.nas-platform-preflight-probe'") ||
-                target_tasks_body.include?("{{ nas_docker_root }}/.nas-platform-preflight-probe"),
+# The leaves are read off the expression the validated task actually evaluates,
+# not off the file's text. A path named in a comment, or in a var some other task
+# owns, is not a path this command validates.
+target_path_expression = target_validation.dig("vars", "deployment_target_paths").to_s
+check(failures, target_path_expression.include?("nas_docker_root ~ '/.nas-platform-preflight-probe'") ||
+                target_path_expression.include?("{{ nas_docker_root }}/.nas-platform-preflight-probe"),
       "target validator must guard the exact preflight probe leaf")
-check(failures, target_tasks_body.include?("deployment_bundle_services") &&
-                target_tasks_body.include?("platform_runtime_dir ~ '/services/'"),
+check(failures, target_path_expression.include?("deployment_bundle_services") &&
+                target_path_expression.include?("platform_runtime_dir ~ '/services/'"),
       "target validator must guard every implemented runtime service leaf")
 
 controller_input_path = File.join(ROOT, "roles", "deployment_bundle", "tasks", "controller_input.yml")
@@ -183,14 +190,31 @@ controller_input_body = File.file?(controller_input_validator_path) ?
 end
 inputs_path = File.join(ROOT, "roles", "deployment_bundle", "tasks", "inputs.yml")
 inputs_body = File.file?(inputs_path) ? File.read(inputs_path) : ""
-check(failures, inputs_body.include?("services/manifest.yml") &&
-                inputs_body.include?("compose.yml") &&
-                inputs_body.include?("compose.{{ platform_compose_kind }}.yml"),
-      "controller inputs must validate manifest, canonical Compose, and platform overrides")
-check(failures, inputs_body.include?("services/dozzle/alert_relay.py") &&
-                inputs_body.include?("services/immich/classify_restore.py"),
-      "controller inputs must validate every tracked runtime helper")
 input_tasks = flatten_tasks(YAML.safe_load(inputs_body))
+# The inputs the role actually validates are the paths its controller_input.yml
+# inclusions name, not every path string that appears somewhere in the file. Read
+# them off the parsed tasks: a path that survives only in a comment, or that is
+# named by a task which no longer includes the validator, validates nothing.
+validated_input_paths = input_tasks.filter_map do |task|
+  next unless task["ansible.builtin.include_tasks"] == "controller_input.yml"
+
+  path = task.dig("vars", "deployment_controller_input_path")
+  path.is_a?(String) ? path.strip : nil
+end
+check(failures, validated_input_paths.include?("{{ playbook_dir }}/services/manifest.yml") &&
+                validated_input_paths.include?(
+                  "{{ playbook_dir }}/services/{{ deployment_controller_service.name }}/compose.yml"
+                ) &&
+                validated_input_paths.include?(
+                  "{{ playbook_dir }}/services/{{ deployment_controller_service.name }}/" \
+                  "compose.{{ platform_compose_kind }}.yml"
+                ),
+      "controller inputs must validate manifest, canonical Compose, and platform overrides")
+check(failures, validated_input_paths.include?("{{ playbook_dir }}/services/dozzle/alert_relay.py") &&
+                validated_input_paths.include?(
+                  "{{ playbook_dir }}/services/immich/classify_restore.py"
+                ),
+      "controller inputs must validate every tracked runtime helper")
 catalog_validation_index = input_tasks.index do |task|
   task.dig("vars", "deployment_controller_input_path") ==
     "{{ playbook_dir }}/config/media-acquisition.yml"
@@ -388,6 +412,12 @@ check(failures,
           .include?("always"),
       "verify.yml must resolve hardware acceleration before any verified role reads it")
 
+# Deliberately source text. manifest.yml.j2 is a Jinja template, not a YAML
+# document: its `{% for %}` and `{% set %}` lines are not parseable as YAML, and
+# what these checks are about is the expression the template will evaluate, which
+# only exists in the source. Rendering it needs a real Ansible run against a
+# staged bundle, which tests/verify_deployment_manifest.rb does on the rendered
+# output during the integration lanes.
 deployment_manifest_template = File.read(
   File.join(ROOT, "roles", "deployment_bundle", "templates", "manifest.yml.j2")
 )
@@ -403,8 +433,13 @@ check(failures, deployment_manifest_template.include?("runtime_files:") &&
                 deployment_manifest_template.include?("runtime_file") &&
                 deployment_manifest_template.include?("hash('sha256')"),
       "deployment manifest must bind runtime helper paths, modes, and checksums")
-platform_inputs_index = deployment_manifest_template.index("platform_inputs:")
-services_index = deployment_manifest_template.index("services:")
+# Top-level key position, read off whole lines rather than byte offsets. The
+# offsets matched "services:" wherever it appeared first, including inside a
+# comment or nested under another key; a top-level mapping key is a line of its
+# own, so the line index is the ordering the rendered manifest will have.
+manifest_template_lines = deployment_manifest_template.lines.map(&:chomp)
+platform_inputs_index = manifest_template_lines.index("platform_inputs:")
+services_index = manifest_template_lines.index("services:")
 check(failures,
       !platform_inputs_index.nil? && !services_index.nil? && platform_inputs_index < services_index &&
         deployment_manifest_template.include?("- path: config/media-acquisition.yml") &&
@@ -417,9 +452,11 @@ check(failures,
 compose_metadata_filter = File.read(
   File.join(ROOT, "filter_plugins", "compose_metadata.py")
 )
-compose_metadata_behavior = File.read(
-  File.join(ROOT, "tests", "compose_metadata_filter_test.yml")
+compose_metadata_behavior_tasks = flatten_tasks(
+  YAML.safe_load_file(File.join(ROOT, "tests", "compose_metadata_filter_test.yml"), aliases: true)
+    .flat_map { |play| Array(play["tasks"]) }
 )
+compose_metadata_behavior_names = compose_metadata_behavior_tasks.filter_map { |task| task["name"] }
 check(failures, deployment_manifest_template.include?("| platform_compose_metadata") &&
                 !deployment_manifest_template.match?(/regex_replace\(['\"]!override|regex_replace\(['\"]!reset/),
       "deployment manifest must parse Compose tags without rewriting source text")
@@ -429,10 +466,12 @@ check(failures, compose_metadata_filter.include?("yaml.SafeLoader") &&
                 compose_metadata_filter.include?("unsupported YAML") &&
                 !compose_metadata_filter.include?("add_multi_constructor"),
       "Compose metadata loader must allow only exact known tags and fail closed")
-check(failures, compose_metadata_behavior.include?("quoted, block, and commented literal markers") &&
-                compose_metadata_behavior.include?("Require unknown YAML tags to fail closed") &&
-                File.read(File.join(ROOT, "tests", "validate-policy.sh"))
-                    .include?("tests/compose_metadata_filter_test.yml"),
+check(failures, compose_metadata_behavior_names
+                  .include?("Parse quoted, block, and commented literal markers") &&
+                compose_metadata_behavior_names
+                  .include?("Require unknown YAML tags to fail closed") &&
+                File.readlines(File.join(ROOT, "tests", "validate-policy.sh"), chomp: true)
+                    .any? { |line| line.include?("tests/compose_metadata_filter_test.yml") },
       "policy validation must execute Compose metadata parser behavior tests")
 
 site_source = File.read(File.join(ROOT, "site.yml"))
