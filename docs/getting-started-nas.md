@@ -173,11 +173,11 @@ subject, plus one nobody reads.
 
 `nas-critical` cuts across every publisher and carries only what should get you
 out of your chair: out of memory, an unexpected container exit, an unhealthy
-container, a Beszel threshold breach, a failed deployment, and a deployment
-poller that has gone blind. The other two are the routine record, one per
-subject, so deployment chatter can be muted without also muting container
-events: `nas-deployment` for successful deployments and poller recovery, and
-`nas-containers` for container recoveries.
+container, a Beszel threshold breach, a failed deployment, a revision CI
+refuses to release, and a deployment poller that has gone blind. The other two
+are the routine record, one per subject, so deployment chatter can be muted
+without also muting container events: `nas-deployment` for successful
+deployments and poller recovery, and `nas-containers` for container recoveries.
 
 A fourth topic, `nas-verification`, exists only for the provisioning proof:
 every publisher token publishes there once per converge to prove it can still
@@ -365,6 +365,16 @@ publisher token, as rendered Markdown rather than a raw document, publishing to
 `nas-critical` at priority 5. A successful deployment reports itself from inside
 the run, through the summary above, which can say what shipped; the poller adds
 nothing to it and stays quiet.
+
+A revision CI refuses is the other way a deployment never happens. The poller
+requires exactly one completed, successful `CI` push run for the head of `main`;
+when the run concluded anything else, or when several successful runs make the
+answer ambiguous, nothing deploys until a human intervenes. That is announced
+once on `nas-critical` at priority 4, naming the revision, the conclusion and
+the run's URL. Once per revision and verdict, not once per poll: a red `main`
+stays red, and the five-minute cadence would otherwise repeat it twelve times an
+hour. A revision whose CI has not finished yet is the ordinary case and is never
+reported. `--status` says the same thing on demand.
 
 A poll that cannot establish a candidate revision at all -- Git unreachable,
 the GitHub API failing, an unparsable response -- is a worse failure than a
