@@ -298,14 +298,17 @@ def ntfy_playbook(output_path, tasks_path = NTFY_TASKS)
       vars:
         ntfy_topic: nas-critical
         ntfy_containers_topic: nas-containers
+        ntfy_verification_topic: nas-verification
         ntfy_topics: [nas-critical, nas-deployment, nas-containers]
+        ntfy_publishable_topics:
+          [nas-critical, nas-deployment, nas-containers, nas-verification]
         vault_ntfy_admin_user: admin
         vault_ntfy_admin_password_hash: #{BCRYPT_A.to_json}
         ntfy_publishers:
           - name: dozzle
             password_hash: #{BCRYPT_A.to_json}
             token: #{TOKEN_A}
-            topics: [nas-critical, nas-containers]
+            topics: [nas-critical, nas-containers, nas-verification]
         vault_managed_ntfy_users:
           - username: reader
             password: managed-plaintext
@@ -1018,6 +1021,7 @@ if !ntfy_tasks.empty?
           ], "ntfy user provisioning entries differ")
     check(failures, provisioned["access"].split(",") == [
             "dozzle:nas-critical:write-only", "dozzle:nas-containers:write-only",
+            "dozzle:nas-verification:write-only",
             "reader:nas-critical:read-only", "reader:private:deny"
           ], "ntfy access provisioning entries differ")
     check(failures, provisioned["tokens"].split(",") == ["dozzle:#{TOKEN_A}", "reader:#{TOKEN_B}"],

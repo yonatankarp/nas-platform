@@ -100,3 +100,15 @@
 
     - role: paperless_ngx
       tags: [paperless, documents]
+
+  post_tasks:
+    # After every service, so reaching it means the whole run converged: the
+    # summary reports a deployment that actually finished. The per-service
+    # reports remain the detail behind it.
+    - name: Summarize what the run deployed
+      ansible.builtin.include_role:
+        name: ntfy
+        tasks_from: deployment_summary
+        apply:
+          tags: [deployment_summary]
+      tags: [deployment_summary]

@@ -17,23 +17,59 @@ ntfy_deployment_topic: nas-deployment
 ntfy_containers_topic: nas-containers
 ntfy_topics: "{{ [ntfy_topic, ntfy_deployment_topic, ntfy_containers_topic] }}"
 
+# Where the provisioning proof publishes. Deliberately outside ntfy_topics: that
+# list is what a managed user may declare access to and what subscriptions are
+# synchronized for, so a topic absent from it is one no device can subscribe to
+# and therefore one no human is ever notified about.
+#
+# Cache and Firebase headers do not achieve that. ntfy forwards a poll request
+# to its upstream push server for every message when upstream-base-url is set,
+# carrying the message id and nothing else; the phone then fetches the body from
+# this server. Refusing the cache only removes the body it would fetch, so the
+# proof arrived as an empty "New message" on every converge.
+ntfy_verification_topic: nas-verification
+ntfy_publishable_topics: "{{ ntfy_topics + [ntfy_verification_topic] }}"
+
 # Each publisher is its own user with write-only access and one token, because a
 # token inherits all of its user's rights. Sharing one identity would let a
 # leaked token read notification history.
 #
 # topics lists exactly what each publisher may write to, so a leaked token
 # cannot reach a subject its owner never reports on. Beszel emits only threshold
-# breaches, so it needs nothing but the critical topic.
+# breaches, so it needs nothing but the critical topic. Every publisher also
+# holds the verification topic, which is what its provisioning proof writes to.
 ntfy_publishers:
   - name: dozzle
     password_hash: "{{ vault_ntfy_dozzle_password_hash }}"
     token: "{{ vault_ntfy_dozzle_token }}"
-    topics: "{{ [ntfy_topic, ntfy_containers_topic] }}"
+    topics: "{{ [ntfy_topic, ntfy_containers_topic, ntfy_verification_topic] }}"
   - name: beszel
     password_hash: "{{ vault_ntfy_beszel_password_hash }}"
     token: "{{ vault_ntfy_beszel_token }}"
-    topics: "{{ [ntfy_topic] }}"
+    topics: "{{ [ntfy_topic, ntfy_verification_topic] }}"
   - name: deploy
     password_hash: "{{ vault_ntfy_deploy_password_hash }}"
     token: "{{ vault_ntfy_deploy_token }}"
-    topics: "{{ [ntfy_topic, ntfy_deployment_topic] }}"
+    topics: "{{ [ntfy_topic, ntfy_deployment_topic, ntfy_verification_topic] }}"
+
+# The run-level deployment summary. The per-service reports name what Compose
+# recreated; this names what the release actually changed.
+#
+# previous is published as a fact by deployment_bundle before it moves the
+# deployment pointer. Empty means a first install, where every image really is
+# new; absent means the bundle never ran — a selective converge — where the
+# release did not move and there is nothing to summarize.
+ntfy_deployment_summary_previous: >-
+  {{ deployment_bundle_previous_release_id
+     if deployment_bundle_previous_release_id is defined
+     else platform_release_id }}
+ntfy_deployment_summary_release_moved: >-
+  {{ ntfy_deployment_summary_previous != platform_release_id }}
+# The controller checkout, which is the only place the Git history exists. The
+# target holds releases, not a repository.
+ntfy_deployment_summary_checkout: "{{ playbook_dir }}"
+# A lock screen shows a few lines. Beyond this the body says how many were cut
+# rather than scrolling a wall of subjects nobody reads on a phone.
+ntfy_deployment_summary_max_commits: 8
+ntfy_deployment_summary_changes: []
+ntfy_deployment_summary_commits: []

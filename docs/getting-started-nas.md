@@ -168,7 +168,8 @@ can traverse the required directories. Record only pass/fail and the tested
 identity class—never directory listings, ACL dumps containing private account
 details, or secrets. Docker Desktop cannot prove this NAS ACL boundary.
 
-The platform provisions three ntfy topics: severity first, then subject.
+The platform provisions three ntfy topics for humans, severity first then
+subject, plus one nobody reads.
 
 `nas-critical` cuts across every publisher and carries only what should get you
 out of your chair: out of memory, an unexpected container exit, an unhealthy
@@ -178,13 +179,37 @@ subject, so deployment chatter can be muted without also muting container
 events: `nas-deployment` for successful deployments and poller recovery, and
 `nas-containers` for container recoveries.
 
+A fourth topic, `nas-verification`, exists only for the provisioning proof:
+every publisher token publishes there once per converge to prove it can still
+write. It is deliberately absent from the topic list a managed user may declare
+access to, so no account can subscribe and no device is notified. Refusing the
+cache is not a substitute — ntfy forwards a poll request to its upstream push
+server for every message once `upstream-base-url` is set, carrying the message
+id alone, and the phone then fetches the body from your server. An uncached
+proof therefore arrived as an empty "New message", once per publisher, on every
+converge.
+
 Every service reports its own deployment on `nas-deployment` at priority 2, one
 message per service whose containers Compose actually recreated. The controller
 publishes them with the deploy publisher's token, so no service needs a token
 of its own inside its image. A converge that leaves a service untouched sends
 nothing, which keeps a no-op run silent and makes the messages you do get name
-exactly what changed. The poller's own deployment summary stays at priority 3,
-above the per-service detail.
+exactly what changed.
+
+After every service role, a single run-level summary follows on
+`nas-deployment` at priority 3, above the per-service detail. It diffs the
+manifest of the release the deployment replaced against the one it installed,
+so it names the versions each image moved between and the commit subjects the
+release carries — readable on a phone with no checkout at hand, where a
+revision is a lookup you cannot perform. It is published only when the release
+actually moved, and reaching it means the whole run converged. Since it
+publishes with the deploy publisher's token, a broken write ACL fails the run
+there rather than going unnoticed until an alert is missed.
+
+Message bodies only appear on iOS when the phone can reach the ntfy server named
+by `PLATFORM_PUBLIC_HOST` — over Tailscale, a VPN, or the LAN. That is the same
+poll-request mechanism described above: off-network, every message shows as
+"New message" regardless of what it says.
 
 Each publisher may write only to the topics it reports on, so a leaked Beszel
 token cannot reach either record topic, and a leaked deploy token cannot post
@@ -329,11 +354,11 @@ $HOME/.local/bin/nas-platform-deploy --retry-failed "$FAILED_SHA"
 Attempt logs are protected mode-0600 files under
 `$HOME/.local/share/nas-platform/logs`, retained for 30 days. The controller
 checkout, the installed poller, and the deployment state live under the same
-private root. Success and failure outcomes are sent to ntfy using the
-deployer's own protected publisher token, as rendered Markdown rather than a
-raw document. A failed deployment publishes to `nas-critical` at priority 5; a
-successful one publishes to `nas-deployment` at priority 3, so a routine deploy
-does not compete with a real problem for attention.
+private root. Failures are sent to ntfy using the deployer's own protected
+publisher token, as rendered Markdown rather than a raw document, publishing to
+`nas-critical` at priority 5. A successful deployment reports itself from inside
+the run, through the summary above, which can say what shipped; the poller adds
+nothing to it and stays quiet.
 
 A poll that cannot establish a candidate revision at all -- Git unreachable,
 the GitHub API failing, an unparsable response -- is a worse failure than a
