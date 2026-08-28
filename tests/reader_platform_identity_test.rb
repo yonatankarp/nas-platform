@@ -82,8 +82,17 @@ READERS = {
 }.freeze
 
 # The identity reference exactly as the newer direct-user services spell it.
-IDENTITY = '"${NAS_UID:?}:${NAS_GID:?}"'
-IDENTITY_LINE = /^\s+user:\s*#{Regexp.escape(IDENTITY)}\s*$/
+IDENTITY = "${NAS_UID:?}:${NAS_GID:?}"
+
+# Every string a parsed Compose document carries, keys included, each on its own.
+def compose_strings(node)
+  case node
+  when Hash then node.flat_map { |key, value| [key.to_s] + compose_strings(value) }
+  when Array then node.flat_map { |value| compose_strings(value) }
+  when String then [node]
+  else []
+  end
+end
 
 failures = []
 
@@ -127,14 +136,17 @@ storage = YAML.safe_load_file(File.join(ROOT, "inventory", "group_vars", "all", 
 
 READERS.each do |name, reader|
   compose_path = File.join(ROOT, "services", name, "compose.yml")
-  source = File.read(compose_path)
+  compose_document = YAML.safe_load_file(compose_path, aliases: true)
+  declared_users = Array(compose_document["services"]).map { |_service, definition| definition["user"] }
 
-  # Source shape. The rendered document below proves the identity resolves; this
-  # proves it is spelled the one way the rest of the platform spells it, so a
-  # second convention cannot quietly appear.
-  check(failures, source.scan(IDENTITY_LINE).length == 1,
+  # Declared shape. The rendered document below proves the identity resolves;
+  # this proves it is spelled the one way the rest of the platform spells it, so
+  # a second convention cannot quietly appear. Read off the parsed services
+  # rather than the file's lines: a user declared in a comment is not a user, and
+  # a stray 1000:100 in a comment is not an identity the stack adopts.
+  check(failures, declared_users.count(IDENTITY) == 1,
         "#{name} Compose must declare its user as #{IDENTITY} exactly once")
-  check(failures, !source.include?("1000:100"),
+  check(failures, compose_strings(compose_document).none? { |value| value.include?("1000:100") },
         "#{name} Compose must not contain the hard-coded 1000:100 identity")
 
   environment_path = File.join(ROOT, "roles", reader.fetch("role"), "templates", "env.j2")

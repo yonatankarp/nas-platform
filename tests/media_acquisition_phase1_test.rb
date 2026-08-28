@@ -117,11 +117,15 @@ arr_compose = compose_yaml("services/arr/compose.yml", failures)
 downloaders_compose = compose_yaml("services/downloaders/compose.yml", failures)
 check(failures, !File.exist?(File.join(ROOT, "services/arr/compose.jobs.yml")),
       "services/arr/compose.jobs.yml must be absent")
-downloaders_source = File.read(File.join(ROOT, "services/downloaders/compose.yml"))
+# Read off the parsed services rather than the file's lines: a user declared in
+# a comment is not a user any container runs as, and the negative used to reject
+# a comment recording that the literal must never come back.
+downloaders_users = Array(downloaders_compose["services"])
+                    .to_h { |service, definition| [service, definition["user"]] }
 check(failures,
-      downloaders_source.match?(/^\s+user:\s*"\$\{NAS_UID:\?\}:\$\{NAS_GID:\?\}"\s*$/),
+      downloaders_users["unpackerr"] == "${NAS_UID:?}:${NAS_GID:?}",
       "Unpackerr source must derive its user from NAS_UID and NAS_GID")
-check(failures, !downloaders_source.include?('user: "1000:100"'),
+check(failures, downloaders_users.values.none? { |user| user.to_s.include?("1000:100") },
       "downloaders Compose must not contain the hard-coded 1000:100 user")
 effective_downloaders = effective_compose("services/downloaders/compose.yml", {
   "NAS_UID" => "2345",

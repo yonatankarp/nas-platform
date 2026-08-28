@@ -498,16 +498,15 @@ immich_preference_keys.each do |key|
         "Immich argument specs must declare optional #{expected_type} #{key}")
 end
 
-paperless_env_lines = File.readlines(
-  File.join(ROOT, "roles", "paperless_ngx", "templates", "env.j2"),
-  chomp: true
+paperless_env_assignments = environment_assignments(
+  File.join(ROOT, "roles", "paperless_ngx", "templates", "env.j2")
 )
 [
-  "PAPERLESS_TASK_WORKERS={{ paperless_task_workers }}",
-  "PAPERLESS_THREADS_PER_WORKER={{ paperless_threads_per_worker }}"
-].each do |line|
-  check(failures, paperless_env_lines.include?(line),
-        "Paperless environment template must contain exact line: #{line}")
+  ["PAPERLESS_TASK_WORKERS", "{{ paperless_task_workers }}"],
+  ["PAPERLESS_THREADS_PER_WORKER", "{{ paperless_threads_per_worker }}"]
+].each do |name, value|
+  check(failures, paperless_env_assignments.include?([name, value]),
+        "Paperless environment template must contain exact line: #{name}=#{value}")
 end
 
 
@@ -832,6 +831,12 @@ end
 # mount. Accepting it is confined to these templates on purpose, because letting
 # a Compose volume source name an ancestor would let a container see a whole
 # service state tree where the declared entry gave it one subdirectory.
+#
+# Deliberately source text. This sweeps every role template regardless of
+# grammar — env files, XML, INI, YAML fragments — for a media path written into
+# a rendered artifact. There is no one structure to parse across them, and a
+# path in a template comment still reaches the render unless the comment belongs
+# to the target grammar.
 MEDIA_ROOT_LITERAL = %r{\{\{\s*nas_media_root\s*\}\}(/[A-Za-z0-9._/-]+)}
 Dir[File.join(ROOT, "roles", "*", "templates", "*.j2")].sort.each do |template_path|
   relative_template = template_path.delete_prefix("#{ROOT}/")

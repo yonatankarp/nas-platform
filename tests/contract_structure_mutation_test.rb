@@ -102,6 +102,23 @@ SUITES = {
     environment: ->(_repo) { {} },
     diagnostic: ->(message) { "FAIL #{message}" }
   },
+  reader_identity: {
+    command: ->(repo) { [RbConfig.ruby, File.join(repo, "tests", "reader_platform_identity_test.rb")] },
+    environment: ->(_repo) { {} },
+    diagnostic: ->(message) { "FAIL #{message}" }
+  },
+  # This suite reports bare messages, one per line, and drives a real Ansible
+  # guard matrix, so its single row is the slowest of the fast ones.
+  acquisition_phase1: {
+    command: ->(repo) { [RbConfig.ruby, File.join(repo, "tests", "media_acquisition_phase1_test.rb")] },
+    environment: ->(_repo) { {} },
+    diagnostic: ->(message) { message }
+  },
+  acquisition_adoption: {
+    command: ->(repo) { [RbConfig.ruby, File.join(repo, "tests", "media_acquisition_adoption_test.rb")] },
+    environment: ->(_repo) { {} },
+    diagnostic: ->(message) { message }
+  },
   policy_integration: {
     command: ->(repo) { [RbConfig.ruby, File.join(repo, "tests", "policy_integration_test.rb")] },
     environment: ->(_repo) { {} },
@@ -250,6 +267,9 @@ ARR_ENVIRONMENT = "roles/arr/templates/env.j2"
 ARR_SERVARR = "roles/arr/tasks/reconcile_servarr.yml"
 ARR_PROWLARR = "roles/arr/tasks/reconcile_prowlarr.yml"
 ARR_BAZARR = "roles/arr/tasks/reconcile_bazarr.yml"
+KOMGA_COMPOSE = "services/komga/compose.yml"
+DOWNLOADERS_COMPOSE = "services/downloaders/compose.yml"
+ARR_STATE_GUARD = "roles/arr/tasks/state_guard.yml"
 MAC_PATH_FIXTURE = "tests/mac_inventory_path_test.yml"
 SHARED_INVENTORY = "inventory/group_vars/all/main.yml"
 HOST_PREP = "roles/host_prep/tasks/main.yml"
@@ -1077,6 +1097,60 @@ check_accepted(
   [[ARR_PROWLARR,
     "---\n",
     "---\n# Prowlarr indexes; a download client is deliberately never created here.\n"]]
+)
+
+# --- Compose identity, adoption guard and the Paperless environment -------------
+
+check_rejected(
+  failures, :reader_identity, "the platform identity moved into a comment",
+  [[KOMGA_COMPOSE,
+    "    user: \"${NAS_UID:?}:${NAS_GID:?}\"\n",
+    "    # user: \"${NAS_UID:?}:${NAS_GID:?}\"\n"]],
+  "komga Compose must declare its user as ${NAS_UID:?}:${NAS_GID:?} exactly once"
+)
+
+# The banned literal used to be searched for in the file's text, so recording
+# that it is banned was itself the ban being broken.
+check_accepted(
+  failures, :reader_identity, "a comment recording the banned literal identity",
+  [[KOMGA_COMPOSE,
+    "services:\n",
+    "# The identity is never the literal 1000:100; it is supplied by the platform.\nservices:\n"]]
+)
+
+check_rejected(
+  failures, :acquisition_phase1, "the Unpackerr identity hard-coded",
+  [[DOWNLOADERS_COMPOSE,
+    "    user: \"${NAS_UID:?}:${NAS_GID:?}\"\n",
+    "    user: \"4242:4343\"\n    # user: \"${NAS_UID:?}:${NAS_GID:?}\"\n"]],
+  "Unpackerr source must derive its user from NAS_UID and NAS_GID"
+)
+
+# The pattern this replaced ran with /m over the whole file, so it could see a
+# writing module in one task and the variable in another. This plants both in
+# the same task, which is the only shape that actually persists the input.
+check_rejected(
+  failures, :acquisition_adoption, "the one-run adoption input written to disk",
+  [[ARR_STATE_GUARD,
+    "- name: Detect existing movie library content\n",
+    "- name: Remember the adoption bypass\n" \
+    "  ansible.builtin.copy:\n" \
+    "    dest: /tmp/adopted\n" \
+    "    content: \"{{ media_acquisition_adopt_existing_libraries }}\"\n" \
+    "    mode: \"0644\"\n" \
+    "\n" \
+    "- name: Detect existing movie library content\n"]],
+  "guard must never persist the one-run adoption input"
+)
+
+check_rejected(
+  failures, :policy, "a Paperless worker assignment demoted to a comment",
+  [[PAPERLESS_ENVIRONMENT,
+    "PAPERLESS_TASK_WORKERS={{ paperless_task_workers }}\n",
+    "# PAPERLESS_TASK_WORKERS={{ paperless_task_workers }}\n" \
+    "PAPERLESS_TASK_WORKERS=2\n"]],
+  "Paperless environment template must contain exact line: " \
+  "PAPERLESS_TASK_WORKERS={{ paperless_task_workers }}"
 )
 
 # --- Integration, Mac and vault policy ------------------------------------------

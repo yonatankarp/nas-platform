@@ -843,6 +843,9 @@ else
   readme = ROOT.join("README.md").read.gsub("`", "").gsub(/\s+/, " ")
   failures << "README.md must not describe every manifest service stack as implemented" if
     readme.match?(/service stacks in .*services\/manifest\.yml.* are implemented/i)
+  # Deliberately source text. Both subjects are the wording of a comment, which
+  # is what a reader of the file sees and what YAML parsing erases; there is no
+  # parsed structure that carries it.
   jellyfin_compose = ROOT.join("services/jellyfin/compose.yml").read
   failures << "Jellyfin media-mount comment must assign adjacent metadata to neutral media writers" unless
     jellyfin_compose.match?(/media writers own adjacent metadata.*Jellyfin remains read-only/im)
