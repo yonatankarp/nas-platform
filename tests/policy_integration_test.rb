@@ -143,6 +143,36 @@ check(failures,
       "integration scenario projects must derive from the sandbox namespace: " \
       "#{negative_project_names.inspect}")
 
+# A contract that runs a play of its own is a second entry point into the same
+# sandbox, and namespacing tests/integration.sh alone left it behind: the
+# Audiobookshelf refusal suite converged Audiobookshelf into its production
+# project, where the integration override's ${PLATFORM_PROJECT_NAME:?} refused
+# the deployment before the refusal under test could be reached. Require both
+# halves of the propagation — the harness exports the namespace to every such
+# contract, and the contract derives its play's project from that export rather
+# than naming a project of its own.
+playing_contracts = Dir[File.join(ROOT, "tests", "contracts", "*.sh")].sort.select do |path|
+  File.read(path).include?("ansible-playbook")
+end
+check(failures, !playing_contracts.empty?,
+      "no contract runs a play of its own, so this namespace check polices nothing")
+unnamespaced_contracts = playing_contracts.reject do |path|
+  body = File.read(path)
+  namespace_variable = body[/(\w+)\s*=\s*ENV\.fetch\("PLATFORM_PROJECT_NAME"/, 1]
+  namespace_variable && body.include?("\"platform_project_name=\#{#{namespace_variable}}\"")
+end
+check(failures, unnamespaced_contracts.empty?,
+      "contracts that run their own play must converge under the exported sandbox " \
+      "namespace: #{unnamespaced_contracts.map { |path| File.basename(path) }.join(', ')}")
+unexported_namespace = playing_contracts.reject do |path|
+  service = File.basename(path, ".sh")
+  harness[/^    run_#{Regexp.escape(service)}_contract\(\) \{.*?^    \}/m]
+    .to_s.include?("PLATFORM_PROJECT_NAME=$integration_project_namespace")
+end
+check(failures, unexported_namespace.empty?,
+      "integration must export the sandbox namespace to every contract that runs a " \
+      "play: #{unexported_namespace.map { |path| File.basename(path) }.join(', ')}")
+
 arr_integration = YAML.safe_load(
   File.read(File.join(ROOT, "services", "arr", "compose.integration.yml"))
 ).fetch("services")

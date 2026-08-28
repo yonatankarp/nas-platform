@@ -480,6 +480,16 @@ satisfies the policy. Use a contract when proving the service means driving a
 real workflow (Paperless ingests a PDF and reads back its checksum) rather than
 reading one endpoint.
 
+A contract that runs a play of its own — to prove the platform *refuses*
+something, which needs a failing convergence — is a second entry point into the
+same sandbox, so it must converge into the same disposable project. Pass
+`-e platform_project_name=` from the `PLATFORM_PROJECT_NAME` the harness exports
+to the contract, never a name of the contract's own: without it the play renders
+an empty namespace, the integration override's `${PLATFORM_PROJECT_NAME:?}`
+refuses the deployment, and the run dies before it reaches the refusal under
+test. `tests/policy_integration_test.rb` requires both halves of that
+propagation.
+
 ### 6. Declare the storage
 
 The remaining failure is `implemented service has no storage declaration`. Add
