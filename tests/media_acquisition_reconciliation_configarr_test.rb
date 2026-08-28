@@ -120,120 +120,7 @@ if PROFILE_TREE_ID_TARGETED_ONLY
   puts "Configarr recursive profile-tree identity preflight behavior holds"
   exit
 end
-configarr_mutations = {}
-%w[radarr sonarr].each do |service|
-  service_name = service.dup
-  profile_mutations = {
-    "name" => ->(profile) { profile["name"] = "Legacy Profile" },
-    "upgradeAllowed" => ->(profile) { profile["upgradeAllowed"] = true },
-    "cutoff" => ->(profile) { profile["cutoff"] = 9 },
-    "minFormatScore" => ->(profile) { profile["minFormatScore"] = 100 },
-    "cutoffFormatScore" => ->(profile) { profile["cutoffFormatScore"] = 100 },
-    "minUpgradeFormatScore" => ->(profile) { profile["minUpgradeFormatScore"] = 100 },
-    "reset unmatched scores outcome" => ->(profile) { profile["formatItems"].last["score"] = 99 },
-    "quality sort/order outcome" => ->(profile) { profile["items"].reverse! },
-    "quality structure" => lambda do |profile|
-      profile.fetch("items").find { |item| item["name"] == "WEB 1080p" }.fetch("items").pop
-    end,
-    "non-cutoff nested item id" => lambda do |profile|
-      profile.fetch("items").find { |item| item["name"] == "WEB 1080p" }
-        .fetch("items").find { |item| item.dig("quality", "name") == "WEBDL-1080p" }
-        .fetch("quality")["id"] = 999
-    end,
-    "format assignment name" => ->(profile) { profile["formatItems"].first["name"] = "Legacy Format" },
-    "format assignment score" => ->(profile) { profile["formatItems"].first["score"] = 0 }
-  }
-  profile_mutations.each do |field, mutate_profile|
-    configarr_mutations["#{service_name}.quality_profile.#{field}"] = lambda do |state|
-      mutate_profile.call(state.dig("configarr", service_name, "qualityprofile").first)
-    end
-  end
-  [
-    ["HDTV-1080p", 0], ["Raw-HD", 1], ["Bluray-1080p", 3],
-    ["WEB 1080p", 2], ["WEBRip-1080p", 2, 0], ["WEBDL-1080p", 2, 1]
-  ].each do |quality_name, item_index, child_index|
-    configarr_mutations["#{service_name}.quality_profile.#{quality_name}.name"] = lambda do |state|
-      item = state.dig("configarr", service_name, "qualityprofile").first.fetch("items")[item_index]
-      item = item.fetch("items")[child_index] unless child_index.nil?
-      if item["quality"].is_a?(Hash)
-        item.fetch("quality")["name"] = "Legacy Quality"
-      else
-        item["name"] = "Legacy Quality Group"
-      end
-    end
-    configarr_mutations["#{service_name}.quality_profile.#{quality_name}.allowed"] = lambda do |state|
-      item = state.dig("configarr", service_name, "qualityprofile").first.fetch("items")[item_index]
-      item = item.fetch("items")[child_index] unless child_index.nil?
-      item["allowed"] = !item.fetch("allowed")
-    end
-  end
-
-  CONFIGARR.dig(service_name, "qualitydefinition").each_with_index do |definition, index|
-    quality_name = definition.dig("quality", "name")
-    # Configarr v1.28.0 only applies the three numeric TRaSH leaves in this
-    # bundled configuration. Identity metadata, title and weight are retained
-    # in the verified state hash and fail closed if they drift.
-    definition_mutations = if QUALITY_SIZES.fetch(service_name).key?(quality_name)
-      {
-      "minSize" => ->(item) { item["minSize"] = item["minSize"].nil? ? 1 : item["minSize"] + 1 },
-      "preferredSize" => lambda do |item|
-        item["preferredSize"] = item["preferredSize"].nil? ? 1 : item["preferredSize"] + 1
-      end,
-      "maxSize" => ->(item) { item["maxSize"] = item["maxSize"].nil? ? 1 : item["maxSize"] + 1 }
-      }
-    else
-      {}
-    end
-    definition_mutations.each do |field, mutate_definition|
-      label = "#{service_name}.quality_definition.#{quality_name}.#{field}"
-      configarr_mutations[label] = lambda do |state|
-        item = state.dig("configarr", service_name, "qualitydefinition").fetch(index)
-        mutate_definition.call(item)
-      end
-    end
-  end
-
-  {
-    "name" => ->(format) { format["name"] = "Legacy Format" },
-    "includeWhenRenaming" => ->(format) { format["includeCustomFormatWhenRenaming"] = true },
-    "specification.name" => ->(format) { format.dig("specifications", 0)["name"] = "Legacy" },
-    "specification.implementation" => lambda do |format|
-      format.dig("specifications", 0)["implementation"] = "LegacySpecification"
-    end,
-    "specification.negate" => ->(format) { format.dig("specifications", 0)["negate"] = true },
-    "specification.required" => ->(format) { format.dig("specifications", 0)["required"] = true },
-    "specification.regex" => lambda do |format|
-      format.dig("specifications", 0, "fields", 0)["value"] = "legacy-regex"
-    end
-  }.each do |field, mutate_format|
-    configarr_mutations["#{service_name}.custom_format.#{field}"] = lambda do |state|
-      mutate_format.call(state.dig("configarr", service_name, "customformat").first)
-    end
-  end
-end
-{
-  "radarr.naming.renameMovies" => ["radarr", "renameMovies", true],
-  "radarr.naming.standardMovieFormat" => ["radarr", "standardMovieFormat", "Legacy"],
-  "radarr.naming.movieFolderFormat" => ["radarr", "movieFolderFormat", "Legacy"],
-  "sonarr.naming.renameEpisodes" => ["sonarr", "renameEpisodes", true],
-  "sonarr.naming.standardEpisodeFormat" => ["sonarr", "standardEpisodeFormat", "Legacy"],
-  "sonarr.naming.dailyEpisodeFormat" => ["sonarr", "dailyEpisodeFormat", "Legacy"],
-  "sonarr.naming.animeEpisodeFormat" => ["sonarr", "animeEpisodeFormat", "Legacy"],
-  "sonarr.naming.seriesFolderFormat" => ["sonarr", "seriesFolderFormat", "Legacy"],
-  "sonarr.naming.seasonFolderFormat" => ["sonarr", "seasonFolderFormat", "Legacy"]
-}.each do |label, (service, field, value)|
-  configarr_mutations[label] = lambda do |state|
-    state.dig("configarr", service, "config/naming")[field] = value
-  end
-end
-{
-  "radarr.naming.nullable standard format" => ["radarr", "standardMovieFormat"],
-  "sonarr.naming.nullable daily format" => ["sonarr", "dailyEpisodeFormat"]
-}.each do |label, (service, field)|
-  configarr_mutations[label] = lambda do |state|
-    state.dig("configarr", service, "config/naming")[field] = nil
-  end
-end
+configarr_mutations = configarr_owned_field_mutations
 configarr_write = lambda do |request|
   request["method"] == "POST" && request["target"] == "/_fixture/configarr/apply"
 end
@@ -412,38 +299,30 @@ if COMPLETE_PROFILE_TREE_TARGETED_ONLY
   puts "complete Configarr profile-tree identity behavior holds"
   exit
 end
-%w[radarr sonarr].each do |service|
-  configarr_mutations["#{service}.missing quality profile among unrelated profiles"] = lambda do |state|
-    state.dig("configarr", service, "qualityprofile").reject! do |profile|
-      profile["name"] == CONFIGARR_PROFILE_NAME
-    end
-  end
-  configarr_mutations["#{service}.missing custom format among unrelated formats"] = lambda do |state|
-    state.dig("configarr", service, "customformat").reject! do |format|
-      format["name"] == CONFIGARR_FORMAT_NAME
-    end
-  end
-  configarr_mutations["#{service}.missing format assignment among unrelated assignments"] = lambda do |state|
-    profile = state.dig("configarr", service, "qualityprofile").find do |candidate|
-      candidate["name"] == CONFIGARR_PROFILE_NAME
-    end
-    profile.fetch("formatItems").reject! { |item| item["name"] == CONFIGARR_FORMAT_NAME }
-  end
-  configarr_mutations["#{service}.empty format-score assignments"] = lambda do |state|
-    profile = state.dig("configarr", service, "qualityprofile").find do |candidate|
-      candidate["name"] == CONFIGARR_PROFILE_NAME
-    end
-    profile["formatItems"] = []
-  end
-end
-if CONFIGARR_MUTATION_PATTERN
-  selector = Regexp.new(CONFIGARR_MUTATION_PATTERN)
-  configarr_mutations.select! { |field, _mutation| field.match?(selector) }
-  abort "Configarr mutation selector matched no scenarios" if configarr_mutations.empty?
+# One field per class rather than all hundred and five. Each round trip costs
+# about twenty-two seconds and proves two things: that the field is visible in
+# the owned projection, and that a difference in it reaches Configarr as exactly
+# one write and is recorded. The first is a property of a pure function, proved
+# for every field in about a second by
+# tests/acquisition_configarr_field_coverage_test.rb. The second is a property
+# of the code path rather than of the field, so a class needs one witness, not
+# one per member. Running all of them cost this job eighteen minutes to prove
+# the same two things over and over.
+#
+# The targeted selector still reaches the whole table, because narrowing to one
+# scenario is what it is for.
+configarr_exercised = if CONFIGARR_MUTATION_PATTERN
+                        selector = Regexp.new(CONFIGARR_MUTATION_PATTERN)
+                        configarr_mutations.select { |field, _| field.match?(selector) }
+                      else
+                        configarr_representative_mutations(configarr_mutations)
+                      end
+if CONFIGARR_MUTATION_PATTERN && configarr_exercised.empty?
+  abort "Configarr mutation selector matched no scenarios"
 end
 exercise_mutations(
   failures, relationship: "Configarr", kind: :configarr,
-  baseline: configarr_state, mutations: configarr_mutations,
+  baseline: configarr_state, mutations: configarr_exercised,
   write_matcher: configarr_write, projection: method(:configarr_projection),
   desired: CONFIGARR, current: configarr_current,
   preserved: configarr_unmanaged_preserved

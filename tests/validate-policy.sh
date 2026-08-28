@@ -93,6 +93,9 @@ PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/managed_user_state_filter_test
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_relationships_profile_ids_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_filter_native_arguments_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_filter_native_arguments_test.py --self-test
+ruby tests/acquisition_configarr_field_coverage_test.rb
+ruby tests/acquisition_configarr_field_coverage_test.rb --self-test
+PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_owned_field_coverage_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/vault_managed_user_schema_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/vault_credential_schema_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/immich_preference_schema_test.py

@@ -1731,6 +1731,12 @@ end
     "ruby tests/media_acquisition_foundation_verifier_test.rb",
   "acquisition filter argument conversion regression" =>
     'PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_filter_native_arguments_test.py',
+  "Configarr owned-field coverage regression" =>
+    "ruby tests/acquisition_configarr_field_coverage_test.rb",
+  "Configarr owned-field coverage self-test" =>
+    "ruby tests/acquisition_configarr_field_coverage_test.rb --self-test",
+  "relationship owned-field coverage regression" =>
+    'PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_owned_field_coverage_test.py',
   "acquisition filter argument conversion self-test" =>
     'PYTHONDONTWRITEBYTECODE=1 "$ansible_python" ' \
     'tests/acquisition_filter_native_arguments_test.py --self-test',
