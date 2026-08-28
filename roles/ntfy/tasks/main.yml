@@ -236,17 +236,20 @@
 # webhook and the deploy publisher is proven by the deployment report failing
 # the converge when publishing is refused.
 #
-# Cache and Firebase are refused so the proof leaves no trace for a human: the
-# message is neither stored in the topic's history nor pushed to a device, which
-# keeps nas-critical to things that are actually wrong. It is the only publish to
-# that topic that happens on every converge regardless of state; everything else
-# there is event driven. A client with the topic already open still sees it live,
-# which is the cost of proving write access to the real topic rather than a
-# throwaway one.
+# Published to the verification topic, which no managed user may declare access
+# to and no device is subscribed to, so the proof reaches nobody. Cache and
+# Firebase headers cannot achieve that on their own: ntfy forwards a poll request
+# upstream for every message once upstream-base-url is set, and it carries the
+# message id alone, so a phone is woken and then finds no body to fetch. Refusing
+# the cache turned the proof into an empty notification rather than no
+# notification, three times a converge, on the topic reserved for what is wrong.
+#
+# They are kept anyway: nothing should read this topic, so nothing should store
+# it either.
 - name: Verify each provisioned token can publish
   tags: [platform_verify_ntfy]
   ansible.builtin.uri:
-    url: "http://127.0.0.1:{{ ntfy_port }}/{{ ntfy_topic }}"
+    url: "http://127.0.0.1:{{ ntfy_port }}/{{ ntfy_verification_topic }}"
     method: POST
     headers:
       Authorization: "Bearer {{ item.token }}"

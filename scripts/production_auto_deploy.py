@@ -911,11 +911,16 @@ def poll(config: Config, retry_sha: str | None = None) -> bool | None:
             finished = _timestamp()
             if succeeded:
                 record_success(config, head, finished)
+            # A successful deployment reports itself, from inside the run,
+            # where the manifests and the Git history that say what shipped are
+            # still at hand. Announcing it a second time here would add a
+            # revision and a duration to a message that already said more.
+            #
             # Best effort, but never silent: a misconfigured publisher would
-            # otherwise lose every outcome with nothing to show for it.
-            if not notify(
+            # otherwise lose every failure with nothing to show for it.
+            if not succeeded and not notify(
                 config,
-                "success" if succeeded else "failed",
+                "failed",
                 head,
                 started,
                 finished,

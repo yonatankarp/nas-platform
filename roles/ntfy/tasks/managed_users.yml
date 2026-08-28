@@ -63,7 +63,7 @@
           - item.topics is not mapping
           - item.topics | length > 0
           - item.topics | unique | length == item.topics | length
-          - item.topics | difference(ntfy_topics) | length == 0
+          - item.topics | difference(ntfy_publishable_topics) | length == 0
         fail_msg: ntfy provisioning contains an unsafe identity; values are redacted.
       loop: "{{ ntfy_publishers }}"
       loop_control:
