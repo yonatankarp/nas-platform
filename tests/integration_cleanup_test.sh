@@ -23,24 +23,24 @@ python_root_symlink=
 python_victim=
 runner_image=docker.io/library/python:3.14-alpine@sha256:05b2b8b732ecd268fee8727a369f936f022d1321b59befd13c30ede22769dcdc
 
+# Cleanup must own every disposable resource through its namespace, and must
+# keep no fixed production name it could delete unconditionally.
 test_cleanup_service_registry() {
-  for unsafe_cleanup_container in radarr sonarr prowlarr bazarr sabnzbd unpackerr; do
-    for registered_cleanup_container in $cleanup_sandbox_containers; do
-      [ "$registered_cleanup_container" != "$unsafe_cleanup_container" ] || {
-        printf 'acquisition service is cleaned by fixed name: %s\n' \
-          "$unsafe_cleanup_container" >&2
-        exit 1
-      }
-    done
+  for unsafe_cleanup_register in cleanup_sandbox_containers cleanup_sandbox_networks; do
+    eval "unsafe_cleanup_value=\${$unsafe_cleanup_register+set}"
+    [ -z "${unsafe_cleanup_value:-}" ] || {
+      printf 'sandbox cleanup still registers fixed names: %s\n' \
+        "$unsafe_cleanup_register" >&2
+      exit 1
+    }
   done
-
-  [ -z "$cleanup_sandbox_networks" ] || {
-    printf 'sandbox cleanup still removes fixed network names: %s\n' \
-      "$cleanup_sandbox_networks" >&2
+  grep -q -- '--filter "name=' "$script_dir/sandbox_cleanup.sh" || {
+    printf '%s\n' 'sandbox cleanup no longer probes derived names' >&2
     exit 1
   }
 
-  for expected_cleanup_project in arr downloaders; do
+  for expected_cleanup_project in ntfy beszel dozzle audiobookshelf komga jellyfin \
+    immich paperless arr downloaders; do
     cleanup_project_registered=false
     for registered_cleanup_project in $cleanup_sandbox_projects; do
       [ "$registered_cleanup_project" != "$expected_cleanup_project" ] ||
@@ -53,7 +53,12 @@ test_cleanup_service_registry() {
     }
   done
 
-  for expected_cleanup_service in radarr sonarr prowlarr bazarr sabnzbd unpackerr; do
+  for expected_cleanup_service in radarr sonarr prowlarr bazarr sabnzbd unpackerr \
+    ntfy beszel beszel-agent-intel beszel-agent-portable beszel-socket-proxy \
+    dozzle dozzle-alert-relay dozzle-socket-proxy audiobookshelf komga jellyfin \
+    immich-server immich-machine-learning immich-redis immich-postgres \
+    paperless-redis paperless-postgres paperless-webserver paperless-gotenberg \
+    paperless-tika; do
     cleanup_service_registered=false
     for registered_cleanup_project in $cleanup_sandbox_projects; do
       cleanup_sandbox_project_services "$registered_cleanup_project"
@@ -65,6 +70,31 @@ test_cleanup_service_registry() {
     [ "$cleanup_service_registered" = true ] || {
       printf 'sandbox cleanup service is not owned by any project: %s\n' \
         "$expected_cleanup_service" >&2
+      exit 1
+    }
+  done
+
+  # A registered identity is always the namespaced Compose name, never the
+  # canonical production name a bystander container could carry.
+  for registered_cleanup_project in $cleanup_sandbox_projects; do
+    cleanup_sandbox_project_services "$registered_cleanup_project"
+    for registered_cleanup_service in $cleanup_project_services; do
+      case $registered_cleanup_service in
+        *_*)
+          printf 'sandbox cleanup registers a production container name: %s\n' \
+            "$registered_cleanup_service" >&2
+          exit 1
+          ;;
+      esac
+    done
+  done
+
+  for expected_cleanup_namespace in nas-platform-cleanup-a1b2c3 \
+    nas-platform-cleanup-a1b2c3-negative; do
+    printf '%s\n' "$(cleanup_sandbox_namespaces nas-platform-cleanup-a1b2c3)" |
+      tr ' ' '\n' | grep -qx "$expected_cleanup_namespace" || {
+      printf 'sandbox cleanup namespace is not derived: %s\n' \
+        "$expected_cleanup_namespace" >&2
       exit 1
     }
   done
@@ -149,10 +179,6 @@ test_docker_failure() {
     docker() {
       docker_arguments=$*
       case $docker_arguments in
-        *"$failure_namespace"*) docker_scope=ownership ;;
-        *) docker_scope=fixed ;;
-      esac
-      case $docker_arguments in
         *'--filter label=com.docker.compose.project='*) docker_query=label ;;
         *) docker_query=name ;;
       esac
@@ -160,14 +186,7 @@ test_docker_failure() {
 
       case "${1-}:${2-}" in
         ps:*)
-          case "$docker_scope:$failure_mode" in
-            ownership:ownership-list) return 41 ;;
-            fixed:list) return 45 ;;
-          esac
-          [ "$docker_scope" != fixed ] || {
-            [ "$failure_mode" != rm ] || printf '%s\n' fake-fixed-container-id
-            return 0
-          }
+          [ "$failure_mode" != ownership-list ] || return 41
           case "$docker_query:$failure_mode" in
             name:ownership-inspect) printf '%s\n' fake-probe-container-id ;;
             label:ownership-rm) printf 'owned-container-%s\n' "$docker_project" ;;
@@ -208,9 +227,7 @@ test_docker_failure() {
           esac
           ;;
         rm:*)
-          case $failure_mode in
-            rm | ownership-rm) return 46 ;;
-          esac
+          [ "$failure_mode" != ownership-rm ] || return 46
           ;;
         network:rm)
           [ "$failure_mode" != ownership-network-rm ] || return 47
@@ -342,8 +359,6 @@ case "$test_case" in
   service-registry) test_cleanup_service_registry; exit 0 ;;
   unsupported-stem) test_unsupported_stem; exit 0 ;;
   invalid-suffix) test_invalid_suffix_alphabet; exit 0 ;;
-  docker-list) test_docker_failure list; exit 0 ;;
-  docker-rm) test_docker_failure rm; exit 0 ;;
   docker-ownership-list) test_docker_failure ownership-list; exit 0 ;;
   docker-ownership-inspect) test_docker_failure ownership-inspect; exit 0 ;;
   docker-ownership-rm) test_docker_failure ownership-rm; exit 0 ;;
@@ -361,8 +376,6 @@ esac
 test_unsupported_stem
 test_cleanup_service_registry
 test_invalid_suffix_alphabet
-test_docker_failure list
-test_docker_failure rm
 test_docker_failure ownership-list
 test_docker_failure ownership-inspect
 test_docker_failure ownership-rm

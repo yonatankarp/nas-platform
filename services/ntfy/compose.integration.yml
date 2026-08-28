@@ -1,0 +1,4 @@
+---
+services:
+  ntfy:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-ntfy

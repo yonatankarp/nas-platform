@@ -1,0 +1,12 @@
+---
+services:
+  broker:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-paperless-redis
+  db:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-paperless-postgres
+  webserver:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-paperless-webserver
+  gotenberg:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-paperless-gotenberg
+  tika:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-paperless-tika

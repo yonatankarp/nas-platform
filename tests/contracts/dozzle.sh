@@ -137,6 +137,9 @@ end
 RUBY
 }
 
+# Every stack now carries an integration override, so the disposable lane is
+# rendered here rather than named service by service: a new override that
+# breaks the Dozzle grouping cannot slip in unrendered.
 render_group_variants() {
   stack=$1
   expected_group=$2
@@ -144,6 +147,8 @@ render_group_variants() {
   render_group_contract "$stack" "$expected_group" base -f "$service_dir/compose.yml"
   render_group_contract "$stack" "$expected_group" mac \
     -f "$service_dir/compose.yml" -f "$service_dir/compose.mac.yml"
+  render_group_contract "$stack" "$expected_group" integration \
+    -f "$service_dir/compose.yml" -f "$service_dir/compose.integration.yml"
 }
 
 if [ "$mode" = static ]; then
@@ -170,16 +175,10 @@ RUBY
   render_group_variants dozzle dozzle
   render_group_variants paperless-ngx paperless
   render_group_variants immich immich
-  render_group_contract immich immich integration \
-    -f "$repo_dir/services/immich/compose.yml" \
-    -f "$repo_dir/services/immich/compose.integration.yml"
   render_group_variants audiobookshelf ""
   render_group_variants jellyfin ""
   render_group_variants komga ""
   render_group_variants ntfy ""
-  render_group_contract jellyfin "" integration \
-    -f "$repo_dir/services/jellyfin/compose.yml" \
-    -f "$repo_dir/services/jellyfin/compose.integration.yml"
 fi
 
 ruby -ryaml - "$compose" "$role" "$env_template" \

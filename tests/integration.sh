@@ -470,8 +470,11 @@ printf '%s\n' legacy-current-compose > \
   "$stale_deploy_root/current/services/ntfy/compose.yml"
 printf '%s\n' stale-same-sha-compose > \
   "$stale_release_dir/services/ntfy/compose.yml"
+# A platform override the integration bundle never renders: the run deploys the
+# canonical and integration files, so a Mac override left in the release is
+# target-only content that convergence must delete.
 printf '%s\n' target-only-override > \
-  "$stale_release_dir/services/ntfy/compose.integration.yml"
+  "$stale_release_dir/services/ntfy/compose.mac.yml"
 printf '%s\n' undeclared-service > \
   "$stale_release_dir/services/undeclared/compose.yml"
 
@@ -936,6 +939,7 @@ docker run --rm \
         -e nas_docker_root=$sandbox/volume1/Docker \
         -e nas_media_root=$sandbox/volume2 \
         -e platform_compose_kind=integration \
+        -e platform_project_name=\"$integration_project_namespace\" \
         -e arr_platform_project_name=\"$integration_project_namespace\" \
         -e downloaders_platform_project_name=\"$integration_project_namespace\" \
         -e platform_beszel_agent_kind=portable \
@@ -1036,7 +1040,7 @@ docker run --rm \
         PLATFORM_FIXTURE_ROOT='$sandbox/fixtures' \
         PLATFORM_REPORT_ROOT='$sandbox/reports' \
         PLATFORM_AUDIOBOOKSHELF_PORT=13378 \
-        PLATFORM_AUDIOBOOKSHELF_CONTAINER=audiobookshelf \
+        PLATFORM_AUDIOBOOKSHELF_CONTAINER=$integration_project_namespace-audiobookshelf \
         /repo/tests/contracts/audiobookshelf.sh \"\$@\"
     }
 
@@ -1048,6 +1052,7 @@ docker run --rm \
         PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
         PLATFORM_REPORT_ROOT='$sandbox/reports' \
         PLATFORM_KOMGA_RUNTIME_CONTEXT=base \
+        PLATFORM_PROJECT_NAME=$integration_project_namespace \
         /repo/tests/contracts/komga.sh \"\$@\"
     }
 
@@ -1059,7 +1064,7 @@ docker run --rm \
         PLATFORM_DOCKER_ROOT='$sandbox/volume1/Docker' \
         PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
         PLATFORM_REPORT_ROOT='$sandbox/reports' \
-        PLATFORM_JELLYFIN_CONTAINER=jellyfin \
+        PLATFORM_JELLYFIN_CONTAINER=$integration_project_namespace-jellyfin \
         /repo/tests/contracts/jellyfin.sh \"\$@\"
     }
 
@@ -1073,6 +1078,10 @@ docker run --rm \
         PLATFORM_FIXTURE_ROOT='$sandbox/fixtures' \
         PLATFORM_REPORT_ROOT='$sandbox/reports' \
         PLATFORM_MAC_FIXTURE_VARS_FILE=\"\$fixture_vars_file\" \
+        PLATFORM_IMMICH_SERVER_CONTAINER=$integration_project_namespace-immich-server \
+        PLATFORM_IMMICH_MACHINE_LEARNING_CONTAINER=$integration_project_namespace-immich-machine-learning \
+        PLATFORM_IMMICH_REDIS_CONTAINER=$integration_project_namespace-immich-redis \
+        PLATFORM_IMMICH_POSTGRES_CONTAINER=$integration_project_namespace-immich-postgres \
         /repo/tests/contracts/immich.sh \"\$@\"
     }
 
@@ -1083,18 +1092,18 @@ docker run --rm \
       immich_quarantine='$sandbox/reports/immich-postgres-quarantine'
       immich_stale_redis_key=nas-platform-restore-stale
       test ! -e "\$immich_quarantine"
-      redis_seed_result=\$(docker compose --project-name immich \
+      redis_seed_result=\$(docker compose --project-name $integration_project_namespace-immich \
         --env-file "\$immich_runtime" \
         -f "\$immich_release/compose.yml" \
         -f "\$immich_release/compose.integration.yml" \
         exec -T redis redis-cli --raw set "\$immich_stale_redis_key" stale)
       test "\$redis_seed_result" = OK
-      docker compose --project-name immich \
+      docker compose --project-name $integration_project_namespace-immich \
         --env-file "\$immich_runtime" \
         -f "\$immich_release/compose.yml" \
         -f "\$immich_release/compose.integration.yml" \
         stop immich-server immich-machine-learning database
-      docker compose --project-name immich \
+      docker compose --project-name $integration_project_namespace-immich \
         --env-file "\$immich_runtime" \
         -f "\$immich_release/compose.yml" \
         -f "\$immich_release/compose.integration.yml" \
@@ -1105,7 +1114,7 @@ docker run --rm \
       mkdir -m 0755 "\$immich_postgres"
 
       run_play --tags immich
-      redis_stale_count=\$(docker compose --project-name immich \
+      redis_stale_count=\$(docker compose --project-name $integration_project_namespace-immich \
         --env-file "\$immich_runtime" \
         -f "\$immich_release/compose.yml" \
         -f "\$immich_release/compose.integration.yml" \
@@ -1121,8 +1130,8 @@ docker run --rm \
     }
 
     run_immich_restore_negative_matrix() {
-      immich_server_before=\$(docker inspect --format '{{.Id}}:{{.State.StartedAt}}' immich_server)
-      immich_database_before=\$(docker inspect --format '{{.Id}}:{{.State.StartedAt}}' immich_postgres)
+      immich_server_before=\$(docker inspect --format '{{.Id}}:{{.State.StartedAt}}' $integration_project_namespace-immich-server)
+      immich_database_before=\$(docker inspect --format '{{.Id}}:{{.State.StartedAt}}' $integration_project_namespace-immich-postgres)
 
       # One root, and one bundle render for all five scenarios. Each scenario
       # already asserts its own storage sha is unchanged across its play, which is
@@ -1136,7 +1145,7 @@ docker run --rm \
       run_play \
         -e nas_docker_root=\"\$scenario_root/docker\" \
         -e nas_media_root=\"\$scenario_root/media\" \
-        -e platform_project_name=immich-negative \
+        -e platform_project_name=$integration_project_namespace-negative \
         --tags host_prep,deployment_bundle
 
       postgres_root=\"\$scenario_root/docker/immich/postgres\"
@@ -1191,7 +1200,7 @@ docker run --rm \
         if run_play \
             -e nas_docker_root=\"\$scenario_root/docker\" \
             -e nas_media_root=\"\$scenario_root/media\" \
-            -e platform_project_name=immich-negative \
+            -e platform_project_name=$integration_project_namespace-negative \
             --tags immich >\"\$output\" 2>&1; then
           cat \"\$output\" >&2
           printf 'IMMICH NEGATIVE RESTORE SCENARIO SUCCEEDED: %s\n' \"\$scenario\" >&2
@@ -1211,9 +1220,9 @@ docker run --rm \
           \"\$vault_file\" \"\$vault_password_file\" \"\$output\"
         storage_after=\$(tar -C \"\$scenario_root\" -cf - docker/immich media | sha256sum)
         test \"\$storage_after\" = \"\$storage_before\"
-        test \"\$(docker inspect --format '{{.Id}}:{{.State.StartedAt}}' immich_server)\" = \
+        test \"\$(docker inspect --format '{{.Id}}:{{.State.StartedAt}}' $integration_project_namespace-immich-server)\" = \
           \"\$immich_server_before\"
-        test \"\$(docker inspect --format '{{.Id}}:{{.State.StartedAt}}' immich_postgres)\" = \
+        test \"\$(docker inspect --format '{{.Id}}:{{.State.StartedAt}}' $integration_project_namespace-immich-postgres)\" = \
           \"\$immich_database_before\"
       done
 
@@ -1227,7 +1236,7 @@ docker run --rm \
       run_play --tags immich > /tmp/immich-existing-database-backup.txt 2>&1
       test \"\$(sha256sum \"\$existing_backup\")\" = \"\$existing_backup_before\"
       test ! -e '$sandbox/volume1/Docker/immich/.restore-failed'
-      test \"\$(docker inspect --format '{{.Id}}:{{.State.StartedAt}}' immich_server)\" = \
+      test \"\$(docker inspect --format '{{.Id}}:{{.State.StartedAt}}' $integration_project_namespace-immich-server)\" = \
         \"\$immich_server_before\"
       run_immich_contract clean-restore-assert
       mv \"\$existing_backup\" \"\$existing_quarantine\"
@@ -1245,7 +1254,7 @@ docker run --rm \
         PLATFORM_DOCKER_ROOT='$sandbox/volume1/Docker' \
         PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
         PLATFORM_REPORT_ROOT='$sandbox/reports' \
-        PLATFORM_PAPERLESS_WEBSERVER_CONTAINER=paperless_webserver \
+        PLATFORM_PAPERLESS_WEBSERVER_CONTAINER=$integration_project_namespace-paperless-webserver \
         /repo/tests/contracts/paperless.sh \"\$@\"
     }
 
@@ -1256,9 +1265,9 @@ docker run --rm \
         PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=\"\$vault_password_file\" \
         PLATFORM_DOCKER_ROOT='$sandbox/volume1/Docker' \
         PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
-        PLATFORM_PAPERLESS_WEBSERVER_CONTAINER=paperless_webserver \
-        PLATFORM_PAPERLESS_POSTGRES_CONTAINER=paperless_postgres \
-        PLATFORM_PAPERLESS_REDIS_CONTAINER=paperless_redis \
+        PLATFORM_PAPERLESS_WEBSERVER_CONTAINER=$integration_project_namespace-paperless-webserver \
+        PLATFORM_PAPERLESS_POSTGRES_CONTAINER=$integration_project_namespace-paperless-postgres \
+        PLATFORM_PAPERLESS_REDIS_CONTAINER=$integration_project_namespace-paperless-redis \
         /repo/tests/mac/snapshot-paperless.sh \"\$@\"
     }
 
@@ -1271,6 +1280,7 @@ docker run --rm \
         -e nas_docker_root=$sandbox/volume1/Docker \
         -e nas_media_root=$sandbox/volume2 \
         -e platform_compose_kind=integration \
+        -e platform_project_name=\"$integration_project_namespace\" \
         -e platform_beszel_agent_kind=portable \
         -e deployment_bundle_test_mode=true \
         -e deployment_bundle_allow_dirty_controller=true \
@@ -1287,6 +1297,7 @@ docker run --rm \
         -e nas_docker_root=$sandbox/volume1/Docker \
         -e nas_media_root=$sandbox/volume2 \
         -e platform_compose_kind=integration \
+        -e platform_project_name=\"$integration_project_namespace\" \
         -e platform_beszel_agent_kind=portable \
         -e deployment_bundle_test_mode=true \
         -e deployment_bundle_allow_dirty_controller=true \
@@ -1303,6 +1314,7 @@ docker run --rm \
         -e nas_docker_root=$sandbox/volume1/Docker \
         -e nas_media_root=$sandbox/volume2 \
         -e platform_compose_kind=integration \
+        -e platform_project_name=\"$integration_project_namespace\" \
         -e platform_beszel_agent_kind=portable \
         -e deployment_bundle_test_mode=true \
         -e deployment_bundle_allow_dirty_controller=true \
@@ -1319,6 +1331,7 @@ docker run --rm \
         -e nas_docker_root=$sandbox/volume1/Docker \
         -e nas_media_root=$sandbox/volume2 \
         -e platform_compose_kind=integration \
+        -e platform_project_name=\"$integration_project_namespace\" \
         -e platform_beszel_agent_kind=portable \
         -e deployment_bundle_test_mode=true \
         -e deployment_bundle_allow_dirty_controller=true \
@@ -1336,6 +1349,7 @@ docker run --rm \
         -e nas_docker_root=$sandbox/volume1/Docker \
         -e nas_media_root=$sandbox/volume2 \
         -e platform_compose_kind=integration \
+        -e platform_project_name=\"$integration_project_namespace\" \
         -e platform_beszel_agent_kind=portable \
         -e deployment_bundle_test_mode=true \
         -e deployment_bundle_allow_dirty_controller=true \
@@ -1357,6 +1371,7 @@ docker run --rm \
         -e nas_docker_root=$sandbox/volume1/Docker \
         -e nas_media_root=$sandbox/volume2 \
         -e platform_compose_kind=integration \
+        -e platform_project_name=\"$integration_project_namespace\" \
         -e platform_beszel_agent_kind=portable \
         -e deployment_bundle_test_mode=true \
         -e deployment_bundle_allow_dirty_controller=true \
@@ -1579,7 +1594,7 @@ docker run --rm \
          legacy-current-compose ] && \
        [ \"\$(cat '$stale_release_dir/services/ntfy/compose.yml')\" = \
          stale-same-sha-compose ] && \
-       [ -f '$stale_release_dir/services/ntfy/compose.integration.yml' ] && \
+       [ -f '$stale_release_dir/services/ntfy/compose.mac.yml' ] && \
        [ -f '$stale_release_dir/services/undeclared/compose.yml' ]; then
       printf 'STALE_ROOT_SEEDED\n'
     else
@@ -1599,7 +1614,7 @@ docker run --rm \
       exit 1
     fi
     printf 'STALE_BUNDLE_REPLACED\n'
-    if [ -e '$stale_release_dir/services/ntfy/compose.integration.yml' ] || \
+    if [ -e '$stale_release_dir/services/ntfy/compose.mac.yml' ] || \
        [ -e '$stale_release_dir/services/undeclared' ]; then
       printf 'STALE TARGET-ONLY CONTENT SURVIVED\n' >&2
       exit 1
@@ -1920,7 +1935,7 @@ EOF
 
       run_play -e platform_beszel_agent_available=false --tags beszel
       if docker ps -a --format '{{.Names}}' | \
-          grep -Eq '^(beszel_agent|beszel_agent_portable)$'; then
+          grep -Eq '^('$integration_project_namespace'-beszel-agent-intel|'$integration_project_namespace'-beszel-agent-portable)$'; then
         printf 'BESZEL CAPABILITY-FALSE LEFT A MANAGED AGENT\n' >&2
         exit 1
       fi
@@ -2140,9 +2155,10 @@ EOF
       printf 'AUDIOBOOKSHELF_CHECK_CREATE_PLANNED_IMMUTABLE\n'
 
       run_audiobookshelf_contract seed-progress
-      docker compose --project-name audiobookshelf \
+      docker compose --project-name $integration_project_namespace-audiobookshelf \
         --env-file '$sandbox/volume1/Docker/nas-platform/runtime/services/audiobookshelf/.env' \
         -f '$sandbox/volume1/Docker/nas-platform/current/services/audiobookshelf/compose.yml' \
+        -f '$sandbox/volume1/Docker/nas-platform/current/services/audiobookshelf/compose.integration.yml' \
         up -d --force-recreate --wait
       run_audiobookshelf_contract assert-persistence
       printf 'AUDIOBOOKSHELF_RECREATE_PERSISTENCE_OK\n'
@@ -2177,9 +2193,10 @@ EOF
       mkdir -m 0700 '$sandbox/reports/paperless-coordinated-snapshot'
       run_paperless_snapshot drill '$sandbox/reports/paperless-coordinated-snapshot'
       run_paperless_contract assert-persistence
-      docker compose --project-name paperless \
+      docker compose --project-name $integration_project_namespace-paperless \
         --env-file '$sandbox/volume1/Docker/nas-platform/runtime/services/paperless-ngx/.env' \
         -f '$sandbox/volume1/Docker/nas-platform/current/services/paperless-ngx/compose.yml' \
+        -f '$sandbox/volume1/Docker/nas-platform/current/services/paperless-ngx/compose.integration.yml' \
         up -d --force-recreate --wait
       run_paperless_contract assert-persistence
     fi
@@ -2198,7 +2215,14 @@ EOF
         PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
         PLATFORM_FIXTURE_ROOT='$sandbox/fixtures' \
         PLATFORM_REPORT_ROOT='$sandbox/reports' \
-        PLATFORM_JELLYFIN_CONTAINER=jellyfin \
+        PLATFORM_JELLYFIN_CONTAINER=$integration_project_namespace-jellyfin \
+        PLATFORM_PROJECT_NAME=$integration_project_namespace \
+        PLATFORM_AUDIOBOOKSHELF_CONTAINER=$integration_project_namespace-audiobookshelf \
+        PLATFORM_IMMICH_SERVER_CONTAINER=$integration_project_namespace-immich-server \
+        PLATFORM_IMMICH_MACHINE_LEARNING_CONTAINER=$integration_project_namespace-immich-machine-learning \
+        PLATFORM_IMMICH_REDIS_CONTAINER=$integration_project_namespace-immich-redis \
+        PLATFORM_IMMICH_POSTGRES_CONTAINER=$integration_project_namespace-immich-postgres \
+        PLATFORM_PAPERLESS_WEBSERVER_CONTAINER=$integration_project_namespace-paperless-webserver \
         ruby /repo/tests/run_contracts.rb --execute
       run_audiobookshelf_contract authentication-session-cleanup
     fi
