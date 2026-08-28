@@ -102,6 +102,21 @@ SUITES = {
     environment: ->(_repo) { {} },
     diagnostic: ->(message) { "FAIL #{message}" }
   },
+  policy_integration: {
+    command: ->(repo) { [RbConfig.ruby, File.join(repo, "tests", "policy_integration_test.rb")] },
+    environment: ->(_repo) { {} },
+    diagnostic: ->(message) { "FAIL #{message}" }
+  },
+  policy_mac: {
+    command: ->(repo) { [RbConfig.ruby, File.join(repo, "tests", "policy_mac_test.rb")] },
+    environment: ->(_repo) { {} },
+    diagnostic: ->(message) { "FAIL #{message}" }
+  },
+  policy_vault: {
+    command: ->(repo) { [RbConfig.ruby, File.join(repo, "tests", "policy_vault_test.rb")] },
+    environment: ->(_repo) { {} },
+    diagnostic: ->(message) { "FAIL #{message}" }
+  },
   policy_platform: {
     command: ->(repo) { [RbConfig.ruby, File.join(repo, "tests", "policy_platform_test.rb")] },
     environment: ->(_repo) { {} },
@@ -235,6 +250,11 @@ ARR_ENVIRONMENT = "roles/arr/templates/env.j2"
 ARR_SERVARR = "roles/arr/tasks/reconcile_servarr.yml"
 ARR_PROWLARR = "roles/arr/tasks/reconcile_prowlarr.yml"
 ARR_BAZARR = "roles/arr/tasks/reconcile_bazarr.yml"
+MAC_PATH_FIXTURE = "tests/mac_inventory_path_test.yml"
+SHARED_INVENTORY = "inventory/group_vars/all/main.yml"
+HOST_PREP = "roles/host_prep/tasks/main.yml"
+VERIFY_PLAY = "verify.yml"
+CI_WORKFLOW = ".github/workflows/ci.yml"
 VAULT_CONTRACT = "roles/vault_contract/tasks/main.yml"
 DOWNLOADERS_MAIN = "roles/downloaders/tasks/main.yml"
 DOWNLOADERS_ENVIRONMENT = "roles/downloaders/templates/env.j2"
@@ -1057,6 +1077,68 @@ check_accepted(
   [[ARR_PROWLARR,
     "---\n",
     "---\n# Prowlarr indexes; a download client is deliberately never created here.\n"]]
+)
+
+# --- Integration, Mac and vault policy ------------------------------------------
+
+# tasks_from: target is a prefix of tasks_from: target_docker_dependencies, so
+# the substring check could not tell the containment validator from the module
+# preflight that runs beside it.
+check_rejected(
+  failures, :policy_integration, "the Mac path fixture pointed at a different entry point",
+  [[MAC_PATH_FIXTURE, "        tasks_from: target\n", "        tasks_from: target_docker_dependencies\n"]],
+  "integration must prove canonical Mac paths pass target validation"
+)
+
+check_rejected(
+  failures, :policy_integration, "the Arr project namespace unscoped in the environment",
+  [[ARR_ENVIRONMENT,
+    "PLATFORM_PROJECT_NAME={{ arr_platform_project_name }}\n",
+    "PLATFORM_PROJECT_NAME={{ platform_project_name }}\n" \
+    "# PLATFORM_PROJECT_NAME={{ arr_platform_project_name }}\n"]],
+  "Arr must derive its Compose project and container prefix through its role-scoped namespace"
+)
+
+check_rejected(
+  failures, :policy_integration, "the media-control network suffix changed",
+  [[SHARED_INVENTORY,
+    "  {{ (platform_project_name ~ '-media-control') if",
+    "  {{ (platform_project_name ~ '-media') if"]],
+  "acquisition namespacing must not alter the media-control or legacy project defaults"
+)
+
+# The leak check read three concatenated files, so a comment saying the scoped
+# variable does not apply here was itself the leak.
+check_accepted(
+  failures, :policy_integration, "a comment naming a role-scoped namespace variable",
+  [[HOST_PREP,
+    "---\n",
+    "---\n# The media control network is shared; arr_platform_project_name never applies.\n"]]
+)
+
+check_rejected(
+  failures, :policy_mac, "a converging role added to verify.yml",
+  [[VERIFY_PLAY, "  roles:\n    - role: ntfy\n", "  roles:\n    - role: host_prep\n    - role: ntfy\n"]],
+  "Mac verification must not deploy or converge services"
+)
+
+check_accepted(
+  failures, :policy_mac, "a comment naming the roles verify.yml refuses to run",
+  [[VERIFY_PLAY,
+    "  roles:\n",
+    "  # Never: role: host_prep, role: deployment_bundle, community.docker.docker_compose_v2.\n" \
+    "  roles:\n"]]
+)
+
+check_rejected(
+  failures, :policy_vault, "the redaction test demoted from a run step to its name",
+  [[CI_WORKFLOW,
+    "      - name: Check generated credential redaction\n" \
+    "        run: tests/generate-secrets-redaction-test.sh\n",
+    "      - name: Check generated credential redaction with " \
+    "tests/generate-secrets-redaction-test.sh\n" \
+    "        run: true\n"]],
+  "CI must execute the generated-secret redaction test"
 )
 
 # --- Managed-user vault contract ----------------------------------------------

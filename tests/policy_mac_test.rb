@@ -75,16 +75,24 @@ check(failures, (mac_cleanup + mac_lib).include?("refusing to remove unowned Mac
 
 verify_play_path = File.join(ROOT, "verify.yml")
 check(failures, File.file?(verify_play_path), "Mac proof harness must provide verify.yml")
-verify_play = File.file?(verify_play_path) ? File.read(verify_play_path) : ""
 verify_play_data = File.file?(verify_play_path) ? YAML.safe_load_file(verify_play_path).first : {}
 verification_roles = Array(verify_play_data["roles"])
+# What verify.yml runs, read off the play. The three negatives used to be matched
+# against the file's text, where a comment naming a converging role — the header
+# of this very playbook names them — is indistinguishable from running one.
+verification_role_names = verification_roles.map do |role|
+  role.is_a?(Hash) ? role["role"] || role["name"] : role
+end
+verify_play_strings = task_strings(verify_play_data)
 mac_verify_path = File.join(ROOT, "tests", "mac", "verify.sh")
 mac_verify = File.file?(mac_verify_path) ? File.read(mac_verify_path) : ""
 check(failures, mac_verify.include?('"$mac_repo_dir/verify.yml"') &&
                 !mac_verify.include?('"$mac_repo_dir/site.yml"') &&
-                !verify_play.include?("community.docker.docker_compose_v2") &&
-                !verify_play.include?("role: deployment_bundle") &&
-                !verify_play.include?("role: host_prep"),
+                verify_play_strings.none? do |value|
+                  value.include?("community.docker.docker_compose_v2")
+                end &&
+                !verification_role_names.include?("deployment_bundle") &&
+                !verification_role_names.include?("host_prep"),
       "Mac verification must not deploy or converge services")
 check(failures, verification_roles.any? && verification_roles.all? do |role|
                   role.is_a?(Hash) && Array(role["tags"]).include?("never")
