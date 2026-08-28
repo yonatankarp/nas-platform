@@ -145,7 +145,10 @@
       - item.1 is mapping
       - item.1.name is string
       - item.1.name is match('^[^\r\n]+$')
-      - item.1.value is defined
+      # Prowlarr and the Servarr apps omit `value` for an optional field that
+      # has never been set. The projection already reads a missing value as
+      # null, so requiring it here refused a response the rest of the role
+      # handles correctly. The name still has to be well formed.
     fail_msg: Prowlarr returned an unsupported application field schema.
   loop: "{{ arr_prowlarr_applications_before.json | subelements('fields') }}"
   loop_control:
@@ -232,7 +235,6 @@
       - item.1 is mapping
       - item.1.name is string
       - item.1.name is match('^[^\r\n]+$')
-      - item.1.value is defined
       - >-
         item.1.name != 'categories' or
         (item.1.value is sequence and item.1.value is not mapping and
@@ -319,7 +321,6 @@
       - item.1 is mapping
       - item.1.name is string
       - item.1.name is match('^[^\r\n]+$')
-      - item.1.value is defined
       - >-
         item.1.name != 'categories' or
         (item.1.value is sequence and item.1.value is not mapping and

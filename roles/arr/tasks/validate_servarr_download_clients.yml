@@ -35,7 +35,10 @@
       - item.1 is mapping
       - item.1.name is string
       - item.1.name is match('^[^\r\n]+$')
-      - item.1.value is defined
+      # Prowlarr and the Servarr apps omit `value` for an optional field that
+      # has never been set. The projection already reads a missing value as
+      # null, so requiring it here refused a response the rest of the role
+      # handles correctly. The name still has to be well formed.
       - >-
         item.1.name != 'port' or
         (item.1.value is integer and item.1.value is not boolean) or
