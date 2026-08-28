@@ -13,9 +13,10 @@ services:
     cpus: 3.0
     labels:
       dev.dozzle.name: jellyfin
-    user: "1000:100"
+    user: "${NAS_UID:?}:${NAS_GID:?}"
     # The NAS render node is owned by root, so opening it needs the root group
-    # as a supplementary group. The process itself still runs as 1000:100.
+    # as a supplementary group. The process itself still runs as the platform
+    # identity.
     group_add:
       - "0"
     ports:
