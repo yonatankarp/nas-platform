@@ -106,6 +106,12 @@ then install the poller, declaring that scheduling is external:
 ansible-playbook -i inventory/local.yml install-production-auto-deploy.yml --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE" -e production_auto_deploy_vault_password_file="$PLATFORM_VAULT_PASSWORD_FILE" -e production_auto_deploy_public_host="$PLATFORM_PUBLIC_HOST" -e production_auto_deploy_external_scheduler=true
 ```
 
+One flag covers both schedules. The weekly image prune this playbook also
+installs runs as the same account from the same crond, so it takes its
+scheduling mode from `production_auto_deploy_external_scheduler` rather than
+needing a second declaration; `-e image_prune_external_scheduler=` overrides it
+only if the two ever have to differ.
+
 Then confirm the poller runs at all, before scheduling anything:
 
 ```sh
@@ -156,6 +162,39 @@ bounded to the most recent run. The file ends up owned by `root`, because crond
 performs the redirect before `su` drops privileges; it is harmless inside a
 mode-0700 directory and log rotation ignores it.
 
+### The weekly image prune
+
+The same installer also installs a weekly Docker image prune, and on ADM it
+needs a second root crontab line for exactly the same reason. Confirm it runs
+before scheduling it:
+
+```sh
+sudo su - <account> -c '/home/<account>/.local/bin/nas-platform-prune --status'
+```
+
+Build the line, review it, then append it, in separate commands as above:
+
+```sh
+printf '%s\n' "0 4 * * 0 su - <account> -c '/home/<account>/.local/bin/nas-platform-prune --prune' > /home/<account>/.local/share/nas-platform/prune-logs/cron.out 2>&1" > /tmp/nas-prune.line
+```
+
+```sh
+cat /tmp/nas-prune.line
+```
+
+```sh
+sudo sh -c 'cat /tmp/nas-prune.line >> /usr/builtin/etc/crontabs/root'
+```
+
+Restart crond as above. The two entries share one account and one Docker daemon
+but never overlap: the prune takes the poller's deployment lock for its whole
+run, so whichever starts first makes the other wait or skip. The prune waits
+fifteen minutes for a deployment and then leaves the work to the following
+Sunday.
+
+What each pass removes, and why the age filter is not what makes it safe, is in
+the [physical NAS walkthrough](getting-started-nas.md#the-weekly-image-prune).
+
 ## Verifying a real cycle
 
 The poller records an attempt before deploying, so the attempt count rising is
@@ -196,12 +235,15 @@ $HOME/.local/bin/nas-platform-deploy --retry-failed <sha>
 ## After an ADM firmware update
 
 Firmware updates are reported to overwrite `/usr/builtin/etc/crontabs/root`. The
-loss is silent: deployments simply stop, and the poller has no way to know it is
-no longer being called. Check after every update:
+loss is silent: deployments simply stop, the prune simply stops, and neither has
+any way to know it is no longer being called. Check both after every update:
 
 ```sh
-grep nas-platform-deploy /usr/builtin/etc/crontabs/root
+grep nas-platform- /usr/builtin/etc/crontabs/root
 ```
+
+Two lines must come back, the five-minute `nas-platform-deploy --poll` and the
+weekly `nas-platform-prune --prune`.
 
 ## Troubleshooting
 

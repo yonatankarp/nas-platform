@@ -1,0 +1,191 @@
+---
+- name: Restrict the image prune schedule to the NAS
+  ansible.builtin.assert:
+    that:
+      - platform_kind == 'nas'
+    fail_msg: The scheduled image prune is NAS-only.
+
+- name: Require a dedicated non-root deployment account
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.user_uid | int != 0
+      - image_prune_home | length > 1
+    fail_msg: Install as the dedicated non-root deployment account.
+
+- name: Require the controller checkout the prune script is installed from
+  ansible.builtin.stat:
+    path: "{{ image_prune_checkout }}/scripts/image_prune.py"
+  register: image_prune_source
+
+- name: Reject an absent prune script
+  ansible.builtin.assert:
+    that:
+      - image_prune_source.stat.exists
+      - image_prune_source.stat.isreg
+    fail_msg: >-
+      {{ image_prune_checkout }}/scripts/image_prune.py is missing. Install the
+      production deployment poller first: the prune is installed from, and
+      scheduled beside, that account's controller checkout.
+
+# The prune holds the poller's deployment lock for its whole run, so the
+# directory that lock lives in has to be the poller's own. Stated here rather
+# than created, because a prune that invented its own lock directory would
+# serialise against nothing and could remove an image between a deployment's
+# pull and the container that references it.
+- name: Require the deployment lock directory the prune serialises against
+  ansible.builtin.stat:
+    path: "{{ image_prune_deployment_lock | dirname }}"
+  register: image_prune_lock_root
+
+- name: Reject an absent deployment lock directory
+  ansible.builtin.assert:
+    that:
+      - image_prune_lock_root.stat.exists
+      - image_prune_lock_root.stat.isdir
+    fail_msg: >-
+      {{ image_prune_deployment_lock | dirname }} does not exist, so the prune
+      has no deployment to serialise against. Install the production deployment
+      poller first.
+
+# The prune runs from cron with a deliberately narrow PATH, so it cannot rely on
+# the operator's login environment. NAS firmwares scatter binaries across
+# /usr/local, /usr/builtin and /opt, so discover them here instead of assuming
+# /usr/bin, and record the result in the prune's configuration.
+- name: Locate the tools the prune must run
+  ansible.builtin.shell:
+    cmd: command -v {{ item | quote }}
+    executable: /bin/sh
+  register: image_prune_tool_probe
+  loop: [docker, curl]
+  changed_when: false
+  failed_when: false
+  # A read that must really happen: skipped under --check, the assertion below
+  # would consume a result that does not exist and the review would fail with a
+  # template error instead of reporting what the install would do.
+  check_mode: false
+
+- name: Require every tool the prune depends on
+  ansible.builtin.assert:
+    that:
+      - item.rc | int == 0
+      - item.stdout | trim | length > 0
+    fail_msg: >-
+      {{ item.item }} was not found on this host. The prune runs with a narrow
+      PATH and cannot reclaim anything without it.
+  loop: "{{ image_prune_tool_probe.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Record the discovered tool locations
+  ansible.builtin.set_fact:
+    image_prune_tools: >-
+      {{ dict(image_prune_tool_probe.results
+              | map(attribute='item') | list
+              | zip(image_prune_tool_probe.results
+                    | map(attribute='stdout') | map('trim') | list)) }}
+
+- name: Compose the prune's tool path
+  ansible.builtin.set_fact:
+    image_prune_tool_path: >-
+      {{ (image_prune_tools.values() | map('dirname') | list
+          + ['/usr/bin', '/bin']) | unique | join(':') }}
+
+# Some NAS firmwares ship BusyBox crontab without the setuid bit and keep the
+# spool root-owned, so an unprivileged account cannot schedule anything. Probe
+# here rather than discovering it at the final task, after everything else has
+# already been installed. An empty crontab is a success: the implementations
+# differ on exit status but say so on stderr.
+- name: Check whether this account can manage its own crontab
+  ansible.builtin.command:
+    argv: [crontab, -l]
+  register: image_prune_crontab_probe
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  when: not image_prune_external_scheduler | bool
+
+- name: Require a usable crontab or an acknowledged external scheduler
+  ansible.builtin.assert:
+    that:
+      - >-
+        image_prune_crontab_probe.rc | default(1) | int == 0 or
+        'no crontab' in
+        (image_prune_crontab_probe.stderr | default('') | lower)
+    fail_msg: >-
+      This account cannot manage its own crontab:
+      {{ image_prune_crontab_probe.stderr | default('crontab failed') | trim }}.
+      Schedule {{ image_prune_launcher_path }} --prune weekly with the
+      firmware's own scheduler, running as this account, then re-run with
+      -e image_prune_external_scheduler=true.
+  when: not image_prune_external_scheduler | bool
+
+- name: Report the external prune schedule this installation relies on
+  ansible.builtin.debug:
+    msg: >-
+      Cron is managed externally. Ensure {{ image_prune_launcher_path }} --prune
+      runs weekly as this account.
+  when: image_prune_external_scheduler | bool
+
+- name: Create the private prune directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0700"
+  loop:
+    - "{{ image_prune_root }}"
+    - "{{ image_prune_state_root }}"
+    - "{{ image_prune_log_root }}"
+    - "{{ image_prune_config_root }}"
+    - "{{ image_prune_launcher_root }}"
+
+- name: Install the reviewed prune script
+  ansible.builtin.copy:
+    src: "{{ image_prune_checkout }}/scripts/image_prune.py"
+    dest: "{{ image_prune_script_path }}"
+    mode: "0700"
+    remote_src: true
+
+- name: Install the operator launcher
+  ansible.builtin.template:
+    src: nas-platform-prune.j2
+    dest: "{{ image_prune_launcher_path }}"
+    mode: "0700"
+
+- name: Write the non-secret prune configuration
+  ansible.builtin.template:
+    src: config.json.j2
+    dest: "{{ image_prune_config_path }}"
+    mode: "0600"
+
+- name: Render the protected ntfy publisher configuration
+  ansible.builtin.template:
+    src: ntfy.curl.j2
+    dest: "{{ image_prune_notifier_path }}"
+    mode: "0600"
+  no_log: true
+
+- name: Install one weekly prune cron entry
+  when: not image_prune_external_scheduler | bool
+  ansible.builtin.cron:
+    name: "{{ image_prune_cron_name }}"
+    minute: "{{ image_prune_cron_minute }}"
+    hour: "{{ image_prune_cron_hour }}"
+    weekday: "{{ image_prune_cron_weekday }}"
+    job: "{{ image_prune_launcher_path }} --prune"
+    state: present
+  tags:
+    - image_prune_cron
+
+# Reads the installed configuration through the installed script, so a prune
+# that could not start is a failed installation rather than a silence discovered
+# a week later. --status touches no image and takes no lock.
+- name: Verify the installed prune reads its own configuration
+  ansible.builtin.command:
+    argv: ["{{ image_prune_launcher_path }}", "--status"]
+  register: image_prune_status
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Report the prune policy this installation applies
+  ansible.builtin.debug:
+    msg: "{{ image_prune_status.stdout_lines | default(['not run under check mode']) }}"
