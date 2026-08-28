@@ -28,6 +28,8 @@ ALLOWED_ACTION_NAMES = %w[actions/checkout actions/upload-artifact docker/login-
 CHECKOUT_ACTION_NAME = "actions/checkout"
 LOGIN_ACTION_NAME = "docker/login-action"
 EXPECTED_JOBS = %w[changes static reconciliation suites validate].freeze
+# One reconciliation file per matrix leg, in the order a full run enumerates them.
+RECONCILIATION_PARTS = %w[core bazarr configarr].freeze
 # The suites the matrix dispatches, in the order a full run enumerates them.
 INTEGRATION_SUITES = %w[
   foundation arr downloaders bindery kapowarr pinchflat trailarr seerr smoke beszel
@@ -219,18 +221,38 @@ check(failures, !classifier_run.include?("github.event.pull_request"),
       "event payload expressions must not be interpolated into shell source")
 
 check(failures, jobs.dig("static", "needs") == "changes", "static must depend only on changes")
-# The reconciliation contract is the workflow's heaviest single check. It runs
-# on its own runner so it neither serialises behind the policy gate nor starves
-# it, and every one of its three files must run there or the contract silently
-# stops being enforced.
+# The reconciliation contract is the workflow's heaviest single check. Each of
+# its three files gets its own runner so none of them serialises behind the
+# policy gate, behind each other, or starves the gate. The matrix is a literal
+# list rather than a classifier output: these files always run together, and
+# spelling them here means dropping one is visible in the diff.
 check(failures, jobs.dig("reconciliation", "needs") == "changes",
       "reconciliation must depend only on changes")
-reconciliation_steps = Array(jobs.dig("reconciliation", "steps")).map { |step| step["run"].to_s }.join("\n")
+check(failures, jobs.dig("reconciliation", "strategy", "matrix", "part") == RECONCILIATION_PARTS,
+      "the reconciliation matrix must name every media acquisition reconciliation file " \
+      "in canonical order, found #{jobs.dig('reconciliation', 'strategy', 'matrix', 'part').inspect}")
+check(failures, jobs.dig("reconciliation", "strategy", "matrix").keys == ["part"],
+      "the reconciliation matrix must have exactly one dimension")
+check(failures, jobs.dig("reconciliation", "strategy", "fail-fast") == false,
+      "one failing reconciliation file must not cancel the others")
+check(failures, expression(jobs.dig("reconciliation", "name")) == "reconciliation (${{ matrix.part }})",
+      "each reconciliation leg must report which file it ran as the check name")
+reconciliation_step = Array(jobs.dig("reconciliation", "steps")).find do |step|
+  step["run"].to_s.include?("media_acquisition_reconciliation_")
+end
 check(failures,
-      %w[core bazarr configarr].all? do |part|
-        reconciliation_steps.include?("media_acquisition_reconciliation_#{part}_test.rb")
-      end,
-      "the reconciliation job must run every media acquisition reconciliation file")
+      reconciliation_step.to_h.dig("env", "PART") == "${{ matrix.part }}",
+      "the reconciliation leg must reach its file through an environment variable, " \
+      "not by interpolating the matrix value into shell source")
+check(failures,
+      reconciliation_step.to_h["run"].to_s.strip ==
+        'ruby "tests/media_acquisition_reconciliation_${PART}_test.rb"',
+      "the reconciliation leg must run exactly its own file, " \
+      "found #{reconciliation_step.to_h['run'].inspect}")
+RECONCILIATION_PARTS.each do |part|
+  check(failures, File.file?(File.expand_path("../media_acquisition_reconciliation_#{part}_test.rb", __dir__)),
+        "the reconciliation matrix names a file that does not exist: #{part}")
+end
 check(failures, expression(jobs.dig("static", "if")) == "${{ needs.changes.outputs.static == 'true' }}",
       "static condition must match its classifier output")
 

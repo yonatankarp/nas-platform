@@ -1729,6 +1729,11 @@ end
   "Paperless mail reconciliation regression" => "ruby tests/paperless_mail_reconciliation_test.rb",
   "media acquisition reconciliation regression" =>
     "ruby tests/media_acquisition_foundation_verifier_test.rb",
+  "acquisition filter argument conversion regression" =>
+    'PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_filter_native_arguments_test.py',
+  "acquisition filter argument conversion self-test" =>
+    'PYTHONDONTWRITEBYTECODE=1 "$ansible_python" ' \
+    'tests/acquisition_filter_native_arguments_test.py --self-test',
   "Immich selective helper integrity regression" =>
     "ruby tests/immich_selective_helper_integrity_test.rb",
   "Mac manual-validation runner regression" => "tests/mac/manual-validation-runner-test.sh",
