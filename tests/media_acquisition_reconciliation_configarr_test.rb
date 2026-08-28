@@ -541,7 +541,10 @@ end
         mutation_requests(api, configarr_write).length == 1
       failures << "Configarr #{label} did not converge" unless
         configarr_projection(api.state.fetch("configarr")) == configarr_projection(CONFIGARR)
-      opaque_file = result.fetch("fingerprints").fetch(CONFIGARR_OPAQUE_FINGERPRINT_FILE, {})
+      # A snapshot stores nil for a file that does not exist, so fetch's default
+      # never applies and an absent fingerprint crashed the case instead of
+      # reporting it.
+      opaque_file = result.fetch("fingerprints")[CONFIGARR_OPAQUE_FINGERPRINT_FILE] || {}
       failures << "Configarr #{label} did not record opaque continuity" unless
         opaque_file["content"] == "#{configarr_opaque_fingerprint(CONFIGARR)}\n"
     end

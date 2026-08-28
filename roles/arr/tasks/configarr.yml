@@ -4,16 +4,6 @@
 # those were the same file, so a release carrying a different declaration would
 # apply one thing and be verified against another — which looks exactly like
 # Configarr ignoring its own configuration.
-# Configarr names the instance it processed, where it obtained the guides and
-# what it did with the definitions. None of those lines carry a credential and
-# together they distinguish "talked to a different service" from "applied
-# something else".
-- name: Select the reportable Configarr summary lines
-  ansible.builtin.set_fact:
-    arr_configarr_summary_pattern: >-
-      QualityDefinition|Cloned repository|Checking TRaSH|rror|arning|instance|Processing|Server|CFs:
-  changed_when: false
-
 - name: Read the deployed Configarr declaration
   ansible.builtin.slurp:
     src: "{{ platform_current_dir }}/services/arr/configarr.yml"
@@ -298,7 +288,7 @@
       quality_definition_lines: >-
         {{ (arr_configarr_run.stdout_lines | default([]) +
             arr_configarr_run.stderr_lines | default([])) |
-           select('search', arr_configarr_summary_pattern) |
+           select('search', 'QualityDefinition|Cloned repository|Checking TRaSH|rror|arning|instance|Processing|Server|CFs:') |
            list | map('regex_replace', '^(.{0,160}).*$', '\1') | list }}
   when:
     - not ansible_check_mode
@@ -326,14 +316,22 @@
     acquisition_configarr_quality_definitions_settled(
       arr_configarr_quality_definition_sources[item.name], item.name
     )
-  retries: 30
-  delay: 2
+  # Radarr committed the write within five seconds when this was measured, so
+  # this is generous for the race it exists to close while staying cheap when
+  # the definitions are genuinely different and will never settle.
+  retries: 15
+  delay: 1
   loop: "{{ arr_servarr_instances }}"
   loop_control:
     label: "configarr-settle-{{ item.name }}"
   when:
     - not ansible_check_mode
     - arr_configarr_run_required | bool
+  # Best effort: this exists so the verified state is not read before the write
+  # lands, not to decide whether it is correct. Definitions that never settle
+  # are a real difference, and the assertion below reports which ones with both
+  # values — failing here instead would hide that behind a timeout.
+  failed_when: false
   changed_when: false
   check_mode: false
   no_log: true
