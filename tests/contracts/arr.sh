@@ -74,8 +74,14 @@ if failures.empty?
   defaults_source = File.read(File.join(root, "roles/arr/defaults/main.yml"))
   servarr = File.read(File.join(root, "roles/arr/tasks/reconcile_servarr.yml")) +
     File.read(File.join(root, "roles/arr/tasks/reconcile_servarr_download_client.yml"))
+  # The download-client and Bazarr bodies are built by the relationship filter
+  # rather than spelled out in the task files, so these read where the logic
+  # lives. They stay separate from the narrower `servarr` and `bazarr` sources
+  # above, which the negative checks depend on being exactly the task files.
+  relationships = File.read(File.join(root, "filter_plugins/acquisition_relationships.py"))
   failures << "Servarr reconciliation must own only the SABnzbd clients" unless
-    servarr.include?("Sabnzbd") && defaults_source.include?("category: movies") &&
+    (servarr + relationships).include?("Sabnzbd") &&
+      defaults_source.include?("category: movies") &&
       defaults_source.include?("category: series")
   failures << "Servarr reconciliation must create root folders without import commands" unless
     servarr.include?("rootfolder") && !servarr.match?(/command.*(import|search)/i)
@@ -96,12 +102,14 @@ if failures.empty?
     prowlarr.match?(%r{/downloadclient|download client}i)
 
   bazarr = File.read(File.join(root, "roles/arr/tasks/reconcile_bazarr.yml"))
+  bazarr_sources = bazarr + relationships +
+    File.read(File.join(root, "roles/arr/tasks/reconciliation_fingerprints.yml"))
   failures << "Bazarr must connect to both Arr services" unless
     %w[settings-general-use_radarr settings-general-use_sonarr settings-radarr-apikey settings-sonarr-apikey].all? do |token|
-      bazarr.include?(token)
+      bazarr_sources.include?(token)
     end
   failures << "Bazarr must retain identical paths without remote mappings" unless
-    bazarr.include?("path_mappings") && bazarr.include?("path_mappings_movie")
+    bazarr_sources.include?("path_mappings") && bazarr_sources.include?("path_mappings_movie")
 
   secret_sources = %w[
     roles/arr/tasks/reconcile_servarr.yml
