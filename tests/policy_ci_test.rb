@@ -255,6 +255,18 @@ end
 check(failures,
       validation_commands.count("ruby tests/immich_configured_password_test.rb") == 1,
       "validate-policy.sh must run ruby tests/immich_configured_password_test.rb exactly once")
+# The relationship filters are only fast because Ansible's templated proxies are
+# converted to plain containers on the way in. That conversion is invisible in a
+# unit test and worth 580s of one converge, so the check that pins it, and the
+# self-test proving that check bites, both belong to the gate.
+acquisition_conversion_check =
+  'PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_filter_native_arguments_test.py'
+check(failures,
+      validation_commands.count(acquisition_conversion_check) == 1,
+      "validate-policy.sh must run #{acquisition_conversion_check} exactly once")
+check(failures,
+      validation_commands.count("#{acquisition_conversion_check} --self-test") == 1,
+      "validate-policy.sh must run #{acquisition_conversion_check} --self-test exactly once")
 check(failures,
       validation_commands.count("ruby tests/audiobookshelf_initial_scan_test.rb") == 1,
       "validate-policy.sh must run ruby tests/audiobookshelf_initial_scan_test.rb exactly once")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import re
@@ -2198,10 +2199,60 @@ def acquisition_configarr_profile_repair_bodies(
     return repairs
 
 
+def _native(value: Any) -> Any:
+    """Return plain containers for values that arrived from a play.
+
+    Ansible hands a filter its arguments as templated proxies rather than plain
+    containers, and every element access on one re-enters the templating engine.
+    That is invisible against a fixture and ruinous against a real play: these
+    filters measured 0.05-2.5ms called directly and 1.3-96s called through
+    Jinja on the same data, a factor of about thirty thousand, in proportion to
+    how much of the structure each one walks. Converting once on the way in
+    pays that cost a single time instead of once per access, and every filter
+    below then traverses ordinary dicts and lists.
+
+    A round trip through to_json/from_json inside the template does not work:
+    Ansible re-wraps the intermediate result before the next filter sees it, so
+    the conversion has to happen here.
+    """
+    if isinstance(value, dict):
+        return {_native(key): _native(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_native(item) for item in value]
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, str):
+        return str(value)
+    if isinstance(value, int):
+        return int(value)
+    if isinstance(value, float):
+        return float(value)
+    return value
+
+
+def _with_native_arguments(function: Any) -> Any:
+    """Convert a filter's arguments before its body traverses them."""
+
+    @functools.wraps(function)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        return function(
+            *(_native(argument) for argument in args),
+            **{name: _native(value) for name, value in kwargs.items()},
+        )
+
+    return wrapper
+
+
 class FilterModule:
     """Expose relationship normalization filters to Ansible."""
 
     def filters(self) -> dict[str, Any]:
+        return {
+            name: _with_native_arguments(function)
+            for name, function in self._relationship_filters().items()
+        }
+
+    def _relationship_filters(self) -> dict[str, Any]:
         return {
             "acquisition_application_body": acquisition_application_body,
             "acquisition_application_masked_fields": acquisition_application_masked_fields,
