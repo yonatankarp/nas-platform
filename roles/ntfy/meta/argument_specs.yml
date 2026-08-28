@@ -91,10 +91,13 @@ argument_specs:
         description: Bcrypt hash from the pinned ntfy image's own hasher.
 
   deployment_report:
-    short_description: Publish one deployment report for a service Compose recreated
+    short_description: Publish one deployment report for one service
     description:
       - Called by every service role after its Compose deployment, so the caller
         needs no ntfy port, topic or token of its own.
+      - Publishes on every run that moved the release, whether or not Compose
+        recreated the service, so the record names every service the deployment
+        covered rather than only the ones that happened to change.
     options:
       ntfy_deployment_report_service:
         type: str
@@ -103,7 +106,13 @@ argument_specs:
       ntfy_deployment_report_changed:
         type: bool
         required: true
-        description: Whether Compose recreated anything; false publishes nothing.
+        description: >-
+          Whether Compose recreated anything. Decides how the message reads,
+          and publishes one on its own when the release did not move.
+      ntfy_deployment_release_moved:
+        type: bool
+        required: false
+        description: Whether this run moved the release; the default derives it.
       platform_release_id:
         type: str
         required: true
@@ -137,11 +146,11 @@ argument_specs:
         type: str
         required: true
         description: Git SHA of the release this run deployed.
-      ntfy_deployment_summary_previous:
+      ntfy_deployment_previous_release:
         type: str
         required: false
         description: Release the deployment pointer named before this run.
-      ntfy_deployment_summary_release_moved:
+      ntfy_deployment_release_moved:
         type: bool
         required: false
         description: Whether the release changed; false publishes nothing.

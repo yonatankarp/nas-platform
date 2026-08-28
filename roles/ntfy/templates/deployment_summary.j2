@@ -23,4 +23,4 @@ Changes
 {% endif %}
 {% endif %}
 
-{{ platform_release_id[:12] }}{% if ntfy_deployment_summary_previous is match('^[0-9a-f]{40}$') %} (was {{ ntfy_deployment_summary_previous[:12] }}){% endif %}
+{{ platform_release_id[:12] }}{% if ntfy_deployment_previous_release is match('^[0-9a-f]{40}$') %} (was {{ ntfy_deployment_previous_release[:12] }}){% endif %}

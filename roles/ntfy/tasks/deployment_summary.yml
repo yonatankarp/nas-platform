@@ -14,19 +14,19 @@
     max_bytes: 1048576
   register: ntfy_deployment_summary_current_source
   when:
-    - ntfy_deployment_summary_release_moved | bool
+    - ntfy_deployment_release_moved | bool
     - not ansible_check_mode
 
 - name: Read the manifest of the release this deployment replaced
   atomic_safe_slurp:
     path: >-
-      {{ platform_deploy_root }}/releases/{{ ntfy_deployment_summary_previous }}/manifest.yml
+      {{ platform_deploy_root }}/releases/{{ ntfy_deployment_previous_release }}/manifest.yml
     max_bytes: 1048576
   register: ntfy_deployment_summary_previous_source
   when:
-    - ntfy_deployment_summary_release_moved | bool
+    - ntfy_deployment_release_moved | bool
     - not ansible_check_mode
-    - ntfy_deployment_summary_previous is match('^[0-9a-f]{40}$')
+    - ntfy_deployment_previous_release is match('^[0-9a-f]{40}$')
 
 # A first install has no previous manifest, and every image in it is genuinely
 # new rather than unchanged.
@@ -40,7 +40,7 @@
     ntfy_deployment_summary_current_document: >-
       {{ ntfy_deployment_summary_current_source.content | b64decode | from_yaml }}
   when:
-    - ntfy_deployment_summary_release_moved | bool
+    - ntfy_deployment_release_moved | bool
     - not ansible_check_mode
     - ntfy_deployment_summary_current_source.exists | default(false)
 
@@ -56,7 +56,7 @@
       - log
       - --no-merges
       - --format=%s
-      - "{{ ntfy_deployment_summary_previous }}..{{ platform_release_id }}"
+      - "{{ ntfy_deployment_previous_release }}..{{ platform_release_id }}"
   register: ntfy_deployment_summary_git_log
   changed_when: false
   failed_when: false
@@ -64,10 +64,10 @@
   delegate_to: localhost
   run_once: true
   when:
-    - ntfy_deployment_summary_release_moved | bool
+    - ntfy_deployment_release_moved | bool
     - not ansible_check_mode
     - ntfy_deployment_summary_current_source.exists | default(false)
-    - ntfy_deployment_summary_previous is match('^[0-9a-f]{40}$')
+    - ntfy_deployment_previous_release is match('^[0-9a-f]{40}$')
 
 - name: Resolve the commit subjects to report
   ansible.builtin.set_fact:
@@ -75,7 +75,7 @@
       {{ (ntfy_deployment_summary_git_log.stdout_lines | default([]))
          if (ntfy_deployment_summary_git_log.rc | default(1)) == 0 else [] }}
   when:
-    - ntfy_deployment_summary_release_moved | bool
+    - ntfy_deployment_release_moved | bool
     - not ansible_check_mode
     - ntfy_deployment_summary_current_source.exists | default(false)
 
@@ -105,7 +105,7 @@
   changed_when: false
   no_log: true
   when:
-    - ntfy_deployment_summary_release_moved | bool
+    - ntfy_deployment_release_moved | bool
     - not ansible_check_mode
     - ntfy_deployment_summary_current_source.exists | default(false)
 

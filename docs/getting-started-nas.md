@@ -190,11 +190,17 @@ proof therefore arrived as an empty "New message", once per publisher, on every
 converge.
 
 Every service reports its own deployment on `nas-deployment` at priority 2, one
-message per service whose containers Compose actually recreated. The controller
-publishes them with the deploy publisher's token, so no service needs a token
-of its own inside its image. A converge that leaves a service untouched sends
-nothing, which keeps a no-op run silent and makes the messages you do get name
-exactly what changed.
+message per service, on every run that moved the release. Each says which of
+the two things happened — `Komga deployed (recreated)` when Compose replaced
+its containers, `Komga deployed (already current)` when the release left them
+running — because a release usually moves one image and leaves the rest alone,
+and a service that says nothing is indistinguishable from one that was never
+deployed. The controller publishes them with the deploy publisher's token, so
+no service needs a token of its own inside its image.
+
+A run that does not move the release publishes only for the services Compose
+actually recreated, so a selective converge and a re-run of the installed
+revision stay silent.
 
 After every service role, a single run-level summary follows on
 `nas-deployment` at priority 3, above the per-service detail. It diffs the
