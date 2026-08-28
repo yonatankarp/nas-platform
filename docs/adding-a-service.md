@@ -362,8 +362,12 @@ is worth understanding one thing before reading it: **the role never runs agains
 this repository on the target machine.** `deployment_bundle` assembles an
 immutable release from the controller checkout and installs it at
 `platform_current_dir`, with rendered secrets kept separately under
-`platform_runtime_dir`. The first task re-validates exactly the paths this role
-is about to touch.
+`platform_runtime_dir`. The first task validates exactly the paths this role is
+about to touch, and nothing else does: containment is checked once per distinct
+set of paths, not again beside each write, so a path your role names here and
+nowhere else is a path nobody checked. `deployment_target_require_current_release:
+true` additionally refuses to run unless `current` resolves to the release this
+run installed, which is what makes a lone `--tags navidrome` converge safe.
 
 ```yaml
 ---

@@ -1405,6 +1405,52 @@ expect_failure(failures, "target validator lookup replaced",
   File.write(path, File.read(path).gsub(lookup, "{{ 'pass' }}"))
 end
 
+expect_failure(failures, "target validation record removed",
+               "target validation must record that the play has already validated containment") do |root|
+  path = File.join(root, "roles", "deployment_bundle", "tasks", "target.yml")
+  tasks = YAML.safe_load_file(path)
+  tasks.reject! do |task|
+    task.dig("ansible.builtin.set_fact", "deployment_bundle_target_validated") == true
+  end
+  File.write(path, YAML.dump(tasks))
+end
+
+expect_failure(failures, "containment revalidated beside each mutation",
+               "deployment bundle must validate target containment exactly once, " \
+               "not beside each mutation") do |root|
+  path = File.join(root, "roles", "deployment_bundle", "tasks", "main.yml")
+  tasks = YAML.safe_load_file(path)
+  index = tasks.index { |task| task["ansible.builtin.include_tasks"] == "target.yml" }
+  tasks.insert(index + 1, Marshal.load(Marshal.dump(tasks.fetch(index))))
+  File.write(path, YAML.dump(tasks))
+end
+
+expect_failure(failures, "play-level containment validation repeated",
+               "deployment bundle target validation must be skipped when the play already validated") do |root|
+  path = File.join(root, "roles", "deployment_bundle", "tasks", "main.yml")
+  tasks = YAML.safe_load_file(path)
+  tasks.each do |task|
+    task.delete("when") if task["ansible.builtin.include_tasks"] == "target.yml"
+  end
+  File.write(path, YAML.dump(tasks))
+end
+
+# The guardrail from the issue that removed the adjacent revalidations: hoisting
+# the check out of the roles would leave this policy passing over nothing.
+expect_failure(failures, "service Compose override left unguarded",
+               "komga must guard every Compose file consumed by selective runs") do |root|
+  path = File.join(root, "roles", "komga", "tasks", "main.yml")
+  tasks = YAML.safe_load_file(path)
+  tasks.each do |task|
+    next unless task.dig("ansible.builtin.include_role", "tasks_from") == "target"
+
+    task.fetch("vars").fetch("deployment_target_extra_paths").reject! do |candidate|
+      candidate.to_s.end_with?("/compose.{{ platform_compose_kind }}.yml")
+    end
+  end
+  File.write(path, YAML.dump(tasks))
+end
+
 expect_failure(failures, "preflight probe leaf unguarded",
                "target validator must guard the exact preflight probe leaf") do |root|
   path = File.join(root, "roles", "deployment_bundle", "tasks", "target.yml")
