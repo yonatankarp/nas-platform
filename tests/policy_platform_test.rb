@@ -70,9 +70,14 @@ PLATFORM_INVENTORIES.values.map { |values| [values[0], values[3]] }.uniq.each do
     check(failures, host_vars.key?(policy),
           "#{relative_path} must define #{policy}")
   end
-  %w[media_usenet_enabled media_torrent_enabled].each do |transport|
-    check(failures, host_vars[transport] == false,
-          "#{relative_path} #{transport} must be literal false")
+  # A transport stays false until that host has taken it through its operator
+  # handoff. Usenet on the NAS has been; nothing else has. Pinning the value
+  # rather than requiring false catches a transport switched on before its
+  # handoff, and an accepted one switched off behind the platform's back.
+  { "media_usenet_enabled" => platform_kind == "nas",
+    "media_torrent_enabled" => false }.each do |transport, expected|
+    check(failures, host_vars[transport] == expected,
+          "#{relative_path} #{transport} must be literal #{expected}")
   end
   %w[platform_render_device_available platform_beszel_agent_available].each do |capability|
     check(failures, [true, false].include?(host_vars[capability]),

@@ -1,0 +1,11 @@
+{# The server root, not /<topic>: ntfy only parses a JSON publish document when
+   the POST targets the root, and treats a body sent to /<topic> as literal
+   message text. The prune puts the topic in the body instead, exactly as
+   scripts/production_auto_deploy.py does. The address stays loopback: this
+   publisher always runs on the NAS itself.
+
+   Its own file rather than the poller's: two roles rendering one path would
+   each claim the other's change on every converge. #}
+url = "http://127.0.0.1:{{ ntfy_port | default(2586) }}/"
+header = "Authorization: Bearer {{ vault_ntfy_deploy_token }}"
+header = "Content-Type: application/json"

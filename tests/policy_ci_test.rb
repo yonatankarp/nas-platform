@@ -223,11 +223,14 @@ validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "te
   ruby\ tests/immich_user_onboarding_test.rb
   ruby\ tests/immich_selective_helper_integrity_test.rb
   ruby\ tests/komga_library_reconciliation_test.rb
+  ruby\ tests/reader_platform_identity_test.rb
   ruby\ tests/audiobookshelf_initial_scan_test.rb
   ruby\ tests/audiobookshelf_initial_scan_behavior_test.rb
   ruby\ tests/paperless_mail_reconciliation_test.rb
   PYTHONDONTWRITEBYTECODE=1\ "$ansible_python"\ -m\ unittest\ -v\ tests.production_auto_deploy_test
   ruby\ tests/production_auto_deploy_role_test.rb
+  PYTHONDONTWRITEBYTECODE=1\ "$ansible_python"\ -m\ unittest\ -v\ tests.image_prune_test
+  ruby\ tests/image_prune_role_test.rb
   python3\ -m\ unittest\ -v\ tests/dozzle_alert_relay_test.py
   tests/dozzle_alert_state_symlink_test.sh
   tests/integration_lock_test.sh
@@ -247,7 +250,11 @@ end
   'PYTHONDONTWRITEBYTECODE=1 "$ansible_python" -m unittest -v tests.production_auto_deploy_test' =>
     "the production auto-deploy poller suite",
   "ruby tests/production_auto_deploy_role_test.rb" =>
-    "the production auto-deploy installer suite"
+    "the production auto-deploy installer suite",
+  'PYTHONDONTWRITEBYTECODE=1 "$ansible_python" -m unittest -v tests.image_prune_test' =>
+    "the scheduled image prune suite",
+  "ruby tests/image_prune_role_test.rb" =>
+    "the image prune installer suite"
 }.each do |command, description|
   check(failures, validation_commands.count(command) == 1,
         "validate-policy.sh must run #{description} exactly once")
@@ -285,6 +292,16 @@ acquisition_owned_field_check =
 check(failures,
       validation_commands.count(acquisition_owned_field_check) == 1,
       "validate-policy.sh must run #{acquisition_owned_field_check} exactly once")
+# media_bazarr_providers is validated against no list of known providers, so a
+# misspelled setting key converges and fetches nothing. The documented blocks
+# are the operator's protection against that, and they only protect while
+# something proves they still validate and still match the deployed version.
+check(failures,
+      validation_commands.count("ruby tests/bazarr_provider_schema_test.rb") == 1,
+      "validate-policy.sh must run ruby tests/bazarr_provider_schema_test.rb exactly once")
+check(failures,
+      validation_commands.count("ruby tests/bazarr_provider_schema_test.rb --self-test") == 1,
+      "validate-policy.sh must run ruby tests/bazarr_provider_schema_test.rb --self-test exactly once")
 check(failures,
       validation_commands.count("ruby tests/audiobookshelf_initial_scan_test.rb") == 1,
       "validate-policy.sh must run ruby tests/audiobookshelf_initial_scan_test.rb exactly once")

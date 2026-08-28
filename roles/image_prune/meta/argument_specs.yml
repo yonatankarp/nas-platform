@@ -1,0 +1,52 @@
+---
+argument_specs:
+  main:
+    short_description: Schedule the NAS Docker image prune
+    description:
+      - Installs the prune script, its non-secret configuration, the protected
+        ntfy publisher configuration, and one weekly cron entry.
+    options:
+      platform_kind:
+        description: Platform discriminator; the role accepts only nas.
+        type: str
+        required: true
+      vault_ntfy_deploy_token:
+        description: The deployer's own least-privilege write-only ntfy token.
+        type: str
+        required: true
+      image_prune_home:
+        description: Real home of the dedicated non-root deployment account.
+        type: path
+      image_prune_checkout:
+        description: Controller checkout the prune script is installed from.
+        type: path
+      image_prune_cron_name:
+        description: Comment identifying the managed cron entry.
+        type: str
+      image_prune_cron_minute:
+        description: Cron minute field for the weekly prune.
+        type: str
+      image_prune_cron_hour:
+        description: Cron hour field for the weekly prune.
+        type: str
+      image_prune_cron_weekday:
+        description: Cron weekday field for the weekly prune.
+        type: str
+      image_prune_retention_hours:
+        description: Images created less than this many hours ago are never removed.
+        type: int
+      image_prune_dangling_retention_hours:
+        description: Shorter window applied to untagged images nothing can name.
+        type: int
+      image_prune_log_retention_days:
+        description: Days of prune logs to retain.
+        type: int
+      image_prune_lock_wait_seconds:
+        description: Seconds a prune waits for an in-flight deployment to finish.
+        type: int
+      image_prune_deployment_lock:
+        description: The poller's deployment lock the prune serialises against.
+        type: path
+      image_prune_external_scheduler:
+        description: Prune is scheduled outside cron; the role installs no entry.
+        type: bool

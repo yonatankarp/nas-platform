@@ -17,9 +17,16 @@
     deployment_target_expected_root: >-
       {{ (nas_docker_root | regex_replace('/+$', '')) ~ '/nas-platform' }}
 
-# This is a read-only check against pre-existing symlinks and canonical escapes.
-# Repeating it adjacent to mutations narrows the race window, but it does not
-# eliminate concurrent privileged filesystem mutation between Ansible tasks.
+# A read-only check against pre-existing symlinks and canonical escapes, run
+# once per distinct set of paths, before the tasks that mutate them: once for
+# the play in site.yml pre_tasks, and once per role for the extra paths only
+# that role knows it is about to touch. It is deliberately not repeated beside
+# each individual mutation. That would narrow the window between check and use
+# without closing it, because nothing here excludes a
+# concurrent privileged filesystem mutation between two Ansible tasks; closing
+# it takes the check inside the operation, against a held descriptor, the way
+# library/atomic_safe_slurp.py does. A subprocess per mutation buys only the
+# narrower window, so this role no longer spends one.
 - name: Validate target path ancestry and canonical containment
   ansible.builtin.command:
     argv:
@@ -54,3 +61,10 @@
             | map(attribute='name')
             | map('regex_replace', '^', platform_runtime_dir ~ '/services/')
             | list) }}
+
+# Lets deployment_bundle's own body skip a validation the play already ran,
+# while a playbook that uses the role without site.yml's pre_tasks still gets
+# one. Mirrors deployment_bundle_controller_validated in controller.yml.
+- name: Record target containment validation
+  ansible.builtin.set_fact:
+    deployment_bundle_target_validated: true

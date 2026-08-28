@@ -101,11 +101,15 @@ expected_safe_defaults.each do |name, value|
         "#{name} must default to #{value.inspect}")
 end
 
-%w[nas_hosts mac_hosts].each do |host_group|
+# Usenet is enabled on the NAS, where Phase 1 was accepted. Every other
+# transport on every host stays inert until its own handoff.
+{ "nas_hosts" => { "media_usenet_enabled" => true, "media_torrent_enabled" => false },
+  "mac_hosts" => { "media_usenet_enabled" => false, "media_torrent_enabled" => false } }
+  .each do |host_group, flags|
   vars = strict_yaml("inventory/group_vars/#{host_group}/main.yml")
-  %w[media_usenet_enabled media_torrent_enabled].each do |flag|
-    check(failures, vars[flag] == false,
-          "#{host_group} #{flag} must remain literal false")
+  flags.each do |flag, expected|
+    check(failures, vars[flag] == expected,
+          "#{host_group} #{flag} must remain literal #{expected}")
   end
 end
 
@@ -260,8 +264,12 @@ operator_guide_path = File.join(ROOT, "docs", "media-acquisition-phase1.md")
 operator_guide = File.file?(operator_guide_path) ? File.read(operator_guide_path) : ""
 check(failures, !operator_guide.empty?, "Phase 1 operator guide must exist")
 {
-  /media_usenet_enabled:\s*true/ => "guide must enable Usenet for one target",
-  /outside source control/i => "guide must keep provider and preference choices outside source control",
+  /media_usenet_enabled: true.*inventory\/group_vars\/nas_hosts/m =>
+    "guide must name the inventory value that activates a target",
+  /ansible-vault edit inventory\/group_vars\/all\/vault\.yml/ =>
+    "guide must put provider and preference choices in the vault",
+  /never enter the repository/i =>
+    "guide must say why committing the encrypted vault is safe",
   /media_acquisition_adopt_existing_libraries=true.*one convergence/im =>
     "guide must bound the adoption override to one convergence",
   /match.*Movies.*Series.*before.*rename.*monitor/im =>

@@ -1,0 +1,15 @@
+{{ {
+  'state_root': image_prune_state_root,
+  'log_root': image_prune_log_root,
+  'deployment_lock': image_prune_deployment_lock | trim,
+  'deployment_lock_wait_seconds': image_prune_lock_wait_seconds | int,
+  'ntfy_curl_config': image_prune_notifier_path,
+  'ntfy_topic_critical': ntfy_topic | default('nas-critical'),
+  'ntfy_topic_deployment': ntfy_deployment_topic | default('nas-deployment'),
+  'retention_hours': image_prune_retention_hours | int,
+  'dangling_retention_hours': image_prune_dangling_retention_hours | int,
+  'log_retention_days': image_prune_log_retention_days | int,
+  'docker_path': image_prune_tools['docker'],
+  'curl_path': image_prune_tools['curl'],
+  'tool_path': image_prune_tool_path | trim
+} | to_nice_json }}

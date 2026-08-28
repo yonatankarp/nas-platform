@@ -10,40 +10,53 @@ It does not claim content acquisition. It does not claim NAS ACL correctness.
 It does not claim Open Subtitles retirement. Those are NAS operator acceptance
 decisions backed by the evidence below.
 
-## 1. Prepare one target without committing provider choices
+## 1. Prepare one target
 
-Choose one NAS target and create a mode-`0600`, Ansible-Vault-encrypted extra
-variables file outside source control. Do not put provider credentials in a
-command-line `-e` value, a plaintext inventory file, or shell history.
+Activation is an inventory value: `media_usenet_enabled: true` in
+`inventory/group_vars/nas_hosts/main.yml` deploys the stacks on a host that has
+been through this handoff. The policy tests pin the expected value per host and
+per transport, so a host that has not been through it cannot be activated by a
+merge, and an accepted one cannot be switched off unnoticed.
+
+Provider and preference choices are credentials, and go where every other
+credential on this platform goes:
 
 ```sh
-umask 077
-export PLATFORM_ACQUISITION_VARS="$HOME/.config/nas-platform/acquisition.yml"
-ansible-vault create "$PLATFORM_ACQUISITION_VARS"
+ansible-vault edit inventory/group_vars/all/vault.yml
 ```
 
-The encrypted file must begin with this activation and the operator-reviewed
-values for the three lists:
-
 ```yaml
-media_usenet_enabled: true
 media_arr_indexers: []
 media_bazarr_languages: []
 media_bazarr_providers: []
 ```
 
-Replace the empty lists only with schemas exported from the matching deployed
-Prowlarr and Bazarr versions and reviewed for this target. Provider/indexer
-credentials and Bazarr language/provider preferences stay in that encrypted
-file outside source control. This repository does not choose a Usenet provider,
-indexer, subtitle language, or Bazarr provider. Configure the SABnzbd server
-connection through its protected application configuration before attempting a
-proof download.
+`group_vars/all/main.yml` carries the same three names as empty lists, which is
+what starts the applications without unattended acquisition on a target that has
+declared nothing. Ansible loads both files and the vault wins, so a declaration
+here overrides that default without removing it.
 
-Always pass this file to Phase 1 convergence and verification. The existing
-automatic-deployment poller does not load this external artifact; keep automatic
-deployment disabled for this target until its protected-input procedure is
-extended and reviewed.
+Replace the empty lists only with values reviewed for this target.
+[Bazarr provider schemas](bazarr-providers.md) records the exact keys the
+deployed Bazarr accepts, derived from the pinned version rather than exported
+from a running service. This repository does not choose a Usenet provider,
+indexer, subtitle language, or Bazarr provider; it does record what a chosen one
+requires. Configure the SABnzbd server connection through its protected
+application configuration before attempting a proof download.
+
+Do not put provider credentials in a command-line `-e` value, a plaintext
+inventory file, or shell history.
+
+The vault is committed, so the deployment poller carries these on every cycle:
+there is no external artifact for it to miss, and no reason to leave automatic
+deployment disabled while acquisition is configured. Keep it disabled while
+adopting an existing library in step 2, where a convergence arriving partway
+through the review is the thing to avoid, and turn it back on once the review is
+accepted.
+
+Publishing the ciphertext is uninteresting because the vault password is 384
+random bits that never enter the repository. A credential that must not be
+committed under any circumstances is one this platform should not be holding.
 
 The Arr runtime directory stores private SHA-256 digests for opaque desired
 inputs. It also stores `.configarr-owned-state.sha256`, which is different: it
@@ -68,7 +81,7 @@ activation only, run one convergence with the explicit adoption input:
 ```sh
 ansible-playbook -i inventory/remote.yml site.yml \
   --tags media_acquisition_phase1 \
-  --ask-vault-pass -e @"$PLATFORM_ACQUISITION_VARS" \
+  --ask-vault-pass \
   -e media_acquisition_adopt_existing_libraries=true
 ```
 
@@ -92,7 +105,7 @@ Run later convergence without the adoption override:
 ```sh
 ansible-playbook -i inventory/remote.yml site.yml \
   --tags media_acquisition_phase1 \
-  --ask-vault-pass -e @"$PLATFORM_ACQUISITION_VARS"
+  --ask-vault-pass
 ```
 
 ## 3. Verify declared application state
@@ -102,7 +115,7 @@ The verification play is read-only with respect to reconciliation:
 ```sh
 ansible-playbook -i inventory/remote.yml verify.yml \
   --tags platform_verify_arr,platform_verify_downloaders \
-  --ask-vault-pass -e @"$PLATFORM_ACQUISITION_VARS"
+  --ask-vault-pass
 ```
 
 Require `failed=0` and `unreachable=0`. This proves the repository-owned root

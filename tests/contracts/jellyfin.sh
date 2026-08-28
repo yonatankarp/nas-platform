@@ -68,7 +68,7 @@ avatar = File.join(root, "roles", "jellyfin", "files", "yonatan-avatar.jpeg")
 refuse("approved administrator avatar hash differs") unless
   Digest::SHA256.file(avatar).hexdigest ==
     "bf12ac53a05f1db64f3d00440315a6626e7c2dd12dd41867c93c9ac7aeccc792"
-refuse("NAS UID/GID differs") unless service.fetch("user") == "1000:100"
+refuse("platform identity differs") unless service.fetch("user") == "${NAS_UID:?}:${NAS_GID:?}"
 refuse("NAS port differs") unless service.fetch("ports") == ["8096:8096/tcp"]
 refuse("storage contract differs") unless service.fetch("volumes") == [
   "${JELLYFIN_CONFIG_PATH:?}:/config",

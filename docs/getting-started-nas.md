@@ -385,6 +385,133 @@ broad recursive deletion as an uninstall procedure. Disabling or removing the
 poller does not delete running services, application data, or attempt logs;
 retaining the logs and the recorded deployment state preserves audit evidence.
 
+### The weekly image prune
+
+The same installer schedules a second, unrelated job: a weekly Docker image
+prune, 04:00 on Sunday, as the same account. Every image is pinned as
+`repo:tag@sha256:...`, so each Renovate bump pulls a new image and leaves the
+superseded one on disk; nothing else on the NAS ever removes it.
+
+Two passes run, in this order:
+
+```sh
+docker image prune --all --force --filter until=168h
+docker image prune --force --filter until=24h
+```
+
+The first removes every image no container references and that was created more
+than a week ago. The second removes untagged leftovers on a shorter window,
+because nothing can name them at all. Neither can reach a volume, a network, a
+stopped container, or anything else: `docker image prune` has no argument that
+would, and the prune builds its own argument vectors rather than accepting one.
+
+Two properties are worth being precise about, because the obvious reading of
+each is wrong:
+
+- **`until` compares an image's creation time, not when this host pulled it.** A
+  release published upstream months ago and pulled a minute ago is already
+  outside a 168h window. The window is a margin, not the thing that keeps a
+  prune off a running deployment.
+- **What keeps a prune off a running deployment is the poller's own lock.** The
+  prune takes `state/deployment.lock` and holds it while Docker runs, so it
+  cannot delete an image in the gap between a deployment pulling it and starting
+  its container. If a deployment already holds the lock, the prune waits fifteen
+  minutes and then skips: the same images are still there next Sunday. A poll
+  that arrives while a prune holds the lock likewise does nothing and retries
+  five minutes later.
+
+Rollback does not depend on the local image cache. Images are pinned by digest,
+so deploying an earlier revision re-pulls exactly the image that revision names.
+A pruned image costs a pull, not availability.
+
+#### Scheduling it
+
+The prune is installed by the same play as the poller, so nothing new is cloned,
+no credential is added, and no inventory value is required. Installing the
+poller installs the prune with it:
+
+```sh
+ansible-playbook -i inventory/local.yml install-production-auto-deploy.yml \
+  --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE" \
+  -e production_auto_deploy_vault_password_file="$PLATFORM_VAULT_PASSWORD_FILE" \
+  -e production_auto_deploy_public_host="$PLATFORM_PUBLIC_HOST"
+```
+
+On a host where this account manages its own crontab, that installs the weekly
+entry as well, and there is nothing further to schedule. Both entries should be
+present, and the installed prune should read its own configuration:
+
+```sh
+crontab -l
+$HOME/.local/bin/nas-platform-prune --status
+```
+
+Where an unprivileged account cannot use cron — the ADM case above — the
+installer takes its scheduling mode from
+`production_auto_deploy_external_scheduler` and installs everything except the
+cron entry, exactly as it does for the poller. Schedule
+`$HOME/.local/bin/nas-platform-prune --prune` weekly with the firmware's own
+scheduler, running as the deployment account. The concrete root crontab
+procedure for ADM, and the crond restart it needs, are in
+[the ADM rollout notes](asustor-adm-rollout.md#the-weekly-image-prune). One flag
+covers both schedules; `-e image_prune_external_scheduler=` overrides it only if
+the two ever have to differ.
+
+Run the first prune by hand rather than leaving it to the first Sunday. It is
+the only run with a backlog to clear — every later one is incremental — and
+each pass has a fifteen-minute deadline, so watching the first tells you both
+what the host was holding and whether the deadline is comfortable:
+
+```sh
+docker system df
+$HOME/.local/bin/nas-platform-prune --prune
+$HOME/.local/bin/nas-platform-prune --status
+```
+
+`docker system df` reports what a prune has to work with; there is no dry run,
+because Docker offers no honest one. Nothing above needs doing before the
+change that introduces the prune is deployed: the launcher does not exist until
+the installer has run.
+
+The schedule and both windows are role defaults, overridable from inventory:
+`image_prune_cron_minute`, `image_prune_cron_hour` and
+`image_prune_cron_weekday` for when it runs, `image_prune_retention_hours` and
+`image_prune_dangling_retention_hours` for what it may remove, and
+`image_prune_lock_wait_seconds` for how long it waits on a deployment. The
+prune refuses a configuration that would remove same-day images, or a dangling
+window wider than the unused one, rather than installing a schedule that fails
+on its first run.
+
+#### Operating it
+
+Inspect and operate it the same way as the poller:
+
+```sh
+$HOME/.local/bin/nas-platform-prune --status
+$HOME/.local/bin/nas-platform-prune --prune
+```
+
+`--status` reads the installed configuration and reports what the last run
+reclaimed and which windows the next one will apply; it takes no lock and
+touches no image. Prune logs are mode-0600 files under
+`$HOME/.local/share/nas-platform/prune-logs`, retained for 30 days and kept
+separate from the poller's attempt logs.
+
+A run that reclaims something publishes to `nas-deployment`; a run that fails
+publishes to `nas-critical` at priority 5, through the deployer's own write-only
+token. A run that reclaims nothing stays quiet, because most weeks reclaim
+nothing and a weekly no-op notification is noise. The recorded state under
+`prune-state/last-prune` is what to read when the silence needs explaining.
+
+Removing the `NAS platform Docker image prune` crontab entry disables it, the
+same way the poller's entry is removed. Where this account manages its own
+crontab, that entry is Ansible's: the poller replays the installer play on every
+deployment, so it returns on the next successful one. Where scheduling is
+external — an ADM firmware is the case that matters, see the
+[ADM rollout notes](asustor-adm-rollout.md) — the entry belongs to root's
+crontab, nothing replaces it, and removing it is permanent until it is added
+back by hand.
+
 ## Recover after loss of `/volume1`
 
 Use this procedure when the service-state volume was recreated or wiped but the

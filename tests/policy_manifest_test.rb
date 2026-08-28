@@ -144,10 +144,19 @@ expect_acquisition_failure.call(
   end
 end
 
-%w[nas_hosts mac_hosts].product(%w[media_usenet_enabled media_torrent_enabled]).each do |host_group, flag|
-  expect_acquisition_failure.call("#{host_group} #{flag} enabled", "#{flag} must be literal false") do |root|
-    mutate_yaml_file(root, "inventory/group_vars/#{host_group}/main.yml") do |vars|
-      vars[flag] = true
+# Flipped away from its expected value, in whichever direction that is: an
+# inert transport switched on, and the NAS's accepted Usenet switched off.
+{ "nas_hosts" => { "media_usenet_enabled" => true, "media_torrent_enabled" => false },
+  "mac_hosts" => { "media_usenet_enabled" => false, "media_torrent_enabled" => false } }
+  .each do |host_group, flags|
+  flags.each do |flag, expected|
+    expect_acquisition_failure.call(
+      "#{host_group} #{flag} #{expected ? 'disabled' : 'enabled'}",
+      "#{flag} must be literal #{expected}"
+    ) do |root|
+      mutate_yaml_file(root, "inventory/group_vars/#{host_group}/main.yml") do |vars|
+        vars[flag] = !expected
+      end
     end
   end
 end
@@ -1405,6 +1414,52 @@ expect_failure(failures, "target validator lookup replaced",
   File.write(path, File.read(path).gsub(lookup, "{{ 'pass' }}"))
 end
 
+expect_failure(failures, "target validation record removed",
+               "target validation must record that the play has already validated containment") do |root|
+  path = File.join(root, "roles", "deployment_bundle", "tasks", "target.yml")
+  tasks = YAML.safe_load_file(path)
+  tasks.reject! do |task|
+    task.dig("ansible.builtin.set_fact", "deployment_bundle_target_validated") == true
+  end
+  File.write(path, YAML.dump(tasks))
+end
+
+expect_failure(failures, "containment revalidated beside each mutation",
+               "deployment bundle must validate target containment exactly once, " \
+               "not beside each mutation") do |root|
+  path = File.join(root, "roles", "deployment_bundle", "tasks", "main.yml")
+  tasks = YAML.safe_load_file(path)
+  index = tasks.index { |task| task["ansible.builtin.include_tasks"] == "target.yml" }
+  tasks.insert(index + 1, Marshal.load(Marshal.dump(tasks.fetch(index))))
+  File.write(path, YAML.dump(tasks))
+end
+
+expect_failure(failures, "play-level containment validation repeated",
+               "deployment bundle target validation must be skipped when the play already validated") do |root|
+  path = File.join(root, "roles", "deployment_bundle", "tasks", "main.yml")
+  tasks = YAML.safe_load_file(path)
+  tasks.each do |task|
+    task.delete("when") if task["ansible.builtin.include_tasks"] == "target.yml"
+  end
+  File.write(path, YAML.dump(tasks))
+end
+
+# The guardrail from the issue that removed the adjacent revalidations: hoisting
+# the check out of the roles would leave this policy passing over nothing.
+expect_failure(failures, "service Compose override left unguarded",
+               "komga must guard every Compose file consumed by selective runs") do |root|
+  path = File.join(root, "roles", "komga", "tasks", "main.yml")
+  tasks = YAML.safe_load_file(path)
+  tasks.each do |task|
+    next unless task.dig("ansible.builtin.include_role", "tasks_from") == "target"
+
+    task.fetch("vars").fetch("deployment_target_extra_paths").reject! do |candidate|
+      candidate.to_s.end_with?("/compose.{{ platform_compose_kind }}.yml")
+    end
+  end
+  File.write(path, YAML.dump(tasks))
+end
+
 expect_failure(failures, "preflight probe leaf unguarded",
                "target validator must guard the exact preflight probe leaf") do |root|
   path = File.join(root, "roles", "deployment_bundle", "tasks", "target.yml")
@@ -1731,6 +1786,10 @@ end
     "ruby tests/media_acquisition_foundation_verifier_test.rb",
   "acquisition filter argument conversion regression" =>
     'PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_filter_native_arguments_test.py',
+  "Bazarr provider schema regression" =>
+    "ruby tests/bazarr_provider_schema_test.rb",
+  "Bazarr provider schema self-test" =>
+    "ruby tests/bazarr_provider_schema_test.rb --self-test",
   "Configarr owned-field coverage regression" =>
     "ruby tests/acquisition_configarr_field_coverage_test.rb",
   "Configarr owned-field coverage self-test" =>
@@ -1769,7 +1828,11 @@ end
   "production auto-deploy poller suite" =>
     'PYTHONDONTWRITEBYTECODE=1 "$ansible_python" -m unittest -v tests.production_auto_deploy_test',
   "production auto-deploy installer suite" =>
-    "ruby tests/production_auto_deploy_role_test.rb"
+    "ruby tests/production_auto_deploy_role_test.rb",
+  "scheduled image prune suite" =>
+    'PYTHONDONTWRITEBYTECODE=1 "$ansible_python" -m unittest -v tests.image_prune_test',
+  "image prune installer suite" =>
+    "ruby tests/image_prune_role_test.rb"
 }.each do |name, command|
   expect_failure(failures, "#{name} removed from policy validation",
                  "validate-policy.sh must run the #{name} exactly once") do |root|
