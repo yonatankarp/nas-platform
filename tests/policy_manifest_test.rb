@@ -144,10 +144,19 @@ expect_acquisition_failure.call(
   end
 end
 
-%w[nas_hosts mac_hosts].product(%w[media_usenet_enabled media_torrent_enabled]).each do |host_group, flag|
-  expect_acquisition_failure.call("#{host_group} #{flag} enabled", "#{flag} must be literal false") do |root|
-    mutate_yaml_file(root, "inventory/group_vars/#{host_group}/main.yml") do |vars|
-      vars[flag] = true
+# Flipped away from its expected value, in whichever direction that is: an
+# inert transport switched on, and the NAS's accepted Usenet switched off.
+{ "nas_hosts" => { "media_usenet_enabled" => true, "media_torrent_enabled" => false },
+  "mac_hosts" => { "media_usenet_enabled" => false, "media_torrent_enabled" => false } }
+  .each do |host_group, flags|
+  flags.each do |flag, expected|
+    expect_acquisition_failure.call(
+      "#{host_group} #{flag} #{expected ? 'disabled' : 'enabled'}",
+      "#{flag} must be literal #{expected}"
+    ) do |root|
+      mutate_yaml_file(root, "inventory/group_vars/#{host_group}/main.yml") do |vars|
+        vars[flag] = !expected
+      end
     end
   end
 end

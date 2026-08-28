@@ -540,10 +540,26 @@ end
     end
 end
 
-%w[nas_hosts mac_hosts].each do |host_group|
+# The foundation was inert while it was being built: no host enabled a
+# transport, so the paths and control network existed with nothing running on
+# them. That is still true of every transport nobody has taken through its
+# handoff, and of the disposable Mac proof, which must converge the same
+# unactivated platform every run or it stops proving anything.
+#
+# It stopped being true of Usenet on the NAS when Phase 1 was accepted there.
+# Holding the flag false after that bought nothing and cost a great deal: the
+# activation had to live outside source control, which the deployment poller
+# cannot read, so enabling acquisition meant leaving the NAS with no automatic
+# deployment at all. The guard now covers the transports that are still inert
+# rather than the file that names them.
+MEDIA_TRANSPORT_ACTIVATION = {
+  "nas_hosts" => { "media_usenet_enabled" => true, "media_torrent_enabled" => false },
+  "mac_hosts" => { "media_usenet_enabled" => false, "media_torrent_enabled" => false }
+}.freeze
+MEDIA_TRANSPORT_ACTIVATION.each do |host_group, flags|
   vars = YAML.safe_load_file(File.join(ROOT, "inventory", "group_vars", host_group, "main.yml"))
-  %w[media_usenet_enabled media_torrent_enabled].each do |flag|
-    failures << "#{host_group} #{flag} must be literal false" unless vars[flag] == false
+  flags.each do |flag, expected|
+    failures << "#{host_group} #{flag} must be literal #{expected}" unless vars[flag] == expected
   end
 end
 expected_network_expression = "{{ (platform_project_name ~ '-media-control') if platform_project_name | default('') | length > 0 else 'media-control' }}"

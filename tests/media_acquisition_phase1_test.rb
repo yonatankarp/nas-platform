@@ -101,11 +101,15 @@ expected_safe_defaults.each do |name, value|
         "#{name} must default to #{value.inspect}")
 end
 
-%w[nas_hosts mac_hosts].each do |host_group|
+# Usenet is enabled on the NAS, where Phase 1 was accepted. Every other
+# transport on every host stays inert until its own handoff.
+{ "nas_hosts" => { "media_usenet_enabled" => true, "media_torrent_enabled" => false },
+  "mac_hosts" => { "media_usenet_enabled" => false, "media_torrent_enabled" => false } }
+  .each do |host_group, flags|
   vars = strict_yaml("inventory/group_vars/#{host_group}/main.yml")
-  %w[media_usenet_enabled media_torrent_enabled].each do |flag|
-    check(failures, vars[flag] == false,
-          "#{host_group} #{flag} must remain literal false")
+  flags.each do |flag, expected|
+    check(failures, vars[flag] == expected,
+          "#{host_group} #{flag} must remain literal #{expected}")
   end
 end
 
