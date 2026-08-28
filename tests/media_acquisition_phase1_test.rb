@@ -264,8 +264,12 @@ operator_guide_path = File.join(ROOT, "docs", "media-acquisition-phase1.md")
 operator_guide = File.file?(operator_guide_path) ? File.read(operator_guide_path) : ""
 check(failures, !operator_guide.empty?, "Phase 1 operator guide must exist")
 {
-  /media_usenet_enabled:\s*true/ => "guide must enable Usenet for one target",
-  /outside source control/i => "guide must keep provider and preference choices outside source control",
+  /media_usenet_enabled: true.*inventory\/group_vars\/nas_hosts/m =>
+    "guide must name the inventory value that activates a target",
+  /ansible-vault edit inventory\/group_vars\/all\/vault\.yml/ =>
+    "guide must put provider and preference choices in the vault",
+  /never enter the repository/i =>
+    "guide must say why committing the encrypted vault is safe",
   /media_acquisition_adopt_existing_libraries=true.*one convergence/im =>
     "guide must bound the adoption override to one convergence",
   /match.*Movies.*Series.*before.*rename.*monitor/im =>

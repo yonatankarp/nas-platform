@@ -21,9 +21,13 @@ subtitle provider — that is a regional and legal decision — but which keys a
 chosen provider needs is a property of the pinned version, not a decision, so
 it belongs here rather than in an export from a running service.
 
-Add the block for each provider you want to
-`$PLATFORM_ACQUISITION_VARS`, replace the credential values, and converge.
-Providers you do not declare are left alone, including any enabled by hand.
+Add the block for each provider you want to the vault, replace the credential
+values, and converge. Providers you do not declare are left alone, including any
+enabled by hand.
+
+```sh
+ansible-vault edit inventory/group_vars/all/vault.yml
+```
 
 ## Declared form
 
