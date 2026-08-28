@@ -50,15 +50,27 @@ partial_client = TCPSocket.new("127.0.0.1", partial_api.port)
 partial_client.write("POST /api/system/settings HTTP/1.1\r\nContent-Length: 100\r\n")
 accept_deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) +
                   SOCKET_DEADLINE_SECONDS
+# Yielding rather than spinning: Thread.pass leaves this thread runnable, so on
+# a small runner it competes with the very server thread it is waiting for.
 while partial_api.accepted_client_count.zero? &&
       Process.clock_gettime(Process::CLOCK_MONOTONIC) < accept_deadline
-  Thread.pass
+  sleep 0.005
 end
+partial_accepted = partial_api.accepted_client_count
 partial_started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 partial_api.close
 partial_elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - partial_started
-failures << "HARNESS partial-client shutdown exceeded its deadline" if
-  partial_elapsed >= SOCKET_DEADLINE_SECONDS + 1 || partial_api.error
+# Reported separately because these fail for different reasons, and a single
+# sentence covering all three cost a CI run to tell apart: the client never
+# arriving is a scheduling problem, a slow shutdown is the reader not being
+# woken, and a recorded error is the fixture server itself failing.
+failures << "HARNESS partial client was never accepted within its deadline" if
+  partial_accepted.zero?
+failures << "HARNESS partial-client shutdown exceeded its deadline " \
+            "(#{partial_elapsed.round(2)}s, limit #{SHUTDOWN_DEADLINE_SECONDS}s)" if
+  partial_elapsed >= SHUTDOWN_DEADLINE_SECONDS
+failures << "HARNESS partial-client shutdown recorded #{partial_api.error.inspect}" if
+  partial_api.error
 partial_client.close unless partial_client.closed?
 
 secret_sets = secret_task_sets

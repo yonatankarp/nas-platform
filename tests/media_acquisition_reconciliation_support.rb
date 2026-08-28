@@ -72,6 +72,12 @@ CONFIGARR_QUALITY_DEFINITION_SHA256 = {
 PLAYBOOK_TIMEOUT_SECONDS = Float(ENV.fetch("ACQUISITION_PLAYBOOK_TIMEOUT", "120"))
 PROCESS_TERM_GRACE_SECONDS = Float(ENV.fetch("ACQUISITION_PROCESS_TERM_GRACE", "5"))
 SOCKET_DEADLINE_SECONDS = Float(ENV.fetch("ACQUISITION_SOCKET_DEADLINE", "10"))
+# Releasing a blocked reader is a shutdown and a thread wake-up, which is work
+# measured in milliseconds. The bound is separate from the read deadline above
+# and far below it on purpose: when the two were the same, a reader that was
+# never woken and instead sat out its full read deadline still finished inside
+# the allowance, so the fixture looked healthy while doing nothing of the kind.
+SHUTDOWN_DEADLINE_SECONDS = Float(ENV.fetch("ACQUISITION_SHUTDOWN_DEADLINE", "3"))
 CONFIGARR_MUTATION_PATTERN = ENV["ACQUISITION_CONFIGARR_MUTATION_PATTERN"]
 PROFILE_TREE_ID_TARGETED_ONLY =
   ENV["ACQUISITION_PROFILE_TREE_ID_TARGETED_ONLY"] == "1"
@@ -1512,7 +1518,23 @@ class AcquisitionApi
     @clients_mutex.synchronize do
       @clients.each do |client|
         begin
-          client.close unless client.closed?
+          next if client.closed?
+
+          # Shut the socket down before closing it. Closing alone relies on the
+          # interpreter waking a thread that is blocked in IO.select on that
+          # descriptor, which is not something every platform delivers: a CI
+          # runner left the reader waiting out its full ten-second deadline
+          # while the same close returned instantly on a developer machine.
+          # A shutdown is the kernel telling the descriptor there is nothing
+          # more to read, so the select returns readable, the read reports end
+          # of file, and the server thread unwinds through the EOFError that
+          # serve already treats as an ordinary end.
+          begin
+            client.shutdown(Socket::SHUT_RDWR)
+          rescue Errno::ENOTCONN, Errno::EBADF, Errno::EINVAL, IOError
+            nil
+          end
+          client.close
         rescue IOError, Errno::EBADF
           nil
         end
