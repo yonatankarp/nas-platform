@@ -812,35 +812,45 @@ service_dirs.each do |dir|
   end
 end
 
-# Service templates write their media library paths as literals, and Compose
-# takes those rendered values straight through as bind sources. That makes the
-# library path a second declaration of what nas_storage already declares, with
+# Service templates write their storage paths as literals, and Compose takes
+# those rendered values straight through as bind sources. That makes the
+# template path a second declaration of what nas_storage already declares, with
 # nothing comparing the two: renaming one side leaves host_prep creating one
 # directory while the service mounts another. Compose volume sources cannot
 # reach these, because they arrive as an opaque ${SERVICE_..._PATH:?} the
 # template supplies, so the templates are read directly here.
 #
-# Only a literal with a path suffix is a library path. Several templates export
-# the volume root itself (NAS_MEDIA_ROOT, PLATFORM_MEDIA_ROOT) for a service to
-# join onto, and requiring the suffix is what keeps those out of this check.
+# Only a literal with a path suffix is a declaration. Several templates export
+# the volume root itself (NAS_MEDIA_ROOT, NAS_DOCKER_ROOT, PLATFORM_MEDIA_ROOT)
+# for a service to join onto, and requiring the suffix keeps those out.
 #
-# A library root may also sit above the declared entries rather than at or below
-# one, which is how Jellyfin mounts the whole media tree while nas_storage
+# A media library root may also sit above the declared entries rather than at or
+# below one, which is how Jellyfin mounts the whole media tree while nas_storage
 # declares only the libraries below it: Ansible's file
 # module creates the parent, and the leaves are where a mode and a recovery
 # class belong. Demanding an exact entry would reject that legitimate parent
-# mount. Accepting it is confined to these templates on purpose, because letting
+# mount. Accepting it is confined to the media root on purpose, because letting
 # a Compose volume source name an ancestor would let a container see a whole
-# service state tree where the declared entry gave it one subdirectory.
-MEDIA_ROOT_LITERAL = %r{\{\{\s*nas_media_root\s*\}\}(/[A-Za-z0-9._/-]+)}
+# service state tree where the declared entry gave it one subdirectory — which
+# is exactly what the Docker root holds, so paths under it get no such
+# allowance and must be declared at or below an entry.
+STORAGE_ROOT_ANCESTOR_ALLOWED = {
+  "nas_media_root" => true,
+  "nas_docker_root" => false
+}.freeze
 Dir[File.join(ROOT, "roles", "*", "templates", "*.j2")].sort.each do |template_path|
   relative_template = template_path.delete_prefix("#{ROOT}/")
-  File.read(template_path).scan(MEDIA_ROOT_LITERAL).each do |(suffix)|
-    expected = "{{ nas_media_root }}#{suffix}"
-    covered = storage_declared.call(expected) ||
-              declared_paths.any? { |declared| declared.start_with?("#{expected}/") }
-    check(failures, covered,
-          "#{relative_template}: #{expected} is not declared in nas_storage")
+  contents = File.read(template_path)
+  STORAGE_ROOT_ANCESTOR_ALLOWED.each do |root_variable, ancestor_allowed|
+    literal = %r{\{\{\s*#{root_variable}\s*\}\}(/[A-Za-z0-9._/-]+)}
+    contents.scan(literal).each do |(suffix)|
+      expected = "{{ #{root_variable} }}#{suffix}"
+      covered = storage_declared.call(expected) ||
+                (ancestor_allowed &&
+                 declared_paths.any? { |declared| declared.start_with?("#{expected}/") })
+      check(failures, covered,
+            "#{relative_template}: #{expected} is not declared in nas_storage")
+    end
   end
 end
 
