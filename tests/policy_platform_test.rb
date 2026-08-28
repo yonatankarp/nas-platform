@@ -96,6 +96,50 @@ PLATFORM_INVENTORIES.values.map { |values| [values[0], values[3]] }.uniq.each do
         "#{relative_path} contains portable configuration: #{unexpected_vars.join(', ')}")
 end
 
+# The NAS render node is one constant with five writers. platform_render_device_path
+# is the source, but three of the writers cannot read it: a Compose device mapping
+# is a literal by construction, Jellyfin's QSV encoding policy is a pinned contract
+# compared against the live API, and the two asserts exist precisely to pin the
+# variable to a value, so substituting the variable into them would assert nothing.
+# Copies that must stay literal are held to the source here instead, so renaming the
+# device is one inventory edit plus a failing test naming every site that lagged.
+nas_render_device = YAML.safe_load_file(
+  File.join(ROOT, "inventory", "group_vars", "nas_hosts", "main.yml")
+).fetch("platform_render_device_path")
+
+jellyfin_devices = Array(
+  YAML.safe_load_file(File.join(ROOT, "services", "jellyfin", "compose.yml"), aliases: true)
+      .dig("services", "jellyfin", "devices")
+)
+check(failures, jellyfin_devices.include?("#{nas_render_device}:#{nas_render_device}"),
+      "services/jellyfin/compose.yml must pass #{nas_render_device} through onto itself")
+
+jellyfin_defaults = YAML.safe_load_file(
+  File.join(ROOT, "roles", "jellyfin", "defaults", "main.yml")
+)
+check(failures,
+      jellyfin_defaults.dig("jellyfin_encoding_profiles", "nas", "QsvDevice") == nas_render_device,
+      "the Jellyfin NAS encoding profile must name QsvDevice #{nas_render_device}")
+
+RENDER_DEVICE_ASSERTS = {
+  ["jellyfin", "Require the exact NAS Jellyfin render device"] => true,
+  ["beszel", "Require the selected Beszel telemetry capability"] => false
+}.freeze
+RENDER_DEVICE_ASSERTS.each do |(role_name, task_name), pins_fail_msg|
+  relative_tasks = File.join("roles", role_name, "tasks", "main.yml")
+  task = YAML.safe_load_file(File.join(ROOT, relative_tasks), aliases: true).find do |candidate|
+    candidate.is_a?(Hash) && candidate["name"] == task_name
+  end
+  guard = task&.dig("ansible.builtin.assert")
+  pin = "platform_render_device_path == '#{nas_render_device}'"
+  check(failures, Array(guard&.fetch("that", [])).join(" ").include?(pin),
+        "#{relative_tasks}: \"#{task_name}\" must pin the render device to #{nas_render_device}")
+  next unless pins_fail_msg
+
+  check(failures, guard&.fetch("fail_msg", "").to_s.include?(nas_render_device),
+        "#{relative_tasks}: \"#{task_name}\" must name #{nas_render_device} in its failure message")
+end
+
 site_play = YAML.safe_load_file(File.join(ROOT, "site.yml")).first
 check(failures, site_play["hosts"] == "platform_hosts",
       "site.yml must target platform_hosts")
