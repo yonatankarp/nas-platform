@@ -267,6 +267,24 @@ check(failures,
 check(failures,
       validation_commands.count("#{acquisition_conversion_check} --self-test") == 1,
       "validate-policy.sh must run #{acquisition_conversion_check} --self-test exactly once")
+# The fixture now exercises one Configarr field per behavioural class rather
+# than all hundred and five, which is only honest while something else proves
+# every field still reaches the projection. These two are that something else,
+# so the gate has to keep running them.
+check(failures,
+      validation_commands.count("ruby tests/acquisition_configarr_field_coverage_test.rb") == 1,
+      "validate-policy.sh must run ruby tests/acquisition_configarr_field_coverage_test.rb exactly once")
+check(failures,
+      validation_commands.count(
+        "ruby tests/acquisition_configarr_field_coverage_test.rb --self-test"
+      ) == 1,
+      "validate-policy.sh must run ruby tests/acquisition_configarr_field_coverage_test.rb " \
+      "--self-test exactly once")
+acquisition_owned_field_check =
+  'PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_owned_field_coverage_test.py'
+check(failures,
+      validation_commands.count(acquisition_owned_field_check) == 1,
+      "validate-policy.sh must run #{acquisition_owned_field_check} exactly once")
 check(failures,
       validation_commands.count("ruby tests/audiobookshelf_initial_scan_test.rb") == 1,
       "validate-policy.sh must run ruby tests/audiobookshelf_initial_scan_test.rb exactly once")

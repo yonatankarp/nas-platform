@@ -468,6 +468,199 @@ CONFIGARR = %w[radarr sonarr].each_with_index.to_h do |service, index|
   }]
 end.freeze
 
+# Every owned Configarr field, paired with a mutation that breaks it.
+# Two checks read this: the fast one proves each field is visible in the owned
+# projection, and the fixture proves a representative of each class drives a
+# real reconciliation. Both must see the same table or the fast check would be
+# proving coverage of fields the contract does not actually own.
+def configarr_owned_field_mutations
+  mutations = {}
+  %w[radarr sonarr].each do |service|
+    service_name = service.dup
+    profile_mutations = {
+      "name" => ->(profile) { profile["name"] = "Legacy Profile" },
+      "upgradeAllowed" => ->(profile) { profile["upgradeAllowed"] = true },
+      "cutoff" => ->(profile) { profile["cutoff"] = 9 },
+      "minFormatScore" => ->(profile) { profile["minFormatScore"] = 100 },
+      "cutoffFormatScore" => ->(profile) { profile["cutoffFormatScore"] = 100 },
+      "minUpgradeFormatScore" => ->(profile) { profile["minUpgradeFormatScore"] = 100 },
+      "reset unmatched scores outcome" => ->(profile) { profile["formatItems"].last["score"] = 99 },
+      "quality sort/order outcome" => ->(profile) { profile["items"].reverse! },
+      "quality structure" => lambda do |profile|
+        profile.fetch("items").find { |item| item["name"] == "WEB 1080p" }.fetch("items").pop
+      end,
+      "non-cutoff nested item id" => lambda do |profile|
+        profile.fetch("items").find { |item| item["name"] == "WEB 1080p" }
+          .fetch("items").find { |item| item.dig("quality", "name") == "WEBDL-1080p" }
+          .fetch("quality")["id"] = 999
+      end,
+      "format assignment name" => ->(profile) { profile["formatItems"].first["name"] = "Legacy Format" },
+      "format assignment score" => ->(profile) { profile["formatItems"].first["score"] = 0 }
+    }
+    profile_mutations.each do |field, mutate_profile|
+      mutations["#{service_name}.quality_profile.#{field}"] = lambda do |state|
+        mutate_profile.call(state.dig("configarr", service_name, "qualityprofile").first)
+      end
+    end
+    [
+      ["HDTV-1080p", 0], ["Raw-HD", 1], ["Bluray-1080p", 3],
+      ["WEB 1080p", 2], ["WEBRip-1080p", 2, 0], ["WEBDL-1080p", 2, 1]
+    ].each do |quality_name, item_index, child_index|
+      mutations["#{service_name}.quality_profile.#{quality_name}.name"] = lambda do |state|
+        item = state.dig("configarr", service_name, "qualityprofile").first.fetch("items")[item_index]
+        item = item.fetch("items")[child_index] unless child_index.nil?
+        if item["quality"].is_a?(Hash)
+          item.fetch("quality")["name"] = "Legacy Quality"
+        else
+          item["name"] = "Legacy Quality Group"
+        end
+      end
+      mutations["#{service_name}.quality_profile.#{quality_name}.allowed"] = lambda do |state|
+        item = state.dig("configarr", service_name, "qualityprofile").first.fetch("items")[item_index]
+        item = item.fetch("items")[child_index] unless child_index.nil?
+        item["allowed"] = !item.fetch("allowed")
+      end
+    end
+
+    CONFIGARR.dig(service_name, "qualitydefinition").each_with_index do |definition, index|
+      quality_name = definition.dig("quality", "name")
+      # Configarr v1.28.0 only applies the three numeric TRaSH leaves in this
+      # bundled configuration. Identity metadata, title and weight are retained
+      # in the verified state hash and fail closed if they drift.
+      definition_mutations = if QUALITY_SIZES.fetch(service_name).key?(quality_name)
+        {
+        "minSize" => ->(item) { item["minSize"] = item["minSize"].nil? ? 1 : item["minSize"] + 1 },
+        "preferredSize" => lambda do |item|
+          item["preferredSize"] = item["preferredSize"].nil? ? 1 : item["preferredSize"] + 1
+        end,
+        "maxSize" => ->(item) { item["maxSize"] = item["maxSize"].nil? ? 1 : item["maxSize"] + 1 }
+        }
+      else
+        {}
+      end
+      definition_mutations.each do |field, mutate_definition|
+        label = "#{service_name}.quality_definition.#{quality_name}.#{field}"
+        mutations[label] = lambda do |state|
+          item = state.dig("configarr", service_name, "qualitydefinition").fetch(index)
+          mutate_definition.call(item)
+        end
+      end
+    end
+
+    {
+      "name" => ->(format) { format["name"] = "Legacy Format" },
+      "includeWhenRenaming" => ->(format) { format["includeCustomFormatWhenRenaming"] = true },
+      "specification.name" => ->(format) { format.dig("specifications", 0)["name"] = "Legacy" },
+      "specification.implementation" => lambda do |format|
+        format.dig("specifications", 0)["implementation"] = "LegacySpecification"
+      end,
+      "specification.negate" => ->(format) { format.dig("specifications", 0)["negate"] = true },
+      "specification.required" => ->(format) { format.dig("specifications", 0)["required"] = true },
+      "specification.regex" => lambda do |format|
+        format.dig("specifications", 0, "fields", 0)["value"] = "legacy-regex"
+      end
+    }.each do |field, mutate_format|
+      mutations["#{service_name}.custom_format.#{field}"] = lambda do |state|
+        mutate_format.call(state.dig("configarr", service_name, "customformat").first)
+      end
+    end
+  end
+  {
+    "radarr.naming.renameMovies" => ["radarr", "renameMovies", true],
+    "radarr.naming.standardMovieFormat" => ["radarr", "standardMovieFormat", "Legacy"],
+    "radarr.naming.movieFolderFormat" => ["radarr", "movieFolderFormat", "Legacy"],
+    "sonarr.naming.renameEpisodes" => ["sonarr", "renameEpisodes", true],
+    "sonarr.naming.standardEpisodeFormat" => ["sonarr", "standardEpisodeFormat", "Legacy"],
+    "sonarr.naming.dailyEpisodeFormat" => ["sonarr", "dailyEpisodeFormat", "Legacy"],
+    "sonarr.naming.animeEpisodeFormat" => ["sonarr", "animeEpisodeFormat", "Legacy"],
+    "sonarr.naming.seriesFolderFormat" => ["sonarr", "seriesFolderFormat", "Legacy"],
+    "sonarr.naming.seasonFolderFormat" => ["sonarr", "seasonFolderFormat", "Legacy"]
+  }.each do |label, (service, field, value)|
+    mutations[label] = lambda do |state|
+      state.dig("configarr", service, "config/naming")[field] = value
+    end
+  end
+  {
+    "radarr.naming.nullable standard format" => ["radarr", "standardMovieFormat"],
+    "sonarr.naming.nullable daily format" => ["sonarr", "dailyEpisodeFormat"]
+  }.each do |label, (service, field)|
+    mutations[label] = lambda do |state|
+      state.dig("configarr", service, "config/naming")[field] = nil
+    end
+  end
+  # Whole resources going missing, rather than a field changing value. The
+  # projection has to notice an absence as readily as a difference.
+  %w[radarr sonarr].each do |service|
+    mutations["#{service}.missing quality profile among unrelated profiles"] = lambda do |state|
+      state.dig("configarr", service, "qualityprofile").reject! do |profile|
+        profile["name"] == CONFIGARR_PROFILE_NAME
+      end
+    end
+    mutations["#{service}.missing custom format among unrelated formats"] = lambda do |state|
+      state.dig("configarr", service, "customformat").reject! do |format|
+        format["name"] == CONFIGARR_FORMAT_NAME
+      end
+    end
+    mutations["#{service}.missing format assignment among unrelated assignments"] = lambda do |state|
+      profile = state.dig("configarr", service, "qualityprofile").find do |candidate|
+        candidate["name"] == CONFIGARR_PROFILE_NAME
+      end
+      profile.fetch("formatItems").reject! { |item| item["name"] == CONFIGARR_FORMAT_NAME }
+    end
+    mutations["#{service}.empty format-score assignments"] = lambda do |state|
+      profile = state.dig("configarr", service, "qualityprofile").find do |candidate|
+        candidate["name"] == CONFIGARR_PROFILE_NAME
+      end
+      profile["formatItems"] = []
+    end
+  end
+  mutations
+end
+
+# The class a mutation belongs to, for the fixture's purposes.
+#
+# Every mutation in the table proves the same pure property, that the field is
+# visible in the owned projection, and
+# tests/acquisition_configarr_field_coverage_test.rb proves that for all of them
+# in about a second. What only a real play can show is that a difference reaches
+# Configarr as exactly one write and is recorded, and that is a property of the
+# code path rather than of the field: every quality-definition size travels the
+# same path as every other. The fixture therefore runs one field per class per
+# service instead of all of them.
+#
+# Classes are cut where the projection's code path forks, not by resource: a
+# custom format's own fields and its specification's fields are projected by
+# different functions, and a nullable naming value is the branch that a present
+# one is not.
+def configarr_mutation_class(label)
+  service, resource, *rest = label.split(".")
+  detail = case resource
+           when "quality_profile"
+             # A profile's own scalar field, or a node inside its quality tree.
+             rest.length >= 2 ? "quality_tree.#{rest.last}" : "profile_field"
+           when "quality_definition"
+             "definition.#{rest.last}"
+           when "custom_format"
+             rest.first == "specification" ? "custom_format.specification" : "custom_format"
+           when "naming"
+             label.include?("nullable") ? "naming.absent" : "naming.present"
+           else
+             # Structural absences are each their own path, so each is kept.
+             resource
+           end
+  "#{service}.#{detail}"
+end
+
+# One mutation per class, chosen by the table's own order so the selection is
+# deterministic and a reordering shows up as a diff rather than as drift.
+def configarr_representative_mutations(mutations)
+  seen = {}
+  mutations.each do |label, mutate|
+    seen[configarr_mutation_class(label)] ||= [label, mutate]
+  end
+  seen.values.to_h
+end
+
 def deep_copy(value)
   Marshal.load(Marshal.dump(value))
 end
