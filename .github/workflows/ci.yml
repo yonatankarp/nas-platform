@@ -120,14 +120,20 @@ jobs:
   reconciliation:
     # The media acquisition reconciliation contract is 373 Ansible runs across
     # every relationship. Inside the policy gate it competed with ninety other
-    # checks for four cores and made that job the longest in the workflow. Here
-    # it gets a runner to itself, its three files run concurrently and each
-    # drives its own worker pool, so the contract costs its own parallel time
-    # instead of serialising behind the rest of the gate.
+    # checks for four cores and made that job the longest in the workflow. It
+    # then shared one runner between its three files, which only moved the
+    # contention: twelve worker threads still divided four cores. One runner per
+    # file gives each of them its own four cores, so the contract costs its
+    # slowest file rather than the sum of all three.
     timeout-minutes: 45
+    name: reconciliation (${{ matrix.part }})
     needs: changes
     if: ${{ needs.changes.outputs.static == 'true' }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [core, bazarr, configarr]
 
     steps:
       - name: Check out repository
@@ -152,18 +158,9 @@ jobs:
           "$RUNNER_TEMP/ansible/bin/ansible-galaxy" collection install -r requirements.yml
 
       - name: Check media acquisition reconciliation
-        run: |
-          # Named one per line so tests/ci/workflow_test.rb can require each
-          # file, and so dropping one is visible in the diff rather than hidden
-          # behind a loop variable.
-          status=0
-          ruby tests/media_acquisition_reconciliation_core_test.rb & core=$!
-          ruby tests/media_acquisition_reconciliation_bazarr_test.rb & bazarr=$!
-          ruby tests/media_acquisition_reconciliation_configarr_test.rb & configarr=$!
-          wait "$core" || status=1
-          wait "$bazarr" || status=1
-          wait "$configarr" || status=1
-          exit "$status"
+        env:
+          PART: ${{ matrix.part }}
+        run: ruby "tests/media_acquisition_reconciliation_${PART}_test.rb"
 
   suites:
     timeout-minutes: 60
