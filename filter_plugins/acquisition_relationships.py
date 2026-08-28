@@ -1341,6 +1341,36 @@ def acquisition_configarr_quality_definition_difference(invariants: Any) -> dict
     return difference
 
 
+def acquisition_configarr_quality_definitions_settled(
+    definitions: Any, source: Any, service: Any
+) -> bool:
+    """Report whether a service's quality definitions carry their declared sizes.
+
+    Radarr and Sonarr apply a quality-definition update asynchronously: the API
+    accepts it, Configarr exits, and a read issued immediately afterwards still
+    returns the previous sizes for a few seconds. Reading once after the job
+    therefore captures whatever happened to be committed, so the role waits on
+    this instead.
+    """
+    service = _required_string(service, "Configarr quality-definition service")
+    expected = _configarr_quality_definition_source(source, service)
+    for definition in _sequence(definitions, "Configarr quality definitions"):
+        definition = _mapping(definition, "Configarr quality definition")
+        quality = _mapping(definition.get("quality"), "Configarr quality identity")
+        name = _required_string(quality.get("name"), "Configarr quality name")
+        declared = expected.get(name)
+        if declared is None:
+            continue
+        for live_key, declared_key in (
+            ("minSize", "minSize"),
+            ("preferredSize", "preferredSize"),
+            ("maxSize", "maxSize"),
+        ):
+            if definition.get(live_key) != declared.get(declared_key):
+                return False
+    return True
+
+
 def acquisition_configarr_quality_definition_invariants(
     projection: Any, sources: Any
 ) -> dict[str, Any]:
@@ -2190,6 +2220,8 @@ class FilterModule:
             "acquisition_configarr_owned_projection": acquisition_configarr_owned_projection,
             "acquisition_configarr_quality_definition_difference":
                 acquisition_configarr_quality_definition_difference,
+            "acquisition_configarr_quality_definitions_settled":
+                acquisition_configarr_quality_definitions_settled,
             "acquisition_configarr_quality_definition_invariants": acquisition_configarr_quality_definition_invariants,
             "acquisition_configarr_declared_projection": acquisition_configarr_declared_projection,
             "acquisition_configarr_desired_projection": acquisition_configarr_desired_projection,

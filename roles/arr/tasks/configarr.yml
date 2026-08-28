@@ -305,6 +305,39 @@
     - arr_configarr_run_required | bool
   changed_when: false
 
+# Radarr and Sonarr apply a quality-definition update asynchronously: the API
+# accepts it, Configarr exits reporting success, and a read issued immediately
+# afterwards still returns the previous sizes for a few seconds. Reading once
+# after the job captured whatever happened to be committed, which is why the
+# verified state showed Radarr's own sizes while Configarr's log said it had
+# updated them. Wait for the declared sizes to be readable before reading the
+# state this run is verified against.
+- name: Wait for the Arr quality definitions Configarr wrote to be readable
+  ansible.builtin.uri:
+    url: "{{ item.api }}/qualitydefinition"
+    method: GET
+    headers:
+      X-Api-Key: "{{ item.api_key }}"
+    status_code: [200]
+    return_content: true
+  register: arr_configarr_definitions_settled
+  until: >-
+    arr_configarr_definitions_settled.json |
+    acquisition_configarr_quality_definitions_settled(
+      arr_configarr_quality_definition_sources[item.name], item.name
+    )
+  retries: 30
+  delay: 2
+  loop: "{{ arr_servarr_instances }}"
+  loop_control:
+    label: "configarr-settle-{{ item.name }}"
+  when:
+    - not ansible_check_mode
+    - arr_configarr_run_required | bool
+  changed_when: false
+  check_mode: false
+  no_log: true
+
 - name: Read Configarr-owned Arr resources after reconciliation
   ansible.builtin.uri:
     url: "{{ item.0.api }}/{{ item.1 }}"
