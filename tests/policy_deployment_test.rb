@@ -109,9 +109,11 @@ check(failures, !controller_preflight.nil?,
       "controller bundle cleanliness must be validated before target-mutating roles")
 
 # Target-side deployment paths are hostile inputs until both their lexical form
-# and existing filesystem ancestry have been checked. Validation is read-only,
-# runs before preflight, is repeated next to destructive operations, and runs
-# again before service roles write runtime configuration or consume `current`.
+# and existing filesystem ancestry have been checked. Validation is read-only
+# and runs once per distinct set of paths, ahead of the tasks that mutate them:
+# before preflight for the play's own paths, and before each service role writes
+# runtime configuration or consumes `current` for the extra paths it names. It is
+# not repeated beside individual mutations, which the task file explains.
 target_tasks_path = File.join(ROOT, "roles", "deployment_bundle", "tasks", "target.yml")
 target_tasks_body = File.file?(target_tasks_path) ? File.read(target_tasks_path) : ""
 target_validator_path = File.join(ROOT, "roles", "deployment_bundle", "files", "validate_target.py")
@@ -141,7 +143,12 @@ check(failures, !target_validation.key?("loop") && !target_validation.key?("loop
         "target validator must use #{primitive} for symlink-safe canonical containment")
 end
 check(failures, target_tasks_body.include?("concurrent privileged filesystem mutation"),
-      "target validator must document its adjacent-revalidation threat boundary")
+      "target validator must document the race its containment check cannot close")
+target_record = Array(target_tasks).find do |task|
+  task.dig("ansible.builtin.set_fact", "deployment_bundle_target_validated") == true
+end
+check(failures, !target_record.nil?,
+      "target validation must record that the play has already validated containment")
 check(failures, target_validator_body.include?("os.path.abspath(os.sep)") &&
                 target_validator_body.include?("root_relative_parts"),
       "target validator must lstat every existing ancestor from filesystem root to nas_docker_root")
@@ -256,16 +263,33 @@ check(failures,
         catalog_copy&.dig("changed_when") == false &&
         catalog_copy&.dig("when") == "not ansible_check_mode",
       "deployment bundle must stage the exact acquisition catalog bytes with mode 0644")
-%w[
-  Revalidate_before_removing_the_staging_release
-  Revalidate_before_replacing_an_inactive_release
-  Revalidate_before_installing_the_immutable_release
-  Revalidate_before_replacing_the_current_pointer
-  Revalidate_before_activating_the_controller_release
-].each do |task_token|
-  check(failures, deployment_body.tr(" ", "_").include?(task_token),
-        "deployment bundle must #{task_token.downcase.tr('_', ' ')}")
+# One containment validation covers every path this role mutates, so the role
+# body must run it exactly once and must run it before the first mutation. The
+# guard is what keeps a full converge from repeating the play's own pre_task
+# validation; without it the single include silently becomes a second run.
+bundle_target_indexes = deployment_tasks.each_index.select do |index|
+  deployment_tasks[index]["ansible.builtin.include_tasks"] == "target.yml"
 end
+bundle_target_index = bundle_target_indexes.one? ? bundle_target_indexes.first : nil
+bundle_target = bundle_target_index && deployment_tasks[bundle_target_index]
+first_target_mutation = deployment_tasks.index do |task|
+  %w[ansible.builtin.file ansible.builtin.copy ansible.builtin.template].any? do |module_name|
+    task.key?(module_name)
+  end
+end
+check(failures, bundle_target_indexes.one?,
+      "deployment bundle must validate target containment exactly once, not beside each mutation")
+check(failures,
+      !bundle_target.nil? && !first_target_mutation.nil? &&
+        bundle_target_index < first_target_mutation,
+      "deployment bundle must validate target containment before its first target mutation")
+check(failures,
+      Array(bundle_target && bundle_target["when"]).join(" ")
+        .include?("deployment_bundle_target_validated"),
+      "deployment bundle target validation must be skipped when the play already validated")
+check(failures,
+      bundle_target&.dig("vars", "deployment_target_require_current_release") == false,
+      "deployment bundle must not require an active current release before it installs one")
 release_compare_path = File.join(ROOT, "roles", "deployment_bundle", "files",
                                  "compare_release_trees.py")
 release_compare_source = File.exist?(release_compare_path) ? File.read(release_compare_path) : ""

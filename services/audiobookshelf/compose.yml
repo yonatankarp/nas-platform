@@ -13,7 +13,7 @@ services:
     cpus: 1.5
     labels:
       dev.dozzle.name: audiobookshelf
-    user: "1000:100"
+    user: "${NAS_UID:?}:${NAS_GID:?}"
     ports:
       - "13378:80"
     volumes:

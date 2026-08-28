@@ -13,7 +13,7 @@ services:
     cpus: 1.5
     labels:
       dev.dozzle.name: komga
-    user: "1000:100"
+    user: "${NAS_UID:?}:${NAS_GID:?}"
     ports:
       - "25600:25600"
     volumes:

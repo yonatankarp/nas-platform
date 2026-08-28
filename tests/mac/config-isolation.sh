@@ -55,7 +55,7 @@ render() {
       > "$temporary_dir/$label-dozzle.json"
 
   env PLATFORM_PROJECT_NAME="$base_name" AUDIOBOOKSHELF_HOST_PORT="$audiobookshelf_port" \
-    PLATFORM_MEDIA_NETWORK="$base_name-media-control" \
+    PLATFORM_MEDIA_NETWORK="$base_name-media-control" NAS_UID=1000 NAS_GID=100 \
     PLATFORM_DOCKER_ROOT="$temporary_dir/$label" \
     AUDIOBOOKSHELF_CONFIG_PATH="$temporary_dir/$label-audiobookshelf-config" \
     AUDIOBOOKSHELF_METADATA_PATH="$temporary_dir/$label-audiobookshelf-metadata" \
@@ -67,6 +67,7 @@ render() {
       > "$temporary_dir/$label-audiobookshelf.json"
 
   env PLATFORM_PROJECT_NAME="$base_name" KOMGA_HOST_PORT="$komga_port" \
+    NAS_UID=1000 NAS_GID=100 \
     KOMGA_CONFIG_PATH="$temporary_dir/$label-komga-config" \
     KOMGA_LIBRARY_PATH="$temporary_dir/$label-books" TZ=UTC \
     docker compose --project-name "$base_name-komga" \
@@ -75,7 +76,7 @@ render() {
       > "$temporary_dir/$label-komga.json"
 
   env PLATFORM_PROJECT_NAME="$base_name" JELLYFIN_HOST_PORT="$jellyfin_port" \
-    PLATFORM_MEDIA_NETWORK="$base_name-media-control" \
+    PLATFORM_MEDIA_NETWORK="$base_name-media-control" NAS_UID=1000 NAS_GID=100 \
     JELLYFIN_CONFIG_PATH="$temporary_dir/$label-jellyfin-config" \
     JELLYFIN_CACHE_PATH="$temporary_dir/$label-jellyfin-cache" \
     JELLYFIN_MEDIA_PATH="$temporary_dir/$label-media" TZ=UTC \
