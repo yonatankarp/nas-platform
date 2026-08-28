@@ -14,6 +14,12 @@ require "fileutils"
 require "digest"
 require "etc"
 require "digest/md5"
+# require "digest" only installs an autoload for Digest::SHA256. The case
+# workers touch it for the first time concurrently, and autoloading it from
+# several threads at once raises "Digest::Base cannot be directly inherited"
+# on the Ruby the runners carry. Loading it here means no thread ever
+# triggers that autoload.
+require "digest/sha2"
 require "json"
 require "open3"
 require "rbconfig"
