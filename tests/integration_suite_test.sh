@@ -457,7 +457,32 @@ fi
 # not infer it from check mode. Exercise the production recap parser directly so
 # task output cannot satisfy the gate and malformed or partial recaps fail closed.
 sed -n '/^    enabled_idempotence_recap_is_clean() {/,/^    }$/p' \
-  "$integration" | sed -e 's/\\\$/\$/g' -e 's/\\"/"/g' > "$idempotence_helper"
+  "$integration" | ruby -e '
+    # Reproduce what the controller receives, rather than merely unescaping.
+    # The helper lives inside a double-quoted string, so the shell removes an
+    # unescaped quote instead of passing it through: extracting with a plain
+    # unescape rebuilt a correct function from broken source and hid an awk
+    # syntax error that only appeared when a suite actually ran.
+    source = STDIN.read
+    out = +""
+    index = 0
+    while index < source.length
+      character = source[index]
+      if character == "\\" && index + 1 < source.length &&
+         ["$", "`", "\"", "\\"].include?(source[index + 1])
+        out << source[index + 1]
+        index += 2
+        next
+      end
+      if character == "\""
+        index += 1
+        next
+      end
+      out << character
+      index += 1
+    end
+    print out
+  ' > "$idempotence_helper"
 [ -s "$idempotence_helper" ] || {
   printf '%s\n' 'integration runner has no enabled idempotence recap parser' >&2
   exit 1

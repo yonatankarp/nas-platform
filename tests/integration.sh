@@ -957,14 +957,14 @@ docker run --rm \
             in_recap = 1
             next
           }
-          in_recap && \$1 == "nas" && \$2 == ":" {
+          in_recap && \$1 == \"nas\" && \$2 == \":\" {
             target_count++
             valid = 1
             delete seen
             delete value
             for (field = 3; field <= NF; field++) {
-              parts = split(\$field, pair, "=")
-              if (parts != 2 || pair[1] == "" || pair[2] !~ /^[0-9]+\$/) {
+              parts = split(\$field, pair, \"=\")
+              if (parts != 2 || pair[1] == \"\" || pair[2] !~ /^[0-9]+\$/) {
                 valid = 0
                 continue
               }
@@ -974,9 +974,9 @@ docker run --rm \
               value[pair[1]] = pair[2]
             }
             target_clean = valid &&
-              seen["changed"] == 1 && value["changed"] == "0" &&
-              seen["unreachable"] == 1 && value["unreachable"] == "0" &&
-              seen["failed"] == 1 && value["failed"] == "0"
+              seen[\"changed\"] == 1 && value[\"changed\"] == \"0\" &&
+              seen[\"unreachable\"] == 1 && value[\"unreachable\"] == \"0\" &&
+              seen[\"failed\"] == 1 && value[\"failed\"] == \"0\"
           }
           END {
             exit !(recap_count == 1 && target_count == 1 && target_clean)
