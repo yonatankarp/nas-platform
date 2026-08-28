@@ -70,7 +70,6 @@
   delay: 3
   changed_when: false
   check_mode: false
-  no_log: true
 
 - name: Report planned Komga claim
   ansible.builtin.debug:
@@ -149,7 +148,6 @@
       Komga returned an unsupported libraries response; reconciliation requires the complete
       unpaginated array before any mutation.
   when: not ansible_check_mode or komga_claim_status.json.isClaimed | bool
-  no_log: true
 
 - name: Resolve normalized Komga library target
   ansible.builtin.set_fact:
@@ -157,7 +155,6 @@
     komga_library_inventory: >-
       {{ komga_libraries_before.json
          if (not ansible_check_mode or komga_claim_status.json.isClaimed | bool) else [] }}
-  no_log: true
 
 - name: Require a valid Komga library target
   ansible.builtin.assert:
@@ -197,7 +194,6 @@
          | selectattr('root', 'regex',
                       '\A' ~ (komga_library_normalized_root | regex_escape) ~ '(?<!/)/*\Z')
          | list }}
-  no_log: true
 
 - name: Resolve exact Komga desired-name matches
   ansible.builtin.set_fact:
@@ -206,7 +202,6 @@
          | selectattr('name', 'defined') | selectattr('name', 'string')
          | selectattr('name', 'equalto', komga_library_name)
          | list }}
-  no_log: true
 
 - name: Require valid Komga library candidate schemas
   ansible.builtin.assert:
@@ -247,7 +242,6 @@
     komga_library_create_required: >-
       {{ (ansible_check_mode and not komga_claim_status.json.isClaimed | bool) or
          komga_managed_root_matches | length == 0 }}
-  no_log: true
 
 - name: Resolve Komga library identity repair payload
   ansible.builtin.set_fact:
@@ -259,7 +253,6 @@
           combine({'root': komga_library_root}
                   if komga_existing_library | length > 0 and
                      komga_existing_library.root != komga_library_root else {})) }}
-  no_log: true
 
 - name: Resolve drifted owned Komga library settings
   ansible.builtin.set_fact:
@@ -277,7 +270,6 @@
   ansible.builtin.set_fact:
     komga_library_repair_required: >-
       {{ komga_existing_library | length > 0 and komga_library_patch_body | length > 0 }}
-  no_log: true
 
 - name: Reconcile managed Komga users
   ansible.builtin.include_tasks: managed_users.yml
@@ -357,7 +349,6 @@
                       '\A' ~ (komga_library_normalized_root | regex_escape) ~ '(?<!/)/*\Z')
          | list }}
   when: not ansible_check_mode
-  no_log: true
 
 - name: Resolve authoritative Komga desired-name read-back
   ansible.builtin.set_fact:
@@ -367,7 +358,6 @@
          | selectattr('name', 'equalto', komga_library_name)
          | list }}
   when: not ansible_check_mode
-  no_log: true
 
 # Deliberately not redacted. Unlooped, so the result dict adds only the source text of
 # the failing condition, and the conditions read the library listing Komga returned plus
@@ -409,6 +399,8 @@
   check_mode: false
   no_log: true
 
+# Redacted: results[0] is /api/v2/users/me, which carries
+# vault_komga_admin_email.
 - name: Resolve exact Komga verification state
   tags: [platform_verify_komga]
   ansible.builtin.set_fact:
@@ -430,7 +422,6 @@
          | selectattr('root', 'regex',
                       '\A' ~ (komga_library_root | regex_escape) ~ '(?<!/)/*\Z')
          | list }}
-  no_log: true
 
 - name: Resolve exact Komga verification name matches
   tags: [platform_verify_komga]
@@ -440,7 +431,6 @@
          | selectattr('name', 'defined') | selectattr('name', 'string')
          | selectattr('name', 'equalto', komga_library_name)
          | list }}
-  no_log: true
 
 - name: Require the vault Komga administrator during exact verification
   tags: [platform_verify_komga]

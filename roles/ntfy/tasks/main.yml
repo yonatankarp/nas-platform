@@ -134,7 +134,6 @@
     fail_msg: >-
       Existing ntfy users could not be listed authoritatively; no configuration
       was changed. Restore runtime access to the auth database and retry.
-  no_log: true
 
 - name: Resolve authoritative existing ntfy users
   ansible.builtin.set_fact:

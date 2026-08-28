@@ -358,6 +358,244 @@ check(failures,
         ephemeral_helper.include?("refusing symlink temporary parent"),
       "ephemeral vault helper must preserve GNU/BSD checks and refuse TMPDIR symlinks")
 
+# Redaction is only for credentials, in both directions.
+#
+# `no_log` on a task replaces its whole result with "censored", so applying it
+# where no credential can appear costs a failed converge its diagnosis and buys
+# nothing. Applying it where one can appear is mandatory. Both directions are
+# checked here, against what ansible-core 2.21 actually renders, measured rather
+# than assumed:
+#
+#   * a module result renders its arguments, so a credential in a `uri` url,
+#     header or body, or in a rendered file, reaches the log;
+#   * `assert` renders only the *source text* of the failing condition plus its
+#     rendered `fail_msg`/`success_msg`. `that: [x == vault_y]` prints
+#     "x == vault_y", never the value, so only the messages can leak;
+#   * `debug` renders only `msg`/`var`, and cannot fail;
+#   * a looped task that *fails* prints `item` in full, and `loop_control.label`
+#     does not suppress it, so a credential-bearing loop needs redaction on
+#     anything that can fail;
+#   * `when`, `changed_when`, `failed_when` and `until` are conditions: a skip
+#     prints their source text, never their values.
+#
+# Credentials are the `vault_` namespace plus the three acquisition declarations
+# that docs/media-acquisition-phase1.md authors in the vault under their own
+# names.
+REDACTION_CREDENTIAL_NAMES = %w[
+  media_arr_indexers
+  media_bazarr_providers
+  media_bazarr_languages
+].freeze
+
+# Keys that are the task's control flow rather than the module's arguments.
+REDACTION_CONTROL_KEYS = %w[
+  name tags when register no_log block rescue always loop loop_control with_items
+  with_dict with_subelements with_nested with_together changed_when failed_when
+  until retries delay check_mode ignore_errors vars notify listen become
+  become_user delegate_to run_once any_errors_fatal environment args
+].freeze
+
+# Modules that render less than their whole argument set.
+REDACTION_RENDERED_ARGUMENTS = {
+  "ansible.builtin.assert" => %w[fail_msg success_msg msg],
+  "ansible.builtin.debug" => %w[msg var],
+  "ansible.builtin.fail" => %w[msg]
+}.freeze
+
+# Includes render nothing themselves; their `apply` carries redaction inward.
+REDACTION_TRANSPARENT_MODULES = %w[
+  ansible.builtin.include_role ansible.builtin.include_tasks
+  ansible.builtin.import_role ansible.builtin.import_tasks
+].freeze
+
+# Two asserts name a credential in a message on purpose. Pinned rather than
+# excused by a weaker rule, and asserted to be exactly this pair below, so an
+# entry that stops being needed fails here instead of quietly widening the rule.
+REDACTION_MESSAGE_EXCEPTIONS = {
+  ["roles/beszel/tasks/main.yml",
+   "Verify the advertised key matches vault, proving no read-back is needed"] =>
+    "prints the public half of the agent keypair so the operator can compare it",
+  ["roles/beszel/tasks/main.yml",
+   "Refuse duplicate managed application users after reconciliation"] =>
+    "names the vault email inside a filter chain that emits only record IDs"
+}.freeze
+
+# Assertions that stay redacted although they can render nothing. Each is held
+# there by a dedicated behaviour or contract test that treats the whole
+# credential path it guards as private, which is a reviewed per-task decision
+# rather than a consequence of this rule. Pinned by name with the test that
+# holds them, and asserted to still exist below, so retiring one of those tests
+# surfaces the redaction rather than leaving it unexplained.
+REDACTION_ASSERTION_EXCEPTIONS = {
+  ["roles/arr/tasks/verify.yml", "Verify Configarr complete owned state"] =>
+    "tests/media_acquisition_reconciliation_core_test.rb",
+  ["roles/arr/tasks/verify.yml", "Verify Bazarr authentication and identical-path connections"] =>
+    "tests/media_acquisition_reconciliation_core_test.rb",
+  ["roles/downloaders/tasks/verify.yml",
+   "Require current opaque Servarr desired-input fingerprint in verify-only runs"] =>
+    "tests/media_acquisition_reconciliation_core_test.rb",
+  ["roles/downloaders/tasks/verify.yml", "Verify SABnzbd owned settings and category paths"] =>
+    "tests/media_acquisition_reconciliation_core_test.rb",
+  ["roles/immich/tasks/configured_password.yml", "Require unique desired configured Immich identities"] =>
+    "tests/contracts/immich.sh",
+  ["roles/immich/tasks/configured_password.yml",
+   "Require a complete configured-password Immich user listing"] => "tests/contracts/immich.sh",
+  ["roles/immich/tasks/configured_password.yml",
+   "Require unique configured-password Immich target identifiers"] => "tests/contracts/immich.sh",
+  ["roles/immich/tasks/configured_password.yml",
+   "Require a complete authoritative configured-password user listing"] => "tests/contracts/immich.sh",
+  ["roles/immich/tasks/configured_password.yml",
+   "Require unique authoritative configured-password target identifiers"] => "tests/contracts/immich.sh",
+  ["roles/paperless_ngx/tasks/main.yml", "Require the installed Paperless Gmail credential fingerprint"] =>
+    "tests/contracts/paperless.sh",
+  ["roles/arr/tasks/reconciliation_fingerprints.yml",
+   "Validate the selected Arr desired-input fingerprint subset"] =>
+    "tests/media_acquisition_reconciliation_core_test.rb",
+  ["roles/arr/tasks/record_reconciliation_fingerprints.yml",
+   "Validate the recorded Arr reconciliation hash subset"] =>
+    "tests/media_acquisition_reconciliation_core_test.rb"
+}.freeze
+
+def redaction_credential?(node)
+  text = node.to_s
+  text.match?(/\bvault_[a-z0-9_]+\b/) ||
+    REDACTION_CREDENTIAL_NAMES.any? { |name| text.include?(name) }
+end
+
+# `no_log: "{{ beszel_no_log | default(true) }}"` is redaction with an opt-out
+# for a reviewed debugging session, not an unredacted task.
+def redaction_declared?(value)
+  value == true || (value.is_a?(String) && value.include?("default(true)"))
+end
+
+def redaction_walk(tasks, relative, redacted, collected)
+  Array(tasks).each do |task|
+    next unless task.is_a?(Hash)
+
+    inherited = redacted || redaction_declared?(task["no_log"])
+    collected << [relative, task, inherited]
+    %w[block rescue always].each do |section|
+      redaction_walk(task[section], relative, inherited, collected)
+    end
+  end
+  collected
+end
+
+# Whatever key is left once the control flow is removed is the module, dotted
+# collection name or bare custom module from library/ alike.
+def redaction_module(task)
+  (task.keys - REDACTION_CONTROL_KEYS).first
+end
+
+def redaction_loop(task)
+  (task["loop"] || task["with_items"] || task["with_dict"] || task["with_subelements"] ||
+   task["with_nested"] || task["with_together"]).to_s
+end
+
+redaction_sources = (Dir[File.join(ROOT, "roles", "**", "{tasks,handlers}", "*.yml")].sort +
+                     [File.join(ROOT, "site.yml"), File.join(ROOT, "verify.yml")])
+redaction_tasks = []
+redaction_sources.each do |path|
+  relative = path.delete_prefix("#{ROOT}/")
+  document = begin
+    YAML.safe_load_file(path, aliases: true)
+  rescue Psych::Exception
+    check(failures, false, "#{relative} is malformed YAML")
+    nil
+  end
+  next unless document.is_a?(Array)
+
+  if document.first.is_a?(Hash) && document.first.key?("hosts")
+    document.each do |play|
+      next unless play.is_a?(Hash)
+
+      %w[pre_tasks tasks post_tasks handlers].each do |section|
+        redaction_walk(play[section], relative, false, redaction_tasks)
+      end
+    end
+  else
+    redaction_walk(document, relative, false, redaction_tasks)
+  end
+end
+# The mutation harness copies a curated subset of role files into its sandbox and
+# rewrites some of the ones it does copy, so this cannot assert a full-tree
+# count; it only catches a glob that matches nothing at all. The two
+# "must all still exist" checks below are skipped on such a tree for the same
+# reason: they say nothing about a role file that was never copied or was
+# replaced by a fixture stub. Both are redundant as leak guards anyway — renaming
+# a pinned task also trips the rule that exempted it — so skipping them costs
+# only the detection of an entry left behind by a deleted task.
+check(failures, !redaction_tasks.empty?,
+      "redaction policy found no tasks to inspect; the source glob is wrong")
+redaction_pinned_files =
+  (REDACTION_MESSAGE_EXCEPTIONS.keys + REDACTION_ASSERTION_EXCEPTIONS.keys).map(&:first).uniq
+redaction_whole_tree = redaction_pinned_files.all? do |relative|
+  File.file?(File.join(ROOT, relative))
+end
+
+unredacted_credentials = []
+redaction_tasks.each do |relative, task, redacted|
+  next if redacted
+
+  module_name = redaction_module(task)
+  next if module_name.nil? || REDACTION_TRANSPARENT_MODULES.include?(module_name)
+
+  arguments = task[module_name]
+  rendered = if REDACTION_RENDERED_ARGUMENTS.key?(module_name) && arguments.is_a?(Hash)
+               REDACTION_RENDERED_ARGUMENTS.fetch(module_name).filter_map { |key| arguments[key] }
+             else
+               [arguments]
+             end
+  # A failed iteration prints `item`; `debug` has no failing iteration.
+  looped_credential = module_name != "ansible.builtin.debug" &&
+                      redaction_credential?(redaction_loop(task))
+  next unless rendered.any? { |value| redaction_credential?(value) } || looped_credential
+  next if REDACTION_MESSAGE_EXCEPTIONS.key?([relative, task["name"]])
+
+  unredacted_credentials << "#{relative}: #{task['name']}"
+end
+check(failures, unredacted_credentials.empty?,
+      "tasks that render a credential must set no_log: " \
+      "#{unredacted_credentials.join('; ')}")
+
+if redaction_whole_tree
+  pinned_exceptions = REDACTION_MESSAGE_EXCEPTIONS.keys.to_set
+  observed_exceptions = redaction_tasks.filter_map do |relative, task, _redacted|
+    [relative, task["name"]] if pinned_exceptions.include?([relative, task["name"]])
+  end.to_set
+  check(failures, observed_exceptions == pinned_exceptions,
+        "pinned redaction exceptions must all still exist: " \
+        "#{(pinned_exceptions - observed_exceptions).map { |entry| entry.join(': ') }.join('; ')}")
+end
+
+# The other direction. An unlooped `assert` that names no credential anywhere
+# renders nothing but its own source text, so redacting it only hides which of
+# its conditions failed. roles/vault_contract is exempt: the check earlier in
+# this file requires every task there to be redacted regardless.
+overredacted_assertions = redaction_tasks.filter_map do |relative, task, _redacted|
+  next unless redaction_declared?(task["no_log"])
+  next if relative.start_with?("roles/vault_contract/")
+  next unless redaction_module(task) == "ansible.builtin.assert"
+  next unless redaction_loop(task).empty?
+  next if redaction_credential?(task)
+  next if REDACTION_ASSERTION_EXCEPTIONS.key?([relative, task["name"]])
+
+  "#{relative}: #{task['name']}"
+end
+check(failures, overredacted_assertions.empty?,
+      "assertions that can render no credential must not set no_log: " \
+      "#{overredacted_assertions.join('; ')}")
+
+if redaction_whole_tree
+  pinned_assertions = REDACTION_ASSERTION_EXCEPTIONS.keys.to_set
+  observed_assertions = redaction_tasks.filter_map do |relative, task, _redacted|
+    [relative, task["name"]] if pinned_assertions.include?([relative, task["name"]])
+  end.to_set
+  check(failures, observed_assertions == pinned_assertions,
+        "pinned redacted assertions must all still exist: " \
+        "#{(pinned_assertions - observed_assertions).map { |entry| entry.join(': ') }.join('; ')}")
+end
+
 repository_vault_nas_references = Dir[File.join(ROOT, "{inventory,roles,templates,tests}", "**", "*")]
                                   .select { |path| File.file?(path) }
                                   .filter_map do |path|

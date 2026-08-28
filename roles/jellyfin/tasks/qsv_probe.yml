@@ -1,4 +1,6 @@
 ---
+# Redacted: `docker container inspect` returns the container Env array, which
+# is the rendered .env and therefore every Jellyfin credential.
 - name: Inspect Jellyfin container availability for a check-mode QSV proof
   ansible.builtin.command:
     argv: [docker, container, inspect, jellyfin]

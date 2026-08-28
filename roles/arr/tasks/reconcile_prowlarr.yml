@@ -20,7 +20,6 @@
       - arr_prowlarr_host_before.json.authenticationMethod is defined
       - arr_prowlarr_host_before.json.authenticationRequired is defined
     fail_msg: Prowlarr returned an unsupported host configuration schema.
-  no_log: true
 
 - name: Validate operator-owned Prowlarr application declarations
   ansible.builtin.assert:
@@ -29,7 +28,6 @@
       - arr_prowlarr_applications is not mapping
       - arr_prowlarr_applications is not string
     fail_msg: Prowlarr applications must be declared as a sequence.
-  no_log: true
 
 - name: Validate each Prowlarr application declaration mapping
   ansible.builtin.assert:
@@ -83,7 +81,6 @@
         arr_prowlarr_applications | map(attribute='name') | list | length ==
         arr_prowlarr_applications | map(attribute='name') | unique | list | length
     fail_msg: Prowlarr application declaration names must be unique.
-  no_log: true
 
 - name: Read Prowlarr applications
   ansible.builtin.uri:
@@ -105,7 +102,6 @@
       - arr_prowlarr_applications_before.json is not mapping
       - arr_prowlarr_applications_before.json is not string
     fail_msg: Prowlarr returned an unsupported application collection schema.
-  no_log: true
 
 - name: Validate each Prowlarr application response object
   ansible.builtin.assert:
@@ -285,7 +281,6 @@
       - arr_prowlarr_indexers_before.json is not mapping
       - arr_prowlarr_indexers_before.json is not string
     fail_msg: Prowlarr returned an unsupported indexer collection schema.
-  no_log: true
 
 - name: Validate each Prowlarr indexer response object
   ansible.builtin.assert:

@@ -10,7 +10,6 @@
   become: false
   changed_when: false
   check_mode: false
-  no_log: true
 
 - name: Require the trusted Immich restore classifier source
   ansible.builtin.assert:
@@ -33,7 +32,6 @@
   register: immich_restore_classifier_deployed_stat
   changed_when: false
   check_mode: false
-  no_log: true
 
 - name: Require the deployed Immich restore classifier
   ansible.builtin.assert:

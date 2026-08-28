@@ -1,6 +1,8 @@
 ---
 - name: Safely load the existing Dozzle users document
   block:
+    # Redacted through the parse and index below: users.yml holds one bcrypt
+    # password hash per identity.
     - name: Atomically read the existing Dozzle users document
       atomic_safe_slurp:
         path: "{{ dozzle_users_path }}"
@@ -24,7 +26,6 @@
             dozzle_existing_document.users | default({}) | dict2items |
             map(attribute='key') | reject('string') | list | length == 0
         fail_msg: Existing Dozzle users YAML must contain a users mapping with string identities.
-      no_log: true
   rescue:
     - name: Refuse malformed Dozzle users YAML
       ansible.builtin.fail:
@@ -81,7 +82,6 @@
         dozzle_desired_normalized_names | unique | length ==
         dozzle_desired_normalized_names | length
     fail_msg: Dozzle users contain duplicate normalized identities; no users were changed.
-  no_log: true
 
 - name: Index existing Dozzle identities by normalized name
   ansible.builtin.set_fact:

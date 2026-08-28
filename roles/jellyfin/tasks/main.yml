@@ -400,8 +400,9 @@
     fail_msg: >-
       The Jellyfin primary administrator recovery marker is not a private regular
       file owned by the effective platform user.
-  no_log: true
 
+# Redacted through the parse below: the marker records the primary
+# administrator's original name, which is vault_jellyfin_admin_username.
 - name: Read Jellyfin primary administrator recovery marker
   ansible.builtin.slurp:
     src: "{{ jellyfin_primary_recovery_marker }}"
@@ -432,7 +433,6 @@
         (jellyfin_primary_recovery_state.original_name is string and
          jellyfin_primary_recovery_state.original_name | trim | length > 0)
     fail_msg: The Jellyfin primary administrator recovery marker is malformed.
-  no_log: true
 
 - name: Resolve Jellyfin primary administrator authentication name
   ansible.builtin.set_fact:
@@ -513,7 +513,6 @@
       Jellyfin does not accept the preserved primary administrator credential,
       or the authenticated identity is not an administrator. No owned state was changed.
   when: not ansible_check_mode or jellyfin_wizard_completed | bool
-  no_log: true
 
 - name: Resolve the Jellyfin reconciliation identity and token
   ansible.builtin.set_fact:
@@ -605,7 +604,6 @@
       The configured Jellyfin primary administrator is absent, duplicated, or conflicts
       with a separate exact or temporary identity. Resolve it manually; no users were changed.
   when: not ansible_check_mode or jellyfin_wizard_completed | bool
-  no_log: true
 
 - name: Resolve the existing Jellyfin primary administrator
   ansible.builtin.set_fact:
@@ -655,7 +653,6 @@
     jellyfin_server_name_update_required: >-
       {{ jellyfin_server_configuration_before.json.ServerName != jellyfin_server_name }}
   when: not ansible_check_mode or jellyfin_wizard_completed | bool
-  no_log: true
 
 - name: List Jellyfin libraries for preflight
   ansible.builtin.uri:
@@ -1247,7 +1244,6 @@
         jellyfin_verify_login.json.User.Id | string == jellyfin_primary_authenticated_id
     fail_msg: The Jellyfin primary administrator is absent, drifted, or has no image.
   when: not ansible_check_mode
-  no_log: true
 
 - name: Resolve the Jellyfin verification token
   tags: [platform_verify_jellyfin]
@@ -1327,7 +1323,6 @@
   ansible.builtin.set_fact:
     jellyfin_verified_library_inventory: []
   when: not ansible_check_mode
-  no_log: true
 
 - name: Resolve exact Jellyfin library inventory
   tags: [platform_verify_jellyfin]
