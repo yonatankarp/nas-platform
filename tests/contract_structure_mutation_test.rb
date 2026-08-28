@@ -83,6 +83,15 @@ SUITES = {
     environment: ->(repo) { { "PLATFORM_CONTRACT_REPO_DIR" => repo } },
     diagnostic: ->(message) { message }
   },
+  # This suite drives the real vault_contract role over the documented vault, so
+  # each row costs about twenty seconds. It carries three rows rather than one per
+  # conversion: the ones below are the shapes the old whole-file substrings could
+  # not see at all.
+  managed_users_vault: {
+    command: ->(repo) { [RbConfig.ruby, File.join(repo, "tests", "managed_users_vault_test.rb")] },
+    environment: ->(_repo) { {} },
+    diagnostic: ->(message) { "FAIL #{message}" }
+  },
   downloaders: {
     command: ->(repo) { [File.join(repo, "tests", "contracts", "downloaders.sh"), "static"] },
     environment: ->(repo) { { "PLATFORM_CONTRACT_REPO_DIR" => repo } },
@@ -226,6 +235,7 @@ ARR_ENVIRONMENT = "roles/arr/templates/env.j2"
 ARR_SERVARR = "roles/arr/tasks/reconcile_servarr.yml"
 ARR_PROWLARR = "roles/arr/tasks/reconcile_prowlarr.yml"
 ARR_BAZARR = "roles/arr/tasks/reconcile_bazarr.yml"
+VAULT_CONTRACT = "roles/vault_contract/tasks/main.yml"
 DOWNLOADERS_MAIN = "roles/downloaders/tasks/main.yml"
 DOWNLOADERS_ENVIRONMENT = "roles/downloaders/templates/env.j2"
 DOWNLOADERS_INI = "roles/downloaders/templates/sabnzbd.ini.j2"
@@ -1047,6 +1057,32 @@ check_accepted(
   [[ARR_PROWLARR,
     "---\n",
     "---\n# Prowlarr indexes; a download client is deliberately never created here.\n"]]
+)
+
+# --- Managed-user vault contract ----------------------------------------------
+
+check_rejected(
+  failures, :managed_users_vault, "a published fact demoted to a comment",
+  [[VAULT_CONTRACT,
+    "    vault_managed_komga_users: \"{{ vault_managed_users.komga }}\"\n",
+    "    # vault_managed_komga_users: \"{{ vault_managed_users.komga }}\"\n"]],
+  "vault contract must publish named fact vault_managed_komga_users"
+)
+
+check_rejected(
+  failures, :managed_users_vault, "a reserved identity dropped while its name stays in a comment",
+  [[VAULT_CONTRACT,
+    "      komga: [\"{{ vault_komga_admin_email }}\"]\n",
+    "      # komga: [\"{{ vault_komga_admin_email }}\"]\n      komga: []\n"]],
+  "vault contract validation is missing vault_komga_admin_email"
+)
+
+check_rejected(
+  failures, :managed_users_vault, "an ntfy publisher token dropped from the ownership check",
+  [[VAULT_CONTRACT,
+    "         vault_managed_user_errors([vault_ntfy_dozzle_token, vault_ntfy_beszel_token,\n",
+    "         vault_managed_user_errors([vault_ntfy_dozzle_token,\n"]],
+  "vault contract must enforce global ntfy token uniqueness and publisher separation"
 )
 
 # --- Downloader Phase 1 Usenet ownership ---------------------------------------
