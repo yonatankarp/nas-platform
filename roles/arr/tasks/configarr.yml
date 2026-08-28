@@ -4,6 +4,16 @@
 # those were the same file, so a release carrying a different declaration would
 # apply one thing and be verified against another — which looks exactly like
 # Configarr ignoring its own configuration.
+# Configarr names the instance it processed, where it obtained the guides and
+# what it did with the definitions. None of those lines carry a credential and
+# together they distinguish "talked to a different service" from "applied
+# something else".
+- name: Select the reportable Configarr summary lines
+  ansible.builtin.set_fact:
+    arr_configarr_summary_pattern: >-
+      QualityDefinition|Cloned repository|Checking TRaSH|rror|arning|instance|Processing|Server|CFs:
+  changed_when: false
+
 - name: Read the deployed Configarr declaration
   ansible.builtin.slurp:
     src: "{{ platform_current_dir }}/services/arr/configarr.yml"
@@ -288,8 +298,7 @@
       quality_definition_lines: >-
         {{ (arr_configarr_run.stdout_lines | default([]) +
             arr_configarr_run.stderr_lines | default([])) |
-           select('search',
-                  'QualityDefinition|Cloned repository|Checking TRaSH|rror|arning') |
+           select('search', arr_configarr_summary_pattern) |
            list | map('regex_replace', '^(.{0,160}).*$', '\1') | list }}
   when:
     - not ansible_check_mode
