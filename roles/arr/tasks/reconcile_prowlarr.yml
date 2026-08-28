@@ -232,6 +232,10 @@
 - name: Validate every declared Prowlarr indexer field
   ansible.builtin.assert:
     that:
+      # A declaration is written here, not returned by a service: an operator
+      # who names a field without a value has written an incomplete one, and
+      # accepting it let a malformed duplicate identity through.
+      - item.1.value is defined
       - item.1 is mapping
       - item.1.name is string
       - item.1.name is match('^[^\r\n]+$')
