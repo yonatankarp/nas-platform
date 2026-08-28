@@ -913,6 +913,49 @@ role_task_files.each do |path|
   check(failures, !shells_out,
         "#{path}: shells out to Compose; use community.docker.docker_compose_v2")
 end
+
+# Timing is platform policy, not a number typed into a task. These values were
+# literals across nine roles: one readiness delay written eleven times and four
+# unrelated stack timeouts, with nothing relating any copy to any other, so they
+# drifted independently. inventory/group_vars/all declares the ordinary wait and
+# the ordinary readiness poll, and a service that needs longer declares its own
+# role default with the reason beside it. A bare number bypasses both at once —
+# it is neither the shared policy nor a documented deviation from it — so a bare
+# number is refused and the task has to name which of the two it is.
+#
+# retries and delay are read as task keywords rather than searched for, because
+# modules carry arguments of the same name that are not this policy at all:
+# ansible.builtin.wait_for takes its own delay, and a Compose health check takes
+# its own retries. wait_timeout only ever appears as a module argument, so it is
+# looked for wherever a task carries it.
+literal_wait_timeout = lambda do |node|
+  case node
+  when Hash
+    node.any? do |key, value|
+      (key.to_s == "wait_timeout" && value.is_a?(Integer)) || literal_wait_timeout.call(value)
+    end
+  when Array then node.any? { |value| literal_wait_timeout.call(value) }
+  else false
+  end
+end
+TIMING_KEYWORD_POLICY = {
+  "retries" => "platform_readiness_retries",
+  "delay" => "platform_readiness_delay"
+}.freeze
+role_task_files.each do |path|
+  relative_path = path.delete_prefix("#{ROOT}/")
+  flatten_tasks(YAML.safe_load_file(path, aliases: true)).each do |task|
+    task_name = task["name"] || "an unnamed task"
+    TIMING_KEYWORD_POLICY.each do |keyword, shared_variable|
+      check(failures, !task[keyword].is_a?(Integer),
+            "#{relative_path}: \"#{task_name}\" writes #{keyword}: #{task[keyword]} as a literal; " \
+            "read #{shared_variable} or a role default that says why it differs")
+    end
+    check(failures, !literal_wait_timeout.call(task),
+          "#{relative_path}: \"#{task_name}\" writes wait_timeout as a literal; " \
+          "read platform_compose_wait_timeout or a role default that says why it differs")
+  end
+end
 check(failures, deploys_through_module,
       "no role deploys anything through docker_compose_v2")
 
@@ -1003,9 +1046,21 @@ jellyfin_tasks = File.exist?(jellyfin_tasks_path) ? YAML.safe_load_file(jellyfin
 jellyfin_startup = jellyfin_tasks.find do |task|
   task.dig("ansible.builtin.uri", "url").to_s.include?("/System/Info/Public")
 end
+# The retry count is a role default now that timing literals are refused in
+# tasks, so the property is read through whichever variable the task names.
+jellyfin_role_defaults = YAML.safe_load_file(File.join(ROOT, "roles/jellyfin/defaults/main.yml"))
+jellyfin_startup_retries = jellyfin_startup && jellyfin_startup["retries"]
+resolved_startup_retries =
+  if jellyfin_startup_retries.is_a?(Integer)
+    jellyfin_startup_retries
+  else
+    jellyfin_role_defaults[
+      jellyfin_startup_retries.to_s[/\A\{\{\s*(\w+)\s*\}\}\z/, 1].to_s
+    ].to_i
+  end
 check(failures,
       jellyfin_startup.nil? ||
-        (jellyfin_startup.key?("until") && jellyfin_startup["retries"].to_i > 0),
+        (jellyfin_startup.key?("until") && resolved_startup_retries > 0),
       "reading Jellyfin startup state must retry until the server finishes loading")
 
 paperless_contract = File.read(File.join(ROOT, "tests", "contracts", "paperless.sh"))

@@ -3,6 +3,12 @@ argument_specs:
   main:
     short_description: Deploy Immich and converge its administrator and managed settings
     options:
+      immich_compose_wait_timeout:
+        type: int
+        required: false
+      immich_initialization_retries:
+        type: int
+        required: false
       platform_compose_kind:
         type: str
         required: true

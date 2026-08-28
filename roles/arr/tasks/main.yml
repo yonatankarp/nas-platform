@@ -80,7 +80,7 @@
     env_files: ["{{ platform_runtime_dir }}/services/arr/.env"]
     state: present
     wait: true
-    wait_timeout: 240
+    wait_timeout: "{{ arr_compose_wait_timeout }}"
   when: media_usenet_enabled | bool
   register: arr_deploy
 

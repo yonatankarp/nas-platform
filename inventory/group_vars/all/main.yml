@@ -92,6 +92,22 @@ nas_python_minimum: "3.8"
 # community.docker.docker_compose_v2 documents this floor.
 nas_compose_minimum: "2.18.0"
 
+# Timing policy. How long the platform waits is a platform decision, not a
+# per-role one, so the ordinary stack wait and the ordinary readiness poll are
+# declared once here and every role reads them. group_vars outranks role
+# defaults, so a role cannot quietly redefine these: a service that genuinely
+# needs to wait longer declares its own variable in roles/<name>/defaults with
+# the reason beside it, which is what makes a deviation visible as a deviation.
+# tests/policy_test.rb refuses a bare number for retries, delay, or wait_timeout
+# in any role task, so a new literal cannot reintroduce the drift.
+#
+# platform_readiness_retries x platform_readiness_delay is a minute of patience,
+# which is what a container that has already reported healthy needs to answer
+# its own API.
+platform_compose_wait_timeout: 180
+platform_readiness_retries: 20
+platform_readiness_delay: 3
+
 # Single declarative storage inventory. host_prep creates ordinary entries and
 # validates preservation-only entries, the policy test cross-checks them against
 # Compose volume sources, and the recovery class drives the disaster-recovery

@@ -241,7 +241,7 @@
     env_files: ["{{ platform_runtime_dir }}/services/dozzle/.env"]
     state: present
     wait: true
-    wait_timeout: 180
+    wait_timeout: "{{ platform_compose_wait_timeout }}"
   register: dozzle_deploy
 
 - name: Report the Dozzle deployment
@@ -264,7 +264,7 @@
     services: [dozzle]
     state: restarted
     wait: true
-    wait_timeout: 180
+    wait_timeout: "{{ platform_compose_wait_timeout }}"
   when: dozzle_users_file.changed
 
 - name: Verify Dozzle effective container CPU policy
@@ -280,8 +280,8 @@
     url: "http://127.0.0.1:{{ dozzle_port }}/healthcheck"
   register: dozzle_health
   until: dozzle_health.status | default(0) == 200
-  retries: 20
-  delay: 3
+  retries: "{{ platform_readiness_retries }}"
+  delay: "{{ platform_readiness_delay }}"
   changed_when: false
   check_mode: false
 
