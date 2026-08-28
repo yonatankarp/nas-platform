@@ -39,6 +39,17 @@ argument_specs:
         elements: str
         required: false
         description: Every topic the platform provisions, in declaration order.
+      ntfy_verification_topic:
+        type: str
+        required: false
+        description: >-
+          Topic the provisioning proof publishes to. Outside ntfy_topics, so no
+          managed user can subscribe and no device is notified.
+      ntfy_publishable_topics:
+        type: list
+        elements: str
+        required: false
+        description: Topics a publisher may hold, including the verification topic.
       ntfy_base_url:
         type: str
         required: false
@@ -97,6 +108,61 @@ argument_specs:
         type: str
         required: true
         description: Git SHA of the release the service was deployed from.
+      ntfy_port:
+        type: int
+        required: false
+      ntfy_deployment_topic:
+        type: str
+        required: false
+        description: Topic for the routine deployment record.
+      vault_ntfy_deploy_token:
+        type: str
+        required: true
+        description: Write-only token of the deploy publisher.
+
+  deployment_summary:
+    short_description: Publish one summary of what the whole run deployed
+    description:
+      - Runs once after every service role, and only when the release moved.
+        Diffs the manifest of the release the deployment replaced against the
+        one it installed, so the message names versions rather than a revision.
+    options:
+      platform_deploy_root:
+        type: str
+        required: true
+      platform_release_dir:
+        type: str
+        required: true
+      platform_release_id:
+        type: str
+        required: true
+        description: Git SHA of the release this run deployed.
+      ntfy_deployment_summary_previous:
+        type: str
+        required: false
+        description: Release the deployment pointer named before this run.
+      ntfy_deployment_summary_release_moved:
+        type: bool
+        required: false
+        description: Whether the release changed; false publishes nothing.
+      ntfy_deployment_summary_checkout:
+        type: path
+        required: false
+        description: Controller checkout the commit subjects are read from.
+      ntfy_deployment_summary_max_commits:
+        type: int
+        required: false
+        description: Commit subjects shown before the body reports a remainder.
+      ntfy_deployment_summary_changes:
+        type: list
+        elements: dict
+        required: false
+        description: Image movements resolved from the two manifests.
+      ntfy_deployment_summary_commits:
+        type: list
+        elements: str
+        required: false
+        description: Commit subjects this deployment carries.
       ntfy_port:
         type: int
         required: false

@@ -97,6 +97,18 @@
     follow: false
   register: deployment_bundle_current
 
+# Read before the pointer moves: after activation nothing on the target still
+# names the release this run replaced, and the deployment summary needs it to
+# say what changed rather than only what is now installed.
+- name: Record the release the deployment pointer named
+  ansible.builtin.set_fact:
+    deployment_bundle_previous_release_id: >-
+      {{ (deployment_bundle_current.stat.lnk_source | default('') | basename)
+         if ((deployment_bundle_current.stat.islnk | default(false)) and
+             (deployment_bundle_current.stat.lnk_source | default('') | basename)
+               is match('^[0-9a-f]{40}$'))
+         else '' }}
+
 - name: Revalidate before removing the staging release
   ansible.builtin.include_tasks: target.yml
   vars:

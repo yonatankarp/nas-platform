@@ -1162,16 +1162,36 @@ class PollTest(PollerTestCase):
         ), mock.patch.object(
             production_auto_deploy, "notify", return_value=False
         ), mock.patch.object(
-            production_auto_deploy, "deploy", return_value=True
+            production_auto_deploy, "deploy", return_value=False
         ):
             buffer = io.StringIO()
             with contextlib.redirect_stderr(buffer):
-                self.assertTrue(production_auto_deploy.poll(config))
+                self.assertFalse(production_auto_deploy.poll(config))
 
         self.assertIn("notification failed", buffer.getvalue())
         latest = (config.log_root / "latest").resolve()
         self.assertIn("notification failed", latest.read_text(encoding="ascii"))
-        # A lost notification must not cast doubt on the deployment itself.
+        # A lost notification must not cast doubt on the recorded state.
+        self.assertIsNone(production_auto_deploy.read_state(config)["last_successful"])
+
+    def test_a_successful_deployment_leaves_reporting_to_the_deployment(self):
+        config = self.loaded_config()
+        with mock.patch.object(
+            production_auto_deploy, "resolve_main_sha", return_value=MAIN_SHA
+        ), mock.patch.object(
+            production_auto_deploy,
+            "fetch_ci_runs",
+            return_value=({**self.GREEN_RUN, "head_sha": MAIN_SHA},),
+        ), mock.patch.object(
+            production_auto_deploy, "notify", return_value=True
+        ) as notified, mock.patch.object(
+            production_auto_deploy, "deploy", return_value=True
+        ):
+            self.assertTrue(production_auto_deploy.poll(config))
+
+        # site.yml publishes the summary that says what shipped; a second
+        # message here would carry a revision and say less.
+        notified.assert_not_called()
         self.assertEqual(
             production_auto_deploy.read_state(config)["last_successful"]["sha"],
             MAIN_SHA,

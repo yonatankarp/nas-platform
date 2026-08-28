@@ -1,0 +1,117 @@
+---
+# One message for the whole run, published after every service has converged.
+# The per-service reports say a service was recreated; this says what shipped —
+# which images moved between which versions, and the commit subjects the release
+# carries — because the reader is usually a phone nowhere near a checkout, where
+# a revision is a lookup they cannot perform.
+#
+# Silent unless the release actually moved. A converge that reinstalls the same
+# revision recreated nothing, and the per-service reports stay silent for the
+# same reason.
+- name: Read the installed deployment manifest
+  atomic_safe_slurp:
+    path: "{{ platform_release_dir }}/manifest.yml"
+    max_bytes: 1048576
+  register: ntfy_deployment_summary_current_source
+  when:
+    - ntfy_deployment_summary_release_moved | bool
+    - not ansible_check_mode
+
+- name: Read the manifest of the release this deployment replaced
+  atomic_safe_slurp:
+    path: >-
+      {{ platform_deploy_root }}/releases/{{ ntfy_deployment_summary_previous }}/manifest.yml
+    max_bytes: 1048576
+  register: ntfy_deployment_summary_previous_source
+  when:
+    - ntfy_deployment_summary_release_moved | bool
+    - not ansible_check_mode
+    - ntfy_deployment_summary_previous is match('^[0-9a-f]{40}$')
+
+# A first install has no previous manifest, and every image in it is genuinely
+# new rather than unchanged.
+- name: Resolve which images the release moved
+  ansible.builtin.set_fact:
+    ntfy_deployment_summary_changes: >-
+      {{ ((ntfy_deployment_summary_previous_source.content | b64decode | from_yaml)
+          if (ntfy_deployment_summary_previous_source.exists | default(false)) else none)
+         | deployment_image_changes(ntfy_deployment_summary_current_document) }}
+  vars:
+    ntfy_deployment_summary_current_document: >-
+      {{ ntfy_deployment_summary_current_source.content | b64decode | from_yaml }}
+  when:
+    - ntfy_deployment_summary_release_moved | bool
+    - not ansible_check_mode
+    - ntfy_deployment_summary_current_source.exists | default(false)
+
+# Delegated because the Git history lives in the controller checkout, which the
+# target never has. Best effort: a release whose predecessor the checkout no
+# longer contains still deserves the image summary rather than a failed run.
+- name: Read the commit subjects this deployment carries
+  ansible.builtin.command:
+    argv:
+      - git
+      - -C
+      - "{{ ntfy_deployment_summary_checkout }}"
+      - log
+      - --no-merges
+      - --format=%s
+      - "{{ ntfy_deployment_summary_previous }}..{{ platform_release_id }}"
+  register: ntfy_deployment_summary_git_log
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  delegate_to: localhost
+  run_once: true
+  when:
+    - ntfy_deployment_summary_release_moved | bool
+    - not ansible_check_mode
+    - ntfy_deployment_summary_current_source.exists | default(false)
+    - ntfy_deployment_summary_previous is match('^[0-9a-f]{40}$')
+
+- name: Resolve the commit subjects to report
+  ansible.builtin.set_fact:
+    ntfy_deployment_summary_commits: >-
+      {{ (ntfy_deployment_summary_git_log.stdout_lines | default([]))
+         if (ntfy_deployment_summary_git_log.rc | default(1)) == 0 else [] }}
+  when:
+    - ntfy_deployment_summary_release_moved | bool
+    - not ansible_check_mode
+    - ntfy_deployment_summary_current_source.exists | default(false)
+
+# Addresses the server root so the topic travels in the body: posting this
+# document to /<topic> would deliver it as literal JSON text rather than as a
+# rendered notification.
+#
+# A refused publish fails the converge on purpose, exactly as the per-service
+# report does. It is also what proves the deploy publisher's token still writes,
+# now that the provisioning proof no longer touches a topic anyone reads.
+- name: Publish the deployment summary
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ ntfy_port }}/"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ vault_ntfy_deploy_token }}"
+    body_format: json
+    body:
+      topic: "{{ ntfy_deployment_topic }}"
+      title: >-
+        {{ ntfy_deployment_summary_changes
+           | deployment_report_headline(ntfy_deployment_summary_commits) }}
+      message: "{{ lookup('ansible.builtin.template', 'deployment_summary.j2') }}"
+      priority: 3
+      tags: [rocket]
+    status_code: [200]
+  changed_when: false
+  no_log: true
+  when:
+    - ntfy_deployment_summary_release_moved | bool
+    - not ansible_check_mode
+    - ntfy_deployment_summary_current_source.exists | default(false)
+
+- name: Report the deployment summary withheld by check mode
+  ansible.builtin.debug:
+    msg: >-
+      Check mode publishes no deployment summary; a real run that moves the
+      release publishes one message to {{ ntfy_deployment_topic }}.
+  when: ansible_check_mode
