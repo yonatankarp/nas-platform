@@ -55,9 +55,16 @@
       - host_prep_media_acquisition_storage | selectattr('recovery', 'equalto', 'user') | list | length == 7
       - host_prep_media_acquisition_storage | selectattr('recovery', 'equalto', 'critical') | list | length == 11
       - host_prep_media_acquisition_storage | map(attribute='mode') | unique | list == ['0755']
-      - not (media_usenet_enabled | bool)
+      # Torrent has been through no host's handoff, so it is still inert
+      # everywhere and this reads as an invariant. Usenet is not: the NAS took
+      # it through Phase 1, so asserting it off here would fail the very host
+      # that completed the handoff. Which hosts may enable which transport is
+      # an inventory property, checked where the inventory is, and comparing
+      # the flag to itself at runtime would prove nothing anyway.
       - not (media_torrent_enabled | bool)
-    fail_msg: Media acquisition storage or transport policy differs from the inert foundation.
+    fail_msg: >-
+      Media acquisition storage layout differs from the foundation, or a
+      transport is enabled on a host that has not been through its handoff.
   changed_when: false
   tags: [platform_verify_media_acquisition_foundation]
 

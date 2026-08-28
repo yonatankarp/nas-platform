@@ -60,7 +60,9 @@ def verifier_problems(tasks, verify_play)
     "host_prep_media_acquisition_storage | selectattr('recovery', 'equalto', 'critical') | list | length == 11",
     "host_prep_media_acquisition_storage | map(attribute='mode') | unique | list == ['0755']",
     "host_prep_media_acquisition_storage_stats.results | length == 28",
-    "not (media_usenet_enabled | bool)",
+    # Usenet is deliberately absent: the NAS enabled it through Phase 1, and a
+    # verifier that required it off would fail the host that completed the
+    # handoff. Torrent remains inert on every host.
     "not (media_torrent_enabled | bool)"
   ]
   required.each { |condition| problems << "verifier omits exact assertion: #{condition}" unless conditions.include?(condition) }
