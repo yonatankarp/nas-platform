@@ -291,6 +291,16 @@ acquisition_owned_field_check =
 check(failures,
       validation_commands.count(acquisition_owned_field_check) == 1,
       "validate-policy.sh must run #{acquisition_owned_field_check} exactly once")
+# media_bazarr_providers is validated against no list of known providers, so a
+# misspelled setting key converges and fetches nothing. The documented blocks
+# are the operator's protection against that, and they only protect while
+# something proves they still validate and still match the deployed version.
+check(failures,
+      validation_commands.count("ruby tests/bazarr_provider_schema_test.rb") == 1,
+      "validate-policy.sh must run ruby tests/bazarr_provider_schema_test.rb exactly once")
+check(failures,
+      validation_commands.count("ruby tests/bazarr_provider_schema_test.rb --self-test") == 1,
+      "validate-policy.sh must run ruby tests/bazarr_provider_schema_test.rb --self-test exactly once")
 check(failures,
       validation_commands.count("ruby tests/audiobookshelf_initial_scan_test.rb") == 1,
       "validate-policy.sh must run ruby tests/audiobookshelf_initial_scan_test.rb exactly once")

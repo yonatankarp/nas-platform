@@ -1740,6 +1740,10 @@ end
     "ruby tests/media_acquisition_foundation_verifier_test.rb",
   "acquisition filter argument conversion regression" =>
     'PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_filter_native_arguments_test.py',
+  "Bazarr provider schema regression" =>
+    "ruby tests/bazarr_provider_schema_test.rb",
+  "Bazarr provider schema self-test" =>
+    "ruby tests/bazarr_provider_schema_test.rb --self-test",
   "Configarr owned-field coverage regression" =>
     "ruby tests/acquisition_configarr_field_coverage_test.rb",
   "Configarr owned-field coverage self-test" =>

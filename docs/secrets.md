@@ -9,12 +9,18 @@ editor. Do not put credentials in chat, command-line `-e` arguments, shell
 history, logs, tickets, or pull requests. Do not paste them into diagnostic
 output.
 
-Phase 1 provider/indexer fields and Bazarr preferences are target-owned inputs,
-not repository defaults. Keep them in the encrypted external extra-vars file
-described by the
-[media acquisition Phase 1 handoff](media-acquisition-phase1.md); never commit a
-plaintext provider configuration or place its fields directly on the command
+Phase 1 provider/indexer fields and Bazarr preferences are credentials, and
+belong in the vault beside every other credential. `group_vars/all/main.yml`
+carries them as empty lists so a target that has declared nothing starts without
+unattended acquisition; a declaration in the vault overrides that. Never commit
+a plaintext provider configuration or place its fields directly on the command
 line.
+
+They were previously kept in an encrypted file outside the repository. Nothing
+was gained by it: the vault is encrypted with 384 random bits that never enter
+the repository, so its ciphertext being public discloses nothing, while an
+out-of-repo artifact is invisible to the deployment poller and made automatic
+deployment and configured acquisition mutually exclusive.
 
 ## Start here: choose fresh or recovery
 
