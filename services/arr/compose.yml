@@ -108,7 +108,7 @@ services:
   configarr:
     <<: *job-defaults
     profiles: [jobs]
-    image: ghcr.io/raydak-labs/configarr:1.28.0@sha256:008d8659ff35f63fbcc20b860b33ba7cc49e8d7458a6ec446810ec4d783ef017
+    image: ghcr.io/raydak-labs/configarr:1.30.2@sha256:ec585b6d2530f6090ee26fdcc9701f279666c24dc96c9087208e88ec867c2416
     user: "${NAS_UID:?}:${NAS_GID:?}"
     cpus: 0.5
     environment:
