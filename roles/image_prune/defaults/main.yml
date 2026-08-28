@@ -1,0 +1,48 @@
+---
+# Weekly, early Sunday. Image churn here is driven by Renovate merges, a handful
+# a week, so a daily schedule would spend six runs in seven reclaiming nothing;
+# 04:00 Sunday keeps it clear of evening media activity.
+image_prune_cron_name: NAS platform Docker image prune
+image_prune_cron_minute: "0"
+image_prune_cron_hour: "4"
+image_prune_cron_weekday: "0"
+
+# Docker's `until` filter compares an image's *creation* time, which is when it
+# was built upstream, not when this host pulled it. A release published months
+# ago and pulled a minute ago is therefore already outside any window, so these
+# windows are a margin and not the thing that keeps a prune off a running
+# deployment: the prune holds the poller's own deployment lock for that.
+image_prune_retention_hours: 168
+# Untagged images can be named by nothing at all, so they need less grace.
+image_prune_dangling_retention_hours: 24
+image_prune_log_retention_days: 30
+# How long a prune waits for an in-flight deployment before giving up and
+# leaving the work to the next scheduled run. Fifteen minutes covers a normal
+# converge; waiting longer would hold the lock against the five-minute poll for
+# no gain, since a skipped prune costs only a week of images nobody is using.
+image_prune_lock_wait_seconds: 900
+
+# Both schedules run as the same account, from the same crond, so a host where
+# the poller must be scheduled externally is one where this must be too.
+image_prune_external_scheduler: >-
+  {{ production_auto_deploy_external_scheduler | default(false) }}
+
+# Every managed path derives from the effective account's real home, so the role
+# cannot be pointed at another account's tree by overriding one variable.
+image_prune_home: "{{ ansible_facts.user_dir }}"
+image_prune_share_root: "{{ image_prune_home }}/.local/share/nas-platform"
+image_prune_checkout: "{{ image_prune_share_root }}/controller"
+image_prune_root: "{{ image_prune_share_root }}/prune"
+image_prune_state_root: "{{ image_prune_share_root }}/prune-state"
+image_prune_log_root: "{{ image_prune_share_root }}/prune-logs"
+image_prune_config_root: "{{ image_prune_home }}/.config/nas-platform"
+image_prune_config_path: "{{ image_prune_config_root }}/image-prune.json"
+image_prune_notifier_path: "{{ image_prune_config_root }}/ntfy-prune.curl"
+image_prune_launcher_root: "{{ image_prune_home }}/.local/bin"
+image_prune_launcher_path: "{{ image_prune_launcher_root }}/nas-platform-prune"
+image_prune_script_path: "{{ image_prune_root }}/image_prune.py"
+# The poller's lock, deliberately: a prune that took a lock of its own would be
+# serialised against nothing that matters.
+image_prune_deployment_lock: >-
+  {{ production_auto_deploy_state_root
+     | default(image_prune_share_root ~ '/state') }}/deployment.lock

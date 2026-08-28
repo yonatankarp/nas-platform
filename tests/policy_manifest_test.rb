@@ -1769,7 +1769,11 @@ end
   "production auto-deploy poller suite" =>
     'PYTHONDONTWRITEBYTECODE=1 "$ansible_python" -m unittest -v tests.production_auto_deploy_test',
   "production auto-deploy installer suite" =>
-    "ruby tests/production_auto_deploy_role_test.rb"
+    "ruby tests/production_auto_deploy_role_test.rb",
+  "scheduled image prune suite" =>
+    'PYTHONDONTWRITEBYTECODE=1 "$ansible_python" -m unittest -v tests.image_prune_test',
+  "image prune installer suite" =>
+    "ruby tests/image_prune_role_test.rb"
 }.each do |name, command|
   expect_failure(failures, "#{name} removed from policy validation",
                  "validate-policy.sh must run the #{name} exactly once") do |root|

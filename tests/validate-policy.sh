@@ -48,6 +48,8 @@ tests/policy_runner_test.sh
 ruby tests/paperless_mail_reconciliation_test.rb
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" -m unittest -v tests.production_auto_deploy_test
 ruby tests/production_auto_deploy_role_test.rb
+PYTHONDONTWRITEBYTECODE=1 "$ansible_python" -m unittest -v tests.image_prune_test
+ruby tests/image_prune_role_test.rb
 ruby tests/beszel_telemetry_probe_test.rb
 ruby tests/beszel_telemetry_timeout_test.rb
 ruby tests/beszel_telemetry_ansible_test.rb

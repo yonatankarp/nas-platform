@@ -1,0 +1,6 @@
+#!/bin/sh
+# Operator entry point. The prune serialises itself on the poller's deployment
+# lock, so this wrapper only needs to supply the configuration path.
+set -eu
+exec "{{ image_prune_script_path }}" \
+  --config "{{ image_prune_config_path }}" "$@"

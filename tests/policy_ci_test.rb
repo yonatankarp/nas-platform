@@ -228,6 +228,8 @@ validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "te
   ruby\ tests/paperless_mail_reconciliation_test.rb
   PYTHONDONTWRITEBYTECODE=1\ "$ansible_python"\ -m\ unittest\ -v\ tests.production_auto_deploy_test
   ruby\ tests/production_auto_deploy_role_test.rb
+  PYTHONDONTWRITEBYTECODE=1\ "$ansible_python"\ -m\ unittest\ -v\ tests.image_prune_test
+  ruby\ tests/image_prune_role_test.rb
   python3\ -m\ unittest\ -v\ tests/dozzle_alert_relay_test.py
   tests/dozzle_alert_state_symlink_test.sh
   tests/integration_lock_test.sh
@@ -247,7 +249,11 @@ end
   'PYTHONDONTWRITEBYTECODE=1 "$ansible_python" -m unittest -v tests.production_auto_deploy_test' =>
     "the production auto-deploy poller suite",
   "ruby tests/production_auto_deploy_role_test.rb" =>
-    "the production auto-deploy installer suite"
+    "the production auto-deploy installer suite",
+  'PYTHONDONTWRITEBYTECODE=1 "$ansible_python" -m unittest -v tests.image_prune_test' =>
+    "the scheduled image prune suite",
+  "ruby tests/image_prune_role_test.rb" =>
+    "the image prune installer suite"
 }.each do |command, description|
   check(failures, validation_commands.count(command) == 1,
         "validate-policy.sh must run #{description} exactly once")
