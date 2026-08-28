@@ -34,8 +34,12 @@ ruby tests/policy_vault_test.rb
 "$ansible_python" tests/generate_secrets_jinja_regex_test.py
 tests/target_docker_dependency_preflight_test.sh
 tests/media_control_network_collision_test.sh static
+ruby tests/host_prep_integration_writer_test.rb
 ruby tests/media_acquisition_foundation_test.rb
 ruby tests/media_acquisition_foundation_verifier_test.rb
+ruby tests/media_acquisition_phase1_test.rb
+ruby tests/configarr_job_test.rb
+ruby tests/media_acquisition_adoption_test.rb
 tests/mac/media-acquisition-foundation-hook-test.sh
 ruby tests/mac/media-acquisition-foundation-report-test.rb
 tests/mac/media-acquisition-foundation-cleanup-test.sh
@@ -85,6 +89,7 @@ ruby tests/database_managed_users_test.rb
 ruby tests/database_managed_users_test.rb --self-test
 ruby tests/ntfy_verify_execution_test.rb
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/managed_user_state_filter_test.py
+PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_relationships_profile_ids_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/vault_managed_user_schema_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/vault_credential_schema_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/immich_preference_schema_test.py
@@ -99,6 +104,7 @@ ruby tests/jellyfin_transcode_contract_test.rb
 ruby tests/contract_structure_mutation_test.rb
 tests/integration_lock_test.sh
 tests/integration_suite_test.sh
+tests/sandbox_cleanup_acquisition_ownership_test.sh
 tests/mac/config-isolation.sh
 tests/mac/run-phase-status-test.sh
 tests/mac/manual-validation-runner-test.sh

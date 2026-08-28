@@ -1,0 +1,456 @@
+---
+- name: Read Prowlarr host configuration
+  ansible.builtin.uri:
+    url: "{{ arr_prowlarr_api }}/config/host"
+    method: GET
+    headers:
+      X-Api-Key: "{{ vault_arr_prowlarr_api_key }}"
+    status_code: [200]
+    return_content: true
+  register: arr_prowlarr_host_before
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require the supported Prowlarr host schema
+  ansible.builtin.assert:
+    that:
+      - arr_prowlarr_host_before.json is mapping
+      - arr_prowlarr_host_before.json.id is number
+      - arr_prowlarr_host_before.json.authenticationMethod is defined
+      - arr_prowlarr_host_before.json.authenticationRequired is defined
+    fail_msg: Prowlarr returned an unsupported host configuration schema.
+  no_log: true
+
+- name: Validate operator-owned Prowlarr application declarations
+  ansible.builtin.assert:
+    that:
+      - arr_prowlarr_applications is sequence
+      - arr_prowlarr_applications is not mapping
+      - arr_prowlarr_applications is not string
+    fail_msg: Prowlarr applications must be declared as a sequence.
+  no_log: true
+
+- name: Validate each Prowlarr application declaration mapping
+  ansible.builtin.assert:
+    that:
+      - item is mapping
+    fail_msg: Every Prowlarr application declaration must be a mapping.
+  loop: "{{ arr_prowlarr_applications }}"
+  loop_control:
+    label: prowlarr-application-declaration
+  no_log: true
+
+- name: Validate each complete Prowlarr application declaration
+  ansible.builtin.assert:
+    that:
+      - item.name is string
+      - item.name is match('^[^\r\n]+$')
+      - item.implementation is string
+      - item.implementation is match('^[^\r\n]+$')
+      - item.config_contract is string
+      - item.config_contract is match('^[^\r\n]+$')
+      - item.base_url is string
+      - item.base_url is match('^[^\r\n]+$')
+      - item.api_key is string
+      - item.api_key is match('^[^\r\n]+$')
+      - item.sync_categories is sequence
+      - item.sync_categories is not mapping
+      - item.sync_categories is not string
+      - >-
+        item.sync_categories | select('integer') | list | length ==
+        item.sync_categories | length
+      - >-
+        item.implementation_name is not defined or
+        (item.implementation_name is string and
+         item.implementation_name is match('^[^\r\n]+$'))
+      - item.tags | default([]) is sequence
+      - item.tags | default([]) is not mapping
+      - item.tags | default([]) is not string
+      - >-
+        item.tags | default([]) | select('integer') | list | length ==
+        item.tags | default([]) | length
+    fail_msg: A Prowlarr application declaration is incomplete or malformed.
+  loop: "{{ arr_prowlarr_applications }}"
+  loop_control:
+    label: prowlarr-application-declaration
+  no_log: true
+
+- name: Refuse duplicate Prowlarr application declaration names
+  ansible.builtin.assert:
+    that:
+      - >-
+        arr_prowlarr_applications | map(attribute='name') | list | length ==
+        arr_prowlarr_applications | map(attribute='name') | unique | list | length
+    fail_msg: Prowlarr application declaration names must be unique.
+  no_log: true
+
+- name: Read Prowlarr applications
+  ansible.builtin.uri:
+    url: "{{ arr_prowlarr_api }}/applications"
+    method: GET
+    headers:
+      X-Api-Key: "{{ vault_arr_prowlarr_api_key }}"
+    status_code: [200]
+    return_content: true
+  register: arr_prowlarr_applications_before
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Validate the Prowlarr application response collection
+  ansible.builtin.assert:
+    that:
+      - arr_prowlarr_applications_before.json is sequence
+      - arr_prowlarr_applications_before.json is not mapping
+      - arr_prowlarr_applications_before.json is not string
+    fail_msg: Prowlarr returned an unsupported application collection schema.
+  no_log: true
+
+- name: Validate each Prowlarr application response object
+  ansible.builtin.assert:
+    that:
+      - item is mapping
+      - item.id is integer
+      - item.name is string
+      - item.name is match('^[^\r\n]+$')
+      - >-
+        item.enable is boolean or
+        (item.enable is string and item.enable | lower in ['true', 'false'])
+      - item.syncLevel is string
+      - item.syncLevel is match('^[^\r\n]+$')
+      - item.implementation is string
+      - item.implementation is match('^[^\r\n]+$')
+      - item.implementationName is string
+      - item.implementationName is match('^[^\r\n]+$')
+      - item.configContract is string
+      - item.configContract is match('^[^\r\n]+$')
+      - item.tags is sequence
+      - item.tags is not mapping
+      - item.tags is not string
+      - item.tags | select('integer') | list | length == item.tags | length
+      - item.fields is defined
+      - item.fields is sequence
+      - item.fields is not mapping
+      - item.fields is not string
+    fail_msg: Prowlarr returned an unsupported application object schema.
+  loop: "{{ arr_prowlarr_applications_before.json }}"
+  loop_control:
+    label: prowlarr-application-schema
+  no_log: true
+
+- name: Validate every Prowlarr application response field
+  ansible.builtin.assert:
+    that:
+      - item.1 is mapping
+      - item.1.name is string
+      - item.1.name is match('^[^\r\n]+$')
+      # Prowlarr and the Servarr apps omit `value` for an optional field that
+      # has never been set. The projection already reads a missing value as
+      # null, so requiring it here refused a response the rest of the role
+      # handles correctly. The name still has to be well formed.
+    fail_msg: Prowlarr returned an unsupported application field schema.
+  loop: "{{ arr_prowlarr_applications_before.json | subelements('fields') }}"
+  loop_control:
+    label: prowlarr-application-field-schema
+  no_log: true
+
+- name: Refuse duplicate Prowlarr application response field names
+  ansible.builtin.assert:
+    that:
+      - >-
+        item.fields | map(attribute='name') | list | length ==
+        item.fields | map(attribute='name') | unique | list | length
+    fail_msg: Prowlarr returned duplicate application field names.
+  loop: "{{ arr_prowlarr_applications_before.json }}"
+  loop_control:
+    label: prowlarr-application-schema
+  no_log: true
+
+- name: Refuse duplicate Prowlarr application names before mutation
+  ansible.builtin.assert:
+    that:
+      - >-
+        arr_prowlarr_applications_before.json |
+        selectattr('name', 'equalto', item.name) | list | length <= 1
+    fail_msg: Prowlarr has an ambiguous operator-owned application name.
+  loop: "{{ arr_prowlarr_applications }}"
+  loop_control:
+    label: prowlarr-application-identity
+  no_log: true
+
+- name: Validate operator-owned Prowlarr indexer declarations
+  ansible.builtin.assert:
+    that:
+      - media_arr_indexers is sequence
+      - media_arr_indexers is not mapping
+      - media_arr_indexers is not string
+    fail_msg: Prowlarr indexers must be declared as a sequence.
+  no_log: true
+
+- name: Validate each Prowlarr indexer declaration mapping
+  ansible.builtin.assert:
+    that:
+      - item is mapping
+    fail_msg: Every Prowlarr indexer declaration must be a mapping.
+  loop: "{{ media_arr_indexers }}"
+  loop_control:
+    label: prowlarr-operator-indexer
+  no_log: true
+
+- name: Validate each complete Prowlarr indexer declaration
+  ansible.builtin.assert:
+    that:
+      - item.name is string
+      - item.name is match('^[^\r\n]+$')
+      - item.implementation is string
+      - item.implementation is match('^[^\r\n]+$')
+      - item.config_contract is string
+      - item.config_contract is match('^[^\r\n]+$')
+      - item.fields is sequence
+      - item.fields is not mapping
+      - item.fields is not string
+      - item.fields | length > 0
+      - item.enable | default(true) is boolean
+      - item.priority | default(25) is integer
+      - >-
+        item.implementation_name is not defined or
+        (item.implementation_name is string and
+         item.implementation_name is match('^[^\r\n]+$'))
+      - item.tags | default([]) is sequence
+      - item.tags | default([]) is not mapping
+      - item.tags | default([]) is not string
+      - >-
+        item.tags | default([]) | select('integer') | list | length ==
+        item.tags | default([]) | length
+    fail_msg: A Prowlarr indexer declaration is incomplete or malformed.
+  loop: "{{ media_arr_indexers }}"
+  loop_control:
+    label: prowlarr-operator-indexer
+  no_log: true
+
+- name: Validate every declared Prowlarr indexer field
+  ansible.builtin.assert:
+    that:
+      # A declaration is written here, not returned by a service: an operator
+      # who names a field without a value has written an incomplete one, and
+      # accepting it let a malformed duplicate identity through.
+      - item.1.value is defined
+      - item.1 is mapping
+      - item.1.name is string
+      - item.1.name is match('^[^\r\n]+$')
+      - >-
+        item.1.name != 'categories' or
+        (item.1.value is sequence and item.1.value is not mapping and
+         item.1.value is not string and
+         item.1.value | select('integer') | list | length == item.1.value | length)
+    fail_msg: Every Prowlarr indexer field requires a name and value.
+  loop: "{{ media_arr_indexers | subelements('fields', skip_missing=True) }}"
+  loop_control:
+    label: prowlarr-operator-indexer-field
+  no_log: true
+
+- name: Refuse duplicate Prowlarr indexer declaration identities
+  ansible.builtin.assert:
+    that:
+      - >-
+        media_arr_indexers | map(attribute='name') | list | length ==
+        media_arr_indexers | map(attribute='name') | unique | list | length
+      - >-
+        item.fields | map(attribute='name') | list | length ==
+        item.fields | map(attribute='name') | unique | list | length
+    fail_msg: Prowlarr indexer declarations require unique names and field names.
+  loop: "{{ media_arr_indexers }}"
+  loop_control:
+    label: prowlarr-operator-indexer
+  no_log: true
+
+- name: Read operator-owned Prowlarr indexers
+  ansible.builtin.uri:
+    url: "{{ arr_prowlarr_api }}/indexer"
+    method: GET
+    headers:
+      X-Api-Key: "{{ vault_arr_prowlarr_api_key }}"
+    status_code: [200]
+    return_content: true
+  register: arr_prowlarr_indexers_before
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Validate the Prowlarr indexer response collection
+  ansible.builtin.assert:
+    that:
+      - arr_prowlarr_indexers_before.json is sequence
+      - arr_prowlarr_indexers_before.json is not mapping
+      - arr_prowlarr_indexers_before.json is not string
+    fail_msg: Prowlarr returned an unsupported indexer collection schema.
+  no_log: true
+
+- name: Validate each Prowlarr indexer response object
+  ansible.builtin.assert:
+    that:
+      - item is mapping
+      - item.id is integer
+      - item.name is string
+      - item.name is match('^[^\r\n]+$')
+      - >-
+        item.enable is boolean or
+        (item.enable is string and item.enable | lower in ['true', 'false'])
+      - >-
+        (item.priority is integer and item.priority is not boolean) or
+        (item.priority is string and item.priority is match('^-?[0-9]+$'))
+      - item.implementation is string
+      - item.implementation is match('^[^\r\n]+$')
+      - item.implementationName is string
+      - item.implementationName is match('^[^\r\n]+$')
+      - item.configContract is string
+      - item.configContract is match('^[^\r\n]+$')
+      - item.tags is sequence
+      - item.tags is not mapping
+      - item.tags is not string
+      - item.tags | select('integer') | list | length == item.tags | length
+      - item.fields is sequence
+      - item.fields is not mapping
+      - item.fields is not string
+    fail_msg: Prowlarr returned an unsupported indexer object schema.
+  loop: "{{ arr_prowlarr_indexers_before.json }}"
+  loop_control:
+    label: prowlarr-indexer-schema
+  no_log: true
+
+- name: Validate every Prowlarr indexer response field
+  ansible.builtin.assert:
+    that:
+      - item.1 is mapping
+      - item.1.name is string
+      - item.1.name is match('^[^\r\n]+$')
+      - >-
+        item.1.name != 'categories' or
+        (item.1.value is sequence and item.1.value is not mapping and
+         item.1.value is not string and
+         item.1.value | select('integer') | list | length == item.1.value | length)
+    fail_msg: Prowlarr returned an unsupported indexer field schema.
+  loop: "{{ arr_prowlarr_indexers_before.json | subelements('fields') }}"
+  loop_control:
+    label: prowlarr-indexer-field-schema
+  no_log: true
+
+- name: Refuse duplicate Prowlarr indexer response identities before mutation
+  ansible.builtin.assert:
+    that:
+      - >-
+        arr_prowlarr_indexers_before.json | map(attribute='name') | list | length ==
+        arr_prowlarr_indexers_before.json | map(attribute='name') | unique | list | length
+      - >-
+        item.fields | default([]) | map(attribute='name') | list | length ==
+        item.fields | default([]) | map(attribute='name') | unique | list | length
+    fail_msg: Prowlarr returned duplicate indexer or field identities.
+  loop: "{{ arr_prowlarr_indexers_before.json }}"
+  loop_control:
+    label: prowlarr-indexer-schema
+  no_log: true
+
+- name: Refuse ambiguous Prowlarr indexer names before mutation
+  ansible.builtin.assert:
+    that:
+      - >-
+        arr_prowlarr_indexers_before.json |
+        selectattr('name', 'equalto', item.name) | list | length <= 1
+    fail_msg: Prowlarr has an ambiguous operator-owned indexer name.
+  loop: "{{ media_arr_indexers }}"
+  loop_control:
+    label: prowlarr-operator-indexer
+  no_log: true
+
+- name: Evaluate every owned Prowlarr application projection before mutation
+  ansible.builtin.set_fact:
+    arr_prowlarr_preflight_application_current_projection: >-
+      {{ (arr_prowlarr_preflight_application_matches[0] |
+          acquisition_application_projection(
+            arr_prowlarr_preflight_application_masked_fields
+          )) if arr_prowlarr_preflight_application_matches | length == 1 else {} }}
+    arr_prowlarr_preflight_application_desired_projection: >-
+      {{ (item |
+          acquisition_application_body(
+            arr_prowlarr_internal_url,
+            arr_prowlarr_application_sync_level
+          )) |
+         acquisition_application_projection(
+           arr_prowlarr_preflight_application_masked_fields
+         ) }}
+  loop: "{{ arr_prowlarr_applications }}"
+  vars:
+    arr_prowlarr_preflight_application_matches: >-
+      {{ arr_prowlarr_applications_before.json |
+         selectattr('name', 'equalto', item.name) | list }}
+    arr_prowlarr_preflight_application_masked_fields: >-
+      {{ arr_prowlarr_preflight_application_matches | first | default({}) |
+         acquisition_application_masked_fields }}
+  changed_when: false
+  no_log: true
+
+- name: Evaluate every owned Prowlarr indexer projection before mutation
+  ansible.builtin.set_fact:
+    arr_prowlarr_preflight_indexer_current_projection: >-
+      {{ (arr_prowlarr_preflight_indexer_matches[0] |
+          acquisition_indexer_projection(
+            item,
+            arr_prowlarr_preflight_indexer_masked_fields
+          )) if arr_prowlarr_preflight_indexer_matches | length == 1 else {} }}
+    arr_prowlarr_preflight_indexer_desired_projection: >-
+      {{ (item | acquisition_indexer_body) |
+         acquisition_indexer_projection(
+           item,
+           arr_prowlarr_preflight_indexer_masked_fields
+         ) }}
+  loop: "{{ media_arr_indexers }}"
+  vars:
+    arr_prowlarr_preflight_indexer_matches: >-
+      {{ arr_prowlarr_indexers_before.json |
+         selectattr('name', 'equalto', item.name) | list }}
+    arr_prowlarr_preflight_indexer_masked_fields: >-
+      {{ arr_prowlarr_preflight_indexer_matches | first | default({}) |
+         acquisition_indexer_masked_fields(item) }}
+  changed_when: false
+  no_log: true
+
+- name: Reconcile Prowlarr administrator authentication
+  ansible.builtin.uri:
+    url: "{{ arr_prowlarr_api }}/config/host/{{ arr_prowlarr_host_before.json.id }}"
+    method: PUT
+    headers:
+      X-Api-Key: "{{ vault_arr_prowlarr_api_key }}"
+    body_format: json
+    body: >-
+      {{ arr_prowlarr_host_before.json | combine({
+           'authenticationMethod': 'forms',
+           'authenticationRequired': 'enabled',
+           'username': vault_arr_prowlarr_admin_username,
+           'password': vault_arr_prowlarr_admin_password,
+           'passwordConfirmation': vault_arr_prowlarr_admin_password,
+           'launchBrowser': false
+         }, recursive=True) }}
+    status_code: [200, 202]
+    return_content: true
+  changed_when: >-
+    arr_prowlarr_host_before.json.authenticationMethod | lower != 'forms' or
+    arr_prowlarr_host_before.json.authenticationRequired | lower != 'enabled' or
+    arr_prowlarr_host_before.json.username != vault_arr_prowlarr_admin_username or
+    arr_prowlarr_host_before.json.launchBrowser | bool
+  no_log: true
+
+- name: Reconcile each Prowlarr full-sync application
+  ansible.builtin.include_tasks: reconcile_prowlarr_application.yml
+  loop: "{{ arr_prowlarr_applications }}"
+  loop_control:
+    loop_var: arr_prowlarr_application
+    label: "{{ arr_prowlarr_application.name }}"
+
+- name: Reconcile operator-owned Prowlarr indexers
+  ansible.builtin.include_tasks: reconcile_prowlarr_indexer.yml
+  loop: "{{ media_arr_indexers }}"
+  loop_control:
+    loop_var: arr_prowlarr_indexer
+    label: prowlarr-operator-indexer
+  no_log: true

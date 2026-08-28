@@ -10,19 +10,19 @@ This repository manages service configuration and containers. It does **not**
 back up photos, media, databases, or other application data. Back up the NAS
 and confirm that the backup can be restored before a production migration.
 
-The eight active services are ntfy, Beszel, Dozzle, Audiobookshelf, Komga,
-Jellyfin, Immich, and Paperless-ngx. The production retirement checkpoint has
-passed and the former metadata manager's repository declarations are gone; its
+The active service projects are ntfy, Beszel, Dozzle, Audiobookshelf, Komga,
+Jellyfin, Immich, Paperless-ngx, Arr, and downloaders. The production retirement
+checkpoint has passed and the former metadata manager's repository declarations are gone; its
 preserved application state remains outside repository management and was not
 deleted. The authoritative status is
 [`services/manifest.yml`](../services/manifest.yml).
 
-Phase 0 is an inert media-acquisition foundation. It creates the derived
-`media-control` bridge network and the classified acquisition/final directory
-tree, extends generated-vault and immutable validation contracts, and adds CI
-scaffolding. All seven acquisition projects remain `planned`, both acquisition
-enablement flags are literal `false`, and no acquisition container or download
-is started. Jellyfin keeps Open Subtitles until Bazarr is proven in Phase 1.
+Phase 1 implements Arr and the Usenet downloader project, but transport
+enablement remains false and all provider and subtitle preference lists remain
+empty by default. Five later acquisition projects remain planned. Jellyfin
+keeps Open Subtitles until the physical-NAS Bazarr handoff is accepted. Use the
+[Phase 1 operator handoff](media-acquisition-phase1.md) for controlled
+activation; a normal default deployment remains inert.
 
 The two supported routes are deliberately separate:
 

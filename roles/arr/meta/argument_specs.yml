@@ -1,0 +1,74 @@
+---
+argument_specs:
+  main:
+    short_description: Deploy and reconcile the Phase 1 Arr project
+    options:
+      media_usenet_enabled:
+        type: bool
+        required: false
+      media_acquisition_adopt_existing_libraries:
+        type: bool
+        required: false
+      arr_movies_host_path:
+        type: path
+        required: false
+      arr_series_host_path:
+        type: path
+        required: false
+      arr_radarr_config_host_path:
+        type: path
+        required: false
+      arr_sonarr_config_host_path:
+        type: path
+        required: false
+      arr_prowlarr_config_host_path:
+        type: path
+        required: false
+      arr_bazarr_config_host_path:
+        type: path
+        required: false
+      platform_compose_kind:
+        type: str
+        required: true
+      platform_media_control_network:
+        type: str
+        required: true
+      platform_project_name:
+        type: str
+        required: false
+      arr_platform_project_name:
+        type: str
+        required: false
+      media_arr_automatic_monitoring_enabled:
+        type: bool
+        required: false
+      media_arr_automatic_rename_enabled:
+        type: bool
+        required: false
+      media_arr_indexers:
+        type: list
+        elements: dict
+        required: false
+      media_bazarr_languages:
+        type: list
+        elements: str
+        required: false
+      media_bazarr_providers:
+        type: list
+        elements: dict
+        required: false
+      vault_downloaders_sabnzbd_api_key: {type: str, required: true}
+      vault_downloaders_sabnzbd_admin_username: {type: str, required: true}
+      vault_downloaders_sabnzbd_admin_password: {type: str, required: true}
+      vault_arr_radarr_api_key: {type: str, required: true}
+      vault_arr_radarr_admin_username: {type: str, required: true}
+      vault_arr_radarr_admin_password: {type: str, required: true}
+      vault_arr_sonarr_api_key: {type: str, required: true}
+      vault_arr_sonarr_admin_username: {type: str, required: true}
+      vault_arr_sonarr_admin_password: {type: str, required: true}
+      vault_arr_prowlarr_api_key: {type: str, required: true}
+      vault_arr_prowlarr_admin_username: {type: str, required: true}
+      vault_arr_prowlarr_admin_password: {type: str, required: true}
+      vault_arr_bazarr_api_key: {type: str, required: true}
+      vault_arr_bazarr_admin_username: {type: str, required: true}
+      vault_arr_bazarr_admin_password: {type: str, required: true}

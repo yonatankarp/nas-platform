@@ -549,17 +549,17 @@ end
 
 expect_acquisition_failure.call(
   "planned acquisition source published prematurely",
-  "planned service tree exists prematurely: services/arr"
+  "planned service tree exists prematurely: services/bindery"
 ) do |root|
-  FileUtils.mkdir_p(File.join(root, "services", "arr"))
+  FileUtils.mkdir_p(File.join(root, "services", "bindery"))
 end
 
 {
   "dangling planned acquisition role" => [
-    "roles/arr", "planned role tree exists prematurely: roles/arr"
+    "roles/bindery", "planned role tree exists prematurely: roles/bindery"
   ],
   "dangling planned acquisition service" => [
-    "services/arr", "planned service tree exists prematurely: services/arr"
+    "services/bindery", "planned service tree exists prematurely: services/bindery"
   ]
 }.each do |label, (relative_path, diagnostic)|
   expect_acquisition_failure.call(label, diagnostic) do |root|
@@ -571,9 +571,9 @@ end
 
 expect_acquisition_failure.call(
   "planned acquisition project promoted prematurely",
-  "arr must be planned in the service manifest"
+  "bindery must be planned in the service manifest"
 ) do |root|
-  mutate_manifest(root) { |document| service(document, "arr")["status"] = "implemented" }
+  mutate_manifest(root) { |document| service(document, "bindery")["status"] = "implemented" }
 end
 
 run_foundation_wrapper = lambda do |filename:, mode: 0o755, mutate: nil, ruby_selection: nil,
@@ -966,6 +966,19 @@ end
 expect_failure(failures, "integration omits contract execution", "integration must execute registered contracts") do |root|
   path = File.join(root, "tests", "integration.sh")
   File.write(path, File.read(path).sub(/^\s*ruby \/repo\/tests\/run_contracts\.rb --execute\n/, ""))
+end
+
+expect_failure(failures, "controller script loses its quoting",
+               "controller script escapes its quoted argument") do |root|
+  # Unescape the inner quotes of the recap helper exactly as the regression did:
+  # the argument closes early and the `;` in the character class terminates the
+  # whole `docker run`, so the container starts with no operands at all.
+  path = File.join(root, "tests", "integration.sh")
+  body = File.read(path)
+  broken = body.sub('sed \\"s/', 'sed "s/').sub('//g\\" \\', '//g" \\')
+  raise "controller quoting mutation did not apply" if broken == body
+
+  File.write(path, broken)
 end
 
 expect_failure(failures, "integration omits contract ABI", "integration must set the contract environment ABI") do |root|
@@ -1714,12 +1727,16 @@ end
   "Beszel telemetry Mac hook regression" => "tests/mac/beszel-telemetry-hook-test.sh",
   "Komga library reconciliation regression" => "ruby tests/komga_library_reconciliation_test.rb",
   "Paperless mail reconciliation regression" => "ruby tests/paperless_mail_reconciliation_test.rb",
+  "media acquisition reconciliation regression" =>
+    "ruby tests/media_acquisition_foundation_verifier_test.rb",
   "Immich selective helper integrity regression" =>
     "ruby tests/immich_selective_helper_integrity_test.rb",
   "Mac manual-validation runner regression" => "tests/mac/manual-validation-runner-test.sh",
   "Mac hook coverage regression" => "tests/mac/hook-coverage-test.sh",
   "media acquisition verifier regression" =>
     "ruby tests/media_acquisition_foundation_verifier_test.rb",
+  "host preparation integration writer regression" =>
+    "ruby tests/host_prep_integration_writer_test.rb",
   "media acquisition hook regression" =>
     "tests/mac/media-acquisition-foundation-hook-test.sh",
   "media acquisition report regression" =>

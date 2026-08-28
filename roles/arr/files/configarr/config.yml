@@ -1,0 +1,89 @@
+---
+telemetry: false
+trashRevision: cbfee0205cdcf2b492135edd00e059f3b7c84675
+recyclarrRevision: 4ae377bb704fc7fd69a544ad04e91357e0b09f62
+
+customFormatDefinitions:
+  - trash_id: nas-repack-proper
+    trash_scores:
+      default: 10
+    trash_description: Prefer corrected releases without enabling automatic searches.
+    name: NAS Repack or Proper
+    includeCustomFormatWhenRenaming: false
+    specifications:
+      - name: Repack or Proper release title
+        implementation: ReleaseTitleSpecification
+        negate: false
+        required: false
+        fields:
+          value: '(?i)\b(repack|proper)\b'
+
+radarr:
+  phase1:
+    base_url: http://radarr:7878
+    api_key: !secret RADARR_API_KEY
+    quality_definition:
+      type: movie
+    quality_profiles:
+      - name: HD Bluray + WEB 1080p
+        reset_unmatched_scores:
+          enabled: true
+        upgrade:
+          allowed: false
+        min_format_score: 0
+        quality_sort: top
+        qualities:
+          - name: Bluray-1080p
+          - name: WEB 1080p
+            qualities: [WEBDL-1080p, WEBRip-1080p]
+    custom_formats:
+      - trash_ids: [nas-repack-proper]
+        assign_scores_to:
+          - name: HD Bluray + WEB 1080p
+            score: 10
+    # Configarr's media_naming values are TRaSH preset keys. These are literal
+    # Servarr formats, so use the pinned v1.28.0 raw-API escape hatch instead:
+    # https://github.com/raydak-labs/configarr/blob/v1.28.0/src/config.ts#L1086-L1162
+    media_naming_api:
+      renameMovies: false
+      standardMovieFormat: >-
+        {Movie CleanTitle} ({Release Year}) {tmdb-{TmdbId}}
+        [{Quality Full}]{[MediaInfo VideoDynamicRangeType]}{[MediaInfo AudioCodec]}
+      movieFolderFormat: '{Movie CleanTitle} ({Release Year}) {tmdb-{TmdbId}}'
+
+sonarr:
+  phase1:
+    base_url: http://sonarr:8989
+    api_key: !secret SONARR_API_KEY
+    quality_definition:
+      type: series
+    quality_profiles:
+      - name: HD Bluray + WEB 1080p
+        reset_unmatched_scores:
+          enabled: true
+        upgrade:
+          allowed: false
+        min_format_score: 0
+        quality_sort: top
+        qualities:
+          - name: Bluray-1080p
+          - name: WEB 1080p
+            qualities: [WEBDL-1080p, WEBRip-1080p]
+    custom_formats:
+      - trash_ids: [nas-repack-proper]
+        assign_scores_to:
+          - name: HD Bluray + WEB 1080p
+            score: 10
+    media_naming_api:
+      renameEpisodes: false
+      standardEpisodeFormat: >-
+        {Series TitleYear} - S{season:00}E{episode:00} - {Episode CleanTitle}
+        [{Quality Full}]{[MediaInfo VideoDynamicRangeType]}{[MediaInfo AudioCodec]}
+      dailyEpisodeFormat: >-
+        {Series TitleYear} - {Air-Date} - {Episode CleanTitle}
+        [{Quality Full}]{[MediaInfo VideoDynamicRangeType]}{[MediaInfo AudioCodec]}
+      animeEpisodeFormat: >-
+        {Series TitleYear} - S{season:00}E{episode:00} - {absolute:000} - {Episode CleanTitle}
+        [{Quality Full}]{[MediaInfo VideoDynamicRangeType]}{[MediaInfo AudioCodec]}
+      seriesFolderFormat: '{Series TitleYear} {tvdb-{TvdbId}}'
+      seasonFolderFormat: 'Season {season:00}'

@@ -26,5 +26,7 @@ for mac_verify_service in audiobookshelf komga jellyfin immich paperless; do
 "
 done
 
-mac_assert_service_coverage verify 30-services.sh "$mac_verified" '' \
+mac_assert_service_coverage verify 30-services.sh "$mac_verified" \
+  'arr=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite
+downloaders=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite' \
   "$MAC_VERIFY_INFRASTRUCTURE_HOOKS" "$MAC_VERIFY_COVERAGE_NEUTRAL_HOOKS"

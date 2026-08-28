@@ -5,6 +5,21 @@ nas_timezone: Europe/Berlin
 nas_uid: 1000
 nas_gid: 100
 
+# Phase 1 media acquisition stays inert until a host enables Usenet. Adoption
+# is a one-convergence escape hatch for the existing Movies and Series trees;
+# the role never persists it. Monitoring and bulk rename remain operator gates.
+media_acquisition_adopt_existing_libraries: false
+media_arr_automatic_monitoring_enabled: false
+media_arr_automatic_rename_enabled: false
+media_bazarr_handoff_accepted: false
+
+# Providers, indexers, and subtitle preferences are operator-owned policy. An
+# empty declaration is valid and starts the applications without unattended
+# acquisition or a guessed content-source choice.
+media_arr_indexers: []
+media_bazarr_languages: []
+media_bazarr_providers: []
+
 # Optional Paperless AI integration. Enable only after replacing the documentation
 # address with the reachable Ollama endpoint used by the NAS. This is the only home
 # for the three values; the role declares them required rather than defaulting them
@@ -131,10 +146,12 @@ nas_storage:
     mode: "0755"
     recovery: user
     media_acquisition_foundation: true
+    media_acquisition_writer: true
   - path: "{{ nas_media_root }}/Media/Series"
     mode: "0755"
     recovery: user
     media_acquisition_foundation: true
+    media_acquisition_writer: true
 
   # Inert media acquisition foundation. Transport activation remains explicitly
   # disabled per host class; these paths and service state are prepared so a
@@ -155,42 +172,52 @@ nas_storage:
     mode: "0755"
     recovery: cache
     media_acquisition_foundation: true
+    media_acquisition_writer: true
   - path: "{{ nas_media_root }}/Media/.acquisition/usenet/series"
     mode: "0755"
     recovery: cache
     media_acquisition_foundation: true
+    media_acquisition_writer: true
   - path: "{{ nas_media_root }}/Media/.acquisition/usenet/audiobooks"
     mode: "0755"
     recovery: cache
     media_acquisition_foundation: true
+    media_acquisition_writer: true
   - path: "{{ nas_media_root }}/Media/.acquisition/torrents/movies"
     mode: "0755"
     recovery: cache
     media_acquisition_foundation: true
+    media_acquisition_writer: true
   - path: "{{ nas_media_root }}/Media/.acquisition/torrents/series"
     mode: "0755"
     recovery: cache
     media_acquisition_foundation: true
+    media_acquisition_writer: true
   - path: "{{ nas_media_root }}/Media/.acquisition/torrents/audiobooks"
     mode: "0755"
     recovery: cache
     media_acquisition_foundation: true
+    media_acquisition_writer: true
   - path: "{{ nas_media_root }}/Books/.acquisition/usenet/ebooks"
     mode: "0755"
     recovery: cache
     media_acquisition_foundation: true
+    media_acquisition_writer: true
   - path: "{{ nas_media_root }}/Books/.acquisition/usenet/comics"
     mode: "0755"
     recovery: cache
     media_acquisition_foundation: true
+    media_acquisition_writer: true
   - path: "{{ nas_media_root }}/Books/.acquisition/torrents/ebooks"
     mode: "0755"
     recovery: cache
     media_acquisition_foundation: true
+    media_acquisition_writer: true
   - path: "{{ nas_media_root }}/Books/.acquisition/torrents/comics"
     mode: "0755"
     recovery: cache
     media_acquisition_foundation: true
+    media_acquisition_writer: true
   - path: "{{ nas_docker_root }}/radarr/config"
     owner: "{{ nas_uid }}"
     group: "{{ nas_gid }}"

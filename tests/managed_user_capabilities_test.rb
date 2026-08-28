@@ -7,7 +7,7 @@ require_relative "policy_support"
 
 ROOT = File.expand_path("..", __dir__)
 CAPABILITIES_PATH = File.join(ROOT, "config", "managed-user-capabilities.yml")
-SUCCESS = "Managed-user capabilities: all eight service contracts are pinned"
+SUCCESS = "Managed-user capabilities: all ten service contracts are pinned"
 
 MULTI_USER_DEFAULTS = {
   "preserves_unmanaged_users" => true,
@@ -16,6 +16,15 @@ MULTI_USER_DEFAULTS = {
 }.freeze
 
 EXPECTED_SERVICES = {
+  "arr" => MULTI_USER_DEFAULTS.merge(
+    "mode" => "api",
+    "interfaces" => {
+      "list" => "Servarr config/host and Bazarr system/settings",
+      "create" => "deterministic first-start configuration",
+      "authenticate" => "X-Api-Key",
+      "reconcile" => "Servarr config/host and Bazarr system/settings"
+    }
+  ),
   "audiobookshelf" => MULTI_USER_DEFAULTS.merge(
     "mode" => "api",
     "interfaces" => {
@@ -41,6 +50,15 @@ EXPECTED_SERVICES = {
       "create" => "data/users.yml",
       "authenticate" => "api/token",
       "reconcile" => "data/users.yml"
+    }
+  ),
+  "downloaders" => MULTI_USER_DEFAULTS.merge(
+    "mode" => "api",
+    "interfaces" => {
+      "list" => "SABnzbd get_config",
+      "create" => "deterministic first-start configuration",
+      "authenticate" => "SABnzbd API key",
+      "reconcile" => "SABnzbd set_config"
     }
   ),
   "immich" => MULTI_USER_DEFAULTS.merge(

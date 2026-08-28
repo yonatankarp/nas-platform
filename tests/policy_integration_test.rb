@@ -25,6 +25,56 @@ end
 # Darwin-only fact and command being skipped under --check, both survived syntax
 # checking and were caught by running.
 harness = File.read(File.join(ROOT, "tests", "integration.sh"))
+
+# The controller script is one double-quoted argument to `sh -eu -c`, built by
+# a shell that is still parsing. An unescaped quote inside it closes the
+# argument, and the next shell metacharacter then terminates the whole
+# `docker run` — silently truncating the script and starting the container with
+# no operands. That is invisible to `sh -n` and to every static read of the
+# file, and it broke every suite once before, so walk the quoting the way the
+# shell does and require that nothing escapes the argument.
+controller_regions = []
+controller_state = "DQ"
+controller_offset = harness.index('sh -eu -c "')
+check(failures, !controller_offset.nil?,
+      "tests/integration.sh must invoke the controller through sh -eu -c")
+if controller_offset
+  controller_offset += 'sh -eu -c "'.length
+  controller_line = harness[0, controller_offset].count("\n") + 1
+  controller_region = nil
+  while controller_offset < harness.length
+    character = harness[controller_offset]
+    if controller_state != "SQ" && character == "\\"
+      controller_line += 1 if harness[controller_offset + 1] == "\n"
+      controller_offset += 2
+      next
+    end
+    case [controller_state, character]
+    in ["DQ", '"'] then controller_state = "OUT"
+                        controller_region = [controller_line, +""]
+    in ["OUT", '"'] then controller_state = "DQ"
+                         controller_regions << controller_region if controller_region
+                         controller_region = nil
+    in ["OUT", "'"] then controller_state = "SQ"
+    in ["SQ", "'"] then controller_state = "OUT"
+    else
+      controller_region[1] << character if controller_state != "DQ" && controller_region
+    end
+    controller_line += 1 if character == "\n"
+    controller_offset += 1
+  end
+  # Only the final line may leave the quoted argument: that is where the
+  # operands `integration-run "$playbook" "$@"` are appended.
+  final_line = harness.count("\n") + (harness.end_with?("\n") ? 0 : 1)
+  escaped = controller_regions.reject { |line, _text| line >= final_line }
+                              .select { |_line, text| text.match?(/[\s;&|()<>]/) }
+  check(failures, escaped.empty?,
+        "controller script escapes its quoted argument at " \
+        "#{escaped.map { |line, text| "line #{line}: #{text.inspect}" }.join(', ')}; " \
+        "escape the inner quotes so the whole script stays one argument")
+  check(failures, controller_state == "OUT",
+        "controller script argument is never closed")
+end
 dozzle_contract = File.read(File.join(ROOT, "tests", "contracts", "dozzle.sh"))
 check(failures, dozzle_contract.include?('exec ruby - "$mode" "$@"'),
       "Dozzle contract must pass its default verify mode to the dynamic probe")
@@ -60,6 +110,143 @@ check(failures, contract_execution && contract_abi_names.all? do |name|
   contract_environment.include?("#{name}=")
 end, "integration must set the contract environment ABI before execution")
 run_play_body = harness[/^    run_play\(\) \{.*?^    \}/m].to_s
+namespace_derivation = harness[/^derive_integration_project_namespace\(\) \{.*?^\}/m].to_s
+namespace_call = harness.index('integration_project_namespace=$(derive_integration_project_namespace "$sandbox")')
+controller_run = harness.index("docker run --rm")
+check(failures,
+      namespace_derivation.include?('integration_suffix=${integration_namespace_sandbox##*.}') &&
+        namespace_derivation.include?("tr '[:upper:]' '[:lower:]'") &&
+        namespace_derivation.include?('nas-platform-integration-[a-z0-9][a-z0-9][a-z0-9][a-z0-9][a-z0-9][a-z0-9]') &&
+        namespace_call && controller_run && namespace_call < controller_run,
+      "integration must derive and validate a lowercase six-character sandbox namespace before the controller starts")
+scoped_project_variables = %w[arr_platform_project_name downloaders_platform_project_name]
+check(failures,
+      scoped_project_variables.all? do |variable|
+        run_play_body.include?("-e #{variable}=\\\"$integration_project_namespace\\\"")
+      end && !run_play_body.include?("-e platform_project_name="),
+      "integration must scope the disposable namespace to Arr and downloaders")
+
+arr_integration = YAML.safe_load(
+  File.read(File.join(ROOT, "services", "arr", "compose.integration.yml"))
+).fetch("services")
+downloaders_integration = YAML.safe_load(
+  File.read(File.join(ROOT, "services", "downloaders", "compose.integration.yml"))
+).fetch("services")
+expected_arr_names = %w[radarr sonarr prowlarr bazarr].to_h do |service|
+  [service, "${PLATFORM_PROJECT_NAME:?}-#{service}"]
+end
+check(failures,
+      expected_arr_names.all? do |service, name|
+        arr_integration.fetch(service, {}).fetch("container_name", nil) == name
+      end,
+      "Arr integration containers must use the disposable platform namespace")
+check(failures, arr_integration.fetch("configarr", nil) == {},
+      "Configarr integration must keep its project-derived one-off name")
+expected_downloader_names = %w[sabnzbd unpackerr].to_h do |service|
+  [service, "${PLATFORM_PROJECT_NAME:?}-#{service}"]
+end
+check(failures,
+      expected_downloader_names.all? do |service, name|
+        downloaders_integration.fetch(service, {}).fetch("container_name", nil) == name
+      end,
+      "downloader integration containers must use the disposable platform namespace")
+
+# Sandbox cleanup deletes acquisition resources only when they carry the
+# disposable namespace, so a base service left with its fixed production name
+# is not cleaned up at all: it survives the run and collides with the next one.
+# Derive the requirement from the base Compose rather than a second hand-kept
+# list, so adding a service to a stack cannot skip its override.
+{
+  "arr" => arr_integration,
+  "downloaders" => downloaders_integration
+}.each do |stack, override|
+  base = YAML.safe_load_file(
+    File.join(ROOT, "services", stack, "compose.yml"), aliases: true
+  ).fetch("services")
+  production_named = base.select do |_service, definition|
+    definition.is_a?(Hash) && definition["container_name"].is_a?(String) &&
+      !definition.fetch("container_name").include?("${")
+  end.keys
+  check(failures, !production_named.empty?,
+        "#{stack} base Compose declares no fixed container name to override")
+  unnamespaced = production_named.reject do |service|
+    definition = override.fetch(service, nil)
+    definition.is_a?(Hash) &&
+      definition.fetch("container_name", nil) == "${PLATFORM_PROJECT_NAME:?}-#{service}"
+  end
+  check(failures, unnamespaced.empty?,
+        "#{stack} integration override leaves production container names " \
+        "#{unnamespaced.sort.inspect}, which sandbox cleanup cannot remove")
+end
+
+arr_defaults = YAML.safe_load_file(File.join(ROOT, "roles", "arr", "defaults", "main.yml"))
+downloaders_defaults = YAML.safe_load_file(
+  File.join(ROOT, "roles", "downloaders", "defaults", "main.yml")
+)
+arr_argument_options = YAML.safe_load_file(
+  File.join(ROOT, "roles", "arr", "meta", "argument_specs.yml")
+).dig("argument_specs", "main", "options")
+downloaders_argument_options = YAML.safe_load_file(
+  File.join(ROOT, "roles", "downloaders", "meta", "argument_specs.yml")
+).dig("argument_specs", "main", "options")
+arr_environment = File.read(File.join(ROOT, "roles", "arr", "templates", "env.j2"))
+downloaders_environment = File.read(
+  File.join(ROOT, "roles", "downloaders", "templates", "env.j2")
+)
+check(failures,
+      arr_defaults.fetch("arr_platform_project_name", "").include?("platform_project_name | default('')") &&
+        arr_defaults.fetch("arr_compose_project_name", "").include?("arr_platform_project_name ~ '-arr'") &&
+        arr_argument_options.fetch("arr_platform_project_name", nil) == {
+          "type" => "str", "required" => false
+        } &&
+        arr_environment.include?("PLATFORM_PROJECT_NAME={{ arr_platform_project_name }}"),
+      "Arr must derive its Compose project and container prefix through its role-scoped namespace")
+check(failures,
+      downloaders_defaults.fetch("downloaders_platform_project_name", "")
+                           .include?("platform_project_name | default('')") &&
+        downloaders_defaults.fetch("downloaders_compose_project_name", "")
+                            .include?("downloaders_platform_project_name ~ '-downloaders'") &&
+        downloaders_argument_options.fetch("downloaders_platform_project_name", nil) == {
+          "type" => "str", "required" => false
+        } &&
+        downloaders_environment.include?(
+          "PLATFORM_PROJECT_NAME={{ downloaders_platform_project_name }}"
+        ),
+      "downloaders must derive their Compose project and container prefix through their role-scoped namespace")
+
+inventory_defaults = File.read(File.join(ROOT, "inventory", "group_vars", "all", "main.yml"))
+host_prep = File.read(File.join(ROOT, "roles", "host_prep", "tasks", "main.yml"))
+legacy_defaults = File.read(
+  File.join(ROOT, "roles", "audiobookshelf", "defaults", "main.yml")
+)
+legacy_project_sources = inventory_defaults + host_prep + legacy_defaults
+check(failures,
+      inventory_defaults.include?("platform_project_name ~ '-media-control'") &&
+        host_prep.include?("platform_project_name | default('nas-platform', true)") &&
+        legacy_defaults.include?("platform_project_name ~ '-audiobookshelf'") &&
+        scoped_project_variables.none? do |variable|
+          legacy_project_sources.include?(variable)
+        end,
+      "acquisition namespacing must not alter the media-control or legacy project defaults")
+namespace = "nas-platform-integration-a1b2c3"
+effective_projects, effective_projects_error, effective_projects_status = Open3.capture3(
+  "ansible", "localhost", "-i", "localhost,", "-c", "local", "-m", "debug",
+  "-a", "msg={{ platform_media_control_network }}|{{ audiobookshelf_compose_project_name }}|" \
+        "{{ arr_compose_project_name }}|{{ downloaders_compose_project_name }}",
+  "-e", "@inventory/group_vars/all/main.yml",
+  "-e", "@roles/audiobookshelf/defaults/main.yml",
+  "-e", "@roles/arr/defaults/main.yml",
+  "-e", "@roles/downloaders/defaults/main.yml",
+  "-e", "arr_platform_project_name=#{namespace}",
+  "-e", "downloaders_platform_project_name=#{namespace}",
+  chdir: ROOT
+)
+check(failures,
+      effective_projects_status.success? &&
+        effective_projects.include?(
+          %Q{"msg": "media-control|audiobookshelf|#{namespace}-arr|#{namespace}-downloaders"}
+        ),
+      "effective scoped project defaults differ: #{effective_projects_error.strip}")
 check(failures, harness.match?(/^ruby_package='ruby~\d+\.\d+\.\d+'$/) &&
                 harness.match?(/^curl_package='curl~\d+\.\d+\.\d+'$/),
       "integration must pin distro ruby and curl packages")

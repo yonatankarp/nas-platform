@@ -1,0 +1,353 @@
+---
+- name: Require current opaque Arr desired-input fingerprints in verify-only runs
+  ansible.builtin.assert:
+    that:
+      - >-
+        arr_reconciliation_cycle_started | default(false) | bool or
+        arr_installed_reconciliation_fingerprints[item] ==
+        arr_desired_reconciliation_fingerprints[item]
+    fail_msg: Verify-only Arr execution found stale opaque desired-input state.
+  loop:
+    - configarr
+    - prowlarr_applications
+    - prowlarr_indexers
+    - bazarr_providers
+  no_log: true
+  tags: [platform_verify_arr]
+
+- name: Read Servarr resources for verification
+  ansible.builtin.uri:
+    url: "{{ item.0.api }}/{{ item.1 }}"
+    method: GET
+    headers:
+      X-Api-Key: "{{ item.0.api_key }}"
+    status_code: [200]
+    return_content: true
+  loop: >-
+    {{ arr_servarr_instances |
+       product([
+         'config/host', 'config/naming', 'rootfolder', 'qualityprofile',
+         'qualitydefinition', 'customformat'
+       ]) | list }}
+  loop_control:
+    label: "{{ item.0.name }}-{{ item.1 }}"
+  register: arr_servarr_verification
+  changed_when: false
+  check_mode: false
+  no_log: true
+  tags: [platform_verify_arr]
+
+- name: Build the complete Configarr owned-state verification projection
+  ansible.builtin.set_fact:
+    arr_verify_configarr_owned_state: >-
+      {{ arr_servarr_verification.results | acquisition_configarr_owned_projection }}
+  changed_when: false
+  no_log: true
+  tags: [platform_verify_arr]
+
+- name: Load pinned Configarr quality-definition sources for verification
+  ansible.builtin.set_fact:
+    arr_verify_configarr_quality_definition_sources:
+      radarr: >-
+        {{ lookup(
+             'file',
+             role_path ~ '/files/configarr/quality-definition-movie.json'
+           ) }}
+      sonarr: >-
+        {{ lookup(
+             'file',
+             role_path ~ '/files/configarr/quality-definition-series.json'
+           ) }}
+  changed_when: false
+  no_log: true
+  tags: [platform_verify_arr]
+
+- name: Build Configarr quality-definition verification invariants
+  ansible.builtin.set_fact:
+    arr_verify_configarr_quality_definition_invariants: >-
+      {{ arr_verify_configarr_owned_state |
+         acquisition_configarr_quality_definition_invariants(
+           arr_verify_configarr_quality_definition_sources
+         ) }}
+  changed_when: false
+  no_log: true
+  tags: [platform_verify_arr]
+
+- name: Build the desired Configarr verification projection
+  ansible.builtin.set_fact:
+    arr_verify_configarr_desired_state: >-
+      {{ lookup('file', role_path ~ '/files/configarr/config.yml') |
+         acquisition_configarr_desired_projection(
+           arr_verify_configarr_owned_state
+         ) }}
+  changed_when: false
+  no_log: true
+  tags: [platform_verify_arr]
+
+- name: Compute the Configarr owned-state verification hash
+  ansible.builtin.set_fact:
+    arr_verify_configarr_owned_state_sha256: >-
+      {{ arr_verify_configarr_owned_state | to_json | hash('sha256') }}
+    arr_verify_configarr_expected_state_sha256: >-
+      {{
+        (arr_verified_reconciliation_state_fingerprints | default({})).get(
+          'configarr_owned_state',
+          arr_installed_reconciliation_fingerprints.configarr_owned_state
+        )
+      }}
+    arr_verify_configarr_opaque_context_sha256: >-
+      {{ arr_verify_configarr_quality_definition_invariants.opaque_context |
+         to_json | hash('sha256') }}
+    arr_verify_configarr_expected_opaque_context_sha256: >-
+      {{
+        (arr_verified_reconciliation_state_fingerprints | default({})).get(
+          'configarr_opaque_context',
+          arr_installed_reconciliation_fingerprints.configarr_opaque_context
+        )
+      }}
+  changed_when: false
+  no_log: true
+  tags: [platform_verify_arr]
+
+- name: Verify Configarr complete owned state
+  ansible.builtin.assert:
+    that:
+      - >-
+        arr_verify_configarr_owned_state |
+        acquisition_configarr_declared_projection ==
+        arr_verify_configarr_desired_state
+      - >-
+        arr_verify_configarr_quality_definition_invariants.source_current ==
+        arr_verify_configarr_quality_definition_invariants.source_desired
+      - >-
+        arr_verify_configarr_owned_state_sha256 ==
+        arr_verify_configarr_expected_state_sha256
+      - >-
+        arr_verify_configarr_opaque_context_sha256 ==
+        arr_verify_configarr_expected_opaque_context_sha256
+    fail_msg: Configarr verification found incomplete or unverified owned state.
+  no_log: true
+  tags: [platform_verify_arr]
+
+- name: Stage independently verified Configarr state hashes
+  ansible.builtin.set_fact:
+    arr_verified_reconciliation_state_fingerprints: >-
+      {{ arr_verified_reconciliation_state_fingerprints | default({}) |
+         combine({
+           'configarr_owned_state': arr_verify_configarr_owned_state_sha256,
+           'configarr_opaque_context': arr_verify_configarr_opaque_context_sha256
+         }) }}
+  changed_when: false
+  no_log: true
+  tags: [platform_verify_arr]
+
+- name: Verify Servarr authentication, roots, and rename state
+  ansible.builtin.assert:
+    that:
+      - >-
+        (arr_servarr_verification.results |
+         selectattr('item.0.name', 'equalto', item.name) |
+         selectattr('item.1', 'equalto', 'config/host') |
+         map(attribute='json.authenticationMethod') | first | lower) == 'forms'
+      - >-
+        (arr_servarr_verification.results |
+         selectattr('item.0.name', 'equalto', item.name) |
+         selectattr('item.1', 'equalto', 'config/host') |
+         map(attribute='json.authenticationRequired') | first | lower) == 'enabled'
+      - >-
+        (arr_servarr_verification.results |
+         selectattr('item.0.name', 'equalto', item.name) |
+         selectattr('item.1', 'equalto', 'config/naming') |
+         map(attribute='json') | first)[item.rename_field] | bool ==
+        media_arr_automatic_rename_enabled | bool
+      - >-
+        (arr_servarr_verification.results |
+         selectattr('item.0.name', 'equalto', item.name) |
+         selectattr('item.1', 'equalto', 'rootfolder') |
+         map(attribute='json') | first |
+         selectattr('path', 'equalto', item.root_folder) | list | length) == 1
+    fail_msg: A Servarr instance differs from the declared Phase 1 state.
+  loop: "{{ arr_servarr_instances }}"
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+  tags: [platform_verify_arr]
+
+- name: Read Prowlarr applications and indexers for verification
+  ansible.builtin.uri:
+    url: "{{ arr_prowlarr_api }}/{{ item }}"
+    method: GET
+    headers:
+      X-Api-Key: "{{ vault_arr_prowlarr_api_key }}"
+    status_code: [200]
+    return_content: true
+  loop: [applications, indexer]
+  loop_control:
+    label: "prowlarr-{{ item }}"
+  register: arr_prowlarr_verification
+  changed_when: false
+  check_mode: false
+  no_log: true
+  tags: [platform_verify_arr]
+
+- name: Verify both Prowlarr applications use fullSync
+  ansible.builtin.assert:
+    that:
+      - arr_verify_prowlarr_applications_raw is sequence
+      - arr_verify_prowlarr_applications_raw is not mapping
+      - arr_verify_prowlarr_applications_raw is not string
+      - arr_verify_prowlarr_application_matches | length == 1
+      - >-
+        (arr_verify_prowlarr_application_desired |
+         acquisition_application_projection([])).keys() | sort ==
+        ['configContract', 'enable', 'fields', 'implementation',
+         'implementationName', 'name', 'syncLevel', 'tags']
+      - >-
+        (arr_verify_prowlarr_application_desired |
+         acquisition_application_projection([])).fields.keys() | sort ==
+        ['apiKey', 'baseUrl', 'password', 'prowlarrUrl',
+         'syncCategories', 'username']
+      - >-
+        arr_verify_prowlarr_application_matches[0] |
+        acquisition_application_projection(
+          arr_verify_prowlarr_application_masked_fields
+        ) ==
+        arr_verify_prowlarr_application_desired |
+        acquisition_application_projection(
+          arr_verify_prowlarr_application_masked_fields
+        )
+    fail_msg: A Prowlarr application differs from its complete owned projection.
+  loop: "{{ arr_prowlarr_applications }}"
+  loop_control:
+    label: "{{ item.name }}"
+  vars:
+    arr_verify_prowlarr_applications_raw: >-
+      {{ arr_prowlarr_verification.results |
+         selectattr('item', 'equalto', 'applications') |
+         map(attribute='json') | first | default([]) }}
+    arr_verify_prowlarr_applications: >-
+      {{ arr_verify_prowlarr_applications_raw
+         if arr_verify_prowlarr_applications_raw is sequence and
+            arr_verify_prowlarr_applications_raw is not mapping and
+            arr_verify_prowlarr_applications_raw is not string
+         else [] }}
+    arr_verify_prowlarr_application_matches: >-
+      {{ arr_verify_prowlarr_applications |
+         selectattr('name', 'equalto', item.name) | list }}
+    arr_verify_prowlarr_application_desired: >-
+      {{ item |
+         acquisition_application_body(
+           arr_prowlarr_internal_url,
+           arr_prowlarr_application_sync_level
+         ) }}
+    arr_verify_prowlarr_application_masked_fields: >-
+      {{ arr_verify_prowlarr_application_matches | first | default({}) |
+         acquisition_application_masked_fields }}
+  no_log: true
+  tags: [platform_verify_arr]
+
+- name: Verify operator-owned Prowlarr indexers exist exactly once
+  ansible.builtin.assert:
+    that:
+      - arr_verify_prowlarr_indexers_raw is sequence
+      - arr_verify_prowlarr_indexers_raw is not mapping
+      - arr_verify_prowlarr_indexers_raw is not string
+      - arr_verify_prowlarr_indexer_matches | length == 1
+      - >-
+        arr_verify_prowlarr_indexer_matches[0] |
+        acquisition_indexer_projection(
+          item,
+          arr_verify_prowlarr_indexer_masked_fields
+        ) ==
+        arr_verify_prowlarr_indexer_desired |
+        acquisition_indexer_projection(
+          item,
+          arr_verify_prowlarr_indexer_masked_fields
+        )
+    fail_msg: An operator-owned Prowlarr indexer differs from its complete owned projection.
+  loop: "{{ media_arr_indexers }}"
+  loop_control:
+    label: prowlarr-operator-indexer
+  vars:
+    arr_verify_prowlarr_indexers_raw: >-
+      {{ arr_prowlarr_verification.results |
+         selectattr('item', 'equalto', 'indexer') |
+         map(attribute='json') | first | default([]) }}
+    arr_verify_prowlarr_indexers: >-
+      {{ arr_verify_prowlarr_indexers_raw
+         if arr_verify_prowlarr_indexers_raw is sequence and
+            arr_verify_prowlarr_indexers_raw is not mapping and
+            arr_verify_prowlarr_indexers_raw is not string
+         else [] }}
+    arr_verify_prowlarr_indexer_matches: >-
+      {{ arr_verify_prowlarr_indexers |
+         selectattr('name', 'equalto', item.name) | list }}
+    arr_verify_prowlarr_indexer_desired: >-
+      {{ item | acquisition_indexer_body }}
+    arr_verify_prowlarr_indexer_masked_fields: >-
+      {{ arr_verify_prowlarr_indexer_matches | first | default({}) |
+         acquisition_indexer_masked_fields(item) }}
+  no_log: true
+  tags: [platform_verify_arr]
+
+- name: Read Bazarr settings for verification
+  ansible.builtin.uri:
+    url: "{{ arr_bazarr_api }}/system/settings"
+    method: GET
+    headers:
+      X-API-KEY: "{{ vault_arr_bazarr_api_key }}"
+    status_code: [200]
+    return_content: true
+  register: arr_bazarr_verification
+  changed_when: false
+  check_mode: false
+  no_log: true
+  tags: [platform_verify_arr]
+
+- name: Read Bazarr languages for verification
+  ansible.builtin.uri:
+    url: "{{ arr_bazarr_api }}/system/languages"
+    method: GET
+    headers:
+      X-API-KEY: "{{ vault_arr_bazarr_api_key }}"
+    status_code: [200]
+    return_content: true
+  register: arr_bazarr_languages_verification
+  changed_when: false
+  check_mode: false
+  no_log: true
+  tags: [platform_verify_arr]
+
+- name: Rebuild complete Bazarr owned projections for verification
+  ansible.builtin.set_fact:
+    arr_verify_bazarr_owned_projections: >-
+      {{ arr_bazarr_verification.json |
+         acquisition_bazarr_owned_projections(
+           arr_bazarr_languages_verification.json,
+           media_bazarr_languages |
+             acquisition_bazarr_declarations(media_bazarr_providers),
+           vault_arr_bazarr_admin_username,
+           vault_arr_bazarr_admin_password,
+           vault_arr_radarr_api_key,
+           vault_arr_sonarr_api_key
+         ) }}
+  changed_when: false
+  no_log: true
+  tags: [platform_verify_arr]
+
+- name: Verify Bazarr authentication and identical-path connections
+  ansible.builtin.assert:
+    that:
+      - >-
+        arr_verify_bazarr_owned_projections.current ==
+        arr_verify_bazarr_owned_projections.desired
+    fail_msg: Bazarr differs from the declared Phase 1 connection state.
+  no_log: true
+  tags: [platform_verify_arr]
+
+- name: Mark Arr reconciliation verification successful
+  ansible.builtin.set_fact:
+    arr_reconciliation_verification_succeeded: true
+  changed_when: false
+  no_log: true
+  tags: [platform_verify_arr]

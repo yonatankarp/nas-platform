@@ -178,6 +178,18 @@
   changed_when: false
   when: not ansible_check_mode
 
+- name: Copy the tracked Configarr declaration from the controller
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/roles/arr/files/configarr/config.yml"
+    dest: "{{ deployment_bundle_staging_dir }}/services/arr/configarr.yml"
+    mode: "0644"
+  changed_when: false
+  when:
+    - not ansible_check_mode
+    - >-
+      deployment_bundle_services |
+      selectattr('name', 'equalto', 'arr') | list | length == 1
+
 - name: Copy present platform-specific Compose definitions from the controller
   ansible.builtin.copy:
     src: "{{ item.stat.path }}"

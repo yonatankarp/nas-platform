@@ -17,13 +17,14 @@ services:
       - path: compose.{{ platform_compose_kind }}.yml
         checksum_sha256: {{ (lookup('file', platform_source.stat.path, rstrip=false) | hash('sha256')) | to_json }}
 {% endif %}
-{% set runtime_files = {'dozzle': ['alert_relay.py'], 'immich': ['classify_restore.py']}.get(service.name, []) %}
+{% set runtime_files = {'arr': ['configarr.yml'], 'dozzle': ['alert_relay.py'], 'immich': ['classify_restore.py']}.get(service.name, []) %}
 {% if runtime_files %}
     runtime_files:
 {% for runtime_file in runtime_files %}
       - path: {{ runtime_file | to_json }}
         mode: "0644"
-        checksum_sha256: {{ (lookup('file', playbook_dir ~ '/services/' ~ service.name ~ '/' ~ runtime_file, rstrip=false) | hash('sha256')) | to_json }}
+{% set runtime_source = (playbook_dir ~ '/roles/arr/files/configarr/config.yml') if service.name == 'arr' else (playbook_dir ~ '/services/' ~ service.name ~ '/' ~ runtime_file) %}
+        checksum_sha256: {{ (lookup('file', runtime_source, rstrip=false) | hash('sha256')) | to_json }}
 {% endfor %}
 {% else %}
     runtime_files: []

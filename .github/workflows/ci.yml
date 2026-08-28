@@ -47,6 +47,12 @@ jobs:
           fi
 
   static:
+    # The policy gate's wall time is bounded by its slowest single check. The
+    # media acquisition reconciliation contract is now three checks that the
+    # gate runs concurrently, and its cases run through a worker pool, so the
+    # gate costs the slowest relationship rather than the sum of all of them.
+    # This stays well above the observed runtime so a slow runner cannot cancel
+    # a passing gate the way the previous budget did.
     timeout-minutes: 45
     needs: changes
     if: ${{ needs.changes.outputs.static == 'true' }}
@@ -110,6 +116,54 @@ jobs:
           ansible-playbook -i inventory/local.yml site.yml --syntax-check
           ansible-playbook generate-secrets.yml --syntax-check
           ansible-playbook -i inventory/local.yml install-production-auto-deploy.yml --syntax-check
+
+  reconciliation:
+    # The media acquisition reconciliation contract is 373 Ansible runs across
+    # every relationship. Inside the policy gate it competed with ninety other
+    # checks for four cores and made that job the longest in the workflow. Here
+    # it gets a runner to itself, its three files run concurrently and each
+    # drives its own worker pool, so the contract costs its own parallel time
+    # instead of serialising behind the rest of the gate.
+    timeout-minutes: 45
+    needs: changes
+    if: ${{ needs.changes.outputs.static == 'true' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install Ansible tooling
+        run: |
+          # apache2-utils, openssh-client and openssl all ship in the ubuntu-latest
+          # image, so this normally installs nothing. It ran unconditionally until an
+          # apt-get update stalled mid-download for 161 minutes on 2026-08-19. Guarding
+          # on the one binary not otherwise guaranteed keeps apt off the happy path
+          # while still recovering automatically if the runner image drops it.
+          if ! command -v htpasswd >/dev/null 2>&1; then
+            sudo apt-get -o Acquire::Retries=3 update
+            sudo apt-get -o Acquire::Retries=3 install --yes apache2-utils openssh-client openssl
+          fi
+          python3 -m venv "$RUNNER_TEMP/ansible"
+          "$RUNNER_TEMP/ansible/bin/pip" install 'ansible-core==2.21.3' 'ansible-lint==26.8.0'
+          echo "$RUNNER_TEMP/ansible/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/ansible/bin/ansible-galaxy" collection install -r requirements.yml
+
+      - name: Check media acquisition reconciliation
+        run: |
+          # Named one per line so tests/ci/workflow_test.rb can require each
+          # file, and so dropping one is visible in the diff rather than hidden
+          # behind a loop variable.
+          status=0
+          ruby tests/media_acquisition_reconciliation_core_test.rb & core=$!
+          ruby tests/media_acquisition_reconciliation_bazarr_test.rb & bazarr=$!
+          ruby tests/media_acquisition_reconciliation_configarr_test.rb & configarr=$!
+          wait "$core" || status=1
+          wait "$bazarr" || status=1
+          wait "$configarr" || status=1
+          exit "$status"
 
   suites:
     timeout-minutes: 60
@@ -177,6 +231,7 @@ jobs:
     needs:
       - changes
       - static
+      - reconciliation
       - suites
     runs-on: ubuntu-latest
 
@@ -189,4 +244,5 @@ jobs:
           ruby tests/ci/validate_results.rb \
             changes="${{ needs.changes.result }}" \
             static="${{ needs.static.result }}" \
+            reconciliation="${{ needs.reconciliation.result }}" \
             suites="${{ needs.suites.result }}"

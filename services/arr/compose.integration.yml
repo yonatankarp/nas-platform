@@ -1,0 +1,11 @@
+---
+services:
+  radarr:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-radarr
+  sonarr:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-sonarr
+  prowlarr:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-prowlarr
+  bazarr:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-bazarr
+  configarr: {}

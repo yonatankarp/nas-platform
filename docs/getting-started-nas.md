@@ -4,7 +4,8 @@ This path targets a fresh production installation. Complete the
 [disposable Mac proof](getting-started-mac.md), protect any media already on the
 NAS, and confirm every required service is `implemented` or `accepted` in
 [`services/manifest.yml`](../services/manifest.yml) before installation. The
-active services are Audiobookshelf, Beszel, Dozzle, Immich, Jellyfin, Komga,
+active service projects also include the default-disabled Arr and downloader
+projects alongside Audiobookshelf, Beszel, Dozzle, Immich, Jellyfin, Komga,
 ntfy, and Paperless-ngx. The production retirement checkpoint has passed and
 the retired metadata manager declarations have been removed from the repository.
 
@@ -13,12 +14,12 @@ Commands are labelled **read-only**, **check mode**, or **changes production**.
 ## Retired metadata manager cleanup checkpoint
 
 Former metadata manager application state remains preserved outside repository
-management; the repository cleanup did not delete it or any media. Phase 0
-creates only the derived bridge network, classified acquisition/final paths,
-immutable contracts, generated vault keys, and CI scaffolding. All seven
-projects remain `planned`, both acquisition flags remain `false`, and no
-acquisition container or download starts. Open Subtitles remains configured in
-Jellyfin until Bazarr is proven in Phase 1.
+management; the repository cleanup did not delete it or any media. Phase 1
+implements Arr and the Usenet downloader project, while both transport flags
+remain `false` by default and five later projects remain planned. Open
+Subtitles remains configured in Jellyfin until the
+[Phase 1 operator handoff](media-acquisition-phase1.md) records physical-NAS
+Bazarr proof.
 
 ## 1. Prepare the NAS and workstation
 
@@ -132,6 +133,11 @@ after a failure. Preserve the first failing task and its message, check the
 affected container without exposing secrets, and decide whether to fix forward
 or execute the pre-agreed rollback.
 
+Do not enable acquisition as part of this general platform apply. Complete the
+default deployment and verification first, then use the separate
+[Phase 1 operator handoff](media-acquisition-phase1.md) for one-target adoption,
+proof downloads, ACL acceptance, and rollback ordering.
+
 ## 7. Verify and prove idempotence
 
 `verify.yml` performs application checks without deploying or reconciling:
@@ -155,7 +161,7 @@ against the production deployment without exercising external integrations; for
 ntfy, use only an agreed disposable topic when verifying alerts from Beszel and
 Dozzle.
 
-Phase 0 also requires a NAS-only ACL acceptance check: using an ordinary SMB
+Media acquisition also requires a NAS-only ACL acceptance check: using an ordinary SMB
 account, confirm that ordinary SMB users cannot access either
 `Media/.acquisition` or `Books/.acquisition`, while the intended service identity
 can traverse the required directories. Record only pass/fail and the tested
@@ -274,7 +280,7 @@ ansible-playbook -i inventory/local.yml site.yml \
   --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE"
 
 ansible-playbook -i inventory/local.yml verify.yml \
-  --tags platform_verify_media_acquisition_foundation,platform_verify_ntfy,platform_verify_beszel,platform_verify_dozzle,platform_verify_audiobookshelf,platform_verify_komga,platform_verify_jellyfin,platform_verify_immich,platform_verify_paperless \
+  --tags platform_verify_media_acquisition_foundation,platform_verify_ntfy,platform_verify_beszel,platform_verify_dozzle,platform_verify_audiobookshelf,platform_verify_komga,platform_verify_arr,platform_verify_downloaders,platform_verify_jellyfin,platform_verify_immich,platform_verify_paperless \
   --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE"
 ```
 

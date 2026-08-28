@@ -56,7 +56,7 @@ end
 
 EXPECTED_PROJECTS = {
   "arr" => {
-    "role" => "arr", "status" => "planned", "services" => {
+    "role" => "arr", "status" => "implemented", "services" => {
       "radarr" => service("long_running", 1.0, ui_port(7878, published_by: "radarr")),
       "sonarr" => service("long_running", 1.0, ui_port(8989, published_by: "sonarr")),
       "prowlarr" => service("long_running", 0.5, ui_port(9696, published_by: "prowlarr")),
@@ -65,7 +65,7 @@ EXPECTED_PROJECTS = {
     }
   },
   "downloaders" => {
-    "role" => "downloaders", "status" => "planned", "services" => {
+    "role" => "downloaders", "status" => "implemented", "services" => {
       "sabnzbd" => service("long_running", 2.0,
                            ui_port(8085, container_port: 8080, published_by: "sabnzbd")),
       "unpackerr" => service("long_running", 1.0),
@@ -135,10 +135,15 @@ EXPECTED = {
 }.freeze
 
 EXPECTED_IMPLEMENTED_PORTS = [
+  ["arr", "bazarr", "0.0.0.0", 6767, 6767, "tcp"],
+  ["arr", "prowlarr", "0.0.0.0", 9696, 9696, "tcp"],
+  ["arr", "radarr", "0.0.0.0", 7878, 7878, "tcp"],
+  ["arr", "sonarr", "0.0.0.0", 8989, 8989, "tcp"],
   ["audiobookshelf", "audiobookshelf", "0.0.0.0", 13_378, 80, "tcp"],
   ["beszel", "hub", "0.0.0.0", 8090, 8090, "tcp"],
   ["beszel", "socket-proxy", "127.0.0.1", 2375, 2375, "tcp"],
   ["dozzle", "dozzle", "0.0.0.0", 8080, 8080, "tcp"],
+  ["downloaders", "sabnzbd", "0.0.0.0", 8085, 8080, "tcp"],
   ["immich", "immich-server", "0.0.0.0", 2283, 2283, "tcp"],
   ["jellyfin", "jellyfin", "0.0.0.0", 8096, 8096, "tcp"],
   ["komga", "komga", "0.0.0.0", 25_600, 25_600, "tcp"],
@@ -180,6 +185,21 @@ EXPECTED_STORAGE = {
   "{{ nas_docker_root }}/seerr/config" => "critical"
 }.freeze
 
+EXPECTED_INTEGRATION_WRITERS = Set[
+  "{{ nas_media_root }}/Media/Movies",
+  "{{ nas_media_root }}/Media/Series",
+  "{{ nas_media_root }}/Media/.acquisition/usenet/movies",
+  "{{ nas_media_root }}/Media/.acquisition/usenet/series",
+  "{{ nas_media_root }}/Media/.acquisition/usenet/audiobooks",
+  "{{ nas_media_root }}/Media/.acquisition/torrents/movies",
+  "{{ nas_media_root }}/Media/.acquisition/torrents/series",
+  "{{ nas_media_root }}/Media/.acquisition/torrents/audiobooks",
+  "{{ nas_media_root }}/Books/.acquisition/usenet/ebooks",
+  "{{ nas_media_root }}/Books/.acquisition/usenet/comics",
+  "{{ nas_media_root }}/Books/.acquisition/torrents/ebooks",
+  "{{ nas_media_root }}/Books/.acquisition/torrents/comics"
+].freeze
+
 def catalog_contract_problems(catalog)
   catalog == EXPECTED ? [] : ["media acquisition catalog differs from the pinned inert contract"]
 end
@@ -191,9 +211,11 @@ def jellyfin_defaults_contract_problems(defaults)
 end
 
 def planned_tree_problems(existing_paths)
-  expected_paths = EXPECTED_PROJECTS.flat_map do |project_name, project|
+  expected_paths = EXPECTED_PROJECTS.filter_map do |project_name, project|
+    next unless project.fetch("status") == "planned"
+
     ["roles/#{project.fetch('role')}", "services/#{project_name}"]
-  end
+  end.flatten
   (existing_paths & expected_paths).map do |path|
     tree_kind = path.start_with?("roles/") ? "role" : "service"
     "planned #{tree_kind} tree exists prematurely: #{path}"
@@ -202,6 +224,23 @@ end
 
 def deep_copy(value)
   Marshal.load(Marshal.dump(value))
+end
+
+def integration_writer_contract_problems(storage)
+  integration_writers = storage.select do |entry|
+    entry.key?("media_acquisition_writer")
+  end
+  actual_integration_writers = integration_writers.map { |entry| entry.fetch("path") }.to_set
+  problems = []
+  problems << "media acquisition integration writers differ from the exact writable set" unless
+    actual_integration_writers == EXPECTED_INTEGRATION_WRITERS
+  problems << "integration writer declarations must use literal true" if
+    integration_writers.any? { |entry| entry["media_acquisition_writer"] != true }
+  problems << "integration writer declarations must remain acquisition foundation storage" if
+    integration_writers.any? { |entry| entry["media_acquisition_foundation"] != true }
+  problems << "integration writer declarations must remain ownerless for production NAS storage" if
+    integration_writers.any? { |entry| entry.key?("owner") || entry.key?("group") }
+  problems
 end
 
 def flatten_tasks(tasks)
@@ -377,7 +416,10 @@ if catalog
     failures << "planned host publications collide" if collides?(left, right)
   end
 
-  planned_paths = catalog.fetch("projects").flat_map do |project_name, project|
+  planned_projects = catalog.fetch("projects").select do |_project_name, project|
+    project.fetch("status") == "planned"
+  end
+  planned_paths = planned_projects.flat_map do |project_name, project|
     ["roles/#{project.fetch('role')}", "services/#{project_name}"]
   end
   existing_planned_paths = planned_paths.select { |path| path_entry_exists?(File.join(ROOT, path)) }
@@ -410,8 +452,9 @@ if manifest
   names = entries.map { |entry| entry.fetch("name") }
   failures << "service manifest names must be unique" unless names.uniq == names
   EXPECTED_PROJECTS.each do |name, project|
-    failures << "#{name} must be planned in the service manifest" unless
-      entries.include?({ "name" => name, "role" => project.fetch("role"), "status" => "planned" })
+    status = project.fetch("status")
+    failures << "#{name} must be #{status} in the service manifest" unless
+      entries.include?({ "name" => name, "role" => project.fetch("role"), "status" => status })
   end
 
   actual_ports = implemented_ports(manifest)
@@ -421,7 +464,8 @@ if manifest
     { "protocol" => protocol, "bind_address" => bind_address, "host_port" => host_port }
   end
   if catalog
-    catalog.fetch("projects").values.flat_map { |project| project.fetch("services").values }
+    catalog.fetch("projects").values.select { |project| project.fetch("status") == "planned" }
+           .flat_map { |project| project.fetch("services").values }
            .flat_map { |definition| definition.fetch("host_ports") }.each do |planned|
       failures << "planned publication collides with an implemented Compose publication" if
         existing.any? { |publication| collides?(planned, publication) }
@@ -458,9 +502,23 @@ failures << "unbracketed IPv6 wildcard must normalize" unless
 end
 
 shared_vars = YAML.safe_load_file(File.join(ROOT, "inventory", "group_vars", "all", "main.yml"))
+all_storage = shared_vars.fetch("nas_storage")
 acquisition_storage = shared_vars.fetch("nas_storage").select do |entry|
   entry["media_acquisition_foundation"] == true
 end
+failures.concat(integration_writer_contract_problems(all_storage))
+
+extra_writer_mutation = deep_copy(all_storage)
+extra_writer_mutation.find { |entry| entry.fetch("path").end_with?("/audiobookshelf/config") }["media_acquisition_writer"] = true
+failures << "integration writer guard misses extra service-config marker" if
+  integration_writer_contract_problems(extra_writer_mutation).empty?
+
+non_true_writer_mutation = deep_copy(all_storage)
+non_true_writer_mutation.find do |entry|
+  entry.fetch("path") == "{{ nas_media_root }}/Media/Movies"
+end["media_acquisition_writer"] = false
+failures << "integration writer guard misses non-true declaration" if
+  integration_writer_contract_problems(non_true_writer_mutation).empty?
 actual_storage = acquisition_storage.to_h { |entry| [entry.fetch("path"), entry.fetch("recovery")] }
 failures << "media acquisition storage differs from the exact classified foundation" unless
   actual_storage == EXPECTED_STORAGE && acquisition_storage.length == EXPECTED_STORAGE.length
@@ -525,6 +583,24 @@ end
 network_post_assertion = host_prep.find do |task|
   task["name"] == "Require the exact media control network after create-only handling"
 end
+writer_mode = host_prep.find do |task|
+  task["name"] == "Select synthetic integration writer ownership"
+end
+writer_boundary = host_prep.find do |task|
+  task["name"] == "Require the exact integration media sandbox"
+end
+writer_preserve_refusal = host_prep.find do |task|
+  task["name"] == "Refuse preservation-only synthetic integration writers"
+end
+directory_task = host_prep.find do |task|
+  task["name"] == "Create service state directories"
+end
+writer_inspection = host_prep.find do |task|
+  task["name"] == "Inspect synthetic integration writer directories"
+end
+writer_assertion = host_prep.find do |task|
+  task["name"] == "Require synthetic integration writer ownership"
+end
 network_refusal_conditions = Array(network_refusal&.dig("ansible.builtin.assert", "that"))
 network_post_conditions = Array(network_post_assertion&.dig("ansible.builtin.assert", "that"))
 failures << "host preparation must inspect and fail closed on exact-name network collisions" unless
@@ -568,6 +644,83 @@ failures << "host preparation must never delete Docker networks" if
   end
 failures << "host preparation must never recursively change storage ownership" if
   all_host_prep_tasks.any? { |task| task.dig("ansible.builtin.file", "recurse") == true }
+
+writer_requested = writer_mode&.dig(
+  "ansible.builtin.set_fact", "host_prep_integration_writer_requested"
+).to_s
+writer_enabled = writer_mode&.dig(
+  "ansible.builtin.set_fact", "host_prep_integration_writer_enabled"
+).to_s
+writer_storage = writer_mode&.dig(
+  "ansible.builtin.set_fact", "host_prep_integration_writer_storage"
+).to_s
+failures << "host preparation must select synthetic writer mode only for explicit NAS integration tests" unless
+    writer_requested.include?("platform_kind == 'nas'") &&
+    writer_requested.include?("platform_compose_kind == 'integration'") &&
+    writer_requested.include?("deployment_bundle_test_mode | bool") &&
+    writer_enabled.include?("platform_kind == 'nas'") &&
+    writer_enabled.include?("platform_compose_kind == 'integration'") &&
+    writer_enabled.include?("deployment_bundle_test_mode | bool") &&
+    writer_enabled.include?("nas_media_root is match('^.*/nas-platform-integration[.][A-Za-z0-9]{6}/.+\\Z')") &&
+    !writer_enabled.include?(".+$") &&
+    writer_storage.include?("selectattr('media_acquisition_writer', 'defined')") &&
+    writer_storage.include?("selectattr('media_acquisition_writer', 'sameas', true)")
+
+writer_boundary_conditions = Array(writer_boundary&.dig("ansible.builtin.assert", "that"))
+writer_boundary_message = writer_boundary&.dig("ansible.builtin.assert", "fail_msg").to_s
+writer_preserve_conditions = Array(writer_preserve_refusal&.dig("ansible.builtin.assert", "that"))
+writer_mode_index = host_prep.index(writer_mode)
+writer_boundary_index = host_prep.index(writer_boundary)
+writer_preserve_index = host_prep.index(writer_preserve_refusal)
+directory_index = host_prep.index(directory_task)
+failures << "host preparation must fail closed on the exact integration media sandbox before directory creation" unless
+  writer_boundary&.fetch("when", nil) == "host_prep_integration_writer_requested | bool" &&
+    writer_boundary_conditions.include?("host_prep_integration_writer_enabled | bool") &&
+    writer_boundary_message.include?("nas_media_root | to_json") &&
+    writer_boundary_message.include?("/nas-platform-integration.XXXXXX/") &&
+    writer_preserve_refusal&.fetch("loop", nil) == "{{ host_prep_integration_writer_storage }}" &&
+    writer_preserve_conditions.include?("item.preserve_only is not defined") &&
+    writer_mode_index && writer_boundary_index && writer_preserve_index && directory_index &&
+    writer_mode_index < writer_boundary_index && writer_boundary_index < writer_preserve_index &&
+    writer_preserve_index < directory_index
+
+directory_owner = directory_task&.dig("ansible.builtin.file", "owner").to_s.gsub(/\s+/, " ")
+directory_group = directory_task&.dig("ansible.builtin.file", "group").to_s.gsub(/\s+/, " ")
+failures << "host preparation must scope synthetic ownership to marked integration writer directories" unless
+  directory_owner.include?("host_prep_integration_writer_enabled | bool") &&
+    directory_owner.include?("(item.media_acquisition_writer | default(false)) is sameas true") &&
+    !directory_owner.include?("item.media_acquisition_writer | default(false) | bool") &&
+    !directory_owner.include?("item.media_acquisition_writer | default(false)) == true") &&
+    directory_owner.include?("nas_uid") &&
+    directory_owner.include?("else item.owner") &&
+    directory_owner.include?("platform_kind == 'nas' or (platform_manage_linux_ownership | bool)") &&
+    directory_owner.include?("item.owner is defined") &&
+    directory_group.include?("host_prep_integration_writer_enabled | bool") &&
+    directory_group.include?("(item.media_acquisition_writer | default(false)) is sameas true") &&
+    !directory_group.include?("item.media_acquisition_writer | default(false) | bool") &&
+    !directory_group.include?("item.media_acquisition_writer | default(false)) == true") &&
+    directory_group.include?("nas_gid") &&
+    directory_group.include?("else item.group") &&
+    directory_group.include?("platform_kind == 'nas' or (platform_manage_linux_ownership | bool)") &&
+    directory_group.include?("item.group is defined")
+
+writer_inspection_index = host_prep.index(writer_inspection)
+writer_assertion_index = host_prep.index(writer_assertion)
+writer_assertion_conditions = Array(writer_assertion&.dig("ansible.builtin.assert", "that"))
+failures << "host preparation must verify synthetic integration writer ownership after convergence" unless
+  writer_inspection&.dig("ansible.builtin.stat", "follow") == false &&
+    writer_inspection&.fetch("loop", nil) == "{{ host_prep_integration_writer_storage }}" &&
+    writer_inspection&.fetch("when", nil) == "host_prep_integration_writer_enabled | bool" &&
+    writer_assertion&.fetch("when", nil) == "host_prep_integration_writer_enabled | bool" &&
+    directory_index && writer_inspection_index && writer_assertion_index &&
+    writer_inspection_index == directory_index + 1 &&
+    writer_assertion_index == writer_inspection_index + 1 &&
+    writer_assertion_conditions.include?("item.stat.exists") &&
+    writer_assertion_conditions.include?("item.stat.isdir") &&
+    writer_assertion_conditions.include?("not item.stat.islnk") &&
+    writer_assertion_conditions.include?("item.stat.uid == (nas_uid | int)") &&
+    writer_assertion_conditions.include?("item.stat.gid == (nas_gid | int)") &&
+    writer_assertion_conditions.include?("item.stat.mode == item.item.mode")
 
 %w[audiobookshelf jellyfin].each do |reader|
   compose = YAML.safe_load_file(File.join(ROOT, "services", reader, "compose.yml"), aliases: true)
@@ -614,6 +767,18 @@ failures << "host_prep must require a string media control network" unless
   host_prep_options["platform_media_control_network"] == { "type" => "str", "required" => true }
 failures << "host_prep must accept the acquisition foundation marker" unless
   host_prep_options.dig("nas_storage", "options", "media_acquisition_foundation") == {
+    "type" => "bool", "required" => false
+  }
+failures << "host_prep must require the integration compose kind" unless
+  host_prep_options["platform_compose_kind"] == { "type" => "str", "required" => true }
+failures << "host_prep must default deployment bundle test mode off" unless
+  host_prep_options["deployment_bundle_test_mode"] == { "type" => "bool", "default" => false }
+failures << "host_prep must require the raw NAS user identity" unless
+  host_prep_options["nas_uid"] == { "type" => "raw", "required" => true }
+failures << "host_prep must require the raw NAS group identity" unless
+  host_prep_options["nas_gid"] == { "type" => "raw", "required" => true }
+failures << "host_prep must accept the synthetic integration writer marker" unless
+  host_prep_options.dig("nas_storage", "options", "media_acquisition_writer")&.slice("type", "required") == {
     "type" => "bool", "required" => false
   }
 

@@ -85,6 +85,45 @@
   loop_control:
     label: "{{ item.path }}"
 
+- name: Select synthetic integration writer ownership
+  ansible.builtin.set_fact:
+    host_prep_integration_writer_requested: >-
+      {{ platform_kind == 'nas' and
+         platform_compose_kind == 'integration' and
+         (deployment_bundle_test_mode | bool) }}
+    host_prep_integration_writer_enabled: >-
+      {{ (platform_kind == 'nas') and
+         (platform_compose_kind == 'integration') and
+         (deployment_bundle_test_mode | bool) and
+         (nas_media_root is match('^.*/nas-platform-integration[.][A-Za-z0-9]{6}/.+\Z')) }}
+    host_prep_integration_writer_storage: >-
+      {{ nas_storage |
+         selectattr('media_acquisition_writer', 'defined') |
+         selectattr('media_acquisition_writer', 'sameas', true) |
+         list }}
+  changed_when: false
+
+- name: Require the exact integration media sandbox
+  ansible.builtin.assert:
+    that:
+      - host_prep_integration_writer_enabled | bool
+    fail_msg: >-
+      Refusing synthetic media writer ownership for root
+      {{ nas_media_root | to_json }}. Expected a root inside a disposable
+      /nas-platform-integration.XXXXXX/ sandbox.
+  when: host_prep_integration_writer_requested | bool
+
+- name: Refuse preservation-only synthetic integration writers
+  ansible.builtin.assert:
+    that:
+      - item.preserve_only is not defined
+    fail_msg: >-
+      Synthetic integration writer storage cannot be preservation-only:
+      {{ item.path }}.
+  loop: "{{ host_prep_integration_writer_storage }}"
+  loop_control:
+    label: "{{ item.path }}"
+
 - name: Validate preservation-only storage declarations
   ansible.builtin.assert:
     that:
@@ -125,14 +164,49 @@
     state: directory
     # Linux container UID/GID declarations do not map to macOS host ownership.
     owner: >-
-      {{ item.owner
+      {{ nas_uid
+         if (host_prep_integration_writer_enabled | bool) and
+            (item.media_acquisition_writer | default(false)) is sameas true
+         else item.owner
          if (platform_kind == 'nas' or (platform_manage_linux_ownership | bool)) and item.owner is defined
          else omit }}
     group: >-
-      {{ item.group
+      {{ nas_gid
+         if (host_prep_integration_writer_enabled | bool) and
+            (item.media_acquisition_writer | default(false)) is sameas true
+         else item.group
          if (platform_kind == 'nas' or (platform_manage_linux_ownership | bool)) and item.group is defined
          else omit }}
     mode: "{{ item.mode }}"
   loop: "{{ nas_storage | rejectattr('preserve_only', 'defined') | list }}"
   loop_control:
     label: "{{ item.path }}"
+
+- name: Inspect synthetic integration writer directories
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+    follow: false
+  loop: "{{ host_prep_integration_writer_storage }}"
+  loop_control:
+    label: "{{ item.path }}"
+  register: host_prep_integration_writer_stats
+  changed_when: false
+  when: host_prep_integration_writer_enabled | bool
+
+- name: Require synthetic integration writer ownership
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isdir
+      - not item.stat.islnk
+      - item.stat.uid == (nas_uid | int)
+      - item.stat.gid == (nas_gid | int)
+      - item.stat.mode == item.item.mode
+    fail_msg: >-
+      Synthetic integration writer path differs from the application identity:
+      {{ item.item.path }}.
+  loop: "{{ host_prep_integration_writer_stats.results }}"
+  loop_control:
+    label: "{{ item.item.path }}"
+  changed_when: false
+  when: host_prep_integration_writer_enabled | bool

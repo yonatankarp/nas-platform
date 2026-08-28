@@ -1,0 +1,15 @@
+<Config>
+  <BindAddress>*</BindAddress>
+  <Port>{{ arr_bootstrap_port }}</Port>
+  <SslPort>{{ arr_bootstrap_ssl_port }}</SslPort>
+  <EnableSsl>False</EnableSsl>
+  <LaunchBrowser>False</LaunchBrowser>
+  <ApiKey>{{ arr_bootstrap_api_key }}</ApiKey>
+  <AuthenticationMethod>Forms</AuthenticationMethod>
+  <AuthenticationRequired>Enabled</AuthenticationRequired>
+  <Branch>master</Branch>
+  <LogLevel>info</LogLevel>
+  <UrlBase></UrlBase>
+  <InstanceName>{{ arr_bootstrap_instance_name }}</InstanceName>
+  <UpdateMechanism>Docker</UpdateMechanism>
+</Config>

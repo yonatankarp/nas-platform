@@ -1,0 +1,175 @@
+---
+- name: Guard Arr critical state before Phase 1 activation
+  ansible.builtin.include_tasks: state_guard.yml
+  when: media_usenet_enabled | bool
+
+- name: Revalidate deployment paths before Arr runtime use
+  ansible.builtin.include_role:
+    name: deployment_bundle
+    tasks_from: target
+  vars:
+    deployment_target_require_current_release: true
+    deployment_target_extra_paths:
+      - "{{ platform_current_dir }}/services/arr"
+      - "{{ platform_current_dir }}/services/arr/compose.yml"
+      - "{{ platform_current_dir }}/services/arr/compose.{{ platform_compose_kind }}.yml"
+      - "{{ platform_current_dir }}/services/arr/configarr.yml"
+      - "{{ platform_runtime_dir }}/services/arr"
+      - "{{ platform_runtime_dir }}/services/arr/configarr-repos"
+      - "{{ platform_runtime_dir }}/services/arr/.env"
+      - "{{ arr_radarr_config_host_path }}"
+      - "{{ arr_sonarr_config_host_path }}"
+      - "{{ arr_prowlarr_config_host_path }}"
+      - "{{ arr_bazarr_config_host_path }}"
+
+- name: Require single-line Arr administrator credentials
+  ansible.builtin.assert:
+    that:
+      - item.username is match('^[^\r\n]+$')
+      - item.password is match('^[^\r\n]+$')
+    fail_msg: Arr administrator credentials must be nonempty single-line values.
+  loop:
+    - username: "{{ vault_arr_radarr_admin_username }}"
+      password: "{{ vault_arr_radarr_admin_password }}"
+    - username: "{{ vault_arr_sonarr_admin_username }}"
+      password: "{{ vault_arr_sonarr_admin_password }}"
+    - username: "{{ vault_arr_prowlarr_admin_username }}"
+      password: "{{ vault_arr_prowlarr_admin_password }}"
+    - username: "{{ vault_arr_bazarr_admin_username }}"
+      password: "{{ vault_arr_bazarr_admin_password }}"
+  loop_control:
+    label: arr-administrator-credential
+  no_log: true
+
+- name: Create the Configarr repository cache
+  ansible.builtin.file:
+    path: "{{ platform_runtime_dir }}/services/arr/configarr-repos"
+    state: directory
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0755"
+  when: media_usenet_enabled | bool
+
+- name: Render the private Arr environment
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ platform_runtime_dir }}/services/arr/.env"
+    mode: "0600"
+  no_log: true
+
+- name: Stop the disabled Arr project
+  community.docker.docker_compose_v2:
+    project_src: "{{ platform_current_dir }}/services/arr"
+    project_name: "{{ arr_compose_project_name }}"
+    files: "{{ platform_service_compose_files['arr'] }}"
+    env_files: ["{{ platform_runtime_dir }}/services/arr/.env"]
+    state: absent
+    remove_orphans: true
+  when: not media_usenet_enabled | bool
+  register: arr_stop
+
+- name: Bootstrap deterministic Arr authentication
+  ansible.builtin.include_tasks: bootstrap.yml
+  when: media_usenet_enabled | bool
+
+- name: Deploy the Phase 1 Arr project
+  community.docker.docker_compose_v2:
+    project_src: "{{ platform_current_dir }}/services/arr"
+    project_name: "{{ arr_compose_project_name }}"
+    files: "{{ platform_service_compose_files['arr'] }}"
+    env_files: ["{{ platform_runtime_dir }}/services/arr/.env"]
+    state: present
+    wait: true
+    wait_timeout: 240
+  when: media_usenet_enabled | bool
+  register: arr_deploy
+
+- name: Load private Arr desired-input fingerprints
+  ansible.builtin.include_tasks:
+    file: reconciliation_fingerprints.yml
+    apply:
+      tags: [platform_verify_arr]
+  vars:
+    arr_reconciliation_fingerprint_subset:
+      - configarr
+      - configarr_owned_state
+      - configarr_opaque_context
+      - prowlarr_applications
+      - prowlarr_indexers
+      - bazarr_providers
+  when: media_usenet_enabled | bool
+  tags: [platform_verify_arr]
+
+- name: Initialize Arr reconciliation verification gate
+  ansible.builtin.set_fact:
+    arr_reconciliation_verification_succeeded: false
+  changed_when: false
+  when: media_usenet_enabled | bool
+
+- name: Mark the ordinary Arr reconciliation cycle started
+  ansible.builtin.set_fact:
+    arr_reconciliation_cycle_started: true
+  changed_when: false
+  when: media_usenet_enabled | bool
+
+- name: Reconcile each Servarr instance
+  ansible.builtin.include_tasks: reconcile_servarr.yml
+  loop: "{{ arr_servarr_instances }}"
+  loop_control:
+    loop_var: arr_servarr_instance
+    label: "{{ arr_servarr_instance.name }}"
+  when: media_usenet_enabled | bool
+
+- name: Reconcile Prowlarr applications and indexers
+  ansible.builtin.include_tasks: reconcile_prowlarr.yml
+  when: media_usenet_enabled | bool
+
+- name: Reconcile Bazarr connections and operator settings
+  ansible.builtin.include_tasks: reconcile_bazarr.yml
+  when: media_usenet_enabled | bool
+
+- name: Apply declarative Arr profiles with Configarr
+  ansible.builtin.include_tasks: configarr.yml
+  when: media_usenet_enabled | bool
+
+- name: Report the Arr deployment
+  ansible.builtin.include_role:
+    name: ntfy
+    tasks_from: deployment_report
+  vars:
+    ntfy_deployment_report_service: Arr
+    ntfy_deployment_report_changed: "{{ arr_deploy is changed }}"
+  when: media_usenet_enabled | bool
+
+- name: Verify the Arr project effective container CPU policy
+  ansible.builtin.include_role:
+    name: container_cpu
+  vars:
+    container_cpu_service_name: arr
+    container_cpu_project_name: "{{ arr_compose_project_name }}"
+  when:
+    - media_usenet_enabled | bool
+    - not ansible_check_mode
+
+- name: Run Arr service verification
+  ansible.builtin.include_tasks:
+    file: verify.yml
+    apply:
+      tags: [platform_verify_arr]
+  when: media_usenet_enabled | bool
+  tags: [platform_verify_arr]
+
+- name: Persist verified Arr desired-input fingerprints
+  ansible.builtin.include_tasks: record_reconciliation_fingerprints.yml
+  vars:
+    arr_reconciliation_fingerprint_subset:
+      - configarr
+      - configarr_owned_state
+      - configarr_opaque_context
+      - prowlarr_applications
+      - prowlarr_indexers
+      - bazarr_providers
+  when:
+    - media_usenet_enabled | bool
+    - not ansible_check_mode
+    - arr_reconciliation_verification_succeeded is sameas true

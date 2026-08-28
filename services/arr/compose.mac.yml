@@ -1,0 +1,18 @@
+---
+services:
+  radarr:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-radarr
+    ports: !override
+      - "${RADARR_HOST_PORT:?}:7878"
+  sonarr:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-sonarr
+    ports: !override
+      - "${SONARR_HOST_PORT:?}:8989"
+  prowlarr:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-prowlarr
+    ports: !override
+      - "${PROWLARR_HOST_PORT:?}:9696"
+  bazarr:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-bazarr
+    ports: !override
+      - "${BAZARR_HOST_PORT:?}:6767"

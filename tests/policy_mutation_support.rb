@@ -96,15 +96,21 @@ BASE_FIXTURE_PATHS = %w[
   tests/immich_release_helper_test.rb
   tests/immich_selective_helper_integrity_test.rb
   tests/sandbox_cleanup.sh
+  tests/sandbox_cleanup_acquisition_ownership_test.sh
   tests/generate-ephemeral-vault.sh
   tests/generate-secrets-redaction-test.sh
   tests/mac_inventory_path_test.yml
   tests/media_acquisition_foundation_test.rb
+  tests/host_prep_integration_writer_test.rb
   tests/media_acquisition_foundation_verifier_test.rb
   tests/managed_user_state_filter_test.py
   tests/ntfy_verify_execution_test.rb
   tests/komga_library_reconciliation_test.rb
   tests/paperless_mail_reconciliation_test.rb
+  tests/media_acquisition_reconciliation_core_test.rb
+  tests/media_acquisition_reconciliation_bazarr_test.rb
+  tests/media_acquisition_reconciliation_configarr_test.rb
+  tests/media_acquisition_reconciliation_support.rb
   tests/production_auto_deploy_test.py
   tests/production_auto_deploy_role_test.rb
   tests/safe_slurp_test.py
@@ -184,6 +190,11 @@ def fixture_paths(root = ROOT)
     paths << defaults if File.file?(File.join(root, defaults))
     env_template = File.join(role_root, "templates", "env.j2")
     paths << env_template if File.file?(File.join(root, env_template))
+    # policy_integration_test.rb reads the integration override of every service
+    # that has one, so a sandbox without them fails every mutation with a Ruby
+    # stack trace instead of the failure under test.
+    integration_override = File.join("services", name, "compose.integration.yml")
+    paths << integration_override if File.file?(File.join(root, integration_override))
   end
 
 

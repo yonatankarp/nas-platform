@@ -1,0 +1,8 @@
+---
+services:
+  sabnzbd:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-sabnzbd
+    ports: !override
+      - "${SABNZBD_HOST_PORT:?}:8080"
+  unpackerr:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-unpackerr

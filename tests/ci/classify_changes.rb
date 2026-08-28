@@ -40,8 +40,8 @@ module ClassifyChanges
   # report there. Planned acquisition suites instead converge only the shared
   # inert foundation and validate it with their static contract.
   SERVICE_TAGS = {
-    "arr" => %w[host_prep deployment_bundle media_acquisition_foundation],
-    "downloaders" => %w[host_prep deployment_bundle media_acquisition_foundation],
+    "arr" => %w[host_prep deployment_bundle ntfy arr],
+    "downloaders" => %w[host_prep deployment_bundle ntfy arr downloaders],
     "bindery" => %w[host_prep deployment_bundle media_acquisition_foundation],
     "kapowarr" => %w[host_prep deployment_bundle media_acquisition_foundation],
     "pinchflat" => %w[host_prep deployment_bundle media_acquisition_foundation],
@@ -56,6 +56,8 @@ module ClassifyChanges
     "paperless" => %w[host_prep deployment_bundle ntfy paperless]
   }.freeze
   SERVICE_NAMES = {
+    "arr" => %w[arr],
+    "downloaders" => %w[downloaders],
     "beszel" => %w[beszel],
     "dozzle" => %w[dozzle],
     "audiobookshelf" => %w[audiobookshelf],
@@ -183,7 +185,8 @@ module ClassifyChanges
     ACQUISITION_LANES.find do |lane|
       path.start_with?("roles/#{lane}/", "services/#{lane}/") ||
         path == "tests/expected/#{lane}.yml" ||
-        path == "tests/contracts/#{lane}-foundation.sh"
+        path == "tests/contracts/#{lane}-foundation.sh" ||
+        path == "tests/contracts/#{lane}.sh"
     end
   end
 

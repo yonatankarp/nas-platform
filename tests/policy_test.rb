@@ -722,7 +722,17 @@ service_dirs.each do |dir|
   compose = YAML.safe_load_file(compose_path, aliases: true)
   containers = compose.fetch("services")
   expected_cpus = EXPECTED_CONTAINER_CPUS.fetch(name)
-  check(failures, containers.keys.sort == expected_cpus.keys.sort,
+  acquisition_services = acquisition_projects.dig(name, "services")
+  expected_compose_services = if acquisition_services.is_a?(Hash)
+                                acquisition_services.filter_map do |service_name, definition|
+                                  service_name if !definition.is_a?(Hash) ||
+                                                  !definition.key?("compose_profile") ||
+                                                  ACQUISITION_JOB_SERVICES.include?(service_name)
+                                end
+                              else
+                                expected_cpus.keys
+                              end
+  check(failures, containers.keys.sort == expected_compose_services.sort,
         "#{name}: CPU policy must cover the exact Compose service set")
 
   containers.each do |container, spec|
@@ -839,7 +849,7 @@ end
 # platform keys sit beside it, never to deploy something different. The
 # relationship is the invariant, so the canonical file stays the only place a
 # version is written and a nil canonical value fails the same way a mismatch does.
-Dir[File.join(ROOT, "services", "*", "compose.*.yml")].sort.each do |override_path|
+Dir[File.join(ROOT, "services", "*", "compose.{mac,integration}.yml")].sort.each do |override_path|
   relative_override = override_path.delete_prefix("#{ROOT}/")
   canonical_path = File.join(File.dirname(override_path), "compose.yml")
   canonical = File.file?(canonical_path) ? YAML.safe_load_file(canonical_path, aliases: true) : {}
@@ -1088,7 +1098,15 @@ manifest_entries.each do |service|
           (container_cpu_includes.length == 1 &&
            container_cpu_includes.fetch(0).dig("vars", "container_cpu_service_name") == name),
         "#{name}: role must verify its effective container CPU policy exactly once")
-  check(failures, declared_paths.any? { |path| path.include?("/#{name}/") || path.end_with?("/#{name}") },
+  acquisition_state_names = acquisition_projects.dig(name, "services")&.keys || []
+  service_storage_declared =
+    declared_paths.any? { |path| path.include?("/#{name}/") || path.end_with?("/#{name}") } ||
+    acquisition_state_names.any? do |state_name|
+      declared_paths.any? do |path|
+        path.include?("/#{state_name}/") || path.end_with?("/#{state_name}")
+      end
+    end
+  check(failures, service_storage_declared,
         "#{name}: implemented service has no storage declaration")
 
   relative_contract_path = "tests/contracts/#{contract_basename(name)}.sh"

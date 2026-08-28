@@ -28,7 +28,7 @@ end
 integration_path = File.join(ROOT, "tests", "integration.sh")
 classifier_path = File.join(ROOT, "tests", "ci", "classify_changes.rb")
 if File.file?(integration_path) && File.file?(classifier_path)
-  acquisition_lanes = %w[arr downloaders bindery kapowarr pinchflat trailarr seerr]
+  planned_acquisition_lanes = %w[bindery kapowarr pinchflat trailarr seerr]
   suite_tags = File.read(integration_path)
                    .scan(/^\s*([a-z][a-z0-9-]*)\)\s+fixed_tags=([a-z0-9_,-]*)\s*;;/)
                    .to_h { |suite, tags| [suite, tags.split(",")] }
@@ -41,13 +41,13 @@ if File.file?(integration_path) && File.file?(classifier_path)
     check(failures, suite_tags[lane] == tags,
           "integration suite #{lane} converges #{suite_tags[lane].inspect}, " \
           "CI selects #{tags.inspect}")
-    unless acquisition_lanes.include?(lane)
+    unless planned_acquisition_lanes.include?(lane)
       check(failures, tags.include?("ntfy"),
             "service lane #{lane} must converge ntfy: its role reports its deployment there")
     end
   end
 
-  acquisition_lanes.each do |lane|
+  planned_acquisition_lanes.each do |lane|
     check(failures,
           suite_tags[lane] == %w[host_prep deployment_bundle media_acquisition_foundation],
           "acquisition foundation suite #{lane} must converge only shared inert foundation tags")
@@ -124,6 +124,29 @@ check(failures, integration_body.include?('pull_image "$runner_image"'),
 check(failures, integration_body.include?("prepull_images\n"),
       "tests/integration.sh must pre-pull the suite's images before the converge")
 
+enabled_idempotence_contracts = {
+  "arr" => ["run_enabled_idempotence arr", "run_play --tags arr --check --diff"],
+  "downloaders" => [
+    "run_enabled_idempotence arr,downloaders",
+    "run_play --tags arr,downloaders --check --diff"
+  ]
+}
+enabled_idempotence_contracts.each do |suite, (idempotence_call, check_call)|
+  suite_body = integration_body[
+    /if \[ "\\\$INTEGRATION_SUITE" = #{Regexp.escape(suite)} \]; then(.*?)^    fi$/m,
+    1
+  ].to_s
+  check(failures, suite_body.include?(idempotence_call),
+        "the #{suite} suite must run a second normal enabled convergence")
+  check(failures,
+        suite_body.include?(check_call) &&
+          suite_body.index(idempotence_call).to_i < suite_body.index(check_call).to_i,
+        "the #{suite} suite must run enabled idempotence before check mode")
+end
+check(failures,
+      integration_body.scan(/^    enabled_idempotence_recap_is_clean\(\) \{/).length == 1,
+      "tests/integration.sh must define one enabled idempotence recap parser")
+
 # The manifest's own shape is policed elsewhere, which reports a malformed
 # document or a non-string service name by name. Read it tolerantly here and skip
 # the cross-check when it is unusable rather than raising a second time on the same
@@ -165,7 +188,7 @@ service_image_sources.each do |service_tag, service_directory|
         "which has no compose.yml")
 end
 
-acquisition_image_tags = %w[arr downloaders bindery kapowarr pinchflat trailarr seerr]
+acquisition_image_tags = %w[bindery kapowarr pinchflat trailarr seerr]
 check(failures, (service_image_sources.map(&:first) & acquisition_image_tags).empty?,
       "planned acquisition foundation suites must have zero service image sources")
 
@@ -185,6 +208,7 @@ validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "te
   ruby\ tests/policy_deployment_test.rb
   ruby\ tests/policy_mac_test.rb
   ruby\ tests/policy_vault_test.rb
+  ruby\ tests/host_prep_integration_writer_test.rb
   ruby\ tests/media_acquisition_foundation_verifier_test.rb
   tests/mac/media-acquisition-foundation-hook-test.sh
   ruby\ tests/mac/media-acquisition-foundation-report-test.rb
@@ -208,6 +232,7 @@ validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "te
   tests/dozzle_alert_state_symlink_test.sh
   tests/integration_lock_test.sh
   tests/integration_suite_test.sh
+  tests/sandbox_cleanup_acquisition_ownership_test.sh
   tests/mac/manual-validation-runner-test.sh
   tests/mac/audiobookshelf-drift-hook-test.sh
   tests/contracts/audiobookshelf-audio-test.sh
@@ -236,12 +261,27 @@ check(failures,
 check(failures,
       validation_commands.count("ruby tests/audiobookshelf_initial_scan_behavior_test.rb") == 1,
       "validate-policy.sh must run ruby tests/audiobookshelf_initial_scan_behavior_test.rb exactly once")
+# The reconciliation contract runs in its own workflow job, not in the policy
+# gate: inside the gate it competed with every other check for the same four
+# cores and made that job the longest in the workflow. tests/ci/workflow_test.rb
+# owns the requirement that the job runs all three files.
+check(failures,
+      %w[core bazarr configarr].none? do |part|
+        validation_commands.any? do |command|
+          command.include?("media_acquisition_reconciliation_#{part}_test.rb")
+        end
+      end,
+      "the media acquisition reconciliation checks belong to their own CI job, " \
+      "not to validate-policy.sh")
 check(failures,
       validation_commands.count("python3 -m unittest -v tests/dozzle_alert_relay_test.py") == 1,
       "validate-policy.sh must run the Dozzle alert relay unit test exactly once")
 check(failures,
       validation_commands.count("tests/dozzle_alert_state_symlink_test.sh") == 1,
       "validate-policy.sh must run the Dozzle alert state symlink test exactly once")
+check(failures,
+      validation_commands.count("tests/sandbox_cleanup_acquisition_ownership_test.sh") == 1,
+      "validate-policy.sh must run the acquisition cleanup ownership test exactly once")
 check(failures,
       validation_commands.count(
         "python3 -m unittest -v tests/immich_restore_classifier_test.py"

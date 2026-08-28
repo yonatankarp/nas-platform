@@ -115,13 +115,13 @@
       "datasourceTemplate": "pypi"
     },
     {
-      "description": "Ansible tooling pinned in controller-requirements.txt, which the operator guide installs from. Bumped alongside ci.yml because tests/ci/workflow_test.rb requires the two to agree.",
+      "description": "Python tooling pinned in controller-requirements.txt, which the operator guide and production poller install from.",
       "customType": "regex",
       "managerFilePatterns": [
         "/^controller-requirements\\.txt$/"
       ],
       "matchStrings": [
-        "(?<depName>ansible-core|ansible-lint)==(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)"
+        "(?<depName>ansible-core|ansible-lint|requests)==(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)"
       ],
       "datasourceTemplate": "pypi"
     },

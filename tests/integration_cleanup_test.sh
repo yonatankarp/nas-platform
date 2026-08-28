@@ -15,12 +15,60 @@ symlink_sandbox=${TMPDIR:-/tmp}/nas-platform-cleanup.$symlink_suffix
 unsupported_sandbox=
 invalid_suffix_sandbox=
 failure_sandbox=
+failure_diagnostic=
 swap_sandbox=
 swap_victim=
 python_sandbox=
 python_root_symlink=
 python_victim=
 runner_image=docker.io/library/python:3.14-alpine@sha256:05b2b8b732ecd268fee8727a369f936f022d1321b59befd13c30ede22769dcdc
+
+test_cleanup_service_registry() {
+  for unsafe_cleanup_container in radarr sonarr prowlarr bazarr sabnzbd unpackerr; do
+    for registered_cleanup_container in $cleanup_sandbox_containers; do
+      [ "$registered_cleanup_container" != "$unsafe_cleanup_container" ] || {
+        printf 'acquisition service is cleaned by fixed name: %s\n' \
+          "$unsafe_cleanup_container" >&2
+        exit 1
+      }
+    done
+  done
+
+  [ -z "$cleanup_sandbox_networks" ] || {
+    printf 'sandbox cleanup still removes fixed network names: %s\n' \
+      "$cleanup_sandbox_networks" >&2
+    exit 1
+  }
+
+  for expected_cleanup_project in arr downloaders; do
+    cleanup_project_registered=false
+    for registered_cleanup_project in $cleanup_sandbox_projects; do
+      [ "$registered_cleanup_project" != "$expected_cleanup_project" ] ||
+        cleanup_project_registered=true
+    done
+    [ "$cleanup_project_registered" = true ] || {
+      printf 'sandbox cleanup project is not registered: %s\n' \
+        "$expected_cleanup_project" >&2
+      exit 1
+    }
+  done
+
+  for expected_cleanup_service in radarr sonarr prowlarr bazarr sabnzbd unpackerr; do
+    cleanup_service_registered=false
+    for registered_cleanup_project in $cleanup_sandbox_projects; do
+      cleanup_sandbox_project_services "$registered_cleanup_project"
+      for registered_cleanup_service in $cleanup_project_services; do
+        [ "$registered_cleanup_service" != "$expected_cleanup_service" ] ||
+          cleanup_service_registered=true
+      done
+    done
+    [ "$cleanup_service_registered" = true ] || {
+      printf 'sandbox cleanup service is not owned by any project: %s\n' \
+        "$expected_cleanup_service" >&2
+      exit 1
+    }
+  done
+}
 
 assert_cleanup_rejected() {
   rejected_path=$1
@@ -46,6 +94,7 @@ emergency_cleanup() {
   [ -z "$unsupported_sandbox" ] || [ ! -d "$unsupported_sandbox" ] || rmdir "$unsupported_sandbox"
   [ -z "$invalid_suffix_sandbox" ] || [ ! -d "$invalid_suffix_sandbox" ] || rmdir "$invalid_suffix_sandbox"
   [ -z "$failure_sandbox" ] || [ ! -d "$failure_sandbox" ] || rmdir "$failure_sandbox"
+  [ -z "$failure_diagnostic" ] || [ ! -f "$failure_diagnostic" ] || unlink "$failure_diagnostic"
   [ -z "$swap_sandbox" ] || [ ! -L "$swap_sandbox" ] || unlink "$swap_sandbox"
   [ -z "$swap_sandbox" ] || [ ! -d "$swap_sandbox" ] || rmdir "$swap_sandbox"
   if [ -n "$swap_victim" ] && [ -d "$swap_victim" ]; then
@@ -85,23 +134,108 @@ test_invalid_suffix_alphabet() {
   invalid_suffix_sandbox=
 }
 
+# Every Docker call cleanup makes must fail closed. The fake keys off the
+# derived namespace to tell the ownership-scoped calls apart from the remaining
+# fixed-name ones, and synthesises valid Compose identities where a mode has to
+# reach the removal calls.
 test_docker_failure() {
   failure_mode=$1
   failure_sandbox=$(mktemp -d "${TMPDIR:-/tmp}/nas-platform-cleanup.XXXXXX")
+  failure_suffix=${failure_sandbox##*.}
+  failure_namespace=nas-platform-cleanup-$(printf '%s' "$failure_suffix" |
+    tr '[:upper:]' '[:lower:]')
+  failure_diagnostic=$(mktemp "${TMPDIR:-/tmp}/nas-platform-cleanup-diagnostic.XXXXXX")
   if (
     docker() {
-      case "$1:$failure_mode" in
-        ps:list) return 41 ;;
-        ps:rm) printf '%s\n' fake-container-id ;;
-        rm:rm) return 42 ;;
+      docker_arguments=$*
+      case $docker_arguments in
+        *"$failure_namespace"*) docker_scope=ownership ;;
+        *) docker_scope=fixed ;;
+      esac
+      case $docker_arguments in
+        *'--filter label=com.docker.compose.project='*) docker_query=label ;;
+        *) docker_query=name ;;
+      esac
+      docker_project=${docker_arguments##*=}
+
+      case "${1-}:${2-}" in
+        ps:*)
+          case "$docker_scope:$failure_mode" in
+            ownership:ownership-list) return 41 ;;
+            fixed:list) return 45 ;;
+          esac
+          [ "$docker_scope" != fixed ] || {
+            [ "$failure_mode" != rm ] || printf '%s\n' fake-fixed-container-id
+            return 0
+          }
+          case "$docker_query:$failure_mode" in
+            name:ownership-inspect) printf '%s\n' fake-probe-container-id ;;
+            label:ownership-rm) printf 'owned-container-%s\n' "$docker_project" ;;
+          esac
+          ;;
+        container:inspect)
+          [ "$failure_mode" != ownership-inspect ] || return 42
+          docker_identity_target=${3-}
+          case $docker_identity_target in
+            owned-container-*)
+              docker_identity_project=${docker_identity_target#owned-container-}
+              case ${docker_identity_project##*-} in
+                arr) docker_identity_service=radarr ;;
+                *) docker_identity_service=sabnzbd ;;
+              esac
+              printf '/%s-%s|%s|%s|\n' "$failure_namespace" \
+                "$docker_identity_service" "$docker_identity_project" \
+                "$docker_identity_service"
+              ;;
+          esac
+          ;;
+        network:ls)
+          [ "$failure_mode" != ownership-network-list ] || return 43
+          case "$docker_query:$failure_mode" in
+            name:ownership-network-inspect) printf '%s\n' fake-probe-network-id ;;
+            label:ownership-network-rm) printf 'owned-network-%s\n' "$docker_project" ;;
+          esac
+          ;;
+        network:inspect)
+          [ "$failure_mode" != ownership-network-inspect ] || return 44
+          docker_identity_target=${3-}
+          case $docker_identity_target in
+            owned-network-*)
+              docker_identity_project=${docker_identity_target#owned-network-}
+              printf '%s_default|%s|default\n' "$docker_identity_project" \
+                "$docker_identity_project"
+              ;;
+          esac
+          ;;
+        rm:*)
+          case $failure_mode in
+            rm | ownership-rm) return 46 ;;
+          esac
+          ;;
+        network:rm)
+          [ "$failure_mode" != ownership-network-rm ] || return 47
+          ;;
       esac
       return 0
     }
     cleanup_sandbox "$failure_sandbox"
-  ); then
+  ) >"$failure_diagnostic" 2>&1; then
     printf 'cleanup ignored docker %s failure\n' "$failure_mode" >&2
     exit 1
   fi
+  # A Docker error is not an ownership violation. Reporting one as the other
+  # would send an operator looking for a resource that never misbehaved.
+  case $failure_mode in
+    ownership-inspect | ownership-network-inspect)
+      ! grep -q 'Refusing cleanup ownership' "$failure_diagnostic" || {
+        printf 'cleanup reported a docker %s failure as an ownership refusal\n' \
+          "$failure_mode" >&2
+        exit 1
+      }
+      ;;
+  esac
+  unlink "$failure_diagnostic"
+  failure_diagnostic=
   [ -d "$failure_sandbox" ]
   rmdir "$failure_sandbox"
   failure_sandbox=
@@ -205,10 +339,17 @@ test_python_deletes_nested_entries() {
 }
 
 case "$test_case" in
+  service-registry) test_cleanup_service_registry; exit 0 ;;
   unsupported-stem) test_unsupported_stem; exit 0 ;;
   invalid-suffix) test_invalid_suffix_alphabet; exit 0 ;;
   docker-list) test_docker_failure list; exit 0 ;;
   docker-rm) test_docker_failure rm; exit 0 ;;
+  docker-ownership-list) test_docker_failure ownership-list; exit 0 ;;
+  docker-ownership-inspect) test_docker_failure ownership-inspect; exit 0 ;;
+  docker-ownership-rm) test_docker_failure ownership-rm; exit 0 ;;
+  docker-network-list) test_docker_failure ownership-network-list; exit 0 ;;
+  docker-network-inspect) test_docker_failure ownership-network-inspect; exit 0 ;;
+  docker-network-rm) test_docker_failure ownership-network-rm; exit 0 ;;
   symlink-swap) test_symlink_swap; exit 0 ;;
   trap-statuses) test_trap_statuses; exit 0 ;;
   python-root-symlink) test_python_rejects_root_symlink; exit 0 ;;
@@ -218,9 +359,16 @@ case "$test_case" in
 esac
 
 test_unsupported_stem
+test_cleanup_service_registry
 test_invalid_suffix_alphabet
 test_docker_failure list
 test_docker_failure rm
+test_docker_failure ownership-list
+test_docker_failure ownership-inspect
+test_docker_failure ownership-rm
+test_docker_failure ownership-network-list
+test_docker_failure ownership-network-inspect
+test_docker_failure ownership-network-rm
 test_symlink_swap
 test_trap_statuses
 test_python_rejects_root_symlink

@@ -10,6 +10,9 @@ prepull_bin=$(mktemp -d "${TMPDIR:-/tmp}/nas-platform-prepull-test.XXXXXX")
 pull_log=$prepull_bin/pull.log
 immich_order_mutant=$fake_bin/immich-order-mutant.sh
 acquisition_runtime_mutant=$fake_bin/acquisition-runtime-mutant.sh
+idempotence_helper=$fake_bin/enabled-idempotence-helper.sh
+idempotence_recap=$fake_bin/enabled-idempotence-recap.txt
+namespace_helper=$fake_bin/integration-namespace-helper.sh
 
 cleanup() {
   for case_root in "$fake_bin/contract-cases" "$fake_bin/boundary-cases" \
@@ -23,6 +26,8 @@ cleanup() {
   rm -f "$fake_bin/docker" "$fake_bin/mktemp" "$docker_log"
   rm -f "$immich_order_mutant"
   rm -f "$acquisition_runtime_mutant"
+  rm -f "$idempotence_helper" "$idempotence_recap"
+  rm -f "$namespace_helper"
   rm -f "$fake_bin/hostile-validator-ran"
   rmdir "$fake_bin"
   rm -f "$prepull_bin/docker" "$pull_log"
@@ -296,12 +301,18 @@ explicit_controller_plan=$(INTEGRATION_RUN_SERVICE_SCENARIOS=true \
 
 assert_output 'suite=foundation tags=deployment_bundle playbook=site.yml scenarios=true' \
   --describe-suite foundation
-for project in arr downloaders bindery kapowarr pinchflat trailarr seerr; do
+assert_output \
+  'suite=arr tags=host_prep,deployment_bundle,ntfy,arr playbook=site.yml scenarios=true' \
+  --describe-suite arr
+assert_output \
+  'suite=downloaders tags=host_prep,deployment_bundle,ntfy,arr,downloaders playbook=site.yml scenarios=true' \
+  --describe-suite downloaders
+for project in bindery kapowarr pinchflat trailarr seerr; do
   assert_output \
     "suite=$project tags=host_prep,deployment_bundle,media_acquisition_foundation playbook=site.yml scenarios=true" \
     --describe-suite "$project"
 done
-grep -qF 'arr|downloaders|bindery|kapowarr|pinchflat|trailarr|seerr)' "$integration" || {
+grep -qF 'bindery|kapowarr|pinchflat|trailarr|seerr)' "$integration" || {
   printf '%s\n' 'integration runner has no closed acquisition foundation dispatch' >&2
   exit 1
 }
@@ -313,7 +324,7 @@ acquisition_runtime_contract_holds() {
   source_path=$1
   reader_converge=$(sed -n '/converge_media_acquisition_reader_prerequisites() {/,/^    }$/p' "$source_path")
   foundation_verify=$(sed -n '/run_media_acquisition_foundation_verify() {/,/^    }$/p' "$source_path")
-  acquisition_dispatch=$(sed -n '/arr|downloaders|bindery|kapowarr|pinchflat|trailarr|seerr)/,/;;/p' "$source_path" | tail -n 12)
+  acquisition_dispatch=$(sed -n '/bindery|kapowarr|pinchflat|trailarr|seerr)/,/;;/p' "$source_path" | tail -n 12)
   printf '%s\n' "$reader_converge" |
     grep -qF -- '--tags host_prep,deployment_bundle,ntfy,audiobookshelf,jellyfin' &&
     printf '%s\n' "$foundation_verify" | grep -qF '/repo/verify.yml' &&
@@ -384,6 +395,177 @@ grep -qF -- '" integration-run "$playbook" "$@"' "$integration"
 grep -qF -- '\"\$playbook\" \"\$@\"' "$integration"
 grep -qF -- 'run_play --tags \"\$INTEGRATION_TAGS\" \"\$@\"' "$integration"
 grep -qF -- 'run_play \"\$@\"' "$integration"
+
+# The controller and every acquisition resource share one strict namespace
+# derived from the disposable directory. Exercise the production derivation so
+# case normalization and exact-length rejection cannot drift from the harness.
+sed -n '/^derive_integration_project_namespace() {/,/^}$/p' \
+  "$integration" > "$namespace_helper"
+[ -s "$namespace_helper" ] || {
+  printf '%s\n' 'integration runner has no project namespace derivation' >&2
+  exit 1
+}
+. "$namespace_helper"
+[ "$(derive_integration_project_namespace \
+  /tmp/nas-platform-integration.A1B2C3)" = \
+  nas-platform-integration-a1b2c3 ] || {
+  printf '%s\n' 'integration namespace does not lowercase its sandbox suffix' >&2
+  exit 1
+}
+for invalid_sandbox in \
+  /tmp/nas-platform-integration.a1b2c \
+  /tmp/nas-platform-integration.a1b2c34 \
+  /tmp/nas-platform-integration.a1b-2c \
+  /tmp/nas-platform-integration.a1b2_c; do
+  invalid_namespace_status=0
+  derive_integration_project_namespace "$invalid_sandbox" \
+    >/dev/null 2>&1 || invalid_namespace_status=$?
+  [ "$invalid_namespace_status" -eq 2 ] || {
+    printf 'integration namespace accepted invalid sandbox: %s\n' \
+      "$invalid_sandbox" >&2
+    exit 1
+  }
+done
+namespace_call_line=$(grep -nF \
+  'integration_project_namespace=$(derive_integration_project_namespace "$sandbox")' \
+  "$integration" | cut -d: -f1)
+controller_run_line=$(grep -nF 'docker run --rm' "$integration" |
+  head -1 | cut -d: -f1)
+[ -n "$namespace_call_line" ] && [ -n "$controller_run_line" ] &&
+  [ "$namespace_call_line" -lt "$controller_run_line" ] || {
+  printf '%s\n' 'invalid integration namespaces are not refused before the play' >&2
+  exit 1
+}
+run_play_namespace=$(sed -n '/^    run_play() {/,/^    }$/p' "$integration")
+for scoped_project_variable in \
+  arr_platform_project_name downloaders_platform_project_name; do
+  printf '%s\n' "$run_play_namespace" |
+    grep -qF -- \
+      "-e $scoped_project_variable=\\\"\$integration_project_namespace\\\"" || {
+    printf 'integration plays omit scoped namespace %s\n' \
+      "$scoped_project_variable" >&2
+    exit 1
+  }
+done
+if printf '%s\n' "$run_play_namespace" |
+   grep -qF -- '-e platform_project_name='; then
+  printf '%s\n' 'integration plays globally override the platform project name' >&2
+  exit 1
+fi
+
+# Enabled acquisition suites must prove idempotence with a second normal play,
+# not infer it from check mode. Exercise the production recap parser directly so
+# task output cannot satisfy the gate and malformed or partial recaps fail closed.
+sed -n '/^    enabled_idempotence_recap_is_clean() {/,/^    }$/p' \
+  "$integration" | ruby -e '
+    # Reproduce what the controller receives, rather than merely unescaping.
+    # The helper lives inside a double-quoted string, so the shell removes an
+    # unescaped quote instead of passing it through: extracting with a plain
+    # unescape rebuilt a correct function from broken source and hid an awk
+    # syntax error that only appeared when a suite actually ran.
+    source = STDIN.read
+    out = +""
+    index = 0
+    while index < source.length
+      character = source[index]
+      if character == "\\" && index + 1 < source.length &&
+         ["$", "`", "\"", "\\"].include?(source[index + 1])
+        out << source[index + 1]
+        index += 2
+        next
+      end
+      if character == "\""
+        index += 1
+        next
+      end
+      out << character
+      index += 1
+    end
+    print out
+  ' > "$idempotence_helper"
+[ -s "$idempotence_helper" ] || {
+  printf '%s\n' 'integration runner has no enabled idempotence recap parser' >&2
+  exit 1
+}
+. "$idempotence_helper"
+
+enabled_idempotence_runner=$(sed -n \
+  '/^    run_enabled_idempotence() {/,/^    }$/p' "$integration")
+printf '%s\n' "$enabled_idempotence_runner" |
+  grep -qF 'run_play --tags "\$idempotence_tags"' || {
+    printf '%s\n' 'enabled idempotence gate does not run a tagged play' >&2
+    exit 1
+  }
+if printf '%s\n' "$enabled_idempotence_runner" | grep -qF -- '--check'; then
+  printf '%s\n' 'enabled idempotence gate substitutes check mode for convergence' >&2
+  exit 1
+fi
+
+assert_idempotence_recap_accepted() {
+  case_name=$1
+  shift
+  printf '%b' "$*" > "$idempotence_recap"
+  enabled_idempotence_recap_is_clean "$idempotence_recap" || {
+    printf 'enabled idempotence parser rejected %s\n' "$case_name" >&2
+    exit 1
+  }
+}
+
+assert_idempotence_recap_rejected() {
+  case_name=$1
+  shift
+  printf '%b' "$*" > "$idempotence_recap"
+  if enabled_idempotence_recap_is_clean "$idempotence_recap"; then
+    printf 'enabled idempotence parser accepted %s\n' "$case_name" >&2
+    exit 1
+  fi
+}
+
+assert_idempotence_recap_accepted 'clean target recap' \
+  'PLAY RECAP *********************************************************************\nnas : ok=37 changed=0 unreachable=0 failed=0 skipped=2 rescued=0 ignored=0\n'
+assert_idempotence_recap_accepted 'ANSI-colored clean target recap' \
+  '\033[0;36mPLAY RECAP *********************************************************************\033[0m\n\033[0;32mnas : ok=5 changed=0 unreachable=0 failed=0 skipped=0 rescued=0 ignored=0\033[0m\n'
+assert_idempotence_recap_rejected 'changed target recap' \
+  'PLAY RECAP *********************************************************************\nnas : ok=37 changed=1 unreachable=0 failed=0 skipped=2 rescued=0 ignored=0\n'
+assert_idempotence_recap_rejected 'unreachable target recap' \
+  'PLAY RECAP *********************************************************************\nnas : ok=3 changed=0 unreachable=1 failed=0 skipped=0 rescued=0 ignored=0\n'
+assert_idempotence_recap_rejected 'failed target recap' \
+  'PLAY RECAP *********************************************************************\nnas : ok=3 changed=0 unreachable=0 failed=1 skipped=0 rescued=0 ignored=0\n'
+assert_idempotence_recap_rejected 'missing recap marker' \
+  'nas : ok=37 changed=0 unreachable=0 failed=0 skipped=2 rescued=0 ignored=0\n'
+assert_idempotence_recap_rejected 'missing target recap' \
+  'PLAY RECAP *********************************************************************\nlocalhost : ok=3 changed=0 unreachable=0 failed=0 skipped=0 rescued=0 ignored=0\n'
+assert_idempotence_recap_rejected 'malformed target recap' \
+  'PLAY RECAP *********************************************************************\nnas : ok=3 changed=zero unreachable=0 failed=0 skipped=0 rescued=0 ignored=0\n'
+assert_idempotence_recap_rejected 'duplicate target recap' \
+  'PLAY RECAP *********************************************************************\nnas : ok=3 changed=0 unreachable=0 failed=0 skipped=0 rescued=0 ignored=0\nnas : ok=3 changed=0 unreachable=0 failed=0 skipped=0 rescued=0 ignored=0\n'
+assert_idempotence_recap_rejected 'task-output false match before failed recap' \
+  'TASK [debug] ********************************************************************\nok: [nas] => {"msg":"changed=0 unreachable=0 failed=0"}\nPLAY RECAP *********************************************************************\nnas : ok=3 changed=1 unreachable=0 failed=0 skipped=0 rescued=0 ignored=0\n'
+
+arr_enabled_block=$(sed -n '/if \[ "\\\$INTEGRATION_SUITE" = arr \]; then/,/^    fi$/p' \
+  "$integration")
+downloaders_enabled_block=$(sed -n \
+  '/if \[ "\\\$INTEGRATION_SUITE" = downloaders \]; then/,/^    fi$/p' \
+  "$integration")
+printf '%s\n' "$arr_enabled_block" | grep -qF 'run_enabled_idempotence arr'
+printf '%s\n' "$downloaders_enabled_block" |
+  grep -qF 'run_enabled_idempotence arr,downloaders'
+arr_idempotence_line=$(printf '%s\n' "$arr_enabled_block" |
+  grep -nF 'run_enabled_idempotence arr' | cut -d: -f1)
+arr_check_line=$(printf '%s\n' "$arr_enabled_block" |
+  grep -nF 'run_play --tags arr --check --diff' | cut -d: -f1)
+downloaders_idempotence_line=$(printf '%s\n' "$downloaders_enabled_block" |
+  grep -nF 'run_enabled_idempotence arr,downloaders' | cut -d: -f1)
+downloaders_check_line=$(printf '%s\n' "$downloaders_enabled_block" |
+  grep -nF 'run_play --tags arr,downloaders --check --diff' | cut -d: -f1)
+[ "$arr_idempotence_line" -lt "$arr_check_line" ] || {
+  printf '%s\n' 'Arr enabled idempotence play does not precede check mode' >&2
+  exit 1
+}
+[ "$downloaders_idempotence_line" -lt "$downloaders_check_line" ] || {
+  printf '%s\n' 'downloaders enabled idempotence play does not precede check mode' >&2
+  exit 1
+}
 grep -qF 'requests_version=2.34.2' "$integration" || {
   printf '%s\n' 'integration controller does not pin docker_container_info runtime support' >&2
   exit 1
@@ -643,12 +825,22 @@ assert_pull_count "$runner_image" 3
 [ "$(wc -l < "$pull_log" | tr -d " ")" -eq 3 ] ||
   prepull_fail "foundation pulled service images it never converges: $(sort -u "$pull_log")"
 
-for project in arr downloaders bindery kapowarr pinchflat trailarr seerr; do
+for project in bindery kapowarr pinchflat trailarr seerr; do
   run_prepull 0 4 --suite "$project"
   [ "$prepull_status" -eq 0 ] || prepull_fail "$project foundation pre-pull failed ($prepull_status)"
   assert_pull_set \
     "$({ printf '%s\n' "$runner_image"; compose_images ntfy; compose_images audiobookshelf; compose_images jellyfin; } | sort -u)"
 done
+
+run_prepull 0 4 --suite arr
+[ "$prepull_status" -eq 0 ] || prepull_fail "arr pre-pull failed ($prepull_status)"
+assert_pull_set \
+  "$({ printf '%s\n' "$runner_image"; compose_images ntfy; compose_images arr; } | sort -u)"
+
+run_prepull 0 4 --suite downloaders
+[ "$prepull_status" -eq 0 ] || prepull_fail "downloaders pre-pull failed ($prepull_status)"
+assert_pull_set \
+  "$({ printf '%s\n' "$runner_image"; compose_images ntfy; compose_images arr; compose_images downloaders; } | sort -u)"
 
 # A registry that refuses more times than the budget allows must fail, and must
 # not go on pulling the rest: under a rate limit the remaining pulls would only

@@ -1,0 +1,97 @@
+---
+- name: Find the Prowlarr application by name
+  ansible.builtin.set_fact:
+    arr_prowlarr_application_matches: >-
+      {{ arr_prowlarr_applications_before.json |
+         selectattr('name', 'equalto', arr_prowlarr_application.name) | list }}
+  changed_when: false
+  no_log: true
+
+- name: Refuse an ambiguous Prowlarr application name
+  ansible.builtin.assert:
+    that:
+      - arr_prowlarr_application_matches | length <= 1
+      - >-
+        arr_prowlarr_application_matches | length == 0 or
+        arr_prowlarr_application_matches[0] is mapping
+      - >-
+        arr_prowlarr_application_matches | length == 0 or
+        arr_prowlarr_application_matches[0].id is number
+      - >-
+        arr_prowlarr_application_matches | length == 0 or
+        arr_prowlarr_application_matches[0].fields | default([]) is sequence
+    fail_msg: "Prowlarr has a duplicate or invalid {{ arr_prowlarr_application.name }} application."
+  no_log: true
+
+- name: Build the owned Prowlarr full-sync application
+  ansible.builtin.set_fact:
+    arr_prowlarr_application_current: >-
+      {{ arr_prowlarr_application_matches | first | default({}) }}
+    arr_prowlarr_application_desired: >-
+      {{ arr_prowlarr_application |
+         acquisition_application_body(
+           arr_prowlarr_internal_url,
+           arr_prowlarr_application_sync_level
+         ) }}
+  changed_when: false
+  no_log: true
+
+- name: Build the complete Prowlarr application projections and body
+  ansible.builtin.set_fact:
+    arr_prowlarr_application_masked_fields: >-
+      {{ arr_prowlarr_application_current |
+         acquisition_application_masked_fields }}
+  changed_when: false
+  no_log: true
+
+- name: Finish the complete Prowlarr application projections and body
+  ansible.builtin.set_fact:
+    arr_prowlarr_application_current_projection: >-
+      {{ (arr_prowlarr_application_current |
+          acquisition_application_projection(
+            arr_prowlarr_application_masked_fields
+          )) if arr_prowlarr_application_matches | length == 1 else {} }}
+    arr_prowlarr_application_desired_projection: >-
+      {{ arr_prowlarr_application_desired |
+         acquisition_application_projection(
+           arr_prowlarr_application_masked_fields
+         ) }}
+    arr_prowlarr_application_body: >-
+      {{ arr_prowlarr_application_current |
+         combine(arr_prowlarr_application_desired, recursive=True) |
+         combine({
+           'fields': arr_prowlarr_application_current.fields | default([]) |
+                     acquisition_merge_owned_fields(
+                       arr_prowlarr_application_desired.fields
+                     )
+         }, recursive=True) }}
+  changed_when: false
+  no_log: true
+
+- name: Determine whether the Prowlarr application differs
+  ansible.builtin.set_fact:
+    arr_prowlarr_application_needs_update: >-
+      {{ arr_prowlarr_application_matches | length == 0 or
+         arr_prowlarr_application_current_projection !=
+           arr_prowlarr_application_desired_projection or
+         arr_installed_reconciliation_fingerprints.prowlarr_applications !=
+           arr_desired_reconciliation_fingerprints.prowlarr_applications }}
+  changed_when: false
+  no_log: true
+
+- name: Reconcile the Prowlarr application with fullSync
+  ansible.builtin.uri:
+    url: >-
+      {{ arr_prowlarr_api }}/applications{{
+         '/' ~ arr_prowlarr_application_matches[0].id
+         if arr_prowlarr_application_matches | length == 1 else '' }}
+    method: "{{ 'PUT' if arr_prowlarr_application_matches | length == 1 else 'POST' }}"
+    headers:
+      X-Api-Key: "{{ vault_arr_prowlarr_api_key }}"
+    body_format: json
+    body: "{{ arr_prowlarr_application_body }}"
+    status_code: [200, 201, 202]
+    return_content: true
+  when: arr_prowlarr_application_needs_update | bool
+  changed_when: true
+  no_log: true

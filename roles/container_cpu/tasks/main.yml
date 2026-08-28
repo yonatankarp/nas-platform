@@ -9,11 +9,18 @@
     container_cpu_compose_services: >-
       {{ (container_cpu_compose_source.content | b64decode | from_yaml).services }}
 
+# A service behind a Compose profile is not part of the default project, so it
+# is not running and cannot be inspected: Configarr is a one-shot job that exits
+# and is removed. Callers that activate a profile pass their own active service
+# list, which is how the torrent services are checked once they are enabled.
 - name: Resolve the expected running Compose services
   ansible.builtin.set_fact:
     container_cpu_selected_services: >-
       {{ container_cpu_expected_services
-         | default(container_cpu_compose_services.keys() | list, true) }}
+         | default(container_cpu_compose_services
+                   | dict2items
+                   | rejectattr('value.profiles', 'defined')
+                   | map(attribute='key') | list, true) }}
 
 - name: List running containers in the managed Compose project
   ansible.builtin.command:

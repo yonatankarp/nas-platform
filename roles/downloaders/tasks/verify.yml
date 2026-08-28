@@ -1,0 +1,143 @@
+---
+- name: Require current opaque Servarr desired-input fingerprint in verify-only runs
+  ansible.builtin.assert:
+    that:
+      - >-
+        downloaders_reconciliation_cycle_started | default(false) | bool or
+        arr_installed_reconciliation_fingerprints.servarr_sabnzbd ==
+        arr_desired_reconciliation_fingerprints.servarr_sabnzbd
+    fail_msg: Verify-only downloader execution found stale opaque desired-input state.
+  no_log: true
+  tags: [platform_verify_downloaders]
+
+- name: Read SABnzbd configuration for verification
+  ansible.builtin.uri:
+    url: >-
+      {{ downloaders_sabnzbd_api }}?mode=get_config&output=json&apikey={{
+         vault_downloaders_sabnzbd_api_key | urlencode }}
+    method: GET
+    status_code: [200]
+    return_content: true
+  register: downloaders_sabnzbd_verification
+  changed_when: false
+  check_mode: false
+  no_log: true
+  tags: [platform_verify_downloaders]
+
+- name: Verify SABnzbd owned settings and category paths
+  ansible.builtin.assert:
+    that:
+      - downloaders_sabnzbd_verification.json is mapping
+      - downloaders_sabnzbd_verification.json.config is mapping
+      - downloaders_sabnzbd_verification.json.config.misc is mapping
+      - downloaders_sabnzbd_verification.json.config.categories is sequence
+      - >-
+        downloaders_sabnzbd_categories | dict2items |
+        selectattr('key', 'in', downloaders_sabnzbd_verification.json.config.categories |
+                   map(attribute='name') | list) |
+        list | length == downloaders_sabnzbd_categories | length
+    fail_msg: SABnzbd verification did not observe the complete owned configuration.
+  no_log: true
+  tags: [platform_verify_downloaders]
+
+- name: Verify each SABnzbd category destination
+  ansible.builtin.assert:
+    that:
+      - >-
+        downloaders_sabnzbd_verification.json.config.categories |
+        selectattr('name', 'equalto', item.key) | map(attribute='dir') |
+        first == item.value
+    fail_msg: A SABnzbd category destination differs from the declared acquisition path.
+  loop: "{{ downloaders_sabnzbd_categories | dict2items }}"
+  loop_control:
+    label: sabnzbd-category-destination
+  no_log: true
+  tags: [platform_verify_downloaders]
+
+- name: Verify each bounded SABnzbd miscellaneous setting
+  ansible.builtin.assert:
+    that:
+      - >-
+        downloaders_sabnzbd_verification.json.config.misc.get(item.key) | string ==
+        item.value | string
+    fail_msg: A bounded SABnzbd setting differs from the declared value.
+  loop: "{{ downloaders_sabnzbd_owned_misc | dict2items }}"
+  loop_control:
+    label: sabnzbd-owned-misc-setting
+  no_log: true
+  tags: [platform_verify_downloaders]
+
+- name: Read Arr download clients for downloader verification
+  ansible.builtin.uri:
+    url: "{{ item.api }}/downloadclient"
+    method: GET
+    headers:
+      X-Api-Key: "{{ item.api_key }}"
+    status_code: [200]
+    return_content: true
+  loop: "{{ arr_servarr_instances }}"
+  loop_control:
+    label: "{{ item.name }}-sabnzbd-client"
+  register: downloaders_arr_clients_verification
+  changed_when: false
+  check_mode: false
+  no_log: true
+  tags: [platform_verify_downloaders]
+
+- name: Verify each Arr instance has one owned SABnzbd client
+  ansible.builtin.assert:
+    that:
+      - item.json is sequence
+      - item.json is not mapping
+      - item.json is not string
+      - downloaders_verify_arr_sab_name_matches | length == 1
+      - downloaders_verify_arr_sab_url_matches | length == 1
+      - >-
+        downloaders_verify_arr_sab_name_matches[0].id ==
+        downloaders_verify_arr_sab_url_matches[0].id
+      - >-
+        downloaders_verify_arr_sab_name_matches[0] |
+        acquisition_servarr_client_projection(
+          downloaders_verify_arr_sab_masked_fields
+        ) ==
+        downloaders_verify_arr_sab_desired |
+        acquisition_servarr_client_projection(
+          downloaders_verify_arr_sab_masked_fields
+        )
+    fail_msg: An Arr SABnzbd client differs from the downloader-owned connection state.
+  loop: "{{ downloaders_arr_clients_verification.results }}"
+  loop_control:
+    label: "{{ item.item.name }}-sabnzbd-client"
+  vars:
+    downloaders_verify_arr_clients: >-
+      {{ item.json
+         if item.json is sequence and item.json is not mapping and item.json is not string
+         else [] }}
+    downloaders_verify_arr_sab_name_matches: >-
+      {{ downloaders_verify_arr_clients |
+         selectattr('name', 'equalto', arr_sabnzbd_client_name) | list }}
+    downloaders_verify_arr_sab_url_matches: >-
+      {{ downloaders_verify_arr_clients |
+         acquisition_servarr_client_url_matches(arr_sabnzbd_host, arr_sabnzbd_port) }}
+    downloaders_verify_arr_sab_desired: >-
+      {{ item.item |
+         acquisition_servarr_client_body(
+           arr_sabnzbd_client_name,
+           arr_sabnzbd_host,
+           arr_sabnzbd_port,
+           vault_downloaders_sabnzbd_api_key,
+           vault_downloaders_sabnzbd_admin_username,
+           vault_downloaders_sabnzbd_admin_password
+         ) }}
+    downloaders_verify_arr_sab_masked_fields: >-
+      {{ downloaders_verify_arr_sab_name_matches | first | default({}) |
+         acquisition_servarr_client_masked_fields }}
+  no_log: true
+  tags: [platform_verify_downloaders]
+
+- name: Mark downloader relationship verification successful
+  ansible.builtin.set_fact:
+    downloaders_relationship_verification_succeeded: true
+  changed_when: false
+  no_log: true
+  tags: [platform_verify_downloaders]

@@ -13,12 +13,18 @@ removed without deleting the former metadata manager's preserved state. The
 harness sends test alerts to the sandbox's own ntfy instance. Mobile delivery
 is outside scope.
 
-For the inert Phase 0 foundation, the report contains exactly four labeled,
+For the default-disabled acquisition foundation, the report contains exactly four labeled,
 bounded summary lines: `MEDIA_ACQUISITION_FOUNDATION`,
 `MEDIA_ACQUISITION_STORAGE`, `MEDIA_ACQUISITION_TRANSPORTS`, and
 `MEDIA_ACQUISITION_CONTAINERS`. They report the derived bridge network, the
 classified paths, false transport flags, and the absence of acquisition
 containers without exposing directory listings or secrets.
+
+The harness reserves isolated ports for the Phase 1 Arr and SABnzbd services,
+but its default transport flag remains false, so the ordinary eight-service Mac
+proof does not claim provider connectivity or content acquisition. Production
+activation and acceptance follow the
+[Phase 1 operator handoff](media-acquisition-phase1.md).
 
 ## 1. Install and verify prerequisites
 

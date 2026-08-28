@@ -1,0 +1,244 @@
+---
+- name: Compute private Arr desired-input fingerprints
+  ansible.builtin.set_fact:
+    arr_reconciliation_fingerprint_filenames:
+      configarr: .configarr-input.sha256
+      # This is verified API state, not a desired-input or secret digest. It
+      # shares the same atomic loader and private filesystem protections.
+      configarr_owned_state: .configarr-owned-state.sha256
+      # This is irreducible Servarr API context continuity, not a desired-input
+      # or secret digest. It is recorded only after complete post-verification.
+      configarr_opaque_context: .configarr-opaque-context.sha256
+      prowlarr_applications: .prowlarr-applications-input.sha256
+      servarr_sabnzbd: .servarr-sabnzbd-input.sha256
+      prowlarr_indexers: .prowlarr-indexers-input.sha256
+      bazarr_providers: .bazarr-providers-input.sha256
+    arr_reconciliation_fingerprint_subset_effective: >-
+      {{ arr_reconciliation_fingerprint_subset |
+         default([
+           'configarr',
+           'configarr_owned_state',
+           'configarr_opaque_context',
+           'prowlarr_applications',
+           'servarr_sabnzbd',
+           'prowlarr_indexers',
+           'bazarr_providers'
+         ]) }}
+    arr_desired_reconciliation_fingerprints:
+      prowlarr_applications: >-
+        {{ arr_prowlarr_applications | to_json | hash('sha256') }}
+      servarr_sabnzbd: >-
+        {{
+          {
+            'instances': arr_servarr_instances,
+            'name': arr_sabnzbd_client_name,
+            'host': arr_sabnzbd_host,
+            'port': arr_sabnzbd_port,
+            'api_key': vault_downloaders_sabnzbd_api_key,
+            'username': vault_downloaders_sabnzbd_admin_username,
+            'password': vault_downloaders_sabnzbd_admin_password
+          } | to_json | hash('sha256')
+        }}
+      prowlarr_indexers: >-
+        {{ media_arr_indexers | to_json | hash('sha256') }}
+      bazarr_providers: >-
+        {{
+          {
+            'providers': media_bazarr_providers,
+            'languages': media_bazarr_languages,
+            'auth': {
+              'type': 'form',
+              'username': vault_arr_bazarr_admin_username,
+              'password': vault_arr_bazarr_admin_password
+            },
+            'radarr': {
+              'enabled': true,
+              'host': 'radarr',
+              'port': 7878,
+              'base_url': '',
+              'ssl': false,
+              'api_key': vault_arr_radarr_api_key
+            },
+            'sonarr': {
+              'enabled': true,
+              'host': 'sonarr',
+              'port': 8989,
+              'base_url': '',
+              'ssl': false,
+              'api_key': vault_arr_sonarr_api_key
+            },
+            'path_mappings': [],
+            'path_mappings_movie': []
+          } | to_json | hash('sha256')
+        }}
+      configarr: >-
+        {{
+          {
+            'config': lookup('file', role_path ~ '/files/configarr/config.yml'),
+            'quality_definitions': {
+              'radarr': lookup(
+                'file',
+                role_path ~ '/files/configarr/quality-definition-movie.json'
+              ),
+              'sonarr': lookup(
+                'file',
+                role_path ~ '/files/configarr/quality-definition-series.json'
+              )
+            },
+            'radarr_api_key': vault_arr_radarr_api_key,
+            'sonarr_api_key': vault_arr_sonarr_api_key,
+            'image': 'ghcr.io/raydak-labs/configarr:1.28.0@sha256:008d8659ff35f63fbcc20b860b33ba7cc49e8d7458a6ec446810ec4d783ef017'
+          } | to_json | hash('sha256')
+        }}
+  changed_when: false
+  no_log: true
+
+- name: Validate the selected Arr desired-input fingerprint subset
+  ansible.builtin.assert:
+    that:
+      - arr_reconciliation_fingerprint_subset_effective is sequence
+      - arr_reconciliation_fingerprint_subset_effective is not mapping
+      - arr_reconciliation_fingerprint_subset_effective is not string
+      - >-
+        arr_reconciliation_fingerprint_subset_effective | length ==
+        arr_reconciliation_fingerprint_subset_effective | unique | list | length
+      - >-
+        arr_reconciliation_fingerprint_subset_effective |
+        difference(arr_reconciliation_fingerprint_filenames.keys() | list) |
+        length == 0
+    fail_msg: The selected Arr desired-input fingerprint subset is invalid.
+  no_log: true
+
+- name: Inspect private Arr desired-input fingerprint files
+  ansible.builtin.stat:
+    path: >-
+      {{ platform_runtime_dir }}/services/arr/{{ item.value }}
+    follow: false
+    get_checksum: false
+    get_mime: false
+    get_attributes: false
+  loop: >-
+    {{ arr_reconciliation_fingerprint_filenames | dict2items |
+       selectattr('key', 'in', arr_reconciliation_fingerprint_subset_effective) |
+       list }}
+  loop_control:
+    label: "{{ item.key }}"
+  register: arr_reconciliation_fingerprint_stats
+  changed_when: false
+  no_log: true
+
+- name: Validate private Arr desired-input fingerprints
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists or item.stat.isreg
+      - not item.stat.exists or not item.stat.islnk
+      - not item.stat.exists or item.stat.mode == '0600'
+      - not item.stat.exists or item.stat.uid | int == nas_uid | int
+      - not item.stat.exists or item.stat.gid | int == nas_gid | int
+    fail_msg: A private Arr desired-input fingerprint file is unsafe.
+  loop: "{{ arr_reconciliation_fingerprint_stats.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+  no_log: true
+
+- name: Atomically read private Arr desired-input fingerprints
+  ansible.builtin.command:
+    argv:
+      - >-
+        {{
+          ansible_facts.get('python', {}).get(
+            'executable',
+            ansible_facts.get('discovered_interpreter_python', ansible_playbook_python)
+          )
+        }}
+      - -c
+      - |
+        import os
+        import stat
+        import sys
+
+        path = sys.argv[1]
+        expected_uid = int(sys.argv[2])
+        expected_gid = int(sys.argv[3])
+        # O_NONBLOCK prevents a validated path swapped to a FIFO from hanging
+        # before fstat can reject the non-regular descriptor.
+        flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
+        fd = os.open(path, flags)
+        try:
+            before = os.fstat(fd)
+            before_identity = (
+                before.st_dev, before.st_ino, before.st_mode, before.st_uid,
+                before.st_gid, before.st_size, before.st_mtime_ns,
+                before.st_ctime_ns,
+            )
+            if not stat.S_ISREG(before.st_mode):
+                raise RuntimeError("fingerprint is not a regular file")
+            if stat.S_IMODE(before.st_mode) != 0o600:
+                raise RuntimeError("fingerprint mode is not 0600")
+            if before.st_uid != expected_uid or before.st_gid != expected_gid:
+                raise RuntimeError("fingerprint ownership differs")
+            if before.st_size != 65:
+                raise RuntimeError("fingerprint size is not exactly 65 bytes")
+
+            content = os.read(fd, 65)
+            if len(content) != 65 or os.read(fd, 1) != b"":
+                raise RuntimeError("fingerprint read is not exactly 65 bytes")
+            if content[64:] != b"\n" or any(
+                byte not in b"0123456789abcdef" for byte in content[:64]
+            ):
+                raise RuntimeError("fingerprint content is invalid")
+
+            after = os.fstat(fd)
+            after_identity = (
+                after.st_dev, after.st_ino, after.st_mode, after.st_uid,
+                after.st_gid, after.st_size, after.st_mtime_ns,
+                after.st_ctime_ns,
+            )
+            if before_identity != after_identity:
+                raise RuntimeError("fingerprint changed while being read")
+            sys.stdout.write(content[:64].decode("ascii"))
+        finally:
+            os.close(fd)
+      - >-
+        {{ platform_runtime_dir }}/services/arr/{{ item.value }}
+      - "{{ nas_uid }}"
+      - "{{ nas_gid }}"
+  loop: >-
+    {{
+      arr_reconciliation_fingerprint_stats.results
+      | selectattr('stat.exists')
+      | map(attribute='item')
+      | list
+    }}
+  loop_control:
+    label: "{{ item.key }}"
+  register: arr_reconciliation_fingerprint_reads
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Initialize installed Arr desired-input fingerprints
+  ansible.builtin.set_fact:
+    arr_installed_reconciliation_fingerprints:
+      prowlarr_applications: ""
+      servarr_sabnzbd: ""
+      prowlarr_indexers: ""
+      bazarr_providers: ""
+      configarr: ""
+      configarr_owned_state: ""
+      configarr_opaque_context: ""
+  changed_when: false
+  no_log: true
+
+- name: Load installed Arr desired-input fingerprints
+  ansible.builtin.set_fact:
+    arr_installed_reconciliation_fingerprints: >-
+      {{
+        arr_installed_reconciliation_fingerprints
+        | combine({item.item.key: item.stdout})
+      }}
+  loop: "{{ arr_reconciliation_fingerprint_reads.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+  changed_when: false
+  no_log: true

@@ -127,8 +127,8 @@ case "$suite" in
   # rather than at anything the suite is about. These must stay equal to
   # SERVICE_TAGS in tests/ci/classify_changes.rb, which the policy test checks.
   foundation) fixed_tags=deployment_bundle ;;
-  arr) fixed_tags=host_prep,deployment_bundle,media_acquisition_foundation ;;
-  downloaders) fixed_tags=host_prep,deployment_bundle,media_acquisition_foundation ;;
+  arr) fixed_tags=host_prep,deployment_bundle,ntfy,arr ;;
+  downloaders) fixed_tags=host_prep,deployment_bundle,ntfy,arr,downloaders ;;
   bindery) fixed_tags=host_prep,deployment_bundle,media_acquisition_foundation ;;
   kapowarr) fixed_tags=host_prep,deployment_bundle,media_acquisition_foundation ;;
   pinchflat) fixed_tags=host_prep,deployment_bundle,media_acquisition_foundation ;;
@@ -281,6 +281,8 @@ komga komga
 jellyfin jellyfin
 immich immich
 paperless paperless-ngx
+arr arr
+downloaders downloaders
 '
 
 # Retry budget for a registry that refuses. Both values are floored rather than
@@ -327,8 +329,6 @@ suite_pull_images() {
         *",$service_tag,"*) ;;
         *)
           case "$suite:$service_tag" in
-            arr:ntfy|arr:audiobookshelf|arr:jellyfin|\
-            downloaders:ntfy|downloaders:audiobookshelf|downloaders:jellyfin|\
             bindery:ntfy|bindery:audiobookshelf|bindery:jellyfin|\
             kapowarr:ntfy|kapowarr:audiobookshelf|kapowarr:jellyfin|\
             pinchflat:ntfy|pinchflat:audiobookshelf|pinchflat:jellyfin|\
@@ -397,6 +397,24 @@ temporary_parent=${TMPDIR:-/tmp}
 temporary_parent=${temporary_parent%/}
 temporary_parent=$(CDPATH= cd -P "$temporary_parent" && pwd -P)
 sandbox=
+
+derive_integration_project_namespace() {
+  integration_namespace_sandbox=$1
+  integration_suffix=${integration_namespace_sandbox##*.}
+  integration_suffix=$(printf '%s' "$integration_suffix" |
+    tr '[:upper:]' '[:lower:]')
+  integration_project_namespace=nas-platform-integration-$integration_suffix
+  case $integration_project_namespace in
+    nas-platform-integration-[a-z0-9][a-z0-9][a-z0-9][a-z0-9][a-z0-9][a-z0-9]) ;;
+    *)
+      printf 'invalid integration sandbox suffix: %s\n' \
+        "$integration_suffix" >&2
+      return 2
+      ;;
+  esac
+  printf '%s\n' "$integration_project_namespace"
+}
+
 acquire_integration_lock "$temporary_parent"
 
 cleanup_integration_on_exit() {
@@ -422,6 +440,7 @@ ruby -e '
   abort "integration sandbox owner differs" unless sandbox.uid == expected_uid
   abort "integration sandbox mode differs" unless (sandbox.mode & 0o777) == 0o700
 ' "$sandbox" "$sandbox_host_owner_uid"
+integration_project_namespace=$(derive_integration_project_namespace "$sandbox")
 
 mkdir -p "$sandbox/volume1/Docker" "$sandbox/volume2" "$sandbox/repo" \
   "$sandbox/fixtures" "$sandbox/reports" \
@@ -898,6 +917,15 @@ docker run --rm \
     git -C '$controller_test_dir' checkout -q -- .
     fi
 
+    integration_media_usenet_enabled=false
+    integration_media_adopt_existing=false
+    case "\$INTEGRATION_SUITE" in
+      arr|downloaders)
+        integration_media_usenet_enabled=true
+        integration_media_adopt_existing=true
+        ;;
+    esac
+
     run_play() {
       ansible-playbook \
         -i inventory/local.yml \
@@ -908,10 +936,70 @@ docker run --rm \
         -e nas_docker_root=$sandbox/volume1/Docker \
         -e nas_media_root=$sandbox/volume2 \
         -e platform_compose_kind=integration \
+        -e arr_platform_project_name=\"$integration_project_namespace\" \
+        -e downloaders_platform_project_name=\"$integration_project_namespace\" \
         -e platform_beszel_agent_kind=portable \
+        -e media_usenet_enabled="\$integration_media_usenet_enabled" \
+        -e media_acquisition_adopt_existing_libraries="\$integration_media_adopt_existing" \
         -e deployment_bundle_test_mode=true \
         -e deployment_bundle_allow_dirty_controller=true \
         \"\$playbook\" \"\$@\"
+    }
+
+    enabled_idempotence_recap_is_clean() {
+      idempotence_recap_file=\$1
+      idempotence_escape=\$(printf '\033')
+      sed \"s/\${idempotence_escape}\\[[0-9;]*[[:alpha:]]//g\" \
+        \"\$idempotence_recap_file\" |
+        awk '
+          /^PLAY RECAP[[:space:]]+\*+[[:space:]]*$/ {
+            recap_count++
+            in_recap = 1
+            next
+          }
+          in_recap && \$1 == \"nas\" && \$2 == \":\" {
+            target_count++
+            valid = 1
+            delete seen
+            delete value
+            for (field = 3; field <= NF; field++) {
+              parts = split(\$field, pair, \"=\")
+              if (parts != 2 || pair[1] == \"\" || pair[2] !~ /^[0-9]+\$/) {
+                valid = 0
+                continue
+              }
+              if (seen[pair[1]]++) {
+                valid = 0
+              }
+              value[pair[1]] = pair[2]
+            }
+            target_clean = valid &&
+              seen[\"changed\"] == 1 && value[\"changed\"] == \"0\" &&
+              seen[\"unreachable\"] == 1 && value[\"unreachable\"] == \"0\" &&
+              seen[\"failed\"] == 1 && value[\"failed\"] == \"0\"
+          }
+          END {
+            exit !(recap_count == 1 && target_count == 1 && target_clean)
+          }
+        '
+    }
+
+    run_enabled_idempotence() {
+      idempotence_tags=\$1
+      idempotence_output=/tmp/media-acquisition-idempotence.txt
+      if ! run_play --tags "\$idempotence_tags" \
+          >"\$idempotence_output" 2>&1; then
+        cat "\$idempotence_output" >&2
+        printf '%s\n' \
+          'enabled media acquisition convergence did not complete' >&2
+        exit 1
+      fi
+      if ! enabled_idempotence_recap_is_clean "\$idempotence_output"; then
+        cat "\$idempotence_output" >&2
+        printf '%s\n' \
+          'enabled media acquisition convergence was not idempotent' >&2
+        exit 1
+      fi
     }
 
     run_beszel_contract() {
@@ -1220,6 +1308,40 @@ docker run --rm \
         -e deployment_bundle_allow_dirty_controller=true \
         /repo/verify.yml \
         --tags platform_verify_audiobookshelf
+    }
+
+    run_arr_verify_only() {
+      PLATFORM_VAULT_FILE="\$vault_file" ansible-playbook \
+        -i inventory/local.yml \
+        --vault-password-file "\$vault_password_file" \
+        -e @"\$vault_file" \
+        -e platform_vault_file="\$vault_file" \
+        -e nas_docker_root=$sandbox/volume1/Docker \
+        -e nas_media_root=$sandbox/volume2 \
+        -e platform_compose_kind=integration \
+        -e platform_beszel_agent_kind=portable \
+        -e deployment_bundle_test_mode=true \
+        -e deployment_bundle_allow_dirty_controller=true \
+        -e media_usenet_enabled=true \
+        /repo/verify.yml \
+        --tags platform_verify_arr
+    }
+
+    run_downloaders_verify_only() {
+      PLATFORM_VAULT_FILE="\$vault_file" ansible-playbook \
+        -i inventory/local.yml \
+        --vault-password-file "\$vault_password_file" \
+        -e @"\$vault_file" \
+        -e platform_vault_file="\$vault_file" \
+        -e nas_docker_root=$sandbox/volume1/Docker \
+        -e nas_media_root=$sandbox/volume2 \
+        -e platform_compose_kind=integration \
+        -e platform_beszel_agent_kind=portable \
+        -e deployment_bundle_test_mode=true \
+        -e deployment_bundle_allow_dirty_controller=true \
+        -e media_usenet_enabled=true \
+        /repo/verify.yml \
+        --tags platform_verify_downloaders
     }
 
     converge_media_acquisition_reader_prerequisites() {
@@ -1538,6 +1660,7 @@ docker run --rm \
       case \$lifecycle_event in
         converge)
           perform_initial_converge "\$@"
+          integration_media_adopt_existing=false
           ;;
         success)
           lifecycle_success=true
@@ -1571,10 +1694,7 @@ EOF
       /repo /repo/services/manifest.yml nas integration '$expected_release_id'
 
     case "\$INTEGRATION_SUITE" in
-      arr|downloaders|bindery|kapowarr|pinchflat|trailarr|seerr)
-        if [ "\$INTEGRATION_SUITE" = arr ]; then
-          /repo/tests/media_control_network_collision_test.sh live
-        fi
+      bindery|kapowarr|pinchflat|trailarr|seerr)
         /repo/tests/contracts/"\$INTEGRATION_SUITE"-foundation.sh static
         converge_media_acquisition_reader_prerequisites
         run_media_acquisition_foundation_verify
@@ -1583,6 +1703,29 @@ EOF
         exit 0
         ;;
     esac
+
+    if [ "\$INTEGRATION_SUITE" = arr ]; then
+      /repo/tests/media_control_network_collision_test.sh live
+      /repo/tests/contracts/arr.sh static
+      run_arr_verify_only
+      run_enabled_idempotence arr
+      run_play --tags arr --check --diff
+      printf 'ARR_PHASE1_RUNTIME_VERIFIED\n'
+      cleanup_vault
+      exit 0
+    fi
+
+    if [ "\$INTEGRATION_SUITE" = downloaders ]; then
+      /repo/tests/contracts/arr.sh static
+      /repo/tests/contracts/downloaders.sh static
+      run_arr_verify_only
+      run_downloaders_verify_only
+      run_enabled_idempotence arr,downloaders
+      run_play --tags arr,downloaders --check --diff
+      printf 'DOWNLOADERS_PHASE1_RUNTIME_VERIFIED\n'
+      cleanup_vault
+      exit 0
+    fi
 
     if [ "\$INTEGRATION_SUITE" = smoke ]; then
       cleanup_vault

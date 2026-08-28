@@ -1,0 +1,84 @@
+---
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
+x-service-defaults: &service-defaults
+  cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
+  restart: unless-stopped
+  logging: *default-logging
+  networks:
+    - default
+    - media-control
+
+services:
+  sabnzbd:
+    <<: *service-defaults
+    container_name: sabnzbd
+    image: lscr.io/linuxserver/sabnzbd:5.0.4@sha256:4307a4ef4a1687c6f7dfa36fc745c1fc10b78db9916b64970b9ff682539dd03b
+    cpus: 2.0
+    labels:
+      dev.dozzle.name: sabnzbd
+    ports:
+      - "8085:8080"
+    volumes:
+      - ${SABNZBD_CONFIG_PATH:?}:/config
+      - ${MEDIA_ACQUISITION_PATH:?}:/data/media/.acquisition
+      - ${BOOKS_ACQUISITION_PATH:?}:/data/books/.acquisition
+    environment:
+      PUID: ${NAS_UID:?}
+      PGID: ${NAS_GID:?}
+      UMASK: "022"
+      TZ: ${TZ:?}
+      SABNZBD_API_KEY: ${SABNZBD_API_KEY:?}
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          curl --fail --silent --show-error
+          "http://127.0.0.1:8080/api?mode=version&output=json&apikey=$${SABNZBD_API_KEY}"
+          >/dev/null
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  unpackerr:
+    <<: *service-defaults
+    container_name: unpackerr
+    image: docker.io/golift/unpackerr:0.15.2@sha256:057e34740d26c34d81ec8e2faf8ec11f8dbfc77489b7a42826f52b37e5ee1b6c
+    cpus: 1.0
+    labels:
+      dev.dozzle.name: unpackerr
+    user: "${NAS_UID:?}:${NAS_GID:?}"
+    volumes:
+      - ${MEDIA_ACQUISITION_PATH:?}:/data/media/.acquisition
+      - ${BOOKS_ACQUISITION_PATH:?}:/data/books/.acquisition
+    environment:
+      TZ: ${TZ:?}
+      UN_FILE_MODE: "0644"
+      UN_DIR_MODE: "0755"
+      UN_PARALLEL: "1"
+      UN_MAX_RETRIES: "3"
+      UN_SONARR_0_URL: http://sonarr:8989
+      UN_SONARR_0_API_KEY: ${SONARR_API_KEY:?}
+      UN_SONARR_0_PATHS_0: /data/media/.acquisition/usenet/series
+      UN_SONARR_0_PROTOCOLS: usenet
+      UN_RADARR_0_URL: http://radarr:7878
+      UN_RADARR_0_API_KEY: ${RADARR_API_KEY:?}
+      UN_RADARR_0_PATHS_0: /data/media/.acquisition/usenet/movies
+      UN_RADARR_0_PROTOCOLS: usenet
+    healthcheck:
+      test: [CMD-SHELL, "kill -0 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+networks:
+  default: {}
+  media-control:
+    external: true
+    name: ${PLATFORM_MEDIA_NETWORK:?}

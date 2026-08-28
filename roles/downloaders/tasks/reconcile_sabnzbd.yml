@@ -1,0 +1,60 @@
+---
+- name: Read SABnzbd owned configuration before reconciliation
+  ansible.builtin.uri:
+    url: >-
+      {{ downloaders_sabnzbd_api }}?mode=get_config&output=json&apikey={{
+         vault_downloaders_sabnzbd_api_key | urlencode }}
+    method: GET
+    status_code: [200]
+    return_content: true
+  register: downloaders_sabnzbd_config_before
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require a complete SABnzbd configuration response
+  ansible.builtin.assert:
+    that:
+      - downloaders_sabnzbd_config_before.json is mapping
+      - downloaders_sabnzbd_config_before.json.config is mapping
+      - downloaders_sabnzbd_config_before.json.config.misc is mapping
+      - downloaders_sabnzbd_config_before.json.config.categories is sequence
+    fail_msg: SABnzbd returned an unsupported configuration schema before reconciliation.
+  no_log: true
+
+- name: Reconcile bounded SABnzbd miscellaneous settings
+  ansible.builtin.uri:
+    url: >-
+      {{ downloaders_sabnzbd_api }}?mode=set_config&section=misc&keyword={{ item.key | urlencode
+      }}&value={{ item.value | string | urlencode }}&output=json&apikey={{
+      vault_downloaders_sabnzbd_api_key | urlencode }}
+    method: GET
+    status_code: [200]
+    return_content: true
+  loop: "{{ downloaders_sabnzbd_owned_misc | dict2items }}"
+  loop_control:
+    label: sabnzbd-owned-misc-setting
+  when: >-
+    downloaders_sabnzbd_config_before.json.config.misc.get(item.key) | string !=
+    item.value | string
+  changed_when: true
+  no_log: true
+
+- name: Reconcile SABnzbd categories
+  ansible.builtin.uri:
+    url: >-
+      {{ downloaders_sabnzbd_api }}?mode=set_config&section=categories&name={{ item.key | urlencode
+      }}&dir={{ item.value | urlencode }}&pp=0&script=None&priority=-100&output=json&apikey={{
+      vault_downloaders_sabnzbd_api_key | urlencode }}
+    method: GET
+    status_code: [200]
+    return_content: true
+  loop: "{{ downloaders_sabnzbd_categories | dict2items }}"
+  loop_control:
+    label: sabnzbd-category
+  when: >-
+    downloaders_sabnzbd_config_before.json.config.categories |
+    selectattr('name', 'equalto', item.key) | map(attribute='dir') |
+    first | default('') != item.value
+  changed_when: true
+  no_log: true
