@@ -7,6 +7,18 @@
   ansible.builtin.include_tasks: inputs.yml
   when: not (deployment_bundle_controller_inputs_validated | default(false) | bool)
 
+# Once, ahead of every mutation this role makes, and only when the play has
+# not already validated the same paths in its pre_tasks. site.yml validates
+# them before preflight, so a full converge skips this; a playbook that uses
+# the role on its own still validates before it touches anything.
+- name: Validate target containment when not already checked by the play
+  ansible.builtin.include_tasks: target.yml
+  vars:
+    # A deployment may legitimately replace an older active release. Runtime
+    # service callers require the current release once the pointer is active.
+    deployment_target_require_current_release: false
+  when: not (deployment_bundle_target_validated | default(false) | bool)
+
 - name: Resolve the deployment staging directory
   ansible.builtin.set_fact:
     deployment_bundle_staging_dir: >-
@@ -64,13 +76,6 @@
   register: deployment_bundle_platform_sources
   delegate_to: localhost
 
-- name: Revalidate before creating deployment and runtime directories
-  ansible.builtin.include_tasks: target.yml
-  vars:
-    # A deployment may legitimately replace an older active release. Runtime
-    # service callers set this true after the new pointer is activated.
-    deployment_target_require_current_release: false
-
 - name: Create deployment and mutable runtime directories
   ansible.builtin.file:
     path: "{{ item }}"
@@ -108,11 +113,6 @@
              (deployment_bundle_current.stat.lnk_source | default('') | basename)
                is match('^[0-9a-f]{40}$'))
          else '' }}
-
-- name: Revalidate before removing the staging release
-  ansible.builtin.include_tasks: target.yml
-  vars:
-    deployment_target_require_current_release: false
 
 - name: Remove an abandoned staging release
   ansible.builtin.file:
@@ -262,13 +262,6 @@
       Active release {{ platform_release_dir }} differs from the controller
       bundle. Refusing to mutate it in place; deploy a new controller revision.
 
-- name: Revalidate before replacing an inactive release
-  ansible.builtin.include_tasks: target.yml
-  when:
-    - not ansible_check_mode
-    - deployment_bundle_release.stat.exists
-    - deployment_bundle_release_install_required
-
 - name: Remove an inactive stale release
   ansible.builtin.file:
     path: "{{ platform_release_dir }}"
@@ -276,12 +269,6 @@
   when:
     - not ansible_check_mode
     - deployment_bundle_release.stat.exists
-    - deployment_bundle_release_install_required
-
-- name: Revalidate before installing the immutable release
-  ansible.builtin.include_tasks: target.yml
-  when:
-    - not ansible_check_mode
     - deployment_bundle_release_install_required
 
 - name: Atomically install the immutable release
@@ -296,14 +283,6 @@
   when:
     - not ansible_check_mode
     - deployment_bundle_release_install_required
-
-- name: Revalidate before removing the verified staging release
-  ansible.builtin.include_tasks: target.yml
-  vars:
-    deployment_target_require_current_release: false
-  when:
-    - not ansible_check_mode
-    - not deployment_bundle_release_install_required
 
 - name: Remove the verified staging release
   ansible.builtin.file:
@@ -320,14 +299,6 @@
       {{ not (deployment_bundle_current.stat.islnk | default(false)) or
          deployment_bundle_current.stat.lnk_source | default('') != platform_release_dir }}
 
-- name: Revalidate before replacing the current pointer
-  ansible.builtin.include_tasks: target.yml
-  vars:
-    deployment_target_require_current_release: false
-  when:
-    - deployment_bundle_current.stat.exists
-    - not (deployment_bundle_current.stat.islnk | default(false))
-
 - name: Remove a legacy non-symlink deployment directory
   ansible.builtin.file:
     path: "{{ platform_current_dir }}"
@@ -336,24 +307,12 @@
     - deployment_bundle_current.stat.exists
     - not (deployment_bundle_current.stat.islnk | default(false))
 
-- name: Revalidate before creating the next deployment pointer
-  ansible.builtin.include_tasks: target.yml
-  vars:
-    deployment_target_require_current_release: false
-  when: deployment_bundle_switch_required
-
 - name: Create the next deployment pointer
   ansible.builtin.file:
     src: "{{ platform_release_dir }}"
     dest: "{{ platform_deploy_root }}/.current-{{ platform_release_id }}"
     state: link
     force: true
-  when: deployment_bundle_switch_required
-
-- name: Revalidate before activating the controller release
-  ansible.builtin.include_tasks: target.yml
-  vars:
-    deployment_target_require_current_release: false
   when: deployment_bundle_switch_required
 
 - name: Atomically activate the controller release

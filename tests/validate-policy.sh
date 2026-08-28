@@ -39,6 +39,7 @@ ruby tests/media_acquisition_foundation_test.rb
 ruby tests/media_acquisition_foundation_verifier_test.rb
 ruby tests/media_acquisition_phase1_test.rb
 ruby tests/configarr_job_test.rb
+ruby tests/reader_platform_identity_test.rb
 ruby tests/media_acquisition_adoption_test.rb
 tests/mac/media-acquisition-foundation-hook-test.sh
 ruby tests/mac/media-acquisition-foundation-report-test.rb
@@ -48,6 +49,8 @@ tests/policy_runner_test.sh
 ruby tests/paperless_mail_reconciliation_test.rb
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" -m unittest -v tests.production_auto_deploy_test
 ruby tests/production_auto_deploy_role_test.rb
+PYTHONDONTWRITEBYTECODE=1 "$ansible_python" -m unittest -v tests.image_prune_test
+ruby tests/image_prune_role_test.rb
 ruby tests/beszel_telemetry_probe_test.rb
 ruby tests/beszel_telemetry_timeout_test.rb
 ruby tests/beszel_telemetry_ansible_test.rb
@@ -95,6 +98,8 @@ PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_filter_native_argu
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_filter_native_arguments_test.py --self-test
 ruby tests/acquisition_configarr_field_coverage_test.rb
 ruby tests/acquisition_configarr_field_coverage_test.rb --self-test
+ruby tests/bazarr_provider_schema_test.rb
+ruby tests/bazarr_provider_schema_test.rb --self-test
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_owned_field_coverage_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/vault_managed_user_schema_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/vault_credential_schema_test.py

@@ -70,7 +70,8 @@ environment_assignments = File.readlines(environment_template_path).filter_map d
   [name, value] if line.strip.match?(/\A[A-Z][A-Z0-9_]*=/)
 end
 service = compose.fetch("services").fetch("audiobookshelf")
-abort "Audiobookshelf contract failed: NAS UID/GID differs" unless service.fetch("user") == "1000:100"
+abort "Audiobookshelf contract failed: platform identity differs" unless
+  service.fetch("user") == "${NAS_UID:?}:${NAS_GID:?}"
 abort "Audiobookshelf contract failed: NAS port differs" unless service.fetch("ports") == ["13378:80"]
 abort "Audiobookshelf contract failed: storage contract differs" unless service.fetch("volumes") == [
   "${AUDIOBOOKSHELF_CONFIG_PATH:?}:/config",

@@ -253,7 +253,7 @@ services:
     image: docker.io/deluan/navidrome:0.58.0@sha256:2ae037d464de9f802d047165a13b1c9dc2bdbb14920a317ae4aef1233adc0a3c
     labels:
       dev.dozzle.name: navidrome
-    user: "1000:100"
+    user: "${NAS_UID:?}:${NAS_GID:?}"
     ports:
       - "4533:4533"
     volumes:
@@ -289,6 +289,17 @@ The policy test enforces every one of these properties:
   `:?` suffix makes an unset variable fail loudly instead of silently creating a
   relative bind mount. Hardcoding `/volume1/...` is rejected outright, because
   the same file has to run unmodified on the NAS, on a Mac sandbox and in CI.
+
+A service that runs as a direct numeric user takes the shared platform identity,
+`user: "${NAS_UID:?}:${NAS_GID:?}"`, never a literal pair — even one that happens
+to equal today's `nas_uid` and `nas_gid`. The two variables reach the container
+through the role's `env.j2`, so one inventory change moves every container at
+once and a Compose file cannot drift from the identity the storage declarations
+grant. Images that read `PUID`/`PGID` instead — the linuxserver.io family — take
+the same two variables under those names.
+`tests/reader_platform_identity_test.rb` proves the identity resolves by
+rendering the effective Compose document with a uid and gid the repository never
+mentions.
 
 Platform overrides live in `services/<name>/compose.<kind>.yml`. They may add
 host-specific wiring such as devices, mounts and per-project container names,
@@ -371,6 +382,8 @@ demands:
 ```jinja
 {# Rendered on the target from vault and inventory facts. #}
 TZ={{ nas_timezone }}
+NAS_UID={{ nas_uid }}
+NAS_GID={{ nas_gid }}
 NAVIDROME_DATA_PATH={{ nas_docker_root }}/navidrome/data
 NAVIDROME_MUSIC_PATH={{ nas_media_root }}/Media/Music
 NAVIDROME_HOST_PORT={{ navidrome_port }}
@@ -382,8 +395,12 @@ is worth understanding one thing before reading it: **the role never runs agains
 this repository on the target machine.** `deployment_bundle` assembles an
 immutable release from the controller checkout and installs it at
 `platform_current_dir`, with rendered secrets kept separately under
-`platform_runtime_dir`. The first task re-validates exactly the paths this role
-is about to touch.
+`platform_runtime_dir`. The first task validates exactly the paths this role is
+about to touch, and nothing else does: containment is checked once per distinct
+set of paths, not again beside each write, so a path your role names here and
+nowhere else is a path nobody checked. `deployment_target_require_current_release:
+true` additionally refuses to run unless `current` resolves to the release this
+run installed, which is what makes a lone `--tags navidrome` converge safe.
 
 ```yaml
 ---

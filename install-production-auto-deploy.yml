@@ -1,5 +1,5 @@
 ---
-- name: Install the NAS production deployment poller
+- name: Install the NAS production deployment poller and its maintenance schedule
   hosts: platform_hosts
   gather_facts: true
   vars:
@@ -25,3 +25,10 @@
 
   roles:
     - role: production_auto_deploy
+
+    # Second, and in this playbook rather than one of its own: the prune runs as
+    # the same account, from the same crond, publishes with the same token, and
+    # serialises on the lock the poller creates. Installing it here also means
+    # the poller's own reinstall replays it, so the schedule reconverges on
+    # every deployment instead of drifting until someone notices.
+    - role: image_prune

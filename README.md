@@ -159,8 +159,15 @@ GitHub write permission, inbound webhook, or self-hosted runner. A failed commit
 is quarantined until an operator explicitly retries that exact current SHA; a
 newer successful commit may proceed normally.
 
-The complete bootstrap, status, manual retry, protected-log, ntfy, SSH, and
-disable/removal procedures are in the
+The same installer schedules a weekly Docker image prune, because every image is
+pinned by digest and each bump otherwise leaves its predecessor on disk forever.
+It removes only images no container references, holds the poller's own
+deployment lock while Docker runs so it can never race a deployment, and reports
+what it reclaimed. Rollback is unaffected: images are pinned by digest, so an
+earlier revision re-pulls exactly what it names.
+
+The complete bootstrap, status, manual retry, protected-log, ntfy, SSH, prune,
+and disable/removal procedures are in the
 [physical NAS walkthrough](docs/getting-started-nas.md#automatic-deployment-from-the-nas).
 
 ## Media acquisition foundation

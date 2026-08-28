@@ -60,7 +60,8 @@ role_task = lambda { |name| role_tasks.find { |task| task["name"] == name } || {
 defaults = YAML.safe_load_file(defaults_path)
 argument_specs = YAML.safe_load_file(argument_specs_path)
 service = compose.fetch("services").fetch("komga")
-abort "Komga contract failed: NAS UID/GID differs" unless service.fetch("user") == "1000:100"
+abort "Komga contract failed: platform identity differs" unless
+  service.fetch("user") == "${NAS_UID:?}:${NAS_GID:?}"
 abort "Komga contract failed: NAS port differs" unless service.fetch("ports") == ["25600:25600"]
 abort "Komga contract failed: storage contract differs" unless service.fetch("volumes") == [
   "${KOMGA_CONFIG_PATH:?}:/config",
