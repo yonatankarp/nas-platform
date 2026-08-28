@@ -76,6 +76,13 @@ SUITES = {
     environment: ->(_repo) { {} },
     diagnostic: ->(message) { "FAIL #{message}" }
   },
+  # The Arr contract reports every violation it found, one bare message per line,
+  # rather than aborting on the first with a prefix.
+  arr: {
+    command: ->(repo) { [File.join(repo, "tests", "contracts", "arr.sh"), "static"] },
+    environment: ->(repo) { { "PLATFORM_CONTRACT_REPO_DIR" => repo } },
+    diagnostic: ->(message) { message }
+  },
   policy_deployment: {
     command: ->(repo) { [RbConfig.ruby, File.join(repo, "tests", "policy_deployment_test.rb")] },
     environment: ->(_repo) { {} },
@@ -207,6 +214,13 @@ IMMICH_ONBOARDING = "roles/immich/tasks/user_onboarding.yml"
 DOZZLE_ROLE = "roles/dozzle/tasks/main.yml"
 DOZZLE_DEFAULTS = "roles/dozzle/defaults/main.yml"
 PREFLIGHT = "roles/preflight/tasks/main.yml"
+ARR_MAIN = "roles/arr/tasks/main.yml"
+ARR_BOOTSTRAP = "roles/arr/tasks/bootstrap.yml"
+ARR_CONFIG_XML = "roles/arr/templates/config.xml.j2"
+ARR_ENVIRONMENT = "roles/arr/templates/env.j2"
+ARR_SERVARR = "roles/arr/tasks/reconcile_servarr.yml"
+ARR_PROWLARR = "roles/arr/tasks/reconcile_prowlarr.yml"
+ARR_BAZARR = "roles/arr/tasks/reconcile_bazarr.yml"
 BUNDLE_INPUTS = "roles/deployment_bundle/tasks/inputs.yml"
 BUNDLE_TARGET = "roles/deployment_bundle/tasks/target.yml"
 BUNDLE_MANIFEST_TEMPLATE = "roles/deployment_bundle/templates/manifest.yml.j2"
@@ -919,6 +933,111 @@ check_rejected(
     "\n" \
     "- name: Wait for the hub to report healthy\n"]],
   "%REPO%/roles/beszel/tasks/main.yml: shells out to Compose; use community.docker.docker_compose_v2"
+)
+
+# --- Arr Phase 1 API ownership ------------------------------------------------
+#
+# Every row below was accepted by the whole-file substring pairs these assertions
+# replaced. Three of them are the unintended-match class: a literal that belongs
+# to one task satisfying a check about another.
+
+check_rejected(
+  failures, :arr, "an activation downgraded while the module stays named in the file",
+  [[ARR_MAIN, "    state: present\n    wait: true\n", "    state: absent\n    wait: true\n"]],
+  "Arr role must deploy through docker_compose_v2"
+)
+
+check_rejected(
+  failures, :arr, "the activation gate demoted to a comment",
+  [[ARR_MAIN,
+    "    wait_timeout: 240\n  when: media_usenet_enabled | bool\n  register: arr_deploy\n",
+    "    wait_timeout: 240\n  # when: media_usenet_enabled | bool\n  register: arr_deploy\n"]],
+  "Arr role must gate activation on media_usenet_enabled"
+)
+
+# force: false lives on one of two seed tasks. The old pair asked whether the file
+# contained the words, so the Servarr task's force answered for the Bazarr task,
+# and the Bazarr half never asked about force at all.
+check_rejected(
+  failures, :arr, "a Bazarr seed that overwrites an operator's own configuration",
+  [[ARR_BOOTSTRAP,
+    "    dest: \"{{ arr_bazarr_config_host_path }}/config/config.yaml\"\n" \
+    "    owner: \"{{ nas_uid }}\"\n" \
+    "    group: \"{{ nas_gid }}\"\n" \
+    "    mode: \"0600\"\n" \
+    "    force: false\n",
+    "    dest: \"{{ arr_bazarr_config_host_path }}/config/config.yaml\"\n" \
+    "    owner: \"{{ nas_uid }}\"\n" \
+    "    group: \"{{ nas_gid }}\"\n" \
+    "    mode: \"0600\"\n"]],
+  "Bazarr bootstrap must preserve existing config"
+)
+
+check_rejected(
+  failures, :arr, "authentication disabled with the old element left in a comment",
+  [[ARR_CONFIG_XML,
+    "  <AuthenticationRequired>Enabled</AuthenticationRequired>\n",
+    "  <!-- <AuthenticationRequired>Enabled</AuthenticationRequired> -->\n" \
+    "  <AuthenticationRequired>Disabled</AuthenticationRequired>\n"]],
+  "Servarr authentication must be enabled before first start"
+)
+
+check_rejected(
+  failures, :arr, "an API key bound to the wrong service",
+  [[ARR_ENVIRONMENT,
+    "BAZARR_API_KEY={{ vault_arr_bazarr_api_key }}\n",
+    "BAZARR_API_KEY={{ vault_arr_radarr_api_key }}\n" \
+    "# BAZARR_API_KEY={{ vault_arr_bazarr_api_key }}\n"]],
+  "Arr env must carry all deterministic API keys"
+)
+
+check_rejected(
+  failures, :arr, "one API request logging its payload while its siblings redact",
+  [[ARR_BAZARR,
+    "  register: arr_bazarr_settings_before\n  changed_when: false\n" \
+    "  check_mode: false\n  no_log: true\n",
+    "  register: arr_bazarr_settings_before\n  changed_when: false\n  check_mode: false\n"]],
+  "all Arr API reconciliation must redact secret-bearing payloads"
+)
+
+# The negative half of the old pair only matched an import or search named on the
+# same source line as the word command, which a JSON body on its own line is not.
+check_rejected(
+  failures, :arr, "a library scan command issued beside the root folder creation",
+  [[ARR_SERVARR,
+    "- name: Create the declared Servarr root without import or search\n",
+    "- name: Trigger a Servarr library scan\n" \
+    "  ansible.builtin.uri:\n" \
+    "    url: \"{{ arr_servarr_instance.api }}/command\"\n" \
+    "    method: POST\n" \
+    "    body_format: json\n" \
+    "    body:\n" \
+    "      name: DownloadedMoviesScan\n" \
+    "  no_log: true\n" \
+    "\n" \
+    "- name: Create the declared Servarr root without import or search\n"]],
+  "Servarr reconciliation must create root folders without import commands"
+)
+
+# combine( appears in two requests in this file, so the old check was answered by
+# the naming request no matter what the host request did with unowned fields.
+check_rejected(
+  failures, :arr, "the host request replacing unowned fields instead of merging them",
+  [[ARR_SERVARR,
+    "      {{ arr_servarr_host_before.json | combine({\n" \
+    "           'authenticationMethod': 'forms',\n",
+    "      {{ {\n" \
+    "           'authenticationMethod': 'forms',\n"]],
+  "Servarr reconciliation must preserve unowned host fields"
+)
+
+# The forbidden-endpoint check used to read the file's text, so writing down that
+# the endpoint is deliberately not used was itself a violation.
+check_accepted(
+  failures, :arr, "a comment recording that no download client is created",
+  [[ARR_PROWLARR,
+    "---\n",
+    "---\n# Prowlarr indexes; a download client is deliberately never created here.\n"]]
 )
 
 # --- Deployment bundle policy -------------------------------------------------

@@ -31,6 +31,46 @@ required.each do |relative|
   failures << "missing #{relative}" unless File.file?(File.join(root, relative))
 end
 
+# Task files are flattened so a task on a block's rescue or always path is still
+# a task the role executes.
+def flatten_tasks(tasks)
+  Array(tasks).flat_map do |task|
+    next [] unless task.is_a?(Hash)
+
+    [task] + flatten_tasks(task["block"]) + flatten_tasks(task["rescue"]) +
+      flatten_tasks(task["always"])
+  end
+end
+
+# Assertions about what the role does read the parsed structure rather than the
+# file's bytes: a module named in a comment is not a module the role runs, and a
+# literal found anywhere in the file does not belong to the task the assertion
+# names. role_strings collects the strings one at a time rather than joining
+# them, because a pattern matched against a joined blob spans two unrelated
+# tasks — or, when two files were concatenated, two unrelated files — and reports
+# a violation neither of them contains.
+def role_strings(node)
+  case node
+  when Hash then node.flat_map { |key, value| [key.to_s] + role_strings(value) }
+  when Array then node.flat_map { |value| role_strings(value) }
+  when String then [node]
+  else []
+  end
+end
+
+def role_tasks(root, relative)
+  flatten_tasks(YAML.safe_load_file(File.join(root, relative), aliases: true))
+end
+
+# A folded scalar carries its line breaks into the parsed value, so a URL written
+# across two lines is compared in its collapsed form.
+def request_urls(tasks)
+  tasks.filter_map do |task|
+    uri = task["ansible.builtin.uri"]
+    uri["url"].to_s.gsub(/[[:space:]]+/, "") if uri.is_a?(Hash) && uri["url"]
+  end
+end
+
 if failures.empty?
   defaults = YAML.safe_load_file(File.join(root, "roles/arr/defaults/main.yml"))
   failures << "Radarr root must be exact" unless
@@ -44,80 +84,149 @@ if failures.empty?
   failures << "Prowlarr applications must use full sync" unless
     defaults["arr_prowlarr_application_sync_level"] == "fullSync"
 
-  main_source = File.read(File.join(root, "roles/arr/tasks/main.yml"))
+  main_tasks = role_tasks(root, "roles/arr/tasks/main.yml")
+  compose_activations = main_tasks.select do |task|
+    task.dig("community.docker.docker_compose_v2", "state") == "present"
+  end
+  activation_task = compose_activations.first
   failures << "Arr role must deploy through docker_compose_v2" unless
-    main_source.include?("community.docker.docker_compose_v2")
+    compose_activations.length == 1
   failures << "Arr role must gate activation on media_usenet_enabled" unless
-    main_source.include?("media_usenet_enabled | bool")
+    activation_task && Array(activation_task["when"]).any? do |condition|
+      condition.to_s.include?("media_usenet_enabled | bool")
+    end
   failures << "Arr role must verify the complete project CPU policy once" unless
-    main_source.scan("container_cpu_service_name: arr").length == 1
+    main_tasks.count { |task| task.dig("vars", "container_cpu_service_name") == "arr" } == 1
 
-  bootstrap = File.read(File.join(root, "roles/arr/tasks/bootstrap.yml"))
+  # force: false is what preserves an operator's existing file, and it has to be
+  # on the task that writes that file. The pair of substring checks this replaced
+  # could not tell the two seed tasks apart: either task's force satisfied both,
+  # and the Bazarr half never asked about force at all.
+  bootstrap_tasks = role_tasks(root, "roles/arr/tasks/bootstrap.yml")
+  servarr_seed = bootstrap_tasks.find do |task|
+    task.dig("ansible.builtin.template", "src") == "config.xml.j2"
+  end
   failures << "Servarr bootstrap must preserve existing config.xml" unless
-    bootstrap.include?("force: false") && bootstrap.include?("config.xml.j2")
+    servarr_seed && servarr_seed.dig("ansible.builtin.template", "force") == false &&
+      servarr_seed.dig("ansible.builtin.template", "dest").to_s.end_with?("/config.xml")
+  bazarr_seed = bootstrap_tasks.find do |task|
+    task.dig("ansible.builtin.template", "src") == "bazarr-config.yml.j2"
+  end
   failures << "Bazarr bootstrap must preserve existing config" unless
-    bootstrap.include?("bazarr-config.yml.j2") && bootstrap.include?("config/config.yaml")
+    bazarr_seed && bazarr_seed.dig("ansible.builtin.template", "force") == false &&
+      bazarr_seed.dig("ansible.builtin.template", "dest").to_s.end_with?("/config/config.yaml")
 
-  config_xml = File.read(File.join(root, "roles/arr/templates/config.xml.j2"))
+  # The bootstrap config is an XML template, so it is read as the elements it
+  # declares. A substring check cannot tell <AuthenticationMethod>Forms</...>
+  # from the word Forms appearing in a comment or in some other element.
+  config_elements = File.readlines(
+    File.join(root, "roles/arr/templates/config.xml.j2"), chomp: true
+  ).filter_map do |line|
+    match = line.strip.match(%r{\A<([A-Za-z][A-Za-z0-9]*)>(.*)</\1>\z})
+    [match[1], match[2]] if match
+  end.to_h
   failures << "Servarr bootstrap must use deterministic vault API keys" unless
-    config_xml.include?("arr_bootstrap_api_key")
+    config_elements["ApiKey"] == "{{ arr_bootstrap_api_key }}"
   failures << "Servarr authentication must be enabled before first start" unless
-    config_xml.include?("<AuthenticationMethod>Forms</AuthenticationMethod>") &&
-      config_xml.include?("<AuthenticationRequired>Enabled</AuthenticationRequired>")
+    config_elements["AuthenticationMethod"] == "Forms" &&
+      config_elements["AuthenticationRequired"] == "Enabled"
 
-  env = File.read(File.join(root, "roles/arr/templates/env.j2"))
+  # The environment file has its own grammar, so it is read as the assignments it
+  # declares. A commented-out sample of the right assignment satisfies a
+  # substring check while the live line exports something else, and a key found
+  # anywhere in the file says nothing about which variable it is bound to.
+  env_assignments = File.readlines(
+    File.join(root, "roles/arr/templates/env.j2"), chomp: true
+  ).filter_map do |line|
+    name, _separator, value = line.strip.partition("=")
+    [name, value] if line.strip.match?(/\A[A-Z][A-Z0-9_]*=/)
+  end
   failures << "Arr env must render CPU set exactly once" unless
-    env.lines.map(&:strip).count("PLATFORM_CONTAINER_CPUSET={{ platform_effective_container_cpuset }}") == 1
+    env_assignments.select { |name, _value| name == "PLATFORM_CONTAINER_CPUSET" } ==
+      [["PLATFORM_CONTAINER_CPUSET", "{{ platform_effective_container_cpuset }}"]]
   failures << "Arr env must carry all deterministic API keys" unless
-    %w[radarr sonarr prowlarr bazarr].all? { |name| env.include?("vault_arr_#{name}_api_key") }
+    %w[radarr sonarr prowlarr bazarr].all? do |name|
+      env_assignments.include?(["#{name.upcase}_API_KEY", "{{ vault_arr_#{name}_api_key }}"])
+    end
 
-  defaults_source = File.read(File.join(root, "roles/arr/defaults/main.yml"))
-  servarr = File.read(File.join(root, "roles/arr/tasks/reconcile_servarr.yml")) +
-    File.read(File.join(root, "roles/arr/tasks/reconcile_servarr_download_client.yml"))
+  servarr_categories = Array(defaults["arr_servarr_instances"]).each_with_object({}) do |entry, mapped|
+    mapped[entry["name"]] = entry["category"] if entry.is_a?(Hash)
+  end
+  servarr_tasks = role_tasks(root, "roles/arr/tasks/reconcile_servarr.yml") +
+    role_tasks(root, "roles/arr/tasks/reconcile_servarr_download_client.yml")
+  servarr_scalars = role_strings(servarr_tasks)
+  servarr_urls = request_urls(servarr_tasks)
   # The download-client and Bazarr bodies are built by the relationship filter
   # rather than spelled out in the task files, so these read where the logic
-  # lives. They stay separate from the narrower `servarr` and `bazarr` sources
-  # above, which the negative checks depend on being exactly the task files.
+  # lives. Python is not YAML, so the filter is still read as source text; the
+  # task files beside it are read as tasks.
   relationships = File.read(File.join(root, "filter_plugins/acquisition_relationships.py"))
   failures << "Servarr reconciliation must own only the SABnzbd clients" unless
-    (servarr + relationships).include?("Sabnzbd") &&
-      defaults_source.include?("category: movies") &&
-      defaults_source.include?("category: series")
+    (servarr_scalars.any? { |value| value.include?("Sabnzbd") } ||
+      relationships.include?("Sabnzbd")) &&
+      servarr_categories["radarr"] == "movies" &&
+      servarr_categories["sonarr"] == "series"
+  # A root folder is created by a request to the rootfolder endpoint, and an
+  # import or search is a request to the command endpoint. Reading the URLs the
+  # tasks actually call says that; the substring pair it replaced was satisfied
+  # by the word rootfolder anywhere in either file, and its negative half only
+  # matched an import or search named on the same source line as the word
+  # command, which a JSON body on its own line never is.
   failures << "Servarr reconciliation must create root folders without import commands" unless
-    servarr.include?("rootfolder") && !servarr.match?(/command.*(import|search)/i)
+    servarr_urls.any? { |url| url.end_with?("/rootfolder") } &&
+      servarr_urls.none? { |url| url.match?(%r{/command(/|\z)}i) } &&
+      servarr_scalars.none? { |value| value.match?(/command.*(import|search)/i) }
+  host_reconciliation = servarr_tasks.find do |task|
+    uri = task["ansible.builtin.uri"]
+    uri.is_a?(Hash) && uri["method"] == "PUT" &&
+      uri["url"].to_s.gsub(/[[:space:]]+/, "").include?("/config/host")
+  end
   failures << "Servarr reconciliation must preserve unowned host fields" unless
-    servarr.include?("combine(") && servarr.include?("config/host")
-  naming_sources = servarr +
-    File.read(File.join(root, "roles/arr/tasks/configarr.yml")) +
-    File.read(File.join(root, "roles/arr/tasks/verify.yml"))
+    host_reconciliation &&
+      host_reconciliation.dig("ansible.builtin.uri", "body").to_s.include?("combine(")
+
+  naming_scalars = servarr_scalars +
+    role_strings(role_tasks(root, "roles/arr/tasks/configarr.yml")) +
+    role_strings(role_tasks(root, "roles/arr/tasks/verify.yml"))
   failures << "Servarr rename policy must use the naming configuration API" unless
-    naming_sources.include?("config/naming") && !naming_sources.include?("config/mediamanagement")
+    naming_scalars.any? { |value| value.include?("config/naming") } &&
+      naming_scalars.none? { |value| value.include?("config/mediamanagement") }
 
-  prowlarr = File.read(File.join(root, "roles/arr/tasks/reconcile_prowlarr.yml")) +
-    File.read(File.join(root, "roles/arr/tasks/reconcile_prowlarr_application.yml")) +
-    defaults_source
+  prowlarr_scalars = role_strings(
+    role_tasks(root, "roles/arr/tasks/reconcile_prowlarr.yml") +
+      role_tasks(root, "roles/arr/tasks/reconcile_prowlarr_application.yml")
+  ) + role_strings(defaults)
   failures << "Prowlarr must own Radarr and Sonarr applications" unless
-    %w[Radarr Sonarr fullSync].all? { |token| prowlarr.include?(token) }
+    %w[Radarr Sonarr fullSync].all? do |token|
+      prowlarr_scalars.any? { |value| value.include?(token) }
+    end
   failures << "Prowlarr must not receive a download client" if
-    prowlarr.match?(%r{/downloadclient|download client}i)
+    prowlarr_scalars.any? { |value| value.match?(%r{/downloadclient|download client}i) }
 
-  bazarr = File.read(File.join(root, "roles/arr/tasks/reconcile_bazarr.yml"))
-  bazarr_sources = bazarr + relationships +
-    File.read(File.join(root, "roles/arr/tasks/reconciliation_fingerprints.yml"))
+  bazarr_scalars = role_strings(
+    role_tasks(root, "roles/arr/tasks/reconcile_bazarr.yml") +
+      role_tasks(root, "roles/arr/tasks/reconciliation_fingerprints.yml")
+  ) + [relationships]
   failures << "Bazarr must connect to both Arr services" unless
     %w[settings-general-use_radarr settings-general-use_sonarr settings-radarr-apikey settings-sonarr-apikey].all? do |token|
-      bazarr_sources.include?(token)
+      bazarr_scalars.any? { |value| value.include?(token) }
     end
   failures << "Bazarr must retain identical paths without remote mappings" unless
-    bazarr_sources.include?("path_mappings") && bazarr_sources.include?("path_mappings_movie")
+    bazarr_scalars.any? { |value| value.include?("path_mappings") } &&
+      bazarr_scalars.any? { |value| value.include?("path_mappings_movie") }
 
-  secret_sources = %w[
-    roles/arr/tasks/reconcile_servarr.yml
-    roles/arr/tasks/reconcile_prowlarr.yml
-    roles/arr/tasks/reconcile_bazarr.yml
-  ].map { |path| File.read(File.join(root, path)) }
+  # Redaction is a property of each request, not of the file it lives in. One
+  # no_log anywhere satisfied the substring check while every other request in
+  # the same file logged its payload.
   failures << "all Arr API reconciliation must redact secret-bearing payloads" unless
-    secret_sources.all? { |source| source.include?("no_log: true") }
+    %w[
+      roles/arr/tasks/reconcile_servarr.yml
+      roles/arr/tasks/reconcile_prowlarr.yml
+      roles/arr/tasks/reconcile_bazarr.yml
+    ].all? do |relative|
+      requests = role_tasks(root, relative).select { |task| task.key?("ansible.builtin.uri") }
+      !requests.empty? && requests.all? { |task| task["no_log"] == true }
+    end
 end
 
 if failures.empty?
