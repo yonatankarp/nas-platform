@@ -83,6 +83,11 @@ SUITES = {
     environment: ->(repo) { { "PLATFORM_CONTRACT_REPO_DIR" => repo } },
     diagnostic: ->(message) { message }
   },
+  downloaders: {
+    command: ->(repo) { [File.join(repo, "tests", "contracts", "downloaders.sh"), "static"] },
+    environment: ->(repo) { { "PLATFORM_CONTRACT_REPO_DIR" => repo } },
+    diagnostic: ->(message) { message }
+  },
   policy_deployment: {
     command: ->(repo) { [RbConfig.ruby, File.join(repo, "tests", "policy_deployment_test.rb")] },
     environment: ->(_repo) { {} },
@@ -221,6 +226,10 @@ ARR_ENVIRONMENT = "roles/arr/templates/env.j2"
 ARR_SERVARR = "roles/arr/tasks/reconcile_servarr.yml"
 ARR_PROWLARR = "roles/arr/tasks/reconcile_prowlarr.yml"
 ARR_BAZARR = "roles/arr/tasks/reconcile_bazarr.yml"
+DOWNLOADERS_MAIN = "roles/downloaders/tasks/main.yml"
+DOWNLOADERS_ENVIRONMENT = "roles/downloaders/templates/env.j2"
+DOWNLOADERS_INI = "roles/downloaders/templates/sabnzbd.ini.j2"
+DOWNLOADERS_VERIFY = "roles/downloaders/tasks/verify.yml"
 BUNDLE_INPUTS = "roles/deployment_bundle/tasks/inputs.yml"
 BUNDLE_TARGET = "roles/deployment_bundle/tasks/target.yml"
 BUNDLE_MANIFEST_TEMPLATE = "roles/deployment_bundle/templates/manifest.yml.j2"
@@ -1038,6 +1047,90 @@ check_accepted(
   [[ARR_PROWLARR,
     "---\n",
     "---\n# Prowlarr indexes; a download client is deliberately never created here.\n"]]
+)
+
+# --- Downloader Phase 1 Usenet ownership ---------------------------------------
+#
+# Two of these are the byte-offset ordering failure this conversion is about: a
+# task named in a comment sorts ahead of the task it names, and a substring that
+# is a prefix of a longer identifier matches it.
+
+check_rejected(
+  failures, :downloaders, "the state guard replaced by a comment naming it",
+  [[DOWNLOADERS_MAIN,
+    "- name: Guard downloader critical state before Phase 1 activation\n" \
+    "  ansible.builtin.include_tasks: state_guard.yml\n",
+    "# ansible.builtin.include_tasks: state_guard.yml\n" \
+    "- name: Guard downloader critical state before Phase 1 activation\n" \
+    "  ansible.builtin.debug:\n" \
+    "    msg: state guard skipped\n"]],
+  "downloaders role must include the state guard before deployment"
+)
+
+check_rejected(
+  failures, :downloaders, "the CPU policy service renamed with the old name left in a comment",
+  [[DOWNLOADERS_MAIN,
+    "    container_cpu_service_name: downloaders\n",
+    "    # container_cpu_service_name: downloaders\n" \
+    "    container_cpu_service_name: usenet-downloaders\n"]],
+  "downloaders role must verify its effective project CPU policy"
+)
+
+check_rejected(
+  failures, :downloaders, "the activation gate demoted to a comment",
+  [[DOWNLOADERS_MAIN,
+    "    wait_timeout: 180\n  when: media_usenet_enabled | bool\n  register: downloaders_deploy\n",
+    "    wait_timeout: 180\n  # when: media_usenet_enabled | bool\n  register: downloaders_deploy\n"]],
+  "downloaders role must gate activation on media_usenet_enabled"
+)
+
+check_rejected(
+  failures, :downloaders, "the Arr client reconciliation pointed at a different entry point",
+  [[DOWNLOADERS_MAIN,
+    "    tasks_from: reconcile_download_clients\n",
+    "    tasks_from: reconcile_download_clients_disabled\n"]],
+  "downloaders must reconcile Arr clients only after SABnzbd"
+)
+
+check_rejected(
+  failures, :downloaders, "an API key bound to the wrong service",
+  [[DOWNLOADERS_ENVIRONMENT,
+    "SONARR_API_KEY={{ vault_arr_sonarr_api_key }}\n",
+    "SONARR_API_KEY={{ vault_arr_radarr_api_key }}\n" \
+    "# SONARR_API_KEY={{ vault_arr_sonarr_api_key }}\n"]],
+  "downloaders env must carry only declared API keys"
+)
+
+check_rejected(
+  failures, :downloaders, "SABnzbd bound to loopback with the old value left in a comment",
+  [[DOWNLOADERS_INI,
+    "host = 0.0.0.0\nport = 8080\n",
+    "host = 127.0.0.1\nport = 8080\n# host = 0.0.0.0\n"]],
+  "bootstrap must bind SABnzbd on all container interfaces"
+)
+
+check_rejected(
+  failures, :downloaders, "a category destination fixed instead of declared",
+  [[DOWNLOADERS_INI,
+    "dir = {{ directory }}\n",
+    "dir = /data/media/.acquisition/usenet\n# dir = {{ directory }}\n"]],
+  "bootstrap must render every declared category and destination"
+)
+
+# Both absence invariants used to read the file's text, so writing down that the
+# forbidden shape is deliberately absent was itself the forbidden shape.
+check_accepted(
+  failures, :downloaders, "a comment recording that no provider section is rendered",
+  [[DOWNLOADERS_INI,
+    "[misc]\n",
+    "# No [servers] section: providers are the operator's, never ours.\n[misc]\n"]]
+)
+
+check_accepted(
+  failures, :downloaders, "a comment explaining why categories are not a mapping",
+  [[DOWNLOADERS_VERIFY,
+    "---\n",
+    "---\n# SABnzbd returns config.categories is mapping only on ancient builds.\n"]]
 )
 
 # --- Deployment bundle policy -------------------------------------------------
