@@ -2,4 +2,6 @@
 role: pinchflat
 container_cpus:
   pinchflat: 1.0
-vault_keys: []
+vault_keys:
+  - vault_pinchflat_admin_username
+  - vault_pinchflat_admin_password

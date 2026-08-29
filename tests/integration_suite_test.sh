@@ -307,12 +307,15 @@ assert_output \
 assert_output \
   'suite=downloaders tags=host_prep,deployment_bundle,ntfy,arr,downloaders playbook=site.yml scenarios=true' \
   --describe-suite downloaders
-for project in bindery kapowarr pinchflat trailarr seerr; do
+assert_output \
+  'suite=pinchflat tags=host_prep,deployment_bundle,ntfy,pinchflat playbook=site.yml scenarios=true' \
+  --describe-suite pinchflat
+for project in bindery kapowarr trailarr seerr; do
   assert_output \
     "suite=$project tags=host_prep,deployment_bundle,media_acquisition_foundation playbook=site.yml scenarios=true" \
     --describe-suite "$project"
 done
-grep -qF 'bindery|kapowarr|pinchflat|trailarr|seerr)' "$integration" || {
+grep -qF 'bindery|kapowarr|trailarr|seerr)' "$integration" || {
   printf '%s\n' 'integration runner has no closed acquisition foundation dispatch' >&2
   exit 1
 }
@@ -324,7 +327,7 @@ acquisition_runtime_contract_holds() {
   source_path=$1
   reader_converge=$(sed -n '/converge_media_acquisition_reader_prerequisites() {/,/^    }$/p' "$source_path")
   foundation_verify=$(sed -n '/run_media_acquisition_foundation_verify() {/,/^    }$/p' "$source_path")
-  acquisition_dispatch=$(sed -n '/bindery|kapowarr|pinchflat|trailarr|seerr)/,/;;/p' "$source_path" | tail -n 12)
+  acquisition_dispatch=$(sed -n '/bindery|kapowarr|trailarr|seerr)/,/;;/p' "$source_path" | tail -n 12)
   printf '%s\n' "$reader_converge" |
     grep -qF -- '--tags host_prep,deployment_bundle,ntfy,audiobookshelf,jellyfin' &&
     printf '%s\n' "$foundation_verify" | grep -qF '/repo/verify.yml' &&
@@ -608,7 +611,7 @@ done
 grep -qF 'komga:true|full:true)' "$integration"
 grep -qF 'jellyfin:true|arr:true|downloaders:true' "$integration"
 grep -qF 'audiobookshelf:true|arr:true|downloaders:true' "$integration"
-grep -qF 'pinchflat:true|trailarr:true|seerr:true|full:true)' "$integration"
+grep -qF 'trailarr:true|seerr:true|full:true)' "$integration"
 grep -qF -- '-e PLATFORM_KOMGA_FIXTURE_PRESEEDED="$komga_fixture_preseeded"' "$integration"
 grep -qF -- '-e PLATFORM_JELLYFIN_FIXTURE_PRESEEDED="$jellyfin_fixture_preseeded"' \
   "$integration"
@@ -835,12 +838,17 @@ assert_pull_count "$runner_image" 3
 [ "$(wc -l < "$pull_log" | tr -d " ")" -eq 3 ] ||
   prepull_fail "foundation pulled service images it never converges: $(sort -u "$pull_log")"
 
-for project in bindery kapowarr pinchflat trailarr seerr; do
+for project in bindery kapowarr trailarr seerr; do
   run_prepull 0 4 --suite "$project"
   [ "$prepull_status" -eq 0 ] || prepull_fail "$project foundation pre-pull failed ($prepull_status)"
   assert_pull_set \
     "$({ printf '%s\n' "$runner_image"; compose_images ntfy; compose_images audiobookshelf; compose_images jellyfin; } | sort -u)"
 done
+
+run_prepull 0 4 --suite pinchflat
+[ "$prepull_status" -eq 0 ] || prepull_fail "pinchflat pre-pull failed ($prepull_status)"
+assert_pull_set \
+  "$({ printf '%s\n' "$runner_image"; compose_images ntfy; compose_images pinchflat; } | sort -u)"
 
 run_prepull 0 4 --suite arr
 [ "$prepull_status" -eq 0 ] || prepull_fail "arr pre-pull failed ($prepull_status)"

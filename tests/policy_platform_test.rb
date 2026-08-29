@@ -91,7 +91,7 @@ PLATFORM_INVENTORIES.values.map { |values| [values[0], values[3]] }.uniq.each do
                           platform_project_name beszel_port ntfy_port dozzle_port
                           audiobookshelf_port komga_port jellyfin_port immich_port paperless_port
                           arr_radarr_port arr_sonarr_port arr_prowlarr_port arr_bazarr_port
-                          downloaders_sabnzbd_port
+                          downloaders_sabnzbd_port pinchflat_port
                         ]
                       else
                         []

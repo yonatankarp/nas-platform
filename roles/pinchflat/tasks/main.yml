@@ -1,0 +1,132 @@
+---
+- name: Revalidate deployment paths before Pinchflat runtime use
+  ansible.builtin.include_role:
+    name: deployment_bundle
+    tasks_from: target
+  vars:
+    deployment_target_require_current_release: true
+    deployment_target_extra_paths:
+      - "{{ platform_current_dir }}/services/pinchflat"
+      - "{{ platform_current_dir }}/services/pinchflat/compose.yml"
+      - "{{ platform_current_dir }}/services/pinchflat/compose.{{ platform_compose_kind }}.yml"
+      - "{{ platform_runtime_dir }}/services/pinchflat"
+      - "{{ platform_runtime_dir }}/services/pinchflat/.env"
+      - "{{ pinchflat_config_host_path }}"
+
+# Redacted: the conditions name the two halves of the Pinchflat basic-auth
+# identity. Compose reads the rendered .env line by line, so a value carrying a
+# newline would silently truncate the credential rather than fail.
+- name: Require env-safe Pinchflat administrator credentials
+  ansible.builtin.assert:
+    that:
+      - vault_pinchflat_admin_username is match('^[^\r\n]+$')
+      - vault_pinchflat_admin_password is match('^[^\r\n]+$')
+    fail_msg: Pinchflat administrator credentials must be nonempty single-line values.
+  no_log: true
+
+# Redacted: this is where the basic-auth identity enters the target filesystem.
+- name: Render the private Pinchflat environment
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ platform_runtime_dir }}/services/pinchflat/.env"
+    mode: "0600"
+  no_log: true
+
+- name: Deploy Pinchflat
+  community.docker.docker_compose_v2:
+    project_src: "{{ platform_current_dir }}/services/pinchflat"
+    project_name: "{{ pinchflat_compose_project_name }}"
+    files: "{{ platform_service_compose_files['pinchflat'] }}"
+    env_files: ["{{ platform_runtime_dir }}/services/pinchflat/.env"]
+    state: present
+    wait: true
+    wait_timeout: "{{ platform_compose_wait_timeout }}"
+  register: pinchflat_deploy
+
+- name: Report the Pinchflat deployment
+  ansible.builtin.include_role:
+    name: ntfy
+    tasks_from: deployment_report
+  vars:
+    ntfy_deployment_report_service: Pinchflat
+    ntfy_deployment_report_changed: "{{ pinchflat_deploy is changed }}"
+
+- name: Verify Pinchflat effective container CPU policy
+  ansible.builtin.include_role:
+    name: container_cpu
+  vars:
+    container_cpu_service_name: pinchflat
+    container_cpu_project_name: "{{ pinchflat_compose_project_name }}"
+  when: not ansible_check_mode
+
+# /healthcheck is the one route Pinchflat leaves outside its basic-auth
+# pipelines, so readiness can be polled without presenting the credential.
+- name: Wait for Pinchflat application health
+  ansible.builtin.uri:
+    url: "{{ pinchflat_api }}/healthcheck"
+    method: GET
+    status_code: [200]
+    return_content: true
+  register: pinchflat_health
+  until:
+    - pinchflat_health.json | default(none) is mapping
+    - pinchflat_health.json.status | default(none) == 'ok'
+  retries: "{{ platform_readiness_retries }}"
+  delay: "{{ platform_readiness_delay }}"
+  changed_when: false
+  check_mode: false
+
+- name: Verify the Pinchflat health endpoint
+  tags: [platform_verify_pinchflat]
+  ansible.builtin.uri:
+    url: "{{ pinchflat_api }}/healthcheck"
+    method: GET
+    status_code: [200]
+    return_content: true
+  register: pinchflat_verify_health
+  changed_when: false
+  check_mode: false
+
+# The web interface is the writer: it queues downloads into the YouTube library
+# and can delete from it. These two reads prove the vault-authored identity is
+# the one Pinchflat accepts, and that it refuses a request without it. Both
+# accept any status so the assertion below is what fails, naming which outcome
+# differed: a probe that died on the HTTP code would report the failure from a
+# redacted task and say nothing.
+# Redacted: the credential is the request.
+- name: Verify the Pinchflat interface accepts the vault administrator
+  tags: [platform_verify_pinchflat]
+  ansible.builtin.uri:
+    url: "{{ pinchflat_api }}/"
+    method: GET
+    url_username: "{{ vault_pinchflat_admin_username }}"
+    url_password: "{{ vault_pinchflat_admin_password }}"
+    force_basic_auth: true
+    status_code: "{{ range(100, 600) | list }}"
+  register: pinchflat_verify_authenticated
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Verify the Pinchflat interface refuses an anonymous request
+  tags: [platform_verify_pinchflat]
+  ansible.builtin.uri:
+    url: "{{ pinchflat_api }}/"
+    method: GET
+    status_code: "{{ range(100, 600) | list }}"
+  register: pinchflat_verify_anonymous
+  failed_when: false
+  changed_when: false
+  check_mode: false
+
+- name: Require the exact Pinchflat verification results
+  tags: [platform_verify_pinchflat]
+  ansible.builtin.assert:
+    that:
+      - pinchflat_verify_health.json.status == 'ok'
+      - pinchflat_verify_authenticated.status | default(0) | int == 200
+      - pinchflat_verify_anonymous.status | default(0) | int == 401
+    fail_msg: >-
+      Pinchflat is unhealthy, or its web interface no longer accepts exactly the
+      vault-authored administrator and refuses everyone else.

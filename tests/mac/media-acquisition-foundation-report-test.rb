@@ -50,6 +50,7 @@ def report_input
     "prowlarr_port" => 36_969,
     "bazarr_port" => 36_767,
     "sabnzbd_port" => 38_082,
+    "pinchflat_port" => 38_945,
     "git_revision" => "abc123",
     "vault_checksum" => "0" * 64,
     "diagnostic_locations" => [],

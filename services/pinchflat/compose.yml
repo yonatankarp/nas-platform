@@ -1,0 +1,45 @@
+---
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
+services:
+  # Pinchflat is a self-contained YouTube writer: it calls no other platform
+  # service, so it stays off the media-control network for the same reason Komga
+  # does. Jellyfin reads what it writes from disk through its own library.
+  pinchflat:
+    container_name: pinchflat
+    image: ghcr.io/kieraneglin/pinchflat:v2025.6.6@sha256:4e975edf58f0861a5cbfe8fc6aac4851ff5a02dfc3f05ffeea4982e3084a5a4a
+    cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
+    cpus: 1.0
+    labels:
+      dev.dozzle.name: pinchflat
+    # The image ships no PUID/PGID handling and upstream refuses to run as root,
+    # so the container takes the shared platform identity directly.
+    user: "${NAS_UID:?}:${NAS_GID:?}"
+    ports:
+      - "8945:8945"
+    volumes:
+      - ${PINCHFLAT_CONFIG_PATH:?}:/config
+      - ${PINCHFLAT_DOWNLOADS_PATH:?}:/downloads
+    environment:
+      TZ: ${TZ:?}
+      UMASK: "022"
+      # Pinchflat's only access control. Unset, the web UI is an unauthenticated
+      # writer on the LAN that can queue and delete media.
+      BASIC_AUTH_USERNAME: ${PINCHFLAT_BASIC_AUTH_USERNAME:?}
+      BASIC_AUTH_PASSWORD: ${PINCHFLAT_BASIC_AUTH_PASSWORD:?}
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          curl --fail --silent --show-error
+          http://127.0.0.1:8945/healthcheck >/dev/null
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+    logging: *default-logging

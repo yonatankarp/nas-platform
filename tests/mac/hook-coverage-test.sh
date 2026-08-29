@@ -176,11 +176,11 @@ expect_log() {
 tree=$fixture/accepted
 build_tree "$tree"
 
-# Every group must account for all ten services: the nine registered contracts
+# Every group must account for all eleven services: the ten registered contracts
 # plus ntfy, which has no contract of its own and so is never in the registry.
 summary=$(run_group "$tree" fixtures-seed 00-services.sh)
 expect_summary "$summary" \
-  'mac fixtures-seed hooks: covered 10 of 10 registered services (ran 7, delegated 0, exempt 3)'
+  'mac fixtures-seed hooks: covered 11 of 11 registered services (ran 7, delegated 0, exempt 4)'
 expect_log "$(cat "$tree/log/hooks")" 'beszel verify
 dozzle verify
 audiobookshelf seed-progress
@@ -191,26 +191,28 @@ paperless seed' 'fixtures-seed'
 
 summary=$(run_group "$tree" fixtures-persistence 00-services.sh)
 expect_summary "$summary" \
-  'mac fixtures-persistence hooks: covered 10 of 10 registered services (ran 6, delegated 1, exempt 3)'
+  'mac fixtures-persistence hooks: covered 11 of 11 registered services (ran 7, delegated 1, exempt 3)'
 expect_log "$(cat "$tree/log/hooks")" 'beszel verify
 dozzle verify
 audiobookshelf assert-persistence
 komga assert-persistence
 jellyfin assert-persistence
-immich assert-persistence' 'fixtures-persistence'
+immich assert-persistence
+pinchflat run' 'fixtures-persistence'
 
 summary=$(run_group "$tree" verify 30-services.sh)
 expect_summary "$summary" \
-  'mac verify hooks: covered 10 of 10 registered services (ran 5, delegated 3, exempt 2)'
+  'mac verify hooks: covered 11 of 11 registered services (ran 6, delegated 3, exempt 2)'
 expect_log "$(cat "$tree/log/hooks")" 'audiobookshelf run
 komga run
 jellyfin run
 immich run
-paperless run' 'verify'
+paperless run
+pinchflat run' 'verify'
 
 summary=$(run_group "$tree" fixtures-recreate 00-services.sh)
 expect_summary "$summary" \
-  'mac fixtures-recreate hooks: covered 10 of 10 registered services (ran 8, delegated 0, exempt 2)'
+  'mac fixtures-recreate hooks: covered 11 of 11 registered services (ran 9, delegated 0, exempt 2)'
 expect_log "$(cat "$tree/log/hooks")" 'beszel verify
 ntfy verify-hook
 dozzle verify
@@ -218,7 +220,8 @@ audiobookshelf run
 komga run
 jellyfin run
 immich run
-paperless run' 'fixtures-recreate'
+paperless run
+pinchflat run' 'fixtures-recreate'
 # The recreate table also carries the deployed bundle directory and the Compose
 # container set, which no other assertion here would notice going wrong.
 # Paperless is the one service whose bundle directory is not its Mac alias.
@@ -229,7 +232,8 @@ proof-audiobookshelf |runtime/services/audiobookshelf/.env |current/services/aud
 proof-komga |runtime/services/komga/.env |current/services/komga/compose.yml |komga
 proof-jellyfin |runtime/services/jellyfin/.env |current/services/jellyfin/compose.yml |jellyfin
 proof-immich |runtime/services/immich/.env |current/services/immich/compose.yml |immich-server immich-machine-learning redis database
-proof-paperless |runtime/services/paperless-ngx/.env |current/services/paperless-ngx/compose.yml |broker db webserver gotenberg tika' \
+proof-paperless |runtime/services/paperless-ngx/.env |current/services/paperless-ngx/compose.yml |broker db webserver gotenberg tika
+proof-pinchflat |runtime/services/pinchflat/.env |current/services/pinchflat/compose.yml |pinchflat' \
   'fixtures-recreate compose'
 
 # The lifecycle calls verify.sh, not the collapsed hook directly. Keep that
@@ -239,7 +243,7 @@ tree=$fixture/verify-wrapper
 build_verify_tree "$tree"
 summary=$(run_verify_wrapper "$tree")
 expect_summary "$summary" \
-  'mac verify hooks: covered 10 of 10 registered services (ran 5, delegated 3, exempt 2)'
+  'mac verify hooks: covered 11 of 11 registered services (ran 6, delegated 3, exempt 2)'
 expect_log "$(cat "$tree/log/hooks")" 'beszel verify-hook
 media-acquisition-foundation verify-hook
 ntfy verify-hook
@@ -248,7 +252,8 @@ audiobookshelf run
 komga run
 jellyfin run
 immich run
-paperless run' 'verify wrapper'
+paperless run
+pinchflat run' 'verify wrapper'
 
 tree=$fixture/verify-wrapper-registered-surplus
 build_verify_tree "$tree"

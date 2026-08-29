@@ -62,6 +62,7 @@ mac_recreate_and_reassert immich immich immich \
   'immich-server immich-machine-learning redis database' run
 mac_recreate_and_reassert paperless paperless-ngx paperless \
   'broker db webserver gotenberg tika' run
+mac_recreate_and_reassert pinchflat pinchflat pinchflat pinchflat run
 
 mac_assert_service_coverage fixtures-recreate 00-services.sh "$mac_recreated" \
   'arr=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite

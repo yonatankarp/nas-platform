@@ -101,3 +101,13 @@ services:
       create: get_user_model
       authenticate: api/token
       reconcile: get_user_model
+  pinchflat:
+    preserves_unmanaged_users: true
+    password_rotation: refuse
+    existing_identity_password_update: forbidden
+    mode: declarative_environment
+    interfaces:
+      list: BASIC_AUTH_USERNAME
+      create: BASIC_AUTH_USERNAME/BASIC_AUTH_PASSWORD
+      authenticate: Basic authentication
+      reconcile: BASIC_AUTH_USERNAME/BASIC_AUTH_PASSWORD

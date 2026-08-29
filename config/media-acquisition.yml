@@ -163,7 +163,7 @@ projects:
             published_by: kapowarr
   pinchflat:
     role: pinchflat
-    status: planned
+    status: implemented
     services:
       pinchflat:
         class: long_running

@@ -127,6 +127,9 @@ case $mac_service in
     PLATFORM_PAPERLESS_WEBSERVER_CONTAINER=$(mac_container_name paperless-webserver)
     export PLATFORM_PAPERLESS_WEBSERVER_CONTAINER
     ;;
+  pinchflat)
+    : "${PLATFORM_PINCHFLAT_PORT:?PLATFORM_PINCHFLAT_PORT is required}"
+    ;;
   *) mac_die "registered service has no Mac contract environment: $mac_service" ;;
 esac
 

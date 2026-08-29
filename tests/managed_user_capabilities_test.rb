@@ -7,7 +7,7 @@ require_relative "policy_support"
 
 ROOT = File.expand_path("..", __dir__)
 CAPABILITIES_PATH = File.join(ROOT, "config", "managed-user-capabilities.yml")
-SUCCESS = "Managed-user capabilities: all ten service contracts are pinned"
+SUCCESS = "Managed-user capabilities: all eleven service contracts are pinned"
 
 MULTI_USER_DEFAULTS = {
   "preserves_unmanaged_users" => true,
@@ -104,6 +104,15 @@ EXPECTED_SERVICES = {
       "create" => "get_user_model",
       "authenticate" => "api/token",
       "reconcile" => "get_user_model"
+    }
+  ),
+  "pinchflat" => MULTI_USER_DEFAULTS.merge(
+    "mode" => "declarative_environment",
+    "interfaces" => {
+      "list" => "BASIC_AUTH_USERNAME",
+      "create" => "BASIC_AUTH_USERNAME/BASIC_AUTH_PASSWORD",
+      "authenticate" => "Basic authentication",
+      "reconcile" => "BASIC_AUTH_USERNAME/BASIC_AUTH_PASSWORD"
     }
   )
 }.freeze

@@ -47,7 +47,7 @@ module ClassifyChanges
     "downloaders" => %w[host_prep deployment_bundle ntfy arr downloaders],
     "bindery" => %w[host_prep deployment_bundle media_acquisition_foundation],
     "kapowarr" => %w[host_prep deployment_bundle media_acquisition_foundation],
-    "pinchflat" => %w[host_prep deployment_bundle media_acquisition_foundation],
+    "pinchflat" => %w[host_prep deployment_bundle ntfy pinchflat],
     "trailarr" => %w[host_prep deployment_bundle media_acquisition_foundation],
     "seerr" => %w[host_prep deployment_bundle media_acquisition_foundation],
     "beszel" => %w[host_prep deployment_bundle ntfy beszel],
@@ -61,6 +61,7 @@ module ClassifyChanges
   SERVICE_NAMES = {
     "arr" => %w[arr],
     "downloaders" => %w[downloaders],
+    "pinchflat" => %w[pinchflat],
     "beszel" => %w[beszel],
     "dozzle" => %w[dozzle],
     "audiobookshelf" => %w[audiobookshelf],

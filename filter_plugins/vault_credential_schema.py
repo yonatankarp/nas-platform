@@ -149,6 +149,8 @@ CREDENTIAL_RULES = {
     "vault_downloaders_sabnzbd_api_key": ((PATTERN, HEX_32),),
     "vault_downloaders_sabnzbd_admin_username": ((NONEMPTY, None),),
     "vault_downloaders_sabnzbd_admin_password": ((NONEMPTY, None),),
+    "vault_pinchflat_admin_username": ((NONEMPTY, None),),
+    "vault_pinchflat_admin_password": ((NONEMPTY, None),),
 }
 
 # The three publisher tokens authenticate three different ntfy identities. A

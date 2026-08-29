@@ -94,7 +94,7 @@ EXPECTED_PROJECTS = {
     }
   },
   "pinchflat" => {
-    "role" => "pinchflat", "status" => "planned", "services" => {
+    "role" => "pinchflat", "status" => "implemented", "services" => {
       "pinchflat" => service("long_running", 1.0, ui_port(8945, published_by: "pinchflat"))
     }
   },
@@ -151,7 +151,8 @@ EXPECTED_IMPLEMENTED_PORTS = [
   ["paperless-ngx", "broker", "127.0.0.1", 6379, 6379, "tcp"],
   ["paperless-ngx", "db", "127.0.0.1", 5432, 5432, "tcp"],
   ["paperless-ngx", "gotenberg", "127.0.0.1", 3000, 3000, "tcp"],
-  ["paperless-ngx", "tika", "127.0.0.1", 9998, 9998, "tcp"]
+  ["paperless-ngx", "tika", "127.0.0.1", 9998, 9998, "tcp"],
+  ["pinchflat", "pinchflat", "0.0.0.0", 8945, 8945, "tcp"]
 ].freeze
 
 EXPECTED_STORAGE = {
@@ -188,6 +189,7 @@ EXPECTED_STORAGE = {
 EXPECTED_INTEGRATION_WRITERS = Set[
   "{{ nas_media_root }}/Media/Movies",
   "{{ nas_media_root }}/Media/Series",
+  "{{ nas_media_root }}/Media/YouTube",
   "{{ nas_media_root }}/Media/.acquisition/usenet/movies",
   "{{ nas_media_root }}/Media/.acquisition/usenet/series",
   "{{ nas_media_root }}/Media/.acquisition/usenet/audiobooks",

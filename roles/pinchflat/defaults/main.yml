@@ -1,0 +1,8 @@
+---
+pinchflat_port: 8945
+pinchflat_api: "http://127.0.0.1:{{ pinchflat_port }}"
+pinchflat_config_host_path: "{{ nas_docker_root }}/pinchflat/config"
+pinchflat_downloads_host_path: "{{ nas_media_root }}/Media/YouTube"
+pinchflat_compose_project_name: >-
+  {{ (platform_project_name ~ '-pinchflat')
+     if platform_project_name | default('') | length > 0 else 'pinchflat' }}

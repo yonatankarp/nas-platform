@@ -183,6 +183,7 @@ nas_storage:
     mode: "0755"
     recovery: user
     media_acquisition_foundation: true
+    media_acquisition_writer: true
   - path: "{{ nas_media_root }}/Books/Ebooks"
     mode: "0755"
     recovery: user

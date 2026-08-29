@@ -23,6 +23,7 @@ render() {
   prowlarr_port=${13}
   bazarr_port=${14}
   sabnzbd_port=${15}
+  pinchflat_port=${16}
 
   env PLATFORM_PROJECT_NAME="$base_name" BESZEL_HOST_PORT="$beszel_port" \
     NAS_DOCKER_ROOT="$temporary_dir/$label" NAS_MEDIA_ROOT="$temporary_dir/$label-media" \
@@ -140,12 +141,23 @@ render() {
       -f "$repo_dir/services/downloaders/compose.yml" \
       -f "$repo_dir/services/downloaders/compose.mac.yml" config --format json \
       > "$temporary_dir/$label-downloaders.json"
+
+  env PLATFORM_PROJECT_NAME="$base_name" PLATFORM_CONTAINER_CPUSET=0-2 \
+    NAS_UID=1000 NAS_GID=100 TZ=UTC \
+    PINCHFLAT_CONFIG_PATH="$temporary_dir/$label-pinchflat-config" \
+    PINCHFLAT_DOWNLOADS_PATH="$temporary_dir/$label-media/Media/YouTube" \
+    PINCHFLAT_HOST_PORT="$pinchflat_port" \
+    PINCHFLAT_BASIC_AUTH_USERNAME=test PINCHFLAT_BASIC_AUTH_PASSWORD=test \
+    docker compose --project-name "$base_name-pinchflat" \
+      -f "$repo_dir/services/pinchflat/compose.yml" \
+      -f "$repo_dir/services/pinchflat/compose.mac.yml" config --format json \
+      > "$temporary_dir/$label-pinchflat.json"
 }
 
 render first nas-platform-mac-first 38090 32586 38080 33378 35600 38096 32283 38000 \
-  37878 38989 36969 36767 38082
+  37878 38989 36969 36767 38082 38945
 render second nas-platform-mac-second 38091 32587 38081 33379 35601 38097 32284 38001 \
-  37879 38990 36970 36768 38083
+  37879 38990 36970 36768 38083 38946
 
 ruby -rjson - "$temporary_dir" <<'RUBY'
 directory = ARGV.fetch(0)
@@ -157,6 +169,8 @@ first_dozzle = JSON.parse(File.read(File.join(directory, "first-dozzle.json")))
 second_dozzle = JSON.parse(File.read(File.join(directory, "second-dozzle.json")))
 first_audiobookshelf = JSON.parse(File.read(File.join(directory, "first-audiobookshelf.json")))
 second_audiobookshelf = JSON.parse(File.read(File.join(directory, "second-audiobookshelf.json")))
+first_pinchflat = JSON.parse(File.read(File.join(directory, "first-pinchflat.json")))
+second_pinchflat = JSON.parse(File.read(File.join(directory, "second-pinchflat.json")))
 first_komga = JSON.parse(File.read(File.join(directory, "first-komga.json")))
 second_komga = JSON.parse(File.read(File.join(directory, "second-komga.json")))
 first_jellyfin = JSON.parse(File.read(File.join(directory, "first-jellyfin.json")))
@@ -301,6 +315,13 @@ raise "SABnzbd published ports collide" if
   published(first_downloaders, "sabnzbd") == published(second_downloaders, "sabnzbd")
 raise "Unpackerr publishes a host port" if
   first_downloaders.dig("services", "unpackerr").key?("ports")
+
+raise "Pinchflat project namespaces collide" if first_pinchflat["name"] == second_pinchflat["name"]
+raise "Pinchflat container names collide" if
+  first_pinchflat.dig("services", "pinchflat", "container_name") ==
+  second_pinchflat.dig("services", "pinchflat", "container_name")
+raise "Pinchflat published ports collide" if
+  published(first_pinchflat, "pinchflat") == published(second_pinchflat, "pinchflat")
 
 raise "Mac socket proxy publishes a host port" if first_beszel.dig("services", "socket-proxy").key?("ports")
 raise "Dozzle socket proxy publishes a host port" if first_dozzle.dig("services", "socket-proxy").key?("ports")
