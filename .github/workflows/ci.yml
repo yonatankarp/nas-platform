@@ -190,6 +190,11 @@ jobs:
     permissions:
       contents: read
       packages: read
+    # Read at job level rather than inside the step because a step's `if` is
+    # evaluated before that step's own env block exists. This carries no secret
+    # value into the log: it is present-or-absent that the guard below reads.
+    env:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
     strategy:
       fail-fast: false
       matrix:
@@ -211,6 +216,43 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # lscr.io is linuxserver.io's front door onto that same registry: its
+      # authentication challenge names realm="https://ghcr.io/token"
+      # service="ghcr.io", and a GitHub credential is what redeems it. The Docker
+      # CLI keys credentials by the host it was asked for, so the login above does
+      # not reach a lscr.io pull, and seven of the images the plays pull are
+      # lscr.io ones -- every arr and every downloader. Without this they stay on
+      # the anonymous per-IP allowance, which is the one that refused three
+      # unrelated PRs on 2026-08-28.
+      - name: Authenticate to the linuxserver.io registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: lscr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # Docker Hub is the last registry still pulled anonymously, and eleven of the
+      # images the plays pull are docker.io ones. Anonymous Hub pulls are 100 per
+      # six hours scoped to the runner's IPv4 address or IPv6 /64 -- the same shared
+      # bucket that refused the ghcr.io pulls above. A free personal account is 200
+      # per six hours that only this repository spends, so the isolation matters
+      # more than the doubling.
+      #
+      # This is the one login that needs a stored credential: GITHUB_TOKEN is not a
+      # Docker Hub account. `docker login docker.io` resolves to
+      # https://registry-1.docker.io/v2/, so naming the host reads the same as every
+      # other login here and keeps the Docker CLI's credential key correct.
+      #
+      # Guarded on the secret being set. Authentication is an optimization over the
+      # anonymous allowance, never a precondition for it, so a checkout without the
+      # secret -- a fork PR, a clone -- pulls exactly as it did before this step
+      # existed instead of failing at login.
+      - name: Authenticate to Docker Hub
+        if: ${{ env.DOCKERHUB_USERNAME != '' }}
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Run integration suite
         env:
           SUITE: ${{ matrix.suite }}
