@@ -149,22 +149,84 @@
       unpaginated array before any mutation.
   when: not ansible_check_mode or komga_claim_status.json.isClaimed | bool
 
-- name: Resolve normalized Komga library target
+
+# The desired model is derived from komga_libraries alone, so it is equally
+# available on the platform_verify_komga path, where every untagged task above is
+# skipped. Both halves are tagged for that reason, and the model is rebuilt from
+# empty rather than appended to so a second include cannot accumulate duplicates.
+#
+# Every accumulating loop below is redacted, and none of them can name a
+# credential: a failed iteration prints `item` in full whatever it loops over, so
+# the looped tasks carry redaction and every task that has to say what went
+# wrong is unlooped and unredacted instead.
+- name: Reset normalized Komga library targets
+  tags: [platform_verify_komga]
   ansible.builtin.set_fact:
-    komga_library_normalized_root: "{{ komga_library_root | regex_replace('/+$', '') }}"
+    komga_desired_libraries: []
+
+- name: Resolve normalized Komga library targets
+  tags: [platform_verify_komga]
+  ansible.builtin.set_fact:
+    komga_desired_libraries: >-
+      {{ komga_desired_libraries + [{
+           'name': item.name | default(none),
+           'root': item.root | default(none),
+           'normalized_root': item.root | default('', true) | string | regex_replace('/+$', ''),
+           'settings': komga_library_settings | combine(item.settings | default({}, true))
+         }] }}
+  loop: "{{ komga_libraries }}"
+  loop_control:
+    label: "{{ item.name | default('komga-library') }}"
+  no_log: true
+
+# Vectorized rather than looped so the failing condition and the declared model
+# both reach the log. `is string` precedes every filter that would raise on a
+# non-string, because assert stops at its first false condition.
+- name: Require a valid Komga library target
+  tags: [platform_verify_komga]
+  ansible.builtin.assert:
+    that:
+      - >-
+        komga_desired_libraries | selectattr('name', 'string') | list | length ==
+        komga_desired_libraries | length
+      - komga_desired_libraries | map(attribute='name') | select('equalto', '') | list | length == 0
+      - >-
+        komga_desired_libraries | selectattr('root', 'string') | list | length ==
+        komga_desired_libraries | length
+      - komga_desired_libraries | map(attribute='root') | select('equalto', '') | list | length == 0
+      - >-
+        komga_desired_libraries | map(attribute='root') | map('regex_replace', '/+$', '') | list ==
+        komga_desired_libraries | map(attribute='root') | list
+      - >-
+        komga_desired_libraries | selectattr('settings', 'mapping') | list | length ==
+        komga_desired_libraries | length
+    fail_msg: >-
+      Every managed Komga library name and exact normalized API root must be a nonempty string:
+      {{ komga_desired_libraries | map(attribute='name') | list }} at
+      {{ komga_desired_libraries | map(attribute='root') | list }}.
+
+- name: Require a distinct Komga library model
+  tags: [platform_verify_komga]
+  ansible.builtin.assert:
+    that:
+      - komga_libraries is sequence
+      - komga_libraries is not string
+      - komga_desired_libraries | length > 0
+      - >-
+        komga_desired_libraries | map(attribute='name') | unique | list | length ==
+        komga_desired_libraries | length
+      - >-
+        komga_desired_libraries | map(attribute='normalized_root') | unique | list | length ==
+        komga_desired_libraries | length
+    fail_msg: >-
+      komga_libraries must be a nonempty list of libraries with distinct names and distinct
+      normalized roots.
+
+- name: Resolve the Komga library inventory
+  ansible.builtin.set_fact:
     komga_library_inventory: >-
       {{ komga_libraries_before.json
          if (not ansible_check_mode or komga_claim_status.json.isClaimed | bool) else [] }}
-
-- name: Require a valid Komga library target
-  ansible.builtin.assert:
-    that:
-      - komga_library_name is string
-      - komga_library_name | length > 0
-      - komga_library_root is string
-      - komga_library_root | length > 0
-      - komga_library_normalized_root == komga_library_root
-    fail_msg: The managed Komga library name and exact normalized API root are invalid.
 
 # Every Komga root match below selects the same way, and the regex is not the
 # obvious one, so the reasoning lives here once.
@@ -177,31 +239,36 @@
 #   regex_escape  a root containing `.` must not behave as a wildcard.
 #   (?<!/)        a needle that itself ends in a slash matched nothing under the
 #                 accumulator, because the left side never ends in one. The
-#                 lookbehind keeps that closed. It matters on the
-#                 platform_verify_komga path, where the normalizing task and its
-#                 assert are untagged and so never run.
+#                 lookbehind keeps that closed.
 #   \A and \Z     Python's `$` also matches before a trailing newline, so `^..$`
 #                 accepted a root of "/data\n" that the accumulator rejected.
 #
 # The dropped `item is mapping` condition needs no replacement: a non-mapping
 # candidate has no `root` attribute, so `selectattr('root', 'defined')` discards
 # it exactly as the loop did.
-- name: Resolve normalized Komga managed-root matches
+- name: Reset Komga library candidates
   ansible.builtin.set_fact:
-    komga_managed_root_matches: >-
-      {{ komga_library_inventory
-         | selectattr('root', 'defined') | selectattr('root', 'string')
-         | selectattr('root', 'regex',
-                      '\A' ~ (komga_library_normalized_root | regex_escape) ~ '(?<!/)/*\Z')
-         | list }}
+    komga_library_candidates: []
 
-- name: Resolve exact Komga desired-name matches
+- name: Resolve Komga library candidates
   ansible.builtin.set_fact:
-    komga_desired_name_matches: >-
-      {{ komga_library_inventory
-         | selectattr('name', 'defined') | selectattr('name', 'string')
-         | selectattr('name', 'equalto', komga_library_name)
-         | list }}
+    komga_library_candidates: >-
+      {{ komga_library_candidates + [item | combine({
+           'settings_items': item.settings | dict2items,
+           'root_matches': komga_library_inventory
+             | selectattr('root', 'defined') | selectattr('root', 'string')
+             | selectattr('root', 'regex',
+                          '\A' ~ (item.normalized_root | regex_escape) ~ '(?<!/)/*\Z')
+             | list,
+           'name_matches': komga_library_inventory
+             | selectattr('name', 'defined') | selectattr('name', 'string')
+             | selectattr('name', 'equalto', item.name)
+             | list
+         })] }}
+  loop: "{{ komga_desired_libraries }}"
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
 
 - name: Require valid Komga library candidate schemas
   ansible.builtin.assert:
@@ -216,60 +283,155 @@
       - item.id is string
       - item.id is match('^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$')
     fail_msg: A managed-root or desired-name Komga library candidate has an unsafe schema.
-  loop: "{{ komga_managed_root_matches + komga_desired_name_matches }}"
+  loop: >-
+    {{ (komga_library_candidates | map(attribute='root_matches') | list | flatten) +
+       (komga_library_candidates | map(attribute='name_matches') | list | flatten) }}
   loop_control:
     label: komga-library-candidate
+  no_log: true
+
+# The two refusals below are resolved into named lists first so the assert that
+# reports them stays unlooped, and so keeps both its diagnosis and the names of
+# the libraries the operator has to go and look at.
+- name: Reset ambiguous Komga library candidates
+  ansible.builtin.set_fact:
+    komga_ambiguous_libraries: []
+    komga_library_root_migrations: []
+
+- name: Resolve ambiguous Komga library candidates
+  ansible.builtin.set_fact:
+    komga_ambiguous_libraries: "{{ komga_ambiguous_libraries + [item.name] }}"
+  when: item.root_matches | length > 1 or item.name_matches | length > 1
+  loop: "{{ komga_library_candidates }}"
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+
+# A library carrying the desired name at a different root is exactly the state a
+# single /data library is in before it narrows to /data/Comics. Repointing it is
+# not something an unreviewed run may do, so it is collected here and refused
+# below unless the one-convergence input opens it.
+- name: Resolve pending Komga library root migrations
+  ansible.builtin.set_fact:
+    komga_library_root_migrations: "{{ komga_library_root_migrations + [item.name] }}"
+  when:
+    - item.name_matches | length > 0
+    - (item.name_matches[0].root | regex_replace('/+$', '')) != item.normalized_root
+  loop: "{{ komga_library_candidates }}"
+  loop_control:
+    label: "{{ item.name }}"
   no_log: true
 
 - name: Refuse ambiguous Komga library candidates
   ansible.builtin.assert:
     that:
-      - komga_managed_root_matches | length <= 1
-      - komga_desired_name_matches | length <= 1
+      - komga_ambiguous_libraries | length == 0
       - >-
-        komga_desired_name_matches | length == 0 or
-        (komga_desired_name_matches[0].root | regex_replace('/+$', '')) ==
-          komga_library_normalized_root
+        komga_library_root_migrations | length == 0 or
+        komga_library_root_migration_allowed | bool
     fail_msg: >-
-      Komga library reconciliation is ambiguous: managed-root IDs
-      {{ komga_managed_root_matches | map(attribute='id') | list }} and desired-name IDs
-      {{ komga_desired_name_matches | map(attribute='id') | list }}. Resolve the conflict manually;
-      no library was mutated.
+      Komga library reconciliation is ambiguous. Libraries matched more than once:
+      {{ komga_ambiguous_libraries }}. Libraries whose desired name is bound to a different root:
+      {{ komga_library_root_migrations }}. The second is a library root migration; rerun that one
+      convergence with komga_library_root_migration_allowed=true, or resolve the conflict manually.
+      No library was mutated.
 
-- name: Resolve the existing managed Komga library
+# Matched by root first, so a converged platform never depends on the migration
+# input. The name match is consulted only while that input is set, which is what
+# makes the root repair below reachable at all.
+- name: Reset the Komga library reconciliation plan
   ansible.builtin.set_fact:
-    komga_existing_library: "{{ komga_managed_root_matches | first | default({}) }}"
-    komga_library_create_required: >-
-      {{ (ansible_check_mode and not komga_claim_status.json.isClaimed | bool) or
-         komga_managed_root_matches | length == 0 }}
+    komga_library_plan: []
 
-- name: Resolve Komga library identity repair payload
+- name: Resolve the Komga library reconciliation plan
   ansible.builtin.set_fact:
-    komga_library_patch_body: >-
-      {{ ({} |
-          combine({'name': komga_library_name}
-                  if komga_existing_library | length > 0 and
-                     komga_existing_library.name != komga_library_name else {}) |
-          combine({'root': komga_library_root}
-                  if komga_existing_library | length > 0 and
-                     komga_existing_library.root != komga_library_root else {})) }}
+    komga_library_plan: >-
+      {{ komga_library_plan + [item | combine({'existing': (
+           item.root_matches | first | default(
+             (item.name_matches | first | default({}))
+             if komga_library_root_migration_allowed | bool else {})
+         )})] }}
+  loop: "{{ komga_library_candidates }}"
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+
+- name: Refuse overlapping Komga library targets
+  ansible.builtin.assert:
+    that:
+      - >-
+        (komga_library_plan | selectattr('existing') | map(attribute='existing.id')
+         | unique | list | length) ==
+        (komga_library_plan | selectattr('existing') | list | length)
+    fail_msg: >-
+      Two managed Komga libraries resolved to the same existing library:
+      {{ komga_library_plan | selectattr('existing') | map(attribute='name') | list }}. Resolve the
+      conflict manually; no library was mutated.
+
+- name: Resolve the Komga library creation plan
+  ansible.builtin.set_fact:
+    komga_library_creations: "{{ komga_library_plan | rejectattr('existing') | list }}"
+
+- name: Reset drifted owned Komga library settings
+  ansible.builtin.set_fact:
+    komga_library_setting_drift: {}
 
 - name: Resolve drifted owned Komga library settings
   ansible.builtin.set_fact:
-    komga_library_patch_body: >-
-      {{ komga_library_patch_body | combine({item.key: item.value}) }}
+    komga_library_setting_drift: >-
+      {{ komga_library_setting_drift | combine({
+           item.0.name: (komga_library_setting_drift[item.0.name] | default({}))
+                        | combine({item.1.key: item.1.value})}) }}
   when:
-    - komga_existing_library | length > 0
-    - item.key not in komga_existing_library or komga_existing_library[item.key] != item.value
-  loop: "{{ komga_library_settings | dict2items }}"
+    - item.1.key not in item.0.existing or item.0.existing[item.1.key] != item.1.value
+  loop: "{{ komga_library_plan | selectattr('existing') | list | subelements('settings_items') }}"
   loop_control:
     label: komga-owned-library-setting
   no_log: true
 
-- name: Resolve Komga library repair requirement
+- name: Reset the Komga library repair plan
   ansible.builtin.set_fact:
-    komga_library_repair_required: >-
-      {{ komga_existing_library | length > 0 and komga_library_patch_body | length > 0 }}
+    komga_library_repairs: []
+
+- name: Resolve Komga library identity repair payloads
+  ansible.builtin.set_fact:
+    komga_library_repairs: >-
+      {{ komga_library_repairs + [{
+           'name': item.name,
+           'id': item.existing.id,
+           'body': ({}
+             | combine({'name': item.name} if item.existing.name != item.name else {})
+             | combine({'root': item.root} if item.existing.root != item.root else {})
+             | combine(komga_library_setting_drift[item.name] | default({})))
+         }] }}
+  loop: "{{ komga_library_plan | selectattr('existing') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+
+- name: Resolve the Komga library repair requirement
+  ansible.builtin.set_fact:
+    komga_library_repairs: "{{ komga_library_repairs | selectattr('body') | list }}"
+
+- name: Resolve Komga library reconciliation requirements
+  ansible.builtin.set_fact:
+    komga_library_create_required: "{{ komga_library_creations | length > 0 }}"
+    komga_library_repair_required: "{{ komga_library_repairs | length > 0 }}"
+    komga_library_root_moves: >-
+      {{ komga_library_repairs | selectattr('body.root', 'defined') | map(attribute='name') | list }}
+
+# How the role says that this input is not a setting. It is reported on every run
+# that carries it, including the run where it turns out to have nothing left to
+# do, so a flag left on is visible in the output rather than silent.
+- name: Report the one-convergence Komga library root migration input
+  ansible.builtin.debug:
+    msg: >-
+      KOMGA_ROOT_MIGRATION_ALLOWED: pending library root moves
+      {{ komga_library_root_moves }}. komga_library_root_migration_allowed is a one-convergence
+      input, not a platform setting: drop it from the next run and never store it in a host
+      variable file. An empty list here means it is already stale.
+  when: komga_library_root_migration_allowed | bool
+  changed_when: false
 
 - name: Reconcile managed Komga users
   ansible.builtin.include_tasks: managed_users.yml
@@ -279,7 +441,7 @@
 
 - name: Report planned Komga library creation
   ansible.builtin.debug:
-    msg: KOMGA_PLAN_LIBRARY_CREATE
+    msg: "KOMGA_PLAN_LIBRARY_CREATE {{ komga_library_creations | map(attribute='name') | list }}"
   when:
     - ansible_check_mode
     - komga_library_create_required | bool
@@ -293,17 +455,18 @@
     url_password: "{{ vault_komga_admin_password }}"
     force_basic_auth: true
     body_format: json
-    body: "{{ {'name': komga_library_name, 'root': komga_library_root} | combine(komga_library_settings) }}"
+    body: "{{ {'name': item.name, 'root': item.root} | combine(item.settings) }}"
     status_code: [200]
-  when:
-    - not ansible_check_mode
-    - komga_library_create_required | bool
+  loop: "{{ komga_library_creations }}"
+  loop_control:
+    label: komga-library-creation
+  when: not ansible_check_mode
   changed_when: true
   no_log: true
 
 - name: Report planned Komga library repair
   ansible.builtin.debug:
-    msg: KOMGA_PLAN_LIBRARY_REPAIR
+    msg: "KOMGA_PLAN_LIBRARY_REPAIR {{ komga_library_repairs | map(attribute='name') | list }}"
   when:
     - ansible_check_mode
     - komga_library_repair_required | bool
@@ -312,17 +475,18 @@
 - name: Repair the managed Komga library
   ansible.builtin.uri:
     url: >-
-      {{ komga_api }}/api/v1/libraries/{{ komga_existing_library.id | urlencode }}
+      {{ komga_api }}/api/v1/libraries/{{ item.id | urlencode }}
     method: PATCH
     url_username: "{{ vault_komga_admin_email }}"
     url_password: "{{ vault_komga_admin_password }}"
     force_basic_auth: true
     body_format: json
-    body: "{{ komga_library_patch_body }}"
+    body: "{{ item.body }}"
     status_code: [204]
-  when:
-    - not ansible_check_mode
-    - komga_library_repair_required | bool
+  loop: "{{ komga_library_repairs }}"
+  loop_control:
+    label: komga-library-repair
+  when: not ansible_check_mode
   changed_when: true
   no_log: true
 
@@ -340,48 +504,69 @@
   check_mode: false
   no_log: true
 
-- name: Resolve authoritative Komga managed-root read-back
+- name: Reset the authoritative Komga library read-back
   ansible.builtin.set_fact:
-    komga_reconciled_root_matches: >-
-      {{ komga_libraries_after.json | default([])
-         | selectattr('root', 'defined') | selectattr('root', 'string')
-         | selectattr('root', 'regex',
-                      '\A' ~ (komga_library_normalized_root | regex_escape) ~ '(?<!/)/*\Z')
-         | list }}
+    komga_reconciled_libraries: []
+    komga_reconciled_drift: []
   when: not ansible_check_mode
 
-- name: Resolve authoritative Komga desired-name read-back
+- name: Resolve the authoritative Komga library read-back
   ansible.builtin.set_fact:
-    komga_reconciled_name_matches: >-
-      {{ komga_libraries_after.json | default([])
-         | selectattr('name', 'defined') | selectattr('name', 'string')
-         | selectattr('name', 'equalto', komga_library_name)
-         | list }}
+    komga_reconciled_libraries: >-
+      {{ komga_reconciled_libraries + [item | combine({
+           'root_matches': komga_libraries_after.json | default([])
+             | selectattr('root', 'defined') | selectattr('root', 'string')
+             | selectattr('root', 'regex',
+                          '\A' ~ (item.normalized_root | regex_escape) ~ '(?<!/)/*\Z')
+             | list,
+           'name_matches': komga_libraries_after.json | default([])
+             | selectattr('name', 'defined') | selectattr('name', 'string')
+             | selectattr('name', 'equalto', item.name)
+             | list
+         })] }}
+  loop: "{{ komga_library_plan }}"
+  loop_control:
+    label: "{{ item.name }}"
   when: not ansible_check_mode
+  no_log: true
 
-# Deliberately not redacted. Unlooped, so the result dict adds only the source text of
-# the failing condition, and the conditions read the library listing Komga returned plus
-# the owned name, root and settings, none of which is credential material. The fail_msg
-# lists four alternatives and redaction would hide which one applied.
+# Jinja `or` short-circuits, so each condition guards the indexing in the ones
+# after it.
+- name: Resolve drifted reconciled Komga libraries
+  ansible.builtin.set_fact:
+    komga_reconciled_drift: "{{ komga_reconciled_drift + [item.name] }}"
+  when:
+    - not ansible_check_mode
+    - >-
+      item.root_matches | length != 1 or
+      item.name_matches | length != 1 or
+      item.root_matches[0].id != item.name_matches[0].id or
+      item.root_matches[0].name != item.name or
+      item.root_matches[0].root != item.root or
+      (item.root_matches[0] | dict2items
+       | selectattr('key', 'in', item.settings.keys())
+       | items2dict) != item.settings or
+      (item.existing | length > 0 and item.root_matches[0].id != item.existing.id)
+  loop: "{{ komga_reconciled_libraries | default([]) }}"
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+
+# Deliberately not redacted. Unlooped, so the result dict adds only the source text
+# of the failing condition, and the conditions read the library listing Komga
+# returned plus the owned names and roots, none of which is credential material.
+# The fail_msg names the libraries that did not converge and redaction would hide
+# both that and which of the four alternatives applied.
 - name: Require exact reconciled Komga library
   ansible.builtin.assert:
     that:
       - komga_libraries_after.json | type_debug == 'list'
-      - komga_reconciled_root_matches | length == 1
-      - komga_reconciled_name_matches | length == 1
-      - komga_reconciled_root_matches[0].id == komga_reconciled_name_matches[0].id
-      - komga_reconciled_root_matches[0].name == komga_library_name
-      - komga_reconciled_root_matches[0].root == komga_library_root
-      - >-
-        (komga_reconciled_root_matches[0] | dict2items
-         | selectattr('key', 'in', komga_library_settings.keys())
-         | items2dict) == komga_library_settings
-      - >-
-        komga_existing_library | length == 0 or
-        komga_reconciled_root_matches[0].id == komga_existing_library.id
+      - komga_desired_libraries | length > 0
+      - komga_reconciled_libraries | default([]) | length == komga_desired_libraries | length
+      - komga_reconciled_drift | default([]) | length == 0
     fail_msg: >-
-      Komga did not authoritatively return one exact Comics library at the managed root with the
-      preserved identifier and owned settings.
+      Komga did not authoritatively return one exact library at each managed root with the
+      preserved identifier and owned settings: {{ komga_reconciled_drift }}.
   when: not ansible_check_mode
 
 - name: Verify exact Komga administrator and libraries
@@ -408,29 +593,53 @@
     komga_verified_libraries: "{{ komga_verify_state.results[1].json }}"
   no_log: true
 
-# These two match against komga_library_root rather than the normalized fact,
-# because this tagged path runs without the untagged task that computes it. That
-# is also why the (?<!/) lookbehind documented above is not decoration here: a
-# komga_library_root carrying a trailing slash reaches this point unasserted, and
-# the accumulator these replace matched nothing at all in that case.
-- name: Resolve normalized Komga verification root matches
+# This path reaches the same normalized model as reconciliation because the two
+# tasks that build it are tagged. The (?<!/) lookbehind documented above is not
+# decoration even so: it is what makes a root carrying a trailing slash match
+# itself rather than nothing.
+- name: Reset exact Komga verification matches
   tags: [platform_verify_komga]
   ansible.builtin.set_fact:
-    komga_verified_root_library: >-
-      {{ komga_verified_libraries
-         | selectattr('root', 'defined') | selectattr('root', 'string')
-         | selectattr('root', 'regex',
-                      '\A' ~ (komga_library_root | regex_escape) ~ '(?<!/)/*\Z')
-         | list }}
+    komga_verified_library_matches: []
+    komga_verified_drift: []
 
-- name: Resolve exact Komga verification name matches
+- name: Resolve exact Komga verification matches
   tags: [platform_verify_komga]
   ansible.builtin.set_fact:
-    komga_verified_named_library: >-
-      {{ komga_verified_libraries
-         | selectattr('name', 'defined') | selectattr('name', 'string')
-         | selectattr('name', 'equalto', komga_library_name)
-         | list }}
+    komga_verified_library_matches: >-
+      {{ komga_verified_library_matches + [item | combine({
+           'root_matches': komga_verified_libraries
+             | selectattr('root', 'defined') | selectattr('root', 'string')
+             | selectattr('root', 'regex',
+                          '\A' ~ (item.normalized_root | regex_escape) ~ '(?<!/)/*\Z')
+             | list,
+           'name_matches': komga_verified_libraries
+             | selectattr('name', 'defined') | selectattr('name', 'string')
+             | selectattr('name', 'equalto', item.name)
+             | list
+         })] }}
+  loop: "{{ komga_desired_libraries }}"
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+
+- name: Resolve drifted managed Komga libraries
+  tags: [platform_verify_komga]
+  ansible.builtin.set_fact:
+    komga_verified_drift: "{{ komga_verified_drift + [item.name] }}"
+  when: >-
+    item.root_matches | length != 1 or
+    item.name_matches | length != 1 or
+    item.root_matches[0].id != item.name_matches[0].id or
+    item.root_matches[0].name != item.name or
+    item.root_matches[0].root != item.root or
+    (item.root_matches[0] | dict2items
+     | selectattr('key', 'in', item.settings.keys())
+     | items2dict) != item.settings
+  loop: "{{ komga_verified_library_matches }}"
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
 
 - name: Require the vault Komga administrator during exact verification
   tags: [platform_verify_komga]
@@ -454,13 +663,10 @@
   tags: [platform_verify_komga]
   ansible.builtin.assert:
     that:
-      - komga_verified_root_library | length == 1
-      - komga_verified_named_library | length == 1
-      - komga_verified_root_library[0].id == komga_verified_named_library[0].id
-      - komga_verified_root_library[0].name == komga_library_name
-      - komga_verified_root_library[0].root == komga_library_root
-      - >-
-        (komga_verified_root_library[0] | dict2items
-         | selectattr('key', 'in', komga_library_settings.keys())
-         | items2dict) == komga_library_settings
-    fail_msg: The managed Komga library is absent, duplicated at its root, conflicted, or drifted.
+      - komga_verified_libraries | type_debug == 'list'
+      - komga_desired_libraries | length > 0
+      - komga_verified_library_matches | length == komga_desired_libraries | length
+      - komga_verified_drift | length == 0
+    fail_msg: >-
+      The managed Komga library is absent, duplicated at its root, conflicted, or drifted.
+      Drifted libraries: {{ komga_verified_drift }}.

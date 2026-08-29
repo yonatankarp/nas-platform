@@ -87,8 +87,25 @@ abort "Komga contract failed: application healthcheck differs" unless
 mac_service = mac.fetch("services").fetch("komga")
 abort "Komga contract failed: Mac override may only replace container name and ports" unless
   mac_service.keys.sort == %w[container_name ports] && !mac_service.key?("image")
-abort "Komga contract failed: managed library root differs" unless defaults.fetch("komga_library_root") == "/data"
-abort "Komga contract failed: managed library name differs" unless defaults.fetch("komga_library_name") == "Comics"
+expected_libraries = [
+  { "name" => "Comics", "root" => "/data/Comics", "settings" => {} },
+  { "name" => "Ebooks", "root" => "/data/Ebooks", "settings" => {} }
+]
+abort "Komga contract failed: managed library model differs" unless
+  defaults.fetch("komga_libraries") == expected_libraries
+abort "Komga contract failed: the retired singular library inputs survive" if
+  defaults.key?("komga_library_name") || defaults.key?("komga_library_root")
+abort "Komga contract failed: managed scan schedule differs" unless
+  defaults.fetch("komga_library_settings").fetch("scanInterval") == "EVERY_6H"
+abort "Komga contract failed: managed scan exclusions differ" unless
+  defaults.fetch("komga_library_settings").fetch("scanDirectoryExclusions") == [".acquisition"]
+abort "Komga contract failed: the library root migration input is not one-convergence" unless
+  defaults.fetch("komga_library_root_migration_allowed") == false
+library_options = argument_specs.dig("argument_specs", "main", "options") || {}
+abort "Komga contract failed: the plural library model is undeclared" unless
+  library_options.dig("komga_libraries", "type") == "list" &&
+  library_options.dig("komga_libraries", "elements") == "dict" &&
+  library_options.dig("komga_library_root_migration_allowed", "type") == "bool"
 abort "Komga contract failed: application health timing defaults differ" unless
   defaults.values_at("komga_health_retries", "komga_health_delay") == [60, 3]
 health_options = argument_specs.dig("argument_specs", "main", "options")
@@ -155,12 +172,20 @@ mutations = mutation_names.map(&role_at)
 abort "Komga contract failed: library preflight must precede every mutation" unless
   preflight.none?(&:nil?) && mutations.none?(&:nil?) && preflight.max < mutations.min
 abort "Komga contract failed: managed root matching is not trailing-slash normalized" unless
-  role_task.call("Resolve normalized Komga library target")
-    .dig("ansible.builtin.set_fact", "komga_library_normalized_root").to_s
+  role_task.call("Resolve normalized Komga library targets")
+    .dig("ansible.builtin.set_fact", "komga_desired_libraries").to_s
     .include?("regex_replace('/+$', '')")
 abort "Komga contract failed: library updates must preserve the selected identifier" unless
   role_task.call("Repair the managed Komga library").dig("ansible.builtin.uri", "url").to_s
-    .include?("komga_existing_library.id | urlencode")
+    .include?("item.id | urlencode")
+# Read as the guard's own conditions rather than as one joined string: the input
+# is named in three live places in this role, and a check that could see any of
+# them would keep passing after this guard lost its clause.
+abort "Komga contract failed: the library root move is not gated on the one-convergence input" unless
+  Array(role_task.call("Refuse ambiguous Komga library candidates")
+    .dig("ansible.builtin.assert", "that")).any? do |condition|
+    condition.to_s.include?("komga_library_root_migration_allowed | bool")
+  end
 user_mutation = role_at.call("Reconcile managed Komga users")
 abort "Komga contract failed: complete library preflight must precede managed-user mutation" unless
   user_mutation && preflight.none?(&:nil?) && preflight.max < user_mutation &&
@@ -236,19 +261,29 @@ DOCKER_HEALTH_REQUIRED = { "true" => true, "false" => false }.fetch(
 MEDIA_ROOT = Pathname.new(ENV.fetch("PLATFORM_MEDIA_ROOT")).expand_path
 REPORT_ROOT = Pathname.new(ENV.fetch("PLATFORM_REPORT_ROOT")).expand_path
 LIBRARY_NAME = "Comics"
-LIBRARY_ROOT = "/data"
+COMICS_ROOT = "/data/Comics"
+EBOOKS_ROOT = "/data/Ebooks"
+# The exact two-library model. The pre-migration state this lane can install is
+# one Comics library at /data, which is the state the role refuses to repoint
+# without komga_library_root_migration_allowed.
+LIBRARY_MODEL = [
+  { "name" => "Comics", "root" => COMICS_ROOT },
+  { "name" => "Ebooks", "root" => EBOOKS_ROOT }
+].freeze
+LEGACY_LIBRARY_ROOT = "/data"
 LEGACY_LIBRARY_NAME = "Books"
 UNRELATED_LIBRARY_NAME = "Komga Contract Reference"
 UNRELATED_LIBRARY_ROOT = "/config/.nas-platform-unmanaged"
 LIBRARY_FILESYSTEM_ROOT = Pathname.new(
   ENV.fetch("PLATFORM_KOMGA_LIBRARY_PATH", MEDIA_ROOT.join("Books").to_s)
 ).expand_path
-FIXTURE_RELATIVE = Pathname.new("task-10-contract-comic/Task 10 Contract Comic.cbz")
+FIXTURE_RELATIVE = Pathname.new("Comics/task-10-contract-comic/Task 10 Contract Comic.cbz")
 FIXTURE_PATH = LIBRARY_FILESYSTEM_ROOT.join(FIXTURE_RELATIVE)
-FIXTURE_LIBRARY_URL = "/data/task-10-contract-comic/Task 10 Contract Comic.cbz"
+FIXTURE_LIBRARY_URL = "/data/Comics/task-10-contract-comic/Task 10 Contract Comic.cbz"
 STATE_PATH = REPORT_ROOT.join("komga-persistence.json")
 MANAGED_SETTINGS = {
-  "scanInterval" => "DISABLED",
+  "scanInterval" => "EVERY_6H",
+  "scanDirectoryExclusions" => [".acquisition"],
   "scanOnStartup" => false,
   "scanCbx" => true,
   "scanPdf" => true,
@@ -277,10 +312,10 @@ def safe_library_id?(value)
   value.is_a?(String) && value.match?(/\A[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\z/)
 end
 
-def resolve_library(libraries, expected_name)
+def resolve_library(libraries, expected_name, expected_root)
   fail_contract("library listing schema differs") unless libraries.is_a?(Array)
   root_matches = libraries.select do |entry|
-    entry.is_a?(Hash) && normalized_library_root(entry["root"]) == LIBRARY_ROOT
+    entry.is_a?(Hash) && normalized_library_root(entry["root"]) == expected_root
   end
   name_matches = libraries.select do |entry|
     entry.is_a?(Hash) && entry["name"].is_a?(String) && entry["name"] == expected_name
@@ -419,16 +454,54 @@ fail_contract("vault administrator identity or role differs") unless
   me.fetch("email") == credentials.first && Array(me.fetch("roles")).include?("ADMIN")
 
 _libraries_response, libraries = request("get", "/api/v1/libraries", basic: credentials)
-expected_library_name = MODE == "drift-verify" ? LEGACY_LIBRARY_NAME : LIBRARY_NAME
-library = resolve_library(libraries, expected_library_name)
+
+# Collapse the converged model back to the single pre-migration library, so the
+# lane can prove that a plain converge refuses the root move and that the run
+# carrying komga_library_root_migration_allowed completes it.
+if MODE == "migration-legacy"
+  comics = resolve_library(libraries, LIBRARY_NAME, COMICS_ROOT)
+  ebooks = resolve_library(libraries, "Ebooks", EBOOKS_ROOT)
+  request(
+    "delete", "/api/v1/libraries/#{ebooks.fetch('id')}", basic: credentials, expected: [204]
+  )
+  request(
+    "patch", "/api/v1/libraries/#{comics.fetch('id')}", basic: credentials,
+    body: { "root" => LEGACY_LIBRARY_ROOT, "scanInterval" => "DISABLED",
+            "scanDirectoryExclusions" => [] },
+    expected: [204]
+  )
+  File.write(REPORT_ROOT.join("komga-migration-legacy-id").to_s, comics.fetch("id"))
+  puts "Komga pre-migration single-library state installed"
+  exit
+end
+
+if MODE == "migration-legacy-verify"
+  legacy = resolve_library(libraries, LIBRARY_NAME, LEGACY_LIBRARY_ROOT)
+  fail_contract("the pre-migration library was not installed") unless
+    legacy.fetch("scanInterval") == "DISABLED"
+  fail_contract("the Ebooks library survived the pre-migration collapse") if
+    libraries.any? { |entry| entry.is_a?(Hash) && entry["name"] == "Ebooks" }
+  puts "Komga pre-migration single-library state is present"
+  exit
+end
+
+comics_name = MODE == "drift-verify" ? LEGACY_LIBRARY_NAME : LIBRARY_NAME
+library = resolve_library(libraries, comics_name, COMICS_ROOT)
 if MODE == "drift-verify"
   fail_contract("Komga drift fixture was not installed") unless
     library.fetch("name") == LEGACY_LIBRARY_NAME && library.fetch("scanOnStartup") == true
   puts "Komga library drift is present"
   exit
-else
+end
+
+ebooks_library = resolve_library(libraries, "Ebooks", EBOOKS_ROOT)
+LIBRARY_MODEL.zip([library, ebooks_library]).each do |expected, actual|
+  fail_contract("managed library #{expected.fetch('name')} is not at its declared root") unless
+    actual.fetch("name") == expected.fetch("name") &&
+    normalized_library_root(actual.fetch("root")) == expected.fetch("root")
   MANAGED_SETTINGS.each do |key, value|
-    fail_contract("managed library setting #{key} differs") unless library.fetch(key) == value
+    fail_contract("managed library setting #{key} differs on #{expected.fetch('name')}") unless
+      actual.fetch(key) == value
   end
 end
 
@@ -438,6 +511,17 @@ if MODE == "drift"
     body: { "name" => LEGACY_LIBRARY_NAME, "scanOnStartup" => true }, expected: [204]
   )
   puts "Komga library drift installed"
+  exit
+end
+
+if MODE == "migration-verify"
+  legacy_id_path = REPORT_ROOT.join("komga-migration-legacy-id")
+  fail_contract("the pre-migration library identifier was not recorded") unless
+    legacy_id_path.file? && !legacy_id_path.symlink?
+  fail_contract("the migration replaced the Comics library instead of repointing it") unless
+    library.fetch("id") == legacy_id_path.read.strip
+  legacy_id_path.unlink
+  puts "Komga library root migration completed in place"
   exit
 end
 
@@ -466,9 +550,15 @@ loop do
 end
 
 library_state = {
-  "id" => library.fetch("id"),
-  "root" => normalized_library_root(library.fetch("root")),
-  "settings" => library.reject { |key, _value| %w[id name root unavailable].include?(key) }.sort.to_h,
+  "libraries" => [library, ebooks_library].map do |entry|
+    {
+      "id" => entry.fetch("id"),
+      "name" => entry.fetch("name"),
+      "root" => normalized_library_root(entry.fetch("root")),
+      "settings" => entry.reject { |key, _value| %w[id name root unavailable].include?(key) }
+                         .sort.to_h
+    }
+  end,
   "unrelated" => libraries.filter_map do |entry|
     next unless entry.is_a?(Hash) && entry["name"] == UNRELATED_LIBRARY_NAME
 
@@ -486,10 +576,11 @@ when "seed"
 when "assert-persistence"
   fail_contract("Komga persistence artifact is unavailable or unsafe") unless STATE_PATH.file? && !STATE_PATH.symlink?
   snapshot = JSON.parse(STATE_PATH.binread)
-  fail_contract("Komga managed library identifier changed across recreation") unless
-    snapshot.fetch("id") == library_state.fetch("id")
-  fail_contract("Komga managed library root or settings changed across recreation") unless
-    snapshot.values_at("root", "settings") == library_state.values_at("root", "settings")
+  fail_contract("Komga managed library identifiers changed across recreation") unless
+    snapshot.fetch("libraries").map { |entry| entry.fetch("id") } ==
+      library_state.fetch("libraries").map { |entry| entry.fetch("id") }
+  fail_contract("Komga managed library names, roots or settings changed across recreation") unless
+    snapshot.fetch("libraries") == library_state.fetch("libraries")
   snapshot.fetch("unrelated").each do |expected|
     fail_contract("unrelated Komga library did not survive recreation") unless
       libraries.any? do |entry|

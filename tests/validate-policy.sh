@@ -83,6 +83,7 @@ ruby tests/config_managed_users_test.rb --self-test
 ruby tests/media_managed_users_test.rb
 ruby tests/media_managed_users_test.rb --self-test
 ruby tests/komga_library_reconciliation_test.rb
+ruby tests/komga_library_reconciliation_test.rb --self-test
 ruby tests/audiobookshelf_initial_scan_test.rb
 ruby tests/audiobookshelf_initial_scan_behavior_test.rb
 ruby tests/immich_user_onboarding_test.rb
