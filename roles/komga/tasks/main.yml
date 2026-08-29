@@ -439,31 +439,12 @@
     komga_managed_users_phase: reconcile
   when: not ansible_check_mode or komga_claim_status.json.isClaimed | bool
 
-- name: Report planned Komga library creation
-  ansible.builtin.debug:
-    msg: "KOMGA_PLAN_LIBRARY_CREATE {{ komga_library_creations | map(attribute='name') | list }}"
-  when:
-    - ansible_check_mode
-    - komga_library_create_required | bool
-  changed_when: true
-
-- name: Create the managed Komga library
-  ansible.builtin.uri:
-    url: "{{ komga_api }}/api/v1/libraries"
-    method: POST
-    url_username: "{{ vault_komga_admin_email }}"
-    url_password: "{{ vault_komga_admin_password }}"
-    force_basic_auth: true
-    body_format: json
-    body: "{{ {'name': item.name, 'root': item.root} | combine(item.settings) }}"
-    status_code: [200]
-  loop: "{{ komga_library_creations }}"
-  loop_control:
-    label: komga-library-creation
-  when: not ansible_check_mode
-  changed_when: true
-  no_log: true
-
+# Repairs run before creations, and that order is load-bearing. Komga refuses a
+# library root that is a parent or a child of an existing library's root, so
+# creating Ebooks at /data/Ebooks while Comics is still rooted at /data is a 400
+# -- exactly the state the legacy single-library platform migrates out of. A
+# repair can only ever free such a conflict, never introduce one, so there is
+# nothing to lose by always repairing first.
 - name: Report planned Komga library repair
   ansible.builtin.debug:
     msg: "KOMGA_PLAN_LIBRARY_REPAIR {{ komga_library_repairs | map(attribute='name') | list }}"
@@ -486,6 +467,31 @@
   loop: "{{ komga_library_repairs }}"
   loop_control:
     label: komga-library-repair
+  when: not ansible_check_mode
+  changed_when: true
+  no_log: true
+
+- name: Report planned Komga library creation
+  ansible.builtin.debug:
+    msg: "KOMGA_PLAN_LIBRARY_CREATE {{ komga_library_creations | map(attribute='name') | list }}"
+  when:
+    - ansible_check_mode
+    - komga_library_create_required | bool
+  changed_when: true
+
+- name: Create the managed Komga library
+  ansible.builtin.uri:
+    url: "{{ komga_api }}/api/v1/libraries"
+    method: POST
+    url_username: "{{ vault_komga_admin_email }}"
+    url_password: "{{ vault_komga_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body: "{{ {'name': item.name, 'root': item.root} | combine(item.settings) }}"
+    status_code: [200]
+  loop: "{{ komga_library_creations }}"
+  loop_control:
+    label: komga-library-creation
   when: not ansible_check_mode
   changed_when: true
   no_log: true
