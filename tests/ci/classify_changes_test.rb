@@ -8,10 +8,20 @@ require "tmpdir"
 
 SCRIPT = File.expand_path("classify_changes.rb", __dir__)
 LANES = %w[
-  static foundation arr downloaders bindery kapowarr pinchflat trailarr seerr
+  static reconciliation foundation arr downloaders bindery kapowarr pinchflat trailarr seerr
   smoke beszel dozzle audiobookshelf komga jellyfin immich paperless idempotence_check
 ].freeze
 ACQUISITION_LANES = %w[arr downloaders bindery kapowarr pinchflat trailarr seerr].freeze
+# The lanes the media acquisition reconciliation contract reads, and the four
+# files it owns. Both are stated here rather than imported so that widening the
+# classifier's own list is a failure here rather than a silent change of scope.
+RECONCILIATION_LANES = %w[arr downloaders].freeze
+RECONCILIATION_OWNED_PATHS = %w[
+  tests/media_acquisition_reconciliation_support.rb
+  tests/media_acquisition_reconciliation_core_test.rb
+  tests/media_acquisition_reconciliation_bazarr_test.rb
+  tests/media_acquisition_reconciliation_configarr_test.rb
+].freeze
 failures = []
 
 def check(failures, condition, message)
@@ -38,13 +48,13 @@ if defined?(ClassifyChanges)
     ["roles/paperless_ngx/tasks/main.yml"] => %w[static smoke paperless idempotence_check],
     ["services/dozzle/compose.yml"] => %w[static smoke dozzle idempotence_check],
     ["tests/contracts/jellyfin.sh"] => %w[static smoke jellyfin idempotence_check],
-    ["roles/arr/tasks/main.yml"] => %w[static arr idempotence_check],
-    ["services/downloaders/compose.yml"] => %w[static downloaders idempotence_check],
+    ["roles/arr/tasks/main.yml"] => %w[static reconciliation arr idempotence_check],
+    ["services/downloaders/compose.yml"] => %w[static reconciliation downloaders idempotence_check],
     ["tests/expected/bindery.yml"] => %w[static bindery idempotence_check],
     ["tests/contracts/kapowarr-foundation.sh"] => %w[static kapowarr idempotence_check],
-    ["tests/media_control_network_collision_test.sh"] => %w[static arr idempotence_check],
-    ["config/media-acquisition.yml"] => %w[static arr downloaders bindery kapowarr pinchflat trailarr seerr idempotence_check],
-    ["roles/host_prep/tasks/verify_media_acquisition.yml"] => %w[static arr downloaders bindery kapowarr pinchflat trailarr seerr idempotence_check],
+    ["tests/media_control_network_collision_test.sh"] => %w[static reconciliation arr idempotence_check],
+    ["config/media-acquisition.yml"] => %w[static reconciliation arr downloaders bindery kapowarr pinchflat trailarr seerr idempotence_check],
+    ["roles/host_prep/tasks/verify_media_acquisition.yml"] => %w[static reconciliation arr downloaders bindery kapowarr pinchflat trailarr seerr idempotence_check],
     ["roles/deployment_bundle/tasks/main.yml"] => LANES,
     ["unexpected/new-runtime-file"] => LANES
   }.each do |paths, expected|
@@ -59,7 +69,8 @@ if defined?(ClassifyChanges)
       "tests/expected/#{project}.yml",
       "tests/contracts/#{project}-foundation.sh"
     ].each do |path|
-      expected = ["static", project, "idempotence_check"]
+      expected = ["static", *("reconciliation" if RECONCILIATION_LANES.include?(project)), project,
+                  "idempotence_check"]
       check(failures, selected_lanes([path]) == expected,
             "#{path} selected #{selected_lanes([path]).inspect}, expected #{expected.inspect}")
     end
@@ -70,9 +81,32 @@ if defined?(ClassifyChanges)
     roles/host_prep/tasks/verify_media_acquisition.yml
     tests/media_acquisition_foundation_verifier_test.rb
   ].each do |path|
-    expected = ["static", *ACQUISITION_LANES, "idempotence_check"]
+    expected = ["static", "reconciliation", *ACQUISITION_LANES, "idempotence_check"]
     check(failures, selected_lanes([path]) == expected,
           "#{path} must select every acquisition foundation lane")
+  end
+
+  # The contract's own files are read by no play and by no integration suite, so
+  # they select the contract and the policy gate that carries them as fixtures --
+  # not the whole repository, which is what they used to fall open to.
+  RECONCILIATION_OWNED_PATHS.each do |path|
+    expected = %w[static reconciliation]
+    check(failures, selected_lanes([path]) == expected,
+          "#{path} selected #{selected_lanes([path]).inspect}, expected #{expected.inspect}")
+    check(failures, File.file?(File.expand_path("../../#{path}", __dir__)),
+          "the classifier routes #{path}, which does not exist")
+  end
+
+  # Every lane the contract reads must select it, and no lane it does not read may.
+  LANES.each do |lane|
+    next if %w[static reconciliation].include?(lane)
+
+    path = "roles/#{lane}/tasks/main.yml"
+    next unless File.directory?(File.expand_path("../../roles/#{lane}", __dir__))
+
+    check(failures, selected_lanes([path]).include?("reconciliation") ==
+                    RECONCILIATION_LANES.include?(lane),
+          "#{path} must #{RECONCILIATION_LANES.include?(lane) ? '' : 'not '}select reconciliation")
   end
 
   {
@@ -139,6 +173,7 @@ if defined?(ClassifyChanges)
   )
   expected_output = <<~OUTPUT
     static=true
+    reconciliation=false
     foundation=false
     arr=false
     downloaders=false
@@ -167,6 +202,7 @@ if defined?(ClassifyChanges)
   ClassifyChanges.write_github_outputs(ClassifyChanges.classify([], full: true), full_output)
   expected_full_output = <<~OUTPUT
     static=true
+    reconciliation=true
     foundation=true
     arr=true
     downloaders=true
@@ -211,6 +247,7 @@ if defined?(ClassifyChanges)
   )
   check(failures, paperless_output.string == <<~OUTPUT,
     static=true
+    reconciliation=false
     foundation=false
     arr=false
     downloaders=false
@@ -242,8 +279,10 @@ if defined?(ClassifyChanges)
   check(failures, io.string.include?("suites=[]\n"),
         "protected operator docs must emit an empty suite array: #{io.string.inspect}")
 
-  check(failures, ClassifyChanges::SUITES.keys == ClassifyChanges::LANES - ["static"],
-        "every lane except static must map to exactly one integration suite")
+  check(failures, ClassifyChanges::SUITES.keys == ClassifyChanges::LANES - ClassifyChanges::JOB_LANES,
+        "every lane but the job lanes must map to exactly one integration suite")
+  check(failures, ClassifyChanges::JOB_LANES == %w[static reconciliation],
+        "static and reconciliation are the only lanes that gate a job instead of a suite")
   check(failures,
         ClassifyChanges.suites(ClassifyChanges.classify(["roles/beszel/tasks/main.yml"])) ==
           %w[smoke beszel idempotence-check],
