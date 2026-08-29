@@ -43,6 +43,11 @@ vault_downloaders_sabnzbd_api_key: "44444444444444444444444444444444"
 vault_downloaders_sabnzbd_admin_username: nasadmin
 vault_downloaders_sabnzbd_admin_password: example-sabnzbd-password
 
+# Pinchflat's only access control: HTTP basic authentication on its web
+# interface, which is the writer for the YouTube library.
+vault_pinchflat_admin_username: example-admin
+vault_pinchflat_admin_password: example-pinchflat-password
+
 # ntfy tokens are tk_ plus 29 lowercase alphanumeric characters. Password
 # hashes are bcrypt values produced by the pinned ntfy image.
 vault_ntfy_admin_user: example-admin

@@ -34,4 +34,5 @@ done
 mac_assert_service_coverage fixtures-seed 00-services.sh "$mac_seeded" \
   'arr=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite
 downloaders=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite
-ntfy=it has no contract suite of its own; its fixtures are the provisioned topics'
+ntfy=it has no contract suite of its own; its fixtures are the provisioned topics
+pinchflat=its only fixture would be a real YouTube download, which this lane must not make; its persisted state is the database its own run phase asserts'

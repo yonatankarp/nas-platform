@@ -92,6 +92,12 @@
     - role: downloaders
       tags: [downloaders, media, media_acquisition_phase1]
 
+    # Pinchflat is self-contained: it consumes no platform API and Jellyfin
+    # reads its output from disk, so it converges before the reader that
+    # indexes the YouTube library it writes.
+    - role: pinchflat
+      tags: [pinchflat, media, media_acquisition_phase2]
+
     - role: jellyfin
       tags: [jellyfin, media]
 

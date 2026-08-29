@@ -74,7 +74,7 @@ expected_status = {
   "downloaders" => "implemented",
   "bindery" => "planned",
   "kapowarr" => "planned",
-  "pinchflat" => "planned",
+  "pinchflat" => "implemented",
   "trailarr" => "planned",
   "seerr" => "planned"
 }

@@ -18,9 +18,10 @@ mac_script_dir=$(CDPATH= cd -- "$mac_hook_dir/../.." && pwd -P)
 # plugins, Open Subtitles validation, both owned libraries and unrelated
 # sentinels. Immich's covers every effective managed-user preference leaf and any
 # seeded supported unowned leaf, in addition to login, assets, settings and
-# containment.
+# containment. Pinchflat's covers container health, the three
+# basic-authentication outcomes, and its persisted database.
 mac_verified=
-for mac_verify_service in audiobookshelf komga jellyfin immich paperless; do
+for mac_verify_service in audiobookshelf komga jellyfin immich paperless pinchflat; do
   "$mac_script_dir/run-contract.sh" "$mac_verify_service" run
   mac_verified="$mac_verified$mac_verify_service
 "

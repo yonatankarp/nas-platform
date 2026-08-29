@@ -1,0 +1,6 @@
+---
+services:
+  pinchflat:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-pinchflat
+    ports: !override
+      - "${PINCHFLAT_HOST_PORT:?}:8945"

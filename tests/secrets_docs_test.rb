@@ -69,8 +69,8 @@ vault_keys = if vault_example.is_a?(Hash)
                []
              end
 
-check(failures, vault_keys.length == 59,
-      "vault example must contain exactly 59 vault_* keys (found #{vault_keys.length})")
+check(failures, vault_keys.length == 61,
+      "vault example must contain exactly 61 vault_* keys (found #{vault_keys.length})")
 
 secrets_guide_path = File.join(ROOT, "docs", "secrets.md")
 secrets_guide = File.file?(secrets_guide_path) ? File.read(secrets_guide_path) : ""
@@ -319,7 +319,8 @@ verify_tags = %w[
   platform_verify_media_acquisition_foundation platform_verify_ntfy
   platform_verify_beszel platform_verify_dozzle
   platform_verify_audiobookshelf platform_verify_komga
-  platform_verify_arr platform_verify_downloaders platform_verify_jellyfin
+  platform_verify_arr platform_verify_downloaders platform_verify_pinchflat
+  platform_verify_jellyfin
   platform_verify_immich platform_verify_paperless
 ].join(",")
 check(failures,

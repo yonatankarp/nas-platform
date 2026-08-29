@@ -189,6 +189,8 @@ vault_arr_bazarr_admin_password: '$(random_password)'
 vault_downloaders_sabnzbd_api_key: '$(openssl rand -hex 16 2>/dev/null)'
 vault_downloaders_sabnzbd_admin_username: nasadmin
 vault_downloaders_sabnzbd_admin_password: '$(random_password)'
+vault_pinchflat_admin_username: nasadmin
+vault_pinchflat_admin_password: '$(random_password)'
 vault_ntfy_admin_user: ephemeral-admin
 vault_ntfy_admin_password: '$ntfy_admin_password'
 vault_ntfy_admin_password_hash: '$(bcrypt_password "$ntfy_admin_password")'

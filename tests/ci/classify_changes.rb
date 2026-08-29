@@ -47,7 +47,7 @@ module ClassifyChanges
     "downloaders" => %w[host_prep deployment_bundle ntfy arr downloaders],
     "bindery" => %w[host_prep deployment_bundle media_acquisition_foundation],
     "kapowarr" => %w[host_prep deployment_bundle media_acquisition_foundation],
-    "pinchflat" => %w[host_prep deployment_bundle media_acquisition_foundation],
+    "pinchflat" => %w[host_prep deployment_bundle ntfy pinchflat],
     "trailarr" => %w[host_prep deployment_bundle media_acquisition_foundation],
     "seerr" => %w[host_prep deployment_bundle media_acquisition_foundation],
     "beszel" => %w[host_prep deployment_bundle ntfy beszel],
@@ -61,6 +61,7 @@ module ClassifyChanges
   SERVICE_NAMES = {
     "arr" => %w[arr],
     "downloaders" => %w[downloaders],
+    "pinchflat" => %w[pinchflat],
     "beszel" => %w[beszel],
     "dozzle" => %w[dozzle],
     "audiobookshelf" => %w[audiobookshelf],
@@ -145,9 +146,9 @@ module ClassifyChanges
     tests/media_acquisition_reconciliation_configarr_test.rb
   ].freeze
   # Every lane whose tags start the alerting sink, which is where each role
-  # publishes its deployment report. The five acquisition foundation suites
-  # converge only the shared inert foundation and never start ntfy, so a change
-  # to it cannot reach them.
+  # publishes its deployment report. The four remaining acquisition foundation
+  # suites converge only the shared inert foundation and never start ntfy, so a
+  # change to it cannot reach them.
   NTFY_LANES = TAGGED_LANES.select { |lane| SERVICE_TAGS.fetch(lane).include?("ntfy") }.freeze
 
   module_function

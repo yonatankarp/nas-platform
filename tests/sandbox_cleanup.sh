@@ -7,7 +7,7 @@ cleanup_sandbox_image=docker.io/library/python:3.14-alpine@sha256:05b2b8b732ecd2
 # Compose gives them. A container that merely shares a production name is
 # therefore never a cleanup target, and is left untouched.
 cleanup_sandbox_projects='ntfy beszel dozzle audiobookshelf komga jellyfin immich paperless'
-cleanup_sandbox_projects="$cleanup_sandbox_projects arr downloaders"
+cleanup_sandbox_projects="$cleanup_sandbox_projects arr downloaders pinchflat"
 cleanup_sandbox_ntfy_services='ntfy'
 cleanup_sandbox_beszel_services='beszel beszel-agent-intel beszel-agent-portable beszel-socket-proxy'
 cleanup_sandbox_dozzle_services='dozzle dozzle-alert-relay dozzle-socket-proxy'
@@ -19,6 +19,7 @@ cleanup_sandbox_paperless_services='paperless-redis paperless-postgres paperless
 cleanup_sandbox_paperless_services="$cleanup_sandbox_paperless_services paperless-gotenberg paperless-tika"
 cleanup_sandbox_arr_services='radarr sonarr prowlarr bazarr'
 cleanup_sandbox_downloaders_services='sabnzbd unpackerr'
+cleanup_sandbox_pinchflat_services='pinchflat'
 
 cleanup_sandbox_program() {
   cat <<'PY'
@@ -133,6 +134,7 @@ cleanup_sandbox_project_services() {
     paperless) cleanup_project_services=$cleanup_sandbox_paperless_services ;;
     arr) cleanup_project_services=$cleanup_sandbox_arr_services ;;
     downloaders) cleanup_project_services=$cleanup_sandbox_downloaders_services ;;
+    pinchflat) cleanup_project_services=$cleanup_sandbox_pinchflat_services ;;
     *)
       printf 'unknown sandbox cleanup project kind: %s\n' "$1" >&2
       return 1

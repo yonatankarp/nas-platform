@@ -38,7 +38,7 @@ services:
     status: planned
   - name: pinchflat
     role: pinchflat
-    status: planned
+    status: implemented
   - name: trailarr
     role: trailarr
     status: planned
