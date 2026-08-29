@@ -13,6 +13,13 @@ media_arr_automatic_monitoring_enabled: false
 media_arr_automatic_rename_enabled: false
 media_bazarr_handoff_accepted: false
 
+# Phase 2 one-convergence input. Narrows the Komga Comics library root from the
+# whole Books share to Books/Comics and adds Ebooks beside it. Set true for the
+# deployment that performs the migration and restored to false immediately
+# after, so a later unreviewed root change is refused again. Repeating it once
+# the roots match is a no-op; the value only ever unblocks a pending move.
+komga_library_root_migration_allowed: true
+
 # Providers, indexers, and subtitle preferences are operator-owned policy. An
 # empty declaration is valid and starts the applications without unattended
 # acquisition or a guessed content-source choice.
