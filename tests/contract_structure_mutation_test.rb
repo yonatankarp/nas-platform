@@ -1009,8 +1009,8 @@ check_rejected(
 check_rejected(
   failures, :arr, "the activation gate demoted to a comment",
   [[ARR_MAIN,
-    "    wait_timeout: 240\n  when: media_usenet_enabled | bool\n  register: arr_deploy\n",
-    "    wait_timeout: 240\n  # when: media_usenet_enabled | bool\n  register: arr_deploy\n"]],
+    "  when: media_usenet_enabled | bool\n  register: arr_deploy\n",
+    "  # when: media_usenet_enabled | bool\n  register: arr_deploy\n"]],
   "Arr role must gate activation on media_usenet_enabled"
 )
 
@@ -1271,8 +1271,8 @@ check_rejected(
 check_rejected(
   failures, :downloaders, "the activation gate demoted to a comment",
   [[DOWNLOADERS_MAIN,
-    "    wait_timeout: 180\n  when: media_usenet_enabled | bool\n  register: downloaders_deploy\n",
-    "    wait_timeout: 180\n  # when: media_usenet_enabled | bool\n  register: downloaders_deploy\n"]],
+    "  when: media_usenet_enabled | bool\n  register: downloaders_deploy\n",
+    "  # when: media_usenet_enabled | bool\n  register: downloaders_deploy\n"]],
   "downloaders role must gate activation on media_usenet_enabled"
 )
 
