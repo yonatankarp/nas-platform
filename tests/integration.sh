@@ -286,37 +286,208 @@ downloaders downloaders
 pinchflat pinchflat
 '
 
-# Retry budget for a registry that refuses. Both values are floored rather than
-# validated, so a mistyped or hostile setting cannot configure the retry away,
-# which is the only reason the wrapper exists.
-image_pull_attempts=${INTEGRATION_IMAGE_PULL_ATTEMPTS:-4}
-case $image_pull_attempts in
-  ''|*[!0123456789]*) image_pull_attempts=4 ;;
-esac
-[ "$image_pull_attempts" -ge 2 ] || image_pull_attempts=2
-image_pull_delay=${INTEGRATION_IMAGE_PULL_DELAY:-5}
-case $image_pull_delay in
-  ''|*[!0123456789]*) image_pull_delay=5 ;;
-esac
-[ "$image_pull_delay" -ge 1 ] || image_pull_delay=1
+# Retry budget for a registry that refuses. These ceilings bound all shell
+# arithmetic even when CI environment variables or registry diagnostics are
+# malformed or hostile.
+image_pull_attempt_limit=10
+image_pull_delay_limit=300
+image_pull_wait_limit=375
+
+bounded_integer() {
+  LC_ALL=C awk -v value="$1" -v fallback="$2" -v minimum="$3" \
+    -v maximum="$4" '
+    function digits_greater(left, right, digit_index, left_digit, right_digit) {
+      for (digit_index = 1; digit_index <= length(left); digit_index++) {
+        left_digit = substr(left, digit_index, 1)
+        right_digit = substr(right, digit_index, 1)
+        if (left_digit > right_digit) return 1
+        if (left_digit < right_digit) return 0
+      }
+      return 0
+    }
+
+    BEGIN {
+      if (value !~ /^[0-9]+$/) {
+        print fallback
+        exit
+      }
+      sub(/^0+/, "", value)
+      if (value == "") value = "0"
+
+      if (length(value) > length(maximum) ||
+          (length(value) == length(maximum) &&
+           digits_greater(value, maximum))) {
+        print maximum
+        exit
+      }
+      if (length(value) < length(minimum) ||
+          (length(value) == length(minimum) &&
+           digits_greater(minimum, value))) {
+        print minimum
+        exit
+      }
+      print value
+    }
+  '
+}
+
+image_pull_attempts=$(bounded_integer "${INTEGRATION_IMAGE_PULL_ATTEMPTS:-6}" \
+  6 2 "$image_pull_attempt_limit")
+image_pull_delay=$(bounded_integer "${INTEGRATION_IMAGE_PULL_DELAY:-5}" \
+  5 1 "$image_pull_delay_limit")
+image_pull_max_delay=$(bounded_integer "${INTEGRATION_IMAGE_PULL_MAX_DELAY:-60}" \
+  60 1 "$image_pull_delay_limit")
+[ "$image_pull_max_delay" -ge "$image_pull_delay" ] ||
+  image_pull_max_delay=$image_pull_delay
+
+pull_error=
+
+cleanup_pull_error() {
+  if [ -n "$pull_error" ]; then
+    rm -f "$pull_error" || true
+    pull_error=
+  fi
+}
+
+retry_after_seconds() {
+  LC_ALL=C awk '
+    function value_exceeds(value, limit, whole, fraction, digit_index, value_digit, limit_digit) {
+      split(value, parts, ".")
+      whole = parts[1]
+      fraction = parts[2]
+      sub(/^0+/, "", whole)
+      if (whole == "") whole = "0"
+      if (length(whole) > length(limit)) return 1
+      if (length(whole) < length(limit)) return 0
+      for (digit_index = 1; digit_index <= length(whole); digit_index++) {
+        value_digit = substr(whole, digit_index, 1)
+        limit_digit = substr(limit, digit_index, 1)
+        if (value_digit > limit_digit) return 1
+        if (value_digit < limit_digit) return 0
+      }
+      return fraction ~ /[1-9]/
+    }
+
+    {
+      # Case-insensitive, and tolerant of a space before the colon, so the hint
+      # is still read if the daemon ever echoes an HTTP-style "Retry-After".
+      # A stricter match would turn this whole parser into dead code silently.
+      if (!match($0, /[Rr][Ee][Tt][Rr][Yy]-[Aa][Ff][Tt][Ee][Rr][[:space:]]*:/)) next
+      token = substr($0, RSTART + RLENGTH)
+      sub(/^[[:space:]]*/, "", token)
+      sub(/[,[:space:]].*$/, "", token)
+
+      unit = ""
+      if (token ~ /ns$/) unit = "ns"
+      else if (token ~ /us$/) unit = "us"
+      else if (token ~ /µs$/) unit = "µs"
+      else if (token ~ /ms$/) unit = "ms"
+      else if (token ~ /s$/) unit = "s"
+      else if (token ~ /m$/) unit = "m"
+
+      value = unit == "" ? token : substr(token, 1, length(token) - length(unit))
+      if (value !~ /^[0-9]+([.][0-9]+)?$/) next
+
+      limit = "300"
+      if (unit == "ns") limit = "300000000000"
+      else if (unit == "us" || unit == "µs") limit = "300000000"
+      else if (unit == "ms") limit = "300000"
+      else if (unit == "m") limit = "5"
+      if (value_exceeds(value, limit)) {
+        print 300
+        exit
+      }
+
+      seconds = value + 0
+      if (unit == "ns") seconds /= 1000000000
+      else if (unit == "us" || unit == "µs") seconds /= 1000000
+      else if (unit == "ms") seconds /= 1000
+      else if (unit == "m") seconds *= 60
+
+      rounded = int(seconds)
+      if (seconds > rounded) rounded++
+      if (seconds > 0 && rounded < 1) rounded = 1
+      print rounded
+      exit
+    }
+  '
+}
+
+image_pull_jitter() {
+  jitter_base=$1
+  jitter_limit=$((jitter_base / 4))
+  [ "$jitter_limit" -ge 1 ] || jitter_limit=1
+  jitter_entropy=$(od -An -N4 -tu4 /dev/urandom 2>/dev/null | tr -d ' ')
+  case $jitter_entropy in
+    ''|*[!0123456789]*) jitter_entropy=$$ ;;
+  esac
+  LC_ALL=C awk -v entropy="$jitter_entropy" -v limit="$jitter_limit" '
+    BEGIN {
+      remainder = 0
+      for (digit_index = 1; digit_index <= length(entropy); digit_index++) {
+        remainder = (remainder * 10 + substr(entropy, digit_index, 1)) % limit
+      }
+      print remainder + 1
+    }
+  '
+}
 
 pull_image() {
   pull_target=$1
   pull_attempt=1
   pull_delay=$image_pull_delay
+  pull_error=$(mktemp "${TMPDIR:-/tmp}/nas-platform-pull-error.XXXXXX") || pull_error=
+  if [ -z "$pull_error" ]; then
+    # Without it every `docker pull` would redirect to "" and fail without
+    # running, burning the whole attempt budget of sleeps to report a refusal
+    # that never happened.
+    printf 'could not create a pull diagnostic file under %s\n' \
+      "${TMPDIR:-/tmp}" >&2
+    return 1
+  fi
   while :; do
-    if docker pull "$pull_target"; then
+    if docker pull "$pull_target" 2> "$pull_error"; then
+      cat "$pull_error" >&2
+      rm -f "$pull_error"
+      pull_error=
       return 0
     fi
+    cat "$pull_error" >&2
     if [ "$pull_attempt" -ge "$image_pull_attempts" ]; then
-      printf 'could not pull %s in %s attempt(s)\n' "$pull_target" "$pull_attempt" >&2
+      rm -f "$pull_error"
+      pull_error=
+      printf 'could not pull %s in %s attempt(s)\n' \
+        "$pull_target" "$pull_attempt" >&2
       return 1
     fi
+    retry_after=$(retry_after_seconds < "$pull_error")
+    retry_delay=$pull_delay
+    case $retry_after in
+      ''|*[!0123456789]*) ;;
+      *)
+        # A registry hint lengthens the wait but does not escape the ceiling the
+        # local ladder obeys. Honouring "retry-after: 5m" literally would sleep
+        # roughly thirty-one minutes across the default budget for a single
+        # image, and the Actions timeout would kill the job with no diagnostic
+        # -- strictly worse than reporting the refusal ourselves.
+        retry_after=$(bounded_integer "$retry_after" 0 0 "$image_pull_max_delay")
+        [ "$retry_after" -le "$retry_delay" ] || retry_delay=$retry_after
+        ;;
+    esac
+    jitter=$(image_pull_jitter "$retry_delay")
+    retry_delay=$((retry_delay + jitter))
+    [ "$retry_delay" -le "$image_pull_wait_limit" ] ||
+      retry_delay=$image_pull_wait_limit
     printf 'pull of %s failed, retrying in %ss (attempt %s of %s)\n' \
-      "$pull_target" "$pull_delay" "$pull_attempt" "$image_pull_attempts" >&2
-    sleep "$pull_delay"
+      "$pull_target" "$retry_delay" "$pull_attempt" "$image_pull_attempts" >&2
+    sleep "$retry_delay"
     pull_attempt=$((pull_attempt + 1))
-    pull_delay=$((pull_delay * 2))
+    if [ "$pull_delay" -gt $((image_pull_max_delay / 2)) ]; then
+      pull_delay=$image_pull_max_delay
+    else
+      pull_delay=$((pull_delay * 2))
+    fi
+    : > "$pull_error"
   done
 }
 
@@ -381,6 +552,9 @@ prepull_images() {
 # Pull-only mode exists so tests/integration_suite_test.sh can drive the retry
 # against a stub docker without building a sandbox. It shares the code path the
 # real run uses rather than re-implementing it.
+trap cleanup_pull_error EXIT
+trap 'exit 130' HUP INT TERM
+
 if [ "${INTEGRATION_PREPULL_ONLY:-0}" = 1 ]; then
   prepull_status=0
   prepull_images || prepull_status=$?
@@ -420,6 +594,7 @@ acquire_integration_lock "$temporary_parent"
 cleanup_integration_on_exit() {
   integration_exit_status=$?
   trap - EXIT HUP INT TERM
+  cleanup_pull_error
   if [ -n "$sandbox" ] && ! cleanup_sandbox "$sandbox"; then
     [ "$integration_exit_status" -ne 0 ] || integration_exit_status=1
   fi

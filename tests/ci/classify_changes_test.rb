@@ -22,6 +22,13 @@ RECONCILIATION_OWNED_PATHS = %w[
   tests/media_acquisition_reconciliation_bazarr_test.rb
   tests/media_acquisition_reconciliation_configarr_test.rb
 ].freeze
+# The alerting sink is deployed by every lane that carries the ntfy tag and by
+# no other. Stated rather than imported for the same reason: widening the
+# classifier's own list must fail here.
+NTFY_LANES = %w[
+  static reconciliation arr downloaders pinchflat smoke beszel dozzle audiobookshelf komga
+  jellyfin immich paperless idempotence_check
+].freeze
 failures = []
 
 def check(failures, condition, message)
@@ -56,6 +63,21 @@ if defined?(ClassifyChanges)
     ["config/media-acquisition.yml"] => %w[static reconciliation arr downloaders bindery kapowarr pinchflat trailarr seerr idempotence_check],
     ["roles/host_prep/tasks/verify_media_acquisition.yml"] => %w[static reconciliation arr downloaders bindery kapowarr pinchflat trailarr seerr idempotence_check],
     ["roles/deployment_bundle/tasks/main.yml"] => LANES,
+    ["tests/policy_test.rb"] => %w[static],
+    ["tests/validate-policy.sh"] => %w[static],
+    ["tests/ci/workflow_test.rb"] => %w[static],
+    ["tests/expected/beszel.yml"] => %w[static],
+    ["renovate.json"] => %w[static],
+    ["generate-secrets.yml"] => %w[static],
+    ["templates/vault-plain.yml.j2"] => %w[static],
+    ["install-production-auto-deploy.yml"] => %w[static],
+    ["roles/production_auto_deploy/tasks/main.yml"] => %w[static],
+    ["roles/image_prune/templates/config.json.j2"] => %w[static],
+    ["scripts/production_auto_deploy.py"] => %w[static],
+    ["tests/media_acquisition_foundation_test.rb"] =>
+      ["static", "reconciliation", *ACQUISITION_LANES, "idempotence_check"],
+    ["roles/ntfy/tasks/main.yml"] => NTFY_LANES,
+    ["services/ntfy/compose.yml"] => NTFY_LANES,
     ["unexpected/new-runtime-file"] => LANES
   }.each do |paths, expected|
     check(failures, selected_lanes(paths) == expected,
@@ -151,6 +173,47 @@ if defined?(ClassifyChanges)
         "AGENTS.md must not be treated as inert Markdown")
   check(failures, selected_lanes(["tests/fixtures/operator-guide.md"]) == LANES,
         "test fixture Markdown must not be treated as inert")
+
+  # Routing a path under tests/ to the policy gate alone is only safe while no
+  # integration suite reads it, and the harness reaches well past its own file:
+  # tests/integration.sh runs the contracts, and those read document fixtures,
+  # Mac drift hooks and shared Ruby support. Walking that reference closure --
+  # rather than restating it -- is what makes a new harness file fail here on the
+  # day it is added instead of silently skipping every suite it belongs to.
+  REPO_ROOT = File.expand_path("../..", __dir__)
+  PATH_REFERENCE = %r{(?:/repo/)?(tests/[A-Za-z0-9_/.-]+)}
+  REQUIRE_REFERENCE = /require_relative\s+"([^"]+)"/
+
+  def harness_closure
+    seen = {}
+    queue = ["tests/integration.sh", *Dir.glob("tests/contracts/**/*", base: REPO_ROOT)]
+    until queue.empty?
+      path = queue.shift
+      next if seen.key?(path)
+
+      seen[path] = true
+      absolute = File.join(REPO_ROOT, path)
+      next unless File.file?(absolute)
+
+      File.foreach(absolute) do |line|
+        next if line.lstrip.start_with?("#")
+
+        line.scan(PATH_REFERENCE) { |reference| queue << reference.first }
+        line.scan(REQUIRE_REFERENCE) do |reference|
+          queue << File.join(File.dirname(path), "#{reference.first}.rb")
+        end
+      end
+    end
+    seen.keys.select { |path| File.file?(File.join(REPO_ROOT, path)) }.sort
+  end
+
+  reached = harness_closure
+  check(failures, reached.include?("tests/contracts/paperless.sh"),
+        "the harness closure must reach the contracts tests/integration.sh runs")
+  reached.each do |path|
+    check(failures, !ClassifyChanges.suites(ClassifyChanges.classify([path])).empty?,
+          "#{path} is executed by an integration suite but selects none")
+  end
 
   {
     "roles/beszel/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,beszel",
