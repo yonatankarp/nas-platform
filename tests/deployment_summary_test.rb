@@ -1,8 +1,9 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# The run-level summary is what a human actually reads after a deployment, so
-# what it says — and when it stays silent — is a contract.
+# The deployment record is what a human actually reads after a deployment, so
+# what it says — and when it stays silent — is a contract. Two messages make it
+# up: one per-service report, and the run-level summary behind them.
 
 require "fileutils"
 require "json"
@@ -52,7 +53,7 @@ def with_http_probe(expected_count)
   server.close
   Timeout.timeout(10) { thread.join }
   raise error if error
-  raise "deployment summary probe request count differs: #{requests.length}" unless
+  raise "deployment record probe request count differs: #{requests.length}" unless
     requests.length == expected_count
 ensure
   stopped = true
@@ -102,15 +103,15 @@ def with_controller_repository
   end
 end
 
-def run_summary(variables, *arguments)
+def run_ntfy_task(tasks_from, variables, *arguments)
   Dir.mktmpdir("nas-platform-deployment-summary-play-") do |directory|
     playbook = [{
       "hosts" => "localhost", "gather_facts" => false,
       "vars" => variables,
       "tasks" => [{
-        "name" => "Summarize the deployment",
+        "name" => "Report the deployment",
         "ansible.builtin.include_role" => {
-          "name" => "ntfy", "tasks_from" => "deployment_summary"
+          "name" => "ntfy", "tasks_from" => tasks_from
         }
       }]
     }]
@@ -121,6 +122,14 @@ def run_summary(variables, *arguments)
       "ansible-playbook", "-i", "localhost,", "-c", "local", path, *arguments, chdir: ROOT
     )
   end
+end
+
+def run_summary(variables, *arguments)
+  run_ntfy_task("deployment_summary", variables, *arguments)
+end
+
+def run_report(variables, *arguments)
+  run_ntfy_task("deployment_report", variables, *arguments)
 end
 
 PREVIOUS_IMAGES = {
@@ -230,8 +239,88 @@ with_controller_repository do |directory, repository, previous, current|
   end
 end
 
+# The per-service report is the detail behind the summary. A release that moves
+# recreates only the services it changed, so a report that spoke only for those
+# left every other service indistinguishable from one that was never deployed.
+RELEASE = "c" * 40
+PREDECESSOR = "d" * 40
+
+def report_variables(port, overrides)
+  {
+    "platform_release_id" => RELEASE,
+    "ntfy_port" => port,
+    "vault_ntfy_deploy_token" => TOKEN,
+    "ntfy_deployment_report_service" => "Komga",
+    "ntfy_deployment_report_changed" => false
+  }.merge(overrides)
+end
+
+def published_report(requests)
+  JSON.parse((requests.first || {})["body"].to_s)
+rescue JSON::ParserError
+  {}
+end
+
+def check_report(failures, label, variables_overrides, expected_count, *arguments)
+  with_http_probe(expected_count) do |port, requests|
+    _stdout, stderr, status = run_report(
+      report_variables(port, variables_overrides), *arguments
+    )
+    check(failures, status.success?,
+          "#{label} report fixture failed: #{stderr.lines.last&.strip}")
+    yield published_report(requests) if block_given?
+  end
+end
+
+check_report(failures, "recreated", {
+               "deployment_bundle_previous_release_id" => PREDECESSOR,
+               "ntfy_deployment_report_changed" => true
+             }, 1) do |document|
+  check(failures, document["topic"] == "nas-deployment",
+        "a service report belongs on the deployment topic")
+  check(failures, document["title"] == "Komga deployed (recreated)",
+        "a recreated service must say so: #{document['title'].inspect}")
+  check(failures, document["message"].to_s.include?("Compose recreated Komga") &&
+                  document["message"].to_s.include?(RELEASE[0, 12]),
+        "a recreated service must name what happened and at which release")
+  check(failures, document["priority"] == 2,
+        "a service report stays below the run summary it details")
+end
+
+check_report(failures, "already current", {
+               "deployment_bundle_previous_release_id" => PREDECESSOR
+             }, 1) do |document|
+  check(failures, document["title"] == "Komga deployed (already current)",
+        "a service the release left alone must still report: #{document['title'].inspect}")
+  check(failures, document["message"].to_s.include?("running unchanged"),
+        "an unchanged service must say Compose left it running")
+end
+
+# A converge that reinstalls the installed revision deployed nothing, so only a
+# service Compose actually touched has anything to report.
+check_report(failures, "unmoved release", {
+               "deployment_bundle_previous_release_id" => RELEASE
+             }, 0)
+check_report(failures, "unmoved release with a recreation", {
+               "deployment_bundle_previous_release_id" => RELEASE,
+               "ntfy_deployment_report_changed" => true
+             }, 1) do |document|
+  check(failures, document["title"] == "Komga deployed (recreated)",
+        "a recreation outside a release move must still be reported")
+end
+
+# A selective converge never rebuilds the bundle, so nothing moved.
+check_report(failures, "selective converge", {}, 0)
+
+# Check mode reviews a deployment rather than performing one.
+check_report(failures, "check mode", {
+               "deployment_bundle_previous_release_id" => PREDECESSOR,
+               "ntfy_deployment_report_changed" => true
+             }, 0, "--check")
+
 if failures.empty?
-  puts "Deployment summary: one moved release publishes one readable message"
+  puts "Deployment record: every service the release moved reports its outcome, " \
+       "and one summary says what shipped"
 else
   failures.each { |failure| puts "FAIL #{failure}" }
   puts "#{failures.length} deployment summary violation(s)"

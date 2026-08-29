@@ -284,25 +284,72 @@ def fetch_ci_runs(config: Config, sha: str) -> tuple[dict, ...]:
     return tuple(run for run in runs if isinstance(run, dict))
 
 
-def matching_ci_runs(config: Config, sha: str, runs) -> list[dict]:
-    """Completed successful push runs of the gating workflow for this SHA."""
+def gating_ci_runs(config: Config, sha: str, runs) -> list[dict]:
+    """Completed push runs of the gating workflow for this SHA, any conclusion.
+
+    GitHub returns workflow runs newest first, so the first entry is the most
+    recent attempt at this revision.
+    """
 
     return [
         run
         for run in runs
         if run.get("head_sha") == sha
         and run.get("status") == "completed"
-        and run.get("conclusion") == "success"
         and run.get("event") == "push"
         and run.get("head_branch") == config.branch
         and run.get("name") == config.workflow_name
     ]
 
 
-def is_ci_green(config: Config, sha: str, runs) -> bool:
-    """Accept exactly one such run. More than one is ambiguity, not success."""
+# Why CI does or does not release a revision. Only GREEN deploys; only PENDING
+# is an ordinary state worth no notification, because CI simply has not
+# finished. The other two stop every deployment until a human intervenes.
+CI_GREEN = "green"
+CI_PENDING = "pending"
+CI_FAILED = "failed"
+CI_AMBIGUOUS = "ambiguous"
 
-    return len(matching_ci_runs(config, sha, runs)) == 1
+
+def _run_url(run: dict) -> str:
+    """The run's web address, when GitHub supplied a usable one."""
+
+    url = run.get("html_url")
+    if not isinstance(url, str):
+        return ""
+    parts = urlsplit(url)
+    if parts.scheme != "https" or not parts.netloc:
+        return ""
+    return url
+
+
+def ci_verdict(config: Config, sha: str, runs) -> tuple[str, str, str]:
+    """Classify CI for one revision as (verdict, detail, run URL).
+
+    Whether a revision may deploy is only half the answer. A poll that refuses
+    one has to be able to say why as well: a red main blocks every deployment,
+    and a poll that decides nothing looks exactly like a poll with nothing to
+    do. Exactly one successful run releases a revision — several is ambiguity,
+    not success.
+    """
+
+    gating = gating_ci_runs(config, sha, runs)
+    successful = [run for run in gating if run.get("conclusion") == "success"]
+    if len(successful) == 1:
+        return CI_GREEN, "success", _run_url(successful[0])
+    if len(successful) > 1:
+        return (
+            CI_AMBIGUOUS,
+            f"{len(successful)} successful push runs exist, "
+            "and exactly one is required",
+            _run_url(successful[0]),
+        )
+    if gating:
+        latest = gating[0]
+        conclusion = latest.get("conclusion")
+        detail = conclusion if isinstance(conclusion, str) and conclusion else "unknown"
+        return CI_FAILED, detail, _run_url(latest)
+    return CI_PENDING, "no completed run yet", ""
 
 
 def _write_private(path: Path, payload: bytes) -> None:
@@ -860,8 +907,77 @@ def note_seeing_poll(config: Config) -> None:
     _write_blind_polls(config, 0)
 
 
-def _eligible_revision(config: Config, head: str, retry_sha: str | None) -> bool:
-    """Decide whether head may be deployed. Raises only on an unusable answer."""
+def _ci_refusal_path(config: Config) -> Path:
+    return config.state_root / "ci-refusal"
+
+
+def read_ci_refusal(config: Config) -> str:
+    """The revision-and-verdict already announced as blocking deployment."""
+
+    try:
+        return _ci_refusal_path(config).read_text(encoding="ascii").strip()
+    except (OSError, UnicodeError):
+        return ""
+
+
+def note_ci_refusal(
+    config: Config, sha: str, verdict: str, detail: str, url: str
+) -> None:
+    """Announce once that CI will not release head, and forget it when it clears.
+
+    A revision CI refuses is the one failure the poller used to swallow whole:
+    eligibility simply said no, the poll returned quietly, and every subsequent
+    deployment stopped with nothing to show for it. Announced once per revision
+    and verdict rather than every poll, because the cron cadence is five
+    minutes and a red main stays red until somebody fixes it.
+    """
+
+    announced = read_ci_refusal(config)
+    if verdict in (CI_GREEN, CI_PENDING):
+        # Pending is the ordinary state, and clearing on it is what lets a
+        # re-run that fails a second time be reported again.
+        if announced:
+            _write_private(_ci_refusal_path(config), b"\n")
+        return
+    marker = f"{sha} {verdict} {detail}"
+    if announced == marker:
+        return
+    lines = [
+        f"**Commit:** `{sha}`",
+        f"**CI:** `{markdown_escape(detail)}`",
+        "**Effect:** `no deployment until this revision passes CI`",
+    ]
+    if url:
+        lines.append(f"**Run:** `{markdown_escape(url)}`")
+    published = publish(
+        config,
+        {
+            "topic": config.ntfy_topic_critical,
+            "title": f"CI blocks deploy · {sha[:9]}",
+            "message": "\n".join(lines),
+            "priority": 4,
+            "tags": ["warning"],
+            "markdown": True,
+        },
+    )
+    if not published:
+        # Recorded only once it has actually been delivered, so a publisher
+        # that was briefly unreachable reports on the next poll instead of
+        # losing the only notice this revision ever gets.
+        print("production auto-deploy: CI refusal notification failed", file=sys.stderr)
+        return
+    _write_private(_ci_refusal_path(config), marker.encode("ascii", "replace") + b"\n")
+
+
+def _eligible_revision(
+    config: Config, head: str, retry_sha: str | None
+) -> tuple[bool, tuple[str, str, str] | None]:
+    """Decide whether head may be deployed, and how CI judged it if it was asked.
+
+    The verdict is None when CI was never consulted, which is not the same as
+    CI having nothing to say: the caller must leave the announced refusal alone
+    rather than treat an unasked question as an answer.
+    """
 
     if retry_sha is not None:
         successful = read_state(config)["last_successful"]
@@ -870,10 +986,11 @@ def _eligible_revision(config: Config, head: str, retry_sha: str | None) -> bool
             or retry_sha not in attempted_shas(config)
             or (successful is not None and successful["sha"] == retry_sha)
         ):
-            return False
+            return False, None
     elif head in attempted_shas(config):
-        return False
-    return is_ci_green(config, head, fetch_ci_runs(config, head))
+        return False, None
+    verdict = ci_verdict(config, head, fetch_ci_runs(config, head))
+    return verdict[0] == CI_GREEN, verdict
 
 
 def poll(config: Config, retry_sha: str | None = None) -> bool | None:
@@ -891,11 +1008,13 @@ def poll(config: Config, retry_sha: str | None = None) -> bool | None:
         # is tracked rather than only printed to a cron mailbox nobody reads.
         try:
             head = resolve_main_sha(config)
-            eligible = _eligible_revision(config, head, retry_sha)
+            eligible, verdict = _eligible_revision(config, head, retry_sha)
         except EligibilityError as error:
             note_blind_poll(config, str(error))
             raise
         note_seeing_poll(config)
+        if verdict is not None:
+            note_ci_refusal(config, head, *verdict)
         if not eligible:
             return None
         if retry_sha is not None:
@@ -953,19 +1072,26 @@ def _next_poll_verdict(config: Config, state: dict) -> tuple[str, str]:
             f"Retry it explicitly with --retry-failed {head}"
         )
     try:
-        runs = matching_ci_runs(config, head, fetch_ci_runs(config, head))
+        verdict, detail, url = ci_verdict(config, head, fetch_ci_runs(config, head))
     except EligibilityError as error:
         return head, f"could not query CI for {short}: {error}"
-    if len(runs) == 1:
+    if verdict == CI_GREEN:
         return head, f"would deploy {short}"
-    if not runs:
+    if verdict == CI_PENDING:
         return head, (
             f"waiting: no completed successful {config.workflow_name} push run "
             f"for {short} yet"
         )
+    if verdict == CI_FAILED:
+        location = f" ({url})" if url else ""
+        return head, (
+            f"blocked: the {config.workflow_name} push run for {short} "
+            f"concluded {detail}{location}. Fix main; nothing deploys until it "
+            "passes"
+        )
     return head, (
-        f"blocked: {len(runs)} successful push runs exist for {short}, and "
-        "exactly one is required. Re-run only failed jobs rather than all of them"
+        f"blocked: for {short}, {detail}. "
+        "Re-run only failed jobs rather than all of them"
     )
 
 

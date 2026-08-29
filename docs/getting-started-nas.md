@@ -173,11 +173,11 @@ subject, plus one nobody reads.
 
 `nas-critical` cuts across every publisher and carries only what should get you
 out of your chair: out of memory, an unexpected container exit, an unhealthy
-container, a Beszel threshold breach, a failed deployment, and a deployment
-poller that has gone blind. The other two are the routine record, one per
-subject, so deployment chatter can be muted without also muting container
-events: `nas-deployment` for successful deployments and poller recovery, and
-`nas-containers` for container recoveries.
+container, a Beszel threshold breach, a failed deployment, a revision CI
+refuses to release, and a deployment poller that has gone blind. The other two
+are the routine record, one per subject, so deployment chatter can be muted
+without also muting container events: `nas-deployment` for successful
+deployments and poller recovery, and `nas-containers` for container recoveries.
 
 A fourth topic, `nas-verification`, exists only for the provisioning proof:
 every publisher token publishes there once per converge to prove it can still
@@ -190,11 +190,17 @@ proof therefore arrived as an empty "New message", once per publisher, on every
 converge.
 
 Every service reports its own deployment on `nas-deployment` at priority 2, one
-message per service whose containers Compose actually recreated. The controller
-publishes them with the deploy publisher's token, so no service needs a token
-of its own inside its image. A converge that leaves a service untouched sends
-nothing, which keeps a no-op run silent and makes the messages you do get name
-exactly what changed.
+message per service, on every run that moved the release. Each says which of
+the two things happened — `Komga deployed (recreated)` when Compose replaced
+its containers, `Komga deployed (already current)` when the release left them
+running — because a release usually moves one image and leaves the rest alone,
+and a service that says nothing is indistinguishable from one that was never
+deployed. The controller publishes them with the deploy publisher's token, so
+no service needs a token of its own inside its image.
+
+A run that does not move the release publishes only for the services Compose
+actually recreated, so a selective converge and a re-run of the installed
+revision stay silent.
 
 After every service role, a single run-level summary follows on
 `nas-deployment` at priority 3, above the per-service detail. It diffs the
@@ -359,6 +365,16 @@ publisher token, as rendered Markdown rather than a raw document, publishing to
 `nas-critical` at priority 5. A successful deployment reports itself from inside
 the run, through the summary above, which can say what shipped; the poller adds
 nothing to it and stays quiet.
+
+A revision CI refuses is the other way a deployment never happens. The poller
+requires exactly one completed, successful `CI` push run for the head of `main`;
+when the run concluded anything else, or when several successful runs make the
+answer ambiguous, nothing deploys until a human intervenes. That is announced
+once on `nas-critical` at priority 4, naming the revision, the conclusion and
+the run's URL. Once per revision and verdict, not once per poll: a red `main`
+stays red, and the five-minute cadence would otherwise repeat it twelve times an
+hour. A revision whose CI has not finished yet is the ordinary case and is never
+reported. `--status` says the same thing on demand.
 
 A poll that cannot establish a candidate revision at all -- Git unreachable,
 the GitHub API failing, an unparsable response -- is a worse failure than a
