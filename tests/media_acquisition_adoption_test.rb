@@ -86,9 +86,28 @@ cases.each do |(library_nonempty, state_present, adopt_input), expected_success|
   end
 end
 
-source = File.read(TASK_PATH)
+# Persistence is a property of one task: a writing module whose arguments name
+# the one-run input. The pattern this replaced ran with /m over the whole file,
+# so any writing module anywhere and any later mention of the variable matched,
+# whether or not they were the same task — and a rename that split them across
+# tasks would have hidden a real one.
+PERSISTING_MODULES = /\.(copy|template|lineinfile|blockinfile)\z/
+def guard_task_strings(node)
+  case node
+  when Hash then node.flat_map { |key, value| [key.to_s] + guard_task_strings(value) }
+  when Array then node.flat_map { |value| guard_task_strings(value) }
+  when String then [node]
+  else []
+  end
+end
+guard_tasks = Array(YAML.safe_load_file(TASK_PATH, aliases: true))
 failures << "guard must never persist the one-run adoption input" if
-  source.match?(/(?:copy|template|lineinfile|blockinfile).*media_acquisition_adopt_existing_libraries/m)
+  guard_tasks.any? do |task|
+    task.is_a?(Hash) && task.keys.any? { |key| key.to_s.match?(PERSISTING_MODULES) } &&
+      guard_task_strings(task).any? do |value|
+        value.include?("media_acquisition_adopt_existing_libraries")
+      end
+  end
 
 if failures.empty?
   puts "media acquisition adoption: refusal and one-run bypass matrix holds"

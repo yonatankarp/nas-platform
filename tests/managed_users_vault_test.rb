@@ -376,27 +376,59 @@ vault_options = spec.dig("argument_specs", "main", "options") || {}
         "vault argument spec must require #{key}")
 end
 
-tasks = File.file?(TASKS_PATH) ? File.read(TASKS_PATH) : ""
 parsed_tasks = File.file?(TASKS_PATH) ? YAML.safe_load_file(TASKS_PATH, aliases: false) : []
+
+# What the role does is read off its parsed tasks. A fact assigned in a comment
+# is not a fact the role publishes, a task named in a comment sorts ahead of the
+# task it names when positions are byte offsets, and no_log counted over a file's
+# text counts the ones in comments too.
+def task_scalars(node)
+  case node
+  when Hash then node.flat_map { |key, value| [key.to_s] + task_scalars(value) }
+  when Array then node.flat_map { |value| task_scalars(value) }
+  when String then [node]
+  else []
+  end
+end
+task_strings = task_scalars(parsed_tasks)
+reserved_identities = parsed_tasks.filter_map do |task|
+  task.dig("vars", "vault_contract_reserved_identities")
+end.first
+reserved_identity_values = Array(reserved_identities&.values).flatten
+
+published_facts = parsed_tasks.flat_map do |task|
+  set_fact = task["ansible.builtin.set_fact"]
+  set_fact.is_a?(Hash) ? set_fact.keys : []
+end
 facts = ENTRY_FIELDS.keys.map { |service| "vault_managed_#{service}_users" }
 facts.each do |fact|
-  check(failures, tasks.include?("#{fact}:"), "vault contract must publish named fact #{fact}")
+  check(failures, published_facts.include?(fact),
+        "vault contract must publish named fact #{fact}")
 end
-validation_position = tasks.index("Require a valid managed-user vault schema")
-facts_position = tasks.index("Resolve validated managed-user service lists")
+validation_position = parsed_tasks.index do |task|
+  task["name"] == "Require a valid managed-user vault schema"
+end
+facts_position = parsed_tasks.index do |task|
+  task["name"] == "Resolve validated managed-user service lists"
+end
 check(failures, validation_position && facts_position && validation_position < facts_position,
       "managed-user validation must precede named facts")
-check(failures, tasks.scan(/name: .*managed-user/i).length >= 3 &&
-                  tasks.scan(/no_log: true/).length >= 4,
+check(failures, parsed_tasks.count { |task| task["name"].to_s.match?(/managed-user/i) } >= 3 &&
+                  parsed_tasks.count { |task| task["no_log"] == true } >= 4,
       "managed-user validation must use no_log redaction")
 # The per-service fail_msg moved into filter_plugins/vault_managed_user_schema.py,
 # which reports field paths rather than one generic message per service. Per-service
 # coverage is still required, now by asserting the filter dispatches for each one.
 schema_filter_path = File.join(ROOT, "filter_plugins", "vault_managed_user_schema.py")
 schema_filter_source = File.file?(schema_filter_path) ? File.read(schema_filter_path) : ""
-check(failures, tasks.include?("vault_managed_user_errors"),
+check(failures, task_strings.any? { |value| value.include?("vault_managed_user_errors") },
       "vault contract must validate managed users with the schema filter")
-check(failures, tasks.include?("values not shown"),
+schema_assertion = parsed_tasks.find do |task|
+  task["name"] == "Require a valid managed-user vault schema"
+end
+check(failures,
+      schema_assertion.to_h.dig("ansible.builtin.assert", "fail_msg").to_s
+        .include?("values not shown"),
       "managed-user schema failure must state that values are not shown")
 ENTRY_FIELDS.each_key do |service|
   check(failures, schema_filter_source.match?(/^\s*"#{Regexp.escape(service)}": _/),
@@ -414,7 +446,7 @@ required_validation_fragments = [
   "vault_paperless_admin_username"
 ]
 required_validation_fragments.each do |fragment|
-  check(failures, tasks.include?(fragment),
+  check(failures, reserved_identity_values.any? { |value| value.include?(fragment) },
         "vault contract validation is missing #{fragment}")
 end
 # Identity uniqueness and separation moved into the same schema filter, so the
@@ -427,7 +459,6 @@ IDENTITY_FIELDS.each do |service, field|
   check(failures, schema_filter_source.match?(/^\s*"#{Regexp.escape(service)}": "#{Regexp.escape(field)}",$/),
         "#{service} identity uniqueness must key on #{field}")
 end
-reserved_identities = parsed_tasks.filter_map { |task| task.dig("vars", "vault_contract_reserved_identities") }.first
 check(failures, reserved_identities.is_a?(Hash) &&
                   reserved_identities.keys.sort == ENTRY_FIELDS.keys.sort,
       "vault contract must reserve identities for every managed service")
@@ -463,8 +494,12 @@ check(failures,
       "ntfy access fields must have runtime string guards")
 check(failures, schema_filter_source.match?(/in JELLYFIN_FORBIDDEN_POLICY_FIELDS\b/),
       "vault contract must reject secret-bearing Jellyfin policy keys")
+schema_errors_expression = parsed_tasks.filter_map do |task|
+  task.dig("ansible.builtin.set_fact", "vault_contract_schema_errors")
+end.first.to_s
 check(failures, schema_filter_source.include?("_ntfy_token_ownership") &&
-                tasks.include?("vault_ntfy_dozzle_token") && tasks.include?("vault_ntfy_beszel_token"),
+                schema_errors_expression.include?("vault_ntfy_dozzle_token") &&
+                schema_errors_expression.include?("vault_ntfy_beszel_token"),
       "vault contract must enforce global ntfy token uniqueness and publisher separation")
 # The scalar credential shape rules moved into
 # filter_plugins/vault_credential_schema.py, which reports the offending variable
@@ -475,9 +510,17 @@ check(failures, schema_filter_source.include?("_ntfy_token_ownership") &&
 # which drives the real role over the documented vault.
 credential_filter_path = File.join(ROOT, "filter_plugins", "vault_credential_schema.py")
 credential_filter_source = File.file?(credential_filter_path) ? File.read(credential_filter_path) : ""
-check(failures, tasks.include?("vault_credential_errors"),
+credential_mapping = parsed_tasks.filter_map do |task|
+  task.dig("ansible.builtin.set_fact", "vault_contract_credential_errors")
+end.first.to_s
+check(failures, credential_mapping.include?("vault_credential_errors"),
       "vault contract must validate portable credentials with the shape filter")
-check(failures, tasks.include?("Offending keys, values"),
+credential_assertion = parsed_tasks.find do |task|
+  task["name"] == "Validate credential shapes without disclosing credential material"
+end
+check(failures,
+      credential_assertion.to_h.dig("ansible.builtin.assert", "fail_msg").to_s
+        .include?("Offending keys, values"),
       "credential shape failure must state that values are not shown")
 check(failures, credential_filter_source.include?('JELLYFIN_ADMIN_USERNAME = "Yonatan"') &&
                 credential_filter_source.match?(
@@ -491,7 +534,7 @@ scalar_vault_keys = vault_options.keys.grep(/\Avault_/) - ["vault_managed_users"
 scalar_vault_keys.each do |key|
   check(failures, credential_filter_source.match?(/^\s*"#{Regexp.escape(key)}": \(/),
         "credential shape filter must carry a rule for #{key}")
-  check(failures, tasks.include?("'#{key}': #{key}"),
+  check(failures, credential_mapping.include?("'#{key}': #{key}"),
         "vault contract must submit #{key} for shape validation")
 end
 %w[vault_jellyfin_opensubtitles_username vault_jellyfin_opensubtitles_password].each do |key|
@@ -521,8 +564,28 @@ policy = File.file?(POLICY_SUPPORT_PATH) ? File.read(POLICY_SUPPORT_PATH) : ""
 check(failures, policy.match?(/GLOBAL_VAULT_KEYS = %w\[[^\]]*vault_managed_users[^\]]*\]\.freeze/m),
       "policy expected vault keys must include vault_managed_users")
 plain_template = File.file?(PLAIN_TEMPLATE_PATH) ? File.read(PLAIN_TEMPLATE_PATH) : ""
-empty_lists = ENTRY_FIELDS.keys.map { |service| "  #{service}: []" }.join("\n")
-check(failures, plain_template.include?("vault_managed_users:\n#{empty_lists}"),
+# The template as a whole is Jinja, but this block carries no substitutions, so
+# the block the template writes is parsed as the mapping it will be. The exact
+# eight-line string this replaced also pinned the key order, which YAML does not
+# make meaningful, and would have been satisfied by the same eight lines sitting
+# in a comment.
+plain_lines = plain_template.lines.map(&:chomp)
+managed_start = plain_lines.index("vault_managed_users:")
+managed_block = if managed_start
+                  [plain_lines[managed_start]] +
+                    plain_lines[(managed_start + 1)..].to_a.take_while do |line|
+                      line.start_with?("  ")
+                    end
+                else
+                  []
+                end
+managed_defaults = begin
+  managed_block.empty? ? nil : YAML.safe_load(managed_block.join("\n"))["vault_managed_users"]
+rescue Psych::SyntaxError
+  nil
+end
+check(failures,
+      managed_defaults == ENTRY_FIELDS.keys.each_with_object({}) { |service, empty| empty[service] = [] },
       "brand-new vault template must render eight empty managed-user lists")
 validate_policy = File.file?(VALIDATE_POLICY_PATH) ? File.read(VALIDATE_POLICY_PATH) : ""
 check(failures, validate_policy.lines.include?("ruby tests/managed_users_vault_test.rb\n"),
