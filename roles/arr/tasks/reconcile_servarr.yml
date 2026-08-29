@@ -20,7 +20,6 @@
       - arr_servarr_host_before.json.authenticationMethod is defined
       - arr_servarr_host_before.json.authenticationRequired is defined
     fail_msg: "{{ arr_servarr_instance.name }} returned an unsupported host configuration schema."
-  no_log: true
 
 - name: Reconcile Servarr administrator authentication
   ansible.builtin.uri:
@@ -68,7 +67,6 @@
       - arr_servarr_naming_before.json.id is number
       - arr_servarr_naming_before.json[arr_servarr_instance.rename_field] is defined
     fail_msg: "{{ arr_servarr_instance.name }} returned an unsupported naming schema."
-  no_log: true
 
 - name: Reconcile the safe automatic rename setting
   ansible.builtin.uri:
@@ -109,7 +107,6 @@
       {{ arr_servarr_roots_before.json |
          selectattr('path', 'equalto', arr_servarr_instance.root_folder) | list }}
   changed_when: false
-  no_log: true
 
 - name: Refuse ambiguous Servarr root folders
   ansible.builtin.assert:
@@ -117,7 +114,6 @@
       - arr_servarr_roots_before.json is sequence
       - arr_servarr_root_matches | length <= 1
     fail_msg: "{{ arr_servarr_instance.name }} has an ambiguous declared root folder."
-  no_log: true
 
 - name: Create the declared Servarr root without import or search
   ansible.builtin.uri:

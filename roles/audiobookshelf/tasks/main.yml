@@ -78,12 +78,10 @@
   register: audiobookshelf_status
   changed_when: false
   check_mode: false
-  no_log: true
 
 - name: Resolve Audiobookshelf initialization state
   ansible.builtin.set_fact:
     audiobookshelf_initialized: "{{ audiobookshelf_status.json.isInit | bool }}"
-  no_log: true
 
 - name: Report planned Audiobookshelf administrator creation
   ansible.builtin.debug:
@@ -174,7 +172,6 @@
            'backupSchedule': audiobookshelf_backup_cron,
            'backupsToKeep': audiobookshelf_backup_retention
          }) }}
-  no_log: true
 
 - name: Read Audiobookshelf server settings for reconciliation
   ansible.builtin.uri:
@@ -230,7 +227,6 @@
                   map('extract', audiobookshelf_server_settings_before.json.serverSettings))) !=
          audiobookshelf_desired_server_settings }}
   when: not ansible_check_mode or audiobookshelf_initialized | bool
-  no_log: true
 
 - name: Report planned Audiobookshelf server settings reconciliation
   ansible.builtin.debug:
@@ -396,7 +392,6 @@
           | selectattr('name', 'equalto', audiobookshelf_library_name)
           | map(attribute='id') | map('string') | sort)
          if (not ansible_check_mode or audiobookshelf_initialized | bool) else [] }}
-  no_log: true
 
 - name: Require safe managed Audiobookshelf library IDs
   ansible.builtin.assert:
@@ -420,14 +415,12 @@
       {{ audiobookshelf_libraries
          | selectattr('name', 'equalto', audiobookshelf_library_name)
          | list | first | default({}) }}
-  no_log: true
 
 - name: Resolve existing Audiobookshelf library folder paths
   ansible.builtin.set_fact:
     audiobookshelf_existing_library_paths: >-
       {{ audiobookshelf_existing_library.folders | default([])
          | map(attribute='fullPath') | list }}
-  no_log: true
 
 - name: Resolve Audiobookshelf library repair requirement
   ansible.builtin.set_fact:
@@ -446,7 +439,6 @@
           audiobookshelf_existing_library.settings != audiobookshelf_library_settings or
           (audiobookshelf_existing_library.folders | map(attribute='fullPath') | list) !=
             (audiobookshelf_library_folders | map(attribute='path') | list)) }}
-  no_log: true
 
 - name: Resolve Audiobookshelf initial scan marker path and expected intents
   ansible.builtin.set_fact:
@@ -465,15 +457,12 @@
           'library_id': audiobookshelf_existing_library.id,
           'folder_paths': audiobookshelf_library_folders | map(attribute='path') | list}
          if audiobookshelf_existing_library | length > 0 else {} }}
-  no_log: true
 
 - name: Initialize Audiobookshelf initial scan marker state
   ansible.builtin.set_fact:
     audiobookshelf_initial_scan_marker_state: {}
-  no_log: true
 
 - name: Safely load Audiobookshelf initial scan marker
-  no_log: true
   block:
     - name: Inspect Audiobookshelf initial scan marker
       ansible.builtin.stat:
@@ -570,7 +559,6 @@
       {{ audiobookshelf_initial_scan_marker_state ==
          audiobookshelf_initial_scan_existing_bound_state and
          audiobookshelf_initial_scan_existing_bound_state | length > 0 }}
-  no_log: true
 
 - name: Resolve Audiobookshelf initial scan marker acceptance
   ansible.builtin.set_fact:
@@ -580,14 +568,12 @@
          (audiobookshelf_initial_scan_precreate_marker_matches | bool and
           (audiobookshelf_existing_library | length == 0 or
            not audiobookshelf_library_repair_required | bool)) }}
-  no_log: true
 
 - name: Refuse mismatched Audiobookshelf initial scan intent
   ansible.builtin.assert:
     that:
       - audiobookshelf_initial_scan_marker_accepted | bool
     fail_msg: The Audiobookshelf initial scan intent does not match the managed library.
-  no_log: true
 
 - name: Report planned Audiobookshelf library creation
   ansible.builtin.debug:
@@ -647,7 +633,6 @@
       {{ audiobookshelf_existing_library
          if audiobookshelf_existing_library | length > 0
          else (audiobookshelf_library_created.json if not ansible_check_mode else {}) }}
-  no_log: true
 
 - name: Require safe current managed Audiobookshelf library ID
   ansible.builtin.assert:
@@ -655,7 +640,6 @@
       - audiobookshelf_current_library.id | string is match('^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$')
     fail_msg: The current managed Audiobookshelf library has an unsafe API identifier.
   when: audiobookshelf_current_library | length > 0
-  no_log: true
 
 - name: Resolve current Audiobookshelf initial scan intent
   ansible.builtin.set_fact:
@@ -665,7 +649,6 @@
       library_name: "{{ audiobookshelf_library_name }}"
       library_id: "{{ audiobookshelf_current_library.id | default(none) }}"
       folder_paths: "{{ audiobookshelf_library_folders | map(attribute='path') | list }}"
-  no_log: true
 
 - name: Resolve Audiobookshelf initial scan requirement
   ansible.builtin.set_fact:
@@ -674,7 +657,6 @@
          audiobookshelf_library_folder_repair_required | bool or
          audiobookshelf_initial_scan_precreate_marker_matches | bool or
          audiobookshelf_initial_scan_bound_marker_matches | bool }}
-  no_log: true
 
 - name: Bind Audiobookshelf initial scan intent to current library
   ansible.builtin.copy:
@@ -705,7 +687,6 @@
             (audiobookshelf_library_folders | map(attribute='path') | list)
          else audiobookshelf_library_folders }}
   when: audiobookshelf_current_library | length > 0
-  no_log: true
 
 - name: Report planned Audiobookshelf library repair
   ansible.builtin.debug:
@@ -767,7 +748,6 @@
   when:
     - not ansible_check_mode
     - audiobookshelf_library_folder_repair_required | bool
-  no_log: true
 
 - name: Repair the managed Audiobookshelf library
   ansible.builtin.uri:
@@ -850,7 +830,6 @@
   when:
     - not ansible_check_mode
     - audiobookshelf_initial_scan_required | bool
-  no_log: true
 
 - name: Refetch authoritative Audiobookshelf library before initial scan
   ansible.builtin.uri:
@@ -897,7 +876,6 @@
   when:
     - not ansible_check_mode
     - audiobookshelf_initial_scan_required | bool
-  no_log: true
 
 # Deliberately not redacted, and the most informative conversion in the role. Unlooped,
 # so the result dict adds only the source text of the failing condition, and every
@@ -931,7 +909,6 @@
   when:
     - not ansible_check_mode
     - audiobookshelf_initial_scan_required | bool
-  no_log: true
 
 - name: Request Audiobookshelf initial library scan
   ansible.builtin.uri:
@@ -1057,7 +1034,6 @@
   when:
     - not ansible_check_mode
     - audiobookshelf_initial_scan_required | bool
-  no_log: true
 
 - name: Resolve sanitized Audiobookshelf initial scan observation
   ansible.builtin.set_fact:
@@ -1081,7 +1057,6 @@
   when:
     - not ansible_check_mode
     - audiobookshelf_initial_scan_required | bool
-  no_log: true
 
 - name: Require completed Audiobookshelf initial library scan
   ansible.builtin.assert:
@@ -1209,7 +1184,6 @@
            'backupsToKeep': audiobookshelf_backup_retention
          }) }}
   when: not ansible_check_mode
-  no_log: true
 
 - name: Re-authorize for exact Audiobookshelf server settings verification
   tags: [platform_verify_audiobookshelf]
@@ -1267,6 +1241,8 @@
   check_mode: false
   no_log: true
 
+# Redacted: results[0] is the complete user listing, which carries
+# vault_audiobookshelf_admin_username and every managed username.
 - name: Resolve exact Audiobookshelf verification state
   tags: [platform_verify_audiobookshelf]
   ansible.builtin.set_fact:

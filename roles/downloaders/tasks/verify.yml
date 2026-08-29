@@ -7,8 +7,8 @@
         arr_installed_reconciliation_fingerprints.servarr_sabnzbd ==
         arr_desired_reconciliation_fingerprints.servarr_sabnzbd
     fail_msg: Verify-only downloader execution found stale opaque desired-input state.
-  no_log: true
   tags: [platform_verify_downloaders]
+  no_log: true
 
 - name: Read SABnzbd configuration for verification
   ansible.builtin.uri:
@@ -37,8 +37,8 @@
                    map(attribute='name') | list) |
         list | length == downloaders_sabnzbd_categories | length
     fail_msg: SABnzbd verification did not observe the complete owned configuration.
-  no_log: true
   tags: [platform_verify_downloaders]
+  no_log: true
 
 - name: Verify each SABnzbd category destination
   ansible.builtin.assert:
@@ -51,8 +51,8 @@
   loop: "{{ downloaders_sabnzbd_categories | dict2items }}"
   loop_control:
     label: sabnzbd-category-destination
-  no_log: true
   tags: [platform_verify_downloaders]
+  no_log: true
 
 - name: Verify each bounded SABnzbd miscellaneous setting
   ansible.builtin.assert:
@@ -64,8 +64,8 @@
   loop: "{{ downloaders_sabnzbd_owned_misc | dict2items }}"
   loop_control:
     label: sabnzbd-owned-misc-setting
-  no_log: true
   tags: [platform_verify_downloaders]
+  no_log: true
 
 - name: Read Arr download clients for downloader verification
   ansible.builtin.uri:
@@ -139,5 +139,4 @@
   ansible.builtin.set_fact:
     downloaders_relationship_verification_succeeded: true
   changed_when: false
-  no_log: true
   tags: [platform_verify_downloaders]

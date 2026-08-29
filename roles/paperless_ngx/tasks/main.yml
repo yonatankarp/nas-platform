@@ -462,6 +462,8 @@
           (vault_paperless_gmail_app_password | replace(' ', ''))) | hash('sha256') }}
   no_log: true
 
+# Redacted through the read and resolve below: the file is a hash over
+# vault_paperless_gmail_username and vault_paperless_gmail_app_password.
 - name: Inspect the installed Paperless Gmail credential fingerprint
   tags: [platform_verify_paperless]
   ansible.builtin.stat:

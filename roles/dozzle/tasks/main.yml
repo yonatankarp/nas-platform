@@ -217,7 +217,6 @@
   when: >-
     dozzle_alert_relay_legacy_state.stat.exists and
     not dozzle_alert_relay_isolated_state.stat.exists
-  no_log: true
 
 - name: Relocate the legacy Dozzle alert relay state file
   ansible.builtin.command:
@@ -231,7 +230,6 @@
   when: >-
     dozzle_alert_relay_legacy_state.stat.exists and
     not dozzle_alert_relay_isolated_state.stat.exists
-  no_log: true
 
 - name: Deploy Dozzle
   community.docker.docker_compose_v2:

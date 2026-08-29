@@ -1,4 +1,6 @@
 ---
+# Redacted: the listing carries vault_paperless_admin_username and every
+# managed username and email, even though it omits password hashes.
 - name: List complete sanitized Paperless users for managed-user reconciliation
   community.docker.docker_compose_v2_exec:
     project_src: "{{ platform_current_dir }}/services/paperless-ngx"

@@ -32,7 +32,6 @@
       - ntfy_subscription_create.json.topic == ntfy_subscription_pair.topic
     fail_msg: ntfy returned an unsupported account-subscription create response.
   when: ntfy_subscription_create.status == 200
-  no_log: true
 
 # Deliberately not redacted, and the only task in this file that can be. Every sibling
 # here reaches ntfy_subscription_pair, the include_tasks loop variable that carries a
@@ -89,7 +88,6 @@
       - ntfy_subscription_post_read.json.subscriptions | default([]) is not mapping
     fail_msg: >-
       The authoritative ntfy account re-read has an unsupported account schema.
-  no_log: true
 
 - name: Validate authoritative managed ntfy subscription entries after creation
   ansible.builtin.assert:
@@ -117,4 +115,3 @@
     fail_msg: >-
       The authoritative ntfy account re-read did not contain exactly one
       synchronized subscription for the reconciled topic.
-  no_log: true

@@ -234,7 +234,6 @@
       Beszel superuser creation failed or the existing identity does not accept
       its preserved vault password. Run the reviewed credential-migration
       procedure; Ansible will not reset it automatically.
-  no_log: true
 
 - name: Report newly created Beszel superuser
   ansible.builtin.debug:
@@ -450,7 +449,6 @@
       password. Run the reviewed credential-migration procedure; Ansible will
       not reset it automatically.
   when: beszel_user_id | length > 0
-  no_log: true
 
 - name: Reconcile managed application user role and verification
   ansible.builtin.uri:

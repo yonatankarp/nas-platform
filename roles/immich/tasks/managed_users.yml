@@ -75,6 +75,7 @@
     label: immich-managed-user
   no_log: true
 
+# Redacted: the mapping keys are the managed users' email addresses.
 - name: Normalize Immich managed user preference policy emails
   ansible.builtin.set_fact:
     immich_managed_user_profile_by_normalized_email: >-

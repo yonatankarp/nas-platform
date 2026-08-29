@@ -166,9 +166,11 @@ def validate_initial_scan!(tasks, defaults)
     ] && Array(current_id_gate["when"]) == ["audiobookshelf_current_library | length > 0"],
     "current library ID must be validated against the safe API pattern"
   )
+  # `assert` renders the source text of the failing condition and the rendered
+  # fail_msg, never the values, so an untemplated message is the whole property
+  # here; `no_log` would only hide which condition failed.
   require_condition(
-    current_id_gate["no_log"] == true &&
-      !current_id_assert.fetch("fail_msg", "").to_s.include?("{{"),
+    !current_id_assert.fetch("fail_msg", "").to_s.include?("{{"),
     "unsafe current library IDs must not be disclosed"
   )
 
@@ -275,7 +277,8 @@ def validate_initial_scan!(tasks, defaults)
     assertions = Array(drain_assert.dig("ansible.builtin.assert", "that")).join(" ")
     require_condition(
       assertions.include?("type_debug == 'list'") && assertions.include?("library-scan") &&
-        assertions.include?("audiobookshelf_current_library.id") && drain_assert["no_log"] == true &&
+        assertions.include?("audiobookshelf_current_library.id") &&
+        !drain_assert.dig("ansible.builtin.assert", "fail_msg").to_s.include?("{{") &&
         Array(drain_assert["when"]) == ["not ansible_check_mode", guard],
       "scan drain completion must be strictly asserted without disclosure"
     )
@@ -370,7 +373,7 @@ def validate_initial_scan!(tasks, defaults)
     marker_state_index < stale_gate_index && stale_gate_index < precreate_pending_index &&
       stale_gate_index < create_index && stale_gate_index < repair_index &&
       Array(stale_assert["that"]) == ["audiobookshelf_initial_scan_marker_accepted | bool"] &&
-      stale_gate["no_log"] == true && !stale_assert.fetch("fail_msg", "").include?("{{"),
+      !stale_assert.fetch("fail_msg", "").include?("{{"),
     "mismatched pending intents must fail closed before every library API mutation"
   )
   precreate_copy = precreate_pending.fetch("ansible.builtin.copy", {})
@@ -488,7 +491,10 @@ unsafe_id_assert["that"] = ["audiobookshelf_current_library.id | string is match
 mutation_rejected!(unsafe_create_response, defaults, "unsafe create-response ID")
 
 disclosed_create_response = deep_copy(tasks)
-task_named(disclosed_create_response, CURRENT_LIBRARY_ID_TASK).first["no_log"] = false
+task_named(
+  disclosed_create_response, CURRENT_LIBRARY_ID_TASK
+).first.fetch("ansible.builtin.assert")["fail_msg"] =
+  "Unsafe library ID {{ audiobookshelf_current_library.id }}."
 mutation_rejected!(disclosed_create_response, defaults, "disclosed create-response ID")
 
 inverted_folder_guard = deep_copy(tasks)
