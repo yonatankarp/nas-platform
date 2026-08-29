@@ -135,7 +135,7 @@
     services: "{{ ['hub', 'socket-proxy'] + ([beszel_agent_service] if beszel_agent_enabled else []) }}"
     state: present
     wait: true
-    wait_timeout: 180
+    wait_timeout: "{{ platform_compose_wait_timeout }}"
   register: beszel_deploy
 
 - name: Report the Beszel deployment
@@ -161,8 +161,8 @@
     url: "{{ beszel_api }}/api/health"
   register: beszel_health
   until: beszel_health.status | default(0) == 200
-  retries: 20
-  delay: 3
+  retries: "{{ platform_readiness_retries }}"
+  delay: "{{ platform_readiness_delay }}"
   changed_when: false
   check_mode: false
 
@@ -234,7 +234,6 @@
       Beszel superuser creation failed or the existing identity does not accept
       its preserved vault password. Run the reviewed credential-migration
       procedure; Ansible will not reset it automatically.
-  no_log: true
 
 - name: Report newly created Beszel superuser
   ansible.builtin.debug:
@@ -383,7 +382,7 @@
     services: [hub]
     state: restarted
     wait: true
-    wait_timeout: 180
+    wait_timeout: "{{ platform_compose_wait_timeout }}"
   when: beszel_matching_users | length == 0
 
 # Read the id back from the collection rather than trusting the create response.
@@ -450,7 +449,6 @@
       password. Run the reviewed credential-migration procedure; Ansible will
       not reset it automatically.
   when: beszel_user_id | length > 0
-  no_log: true
 
 - name: Reconcile managed application user role and verification
   ansible.builtin.uri:
@@ -807,8 +805,8 @@
           Authorization: "{{ beszel_auth.json.token }}"
       register: beszel_systems
       until: beszel_matching_systems | length > 0
-      retries: "{{ beszel_agent_enabled | ternary(20, 1) }}"
-      delay: 3
+      retries: "{{ beszel_agent_enabled | ternary(platform_readiness_retries, 1) }}"
+      delay: "{{ platform_readiness_delay }}"
       failed_when: false
       changed_when: false
       check_mode: false

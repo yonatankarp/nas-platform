@@ -71,7 +71,7 @@
     env_files: ["{{ platform_runtime_dir }}/services/downloaders/.env"]
     state: present
     wait: true
-    wait_timeout: 180
+    wait_timeout: "{{ platform_compose_wait_timeout }}"
   when: media_usenet_enabled | bool
   register: downloaders_deploy
 

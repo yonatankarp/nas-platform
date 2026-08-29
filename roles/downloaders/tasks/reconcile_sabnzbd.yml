@@ -20,7 +20,6 @@
       - downloaders_sabnzbd_config_before.json.config.misc is mapping
       - downloaders_sabnzbd_config_before.json.config.categories is sequence
     fail_msg: SABnzbd returned an unsupported configuration schema before reconciliation.
-  no_log: true
 
 - name: Reconcile bounded SABnzbd miscellaneous settings
   ansible.builtin.uri:

@@ -3,6 +3,15 @@ argument_specs:
   main:
     short_description: Deploy and reconcile the Phase 1 Arr project
     options:
+      arr_compose_wait_timeout:
+        type: int
+        required: false
+      arr_configarr_settled_retries:
+        type: int
+        required: false
+      arr_configarr_settled_delay:
+        type: int
+        required: false
       media_usenet_enabled:
         type: bool
         required: false

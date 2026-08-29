@@ -21,7 +21,6 @@
         arr_prowlarr_application_matches | length == 0 or
         arr_prowlarr_application_matches[0].fields | default([]) is sequence
     fail_msg: "Prowlarr has a duplicate or invalid {{ arr_prowlarr_application.name }} application."
-  no_log: true
 
 - name: Build the owned Prowlarr full-sync application
   ansible.builtin.set_fact:

@@ -100,9 +100,34 @@ SECRET_TASK_FILES = [
   [ARR_TASKS, "verify.yml"],
   [DOWNLOADER_TASKS, "verify.yml"]
 ].freeze
+# Tasks in the acquisition path that render nothing private, so redacting them
+# would only hide which condition failed. Every entry is an unlooped `assert` or
+# a `set_fact` over pinned role files, projections and hashes: `assert` prints
+# the source text of the failing condition and its untemplated message, never a
+# value, and none of these facts derive from a credential-bearing read. The
+# files whose basename contains "fingerprint" have no escape hatch here and are
+# redacted regardless.
 NON_SECRET_TASK_NAMES = [
   "Reconcile each Prowlarr full-sync application",
-  "Record a bounded Configarr execution summary"
+  "Record a bounded Configarr execution summary",
+  "Require the deployed Configarr declaration to match the role",
+  "Load pinned Configarr quality-definition source documents",
+  "Require Configarr opaque context continuity before mutation",
+  "Verify the Configarr declared projection matches the desired projection",
+  "Verify Configarr quality definitions match their declared source",
+  "Verify the Configarr opaque context is unchanged",
+  "Verify the Configarr owned state matches its installed fingerprint",
+  "Verify a skipped Configarr run left its owned state untouched",
+  "Require the supported Prowlarr host schema",
+  "Validate operator-owned Prowlarr application declarations",
+  "Refuse duplicate Prowlarr application declaration names",
+  "Validate the Prowlarr application response collection",
+  "Validate the Prowlarr indexer response collection",
+  "Refuse an ambiguous Prowlarr application name",
+  "Validate the Servarr download client response collection",
+  "Refuse ambiguous Servarr SABnzbd ownership",
+  "Resolve Servarr SABnzbd name and URL ownership before mutation",
+  "Mark downloader relationship verification successful"
 ].freeze
 FINGERPRINT_RECORD_TASK_NAME = "Record verified Arr desired-input fingerprints"
 FINGERPRINT_READER_TASK_NAME = "Atomically read private Arr desired-input fingerprints"
@@ -2443,12 +2468,29 @@ def write_fake_configarr_module(collection_root)
   )
 end
 
+# The probes lift task files out of the roles and run them in a synthetic play,
+# so Ansible loads neither inventory/group_vars/all/main.yml nor the defaults
+# beside those tasks, and every timing keyword the tasks read would be undefined.
+# The values are taken from the real files rather than restated here, so a probe
+# waits exactly as production does and a retimed platform stays one edit. A probe
+# that declares its own value still wins, because these are merged underneath it.
+TIMED_ROLES = %w[arr downloaders].freeze
+TIMING_VARIABLE = /\A(?:platform|#{TIMED_ROLES.join('|')})_\w*(?:_retries|_delay|_wait_timeout)\z/
+HARNESS_TIMING_DEFAULTS = (
+  [File.join(ROOT, "inventory", "group_vars", "all", "main.yml")] +
+  TIMED_ROLES.map { |role| File.join(ROOT, "roles", role, "defaults", "main.yml") }
+).each_with_object({}) do |path, defaults|
+  YAML.safe_load_file(path).each do |name, value|
+    defaults[name] = value if name.match?(TIMING_VARIABLE)
+  end
+end.freeze
+
 def write_playbook(path, variables, tasks)
   File.write(
     path,
     YAML.dump([{
       "hosts" => "localhost", "gather_facts" => false,
-      "vars" => variables, "tasks" => tasks
+      "vars" => HARNESS_TIMING_DEFAULTS.merge(variables), "tasks" => tasks
     }]),
     mode: "w", perm: 0o600
   )

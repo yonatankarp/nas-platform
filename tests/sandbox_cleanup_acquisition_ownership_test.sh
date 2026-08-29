@@ -32,9 +32,6 @@ created_network_records=
 active_sandbox=
 active_sandbox_owned=0
 active_sandbox_identity=
-preflight_mode=live
-preflight_seen_containers=
-preflight_seen_networks=
 docker_backend_mode=live
 creation_backend_mode=live
 
@@ -121,49 +118,56 @@ record_contains() {
 fake_docker() {
   fake_command=$*
   case $fake_command in
-    *"container inspect $fake_fixed_old_id --format {{.Name}}"*)
-      printf '/%s\n' "$fake_fixed_name"
-      ;;
     *"container inspect $fake_label_container_old_id --format {{.Name}}"*)
       printf '/%s\n' "$fake_label_container_name"
+      ;;
+    *"container inspect $fake_legacy_container_old_id --format {{.Name}}"*)
+      printf '/%s\n' "$fake_legacy_container_name"
       ;;
     *"network inspect $fake_label_old_id --format {{.Name}}"*)
       printf '%s\n' "$fake_label_network_name"
       ;;
-    *"network inspect $fake_fixed_network_old_id --format {{.Name}}"*)
-      printf '%s\n' "$fake_fixed_network_name"
-      ;;
-    *"container inspect $fake_fixed_name --format {{.Id}} {{.Name}}"*)
-      printf '%s /%s\n' "$fake_fixed_replacement_id" "$fake_fixed_name"
+    *"network inspect $fake_media_network_old_id --format {{.Name}}"*)
+      printf '%s\n' "$fixture_media_network"
       ;;
     *"container inspect $fake_label_container_name --format {{.Id}} {{.Name}}"*)
       printf '%s /%s\n' \
         "$fake_label_container_replacement_id" "$fake_label_container_name"
       ;;
+    *"container inspect $fake_legacy_container_name --format {{.Id}} {{.Name}}"*)
+      printf '%s /%s\n' \
+        "$fake_legacy_container_replacement_id" "$fake_legacy_container_name"
+      ;;
     *"network inspect $fake_label_network_name --format {{.Id}} {{.Name}}"*)
       printf '%s %s\n' "$fake_label_replacement_id" "$fake_label_network_name"
       ;;
-    *"network inspect $fake_fixed_network_name --format {{.Id}} {{.Name}}"*)
+    *"network inspect $fixture_media_network --format {{.Id}} {{.Name}}"*)
       printf '%s %s\n' \
-        "$fake_fixed_network_replacement_id" "$fake_fixed_network_name"
-      ;;
-    *"ps -aq --no-trunc --filter name=^${fake_fixed_name}$"*)
-      printf '%s\n' "$fake_fixed_old_id"
+        "$fake_media_network_replacement_id" "$fixture_media_network"
       ;;
     *"ps -aq --no-trunc --filter name=^${fake_label_container_name}$"*)
       printf '%s\n' "$fake_label_container_old_id"
       ;;
+    *"ps -aq --no-trunc --filter name=^${fake_legacy_container_name}$"*)
+      printf '%s\n' "$fake_legacy_container_old_id"
+      ;;
     *"ps -aq --no-trunc --filter label=com.docker.compose.project=$fixture_arr_project"*)
       printf '%s\n' "$fake_label_container_old_id"
+      ;;
+    *"ps -aq --no-trunc --filter label=com.docker.compose.project=$fixture_immich_project"*)
+      printf '%s\n' "$fake_legacy_container_old_id"
       ;;
     *"network ls -q --no-trunc --filter name=^${fake_label_network_name}$"*)
       printf '%s\n' "$fake_label_old_id"
       ;;
-    *"network ls -q --no-trunc --filter name=^${fake_fixed_network_name}$"*)
-      printf '%s\n' "$fake_fixed_network_old_id"
+    *"network ls -q --no-trunc --filter name=^${fixture_media_network}$"*)
+      printf '%s\n' "$fake_media_network_old_id"
       ;;
     *"network ls -q --no-trunc --filter label=com.docker.compose.project=$fixture_arr_project"*)
       printf '%s\n' "$fake_label_old_id"
+      ;;
+    *"network ls -q --no-trunc --filter label=nas.platform.purpose=media-control --filter label=nas.platform.project=$fixture_namespace")
+      printf '%s\n' "$fake_media_network_old_id"
       ;;
     "rm -f "* | "network rm "*)
       printf '%s\n' 'FAKE_DESTRUCTIVE_CALL'
@@ -253,41 +257,6 @@ docker() {
   esac
 }
 
-preflight_fixed_cleanup_targets() {
-  for preflight_name in $cleanup_sandbox_containers; do
-    case $preflight_name in
-      '' | *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-]*)
-        fail "cleanup_sandbox_containers contains an unsafe name: $preflight_name"
-        ;;
-    esac
-    preflight_seen_containers="$preflight_seen_containers $preflight_name"
-    [ "$preflight_mode" = live ] || continue
-    preflight_ids=$(docker_backend ps -aq --no-trunc --filter "name=^${preflight_name}$") ||
-      fail "could not inspect cleanup target container: $preflight_name"
-    for preflight_id in $preflight_ids; do
-      record_contains "$created_container_records" "$preflight_id" "$preflight_name" ||
-        fail "refusing to run: pre-existing cleanup target container $preflight_name"
-    done
-  done
-
-  for preflight_name in $cleanup_sandbox_networks; do
-    case $preflight_name in
-      '' | *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-]*)
-        fail "cleanup_sandbox_networks contains an unsafe name: $preflight_name"
-        ;;
-    esac
-    preflight_seen_networks="$preflight_seen_networks $preflight_name"
-    [ "$preflight_mode" = live ] || continue
-    preflight_ids=$(docker_backend network ls -q --no-trunc \
-      --filter "name=^${preflight_name}$") ||
-      fail "could not inspect cleanup target network: $preflight_name"
-    for preflight_id in $preflight_ids; do
-      record_contains "$created_network_records" "$preflight_id" "$preflight_name" ||
-        fail "refusing to run: pre-existing cleanup target network $preflight_name"
-    done
-  done
-}
-
 ensure_cleanup_image() {
   if ! "$real_docker" image inspect "$cleanup_sandbox_image" >/dev/null 2>&1; then
     "$real_docker" pull "$cleanup_sandbox_image" >/dev/null ||
@@ -329,60 +298,91 @@ revalidate_recorded_resources() {
   done
 }
 
+# Refuse to run against a daemon that already holds any resource this fixture
+# would create or cleanup would collect, across every registered project of both
+# namespaces the sandbox owns. The probes are batched exactly as cleanup batches
+# them, so the fixture observes the same daemon state the code under test does.
 preflight_project_cleanup_targets() {
   [ -n "$active_sandbox" ] || return 0
 
-  preflight_expected_containers=
-  for preflight_service in radarr sonarr prowlarr bazarr sabnzbd unpackerr; do
-    preflight_expected_containers="$preflight_expected_containers $fixture_namespace-$preflight_service"
-  done
-  for preflight_name in $preflight_expected_containers; do
-    preflight_ids=$(docker_backend ps -aq --no-trunc \
-      --filter "name=^${preflight_name}$") ||
-      fail "could not inspect namespace container: $preflight_name"
-    for preflight_id in $preflight_ids; do
-      record_contains "$created_container_records" "$preflight_id" "$preflight_name" ||
-        fail "refusing to collide with namespace container: $preflight_name"
+  for preflight_namespace in $(cleanup_sandbox_namespaces "$fixture_namespace"); do
+    preflight_container_filters=
+    preflight_network_filters=
+    for preflight_kind in $cleanup_sandbox_projects; do
+      cleanup_sandbox_project_services "$preflight_kind" ||
+        fail "unregistered cleanup project kind: $preflight_kind"
+      for preflight_service in $cleanup_project_services; do
+        preflight_container_filters="$preflight_container_filters --filter name=^$preflight_namespace-$preflight_service\$"
+      done
+      preflight_network_filters="$preflight_network_filters --filter name=^$preflight_namespace-${preflight_kind}_default\$"
     done
-  done
+    preflight_network_filters="$preflight_network_filters --filter name=^$preflight_namespace-media-control\$"
 
-  for preflight_project in "$fixture_arr_project" "$fixture_downloaders_project"; do
-    preflight_ids=$(docker_backend ps -aq --no-trunc \
-      --filter "label=com.docker.compose.project=$preflight_project") ||
-      fail "could not inspect project containers: $preflight_project"
+    # shellcheck disable=SC2086 # The filters are whitespace-free by construction.
+    preflight_ids=$(docker_backend ps -aq --no-trunc $preflight_container_filters) ||
+      fail "could not inspect namespace containers: $preflight_namespace"
     for preflight_id in $preflight_ids; do
       preflight_name=$(docker_backend container inspect "$preflight_id" \
         --format '{{.Name}}') ||
-        fail "could not inspect project container ID: $preflight_id"
+        fail "could not inspect namespace container ID: $preflight_id"
       preflight_name=${preflight_name#/}
       record_contains "$created_container_records" "$preflight_id" "$preflight_name" ||
-        fail "refusing to collide with project container: $preflight_name"
+        fail "refusing to collide with namespace container: $preflight_name"
     done
 
-    preflight_network_name=${preflight_project}_default
-    preflight_ids=$(docker_backend network ls -q --no-trunc \
-      --filter "name=^${preflight_network_name}$") ||
-      fail "could not inspect namespace network: $preflight_network_name"
-    for preflight_id in $preflight_ids; do
-      record_contains "$created_network_records" "$preflight_id" "$preflight_network_name" ||
-        fail "refusing to collide with namespace network: $preflight_network_name"
-    done
-    preflight_ids=$(docker_backend network ls -q --no-trunc \
-      --filter "label=com.docker.compose.project=$preflight_project") ||
-      fail "could not inspect project networks: $preflight_project"
+    # shellcheck disable=SC2086 # The filters are whitespace-free by construction.
+    preflight_ids=$(docker_backend network ls -q --no-trunc $preflight_network_filters) ||
+      fail "could not inspect namespace networks: $preflight_namespace"
     for preflight_id in $preflight_ids; do
       preflight_name=$(docker_backend network inspect "$preflight_id" \
         --format '{{.Name}}') ||
-        fail "could not inspect project network ID: $preflight_id"
+        fail "could not inspect namespace network ID: $preflight_id"
       record_contains "$created_network_records" "$preflight_id" "$preflight_name" ||
-        fail "refusing to collide with project network: $preflight_name"
+        fail "refusing to collide with namespace network: $preflight_name"
+    done
+
+    for preflight_kind in $cleanup_sandbox_projects; do
+      preflight_project=$preflight_namespace-$preflight_kind
+      preflight_ids=$(docker_backend ps -aq --no-trunc \
+        --filter "label=com.docker.compose.project=$preflight_project") ||
+        fail "could not inspect project containers: $preflight_project"
+      for preflight_id in $preflight_ids; do
+        preflight_name=$(docker_backend container inspect "$preflight_id" \
+          --format '{{.Name}}') ||
+          fail "could not inspect project container ID: $preflight_id"
+        preflight_name=${preflight_name#/}
+        record_contains "$created_container_records" "$preflight_id" "$preflight_name" ||
+          fail "refusing to collide with project container: $preflight_name"
+      done
+
+      preflight_ids=$(docker_backend network ls -q --no-trunc \
+        --filter "label=com.docker.compose.project=$preflight_project") ||
+        fail "could not inspect project networks: $preflight_project"
+      for preflight_id in $preflight_ids; do
+        preflight_name=$(docker_backend network inspect "$preflight_id" \
+          --format '{{.Name}}') ||
+          fail "could not inspect project network ID: $preflight_id"
+        record_contains "$created_network_records" "$preflight_id" "$preflight_name" ||
+          fail "refusing to collide with project network: $preflight_name"
+      done
+    done
+
+    preflight_ids=$(docker_backend network ls -q --no-trunc \
+      --filter label=nas.platform.purpose=media-control \
+      --filter "label=nas.platform.project=$preflight_namespace") ||
+      fail "could not inspect labelled media-control networks: $preflight_namespace"
+    for preflight_id in $preflight_ids; do
+      preflight_name=$(docker_backend network inspect "$preflight_id" \
+        --format '{{.Name}}') ||
+        fail "could not inspect media-control network ID: $preflight_id"
+      record_contains "$created_network_records" "$preflight_id" "$preflight_name" ||
+        fail "refusing to collide with media-control network: $preflight_name"
     done
   done
 }
 
 preflight_cleanup_call() {
   revalidate_recorded_resources
-  preflight_fixed_cleanup_targets
   preflight_project_cleanup_targets
 }
 
@@ -411,6 +411,8 @@ new_sandbox() {
   fixture_namespace=nas-platform-integration-$fixture_suffix
   fixture_arr_project=$fixture_namespace-arr
   fixture_downloaders_project=$fixture_namespace-downloaders
+  fixture_immich_project=$fixture_namespace-immich
+  fixture_media_network=$fixture_namespace-media-control
   preflight_cleanup_call
 }
 
@@ -504,6 +506,35 @@ require_network_unchanged() {
   [ "$actual_id" = "$expected_id" ] || fail "cleanup replaced unrelated $description network"
 }
 
+# A production-named resource is unrelated whether this fixture created it or an
+# earlier run left it behind. One that already exists is borrowed rather than
+# recreated: it is never recorded, so the execution guard refuses any attempt to
+# remove it, and the fixture never deletes it either.
+borrow_or_create_container() {
+  borrow_name=$1
+  borrow_id=$("$real_docker" container inspect "$borrow_name" \
+    --format '{{.Id}}' 2>/dev/null) || borrow_id=
+  if [ -n "$borrow_id" ]; then
+    borrowed_container_ids="$borrowed_container_ids $borrow_id"
+    return 0
+  fi
+  create_container "$borrow_name"
+  unrelated_container_ids="$unrelated_container_ids $created_container_id"
+}
+
+borrow_or_create_network() {
+  borrow_name=$1
+  shift
+  borrow_id=$("$real_docker" network inspect "$borrow_name" \
+    --format '{{.Id}}' 2>/dev/null) || borrow_id=
+  if [ -n "$borrow_id" ]; then
+    borrowed_network_ids="$borrowed_network_ids $borrow_id"
+    return 0
+  fi
+  create_network "$borrow_name" "$@"
+  unrelated_network_ids="$unrelated_network_ids $created_network_id"
+}
+
 require_container_absent() {
   removed_id=$1
   description=$2
@@ -531,6 +562,12 @@ select_negative_project() {
     downloaders)
       negative_project=$fixture_downloaders_project
       negative_service=sabnzbd
+      peer_project=$fixture_arr_project
+      peer_service=radarr
+      ;;
+    immich)
+      negative_project=$fixture_immich_project
+      negative_service=immich-postgres
       peer_project=$fixture_arr_project
       peer_service=radarr
       ;;
@@ -579,53 +616,30 @@ verify_fake_guard_refusal() {
 
 verify_execution_guard() {
   docker_backend_mode=fake
-  fake_fixed_name=fixture_future_cleanup_container
-  fake_fixed_old_id=fake-fixed-container-old-id
-  fake_fixed_replacement_id=fake-fixed-container-replacement-id
-  fake_fixed_network_name=fixture_future_cleanup_network
-  fake_fixed_network_old_id=fake-fixed-network-old-id
-  fake_fixed_network_replacement_id=fake-fixed-network-replacement-id
   fixture_namespace=nas-platform-integration-a1b2c3
   fixture_arr_project=$fixture_namespace-arr
   fixture_downloaders_project=$fixture_namespace-downloaders
+  fixture_immich_project=$fixture_namespace-immich
+  fixture_media_network=$fixture_namespace-media-control
   fake_label_container_name=$fixture_namespace-radarr
   fake_label_container_old_id=fake-label-container-old-id
   fake_label_container_replacement_id=fake-label-container-replacement-id
+  fake_legacy_container_name=$fixture_namespace-immich-postgres
+  fake_legacy_container_old_id=fake-legacy-container-old-id
+  fake_legacy_container_replacement_id=fake-legacy-container-replacement-id
   fake_label_network_name=${fixture_arr_project}_default
   fake_label_old_id=fake-label-network-old-id
   fake_label_replacement_id=fake-label-network-replacement-id
+  fake_media_network_old_id=fake-media-network-old-id
+  fake_media_network_replacement_id=fake-media-network-replacement-id
   active_sandbox=$fixture_parent/nas-platform-integration.a1b2c3
-  cleanup_sandbox_containers="$cleanup_sandbox_containers $fake_fixed_name"
-  cleanup_sandbox_networks="$cleanup_sandbox_networks $fake_fixed_network_name"
-  created_container_records=" $fake_fixed_old_id:$fake_fixed_name"
+  created_container_records=" $fake_label_container_old_id:$fake_label_container_name"
   created_container_records="$created_container_records \
-    $fake_label_container_old_id:$fake_label_container_name"
-  created_network_records=" $fake_fixed_network_old_id:$fake_fixed_network_name"
-  created_network_records="$created_network_records $fake_label_old_id:$fake_label_network_name"
+    $fake_legacy_container_old_id:$fake_legacy_container_name"
+  created_network_records=" $fake_label_old_id:$fake_label_network_name"
+  created_network_records="$created_network_records $fake_media_network_old_id:$fixture_media_network"
 
-  preflight_seen_containers=
-  preflight_seen_networks=
   preflight_cleanup_call
-  case $preflight_seen_containers in
-    *" $fake_fixed_name"*) ;;
-    *) fail "fake guard preflight did not consume a future sourced container target" ;;
-  esac
-  case $preflight_seen_networks in
-    *" $fake_fixed_network_name"*) ;;
-    *) fail "fake guard preflight did not consume a future sourced network target" ;;
-  esac
-
-  cleanup_sandbox() {
-    docker rm "$fake_fixed_name"
-  }
-  verify_fake_guard_refusal fixed-container \
-    "refusing unrecorded cleanup container at execution time: $fake_fixed_name"
-
-  cleanup_sandbox() {
-    docker network rm "$fake_fixed_network_name"
-  }
-  verify_fake_guard_refusal fixed-network \
-    "refusing unrecorded cleanup network at execution time: $fake_fixed_network_name"
 
   cleanup_sandbox() {
     docker network rm "$fake_label_network_name"
@@ -634,10 +648,22 @@ verify_execution_guard() {
     "refusing unrecorded cleanup network at execution time: $fake_label_network_name"
 
   cleanup_sandbox() {
+    docker network rm "$fixture_media_network"
+  }
+  verify_fake_guard_refusal media-control-network \
+    "refusing unrecorded cleanup network at execution time: $fixture_media_network"
+
+  cleanup_sandbox() {
     docker rm "$fake_label_container_name"
   }
   verify_fake_guard_refusal label-owned-container \
     "refusing unrecorded cleanup container at execution time: $fake_label_container_name"
+
+  cleanup_sandbox() {
+    docker rm "$fake_legacy_container_name"
+  }
+  verify_fake_guard_refusal legacy-label-owned-container \
+    "refusing unrecorded cleanup container at execution time: $fake_legacy_container_name"
 
   active_sandbox=
   active_sandbox_owned=0
@@ -800,76 +826,94 @@ case ${1-} in
     ;;
   *) fail "unknown acquisition cleanup fixture mode: ${1-}" ;;
 esac
-preflight_fixed_cleanup_targets
 ensure_cleanup_image
 
-# Production-looking names without Compose ownership are unrelated resources and
-# must survive cleanup unchanged.
+# Production-looking names without sandbox ownership are unrelated resources and
+# must survive cleanup unchanged. The roster covers a container and a Compose
+# network of an acquisition stack and of the pre-existing stacks, plus the
+# production media-control bridge, which carries the platform purpose label under
+# another project.
+unrelated_container_names='radarr sabnzbd ntfy dozzle_socket_proxy immich_postgres paperless_webserver'
+unrelated_network_names='arr_default downloaders_default immich_default ntfy_default'
 new_sandbox
-create_container radarr
-unrelated_radarr_id=$created_container_id
-create_container sabnzbd
-unrelated_sabnzbd_id=$created_container_id
-create_network arr_default
-unrelated_arr_network_id=$created_network_id
-create_network downloaders_default
-unrelated_downloaders_network_id=$created_network_id
+unrelated_container_ids=
+unrelated_network_ids=
+borrowed_container_ids=
+borrowed_network_ids=
+for unrelated_name in $unrelated_container_names; do
+  borrow_or_create_container "$unrelated_name"
+done
+for unrelated_name in $unrelated_network_names; do
+  borrow_or_create_network "$unrelated_name"
+done
+borrow_or_create_network media-control \
+  --label nas.platform.purpose=media-control \
+  --label nas.platform.project=nas-platform
 
 run_cleanup
 release_sandbox_after_cleanup
-require_container_unchanged "$unrelated_radarr_id" radarr
-require_container_unchanged "$unrelated_sabnzbd_id" sabnzbd
-require_network_unchanged "$unrelated_arr_network_id" arr_default
-require_network_unchanged "$unrelated_downloaders_network_id" downloaders_default
+for unrelated_id in $unrelated_container_ids $borrowed_container_ids; do
+  require_container_unchanged "$unrelated_id" production-named
+done
+for unrelated_id in $unrelated_network_ids $borrowed_network_ids; do
+  require_network_unchanged "$unrelated_id" production-named
+done
 
-"$real_docker" rm -f "$unrelated_radarr_id" "$unrelated_sabnzbd_id" >/dev/null
-"$real_docker" network rm \
-  "$unrelated_arr_network_id" "$unrelated_downloaders_network_id" >/dev/null
+# Only what this fixture created is removed; a borrowed resource stays exactly
+# as it was found.
+for unrelated_id in $unrelated_container_ids; do
+  "$real_docker" rm -f "$unrelated_id" >/dev/null
+done
+for unrelated_id in $unrelated_network_ids; do
+  "$real_docker" network rm "$unrelated_id" >/dev/null
+done
 clear_active_records
 
-# Exact namespace-derived permanent resources and a strict Configarr one-shot
-# are owned by this disposable Compose namespace and must be removed.
+# Exact namespace-derived permanent resources, the media-control bridge, and a
+# strict Configarr one-shot are owned by this disposable namespace and must be
+# removed. The roster is taken from the cleanup registry itself, so every
+# registered service of every registered project is proven, not just the two
+# acquisition stacks.
 new_sandbox
-for service in radarr sonarr prowlarr bazarr; do
-  create_container "$fixture_namespace-$service" \
-    --label "com.docker.compose.project=$fixture_arr_project" \
-    --label "com.docker.compose.service=$service"
-  eval "owned_${service}_id=\$created_container_id"
-done
-for service in sabnzbd unpackerr; do
-  create_container "$fixture_namespace-$service" \
-    --label "com.docker.compose.project=$fixture_downloaders_project" \
-    --label "com.docker.compose.service=$service"
-  eval "owned_${service}_id=\$created_container_id"
+owned_container_ids=
+owned_network_ids=
+for kind in $cleanup_sandbox_projects; do
+  cleanup_sandbox_project_services "$kind" ||
+    fail "unregistered cleanup project kind: $kind"
+  for service in $cleanup_project_services; do
+    create_container "$fixture_namespace-$service" \
+      --label "com.docker.compose.project=$fixture_namespace-$kind" \
+      --label "com.docker.compose.service=$service"
+    owned_container_ids="$owned_container_ids $created_container_id"
+  done
+  create_network "$fixture_namespace-${kind}_default" \
+    --label "com.docker.compose.project=$fixture_namespace-$kind" \
+    --label com.docker.compose.network=default
+  owned_network_ids="$owned_network_ids $created_network_id"
 done
 create_container "$fixture_namespace-arr-configarr-run-a1b2c3" \
   --label "com.docker.compose.project=$fixture_arr_project" \
   --label com.docker.compose.service=configarr \
   --label com.docker.compose.oneoff=True
-owned_configarr_id=$created_container_id
-create_network "${fixture_arr_project}_default" \
-  --label "com.docker.compose.project=$fixture_arr_project" \
-  --label com.docker.compose.network=default
-owned_arr_network_id=$created_network_id
-create_network "${fixture_downloaders_project}_default" \
-  --label "com.docker.compose.project=$fixture_downloaders_project" \
-  --label com.docker.compose.network=default
-owned_downloaders_network_id=$created_network_id
+owned_container_ids="$owned_container_ids $created_container_id"
+create_network "$fixture_media_network" \
+  --label nas.platform.purpose=media-control \
+  --label "nas.platform.project=$fixture_namespace"
+owned_network_ids="$owned_network_ids $created_network_id"
 
 run_cleanup
 release_sandbox_after_cleanup
-for service in radarr sonarr prowlarr bazarr sabnzbd unpackerr; do
-  eval "owned_service_id=\$owned_${service}_id"
-  require_container_absent "$owned_service_id" "$service"
+for owned_id in $owned_container_ids; do
+  require_container_absent "$owned_id" registered-service
 done
-require_container_absent "$owned_configarr_id" configarr
-require_network_absent "$owned_arr_network_id" arr-default
-require_network_absent "$owned_downloaders_network_id" downloaders-default
+for owned_id in $owned_network_ids; do
+  require_network_absent "$owned_id" registered-network
+done
 clear_active_records
 
 # Exact names with missing/wrong project labels and project labels on unexpected
 # names must refuse atomically for both acquisition Compose projects.
-for negative_kind in arr downloaders; do
+for negative_kind in arr downloaders immich; do
   for project_mismatch in missing wrong; do
     new_sandbox
     select_negative_project "$negative_kind"
@@ -916,7 +960,7 @@ done
 
 # Network project, name, and default-network-label mismatches are independently
 # table-driven across Arr and downloader ownership, with collected peers intact.
-for negative_kind in arr downloaders; do
+for negative_kind in arr downloaders immich; do
   for network_project_mismatch in missing wrong; do
     new_sandbox
     select_negative_project "$negative_kind"
@@ -1014,6 +1058,49 @@ for negative_kind in arr downloaders; do
       "$mismatched_network_id" "$atomic_peer_network_id" >/dev/null
     release_owned_refused_sandbox
   done
+done
+
+# The media-control bridge is not a Compose resource: it is owned only when its
+# namespace-derived name, bridge driver, and exactly two platform labels all
+# match. A wrong project, an extra label, and a labelled network under another
+# name each refuse before anything is deleted.
+for media_mismatch in project extra-label unexpected-name; do
+  new_sandbox
+  case $media_mismatch in
+    project)
+      media_refusal_target=$fixture_media_network
+      create_network "$fixture_media_network" \
+        --label nas.platform.purpose=media-control \
+        --label nas.platform.project=somebody-else
+      ;;
+    extra-label)
+      media_refusal_target=$fixture_media_network
+      create_network "$fixture_media_network" \
+        --label nas.platform.purpose=media-control \
+        --label "nas.platform.project=$fixture_namespace" \
+        --label nas.platform.extra=unexpected
+      ;;
+    unexpected-name)
+      media_refusal_target=$fixture_media_network
+      create_network "$fixture_media_network-copy" \
+        --label nas.platform.purpose=media-control \
+        --label "nas.platform.project=$fixture_namespace"
+      ;;
+  esac
+  mismatched_network_id=$created_network_id
+  create_container "$fixture_namespace-radarr" \
+    --label "com.docker.compose.project=$fixture_arr_project" \
+    --label com.docker.compose.service=radarr
+  atomic_peer_container_id=$created_container_id
+
+  expect_cleanup_refusal "media-control $media_mismatch" \
+    "$media_refusal_target" network
+  require_network_unchanged "$mismatched_network_id" "media-control $media_mismatch"
+  require_container_unchanged \
+    "$atomic_peer_container_id" "media-control atomic-peer service"
+  "$real_docker" rm -f "$atomic_peer_container_id" >/dev/null
+  "$real_docker" network rm "$mismatched_network_id" >/dev/null
+  release_owned_refused_sandbox
 done
 
 # A generated Configarr name outside the exact project is not owned by this

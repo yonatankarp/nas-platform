@@ -117,13 +117,30 @@ def command_available?(name)
   end
 end
 
+# The probes lift task files out of the roles and run them in a synthetic play,
+# so Ansible loads neither inventory/group_vars/all/main.yml nor the defaults
+# beside those tasks, and every timing keyword the tasks read would be undefined.
+# The values are taken from the real files rather than restated here, so a probe
+# waits exactly as production does and a retimed platform stays one edit. A probe
+# that declares its own value still wins, because these are merged underneath it.
+TIMING_VARIABLE = /\A(?:platform|#{SERVICES.join('|')})_\w*(?:_retries|_delay|_wait_timeout)\z/
+HARNESS_TIMING_DEFAULTS = (
+  [File.join(ROOT, "inventory", "group_vars", "all", "main.yml")] +
+  SERVICES.map { |service| File.join(ROOT, "roles", service, "defaults", "main.yml") }
+).each_with_object({}) do |path, defaults|
+  YAML.safe_load_file(path).each do |name, value|
+    defaults[name] = value if name.match?(TIMING_VARIABLE)
+  end
+end.freeze
+
 def run_playbook(tasks, variables, *arguments)
   Dir.mktmpdir("nas-platform-media-managed-users-") do |directory|
     playbook = File.join(directory, "playbook.yml")
     File.write(
       playbook,
       YAML.dump([{ "hosts" => "localhost", "gather_facts" => false,
-                   "vars" => variables, "tasks" => tasks }]),
+                   "vars" => HARNESS_TIMING_DEFAULTS.merge(variables),
+                   "tasks" => tasks }]),
       mode: "w", perm: 0o600
     )
     Open3.capture3(

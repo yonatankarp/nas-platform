@@ -82,13 +82,11 @@
         fail_msg: >-
           Jellyfin primary administrator rename and recovery both failed. The authoritative
           identity did not return to a safe name; inspect the user by its preserved ID.
-      no_log: true
 
     - name: Clear recovered Jellyfin primary administrator rename state
       ansible.builtin.file:
         path: "{{ jellyfin_primary_recovery_marker }}"
         state: absent
-      no_log: true
 
     - name: Stop after recovered Jellyfin primary administrator rename failure
       ansible.builtin.fail:
@@ -116,11 +114,9 @@
       - jellyfin_primary_after_rename.json.Policy.IsAdministrator | bool
     fail_msg: The authoritative Jellyfin primary administrator identity did not converge exactly.
   when: not ansible_check_mode
-  no_log: true
 
 - name: Clear exact Jellyfin primary administrator rename state
   ansible.builtin.file:
     path: "{{ jellyfin_primary_recovery_marker }}"
     state: absent
   when: not ansible_check_mode
-  no_log: true

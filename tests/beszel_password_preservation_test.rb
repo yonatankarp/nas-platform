@@ -227,8 +227,11 @@ check(failures,
       "superuser preservation must require exact post-create authentication outside check mode")
 check(failures, !superuser_conditions.join(" ").match?(/std(out|err)/),
       "superuser create-result classification must not parse brittle command output")
-check(failures, superuser_assert&.fetch("no_log", nil) == true,
-      "the superuser preservation assertion must always redact credentials")
+# The assertion itself renders nothing but its own condition source and a static
+# fail_msg, so redacting it would only hide which condition failed. The reads it
+# gates carry the redaction; see the no_log contracts checked above.
+check(failures, superuser_assert && !superuser_assert.key?("no_log"),
+      "the superuser preservation assertion must stay readable on failure")
 check(failures, Array(superuser_assert&.fetch("tags", nil)).include?("platform_verify_beszel"),
       "Beszel verify-only must enforce the superuser credential assertion")
 
@@ -456,8 +459,8 @@ check(failures,
       "failed application-user authentication must give exact credential-migration guidance")
 check(failures, app_assert&.fetch("when", nil) == "beszel_user_id | length > 0",
       "the application-user preservation assertion must apply only to an existing identity")
-check(failures, app_assert&.fetch("no_log", nil) == true,
-      "the application-user preservation assertion must always redact credentials")
+check(failures, app_assert && !app_assert.key?("no_log"),
+      "the application-user preservation assertion must stay readable on failure")
 
 existing_user_patches = tasks.select do |task|
   uri = task["ansible.builtin.uri"]

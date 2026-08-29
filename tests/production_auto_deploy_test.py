@@ -139,26 +139,24 @@ class EligibilityTest(PollerTestCase):
         "name": "CI",
     }
 
+    def verdict_of(self, runs):
+        return production_auto_deploy.ci_verdict(self.loaded_config(), MAIN_SHA, runs)[0]
+
     def test_exactly_one_matching_success_is_green(self):
-        config = self.loaded_config()
-        self.assertTrue(
-            production_auto_deploy.is_ci_green(config, MAIN_SHA, (self.GREEN_RUN,))
+        self.assertEqual(
+            self.verdict_of((self.GREEN_RUN,)), production_auto_deploy.CI_GREEN
         )
 
     def test_ambiguity_is_not_green(self):
-        config = self.loaded_config()
-        self.assertFalse(
-            production_auto_deploy.is_ci_green(
-                config, MAIN_SHA, (self.GREEN_RUN, self.GREEN_RUN)
-            )
+        self.assertEqual(
+            self.verdict_of((self.GREEN_RUN, self.GREEN_RUN)),
+            production_auto_deploy.CI_AMBIGUOUS,
         )
 
     def test_no_runs_is_not_green(self):
-        config = self.loaded_config()
-        self.assertFalse(production_auto_deploy.is_ci_green(config, MAIN_SHA, ()))
+        self.assertEqual(self.verdict_of(()), production_auto_deploy.CI_PENDING)
 
     def test_every_field_must_match(self):
-        config = self.loaded_config()
         for key, bad in (
             ("head_sha", OTHER_SHA),
             ("status", "in_progress"),
@@ -169,8 +167,73 @@ class EligibilityTest(PollerTestCase):
         ):
             run = {**self.GREEN_RUN, key: bad}
             with self.subTest(key=key):
-                self.assertFalse(
-                    production_auto_deploy.is_ci_green(config, MAIN_SHA, (run,))
+                self.assertNotEqual(
+                    self.verdict_of((run,)), production_auto_deploy.CI_GREEN
+                )
+
+    def test_verdict_separates_a_red_run_from_one_that_has_not_finished(self):
+        config = self.loaded_config()
+        red = {
+            **self.GREEN_RUN,
+            "conclusion": "failure",
+            "html_url": "https://github.com/o/r/actions/runs/1",
+        }
+
+        self.assertEqual(
+            production_auto_deploy.ci_verdict(config, MAIN_SHA, (red,)),
+            (
+                production_auto_deploy.CI_FAILED,
+                "failure",
+                "https://github.com/o/r/actions/runs/1",
+            ),
+        )
+        self.assertEqual(
+            production_auto_deploy.ci_verdict(config, MAIN_SHA, ())[0],
+            production_auto_deploy.CI_PENDING,
+        )
+        self.assertEqual(
+            production_auto_deploy.ci_verdict(config, MAIN_SHA, (self.GREEN_RUN,))[0],
+            production_auto_deploy.CI_GREEN,
+        )
+
+    def test_verdict_reports_the_newest_conclusion_and_names_ambiguity(self):
+        config = self.loaded_config()
+        newest = {**self.GREEN_RUN, "conclusion": "cancelled"}
+        older = {**self.GREEN_RUN, "conclusion": "timed_out"}
+
+        verdict, detail, _url = production_auto_deploy.ci_verdict(
+            config, MAIN_SHA, (newest, older)
+        )
+        self.assertEqual((verdict, detail), (production_auto_deploy.CI_FAILED, "cancelled"))
+
+        verdict, detail, _url = production_auto_deploy.ci_verdict(
+            config, MAIN_SHA, (self.GREEN_RUN, self.GREEN_RUN)
+        )
+        self.assertEqual(verdict, production_auto_deploy.CI_AMBIGUOUS)
+        self.assertIn("exactly one is required", detail)
+
+    def test_verdict_ignores_runs_of_another_branch_workflow_or_revision(self):
+        config = self.loaded_config()
+        for key, bad in (
+            ("head_sha", OTHER_SHA),
+            ("event", "workflow_dispatch"),
+            ("head_branch", "topic"),
+            ("name", "Lint"),
+        ):
+            run = {**self.GREEN_RUN, "conclusion": "failure", key: bad}
+            with self.subTest(key=key):
+                self.assertEqual(
+                    production_auto_deploy.ci_verdict(config, MAIN_SHA, (run,))[0],
+                    production_auto_deploy.CI_PENDING,
+                )
+
+    def test_verdict_drops_a_run_url_it_cannot_trust(self):
+        config = self.loaded_config()
+        for url in (None, 42, "javascript:alert(1)", "http://github.com/o/r", ""):
+            run = {**self.GREEN_RUN, "conclusion": "failure", "html_url": url}
+            with self.subTest(url=url):
+                self.assertEqual(
+                    production_auto_deploy.ci_verdict(config, MAIN_SHA, (run,))[2], ""
                 )
 
     def test_resolve_main_sha_reads_ls_remote(self):
@@ -1019,6 +1082,137 @@ class PollBlindnessTest(PollerTestCase):
         self.assertEqual(
             (config.state_root / "blind-polls").read_text(encoding="ascii").strip(), "1"
         )
+
+
+class PollCiRefusalTest(PollerTestCase):
+    """A revision CI refuses stops every deployment, so it must be announced."""
+
+    GREEN_RUN = EligibilityTest.GREEN_RUN
+    RED_RUN = {
+        **EligibilityTest.GREEN_RUN,
+        "conclusion": "failure",
+        "html_url": "https://github.com/yonatankarp/nas-platform/actions/runs/17",
+    }
+
+    def poll_with(self, config, runs, sha=MAIN_SHA, delivered=True):
+        """Run one poll against a fixed CI answer, capturing what it published."""
+
+        published = []
+
+        def fake_publish(_config, notification):
+            published.append(notification)
+            return delivered
+
+        with mock.patch.object(
+            production_auto_deploy, "resolve_main_sha", return_value=sha
+        ), mock.patch.object(
+            production_auto_deploy, "fetch_ci_runs", return_value=runs
+        ), mock.patch.object(
+            production_auto_deploy, "publish", side_effect=fake_publish
+        ), mock.patch.object(
+            production_auto_deploy, "notify", return_value=True
+        ), mock.patch.object(
+            production_auto_deploy, "deploy", return_value=True
+        ):
+            outcome = production_auto_deploy.poll(config)
+        return published, outcome
+
+    def test_a_red_run_alerts_once_on_the_critical_topic(self):
+        config = self.loaded_config()
+
+        published, outcome = self.poll_with(config, (self.RED_RUN,))
+
+        self.assertIsNone(outcome)
+        self.assertEqual(len(published), 1)
+        self.assertEqual(published[0]["topic"], "nas-critical")
+        self.assertEqual(published[0]["priority"], 4)
+        self.assertIn(MAIN_SHA[:9], published[0]["title"])
+        self.assertIn("failure", published[0]["message"])
+        self.assertIn("actions/runs/17", published[0]["message"])
+        # Nothing was attempted, so the revision stays deployable once it goes
+        # green rather than being quarantined by the report.
+        self.assertEqual(production_auto_deploy.attempted_shas(config), set())
+
+    def test_the_same_red_revision_is_not_reported_every_five_minutes(self):
+        config = self.loaded_config()
+
+        self.assertEqual(len(self.poll_with(config, (self.RED_RUN,))[0]), 1)
+        self.assertEqual(self.poll_with(config, (self.RED_RUN,))[0], [])
+        self.assertEqual(self.poll_with(config, (self.RED_RUN,))[0], [])
+
+    def test_ci_that_has_not_finished_stays_quiet(self):
+        config = self.loaded_config()
+
+        self.assertEqual(self.poll_with(config, ())[0], [])
+
+    def test_ambiguous_successful_runs_are_reported_as_a_refusal(self):
+        config = self.loaded_config()
+
+        published, outcome = self.poll_with(
+            config, (self.GREEN_RUN, self.GREEN_RUN)
+        )
+
+        self.assertIsNone(outcome)
+        self.assertEqual(len(published), 1)
+        self.assertIn("exactly one is required", published[0]["message"])
+
+    def test_a_second_red_revision_is_reported_in_its_own_right(self):
+        config = self.loaded_config()
+        self.poll_with(config, (self.RED_RUN,))
+
+        published, _outcome = self.poll_with(
+            config,
+            ({**self.RED_RUN, "head_sha": OTHER_SHA},),
+            sha=OTHER_SHA,
+        )
+
+        self.assertEqual(len(published), 1)
+        self.assertIn(OTHER_SHA[:9], published[0]["title"])
+
+    def test_a_revision_that_goes_green_clears_the_refusal(self):
+        config = self.loaded_config()
+        self.poll_with(config, (self.RED_RUN,))
+
+        published, outcome = self.poll_with(config, (self.GREEN_RUN,))
+
+        self.assertTrue(outcome)
+        self.assertEqual(published, [])
+        self.assertEqual(production_auto_deploy.read_ci_refusal(config), "")
+
+    def test_a_re_run_that_fails_again_is_reported_again(self):
+        config = self.loaded_config()
+        self.poll_with(config, (self.RED_RUN,))
+        # A re-running workflow is no longer a completed run, so the poller
+        # sees nothing for the revision until it concludes a second time.
+        self.assertEqual(self.poll_with(config, ())[0], [])
+
+        self.assertEqual(len(self.poll_with(config, (self.RED_RUN,))[0]), 1)
+
+    def test_an_undelivered_refusal_is_reported_on_the_next_poll(self):
+        config = self.loaded_config()
+
+        self.assertEqual(len(self.poll_with(config, (self.RED_RUN,), delivered=False)[0]), 1)
+        self.assertEqual(production_auto_deploy.read_ci_refusal(config), "")
+
+        self.assertEqual(len(self.poll_with(config, (self.RED_RUN,))[0]), 1)
+
+    def test_an_already_attempted_revision_leaves_the_refusal_untouched(self):
+        config = self.loaded_config()
+        self.poll_with(config, (self.RED_RUN,))
+        recorded = production_auto_deploy.read_ci_refusal(config)
+        production_auto_deploy.record_attempt(config, MAIN_SHA)
+
+        published, outcome = self.poll_with(config, (self.GREEN_RUN,))
+
+        self.assertIsNone(outcome)
+        self.assertEqual(published, [])
+        self.assertEqual(production_auto_deploy.read_ci_refusal(config), recorded)
+
+    def test_an_unreadable_refusal_record_does_not_stop_the_poller(self):
+        config = self.loaded_config()
+        (config.state_root / "ci-refusal").write_bytes(b"\xff\xfe not ascii\n")
+
+        self.assertEqual(len(self.poll_with(config, (self.RED_RUN,))[0]), 1)
 
 
 class PollTest(PollerTestCase):

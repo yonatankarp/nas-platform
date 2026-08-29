@@ -1578,6 +1578,46 @@ expect_failure(failures, "NAS coordinate leaked into vault",
   File.write(path, File.read(path) + "vault_nas_address: 192.0.2.1\n")
 end
 
+expect_failure(failures, "credential-bearing read left unredacted",
+               "tasks that render a credential must set no_log") do |root|
+  path = File.join(root, "roles", "komga", "tasks", "main.yml")
+  body = File.read(path)
+  File.write(path, replace_last(
+                     body,
+                     "  register: komga_libraries_before\n" \
+                     "  when: not ansible_check_mode or komga_claim_status.json.isClaimed | bool\n" \
+                     "  changed_when: false\n  check_mode: false\n  no_log: true\n",
+                     "  register: komga_libraries_before\n" \
+                     "  when: not ansible_check_mode or komga_claim_status.json.isClaimed | bool\n" \
+                     "  changed_when: false\n  check_mode: false\n"
+                   ))
+end
+
+# Anchored on the library-listing guard, whose whole task is two conditions over
+# a Komga response: unlooped, credential-free, and so exactly the shape the rule
+# refuses to see redacted.
+expect_failure(failures, "credential-free assertion redacted",
+               "assertions that can render no credential must not set no_log") do |root|
+  path = File.join(root, "roles", "komga", "tasks", "main.yml")
+  body = File.read(path)
+  anchor = "      unpaginated array before any mutation.\n" \
+           "  when: not ansible_check_mode or komga_claim_status.json.isClaimed | bool\n"
+  File.write(path, replace_last(body, anchor, "#{anchor}  no_log: true\n"))
+end
+
+# The exception is pinned by task name, so renaming the task drops the exemption
+# and the assertion falls back to the rule it was excused from. The companion
+# check that a pinned entry still names a real task is deliberately skipped on a
+# partial tree, which this sandbox is, so the message asserted here is the rule's.
+expect_failure(failures, "pinned redaction exception no longer covers a renamed task",
+               "tasks that render a credential must set no_log") do |root|
+  path = File.join(root, "roles", "beszel", "tasks", "main.yml")
+  File.write(path, File.read(path).sub(
+                     "- name: Refuse duplicate managed application users after reconciliation\n",
+                     "- name: Refuse duplicate managed application users\n"
+                   ))
+end
+
 expect_failure(failures, "vault validation disclosure",
                "every vault contract task must use no_log") do |root|
   path = File.join(root, "roles", "vault_contract", "tasks", "main.yml")

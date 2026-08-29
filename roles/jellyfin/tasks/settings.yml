@@ -50,7 +50,6 @@
     jellyfin_encoding_reconciled_document: >-
       {{ jellyfin_encoding_before.json | combine(jellyfin_encoding_policy) }}
   when: jellyfin_settings_phase == 'preflight'
-  no_log: true
 
 - name: Read Jellyfin plugin repositories for preflight
   ansible.builtin.uri:
@@ -96,7 +95,6 @@
     jellyfin_repository_by_normalized_url: >-
       {{ jellyfin_plugin_repositories | jellyfin_repositories_by_url }}
   when: jellyfin_settings_phase == 'preflight'
-  no_log: true
 
 # Deliberately not redacted. Unlooped, so the result dict adds only the source text of
 # the failing condition, and both conditions read plugin repository URLs: the live
@@ -129,14 +127,12 @@
          | jellyfin_merged_repositories(jellyfin_plugin_repositories,
                                        jellyfin_retired_plugin_repository_urls) }}
   when: jellyfin_settings_phase == 'preflight'
-  no_log: true
 
 - name: Resolve Jellyfin repository repair requirement
   ansible.builtin.set_fact:
     jellyfin_repositories_update_required: >-
       {{ jellyfin_repositories_merged != jellyfin_repositories_before.json }}
   when: jellyfin_settings_phase == 'preflight'
-  no_log: true
 
 - name: Read installed Jellyfin plugins for preflight
   ansible.builtin.uri:
@@ -175,7 +171,6 @@
     jellyfin_disabled_plugins: []
     jellyfin_opensubtitles_credentials_validated: false
   when: jellyfin_settings_phase == 'preflight'
-  no_log: true
 
 - name: Refuse ambiguous required Jellyfin plugin identities
   ansible.builtin.assert:
@@ -254,7 +249,6 @@
          selectattr('Name', 'equalto', 'Open Subtitles') |
          selectattr('Status', 'equalto', 'Active') | list | length != 1 }}
   when: jellyfin_settings_phase == 'preflight'
-  no_log: true
 
 - name: Refuse unusable installed required Jellyfin plugins
   ansible.builtin.assert:
@@ -306,7 +300,6 @@
   when:
     - jellyfin_settings_phase == 'preflight'
     - not jellyfin_opensubtitles_preflight_read.skipped | default(false) | bool
-  no_log: true
 
 - name: Validate active Open Subtitles credentials during global preflight
   ansible.builtin.uri:
@@ -342,8 +335,9 @@
   when:
     - jellyfin_settings_phase == 'preflight'
     - not jellyfin_opensubtitles_preflight_validation.skipped | default(false) | bool
-  no_log: true
 
+# Redacted here and at the activation copy below: the plugin configuration
+# document carries vault_jellyfin_opensubtitles_username and its password.
 - name: Preserve active Open Subtitles preflight configuration for reconciliation
   ansible.builtin.set_fact:
     jellyfin_opensubtitles_configuration_before: "{{ jellyfin_opensubtitles_preflight_read }}"
@@ -478,7 +472,6 @@
   when:
     - jellyfin_settings_phase == 'reconcile'
     - not ansible_check_mode
-  no_log: true
 
 - name: Merge Jellyfin plugin repositories
   ansible.builtin.uri:
@@ -531,7 +524,6 @@
       (jellyfin_settings_phase == 'reconcile' and
        jellyfin_missing_plugins | default([]) | length == 0)
     - not ansible_check_mode
-  no_log: true
 
 - name: Read compatible Jellyfin package catalog after repository preparation
   ansible.builtin.uri:
@@ -647,7 +639,6 @@
   when:
     - jellyfin_settings_phase == 'finalize'
     - not ansible_check_mode
-  no_log: true
 
 - name: Resolve whether Open Subtitles credentials can be validated before restart
   ansible.builtin.set_fact:
@@ -661,7 +652,6 @@
   when:
     - jellyfin_settings_phase == 'activate'
     - not ansible_check_mode
-  no_log: true
 
 # Activations are deliberately accumulated before this single barrier. A plugin
 # in Restart state cannot serve its credential endpoint until after restart, so
@@ -676,7 +666,7 @@
     services: [jellyfin]
     state: restarted
     wait: true
-    wait_timeout: 300
+    wait_timeout: "{{ jellyfin_compose_wait_timeout }}"
   when:
     - jellyfin_settings_phase == 'finalize'
     - not ansible_check_mode
@@ -690,8 +680,8 @@
     status_code: "{{ range(100, 600) | list }}"
   register: jellyfin_plugin_startup_readiness
   until: jellyfin_plugin_startup_readiness.status | default(0) | int in [200, 401, 403]
-  retries: 100
-  delay: 3
+  retries: "{{ jellyfin_plugin_restart_retries }}"
+  delay: "{{ platform_readiness_delay }}"
   when:
     - jellyfin_settings_phase == 'finalize'
     - not ansible_check_mode
@@ -713,8 +703,8 @@
     return_content: true
   register: jellyfin_after_restart_login
   until: jellyfin_after_restart_login.status | default(0) | int == 200
-  retries: 20
-  delay: 3
+  retries: "{{ platform_readiness_retries }}"
+  delay: "{{ platform_readiness_delay }}"
   when:
     - jellyfin_settings_phase == 'finalize'
     - not ansible_check_mode
@@ -776,7 +766,6 @@
   when:
     - jellyfin_settings_phase == 'finalize'
     - not ansible_check_mode
-  no_log: true
 
 - name: Read Open Subtitles plugin configuration
   ansible.builtin.uri:
@@ -806,7 +795,6 @@
     - jellyfin_settings_phase in ['activate', 'finalize']
     - not ansible_check_mode
     - jellyfin_opensubtitles_validation_now | default(false) | bool
-  no_log: true
 
 - name: Preserve activated Open Subtitles configuration for reconciliation
   ansible.builtin.set_fact:
@@ -857,7 +845,6 @@
     - >-
       not ((platform_compose_kind | default('') == 'integration') and
            (deployment_bundle_test_mode | default(false) | bool))
-  no_log: true
 
 - name: Preserve successful Open Subtitles activation credential validation
   ansible.builtin.set_fact:
@@ -866,7 +853,6 @@
     - jellyfin_settings_phase in ['activate', 'finalize']
     - not ansible_check_mode
     - jellyfin_opensubtitles_validation_now | default(false) | bool
-  no_log: true
 
 - name: Update Open Subtitles plugin configuration
   ansible.builtin.uri:
@@ -998,7 +984,6 @@
          items2dict) == jellyfin_encoding_policy
     fail_msg: The Jellyfin platform encoding policy is drifted.
   when: jellyfin_settings_phase == 'verify'
-  no_log: true
 
 - name: Verify exact enabled Jellyfin plugin repositories
   ansible.builtin.assert:

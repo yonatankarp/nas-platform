@@ -18,12 +18,18 @@ mkdir -m 0700 -p "$sandbox/service-data/docker" "$sandbox/service-data/media" \
   "$fixture/snapshot" "$fixture/bin"
 printf 'schema=1\nproject=%s\n' "$project" > "$sandbox/.nas-platform-mac-owned"
 chmod 0600 "$sandbox/.nas-platform-mac-owned"
+# The integration adoption drill deploys the namespaced Compose identities the
+# Mac lane deploys, so the drill must resolve the owned project prefix rather
+# than the canonical production names.
 cat > "$fixture/bin/ruby" <<'SH'
 #!/bin/sh
 [ "$1" = - ] && [ "$2" = drill ] || exit 81
-[ "$PLATFORM_PAPERLESS_WEBSERVER_CONTAINER" = paperless_webserver ] || exit 82
-[ "$PLATFORM_PAPERLESS_POSTGRES_CONTAINER" = paperless_postgres ] || exit 83
-[ "$PLATFORM_PAPERLESS_REDIS_CONTAINER" = paperless_redis ] || exit 84
+[ "$PLATFORM_PAPERLESS_WEBSERVER_CONTAINER" = \
+  "$PLATFORM_PROJECT_NAME-paperless-webserver" ] || exit 82
+[ "$PLATFORM_PAPERLESS_POSTGRES_CONTAINER" = \
+  "$PLATFORM_PROJECT_NAME-paperless-postgres" ] || exit 83
+[ "$PLATFORM_PAPERLESS_REDIS_CONTAINER" = \
+  "$PLATFORM_PROJECT_NAME-paperless-redis" ] || exit 84
 exit 0
 SH
 chmod 0700 "$fixture/bin/ruby"

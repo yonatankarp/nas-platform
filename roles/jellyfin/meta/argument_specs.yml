@@ -3,6 +3,21 @@ argument_specs:
   main:
     short_description: Deploy Jellyfin and converge its administrator and media library
     options:
+      jellyfin_compose_wait_timeout:
+        type: int
+        required: false
+      jellyfin_startup_retries:
+        type: int
+        required: false
+      jellyfin_plugin_restart_retries:
+        type: int
+        required: false
+      jellyfin_library_identity_retries:
+        type: int
+        required: false
+      jellyfin_library_identity_delay:
+        type: int
+        required: false
       platform_compose_kind:
         type: str
         required: true

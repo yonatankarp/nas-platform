@@ -19,7 +19,6 @@
       - arr_servarr_clients_before.json is not mapping
       - arr_servarr_clients_before.json is not string
     fail_msg: "{{ arr_servarr_instance.name }} returned an unsupported download client collection."
-  no_log: true
 
 - name: Validate every Servarr download client object
   ansible.builtin.include_tasks: validate_servarr_download_clients.yml
@@ -67,7 +66,6 @@
         arr_servarr_sab_host_matches | length == 0 or
         arr_servarr_sab_name_matches[0].id == arr_servarr_sab_host_matches[0].id
     fail_msg: "{{ arr_servarr_instance.name }} has duplicate SABnzbd names or URLs."
-  no_log: true
 
 - name: Build the owned Servarr SABnzbd client
   ansible.builtin.set_fact:

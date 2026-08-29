@@ -82,7 +82,6 @@
     arr_servarr_validation_url_matches: >-
       {{ arr_servarr_clients_validation_collection |
          acquisition_servarr_client_url_matches(arr_sabnzbd_host, arr_sabnzbd_port) }}
-  no_log: true
 
 - name: Require complete selected Servarr SABnzbd client fields before mutation
   ansible.builtin.assert:

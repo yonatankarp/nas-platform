@@ -43,6 +43,8 @@
       {{ container_cpu_service_name }} has no running containers in Compose
       project {{ container_cpu_project_name }}.
 
+# Redacted: `docker container inspect` returns each container's Env array,
+# which is the rendered .env and therefore every credential the stack holds.
 - name: Inspect effective Docker CPU controls
   ansible.builtin.command:
     argv: "{{ ['docker', 'container', 'inspect'] + container_cpu_running_ids.stdout_lines }}"
@@ -59,7 +61,6 @@
              container_cpu_inspection.stdout | from_json,
              container_cpu_selected_services,
              platform_effective_container_cpuset) }}
-  no_log: true
 
 - name: Require effective Docker CPU controls
   ansible.builtin.assert:
