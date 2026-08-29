@@ -177,7 +177,7 @@
     env_files: ["{{ platform_runtime_dir }}/services/ntfy/.env"]
     state: present
     wait: true
-    wait_timeout: 180
+    wait_timeout: "{{ platform_compose_wait_timeout }}"
   register: ntfy_deploy
 
 - name: Verify ntfy effective container CPU policy
@@ -194,8 +194,8 @@
     return_content: true
   register: ntfy_health
   until: ntfy_health.json.healthy | default(false)
-  retries: 20
-  delay: 3
+  retries: "{{ platform_readiness_retries }}"
+  delay: "{{ platform_readiness_delay }}"
 
 - name: Synchronize managed ntfy account subscriptions
   ansible.builtin.include_tasks: managed_users.yml

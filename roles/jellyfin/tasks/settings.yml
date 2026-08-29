@@ -676,7 +676,7 @@
     services: [jellyfin]
     state: restarted
     wait: true
-    wait_timeout: 300
+    wait_timeout: "{{ jellyfin_compose_wait_timeout }}"
   when:
     - jellyfin_settings_phase == 'finalize'
     - not ansible_check_mode
@@ -690,8 +690,8 @@
     status_code: "{{ range(100, 600) | list }}"
   register: jellyfin_plugin_startup_readiness
   until: jellyfin_plugin_startup_readiness.status | default(0) | int in [200, 401, 403]
-  retries: 100
-  delay: 3
+  retries: "{{ jellyfin_plugin_restart_retries }}"
+  delay: "{{ platform_readiness_delay }}"
   when:
     - jellyfin_settings_phase == 'finalize'
     - not ansible_check_mode
@@ -713,8 +713,8 @@
     return_content: true
   register: jellyfin_after_restart_login
   until: jellyfin_after_restart_login.status | default(0) | int == 200
-  retries: 20
-  delay: 3
+  retries: "{{ platform_readiness_retries }}"
+  delay: "{{ platform_readiness_delay }}"
   when:
     - jellyfin_settings_phase == 'finalize'
     - not ansible_check_mode

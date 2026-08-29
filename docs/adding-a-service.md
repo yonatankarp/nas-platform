@@ -431,7 +431,7 @@ run installed, which is what makes a lone `--tags navidrome` converge safe.
     env_files: ["{{ platform_runtime_dir }}/services/navidrome/.env"]
     state: present
     wait: true
-    wait_timeout: 180
+    wait_timeout: "{{ platform_compose_wait_timeout }}"
 
 - name: Wait for Navidrome application health
   ansible.builtin.uri:

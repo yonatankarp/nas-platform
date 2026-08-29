@@ -3,6 +3,12 @@ paperless_port: 8000
 paperless_task_workers: 2
 paperless_threads_per_worker: 1
 paperless_api: "http://127.0.0.1:{{ paperless_port }}"
+
+# Paperless comes up in two stages. PostgreSQL and Redis alone take longer than
+# the platform default; the full stack then runs database migrations and loads
+# its OCR models before the web container reports healthy.
+paperless_data_compose_wait_timeout: 300
+paperless_compose_wait_timeout: 600
 paperless_compose_project_name: >-
   {{ (platform_project_name ~ '-paperless')
      if platform_project_name | default('') | length > 0 else 'paperless' }}

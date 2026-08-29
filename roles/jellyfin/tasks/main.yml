@@ -204,7 +204,7 @@
     env_files: ["{{ platform_runtime_dir }}/services/jellyfin/.env"]
     state: present
     wait: true
-    wait_timeout: 300
+    wait_timeout: "{{ jellyfin_compose_wait_timeout }}"
   register: jellyfin_deploy
 
 - name: Report the Jellyfin deployment
@@ -243,8 +243,8 @@
     status_code: "{{ range(100, 600) | list }}"
   register: jellyfin_startup_api
   until: jellyfin_startup_api.status | default(0) | int in [200, 401, 403]
-  retries: 60
-  delay: 3
+  retries: "{{ jellyfin_startup_retries }}"
+  delay: "{{ platform_readiness_delay }}"
   changed_when: false
   check_mode: false
 
@@ -259,8 +259,8 @@
     status_code: "{{ range(100, 600) | list }}"
   register: jellyfin_public_info
   until: jellyfin_public_info.status | default(0) | int == 200
-  retries: 60
-  delay: 3
+  retries: "{{ jellyfin_startup_retries }}"
+  delay: "{{ platform_readiness_delay }}"
   changed_when: false
   check_mode: false
 
@@ -974,8 +974,8 @@
       jellyfin_library_identity_match.LibraryOptions.PathInfos |
       default(none) | type_debug == 'list'
     - item.normalized_path in jellyfin_library_identity_normalized_paths
-  retries: 20
-  delay: 1
+  retries: "{{ jellyfin_library_identity_retries }}"
+  delay: "{{ jellyfin_library_identity_delay }}"
   vars:
     jellyfin_library_identity_observation: "{{ jellyfin_library_identity_observations }}"
     jellyfin_library_identity_folders: >-

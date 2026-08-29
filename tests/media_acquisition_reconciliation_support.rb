@@ -2443,12 +2443,29 @@ def write_fake_configarr_module(collection_root)
   )
 end
 
+# The probes lift task files out of the roles and run them in a synthetic play,
+# so Ansible loads neither inventory/group_vars/all/main.yml nor the defaults
+# beside those tasks, and every timing keyword the tasks read would be undefined.
+# The values are taken from the real files rather than restated here, so a probe
+# waits exactly as production does and a retimed platform stays one edit. A probe
+# that declares its own value still wins, because these are merged underneath it.
+TIMED_ROLES = %w[arr downloaders].freeze
+TIMING_VARIABLE = /\A(?:platform|#{TIMED_ROLES.join('|')})_\w*(?:_retries|_delay|_wait_timeout)\z/
+HARNESS_TIMING_DEFAULTS = (
+  [File.join(ROOT, "inventory", "group_vars", "all", "main.yml")] +
+  TIMED_ROLES.map { |role| File.join(ROOT, "roles", role, "defaults", "main.yml") }
+).each_with_object({}) do |path, defaults|
+  YAML.safe_load_file(path).each do |name, value|
+    defaults[name] = value if name.match?(TIMING_VARIABLE)
+  end
+end.freeze
+
 def write_playbook(path, variables, tasks)
   File.write(
     path,
     YAML.dump([{
       "hosts" => "localhost", "gather_facts" => false,
-      "vars" => variables, "tasks" => tasks
+      "vars" => HARNESS_TIMING_DEFAULTS.merge(variables), "tasks" => tasks
     }]),
     mode: "w", perm: 0o600
   )
