@@ -178,10 +178,14 @@ abort "Komga contract failed: managed root matching is not trailing-slash normal
 abort "Komga contract failed: library updates must preserve the selected identifier" unless
   role_task.call("Repair the managed Komga library").dig("ansible.builtin.uri", "url").to_s
     .include?("item.id | urlencode")
+# Read as the guard's own conditions rather than as one joined string: the input
+# is named in three live places in this role, and a check that could see any of
+# them would keep passing after this guard lost its clause.
 abort "Komga contract failed: the library root move is not gated on the one-convergence input" unless
-  role_task.call("Refuse ambiguous Komga library candidates")
-    .dig("ansible.builtin.assert", "that").to_s
-    .include?("komga_library_root_migration_allowed | bool")
+  Array(role_task.call("Refuse ambiguous Komga library candidates")
+    .dig("ansible.builtin.assert", "that")).any? do |condition|
+    condition.to_s.include?("komga_library_root_migration_allowed | bool")
+  end
 user_mutation = role_at.call("Reconcile managed Komga users")
 abort "Komga contract failed: complete library preflight must precede managed-user mutation" unless
   user_mutation && preflight.none?(&:nil?) && preflight.max < user_mutation &&

@@ -1593,16 +1593,31 @@ expect_failure(failures, "credential-bearing read left unredacted",
                    ))
 end
 
-# Anchored on the library-listing guard, whose whole task is two conditions over
-# a Komga response: unlooped, credential-free, and so exactly the shape the rule
-# refuses to see redacted.
+# The library-listing guard is the shape the rule refuses to see redacted: an
+# unlooped assertion whose conditions read a Komga response and name no
+# credential. That the task is still that shape is read off the parsed role
+# rather than assumed, so the fixture reports a drifted target instead of
+# planting redaction on a task the rule would have excused anyway. Only the
+# insertion itself is textual, because the mutation has to produce a file, and it
+# is anchored on the task's own name and module rather than on the wording of a
+# message.
+REDACTED_ASSERTION_TARGET = "Require a complete Komga library listing"
 expect_failure(failures, "credential-free assertion redacted",
                "assertions that can render no credential must not set no_log") do |root|
   path = File.join(root, "roles", "komga", "tasks", "main.yml")
-  body = File.read(path)
-  anchor = "      unpaginated array before any mutation.\n" \
-           "  when: not ansible_check_mode or komga_claim_status.json.isClaimed | bool\n"
-  File.write(path, replace_last(body, anchor, "#{anchor}  no_log: true\n"))
+  target = YAML.safe_load_file(path, aliases: true).find do |task|
+    task.is_a?(Hash) && task["name"] == REDACTED_ASSERTION_TARGET
+  end
+  raise "#{REDACTED_ASSERTION_TARGET} is absent" unless target
+  raise "#{REDACTED_ASSERTION_TARGET} is no longer an unredacted unlooped assertion" unless
+    target.key?("ansible.builtin.assert") && !target.key?("loop") && !target.key?("no_log")
+  raise "#{REDACTED_ASSERTION_TARGET} now names a credential" if
+    YAML.dump(target).match?(/\bvault_[a-z0-9_]+\b/)
+
+  anchor = "- name: #{REDACTED_ASSERTION_TARGET}\n  ansible.builtin.assert:\n"
+  File.write(path, replace_last(File.read(path), anchor,
+                                "- name: #{REDACTED_ASSERTION_TARGET}\n  no_log: true\n" \
+                                "  ansible.builtin.assert:\n"))
 end
 
 # The exception is pinned by task name, so renaming the task drops the exemption

@@ -39,9 +39,27 @@ END_TASK = "Require exact reconciled Komga library"
 COMICS_ROOT = "/data/Comics"
 EBOOKS_ROOT = "/data/Ebooks"
 MIGRATION_INPUT = "komga_library_root_migration_allowed"
+# A module that writes to the target. Anything that renders the migration input
+# into a file on the host turns a one-convergence argument into a setting.
+PERSISTING_MODULES = /\.(copy|template|lineinfile|blockinfile|ini_file)\z/
 
 def task_name(task)
   task.fetch("name", "")
+end
+
+def named_task(tasks, name)
+  tasks.find { |task| task.is_a?(Hash) && task_name(task) == name }
+end
+
+# Every string a parsed task carries, keys included. A comment is not one of
+# them, which is the whole point of reading the tasks instead of the file.
+def task_strings(node)
+  case node
+  when Hash then node.flat_map { |key, value| [key.to_s] + task_strings(value) }
+  when Array then node.flat_map { |value| task_strings(value) }
+  when String then [node]
+  else []
+  end
 end
 
 def deep_copy(value)
@@ -233,19 +251,43 @@ def model_failures(defaults_source, argument_specs, role_source, contract, drift
     failures << "argument_specs still types the retired #{retired}" if options.key?(retired)
   end
 
-  # A one-convergence input that any task writes to the target is no longer one,
-  # so no task that writes a file may mention it at all.
-  writing_modules = %w[copy template lineinfile blockinfile ini_file]
-  persisting = YAML.safe_load(role_source, aliases: false).select do |task|
-    task.keys.any? { |key| writing_modules.any? { |name| key.to_s.end_with?(".#{name}") } } &&
-      YAML.dump(task).include?(MIGRATION_INPUT)
+  role_tasks = begin
+    Array(YAML.safe_load(role_source, aliases: false))
+  rescue Psych::Exception => error
+    return failures + ["role tasks are malformed: #{error.message.lines.first.to_s.strip}"]
+  end
+
+  # A one-convergence input that any task writes to the target is no longer one.
+  # Persistence is a property of one task -- a writing module whose own arguments
+  # name the input -- so the module and the mention have to be found in the same
+  # parsed task rather than anywhere in the file.
+  persisting = role_tasks.select do |task|
+    task.is_a?(Hash) && task.keys.any? { |key| key.to_s.match?(PERSISTING_MODULES) } &&
+      task_strings(task).any? { |value| value.include?(MIGRATION_INPUT) }
   end
   failures << "the role persists the one-convergence migration input" unless persisting.empty?
-  failures << "the ambiguity guard no longer gates the root move on the migration input" unless
-    role_source.include?("#{MIGRATION_INPUT} | bool")
-  failures << "the role never reports that the migration input is one-convergence only" unless
-    role_source.include?("KOMGA_ROOT_MIGRATION_ALLOWED")
 
+  # Read off the guard's own conditions. The input is named in three live places
+  # -- this guard, the plan that consults the name match, and the report's when --
+  # so asking whether the file mentions it answered for whichever of the three
+  # happened to survive, and the guard could lose its clause unnoticed.
+  guard = named_task(role_tasks, "Refuse ambiguous Komga library candidates")
+  failures << "the ambiguity guard no longer gates the root move on the migration input" unless
+    Array(guard&.dig("ansible.builtin.assert", "that")).any? do |condition|
+      condition.to_s.include?("#{MIGRATION_INPUT} | bool")
+    end
+
+  # Likewise the report: a banner that survives only in a comment reports nothing.
+  report = named_task(role_tasks, "Report the one-convergence Komga library root migration input")
+  failures << "the role never reports that the migration input is one-convergence only" unless
+    report&.dig("ansible.builtin.debug", "msg").to_s.include?("KOMGA_ROOT_MIGRATION_ALLOWED") &&
+    report["when"].to_s.include?("#{MIGRATION_INPUT} | bool")
+
+  # The four below stay source text. tests/contracts/komga.sh and the Mac drift
+  # hook are shell scripts carrying embedded Ruby, so they have no parsed
+  # structure to read; what the values they pin should be is asserted against the
+  # parsed defaults above, and this only asks that the contract and the lane still
+  # pin them.
   failures << "the contract does not pin the two-library model" unless
     contract.include?('LIBRARY_MODEL = [') &&
       contract.include?("\"Comics\", \"root\" => \"#{COMICS_ROOT}\"") &&
@@ -523,11 +565,39 @@ if self_test
       detected.any? { |failure| failure.include?(diagnostic) }
   end
 
-  # The behavioral half. With the guard's migration clause replaced by a literal
-  # truth, the root move is no longer reviewed, and the refusal fixture must say so.
+  # The two rows below are why the guard and report checks read parsed tasks
+  # rather than the role's text. The input is named in three live places and the
+  # banner appears exactly once, so a whole-file substring answered for whichever
+  # copy happened to survive: an ungated guard still mentions the input twice
+  # elsewhere, and a banner demoted to a comment is still in the file. Each plant
+  # is asserted to pass the source-text form before it is required to fail the
+  # structural one.
   ungated = ROLE_SOURCE.sub("        #{MIGRATION_INPUT} | bool\n", "        true\n")
   abort "self-test could not plant an ungated root migration" if ungated == ROLE_SOURCE
-  abort "self-test failed: an ungated root migration was accepted" if
+  abort "self-test failed: an ungated guard no longer names the input in the file" unless
+    ungated.include?("#{MIGRATION_INPUT} | bool")
+  abort "self-test failed: an ungated root migration was accepted" unless
+    model_failures(DEFAULTS_SOURCE, argument_specs, ungated, contract, drift_hook)
+      .any? { |failure| failure.include?("gates the root move") }
+
+  commented_banner = ROLE_SOURCE.sub(
+    "  ansible.builtin.debug:\n" \
+    "    msg: >-\n" \
+    "      KOMGA_ROOT_MIGRATION_ALLOWED: pending library root moves\n",
+    "  # KOMGA_ROOT_MIGRATION_ALLOWED\n" \
+    "  ansible.builtin.debug:\n" \
+    "    msg: >-\n" \
+    "      pending library root moves\n"
+  )
+  abort "self-test could not plant a commented migration banner" if commented_banner == ROLE_SOURCE
+  abort "self-test failed: a commented banner no longer appears in the file" unless
+    commented_banner.include?("KOMGA_ROOT_MIGRATION_ALLOWED")
+  abort "self-test failed: a banner that survives only as a comment was accepted" unless
+    model_failures(DEFAULTS_SOURCE, argument_specs, commented_banner, contract, drift_hook)
+      .any? { |failure| failure.include?("one-convergence only") }
+
+  # And the behavioural half: an ungated guard also lets the refusal fixture through.
+  abort "self-test failed: an ungated root migration reconciled" if
     migration_refusal_failures(ungated).empty?
 
   # And with the name match never consulted, the allowed migration cannot complete.
