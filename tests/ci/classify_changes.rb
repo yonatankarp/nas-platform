@@ -69,14 +69,58 @@ module ClassifyChanges
     "immich" => %w[immich],
     "paperless" => %w[paperless paperless-ngx paperless_ngx]
   }.freeze
+  # Paths the policy gate checks and nothing else in CI reads. The auto-deploy
+  # playbook and its two roles are reachable only from
+  # install-production-auto-deploy.yml -- site.yml never includes them and
+  # tests/integration.sh never names them -- so no suite can observe a change to
+  # one. The vault generator is the same shape: the suites build their sandbox
+  # vault with tests/generate-ephemeral-vault.sh, which writes its own plaintext
+  # rather than running this playbook. renovate.json is read by
+  # tests/renovate_policy_test.rb and by no play at all.
   STATIC_ONLY_PATHS = %w[
     README.md
     docs/getting-started-nas.md
     docs/secrets.md
+    generate-secrets.yml
+    install-production-auto-deploy.yml
+    renovate.json
+    templates/vault-plain.yml.j2
+  ].freeze
+  STATIC_ONLY_PREFIXES = %w[
+    roles/image_prune/
+    roles/production_auto_deploy/
+    scripts/
+  ].freeze
+  # The files under tests/ that tests/integration.sh executes on the target. A
+  # change to one of them changes what every suite does, so they keep falling
+  # open; everything else under tests/ is a check the policy gate runs and
+  # selects the gate alone. tests/ci/classify_changes_test.rb asserts this list
+  # against what the harness actually invokes, so a new harness file that is
+  # missing here fails there rather than silently skipping every suite.
+  INTEGRATION_HARNESS_PATHS = %w[
+    tests/assert-no-vault-secrets.rb
+    tests/generate-ephemeral-vault.sh
+    tests/integration.sh
+    tests/integration_lock.sh
+    tests/mac/generate-immich-fixture-vars.rb
+    tests/mac/snapshot-paperless.sh
+    tests/mac_inventory_path_test.yml
+    tests/policy_support.rb
+    tests/run_contracts.rb
+    tests/sandbox_cleanup.sh
+    tests/verify_deployment_manifest.rb
+  ].freeze
+  # The contracts a suite runs, the document fixtures they upload and the Mac
+  # hooks they read as the definition of a drifted service.
+  INTEGRATION_HARNESS_PREFIXES = %w[
+    tests/contracts/
+    tests/fixtures/
+    tests/mac/hooks/
   ].freeze
   ACQUISITION_SHARED_PATHS = %w[
     config/media-acquisition.yml
     roles/host_prep/tasks/verify_media_acquisition.yml
+    tests/media_acquisition_foundation_test.rb
     tests/media_acquisition_foundation_verifier_test.rb
   ].freeze
   ACQUISITION_OWNED_PATHS = {
@@ -100,6 +144,11 @@ module ClassifyChanges
     tests/media_acquisition_reconciliation_bazarr_test.rb
     tests/media_acquisition_reconciliation_configarr_test.rb
   ].freeze
+  # Every lane whose tags start the alerting sink, which is where each role
+  # publishes its deployment report. The five acquisition foundation suites
+  # converge only the shared inert foundation and never start ntfy, so a change
+  # to it cannot reach them.
+  NTFY_LANES = TAGGED_LANES.select { |lane| SERVICE_TAGS.fetch(lane).include?("ntfy") }.freeze
 
   module_function
 
@@ -111,7 +160,7 @@ module ClassifyChanges
     reconciliation_owned = false
     paths.each do |raw_path|
       path = raw_path.to_s.sub(%r{\A\./}, "")
-      if STATIC_ONLY_PATHS.include?(path)
+      if static_only_path?(path)
         selection["static"] = true
         next
       end
@@ -119,6 +168,11 @@ module ClassifyChanges
 
       if RECONCILIATION_OWNED_PATHS.include?(path)
         reconciliation_owned = true
+        next
+      end
+
+      if path.start_with?("roles/ntfy/", "services/ntfy/")
+        tagged_lanes.concat(NTFY_LANES)
         next
       end
 
@@ -133,7 +187,12 @@ module ClassifyChanges
       end
 
       lane = acquisition_lane(path) || service_lane(path)
-      return selection.transform_values { true } unless lane
+      unless lane
+        return selection.transform_values { true } unless static_only_test?(path)
+
+        selection["static"] = true
+        next
+      end
 
       tagged_lanes << lane
     end
@@ -202,6 +261,19 @@ module ClassifyChanges
     return false if path == "AGENTS.md" || path.match?(%r{\A(?:tests|fixtures|scripts)/})
 
     path.end_with?(".md")
+  end
+
+  def static_only_path?(path)
+    STATIC_ONLY_PATHS.include?(path) ||
+      STATIC_ONLY_PREFIXES.any? { |prefix| path.start_with?(prefix) }
+  end
+
+  # Reached only once no lane has claimed the path, so the contract fixtures and
+  # the per-service contracts routed above keep the lanes they already had.
+  def static_only_test?(path)
+    path.start_with?("tests/") &&
+      INTEGRATION_HARNESS_PREFIXES.none? { |prefix| path.start_with?(prefix) } &&
+      !INTEGRATION_HARNESS_PATHS.include?(path)
   end
 
   def service_lane(path)
