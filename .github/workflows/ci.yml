@@ -22,6 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       static: ${{ steps.classify.outputs.static }}
+      reconciliation: ${{ steps.classify.outputs.reconciliation }}
       suites: ${{ steps.classify.outputs.suites }}
       selected_tags: ${{ steps.classify.outputs.selected_tags }}
 
@@ -128,7 +129,14 @@ jobs:
     timeout-minutes: 45
     name: reconciliation (${{ matrix.part }})
     needs: changes
-    if: ${{ needs.changes.outputs.static == 'true' }}
+    # Routed, not gated on the policy flag. `static` is true whenever any lane
+    # runs at all, so a one-line change in roles/dozzle/ paid for all three legs.
+    # The contract reads roles/arr/, roles/downloaders/ and its own four test
+    # files, and the classifier selects it from those; the shared files it also
+    # loads -- site.yml, the inventory -- already select every lane. Anything the
+    # classifier does not recognise still selects every lane too, so a missed
+    # entry here costs time rather than coverage.
+    if: ${{ needs.changes.outputs.reconciliation == 'true' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

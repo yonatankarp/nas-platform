@@ -5,11 +5,14 @@ require "open3"
 
 module ClassifyChanges
   LANES = %w[
-    static foundation arr downloaders bindery kapowarr pinchflat trailarr seerr
+    static reconciliation foundation arr downloaders bindery kapowarr pinchflat trailarr seerr
     smoke beszel dozzle audiobookshelf komga jellyfin immich paperless idempotence_check
   ].freeze
+  # Lanes that gate a workflow job of their own rather than dispatching an
+  # integration suite. Everything else in LANES is one suite.
+  JOB_LANES = %w[static reconciliation].freeze
   # The integration suite each lane dispatches, in the order the CI matrix runs
-  # them. `static` is not a suite.
+  # them. The job lanes above are not suites.
   SUITES = {
     "foundation" => "foundation",
     "arr" => "arr",
@@ -79,6 +82,24 @@ module ClassifyChanges
   ACQUISITION_OWNED_PATHS = {
     "tests/media_control_network_collision_test.sh" => "arr"
   }.freeze
+  # The media acquisition reconciliation contract lifts task files out of these
+  # two roles and runs them against a fixture, and reads their defaults for its
+  # timings, so any change inside either role changes what it asserts. Selecting
+  # the lane rather than the individual files is deliberate: the contract reads
+  # roles/arr/tasks/, roles/arr/files/configarr/ and roles/downloaders/tasks/,
+  # and a file added to any of them must select the contract without an edit
+  # here.
+  RECONCILIATION_LANES = %w[arr downloaders].freeze
+  # The contract's own files. They are read by no play and by no integration
+  # suite, so they select the contract alone rather than falling open to every
+  # lane in the repository. The support file is listed because all three legs
+  # require it -- routing one leg on its own is not safe while they share it.
+  RECONCILIATION_OWNED_PATHS = %w[
+    tests/media_acquisition_reconciliation_support.rb
+    tests/media_acquisition_reconciliation_core_test.rb
+    tests/media_acquisition_reconciliation_bazarr_test.rb
+    tests/media_acquisition_reconciliation_configarr_test.rb
+  ].freeze
 
   module_function
 
@@ -87,6 +108,7 @@ module ClassifyChanges
     return selection.transform_values { true } if full
 
     tagged_lanes = []
+    reconciliation_owned = false
     paths.each do |raw_path|
       path = raw_path.to_s.sub(%r{\A\./}, "")
       if STATIC_ONLY_PATHS.include?(path)
@@ -94,6 +116,11 @@ module ClassifyChanges
         next
       end
       next if inert_path?(path)
+
+      if RECONCILIATION_OWNED_PATHS.include?(path)
+        reconciliation_owned = true
+        next
+      end
 
       if ACQUISITION_SHARED_PATHS.include?(path)
         tagged_lanes.concat(ACQUISITION_LANES)
@@ -116,6 +143,12 @@ module ClassifyChanges
       selection["smoke"] = true if (tagged_lanes & SERVICE_LANES).any?
       tagged_lanes.each { |lane| selection[lane] = true }
     end
+    # The contract's own files are fixtures of the policy gate as well -- they are
+    # named in tests/policy_mutation_support.rb and tests/policy_vault_test.rb --
+    # so they select static too.
+    selection["static"] = true if reconciliation_owned
+    selection["reconciliation"] = true if reconciliation_owned ||
+                                          RECONCILIATION_LANES.any? { |lane| selection.fetch(lane) }
     selection
   end
 
