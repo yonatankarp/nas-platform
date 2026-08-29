@@ -7,8 +7,22 @@ komga_compose_project_name: >-
   {{ (platform_project_name ~ '-komga')
      if platform_project_name | default('') | length > 0 else 'komga' }}
 
-komga_library_name: Comics
-komga_library_root: /data
+# One-convergence input. False is the only value this repository stores. Pass
+# `-e komga_library_root_migration_allowed=true` for the single run that moves a
+# library root, then drop it again: with it set, a library matched by name may
+# have its root repaired, which is exactly the mutation the ambiguity guard
+# exists to refuse. It is never written to a host variable file.
+komga_library_root_migration_allowed: false
+
+# Owned settings shared by every managed library. A library entry below may
+# override any of these for itself; the effective set is this mapping combined
+# with the entry's own `settings`.
+#
+# scanInterval is the conservative six-hour schedule the acquisition design
+# calls for. scanDirectoryExclusions names the `.acquisition` staging tree as
+# defence in depth: that tree is a sibling of both library roots and so is
+# already outside them, but an exclusion costs nothing and survives a future
+# root widening.
 komga_library_settings:
   importComicInfoBook: true
   importComicInfoSeries: true
@@ -21,12 +35,13 @@ komga_library_settings:
   importLocalArtwork: true
   importBarcodeIsbn: true
   scanForceModifiedTime: false
-  scanInterval: DISABLED
+  scanInterval: EVERY_6H
   scanOnStartup: false
   scanCbx: true
   scanPdf: true
   scanEpub: true
-  scanDirectoryExclusions: []
+  scanDirectoryExclusions:
+    - .acquisition
   repairExtensions: false
   convertToCbz: false
   emptyTrashAfterScan: false
@@ -36,3 +51,15 @@ komga_library_settings:
   hashKoreader: false
   analyzeDimensions: true
   oneshotsDirectory: null
+
+# The exact managed library set. `root` is the path inside the container, where
+# `${KOMGA_LIBRARY_PATH}` is mounted read-only at /data. Both roots are declared
+# foundation storage on the host, so nothing moves on disk when the previously
+# single /data library narrows to /data/Comics.
+komga_libraries:
+  - name: Comics
+    root: /data/Comics
+    settings: {}
+  - name: Ebooks
+    root: /data/Ebooks
+    settings: {}

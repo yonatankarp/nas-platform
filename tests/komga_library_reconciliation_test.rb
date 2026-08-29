@@ -1,6 +1,16 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+# Behavior and shape proof for the exactly reconciled Komga library model.
+#
+# The model is plural: komga_libraries declares Comics at /data/Comics and
+# Ebooks at /data/Ebooks, each carrying its own settings over the shared
+# komga_library_settings baseline. The interesting case is the migration from
+# the single Comics library at /data, which the ambiguity guard refuses unless
+# komga_library_root_migration_allowed is set for that one convergence.
+#
+# Run with --self-test to prove this file detects a planted regression.
+
 require "json"
 require "open3"
 require "socket"
@@ -11,6 +21,7 @@ ROOT = File.expand_path("..", __dir__)
 ROLE = File.join(ROOT, "roles/komga/tasks/main.yml")
 COMPOSE = File.join(ROOT, "services/komga/compose.yml")
 ARGUMENT_SPECS = File.join(ROOT, "roles/komga/meta/argument_specs.yml")
+DEFAULTS_PATH = File.join(ROOT, "roles/komga/defaults/main.yml")
 CONTRACT = File.join(ROOT, "tests/contracts/komga.sh")
 # The Mac wrapper and the Mac seed hook are both shared across services now: one
 # runner resolves every contract through tests/contracts/registry.yml, and one
@@ -18,10 +29,16 @@ CONTRACT = File.join(ROOT, "tests/contracts/komga.sh")
 # are unchanged, they just live in the shared files.
 MAC_CONTRACT_WRAPPER = File.join(ROOT, "tests/mac/run-contract.sh")
 SEED_HOOK = File.join(ROOT, "tests/mac/hooks/fixtures-seed/00-services.sh")
+DRIFT_HOOK = File.join(ROOT, "tests/mac/hooks/drift/40-komga.sh")
 INTEGRATION_HARNESS = File.join(ROOT, "tests/integration.sh")
-DEFAULTS = YAML.safe_load_file(File.join(ROOT, "roles/komga/defaults/main.yml"), aliases: false)
+ROLE_SOURCE = File.read(ROLE)
+DEFAULTS_SOURCE = File.read(DEFAULTS_PATH)
+DEFAULTS = YAML.safe_load(DEFAULTS_SOURCE, aliases: false)
 START_TASK = "List Komga libraries for reconciliation"
 END_TASK = "Require exact reconciled Komga library"
+COMICS_ROOT = "/data/Comics"
+EBOOKS_ROOT = "/data/Ebooks"
+MIGRATION_INPUT = "komga_library_root_migration_allowed"
 
 def task_name(task)
   task.fetch("name", "")
@@ -164,8 +181,94 @@ else
   raise "#{label} runtime-health mutation was not rejected"
 end
 
-def library_tasks
-  tasks = YAML.safe_load_file(ROLE, aliases: false)
+# ---------------------------------------------------------------------------
+# The two-library model, as declared rather than as reconciled.
+# ---------------------------------------------------------------------------
+
+def model_failures(defaults_source, argument_specs, role_source, contract, drift_hook)
+  failures = []
+  defaults = begin
+    YAML.safe_load(defaults_source, aliases: false)
+  rescue Psych::Exception => error
+    return ["role defaults are malformed: #{error.message.lines.first.to_s.strip}"]
+  end
+
+  %w[komga_library_name komga_library_root].each do |retired|
+    failures << "#{retired} survives the plural library model" if defaults.key?(retired)
+  end
+
+  libraries = defaults["komga_libraries"]
+  failures << "komga_libraries does not declare exactly Comics and Ebooks at their own roots" unless
+    libraries == [
+      { "name" => "Comics", "root" => COMICS_ROOT, "settings" => {} },
+      { "name" => "Ebooks", "root" => EBOOKS_ROOT, "settings" => {} }
+    ]
+
+  settings = defaults["komga_library_settings"]
+  failures << "the shared library settings are not a mapping" unless settings.is_a?(Hash)
+  if settings.is_a?(Hash)
+    failures << "the six-hour scan schedule is not declared (scanInterval)" unless
+      settings["scanInterval"] == "EVERY_6H"
+    failures << "the .acquisition scan exclusion is not declared" unless
+      settings["scanDirectoryExclusions"] == [".acquisition"]
+    failures << "scanOnStartup is no longer owned as false" unless settings["scanOnStartup"] == false
+  end
+
+  failures << "#{MIGRATION_INPUT} does not default to false" unless
+    defaults[MIGRATION_INPUT] == false
+
+  options = argument_specs.dig("argument_specs", "main", "options") || {}
+  failures << "the plural library model is undeclared in argument_specs" unless
+    options.dig("komga_libraries", "type") == "list" &&
+    options.dig("komga_libraries", "elements") == "dict" &&
+    options.dig("komga_libraries", "options", "name", "required") == true &&
+    options.dig("komga_libraries", "options", "root", "required") == true &&
+    options.dig("komga_libraries", "options").key?("settings")
+  failures << "the shared library settings are undeclared in argument_specs" unless
+    options.dig("komga_library_settings", "type") == "dict"
+  failures << "#{MIGRATION_INPUT} is undeclared in argument_specs" unless
+    options.dig(MIGRATION_INPUT, "type") == "bool" &&
+    options.dig(MIGRATION_INPUT, "required") == false
+  %w[komga_library_name komga_library_root].each do |retired|
+    failures << "argument_specs still types the retired #{retired}" if options.key?(retired)
+  end
+
+  # A one-convergence input that any task writes to the target is no longer one,
+  # so no task that writes a file may mention it at all.
+  writing_modules = %w[copy template lineinfile blockinfile ini_file]
+  persisting = YAML.safe_load(role_source, aliases: false).select do |task|
+    task.keys.any? { |key| writing_modules.any? { |name| key.to_s.end_with?(".#{name}") } } &&
+      YAML.dump(task).include?(MIGRATION_INPUT)
+  end
+  failures << "the role persists the one-convergence migration input" unless persisting.empty?
+  failures << "the ambiguity guard no longer gates the root move on the migration input" unless
+    role_source.include?("#{MIGRATION_INPUT} | bool")
+  failures << "the role never reports that the migration input is one-convergence only" unless
+    role_source.include?("KOMGA_ROOT_MIGRATION_ALLOWED")
+
+  failures << "the contract does not pin the two-library model" unless
+    contract.include?('LIBRARY_MODEL = [') &&
+      contract.include?("\"Comics\", \"root\" => \"#{COMICS_ROOT}\"") &&
+      contract.include?("\"Ebooks\", \"root\" => \"#{EBOOKS_ROOT}\"")
+  failures << "the contract does not pin the six-hour scan schedule" unless
+    contract.include?('"scanInterval" => "EVERY_6H"')
+  failures << "the contract does not pin the .acquisition scan exclusion" unless
+    contract.include?('"scanDirectoryExclusions" => [".acquisition"]')
+
+  failures << "the Mac drift lane does not prove the refused root migration" unless
+    drift_hook.include?("#{MIGRATION_INPUT}=true") &&
+      drift_hook.include?("migration-legacy") &&
+      drift_hook.include?("refused the Komga library root migration")
+
+  failures
+end
+
+# ---------------------------------------------------------------------------
+# Behavior fixtures.
+# ---------------------------------------------------------------------------
+
+def library_tasks(role_source)
+  tasks = YAML.safe_load(role_source, aliases: false)
   first = tasks.index { |task| task_name(task) == START_TASK }
   last = tasks.index { |task| task_name(task) == END_TASK }
   raise "Komga library task slice is unavailable" unless first && last && first <= last
@@ -177,10 +280,18 @@ def library_tasks
   end
 end
 
-def managed_library(id:, name: "Comics", root: "/data", settings: {})
-  DEFAULTS.fetch("komga_library_settings").merge(
+def owned_settings
+  DEFAULTS.fetch("komga_library_settings")
+end
+
+def managed_library(id:, name: "Comics", root: COMICS_ROOT, settings: {})
+  owned_settings.merge(
     "id" => id, "name" => name, "root" => root, "unavailable" => false
   ).merge(settings)
+end
+
+def converged_libraries
+  [managed_library(id: "comics"), managed_library(id: "ebooks", name: "Ebooks", root: EBOOKS_ROOT)]
 end
 
 def with_http_service(libraries, users: [], fail_after_apply: false)
@@ -189,6 +300,7 @@ def with_http_service(libraries, users: [], fail_after_apply: false)
   stopped = false
   error = nil
   failed_patch = false
+  created = 0
   thread = Thread.new do
     until stopped
       next unless IO.select([server], nil, nil, 0.05)
@@ -214,8 +326,11 @@ def with_http_service(libraries, users: [], fail_after_apply: false)
         status = 200
         response = libraries
       when ["POST", "/api/v1/libraries"]
+        created += 1
         status = 200
-        libraries << request.fetch("json").merge("id" => "created-library", "unavailable" => false)
+        libraries << request.fetch("json").merge(
+          "id" => "created-library-#{created}", "unavailable" => false
+        )
         response = libraries.last
       when ["GET", "/api/v2/users"]
         status = 200
@@ -261,7 +376,8 @@ ensure
   raise error if error
 end
 
-def run_tasks(port, arguments = [], managed_users: [])
+def run_tasks(port, arguments = [], managed_users: [], migration_allowed: false,
+              role_source: ROLE_SOURCE)
   Dir.mktmpdir("komga-library-reconciliation-") do |directory|
     playbook = File.join(directory, "playbook.yml")
     variables = DEFAULTS.merge(
@@ -269,12 +385,13 @@ def run_tasks(port, arguments = [], managed_users: [])
       "vault_komga_admin_email" => "admin@example.invalid",
       "vault_komga_admin_password" => "admin-secret",
       "komga_claim_status" => { "json" => { "isClaimed" => true } },
-      "vault_managed_komga_users" => managed_users
+      "vault_managed_komga_users" => managed_users,
+      MIGRATION_INPUT => migration_allowed
     )
     File.write(
       playbook,
       YAML.dump([{ "hosts" => "localhost", "gather_facts" => false,
-                   "vars" => variables, "tasks" => library_tasks }]),
+                   "vars" => variables, "tasks" => library_tasks(role_source) }]),
       mode: "w", perm: 0o600
     )
     Open3.capture3(
@@ -288,14 +405,77 @@ def mutations(requests)
   requests.select { |request| %w[POST PATCH DELETE].include?(request.fetch("method")) }
 end
 
-failures = []
+def legacy_single_library
+  [managed_library(id: "legacy-library", name: "Comics", root: "/data").merge(
+    "legacySentinel" => "preserve-me",
+    "scanInterval" => "DISABLED",
+    "scanDirectoryExclusions" => []
+  )]
+end
 
-main_tasks = YAML.safe_load_file(ROLE, aliases: false)
+# The refusal half of the migration: without the one-convergence input, the
+# single /data library must stop the run with nothing mutated.
+def migration_refusal_failures(role_source)
+  failures = []
+  libraries = legacy_single_library
+  with_http_service(libraries) do |port, requests|
+    stdout, stderr, status = run_tasks(port, role_source: role_source)
+    failures << "the root migration was not refused without the one-convergence input" if
+      status.success?
+    failures << "a refused root migration still mutated a library" unless mutations(requests).empty?
+    failures << "the refusal does not name the one-convergence input" unless
+      (stdout + stderr).include?("#{MIGRATION_INPUT}=true")
+  end
+  failures
+end
+
+# The completion half: with the input set, the named library is repointed in
+# place and the second library is created beside it.
+def migration_completion_failures(role_source)
+  failures = []
+  libraries = legacy_single_library
+  with_http_service(libraries) do |port, requests|
+    _stdout, stderr, status = run_tasks(port, migration_allowed: true, role_source: role_source)
+    failures << "the allowed root migration failed: #{stderr.lines.last(12).join}" unless
+      status.success?
+    patch = mutations(requests).find { |request| request.fetch("method") == "PATCH" }
+    create = mutations(requests).find { |request| request.fetch("method") == "POST" }
+    failures << "the migration did not repoint the named library in place" unless
+      patch&.fetch("target") == "/api/v1/libraries/legacy-library" &&
+      patch&.fetch("json") == {
+        "root" => COMICS_ROOT,
+        "scanInterval" => "EVERY_6H",
+        "scanDirectoryExclusions" => [".acquisition"]
+      }
+    failures << "the migration did not create the Ebooks library" unless
+      create&.fetch("target") == "/api/v1/libraries" &&
+      create&.fetch("json") == owned_settings.merge("name" => "Ebooks", "root" => EBOOKS_ROOT)
+    failures << "the migration used more than one repair and one creation" unless
+      mutations(requests).length == 2
+    failures << "the migration changed the Comics library identifier" unless
+      libraries.first["id"] == "legacy-library"
+    failures << "the migration overwrote an unowned library setting" unless
+      libraries.first["legacySentinel"] == "preserve-me"
+
+    requests.clear
+    _stdout, rerun_stderr, rerun = run_tasks(port, role_source: role_source)
+    failures << "the migrated platform does not converge without the input: " \
+                "#{rerun_stderr.lines.last(8).join}" unless rerun.success?
+    failures << "the migrated platform is not idempotent" unless mutations(requests).empty?
+  end
+  failures
+end
+
+failures = []
+self_test = ARGV.include?("--self-test")
+
+main_tasks = YAML.safe_load(ROLE_SOURCE, aliases: false)
 compose = YAML.safe_load_file(COMPOSE, aliases: true)
 argument_specs = YAML.safe_load_file(ARGUMENT_SPECS, aliases: false)
 validate_health_gating!(compose, main_tasks, DEFAULTS, argument_specs)
 
 contract = File.read(CONTRACT)
+drift_hook = File.read(DRIFT_HOOK)
 mac_contract_wrapper = File.read(MAC_CONTRACT_WRAPPER)
 seed_hook = File.read(SEED_HOOK)
 runtime_sources = [
@@ -305,6 +485,66 @@ runtime_sources = [
   File.read(INTEGRATION_HARNESS)
 ]
 validate_runtime_health_paths!(runtime_sources)
+
+unless ENV.fetch("PATH", "").split(File::PATH_SEPARATOR).any? do |directory|
+         File.executable?(File.join(directory, "ansible-playbook"))
+       end
+  abort "ansible-playbook is required for Komga library behavior fixtures"
+end
+
+if self_test
+  planted = [
+    ["a disabled scan interval",
+     lambda do
+       source = DEFAULTS_SOURCE.sub("scanInterval: EVERY_6H", "scanInterval: DISABLED")
+       abort "self-test could not plant a disabled scan interval" if source == DEFAULTS_SOURCE
+       model_failures(source, argument_specs, ROLE_SOURCE, contract, drift_hook)
+     end,
+     "scanInterval"],
+    ["a dropped .acquisition exclusion",
+     lambda do
+       source = DEFAULTS_SOURCE.sub("  scanDirectoryExclusions:\n    - .acquisition\n",
+                                    "  scanDirectoryExclusions: []\n")
+       abort "self-test could not plant an empty exclusion list" if source == DEFAULTS_SOURCE
+       model_failures(source, argument_specs, ROLE_SOURCE, contract, drift_hook)
+     end,
+     ".acquisition"],
+    ["a migration input that defaults to true",
+     lambda do
+       source = DEFAULTS_SOURCE.sub("#{MIGRATION_INPUT}: false", "#{MIGRATION_INPUT}: true")
+       abort "self-test could not plant a persistent migration input" if source == DEFAULTS_SOURCE
+       model_failures(source, argument_specs, ROLE_SOURCE, contract, drift_hook)
+     end,
+     MIGRATION_INPUT]
+  ]
+  planted.each do |label, collect, diagnostic|
+    detected = collect.call
+    abort "self-test failed: #{label} was accepted" unless
+      detected.any? { |failure| failure.include?(diagnostic) }
+  end
+
+  # The behavioral half. With the guard's migration clause replaced by a literal
+  # truth, the root move is no longer reviewed, and the refusal fixture must say so.
+  ungated = ROLE_SOURCE.sub("        #{MIGRATION_INPUT} | bool\n", "        true\n")
+  abort "self-test could not plant an ungated root migration" if ungated == ROLE_SOURCE
+  abort "self-test failed: an ungated root migration was accepted" if
+    migration_refusal_failures(ungated).empty?
+
+  # And with the name match never consulted, the allowed migration cannot complete.
+  unreachable = ROLE_SOURCE.sub(
+    "             (item.name_matches | first | default({}))\n" \
+    "             if komga_library_root_migration_allowed | bool else {})\n",
+    "             {})\n"
+  )
+  abort "self-test could not plant an unreachable root repair" if unreachable == ROLE_SOURCE
+  abort "self-test failed: an unreachable root repair was accepted" if
+    migration_completion_failures(unreachable).empty?
+
+  puts "Komga library reconciliation: self-test detects model, guard and repair regressions"
+  exit
+end
+
+failures.concat(model_failures(DEFAULTS_SOURCE, argument_specs, ROLE_SOURCE, contract, drift_hook))
 
 project_derived_base = runtime_sources.dup
 project_derived_base[0] = contract.sub(
@@ -379,84 +619,110 @@ failures << "complete library preflight does not precede all user/library mutati
   preflight_index && user_index && library_mutation_index &&
     preflight_index < user_index && user_index < library_mutation_index
 
-unless ENV.fetch("PATH", "").split(File::PATH_SEPARATOR).any? do |directory|
-         File.executable?(File.join(directory, "ansible-playbook"))
-       end
-  abort "ansible-playbook is required for Komga library behavior fixtures"
-end
+failures.concat(migration_refusal_failures(ROLE_SOURCE))
+failures.concat(migration_completion_failures(ROLE_SOURCE))
 
+# Fresh installation: both libraries are created, in declaration order, with the
+# complete owned setting set and nothing else.
 unrelated = managed_library(id: "unrelated", name: "Reference", root: "/reference")
-libraries = [managed_library(id: "legacy-library", name: "Books", root: "/data/").merge(
-  "legacySentinel" => "preserve-me"
-), unrelated.dup]
-with_http_service(libraries) do |port, requests|
-  stdout, stderr, status = run_tasks(port)
-  failures << "path adoption failed: #{(stdout + stderr).lines.last(12).join}" unless status.success?
-  patch = mutations(requests).fetch(0, nil)
-  failures << "path adoption did not use one in-place PATCH" unless
-    mutations(requests).length == 1 && patch&.fetch("target") == "/api/v1/libraries/legacy-library"
-  failures << "path adoption body is not limited to canonical name/root drift" unless
-    patch&.fetch("json") == { "name" => "Comics", "root" => "/data" }
-  failures << "path adoption overwrote an unowned library setting" unless
-    libraries.first["legacySentinel"] == "preserve-me"
-  failures << "path adoption changed the library identifier" unless libraries.first["id"] == "legacy-library"
-  failures << "path adoption did not preserve the unrelated library" unless libraries.last == unrelated
-
-  requests.clear
-  _stdout, _stderr, rerun = run_tasks(port)
-  failures << "path adoption rerun failed" unless rerun.success?
-  failures << "path adoption is not idempotent" unless mutations(requests).empty?
-end
-
-libraries = [managed_library(id: "rename-only", name: "Books").merge(
-  "legacySentinel" => "preserve-me"
-)]
-with_http_service(libraries) do |port, requests|
-  _stdout, stderr, status = run_tasks(port)
-  patch = mutations(requests).fetch(0, nil)
-  failures << "exact-root rename failed: #{stderr.lines.last(8).join}" unless status.success?
-  failures << "exact-root rename PATCH was not name-only" unless patch&.fetch("json") == { "name" => "Comics" }
-  failures << "exact-root rename lost the unowned sentinel" unless libraries.first["legacySentinel"] == "preserve-me"
-end
-
-libraries = [managed_library(id: "settings-only", settings: { "scanOnStartup" => true }).merge(
-  "legacySentinel" => "preserve-me"
-)]
-with_http_service(libraries) do |port, requests|
-  _stdout, stderr, status = run_tasks(port)
-  patch = mutations(requests).fetch(0, nil)
-  failures << "owned-setting repair failed: #{stderr.lines.last(8).join}" unless status.success?
-  failures << "owned-setting PATCH included unchanged fields" unless patch&.fetch("json") == { "scanOnStartup" => false }
-  failures << "owned-setting repair lost the unowned sentinel" unless libraries.first["legacySentinel"] == "preserve-me"
-end
-
 libraries = [unrelated.dup]
 with_http_service(libraries) do |port, requests|
   _stdout, stderr, status = run_tasks(port)
   failures << "fresh creation failed: #{stderr.lines.last(8).join}" unless status.success?
-  create = mutations(requests).fetch(0, nil)
-  failures << "fresh creation did not POST one exact Comics library" unless
-    mutations(requests).length == 1 && create&.fetch("method") == "POST" &&
-      create&.fetch("target") == "/api/v1/libraries" &&
-      create&.fetch("json") == DEFAULTS.fetch("komga_library_settings").merge(
-        "name" => "Comics", "root" => "/data"
-      )
+  creates = mutations(requests)
+  failures << "fresh creation did not POST exactly the two managed libraries" unless
+    creates.length == 2 && creates.all? { |request| request.fetch("method") == "POST" } &&
+      creates.map { |request| request.fetch("json") } == [
+        owned_settings.merge("name" => "Comics", "root" => COMICS_ROOT),
+        owned_settings.merge("name" => "Ebooks", "root" => EBOOKS_ROOT)
+      ]
   failures << "fresh creation did not preserve an unrelated library" unless libraries.first == unrelated
+
+  requests.clear
+  _stdout, _stderr, rerun = run_tasks(port)
+  failures << "fresh creation rerun failed" unless rerun.success?
+  failures << "fresh creation is not idempotent" unless mutations(requests).empty?
+end
+
+# A converged platform is untouched, and each library is repaired on its own.
+libraries = converged_libraries
+with_http_service(libraries) do |port, requests|
+  _stdout, stderr, status = run_tasks(port)
+  failures << "converged model failed: #{stderr.lines.last(8).join}" unless status.success?
+  failures << "converged model mutated a library" unless mutations(requests).empty?
+
+  # A stale migration input must be inert rather than a source of churn: the
+  # root match still wins, so there is nothing for the name match to repoint.
+  requests.clear
+  stdout, stderr, allowed = run_tasks(port, migration_allowed: true)
+  failures << "converged model with the migration input failed: #{stderr.lines.last(8).join}" unless
+    allowed.success?
+  failures << "a stale migration input mutated a converged library" unless
+    mutations(requests).empty?
+  failures << "a stale migration input is not reported as stale" unless
+    stdout.include?("KOMGA_ROOT_MIGRATION_ALLOWED")
+end
+
+libraries = [
+  managed_library(id: "rename-only", name: "Books").merge("legacySentinel" => "preserve-me"),
+  managed_library(id: "ebooks", name: "Ebooks", root: EBOOKS_ROOT)
+]
+with_http_service(libraries) do |port, requests|
+  _stdout, stderr, status = run_tasks(port)
+  patch = mutations(requests).fetch(0, nil)
+  failures << "exact-root rename failed: #{stderr.lines.last(8).join}" unless status.success?
+  failures << "exact-root rename PATCH was not name-only" unless
+    mutations(requests).length == 1 && patch&.fetch("json") == { "name" => "Comics" }
+  failures << "exact-root rename lost the unowned sentinel" unless
+    libraries.first["legacySentinel"] == "preserve-me"
+end
+
+libraries = [
+  managed_library(id: "comics"),
+  managed_library(id: "settings-only", name: "Ebooks", root: EBOOKS_ROOT,
+                  settings: { "scanOnStartup" => true }).merge("legacySentinel" => "preserve-me")
+]
+with_http_service(libraries) do |port, requests|
+  _stdout, stderr, status = run_tasks(port)
+  patch = mutations(requests).fetch(0, nil)
+  failures << "owned-setting repair failed: #{stderr.lines.last(8).join}" unless status.success?
+  failures << "owned-setting PATCH did not target only the drifted library" unless
+    mutations(requests).length == 1 &&
+      patch&.fetch("target") == "/api/v1/libraries/settings-only" &&
+      patch&.fetch("json") == { "scanOnStartup" => false }
+  failures << "owned-setting repair lost the unowned sentinel" unless
+    libraries.last["legacySentinel"] == "preserve-me"
+end
+
+# The scan-schedule half of the acquisition design: an already correctly rooted
+# pair still has its interval and exclusions brought to the owned values.
+libraries = converged_libraries.map do |library|
+  library.merge("scanInterval" => "DISABLED", "scanDirectoryExclusions" => [])
+end
+with_http_service(libraries) do |port, requests|
+  _stdout, stderr, status = run_tasks(port)
+  failures << "scan schedule repair failed: #{stderr.lines.last(8).join}" unless status.success?
+  failures << "scan schedule repair did not converge both libraries" unless
+    mutations(requests).length == 2 &&
+      mutations(requests).map { |request| request.fetch("json") }.uniq == [{
+        "scanInterval" => "EVERY_6H", "scanDirectoryExclusions" => [".acquisition"]
+      }]
 end
 
 conflicts = {
-  "duplicate root" => [managed_library(id: "one", name: "Books", root: "/data"),
-                         managed_library(id: "two", name: "Manga", root: "/data/")],
-  "desired name on another root" => [managed_library(id: "managed", name: "Books", root: "/data"),
-                                      managed_library(id: "conflict", name: "Comics", root: "/elsewhere")],
-  "duplicate desired name" => [managed_library(id: "one", name: "Comics", root: "/elsewhere"),
-                                managed_library(id: "two", name: "Comics", root: "/other")],
-  "root candidate missing name" => [{ "id" => "candidate", "root" => "/data" }],
-  "name candidate malformed root" => [{ "id" => "candidate", "name" => "Comics", "root" => ["/data"] }]
+  "duplicate root" => [[managed_library(id: "one", name: "Books"),
+                        managed_library(id: "two", name: "Manga", root: "#{COMICS_ROOT}/")], false],
+  "duplicate desired name" => [[managed_library(id: "one", name: "Comics", root: "/elsewhere"),
+                                managed_library(id: "two", name: "Comics", root: "/other")], true],
+  "root candidate missing name" => [[{ "id" => "candidate", "root" => COMICS_ROOT }], false],
+  "name candidate malformed root" =>
+    [[{ "id" => "candidate", "name" => "Comics", "root" => [COMICS_ROOT] }], false],
+  "one library claimed by two managed names" =>
+    [[managed_library(id: "shared", name: "Comics", root: EBOOKS_ROOT)], true]
 }
-conflicts.each do |label, state|
+conflicts.each do |label, (state, migration_allowed)|
   with_http_service(state) do |port, requests|
-    _stdout, _stderr, status = run_tasks(port)
+    _stdout, _stderr, status = run_tasks(port, migration_allowed: migration_allowed)
     failures << "#{label} unexpectedly reconciled" if status.success?
     failures << "#{label} reached a mutation before global preflight" unless mutations(requests).empty?
   end
@@ -468,12 +734,13 @@ managed_users = [
   { "email" => "missing@example.invalid", "password" => "missing-secret", "roles" => ["PAGE_STREAMING"] }
 ]
 multi_conflicts = {
-  "duplicate root" => [managed_library(id: "one", name: "Books", root: "/data"),
-                        managed_library(id: "two", name: "Manga", root: "/data/")],
-  "duplicate desired name" => [managed_library(id: "managed", name: "Books", root: "/data"),
+  "duplicate root" => [managed_library(id: "one", name: "Books"),
+                       managed_library(id: "two", name: "Manga", root: "#{COMICS_ROOT}/")],
+  "duplicate desired name" => [managed_library(id: "managed", name: "Books"),
                                managed_library(id: "one", name: "Comics", root: "/one"),
                                managed_library(id: "two", name: "Comics", root: "/two")],
-  "malformed managed candidate" => [{ "id" => "candidate", "root" => "/data" }]
+  "malformed managed candidate" => [{ "id" => "candidate", "root" => COMICS_ROOT }],
+  "unreviewed root migration" => legacy_single_library
 }
 multi_conflicts.each do |label, state|
   with_http_service(state, users: users.map(&:dup)) do |port, requests|
@@ -484,7 +751,7 @@ multi_conflicts.each do |label, state|
 end
 
 malformed_unrelated = { "id" => ["opaque"], "name" => 7, "root" => { "path" => "/other" } }
-libraries = [managed_library(id: "managed"), malformed_unrelated]
+libraries = converged_libraries + [malformed_unrelated]
 with_http_service(libraries) do |port, requests|
   _stdout, stderr, status = run_tasks(port)
   failures << "unrelated malformed library was unnecessarily rejected: #{stderr.lines.last(8).join}" unless
@@ -493,7 +760,10 @@ with_http_service(libraries) do |port, requests|
     libraries.last == malformed_unrelated
 end
 
-libraries = [managed_library(id: "managed", name: "Books", settings: { "scanOnStartup" => true })]
+libraries = [
+  managed_library(id: "managed", name: "Books", settings: { "scanOnStartup" => true }),
+  managed_library(id: "ebooks", name: "Ebooks", root: EBOOKS_ROOT)
+]
 with_http_service(libraries, fail_after_apply: true) do |port, requests|
   _stdout, _stderr, first = run_tasks(port)
   failures << "uncertain PATCH response unexpectedly succeeded" if first.success?
@@ -506,16 +776,20 @@ with_http_service(libraries, fail_after_apply: true) do |port, requests|
   failures << "rerun after uncertain PATCH changed the identifier" unless libraries.first["id"] == "managed"
 end
 
-libraries = [managed_library(id: "managed", name: "Books")]
+# Check mode reviews the whole migration without performing any of it.
+libraries = legacy_single_library
 with_http_service(libraries) do |port, requests|
-  stdout, stderr, status = run_tasks(port, ["--check"])
-  failures << "check-mode adoption failed: #{stderr.lines.last(8).join}" unless status.success?
-  failures << "check-mode adoption omitted its repair plan" unless stdout.include?("KOMGA_PLAN_LIBRARY_REPAIR")
+  stdout, stderr, status = run_tasks(port, ["--check"], migration_allowed: true)
+  failures << "check-mode migration failed: #{stderr.lines.last(8).join}" unless status.success?
+  failures << "check-mode migration omitted its repair plan" unless
+    stdout.include?("KOMGA_PLAN_LIBRARY_REPAIR")
+  failures << "check-mode migration omitted its creation plan" unless
+    stdout.include?("KOMGA_PLAN_LIBRARY_CREATE")
   failures << "check mode mutated a library" unless mutations(requests).empty?
 end
 
 if failures.empty?
-  puts "Komga library reconciliation behavior passed"
+  puts "Komga two-library reconciliation and root migration behavior passed"
 else
   failures.each { |failure| warn "FAIL #{failure}" }
   abort "#{failures.length} Komga library reconciliation violation(s)"
