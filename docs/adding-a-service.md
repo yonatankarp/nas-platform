@@ -27,9 +27,10 @@ This is why deployment goes through `community.docker.docker_compose_v2` rather
 than a shell command: a shell-out always claims a change and cannot simulate
 itself under `--check`.
 
-You do not need to know Ruby. The tests are written in Ruby, but the only two
-Ruby files you will edit contain literal lists of service names, and you will be
-copying the line above yours.
+You do not need to know Ruby. The tests are written in Ruby, and you will edit a
+dozen or so of them, but every edit is the same edit: a literal list of service
+names, a literal expected string, or a spelled-out count. In each one you are
+copying the line above yours and changing the name.
 
 ## The loop that teaches you the rest
 
@@ -46,15 +47,16 @@ loop, not by reading the test.
 
 ### Backing out
 
-A half-added service leaves edits in tracked files and two new directories, so
-`git checkout` alone will not clean it up. Both halves, with `navidrome` as the
-example:
+A half-added service leaves edits scattered across dozens of tracked files and
+several new ones, so `git checkout` alone will not clean it up, and enumerating
+the edited files by hand is exactly the thing this guide has historically got
+wrong. Revert both halves wholesale, with `navidrome` as the example:
 
 ```sh
-git checkout -- services/manifest.yml tests/policy_support.rb \
-  tests/expected tests/policy_manifest_test.rb inventory/group_vars/all/main.yml \
-  site.yml verify.yml
+git checkout -- .
 rm -rf services/navidrome roles/navidrome
+rm -f tests/expected/navidrome.yml tests/contracts/navidrome.sh \
+  tests/mac/hooks/drift/*-navidrome.sh
 ```
 
 Then confirm you are back to a passing baseline with `git status --porcelain`
@@ -63,14 +65,32 @@ nothing outside the repository has changed yet.
 
 ## Anatomy of a service
 
-A service with no credentials of its own touches fifteen places. Eight are new
-files, seven are existing files that gain an entry.
+Earlier versions of this guide said fifteen places. That was wrong, and wrong in
+the direction that costs an afternoon. The honest figure is measured rather than
+remembered: **promoting Pinchflat changed 55 files.**
 
-New files:
+Only nine of those were new files, and all nine are the service itself and its
+own proof. The other forty-six are existing files that had to be told the
+platform is one service larger. A handful are wiring and prose; most are
+*registries* — files that pin a list, a count or a literal string describing the
+platform as it currently is, and that fail when it grows without them. Sometimes
+loudly, sometimes with a Ruby stack trace, occasionally not at all.
+
+That the registries are stated rather than derived is deliberate: a derived list
+would let a new service authorize itself by the arrival of its own files. The
+price is paid here, once per service.
+
+Do not read the groups below as a checklist to work down. Read them to tell
+which ones apply to you, then go back to the edit loop, which will name the rest
+in the repository's own words.
+
+### 1. The service itself
+
+Seven new files, always:
 
 ```
 services/<name>/compose.yml
-services/<name>/compose.mac.yml       (see below)
+services/<name>/compose.mac.yml         (see below)
 services/<name>/compose.integration.yml (see below)
 roles/<role>/defaults/main.yml
 roles/<role>/meta/argument_specs.yml
@@ -78,21 +98,111 @@ roles/<role>/templates/env.j2
 roles/<role>/tasks/main.yml
 ```
 
-Existing files that need an entry:
+### 2. Wiring it into the platform
+
+Four existing files, always:
 
 ```
-services/manifest.yml                  the service and its role
-inventory/group_vars/all/main.yml      its directories, under nas_storage
-site.yml                               the role, with tags
-verify.yml                             the role, with tags: [never]
-tests/policy_support.rb                EXPECTED_SERVICES, the roster
-tests/expected/<service>.yml           its role, CPU ceilings and vault keys
-tests/policy_manifest_test.rb          EXPECTED_FIXTURE_ROLES
-tests/ci/classify_changes.rb           the CI lane that owns it
+services/manifest.yml              the service, its role and its status
+inventory/group_vars/all/main.yml  its directories, under nas_storage
+site.yml                           the role, with tags
+verify.yml                         the role, with tags: [never]
 ```
 
-Give the service a Mac hook too. Four of the five hook groups are now one
-table-driven file each, driven from the same registry:
+### 3. The roster and its expectations
+
+Three files. Every one of these already exists for a service being **promoted**
+from `planned`; all three are new work only for a greenfield service.
+
+```
+tests/policy_support.rb           EXPECTED_SERVICES, the roster
+tests/policy_mutation_support.rb  EXPECTED_FIXTURE_ROLES, the sandbox identity
+tests/expected/<service>.yml      its role, CPU ceilings and vault keys
+```
+
+Pinchflat's diff only *edited* `tests/expected/pinchflat.yml`, swapping
+`vault_keys: []` for its two real keys. A planned service is already on the
+roster and already has an expectations file, because the policy scripts read one
+per rostered service regardless of status.
+
+### 4. Proof that it works
+
+Either verification tasks inside the role (the contract in step 5 of the worked
+example below), or an executable contract script and its registration:
+
+```
+tests/contracts/<name>.sh       new, executable, passes sh -n
+tests/contracts/registry.yml    the service and its path
+```
+
+### 5. The verification tag, and its four literal copies
+
+`platform_verify_<service>` is not just a tag on your tasks. Four separate files
+carry the platform's whole tag list as a literal:
+
+```
+roles/production_auto_deploy/defaults/main.yml  production_auto_deploy_verify_tags
+docs/getting-started-nas.md                     the operator's manual command
+tests/secrets_docs_test.rb                      a fourth copy, order-sensitive
+tests/mac/verify.sh                             the Mac lane's --tags argument
+```
+
+`tests/production_auto_deploy_role_test.rb` parses every
+`roles/*/{tasks,handlers}/*.yml`, collects each `platform_verify_*` tag the roles
+actually declare, and requires the poller's list to **equal** that set — it
+reports `missing=` and `stale=` separately, so neither a forgotten service nor a
+leftover one passes. It then requires `docs/getting-started-nas.md` to carry the
+same set. `tests/secrets_docs_test.rb` keeps its own copy and requires the
+guide's shell block to contain that exact comma-joined string, so there the
+*order* matters too.
+
+`tests/mac/verify.sh` is the one copy nothing compares against the roles:
+`tests/policy_mac_test.rb` only checks that it mentions the foundation tag. Omit
+your service there and the Mac lifetime proof quietly verifies one service
+fewer. Add it by hand.
+
+### 6. Sandbox identity: cleanup, container names, namespaces
+
+The disposable lanes delete a container only when both its Compose ownership
+labels and its exact namespaced name say the sandbox created it, so every
+sandbox register has to learn the new name:
+
+```
+tests/sandbox_cleanup.sh                the project list, the service list, the dispatch case
+tests/mac/lib.sh                        mac_target_container_names
+tests/mac/integration-context-test.sh   the expected name list AND a hard-coded count
+```
+
+`tests/mac/integration-context-test.sh` is the one that catches you: it asserts
+the identity set has exactly N entries, so adding the name without bumping the
+number fails, and bumping the number without adding the name also fails.
+
+### 7. The Mac lane's port allocation chain
+
+If the service publishes a port — and if it has a web interface, it does —
+`tests/mac/run.sh` has to allocate one for it. This is the single most
+error-prone edit in the repository, and it gets its own section below.
+
+Along with `run.sh`, a published port lands in:
+
+```
+inventory/group_vars/mac_hosts/main.yml               <service>_port from the environment
+tests/policy_platform_test.rb                         the mac_runtime_facts list
+tests/mac/report.rb                                   six sites: ROOT_KEYS, the
+                                                      validator's port-field list, the
+                                                      markdown key order, the initializer,
+                                                      the self-test, and the option parser
+tests/mac/config-isolation.sh                         a render() positional, a compose
+                                                      render, two call sites, three
+                                                      collision assertions
+tests/mac/run-phase-status-test.sh                    the pinned report.rb invocation
+tests/mac/media-acquisition-foundation-report-test.rb the report fixture
+```
+
+### 8. The Mac hook tables and their pinned counts
+
+Four of the five hook groups are one table-driven file each, driven from the
+same registry:
 
 ```
 tests/mac/hooks/verify/30-services.sh                one line per service
@@ -104,7 +214,8 @@ tests/mac/hooks/fixtures-recreate/00-services.sh     one line per service
 Add the service to each table, or, if its behaviour does not fit the table, give
 it its own `tests/mac/hooks/<group>/<NN>-<service>.sh` and the collapsed hook
 will credit it automatically from the filename. `tests/mac/hooks/drift/` is still
-one file per service throughout, because no two services drift alike.
+one file per service throughout, because no two services drift alike — expect to
+write a new `tests/mac/hooks/drift/<NN>-<service>.sh` for yours.
 
 The runner discovers hooks by globbing and only fails when a group is empty, so
 the collapsed hooks assert their own coverage against
@@ -112,16 +223,90 @@ the collapsed hooks assert their own coverage against
 knows and no hook runs fails the group instead of being verified one fewer
 without saying so. A service that genuinely has no work in a group needs a named
 exemption in the hook's `mac_assert_service_coverage` call, which is how ntfy,
-the alerting sink with no user data to seed, is accounted for. The Mac lane also
-covers ntfy, which the registry does not list because it has no contract of its
-own; `MAC_UNREGISTERED_SERVICES` in `tests/mac/lib.sh` is where such a service is
+the alerting sink with no user data to seed, is accounted for, and how Pinchflat
+is accounted for in `fixtures-seed`: its only real fixture would be a YouTube
+download, which the lane must not make. The Mac lane also covers ntfy, which the
+registry does not list because it has no contract of its own;
+`MAC_UNREGISTERED_SERVICES` in `tests/mac/lib.sh` is where such a service is
 named.
 
-The Mac wrapper for a contract needs no new file: `tests/mac/run-contract.sh`
-resolves any registered service through the registry. Give it the service's port
-variable and any container identities the contract reads, in the table at the
-bottom of that script. A registered service with no row there is refused rather
-than run with an incomplete environment.
+Those `N of M` lines are then pinned, verbatim, in
+`tests/mac/hook-coverage-test.sh` — every summary string, plus the expected hook
+execution log for each group, plus the recreate table's bundle-and-container
+listing. Pinchflat changed ten separate expectations in that one file. Nothing
+derives them; run the test, read the diff it prints, and update each pinned
+string to match.
+
+`tests/mac/run-contract.sh` needs no new file: it resolves any registered service
+through the registry. Give it the service's port variable and any container
+identities the contract reads, in the `case` at the bottom of that script. A
+registered service with no arm there is refused rather than run with an
+incomplete environment.
+
+### 9. CI routing and the integration runner
+
+```
+tests/ci/classify_changes.rb       SERVICE_TAGS, SERVICE_NAMES, LANES, SUITES
+tests/ci/classify_changes_test.rb  the pinned tag plan for the lane, and NTFY_LANES
+tests/integration.sh               fixed_tags, the service/directory table, the
+                                   contract runner, the verify-only function, the
+                                   suite dispatch
+tests/integration_suite_test.sh    the pinned --describe-suite line and pre-pull set
+```
+
+`.github/workflows/ci.yml` needs **no** edit. The `suites` job is a matrix fed by
+the classifier's `suites` output and `validate` covers every leg through one
+`needs` entry, so a new lane flows through the existing workflow unchanged. Only
+`INTEGRATION_SUITES` in `tests/ci/workflow_test.rb`, which pins the list the
+workflow is allowed to produce, has to learn the name.
+
+### 10. If it has any user identity at all
+
+```
+config/managed-user-capabilities.yml     the service's contract
+tests/managed_user_capabilities_test.rb  the same contract, restated, plus a
+                                         spelled-out count in its success line
+```
+
+Pinchflat has no managed users and no user API — its whole identity is one
+basic-authentication pair in its environment — and it still needed both files,
+because the register describes how every service handles identity, including by
+declaring `mode: declarative_environment` and refusing rotation. The success
+string is spelled in English (`all eleven service contracts are pinned`), so the
+number is also a literal you have to change.
+
+### 11. The prose
+
+`README.md` describes what is deployed. `docs/getting-started-nas.md` carries the
+operator's verify command. `docs/secrets.md` carries the credential. All three
+are checked by tests, not left to courtesy.
+
+### What of this is Pinchflat's own problem
+
+The 55 files are one service's measured diff, not a universal law, and some of
+them were Pinchflat's circumstances rather than yours. Read the groups above with
+these caveats:
+
+- Groups 1, 2, 5, 6, 8 and 11 apply to every service, with or without a port.
+- Group 3 is greenfield-only; a promotion edits those files rather than growing
+  them. Group 4 is a choice between two ways of proving the service.
+- Group 7 applies only to a service that publishes a host port, which in practice
+  means one with a web interface.
+- Group 9 assumes the service gets a CI lane of its own. Every implemented
+  service currently does, and that is the normal arrangement, but it is a choice
+  rather than a rule; a service folded into an existing lane edits fewer of those
+  four files.
+- Group 10 applies to every service, but the *content* of the entry depends
+  entirely on what identity the service has — Pinchflat's says, in effect, "none
+  that can be reconciled".
+- Everything in the promotion section below — `config/media-acquisition.yml`, the
+  `media_acquisition_*` tests, the foundation contract and hook — exists only
+  because Pinchflat came from the media-acquisition catalog. A service added
+  directly touches none of it.
+- One file is misleadingly named:
+  `tests/mac/media-acquisition-foundation-report-test.rb` is a fixture for
+  `tests/mac/report.rb`, so *any* service adding a Mac port has to update it,
+  acquisition project or not.
 
 ## Where policy checks live
 
@@ -140,8 +325,10 @@ tests/policy_mac_test.rb          the tests/mac/ orchestration contract
 tests/policy_ci_test.rb           runner registration, ci.yml, the classifier tables
 ```
 
-A new script must be added to `tests/validate-policy.sh`, to `POLICY_SCRIPTS` in
-`tests/policy_manifest_test.rb`, and to that file's fixture list.
+A new script must be added to `tests/validate-policy.sh`, and to `POLICY_SCRIPTS`
+and `BASE_FIXTURE_PATHS` in `tests/policy_mutation_support.rb`, which is where the
+mutation harness's shared registers live — `EXPECTED_FIXTURE_ROLES` is in that
+file too, not in `tests/policy_manifest_test.rb` as this guide used to say.
 `tests/policy_ci_test.rb` asserts the runner runs every one of them, which is what
 stops a check from being written and then never run.
 
@@ -149,11 +336,60 @@ The service name and the role name may differ. Paperless is `paperless-ngx` as a
 service and `paperless_ngx` as a role, because directory names use hyphens and
 Ansible role names cannot. Keep them identical unless you have that problem.
 
+## Promoting a planned service is not the same job
+
 The media-acquisition catalog is an exception to this implementation workflow.
 While its entries are `planned`, planned acquisition projects' role and Compose
 directories must remain absent. Moving one project to implementation requires a
 separate phase with its own failing contracts and manifest transition; do not
 create a placeholder role or `services/<project>/` directory during Phase 0.
+
+That absence is enforced, and it constrains how you commit. `planned_tree_problems`
+in `tests/media_acquisition_foundation_test.rb` reads every project whose status is
+`planned` and fails with `planned role tree exists prematurely` the moment
+`roles/<role>/` or `services/<project>/` appears on disk. So **the role tree cannot
+exist while the manifest still says `planned`**: creating the directories and
+flipping the status in `services/manifest.yml` and `config/media-acquisition.yml`
+have to land in one commit. There is no intermediate state where the repository is
+green. Plan the branch accordingly; do not try to scaffold first and wire up after.
+
+In exchange, Phase 0 has already done real work for you. A planned project
+already has:
+
+- its entry in `services/manifest.yml` and in `config/media-acquisition.yml`,
+  including its declared port, CPU class and service names. You flip
+  `status: planned` to `status: implemented` in both, and both flips are pinned:
+  `tests/media_acquisition_phase1_test.rb` reads the catalog and the manifest
+  together, and `tests/media_acquisition_foundation_test.rb` pins the catalog entry
+  whole — so becoming implemented also means adding the service's published port to
+  its `EXPECTED_IMPLEMENTED_PORTS` list
+- its name in `EXPECTED_SERVICES` and `EXPECTED_FIXTURE_ROLES`
+- a `tests/expected/<name>.yml` to edit rather than create
+- its storage already declared under `nas_storage` as foundation storage. Pinchflat
+  added only `media_acquisition_writer: true` to the `Media/YouTube` entry that
+  already existed, and a matching line in `EXPECTED_INTEGRATION_WRITERS`
+- a placeholder CI lane in `tests/ci/classify_changes.rb`, `tests/integration.sh`
+  and `tests/integration_suite_test.sh`, whose tags you repoint from the shared
+  inert foundation to your own role
+- `tests/contracts/<name>-foundation.sh`, which **stays**
+
+That last point is worth stating plainly, because the instinct is to delete it.
+The foundation contract proves the project is *inert* — that no container by that
+name is running and nothing has been provisioned. It is a different claim from the
+runtime contract and it does not stop being true or useful once the service is
+implemented. Both `arr` and `downloaders` kept theirs through Phase 1, and
+`tests/contracts/pinchflat-foundation.sh` survives the Pinchflat promotion
+alongside the new `tests/contracts/pinchflat.sh`. What changes is the dispatch:
+the promoted project leaves the `bindery|kapowarr|trailarr|seerr)` arm in
+`tests/integration.sh` for a branch of its own, and
+`tests/integration_suite_test.sh` pins both the shrunken arm and the new lane.
+
+Promotion also removes the service from the registers that asserted its absence:
+the catalog loop in `tests/mac/hooks/verify/15-media-acquisition-foundation.sh`
+that requires no container by that name to exist, and the
+`planned_acquisition_lanes` and `acquisition_image_tags` lists in
+`tests/policy_ci_test.rb`, which require a planned lane to have zero service image
+sources. A greenfield service never touches any of those.
 
 ## Worked example: Navidrome
 
@@ -182,7 +418,15 @@ FAIL navidrome: implemented service has no automated verification or service con
 9 policy violation(s)
 ```
 
-That is the whole remaining task list.
+That is the task list `policy_test.rb` can see. It is not the whole task list.
+The registries in groups 5 through 10 above fail in other scripts, later in the
+run, and some of them — `tests/mac/verify.sh`, the `allocate_service_port` chain —
+fail nowhere at all. Work the failures the loop names, then walk the anatomy
+groups deliberately.
+
+The example roster below is Navidrome's; the real one is longer, and the
+manifest, the roster and the fixture roles have grown considerably since. Copy
+the shape, not the contents.
 
 ### 2. Register the name in the two Ruby lists and pin its expectations
 
@@ -223,17 +467,22 @@ The `container_cpus` values must equal the `cpus:` keys in the service's
 `compose.yml`, and `vault_keys` must be prefixed for this service and must list
 every key the service adds to the vault.
 
-There is a second list in `tests/policy_manifest_test.rb`, `EXPECTED_FIXTURE_ROLES`.
-It is easy to miss because `policy_test.rb` will pass without it, and
-`policy_manifest_test.rb` does not report a policy failure when it is missing.
-It raises instead:
+There is a second list, `EXPECTED_FIXTURE_ROLES`, in
+`tests/policy_mutation_support.rb` — the shared harness the mutation checks build
+their sandboxes from. It is easy to miss because `policy_test.rb` will pass
+without it, and the mutation checks do not report a policy failure when it is
+missing. They raise instead:
 
 ```
-tests/policy_manifest_test.rb:123:in 'block in Object#fixture_paths':
+tests/policy_mutation_support.rb:183:in 'block in Object#fixture_paths':
   unsafe manifest fixture identity (RuntimeError)
 ```
 
-Add the same pair there.
+Add the same pair there. Note that the harness raises twice over the same list:
+once for the manifest identity of an implemented service, and once, a few lines
+below, for `unsafe expectation fixture identity` on *every* rostered service
+regardless of status — which is why a planned service already needs both the
+roster entry and its `tests/expected/<name>.yml`.
 
 ### 3. Write the Compose definition
 
@@ -548,8 +797,11 @@ At this point:
 
 ```
 $ bash tests/validate-policy.sh
-policy validation: all 71 checks passed
+policy validation: all 106 checks passed
 ```
+
+That total is whatever the manifest in `tests/validate-policy.sh` currently holds;
+it grows, so read it as "no failures", not as a number to match.
 
 ## What the policy test does not catch
 
@@ -588,7 +840,9 @@ CI fails open, so forgetting this costs time rather than correctness. An
 unrecognised path makes `service_lane` return nil, which runs every lane:
 
 ```
-roles/navidrome/... unmapped -> static, foundation, smoke, beszel, dozzle,
+roles/navidrome/... unmapped -> static, reconciliation, foundation, arr,
+                                downloaders, bindery, kapowarr, pinchflat,
+                                trailarr, seerr, smoke, beszel, dozzle,
                                 audiobookshelf, komga, jellyfin, immich,
                                 paperless, idempotence-check
 roles/komga/...     mapped   -> static, smoke, komga, idempotence-check
@@ -621,6 +875,82 @@ A lane needs its name in `LANES` and its integration suite in `SUITES`, both in
 itself needs no change: the `suites` job is a matrix fed by the `suites` output,
 and `validate` covers every leg through one `needs` entry.
 
+Those four are the agreement, but two of them need more than one edit each.
+`tests/integration.sh` also wants the service in its service/directory table for
+image pre-pulling, a `run_<service>_contract` wrapper if the service has a contract,
+a `run_<service>_verify_only` function, and an arm in the suite dispatch that says
+what the lane actually does. `tests/integration_suite_test.sh` pins both the
+`--describe-suite` line and the exact set of images the lane pre-pulls, so a lane
+that converges a new stack fails there until you say which images it needs.
+
+`tests/ci/classify_changes_test.rb` additionally keeps `NTFY_LANES`: every lane
+whose tags start the alerting sink. If your lane converges `ntfy` — and it does if
+the role publishes a deployment report — add it there as well, in both the
+classifier and the test, which state the list separately on purpose.
+
+## The Mac lane's port chain
+
+The Mac lifecycle proof runs several isolated copies of the platform, so it cannot
+use the service's production port. `tests/mac/run.sh` allocates a free host port
+per service, exports it as `PLATFORM_<NAME>_PORT`, and
+`inventory/group_vars/mac_hosts/main.yml` reads it back into `<service>_port`.
+`tests/policy_platform_test.rb` pins the resulting `mac_runtime_facts` list, so a
+port fact that exists in the inventory and not in that list, or the reverse, fails.
+
+Adding one port to `run.sh` is twelve separate edits in that one file — eleven if
+you count the prose comment above the guard as part of the guard. Previous
+attempts at this work believed it was eight, which is how ports get half-added.
+They are, in file order:
+
+```
+1   the port-name list in read_integration_ports's embedded Ruby
+2   the comment stating how many integers the validated input holds
+3   the [ "$#" -eq N ] argument-count guard
+4   the positional unpack, expected_<service>_port=${N}
+5   initialize_report_input's --<service>-port flag
+6   the integration branch's <service>_port=$expected_<service>_port
+7   the nested allocate_service_port chain in the non-integration branch
+8   the resume read, fetching "<service>_port" out of the state JSON
+9   the resume comparison against the recorded run
+10  export PLATFORM_<NAME>_PORT
+11  the preflight `for reserved_port in ...` reservation loop
+12  the preflight embedded Ruby's duplicate-port argument list
+```
+
+Site 7 is the dangerous one, and the reason this section exists.
+`allocate_service_port` asks the kernel for an ephemeral port and rejects it only
+if it equals one of the ports passed as arguments. Every allocation therefore has
+to name every port allocated before it, so the chain grows quadratically and each
+new line is the longest:
+
+```sh
+sabnzbd_port=$(allocate_service_port \
+  "$beszel_port" ... "$bazarr_port")
+pinchflat_port=$(allocate_service_port \
+  "$beszel_port" ... "$bazarr_port" "$sabnzbd_port")
+```
+
+The exclusion set is positional and implicit. Nothing states the invariant, no
+test asserts it, and a line that omits a port is syntactically perfect. Two
+branches that each add a service each write a final line whose argument list ends
+at the last port *that existed on `main`*, so once both land — merged, rebased, or
+resolved by hand by keeping both lines, which is the natural resolution — neither
+knows about the other. The two services can then be handed the same free port, and
+the failure is a container that will not bind, appearing at converge time, in one
+lane, sometimes.
+
+The same trap sits in sites 3 and 4. Two branches each bump the argument-count
+guard from 13 to 14; the merged file needs 15, has 14, and the positional unpack
+silently drops the last port into nothing.
+
+So: when you add a port, read the whole chain top to bottom rather than copying
+the line above, and check that the last line names every port declared before it.
+Then propagate the port to the five files that carry it outside `run.sh` —
+`tests/mac/report.rb` (six sites of its own), `tests/mac/config-isolation.sh`,
+`tests/mac/run-phase-status-test.sh`,
+`tests/mac/media-acquisition-foundation-report-test.rb` and
+`inventory/group_vars/mac_hosts/main.yml`.
+
 ## When the service has credentials
 
 Everything above covers a service that proves itself over an unauthenticated
@@ -630,19 +960,42 @@ running service, which is what lets a run converge in a single pass. Where a
 service would normally hand you a generated value to copy, this platform
 supplies its own value instead.
 
-Adding one credential touches:
+This guide used to say a credential touches six files. It touches **eleven**, and
+the five it omitted are the ones that fail last and least clearly. Pinchflat's two
+keys landed in every one of these:
 
 ```
 inventory/group_vars/all/vault.yml.example    a sanitized placeholder
 roles/vault_contract/meta/argument_specs.yml  {type: str, required: true}
+roles/vault_contract/tasks/main.yml           the redacted validation map
+filter_plugins/vault_credential_schema.py     CREDENTIAL_RULES: its shape rule
 roles/<role>/meta/argument_specs.yml          required: true
 tests/expected/<service>.yml                  vault_keys
-generate-secrets.yml                          brand-new-platform generation
+generate-secrets.yml                          generation, and a second edit in
+                                              the assertion block below it
+templates/vault-plain.yml.j2                  what generate-secrets renders
+tests/generate-ephemeral-vault.sh             the integration and Mac lanes' vault
 docs/secrets.md                               enforced by secrets_docs_test.rb
+tests/secrets_docs_test.rb                    a hard-coded total key count
 ```
 
+Two of those deserve naming. `filter_plugins/vault_credential_schema.py` is where
+the credential's *shape* is stated — `NONEMPTY`, a hex pattern, a UUID — and a key
+declared in `vault_contract` without a rule here is validated only for presence.
+And `tests/secrets_docs_test.rb` carries a literal total: `vault example must
+contain exactly 59 vault_* keys`. Pinchflat's two keys made it 61. Nothing derives
+that number, and the failure names the count rather than your service, so it reads
+like an unrelated breakage.
+
+`roles/vault_contract/tasks/main.yml` matters for the same reason: the argument
+spec makes Ansible require the variable, but the map in the tasks file is what
+actually feeds it to the schema filter. A key in the spec and not in the map is
+required but never shape-checked.
+
 The `docs/secrets.md` edit is mandatory, not courtesy. `tests/secrets_docs_test.rb`
-checks the guide against the vault contract and fails when they diverge.
+checks the guide against the vault contract and fails when they diverge. Write the
+entry as a recovery instruction — where an operator rebuilding the vault finds the
+existing value — not as a description of the field.
 
 In the role itself, mark every task that touches a credential `no_log: true`.
 The vault contract validation in `site.yml` and `verify.yml` is already wired
@@ -657,6 +1010,16 @@ Managed non-administrator users are a separate mechanism: they live under
 included twice, once with a `reconcile` phase and once with a `verify` phase.
 `roles/komga/tasks/managed_users.yml` and `config/managed-user-capabilities.yml`
 are the reference.
+
+`config/managed-user-capabilities.yml` is not optional for services that skip that
+mechanism. It is the register of how *every* service handles identity, so a service
+with no managed users still needs an entry saying so. Pinchflat has no user API at
+all — its whole identity is one basic-authentication pair in its environment — and
+it still declares `mode: declarative_environment`, `password_rotation: refuse` and
+its four interface strings. Restate the same contract in `EXPECTED_SERVICES` in
+`tests/managed_user_capabilities_test.rb`, and change that file's success line,
+which spells the number of pinned contracts in English (`all eleven service
+contracts are pinned`).
 
 ## The test ladder
 
@@ -698,11 +1061,11 @@ bugs found in this repository so far, a fact that exists only on Linux and a
 `command` task silently skipped under `--check`, both passed syntax checking and
 lint and were caught only here.
 
-If the service publishes a port, the Mac harness needs to know about it.
-`tests/mac/run.sh` allocates a free port per service, exports it as
-`PLATFORM_<NAME>_PORT`, and isolates each Compose project under a unique project
-name. The policy test asserts that those exports and per-project container names
-exist for the services it knows about.
+If the service publishes a port, the Mac harness needs to know about it, and that
+is a larger job than it looks: see "The Mac lane's port
+chain" above. The policy test asserts that the exports and per-project container names
+exist for the services it knows about, but it cannot tell you that one allocation
+forgot to exclude another.
 
 ## Reviewing before you apply
 

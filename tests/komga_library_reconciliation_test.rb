@@ -336,6 +336,17 @@ def converged_libraries
   [managed_library(id: "comics"), managed_library(id: "ebooks", name: "Ebooks", root: EBOOKS_ROOT)]
 end
 
+# Komga refuses a library root that contains, or is contained by, an existing
+# library's root, and answers 400. The stub models that rule because it is the
+# whole reason library repairs must precede library creations: a creation
+# ordered before the repair that frees its root is accepted by a permissive
+# fixture and rejected by the real service.
+def nested_root?(existing, requested)
+  held = existing.to_s.chomp("/")
+  wanted = requested.to_s.chomp("/")
+  held == wanted || wanted.start_with?("#{held}/") || held.start_with?("#{wanted}/")
+end
+
 def with_http_service(libraries, users: [], fail_after_apply: false)
   server = TCPServer.new("127.0.0.1", 0)
   requests = []
@@ -368,12 +379,21 @@ def with_http_service(libraries, users: [], fail_after_apply: false)
         status = 200
         response = libraries
       when ["POST", "/api/v1/libraries"]
-        created += 1
-        status = 200
-        libraries << request.fetch("json").merge(
-          "id" => "created-library-#{created}", "unavailable" => false
-        )
-        response = libraries.last
+        requested = request.fetch("json").fetch("root")
+        conflict = libraries.find do |entry|
+          entry.is_a?(Hash) && nested_root?(entry["root"], requested)
+        end
+        if conflict
+          status = 400
+          response = { "error" => "Library root overlaps #{conflict['root']}" }
+        else
+          created += 1
+          status = 200
+          libraries << request.fetch("json").merge(
+            "id" => "created-library-#{created}", "unavailable" => false
+          )
+          response = libraries.last
+        end
       when ["GET", "/api/v2/users"]
         status = 200
         response = users
@@ -399,7 +419,8 @@ def with_http_service(libraries, users: [], fail_after_apply: false)
         end
       end
       payload = response.nil? ? "" : JSON.generate(response)
-      reason = { 200 => "OK", 204 => "No Content", 500 => "Error" }.fetch(status)
+      reason = { 200 => "OK", 201 => "Created", 204 => "No Content",
+                 400 => "Bad Request", 500 => "Error" }.fetch(status)
       client.write("HTTP/1.1 #{status} #{reason}\r\n")
       client.write("Content-Type: application/json\r\n") unless payload.empty?
       client.write("Content-Length: #{payload.bytesize}\r\nConnection: close\r\n\r\n#{payload}")
@@ -492,6 +513,9 @@ def migration_completion_failures(role_source)
     failures << "the migration did not create the Ebooks library" unless
       create&.fetch("target") == "/api/v1/libraries" &&
       create&.fetch("json") == owned_settings.merge("name" => "Ebooks", "root" => EBOOKS_ROOT)
+    ordered = mutations(requests)
+    failures << "the migration created a library before freeing the root it nests in" unless
+      patch && create && ordered.index(patch) < ordered.index(create)
     failures << "the migration used more than one repair and one creation" unless
       mutations(requests).length == 2
     failures << "the migration changed the Comics library identifier" unless
@@ -610,7 +634,28 @@ if self_test
   abort "self-test failed: an unreachable root repair was accepted" if
     migration_completion_failures(unreachable).empty?
 
-  puts "Komga library reconciliation: self-test detects model, guard and repair regressions"
+  # And the ordering: a creation written before the repair that frees its root
+  # is what the real service rejects, so the fixture has to reject it too.
+  create_at = ROLE_SOURCE.index("- name: Report planned Komga library creation")
+  repair_at = ROLE_SOURCE.index("- name: Report planned Komga library repair")
+  read_back_at = ROLE_SOURCE.index("- name: Read back Komga libraries after reconciliation")
+  abort "self-test could not locate the library mutation blocks" unless
+    create_at && repair_at && read_back_at && repair_at < create_at && create_at < read_back_at
+  create_first = ROLE_SOURCE[0...repair_at] +
+                 ROLE_SOURCE[create_at...read_back_at] +
+                 ROLE_SOURCE[repair_at...create_at] +
+                 ROLE_SOURCE[read_back_at..]
+  abort "self-test could not plant a creation ordered before its repair" if
+    create_first == ROLE_SOURCE
+  # A pure reordering: anything else and the failure below would be proving that
+  # a malformed role fails, which it would do for any reason at all.
+  abort "self-test planted a malformed task list" unless
+    YAML.safe_load(create_first, aliases: false).map { |task| task_name(task) }.sort ==
+      main_tasks.map { |task| task_name(task) }.sort
+  abort "self-test failed: a creation ordered before its repair was accepted" if
+    migration_completion_failures(create_first).empty?
+
+  puts "Komga library reconciliation: self-test detects model, guard, repair and ordering regressions"
   exit
 end
 
@@ -687,7 +732,12 @@ health_mutation_rejected!(compose, late_readiness, DEFAULTS, argument_specs, "la
 main_names = main_tasks.map { |task| task_name(task) }
 preflight_index = main_names.index("Refuse ambiguous Komga library candidates")
 user_index = main_names.index("Reconcile managed Komga users")
-library_mutation_index = main_names.index("Create the managed Komga library")
+# The earliest of the two, so the invariant cannot be satisfied by whichever
+# mutation happens to be written second.
+library_mutation_index = [
+  main_names.index("Repair the managed Komga library"),
+  main_names.index("Create the managed Komga library")
+].compact.min
 failures << "complete library preflight does not precede all user/library mutation" unless
   preflight_index && user_index && library_mutation_index &&
     preflight_index < user_index && user_index < library_mutation_index
