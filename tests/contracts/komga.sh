@@ -171,6 +171,12 @@ preflight = preflight_names.map(&role_at)
 mutations = mutation_names.map(&role_at)
 abort "Komga contract failed: library preflight must precede every mutation" unless
   preflight.none?(&:nil?) && mutations.none?(&:nil?) && preflight.max < mutations.min
+# Komga refuses a root that is a parent or child of an existing library's root,
+# so a creation ordered before the repair that frees that root is a 400 against
+# the real service and converges only against a permissive fixture.
+abort "Komga contract failed: library repairs must precede library creations" unless
+  role_at.call("Repair the managed Komga library") <
+    role_at.call("Create the managed Komga library")
 abort "Komga contract failed: managed root matching is not trailing-slash normalized" unless
   role_task.call("Resolve normalized Komga library targets")
     .dig("ansible.builtin.set_fact", "komga_desired_libraries").to_s
