@@ -285,12 +285,12 @@ arr arr
 downloaders downloaders
 '
 
-# Retry budget for a registry that refuses. Both values are floored rather than
+# Retry budget for a registry that refuses. The values are floored rather than
 # validated, so a mistyped or hostile setting cannot configure the retry away,
 # which is the only reason the wrapper exists.
-image_pull_attempts=${INTEGRATION_IMAGE_PULL_ATTEMPTS:-4}
+image_pull_attempts=${INTEGRATION_IMAGE_PULL_ATTEMPTS:-6}
 case $image_pull_attempts in
-  ''|*[!0123456789]*) image_pull_attempts=4 ;;
+  ''|*[!0123456789]*) image_pull_attempts=6 ;;
 esac
 [ "$image_pull_attempts" -ge 2 ] || image_pull_attempts=2
 image_pull_delay=${INTEGRATION_IMAGE_PULL_DELAY:-5}
@@ -298,24 +298,94 @@ case $image_pull_delay in
   ''|*[!0123456789]*) image_pull_delay=5 ;;
 esac
 [ "$image_pull_delay" -ge 1 ] || image_pull_delay=1
+image_pull_max_delay=${INTEGRATION_IMAGE_PULL_MAX_DELAY:-60}
+case $image_pull_max_delay in
+  ''|*[!0123456789]*) image_pull_max_delay=60 ;;
+esac
+[ "$image_pull_max_delay" -ge "$image_pull_delay" ] ||
+  image_pull_max_delay=$image_pull_delay
+
+retry_after_seconds() {
+  awk '
+    {
+      marker = "retry-after:"
+      marker_at = index($0, marker)
+      if (!marker_at) next
+      token = substr($0, marker_at + length(marker))
+      sub(/^[[:space:]]*/, "", token)
+      sub(/[,[:space:]].*$/, "", token)
+
+      unit = ""
+      if (token ~ /ns$/) unit = "ns"
+      else if (token ~ /us$/) unit = "us"
+      else if (token ~ /µs$/) unit = "µs"
+      else if (token ~ /ms$/) unit = "ms"
+      else if (token ~ /s$/) unit = "s"
+      else if (token ~ /m$/) unit = "m"
+
+      value = unit == "" ? token : substr(token, 1, length(token) - length(unit))
+      if (value !~ /^[0-9]+([.][0-9]+)?$/) next
+
+      seconds = value + 0
+      if (unit == "ns") seconds /= 1000000000
+      else if (unit == "us" || unit == "µs") seconds /= 1000000
+      else if (unit == "ms") seconds /= 1000
+      else if (unit == "m") seconds *= 60
+
+      rounded = int(seconds)
+      if (seconds > rounded) rounded++
+      if (seconds > 0 && rounded < 1) rounded = 1
+      print rounded
+      exit
+    }
+  '
+}
+
+image_pull_jitter() {
+  jitter_base=$1
+  jitter_limit=$((jitter_base / 4))
+  [ "$jitter_limit" -ge 1 ] || jitter_limit=1
+  jitter_entropy=$(od -An -N4 -tu4 /dev/urandom 2>/dev/null | tr -d ' ')
+  case $jitter_entropy in
+    ''|*[!0123456789]*) jitter_entropy=$$ ;;
+  esac
+  printf '%s\n' $((jitter_entropy % jitter_limit + 1))
+}
 
 pull_image() {
   pull_target=$1
   pull_attempt=1
   pull_delay=$image_pull_delay
+  pull_error=$(mktemp "${TMPDIR:-/tmp}/nas-platform-pull-error.XXXXXX")
   while :; do
-    if docker pull "$pull_target"; then
+    if docker pull "$pull_target" 2> "$pull_error"; then
+      cat "$pull_error" >&2
+      rm -f "$pull_error"
       return 0
     fi
+    cat "$pull_error" >&2
     if [ "$pull_attempt" -ge "$image_pull_attempts" ]; then
-      printf 'could not pull %s in %s attempt(s)\n' "$pull_target" "$pull_attempt" >&2
+      rm -f "$pull_error"
+      printf 'could not pull %s in %s attempt(s)\n' \
+        "$pull_target" "$pull_attempt" >&2
       return 1
     fi
+    retry_after=$(retry_after_seconds < "$pull_error")
+    retry_delay=$pull_delay
+    case $retry_after in
+      ''|*[!0123456789]*) ;;
+      *) [ "$retry_after" -le "$retry_delay" ] || retry_delay=$retry_after ;;
+    esac
+    jitter=$(image_pull_jitter "$retry_delay")
+    retry_delay=$((retry_delay + jitter))
     printf 'pull of %s failed, retrying in %ss (attempt %s of %s)\n' \
-      "$pull_target" "$pull_delay" "$pull_attempt" "$image_pull_attempts" >&2
-    sleep "$pull_delay"
+      "$pull_target" "$retry_delay" "$pull_attempt" "$image_pull_attempts" >&2
+    sleep "$retry_delay"
     pull_attempt=$((pull_attempt + 1))
     pull_delay=$((pull_delay * 2))
+    [ "$pull_delay" -le "$image_pull_max_delay" ] ||
+      pull_delay=$image_pull_max_delay
+    : > "$pull_error"
   done
 }
 
