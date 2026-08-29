@@ -8,6 +8,7 @@ fake_bin=$(CDPATH= cd -P "$fake_bin" && pwd -P)
 docker_log=$fake_bin/docker.log
 prepull_bin=$(mktemp -d "${TMPDIR:-/tmp}/nas-platform-prepull-test.XXXXXX")
 pull_log=$prepull_bin/pull.log
+sleep_log=$prepull_bin/sleep.log
 immich_order_mutant=$fake_bin/immich-order-mutant.sh
 acquisition_runtime_mutant=$fake_bin/acquisition-runtime-mutant.sh
 idempotence_helper=$fake_bin/enabled-idempotence-helper.sh
@@ -30,7 +31,8 @@ cleanup() {
   rm -f "$namespace_helper"
   rm -f "$fake_bin/hostile-validator-ran"
   rmdir "$fake_bin"
-  rm -f "$prepull_bin/docker" "$pull_log"
+  rm -f "$prepull_bin/docker" "$prepull_bin/sleep" "$prepull_bin/od" \
+    "$pull_log" "$sleep_log"
   rmdir "$prepull_bin"
 }
 trap cleanup EXIT HUP INT TERM
@@ -729,7 +731,8 @@ if [ "${1:-}" = pull ]; then
   printf '%s\n' "$2" >> "${STUB_PULL_LOG:?}"
   attempt=$(grep -Fxc -- "$2" "$STUB_PULL_LOG" || true)
   if [ "$attempt" -le "${STUB_PULL_REFUSALS:-0}" ]; then
-    printf 'toomanyrequests: retry-after: 218.093us, allowed: 44000/minute\n' >&2
+    printf 'toomanyrequests: retry-after: %s, allowed: 44000/minute\n' \
+      "${STUB_RETRY_AFTER:-218.093us}" >&2
     exit 1
   fi
   exit 0
@@ -740,6 +743,20 @@ printf 'unexpected docker invocation: %s\n' "$*" >&2
 exit 97
 EOF
 chmod +x "$prepull_bin/docker"
+
+cat > "$prepull_bin/sleep" <<'EOF'
+#!/bin/sh
+set -eu
+printf '%s\n' "${1:?}" >> "${STUB_SLEEP_LOG:?}"
+EOF
+
+cat > "$prepull_bin/od" <<'EOF'
+#!/bin/sh
+set -eu
+printf '%s\n' "${STUB_RANDOM_VALUE:-0}"
+EOF
+
+chmod +x "$prepull_bin/docker" "$prepull_bin/sleep" "$prepull_bin/od"
 
 # Read back rather than restated: Renovate bumps every one of these digests.
 runner_image=$(sed -n 's/^runner_image=//p' "$integration")
@@ -768,13 +785,18 @@ run_prepull() {
   prepull_attempts=$2
   shift 2
   : > "$pull_log"
+  : > "$sleep_log"
   prepull_status=0
   PATH="$prepull_bin:$PATH" \
     STUB_PULL_LOG=$pull_log \
+    STUB_SLEEP_LOG=$sleep_log \
     STUB_PULL_REFUSALS=$prepull_refusals \
+    STUB_RETRY_AFTER=${PREPULL_RETRY_AFTER:-218.093us} \
+    STUB_RANDOM_VALUE=${PREPULL_RANDOM_VALUE:-0} \
     INTEGRATION_PREPULL_ONLY=1 \
     INTEGRATION_IMAGE_PULL_ATTEMPTS=$prepull_attempts \
-    INTEGRATION_IMAGE_PULL_DELAY=1 \
+    INTEGRATION_IMAGE_PULL_DELAY=${PREPULL_DELAY:-1} \
+    INTEGRATION_IMAGE_PULL_MAX_DELAY=${PREPULL_MAX_DELAY:-60} \
     "$integration" "$@" >/dev/null 2>&1 || prepull_status=$?
 }
 
@@ -791,6 +813,13 @@ assert_pull_count() {
   observed=$(grep -Fxc -- "$1" "$pull_log" || true)
   [ "$observed" -eq "$2" ] ||
     prepull_fail "expected $2 attempt(s) at $1, saw $observed"
+}
+
+assert_sleep_log() {
+  expected=$1
+  actual=$(cat "$sleep_log")
+  [ "$expected" = "$actual" ] ||
+    prepull_fail "expected sleeps [$expected], saw [$actual]"
 }
 
 # A suite pulls the controller image plus the images of the services its tags
@@ -834,6 +863,37 @@ run_prepull 2 4 --suite foundation
 assert_pull_count "$runner_image" 3
 [ "$(wc -l < "$pull_log" | tr -d " ")" -eq 3 ] ||
   prepull_fail "foundation pulled service images it never converges: $(sort -u "$pull_log")"
+
+run_prepull 0 6 --suite foundation
+[ "$prepull_status" -eq 0 ] || prepull_fail "an answering registry failed"
+assert_sleep_log ""
+
+PREPULL_RETRY_AFTER=584.244µs PREPULL_RANDOM_VALUE=0 PREPULL_DELAY=5 \
+  run_prepull 2 6 --suite foundation
+[ "$prepull_status" -eq 0 ] || prepull_fail "microsecond retry hint failed"
+assert_sleep_log "6
+11"
+unset PREPULL_RETRY_AFTER PREPULL_RANDOM_VALUE PREPULL_DELAY
+
+PREPULL_RETRY_AFTER=45s PREPULL_RANDOM_VALUE=3 PREPULL_DELAY=5 \
+  run_prepull 1 6 --suite foundation
+[ "$prepull_status" -eq 0 ] || prepull_fail "long retry hint failed"
+assert_sleep_log "49"
+unset PREPULL_RETRY_AFTER PREPULL_RANDOM_VALUE PREPULL_DELAY
+
+PREPULL_RETRY_AFTER=invalid PREPULL_RANDOM_VALUE=0 PREPULL_DELAY=10 \
+  PREPULL_MAX_DELAY=40 run_prepull 5 6 --suite foundation
+[ "$prepull_status" -eq 0 ] || prepull_fail "widened retry budget failed"
+assert_sleep_log "11
+21
+41
+41
+41"
+unset PREPULL_RETRY_AFTER PREPULL_RANDOM_VALUE PREPULL_DELAY PREPULL_MAX_DELAY
+
+run_prepull 5 malformed --suite foundation
+[ "$prepull_status" -eq 0 ] || prepull_fail "malformed attempt budget removed the safe default"
+assert_pull_count "$runner_image" 6
 
 for project in bindery kapowarr pinchflat trailarr seerr; do
   run_prepull 0 4 --suite "$project"
