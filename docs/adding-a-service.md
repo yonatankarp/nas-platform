@@ -594,6 +594,17 @@ roles/navidrome/... unmapped -> static, foundation, smoke, beszel, dozzle,
 roles/komga/...     mapped   -> static, smoke, komga, idempotence-check
 ```
 
+Falling open is the right answer for a role, because a role is converged by a
+play. It is the wrong answer for a check: a file under `tests/` that no suite
+executes cannot change what a suite does, so the classifier routes it to the
+policy gate alone. The exception is the integration harness itself and
+everything it reaches -- `tests/integration.sh`, the contracts under
+`tests/contracts/`, the document fixtures under `tests/fixtures/` and the Mac
+hooks under `tests/mac/hooks/`. Add a file there and
+`tests/ci/classify_changes_test.rb` walks the harness's reference closure and
+fails until `INTEGRATION_HARNESS_PATHS` names it, so the narrower routing cannot
+quietly skip a suite that reads it.
+
 Each service should normally own its own lane. Four files must agree, and three
 of them pin the tag list literally:
 
