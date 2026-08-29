@@ -30,13 +30,32 @@ LOGIN_ACTION_NAME = "docker/login-action"
 EXPECTED_JOBS = %w[changes static reconciliation suites validate].freeze
 # One reconciliation file per matrix leg, in the order a full run enumerates them.
 RECONCILIATION_PARTS = %w[core bazarr configarr].freeze
+RECONCILIATION_SUPPORT_PATH =
+  File.expand_path("../media_acquisition_reconciliation_support.rb", __dir__)
+# The role directories the support file's ARR_TASKS/DOWNLOADER_TASKS resolve to.
+RECONCILIATION_TASK_ROOTS = {
+  "ARR_TASKS" => "roles/arr/tasks",
+  "DOWNLOADER_TASKS" => "roles/downloaders/tasks"
+}.freeze
+# Inputs the contract reads that the support file does not enumerate as a list
+# this test can parse: its pinned Configarr sources, the defaults it lifts its
+# timings from, and the two playbook-level files the core leg loads.
+RECONCILIATION_EXTRA_INPUTS = %w[
+  roles/arr/files/configarr/config.yml
+  roles/arr/files/configarr/quality-definition-movie.json
+  roles/arr/files/configarr/quality-definition-series.json
+  roles/arr/defaults/main.yml
+  roles/downloaders/defaults/main.yml
+  inventory/group_vars/all/main.yml
+  site.yml
+].freeze
 # The suites the matrix dispatches, in the order a full run enumerates them.
 INTEGRATION_SUITES = %w[
   foundation arr downloaders bindery kapowarr pinchflat trailarr seerr smoke beszel
   dozzle audiobookshelf komga jellyfin immich paperless idempotence-check
 ].freeze
 TAGGED_SUITES = %w[smoke idempotence-check].freeze
-CLASSIFIER_OUTPUTS = %w[static suites selected_tags].freeze
+CLASSIFIER_OUTPUTS = %w[static reconciliation suites selected_tags].freeze
 SAMPLE_TAGS = "host_prep,deployment_bundle,ntfy,beszel"
 STATIC_STEP_NAMES = [
   "Check out repository",
@@ -253,6 +272,51 @@ RECONCILIATION_PARTS.each do |part|
   check(failures, File.file?(File.expand_path("../media_acquisition_reconciliation_#{part}_test.rb", __dir__)),
         "the reconciliation matrix names a file that does not exist: #{part}")
 end
+
+# The job used to be gated on `static`, which is true whenever any lane runs at
+# all, so a change to roles/dozzle/ paid for all three legs. It is routed now,
+# and routing that fails closed silently stops running a contract -- so what the
+# contract reads is asserted to select it, file by file.
+check(failures,
+      expression(jobs.dig("reconciliation", "if")) ==
+        "${{ needs.changes.outputs.reconciliation == 'true' }}",
+      "reconciliation must be gated on its own classifier output, found " \
+      "#{expression(jobs.dig('reconciliation', 'if')).inspect}")
+
+# Taken out of the support file rather than restated, so a task file added to the
+# contract is checked for routing by the same edit that adds it.
+support_source = File.read(RECONCILIATION_SUPPORT_PATH)
+secret_task_block = support_source[/^SECRET_TASK_FILES = \[\n(.*?)^\]\.freeze$/m, 1].to_s
+reconciliation_task_files = secret_task_block.scan(/\[(\w+), "([^"]+)"\]/).map do |root, file|
+  root_path = RECONCILIATION_TASK_ROOTS[root]
+  check(failures, !root_path.nil?,
+        "the reconciliation contract reads task files from an unmapped root: #{root}")
+  "#{root_path}/#{file}"
+end
+check(failures, reconciliation_task_files.length >= RECONCILIATION_TASK_ROOTS.length,
+      "SECRET_TASK_FILES could not be read out of the support file: " \
+      "#{secret_task_block.inspect}")
+
+reconciliation_inputs = (
+  reconciliation_task_files + RECONCILIATION_EXTRA_INPUTS +
+  ClassifyChanges::RECONCILIATION_OWNED_PATHS
+).uniq
+reconciliation_inputs.each do |path|
+  check(failures, File.file?(File.expand_path("../../#{path}", __dir__)),
+        "the reconciliation contract names an input that does not exist: #{path}")
+  check(failures, ClassifyChanges.classify([path]).fetch("reconciliation"),
+        "#{path} is an input to the reconciliation contract but does not select it")
+end
+# The saving is the point: a change that the contract cannot read must not run it.
+%w[
+  roles/dozzle/tasks/managed_users.yml
+  services/beszel/compose.yml
+  docs/secrets.md
+].each do |path|
+  check(failures, !ClassifyChanges.classify([path]).fetch("reconciliation"),
+        "#{path} cannot reach the reconciliation contract but still selects it")
+end
+
 check(failures, expression(jobs.dig("static", "if")) == "${{ needs.changes.outputs.static == 'true' }}",
       "static condition must match its classifier output")
 
