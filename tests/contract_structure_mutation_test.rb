@@ -76,6 +76,64 @@ SUITES = {
     environment: ->(_repo) { {} },
     diagnostic: ->(message) { "FAIL #{message}" }
   },
+  # The Arr contract reports every violation it found, one bare message per line,
+  # rather than aborting on the first with a prefix.
+  arr: {
+    command: ->(repo) { [File.join(repo, "tests", "contracts", "arr.sh"), "static"] },
+    environment: ->(repo) { { "PLATFORM_CONTRACT_REPO_DIR" => repo } },
+    diagnostic: ->(message) { message }
+  },
+  # This suite drives the real vault_contract role over the documented vault, so
+  # each row costs about twenty seconds. It carries three rows rather than one per
+  # conversion: the ones below are the shapes the old whole-file substrings could
+  # not see at all.
+  managed_users_vault: {
+    command: ->(repo) { [RbConfig.ruby, File.join(repo, "tests", "managed_users_vault_test.rb")] },
+    environment: ->(_repo) { {} },
+    diagnostic: ->(message) { "FAIL #{message}" }
+  },
+  downloaders: {
+    command: ->(repo) { [File.join(repo, "tests", "contracts", "downloaders.sh"), "static"] },
+    environment: ->(repo) { { "PLATFORM_CONTRACT_REPO_DIR" => repo } },
+    diagnostic: ->(message) { message }
+  },
+  policy_deployment: {
+    command: ->(repo) { [RbConfig.ruby, File.join(repo, "tests", "policy_deployment_test.rb")] },
+    environment: ->(_repo) { {} },
+    diagnostic: ->(message) { "FAIL #{message}" }
+  },
+  reader_identity: {
+    command: ->(repo) { [RbConfig.ruby, File.join(repo, "tests", "reader_platform_identity_test.rb")] },
+    environment: ->(_repo) { {} },
+    diagnostic: ->(message) { "FAIL #{message}" }
+  },
+  # This suite reports bare messages, one per line, and drives a real Ansible
+  # guard matrix, so its single row is the slowest of the fast ones.
+  acquisition_phase1: {
+    command: ->(repo) { [RbConfig.ruby, File.join(repo, "tests", "media_acquisition_phase1_test.rb")] },
+    environment: ->(_repo) { {} },
+    diagnostic: ->(message) { message }
+  },
+  acquisition_adoption: {
+    command: ->(repo) { [RbConfig.ruby, File.join(repo, "tests", "media_acquisition_adoption_test.rb")] },
+    environment: ->(_repo) { {} },
+    diagnostic: ->(message) { message }
+  },
+  policy_integration: {
+    command: ->(repo) { [RbConfig.ruby, File.join(repo, "tests", "policy_integration_test.rb")] },
+    environment: ->(_repo) { {} },
+    diagnostic: ->(message) { "FAIL #{message}" }
+  },
+  policy_mac: {
+    command: ->(repo) { [RbConfig.ruby, File.join(repo, "tests", "policy_mac_test.rb")] },
+    environment: ->(_repo) { {} },
+    diagnostic: ->(message) { "FAIL #{message}" }
+  },
+  policy_vault: {
+    command: ->(repo) { [RbConfig.ruby, File.join(repo, "tests", "policy_vault_test.rb")] },
+    environment: ->(_repo) { {} },
+    diagnostic: ->(message) { "FAIL #{message}" }
+  },
   policy_platform: {
     command: ->(repo) { [RbConfig.ruby, File.join(repo, "tests", "policy_platform_test.rb")] },
     environment: ->(_repo) { {} },
@@ -103,10 +161,27 @@ def check(failures, condition, message)
   failures << message unless condition
 end
 
+# Every row copies the repository, so the copy is the cost of a proof. Ignored
+# paths — the Python virtualenv, worktrees, editor caches — are build artifacts,
+# never contract inputs, and copying them costs ten times what copying the
+# repository does. `.git` is kept: policy_test.rb enumerates its own sources with
+# git and fails without it. If git cannot answer, the whole tree is copied, which
+# is only slower.
+def ignored_children(children)
+  stdout, _stderr, status = Open3.capture3("git", "-C", ROOT, "check-ignore", "--", *children)
+  status.exitstatus == 128 ? [] : stdout.lines.map(&:chomp)
+rescue SystemCallError
+  []
+end
+
 def with_copied_repo
   Dir.mktmpdir("nas-platform-contract-structure-") do |directory|
     repo = File.join(directory, "repo")
-    FileUtils.cp_r(ROOT, repo)
+    FileUtils.mkdir_p(repo)
+    children = Dir.children(ROOT)
+    (children - ignored_children(children)).each do |entry|
+      FileUtils.cp_r(File.join(ROOT, entry), File.join(repo, entry))
+    end
     yield repo
   end
 end
@@ -185,6 +260,30 @@ IMMICH_ONBOARDING = "roles/immich/tasks/user_onboarding.yml"
 DOZZLE_ROLE = "roles/dozzle/tasks/main.yml"
 DOZZLE_DEFAULTS = "roles/dozzle/defaults/main.yml"
 PREFLIGHT = "roles/preflight/tasks/main.yml"
+ARR_MAIN = "roles/arr/tasks/main.yml"
+ARR_BOOTSTRAP = "roles/arr/tasks/bootstrap.yml"
+ARR_CONFIG_XML = "roles/arr/templates/config.xml.j2"
+ARR_ENVIRONMENT = "roles/arr/templates/env.j2"
+ARR_SERVARR = "roles/arr/tasks/reconcile_servarr.yml"
+ARR_PROWLARR = "roles/arr/tasks/reconcile_prowlarr.yml"
+ARR_BAZARR = "roles/arr/tasks/reconcile_bazarr.yml"
+KOMGA_COMPOSE = "services/komga/compose.yml"
+DOWNLOADERS_COMPOSE = "services/downloaders/compose.yml"
+ARR_STATE_GUARD = "roles/arr/tasks/state_guard.yml"
+MAC_PATH_FIXTURE = "tests/mac_inventory_path_test.yml"
+SHARED_INVENTORY = "inventory/group_vars/all/main.yml"
+HOST_PREP = "roles/host_prep/tasks/main.yml"
+VERIFY_PLAY = "verify.yml"
+CI_WORKFLOW = ".github/workflows/ci.yml"
+VAULT_CONTRACT = "roles/vault_contract/tasks/main.yml"
+DOWNLOADERS_MAIN = "roles/downloaders/tasks/main.yml"
+DOWNLOADERS_ENVIRONMENT = "roles/downloaders/templates/env.j2"
+DOWNLOADERS_INI = "roles/downloaders/templates/sabnzbd.ini.j2"
+DOWNLOADERS_VERIFY = "roles/downloaders/tasks/verify.yml"
+BUNDLE_INPUTS = "roles/deployment_bundle/tasks/inputs.yml"
+BUNDLE_TARGET = "roles/deployment_bundle/tasks/target.yml"
+BUNDLE_MANIFEST_TEMPLATE = "roles/deployment_bundle/templates/manifest.yml.j2"
+COMPOSE_METADATA_BEHAVIOR = "tests/compose_metadata_filter_test.yml"
 AUTO_DEPLOY_ROLE = "roles/production_auto_deploy/tasks/main.yml"
 AUTO_DEPLOY_NOTIFIER = "roles/production_auto_deploy/templates/ntfy.curl.j2"
 
@@ -903,6 +1002,418 @@ check_rejected(
     "\n" \
     "- name: Wait for the hub to report healthy\n"]],
   "%REPO%/roles/beszel/tasks/main.yml: shells out to Compose; use community.docker.docker_compose_v2"
+)
+
+# --- Arr Phase 1 API ownership ------------------------------------------------
+#
+# Every row below was accepted by the whole-file substring pairs these assertions
+# replaced. Three of them are the unintended-match class: a literal that belongs
+# to one task satisfying a check about another.
+
+check_rejected(
+  failures, :arr, "an activation downgraded while the module stays named in the file",
+  [[ARR_MAIN, "    state: present\n    wait: true\n", "    state: absent\n    wait: true\n"]],
+  "Arr role must deploy through docker_compose_v2"
+)
+
+check_rejected(
+  failures, :arr, "the activation gate demoted to a comment",
+  [[ARR_MAIN,
+    "  when: media_usenet_enabled | bool\n  register: arr_deploy\n",
+    "  # when: media_usenet_enabled | bool\n  register: arr_deploy\n"]],
+  "Arr role must gate activation on media_usenet_enabled"
+)
+
+# force: false lives on one of two seed tasks. The old pair asked whether the file
+# contained the words, so the Servarr task's force answered for the Bazarr task,
+# and the Bazarr half never asked about force at all.
+check_rejected(
+  failures, :arr, "a Bazarr seed that overwrites an operator's own configuration",
+  [[ARR_BOOTSTRAP,
+    "    dest: \"{{ arr_bazarr_config_host_path }}/config/config.yaml\"\n" \
+    "    owner: \"{{ nas_uid }}\"\n" \
+    "    group: \"{{ nas_gid }}\"\n" \
+    "    mode: \"0600\"\n" \
+    "    force: false\n",
+    "    dest: \"{{ arr_bazarr_config_host_path }}/config/config.yaml\"\n" \
+    "    owner: \"{{ nas_uid }}\"\n" \
+    "    group: \"{{ nas_gid }}\"\n" \
+    "    mode: \"0600\"\n"]],
+  "Bazarr bootstrap must preserve existing config"
+)
+
+check_rejected(
+  failures, :arr, "authentication disabled with the old element left in a comment",
+  [[ARR_CONFIG_XML,
+    "  <AuthenticationRequired>Enabled</AuthenticationRequired>\n",
+    "  <!-- <AuthenticationRequired>Enabled</AuthenticationRequired> -->\n" \
+    "  <AuthenticationRequired>Disabled</AuthenticationRequired>\n"]],
+  "Servarr authentication must be enabled before first start"
+)
+
+check_rejected(
+  failures, :arr, "an API key bound to the wrong service",
+  [[ARR_ENVIRONMENT,
+    "BAZARR_API_KEY={{ vault_arr_bazarr_api_key }}\n",
+    "BAZARR_API_KEY={{ vault_arr_radarr_api_key }}\n" \
+    "# BAZARR_API_KEY={{ vault_arr_bazarr_api_key }}\n"]],
+  "Arr env must carry all deterministic API keys"
+)
+
+check_rejected(
+  failures, :arr, "one API request logging its payload while its siblings redact",
+  [[ARR_BAZARR,
+    "  register: arr_bazarr_settings_before\n  changed_when: false\n" \
+    "  check_mode: false\n  no_log: true\n",
+    "  register: arr_bazarr_settings_before\n  changed_when: false\n  check_mode: false\n"]],
+  "all Arr API reconciliation must redact secret-bearing payloads"
+)
+
+# The negative half of the old pair only matched an import or search named on the
+# same source line as the word command, which a JSON body on its own line is not.
+check_rejected(
+  failures, :arr, "a library scan command issued beside the root folder creation",
+  [[ARR_SERVARR,
+    "- name: Create the declared Servarr root without import or search\n",
+    "- name: Trigger a Servarr library scan\n" \
+    "  ansible.builtin.uri:\n" \
+    "    url: \"{{ arr_servarr_instance.api }}/command\"\n" \
+    "    method: POST\n" \
+    "    body_format: json\n" \
+    "    body:\n" \
+    "      name: DownloadedMoviesScan\n" \
+    "  no_log: true\n" \
+    "\n" \
+    "- name: Create the declared Servarr root without import or search\n"]],
+  "Servarr reconciliation must create root folders without import commands"
+)
+
+# combine( appears in two requests in this file, so the old check was answered by
+# the naming request no matter what the host request did with unowned fields.
+check_rejected(
+  failures, :arr, "the host request replacing unowned fields instead of merging them",
+  [[ARR_SERVARR,
+    "      {{ arr_servarr_host_before.json | combine({\n" \
+    "           'authenticationMethod': 'forms',\n",
+    "      {{ {\n" \
+    "           'authenticationMethod': 'forms',\n"]],
+  "Servarr reconciliation must preserve unowned host fields"
+)
+
+# The forbidden-endpoint check used to read the file's text, so writing down that
+# the endpoint is deliberately not used was itself a violation.
+check_accepted(
+  failures, :arr, "a comment recording that no download client is created",
+  [[ARR_PROWLARR,
+    "---\n",
+    "---\n# Prowlarr indexes; a download client is deliberately never created here.\n"]]
+)
+
+# --- Compose identity, adoption guard and the Paperless environment -------------
+
+check_rejected(
+  failures, :reader_identity, "the platform identity moved into a comment",
+  [[KOMGA_COMPOSE,
+    "    user: \"${NAS_UID:?}:${NAS_GID:?}\"\n",
+    "    # user: \"${NAS_UID:?}:${NAS_GID:?}\"\n"]],
+  "komga Compose must declare its user as ${NAS_UID:?}:${NAS_GID:?} exactly once"
+)
+
+# The banned literal used to be searched for in the file's text, so recording
+# that it is banned was itself the ban being broken.
+check_accepted(
+  failures, :reader_identity, "a comment recording the banned literal identity",
+  [[KOMGA_COMPOSE,
+    "services:\n",
+    "# The identity is never the literal 1000:100; it is supplied by the platform.\nservices:\n"]]
+)
+
+check_rejected(
+  failures, :acquisition_phase1, "the Unpackerr identity hard-coded",
+  [[DOWNLOADERS_COMPOSE,
+    "    user: \"${NAS_UID:?}:${NAS_GID:?}\"\n",
+    "    user: \"4242:4343\"\n    # user: \"${NAS_UID:?}:${NAS_GID:?}\"\n"]],
+  "Unpackerr source must derive its user from NAS_UID and NAS_GID"
+)
+
+# The pattern this replaced ran with /m over the whole file, so it could see a
+# writing module in one task and the variable in another. This plants both in
+# the same task, which is the only shape that actually persists the input.
+check_rejected(
+  failures, :acquisition_adoption, "the one-run adoption input written to disk",
+  [[ARR_STATE_GUARD,
+    "- name: Detect existing movie library content\n",
+    "- name: Remember the adoption bypass\n" \
+    "  ansible.builtin.copy:\n" \
+    "    dest: /tmp/adopted\n" \
+    "    content: \"{{ media_acquisition_adopt_existing_libraries }}\"\n" \
+    "    mode: \"0644\"\n" \
+    "\n" \
+    "- name: Detect existing movie library content\n"]],
+  "guard must never persist the one-run adoption input"
+)
+
+check_rejected(
+  failures, :policy, "a Paperless worker assignment demoted to a comment",
+  [[PAPERLESS_ENVIRONMENT,
+    "PAPERLESS_TASK_WORKERS={{ paperless_task_workers }}\n",
+    "# PAPERLESS_TASK_WORKERS={{ paperless_task_workers }}\n" \
+    "PAPERLESS_TASK_WORKERS=2\n"]],
+  "Paperless environment template must contain exact line: " \
+  "PAPERLESS_TASK_WORKERS={{ paperless_task_workers }}"
+)
+
+# --- Integration, Mac and vault policy ------------------------------------------
+
+# tasks_from: target is a prefix of tasks_from: target_docker_dependencies, so
+# the substring check could not tell the containment validator from the module
+# preflight that runs beside it.
+check_rejected(
+  failures, :policy_integration, "the Mac path fixture pointed at a different entry point",
+  [[MAC_PATH_FIXTURE, "        tasks_from: target\n", "        tasks_from: target_docker_dependencies\n"]],
+  "integration must prove canonical Mac paths pass target validation"
+)
+
+check_rejected(
+  failures, :policy_integration, "the Arr project namespace unscoped in the environment",
+  [[ARR_ENVIRONMENT,
+    "PLATFORM_PROJECT_NAME={{ arr_platform_project_name }}\n",
+    "PLATFORM_PROJECT_NAME={{ platform_project_name }}\n" \
+    "# PLATFORM_PROJECT_NAME={{ arr_platform_project_name }}\n"]],
+  "Arr must derive its Compose project and container prefix through its role-scoped namespace"
+)
+
+check_rejected(
+  failures, :policy_integration, "the media-control network suffix changed",
+  [[SHARED_INVENTORY,
+    "  {{ (platform_project_name ~ '-media-control') if",
+    "  {{ (platform_project_name ~ '-media') if"]],
+  "acquisition namespacing must not alter the media-control or legacy project defaults"
+)
+
+# The leak check read three concatenated files, so a comment saying the scoped
+# variable does not apply here was itself the leak.
+check_accepted(
+  failures, :policy_integration, "a comment naming a role-scoped namespace variable",
+  [[HOST_PREP,
+    "---\n",
+    "---\n# The media control network is shared; arr_platform_project_name never applies.\n"]]
+)
+
+check_rejected(
+  failures, :policy_mac, "a converging role added to verify.yml",
+  [[VERIFY_PLAY, "  roles:\n    - role: ntfy\n", "  roles:\n    - role: host_prep\n    - role: ntfy\n"]],
+  "Mac verification must not deploy or converge services"
+)
+
+check_accepted(
+  failures, :policy_mac, "a comment naming the roles verify.yml refuses to run",
+  [[VERIFY_PLAY,
+    "  roles:\n",
+    "  # Never: role: host_prep, role: deployment_bundle, community.docker.docker_compose_v2.\n" \
+    "  roles:\n"]]
+)
+
+check_rejected(
+  failures, :policy_vault, "the redaction test demoted from a run step to its name",
+  [[CI_WORKFLOW,
+    "      - name: Check generated credential redaction\n" \
+    "        run: tests/generate-secrets-redaction-test.sh\n",
+    "      - name: Check generated credential redaction with " \
+    "tests/generate-secrets-redaction-test.sh\n" \
+    "        run: true\n"]],
+  "CI must execute the generated-secret redaction test"
+)
+
+# --- Managed-user vault contract ----------------------------------------------
+
+check_rejected(
+  failures, :managed_users_vault, "a published fact demoted to a comment",
+  [[VAULT_CONTRACT,
+    "    vault_managed_komga_users: \"{{ vault_managed_users.komga }}\"\n",
+    "    # vault_managed_komga_users: \"{{ vault_managed_users.komga }}\"\n"]],
+  "vault contract must publish named fact vault_managed_komga_users"
+)
+
+check_rejected(
+  failures, :managed_users_vault, "a reserved identity dropped while its name stays in a comment",
+  [[VAULT_CONTRACT,
+    "      komga: [\"{{ vault_komga_admin_email }}\"]\n",
+    "      # komga: [\"{{ vault_komga_admin_email }}\"]\n      komga: []\n"]],
+  "vault contract validation is missing vault_komga_admin_email"
+)
+
+check_rejected(
+  failures, :managed_users_vault, "an ntfy publisher token dropped from the ownership check",
+  [[VAULT_CONTRACT,
+    "         vault_managed_user_errors([vault_ntfy_dozzle_token, vault_ntfy_beszel_token,\n",
+    "         vault_managed_user_errors([vault_ntfy_dozzle_token,\n"]],
+  "vault contract must enforce global ntfy token uniqueness and publisher separation"
+)
+
+# --- Downloader Phase 1 Usenet ownership ---------------------------------------
+#
+# Two of these are the byte-offset ordering failure this conversion is about: a
+# task named in a comment sorts ahead of the task it names, and a substring that
+# is a prefix of a longer identifier matches it.
+
+check_rejected(
+  failures, :downloaders, "the state guard replaced by a comment naming it",
+  [[DOWNLOADERS_MAIN,
+    "- name: Guard downloader critical state before Phase 1 activation\n" \
+    "  ansible.builtin.include_tasks: state_guard.yml\n",
+    "# ansible.builtin.include_tasks: state_guard.yml\n" \
+    "- name: Guard downloader critical state before Phase 1 activation\n" \
+    "  ansible.builtin.debug:\n" \
+    "    msg: state guard skipped\n"]],
+  "downloaders role must include the state guard before deployment"
+)
+
+check_rejected(
+  failures, :downloaders, "the CPU policy service renamed with the old name left in a comment",
+  [[DOWNLOADERS_MAIN,
+    "    container_cpu_service_name: downloaders\n",
+    "    # container_cpu_service_name: downloaders\n" \
+    "    container_cpu_service_name: usenet-downloaders\n"]],
+  "downloaders role must verify its effective project CPU policy"
+)
+
+check_rejected(
+  failures, :downloaders, "the activation gate demoted to a comment",
+  [[DOWNLOADERS_MAIN,
+    "  when: media_usenet_enabled | bool\n  register: downloaders_deploy\n",
+    "  # when: media_usenet_enabled | bool\n  register: downloaders_deploy\n"]],
+  "downloaders role must gate activation on media_usenet_enabled"
+)
+
+check_rejected(
+  failures, :downloaders, "the Arr client reconciliation pointed at a different entry point",
+  [[DOWNLOADERS_MAIN,
+    "    tasks_from: reconcile_download_clients\n",
+    "    tasks_from: reconcile_download_clients_disabled\n"]],
+  "downloaders must reconcile Arr clients only after SABnzbd"
+)
+
+check_rejected(
+  failures, :downloaders, "an API key bound to the wrong service",
+  [[DOWNLOADERS_ENVIRONMENT,
+    "SONARR_API_KEY={{ vault_arr_sonarr_api_key }}\n",
+    "SONARR_API_KEY={{ vault_arr_radarr_api_key }}\n" \
+    "# SONARR_API_KEY={{ vault_arr_sonarr_api_key }}\n"]],
+  "downloaders env must carry only declared API keys"
+)
+
+check_rejected(
+  failures, :downloaders, "SABnzbd bound to loopback with the old value left in a comment",
+  [[DOWNLOADERS_INI,
+    "host = 0.0.0.0\nport = 8080\n",
+    "host = 127.0.0.1\nport = 8080\n# host = 0.0.0.0\n"]],
+  "bootstrap must bind SABnzbd on all container interfaces"
+)
+
+check_rejected(
+  failures, :downloaders, "a category destination fixed instead of declared",
+  [[DOWNLOADERS_INI,
+    "dir = {{ directory }}\n",
+    "dir = /data/media/.acquisition/usenet\n# dir = {{ directory }}\n"]],
+  "bootstrap must render every declared category and destination"
+)
+
+# Both absence invariants used to read the file's text, so writing down that the
+# forbidden shape is deliberately absent was itself the forbidden shape.
+check_accepted(
+  failures, :downloaders, "a comment recording that no provider section is rendered",
+  [[DOWNLOADERS_INI,
+    "[misc]\n",
+    "# No [servers] section: providers are the operator's, never ours.\n[misc]\n"]]
+)
+
+check_accepted(
+  failures, :downloaders, "a comment explaining why categories are not a mapping",
+  [[DOWNLOADERS_VERIFY,
+    "---\n",
+    "---\n# SABnzbd returns config.categories is mapping only on ancient builds.\n"]]
+)
+
+# --- Deployment bundle policy -------------------------------------------------
+#
+# The inputs the role validates are the paths its controller_input.yml inclusions
+# name. The old whole-file substring could not tell a validated path from a path
+# mentioned in a comment, so deleting the canonical Compose validation outright
+# left the check passing as long as the words survived somewhere in the file.
+check_rejected(
+  failures, :policy_deployment, "canonical Compose validation deleted with its path left in a comment",
+  [[BUNDLE_INPUTS,
+    "- name: Validate canonical controller Compose inputs\n" \
+    "  ansible.builtin.include_tasks: controller_input.yml\n" \
+    "  vars:\n" \
+    "    deployment_controller_input_path: >-\n" \
+    "      {{ playbook_dir }}/services/{{ deployment_controller_service.name }}/compose.yml\n" \
+    "    deployment_controller_input_allow_missing: false\n",
+    "# deployment_controller_input_path: services/<name>/compose.yml\n" \
+    "- name: Assume canonical controller Compose inputs are fine\n" \
+    "  ansible.builtin.debug:\n" \
+    "    msg: canonical compose validation removed\n"]],
+  "controller inputs must validate manifest, canonical Compose, and platform overrides"
+)
+
+check_rejected(
+  failures, :policy_deployment, "a runtime helper input no longer handed to the validator",
+  [[BUNDLE_INPUTS,
+    "    deployment_controller_input_path: \"{{ playbook_dir }}/services/dozzle/alert_relay.py\"\n",
+    "    deployment_controller_input_path: \"{{ playbook_dir }}/services/dozzle/alert_relay.py.bak\"\n"]],
+  "controller inputs must validate every tracked runtime helper"
+)
+
+# The leaf moves out of the expression the command evaluates and into a comment
+# beside it. The file still contains the words; the validator no longer sees the
+# path.
+check_rejected(
+  failures, :policy_deployment, "a guarded leaf demoted to a comment beside the batch",
+  [[BUNDLE_TARGET,
+    "    deployment_target_paths: >-\n" \
+    "      {{ [nas_docker_root,\n" \
+    "          nas_docker_root ~ '/.nas-platform-preflight-probe',\n",
+    "    # nas_docker_root ~ '/.nas-platform-preflight-probe' is no longer guarded\n" \
+    "    deployment_target_paths: >-\n" \
+    "      {{ [nas_docker_root,\n"]],
+  "target validator must guard the exact preflight probe leaf"
+)
+
+check_rejected(
+  failures, :policy_deployment, "the runtime service leaves dropped from the batch",
+  [[BUNDLE_TARGET,
+    "         + (deployment_bundle_services | default([])\n" \
+    "            | map(attribute='name')\n" \
+    "            | map('regex_replace', '^', platform_runtime_dir ~ '/services/')\n" \
+    "            | list) }}\n",
+    "         }}\n"]],
+  "target validator must guard every implemented runtime service leaf"
+)
+
+check_rejected(
+  failures, :policy_deployment, "a behavior proof renamed while its old name stays in a comment",
+  [[COMPOSE_METADATA_BEHAVIOR,
+    "    - name: Require unknown YAML tags to fail closed\n",
+    "    # Require unknown YAML tags to fail closed\n" \
+    "    - name: Tolerate unknown YAML tags\n"]],
+  "policy validation must execute Compose metadata parser behavior tests"
+)
+
+check_rejected(
+  failures, :policy_deployment, "the manifest's platform inputs key renamed",
+  [[BUNDLE_MANIFEST_TEMPLATE, "platform_inputs:\n", "platform_input:\n"]],
+  "deployment manifest must bind the exact acquisition catalog path, mode, and checksum"
+)
+
+# The byte-offset form this replaced compared the first occurrence of each key
+# anywhere in the file, so a comment naming the later key sorted ahead of the key
+# itself and failed a template that renders in exactly the required order.
+check_accepted(
+  failures, :policy_deployment, "a template comment naming a key that renders later",
+  [[BUNDLE_MANIFEST_TEMPLATE,
+    "---\n",
+    "---\n{# platform_inputs is rendered before services: below #}\n"]]
 )
 
 # --- Platform policy ----------------------------------------------------------

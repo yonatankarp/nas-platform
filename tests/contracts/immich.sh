@@ -171,6 +171,10 @@ else
   refuse("#{platform} override may not add services: #{surplus_services.join(', ')}") unless
     surplus_services.empty?
   override_server = override_containers.fetch("immich-server")
+  # Deliberately source text, both here and for ports below. safe_load erases the
+  # tag, so `devices: !override []` and `devices: []` parse to the same empty
+  # list — and the difference between them is exactly the bug this guards. Only
+  # the source says which one was written.
   refuse("#{platform} override must reset devices with an explicit tag") unless
     override_text.match?(/^\s+devices: !override(\s|$)/)
   refuse("#{platform} override must reset devices to empty") unless

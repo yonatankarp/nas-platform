@@ -80,12 +80,20 @@ check(failures, dozzle_contract.include?('exec ruby - "$mode" "$@"'),
       "Dozzle contract must pass its default verify mode to the dynamic probe")
 integration_lock_path = File.join(ROOT, "tests", "integration_lock.sh")
 integration_lock = File.file?(integration_lock_path) ? File.read(integration_lock_path) : ""
-mac_path_fixture = File.read(File.join(ROOT, "tests", "mac_inventory_path_test.yml"))
+mac_path_fixture_tasks = flatten_tasks(
+  YAML.safe_load_file(File.join(ROOT, "tests", "mac_inventory_path_test.yml"), aliases: true)
+    .flat_map { |play| Array(play["tasks"]) }
+)
+mac_path_fixture_strings = task_strings(mac_path_fixture_tasks)
 check(failures, harness.include?("MAC_PATH_CANONICAL") &&
                 harness.include?("MAC_PATH_LEXICAL_REFUSED") &&
                 harness.include?("mac_inventory_path_test.yml") &&
-                mac_path_fixture.include?("tasks_from: target") &&
-                mac_path_fixture.include?("EXPECTED_PLATFORM_DOCKER_ROOT"),
+                mac_path_fixture_tasks.any? do |task|
+                  task.dig("ansible.builtin.include_role", "tasks_from") == "target"
+                end &&
+                mac_path_fixture_strings.any? do |value|
+                  value.include?("EXPECTED_PLATFORM_DOCKER_ROOT")
+                end,
       "integration must prove canonical Mac paths pass target validation")
 ["IDEMPOTENT", "CHECK MODE"].each do |property|
   check(failures, harness.include?(property), "integration harness must assert #{property}")
@@ -280,8 +288,10 @@ arr_argument_options = YAML.safe_load_file(
 downloaders_argument_options = YAML.safe_load_file(
   File.join(ROOT, "roles", "downloaders", "meta", "argument_specs.yml")
 ).dig("argument_specs", "main", "options")
-arr_environment = File.read(File.join(ROOT, "roles", "arr", "templates", "env.j2"))
-downloaders_environment = File.read(
+arr_environment = environment_assignments(
+  File.join(ROOT, "roles", "arr", "templates", "env.j2")
+)
+downloaders_environment = environment_assignments(
   File.join(ROOT, "roles", "downloaders", "templates", "env.j2")
 )
 check(failures,
@@ -290,7 +300,7 @@ check(failures,
         arr_argument_options.fetch("arr_platform_project_name", nil) == {
           "type" => "str", "required" => false
         } &&
-        arr_environment.include?("PLATFORM_PROJECT_NAME={{ arr_platform_project_name }}"),
+        arr_environment.include?(["PLATFORM_PROJECT_NAME", "{{ arr_platform_project_name }}"]),
       "Arr must derive its Compose project and container prefix through its role-scoped namespace")
 check(failures,
       downloaders_defaults.fetch("downloaders_platform_project_name", "")
@@ -301,22 +311,33 @@ check(failures,
           "type" => "str", "required" => false
         } &&
         downloaders_environment.include?(
-          "PLATFORM_PROJECT_NAME={{ downloaders_platform_project_name }}"
+          ["PLATFORM_PROJECT_NAME", "{{ downloaders_platform_project_name }}"]
         ),
       "downloaders must derive their Compose project and container prefix through their role-scoped namespace")
 
-inventory_defaults = File.read(File.join(ROOT, "inventory", "group_vars", "all", "main.yml"))
-host_prep = File.read(File.join(ROOT, "roles", "host_prep", "tasks", "main.yml"))
-legacy_defaults = File.read(
-  File.join(ROOT, "roles", "audiobookshelf", "defaults", "main.yml")
+# The defaults these three files declare, read as declarations. The
+# concatenation this replaced could not say which file a match came from, and a
+# scoped variable named in any comment counted as a leak into all three.
+inventory_defaults = task_strings(
+  YAML.safe_load_file(File.join(ROOT, "inventory", "group_vars", "all", "main.yml"))
+)
+host_prep = task_strings(
+  flatten_tasks(YAML.safe_load_file(
+    File.join(ROOT, "roles", "host_prep", "tasks", "main.yml"), aliases: true
+  ))
+)
+legacy_defaults = task_strings(
+  YAML.safe_load_file(File.join(ROOT, "roles", "audiobookshelf", "defaults", "main.yml"))
 )
 legacy_project_sources = inventory_defaults + host_prep + legacy_defaults
 check(failures,
-      inventory_defaults.include?("platform_project_name ~ '-media-control'") &&
-        host_prep.include?("platform_project_name | default('nas-platform', true)") &&
-        legacy_defaults.include?("platform_project_name ~ '-audiobookshelf'") &&
+      inventory_defaults.any? { |value| value.include?("platform_project_name ~ '-media-control'") } &&
+        host_prep.any? do |value|
+          value.include?("platform_project_name | default('nas-platform', true)")
+        end &&
+        legacy_defaults.any? { |value| value.include?("platform_project_name ~ '-audiobookshelf'") } &&
         scoped_project_variables.none? do |variable|
-          legacy_project_sources.include?(variable)
+          legacy_project_sources.any? { |value| value.include?(variable) }
         end,
       "acquisition namespacing must not alter the media-control or legacy project defaults")
 namespace = "nas-platform-integration-a1b2c3"

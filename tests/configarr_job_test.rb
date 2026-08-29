@@ -44,6 +44,10 @@ if failures.empty?
     check(failures, Array(instance["custom_formats"]).any?,
           "#{application} must assign custom formats")
   end
+  # Deliberately source text. !secret is a Configarr YAML tag that the loader
+  # above strips before parsing, exactly so the document is loadable, so the
+  # parsed config cannot say which values were tagged. That erasure is the whole
+  # subject of this check: a value that lost its tag reads as a plain string.
   check(failures, source.scan(/!secret\s+[A-Z_]+/).sort ==
                   ["!secret RADARR_API_KEY", "!secret SONARR_API_KEY"],
         "Configarr must use only the two declared secret references")

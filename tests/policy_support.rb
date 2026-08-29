@@ -213,6 +213,21 @@ IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
     end
   end
 
+  # An env.j2 template is not YAML, but it is not free text either: it is a list
+  # of NAME=value assignments. Reading it as those pairs says which variable a
+  # name is bound to, which a substring search over the file cannot — and it
+  # ignores a commented-out sample of the right assignment sitting above a live
+  # line that exports something else.
+  def environment_assignments(path)
+    File.readlines(path, chomp: true).filter_map do |line|
+      stripped = line.strip
+      next unless stripped.match?(/\A[A-Z][A-Z0-9_]*=/)
+
+      name, _separator, value = stripped.partition("=")
+      [name, value]
+    end
+  end
+
   # The paths tasks act on, wherever the module spells them. Used to check that
   # a set of tasks all address the same location, which a substring search over
   # the file cannot say.

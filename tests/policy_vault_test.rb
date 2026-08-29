@@ -303,13 +303,25 @@ secret_bearing_generator_tasks.each do |task_name|
         "generate-secrets.yml must redact secret-bearing task #{task_name}")
 end
 
-ci_body = File.read(File.join(ROOT, ".github", "workflows", "ci.yml"))
+# The workflow is read as the scripts its steps run. A command named in a step's
+# comment, or in a step whose `if:` never fires, is not a command CI executes,
+# and the whole-file substring could not tell those from a real `run:`.
+ci_workflow = YAML.safe_load_file(File.join(ROOT, ".github", "workflows", "ci.yml"), aliases: true)
+ci_run_scripts = Array(ci_workflow["jobs"]).flat_map do |_name, job|
+  Array(job.is_a?(Hash) ? job["steps"] : nil).filter_map do |step|
+    step["run"].to_s if step.is_a?(Hash) && step.key?("run")
+  end
+end
+ci_commands = ci_run_scripts.flat_map { |script| script.lines.map(&:strip) }
+                            .reject { |line| line.empty? || line.start_with?("#") }
 check(failures,
-      ci_body.include?("tests/generate-ephemeral-vault.sh --self-test") &&
-        ci_body.include?("test ! -s") &&
-        %w[apache2-utils openssh-client openssl].all? { |dependency| ci_body.include?(dependency) },
+      ci_commands.any? { |line| line.include?("tests/generate-ephemeral-vault.sh --self-test") } &&
+        ci_commands.any? { |line| line.include?("test ! -s") } &&
+        %w[apache2-utils openssh-client openssl].all? do |dependency|
+          ci_commands.any? { |line| line.include?(dependency) }
+        end,
       "CI must run the silent ephemeral vault self-test with explicit dependencies")
-check(failures, ci_body.include?("tests/generate-secrets-redaction-test.sh"),
+check(failures, ci_commands.any? { |line| line.include?("tests/generate-secrets-redaction-test.sh") },
       "CI must execute the generated-secret redaction test")
 
 ephemeral_helper = File.read(File.join(ROOT, "tests", "generate-ephemeral-vault.sh"))
