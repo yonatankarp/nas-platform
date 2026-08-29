@@ -737,8 +737,13 @@ if [ "${1:-}" = pull ]; then
   printf '%s\n' "$2" >> "${STUB_PULL_LOG:?}"
   attempt=$(grep -Fxc -- "$2" "$STUB_PULL_LOG" || true)
   if [ "$attempt" -le "${STUB_PULL_REFUSALS:-0}" ]; then
-    printf 'toomanyrequests: retry-after: %s, allowed: 44000/minute\n' \
-      "${STUB_RETRY_AFTER:-218.093us}" >&2
+    if [ -n "${STUB_RETRY_AFTER_LINE:-}" ]; then
+      printf 'toomanyrequests: %s, allowed: 44000/minute\n' \
+        "$STUB_RETRY_AFTER_LINE" >&2
+    else
+      printf 'toomanyrequests: retry-after: %s, allowed: 44000/minute\n' \
+        "${STUB_RETRY_AFTER:-218.093us}" >&2
+    fi
     exit 1
   fi
   exit 0
@@ -803,6 +808,7 @@ run_prepull() {
     STUB_SLEEP_LOG=$sleep_log \
     STUB_PULL_REFUSALS=$prepull_refusals \
     STUB_RETRY_AFTER=${PREPULL_RETRY_AFTER:-218.093us} \
+    STUB_RETRY_AFTER_LINE=${PREPULL_RETRY_AFTER_LINE:-} \
     STUB_RANDOM_VALUE=${PREPULL_RANDOM_VALUE:-0} \
     INTEGRATION_PREPULL_ONLY=1 \
     INTEGRATION_IMAGE_PULL_ATTEMPTS=$prepull_attempts \
@@ -833,6 +839,9 @@ assert_sleep_log() {
     prepull_fail "expected sleeps [$expected], saw [$actual]"
 }
 
+# The assignments are a prefix on a function call, so POSIX keeps them set in the
+# caller after it returns. Unsetting them here is what stops a later case from
+# silently inheriting the last scenario's registry hint.
 assert_retry_after_sleep() {
   retry_after_case=$1
   expected_sleep=$2
@@ -841,6 +850,7 @@ assert_retry_after_sleep() {
   [ "$prepull_status" -eq 0 ] ||
     prepull_fail "retry-after $retry_after_case failed the pre-pull ($prepull_status)"
   assert_sleep_log "$expected_sleep"
+  unset PREPULL_RETRY_AFTER PREPULL_RANDOM_VALUE PREPULL_DELAY
 }
 
 # A suite pulls the controller image plus the images of the services its tags
@@ -896,10 +906,37 @@ assert_retry_after_sleep 500us 2
 assert_retry_after_sleep 500µs 2
 assert_retry_after_sleep 500ms 2
 assert_retry_after_sleep 1.5s 3
-assert_retry_after_sleep 1.5m 91
 assert_retry_after_sleep 45 46
 assert_retry_after_sleep invalid 2
-assert_retry_after_sleep 999999999999999999999999999999999999s 301
+
+# A hint the registry reports in minutes is honoured only up to the ceiling the
+# local ladder obeys. Sleeping "retry-after: 5m" literally would spend about
+# thirty-one minutes of the suite job's sixty on one image and then be killed
+# without a diagnostic, which is worse than reporting the refusal.
+assert_retry_after_sleep 1.5m 61
+assert_retry_after_sleep 5m 61
+assert_retry_after_sleep 999999999999999999999999999999999999s 61
+
+# Raising the ceiling is how an operator opts into honouring a longer hint.
+PREPULL_RETRY_AFTER=5m PREPULL_RANDOM_VALUE=0 PREPULL_DELAY=1 \
+  PREPULL_MAX_DELAY=120 run_prepull 1 2 --suite foundation
+[ "$prepull_status" -eq 0 ] || prepull_fail "raised ceiling failed ($prepull_status)"
+assert_sleep_log 121
+unset PREPULL_RETRY_AFTER PREPULL_RANDOM_VALUE PREPULL_DELAY PREPULL_MAX_DELAY
+
+# The parser reads the hint however the daemon spells it. A stricter match would
+# leave the whole retry-after path dead without failing anything.
+assert_retry_after_sleep_line() {
+  PREPULL_RETRY_AFTER_LINE=$1 PREPULL_RANDOM_VALUE=0 PREPULL_DELAY=1 \
+    run_prepull 1 2 --suite foundation
+  [ "$prepull_status" -eq 0 ] ||
+    prepull_fail "diagnostic [$1] failed the pre-pull ($prepull_status)"
+  assert_sleep_log "$2"
+  unset PREPULL_RETRY_AFTER_LINE PREPULL_RANDOM_VALUE PREPULL_DELAY
+}
+assert_retry_after_sleep_line 'Retry-After: 30' 31
+assert_retry_after_sleep_line 'retry-after : 30' 31
+assert_retry_after_sleep_line 'no hint here at all' 2
 
 PREPULL_RETRY_AFTER=584.244µs PREPULL_RANDOM_VALUE=0 PREPULL_DELAY=5 \
   run_prepull 2 6 --suite foundation

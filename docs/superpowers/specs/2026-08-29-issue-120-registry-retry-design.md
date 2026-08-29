@@ -30,8 +30,14 @@ unrecognized value falls back to the local policy.
 The local policy uses six attempts by default. Its exponential delays begin at
 five seconds and grow as 5, 10, 20, 40, and 60 seconds; the local component is
 capped at sixty seconds so one image cannot consume the entire suite timeout.
-Parsed registry durations are rounded up to whole seconds. For each retry, the
-base wait is the greater of that registry delay and the local exponential delay.
+Parsed registry durations are rounded up to whole seconds and clamped to the
+same maximum the local ladder obeys. For each retry, the base wait is the
+greater of that registry delay and the local exponential delay. The clamp is
+what keeps the ceiling meaningful: honouring a "retry-after: 5m" literally would
+spend about thirty-one minutes of the suite job's sixty on a single image, and
+the Actions timeout would then kill the job without the diagnostic this pre-pull
+exists to produce. Raising `INTEGRATION_IMAGE_PULL_MAX_DELAY` is how an operator
+opts into honouring a longer hint.
 Random jitter from `/dev/urandom`, between one second and one quarter of the base
 wait, is then added so jobs that were refused together do not retry in lockstep.
 

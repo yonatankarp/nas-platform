@@ -368,10 +368,11 @@ retry_after_seconds() {
     }
 
     {
-      marker = "retry-after:"
-      marker_at = index($0, marker)
-      if (!marker_at) next
-      token = substr($0, marker_at + length(marker))
+      # Case-insensitive, and tolerant of a space before the colon, so the hint
+      # is still read if the daemon ever echoes an HTTP-style "Retry-After".
+      # A stricter match would turn this whole parser into dead code silently.
+      if (!match($0, /[Rr][Ee][Tt][Rr][Yy]-[Aa][Ff][Tt][Ee][Rr][[:space:]]*:/)) next
+      token = substr($0, RSTART + RLENGTH)
       sub(/^[[:space:]]*/, "", token)
       sub(/[,[:space:]].*$/, "", token)
 
@@ -434,7 +435,15 @@ pull_image() {
   pull_target=$1
   pull_attempt=1
   pull_delay=$image_pull_delay
-  pull_error=$(mktemp "${TMPDIR:-/tmp}/nas-platform-pull-error.XXXXXX")
+  pull_error=$(mktemp "${TMPDIR:-/tmp}/nas-platform-pull-error.XXXXXX") || pull_error=
+  if [ -z "$pull_error" ]; then
+    # Without it every `docker pull` would redirect to "" and fail without
+    # running, burning the whole attempt budget of sleeps to report a refusal
+    # that never happened.
+    printf 'could not create a pull diagnostic file under %s\n' \
+      "${TMPDIR:-/tmp}" >&2
+    return 1
+  fi
   while :; do
     if docker pull "$pull_target" 2> "$pull_error"; then
       cat "$pull_error" >&2
@@ -455,8 +464,12 @@ pull_image() {
     case $retry_after in
       ''|*[!0123456789]*) ;;
       *)
-        retry_after=$(bounded_integer "$retry_after" 0 0 \
-          "$image_pull_delay_limit")
+        # A registry hint lengthens the wait but does not escape the ceiling the
+        # local ladder obeys. Honouring "retry-after: 5m" literally would sleep
+        # roughly thirty-one minutes across the default budget for a single
+        # image, and the Actions timeout would kill the job with no diagnostic
+        # -- strictly worse than reporting the refusal ourselves.
+        retry_after=$(bounded_integer "$retry_after" 0 0 "$image_pull_max_delay")
         [ "$retry_after" -le "$retry_delay" ] || retry_delay=$retry_after
         ;;
     esac
