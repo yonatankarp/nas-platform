@@ -27,6 +27,24 @@ ARR_LINT_EXCLUSION_MUTATIONS = (BROAD_ARR_LINT_EXCLUSIONS + %w[
 ALLOWED_ACTION_NAMES = %w[actions/checkout actions/upload-artifact docker/login-action].freeze
 CHECKOUT_ACTION_NAME = "actions/checkout"
 LOGIN_ACTION_NAME = "docker/login-action"
+# Registries whose authentication challenge is redeemed with a GitHub credential,
+# so the job's own GITHUB_TOKEN moves their pulls off the anonymous allowance that
+# every other job on the runner's IP is drawing down at the same time. lscr.io is
+# here because it is linuxserver.io's front door onto ghcr.io: it answers with
+# realm="https://ghcr.io/token" service="ghcr.io", and the Docker CLI keys
+# credentials by the host it was asked for, so the ghcr.io login does not cover it.
+GITHUB_BACKED_REGISTRIES = %w[ghcr.io lscr.io].freeze
+# Docker Hub redeems no GitHub credential -- GITHUB_TOKEN is not a Docker Hub
+# account -- so it is the one registry here that authenticates with a stored one.
+# Anonymous Hub pulls are 100 per six hours scoped to the runner's IPv4 address or
+# IPv6 /64 and shared with every unrelated job on it; a free personal account is
+# 200 per six hours that only this repository spends.
+DOCKER_HUB_REGISTRY = "docker.io"
+DOCKER_HUB_USERNAME_SECRET = "DOCKERHUB_USERNAME"
+DOCKER_HUB_TOKEN_SECRET = "DOCKERHUB_TOKEN"
+# Every registry the job is able to authenticate to. A registry outside this list
+# is one nobody decided about, which is what the classification check below names.
+CREDENTIALED_REGISTRIES = (GITHUB_BACKED_REGISTRIES + [DOCKER_HUB_REGISTRY]).freeze
 EXPECTED_JOBS = %w[changes static reconciliation suites validate].freeze
 # One reconciliation file per matrix leg, in the order a full run enumerates them.
 RECONCILIATION_PARTS = %w[core bazarr configarr].freeze
@@ -360,25 +378,60 @@ check(failures, suites_checkout&.fetch("uses", nil).to_s.split("@").first == CHE
 check(failures, suites_job.fetch("permissions", {}) == { "contents" => "read", "packages" => "read" },
       "suites must grant exactly contents: read and packages: read, " \
       "found #{suites_job.fetch('permissions', {}).inspect}")
-login_steps = Array(suites_job["steps"]).select do |step|
-  step["uses"]&.start_with?("#{LOGIN_ACTION_NAME}@")
-end
-check(failures, login_steps.length == 1,
-      "suites must authenticate to the registry exactly once, found #{login_steps.length}")
-login_step = login_steps.first || {}
-check(failures, login_step.dig("with", "registry") == "ghcr.io",
-      "the registry login must target ghcr.io, found #{login_step.dig('with', 'registry').inspect}")
-check(failures, login_step.dig("with", "username") == "${{ github.actor }}",
-      "the registry login must authenticate as the acting account")
-check(failures, login_step.dig("with", "password") == "${{ secrets.GITHUB_TOKEN }}",
-      "the registry login must use the job's own GITHUB_TOKEN, not a stored credential")
-# Order matters: a login after the harness has already run buys nothing.
+# Which registries need a login is read out of the Compose definitions rather than
+# restated here, so an image added at a registry nobody logged into is this test
+# failing rather than a rate limit weeks later.
+compose_image_lines = Dir[File.expand_path("../../services/*/compose.yml", __dir__)]
+                      .flat_map { |path| File.readlines(path) }
+                      .grep(/^\s*image:\s*\S/)
+compose_hosts = compose_image_lines.filter_map { |line| line[/^\s*image:\s*([^\s\/]+)\//, 1] }
+check(failures, !compose_hosts.empty?, "no service image names a registry host")
+# An image written without a host defaults to Docker Hub silently, which would
+# take it out of the classification below rather than into it.
+check(failures, compose_hosts.length == compose_image_lines.length,
+      "every service image must name its registry host, " \
+      "#{compose_image_lines.length - compose_hosts.length} do not")
+compose_registries = compose_hosts.uniq.sort
+unclassified = compose_registries - CREDENTIALED_REGISTRIES
+check(failures, unclassified.empty?,
+      "registry #{unclassified.inspect} is used by a service image but classified nowhere: " \
+      "decide whether the job can authenticate to it before pulling from it")
+expected_logins = (compose_registries & CREDENTIALED_REGISTRIES).sort
 suites_steps = Array(suites_job["steps"])
-login_index = suites_steps.index(login_step)
+login_steps = suites_steps.select { |step| step["uses"]&.start_with?("#{LOGIN_ACTION_NAME}@") }
+check(failures, login_steps.map { |step| step.dig("with", "registry") }.compact.sort == expected_logins,
+      "suites must authenticate to exactly #{expected_logins.inspect}, found " \
+      "#{login_steps.map { |step| step.dig('with', 'registry') }.inspect}")
 harness_index = suites_steps.index { |step| step["run"]&.include?("tests/integration.sh") }
-check(failures, !login_index.nil? && !harness_index.nil? && login_index < harness_index,
-      "the registry login must precede the integration harness: " \
-      "#{suites_steps.map { |step| step['name'] }.inspect}")
+login_steps.each do |step|
+  registry = step.dig("with", "registry")
+  if registry == DOCKER_HUB_REGISTRY
+    check(failures, step.dig("with", "username") == "${{ secrets.#{DOCKER_HUB_USERNAME_SECRET} }}",
+          "the #{registry} login must authenticate as the stored #{DOCKER_HUB_USERNAME_SECRET} account")
+    check(failures, step.dig("with", "password") == "${{ secrets.#{DOCKER_HUB_TOKEN_SECRET} }}",
+          "the #{registry} login must use the stored #{DOCKER_HUB_TOKEN_SECRET}: GITHUB_TOKEN is not a Docker Hub account")
+    # Authenticating is an optimization over the anonymous allowance, not a
+    # precondition for it. Without the guard a checkout that holds no Docker Hub
+    # secret -- a fork PR, a clone -- fails at login instead of pulling the way it
+    # did before the step existed. The guard reads job-level env because a step's
+    # own env block is not in scope for that step's `if`.
+    check(failures, step["if"].to_s.include?("env.#{DOCKER_HUB_USERNAME_SECRET}"),
+          "the #{registry} login must be guarded on env.#{DOCKER_HUB_USERNAME_SECRET} being set, found #{step['if'].inspect}")
+    check(failures,
+          suites_job.dig("env", DOCKER_HUB_USERNAME_SECRET) == "${{ secrets.#{DOCKER_HUB_USERNAME_SECRET} }}",
+          "suites must expose #{DOCKER_HUB_USERNAME_SECRET} as job-level env for that guard to read")
+  else
+    check(failures, step.dig("with", "username") == "${{ github.actor }}",
+          "the #{registry} login must authenticate as the acting account")
+    check(failures, step.dig("with", "password") == "${{ secrets.GITHUB_TOKEN }}",
+          "the #{registry} login must use the job's own GITHUB_TOKEN, not a stored credential")
+  end
+  # Order matters: a login after the harness has already run buys nothing.
+  login_index = suites_steps.index(step)
+  check(failures, !login_index.nil? && !harness_index.nil? && login_index < harness_index,
+        "the #{registry} login must precede the integration harness: " \
+        "#{suites_steps.map { |item| item['name'] }.inspect}")
+end
 # Only the job that pulls images may hold the registry scope.
 jobs.each do |job_name, job|
   next if job_name == "suites"
