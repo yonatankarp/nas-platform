@@ -82,7 +82,6 @@
          else 'classification-failed'
          if immich_restore_classification_command.rc | default(1) | int != 0
          else 'classified' }}
-  no_log: true
 
 - name: Require successful Immich storage classification
   ansible.builtin.assert:
@@ -97,7 +96,6 @@
   ansible.builtin.set_fact:
     immich_restore_classification: >-
       {{ immich_restore_classification_command.stdout | from_json }}
-  no_log: true
 
 # Deliberately not redacted, matching the treatment the Immich contract already
 # requires of "Require the managed Immich database credential": the credential-bearing
@@ -127,7 +125,6 @@
   ansible.builtin.set_fact:
     immich_restore_required: "{{ immich_restore_classification.restoreRequired | bool }}"
     immich_restore_backup_filename: "{{ immich_restore_classification.backupFilename }}"
-  no_log: true
 
 - name: Report planned Immich database restore
   ansible.builtin.debug:
@@ -259,7 +256,7 @@
     env_files: ["{{ platform_runtime_dir }}/services/immich/.env"]
     state: present
     wait: true
-    wait_timeout: 600
+    wait_timeout: "{{ immich_compose_wait_timeout }}"
   register: immich_deploy
 
 - name: Report the Immich deployment
@@ -288,8 +285,8 @@
     return_content: true
   register: immich_public_config
   until: immich_public_config.json.isInitialized is defined
-  retries: 60
-  delay: 3
+  retries: "{{ immich_initialization_retries }}"
+  delay: "{{ platform_readiness_delay }}"
   changed_when: false
   check_mode: false
 
@@ -417,6 +414,9 @@
 # The whole document goes back, so the desired state is the server's own
 # configuration with only the managed leaves overlaid. Anything an operator
 # changed outside that set survives the converge untouched.
+# Redacted: /system-config carries the whole Immich server configuration,
+# including the SMTP transport password and the OAuth client secret, whether or
+# not this platform sets them.
 - name: Resolve the desired Immich system configuration
   ansible.builtin.set_fact:
     immich_desired_config: >-

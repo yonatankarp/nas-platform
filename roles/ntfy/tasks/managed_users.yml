@@ -19,7 +19,6 @@
       - ntfy_provisioned_identities | unique | length == ntfy_provisioned_identities | length
     fail_msg: ntfy administrator, publisher, and managed identities must be separate.
   when: ntfy_managed_users_phase == 'provision'
-  no_log: true
 
 - name: Refuse duplicate ntfy token ownership
   ansible.builtin.assert:
@@ -27,7 +26,6 @@
       - ntfy_provisioned_tokens | unique | length == ntfy_provisioned_tokens | length
     fail_msg: ntfy provisioning tokens must each have exactly one owner.
   when: ntfy_managed_users_phase == 'provision'
-  no_log: true
 
 - name: Refuse duplicate managed ntfy topic declarations
   ansible.builtin.assert:
@@ -382,6 +380,9 @@
   changed_when: false
   no_log: true
 
+# Redacted here and in every assert below that loops over these results: a
+# failed iteration prints `item` in full, and item.item is the managed user
+# record including its plaintext password.
 - name: Validate all eligible managed ntfy account responses
   ansible.builtin.assert:
     that:

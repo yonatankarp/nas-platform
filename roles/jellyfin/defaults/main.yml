@@ -11,6 +11,18 @@ jellyfin_client_header: >-
   MediaBrowser Client="nas-platform", Device="ansible",
   DeviceId="nas-platform-jellyfin-role", Version="1.0.0"
 
+# Jellyfin's container health check passes as soon as /health answers, well
+# before the server can serve its own startup API, and a plugin restart makes it
+# rebuild its plugin state before answering again. Both take longer than the
+# platform default, so the waits are declared here rather than as bare numbers
+# in the tasks. Reading back a library identity is a different shape of wait: the
+# write has already been accepted and is only not visible yet, so it polls fast.
+jellyfin_compose_wait_timeout: 300
+jellyfin_startup_retries: 60
+jellyfin_plugin_restart_retries: 100
+jellyfin_library_identity_retries: 20
+jellyfin_library_identity_delay: 1
+
 jellyfin_admin_username: Yonatan
 jellyfin_server_name: Yonflix 2.0
 jellyfin_admin_avatar_sha256: bf12ac53a05f1db64f3d00440315a6626e7c2dd12dd41867c93c9ac7aeccc792

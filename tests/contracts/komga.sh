@@ -194,9 +194,12 @@ if [ "${PLATFORM_KIND:-}" = integration ]; then
 elif [ -z "${PLATFORM_KOMGA_RUNTIME_CONTEXT:-}" ]; then
   PLATFORM_KOMGA_RUNTIME_CONTEXT=base
 fi
+# Disposable lanes deploy Komga under a project namespace and name the container
+# after it; production leaves the namespace empty and keeps the canonical Compose
+# name.
 case $PLATFORM_KOMGA_RUNTIME_CONTEXT in
   base)
-    PLATFORM_KOMGA_CONTAINER=komga
+    PLATFORM_KOMGA_CONTAINER=${PLATFORM_PROJECT_NAME:+$PLATFORM_PROJECT_NAME-}komga
     PLATFORM_KOMGA_DOCKER_HEALTH_REQUIRED=true
     ;;
   mac-managed)

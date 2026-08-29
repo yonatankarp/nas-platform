@@ -128,11 +128,58 @@ check(failures,
         namespace_call && controller_run && namespace_call < controller_run,
       "integration must derive and validate a lowercase six-character sandbox namespace before the controller starts")
 scoped_project_variables = %w[arr_platform_project_name downloaders_platform_project_name]
+# Every service, not only the acquisition stacks, is deployed under the
+# disposable namespace: sandbox cleanup deletes by exact Compose ownership, so a
+# stack left in its production project would survive the run and collide with
+# the next one. The role-scoped names stay, because they are the override
+# interface the two acquisition roles expose.
 check(failures,
       scoped_project_variables.all? do |variable|
         run_play_body.include?("-e #{variable}=\\\"$integration_project_namespace\\\"")
-      end && !run_play_body.include?("-e platform_project_name="),
-      "integration must scope the disposable namespace to Arr and downloaders")
+      end && run_play_body.include?("-e platform_project_name=\\\"$integration_project_namespace\\\""),
+      "integration must deploy every service under the disposable namespace")
+verify_only_bodies = harness.scan(/^    run_[a-z_]*verify[a-z_]*\(\) \{.*?^    \}/m)
+check(failures, verify_only_bodies.length >= 6 && verify_only_bodies.all? do |body|
+  body.include?("-e platform_project_name=\\\"$integration_project_namespace\\\"")
+end, "integration verification must read the disposable namespace it deployed")
+negative_project_names = harness.scan(/-e platform_project_name=([^\s\\]+)/)
+                                .flatten.uniq.reject do |value|
+  value == "\\\"$integration_project_namespace\\\""
+end
+check(failures,
+      negative_project_names == ["$integration_project_namespace-negative"],
+      "integration scenario projects must derive from the sandbox namespace: " \
+      "#{negative_project_names.inspect}")
+
+# A contract that runs a play of its own is a second entry point into the same
+# sandbox, and namespacing tests/integration.sh alone left it behind: the
+# Audiobookshelf refusal suite converged Audiobookshelf into its production
+# project, where the integration override's ${PLATFORM_PROJECT_NAME:?} refused
+# the deployment before the refusal under test could be reached. Require both
+# halves of the propagation — the harness exports the namespace to every such
+# contract, and the contract derives its play's project from that export rather
+# than naming a project of its own.
+playing_contracts = Dir[File.join(ROOT, "tests", "contracts", "*.sh")].sort.select do |path|
+  File.read(path).include?("ansible-playbook")
+end
+check(failures, !playing_contracts.empty?,
+      "no contract runs a play of its own, so this namespace check polices nothing")
+unnamespaced_contracts = playing_contracts.reject do |path|
+  body = File.read(path)
+  namespace_variable = body[/(\w+)\s*=\s*ENV\.fetch\("PLATFORM_PROJECT_NAME"/, 1]
+  namespace_variable && body.include?("\"platform_project_name=\#{#{namespace_variable}}\"")
+end
+check(failures, unnamespaced_contracts.empty?,
+      "contracts that run their own play must converge under the exported sandbox " \
+      "namespace: #{unnamespaced_contracts.map { |path| File.basename(path) }.join(', ')}")
+unexported_namespace = playing_contracts.reject do |path|
+  service = File.basename(path, ".sh")
+  harness[/^    run_#{Regexp.escape(service)}_contract\(\) \{.*?^    \}/m]
+    .to_s.include?("PLATFORM_PROJECT_NAME=$integration_project_namespace")
+end
+check(failures, unexported_namespace.empty?,
+      "integration must export the sandbox namespace to every contract that runs a " \
+      "play: #{unexported_namespace.map { |path| File.basename(path) }.join(', ')}")
 
 arr_integration = YAML.safe_load(
   File.read(File.join(ROOT, "services", "arr", "compose.integration.yml"))
@@ -159,33 +206,77 @@ check(failures,
       end,
       "downloader integration containers must use the disposable platform namespace")
 
-# Sandbox cleanup deletes acquisition resources only when they carry the
-# disposable namespace, so a base service left with its fixed production name
-# is not cleaned up at all: it survives the run and collides with the next one.
-# Derive the requirement from the base Compose rather than a second hand-kept
-# list, so adding a service to a stack cannot skip its override.
-{
-  "arr" => arr_integration,
-  "downloaders" => downloaders_integration
-}.each do |stack, override|
-  base = YAML.safe_load_file(
-    File.join(ROOT, "services", stack, "compose.yml"), aliases: true
-  ).fetch("services")
+# Sandbox cleanup deletes a resource only when it carries the disposable
+# namespace, so a service left with its fixed production name is not cleaned up
+# at all: it survives the run and collides with the next one. Derive the
+# requirement from the base and Mac Compose rather than a second hand-kept list,
+# so adding a service to a stack cannot skip its override, and so the two
+# disposable lanes cannot drift into naming the same container differently.
+namespaced_container_names = {}
+named_stacks = 0
+Dir.children(File.join(ROOT, "services")).sort.each do |stack|
+  base_path = File.join(ROOT, "services", stack, "compose.yml")
+  next unless File.file?(base_path)
+
+  override_path = File.join(ROOT, "services", stack, "compose.integration.yml")
+  mac_path = File.join(ROOT, "services", stack, "compose.mac.yml")
+  base = YAML.safe_load_file(base_path, aliases: true).fetch("services")
   production_named = base.select do |_service, definition|
     definition.is_a?(Hash) && definition["container_name"].is_a?(String) &&
       !definition.fetch("container_name").include?("${")
   end.keys
-  check(failures, !production_named.empty?,
-        "#{stack} base Compose declares no fixed container name to override")
-  unnamespaced = production_named.reject do |service|
-    definition = override.fetch(service, nil)
-    definition.is_a?(Hash) &&
-      definition.fetch("container_name", nil) == "${PLATFORM_PROJECT_NAME:?}-#{service}"
+  # A service that declares no container name is already named after its project
+  # by Compose, so it needs no override to be owned by the sandbox.
+  unless production_named.empty?
+    named_stacks += 1
+    if File.file?(override_path) && File.file?(mac_path)
+      override = YAML.safe_load_file(override_path).fetch("services")
+      mac = YAML.safe_load_file(mac_path).fetch("services")
+      unnamespaced = production_named.reject do |service|
+        definition = override.fetch(service, nil)
+        name = definition.is_a?(Hash) ? definition.fetch("container_name", nil) : nil
+        name.is_a?(String) && name.start_with?("${PLATFORM_PROJECT_NAME:?}-") &&
+          name == mac.fetch(service, {}).fetch("container_name", nil)
+      end
+      check(failures, unnamespaced.empty?,
+            "#{stack} integration override leaves production container names " \
+            "#{unnamespaced.sort.inspect}, which sandbox cleanup cannot remove")
+    else
+      check(failures, false, "#{stack} names containers without an integration " \
+                             "and Mac Compose override")
+    end
   end
-  check(failures, unnamespaced.empty?,
-        "#{stack} integration override leaves production container names " \
-        "#{unnamespaced.sort.inspect}, which sandbox cleanup cannot remove")
+
+  next unless File.file?(override_path)
+
+  YAML.safe_load_file(override_path).fetch("services").each do |service, definition|
+    name = definition.is_a?(Hash) ? definition["container_name"] : nil
+    next unless name.is_a?(String)
+
+    namespaced_container_names[name.delete_prefix("${PLATFORM_PROJECT_NAME:?}-")] =
+      "#{stack}/#{service}"
+  end
 end
+check(failures, named_stacks.positive?,
+      "no service Compose declares a fixed container name to override")
+
+# The cleanup registry is the only place that says which namespaced identity
+# belongs to which project. It is checked against the overrides that create
+# those containers, so a renamed or added service cannot leave cleanup looking
+# for a container that is never created, or ignoring one that is.
+cleanup_source = File.read(File.join(ROOT, "tests", "sandbox_cleanup.sh"))
+registered_services = cleanup_source.scan(
+  /^cleanup_sandbox_([a-z]+)_services='([^']*)'/
+).to_h { |kind, services| [kind, services.split] }
+cleanup_source.scan(
+  /^cleanup_sandbox_([a-z]+)_services="\$cleanup_sandbox_\1_services ([^"]*)"/
+).each { |kind, services| registered_services[kind].concat(services.split) }
+registered_identities = registered_services.values.flatten.sort
+check(failures,
+      registered_identities == namespaced_container_names.keys.sort,
+      "sandbox cleanup registers #{registered_identities.inspect}, but the " \
+      "integration overrides create " \
+      "#{namespaced_container_names.keys.sort.inspect}")
 
 arr_defaults = YAML.safe_load_file(File.join(ROOT, "roles", "arr", "defaults", "main.yml"))
 downloaders_defaults = YAML.safe_load_file(
@@ -268,6 +359,41 @@ check(failures,
           %Q{"msg": "media-control|audiobookshelf|#{namespace}-arr|#{namespace}-downloaders"}
         ),
       "effective scoped project defaults differ: #{effective_projects_error.strip}")
+
+# The disposable lane sets the platform namespace itself, and every pre-existing
+# service derives its Compose project and the media-control bridge from it. This
+# renders the same defaults the harness feeds Ansible, so a role that stops
+# deriving its project is caught here rather than by a leaked sandbox container.
+namespaced_projects, namespaced_error, namespaced_status = Open3.capture3(
+  "ansible", "localhost", "-i", "localhost,", "-c", "local", "-m", "debug",
+  "-a", "msg={{ platform_media_control_network }}|{{ ntfy_compose_project_name }}|" \
+        "{{ beszel_compose_project_name }}|{{ dozzle_compose_project_name }}|" \
+        "{{ audiobookshelf_compose_project_name }}|{{ komga_compose_project_name }}|" \
+        "{{ jellyfin_compose_project_name }}|{{ immich_compose_project_name }}|" \
+        "{{ paperless_compose_project_name }}|{{ arr_compose_project_name }}|" \
+        "{{ downloaders_compose_project_name }}",
+  "-e", "@inventory/group_vars/all/main.yml",
+  "-e", "@roles/ntfy/defaults/main.yml",
+  "-e", "@roles/beszel/vars/main.yml",
+  "-e", "@roles/dozzle/defaults/main.yml",
+  "-e", "@roles/audiobookshelf/defaults/main.yml",
+  "-e", "@roles/komga/defaults/main.yml",
+  "-e", "@roles/jellyfin/defaults/main.yml",
+  "-e", "@roles/immich/defaults/main.yml",
+  "-e", "@roles/paperless_ngx/defaults/main.yml",
+  "-e", "@roles/arr/defaults/main.yml",
+  "-e", "@roles/downloaders/defaults/main.yml",
+  "-e", "platform_project_name=#{namespace}",
+  chdir: ROOT
+)
+expected_namespaced = %w[
+  media-control ntfy beszel dozzle audiobookshelf komga jellyfin immich paperless
+  arr downloaders
+].map { |suffix| "#{namespace}-#{suffix}" }.join("|")
+check(failures,
+      namespaced_status.success? &&
+        namespaced_projects.include?(%Q{"msg": "#{expected_namespaced}"}),
+      "effective namespaced project defaults differ: #{namespaced_error.strip}")
 check(failures, harness.match?(/^ruby_package='ruby~\d+\.\d+\.\d+'$/) &&
                 harness.match?(/^curl_package='curl~\d+\.\d+\.\d+'$/),
       "integration must pin distro ruby and curl packages")

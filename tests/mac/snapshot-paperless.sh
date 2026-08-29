@@ -159,11 +159,10 @@ elif [ "$mode" = drill ] && [ "${PLATFORM_KIND:-}" = integration ]; then
     exit 1
   }
 fi
-if [ "${paperless_integration_drill:-false}" = true ]; then
-  PLATFORM_PAPERLESS_WEBSERVER_CONTAINER=paperless_webserver
-  PLATFORM_PAPERLESS_POSTGRES_CONTAINER=paperless_postgres
-  PLATFORM_PAPERLESS_REDIS_CONTAINER=paperless_redis
-elif [ -n "${PLATFORM_PROJECT_NAME:-}" ]; then
+# The integration adoption drill deploys into the same owned Mac sandbox
+# project, and the integration Compose override now names its containers after
+# that project, so both disposable lanes resolve one namespaced identity.
+if [ -n "${PLATFORM_PROJECT_NAME:-}" ]; then
   : "${PLATFORM_PAPERLESS_WEBSERVER_CONTAINER:=$PLATFORM_PROJECT_NAME-paperless-webserver}"
   : "${PLATFORM_PAPERLESS_POSTGRES_CONTAINER:=$PLATFORM_PROJECT_NAME-paperless-postgres}"
   : "${PLATFORM_PAPERLESS_REDIS_CONTAINER:=$PLATFORM_PROJECT_NAME-paperless-redis}"

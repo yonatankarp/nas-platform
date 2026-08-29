@@ -104,7 +104,7 @@ def validate_runtime_health_paths!(sources)
   contract, wrapper, seed_hook, integration = sources
   base_policy = [
     "  base)",
-    "    PLATFORM_KOMGA_CONTAINER=komga",
+    "    PLATFORM_KOMGA_CONTAINER=${PLATFORM_PROJECT_NAME:+$PLATFORM_PROJECT_NAME-}komga",
     "    PLATFORM_KOMGA_DOCKER_HEALTH_REQUIRED=true"
   ].join("\n")
   mac_policy = [
@@ -306,12 +306,15 @@ runtime_sources = [
 ]
 validate_runtime_health_paths!(runtime_sources)
 
-project_derived_base = runtime_sources.dup
-project_derived_base[0] = contract.sub(
-  "PLATFORM_KOMGA_CONTAINER=komga",
-  "PLATFORM_KOMGA_CONTAINER=$PLATFORM_PROJECT_NAME-komga"
+# The disposable lanes deploy Komga under a project namespace and name the
+# container after it, so a base context pinned to the canonical Compose name
+# would verify a container the lane never created.
+production_base = runtime_sources.dup
+production_base[0] = contract.sub(
+  "PLATFORM_KOMGA_CONTAINER=${PLATFORM_PROJECT_NAME:+$PLATFORM_PROJECT_NAME-}komga",
+  "PLATFORM_KOMGA_CONTAINER=komga"
 )
-runtime_health_mutation_rejected!(project_derived_base, "project-derived base container")
+runtime_health_mutation_rejected!(production_base, "production base container")
 
 managed_skips_health = runtime_sources.dup
 managed_skips_health[0] = contract.sub(

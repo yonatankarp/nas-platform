@@ -52,19 +52,20 @@ ntfy_publishers:
     token: "{{ vault_ntfy_deploy_token }}"
     topics: "{{ [ntfy_topic, ntfy_deployment_topic, ntfy_verification_topic] }}"
 
-# The run-level deployment summary. The per-service reports name what Compose
-# recreated; this names what the release actually changed.
+# What counts as a deployment, for both the per-service reports and the
+# run-level summary: a run that moved the release. The two must agree, or a
+# service would report a deployment the summary denies happened.
 #
 # previous is published as a fact by deployment_bundle before it moves the
 # deployment pointer. Empty means a first install, where every image really is
 # new; absent means the bundle never ran — a selective converge — where the
-# release did not move and there is nothing to summarize.
-ntfy_deployment_summary_previous: >-
+# release did not move and there is nothing to report.
+ntfy_deployment_previous_release: >-
   {{ deployment_bundle_previous_release_id
      if deployment_bundle_previous_release_id is defined
      else platform_release_id }}
-ntfy_deployment_summary_release_moved: >-
-  {{ ntfy_deployment_summary_previous != platform_release_id }}
+ntfy_deployment_release_moved: >-
+  {{ ntfy_deployment_previous_release != platform_release_id }}
 # The controller checkout, which is the only place the Git history exists. The
 # target holds releases, not a repository.
 ntfy_deployment_summary_checkout: "{{ playbook_dir }}"

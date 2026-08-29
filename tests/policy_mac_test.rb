@@ -149,10 +149,21 @@ check(failures, mac_cleanup.include?('. "$mac_repo_dir/tests/sandbox_cleanup.sh"
                 !(mac_cleanup + mac_lib).match?(/rm\s+-rf/),
       "Mac cleanup must reuse descriptor-safe cleanup with an owned marker")
 integration_cleanup = File.read(File.join(ROOT, "tests", "sandbox_cleanup.sh"))
-check(failures, integration_cleanup.include?("beszel_agent_portable"),
+# The disposable lanes name every container after their project namespace, so
+# the cleanup registry holds namespaced service identities and no production
+# container name it could delete unconditionally.
+check(failures,
+      integration_cleanup.include?("cleanup_sandbox_beszel_services=") &&
+        integration_cleanup.include?("beszel-agent-portable"),
       "integration cleanup must remove the portable Beszel agent")
-check(failures, integration_cleanup.include?("audiobookshelf"),
+check(failures,
+      integration_cleanup.include?(%q(cleanup_sandbox_audiobookshelf_services='audiobookshelf')),
       "integration cleanup must remove Audiobookshelf")
+check(failures,
+      !integration_cleanup.include?("cleanup_sandbox_containers") &&
+        !integration_cleanup.include?("cleanup_sandbox_networks") &&
+        !integration_cleanup.match?(/beszel_agent|immich_server|paperless_webserver/),
+      "integration cleanup must not register fixed production names")
 check(failures, mac_run.include?('cleanup) release_run_lock && "$mac_script_dir/cleanup.sh" "$sandbox"') &&
                 mac_run.scan("Cleanup command:").length == 1,
       "Mac runner must transfer the shared lock and emit cleanup commands once")

@@ -447,9 +447,19 @@ for scoped_project_variable in \
     exit 1
   }
 done
-if printf '%s\n' "$run_play_namespace" |
-   grep -qF -- '-e platform_project_name='; then
-  printf '%s\n' 'integration plays globally override the platform project name' >&2
+# Every pre-existing service derives its Compose project from the platform
+# namespace, so the disposable lane must set it: a stack deployed under its
+# production project is not owned by sandbox cleanup and survives the run.
+printf '%s\n' "$run_play_namespace" |
+  grep -qF -- '-e platform_project_name=\"$integration_project_namespace\"' || {
+  printf '%s\n' 'integration plays do not deploy under the disposable namespace' >&2
+  exit 1
+}
+if grep -n -- '-e platform_project_name=' "$integration" |
+   grep -vF -- '-e platform_project_name=\"$integration_project_namespace\"' |
+   grep -vF -- '-e platform_project_name=$integration_project_namespace-negative' \
+     >/dev/null; then
+  printf '%s\n' 'integration plays use a project name the sandbox does not derive' >&2
   exit 1
 fi
 

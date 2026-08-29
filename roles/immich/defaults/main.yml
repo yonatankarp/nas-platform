@@ -22,6 +22,14 @@ immich_restore_expected_postgres_major: 14
 immich_restore_verify_limit: 25
 immich_restore_database_wait_timeout: 300
 
+# Immich brings up PostgreSQL, Redis, machine learning and the server together,
+# and the machine learning image loads its models before it answers, so the
+# stack takes far longer than the platform default to report healthy. The API
+# then answers before it has finished initializing, so the readiness poll needs
+# more attempts than the platform default too.
+immich_compose_wait_timeout: 600
+immich_initialization_retries: 60
+
 # Deliberately small and explicit, and every entry is grounded in the deployed
 # stack rather than in taste. Immich stores hundreds of settings; this role owns
 # only the ones the Compose definition already commits to, so an operator can

@@ -38,44 +38,32 @@ RUBY
   done
 }
 
+# Both disposable lanes deploy the same namespaced Compose identities, so the
+# roster is taken from the shared identity helper instead of forking by proof
+# platform.
 case ${PLATFORM_PROOF_PLATFORM:-mac} in
-  integration)
-    verify_dozzle_labels '' audiobookshelf audiobookshelf
-    verify_dozzle_labels beszel hub beszel agent-portable beszel_agent_portable \
-      socket-proxy beszel_socket_proxy
-    verify_dozzle_labels dozzle alert-relay dozzle_alert_relay \
-      dozzle dozzle socket-proxy dozzle_socket_proxy
-    verify_dozzle_labels immich immich-server immich_server \
-      immich-machine-learning immich_machine_learning redis immich_redis \
-      database immich_postgres
-    verify_dozzle_labels '' jellyfin jellyfin
-    verify_dozzle_labels '' komga komga
-    verify_dozzle_labels '' ntfy ntfy
-    verify_dozzle_labels paperless broker paperless_redis db paperless_postgres \
-      webserver paperless_webserver gotenberg paperless_gotenberg tika paperless_tika
-    ;;
-  mac)
-    verify_dozzle_labels '' audiobookshelf "$PLATFORM_PROJECT_NAME-audiobookshelf"
-    verify_dozzle_labels beszel hub "$PLATFORM_PROJECT_NAME-beszel" \
-      agent-portable "$PLATFORM_PROJECT_NAME-beszel-agent-portable" \
-      socket-proxy "$PLATFORM_PROJECT_NAME-beszel-socket-proxy"
-    verify_dozzle_labels dozzle alert-relay "$PLATFORM_PROJECT_NAME-dozzle-alert-relay" \
-      dozzle "$PLATFORM_PROJECT_NAME-dozzle" \
-      socket-proxy "$PLATFORM_PROJECT_NAME-dozzle-socket-proxy"
-    verify_dozzle_labels immich immich-server "$PLATFORM_PROJECT_NAME-immich-server" \
-      immich-machine-learning "$PLATFORM_PROJECT_NAME-immich-machine-learning" \
-      redis "$PLATFORM_PROJECT_NAME-immich-redis" database "$PLATFORM_PROJECT_NAME-immich-postgres"
-    verify_dozzle_labels '' jellyfin "$PLATFORM_PROJECT_NAME-jellyfin"
-    verify_dozzle_labels '' komga "$PLATFORM_PROJECT_NAME-komga"
-    verify_dozzle_labels '' ntfy "$PLATFORM_PROJECT_NAME-ntfy"
-    verify_dozzle_labels paperless broker "$PLATFORM_PROJECT_NAME-paperless-redis" \
-      db "$PLATFORM_PROJECT_NAME-paperless-postgres" \
-      webserver "$PLATFORM_PROJECT_NAME-paperless-webserver" \
-      gotenberg "$PLATFORM_PROJECT_NAME-paperless-gotenberg" \
-      tika "$PLATFORM_PROJECT_NAME-paperless-tika"
-    ;;
+  integration | mac) ;;
   *) mac_die 'proof platform is invalid' ;;
 esac
+verify_dozzle_labels '' audiobookshelf "$(mac_container_name audiobookshelf)"
+verify_dozzle_labels beszel hub "$(mac_container_name beszel)" \
+  agent-portable "$(mac_container_name beszel-agent-portable)" \
+  socket-proxy "$(mac_container_name beszel-socket-proxy)"
+verify_dozzle_labels dozzle alert-relay "$(mac_container_name dozzle-alert-relay)" \
+  dozzle "$(mac_container_name dozzle)" \
+  socket-proxy "$(mac_container_name dozzle-socket-proxy)"
+verify_dozzle_labels immich immich-server "$(mac_container_name immich-server)" \
+  immich-machine-learning "$(mac_container_name immich-machine-learning)" \
+  redis "$(mac_container_name immich-redis)" \
+  database "$(mac_container_name immich-postgres)"
+verify_dozzle_labels '' jellyfin "$(mac_container_name jellyfin)"
+verify_dozzle_labels '' komga "$(mac_container_name komga)"
+verify_dozzle_labels '' ntfy "$(mac_container_name ntfy)"
+verify_dozzle_labels paperless broker "$(mac_container_name paperless-redis)" \
+  db "$(mac_container_name paperless-postgres)" \
+  webserver "$(mac_container_name paperless-webserver)" \
+  gotenberg "$(mac_container_name paperless-gotenberg)" \
+  tika "$(mac_container_name paperless-tika)"
 
 "$mac_hook_dir/../../run-dozzle-contract.sh" verify
 "$mac_hook_dir/../../run-dozzle-contract.sh" notify

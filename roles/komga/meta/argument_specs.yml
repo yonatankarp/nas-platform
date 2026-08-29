@@ -18,6 +18,9 @@ argument_specs:
       komga_health_delay:
         type: int
         required: false
+      komga_claim_retries:
+        type: int
+        required: false
       komga_library_name:
         type: str
         required: false

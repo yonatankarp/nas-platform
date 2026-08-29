@@ -60,12 +60,17 @@ if (
   exit 1
 fi
 
+# The integration proof platform deploys the same namespaced Compose identities
+# as the Mac lane, so its reserved roster is the project-prefixed one and the
+# canonical production names must no longer appear.
 integration_names=$(PLATFORM_PROOF_PLATFORM=integration mac_target_container_names proof)
-for expected_name in ntfy beszel beszel_agent beszel_agent_portable beszel_socket_proxy \
-    dozzle_alert_relay dozzle dozzle_socket_proxy audiobookshelf komga jellyfin \
-    immich_server immich_machine_learning immich_redis immich_postgres \
-    paperless_redis paperless_postgres paperless_webserver paperless_gotenberg paperless_tika; do
-  printf '%s\n' "$integration_names" | grep -qx "$expected_name" || {
+mac_names=$(PLATFORM_PROOF_PLATFORM=mac mac_target_container_names proof)
+for expected_name in ntfy beszel beszel-agent-intel beszel-agent-portable \
+    beszel-socket-proxy dozzle-alert-relay dozzle dozzle-socket-proxy audiobookshelf \
+    komga jellyfin immich-server immich-machine-learning immich-redis immich-postgres \
+    paperless-redis paperless-postgres paperless-webserver paperless-gotenberg \
+    paperless-tika; do
+  printf '%s\n' "$integration_names" | grep -qx "proof-$expected_name" || {
     printf 'integration-context-error: missing target identity: %s\n' "$expected_name" >&2
     exit 1
   }
@@ -74,8 +79,18 @@ done
   printf '%s\n' 'integration-context-error: integration target identity set differs' >&2
   exit 1
 }
-printf '%s\n' "$integration_names" | grep '^proof-' >/dev/null && {
-  printf '%s\n' 'integration-context-error: integration target identity retained Mac prefix' >&2
+[ "$integration_names" = "$mac_names" ] || {
+  printf '%s\n' 'integration-context-error: disposable lanes reserve different identities' >&2
+  exit 1
+}
+if printf '%s\n' "$integration_names" | grep -q '_'; then
+  printf '%s\n' 'integration-context-error: integration target identity kept a production name' >&2
+  exit 1
+fi
+integration_identity=$(PLATFORM_PROOF_PLATFORM=integration PLATFORM_PROJECT_NAME=proof \
+  mac_container_name immich-postgres)
+[ "$integration_identity" = proof-immich-postgres ] || {
+  printf '%s\n' 'integration-context-error: integration container identity is not namespaced' >&2
   exit 1
 }
 

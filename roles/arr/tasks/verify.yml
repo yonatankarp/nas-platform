@@ -12,8 +12,8 @@
     - prowlarr_applications
     - prowlarr_indexers
     - bazarr_providers
-  no_log: true
   tags: [platform_verify_arr]
+  no_log: true
 
 - name: Read Servarr resources for verification
   ansible.builtin.uri:
@@ -59,8 +59,8 @@
              role_path ~ '/files/configarr/quality-definition-series.json'
            ) }}
   changed_when: false
-  no_log: true
   tags: [platform_verify_arr]
+  no_log: true
 
 - name: Build Configarr quality-definition verification invariants
   ansible.builtin.set_fact:
@@ -126,8 +126,8 @@
         arr_verify_configarr_opaque_context_sha256 ==
         arr_verify_configarr_expected_opaque_context_sha256
     fail_msg: Configarr verification found incomplete or unverified owned state.
-  no_log: true
   tags: [platform_verify_arr]
+  no_log: true
 
 - name: Stage independently verified Configarr state hashes
   ansible.builtin.set_fact:
@@ -342,12 +342,12 @@
         arr_verify_bazarr_owned_projections.current ==
         arr_verify_bazarr_owned_projections.desired
     fail_msg: Bazarr differs from the declared Phase 1 connection state.
-  no_log: true
   tags: [platform_verify_arr]
+  no_log: true
 
 - name: Mark Arr reconciliation verification successful
   ansible.builtin.set_fact:
     arr_reconciliation_verification_succeeded: true
   changed_when: false
-  no_log: true
   tags: [platform_verify_arr]
+  no_log: true

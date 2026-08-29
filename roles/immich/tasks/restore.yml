@@ -26,12 +26,13 @@
           - immich_restore_redis_reset.stdout | default('') | trim == 'OK'
           - immich_restore_redis_reset.stderr | default('') | length == 0
         fail_msg: Immich database recovery failed at a protected cache-reset stage.
-      no_log: true
 
     - name: Record the Immich database restore stage
       ansible.builtin.set_fact:
         immich_restore_stage: database-restore
 
+    # Redacted through the evidence read below: both run psql with
+    # PGPASSWORD/POSTGRES_USER, and a connection failure echoes them.
     - name: Restore the selected Immich database backup
       community.docker.docker_compose_v2_exec:
         project_src: "{{ platform_current_dir }}/services/immich"
@@ -103,7 +104,6 @@
       ansible.builtin.set_fact:
         immich_restored_database_evidence: >-
           {{ immich_restored_database_evidence_command.stdout | trim | from_json }}
-      no_log: true
 
     - name: Require restored Immich database evidence
       ansible.builtin.assert:
@@ -118,7 +118,6 @@
           - immich_restored_database_evidence.assets | length > 0
           - immich_restored_database_evidence.assets | length <= immich_restore_verify_limit | int
         fail_msg: Restored Immich database verification failed (schema-or-assets).
-      no_log: true
 
     - name: Record the restored Immich source-file verification stage
       ansible.builtin.set_fact:
@@ -142,7 +141,6 @@
       failed_when: false
       changed_when: false
       check_mode: false
-      no_log: true
 
     - name: Require verified restored Immich source files
       ansible.builtin.assert:
@@ -151,7 +149,6 @@
           - (immich_restored_source_verification.stdout | from_json).keys() | list == ['verified']
           - (immich_restored_source_verification.stdout | from_json).verified | int == immich_restored_database_evidence.assets | length
         fail_msg: Restored Immich database verification failed (source-files).
-      no_log: true
 
   rescue:
     - name: Record sanitized Immich restore failure stage
@@ -168,7 +165,6 @@
           {{ nas_gid
              if platform_kind == 'nas' or (platform_manage_linux_ownership | bool)
              else omit }}
-      no_log: true
 
     - name: Refuse startup after an Immich restore failure
       ansible.builtin.fail:

@@ -12,6 +12,15 @@ arr_sonarr_api: "http://127.0.0.1:{{ arr_sonarr_port }}/api/v3"
 arr_prowlarr_api: "http://127.0.0.1:{{ arr_prowlarr_port }}/api/v1"
 arr_bazarr_api: "http://127.0.0.1:{{ arr_bazarr_port }}/api"
 
+# Four Servarr applications start in one project and each one migrates its own
+# database, so the stack needs longer than the platform default to report
+# healthy. Configarr's definitions settle in about five seconds once written;
+# polling every second keeps that cheap and still gives up promptly when the
+# definitions are genuinely different and will never settle.
+arr_compose_wait_timeout: 240
+arr_configarr_settled_retries: 15
+arr_configarr_settled_delay: 1
+
 arr_radarr_root_folder: /data/media/Movies
 arr_sonarr_root_folder: /data/media/Series
 arr_sabnzbd_host: sabnzbd

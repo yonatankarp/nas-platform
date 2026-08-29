@@ -160,16 +160,13 @@ mac_compose_files() {
   printf '%s\n' "$@"
 }
 
+# Both disposable lanes deploy through a Compose project namespace and name
+# every container after it, so one roster serves the Mac and integration proof
+# platforms alike. Only production keeps the canonical Compose names.
 mac_target_container_names() {
   mac_project=$1
   case ${PLATFORM_PROOF_PLATFORM:-mac} in
-    integration)
-      printf '%s\n' ntfy beszel beszel_agent beszel_agent_portable beszel_socket_proxy \
-        dozzle_alert_relay dozzle dozzle_socket_proxy audiobookshelf komga jellyfin \
-        immich_server immich_machine_learning immich_redis immich_postgres \
-        paperless_redis paperless_postgres paperless_webserver paperless_gotenberg paperless_tika
-      ;;
-    mac)
+    integration | mac)
       printf '%s\n' "$mac_project-beszel" "$mac_project-beszel-agent-intel" \
         "$mac_project-beszel-agent-portable" "$mac_project-beszel-socket-proxy" \
         "$mac_project-ntfy" "$mac_project-dozzle-alert-relay" \
@@ -185,17 +182,16 @@ mac_target_container_names() {
   esac
 }
 
-# The Mac container identity for one Compose service. The two lanes name the
-# same container differently: the Mac lane prefixes the isolated Compose project,
-# and the integration lane uses the Compose default names, which are the same
-# names with underscores. Every wrapper used to carry its own copy of that case
-# statement, so a new service either repeated it or quietly used the wrong lane's
-# identity.
+# The container identity for one Compose service. Both disposable lanes prefix
+# the isolated Compose project, so the identity no longer forks by proof
+# platform. Every wrapper used to carry its own copy of that case statement, so
+# a new service either repeated it or quietly used the wrong lane's identity.
 mac_container_name() {
   mac_container_base=$1
   case ${PLATFORM_PROOF_PLATFORM:-mac} in
-    integration) printf '%s\n' "$mac_container_base" | tr '-' '_' ;;
-    mac) printf '%s\n' "${PLATFORM_PROJECT_NAME:?PLATFORM_PROJECT_NAME is required}-$mac_container_base" ;;
+    integration | mac)
+      printf '%s\n' "${PLATFORM_PROJECT_NAME:?PLATFORM_PROJECT_NAME is required}-$mac_container_base"
+      ;;
     *) mac_die 'proof platform is invalid' ;;
   esac
 }
