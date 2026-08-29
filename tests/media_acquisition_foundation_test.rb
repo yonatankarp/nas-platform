@@ -89,7 +89,7 @@ EXPECTED_PROJECTS = {
     }
   },
   "kapowarr" => {
-    "role" => "kapowarr", "status" => "planned", "services" => {
+    "role" => "kapowarr", "status" => "implemented", "services" => {
       "kapowarr" => service("long_running", 1.0, ui_port(5656, published_by: "kapowarr"))
     }
   },
@@ -146,6 +146,7 @@ EXPECTED_IMPLEMENTED_PORTS = [
   ["downloaders", "sabnzbd", "0.0.0.0", 8085, 8080, "tcp"],
   ["immich", "immich-server", "0.0.0.0", 2283, 2283, "tcp"],
   ["jellyfin", "jellyfin", "0.0.0.0", 8096, 8096, "tcp"],
+  ["kapowarr", "kapowarr", "0.0.0.0", 5656, 5656, "tcp"],
   ["komga", "komga", "0.0.0.0", 25_600, 25_600, "tcp"],
   ["ntfy", "ntfy", "0.0.0.0", 2586, 80, "tcp"],
   ["paperless-ngx", "broker", "127.0.0.1", 6379, 6379, "tcp"],
@@ -190,6 +191,7 @@ EXPECTED_INTEGRATION_WRITERS = Set[
   "{{ nas_media_root }}/Media/Movies",
   "{{ nas_media_root }}/Media/Series",
   "{{ nas_media_root }}/Media/YouTube",
+  "{{ nas_media_root }}/Books/Comics",
   "{{ nas_media_root }}/Media/.acquisition/usenet/movies",
   "{{ nas_media_root }}/Media/.acquisition/usenet/series",
   "{{ nas_media_root }}/Media/.acquisition/usenet/audiobooks",

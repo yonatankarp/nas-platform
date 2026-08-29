@@ -130,7 +130,7 @@ case "$suite" in
   arr) fixed_tags=host_prep,deployment_bundle,ntfy,arr ;;
   downloaders) fixed_tags=host_prep,deployment_bundle,ntfy,arr,downloaders ;;
   bindery) fixed_tags=host_prep,deployment_bundle,media_acquisition_foundation ;;
-  kapowarr) fixed_tags=host_prep,deployment_bundle,media_acquisition_foundation ;;
+  kapowarr) fixed_tags=host_prep,deployment_bundle,ntfy,kapowarr ;;
   pinchflat) fixed_tags=host_prep,deployment_bundle,ntfy,pinchflat ;;
   trailarr) fixed_tags=host_prep,deployment_bundle,media_acquisition_foundation ;;
   seerr) fixed_tags=host_prep,deployment_bundle,media_acquisition_foundation ;;
@@ -283,6 +283,7 @@ immich immich
 paperless paperless-ngx
 arr arr
 downloaders downloaders
+kapowarr kapowarr
 pinchflat pinchflat
 '
 
@@ -502,7 +503,6 @@ suite_pull_images() {
         *)
           case "$suite:$service_tag" in
             bindery:ntfy|bindery:audiobookshelf|bindery:jellyfin|\
-            kapowarr:ntfy|kapowarr:audiobookshelf|kapowarr:jellyfin|\
             trailarr:ntfy|trailarr:audiobookshelf|trailarr:jellyfin|\
             seerr:ntfy|seerr:audiobookshelf|seerr:jellyfin) ;;
             *) continue ;;
@@ -879,7 +879,7 @@ paperless_fixture_preseeded=false
 komga_fixture_preseeded=false
 jellyfin_fixture_preseeded=false
 case "$suite:$run_service_scenarios" in
-  audiobookshelf:true|arr:true|downloaders:true|bindery:true|kapowarr:true|\
+  audiobookshelf:true|arr:true|downloaders:true|bindery:true|\
   trailarr:true|seerr:true|full:true)
     env \
       PLATFORM_MEDIA_ROOT="$sandbox/volume2" \
@@ -908,7 +908,7 @@ case "$suite:$run_service_scenarios" in
     ;;
 esac
 case "$suite:$run_service_scenarios" in
-  jellyfin:true|arr:true|downloaders:true|bindery:true|kapowarr:true|\
+  jellyfin:true|arr:true|downloaders:true|bindery:true|\
   trailarr:true|seerr:true|full:true)
     env \
       PLATFORM_KIND=integration \
@@ -1232,6 +1232,18 @@ docker run --rm \
         /repo/tests/contracts/komga.sh \"\$@\"
     }
 
+    run_kapowarr_contract() {
+      env \
+        PLATFORM_KIND=integration \
+        PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\" \
+        PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=\"\$vault_password_file\" \
+        PLATFORM_DOCKER_ROOT='$sandbox/volume1/Docker' \
+        PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
+        PLATFORM_REPORT_ROOT='$sandbox/reports' \
+        PLATFORM_PROJECT_NAME=$integration_project_namespace \
+        /repo/tests/contracts/kapowarr.sh \"\$@\"
+    }
+
     run_pinchflat_contract() {
       env \
         PLATFORM_KIND=integration \
@@ -1544,6 +1556,23 @@ docker run --rm \
         -e media_usenet_enabled=true \
         /repo/verify.yml \
         --tags platform_verify_downloaders
+    }
+
+    run_kapowarr_verify_only() {
+      PLATFORM_VAULT_FILE="\$vault_file" ansible-playbook \
+        -i inventory/local.yml \
+        --vault-password-file "\$vault_password_file" \
+        -e @"\$vault_file" \
+        -e platform_vault_file="\$vault_file" \
+        -e nas_docker_root=$sandbox/volume1/Docker \
+        -e nas_media_root=$sandbox/volume2 \
+        -e platform_compose_kind=integration \
+        -e platform_project_name=\"$integration_project_namespace\" \
+        -e platform_beszel_agent_kind=portable \
+        -e deployment_bundle_test_mode=true \
+        -e deployment_bundle_allow_dirty_controller=true \
+        /repo/verify.yml \
+        --tags platform_verify_kapowarr
     }
 
     run_pinchflat_verify_only() {
@@ -1914,7 +1943,7 @@ EOF
       /repo /repo/services/manifest.yml nas integration '$expected_release_id'
 
     case "\$INTEGRATION_SUITE" in
-      bindery|kapowarr|trailarr|seerr)
+      bindery|trailarr|seerr)
         /repo/tests/contracts/"\$INTEGRATION_SUITE"-foundation.sh static
         converge_media_acquisition_reader_prerequisites
         run_media_acquisition_foundation_verify
@@ -1943,6 +1972,17 @@ EOF
       run_enabled_idempotence arr,downloaders
       run_play --tags arr,downloaders --check --diff
       printf 'DOWNLOADERS_PHASE1_RUNTIME_VERIFIED\n'
+      cleanup_vault
+      exit 0
+    fi
+
+    if [ "\$INTEGRATION_SUITE" = kapowarr ]; then
+      /repo/tests/contracts/kapowarr.sh static
+      run_kapowarr_contract run
+      run_kapowarr_verify_only
+      run_enabled_idempotence kapowarr
+      run_play --tags kapowarr --check --diff
+      printf 'KAPOWARR_PHASE2_RUNTIME_VERIFIED\n'
       cleanup_vault
       exit 0
     fi

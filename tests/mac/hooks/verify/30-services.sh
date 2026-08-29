@@ -19,9 +19,11 @@ mac_script_dir=$(CDPATH= cd -- "$mac_hook_dir/../.." && pwd -P)
 # sentinels. Immich's covers every effective managed-user preference leaf and any
 # seeded supported unowned leaf, in addition to login, assets, settings and
 # containment. Pinchflat's covers container health, the three
-# basic-authentication outcomes, and its persisted database.
+# basic-authentication outcomes, and its persisted database. Kapowarr's covers
+# the same three outcomes against its own login, the comics library root it
+# owns, and its persisted database.
 mac_verified=
-for mac_verify_service in audiobookshelf komga jellyfin immich paperless pinchflat; do
+for mac_verify_service in audiobookshelf komga jellyfin immich paperless pinchflat kapowarr; do
   "$mac_script_dir/run-contract.sh" "$mac_verify_service" run
   mac_verified="$mac_verified$mac_verify_service
 "

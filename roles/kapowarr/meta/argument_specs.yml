@@ -1,0 +1,35 @@
+---
+argument_specs:
+  main:
+    short_description: Deploy Kapowarr and verify its authenticated comics writer
+    options:
+      platform_compose_kind:
+        type: str
+        required: true
+      platform_project_name:
+        type: str
+        required: false
+      kapowarr_port:
+        type: int
+        required: false
+      kapowarr_config_host_path:
+        type: path
+        required: false
+      kapowarr_downloads_host_path:
+        type: path
+        required: false
+      kapowarr_comics_host_path:
+        type: path
+        required: false
+      kapowarr_library_root:
+        type: path
+        required: false
+      vault_kapowarr_admin_username:
+        type: str
+        required: true
+      vault_kapowarr_admin_password:
+        type: str
+        required: true
+      vault_kapowarr_comicvine_api_key:
+        type: str
+        required: true

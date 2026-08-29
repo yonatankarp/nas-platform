@@ -2,4 +2,7 @@
 role: kapowarr
 container_cpus:
   kapowarr: 1.0
-vault_keys: []
+vault_keys:
+  - vault_kapowarr_admin_username
+  - vault_kapowarr_admin_password
+  - vault_kapowarr_comicvine_api_key

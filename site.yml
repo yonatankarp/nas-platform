@@ -92,6 +92,13 @@
     - role: downloaders
       tags: [downloaders, media, media_acquisition_phase1]
 
+    # Kapowarr is self-contained in the same way: it consumes no platform API,
+    # and Komga reads the comics library it writes from disk. Komga has already
+    # converged above, so the library root it scans exists before Kapowarr
+    # claims it as its own.
+    - role: kapowarr
+      tags: [kapowarr, media, media_acquisition_phase2]
+
     # Pinchflat is self-contained: it consumes no platform API and Jellyfin
     # reads its output from disk, so it converges before the reader that
     # indexes the YouTube library it writes.

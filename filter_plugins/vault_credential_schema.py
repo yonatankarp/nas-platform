@@ -17,8 +17,8 @@ ever carries a value. Neither does one carry the literal a value was compared
 against, even where that literal is already public in the repository: the rule
 that keeps a diagnostic printable is that it names fields and nothing else, and
 an exception for "this one is not really a secret" is how such a rule stops
-holding. `JELLYFIN_ADMIN_USERNAME` and the OpenSubtitles placeholders are the
-comparands, and they stay out of the output.
+holding. `JELLYFIN_ADMIN_USERNAME` and the OpenSubtitles and ComicVine
+placeholders are the comparands, and they stay out of the output.
 
 Semantics are matched to Ansible's Jinja tests, verified on ansible-core 2.21.3:
 `is match` anchors at the start only, so patterns needing a full match carry
@@ -72,6 +72,12 @@ OPENSUBTITLES_USERNAME_PLACEHOLDERS = ("example-opensubtitles-username",
                                        "replace-with-opensubtitles-username")
 OPENSUBTITLES_PASSWORD_PLACEHOLDERS = ("example-opensubtitles-password",
                                        "replace-with-opensubtitles-password")
+
+# The ComicVine key belongs to a third-party account too. Kapowarr refuses a key
+# ComicVine does not recognize, so a stand-in reaching a deployment leaves the
+# comics writer unable to identify anything it downloads.
+COMICVINE_API_KEY_PLACEHOLDERS = ("example-comicvine-api-key",
+                                  "replace-with-comicvine-api-key")
 
 NONEMPTY = "nonempty"
 PATTERN = "pattern"
@@ -149,6 +155,12 @@ CREDENTIAL_RULES = {
     "vault_downloaders_sabnzbd_api_key": ((PATTERN, HEX_32),),
     "vault_downloaders_sabnzbd_admin_username": ((NONEMPTY, None),),
     "vault_downloaders_sabnzbd_admin_password": ((NONEMPTY, None),),
+    "vault_kapowarr_admin_username": ((NONEMPTY, None),),
+    "vault_kapowarr_admin_password": ((NONEMPTY, None),),
+    "vault_kapowarr_comicvine_api_key": (
+        (NONEMPTY, None),
+        (NOT_PLACEHOLDER, COMICVINE_API_KEY_PLACEHOLDERS),
+    ),
     "vault_pinchflat_admin_username": ((NONEMPTY, None),),
     "vault_pinchflat_admin_password": ((NONEMPTY, None),),
 }

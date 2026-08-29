@@ -18,5 +18,7 @@ contracts:
     path: tests/contracts/komga.sh
   - service: paperless-ngx
     path: tests/contracts/paperless.sh
+  - service: kapowarr
+    path: tests/contracts/kapowarr.sh
   - service: pinchflat
     path: tests/contracts/pinchflat.sh
