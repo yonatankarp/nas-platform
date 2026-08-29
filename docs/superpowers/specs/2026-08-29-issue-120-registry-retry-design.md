@@ -8,11 +8,12 @@ throttling without hiding a registry that remains unavailable.
 ## Scope
 
 This change owns only the retry behavior in `tests/integration.sh` and its
-repository tests. A separate change is adding Docker registry authentication,
-so this work will not modify `.github/workflows/ci.yml`, login actions,
-credentials, or permissions. Authentication reduces the probability of a
-refusal; the retry remains the fallback for authenticated pulls and for
-registries without credentials.
+repository tests. Docker registry authentication was a separate change, merged
+as PR #132, so this work does not modify `.github/workflows/ci.yml`, login
+actions, credentials, or permissions. Authentication reduces the probability of
+a refusal; the retry remains the fallback for the pulls no login covers --
+Docker Hub's anonymous allowance among them -- and for a limiter that refuses an
+authenticated request anyway.
 
 Image pulls remain serial. Registry-aware parallelism is intentionally deferred:
 it changes scheduling as well as failure handling and is not needed to close the
