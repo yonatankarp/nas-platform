@@ -758,7 +758,7 @@ clean_restore_source = integration_text[/run_immich_clean_restore\(\) \{.*?^    
 [
   "redis-cli --raw set",
   "redis-cli --raw exists",
-  "docker compose --project-name immich",
+  "docker compose --project-name $integration_project_namespace-immich",
   "stop immich-server immich-machine-learning database",
   "rm -f database"
 ].each do |sentinel|
@@ -771,7 +771,7 @@ refuse("clean restore removes the live Redis container") if clean_restore_source
 end
 [
   "run_immich_contract clean-restore-seed",
-  "docker compose --project-name immich",
+  "docker compose --project-name $integration_project_namespace-immich",
   "run_play --tags immich",
   "run_immich_contract clean-restore-assert",
   "IMMICH_CLEAN_RESTORE_IDEMPOTENT",

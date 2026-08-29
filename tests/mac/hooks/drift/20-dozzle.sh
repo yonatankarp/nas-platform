@@ -56,11 +56,7 @@ EOF
 }
 
 dozzle_socket_proxy_name() {
-  case ${PLATFORM_PROOF_PLATFORM:-mac} in
-    integration) printf '%s\n' dozzle_socket_proxy ;;
-    mac) printf '%s\n' "$PLATFORM_PROJECT_NAME-dozzle-socket-proxy" ;;
-    *) mac_die 'proof platform is invalid' ;;
-  esac
+  mac_container_name dozzle-socket-proxy
 }
 
 recover_label_fixture() {

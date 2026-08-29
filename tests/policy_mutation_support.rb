@@ -186,15 +186,23 @@ def fixture_paths(root = ROOT)
     role_root = File.join("roles", role)
     paths << File.join(role_root, "meta", "argument_specs.yml")
     paths << File.join(role_root, "tasks", "main.yml")
-    defaults = File.join(role_root, "defaults", "main.yml")
-    paths << defaults if File.file?(File.join(root, defaults))
+    # A role states its Compose project either in defaults or, where the value is
+    # not overridable, in vars. policy_integration_test.rb renders both to prove
+    # every service derives its project from the platform namespace.
+    %w[defaults vars].each do |variable_kind|
+      role_variables = File.join(role_root, variable_kind, "main.yml")
+      paths << role_variables if File.file?(File.join(root, role_variables))
+    end
     env_template = File.join(role_root, "templates", "env.j2")
     paths << env_template if File.file?(File.join(root, env_template))
-    # policy_integration_test.rb reads the integration override of every service
-    # that has one, so a sandbox without them fails every mutation with a Ruby
-    # stack trace instead of the failure under test.
-    integration_override = File.join("services", name, "compose.integration.yml")
-    paths << integration_override if File.file?(File.join(root, integration_override))
+    # policy_integration_test.rb reads the disposable-lane overrides of every
+    # service that has them, and requires the two lanes to agree on one container
+    # identity, so a sandbox without them fails every mutation with a Ruby stack
+    # trace instead of the failure under test.
+    %w[integration mac].each do |override_kind|
+      platform_override = File.join("services", name, "compose.#{override_kind}.yml")
+      paths << platform_override if File.file?(File.join(root, platform_override))
+    end
   end
 
 

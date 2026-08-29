@@ -899,6 +899,15 @@ def audiobookshelf_playbook_command(playbook, tags)
   repo_root = Pathname.new(ENV.fetch("PLATFORM_REPO_ROOT")).expand_path
   vault_file = ENV.fetch("PLATFORM_CONTRACT_VAULT_FILE")
   vault_password_file = ENV.fetch("PLATFORM_CONTRACT_VAULT_PASSWORD_FILE")
+  # The harness converges every stack into a sandbox-derived Compose project and
+  # the integration override names the container after it, so a play run from
+  # here has to be given the same namespace. Without it the role renders an empty
+  # PLATFORM_PROJECT_NAME, the override's ${PLATFORM_PROJECT_NAME:?} refuses the
+  # deployment, and the run dies before it can reach the refusal under test.
+  # The value is read from the environment the harness exports rather than spelled
+  # again, so the play and the sandbox can never disagree about which stack it is.
+  project_name = ENV.fetch("PLATFORM_PROJECT_NAME", "")
+  fail_contract("the sandbox project namespace is unavailable") if project_name.empty?
   command = [
     "ansible-playbook", "-i", "inventory/local.yml",
     "--vault-password-file", vault_password_file,
@@ -907,6 +916,7 @@ def audiobookshelf_playbook_command(playbook, tags)
     "-e", "nas_docker_root=#{ENV.fetch('PLATFORM_DOCKER_ROOT')}",
     "-e", "nas_media_root=#{ENV.fetch('PLATFORM_MEDIA_ROOT')}",
     "-e", "platform_compose_kind=integration",
+    "-e", "platform_project_name=#{project_name}",
     "-e", "platform_beszel_agent_kind=portable",
     "-e", "deployment_bundle_test_mode=true",
     "-e", "deployment_bundle_allow_dirty_controller=true",

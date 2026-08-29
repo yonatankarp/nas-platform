@@ -63,14 +63,15 @@ nothing outside the repository has changed yet.
 
 ## Anatomy of a service
 
-A service with no credentials of its own touches thirteen places. Six are new
+A service with no credentials of its own touches fifteen places. Eight are new
 files, seven are existing files that gain an entry.
 
 New files:
 
 ```
 services/<name>/compose.yml
-services/<name>/compose.mac.yml       (optional, see below)
+services/<name>/compose.mac.yml       (see below)
+services/<name>/compose.integration.yml (see below)
 roles/<role>/defaults/main.yml
 roles/<role>/meta/argument_specs.yml
 roles/<role>/templates/env.j2
@@ -300,9 +301,28 @@ the same two variables under those names.
 rendering the effective Compose document with a uid and gid the repository never
 mentions.
 
-If you need a platform override, add `services/<name>/compose.mac.yml`. Overrides
-may add host-specific wiring such as devices, mounts and per-project container
-names, but they **must not contain an `image:` key**.
+Platform overrides live in `services/<name>/compose.<kind>.yml`. They may add
+host-specific wiring such as devices, mounts and per-project container names,
+but they **must not contain an `image:` key**.
+
+A service that names its containers needs both disposable-lane overrides, and
+both must give a container the same name:
+
+```yaml
+---
+services:
+  navidrome:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-navidrome
+```
+
+This is not cosmetic. The Mac and integration lanes deploy into a disposable
+project namespace, and their cleanup deletes a container or network only when
+its Compose ownership labels and its exact namespaced name both say the sandbox
+created it. A service left with its production container name is never cleaned
+up: it survives the run and collides with the next one. `tests/sandbox_cleanup.sh`
+registers the namespaced identity of every service, and
+`tests/policy_integration_test.rb` checks that register against these overrides,
+so a new or renamed service fails there rather than leaking a container.
 
 You do not select the override yourself. `deployment_bundle` stats every manifest
 service against the deployed release once per run and publishes the result as
@@ -476,6 +496,16 @@ that passes `sh -n`, registered in `tests/contracts/registry.yml`. Either one
 satisfies the policy. Use a contract when proving the service means driving a
 real workflow (Paperless ingests a PDF and reads back its checksum) rather than
 reading one endpoint.
+
+A contract that runs a play of its own — to prove the platform *refuses*
+something, which needs a failing convergence — is a second entry point into the
+same sandbox, so it must converge into the same disposable project. Pass
+`-e platform_project_name=` from the `PLATFORM_PROJECT_NAME` the harness exports
+to the contract, never a name of the contract's own: without it the play renders
+an empty namespace, the integration override's `${PLATFORM_PROJECT_NAME:?}`
+refuses the deployment, and the run dies before it reaches the refusal under
+test. `tests/policy_integration_test.rb` requires both halves of that
+propagation.
 
 ### 6. Declare the storage
 

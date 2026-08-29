@@ -1,17 +1,22 @@
 #!/bin/sh
 
 cleanup_sandbox_image=docker.io/library/python:3.14-alpine@sha256:05b2b8b732ecd268fee8727a369f936f022d1321b59befd13c30ede22769dcdc
-cleanup_sandbox_containers='ntfy beszel beszel_agent beszel_agent_portable beszel_socket_proxy'
-cleanup_sandbox_containers="$cleanup_sandbox_containers dozzle_alert_relay dozzle dozzle_socket_proxy"
-cleanup_sandbox_containers="$cleanup_sandbox_containers audiobookshelf komga jellyfin"
-cleanup_sandbox_containers="$cleanup_sandbox_containers immich_server immich_machine_learning immich_redis immich_postgres"
-cleanup_sandbox_containers="$cleanup_sandbox_containers paperless_redis paperless_postgres paperless_webserver paperless_gotenberg paperless_tika"
-# The acquisition services are namespaced per sandbox, so they are discovered
-# through exact Compose ownership labels rather than by fixed name. Every
-# sandbox network is namespace-derived too, so no fixed network name is left to
-# delete; the list stays so a future fixed target has somewhere to go.
-cleanup_sandbox_networks=''
-cleanup_sandbox_projects='arr downloaders'
+# Every sandbox resource is namespace-derived, so nothing is deleted by a fixed
+# production name: containers and networks are discovered through exact Compose
+# ownership labels and then matched against the exact namespaced identity
+# Compose gives them. A container that merely shares a production name is
+# therefore never a cleanup target, and is left untouched.
+cleanup_sandbox_projects='ntfy beszel dozzle audiobookshelf komga jellyfin immich paperless'
+cleanup_sandbox_projects="$cleanup_sandbox_projects arr downloaders"
+cleanup_sandbox_ntfy_services='ntfy'
+cleanup_sandbox_beszel_services='beszel beszel-agent-intel beszel-agent-portable beszel-socket-proxy'
+cleanup_sandbox_dozzle_services='dozzle dozzle-alert-relay dozzle-socket-proxy'
+cleanup_sandbox_audiobookshelf_services='audiobookshelf'
+cleanup_sandbox_komga_services='komga'
+cleanup_sandbox_jellyfin_services='jellyfin'
+cleanup_sandbox_immich_services='immich-server immich-machine-learning immich-redis immich-postgres'
+cleanup_sandbox_paperless_services='paperless-redis paperless-postgres paperless-webserver'
+cleanup_sandbox_paperless_services="$cleanup_sandbox_paperless_services paperless-gotenberg paperless-tika"
 cleanup_sandbox_arr_services='radarr sonarr prowlarr bazarr'
 cleanup_sandbox_downloaders_services='sabnzbd unpackerr'
 
@@ -118,6 +123,14 @@ cleanup_sandbox_contents() {
 
 cleanup_sandbox_project_services() {
   case $1 in
+    ntfy) cleanup_project_services=$cleanup_sandbox_ntfy_services ;;
+    beszel) cleanup_project_services=$cleanup_sandbox_beszel_services ;;
+    dozzle) cleanup_project_services=$cleanup_sandbox_dozzle_services ;;
+    audiobookshelf) cleanup_project_services=$cleanup_sandbox_audiobookshelf_services ;;
+    komga) cleanup_project_services=$cleanup_sandbox_komga_services ;;
+    jellyfin) cleanup_project_services=$cleanup_sandbox_jellyfin_services ;;
+    immich) cleanup_project_services=$cleanup_sandbox_immich_services ;;
+    paperless) cleanup_project_services=$cleanup_sandbox_paperless_services ;;
     arr) cleanup_project_services=$cleanup_sandbox_arr_services ;;
     downloaders) cleanup_project_services=$cleanup_sandbox_downloaders_services ;;
     *)
@@ -156,6 +169,44 @@ cleanup_read_network_identity() {
   cleanup_identity_network=${cleanup_identity_rest#*|}
 }
 
+# The media-control bridge is created by host_prep rather than by Compose, so it
+# carries the platform labels instead of the Compose ones. Its whole label set is
+# read back: an extra label means the network is not the one this run created.
+cleanup_read_media_control_identity() {
+  cleanup_identity=$(docker network inspect "$1" --format \
+    '{{.Name}}|{{.Driver}}|{{index .Labels "nas.platform.purpose"}}|{{index .Labels "nas.platform.project"}}|{{len .Labels}}') ||
+    return 1
+  cleanup_identity_name=${cleanup_identity%%|*}
+  cleanup_identity_rest=${cleanup_identity#*|}
+  cleanup_identity_driver=${cleanup_identity_rest%%|*}
+  cleanup_identity_rest=${cleanup_identity_rest#*|}
+  cleanup_identity_purpose=${cleanup_identity_rest%%|*}
+  cleanup_identity_rest=${cleanup_identity_rest#*|}
+  cleanup_identity_project=${cleanup_identity_rest%%|*}
+  cleanup_identity_label_count=${cleanup_identity_rest#*|}
+}
+
+# Maps an observed namespaced identity back to the project that must own it. A
+# name no registered project claims is never owned, so the caller refuses it.
+cleanup_named_container_kind() {
+  for cleanup_named_kind in $cleanup_sandbox_projects; do
+    cleanup_sandbox_project_services "$cleanup_named_kind" || return 1
+    for cleanup_named_service in $cleanup_project_services; do
+      [ "$1" = "$cleanup_owner_namespace-$cleanup_named_service" ] || continue
+      return 0
+    done
+  done
+  return 1
+}
+
+cleanup_named_network_kind() {
+  for cleanup_named_kind in $cleanup_sandbox_projects; do
+    [ "$1" = "$cleanup_owner_namespace-${cleanup_named_kind}_default" ] || continue
+    return 0
+  done
+  return 1
+}
+
 # A Configarr one-shot is owned only when its generated name, its service label
 # and its one-off label all match. Its run suffix is generated, so the name is
 # matched by prefix and alphabet rather than by an exact string.
@@ -185,42 +236,48 @@ cleanup_owns_permanent_container() {
   return 1
 }
 
-# Collects every resource carrying an exact acquisition project label and
+# Collects every resource carrying an exact project label for one namespace and
 # refuses the whole sandbox unless each one also carries the exact name and
-# supporting labels Compose gives it. Nothing is deleted here: an ownership
+# supporting labels its creator gives it. Nothing is deleted here: an ownership
 # mismatch must leave every collected resource in place.
-cleanup_collect_sandbox_ownership() {
+cleanup_collect_namespace_ownership() {
   cleanup_owner_namespace=$1
-  cleanup_owned_containers=
-  cleanup_owned_networks=
 
+  # Repeated Docker name filters are ORed, so every namespaced container name is
+  # probed in one observation instead of one round trip per registered service.
+  set --
   for cleanup_owner_kind in $cleanup_sandbox_projects; do
-    cleanup_owner_project=$cleanup_owner_namespace-$cleanup_owner_kind
     cleanup_sandbox_project_services "$cleanup_owner_kind" || return 1
     for cleanup_owner_service in $cleanup_project_services; do
-      cleanup_owner_name=$cleanup_owner_namespace-$cleanup_owner_service
-      cleanup_owner_ids=$(docker ps -aq --no-trunc \
-        --filter "name=^${cleanup_owner_name}$") || return 1
-      for cleanup_owner_id in $cleanup_owner_ids; do
-        cleanup_read_container_identity "$cleanup_owner_id" || return 1
-        if [ "$cleanup_identity_project" != "$cleanup_owner_project" ]; then
-          cleanup_refuse_ownership container "$cleanup_owner_name"
-          return 1
-        fi
-      done
+      set -- "$@" --filter "name=^$cleanup_owner_namespace-$cleanup_owner_service\$"
     done
+  done
+  cleanup_owner_ids=$(docker ps -aq --no-trunc "$@") || return 1
+  for cleanup_owner_id in $cleanup_owner_ids; do
+    cleanup_read_container_identity "$cleanup_owner_id" || return 1
+    if ! cleanup_named_container_kind "$cleanup_identity_name" ||
+       [ "$cleanup_identity_project" != \
+         "$cleanup_owner_namespace-$cleanup_named_kind" ]; then
+      cleanup_refuse_ownership container "$cleanup_identity_name"
+      return 1
+    fi
+  done
 
-    cleanup_owner_network=${cleanup_owner_project}_default
-    cleanup_owner_ids=$(docker network ls -q --no-trunc \
-      --filter "name=^${cleanup_owner_network}$") || return 1
-    for cleanup_owner_id in $cleanup_owner_ids; do
-      cleanup_read_network_identity "$cleanup_owner_id" || return 1
-      if [ "$cleanup_identity_project" != "$cleanup_owner_project" ] ||
-         [ "$cleanup_identity_network" != default ]; then
-        cleanup_refuse_ownership network "$cleanup_owner_network"
-        return 1
-      fi
-    done
+  set --
+  for cleanup_owner_kind in $cleanup_sandbox_projects; do
+    set -- "$@" \
+      --filter "name=^$cleanup_owner_namespace-${cleanup_owner_kind}_default\$"
+  done
+  cleanup_owner_ids=$(docker network ls -q --no-trunc "$@") || return 1
+  for cleanup_owner_id in $cleanup_owner_ids; do
+    cleanup_read_network_identity "$cleanup_owner_id" || return 1
+    if ! cleanup_named_network_kind "$cleanup_identity_name" ||
+       [ "$cleanup_identity_project" != \
+         "$cleanup_owner_namespace-$cleanup_named_kind" ] ||
+       [ "$cleanup_identity_network" != default ]; then
+      cleanup_refuse_ownership network "$cleanup_identity_name"
+      return 1
+    fi
   done
 
   for cleanup_owner_kind in $cleanup_sandbox_projects; do
@@ -254,6 +311,53 @@ cleanup_collect_sandbox_ownership() {
       fi
       cleanup_owned_networks="$cleanup_owned_networks $cleanup_owner_id"
     done
+  done
+
+  # host_prep, not Compose, creates the media-control bridge, so it is found by
+  # its namespace-derived name and by its platform labels. Both observations must
+  # agree on one network, and its complete identity must match, or the sandbox is
+  # refused with nothing deleted.
+  cleanup_owner_media_network=$cleanup_owner_namespace-media-control
+  cleanup_owner_ids=$(docker network ls -q --no-trunc \
+    --filter "name=^${cleanup_owner_media_network}$") || return 1
+  cleanup_owner_label_ids=$(docker network ls -q --no-trunc \
+    --filter label=nas.platform.purpose=media-control \
+    --filter "label=nas.platform.project=$cleanup_owner_namespace") || return 1
+  for cleanup_owner_id in $cleanup_owner_label_ids; do
+    case " $cleanup_owner_ids " in
+      *" $cleanup_owner_id "*) ;;
+      *)
+        cleanup_refuse_ownership network "$cleanup_owner_media_network"
+        return 1
+        ;;
+    esac
+  done
+  for cleanup_owner_id in $cleanup_owner_ids; do
+    cleanup_read_media_control_identity "$cleanup_owner_id" || return 1
+    if [ "$cleanup_identity_name" != "$cleanup_owner_media_network" ] ||
+       [ "$cleanup_identity_driver" != bridge ] ||
+       [ "$cleanup_identity_purpose" != media-control ] ||
+       [ "$cleanup_identity_project" != "$cleanup_owner_namespace" ] ||
+       [ "$cleanup_identity_label_count" != 2 ]; then
+      cleanup_refuse_ownership network "$cleanup_owner_media_network"
+      return 1
+    fi
+    cleanup_owned_networks="$cleanup_owned_networks $cleanup_owner_id"
+  done
+}
+
+# One disposable run owns two project namespaces: the sandbox namespace every
+# service is deployed under, and the scenario namespace the Immich negative
+# restore matrix converges into.
+cleanup_sandbox_namespaces() {
+  printf '%s %s-negative' "$1" "$1"
+}
+
+cleanup_collect_sandbox_ownership() {
+  cleanup_owned_containers=
+  cleanup_owned_networks=
+  for cleanup_collected_namespace in $(cleanup_sandbox_namespaces "$1"); do
+    cleanup_collect_namespace_ownership "$cleanup_collected_namespace" || return 1
   done
 }
 
@@ -307,22 +411,6 @@ cleanup_sandbox() {
   esac
 
   cleanup_collect_sandbox_ownership "$cleanup_sandbox_namespace" || return 1
-
-  for cleanup_container in $cleanup_sandbox_containers; do
-    cleanup_container_ids=$(docker ps -aq --no-trunc \
-      --filter "name=^${cleanup_container}$") || return 1
-    for cleanup_container_id in $cleanup_container_ids; do
-      docker rm -f "$cleanup_container_id" >/dev/null || return 1
-    done
-  done
-
-  for cleanup_network in $cleanup_sandbox_networks; do
-    cleanup_network_ids=$(docker network ls -q --no-trunc \
-      --filter "name=^${cleanup_network}$") || return 1
-    for cleanup_network_id in $cleanup_network_ids; do
-      docker network rm "$cleanup_network_id" >/dev/null || return 1
-    done
-  done
 
   for cleanup_owned_container in $cleanup_owned_containers; do
     docker rm -f "$cleanup_owned_container" >/dev/null || return 1
