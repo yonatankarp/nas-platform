@@ -447,8 +447,8 @@ check_rejected(
 check_rejected(
   failures, :komga, "a normalized root fact that dropped its trailing-slash filter",
   [[KOMGA_ROLE,
-    "    komga_library_normalized_root: \"{{ komga_library_root | regex_replace('/+$', '') }}\"\n",
-    "    komga_library_normalized_root: \"{{ komga_library_root }}\"\n"]],
+    "           'normalized_root': item.root | default('', true) | string | regex_replace('/+$', ''),\n",
+    "           'normalized_root': item.root | default('', true) | string,\n"]],
   "managed root matching is not trailing-slash normalized"
 )
 
@@ -456,13 +456,23 @@ check_rejected(
   failures, :komga, "a library repair whose selected identifier moved into a comment",
   [[KOMGA_ROLE,
     "    url: >-\n" \
-    "      {{ komga_api }}/api/v1/libraries/{{ komga_existing_library.id | urlencode }}\n" \
+    "      {{ komga_api }}/api/v1/libraries/{{ item.id | urlencode }}\n" \
     "    method: PATCH\n",
-    "    # {{ komga_existing_library.id | urlencode }}\n" \
+    "    # {{ item.id | urlencode }}\n" \
     "    url: >-\n" \
-    "      {{ komga_api }}/api/v1/libraries/{{ komga_existing_library.name | urlencode }}\n" \
+    "      {{ komga_api }}/api/v1/libraries/{{ item.name | urlencode }}\n" \
     "    method: PATCH\n"]],
   "library updates must preserve the selected identifier"
+)
+
+# The root move is the one repair the ambiguity guard exists to refuse, so the
+# clause that opens it for a single convergence must not be able to vanish.
+check_rejected(
+  failures, :komga, "an ambiguity guard that lost its one-convergence migration clause",
+  [[KOMGA_ROLE,
+    "        komga_library_root_migration_allowed | bool\n",
+    "        true\n"]],
+  "the library root move is not gated on the one-convergence input"
 )
 
 check_rejected(

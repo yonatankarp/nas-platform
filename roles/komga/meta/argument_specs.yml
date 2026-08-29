@@ -1,7 +1,7 @@
 ---
 argument_specs:
   main:
-    short_description: Deploy Komga and converge its administrator and comic library
+    short_description: Deploy Komga and converge its administrator and managed libraries
     options:
       platform_compose_kind:
         type: str
@@ -21,14 +21,33 @@ argument_specs:
       komga_claim_retries:
         type: int
         required: false
-      komga_library_name:
-        type: str
+      komga_libraries:
+        description: >-
+          The exact managed library set. Each entry declares its name, its API
+          root inside the container, and its own owned settings, which are
+          combined over komga_library_settings.
+        type: list
+        elements: dict
         required: false
-      komga_library_root:
-        type: str
-        required: false
+        options:
+          name:
+            type: str
+            required: true
+          root:
+            type: str
+            required: true
+          settings:
+            type: dict
+            required: false
       komga_library_settings:
+        description: Owned library settings shared by every entry of komga_libraries.
         type: dict
+        required: false
+      komga_library_root_migration_allowed:
+        description: >-
+          One-convergence input. When true, a library matched by its desired
+          name may have its root repaired. Never stored as a host variable.
+        type: bool
         required: false
       vault_komga_admin_email:
         type: str
