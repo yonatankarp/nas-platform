@@ -8,6 +8,9 @@ fake_bin=$(CDPATH= cd -P "$fake_bin" && pwd -P)
 docker_log=$fake_bin/docker.log
 prepull_bin=$(mktemp -d "${TMPDIR:-/tmp}/nas-platform-prepull-test.XXXXXX")
 pull_log=$prepull_bin/pull.log
+sleep_log=$prepull_bin/sleep.log
+prepull_output=$prepull_bin/prepull.output
+interrupt_tmp=$prepull_bin/interrupt-tmp
 immich_order_mutant=$fake_bin/immich-order-mutant.sh
 acquisition_runtime_mutant=$fake_bin/acquisition-runtime-mutant.sh
 idempotence_helper=$fake_bin/enabled-idempotence-helper.sh
@@ -30,7 +33,12 @@ cleanup() {
   rm -f "$namespace_helper"
   rm -f "$fake_bin/hostile-validator-ran"
   rmdir "$fake_bin"
-  rm -f "$prepull_bin/docker" "$pull_log"
+  rm -f "$prepull_bin/docker" "$prepull_bin/sleep" "$prepull_bin/od" \
+    "$pull_log" "$sleep_log" "$prepull_output"
+  if [ -d "$interrupt_tmp" ]; then
+    find "$interrupt_tmp" -depth -mindepth 1 -delete 2>/dev/null || true
+    rmdir "$interrupt_tmp" 2>/dev/null || true
+  fi
   rmdir "$prepull_bin"
 }
 trap cleanup EXIT HUP INT TERM
@@ -729,7 +737,13 @@ if [ "${1:-}" = pull ]; then
   printf '%s\n' "$2" >> "${STUB_PULL_LOG:?}"
   attempt=$(grep -Fxc -- "$2" "$STUB_PULL_LOG" || true)
   if [ "$attempt" -le "${STUB_PULL_REFUSALS:-0}" ]; then
-    printf 'toomanyrequests: retry-after: 218.093us, allowed: 44000/minute\n' >&2
+    if [ -n "${STUB_RETRY_AFTER_LINE:-}" ]; then
+      printf 'toomanyrequests: %s, allowed: 44000/minute\n' \
+        "$STUB_RETRY_AFTER_LINE" >&2
+    else
+      printf 'toomanyrequests: retry-after: %s, allowed: 44000/minute\n' \
+        "${STUB_RETRY_AFTER:-218.093us}" >&2
+    fi
     exit 1
   fi
   exit 0
@@ -740,6 +754,24 @@ printf 'unexpected docker invocation: %s\n' "$*" >&2
 exit 97
 EOF
 chmod +x "$prepull_bin/docker"
+
+cat > "$prepull_bin/sleep" <<'EOF'
+#!/bin/sh
+set -eu
+if [ "${STUB_SLEEP_INTERRUPT:-0}" = 1 ]; then
+  kill -TERM "$PPID"
+  exit 0
+fi
+printf '%s\n' "${1:?}" >> "${STUB_SLEEP_LOG:?}"
+EOF
+
+cat > "$prepull_bin/od" <<'EOF'
+#!/bin/sh
+set -eu
+printf '%s\n' "${STUB_RANDOM_VALUE:-0}"
+EOF
+
+chmod +x "$prepull_bin/docker" "$prepull_bin/sleep" "$prepull_bin/od"
 
 # Read back rather than restated: Renovate bumps every one of these digests.
 runner_image=$(sed -n 's/^runner_image=//p' "$integration")
@@ -768,14 +800,21 @@ run_prepull() {
   prepull_attempts=$2
   shift 2
   : > "$pull_log"
+  : > "$sleep_log"
+  : > "$prepull_output"
   prepull_status=0
   PATH="$prepull_bin:$PATH" \
     STUB_PULL_LOG=$pull_log \
+    STUB_SLEEP_LOG=$sleep_log \
     STUB_PULL_REFUSALS=$prepull_refusals \
+    STUB_RETRY_AFTER=${PREPULL_RETRY_AFTER:-218.093us} \
+    STUB_RETRY_AFTER_LINE=${PREPULL_RETRY_AFTER_LINE:-} \
+    STUB_RANDOM_VALUE=${PREPULL_RANDOM_VALUE:-0} \
     INTEGRATION_PREPULL_ONLY=1 \
     INTEGRATION_IMAGE_PULL_ATTEMPTS=$prepull_attempts \
-    INTEGRATION_IMAGE_PULL_DELAY=1 \
-    "$integration" "$@" >/dev/null 2>&1 || prepull_status=$?
+    INTEGRATION_IMAGE_PULL_DELAY=${PREPULL_DELAY:-1} \
+    INTEGRATION_IMAGE_PULL_MAX_DELAY=${PREPULL_MAX_DELAY:-60} \
+    "$integration" "$@" >"$prepull_output" 2>&1 || prepull_status=$?
 }
 
 assert_pull_set() {
@@ -791,6 +830,27 @@ assert_pull_count() {
   observed=$(grep -Fxc -- "$1" "$pull_log" || true)
   [ "$observed" -eq "$2" ] ||
     prepull_fail "expected $2 attempt(s) at $1, saw $observed"
+}
+
+assert_sleep_log() {
+  expected=$1
+  actual=$(cat "$sleep_log")
+  [ "$expected" = "$actual" ] ||
+    prepull_fail "expected sleeps [$expected], saw [$actual]"
+}
+
+# The assignments are a prefix on a function call, so POSIX keeps them set in the
+# caller after it returns. Unsetting them here is what stops a later case from
+# silently inheriting the last scenario's registry hint.
+assert_retry_after_sleep() {
+  retry_after_case=$1
+  expected_sleep=$2
+  PREPULL_RETRY_AFTER=$retry_after_case PREPULL_RANDOM_VALUE=0 PREPULL_DELAY=1 \
+    run_prepull 1 2 --suite foundation
+  [ "$prepull_status" -eq 0 ] ||
+    prepull_fail "retry-after $retry_after_case failed the pre-pull ($prepull_status)"
+  assert_sleep_log "$expected_sleep"
+  unset PREPULL_RETRY_AFTER PREPULL_RANDOM_VALUE PREPULL_DELAY
 }
 
 # A suite pulls the controller image plus the images of the services its tags
@@ -835,6 +895,105 @@ assert_pull_count "$runner_image" 3
 [ "$(wc -l < "$pull_log" | tr -d " ")" -eq 3 ] ||
   prepull_fail "foundation pulled service images it never converges: $(sort -u "$pull_log")"
 
+run_prepull 0 6 --suite foundation
+[ "$prepull_status" -eq 0 ] || prepull_fail "an answering registry failed"
+assert_sleep_log ""
+
+grep -qF 'LC_ALL=C awk' "$integration" ||
+  prepull_fail 'retry-after parser does not pin its numeric locale'
+assert_retry_after_sleep 500ns 2
+assert_retry_after_sleep 500us 2
+assert_retry_after_sleep 500µs 2
+assert_retry_after_sleep 500ms 2
+assert_retry_after_sleep 1.5s 3
+assert_retry_after_sleep 45 46
+assert_retry_after_sleep invalid 2
+
+# A hint the registry reports in minutes is honoured only up to the ceiling the
+# local ladder obeys. Sleeping "retry-after: 5m" literally would spend about
+# thirty-one minutes of the suite job's sixty on one image and then be killed
+# without a diagnostic, which is worse than reporting the refusal.
+assert_retry_after_sleep 1.5m 61
+assert_retry_after_sleep 5m 61
+assert_retry_after_sleep 999999999999999999999999999999999999s 61
+
+# Raising the ceiling is how an operator opts into honouring a longer hint.
+PREPULL_RETRY_AFTER=5m PREPULL_RANDOM_VALUE=0 PREPULL_DELAY=1 \
+  PREPULL_MAX_DELAY=120 run_prepull 1 2 --suite foundation
+[ "$prepull_status" -eq 0 ] || prepull_fail "raised ceiling failed ($prepull_status)"
+assert_sleep_log 121
+unset PREPULL_RETRY_AFTER PREPULL_RANDOM_VALUE PREPULL_DELAY PREPULL_MAX_DELAY
+
+# The parser reads the hint however the daemon spells it. A stricter match would
+# leave the whole retry-after path dead without failing anything.
+assert_retry_after_sleep_line() {
+  PREPULL_RETRY_AFTER_LINE=$1 PREPULL_RANDOM_VALUE=0 PREPULL_DELAY=1 \
+    run_prepull 1 2 --suite foundation
+  [ "$prepull_status" -eq 0 ] ||
+    prepull_fail "diagnostic [$1] failed the pre-pull ($prepull_status)"
+  assert_sleep_log "$2"
+  unset PREPULL_RETRY_AFTER_LINE PREPULL_RANDOM_VALUE PREPULL_DELAY
+}
+assert_retry_after_sleep_line 'Retry-After: 30' 31
+assert_retry_after_sleep_line 'retry-after : 30' 31
+assert_retry_after_sleep_line 'no hint here at all' 2
+
+PREPULL_RETRY_AFTER=584.244µs PREPULL_RANDOM_VALUE=0 PREPULL_DELAY=5 \
+  run_prepull 2 6 --suite foundation
+[ "$prepull_status" -eq 0 ] || prepull_fail "microsecond retry hint failed"
+assert_sleep_log "6
+11"
+unset PREPULL_RETRY_AFTER PREPULL_RANDOM_VALUE PREPULL_DELAY
+
+PREPULL_RETRY_AFTER=45s PREPULL_RANDOM_VALUE=3 PREPULL_DELAY=5 \
+  run_prepull 1 6 --suite foundation
+[ "$prepull_status" -eq 0 ] || prepull_fail "long retry hint failed"
+assert_sleep_log "49"
+unset PREPULL_RETRY_AFTER PREPULL_RANDOM_VALUE PREPULL_DELAY
+
+PREPULL_RETRY_AFTER=invalid PREPULL_RANDOM_VALUE=0 PREPULL_DELAY=10 \
+  PREPULL_MAX_DELAY=40 run_prepull 5 6 --suite foundation
+[ "$prepull_status" -eq 0 ] || prepull_fail "widened retry budget failed"
+assert_sleep_log "11
+21
+41
+41
+41"
+unset PREPULL_RETRY_AFTER PREPULL_RANDOM_VALUE PREPULL_DELAY PREPULL_MAX_DELAY
+
+PREPULL_RETRY_AFTER=20s PREPULL_RANDOM_VALUE=not-a-number PREPULL_DELAY=1 \
+  run_prepull 1 2 --suite foundation
+[ "$prepull_status" -eq 0 ] || prepull_fail "malformed entropy failed ($prepull_status)"
+fallback_sleep=$(cat "$sleep_log")
+[ "$fallback_sleep" -ge 21 ] && [ "$fallback_sleep" -le 25 ] ||
+  prepull_fail "entropy fallback sleep escaped its jitter range: $fallback_sleep"
+unset PREPULL_RETRY_AFTER PREPULL_RANDOM_VALUE PREPULL_DELAY
+
+PREPULL_RETRY_AFTER=invalid PREPULL_RANDOM_VALUE=0 PREPULL_DELAY=08 \
+  run_prepull 1 2 --suite foundation
+[ "$prepull_status" -eq 0 ] || prepull_fail "leading-zero delay failed ($prepull_status)"
+assert_sleep_log 9
+unset PREPULL_RETRY_AFTER PREPULL_RANDOM_VALUE PREPULL_DELAY
+
+PREPULL_RETRY_AFTER=invalid PREPULL_RANDOM_VALUE=74 \
+  PREPULL_DELAY=999999999999999999999999999999999999 \
+  run_prepull 1 2 --suite foundation
+[ "$prepull_status" -eq 0 ] || prepull_fail "oversized delay failed ($prepull_status)"
+assert_sleep_log 375
+unset PREPULL_RETRY_AFTER PREPULL_RANDOM_VALUE PREPULL_DELAY
+
+run_prepull 7 08 --suite foundation
+[ "$prepull_status" -eq 0 ] || prepull_fail "leading-zero attempt budget failed ($prepull_status)"
+assert_pull_count "$runner_image" 8
+
+run_prepull 10 999999999999999999999999999999999999 --suite foundation
+[ "$prepull_status" -ne 0 ] || prepull_fail 'oversized attempt budget escaped its ceiling'
+assert_pull_count "$runner_image" 10
+
+run_prepull 5 malformed --suite foundation
+[ "$prepull_status" -eq 0 ] || prepull_fail "malformed attempt budget removed the safe default"
+assert_pull_count "$runner_image" 6
+
 for project in bindery kapowarr pinchflat trailarr seerr; do
   run_prepull 0 4 --suite "$project"
   [ "$prepull_status" -eq 0 ] || prepull_fail "$project foundation pre-pull failed ($prepull_status)"
@@ -865,6 +1024,33 @@ run_prepull 3 2 --suite beszel
 assert_pull_count "$runner_image" 2
 [ "$(wc -l < "$pull_log" | tr -d " ")" -eq 2 ] ||
   prepull_fail "the pre-pull continued past an exhausted budget: $(cat "$pull_log")"
+grep -qF 'toomanyrequests: retry-after:' "$prepull_output" ||
+  prepull_fail 'exhausted pre-pull did not replay the registry diagnostic'
+
+mkdir "$interrupt_tmp"
+: > "$pull_log"
+: > "$sleep_log"
+: > "$prepull_output"
+prepull_status=0
+TMPDIR=$interrupt_tmp \
+  PATH="$prepull_bin:$PATH" \
+  STUB_PULL_LOG=$pull_log \
+  STUB_SLEEP_LOG=$sleep_log \
+  STUB_PULL_REFUSALS=1 \
+  STUB_RETRY_AFTER=1s \
+  STUB_RANDOM_VALUE=0 \
+  STUB_SLEEP_INTERRUPT=1 \
+  INTEGRATION_PREPULL_ONLY=1 \
+  INTEGRATION_IMAGE_PULL_ATTEMPTS=2 \
+  INTEGRATION_IMAGE_PULL_DELAY=1 \
+  INTEGRATION_IMAGE_PULL_MAX_DELAY=60 \
+  "$integration" --suite foundation >"$prepull_output" 2>&1 || prepull_status=$?
+[ "$prepull_status" -ne 0 ] ||
+  prepull_fail 'interrupted pre-pull unexpectedly completed'
+if find "$interrupt_tmp" -name 'nas-platform-pull-error.*' -print | grep -q .; then
+  prepull_fail 'interrupted pre-pull leaked a pull diagnostic file'
+fi
+rmdir "$interrupt_tmp"
 
 # The retry cannot be configured away: a zero budget is floored, so one refusal is
 # still survived.
