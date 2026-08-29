@@ -46,7 +46,9 @@ argument_specs:
       komga_library_root_migration_allowed:
         description: >-
           One-convergence input. When true, a library matched by its desired
-          name may have its root repaired. Never stored as a host variable.
+          name may have its root repaired. Pinned false in inventory and
+          flipped to true for the single reviewed convergence that performs a
+          migration, then restored.
         type: bool
         required: false
       vault_komga_admin_email:
