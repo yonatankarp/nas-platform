@@ -8,6 +8,14 @@
 
 **Tech Stack:** GitHub Actions, POSIX shell, Ruby 4-compatible tests, Git.
 
+**Status:** the fast path this plan built treated everything under `docs/` as
+inert, and the documentation checks it deferred to were later registered in the
+policy gate. A document the gate reads but the routing dropped could then break
+`main` and still merge green. The routing now sends `README.md` and every path
+under `docs/` to a `docs` job of its own, which runs the link and secrets-guide
+checks on a checkout and Ruby alone; the documents a heavyweight policy check
+reads by name select the `static` job as well.
+
 ---
 
 ### Task 1: Add the fail-closed change classifier

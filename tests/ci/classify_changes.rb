@@ -20,7 +20,7 @@ module ClassifyChanges
   end.freeze
   # Lanes that gate a workflow job of their own rather than dispatching an
   # integration suite. Every other lane is one suite.
-  JOB_LANES = %w[static reconciliation].freeze
+  JOB_LANES = %w[static docs reconciliation].freeze
   # `full` is the runner's own default and no CI lane dispatches it, so it is the
   # one row the classifier drops. A lane is its suite with hyphens written as
   # underscores, because a lane is also a GitHub Actions output key.
@@ -66,13 +66,18 @@ module ClassifyChanges
   # tests/renovate_policy_test.rb and by no play at all.
   #
   # The documents are here for the same reason and not because they are
-  # documentation: each one is read by a check registered in
-  # tests/validate-policy.sh, so editing it can break the gate. inert_path? drops
-  # every other path under docs/, which is what let a docs commit break the gate
-  # and still merge green, so a document that a check reads has to be rescued by
-  # name here. tests/ci/classify_changes_test.rb derives that list from the
-  # registered checks themselves and fails when one of them is missing, so the
-  # next doc-reading check cannot reopen the hole by being written.
+  # documentation: each one is read *by name* by a check that only the static job
+  # runs -- tests/policy_test.rb, the mutation harness's retired-declaration
+  # sweep, tests/policy_mac_test.rb, tests/policy_vault_test.rb,
+  # tests/bazarr_provider_schema_test.rb, tests/production_auto_deploy_role_test.rb
+  # -- and those checks are the policy gate itself, so they cannot move to a
+  # cheaper job. Everything else under docs/ is routed by docs_input? below to the
+  # docs job instead, which is why docs/secrets.md is no longer here: the only
+  # check that reads it, tests/secrets_docs_test.rb, runs there.
+  # tests/ci/classify_changes_test.rb derives the coupling from the registered
+  # checks themselves and fails when a document reaches no job that runs a check
+  # reading it, so the next doc-reading check cannot reopen the hole by being
+  # written.
   STATIC_ONLY_PATHS = %w[
     README.md
     docs/adding-a-service.md
@@ -83,12 +88,22 @@ module ClassifyChanges
     docs/getting-started-nas.md
     docs/getting-started.md
     docs/media-acquisition-phase1.md
-    docs/secrets.md
     generate-secrets.yml
     install-production-auto-deploy.yml
     renovate.json
     templates/vault-plain.yml.j2
   ].freeze
+  # Documentation is a gate input rather than inert text, and the coupling is a
+  # glob, not a list: tests/docs_links_test.rb reads README.md and every *.md
+  # under docs/, and it resolves each link against the working tree, so deleting
+  # an image a document points at breaks it too. Routing the whole directory here
+  # is what closes the half that rescuing documents by name never could -- a
+  # broken link under docs/superpowers/plans/ used to merge green and turn main
+  # red. It selects the docs job, which needs Ruby and the checkout and nothing
+  # else, rather than the fifteen-minute static job a typo fix has no business
+  # paying for. The documents STATIC_ONLY_PATHS still names select both.
+  DOCUMENTATION_PATHS = %w[README.md].freeze
+  DOCUMENTATION_PREFIXES = %w[docs/].freeze
   STATIC_ONLY_PREFIXES = %w[
     roles/image_prune/
     roles/production_auto_deploy/
@@ -164,11 +179,13 @@ module ClassifyChanges
     reconciliation_owned = false
     paths.each do |raw_path|
       path = raw_path.to_s.sub(%r{\A\./}, "")
+      documentation = docs_input?(path)
+      selection["docs"] = true if documentation
       if static_only_path?(path)
         selection["static"] = true
         next
       end
-      next if inert_path?(path)
+      next if documentation || inert_path?(path)
 
       if RECONCILIATION_OWNED_PATHS.include?(path)
         reconciliation_owned = true
@@ -257,13 +274,21 @@ module ClassifyChanges
     SUITES.filter_map { |lane, suite| suite if selection.fetch(lane) }
   end
 
+  # Reached only after docs_input? has claimed README.md and everything under
+  # docs/, so no documentation the link gate reads can be called inert here. What
+  # is left is Markdown the gate does not read at all -- a stray note beside a
+  # role -- and editor droppings.
   def inert_path?(path)
-    return true if path == "README.md" || path == ".gitignore" || path.match?(%r{\ALICENSE(?:\.[^/]+)?\z})
+    return true if path == ".gitignore" || path.match?(%r{\ALICENSE(?:\.[^/]+)?\z})
     return true if path.match?(%r{\A(?:\.idea|\.vscode)/}) || path == ".editorconfig"
-    return true if path.start_with?("docs/")
     return false if path == "AGENTS.md" || path.match?(%r{\A(?:tests|fixtures|scripts)/})
 
     path.end_with?(".md")
+  end
+
+  def docs_input?(path)
+    DOCUMENTATION_PATHS.include?(path) ||
+      DOCUMENTATION_PREFIXES.any? { |prefix| path.start_with?(prefix) }
   end
 
   def static_only_path?(path)
