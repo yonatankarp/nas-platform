@@ -44,4 +44,9 @@ services:
     security_opt:
       - no-new-privileges:true
     restart: unless-stopped
+    # The source list and download history are a SQLite database under a
+    # recovery: critical config directory. 30s commits it. A yt-dlp download cut
+    # short is re-queued from that same database, so the window does not wait
+    # for one.
+    stop_grace_period: 30s
     logging: *default-logging

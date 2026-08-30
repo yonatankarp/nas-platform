@@ -50,6 +50,12 @@ services:
       timeout: 10s
       retries: 5
       start_period: 60s
+    # SABnzbd answers SIGTERM by pausing the active download and writing the
+    # queue and history admin under its recovery: critical config directory. A
+    # minute lets that finish, so a restart resumes the transfer instead of
+    # re-fetching it. Unpackerr deliberately gets no window: it holds no
+    # database, and a half-finished extraction is discarded and retried.
+    stop_grace_period: 1m
 
   unpackerr:
     <<: *service-defaults

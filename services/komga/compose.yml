@@ -34,4 +34,8 @@ services:
     security_opt:
       - no-new-privileges:true
     restart: unless-stopped
+    # Komga keeps its library database and its search index under a recovery:
+    # critical config directory, and a scan writes to both. 30s covers the
+    # commit and the index flush; the scan itself resumes on the next start.
+    stop_grace_period: 30s
     logging: *default-logging

@@ -27,6 +27,11 @@ services:
     security_opt:
       - no-new-privileges:true
     restart: unless-stopped
+    # Valkey answers SIGTERM by writing one final snapshot to /data before it
+    # exits. That directory is recovery: cache — the task queue is rebuilt from
+    # Postgres — so this window is about exiting with the write finished rather
+    # than about protecting the data. 30s is well past what the snapshot costs.
+    stop_grace_period: 30s
     healthcheck:
       test: [CMD, valkey-cli, ping]
       interval: 10s
@@ -54,6 +59,13 @@ services:
     security_opt:
       - no-new-privileges:true
     restart: unless-stopped
+    # The image's STOPSIGNAL is SIGINT, which is a Postgres fast shutdown:
+    # connections dropped, open transactions aborted, then a checkpoint that
+    # flushes every dirty buffer. A document archive's working set is small, so
+    # a minute is far past what that checkpoint costs — and this directory is
+    # recovery: critical, where being killed mid-checkpoint means coming back
+    # through WAL recovery.
+    stop_grace_period: 1m
     healthcheck:
       test: [CMD-SHELL, "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s
@@ -127,6 +139,12 @@ services:
     security_opt:
       - no-new-privileges:true
     restart: unless-stopped
+    # Consumption moves a scanned original into the recovery: critical media
+    # tree and writes its record to Postgres. A minute lets the document being
+    # consumed reach both, so a shutdown does not leave a file in the archive
+    # that no record names. OCR of a queued document is not waited for: it is
+    # re-queued in the broker and runs again.
+    stop_grace_period: 1m
     logging: *default-logging
 
   gotenberg:

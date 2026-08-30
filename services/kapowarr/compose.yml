@@ -49,4 +49,8 @@ services:
     security_opt:
       - no-new-privileges:true
     restart: unless-stopped
+    # /app/db is the SQLite database of the whole comic library and is recovery:
+    # critical. 30s commits the open transaction; an interrupted download is
+    # already retried from the queue that database holds.
+    stop_grace_period: 30s
     logging: *default-logging

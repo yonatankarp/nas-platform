@@ -19,6 +19,11 @@ x-service-defaults: &service-defaults
   security_opt:
     - no-new-privileges:true
   restart: unless-stopped
+  # Each of these owns a SQLite database under a recovery: critical config
+  # directory. A shutdown only has to commit the open transaction and check the
+  # write-ahead log back into it; 30s is far past that and short enough that a
+  # stack restart stays quick.
+  stop_grace_period: 30s
   logging: *default-logging
   networks:
     - default

@@ -550,6 +550,18 @@ The policy test enforces every one of these properties:
   relative bind mount. Hardcoding `/volume1/...` is rejected outright, because
   the same file has to run unmodified on the NAS, on a Mac sandbox and in CI.
 
+A container that owns state — anything mounting a `recovery: critical` path, or
+writing into the media tree — declares `stop_grace_period` with the reason beside
+it, because Docker's undeclared ten seconds is a default nobody chose. The number
+comes from what that particular software has to flush: a Postgres fast shutdown
+checkpoints every dirty buffer and gets one to two minutes, a Valkey snapshot or
+a SQLite commit gets thirty seconds, an importer gets long enough to finish the
+file it is writing but not long enough to wait on work that is simply re-queued.
+Containers that hold nothing — renderers, parsers, socket proxies, model caches —
+declare nothing and keep the default. This is judgement, not a policy check:
+there is no property that can tell the two apart, so state the reasoning in the
+comment.
+
 A service that runs as a direct numeric user takes the shared platform identity,
 `user: "${NAS_UID:?}:${NAS_GID:?}"`, never a literal pair — even one that happens
 to equal today's `nas_uid` and `nas_gid`. The two variables reach the container
