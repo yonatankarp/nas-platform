@@ -255,7 +255,8 @@ Two consequences worth keeping:
 Safe to commit: Compose definitions, pinned digests, roles, the **encrypted**
 vault, documentation. Never commit: the vault password, any decrypted vault
 copy, rendered `.env` files, plaintext credentials, or application data. At
-runtime plaintext lives in service `.env` files, Dozzle's users file, Beszel's
-private key, and application data — treat those and their backups as
-secret-bearing. Losing the vault password means regenerating every credential;
-there is no backdoor.
+runtime plaintext lives in service `.env` files, Dozzle's whole data directory
+(its users file, plus the dispatcher record whose `Authorization: Bearer`
+header the platform POSTs in), Beszel's private key, and application data —
+treat those and their backups as secret-bearing. Losing the vault password
+means regenerating every credential; there is no backdoor.
