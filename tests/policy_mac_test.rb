@@ -123,19 +123,67 @@ check(failures, mac_run.include?('mktemp -d "$temporary_parent/nas-platform-mac.
 check(failures, mac_run.include?('export PLATFORM_MEDIA_NETWORK=$project_name-media-control') &&
                 mac_verify.include?("platform_verify_media_acquisition_foundation"),
       "Mac lifecycle must export and select the derived media acquisition network verifier")
+# These stay literal exports in run.sh, so a literal grep is still the right
+# assertion for them.
 %w[
   PLATFORM_MAC_SANDBOX PLATFORM_DOCKER_ROOT PLATFORM_MEDIA_ROOT
   PLATFORM_FIXTURE_ROOT PLATFORM_REPORT_ROOT PLATFORM_PROOF_LANE
-  PLATFORM_PROJECT_NAME PLATFORM_BESZEL_PORT PLATFORM_NTFY_PORT PLATFORM_DOZZLE_PORT
-  PLATFORM_AUDIOBOOKSHELF_PORT
-  PLATFORM_PAPERLESS_PORT
-  PLATFORM_RADARR_PORT PLATFORM_SONARR_PORT PLATFORM_PROWLARR_PORT
-  PLATFORM_BAZARR_PORT PLATFORM_SABNZBD_PORT
-  COMPOSE_PROJECT_NAME
+  PLATFORM_PROJECT_NAME COMPOSE_PROJECT_NAME
 ].each do |variable|
   check(failures, mac_run.include?("export #{variable}="),
         "Mac lifecycle must export #{variable}")
 end
+
+# The service ports are no longer literal exports: run.sh derives them from
+# MAC_SERVICE_PORT_ORDER through mac_export_service_ports. Grepping for eleven
+# literal `export PLATFORM_<SERVICE>_PORT=` strings is not available any more,
+# and it was never the stronger check: it pinned ten of the fifteen services --
+# Komga, Jellyfin, Immich, Pinchflat and Kapowarr were never named -- and it
+# proved only that the text existed, never that a port reached the variable.
+# Running the real derivation over a seeded roster proves both, for all fifteen.
+mac_port_roster = mac_lib[/^MAC_SERVICE_PORT_ORDER='([^']*)'/m, 1].to_s.split
+check(failures, mac_port_roster.length >= 15 &&
+                mac_port_roster.uniq.length == mac_port_roster.length &&
+                mac_port_roster.all? { |service| service.match?(/\A[a-z][a-z0-9]*\z/) },
+      "Mac lifecycle must declare a distinct-service port roster")
+mac_port_probe = <<~PROBE
+  set -eu
+  . "$1"
+  probe_index=0
+  for probe_service in $MAC_SERVICE_PORT_ORDER; do
+    probe_index=$((probe_index + 1))
+    eval "${probe_service}_port=$((40000 + probe_index))"
+  done
+  mac_export_service_ports
+  env | grep '^PLATFORM_[A-Z0-9_]*_PORT=' | LC_ALL=C sort
+PROBE
+mac_port_exports, mac_port_probe_status =
+  if mac_lib.empty?
+    ["", nil]
+  else
+    Open3.capture2e({ "PATH" => ENV.fetch("PATH", "/usr/bin:/bin"), "LC_ALL" => "C" },
+                    "/bin/sh", "-c", mac_port_probe, "sh", mac_lib_path,
+                    unsetenv_others: true)
+  end
+expected_port_exports = mac_port_roster.each_with_index.map do |service, index|
+  "PLATFORM_#{service.upcase}_PORT=#{40_001 + index}"
+end.sort
+check(failures, !mac_lib.empty? && mac_port_probe_status.success? &&
+                mac_port_exports.split("\n") == expected_port_exports,
+      "Mac lifecycle must export one PLATFORM_<SERVICE>_PORT per roster service")
+check(failures, mac_run.match?(/^mac_export_service_ports$/),
+      "Mac lifecycle must export the roster ports it derives")
+
+# The roster and report.rb's validated port fields are two lists that must name
+# the same services. Nothing else notices a service added to one and not the
+# other until a full Mac run fails on an unrecognised option.
+mac_report_path = File.join(ROOT, "tests", "mac", "report.rb")
+mac_report = File.file?(mac_report_path) ? File.read(mac_report_path) : ""
+mac_report_port_fields = mac_report[/service_port_fields = %w\[(.*?)\]/m, 1].to_s.split
+check(failures, !mac_report_port_fields.empty? &&
+                mac_report_port_fields.sort ==
+                  mac_port_roster.map { |service| "#{service}_port" }.sort,
+      "Mac report input must validate exactly the roster's service ports")
 check(failures, mac_cleanup.include?('. "$mac_repo_dir/tests/sandbox_cleanup.sh"') &&
                 mac_cleanup.include?('. "$mac_repo_dir/tests/integration_lock.sh"') &&
                 mac_cleanup.include?('acquire_integration_lock "$mac_cleanup_parent"') &&

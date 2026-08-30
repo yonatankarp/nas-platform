@@ -187,9 +187,18 @@ places a new vault credential lands (`docs/secrets.md` among them, enforced by
 `.github/workflows/ci.yml` classifies the diff with
 `tests/ci/classify_changes.rb` into a `static` job and a matrix of integration
 `suites`, then `tests/ci/validate_results.rb` decides pass/fail across all legs.
-Routing fails open: an unmapped path runs every lane, so a missed CI entry costs
-time rather than correctness. `tests/ci/workflow_test.rb` pins the workflow's
-own shape.
+A pull request classifies its own base/head diff; a push to `main` classifies
+the merge it just landed — `github.event.before`, falling back to the first
+parent — rather than sweeping the whole repository a second time against a tree
+its pull request already tested. `--full` is what the nightly `schedule` and
+`workflow_dispatch` request, and what a push falls back to when it has no base
+to diff against, because routing fails open: an unmapped path runs every lane,
+so a missed CI entry costs time rather than correctness. Only a pull request
+cancels its own superseded runs; a push to `main` queues instead, since its run
+is the only one that will ever see the tree it merged.
+`tests/ci/workflow_test.rb` pins the workflow's own shape, and
+`tests/ci/classify_changes_test.rb` runs the classify step's own shell against
+synthetic histories.
 
 ### The `static` budget, and the one way it keeps being blown
 

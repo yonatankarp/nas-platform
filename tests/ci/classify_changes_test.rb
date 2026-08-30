@@ -540,6 +540,154 @@ Dir.mktmpdir("classify-changes-cli-") do |root|
         "--full CLI mode must emit an untagged full-site selection: #{stdout.inspect}")
 end
 
+# How a push to main is classified is decided in shell, in the workflow's own
+# classify step, and it is the half of the routing that says whether a merge costs
+# the 202 runner-minutes a full sweep took or the handful its own diff is worth.
+# The step's `run:` block is lifted out of the workflow and executed against
+# synthetic histories rather than reimplemented here, so a rewrite that quietly
+# returns to sweeping -- or, worse, one that classifies nothing and lets every job
+# skip into a green run that tested nothing -- fails here rather than on main.
+CI_WORKFLOW_PATH = File.expand_path("../../.github/workflows/ci.yml", __dir__)
+CLASSIFY_STEP = begin
+  steps = YAML.safe_load_file(CI_WORKFLOW_PATH).dig("jobs", "changes", "steps")
+  step = Array(steps).find { |candidate| candidate.is_a?(Hash) && candidate["id"] == "classify" }
+  step && step["run"].to_s
+end
+
+# A repository the classifier can run inside: it needs its own script and the suite
+# table beside it, committed first so they never appear in a diff under test.
+def init_push_repository(root)
+  system("git", "init", "-q", root, exception: true)
+  system("git", "-C", root, "config", "user.email", "ci@example.invalid", exception: true)
+  system("git", "-C", root, "config", "user.name", "CI Test", exception: true)
+  FileUtils.mkdir_p(File.join(root, "tests", "ci"))
+  %w[classify_changes.rb suites.conf].each do |name|
+    FileUtils.cp(File.expand_path(name, __dir__), File.join(root, "tests", "ci", name))
+  end
+end
+
+def push_commit(root, *paths)
+  paths.each do |path|
+    absolute = File.join(root, path)
+    FileUtils.mkdir_p(File.dirname(absolute))
+    File.write(absolute, "owned content for #{path}\n#{Time.now.to_f}\n")
+  end
+  system("git", "-C", root, "add", "-A", exception: true)
+  system("git", "-C", root, "commit", "-qm", "commit #{paths.join(' ')}", exception: true)
+  git_revision(root, "HEAD")
+end
+
+def git_revision(root, revision)
+  output, status = Open3.capture2("git", "-C", root, "rev-parse", revision)
+  raise "failed to resolve #{revision}" unless status.success?
+
+  output.strip
+end
+
+# Exactly what the runner does: the step's shell, the push event, and nothing in
+# the environment but the values the workflow passes through `env:`.
+def classify_push(root, before)
+  script = File.join(root, ".classify-step.sh")
+  File.write(script, CLASSIFY_STEP.to_s)
+  output_path = File.join(root, ".github-output")
+  FileUtils.rm_f(output_path)
+  environment = {
+    "EVENT_NAME" => "push", "PR_BASE" => "", "PR_HEAD" => "",
+    "PUSH_BEFORE" => before, "GITHUB_OUTPUT" => output_path
+  }
+  _stdout, stderr, status = Open3.capture3(environment, "bash", "-e", script, chdir: root)
+  [status, File.exist?(output_path) ? File.read(output_path) : "", stderr]
+end
+
+def push_lanes(output)
+  output.lines.filter_map { |line| line.split("=", 2).first if line.strip.end_with?("=true") }
+end
+
+check(failures, !CLASSIFY_STEP.to_s.empty?,
+      "the changes job must still carry a step with id `classify`")
+
+unless CLASSIFY_STEP.to_s.empty?
+  # A squash merge: main gains one commit, and `before` is the tip it replaced.
+  Dir.mktmpdir("classify-push-squash-") do |root|
+    init_push_repository(root)
+    before = push_commit(root, "roles/dozzle/tasks/main.yml")
+    push_commit(root, "roles/beszel/tasks/main.yml")
+    status, output, stderr = classify_push(root, before)
+    lanes = push_lanes(output)
+    check(failures, status.success?, "a squash merge must classify cleanly: #{stderr.inspect}")
+    check(failures, lanes.include?("beszel") && !lanes.include?("dozzle"),
+          "a squash merge must select only the lanes it touched, got #{lanes.inspect}")
+    check(failures, !lanes.include?("immich"),
+          "a squash merge must not fall back to a full sweep, got #{lanes.inspect}")
+  end
+
+  # A merge commit: HEAD has two parents, and the diff has to be the whole branch
+  # that was merged rather than one parent's side of it.
+  Dir.mktmpdir("classify-push-merge-") do |root|
+    init_push_repository(root)
+    before = push_commit(root, "roles/dozzle/tasks/main.yml")
+    system("git", "-C", root, "checkout", "-q", "-b", "feature", exception: true)
+    push_commit(root, "roles/immich/tasks/main.yml")
+    push_commit(root, "roles/komga/tasks/main.yml")
+    system("git", "-C", root, "checkout", "-q", "-", exception: true)
+    system("git", "-C", root, "merge", "-q", "--no-ff", "-m", "merge", "feature", exception: true)
+    status, output, stderr = classify_push(root, before)
+    lanes = push_lanes(output)
+    check(failures, status.success?, "a merge commit must classify cleanly: #{stderr.inspect}")
+    check(failures, lanes.include?("immich") && lanes.include?("komga"),
+          "a merge commit must classify the whole branch it merged, got #{lanes.inspect}")
+    check(failures, !lanes.include?("dozzle"),
+          "a merge commit must not select lanes it did not touch, got #{lanes.inspect}")
+  end
+
+  # A direct push of several commits. This is the case `HEAD^` alone gets wrong:
+  # it would see only the last commit and drop every lane the earlier ones touched.
+  Dir.mktmpdir("classify-push-multi-") do |root|
+    init_push_repository(root)
+    before = push_commit(root, "roles/dozzle/tasks/main.yml")
+    push_commit(root, "roles/jellyfin/tasks/main.yml")
+    push_commit(root, "roles/paperless-ngx/tasks/main.yml")
+    status, output, stderr = classify_push(root, before)
+    lanes = push_lanes(output)
+    check(failures, status.success?, "a multi-commit push must classify cleanly: #{stderr.inspect}")
+    check(failures, lanes.include?("paperless"),
+          "a multi-commit push must select the last commit's lane, got #{lanes.inspect}")
+    check(failures, lanes.include?("jellyfin"),
+          "a multi-commit push must classify every commit it carried, not just HEAD^: " \
+          "#{lanes.inspect}")
+  end
+
+  # The two pushes with no usable `before`: a ref reported as all zeros, and a
+  # force push naming a commit this clone never fetched. Both fall back to HEAD^,
+  # which still classifies rather than sweeping.
+  ["0" * 40, "1" * 40, ""].each do |unusable|
+    Dir.mktmpdir("classify-push-fallback-") do |root|
+      init_push_repository(root)
+      push_commit(root, "roles/dozzle/tasks/main.yml")
+      push_commit(root, "roles/audiobookshelf/tasks/main.yml")
+      status, output, stderr = classify_push(root, unusable)
+      lanes = push_lanes(output)
+      check(failures, status.success?,
+            "an unusable before=#{unusable.inspect} must still classify: #{stderr.inspect}")
+      check(failures, lanes.include?("audiobookshelf") && !lanes.include?("dozzle"),
+            "before=#{unusable.inspect} must fall back to the first parent, got #{lanes.inspect}")
+    end
+  end
+
+  # Nothing to diff against at all. Routing fails open, so this must reach `--full`
+  # and select every lane -- never an empty selection, which would skip every job
+  # and conclude the run green having tested nothing.
+  Dir.mktmpdir("classify-push-rootless-") do |root|
+    init_push_repository(root)
+    push_commit(root, "roles/dozzle/tasks/main.yml")
+    status, output, stderr = classify_push(root, "0" * 40)
+    check(failures, status.success?,
+          "a push with no parent must still classify: #{stderr.inspect}")
+    check(failures, output == expected_full_output,
+          "a push with no parent must fail open to a full run, got #{output.inspect}")
+  end
+end
+
 # Every document a registered check reads is a CI input, and until the docs job
 # existed inert_path? dropped all of docs/, so such a document reached no job at
 # all unless STATIC_ONLY_PATHS rescued it by name. That is how a documentation

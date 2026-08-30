@@ -215,13 +215,21 @@ if triggers.is_a?(Hash)
 end
 
 concurrency = workflow.fetch("concurrency", {})
+# The event name belongs in the key. Without it `push` and `schedule` both resolve
+# to refs/heads/main, and the nightly sweep -- which still cancels, because it is
+# not a push -- would kill an in-flight post-merge run once a night.
 check(
   failures,
   expression(concurrency["group"]) ==
-    'ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}',
-  "concurrency group must use PR number with a ref fallback"
+    'ci-${{ github.workflow }}-${{ github.event_name }}-' \
+    '${{ github.event.pull_request.number || github.ref }}',
+  "concurrency group must separate events and use PR number with a ref fallback"
 )
-check(failures, concurrency["cancel-in-progress"] == true, "concurrency cancellation must be enabled")
+# Only a pull request supersedes itself. A push to main is the only run that will
+# ever see the tree it merged, and cancelling those ended 21% of recent main runs
+# without a verdict. This is an expression, so it parses as a string, not a boolean.
+check(failures, expression(concurrency["cancel-in-progress"]) == "${{ github.event_name == 'pull_request' }}",
+      "only pull requests may cancel their own superseded runs")
 check(failures, workflow.dig("permissions", "contents") == "read", "contents permission must be read-only")
 # Registry access is granted to the one job that pulls images, not to the workflow.
 # Asserting the top-level block stays a single key is what stops the narrow grant
@@ -256,17 +264,33 @@ check(failures, classify.dig("env", "PR_BASE") == "${{ github.event.pull_request
       "classifier must receive the PR base SHA through env")
 check(failures, classify.dig("env", "PR_HEAD") == "${{ github.event.pull_request.head.sha }}",
       "classifier must receive the PR head SHA through env")
+check(failures, classify.dig("env", "PUSH_BEFORE") == "${{ github.event.before }}",
+      "classifier must receive the ref a push replaced through env")
 classifier_run = classify["run"].to_s
 check(failures, classifier_run.include?('[ "$EVENT_NAME" = pull_request ]'),
-      "classifier must branch only for pull_request")
+      "classifier must recognise the pull_request event by name")
 check(failures, classifier_run.include?('BASE=$PR_BASE') && classifier_run.include?('HEAD=$PR_HEAD'),
       "classifier must set BASE and HEAD only inside the pull_request branch")
 check(failures,
       classifier_run.include?('ruby tests/ci/classify_changes.rb --diff "$BASE" "$HEAD" --github-output "$GITHUB_OUTPUT"'),
       "pull requests must classify the base/head diff safely")
+# A push to main used to sweep the whole repository -- 202 runner-minutes across 23
+# jobs -- on top of the routed matrix the pull request had already run against an
+# identical tree. It now classifies the merge it landed. `--full` stays reachable
+# twice and only twice: once as the fail-open fallback for a push whose base cannot
+# be resolved, and once as the else branch schedule and workflow_dispatch take.
+check(failures, classifier_run.include?('[ "$EVENT_NAME" = push ]'),
+      "classifier must recognise the push event by name")
 check(failures,
-      classifier_run.include?('ruby tests/ci/classify_changes.rb --full --github-output "$GITHUB_OUTPUT"'),
-      "non-PR events must request a full run")
+      classifier_run.include?('ruby tests/ci/classify_changes.rb --diff "$PUSH_BASE" HEAD --github-output "$GITHUB_OUTPUT"'),
+      "a push must classify the diff it landed rather than sweeping the repository")
+check(failures, classifier_run.include?('"$PUSH_BEFORE"') && classifier_run.include?('"HEAD^"'),
+      "a push must prefer the ref it replaced and fall back to the first parent")
+full_requests =
+  classifier_run.scan('ruby tests/ci/classify_changes.rb --full --github-output "$GITHUB_OUTPUT"').length
+check(failures, full_requests == 2,
+      "--full must be reachable exactly twice -- the push fallback and schedule/dispatch -- " \
+      "found #{full_requests}")
 check(failures, !classifier_run.include?("github.event.pull_request"),
       "event payload expressions must not be interpolated into shell source")
 
