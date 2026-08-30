@@ -13,3 +13,69 @@ kapowarr_library_root: /comics
 kapowarr_compose_project_name: >-
   {{ (platform_project_name ~ '-kapowarr')
      if platform_project_name | default('') | length > 0 else 'kapowarr' }}
+
+# The application settings this platform declares. Kapowarr's settings interface
+# is a partial merge -- a request carrying two keys changes those two and drops
+# nothing -- so this mapping is the whole of what a converge writes, and a key
+# absent from it is left exactly as the application holds it.
+#
+# The values are Kapowarr v1.3.1's own defaults. That is deliberate: the first
+# converge against an untouched deployment writes nothing, and every later one
+# reverts whatever was changed in the web interface. Changing a value here is
+# how the platform's opinion is expressed, and the naming group is the one with
+# a consequence outside Kapowarr, because Komga indexes the directory these
+# templates name.
+#
+# Numeric keys are range-checked rather than type-checked, and a request is
+# refused whole if any single key in it is invalid, so a wrong value here fails
+# the converge loudly instead of half-applying.
+kapowarr_settings:
+  volume_folder_naming: "{series_name}/Volume {volume_number} ({year})"
+  file_naming: "{series_name} ({year}) Volume {volume_number} Issue {issue_number}"
+  file_naming_empty: "{series_name} ({year}) Volume {volume_number} Issue {issue_number}"
+  file_naming_special_version: "{series_name} ({year}) Volume {volume_number} {special_version}"
+  file_naming_vai: "{series_name} ({year}) Volume {issue_number}"
+  volume_padding: 2
+  issue_padding: 3
+  long_special_version: false
+  replace_illegal_characters: true
+  rename_downloaded_files: true
+  create_empty_volume_folders: true
+  delete_empty_folders: false
+  unmonitor_deleted_issues: false
+  convert: false
+  extract_issue_ranges: false
+  concurrent_direct_downloads: 1
+  failing_download_timeout: 0
+  delete_completed_downloads: true
+  seeding_handling: copy
+  date_type: cover_date
+
+# Kapowarr refuses a subset of its download services and accepts only a
+# permutation of every service the deployed version knows, so preference cannot
+# be declared as a short list. It is declared here as a partial ordering
+# instead: the services named below are placed first, in this order, and every
+# other service the deployed version reports keeps its relative order behind
+# them. A Kapowarr release that adds or renames a service therefore lands at the
+# end of the order rather than failing the converge on a rejected permutation.
+kapowarr_service_preference:
+  - Mega
+  - MediaFire
+  - WeTransfer
+  - Pixeldrain
+  - GetComics
+  - GetComics (torrent)
+
+# Kapowarr masks its stored credentials on read -- both halves of the
+# administrator identity come back as literal asterisks rather than as the value
+# or as an empty string. A declaration naming one could never match what is read
+# back, so the settings task would rewrite it on every converge and never report
+# a converged state. These keys are refused in the declaration rather than
+# silently skipped, so the failure names the cause.
+kapowarr_settings_credential_keys:
+  - api_key
+  - auth_username
+  - auth_password
+  - comicvine_api_key
+  - proxy_username
+  - proxy_password

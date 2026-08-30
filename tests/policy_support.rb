@@ -31,6 +31,42 @@ IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
     CONTRACT_BASENAME_EXCEPTIONS.fetch(service_name, service_name)
   end
 
+  # The manifest's own statuses, read once. EXPECTED_SERVICES above stays the
+  # authorization gate — a service is admitted by being written there, and by the
+  # cross-check that the manifest names exactly those services. What follows *from*
+  # a status is derived through the three readers below instead of restated,
+  # because a second copy of the roster is a copy no test says must agree with the
+  # first: promoting one service used to mean hand-editing status literals in half
+  # a dozen test files, and nothing failed when one was missed.
+  #
+  # Malformed or missing input yields an empty mapping rather than raising. The
+  # manifest's shape is policed by policy_test.rb and policy_vault_test.rb, which
+  # name the defect; a stack trace out of a caller that only wanted the roster
+  # would bury that diagnosis under an unrelated suite.
+  def service_statuses(root)
+    document = begin
+      YAML.safe_load_file(File.join(root, "services", "manifest.yml"))
+    rescue Errno::ENOENT, Psych::Exception
+      nil
+    end
+    entries = document.is_a?(Hash) && document["services"].is_a?(Array) ? document["services"] : []
+    entries.each_with_object({}) do |entry, statuses|
+      next unless entry.is_a?(Hash) && entry["name"].is_a?(String) && entry["status"].is_a?(String)
+
+      statuses[entry["name"]] = entry["status"]
+    end
+  end
+
+  def planned_services(root)
+    service_statuses(root).select { |_name, status| status == "planned" }.keys.freeze
+  end
+
+  # "accepted" counts as deployed: the status vocabulary distinguishes a service
+  # that has passed its operator handoff from one that has not, and both run.
+  def implemented_services(root)
+    service_statuses(root).select { |_name, status| IMPLEMENTED_STATUSES.include?(status) }.keys.freeze
+  end
+
   def duplicate_yaml_keys(node, duplicates = [])
     if node.is_a?(Psych::Nodes::Mapping)
       seen = {}
@@ -319,5 +355,48 @@ IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
 
     _stdout, _stderr, status = Open3.capture3("sh", "-n", contract_path)
     status.success?
+  end
+end
+
+# The mechanical scaffolding every check script in this suite used to retype:
+# where the repository root is, how one failure joins the accumulator, how a
+# subprocess's output is quoted in a diagnostic, and how the run reports itself.
+#
+# It lives beside PolicySupport rather than in a file of its own because the
+# reduced fixture sandbox in tests/policy_mutation_support.rb copies a stated
+# list of paths. policy_support.rb is already on that list, so a script that
+# starts requiring this module keeps working inside the sandbox; a second
+# support file would fail there for a reason unrelated to the mutation the
+# sandbox exists to check.
+module TestScaffold
+  # Resolved from this file, so a check under tests/, tests/ci/ or tests/mac/
+  # all name the same root without each restating its own depth.
+  ROOT = File.expand_path("..", __dir__)
+
+  module_function
+
+  def check(failures, condition, message)
+    failures << message unless condition
+  end
+
+  # The tail of a subprocess's output as one grep-able line, blank lines
+  # dropped. The copies of this picked 8, 10 or 12 lines for no recorded
+  # reason; a caller that needs a particular depth still says so.
+  def failure_tail(output, lines = 10)
+    output.lines.map(&:strip).reject(&:empty?).last(lines).join(" | ")
+  end
+
+  # The epilogue. +subject+ is the line a passing run prints; +summary+ is the
+  # counted noun a failing run aborts with. Both are stated by the caller rather
+  # than derived, because what a check proves is the one part of this that is
+  # never mechanical.
+  def report(failures, subject, summary)
+    if failures.empty?
+      puts subject
+      return
+    end
+
+    failures.each { |failure| warn "FAIL #{failure}" }
+    abort "#{failures.length} #{summary}"
   end
 end

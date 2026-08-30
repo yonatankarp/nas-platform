@@ -5,13 +5,17 @@ require "base64"
 require "json"
 require "open3"
 require "shellwords"
-require "socket"
 require "tmpdir"
-require "timeout"
 require "uri"
 require "yaml"
+require_relative "policy_support"
 
-ROOT = File.expand_path("..", __dir__)
+require_relative "policy_support"
+require_relative "http_fixture_support"
+
+include HttpFixtureSupport
+include TestScaffold
+
 DOZZLE_TASKS = File.join(ROOT, "roles", "dozzle", "tasks", "managed_users.yml")
 DOZZLE_MAIN = File.join(ROOT, "roles", "dozzle", "tasks", "main.yml")
 DOZZLE_TEMPLATE = File.join(ROOT, "roles", "dozzle", "templates", "users.yml.j2")
@@ -29,34 +33,248 @@ BCRYPT_B = "$2b$12$bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 TOKEN_A = "tk_aaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 TOKEN_B = "tk_bbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
-SOURCE_REQUIREMENTS = {
-  "Dozzle safe load" => ["dozzle_tasks", "managed_users_yaml"],
-  "Dozzle atomic read" => ["dozzle_tasks", "atomic_safe_slurp"],
-  "Dozzle explicit presence" => ["dozzle_tasks", "dozzle_existing_key_present"],
-  "Dozzle hash refusal" => ["dozzle_tasks", "will not replace"],
-  "Dozzle unmanaged preservation" => ["dozzle_tasks", "dozzle_unmanaged_users"],
-  "Dozzle rendered loop" => ["dozzle_template", "{% for"],
-  "Dozzle managed authentication" => ["dozzle_main", "vault_managed_dozzle_users"],
-  "strict YAML alias refusal" => ["state_filter", "yaml.tokens.AnchorToken"],
-  "strict YAML duplicate refusal" => ["state_filter", "duplicate normalized user identities"],
-  "ntfy prior ownership preflight" => ["ntfy_main", "Inspect existing ntfy declarative ownership and users"],
-  "ntfy authoritative CLI" => ["ntfy_main", "community.docker.docker_compose_v2_run"],
-  "ntfy user provisioning" => ["ntfy_tasks", "ntfy_auth_users"],
-  "ntfy owned hash refusal" => ["ntfy_tasks", "Refuse password hash replacement for owned ntfy identities"],
-  "ntfy unmanaged adoption refusal" => ["ntfy_tasks", "Refuse automatic adoption of unmanaged ntfy identities"],
-  "ntfy token ownership" => ["ntfy_tasks", "Refuse duplicate ntfy token ownership"],
-  "ntfy Basic authentication" => ["ntfy_tasks", "force_basic_auth: true"],
-  "ntfy declared access verification" => ["ntfy_tasks", "Verify managed ntfy declared write access"],
-  "ntfy account subscription preflight" => ["ntfy_tasks", "Read all eligible managed ntfy accounts before subscription mutation"],
-  "ntfy account subscription mutation" => ["ntfy_subscription_tasks", "Create missing managed ntfy account subscriptions"],
-  "ntfy account subscription post-read" => ["ntfy_subscription_tasks", "Re-read managed ntfy accounts after subscription creation"],
-  "policy registration" => ["validate_policy", "config_managed_users_test.rb --self-test"],
-  "filter behavior registration" => ["validate_policy", "managed_user_state_filter_test.py"]
+# Every property these roles must have, stated against the parsed thing Ansible
+# would run rather than against the text of the file that spells it. A module
+# key, a `when`, a `no_log`, a loop, or a rescue attached to one particular
+# block are things the role acts on; a substring is not. "Dozzle rejects
+# malformed YAML" used to be satisfied by `rescue:` appearing anywhere in the
+# file -- inside a comment, or inside some other task's name -- and never said
+# the rescue guarded the safe-load block at all.
+#
+# Each entry is a predicate over the parsed context assembled below, so
+# --self-test can mutate that context the way a regression would (retarget a
+# module, drop a `when`, unset a `no_log`, detach a rescue) and watch the
+# predicate fire. That is the difference from the loop this replaced, which
+# deleted the very substring it then searched for.
+STRUCTURAL_PROPERTIES = {
+  "Dozzle safe load" => lambda do |context|
+    parse = named_task(
+      dozzle_safe_load_block(context), "Parse the existing Dozzle users document"
+    )
+    document = parse&.dig("ansible.builtin.set_fact", "dozzle_existing_document").to_s
+    !parse.nil? && parse["no_log"] == true &&
+      document.match?(/\|\s*b64decode\s*\|\s*managed_users_yaml/)
+  end,
+  "Dozzle malformed refusal" => lambda do |context|
+    safe_load = named_task(
+      context.fetch(:dozzle), "Safely load the existing Dozzle users document"
+    )
+    guarded = Array(safe_load&.fetch("block", nil)).map { |task| task["name"] }
+    refusals = Array(safe_load&.fetch("rescue", nil))
+    # The rescue has to belong to the block that does the reading and parsing.
+    guarded.include?("Atomically read the existing Dozzle users document") &&
+      guarded.include?("Parse the existing Dozzle users document") &&
+      refusals.length == 1 && refusals.first.key?("ansible.builtin.fail") &&
+      refusals.first.dig("ansible.builtin.fail", "msg").to_s.include?("no users were changed")
+  end,
+  "Dozzle atomic read" => lambda do |context|
+    read = named_task(
+      dozzle_safe_load_block(context), "Atomically read the existing Dozzle users document"
+    )
+    arguments = read&.fetch("atomic_safe_slurp", nil)
+    tasks = PolicySupport.flatten_tasks(context.fetch(:dozzle))
+    arguments.is_a?(Hash) && arguments["max_bytes"] == 1_048_576 &&
+      arguments["path"] == "{{ dozzle_users_path }}" && read["no_log"] == true &&
+      # Neither a plain slurp nor a stat-then-read: the read is the whole check.
+      tasks.none? { |task| task.key?("ansible.builtin.slurp") } &&
+      tasks.none? { |task| task["register"] == "dozzle_existing_users_stat" }
+  end,
+  "Dozzle explicit presence" => lambda do |context|
+    refusal = dozzle_hash_refusal(context)
+    conditions = Array(refusal&.dig("ansible.builtin.assert", "that"))
+    # Absence is decided by one named fact, and every condition is guarded by it,
+    # so a missing entry can never be read as a matching one.
+    refusal&.fetch("vars", nil).is_a?(Hash) &&
+      refusal.fetch("vars").key?("dozzle_existing_key_present") &&
+      conditions.length >= 3 &&
+      conditions.all? { |condition| condition.include?("dozzle_existing_key_present") }
+  end,
+  "Dozzle hash refusal" => lambda do |context|
+    refusal = dozzle_hash_refusal(context)
+    !refusal.nil? &&
+      refusal.dig("ansible.builtin.assert", "fail_msg").to_s.include?("will not replace") &&
+      refusal["loop"] == "{{ dozzle_desired_users | dict2items }}" &&
+      refusal["no_log"] == true
+  end,
+  "Dozzle unmanaged preservation" => lambda do |context|
+    preserve = named_task(context.fetch(:dozzle), "Preserve unmanaged Dozzle users verbatim")
+    reconcile = named_task(context.fetch(:dozzle), "Resolve the reconciled Dozzle users document")
+    merged = reconcile&.dig("ansible.builtin.set_fact", "dozzle_reconciled_users").to_s
+    !preserve.nil? && preserve["loop"] == "{{ dozzle_existing_users | dict2items }}" &&
+      # Without this `when` the loop would also copy the managed identities back
+      # over their reconciled values.
+      preserve["when"].to_s.include?("not in dozzle_desired_normalized_names") &&
+      preserve.dig("ansible.builtin.set_fact", "dozzle_unmanaged_users").to_s
+            .include?("combine({item.key: item.value})") &&
+      merged.include?("dozzle_unmanaged_users | combine(dozzle_desired_users)")
+  end,
+  "Dozzle rendered loop" => lambda do |context|
+    # users.yml.j2 is a template, not YAML: read it as its sequence of Jinja
+    # tags and the line they enclose, which says what it renders per user.
+    tags = context.fetch(:dozzle_template).scan(/\{%-?\s*(.*?)\s*-?%\}/).flatten
+    emitted = context.fetch(:dozzle_template).lines.map(&:strip).select do |line|
+      line.start_with?("{{")
+    end
+    tags.length == 2 && tags.last == "endfor" &&
+      tags.first.match?(/\Afor\s+key,\s*value\s+in\s+dozzle_reconciled_document\s*\|\s*dictsort\z/) &&
+      emitted == ["{{ key | to_json }}: {{ value | to_json }}"]
+  end,
+  "Dozzle managed authentication" => lambda do |context|
+    auth = named_task(context.fetch(:dozzle_main), "Authenticate each managed Dozzle user")
+    auth&.fetch("loop", nil) == "{{ vault_managed_dozzle_users }}" &&
+      auth.dig("ansible.builtin.uri", "url") == "{{ dozzle_api }}/token" &&
+      auth["no_log"] == true && auth["changed_when"] == false &&
+      auth["check_mode"] == false
+  end,
+  # The two filter properties are stated as the behaviour itself: the parser is
+  # handed the document it must refuse and asked what it did. A substring saying
+  # the token class is mentioned somewhere in the plugin proves far less.
+  "strict YAML alias refusal" => lambda do |context|
+    managed_users_yaml_outcome(
+      "shared: &shared {password: #{BCRYPT_B}}\nusers: {reader: *shared}\n",
+      context.fetch(:state_filter_path)
+    ).include?("anchors and aliases are forbidden")
+  end,
+  "strict YAML duplicate refusal" => lambda do |context|
+    managed_users_yaml_outcome(
+      "users:\n  reader: {password: #{BCRYPT_A}}\n  ' Reader ': {password: #{BCRYPT_B}}\n",
+      context.fetch(:state_filter_path)
+    ).include?("duplicate normalized user identities")
+  end,
+  "ntfy prior ownership preflight" => lambda do |context|
+    preflight = named_task(
+      context.fetch(:ntfy_main), "Inspect existing ntfy declarative ownership and users"
+    )
+    inspected = Array(preflight&.fetch("block", nil)).map { |task| task["name"] }
+    refusals = Array(preflight&.fetch("rescue", nil))
+    inspected.include?("Read the prior ntfy runtime environment") &&
+      inspected.include?("Resolve prior ntfy declarative users") &&
+      refusals.length == 1 && refusals.first.key?("ansible.builtin.fail") &&
+      ntfy_main_order_valid?(context.fetch(:ntfy_main))
+  end,
+  "ntfy authoritative CLI" => lambda do |context|
+    probe = named_task(context.fetch(:ntfy_main), "List authoritative existing ntfy users")
+    probe&.key?("community.docker.docker_compose_v2_run") == true &&
+      # A shell-out would always report a change and could not simulate itself.
+      PolicySupport.flatten_tasks(context.fetch(:ntfy_main)).none? do |task|
+        task.key?("ansible.builtin.command") || task.key?("ansible.builtin.shell")
+      end
+  end,
+  "ntfy user provisioning" => lambda do |context|
+    resolve = named_task(
+      context.fetch(:ntfy_managed), "Resolve ntfy declarative provisioning environment"
+    )
+    facts = resolve&.fetch("ansible.builtin.set_fact", nil)
+    facts.is_a?(Hash) &&
+      %w[ntfy_auth_users ntfy_auth_access ntfy_auth_tokens].all? { |key| facts.key?(key) } &&
+      Array(resolve["when"]).include?("ntfy_managed_users_phase == 'provision'") &&
+      resolve["no_log"] == true
+  end,
+  "ntfy owned hash refusal" => lambda do |context|
+    refusal = named_task(
+      context.fetch(:ntfy_managed),
+      "Refuse password hash replacement for owned ntfy identities"
+    )
+    refusal&.key?("ansible.builtin.assert") == true &&
+      refusal.dig("ansible.builtin.assert", "fail_msg").to_s.include?("will not replace") &&
+      refusal["loop"] == "{{ ntfy_desired_owned_users | dict2items }}" &&
+      Array(refusal["when"]).include?("ntfy_managed_users_phase == 'provision'") &&
+      refusal["no_log"] == true
+  end,
+  "ntfy unmanaged adoption refusal" => lambda do |context|
+    refusal = named_task(
+      context.fetch(:ntfy_managed),
+      "Refuse automatic adoption of unmanaged ntfy identities"
+    )
+    conditions = Array(refusal&.dig("ansible.builtin.assert", "that"))
+    refusal&.key?("ansible.builtin.assert") == true &&
+      conditions.any? do |condition|
+        condition.include?("ntfy_prior_provisioned_users") &&
+          condition.include?("ntfy_existing_user_records")
+      end &&
+      Array(refusal["when"]).include?("ntfy_managed_users_phase == 'provision'") &&
+      # The authoritative record does not exist under --check, so the guard must
+      # not run there and pass itself on an empty reading.
+      Array(refusal["when"]).include?("not ansible_check_mode") &&
+      refusal["no_log"] == true
+  end,
+  "ntfy token ownership" => lambda do |context|
+    refusal = named_task(context.fetch(:ntfy_managed), "Refuse duplicate ntfy token ownership")
+    conditions = Array(refusal&.dig("ansible.builtin.assert", "that"))
+    conditions.any? do |condition|
+      condition.gsub(/\s+/, " ").include?(
+        "ntfy_provisioned_tokens | unique | length == ntfy_provisioned_tokens | length"
+      )
+    end && Array(refusal["when"]).include?("ntfy_managed_users_phase == 'provision'")
+  end,
+  "ntfy Basic authentication" => lambda do |context|
+    # Quantified over every credentialed request, not asserted of one of them:
+    # a request that carries a username without forcing Basic authentication
+    # waits for a challenge ntfy does not send for account reads.
+    credentialed = PolicySupport.flatten_tasks(context.fetch(:ntfy_managed)).select do |task|
+      task["ansible.builtin.uri"].is_a?(Hash) &&
+        task.fetch("ansible.builtin.uri").key?("url_username")
+    end
+    !credentialed.empty? && credentialed.all? do |task|
+      task.fetch("ansible.builtin.uri")["force_basic_auth"] == true &&
+        task["no_log"] == true
+    end
+  end,
+  "ntfy declared access verification" => lambda do |context|
+    read = named_task(context.fetch(:ntfy_managed), "Verify managed ntfy declared read access")
+    write = named_task(context.fetch(:ntfy_managed), "Verify managed ntfy declared write access")
+    !read.nil? && !write.nil? &&
+      write.dig("ansible.builtin.uri", "method") == "POST" &&
+      write["loop"] == "{{ vault_managed_ntfy_users | subelements('access') }}" &&
+      read["loop"] == write["loop"] &&
+      # A topic the identity may not write to must be refused, not merely allowed
+      # to succeed: the expected status is derived from the declared permission.
+      write.dig("ansible.builtin.uri", "status_code").to_s.include?("403")
+  end,
+  "ntfy account subscription preflight" => lambda do |context|
+    tasks = PolicySupport.flatten_tasks(context.fetch(:ntfy_managed))
+    names = tasks.map { |task| task["name"] }
+    read_index = names.index("Read all eligible managed ntfy accounts before subscription mutation")
+    mutation_index = names.index("Reconcile each missing managed ntfy account subscription atomically")
+    read = read_index && tasks[read_index]
+    # "before subscription mutation" is the claim in the name; this is the claim.
+    !read.nil? && !mutation_index.nil? && read_index < mutation_index &&
+      read.dig("ansible.builtin.uri", "method") == "GET" &&
+      read["changed_when"] == false &&
+      read["loop"] == "{{ ntfy_subscription_eligible_users }}" &&
+      Array(read["when"]).include?("ntfy_managed_users_phase == 'subscription_sync'")
+  end,
+  "ntfy account subscription mutation" => lambda do |context|
+    create = named_task(
+      context.fetch(:ntfy_subscription), "Create missing managed ntfy account subscriptions"
+    )
+    request = create&.fetch("ansible.builtin.uri", nil)
+    request.is_a?(Hash) && request["method"] == "POST" &&
+      request["url"] == "{{ ntfy_account_subscription_api }}" &&
+      request["status_code"] == [200, 409]
+  end,
+  "ntfy account subscription post-read" => lambda do |context|
+    tasks = PolicySupport.flatten_tasks(context.fetch(:ntfy_subscription))
+    names = tasks.map { |task| task["name"] }
+    create_index = names.index("Create missing managed ntfy account subscriptions")
+    reread_index = names.index("Re-read managed ntfy accounts after subscription creation")
+    reread = reread_index && tasks[reread_index]
+    # "after subscription creation" is likewise an ordering, so order is checked.
+    !reread.nil? && !create_index.nil? && create_index < reread_index &&
+      reread.dig("ansible.builtin.uri", "method") == "GET" &&
+      reread["changed_when"] == false
+  end,
+  "policy registration" => lambda do |context|
+    context.fetch(:validate_policy_lines).include?(
+      "ruby tests/config_managed_users_test.rb --self-test\n"
+    )
+  end,
+  "filter behavior registration" => lambda do |context|
+    context.fetch(:validate_policy_lines).include?(
+      "PYTHONDONTWRITEBYTECODE=1 \"$ansible_python\" tests/managed_user_state_filter_test.py\n"
+    )
+  end
 }.freeze
-
-def check(failures, condition, message)
-  failures << message unless condition
-end
 
 def read(path)
   File.read(path)
@@ -93,10 +311,57 @@ def ansible_python
   interpreter
 end
 
-def source_fragment_failures(sources)
-  SOURCE_REQUIREMENTS.filter_map do |label, (source_name, fragment)|
-    label unless sources.fetch(source_name).include?(fragment)
-  end
+# Ansible task lists nest through block/rescue/always, so finding a task by name
+# has to see through those sections.
+def named_task(tasks, name)
+  PolicySupport.flatten_tasks(tasks).find { |task| task["name"] == name }
+end
+
+def dozzle_safe_load_block(context)
+  named_task(
+    context.fetch(:dozzle), "Safely load the existing Dozzle users document"
+  )&.fetch("block", nil)
+end
+
+def dozzle_hash_refusal(context)
+  named_task(
+    context.fetch(:dozzle), "Refuse password hash replacement for existing Dozzle identities"
+  )
+end
+
+# Hand the strict parser a document and report what it did with it. The plugin
+# path is a parameter so --self-test can ask the same question of a mutant.
+def managed_users_yaml_outcome(document, plugin_path)
+  script = <<~PYTHON
+    import importlib.util, sys
+    spec = importlib.util.spec_from_file_location("managed_user_state", sys.argv[1])
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    try:
+        module.managed_users_yaml(sys.stdin.read())
+    except Exception as error:
+        print(type(error).__name__ + ": " + str(error))
+    else:
+        print("accepted")
+  PYTHON
+  stdout, stderr, _status = Open3.capture3(
+    { "PYTHONDONTWRITEBYTECODE" => "1" },
+    ansible_python, "-c", script, plugin_path, stdin_data: document, chdir: ROOT
+  )
+  stdout.empty? ? stderr : stdout
+end
+
+def structural_property_failures(context)
+  STRUCTURAL_PROPERTIES.reject { |_label, property| property.call(context) }.keys
+end
+
+# Deep-copy one parsed structure out of the context and let the caller change it
+# the way a regression would, leaving the baseline the other properties are
+# still measured against untouched.
+def mutate_structure(context, key)
+  mutant = Marshal.load(Marshal.dump(context.to_h))
+  yield mutant.fetch(key)
+  mutant
 end
 
 def run_playbook(source, extra_vars = {})
@@ -112,60 +377,22 @@ def run_playbook(source, extra_vars = {})
   end
 end
 
-def with_http_probe(expected_count, responder)
-  server = TCPServer.new("127.0.0.1", 0)
+# A responder answers either a full {status, body, content_type} record or a
+# bare status, which is how the refusal cases stay a single number.
+def with_http_probe(expected_count, responder, &block)
   requests = []
-  error = nil
-  stopped = false
-  thread = Thread.new do
-    until stopped
-      next unless IO.select([server], nil, nil, 0.05)
+  reasons = { 200 => "OK", 403 => "Forbidden", 409 => "Conflict" }.freeze
+  with_http_fixture(->(port) { block.call(port, requests) },
+                    reason: reasons) do |method, target, headers, body|
+    request = { "method" => method, "target" => target, "headers" => headers, "body" => body }
+    requests << request
+    response = responder.call(request)
+    next [response, "", "text/plain"] unless response.is_a?(Hash)
 
-      client = server.accept
-      request_line = client.gets&.strip
-      raise "HTTP probe received an empty request" unless request_line
-
-      method, target, _protocol = request_line.split(" ", 3)
-      headers = {}
-      while (line = client.gets)
-        line = line.chomp
-        break if line == "\r" || line.empty?
-        key, value = line.split(":", 2)
-        headers[key.downcase] = value.to_s.strip
-      end
-      body = client.read(headers.fetch("content-length", "0").to_i)
-      request = { "method" => method, "target" => target, "headers" => headers, "body" => body }
-      requests << request
-      response = responder.call(request)
-      if response.is_a?(Hash)
-        status = response.fetch("status")
-        body = response.fetch("body", "")
-        content_type = response.fetch("content_type", "application/json")
-      else
-        status = response
-        body = ""
-        content_type = "text/plain"
-      end
-      reason = { 200 => "OK", 403 => "Forbidden", 409 => "Conflict" }.fetch(status, "Error")
-      client.write(
-        "HTTP/1.1 #{status} #{reason}\r\nContent-Type: #{content_type}\r\n" \
-        "Content-Length: #{body.bytesize}\r\nConnection: close\r\n\r\n#{body}"
-      )
-      client.close
-    end
-  rescue StandardError => caught
-    error = caught unless stopped
+    [response.fetch("status"), response.fetch("body", ""),
+     response.fetch("content_type", "application/json")]
   end
-  yield server.addr.fetch(1), requests
-  stopped = true
-  server.close
-  Timeout.timeout(10) { thread.join }
-  raise error if error
   raise "HTTP probe request count differs" unless requests.length == expected_count
-ensure
-  stopped = true
-  server&.close unless server&.closed?
-  thread&.join
 end
 
 def task_playbook(tasks, variables)
@@ -465,35 +692,32 @@ ntfy_defaults = read(NTFY_DEFAULTS)
 ntfy_argument_specs = read(NTFY_ARGUMENT_SPECS)
 state_filter = read(STATE_FILTER)
 safe_slurp = read(SAFE_SLURP)
+validate_policy = read(VALIDATE_POLICY)
 
 check(failures, !dozzle_tasks.empty?, "Dozzle managed-user tasks are missing")
+check(failures, !ntfy_tasks.empty?, "ntfy managed-user tasks are missing")
+
+dozzle_main_tasks = YAML.safe_load(dozzle_main, aliases: false) || []
+structural_context = {
+  dozzle: YAML.safe_load(dozzle_tasks, aliases: false) || [],
+  dozzle_main: dozzle_main_tasks,
+  dozzle_template: dozzle_template,
+  ntfy_main: YAML.safe_load(ntfy_main, aliases: false) || [],
+  ntfy_managed: YAML.safe_load(ntfy_tasks, aliases: false) || [],
+  ntfy_subscription: YAML.safe_load(ntfy_subscription_tasks, aliases: false) || [],
+  state_filter_path: STATE_FILTER,
+  validate_policy_lines: validate_policy.lines
+}.freeze
+structural_property_failures(structural_context).each do |label|
+  failures << "#{label} does not hold"
+end
+
 check(failures, dozzle_main.include?("managed_users.yml"), "Dozzle main tasks do not include managed-user reconciliation")
-check(failures, dozzle_tasks.include?("managed_users_yaml"),
-      "Dozzle does not strictly safe-load the existing users file")
-check(failures,
-      dozzle_tasks.include?("atomic_safe_slurp:") &&
-        dozzle_tasks.include?("max_bytes: 1048576") &&
-        !dozzle_tasks.include?("ansible.builtin.slurp") &&
-        !dozzle_tasks.include?("dozzle_existing_users_stat"),
-      "Dozzle does not atomically read a bounded regular users file")
-check(failures, dozzle_tasks.include?("rescue:"), "Dozzle does not reject malformed YAML explicitly")
 check(failures, dozzle_tasks.include?("dozzle_existing_normalized_names") &&
                 dozzle_tasks.include?("unique | length"),
       "Dozzle does not reject duplicate normalized existing names")
-check(failures, dozzle_tasks.include?("password") && dozzle_tasks.include?("password_hash") &&
-                dozzle_tasks.include?("will not replace"),
-      "Dozzle does not refuse stored hash replacement")
-check(failures, dozzle_tasks.include?("dozzle_unmanaged_users") &&
-                dozzle_tasks.include?("dozzle_reconciled_users"),
-      "Dozzle does not preserve and merge unmanaged users")
-check(failures, dozzle_template.include?("{% for") && dozzle_template.include?("to_json"),
-      "Dozzle users template does not safely loop over reconciled users")
 check(failures, dozzle_main.include?("when: dozzle_users_file.changed"),
       "Dozzle restart is not conditional on users file change")
-check(failures, dozzle_main.include?("{{ dozzle_api }}/token") &&
-                dozzle_main.include?("vault_managed_dozzle_users"),
-      "Dozzle does not authenticate every managed plaintext password at api/token")
-dozzle_main_tasks = YAML.safe_load(dozzle_main, aliases: false) || []
 dozzle_health_index = dozzle_main_tasks.index { |task| task["name"] == "Wait for Dozzle to report healthy" }
 dozzle_auth_index = dozzle_main_tasks.index { |task| task["name"] == "Authenticate each managed Dozzle user" }
 dozzle_auth_task = dozzle_main_tasks[dozzle_auth_index] if dozzle_auth_index
@@ -595,22 +819,12 @@ if !dozzle_tasks.empty?
   end
 end
 
-check(failures, !ntfy_tasks.empty?, "ntfy managed-user tasks are missing")
 check(failures, ntfy_main.include?("managed_users.yml"), "ntfy main tasks do not include managed-user provisioning")
-check(failures, ntfy_tasks.include?("ntfy_auth_users") && ntfy_tasks.include?("ntfy_auth_access") &&
-                ntfy_tasks.include?("ntfy_auth_tokens"),
-      "ntfy does not derive all three declarative provisioning values")
-check(failures, ntfy_tasks.include?("Refuse duplicate ntfy identities") &&
-                ntfy_tasks.include?("Refuse duplicate ntfy token ownership"),
-      "ntfy does not refuse identity and token collisions")
+check(failures,
+      !named_task(structural_context.fetch(:ntfy_managed), "Refuse duplicate ntfy identities").nil?,
+      "ntfy does not refuse identity collisions")
 check(failures, ntfy_tasks.include?("vault_ntfy_admin_user") && ntfy_tasks.include?("ntfy_publishers"),
       "ntfy does not separate the administrator and publishers")
-check(failures, ntfy_tasks.include?("url_username") && ntfy_tasks.include?("force_basic_auth: true") &&
-                ntfy_tasks.include?("vault_managed_ntfy_users"),
-      "ntfy does not Basic-authenticate every managed user")
-check(failures, ntfy_tasks.include?("Verify managed ntfy declared read access") &&
-                ntfy_tasks.include?("Verify managed ntfy declared write access"),
-      "ntfy does not verify each declared topic permission")
 check(failures,
       ntfy_defaults.include?("ntfy_account_subscription_api:") &&
         ntfy_argument_specs.include?("ntfy_account_subscription_api:"),
@@ -1148,38 +1362,198 @@ if !ntfy_tasks.empty?
         "ntfy accepted or disclosed a non-literal publisher topic")
 end
 
-validate_policy = read(VALIDATE_POLICY)
-check(failures, validate_policy.lines.include?("ruby tests/config_managed_users_test.rb --self-test\n"),
-      "policy validation does not run the config managed-user self-test")
-check(failures, validate_policy.include?("tests/managed_user_state_filter_test.py"),
-      "policy validation does not run the managed-user state filter behavior test")
-
 unless [[], ["--self-test"]].include?(ARGV)
   abort "usage: config_managed_users_test.rb [--self-test]"
 end
 
 if ARGV == ["--self-test"]
-  sources = {
-    "dozzle_tasks" => dozzle_tasks,
-    "dozzle_main" => dozzle_main,
-    "dozzle_template" => dozzle_template,
-    "ntfy_tasks" => ntfy_tasks,
-    "ntfy_subscription_tasks" => ntfy_subscription_tasks,
-    "ntfy_main" => ntfy_main,
-    "ntfy_defaults" => ntfy_defaults,
-    "ntfy_argument_specs" => ntfy_argument_specs,
-    "state_filter" => state_filter,
-    "safe_slurp" => safe_slurp,
-    "validate_policy" => validate_policy
-  }
-  source_fragment_failures(sources).each do |label|
+  structural_property_failures(structural_context).each do |label|
     failures << "self-test baseline rejected #{label}"
   end
-  SOURCE_REQUIREMENTS.each do |label, (source_name, fragment)|
-    mutated_source = sources.fetch(source_name).gsub(fragment, "removed-by-self-test")
-    mutated = sources.merge(source_name => mutated_source)
-    check(failures, source_fragment_failures(mutated).include?(label),
-          "self-test did not reject the #{label} mutation")
+
+  # Every mutation below changes something the role would act on -- a module
+  # key, a `when`, a `no_log`, the block a rescue hangs off, the order of two
+  # tasks -- and the matching property has to notice. None of them edits the
+  # text its property looks for, which is exactly what made the substring loop
+  # this replaced circular: it proved only that deleting a fragment defeats a
+  # search for that fragment.
+  Dir.mktmpdir("nas-platform-managed-user-state-mutant-") do |mutant_directory|
+    alias_mutant = File.join(mutant_directory, "alias_managed_user_state.py")
+    File.write(
+      alias_mutant,
+      state_filter.sub("(yaml.tokens.AnchorToken, yaml.tokens.AliasToken)", "()"),
+      mode: "w", perm: 0o600
+    )
+    duplicate_mutant = File.join(mutant_directory, "duplicate_managed_user_state.py")
+    File.write(
+      duplicate_mutant,
+      state_filter.sub("if len(set(normalized)) != len(normalized):", "if False:"),
+      mode: "w", perm: 0o600
+    )
+
+    structural_mutations = {
+      "Dozzle safe load" => lambda do |context|
+        mutate_structure(context, :dozzle) do |tasks|
+          named_task(tasks, "Parse the existing Dozzle users document")
+            .fetch("ansible.builtin.set_fact")["dozzle_existing_document"] =
+              "{{ dozzle_existing_users_source.content | b64decode | from_yaml }}"
+        end
+      end,
+      "Dozzle malformed refusal" => lambda do |context|
+        # Detach the rescue from the block it guards -- the defect the old
+        # `dozzle_tasks.include?("rescue:")` check could never have seen.
+        mutate_structure(context, :dozzle) do |tasks|
+          named_task(tasks, "Safely load the existing Dozzle users document").delete("rescue")
+        end
+      end,
+      "Dozzle atomic read" => lambda do |context|
+        mutate_structure(context, :dozzle) do |tasks|
+          read = named_task(tasks, "Atomically read the existing Dozzle users document")
+          read["ansible.builtin.slurp"] = { "src" => read.delete("atomic_safe_slurp")["path"] }
+        end
+      end,
+      "Dozzle explicit presence" => lambda do |context|
+        mutate_structure(context, :dozzle) do |tasks|
+          dozzle_hash_refusal({ dozzle: tasks }).fetch("vars").delete("dozzle_existing_key_present")
+        end
+      end,
+      "Dozzle hash refusal" => lambda do |context|
+        mutate_structure(context, :dozzle) do |tasks|
+          dozzle_hash_refusal({ dozzle: tasks })["no_log"] = false
+        end
+      end,
+      "Dozzle unmanaged preservation" => lambda do |context|
+        mutate_structure(context, :dozzle) do |tasks|
+          named_task(tasks, "Preserve unmanaged Dozzle users verbatim").delete("when")
+        end
+      end,
+      "Dozzle rendered loop" => lambda do |context|
+        context.merge(
+          dozzle_template: context.fetch(:dozzle_template).sub(
+            "{{ key | to_json }}: {{ value | to_json }}", "{{ key }}: {{ value }}"
+          )
+        )
+      end,
+      "Dozzle managed authentication" => lambda do |context|
+        mutate_structure(context, :dozzle_main) do |tasks|
+          named_task(tasks, "Authenticate each managed Dozzle user").delete("loop")
+        end
+      end,
+      "strict YAML alias refusal" => lambda do |context|
+        context.merge(state_filter_path: alias_mutant)
+      end,
+      "strict YAML duplicate refusal" => lambda do |context|
+        context.merge(state_filter_path: duplicate_mutant)
+      end,
+      "ntfy prior ownership preflight" => lambda do |context|
+        mutate_structure(context, :ntfy_main) do |tasks|
+          named_task(tasks, "Inspect existing ntfy declarative ownership and users").delete("rescue")
+        end
+      end,
+      "ntfy authoritative CLI" => lambda do |context|
+        mutate_structure(context, :ntfy_main) do |tasks|
+          probe = named_task(tasks, "List authoritative existing ntfy users")
+          probe.delete("community.docker.docker_compose_v2_run")
+          probe["ansible.builtin.command"] = "docker compose run ntfy user list"
+        end
+      end,
+      "ntfy user provisioning" => lambda do |context|
+        mutate_structure(context, :ntfy_managed) do |tasks|
+          named_task(tasks, "Resolve ntfy declarative provisioning environment")
+            .fetch("ansible.builtin.set_fact").delete("ntfy_auth_tokens")
+        end
+      end,
+      "ntfy owned hash refusal" => lambda do |context|
+        mutate_structure(context, :ntfy_managed) do |tasks|
+          named_task(tasks, "Refuse password hash replacement for owned ntfy identities")["no_log"] = false
+        end
+      end,
+      "ntfy unmanaged adoption refusal" => lambda do |context|
+        mutate_structure(context, :ntfy_managed) do |tasks|
+          refusal = named_task(tasks, "Refuse automatic adoption of unmanaged ntfy identities")
+          refusal["when"] = Array(refusal["when"]) - ["not ansible_check_mode"]
+        end
+      end,
+      "ntfy token ownership" => lambda do |context|
+        mutate_structure(context, :ntfy_managed) do |tasks|
+          named_task(tasks, "Refuse duplicate ntfy token ownership").delete("when")
+        end
+      end,
+      "ntfy Basic authentication" => lambda do |context|
+        mutate_structure(context, :ntfy_managed) do |tasks|
+          named_task(tasks, "Verify managed ntfy declared read access")
+            .fetch("ansible.builtin.uri")["force_basic_auth"] = false
+        end
+      end,
+      "ntfy declared access verification" => lambda do |context|
+        mutate_structure(context, :ntfy_managed) do |tasks|
+          named_task(tasks, "Verify managed ntfy declared write access")
+            .fetch("ansible.builtin.uri")["method"] = "PUT"
+        end
+      end,
+      "ntfy account subscription preflight" => lambda do |context|
+        # Read the accounts after the subscriptions were already created.
+        mutate_structure(context, :ntfy_managed) do |tasks|
+          read = tasks.delete_at(
+            tasks.index do |task|
+              task["name"] == "Read all eligible managed ntfy accounts before subscription mutation"
+            end
+          )
+          tasks.insert(
+            tasks.index do |task|
+              task["name"] == "Reconcile each missing managed ntfy account subscription atomically"
+            end + 1,
+            read
+          )
+        end
+      end,
+      "ntfy account subscription mutation" => lambda do |context|
+        mutate_structure(context, :ntfy_subscription) do |tasks|
+          named_task(tasks, "Create missing managed ntfy account subscriptions")
+            .fetch("ansible.builtin.uri")["status_code"] = [200]
+        end
+      end,
+      "ntfy account subscription post-read" => lambda do |context|
+        # Re-read the accounts before creating anything, so the verification
+        # would confirm the state that existed before the run.
+        mutate_structure(context, :ntfy_subscription) do |tasks|
+          reread = tasks.delete_at(
+            tasks.index do |task|
+              task["name"] == "Re-read managed ntfy accounts after subscription creation"
+            end
+          )
+          tasks.insert(
+            tasks.index do |task|
+              task["name"] == "Create missing managed ntfy account subscriptions"
+            end,
+            reread
+          )
+        end
+      end,
+      "policy registration" => lambda do |context|
+        context.merge(
+          validate_policy_lines: context.fetch(:validate_policy_lines) -
+            ["ruby tests/config_managed_users_test.rb --self-test\n"]
+        )
+      end,
+      "filter behavior registration" => lambda do |context|
+        context.merge(
+          validate_policy_lines: context.fetch(:validate_policy_lines) -
+            ["PYTHONDONTWRITEBYTECODE=1 \"$ansible_python\" tests/managed_user_state_filter_test.py\n"]
+        )
+      end
+    }
+
+    missing_mutations = STRUCTURAL_PROPERTIES.keys - structural_mutations.keys
+    check(failures, missing_mutations.empty?,
+          "structural properties without a self-test mutation: #{missing_mutations.join(', ')}")
+    structural_mutations.each do |label, mutate|
+      mutant = mutate.call(structural_context)
+      check(failures, mutant != structural_context,
+            "the #{label} self-test mutation did not change anything")
+      check(failures, structural_property_failures(mutant).include?(label),
+            "self-test did not reject the #{label} mutation")
+    end
   end
 
   reordered_main = YAML.safe_load(ntfy_main, aliases: false)
@@ -1330,9 +1704,5 @@ if ARGV == ["--self-test"]
   end
 end
 
-if failures.empty?
-  puts "Config managed users: Dozzle preservation and ntfy provisioning contracts hold"
-else
-  failures.each { |failure| warn "FAIL #{failure}" }
-  abort "#{failures.length} config managed-user violation(s)"
-end
+report(failures, "Config managed users: Dozzle preservation and ntfy provisioning contracts hold",
+       "config managed-user violation(s)")

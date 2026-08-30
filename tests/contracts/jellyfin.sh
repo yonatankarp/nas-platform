@@ -3,6 +3,10 @@ set -eu
 set +x
 
 repo_dir=${PLATFORM_CONTRACT_REPO_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)}
+# The embedded Ruby below reads tests/policy_support.rb from here instead of
+# carrying its own copy of flatten_tasks.
+PLATFORM_CONTRACT_REPO_DIR=$repo_dir
+export PLATFORM_CONTRACT_REPO_DIR
 compose=$repo_dir/services/jellyfin/compose.yml
 role=$repo_dir/roles/jellyfin/tasks/main.yml
 defaults=$repo_dir/roles/jellyfin/defaults/main.yml
@@ -154,13 +158,8 @@ end
 # block/rescue/always nest their tasks one level deeper. primary_identity.yml is
 # entirely a block/rescue pair, so flattening is required rather than optional:
 # a plain load would silently hide every task the recovery path declares.
-def flatten_tasks(tasks)
-  Array(tasks).flat_map do |task|
-    [task] + %w[block rescue always].flat_map do |section|
-      flatten_tasks(task.is_a?(Hash) ? task[section] : nil)
-    end
-  end
-end
+require File.join(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR"), "tests", "policy_support")
+include PolicySupport
 
 # The absence invariants further down must stay scoped to a whole file: a
 # forbidden primitive introduced in some task other than the one an assertion

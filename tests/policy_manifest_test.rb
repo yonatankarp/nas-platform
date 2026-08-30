@@ -492,6 +492,7 @@ promote_arr_with_compose = lambda do |root|
       "cpus" => cpus,
       "labels" => { "dev.dozzle.name" => "service" },
       "healthcheck" => { "test" => ["CMD", "true"] },
+      "security_opt" => ["no-new-privileges:true"],
       "restart" => "unless-stopped",
       "logging" => logging,
       "volumes" => []
@@ -502,6 +503,7 @@ promote_arr_with_compose = lambda do |root|
     "cpuset" => "${PLATFORM_CONTAINER_CPUSET:?}",
     "cpus" => 0.5,
     "profiles" => ["jobs"],
+    "security_opt" => ["no-new-privileges:true"],
     "logging" => logging,
     "volumes" => []
   }
@@ -546,6 +548,30 @@ expect_failure(failures, "acquisition daemon claims healthcheck exemption",
                "arr/radarr: long-running services must define a health check") do |root|
   compose = promote_arr_with_compose.call(root)
   compose.dig("services", "radarr").delete("healthcheck")
+  File.write(File.join(root, "services", "arr", "compose.yml"), YAML.dump(compose))
+end
+
+expect_failure(failures, "acquisition daemon claims privilege-escalation exemption",
+               "arr/radarr: must refuse privilege escalation with security_opt " \
+               "no-new-privileges:true") do |root|
+  compose = promote_arr_with_compose.call(root)
+  compose.dig("services", "radarr").delete("security_opt")
+  File.write(File.join(root, "services", "arr", "compose.yml"), YAML.dump(compose))
+end
+
+expect_failure(failures, "acquisition job claims privilege-escalation exemption",
+               "arr/configarr: must refuse privilege escalation with security_opt " \
+               "no-new-privileges:true") do |root|
+  compose = promote_arr_with_compose.call(root)
+  compose.dig("services", "configarr").delete("security_opt")
+  File.write(File.join(root, "services", "arr", "compose.yml"), YAML.dump(compose))
+end
+
+expect_failure(failures, "acquisition daemon disarms no-new-privileges",
+               "arr/radarr: must refuse privilege escalation with security_opt " \
+               "no-new-privileges:true") do |root|
+  compose = promote_arr_with_compose.call(root)
+  compose.dig("services", "radarr")["security_opt"] = ["no-new-privileges:false"]
   File.write(File.join(root, "services", "arr", "compose.yml"), YAML.dump(compose))
 end
 
@@ -903,7 +929,7 @@ end
 expect_failure(failures, "unfiltered Beszel settings readback",
                "collection readback must use a URL-encoded identity filter with totals") do |root|
   mutate_yaml_file(root, "roles/beszel/tasks/main.yml") do |tasks|
-    task = flatten_fixture_tasks(tasks).find do |entry|
+    task = flatten_tasks(tasks).find do |entry|
       entry["name"] == "Refresh notification settings after reconciliation"
     end
     uri = task.fetch("ansible.builtin.uri")
@@ -914,7 +940,7 @@ end
 expect_failure(failures, "silent Beszel user creation",
                "Beszel user creation must report real and check-mode predicted changes") do |root|
   mutate_yaml_file(root, "roles/beszel/tasks/main.yml") do |tasks|
-    task = flatten_fixture_tasks(tasks).find do |entry|
+    task = flatten_tasks(tasks).find do |entry|
       entry["name"] == "Create the application user"
     end
     task["changed_when"] = false
@@ -924,7 +950,7 @@ end
 expect_failure(failures, "unredacted Beszel webhook summary",
                "Beszel webhook mismatch diagnostics must never include URL bodies") do |root|
   mutate_yaml_file(root, "roles/beszel/tasks/main.yml") do |tasks|
-    task = flatten_fixture_tasks(tasks).find do |entry|
+    task = flatten_tasks(tasks).find do |entry|
       entry["name"] == "Summarize the managed ntfy webhook without URL bodies"
     end
     task["no_log"] = false
@@ -970,6 +996,16 @@ end
 expect_failure(failures, "CI bypasses policy entrypoint", "CI must run tests/validate-policy.sh") do |root|
   path = File.join(root, ".github", "workflows", "ci.yml")
   File.write(path, File.read(path).sub("tests/validate-policy.sh", "ruby tests/policy_test.rb"))
+end
+
+# This harness left the policy gate to stop being its floor, which means the gate
+# no longer registers it and only ci.yml does. A check that is in neither place
+# runs nowhere while every test still passes, so dropping its job is planted here
+# the same way dropping a manifest line is.
+expect_failure(failures, "CI drops the policy mutation job",
+               "CI must run ruby tests/policy_manifest_test.rb") do |root|
+  path = File.join(root, ".github", "workflows", "ci.yml")
+  File.write(path, File.read(path).sub("ruby tests/policy_manifest_test.rb", "true"))
 end
 
 expect_failure(failures, "integration omits contract execution", "integration must execute registered contracts") do |root|
@@ -1883,6 +1919,15 @@ end
   end
 end
 
+expect_failure(failures, "filter input argument spec check removed from policy validation",
+               "validate-policy.sh must run PYTHONDONTWRITEBYTECODE=1 \"$ansible_python\" " \
+               "tests/filter_input_argument_spec_test.py exactly once") do |root|
+  path = File.join(root, "tests", "validate-policy.sh")
+  File.write(path, File.read(path).lines.reject do |line|
+    line.strip == 'PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/filter_input_argument_spec_test.py'
+  end.join)
+end
+
 {
   "production auto-deploy poller suite" =>
     'PYTHONDONTWRITEBYTECODE=1 "$ansible_python" -m unittest -v tests.production_auto_deploy_test',
@@ -2005,9 +2050,4 @@ expect_failure(failures, "media Compose bind source undeclared",
   end
 end
 
-if failures.empty?
-  puts "policy manifest: all mutation checks hold"
-else
-  failures.each { |failure| warn "FAIL #{failure}" }
-  abort "#{failures.length} policy manifest regression(s)"
-end
+report(failures, "policy manifest: all mutation checks hold", "policy manifest regression(s)")

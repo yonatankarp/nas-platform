@@ -1052,18 +1052,31 @@ controls appropriate to each. The password belongs in the password manager;
 loss of every password copy makes the ciphertext unrecoverable. An encrypted
 vault is not a backup of application databases or state.
 
-Deployment renders plaintext into protected runtime locations. In particular,
-service environment files live beneath the configured platform runtime
-directory's `services/*/.env`; Dozzle also writes its protected users file,
-Beszel installs the hub private key in its protected data directory, and
-applications and databases retain credentials in their own data/configuration.
-Bindery's configuration root belongs in that same class rather than merely in
-its `critical` recovery class: it stores every credential it holds — its own API
-key, the Prowlarr and indexer keys, download-client passwords and the session
-signing secret — in plaintext inside its SQLite database, and its pre-upgrade
-backup is a whole-database copy written beside it under `backups/` at mode
-`0600`. Treat those runtime paths and all backups as secret-bearing even though
-the repository vault remains encrypted.
+Deployment renders plaintext into protected runtime locations. Treat every one
+of them, and all backups that reach them, as secret-bearing even though the
+repository vault remains encrypted:
+
+- Service environment files beneath the configured platform runtime directory,
+  `services/*/.env`, each mode 0600.
+- Dozzle's protected users file and Beszel's hub private key, in their own
+  protected data directories.
+- Configuration this platform seeds once and then leaves to the application,
+  under the Docker root and mode 0600: SABnzbd's `sabnzbd/config/sabnzbd.ini`
+  carries the administrator username, the administrator password and the API
+  key; `radarr/config/config.xml`, `sonarr/config/config.xml` and
+  `prowlarr/config/config.xml` carry their API keys; Bazarr's
+  `bazarr/config/config/config.yaml` carries its API key and administrator
+  identity.
+- Bindery's configuration root, which belongs in this class rather than merely
+  in the `critical` recovery class it already carries: it stores every
+  credential it holds — its own API key, the Prowlarr and indexer keys,
+  download-client passwords and the session signing secret — in plaintext
+  inside its SQLite database, and its pre-upgrade backup is a whole-database
+  copy written beside it under `backups/` at mode 0600.
+- Whatever the applications and their databases then retain in their own
+  data and configuration.
+- On a NAS running the unattended poller, the deploy account's home. See
+  [Production auto-deployment inputs](#production-auto-deployment-inputs).
 
 ## Preparation and validation handoff
 
@@ -1290,6 +1303,33 @@ cron source, or notification. The installer validates the path before
 activation, and the poller reads it only for the local
 Ansible runs described in the
 [physical NAS walkthrough](getting-started-nas.md#automatic-deployment-from-the-nas).
+
+Installing the poller therefore moves the root of trust onto the NAS. Until
+then, a NAS-local run can take the password at the prompt and store nothing; a
+workstation run keeps the password on the workstation. Afterwards the password
+is a file on the NAS, and the vault it opens is committed and travels with the
+checkout the poller maintains, so the deploy account and root can read every
+credential the platform has. Nothing else has to be compromised first.
+
+Two more files in the same directory are secret-bearing. The installer renders
+`$HOME/.config/nas-platform/ntfy.curl` for the poller and
+`$HOME/.config/nas-platform/ntfy-prune.curl` for the weekly image prune, each
+mode 0600 and each carrying the ntfy deploy token as a bearer header. They
+are separate paths on purpose: one path written by two roles would have each
+role claim the other's change on every converge. Alongside them,
+`deployer.json` and `image-prune.json` are non-secret configuration.
+
+The sibling `$HOME/.local/share/nas-platform` tree is mode 0700 and holds the
+controller checkout, the deployment state, and the mode-0600 attempt and prune
+logs. Those logs are written without credentials, because the tasks that handle
+a credential set `no_log` and the vault password reaches Ansible as a path
+rather than a value.
+
+**Exclude this account's home from ordinary backups.** A routine backup of the
+deploy account captures `vault-password`, and the ciphertext it opens is already
+in every clone of the repository. If the home must be backed up, protect that
+backup exactly as the password-manager entry is protected, and treat its
+retention and access list as part of the vault password's own.
 
 ## Vault password rotation boundary
 

@@ -75,6 +75,11 @@ services:
       timeout: 10s
       retries: 5
       start_period: 60s
+    # There is no root phase to drop from and no gosu re-exec to preserve: the
+    # distroless runtime starts directly as the platform identity `user:` gives
+    # it, so nothing the container does can want a setuid binary.
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
     logging: *default-logging
     networks:

@@ -16,6 +16,12 @@
 # restores the original one-at-a-time order, which is what to use when bisecting
 # a failure that only shows up under load.
 #
+# The gate reports its own wall time and its slowest checks on every run, pass or
+# fail. Its budget has been exceeded three times, and each time naming the check
+# responsible meant timing them by hand; the pool already knows, so it says so.
+# A check that has grown into the gate's floor is visible in that report before
+# it is visible as a cancelled job.
+#
 # Unlike the sequential version this does not stop at the first failure: every
 # check runs and every failure is reported, so one broken check no longer hides
 # the state of the other fifty-six.
@@ -74,7 +80,6 @@ tests/mac/integration-context-test.sh
 tests/mac/snapshot-paperless-context-test.sh
 tests/mac/snapshot-paperless-recovery-test.sh
 tests/mac/snapshot-paperless-drill-throttle-test.sh
-ruby tests/policy_manifest_test.rb
 python3 tests/deployment_target_validator_test.py
 python3 tests/deployment_release_compare_test.py
 python3 tests/deployment_controller_input_test.py
@@ -96,7 +101,7 @@ ruby tests/database_managed_users_test.rb --self-test
 ruby tests/ntfy_verify_execution_test.rb
 ruby tests/deployment_summary_test.rb
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/managed_user_state_filter_test.py
-PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_relationships_profile_ids_test.py
+PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_identity_rules_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_filter_native_arguments_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_filter_native_arguments_test.py --self-test
 ruby tests/acquisition_configarr_field_coverage_test.rb
@@ -104,12 +109,16 @@ ruby tests/acquisition_configarr_field_coverage_test.rb --self-test
 ruby tests/bazarr_provider_schema_test.rb
 ruby tests/bazarr_provider_schema_test.rb --self-test
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_owned_field_coverage_test.py
+PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_servarr_filter_test.py
+PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_bazarr_filter_test.py
+PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_configarr_filter_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/vault_managed_user_schema_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/vault_credential_schema_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/immich_preference_schema_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/container_cpu_filter_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/deployment_summary_filter_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/jellyfin_plugin_repositories_filter_test.py
+PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/filter_input_argument_spec_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/safe_slurp_test.py
 ansible-playbook -i localhost, -c local tests/compose_metadata_filter_test.yml
 ruby tests/run_contracts_test.rb
@@ -179,8 +188,11 @@ cat >"$work/run-check" <<'RUNNER'
 spec=$1
 dir=$(dirname "$spec")
 index=${spec##*/cmd.}
+started=$(date +%s)
 sh -c "$(cat "$spec")" >"$dir/out.$index" 2>&1
-printf '%s\n' "$?" >"$dir/status.$index"
+status=$?
+printf '%s\n' "$(($(date +%s) - started))" >"$dir/seconds.$index"
+printf '%s\n' "$status" >"$dir/status.$index"
 exit 0
 RUNNER
 
@@ -188,8 +200,10 @@ RUNNER
 # recorded rather than allowed to abort the script: the accounting below is what
 # names the checks that never reported, and it has to run for that to be said.
 dispatch=0
+gate_started=$(date +%s)
 tr '\n' '\0' <"$work/queue" |
   xargs -0 -n 1 -P "$jobs" sh "$work/run-check" || dispatch=$?
+gate_seconds=$(($(date +%s) - gate_started))
 
 ran=0
 failed=0
@@ -211,7 +225,24 @@ while [ "$index" -lt "$total" ]; do
     cat "$work/out.$index" >&2
   fi
   [ "$status" -eq 0 ] || failed=$((failed + 1))
+  printf '%s\t%s\n' "$(cat "$work/seconds.$index")" "$check" >>"$work/durations"
 done
+
+# The gate has outgrown its budget three times, and each time finding the check
+# responsible meant timing them by hand. The pool already knows, so it says so:
+# its wall time, the check time it had to place into that wall time, and the ten
+# checks it took longest to place. A pool cannot finish faster than its longest
+# single item, so the top of this list is what the gate's floor actually is.
+# Reported on success too -- a gate that only explains itself once it is already
+# too slow is a gate nobody reads until CI is red.
+if [ -f "$work/durations" ]; then
+  busiest=$(sort -rn "$work/durations" | head -10)
+  work_seconds=$(awk -F'\t' '{ total += $1 } END { print total + 0 }' "$work/durations")
+  printf '\npolicy gate: %ss wall, %ss of check time across %s checks on %s workers\n' \
+    "$gate_seconds" "$work_seconds" "$ran" "$jobs"
+  printf 'slowest checks:\n'
+  printf '%s\n' "$busiest" | awk -F'\t' '{ printf "  %5ds  %s\n", $1, $2 }'
+fi
 
 if [ "$ran" -ne "$total" ] || [ "$failed" -ne 0 ] || [ "$dispatch" -ne 0 ]; then
   printf '\npolicy validation failed: %s of %s checks ran, %s failed' \

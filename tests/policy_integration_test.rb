@@ -13,13 +13,9 @@ require "yaml"
 require_relative "policy_support"
 
 include PolicySupport
+include TestScaffold
 
-ROOT = File.expand_path("..", __dir__)
 failures = []
-
-def check(failures, condition, message)
-  failures << message unless condition
-end
 
 # The plays must be exercised, not merely parsed: the two worst bugs so far, a
 # Darwin-only fact and command being skipped under --check, both survived syntax
@@ -467,9 +463,4 @@ check(failures,
         integration_lock.include?('  lock: %s'),
       "integration lock must record its holder and recover only a provably dead one")
 
-if failures.empty?
-  puts "integration policy: all properties hold"
-else
-  failures.each { |failure| warn "FAIL #{failure}" }
-  abort "#{failures.length} integration policy violation(s)"
-end
+report(failures, "integration policy: all properties hold", "integration policy violation(s)")

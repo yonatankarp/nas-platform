@@ -4,8 +4,13 @@ set +x
 
 mode=${1:-run}
 repo_dir=${PLATFORM_CONTRACT_REPO_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)}
+# The embedded Ruby below reads tests/policy_support.rb from here instead of
+# carrying its own copy of flatten_tasks.
+PLATFORM_CONTRACT_REPO_DIR=$repo_dir
+export PLATFORM_CONTRACT_REPO_DIR
 compose=$repo_dir/services/paperless-ngx/compose.yml
 mac_compose=$repo_dir/services/paperless-ngx/compose.mac.yml
+integration_compose=$repo_dir/services/paperless-ngx/compose.integration.yml
 role=$repo_dir/roles/paperless_ngx/tasks/main.yml
 defaults=$repo_dir/roles/paperless_ngx/defaults/main.yml
 argument_specs=$repo_dir/roles/paperless_ngx/meta/argument_specs.yml
@@ -23,6 +28,8 @@ fail_contract() {
 
 [ -f "$compose" ] || fail_contract 'services/paperless-ngx/compose.yml is absent'
 [ -f "$mac_compose" ] || fail_contract 'services/paperless-ngx/compose.mac.yml is absent'
+[ -f "$integration_compose" ] ||
+  fail_contract 'services/paperless-ngx/compose.integration.yml is absent'
 [ -f "$role" ] || fail_contract 'roles/paperless_ngx/tasks/main.yml is absent'
 [ -f "$defaults" ] || fail_contract 'roles/paperless_ngx/defaults/main.yml is absent'
 [ -f "$argument_specs" ] || fail_contract 'roles/paperless_ngx/meta/argument_specs.yml is absent'
@@ -61,19 +68,20 @@ render_paperless_mounts() {
 variant = ARGV.fetch(0)
 services = JSON.parse(ENV.fetch("PAPERLESS_RENDERED_COMPOSE")).fetch("services")
 # Networking is asserted on the merged effective config rather than on the
-# override's source text. `network_mode: !reset null` and `network_mode: null`
-# parse to the same nil through YAML.safe_load, but they do not merge the same
-# way: with the tag the key is gone from the effective config, and without it the
-# NAS `network_mode: host` survives into the Mac render, which is the failure the
-# override exists to prevent. Only the render can tell the two apart.
+# override's source text. Compose merges two `ports:` lists by appending them, so
+# a sandbox override that publishes its allocated port without `!override`
+# publishes the production 8000 alongside it and two sandboxes collide on it
+# again. The source text of such an override reads correctly; only the render
+# shows the merged list.
 webserver_networking = services.fetch("webserver")
-case variant
-when "nas"
-  abort "Paperless contract failed: nas effective config must use host networking" unless
-    webserver_networking["network_mode"] == "host"
-when "mac"
-  abort "Paperless contract failed: mac effective config did not reset NAS host networking" if
-    webserver_networking.key?("network_mode")
+abort "Paperless contract failed: #{variant} effective config must not use host networking" if
+  webserver_networking.key?("network_mode")
+expected_published = variant == "mac" ? ["38000"] : ["8000"]
+abort "Paperless contract failed: #{variant} effective webserver publication differs" unless
+  webserver_networking.fetch("ports").map { |port| port.fetch("published").to_s } == expected_published
+%w[broker db gotenberg tika].each do |name|
+  abort "Paperless contract failed: #{variant} #{name} publishes a host port" unless
+    Array(services.fetch(name)["ports"]).empty?
 end
 mounts = services.fetch("webserver").fetch("volumes")
 by_target = mounts.group_by { |mount| mount.fetch("target") }
@@ -130,25 +138,21 @@ RUBY
 
 render_paperless_mounts nas -f "$compose"
 render_paperless_mounts mac -f "$compose" -f "$mac_compose"
+render_paperless_mounts integration -f "$compose" -f "$integration_compose"
 
-ruby -ryaml - "$compose" "$mac_compose" "$role" "$defaults" \
+ruby -ryaml - "$compose" "$mac_compose" "$integration_compose" "$role" "$defaults" \
   "$argument_specs" "$storage_inventory" "$host_prep" "$generator" "$environment_template" "$snapshot" <<'RUBY'
-compose_path, mac_path, role_path, defaults_path, argument_specs_path,
+compose_path, mac_path, integration_path, role_path, defaults_path, argument_specs_path,
   storage_inventory_path, host_prep_path, generator_path, environment_template_path, snapshot_path = ARGV
 compose = YAML.safe_load_file(compose_path, aliases: true)
 mac = YAML.safe_load_file(mac_path, aliases: true)
+integration = YAML.safe_load_file(integration_path, aliases: true)
 
 # Task files are flattened so a task on a block's rescue or always path is still
 # a task the role executes. main.yml is flat today; an unflattened load would
 # quietly stop seeing whole phases the first time it is not.
-def flatten_tasks(tasks)
-  Array(tasks).flat_map do |task|
-    next [] unless task.is_a?(Hash)
-
-    [task] + flatten_tasks(task["block"]) + flatten_tasks(task["rescue"]) +
-      flatten_tasks(task["always"])
-  end
-end
+require File.join(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR"), "tests", "policy_support")
+include PolicySupport
 
 # Assertions about what the role does read the parsed structure rather than the
 # file's bytes: a task name that survives only inside a comment is not a task,
@@ -206,8 +210,8 @@ services.each do |name, service|
 end
 
 web = services.fetch("webserver")
-refuse("NAS webserver must use host networking") unless web.fetch("network_mode") == "host"
-refuse("NAS webserver must not publish ports") if web.key?("ports")
+refuse("NAS webserver must not use host networking") if web.key?("network_mode")
+refuse("NAS webserver must publish its documented port") unless web.fetch("ports") == ["8000:8000"]
 web_healthcheck = web.fetch("healthcheck")
 refuse("webserver startup grace must cover fresh database migrations") unless
   web_healthcheck.fetch("start_period") == "300s"
@@ -218,9 +222,10 @@ refuse("webserver runtime health threshold differs") unless
 refuse("webserver must wait for healthy Tika") unless
   web.fetch("depends_on").fetch("tika").fetch("condition") == "service_healthy"
 refuse("Tika healthcheck is absent") unless services.fetch("tika").key?("healthcheck")
+# The dependencies are reached over the stack's own network, so a host
+# publication for any of them is surface the platform does not need.
 %w[broker db gotenberg tika].each do |name|
-  refuse("#{name} must bind only to loopback on the NAS") unless
-    services.fetch(name).fetch("ports").all? { |port| port.start_with?("127.0.0.1:") }
+  refuse("#{name} must not publish a host port") if services.fetch(name).key?("ports")
 end
 
 refuse("document storage contract differs") unless web.fetch("volumes").grep(/PAPERLESS_(MEDIA|CONSUME|EXPORT)_PATH/).sort == [
@@ -251,13 +256,21 @@ refuse("optional Ollama configuration differs from the canonical stack") unless
 
 override_services = mac.fetch("services")
 refuse("Mac override must provide all services") unless override_services.keys.sort == services.keys.sort
-refuse("Mac webserver must reset NAS host networking") unless
-  override_services.fetch("webserver").key?("network_mode") &&
-  override_services.fetch("webserver")["network_mode"].nil?
 refuse("Mac webserver must publish only its configured port") unless
   override_services.fetch("webserver").fetch("ports") == ["${PAPERLESS_HOST_PORT:?}:8000"]
 %w[broker db gotenberg tika].each do |name|
-  refuse("Mac #{name} must not publish a port") unless override_services.fetch(name).fetch("ports") == []
+  refuse("Mac #{name} must not reintroduce a host port") if override_services.fetch(name).key?("ports")
+end
+
+# The integration sandbox keeps the production port, exactly as the Immich and
+# Jellyfin overrides do, so only container names move. Anything else it sets is a
+# divergence between the two non-NAS platforms that nothing else would catch.
+integration_services = integration.fetch("services")
+refuse("integration override must provide all services") unless
+  integration_services.keys.sort == services.keys.sort
+integration_services.each do |name, definition|
+  refuse("integration #{name} must move only its container name") unless
+    definition.keys == ["container_name"]
 end
 
 refuse("mail probe must not inspect global processed-mail or task counts") if
@@ -537,18 +550,17 @@ refuse("role must accept Google's grouped app-password display") unless
               .include?("'password': #{gmail_password_expression}") &&
     payload_facts.fetch("paperless_mail_account_credential_fingerprint", "").split.join(" ")
                  .include?("(#{gmail_password_expression})")
-# The env file is asserted as the assignments it declares. Every host-network
-# endpoint has to carry the selector, not just the first one a substring found,
-# and every secret-bearing assignment has to be the escaped form exactly once, so
-# an appended unescaped duplicate is rejected rather than shadowed.
-host_network_selector = "{{ '127.0.0.1' if platform_compose_kind in ['nas', 'integration'] else"
+# The env file is asserted as the assignments it declares. Every dependency
+# endpoint has to name its Compose service, not just the first one a substring
+# found, and every secret-bearing assignment has to be the escaped form exactly
+# once, so an appended unescaped duplicate is rejected rather than shadowed.
 {
-  "PAPERLESS_DBHOST" => "#{host_network_selector} 'db' }}",
-  "PAPERLESS_REDIS" => "redis://#{host_network_selector} 'broker' }}:6379",
-  "PAPERLESS_TIKA_ENDPOINT" => "http://#{host_network_selector} 'tika' }}:9998",
-  "PAPERLESS_GOTENBERG_ENDPOINT" => "http://#{host_network_selector} 'gotenberg' }}:3000"
+  "PAPERLESS_DBHOST" => "db",
+  "PAPERLESS_REDIS" => "redis://broker:6379",
+  "PAPERLESS_TIKA_ENDPOINT" => "http://tika:9998",
+  "PAPERLESS_GOTENBERG_ENDPOINT" => "http://gotenberg:3000"
 }.each do |name, value|
-  refuse("host-network endpoint selection must cover NAS and integration for #{name}") unless
+  refuse("#{name} must address its Compose service by name on every platform") unless
     environment_assignments.select { |assignment, _| assignment == name } == [[name, value]]
 end
 {

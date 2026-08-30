@@ -87,9 +87,26 @@
             },
             'radarr_api_key': vault_arr_radarr_api_key,
             'sonarr_api_key': vault_arr_sonarr_api_key,
-            'image': 'ghcr.io/raydak-labs/configarr:1.28.0@sha256:008d8659ff35f63fbcc20b860b33ba7cc49e8d7458a6ec446810ec4d783ef017'
+            'image': arr_configarr_compose_definition
+                     ['services']['configarr']['image']
           } | to_json | hash('sha256')
         }}
+  vars:
+    # The Configarr image belongs in this fingerprint so that a version bump
+    # forces a reconcile against the new binary. Restating the pin here made
+    # that trigger die silently: Renovate's enabledManagers never look at
+    # roles/**, so a Compose bump left the hashed literal frozen on a version
+    # that was no longer running. The image is therefore read from the Compose
+    # definition that deploys it. The canonical compose.yml is the only file
+    # that may carry it — deployment_bundle asserts compose.yml leads every
+    # service's file list, and tests/policy_test.rb forbids an `image:` key in a
+    # platform override. role_path is <checkout>/roles/arr, the same controller
+    # checkout the Configarr config and quality definitions above are read from.
+    arr_configarr_compose_definition: >-
+      {{ lookup('ansible.builtin.file',
+                (role_path | dirname | dirname) ~ '/services/arr/' ~
+                (platform_service_compose_files['arr'] | first))
+         | platform_compose_metadata }}
   changed_when: false
   no_log: true
 

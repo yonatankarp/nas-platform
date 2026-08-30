@@ -43,5 +43,14 @@ services:
       timeout: 10s
       retries: 5
       start_period: 60s
+    # The entrypoint's gosu re-exec is a setuid(2) call made by root, not the
+    # execution of a setuid binary, so refusing privilege escalation leaves the
+    # PUID/PGID remap above intact.
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
+    # /app/db is the SQLite database of the whole comic library and is recovery:
+    # critical. 30s commits the open transaction; an interrupted download is
+    # already retried from the queue that database holds.
+    stop_grace_period: 30s
     logging: *default-logging

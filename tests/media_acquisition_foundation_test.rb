@@ -4,7 +4,10 @@ require "open3"
 require "set"
 require "yaml"
 
-ROOT = File.expand_path("..", __dir__)
+require_relative "policy_support"
+
+include TestScaffold
+
 CATALOG_PATH = File.join(ROOT, "config", "media-acquisition.yml")
 ACQUISITION_PROJECTS = Set[
   "arr", "downloaders", "bindery", "kapowarr", "pinchflat", "trailarr", "seerr"
@@ -150,10 +153,7 @@ EXPECTED_IMPLEMENTED_PORTS = [
   ["kapowarr", "kapowarr", "0.0.0.0", 5656, 5656, "tcp"],
   ["komga", "komga", "0.0.0.0", 25_600, 25_600, "tcp"],
   ["ntfy", "ntfy", "0.0.0.0", 2586, 80, "tcp"],
-  ["paperless-ngx", "broker", "127.0.0.1", 6379, 6379, "tcp"],
-  ["paperless-ngx", "db", "127.0.0.1", 5432, 5432, "tcp"],
-  ["paperless-ngx", "gotenberg", "127.0.0.1", 3000, 3000, "tcp"],
-  ["paperless-ngx", "tika", "127.0.0.1", 9998, 9998, "tcp"],
+  ["paperless-ngx", "webserver", "0.0.0.0", 8000, 8000, "tcp"],
   ["pinchflat", "pinchflat", "0.0.0.0", 8945, 8945, "tcp"]
 ].freeze
 
@@ -248,14 +248,6 @@ def integration_writer_contract_problems(storage)
   problems << "integration writer declarations must remain ownerless for production NAS storage" if
     integration_writers.any? { |entry| entry.key?("owner") || entry.key?("group") }
   problems
-end
-
-def flatten_tasks(tasks)
-  Array(tasks).flat_map do |task|
-    next [] unless task.is_a?(Hash)
-
-    [task] + %w[block rescue always].flat_map { |section| flatten_tasks(task[section]) }
-  end
 end
 
 def yaml_structure_problems(source)
@@ -579,7 +571,7 @@ failures << "NAS guide omits the reader-only external network prerequisite" unle
   nas_guide.gsub(/\s+/, " ").include?(reader_prerequisite)
 
 host_prep = YAML.safe_load_file(File.join(ROOT, "roles", "host_prep", "tasks", "main.yml"))
-all_host_prep_tasks = flatten_tasks(host_prep)
+all_host_prep_tasks = PolicySupport.flatten_tasks(host_prep)
 network_task = host_prep.find do |task|
   task["name"] == "Create the external media control network"
 end
@@ -881,9 +873,5 @@ end
   failures << "catalog guard misses #{label}" if catalog_contract_problems(mutation).empty?
 end
 
-if failures.empty?
-  puts "media acquisition foundation: inert catalog and port policy hold"
-else
-  failures.each { |failure| warn "FAIL #{failure}" }
-  abort "#{failures.length} media acquisition foundation regression(s)"
-end
+report(failures, "media acquisition foundation: inert catalog and port policy hold",
+       "media acquisition foundation regression(s)")

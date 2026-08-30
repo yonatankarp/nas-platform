@@ -173,8 +173,14 @@ FINGERPRINT_INPUT_BY_KIND = {
   configarr: "configarr"
 }.freeze
 FINGERPRINT_BASELINE_CACHE = { "enabled" => false }
-CONFIGARR_IMAGE = "ghcr.io/raydak-labs/configarr:1.28.0@sha256:" \
-                  "008d8659ff35f63fbcc20b860b33ba7cc49e8d7458a6ec446810ec4d783ef017"
+ARR_COMPOSE_FILES = { "arr" => ["compose.yml"] }.freeze
+# Read from the Compose definition that deploys Configarr, exactly as the
+# fingerprint task does. Restating the pin here let the fixture agree with the
+# drift instead of catching it when Renovate bumped only the Compose line.
+CONFIGARR_IMAGE = YAML.safe_load_file(
+  File.join(ROOT, "services", "arr", ARR_COMPOSE_FILES.fetch("arr").first),
+  aliases: true
+).fetch("services").fetch("configarr").fetch("image").freeze
 CONFIGARR_QUALITY_DEFINITION_DOCUMENTS =
   CONFIGARR_QUALITY_DEFINITION_SOURCES.transform_values do |path|
     JSON.parse(File.read(path))
@@ -2412,6 +2418,10 @@ def base_variables(port)
     "media_arr_automatic_rename_enabled" => false,
     "media_usenet_enabled" => true,
     "platform_runtime_dir" => nil, "role_path" => File.join(ROOT, "roles", "arr"),
+    # The desired-input fingerprint reads the Configarr image out of the
+    # Compose definition this names, so every probe kind needs the selection
+    # deployment_bundle publishes in production, not only the Configarr one.
+    "platform_service_compose_files" => ARR_COMPOSE_FILES,
     "nas_uid" => Process.uid, "nas_gid" => Process.gid,
     "arr_installed_reconciliation_fingerprints" => {
       "prowlarr_applications" => "same", "servarr_sabnzbd" => "same",
@@ -2793,7 +2803,7 @@ def run_tasks(kind, api, extra_variables = {}, runtime: nil, prepare_fingerprint
       env["ACQUISITION_FIXTURE_APPLY_URL"] = "http://127.0.0.1:#{api.port}/_fixture/configarr/apply"
       variables.merge!(
         "platform_current_dir" => ROOT, "platform_runtime_dir" => runtime,
-        "platform_service_compose_files" => { "arr" => ["compose.yml"] },
+        "platform_service_compose_files" => ARR_COMPOSE_FILES,
         "arr_compose_project_name" => "fixture-arr",
         "arr_servarr_instances" => [SERVARR_INSTANCE, SONARR_INSTANCE].map do |instance|
           deep_copy(instance).merge(

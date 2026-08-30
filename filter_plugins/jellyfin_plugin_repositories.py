@@ -25,6 +25,10 @@ Parity with the loops it replaces, verified by differential on ansible-core
 * The retired list is compared against the *normalized* URL but is itself used
   raw, exactly as the `when:` condition did. Normalizing it here would newly
   retire a repository whose declared URL differs only in case or trailing slash.
+  Its list-ness is enforced, which the `when:` condition never did: `in` against
+  a string is Python's substring test, so a scalar retired URL silently retired
+  every repository whose URL it contained. That is a refusal, not a normalization
+  — the raw comparison of the members themselves is unchanged.
 * `combine` with the default `recursive=false` is a shallow overlay in which the
   desired keys win and every unrelated key on the current record survives, so
   the merge is `{**raw, **desired}` and not a replacement.
@@ -42,9 +46,24 @@ between the inventory and the merge, so a duplicate still aborts with the role's
 own message before any merged list is used.
 """
 
+import importlib.util
 import re
+from pathlib import Path
 
 from ansible.errors import AnsibleFilterError
+
+
+# Filter plugins cannot import module_utils/ by name, and putting the repository
+# root on sys.path to reach it would shadow site-packages with library/, roles/,
+# services/ and tests/ for the whole Ansible process. Loading the file by path
+# shares the guards with no global side effect. tests/policy_test.rb executes
+# every filter plugin and fails if one of them touches sys.path.
+_GUARDS_SPEC = importlib.util.spec_from_file_location(
+    "nas_platform_schema_guards",
+    Path(__file__).resolve().parents[1] / "module_utils" / "schema_guards.py",
+)
+_GUARDS = importlib.util.module_from_spec(_GUARDS_SPEC)
+_GUARDS_SPEC.loader.exec_module(_GUARDS)
 
 
 def _normalized_url(value):
@@ -54,15 +73,8 @@ def _normalized_url(value):
 
 
 def _require_sequence(value, label):
-    if not isinstance(value, (list, tuple)):
-        raise AnsibleFilterError(f"{label} must be a list")
-    return list(value)
-
-
-def _require_mapping(value, label):
-    if not isinstance(value, dict):
-        raise AnsibleFilterError(f"{label} must be a mapping")
-    return value
+    """Jellyfin reports a sequence as "a list"; the wording is the role's."""
+    return _GUARDS.sequence(value, label, noun="a list")
 
 
 def jellyfin_normalized_repositories(current):
@@ -70,7 +82,7 @@ def jellyfin_normalized_repositories(current):
     entries = _require_sequence(current, "Jellyfin plugin repositories")
     inventory = []
     for entry in entries:
-        record = _require_mapping(entry, "a Jellyfin plugin repository")
+        record = _GUARDS.mapping(entry, "a Jellyfin plugin repository")
         if "Url" not in record:
             raise AnsibleFilterError(
                 "a Jellyfin plugin repository is missing its Url"
@@ -90,7 +102,7 @@ def jellyfin_repositories_by_url(desired):
     entries = _require_sequence(desired, "declared Jellyfin plugin repositories")
     keyed = {}
     for entry in entries:
-        record = _require_mapping(entry, "a declared Jellyfin plugin repository")
+        record = _GUARDS.mapping(entry, "a declared Jellyfin plugin repository")
         if "Url" not in record:
             raise AnsibleFilterError(
                 "a declared Jellyfin plugin repository is missing its Url"
@@ -107,11 +119,12 @@ def jellyfin_merged_repositories(inventory, desired, retired):
     """
     entries = _require_sequence(inventory, "the Jellyfin repository inventory")
     declared = _require_sequence(desired, "declared Jellyfin plugin repositories")
+    retired = _require_sequence(retired, "retired Jellyfin plugin repository URLs")
     keyed = jellyfin_repositories_by_url(declared)
 
     merged = []
     for entry in entries:
-        record = _require_mapping(entry, "a Jellyfin repository inventory entry")
+        record = _GUARDS.mapping(entry, "a Jellyfin repository inventory entry")
         for key in ("raw", "normalized_url"):
             if key not in record:
                 raise AnsibleFilterError(
@@ -120,7 +133,7 @@ def jellyfin_merged_repositories(inventory, desired, retired):
         normalized = record["normalized_url"]
         if normalized in retired:
             continue
-        raw = _require_mapping(record["raw"], "a Jellyfin plugin repository")
+        raw = _GUARDS.mapping(record["raw"], "a Jellyfin plugin repository")
         merged.append({**raw, **keyed.get(normalized, {})})
 
     reported = [record["normalized_url"] for record in entries]

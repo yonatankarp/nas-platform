@@ -1,10 +1,8 @@
 # Service investigation dossiers
 
-Four media-acquisition projects remain `planned` in
-[`services/manifest.yml`](../services/manifest.yml). Each was investigated once,
-against upstream source *and* a running container, before any promotion was
-attempted. The files below are what those investigations found, so the person
-who writes the promotion does not have to repeat them.
+Each media-acquisition project is investigated once, against upstream source
+*and* a running container, and what the investigation found is written down here
+so the next person does not pay for it twice.
 
 A dossier is not a design and not an approval. It records what the deployed
 version of a service actually does, which of the repository's own rules that
@@ -12,11 +10,32 @@ behaviour collides with, and which questions were left open. Where it proposes
 a shape, the shape is a suggestion carrying whatever evidence it has, and the
 promotion is still free to choose differently.
 
+## Before a promotion
+
+Four projects remain `planned` in
+[`services/manifest.yml`](../services/manifest.yml). These four files are what a
+promotion starts from.
+
 - [Bindery](dossier-bindery.md) — Phase 2 unit B, ebooks and audiobooks
 - [Trailarr](dossier-trailarr.md) — Phase 3, local trailers
 - [Seerr](dossier-seerr.md) — Phase 4, requests
 - [Gluetun and qBittorrent](dossier-gluetun-qbittorrent.md) — Phase 5, the
   torrent cutover
+
+## After a promotion
+
+Two projects are `implemented`, and both were promoted before this convention
+existed. Their dossiers ask a different question — not whether to deploy the
+service, but **what the running application holds that Ansible does not own**.
+A deployed service with an unowned configuration surface is the one case where
+this repository stops describing reality, so the surface is worth naming even
+when the answer is that it cannot be closed.
+
+- [Pinchflat](dossier-pinchflat.md) — no configuration API exists at all
+- [Kapowarr](dossier-kapowarr.md) — a complete settings API, mostly unclaimed
+
+The two answer that question almost exactly opposite to each other, which is the
+argument for reading them as a pair.
 
 The design they are read against is
 [the media acquisition platform design](superpowers/specs/2026-08-21-media-acquisition-platform-design.md).
@@ -62,10 +81,18 @@ qmcgaw/gluetun:v3.41.3@sha256:fa19cc76b2af13d57a8d3dc3066f2ada061b1c761b8aecf989
 lscr.io/linuxserver/qbittorrent:5.2.3_v2.0.14-ls473@sha256:304b19cf94bf4fda534e0b086cab9c5f1a9e139a8180c05c0ad7d2ba1526fa99
 ```
 
-All five publish `linux/amd64` and `linux/arm64`, so one pin resolves on the
+The two post-promotion dossiers rest on the digests their own Compose files
+already pin, so those two move when Renovate moves the deployment:
+
+```
+ghcr.io/kieraneglin/pinchflat:v2025.6.6@sha256:4e975edf58f0861a5cbfe8fc6aac4851ff5a02dfc3f05ffeea4982e3084a5a4a
+docker.io/mrcas/kapowarr:v1.3.1@sha256:d455797e4f2c5b1a8ccc5ce05c427f1af2179451bb1af195ca3fa8c3e928623b
+```
+
+All seven publish `linux/amd64` and `linux/arm64`, so one pin resolves on the
 AS6704T and on an arm64 Mac lane. Each was taken from the top-level `Digest:`
 of `docker buildx imagetools inspect`, never a per-platform entry. Confirmed
-for all five.
+for all seven.
 
 ## What the four have in common
 

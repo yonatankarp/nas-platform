@@ -61,6 +61,60 @@ argument_specs:
         type: list
         elements: dict
         required: false
+      # Compared raw against the normalized URL of every repository Jellyfin
+      # reports, by jellyfin_merged_repositories. A scalar here is a substring
+      # test rather than list membership, which the filter now refuses and this
+      # declaration stops one layer earlier.
+      jellyfin_retired_plugin_repository_urls:
+        type: list
+        elements: str
+        required: false
+      # Selected out of jellyfin_encoding_profiles by platform_kind and posted
+      # verbatim as Jellyfin's encoding configuration, so the suboptions are the
+      # keys of a profile. An unlisted key here would be written to Jellyfin and
+      # then compared back on every run.
+      jellyfin_encoding_policy:
+        type: dict
+        required: false
+        options:
+          HardwareAccelerationType:
+            type: str
+            required: false
+          # Empty on the Mac profile, so a string and not a path.
+          QsvDevice:
+            type: str
+            required: false
+          HardwareDecodingCodecs:
+            type: list
+            elements: str
+            required: false
+          EnableDecodingColorDepth10Hevc:
+            type: bool
+            required: false
+          EnableDecodingColorDepth10Vp9:
+            type: bool
+            required: false
+          EnableHardwareEncoding:
+            type: bool
+            required: false
+          AllowHevcEncoding:
+            type: bool
+            required: false
+          AllowAv1Encoding:
+            type: bool
+            required: false
+          EnableIntelLowPowerH264HwEncoder:
+            type: bool
+            required: false
+          EnableIntelLowPowerHevcHwEncoder:
+            type: bool
+            required: false
+          EnableVppTonemapping:
+            type: bool
+            required: false
+          EnableTonemapping:
+            type: bool
+            required: false
       jellyfin_opensubtitles_plugin_id:
         type: str
         required: false

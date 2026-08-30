@@ -18,8 +18,8 @@ require "yaml"
 require_relative "policy_support"
 
 include PolicySupport
+include TestScaffold
 
-ROOT = File.expand_path("..", __dir__)
 BASE_FIXTURE_PATHS = %w[
   .gitignore
   .github/workflows/ci.yml
@@ -40,6 +40,7 @@ BASE_FIXTURE_PATHS = %w[
   filter_plugins/vault_managed_user_schema.py
   filter_plugins/vault_credential_schema.py
   filter_plugins/immich_preference_schema.py
+  module_utils/schema_guards.py
   library/atomic_safe_slurp.py
   generate-secrets.yml
   install-production-auto-deploy.yml
@@ -90,6 +91,7 @@ BASE_FIXTURE_PATHS = %w[
   templates/vault-plain.yml.j2
   tests/contracts/registry.yml
   tests/compose_metadata_filter_test.yml
+  tests/ci/suites.conf
   tests/integration.sh
   tests/integration_lock.sh
   tests/integration_lock_test.sh
@@ -144,6 +146,7 @@ BASE_FIXTURE_PATHS = %w[
   tests/mac/verify.sh
   tests/policy_test.rb
   tests/policy_support.rb
+  tests/http_fixture_support.rb
   tests/policy_platform_test.rb
   tests/policy_ci_test.rb
   tests/policy_beszel_test.rb
@@ -228,6 +231,19 @@ def fixture_paths(root = ROOT)
                                                 entry.fetch("path") == expected_path
 
     paths << expected_path
+  end
+
+  # tests/policy_ci_test.rb requires a static foundation contract beside every
+  # planned acquisition lane. Those scripts are not registry contracts -- the
+  # registry only carries services that are built -- so name them from the same
+  # two sources the policy reads: the catalog says which projects are acquisition
+  # lanes, the manifest says which of them are still planned. Without them every
+  # mutation would fail on the absent contract rather than on the mutation.
+  acquisition_catalog = YAML.safe_load_file(File.join(root, "config", "media-acquisition.yml"))
+  acquisition_catalog.fetch("projects").each_key do |project|
+    next unless statuses[project] == "planned"
+
+    paths << File.join("tests", "contracts", "#{project}-foundation.sh")
   end
   paths.uniq
 end
@@ -433,18 +449,6 @@ def mutate_yaml_file(root, relative_path)
   File.write(path, YAML.dump(document))
 end
 
-def flatten_fixture_tasks(tasks, flattened = [])
-  Array(tasks).each do |task|
-    next unless task.is_a?(Hash)
-
-    flattened << task
-    %w[block rescue always].each do |section|
-      flatten_fixture_tasks(task[section], flattened)
-    end
-  end
-  flattened
-end
-
 def service(manifest, name)
   manifest.fetch("services").find { |entry| entry["name"] == name }
 end
@@ -463,19 +467,28 @@ POLICY_SCRIPTS = %w[
   tests/policy_vault_test.rb
 ].freeze
 
+# Runs the whole policy set against one mutated sandbox, because which script
+# rejects a mutation is exactly what this harness must not hard-code.
+#
+# The scripts run concurrently. Every one of them only reads the sandbox, and
+# each is a subprocess that releases the GVL, so this is the same parallelism
+# tests/validate-policy.sh applies to the checks themselves. Serially it was the
+# policy gate's floor: this harness builds a sandbox per mutation and there are
+# over a hundred of them, so a second spent here is spent a hundred times.
+#
+# Results are collected by index rather than appended as they finish, so the
+# output a caller matches against stays in POLICY_SCRIPTS order and a failure
+# report does not depend on which script happened to exit first.
 def run_policy(scripts = POLICY_SCRIPTS)
   Dir.mktmpdir("nas-platform-policy-") do |sandbox|
     copy_fixture(ROOT, sandbox)
     initialize_fixture_index(sandbox)
     yield sandbox
-    output = ""
-    succeeded = true
-    scripts.each do |script|
-      stdout, stderr, status = capture3_without_git_routing(RbConfig.ruby, script, chdir: sandbox)
-      output += stdout + stderr
-      succeeded &&= status.success?
-    end
-    [output, succeeded]
+    results = scripts.map do |script|
+      Thread.new { capture3_without_git_routing(RbConfig.ruby, script, chdir: sandbox) }
+    end.map(&:value)
+    output = results.map { |stdout, stderr, _status| stdout + stderr }.join
+    [output, results.all? { |_stdout, _stderr, status| status.success? }]
   end
 end
 
@@ -565,6 +578,8 @@ def implement_paperless(root)
         cpuset: \${PLATFORM_CONTAINER_CPUSET:?}
         cpus: 0.5
         restart: unless-stopped
+        security_opt:
+          - no-new-privileges:true
         logging:
           driver: json-file
           options:
@@ -575,6 +590,8 @@ def implement_paperless(root)
         cpuset: \${PLATFORM_CONTAINER_CPUSET:?}
         cpus: 2.0
         restart: unless-stopped
+        security_opt:
+          - no-new-privileges:true
         logging:
           driver: json-file
           options:
@@ -585,6 +602,8 @@ def implement_paperless(root)
         cpuset: \${PLATFORM_CONTAINER_CPUSET:?}
         cpus: 3.0
         restart: unless-stopped
+        security_opt:
+          - no-new-privileges:true
         logging:
           driver: json-file
           options:
@@ -595,6 +614,8 @@ def implement_paperless(root)
         cpuset: \${PLATFORM_CONTAINER_CPUSET:?}
         cpus: 2.0
         restart: unless-stopped
+        security_opt:
+          - no-new-privileges:true
         logging:
           driver: json-file
           options:
@@ -605,6 +626,8 @@ def implement_paperless(root)
         cpuset: \${PLATFORM_CONTAINER_CPUSET:?}
         cpus: 2.0
         restart: unless-stopped
+        security_opt:
+          - no-new-privileges:true
         logging:
           driver: json-file
           options:

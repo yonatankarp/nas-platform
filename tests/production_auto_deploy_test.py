@@ -20,6 +20,8 @@ import production_auto_deploy  # noqa: E402
 
 MAIN_SHA = "a" * 40
 OTHER_SHA = "b" * 40
+# A third revision, for the walk back from a head whose run is still going.
+OLDER_SHA = "c" * 40
 
 
 class PollerTestCase(unittest.TestCase):
@@ -197,6 +199,9 @@ class EligibilityTest(PollerTestCase):
         )
 
     def test_verdict_reports_the_newest_conclusion_and_names_ambiguity(self):
+        """The newest run that judged the revision is the verdict, so a
+        cancelled re-run cannot bury the failure that prompted it."""
+
         config = self.loaded_config()
         newest = {**self.GREEN_RUN, "conclusion": "cancelled"}
         older = {**self.GREEN_RUN, "conclusion": "timed_out"}
@@ -204,13 +209,54 @@ class EligibilityTest(PollerTestCase):
         verdict, detail, _url = production_auto_deploy.ci_verdict(
             config, MAIN_SHA, (newest, older)
         )
-        self.assertEqual((verdict, detail), (production_auto_deploy.CI_FAILED, "cancelled"))
+        self.assertEqual((verdict, detail), (production_auto_deploy.CI_FAILED, "timed_out"))
 
         verdict, detail, _url = production_auto_deploy.ci_verdict(
             config, MAIN_SHA, (self.GREEN_RUN, self.GREEN_RUN)
         )
         self.assertEqual(verdict, production_auto_deploy.CI_AMBIGUOUS)
         self.assertIn("exactly one is required", detail)
+
+    def test_a_cancelled_run_is_superseded_rather_than_refused(self):
+        """A run can end without ever judging the revision it was running: by
+        hand, or `skipped`, `stale` or `neutral`, and — until `cancel-in-progress`
+        was confined to pull requests — by the next merge cancelling it. Reading
+        any of those as a red main pages a human for a verdict nobody reached."""
+
+        config = self.loaded_config()
+
+        for conclusion in ("cancelled", "skipped", "stale", "neutral"):
+            run = {**self.GREEN_RUN, "conclusion": conclusion}
+            with self.subTest(conclusion=conclusion):
+                verdict, detail, _url = production_auto_deploy.ci_verdict(
+                    config, MAIN_SHA, (run,)
+                )
+                self.assertEqual(verdict, production_auto_deploy.CI_SUPERSEDED)
+                self.assertEqual(detail, conclusion)
+
+    def test_an_unrecognised_conclusion_still_refuses_the_revision(self):
+        """An answer from CI this poller has never heard of is exactly what
+        should stop a deployment rather than pass unnoticed."""
+
+        config = self.loaded_config()
+        for conclusion in ("failure", "timed_out", "startup_failure", "moon", None):
+            run = {**self.GREEN_RUN, "conclusion": conclusion}
+            with self.subTest(conclusion=conclusion):
+                self.assertEqual(
+                    production_auto_deploy.ci_verdict(config, MAIN_SHA, (run,))[0],
+                    production_auto_deploy.CI_FAILED,
+                )
+
+    def test_a_cancelled_run_does_not_unseat_a_successful_one(self):
+        config = self.loaded_config()
+        cancelled = {**self.GREEN_RUN, "conclusion": "cancelled"}
+
+        self.assertEqual(
+            production_auto_deploy.ci_verdict(
+                config, MAIN_SHA, (cancelled, self.GREEN_RUN)
+            )[0],
+            production_auto_deploy.CI_GREEN,
+        )
 
     def test_verdict_ignores_runs_of_another_branch_workflow_or_revision(self):
         config = self.loaded_config()
@@ -265,25 +311,37 @@ class EligibilityTest(PollerTestCase):
                     with self.assertRaises(production_auto_deploy.EligibilityError):
                         production_auto_deploy.resolve_main_sha(config)
 
-    def test_fetch_ci_runs_rejects_an_invalid_sha_before_any_request(self):
-        config = self.loaded_config()
-        with mock.patch.object(production_auto_deploy, "urlopen") as opener:
-            with self.assertRaises(production_auto_deploy.EligibilityError):
-                production_auto_deploy.fetch_ci_runs(config, "nope")
-        opener.assert_not_called()
-
     def test_fetch_ci_runs_requests_the_pinned_query_and_parses_runs(self):
         config = self.loaded_config()
         body = json.dumps({"workflow_runs": [self.GREEN_RUN, "junk"]}).encode("utf-8")
         with mock.patch.object(production_auto_deploy, "urlopen") as opener:
             opener.return_value.__enter__.return_value.read.return_value = body
-            runs = production_auto_deploy.fetch_ci_runs(config, MAIN_SHA)
+            runs = production_auto_deploy.fetch_ci_runs(config)
         self.assertEqual(runs, (self.GREEN_RUN,))
         url = opener.call_args.args[0].full_url
         self.assertIn("/repos/yonatankarp/nas-platform/", url)
         self.assertIn("workflows/ci.yml/runs", url)
         self.assertIn("event=push", url)
-        self.assertIn(f"head_sha={MAIN_SHA}", url)
+        self.assertIn("branch=main", url)
+        self.assertIn("status=completed", url)
+
+    def test_fetch_ci_runs_asks_about_the_branch_rather_than_one_revision(self):
+        """A per-revision query cannot see that the head is still running while
+        the revision behind it has already passed, which is the whole question."""
+
+        config = self.loaded_config()
+        body = json.dumps({"workflow_runs": []}).encode("utf-8")
+        with mock.patch.object(production_auto_deploy, "urlopen") as opener:
+            opener.return_value.__enter__.return_value.read.return_value = body
+            production_auto_deploy.fetch_ci_runs(config)
+        url = opener.call_args.args[0].full_url
+        self.assertNotIn("head_sha", url)
+        self.assertIn(f"per_page={production_auto_deploy.CI_RUN_PAGE_SIZE}", url)
+        self.assertGreater(
+            production_auto_deploy.CI_RUN_PAGE_SIZE,
+            1,
+            "a page that holds one run cannot show a revision behind the head",
+        )
 
     def test_fetch_ci_runs_rejects_an_oversized_or_invalid_body(self):
         config = self.loaded_config()
@@ -297,7 +355,160 @@ class EligibilityTest(PollerTestCase):
                 opener.return_value.__enter__.return_value.read.return_value = body
                 with self.subTest(body=body[:20]):
                     with self.assertRaises(production_auto_deploy.EligibilityError):
-                        production_auto_deploy.fetch_ci_runs(config, MAIN_SHA)
+                        production_auto_deploy.fetch_ci_runs(config)
+
+
+class SelectionTest(PollerTestCase):
+    """Which revision a poll picks when main has moved on since CI started.
+
+    A run takes longer than the gap between merges, so the head of main is
+    usually still going while the revision behind it has already passed. The
+    poller used to look at the head and nothing else, which meant a green
+    revision sat undeployed for as long as the next commit's run took.
+    """
+
+    GREEN_RUN = EligibilityTest.GREEN_RUN
+    RED_RUN = {**EligibilityTest.GREEN_RUN, "conclusion": "failure"}
+
+    def run_for(self, sha, **overrides):
+        return {**self.GREEN_RUN, "head_sha": sha, **overrides}
+
+    def select(self, runs, head=MAIN_SHA, retry_sha=None):
+        return production_auto_deploy.select_revision(
+            self.loaded_config(), head, runs, retry_sha
+        )
+
+    def test_a_running_head_is_stepped_over_for_the_revision_behind_it(self):
+        selection = self.select((self.run_for(OTHER_SHA),))
+
+        self.assertEqual(selection.candidate, OTHER_SHA)
+        self.assertEqual(selection.judged, OTHER_SHA)
+
+    def test_the_head_wins_once_its_own_run_is_green(self):
+        selection = self.select(
+            (self.run_for(MAIN_SHA), self.run_for(OTHER_SHA)),
+        )
+
+        self.assertEqual(selection.candidate, MAIN_SHA)
+
+    def test_a_red_head_still_blocks_the_green_revision_behind_it(self):
+        """A red main stops every deployment; stepping over a run that has not
+        finished must not become stepping over one that failed."""
+
+        selection = self.select(
+            (self.run_for(MAIN_SHA, conclusion="failure"), self.run_for(OTHER_SHA)),
+        )
+
+        self.assertIsNone(selection.candidate)
+        self.assertEqual(selection.judged, MAIN_SHA)
+        self.assertEqual(selection.verdict[0], production_auto_deploy.CI_FAILED)
+
+    def test_a_red_revision_behind_a_running_head_blocks_and_is_named(self):
+        selection = self.select((self.run_for(OTHER_SHA, conclusion="failure"),))
+
+        self.assertIsNone(selection.candidate)
+        self.assertEqual(selection.judged, OTHER_SHA)
+        self.assertEqual(selection.verdict[0], production_auto_deploy.CI_FAILED)
+
+    def test_a_cancelled_revision_is_walked_past_to_the_green_one_behind_it(self):
+        """Two merges inside one CI window leave the first revision cancelled.
+        Stopping there would block on a run the workflow itself killed."""
+
+        selection = self.select(
+            (
+                self.run_for(OTHER_SHA, conclusion="cancelled"),
+                self.run_for(OLDER_SHA),
+            ),
+        )
+
+        self.assertEqual(selection.candidate, OLDER_SHA)
+
+    def test_a_run_of_cancelled_revisions_leaves_nothing_to_deploy_and_no_alarm(self):
+        selection = self.select(
+            (
+                self.run_for(OTHER_SHA, conclusion="cancelled"),
+                self.run_for(OLDER_SHA, conclusion="cancelled"),
+            ),
+        )
+
+        self.assertIsNone(selection.candidate)
+        self.assertEqual(selection.judged, MAIN_SHA)
+        self.assertEqual(selection.verdict[0], production_auto_deploy.CI_PENDING)
+
+    def test_a_failure_behind_a_cancelled_revision_still_blocks(self):
+        selection = self.select(
+            (
+                self.run_for(OTHER_SHA, conclusion="cancelled"),
+                self.run_for(OLDER_SHA, conclusion="failure"),
+            ),
+        )
+
+        self.assertIsNone(selection.candidate)
+        self.assertEqual(selection.judged, OLDER_SHA)
+        self.assertEqual(selection.verdict[0], production_auto_deploy.CI_FAILED)
+
+    def test_an_attempted_head_stops_the_walk_before_anything_older(self):
+        """Everything behind an attempted revision has already had its turn;
+        walking past it would put an older revision back on the NAS."""
+
+        config = self.loaded_config()
+        production_auto_deploy.record_attempt(config, MAIN_SHA)
+
+        selection = self.select(
+            (self.run_for(MAIN_SHA), self.run_for(OTHER_SHA)),
+        )
+
+        self.assertIsNone(selection.candidate)
+        self.assertEqual(selection.attempted, MAIN_SHA)
+        self.assertIsNone(selection.verdict)
+
+    def test_a_revision_already_deployed_is_not_deployed_a_second_time(self):
+        config = self.loaded_config()
+        production_auto_deploy.record_attempt(config, OTHER_SHA)
+
+        selection = self.select((self.run_for(OTHER_SHA),))
+
+        self.assertIsNone(selection.candidate)
+        self.assertEqual(selection.attempted, OTHER_SHA)
+
+    def test_nothing_finished_reports_the_head_as_still_running(self):
+        selection = self.select(())
+
+        self.assertIsNone(selection.candidate)
+        self.assertEqual(selection.judged, MAIN_SHA)
+        self.assertEqual(selection.verdict[0], production_auto_deploy.CI_PENDING)
+
+    def test_the_candidates_are_the_head_then_the_runs_newest_first(self):
+        candidates = production_auto_deploy.candidate_revisions(
+            self.loaded_config(),
+            MAIN_SHA,
+            (
+                self.run_for(OTHER_SHA),
+                self.run_for(OTHER_SHA, conclusion="failure"),
+                self.run_for(OLDER_SHA),
+            ),
+        )
+
+        self.assertEqual(candidates, [MAIN_SHA, OTHER_SHA, OLDER_SHA])
+
+    def test_a_candidate_must_be_a_real_sha_from_the_gating_workflow(self):
+        """These SHAs come from the network and end up as arguments to git."""
+
+        candidates = production_auto_deploy.candidate_revisions(
+            self.loaded_config(),
+            MAIN_SHA,
+            (
+                self.run_for("../../etc/passwd"),
+                self.run_for(OTHER_SHA.upper()),
+                self.run_for(OTHER_SHA, head_branch="release"),
+                self.run_for(OTHER_SHA, name="Nightly"),
+                self.run_for(OTHER_SHA, event="pull_request"),
+                self.run_for(OTHER_SHA, status="in_progress"),
+                {"head_sha": None},
+            ),
+        )
+
+        self.assertEqual(candidates, [MAIN_SHA])
 
 
 class StateTest(PollerTestCase):
@@ -423,6 +634,62 @@ class StateTest(PollerTestCase):
         body = (config.state_root / "attempted").read_text(encoding="ascii")
         self.assertEqual(body.count(MAIN_SHA), 1)
 
+    def test_a_quiet_poller_still_expires_old_attempts(self):
+        """Recording an attempt prunes as a side effect, so the age bound used
+        to wait for the next deployment. A platform that changes rarely is
+        exactly the one whose record would never be cleaned."""
+
+        config = self.loaded_config()
+        old = datetime.now(timezone.utc) - timedelta(
+            days=production_auto_deploy.ATTEMPTED_RETENTION_DAYS + 1
+        )
+        production_auto_deploy.record_attempt(config, OTHER_SHA, now=old)
+        self.assertEqual(production_auto_deploy.attempted_shas(config), {OTHER_SHA})
+
+        production_auto_deploy.prune_attempts(config, datetime.now(timezone.utc))
+
+        self.assertEqual(production_auto_deploy.attempted_shas(config), set())
+
+    def test_pruning_keeps_an_attempt_inside_the_window(self):
+        config = self.loaded_config()
+        recent = datetime.now(timezone.utc) - timedelta(
+            days=production_auto_deploy.ATTEMPTED_RETENTION_DAYS - 1
+        )
+        production_auto_deploy.record_attempt(config, OTHER_SHA, now=recent)
+
+        production_auto_deploy.prune_attempts(config, datetime.now(timezone.utc))
+
+        self.assertEqual(production_auto_deploy.attempted_shas(config), {OTHER_SHA})
+
+    def test_pruning_does_not_rewrite_a_record_it_did_not_change(self):
+        """Twelve polls an hour rewriting unchanged state is twelve needless
+        writes to the NAS's flash."""
+
+        config = self.loaded_config()
+        production_auto_deploy.record_attempt(config, MAIN_SHA)
+        path = config.state_root / "attempted"
+        os.utime(path, (0, 0))
+
+        production_auto_deploy.prune_attempts(config, datetime.now(timezone.utc))
+
+        self.assertEqual(path.stat().st_mtime, 0)
+
+    def test_every_poll_prunes_the_record_and_rotates_the_logs(self):
+        config = self.loaded_config()
+        old = datetime.now(timezone.utc) - timedelta(
+            days=production_auto_deploy.ATTEMPTED_RETENTION_DAYS + 1
+        )
+        production_auto_deploy.record_attempt(config, OLDER_SHA, now=old)
+
+        with mock.patch.object(
+            production_auto_deploy, "resolve_main_sha", return_value=MAIN_SHA
+        ), mock.patch.object(
+            production_auto_deploy, "fetch_ci_runs", return_value=()
+        ):
+            self.assertIsNone(production_auto_deploy.poll(config))
+
+        self.assertEqual(production_auto_deploy.attempted_shas(config), set())
+
     def test_the_lock_is_exclusive_across_processes(self):
         config = self.loaded_config()
         program = (
@@ -471,17 +738,27 @@ class DeployTest(PollerTestCase):
         outcome, calls, _kwargs = self.deploy_with(config)
 
         self.assertTrue(outcome)
-        self.assertEqual(len(calls), 8)
+        self.assertEqual(len(calls), 9)
 
         self.assertEqual([calls[0][0], calls[0][1]], ["/usr/local/bin/git", "fetch"])
-        self.assertEqual(calls[1][:3], ["/usr/local/bin/git", "checkout", "--detach"])
-        self.assertEqual(calls[1][3], MAIN_SHA)
+        self.assertEqual(
+            calls[1],
+            [
+                "/usr/local/bin/git",
+                "merge-base",
+                "--is-ancestor",
+                MAIN_SHA,
+                "FETCH_HEAD",
+            ],
+        )
+        self.assertEqual(calls[2][:3], ["/usr/local/bin/git", "checkout", "--detach"])
+        self.assertEqual(calls[2][3], MAIN_SHA)
 
-        self.assertTrue(calls[2][0].endswith("pip"))
-        self.assertIn("--requirement", calls[2])
-        self.assertTrue(calls[2][-1].endswith("controller-requirements.txt"))
+        self.assertTrue(calls[3][0].endswith("pip"))
+        self.assertIn("--requirement", calls[3])
+        self.assertTrue(calls[3][-1].endswith("controller-requirements.txt"))
 
-        self.assertTrue(calls[3][0].endswith("ansible-galaxy"))
+        self.assertTrue(calls[4][0].endswith("ansible-galaxy"))
 
         def playbook_of(call):
             # A playbook is a bare filename: vault arguments are paths or
@@ -497,7 +774,7 @@ class DeployTest(PollerTestCase):
             self.assertEqual(len(names), 1, f"one playbook per call, got {names}")
             return names[0]
 
-        playbooks = [playbook_of(call) for call in calls[4:]]
+        playbooks = [playbook_of(call) for call in calls[5:]]
         self.assertEqual(
             playbooks,
             [
@@ -642,6 +919,17 @@ class DeployTest(PollerTestCase):
         for call_kwargs in kwargs:
             environment = (call_kwargs or {}).get("env") or {}
             self.assertNotIn("PLATFORM_VAULT_FILE", environment)
+
+    def test_a_revision_no_longer_on_main_is_never_checked_out(self):
+        """A revision behind the head is named by GitHub's record of what it
+        ran, which is a record of the past. Only the branch just fetched says
+        what main is now."""
+
+        config = self.loaded_config()
+        outcome, calls, _kwargs = self.deploy_with(config, fail_on="merge-base")
+
+        self.assertFalse(outcome)
+        self.assertNotIn("checkout", [part for call in calls for part in call])
 
     def test_a_failed_checkout_stops_before_touching_tooling(self):
         config = self.loaded_config()
@@ -1145,6 +1433,29 @@ class PollCiRefusalTest(PollerTestCase):
 
         self.assertEqual(self.poll_with(config, ())[0], [])
 
+    def test_a_cancelled_run_is_never_announced_as_a_red_main(self):
+        """The alert says "no deployment until this revision passes CI" at
+        priority 4. A run the workflow cancelled to make way for the next merge
+        is not that, and it happens whenever two changes land together."""
+
+        config = self.loaded_config()
+
+        published, outcome = self.poll_with(
+            config, ({**self.GREEN_RUN, "conclusion": "cancelled"},)
+        )
+
+        self.assertIsNone(outcome)
+        self.assertEqual(published, [])
+
+    def test_a_cancelled_run_clears_a_refusal_so_a_real_failure_reports_again(self):
+        config = self.loaded_config()
+        self.poll_with(config, (self.RED_RUN,))
+
+        self.poll_with(config, ({**self.GREEN_RUN, "conclusion": "cancelled"},))
+        self.assertEqual(production_auto_deploy.read_ci_refusal(config), "")
+
+        self.assertEqual(len(self.poll_with(config, (self.RED_RUN,))[0]), 1)
+
     def test_ambiguous_successful_runs_are_reported_as_a_refusal(self):
         config = self.loaded_config()
 
@@ -1227,6 +1538,106 @@ class PollTest(PollerTestCase):
             production_auto_deploy, "fetch_ci_runs", return_value=runs
         ), mock.patch.object(production_auto_deploy, "notify", return_value=True):
             yield
+
+    @contextlib.contextmanager
+    def seeing(self, head, runs):
+        """One poll against an explicit branch history: `head` is main's tip,
+        `runs` are the completed runs GitHub reports for the branch."""
+
+        with mock.patch.object(
+            production_auto_deploy, "resolve_main_sha", return_value=head
+        ), mock.patch.object(
+            production_auto_deploy, "fetch_ci_runs", return_value=runs
+        ), mock.patch.object(production_auto_deploy, "notify", return_value=True):
+            yield
+
+    def green_run(self, sha):
+        return {**self.GREEN_RUN, "head_sha": sha}
+
+    def test_poll_deploys_the_green_revision_behind_a_running_head(self):
+        """The bug this replaced: a merge landing during a run left the
+        revision that had just passed undeployed for the length of the next
+        run, which is over half an hour."""
+
+        config = self.loaded_config()
+        with self.seeing(MAIN_SHA, (self.green_run(OTHER_SHA),)), mock.patch.object(
+            production_auto_deploy, "deploy", return_value=True
+        ) as deploy:
+            self.assertTrue(production_auto_deploy.poll(config))
+
+        self.assertEqual(deploy.call_args.args[1], OTHER_SHA)
+        state = production_auto_deploy.read_state(config)
+        self.assertEqual(state["last_successful"]["sha"], OTHER_SHA)
+        self.assertEqual(state["attempted"], [OTHER_SHA])
+
+    def test_a_cancelled_revision_does_not_hide_the_green_one_behind_it(self):
+        config = self.loaded_config()
+        runs = (
+            {**self.GREEN_RUN, "head_sha": OTHER_SHA, "conclusion": "cancelled"},
+            self.green_run(OLDER_SHA),
+        )
+        with self.seeing(MAIN_SHA, runs), mock.patch.object(
+            production_auto_deploy, "deploy", return_value=True
+        ) as deploy:
+            self.assertTrue(production_auto_deploy.poll(config))
+
+        self.assertEqual(deploy.call_args.args[1], OLDER_SHA)
+
+    def test_the_head_deploys_in_its_own_right_once_its_run_finishes(self):
+        """Stepping over a revision is not skipping it. Deploying its parent
+        first must leave it deployable, and must not deploy it twice."""
+
+        config = self.loaded_config()
+        with self.seeing(MAIN_SHA, (self.green_run(OTHER_SHA),)), mock.patch.object(
+            production_auto_deploy, "deploy", return_value=True
+        ):
+            production_auto_deploy.poll(config)
+
+        history = (self.green_run(MAIN_SHA), self.green_run(OTHER_SHA))
+        with self.seeing(MAIN_SHA, history), mock.patch.object(
+            production_auto_deploy, "deploy", return_value=True
+        ) as deploy:
+            self.assertTrue(production_auto_deploy.poll(config))
+        self.assertEqual(deploy.call_args.args[1], MAIN_SHA)
+
+        with self.seeing(MAIN_SHA, history), mock.patch.object(
+            production_auto_deploy, "deploy"
+        ) as deploy:
+            self.assertIsNone(production_auto_deploy.poll(config))
+        deploy.assert_not_called()
+
+    def test_a_deployed_revision_is_not_redeployed_behind_a_running_head(self):
+        config = self.loaded_config()
+        runs = (self.green_run(OTHER_SHA),)
+        with self.seeing(MAIN_SHA, runs), mock.patch.object(
+            production_auto_deploy, "deploy", return_value=True
+        ):
+            production_auto_deploy.poll(config)
+
+        with self.seeing(MAIN_SHA, runs), mock.patch.object(
+            production_auto_deploy, "deploy"
+        ) as deploy:
+            self.assertIsNone(production_auto_deploy.poll(config))
+        deploy.assert_not_called()
+
+    def test_retry_is_refused_once_a_newer_revision_is_deployable(self):
+        """--retry-failed overrides the attempted record, not the ordering: it
+        must not put an older revision back on the NAS."""
+
+        config = self.loaded_config()
+        with self.seeing(OTHER_SHA, (self.green_run(OTHER_SHA),)), mock.patch.object(
+            production_auto_deploy, "deploy", return_value=False
+        ):
+            self.assertFalse(production_auto_deploy.poll(config))
+
+        history = (self.green_run(MAIN_SHA), self.green_run(OTHER_SHA))
+        with self.seeing(MAIN_SHA, history), mock.patch.object(
+            production_auto_deploy, "deploy"
+        ) as deploy:
+            self.assertIsNone(
+                production_auto_deploy.poll(config, retry_sha=OTHER_SHA)
+            )
+        deploy.assert_not_called()
 
     def test_poll_deploys_a_green_unattempted_revision(self):
         config = self.loaded_config()
@@ -1443,6 +1854,14 @@ class CliTest(PollerTestCase):
         self.assertIn(f"current main: {MAIN_SHA}", text)
         self.assertIn("would deploy", text)
 
+    def test_status_names_the_revision_it_would_deploy_behind_a_running_head(self):
+        text = self.status_text(
+            runs=({**self.GREEN_RUN, "head_sha": OTHER_SHA},)
+        )
+        self.assertIn(f"current main: {MAIN_SHA}", text)
+        self.assertIn(f"would deploy {OTHER_SHA[:9]}", text)
+        self.assertIn("has not finished its run", text)
+
     def test_status_distinguishes_waiting_for_ci_from_broken(self):
         """Silence is the normal outcome of a poll, so an idle poller and a
         broken one must not look the same."""
@@ -1450,6 +1869,14 @@ class CliTest(PollerTestCase):
         text = self.status_text(runs=())
         self.assertIn("waiting", text)
         self.assertIn("no completed successful CI push run", text)
+
+    def test_status_distinguishes_a_superseded_run_from_a_broken_one(self):
+        text = self.status_text(
+            runs=({**self.GREEN_RUN, "conclusion": "cancelled"},)
+        )
+        self.assertIn("waiting", text)
+        self.assertIn("cancelled without judging it", text)
+        self.assertNotIn("Fix main", text)
 
     def test_status_reports_a_deployed_head_as_nothing_to_do(self):
         config = self.loaded_config()

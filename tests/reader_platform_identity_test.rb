@@ -19,7 +19,9 @@ require "json"
 require "open3"
 require "yaml"
 
-ROOT = File.expand_path("..", __dir__)
+require_relative "policy_support"
+
+include TestScaffold
 
 # Deliberately not 1000:100, and deliberately not equal to each other: a
 # renderer that swapped uid and gid, or that ignored one of them, is caught.
@@ -95,10 +97,6 @@ def compose_strings(node)
 end
 
 failures = []
-
-def check(failures, condition, message)
-  failures << message unless condition
-end
 
 # Every Compose file the platform ever hands Docker for this service: the
 # canonical definition on its own, and the canonical definition beneath each
@@ -207,9 +205,5 @@ media_entries.each do |entry|
         "the readers adopt the platform identity instead of the files being rewritten")
 end
 
-if failures.empty?
-  puts "reader platform identity: all properties hold"
-else
-  failures.each { |failure| warn "FAIL #{failure}" }
-  abort "#{failures.length} reader platform identity violation(s)"
-end
+report(failures, "reader platform identity: all properties hold",
+       "reader platform identity violation(s)")

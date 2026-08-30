@@ -10,8 +10,21 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # A run is superseded only by a newer run of the same thing. Another push to a
+  # pull request replaces the tree the previous run was testing, so cancelling that
+  # run costs nothing. A push to `main` replaces nothing: every merge is a different
+  # tree and its post-merge run is the only run that will ever see it. Cancelling
+  # those is what ended 11 of 52 recent `main` push runs -- 21% -- in `cancelled`
+  # rather than in a verdict, so the sweep they paid for routinely never finished.
+  #
+  # The event name is part of the key and is load-bearing rather than decorative:
+  # without it `push` and `schedule` both resolve to `refs/heads/main`, and the
+  # nightly sweep -- not a push, so still cancelling -- would kill an in-flight
+  # post-merge run once a night and reintroduce exactly what the predicate below
+  # removes. Keyed apart, a merge and the nightly sweep neither cancel nor block
+  # one another, and two merges landing together queue instead of racing.
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -22,6 +35,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       static: ${{ steps.classify.outputs.static }}
+      docs: ${{ steps.classify.outputs.docs }}
       reconciliation: ${{ steps.classify.outputs.reconciliation }}
       suites: ${{ steps.classify.outputs.suites }}
       selected_tags: ${{ steps.classify.outputs.selected_tags }}
@@ -38,22 +52,58 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
         run: |
+          # A pull request is classified against its own base. A push to main is
+          # classified against the ref it replaced -- the merge it just landed --
+          # rather than being swept in full: the pull request already ran the routed
+          # matrix against an identical tree, because
+          # strict_required_status_checks_policy forces it up to date before it may
+          # merge, and re-running everything cost 202 runner-minutes across 23 jobs
+          # to say so a second time. `--full` is what schedule and workflow_dispatch
+          # are for.
+          #
+          # github.event.before is the ref's previous tip, so it covers a push of
+          # several commits; HEAD^ covers only the last one and is the fallback for
+          # the pushes with no usable `before` -- a brand new ref reports all zeros,
+          # a force push names a commit this clone never fetched. Both are compared
+          # with three dots by the classifier, which is a no-op here because each
+          # candidate is an ancestor of HEAD, and is what makes a merge commit report
+          # the whole branch it merged instead of one parent's side of it.
+          #
+          # Every failure falls open to `--full`, never to nothing: routing that
+          # recognises nothing has to cost time rather than coverage. Retrying is
+          # safe because the classifier resolves the whole diff before it opens the
+          # output file, so a run that failed left no partial selection behind.
           if [ "$EVENT_NAME" = pull_request ]; then
             BASE=$PR_BASE
             HEAD=$PR_HEAD
             ruby tests/ci/classify_changes.rb --diff "$BASE" "$HEAD" --github-output "$GITHUB_OUTPUT"
+          elif [ "$EVENT_NAME" = push ]; then
+            PUSH_BASE=
+            for candidate in "$PUSH_BEFORE" "HEAD^"; do
+              [ -n "$candidate" ] || continue
+              if resolved=$(git rev-parse --verify --quiet "${candidate}^{commit}"); then
+                PUSH_BASE=$resolved
+                break
+              fi
+            done
+            if [ -z "$PUSH_BASE" ] ||
+               ! ruby tests/ci/classify_changes.rb --diff "$PUSH_BASE" HEAD --github-output "$GITHUB_OUTPUT"; then
+              ruby tests/ci/classify_changes.rb --full --github-output "$GITHUB_OUTPUT"
+            fi
           else
             ruby tests/ci/classify_changes.rb --full --github-output "$GITHUB_OUTPUT"
           fi
 
   static:
-    # The policy gate's wall time is bounded by its slowest single check. The
-    # media acquisition reconciliation contract is now three checks that the
-    # gate runs concurrently, and its cases run through a worker pool, so the
-    # gate costs the slowest relationship rather than the sum of all of them.
-    # This stays well above the observed runtime so a slow runner cannot cancel
-    # a passing gate the way the previous budget did.
+    # The policy gate's wall time is bounded by its slowest single check, so a
+    # check that spawns a subprocess per case becomes the floor for the whole job
+    # however well the pool is packed. Two have grown that way -- the media
+    # acquisition reconciliation contract and the policy mutation harness -- and
+    # both now run beside the gate rather than inside it. This stays well above
+    # the observed runtime so a slow runner cannot cancel a passing gate the way
+    # the previous budget did.
     timeout-minutes: 45
     needs: changes
     if: ${{ needs.changes.outputs.static == 'true' }}
@@ -117,6 +167,83 @@ jobs:
           ansible-playbook -i inventory/local.yml site.yml --syntax-check
           ansible-playbook generate-secrets.yml --syntax-check
           ansible-playbook -i inventory/local.yml install-production-auto-deploy.yml --syntax-check
+
+  docs:
+    # Documentation is a gate input, and it used to be routed as if it were inert.
+    # tests/docs_links_test.rb reads README.md and every *.md under docs/ through
+    # a glob and resolves each link against the working tree, but only ten named
+    # documents reached the gate, so a broken link anywhere else -- a plan under
+    # docs/superpowers/ -- merged green and turned main red.
+    #
+    # Sending all of docs/ to `static` would have closed that by spending fifteen
+    # minutes of Ansible toolchain on a typo fix. These checks read Markdown and
+    # the working tree and nothing else, so they run here instead: a checkout, the
+    # Ruby the runner image already ships, and under a minute. They stay
+    # registered in tests/validate-policy.sh as well, and deliberately so -- a
+    # link resolves against files the documents do not own, so a code rename has
+    # to keep running them too, and only `static` runs on a code rename.
+    timeout-minutes: 10
+    needs: changes
+    if: ${{ needs.changes.outputs.docs == 'true' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check documentation links
+        run: |
+          ruby tests/docs_links_test.rb
+          ruby tests/docs_links_test.rb --self-test
+
+      - name: Check the secrets guide against the vault contract
+        run: ruby tests/secrets_docs_test.rb
+
+  mutation:
+    # tests/policy_manifest_test.rb plants a defect in a throwaway copy of the
+    # repository and requires the policy set to reject it, once per mutation.
+    # There are over a hundred and fifty of them, and each one runs the whole
+    # eight-script policy set. It was the gate's floor, which no amount of packing
+    # the pool could lower: taking it out took the gate from the 24m32s it spent
+    # on 2026-08-30 to 630s, measured on a machine calibrated against this runner.
+    #
+    # It runs beside the gate for the same reason the reconciliation contract
+    # does: on its own runner its scripts get four cores to themselves instead of
+    # competing with ninety other checks for them. Nothing about the mutations is
+    # routed more narrowly than the gate, because a mutation is planted in a copy
+    # of the whole repository and any file can change what the policy set says.
+    timeout-minutes: 45
+    needs: changes
+    if: ${{ needs.changes.outputs.static == 'true' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install Ansible tooling
+        run: |
+          # apache2-utils, openssh-client and openssl all ship in the ubuntu-latest
+          # image, so this normally installs nothing. It ran unconditionally until an
+          # apt-get update stalled mid-download for 161 minutes on 2026-08-19. Guarding
+          # on the one binary not otherwise guaranteed keeps apt off the happy path
+          # while still recovering automatically if the runner image drops it.
+          if ! command -v htpasswd >/dev/null 2>&1; then
+            sudo apt-get -o Acquire::Retries=3 update
+            sudo apt-get -o Acquire::Retries=3 install --yes apache2-utils openssh-client openssl
+          fi
+          python3 -m venv "$RUNNER_TEMP/ansible"
+          "$RUNNER_TEMP/ansible/bin/pip" install 'ansible-core==2.21.3' 'ansible-lint==26.8.0'
+          echo "$RUNNER_TEMP/ansible/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/ansible/bin/ansible-galaxy" collection install -r requirements.yml
+
+      # The harness syntax-checks a play in every sandbox it builds, and the
+      # policy set it runs there renders role defaults through Ansible, so this
+      # job needs the same toolchain the gate does.
+      - name: Check policy mutation coverage
+        run: ruby tests/policy_manifest_test.rb
 
   reconciliation:
     # The media acquisition reconciliation contract is 373 Ansible runs across
@@ -278,6 +405,8 @@ jobs:
     needs:
       - changes
       - static
+      - docs
+      - mutation
       - reconciliation
       - suites
     runs-on: ubuntu-latest
@@ -291,5 +420,7 @@ jobs:
           ruby tests/ci/validate_results.rb \
             changes="${{ needs.changes.result }}" \
             static="${{ needs.static.result }}" \
+            docs="${{ needs.docs.result }}" \
+            mutation="${{ needs.mutation.result }}" \
             reconciliation="${{ needs.reconciliation.result }}" \
             suites="${{ needs.suites.result }}"

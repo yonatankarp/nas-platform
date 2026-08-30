@@ -367,21 +367,55 @@ $HOME/.local/bin/nas-platform-deploy --retry-failed "$FAILED_SHA"
 Attempt logs are protected mode-0600 files under
 `$HOME/.local/share/nas-platform/logs`, retained for 30 days. The controller
 checkout, the installed poller, and the deployment state live under the same
-private root. Failures are sent to ntfy using the deployer's own protected
-publisher token, as rendered Markdown rather than a raw document, publishing to
+private root. The record of attempted revisions -- the list `--status` prints
+-- is bounded the same way, to the newest 50 within 90 days, and every poll
+trims it alongside the logs rather than only when something ships. Deploying
+one revision at a time fills that record faster than deploying only heads did,
+and a platform that changes rarely is exactly the one whose expired entries
+would otherwise sit there forever.
+
+Failures are sent to ntfy using the deployer's own protected publisher token,
+as rendered Markdown rather than a raw document, publishing to
 `nas-critical` at priority 5. A successful deployment reports itself from inside
 the run, through the summary above, which can say what shipped; the poller adds
 nothing to it and stays quiet.
 
+The poller deploys the newest revision of `main` that CI has released, which is
+not always the head. A full run takes longer than the gap between merges, so the
+head is often still running while the revision behind it has already passed;
+waiting for the head would leave that revision undeployed for the length of a
+run it has nothing to do with. A revision CI has not judged is therefore
+stepped over rather than waited for, and deploys in its own right once its own
+run concludes -- so a batch of merges reaches the NAS one revision at a time,
+in order. Nothing ever moves backwards: the walk stops at the first revision
+the poller has already attempted, and `--status` names the revision it would
+deploy whenever that is not the head.
+
+Being stepped over is also the right answer for a revision CI will *never*
+judge. `CI` cancels only a pull request's own superseded runs; a push to `main`
+queues behind the one before it, because a post-merge run is the only run that
+will ever see the tree it merged. While `cancel-in-progress` was keyed on the
+branch alone, merging twice inside one run's window left the first revision
+`cancelled` -- neither a pass nor a failure -- and roughly a quarter of pushes
+to `main` ended that way. A run cancelled by hand still ends the same way. The
+poller walks past such revisions and stays silent; treating them as a red
+`main` would raise a critical alert for a run that judged nothing.
+
 A revision CI refuses is the other way a deployment never happens. The poller
-requires exactly one completed, successful `CI` push run for the head of `main`;
-when the run concluded anything else, or when several successful runs make the
-answer ambiguous, nothing deploys until a human intervenes. That is announced
-once on `nas-critical` at priority 4, naming the revision, the conclusion and
-the run's URL. Once per revision and verdict, not once per poll: a red `main`
-stays red, and the five-minute cadence would otherwise repeat it twelve times an
-hour. A revision whose CI has not finished yet is the ordinary case and is never
-reported. `--status` says the same thing on demand.
+requires exactly one completed, successful `CI` push run for the revision it is
+about to deploy; when the run reached a verdict and that verdict was anything
+else, or when several successful runs make the answer ambiguous, nothing
+deploys until a human intervenes, and a refused revision blocks every revision
+behind it, so a red `main` still stops every deployment. A conclusion this
+poller does not recognise counts as a refusal rather than being waved through,
+and a cancelled re-run does not bury the failure that prompted it: the newest
+run that actually judged the revision is the one that counts. A refusal is
+announced once on `nas-critical` at priority 4, naming the revision, the
+conclusion and the run's URL. Once per revision and verdict, not once per
+poll: a red `main` stays red, and the five-minute cadence would otherwise
+repeat it twelve times an hour. A revision
+whose CI has not finished yet is the ordinary case and is never reported.
+`--status` says the same thing on demand.
 
 A poll that cannot establish a candidate revision at all -- Git unreachable,
 the GitHub API failing, an unparsable response -- is a worse failure than a

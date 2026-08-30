@@ -14,13 +14,9 @@ require "yaml"
 require_relative "policy_support"
 
 include PolicySupport
+include TestScaffold
 
-ROOT = File.expand_path("..", __dir__)
 failures = []
-
-def check(failures, condition, message)
-  failures << message unless condition
-end
 
 manifest_path = File.join(ROOT, "services", "manifest.yml")
 manifest = begin
@@ -480,10 +476,14 @@ def redaction_credential?(node)
     REDACTION_CREDENTIAL_NAMES.any? { |name| text.include?(name) }
 end
 
-# `no_log: "{{ beszel_no_log | default(true) }}"` is redaction with an opt-out
-# for a reviewed debugging session, not an unredacted task.
+# Redaction is the literal `true` and nothing else. A templated value such as
+# `no_log: "{{ some_flag | default(true) }}"` reads as redaction but is one
+# `-e some_flag=false` away from printing every credential the task carries, and
+# the run that would do it is the one whose output is kept the longest. Anything
+# other than `true` therefore does not declare redaction here, and the check
+# below names it rather than letting it pass as one.
 def redaction_declared?(value)
-  value == true || (value.is_a?(String) && value.include?("default(true)"))
+  value == true
 end
 
 def redaction_walk(tasks, relative, redacted, collected)
@@ -545,6 +545,16 @@ end
 # only the detection of an entry left behind by a deleted task.
 check(failures, !redaction_tasks.empty?,
       "redaction policy found no tasks to inspect; the source glob is wrong")
+
+# `no_log` is a decision taken in the repository, not an input to the run.
+# `true` redacts and `false` is a reviewed, explicit exposure; a template is
+# neither, because whoever runs the play chooses which one it means.
+templated_redactions = redaction_tasks.filter_map do |relative, task, _redacted|
+  "#{relative}: #{task['name']}" unless [true, false, nil].include?(task["no_log"])
+end
+check(failures, templated_redactions.empty?,
+      "no_log must be a literal true or false, never a runtime opt-out: " \
+      "#{templated_redactions.join('; ')}")
 redaction_pinned_files =
   (REDACTION_MESSAGE_EXCEPTIONS.keys + REDACTION_ASSERTION_EXCEPTIONS.keys).map(&:first).uniq
 redaction_whole_tree = redaction_pinned_files.all? do |relative|
@@ -633,9 +643,4 @@ if File.file?(vault_path)
 end
 
 
-if failures.empty?
-  puts "vault policy: all properties hold"
-else
-  failures.each { |failure| warn "FAIL #{failure}" }
-  abort "#{failures.length} vault policy violation(s)"
-end
+report(failures, "vault policy: all properties hold", "vault policy violation(s)")

@@ -5,11 +5,11 @@ your Mac. It does not SSH to or otherwise contact the physical NAS. Service
 data is disposable; credentials may deliberately match the NAS so that reused
 logins, ntfy tokens, Beszel keys, and future integrations are proven portable.
 
-This proof deploys the ten service projects in
+This proof deploys the eleven service projects in
 [`services/manifest.yml`](../services/manifest.yml) that need no transport
-flag—Audiobookshelf, Beszel, Dozzle, Immich, Jellyfin, Kapowarr, Komga, ntfy,
-Paperless-ngx, and Pinchflat—and verifies the Arr and downloader projects in
-their inert, transport-disabled state alongside them. The production
+flag—Audiobookshelf, Beszel, Bindery, Dozzle, Immich, Jellyfin, Kapowarr,
+Komga, ntfy, Paperless-ngx, and Pinchflat—and verifies the Arr and downloader
+projects in their inert, transport-disabled state alongside them. The production
 retirement checkpoint has passed and its repository declarations have been
 removed without deleting the former metadata manager's preserved state. The
 harness sends test alerts to the sandbox's own ntfy instance. Mobile delivery
@@ -167,6 +167,24 @@ active service:
 - Paperless-ngx: sign in with the deployed administrator identity, confirm its
   database-backed fixtures survive recreation, and inspect the existing Gmail
   account and mail rule without fetching mail.
+- Pinchflat: sign in with the deployed basic-authentication pair, then confirm
+  that an anonymous request and a wrong password are both refused. That pair is
+  Pinchflat's only access control, and an empty half serves the interface that
+  queues and deletes YouTube library media to anyone who can reach the port.
+- Kapowarr: sign in with the deployed administrator identity, confirm that an
+  anonymous request and a wrong password are both refused, and confirm the
+  comics library root it owns survives recreation. The password is the only
+  access control, and an empty one hands out the API key. Confirm the ComicVine
+  key is present in the application; the platform records it but never pushes
+  it.
+- Bindery: sign in with the deployed administrator identity, then confirm that
+  an anonymous request to a protected route is refused and that the ebook and
+  audiobook library roots it owns survive recreation. Do not probe the refusal
+  with a wrong password: the login limiter records five failures per fifteen
+  minutes per IP and then answers 429 to the correct password too, so a
+  credential-free read is the honest probe and exactly one login is spent.
+  Confirm unattended auto-grabbing is still off; its kill switch fails open, so
+  a missing setting reads as enabled.
 
 After the review, produce the report and clean only the validated sandbox:
 

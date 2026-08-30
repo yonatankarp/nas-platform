@@ -7,7 +7,7 @@
       - "{{ lookup('ansible.builtin.file', role_path ~ '/files/validate_controller_input.py') }}"
       - "{{ playbook_dir }}"
       - "{{ deployment_controller_input_path }}"
-      - "{{ (deployment_controller_input_allow_missing | default(false) | bool) | ternary('1', '0') }}"
+      - "{{ (deployment_controller_input_allow_missing | bool) | ternary('1', '0') }}"
   changed_when: false
   check_mode: false
   delegate_to: localhost

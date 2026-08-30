@@ -4,11 +4,9 @@ require "json"
 require "open3"
 require "yaml"
 
-ROOT = File.expand_path("..", __dir__)
+require_relative "policy_support"
 
-def check(failures, condition, message)
-  failures << message unless condition
-end
+include TestScaffold
 
 def strict_yaml(relative_path)
   path = File.join(ROOT, relative_path)
@@ -69,22 +67,25 @@ catalog = strict_yaml("config/media-acquisition.yml")
 manifest = strict_yaml("services/manifest.yml")
 all_vars = strict_yaml("inventory/group_vars/all/main.yml")
 
-expected_status = {
-  "arr" => "implemented",
-  "downloaders" => "implemented",
-  "bindery" => "implemented",
-  "kapowarr" => "implemented",
-  "pinchflat" => "implemented",
-  "trailarr" => "planned",
-  "seerr" => "planned"
-}
-
-expected_status.each do |name, status|
-  check(failures, catalog.dig("projects", name, "status") == status,
-        "#{name} catalog status must be #{status}")
-  manifest_entry = manifest.fetch("services").find { |entry| entry["name"] == name }
-  check(failures, manifest_entry&.fetch("status") == status,
-        "#{name} manifest status must be #{status}")
+# The two files must agree; which status they agree on is not restated here.
+# media_acquisition_foundation_test.rb pins the catalog exactly and holds it to
+# the manifest, so that is where a promotion is admitted. A third copy of the
+# statuses in this file recorded only what someone remembered to update, and no
+# test said it had to match either of the other two.
+# Read tolerantly: the manifest's required fields are policed by policy_test.rb,
+# which names the entry that lacks one. A KeyError raised out of this suite would
+# report that defect as a crash in a file it is not about.
+manifest_status = Array(manifest["services"]).select { |entry| entry.is_a?(Hash) }
+                                             .to_h { |entry| [entry["name"], entry["status"]] }
+catalog_projects = catalog["projects"].is_a?(Hash) ? catalog.fetch("projects") : {}
+check(failures, !catalog_projects.empty?,
+      "the media acquisition catalog must declare at least one project")
+catalog_projects.each do |name, project|
+  check(failures, manifest_status.key?(name),
+        "#{name} is an acquisition project the service manifest does not name")
+  check(failures, project["status"] == manifest_status[name],
+        "#{name} catalog status #{project['status'].inspect} must equal its manifest " \
+        "status #{manifest_status[name].inspect}")
 end
 
 expected_safe_defaults = {

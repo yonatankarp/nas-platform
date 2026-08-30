@@ -4,60 +4,45 @@ require "json"
 require "open3"
 
 module ClassifyChanges
-  LANES = %w[
-    static reconciliation foundation arr downloaders bindery kapowarr pinchflat trailarr seerr
-    smoke beszel dozzle audiobookshelf komga jellyfin immich paperless idempotence_check
-  ].freeze
+  # The suite table is data, not code: tests/ci/suites.conf lists every suite
+  # once, with the tags it converges, and tests/integration.sh reads the same
+  # rows for its own --list-suites, its unknown-suite refusal and its fixed tags.
+  # Everything below is derived from it, so a new suite is one row rather than
+  # one table here and another one there kept equal by a policy check.
+  SUITE_TABLE_PATH = File.expand_path("suites.conf", __dir__)
+  SUITE_TABLE = File.readlines(SUITE_TABLE_PATH, chomp: true).filter_map do |line|
+    fields = line.sub(/#.*/, "").split
+    next if fields.empty?
+    raise "malformed row in #{SUITE_TABLE_PATH}: #{line.inspect}" unless fields.length == 3
+
+    suite, kind, tags = fields
+    [suite, kind, tags == "-" ? [] : tags.split(",")]
+  end.freeze
   # Lanes that gate a workflow job of their own rather than dispatching an
-  # integration suite. Everything else in LANES is one suite.
-  JOB_LANES = %w[static reconciliation].freeze
+  # integration suite. Every other lane is one suite.
+  JOB_LANES = %w[static docs reconciliation].freeze
+  # `full` is the runner's own default and no CI lane dispatches it, so it is the
+  # one row the classifier drops. A lane is its suite with hyphens written as
+  # underscores, because a lane is also a GitHub Actions output key.
+  CI_SUITE_ROWS = SUITE_TABLE.reject { |_suite, kind, _tags| kind == "harness" }.freeze
   # The integration suite each lane dispatches, in the order the CI matrix runs
   # them. The job lanes above are not suites.
-  SUITES = {
-    "foundation" => "foundation",
-    "arr" => "arr",
-    "downloaders" => "downloaders",
-    "bindery" => "bindery",
-    "kapowarr" => "kapowarr",
-    "pinchflat" => "pinchflat",
-    "trailarr" => "trailarr",
-    "seerr" => "seerr",
-    "smoke" => "smoke",
-    "beszel" => "beszel",
-    "dozzle" => "dozzle",
-    "audiobookshelf" => "audiobookshelf",
-    "komga" => "komga",
-    "jellyfin" => "jellyfin",
-    "immich" => "immich",
-    "paperless" => "paperless",
-    "idempotence_check" => "idempotence-check"
-  }.freeze
-  SERVICE_LANES = %w[
-    beszel dozzle audiobookshelf komga jellyfin immich paperless
-  ].freeze
-  ACQUISITION_LANES = %w[
-    arr downloaders bindery kapowarr pinchflat trailarr seerr
-  ].freeze
+  SUITES = CI_SUITE_ROWS.to_h { |suite, _kind, _tags| [suite.tr("-", "_"), suite] }.freeze
+  LANES = (JOB_LANES + SUITES.keys).freeze
+  SERVICE_LANES = CI_SUITE_ROWS.filter_map do |suite, kind, _tags|
+    suite.tr("-", "_") if kind == "service"
+  end.freeze
+  ACQUISITION_LANES = CI_SUITE_ROWS.filter_map do |suite, kind, _tags|
+    suite.tr("-", "_") if kind == "acquisition"
+  end.freeze
   TAGGED_LANES = (ACQUISITION_LANES + SERVICE_LANES).freeze
-  # Active services include ntfy because each role publishes its deployment
-  # report there. Planned acquisition suites instead converge only the shared
-  # inert foundation and validate it with their static contract.
-  SERVICE_TAGS = {
-    "arr" => %w[host_prep deployment_bundle ntfy arr],
-    "downloaders" => %w[host_prep deployment_bundle ntfy arr downloaders],
-    "bindery" => %w[host_prep deployment_bundle ntfy arr downloaders bindery],
-    "kapowarr" => %w[host_prep deployment_bundle ntfy kapowarr],
-    "pinchflat" => %w[host_prep deployment_bundle ntfy pinchflat],
-    "trailarr" => %w[host_prep deployment_bundle media_acquisition_foundation],
-    "seerr" => %w[host_prep deployment_bundle media_acquisition_foundation],
-    "beszel" => %w[host_prep deployment_bundle ntfy beszel],
-    "dozzle" => %w[host_prep deployment_bundle ntfy dozzle],
-    "audiobookshelf" => %w[host_prep deployment_bundle ntfy audiobookshelf],
-    "komga" => %w[host_prep deployment_bundle ntfy komga],
-    "jellyfin" => %w[host_prep deployment_bundle ntfy jellyfin],
-    "immich" => %w[host_prep deployment_bundle ntfy immich],
-    "paperless" => %w[host_prep deployment_bundle ntfy paperless]
-  }.freeze
+  # The tags CI narrows the site to for each lane it selects by tag. Active
+  # services include ntfy because each role publishes its deployment report
+  # there. Planned acquisition suites instead converge only the shared inert
+  # foundation and validate it with their static contract.
+  SERVICE_TAGS = CI_SUITE_ROWS.filter_map do |suite, kind, tags|
+    [suite.tr("-", "_"), tags] if %w[acquisition service].include?(kind)
+  end.to_h.freeze
   SERVICE_NAMES = {
     "arr" => %w[arr],
     "downloaders" => %w[downloaders],
@@ -82,13 +67,18 @@ module ClassifyChanges
   # tests/renovate_policy_test.rb and by no play at all.
   #
   # The documents are here for the same reason and not because they are
-  # documentation: each one is read by a check registered in
-  # tests/validate-policy.sh, so editing it can break the gate. inert_path? drops
-  # every other path under docs/, which is what let a docs commit break the gate
-  # and still merge green, so a document that a check reads has to be rescued by
-  # name here. tests/ci/classify_changes_test.rb derives that list from the
-  # registered checks themselves and fails when one of them is missing, so the
-  # next doc-reading check cannot reopen the hole by being written.
+  # documentation: each one is read *by name* by a check that only the static job
+  # runs -- tests/policy_test.rb, the mutation harness's retired-declaration
+  # sweep, tests/policy_mac_test.rb, tests/policy_vault_test.rb,
+  # tests/bazarr_provider_schema_test.rb, tests/production_auto_deploy_role_test.rb
+  # -- and those checks are the policy gate itself, so they cannot move to a
+  # cheaper job. Everything else under docs/ is routed by docs_input? below to the
+  # docs job instead, which is why docs/secrets.md is no longer here: the only
+  # check that reads it, tests/secrets_docs_test.rb, runs there.
+  # tests/ci/classify_changes_test.rb derives the coupling from the registered
+  # checks themselves and fails when a document reaches no job that runs a check
+  # reading it, so the next doc-reading check cannot reopen the hole by being
+  # written.
   STATIC_ONLY_PATHS = %w[
     README.md
     docs/adding-a-service.md
@@ -99,12 +89,22 @@ module ClassifyChanges
     docs/getting-started-nas.md
     docs/getting-started.md
     docs/media-acquisition-phase1.md
-    docs/secrets.md
     generate-secrets.yml
     install-production-auto-deploy.yml
     renovate.json
     templates/vault-plain.yml.j2
   ].freeze
+  # Documentation is a gate input rather than inert text, and the coupling is a
+  # glob, not a list: tests/docs_links_test.rb reads README.md and every *.md
+  # under docs/, and it resolves each link against the working tree, so deleting
+  # an image a document points at breaks it too. Routing the whole directory here
+  # is what closes the half that rescuing documents by name never could -- a
+  # broken link under docs/superpowers/plans/ used to merge green and turn main
+  # red. It selects the docs job, which needs Ruby and the checkout and nothing
+  # else, rather than the fifteen-minute static job a typo fix has no business
+  # paying for. The documents STATIC_ONLY_PATHS still names select both.
+  DOCUMENTATION_PATHS = %w[README.md].freeze
+  DOCUMENTATION_PREFIXES = %w[docs/].freeze
   STATIC_ONLY_PREFIXES = %w[
     roles/image_prune/
     roles/production_auto_deploy/
@@ -118,6 +118,7 @@ module ClassifyChanges
   # missing here fails there rather than silently skipping every suite.
   INTEGRATION_HARNESS_PATHS = %w[
     tests/assert-no-vault-secrets.rb
+    tests/ci/suites.conf
     tests/generate-ephemeral-vault.sh
     tests/integration.sh
     tests/integration_lock.sh
@@ -179,11 +180,13 @@ module ClassifyChanges
     reconciliation_owned = false
     paths.each do |raw_path|
       path = raw_path.to_s.sub(%r{\A\./}, "")
+      documentation = docs_input?(path)
+      selection["docs"] = true if documentation
       if static_only_path?(path)
         selection["static"] = true
         next
       end
-      next if inert_path?(path)
+      next if documentation || inert_path?(path)
 
       if RECONCILIATION_OWNED_PATHS.include?(path)
         reconciliation_owned = true
@@ -258,7 +261,6 @@ module ClassifyChanges
   def write_github_outputs(selection, io)
     LANES.each { |lane| io.puts "#{lane}=#{selection.fetch(lane)}" }
     io.puts "suites=#{suites(selection).to_json}"
-    io.puts "run_ci=#{selection.values.any?}"
     tags = if selection.fetch("foundation")
              []
            else
@@ -273,13 +275,21 @@ module ClassifyChanges
     SUITES.filter_map { |lane, suite| suite if selection.fetch(lane) }
   end
 
+  # Reached only after docs_input? has claimed README.md and everything under
+  # docs/, so no documentation the link gate reads can be called inert here. What
+  # is left is Markdown the gate does not read at all -- a stray note beside a
+  # role -- and editor droppings.
   def inert_path?(path)
-    return true if path == "README.md" || path == ".gitignore" || path.match?(%r{\ALICENSE(?:\.[^/]+)?\z})
+    return true if path == ".gitignore" || path.match?(%r{\ALICENSE(?:\.[^/]+)?\z})
     return true if path.match?(%r{\A(?:\.idea|\.vscode)/}) || path == ".editorconfig"
-    return true if path.start_with?("docs/")
     return false if path == "AGENTS.md" || path.match?(%r{\A(?:tests|fixtures|scripts)/})
 
     path.end_with?(".md")
+  end
+
+  def docs_input?(path)
+    DOCUMENTATION_PATHS.include?(path) ||
+      DOCUMENTATION_PREFIXES.any? { |prefix| path.start_with?(prefix) }
   end
 
   def static_only_path?(path)

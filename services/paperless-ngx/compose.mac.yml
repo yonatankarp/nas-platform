@@ -2,17 +2,14 @@
 services:
   broker:
     container_name: ${PLATFORM_PROJECT_NAME:?}-paperless-redis
-    ports: !override []
     volumes: !override
       - ${PAPERLESS_REDIS_PATH:?}:/data
   db:
     container_name: ${PLATFORM_PROJECT_NAME:?}-paperless-postgres
-    ports: !override []
     volumes: !override
       - ${PAPERLESS_POSTGRES_PATH:?}:/var/lib/postgresql
   webserver:
     container_name: ${PLATFORM_PROJECT_NAME:?}-paperless-webserver
-    network_mode: !reset null
     ports: !override
       - "${PAPERLESS_HOST_PORT:?}:8000"
     volumes: !override
@@ -24,7 +21,5 @@ services:
       - ${PAPERLESS_CONSUME_PATH:?}:/usr/src/paperless/consume
   gotenberg:
     container_name: ${PLATFORM_PROJECT_NAME:?}-paperless-gotenberg
-    ports: !override []
   tika:
     container_name: ${PLATFORM_PROJECT_NAME:?}-paperless-tika
-    ports: !override []

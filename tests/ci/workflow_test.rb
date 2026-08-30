@@ -6,6 +6,10 @@ require "tmpdir"
 require "yaml"
 require_relative "classify_changes"
 
+require_relative "../policy_support"
+
+include TestScaffold
+
 WORKFLOW_PATH = File.expand_path("../../.github/workflows/ci.yml", __dir__)
 POLICY_PATH = File.expand_path("../validate-policy.sh", __dir__)
 ANSIBLE_LINT_PATH = File.expand_path("../../.ansible-lint", __dir__)
@@ -45,7 +49,7 @@ DOCKER_HUB_TOKEN_SECRET = "DOCKERHUB_TOKEN"
 # Every registry the job is able to authenticate to. A registry outside this list
 # is one nobody decided about, which is what the classification check below names.
 CREDENTIALED_REGISTRIES = (GITHUB_BACKED_REGISTRIES + [DOCKER_HUB_REGISTRY]).freeze
-EXPECTED_JOBS = %w[changes static reconciliation suites validate].freeze
+EXPECTED_JOBS = %w[changes static docs mutation reconciliation suites validate].freeze
 # One reconciliation file per matrix leg, in the order a full run enumerates them.
 RECONCILIATION_PARTS = %w[core bazarr configarr].freeze
 RECONCILIATION_SUPPORT_PATH =
@@ -73,7 +77,7 @@ INTEGRATION_SUITES = %w[
   dozzle audiobookshelf komga jellyfin immich paperless idempotence-check
 ].freeze
 TAGGED_SUITES = %w[smoke idempotence-check].freeze
-CLASSIFIER_OUTPUTS = %w[static reconciliation suites selected_tags].freeze
+CLASSIFIER_OUTPUTS = %w[static docs reconciliation suites selected_tags].freeze
 SAMPLE_TAGS = "host_prep,deployment_bundle,ntfy,beszel"
 STATIC_STEP_NAMES = [
   "Check out repository",
@@ -87,6 +91,19 @@ STATIC_STEP_NAMES = [
   "Lint Ansible",
   "Check playbook syntax"
 ].freeze
+# The checks the docs job carries, in the order it runs them. Each one reads
+# Markdown and the working tree and nothing else, which is what lets the job be a
+# checkout and Ruby rather than the pinned Ansible toolchain the gate installs.
+DOCS_STEP_NAMES = [
+  "Check out repository",
+  "Check documentation links",
+  "Check the secrets guide against the vault contract"
+].freeze
+DOCS_CHECK_COMMANDS = [
+  "ruby tests/docs_links_test.rb",
+  "ruby tests/docs_links_test.rb --self-test",
+  "ruby tests/secrets_docs_test.rb"
+].freeze
 RETIRED_MIGRATION_MARKERS = %w[
   nas-infrastructure
   tests/adoption-integration.sh
@@ -96,10 +113,6 @@ RETIRED_MIGRATION_MARKERS = %w[
 ].freeze
 
 failures = []
-
-def check(failures, condition, message)
-  failures << message unless condition
-end
 
 def broad_arr_lint_exclusion?(path)
   normalized = path.to_s.sub(%r{\A\./}, "").sub(%r{/+\z}, "")
@@ -202,13 +215,21 @@ if triggers.is_a?(Hash)
 end
 
 concurrency = workflow.fetch("concurrency", {})
+# The event name belongs in the key. Without it `push` and `schedule` both resolve
+# to refs/heads/main, and the nightly sweep -- which still cancels, because it is
+# not a push -- would kill an in-flight post-merge run once a night.
 check(
   failures,
   expression(concurrency["group"]) ==
-    'ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}',
-  "concurrency group must use PR number with a ref fallback"
+    'ci-${{ github.workflow }}-${{ github.event_name }}-' \
+    '${{ github.event.pull_request.number || github.ref }}',
+  "concurrency group must separate events and use PR number with a ref fallback"
 )
-check(failures, concurrency["cancel-in-progress"] == true, "concurrency cancellation must be enabled")
+# Only a pull request supersedes itself. A push to main is the only run that will
+# ever see the tree it merged, and cancelling those ended 21% of recent main runs
+# without a verdict. This is an expression, so it parses as a string, not a boolean.
+check(failures, expression(concurrency["cancel-in-progress"]) == "${{ github.event_name == 'pull_request' }}",
+      "only pull requests may cancel their own superseded runs")
 check(failures, workflow.dig("permissions", "contents") == "read", "contents permission must be read-only")
 # Registry access is granted to the one job that pulls images, not to the workflow.
 # Asserting the top-level block stays a single key is what stops the narrow grant
@@ -243,17 +264,33 @@ check(failures, classify.dig("env", "PR_BASE") == "${{ github.event.pull_request
       "classifier must receive the PR base SHA through env")
 check(failures, classify.dig("env", "PR_HEAD") == "${{ github.event.pull_request.head.sha }}",
       "classifier must receive the PR head SHA through env")
+check(failures, classify.dig("env", "PUSH_BEFORE") == "${{ github.event.before }}",
+      "classifier must receive the ref a push replaced through env")
 classifier_run = classify["run"].to_s
 check(failures, classifier_run.include?('[ "$EVENT_NAME" = pull_request ]'),
-      "classifier must branch only for pull_request")
+      "classifier must recognise the pull_request event by name")
 check(failures, classifier_run.include?('BASE=$PR_BASE') && classifier_run.include?('HEAD=$PR_HEAD'),
       "classifier must set BASE and HEAD only inside the pull_request branch")
 check(failures,
       classifier_run.include?('ruby tests/ci/classify_changes.rb --diff "$BASE" "$HEAD" --github-output "$GITHUB_OUTPUT"'),
       "pull requests must classify the base/head diff safely")
+# A push to main used to sweep the whole repository -- 202 runner-minutes across 23
+# jobs -- on top of the routed matrix the pull request had already run against an
+# identical tree. It now classifies the merge it landed. `--full` stays reachable
+# twice and only twice: once as the fail-open fallback for a push whose base cannot
+# be resolved, and once as the else branch schedule and workflow_dispatch take.
+check(failures, classifier_run.include?('[ "$EVENT_NAME" = push ]'),
+      "classifier must recognise the push event by name")
 check(failures,
-      classifier_run.include?('ruby tests/ci/classify_changes.rb --full --github-output "$GITHUB_OUTPUT"'),
-      "non-PR events must request a full run")
+      classifier_run.include?('ruby tests/ci/classify_changes.rb --diff "$PUSH_BASE" HEAD --github-output "$GITHUB_OUTPUT"'),
+      "a push must classify the diff it landed rather than sweeping the repository")
+check(failures, classifier_run.include?('"$PUSH_BEFORE"') && classifier_run.include?('"HEAD^"'),
+      "a push must prefer the ref it replaced and fall back to the first parent")
+full_requests =
+  classifier_run.scan('ruby tests/ci/classify_changes.rb --full --github-output "$GITHUB_OUTPUT"').length
+check(failures, full_requests == 2,
+      "--full must be reachable exactly twice -- the push fallback and schedule/dispatch -- " \
+      "found #{full_requests}")
 check(failures, !classifier_run.include?("github.event.pull_request"),
       "event payload expressions must not be interpolated into shell source")
 
@@ -337,6 +374,28 @@ end
 
 check(failures, expression(jobs.dig("static", "if")) == "${{ needs.changes.outputs.static == 'true' }}",
       "static condition must match its classifier output")
+
+# The policy mutation harness runs beside the gate rather than inside it: it
+# builds a sandbox and runs the whole policy set once per mutation, which made it
+# the gate's floor. It is gated on the same classifier output as the gate, not on
+# a narrower lane, because a mutation is planted in a copy of the whole
+# repository -- there is no subset of files that cannot change what it proves.
+check(failures, jobs.dig("mutation", "needs") == "changes",
+      "mutation must depend only on changes")
+check(failures,
+      expression(jobs.dig("mutation", "if")) == "${{ needs.changes.outputs.static == 'true' }}",
+      "the mutation harness must run whenever the policy gate does, found " \
+      "#{expression(jobs.dig('mutation', 'if')).inspect}")
+check(failures, jobs.dig("mutation", "strategy").nil?,
+      "the mutation harness is one file and must not declare a matrix")
+mutation_commands = normalize_shell(run_steps(jobs.fetch("mutation", {}))).lines.map(&:chomp)
+check(failures, mutation_commands.include?("ruby tests/policy_manifest_test.rb"),
+      "the mutation job must run tests/policy_manifest_test.rb")
+# The harness syntax-checks a play in every sandbox and renders role defaults
+# through the policy set, so it needs the toolchain the gate installs. Without
+# this the job would fail on a missing ansible-playbook rather than on a policy.
+check(failures, mutation_commands.any? { |command| command.include?("ansible-core==") },
+      "the mutation job must install the pinned Ansible toolchain")
 
 suites_job = jobs.fetch("suites", {})
 check(failures, suites_job["needs"] == "changes", "suites must depend only on changes")
@@ -554,12 +613,47 @@ production_auto_deploy_commands.each do |command|
         "validate-policy.sh must register exactly once #{command.inspect}")
 end
 
+# The documentation gate. Its whole reason to exist is that it is cheap: it runs
+# on every change under docs/, which the static job no longer sees, so anything
+# that puts the Ansible toolchain or a container into it silently reverses the
+# saving. Assert the steps, the checks and the absence of an install.
+docs_job = jobs.fetch("docs", {})
+docs_steps = Array(docs_job["steps"])
+check(failures, docs_job["needs"] == "changes", "docs must depend only on changes")
+check(failures, expression(docs_job["if"]) == "${{ needs.changes.outputs.docs == 'true' }}",
+      "docs must be gated on its own classifier output, found " \
+      "#{expression(docs_job['if']).inspect}")
+check(failures, docs_job["strategy"].nil?, "the docs job is one runner and must not declare a matrix")
+check(failures, docs_steps.all?(Hash), "docs steps must all be mappings")
+check(failures, docs_steps.map { |step| step["name"] } == DOCS_STEP_NAMES,
+      "docs steps differ: got #{docs_steps.map { |step| step['name'] }.inspect}, " \
+      "expected #{DOCS_STEP_NAMES.inspect}")
+check(failures, docs_steps.none? { |step| step.key?("if") },
+      "docs steps must be unconditional: the changes job is the only classifier")
+docs_commands = normalize_shell(run_steps(docs_job)).lines(chomp: true)
+check(failures, docs_commands == DOCS_CHECK_COMMANDS,
+      "the docs job must run exactly the documentation checks, found #{docs_commands.inspect}")
+check(failures, docs_commands.none? { |command| command.match?(/ansible|apt-get|docker/) },
+      "the docs job must stay a checkout and Ruby: #{docs_commands.inspect}")
+check(failures, Array(docs_job["steps"]).count { |step| step["uses"] } == 1,
+      "the docs job must use only the pinned checkout action")
+# Moving a check here must not take it out of the gate. A documentation link
+# resolves against files the documents do not own, so a role file renamed without
+# touching a word of prose still breaks the link gate -- and such a change selects
+# `static`, never `docs`. The docs job is an added fast lane, not a relocation.
+DOCS_CHECK_COMMANDS.each do |command|
+  check(failures, registers_command_once?(policy_source, command),
+        "validate-policy.sh must still register #{command.inspect}: the docs job runs it " \
+        "for a documentation change, the gate runs it for everything else")
+end
+
 validate = jobs.fetch("validate", {})
 check(failures, validate["name"] == "validate", "aggregate check name must remain validate")
 check(failures, expression(validate["if"]) == "${{ always() }}", "validate must always run")
-expected_needs = %w[changes static reconciliation suites]
+expected_needs = %w[changes static docs mutation reconciliation suites]
 check(failures, Array(validate["needs"]) == expected_needs,
-      "validate must need changes, static, reconciliation and the suite matrix in canonical order")
+      "validate must need changes, static, docs, mutation, reconciliation and the suite matrix " \
+      "in canonical order")
 validate_checkout = Array(validate["steps"]).find { |step| step["uses"]&.start_with?("actions/checkout@") }
 check(failures, validate_checkout&.fetch("uses", nil).to_s.split("@").first == CHECKOUT_ACTION_NAME,
       "validate must check out the repository with the pinned action")
@@ -630,9 +724,5 @@ if ansible_pin
         "got #{controller_lint.inspect}")
 end
 
-unless failures.empty?
-  failures.each { |failure| warn "FAIL #{failure}" }
-  abort "#{failures.length} workflow contract failure(s)"
-end
-
-puts "CI workflow contract: all checks passed"
+report(failures, "CI workflow contract: all checks passed",
+       "workflow contract failure(s)")

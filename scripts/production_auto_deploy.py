@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Deploy the current main revision on the NAS once its CI run is green."""
+"""Deploy the newest main revision on the NAS that CI has released."""
 
 from __future__ import annotations
 
 import contextlib
 from contextlib import contextmanager
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, replace
 from datetime import datetime, timedelta, timezone
 import fcntl
 from http.client import HTTPException
@@ -31,6 +31,10 @@ TIMESTAMP_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 ATTEMPTED_RETENTION_COUNT = 50
 ATTEMPTED_RETENTION_DAYS = 90
 MAX_RESPONSE_BYTES = 1024 * 1024
+# One page of recent completed runs. It bounds how far back a poll can see, so
+# it has to hold more than one revision's worth: a revision owns several runs
+# over its life, and every re-run adds another.
+CI_RUN_PAGE_SIZE = 20
 READ_SIZE = 64 * 1024
 NETWORK_TIMEOUT_SECONDS = 10
 GIT_TIMEOUT_SECONDS = 10
@@ -240,18 +244,22 @@ def resolve_main_sha(config: Config) -> str:
     return parts[0]
 
 
-def fetch_ci_runs(config: Config, sha: str) -> tuple[dict, ...]:
-    """Fetch one bounded page of completed push runs for the exact SHA."""
+def fetch_ci_runs(config: Config) -> tuple[dict, ...]:
+    """Fetch one bounded page of completed push runs for the production branch.
 
-    if SHA_PATTERN.fullmatch(sha) is None:
-        raise EligibilityError("candidate SHA is invalid")
+    The whole branch rather than one revision, because the question a poll has
+    to answer is which revision CI has released, and asking about a single SHA
+    cannot see that the head is still running while its parent already passed.
+    It stays one request either way, which matters: the API is called
+    anonymously, and the poll runs every five minutes.
+    """
+
     query = urlencode(
         {
             "branch": config.branch,
             "event": "push",
             "status": "completed",
-            "head_sha": sha,
-            "per_page": "10",
+            "per_page": str(CI_RUN_PAGE_SIZE),
         }
     )
     url = (
@@ -302,13 +310,70 @@ def gating_ci_runs(config: Config, sha: str, runs) -> list[dict]:
     ]
 
 
-# Why CI does or does not release a revision. Only GREEN deploys; only PENDING
-# is an ordinary state worth no notification, because CI simply has not
-# finished. The other two stop every deployment until a human intervenes.
+def candidate_revisions(config: Config, head: str, runs) -> list[str]:
+    """The revisions one poll may consider, newest first.
+
+    The head leads: it is the revision the platform is meant to reach, and the
+    one whose run is most likely still going — which is exactly why it may be
+    absent from a list of completed runs. Behind it come the revisions CI has
+    finished judging, in the order GitHub returns them, which is the order they
+    were pushed.
+
+    Every SHA past the head arrives from the network and ends up as an argument
+    to git, so it is checked against the same pattern as the head before it is
+    allowed to name a revision. The page of runs bounds the list; the walk that
+    reads it stops long before the end.
+    """
+
+    ordered = [head]
+    for run in runs:
+        sha = run.get("head_sha")
+        if (
+            isinstance(sha, str)
+            and SHA_PATTERN.fullmatch(sha) is not None
+            and sha not in ordered
+            and run.get("status") == "completed"
+            and run.get("event") == "push"
+            and run.get("head_branch") == config.branch
+            and run.get("name") == config.workflow_name
+        ):
+            ordered.append(sha)
+    return ordered
+
+
+# Why CI does or does not release a revision. Only GREEN deploys. PENDING and
+# SUPERSEDED are ordinary states worth no notification, because neither is a
+# judgement: one run has not finished, the other never will. The last two stop
+# every deployment until a human intervenes.
 CI_GREEN = "green"
 CI_PENDING = "pending"
+CI_SUPERSEDED = "superseded"
 CI_FAILED = "failed"
 CI_AMBIGUOUS = "ambiguous"
+
+# Conclusions that end a run without judging the revision it was running. The
+# workflow used to cancel its own superseded runs on every branch, so merging
+# twice inside one CI window left the first revision `cancelled`, and roughly a
+# quarter of pushes to main ended that way. `cancel-in-progress` is now confined
+# to pull requests — a post-merge run is the only run that will ever see the tree
+# it merged, so main pushes queue instead — but a run can still be cancelled by
+# hand, and `skipped`, `stale` and `neutral` say as little as `cancelled` does.
+# Reading any of them as a red main would page a human for a run that never
+# judged the revision at all.
+#
+# Anything absent from this set counts as a refusal, including a conclusion
+# this poller has never heard of: an unrecognised answer from CI is exactly the
+# kind of thing that should stop a deployment rather than pass unnoticed.
+UNJUDGED_CONCLUSIONS = frozenset(
+    {"cancelled", "skipped", "stale", "neutral", "action_required"}
+)
+
+
+def _conclusion_of(run: dict) -> str:
+    """The run's conclusion, or "unknown" when GitHub supplied nothing usable."""
+
+    conclusion = run.get("conclusion")
+    return conclusion if isinstance(conclusion, str) and conclusion else "unknown"
 
 
 def _run_url(run: dict) -> str:
@@ -331,6 +396,11 @@ def ci_verdict(config: Config, sha: str, runs) -> tuple[str, str, str]:
     and a poll that decides nothing looks exactly like a poll with nothing to
     do. Exactly one successful run releases a revision — several is ambiguity,
     not success.
+
+    A run that ended without judging the revision is not a refusal and is not
+    the answer either, so a cancelled re-run cannot bury the failure that
+    prompted it: the newest run that actually reached a verdict is the verdict.
+    A revision with nothing but unjudged runs was superseded, not refused.
     """
 
     gating = gating_ci_runs(config, sha, runs)
@@ -344,11 +414,11 @@ def ci_verdict(config: Config, sha: str, runs) -> tuple[str, str, str]:
             "and exactly one is required",
             _run_url(successful[0]),
         )
+    judged = [run for run in gating if _conclusion_of(run) not in UNJUDGED_CONCLUSIONS]
+    if judged:
+        return CI_FAILED, _conclusion_of(judged[0]), _run_url(judged[0])
     if gating:
-        latest = gating[0]
-        conclusion = latest.get("conclusion")
-        detail = conclusion if isinstance(conclusion, str) and conclusion else "unknown"
-        return CI_FAILED, detail, _run_url(latest)
+        return CI_SUPERSEDED, _conclusion_of(gating[0]), _run_url(gating[0])
     return CI_PENDING, "no completed run yet", ""
 
 
@@ -426,6 +496,27 @@ def _store_attempts(config: Config, attempts: list[tuple[str, str | None]]) -> N
         f"{sha} {stamp}\n" if stamp else f"{sha}\n" for sha, stamp in attempts
     )
     _write_private(_attempted_path(config), payload.encode("ascii"))
+
+
+def prune_attempts(config: Config, now: datetime) -> None:
+    """Trim the attempted record to its retention bounds.
+
+    Recording an attempt prunes as a side effect, which ties the housekeeping
+    to deployments: the count bound holds either way, but the age bound only
+    takes effect the next time something ships, so a quiet fortnight leaves
+    expired revisions sitting in the file and listed by --status. The poll does
+    it every tick instead, beside the log rotation, so the record is bounded by
+    time rather than by how often the platform happens to change.
+
+    Written back only when the pruning actually removed something. A poll that
+    rewrites unchanged state twelve times an hour is twelve needless writes to
+    the NAS's flash.
+    """
+
+    attempts = _read_attempts(config)
+    kept = _prune_attempts(attempts, now)
+    if kept != attempts:
+        _store_attempts(config, kept)
 
 
 def attempted_shas(config: Config) -> set[str]:
@@ -542,17 +633,36 @@ def _vault_arguments(config: Config) -> list[str]:
 
 
 def update_checkout(config: Config, sha: str) -> None:
-    """Materialise the candidate revision in the controller checkout."""
+    """Materialise the candidate revision in the controller checkout.
+
+    A candidate behind the head is named by GitHub's record of what it ran,
+    which is a record of the past: a revision can have been rewritten off the
+    branch since. Only the branch just fetched says what main is now, so the
+    revision has to be an ancestor of it before anything is checked out --
+    against FETCH_HEAD, which this fetch wrote, rather than a remote-tracking
+    ref some other command may have left behind.
+    """
 
     environment = {
         "PATH": config.tool_path,
         "LC_ALL": "C",
         "GIT_TERMINAL_PROMPT": "0",
     }
-    for arguments in (
-        [config.git_path, "fetch", "--prune", "origin", config.branch],
-        [config.git_path, "checkout", "--detach", sha],
-    ):
+    steps = (
+        (
+            [config.git_path, "fetch", "--prune", "origin", config.branch],
+            f"git fetch failed for {sha}",
+        ),
+        (
+            [config.git_path, "merge-base", "--is-ancestor", sha, "FETCH_HEAD"],
+            f"{sha} is not on {config.branch}",
+        ),
+        (
+            [config.git_path, "checkout", "--detach", sha],
+            f"git checkout failed for {sha}",
+        ),
+    )
+    for arguments, failure in steps:
         result = _run(
             arguments,
             timeout=COMMAND_TIMEOUT_SECONDS,
@@ -560,7 +670,7 @@ def update_checkout(config: Config, sha: str) -> None:
             env=environment,
         )
         if result.returncode != 0:
-            raise DeploymentError(f"git {arguments[1]} failed for {sha}")
+            raise DeploymentError(failure)
 
 
 def sync_tooling(config: Config, log=None) -> None:
@@ -923,7 +1033,7 @@ def read_ci_refusal(config: Config) -> str:
 def note_ci_refusal(
     config: Config, sha: str, verdict: str, detail: str, url: str
 ) -> None:
-    """Announce once that CI will not release head, and forget it when it clears.
+    """Announce once that CI refuses a revision, and forget it when that clears.
 
     A revision CI refuses is the one failure the poller used to swallow whole:
     eligibility simply said no, the poll returned quietly, and every subsequent
@@ -933,9 +1043,9 @@ def note_ci_refusal(
     """
 
     announced = read_ci_refusal(config)
-    if verdict in (CI_GREEN, CI_PENDING):
-        # Pending is the ordinary state, and clearing on it is what lets a
-        # re-run that fails a second time be reported again.
+    if verdict in (CI_GREEN, CI_PENDING, CI_SUPERSEDED):
+        # Neither pending nor superseded is a judgement, and clearing on them
+        # is what lets a re-run that fails a second time be reported again.
         if announced:
             _write_private(_ci_refusal_path(config), b"\n")
         return
@@ -969,28 +1079,89 @@ def note_ci_refusal(
     _write_private(_ci_refusal_path(config), marker.encode("ascii", "replace") + b"\n")
 
 
-def _eligible_revision(
-    config: Config, head: str, retry_sha: str | None
-) -> tuple[bool, tuple[str, str, str] | None]:
-    """Decide whether head may be deployed, and how CI judged it if it was asked.
+@dataclass(frozen=True)
+class Selection:
+    """What one poll decided, and enough of why to be able to say so.
 
-    The verdict is None when CI was never consulted, which is not the same as
+    `candidate` is the revision to deploy, when there is one. `judged` and
+    `verdict` carry the CI answer worth announcing — for the revision that
+    stopped the walk, or for the head while its own run is still going. A
+    `verdict` of None means CI was never consulted, which is not the same as
     CI having nothing to say: the caller must leave the announced refusal alone
-    rather than treat an unasked question as an answer.
+    rather than treat an unasked question as an answer. `attempted` names the
+    revision the poller has already had its turn at, which is what makes
+    "nothing to do" different from "nothing may deploy".
     """
 
-    if retry_sha is not None:
-        successful = read_state(config)["last_successful"]
-        if (
-            head != retry_sha
-            or retry_sha not in attempted_shas(config)
-            or (successful is not None and successful["sha"] == retry_sha)
-        ):
-            return False, None
-    elif head in attempted_shas(config):
-        return False, None
-    verdict = ci_verdict(config, head, fetch_ci_runs(config, head))
-    return verdict[0] == CI_GREEN, verdict
+    candidate: str | None = None
+    judged: str | None = None
+    verdict: tuple[str, str, str] | None = None
+    attempted: str | None = None
+
+
+def select_revision(
+    config: Config, head: str, runs, retry_sha: str | None = None
+) -> Selection:
+    """Choose the newest revision CI has released, walking main backwards.
+
+    CI takes longer than the merge cadence, so main's head is usually still
+    running while the revision behind it is already green. Waiting for the head
+    means waiting out a run that has nothing to do with the change that already
+    passed — half an hour of a deployable revision sitting undeployed, for
+    every merge that lands while a run is going.
+
+    So a revision CI has not judged is stepped over rather than waited for. It
+    may be the head, whose run has not finished and which deploys in its own
+    right once it does; it may equally be a revision the workflow cancelled
+    when the next merge superseded it, which will never be judged at all. Two
+    merges inside one CI window leave a run of those, which is why the walk
+    cannot stop at the first revision behind the head.
+
+    A judgement ends the walk. A revision CI refused blocks every deployment
+    behind it, exactly as a red head always has. A revision already attempted
+    means this poller has had its turn at it — and at everything older, which
+    is what keeps the walk from ever going backwards.
+    """
+
+    attempted = attempted_shas(config)
+    unjudged: Selection | None = None
+    for sha in candidate_revisions(config, head, runs):
+        if sha in attempted and sha != retry_sha:
+            return Selection(attempted=sha)
+        verdict = ci_verdict(config, sha, runs)
+        if verdict[0] == CI_GREEN:
+            return Selection(candidate=sha, judged=sha, verdict=verdict)
+        if verdict[0] not in (CI_PENDING, CI_SUPERSEDED):
+            return Selection(judged=sha, verdict=verdict)
+        if unjudged is None:
+            # Normally the head, its own run still going. Announced to nobody,
+            # but it is what clears a refusal once the revision is re-run.
+            unjudged = Selection(judged=sha, verdict=verdict)
+    return unjudged if unjudged is not None else Selection()
+
+
+def _eligible_revision(
+    config: Config, head: str, retry_sha: str | None
+) -> Selection:
+    """Decide what this poll may deploy, and how CI judged what it examined.
+
+    An explicit retry overrides the attempted record for one revision, not the
+    ordering: the revision still has to be the one the walk would have chosen
+    anyway, so a retry can never put an older revision back on the NAS than one
+    a later poll has already deployed.
+    """
+
+    selection = select_revision(config, head, fetch_ci_runs(config), retry_sha)
+    if retry_sha is None:
+        return selection
+    successful = read_state(config)["last_successful"]
+    if (
+        selection.candidate != retry_sha
+        or retry_sha not in attempted_shas(config)
+        or (successful is not None and successful["sha"] == retry_sha)
+    ):
+        return replace(selection, candidate=None)
+    return selection
 
 
 def poll(config: Config, retry_sha: str | None = None) -> bool | None:
@@ -1001,35 +1172,38 @@ def poll(config: Config, retry_sha: str | None = None) -> bool | None:
     with deployment_lock(config) as acquired:
         if not acquired:
             return None
-        rotate_logs(config, datetime.now(timezone.utc))
+        now = datetime.now(timezone.utc)
+        rotate_logs(config, now)
+        prune_attempts(config, now)
         # Eligibility is the part that reaches the network. Failing it leaves
         # the poller unable to deploy anything at all, and a poll that decides
         # nothing looks exactly like a poll with nothing to do, so the outcome
         # is tracked rather than only printed to a cron mailbox nobody reads.
         try:
             head = resolve_main_sha(config)
-            eligible, verdict = _eligible_revision(config, head, retry_sha)
+            selection = _eligible_revision(config, head, retry_sha)
         except EligibilityError as error:
             note_blind_poll(config, str(error))
             raise
         note_seeing_poll(config)
-        if verdict is not None:
-            note_ci_refusal(config, head, *verdict)
-        if not eligible:
+        if selection.verdict is not None:
+            note_ci_refusal(config, selection.judged, *selection.verdict)
+        candidate = selection.candidate
+        if candidate is None:
             return None
         if retry_sha is not None:
             forget_attempt(config, retry_sha)
 
         # Recorded before the attempt: a crash mid-deploy must not become a
         # retry loop on the next five-minute tick.
-        record_attempt(config, head)
+        record_attempt(config, candidate)
         started = _timestamp()
-        with attempt_log(config, head) as log:
+        with attempt_log(config, candidate) as log:
             log_path = Path(log.name)
-            succeeded = deploy(config, head, log)
+            succeeded = deploy(config, candidate, log)
             finished = _timestamp()
             if succeeded:
-                record_success(config, head, finished)
+                record_success(config, candidate, finished)
             # A successful deployment reports itself, from inside the run,
             # where the manifests and the Git history that say what shipped are
             # still at hand. Announcing it a second time here would add a
@@ -1040,7 +1214,7 @@ def poll(config: Config, retry_sha: str | None = None) -> bool | None:
             if not succeeded and not notify(
                 config,
                 "failed",
-                head,
+                candidate,
                 started,
                 finished,
                 log_path,
@@ -1063,34 +1237,48 @@ def _next_poll_verdict(config: Config, state: dict) -> tuple[str, str]:
     except EligibilityError as error:
         return "unknown", f"could not resolve {config.branch}: {error}"
     short = head[:9]
-    if head in set(state["attempted"]):
-        successful = state["last_successful"]
-        if successful is not None and successful["sha"] == head:
-            return head, f"nothing to do: {short} is deployed"
-        return head, (
-            f"nothing to do: {short} was already attempted and failed. "
-            f"Retry it explicitly with --retry-failed {head}"
-        )
     try:
-        verdict, detail, url = ci_verdict(config, head, fetch_ci_runs(config, head))
+        selection = select_revision(config, head, fetch_ci_runs(config))
     except EligibilityError as error:
         return head, f"could not query CI for {short}: {error}"
-    if verdict == CI_GREEN:
-        return head, f"would deploy {short}"
+    if selection.candidate is not None:
+        if selection.candidate == head:
+            return head, f"would deploy {short}"
+        return head, (
+            f"would deploy {selection.candidate[:9]}, the newest revision CI "
+            f"has released; {short} has not finished its run"
+        )
+    if selection.attempted is not None:
+        stopped = selection.attempted
+        successful = state["last_successful"]
+        if successful is not None and successful["sha"] == stopped:
+            return head, f"nothing to do: {stopped[:9]} is deployed"
+        return head, (
+            f"nothing to do: {stopped[:9]} was already attempted and failed. "
+            f"Retry it explicitly with --retry-failed {stopped}"
+        )
+    verdict, detail, url = selection.verdict or (CI_PENDING, "no completed run yet", "")
+    judged = (selection.judged or head)[:9]
     if verdict == CI_PENDING:
         return head, (
             f"waiting: no completed successful {config.workflow_name} push run "
-            f"for {short} yet"
+            f"for {judged} yet"
+        )
+    if verdict == CI_SUPERSEDED:
+        return head, (
+            f"waiting: the {config.workflow_name} push run for {judged} "
+            f"concluded {detail} without judging it, and nothing behind it is "
+            "deployable"
         )
     if verdict == CI_FAILED:
         location = f" ({url})" if url else ""
         return head, (
-            f"blocked: the {config.workflow_name} push run for {short} "
+            f"blocked: the {config.workflow_name} push run for {judged} "
             f"concluded {detail}{location}. Fix main; nothing deploys until it "
             "passes"
         )
     return head, (
-        f"blocked: for {short}, {detail}. "
+        f"blocked: for {judged}, {detail}. "
         "Re-run only failed jobs rather than all of them"
     )
 

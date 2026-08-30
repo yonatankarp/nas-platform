@@ -12,7 +12,10 @@ require "open3"
 require "tmpdir"
 require "yaml"
 
-ROOT = File.expand_path("..", __dir__)
+require_relative "policy_support"
+
+include TestScaffold
+
 ROLE_TASKS = File.join(ROOT, "roles/image_prune/tasks/main.yml")
 PRUNE_SOURCE = File.join(ROOT, "scripts/image_prune.py")
 TOKEN = "tk_#{'r' * 29}"
@@ -29,10 +32,6 @@ CONFIG_KEYS = %w[
 ].freeze
 
 failures = []
-
-def check(failures, condition, message)
-  failures << message unless condition
-end
 
 def command_path(name)
   ENV.fetch("PATH", "").split(File::PATH_SEPARATOR).each do |directory|

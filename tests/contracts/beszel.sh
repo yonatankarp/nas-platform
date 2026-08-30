@@ -7,6 +7,10 @@ mode=${1:-verify}
 case $mode in static|telemetry-fixtures|verify|drift|drift-verify|duplicate|wrong-owner|remove-duplicate|notify) ;; *) exit 2 ;; esac
 
 repo_dir=${PLATFORM_CONTRACT_REPO_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)}
+# The embedded Ruby below reads tests/policy_support.rb from here instead of
+# carrying its own copy of flatten_tasks.
+PLATFORM_CONTRACT_REPO_DIR=$repo_dir
+export PLATFORM_CONTRACT_REPO_DIR
 PLATFORM_CONTRACT_REPO_DIR=$repo_dir
 export PLATFORM_CONTRACT_REPO_DIR
 
@@ -21,13 +25,8 @@ probe_path = File.join(root, "library/beszel_telemetry_probe.py")
 probe = File.file?(probe_path) ? File.read(probe_path) : ""
 probe_support_path = File.join(root, "module_utils/beszel_telemetry.py")
 probe_support = File.file?(probe_support_path) ? File.read(probe_support_path) : ""
-def flatten_tasks(tasks)
-  Array(tasks).flat_map do |task|
-    [task] + flatten_tasks(task.is_a?(Hash) ? task["block"] : nil) +
-      flatten_tasks(task.is_a?(Hash) ? task["rescue"] : nil) +
-      flatten_tasks(task.is_a?(Hash) ? task["always"] : nil)
-  end
-end
+require File.join(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR"), "tests", "policy_support")
+include PolicySupport
 role_tasks = flatten_tasks(YAML.safe_load_file(role_path))
 role_task_names = role_tasks.filter_map { |task| task["name"] if task.is_a?(Hash) }
 # Assertions about what the role does read the parsed structure rather than the

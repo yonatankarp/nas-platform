@@ -13,7 +13,17 @@ x-linuxserver-environment: &linuxserver-environment
 
 x-service-defaults: &service-defaults
   cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
+  # The linuxserver.io entrypoint reaches PUID/PGID by calling setuid(2) as
+  # root, which no_new_privs does not restrict; nothing in these images executes
+  # a setuid binary, so the flag costs them nothing.
+  security_opt:
+    - no-new-privileges:true
   restart: unless-stopped
+  # Each of these owns a SQLite database under a recovery: critical config
+  # directory. A shutdown only has to commit the open transaction and check the
+  # write-ahead log back into it; 30s is far past that and short enough that a
+  # stack restart stays quick.
+  stop_grace_period: 30s
   logging: *default-logging
   networks:
     - default
@@ -21,6 +31,8 @@ x-service-defaults: &service-defaults
 
 x-job-defaults: &job-defaults
   cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
+  security_opt:
+    - no-new-privileges:true
   logging: *default-logging
   networks:
     - media-control

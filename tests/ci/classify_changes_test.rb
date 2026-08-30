@@ -5,10 +5,15 @@ require "open3"
 require "rbconfig"
 require "stringio"
 require "tmpdir"
+require "yaml"
+
+require_relative "../policy_support"
+
+include TestScaffold
 
 SCRIPT = File.expand_path("classify_changes.rb", __dir__)
 LANES = %w[
-  static reconciliation foundation arr downloaders bindery kapowarr pinchflat trailarr seerr
+  static docs reconciliation foundation arr downloaders bindery kapowarr pinchflat trailarr seerr
   smoke beszel dozzle audiobookshelf komga jellyfin immich paperless idempotence_check
 ].freeze
 ACQUISITION_LANES = %w[arr downloaders bindery kapowarr pinchflat trailarr seerr].freeze
@@ -31,10 +36,6 @@ NTFY_LANES = %w[
 ].freeze
 failures = []
 
-def check(failures, condition, message)
-  failures << message unless condition
-end
-
 if File.file?(SCRIPT)
   require_relative "classify_changes"
 else
@@ -47,14 +48,21 @@ end
 
 if defined?(ClassifyChanges)
   {
-    ["docs/getting-started.md"] => %w[static],
-    ["docs/bazarr-providers.md"] => %w[static],
-    ["docs/media-acquisition-phase1.md"] => %w[static],
-    ["docs/no-check-reads-this.md"] => [],
+    ["docs/getting-started.md"] => %w[static docs],
+    ["docs/bazarr-providers.md"] => %w[static docs],
+    ["docs/media-acquisition-phase1.md"] => %w[static docs],
+    # The regression #190 names: a document no registered check spells out is
+    # still read by the link gate's glob, so it has to reach the job that runs it
+    # instead of reaching no job at all.
+    ["docs/superpowers/plans/2026-08-09-docs-only-ci-fast-path.md"] => %w[docs],
+    ["docs/no-check-reads-this.md"] => %w[docs],
+    ["docs/img/topology.png"] => %w[docs],
     [".gitignore"] => [],
-    ["README.md"] => %w[static],
-    ["docs/getting-started-nas.md"] => %w[static],
-    ["docs/secrets.md"] => %w[static],
+    ["README.md"] => %w[static docs],
+    ["docs/getting-started-nas.md"] => %w[static docs],
+    # Only tests/secrets_docs_test.rb reads it, and the docs job runs that, so the
+    # secrets guide no longer pays for the whole policy gate.
+    ["docs/secrets.md"] => %w[docs],
     ["roles/paperless_ngx/tasks/main.yml"] => %w[static smoke paperless idempotence_check],
     ["services/dozzle/compose.yml"] => %w[static smoke dozzle idempotence_check],
     ["tests/contracts/jellyfin.sh"] => %w[static smoke jellyfin idempotence_check],
@@ -124,7 +132,7 @@ if defined?(ClassifyChanges)
 
   # Every lane the contract reads must select it, and no lane it does not read may.
   LANES.each do |lane|
-    next if %w[static reconciliation].include?(lane)
+    next if %w[static docs reconciliation].include?(lane)
 
     path = "roles/#{lane}/tasks/main.yml"
     next unless File.directory?(File.expand_path("../../roles/#{lane}", __dir__))
@@ -239,6 +247,7 @@ if defined?(ClassifyChanges)
   )
   expected_output = <<~OUTPUT
     static=true
+    docs=false
     reconciliation=false
     foundation=false
     arr=false
@@ -258,7 +267,6 @@ if defined?(ClassifyChanges)
     paperless=false
     idempotence_check=true
     suites=["smoke","beszel","dozzle","idempotence-check"]
-    run_ci=true
     selected_tags=host_prep,deployment_bundle,ntfy,beszel,dozzle
   OUTPUT
   check(failures, io.string == expected_output,
@@ -268,6 +276,7 @@ if defined?(ClassifyChanges)
   ClassifyChanges.write_github_outputs(ClassifyChanges.classify([], full: true), full_output)
   expected_full_output = <<~OUTPUT
     static=true
+    docs=true
     reconciliation=true
     foundation=true
     arr=true
@@ -287,7 +296,6 @@ if defined?(ClassifyChanges)
     paperless=true
     idempotence_check=true
     suites=["foundation","arr","downloaders","bindery","kapowarr","pinchflat","trailarr","seerr","smoke","beszel","dozzle","audiobookshelf","komga","jellyfin","immich","paperless","idempotence-check"]
-    run_ci=true
     selected_tags=
   OUTPUT
   check(failures, full_output.string == expected_full_output,
@@ -313,6 +321,7 @@ if defined?(ClassifyChanges)
   )
   check(failures, paperless_output.string == <<~OUTPUT,
     static=true
+    docs=false
     reconciliation=false
     foundation=false
     arr=false
@@ -332,7 +341,6 @@ if defined?(ClassifyChanges)
     paperless=true
     idempotence_check=true
     suites=["smoke","paperless","idempotence-check"]
-    run_ci=true
     selected_tags=host_prep,deployment_bundle,ntfy,paperless
   OUTPUT
         "Paperless-only output must retain its exact tag plan: #{paperless_output.string.inspect}")
@@ -379,6 +387,7 @@ if defined?(ClassifyChanges)
   )
   check(failures, kapowarr_output.string == <<~OUTPUT,
     static=true
+    docs=false
     reconciliation=false
     foundation=false
     arr=false
@@ -398,7 +407,6 @@ if defined?(ClassifyChanges)
     paperless=false
     idempotence_check=true
     suites=["kapowarr","idempotence-check"]
-    run_ci=true
     selected_tags=host_prep,deployment_bundle,ntfy,kapowarr
   OUTPUT
         "Kapowarr-only output must retain its exact tag plan: #{kapowarr_output.string.inspect}")
@@ -409,6 +417,7 @@ if defined?(ClassifyChanges)
   )
   check(failures, pinchflat_output.string == <<~OUTPUT,
     static=true
+    docs=false
     reconciliation=false
     foundation=false
     arr=false
@@ -428,14 +437,15 @@ if defined?(ClassifyChanges)
     paperless=false
     idempotence_check=true
     suites=["pinchflat","idempotence-check"]
-    run_ci=true
     selected_tags=host_prep,deployment_bundle,ntfy,pinchflat
   OUTPUT
         "Pinchflat-only output must retain its exact tag plan: #{pinchflat_output.string.inspect}")
 
   io = StringIO.new
   ClassifyChanges.write_github_outputs(ClassifyChanges.classify(["README.md"]), io)
-  check(failures, io.string.end_with?("run_ci=true\nselected_tags=\n"),
+  check(failures, io.string.start_with?("static=true\ndocs=true\n"),
+        "the README is read by the policy set and by the link gate, so it must select both")
+  check(failures, io.string.end_with?("suites=[]\nselected_tags=\n"),
         "protected operator docs must select static CI and emit empty selected_tags")
   # The CI matrix job skips on exactly this literal, so it has to stay compact.
   check(failures, io.string.include?("suites=[]\n"),
@@ -443,8 +453,8 @@ if defined?(ClassifyChanges)
 
   check(failures, ClassifyChanges::SUITES.keys == ClassifyChanges::LANES - ClassifyChanges::JOB_LANES,
         "every lane but the job lanes must map to exactly one integration suite")
-  check(failures, ClassifyChanges::JOB_LANES == %w[static reconciliation],
-        "static and reconciliation are the only lanes that gate a job instead of a suite")
+  check(failures, ClassifyChanges::JOB_LANES == %w[static docs reconciliation],
+        "static, docs and reconciliation are the only lanes that gate a job instead of a suite")
   check(failures,
         ClassifyChanges.suites(ClassifyChanges.classify(["roles/beszel/tasks/main.yml"])) ==
           %w[smoke beszel idempotence-check],
@@ -554,7 +564,8 @@ Dir.mktmpdir("classify-changes-cli-") do |root|
 
   stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCRIPT, "--files", "README.md")
   check(failures, status.success? && stderr.empty? &&
-                  stdout.include?("static=true\n") && stdout.include?("run_ci=true\n"),
+                  stdout.include?("static=true\n") && stdout.include?("docs=true\n") &&
+                  stdout.include?("suites=[]\n"),
         "--files CLI mode did not select static CI for protected operator docs")
 
   stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCRIPT, "--full")
@@ -562,26 +573,216 @@ Dir.mktmpdir("classify-changes-cli-") do |root|
         "--full CLI mode must emit an untagged full-site selection: #{stdout.inspect}")
 end
 
-# Every document a registered policy check reads is a CI input, and inert_path?
-# drops all of docs/, so such a document reaches no job at all unless
-# STATIC_ONLY_PATHS rescues it by name. That is how a documentation commit broke
-# the policy gate on main and still merged green: the gate was never run against
-# it. Derive the coupling rather than restating it -- read the checks registered
-# in tests/validate-policy.sh, follow the support files they require, and collect
-# every docs/*.md literal that names a document that exists. A check written
-# tomorrow against a document nobody routed then fails here by name instead of
-# quietly reopening the hole.
+# How a push to main is classified is decided in shell, in the workflow's own
+# classify step, and it is the half of the routing that says whether a merge costs
+# the 202 runner-minutes a full sweep took or the handful its own diff is worth.
+# The step's `run:` block is lifted out of the workflow and executed against
+# synthetic histories rather than reimplemented here, so a rewrite that quietly
+# returns to sweeping -- or, worse, one that classifies nothing and lets every job
+# skip into a green run that tested nothing -- fails here rather than on main.
+CI_WORKFLOW_PATH = File.expand_path("../../.github/workflows/ci.yml", __dir__)
+CLASSIFY_STEP = begin
+  steps = YAML.safe_load_file(CI_WORKFLOW_PATH).dig("jobs", "changes", "steps")
+  step = Array(steps).find { |candidate| candidate.is_a?(Hash) && candidate["id"] == "classify" }
+  step && step["run"].to_s
+end
+
+# A repository the classifier can run inside: it needs its own script and the suite
+# table beside it, committed first so they never appear in a diff under test.
+def init_push_repository(root)
+  system("git", "init", "-q", root, exception: true)
+  system("git", "-C", root, "config", "user.email", "ci@example.invalid", exception: true)
+  system("git", "-C", root, "config", "user.name", "CI Test", exception: true)
+  FileUtils.mkdir_p(File.join(root, "tests", "ci"))
+  %w[classify_changes.rb suites.conf].each do |name|
+    FileUtils.cp(File.expand_path(name, __dir__), File.join(root, "tests", "ci", name))
+  end
+end
+
+def push_commit(root, *paths)
+  paths.each do |path|
+    absolute = File.join(root, path)
+    FileUtils.mkdir_p(File.dirname(absolute))
+    File.write(absolute, "owned content for #{path}\n#{Time.now.to_f}\n")
+  end
+  system("git", "-C", root, "add", "-A", exception: true)
+  system("git", "-C", root, "commit", "-qm", "commit #{paths.join(' ')}", exception: true)
+  git_revision(root, "HEAD")
+end
+
+def git_revision(root, revision)
+  output, status = Open3.capture2("git", "-C", root, "rev-parse", revision)
+  raise "failed to resolve #{revision}" unless status.success?
+
+  output.strip
+end
+
+# Exactly what the runner does: the step's shell, the push event, and nothing in
+# the environment but the values the workflow passes through `env:`.
+def classify_push(root, before)
+  script = File.join(root, ".classify-step.sh")
+  File.write(script, CLASSIFY_STEP.to_s)
+  output_path = File.join(root, ".github-output")
+  FileUtils.rm_f(output_path)
+  environment = {
+    "EVENT_NAME" => "push", "PR_BASE" => "", "PR_HEAD" => "",
+    "PUSH_BEFORE" => before, "GITHUB_OUTPUT" => output_path
+  }
+  _stdout, stderr, status = Open3.capture3(environment, "bash", "-e", script, chdir: root)
+  [status, File.exist?(output_path) ? File.read(output_path) : "", stderr]
+end
+
+def push_lanes(output)
+  output.lines.filter_map { |line| line.split("=", 2).first if line.strip.end_with?("=true") }
+end
+
+check(failures, !CLASSIFY_STEP.to_s.empty?,
+      "the changes job must still carry a step with id `classify`")
+
+unless CLASSIFY_STEP.to_s.empty?
+  # A squash merge: main gains one commit, and `before` is the tip it replaced.
+  Dir.mktmpdir("classify-push-squash-") do |root|
+    init_push_repository(root)
+    before = push_commit(root, "roles/dozzle/tasks/main.yml")
+    push_commit(root, "roles/beszel/tasks/main.yml")
+    status, output, stderr = classify_push(root, before)
+    lanes = push_lanes(output)
+    check(failures, status.success?, "a squash merge must classify cleanly: #{stderr.inspect}")
+    check(failures, lanes.include?("beszel") && !lanes.include?("dozzle"),
+          "a squash merge must select only the lanes it touched, got #{lanes.inspect}")
+    check(failures, !lanes.include?("immich"),
+          "a squash merge must not fall back to a full sweep, got #{lanes.inspect}")
+  end
+
+  # A merge commit: HEAD has two parents, and the diff has to be the whole branch
+  # that was merged rather than one parent's side of it.
+  Dir.mktmpdir("classify-push-merge-") do |root|
+    init_push_repository(root)
+    before = push_commit(root, "roles/dozzle/tasks/main.yml")
+    system("git", "-C", root, "checkout", "-q", "-b", "feature", exception: true)
+    push_commit(root, "roles/immich/tasks/main.yml")
+    push_commit(root, "roles/komga/tasks/main.yml")
+    system("git", "-C", root, "checkout", "-q", "-", exception: true)
+    system("git", "-C", root, "merge", "-q", "--no-ff", "-m", "merge", "feature", exception: true)
+    status, output, stderr = classify_push(root, before)
+    lanes = push_lanes(output)
+    check(failures, status.success?, "a merge commit must classify cleanly: #{stderr.inspect}")
+    check(failures, lanes.include?("immich") && lanes.include?("komga"),
+          "a merge commit must classify the whole branch it merged, got #{lanes.inspect}")
+    check(failures, !lanes.include?("dozzle"),
+          "a merge commit must not select lanes it did not touch, got #{lanes.inspect}")
+  end
+
+  # A direct push of several commits. This is the case `HEAD^` alone gets wrong:
+  # it would see only the last commit and drop every lane the earlier ones touched.
+  Dir.mktmpdir("classify-push-multi-") do |root|
+    init_push_repository(root)
+    before = push_commit(root, "roles/dozzle/tasks/main.yml")
+    push_commit(root, "roles/jellyfin/tasks/main.yml")
+    push_commit(root, "roles/paperless-ngx/tasks/main.yml")
+    status, output, stderr = classify_push(root, before)
+    lanes = push_lanes(output)
+    check(failures, status.success?, "a multi-commit push must classify cleanly: #{stderr.inspect}")
+    check(failures, lanes.include?("paperless"),
+          "a multi-commit push must select the last commit's lane, got #{lanes.inspect}")
+    check(failures, lanes.include?("jellyfin"),
+          "a multi-commit push must classify every commit it carried, not just HEAD^: " \
+          "#{lanes.inspect}")
+  end
+
+  # The two pushes with no usable `before`: a ref reported as all zeros, and a
+  # force push naming a commit this clone never fetched. Both fall back to HEAD^,
+  # which still classifies rather than sweeping.
+  ["0" * 40, "1" * 40, ""].each do |unusable|
+    Dir.mktmpdir("classify-push-fallback-") do |root|
+      init_push_repository(root)
+      push_commit(root, "roles/dozzle/tasks/main.yml")
+      push_commit(root, "roles/audiobookshelf/tasks/main.yml")
+      status, output, stderr = classify_push(root, unusable)
+      lanes = push_lanes(output)
+      check(failures, status.success?,
+            "an unusable before=#{unusable.inspect} must still classify: #{stderr.inspect}")
+      check(failures, lanes.include?("audiobookshelf") && !lanes.include?("dozzle"),
+            "before=#{unusable.inspect} must fall back to the first parent, got #{lanes.inspect}")
+    end
+  end
+
+  # Nothing to diff against at all. Routing fails open, so this must reach `--full`
+  # and select every lane -- never an empty selection, which would skip every job
+  # and conclude the run green having tested nothing.
+  Dir.mktmpdir("classify-push-rootless-") do |root|
+    init_push_repository(root)
+    push_commit(root, "roles/dozzle/tasks/main.yml")
+    status, output, stderr = classify_push(root, "0" * 40)
+    check(failures, status.success?,
+          "a push with no parent must still classify: #{stderr.inspect}")
+    check(failures, output == expected_full_output,
+          "a push with no parent must fail open to a full run, got #{output.inspect}")
+  end
+end
+
+# Every document a registered check reads is a CI input, and until the docs job
+# existed inert_path? dropped all of docs/, so such a document reached no job at
+# all unless STATIC_ONLY_PATHS rescued it by name. That is how a documentation
+# commit broke the policy gate on main and still merged green: the gate was never
+# run against it.
+#
+# Rescuing by name only ever covered the documents a check spells out.
+# tests/docs_links_test.rb reads README.md and every *.md under docs/ through a
+# glob, so the earlier form of this guard -- collect the literals, require each to
+# select `static` -- reported the hole as closed while a broken link under
+# docs/superpowers/plans/ still merged green. Both halves are derived below: the
+# literals a check names, and whether it globs the directory.
+#
+# What is asserted is coverage, not a fixed job. A document must select at least
+# one job that runs each check reading it, which is what lets a plan document
+# select the cheap docs job while docs/getting-started.md still selects `static`,
+# because tests/policy_test.rb reads it and tests/policy_test.rb is the gate.
 POLICY_DOC_ROOT = File.expand_path("../..", __dir__)
 POLICY_MANIFEST = File.join(POLICY_DOC_ROOT, "tests", "validate-policy.sh")
+POLICY_WORKFLOW = File.join(POLICY_DOC_ROOT, ".github", "workflows", "ci.yml")
+# The routing and its own fixtures name documents in order to route them, not
+# because they read them. Counting them as readers would make this guard assert
+# whatever the routing already says -- and would make the regression fixture
+# above demand the very job it proves is no longer needed.
+ROUTING_SOURCES = %w[
+  tests/ci/classify_changes.rb
+  tests/ci/classify_changes_test.rb
+  tests/ci/workflow_test.rb
+].freeze
+# How tests/docs_links_test.rb spells "all of docs/". A check that stops globbing
+# is not a failure; a derivation that stops seeing the glob is, which is what the
+# emptiness check below says.
+DOCS_GLOB_PATTERN = %r{docs/\*\*|"docs"\)\s*\.glob\(}
 
-def registered_check_sources(root, manifest_path)
-  return [] unless File.file?(manifest_path)
+# The checks each classifier lane runs. The mutation harness is gated on the same
+# `static` output as the gate, so a check it carries is a `static` input like any
+# other; the docs job is gated on `docs`.
+def lane_check_text(workflow_path, manifest_path)
+  workflow = File.file?(workflow_path) ? YAML.safe_load_file(workflow_path, aliases: false) : {}
+  jobs = workflow.fetch("jobs", {})
+  runs = lambda do |job|
+    Array(jobs.dig(job, "steps")).filter_map { |step| step["run"] if step.is_a?(Hash) }.join("\n")
+  end
+  manifest = File.file?(manifest_path) ? File.read(manifest_path) : ""
+  {
+    "static" => [manifest, runs.call("static"), runs.call("mutation")].join("\n"),
+    "docs" => runs.call("docs")
+  }
+end
 
-  manifest = File.read(manifest_path)
-  # Both spellings the manifest uses: a path, and the dotted module name that
-  # `python3 -m unittest` takes.
-  pending = manifest.scan(%r{tests/[A-Za-z0-9_./-]+\.(?:rb|sh|py)}).uniq
-  pending.concat(manifest.scan(/\btests\.([A-Za-z0-9_]+)\b/).flatten.map { |name| "tests/#{name}.py" })
+# Both spellings a job uses to name a check: a path, and the dotted module name
+# that `python3 -m unittest` takes.
+def registered_checks(text)
+  checks = text.scan(%r{tests/[A-Za-z0-9_./-]+\.(?:rb|sh|py)})
+  checks.concat(text.scan(/\btests\.([A-Za-z0-9_]+)\b/).flatten.map { |name| "tests/#{name}.py" })
+  checks.uniq
+end
+
+# One check and everything it requires, so a document read by a shared support
+# file is attributed to the check that loads it.
+def check_closure(root, entry)
+  pending = [entry]
   sources = []
   until pending.empty?
     relative = pending.shift
@@ -603,26 +804,63 @@ def registered_check_sources(root, manifest_path)
   sources
 end
 
-coupled_documents = registered_check_sources(POLICY_DOC_ROOT, POLICY_MANIFEST).flat_map do |relative|
-  File.read(File.join(POLICY_DOC_ROOT, relative)).scan(%r{docs/[A-Za-z0-9_./-]+\.md})
-end.uniq.select { |document| File.file?(File.join(POLICY_DOC_ROOT, document)) }.sort
+check_lanes = Hash.new { |lanes, check| lanes[check] = [] }
+lane_check_text(POLICY_WORKFLOW, POLICY_MANIFEST).each do |lane, text|
+  registered_checks(text).each { |check_path| check_lanes[check_path] << lane }
+end
+
+coupled_documents = Hash.new { |documents, name| documents[name] = [] }
+globbing_checks = []
+check_lanes.each do |check_path, lanes|
+  next if ROUTING_SOURCES.include?(check_path)
+
+  sources = check_closure(POLICY_DOC_ROOT, check_path).reject { |s| ROUTING_SOURCES.include?(s) }
+  next if sources.empty?
+
+  body = sources.map { |relative| File.read(File.join(POLICY_DOC_ROOT, relative)) }.join("\n")
+  body.scan(%r{(?:docs/[A-Za-z0-9_./-]+|README)\.md}).uniq.each do |document|
+    next unless File.file?(File.join(POLICY_DOC_ROOT, document))
+
+    coupled_documents[document] << [check_path, lanes]
+  end
+  globbing_checks << [check_path, lanes] if body.match?(DOCS_GLOB_PATTERN)
+end
 
 # A derivation that finds nothing would pass silently, which is the failure mode
 # this whole check exists to end.
 check(failures, coupled_documents.length >= 6,
-      "the registered policy checks name only #{coupled_documents.length} existing documents; " \
+      "the registered checks name only #{coupled_documents.length} existing documents; " \
       "the derivation is broken rather than the routing")
+check(failures, !globbing_checks.empty?,
+      "no registered check was seen to glob docs/, but tests/docs_links_test.rb does; " \
+      "the derivation is blind to the half of the coupling that is not a literal")
 if defined?(ClassifyChanges)
-  coupled_documents.each do |document|
-    check(failures, ClassifyChanges.classify([document]).fetch("static"),
-          "#{document} is read by a check registered in tests/validate-policy.sh but does not " \
-          "select the static job; add it to STATIC_ONLY_PATHS in tests/ci/classify_changes.rb")
+  coupled_documents.sort.each do |document, readers|
+    selection = ClassifyChanges.classify([document])
+    readers.each do |check_path, lanes|
+      check(failures, lanes.any? { |lane| selection.fetch(lane) },
+            "#{document} is read by #{check_path}, which runs in #{lanes.join(' and ')}, but " \
+            "selects neither; route it in tests/ci/classify_changes.rb")
+    end
+  end
+
+  # The half a list of literals cannot see. These documents exist in no check's
+  # source, and one of them does not exist at all -- which is the point: the link
+  # gate reads whatever is under docs/ on the day it runs, so an unnamed document
+  # still has to reach the job that runs it.
+  %w[
+    docs/superpowers/plans/2026-08-09-docs-only-ci-fast-path.md
+    docs/superpowers/specs/2026-08-14-production-auto-deployment-design.md
+    docs/no-check-will-ever-name-this.md
+  ].each do |document|
+    selection = ClassifyChanges.classify([document])
+    globbing_checks.each do |check_path, lanes|
+      check(failures, lanes.any? { |lane| selection.fetch(lane) },
+            "#{document} is read by #{check_path}, which globs docs/, but selects none of " \
+            "#{lanes.join(', ')}")
+    end
   end
 end
 
-unless failures.empty?
-  failures.each { |failure| warn "FAIL #{failure}" }
-  abort "#{failures.length} changed-path classifier failure(s)"
-end
-
-puts "changed-path classifier: all checks passed"
+report(failures, "changed-path classifier: all checks passed",
+       "changed-path classifier failure(s)")

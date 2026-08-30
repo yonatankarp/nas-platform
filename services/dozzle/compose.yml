@@ -92,6 +92,11 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
+      # The proxy denies /containers/<id>/logs on its own rule, before the
+      # general CONTAINERS allow it would otherwise fall through to. Without
+      # this the container list renders and every log stream is refused with
+      # 403, which Dozzle displays as the far quieter "no logs yet".
+      ALLOW_LOGS: "1"
       CONTAINERS: "1"
       EVENTS: "1"
       INFO: "1"

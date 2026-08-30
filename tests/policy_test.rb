@@ -13,14 +13,10 @@ require "yaml"
 require_relative "policy_support"
 
 include PolicySupport
+include TestScaffold
 
-ROOT = File.expand_path("..", __dir__)
 failures = []
 ACQUISITION_JOB_SERVICES = Set["configarr"].freeze
-
-def check(failures, condition, message)
-  failures << message unless condition
-end
 
 def task_list_document?(tasks)
   tasks.is_a?(Array) && tasks.all? do |task|
@@ -279,15 +275,23 @@ dozzle_planned_tasks = [
 ]
 check(failures, dozzle_planned_tasks.all? { |name| dozzle_task_names.include?(name) },
       "Dozzle must expose every REST mutation category as a check-mode planned change")
+# The per-service port exports are derived from tests/mac/lib.sh's
+# MAC_SERVICE_PORT_ORDER rather than written out one line per service, so what
+# this file can assert is that the roster names the service and that the runner
+# runs the derivation. tests/policy_mac_test.rb executes that derivation and
+# checks the variable each service actually lands in.
+mac_lib_roster_path = File.join(ROOT, "tests", "mac", "lib.sh")
+mac_lib_roster = if File.file?(mac_lib_roster_path)
+                   File.read(mac_lib_roster_path)[/^MAC_SERVICE_PORT_ORDER='([^']*)'/m, 1].to_s.split
+                 else
+                   []
+                 end
 check(failures,
-      %w[
-        PLATFORM_PROJECT_NAME PLATFORM_BESZEL_PORT PLATFORM_NTFY_PORT PLATFORM_DOZZLE_PORT
-        PLATFORM_AUDIOBOOKSHELF_PORT
-      ].all? do |value|
-        mac_run.include?("export #{value}=")
-      end && %w[beszel ntfy dozzle audiobookshelf].all? do |name|
-        mac_run.include?(%Q{"$project_name-#{name}"})
-      end,
+      mac_run.include?("export PLATFORM_PROJECT_NAME=") &&
+        mac_run.match?(/^mac_export_service_ports$/) &&
+        %w[beszel ntfy dozzle audiobookshelf].all? do |name|
+          mac_lib_roster.include?(name) && mac_run.include?(%Q{"$project_name-#{name}"})
+        end,
       "Mac runner must export dynamic project/port facts and isolate every Compose project")
 
 PLATFORM_INVENTORIES = {
@@ -460,6 +464,47 @@ paperless_options = YAML.safe_load_file(
                   paperless_options.dig(variable, "required") == false,
         "Paperless argument specs must declare optional integer #{variable}")
 end
+
+# These four are handed whole to a Python filter or posted verbatim to a service
+# API from a task running under no_log: true, so an undeclared shape surfaces as
+# a redacted AnsibleFilterError rather than as a named option. The nested
+# options are what makes the declaration a shape and not just a container type;
+# tests/filter_input_argument_spec_test.py proves they still refuse a malformed
+# element.
+{
+  "arr" => {
+    "arr_servarr_instances" => %w[
+      name api api_key admin_username admin_password root_folder category rename_field
+    ],
+    "arr_prowlarr_applications" => %w[
+      name implementation config_contract base_url api_key sync_categories
+    ]
+  },
+  "jellyfin" => { "jellyfin_encoding_policy" => %w[HardwareAccelerationType] }
+}.each do |role_name, declarations|
+  role_options = YAML.safe_load_file(
+    File.join(ROOT, "roles", role_name, "meta", "argument_specs.yml")
+  ).dig("argument_specs", "main", "options")
+  declarations.each do |variable, required_suboptions|
+    declared = role_options[variable]
+    check(failures, declared.is_a?(Hash) && declared["options"].is_a?(Hash),
+          "#{role_name} argument specs must declare the shape of #{variable}")
+    next unless declared.is_a?(Hash) && declared["options"].is_a?(Hash)
+
+    missing = required_suboptions - declared["options"].keys
+    check(failures, missing.empty?,
+          "#{role_name} #{variable} must declare the fields its filter reads: " \
+          "#{missing.join(', ')}")
+  end
+end
+
+jellyfin_options = YAML.safe_load_file(
+  File.join(ROOT, "roles", "jellyfin", "meta", "argument_specs.yml")
+).dig("argument_specs", "main", "options")
+check(failures,
+      jellyfin_options.dig("jellyfin_retired_plugin_repository_urls", "type") == "list" &&
+      jellyfin_options.dig("jellyfin_retired_plugin_repository_urls", "elements") == "str",
+      "Jellyfin argument specs must declare the retired repository URLs as a list of strings")
 
 expected_immich_preference_profile = {
   "albums" => { "defaultAssetOrder" => "desc" },
@@ -804,6 +849,18 @@ service_dirs.each do |dir|
           "#{label}: must use a published image, not build")
     check(failures, spec["privileged"] != true,
           "#{label}: privileged mode is not allowed")
+    # The other half of the same boundary. Refusing `privileged` says the
+    # container starts without extra power; no_new_privs says it cannot acquire
+    # any afterwards by executing a setuid binary. Every image on the platform
+    # can honour it: the linuxserver.io, gosu and Postgres entrypoints reach
+    # their service accounts with setuid(2) as root, which no_new_privs does not
+    # restrict, and Gotenberg launches Chromium with --no-sandbox rather than
+    # through the setuid sandbox helper. An image that genuinely needed the
+    # escalation would belong in a stated allowlist here, with its reason, and
+    # there is none — so the property holds for every container without
+    # exception.
+    check(failures, Array(spec["security_opt"]).include?("no-new-privileges:true"),
+          "#{label}: must refuse privilege escalation with security_opt no-new-privileges:true")
     unless acquisition_job
       check(failures, spec["restart"] == "unless-stopped",
             "#{label}: long-running services must restart unless-stopped")
@@ -1234,10 +1291,99 @@ manifest_entries.each do |service|
 end
 
 
-
-if failures.empty?
-  puts "policy: all properties hold"
-else
-  failures.each { |f| warn "FAIL #{f}" }
-  abort "#{failures.length} policy violation(s)"
+# Included reconciliation files are gated on a phase string the caller passes
+# through vars:. include_tasks never applies meta/argument_specs.yml, so a phase
+# matching no gate turns the whole file into a silent no-op that still reports
+# success -- and verify.yml reaches every verification it owns through exactly
+# this mechanism, so a renamed call site would remove a verification without
+# failing anything. Each gated file therefore opens with an unconditional assert
+# naming the phases it implements, every literal it gates on must appear in that
+# list, and the phases its callers actually pass must be exactly that list.
+PHASE_GATE_PATTERN = /\b([a-z][a-z0-9_]*_phase)\b\s*(?:==|in)(?![a-z0-9_])/
+PHASE_DECLARATION_PATTERN = /\A\s*([a-z][a-z0-9_]*_phase)\s+in\s+\[([^\]]*)\]\s*\z/
+def phase_literals(strings, variable)
+  escaped = Regexp.escape(variable)
+  strings.flat_map do |value|
+    value.scan(/#{escaped}\s*==\s*'([a-z0-9_]+)'/).flatten +
+      value.scan(/#{escaped}\s*in\s*\[([^\]]*)\]/).flatten
+           .flat_map { |list| list.scan(/'([a-z0-9_]+)'/).flatten }
+  end.uniq
 end
+
+phase_task_files = Dir[File.join(ROOT, "roles", "*")].sort.flat_map do |role_root|
+  recursive_role_yaml_paths(File.join(role_root, "tasks"), failures)
+end
+declared_phases = {}
+phase_task_files.each do |path|
+  relative_path = path.delete_prefix("#{ROOT}/")
+  document = YAML.safe_load_file(path, aliases: true)
+  next unless document.is_a?(Array) && document.first.is_a?(Hash)
+
+  tasks = flatten_tasks(document)
+  gated_variables = task_strings(tasks)
+                    .flat_map { |value| value.scan(PHASE_GATE_PATTERN).flatten }.uniq.sort
+  next if gated_variables.empty?
+
+  opening = document.first
+  opens_with_assert = opening.key?("ansible.builtin.assert") && !opening.key?("when")
+  check(failures, opens_with_assert,
+        "#{relative_path}: gates tasks on #{gated_variables.join(', ')} but does not open with " \
+        "an unconditional assert; an unrecognised phase would skip the whole file silently")
+  declarations = {}
+  Array(opening.dig("ansible.builtin.assert", "that")).each do |condition|
+    match = PHASE_DECLARATION_PATTERN.match(condition.to_s)
+    declarations[match[1]] = match[2].scan(/'([a-z0-9_]+)'/).flatten.sort if match
+  end
+  body_strings = task_strings(tasks.drop(1))
+  gated_variables.each do |variable|
+    unless declarations.key?(variable)
+      check(failures, false,
+            "#{relative_path}: opening assert does not name the phases #{variable} implements")
+      next
+    end
+
+    unnamed = phase_literals(body_strings, variable) - declarations[variable]
+    check(failures, unnamed.empty?,
+          "#{relative_path}: gates on #{variable} #{unnamed.sort.join(', ')} without declaring " \
+          "#{unnamed.length == 1 ? 'it' : 'them'} in the opening assert")
+  end
+  declared_phases[relative_path] = declarations
+end
+passed_phases = Hash.new { |store, key| store[key] = {} }
+phase_task_files.each do |path|
+  relative_path = path.delete_prefix("#{ROOT}/")
+  flatten_tasks(YAML.safe_load_file(path, aliases: true)).each do |task|
+    included = task["ansible.builtin.include_tasks"]
+    file_name = included.is_a?(Hash) ? included["file"] : included
+    variables = task["vars"]
+    next unless file_name.is_a?(String) && variables.is_a?(Hash)
+
+    target_path = File.expand_path(File.join(File.dirname(path), file_name))
+    # A file that is not on disk is a different failure, reported elsewhere, and
+    # the reduced fixture the mutation harness builds carries the callers without
+    # the files they include.
+    next unless File.file?(target_path)
+
+    target = target_path.delete_prefix("#{ROOT}/")
+    variables.each do |name, value|
+      next unless name.to_s.end_with?("_phase")
+
+      declaration = declared_phases.dig(target, name.to_s)
+      check(failures, !declaration.nil? && declaration.include?(value.to_s),
+            "#{relative_path}: \"#{task['name']}\" includes #{file_name} with " \
+            "#{name}: #{value}, which that file does not declare it implements")
+      (passed_phases[target][name.to_s] ||= []) << value.to_s if declaration
+    end
+  end
+end
+declared_phases.each do |relative_path, declarations|
+  declarations.each do |variable, phases|
+    reached = (passed_phases.dig(relative_path, variable) || []).uniq.sort
+    check(failures, reached == phases,
+          "#{relative_path}: declares #{variable} phases #{phases.join(', ')} but its callers " \
+          "pass #{reached.empty? ? 'none' : reached.join(', ')}")
+  end
+end
+
+
+report(failures, "policy: all properties hold", "policy violation(s)")

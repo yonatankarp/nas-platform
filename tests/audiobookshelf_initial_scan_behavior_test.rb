@@ -9,7 +9,10 @@ require "timeout"
 require "tmpdir"
 require "yaml"
 
-ROOT = File.expand_path("..", __dir__)
+require_relative "policy_support"
+
+include TestScaffold
+
 MAIN_TASKS = File.join(ROOT, "roles", "audiobookshelf", "tasks", "main.yml")
 SCAN_TASKS = File.join(ROOT, "roles", "audiobookshelf", "tasks", "initial_scan.yml")
 DEFAULTS = YAML.safe_load_file(
@@ -295,10 +298,6 @@ end
 def changed_count(output)
   match = output.match(/localhost\s+: .*changed=(\d+)/)
   match && Integer(match[1], 10)
-end
-
-def failure_tail(output)
-  output.lines.map(&:strip).reject(&:empty?).last(10).join(" | ")
 end
 
 def pending_state(library_id: LIBRARY_ID, folder_paths: ["/audiobooks"])
@@ -681,9 +680,5 @@ end
   end
 end
 
-if failures.empty?
-  puts "Audiobookshelf initial scan behavior tests passed"
-else
-  failures.each { |failure| warn "FAIL #{failure}" }
-  abort "#{failures.length} Audiobookshelf initial scan behavior failure(s)"
-end
+report(failures, "Audiobookshelf initial scan behavior tests passed",
+       "Audiobookshelf initial scan behavior failure(s)")

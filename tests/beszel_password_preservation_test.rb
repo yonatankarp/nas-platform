@@ -9,7 +9,10 @@ require "timeout"
 require "tmpdir"
 require "yaml"
 
-ROOT = File.expand_path("..", __dir__)
+require_relative "policy_support"
+
+include TestScaffold
+
 DEFAULT_TASKS_PATH = File.join(ROOT, "roles", "beszel", "tasks", "main.yml")
 TASKS_PATH = ENV.fetch(
   "BESZEL_PASSWORD_TASKS_PATH",
@@ -18,10 +21,6 @@ TASKS_PATH = ENV.fetch(
 
 class FixtureTimeout < StandardError; end
 class FixtureServerError < StandardError; end
-
-def check(failures, condition, message)
-  failures << message unless condition
-end
 
 def normalized(value)
   value.to_s.split.join(" ")
@@ -134,7 +133,6 @@ def run_superuser_lifecycle(tasks, state_path, creator_path, port, *arguments, t
     "hosts" => "localhost", "gather_facts" => false,
     "vars" => {
       "beszel_api" => "http://127.0.0.1:#{port}",
-      "beszel_no_log" => true,
       "vault_beszel_superuser_email" => "admin@example.invalid",
       "vault_beszel_superuser_password" => "vault-superuser-secret"
     },
@@ -186,7 +184,7 @@ check(failures, Array(superuser_create&.fetch("when", nil)) == [
         "not ansible_check_mode", "beszel_superuser_pre_auth.status | int != 200"
       ], "Beszel atomic create must run only when exact credentials do not already authenticate")
 check(failures,
-      superuser_create&.fetch("no_log", nil) == "{{ beszel_no_log | default(true) }}",
+      superuser_create&.fetch("no_log", nil) == true,
       "Beszel atomic superuser creation must use the repository redaction contract")
 check(failures, superuser_create && !superuser_create.key?("tags"),
       "Beszel atomic superuser creation must not run during verify-only execution")
@@ -210,14 +208,14 @@ check(failures, superuser_auth&.fetch("ansible.builtin.uri", nil) == expected_su
 check(failures, superuser_auth&.fetch("register", nil) == "beszel_auth" &&
                 superuser_auth&.fetch("changed_when", nil) == false &&
                 superuser_auth&.fetch("check_mode", nil) == false &&
-                superuser_auth&.fetch("no_log", nil) == "{{ beszel_no_log | default(true) }}",
+                superuser_auth&.fetch("no_log", nil) == true,
       "Beszel superuser authentication must preserve its exact result and redaction contract")
 check(failures,
       superuser_pre_auth&.fetch("ansible.builtin.uri", nil) == expected_superuser_auth &&
         superuser_pre_auth&.fetch("register", nil) == "beszel_superuser_pre_auth" &&
         superuser_pre_auth&.fetch("changed_when", nil) == false &&
         superuser_pre_auth&.fetch("check_mode", nil) == false &&
-        superuser_pre_auth&.fetch("no_log", nil) == "{{ beszel_no_log | default(true) }}",
+        superuser_pre_auth&.fetch("no_log", nil) == true,
       "Beszel must capture exact pre-create authentication without exposing credentials")
 
 superuser_assert = tasks.find { |task| task["name"] == "Require created or preserved Beszel superuser credentials" }
@@ -421,7 +419,7 @@ check(failures, app_auth&.fetch("ansible.builtin.uri", nil) == expected_app_auth
 check(failures, app_auth&.fetch("register", nil) == "beszel_app_user_auth" &&
                 app_auth&.fetch("changed_when", nil) == false &&
                 app_auth&.fetch("check_mode", nil) == false &&
-                app_auth&.fetch("no_log", nil) == "{{ beszel_no_log | default(true) }}" &&
+                app_auth&.fetch("no_log", nil) == true &&
                 app_auth&.fetch("when", nil) == "beszel_user_id | length > 0",
       "Beszel application-user authentication must preserve its exact result, redaction, and presence contract")
 

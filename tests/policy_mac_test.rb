@@ -13,13 +13,9 @@ require "yaml"
 require_relative "policy_support"
 
 include PolicySupport
+include TestScaffold
 
-ROOT = File.expand_path("..", __dir__)
 failures = []
-
-def check(failures, condition, message)
-  failures << message unless condition
-end
 
 # The Mac proof harness is an orchestration contract: each service plugs its
 # fixture, drift, and verification behavior into these stable phases.
@@ -127,19 +123,67 @@ check(failures, mac_run.include?('mktemp -d "$temporary_parent/nas-platform-mac.
 check(failures, mac_run.include?('export PLATFORM_MEDIA_NETWORK=$project_name-media-control') &&
                 mac_verify.include?("platform_verify_media_acquisition_foundation"),
       "Mac lifecycle must export and select the derived media acquisition network verifier")
+# These stay literal exports in run.sh, so a literal grep is still the right
+# assertion for them.
 %w[
   PLATFORM_MAC_SANDBOX PLATFORM_DOCKER_ROOT PLATFORM_MEDIA_ROOT
   PLATFORM_FIXTURE_ROOT PLATFORM_REPORT_ROOT PLATFORM_PROOF_LANE
-  PLATFORM_PROJECT_NAME PLATFORM_BESZEL_PORT PLATFORM_NTFY_PORT PLATFORM_DOZZLE_PORT
-  PLATFORM_AUDIOBOOKSHELF_PORT
-  PLATFORM_PAPERLESS_PORT
-  PLATFORM_RADARR_PORT PLATFORM_SONARR_PORT PLATFORM_PROWLARR_PORT
-  PLATFORM_BAZARR_PORT PLATFORM_SABNZBD_PORT
-  COMPOSE_PROJECT_NAME
+  PLATFORM_PROJECT_NAME COMPOSE_PROJECT_NAME
 ].each do |variable|
   check(failures, mac_run.include?("export #{variable}="),
         "Mac lifecycle must export #{variable}")
 end
+
+# The service ports are no longer literal exports: run.sh derives them from
+# MAC_SERVICE_PORT_ORDER through mac_export_service_ports. Grepping for eleven
+# literal `export PLATFORM_<SERVICE>_PORT=` strings is not available any more,
+# and it was never the stronger check: it pinned ten of the fifteen services --
+# Komga, Jellyfin, Immich, Pinchflat and Kapowarr were never named -- and it
+# proved only that the text existed, never that a port reached the variable.
+# Running the real derivation over a seeded roster proves both, for all fifteen.
+mac_port_roster = mac_lib[/^MAC_SERVICE_PORT_ORDER='([^']*)'/m, 1].to_s.split
+check(failures, mac_port_roster.length >= 15 &&
+                mac_port_roster.uniq.length == mac_port_roster.length &&
+                mac_port_roster.all? { |service| service.match?(/\A[a-z][a-z0-9]*\z/) },
+      "Mac lifecycle must declare a distinct-service port roster")
+mac_port_probe = <<~PROBE
+  set -eu
+  . "$1"
+  probe_index=0
+  for probe_service in $MAC_SERVICE_PORT_ORDER; do
+    probe_index=$((probe_index + 1))
+    eval "${probe_service}_port=$((40000 + probe_index))"
+  done
+  mac_export_service_ports
+  env | grep '^PLATFORM_[A-Z0-9_]*_PORT=' | LC_ALL=C sort
+PROBE
+mac_port_exports, mac_port_probe_status =
+  if mac_lib.empty?
+    ["", nil]
+  else
+    Open3.capture2e({ "PATH" => ENV.fetch("PATH", "/usr/bin:/bin"), "LC_ALL" => "C" },
+                    "/bin/sh", "-c", mac_port_probe, "sh", mac_lib_path,
+                    unsetenv_others: true)
+  end
+expected_port_exports = mac_port_roster.each_with_index.map do |service, index|
+  "PLATFORM_#{service.upcase}_PORT=#{40_001 + index}"
+end.sort
+check(failures, !mac_lib.empty? && mac_port_probe_status.success? &&
+                mac_port_exports.split("\n") == expected_port_exports,
+      "Mac lifecycle must export one PLATFORM_<SERVICE>_PORT per roster service")
+check(failures, mac_run.match?(/^mac_export_service_ports$/),
+      "Mac lifecycle must export the roster ports it derives")
+
+# The roster and report.rb's validated port fields are two lists that must name
+# the same services. Nothing else notices a service added to one and not the
+# other until a full Mac run fails on an unrecognised option.
+mac_report_path = File.join(ROOT, "tests", "mac", "report.rb")
+mac_report = File.file?(mac_report_path) ? File.read(mac_report_path) : ""
+mac_report_port_fields = mac_report[/service_port_fields = %w\[(.*?)\]/m, 1].to_s.split
+check(failures, !mac_report_port_fields.empty? &&
+                mac_report_port_fields.sort ==
+                  mac_port_roster.map { |service| "#{service}_port" }.sort,
+      "Mac report input must validate exactly the roster's service ports")
 check(failures, mac_cleanup.include?('. "$mac_repo_dir/tests/sandbox_cleanup.sh"') &&
                 mac_cleanup.include?('. "$mac_repo_dir/tests/integration_lock.sh"') &&
                 mac_cleanup.include?('acquire_integration_lock "$mac_cleanup_parent"') &&
@@ -283,9 +327,92 @@ check(failures,
         .include?("tests/mac/snapshot-paperless-drill-throttle-test.sh"),
       "validate-policy.sh must run tests/mac/snapshot-paperless-drill-throttle-test.sh")
 
-if failures.empty?
-  puts "mac policy: all properties hold"
-else
-  failures.each { |failure| warn "FAIL #{failure}" }
-  abort "#{failures.length} mac policy violation(s)"
+# The manual review is where a human exercises the credentials nothing automated
+# can hold: a sign-in with the deployed identity, and the refusal of anything
+# else. Both lists were maintained by hand, and both silently fell behind the
+# roster -- Pinchflat and Kapowarr deployed, got sandbox ports and were verified
+# for two phases with no review entry at all, and the omission was invisible
+# because nothing compared the lists to the manifest. Compare them here, the way
+# tests/mac/hooks/verify/30-services.sh compares its dispatch table, so a
+# promotion that forgets the review is a red check rather than a gap discovered
+# later.
+MAC_REVIEW_EXEMPTIONS = {
+  "arr" => "its Phase 1 runtime is default-disabled in the Mac lane and " \
+           "proved by its Docker integration suite",
+  "downloaders" => "its Phase 1 runtime is default-disabled in the Mac lane and " \
+                   "proved by its Docker integration suite"
+}.freeze
+
+# One bullet may cover several services -- "Audiobookshelf, Jellyfin, and Komga"
+# is one check with one procedure -- so the subject is the label before the first
+# colon, split on the separators a reader already reads as a list.
+def mac_review_subjects(text, marker)
+  found = marker.match(text)
+  return unless found
+
+  bullets = []
+  started = false
+  text[found.end(0)..].to_s.lines.each do |line|
+    if line.strip.empty?
+      break if started
+
+      next
+    end
+    break unless line.start_with?("- ") || (started && line.match?(/\A[ \t]+\S/))
+
+    bullets << line if line.start_with?("- ")
+    started = true
+  end
+  bullets.filter_map do |line|
+    label = line.delete_prefix("- ").sub(/\A\[[ xX]\][ \t]*/, "")
+    next unless label.include?(":")
+
+    label.split(":", 2).first
+  end.flat_map { |label| label.split(/,|\band\b/) }
+     .map { |name| name.strip.downcase }
+     .reject(&:empty?)
 end
+
+# Read the roster through the shared reader rather than parsing the manifest a
+# second time: a second copy is a copy no test says must agree with the first,
+# and it would miss "accepted", which counts as deployed. The reader is fail-soft
+# by design -- policy_test.rb owns the diagnosis of a missing, malformed or
+# heterogeneous manifest, and raising here would replace its named failure with a
+# stack trace from this script, which tests/policy_manifest_test.rb refuses.
+mac_implemented_services = implemented_services(ROOT)
+# A stale exemption is the same defect one step later: a service removed from the
+# roster must not leave behind a standing excuse for the next one to inherit.
+# Skipped when the roster did not load, so an unreadable manifest is reported
+# once, by the check that owns it, rather than echoed here as a second cause.
+check(failures, (MAC_REVIEW_EXEMPTIONS.keys - mac_implemented_services).empty?,
+      "Mac review exemptions must name implemented services") unless mac_implemented_services.empty?
+{
+  "tests/mac/manual-review.md" =>
+    /^## Application checks$/,
+  # Whitespace-agnostic: the sentence is wrapped prose, and a reflow must not be
+  # the thing that decides whether the roster is checked.
+  "docs/getting-started-mac.md" =>
+    /Credential\s+continuity\s+requires\s+a\s+private\s+check\s+for\s+every\s+active\s+service:/
+}.each do |relative_path, marker|
+  document_path = File.join(ROOT, relative_path)
+  # An absent file is reported as a missing checklist, not as a stack trace: the
+  # existence of both documents is somebody else's named check.
+  document = File.file?(document_path) ? File.read(document_path) : ""
+  subjects = mac_review_subjects(document, marker)
+  if subjects.nil?
+    check(failures, false, "#{relative_path} must keep its Mac review checklist")
+    next
+  end
+  mac_implemented_services.each do |service|
+    next if MAC_REVIEW_EXEMPTIONS.key?(service)
+
+    check(failures, subjects.include?(service),
+          "#{relative_path} must give #{service} a Mac review check")
+  end
+  MAC_REVIEW_EXEMPTIONS.each do |service, reason|
+    check(failures, !subjects.include?(service),
+          "#{relative_path} lists #{service}, which is exempt because #{reason}")
+  end
+end
+
+report(failures, "mac policy: all properties hold", "mac policy violation(s)")

@@ -1,0 +1,83 @@
+{
+  "declarations": {
+    "languages": [
+      "de",
+      "en"
+    ],
+    "provider_bodies": {
+      "animetosho": {
+        "settings-animetosho-exclude": [
+          "null"
+        ],
+        "settings-animetosho-search_threshold": "6"
+      }
+    },
+    "provider_names": [
+      "animetosho"
+    ],
+    "provider_settings": {
+      "animetosho": {
+        "exclude": [],
+        "search_threshold": 6
+      }
+    }
+  },
+  "language_state": [
+    {
+      "code2": "de",
+      "code3": "dex",
+      "enabled": true,
+      "name": "Fixture de"
+    },
+    {
+      "code2": "en",
+      "code3": "enx",
+      "enabled": true,
+      "name": "Fixture en"
+    },
+    {
+      "code2": "fr",
+      "code3": "frx",
+      "enabled": false,
+      "name": "Fixture fr"
+    }
+  ],
+  "password": "fixture-bazarr-admin-secret",
+  "radarr_api_key": "fixture-radarr-api-secret",
+  "settings": {
+    "animetosho": {
+      "exclude": [],
+      "search_threshold": 6
+    },
+    "auth": {
+      "password": "e1de96bfdb68ac393ae87427960d5b9f",
+      "type": "form",
+      "username": "fixture-bazarr-admin"
+    },
+    "general": {
+      "enabled_providers": [
+        "animetosho"
+      ],
+      "path_mappings": [],
+      "path_mappings_movie": [],
+      "use_radarr": true,
+      "use_sonarr": true
+    },
+    "radarr": {
+      "apikey": "fixture-radarr-api-secret",
+      "base_url": "",
+      "ip": "radarr",
+      "port": 7878,
+      "ssl": false
+    },
+    "sonarr": {
+      "apikey": "fixture-sonarr-api-secret",
+      "base_url": "",
+      "ip": "sonarr",
+      "port": 8989,
+      "ssl": false
+    }
+  },
+  "sonarr_api_key": "fixture-sonarr-api-secret",
+  "username": "fixture-bazarr-admin"
+}

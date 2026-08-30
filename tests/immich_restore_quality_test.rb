@@ -30,14 +30,6 @@ def task(tasks, name)
   tasks.find { |candidate| candidate["name"] == name }
 end
 
-def flatten_tasks(tasks)
-  tasks.flat_map do |candidate|
-    [candidate] + %w[block rescue always].flat_map do |section|
-      flatten_tasks(Array(candidate[section]))
-    end
-  end
-end
-
 def require_order(tasks, names)
   positions = names.map do |name|
     index = tasks.index { |candidate| candidate["name"] == name }
@@ -484,17 +476,17 @@ initialized_guard = task(main_tasks, "Require initialized Immich after database 
 refuse("restored path can create a new administrator") unless
   initialized_guard&.dig("ansible.builtin.assert", "that").to_s.include?("immich_initialized")
 
-restore_tasks = flatten_tasks(YAML.safe_load_file(restore_path, aliases: true))
-integrity_tasks = flatten_tasks(YAML.safe_load_file(integrity_path, aliases: true))
+restore_tasks = PolicySupport.flatten_tasks(YAML.safe_load_file(restore_path, aliases: true))
+integrity_tasks = PolicySupport.flatten_tasks(YAML.safe_load_file(integrity_path, aliases: true))
 refuse("classifier is not executed from the immutable release") unless
   classifier_uses_deployed_helper?(main_tasks, restore_tasks)
 refuse("classifier is not integrity-checked before every execution") unless
   classifier_integrity_bound?(main_tasks, restore_tasks, integrity_tasks)
 
-input_tasks = flatten_tasks(YAML.safe_load_file(
+input_tasks = PolicySupport.flatten_tasks(YAML.safe_load_file(
   File.join(ROOT, "roles", "deployment_bundle", "tasks", "inputs.yml"), aliases: true
 ))
-bundle_tasks = flatten_tasks(YAML.safe_load_file(
+bundle_tasks = PolicySupport.flatten_tasks(YAML.safe_load_file(
   File.join(ROOT, "roles", "deployment_bundle", "tasks", "main.yml"), aliases: true
 ))
 manifest_template = File.read(

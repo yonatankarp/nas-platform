@@ -3,12 +3,12 @@
 require "open3"
 require "rbconfig"
 
+require_relative "../policy_support"
+
+include TestScaffold
+
 SCRIPT = File.expand_path("validate_results.rb", __dir__)
 failures = []
-
-def check(failures, condition, message)
-  failures << message unless condition
-end
 
 def validate(*arguments)
   Open3.capture3(RbConfig.ruby, SCRIPT, *arguments)
@@ -49,9 +49,5 @@ end
   check(failures, !stderr.empty?, "#{description} must explain why validation failed")
 end
 
-unless failures.empty?
-  failures.each { |failure| warn "FAIL #{failure}" }
-  abort "#{failures.length} aggregate result-policy failure(s)"
-end
-
-puts "aggregate result policy: all checks passed"
+report(failures, "aggregate result policy: all checks passed",
+       "aggregate result-policy failure(s)")

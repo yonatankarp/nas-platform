@@ -9,6 +9,10 @@ mode=${1:-static}
 }
 
 repo_dir=${PLATFORM_CONTRACT_REPO_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)}
+# The embedded Ruby below reads tests/policy_support.rb from here instead of
+# carrying its own copy of flatten_tasks.
+PLATFORM_CONTRACT_REPO_DIR=$repo_dir
+export PLATFORM_CONTRACT_REPO_DIR
 ruby - "$repo_dir" <<'RUBY'
 require "yaml"
 
@@ -33,14 +37,8 @@ end
 
 # Task files are flattened so a task on a block's rescue or always path is still
 # a task the role executes.
-def flatten_tasks(tasks)
-  Array(tasks).flat_map do |task|
-    next [] unless task.is_a?(Hash)
-
-    [task] + flatten_tasks(task["block"]) + flatten_tasks(task["rescue"]) +
-      flatten_tasks(task["always"])
-  end
-end
+require File.join(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR"), "tests", "policy_support")
+include PolicySupport
 
 # Assertions about what the role does read the parsed structure rather than the
 # file's bytes: a module named in a comment is not a module the role runs, and a
@@ -156,14 +154,15 @@ if failures.empty?
     role_tasks(root, "roles/arr/tasks/reconcile_servarr_download_client.yml")
   servarr_scalars = role_strings(servarr_tasks)
   servarr_urls = request_urls(servarr_tasks)
-  # The download-client and Bazarr bodies are built by the relationship filter
-  # rather than spelled out in the task files, so these read where the logic
-  # lives. Python is not YAML, so the filter is still read as source text; the
-  # task files beside it are read as tasks.
-  relationships = File.read(File.join(root, "filter_plugins/acquisition_relationships.py"))
+  # The download-client body is built by the Servarr relationship filter, and the
+  # Bazarr settings POST by the Bazarr one, rather than being spelled out in the
+  # task files; these read where each body actually lives. Python is not YAML, so
+  # a filter is read as source text; the task files beside it are read as tasks.
+  servarr_filter = File.read(File.join(root, "filter_plugins/acquisition_servarr.py"))
+  bazarr_filter = File.read(File.join(root, "filter_plugins/acquisition_bazarr.py"))
   failures << "Servarr reconciliation must own only the SABnzbd clients" unless
     (servarr_scalars.any? { |value| value.include?("Sabnzbd") } ||
-      relationships.include?("Sabnzbd")) &&
+      servarr_filter.include?("Sabnzbd")) &&
       servarr_categories["radarr"] == "movies" &&
       servarr_categories["sonarr"] == "series"
   # A root folder is created by a request to the rootfolder endpoint, and an
@@ -206,7 +205,7 @@ if failures.empty?
   bazarr_scalars = role_strings(
     role_tasks(root, "roles/arr/tasks/reconcile_bazarr.yml") +
       role_tasks(root, "roles/arr/tasks/reconciliation_fingerprints.yml")
-  ) + [relationships]
+  ) + [bazarr_filter]
   failures << "Bazarr must connect to both Arr services" unless
     %w[settings-general-use_radarr settings-general-use_sonarr settings-radarr-apikey settings-sonarr-apikey].all? do |token|
       bazarr_scalars.any? { |value| value.include?(token) }

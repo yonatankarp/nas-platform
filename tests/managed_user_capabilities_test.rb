@@ -7,7 +7,6 @@ require_relative "policy_support"
 
 ROOT = File.expand_path("..", __dir__)
 CAPABILITIES_PATH = File.join(ROOT, "config", "managed-user-capabilities.yml")
-SUCCESS = "Managed-user capabilities: all thirteen service contracts are pinned"
 
 MULTI_USER_DEFAULTS = {
   "preserves_unmanaged_users" => true,
@@ -134,6 +133,17 @@ EXPECTED_SERVICES = {
     }
   )
 }.freeze
+
+# The success line counts the contracts it just proved rather than restating a
+# number a promotion has to remember to bump. Spelled out because the sentence is
+# read by a person; the arithmetic is not theirs to do.
+CONTRACT_COUNT_WORDS = %w[
+  zero one two three four five six seven eight nine ten eleven twelve thirteen
+  fourteen fifteen sixteen seventeen eighteen nineteen twenty
+].freeze
+SUCCESS = "Managed-user capabilities: all " \
+          "#{CONTRACT_COUNT_WORDS.fetch(EXPECTED_SERVICES.size, EXPECTED_SERVICES.size)} " \
+          "service contracts are pinned"
 
 def fail_contract(message)
   raise "Managed-user capabilities: #{message}"

@@ -8,7 +8,8 @@ require "yaml"
 
 require_relative "policy_support"
 
-ROOT = File.expand_path("..", __dir__)
+include TestScaffold
+
 CONTRACT = File.join(ROOT, "tests", "contracts", "dozzle.sh")
 ROLE = File.join(ROOT, "roles", "dozzle", "tasks", "main.yml")
 PAPERLESS_COMPOSE = File.join("services", "paperless-ngx", "compose.yml")
@@ -43,10 +44,6 @@ TASKS = [
   "Report planned unmanaged Dozzle alert rule removal",
   "Report planned unmanaged Dozzle dispatcher removal"
 ].freeze
-
-def check(failures, condition, message)
-  failures << message unless condition
-end
 
 def output_for(index)
   headers = TASKS.map { |task| "TASK [dozzle : #{task}]" }
@@ -349,9 +346,5 @@ role_scalars = PolicySupport.task_strings(YAML.safe_load_file(ROLE, aliases: tru
 check(failures, role_scalars.none? { |value| value.include?("dispatcher.id|int") },
       "Dozzle verification coerces opaque dispatcher IDs to integers")
 
-if failures.empty?
-  puts "Dozzle quality regressions: marker counts and safe diagnostics hold"
-else
-  failures.each { |failure| warn "FAIL #{failure}" }
-  abort "#{failures.length} Dozzle quality regression(s)"
-end
+report(failures, "Dozzle quality regressions: marker counts and safe diagnostics hold",
+       "Dozzle quality regression(s)")

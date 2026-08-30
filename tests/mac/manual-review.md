@@ -12,6 +12,18 @@ private keys, password hashes, rendered environment files, or application logs.
 - [ ] Immich: upload, thumbnail, search, exercise CPU ML, and retain assets.
 - [ ] Paperless-ngx: ingest German/English/Hebrew fixtures, preview, search,
       convert, export, and inspect Gmail configuration without fetching mail.
+- [ ] Pinchflat: sign in with the deployed basic-authentication pair; confirm an
+      anonymous request and a wrong password are both refused, and that the
+      persisted database survives recreation.
+- [ ] Kapowarr: sign in with the deployed administrator identity; confirm an
+      anonymous request and a wrong password are both refused, that the owned
+      comics library root and persisted database survive recreation, and that
+      the ComicVine key is present in the application.
+- [ ] Bindery: sign in with the deployed administrator identity; confirm an
+      anonymous request to a protected route is refused, that the ebook and
+      audiobook library roots and the persisted database survive recreation,
+      and that unattended auto-grabbing is still off. Spend exactly one login —
+      the limiter answers 429 to the correct password after five failures.
 - [ ] ntfy: confirm anonymous denial and authenticated disposable messages.
 - [ ] Beszel: inspect metrics/thresholds and send a disposable ntfy event.
 - [ ] Dozzle: inspect logs and event rules; confirm shell/actions/MCP are off.
