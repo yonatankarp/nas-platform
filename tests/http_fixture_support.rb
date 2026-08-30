@@ -8,8 +8,10 @@
 # request-line and header parse, the content-length body read, and the teardown
 # that has to hand a crash in that thread back to the main thread. The copies
 # drifted — tests/paperless_mail_reconciliation_test.rb and
-# tests/ntfy_verify_execution_test.rb had both lost the error propagation, so a
-# fixture that raised reported a passing test.
+# tests/ntfy_verify_execution_test.rb had both dropped the explicit
+# propagation, leaving the crash to Thread#join re-raising it — which stops
+# holding the moment that join is bounded or the thread is killed, as they are
+# here.
 #
 # What genuinely differs between the tests is the response, so that is all a
 # caller supplies: a responder block answering [status, payload]. The transport,
@@ -22,7 +24,6 @@
 
 require "open3"
 require "socket"
-require "timeout"
 require "tmpdir"
 require "yaml"
 
