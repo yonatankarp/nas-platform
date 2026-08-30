@@ -343,6 +343,15 @@ acquisition_owned_field_check =
 check(failures,
       validation_commands.count(acquisition_owned_field_check) == 1,
       "validate-policy.sh must run #{acquisition_owned_field_check} exactly once")
+# The structured declarations the relationship filters consume are validated at
+# role entry and nowhere else, and an argument spec is only a guard while
+# something proves it still refuses a malformed element. Too strict fails a
+# deployment, too loose fails nothing, and neither shows up in a syntax check.
+filter_input_spec_check =
+  'PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/filter_input_argument_spec_test.py'
+check(failures,
+      validation_commands.count(filter_input_spec_check) == 1,
+      "validate-policy.sh must run #{filter_input_spec_check} exactly once")
 # media_bazarr_providers is validated against no list of known providers, so a
 # misspelled setting key converges and fetches nothing. The documented blocks
 # are the operator's protection against that, and they only protect while

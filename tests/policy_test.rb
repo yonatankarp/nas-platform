@@ -457,6 +457,47 @@ paperless_options = YAML.safe_load_file(
         "Paperless argument specs must declare optional integer #{variable}")
 end
 
+# These four are handed whole to a Python filter or posted verbatim to a service
+# API from a task running under no_log: true, so an undeclared shape surfaces as
+# a redacted AnsibleFilterError rather than as a named option. The nested
+# options are what makes the declaration a shape and not just a container type;
+# tests/filter_input_argument_spec_test.py proves they still refuse a malformed
+# element.
+{
+  "arr" => {
+    "arr_servarr_instances" => %w[
+      name api api_key admin_username admin_password root_folder category rename_field
+    ],
+    "arr_prowlarr_applications" => %w[
+      name implementation config_contract base_url api_key sync_categories
+    ]
+  },
+  "jellyfin" => { "jellyfin_encoding_policy" => %w[HardwareAccelerationType] }
+}.each do |role_name, declarations|
+  role_options = YAML.safe_load_file(
+    File.join(ROOT, "roles", role_name, "meta", "argument_specs.yml")
+  ).dig("argument_specs", "main", "options")
+  declarations.each do |variable, required_suboptions|
+    declared = role_options[variable]
+    check(failures, declared.is_a?(Hash) && declared["options"].is_a?(Hash),
+          "#{role_name} argument specs must declare the shape of #{variable}")
+    next unless declared.is_a?(Hash) && declared["options"].is_a?(Hash)
+
+    missing = required_suboptions - declared["options"].keys
+    check(failures, missing.empty?,
+          "#{role_name} #{variable} must declare the fields its filter reads: " \
+          "#{missing.join(', ')}")
+  end
+end
+
+jellyfin_options = YAML.safe_load_file(
+  File.join(ROOT, "roles", "jellyfin", "meta", "argument_specs.yml")
+).dig("argument_specs", "main", "options")
+check(failures,
+      jellyfin_options.dig("jellyfin_retired_plugin_repository_urls", "type") == "list" &&
+      jellyfin_options.dig("jellyfin_retired_plugin_repository_urls", "elements") == "str",
+      "Jellyfin argument specs must declare the retired repository URLs as a list of strings")
+
 expected_immich_preference_profile = {
   "albums" => { "defaultAssetOrder" => "desc" },
   "avatar" => { "color" => "primary" },

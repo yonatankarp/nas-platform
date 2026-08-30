@@ -25,6 +25,10 @@ Parity with the loops it replaces, verified by differential on ansible-core
 * The retired list is compared against the *normalized* URL but is itself used
   raw, exactly as the `when:` condition did. Normalizing it here would newly
   retire a repository whose declared URL differs only in case or trailing slash.
+  Its list-ness is enforced, which the `when:` condition never did: `in` against
+  a string is Python's substring test, so a scalar retired URL silently retired
+  every repository whose URL it contained. That is a refusal, not a normalization
+  — the raw comparison of the members themselves is unchanged.
 * `combine` with the default `recursive=false` is a shallow overlay in which the
   desired keys win and every unrelated key on the current record survives, so
   the merge is `{**raw, **desired}` and not a replacement.
@@ -115,6 +119,7 @@ def jellyfin_merged_repositories(inventory, desired, retired):
     """
     entries = _require_sequence(inventory, "the Jellyfin repository inventory")
     declared = _require_sequence(desired, "declared Jellyfin plugin repositories")
+    retired = _require_sequence(retired, "retired Jellyfin plugin repository URLs")
     keyed = jellyfin_repositories_by_url(declared)
 
     merged = []
