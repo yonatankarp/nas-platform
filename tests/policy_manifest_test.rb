@@ -972,6 +972,16 @@ expect_failure(failures, "CI bypasses policy entrypoint", "CI must run tests/val
   File.write(path, File.read(path).sub("tests/validate-policy.sh", "ruby tests/policy_test.rb"))
 end
 
+# This harness left the policy gate to stop being its floor, which means the gate
+# no longer registers it and only ci.yml does. A check that is in neither place
+# runs nowhere while every test still passes, so dropping its job is planted here
+# the same way dropping a manifest line is.
+expect_failure(failures, "CI drops the policy mutation job",
+               "CI must run ruby tests/policy_manifest_test.rb") do |root|
+  path = File.join(root, ".github", "workflows", "ci.yml")
+  File.write(path, File.read(path).sub("ruby tests/policy_manifest_test.rb", "true"))
+end
+
 expect_failure(failures, "integration omits contract execution", "integration must execute registered contracts") do |root|
   path = File.join(root, "tests", "integration.sh")
   File.write(path, File.read(path).sub(/^\s*ruby \/repo\/tests\/run_contracts\.rb --execute\n/, ""))
