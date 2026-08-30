@@ -804,6 +804,18 @@ service_dirs.each do |dir|
           "#{label}: must use a published image, not build")
     check(failures, spec["privileged"] != true,
           "#{label}: privileged mode is not allowed")
+    # The other half of the same boundary. Refusing `privileged` says the
+    # container starts without extra power; no_new_privs says it cannot acquire
+    # any afterwards by executing a setuid binary. Every image on the platform
+    # can honour it: the linuxserver.io, gosu and Postgres entrypoints reach
+    # their service accounts with setuid(2) as root, which no_new_privs does not
+    # restrict, and Gotenberg launches Chromium with --no-sandbox rather than
+    # through the setuid sandbox helper. An image that genuinely needed the
+    # escalation would belong in a stated allowlist here, with its reason, and
+    # there is none — so the property holds for every container without
+    # exception.
+    check(failures, Array(spec["security_opt"]).include?("no-new-privileges:true"),
+          "#{label}: must refuse privilege escalation with security_opt no-new-privileges:true")
     unless acquisition_job
       check(failures, spec["restart"] == "unless-stopped",
             "#{label}: long-running services must restart unless-stopped")

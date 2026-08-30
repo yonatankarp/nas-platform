@@ -523,6 +523,8 @@ services:
       timeout: 10s
       retries: 5
       start_period: 60s
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
     logging: *default-logging
 ```
@@ -539,12 +541,33 @@ The policy test enforces every one of these properties:
   lets one pin resolve correctly on both the NAS and an arm64 Mac.
 - No `build:` key. Published images only.
 - No `privileged: true`.
+- `security_opt: [no-new-privileges:true]`, on every container in the stack,
+  one-shot jobs included. `privileged` says the container starts without extra
+  power; this says it cannot acquire any afterwards by executing a setuid
+  binary. Entrypoints that drop to a service account — linuxserver.io's
+  `s6-setuidgid`, `gosu`, the Postgres and Valkey entrypoints — call `setuid(2)`
+  as root, which `no_new_privs` does not restrict, so they keep working. If an
+  image ever does need the escalation, it belongs in an allowlist beside the
+  check in `tests/policy_test.rb` with the reason stated, never omitted in
+  silence.
 - `restart: unless-stopped`.
 - `logging` with the `json-file` driver and both `max-size` and `max-file`.
 - Volume sources must be `${VARIABLE:?}` references, never absolute paths. The
   `:?` suffix makes an unset variable fail loudly instead of silently creating a
   relative bind mount. Hardcoding `/volume1/...` is rejected outright, because
   the same file has to run unmodified on the NAS, on a Mac sandbox and in CI.
+
+A container that owns state — anything mounting a `recovery: critical` path, or
+writing into the media tree — declares `stop_grace_period` with the reason beside
+it, because Docker's undeclared ten seconds is a default nobody chose. The number
+comes from what that particular software has to flush: a Postgres fast shutdown
+checkpoints every dirty buffer and gets one to two minutes, a Valkey snapshot or
+a SQLite commit gets thirty seconds, an importer gets long enough to finish the
+file it is writing but not long enough to wait on work that is simply re-queued.
+Containers that hold nothing — renderers, parsers, socket proxies, model caches —
+declare nothing and keep the default. This is judgement, not a policy check:
+there is no property that can tell the two apart, so state the reasoning in the
+comment.
 
 A service that runs as a direct numeric user takes the shared platform identity,
 `user: "${NAS_UID:?}:${NAS_GID:?}"`, never a literal pair — even one that happens

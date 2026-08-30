@@ -48,7 +48,18 @@ services:
     # health check as ready the moment it is running.
     healthcheck:
       disable: false
+    # These containers carry no `user:`, so PID 1 starts as root. Refusing
+    # privilege escalation is what keeps that from being a path to more than
+    # root-in-a-namespace: nothing in the Immich images executes a setuid binary.
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
+    # This is the process that writes an original photograph to /data and its
+    # row to Postgres. A minute is enough for an upload in flight to land on
+    # both sides; it is deliberately not longer, because background transcodes
+    # and thumbnail jobs write only regenerable derivatives and pick themselves
+    # up again on the next start.
+    stop_grace_period: 1m
     logging: *default-logging
 
   immich-machine-learning:
@@ -67,6 +78,8 @@ services:
       TZ: ${TZ:?}
     healthcheck:
       disable: false
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
     logging: *default-logging
 
@@ -86,7 +99,14 @@ services:
       dev.dozzle.name: redis
     healthcheck:
       test: redis-cli ping || exit 1
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
+    # Valkey answers SIGTERM by writing one final snapshot before it exits. This
+    # one keeps no volume at all — the job queue is rebuilt from Postgres — so
+    # the window is only about exiting cleanly rather than being killed with a
+    # write open. 30s is well past what that snapshot costs.
+    stop_grace_period: 30s
     logging: *default-logging
 
   # Not a version we chose, and not really one version. This is Immich's own
@@ -119,5 +139,17 @@ services:
     shm_size: 128mb
     healthcheck:
       disable: false
+    # The Postgres entrypoint drops to the postgres account with setuid(2) as
+    # root before the server starts, which no_new_privs does not restrict.
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
+    # The image's STOPSIGNAL is SIGINT, which is a Postgres fast shutdown:
+    # connections dropped, open transactions aborted, then a checkpoint that
+    # flushes every dirty buffer. Two minutes, twice what the Paperless cluster
+    # gets, because this one carries the photo library's VectorChord indexes and
+    # a proportionally larger buffer cache to write out. Killed mid-checkpoint
+    # the cluster is not lost, but it comes back through WAL recovery — and this
+    # directory is recovery: critical.
+    stop_grace_period: 2m
     logging: *default-logging

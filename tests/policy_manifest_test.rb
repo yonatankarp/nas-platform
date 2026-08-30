@@ -492,6 +492,7 @@ promote_arr_with_compose = lambda do |root|
       "cpus" => cpus,
       "labels" => { "dev.dozzle.name" => "service" },
       "healthcheck" => { "test" => ["CMD", "true"] },
+      "security_opt" => ["no-new-privileges:true"],
       "restart" => "unless-stopped",
       "logging" => logging,
       "volumes" => []
@@ -502,6 +503,7 @@ promote_arr_with_compose = lambda do |root|
     "cpuset" => "${PLATFORM_CONTAINER_CPUSET:?}",
     "cpus" => 0.5,
     "profiles" => ["jobs"],
+    "security_opt" => ["no-new-privileges:true"],
     "logging" => logging,
     "volumes" => []
   }
@@ -546,6 +548,30 @@ expect_failure(failures, "acquisition daemon claims healthcheck exemption",
                "arr/radarr: long-running services must define a health check") do |root|
   compose = promote_arr_with_compose.call(root)
   compose.dig("services", "radarr").delete("healthcheck")
+  File.write(File.join(root, "services", "arr", "compose.yml"), YAML.dump(compose))
+end
+
+expect_failure(failures, "acquisition daemon claims privilege-escalation exemption",
+               "arr/radarr: must refuse privilege escalation with security_opt " \
+               "no-new-privileges:true") do |root|
+  compose = promote_arr_with_compose.call(root)
+  compose.dig("services", "radarr").delete("security_opt")
+  File.write(File.join(root, "services", "arr", "compose.yml"), YAML.dump(compose))
+end
+
+expect_failure(failures, "acquisition job claims privilege-escalation exemption",
+               "arr/configarr: must refuse privilege escalation with security_opt " \
+               "no-new-privileges:true") do |root|
+  compose = promote_arr_with_compose.call(root)
+  compose.dig("services", "configarr").delete("security_opt")
+  File.write(File.join(root, "services", "arr", "compose.yml"), YAML.dump(compose))
+end
+
+expect_failure(failures, "acquisition daemon disarms no-new-privileges",
+               "arr/radarr: must refuse privilege escalation with security_opt " \
+               "no-new-privileges:true") do |root|
+  compose = promote_arr_with_compose.call(root)
+  compose.dig("services", "radarr")["security_opt"] = ["no-new-privileges:false"]
   File.write(File.join(root, "services", "arr", "compose.yml"), YAML.dump(compose))
 end
 
