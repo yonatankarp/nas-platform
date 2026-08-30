@@ -201,6 +201,30 @@ tests/mac/run.sh \
 Passed phases are skipped. A changed vault or Git revision is intentionally
 rejected so evidence from different deployments cannot be mixed.
 
+### If a run refuses to start because the lock is held
+
+`tests/mac/run.sh`, `tests/mac/cleanup.sh` and `tests/integration.sh` share one
+lock directory under `TMPDIR`, so that only one of them drives Docker's
+fixed-name containers at a time. The holder records its pid, uid and hostname
+inside the lock, and a later run whose predecessor was killed -- a SIGKILL, an
+out-of-memory kill, a cancelled CI job, a laptop that slept -- reclaims the lock
+automatically and says so.
+
+A refusal therefore means the recorded holder is still alive, ran as another
+user, ran on another machine, or was killed in the instant before it could
+record itself. The message names the lock and, when it can, the holder:
+
+```text
+another NAS platform integration run holds the shared Docker lock
+  lock: /path/to/tmp/nas-platform-integration.lock
+  holder: pid 4242 of uid 501 on example.local
+  if that holder is gone: rm -f /path/to/.../owner && rmdir /path/to/...
+```
+
+Check that pid before removing anything. Run the printed command only once you
+have confirmed no run is using it; a `.reclaim` directory beside the lock is a
+recovery in flight, and is safe to remove only under the same condition.
+
 ## What this does not prove
 
 Docker Desktop cannot prove NAS ACL enforcement, NAS GPU access, host

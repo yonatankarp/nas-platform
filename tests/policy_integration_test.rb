@@ -451,6 +451,21 @@ check(failures,
         integration_lock.include?('rmdir "$integration_lock_path"') &&
         !integration_lock.match?(/rm\s+-rf/),
       "integration must serialize fixed-name containers with an atomic empty-directory lock")
+# Release happens only through an EXIT trap, so a lock that records nothing about
+# its holder survives every hard termination -- and because the same lock gates
+# tests/mac/cleanup.sh, the dead run's containers survive with it. Recovery has to
+# stay a fact rather than a guess: serialized by a lock of its own, refused for a
+# holder on another machine or another uid (where kill -0 answers EPERM, which is
+# indistinguishable from "no such process"), and named in the refusal either way.
+check(failures,
+      integration_lock.include?('integration_lock_owner_identity > "$lock_candidate/owner"') &&
+        integration_lock.include?('mkdir "$reclaim_guard" 2>/dev/null || return 1') &&
+        integration_lock.include?('rmdir "$reclaim_target" 2>/dev/null') &&
+        integration_lock.include?('! kill -0 "$reclaim_pid" 2>/dev/null') &&
+        integration_lock.include?('[ "$reclaim_uid" = "$(id -u)" ]') &&
+        integration_lock.include?('[ "$reclaim_host" = "$(uname -n)" ]') &&
+        integration_lock.include?('  lock: %s'),
+      "integration lock must record its holder and recover only a provably dead one")
 
 if failures.empty?
   puts "integration policy: all properties hold"
