@@ -10,7 +10,7 @@
   register: beszel_alert_records
   changed_when: false
   check_mode: false
-  no_log: "{{ beszel_no_log | default(true) }}"
+  no_log: true
   vars:
     beszel_alert_filter: >-
       user = {{ beszel_user_id | to_json }} &&
@@ -53,7 +53,7 @@
     status_code: [200]
   when: beszel_current_alerts | length == 0
   changed_when: true
-  no_log: "{{ beszel_no_log | default(true) }}"
+  no_log: true
 
 - name: Patch the mismatched managed-system alert for {{ beszel_alert.name }}
   ansible.builtin.uri:
@@ -71,7 +71,7 @@
     - (beszel_current_alerts | first).value != beszel_alert.value
       or (beszel_current_alerts | first).min != beszel_alert.min
   changed_when: true
-  no_log: "{{ beszel_no_log | default(true) }}"
+  no_log: true
 
 - name: Report planned alert reconciliation for {{ beszel_alert.name }}
   ansible.builtin.debug:
@@ -95,7 +95,7 @@
   register: beszel_refreshed_alerts
   changed_when: false
   check_mode: false
-  no_log: "{{ beszel_no_log | default(true) }}"
+  no_log: true
   vars:
     beszel_alert_filter: >-
       user = {{ beszel_user_id | to_json }} &&
