@@ -1,0 +1,69 @@
+---
+- name: Read the deployed base Compose CPU policy
+  ansible.builtin.slurp:
+    path: "{{ platform_current_dir }}/services/{{ container_cpu_service_name }}/compose.yml"
+  register: container_cpu_compose_source
+
+- name: Resolve the deployed Compose CPU policy
+  ansible.builtin.set_fact:
+    container_cpu_compose_services: >-
+      {{ (container_cpu_compose_source.content | b64decode | from_yaml).services }}
+
+# A service behind a Compose profile is not part of the default project, so it
+# is not running and cannot be inspected: Configarr is a one-shot job that exits
+# and is removed. Callers that activate a profile pass their own active service
+# list, which is how the torrent services are checked once they are enabled.
+- name: Resolve the expected running Compose services
+  ansible.builtin.set_fact:
+    container_cpu_selected_services: >-
+      {{ container_cpu_expected_services
+         | default(container_cpu_compose_services
+                   | dict2items
+                   | rejectattr('value.profiles', 'defined')
+                   | map(attribute='key') | list, true) }}
+
+- name: List running containers in the managed Compose project
+  ansible.builtin.command:
+    argv:
+      - docker
+      - container
+      - ls
+      - --quiet
+      - --filter
+      - "label=com.docker.compose.project={{ container_cpu_project_name }}"
+  register: container_cpu_running_ids
+  changed_when: false
+  check_mode: false
+
+- name: Require running containers for CPU verification
+  ansible.builtin.assert:
+    that:
+      - container_cpu_running_ids.stdout_lines | length > 0
+    fail_msg: >-
+      {{ container_cpu_service_name }} has no running containers in Compose
+      project {{ container_cpu_project_name }}.
+
+# Redacted: `docker container inspect` returns each container's Env array,
+# which is the rendered .env and therefore every credential the stack holds.
+- name: Inspect effective Docker CPU controls
+  ansible.builtin.command:
+    argv: "{{ ['docker', 'container', 'inspect'] + container_cpu_running_ids.stdout_lines }}"
+  register: container_cpu_inspection
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Resolve sanitized container CPU drift
+  ansible.builtin.set_fact:
+    container_cpu_runtime_errors: >-
+      {{ container_cpu_compose_services
+         | platform_container_cpu_runtime_errors(
+             container_cpu_inspection.stdout | from_json,
+             container_cpu_selected_services,
+             platform_effective_container_cpuset) }}
+
+- name: Require effective Docker CPU controls
+  ansible.builtin.assert:
+    that:
+      - container_cpu_runtime_errors | length == 0
+    fail_msg: "Container CPU policy drift: {{ container_cpu_runtime_errors | join('; ') }}"
