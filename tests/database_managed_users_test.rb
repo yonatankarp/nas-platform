@@ -7,11 +7,12 @@ require "fileutils"
 require "open3"
 require "tmpdir"
 
+require_relative "policy_support"
 require_relative "http_fixture_support"
 
 include HttpFixtureSupport
+include TestScaffold
 
-ROOT = File.expand_path("..", __dir__)
 SERVICES = %w[immich paperless_ngx beszel].freeze
 REQUIRED_TASKS = {
   "immich" => [
@@ -303,10 +304,6 @@ def primary_beszel_user_tasks
     File.join(ROOT, "roles", "beszel", "tasks", "main.yml"), aliases: false
   )
   tasks.select { |task| names.include?(task_name(task)) }
-end
-
-def failure_tail(output)
-  output.lines.map(&:strip).reject(&:empty?).last(8).join(" | ")
 end
 
 PAPERLESS_EXECUTOR_MODULE = <<~'PYTHON'
@@ -1475,9 +1472,5 @@ elsif !ARGV.empty?
   failures << "usage: database_managed_users_test.rb [--self-test]"
 end
 
-if failures.empty?
-  puts "database managed users: lifecycle and mutation contracts passed"
-else
-  failures.each { |failure| warn "FAIL #{failure}" }
-  abort "#{failures.length} database managed-user contract violation(s)"
-end
+report(failures, "database managed users: lifecycle and mutation contracts passed",
+       "database managed-user contract violation(s)")

@@ -9,11 +9,12 @@ require "timeout"
 require "tmpdir"
 require "yaml"
 
+require_relative "policy_support"
 require_relative "http_fixture_support"
 
 include HttpFixtureSupport
+include TestScaffold
 
-ROOT = File.expand_path("..", __dir__)
 NTFY_MAIN = File.join(ROOT, "roles", "ntfy", "tasks", "main.yml")
 NTFY_MANAGED = File.join(ROOT, "roles", "ntfy", "tasks", "managed_users.yml")
 NTFY_VERIFY_HOOK = File.join(ROOT, "tests", "mac", "hooks", "verify", "15-ntfy.sh")
@@ -476,9 +477,5 @@ failures << "check-mode authoritative probe fixture failed safely: #{stderr.line
 failures << "check-mode authoritative probe was not skipped" unless
   output.match?(/skipped=1\b/)
 
-if failures.empty?
-  puts "ntfy verification selection: tags and check mode are non-mutating and complete"
-else
-  failures.each { |failure| warn "FAIL #{failure}" }
-  abort "#{failures.length} ntfy verification selection violation(s)"
-end
+report(failures, "ntfy verification selection: tags and check mode are non-mutating and complete",
+       "ntfy verification selection violation(s)")

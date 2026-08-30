@@ -6,6 +6,10 @@ require "rbconfig"
 require "stringio"
 require "tmpdir"
 
+require_relative "../policy_support"
+
+include TestScaffold
+
 SCRIPT = File.expand_path("classify_changes.rb", __dir__)
 LANES = %w[
   static reconciliation foundation arr downloaders bindery kapowarr pinchflat trailarr seerr
@@ -30,10 +34,6 @@ NTFY_LANES = %w[
   komga jellyfin immich paperless idempotence_check
 ].freeze
 failures = []
-
-def check(failures, condition, message)
-  failures << message unless condition
-end
 
 if File.file?(SCRIPT)
   require_relative "classify_changes"

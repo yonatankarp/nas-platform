@@ -9,11 +9,12 @@ require "tmpdir"
 require "uri"
 require "yaml"
 
+require_relative "policy_support"
 require_relative "http_fixture_support"
 
 include HttpFixtureSupport
+include TestScaffold
 
-ROOT = File.expand_path("..", __dir__)
 DOZZLE_TASKS = File.join(ROOT, "roles", "dozzle", "tasks", "managed_users.yml")
 DOZZLE_MAIN = File.join(ROOT, "roles", "dozzle", "tasks", "main.yml")
 DOZZLE_TEMPLATE = File.join(ROOT, "roles", "dozzle", "templates", "users.yml.j2")
@@ -55,10 +56,6 @@ SOURCE_REQUIREMENTS = {
   "policy registration" => ["validate_policy", "config_managed_users_test.rb --self-test"],
   "filter behavior registration" => ["validate_policy", "managed_user_state_filter_test.py"]
 }.freeze
-
-def check(failures, condition, message)
-  failures << message unless condition
-end
 
 def read(path)
   File.read(path)
@@ -1294,9 +1291,5 @@ if ARGV == ["--self-test"]
   end
 end
 
-if failures.empty?
-  puts "Config managed users: Dozzle preservation and ntfy provisioning contracts hold"
-else
-  failures.each { |failure| warn "FAIL #{failure}" }
-  abort "#{failures.length} config managed-user violation(s)"
-end
+report(failures, "Config managed users: Dozzle preservation and ntfy provisioning contracts hold",
+       "config managed-user violation(s)")

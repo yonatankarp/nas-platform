@@ -7,7 +7,10 @@ require "socket"
 require "tmpdir"
 require "uri"
 
-ROOT = File.expand_path("..", __dir__)
+require_relative "policy_support"
+
+include TestScaffold
+
 CONTRACT = File.join(ROOT, "tests", "contracts", "jellyfin.sh")
 VALIDATE_POLICY = File.join(ROOT, "tests", "validate-policy.sh")
 SECRET = "JELLYFIN-TRANSCODE-SECRET-DO-NOT-LEAK"
@@ -15,10 +18,6 @@ Response = Struct.new(:code, :body)
 ContractFailure = Class.new(StandardError)
 
 failures = []
-
-def check(failures, condition, message)
-  failures << message unless condition
-end
 
 def query_for(target)
   URI.decode_www_form(URI(target).query.to_s).to_h
@@ -565,9 +564,5 @@ check(failures,
       File.readlines(VALIDATE_POLICY).include?("ruby tests/jellyfin_transcode_contract_test.rb\n"),
       "Jellyfin transcode regression is not registered in the policy suite")
 
-if failures.empty?
-  puts "Jellyfin transcode contract regressions: unique reruns and active observation hold"
-else
-  failures.each { |failure| warn "FAIL #{failure}" }
-  abort "#{failures.length} Jellyfin transcode contract regression(s)"
-end
+report(failures, "Jellyfin transcode contract regressions: unique reruns and active observation hold",
+       "Jellyfin transcode contract regression(s)")

@@ -16,11 +16,12 @@ require "open3"
 require "tmpdir"
 require "yaml"
 
+require_relative "policy_support"
 require_relative "http_fixture_support"
 
 include HttpFixtureSupport
+include TestScaffold
 
-ROOT = File.expand_path("..", __dir__)
 ROLE = File.join(ROOT, "roles/komga/tasks/main.yml")
 COMPOSE = File.join(ROOT, "services/komga/compose.yml")
 ARGUMENT_SPECS = File.join(ROOT, "roles/komga/meta/argument_specs.yml")
@@ -876,9 +877,5 @@ with_http_service(libraries) do |port, requests|
   failures << "check mode mutated a library" unless mutations(requests).empty?
 end
 
-if failures.empty?
-  puts "Komga two-library reconciliation and root migration behavior passed"
-else
-  failures.each { |failure| warn "FAIL #{failure}" }
-  abort "#{failures.length} Komga library reconciliation violation(s)"
-end
+report(failures, "Komga two-library reconciliation and root migration behavior passed",
+       "Komga library reconciliation violation(s)")

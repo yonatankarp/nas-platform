@@ -11,20 +11,17 @@ require "open3"
 require "tmpdir"
 require "yaml"
 
+require_relative "policy_support"
 require_relative "http_fixture_support"
 
 include HttpFixtureSupport
+include TestScaffold
 
-ROOT = File.expand_path("..", __dir__)
 DIGEST_A = "@sha256:#{'a' * 64}"
 DIGEST_B = "@sha256:#{'b' * 64}"
 TOKEN = "tk_fixturedeploytokenvalue"
 
 failures = []
-
-def check(failures, condition, message)
-  failures << message unless condition
-end
 
 # The record is a fire-and-forget POST, so the probe only has to accept it and
 # say nothing back: no Content-Type and no body. What the test reads afterwards

@@ -3,16 +3,13 @@
 
 require "json"
 
+require_relative "policy_support"
 require_relative "http_fixture_support"
 
 include HttpFixtureSupport
+include TestScaffold
 
-ROOT = File.expand_path("..", __dir__)
 TASK_FILE = File.join(ROOT, "roles", "immich", "tasks", "user_onboarding.yml")
-
-def failure_tail(output)
-  output.lines.map(&:strip).reject(&:empty?).last(8).join(" | ")
-end
 
 def run_onboarding(port, phases)
   variables = {

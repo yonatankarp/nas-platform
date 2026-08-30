@@ -9,7 +9,10 @@ require "timeout"
 require "tmpdir"
 require "yaml"
 
-ROOT = File.expand_path("..", __dir__)
+require_relative "policy_support"
+
+include TestScaffold
+
 DEFAULT_TASKS_PATH = File.join(ROOT, "roles", "beszel", "tasks", "main.yml")
 TASKS_PATH = ENV.fetch(
   "BESZEL_PASSWORD_TASKS_PATH",
@@ -18,10 +21,6 @@ TASKS_PATH = ENV.fetch(
 
 class FixtureTimeout < StandardError; end
 class FixtureServerError < StandardError; end
-
-def check(failures, condition, message)
-  failures << message unless condition
-end
 
 def normalized(value)
   value.to_s.split.join(" ")

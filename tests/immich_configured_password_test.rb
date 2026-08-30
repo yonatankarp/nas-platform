@@ -7,11 +7,12 @@ require "timeout"
 require "tmpdir"
 require "yaml"
 
+require_relative "policy_support"
 require_relative "http_fixture_support"
 
 include HttpFixtureSupport
+include TestScaffold
 
-ROOT = File.expand_path("..", __dir__)
 TASK_FILE = File.join(ROOT, "roles", "immich", "tasks", "configured_password.yml")
 TOKEN = "configured-password-fixture-token"
 MUTATION_METHODS = %w[POST PUT PATCH DELETE].freeze
@@ -30,10 +31,6 @@ MANAGED_USERS = [
   { "email" => "reader@example.invalid", "password" => "reader-password" },
   { "email" => "editor@example.invalid", "password" => "editor-password" }
 ].freeze
-
-def failure_tail(output)
-  output.lines.map(&:strip).reject(&:empty?).last(12).join(" | ")
-end
 
 def user(id, email, admin:, should_change_password: true)
   {
@@ -191,7 +188,7 @@ captured_request_sets = []
 with_immich_users(complete_users) do |port, requests, users|
   captured_request_sets << requests
   stdout, stderr, status = run_configured_password(port, ["reconcile"])
-  failures << "initial reconciliation failed: #{failure_tail(stdout + stderr)}" unless status.success?
+  failures << "initial reconciliation failed: #{failure_tail(stdout + stderr, 12)}" unless status.success?
 
   lifecycle_mutations = mutations(requests)
   expected_targets = [ADMIN_ID, READER_ID, EDITOR_ID].map do |id|
@@ -219,12 +216,12 @@ with_immich_users(complete_users) do |port, requests, users|
 
   mutation_count = lifecycle_mutations.length
   repeat_stdout, repeat_stderr, repeat_status = run_configured_password(port, ["reconcile"])
-  failures << "second reconciliation failed: #{failure_tail(repeat_stdout + repeat_stderr)}" unless
+  failures << "second reconciliation failed: #{failure_tail(repeat_stdout + repeat_stderr, 12)}" unless
     repeat_status.success?
   failures << "second reconciliation was not idempotent" unless patches(requests).length == mutation_count
 
   verify_stdout, verify_stderr, verify_status = run_configured_password(port, ["verify"])
-  failures << "verification of reconciled users failed: #{failure_tail(verify_stdout + verify_stderr)}" unless
+  failures << "verification of reconciled users failed: #{failure_tail(verify_stdout + verify_stderr, 12)}" unless
     verify_status.success?
   failures << "verification mutated configured-password state" unless
     patches(requests).length == mutation_count
@@ -340,7 +337,7 @@ end
 with_immich_users(complete_users) do |port, requests, _users|
   captured_request_sets << requests
   stdout, stderr, status = run_configured_password(port, ["reconcile"], "--check")
-  failures << "configured-password check mode failed: #{failure_tail(stdout + stderr)}" unless
+  failures << "configured-password check mode failed: #{failure_tail(stdout + stderr, 12)}" unless
     status.success?
   plan_lines = stdout.lines.select do |line|
     line.match?(/^\s*"msg": "IMMICH_PLAN_CONFIGURED_PASSWORD"\s*$/)

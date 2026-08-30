@@ -6,6 +6,10 @@ require "tmpdir"
 require "yaml"
 require_relative "classify_changes"
 
+require_relative "../policy_support"
+
+include TestScaffold
+
 WORKFLOW_PATH = File.expand_path("../../.github/workflows/ci.yml", __dir__)
 POLICY_PATH = File.expand_path("../validate-policy.sh", __dir__)
 ANSIBLE_LINT_PATH = File.expand_path("../../.ansible-lint", __dir__)
@@ -96,10 +100,6 @@ RETIRED_MIGRATION_MARKERS = %w[
 ].freeze
 
 failures = []
-
-def check(failures, condition, message)
-  failures << message unless condition
-end
 
 def broad_arr_lint_exclusion?(path)
   normalized = path.to_s.sub(%r{\A\./}, "").sub(%r{/+\z}, "")

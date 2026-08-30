@@ -3,12 +3,12 @@
 require "open3"
 require "rbconfig"
 
+require_relative "../policy_support"
+
+include TestScaffold
+
 SCRIPT = File.expand_path("validate_results.rb", __dir__)
 failures = []
-
-def check(failures, condition, message)
-  failures << message unless condition
-end
 
 def validate(*arguments)
   Open3.capture3(RbConfig.ruby, SCRIPT, *arguments)

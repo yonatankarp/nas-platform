@@ -16,11 +16,12 @@ require "tmpdir"
 require "uri"
 require "yaml"
 
+require_relative "policy_support"
 require_relative "http_fixture_support"
 
 include HttpFixtureSupport
+include TestScaffold
 
-ROOT = File.expand_path("..", __dir__)
 SERVICES = %w[audiobookshelf jellyfin komga].freeze
 VALIDATE_POLICY = File.join(ROOT, "tests", "validate-policy.sh")
 JELLYFIN_AVATAR_SHA256 = "bf12ac53a05f1db64f3d00440315a6626e7c2dd12dd41867c93c9ac7aeccc792"
@@ -215,10 +216,6 @@ end
 
 def basic_identity(request)
   basic_credentials(request).first
-end
-
-def failure_tail(output)
-  output.lines.map(&:strip).reject(&:empty?).last(8).join(" | ")
 end
 
 
