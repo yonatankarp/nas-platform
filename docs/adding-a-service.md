@@ -246,11 +246,15 @@ incomplete environment.
 ### 9. CI routing and the integration runner
 
 ```
-tests/ci/classify_changes.rb       SERVICE_TAGS, SERVICE_NAMES, LANES, SUITES
+tests/ci/suites.conf               one row: the suite, its kind, and the tags it
+                                   converges. LANES, SUITES and SERVICE_TAGS in
+                                   the classifier, and --list-suites and the
+                                   fixed tags in the runner, all derive from it
+tests/ci/classify_changes.rb       SERVICE_NAMES
 tests/ci/classify_changes_test.rb  the pinned tag plan for the lane, and NTFY_LANES
-tests/integration.sh               fixed_tags, the service/directory table, the
-                                   contract runner, the verify-only function, the
-                                   suite dispatch
+tests/integration.sh               the service/directory table, the contract
+                                   runner, the verify-only function, the suite
+                                   dispatch
 tests/integration_suite_test.sh    the pinned --describe-suite line and pre-pull set
 ```
 
@@ -859,29 +863,32 @@ hooks under `tests/mac/hooks/`. Add a file there and
 fails until `INTEGRATION_HARNESS_PATHS` names it, so the narrower routing cannot
 quietly skip a suite that reads it.
 
-Each service should normally own its own lane. Four files must agree, and three
-of them pin the tag list literally:
+Each service should normally own its own lane. The tag list is stated once, in
+`tests/ci/suites.conf`, and two tests pin it back:
 
 ```
-tests/ci/classify_changes.rb        SERVICE_TAGS and SERVICE_NAMES
+tests/ci/suites.conf                the suite, its kind, and its tags -- one row
+tests/ci/classify_changes.rb        SERVICE_NAMES
 tests/ci/classify_changes_test.rb   the pinned expected tag string
-tests/integration.sh                the fixed_tags for that suite
 tests/integration_suite_test.sh     the pinned --describe-suite output
 ```
 
-A lane needs its name in `LANES` and its integration suite in `SUITES`, both in
-`tests/ci/classify_changes.rb`, plus the suite in the
-`INTEGRATION_SUITES` list that `tests/ci/workflow_test.rb` pins. The workflow
-itself needs no change: the `suites` job is a matrix fed by the `suites` output,
-and `validate` covers every leg through one `needs` entry.
+The row is what makes the lane exist: `LANES`, `SUITES` and `SERVICE_TAGS` in
+`tests/ci/classify_changes.rb` are derived from the table, and so are the
+runner's `--list-suites` roster and the tags a suite converges when the caller
+passes none. The lane name is the suite name with hyphens written as
+underscores. The suite still needs its name in the `INTEGRATION_SUITES` list that
+`tests/ci/workflow_test.rb` pins. The workflow itself needs no change: the
+`suites` job is a matrix fed by the `suites` output, and `validate` covers every
+leg through one `needs` entry.
 
-Those four are the agreement, but two of them need more than one edit each.
-`tests/integration.sh` also wants the service in its service/directory table for
-image pre-pulling, a `run_<service>_contract` wrapper if the service has a contract,
-a `run_<service>_verify_only` function, and an arm in the suite dispatch that says
-what the lane actually does. `tests/integration_suite_test.sh` pins both the
-`--describe-suite` line and the exact set of images the lane pre-pulls, so a lane
-that converges a new stack fails there until you say which images it needs.
+`tests/integration.sh` no longer restates the tags -- `tests/policy_ci_test.rb`
+fails if it does -- but it still wants the service in its service/directory table
+for image pre-pulling, a `run_<service>_contract` wrapper if the service has a
+contract, a `run_<service>_verify_only` function, and an arm in the suite dispatch
+that says what the lane actually does. `tests/integration_suite_test.sh` pins both
+the `--describe-suite` line and the exact set of images the lane pre-pulls, so a
+lane that converges a new stack fails there until you say which images it needs.
 
 `tests/ci/classify_changes_test.rb` additionally keeps `NTFY_LANES`: every lane
 whose tags start the alerting sink. If your lane converges `ntfy` — and it does if

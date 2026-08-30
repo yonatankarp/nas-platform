@@ -77,8 +77,48 @@ case "${1:-}" in
   --consume-lifecycle) consume_lifecycle=true; shift ;;
 esac
 
+# Which suites exist, and what each one converges, is data rather than code:
+# tests/ci/suites.conf holds one row per suite and tests/ci/classify_changes.rb
+# derives its lanes, its CI matrix and its tag plans from the same rows. Reading
+# the file here is what stops the runner and CI from disagreeing about what a
+# suite is -- they used to hold separate copies kept equal by a policy check.
+repo_dir=$(CDPATH= cd -P "$(dirname "$0")/.." && pwd -P)
+suite_table=$repo_dir/tests/ci/suites.conf
+if [ ! -f "$suite_table" ]; then
+  printf 'missing integration suite table: %s\n' "$suite_table" >&2
+  exit 2
+fi
+
+# Sets suite_names to every suite in row order, suite_known to whether $1 is one
+# of them, and fixed_tags to the tags that suite converges. Reads the file in the
+# current shell rather than through a pipeline so a malformed row can exit.
+read_suite_table() {
+  suite_names=
+  suite_known=false
+  fixed_tags=
+  while read -r table_suite table_kind table_tags; do
+    case $table_suite in
+      ''|'#'*) continue ;;
+    esac
+    if [ -z "$table_kind" ] || [ -z "$table_tags" ]; then
+      printf 'malformed integration suite table row: %s\n' "$table_suite" >&2
+      exit 2
+    fi
+    suite_names="${suite_names:+$suite_names }$table_suite"
+    if [ "$table_suite" = "$1" ]; then
+      suite_known=true
+      [ "$table_tags" = - ] || fixed_tags=$table_tags
+    fi
+  done < "$suite_table"
+  if [ -z "$suite_names" ]; then
+    printf 'empty integration suite table: %s\n' "$suite_table" >&2
+    exit 2
+  fi
+}
+
 if [ "${1:-}" = --list-suites ]; then
-  printf '%s\n' 'foundation arr downloaders bindery kapowarr pinchflat trailarr seerr smoke beszel dozzle audiobookshelf komga jellyfin immich paperless idempotence-check full'
+  read_suite_table ''
+  printf '%s\n' "$suite_names"
   exit 0
 fi
 
@@ -121,34 +161,11 @@ if [ "${1:-}" = --tags ]; then
   shift
 fi
 
-case "$suite" in
-  # Every service suite converges ntfy: each service role reports its own
-  # deployment to it, so a suite that left the sink out would fail at the report
-  # rather than at anything the suite is about. These must stay equal to
-  # SERVICE_TAGS in tests/ci/classify_changes.rb, which the policy test checks.
-  foundation) fixed_tags=deployment_bundle ;;
-  arr) fixed_tags=host_prep,deployment_bundle,ntfy,arr ;;
-  downloaders) fixed_tags=host_prep,deployment_bundle,ntfy,arr,downloaders ;;
-  bindery) fixed_tags=host_prep,deployment_bundle,media_acquisition_foundation ;;
-  kapowarr) fixed_tags=host_prep,deployment_bundle,ntfy,kapowarr ;;
-  pinchflat) fixed_tags=host_prep,deployment_bundle,ntfy,pinchflat ;;
-  trailarr) fixed_tags=host_prep,deployment_bundle,media_acquisition_foundation ;;
-  seerr) fixed_tags=host_prep,deployment_bundle,media_acquisition_foundation ;;
-  smoke) fixed_tags= ;;
-  beszel) fixed_tags=host_prep,deployment_bundle,ntfy,beszel ;;
-  dozzle) fixed_tags=host_prep,deployment_bundle,ntfy,dozzle ;;
-  audiobookshelf) fixed_tags=host_prep,deployment_bundle,ntfy,audiobookshelf ;;
-  komga) fixed_tags=host_prep,deployment_bundle,ntfy,komga ;;
-  jellyfin) fixed_tags=host_prep,deployment_bundle,ntfy,jellyfin ;;
-  immich) fixed_tags=host_prep,deployment_bundle,ntfy,immich ;;
-  paperless) fixed_tags=host_prep,deployment_bundle,ntfy,paperless ;;
-  idempotence-check) fixed_tags= ;;
-  full) fixed_tags= ;;
-  *)
-    printf 'unknown integration suite: %s\n' "$suite" >&2
-    exit 2
-    ;;
-esac
+read_suite_table "$suite"
+if [ "$suite_known" != true ]; then
+  printf 'unknown integration suite: %s\n' "$suite" >&2
+  exit 2
+fi
 
 if [ "$tags_explicit" = true ]; then
   case "$suite" in
@@ -257,8 +274,6 @@ if [ "$consume_lifecycle" = true ]; then
     "$0" --observe-lifecycle --suite "$suite"
   exit $?
 fi
-
-repo_dir=$(CDPATH= cd -P "$(dirname "$0")/.." && pwd -P)
 
 # Service images the suite will need, keyed by the site.yml role tag that
 # converges them.

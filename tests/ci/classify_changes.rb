@@ -4,60 +4,45 @@ require "json"
 require "open3"
 
 module ClassifyChanges
-  LANES = %w[
-    static reconciliation foundation arr downloaders bindery kapowarr pinchflat trailarr seerr
-    smoke beszel dozzle audiobookshelf komga jellyfin immich paperless idempotence_check
-  ].freeze
+  # The suite table is data, not code: tests/ci/suites.conf lists every suite
+  # once, with the tags it converges, and tests/integration.sh reads the same
+  # rows for its own --list-suites, its unknown-suite refusal and its fixed tags.
+  # Everything below is derived from it, so a new suite is one row rather than
+  # one table here and another one there kept equal by a policy check.
+  SUITE_TABLE_PATH = File.expand_path("suites.conf", __dir__)
+  SUITE_TABLE = File.readlines(SUITE_TABLE_PATH, chomp: true).filter_map do |line|
+    fields = line.sub(/#.*/, "").split
+    next if fields.empty?
+    raise "malformed row in #{SUITE_TABLE_PATH}: #{line.inspect}" unless fields.length == 3
+
+    suite, kind, tags = fields
+    [suite, kind, tags == "-" ? [] : tags.split(",")]
+  end.freeze
   # Lanes that gate a workflow job of their own rather than dispatching an
-  # integration suite. Everything else in LANES is one suite.
+  # integration suite. Every other lane is one suite.
   JOB_LANES = %w[static reconciliation].freeze
+  # `full` is the runner's own default and no CI lane dispatches it, so it is the
+  # one row the classifier drops. A lane is its suite with hyphens written as
+  # underscores, because a lane is also a GitHub Actions output key.
+  CI_SUITE_ROWS = SUITE_TABLE.reject { |_suite, kind, _tags| kind == "harness" }.freeze
   # The integration suite each lane dispatches, in the order the CI matrix runs
   # them. The job lanes above are not suites.
-  SUITES = {
-    "foundation" => "foundation",
-    "arr" => "arr",
-    "downloaders" => "downloaders",
-    "bindery" => "bindery",
-    "kapowarr" => "kapowarr",
-    "pinchflat" => "pinchflat",
-    "trailarr" => "trailarr",
-    "seerr" => "seerr",
-    "smoke" => "smoke",
-    "beszel" => "beszel",
-    "dozzle" => "dozzle",
-    "audiobookshelf" => "audiobookshelf",
-    "komga" => "komga",
-    "jellyfin" => "jellyfin",
-    "immich" => "immich",
-    "paperless" => "paperless",
-    "idempotence_check" => "idempotence-check"
-  }.freeze
-  SERVICE_LANES = %w[
-    beszel dozzle audiobookshelf komga jellyfin immich paperless
-  ].freeze
-  ACQUISITION_LANES = %w[
-    arr downloaders bindery kapowarr pinchflat trailarr seerr
-  ].freeze
+  SUITES = CI_SUITE_ROWS.to_h { |suite, _kind, _tags| [suite.tr("-", "_"), suite] }.freeze
+  LANES = (JOB_LANES + SUITES.keys).freeze
+  SERVICE_LANES = CI_SUITE_ROWS.filter_map do |suite, kind, _tags|
+    suite.tr("-", "_") if kind == "service"
+  end.freeze
+  ACQUISITION_LANES = CI_SUITE_ROWS.filter_map do |suite, kind, _tags|
+    suite.tr("-", "_") if kind == "acquisition"
+  end.freeze
   TAGGED_LANES = (ACQUISITION_LANES + SERVICE_LANES).freeze
-  # Active services include ntfy because each role publishes its deployment
-  # report there. Planned acquisition suites instead converge only the shared
-  # inert foundation and validate it with their static contract.
-  SERVICE_TAGS = {
-    "arr" => %w[host_prep deployment_bundle ntfy arr],
-    "downloaders" => %w[host_prep deployment_bundle ntfy arr downloaders],
-    "bindery" => %w[host_prep deployment_bundle media_acquisition_foundation],
-    "kapowarr" => %w[host_prep deployment_bundle ntfy kapowarr],
-    "pinchflat" => %w[host_prep deployment_bundle ntfy pinchflat],
-    "trailarr" => %w[host_prep deployment_bundle media_acquisition_foundation],
-    "seerr" => %w[host_prep deployment_bundle media_acquisition_foundation],
-    "beszel" => %w[host_prep deployment_bundle ntfy beszel],
-    "dozzle" => %w[host_prep deployment_bundle ntfy dozzle],
-    "audiobookshelf" => %w[host_prep deployment_bundle ntfy audiobookshelf],
-    "komga" => %w[host_prep deployment_bundle ntfy komga],
-    "jellyfin" => %w[host_prep deployment_bundle ntfy jellyfin],
-    "immich" => %w[host_prep deployment_bundle ntfy immich],
-    "paperless" => %w[host_prep deployment_bundle ntfy paperless]
-  }.freeze
+  # The tags CI narrows the site to for each lane it selects by tag. Active
+  # services include ntfy because each role publishes its deployment report
+  # there. Planned acquisition suites instead converge only the shared inert
+  # foundation and validate it with their static contract.
+  SERVICE_TAGS = CI_SUITE_ROWS.filter_map do |suite, kind, tags|
+    [suite.tr("-", "_"), tags] if %w[acquisition service].include?(kind)
+  end.to_h.freeze
   SERVICE_NAMES = {
     "arr" => %w[arr],
     "downloaders" => %w[downloaders],
@@ -101,6 +86,7 @@ module ClassifyChanges
   # missing here fails there rather than silently skipping every suite.
   INTEGRATION_HARNESS_PATHS = %w[
     tests/assert-no-vault-secrets.rb
+    tests/ci/suites.conf
     tests/generate-ephemeral-vault.sh
     tests/integration.sh
     tests/integration_lock.sh
