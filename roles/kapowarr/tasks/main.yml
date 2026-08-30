@@ -68,7 +68,6 @@
   vars:
     container_cpu_service_name: kapowarr
     container_cpu_project_name: "{{ kapowarr_compose_project_name }}"
-  when: not ansible_check_mode
 
 # /api/public is the only route Kapowarr leaves outside its API-key decorator,
 # and it reports which authentication mode the deployed database holds: 0 for

@@ -57,7 +57,6 @@
   vars:
     container_cpu_service_name: pinchflat
     container_cpu_project_name: "{{ pinchflat_compose_project_name }}"
-  when: not ansible_check_mode
 
 # /healthcheck is the one route Pinchflat leaves outside its basic-auth
 # pipelines, so readiness can be polled without presenting the credential.
