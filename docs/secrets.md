@@ -752,8 +752,11 @@ template update uses Ansible's atomic writer with unsafe writes disabled.
 
 `email` is the normalized login identity; `password` is its preserved clear
 credential; `name` is the displayed name; and `quota_size` is a non-negative
-integer in the units expected by the pinned Immich API. Administrator status is
-not part of this allowlist contract.
+integer of bytes, or `null` for no limit at all. `null` is the only value that
+lifts the limit: Immich skips the quota check entirely when it is null, and `0`
+is the opposite of unlimited -- it rejects every upload of a non-empty file with
+"Quota has been exceeded!". Administrator status is not part of this allowlist
+contract.
 
 #### jellyfin managed users
 
