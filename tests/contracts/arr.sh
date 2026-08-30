@@ -156,14 +156,15 @@ if failures.empty?
     role_tasks(root, "roles/arr/tasks/reconcile_servarr_download_client.yml")
   servarr_scalars = role_strings(servarr_tasks)
   servarr_urls = request_urls(servarr_tasks)
-  # The download-client and Bazarr bodies are built by the relationship filter
-  # rather than spelled out in the task files, so these read where the logic
-  # lives. Python is not YAML, so the filter is still read as source text; the
-  # task files beside it are read as tasks.
-  relationships = File.read(File.join(root, "filter_plugins/acquisition_relationships.py"))
+  # The download-client body is built by the Servarr relationship filter, and the
+  # Bazarr settings POST by the Bazarr one, rather than being spelled out in the
+  # task files; these read where each body actually lives. Python is not YAML, so
+  # a filter is read as source text; the task files beside it are read as tasks.
+  servarr_filter = File.read(File.join(root, "filter_plugins/acquisition_servarr.py"))
+  bazarr_filter = File.read(File.join(root, "filter_plugins/acquisition_bazarr.py"))
   failures << "Servarr reconciliation must own only the SABnzbd clients" unless
     (servarr_scalars.any? { |value| value.include?("Sabnzbd") } ||
-      relationships.include?("Sabnzbd")) &&
+      servarr_filter.include?("Sabnzbd")) &&
       servarr_categories["radarr"] == "movies" &&
       servarr_categories["sonarr"] == "series"
   # A root folder is created by a request to the rootfolder endpoint, and an
@@ -206,7 +207,7 @@ if failures.empty?
   bazarr_scalars = role_strings(
     role_tasks(root, "roles/arr/tasks/reconcile_bazarr.yml") +
       role_tasks(root, "roles/arr/tasks/reconciliation_fingerprints.yml")
-  ) + [relationships]
+  ) + [bazarr_filter]
   failures << "Bazarr must connect to both Arr services" unless
     %w[settings-general-use_radarr settings-general-use_sonarr settings-radarr-apikey settings-sonarr-apikey].all? do |token|
       bazarr_scalars.any? { |value| value.include?(token) }

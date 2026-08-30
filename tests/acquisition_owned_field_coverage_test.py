@@ -19,13 +19,13 @@ import sys
 from ansible.errors import AnsibleFilterError
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-PLUGIN = ROOT / "filter_plugins" / "acquisition_relationships.py"
+PLUGIN = ROOT / "filter_plugins" / "acquisition_servarr.py"
 
 
 def load_plugin():
-    spec = importlib.util.spec_from_file_location("acquisition_relationships", PLUGIN)
+    spec = importlib.util.spec_from_file_location("acquisition_servarr", PLUGIN)
     if spec is None or spec.loader is None:
-        raise AssertionError("acquisition relationship filter cannot be imported")
+        raise AssertionError("the Servarr relationship filters cannot be imported")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module

@@ -96,7 +96,7 @@ ruby tests/database_managed_users_test.rb --self-test
 ruby tests/ntfy_verify_execution_test.rb
 ruby tests/deployment_summary_test.rb
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/managed_user_state_filter_test.py
-PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_relationships_profile_ids_test.py
+PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_identity_rules_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_filter_native_arguments_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_filter_native_arguments_test.py --self-test
 ruby tests/acquisition_configarr_field_coverage_test.rb
