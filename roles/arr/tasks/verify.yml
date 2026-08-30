@@ -335,13 +335,32 @@
   no_log: true
   tags: [platform_verify_arr]
 
+- name: Name the Bazarr settings that drifted, without their values
+  ansible.builtin.set_fact:
+    arr_verify_bazarr_differences: >-
+      {{ arr_verify_bazarr_owned_projections |
+         acquisition_bazarr_projection_differences }}
+  changed_when: false
+  no_log: true
+  tags: [platform_verify_arr]
+
+# The projections carry the Radarr and Sonarr API keys and the hash of the
+# administrator password, so this task stays redacted. `no_log` does not
+# suppress `fail_msg`, and the filter above emits setting paths with no values,
+# so the message names which of the roughly twenty owned settings moved instead
+# of reporting only that the two projections are unequal. The condition remains
+# the projection comparison itself: the difference list is what the operator
+# reads, not what decides the verdict.
 - name: Verify Bazarr authentication and identical-path connections
   ansible.builtin.assert:
     that:
       - >-
         arr_verify_bazarr_owned_projections.current ==
         arr_verify_bazarr_owned_projections.desired
-    fail_msg: Bazarr differs from the declared Phase 1 connection state.
+    fail_msg: >-
+      Bazarr differs from the declared Phase 1 connection state. Drifted
+      settings, values not shown:
+      {{ arr_verify_bazarr_differences | join('; ') }}
   tags: [platform_verify_arr]
   no_log: true
 
