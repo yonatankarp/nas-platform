@@ -18,10 +18,11 @@ off-site backup. RAID is not a backup.
 - [Ansible concepts used here](docs/ansible-basics.md)
 - [Adding a service](docs/adding-a-service.md)
 
-The [`services/manifest.yml`](services/manifest.yml) catalog distinguishes ten
-implemented service projects from five planned media-acquisition projects. Runtime
-role and service directories exist only for the implemented projects; the planned
-entries remain inert and intentionally have no runtime role or Compose directory.
+The [`services/manifest.yml`](services/manifest.yml) catalog distinguishes
+twelve implemented service projects from three planned media-acquisition
+projects. Runtime role and service directories exist only for the implemented
+projects; the planned entries remain inert and intentionally have no runtime
+role or Compose directory.
 Prove the implemented platform on the Mac before preparing a fresh production NAS
 installation.
 
@@ -178,11 +179,18 @@ manager application state is preserved outside repository management and was
 not deleted.
 
 Phase 1 implements the `arr` and `downloaders` projects for Radarr, Sonarr,
-Prowlarr, Bazarr, Configarr, SABnzbd, and Unpackerr. Usenet and torrent
-enablement still default to false, as do automatic monitoring, rename, and the
-Bazarr handoff. Provider, indexer, and subtitle preferences default to empty
-operator-owned lists. With the default false transport flags, a normal
-deployment starts no Phase 1 acquisition containers or downloads.
+Prowlarr, Bazarr, Configarr, SABnzbd, and Unpackerr. Both transport flags
+default to false in the role defaults, as do automatic monitoring, rename, and
+the Bazarr handoff. Provider, indexer, and subtitle preferences default to empty
+operator-owned lists. Inventory decides the rest, and the two inventories
+disagree deliberately:
+[`inventory/group_vars/nas_hosts/main.yml`](inventory/group_vars/nas_hosts/main.yml)
+sets `media_usenet_enabled: true`, so a normal deployment to the physical NAS
+starts the Phase 1 Usenet acquisition containers, while
+[`inventory/group_vars/mac_hosts/main.yml`](inventory/group_vars/mac_hosts/main.yml)
+leaves both flags false, so the Mac proof starts no acquisition containers or
+downloads. Torrent enablement is false on every host, so no torrent client is
+deployed anywhere.
 
 Phase 2 adds Pinchflat, which writes the `Media/YouTube` library that Jellyfin
 reads, and Kapowarr, which writes the `Books/Comics` library that Komga reads.
@@ -194,6 +202,12 @@ source in the application. Kapowarr additionally needs the vault-authored
 ComicVine key entered in the application before it can identify anything, which
 is the deliberate reason a fresh deployment acquires nothing. The remaining
 three acquisition projects — Bindery, Trailarr and Seerr — stay planned.
+
+Each of the later phases was investigated before it was planned, against
+upstream source and a running container. The
+[service investigation dossiers](docs/service-dossiers.md) record what those
+investigations found, marking every claim as measured or reasoned, so a
+promotion starts from evidence rather than from the beginning.
 
 Open Subtitles remains configured in Jellyfin until Bazarr is proven on the
 physical NAS. Follow the

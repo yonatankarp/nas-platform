@@ -8,6 +8,13 @@ Read [Ansible concepts used here](ansible-basics.md) first if the words *role*,
 *play* and *inventory* are new. This guide is about the mechanics of adding a
 service on top of those concepts.
 
+It is not about the service. What the image actually contains, what a fresh
+install does before anyone configures it, and which of its API calls are safe to
+repeat are questions only that service can answer, and answering them wrongly
+costs more than any registry on this page. The
+[service investigation dossiers](service-dossiers.md) are what that investigation
+looks like when it has already been done.
+
 ## The mental model, in Python terms
 
 A **role** is a function. `roles/komga/` is one function named `komga`, and
@@ -1003,6 +1010,34 @@ The `docs/secrets.md` edit is mandatory, not courtesy. `tests/secrets_docs_test.
 checks the guide against the vault contract and fails when they diverge. Write the
 entry as a recovery instruction — where an operator rebuilding the vault finds the
 existing value — not as a description of the field.
+
+### A third-party credential lands in one more place than that
+
+The eleven above are for a credential this platform *generates*. A credential
+that belongs to somebody else — an account at an external service, the way the
+Open Subtitles pair does — needs a `NOT_PLACEHOLDER` rule in
+`filter_plugins/vault_credential_schema.py`, so the vault contract refuses to
+converge against the documented example value instead of failing later at the
+provider. That rule is correct, and it breaks a test that nothing about your
+service will make you think of.
+
+`tests/managed_users_vault_test.rb` loads
+`inventory/group_vars/all/vault.yml.example`, substitutes **only** the Open
+Subtitles placeholders with runtime-shaped values, and requires the result to
+pass `vault_contract` evaluation. Every rejection case below it is built from
+that same runtime vault by mutating one field, so they inherit the failure: a
+second `NOT_PLACEHOLDER` key whose example value is still a placeholder makes the
+whole file fail, and it fails naming *your* key inside an assertion about managed
+users. The fail-closed probes in `tests/media_probes_fail_closed.rb` and
+`tests/database_managed_users_test.rb` build a working vault out of the same
+example file the same way.
+
+So a third-party credential has a choice to make in the example vault, and it is
+a real one: either give it a placeholder and teach every test that builds a
+runtime vault to substitute it, or give it a syntactically valid non-placeholder
+value and lose the "you forgot to replace this" guard. Whichever you pick, make
+it deliberately — the tests will not explain the trade-off, they will just fail
+somewhere that looks unrelated.
 
 In the role itself, mark every task that touches a credential `no_log: true`.
 The vault contract validation in `site.yml` and `verify.yml` is already wired
