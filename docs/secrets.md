@@ -1057,8 +1057,16 @@ repository vault remains encrypted:
 
 - Service environment files beneath the configured platform runtime directory,
   `services/*/.env`, each mode 0600.
-- Dozzle's protected users file and Beszel's hub private key, in their own
-  protected data directories.
+- Dozzle's whole data directory and Beszel's hub private key, in their own
+  protected data directories. Dozzle's directory is secret-bearing past the
+  protected users file it holds: the platform POSTs a notification dispatcher
+  into `/api/notifications/dispatchers`, and Dozzle keeps that dispatcher —
+  its `Authorization: Bearer` header included — in the `/data` volume, the
+  only writable persistent path the read-only container has, and returns the
+  header in cleartext over the same API. That header currently carries the
+  same value as Dozzle's ntfy publish token, so a copy of Dozzle's data
+  directory is a copy of that token; the alert relay holds the same value in
+  its container environment.
 - Configuration this platform seeds once and then leaves to the application,
   under the Docker root and mode 0600: SABnzbd's `sabnzbd/config/sabnzbd.ini`
   carries the administrator username, the administrator password and the API
