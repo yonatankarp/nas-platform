@@ -31,6 +31,42 @@ IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
     CONTRACT_BASENAME_EXCEPTIONS.fetch(service_name, service_name)
   end
 
+  # The manifest's own statuses, read once. EXPECTED_SERVICES above stays the
+  # authorization gate — a service is admitted by being written there, and by the
+  # cross-check that the manifest names exactly those services. What follows *from*
+  # a status is derived through the three readers below instead of restated,
+  # because a second copy of the roster is a copy no test says must agree with the
+  # first: promoting one service used to mean hand-editing status literals in half
+  # a dozen test files, and nothing failed when one was missed.
+  #
+  # Malformed or missing input yields an empty mapping rather than raising. The
+  # manifest's shape is policed by policy_test.rb and policy_vault_test.rb, which
+  # name the defect; a stack trace out of a caller that only wanted the roster
+  # would bury that diagnosis under an unrelated suite.
+  def service_statuses(root)
+    document = begin
+      YAML.safe_load_file(File.join(root, "services", "manifest.yml"))
+    rescue Errno::ENOENT, Psych::Exception
+      nil
+    end
+    entries = document.is_a?(Hash) && document["services"].is_a?(Array) ? document["services"] : []
+    entries.each_with_object({}) do |entry, statuses|
+      next unless entry.is_a?(Hash) && entry["name"].is_a?(String) && entry["status"].is_a?(String)
+
+      statuses[entry["name"]] = entry["status"]
+    end
+  end
+
+  def planned_services(root)
+    service_statuses(root).select { |_name, status| status == "planned" }.keys.freeze
+  end
+
+  # "accepted" counts as deployed: the status vocabulary distinguishes a service
+  # that has passed its operator handoff from one that has not, and both run.
+  def implemented_services(root)
+    service_statuses(root).select { |_name, status| IMPLEMENTED_STATUSES.include?(status) }.keys.freeze
+  end
+
   def duplicate_yaml_keys(node, duplicates = [])
     if node.is_a?(Psych::Nodes::Mapping)
       seen = {}

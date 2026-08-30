@@ -135,15 +135,14 @@ tests/contracts/<name>.sh       new, executable, passes sh -n
 tests/contracts/registry.yml    the service and its path
 ```
 
-### 5. The verification tag, and its four literal copies
+### 5. The verification tag, and its three literal copies
 
-`platform_verify_<service>` is not just a tag on your tasks. Four separate files
+`platform_verify_<service>` is not just a tag on your tasks. Three separate files
 carry the platform's whole tag list as a literal:
 
 ```
 roles/production_auto_deploy/defaults/main.yml  production_auto_deploy_verify_tags
 docs/getting-started-nas.md                     the operator's manual command
-tests/secrets_docs_test.rb                      a fourth copy, order-sensitive
 tests/mac/verify.sh                             the Mac lane's --tags argument
 ```
 
@@ -152,9 +151,9 @@ tests/mac/verify.sh                             the Mac lane's --tags argument
 actually declare, and requires the poller's list to **equal** that set — it
 reports `missing=` and `stale=` separately, so neither a forgotten service nor a
 leftover one passes. It then requires `docs/getting-started-nas.md` to carry the
-same set. `tests/secrets_docs_test.rb` keeps its own copy and requires the
-guide's shell block to contain that exact comma-joined string, so there the
-*order* matters too.
+same set. `tests/secrets_docs_test.rb` requires the guide's shell block to contain
+that exact comma-joined string — *order* included — but reads the string out of
+the poller's own defaults rather than keeping a fourth copy of it.
 
 `tests/mac/verify.sh` is the one copy nothing compares against the roles:
 `tests/policy_mac_test.rb` only checks that it mentions the foundation tag. Omit
@@ -187,7 +186,6 @@ Along with `run.sh`, a published port lands in:
 
 ```
 inventory/group_vars/mac_hosts/main.yml               <service>_port from the environment
-tests/policy_platform_test.rb                         the mac_runtime_facts list
 tests/mac/report.rb                                   six sites: ROOT_KEYS, the
                                                       validator's port-field list, the
                                                       markdown key order, the initializer,
@@ -386,10 +384,12 @@ the promoted project leaves the `bindery|kapowarr|trailarr|seerr)` arm in
 
 Promotion also removes the service from the registers that asserted its absence:
 the catalog loop in `tests/mac/hooks/verify/15-media-acquisition-foundation.sh`
-that requires no container by that name to exist, and the
-`planned_acquisition_lanes` and `acquisition_image_tags` lists in
-`tests/policy_ci_test.rb`, which require a planned lane to have zero service image
-sources. A greenfield service never touches any of those.
+that requires no container by that name to exist. `tests/policy_ci_test.rb` used
+to carry two more such lists; it now derives the planned and implemented
+acquisition lanes from `config/media-acquisition.yml` and the manifest, so the
+status flip alone moves your lane from "must converge only the inert foundation
+tags and ship no service image" to "must converge ntfy, its own role and a second
+enabled convergence". A greenfield service never touches any of those.
 
 ## Worked example: Navidrome
 
@@ -894,8 +894,10 @@ The Mac lifecycle proof runs several isolated copies of the platform, so it cann
 use the service's production port. `tests/mac/run.sh` allocates a free host port
 per service, exports it as `PLATFORM_<NAME>_PORT`, and
 `inventory/group_vars/mac_hosts/main.yml` reads it back into `<service>_port`.
-`tests/policy_platform_test.rb` pins the resulting `mac_runtime_facts` list, so a
-port fact that exists in the inventory and not in that list, or the reverse, fails.
+`tests/policy_platform_test.rb` no longer names those facts one by one: it accepts
+a Mac host variable called `<something>_port` only when its value is nothing but a
+`PLATFORM_*` environment lookup, and rejects anything else in that group as
+portable configuration. So the inventory line is the whole edit here.
 
 Adding one port to `run.sh` is twelve separate edits in that one file — eleven if
 you count the prose comment above the guard as part of the guard. Previous
@@ -960,9 +962,9 @@ running service, which is what lets a run converge in a single pass. Where a
 service would normally hand you a generated value to copy, this platform
 supplies its own value instead.
 
-This guide used to say a credential touches six files. It touches **eleven**, and
-the five it omitted are the ones that fail last and least clearly. Pinchflat's two
-keys landed in every one of these:
+This guide used to say a credential touches six files. It touches **ten**, and the
+ones it omitted are those that fail last and least clearly. Pinchflat's two keys
+landed in every one of these:
 
 ```
 inventory/group_vars/all/vault.yml.example    a sanitized placeholder
@@ -976,16 +978,17 @@ generate-secrets.yml                          generation, and a second edit in
 templates/vault-plain.yml.j2                  what generate-secrets renders
 tests/generate-ephemeral-vault.sh             the integration and Mac lanes' vault
 docs/secrets.md                               enforced by secrets_docs_test.rb
-tests/secrets_docs_test.rb                    a hard-coded total key count
 ```
 
-Two of those deserve naming. `filter_plugins/vault_credential_schema.py` is where
+One of those deserves naming. `filter_plugins/vault_credential_schema.py` is where
 the credential's *shape* is stated — `NONEMPTY`, a hex pattern, a UUID — and a key
 declared in `vault_contract` without a rule here is validated only for presence.
-And `tests/secrets_docs_test.rb` carries a literal total: `vault example must
-contain exactly 59 vault_* keys`. Pinchflat's two keys made it 61. Nothing derives
-that number, and the failure names the count rather than your service, so it reads
-like an unrelated breakage.
+
+`tests/secrets_docs_test.rb` used to carry a literal total on top of that list —
+`vault example must contain exactly 59 vault_* keys` — which nothing derived and
+which named the count rather than your service, so it read like an unrelated
+breakage. It now counts the keys the `tests/expected/*.yml` files pin, so adding
+the key in the ten places above is the whole edit.
 
 `roles/vault_contract/tasks/main.yml` matters for the same reason: the argument
 spec makes Ansible require the variable, but the map in the tasks file is what
@@ -1017,9 +1020,9 @@ with no managed users still needs an entry saying so. Pinchflat has no user API 
 all — its whole identity is one basic-authentication pair in its environment — and
 it still declares `mode: declarative_environment`, `password_rotation: refuse` and
 its four interface strings. Restate the same contract in `EXPECTED_SERVICES` in
-`tests/managed_user_capabilities_test.rb`, and change that file's success line,
-which spells the number of pinned contracts in English (`all eleven service
-contracts are pinned`).
+`tests/managed_user_capabilities_test.rb`. That file's success line spells the
+number of pinned contracts in English (`all twelve service contracts are pinned`)
+but counts `EXPECTED_SERVICES` to do it, so the entry is the whole edit.
 
 ## The test ladder
 
