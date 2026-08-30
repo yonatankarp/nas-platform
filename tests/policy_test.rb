@@ -764,14 +764,17 @@ COUNT_WORDS = %w[
 ].freeze
 readme_prose = readme_source.gsub("`", "").gsub(/\s+/, " ")
 {
-  "implemented service projects" =>
+  "implemented service project" =>
     service_statuses.count { |_name, status| IMPLEMENTED_STATUSES.include?(status) },
-  "planned media-acquisition projects" =>
+  "planned media-acquisition project" =>
     service_statuses.count { |_name, status| status == "planned" }
 }.each do |phrase, count|
   word = COUNT_WORDS[count]
-  check(failures, !word.nil? && readme_prose.include?("#{word} #{phrase}"),
-        "README must state \"#{word || count} #{phrase}\" to match services/manifest.yml")
+  # The catalog can hold exactly one of something, and "one projects" is a
+  # sentence no reviewer would let through. The noun agrees with the count.
+  noun = count == 1 ? phrase : "#{phrase}s"
+  check(failures, !word.nil? && readme_prose.include?("#{word} #{noun}"),
+        "README must state \"#{word || count} #{noun}\" to match services/manifest.yml")
 end
 service_statuses.each do |name, status|
   next unless status == "planned"

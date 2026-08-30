@@ -328,12 +328,15 @@ assert_output \
 assert_output \
   'suite=pinchflat tags=host_prep,deployment_bundle,ntfy,pinchflat playbook=site.yml scenarios=true' \
   --describe-suite pinchflat
-for project in trailarr seerr; do
+assert_output \
+  'suite=trailarr tags=host_prep,deployment_bundle,ntfy,arr,trailarr playbook=site.yml scenarios=true' \
+  --describe-suite trailarr
+for project in seerr; do
   assert_output \
     "suite=$project tags=host_prep,deployment_bundle,media_acquisition_foundation playbook=site.yml scenarios=true" \
     --describe-suite "$project"
 done
-grep -qF 'trailarr|seerr)' "$integration" || {
+grep -qF 'seerr)' "$integration" || {
   printf '%s\n' 'integration runner has no closed acquisition foundation dispatch' >&2
   exit 1
 }
@@ -345,7 +348,7 @@ acquisition_runtime_contract_holds() {
   source_path=$1
   reader_converge=$(sed -n '/converge_media_acquisition_reader_prerequisites() {/,/^    }$/p' "$source_path")
   foundation_verify=$(sed -n '/run_media_acquisition_foundation_verify() {/,/^    }$/p' "$source_path")
-  acquisition_dispatch=$(sed -n '/trailarr|seerr)/,/;;/p' "$source_path" | tail -n 12)
+  acquisition_dispatch=$(sed -n '/^      seerr)/,/;;/p' "$source_path" | tail -n 12)
   printf '%s\n' "$reader_converge" |
     grep -qF -- '--tags host_prep,deployment_bundle,ntfy,audiobookshelf,jellyfin' &&
     printf '%s\n' "$foundation_verify" | grep -qF '/repo/verify.yml' &&
@@ -1051,7 +1054,7 @@ run_prepull 5 malformed --suite foundation
 [ "$prepull_status" -eq 0 ] || prepull_fail "malformed attempt budget removed the safe default"
 assert_pull_count "$runner_image" 6
 
-for project in trailarr seerr; do
+for project in seerr; do
   run_prepull 0 4 --suite "$project"
   [ "$prepull_status" -eq 0 ] || prepull_fail "$project foundation pre-pull failed ($prepull_status)"
   assert_pull_set \
@@ -1062,6 +1065,11 @@ run_prepull 0 4 --suite bindery
 [ "$prepull_status" -eq 0 ] || prepull_fail "bindery pre-pull failed ($prepull_status)"
 assert_pull_set \
   "$({ printf '%s\n' "$runner_image"; compose_images ntfy; compose_images arr; compose_images downloaders; compose_images bindery; } | sort -u)"
+
+run_prepull 0 4 --suite trailarr
+[ "$prepull_status" -eq 0 ] || prepull_fail "trailarr pre-pull failed ($prepull_status)"
+assert_pull_set \
+  "$({ printf '%s\n' "$runner_image"; compose_images ntfy; compose_images arr; compose_images trailarr; } | sort -u)"
 
 run_prepull 0 4 --suite kapowarr
 [ "$prepull_status" -eq 0 ] || prepull_fail "kapowarr pre-pull failed ($prepull_status)"

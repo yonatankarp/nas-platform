@@ -1,0 +1,241 @@
+---
+- name: Revalidate deployment paths before Trailarr runtime use
+  ansible.builtin.include_role:
+    name: deployment_bundle
+    tasks_from: target
+  vars:
+    deployment_target_require_current_release: true
+    deployment_target_extra_paths:
+      - "{{ platform_current_dir }}/services/trailarr"
+      - "{{ platform_current_dir }}/services/trailarr/compose.yml"
+      - "{{ platform_current_dir }}/services/trailarr/compose.{{ platform_compose_kind }}.yml"
+      - "{{ platform_runtime_dir }}/services/trailarr"
+      - "{{ platform_runtime_dir }}/services/trailarr/.env"
+      - "{{ trailarr_config_host_path }}"
+      - "{{ trailarr_config_host_path }}/.env"
+
+# Redacted: the conditions name the administrator identity and the API key.
+# Compose reads the rendered .env line by line, so a value carrying a newline
+# would silently truncate the credential rather than fail. The hash shape is
+# pinned as well, because WEBUI_PASSWORD is compared with bcrypt.checkpw
+# directly and nothing hashes it: a plaintext there does not fail loudly, it
+# makes login permanently impossible.
+- name: Require env-safe Trailarr administrator credentials
+  ansible.builtin.assert:
+    that:
+      - vault_trailarr_admin_username is match('^[^\r\n]+$')
+      - vault_trailarr_admin_password is match('^[^\r\n]+$')
+      - vault_trailarr_admin_password_hash is match('^\$2[aby]\$[0-9]{2}\$[./A-Za-z0-9]{53}$')
+      - vault_trailarr_api_key is match('^[0-9a-f]{32}\Z')
+    fail_msg: >-
+      Trailarr needs a single-line administrator name and password, a bcrypt
+      hash of that password, and a 32-character hexadecimal API key. A key
+      shorter than 32 characters is silently replaced by a random one, and a
+      plaintext password in place of the hash makes login impossible.
+  no_log: true
+
+# Redacted: this is where the API key and the administrator hash enter the
+# target filesystem.
+- name: Render the private Trailarr environment
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ platform_runtime_dir }}/services/trailarr/.env"
+    mode: "0600"
+  no_log: true
+
+# The application's own /config/.env beats everything above, so it is reconciled
+# before Compose brings the container up: scripts/start.sh sources it after the
+# container environment is already in place.
+- name: Reconcile the platform-owned Trailarr application environment
+  ansible.builtin.include_tasks: reconcile_env.yml
+
+- name: Deploy Trailarr
+  community.docker.docker_compose_v2:
+    project_src: "{{ platform_current_dir }}/services/trailarr"
+    project_name: "{{ trailarr_compose_project_name }}"
+    files: "{{ platform_service_compose_files['trailarr'] }}"
+    env_files: ["{{ platform_runtime_dir }}/services/trailarr/.env"]
+    state: present
+    wait: true
+    wait_timeout: "{{ platform_compose_wait_timeout }}"
+  register: trailarr_deploy
+
+# /config/.env lives under a bind mount rather than in the Compose spec, so
+# docker_compose_v2 does not recreate the container when it changes and the
+# running process keeps the values it read at start. Without this the repair
+# above silently does not take effect until some unrelated recreation.
+#
+# Not a handler: handlers run at the end of the play, but the readiness probe
+# and every reconciliation below read the live settings, which are os.getenv
+# reads in the running process. Deferring the restart would run all of them
+# against the values the old process loaded.
+- name: Restart Trailarr onto the repaired application environment # noqa: no-handler
+  community.docker.docker_compose_v2:
+    project_src: "{{ platform_current_dir }}/services/trailarr"
+    project_name: "{{ trailarr_compose_project_name }}"
+    files: "{{ platform_service_compose_files['trailarr'] }}"
+    env_files: ["{{ platform_runtime_dir }}/services/trailarr/.env"]
+    state: restarted
+    wait: true
+    wait_timeout: "{{ platform_compose_wait_timeout }}"
+  when: trailarr_config_env_repair is changed
+
+- name: Report the Trailarr deployment
+  ansible.builtin.include_role:
+    name: ntfy
+    tasks_from: deployment_report
+  vars:
+    ntfy_deployment_report_service: Trailarr
+    ntfy_deployment_report_changed: >-
+      {{ trailarr_deploy is changed or trailarr_config_env_repair is changed }}
+
+- name: Verify Trailarr effective container CPU policy
+  ansible.builtin.include_role:
+    name: container_cpu
+  vars:
+    container_cpu_service_name: trailarr
+    container_cpu_project_name: "{{ trailarr_compose_project_name }}"
+  when: not ansible_check_mode
+
+# Two failures wear the same costume here and neither is a network problem.
+# When the hourly nvidia probe fails, /status raises 404 rather than 503, so the
+# status list below accepts it and the assertion names it. And when an alembic
+# migration fails the start script restores its backup and then sleeps forever
+# instead of exiting, so the container stays up, `restart: unless-stopped` never
+# fires, and nothing is ever listening.
+- name: Wait for Trailarr application health
+  ansible.builtin.uri:
+    url: "{{ trailarr_status_url }}"
+    method: GET
+    status_code: [200, 404]
+    return_content: true
+  register: trailarr_health
+  until:
+    - trailarr_health.json | default(none) is mapping
+    - trailarr_health.json.status | default(none) == 'healthy'
+  retries: "{{ platform_readiness_retries }}"
+  delay: "{{ platform_readiness_delay }}"
+  changed_when: false
+  check_mode: false
+
+- name: Require Trailarr to report itself healthy
+  ansible.builtin.assert:
+    that:
+      - trailarr_health.status | default(0) | int == 200
+      - trailarr_health.json | default(none) is mapping
+      - trailarr_health.json.status | default(none) == 'healthy'
+    fail_msg: >-
+      Trailarr did not report a healthy status. A 404 from /status is the hourly
+      nvidia probe failing rather than a missing route, and a container that is
+      up with nothing listening is a failed alembic migration sleeping forever
+      after restoring its own backup.
+
+- name: Reconcile the Trailarr trailer profiles
+  ansible.builtin.include_tasks: reconcile_profiles.yml
+
+- name: Reconcile the Trailarr arr connections
+  ansible.builtin.include_tasks: reconcile_connections.yml
+  when: media_usenet_enabled | bool
+
+- name: Report the inert Trailarr arr connections
+  ansible.builtin.debug:
+    msg: >-
+      Usenet is disabled for this host, so Trailarr declares no Radarr and no
+      Sonarr connection. Each write is validated with a live call to the
+      submitted address and answers 400 when the host cannot be reached, so
+      neither can be declared while Radarr and Sonarr are stopped.
+  when: not media_usenet_enabled | bool
+
+- name: Verify the Trailarr service endpoint
+  tags: [platform_verify_trailarr]
+  ansible.builtin.uri:
+    url: "{{ trailarr_status_url }}"
+    method: GET
+    status_code: [200]
+    return_content: true
+  register: trailarr_verify_status
+  changed_when: false
+  check_mode: false
+
+# The web interface is the writer: the same session can download a trailer,
+# delete one, rename a file and declare a new connection, over the same Movies
+# and Series trees Radarr and Sonarr own. These three reads prove the
+# vault-authored identity is the one Trailarr accepts, that it refuses an
+# anonymous caller, and that the published default administrator — admin /
+# trailarr, whose hash is a literal in the application's own settings module —
+# is no longer accepted.
+# Redacted: the credential is the request.
+- name: Verify Trailarr accepts the vault-authored API key
+  tags: [platform_verify_trailarr]
+  ansible.builtin.uri:
+    url: "{{ trailarr_api }}/settings/"
+    method: GET
+    headers:
+      X-API-KEY: "{{ vault_trailarr_api_key }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: trailarr_verify_authenticated
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Verify Trailarr refuses an unauthenticated caller
+  tags: [platform_verify_trailarr]
+  ansible.builtin.uri:
+    url: "{{ trailarr_api }}/settings/"
+    method: GET
+    status_code: "{{ range(100, 600) | list }}"
+  register: trailarr_verify_anonymous
+  failed_when: false
+  changed_when: false
+  check_mode: false
+
+- name: Verify Trailarr refuses the published default administrator
+  tags: [platform_verify_trailarr]
+  ansible.builtin.uri:
+    url: "{{ trailarr_api }}/auth/login"
+    method: POST
+    body_format: json
+    body:
+      username: admin
+      password: trailarr
+    status_code: "{{ range(100, 600) | list }}"
+  register: trailarr_verify_default_identity
+  failed_when: false
+  changed_when: false
+  check_mode: false
+
+# The settings read is also the drift probe, because every global setting is a
+# live os.getenv rather than database state: if /config/.env has reacquired a
+# platform-owned key, the value the application reports here is the drifted one.
+# PUT /api/v1/settings/update is deliberately never called anywhere in this
+# role: it reports failure with HTTP 200 and prose in the body, so a task
+# asserting status_code 200 would pass on every failure, and every call writes
+# to /config/.env, which is the drift mechanism itself.
+- name: Require the exact Trailarr verification results
+  tags: [platform_verify_trailarr]
+  ansible.builtin.assert:
+    that:
+      - trailarr_verify_status.json.status == 'healthy'
+      - trailarr_verify_authenticated.status | default(0) | int == 200
+      - trailarr_verify_anonymous.status | default(0) | int == 401
+      - trailarr_verify_default_identity.status | default(0) | int == 401
+      - trailarr_verify_authenticated.json.webui_username | default('') == vault_trailarr_admin_username
+      - not trailarr_verify_authenticated.json.webui_disable_auth | default(true) | bool
+      - not trailarr_verify_authenticated.json.create_missing_folders | default(true) | bool
+      - not trailarr_verify_authenticated.json.delete_trailer_connection | default(true) | bool
+      - not trailarr_verify_authenticated.json.delete_trailer_media | default(true) | bool
+      - not trailarr_verify_authenticated.json.update_ytdlp | default(true) | bool
+      - not trailarr_verify_authenticated.json.ytdlp_nightly | default(true) | bool
+      - >-
+        trailarr_verify_authenticated.json.monitor_enabled | default(true) | bool
+        == trailarr_monitoring_enabled | bool
+      - >-
+        trailarr_verify_authenticated.json.downloads_enabled | default(true) | bool
+        == trailarr_monitoring_enabled | bool
+    fail_msg: >-
+      Trailarr is unhealthy, or it no longer serves exactly the platform's
+      declared settings to exactly the vault-authored identity. Its /config/.env
+      overwrites the container environment permanently on the next start, so a
+      setting changed by hand survives a converge until that file is repaired.

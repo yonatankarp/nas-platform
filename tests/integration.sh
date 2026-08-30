@@ -301,6 +301,7 @@ downloaders downloaders
 bindery bindery
 kapowarr kapowarr
 pinchflat pinchflat
+trailarr trailarr
 '
 
 # Retry budget for a registry that refuses. These ceilings bound all shell
@@ -526,7 +527,6 @@ suite_pull_images() {
         *",$service_tag,"*) ;;
         *)
           case "$suite:$service_tag" in
-            trailarr:ntfy|trailarr:audiobookshelf|trailarr:jellyfin|\
             seerr:ntfy|seerr:audiobookshelf|seerr:jellyfin) ;;
             *) continue ;;
           esac
@@ -1152,7 +1152,7 @@ docker run --rm \
     integration_media_usenet_enabled=false
     integration_media_adopt_existing=false
     case "\$INTEGRATION_SUITE" in
-      arr|downloaders|bindery)
+      arr|downloaders|bindery|trailarr)
         integration_media_usenet_enabled=true
         integration_media_adopt_existing=true
         ;;
@@ -1300,6 +1300,22 @@ docker run --rm \
         PLATFORM_PROJECT_NAME=$integration_project_namespace \
         PLATFORM_BINDERY_USENET=true \
         /repo/tests/contracts/bindery.sh \"\$@\"
+    }
+
+    # This lane converges arr with the transport enabled, so Radarr and Sonarr
+    # are resolvable by name and both of Trailarr's connections are expected to
+    # exist.
+    run_trailarr_contract() {
+      env \
+        PLATFORM_KIND=integration \
+        PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\" \
+        PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=\"\$vault_password_file\" \
+        PLATFORM_DOCKER_ROOT='$sandbox/volume1/Docker' \
+        PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
+        PLATFORM_REPORT_ROOT='$sandbox/reports' \
+        PLATFORM_PROJECT_NAME=$integration_project_namespace \
+        PLATFORM_TRAILARR_ARRS=true \
+        /repo/tests/contracts/trailarr.sh \"\$@\"
     }
 
     run_kapowarr_contract() {
@@ -1690,6 +1706,23 @@ docker run --rm \
         --tags platform_verify_pinchflat
     }
 
+    run_trailarr_verify_only() {
+      PLATFORM_VAULT_FILE="\$vault_file" ansible-playbook \
+        -i inventory/local.yml \
+        --vault-password-file "\$vault_password_file" \
+        -e @"\$vault_file" \
+        -e platform_vault_file="\$vault_file" \
+        -e nas_docker_root=$sandbox/volume1/Docker \
+        -e nas_media_root=$sandbox/volume2 \
+        -e platform_compose_kind=integration \
+        -e platform_project_name=\"$integration_project_namespace\" \
+        -e platform_beszel_agent_kind=portable \
+        -e deployment_bundle_test_mode=true \
+        -e deployment_bundle_allow_dirty_controller=true \
+        /repo/verify.yml \
+        --tags platform_verify_trailarr
+    }
+
     converge_media_acquisition_reader_prerequisites() {
       run_play --tags host_prep,deployment_bundle,ntfy,audiobookshelf,jellyfin
     }
@@ -2041,7 +2074,7 @@ EOF
       /repo /repo/services/manifest.yml nas integration '$expected_release_id'
 
     case "\$INTEGRATION_SUITE" in
-      trailarr|seerr)
+      seerr)
         /repo/tests/contracts/"\$INTEGRATION_SUITE"-foundation.sh static
         converge_media_acquisition_reader_prerequisites
         run_media_acquisition_foundation_verify
@@ -2105,6 +2138,18 @@ EOF
       run_enabled_idempotence pinchflat
       run_play --tags pinchflat --check --diff
       printf 'PINCHFLAT_PHASE2_RUNTIME_VERIFIED\n'
+      cleanup_vault
+      exit 0
+    fi
+
+    if [ "\$INTEGRATION_SUITE" = trailarr ]; then
+      /repo/tests/contracts/arr.sh static
+      /repo/tests/contracts/trailarr.sh static
+      run_trailarr_contract run
+      run_trailarr_verify_only
+      run_enabled_idempotence arr,trailarr
+      run_play --tags arr,trailarr --check --diff
+      printf 'TRAILARR_PHASE3_RUNTIME_VERIFIED\n'
       cleanup_vault
       exit 0
     fi

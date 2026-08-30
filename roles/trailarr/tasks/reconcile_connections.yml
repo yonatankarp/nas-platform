@@ -1,0 +1,143 @@
+---
+# A connection is the only part of Trailarr that is neither environment nor
+# file: it lives in the SQLite connection table with no variable and no config
+# key, so it is reconciled through the API and nowhere else.
+#
+# Four measured behaviours shape this file. The create route validates with a
+# live GET {url}/api/v3/system/status carrying the submitted key and checks the
+# returned appName, so Radarr and Sonarr have to be reachable from inside the
+# container — which is why this runs only when the host has enabled Usenet and
+# why the role emits an explicit prediction under --check instead. It has no
+# uniqueness check at all: three identical creates produced ids 1, 2 and 3, so
+# every write is matched by name first. An update with an identical body is safe
+# and repeatable but always reports success, so the changed decision comes from
+# the comparison rather than from the response. And delete is asynchronous — the
+# listing is still stale seconds later — so nothing here deletes and re-creates.
+#
+# path_mappings stay empty on purpose. Trailarr appends a trailing slash on
+# write, so a declared /data/media/Movies reads back /data/media/Movies/ and a
+# naive comparison reports drift forever; the Compose file avoids needing one at
+# all by mounting both libraries at the same container paths Radarr and Sonarr
+# use.
+#
+# Redacted: the request carries the application API key, and the listing carries
+# Radarr's and Sonarr's.
+- name: Read the declared Trailarr connections
+  ansible.builtin.uri:
+    url: "{{ trailarr_api }}/connections/"
+    method: GET
+    headers:
+      X-API-KEY: "{{ vault_trailarr_api_key }}"
+    status_code: [200]
+    return_content: true
+  register: trailarr_connections_read
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Refuse an ambiguous Trailarr connection
+  ansible.builtin.assert:
+    that:
+      - >-
+        trailarr_connections_read.json | default([])
+        | selectattr('name', 'equalto', item.name) | list | length <= 1
+    fail_msg: >-
+      Trailarr holds more than one connection named {{ item.name }}. The create
+      route has no duplicate check, so a repeated create adds a row rather than
+      failing; remove the surplus rows in the application before running again.
+  loop: "{{ trailarr_connections }}"
+  loop_control:
+    label: "trailarr-connection-{{ item.name }}"
+
+- name: Initialize the Trailarr connection reconciliation
+  ansible.builtin.set_fact:
+    trailarr_connections_to_create: []
+    trailarr_connections_to_repair: []
+    trailarr_connection_plan: []
+
+# Redacted: the desired bodies carry Radarr's and Sonarr's API keys.
+- name: Resolve the Trailarr connection reconciliation
+  vars:
+    trailarr_connection_existing: >-
+      {{ trailarr_connections_read.json | default([])
+         | selectattr('name', 'equalto', item.name) | list
+         | first | default({}, true) }}
+    trailarr_connection_desired:
+      name: "{{ item.name }}"
+      arr_type: "{{ item.arr_type }}"
+      url: "{{ item.url }}"
+      api_key: "{{ item.api_key }}"
+      monitor_new_media: "{{ trailarr_monitoring_enabled | bool }}"
+      path_mappings: []
+    trailarr_connection_drifted: >-
+      {{ trailarr_connection_existing.arr_type | default('') != item.arr_type or
+         trailarr_connection_existing.url | default('') != item.url or
+         trailarr_connection_existing.api_key | default('') != item.api_key or
+         trailarr_connection_existing.monitor_new_media | default(true) | bool
+           != trailarr_monitoring_enabled | bool or
+         trailarr_connection_existing.path_mappings | default([]) | length > 0 }}
+  ansible.builtin.set_fact:
+    trailarr_connections_to_create: >-
+      {{ trailarr_connections_to_create
+         + ([trailarr_connection_desired] if trailarr_connection_existing | length == 0 else []) }}
+    trailarr_connections_to_repair: >-
+      {{ trailarr_connections_to_repair
+         + ([trailarr_connection_desired | combine({'id': trailarr_connection_existing.id | default(0)})]
+            if trailarr_connection_existing | length > 0 and trailarr_connection_drifted
+            else []) }}
+    # The plan carries names and verbs only, so the check-mode prediction below
+    # can stay readable while every list holding a key stays redacted.
+    trailarr_connection_plan: >-
+      {{ trailarr_connection_plan
+         + ([{'name': item.name, 'action': 'create'}]
+            if trailarr_connection_existing | length == 0
+            else ([{'name': item.name, 'action': 'repair'}]
+                  if trailarr_connection_drifted else [])) }}
+  loop: "{{ trailarr_connections }}"
+  loop_control:
+    label: "trailarr-connection-{{ item.name }}"
+  no_log: true
+
+- name: Report the planned Trailarr connection reconciliation
+  ansible.builtin.debug:
+    msg: >-
+      Trailarr does not hold the declared {{ item.name }} connection as the
+      platform states it; a live run would {{ item.action }} it.
+  loop: "{{ trailarr_connection_plan }}"
+  loop_control:
+    label: "trailarr-connection-{{ item.name }}"
+  when: ansible_check_mode
+
+# Redacted: the request carries both the application API key and the arr's own.
+- name: Declare the Trailarr connections
+  ansible.builtin.uri:
+    url: "{{ trailarr_api }}/connections/"
+    method: POST
+    headers:
+      X-API-KEY: "{{ vault_trailarr_api_key }}"
+    body_format: json
+    body: "{{ item }}"
+    status_code: [201]
+  loop: "{{ trailarr_connections_to_create }}"
+  loop_control:
+    label: trailarr-connection-create
+  when: not ansible_check_mode
+  changed_when: true
+  no_log: true
+
+# Redacted: the request carries both the application API key and the arr's own.
+- name: Repair the Trailarr connections
+  ansible.builtin.uri:
+    url: "{{ trailarr_api }}/connections/{{ item.id }}"
+    method: PUT
+    headers:
+      X-API-KEY: "{{ vault_trailarr_api_key }}"
+    body_format: json
+    body: "{{ item | dict2items | rejectattr('key', 'equalto', 'id') | items2dict }}"
+    status_code: [200]
+  loop: "{{ trailarr_connections_to_repair }}"
+  loop_control:
+    label: trailarr-connection-repair
+  when: not ansible_check_mode
+  changed_when: true
+  no_log: true

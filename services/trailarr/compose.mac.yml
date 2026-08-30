@@ -1,0 +1,6 @@
+---
+services:
+  trailarr:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-trailarr
+    ports: !override
+      - "${TRAILARR_HOST_PORT:?}:7889"

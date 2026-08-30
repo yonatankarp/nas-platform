@@ -41,7 +41,7 @@ services:
     status: implemented
   - name: trailarr
     role: trailarr
-    status: planned
+    status: implemented
   - name: seerr
     role: seerr
     status: planned

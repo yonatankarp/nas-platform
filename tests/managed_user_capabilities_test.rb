@@ -131,6 +131,15 @@ EXPECTED_SERVICES = {
       "authenticate" => "Basic authentication",
       "reconcile" => "BASIC_AUTH_USERNAME/BASIC_AUTH_PASSWORD"
     }
+  ),
+  "trailarr" => MULTI_USER_DEFAULTS.merge(
+    "mode" => "declarative_environment",
+    "interfaces" => {
+      "list" => "WEBUI_USERNAME",
+      "create" => "WEBUI_USERNAME/WEBUI_PASSWORD",
+      "authenticate" => "api/v1/auth/login",
+      "reconcile" => "WEBUI_USERNAME/WEBUI_PASSWORD"
+    }
   )
 }.freeze
 

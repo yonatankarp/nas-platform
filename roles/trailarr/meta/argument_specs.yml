@@ -1,0 +1,84 @@
+---
+argument_specs:
+  main:
+    short_description: Deploy Trailarr and reconcile its local trailer writer
+    options:
+      platform_compose_kind:
+        type: str
+        required: true
+      platform_project_name:
+        type: str
+        required: false
+      media_usenet_enabled:
+        type: bool
+        required: false
+      trailarr_port:
+        type: int
+        required: false
+      trailarr_config_host_path:
+        type: path
+        required: false
+      trailarr_movies_host_path:
+        type: path
+        required: false
+      trailarr_series_host_path:
+        type: path
+        required: false
+      trailarr_movies_root:
+        type: path
+        required: false
+      trailarr_series_root:
+        type: path
+        required: false
+      trailarr_connections:
+        type: list
+        elements: dict
+        required: false
+      trailarr_monitoring_enabled:
+        type: bool
+        required: false
+      trailarr_trailer_profiles:
+        type: list
+        elements: dict
+        required: false
+      trailarr_trailer_profile_settings:
+        type: dict
+        required: false
+      trailarr_config_env_log_level:
+        type: str
+        required: false
+      trailarr_config_env_wait_for_media:
+        type: str
+        required: false
+      trailarr_config_env_yt_cookies_path:
+        type: str
+        required: false
+      trailarr_config_env_absent_keys:
+        type: list
+        elements: str
+        required: false
+      trailarr_config_env_absent_pattern:
+        type: str
+        required: false
+      vault_trailarr_api_key:
+        type: str
+        required: true
+      vault_trailarr_admin_username:
+        type: str
+        required: true
+      vault_trailarr_admin_password:
+        type: str
+        required: true
+      vault_trailarr_admin_password_hash:
+        type: str
+        required: true
+      # Radarr's and Sonarr's own keys, consumed rather than minted again. A
+      # second copy would be a second thing to rotate and a second thing to
+      # drift, so tests/expected/trailarr.yml lists only vault_trailarr_* and
+      # these two are declared here as the dependency they are.
+      vault_arr_radarr_api_key:
+        type: str
+        required: true
+      vault_arr_sonarr_api_key:
+        type: str
+        required: true

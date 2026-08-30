@@ -130,6 +130,9 @@ case $mac_service in
   bindery)
     : "${PLATFORM_BINDERY_PORT:?PLATFORM_BINDERY_PORT is required}"
     ;;
+  trailarr)
+    : "${PLATFORM_TRAILARR_PORT:?PLATFORM_TRAILARR_PORT is required}"
+    ;;
   kapowarr)
     : "${PLATFORM_KAPOWARR_PORT:?PLATFORM_KAPOWARR_PORT is required}"
     ;;

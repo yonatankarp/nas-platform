@@ -2,4 +2,8 @@
 role: trailarr
 container_cpus:
   trailarr: 1.0
-vault_keys: []
+vault_keys:
+  - vault_trailarr_api_key
+  - vault_trailarr_admin_username
+  - vault_trailarr_admin_password
+  - vault_trailarr_admin_password_hash
