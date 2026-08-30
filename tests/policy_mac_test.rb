@@ -158,11 +158,17 @@ mac_port_probe = <<~PROBE
   env | grep '^PLATFORM_[A-Z0-9_]*_PORT=' | LC_ALL=C sort
 PROBE
 mac_port_exports, mac_port_probe_status =
-  Open3.capture2e({}, "/bin/sh", "-c", mac_port_probe, "sh", mac_lib_path, unsetenv_others: true)
+  if mac_lib.empty?
+    ["", nil]
+  else
+    Open3.capture2e({ "PATH" => ENV.fetch("PATH", "/usr/bin:/bin"), "LC_ALL" => "C" },
+                    "/bin/sh", "-c", mac_port_probe, "sh", mac_lib_path,
+                    unsetenv_others: true)
+  end
 expected_port_exports = mac_port_roster.each_with_index.map do |service, index|
   "PLATFORM_#{service.upcase}_PORT=#{40_001 + index}"
 end.sort
-check(failures, mac_port_probe_status.success? &&
+check(failures, !mac_lib.empty? && mac_port_probe_status.success? &&
                 mac_port_exports.split("\n") == expected_port_exports,
       "Mac lifecycle must export one PLATFORM_<SERVICE>_PORT per roster service")
 check(failures, mac_run.match?(/^mac_export_service_ports$/),
