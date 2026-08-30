@@ -276,12 +276,39 @@ Raw log content is never written to a temporary file, report, or console.
 
 ## Manual escape hatch
 
-Ansible owns deployment, but a stack can be brought up by hand if needed, using
-the environment file Ansible rendered:
+Ansible owns deployment, but a stack can be brought up by hand if needed. Run it
+against what the target actually runs, not against this checkout: the target
+never runs from a clone. `deployment_bundle` installs an immutable release at
+`platform_current_dir` and keeps the rendered secrets separately under
+`platform_runtime_dir`, so the Compose file and the environment file come from
+two different trees, and `services/<name>/.env` exists in neither.
+
+On the NAS, with the production defaults of
+`inventory/group_vars/all/main.yml`:
 
 ```sh
-docker compose --env-file services/ntfy/.env -f services/ntfy/compose.yml up -d
+cd /volume1/Docker/nas-platform/current/services/ntfy
+docker compose \
+  --project-name ntfy \
+  --env-file /volume1/Docker/nas-platform/runtime/services/ntfy/.env \
+  -f compose.yml up -d
 ```
+
+The project name matters: Ansible derives it from `platform_project_name`, which
+is empty on the NAS, so the production project is the bare service name. A
+sandbox sets that variable and its projects are prefixed, which is what lets
+several copies of the platform run side by side.
+
+One `-f` is right for production because no service ships a `compose.nas.yml`.
+The disposable lanes do ship overrides, so a sandbox release holds
+`compose.mac.yml` or `compose.integration.yml` beside `compose.yml` and needs
+both, override second. That is the pair Ansible itself reads from
+`platform_service_compose_files`; check the release directory rather than
+assuming.
+
+The checkout under `services/` is the source those releases are built from, not
+the release the target runs. Anything started by hand is reverted by the next
+Ansible run, which is the point.
 
 ## Security boundary
 
