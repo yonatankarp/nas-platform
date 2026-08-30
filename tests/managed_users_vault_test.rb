@@ -160,7 +160,10 @@ failures = []
 vault = load_mapping(VAULT_PATH, failures, "vault example")
 check(failures, vault["vault_jellyfin_admin_username"] == "Yonatan",
       "Jellyfin administrator username must have exact approved casing")
-%w[vault_jellyfin_opensubtitles_username vault_jellyfin_opensubtitles_password].each do |key|
+%w[
+  vault_jellyfin_opensubtitles_username vault_jellyfin_opensubtitles_password
+  vault_kapowarr_comicvine_api_key
+].each do |key|
   check(failures, vault[key].is_a?(String) && !vault[key].empty?,
         "vault example must declare #{key}")
 end
@@ -370,7 +373,10 @@ check(failures, immich_fields == %w[email name password quota_size],
       "Immich preference policy must not enter the encrypted user records")
 
 vault_options = spec.dig("argument_specs", "main", "options") || {}
-%w[vault_jellyfin_opensubtitles_username vault_jellyfin_opensubtitles_password].each do |key|
+%w[
+  vault_jellyfin_opensubtitles_username vault_jellyfin_opensubtitles_password
+  vault_kapowarr_comicvine_api_key
+].each do |key|
   check(failures,
         vault_options[key] == { "type" => "str", "required" => true },
         "vault argument spec must require #{key}")
@@ -547,6 +553,18 @@ end
                   ),
         "vault contract must reject the documented #{key} placeholder")
 end
+# ComicVine issues its key to a human account, so the platform cannot generate
+# one either. Its stand-in is refused for the same reason: a Kapowarr holding it
+# can identify nothing it downloads.
+check(failures,
+      credential_filter_source.match?(
+        /"vault_kapowarr_comicvine_api_key": \(\n\s*\(NONEMPTY, None\),/
+      ) &&
+        credential_filter_source.include?('"example-comicvine-api-key"') &&
+        credential_filter_source.include?(
+          "(NOT_PLACEHOLDER, COMICVINE_API_KEY_PLACEHOLDERS)"
+        ),
+      "vault contract must reject the documented ComicVine placeholder")
 
 generator = File.file?(GENERATOR_PATH) ? File.read(GENERATOR_PATH) : ""
 check(failures, generator.include?("vault_managed_users:"),
@@ -615,10 +633,18 @@ check(failures,
 runtime_vault = duplicate(vault)
 runtime_vault["vault_jellyfin_opensubtitles_username"] = "runtime-opensubtitles-user"
 runtime_vault["vault_jellyfin_opensubtitles_password"] = "runtime-opensubtitles-password"
+runtime_vault["vault_kapowarr_comicvine_api_key"] = "runtime-comicvine-api-key"
 _stdout, _stderr, valid_status = validate_with_role(runtime_vault)
 check(failures, valid_status.success?, "vault example with runtime integrations must pass role evaluation")
 expect_role_rejection(failures, "documented OpenSubtitles placeholders", vault,
                       "example-opensubtitles-password")
+# Only the ComicVine half is left documented, so the refusal is attributable to
+# it rather than to the OpenSubtitles pair above.
+comicvine_placeholder = duplicate(runtime_vault)
+comicvine_placeholder["vault_kapowarr_comicvine_api_key"] =
+  vault["vault_kapowarr_comicvine_api_key"]
+expect_role_rejection(failures, "documented ComicVine placeholder", comicvine_placeholder,
+                      "runtime-opensubtitles-password")
 
 empty_immich = duplicate(runtime_vault)
 empty_immich.dig("vault_managed_users", "immich").clear

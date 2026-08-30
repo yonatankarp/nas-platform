@@ -39,6 +39,11 @@ vault_arr_bazarr_admin_password: {{ arr_bazarr_admin_password }}
 vault_downloaders_sabnzbd_api_key: {{ downloaders_sabnzbd_api_key | to_json }}
 vault_downloaders_sabnzbd_admin_username: {{ downloaders_sabnzbd_admin_username }}
 vault_downloaders_sabnzbd_admin_password: {{ downloaders_sabnzbd_admin_password }}
+vault_kapowarr_admin_username: {{ kapowarr_admin_username }}
+vault_kapowarr_admin_password: {{ kapowarr_admin_password }}
+{# ComicVine issues this key to a human account; the platform cannot generate
+   one, and the vault contract refuses this stand-in until it is replaced. #}
+vault_kapowarr_comicvine_api_key: replace-with-comicvine-api-key
 vault_pinchflat_admin_username: {{ pinchflat_admin_username }}
 vault_pinchflat_admin_password: {{ pinchflat_admin_password }}
 

@@ -26,8 +26,8 @@ RECONCILIATION_OWNED_PATHS = %w[
 # no other. Stated rather than imported for the same reason: widening the
 # classifier's own list must fail here.
 NTFY_LANES = %w[
-  static reconciliation arr downloaders pinchflat smoke beszel dozzle audiobookshelf komga
-  jellyfin immich paperless idempotence_check
+  static reconciliation arr downloaders kapowarr pinchflat smoke beszel dozzle audiobookshelf
+  komga jellyfin immich paperless idempotence_check
 ].freeze
 failures = []
 
@@ -334,9 +334,39 @@ if defined?(ClassifyChanges)
   OUTPUT
         "Paperless-only output must retain its exact tag plan: #{paperless_output.string.inspect}")
 
-  # Pinchflat is the first implemented acquisition project outside Phase 1: its
-  # lane converges its own role rather than the shared inert foundation, and it
-  # is the only one that does so without also converging Arr.
+  # Kapowarr and Pinchflat are the implemented acquisition projects outside
+  # Phase 1: each lane converges its own role rather than the shared inert
+  # foundation, and neither also converges Arr.
+  kapowarr_output = StringIO.new
+  ClassifyChanges.write_github_outputs(
+    ClassifyChanges.classify(["roles/kapowarr/tasks/main.yml"]), kapowarr_output
+  )
+  check(failures, kapowarr_output.string == <<~OUTPUT,
+    static=true
+    reconciliation=false
+    foundation=false
+    arr=false
+    downloaders=false
+    bindery=false
+    kapowarr=true
+    pinchflat=false
+    trailarr=false
+    seerr=false
+    smoke=false
+    beszel=false
+    dozzle=false
+    audiobookshelf=false
+    komga=false
+    jellyfin=false
+    immich=false
+    paperless=false
+    idempotence_check=true
+    suites=["kapowarr","idempotence-check"]
+    run_ci=true
+    selected_tags=host_prep,deployment_bundle,ntfy,kapowarr
+  OUTPUT
+        "Kapowarr-only output must retain its exact tag plan: #{kapowarr_output.string.inspect}")
+
   pinchflat_output = StringIO.new
   ClassifyChanges.write_github_outputs(
     ClassifyChanges.classify(["roles/pinchflat/tasks/main.yml"]), pinchflat_output

@@ -618,7 +618,7 @@ path, repository = ARGV
 expected = %w[
   audiobookshelf_port beszel_port dozzle_port immich_port jellyfin_port komga_port
   ntfy_port paperless_port radarr_port sonarr_port prowlarr_port bazarr_port sabnzbd_port
-  pinchflat_port
+  pinchflat_port kapowarr_port
 ]
 flags = File::RDONLY
 flags |= File::NOFOLLOW if File.const_defined?(:NOFOLLOW)
@@ -652,14 +652,15 @@ RUBY
 
 if [ "$proof_platform" = integration ]; then
   integration_ports=$(read_integration_ports) || mac_die 'integration ports input is invalid'
-  # The validated representation contains exactly fourteen decimal integers.
+  # The validated representation contains exactly fifteen decimal integers.
   set -- $integration_ports
-  [ "$#" -eq 14 ] || mac_die 'integration ports input is invalid'
+  [ "$#" -eq 15 ] || mac_die 'integration ports input is invalid'
   expected_audiobookshelf_port=$1 expected_beszel_port=$2 expected_dozzle_port=$3
   expected_immich_port=$4 expected_jellyfin_port=$5 expected_komga_port=$6
   expected_ntfy_port=$7 expected_paperless_port=$8
   expected_radarr_port=$9 expected_sonarr_port=${10} expected_prowlarr_port=${11}
   expected_bazarr_port=${12} expected_sabnzbd_port=${13} expected_pinchflat_port=${14}
+  expected_kapowarr_port=${15}
   callback_host=$(mac_integration_gateway) || mac_die 'integration callback host is invalid'
 else
   callback_host=host.docker.internal
@@ -677,7 +678,7 @@ initialize_report_input() {
     --paperless-port "$paperless_port" --radarr-port "$radarr_port" \
     --sonarr-port "$sonarr_port" --prowlarr-port "$prowlarr_port" \
     --bazarr-port "$bazarr_port" --sabnzbd-port "$sabnzbd_port" \
-    --pinchflat-port "$pinchflat_port" "$@"
+    --pinchflat-port "$pinchflat_port" --kapowarr-port "$kapowarr_port" "$@"
 }
 
 if [ ! -f "$state_input" ]; then
@@ -689,6 +690,7 @@ if [ ! -f "$state_input" ]; then
     radarr_port=$expected_radarr_port sonarr_port=$expected_sonarr_port
     prowlarr_port=$expected_prowlarr_port bazarr_port=$expected_bazarr_port
     sabnzbd_port=$expected_sabnzbd_port pinchflat_port=$expected_pinchflat_port
+    kapowarr_port=$expected_kapowarr_port
   else
     beszel_port=$(allocate_service_port)
     ntfy_port=$(allocate_service_port "$beszel_port")
@@ -725,6 +727,10 @@ if [ ! -f "$state_input" ]; then
       "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port" "$komga_port" \
       "$jellyfin_port" "$immich_port" "$paperless_port" "$radarr_port" "$sonarr_port" \
       "$prowlarr_port" "$bazarr_port" "$sabnzbd_port")
+    kapowarr_port=$(allocate_service_port \
+      "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port" "$komga_port" \
+      "$jellyfin_port" "$immich_port" "$paperless_port" "$radarr_port" "$sonarr_port" \
+      "$prowlarr_port" "$bazarr_port" "$sabnzbd_port" "$pinchflat_port")
   fi
   initialize_report_input
 else
@@ -750,6 +756,7 @@ else
   bazarr_port=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("bazarr_port")' "$state_input")
   sabnzbd_port=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("sabnzbd_port")' "$state_input")
   pinchflat_port=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("pinchflat_port")' "$state_input")
+  kapowarr_port=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("kapowarr_port")' "$state_input")
   [ "$state_lane" = "$lane" ] || mac_die 'resume lane does not match the recorded lane'
   [ "$state_proof_platform" = "$proof_platform" ] ||
     mac_die 'resume proof platform does not match the recorded run'
@@ -777,7 +784,8 @@ else
       [ "$prowlarr_port" = "$expected_prowlarr_port" ] &&
       [ "$bazarr_port" = "$expected_bazarr_port" ] &&
       [ "$sabnzbd_port" = "$expected_sabnzbd_port" ] &&
-      [ "$pinchflat_port" = "$expected_pinchflat_port" ] ||
+      [ "$pinchflat_port" = "$expected_pinchflat_port" ] &&
+      [ "$kapowarr_port" = "$expected_kapowarr_port" ] ||
       mac_die 'resume integration ports do not match the recorded run'
   fi
 fi
@@ -809,6 +817,7 @@ export PLATFORM_PROWLARR_PORT=$prowlarr_port
 export PLATFORM_BAZARR_PORT=$bazarr_port
 export PLATFORM_SABNZBD_PORT=$sabnzbd_port
 export PLATFORM_PINCHFLAT_PORT=$pinchflat_port
+export PLATFORM_KAPOWARR_PORT=$kapowarr_port
 export COMPOSE_PROJECT_NAME=$project_name
 export PLATFORM_MAC_VAULT_FILE=$vault_file
 export PLATFORM_MAC_VAULT_PASSWORD_FILE=$vault_password_file
@@ -951,7 +960,8 @@ execute_phase() {
         "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port" "$komga_port" \
         "$jellyfin_port" \
         "$immich_port" "$paperless_port" "$radarr_port" "$sonarr_port" \
-        "$prowlarr_port" "$bazarr_port" "$sabnzbd_port" "$pinchflat_port"; do
+        "$prowlarr_port" "$bazarr_port" "$sabnzbd_port" "$pinchflat_port" \
+        "$kapowarr_port"; do
         reserved_port_container_ids=$(docker ps -q --filter "publish=$reserved_port") || {
           mac_die "could not inspect reserved host port: $reserved_port"
           return 1
@@ -972,7 +982,8 @@ execute_phase() {
       ' "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port" "$komga_port" \
         "$jellyfin_port" \
         "$immich_port" "$paperless_port" "$radarr_port" "$sonarr_port" \
-        "$prowlarr_port" "$bazarr_port" "$sabnzbd_port" "$pinchflat_port" || return 1
+        "$prowlarr_port" "$bazarr_port" "$sabnzbd_port" "$pinchflat_port" \
+        "$kapowarr_port" || return 1
       ensure_immich_fixture_vars || return $?
       ansible-playbook "$mac_repo_dir/validate-vault.yml" \
         --vault-password-file "$vault_password_file" -e @"$vault_file" \

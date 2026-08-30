@@ -1,0 +1,47 @@
+---
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
+services:
+  # Kapowarr owns the Books/Comics library and its own SQLite database. In this
+  # slice it calls no other platform service — no Prowlarr indexer and no
+  # download client are declared for it — so it stays off the media-control
+  # network, the same reason Komga and Pinchflat do. Komga keeps reading the
+  # library from disk.
+  kapowarr:
+    container_name: kapowarr
+    image: docker.io/mrcas/kapowarr:v1.3.1@sha256:d455797e4f2c5b1a8ccc5ce05c427f1af2179451bb1af195ca3fa8c3e928623b
+    cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
+    cpus: 1.0
+    labels:
+      dev.dozzle.name: kapowarr
+    ports:
+      - "5656:5656"
+    volumes:
+      - ${KAPOWARR_CONFIG_PATH:?}:/app/db
+      - ${KAPOWARR_DOWNLOADS_PATH:?}:/app/temp_downloads
+      - ${KAPOWARR_COMICS_PATH:?}:/comics
+    environment:
+      TZ: ${TZ:?}
+      # The entrypoint starts as root, remaps its own account to this pair and
+      # re-executes through gosu, so the platform identity arrives under the
+      # linuxserver.io names rather than through `user:`.
+      PUID: ${NAS_UID:?}
+      PGID: ${NAS_GID:?}
+    healthcheck:
+      # The runtime image is python:3.13-slim and ships neither curl nor wget,
+      # so the interpreter Kapowarr itself runs on is the health probe.
+      test:
+        - CMD-SHELL
+        - >-
+          python3 -c "import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:5656/api/public', timeout=5)"
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+    logging: *default-logging

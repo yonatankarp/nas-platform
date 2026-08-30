@@ -1,0 +1,312 @@
+---
+- name: Revalidate deployment paths before Kapowarr runtime use
+  ansible.builtin.include_role:
+    name: deployment_bundle
+    tasks_from: target
+  vars:
+    deployment_target_require_current_release: true
+    deployment_target_extra_paths:
+      - "{{ platform_current_dir }}/services/kapowarr"
+      - "{{ platform_current_dir }}/services/kapowarr/compose.yml"
+      - "{{ platform_current_dir }}/services/kapowarr/compose.{{ platform_compose_kind }}.yml"
+      - "{{ platform_runtime_dir }}/services/kapowarr"
+      - "{{ platform_runtime_dir }}/services/kapowarr/.env"
+      - "{{ kapowarr_config_host_path }}"
+
+# The ComicVine key is the one Kapowarr credential this platform authors but
+# does not push. Kapowarr validates `comicvine_api_key` by calling
+# comicvine.gamespot.com before it will store the value, so a converge that set
+# it would depend on a third party being reachable and un-rate-limited, and
+# could not be proved in any disposable lane. The vault is still its authority:
+# it is where the operator's key is recorded and recovered from. Guarding its
+# shape here refuses a truncated or multi-line value at the top of the run
+# instead of at the point the operator pastes it into the application.
+- name: Require a well-formed Kapowarr ComicVine credential
+  ansible.builtin.assert:
+    that:
+      - vault_kapowarr_comicvine_api_key is match('^[^\r\n]+$')
+    fail_msg: The Kapowarr ComicVine credential must be a nonempty single-line value.
+
+# Redacted: the conditions name the two halves of the Kapowarr administrator
+# identity, which the platform submits to the application as JSON.
+- name: Require env-safe Kapowarr administrator credentials
+  ansible.builtin.assert:
+    that:
+      - vault_kapowarr_admin_username is match('^[^\r\n]+$')
+      - vault_kapowarr_admin_password is match('^[^\r\n]+$')
+    fail_msg: Kapowarr administrator credentials must be nonempty single-line values.
+  no_log: true
+
+- name: Render the Kapowarr environment
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ platform_runtime_dir }}/services/kapowarr/.env"
+    mode: "0600"
+
+- name: Deploy Kapowarr
+  community.docker.docker_compose_v2:
+    project_src: "{{ platform_current_dir }}/services/kapowarr"
+    project_name: "{{ kapowarr_compose_project_name }}"
+    files: "{{ platform_service_compose_files['kapowarr'] }}"
+    env_files: ["{{ platform_runtime_dir }}/services/kapowarr/.env"]
+    state: present
+    wait: true
+    wait_timeout: "{{ platform_compose_wait_timeout }}"
+  register: kapowarr_deploy
+
+- name: Report the Kapowarr deployment
+  ansible.builtin.include_role:
+    name: ntfy
+    tasks_from: deployment_report
+  vars:
+    ntfy_deployment_report_service: Kapowarr
+    ntfy_deployment_report_changed: "{{ kapowarr_deploy is changed }}"
+
+- name: Verify Kapowarr effective container CPU policy
+  ansible.builtin.include_role:
+    name: container_cpu
+  vars:
+    container_cpu_service_name: kapowarr
+    container_cpu_project_name: "{{ kapowarr_compose_project_name }}"
+  when: not ansible_check_mode
+
+# /api/public is the only route Kapowarr leaves outside its API-key decorator,
+# and it reports which authentication mode the deployed database holds: 0 for
+# none, 1 for a bare password, 2 for the username and password pair this
+# platform authors.
+- name: Wait for Kapowarr application readiness
+  ansible.builtin.uri:
+    url: "{{ kapowarr_api }}/api/public"
+    method: GET
+    status_code: [200]
+    return_content: true
+  register: kapowarr_public
+  until:
+    - kapowarr_public.json | default(none) is mapping
+    - (kapowarr_public.json.result | default({})).authentication_method | default(none) is number
+  retries: "{{ platform_readiness_retries }}"
+  delay: "{{ platform_readiness_delay }}"
+  changed_when: false
+  check_mode: false
+
+# Kapowarr stores no credential outside its own database, so the deployed
+# identity can only be learned by presenting the authored one. A successful
+# login answers with the application's API key, which is what every other route
+# demands; that is why both probes stay redacted even though only the first
+# carries a credential in its request.
+# Redacted: the request is the vault-authored administrator identity.
+- name: Probe the vault-authored Kapowarr administrator
+  ansible.builtin.uri:
+    url: "{{ kapowarr_api }}/api/auth"
+    method: POST
+    body_format: json
+    body:
+      username: "{{ vault_kapowarr_admin_username }}"
+      password: "{{ vault_kapowarr_admin_password }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: kapowarr_identity_probe
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+# Redacted: an unprotected Kapowarr answers this credential-free request with
+# the API key that authorizes every other route.
+- name: Probe Kapowarr for an unprotected application interface
+  ansible.builtin.uri:
+    url: "{{ kapowarr_api }}/api/auth"
+    method: POST
+    body_format: json
+    body: {}
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: kapowarr_anonymous_probe
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+# A bare password (mode 1) accepts any username, so the authored pair is only
+# actually in force at mode 2; reconciliation is required below that.
+# Redacted: the resolved API key is the application's own authorization secret.
+- name: Resolve the Kapowarr administrator reconciliation
+  ansible.builtin.set_fact:
+    kapowarr_identity_current: >-
+      {{ kapowarr_identity_probe.status | default(0) | int == 200 and
+         (kapowarr_public.json.result | default({})).authentication_method | default(0) | int == 2 }}
+    kapowarr_settings_api_key: >-
+      {{ kapowarr_identity_probe.json.result.api_key
+         if kapowarr_identity_probe.status | default(0) | int == 200
+         else (kapowarr_anonymous_probe.json.result.api_key
+               if kapowarr_anonymous_probe.status | default(0) | int == 200
+               else '') }}
+  no_log: true
+
+- name: Refuse an unrecoverable Kapowarr administrator identity
+  ansible.builtin.assert:
+    that:
+      - kapowarr_identity_current | bool or kapowarr_settings_api_key | length > 0
+    fail_msg: >-
+      Kapowarr holds an administrator identity this platform did not author and
+      refuses both that identity and an unauthenticated caller, so no converge
+      can replace it. Recover the deployed password or remove the Kapowarr
+      database before running again.
+
+- name: Report the planned Kapowarr administrator provisioning
+  ansible.builtin.debug:
+    msg: >-
+      Kapowarr does not hold the vault-authored administrator pair; a live run
+      would declare it through the application settings interface.
+  when:
+    - ansible_check_mode
+    - not kapowarr_identity_current | bool
+
+# Kapowarr hashes both halves with a salt it generated at first start and keeps
+# private, so the platform cannot precompute the stored value and has to submit
+# the clear pair. Submitting it again is harmless but is not a converged state,
+# so the write only runs when the probes above proved it is missing.
+# Redacted: this request is where the administrator identity enters the target.
+- name: Declare the vault-authored Kapowarr administrator
+  ansible.builtin.uri:
+    url: "{{ kapowarr_api }}/api/settings?api_key={{ kapowarr_settings_api_key }}"
+    method: PUT
+    body_format: json
+    body:
+      auth_username: "{{ vault_kapowarr_admin_username }}"
+      auth_password: "{{ vault_kapowarr_admin_password }}"
+    status_code: [200]
+  when:
+    - not ansible_check_mode
+    - not kapowarr_identity_current | bool
+  changed_when: true
+  no_log: true
+
+# Redacted: the request carries the application API key in its query string.
+- name: Read the declared Kapowarr library roots
+  ansible.builtin.uri:
+    url: "{{ kapowarr_api }}/api/rootfolder?api_key={{ kapowarr_settings_api_key }}"
+    method: GET
+    status_code: [200]
+    return_content: true
+  register: kapowarr_root_folders
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+# Kapowarr stores a root folder with a trailing separator, and refuses a second
+# root that is a parent or child of an existing one, so the comparison is on the
+# separator-free form and the create below is the only reachable mutation.
+- name: Resolve whether Kapowarr owns the declared comics library root
+  ansible.builtin.set_fact:
+    kapowarr_library_root_present: >-
+      {{ kapowarr_root_folders.json.result | default([]) | map(attribute='folder') |
+         map('regex_replace', '/+$', '') | select('equalto', kapowarr_library_root) |
+         list | length == 1 }}
+
+- name: Report the planned Kapowarr comics library root
+  ansible.builtin.debug:
+    msg: >-
+      Kapowarr does not own the declared comics library root; a live run would
+      create it.
+  when:
+    - ansible_check_mode
+    - not kapowarr_library_root_present | bool
+
+# Redacted: the request carries the application API key in its query string.
+- name: Declare the Kapowarr comics library root
+  ansible.builtin.uri:
+    url: "{{ kapowarr_api }}/api/rootfolder?api_key={{ kapowarr_settings_api_key }}"
+    method: POST
+    body_format: json
+    body:
+      folder: "{{ kapowarr_library_root }}"
+    status_code: [201]
+  when:
+    - not ansible_check_mode
+    - not kapowarr_library_root_present | bool
+  changed_when: true
+  no_log: true
+
+- name: Verify the Kapowarr service endpoint
+  tags: [platform_verify_kapowarr]
+  ansible.builtin.uri:
+    url: "{{ kapowarr_api }}/api/public"
+    method: GET
+    status_code: [200]
+    return_content: true
+  register: kapowarr_verify_public
+  changed_when: false
+  check_mode: false
+
+# The web interface is the writer: it renames and deletes the comics library and
+# queues downloads into it, and every route behind /api answers to the key a
+# successful login returns. These three reads prove the vault-authored identity
+# is the one Kapowarr accepts, that it refuses a caller without it, and that the
+# library root the platform declared is still the only one it owns. All of them
+# accept any status so the assertion below is what fails, naming which outcome
+# differed: a probe that died on the HTTP code would report the failure from a
+# redacted task and say nothing.
+# Redacted: the request is the vault-authored administrator identity.
+- name: Verify Kapowarr accepts the vault administrator
+  tags: [platform_verify_kapowarr]
+  ansible.builtin.uri:
+    url: "{{ kapowarr_api }}/api/auth"
+    method: POST
+    body_format: json
+    body:
+      username: "{{ vault_kapowarr_admin_username }}"
+      password: "{{ vault_kapowarr_admin_password }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: kapowarr_verify_identity
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Verify Kapowarr refuses an unauthenticated caller
+  tags: [platform_verify_kapowarr]
+  ansible.builtin.uri:
+    url: "{{ kapowarr_api }}/api/auth"
+    method: POST
+    body_format: json
+    body: {}
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: kapowarr_verify_anonymous
+  failed_when: false
+  changed_when: false
+  check_mode: false
+
+# Redacted: the request carries the application API key the login returned.
+- name: Verify the Kapowarr comics library root ownership
+  tags: [platform_verify_kapowarr]
+  ansible.builtin.uri:
+    url: >-
+      {{ kapowarr_api }}/api/rootfolder?api_key={{
+         kapowarr_verify_identity.json.result.api_key | default('') }}
+    method: GET
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: kapowarr_verify_roots
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require the exact Kapowarr verification results
+  tags: [platform_verify_kapowarr]
+  ansible.builtin.assert:
+    that:
+      - (kapowarr_verify_public.json.result | default({})).authentication_method | default(0) | int == 2
+      - kapowarr_verify_identity.status | default(0) | int == 200
+      - kapowarr_verify_anonymous.status | default(0) | int == 401
+      - kapowarr_verify_roots.status | default(0) | int == 200
+      - >-
+        kapowarr_verify_roots.json.result | default([]) | map(attribute='folder') |
+        map('regex_replace', '/+$', '') | list == [kapowarr_library_root]
+    fail_msg: >-
+      Kapowarr is unreachable, or it no longer accepts exactly the vault-authored
+      administrator, refuses everyone else, and owns exactly the declared comics
+      library root.

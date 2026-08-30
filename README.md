@@ -185,12 +185,15 @@ operator-owned lists. With the default false transport flags, a normal
 deployment starts no Phase 1 acquisition containers or downloads.
 
 Phase 2 adds Pinchflat, which writes the `Media/YouTube` library that Jellyfin
-reads. It is self-contained: it consumes no platform API, joins no control
-network, and needs neither transport flag, so it deploys unconditionally. Its
-web interface is the writer and its only access control is the basic-auth
+reads, and Kapowarr, which writes the `Books/Comics` library that Komga reads.
+Both are self-contained: they consume no platform API, join no control network,
+and need neither transport flag, so they deploy unconditionally. Each one's web
+interface is the writer, and its only access control is the administrator
 identity authored in vault; nothing is downloaded until an operator declares a
-source in the application. The remaining four acquisition projects — Bindery,
-Kapowarr, Trailarr and Seerr — stay planned.
+source in the application. Kapowarr additionally needs the vault-authored
+ComicVine key entered in the application before it can identify anything, which
+is the deliberate reason a fresh deployment acquires nothing. The remaining
+three acquisition projects — Bindery, Trailarr and Seerr — stay planned.
 
 Open Subtitles remains configured in Jellyfin until Bazarr is proven on the
 physical NAS. Follow the

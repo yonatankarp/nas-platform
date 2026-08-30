@@ -1,0 +1,4 @@
+---
+services:
+  kapowarr:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-kapowarr

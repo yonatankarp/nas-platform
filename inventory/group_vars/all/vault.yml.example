@@ -43,6 +43,14 @@ vault_downloaders_sabnzbd_api_key: "44444444444444444444444444444444"
 vault_downloaders_sabnzbd_admin_username: nasadmin
 vault_downloaders_sabnzbd_admin_password: example-sabnzbd-password
 
+# Kapowarr's only access control: the administrator pair it stores hashed in
+# its own database and demands before it hands out its API key. The ComicVine
+# key is a third-party account credential; the platform records it here and
+# never generates it.
+vault_kapowarr_admin_username: example-admin
+vault_kapowarr_admin_password: example-kapowarr-password
+vault_kapowarr_comicvine_api_key: example-comicvine-api-key
+
 # Pinchflat's only access control: HTTP basic authentication on its web
 # interface, which is the writer for the YouTube library.
 vault_pinchflat_admin_username: example-admin

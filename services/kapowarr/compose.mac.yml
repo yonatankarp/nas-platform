@@ -1,0 +1,6 @@
+---
+services:
+  kapowarr:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-kapowarr
+    ports: !override
+      - "${KAPOWARR_HOST_PORT:?}:5656"

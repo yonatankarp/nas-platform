@@ -148,7 +148,7 @@ projects:
             published_by: bindery
   kapowarr:
     role: kapowarr
-    status: planned
+    status: implemented
     services:
       kapowarr:
         class: long_running

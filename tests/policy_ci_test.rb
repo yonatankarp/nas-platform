@@ -28,7 +28,7 @@ end
 integration_path = File.join(ROOT, "tests", "integration.sh")
 classifier_path = File.join(ROOT, "tests", "ci", "classify_changes.rb")
 if File.file?(integration_path) && File.file?(classifier_path)
-  planned_acquisition_lanes = %w[bindery kapowarr trailarr seerr]
+  planned_acquisition_lanes = %w[bindery trailarr seerr]
   suite_tags = File.read(integration_path)
                    .scan(/^\s*([a-z][a-z0-9-]*)\)\s+fixed_tags=([a-z0-9_,-]*)\s*;;/)
                    .to_h { |suite, tags| [suite, tags.split(",")] }
@@ -130,6 +130,10 @@ enabled_idempotence_contracts = {
     "run_enabled_idempotence arr,downloaders",
     "run_play --tags arr,downloaders --check --diff"
   ],
+  "kapowarr" => [
+    "run_enabled_idempotence kapowarr",
+    "run_play --tags kapowarr --check --diff"
+  ],
   "pinchflat" => [
     "run_enabled_idempotence pinchflat",
     "run_play --tags pinchflat --check --diff"
@@ -192,7 +196,7 @@ service_image_sources.each do |service_tag, service_directory|
         "which has no compose.yml")
 end
 
-acquisition_image_tags = %w[bindery kapowarr trailarr seerr]
+acquisition_image_tags = %w[bindery trailarr seerr]
 check(failures, (service_image_sources.map(&:first) & acquisition_image_tags).empty?,
       "planned acquisition foundation suites must have zero service image sources")
 

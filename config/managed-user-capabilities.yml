@@ -101,6 +101,16 @@ services:
       create: get_user_model
       authenticate: api/token
       reconcile: get_user_model
+  kapowarr:
+    preserves_unmanaged_users: true
+    password_rotation: refuse
+    existing_identity_password_update: forbidden
+    mode: single_identity_settings
+    interfaces:
+      list: api/public
+      create: api/settings
+      authenticate: api/auth
+      reconcile: api/settings
   pinchflat:
     preserves_unmanaged_users: true
     password_rotation: refuse

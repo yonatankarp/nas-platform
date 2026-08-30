@@ -189,6 +189,9 @@ vault_arr_bazarr_admin_password: '$(random_password)'
 vault_downloaders_sabnzbd_api_key: '$(openssl rand -hex 16 2>/dev/null)'
 vault_downloaders_sabnzbd_admin_username: nasadmin
 vault_downloaders_sabnzbd_admin_password: '$(random_password)'
+vault_kapowarr_admin_username: nasadmin
+vault_kapowarr_admin_password: '$(random_password)'
+vault_kapowarr_comicvine_api_key: ephemeral-comicvine-api-key
 vault_pinchflat_admin_username: nasadmin
 vault_pinchflat_admin_password: '$(random_password)'
 vault_ntfy_admin_user: ephemeral-admin
