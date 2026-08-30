@@ -96,14 +96,14 @@
     content: "{{ vault_beszel_hub_private_key }}"
     dest: "{{ beszel_state_root }}/id_ed25519"
     mode: "0600"
-  no_log: "{{ beszel_no_log | default(true) }}"
+  no_log: true
 
 - name: Render the Beszel environment
   ansible.builtin.template:
     src: env.j2
     dest: "{{ platform_runtime_dir }}/services/beszel/.env"
     mode: "0600"
-  no_log: "{{ beszel_no_log | default(true) }}"
+  no_log: true
 
 - name: List deployed Beszel Compose services
   ansible.builtin.command:
@@ -187,7 +187,7 @@
   register: beszel_superuser_pre_auth
   changed_when: false
   check_mode: false
-  no_log: "{{ beszel_no_log | default(true) }}"
+  no_log: true
 
 - name: Create the superuser without updating an existing identity
   community.docker.docker_compose_v2_exec:
@@ -208,7 +208,7 @@
     - beszel_superuser_pre_auth.status | int != 200
   failed_when: false
   changed_when: false
-  no_log: "{{ beszel_no_log | default(true) }}"
+  no_log: true
 
 - name: Authenticate as the superuser
   tags: [platform_verify_beszel]
@@ -223,7 +223,7 @@
   register: beszel_auth
   changed_when: false
   check_mode: false
-  no_log: "{{ beszel_no_log | default(true) }}"
+  no_log: true
 
 - name: Require created or preserved Beszel superuser credentials
   tags: [platform_verify_beszel]
@@ -267,7 +267,7 @@
   register: beszel_advertised_key
   changed_when: false
   check_mode: false
-  no_log: "{{ beszel_no_log | default(true) }}"
+  no_log: true
 
 - name: Verify the advertised key matches vault, proving no read-back is needed
   tags: [platform_verify_beszel]
@@ -299,7 +299,7 @@
   register: beszel_complete_users
   changed_when: false
   check_mode: false
-  no_log: "{{ beszel_no_log | default(true) }}"
+  no_log: true
 
 - name: Require a complete PocketBase users collection
   ansible.builtin.assert:
@@ -323,7 +323,7 @@
   register: beszel_users
   changed_when: false
   check_mode: false
-  no_log: "{{ beszel_no_log | default(true) }}"
+  no_log: true
 
 - name: Require the complete managed application user result set
   ansible.builtin.assert:
@@ -360,7 +360,7 @@
   register: beszel_created_user
   when: beszel_matching_users | length == 0
   changed_when: true
-  no_log: "{{ beszel_no_log | default(true) }}"
+  no_log: true
 
 - name: Report planned application user creation
   ansible.builtin.debug:
@@ -399,7 +399,7 @@
   register: beszel_users_after
   changed_when: false
   check_mode: false
-  no_log: "{{ beszel_no_log | default(true) }}"
+  no_log: true
 
 - name: Refuse duplicate managed application users after reconciliation
   tags: [platform_verify_beszel]
@@ -422,7 +422,7 @@
       {{ (beszel_users_after.json.get('items', [])
           | selectattr('email', 'equalto', vault_beszel_app_user_email)
           | list | first | default({})).id | default('') }}
-  no_log: "{{ beszel_no_log | default(true) }}"
+  no_log: true
 
 - name: Check whether the managed application user accepts vault credentials
   tags: [platform_verify_beszel]
@@ -437,7 +437,7 @@
   register: beszel_app_user_auth
   changed_when: false
   check_mode: false
-  no_log: "{{ beszel_no_log | default(true) }}"
+  no_log: true
   when: beszel_user_id | length > 0
 
 - name: Require preserved Beszel application-user credentials
@@ -469,7 +469,7 @@
       or (beszel_users_after.json.get('items', [])
           | selectattr('id', 'equalto', beszel_user_id) | first).role != 'admin'
   changed_when: true
-  no_log: "{{ beszel_no_log | default(true) }}"
+  no_log: true
 
 - name: Report planned managed application user reconciliation
   ansible.builtin.debug:
@@ -495,7 +495,7 @@
   register: beszel_users_after
   changed_when: false
   check_mode: false
-  no_log: "{{ beszel_no_log | default(true) }}"
+  no_log: true
 
 - name: Resolve the reconciled application user id
   tags: [platform_verify_beszel]
@@ -504,7 +504,7 @@
       {{ (beszel_users_after.json.get('items', [])
           | selectattr('email', 'equalto', vault_beszel_app_user_email)
           | list | first | default({})).id | default('') }}
-  no_log: "{{ beszel_no_log | default(true) }}"
+  no_log: true
 
 - name: Verify the managed application user contract
   tags: [platform_verify_beszel]
@@ -530,7 +530,7 @@
     status_code: [200]
   changed_when: false
   check_mode: false
-  no_log: "{{ beszel_no_log | default(true) }}"
+  no_log: true
   when: not ansible_check_mode
 
 - name: Reconcile managed Beszel users
@@ -562,7 +562,7 @@
       register: beszel_tokens
       changed_when: false
       check_mode: false
-      no_log: "{{ beszel_no_log | default(true) }}"
+      no_log: true
 
     - name: Require the complete managed universal token result set
       ansible.builtin.assert:
@@ -597,7 +597,7 @@
         beszel_tokens.json.get('items', [])
         | selectattr('user', 'equalto', beszel_user_id) | list | length == 0
       changed_when: true
-      no_log: "{{ beszel_no_log | default(true) }}"
+      no_log: true
 
     - name: Reconcile the universal token from vault
       ansible.builtin.uri:
@@ -616,7 +616,7 @@
            | selectattr('user', 'equalto', beszel_user_id) | first).token
           != vault_beszel_universal_token
       changed_when: true
-      no_log: "{{ beszel_no_log | default(true) }}"
+      no_log: true
       vars:
         beszel_managed_token: >-
           {{ beszel_tokens.json.get('items', [])
@@ -636,7 +636,7 @@
                    | selectattr('user', 'equalto', beszel_user_id) | first).token
                   != vault_beszel_universal_token)
       changed_when: true
-      no_log: "{{ beszel_no_log | default(true) }}"
+      no_log: true
 
     - name: Refresh universal tokens after reconciliation
       tags: [platform_verify_beszel]
@@ -649,7 +649,7 @@
       register: beszel_tokens
       changed_when: false
       check_mode: false
-      no_log: "{{ beszel_no_log | default(true) }}"
+      no_log: true
 
     - name: Verify the exact managed universal token
       tags: [platform_verify_beszel]
@@ -661,7 +661,7 @@
              | selectattr('user', 'equalto', beszel_user_id) | first).token
             == vault_beszel_universal_token
         fail_msg: Managed universal token is absent, duplicated, or differs from vault.
-      no_log: "{{ beszel_no_log | default(true) }}"
+      no_log: true
       when: not ansible_check_mode
 
     - name: List notification settings
@@ -675,7 +675,7 @@
       register: beszel_settings
       changed_when: false
       check_mode: false
-      no_log: "{{ beszel_no_log | default(true) }}"
+      no_log: true
 
     - name: Require the complete managed notification settings result set
       ansible.builtin.assert:
@@ -703,7 +703,7 @@
         status_code: [200]
       when: beszel_matching_settings | length == 0
       changed_when: true
-      no_log: "{{ beszel_no_log | default(true) }}"
+      no_log: true
 
     # Beszel's create hook authors email/chart defaults and intentionally
     # replaces a settings payload supplied on POST. Read that created record,
@@ -719,7 +719,7 @@
       register: beszel_settings
       changed_when: false
       check_mode: false
-      no_log: "{{ beszel_no_log | default(true) }}"
+      no_log: true
 
     - name: Point Beszel notifications at ntfy
       ansible.builtin.uri:
@@ -738,7 +738,7 @@
         - (beszel_current_notification_settings.webhooks | default([]))
           != [beszel_notification_url | trim]
       changed_when: true
-      no_log: "{{ beszel_no_log | default(true) }}"
+      no_log: true
 
     - name: Report planned notification webhook reconciliation
       ansible.builtin.debug:
@@ -762,7 +762,7 @@
       register: beszel_settings
       changed_when: false
       check_mode: false
-      no_log: "{{ beszel_no_log | default(true) }}"
+      no_log: true
 
     - name: Summarize the managed ntfy webhook without URL bodies
       tags: [platform_verify_beszel]
@@ -810,7 +810,7 @@
       failed_when: false
       changed_when: false
       check_mode: false
-      no_log: "{{ beszel_no_log | default(true) }}"
+      no_log: true
 
     - name: Require the complete same-name system result set
       ansible.builtin.assert:

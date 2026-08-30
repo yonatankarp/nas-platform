@@ -1066,8 +1066,7 @@ def exercise_primary_beszel_drift(failures)
     "beszel_user_id" => current_user.fetch("id"),
     "beszel_users_after" => { "json" => { "items" => [current_user] } },
     "vault_beszel_app_user_email" => current_user.fetch("email"),
-    "vault_beszel_app_user_password" => "primary-secret",
-    "beszel_no_log" => false
+    "vault_beszel_app_user_password" => "primary-secret"
   }
   tasks = primary_beszel_user_tasks
 
