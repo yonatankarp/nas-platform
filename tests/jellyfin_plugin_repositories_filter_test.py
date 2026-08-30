@@ -120,9 +120,27 @@ retired_declaration = {"Name": "Retired Declaration", "Url": RETIRED_URL}
 assert merged_from(inventory_of([listed_retired]), [retired_declaration], retired) == []
 assert merged_from([], [retired_declaration], retired) == [retired_declaration]
 
-# Membership against a retired value that is a string is Python's substring test,
-# exactly as the `when:` condition's `in` was.
-assert merged_from(inventory_of([stable]), [], STABLE_URL) == []
+# A retired value that is not a sequence is refused. Unguarded, `in` against a
+# string is Python's substring test — the `when:` condition's behaviour — so the
+# scalar below dropped every repository whose normalized URL it merely contained,
+# from a task running under no_log, and reported nothing.
+require_rejected(merged_from, inventory_of([stable]), [], STABLE_URL)
+require_rejected(merged_from, inventory_of([stable]), [], STABLE_URL + "?x")
+require_rejected(merged_from, inventory_of([stable]), [], None)
+require_rejected(merged_from, inventory_of([stable]), [], {STABLE_URL: True})
+
+# The refusal names the retired list, not the inventory or the declarations.
+try:
+    merged_from(inventory_of([stable]), [], STABLE_URL)
+except AnsibleFilterError as refusal:
+    assert str(refusal) == "retired Jellyfin plugin repository URLs must be a list", refusal
+else:
+    raise AssertionError("a scalar retired URL was accepted")
+
+# A tuple is still accepted — the templar can deliver one — and its members are
+# compared by equality, so a URL that only contains a reported one retires nothing.
+assert merged_from(inventory_of([stable]), [], (STABLE_URL,)) == []
+assert merged_from(inventory_of([stable]), [], (STABLE_URL + "?x",)) == [stable]
 
 require_rejected(inventory_of, {"Url": STABLE_URL})
 require_rejected(inventory_of, STABLE_URL)

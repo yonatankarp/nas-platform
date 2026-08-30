@@ -1919,6 +1919,15 @@ end
   end
 end
 
+expect_failure(failures, "filter input argument spec check removed from policy validation",
+               "validate-policy.sh must run PYTHONDONTWRITEBYTECODE=1 \"$ansible_python\" " \
+               "tests/filter_input_argument_spec_test.py exactly once") do |root|
+  path = File.join(root, "tests", "validate-policy.sh")
+  File.write(path, File.read(path).lines.reject do |line|
+    line.strip == 'PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/filter_input_argument_spec_test.py'
+  end.join)
+end
+
 {
   "production auto-deploy poller suite" =>
     'PYTHONDONTWRITEBYTECODE=1 "$ansible_python" -m unittest -v tests.production_auto_deploy_test',

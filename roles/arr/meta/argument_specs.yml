@@ -66,6 +66,79 @@ argument_specs:
         type: list
         elements: dict
         required: false
+      # The two structured declarations below are fed straight into
+      # filter_plugins/acquisition_servarr.py, whose tasks run under
+      # no_log: true. Without a declared shape a missing or mistyped field
+      # surfaces as an AnsibleFilterError inside a redacted task; declared, it
+      # fails at role entry naming the element and the field.
+      arr_servarr_instances:
+        type: list
+        elements: dict
+        required: false
+        options:
+          name:
+            type: str
+            required: true
+          api:
+            type: str
+            required: true
+          api_key:
+            type: str
+            required: true
+          admin_username:
+            type: str
+            required: true
+          admin_password:
+            type: str
+            required: true
+          root_folder:
+            type: str
+            required: true
+          category:
+            type: str
+            required: true
+          rename_field:
+            type: str
+            required: true
+          # Read as instance.get('tags', []) by acquisition_servarr_client_body.
+          # No declared instance carries tags today; the platform tags nothing.
+          tags:
+            type: list
+            elements: int
+            required: false
+      arr_prowlarr_applications:
+        type: list
+        elements: dict
+        required: false
+        options:
+          name:
+            type: str
+            required: true
+          implementation:
+            type: str
+            required: true
+          # acquisition_application_body defaults implementation_name to
+          # implementation, so it is optional here and absent from the defaults.
+          implementation_name:
+            type: str
+            required: false
+          config_contract:
+            type: str
+            required: true
+          base_url:
+            type: str
+            required: true
+          api_key:
+            type: str
+            required: true
+          sync_categories:
+            type: list
+            elements: int
+            required: false
+          tags:
+            type: list
+            elements: int
+            required: false
       vault_downloaders_sabnzbd_api_key: {type: str, required: true}
       vault_downloaders_sabnzbd_admin_username: {type: str, required: true}
       vault_downloaders_sabnzbd_admin_password: {type: str, required: true}

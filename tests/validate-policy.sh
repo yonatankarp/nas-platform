@@ -118,6 +118,7 @@ PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/immich_preference_schema_test.
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/container_cpu_filter_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/deployment_summary_filter_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/jellyfin_plugin_repositories_filter_test.py
+PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/filter_input_argument_spec_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/safe_slurp_test.py
 ansible-playbook -i localhost, -c local tests/compose_metadata_filter_test.yml
 ruby tests/run_contracts_test.rb
