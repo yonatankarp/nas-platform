@@ -352,11 +352,14 @@ CI_FAILED = "failed"
 CI_AMBIGUOUS = "ambiguous"
 
 # Conclusions that end a run without judging the revision it was running. The
-# workflow cancels its own superseded runs — `cancel-in-progress` keyed on the
-# branch — so merging twice inside one CI window is enough to leave the first
-# revision `cancelled`, and roughly a quarter of pushes to main end that way.
-# Reading that as a red main would page a human for the repository's own
-# concurrency policy, every time two changes land close together.
+# workflow used to cancel its own superseded runs on every branch, so merging
+# twice inside one CI window left the first revision `cancelled`, and roughly a
+# quarter of pushes to main ended that way. `cancel-in-progress` is now confined
+# to pull requests — a post-merge run is the only run that will ever see the tree
+# it merged, so main pushes queue instead — but a run can still be cancelled by
+# hand, and `skipped`, `stale` and `neutral` say as little as `cancelled` does.
+# Reading any of them as a red main would page a human for a run that never
+# judged the revision at all.
 #
 # Anything absent from this set counts as a refusal, including a conclusion
 # this poller has never heard of: an unrecognised answer from CI is exactly the

@@ -229,8 +229,8 @@ def model_failures(defaults_source, argument_specs, role_source, contract, drift
   settings = defaults["komga_library_settings"]
   failures << "the shared library settings are not a mapping" unless settings.is_a?(Hash)
   if settings.is_a?(Hash)
-    failures << "the six-hour scan schedule is not declared (scanInterval)" unless
-      settings["scanInterval"] == "EVERY_6H"
+    failures << "the hourly scan schedule is not declared (scanInterval)" unless
+      settings["scanInterval"] == "HOURLY"
     failures << "the .acquisition scan exclusion is not declared" unless
       settings["scanDirectoryExclusions"] == [".acquisition"]
     failures << "scanOnStartup is no longer owned as false" unless settings["scanOnStartup"] == false
@@ -296,8 +296,8 @@ def model_failures(defaults_source, argument_specs, role_source, contract, drift
     contract.include?('LIBRARY_MODEL = [') &&
       contract.include?("\"Comics\", \"root\" => \"#{COMICS_ROOT}\"") &&
       contract.include?("\"Ebooks\", \"root\" => \"#{EBOOKS_ROOT}\"")
-  failures << "the contract does not pin the six-hour scan schedule" unless
-    contract.include?('"scanInterval" => "EVERY_6H"')
+  failures << "the contract does not pin the hourly scan schedule" unless
+    contract.include?('"scanInterval" => "HOURLY"')
   failures << "the contract does not pin the .acquisition scan exclusion" unless
     contract.include?('"scanDirectoryExclusions" => [".acquisition"]')
 
@@ -473,7 +473,7 @@ def migration_completion_failures(role_source)
       patch&.fetch("target") == "/api/v1/libraries/legacy-library" &&
       patch&.fetch("json") == {
         "root" => COMICS_ROOT,
-        "scanInterval" => "EVERY_6H",
+        "scanInterval" => "HOURLY",
         "scanDirectoryExclusions" => [".acquisition"]
       }
     failures << "the migration did not create the Ebooks library" unless
@@ -528,7 +528,7 @@ if self_test
   planted = [
     ["a disabled scan interval",
      lambda do
-       source = DEFAULTS_SOURCE.sub("scanInterval: EVERY_6H", "scanInterval: DISABLED")
+       source = DEFAULTS_SOURCE.sub("scanInterval: HOURLY", "scanInterval: DISABLED")
        abort "self-test could not plant a disabled scan interval" if source == DEFAULTS_SOURCE
        model_failures(source, argument_specs, ROLE_SOURCE, contract, drift_hook)
      end,
@@ -794,7 +794,7 @@ with_http_service(libraries) do |port, requests|
   failures << "scan schedule repair did not converge both libraries" unless
     mutations(requests).length == 2 &&
       mutations(requests).map { |request| request.fetch("json") }.uniq == [{
-        "scanInterval" => "EVERY_6H", "scanDirectoryExclusions" => [".acquisition"]
+        "scanInterval" => "HOURLY", "scanDirectoryExclusions" => [".acquisition"]
       }]
 end
 

@@ -10,8 +10,21 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # A run is superseded only by a newer run of the same thing. Another push to a
+  # pull request replaces the tree the previous run was testing, so cancelling that
+  # run costs nothing. A push to `main` replaces nothing: every merge is a different
+  # tree and its post-merge run is the only run that will ever see it. Cancelling
+  # those is what ended 11 of 52 recent `main` push runs -- 21% -- in `cancelled`
+  # rather than in a verdict, so the sweep they paid for routinely never finished.
+  #
+  # The event name is part of the key and is load-bearing rather than decorative:
+  # without it `push` and `schedule` both resolve to `refs/heads/main`, and the
+  # nightly sweep -- not a push, so still cancelling -- would kill an in-flight
+  # post-merge run once a night and reintroduce exactly what the predicate below
+  # removes. Keyed apart, a merge and the nightly sweep neither cancel nor block
+  # one another, and two merges landing together queue instead of racing.
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -39,11 +52,46 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
         run: |
+          # A pull request is classified against its own base. A push to main is
+          # classified against the ref it replaced -- the merge it just landed --
+          # rather than being swept in full: the pull request already ran the routed
+          # matrix against an identical tree, because
+          # strict_required_status_checks_policy forces it up to date before it may
+          # merge, and re-running everything cost 202 runner-minutes across 23 jobs
+          # to say so a second time. `--full` is what schedule and workflow_dispatch
+          # are for.
+          #
+          # github.event.before is the ref's previous tip, so it covers a push of
+          # several commits; HEAD^ covers only the last one and is the fallback for
+          # the pushes with no usable `before` -- a brand new ref reports all zeros,
+          # a force push names a commit this clone never fetched. Both are compared
+          # with three dots by the classifier, which is a no-op here because each
+          # candidate is an ancestor of HEAD, and is what makes a merge commit report
+          # the whole branch it merged instead of one parent's side of it.
+          #
+          # Every failure falls open to `--full`, never to nothing: routing that
+          # recognises nothing has to cost time rather than coverage. Retrying is
+          # safe because the classifier resolves the whole diff before it opens the
+          # output file, so a run that failed left no partial selection behind.
           if [ "$EVENT_NAME" = pull_request ]; then
             BASE=$PR_BASE
             HEAD=$PR_HEAD
             ruby tests/ci/classify_changes.rb --diff "$BASE" "$HEAD" --github-output "$GITHUB_OUTPUT"
+          elif [ "$EVENT_NAME" = push ]; then
+            PUSH_BASE=
+            for candidate in "$PUSH_BEFORE" "HEAD^"; do
+              [ -n "$candidate" ] || continue
+              if resolved=$(git rev-parse --verify --quiet "${candidate}^{commit}"); then
+                PUSH_BASE=$resolved
+                break
+              fi
+            done
+            if [ -z "$PUSH_BASE" ] ||
+               ! ruby tests/ci/classify_changes.rb --diff "$PUSH_BASE" HEAD --github-output "$GITHUB_OUTPUT"; then
+              ruby tests/ci/classify_changes.rb --full --github-output "$GITHUB_OUTPUT"
+            fi
           else
             ruby tests/ci/classify_changes.rb --full --github-output "$GITHUB_OUTPUT"
           fi
