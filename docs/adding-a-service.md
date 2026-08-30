@@ -1069,6 +1069,13 @@ included twice, once with a `reconcile` phase and once with a `verify` phase.
 `roles/komga/tasks/managed_users.yml` and `config/managed-user-capabilities.yml`
 are the reference.
 
+Any task file gated on such a phase must open with an unconditional `assert`
+naming exactly the phases it implements. `include_tasks` never applies
+`meta/argument_specs.yml`, so without that assert a phase string matching no gate
+skips the entire file and the run still reports success — and `verify.yml` reaches
+every verification it owns through this mechanism. `ruby tests/policy_test.rb`
+enforces it: the phases the file declares must equal the phases its callers pass.
+
 `config/managed-user-capabilities.yml` is not optional for services that skip that
 mechanism. It is the register of how *every* service handles identity, so a service
 with no managed users still needs an entry saying so. Pinchflat has no user API at
