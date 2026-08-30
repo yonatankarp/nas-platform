@@ -357,6 +357,7 @@ if defined?(ClassifyChanges)
   )
   check(failures, bindery_output.string == <<~OUTPUT,
     static=true
+    docs=false
     reconciliation=false
     foundation=false
     arr=false
@@ -376,7 +377,6 @@ if defined?(ClassifyChanges)
     paperless=false
     idempotence_check=true
     suites=["bindery","idempotence-check"]
-    run_ci=true
     selected_tags=host_prep,deployment_bundle,ntfy,arr,downloaders,bindery
   OUTPUT
         "Bindery-only output must retain its exact tag plan: #{bindery_output.string.inspect}")
