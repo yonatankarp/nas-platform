@@ -224,7 +224,6 @@ validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "te
   ruby\ tests/renovate_policy_test.rb
   ruby\ tests/docs_links_test.rb
   ruby\ tests/docs_links_test.rb\ --self-test
-  ruby\ tests/policy_manifest_test.rb
   ruby\ tests/run_contracts_test.rb
   ruby\ tests/run_contracts.rb\ --validate-only
   ruby\ tests/database_managed_users_test.rb
@@ -331,6 +330,16 @@ check(failures,
       end,
       "the media acquisition reconciliation checks belong to their own CI job, " \
       "not to validate-policy.sh")
+# The policy mutation harness left the gate for the same reason: it builds a
+# sandbox and runs the whole policy set once per mutation, which made it the
+# gate's floor rather than one more check in its pool. CI must still run it --
+# a check that is in neither place is a guard that silently stopped running.
+check(failures,
+      validation_commands.reject { |command| command.start_with?("#") }
+                         .none? { |command| command.include?("policy_manifest_test.rb") },
+      "the policy mutation harness belongs to its own CI job, not to validate-policy.sh")
+check(failures, ci_commands.include?("ruby tests/policy_manifest_test.rb"),
+      "CI must run ruby tests/policy_manifest_test.rb")
 check(failures,
       validation_commands.count("python3 -m unittest -v tests/dozzle_alert_relay_test.py") == 1,
       "validate-policy.sh must run the Dozzle alert relay unit test exactly once")

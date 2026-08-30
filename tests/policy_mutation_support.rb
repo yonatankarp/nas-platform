@@ -463,19 +463,28 @@ POLICY_SCRIPTS = %w[
   tests/policy_vault_test.rb
 ].freeze
 
+# Runs the whole policy set against one mutated sandbox, because which script
+# rejects a mutation is exactly what this harness must not hard-code.
+#
+# The scripts run concurrently. Every one of them only reads the sandbox, and
+# each is a subprocess that releases the GVL, so this is the same parallelism
+# tests/validate-policy.sh applies to the checks themselves. Serially it was the
+# policy gate's floor: this harness builds a sandbox per mutation and there are
+# over a hundred of them, so a second spent here is spent a hundred times.
+#
+# Results are collected by index rather than appended as they finish, so the
+# output a caller matches against stays in POLICY_SCRIPTS order and a failure
+# report does not depend on which script happened to exit first.
 def run_policy(scripts = POLICY_SCRIPTS)
   Dir.mktmpdir("nas-platform-policy-") do |sandbox|
     copy_fixture(ROOT, sandbox)
     initialize_fixture_index(sandbox)
     yield sandbox
-    output = ""
-    succeeded = true
-    scripts.each do |script|
-      stdout, stderr, status = capture3_without_git_routing(RbConfig.ruby, script, chdir: sandbox)
-      output += stdout + stderr
-      succeeded &&= status.success?
-    end
-    [output, succeeded]
+    results = scripts.map do |script|
+      Thread.new { capture3_without_git_routing(RbConfig.ruby, script, chdir: sandbox) }
+    end.map(&:value)
+    output = results.map { |stdout, stderr, _status| stdout + stderr }.join
+    [output, results.all? { |_stdout, _stderr, status| status.success? }]
   end
 end
 

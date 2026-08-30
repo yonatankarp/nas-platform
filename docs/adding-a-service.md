@@ -804,7 +804,7 @@ At this point:
 
 ```
 $ bash tests/validate-policy.sh
-policy validation: all 106 checks passed
+policy validation: all 107 checks passed
 ```
 
 That total is whatever the manifest in `tests/validate-policy.sh` currently holds;
@@ -1084,9 +1084,13 @@ tests/mac/run.sh --lane fresh \
   --vault-password-file /absolute/path/to/password-command
 ```
 
-`tests/validate-policy.sh` is the gate CI runs, and it runs every check in the
-repository including the Ruby, Python and shell unit tests. Run it before
-opening a pull request, not during the edit loop.
+`tests/validate-policy.sh` is the gate CI runs, and it runs almost every check in
+the repository including the Ruby, Python and shell unit tests. Run it before
+opening a pull request, not during the edit loop. The exceptions are the checks
+that grew a case list large enough to become the gate's floor and now run in CI
+jobs of their own — `tests/policy_manifest_test.rb` and the three
+`tests/media_acquisition_reconciliation_*_test.rb` files — so run those directly
+when you touch what they cover.
 
 The integration harness runs Ansible inside a Linux container against a
 temporary sandbox, so the plays meet a real `/proc/mounts`, real numeric uid and
