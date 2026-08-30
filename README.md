@@ -253,31 +253,15 @@ tests/mac/run.sh \
   --vault-password-file /absolute/path/to/password-command
 ```
 
-For this harness, executable password providers are POSIX shell text with the
-exact `#!/bin/sh` shebang, no shebang options, and no NUL bytes. The harness
-streams inspected provider bytes through an anonymous pipe and executes them
-once in the provider's original directory context, so sibling-helper wrappers
-remain supported without creating a plaintext script file. Other executable
-formats fail closed. Regular password files remain supported unchanged.
+A failed run preserves its sandbox by default; `--keep-on-failure` states that
+policy explicitly for automation that wants it in writing.
 
-The ordered phases are `preflight`, `deploy`, `seed`, `verify`, `idempotence`,
-`drift`, `reconcile`, `recreate`, `persistence`, `report`, and `cleanup`. Select
-one with `--phase NAME`. Resume a preserved run with `--sandbox ABSOLUTE_PATH`;
-completed phases remain recorded and are not repeated. A later phase is refused
-until its predecessors have passed, except that `report` and `cleanup` remain
-available after a failure.
-
-Failed sandboxes are preserved by default, and `--keep-on-failure` is accepted
-for automation that wants to state that policy explicitly. A failed run prints
-exactly one validated cleanup command. Cleanup removes only the marked sandbox;
-the sibling `.reports` directory remains as sanitized evidence. Optional report
-copies under `mac-proof-reports/` are ignored by Git. Complete
-`tests/mac/manual-review.md` against the generated manifest and report.
-
-Failure evidence includes label-scoped container state and bounded log summaries.
-Log message bodies and unparseable lines are always replaced with `[REDACTED]`;
-only validated timestamps, counts, capture status, and container identity remain.
-Raw log content is never written to a temporary file, report, or console.
+[docs/getting-started-mac.md](docs/getting-started-mac.md) owns the rest of the
+contract, so that it is stated once: the password-provider rules and the
+[ordered phases](docs/getting-started-mac.md#3-run-the-complete-fresh-proof),
+[the manual review](docs/getting-started-mac.md#4-perform-the-manual-review),
+and [what a failure preserves, together with the single validated cleanup
+command](docs/getting-started-mac.md#5-resume-or-clean-a-failed-proof).
 
 ## Manual escape hatch
 

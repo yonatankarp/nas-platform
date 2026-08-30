@@ -1103,7 +1103,7 @@ laptop.
 
 ```sh
 # seconds
-bash tests/validate-policy.sh
+ruby tests/policy_test.rb
 ansible-playbook -i inventory/local.yml site.yml --syntax-check
 ansible-playbook -i inventory/local.yml verify.yml \
   --tags platform_verify_<name> --list-tasks
@@ -1111,7 +1111,9 @@ ansible-playbook -i inventory/local.yml verify.yml \
 # about a minute
 ansible-lint --strict
 
-# slow; exceeded ten minutes without completing when this guide was written
+# minutes; the checks run concurrently and the script reports its own wall
+# time and its ten slowest checks when it finishes. POLICY_JOBS=1 restores the
+# serial order (15m28s) for bisecting a failure that only appears under load.
 tests/validate-policy.sh
 
 # needs Docker; converges a disposable Linux sandbox
