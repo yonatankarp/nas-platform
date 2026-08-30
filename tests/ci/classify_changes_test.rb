@@ -258,7 +258,6 @@ if defined?(ClassifyChanges)
     paperless=false
     idempotence_check=true
     suites=["smoke","beszel","dozzle","idempotence-check"]
-    run_ci=true
     selected_tags=host_prep,deployment_bundle,ntfy,beszel,dozzle
   OUTPUT
   check(failures, io.string == expected_output,
@@ -287,7 +286,6 @@ if defined?(ClassifyChanges)
     paperless=true
     idempotence_check=true
     suites=["foundation","arr","downloaders","bindery","kapowarr","pinchflat","trailarr","seerr","smoke","beszel","dozzle","audiobookshelf","komga","jellyfin","immich","paperless","idempotence-check"]
-    run_ci=true
     selected_tags=
   OUTPUT
   check(failures, full_output.string == expected_full_output,
@@ -332,7 +330,6 @@ if defined?(ClassifyChanges)
     paperless=true
     idempotence_check=true
     suites=["smoke","paperless","idempotence-check"]
-    run_ci=true
     selected_tags=host_prep,deployment_bundle,ntfy,paperless
   OUTPUT
         "Paperless-only output must retain its exact tag plan: #{paperless_output.string.inspect}")
@@ -365,7 +362,6 @@ if defined?(ClassifyChanges)
     paperless=false
     idempotence_check=true
     suites=["kapowarr","idempotence-check"]
-    run_ci=true
     selected_tags=host_prep,deployment_bundle,ntfy,kapowarr
   OUTPUT
         "Kapowarr-only output must retain its exact tag plan: #{kapowarr_output.string.inspect}")
@@ -395,14 +391,13 @@ if defined?(ClassifyChanges)
     paperless=false
     idempotence_check=true
     suites=["pinchflat","idempotence-check"]
-    run_ci=true
     selected_tags=host_prep,deployment_bundle,ntfy,pinchflat
   OUTPUT
         "Pinchflat-only output must retain its exact tag plan: #{pinchflat_output.string.inspect}")
 
   io = StringIO.new
   ClassifyChanges.write_github_outputs(ClassifyChanges.classify(["README.md"]), io)
-  check(failures, io.string.end_with?("run_ci=true\nselected_tags=\n"),
+  check(failures, io.string.end_with?("suites=[]\nselected_tags=\n"),
         "protected operator docs must select static CI and emit empty selected_tags")
   # The CI matrix job skips on exactly this literal, so it has to stay compact.
   check(failures, io.string.include?("suites=[]\n"),
@@ -521,7 +516,7 @@ Dir.mktmpdir("classify-changes-cli-") do |root|
 
   stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCRIPT, "--files", "README.md")
   check(failures, status.success? && stderr.empty? &&
-                  stdout.include?("static=true\n") && stdout.include?("run_ci=true\n"),
+                  stdout.include?("static=true\n") && stdout.include?("suites=[]\n"),
         "--files CLI mode did not select static CI for protected operator docs")
 
   stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCRIPT, "--full")

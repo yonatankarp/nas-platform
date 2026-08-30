@@ -881,8 +881,12 @@ fi
 # was left to be pulled inside docker_compose_v2 -- the registry refusal this
 # whole ladder exists to absorb. The fixture removes beszel's compose.yml, which
 # the beszel suite enumerates after ntfy's, so a truncation is observable.
-mkdir -p "$truncated_repo/tests" "$truncated_tmp"
+mkdir -p "$truncated_repo/tests/ci" "$truncated_tmp"
 cp "$integration" "$truncated_repo/tests/integration.sh"
+# The runner reads its suite table from tests/ci/suites.conf. The fixture is
+# truncated in services/, not in its suite table: without this copy the run
+# refuses for a missing table and never reaches the enumeration this asserts.
+cp "$repo_dir/tests/ci/suites.conf" "$truncated_repo/tests/ci/suites.conf"
 cp -R "$repo_dir/services" "$truncated_repo/services"
 rm "$truncated_repo/services/beszel/compose.yml"
 : > "$pull_log"

@@ -1,10 +1,12 @@
 #!/usr/bin/env ruby
 # CI and policy-runner policy.
 #
-# Two tables decide which roles a service suite converges, the integration runner's
-# and the CI classifier's, and they must agree. The runner itself is pinned here:
-# every policy script must be registered in validate-policy.sh, which is what stops
-# a check from being written and then never run. Collections pin like images do.
+# One table decides which roles a suite converges -- tests/ci/suites.conf, which
+# the integration runner and the CI classifier both read -- so what is policed
+# here is that table's content rather than the agreement of two copies of it. The
+# runner itself is pinned here: every policy script must be registered in
+# validate-policy.sh, which is what stops a check from being written and then
+# never run. Collections pin like images do.
 
 require "open3"
 require "rbconfig"
@@ -21,21 +23,45 @@ def check(failures, condition, message)
   failures << message unless condition
 end
 
-# Two tables decide which roles a service suite converges: the integration
-# runner's own and the CI classifier's. They must agree, and both must name the
-# alerting sink, because a suite that leaves ntfy out now fails at the service's
-# deployment report rather than at anything the suite is about.
+# tests/ci/suites.conf is the one table that says which roles each suite
+# converges: tests/integration.sh reads it for the tags a suite gets when the
+# caller passes none, and tests/ci/classify_changes.rb derives its lanes, its CI
+# matrix and its tag plans from the same rows. There is no second copy to
+# reconcile, so what is checked here is the table itself. Every lane but the
+# planned acquisition foundations must name the alerting sink, because a suite
+# that leaves ntfy out now fails at the service's deployment report rather than
+# at anything the suite is about.
 integration_path = File.join(ROOT, "tests", "integration.sh")
-classifier_path = File.join(ROOT, "tests", "ci", "classify_changes.rb")
+suite_table_path = File.join(ROOT, "tests", "ci", "suites.conf")
 integration_body = File.file?(integration_path) ? File.read(integration_path) : ""
-suite_tags = integration_body
-             .scan(/^\s*([a-z][a-z0-9-]*)\)\s+fixed_tags=([a-z0-9_,-]*)\s*;;/)
-             .to_h { |suite, tags| [suite, tags.split(",")] }
+
+suite_rows = []
+malformed_rows = []
+if File.file?(suite_table_path)
+  File.readlines(suite_table_path, chomp: true).each do |line|
+    fields = line.sub(/#.*/, "").split
+    next if fields.empty?
+
+    if fields.length == 3
+      suite, kind, tags = fields
+      suite_rows << [suite, kind, tags == "-" ? [] : tags.split(",")]
+    else
+      malformed_rows << line
+    end
+  end
+  check(failures, malformed_rows.empty?,
+        "tests/ci/suites.conf: malformed row(s) #{malformed_rows.inspect}")
+  check(failures, !suite_rows.empty?,
+        "tests/ci/suites.conf: the suite table could not be read")
+end
+# Keyed by the suite name the table writes, which is also the manifest's service
+# name -- the classifier's underscored lane key is its own concern.
+suite_tags = suite_rows.to_h { |suite, _kind, tags| [suite, tags] }
 
 # Which acquisition lanes are inert and which converge a real role is a
 # consequence of services/manifest.yml, not a separate fact. It used to be
-# written out here twice — once to exempt the inert lanes from the ntfy
-# requirement and once to require they ship no image — so promoting a project
+# written out here twice -- once to exempt the inert lanes from the ntfy
+# requirement and once to require they ship no image -- so promoting a project
 # meant editing two literals in this file that nothing held to the manifest or to
 # each other. The catalog supplies which projects are acquisition projects; the
 # manifest supplies whether each one is built yet.
@@ -51,30 +77,26 @@ check(failures, !acquisition_projects.empty?,
 planned_acquisition_lanes = acquisition_projects & PolicySupport.planned_services(ROOT)
 implemented_acquisition_lanes = acquisition_projects & PolicySupport.implemented_services(ROOT)
 
-if File.file?(integration_path) && File.file?(classifier_path)
-  classifier_tags = File.read(classifier_path)[/SERVICE_TAGS = \{(.*?)\}\.freeze/m].to_s
-                        .scan(/"([a-z0-9_-]+)"\s*=>\s*%w\[([^\]]*)\]/)
-                        .to_h { |lane, tags| [lane, tags.split] }
-  check(failures, !classifier_tags.empty?,
-        "tests/ci/classify_changes.rb: SERVICE_TAGS could not be read")
-  classifier_tags.each do |lane, tags|
-    check(failures, suite_tags[lane] == tags,
-          "integration suite #{lane} converges #{suite_tags[lane].inspect}, " \
-          "CI selects #{tags.inspect}")
-    unless planned_acquisition_lanes.include?(lane)
-      check(failures, tags.include?("ntfy"),
-            "service lane #{lane} must converge ntfy: its role reports its deployment there")
-    end
+unless suite_rows.empty?
+  suite_rows.each do |suite, kind, tags|
+    next unless %w[acquisition service].include?(kind)
+    next if planned_acquisition_lanes.include?(suite)
+
+    check(failures, tags.include?("ntfy"),
+          "service lane #{suite} must converge ntfy: its role reports its deployment there")
   end
 
   planned_acquisition_lanes.each do |lane|
+    row = suite_rows.find { |suite, _kind, _tags| suite == lane }
     check(failures,
-          suite_tags[lane] == %w[host_prep deployment_bundle media_acquisition_foundation],
+          row && row.last == %w[host_prep deployment_bundle media_acquisition_foundation],
           "acquisition foundation suite #{lane} must converge only shared inert foundation tags")
     contract = File.join(ROOT, "tests", "contracts", "#{lane}-foundation.sh")
     check(failures, File.file?(contract),
           "acquisition foundation suite #{lane} has no matching static contract")
   end
+end
+if File.file?(integration_path)
   check(failures,
         integration_body.include?(
           '/repo/tests/contracts/"\$INTEGRATION_SUITE"-foundation.sh static'
@@ -142,6 +164,14 @@ check(failures, integration_body.include?('pull_image "$runner_image"'),
       "tests/integration.sh must retry the controller image pull: Docker Hub is anonymous here")
 check(failures, integration_body.include?("prepull_images\n"),
       "tests/integration.sh must pre-pull the suite's images before the converge")
+# The runner must read the suite table rather than restate it. This is what the
+# equality check between two hand-maintained tables used to buy, bought instead
+# by there being only one table: a case arm reintroducing per-suite tags in the
+# harness is the regression that would silently split them again.
+check(failures, integration_body.include?("suite_table=$repo_dir/tests/ci/suites.conf"),
+      "tests/integration.sh must read its suite tags from tests/ci/suites.conf")
+check(failures, !integration_body.match?(/^\s*[a-z][a-z0-9-]*\)\s+fixed_tags=/),
+      "tests/integration.sh must not restate per-suite tags: tests/ci/suites.conf owns them")
 
 # Every acquisition lane that converges a real role owes a second enabled
 # convergence, and the roles it converges are the suite's own fixed tags minus the
