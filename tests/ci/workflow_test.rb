@@ -45,7 +45,7 @@ DOCKER_HUB_TOKEN_SECRET = "DOCKERHUB_TOKEN"
 # Every registry the job is able to authenticate to. A registry outside this list
 # is one nobody decided about, which is what the classification check below names.
 CREDENTIALED_REGISTRIES = (GITHUB_BACKED_REGISTRIES + [DOCKER_HUB_REGISTRY]).freeze
-EXPECTED_JOBS = %w[changes static mutation reconciliation suites validate].freeze
+EXPECTED_JOBS = %w[changes static docs mutation reconciliation suites validate].freeze
 # One reconciliation file per matrix leg, in the order a full run enumerates them.
 RECONCILIATION_PARTS = %w[core bazarr configarr].freeze
 RECONCILIATION_SUPPORT_PATH =
@@ -73,7 +73,7 @@ INTEGRATION_SUITES = %w[
   dozzle audiobookshelf komga jellyfin immich paperless idempotence-check
 ].freeze
 TAGGED_SUITES = %w[smoke idempotence-check].freeze
-CLASSIFIER_OUTPUTS = %w[static reconciliation suites selected_tags].freeze
+CLASSIFIER_OUTPUTS = %w[static docs reconciliation suites selected_tags].freeze
 SAMPLE_TAGS = "host_prep,deployment_bundle,ntfy,beszel"
 STATIC_STEP_NAMES = [
   "Check out repository",
@@ -86,6 +86,19 @@ STATIC_STEP_NAMES = [
   "Check silent ephemeral vault generation",
   "Lint Ansible",
   "Check playbook syntax"
+].freeze
+# The checks the docs job carries, in the order it runs them. Each one reads
+# Markdown and the working tree and nothing else, which is what lets the job be a
+# checkout and Ruby rather than the pinned Ansible toolchain the gate installs.
+DOCS_STEP_NAMES = [
+  "Check out repository",
+  "Check documentation links",
+  "Check the secrets guide against the vault contract"
+].freeze
+DOCS_CHECK_COMMANDS = [
+  "ruby tests/docs_links_test.rb",
+  "ruby tests/docs_links_test.rb --self-test",
+  "ruby tests/secrets_docs_test.rb"
 ].freeze
 RETIRED_MIGRATION_MARKERS = %w[
   nas-infrastructure
@@ -576,12 +589,46 @@ production_auto_deploy_commands.each do |command|
         "validate-policy.sh must register exactly once #{command.inspect}")
 end
 
+# The documentation gate. Its whole reason to exist is that it is cheap: it runs
+# on every change under docs/, which the static job no longer sees, so anything
+# that puts the Ansible toolchain or a container into it silently reverses the
+# saving. Assert the steps, the checks and the absence of an install.
+docs_job = jobs.fetch("docs", {})
+docs_steps = Array(docs_job["steps"])
+check(failures, docs_job["needs"] == "changes", "docs must depend only on changes")
+check(failures, expression(docs_job["if"]) == "${{ needs.changes.outputs.docs == 'true' }}",
+      "docs must be gated on its own classifier output, found " \
+      "#{expression(docs_job['if']).inspect}")
+check(failures, docs_job["strategy"].nil?, "the docs job is one runner and must not declare a matrix")
+check(failures, docs_steps.all?(Hash), "docs steps must all be mappings")
+check(failures, docs_steps.map { |step| step["name"] } == DOCS_STEP_NAMES,
+      "docs steps differ: got #{docs_steps.map { |step| step['name'] }.inspect}, " \
+      "expected #{DOCS_STEP_NAMES.inspect}")
+check(failures, docs_steps.none? { |step| step.key?("if") },
+      "docs steps must be unconditional: the changes job is the only classifier")
+docs_commands = normalize_shell(run_steps(docs_job)).lines(chomp: true)
+check(failures, docs_commands == DOCS_CHECK_COMMANDS,
+      "the docs job must run exactly the documentation checks, found #{docs_commands.inspect}")
+check(failures, docs_commands.none? { |command| command.match?(/ansible|apt-get|docker/) },
+      "the docs job must stay a checkout and Ruby: #{docs_commands.inspect}")
+check(failures, Array(docs_job["steps"]).count { |step| step["uses"] } == 1,
+      "the docs job must use only the pinned checkout action")
+# Moving a check here must not take it out of the gate. A documentation link
+# resolves against files the documents do not own, so a role file renamed without
+# touching a word of prose still breaks the link gate -- and such a change selects
+# `static`, never `docs`. The docs job is an added fast lane, not a relocation.
+DOCS_CHECK_COMMANDS.each do |command|
+  check(failures, registers_command_once?(policy_source, command),
+        "validate-policy.sh must still register #{command.inspect}: the docs job runs it " \
+        "for a documentation change, the gate runs it for everything else")
+end
+
 validate = jobs.fetch("validate", {})
 check(failures, validate["name"] == "validate", "aggregate check name must remain validate")
 check(failures, expression(validate["if"]) == "${{ always() }}", "validate must always run")
-expected_needs = %w[changes static mutation reconciliation suites]
+expected_needs = %w[changes static docs mutation reconciliation suites]
 check(failures, Array(validate["needs"]) == expected_needs,
-      "validate must need changes, static, mutation, reconciliation and the suite matrix " \
+      "validate must need changes, static, docs, mutation, reconciliation and the suite matrix " \
       "in canonical order")
 validate_checkout = Array(validate["steps"]).find { |step| step["uses"]&.start_with?("actions/checkout@") }
 check(failures, validate_checkout&.fetch("uses", nil).to_s.split("@").first == CHECKOUT_ACTION_NAME,

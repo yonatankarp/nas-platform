@@ -22,6 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       static: ${{ steps.classify.outputs.static }}
+      docs: ${{ steps.classify.outputs.docs }}
       reconciliation: ${{ steps.classify.outputs.reconciliation }}
       suites: ${{ steps.classify.outputs.suites }}
       selected_tags: ${{ steps.classify.outputs.selected_tags }}
@@ -118,6 +119,37 @@ jobs:
           ansible-playbook -i inventory/local.yml site.yml --syntax-check
           ansible-playbook generate-secrets.yml --syntax-check
           ansible-playbook -i inventory/local.yml install-production-auto-deploy.yml --syntax-check
+
+  docs:
+    # Documentation is a gate input, and it used to be routed as if it were inert.
+    # tests/docs_links_test.rb reads README.md and every *.md under docs/ through
+    # a glob and resolves each link against the working tree, but only ten named
+    # documents reached the gate, so a broken link anywhere else -- a plan under
+    # docs/superpowers/ -- merged green and turned main red.
+    #
+    # Sending all of docs/ to `static` would have closed that by spending fifteen
+    # minutes of Ansible toolchain on a typo fix. These checks read Markdown and
+    # the working tree and nothing else, so they run here instead: a checkout, the
+    # Ruby the runner image already ships, and under a minute. They stay
+    # registered in tests/validate-policy.sh as well, and deliberately so -- a
+    # link resolves against files the documents do not own, so a code rename has
+    # to keep running them too, and only `static` runs on a code rename.
+    timeout-minutes: 10
+    needs: changes
+    if: ${{ needs.changes.outputs.docs == 'true' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check documentation links
+        run: |
+          ruby tests/docs_links_test.rb
+          ruby tests/docs_links_test.rb --self-test
+
+      - name: Check the secrets guide against the vault contract
+        run: ruby tests/secrets_docs_test.rb
 
   mutation:
     # tests/policy_manifest_test.rb plants a defect in a throwaway copy of the
@@ -325,6 +357,7 @@ jobs:
     needs:
       - changes
       - static
+      - docs
       - mutation
       - reconciliation
       - suites
@@ -339,6 +372,7 @@ jobs:
           ruby tests/ci/validate_results.rb \
             changes="${{ needs.changes.result }}" \
             static="${{ needs.static.result }}" \
+            docs="${{ needs.docs.result }}" \
             mutation="${{ needs.mutation.result }}" \
             reconciliation="${{ needs.reconciliation.result }}" \
             suites="${{ needs.suites.result }}"
