@@ -218,9 +218,10 @@ class EligibilityTest(PollerTestCase):
         self.assertIn("exactly one is required", detail)
 
     def test_a_cancelled_run_is_superseded_rather_than_refused(self):
-        """`cancel-in-progress` is keyed on the branch, so merging twice inside
-        one CI window cancels the first run. Reading that as a red main pages a
-        human for the repository's own concurrency policy."""
+        """A run can end without ever judging the revision it was running: by
+        hand, or `skipped`, `stale` or `neutral`, and — until `cancel-in-progress`
+        was confined to pull requests — by the next merge cancelling it. Reading
+        any of those as a red main pages a human for a verdict nobody reached."""
 
         config = self.loaded_config()
 

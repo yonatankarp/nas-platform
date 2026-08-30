@@ -392,12 +392,14 @@ the poller has already attempted, and `--status` names the revision it would
 deploy whenever that is not the head.
 
 Being stepped over is also the right answer for a revision CI will *never*
-judge. `CI` cancels its own superseded runs -- `cancel-in-progress`, keyed on
-the branch -- so merging twice inside one run's window leaves the first
-revision `cancelled`, which is neither a pass nor a failure. Roughly a quarter
-of pushes to `main` end that way. The poller walks past them and stays silent;
-treating them as a red `main` would raise a critical alert for the
-repository's own concurrency policy every time two changes landed together.
+judge. `CI` cancels only a pull request's own superseded runs; a push to `main`
+queues behind the one before it, because a post-merge run is the only run that
+will ever see the tree it merged. While `cancel-in-progress` was keyed on the
+branch alone, merging twice inside one run's window left the first revision
+`cancelled` -- neither a pass nor a failure -- and roughly a quarter of pushes
+to `main` ended that way. A run cancelled by hand still ends the same way. The
+poller walks past such revisions and stays silent; treating them as a red
+`main` would raise a critical alert for a run that judged nothing.
 
 A revision CI refuses is the other way a deployment never happens. The poller
 requires exactly one completed, successful `CI` push run for the revision it is
