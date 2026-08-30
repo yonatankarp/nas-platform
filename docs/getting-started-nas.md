@@ -4,10 +4,11 @@ This path targets a fresh production installation. Complete the
 [disposable Mac proof](getting-started-mac.md), protect any media already on the
 NAS, and confirm every required service is `implemented` or `accepted` in
 [`services/manifest.yml`](../services/manifest.yml) before installation. The
-active service projects also include the default-disabled Arr and downloader
-projects alongside Audiobookshelf, Beszel, Dozzle, Immich, Jellyfin, Komga,
-ntfy, and Paperless-ngx. The production retirement checkpoint has passed and
-the retired metadata manager declarations have been removed from the repository.
+twelve implemented service projects are Audiobookshelf, Beszel, Dozzle, Immich,
+Jellyfin, Kapowarr, Komga, ntfy, Paperless-ngx, Pinchflat, and the Arr and
+downloader projects, which this host runs because it enables Usenet. The
+production retirement checkpoint has passed and the retired metadata manager
+declarations have been removed from the repository.
 
 Commands are labelled **read-only**, **check mode**, or **changes production**.
 
@@ -15,9 +16,14 @@ Commands are labelled **read-only**, **check mode**, or **changes production**.
 
 Former metadata manager application state remains preserved outside repository
 management; the repository cleanup did not delete it or any media. Phase 1
-implements Arr and the Usenet downloader project, while both transport flags
-remain `false` by default and five later projects remain planned. Open
-Subtitles remains configured in Jellyfin until the
+implements Arr and the Usenet downloader project. Both transport flags default
+to `false`, but
+[`inventory/group_vars/nas_hosts/main.yml`](../inventory/group_vars/nas_hosts/main.yml)
+sets `media_usenet_enabled: true`, so a run against this host starts Radarr,
+Sonarr, Prowlarr, Bazarr, Configarr, SABnzbd, and Unpackerr;
+`media_torrent_enabled` stays `false`, so no torrent client is deployed. Three
+later projects remain planned. Open Subtitles remains configured in Jellyfin
+until the
 [Phase 1 operator handoff](media-acquisition-phase1.md) records physical-NAS
 Bazarr proof.
 
@@ -155,8 +161,9 @@ ansible-playbook -i inventory/remote.yml site.yml --ask-vault-pass
 
 Record the Git commit, encrypted vault checksum, recap, application checks, and
 operator decision without recording secrets. Existing NAS credentials must work
-unchanged for all eight active services. Repeat the service-specific credential checks
-from the [Mac manual review](getting-started-mac.md#4-perform-the-manual-review)
+unchanged for all twelve implemented service projects. Repeat the
+service-specific credential checks from the
+[Mac manual review](getting-started-mac.md#4-perform-the-manual-review)
 against the production deployment without exercising external integrations; for
 ntfy, use only an agreed disposable topic when verifying alerts from Beszel and
 Dozzle.

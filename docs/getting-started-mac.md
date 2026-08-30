@@ -5,9 +5,11 @@ your Mac. It does not SSH to or otherwise contact the physical NAS. Service
 data is disposable; credentials may deliberately match the NAS so that reused
 logins, ntfy tokens, Beszel keys, and future integrations are proven portable.
 
-This proof covers the eight active services in
-[`services/manifest.yml`](../services/manifest.yml)—Audiobookshelf, Beszel,
-Dozzle, Immich, Jellyfin, Komga, ntfy, and Paperless-ngx. The production
+This proof deploys the ten service projects in
+[`services/manifest.yml`](../services/manifest.yml) that need no transport
+flag—Audiobookshelf, Beszel, Dozzle, Immich, Jellyfin, Kapowarr, Komga, ntfy,
+Paperless-ngx, and Pinchflat—and verifies the Arr and downloader projects in
+their inert, transport-disabled state alongside them. The production
 retirement checkpoint has passed and its repository declarations have been
 removed without deleting the former metadata manager's preserved state. The
 harness sends test alerts to the sandbox's own ntfy instance. Mobile delivery
@@ -21,9 +23,11 @@ classified paths, false transport flags, and the absence of acquisition
 containers without exposing directory listings or secrets.
 
 The harness reserves isolated ports for the Phase 1 Arr and SABnzbd services,
-but its default transport flag remains false, so the ordinary eight-service Mac
-proof does not claim provider connectivity or content acquisition. Production
-activation and acceptance follow the
+but
+[`inventory/group_vars/mac_hosts/main.yml`](../inventory/group_vars/mac_hosts/main.yml)
+keeps both transport flags false, so the ordinary ten-service Mac proof does
+not claim provider connectivity or content acquisition. The physical NAS is
+the one host that enables Usenet; its activation and acceptance follow the
 [Phase 1 operator handoff](media-acquisition-phase1.md).
 
 ## 1. Install and verify prerequisites
@@ -35,7 +39,7 @@ and start it. From the repository root, install the pinned Ansible tools:
 python3 -m venv .venv
 . .venv/bin/activate
 python3 -m pip install --upgrade pip
-python3 -m pip install 'ansible-core==2.21.2' 'ansible-lint==26.6.0'
+python3 -m pip install -r controller-requirements.txt
 ansible-galaxy collection install -r requirements.yml
 docker version
 docker compose version
@@ -43,7 +47,8 @@ ansible-playbook --version
 ```
 
 Stop if any command fails. Docker must be running, and `ansible-playbook` must
-report Core 2.21.2.
+report the ansible-core version pinned in
+[`controller-requirements.txt`](../controller-requirements.txt).
 
 ## 2. Prepare the external vault
 
@@ -142,8 +147,8 @@ unset proof_status
 ```
 
 Proceed only when the block prints `All automated phases passed`. Use
-[`tests/mac/manual-review.md`](../tests/mac/manual-review.md) while the eight
-active services are running. Record the reviewer, manifest commit, decision,
+[`tests/mac/manual-review.md`](../tests/mac/manual-review.md) while the ten
+deployed services are running. Record the reviewer, manifest commit, decision,
 and non-secret notes. Credential continuity requires a private check for every
 active service:
 

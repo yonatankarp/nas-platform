@@ -1,9 +1,18 @@
 # Media acquisition Phase 1 operator handoff
 
 Phase 1 deploys Radarr, Sonarr, Prowlarr, Bazarr, Configarr, SABnzbd, and
-Unpackerr. It is deliberately safe by default: Usenet is disabled, provider
-lists are empty, existing titles are not monitored automatically, automatic
-rename is disabled, and Jellyfin keeps Open Subtitles.
+Unpackerr. It is deliberately safe by default: the transport flags default to
+disabled, provider lists are empty, existing titles are not monitored
+automatically, automatic rename is disabled, and Jellyfin keeps Open Subtitles.
+
+The physical NAS has been through this handoff and is activated:
+[`inventory/group_vars/nas_hosts/main.yml`](../inventory/group_vars/nas_hosts/main.yml)
+sets `media_usenet_enabled: true`, so those seven containers run there.
+`media_torrent_enabled` is `false` on every host, and
+[`inventory/group_vars/mac_hosts/main.yml`](../inventory/group_vars/mac_hosts/main.yml)
+leaves both flags `false`, so the disposable Mac proof stays inert. Read this
+handoff before activating a transport on any further host, and before changing
+the flags on the NAS.
 
 Completing the code or a deployment does not claim provider connectivity.
 It does not claim content acquisition. It does not claim NAS ACL correctness.
