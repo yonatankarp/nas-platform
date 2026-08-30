@@ -565,6 +565,8 @@ def implement_paperless(root)
         cpuset: \${PLATFORM_CONTAINER_CPUSET:?}
         cpus: 0.5
         restart: unless-stopped
+        security_opt:
+          - no-new-privileges:true
         logging:
           driver: json-file
           options:
@@ -575,6 +577,8 @@ def implement_paperless(root)
         cpuset: \${PLATFORM_CONTAINER_CPUSET:?}
         cpus: 2.0
         restart: unless-stopped
+        security_opt:
+          - no-new-privileges:true
         logging:
           driver: json-file
           options:
@@ -585,6 +589,8 @@ def implement_paperless(root)
         cpuset: \${PLATFORM_CONTAINER_CPUSET:?}
         cpus: 3.0
         restart: unless-stopped
+        security_opt:
+          - no-new-privileges:true
         logging:
           driver: json-file
           options:
@@ -595,6 +601,8 @@ def implement_paperless(root)
         cpuset: \${PLATFORM_CONTAINER_CPUSET:?}
         cpus: 2.0
         restart: unless-stopped
+        security_opt:
+          - no-new-privileges:true
         logging:
           driver: json-file
           options:
@@ -605,6 +613,8 @@ def implement_paperless(root)
         cpuset: \${PLATFORM_CONTAINER_CPUSET:?}
         cpus: 2.0
         restart: unless-stopped
+        security_opt:
+          - no-new-privileges:true
         logging:
           driver: json-file
           options:

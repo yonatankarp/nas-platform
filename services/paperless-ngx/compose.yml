@@ -20,6 +20,12 @@ services:
       - "127.0.0.1:6379:6379"
     environment:
       TZ: ${TZ:?}
+    # These containers carry no `user:`, so PID 1 starts as root and the
+    # entrypoints drop to their service accounts with setuid(2), which
+    # no_new_privs does not restrict. Nothing here executes a setuid binary, so
+    # refusing the escalation outright costs the stack nothing.
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
     healthcheck:
       test: [CMD, valkey-cli, ping]
@@ -45,6 +51,8 @@ services:
       POSTGRES_DB: ${DB_NAME:?}
       POSTGRES_USER: ${DB_USER:?}
       POSTGRES_PASSWORD: ${DB_PASSWORD:?}
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
     healthcheck:
       test: [CMD-SHELL, "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
@@ -116,6 +124,8 @@ services:
       # A fresh database applies every migration before binding port 8000. The
       # production NAS needed just over three minutes for that first boot.
       start_period: 300s
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
     logging: *default-logging
 
@@ -141,6 +151,12 @@ services:
       timeout: 10s
       retries: 4
       start_period: 30s
+    # Chromium's setuid sandbox helper is the one binary on this platform that
+    # no_new_privs would disarm, and Gotenberg never reaches it: it launches
+    # Chromium with --no-sandbox, the only mode that works under Docker's default
+    # seccomp profile. So this container is no exception either.
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
     logging: *default-logging
 
@@ -162,5 +178,7 @@ services:
       timeout: 10s
       retries: 4
       start_period: 30s
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
     logging: *default-logging

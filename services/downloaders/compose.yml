@@ -7,6 +7,12 @@ x-logging: &default-logging
 
 x-service-defaults: &service-defaults
   cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
+  # SABnzbd's linuxserver.io entrypoint reaches PUID/PGID by calling setuid(2)
+  # as root, which no_new_privs does not restrict, and Unpackerr is a single Go
+  # binary already running as the platform identity. Neither executes a setuid
+  # binary, so neither loses anything by refusing that escalation outright.
+  security_opt:
+    - no-new-privileges:true
   restart: unless-stopped
   logging: *default-logging
   networks:

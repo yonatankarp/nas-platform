@@ -32,6 +32,8 @@ services:
       timeout: 10s
       retries: 4
       start_period: 30s
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
     logging: *default-logging
 

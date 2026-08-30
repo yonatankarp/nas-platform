@@ -516,6 +516,8 @@ services:
       timeout: 10s
       retries: 5
       start_period: 60s
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
     logging: *default-logging
 ```
@@ -532,6 +534,15 @@ The policy test enforces every one of these properties:
   lets one pin resolve correctly on both the NAS and an arm64 Mac.
 - No `build:` key. Published images only.
 - No `privileged: true`.
+- `security_opt: [no-new-privileges:true]`, on every container in the stack,
+  one-shot jobs included. `privileged` says the container starts without extra
+  power; this says it cannot acquire any afterwards by executing a setuid
+  binary. Entrypoints that drop to a service account — linuxserver.io's
+  `s6-setuidgid`, `gosu`, the Postgres and Valkey entrypoints — call `setuid(2)`
+  as root, which `no_new_privs` does not restrict, so they keep working. If an
+  image ever does need the escalation, it belongs in an allowlist beside the
+  check in `tests/policy_test.rb` with the reason stated, never omitted in
+  silence.
 - `restart: unless-stopped`.
 - `logging` with the `json-file` driver and both `max-size` and `max-file`.
 - Volume sources must be `${VARIABLE:?}` references, never absolute paths. The

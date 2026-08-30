@@ -13,6 +13,11 @@ x-linuxserver-environment: &linuxserver-environment
 
 x-service-defaults: &service-defaults
   cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
+  # The linuxserver.io entrypoint reaches PUID/PGID by calling setuid(2) as
+  # root, which no_new_privs does not restrict; nothing in these images executes
+  # a setuid binary, so the flag costs them nothing.
+  security_opt:
+    - no-new-privileges:true
   restart: unless-stopped
   logging: *default-logging
   networks:
@@ -21,6 +26,8 @@ x-service-defaults: &service-defaults
 
 x-job-defaults: &job-defaults
   cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
+  security_opt:
+    - no-new-privileges:true
   logging: *default-logging
   networks:
     - media-control

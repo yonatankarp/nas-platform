@@ -48,6 +48,11 @@ services:
     # health check as ready the moment it is running.
     healthcheck:
       disable: false
+    # These containers carry no `user:`, so PID 1 starts as root. Refusing
+    # privilege escalation is what keeps that from being a path to more than
+    # root-in-a-namespace: nothing in the Immich images executes a setuid binary.
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
     logging: *default-logging
 
@@ -67,6 +72,8 @@ services:
       TZ: ${TZ:?}
     healthcheck:
       disable: false
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
     logging: *default-logging
 
@@ -86,6 +93,8 @@ services:
       dev.dozzle.name: redis
     healthcheck:
       test: redis-cli ping || exit 1
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
     logging: *default-logging
 
@@ -119,5 +128,9 @@ services:
     shm_size: 128mb
     healthcheck:
       disable: false
+    # The Postgres entrypoint drops to the postgres account with setuid(2) as
+    # root before the server starts, which no_new_privs does not restrict.
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
     logging: *default-logging
