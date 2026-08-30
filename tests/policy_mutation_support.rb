@@ -91,6 +91,7 @@ BASE_FIXTURE_PATHS = %w[
   templates/vault-plain.yml.j2
   tests/contracts/registry.yml
   tests/compose_metadata_filter_test.yml
+  tests/ci/suites.conf
   tests/integration.sh
   tests/integration_lock.sh
   tests/integration_lock_test.sh
@@ -230,6 +231,19 @@ def fixture_paths(root = ROOT)
                                                 entry.fetch("path") == expected_path
 
     paths << expected_path
+  end
+
+  # tests/policy_ci_test.rb requires a static foundation contract beside every
+  # planned acquisition lane. Those scripts are not registry contracts -- the
+  # registry only carries services that are built -- so name them from the same
+  # two sources the policy reads: the catalog says which projects are acquisition
+  # lanes, the manifest says which of them are still planned. Without them every
+  # mutation would fail on the absent contract rather than on the mutation.
+  acquisition_catalog = YAML.safe_load_file(File.join(root, "config", "media-acquisition.yml"))
+  acquisition_catalog.fetch("projects").each_key do |project|
+    next unless statuses[project] == "planned"
+
+    paths << File.join("tests", "contracts", "#{project}-foundation.sh")
   end
   paths.uniq
 end
