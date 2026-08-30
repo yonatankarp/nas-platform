@@ -8,57 +8,33 @@
 require "fileutils"
 require "json"
 require "open3"
-require "socket"
-require "timeout"
 require "tmpdir"
 require "yaml"
 
-ROOT = File.expand_path("..", __dir__)
+require_relative "policy_support"
+require_relative "http_fixture_support"
+
+include HttpFixtureSupport
+include TestScaffold
+
 DIGEST_A = "@sha256:#{'a' * 64}"
 DIGEST_B = "@sha256:#{'b' * 64}"
 TOKEN = "tk_fixturedeploytokenvalue"
 
 failures = []
 
-def check(failures, condition, message)
-  failures << message unless condition
-end
-
-def with_http_probe(expected_count)
+# The record is a fire-and-forget POST, so the probe only has to accept it and
+# say nothing back: no Content-Type and no body. What the test reads afterwards
+# is what arrived.
+def with_http_probe(expected_count, &block)
   requests = []
-  server = TCPServer.new("127.0.0.1", 0)
-  stopped = false
-  error = nil
-  thread = Thread.new do
-    while (client = server.accept)
-      request_line = client.gets.to_s
-      method, target, = request_line.split(" ")
-      headers = {}
-      while (line = client.gets)
-        line = line.chomp
-        break if line.empty?
-        key, value = line.split(":", 2)
-        headers[key.downcase] = value.to_s.strip
-      end
-      body = client.read(headers.fetch("content-length", "0").to_i).to_s.force_encoding("UTF-8")
-      requests << { "method" => method, "target" => target, "headers" => headers, "body" => body }
-      client.write("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-      client.close
-    end
-  rescue StandardError => caught
-    error = caught unless stopped
+  with_http_fixture(->(port) { block.call(port, requests) },
+                    content_type: nil) do |method, target, headers, body|
+    requests << { "method" => method, "target" => target, "headers" => headers, "body" => body }
+    200
   end
-  yield server.addr.fetch(1), requests
-  stopped = true
-  server.close
-  Timeout.timeout(10) { thread.join }
-  raise error if error
   raise "deployment record probe request count differs: #{requests.length}" unless
     requests.length == expected_count
-ensure
-  stopped = true
-  server&.close unless server&.closed?
-  thread&.join
 end
 
 def manifest(images)
@@ -104,24 +80,11 @@ def with_controller_repository
 end
 
 def run_ntfy_task(tasks_from, variables, *arguments)
-  Dir.mktmpdir("nas-platform-deployment-summary-play-") do |directory|
-    playbook = [{
-      "hosts" => "localhost", "gather_facts" => false,
-      "vars" => variables,
-      "tasks" => [{
-        "name" => "Report the deployment",
-        "ansible.builtin.include_role" => {
-          "name" => "ntfy", "tasks_from" => tasks_from
-        }
-      }]
-    }]
-    path = File.join(directory, "playbook.yml")
-    File.write(path, YAML.dump(playbook), mode: "w", perm: 0o600)
-    Open3.capture3(
-      { "ANSIBLE_NOCOLOR" => "1" },
-      "ansible-playbook", "-i", "localhost,", "-c", "local", path, *arguments, chdir: ROOT
-    )
-  end
+  report = [{
+    "name" => "Report the deployment",
+    "ansible.builtin.include_role" => { "name" => "ntfy", "tasks_from" => tasks_from }
+  }]
+  run_playbook(report, variables, *arguments, prefix: "nas-platform-deployment-summary-play-")
 end
 
 def run_summary(variables, *arguments)

@@ -12,6 +12,10 @@ case $mode in
 esac
 
 repo_dir=${PLATFORM_CONTRACT_REPO_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)}
+# The embedded Ruby below reads tests/policy_support.rb from here instead of
+# carrying its own copy of flatten_tasks.
+PLATFORM_CONTRACT_REPO_DIR=$repo_dir
+export PLATFORM_CONTRACT_REPO_DIR
 ruby - "$repo_dir" <<'RUBY'
 require "yaml"
 
@@ -32,14 +36,8 @@ end
 
 # Task files are flattened so a task on a block's rescue or always path is still
 # a task the role executes.
-def flatten_tasks(tasks)
-  Array(tasks).flat_map do |task|
-    next [] unless task.is_a?(Hash)
-
-    [task] + flatten_tasks(task["block"]) + flatten_tasks(task["rescue"]) +
-      flatten_tasks(task["always"])
-  end
-end
+require File.join(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR"), "tests", "policy_support")
+include PolicySupport
 
 # The environment file is a line-oriented grammar, so it is read as the
 # assignments it declares: a commented-out sample of the right assignment

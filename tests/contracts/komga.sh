@@ -4,6 +4,10 @@ set +x
 
 mode=${1:-run}
 repo_dir=${PLATFORM_CONTRACT_REPO_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)}
+# The embedded Ruby below reads tests/policy_support.rb from here instead of
+# carrying its own copy of flatten_tasks.
+PLATFORM_CONTRACT_REPO_DIR=$repo_dir
+export PLATFORM_CONTRACT_REPO_DIR
 compose=$repo_dir/services/komga/compose.yml
 mac_compose=$repo_dir/services/komga/compose.mac.yml
 role=$repo_dir/roles/komga/tasks/main.yml
@@ -31,13 +35,8 @@ mac = YAML.safe_load_file(mac_path, aliases: true)
 # block/rescue/always nest their tasks one level deeper, so the task list is
 # flattened before anything looks a name up: an unflattened load would report a
 # required task as missing the moment it moved inside a block.
-def flatten_tasks(tasks)
-  Array(tasks).flat_map do |task|
-    [task] + %w[block rescue always].flat_map do |section|
-      flatten_tasks(task.is_a?(Hash) ? task[section] : nil)
-    end
-  end
-end
+require File.join(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR"), "tests", "policy_support")
+include PolicySupport
 
 # Whole-file string harvest for the absence invariant at the end of this
 # contract. It has to stay unscoped, since a forbidden primitive introduced by

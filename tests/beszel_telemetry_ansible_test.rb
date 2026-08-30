@@ -8,6 +8,8 @@ require "tmpdir"
 require "time"
 require "yaml"
 
+require_relative "policy_support"
+
 ROOT = File.expand_path("..", __dir__)
 ROLE_TASKS = File.join(ROOT, "roles/beszel/tasks/main.yml")
 ROLE_VARS = File.join(ROOT, "roles/beszel/vars/main.yml")
@@ -21,14 +23,6 @@ version_output, version_status = Open3.capture2("ansible-playbook", "--version")
 abort "Beszel Ansible telemetry test requires ansible-core #{REQUIRED_ANSIBLE_CORE}" unless
   version_status.success? &&
   version_output.start_with?("ansible-playbook [core #{REQUIRED_ANSIBLE_CORE}]")
-
-def flatten_tasks(tasks)
-  Array(tasks).flat_map do |task|
-    [task] + flatten_tasks(task.is_a?(Hash) ? task["block"] : nil) +
-      flatten_tasks(task.is_a?(Hash) ? task["rescue"] : nil) +
-      flatten_tasks(task.is_a?(Hash) ? task["always"] : nil)
-  end
-end
 
 def run_play(tasks, vars, vars_files: [])
   play = [{
@@ -49,7 +43,7 @@ def run_play(tasks, vars, vars_files: [])
 end
 
 failures = []
-tasks = flatten_tasks(YAML.safe_load_file(ROLE_TASKS))
+tasks = PolicySupport.flatten_tasks(YAML.safe_load_file(ROLE_TASKS))
 capability = tasks.find { |task| task["name"] == "Require the selected Beszel telemetry capability" }
 cardinality = tasks.find { |task| task["name"] == "Require exactly one managed Beszel system for telemetry" }
 resolve_evidence = tasks.find { |task| task["name"] == "Resolve persisted Beszel telemetry evidence" }

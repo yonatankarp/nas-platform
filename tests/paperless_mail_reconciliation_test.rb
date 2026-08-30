@@ -5,11 +5,15 @@ require "digest"
 require "fileutils"
 require "json"
 require "open3"
-require "socket"
 require "tmpdir"
 require "yaml"
 
-ROOT = File.expand_path("..", __dir__)
+require_relative "policy_support"
+require_relative "http_fixture_support"
+
+include HttpFixtureSupport
+include TestScaffold
+
 ROLE = File.join(ROOT, "roles", "paperless_ngx", "tasks", "main.yml")
 
 ACCOUNT = {
@@ -60,108 +64,81 @@ def missing_mail_item_output_guards(tasks)
   end
 end
 
-def response(client, status, body, content_type: "application/json")
-  reason = status == 200 ? "OK" : status == 201 ? "Created" : "Bad Request"
-  client.write(
-    "HTTP/1.1 #{status} #{reason}\r\nContent-Type: #{content_type}\r\n" \
-    "Content-Length: #{body.bytesize}\r\nConnection: close\r\n\r\n#{body}"
-  )
+# The fixture answers a status and an already-serialised body; the shared
+# fixture server puts them on the wire. Paperless answers text/plain for the
+# errors it reports, which is what the role has to read.
+def response(status, body, content_type: "application/json")
+  [status, body, content_type]
 end
 
-def with_paperless_api(probe:, initial_accounts:, initial_rules:, listing: :complete)
-  server = TCPServer.new("127.0.0.1", 0)
+def with_paperless_api(probe:, initial_accounts:, initial_rules:, listing: :complete, &block)
   requests = []
   state = { "accounts" => initial_accounts, "rules" => initial_rules }
-  stop = false
-  thread = Thread.new do
-    until stop
-      next unless IO.select([server], nil, nil, 0.05)
+  with_http_fixture(->(port) { block.call(port, requests) }) do |method, target, _headers, body|
+    requests << [method, target, body]
 
-      client = server.accept
-      request_line = client.gets.to_s.strip
-      method, target, = request_line.split(" ", 3)
-      headers = {}
-      while (line = client.gets)
-        line = line.chomp
-        break if line == "\r" || line.empty?
-
-        key, value = line.split(":", 2)
-        headers[key.downcase] = value.to_s.strip
-      end
-      body = client.read(headers.fetch("content-length", "0").to_i)
-      requests << [method, target, body]
-
-      case [method, target]
-      when ["POST", "/api/token/"]
-        username = JSON.parse(body).fetch("username")
-        response(client, 200, JSON.generate("token" => "fixture-token-#{username}"))
-      when ["GET", "/api/users/?page_size=1000"]
-        users = [{
-          "id" => 1, "username" => "admin", "email" => "admin@example.invalid",
-          "is_superuser" => true, "is_staff" => true, "is_active" => true
-        }]
-        response(client, 200, JSON.generate("count" => users.length, "next" => nil,
-                                            "previous" => nil, "results" => users))
-      when ["GET", "/api/mail_accounts/?page_size=1000"]
-        count = listing == :count_mismatch ? state["accounts"].length + 1 : state["accounts"].length
-        count += 1 if listing == :next_page_duplicate
-        next_page = listing == :next_page_duplicate ? "http://127.0.0.1/hidden-page" : nil
-        count = count.to_s if listing == :malformed_count
-        response(client, 200, JSON.generate("count" => count, "next" => next_page, "previous" => nil,
-                                            "results" => state["accounts"]))
-      when ["GET", "/api/mail_rules/?page_size=1000"]
-        count = listing == :count_mismatch ? state["rules"].length + 1 : state["rules"].length
-        count += 1 if listing == :next_page_duplicate
-        next_page = listing == :next_page_duplicate ? "http://127.0.0.1/hidden-page" : nil
-        count = count.to_s if listing == :malformed_count
-        response(client, 200, JSON.generate("count" => count, "next" => next_page, "previous" => nil,
-                                            "results" => state["rules"]))
-      when ["POST", "/api/mail_accounts/test/"]
-        if probe == :failure
-          response(client, 400, "Unable to connect to server", content_type: "text/plain")
-        else
-          if probe == :managed_alteration
-            state["rules"] = state["rules"].map do |rule|
-              rule["name"] == "managed-inbox" ? rule.merge("enabled" => false) : rule
-            end
-          end
-          response(client, 200, JSON.generate("success" => true))
-        end
-      when ["POST", "/api/mail_accounts/"]
-        payload = JSON.parse(body)
-        state["accounts"] << ACCOUNT.merge(payload.reject { |key, _| key == "password" })
-        response(client, 201, JSON.generate(state["accounts"].last))
-      when ["POST", "/api/mail_rules/"]
-        payload = JSON.parse(body)
-        state["rules"] << RULE.merge(payload)
-        response(client, 201, JSON.generate(state["rules"].last))
+    case [method, target]
+    when ["POST", "/api/token/"]
+      username = JSON.parse(body).fetch("username")
+      response(200, JSON.generate("token" => "fixture-token-#{username}"))
+    when ["GET", "/api/users/?page_size=1000"]
+      users = [{
+        "id" => 1, "username" => "admin", "email" => "admin@example.invalid",
+        "is_superuser" => true, "is_staff" => true, "is_active" => true
+      }]
+      response(200, JSON.generate("count" => users.length, "next" => nil,
+                                          "previous" => nil, "results" => users))
+    when ["GET", "/api/mail_accounts/?page_size=1000"]
+      count = listing == :count_mismatch ? state["accounts"].length + 1 : state["accounts"].length
+      count += 1 if listing == :next_page_duplicate
+      next_page = listing == :next_page_duplicate ? "http://127.0.0.1/hidden-page" : nil
+      count = count.to_s if listing == :malformed_count
+      response(200, JSON.generate("count" => count, "next" => next_page, "previous" => nil,
+                                          "results" => state["accounts"]))
+    when ["GET", "/api/mail_rules/?page_size=1000"]
+      count = listing == :count_mismatch ? state["rules"].length + 1 : state["rules"].length
+      count += 1 if listing == :next_page_duplicate
+      next_page = listing == :next_page_duplicate ? "http://127.0.0.1/hidden-page" : nil
+      count = count.to_s if listing == :malformed_count
+      response(200, JSON.generate("count" => count, "next" => next_page, "previous" => nil,
+                                          "results" => state["rules"]))
+    when ["POST", "/api/mail_accounts/test/"]
+      if probe == :failure
+        response(400, "Unable to connect to server", content_type: "text/plain")
       else
-        if method == "PATCH" && target.match?(%r{\A/api/mail_accounts/\d+/\z})
-          payload = JSON.parse(body).reject { |key, _| key == "password" }
-          state["accounts"] = state["accounts"].map do |account|
-            account["id"] == target.split("/").fetch(3).to_i ? account.merge(payload) : account
-          end
-          response(client, 200, JSON.generate(state["accounts"].find { |account| account["id"] == 7 }))
-        elsif method == "PATCH" && target.match?(%r{\A/api/mail_rules/\d+/\z})
-          payload = JSON.parse(body)
+        if probe == :managed_alteration
           state["rules"] = state["rules"].map do |rule|
-            rule["id"] == target.split("/").fetch(3).to_i ? rule.merge(payload) : rule
+            rule["name"] == "managed-inbox" ? rule.merge("enabled" => false) : rule
           end
-          response(client, 200, JSON.generate(state["rules"].find { |rule| rule["id"] == 9 }))
-        else
-          response(client, 400, "unexpected fixture request", content_type: "text/plain")
         end
+        response(200, JSON.generate("success" => true))
       end
-      client.close
+    when ["POST", "/api/mail_accounts/"]
+      payload = JSON.parse(body)
+      state["accounts"] << ACCOUNT.merge(payload.reject { |key, _| key == "password" })
+      response(201, JSON.generate(state["accounts"].last))
+    when ["POST", "/api/mail_rules/"]
+      payload = JSON.parse(body)
+      state["rules"] << RULE.merge(payload)
+      response(201, JSON.generate(state["rules"].last))
+    else
+      if method == "PATCH" && target.match?(%r{\A/api/mail_accounts/\d+/\z})
+        payload = JSON.parse(body).reject { |key, _| key == "password" }
+        state["accounts"] = state["accounts"].map do |account|
+          account["id"] == target.split("/").fetch(3).to_i ? account.merge(payload) : account
+        end
+        response(200, JSON.generate(state["accounts"].find { |account| account["id"] == 7 }))
+      elsif method == "PATCH" && target.match?(%r{\A/api/mail_rules/\d+/\z})
+        payload = JSON.parse(body)
+        state["rules"] = state["rules"].map do |rule|
+          rule["id"] == target.split("/").fetch(3).to_i ? rule.merge(payload) : rule
+        end
+        response(200, JSON.generate(state["rules"].find { |rule| rule["id"] == 9 }))
+      else
+        response(400, "unexpected fixture request", content_type: "text/plain")
+      end
     end
-  rescue IOError, Errno::EBADF
-    nil
   end
-  yield server.addr.fetch(1), requests
-ensure
-  stop = true
-  server&.close
-  thread&.join
 end
 
 def run_fixture(port)
@@ -180,16 +157,7 @@ def run_fixture(port)
     "paperless_installed_mail_account_credential_fingerprint" => "same",
     "paperless_mail_account_credential_fingerprint" => "same"
   }
-  playbook = [{ "hosts" => "localhost", "gather_facts" => false,
-                "vars" => variables, "tasks" => selected_mail_tasks }]
-  Dir.mktmpdir("paperless-mail-reconciliation-") do |directory|
-    path = File.join(directory, "playbook.yml")
-    File.write(path, YAML.dump(playbook), mode: "w", perm: 0o600)
-    Open3.capture3(
-      { "ANSIBLE_NOCOLOR" => "1" }, "ansible-playbook", "-i", "localhost,", "-c", "local", path,
-      chdir: ROOT
-    )
-  end
+  run_playbook(selected_mail_tasks, variables, prefix: "paperless-mail-reconciliation-")
 end
 
 def run_storage_policy_fixture(effective_paths)
@@ -217,16 +185,7 @@ def run_storage_policy_fixture(effective_paths)
   variables["paperless_effective_state_host_paths"] ||= %w[postgres redis data tessdata].map do |kind|
     File.join(state_root, kind)
   end + [variables.fetch("paperless_effective_cache_host_path", File.join(state_root, "cache"))]
-  playbook = [{ "hosts" => "localhost", "gather_facts" => false,
-                "vars" => variables, "tasks" => tasks }]
-  Dir.mktmpdir("paperless-storage-policy-") do |directory|
-    path = File.join(directory, "playbook.yml")
-    File.write(path, YAML.dump(playbook), mode: "w", perm: 0o600)
-    Open3.capture3(
-      { "ANSIBLE_NOCOLOR" => "1" }, "ansible-playbook", "-i", "localhost,", "-c", "local", path,
-      chdir: ROOT
-    )
-  end
+  run_playbook(tasks, variables, prefix: "paperless-storage-policy-")
 end
 
 def run_full_verify_tag_fixture(port, fingerprint: true)

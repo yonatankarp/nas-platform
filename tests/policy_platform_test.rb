@@ -13,13 +13,9 @@ require "yaml"
 require_relative "policy_support"
 
 include PolicySupport
+include TestScaffold
 
-ROOT = File.expand_path("..", __dir__)
 failures = []
-
-def check(failures, condition, message)
-  failures << message unless condition
-end
 
 PLATFORM_CAPABILITIES = %w[
   platform_container_cpu_budget
@@ -295,9 +291,4 @@ check(failures, probe_reclaim &&
 
 
 
-if failures.empty?
-  puts "platform policy: all properties hold"
-else
-  failures.each { |failure| warn "FAIL #{failure}" }
-  abort "#{failures.length} platform policy violation(s)"
-end
+report(failures, "platform policy: all properties hold", "platform policy violation(s)")

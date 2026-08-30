@@ -13,13 +13,9 @@ require "yaml"
 require_relative "policy_support"
 
 include PolicySupport
+include TestScaffold
 
-ROOT = File.expand_path("..", __dir__)
 failures = []
-
-def check(failures, condition, message)
-  failures << message unless condition
-end
 
 # Re-derived rather than shared: these are file reads, so each script that needs
 # them opens the file itself instead of threading state between scripts.
@@ -255,9 +251,4 @@ beszel_verification_prerequisites.each do |name, module_name|
         "Beszel verification-only run must include #{name.downcase}")
 end
 
-if failures.empty?
-  puts "beszel policy: all properties hold"
-else
-  failures.each { |failure| warn "FAIL #{failure}" }
-  abort "#{failures.length} beszel policy violation(s)"
-end
+report(failures, "beszel policy: all properties hold", "beszel policy violation(s)")

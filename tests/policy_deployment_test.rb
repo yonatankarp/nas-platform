@@ -13,13 +13,9 @@ require "yaml"
 require_relative "policy_support"
 
 include PolicySupport
+include TestScaffold
 
-ROOT = File.expand_path("..", __dir__)
 failures = []
-
-def check(failures, condition, message)
-  failures << message unless condition
-end
 
 harness = File.read(File.join(ROOT, "tests", "integration.sh"))
 # A release ID names committed controller content. Production must reject any
@@ -616,9 +612,4 @@ target_include_sites.each do |relative_path, task|
 end
 
 
-if failures.empty?
-  puts "deployment policy: all properties hold"
-else
-  failures.each { |failure| warn "FAIL #{failure}" }
-  abort "#{failures.length} deployment policy violation(s)"
-end
+report(failures, "deployment policy: all properties hold", "deployment policy violation(s)")

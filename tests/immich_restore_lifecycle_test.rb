@@ -8,6 +8,8 @@ require "tmpdir"
 require "yaml"
 require "zlib"
 
+require_relative "policy_support"
+
 ROOT = File.expand_path("..", __dir__)
 MAIN = YAML.safe_load_file(
   File.join(ROOT, "roles", "immich", "tasks", "main.yml"), aliases: true
@@ -59,16 +61,8 @@ def source_task(name)
   Marshal.load(Marshal.dump(task))
 end
 
-def flatten_tasks(tasks)
-  tasks.flat_map do |candidate|
-    [candidate] + %w[block rescue always].flat_map do |section|
-      flatten_tasks(Array(candidate[section]))
-    end
-  end
-end
-
 def source_restore_task(name)
-  task = flatten_tasks(RESTORE).find { |candidate| candidate["name"] == name }
+  task = PolicySupport.flatten_tasks(RESTORE).find { |candidate| candidate["name"] == name }
   fail_test("source restore task is absent: #{name}") unless task
   Marshal.load(Marshal.dump(task))
 end

@@ -13,11 +13,15 @@
 
 require "json"
 require "open3"
-require "socket"
 require "tmpdir"
 require "yaml"
 
-ROOT = File.expand_path("..", __dir__)
+require_relative "policy_support"
+require_relative "http_fixture_support"
+
+include HttpFixtureSupport
+include TestScaffold
+
 ROLE = File.join(ROOT, "roles/komga/tasks/main.yml")
 COMPOSE = File.join(ROOT, "services/komga/compose.yml")
 ARGUMENT_SPECS = File.join(ROOT, "roles/komga/meta/argument_specs.yml")
@@ -347,121 +351,83 @@ def nested_root?(existing, requested)
   held == wanted || wanted.start_with?("#{held}/") || held.start_with?("#{wanted}/")
 end
 
-def with_http_service(libraries, users: [], fail_after_apply: false)
-  server = TCPServer.new("127.0.0.1", 0)
+# Komga answers 400 rather than 204 when a requested library root overlaps one
+# it already holds, and states no Content-Type when it has nothing to say. Both
+# are modelled, because both are what the role has to survive.
+def with_http_service(libraries, users: [], fail_after_apply: false, &block)
   requests = []
-  stopped = false
-  error = nil
   failed_patch = false
   created = 0
-  thread = Thread.new do
-    until stopped
-      next unless IO.select([server], nil, nil, 0.05)
-
-      client = server.accept
-      method, target, = client.gets.to_s.strip.split(" ", 3)
-      headers = {}
-      while (line = client.gets)
-        line = line.chomp
-        break if line == "\r" || line.empty?
-
-        key, value = line.split(":", 2)
-        headers[key.downcase] = value.to_s.strip
+  reasons = { 200 => "OK", 201 => "Created", 204 => "No Content",
+              400 => "Bad Request", 500 => "Error" }.freeze
+  with_http_fixture(->(port) { block.call(port, requests) },
+                    reason: reasons) do |method, target, _headers, body|
+    request = { "method" => method, "target" => target,
+                "json" => body.empty? ? nil : JSON.parse(body) }
+    requests << request
+    status = 500
+    response = { "error" => "unexpected request" }
+    case [method, target]
+    when ["GET", "/api/v1/libraries"]
+      status = 200
+      response = libraries
+    when ["POST", "/api/v1/libraries"]
+      requested = request.fetch("json").fetch("root")
+      conflict = libraries.find do |entry|
+        entry.is_a?(Hash) && nested_root?(entry["root"], requested)
       end
-      body = client.read(headers.fetch("content-length", "0").to_i)
-      request = { "method" => method, "target" => target,
-                  "json" => body.empty? ? nil : JSON.parse(body) }
-      requests << request
-      status = 500
-      response = { "error" => "unexpected request" }
-      case [method, target]
-      when ["GET", "/api/v1/libraries"]
-        status = 200
-        response = libraries
-      when ["POST", "/api/v1/libraries"]
-        requested = request.fetch("json").fetch("root")
-        conflict = libraries.find do |entry|
-          entry.is_a?(Hash) && nested_root?(entry["root"], requested)
-        end
-        if conflict
-          status = 400
-          response = { "error" => "Library root overlaps #{conflict['root']}" }
-        else
-          created += 1
-          status = 200
-          libraries << request.fetch("json").merge(
-            "id" => "created-library-#{created}", "unavailable" => false
-          )
-          response = libraries.last
-        end
-      when ["GET", "/api/v2/users"]
-        status = 200
-        response = users
-      when ["POST", "/api/v2/users"]
-        status = 201
-        users << request.fetch("json").merge("id" => "created-user", "roles" => ["USER", *request.fetch("json").fetch("roles")])
-        response = users.last
+      if conflict
+        status = 400
+        response = { "error" => "Library root overlaps #{conflict['root']}" }
       else
-        if method == "PATCH" && target.match?(%r{\A/api/v1/libraries/[A-Za-z0-9_.%:-]+\z})
-          id = target.split("/").last
-          library = libraries.find { |entry| entry.is_a?(Hash) && entry["id"] == id }
-          if library
-            library.merge!(request.fetch("json"))
-            if fail_after_apply && !failed_patch
-              failed_patch = true
-              status = 500
-              response = { "error" => "response lost after commit" }
-            else
-              status = 204
-              response = nil
-            end
+        created += 1
+        status = 200
+        libraries << request.fetch("json").merge(
+          "id" => "created-library-#{created}", "unavailable" => false
+        )
+        response = libraries.last
+      end
+    when ["GET", "/api/v2/users"]
+      status = 200
+      response = users
+    when ["POST", "/api/v2/users"]
+      status = 201
+      users << request.fetch("json").merge("id" => "created-user", "roles" => ["USER", *request.fetch("json").fetch("roles")])
+      response = users.last
+    else
+      if method == "PATCH" && target.match?(%r{\A/api/v1/libraries/[A-Za-z0-9_.%:-]+\z})
+        id = target.split("/").last
+        library = libraries.find { |entry| entry.is_a?(Hash) && entry["id"] == id }
+        if library
+          library.merge!(request.fetch("json"))
+          if fail_after_apply && !failed_patch
+            failed_patch = true
+            status = 500
+            response = { "error" => "response lost after commit" }
+          else
+            status = 204
+            response = nil
           end
         end
       end
-      payload = response.nil? ? "" : JSON.generate(response)
-      reason = { 200 => "OK", 201 => "Created", 204 => "No Content",
-                 400 => "Bad Request", 500 => "Error" }.fetch(status)
-      client.write("HTTP/1.1 #{status} #{reason}\r\n")
-      client.write("Content-Type: application/json\r\n") unless payload.empty?
-      client.write("Content-Length: #{payload.bytesize}\r\nConnection: close\r\n\r\n#{payload}")
-      client.close
     end
-  rescue IOError, Errno::EBADF
-    nil
-  rescue StandardError => caught
-    error = caught
+    payload = response.nil? ? "" : JSON.generate(response)
+    [status, payload, payload.empty? ? nil : "application/json"]
   end
-  yield server.addr.fetch(1), requests
-ensure
-  stopped = true
-  server&.close
-  thread&.join
-  raise error if error
 end
 
 def run_tasks(port, arguments = [], managed_users: [], migration_allowed: false,
               role_source: ROLE_SOURCE)
-  Dir.mktmpdir("komga-library-reconciliation-") do |directory|
-    playbook = File.join(directory, "playbook.yml")
-    variables = DEFAULTS.merge(
-      "komga_api" => "http://127.0.0.1:#{port}",
-      "vault_komga_admin_email" => "admin@example.invalid",
-      "vault_komga_admin_password" => "admin-secret",
-      "komga_claim_status" => { "json" => { "isClaimed" => true } },
-      "vault_managed_komga_users" => managed_users,
-      MIGRATION_INPUT => migration_allowed
-    )
-    File.write(
-      playbook,
-      YAML.dump([{ "hosts" => "localhost", "gather_facts" => false,
-                   "vars" => variables, "tasks" => library_tasks(role_source) }]),
-      mode: "w", perm: 0o600
-    )
-    Open3.capture3(
-      { "ANSIBLE_NOCOLOR" => "1" }, "ansible-playbook", "-i", "localhost,", "-c", "local",
-      playbook, *arguments, chdir: ROOT
-    )
-  end
+  variables = DEFAULTS.merge(
+    "komga_api" => "http://127.0.0.1:#{port}",
+    "vault_komga_admin_email" => "admin@example.invalid",
+    "vault_komga_admin_password" => "admin-secret",
+    "komga_claim_status" => { "json" => { "isClaimed" => true } },
+    "vault_managed_komga_users" => managed_users,
+    MIGRATION_INPUT => migration_allowed
+  )
+  run_playbook(library_tasks(role_source), variables, *arguments,
+               prefix: "komga-library-reconciliation-")
 end
 
 def mutations(requests)
@@ -911,9 +877,5 @@ with_http_service(libraries) do |port, requests|
   failures << "check mode mutated a library" unless mutations(requests).empty?
 end
 
-if failures.empty?
-  puts "Komga two-library reconciliation and root migration behavior passed"
-else
-  failures.each { |failure| warn "FAIL #{failure}" }
-  abort "#{failures.length} Komga library reconciliation violation(s)"
-end
+report(failures, "Komga two-library reconciliation and root migration behavior passed",
+       "Komga library reconciliation violation(s)")

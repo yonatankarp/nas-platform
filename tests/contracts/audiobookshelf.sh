@@ -4,6 +4,10 @@ set +x
 
 mode=${1:-run}
 repo_dir=${PLATFORM_CONTRACT_REPO_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)}
+# The embedded Ruby below reads tests/policy_support.rb from here instead of
+# carrying its own copy of flatten_tasks.
+PLATFORM_CONTRACT_REPO_DIR=$repo_dir
+export PLATFORM_CONTRACT_REPO_DIR
 compose=$repo_dir/services/audiobookshelf/compose.yml
 mac_compose=$repo_dir/services/audiobookshelf/compose.mac.yml
 role=$repo_dir/roles/audiobookshelf/tasks/main.yml
@@ -53,12 +57,8 @@ def role_strings(node)
   end
 end
 # The role wraps its marker handling in a block, whose children are tasks too.
-def flatten_tasks(tasks)
-  Array(tasks).flat_map do |task|
-    next [] unless task.is_a?(Hash)
-    [task] + %w[block rescue always].flat_map { |key| flatten_tasks(task[key]) }
-  end
-end
+require File.join(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR"), "tests", "policy_support")
+include PolicySupport
 all_role_tasks = flatten_tasks(role_tasks)
 role_task_names = all_role_tasks.filter_map { |task| task["name"] }
 # The environment file has its own grammar, so it is read as the assignments it

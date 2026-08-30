@@ -15,13 +15,9 @@ require "yaml"
 require_relative "policy_support"
 
 include PolicySupport
+include TestScaffold
 
-ROOT = File.expand_path("..", __dir__)
 failures = []
-
-def check(failures, condition, message)
-  failures << message unless condition
-end
 
 # tests/ci/suites.conf is the one table that says which roles each suite
 # converges: tests/integration.sh reads it for the tags a suite gets when the
@@ -421,9 +417,4 @@ check(failures,
       "Immich selective helper integrity test must be a regular non-symlink file")
 
 
-if failures.empty?
-  puts "ci policy: all properties hold"
-else
-  failures.each { |failure| warn "FAIL #{failure}" }
-  abort "#{failures.length} ci policy violation(s)"
-end
+report(failures, "ci policy: all properties hold", "ci policy violation(s)")

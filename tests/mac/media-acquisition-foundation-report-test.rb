@@ -5,7 +5,10 @@ require "open3"
 require "rbconfig"
 require "tmpdir"
 
-ROOT = File.expand_path("../..", __dir__)
+require_relative "../policy_support"
+
+include TestScaffold
+
 REPORT = File.join(ROOT, "tests", "mac", "report.rb")
 source = File.read(REPORT)
 
@@ -99,9 +102,5 @@ Dir.mktmpdir("media-acquisition-report-mutant.") do |directory|
     rendered_media_fields(mutant, expected, phases: passed_verify).empty?
 end
 
-if failures.empty?
-  puts "media acquisition report: four bounded non-secret fields hold"
-else
-  failures.each { |failure| warn "FAIL #{failure}" }
-  abort "#{failures.length} media acquisition report regression(s)"
-end
+report(failures, "media acquisition report: four bounded non-secret fields hold",
+       "media acquisition report regression(s)")

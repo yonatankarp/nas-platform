@@ -10,6 +10,10 @@ require_relative "media_probes_jellyfin_identity"
 require_relative "media_probes_jellyfin_settings"
 require_relative "media_probes_services"
 
+require_relative "policy_support"
+
+include TestScaffold
+
 failures = []
 failures.concat(jellyfin_identity_contract_failures)
 
@@ -133,9 +137,5 @@ elsif ARGV != ["--self-test"] && !ARGV.empty?
   failures << "usage: media_managed_users_test.rb [--self-test]"
 end
 
-if failures.empty?
-  puts "media managed users: lifecycle, mutation, and registration contracts passed"
-else
-  failures.each { |failure| warn "FAIL #{failure}" }
-  abort "#{failures.length} media managed-user contract violation(s)"
-end
+report(failures, "media managed users: lifecycle, mutation, and registration contracts passed",
+       "media managed-user contract violation(s)")

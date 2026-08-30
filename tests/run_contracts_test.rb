@@ -7,7 +7,10 @@ require "rbconfig"
 require "tmpdir"
 require "yaml"
 
-ROOT = File.expand_path("..", __dir__)
+require_relative "policy_support"
+
+include TestScaffold
+
 failures = []
 
 def run_registry(registry:, contracts: {}, mode: "--validate-only", env: {}, manifest: nil, setup: nil,
@@ -58,10 +61,6 @@ def run_registry(registry:, contracts: {}, mode: "--validate-only", env: {}, man
     observation = block_given? ? yield(root) : nil
     [stdout + stderr, status, observation]
   end
-end
-
-def check(failures, condition, message)
-  failures << message unless condition
 end
 
 registry = YAML.dump(
@@ -282,9 +281,4 @@ File.unlink(sentinel_path) if sentinel_path && File.exist?(sentinel_path)
 check(failures, !status.success? && sentinel == "DO_NOT_TOUCH",
       "traversal registry path touched a sentinel outside the fixture")
 
-if failures.empty?
-  puts "contracts: all registry checks hold"
-else
-  failures.each { |failure| warn "FAIL #{failure}" }
-  abort "#{failures.length} contract registry regression(s)"
-end
+report(failures, "contracts: all registry checks hold", "contract registry regression(s)")

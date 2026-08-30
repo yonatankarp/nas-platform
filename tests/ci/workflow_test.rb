@@ -6,6 +6,10 @@ require "tmpdir"
 require "yaml"
 require_relative "classify_changes"
 
+require_relative "../policy_support"
+
+include TestScaffold
+
 WORKFLOW_PATH = File.expand_path("../../.github/workflows/ci.yml", __dir__)
 POLICY_PATH = File.expand_path("../validate-policy.sh", __dir__)
 ANSIBLE_LINT_PATH = File.expand_path("../../.ansible-lint", __dir__)
@@ -96,10 +100,6 @@ RETIRED_MIGRATION_MARKERS = %w[
 ].freeze
 
 failures = []
-
-def check(failures, condition, message)
-  failures << message unless condition
-end
 
 def broad_arr_lint_exclusion?(path)
   normalized = path.to_s.sub(%r{\A\./}, "").sub(%r{/+\z}, "")
@@ -653,9 +653,5 @@ if ansible_pin
         "got #{controller_lint.inspect}")
 end
 
-unless failures.empty?
-  failures.each { |failure| warn "FAIL #{failure}" }
-  abort "#{failures.length} workflow contract failure(s)"
-end
-
-puts "CI workflow contract: all checks passed"
+report(failures, "CI workflow contract: all checks passed",
+       "workflow contract failure(s)")

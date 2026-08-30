@@ -18,8 +18,8 @@ require "yaml"
 require_relative "policy_support"
 
 include PolicySupport
+include TestScaffold
 
-ROOT = File.expand_path("..", __dir__)
 BASE_FIXTURE_PATHS = %w[
   .gitignore
   .github/workflows/ci.yml
@@ -146,6 +146,7 @@ BASE_FIXTURE_PATHS = %w[
   tests/mac/verify.sh
   tests/policy_test.rb
   tests/policy_support.rb
+  tests/http_fixture_support.rb
   tests/policy_platform_test.rb
   tests/policy_ci_test.rb
   tests/policy_beszel_test.rb
@@ -446,18 +447,6 @@ def mutate_yaml_file(root, relative_path)
   document = YAML.safe_load_file(path)
   yield document
   File.write(path, YAML.dump(document))
-end
-
-def flatten_fixture_tasks(tasks, flattened = [])
-  Array(tasks).each do |task|
-    next unless task.is_a?(Hash)
-
-    flattened << task
-    %w[block rescue always].each do |section|
-      flatten_fixture_tasks(task[section], flattened)
-    end
-  end
-  flattened
 end
 
 def service(manifest, name)

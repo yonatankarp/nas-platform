@@ -9,6 +9,7 @@ require "yaml"
 require_relative "policy_support"
 
 include PolicySupport
+include TestScaffold
 
 arguments = ARGV.dup
 # Static validation is the safe default; service probes run only when the
@@ -27,10 +28,6 @@ CONTRACT_ENV_NAMES = %w[
   PLATFORM_MEDIA_ROOT PLATFORM_FIXTURE_ROOT PLATFORM_REPORT_ROOT
 ].freeze
 failures = []
-
-def check(failures, condition, message)
-  failures << message unless condition
-end
 
 def owned_contract?(path)
   owned_file?(path, CONTRACT_ROOT) && symlink_free_below?(ROOT, path)

@@ -3,12 +3,16 @@
 
 require "json"
 require "open3"
-require "socket"
 require "timeout"
 require "tmpdir"
 require "yaml"
 
-ROOT = File.expand_path("..", __dir__)
+require_relative "policy_support"
+require_relative "http_fixture_support"
+
+include HttpFixtureSupport
+include TestScaffold
+
 TASK_FILE = File.join(ROOT, "roles", "immich", "tasks", "configured_password.yml")
 TOKEN = "configured-password-fixture-token"
 MUTATION_METHODS = %w[POST PUT PATCH DELETE].freeze
@@ -27,10 +31,6 @@ MANAGED_USERS = [
   { "email" => "reader@example.invalid", "password" => "reader-password" },
   { "email" => "editor@example.invalid", "password" => "editor-password" }
 ].freeze
-
-def failure_tail(output)
-  output.lines.map(&:strip).reject(&:empty?).last(12).join(" | ")
-end
 
 def user(id, email, admin:, should_change_password: true)
   {
@@ -79,7 +79,7 @@ def capture3_with_timeout(environment, *command, chdir:, timeout_seconds:)
   end
 end
 
-def run_playbook(port, phases, *arguments)
+def run_configured_password(port, phases, *arguments)
   variables = {
     "immich_api" => "http://127.0.0.1:#{port}/api",
     "vault_immich_admin_email" => "admin@example.invalid",
@@ -110,97 +110,52 @@ def run_playbook(port, phases, *arguments)
   end
 end
 
-def send_response(client, status, response)
-  payload = JSON.generate(response)
-  client.write(
-    "HTTP/1.1 #{status} Fixture\r\nContent-Type: application/json\r\n" \
-    "Content-Length: #{payload.bytesize}\r\nConnection: close\r\n\r\n#{payload}"
-  )
+# The fixture answers a status and a JSON body; the shared fixture server puts
+# them on the wire.
+def send_response(status, response)
+  [status, JSON.generate(response)]
 end
 
-def with_immich_users(initial_users, persist_patches: true, replace_after_patches: nil)
-  server = TCPServer.new("127.0.0.1", 0)
-  shutdown_reader, shutdown_writer = IO.pipe
+def with_immich_users(initial_users, persist_patches: true, replace_after_patches: nil, &block)
   users = Marshal.load(Marshal.dump(initial_users))
   requests = []
   patch_count = 0
   replacement_pending = false
-  error = nil
-  thread = Thread.new do
-    Thread.current.report_on_exception = false
-    loop do
-      ready = IO.select([server, shutdown_reader], nil, nil, 0.05)
-      next unless ready
-      break if ready.first.include?(shutdown_reader)
+  with_http_fixture(->(port) { block.call(port, requests, users) },
+                    reason: "Fixture") do |method, target, headers, body|
+    parsed = body.empty? ? nil : JSON.parse(body)
+    request = {
+      "method" => method, "target" => target, "headers" => headers, "json" => parsed
+    }
+    requests << request
 
-      client = server.accept
-      begin
-        method, target, = client.gets.to_s.strip.split(" ", 3)
-        headers = {}
-        while (line = client.gets)
-          line = line.chomp
-          break if line == "\r" || line.empty?
-
-          key, value = line.split(":", 2)
-          headers[key.downcase] = value.to_s.strip
-        end
-        body = client.read(headers.fetch("content-length", "0").to_i)
-        parsed = body.empty? ? nil : JSON.parse(body)
-        request = {
-          "method" => method, "target" => target, "headers" => headers, "json" => parsed
-        }
-        requests << request
-
-        authorized = headers["authorization"] == "Bearer #{TOKEN}"
-        if authorized && method == "GET" && target == "/api/admin/users?withDeleted=true"
-          if replacement_pending
-            record = users.find { |candidate| candidate["id"] == replace_after_patches.fetch("id") }
-            record.replace(replace_after_patches.fetch("replacement"))
-            replacement_pending = false
-          end
-          send_response(client, 200, users)
-        elsif authorized && method == "PATCH" &&
-              (match = target.match(
-                %r{\A/api/admin/users/([0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12})\z}
-              ))
-          id = match[1]
-          record = users.find { |candidate| candidate["id"] == id }
-          if record && parsed == { "shouldChangePassword" => false }
-            response_record = record.merge("shouldChangePassword" => false)
-            record["shouldChangePassword"] = false if persist_patches
-            patch_count += 1
-            replacement_pending = true if replace_after_patches && patch_count == 3
-            send_response(client, 200, response_record)
-          else
-            send_response(client, 400, { "message" => "invalid configured-password patch" })
-          end
-        else
-          send_response(client, 400, { "message" => "unexpected fixture request" })
-        end
-      ensure
-        client.close unless client.closed?
+    authorized = headers["authorization"] == "Bearer #{TOKEN}"
+    if authorized && method == "GET" && target == "/api/admin/users?withDeleted=true"
+      if replacement_pending
+        record = users.find { |candidate| candidate["id"] == replace_after_patches.fetch("id") }
+        record.replace(replace_after_patches.fetch("replacement"))
+        replacement_pending = false
       end
+      send_response(200, users)
+    elsif authorized && method == "PATCH" &&
+          (match = target.match(
+            %r{\A/api/admin/users/([0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12})\z}
+          ))
+      id = match[1]
+      record = users.find { |candidate| candidate["id"] == id }
+      if record && parsed == { "shouldChangePassword" => false }
+        response_record = record.merge("shouldChangePassword" => false)
+        record["shouldChangePassword"] = false if persist_patches
+        patch_count += 1
+        replacement_pending = true if replace_after_patches && patch_count == 3
+        send_response(200, response_record)
+      else
+        send_response(400, { "message" => "invalid configured-password patch" })
+      end
+    else
+      send_response(400, { "message" => "unexpected fixture request" })
     end
-  rescue IOError, Errno::EBADF
-    nil
-  rescue StandardError => caught
-    error = caught
   end
-
-  yield server.addr.fetch(1), requests, users
-ensure
-  begin
-    shutdown_writer&.write("x")
-  rescue IOError, Errno::EPIPE
-    nil
-  end
-  shutdown_writer&.close
-  server&.close
-  thread&.join(2)
-  thread&.kill if thread&.alive?
-  thread&.join(1)
-  shutdown_reader&.close
-  raise error if error
 end
 
 def patches(requests)
@@ -232,8 +187,8 @@ captured_request_sets = []
 
 with_immich_users(complete_users) do |port, requests, users|
   captured_request_sets << requests
-  stdout, stderr, status = run_playbook(port, ["reconcile"])
-  failures << "initial reconciliation failed: #{failure_tail(stdout + stderr)}" unless status.success?
+  stdout, stderr, status = run_configured_password(port, ["reconcile"])
+  failures << "initial reconciliation failed: #{failure_tail(stdout + stderr, 12)}" unless status.success?
 
   lifecycle_mutations = mutations(requests)
   expected_targets = [ADMIN_ID, READER_ID, EDITOR_ID].map do |id|
@@ -260,13 +215,13 @@ with_immich_users(complete_users) do |port, requests, users|
     users.find { |entry| entry["id"] == UNMANAGED_ID }["shouldChangePassword"] == true
 
   mutation_count = lifecycle_mutations.length
-  repeat_stdout, repeat_stderr, repeat_status = run_playbook(port, ["reconcile"])
-  failures << "second reconciliation failed: #{failure_tail(repeat_stdout + repeat_stderr)}" unless
+  repeat_stdout, repeat_stderr, repeat_status = run_configured_password(port, ["reconcile"])
+  failures << "second reconciliation failed: #{failure_tail(repeat_stdout + repeat_stderr, 12)}" unless
     repeat_status.success?
   failures << "second reconciliation was not idempotent" unless patches(requests).length == mutation_count
 
-  verify_stdout, verify_stderr, verify_status = run_playbook(port, ["verify"])
-  failures << "verification of reconciled users failed: #{failure_tail(verify_stdout + verify_stderr)}" unless
+  verify_stdout, verify_stderr, verify_status = run_configured_password(port, ["verify"])
+  failures << "verification of reconciled users failed: #{failure_tail(verify_stdout + verify_stderr, 12)}" unless
     verify_status.success?
   failures << "verification mutated configured-password state" unless
     patches(requests).length == mutation_count
@@ -274,7 +229,7 @@ end
 
 with_immich_users(complete_users, persist_patches: false) do |port, requests, _users|
   captured_request_sets << requests
-  _stdout, _stderr, status = run_playbook(port, ["reconcile"])
+  _stdout, _stderr, status = run_configured_password(port, ["reconcile"])
   failures << "reconciliation accepted acknowledged but unpersisted password state" if status.success?
 
   expected_patches = [ADMIN_ID, READER_ID, EDITOR_ID].map do |id|
@@ -297,7 +252,7 @@ with_immich_users(
   replace_after_patches: { "id" => READER_ID, "replacement" => replacement_reader }
 ) do |port, requests, _users|
   captured_request_sets << requests
-  _stdout, _stderr, status = run_playbook(port, ["reconcile"])
+  _stdout, _stderr, status = run_configured_password(port, ["reconcile"])
   failures << "reconciliation accepted a same-email configured identity replacement" if status.success?
 
   expected_patches = [ADMIN_ID, READER_ID, EDITOR_ID].map do |id|
@@ -316,7 +271,7 @@ end
   malformed_users.find { |entry| entry["id"] == malformed_id }["shouldChangePassword"] = "true"
   with_immich_users(malformed_users) do |port, requests, _users|
     captured_request_sets << requests
-    _stdout, _stderr, status = run_playbook(port, ["reconcile"])
+    _stdout, _stderr, status = run_configured_password(port, ["reconcile"])
     failures << "malformed shouldChangePassword for #{malformed_id} unexpectedly succeeded" if
       status.success?
     check_no_mutation(
@@ -334,7 +289,7 @@ end
   mutate_status.call(unsafe_users.find { |entry| entry["id"] == READER_ID })
   with_immich_users(unsafe_users) do |port, requests, _users|
     captured_request_sets << requests
-    _stdout, _stderr, status = run_playbook(port, ["reconcile"])
+    _stdout, _stderr, status = run_configured_password(port, ["reconcile"])
     failures << "#{scenario} configured target status unexpectedly succeeded" if status.success?
     check_no_mutation(
       failures, requests, "#{scenario} configured target status reached mutation"
@@ -348,7 +303,7 @@ duplicate_users << user(
 )
 with_immich_users(duplicate_users) do |port, requests, _users|
   captured_request_sets << requests
-  _stdout, _stderr, status = run_playbook(port, ["reconcile"])
+  _stdout, _stderr, status = run_configured_password(port, ["reconcile"])
   failures << "duplicate normalized configured target unexpectedly succeeded" if status.success?
   check_no_mutation(failures, requests, "duplicate normalized configured target reached mutation")
 end
@@ -357,7 +312,7 @@ duplicate_id_users = complete_users
 duplicate_id_users.find { |entry| entry["id"] == EDITOR_ID }["id"] = READER_ID
 with_immich_users(duplicate_id_users) do |port, requests, _users|
   captured_request_sets << requests
-  _stdout, _stderr, status = run_playbook(port, ["reconcile"])
+  _stdout, _stderr, status = run_configured_password(port, ["reconcile"])
   failures << "duplicate configured target UUID unexpectedly succeeded" if status.success?
   check_no_mutation(failures, requests, "duplicate configured target UUID reached mutation")
 end
@@ -365,7 +320,7 @@ end
 missing_users = complete_users.reject { |entry| entry["id"] == EDITOR_ID }
 with_immich_users(missing_users) do |port, requests, _users|
   captured_request_sets << requests
-  _stdout, _stderr, status = run_playbook(port, ["reconcile"])
+  _stdout, _stderr, status = run_configured_password(port, ["reconcile"])
   failures << "missing configured target unexpectedly succeeded" if status.success?
   check_no_mutation(failures, requests, "missing configured target reached mutation")
 end
@@ -374,15 +329,15 @@ managed_admin_users = complete_users
 managed_admin_users.find { |entry| entry["id"] == READER_ID }["isAdmin"] = true
 with_immich_users(managed_admin_users) do |port, requests, _users|
   captured_request_sets << requests
-  _stdout, _stderr, status = run_playbook(port, ["reconcile"])
+  _stdout, _stderr, status = run_configured_password(port, ["reconcile"])
   failures << "managed isAdmin=true target unexpectedly succeeded" if status.success?
   check_no_mutation(failures, requests, "managed isAdmin=true target reached mutation")
 end
 
 with_immich_users(complete_users) do |port, requests, _users|
   captured_request_sets << requests
-  stdout, stderr, status = run_playbook(port, ["reconcile"], "--check")
-  failures << "configured-password check mode failed: #{failure_tail(stdout + stderr)}" unless
+  stdout, stderr, status = run_configured_password(port, ["reconcile"], "--check")
+  failures << "configured-password check mode failed: #{failure_tail(stdout + stderr, 12)}" unless
     status.success?
   plan_lines = stdout.lines.select do |line|
     line.match?(/^\s*"msg": "IMMICH_PLAN_CONFIGURED_PASSWORD"\s*$/)
@@ -398,7 +353,7 @@ end
 
 with_immich_users(complete_users) do |port, requests, _users|
   captured_request_sets << requests
-  _stdout, _stderr, status = run_playbook(port, ["verify"])
+  _stdout, _stderr, status = run_configured_password(port, ["verify"])
   failures << "verification accepted shouldChangePassword=true" if status.success?
   check_no_mutation(failures, requests, "verification mutated shouldChangePassword=true")
 end
