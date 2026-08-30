@@ -525,6 +525,97 @@ check(failures, !File.exist?(File.join(ROOT, "roles", "immich", "files", "classi
       "Immich classifier must not retain a divergent role-local source")
 
 
+# Every entry point this role is re-included through is a declared contract.
+# include_role applies the argument spec named by tasks_from, so a renamed or
+# forgotten parameter fails the run instead of degrading a guard: without the
+# declaration, target.yml read deployment_target_require_current_release through
+# a default and a typo in any caller silently downgraded release containment to
+# "not required" while the run still reported success, and a typo in
+# deployment_target_extra_paths silently dropped the paths that caller declared
+# it was about to touch. Both are required rather than defaulted, so the callers
+# that genuinely have no extra paths write an empty list rather than omit one.
+%w[main controller inputs compose_files target].each do |entry_point|
+  check(failures, deployment_spec.dig("argument_specs", entry_point).is_a?(Hash),
+        "deployment bundle must declare an argument spec for its #{entry_point} entry point")
+end
+target_options = deployment_spec.dig("argument_specs", "target", "options") || {}
+require_current_option = target_options["deployment_target_require_current_release"]
+check(failures, require_current_option.is_a?(Hash) &&
+                require_current_option["type"] == "bool" &&
+                require_current_option["required"] == true,
+      "the target entry point must require an explicit release-containment flag")
+extra_paths_option = target_options["deployment_target_extra_paths"]
+check(failures, extra_paths_option.is_a?(Hash) && extra_paths_option["type"] == "list" &&
+                extra_paths_option["elements"] == "path" &&
+                extra_paths_option["required"] == true,
+      "the target entry point must require an explicit list of the paths its caller touches")
+check(failures, deployment_defaults.keys.none? { |name| name.start_with?("deployment_target_") },
+      "target containment parameters must not be silently defaulted in role defaults")
+check(failures,
+      !target_tasks_body.match?(/deployment_target_\w+\s*\|\s*default/) &&
+        !File.read(File.join(ROOT, "roles", "deployment_bundle", "tasks", "controller_input.yml"))
+             .match?(/deployment_controller_input_\w+\s*\|\s*default/),
+      "include-entry parameters must fail loudly rather than fall back to a default")
+
+# Enumerated rather than listed: a service role added without both parameters is
+# the mistake this is here to catch, and site.yml and the deployment bundle's own
+# body reach the same task file through include_tasks, which never validates.
+target_include_sites = []
+playbook_paths = [
+  File.join(ROOT, "site.yml"),
+  File.join(ROOT, "verify.yml"),
+  File.join(ROOT, "tests", "mac_inventory_path_test.yml")
+]
+playbook_paths.each do |path|
+  Array(YAML.safe_load_file(path, aliases: true)).each do |play|
+    next unless play.is_a?(Hash)
+
+    %w[pre_tasks tasks post_tasks].each do |section|
+      flatten_tasks(play[section]).each do |task|
+        include_role = task["ansible.builtin.include_role"]
+        next unless include_role.is_a?(Hash) && include_role["name"] == "deployment_bundle" &&
+                    include_role["tasks_from"] == "target"
+
+        target_include_sites << [path.delete_prefix("#{ROOT}/"), task]
+      end
+    end
+  end
+end
+Dir[File.join(ROOT, "roles", "*", "tasks", "*.yml")].sort.each do |path|
+  relative_path = path.delete_prefix("#{ROOT}/")
+  flatten_tasks(YAML.safe_load_file(path, aliases: true)).each do |task|
+    include_role = task["ansible.builtin.include_role"]
+    included_tasks = task["ansible.builtin.include_tasks"]
+    included_file = included_tasks.is_a?(Hash) ? included_tasks["file"] : included_tasks
+    includes_target =
+      (include_role.is_a?(Hash) && include_role["name"] == "deployment_bundle" &&
+       include_role["tasks_from"] == "target") ||
+      (included_file == "target.yml" && relative_path.start_with?("roles/deployment_bundle/"))
+    target_include_sites << [relative_path, task] if includes_target
+  end
+end
+# Anchored on the two call sites no service role owns rather than on a count:
+# the mutation harness replaces individual role task files, so a total would
+# report a deliberately reduced fixture as a broken enumeration.
+enumerated_callers = target_include_sites.map(&:first).uniq
+check(failures,
+      enumerated_callers.include?("site.yml") &&
+        enumerated_callers.include?("roles/deployment_bundle/tasks/main.yml"),
+      "target containment call-site enumeration found #{target_include_sites.length} sites in " \
+      "#{enumerated_callers.join(', ')}; the callers that must declare what they touch are no " \
+      "longer being inspected")
+target_include_sites.each do |relative_path, task|
+  task_vars = task["vars"] || {}
+  label = "#{relative_path}: \"#{task['name']}\""
+  check(failures, [true, false].include?(task_vars["deployment_target_require_current_release"]),
+        "#{label} must state whether target validation requires an active current release")
+  declared_extra_paths = task_vars["deployment_target_extra_paths"]
+  check(failures, declared_extra_paths.is_a?(Array) ||
+                  declared_extra_paths.to_s.match?(/\A\{\{.*\}\}\z/m),
+        "#{label} must declare the extra paths it is about to touch, even when there are none")
+end
+
+
 if failures.empty?
   puts "deployment policy: all properties hold"
 else
