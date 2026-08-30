@@ -183,6 +183,54 @@ mac_target_container_names() {
   esac
 }
 
+# Every service the disposable lanes publish a host port for, in the one order
+# everything derived from this roster uses: ports are allocated in this order,
+# handed to report.rb in this order, exported in this order, reserved in this
+# order, and read back from the resume state in this order.
+#
+# tests/mac/run.sh used to spell the roster out ten times, and -- worse -- in two
+# divergent hand-written orders: the positional integration handoff listed the
+# original eight services alphabetically and appended the rest, while allocation
+# and the exports used the order the services were added. Nothing enforced that
+# the two agreed, and a mismatch does not fail: the positional unpack would just
+# bind every service to another service's port in silence. One order removes
+# that failure mode rather than documenting it. It is safe to have exactly one
+# because the positional handoff is internal to read_integration_ports and its
+# single consumer, and the on-disk integration ports file is keyed by name, so
+# no caller outside that function can observe an order at all.
+MAC_SERVICE_PORT_ORDER='beszel ntfy dozzle audiobookshelf komga jellyfin immich
+paperless radarr sonarr prowlarr bazarr sabnzbd pinchflat kapowarr'
+
+# How many services the roster holds, for callers validating a list length
+# against it. Resetting the positional parameters inside a function does not
+# touch the caller's.
+mac_service_port_count() {
+  # shellcheck disable=SC2086
+  set -- $MAC_SERVICE_PORT_ORDER
+  printf '%s\n' "$#"
+}
+
+# The resolved host port of every roster service, one per line, in roster order.
+# Reads the "<service>_port" shell variables the runner has already resolved; a
+# service on the roster with no resolved port aborts by name instead of
+# contributing an empty field to a docker filter or a port reservation.
+mac_service_ports() {
+  for mac_port_service in $MAC_SERVICE_PORT_ORDER; do
+    eval "printf '%s\\n' \"\${${mac_port_service}_port:?${mac_port_service}_port is required}\""
+  done
+}
+
+# Export PLATFORM_<SERVICE>_PORT for every roster service from the same
+# "<service>_port" variables. This replaces fifteen hand-written export lines
+# whose only guard was that a human kept them in step with the roster.
+mac_export_service_ports() {
+  for mac_port_service in $MAC_SERVICE_PORT_ORDER; do
+    mac_port_variable=PLATFORM_$(printf '%s' "$mac_port_service" |
+      tr '[:lower:]' '[:upper:]')_PORT
+    eval "export $mac_port_variable=\"\${${mac_port_service}_port:?${mac_port_service}_port is required}\""
+  done
+}
+
 # The container identity for one Compose service. Both disposable lanes prefix
 # the isolated Compose project, so the identity no longer forks by proof
 # platform. Every wrapper used to carry its own copy of that case statement, so

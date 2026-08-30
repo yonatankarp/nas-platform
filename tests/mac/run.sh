@@ -612,14 +612,15 @@ allocate_service_port() {
   done
 }
 
+# Emits one decimal port per roster service, in roster order, from a validated
+# ports file. The roster arrives as arguments rather than as a literal list so
+# that the emission order and the order the caller unpacks are the same list.
 read_integration_ports() {
-  ruby -rjson - "$integration_ports_file" "$mac_repo_dir" <<'RUBY'
-path, repository = ARGV
-expected = %w[
-  audiobookshelf_port beszel_port dozzle_port immich_port jellyfin_port komga_port
-  ntfy_port paperless_port radarr_port sonarr_port prowlarr_port bazarr_port sabnzbd_port
-  pinchflat_port kapowarr_port
-]
+  # shellcheck disable=SC2086
+  ruby -rjson - "$integration_ports_file" "$mac_repo_dir" $MAC_SERVICE_PORT_ORDER <<'RUBY'
+path, repository, *services = ARGV
+expected = services.map { |service| "#{service}_port" }
+raise "unsafe" if expected.empty? || expected.uniq.length != expected.length
 flags = File::RDONLY
 flags |= File::NOFOLLOW if File.const_defined?(:NOFOLLOW)
 raise "unsafe" unless File.absolute_path(path) == path && !File.symlink?(path)
@@ -652,85 +653,52 @@ RUBY
 
 if [ "$proof_platform" = integration ]; then
   integration_ports=$(read_integration_ports) || mac_die 'integration ports input is invalid'
-  # The validated representation contains exactly fifteen decimal integers.
+  # The validated representation contains one decimal integer per roster service,
+  # in roster order, because read_integration_ports emitted it from this same
+  # list. The length check keeps a short list from binding services to nothing.
+  # shellcheck disable=SC2086
   set -- $integration_ports
-  [ "$#" -eq 15 ] || mac_die 'integration ports input is invalid'
-  expected_audiobookshelf_port=$1 expected_beszel_port=$2 expected_dozzle_port=$3
-  expected_immich_port=$4 expected_jellyfin_port=$5 expected_komga_port=$6
-  expected_ntfy_port=$7 expected_paperless_port=$8
-  expected_radarr_port=$9 expected_sonarr_port=${10} expected_prowlarr_port=${11}
-  expected_bazarr_port=${12} expected_sabnzbd_port=${13} expected_pinchflat_port=${14}
-  expected_kapowarr_port=${15}
+  [ "$#" -eq "$(mac_service_port_count)" ] || mac_die 'integration ports input is invalid'
+  for mac_roster_service in $MAC_SERVICE_PORT_ORDER; do
+    eval "expected_${mac_roster_service}_port=\$1"
+    shift
+  done
   callback_host=$(mac_integration_gateway) || mac_die 'integration callback host is invalid'
 else
   callback_host=host.docker.internal
 fi
 
+# report.rb names one --<service>-port option per roster service, so the flag
+# list is the roster spelled with hyphens. The caller's own arguments are
+# appended to, never replaced: OptionParser is order-insensitive across distinct
+# options, so they may sit before the port flags.
 initialize_report_input() {
+  for mac_roster_service in $MAC_SERVICE_PORT_ORDER; do
+    eval "set -- \"\$@\" --$mac_roster_service-port \"\${${mac_roster_service}_port:?${mac_roster_service}_port is required}\""
+  done
   "$mac_script_dir/report.rb" --init "$state_input" --lane "$lane" \
     --proof-platform "$proof_platform" \
     --callback-host "$callback_host" \
     --sandbox-id "$(basename -- "$sandbox")" --git-revision "$git_revision" \
-    --vault-checksum "$vault_checksum" --project-name "$project_name" \
-    --beszel-port "$beszel_port" --ntfy-port "$ntfy_port" --dozzle-port "$dozzle_port" \
-    --audiobookshelf-port "$audiobookshelf_port" --komga-port "$komga_port" \
-    --jellyfin-port "$jellyfin_port" --immich-port "$immich_port" \
-    --paperless-port "$paperless_port" --radarr-port "$radarr_port" \
-    --sonarr-port "$sonarr_port" --prowlarr-port "$prowlarr_port" \
-    --bazarr-port "$bazarr_port" --sabnzbd-port "$sabnzbd_port" \
-    --pinchflat-port "$pinchflat_port" --kapowarr-port "$kapowarr_port" "$@"
+    --vault-checksum "$vault_checksum" --project-name "$project_name" "$@"
 }
 
 if [ ! -f "$state_input" ]; then
   if [ "$proof_platform" = integration ]; then
-    audiobookshelf_port=$expected_audiobookshelf_port beszel_port=$expected_beszel_port
-    dozzle_port=$expected_dozzle_port immich_port=$expected_immich_port
-    jellyfin_port=$expected_jellyfin_port komga_port=$expected_komga_port
-    ntfy_port=$expected_ntfy_port paperless_port=$expected_paperless_port
-    radarr_port=$expected_radarr_port sonarr_port=$expected_sonarr_port
-    prowlarr_port=$expected_prowlarr_port bazarr_port=$expected_bazarr_port
-    sabnzbd_port=$expected_sabnzbd_port pinchflat_port=$expected_pinchflat_port
-    kapowarr_port=$expected_kapowarr_port
+    for mac_roster_service in $MAC_SERVICE_PORT_ORDER; do
+      eval "${mac_roster_service}_port=\$expected_${mac_roster_service}_port"
+    done
   else
-    beszel_port=$(allocate_service_port)
-    ntfy_port=$(allocate_service_port "$beszel_port")
-    dozzle_port=$(allocate_service_port "$beszel_port" "$ntfy_port")
-    audiobookshelf_port=$(allocate_service_port "$beszel_port" "$ntfy_port" "$dozzle_port")
-    komga_port=$(allocate_service_port \
-      "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port")
-    jellyfin_port=$(allocate_service_port \
-      "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port" "$komga_port")
-    immich_port=$(allocate_service_port \
-      "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port" "$komga_port" \
-      "$jellyfin_port")
-    paperless_port=$(allocate_service_port \
-      "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port" "$komga_port" \
-      "$jellyfin_port" "$immich_port")
-    radarr_port=$(allocate_service_port \
-      "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port" "$komga_port" \
-      "$jellyfin_port" "$immich_port" "$paperless_port")
-    sonarr_port=$(allocate_service_port \
-      "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port" "$komga_port" \
-      "$jellyfin_port" "$immich_port" "$paperless_port" "$radarr_port")
-    prowlarr_port=$(allocate_service_port \
-      "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port" "$komga_port" \
-      "$jellyfin_port" "$immich_port" "$paperless_port" "$radarr_port" "$sonarr_port")
-    bazarr_port=$(allocate_service_port \
-      "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port" "$komga_port" \
-      "$jellyfin_port" "$immich_port" "$paperless_port" "$radarr_port" "$sonarr_port" \
-      "$prowlarr_port")
-    sabnzbd_port=$(allocate_service_port \
-      "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port" "$komga_port" \
-      "$jellyfin_port" "$immich_port" "$paperless_port" "$radarr_port" "$sonarr_port" \
-      "$prowlarr_port" "$bazarr_port")
-    pinchflat_port=$(allocate_service_port \
-      "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port" "$komga_port" \
-      "$jellyfin_port" "$immich_port" "$paperless_port" "$radarr_port" "$sonarr_port" \
-      "$prowlarr_port" "$bazarr_port" "$sabnzbd_port")
-    kapowarr_port=$(allocate_service_port \
-      "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port" "$komga_port" \
-      "$jellyfin_port" "$immich_port" "$paperless_port" "$radarr_port" "$sonarr_port" \
-      "$prowlarr_port" "$bazarr_port" "$sabnzbd_port" "$pinchflat_port")
+    # Each allocation is told every port already handed out, so the cascade that
+    # used to repeat the growing argument list by hand -- fourteen arguments on
+    # the last call -- is now one accumulator threaded through the roster.
+    mac_allocated_ports=
+    for mac_roster_service in $MAC_SERVICE_PORT_ORDER; do
+      # shellcheck disable=SC2086
+      mac_next_port=$(allocate_service_port $mac_allocated_ports)
+      eval "${mac_roster_service}_port=\$mac_next_port"
+      mac_allocated_ports="$mac_allocated_ports $mac_next_port"
+    done
   fi
   initialize_report_input
 else
@@ -742,21 +710,25 @@ else
   state_git_revision=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("git_revision")' "$state_input")
   state_vault_checksum=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("vault_checksum")' "$state_input")
   state_project_name=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("project_name")' "$state_input")
-  beszel_port=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("beszel_port")' "$state_input")
-  ntfy_port=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("ntfy_port")' "$state_input")
-  dozzle_port=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("dozzle_port")' "$state_input")
-  audiobookshelf_port=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("audiobookshelf_port")' "$state_input")
-  komga_port=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("komga_port")' "$state_input")
-  jellyfin_port=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("jellyfin_port")' "$state_input")
-  immich_port=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("immich_port")' "$state_input")
-  paperless_port=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("paperless_port")' "$state_input")
-  radarr_port=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("radarr_port")' "$state_input")
-  sonarr_port=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("sonarr_port")' "$state_input")
-  prowlarr_port=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("prowlarr_port")' "$state_input")
-  bazarr_port=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("bazarr_port")' "$state_input")
-  sabnzbd_port=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("sabnzbd_port")' "$state_input")
-  pinchflat_port=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("pinchflat_port")' "$state_input")
-  kapowarr_port=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("kapowarr_port")' "$state_input")
+  # One interpreter start-up for every roster port, instead of one per service.
+  # `set --` rather than a pipe: in POSIX sh the right side of a pipe is a
+  # subshell and the assignments would evaporate with it.
+  state_ports=$(
+    # shellcheck disable=SC2086
+    ruby -rjson - "$state_input" $MAC_SERVICE_PORT_ORDER <<'RUBY'
+path, *services = ARGV
+document = JSON.parse(File.read(path))
+puts services.map { |service| document.fetch("#{service}_port") }.join(" ")
+RUBY
+  ) || mac_die 'resume state input does not record the service ports'
+  # shellcheck disable=SC2086
+  set -- $state_ports
+  [ "$#" -eq "$(mac_service_port_count)" ] ||
+    mac_die 'resume state input does not record the service ports'
+  for mac_roster_service in $MAC_SERVICE_PORT_ORDER; do
+    eval "${mac_roster_service}_port=\$1"
+    shift
+  done
   [ "$state_lane" = "$lane" ] || mac_die 'resume lane does not match the recorded lane'
   [ "$state_proof_platform" = "$proof_platform" ] ||
     mac_die 'resume proof platform does not match the recorded run'
@@ -771,22 +743,10 @@ else
   [ "$state_vault_checksum" = "$vault_checksum" ] ||
     mac_die 'resume vault checksum does not match the recorded run'
   if [ "$proof_platform" = integration ]; then
-    [ "$audiobookshelf_port" = "$expected_audiobookshelf_port" ] &&
-      [ "$beszel_port" = "$expected_beszel_port" ] &&
-      [ "$dozzle_port" = "$expected_dozzle_port" ] &&
-      [ "$immich_port" = "$expected_immich_port" ] &&
-      [ "$jellyfin_port" = "$expected_jellyfin_port" ] &&
-      [ "$komga_port" = "$expected_komga_port" ] &&
-      [ "$ntfy_port" = "$expected_ntfy_port" ] &&
-      [ "$paperless_port" = "$expected_paperless_port" ] &&
-      [ "$radarr_port" = "$expected_radarr_port" ] &&
-      [ "$sonarr_port" = "$expected_sonarr_port" ] &&
-      [ "$prowlarr_port" = "$expected_prowlarr_port" ] &&
-      [ "$bazarr_port" = "$expected_bazarr_port" ] &&
-      [ "$sabnzbd_port" = "$expected_sabnzbd_port" ] &&
-      [ "$pinchflat_port" = "$expected_pinchflat_port" ] &&
-      [ "$kapowarr_port" = "$expected_kapowarr_port" ] ||
-      mac_die 'resume integration ports do not match the recorded run'
+    for mac_roster_service in $MAC_SERVICE_PORT_ORDER; do
+      eval "[ \"\$${mac_roster_service}_port\" = \"\$expected_${mac_roster_service}_port\" ]" ||
+        mac_die 'resume integration ports do not match the recorded run'
+    done
   fi
 fi
 
@@ -803,21 +763,7 @@ export PLATFORM_COMPOSE_KIND=$proof_platform
 export PLATFORM_KIND=$proof_platform
 export PLATFORM_PROJECT_NAME=$project_name
 export PLATFORM_MEDIA_NETWORK=$project_name-media-control
-export PLATFORM_BESZEL_PORT=$beszel_port
-export PLATFORM_NTFY_PORT=$ntfy_port
-export PLATFORM_DOZZLE_PORT=$dozzle_port
-export PLATFORM_AUDIOBOOKSHELF_PORT=$audiobookshelf_port
-export PLATFORM_KOMGA_PORT=$komga_port
-export PLATFORM_JELLYFIN_PORT=$jellyfin_port
-export PLATFORM_IMMICH_PORT=$immich_port
-export PLATFORM_PAPERLESS_PORT=$paperless_port
-export PLATFORM_RADARR_PORT=$radarr_port
-export PLATFORM_SONARR_PORT=$sonarr_port
-export PLATFORM_PROWLARR_PORT=$prowlarr_port
-export PLATFORM_BAZARR_PORT=$bazarr_port
-export PLATFORM_SABNZBD_PORT=$sabnzbd_port
-export PLATFORM_PINCHFLAT_PORT=$pinchflat_port
-export PLATFORM_KAPOWARR_PORT=$kapowarr_port
+mac_export_service_ports
 export COMPOSE_PROJECT_NAME=$project_name
 export PLATFORM_MAC_VAULT_FILE=$vault_file
 export PLATFORM_MAC_VAULT_PASSWORD_FILE=$vault_password_file
@@ -956,12 +902,20 @@ execute_phase() {
           return 1
         }
       done
-      for reserved_port in \
-        "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port" "$komga_port" \
-        "$jellyfin_port" \
-        "$immich_port" "$paperless_port" "$radarr_port" "$sonarr_port" \
-        "$prowlarr_port" "$bazarr_port" "$sabnzbd_port" "$pinchflat_port" \
-        "$kapowarr_port"; do
+      # Resolved once, into a variable, so that a roster service without a port
+      # aborts here rather than collapsing the substitution to nothing and
+      # letting both reservation checks pass over an empty list.
+      reserved_ports=$(mac_service_ports) || {
+        mac_die 'reserved host ports are unresolved'
+        return 1
+      }
+      [ "$(printf '%s\n' "$reserved_ports" | wc -l | tr -d ' ')" \
+        -eq "$(mac_service_port_count)" ] || {
+        mac_die 'reserved host ports are unresolved'
+        return 1
+      }
+      # shellcheck disable=SC2086
+      for reserved_port in $reserved_ports; do
         reserved_port_container_ids=$(docker ps -q --filter "publish=$reserved_port") || {
           mac_die "could not inspect reserved host port: $reserved_port"
           return 1
@@ -971,6 +925,7 @@ execute_phase() {
           return 1
         }
       done
+      # shellcheck disable=SC2086
       ruby -rsocket -e '
         ARGV.each do |value|
           server = TCPServer.new("127.0.0.1", Integer(value, 10))
@@ -979,11 +934,7 @@ execute_phase() {
           warn "reserved host port is already in use: #{value}"
           exit 1
         end
-      ' "$beszel_port" "$ntfy_port" "$dozzle_port" "$audiobookshelf_port" "$komga_port" \
-        "$jellyfin_port" \
-        "$immich_port" "$paperless_port" "$radarr_port" "$sonarr_port" \
-        "$prowlarr_port" "$bazarr_port" "$sabnzbd_port" "$pinchflat_port" \
-        "$kapowarr_port" || return 1
+      ' $reserved_ports || return 1
       ensure_immich_fixture_vars || return $?
       ansible-playbook "$mac_repo_dir/validate-vault.yml" \
         --vault-password-file "$vault_password_file" -e @"$vault_file" \
