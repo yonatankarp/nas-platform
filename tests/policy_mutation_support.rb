@@ -18,8 +18,8 @@ require "yaml"
 require_relative "policy_support"
 
 include PolicySupport
+include TestScaffold
 
-ROOT = File.expand_path("..", __dir__)
 BASE_FIXTURE_PATHS = %w[
   .gitignore
   .github/workflows/ci.yml

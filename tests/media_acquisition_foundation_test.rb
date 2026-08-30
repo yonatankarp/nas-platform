@@ -6,7 +6,8 @@ require "yaml"
 
 require_relative "policy_support"
 
-ROOT = File.expand_path("..", __dir__)
+include TestScaffold
+
 CATALOG_PATH = File.join(ROOT, "config", "media-acquisition.yml")
 ACQUISITION_PROJECTS = Set[
   "arr", "downloaders", "bindery", "kapowarr", "pinchflat", "trailarr", "seerr"
@@ -872,9 +873,5 @@ end
   failures << "catalog guard misses #{label}" if catalog_contract_problems(mutation).empty?
 end
 
-if failures.empty?
-  puts "media acquisition foundation: inert catalog and port policy hold"
-else
-  failures.each { |failure| warn "FAIL #{failure}" }
-  abort "#{failures.length} media acquisition foundation regression(s)"
-end
+report(failures, "media acquisition foundation: inert catalog and port policy hold",
+       "media acquisition foundation regression(s)")

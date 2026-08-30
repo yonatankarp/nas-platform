@@ -13,13 +13,9 @@ require "yaml"
 require_relative "policy_support"
 
 include PolicySupport
+include TestScaffold
 
-ROOT = File.expand_path("..", __dir__)
 failures = []
-
-def check(failures, condition, message)
-  failures << message unless condition
-end
 
 # The Mac proof harness is an orchestration contract: each service plugs its
 # fixture, drift, and verification behavior into these stable phases.
@@ -283,9 +279,4 @@ check(failures,
         .include?("tests/mac/snapshot-paperless-drill-throttle-test.sh"),
       "validate-policy.sh must run tests/mac/snapshot-paperless-drill-throttle-test.sh")
 
-if failures.empty?
-  puts "mac policy: all properties hold"
-else
-  failures.each { |failure| warn "FAIL #{failure}" }
-  abort "#{failures.length} mac policy violation(s)"
-end
+report(failures, "mac policy: all properties hold", "mac policy violation(s)")

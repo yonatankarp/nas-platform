@@ -3,7 +3,10 @@
 require "json"
 require "set"
 
-ROOT = File.expand_path("..", __dir__)
+require_relative "policy_support"
+
+include TestScaffold
+
 ELIGIBLE_UPDATE_TYPES = Set.new(%w[
   minor
   patch
@@ -20,10 +23,6 @@ ALPINE_PACKAGE_DATASOURCE = "custom.alpine-3.24-main"
 ALPINE_PACKAGE_NAMES = Set.new(%w[ruby curl]).freeze
 
 failures = []
-
-def check(failures, condition, message)
-  failures << message unless condition
-end
 
 config = JSON.parse(File.read(File.join(ROOT, "renovate.json")))
 rules = config.fetch("packageRules")
@@ -148,9 +147,4 @@ check(failures, Array(config["customManagers"]).none? do |manager|
     manager["depNameTemplate"].to_s.start_with?("alpine_3_24/")
 end, "Alpine 3.24 pins must not depend on Repology coverage")
 
-if failures.empty?
-  puts "renovate policy: all checks passed"
-else
-  failures.each { |failure| warn "FAIL #{failure}" }
-  abort "#{failures.length} Renovate policy regression(s)"
-end
+report(failures, "renovate policy: all checks passed", "Renovate policy regression(s)")

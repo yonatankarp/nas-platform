@@ -13,14 +13,10 @@ require "yaml"
 require_relative "policy_support"
 
 include PolicySupport
+include TestScaffold
 
-ROOT = File.expand_path("..", __dir__)
 failures = []
 ACQUISITION_JOB_SERVICES = Set["configarr"].freeze
-
-def check(failures, condition, message)
-  failures << message unless condition
-end
 
 def task_list_document?(tasks)
   tasks.is_a?(Array) && tasks.all? do |task|
@@ -1235,9 +1231,4 @@ end
 
 
 
-if failures.empty?
-  puts "policy: all properties hold"
-else
-  failures.each { |f| warn "FAIL #{f}" }
-  abort "#{failures.length} policy violation(s)"
-end
+report(failures, "policy: all properties hold", "policy violation(s)")

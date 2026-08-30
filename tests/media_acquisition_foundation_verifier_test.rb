@@ -7,7 +7,8 @@ require "yaml"
 
 require_relative "policy_support"
 
-ROOT = File.expand_path("..", __dir__)
+include TestScaffold
+
 TASKS_PATH = File.join(ROOT, "roles", "host_prep", "tasks", "verify_media_acquisition.yml")
 VERIFY_PATH = File.join(ROOT, "verify.yml")
 
@@ -343,9 +344,5 @@ unless failures.any?
   end
 end
 
-if failures.empty?
-  puts "media acquisition verifier: standalone read-only contract holds"
-else
-  failures.each { |failure| warn "FAIL #{failure}" }
-  abort "#{failures.length} media acquisition verifier regression(s)"
-end
+report(failures, "media acquisition verifier: standalone read-only contract holds",
+       "media acquisition verifier regression(s)")

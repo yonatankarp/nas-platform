@@ -19,7 +19,10 @@ require "open3"
 require "rbconfig"
 require "tmpdir"
 
-ROOT = File.expand_path("..", __dir__)
+require_relative "policy_support"
+
+include TestScaffold
+
 VALIDATE_POLICY = File.join(ROOT, "tests", "validate-policy.sh")
 # The media probe suite reads the same Jellyfin role and duplicates several of
 # the contract assertions, so it is proven here too. Its slow behavioural probes
@@ -156,10 +159,6 @@ SUITES = {
 }.freeze
 
 failures = []
-
-def check(failures, condition, message)
-  failures << message unless condition
-end
 
 # Every row copies the repository, so the copy is the cost of a proof. Ignored
 # paths — the Python virtualenv, worktrees, editor caches — are build artifacts,
@@ -1473,9 +1472,5 @@ check(failures,
       File.readlines(VALIDATE_POLICY).include?("ruby tests/contract_structure_mutation_test.rb\n"),
       "contract structure mutation proofs are not registered in the policy suite")
 
-if failures.empty?
-  puts "Contract structure mutations: parsed task assertions reject every named shape"
-else
-  failures.each { |failure| warn "FAIL #{failure}" }
-  abort "#{failures.length} contract structure mutation failure(s)"
-end
+report(failures, "Contract structure mutations: parsed task assertions reject every named shape",
+       "contract structure mutation failure(s)")

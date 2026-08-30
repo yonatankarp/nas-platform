@@ -2,12 +2,11 @@
 
 require "yaml"
 
-ROOT = File.expand_path("..", __dir__)
-failures = []
+require_relative "policy_support"
 
-def check(failures, condition, message)
-  failures << message unless condition
-end
+include TestScaffold
+
+failures = []
 
 required = %w[
   roles/arr/files/configarr/config.yml

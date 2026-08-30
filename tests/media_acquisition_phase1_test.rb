@@ -4,11 +4,9 @@ require "json"
 require "open3"
 require "yaml"
 
-ROOT = File.expand_path("..", __dir__)
+require_relative "policy_support"
 
-def check(failures, condition, message)
-  failures << message unless condition
-end
+include TestScaffold
 
 def strict_yaml(relative_path)
   path = File.join(ROOT, relative_path)

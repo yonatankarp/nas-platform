@@ -3,12 +3,11 @@
 
 require "yaml"
 
-ROOT = File.expand_path("..", __dir__)
-failures = []
+require_relative "policy_support"
 
-def check(failures, condition, message)
-  failures << message unless condition
-end
+include TestScaffold
+
+failures = []
 
 def markdown_section(document, heading)
   heading = "## #{heading}" unless heading.start_with?("#")
@@ -684,9 +683,5 @@ check(failures,
       secrets_guide.match?(/brand_new_generation_ready=false.*?if ansible-playbook generate-secrets\.yml.*?then\s+brand_new_generation_ready=true/m),
       "brand-new workflow must stop after generator failure")
 
-if failures.empty?
-  puts "secrets docs: canonical guide and vault schema agree"
-else
-  failures.each { |failure| warn "FAIL #{failure}" }
-  abort "#{failures.length} secrets docs violation(s)"
-end
+report(failures, "secrets docs: canonical guide and vault schema agree",
+       "secrets docs violation(s)")

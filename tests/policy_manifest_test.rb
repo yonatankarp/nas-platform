@@ -2005,9 +2005,4 @@ expect_failure(failures, "media Compose bind source undeclared",
   end
 end
 
-if failures.empty?
-  puts "policy manifest: all mutation checks hold"
-else
-  failures.each { |failure| warn "FAIL #{failure}" }
-  abort "#{failures.length} policy manifest regression(s)"
-end
+report(failures, "policy manifest: all mutation checks hold", "policy manifest regression(s)")

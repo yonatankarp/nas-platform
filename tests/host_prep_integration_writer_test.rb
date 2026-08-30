@@ -5,7 +5,9 @@ require "open3"
 require "tmpdir"
 require "yaml"
 
-ROOT = File.expand_path("..", __dir__)
+require_relative "policy_support"
+
+include TestScaffold
 
 def executable_on_path(name, path)
   path.to_s.split(File::PATH_SEPARATOR).each do |directory|
@@ -376,9 +378,5 @@ Dir.mktmpdir("host-prep-writer-") do |fixture|
   end
 end
 
-if failures.empty?
-  puts "host prep integration writer: executable safety boundary holds"
-else
-  failures.each { |failure| warn "FAIL #{failure}" }
-  abort "#{failures.length} host prep integration writer regression(s)"
-end
+report(failures, "host prep integration writer: executable safety boundary holds",
+       "host prep integration writer regression(s)")

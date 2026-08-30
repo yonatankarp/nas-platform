@@ -14,13 +14,9 @@ require "yaml"
 require_relative "policy_support"
 
 include PolicySupport
+include TestScaffold
 
-ROOT = File.expand_path("..", __dir__)
 failures = []
-
-def check(failures, condition, message)
-  failures << message unless condition
-end
 
 manifest_path = File.join(ROOT, "services", "manifest.yml")
 manifest = begin
@@ -641,9 +637,4 @@ if File.file?(vault_path)
 end
 
 
-if failures.empty?
-  puts "vault policy: all properties hold"
-else
-  failures.each { |failure| warn "FAIL #{failure}" }
-  abort "#{failures.length} vault policy violation(s)"
-end
+report(failures, "vault policy: all properties hold", "vault policy violation(s)")

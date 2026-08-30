@@ -6,7 +6,10 @@ require "tmpdir"
 require "yaml"
 require "fileutils"
 
-ROOT = File.expand_path("..", __dir__)
+require_relative "policy_support"
+
+include TestScaffold
+
 VAULT_PATH = File.join(ROOT, "inventory", "group_vars", "all", "vault.yml.example")
 SPEC_PATH = File.join(ROOT, "roles", "vault_contract", "meta", "argument_specs.yml")
 TASKS_PATH = File.join(ROOT, "roles", "vault_contract", "tasks", "main.yml")
@@ -101,10 +104,6 @@ ARGUMENT_FIELDS = {
     "groups" => ["list", "str"]
   }
 }.freeze
-
-def check(failures, condition, message)
-  failures << message unless condition
-end
 
 def load_mapping(path, failures, label)
   document = YAML.safe_load_file(path, aliases: false)
@@ -836,9 +835,5 @@ expect_role_rejection(
   "immich_managed_user_preference_overrides" => {}
 )
 
-if failures.empty?
-  puts "Managed-user vault: all eight service schemas are valid"
-else
-  failures.each { |failure| warn "FAIL #{failure}" }
-  abort "#{failures.length} managed-user vault violation(s)"
-end
+report(failures, "Managed-user vault: all eight service schemas are valid",
+       "managed-user vault violation(s)")
