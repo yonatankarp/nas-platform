@@ -88,7 +88,7 @@
   changed_when: false
   no_log: true
 
-- name: Validate the Configarr materialized projection inputs
+- name: Build the preflighted Configarr materialized projection
   ansible.builtin.set_fact:
     arr_configarr_owned_state_preflight: >-
       {{ lookup('file', role_path ~ '/files/configarr/config.yml') |
@@ -125,10 +125,14 @@
   changed_when: false
   no_log: true
 
+# The desired projection is the one built above: nothing between that task and
+# this one touches either the declaration or the current owned state, and the
+# first write to Arr state is the create below. Materializing it again here
+# only re-ran the same pure function over the same two inputs.
 - name: Build exact missing Configarr custom-format create bodies
   ansible.builtin.set_fact:
     arr_configarr_missing_custom_format_bodies: >-
-      {{ lookup('file', role_path ~ '/files/configarr/config.yml') |
+      {{ arr_configarr_owned_state_preflight |
          acquisition_configarr_missing_custom_format_bodies(
            arr_configarr_owned_state_current
          ) }}
