@@ -147,10 +147,26 @@ check(failures,
         run_play_body.include?("-e #{variable}=\\\"$integration_project_namespace\\\"")
       end && run_play_body.include?("-e platform_project_name=\\\"$integration_project_namespace\\\""),
       "integration must deploy every service under the disposable namespace")
-verify_only_bodies = harness.scan(/^    run_[a-z_]*verify[a-z_]*\(\) \{.*?^    \}/m)
-check(failures, verify_only_bodies.length >= 6 && verify_only_bodies.all? do |body|
-  body.include?("-e platform_project_name=\\\"$integration_project_namespace\\\"")
-end, "integration verification must read the disposable namespace it deployed")
+# One launcher runs every per-service verification, so the namespace, the vault
+# quoting and the play itself are written once. Assert the property on that
+# launcher, and require every wrapper to be nothing but a delegation to it: a
+# hand-rolled verification that spelled any of those differently — as five of
+# the seven copies once spelled the vault paths unquoted — is now rejected
+# outright rather than checked copy by copy.
+verification_launcher = harness[/^    run_verification\(\) \{.*?^    \}/m].to_s
+check(failures,
+      verification_launcher.include?(
+        "-e platform_project_name=\\\"$integration_project_namespace\\\""
+      ) &&
+        verification_launcher.include?("--tags \\\"platform_verify_\\$verification_tag\\\""),
+      "integration verification must read the disposable namespace it deployed")
+verify_only_bodies = harness.scan(/^    (run_[a-z_]*verif[a-z_]*)\(\) \{\n(.*?)^    \}/m)
+                            .reject { |name, _body| name == "run_verification" }
+check(failures, verify_only_bodies.length >= 6 &&
+                verify_only_bodies.all? do |_name, body|
+                  body.match?(/\A      run_verification [a-z_]+\n\z/)
+                end,
+      "every integration verification wrapper must delegate to the shared launcher")
 negative_project_names = harness.scan(/-e platform_project_name=([^\s\\]+)/)
                                 .flatten.uniq.reject do |value|
   value == "\\\"$integration_project_namespace\\\""
@@ -181,10 +197,14 @@ end
 check(failures, unnamespaced_contracts.empty?,
       "contracts that run their own play must converge under the exported sandbox " \
       "namespace: #{unnamespaced_contracts.map { |path| File.basename(path) }.join(', ')}")
+contract_launcher = harness[/^    run_contract\(\) \{.*?^    \}/m].to_s
 unexported_namespace = playing_contracts.reject do |path|
   service = File.basename(path, ".sh")
-  harness[/^    run_#{Regexp.escape(service)}_contract\(\) \{.*?^    \}/m]
-    .to_s.include?("PLATFORM_PROJECT_NAME=$integration_project_namespace")
+  # The per-service extras now live in a case arm of the single launcher, so
+  # read the arm that names this contract rather than a wrapper of its own.
+  contract_launcher[
+    /^\s*[a-z|]*\b#{Regexp.escape(service)}\b[a-z|]*\)\n(.*?)^\s*;;$/m, 1
+  ].to_s.include?("PLATFORM_PROJECT_NAME=$integration_project_namespace")
 end
 check(failures, unexported_namespace.empty?,
       "integration must export the sandbox namespace to every contract that runs a " \

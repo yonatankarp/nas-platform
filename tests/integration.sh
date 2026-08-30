@@ -1235,108 +1235,105 @@ docker run --rm \
       fi
     }
 
-    run_beszel_contract() {
+    # One launcher for every contract. The environment ABI every contract reads
+    # is written once here and a service's extras arrive as a case arm, so the
+    # nine wrappers below carry only the name they run under. Each layer is
+    # prepended onto the positional parameters rather than pasted into an
+    # unquoted string, so every path stays one word however it is spelled.
+    run_contract() {
+      contract_service=\$1
+      shift
+      set -- \"/repo/tests/contracts/\$contract_service.sh\" \"\$@\"
+      case \"\$contract_service\" in
+        beszel|dozzle)
+          ;;
+        audiobookshelf)
+          set -- PLATFORM_AUDIOBOOKSHELF_PORT=13378 \
+            PLATFORM_PROJECT_NAME=$integration_project_namespace \
+            PLATFORM_AUDIOBOOKSHELF_CONTAINER=$integration_project_namespace-audiobookshelf \
+            \"\$@\"
+          ;;
+        komga)
+          set -- PLATFORM_KOMGA_RUNTIME_CONTEXT=base \
+            PLATFORM_PROJECT_NAME=$integration_project_namespace \
+            \"\$@\"
+          ;;
+        kapowarr|pinchflat)
+          set -- PLATFORM_PROJECT_NAME=$integration_project_namespace \
+            \"\$@\"
+          ;;
+        jellyfin)
+          set -- PLATFORM_JELLYFIN_CONTAINER=$integration_project_namespace-jellyfin \
+            \"\$@\"
+          ;;
+        immich)
+          set -- PLATFORM_MAC_FIXTURE_VARS_FILE=\"\$fixture_vars_file\" \
+            PLATFORM_IMMICH_SERVER_CONTAINER=$integration_project_namespace-immich-server \
+            PLATFORM_IMMICH_MACHINE_LEARNING_CONTAINER=$integration_project_namespace-immich-machine-learning \
+            PLATFORM_IMMICH_REDIS_CONTAINER=$integration_project_namespace-immich-redis \
+            PLATFORM_IMMICH_POSTGRES_CONTAINER=$integration_project_namespace-immich-postgres \
+            \"\$@\"
+          ;;
+        paperless)
+          set -- PLATFORM_PAPERLESS_WEBSERVER_CONTAINER=$integration_project_namespace-paperless-webserver \
+            \"\$@\"
+          ;;
+        *)
+          printf 'unknown integration contract: %s\n' \"\$contract_service\" >&2
+          exit 1
+          ;;
+      esac
+      set -- PLATFORM_REPORT_ROOT='$sandbox/reports' \"\$@\"
+      case \"\$contract_service\" in
+        beszel|dozzle|audiobookshelf|immich)
+          set -- PLATFORM_FIXTURE_ROOT='$sandbox/fixtures' \"\$@\"
+          ;;
+      esac
+      set -- PLATFORM_MEDIA_ROOT='$sandbox/volume2' \"\$@\"
+      case \"\$contract_service\" in
+        komga)
+          ;;
+        *)
+          set -- PLATFORM_DOCKER_ROOT='$sandbox/volume1/Docker' \"\$@\"
+          ;;
+      esac
       env \
         PLATFORM_KIND=integration \
         PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\" \
         PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=\"\$vault_password_file\" \
-        PLATFORM_DOCKER_ROOT='$sandbox/volume1/Docker' \
-        PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
-        PLATFORM_FIXTURE_ROOT='$sandbox/fixtures' \
-        PLATFORM_REPORT_ROOT='$sandbox/reports' \
-        /repo/tests/contracts/beszel.sh \"\$1\"
+        \"\$@\"
+    }
+
+    run_beszel_contract() {
+      run_contract beszel \"\$@\"
     }
 
     run_dozzle_contract() {
-      env \
-        PLATFORM_KIND=integration \
-        PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\" \
-        PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=\"\$vault_password_file\" \
-        PLATFORM_DOCKER_ROOT='$sandbox/volume1/Docker' \
-        PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
-        PLATFORM_FIXTURE_ROOT='$sandbox/fixtures' \
-        PLATFORM_REPORT_ROOT='$sandbox/reports' \
-        /repo/tests/contracts/dozzle.sh \"\$@\"
+      run_contract dozzle \"\$@\"
     }
 
     run_audiobookshelf_contract() {
-      env \
-        PLATFORM_KIND=integration \
-        PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\" \
-        PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=\"\$vault_password_file\" \
-        PLATFORM_DOCKER_ROOT='$sandbox/volume1/Docker' \
-        PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
-        PLATFORM_FIXTURE_ROOT='$sandbox/fixtures' \
-        PLATFORM_REPORT_ROOT='$sandbox/reports' \
-        PLATFORM_AUDIOBOOKSHELF_PORT=13378 \
-        PLATFORM_PROJECT_NAME=$integration_project_namespace \
-        PLATFORM_AUDIOBOOKSHELF_CONTAINER=$integration_project_namespace-audiobookshelf \
-        /repo/tests/contracts/audiobookshelf.sh \"\$@\"
+      run_contract audiobookshelf \"\$@\"
     }
 
     run_komga_contract() {
-      env \
-        PLATFORM_KIND=integration \
-        PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\" \
-        PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=\"\$vault_password_file\" \
-        PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
-        PLATFORM_REPORT_ROOT='$sandbox/reports' \
-        PLATFORM_KOMGA_RUNTIME_CONTEXT=base \
-        PLATFORM_PROJECT_NAME=$integration_project_namespace \
-        /repo/tests/contracts/komga.sh \"\$@\"
+      run_contract komga \"\$@\"
     }
 
     run_kapowarr_contract() {
-      env \
-        PLATFORM_KIND=integration \
-        PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\" \
-        PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=\"\$vault_password_file\" \
-        PLATFORM_DOCKER_ROOT='$sandbox/volume1/Docker' \
-        PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
-        PLATFORM_REPORT_ROOT='$sandbox/reports' \
-        PLATFORM_PROJECT_NAME=$integration_project_namespace \
-        /repo/tests/contracts/kapowarr.sh \"\$@\"
+      run_contract kapowarr \"\$@\"
     }
 
     run_pinchflat_contract() {
-      env \
-        PLATFORM_KIND=integration \
-        PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\" \
-        PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=\"\$vault_password_file\" \
-        PLATFORM_DOCKER_ROOT='$sandbox/volume1/Docker' \
-        PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
-        PLATFORM_REPORT_ROOT='$sandbox/reports' \
-        PLATFORM_PROJECT_NAME=$integration_project_namespace \
-        /repo/tests/contracts/pinchflat.sh \"\$@\"
+      run_contract pinchflat \"\$@\"
     }
 
     run_jellyfin_contract() {
-      env \
-        PLATFORM_KIND=integration \
-        PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\" \
-        PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=\"\$vault_password_file\" \
-        PLATFORM_DOCKER_ROOT='$sandbox/volume1/Docker' \
-        PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
-        PLATFORM_REPORT_ROOT='$sandbox/reports' \
-        PLATFORM_JELLYFIN_CONTAINER=$integration_project_namespace-jellyfin \
-        /repo/tests/contracts/jellyfin.sh \"\$@\"
+      run_contract jellyfin \"\$@\"
     }
 
     run_immich_contract() {
-      env \
-        PLATFORM_KIND=integration \
-        PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\" \
-        PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=\"\$vault_password_file\" \
-        PLATFORM_DOCKER_ROOT='$sandbox/volume1/Docker' \
-        PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
-        PLATFORM_FIXTURE_ROOT='$sandbox/fixtures' \
-        PLATFORM_REPORT_ROOT='$sandbox/reports' \
-        PLATFORM_MAC_FIXTURE_VARS_FILE=\"\$fixture_vars_file\" \
-        PLATFORM_IMMICH_SERVER_CONTAINER=$integration_project_namespace-immich-server \
-        PLATFORM_IMMICH_MACHINE_LEARNING_CONTAINER=$integration_project_namespace-immich-machine-learning \
-        PLATFORM_IMMICH_REDIS_CONTAINER=$integration_project_namespace-immich-redis \
-        PLATFORM_IMMICH_POSTGRES_CONTAINER=$integration_project_namespace-immich-postgres \
-        /repo/tests/contracts/immich.sh \"\$@\"
+      run_contract immich \"\$@\"
     }
 
     run_immich_clean_restore() {
@@ -1512,15 +1509,7 @@ docker run --rm \
     }
 
     run_paperless_contract() {
-      env \
-        PLATFORM_KIND=integration \
-        PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\" \
-        PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=\"\$vault_password_file\" \
-        PLATFORM_DOCKER_ROOT='$sandbox/volume1/Docker' \
-        PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
-        PLATFORM_REPORT_ROOT='$sandbox/reports' \
-        PLATFORM_PAPERLESS_WEBSERVER_CONTAINER=$integration_project_namespace-paperless-webserver \
-        /repo/tests/contracts/paperless.sh \"\$@\"
+      run_contract paperless \"\$@\"
     }
 
     run_paperless_snapshot() {
@@ -1536,7 +1525,18 @@ docker run --rm \
         /repo/tests/mac/snapshot-paperless.sh \"\$@\"
     }
 
-    run_verify_only() {
+    # Every per-service verification runs the same play against the same
+    # disposable sandbox; only the tag differs, and the one stack that needs an
+    # extra fact declares it in the case below. Written once so a wrapper cannot
+    # quietly drop the namespace or the quoting around the vault paths.
+    run_verification() {
+      verification_tag=\$1
+      set -- /repo/verify.yml --tags \"platform_verify_\$verification_tag\"
+      case \"\$verification_tag\" in
+        arr|downloaders)
+          set -- -e media_usenet_enabled=true \"\$@\"
+          ;;
+      esac
       PLATFORM_VAULT_FILE=\"\$vault_file\" ansible-playbook \
         -i inventory/local.yml \
         --vault-password-file \"\$vault_password_file\" \
@@ -1549,112 +1549,35 @@ docker run --rm \
         -e platform_beszel_agent_kind=portable \
         -e deployment_bundle_test_mode=true \
         -e deployment_bundle_allow_dirty_controller=true \
-        /repo/verify.yml \
-        --tags platform_verify_beszel
+        \"\$@\"
+    }
+
+    run_verify_only() {
+      run_verification beszel
     }
 
     run_dozzle_verify_only() {
-      PLATFORM_VAULT_FILE=\"\$vault_file\" ansible-playbook \
-        -i inventory/local.yml \
-        --vault-password-file \"\$vault_password_file\" \
-        -e @\"\$vault_file\" \
-        -e platform_vault_file=\"\$vault_file\" \
-        -e nas_docker_root=$sandbox/volume1/Docker \
-        -e nas_media_root=$sandbox/volume2 \
-        -e platform_compose_kind=integration \
-        -e platform_project_name=\"$integration_project_namespace\" \
-        -e platform_beszel_agent_kind=portable \
-        -e deployment_bundle_test_mode=true \
-        -e deployment_bundle_allow_dirty_controller=true \
-        /repo/verify.yml \
-        --tags platform_verify_dozzle
+      run_verification dozzle
     }
 
     run_audiobookshelf_verify_only() {
-      PLATFORM_VAULT_FILE=\"\$vault_file\" ansible-playbook \
-        -i inventory/local.yml \
-        --vault-password-file \"\$vault_password_file\" \
-        -e @\"\$vault_file\" \
-        -e platform_vault_file=\"\$vault_file\" \
-        -e nas_docker_root=$sandbox/volume1/Docker \
-        -e nas_media_root=$sandbox/volume2 \
-        -e platform_compose_kind=integration \
-        -e platform_project_name=\"$integration_project_namespace\" \
-        -e platform_beszel_agent_kind=portable \
-        -e deployment_bundle_test_mode=true \
-        -e deployment_bundle_allow_dirty_controller=true \
-        /repo/verify.yml \
-        --tags platform_verify_audiobookshelf
+      run_verification audiobookshelf
     }
 
     run_arr_verify_only() {
-      PLATFORM_VAULT_FILE="\$vault_file" ansible-playbook \
-        -i inventory/local.yml \
-        --vault-password-file "\$vault_password_file" \
-        -e @"\$vault_file" \
-        -e platform_vault_file="\$vault_file" \
-        -e nas_docker_root=$sandbox/volume1/Docker \
-        -e nas_media_root=$sandbox/volume2 \
-        -e platform_compose_kind=integration \
-        -e platform_project_name=\"$integration_project_namespace\" \
-        -e platform_beszel_agent_kind=portable \
-        -e deployment_bundle_test_mode=true \
-        -e deployment_bundle_allow_dirty_controller=true \
-        -e media_usenet_enabled=true \
-        /repo/verify.yml \
-        --tags platform_verify_arr
+      run_verification arr
     }
 
     run_downloaders_verify_only() {
-      PLATFORM_VAULT_FILE="\$vault_file" ansible-playbook \
-        -i inventory/local.yml \
-        --vault-password-file "\$vault_password_file" \
-        -e @"\$vault_file" \
-        -e platform_vault_file="\$vault_file" \
-        -e nas_docker_root=$sandbox/volume1/Docker \
-        -e nas_media_root=$sandbox/volume2 \
-        -e platform_compose_kind=integration \
-        -e platform_project_name=\"$integration_project_namespace\" \
-        -e platform_beszel_agent_kind=portable \
-        -e deployment_bundle_test_mode=true \
-        -e deployment_bundle_allow_dirty_controller=true \
-        -e media_usenet_enabled=true \
-        /repo/verify.yml \
-        --tags platform_verify_downloaders
+      run_verification downloaders
     }
 
     run_kapowarr_verify_only() {
-      PLATFORM_VAULT_FILE="\$vault_file" ansible-playbook \
-        -i inventory/local.yml \
-        --vault-password-file "\$vault_password_file" \
-        -e @"\$vault_file" \
-        -e platform_vault_file="\$vault_file" \
-        -e nas_docker_root=$sandbox/volume1/Docker \
-        -e nas_media_root=$sandbox/volume2 \
-        -e platform_compose_kind=integration \
-        -e platform_project_name=\"$integration_project_namespace\" \
-        -e platform_beszel_agent_kind=portable \
-        -e deployment_bundle_test_mode=true \
-        -e deployment_bundle_allow_dirty_controller=true \
-        /repo/verify.yml \
-        --tags platform_verify_kapowarr
+      run_verification kapowarr
     }
 
     run_pinchflat_verify_only() {
-      PLATFORM_VAULT_FILE="\$vault_file" ansible-playbook \
-        -i inventory/local.yml \
-        --vault-password-file "\$vault_password_file" \
-        -e @"\$vault_file" \
-        -e platform_vault_file="\$vault_file" \
-        -e nas_docker_root=$sandbox/volume1/Docker \
-        -e nas_media_root=$sandbox/volume2 \
-        -e platform_compose_kind=integration \
-        -e platform_project_name=\"$integration_project_namespace\" \
-        -e platform_beszel_agent_kind=portable \
-        -e deployment_bundle_test_mode=true \
-        -e deployment_bundle_allow_dirty_controller=true \
-        /repo/verify.yml \
-        --tags platform_verify_pinchflat
+      run_verification pinchflat
     }
 
     converge_media_acquisition_reader_prerequisites() {
@@ -1662,20 +1585,7 @@ docker run --rm \
     }
 
     run_media_acquisition_foundation_verify() {
-      PLATFORM_VAULT_FILE="\$vault_file" ansible-playbook \
-        -i inventory/local.yml \
-        --vault-password-file "\$vault_password_file" \
-        -e @"\$vault_file" \
-        -e platform_vault_file="\$vault_file" \
-        -e nas_docker_root=$sandbox/volume1/Docker \
-        -e nas_media_root=$sandbox/volume2 \
-        -e platform_compose_kind=integration \
-        -e platform_project_name=\"$integration_project_namespace\" \
-        -e platform_beszel_agent_kind=portable \
-        -e deployment_bundle_test_mode=true \
-        -e deployment_bundle_allow_dirty_controller=true \
-        /repo/verify.yml \
-        --tags platform_verify_media_acquisition_foundation
+      run_verification media_acquisition_foundation
     }
 
     assert_controller_symlink_refused() {

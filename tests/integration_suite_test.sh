@@ -342,14 +342,24 @@ acquisition_runtime_contract_holds() {
   source_path=$1
   reader_converge=$(sed -n '/converge_media_acquisition_reader_prerequisites() {/,/^    }$/p' "$source_path")
   foundation_verify=$(sed -n '/run_media_acquisition_foundation_verify() {/,/^    }$/p' "$source_path")
+  # The foundation verification now delegates to the one shared launcher, so the
+  # play it runs is read there. The single fact that launcher forces lives in a
+  # case arm; the foundation tag must not be named by it, or the lane would
+  # assert against a truth it supplied itself instead of the inventory's.
+  verification_launcher=$(sed -n '/^    run_verification() {/,/^    }$/p' "$source_path")
+  forced_fact_arm=$(printf '%s\n' "$verification_launcher" |
+    grep -B 1 -F -- '-e media_usenet_enabled=true' | head -n 1 | tr -d ' ')
   acquisition_dispatch=$(sed -n '/bindery|trailarr|seerr)/,/;;/p' "$source_path" | tail -n 12)
   printf '%s\n' "$reader_converge" |
     grep -qF -- '--tags host_prep,deployment_bundle,ntfy,audiobookshelf,jellyfin' &&
-    printf '%s\n' "$foundation_verify" | grep -qF '/repo/verify.yml' &&
     printf '%s\n' "$foundation_verify" |
-      grep -qF -- '--tags platform_verify_media_acquisition_foundation' &&
-    ! printf '%s\n' "$foundation_verify" |
-      grep -Eq -- '-e (platform_media_control_network|media_usenet_enabled|media_torrent_enabled)=' &&
+      grep -qF 'run_verification media_acquisition_foundation' &&
+    printf '%s\n' "$verification_launcher" | grep -qF '/repo/verify.yml' &&
+    printf '%s\n' "$verification_launcher" |
+      grep -qF -- '--tags \"platform_verify_\$verification_tag\"' &&
+    [ "$forced_fact_arm" = 'arr|downloaders)' ] &&
+    ! printf '%s\n' "$verification_launcher" |
+      grep -Eq -- '-e (platform_media_control_network|media_torrent_enabled)=' &&
     printf '%s\n' "$acquisition_dispatch" |
       grep -qF 'converge_media_acquisition_reader_prerequisites' &&
     printf '%s\n' "$acquisition_dispatch" |

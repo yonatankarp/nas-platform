@@ -915,8 +915,13 @@ leg through one `needs` entry.
 `tests/integration.sh` no longer restates the tags -- `tests/policy_ci_test.rb`
 fails if it does -- but it still wants the service in its service/directory table
 for image pre-pulling, a `run_<service>_contract` wrapper if the service has a
-contract, a `run_<service>_verify_only` function, and an arm in the suite dispatch
-that says what the lane actually does. `tests/integration_suite_test.sh` pins both
+contract, a `run_<service>_verify_only` wrapper, and an arm in the suite dispatch
+that says what the lane actually does. Both wrappers are three lines: they name
+the service and delegate to `run_contract` / `run_verification`, the two shared
+launchers that hold the environment ABI and the verification play. Anything the
+service needs beyond the shared block belongs in a case arm of `run_contract`,
+not in a wrapper body -- `tests/policy_integration_test.rb` rejects a
+verification wrapper that is anything other than a delegation. `tests/integration_suite_test.sh` pins both
 the `--describe-suite` line and the exact set of images the lane pre-pulls, so a
 lane that converges a new stack fails there until you say which images it needs.
 
