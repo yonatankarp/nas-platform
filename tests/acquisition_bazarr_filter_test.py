@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Behaviour of the Bazarr settings projection and the settings POST body.
+"""Behaviour of the Bazarr settings projection, its differences and the POST body.
 
-Both filters were reachable only by spawning `ansible-playbook`: the
-reconciliation fixture drove them through a fake Bazarr, and nothing called them
-directly. They are pure functions, so the properties that do not need a running
-Bazarr are checked here.
+The projection and the POST body were reachable only by spawning
+`ansible-playbook`: the reconciliation fixture drove them through a fake Bazarr,
+and nothing called them directly. They are pure functions, so the properties that
+do not need a running Bazarr are checked here. The difference list joins them
+because it is the printable half of the projection comparison, and what makes it
+printable — that it names settings and never their values — is a property, not
+an observation about today's callers.
 
 `tests/fixtures/acquisition/bazarr_state.json` is a converged readback captured
 from that fixture's Bazarr, keyed by argument name. Starting from a converged
@@ -56,6 +59,10 @@ def settings_with(mutate):
     return settings
 
 
+def differences(projections):
+    return plugin.acquisition_bazarr_projection_differences(projections)
+
+
 def check(failures, condition, message):
     if not condition:
         failures.append(message)
@@ -96,6 +103,10 @@ def collect_failures():
         drifted = project(settings=settings_with(mutate))
         check(failures, drifted["current"] != drifted["desired"],
               f"drift in {label} must show as a difference between the projections")
+        # The difference list is the same verdict, said in field paths. Every
+        # case the projections call drift must therefore name something.
+        check(failures, differences(drifted) != [],
+              f"drift in {label} must be named by the difference list")
 
     languages = copy.deepcopy(fixture["language_state"])
     languages[-1]["enabled"] = True
@@ -172,6 +183,88 @@ def collect_failures():
             "an ambiguous enabled-provider list must be refused")
     refuses(failures, lambda: project(password=""),
             "an empty Bazarr administrator password must be refused")
+
+    # --- acquisition_bazarr_projection_differences ------------------------
+    # The projections carry live credentials, so the drift assert that holds
+    # them runs under no_log and could report only that they were unequal. This
+    # filter is the printable half of that verdict: the same comparison, said
+    # as field paths.
+    check(failures, differences(converged) == [],
+          "a converged Bazarr must report no differences at all")
+
+    for label, mutate, expected in [
+        ("auth.type", lambda s: s["auth"].update(type=None),
+         ["connection.auth.type"]),
+        ("radarr.port", lambda s: s["radarr"].update(port=1234),
+         ["connection.radarr.port"]),
+        ("path mappings", lambda s: s["general"].update(
+            path_mappings=[["/from", "/to"]]), ["connection.general.path_mappings"]),
+        ("a provider setting", lambda s: s["animetosho"].update(search_threshold=99),
+         ["providers.animetosho.search_threshold"]),
+        ("a provider setting Bazarr has not stored",
+         lambda s: s["animetosho"].pop("search_threshold"),
+         ["providers.animetosho.search_threshold"]),
+    ]:
+        named = differences(project(settings=settings_with(mutate)))
+        check(failures, named == expected,
+              f"drift in {label} must be named exactly {expected}, not {named}")
+
+    check(failures, differences(project(language_state=languages))
+          == ["connection.languages"],
+          "an undeclared enabled language must be named by its list, not its codes")
+
+    # A drifted list is one leaf: Bazarr's languages, enabled providers and path
+    # mappings are lists *of* values, so naming an element would print one.
+    check(failures, differences(project(
+              language_state=languages,
+              settings=settings_with(lambda s: s["general"].update(
+                  path_mappings=[["/from", "/to"]])))) ==
+          ["connection.general.path_mappings", "connection.languages"],
+          "a difference must name the list that drifted, never an element of it")
+
+    # The redaction proof. Drift all three connection secrets at once and
+    # require the result to name them and to carry none of them.
+    secrets = {
+        "password": "f" * 32,
+        "radarr": "sentinel-radarr-api-key",
+        "sonarr": "sentinel-sonarr-api-key",
+    }
+
+    def drift_every_secret(settings):
+        settings["auth"]["password"] = secrets["password"]
+        settings["radarr"]["apikey"] = secrets["radarr"]
+        settings["sonarr"]["apikey"] = secrets["sonarr"]
+
+    exposed = differences(project(settings=settings_with(drift_every_secret)))
+    check(failures, exposed == ["connection.readable_secrets.auth.password",
+                                "connection.readable_secrets.radarr.apikey",
+                                "connection.readable_secrets.sonarr.apikey"],
+          f"a drifted Bazarr secret must be named by its path, not by {exposed}")
+    known_credentials = [
+        *secrets.values(), fixture["password"], fixture["radarr_api_key"],
+        fixture["sonarr_api_key"], fixture["settings"]["auth"]["password"],
+        fixture["settings"]["radarr"]["apikey"],
+        fixture["settings"]["sonarr"]["apikey"],
+    ]
+    check(failures, not any(credential in name
+                            for name in exposed for credential in known_credentials),
+          "the difference list must name a credential's setting, never its value")
+
+    # Defence in depth for a projection key that is not a canonical identifier.
+    # Nothing reaches one today — an undeclared live setting is copied to both
+    # sides and so never differs — which is exactly why the rule is checked on a
+    # projection built here rather than on one the fixture can produce.
+    crafted = differences({
+        "current": {"providers": {"animetosho": {"password=sentinel-value": "a"}}},
+        "desired": {"providers": {"animetosho": {"password=sentinel-value": "b"}}},
+    })
+    check(failures, crafted == ["providers.animetosho[0]"],
+          "a projection key that is not a canonical identifier must be named by position")
+
+    refuses(failures, lambda: differences({"current": {}, "desired": []}),
+            "a projection that is not a mapping must be refused, not diffed")
+    refuses(failures, lambda: differences("not a projection"),
+            "a projections argument that is not a mapping must be refused")
 
     # --- acquisition_bazarr_connection_body -------------------------------
     body = plugin.acquisition_bazarr_connection_body(

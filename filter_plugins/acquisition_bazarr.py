@@ -481,6 +481,72 @@ def acquisition_bazarr_owned_projections(
     }
 
 
+# A projection key is spelled out in a difference only when it is a canonical
+# Bazarr identifier: the form `acquisition_bazarr_declarations` holds a provider
+# and each of its settings to, optionally carrying the single dot
+# `_bazarr_connection_secrets` uses to name a section's secret. Every other key
+# is named by its position instead, the way `immich_preference_schema` names a
+# collection keyed from the vault. Nothing reachable through the projections
+# today carries a key outside that form — an undeclared live setting is copied
+# to both sides and so never differs — but a difference list exists to be
+# printed, and a rule that only holds for the current callers is not one.
+BAZARR_NAMEABLE_KEY = re.compile(r"[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)?")
+
+
+def _bazarr_difference_segment(key: Any, index: int) -> str:
+    """Name one projection key, or its position when the name cannot be printed."""
+    if isinstance(key, str) and BAZARR_NAMEABLE_KEY.fullmatch(key):
+        return f".{key}"
+    return f"[{index}]"
+
+
+def _bazarr_differences(
+    current: Any, desired: Any, path: str, differences: list[str]
+) -> None:
+    """Walk both projections together, recording paths and never values.
+
+    Recursion stops at anything that is not a mapping, so a list is one leaf and
+    is reported by its own path rather than by its differing elements: Bazarr's
+    languages, enabled providers and path mappings are all lists *of* values.
+    Two mappings differ exactly when a key is missing from one side or a shared
+    key's values differ, which is what `==` means for them, so an empty result
+    is the same verdict `current == desired` reaches.
+    """
+    if not isinstance(current, dict) or not isinstance(desired, dict):
+        if current != desired:
+            differences.append(path)
+        return
+    for index, key in enumerate(sorted(set(current) | set(desired), key=repr)):
+        child = path + _bazarr_difference_segment(key, index)
+        if key not in current or key not in desired:
+            differences.append(child)
+            continue
+        _bazarr_differences(current[key], desired[key], child, differences)
+
+
+def acquisition_bazarr_projection_differences(projections: Any) -> list[str]:
+    """Name every owned Bazarr setting that drifted, and never one of the values.
+
+    `acquisition_bazarr_owned_projections` returns two trees that carry the
+    Radarr and Sonarr API keys and the hash of the administrator password, so
+    every task holding them sets `no_log` and the drift assert could report only
+    that the two were unequal. `no_log` does not suppress `fail_msg`, so the
+    same comparison expressed as field paths is what turns that message into
+    "connection.radarr.port, connection.readable_secrets.sonarr.apikey".
+    """
+    projections = _mapping(projections, "Bazarr owned projections")
+    differences: list[str] = []
+    _bazarr_differences(
+        _mapping(projections.get("current"), "current Bazarr projection"),
+        _mapping(projections.get("desired"), "desired Bazarr projection"),
+        "",
+        differences,
+    )
+    # Every named first segment carries the separator its parent would have
+    # written; the outermost has no parent.
+    return [difference.removeprefix(".") for difference in differences]
+
+
 def acquisition_bazarr_connection_body(
     declarations: Any,
     username: Any,
@@ -531,5 +597,8 @@ class FilterModule:
         return {
             "acquisition_bazarr_declarations": acquisition_bazarr_declarations,
             "acquisition_bazarr_owned_projections": acquisition_bazarr_owned_projections,
+            "acquisition_bazarr_projection_differences": (
+                acquisition_bazarr_projection_differences
+            ),
             "acquisition_bazarr_connection_body": acquisition_bazarr_connection_body,
         }
