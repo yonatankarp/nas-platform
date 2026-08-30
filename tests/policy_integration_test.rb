@@ -21,6 +21,26 @@ failures = []
 # Darwin-only fact and command being skipped under --check, both survived syntax
 # checking and were caught by running.
 harness = File.read(File.join(ROOT, "tests", "integration.sh"))
+# The play, contract and verification launchers are a file of their own, so the
+# properties required of them are read from there. They are ordinary shell now
+# rather than escaped text inside the controller argument, which is why the
+# spellings below carry no backslashes: the same guarantee, asserted where the
+# code it polices actually lives.
+controller_library = File.read(
+  File.join(ROOT, "tests", "integration_controller_lib.sh")
+)
+check(failures,
+      harness.include?(". /repo/tests/integration_controller_lib.sh") &&
+        harness.include?('-e PLATFORM_INTEGRATION_SANDBOX="$sandbox"') &&
+        harness.include?(
+          '-e PLATFORM_INTEGRATION_PROJECT_NAMESPACE="$integration_project_namespace"'
+        ) &&
+        controller_library.include?("sandbox=${PLATFORM_INTEGRATION_SANDBOX:?") &&
+        controller_library.include?(
+          "integration_project_namespace=${PLATFORM_INTEGRATION_PROJECT_NAMESPACE:?"
+        ),
+      "the controller must source its launcher library and hand it the sandbox " \
+      "it deploys into")
 
 # The controller script is one double-quoted argument to `sh -eu -c`, built by
 # a shell that is still parsing. An unescaped quote inside it closes the
@@ -98,9 +118,11 @@ end
 # with no pipefail available, so a play that died reached its recap grep looking
 # merely quiet. Redirect and read the producer's own status instead.
 check(failures,
-      !harness.match?(/\|\s*tee\b/) &&
+      !harness.match?(/\|\s*tee\b/) && !controller_library.match?(/\|\s*tee\b/) &&
         harness.include?('run_selected_play "\$@" >/tmp/second.txt 2>&1 || idempotence_status=\$?') &&
-        harness.include?('run_play --tags immich >/tmp/immich-clean-restore-second.txt 2>&1 ||'),
+        controller_library.include?(
+          "run_play --tags immich >/tmp/immich-clean-restore-second.txt 2>&1 ||"
+        ),
       "integration must read a play's own status rather than a pipeline's")
 check(failures,
       harness.include?('suite_pull_images > "$prepull_list" || prepull_enumeration_status=$?') &&
@@ -126,7 +148,7 @@ contract_environment = if contract_environment_start && contract_execution
 check(failures, contract_execution && contract_abi_names.all? do |name|
   contract_environment.include?("#{name}=")
 end, "integration must set the contract environment ABI before execution")
-run_play_body = harness[/^    run_play\(\) \{.*?^    \}/m].to_s
+run_play_body = controller_library[/^run_play\(\) \{.*?^\}/m].to_s
 namespace_derivation = harness[/^derive_integration_project_namespace\(\) \{.*?^\}/m].to_s
 namespace_call = harness.index('integration_project_namespace=$(derive_integration_project_namespace "$sandbox")')
 controller_run = harness.index("docker run --rm")
@@ -144,8 +166,8 @@ scoped_project_variables = %w[arr_platform_project_name downloaders_platform_pro
 # interface the two acquisition roles expose.
 check(failures,
       scoped_project_variables.all? do |variable|
-        run_play_body.include?("-e #{variable}=\\\"$integration_project_namespace\\\"")
-      end && run_play_body.include?("-e platform_project_name=\\\"$integration_project_namespace\\\""),
+        run_play_body.include?(%(-e #{variable}="$integration_project_namespace"))
+      end && run_play_body.include?(%(-e platform_project_name="$integration_project_namespace")),
       "integration must deploy every service under the disposable namespace")
 # One launcher runs every per-service verification, so the namespace, the vault
 # quoting and the play itself are written once. Assert the property on that
@@ -153,24 +175,33 @@ check(failures,
 # hand-rolled verification that spelled any of those differently — as five of
 # the seven copies once spelled the vault paths unquoted — is now rejected
 # outright rather than checked copy by copy.
-verification_launcher = harness[/^    run_verification\(\) \{.*?^    \}/m].to_s
+verification_launcher = controller_library[/^run_verification\(\) \{.*?^\}/m].to_s
 check(failures,
       verification_launcher.include?(
-        "-e platform_project_name=\\\"$integration_project_namespace\\\""
+        %(-e platform_project_name="$integration_project_namespace")
       ) &&
-        verification_launcher.include?("--tags \\\"platform_verify_\\$verification_tag\\\""),
+        verification_launcher.include?(%(--tags "platform_verify_$verification_tag")),
       "integration verification must read the disposable namespace it deployed")
-verify_only_bodies = harness.scan(/^    (run_[a-z_]*verif[a-z_]*)\(\) \{\n(.*?)^    \}/m)
-                            .reject { |name, _body| name == "run_verification" }
+verify_only_bodies = controller_library
+                     .scan(/^(run_[a-z_]*verif[a-z_]*)\(\) \{\n(.*?)^\}/m)
+                     .reject { |name, _body| name == "run_verification" }
 check(failures, verify_only_bodies.length >= 6 &&
                 verify_only_bodies.all? do |_name, body|
-                  body.match?(/\A      run_verification [a-z_]+\n\z/)
+                  body.match?(/\A  run_verification [a-z_]+\n\z/)
                 end,
       "every integration verification wrapper must delegate to the shared launcher")
-negative_project_names = harness.scan(/-e platform_project_name=([^\s\\]+)/)
-                                .flatten.uniq.reject do |value|
-  value == "\\\"$integration_project_namespace\\\""
-end
+# The controller argument spells a namespaced project with escaped quotes and
+# the launcher library with plain ones. Both spellings are read, and both must
+# reduce to the sandbox namespace: any other project is a stack sandbox cleanup
+# does not own.
+negative_project_names = (
+  harness.scan(/-e platform_project_name=([^\s\\]+)/).flatten.reject do |value|
+    value == "\\\"$integration_project_namespace\\\""
+  end +
+  controller_library.scan(/-e platform_project_name=(\S+)/).flatten.reject do |value|
+    value == %("$integration_project_namespace")
+  end
+).map { |value| value.delete('"') }.uniq
 check(failures,
       negative_project_names == ["$integration_project_namespace-negative"],
       "integration scenario projects must derive from the sandbox namespace: " \
@@ -197,14 +228,14 @@ end
 check(failures, unnamespaced_contracts.empty?,
       "contracts that run their own play must converge under the exported sandbox " \
       "namespace: #{unnamespaced_contracts.map { |path| File.basename(path) }.join(', ')}")
-contract_launcher = harness[/^    run_contract\(\) \{.*?^    \}/m].to_s
+contract_launcher = controller_library[/^run_contract\(\) \{.*?^\}/m].to_s
 unexported_namespace = playing_contracts.reject do |path|
   service = File.basename(path, ".sh")
   # The per-service extras now live in a case arm of the single launcher, so
   # read the arm that names this contract rather than a wrapper of its own.
   contract_launcher[
     /^\s*[a-z|]*\b#{Regexp.escape(service)}\b[a-z|]*\)\n(.*?)^\s*;;$/m, 1
-  ].to_s.include?("PLATFORM_PROJECT_NAME=$integration_project_namespace")
+  ].to_s.include?(%(PLATFORM_PROJECT_NAME="$integration_project_namespace"))
 end
 check(failures, unexported_namespace.empty?,
       "integration must export the sandbox namespace to every contract that runs a " \
@@ -430,9 +461,9 @@ check(failures,
       harness.include?("/repo/tests/generate-ephemeral-vault.sh") &&
       harness.include?("--output \\\"\\$vault_file\\\"") &&
         harness.include?("--password-file") &&
-        run_play_body.include?("--vault-password-file \\\"\\$vault_password_file\\\"") &&
-        run_play_body.include?("-e @\\\"\\$vault_file\\\"") &&
-        run_play_body.include?("-e platform_vault_file=\\\"\\$vault_file\\\"") &&
+        run_play_body.include?(%(--vault-password-file "$vault_password_file")) &&
+        run_play_body.include?(%(-e @"$vault_file")) &&
+        run_play_body.include?(%(-e platform_vault_file="$vault_file")) &&
         harness.include?("TMPDIR='$sandbox' /repo/tests/generate-ephemeral-vault.sh --cleanup") &&
         contract_environment.include?("PLATFORM_CONTRACT_VAULT_FILE=\\\"\\$vault_file\\\"") &&
         !harness.include?("sandbox-vault.yml") &&
@@ -443,7 +474,7 @@ check(failures,
       harness.include?('/repo/tests/mac/generate-immich-fixture-vars.rb') &&
         harness.include?('ANSIBLE_VAULT_PASSWORD_FILE=\"\$vault_password_file\" ansible-vault view') &&
         harness.include?('fixture_vars_file=\"\$fixture_input_directory/immich-fixture-vars.yml\"') &&
-        harness.include?('PLATFORM_MAC_FIXTURE_VARS_FILE=\"\$fixture_vars_file\"') &&
+        controller_library.include?('PLATFORM_MAC_FIXTURE_VARS_FILE="$fixture_vars_file"') &&
         harness.include?('install -m 0600 /dev/null \"\$fixture_vars_file\"') &&
         harness.include?('chmod 0600 \"\$fixture_vars_file\"') &&
         harness.include?('rm -f \"\$fixture_vault_view\"') &&
