@@ -11,18 +11,24 @@ back up photos, media, databases, or other application data. Back up the NAS
 and confirm that the backup can be restored before a production migration.
 
 The active service projects are ntfy, Beszel, Dozzle, Audiobookshelf, Komga,
-Jellyfin, Immich, Paperless-ngx, Arr, and downloaders. The production retirement
-checkpoint has passed and the former metadata manager's repository declarations are gone; its
-preserved application state remains outside repository management and was not
-deleted. The authoritative status is
+Jellyfin, Immich, Paperless-ngx, Arr, downloaders, Kapowarr, and Pinchflat. The
+production retirement checkpoint has passed and the former metadata manager's
+repository declarations are gone; its preserved application state remains
+outside repository management and was not deleted. The authoritative status is
 [`services/manifest.yml`](../services/manifest.yml).
 
-Phase 1 implements Arr and the Usenet downloader project, but transport
-enablement remains false and all provider and subtitle preference lists remain
-empty by default. Five later acquisition projects remain planned. Jellyfin
-keeps Open Subtitles until the physical-NAS Bazarr handoff is accepted. Use the
-[Phase 1 operator handoff](media-acquisition-phase1.md) for controlled
-activation; a normal default deployment remains inert.
+Phase 1 implements Arr and the Usenet downloader project. Both transport flags
+default to false and all provider and subtitle preference lists remain empty by
+default, but enablement is an inventory decision and the two inventories differ:
+[`inventory/group_vars/nas_hosts/main.yml`](../inventory/group_vars/nas_hosts/main.yml)
+sets `media_usenet_enabled: true`, so a deployment to the physical NAS starts
+the Phase 1 Usenet containers, while
+[`inventory/group_vars/mac_hosts/main.yml`](../inventory/group_vars/mac_hosts/main.yml)
+leaves both flags false, so the Mac proof remains inert. Three later
+acquisition projects remain planned. Jellyfin keeps Open Subtitles until the
+physical-NAS Bazarr handoff is accepted. Read the
+[Phase 1 operator handoff](media-acquisition-phase1.md) before changing a
+transport flag on any host.
 
 The two supported routes are deliberately separate:
 
@@ -56,7 +62,7 @@ your computer.
 python3 -m venv .venv
 . .venv/bin/activate
 python3 -m pip install --upgrade pip
-python3 -m pip install 'ansible-core==2.21.2' 'ansible-lint==26.6.0'
+python3 -m pip install -r controller-requirements.txt
 ansible-galaxy collection install -r requirements.yml
 ansible-playbook --version
 docker compose version

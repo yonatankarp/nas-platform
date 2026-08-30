@@ -806,17 +806,23 @@ else
   failures = check_sources(ROOT, SOURCES)
   documentation_contracts = {
     "README.md" => {
-      /manifest.*ten implemented service projects.*five planned (?:media-)?acquisition projects/im =>
-        "distinguish the ten implemented service projects from the five planned acquisition projects",
+      /manifest.*twelve implemented service projects.*three planned (?:media-)?acquisition projects/im =>
+        "distinguish the twelve implemented service projects from the three planned acquisition projects",
       /production retirement checkpoint has passed/i => "state that the production retirement checkpoint passed",
       /former metadata manager.*outside repository management.*not deleted/im =>
         "preserve former metadata-manager state outside repository management without claiming deletion",
       /Phase 1 implements.*arr.*downloaders.*Radarr.*Sonarr.*Prowlarr.*Bazarr.*Configarr.*SABnzbd.*Unpackerr/im =>
         "name the implemented Phase 1 acquisition projects and components",
-      /remaining five acquisition projects stay planned.*enablement still default.*false/im =>
-        "state that five acquisition projects remain planned and transports default disabled",
-      /default false transport flags.*starts no acquisition containers or downloads/im =>
-        "state that the default deployment starts no acquisition containers or downloads",
+      /Both transport flags default to false in the role defaults/im =>
+        "state that both transport flags default to false in the role defaults",
+      /inventory\/group_vars\/nas_hosts\/main\.yml.*media_usenet_enabled: true.*normal deployment to the physical NAS starts the Phase 1 Usenet acquisition containers/im =>
+        "name the NAS inventory file that enables Usenet and say what it starts",
+      /inventory\/group_vars\/mac_hosts\/main\.yml.*leaves both flags false.*Mac proof starts no acquisition containers or downloads/im =>
+        "state that the Mac inventory leaves both flags false and starts no acquisition containers",
+      /Torrent enablement is false on every host/im =>
+        "state that torrent enablement is false on every host",
+      /remaining three acquisition projects.*Bindery.*Trailarr.*Seerr.*stay planned/im =>
+        "name the three acquisition projects that stay planned",
       /Open Subtitles.*Jellyfin.*Bazarr.*Phase 1/im =>
         "retain Jellyfin Open Subtitles through the Phase 1 Bazarr proof"
     },
