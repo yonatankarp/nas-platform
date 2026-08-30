@@ -4,14 +4,36 @@ from __future__ import annotations
 
 import functools
 import hashlib
+import importlib.util
 import json
 import re
 from copy import deepcopy
+from pathlib import Path
 from typing import Any
 
 import yaml
 from ansible.errors import AnsibleFilterError
 
+
+# Filter plugins cannot import module_utils/ by name, and putting the repository
+# root on sys.path to reach it would shadow site-packages with library/, roles/,
+# services/ and tests/ for the whole Ansible process. Loading the file by path
+# shares the guards with no global side effect. tests/policy_test.rb executes
+# every filter plugin and fails if one of them touches sys.path.
+_GUARDS_SPEC = importlib.util.spec_from_file_location(
+    "nas_platform_schema_guards",
+    Path(__file__).resolve().parents[1] / "module_utils" / "schema_guards.py",
+)
+_GUARDS = importlib.util.module_from_spec(_GUARDS_SPEC)
+_GUARDS_SPEC.loader.exec_module(_GUARDS)
+
+
+# The type checks these names stand for are shared; the domain rules built on
+# top of them below are this module's own.
+_mapping = _GUARDS.mapping
+_sequence = _GUARDS.sequence
+_strict_boolean = _GUARDS.boolean
+_strict_integer = _GUARDS.integer
 
 MASKED_VALUE = re.compile(r"^\*+$")
 BAZARR_ARRAY_SETTINGS = {
@@ -26,12 +48,6 @@ BAZARR_STRING_SETTINGS = {
     "chmod", "log_include_filter", "log_exclude_filter", "password",
     "f_password", "hashed_password",
 }
-
-
-def _mapping(value: Any, label: str) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        raise AnsibleFilterError(f"{label} must be a mapping")
-    return value
 
 
 def _fields(value: Any) -> dict[str, Any]:
@@ -352,15 +368,8 @@ def acquisition_merge_owned_fields(
     return merged
 
 
-def _sequence(value: Any, label: str) -> list[Any]:
-    if not isinstance(value, (list, tuple)):
-        raise AnsibleFilterError(f"{label} must be a sequence")
-    return list(value)
-
-
 def _required_string(value: Any, label: str, *, allow_empty: bool = False) -> str:
-    if not isinstance(value, str):
-        raise AnsibleFilterError(f"{label} must be a string")
+    _GUARDS.string(value, label)
     if not allow_empty and not value:
         raise AnsibleFilterError(f"{label} must be non-empty")
     if "\x00" in value or "\r" in value or "\n" in value:
@@ -387,18 +396,6 @@ def _nullable_number(value: Any, label: str) -> int | float | None:
 
 def _nullable_string(value: Any, label: str) -> str | None:
     return None if value is None else _required_string(value, label)
-
-
-def _strict_boolean(value: Any, label: str) -> bool:
-    if not isinstance(value, bool):
-        raise AnsibleFilterError(f"{label} must be a boolean")
-    return value
-
-
-def _strict_integer(value: Any, label: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise AnsibleFilterError(f"{label} must be an integer")
-    return value
 
 
 def _safe_setting_value(value: Any, label: str) -> Any:

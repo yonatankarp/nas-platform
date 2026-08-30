@@ -5,16 +5,31 @@ between the previously active release and the one just installed answers "what
 did this deployment actually change" without a Git checkout at hand.
 """
 
+import importlib.util
+from pathlib import Path
+
 from ansible.errors import AnsibleFilterError
+
+
+# Filter plugins cannot import module_utils/ by name, and putting the repository
+# root on sys.path to reach it would shadow site-packages with library/, roles/,
+# services/ and tests/ for the whole Ansible process. Loading the file by path
+# shares the guards with no global side effect. tests/policy_test.rb executes
+# every filter plugin and fails if one of them touches sys.path.
+_GUARDS_SPEC = importlib.util.spec_from_file_location(
+    "nas_platform_schema_guards",
+    Path(__file__).resolve().parents[1] / "module_utils" / "schema_guards.py",
+)
+_GUARDS = importlib.util.module_from_spec(_GUARDS_SPEC)
+_GUARDS_SPEC.loader.exec_module(_GUARDS)
 
 
 def _require_manifest(manifest, label):
     if manifest is None:
         return {"services": []}
-    if not isinstance(manifest, dict):
-        raise AnsibleFilterError(f"{label} deployment manifest must be a mapping")
+    _GUARDS.mapping(manifest, f"{label} deployment manifest")
     services = manifest.get("services", [])
-    if not isinstance(services, list):
+    if not _GUARDS.is_list(services):
         raise AnsibleFilterError(f"{label} deployment manifest services must be a list")
     return manifest
 
