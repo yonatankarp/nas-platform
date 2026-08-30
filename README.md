@@ -195,6 +195,12 @@ ComicVine key entered in the application before it can identify anything, which
 is the deliberate reason a fresh deployment acquires nothing. The remaining
 three acquisition projects — Bindery, Trailarr and Seerr — stay planned.
 
+Each of the later phases was investigated before it was planned, against
+upstream source and a running container. The
+[service investigation dossiers](docs/service-dossiers.md) record what those
+investigations found, marking every claim as measured or reasoned, so a
+promotion starts from evidence rather than from the beginning.
+
 Open Subtitles remains configured in Jellyfin until Bazarr is proven on the
 physical NAS. Follow the
 [Phase 1 operator handoff](docs/media-acquisition-phase1.md) before enabling a
