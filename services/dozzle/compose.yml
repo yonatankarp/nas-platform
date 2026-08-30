@@ -83,7 +83,7 @@ services:
 
   socket-proxy:
     container_name: dozzle_socket_proxy
-    image: lscr.io/linuxserver/socket-proxy:3.4.4@sha256:c0e905167a19a756f47e7fcf724ac08e47a883238ef2e1dfb1bd62e94d481ce5
+    image: lscr.io/linuxserver/socket-proxy:3.4.4@sha256:6db1248c90172faf667bd34da55aa7ad43e73dc53f4eac2130ac9530bc79cd1b
     cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
     cpus: 0.5
     labels:
