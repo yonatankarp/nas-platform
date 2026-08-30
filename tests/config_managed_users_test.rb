@@ -5,11 +5,13 @@ require "base64"
 require "json"
 require "open3"
 require "shellwords"
-require "socket"
 require "tmpdir"
-require "timeout"
 require "uri"
 require "yaml"
+
+require_relative "http_fixture_support"
+
+include HttpFixtureSupport
 
 ROOT = File.expand_path("..", __dir__)
 DOZZLE_TASKS = File.join(ROOT, "roles", "dozzle", "tasks", "managed_users.yml")
@@ -112,60 +114,22 @@ def run_playbook(source, extra_vars = {})
   end
 end
 
-def with_http_probe(expected_count, responder)
-  server = TCPServer.new("127.0.0.1", 0)
+# A responder answers either a full {status, body, content_type} record or a
+# bare status, which is how the refusal cases stay a single number.
+def with_http_probe(expected_count, responder, &block)
   requests = []
-  error = nil
-  stopped = false
-  thread = Thread.new do
-    until stopped
-      next unless IO.select([server], nil, nil, 0.05)
+  reasons = { 200 => "OK", 403 => "Forbidden", 409 => "Conflict" }.freeze
+  with_http_fixture(->(port) { block.call(port, requests) },
+                    reason: reasons) do |method, target, headers, body|
+    request = { "method" => method, "target" => target, "headers" => headers, "body" => body }
+    requests << request
+    response = responder.call(request)
+    next [response, "", "text/plain"] unless response.is_a?(Hash)
 
-      client = server.accept
-      request_line = client.gets&.strip
-      raise "HTTP probe received an empty request" unless request_line
-
-      method, target, _protocol = request_line.split(" ", 3)
-      headers = {}
-      while (line = client.gets)
-        line = line.chomp
-        break if line == "\r" || line.empty?
-        key, value = line.split(":", 2)
-        headers[key.downcase] = value.to_s.strip
-      end
-      body = client.read(headers.fetch("content-length", "0").to_i)
-      request = { "method" => method, "target" => target, "headers" => headers, "body" => body }
-      requests << request
-      response = responder.call(request)
-      if response.is_a?(Hash)
-        status = response.fetch("status")
-        body = response.fetch("body", "")
-        content_type = response.fetch("content_type", "application/json")
-      else
-        status = response
-        body = ""
-        content_type = "text/plain"
-      end
-      reason = { 200 => "OK", 403 => "Forbidden", 409 => "Conflict" }.fetch(status, "Error")
-      client.write(
-        "HTTP/1.1 #{status} #{reason}\r\nContent-Type: #{content_type}\r\n" \
-        "Content-Length: #{body.bytesize}\r\nConnection: close\r\n\r\n#{body}"
-      )
-      client.close
-    end
-  rescue StandardError => caught
-    error = caught unless stopped
+    [response.fetch("status"), response.fetch("body", ""),
+     response.fetch("content_type", "application/json")]
   end
-  yield server.addr.fetch(1), requests
-  stopped = true
-  server.close
-  Timeout.timeout(10) { thread.join }
-  raise error if error
   raise "HTTP probe request count differs" unless requests.length == expected_count
-ensure
-  stopped = true
-  server&.close unless server&.closed?
-  thread&.join
 end
 
 def task_playbook(tasks, variables)

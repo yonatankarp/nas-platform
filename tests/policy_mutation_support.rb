@@ -144,6 +144,7 @@ BASE_FIXTURE_PATHS = %w[
   tests/mac/verify.sh
   tests/policy_test.rb
   tests/policy_support.rb
+  tests/http_fixture_support.rb
   tests/policy_platform_test.rb
   tests/policy_ci_test.rb
   tests/policy_beszel_test.rb

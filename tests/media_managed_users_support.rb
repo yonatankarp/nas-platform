@@ -12,10 +12,13 @@
 require "base64"
 require "json"
 require "open3"
-require "socket"
 require "tmpdir"
 require "uri"
 require "yaml"
+
+require_relative "http_fixture_support"
+
+include HttpFixtureSupport
 
 ROOT = File.expand_path("..", __dir__)
 SERVICES = %w[audiobookshelf jellyfin komga].freeze
@@ -133,66 +136,27 @@ HARNESS_TIMING_DEFAULTS = (
   end
 end.freeze
 
+# Named the same as the shared runner it wraps: every probe passes its own
+# variables and the harness timings underneath them, which is the one thing this
+# suite adds to the shared runner.
 def run_playbook(tasks, variables, *arguments)
-  Dir.mktmpdir("nas-platform-media-managed-users-") do |directory|
-    playbook = File.join(directory, "playbook.yml")
-    File.write(
-      playbook,
-      YAML.dump([{ "hosts" => "localhost", "gather_facts" => false,
-                   "vars" => HARNESS_TIMING_DEFAULTS.merge(variables),
-                   "tasks" => tasks }]),
-      mode: "w", perm: 0o600
-    )
-    Open3.capture3(
-      { "ANSIBLE_NOCOLOR" => "1" }, "ansible-playbook", "-i", "localhost,",
-      "-c", "local", playbook, *arguments, chdir: ROOT
-    )
-  end
+  HttpFixtureSupport.run_playbook(tasks, HARNESS_TIMING_DEFAULTS.merge(variables), *arguments,
+                                  prefix: "nas-platform-media-managed-users-")
 end
 
-def with_http_service(responder)
-  server = TCPServer.new("127.0.0.1", 0)
+def with_http_service(responder, &block)
   requests = []
-  stopped = false
-  error = nil
-  thread = Thread.new do
-    until stopped
-      next unless IO.select([server], nil, nil, 0.05)
-
-      client = server.accept
-      method, target, = client.gets.to_s.strip.split(" ", 3)
-      headers = {}
-      while (line = client.gets)
-        line = line.chomp
-        break if line == "\r" || line.empty?
-
-        key, value = line.split(":", 2)
-        headers[key.downcase] = value.to_s.strip
-      end
-      body = client.read(headers.fetch("content-length", "0").to_i)
-      request = { "method" => method, "target" => target, "headers" => headers,
-                  "json" => body.empty? ? nil : JSON.parse(body) }
-      requests << request
-      status, response = responder.call(request)
-      payload = response.nil? ? "" : JSON.generate(response)
-      reason = { 200 => "OK", 201 => "Created", 204 => "No Content",
-                 401 => "Unauthorized" }.fetch(status, "Error")
-      client.write("HTTP/1.1 #{status} #{reason}\r\n")
-      client.write("Content-Type: application/json\r\n") unless payload.empty?
-      client.write("Content-Length: #{payload.bytesize}\r\nConnection: close\r\n\r\n#{payload}")
-      client.close
-    end
-  rescue IOError, Errno::EBADF
-    nil
-  rescue StandardError => caught
-    error = caught
+  reasons = { 200 => "OK", 201 => "Created", 204 => "No Content",
+              401 => "Unauthorized" }.freeze
+  with_http_fixture(->(port) { block.call(port, requests) },
+                    reason: reasons) do |method, target, headers, body|
+    request = { "method" => method, "target" => target, "headers" => headers,
+                "json" => body.empty? ? nil : JSON.parse(body) }
+    requests << request
+    status, response = responder.call(request)
+    payload = response.nil? ? "" : JSON.generate(response)
+    [status, payload, payload.empty? ? nil : "application/json"]
   end
-  yield server.addr.fetch(1), requests
-ensure
-  stopped = true
-  server&.close
-  thread&.join
-  raise error if error
 end
 
 def includes_for(service, token_variable = nil)

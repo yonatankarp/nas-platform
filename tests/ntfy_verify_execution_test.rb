@@ -9,6 +9,10 @@ require "timeout"
 require "tmpdir"
 require "yaml"
 
+require_relative "http_fixture_support"
+
+include HttpFixtureSupport
+
 ROOT = File.expand_path("..", __dir__)
 NTFY_MAIN = File.join(ROOT, "roles", "ntfy", "tasks", "main.yml")
 NTFY_MANAGED = File.join(ROOT, "roles", "ntfy", "tasks", "managed_users.yml")
@@ -161,58 +165,25 @@ def run_authoritative_probe_fixture(
   end
 end
 
-def with_http_recorder(account_mutator = nil)
-  server = TCPServer.new("127.0.0.1", 0)
+def with_http_recorder(account_mutator = nil, &block)
   requests = []
-  stopped = false
-  thread = Thread.new do
-    until stopped
-      next unless IO.select([server], nil, nil, 0.05)
+  with_http_fixture(->(port) { block.call(port, requests) }) do |method, target, headers, body|
+    requests << [method, target, body]
+    next [200, "", "text/plain"] unless target == "/v1/account"
 
-      client = server.accept
-      request_line = client.gets&.strip
-      method, target, = request_line.to_s.split(" ", 3)
-      headers = {}
-      while (line = client.gets)
-        line = line.chomp
-        break if line == "\r" || line.empty?
-
-        key, value = line.split(":", 2)
-        headers[key.downcase] = value.to_s.strip
-      end
-      body = client.read(headers.fetch("content-length", "0").to_i)
-      requests << [method, target, body]
-      response_body = if target == "/v1/account"
-                        username = headers.fetch("authorization", "").delete_prefix("Basic ")
-                        username = username.unpack1("m0").to_s.split(":", 2).first
-                        host = headers.fetch("host")
-                        account = {
-                          "username" => username, "role" => "user",
-                          "subscriptions" => [{
-                            "base_url" => "http://#{host}", "topic" => "nas-critical",
-                            "display_name" => nil
-                          }]
-                        }
-                        account = account_mutator.call(account) if account_mutator
-                        JSON.generate(account)
-                      else
-                        ""
-                      end
-      content_type = target == "/v1/account" ? "application/json" : "text/plain"
-      client.write(
-        "HTTP/1.1 200 OK\r\nContent-Type: #{content_type}\r\n" \
-        "Content-Length: #{response_body.bytesize}\r\nConnection: close\r\n\r\n#{response_body}"
-      )
-      client.close
-    end
-  rescue IOError, Errno::EBADF
-    nil
+    username = headers.fetch("authorization", "").delete_prefix("Basic ")
+    username = username.unpack1("m0").to_s.split(":", 2).first
+    host = headers.fetch("host")
+    account = {
+      "username" => username, "role" => "user",
+      "subscriptions" => [{
+        "base_url" => "http://#{host}", "topic" => "nas-critical",
+        "display_name" => nil
+      }]
+    }
+    account = account_mutator.call(account) if account_mutator
+    [200, JSON.generate(account)]
   end
-  yield server.addr.fetch(1), requests
-ensure
-  stopped = true
-  server&.close
-  thread&.join
 end
 
 def run_ntfy_verify_hook_fixture(port)

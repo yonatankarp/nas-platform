@@ -5,8 +5,11 @@ require "yaml"
 require "json"
 require "fileutils"
 require "open3"
-require "socket"
 require "tmpdir"
+
+require_relative "http_fixture_support"
+
+include HttpFixtureSupport
 
 ROOT = File.expand_path("..", __dir__)
 SERVICES = %w[immich paperless_ngx beszel].freeze
@@ -248,56 +251,23 @@ def contract_failures(service, tasks)
   failures
 end
 
+# Named the same as the shared runner it wraps, so the several dozen call sites
+# below read unchanged; the qualified call is what reaches the shared one.
 def run_playbook(tasks, variables, *arguments, env: {})
-  Dir.mktmpdir("nas-platform-database-managed-users-") do |directory|
-    playbook = File.join(directory, "playbook.yml")
-    File.write(playbook, YAML.dump([{ "hosts" => "localhost", "gather_facts" => false,
-                                     "vars" => variables, "tasks" => tasks }]), mode: "w", perm: 0o600)
-    Open3.capture3({ "ANSIBLE_NOCOLOR" => "1" }.merge(env), "ansible-playbook", "-i", "localhost,",
-                   "-c", "local", playbook, *arguments, chdir: ROOT)
-  end
+  HttpFixtureSupport.run_playbook(tasks, variables, *arguments, environment: env,
+                                  prefix: "nas-platform-database-managed-users-")
 end
 
-def with_http_service(responder)
-  server = TCPServer.new("127.0.0.1", 0)
+def with_http_service(responder, &block)
   requests = []
-  stopped = false
-  error = nil
-  thread = Thread.new do
-    until stopped
-      next unless IO.select([server], nil, nil, 0.05)
-
-      client = server.accept
-      method, target, = client.gets.to_s.strip.split(" ", 3)
-      headers = {}
-      while (line = client.gets)
-        line = line.chomp
-        break if line == "\r" || line.empty?
-
-        key, value = line.split(":", 2)
-        headers[key.downcase] = value.to_s.strip
-      end
-      body = client.read(headers.fetch("content-length", "0").to_i)
-      request = { "method" => method, "target" => target, "headers" => headers,
-                  "json" => body.empty? ? nil : JSON.parse(body) }
-      requests << request
-      status, response = responder.call(request)
-      payload = response.nil? ? "" : JSON.generate(response)
-      client.write("HTTP/1.1 #{status} Fixture\r\nContent-Type: application/json\r\n")
-      client.write("Content-Length: #{payload.bytesize}\r\nConnection: close\r\n\r\n#{payload}")
-      client.close
-    end
-  rescue IOError, Errno::EBADF
-    nil
-  rescue StandardError => caught
-    error = caught
+  with_http_fixture(->(port) { block.call(port, requests) },
+                    reason: "Fixture") do |method, target, headers, body|
+    request = { "method" => method, "target" => target, "headers" => headers,
+                "json" => body.empty? ? nil : JSON.parse(body) }
+    requests << request
+    status, response = responder.call(request)
+    [status, response.nil? ? "" : JSON.generate(response)]
   end
-  yield server.addr.fetch(1), requests
-ensure
-  stopped = true
-  server&.close
-  thread&.join
-  raise error if error
 end
 
 def managed_includes(service, extra_vars = {}, path: nil)
