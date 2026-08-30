@@ -587,9 +587,5 @@ if defined?(ClassifyChanges)
   end
 end
 
-unless failures.empty?
-  failures.each { |failure| warn "FAIL #{failure}" }
-  abort "#{failures.length} changed-path classifier failure(s)"
-end
-
-puts "changed-path classifier: all checks passed"
+report(failures, "changed-path classifier: all checks passed",
+       "changed-path classifier failure(s)")

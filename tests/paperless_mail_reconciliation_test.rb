@@ -8,11 +8,12 @@ require "open3"
 require "tmpdir"
 require "yaml"
 
+require_relative "policy_support"
 require_relative "http_fixture_support"
 
 include HttpFixtureSupport
+include TestScaffold
 
-ROOT = File.expand_path("..", __dir__)
 ROLE = File.join(ROOT, "roles", "paperless_ngx", "tasks", "main.yml")
 
 ACCOUNT = {

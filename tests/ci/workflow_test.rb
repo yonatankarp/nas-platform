@@ -630,9 +630,5 @@ if ansible_pin
         "got #{controller_lint.inspect}")
 end
 
-unless failures.empty?
-  failures.each { |failure| warn "FAIL #{failure}" }
-  abort "#{failures.length} workflow contract failure(s)"
-end
-
-puts "CI workflow contract: all checks passed"
+report(failures, "CI workflow contract: all checks passed",
+       "workflow contract failure(s)")

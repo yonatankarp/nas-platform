@@ -49,9 +49,5 @@ end
   check(failures, !stderr.empty?, "#{description} must explain why validation failed")
 end
 
-unless failures.empty?
-  failures.each { |failure| warn "FAIL #{failure}" }
-  abort "#{failures.length} aggregate result-policy failure(s)"
-end
-
-puts "aggregate result policy: all checks passed"
+report(failures, "aggregate result policy: all checks passed",
+       "aggregate result-policy failure(s)")
