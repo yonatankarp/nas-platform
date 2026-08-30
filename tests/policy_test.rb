@@ -1192,6 +1192,100 @@ manifest_entries.each do |service|
 end
 
 
+# Included reconciliation files are gated on a phase string the caller passes
+# through vars:. include_tasks never applies meta/argument_specs.yml, so a phase
+# matching no gate turns the whole file into a silent no-op that still reports
+# success -- and verify.yml reaches every verification it owns through exactly
+# this mechanism, so a renamed call site would remove a verification without
+# failing anything. Each gated file therefore opens with an unconditional assert
+# naming the phases it implements, every literal it gates on must appear in that
+# list, and the phases its callers actually pass must be exactly that list.
+PHASE_GATE_PATTERN = /\b([a-z][a-z0-9_]*_phase)\b\s*(?:==|in)(?![a-z0-9_])/
+PHASE_DECLARATION_PATTERN = /\A\s*([a-z][a-z0-9_]*_phase)\s+in\s+\[([^\]]*)\]\s*\z/
+def phase_literals(strings, variable)
+  escaped = Regexp.escape(variable)
+  strings.flat_map do |value|
+    value.scan(/#{escaped}\s*==\s*'([a-z0-9_]+)'/).flatten +
+      value.scan(/#{escaped}\s*in\s*\[([^\]]*)\]/).flatten
+           .flat_map { |list| list.scan(/'([a-z0-9_]+)'/).flatten }
+  end.uniq
+end
+
+phase_task_files = Dir[File.join(ROOT, "roles", "*")].sort.flat_map do |role_root|
+  recursive_role_yaml_paths(File.join(role_root, "tasks"), failures)
+end
+declared_phases = {}
+phase_task_files.each do |path|
+  relative_path = path.delete_prefix("#{ROOT}/")
+  document = YAML.safe_load_file(path, aliases: true)
+  next unless document.is_a?(Array) && document.first.is_a?(Hash)
+
+  tasks = flatten_tasks(document)
+  gated_variables = task_strings(tasks)
+                    .flat_map { |value| value.scan(PHASE_GATE_PATTERN).flatten }.uniq.sort
+  next if gated_variables.empty?
+
+  opening = document.first
+  opens_with_assert = opening.key?("ansible.builtin.assert") && !opening.key?("when")
+  check(failures, opens_with_assert,
+        "#{relative_path}: gates tasks on #{gated_variables.join(', ')} but does not open with " \
+        "an unconditional assert; an unrecognised phase would skip the whole file silently")
+  declarations = {}
+  Array(opening.dig("ansible.builtin.assert", "that")).each do |condition|
+    match = PHASE_DECLARATION_PATTERN.match(condition.to_s)
+    declarations[match[1]] = match[2].scan(/'([a-z0-9_]+)'/).flatten.sort if match
+  end
+  body_strings = task_strings(tasks.drop(1))
+  gated_variables.each do |variable|
+    unless declarations.key?(variable)
+      check(failures, false,
+            "#{relative_path}: opening assert does not name the phases #{variable} implements")
+      next
+    end
+
+    unnamed = phase_literals(body_strings, variable) - declarations[variable]
+    check(failures, unnamed.empty?,
+          "#{relative_path}: gates on #{variable} #{unnamed.sort.join(', ')} without declaring " \
+          "#{unnamed.length == 1 ? 'it' : 'them'} in the opening assert")
+  end
+  declared_phases[relative_path] = declarations
+end
+passed_phases = Hash.new { |store, key| store[key] = {} }
+phase_task_files.each do |path|
+  relative_path = path.delete_prefix("#{ROOT}/")
+  flatten_tasks(YAML.safe_load_file(path, aliases: true)).each do |task|
+    included = task["ansible.builtin.include_tasks"]
+    file_name = included.is_a?(Hash) ? included["file"] : included
+    variables = task["vars"]
+    next unless file_name.is_a?(String) && variables.is_a?(Hash)
+
+    target_path = File.expand_path(File.join(File.dirname(path), file_name))
+    # A file that is not on disk is a different failure, reported elsewhere, and
+    # the reduced fixture the mutation harness builds carries the callers without
+    # the files they include.
+    next unless File.file?(target_path)
+
+    target = target_path.delete_prefix("#{ROOT}/")
+    variables.each do |name, value|
+      next unless name.to_s.end_with?("_phase")
+
+      declaration = declared_phases.dig(target, name.to_s)
+      check(failures, !declaration.nil? && declaration.include?(value.to_s),
+            "#{relative_path}: \"#{task['name']}\" includes #{file_name} with " \
+            "#{name}: #{value}, which that file does not declare it implements")
+      (passed_phases[target][name.to_s] ||= []) << value.to_s if declaration
+    end
+  end
+end
+declared_phases.each do |relative_path, declarations|
+  declarations.each do |variable, phases|
+    reached = (passed_phases.dig(relative_path, variable) || []).uniq.sort
+    check(failures, reached == phases,
+          "#{relative_path}: declares #{variable} phases #{phases.join(', ')} but its callers " \
+          "pass #{reached.empty? ? 'none' : reached.join(', ')}")
+  end
+end
+
 
 if failures.empty?
   puts "policy: all properties hold"

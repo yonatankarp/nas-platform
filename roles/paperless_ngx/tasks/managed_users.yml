@@ -1,4 +1,17 @@
 ---
+# include_tasks never applies meta/argument_specs.yml, and the tasks below are
+# gated on this phase, so an unrecognised value would silently skip them while
+# the run still reported success. verify.yml reaches its verification tasks
+# through exactly this mechanism.
+- name: Validate the Paperless managed-user phase
+  ansible.builtin.assert:
+    that:
+      - paperless_managed_users_phase in ['reconcile', 'verify']
+    fail_msg: >-
+      Paperless managed-user reconciliation was included with a phase it does not
+      implement. The tasks in this file are gated on paperless_managed_users_phase,
+      so an unrecognised phase silently skips them.
+
 # Redacted: the listing carries vault_paperless_admin_username and every
 # managed username and email, even though it omits password hashes.
 - name: List complete sanitized Paperless users for managed-user reconciliation

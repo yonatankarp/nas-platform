@@ -1,4 +1,17 @@
 ---
+# include_tasks never applies meta/argument_specs.yml, and the tasks below are
+# gated on this phase, so an unrecognised value would silently skip them while
+# the run still reported success. verify.yml reaches its verification tasks
+# through exactly this mechanism.
+- name: Validate the Jellyfin managed-user phase
+  ansible.builtin.assert:
+    that:
+      - jellyfin_managed_users_phase in ['preflight', 'reconcile', 'verify']
+    fail_msg: >-
+      Jellyfin managed-user reconciliation was included with a phase it does not
+      implement. The tasks in this file are gated on jellyfin_managed_users_phase,
+      so an unrecognised phase silently skips them.
+
 - name: List complete Jellyfin users for managed-user reconciliation
   ansible.builtin.uri:
     url: "{{ jellyfin_api }}/Users"
