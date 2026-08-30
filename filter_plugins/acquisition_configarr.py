@@ -1286,12 +1286,18 @@ def _configarr_api_custom_format_body(value: Any, label: str) -> dict[str, Any]:
 
 
 def acquisition_configarr_missing_custom_format_bodies(
-    config_source: Any, current_projection: Any
+    desired_projection: Any, current_projection: Any
 ) -> dict[str, dict[str, Any]]:
-    """Return exact create bodies only for globally preflighted missing targets."""
-    desired = acquisition_configarr_desired_projection(
-        config_source, current_projection
-    )
+    """Return exact create bodies only for globally preflighted missing targets.
+
+    The desired projection is taken already materialized rather than parsed
+    again from the declaration source: the play materializes it once before it
+    mutates anything, and materializing it a second time from the same two
+    inputs re-ran the whole of `acquisition_configarr_desired_projection` for a
+    result that cannot differ. Do not re-add the source parse for convenience —
+    pass the fact the play already holds.
+    """
+    desired = _mapping(desired_projection, "Configarr desired owned projection")
     current_projection = _mapping(
         current_projection, "Configarr current owned projection"
     )
