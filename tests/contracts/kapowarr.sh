@@ -171,6 +171,62 @@ if failures.empty?
     identity_write && identity_conditions.include?("kapowarr_identity_current") &&
     identity_conditions.include?("ansible_check_mode")
 
+  # The settings declaration is this platform's ownership of Kapowarr's
+  # configuration, and its shape is what keeps that ownership convergent.
+  # Kapowarr masks every stored credential on read -- both halves of the
+  # administrator identity answer as literal asterisks -- so a declaration
+  # naming one could never match what comes back, and the write would run on
+  # every converge. The service order is excluded for a different reason: the
+  # application validates it as a permutation of its own service list, so it is
+  # declared as a partial ordering and merged over the deployed order instead.
+  declared_settings = defaults["kapowarr_settings"]
+  credential_keys = Array(defaults["kapowarr_settings_credential_keys"])
+  failures << "Kapowarr must declare the application settings it owns" unless
+    declared_settings.is_a?(Hash) && !declared_settings.empty?
+  failures << "the Kapowarr credential key list must name every masked credential" unless
+    (%w[api_key auth_username auth_password comicvine_api_key] - credential_keys).empty?
+  if declared_settings.is_a?(Hash)
+    named_credentials = declared_settings.keys & credential_keys
+    failures << "the declared Kapowarr settings must name no credential: " \
+                "#{named_credentials.join(', ')}" unless named_credentials.empty?
+    failures << "the declared Kapowarr settings must not carry the service order" if
+      declared_settings.key?("service_preference")
+    # Komga indexes the directory these name, so a change that drops them hands
+    # a second service's view of the library back to the web interface.
+    failures << "the declared Kapowarr settings must own the library naming templates" unless
+      (%w[volume_folder_naming file_naming] - declared_settings.keys).empty?
+  end
+  failures << "Kapowarr must declare its download service order" if
+    Array(defaults["kapowarr_service_preference"]).empty?
+
+  settings_read = tasks.find do |task|
+    task.dig("ansible.builtin.uri", "method") == "GET" &&
+      task.dig("ansible.builtin.uri", "url").to_s.include?("/api/settings") &&
+      !Array(task["tags"]).include?("platform_verify_kapowarr")
+  end
+  failures << "Kapowarr must read its deployed settings before declaring them" if settings_read.nil?
+  # The read carries the API key in its query string and is a read: it must be
+  # redacted, must not claim a change, and must really run under --check, or the
+  # write decides from nothing.
+  failures << "the Kapowarr settings read must be a redacted, real, changeless read" unless
+    settings_read && settings_read["changed_when"] == false &&
+    settings_read["check_mode"] == false && settings_read["no_log"] == true
+
+  # The interface answers a no-op write and a real write identically, so the
+  # write has to be gated on a difference computed before it, or the role
+  # reports a change on every converge.
+  settings_write = tasks.find do |task|
+    task.dig("ansible.builtin.uri", "method") == "PUT" &&
+      task.dig("ansible.builtin.uri", "url").to_s.include?("/api/settings") &&
+      task.dig("ansible.builtin.uri", "body").to_s.include?("kapowarr_settings_declared")
+  end
+  settings_conditions = Array(settings_write&.fetch("when", nil)).join(" ")
+  failures << "the Kapowarr settings write must be gated on the resolved drift" unless
+    settings_write && settings_conditions.include?("kapowarr_settings_drift_keys") &&
+    settings_conditions.include?("ansible_check_mode")
+  failures << "the Kapowarr settings write must stay redacted" unless
+    settings_write && settings_write["no_log"] == true
+
   verification = tasks.select { |task| Array(task["tags"]).include?("platform_verify_kapowarr") }
   verification_urls = verification.filter_map { |task| task.dig("ansible.builtin.uri", "url") }
   failures << "Kapowarr verification must read its unauthenticated public endpoint" unless
@@ -189,6 +245,11 @@ if failures.empty?
     task.dig("ansible.builtin.uri", "url").to_s.include?("/api/rootfolder")
   end
   failures << "Kapowarr verification must read the library roots it owns" if roots.nil?
+  settings_verification = verification.find do |task|
+    task.dig("ansible.builtin.uri", "url").to_s.include?("/api/settings")
+  end
+  failures << "Kapowarr verification must read the settings it declares" if
+    settings_verification.nil?
 
   # Every probe accepts any status and defers to the assertion, so a drifted
   # credential fails with a diagnosis rather than inside the redacted request.
@@ -214,6 +275,13 @@ if failures.empty?
     end &&
     conditions.any? do |value|
       value.include?("kapowarr_verify_roots") && value.include?("kapowarr_library_root")
+    end &&
+    conditions.any? do |value|
+      value.include?("kapowarr_verify_settings") && value.include?("kapowarr_settings")
+    end &&
+    conditions.any? do |value|
+      value.include?("kapowarr_verify_settings") &&
+        value.include?("kapowarr_service_preference")
     end
   # The diagnosis is the point of deferring, so it must not be redacted away.
   failures << "the Kapowarr outcome assertion must stay readable" if
@@ -247,8 +315,10 @@ RUBY
 : "${PLATFORM_DOCKER_ROOT:?PLATFORM_DOCKER_ROOT is required}"
 : "${PLATFORM_KAPOWARR_PORT:=5656}"
 PLATFORM_KAPOWARR_CONTAINER=${PLATFORM_PROJECT_NAME:+$PLATFORM_PROJECT_NAME-}kapowarr
+PLATFORM_CONTRACT_REPO_DIR=$repo_dir
 export PLATFORM_CONTRACT_VAULT_FILE PLATFORM_CONTRACT_VAULT_PASSWORD_FILE
 export PLATFORM_DOCKER_ROOT PLATFORM_KAPOWARR_PORT PLATFORM_KAPOWARR_CONTAINER
+export PLATFORM_CONTRACT_REPO_DIR
 
 exec ruby - <<'RUBY'
 require "json"
@@ -352,6 +422,35 @@ fail_contract("Kapowarr does not own exactly the declared comics library root") 
 fail_contract("Kapowarr did not persist its database in the declared config root") unless
   File.file?(DATABASE) && File.size?(DATABASE)
 
+# The static half proves the role declares these settings and gates the write on
+# a difference. This half proves the deployed application actually holds them,
+# which is the only place the merge, the value types and the application's own
+# validation are exercised against a real Kapowarr.
+settings = get("/api/settings?api_key=#{api_key}")
+fail_contract("Kapowarr refused to report its settings") unless settings.code == "200"
+deployed_settings = JSON.parse(settings.body).fetch("result")
+role_defaults = YAML.safe_load_file(
+  File.join(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR"), "roles/kapowarr/defaults/main.yml")
+)
+mismatched = role_defaults.fetch("kapowarr_settings").reject do |key, value|
+  deployed_settings[key] == value
+end
+unless mismatched.empty?
+  fail_contract(
+    "Kapowarr does not hold the declared application settings: #{mismatched.keys.join(', ')}"
+  )
+end
+
+# The declared order is a partial one: the services it names must appear in that
+# relative order, and a service the deployed version knows and the declaration
+# does not is free to sit anywhere. Filtering both lists by the other is what
+# makes this a statement about order rather than about membership.
+declared_order = Array(role_defaults.fetch("kapowarr_service_preference"))
+deployed_order = Array(deployed_settings.fetch("service_preference"))
+fail_contract("Kapowarr does not hold the declared download service order") unless
+  deployed_order.select { |service| declared_order.include?(service) } ==
+    declared_order.select { |service| deployed_order.include?(service) }
+
 puts "kapowarr contract: health, exclusive administrator identity, comics root ownership, " \
-     "and persisted state hold"
+     "declared application settings, and persisted state hold"
 RUBY

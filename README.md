@@ -208,7 +208,10 @@ Each of the later phases was investigated before it was planned, against
 upstream source and a running container. The
 [service investigation dossiers](docs/service-dossiers.md) record what those
 investigations found, marking every claim as measured or reasoned, so a
-promotion starts from evidence rather than from the beginning.
+promotion starts from evidence rather than from the beginning. Pinchflat and
+Kapowarr have dossiers of their own written after the fact, recording which
+parts of each application Ansible does not own — because for these two,
+configuration made in the web interface is *not* reverted by the next run.
 
 Open Subtitles remains configured in Jellyfin until Bazarr is proven on the
 physical NAS. Follow the
