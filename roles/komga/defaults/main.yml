@@ -21,8 +21,12 @@ komga_library_root_migration_allowed: false
 # override any of these for itself; the effective set is this mapping combined
 # with the entry's own `settings`.
 #
-# scanInterval is the conservative six-hour schedule the acquisition design
-# calls for. scanDirectoryExclusions names the `.acquisition` staging tree as
+# scanInterval is hourly, not the six hours the acquisition design named.
+# Komga notices a new file only when it polls: it watches nothing, so this
+# interval is the entire delay between an acquisition tool writing a comic and
+# a reader being able to open it. Six hours of that reads as a failed import
+# rather than as a schedule, and it hid a working Kapowarr download for an
+# evening. scanDirectoryExclusions names the `.acquisition` staging tree as
 # defence in depth: that tree is a sibling of both library roots and so is
 # already outside them, but an exclusion costs nothing and survives a future
 # root widening.
@@ -38,7 +42,7 @@ komga_library_settings:
   importLocalArtwork: true
   importBarcodeIsbn: true
   scanForceModifiedTime: false
-  scanInterval: EVERY_6H
+  scanInterval: HOURLY
   scanOnStartup: false
   scanCbx: true
   scanPdf: true
