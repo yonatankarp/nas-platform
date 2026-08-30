@@ -16,8 +16,6 @@ services:
       dev.dozzle.name: broker
     volumes:
       - ${PAPERLESS_REDIS_PATH:?}:/data
-    ports:
-      - "127.0.0.1:6379:6379"
     environment:
       TZ: ${TZ:?}
     # These containers carry no `user:`, so PID 1 starts as root and the
@@ -49,8 +47,6 @@ services:
       dev.dozzle.name: db
     volumes:
       - ${PAPERLESS_POSTGRES_PATH:?}:/var/lib/postgresql
-    ports:
-      - "127.0.0.1:5432:5432"
     environment:
       TZ: ${TZ:?}
       POSTGRES_DB: ${DB_NAME:?}
@@ -90,7 +86,11 @@ services:
         condition: service_healthy
       tika:
         condition: service_healthy
-    network_mode: host
+    # The webserver joins the stack's default Compose network like every other
+    # service, so broker, db, gotenberg and tika are reached by service name and
+    # publish nothing of their own. Only this port is visible on the host.
+    ports:
+      - "8000:8000"
     volumes:
       - ${PAPERLESS_DATA_PATH:?}:/usr/src/paperless/data
       - ${PAPERLESS_CACHE_PATH:?}:/usr/src/paperless/cache
@@ -159,8 +159,6 @@ services:
       - gotenberg
       - --chromium-disable-javascript=true
       - --chromium-allow-list=file:///tmp/.*
-    ports:
-      - "127.0.0.1:3000:3000"
     environment:
       TZ: ${TZ:?}
     healthcheck:
@@ -188,8 +186,6 @@ services:
       dev.dozzle.name: tika
     environment:
       TZ: ${TZ:?}
-    ports:
-      - "127.0.0.1:9998:9998"
     healthcheck:
       test: [CMD, bash, -ec, "exec 3<>/dev/tcp/127.0.0.1/9998"]
       interval: 30s

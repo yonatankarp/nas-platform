@@ -4,6 +4,10 @@ services:
     container_name: ${PLATFORM_PROJECT_NAME:?}-paperless-redis
   db:
     container_name: ${PLATFORM_PROJECT_NAME:?}-paperless-postgres
+  # Only container names move. The stack already runs on its own Compose
+  # network with the four dependencies unpublished, so there is nothing to
+  # reset; the webserver keeps the production port, exactly as Immich and
+  # Jellyfin do.
   webserver:
     container_name: ${PLATFORM_PROJECT_NAME:?}-paperless-webserver
   gotenberg:

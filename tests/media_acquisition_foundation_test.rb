@@ -152,10 +152,7 @@ EXPECTED_IMPLEMENTED_PORTS = [
   ["kapowarr", "kapowarr", "0.0.0.0", 5656, 5656, "tcp"],
   ["komga", "komga", "0.0.0.0", 25_600, 25_600, "tcp"],
   ["ntfy", "ntfy", "0.0.0.0", 2586, 80, "tcp"],
-  ["paperless-ngx", "broker", "127.0.0.1", 6379, 6379, "tcp"],
-  ["paperless-ngx", "db", "127.0.0.1", 5432, 5432, "tcp"],
-  ["paperless-ngx", "gotenberg", "127.0.0.1", 3000, 3000, "tcp"],
-  ["paperless-ngx", "tika", "127.0.0.1", 9998, 9998, "tcp"],
+  ["paperless-ngx", "webserver", "0.0.0.0", 8000, 8000, "tcp"],
   ["pinchflat", "pinchflat", "0.0.0.0", 8945, 8945, "tcp"]
 ].freeze
 

@@ -317,6 +317,7 @@ KOMGA_ROLE = "roles/komga/tasks/main.yml"
 PAPERLESS_SNAPSHOT = "tests/mac/snapshot-paperless.sh"
 PAPERLESS_ROLE = "roles/paperless_ngx/tasks/main.yml"
 PAPERLESS_ENVIRONMENT = "roles/paperless_ngx/templates/env.j2"
+PAPERLESS_COMPOSE = "services/paperless-ngx/compose.yml"
 PAPERLESS_MAC_COMPOSE = "services/paperless-ngx/compose.mac.yml"
 GENERATOR = "generate-secrets.yml"
 BESZEL_VARS = "roles/beszel/vars/main.yml"
@@ -669,14 +670,33 @@ check_rejected(
 
 # --- Paperless contract -------------------------------------------------------
 #
-# `network_mode: !reset null` and `network_mode: null` parse to the same nil, so
-# the override's own structure cannot tell them apart. Only the merged effective
-# config can, and without the tag the NAS host networking survives into the Mac
-# render, which is the one thing the override exists to prevent.
+# Host networking makes the webserver occupy the host's whole port namespace, so
+# the port registry that guards every other publication cannot see it at all.
 check_rejected(
-  failures, :paperless, "a Mac override that lost its reset tag",
-  [[PAPERLESS_MAC_COMPOSE, "network_mode: !reset null", "network_mode: null"]],
-  "mac effective config did not reset NAS host networking"
+  failures, :paperless, "a webserver that goes back to host networking",
+  [[PAPERLESS_COMPOSE, "    ports:\n      - \"8000:8000\"\n", "    network_mode: host\n"]],
+  "nas effective config must not use host networking"
+)
+
+# The dependencies answer on the stack's own network, so a host publication for
+# one of them is surface with nothing behind it.
+check_rejected(
+  failures, :paperless, "a dependency that goes back to publishing a host port",
+  [[PAPERLESS_COMPOSE,
+    "    volumes:\n      - ${PAPERLESS_REDIS_PATH:?}:/data\n",
+    "    volumes:\n      - ${PAPERLESS_REDIS_PATH:?}:/data\n" \
+    "    ports:\n      - \"127.0.0.1:6379:6379\"\n"]],
+  "nas broker publishes a host port"
+)
+
+# Compose merges two `ports:` lists by appending them, so an override that drops
+# `!override` publishes the production port next to its allocated one and the
+# collision it exists to prevent comes back. The override's own structure cannot
+# say that; only the merged effective config can.
+check_rejected(
+  failures, :paperless, "a Mac override that lost its override tag",
+  [[PAPERLESS_MAC_COMPOSE, "    ports: !override\n", "    ports:\n"]],
+  "mac effective webserver publication differs"
 )
 
 check_rejected(
@@ -806,13 +826,11 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :paperless, "one host-network endpoint that stops covering integration",
+  failures, :paperless, "one dependency endpoint that goes back to a loopback address",
   [[PAPERLESS_ENVIRONMENT,
-    "PAPERLESS_TIKA_ENDPOINT=http://{{ '127.0.0.1' if platform_compose_kind in " \
-    "['nas', 'integration'] else 'tika' }}:9998\n",
-    "PAPERLESS_TIKA_ENDPOINT=http://{{ '127.0.0.1' if platform_compose_kind == " \
-    "'nas' else 'tika' }}:9998\n"]],
-  "host-network endpoint selection must cover NAS and integration for PAPERLESS_TIKA_ENDPOINT"
+    "PAPERLESS_TIKA_ENDPOINT=http://tika:9998\n",
+    "PAPERLESS_TIKA_ENDPOINT=http://127.0.0.1:9998\n"]],
+  "PAPERLESS_TIKA_ENDPOINT must address its Compose service by name on every platform"
 )
 
 # Compose reads the last assignment of a name, so an appended unescaped duplicate
