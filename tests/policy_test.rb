@@ -275,15 +275,23 @@ dozzle_planned_tasks = [
 ]
 check(failures, dozzle_planned_tasks.all? { |name| dozzle_task_names.include?(name) },
       "Dozzle must expose every REST mutation category as a check-mode planned change")
+# The per-service port exports are derived from tests/mac/lib.sh's
+# MAC_SERVICE_PORT_ORDER rather than written out one line per service, so what
+# this file can assert is that the roster names the service and that the runner
+# runs the derivation. tests/policy_mac_test.rb executes that derivation and
+# checks the variable each service actually lands in.
+mac_lib_roster_path = File.join(ROOT, "tests", "mac", "lib.sh")
+mac_lib_roster = if File.file?(mac_lib_roster_path)
+                   File.read(mac_lib_roster_path)[/^MAC_SERVICE_PORT_ORDER='([^']*)'/m, 1].to_s.split
+                 else
+                   []
+                 end
 check(failures,
-      %w[
-        PLATFORM_PROJECT_NAME PLATFORM_BESZEL_PORT PLATFORM_NTFY_PORT PLATFORM_DOZZLE_PORT
-        PLATFORM_AUDIOBOOKSHELF_PORT
-      ].all? do |value|
-        mac_run.include?("export #{value}=")
-      end && %w[beszel ntfy dozzle audiobookshelf].all? do |name|
-        mac_run.include?(%Q{"$project_name-#{name}"})
-      end,
+      mac_run.include?("export PLATFORM_PROJECT_NAME=") &&
+        mac_run.match?(/^mac_export_service_ports$/) &&
+        %w[beszel ntfy dozzle audiobookshelf].all? do |name|
+          mac_lib_roster.include?(name) && mac_run.include?(%Q{"$project_name-#{name}"})
+        end,
       "Mac runner must export dynamic project/port facts and isolate every Compose project")
 
 PLATFORM_INVENTORIES = {
