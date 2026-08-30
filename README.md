@@ -192,6 +192,12 @@ identity authored in vault; nothing is downloaded until an operator declares a
 source in the application. The remaining four acquisition projects — Bindery,
 Kapowarr, Trailarr and Seerr — stay planned.
 
+Each of the later phases was investigated before it was planned, against
+upstream source and a running container. The
+[service investigation dossiers](docs/service-dossiers.md) record what those
+investigations found, marking every claim as measured or reasoned, so a
+promotion starts from evidence rather than from the beginning.
+
 Open Subtitles remains configured in Jellyfin until Bazarr is proven on the
 physical NAS. Follow the
 [Phase 1 operator handoff](docs/media-acquisition-phase1.md) before enabling a
