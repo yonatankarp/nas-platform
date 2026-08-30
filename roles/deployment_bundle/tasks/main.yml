@@ -17,6 +17,7 @@
     # A deployment may legitimately replace an older active release. Runtime
     # service callers require the current release once the pointer is active.
     deployment_target_require_current_release: false
+    deployment_target_extra_paths: []
   when: not (deployment_bundle_target_validated | default(false) | bool)
 
 - name: Resolve the deployment staging directory

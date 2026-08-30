@@ -24,5 +24,8 @@
       ansible.builtin.include_role:
         name: deployment_bundle
         tasks_from: target
+      vars:
+        deployment_target_require_current_release: false
+        deployment_target_extra_paths: []
   vars:
     platform_release_id: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa

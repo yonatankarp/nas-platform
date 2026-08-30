@@ -23,11 +23,31 @@ failures = []
 # deployment report rather than at anything the suite is about.
 integration_path = File.join(ROOT, "tests", "integration.sh")
 classifier_path = File.join(ROOT, "tests", "ci", "classify_changes.rb")
+integration_body = File.file?(integration_path) ? File.read(integration_path) : ""
+suite_tags = integration_body
+             .scan(/^\s*([a-z][a-z0-9-]*)\)\s+fixed_tags=([a-z0-9_,-]*)\s*;;/)
+             .to_h { |suite, tags| [suite, tags.split(",")] }
+
+# Which acquisition lanes are inert and which converge a real role is a
+# consequence of services/manifest.yml, not a separate fact. It used to be
+# written out here twice — once to exempt the inert lanes from the ntfy
+# requirement and once to require they ship no image — so promoting a project
+# meant editing two literals in this file that nothing held to the manifest or to
+# each other. The catalog supplies which projects are acquisition projects; the
+# manifest supplies whether each one is built yet.
+acquisition_catalog = begin
+  YAML.safe_load_file(File.join(ROOT, "config", "media-acquisition.yml"))
+rescue Errno::ENOENT, Psych::Exception
+  nil
+end
+acquisition_projects = acquisition_catalog.is_a?(Hash) && acquisition_catalog["projects"].is_a?(Hash) ?
+                         acquisition_catalog.fetch("projects").keys : []
+check(failures, !acquisition_projects.empty?,
+      "config/media-acquisition.yml: the acquisition project roster could not be read")
+planned_acquisition_lanes = acquisition_projects & PolicySupport.planned_services(ROOT)
+implemented_acquisition_lanes = acquisition_projects & PolicySupport.implemented_services(ROOT)
+
 if File.file?(integration_path) && File.file?(classifier_path)
-  planned_acquisition_lanes = %w[bindery trailarr seerr]
-  suite_tags = File.read(integration_path)
-                   .scan(/^\s*([a-z][a-z0-9-]*)\)\s+fixed_tags=([a-z0-9_,-]*)\s*;;/)
-                   .to_h { |suite, tags| [suite, tags.split(",")] }
   classifier_tags = File.read(classifier_path)[/SERVICE_TAGS = \{(.*?)\}\.freeze/m].to_s
                         .scan(/"([a-z0-9_-]+)"\s*=>\s*%w\[([^\]]*)\]/)
                         .to_h { |lane, tags| [lane, tags.split] }
@@ -52,7 +72,7 @@ if File.file?(integration_path) && File.file?(classifier_path)
           "acquisition foundation suite #{lane} has no matching static contract")
   end
   check(failures,
-        File.read(integration_path).include?(
+        integration_body.include?(
           '/repo/tests/contracts/"\$INTEGRATION_SUITE"-foundation.sh static'
         ),
         "acquisition foundation suites must execute their matching static contract")
@@ -110,7 +130,6 @@ check(failures, suites_job.fetch("permissions", {}) == { "contents" => "read", "
 # it is held to the manifest here: a service the map forgets would be pulled
 # without a retry inside community.docker.docker_compose_v2, which is exactly the
 # failure mode the retry exists for.
-integration_body = File.file?(integration_path) ? File.read(integration_path) : ""
 image_source_block = integration_body[/^service_image_sources='\n(.*?)'$/m].to_s
 service_image_sources = image_source_block.scan(/^([a-z0-9_-]+) ([a-z0-9-]+)$/)
 check(failures, !service_image_sources.empty?,
@@ -120,21 +139,25 @@ check(failures, integration_body.include?('pull_image "$runner_image"'),
 check(failures, integration_body.include?("prepull_images\n"),
       "tests/integration.sh must pre-pull the suite's images before the converge")
 
-enabled_idempotence_contracts = {
-  "arr" => ["run_enabled_idempotence arr", "run_play --tags arr --check --diff"],
-  "downloaders" => [
-    "run_enabled_idempotence arr,downloaders",
-    "run_play --tags arr,downloaders --check --diff"
-  ],
-  "kapowarr" => [
-    "run_enabled_idempotence kapowarr",
-    "run_play --tags kapowarr --check --diff"
-  ],
-  "pinchflat" => [
-    "run_enabled_idempotence pinchflat",
-    "run_play --tags pinchflat --check --diff"
-  ]
-}
+# Every acquisition lane that converges a real role owes a second enabled
+# convergence, and the roles it converges are the suite's own fixed tags minus the
+# shared infrastructure ones. Both used to be transcribed per suite, so a promoted
+# project silently skipped the phase until someone remembered to add it.
+ACQUISITION_INFRASTRUCTURE_TAGS = %w[host_prep deployment_bundle ntfy media_acquisition_foundation].freeze
+enabled_idempotence_service_tags = implemented_acquisition_lanes.to_h do |suite|
+  [suite, suite_tags.fetch(suite, []) - ACQUISITION_INFRASTRUCTURE_TAGS]
+end
+enabled_idempotence_service_tags.each do |suite, service_tags|
+  check(failures, !service_tags.empty?,
+        "implemented acquisition suite #{suite} must converge at least one service role")
+end
+enabled_idempotence_contracts = enabled_idempotence_service_tags
+                                .reject { |_suite, service_tags| service_tags.empty? }
+                                .to_h do |suite, service_tags|
+  selection = service_tags.join(",")
+  [suite,
+   ["run_enabled_idempotence #{selection}", "run_play --tags #{selection} --check --diff"]]
+end
 enabled_idempotence_contracts.each do |suite, (idempotence_call, check_call)|
   suite_body = integration_body[
     /if \[ "\\\$INTEGRATION_SUITE" = #{Regexp.escape(suite)} \]; then(.*?)^    fi$/m,
@@ -152,18 +175,11 @@ check(failures,
       "tests/integration.sh must define one enabled idempotence recap parser")
 
 # The manifest's own shape is policed elsewhere, which reports a malformed
-# document or a non-string service name by name. Read it tolerantly here and skip
-# the cross-check when it is unusable rather than raising a second time on the same
+# document or a non-string service name by name. PolicySupport reads it tolerantly
+# so the cross-check is skipped rather than raising a second time on the same
 # input: a stack trace out of this suite would bury that diagnosis.
-manifest = begin
-  YAML.safe_load_file(File.join(ROOT, "services", "manifest.yml"))
-rescue Psych::Exception
-  nil
-end
-implemented_services = Array(manifest.is_a?(Hash) ? manifest["services"] : nil)
-                       .select { |service| service.is_a?(Hash) && service["status"] == "implemented" }
-                       .map { |service| service["name"] }
-if !implemented_services.empty? && implemented_services.all?(String)
+implemented_services = PolicySupport.implemented_services(ROOT)
+unless implemented_services.empty?
   mapped_directories = service_image_sources.map(&:last)
   check(failures, mapped_directories.sort == implemented_services.sort,
         "tests/integration.sh service_image_sources must cover every implemented service exactly " \
@@ -192,8 +208,7 @@ service_image_sources.each do |service_tag, service_directory|
         "which has no compose.yml")
 end
 
-acquisition_image_tags = %w[bindery trailarr seerr]
-check(failures, (service_image_sources.map(&:first) & acquisition_image_tags).empty?,
+check(failures, (service_image_sources.map(&:first) & planned_acquisition_lanes).empty?,
       "planned acquisition foundation suites must have zero service image sources")
 
 
@@ -220,7 +235,6 @@ validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "te
   ruby\ tests/renovate_policy_test.rb
   ruby\ tests/docs_links_test.rb
   ruby\ tests/docs_links_test.rb\ --self-test
-  ruby\ tests/policy_manifest_test.rb
   ruby\ tests/run_contracts_test.rb
   ruby\ tests/run_contracts.rb\ --validate-only
   ruby\ tests/database_managed_users_test.rb
@@ -327,6 +341,16 @@ check(failures,
       end,
       "the media acquisition reconciliation checks belong to their own CI job, " \
       "not to validate-policy.sh")
+# The policy mutation harness left the gate for the same reason: it builds a
+# sandbox and runs the whole policy set once per mutation, which made it the
+# gate's floor rather than one more check in its pool. CI must still run it --
+# a check that is in neither place is a guard that silently stopped running.
+check(failures,
+      validation_commands.reject { |command| command.start_with?("#") }
+                         .none? { |command| command.include?("policy_manifest_test.rb") },
+      "the policy mutation harness belongs to its own CI job, not to validate-policy.sh")
+check(failures, ci_commands.include?("ruby tests/policy_manifest_test.rb"),
+      "CI must run ruby tests/policy_manifest_test.rb")
 check(failures,
       validation_commands.count("python3 -m unittest -v tests/dozzle_alert_relay_test.py") == 1,
       "validate-policy.sh must run the Dozzle alert relay unit test exactly once")
