@@ -24,6 +24,17 @@ argument_specs:
       kapowarr_library_root:
         type: path
         required: false
+      kapowarr_settings:
+        type: dict
+        required: false
+      kapowarr_service_preference:
+        type: list
+        elements: str
+        required: false
+      kapowarr_settings_credential_keys:
+        type: list
+        elements: str
+        required: false
       vault_kapowarr_admin_username:
         type: str
         required: true

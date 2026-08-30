@@ -228,6 +228,97 @@
   changed_when: true
   no_log: true
 
+# Kapowarr's settings interface is a partial merge: a request carrying two keys
+# changes those two and drops nothing, which is what lets this platform declare
+# the subset it owns without restating the application's whole configuration.
+# Nothing in that subset may name a credential. The application masks its stored
+# credentials on read -- both halves of the administrator identity come back as
+# literal asterisks -- so a declaration carrying one could never match what is
+# read back, and the write below would run on every converge and never report a
+# converged state.
+- name: Refuse a Kapowarr settings declaration that names a credential
+  ansible.builtin.assert:
+    that:
+      - >-
+        kapowarr_settings.keys() | list
+        | select('in', kapowarr_settings_credential_keys) | list | length == 0
+      - "'service_preference' not in kapowarr_settings"
+    fail_msg: >-
+      The declared Kapowarr settings must name no credential and must not carry
+      service_preference. Credentials read back masked and can never match, and
+      the service order is validated as a permutation of the deployed version's
+      own service list, so it is declared as a partial ordering in
+      kapowarr_service_preference instead.
+
+# Redacted: the request carries the application API key in its query string.
+- name: Read the deployed Kapowarr application settings
+  ansible.builtin.uri:
+    url: "{{ kapowarr_api }}/api/settings?api_key={{ kapowarr_settings_api_key }}"
+    method: GET
+    status_code: [200]
+    return_content: true
+  register: kapowarr_settings_deployed
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+# The declared service order is applied over the deployed one rather than
+# replacing it. Kapowarr refuses anything but a permutation of every service it
+# knows, so a service this version has and the declaration does not must keep
+# its place at the end instead of being dropped -- otherwise the next upstream
+# release that adds one fails the converge on a rejected permutation.
+- name: Resolve the declared Kapowarr application settings
+  ansible.builtin.set_fact:
+    kapowarr_settings_declared: >-
+      {{ kapowarr_settings | combine({
+           'service_preference':
+             (kapowarr_service_preference
+              | select('in', kapowarr_settings_deployed.json.result.service_preference)
+              | list)
+             + (kapowarr_settings_deployed.json.result.service_preference
+                | reject('in', kapowarr_service_preference) | list),
+         }) }}
+
+# Every declared pair the application already holds verbatim is converged, so
+# the difference is the declared pairs that are not among the deployed ones. The
+# interface reports nothing about what it changed -- a no-op write and a real
+# write are answered identically -- so this comparison is what a changed result
+# is computed from, and the key names it yields are what check mode reports.
+# Only the names: the values were read back through a redacted request.
+- name: Resolve which declared Kapowarr settings the application does not hold
+  ansible.builtin.set_fact:
+    kapowarr_settings_drift_keys: >-
+      {{ kapowarr_settings_declared | dict2items
+         | reject('in', kapowarr_settings_deployed.json.result | dict2items)
+         | map(attribute='key') | list }}
+
+- name: Report the planned Kapowarr application settings
+  ansible.builtin.debug:
+    msg: >-
+      Kapowarr does not hold the declared application settings; a live run would
+      declare {{ kapowarr_settings_drift_keys | join(', ') }}.
+  when:
+    - ansible_check_mode
+    - kapowarr_settings_drift_keys | length > 0
+
+# The whole declared subset is submitted rather than only the keys that differ.
+# A request is refused whole if any single key in it is invalid, with nothing
+# applied, so submitting the set together is what makes a bad declaration fail
+# loudly instead of leaving the application half-configured.
+# Redacted: the request carries the application API key in its query string.
+- name: Declare the Kapowarr application settings
+  ansible.builtin.uri:
+    url: "{{ kapowarr_api }}/api/settings?api_key={{ kapowarr_settings_api_key }}"
+    method: PUT
+    body_format: json
+    body: "{{ kapowarr_settings_declared }}"
+    status_code: [200]
+  when:
+    - not ansible_check_mode
+    - kapowarr_settings_drift_keys | length > 0
+  changed_when: true
+  no_log: true
+
 - name: Verify the Kapowarr service endpoint
   tags: [platform_verify_kapowarr]
   ansible.builtin.uri:
@@ -295,6 +386,27 @@
   check_mode: false
   no_log: true
 
+# The declaration is compared against the defaults rather than against the facts
+# the converge resolved, because verify.yml reaches only the tagged tasks and
+# none of those facts exist there. The service order is compared as the partial
+# ordering it is declared as: the declared services, in declared order, ignoring
+# whatever the deployed version knows and the declaration does not name.
+# Redacted: the request carries the application API key the login returned.
+- name: Verify the Kapowarr declared application settings
+  tags: [platform_verify_kapowarr]
+  ansible.builtin.uri:
+    url: >-
+      {{ kapowarr_api }}/api/settings?api_key={{
+         kapowarr_verify_identity.json.result.api_key | default('') }}
+    method: GET
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: kapowarr_verify_settings
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
 - name: Require the exact Kapowarr verification results
   tags: [platform_verify_kapowarr]
   ansible.builtin.assert:
@@ -306,7 +418,19 @@
       - >-
         kapowarr_verify_roots.json.result | default([]) | map(attribute='folder') |
         map('regex_replace', '/+$', '') | list == [kapowarr_library_root]
+      - kapowarr_verify_settings.status | default(0) | int == 200
+      - >-
+        (kapowarr_verify_settings.json.result | default({}) | dict2items |
+         selectattr('key', 'in', kapowarr_settings.keys() | list) | items2dict)
+        == kapowarr_settings
+      - >-
+        ((kapowarr_verify_settings.json.result | default({})).service_preference
+         | default([]) | select('in', kapowarr_service_preference) | list)
+        == (kapowarr_service_preference |
+            select('in', (kapowarr_verify_settings.json.result | default({})).service_preference
+                         | default([])) | list)
     fail_msg: >-
       Kapowarr is unreachable, or it no longer accepts exactly the vault-authored
-      administrator, refuses everyone else, and owns exactly the declared comics
-      library root.
+      administrator, refuses everyone else, owns exactly the declared comics
+      library root, and holds the declared application settings in the declared
+      service order.
