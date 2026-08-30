@@ -231,7 +231,9 @@ that exists only on Linux and `command` being skipped under `--check`, both pass
 syntax checking and were caught only by running.
 
 The current Mac proof covers ntfy, Beszel, Dozzle, Audiobookshelf, Komga,
-Jellyfin, Immich, and Paperless-ngx.
+Jellyfin, Immich, Paperless-ngx, Pinchflat, and Kapowarr — every implemented
+service except `arr` and `downloaders`, whose Phase 1 runtime is
+default-disabled in that lane and proved by its Docker integration suite.
 NAS-only GPU, host-networking, native-mount and production-scale behavior remain
 outside the Mac proof.
 

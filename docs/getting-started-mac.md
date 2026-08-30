@@ -167,6 +167,16 @@ active service:
 - Paperless-ngx: sign in with the deployed administrator identity, confirm its
   database-backed fixtures survive recreation, and inspect the existing Gmail
   account and mail rule without fetching mail.
+- Pinchflat: sign in with the deployed basic-authentication pair, then confirm
+  that an anonymous request and a wrong password are both refused. That pair is
+  Pinchflat's only access control, and an empty half serves the interface that
+  queues and deletes YouTube library media to anyone who can reach the port.
+- Kapowarr: sign in with the deployed administrator identity, confirm that an
+  anonymous request and a wrong password are both refused, and confirm the
+  comics library root it owns survives recreation. The password is the only
+  access control, and an empty one hands out the API key. Confirm the ComicVine
+  key is present in the application; the platform records it but never pushes
+  it.
 
 After the review, produce the report and clean only the validated sandbox:
 
