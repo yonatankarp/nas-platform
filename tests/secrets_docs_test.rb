@@ -2,6 +2,7 @@
 # Keep the canonical secrets guide aligned with the deployment vault contract.
 
 require "yaml"
+require_relative "policy_support"
 
 ROOT = File.expand_path("..", __dir__)
 failures = []
@@ -69,8 +70,17 @@ vault_keys = if vault_example.is_a?(Hash)
                []
              end
 
-check(failures, vault_keys.length == 64,
-      "vault example must contain exactly 64 vault_* keys (found #{vault_keys.length})")
+# The size of the credential set, taken from the per-service files that pin it
+# rather than written out again. Its job here is that the key-by-key comparison
+# below cannot pass vacuously on a truncated example; policy_vault_test.rb owns
+# the set equality itself and reports which key differs. The pinned expectations'
+# own problems are that suite's to report, so they are not repeated here.
+expected_vault_keys = PolicySupport.pinned_vault_keys(
+  PolicySupport.pinned_service_expectations(ROOT, PolicySupport.service_statuses(ROOT)).first
+)
+check(failures, vault_keys.length == expected_vault_keys.length,
+      "vault example must contain exactly #{expected_vault_keys.length} vault_* keys " \
+      "(found #{vault_keys.length})")
 
 secrets_guide_path = File.join(ROOT, "docs", "secrets.md")
 secrets_guide = File.file?(secrets_guide_path) ? File.read(secrets_guide_path) : ""
@@ -315,14 +325,17 @@ nas_guide_path = File.join(ROOT, "docs", "getting-started-nas.md")
 nas_guide = File.file?(nas_guide_path) ? File.read(nas_guide_path) : ""
 auto_deploy_section = markdown_section(nas_guide, "## Automatic deployment from the NAS")
 auto_deploy_shell_blocks = shell_code_fences(auto_deploy_section)
-verify_tags = %w[
-  platform_verify_media_acquisition_foundation platform_verify_ntfy
-  platform_verify_beszel platform_verify_dozzle
-  platform_verify_audiobookshelf platform_verify_komga
-  platform_verify_arr platform_verify_downloaders platform_verify_kapowarr
-  platform_verify_pinchflat platform_verify_jellyfin
-  platform_verify_immich platform_verify_paperless
-].join(",")
+# The poller's own tag list, not a transcription of it. Read from the role's
+# defaults, which production_auto_deploy_role_test.rb already holds to the
+# verification tags the service roles actually declare — so the documented manual
+# command and the automatic one are the same list by construction, and promoting a
+# service adds its tag in one place instead of two.
+auto_deploy_defaults = YAML.safe_load_file(
+  File.join(ROOT, "roles", "production_auto_deploy", "defaults", "main.yml")
+)
+verify_tags = auto_deploy_defaults.fetch("production_auto_deploy_verify_tags").strip
+check(failures, verify_tags.split(",").all? { |tag| tag.match?(/\Aplatform_verify_[a-z_]+\z/) },
+      "the poller's verify tag list must be a comma-separated list of verification tags")
 check(failures,
       auto_deploy_section.include?("the installed\npoller cannot select a verification tag that exists only in the candidate until\nthat candidate has been activated"),
       "NAS automatic deployment guide must require manual verification for first foundation rollout")

@@ -1,4 +1,17 @@
 ---
+# include_tasks never applies meta/argument_specs.yml, and the tasks below are
+# gated on this phase, so an unrecognised value would silently skip them while
+# the run still reported success. verify.yml reaches its verification tasks
+# through exactly this mechanism.
+- name: Validate the Jellyfin settings phase
+  ansible.builtin.assert:
+    that:
+      - jellyfin_settings_phase in ['preflight', 'prepare', 'activate', 'finalize', 'reconcile', 'verify']
+    fail_msg: >-
+      Jellyfin settings reconciliation was included with a phase it does not
+      implement. The tasks in this file are gated on jellyfin_settings_phase,
+      so an unrecognised phase silently skips them.
+
 # Jellyfin 10.11.11 exposes transcoding policy as the named `encoding`
 # configuration. Reads are kept separate from mutations so every ambiguity is
 # rejected before any owned application setting changes.

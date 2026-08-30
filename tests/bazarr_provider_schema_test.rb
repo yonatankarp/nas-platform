@@ -66,7 +66,7 @@ VALIDATION_PROGRAM = <<~PYTHON
 
   root = pathlib.Path(sys.argv[1])
   spec = importlib.util.spec_from_file_location(
-      "acquisition_relationships", root / "filter_plugins" / "acquisition_relationships.py"
+      "acquisition_bazarr", root / "filter_plugins" / "acquisition_bazarr.py"
   )
   module = importlib.util.module_from_spec(spec)
   spec.loader.exec_module(module)

@@ -696,9 +696,8 @@
   ansible.builtin.file:
     path: "{{ jellyfin_admin_avatar_probe }}"
     state: absent
-  when: not ansible_check_mode or jellyfin_wizard_completed | bool
+  when: not ansible_check_mode
   changed_when: false
-  check_mode: false
 
 - name: Read the current Jellyfin primary administrator image
   ansible.builtin.uri:
@@ -713,10 +712,9 @@
     status_code: [200, 404]
   register: jellyfin_admin_avatar_before
   when:
-    - not ansible_check_mode or jellyfin_wizard_completed | bool
+    - not ansible_check_mode
     - jellyfin_primary_user_before.PrimaryImageTag | default('') | length > 0
   changed_when: false
-  check_mode: false
   no_log: true
 
 - name: Inspect the current Jellyfin primary administrator image bytes
@@ -725,28 +723,48 @@
     checksum_algorithm: sha256
   register: jellyfin_admin_avatar_before_state
   when:
-    - not ansible_check_mode or jellyfin_wizard_completed | bool
+    - not ansible_check_mode
     - jellyfin_admin_avatar_before.status | default(404) | int == 200
   changed_when: false
-  check_mode: false
 
+# Comparing the published bytes means downloading them into the probe file, and
+# a check-mode review must write nothing. What check mode can still decide is
+# the case it reads for free: a primary administrator carrying no image tag at
+# all has no image, so that repair is reported. A byte difference hiding behind
+# an existing tag stays unknown and is treated as "no upload required" —
+# assuming an upload instead would make every review of a converged NAS report a
+# change it never proved, which is noise that hides real drift rather than
+# revealing it. The debug below discloses that the comparison was deferred.
 - name: Resolve Jellyfin primary administrator image repair requirement
   ansible.builtin.set_fact:
     jellyfin_admin_avatar_upload_required: >-
       {{ jellyfin_primary_user_before.PrimaryImageTag | default('') | length == 0 or
-         jellyfin_admin_avatar_before.status | default(404) | int != 200 or
-         jellyfin_admin_avatar_before_state.stat.checksum |
-           default('') != jellyfin_admin_avatar_sha256 }}
+         (not ansible_check_mode and
+          (jellyfin_admin_avatar_before.status | default(404) | int != 200 or
+           jellyfin_admin_avatar_before_state.stat.checksum |
+             default('') != jellyfin_admin_avatar_sha256)) }}
   when: not ansible_check_mode or jellyfin_wizard_completed | bool
   no_log: true
+
+- name: Report deferred Jellyfin administrator image comparison in check mode
+  ansible.builtin.debug:
+    msg: >-
+      The published Jellyfin administrator image is compared by downloading it,
+      which check mode will not do; an image that differs from the approved
+      bytes behind the existing image tag is repaired during a normal
+      convergence.
+  when:
+    - ansible_check_mode
+    - jellyfin_wizard_completed | bool
+    - jellyfin_primary_user_before.PrimaryImageTag | default('') | length > 0
+  changed_when: false
 
 - name: Remove the Jellyfin administrator image preflight probe
   ansible.builtin.file:
     path: "{{ jellyfin_admin_avatar_probe }}"
     state: absent
-  when: not ansible_check_mode or jellyfin_wizard_completed | bool
+  when: not ansible_check_mode
   changed_when: false
-  check_mode: false
 
 - name: Prepare Jellyfin plugin repositories and package catalog
   ansible.builtin.include_tasks: settings.yml

@@ -49,3 +49,135 @@ argument_specs:
         type: path
         required: true
         description: Mutable runtime configuration outside immutable releases.
+
+  # The three entry points site.yml re-includes before any role mutates the
+  # target, plus the one verify.yml re-includes. include_role applies the entry
+  # point matching tasks_from, so declaring them turns a renamed or forgotten
+  # parameter into a failed run instead of a silently weaker guard.
+  controller:
+    short_description: Prove the controller checkout is the release it names
+    description:
+      - Included once from site.yml pre_tasks, ahead of every target-mutating
+        role, so a modified or untracked controller checkout fails the run
+        rather than shipping a release nobody can reproduce.
+    options:
+      platform_kind:
+        type: str
+        required: true
+        choices: [nas, mac]
+        description: Production host platform discriminator.
+      platform_compose_kind:
+        type: str
+        required: true
+        description: Compose override suffix; equals platform_kind outside tests.
+      deployment_bundle_test_mode:
+        type: bool
+        default: false
+        description: Enables an explicit non-production Compose selector for tests.
+      deployment_bundle_allow_dirty_controller:
+        type: bool
+        default: false
+        description: >-
+          Test-only bypass for pre-commit validation of a dirty controller
+          checkout. Requires explicit deployment bundle test mode.
+
+  inputs:
+    short_description: Validate every controller input before anything parses it
+    description:
+      - Included once from site.yml pre_tasks. Publishes deployment_bundle_services
+        from the manifest it has just proved is a tracked controller file.
+    options:
+      platform_compose_kind:
+        type: str
+        required: true
+        description: Selects which optional platform Compose overrides are validated.
+
+  compose_files:
+    short_description: Publish the deployed Compose file list for every service
+    description:
+      - Read from the deployed release rather than the controller checkout, so
+        both site.yml and verify.yml include it directly.
+    options:
+      platform_current_dir:
+        type: path
+        required: true
+        description: Symlink naming the active controller revision.
+      platform_compose_kind:
+        type: str
+        required: true
+        description: Compose override suffix; equals platform_kind outside tests.
+
+  target:
+    short_description: Validate target path ancestry and canonical containment
+    description:
+      - Re-included by every service role immediately before it writes runtime
+        configuration or reads the current release, naming exactly the paths it
+        is about to touch.
+      - Both parameters are required rather than defaulted. A defaulted
+        deployment_target_require_current_release turns a renamed caller
+        parameter into a silently disabled release-containment guard, and a
+        defaulted deployment_target_extra_paths silently drops the paths the
+        caller declared.
+    options:
+      deployment_target_require_current_release:
+        type: bool
+        required: true
+        description: >-
+          Whether an active current release must already exist. False only for
+          the play preflight and for the bundle installing that release; every
+          runtime caller requires it.
+      deployment_target_extra_paths:
+        type: list
+        elements: path
+        required: true
+        description: >-
+          Exactly the paths this caller is about to touch beyond the platform
+          set. An empty list is written explicitly by the callers that have none.
+      nas_docker_root:
+        type: path
+        required: true
+        description: Storage root beneath which deployment bundles must live.
+      nas_media_root:
+        type: path
+        required: true
+        description: Media storage root the validated paths may also resolve beneath.
+      platform_kind:
+        type: str
+        required: true
+        choices: [nas, mac]
+        description: Production host platform discriminator.
+      platform_compose_kind:
+        type: str
+        required: true
+        description: Compose override suffix; equals platform_kind outside tests.
+      platform_release_id:
+        type: str
+        required: true
+        description: Git revision identifying the controller release.
+      platform_deploy_root:
+        type: path
+        required: true
+        description: Root containing all versioned releases.
+      platform_release_dir:
+        type: path
+        required: true
+        description: Directory for this controller revision.
+      platform_current_dir:
+        type: path
+        required: true
+        description: Symlink naming the active controller revision.
+      platform_runtime_dir:
+        type: path
+        required: true
+        description: Mutable runtime configuration outside immutable releases.
+      deployment_bundle_test_mode:
+        type: bool
+        default: false
+        description: Enables an explicit non-production Compose selector for tests.
+      deployment_bundle_services:
+        type: list
+        elements: dict
+        required: false
+        description: >-
+          Implemented services published by the inputs entry point. Absent when a
+          playbook validates target paths without parsing controller inputs.

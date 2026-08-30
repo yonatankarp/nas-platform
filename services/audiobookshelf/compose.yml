@@ -32,7 +32,13 @@ services:
       timeout: 10s
       retries: 4
       start_period: 30s
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
+    # The listening progress every client syncs lands in a SQLite database under
+    # a recovery: critical config directory. 30s is enough to commit the open
+    # transaction and check the write-ahead log back in.
+    stop_grace_period: 30s
     logging: *default-logging
 
 networks:

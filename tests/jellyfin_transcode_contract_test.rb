@@ -14,10 +14,96 @@ SECRET = "JELLYFIN-TRANSCODE-SECRET-DO-NOT-LEAK"
 Response = Struct.new(:code, :body)
 ContractFailure = Class.new(StandardError)
 
+# These five bound how long the harness waits before calling something hung.
+# They are not performance assertions: every behavioural property below has its
+# own check, and the one that matters most -- that a request is cut short by its
+# own deadline rather than by the far end finally letting go -- is proven by
+# asking the fixture whether it was still holding the connection, not by a
+# stopwatch. tests/validate-policy.sh runs its checks concurrently, so on a
+# loaded runner work that takes milliseconds unloaded can take orders of
+# magnitude longer: a 30-way parallel run failed this file's renamed-library
+# poll budget, which passed alone moments later. They are generous enough that
+# only a genuine hang trips them, and overridable for anyone who wants them
+# strict.
+#
+# PROOF_DEADLINE  the deadline handed to a request that must be bounded.
+# HANG_GUARD      the last-resort ceiling on any of it; only a hang reaches it.
+# FIXTURE_HANG    how long a blackhole fixture holds a connection. It must
+#                 outlast HANG_GUARD, or an unbounded request would slip under
+#                 the guard because the fixture released it first.
+PROOF_DEADLINE_SECONDS = Float(ENV.fetch("JELLYFIN_PROOF_DEADLINE", "1"))
+HANG_GUARD_SECONDS = Float(ENV.fetch("JELLYFIN_HANG_GUARD", "10"))
+FIXTURE_HANG_SECONDS = Float(ENV.fetch("JELLYFIN_FIXTURE_HANG", "30"))
+# The renamed-library wait polls in-process. Cases that only have to reach the
+# controlled timeout are load-safe at any budget -- a slow runner makes them
+# time out sooner, not later -- so they stay small and keep the file quick.
+LIBRARY_WAIT_TIMEOUT_SECONDS = Float(ENV.fetch("JELLYFIN_LIBRARY_WAIT_TIMEOUT", "0.05"))
+# Cases that must poll more than once before giving up need a budget that
+# survives losing the CPU between polls: this is the one that flaked.
+LIBRARY_WAIT_POLLED_TIMEOUT_SECONDS =
+  Float(ENV.fetch("JELLYFIN_LIBRARY_WAIT_POLLED_TIMEOUT", "1"))
+# Cases that return as soon as the fixture yields a complete state pay nothing
+# for a patient budget, so they get one.
+LIBRARY_WAIT_PATIENT_TIMEOUT_SECONDS =
+  Float(ENV.fetch("JELLYFIN_LIBRARY_WAIT_PATIENT_TIMEOUT", "10"))
+
 failures = []
 
 def check(failures, condition, message)
   failures << message unless condition
+end
+
+# A server that accepts one request and then holds the connection open without
+# answering it. `released?` stays false for as long as it is still holding, so a
+# request that failed while it reads false was cut short by its own deadline
+# rather than by this fixture letting go -- the property under test, stated
+# without reference to how many seconds either of them took.
+class BlackholeServer
+  def initialize(hold: FIXTURE_HANG_SECONDS)
+    @server = TCPServer.new("127.0.0.1", 0)
+    @released = false
+    @thread = Thread.new do
+      Thread.current.report_on_exception = false
+      client = @server.accept
+      client.gets
+      sleep hold
+      @released = true
+    rescue IOError, Errno::EBADF
+      nil
+    ensure
+      client&.close
+    end
+  end
+
+  def released?
+    @released
+  end
+
+  def base
+    URI("http://127.0.0.1:#{@server.addr.fetch(1)}")
+  end
+
+  def close
+    @server.close
+    @thread.kill
+    @thread.join
+  end
+end
+
+# Waiting for a worker to finish is a thread wake-up, so it is quick -- but on a
+# loaded runner "quick" is not "within one fixed sleep", and a leak check that
+# slept a guessed interval would report a leak for a thread that was merely
+# waiting for a core. Poll for the baseline instead; a genuinely leaked thread
+# never returns to it and still trips the guard.
+def settle_threads(baseline)
+  started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+  loop do
+    live = Thread.list.select(&:alive?)
+    return live if live == baseline
+    return live if Process.clock_gettime(Process::CLOCK_MONOTONIC) - started >= HANG_GUARD_SECONDS
+
+    sleep 0.01
+  end
 end
 
 def query_for(target)
@@ -28,6 +114,13 @@ class TranscodeScenario
   attr_reader :master_targets, :segment_cache_keys, :session_poll_while_active,
               :stale_cache_hit, :missing_deadline_paths, :attempt_deadlines,
               :deadline_mismatch
+
+  # False for as long as the blocked segment request is still blocked. A proof
+  # that gave up while this reads false was bounded by its own deadline, not by
+  # the fixture finally answering.
+  def segment_released?
+    @segment_released
+  end
 
   def initialize(mode, transcode_root:)
     @mode = mode
@@ -43,6 +136,7 @@ class TranscodeScenario
     @missing_deadline_paths = []
     @attempt_deadlines = []
     @deadline_mismatch = false
+    @segment_released = false
   end
 
   def request(_method, path, **options)
@@ -127,7 +221,10 @@ class TranscodeScenario
       return Response.new("200", "\x47mpeg-ts") if Thread.current == Thread.main
 
       @mutex.synchronize { @segment_active = true }
-      sleep 5
+      # Outlasts the hang guard on purpose: a proof that waited for this instead
+      # of honouring its own deadline must be caught, not accidentally excused.
+      sleep FIXTURE_HANG_SECONDS
+      @segment_released = true
       Response.new("200", "\x47mpeg-ts")
     else
       raise "unknown transcode scenario"
@@ -196,14 +293,14 @@ def complete_library(name: "Movies Drifted", path: "/media/Movies", item_id: "a"
   }
 end
 
-def exercise_library_wait(scenario, timeout: 0.04)
+def exercise_library_wait(scenario, timeout: LIBRARY_WAIT_TIMEOUT_SECONDS)
   scenario.send(
     :wait_for_complete_library, "token", { "Path" => "/media/Movies" },
     name: "Movies Drifted", timeout: timeout
   )
 end
 
-def library_wait_failure(scenario, timeout: 0.04)
+def library_wait_failure(scenario, timeout: LIBRARY_WAIT_TIMEOUT_SECONDS)
   exercise_library_wait(scenario, timeout: timeout)
   nil
 rescue ContractFailure => error
@@ -233,14 +330,28 @@ Dir.mktmpdir("nas-platform-jellyfin-transcode-") do |directory|
   wait_source = library[/^def wait_for_complete_library.*?(?=^def assert_managed_library)/m]
   check(failures, !wait_source.nil?, "renamed-library wait helper cannot be extracted from production")
 
+  check(failures,
+        PROOF_DEADLINE_SECONDS < HANG_GUARD_SECONDS &&
+          HANG_GUARD_SECONDS < FIXTURE_HANG_SECONDS,
+        "the harness bounds are ordered so that an unbounded request could pass")
+
   immediate_started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
   immediate = LibraryWaitScenario.new([[complete_library]])
-  check(failures, exercise_library_wait(immediate) == complete_library,
+  check(failures,
+        exercise_library_wait(
+          immediate, timeout: LIBRARY_WAIT_PATIENT_TIMEOUT_SECONDS
+        ) == complete_library,
         "complete renamed-library state was not accepted")
+  # The deadline is absolute and monotonic: ahead of the clock read that preceded
+  # the call, and no further ahead than the budget it was handed. The upper edge
+  # is a sanity bound on the arithmetic, not a timing measurement.
   check(failures,
         immediate.deadlines.one? &&
           immediate.deadlines.first.is_a?(Numeric) &&
-          immediate.deadlines.first.between?(immediate_started, immediate_started + 0.2),
+          immediate.deadlines.first.between?(
+            immediate_started,
+            immediate_started + LIBRARY_WAIT_PATIENT_TIMEOUT_SECONDS + HANG_GUARD_SECONDS
+          ),
         "renamed-library polling did not propagate one monotonic absolute deadline")
 
   eventually_complete = LibraryWaitScenario.new([
@@ -248,7 +359,10 @@ Dir.mktmpdir("nas-platform-jellyfin-transcode-") do |directory|
     [{ "Name" => "Movies Drifted", "Locations" => ["/media/Movies"] }],
     [complete_library]
   ])
-  check(failures, exercise_library_wait(eventually_complete, timeout: 0.2) == complete_library,
+  check(failures,
+        exercise_library_wait(
+          eventually_complete, timeout: LIBRARY_WAIT_PATIENT_TIMEOUT_SECONDS
+        ) == complete_library,
         "absent and incomplete renamed-library states were not polled to completion")
   check(failures, eventually_complete.deadlines.uniq.one?,
         "renamed-library polls did not share one absolute deadline")
@@ -263,13 +377,20 @@ Dir.mktmpdir("nas-platform-jellyfin-transcode-") do |directory|
     [complete_library, incomplete_sibling],
     [complete_library, complete_sibling]
   ])
-  check(failures, exercise_library_wait(globally_eventual, timeout: 0.2) == complete_library,
+  check(failures,
+        exercise_library_wait(
+          globally_eventual, timeout: LIBRARY_WAIT_PATIENT_TIMEOUT_SECONDS
+        ) == complete_library,
         "a complete renamed target bypassed an incomplete sibling")
   check(failures, globally_eventual.calls == 2,
         "renamed-library polling did not wait for the complete folder array")
 
+  # This one has to poll more than once *and* run out of budget, so it is the
+  # only wait here that a runner losing the CPU between polls can break.
   persistent_incomplete = LibraryWaitScenario.new([[complete_library, incomplete_sibling]])
-  persistent_error = library_wait_failure(persistent_incomplete)
+  persistent_error = library_wait_failure(
+    persistent_incomplete, timeout: LIBRARY_WAIT_POLLED_TIMEOUT_SECONDS
+  )
   check(failures,
         persistent_error&.message == "renamed library did not regain its complete API shape" &&
           persistent_incomplete.calls > 1,
@@ -281,8 +402,12 @@ Dir.mktmpdir("nas-platform-jellyfin-transcode-") do |directory|
                   expired.calls.zero?,
         "an expired renamed-library deadline reached the blocking API call")
 
-  delayed_complete = LibraryWaitScenario.new([[complete_library]], delay: 0.06)
-  delayed_error = library_wait_failure(delayed_complete, timeout: 0.04)
+  # The fixture sleeps past the budget unconditionally, so load can only make
+  # this arrive later still: the expected failure is the load-safe direction.
+  delayed_complete = LibraryWaitScenario.new(
+    [[complete_library]], delay: LIBRARY_WAIT_TIMEOUT_SECONDS * 2
+  )
+  delayed_error = library_wait_failure(delayed_complete)
   check(failures, delayed_error&.message == "renamed library did not regain its complete API shape",
         "state returned after the deadline bypassed the post-request deadline guard")
 
@@ -299,7 +424,10 @@ Dir.mktmpdir("nas-platform-jellyfin-transcode-") do |directory|
   mismatch_elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - mismatch_started
   check(failures, mismatch_error&.message == "renamed library did not regain its complete API shape",
         "an exact-name mismatch did not reach the controlled timeout")
-  check(failures, mismatch_elapsed < 0.2, "exact-name mismatch timeout was not bounded")
+  # Terminating with the controlled diagnostic above is what proves the wait is
+  # bounded; this only catches a wait that never terminates at all.
+  check(failures, mismatch_elapsed < HANG_GUARD_SECONDS,
+        "exact-name mismatch timeout hung past the guard")
 
   wrong_path_error = library_wait_failure(
     LibraryWaitScenario.new([[complete_library(path: "/media/Series")]])
@@ -355,11 +483,15 @@ Dir.mktmpdir("nas-platform-jellyfin-transcode-") do |directory|
           "renamed-library deadline-propagation mutation did not alter production source")
     deadline_mutant = Class.new(LibraryWaitScenario)
     deadline_mutant.class_eval(deadline_mutant_source, CONTRACT)
-    delayed = deadline_mutant.new([[complete_library]], delay: 0.15)
-    deadline_started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-    library_wait_failure(delayed, timeout: 0.04)
-    deadline_elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - deadline_started
-    check(failures, deadline_elapsed >= 0.1,
+    delayed = deadline_mutant.new(
+      [[complete_library]], delay: LIBRARY_WAIT_TIMEOUT_SECONDS * 2
+    )
+    library_wait_failure(delayed)
+    # The mutation's whole effect is at the API boundary: the blocking call is
+    # entered with nothing that could cut it short. Observing that is the proof.
+    # An elapsed-time check could not distinguish the two, because this fixture
+    # sleeps for its full delay either way.
+    check(failures, delayed.deadlines == [nil],
           "removing renamed-library deadline propagation survived behavioral tests")
 
     deadline_guard_source = wait_source.gsub(
@@ -370,48 +502,41 @@ Dir.mktmpdir("nas-platform-jellyfin-transcode-") do |directory|
           "renamed-library deadline-guard mutation did not alter production source")
     deadline_guard_mutant = Class.new(LibraryWaitScenario)
     deadline_guard_mutant.class_eval(deadline_guard_source, CONTRACT)
-    late_success = deadline_guard_mutant.new([[complete_library]], delay: 0.06)
-    check(failures, library_wait_failure(late_success, timeout: 0.04).nil?,
+    late_success = deadline_guard_mutant.new(
+      [[complete_library]], delay: LIBRARY_WAIT_TIMEOUT_SECONDS * 2
+    )
+    check(failures, library_wait_failure(late_success).nil?,
           "removing renamed-library deadline guards survived behavioral tests")
   end
 
   original_base = BASE
-  server = TCPServer.new("127.0.0.1", 0)
-  server_thread = Thread.new do
-    Thread.current.report_on_exception = false
-    client = server.accept
-    client.gets
-    sleep 2
-  rescue IOError, Errno::EBADF
-    nil
-  ensure
-    client&.close
-  end
+  blackhole = BlackholeServer.new
   Object.send(:remove_const, :BASE)
-  Object.const_set(:BASE, URI("http://127.0.0.1:#{server.addr.fetch(1)}"))
+  Object.const_set(:BASE, blackhole.base)
   stalled_probe = Object.new
   stalled_probe.define_singleton_method(:fail_contract) { |message| raise ContractFailure, message }
   stalled_started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
   stalled_error = begin
     stalled_probe.send(
       :wait_for_complete_library, "token", { "Path" => "/media/Movies" },
-      name: "Movies Drifted", timeout: 0.1
+      name: "Movies Drifted", timeout: PROOF_DEADLINE_SECONDS
     )
     nil
   rescue ContractFailure => error
     error
   ensure
     stalled_elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - stalled_started
-    server.close
-    server_thread.kill
-    server_thread.join
+    stalled_still_blocked = !blackhole.released?
+    blackhole.close
     Object.send(:remove_const, :BASE)
     Object.const_set(:BASE, original_base)
   end
   check(failures, stalled_error&.message == "renamed library did not regain its complete API shape",
         "stalled renamed-library request emitted an uncontrolled timeout diagnostic")
-  check(failures, stalled_elapsed < 0.5,
-        "stalled renamed-library HTTP request exceeded the absolute deadline")
+  check(failures, stalled_still_blocked,
+        "stalled renamed-library request waited for the server instead of its own deadline")
+  check(failures, stalled_elapsed < HANG_GUARD_SECONDS,
+        "stalled renamed-library HTTP request hung past the guard")
 
   original_request = Object.instance_method(:request)
 
@@ -468,7 +593,7 @@ Dir.mktmpdir("nas-platform-jellyfin-transcode-") do |directory|
     check(failures, error.message == "no current-attempt transcoded segment reached the cache volume",
           "stale-only transcode cache diagnostic differs")
   end
-  check(failures, Thread.list.select(&:alive?) == baseline_threads,
+  check(failures, settle_threads(baseline_threads) == baseline_threads,
         "the stale-cache rejection leaked a segment worker thread")
 
   fast_scenario = TranscodeScenario.new(:fast_success, transcode_root: transcodes)
@@ -481,7 +606,7 @@ Dir.mktmpdir("nas-platform-jellyfin-transcode-") do |directory|
           error.message == "transcode session was observed only after the segment request completed",
           "completed-request transcode diagnostic differs")
   end
-  check(failures, Thread.list.select(&:alive?) == baseline_threads,
+  check(failures, settle_threads(baseline_threads) == baseline_threads,
         "the completed-request rejection leaked a segment worker thread")
 
   failure_scenario = TranscodeScenario.new(:failure, transcode_root: transcodes)
@@ -492,13 +617,12 @@ Dir.mktmpdir("nas-platform-jellyfin-transcode-") do |directory|
   rescue ContractFailure => error
     check(failures, !error.message.include?(SECRET), "segment failure diagnostic leaked the token")
   end
-  sleep 0.05
-  check(failures, Thread.list.select(&:alive?) == baseline_threads,
+  check(failures, settle_threads(baseline_threads) == baseline_threads,
         "a failed segment request leaked a worker thread")
 
   if Object.const_defined?(:TRANSCODE_PROOF_TIMEOUT_SECONDS)
     Object.send(:remove_const, :TRANSCODE_PROOF_TIMEOUT_SECONDS)
-    Object.const_set(:TRANSCODE_PROOF_TIMEOUT_SECONDS, 0.1)
+    Object.const_set(:TRANSCODE_PROOF_TIMEOUT_SECONDS, PROOF_DEADLINE_SECONDS)
   end
   timeout_scenario = TranscodeScenario.new(:timeout, transcode_root: transcodes)
   $jellyfin_transcode_scenario = timeout_scenario
@@ -511,31 +635,24 @@ Dir.mktmpdir("nas-platform-jellyfin-transcode-") do |directory|
           "transcode timeout diagnostic differs or exposes request details")
   end
   elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
-  check(failures, elapsed < 1, "transcode timeout was not bounded in the focused regression")
-  sleep 0.05
-  check(failures, Thread.list.select(&:alive?) == baseline_threads,
+  check(failures, !timeout_scenario.segment_released?,
+        "the transcode proof waited for its blocked segment instead of its own deadline")
+  check(failures, elapsed < HANG_GUARD_SECONDS,
+        "the transcode proof hung past the guard in the focused regression")
+  check(failures, settle_threads(baseline_threads) == baseline_threads,
         "a timed-out segment request leaked a worker thread")
 
   original_base = BASE
   %w[/Videos/item/master.m3u8 /Sessions].each do |path|
-    server = TCPServer.new("127.0.0.1", 0)
-    server_thread = Thread.new do
-      Thread.current.report_on_exception = false
-      client = server.accept
-      client.gets
-      sleep 5
-    rescue IOError, Errno::EBADF
-      nil
-    ensure
-      client&.close
-    end
+    blocked = BlackholeServer.new
     Object.send(:remove_const, :BASE)
-    Object.const_set(:BASE, URI("http://127.0.0.1:#{server.addr.fetch(1)}"))
+    Object.const_set(:BASE, blocked.base)
     started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
     begin
       original_request.bind(self).call(
         "get", path, token: "#{SECRET}-token", raw: true,
-        deadline: started + 0.1, timeout_message: "transcode proof timed out"
+        deadline: started + PROOF_DEADLINE_SECONDS,
+        timeout_message: "transcode proof timed out"
       )
       failures << "blocked #{path} request exceeded the proof contract without failing"
     rescue ContractFailure => error
@@ -545,17 +662,16 @@ Dir.mktmpdir("nas-platform-jellyfin-transcode-") do |directory|
       failures << "blocked #{path} request has no deadline support: #{error.message}"
     ensure
       elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
-      check(failures, elapsed < 1, "blocked #{path} request was not bounded by the proof deadline")
-      server.close
-      server_thread.kill
-      server_thread.join
+      check(failures, !blocked.released?,
+            "blocked #{path} request waited for the server instead of the proof deadline")
+      check(failures, elapsed < HANG_GUARD_SECONDS,
+            "blocked #{path} request hung past the guard")
+      blocked.close
     end
   end
   Object.send(:remove_const, :BASE)
   Object.const_set(:BASE, original_base)
-  sleep 0.05
-  live_threads = Thread.list.select(&:alive?)
-  check(failures, live_threads == baseline_threads,
+  check(failures, settle_threads(baseline_threads) == baseline_threads,
         "blocked proof requests leaked a server or segment worker thread")
 ensure
   $jellyfin_transcode_scenario = nil

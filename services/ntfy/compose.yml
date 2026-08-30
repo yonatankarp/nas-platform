@@ -45,8 +45,20 @@ services:
       timeout: 10s
       retries: 4
       start_period: 40s
+    # Carried from ntfy's own reference Compose, and deliberately not copied
+    # outward. An init shim is only ever the answer where PID 1 would be an
+    # application that never reaps what it forks; every other image here either
+    # ships its own init — s6-overlay in the linuxserver.io images, which
+    # refuses to run as anything but PID 1 — or runs a single process that forks
+    # nothing. Adding this key elsewhere would be cargo, and in the s6 case it
+    # would break the container outright.
     init: true
     security_opt:
       - no-new-privileges:true
     restart: unless-stopped
+    # The auth database and the message cache are SQLite files, and /var/lib/ntfy
+    # is recovery: critical — it is where the credentials this platform pushes
+    # outward actually live. 30s commits the open transaction and checks the
+    # write-ahead log back in.
+    stop_grace_period: 30s
     logging: *default-logging

@@ -659,7 +659,7 @@ def exact_baseline_role_runs(integration)
   initial = integration.scan(
     /^\s*if \[ -z "\\\$INTEGRATION_TAGS" \] && \[ "\\\$#" -eq 0 \]; then\n\s*run_play\n\s*else\n\s*run_selected_play "\\\$@"\n\s*fi$/
   ).length
-  idempotence = integration.scan(/^\s*run_selected_play "\\\$@" \| tee \/tmp\/second\.txt$/).length
+  idempotence = integration.scan(/^\s*run_selected_play "\\\$@" >\/tmp\/second\.txt 2>&1 \|\| idempotence_status=\\\$\?$/).length
   check = integration.scan(/^\s*if run_selected_play "\\\$@" --check --diff; then$/).length
   fail_contract("Audiobookshelf baseline role call sequence differs") unless
     selector == 1 && initial == 1 && idempotence == 1 && check == 1

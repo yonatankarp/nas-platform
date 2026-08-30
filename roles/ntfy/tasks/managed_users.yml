@@ -1,4 +1,17 @@
 ---
+# include_tasks never applies meta/argument_specs.yml, and the tasks below are
+# gated on this phase, so an unrecognised value would silently skip them while
+# the run still reported success. verify.yml reaches its verification tasks
+# through exactly this mechanism.
+- name: Validate the ntfy managed-user phase
+  ansible.builtin.assert:
+    that:
+      - ntfy_managed_users_phase in ['provision', 'subscription_sync', 'verify']
+    fail_msg: >-
+      ntfy managed-user provisioning was included with a phase it does not
+      implement. The tasks in this file are gated on ntfy_managed_users_phase,
+      so an unrecognised phase silently skips them.
+
 - name: Resolve ntfy provisioning ownership sets
   ansible.builtin.set_fact:
     ntfy_provisioned_identities: >-

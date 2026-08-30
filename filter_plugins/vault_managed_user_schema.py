@@ -17,7 +17,22 @@ None and ints, and `is match` anchors at the start only, so patterns needing a
 full match carry their own `$`.
 """
 
+import importlib.util
 import re
+from pathlib import Path
+
+
+# Filter plugins cannot import module_utils/ by name, and putting the repository
+# root on sys.path to reach it would shadow site-packages with library/, roles/,
+# services/ and tests/ for the whole Ansible process. Loading the file by path
+# shares the guards with no global side effect. tests/policy_test.rb executes
+# every filter plugin and fails if one of them touches sys.path.
+_GUARDS_SPEC = importlib.util.spec_from_file_location(
+    "nas_platform_schema_guards",
+    Path(__file__).resolve().parents[1] / "module_utils" / "schema_guards.py",
+)
+_GUARDS = importlib.util.module_from_spec(_GUARDS_SPEC)
+_GUARDS_SPEC.loader.exec_module(_GUARDS)
 
 
 BCRYPT_HASH = re.compile(r"^\$2[aby]\$[0-9]{2}\$[./A-Za-z0-9]{53}")
@@ -68,30 +83,10 @@ JELLYFIN_FORBIDDEN_POLICY_FIELDS = (
 NTFY_PERMISSIONS = ("read-only", "write-only", "read-write", "deny")
 
 
-def _is_string(value):
-    return isinstance(value, str)
-
-
-def _is_boolean(value):
-    return isinstance(value, bool)
-
-
-def _is_integer(value):
-    return isinstance(value, int) and not isinstance(value, bool)
-
-
-def _is_mapping(value):
-    return isinstance(value, dict)
-
-
-def _is_list(value):
-    return isinstance(value, list)
-
-
 def string(errors, path, value, *, pattern=None, trimmed_nonempty=False,
            nonempty=False, allowed=None, empty_or_pattern=None):
     """Validate one string field, appending a path-qualified error per failure."""
-    if not _is_string(value):
+    if not _GUARDS.is_string(value):
         errors.append(f"{path}: must be a string")
         return
     if trimmed_nonempty and not value.strip():
@@ -108,12 +103,12 @@ def string(errors, path, value, *, pattern=None, trimmed_nonempty=False,
 
 def string_list(errors, path, value, *, unique=False, nonempty_items=False,
                 allowed=None, item_pattern=None, nonempty=False):
-    if not _is_list(value):
+    if not _GUARDS.is_list(value):
         errors.append(f"{path}: must be a list")
         return
     if nonempty and not value:
         errors.append(f"{path}: must not be empty")
-    if any(not _is_string(item) for item in value):
+    if any(not _GUARDS.is_string(item) for item in value):
         errors.append(f"{path}: every entry must be a string")
         return
     if nonempty_items and any(not item for item in value):
@@ -130,7 +125,7 @@ def string_list(errors, path, value, *, unique=False, nonempty_items=False,
 
 
 def exact_keys(errors, path, value, expected):
-    if not _is_mapping(value):
+    if not _GUARDS.is_mapping(value):
         errors.append(f"{path}: must be a mapping")
         return False
     actual = sorted(value.keys(), key=str)
@@ -148,10 +143,10 @@ def exact_keys(errors, path, value, expected):
 
 
 def boolean_flags(errors, path, value, allowed):
-    if not _is_mapping(value):
+    if not _GUARDS.is_mapping(value):
         errors.append(f"{path}: must be a mapping")
         return
-    if any(not _is_string(key) for key in value):
+    if any(not _GUARDS.is_string(key) for key in value):
         errors.append(f"{path}: every key must be a string")
         return
     unknown = [key for key in value if key not in allowed]
@@ -159,7 +154,7 @@ def boolean_flags(errors, path, value, allowed):
         errors.append(f"{path}: contains {len(unknown)} unsupported flag"
                       f"{'' if len(unknown) == 1 else 's'}")
     for key, flag in value.items():
-        if not _is_boolean(flag):
+        if not _GUARDS.is_boolean(flag):
             errors.append(f"{path}.{key}: must be a boolean")
 
 
@@ -170,7 +165,7 @@ def _audiobookshelf(errors, path, entry):
     string(errors, f"{path}.username", entry["username"], trimmed_nonempty=True)
     string(errors, f"{path}.password", entry["password"], nonempty=True)
     string(errors, f"{path}.type", entry["type"], allowed=("admin", "user", "guest"))
-    if not _is_boolean(entry["is_active"]):
+    if not _GUARDS.is_boolean(entry["is_active"]):
         errors.append(f"{path}.is_active: must be a boolean")
     elif not entry["is_active"]:
         errors.append(f"{path}.is_active: must be true")
@@ -191,7 +186,7 @@ def _beszel(errors, path, entry):
     string(errors, f"{path}.email", entry["email"], pattern=EMAIL)
     string(errors, f"{path}.password", entry["password"], nonempty=True)
     string(errors, f"{path}.role", entry["role"], allowed=("user", "admin"))
-    if not _is_boolean(entry["verified"]):
+    if not _GUARDS.is_boolean(entry["verified"]):
         errors.append(f"{path}.verified: must be a boolean")
     elif entry["verified"] is not True:
         errors.append(f"{path}.verified: must be true")
@@ -216,7 +211,7 @@ def _immich(errors, path, entry):
     string(errors, f"{path}.email", entry["email"], pattern=EMAIL)
     string(errors, f"{path}.password", entry["password"], nonempty=True)
     string(errors, f"{path}.name", entry["name"], nonempty=True)
-    if not _is_integer(entry["quota_size"]):
+    if not _GUARDS.is_integer(entry["quota_size"]):
         errors.append(f"{path}.quota_size: must be an integer")
     elif entry["quota_size"] < 0:
         errors.append(f"{path}.quota_size: must not be negative")
@@ -228,10 +223,10 @@ def _jellyfin(errors, path, entry):
     string(errors, f"{path}.username", entry["username"], trimmed_nonempty=True)
     string(errors, f"{path}.password", entry["password"], nonempty=True)
     policy = entry["policy"]
-    if not _is_mapping(policy):
+    if not _GUARDS.is_mapping(policy):
         errors.append(f"{path}.policy: must be a mapping")
         return
-    if any(not _is_string(key) for key in policy):
+    if any(not _GUARDS.is_string(key) for key in policy):
         errors.append(f"{path}.policy: every key must be a string")
         return
     if not policy:
@@ -241,7 +236,7 @@ def _jellyfin(errors, path, entry):
         errors.append(f"{path}.policy: contains {len(unknown)} unsupported field"
                       f"{'' if len(unknown) == 1 else 's'}")
     for key, flag in policy.items():
-        if not _is_boolean(flag):
+        if not _GUARDS.is_boolean(flag):
             errors.append(f"{path}.policy.{key}: must be a boolean")
     if policy.get("IsDisabled", False) is not False:
         errors.append(f"{path}.policy.IsDisabled: must be false")
@@ -273,7 +268,7 @@ def _ntfy(errors, path, entry):
     string(errors, f"{path}.password", entry["password"], nonempty=True)
     string(errors, f"{path}.password_hash", entry["password_hash"], pattern=BCRYPT_HASH)
     string(errors, f"{path}.role", entry["role"], allowed=("user",))
-    if not _is_list(entry["access"]):
+    if not _GUARDS.is_list(entry["access"]):
         errors.append(f"{path}.access: must be a list")
     else:
         for index, access in enumerate(entry["access"]):
@@ -294,12 +289,12 @@ def _paperless_ngx(errors, path, entry):
     string(errors, f"{path}.username", entry["username"], trimmed_nonempty=True)
     string(errors, f"{path}.password", entry["password"], nonempty=True)
     string(errors, f"{path}.email", entry["email"], pattern=EMAIL)
-    if not _is_boolean(entry["is_active"]):
+    if not _GUARDS.is_boolean(entry["is_active"]):
         errors.append(f"{path}.is_active: must be a boolean")
     elif not entry["is_active"]:
         errors.append(f"{path}.is_active: must be true")
     for field in ("is_staff", "is_superuser"):
-        if not _is_boolean(entry[field]):
+        if not _GUARDS.is_boolean(entry[field]):
             errors.append(f"{path}.{field}: must be a boolean")
     string_list(errors, f"{path}.groups", entry["groups"], unique=True,
                 item_pattern=NONEMPTY)
@@ -328,7 +323,7 @@ def vault_managed_user_errors(value, reserved_ntfy_tokens=None,
     claim: the service administrator, plus any name the platform owns itself.
     """
     errors = []
-    if not _is_mapping(value):
+    if not _GUARDS.is_mapping(value):
         return ["vault_managed_users: must be a mapping"]
     if sorted(map(str, value.keys())) != sorted(SERVICES):
         missing = [name for name in SERVICES if name not in value]
@@ -344,7 +339,7 @@ def vault_managed_user_errors(value, reserved_ntfy_tokens=None,
 
     for service in SERVICES:
         entries = value[service]
-        if not _is_list(entries):
+        if not _GUARDS.is_list(entries):
             errors.append(f"vault_managed_users.{service}: must be a list")
             continue
         if service in NONEMPTY_SERVICES and not entries:
@@ -360,7 +355,7 @@ def vault_managed_user_errors(value, reserved_ntfy_tokens=None,
 
 def _normalized_identities(entries, field):
     return [entry[field].strip().lower() for entry in entries
-            if _is_mapping(entry) and _is_string(entry.get(field))]
+            if _GUARDS.is_mapping(entry) and _GUARDS.is_string(entry.get(field))]
 
 
 def _identity_ownership(value, reserved_identities):
@@ -374,7 +369,7 @@ def _identity_ownership(value, reserved_identities):
     reserved_identities = reserved_identities or {}
     for service, field in IDENTITY_FIELDS.items():
         entries = value.get(service)
-        if not _is_list(entries):
+        if not _GUARDS.is_list(entries):
             continue
         identities = _normalized_identities(entries, field)
         if len(set(identities)) != len(identities):
@@ -382,7 +377,7 @@ def _identity_ownership(value, reserved_identities):
                           f"unique after normalization")
         reserved = {name.strip().lower()
                     for name in reserved_identities.get(service, [])
-                    if _is_string(name)}
+                    if _GUARDS.is_string(name)}
         claimed = reserved & set(identities)
         if claimed:
             errors.append(f"vault_managed_users.{service}: {len(claimed)} "
@@ -393,11 +388,11 @@ def _identity_ownership(value, reserved_identities):
 
 def _ntfy_token_ownership(value, reserved_ntfy_tokens):
     entries = value.get("ntfy")
-    if not _is_list(entries):
+    if not _GUARDS.is_list(entries):
         return []
     tokens = []
     for entry in entries:
-        if _is_mapping(entry) and _is_list(entry.get("tokens")):
+        if _GUARDS.is_mapping(entry) and _GUARDS.is_list(entry.get("tokens")):
             tokens.extend(entry["tokens"])
     errors = []
     if len(set(map(str, tokens))) != len(tokens):

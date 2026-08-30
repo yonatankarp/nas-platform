@@ -1,23 +1,32 @@
 """Filters for deriving and verifying the managed container CPU policy."""
 
+import importlib.util
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 
 from ansible.errors import AnsibleFilterError
+
+
+# Filter plugins cannot import module_utils/ by name, and putting the repository
+# root on sys.path to reach it would shadow site-packages with library/, roles/,
+# services/ and tests/ for the whole Ansible process. Loading the file by path
+# shares the guards with no global side effect. tests/policy_test.rb executes
+# every filter plugin and fails if one of them touches sys.path.
+_GUARDS_SPEC = importlib.util.spec_from_file_location(
+    "nas_platform_schema_guards",
+    Path(__file__).resolve().parents[1] / "module_utils" / "schema_guards.py",
+)
+_GUARDS = importlib.util.module_from_spec(_GUARDS_SPEC)
+_GUARDS_SPEC.loader.exec_module(_GUARDS)
 
 
 NANOCPUS_PER_CPU = 1_000_000_000
 
 
-def _require_integer(value, label):
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise AnsibleFilterError(f"{label} must be an integer")
-    return value
-
-
 def platform_container_cpuset(available_cpus, requested_budget, require_headroom):
     """Return a contiguous zero-based CPU set after validating host headroom."""
-    available = _require_integer(available_cpus, "Docker CPU count")
-    budget = _require_integer(requested_budget, "container CPU budget")
+    available = _GUARDS.integer(available_cpus, "Docker CPU count")
+    budget = _GUARDS.integer(requested_budget, "container CPU budget")
     if not isinstance(require_headroom, bool):
         raise AnsibleFilterError("container CPU headroom policy must be boolean")
     if available < 1:

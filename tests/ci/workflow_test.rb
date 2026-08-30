@@ -45,7 +45,7 @@ DOCKER_HUB_TOKEN_SECRET = "DOCKERHUB_TOKEN"
 # Every registry the job is able to authenticate to. A registry outside this list
 # is one nobody decided about, which is what the classification check below names.
 CREDENTIALED_REGISTRIES = (GITHUB_BACKED_REGISTRIES + [DOCKER_HUB_REGISTRY]).freeze
-EXPECTED_JOBS = %w[changes static reconciliation suites validate].freeze
+EXPECTED_JOBS = %w[changes static mutation reconciliation suites validate].freeze
 # One reconciliation file per matrix leg, in the order a full run enumerates them.
 RECONCILIATION_PARTS = %w[core bazarr configarr].freeze
 RECONCILIATION_SUPPORT_PATH =
@@ -338,6 +338,28 @@ end
 check(failures, expression(jobs.dig("static", "if")) == "${{ needs.changes.outputs.static == 'true' }}",
       "static condition must match its classifier output")
 
+# The policy mutation harness runs beside the gate rather than inside it: it
+# builds a sandbox and runs the whole policy set once per mutation, which made it
+# the gate's floor. It is gated on the same classifier output as the gate, not on
+# a narrower lane, because a mutation is planted in a copy of the whole
+# repository -- there is no subset of files that cannot change what it proves.
+check(failures, jobs.dig("mutation", "needs") == "changes",
+      "mutation must depend only on changes")
+check(failures,
+      expression(jobs.dig("mutation", "if")) == "${{ needs.changes.outputs.static == 'true' }}",
+      "the mutation harness must run whenever the policy gate does, found " \
+      "#{expression(jobs.dig('mutation', 'if')).inspect}")
+check(failures, jobs.dig("mutation", "strategy").nil?,
+      "the mutation harness is one file and must not declare a matrix")
+mutation_commands = normalize_shell(run_steps(jobs.fetch("mutation", {}))).lines.map(&:chomp)
+check(failures, mutation_commands.include?("ruby tests/policy_manifest_test.rb"),
+      "the mutation job must run tests/policy_manifest_test.rb")
+# The harness syntax-checks a play in every sandbox and renders role defaults
+# through the policy set, so it needs the toolchain the gate installs. Without
+# this the job would fail on a missing ansible-playbook rather than on a policy.
+check(failures, mutation_commands.any? { |command| command.include?("ansible-core==") },
+      "the mutation job must install the pinned Ansible toolchain")
+
 suites_job = jobs.fetch("suites", {})
 check(failures, suites_job["needs"] == "changes", "suites must depend only on changes")
 check(failures, expression(suites_job["if"]) == "${{ needs.changes.outputs.suites != '[]' }}",
@@ -557,9 +579,10 @@ end
 validate = jobs.fetch("validate", {})
 check(failures, validate["name"] == "validate", "aggregate check name must remain validate")
 check(failures, expression(validate["if"]) == "${{ always() }}", "validate must always run")
-expected_needs = %w[changes static reconciliation suites]
+expected_needs = %w[changes static mutation reconciliation suites]
 check(failures, Array(validate["needs"]) == expected_needs,
-      "validate must need changes, static, reconciliation and the suite matrix in canonical order")
+      "validate must need changes, static, mutation, reconciliation and the suite matrix " \
+      "in canonical order")
 validate_checkout = Array(validate["steps"]).find { |step| step["uses"]&.start_with?("actions/checkout@") }
 check(failures, validate_checkout&.fetch("uses", nil).to_s.split("@").first == CHECKOUT_ACTION_NAME,
       "validate must check out the repository with the pinned action")
