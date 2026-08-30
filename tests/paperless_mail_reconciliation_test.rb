@@ -73,6 +73,7 @@ def with_paperless_api(probe:, initial_accounts:, initial_rules:, listing: :comp
   requests = []
   state = { "accounts" => initial_accounts, "rules" => initial_rules }
   stop = false
+  error = nil
   thread = Thread.new do
     until stop
       next unless IO.select([server], nil, nil, 0.05)
@@ -156,12 +157,20 @@ def with_paperless_api(probe:, initial_accounts:, initial_rules:, listing: :comp
     end
   rescue IOError, Errno::EBADF
     nil
+  # Every sibling fixture records what its server thread raised and re-raises it
+  # after the join. This copy relied on Thread#join propagating the exception on
+  # its own, which stops being true the moment the join is bounded or the thread
+  # is killed -- and it drowns the run in a report_on_exception dump instead of
+  # naming the fault once.
+  rescue StandardError => caught
+    error = caught
   end
   yield server.addr.fetch(1), requests
 ensure
   stop = true
   server&.close
   thread&.join
+  raise error if error
 end
 
 def run_fixture(port)
