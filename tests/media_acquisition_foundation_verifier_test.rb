@@ -5,6 +5,8 @@ require "open3"
 require "tmpdir"
 require "yaml"
 
+require_relative "policy_support"
+
 ROOT = File.expand_path("..", __dir__)
 TASKS_PATH = File.join(ROOT, "roles", "host_prep", "tasks", "verify_media_acquisition.yml")
 VERIFY_PATH = File.join(ROOT, "verify.yml")
@@ -28,16 +30,9 @@ def normalize_expression(value)
   value.to_s.gsub(/\s+/, " ").strip
 end
 
-def flatten(tasks)
-  Array(tasks).flat_map do |task|
-    next [] unless task.is_a?(Hash)
-    [task] + %w[block rescue always].flat_map { |key| flatten(task[key]) }
-  end
-end
-
 def verifier_problems(tasks, verify_play)
   problems = []
-  flat = flatten(tasks)
+  flat = PolicySupport.flatten_tasks(tasks)
   selector = flat.find { |task| task["name"] == "Select media acquisition foundation storage" }
   selected = selector&.dig("ansible.builtin.set_fact", "host_prep_media_acquisition_storage")
   problems << "verifier must select only entries with the literal foundation marker" unless

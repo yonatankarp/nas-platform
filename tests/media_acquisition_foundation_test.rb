@@ -4,6 +4,8 @@ require "open3"
 require "set"
 require "yaml"
 
+require_relative "policy_support"
+
 ROOT = File.expand_path("..", __dir__)
 CATALOG_PATH = File.join(ROOT, "config", "media-acquisition.yml")
 ACQUISITION_PROJECTS = Set[
@@ -245,14 +247,6 @@ def integration_writer_contract_problems(storage)
   problems << "integration writer declarations must remain ownerless for production NAS storage" if
     integration_writers.any? { |entry| entry.key?("owner") || entry.key?("group") }
   problems
-end
-
-def flatten_tasks(tasks)
-  Array(tasks).flat_map do |task|
-    next [] unless task.is_a?(Hash)
-
-    [task] + %w[block rescue always].flat_map { |section| flatten_tasks(task[section]) }
-  end
 end
 
 def yaml_structure_problems(source)
@@ -576,7 +570,7 @@ failures << "NAS guide omits the reader-only external network prerequisite" unle
   nas_guide.gsub(/\s+/, " ").include?(reader_prerequisite)
 
 host_prep = YAML.safe_load_file(File.join(ROOT, "roles", "host_prep", "tasks", "main.yml"))
-all_host_prep_tasks = flatten_tasks(host_prep)
+all_host_prep_tasks = PolicySupport.flatten_tasks(host_prep)
 network_task = host_prep.find do |task|
   task["name"] == "Create the external media control network"
 end

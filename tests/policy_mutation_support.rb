@@ -433,18 +433,6 @@ def mutate_yaml_file(root, relative_path)
   File.write(path, YAML.dump(document))
 end
 
-def flatten_fixture_tasks(tasks, flattened = [])
-  Array(tasks).each do |task|
-    next unless task.is_a?(Hash)
-
-    flattened << task
-    %w[block rescue always].each do |section|
-      flatten_fixture_tasks(task[section], flattened)
-    end
-  end
-  flattened
-end
-
 def service(manifest, name)
   manifest.fetch("services").find { |entry| entry["name"] == name }
 end

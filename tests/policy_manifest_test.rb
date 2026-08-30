@@ -903,7 +903,7 @@ end
 expect_failure(failures, "unfiltered Beszel settings readback",
                "collection readback must use a URL-encoded identity filter with totals") do |root|
   mutate_yaml_file(root, "roles/beszel/tasks/main.yml") do |tasks|
-    task = flatten_fixture_tasks(tasks).find do |entry|
+    task = flatten_tasks(tasks).find do |entry|
       entry["name"] == "Refresh notification settings after reconciliation"
     end
     uri = task.fetch("ansible.builtin.uri")
@@ -914,7 +914,7 @@ end
 expect_failure(failures, "silent Beszel user creation",
                "Beszel user creation must report real and check-mode predicted changes") do |root|
   mutate_yaml_file(root, "roles/beszel/tasks/main.yml") do |tasks|
-    task = flatten_fixture_tasks(tasks).find do |entry|
+    task = flatten_tasks(tasks).find do |entry|
       entry["name"] == "Create the application user"
     end
     task["changed_when"] = false
@@ -924,7 +924,7 @@ end
 expect_failure(failures, "unredacted Beszel webhook summary",
                "Beszel webhook mismatch diagnostics must never include URL bodies") do |root|
   mutate_yaml_file(root, "roles/beszel/tasks/main.yml") do |tasks|
-    task = flatten_fixture_tasks(tasks).find do |entry|
+    task = flatten_tasks(tasks).find do |entry|
       entry["name"] == "Summarize the managed ntfy webhook without URL bodies"
     end
     task["no_log"] = false
