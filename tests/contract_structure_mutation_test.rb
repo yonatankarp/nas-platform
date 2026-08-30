@@ -14,6 +14,7 @@
 # correctness change rather than a restyling, and they are what would regress
 # first if someone reintroduced a substring check.
 
+require "digest"
 require "fileutils"
 require "open3"
 require "rbconfig"
@@ -174,21 +175,90 @@ rescue SystemCallError
   []
 end
 
-def with_copied_repo
-  Dir.mktmpdir("nas-platform-contract-structure-") do |directory|
-    repo = File.join(directory, "repo")
-    FileUtils.mkdir_p(repo)
-    children = Dir.children(ROOT)
-    (children - ignored_children(children)).each do |entry|
-      FileUtils.cp_r(File.join(ROOT, entry), File.join(repo, entry))
-    end
-    yield repo
+# One copy, reused. Copying the repository took a third of a second and every row
+# paid it to change two or three files, which made the copies alone a quarter of
+# this suite's runtime. A row now restores exactly the paths it substituted.
+#
+# The reuse is verified rather than assumed. Restoring the wrong set of paths, or a
+# suite writing into the copy, would leave the next row proving something about a
+# tree nobody described -- so the whole tree is hashed after every row and compared
+# against the state it was built in. A copy that does not match is thrown away and
+# rebuilt. That costs 15ms per row against a 330ms copy, and its failure mode is an
+# extra copy rather than a row that passes for the wrong reason.
+#
+# `.git` is excluded from the comparison but kept in the copy: policy_test.rb
+# enumerates its own sources with git, and running git legitimately writes there.
+PRISTINE = { directory: nil, repo: nil, manifest: nil }
+COPY_ACCOUNTING = { copies: 0, rows: 0, rebuilt: [] }
+
+def tree_manifest(repo)
+  Dir.glob("**/*", File::FNM_DOTMATCH, base: repo).each_with_object({}) do |relative, manifest|
+    next if File.basename(relative) == "." || File.basename(relative) == ".."
+    next if relative == ".git" || relative.start_with?(".git/")
+
+    path = File.join(repo, relative)
+    stat = File.lstat(path)
+    manifest[relative] =
+      if stat.symlink?
+        "link:#{File.readlink(path)}"
+      elsif stat.directory?
+        "directory"
+      else
+        format("file:%<mode>o:%<digest>s", mode: stat.mode & 0o7777,
+                                           digest: Digest::SHA256.file(path).hexdigest)
+      end
   end
 end
 
+def discard_repo
+  FileUtils.remove_entry(PRISTINE[:directory]) if PRISTINE[:directory]
+  PRISTINE[:directory] = PRISTINE[:repo] = PRISTINE[:manifest] = nil
+end
+at_exit { discard_repo }
+
+def pristine_repo
+  return PRISTINE if PRISTINE[:repo]
+
+  directory = Dir.mktmpdir("nas-platform-contract-structure-")
+  repo = File.join(directory, "repo")
+  FileUtils.mkdir_p(repo)
+  children = Dir.children(ROOT)
+  (children - ignored_children(children)).each do |entry|
+    FileUtils.cp_r(File.join(ROOT, entry), File.join(repo, entry))
+  end
+  PRISTINE[:directory] = directory
+  PRISTINE[:repo] = repo
+  PRISTINE[:manifest] = tree_manifest(repo)
+  COPY_ACCOUNTING[:copies] += 1
+  PRISTINE
+end
+
+def with_copied_repo(mutated = [], label = nil)
+  state = pristine_repo
+  repo = state[:repo]
+  COPY_ACCOUNTING[:rows] += 1
+  begin
+    yield repo
+  ensure
+    mutated.each do |relative_path|
+      FileUtils.cp(File.join(ROOT, relative_path), File.join(repo, relative_path))
+    end
+    unless tree_manifest(repo) == state[:manifest]
+      COPY_ACCOUNTING[:rebuilt] << (label || "unnamed row")
+      discard_repo
+    end
+  end
+end
+
+# PYTHONDONTWRITEBYTECODE is set for the same reason tests/validate-policy.sh sets
+# it: the suites that reach Ansible leave a __pycache__ tree behind them, which is
+# a build artifact rather than anything a contract reads. Suppressing it is what
+# lets the reuse check below stay strict -- every other byte a suite writes into
+# the copy is treated as contamination.
 def run_static(suite, repo)
   definition = SUITES.fetch(suite)
-  Open3.capture3(definition.fetch(:environment).call(repo), *definition.fetch(:command).call(repo))
+  environment = { "PYTHONDONTWRITEBYTECODE" => "1" }.merge(definition.fetch(:environment).call(repo))
+  Open3.capture3(environment, *definition.fetch(:command).call(repo))
 end
 
 # Each substitution must match exactly once. A fixture that drifted would
@@ -217,7 +287,7 @@ end
 # A few diagnostics name the file they are about, which lives under the copy, so
 # %REPO% in an expected diagnostic is replaced with the copy's root.
 def check_rejected(failures, suite, name, substitutions, diagnostic)
-  with_copied_repo do |repo|
+  with_copied_repo(substitutions.map(&:first), "#{suite} #{name}") do |repo|
     expected = SUITES.fetch(suite).fetch(:diagnostic).call(diagnostic).gsub("%REPO%", File.realpath(repo))
     apply_substitutions(repo, substitutions)
     stdout, stderr, status = run_static(suite, repo)
@@ -231,7 +301,7 @@ rescue RuntimeError, SystemCallError => error
 end
 
 def check_accepted(failures, suite, name, substitutions)
-  with_copied_repo do |repo|
+  with_copied_repo(substitutions.map(&:first), "#{suite} #{name}") do |repo|
     apply_substitutions(repo, substitutions)
     stdout, stderr, status = run_static(suite, repo)
     check(failures, status.success?,
@@ -288,7 +358,7 @@ AUTO_DEPLOY_ROLE = "roles/production_auto_deploy/tasks/main.yml"
 AUTO_DEPLOY_NOTIFIER = "roles/production_auto_deploy/templates/ntfy.curl.j2"
 
 SUITES.each_key do |suite|
-  with_copied_repo do |repo|
+  with_copied_repo([], "#{suite} pristine baseline") do |repo|
     stdout, stderr, status = run_static(suite, repo)
     check(failures, status.success?,
           "#{suite} static contract failed on a pristine copy: " \
@@ -1473,8 +1543,16 @@ check(failures,
       File.readlines(VALIDATE_POLICY).include?("ruby tests/contract_structure_mutation_test.rb\n"),
       "contract structure mutation proofs are not registered in the policy suite")
 
+# Printed so the reuse is checkable from a build log rather than believed: one copy
+# for every row means the verification is rejecting the copy every time and the
+# rows are paying for a cache that is not working.
+reuse = format("%<rows>d rows, %<copies>d repository copies", **COPY_ACCOUNTING.slice(:rows, :copies))
+unless COPY_ACCOUNTING[:rebuilt].empty?
+  warn "contract structure copy rebuilt after: #{COPY_ACCOUNTING[:rebuilt].join(', ')}"
+end
+
 if failures.empty?
-  puts "Contract structure mutations: parsed task assertions reject every named shape"
+  puts "Contract structure mutations: parsed task assertions reject every named shape (#{reuse})"
 else
   failures.each { |failure| warn "FAIL #{failure}" }
   abort "#{failures.length} contract structure mutation failure(s)"
