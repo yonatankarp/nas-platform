@@ -148,6 +148,31 @@ check(failures, Array(config["customManagers"]).none? do |manager|
     manager["depNameTemplate"].to_s.start_with?("alpine_3_24/")
 end, "Alpine 3.24 pins must not depend on Repology coverage")
 
+# A container image pinned inside the Ansible control plane is a second copy of
+# a pin Renovate cannot see: enabledManagers covers docker-compose plus the
+# custom managers above, and none of them look at roles/**, inventory/** or
+# config/**. The Configarr digest hashed into the Arr reconciliation fingerprint
+# drifted two releases behind the deployed image exactly that way, which
+# silently disabled the reconcile a version bump exists to force. The Compose
+# definition is the one pin; the control plane reads the image out of it.
+CONTROL_PLANE_TREES = %w[roles inventory config].freeze
+CONTROL_PLANE_TEXT = /\.(ya?ml|j2|json|py|sh|cfg|txt|md)\z/.freeze
+IMAGE_PIN = %r{[a-z0-9][a-z0-9._/-]*:[\w][\w.-]*@sha256:[0-9a-f]{64}}.freeze
+
+CONTROL_PLANE_TREES.each do |tree|
+  Dir[File.join(ROOT, tree, "**", "*")].sort.each do |path|
+    next unless File.file?(path) && path.match?(CONTROL_PLANE_TEXT)
+
+    relative = path.delete_prefix("#{ROOT}/")
+    File.readlines(path, chomp: true).each_with_index do |line, index|
+      pin = line[IMAGE_PIN]
+      check(failures, pin.nil?,
+            "#{relative}:#{index + 1} restates the pinned image #{pin.inspect}; " \
+            "read it from the service's compose.yml, which Renovate does bump")
+    end
+  end
+end
+
 if failures.empty?
   puts "renovate policy: all checks passed"
 else
