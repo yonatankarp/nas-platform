@@ -24,6 +24,23 @@ here. A non-string compared against an enum also failed, since `5 in ['asc',
 before the membership.
 """
 
+import importlib.util
+from pathlib import Path
+
+
+# Filter plugins cannot import module_utils/ by name, and putting the repository
+# root on sys.path to reach it would shadow site-packages with library/, roles/,
+# services/ and tests/ for the whole Ansible process. Loading the file by path
+# shares the guards with no global side effect. tests/policy_test.rb executes
+# every filter plugin and fails if one of them touches sys.path.
+_GUARDS_SPEC = importlib.util.spec_from_file_location(
+    "nas_platform_schema_guards",
+    Path(__file__).resolve().parents[1] / "module_utils" / "schema_guards.py",
+)
+_GUARDS = importlib.util.module_from_spec(_GUARDS_SPEC)
+_GUARDS_SPEC.loader.exec_module(_GUARDS)
+
+
 BOOLEAN = "boolean"
 POSITIVE_INTEGER = "positive_integer"
 STRING = "string"
@@ -58,22 +75,6 @@ SCOPES = {
 }
 
 
-def _is_string(value):
-    return isinstance(value, str)
-
-
-def _is_boolean(value):
-    return isinstance(value, bool)
-
-
-def _is_integer(value):
-    return isinstance(value, int) and not isinstance(value, bool)
-
-
-def _is_mapping(value):
-    return isinstance(value, dict)
-
-
 def _normalize(value):
     return value.strip().lower()
 
@@ -88,18 +89,18 @@ def _unsupported(errors, path, value, allowed, noun):
 
 def _field(errors, path, value, kind, allowed):
     if kind is BOOLEAN:
-        if not _is_boolean(value):
+        if not _GUARDS.is_boolean(value):
             errors.append(f"{path}: must be a boolean")
     elif kind is POSITIVE_INTEGER:
-        if not _is_integer(value):
+        if not _GUARDS.is_integer(value):
             errors.append(f"{path}: must be an integer")
         elif value <= 0:
             errors.append(f"{path}: must be greater than zero")
     elif kind is STRING:
-        if not _is_string(value):
+        if not _GUARDS.is_string(value):
             errors.append(f"{path}: must be a string")
     elif kind is ENUM:
-        if not _is_string(value):
+        if not _GUARDS.is_string(value):
             errors.append(f"{path}: must be a string")
         elif value not in allowed:
             errors.append(f"{path}: must be one of {', '.join(allowed)}")
@@ -107,7 +108,7 @@ def _field(errors, path, value, kind, allowed):
 
 def _preferences(errors, path, value):
     """Validate one preference mapping, whether it is a profile or an override."""
-    if not _is_mapping(value):
+    if not _GUARDS.is_mapping(value):
         errors.append(f"{path}: must be a mapping")
         return
     _unsupported(errors, path, value, SCOPES, "field")
@@ -116,7 +117,7 @@ def _preferences(errors, path, value):
             continue
         scoped = value[scope]
         scope_path = f"{path}.{scope}"
-        if not _is_mapping(scoped):
+        if not _GUARDS.is_mapping(scoped):
             errors.append(f"{scope_path}: must be a mapping")
             continue
         _unsupported(errors, scope_path, scoped, fields, "field")
@@ -132,19 +133,19 @@ def _collection(errors, label, value, *, string_values=False):
     with a scoped path, so one malformed profile does not stop the others from
     being validated.
     """
-    if not _is_mapping(value):
+    if not _GUARDS.is_mapping(value):
         errors.append(f"{label}: must be a mapping")
         return
     for index, (key, item) in enumerate(value.items()):
-        if not _is_string(key):
+        if not _GUARDS.is_string(key):
             errors.append(f"{label}[{index}]: key must be a string")
-        if string_values and not _is_string(item):
+        if string_values and not _GUARDS.is_string(item):
             errors.append(f"{label}[{index}]: must be a string")
 
 
 def _selector_keys(errors, label, value, managed_emails):
     """Require selector keys to be unique and to name a managed user."""
-    keys = [key for key in value if _is_string(key)]
+    keys = [key for key in value if _GUARDS.is_string(key)]
     normalized = [_normalize(key) for key in keys]
     if len(set(normalized)) != len(normalized):
         errors.append(f"{label}: keys must be unique after normalization")
@@ -167,9 +168,9 @@ def immich_preference_errors(profiles, overrides=None, profile_by_email=None,
     _collection(errors, "profiles", profiles)
     _collection(errors, "overrides", overrides)
     _collection(errors, "profile_by_email", profile_by_email, string_values=True)
-    declared = _is_mapping(profiles)
+    declared = _GUARDS.is_mapping(profiles)
 
-    if not _is_string(profile_default):
+    if not _GUARDS.is_string(profile_default):
         errors.append("profile_default: must be a string")
     elif not declared or profile_default not in profiles:
         # Neither the rejected name nor the declared names are reported: a
@@ -177,21 +178,21 @@ def immich_preference_errors(profiles, overrides=None, profile_by_email=None,
         errors.append("profile_default: is not a declared profile")
 
     normalized_emails = {_normalize(email) for email in (managed_emails or [])
-                         if _is_string(email)}
+                         if _GUARDS.is_string(email)}
 
-    if _is_mapping(profile_by_email):
+    if _GUARDS.is_mapping(profile_by_email):
         _selector_keys(errors, "profile_by_email", profile_by_email,
                        normalized_emails)
         for index, selected in enumerate(profile_by_email.values()):
-            if _is_string(selected) and not (declared and selected in profiles):
+            if _GUARDS.is_string(selected) and not (declared and selected in profiles):
                 errors.append(f"profile_by_email[{index}]: "
                               f"is not a declared profile")
 
-    if _is_mapping(overrides):
+    if _GUARDS.is_mapping(overrides):
         _selector_keys(errors, "overrides", overrides, normalized_emails)
 
     for label, collection in (("profiles", profiles), ("overrides", overrides)):
-        if not _is_mapping(collection):
+        if not _GUARDS.is_mapping(collection):
             continue
         for index, preferences in enumerate(collection.values()):
             _preferences(errors, f"{label}[{index}]", preferences)

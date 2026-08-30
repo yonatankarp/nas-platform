@@ -32,6 +32,11 @@ services:
     security_opt:
       - no-new-privileges:true
     restart: unless-stopped
+    # The hub writes every incoming metric into the PocketBase database in
+    # /beszel_data, which is recovery: critical and also holds the keypair
+    # placed there before first start. 30s lets the open transaction commit.
+    # The agents get no window: they hold a cache and reconnect.
+    stop_grace_period: 30s
     logging: *default-logging
 
   agent-portable:

@@ -7,6 +7,12 @@ x-logging: &default-logging
 
 x-service-defaults: &service-defaults
   cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
+  # SABnzbd's linuxserver.io entrypoint reaches PUID/PGID by calling setuid(2)
+  # as root, which no_new_privs does not restrict, and Unpackerr is a single Go
+  # binary already running as the platform identity. Neither executes a setuid
+  # binary, so neither loses anything by refusing that escalation outright.
+  security_opt:
+    - no-new-privileges:true
   restart: unless-stopped
   logging: *default-logging
   networks:
@@ -44,6 +50,12 @@ services:
       timeout: 10s
       retries: 5
       start_period: 60s
+    # SABnzbd answers SIGTERM by pausing the active download and writing the
+    # queue and history admin under its recovery: critical config directory. A
+    # minute lets that finish, so a restart resumes the transfer instead of
+    # re-fetching it. Unpackerr deliberately gets no window: it holds no
+    # database, and a half-finished extraction is discarded and retried.
+    stop_grace_period: 1m
 
   unpackerr:
     <<: *service-defaults
