@@ -4,6 +4,10 @@ set +x
 
 mode=${1:-run}
 repo_dir=${PLATFORM_CONTRACT_REPO_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)}
+# The embedded Ruby below reads tests/policy_support.rb from here instead of
+# carrying its own copy of flatten_tasks.
+PLATFORM_CONTRACT_REPO_DIR=$repo_dir
+export PLATFORM_CONTRACT_REPO_DIR
 compose=$repo_dir/services/paperless-ngx/compose.yml
 mac_compose=$repo_dir/services/paperless-ngx/compose.mac.yml
 role=$repo_dir/roles/paperless_ngx/tasks/main.yml
@@ -141,14 +145,8 @@ mac = YAML.safe_load_file(mac_path, aliases: true)
 # Task files are flattened so a task on a block's rescue or always path is still
 # a task the role executes. main.yml is flat today; an unflattened load would
 # quietly stop seeing whole phases the first time it is not.
-def flatten_tasks(tasks)
-  Array(tasks).flat_map do |task|
-    next [] unless task.is_a?(Hash)
-
-    [task] + flatten_tasks(task["block"]) + flatten_tasks(task["rescue"]) +
-      flatten_tasks(task["always"])
-  end
-end
+require File.join(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR"), "tests", "policy_support")
+include PolicySupport
 
 # Assertions about what the role does read the parsed structure rather than the
 # file's bytes: a task name that survives only inside a comment is not a task,
