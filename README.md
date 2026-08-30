@@ -115,11 +115,12 @@ survives because everything is authored in vault rather than read back from
 running services, but you would be reprovisioning ntfy, Beszel and every
 administrator account. Keep the password in a password manager.
 
-At runtime, plaintext exists in protected service `.env` files, Dozzle's users
-file, Beszel's private key, and application or database configuration and data.
-Treat those locations and their backups as secret-bearing. The repository vault
-remains ciphertext and may be committed, so its safety rests on the strength of
-the password.
+The repository vault remains ciphertext and may be committed, so its safety
+rests on the strength of the password — and, once unattended deployment is
+installed, on the protection of the copy of that password the poller requires on
+the NAS. Deployment also writes plaintext into three trees on the target; the
+[security boundary](#security-boundary) enumerates them, and a backup that
+reaches any of them is a backup of credentials.
 
 ### Unattended runs
 
@@ -230,7 +231,9 @@ that exists only on Linux and `command` being skipped under `--check`, both pass
 syntax checking and were caught only by running.
 
 The current Mac proof covers ntfy, Beszel, Dozzle, Audiobookshelf, Komga,
-Jellyfin, Immich, and Paperless-ngx.
+Jellyfin, Immich, Paperless-ngx, Pinchflat, and Kapowarr — every implemented
+service except `arr` and `downloaders`, whose Phase 1 runtime is
+default-disabled in that lane and proved by its Docker integration suite.
 NAS-only GPU, host-networking, native-mount and production-scale behavior remain
 outside the Mac proof.
 
@@ -275,12 +278,39 @@ Raw log content is never written to a temporary file, report, or console.
 
 ## Manual escape hatch
 
-Ansible owns deployment, but a stack can be brought up by hand if needed, using
-the environment file Ansible rendered:
+Ansible owns deployment, but a stack can be brought up by hand if needed. Run it
+against what the target actually runs, not against this checkout: the target
+never runs from a clone. `deployment_bundle` installs an immutable release at
+`platform_current_dir` and keeps the rendered secrets separately under
+`platform_runtime_dir`, so the Compose file and the environment file come from
+two different trees, and `services/<name>/.env` exists in neither.
+
+On the NAS, with the production defaults of
+`inventory/group_vars/all/main.yml`:
 
 ```sh
-docker compose --env-file services/ntfy/.env -f services/ntfy/compose.yml up -d
+cd /volume1/Docker/nas-platform/current/services/ntfy
+docker compose \
+  --project-name ntfy \
+  --env-file /volume1/Docker/nas-platform/runtime/services/ntfy/.env \
+  -f compose.yml up -d
 ```
+
+The project name matters: Ansible derives it from `platform_project_name`, which
+is empty on the NAS, so the production project is the bare service name. A
+sandbox sets that variable and its projects are prefixed, which is what lets
+several copies of the platform run side by side.
+
+One `-f` is right for production because no service ships a `compose.nas.yml`.
+The disposable lanes do ship overrides, so a sandbox release holds
+`compose.mac.yml` or `compose.integration.yml` beside `compose.yml` and needs
+both, override second. That is the pair Ansible itself reads from
+`platform_service_compose_files`; check the release directory rather than
+assuming.
+
+The checkout under `services/` is the source those releases are built from, not
+the release the target runs. Anything started by hand is reverted by the next
+Ansible run, which is the point.
 
 ## Security boundary
 
@@ -289,3 +319,38 @@ mappings, roles, the **encrypted** vault, and documentation.
 
 Never commit: the vault password, any decrypted vault copy, rendered `.env` files,
 plaintext credentials, or application data.
+
+### Where plaintext lives at runtime
+
+Deployment writes plaintext into three trees on the NAS. A backup that reaches
+any of them is a backup of credentials, whatever the vault's own encryption
+says.
+
+- **The platform runtime directory**, `/volume1/Docker/nas-platform/runtime` in
+  production: one mode-0600 `services/<name>/.env` per stack, rendered from
+  vault by each role's `templates/env.j2`.
+- **Service data under the Docker root**, `/volume1/Docker` in production:
+  Dozzle's users file, Beszel's hub private key, and the first-run
+  configuration Ansible seeds and then leaves alone — SABnzbd's
+  `sabnzbd/config/sabnzbd.ini` (administrator username, password and API key),
+  the Radarr, Sonarr and Prowlarr `config/config.xml` files (API keys), and
+  Bazarr's `bazarr/config/config/config.yaml` (API key, administrator identity).
+  Each is seeded mode 0600 with `force: false`, so the application owns it
+  afterwards; applications and databases keep further copies of their own.
+- **The deploy account's home**, once `install-production-auto-deploy.yml` has
+  run. `~/.config/nas-platform` is mode 0700 and holds the mode-0600
+  `vault-password` file the poller requires, plus two protected ntfy publisher
+  files, `ntfy.curl` and `ntfy-prune.curl`, each carrying the deployment token.
+  The sibling `~/.local/share/nas-platform` is mode 0700 and holds the
+  controller checkout, the recorded deployment state, and the mode-0600 attempt
+  and prune logs; those logs are written without credentials, because every task
+  that handles one sets `no_log` and the vault password is passed to Ansible as
+  a path rather than a value.
+
+**Unattended production deployment places the vault password on the NAS.** The
+installer refuses to proceed unless `~/.config/nas-platform/vault-password`
+already exists as a regular mode-0600 file, so from that point the deploy
+account — and root — can decrypt the committed vault without knowing anything
+else. Exclude that account's home from ordinary backups, or protect the backup
+exactly as you protect the password manager entry. The vault's ciphertext is not
+a second line of defence once its password sits beside it.

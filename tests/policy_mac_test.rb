@@ -279,4 +279,92 @@ check(failures,
         .include?("tests/mac/snapshot-paperless-drill-throttle-test.sh"),
       "validate-policy.sh must run tests/mac/snapshot-paperless-drill-throttle-test.sh")
 
+# The manual review is where a human exercises the credentials nothing automated
+# can hold: a sign-in with the deployed identity, and the refusal of anything
+# else. Both lists were maintained by hand, and both silently fell behind the
+# roster -- Pinchflat and Kapowarr deployed, got sandbox ports and were verified
+# for two phases with no review entry at all, and the omission was invisible
+# because nothing compared the lists to the manifest. Compare them here, the way
+# tests/mac/hooks/verify/30-services.sh compares its dispatch table, so a
+# promotion that forgets the review is a red check rather than a gap discovered
+# later.
+MAC_REVIEW_EXEMPTIONS = {
+  "arr" => "its Phase 1 runtime is default-disabled in the Mac lane and " \
+           "proved by its Docker integration suite",
+  "downloaders" => "its Phase 1 runtime is default-disabled in the Mac lane and " \
+                   "proved by its Docker integration suite"
+}.freeze
+
+# One bullet may cover several services -- "Audiobookshelf, Jellyfin, and Komga"
+# is one check with one procedure -- so the subject is the label before the first
+# colon, split on the separators a reader already reads as a list.
+def mac_review_subjects(text, marker)
+  found = marker.match(text)
+  return unless found
+
+  bullets = []
+  started = false
+  text[found.end(0)..].to_s.lines.each do |line|
+    if line.strip.empty?
+      break if started
+
+      next
+    end
+    break unless line.start_with?("- ") || (started && line.match?(/\A[ \t]+\S/))
+
+    bullets << line if line.start_with?("- ")
+    started = true
+  end
+  bullets.filter_map do |line|
+    label = line.delete_prefix("- ").sub(/\A\[[ xX]\][ \t]*/, "")
+    next unless label.include?(":")
+
+    label.split(":", 2).first
+  end.flat_map { |label| label.split(/,|\band\b/) }
+     .map { |name| name.strip.downcase }
+     .reject(&:empty?)
+end
+
+# Read the roster through the shared reader rather than parsing the manifest a
+# second time: a second copy is a copy no test says must agree with the first,
+# and it would miss "accepted", which counts as deployed. The reader is fail-soft
+# by design -- policy_test.rb owns the diagnosis of a missing, malformed or
+# heterogeneous manifest, and raising here would replace its named failure with a
+# stack trace from this script, which tests/policy_manifest_test.rb refuses.
+mac_implemented_services = implemented_services(ROOT)
+# A stale exemption is the same defect one step later: a service removed from the
+# roster must not leave behind a standing excuse for the next one to inherit.
+# Skipped when the roster did not load, so an unreadable manifest is reported
+# once, by the check that owns it, rather than echoed here as a second cause.
+check(failures, (MAC_REVIEW_EXEMPTIONS.keys - mac_implemented_services).empty?,
+      "Mac review exemptions must name implemented services") unless mac_implemented_services.empty?
+{
+  "tests/mac/manual-review.md" =>
+    /^## Application checks$/,
+  # Whitespace-agnostic: the sentence is wrapped prose, and a reflow must not be
+  # the thing that decides whether the roster is checked.
+  "docs/getting-started-mac.md" =>
+    /Credential\s+continuity\s+requires\s+a\s+private\s+check\s+for\s+every\s+active\s+service:/
+}.each do |relative_path, marker|
+  document_path = File.join(ROOT, relative_path)
+  # An absent file is reported as a missing checklist, not as a stack trace: the
+  # existence of both documents is somebody else's named check.
+  document = File.file?(document_path) ? File.read(document_path) : ""
+  subjects = mac_review_subjects(document, marker)
+  if subjects.nil?
+    check(failures, false, "#{relative_path} must keep its Mac review checklist")
+    next
+  end
+  mac_implemented_services.each do |service|
+    next if MAC_REVIEW_EXEMPTIONS.key?(service)
+
+    check(failures, subjects.include?(service),
+          "#{relative_path} must give #{service} a Mac review check")
+  end
+  MAC_REVIEW_EXEMPTIONS.each do |service, reason|
+    check(failures, !subjects.include?(service),
+          "#{relative_path} lists #{service}, which is exempt because #{reason}")
+  end
+end
+
 report(failures, "mac policy: all properties hold", "mac policy violation(s)")
