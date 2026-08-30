@@ -226,6 +226,8 @@ validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "te
   ruby\ tests/mac/media-acquisition-foundation-report-test.rb
   tests/mac/media-acquisition-foundation-cleanup-test.sh
   ruby\ tests/renovate_policy_test.rb
+  ruby\ tests/docs_links_test.rb
+  ruby\ tests/docs_links_test.rb\ --self-test
   ruby\ tests/policy_manifest_test.rb
   ruby\ tests/run_contracts_test.rb
   ruby\ tests/run_contracts.rb\ --validate-only

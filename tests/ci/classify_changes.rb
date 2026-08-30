@@ -80,9 +80,25 @@ module ClassifyChanges
   # vault with tests/generate-ephemeral-vault.sh, which writes its own plaintext
   # rather than running this playbook. renovate.json is read by
   # tests/renovate_policy_test.rb and by no play at all.
+  #
+  # The documents are here for the same reason and not because they are
+  # documentation: each one is read by a check registered in
+  # tests/validate-policy.sh, so editing it can break the gate. inert_path? drops
+  # every other path under docs/, which is what let a docs commit break the gate
+  # and still merge green, so a document that a check reads has to be rescued by
+  # name here. tests/ci/classify_changes_test.rb derives that list from the
+  # registered checks themselves and fails when one of them is missing, so the
+  # next doc-reading check cannot reopen the hole by being written.
   STATIC_ONLY_PATHS = %w[
     README.md
+    docs/adding-a-service.md
+    docs/ansible-basics.md
+    docs/asustor-adm-rollout.md
+    docs/bazarr-providers.md
+    docs/getting-started-mac.md
     docs/getting-started-nas.md
+    docs/getting-started.md
+    docs/media-acquisition-phase1.md
     docs/secrets.md
     generate-secrets.yml
     install-production-auto-deploy.yml

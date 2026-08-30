@@ -47,7 +47,10 @@ end
 
 if defined?(ClassifyChanges)
   {
-    ["docs/getting-started.md"] => [],
+    ["docs/getting-started.md"] => %w[static],
+    ["docs/bazarr-providers.md"] => %w[static],
+    ["docs/media-acquisition-phase1.md"] => %w[static],
+    ["docs/no-check-reads-this.md"] => [],
     [".gitignore"] => [],
     ["README.md"] => %w[static],
     ["docs/getting-started-nas.md"] => %w[static],
@@ -557,6 +560,64 @@ Dir.mktmpdir("classify-changes-cli-") do |root|
   stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCRIPT, "--full")
   check(failures, status.success? && stderr.empty? && stdout == expected_full_output,
         "--full CLI mode must emit an untagged full-site selection: #{stdout.inspect}")
+end
+
+# Every document a registered policy check reads is a CI input, and inert_path?
+# drops all of docs/, so such a document reaches no job at all unless
+# STATIC_ONLY_PATHS rescues it by name. That is how a documentation commit broke
+# the policy gate on main and still merged green: the gate was never run against
+# it. Derive the coupling rather than restating it -- read the checks registered
+# in tests/validate-policy.sh, follow the support files they require, and collect
+# every docs/*.md literal that names a document that exists. A check written
+# tomorrow against a document nobody routed then fails here by name instead of
+# quietly reopening the hole.
+POLICY_DOC_ROOT = File.expand_path("../..", __dir__)
+POLICY_MANIFEST = File.join(POLICY_DOC_ROOT, "tests", "validate-policy.sh")
+
+def registered_check_sources(root, manifest_path)
+  return [] unless File.file?(manifest_path)
+
+  manifest = File.read(manifest_path)
+  # Both spellings the manifest uses: a path, and the dotted module name that
+  # `python3 -m unittest` takes.
+  pending = manifest.scan(%r{tests/[A-Za-z0-9_./-]+\.(?:rb|sh|py)}).uniq
+  pending.concat(manifest.scan(/\btests\.([A-Za-z0-9_]+)\b/).flatten.map { |name| "tests/#{name}.py" })
+  sources = []
+  until pending.empty?
+    relative = pending.shift
+    next if sources.include?(relative)
+
+    path = File.join(root, relative)
+    next unless File.file?(path)
+
+    sources << relative
+    next unless relative.end_with?(".rb")
+
+    File.read(path).scan(/require_relative\s+["']([^"']+)["']/).flatten.each do |target|
+      resolved = File.expand_path(target, File.dirname(path))
+      resolved += ".rb" unless resolved.end_with?(".rb")
+      prefix = "#{root}/"
+      pending << resolved.delete_prefix(prefix) if resolved.start_with?(prefix)
+    end
+  end
+  sources
+end
+
+coupled_documents = registered_check_sources(POLICY_DOC_ROOT, POLICY_MANIFEST).flat_map do |relative|
+  File.read(File.join(POLICY_DOC_ROOT, relative)).scan(%r{docs/[A-Za-z0-9_./-]+\.md})
+end.uniq.select { |document| File.file?(File.join(POLICY_DOC_ROOT, document)) }.sort
+
+# A derivation that finds nothing would pass silently, which is the failure mode
+# this whole check exists to end.
+check(failures, coupled_documents.length >= 6,
+      "the registered policy checks name only #{coupled_documents.length} existing documents; " \
+      "the derivation is broken rather than the routing")
+if defined?(ClassifyChanges)
+  coupled_documents.each do |document|
+    check(failures, ClassifyChanges.classify([document]).fetch("static"),
+          "#{document} is read by a check registered in tests/validate-policy.sh but does not " \
+          "select the static job; add it to STATIC_ONLY_PATHS in tests/ci/classify_changes.rb")
+  end
 end
 
 unless failures.empty?

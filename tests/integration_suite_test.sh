@@ -11,6 +11,8 @@ pull_log=$prepull_bin/pull.log
 sleep_log=$prepull_bin/sleep.log
 prepull_output=$prepull_bin/prepull.output
 interrupt_tmp=$prepull_bin/interrupt-tmp
+truncated_repo=$prepull_bin/truncated-repo
+truncated_tmp=$prepull_bin/truncated-tmp
 immich_order_mutant=$fake_bin/immich-order-mutant.sh
 acquisition_runtime_mutant=$fake_bin/acquisition-runtime-mutant.sh
 idempotence_helper=$fake_bin/enabled-idempotence-helper.sh
@@ -35,10 +37,12 @@ cleanup() {
   rmdir "$fake_bin"
   rm -f "$prepull_bin/docker" "$prepull_bin/sleep" "$prepull_bin/od" \
     "$pull_log" "$sleep_log" "$prepull_output"
-  if [ -d "$interrupt_tmp" ]; then
-    find "$interrupt_tmp" -depth -mindepth 1 -delete 2>/dev/null || true
-    rmdir "$interrupt_tmp" 2>/dev/null || true
-  fi
+  for prepull_root in "$interrupt_tmp" "$truncated_repo" "$truncated_tmp"; do
+    if [ -d "$prepull_root" ] && [ ! -L "$prepull_root" ]; then
+      find "$prepull_root" -depth -mindepth 1 -delete 2>/dev/null || true
+      rmdir "$prepull_root" 2>/dev/null || true
+    fi
+  done
   rmdir "$prepull_bin"
 }
 trap cleanup EXIT HUP INT TERM
@@ -870,6 +874,46 @@ run_prepull 0 4 --suite beszel
 assert_pull_set "$({ printf '%s\n' "$runner_image"; compose_images ntfy; compose_images beszel; } | sort -u)"
 if grep -q 'immich' "$pull_log"; then
   prepull_fail 'the beszel suite pulled images it never converges'
+fi
+
+# An enumeration that dies partway must fail the pre-pull rather than pre-pull a
+# truncated list. `for candidate in $(suite_pull_images | sort -u)` took its
+# status from sort, and #!/bin/sh has no pipefail: a missing
+# services/<dir>/compose.yml aborted the enumeration's subshell under set -e,
+# sort still succeeded on whatever had been listed, and every image after the gap
+# was left to be pulled inside docker_compose_v2 -- the registry refusal this
+# whole ladder exists to absorb. The fixture removes beszel's compose.yml, which
+# the beszel suite enumerates after ntfy's, so a truncation is observable.
+mkdir -p "$truncated_repo/tests" "$truncated_tmp"
+cp "$integration" "$truncated_repo/tests/integration.sh"
+cp -R "$repo_dir/services" "$truncated_repo/services"
+rm "$truncated_repo/services/beszel/compose.yml"
+: > "$pull_log"
+: > "$sleep_log"
+: > "$prepull_output"
+prepull_status=0
+TMPDIR=$truncated_tmp \
+  PATH="$prepull_bin:$PATH" \
+  STUB_PULL_LOG=$pull_log \
+  STUB_SLEEP_LOG=$sleep_log \
+  STUB_PULL_REFUSALS=0 \
+  STUB_RANDOM_VALUE=0 \
+  INTEGRATION_PREPULL_ONLY=1 \
+  INTEGRATION_IMAGE_PULL_ATTEMPTS=4 \
+  INTEGRATION_IMAGE_PULL_DELAY=1 \
+  INTEGRATION_IMAGE_PULL_MAX_DELAY=60 \
+  "$truncated_repo/tests/integration.sh" --suite beszel \
+  >"$prepull_output" 2>&1 || prepull_status=$?
+[ "$prepull_status" -ne 0 ] ||
+  prepull_fail 'a truncated image enumeration produced a successful pre-pull'
+grep -qF 'could not enumerate the images the beszel suite needs' \
+  "$prepull_output" ||
+  prepull_fail "truncated enumeration reported no diagnostic: $(cat "$prepull_output")"
+if grep -qF "$(compose_images ntfy)" "$pull_log"; then
+  prepull_fail 'a truncated enumeration still pre-pulled from a partial list'
+fi
+if find "$truncated_tmp" -name 'nas-platform-prepull.*' -print | grep -q .; then
+  prepull_fail 'the refused pre-pull leaked its image enumeration file'
 fi
 
 # The paperless suite is the one whose tag and service directory differ, so it is

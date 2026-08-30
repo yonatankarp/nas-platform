@@ -98,6 +98,19 @@ check(failures, harness.include?("MAC_PATH_CANONICAL") &&
 ["IDEMPOTENT", "CHECK MODE"].each do |property|
   check(failures, harness.include?(property), "integration harness must assert #{property}")
 end
+# `producer | tee log` reports tee's status, and every script here is #!/bin/sh
+# with no pipefail available, so a play that died reached its recap grep looking
+# merely quiet. Redirect and read the producer's own status instead.
+check(failures,
+      !harness.match?(/\|\s*tee\b/) &&
+        harness.include?('run_selected_play "\$@" >/tmp/second.txt 2>&1 || idempotence_status=\$?') &&
+        harness.include?('run_play --tags immich >/tmp/immich-clean-restore-second.txt 2>&1 ||'),
+      "integration must read a play's own status rather than a pipeline's")
+check(failures,
+      harness.include?('suite_pull_images > "$prepull_list" || prepull_enumeration_status=$?') &&
+        harness.include?('for pull_candidate in $prepull_targets; do') &&
+        harness.include?('"$repo_dir/services/$service_dir/compose.yml" || exit 1'),
+      "integration must fail the pre-pull when enumerating its images fails")
 first_converge = harness.index("\n    run_play\n")
 contract_execution = harness.index("ruby /repo/tests/run_contracts.rb --execute")
 idempotence_phase = harness.index("=== phase 2: asserting idempotence ===")
@@ -438,6 +451,21 @@ check(failures,
         integration_lock.include?('rmdir "$integration_lock_path"') &&
         !integration_lock.match?(/rm\s+-rf/),
       "integration must serialize fixed-name containers with an atomic empty-directory lock")
+# Release happens only through an EXIT trap, so a lock that records nothing about
+# its holder survives every hard termination -- and because the same lock gates
+# tests/mac/cleanup.sh, the dead run's containers survive with it. Recovery has to
+# stay a fact rather than a guess: serialized by a lock of its own, refused for a
+# holder on another machine or another uid (where kill -0 answers EPERM, which is
+# indistinguishable from "no such process"), and named in the refusal either way.
+check(failures,
+      integration_lock.include?('integration_lock_owner_identity > "$lock_candidate/owner"') &&
+        integration_lock.include?('mkdir "$reclaim_guard" 2>/dev/null || return 1') &&
+        integration_lock.include?('rmdir "$reclaim_target" 2>/dev/null') &&
+        integration_lock.include?('! kill -0 "$reclaim_pid" 2>/dev/null') &&
+        integration_lock.include?('[ "$reclaim_uid" = "$(id -u)" ]') &&
+        integration_lock.include?('[ "$reclaim_host" = "$(uname -n)" ]') &&
+        integration_lock.include?('  lock: %s'),
+      "integration lock must record its holder and recover only a provably dead one")
 
 if failures.empty?
   puts "integration policy: all properties hold"

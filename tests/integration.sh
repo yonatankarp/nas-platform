@@ -343,11 +343,19 @@ image_pull_max_delay=$(bounded_integer "${INTEGRATION_IMAGE_PULL_MAX_DELAY:-60}"
   image_pull_max_delay=$image_pull_delay
 
 pull_error=
+prepull_list=
 
 cleanup_pull_error() {
   if [ -n "$pull_error" ]; then
     rm -f "$pull_error" || true
     pull_error=
+  fi
+}
+
+cleanup_prepull_list() {
+  if [ -n "$prepull_list" ]; then
+    rm -f "$prepull_list" || true
+    prepull_list=
   fi
 }
 
@@ -510,8 +518,13 @@ suite_pull_images() {
           ;;
       esac
     fi
+    # Explicit rather than left to set -e: the caller reads this function's
+    # status with `|| status=$?`, and POSIX suspends errexit for everything
+    # inside an AND-OR list -- including a function body. Without the exit, an
+    # unreadable compose.yml would be skipped and the suite would converge
+    # images that were never pre-pulled.
     sed -n 's/^[[:space:]]*image:[[:space:]]*//p' \
-      "$repo_dir/services/$service_dir/compose.yml"
+      "$repo_dir/services/$service_dir/compose.yml" || exit 1
   done
 }
 
@@ -540,7 +553,32 @@ prepull_images() {
   # anonymous allowance is the stricter of the two. No login covers it, so the
   # retry is all this pull gets.
   pull_image "$runner_image" || return 1
-  for pull_candidate in $(suite_pull_images | sort -u); do
+  # `for candidate in $(suite_pull_images | sort -u)` would take its status from
+  # sort, and #!/bin/sh has no pipefail to fix that. A missing
+  # services/<dir>/compose.yml aborts the enumeration's `while` subshell under
+  # set -e, sort still succeeds on the truncated list, and every image after the
+  # gap is silently never pre-pulled -- so it gets pulled inside
+  # docker_compose_v2 instead, which is exactly the registry refusal this
+  # function exists to absorb. Materialize the list first and refuse the suite if
+  # producing it failed.
+  prepull_list=$(mktemp "${TMPDIR:-/tmp}/nas-platform-prepull.XXXXXX") ||
+    prepull_list=
+  if [ -z "$prepull_list" ]; then
+    printf 'could not create an image enumeration file under %s\n' \
+      "${TMPDIR:-/tmp}" >&2
+    return 1
+  fi
+  prepull_enumeration_status=0
+  suite_pull_images > "$prepull_list" || prepull_enumeration_status=$?
+  if [ "$prepull_enumeration_status" -ne 0 ]; then
+    cleanup_prepull_list
+    printf 'could not enumerate the images the %s suite needs (status %s)\n' \
+      "$suite" "$prepull_enumeration_status" >&2
+    return 1
+  fi
+  prepull_targets=$(sort -u "$prepull_list")
+  cleanup_prepull_list
+  for pull_candidate in $prepull_targets; do
     # Dozzle's alert relay runs on the same image as the controller, so skipping
     # it here saves a second registry round trip on every suite that includes it.
     if [ "$pull_candidate" != "$runner_image" ]; then
@@ -552,7 +590,7 @@ prepull_images() {
 # Pull-only mode exists so tests/integration_suite_test.sh can drive the retry
 # against a stub docker without building a sandbox. It shares the code path the
 # real run uses rather than re-implementing it.
-trap cleanup_pull_error EXIT
+trap 'cleanup_pull_error; cleanup_prepull_list' EXIT
 trap 'exit 130' HUP INT TERM
 
 if [ "${INTEGRATION_PREPULL_ONLY:-0}" = 1 ]; then
@@ -595,6 +633,7 @@ cleanup_integration_on_exit() {
   integration_exit_status=$?
   trap - EXIT HUP INT TERM
   cleanup_pull_error
+  cleanup_prepull_list
   if [ -n "$sandbox" ] && ! cleanup_sandbox "$sandbox"; then
     [ "$integration_exit_status" -ne 0 ] || integration_exit_status=1
   fi
@@ -1339,7 +1378,18 @@ docker run --rm \
       run_immich_contract clean-restore-assert
       test ! -e '$sandbox/volume1/Docker/immich/.restore-failed'
 
-      run_play --tags immich | tee /tmp/immich-clean-restore-second.txt
+      # Piping into tee would hand the pipeline tee's status, and this shell has
+      # no pipefail: a play that died would arrive at the recap grep below as if
+      # it had merely printed nothing.
+      immich_clean_restore_status=0
+      run_play --tags immich >/tmp/immich-clean-restore-second.txt 2>&1 ||
+        immich_clean_restore_status=\$?
+      cat /tmp/immich-clean-restore-second.txt
+      if [ \"\$immich_clean_restore_status\" -ne 0 ]; then
+        printf 'IMMICH CLEAN RESTORE REPLAY FAILED: status %s\n' \
+          \"\$immich_clean_restore_status\" >&2
+        exit 1
+      fi
       grep -qE 'changed=0 .*failed=0 ' /tmp/immich-clean-restore-second.txt
       run_immich_contract clean-restore-assert
       printf 'IMMICH_CLEAN_RESTORE_IDEMPOTENT\n'
@@ -2531,7 +2581,17 @@ EOF
 
     if suite_is idempotence-check; then
     printf '\n=== phase 2: asserting idempotence ===\n'
-    run_selected_play "\$@" | tee /tmp/second.txt
+    # Not piped into tee: the pipeline would report tee's status, and this shell
+    # has no pipefail. A play that died would reach the recap check below with
+    # whatever partial output it managed to print.
+    idempotence_status=0
+    run_selected_play "\$@" >/tmp/second.txt 2>&1 || idempotence_status=\$?
+    cat /tmp/second.txt
+    if [ \"\$idempotence_status\" -ne 0 ]; then
+      printf 'NOT IDEMPOTENT: second run failed with status %s\n' \
+        \"\$idempotence_status\" >&2
+      exit 1
+    fi
     # Must also require failed=0: a run that changed nothing because it died
     # early is not idempotent, and an earlier version of this check passed on it.
     if grep -qE 'changed=0 ' /tmp/second.txt && grep -qE 'failed=0 ' /tmp/second.txt; then

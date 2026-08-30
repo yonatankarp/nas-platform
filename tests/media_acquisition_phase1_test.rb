@@ -103,15 +103,41 @@ end
 
 # Usenet is enabled on the NAS, where Phase 1 was accepted. Every other
 # transport on every host stays inert until its own handoff.
-{ "nas_hosts" => { "media_usenet_enabled" => true, "media_torrent_enabled" => false },
-  "mac_hosts" => { "media_usenet_enabled" => false, "media_torrent_enabled" => false } }
-  .each do |host_group, flags|
+transport_flags =
+  { "nas_hosts" => { "media_usenet_enabled" => true, "media_torrent_enabled" => false },
+    "mac_hosts" => { "media_usenet_enabled" => false, "media_torrent_enabled" => false } }
+transport_flags.each do |host_group, flags|
   vars = strict_yaml("inventory/group_vars/#{host_group}/main.yml")
   flags.each do |flag, expected|
     check(failures, vars[flag] == expected,
           "#{host_group} #{flag} must remain literal #{expected}")
   end
 end
+
+# What a normal deployment starts is an inventory value, not a role default, so
+# README is only true while it names the host groups that enable a transport and
+# the flags they set. Read the effective values back out of the inventory and
+# require the prose to carry them: flipping a flag without touching README then
+# fails here, instead of leaving the front page telling an operator the opposite
+# of what the run will do.
+readme = File.read(File.join(ROOT, "README.md")).gsub("`", "").gsub(/\s+/, " ")
+enabled_transports = transport_flags.keys.flat_map do |host_group|
+  vars = strict_yaml("inventory/group_vars/#{host_group}/main.yml")
+  %w[media_usenet_enabled media_torrent_enabled]
+    .select { |flag| vars[flag] == true }
+    .map { |flag| [host_group, flag] }
+end
+enabled_transports.each do |host_group, flag|
+  check(failures, readme.include?("inventory/group_vars/#{host_group}/main.yml"),
+        "README must cite inventory/group_vars/#{host_group}/main.yml, which enables #{flag}")
+  check(failures, readme.include?("#{flag}: true"),
+        "README must state #{flag}: true, which inventory/group_vars/#{host_group}/main.yml sets")
+end
+check(failures,
+      enabled_transports.empty? ||
+        !readme.match?(/a normal deployment starts no Phase 1 acquisition containers/i),
+      "README must not claim a normal deployment starts no acquisition containers while " \
+      "#{enabled_transports.map { |group, flag| "#{group} sets #{flag}" }.join(', ')}")
 
 arr_compose = compose_yaml("services/arr/compose.yml", failures)
 downloaders_compose = compose_yaml("services/downloaders/compose.yml", failures)

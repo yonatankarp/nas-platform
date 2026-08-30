@@ -111,6 +111,20 @@ beginner_guides.each do |relative_path|
         "README must link to #{relative_path}")
 end
 
+# The controller pin is authored once, in controller-requirements.txt, and
+# tests/ci/workflow_test.rb holds its three machine-readable mirrors to ci.yml. A
+# guide that restates the version is a fourth mirror that nothing bumps, so a
+# reader following it builds a controller CI never validated against and then
+# fails ansible-lint for reasons the guide cannot explain.
+beginner_guides.each do |relative_path|
+  guide_path = File.join(ROOT, relative_path)
+  guide_source = File.file?(guide_path) ? File.read(guide_path) : ""
+  check(failures, !guide_source.match?(/ansible-(?:core|lint)==\d/),
+        "#{relative_path} must install the controller pins with " \
+        "pip install -r controller-requirements.txt rather than restate " \
+        "an ansible-core or ansible-lint version")
+end
+
 getting_started_path = File.join(ROOT, "docs", "getting-started.md")
 getting_started_source = File.file?(getting_started_path) ? File.read(getting_started_path) : ""
 check(failures,
@@ -692,6 +706,34 @@ service_dir_names = service_dirs.map { |dir| File.basename(dir) }
 undeclared_dirs = service_dir_names - manifest_names
 check(failures, undeclared_dirs.empty?,
       "service directories must be declared in the manifest: #{undeclared_dirs.join(', ')}")
+
+# README states the size of the catalog in English, and both numbers are a
+# property of services/manifest.yml rather than of the prose. Derive them here so
+# that promoting a service fails with the two words the sentence has to carry,
+# instead of leaving the catalog paragraph a release behind and contradicting
+# itself further down the same file -- which is exactly what Pinchflat's
+# promotion did.
+COUNT_WORDS = %w[
+  zero one two three four five six seven eight nine ten eleven twelve thirteen
+  fourteen fifteen sixteen seventeen eighteen nineteen twenty
+].freeze
+readme_prose = readme_source.gsub("`", "").gsub(/\s+/, " ")
+{
+  "implemented service projects" =>
+    service_statuses.count { |_name, status| IMPLEMENTED_STATUSES.include?(status) },
+  "planned media-acquisition projects" =>
+    service_statuses.count { |_name, status| status == "planned" }
+}.each do |phrase, count|
+  word = COUNT_WORDS[count]
+  check(failures, !word.nil? && readme_prose.include?("#{word} #{phrase}"),
+        "README must state \"#{word || count} #{phrase}\" to match services/manifest.yml")
+end
+service_statuses.each do |name, status|
+  next unless status == "planned"
+
+  check(failures, readme_prose.match?(/(?<![[:alnum:]])#{Regexp.escape(name)}(?![[:alnum:]])/i),
+        "README must name the planned project #{name}")
+end
 
 # Digest pinning with a human-readable version tag, so an update bot can propose
 # a bump and a reader can tell what is deployed. The approved version is whatever
