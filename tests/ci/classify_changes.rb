@@ -227,7 +227,6 @@ module ClassifyChanges
   def write_github_outputs(selection, io)
     LANES.each { |lane| io.puts "#{lane}=#{selection.fetch(lane)}" }
     io.puts "suites=#{suites(selection).to_json}"
-    io.puts "run_ci=#{selection.values.any?}"
     tags = if selection.fetch("foundation")
              []
            else
