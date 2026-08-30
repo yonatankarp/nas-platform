@@ -86,13 +86,18 @@ PLATFORM_INVENTORIES.values.map { |values| [values[0], values[3]] }.uniq.each do
   check(failures, host_vars["platform_render_device_path"].is_a?(String) &&
                   !host_vars["platform_render_device_path"].empty?,
         "#{relative_path} platform_render_device_path must be a nonempty path")
+  # The Mac lane's remaining host vars are facts the lifecycle harness injects, and
+  # they are recognised by that binding rather than by a list of their names. The
+  # check below is about portable *configuration* leaking into a host group, and a
+  # value that is nothing but a PLATFORM_* environment lookup is by construction
+  # not configuration: it has no value at all outside a harness run. The name list
+  # this replaces grew a port per promoted service and was held to nothing.
   mac_runtime_facts = if platform_kind == "mac"
-                        %w[
-                          platform_project_name beszel_port ntfy_port dozzle_port
-                          audiobookshelf_port komga_port jellyfin_port immich_port paperless_port
-                          arr_radarr_port arr_sonarr_port arr_prowlarr_port arr_bazarr_port
-                          downloaders_sabnzbd_port kapowarr_port pinchflat_port
-                        ]
+                        host_vars.select do |name, value|
+                          (name == "platform_project_name" || name.end_with?("_port")) &&
+                            value.is_a?(String) &&
+                            value.match?(/\A\{\{ lookup\('env', 'PLATFORM_[A-Z0-9_]+'\)( \| int)? \}\}\z/)
+                        end.keys
                       else
                         []
                       end

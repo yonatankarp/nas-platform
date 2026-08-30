@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Behavior tests for Configarr materialized profile-tree identities."""
+"""Behaviour tests for the identity rules the acquisition filters enforce.
+
+Radarr and Sonarr generate the numeric identities inside a quality profile, and
+Bazarr splits its form keys on hyphens, so both the Configarr profile tree and
+the Bazarr declaration have identity rules that a mistyped declaration would
+otherwise pass straight through. Those two sets of rules live in two filter
+plugins and are checked together here, because they fail the same way: an
+ambiguous identity that converges and points at the wrong thing.
+"""
 
 from __future__ import annotations
 
@@ -10,15 +18,14 @@ from ansible.errors import AnsibleFilterError
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-PLUGIN_PATH = ROOT / "filter_plugins" / "acquisition_relationships.py"
+CONFIGARR_PATH = ROOT / "filter_plugins" / "acquisition_configarr.py"
+BAZARR_PATH = ROOT / "filter_plugins" / "acquisition_bazarr.py"
 
 
-def load_plugin():
-    spec = importlib.util.spec_from_file_location(
-        "acquisition_relationships", PLUGIN_PATH
-    )
+def load_plugin(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
-        raise AssertionError("acquisition relationship filter cannot be imported")
+        raise AssertionError(f"{name} filter cannot be imported")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -42,9 +49,10 @@ def require_tree_rejected(items, label: str, expected_message: str | None = None
     raise AssertionError(f"accepted unsafe complete profile tree: {label}")
 
 
-plugin = load_plugin()
-profile_item_ids = plugin._configarr_profile_item_ids
-profile_tree = plugin._configarr_profile_tree
+configarr = load_plugin("acquisition_configarr", CONFIGARR_PATH)
+bazarr = load_plugin("acquisition_bazarr", BAZARR_PATH)
+profile_item_ids = configarr._configarr_profile_item_ids
+profile_tree = configarr._configarr_profile_tree
 
 valid_items = [
     {
@@ -78,7 +86,11 @@ assert profile_item_ids(valid_items, "Configarr test profile items") == {
 }
 
 tree = profile_tree(valid_items, "Configarr test profile items")
-assert tree["items"] == [plugin._quality_item_projection(item, "test") for item in valid_items]
+# Projecting one item alone must equal that item's place in the whole tree: a
+# node's projection is its own, never a function of its siblings.
+assert tree["items"] == [
+    profile_tree([item], "test")["items"][0] for item in valid_items
+]
 assert tree["item_identities"] == [
     {"path": ["group:WEB 1080p"], "kind": "group", "name": "WEB 1080p", "id": 1001},
     {
@@ -198,7 +210,7 @@ wide_items = [
 ]
 require_tree_rejected(wide_items, "over-count tree", "maximum node count 512")
 
-valid_declarations = plugin.acquisition_bazarr_declarations(
+valid_declarations = bazarr.acquisition_bazarr_declarations(
     ["en"],
     [{"name": "provider_name", "settings": {"settings-provider_name-api_key": "secret"}}],
 )
@@ -209,7 +221,7 @@ for declared, expected in [
     (" TRUE ", "true"),
     (" false ", "false"),
 ]:
-    boolean_declarations = plugin.acquisition_bazarr_declarations(
+    boolean_declarations = bazarr.acquisition_bazarr_declarations(
         ["en"],
         [{"name": "provider_name", "settings": {"settings-provider_name-enabled": declared}}],
     )
@@ -219,7 +231,7 @@ for declared, expected in [
     assert boolean_declarations["provider_settings"]["provider_name"]["enabled"] is (
         expected == "true"
     )
-non_boolean_declarations = plugin.acquisition_bazarr_declarations(
+non_boolean_declarations = bazarr.acquisition_bazarr_declarations(
     ["en"],
     [{"name": "provider_name", "settings": {"settings-provider_name-label": " truth "}}],
 )
@@ -246,7 +258,7 @@ for label, providers in {
     ],
 }.items():
     try:
-        plugin.acquisition_bazarr_declarations(["en"], providers)
+        bazarr.acquisition_bazarr_declarations(["en"], providers)
     except AnsibleFilterError:
         continue
     raise AssertionError(f"accepted ambiguous Bazarr {label}")

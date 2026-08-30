@@ -8,6 +8,11 @@ Configarr tasks cost 554s with the proxies and disappear from the profile
 without them, taking the play from 820s to 239s. The conversion is therefore
 load-bearing, and this check fails if it is removed or narrowed.
 
+The conversion itself lives in `module_utils/acquisition_schema.py`, and each of
+the three acquisition filter plugins wraps every filter it exposes with it. All
+three are checked here, so a plugin added later that forgets the wrapper is
+caught by the same run.
+
 Run with --self-test to prove the check detects its own regression.
 """
 
@@ -18,16 +23,28 @@ import pathlib
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-PLUGIN = ROOT / "filter_plugins" / "acquisition_relationships.py"
+SCHEMA = ROOT / "module_utils" / "acquisition_schema.py"
+DOMAINS = ("servarr", "bazarr", "configarr")
 
 
-def load_plugin():
-    spec = importlib.util.spec_from_file_location("acquisition_relationships", PLUGIN)
+def load(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
-        raise AssertionError("acquisition relationship filter cannot be imported")
+        raise AssertionError(f"{path} cannot be imported")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def load_plugins():
+    schema = load("acquisition_schema", SCHEMA)
+    plugins = {
+        domain: load(
+            f"acquisition_{domain}", ROOT / "filter_plugins" / f"acquisition_{domain}.py"
+        )
+        for domain in DOMAINS
+    }
+    return schema, plugins
 
 
 class TaggedStr(str):
@@ -62,10 +79,10 @@ def exact_types(failures, value, label):
         check(failures, type(value) is str, f"{label} is {type(value).__name__}, not str")
 
 
-def collect_failures(plugin):
+def collect_failures(schema, plugins):
     failures = []
 
-    native = plugin._native
+    native = schema.native
     tagged = TaggedDict({
         TaggedStr("name"): TaggedStr("Radarr"),
         TaggedStr("items"): TaggedList([
@@ -84,13 +101,18 @@ def collect_failures(plugin):
     check(failures, converted["absent"] is None, "conversion lost a null")
     check(failures, native(False) is False, "conversion lost a false boolean")
 
-    # Every exposed filter must be wrapped, so a filter added later cannot
-    # silently skip the conversion.
-    exposed = plugin.FilterModule().filters()
-    check(failures, bool(exposed), "FilterModule exposes no filters")
-    for name, function in exposed.items():
-        check(failures, hasattr(function, "__wrapped__"),
-              f"filter {name} is exposed without argument conversion")
+    # Every exposed filter of every acquisition plugin must be wrapped, so a
+    # filter added later cannot silently skip the conversion.
+    exposed_names = set()
+    for domain, plugin in plugins.items():
+        exposed = plugin.FilterModule().filters()
+        check(failures, bool(exposed), f"acquisition_{domain} exposes no filters")
+        for name, function in exposed.items():
+            check(failures, name not in exposed_names,
+                  f"filter {name} is exposed by more than one acquisition plugin")
+            exposed_names.add(name)
+            check(failures, hasattr(function, "__wrapped__"),
+                  f"filter {name} is exposed without argument conversion")
 
     # The wrapper must reach the filter body, not merely sit beside it.
     seen = {}
@@ -100,7 +122,7 @@ def collect_failures(plugin):
         seen["second"] = second
         return "ok"
 
-    wrapped = plugin._with_native_arguments(spy)
+    wrapped = schema.with_native_arguments(spy)
     check(failures, wrapped(tagged, second=TaggedList([TaggedStr("x")])) == "ok",
           "the wrapper did not return the filter's own result")
     exact_types(failures, seen.get("first"), "filter positional argument")
@@ -110,19 +132,21 @@ def collect_failures(plugin):
 
 
 def main():
-    plugin = load_plugin()
+    schema, plugins = load_plugins()
 
     if "--self-test" in sys.argv:
         # Plant the regression this check exists to catch: expose the filters
         # without the conversion.
-        plugin.FilterModule.filters = plugin.FilterModule._relationship_filters
-        plugin._with_native_arguments = lambda function: function
-        if not collect_failures(plugin):
+        for plugin in plugins.values():
+            plugin.FilterModule.filters = plugin.FilterModule._relationship_filters
+            plugin._with_native_arguments = lambda function: function
+        schema.with_native_arguments = lambda function: function
+        if not collect_failures(schema, plugins):
             sys.exit("self-test failed: unconverted filter arguments were accepted")
         print("acquisition filter argument conversion: self-test detects its own removal")
         return
 
-    failures = collect_failures(plugin)
+    failures = collect_failures(schema, plugins)
     if failures:
         sys.exit("\n".join(failures))
     print("acquisition filter arguments: every exposed filter receives plain containers")

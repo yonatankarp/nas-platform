@@ -51,7 +51,7 @@ PROJECTION_PROGRAM = <<~PYTHON
 
   root = pathlib.Path(sys.argv[1])
   spec = importlib.util.spec_from_file_location(
-      "acquisition_relationships", root / "filter_plugins" / "acquisition_relationships.py"
+      "acquisition_configarr", root / "filter_plugins" / "acquisition_configarr.py"
   )
   module = importlib.util.module_from_spec(spec)
   spec.loader.exec_module(module)
