@@ -155,6 +155,9 @@ CREDENTIAL_RULES = {
     "vault_downloaders_sabnzbd_api_key": ((PATTERN, HEX_32),),
     "vault_downloaders_sabnzbd_admin_username": ((NONEMPTY, None),),
     "vault_downloaders_sabnzbd_admin_password": ((NONEMPTY, None),),
+    "vault_bindery_api_key": ((PATTERN, HEX_32),),
+    "vault_bindery_admin_username": ((NONEMPTY, None),),
+    "vault_bindery_admin_password": ((NONEMPTY, None),),
     "vault_kapowarr_admin_username": ((NONEMPTY, None),),
     "vault_kapowarr_admin_password": ((NONEMPTY, None),),
     "vault_kapowarr_comicvine_api_key": (

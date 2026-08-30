@@ -192,8 +192,17 @@ interface is the writer, and its only access control is the administrator
 identity authored in vault; nothing is downloaded until an operator declares a
 source in the application. Kapowarr additionally needs the vault-authored
 ComicVine key entered in the application before it can identify anything, which
-is the deliberate reason a fresh deployment acquires nothing. The remaining
-three acquisition projects — Bindery, Trailarr and Seerr — stay planned.
+is the deliberate reason a fresh deployment acquires nothing.
+
+Phase 2 also adds Bindery, which writes the `Books/Ebooks` library Komga reads
+and the `Media/Audiobooks` library Audiobookshelf reads. Bindery is not
+self-contained: it stores a Prowlarr instance and a SABnzbd download client and
+resolves the host in both URLs at write time, so it joins `media-control`,
+converges after those two projects, and declares neither integration until a
+host enables Usenet. The container itself deploys unconditionally, with
+unattended auto-grabbing pinned off and telemetry disabled, so a fresh
+deployment downloads nothing. The remaining two acquisition projects — Trailarr
+and Seerr — stay planned.
 
 Open Subtitles remains configured in Jellyfin until Bazarr is proven on the
 physical NAS. Follow the

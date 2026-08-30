@@ -1,0 +1,81 @@
+---
+argument_specs:
+  main:
+    short_description: Deploy Bindery and reconcile its ebook and audiobook writer
+    options:
+      platform_compose_kind:
+        type: str
+        required: true
+      platform_project_name:
+        type: str
+        required: false
+      media_usenet_enabled:
+        type: bool
+        required: false
+      bindery_port:
+        type: int
+        required: false
+      bindery_config_host_path:
+        type: path
+        required: false
+      bindery_ebooks_host_path:
+        type: path
+        required: false
+      bindery_audiobooks_host_path:
+        type: path
+        required: false
+      bindery_ebook_downloads_host_path:
+        type: path
+        required: false
+      bindery_audiobook_downloads_host_path:
+        type: path
+        required: false
+      bindery_ebooks_root:
+        type: path
+        required: false
+      bindery_audiobooks_root:
+        type: path
+        required: false
+      bindery_library_roots:
+        type: list
+        elements: str
+        required: false
+      bindery_pinned_settings:
+        type: dict
+        required: false
+      bindery_prowlarr_name:
+        type: str
+        required: false
+      bindery_prowlarr_internal_url:
+        type: str
+        required: false
+      bindery_sabnzbd_client_name:
+        type: str
+        required: false
+      bindery_sabnzbd_host:
+        type: str
+        required: false
+      bindery_sabnzbd_port:
+        type: int
+        required: false
+      bindery_sabnzbd_ebook_category:
+        type: str
+        required: false
+      bindery_sabnzbd_audiobook_category:
+        type: str
+        required: false
+      vault_bindery_api_key:
+        type: str
+        required: true
+      vault_bindery_admin_username:
+        type: str
+        required: true
+      vault_bindery_admin_password:
+        type: str
+        required: true
+      vault_arr_prowlarr_api_key:
+        type: str
+        required: true
+      vault_downloaders_sabnzbd_api_key:
+        type: str
+        required: true

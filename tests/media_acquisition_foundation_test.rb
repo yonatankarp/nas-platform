@@ -84,7 +84,7 @@ EXPECTED_PROJECTS = {
     }
   },
   "bindery" => {
-    "role" => "bindery", "status" => "planned", "services" => {
+    "role" => "bindery", "status" => "implemented", "services" => {
       "bindery" => service("long_running", 1.0, ui_port(8787, published_by: "bindery"))
     }
   },
@@ -136,6 +136,7 @@ EXPECTED = {
 
 EXPECTED_IMPLEMENTED_PORTS = [
   ["arr", "bazarr", "0.0.0.0", 6767, 6767, "tcp"],
+  ["bindery", "bindery", "0.0.0.0", 8787, 8787, "tcp"],
   ["arr", "prowlarr", "0.0.0.0", 9696, 9696, "tcp"],
   ["arr", "radarr", "0.0.0.0", 7878, 7878, "tcp"],
   ["arr", "sonarr", "0.0.0.0", 8989, 8989, "tcp"],
@@ -192,6 +193,8 @@ EXPECTED_INTEGRATION_WRITERS = Set[
   "{{ nas_media_root }}/Media/Series",
   "{{ nas_media_root }}/Media/YouTube",
   "{{ nas_media_root }}/Books/Comics",
+  "{{ nas_media_root }}/Books/Ebooks",
+  "{{ nas_media_root }}/Media/Audiobooks",
   "{{ nas_media_root }}/Media/.acquisition/usenet/movies",
   "{{ nas_media_root }}/Media/.acquisition/usenet/series",
   "{{ nas_media_root }}/Media/.acquisition/usenet/audiobooks",

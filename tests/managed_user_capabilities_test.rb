@@ -7,7 +7,7 @@ require_relative "policy_support"
 
 ROOT = File.expand_path("..", __dir__)
 CAPABILITIES_PATH = File.join(ROOT, "config", "managed-user-capabilities.yml")
-SUCCESS = "Managed-user capabilities: all twelve service contracts are pinned"
+SUCCESS = "Managed-user capabilities: all thirteen service contracts are pinned"
 
 MULTI_USER_DEFAULTS = {
   "preserves_unmanaged_users" => true,
@@ -104,6 +104,15 @@ EXPECTED_SERVICES = {
       "create" => "get_user_model",
       "authenticate" => "api/token",
       "reconcile" => "get_user_model"
+    }
+  ),
+  "bindery" => MULTI_USER_DEFAULTS.merge(
+    "mode" => "api",
+    "interfaces" => {
+      "list" => "api/v1/auth/users",
+      "create" => "api/v1/auth/users",
+      "authenticate" => "api/v1/auth/login",
+      "reconcile" => "api/v1/auth/users"
     }
   ),
   "kapowarr" => MULTI_USER_DEFAULTS.merge(

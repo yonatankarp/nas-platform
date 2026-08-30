@@ -380,7 +380,7 @@ runtime contract and it does not stop being true or useful once the service is
 implemented. Both `arr` and `downloaders` kept theirs through Phase 1, and
 `tests/contracts/pinchflat-foundation.sh` survives the Pinchflat promotion
 alongside the new `tests/contracts/pinchflat.sh`. What changes is the dispatch:
-the promoted project leaves the `bindery|kapowarr|trailarr|seerr)` arm in
+the promoted project leaves the `trailarr|seerr)` arm in
 `tests/integration.sh` for a branch of its own, and
 `tests/integration_suite_test.sh` pins both the shrunken arm and the new lane.
 

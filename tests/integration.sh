@@ -129,7 +129,7 @@ case "$suite" in
   foundation) fixed_tags=deployment_bundle ;;
   arr) fixed_tags=host_prep,deployment_bundle,ntfy,arr ;;
   downloaders) fixed_tags=host_prep,deployment_bundle,ntfy,arr,downloaders ;;
-  bindery) fixed_tags=host_prep,deployment_bundle,media_acquisition_foundation ;;
+  bindery) fixed_tags=host_prep,deployment_bundle,ntfy,arr,downloaders,bindery ;;
   kapowarr) fixed_tags=host_prep,deployment_bundle,ntfy,kapowarr ;;
   pinchflat) fixed_tags=host_prep,deployment_bundle,ntfy,pinchflat ;;
   trailarr) fixed_tags=host_prep,deployment_bundle,media_acquisition_foundation ;;
@@ -283,6 +283,7 @@ immich immich
 paperless paperless-ngx
 arr arr
 downloaders downloaders
+bindery bindery
 kapowarr kapowarr
 pinchflat pinchflat
 '
@@ -502,7 +503,6 @@ suite_pull_images() {
         *",$service_tag,"*) ;;
         *)
           case "$suite:$service_tag" in
-            bindery:ntfy|bindery:audiobookshelf|bindery:jellyfin|\
             trailarr:ntfy|trailarr:audiobookshelf|trailarr:jellyfin|\
             seerr:ntfy|seerr:audiobookshelf|seerr:jellyfin) ;;
             *) continue ;;
@@ -1098,7 +1098,7 @@ docker run --rm \
     integration_media_usenet_enabled=false
     integration_media_adopt_existing=false
     case "\$INTEGRATION_SUITE" in
-      arr|downloaders)
+      arr|downloaders|bindery)
         integration_media_usenet_enabled=true
         integration_media_adopt_existing=true
         ;;
@@ -1230,6 +1230,22 @@ docker run --rm \
         PLATFORM_KOMGA_RUNTIME_CONTEXT=base \
         PLATFORM_PROJECT_NAME=$integration_project_namespace \
         /repo/tests/contracts/komga.sh \"\$@\"
+    }
+
+    # This lane converges arr and downloaders with the transport enabled, so
+    # Prowlarr and SABnzbd are resolvable by name and both of Bindery's
+    # integration rows are expected to exist.
+    run_bindery_contract() {
+      env \
+        PLATFORM_KIND=integration \
+        PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\" \
+        PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=\"\$vault_password_file\" \
+        PLATFORM_DOCKER_ROOT='$sandbox/volume1/Docker' \
+        PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
+        PLATFORM_REPORT_ROOT='$sandbox/reports' \
+        PLATFORM_PROJECT_NAME=$integration_project_namespace \
+        PLATFORM_BINDERY_USENET=true \
+        /repo/tests/contracts/bindery.sh \"\$@\"
     }
 
     run_kapowarr_contract() {
@@ -1556,6 +1572,23 @@ docker run --rm \
         -e media_usenet_enabled=true \
         /repo/verify.yml \
         --tags platform_verify_downloaders
+    }
+
+    run_bindery_verify_only() {
+      PLATFORM_VAULT_FILE="\$vault_file" ansible-playbook \
+        -i inventory/local.yml \
+        --vault-password-file "\$vault_password_file" \
+        -e @"\$vault_file" \
+        -e platform_vault_file="\$vault_file" \
+        -e nas_docker_root=$sandbox/volume1/Docker \
+        -e nas_media_root=$sandbox/volume2 \
+        -e platform_compose_kind=integration \
+        -e platform_project_name=\"$integration_project_namespace\" \
+        -e platform_beszel_agent_kind=portable \
+        -e deployment_bundle_test_mode=true \
+        -e deployment_bundle_allow_dirty_controller=true \
+        /repo/verify.yml \
+        --tags platform_verify_bindery
     }
 
     run_kapowarr_verify_only() {
@@ -1943,7 +1976,7 @@ EOF
       /repo /repo/services/manifest.yml nas integration '$expected_release_id'
 
     case "\$INTEGRATION_SUITE" in
-      bindery|trailarr|seerr)
+      trailarr|seerr)
         /repo/tests/contracts/"\$INTEGRATION_SUITE"-foundation.sh static
         converge_media_acquisition_reader_prerequisites
         run_media_acquisition_foundation_verify
@@ -1972,6 +2005,19 @@ EOF
       run_enabled_idempotence arr,downloaders
       run_play --tags arr,downloaders --check --diff
       printf 'DOWNLOADERS_PHASE1_RUNTIME_VERIFIED\n'
+      cleanup_vault
+      exit 0
+    fi
+
+    if [ "\$INTEGRATION_SUITE" = bindery ]; then
+      /repo/tests/contracts/arr.sh static
+      /repo/tests/contracts/downloaders.sh static
+      /repo/tests/contracts/bindery.sh static
+      run_bindery_contract run
+      run_bindery_verify_only
+      run_enabled_idempotence arr,downloaders,bindery
+      run_play --tags arr,downloaders,bindery --check --diff
+      printf 'BINDERY_PHASE2_RUNTIME_VERIFIED\n'
       cleanup_vault
       exit 0
     fi

@@ -1,0 +1,434 @@
+---
+- name: Revalidate deployment paths before Bindery runtime use
+  ansible.builtin.include_role:
+    name: deployment_bundle
+    tasks_from: target
+  vars:
+    deployment_target_require_current_release: true
+    deployment_target_extra_paths:
+      - "{{ platform_current_dir }}/services/bindery"
+      - "{{ platform_current_dir }}/services/bindery/compose.yml"
+      - "{{ platform_current_dir }}/services/bindery/compose.{{ platform_compose_kind }}.yml"
+      - "{{ platform_runtime_dir }}/services/bindery"
+      - "{{ platform_runtime_dir }}/services/bindery/.env"
+      - "{{ bindery_config_host_path }}"
+
+# Redacted: the conditions name the API-key seed and both halves of the
+# administrator identity. The seed reaches the target as an environment
+# variable and the pair is submitted to the application as a JSON body, so
+# every one of the three is a value a module result would otherwise render.
+# The application refuses a password shorter than eight characters, and
+# refusing it here fails the run before anything is deployed rather than
+# inside a redacted request.
+- name: Require well-formed Bindery credentials
+  ansible.builtin.assert:
+    that:
+      - vault_bindery_api_key is match('^[0-9a-f]{32}\Z')
+      - vault_bindery_admin_username is match('^[^\r\n]+$')
+      - vault_bindery_admin_password is match('^[^\r\n]+$')
+      - vault_bindery_admin_password | length >= 8
+    fail_msg: >-
+      The Bindery API key must be 32 lowercase hexadecimal characters and the
+      administrator pair must be nonempty single-line values with a password of
+      at least eight characters.
+  no_log: true
+
+# Redacted: this file carries the API-key seed that closes Bindery's anonymous
+# first-run setup window.
+- name: Render the private Bindery environment
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ platform_runtime_dir }}/services/bindery/.env"
+    mode: "0600"
+  no_log: true
+
+- name: Guard Bindery critical state before a pinned upgrade
+  ansible.builtin.include_tasks: pre_upgrade_backup.yml
+
+- name: Deploy Bindery
+  community.docker.docker_compose_v2:
+    project_src: "{{ platform_current_dir }}/services/bindery"
+    project_name: "{{ bindery_compose_project_name }}"
+    files: "{{ platform_service_compose_files['bindery'] }}"
+    env_files: ["{{ platform_runtime_dir }}/services/bindery/.env"]
+    state: present
+    wait: true
+    wait_timeout: "{{ platform_compose_wait_timeout }}"
+  register: bindery_deploy
+
+- name: Report the Bindery deployment
+  ansible.builtin.include_role:
+    name: ntfy
+    tasks_from: deployment_report
+  vars:
+    ntfy_deployment_report_service: Bindery
+    ntfy_deployment_report_changed: "{{ bindery_deploy is changed }}"
+
+- name: Verify Bindery effective container CPU policy
+  ansible.builtin.include_role:
+    name: container_cpu
+  vars:
+    container_cpu_service_name: bindery
+    container_cpu_project_name: "{{ bindery_compose_project_name }}"
+  when: not ansible_check_mode
+
+# /api/v1/health is the one route outside the authentication middleware that
+# says anything about readiness, and it is what the image's own distroless
+# `/bindery healthcheck` probe requests too.
+- name: Wait for Bindery application readiness
+  ansible.builtin.uri:
+    url: "{{ bindery_api }}/health"
+    method: GET
+    status_code: [200]
+    return_content: true
+  register: bindery_health
+  until:
+    - bindery_health.json | default(none) is mapping
+    - bindery_health.json.status | default('') == 'ok'
+  retries: "{{ platform_readiness_retries }}"
+  delay: "{{ platform_readiness_delay }}"
+  changed_when: false
+  check_mode: false
+
+# Credential-free, and the only read that reports which authentication mode the
+# deployed database holds. `local-only` grants administrator to every peer on a
+# private network with no credential at all, and an administrator may read the
+# API key in clear, so that mode would hand the LAN the key that authorizes
+# every route which renames or deletes a book file.
+- name: Read the Bindery authentication posture
+  ansible.builtin.uri:
+    url: "{{ bindery_api }}/auth/status"
+    method: GET
+    status_code: [200]
+    return_content: true
+  register: bindery_auth_status
+  changed_when: false
+  check_mode: false
+
+- name: Require the enforced Bindery authentication mode
+  ansible.builtin.assert:
+    that:
+      - bindery_auth_status.json.mode | default('') == 'enabled'
+    fail_msg: >-
+      Bindery is not in its enforcing authentication mode. In local-only mode it
+      grants administrator to every private-network peer with no credential, and
+      an administrator may read the API key in clear.
+
+- name: Resolve the Bindery API key
+  ansible.builtin.include_tasks: resolve_api_key.yml
+
+# The first-run setup route is anonymous until any user exists and answers 409
+# forever afterwards, so the window between the container starting and the
+# platform declaring its administrator is a permanent land grab for whoever
+# reaches port {{ bindery_port }} first. It is closed inside this same
+# convergence: the seeded key above is what authorizes the declaration below.
+# Redacted: the request carries the application API key.
+- name: Read the declared Bindery users
+  ansible.builtin.uri:
+    url: "{{ bindery_api }}/auth/users"
+    method: GET
+    headers:
+      X-Api-Key: "{{ bindery_api_key }}"
+    status_code: [200]
+    return_content: true
+  register: bindery_users
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+# Nothing in Bindery is create-if-absent: a duplicate user is a 500, so the
+# write below only runs when the read above proved the identity is missing.
+# Redacted: the condition names the vault-authored administrator username.
+- name: Resolve whether Bindery holds the vault administrator
+  ansible.builtin.set_fact:
+    bindery_administrator_present: >-
+      {{ bindery_users.json | default([])
+         | selectattr('username', 'equalto', vault_bindery_admin_username)
+         | selectattr('role', 'equalto', 'admin')
+         | list | length == 1 }}
+  no_log: true
+
+- name: Report the planned Bindery administrator provisioning
+  ansible.builtin.debug:
+    msg: >-
+      Bindery does not hold the vault-authored administrator; a live run would
+      declare it through the user management interface.
+  when:
+    - ansible_check_mode
+    - not bindery_administrator_present | bool
+
+# Redacted: this request is where the administrator identity enters the target.
+- name: Declare the vault-authored Bindery administrator
+  ansible.builtin.uri:
+    url: "{{ bindery_api }}/auth/users"
+    method: POST
+    headers:
+      X-Api-Key: "{{ bindery_api_key }}"
+    body_format: json
+    body:
+      username: "{{ vault_bindery_admin_username }}"
+      password: "{{ vault_bindery_admin_password }}"
+      role: admin
+    status_code: [201]
+  when:
+    - not ansible_check_mode
+    - not bindery_administrator_present | bool
+  changed_when: true
+  no_log: true
+
+# Redacted: the request carries the application API key.
+- name: Read the declared Bindery destination roots
+  ansible.builtin.uri:
+    url: "{{ bindery_api }}/rootfolder"
+    method: GET
+    headers:
+      X-Api-Key: "{{ bindery_api_key }}"
+    status_code: [200]
+    return_content: true
+  register: bindery_root_folders
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+# A duplicate root folder is a 500 as well, and creating one os.Stats the path
+# inside the container first, which is why host_prep's directories and the bind
+# mounts have to exist before this point. Both roots are required: an audiobook
+# root that silently fell back to the ebook root is the single-library collapse
+# the design forbids, and it is invisible in every other reading.
+- name: Resolve the missing Bindery destination roots
+  ansible.builtin.set_fact:
+    bindery_missing_roots: >-
+      {{ bindery_library_roots
+         | difference(bindery_root_folders.json | default([]) | map(attribute='path') | list) }}
+
+- name: Report the planned Bindery destination roots
+  ansible.builtin.debug:
+    msg: >-
+      Bindery does not own these declared destination roots and a live run would
+      create them: {{ bindery_missing_roots | join(', ') }}.
+  when:
+    - ansible_check_mode
+    - bindery_missing_roots | length > 0
+
+# Redacted: the request carries the application API key.
+- name: Declare the Bindery destination roots
+  ansible.builtin.uri:
+    url: "{{ bindery_api }}/rootfolder"
+    method: POST
+    headers:
+      X-Api-Key: "{{ bindery_api_key }}"
+    body_format: json
+    body:
+      path: "{{ item }}"
+    status_code: [201]
+  loop: "{{ bindery_missing_roots }}"
+  loop_control:
+    label: bindery-destination-root
+  when: not ansible_check_mode
+  changed_when: true
+  no_log: true
+
+# Two settings are mandatory rather than optional. The auto-grab kill switch
+# fails open — a missing row, a read error and an unattached repository all read
+# as enabled — so unattended grabbing is only actually off once the row exists
+# and says so. Telemetry is on by default with a daily ping; the environment
+# switch in the Compose definition stops the first one, and this row is what
+# survives a future environment edit.
+# Redacted: the request carries the application API key.
+- name: Read the declared Bindery settings
+  ansible.builtin.uri:
+    url: "{{ bindery_api }}/setting"
+    method: GET
+    headers:
+      X-Api-Key: "{{ bindery_api_key }}"
+    status_code: [200]
+    return_content: true
+  register: bindery_settings
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Resolve the Bindery settings needing reconciliation
+  ansible.builtin.set_fact:
+    bindery_settings_to_write: >-
+      {{ (bindery_pinned_settings | dict2items)
+         | difference(bindery_settings.json | default([])
+                      | items2dict(key_name='key', value_name='value')
+                      | dict2items) }}
+
+- name: Report the planned Bindery settings reconciliation
+  ansible.builtin.debug:
+    msg: >-
+      Bindery does not hold these declared settings and a live run would write
+      them: {{ bindery_settings_to_write | map(attribute='key') | join(', ') }}.
+  when:
+    - ansible_check_mode
+    - bindery_settings_to_write | length > 0
+
+# Redacted: the request carries the application API key.
+- name: Reconcile the declared Bindery settings
+  ansible.builtin.uri:
+    url: "{{ bindery_api }}/setting/{{ item.key }}"
+    method: PUT
+    headers:
+      X-Api-Key: "{{ bindery_api_key }}"
+    body_format: json
+    body:
+      value: "{{ item.value }}"
+    status_code: [200]
+  loop: "{{ bindery_settings_to_write }}"
+  loop_control:
+    label: bindery-setting
+  when: not ansible_check_mode
+  changed_when: true
+  no_log: true
+
+- name: Reconcile the Bindery Usenet integrations
+  ansible.builtin.include_tasks: reconcile_usenet.yml
+  when: media_usenet_enabled | bool
+
+- name: Report the inert Bindery Usenet integrations
+  ansible.builtin.debug:
+    msg: >-
+      Usenet is disabled for this host, so Bindery declares no Prowlarr instance
+      and no download client. Both writes resolve their host at write time and
+      reject an address they cannot look up, so neither can be declared while
+      Prowlarr and SABnzbd are stopped.
+  when: not media_usenet_enabled | bool
+
+- name: Verify the Bindery service endpoint
+  tags: [platform_verify_bindery]
+  ansible.builtin.uri:
+    url: "{{ bindery_api }}/health"
+    method: GET
+    status_code: [200]
+    return_content: true
+  register: bindery_verify_health
+  changed_when: false
+  check_mode: false
+
+- name: Verify the Bindery authentication posture
+  tags: [platform_verify_bindery]
+  ansible.builtin.uri:
+    url: "{{ bindery_api }}/auth/status"
+    method: GET
+    status_code: [200]
+    return_content: true
+  register: bindery_verify_auth_status
+  changed_when: false
+  check_mode: false
+
+# The refusal probe is a credential-free read of a protected route, never a
+# deliberately wrong password: the login limiter records five failures per
+# fifteen minutes per IP and then answers 429 to the correct password too, so a
+# wrong-guess probe would make the next verification lie about the identity.
+- name: Verify Bindery refuses an unauthenticated caller
+  tags: [platform_verify_bindery]
+  ansible.builtin.uri:
+    url: "{{ bindery_api }}/rootfolder"
+    method: GET
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: bindery_verify_anonymous
+  failed_when: false
+  changed_when: false
+  check_mode: false
+
+# Exactly one login per verification, and with the password the platform
+# authored, so it succeeds and resets the limiter rather than consuming it.
+# Redacted: the request is the vault-authored administrator identity.
+- name: Verify Bindery accepts the vault administrator
+  tags: [platform_verify_bindery]
+  ansible.builtin.uri:
+    url: "{{ bindery_api }}/auth/login"
+    method: POST
+    body_format: json
+    body:
+      username: "{{ vault_bindery_admin_username }}"
+      password: "{{ vault_bindery_admin_password }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: bindery_verify_identity
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+# Redacted: the response returns the deployed API key in clear.
+- name: Verify the Bindery administrator session authorizes the API
+  tags: [platform_verify_bindery]
+  ansible.builtin.uri:
+    url: "{{ bindery_api }}/auth/config"
+    method: GET
+    headers:
+      Cookie: "{{ bindery_verify_identity.cookies_string | default('') }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: bindery_verify_config
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+# Redacted: the request carries the application API key.
+- name: Verify the Bindery destination root ownership
+  tags: [platform_verify_bindery]
+  ansible.builtin.uri:
+    url: "{{ bindery_api }}/rootfolder"
+    method: GET
+    headers:
+      X-Api-Key: "{{ bindery_verify_config.json.apiKey | default('') }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: bindery_verify_roots
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+# The image cannot repair a wrongly owned directory: it is distroless, starts as
+# no one privileged and has no shell to chown with. This read is what turns that
+# into a named failure instead of a permission-denied import weeks later, and it
+# is a far better assertion than a bare 200.
+# Redacted: the request carries the application API key.
+- name: Verify the Bindery configured storage
+  tags: [platform_verify_bindery]
+  ansible.builtin.uri:
+    url: "{{ bindery_api }}/system/storage"
+    method: GET
+    headers:
+      X-Api-Key: "{{ bindery_verify_config.json.apiKey | default('') }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: bindery_verify_storage
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+# Every probe above accepts any status and defers to this assertion, so a
+# drifted credential is diagnosed here by name instead of failing inside a
+# redacted request that can say nothing about which outcome differed.
+- name: Require the exact Bindery verification results
+  tags: [platform_verify_bindery]
+  ansible.builtin.assert:
+    that:
+      - bindery_verify_health.json.status | default('') == 'ok'
+      - bindery_verify_auth_status.json.mode | default('') == 'enabled'
+      - not bindery_verify_auth_status.json.setupRequired | default(true) | bool
+      - bindery_verify_anonymous.status | default(0) | int == 401
+      - bindery_verify_identity.status | default(0) | int == 200
+      - bindery_verify_config.status | default(0) | int == 200
+      - bindery_verify_roots.status | default(0) | int == 200
+      - >-
+        bindery_verify_roots.json | default([]) | map(attribute='path') | sort | list
+        == bindery_library_roots | sort | list
+      - bindery_verify_storage.status | default(0) | int == 200
+      - >-
+        (bindery_verify_storage.json.dirs | default([])
+         | selectattr('exists') | selectattr('writable') | list | length) == 4
+    fail_msg: >-
+      Bindery is unreachable, or it no longer enforces authentication, accepts
+      exactly the vault-authored administrator, refuses an unauthenticated
+      caller, owns exactly the declared ebook and audiobook destination roots,
+      and reports all four configured directories present and writable.

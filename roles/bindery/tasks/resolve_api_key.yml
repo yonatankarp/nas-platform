@@ -1,0 +1,81 @@
+---
+# Bindery keeps its API key in its own database and hands it to nobody except an
+# authenticated administrator. Three states are possible and all three are
+# resolved without ever submitting a password the platform expects to be wrong:
+# the login limiter is per IP at five failures in fifteen minutes and, once
+# tripped, answers 429 to the correct password too, so a deliberate wrong-guess
+# probe would lock the platform out of its own service.
+#
+# Redacted: the request carries the vault-authored key and the response returns
+# the deployed one in clear.
+- name: Probe the vault-authored Bindery API key
+  ansible.builtin.uri:
+    url: "{{ bindery_api }}/auth/config"
+    method: GET
+    headers:
+      X-Api-Key: "{{ vault_bindery_api_key }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: bindery_key_probe
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+# The seed is a one-way door: BINDERY_API_KEY is honoured only while the stored
+# key is absent, and the only route that changes one afterwards mints a random
+# value. So a key rotated in the web interface cannot be pushed back, and the
+# single recovery path is the vault-authored administrator reading it out. This
+# runs only when the seeded key has already stopped working, which is why it can
+# afford the one login attempt it costs.
+# Redacted: the request is the vault-authored administrator identity.
+- name: Recover the deployed Bindery API key with the vault administrator
+  ansible.builtin.uri:
+    url: "{{ bindery_api }}/auth/login"
+    method: POST
+    body_format: json
+    body:
+      username: "{{ vault_bindery_admin_username }}"
+      password: "{{ vault_bindery_admin_password }}"
+    status_code: "{{ range(100, 600) | list }}"
+  register: bindery_identity_login
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when: bindery_key_probe.status | default(0) | int != 200
+
+# Redacted: the response returns the deployed API key in clear.
+- name: Read the deployed Bindery API key from the recovered session
+  ansible.builtin.uri:
+    url: "{{ bindery_api }}/auth/config"
+    method: GET
+    headers:
+      Cookie: "{{ bindery_identity_login.cookies_string | default('') }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: bindery_session_config
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when: bindery_identity_login.status | default(0) | int == 200
+
+# Redacted: the resolved value is the application's own authorization secret.
+- name: Resolve the effective Bindery API key
+  ansible.builtin.set_fact:
+    bindery_api_key: >-
+      {{ (bindery_key_probe.json | default({})).apiKey | default('')
+         if bindery_key_probe.status | default(0) | int == 200
+         else (bindery_session_config.json | default({})).apiKey | default('') }}
+  no_log: true
+
+- name: Refuse an unrecoverable Bindery administrator identity
+  ansible.builtin.assert:
+    that:
+      - bindery_api_key | length > 0
+    fail_msg: >-
+      Bindery accepts neither the vault-authored API key nor the vault-authored
+      administrator, so it is holding an identity this platform did not author
+      and no converge can replace it. Recover the deployed credentials or remove
+      the Bindery database before running again.

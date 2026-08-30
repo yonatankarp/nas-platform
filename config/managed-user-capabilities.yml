@@ -101,6 +101,16 @@ services:
       create: get_user_model
       authenticate: api/token
       reconcile: get_user_model
+  bindery:
+    preserves_unmanaged_users: true
+    password_rotation: refuse
+    existing_identity_password_update: forbidden
+    mode: api
+    interfaces:
+      list: api/v1/auth/users
+      create: api/v1/auth/users
+      authenticate: api/v1/auth/login
+      reconcile: api/v1/auth/users
   kapowarr:
     preserves_unmanaged_users: true
     password_rotation: refuse

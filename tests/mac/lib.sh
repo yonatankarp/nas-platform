@@ -177,7 +177,7 @@ mac_target_container_names() {
         "$mac_project-paperless-redis" "$mac_project-paperless-postgres" \
         "$mac_project-paperless-webserver" "$mac_project-paperless-gotenberg" \
         "$mac_project-paperless-tika" "$mac_project-pinchflat" \
-        "$mac_project-kapowarr"
+        "$mac_project-kapowarr" "$mac_project-bindery"
       ;;
     *) mac_die 'proof platform is invalid' ;;
   esac
