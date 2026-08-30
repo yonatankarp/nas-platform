@@ -329,20 +329,13 @@ def mac_review_subjects(text, marker)
      .reject(&:empty?)
 end
 
-# Read the roster without asserting anything about its shape. policy_test.rb owns
-# the diagnosis of a missing, malformed or heterogeneous manifest, and a `fetch`
-# here would replace its named failure with a stack trace from this script --
-# which is exactly what tests/policy_manifest_test.rb refuses.
-mac_manifest = begin
-  YAML.safe_load_file(File.join(ROOT, "services", "manifest.yml"))
-rescue Errno::ENOENT, Psych::Exception
-  nil
-end
-mac_manifest_entries = mac_manifest.is_a?(Hash) ? mac_manifest["services"] : nil
-mac_implemented_services = (mac_manifest_entries.is_a?(Array) ? mac_manifest_entries : [])
-                           .select { |entry| entry.is_a?(Hash) && entry["status"] == "implemented" }
-                           .map { |entry| entry["name"] }
-                           .grep(String)
+# Read the roster through the shared reader rather than parsing the manifest a
+# second time: a second copy is a copy no test says must agree with the first,
+# and it would miss "accepted", which counts as deployed. The reader is fail-soft
+# by design -- policy_test.rb owns the diagnosis of a missing, malformed or
+# heterogeneous manifest, and raising here would replace its named failure with a
+# stack trace from this script, which tests/policy_manifest_test.rb refuses.
+mac_implemented_services = implemented_services(ROOT)
 # A stale exemption is the same defect one step later: a service removed from the
 # roster must not leave behind a standing excuse for the next one to inherit.
 # Skipped when the roster did not load, so an unreadable manifest is reported
