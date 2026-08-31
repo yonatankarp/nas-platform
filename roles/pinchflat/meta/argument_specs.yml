@@ -18,6 +18,15 @@ argument_specs:
       pinchflat_downloads_host_path:
         type: path
         required: false
+      pinchflat_ytdlp_version:
+        type: str
+        required: false
+      pinchflat_ytdlp_sha256:
+        type: str
+        required: false
+      pinchflat_ytdlp_host_path:
+        type: path
+        required: false
       vault_pinchflat_admin_username:
         type: str
         required: true

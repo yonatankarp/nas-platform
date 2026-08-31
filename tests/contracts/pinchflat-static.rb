@@ -82,10 +82,13 @@ if failures.empty?
       service.dig("environment", name) == expected
   end
 
-  failures << "Pinchflat must mount exactly its config and YouTube library" unless
+  # The third mount is the extractor, and it is read-only on purpose: nothing
+  # inside the container may rewrite the thing that resolves every source.
+  failures << "Pinchflat must mount exactly its config, library and extractor" unless
     Array(service["volumes"]) == [
       "${PINCHFLAT_CONFIG_PATH:?}:/config",
-      "${PINCHFLAT_DOWNLOADS_PATH:?}:/downloads"
+      "${PINCHFLAT_DOWNLOADS_PATH:?}:/downloads",
+      "${PINCHFLAT_YTDLP_PATH:?}:/usr/local/bin/yt-dlp:ro"
     ]
 
   # The published port and the container port are both pinned by
@@ -102,6 +105,18 @@ if failures.empty?
     defaults["pinchflat_downloads_host_path"] == "{{ nas_media_root }}/Media/YouTube"
   failures << "Pinchflat must keep its state in the declared config root" unless
     defaults["pinchflat_config_host_path"] == "{{ nas_docker_root }}/pinchflat/config"
+
+  # The image's own yt-dlp is frozen behind YouTube and upstream ships no newer
+  # release image, so the extractor is a declared artifact rather than whatever
+  # the image was built with. Pinned by shape, not by value, so a version bump
+  # does not have to edit this contract -- but a bump that drops either half of
+  # the pin fails here.
+  failures << "Pinchflat must declare the yt-dlp build it deploys" unless
+    defaults["pinchflat_ytdlp_version"].to_s.match?(/\A\d{4}\.\d{2}\.\d{2}\z/)
+  failures << "Pinchflat must pin the yt-dlp artifact by sha256" unless
+    defaults["pinchflat_ytdlp_sha256"].to_s.match?(/\A[0-9a-f]{64}\z/)
+  failures << "Pinchflat must keep the extractor beside its own state" unless
+    defaults["pinchflat_ytdlp_host_path"] == "{{ nas_docker_root }}/pinchflat/bin/yt-dlp"
 
   env_assignments = environment_assignments(
     File.join(root, "roles/pinchflat/templates/env.j2")
@@ -122,6 +137,13 @@ if failures.empty?
     tasks.count { |task| task.dig("community.docker.docker_compose_v2", "state") == "present" } == 1
   failures << "Pinchflat must verify its effective project CPU policy" unless
     tasks.count { |task| task.dig("vars", "container_cpu_service_name") == "pinchflat" } == 1
+
+  # Fetching the extractor unverified would turn a bad download into the code
+  # that resolves every source, so the fetch must be checked against the pin.
+  failures << "Pinchflat must fetch the extractor against the declared checksum" unless
+    tasks.count { |task|
+      task.dig("ansible.builtin.get_url", "checksum").to_s.include?("pinchflat_ytdlp_sha256")
+    } == 1
 
   # The credential reaches the target through the rendered environment and the
   # authenticated probe. Both must stay redacted; the anonymous refusal probe

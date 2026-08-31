@@ -20,6 +20,17 @@ no machine contract.
 
 ## There is no configuration API
 
+> **The image no longer supplies yt-dlp.** v2025.6.6 bakes in yt-dlp
+> 2025.05.22, which reads a current YouTube playlist page as zero entries since
+> YouTube moved playlist items to "lockup view models", and a source Pinchflat
+> cannot resolve is a source it refuses to store (see
+> [A source cannot be declared offline, by anyone](#a-source-cannot-be-declared-offline-by-anyone)).
+> Upstream has published no release image since 2025-06, so the extractor cannot
+> be kept current by moving the image. `roles/pinchflat` now deploys a
+> version-and-sha256-pinned yt-dlp zipapp and Compose bind-mounts it read-only
+> over `/usr/local/bin/yt-dlp`. Findings below were taken against the image's
+> own yt-dlp and are left as the provenance record they are.
+
 The router at v2025.6.6 defines exactly one route under its `:api` pipeline:
 
 ```

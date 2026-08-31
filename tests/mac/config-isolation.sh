@@ -150,6 +150,7 @@ render() {
     NAS_UID=1000 NAS_GID=100 TZ=UTC \
     PINCHFLAT_CONFIG_PATH="$temporary_dir/$label-pinchflat-config" \
     PINCHFLAT_DOWNLOADS_PATH="$temporary_dir/$label-media/Media/YouTube" \
+    PINCHFLAT_YTDLP_PATH="$temporary_dir/$label-pinchflat-bin/yt-dlp" \
     PINCHFLAT_HOST_PORT="$pinchflat_port" \
     PINCHFLAT_BASIC_AUTH_USERNAME=test PINCHFLAT_BASIC_AUTH_PASSWORD=test \
     docker compose --project-name "$base_name-pinchflat" \
