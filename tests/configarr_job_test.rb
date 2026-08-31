@@ -110,9 +110,15 @@ if failures.empty?
   check(failures,
         configarr["image"].to_s.match?(/:[A-Za-z0-9][A-Za-z0-9_.-]*@sha256:[0-9a-f]{64}\z/),
         "Configarr image must carry a readable tag and sha256 digest")
+  # Read rather than restated: tests/expected/arr.yml is the one home of an arr
+  # CPU ceiling, and tests/policy_test.rb pins Compose to it and measures it
+  # against the container CPU budget. A literal here would be a copy to keep
+  # equal, not an independent check.
+  configarr_cpus = YAML.safe_load_file(File.join(ROOT, "tests", "expected", "arr.yml"))
+                       .fetch("container_cpus").fetch("configarr")
   check(failures, configarr["cpuset"] == "${PLATFORM_CONTAINER_CPUSET:?}" &&
-                  configarr["cpus"] == 0.5,
-        "Configarr must use the platform CPU set and a 0.5 CPU ceiling")
+                  configarr["cpus"] == configarr_cpus,
+        "Configarr must use the platform CPU set and its pinned CPU ceiling")
   check(failures, configarr["logging"] == {
           "driver" => "json-file",
           "options" => { "max-size" => "10m", "max-file" => "3" }
