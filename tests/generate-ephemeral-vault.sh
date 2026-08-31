@@ -144,6 +144,7 @@ generate_vault() (
   ntfy_deploy_password=$(random_password)
   dozzle_admin_password=$(random_password)
   trailarr_admin_password=$(random_password)
+  ntfy_seerr_password=$(random_password)
   managed_dozzle_password=$(random_password)
   managed_ntfy_password=$(random_password)
   ssh-keygen -q -t ed25519 -N '' -C 'ephemeral beszel hub' -f "$private_key" \
@@ -202,6 +203,7 @@ vault_trailarr_api_key: '$(openssl rand -hex 16 2>/dev/null)'
 vault_trailarr_admin_username: nasadmin
 vault_trailarr_admin_password: '$trailarr_admin_password'
 vault_trailarr_admin_password_hash: '$(bcrypt_password "$trailarr_admin_password")'
+vault_seerr_api_key: '$(openssl rand -hex 16 2>/dev/null)'
 vault_ntfy_admin_user: ephemeral-admin
 vault_ntfy_admin_password: '$ntfy_admin_password'
 vault_ntfy_admin_password_hash: '$(bcrypt_password "$ntfy_admin_password")'
@@ -211,6 +213,8 @@ vault_ntfy_beszel_password_hash: '$(bcrypt_password "$ntfy_beszel_password")'
 vault_ntfy_beszel_token: '$(random_token)'
 vault_ntfy_deploy_password_hash: '$(bcrypt_password "$ntfy_deploy_password")'
 vault_ntfy_deploy_token: '$(random_token)'
+vault_ntfy_seerr_password_hash: '$(bcrypt_password "$ntfy_seerr_password")'
+vault_ntfy_seerr_token: '$(random_token)'
 vault_paperless_admin_username: ephemeral-admin
 vault_paperless_admin_password: '$(random_password)'
 vault_paperless_admin_email: ephemeral-admin@example.invalid

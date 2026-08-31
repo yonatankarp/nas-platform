@@ -27,6 +27,7 @@ render() {
   kapowarr_port=${17}
   bindery_port=${18}
   trailarr_port=${19}
+  seerr_port=${20}
 
   env PLATFORM_PROJECT_NAME="$base_name" BESZEL_HOST_PORT="$beszel_port" \
     NAS_DOCKER_ROOT="$temporary_dir/$label" NAS_MEDIA_ROOT="$temporary_dir/$label-media" \
@@ -198,12 +199,23 @@ render() {
       -f "$repo_dir/services/trailarr/compose.yml" \
       -f "$repo_dir/services/trailarr/compose.mac.yml" config --format json \
       > "$temporary_dir/$label-trailarr.json"
+
+  env PLATFORM_PROJECT_NAME="$base_name" PLATFORM_CONTAINER_CPUSET=0-2 \
+    PLATFORM_MEDIA_NETWORK="$base_name-media-control" \
+    NAS_UID=1000 NAS_GID=100 TZ=UTC \
+    SEERR_API_KEY=00000000000000000000000000000000 \
+    SEERR_CONFIG_PATH="$temporary_dir/$label-seerr-config" \
+    SEERR_HOST_PORT="$seerr_port" \
+    docker compose --project-name "$base_name-seerr" \
+      -f "$repo_dir/services/seerr/compose.yml" \
+      -f "$repo_dir/services/seerr/compose.mac.yml" config --format json \
+      > "$temporary_dir/$label-seerr.json"
 }
 
 render first nas-platform-mac-first 38090 32586 38080 33378 35600 38096 32283 38000 \
-  37878 38989 36969 36767 38082 38945 35656 38787 37889
+  37878 38989 36969 36767 38082 38945 35656 38787 37889 35055
 render second nas-platform-mac-second 38091 32587 38081 33379 35601 38097 32284 38001 \
-  37879 38990 36970 36768 38083 38946 35657 38788 37890
+  37879 38990 36970 36768 38083 38946 35657 38788 37890 35056
 
 ruby -rjson - "$temporary_dir" <<'RUBY'
 directory = ARGV.fetch(0)
@@ -223,6 +235,8 @@ first_bindery = JSON.parse(File.read(File.join(directory, "first-bindery.json"))
 second_bindery = JSON.parse(File.read(File.join(directory, "second-bindery.json")))
 first_trailarr = JSON.parse(File.read(File.join(directory, "first-trailarr.json")))
 second_trailarr = JSON.parse(File.read(File.join(directory, "second-trailarr.json")))
+first_seerr = JSON.parse(File.read(File.join(directory, "first-seerr.json")))
+second_seerr = JSON.parse(File.read(File.join(directory, "second-seerr.json")))
 first_komga = JSON.parse(File.read(File.join(directory, "first-komga.json")))
 second_komga = JSON.parse(File.read(File.join(directory, "second-komga.json")))
 first_jellyfin = JSON.parse(File.read(File.join(directory, "first-jellyfin.json")))
@@ -405,6 +419,19 @@ raise "Trailarr published ports collide" if
 raise "Trailarr control networks collide" if
   first_trailarr.dig("networks", "media-control", "name") ==
   second_trailarr.dig("networks", "media-control", "name")
+
+raise "Seerr project namespaces collide" if first_seerr["name"] == second_seerr["name"]
+raise "Seerr container names collide" if
+  first_seerr.dig("services", "seerr", "container_name") ==
+  second_seerr.dig("services", "seerr", "container_name")
+raise "Seerr published ports collide" if
+  published(first_seerr, "seerr") == published(second_seerr, "seerr")
+# Seerr reads Jellyfin and writes Radarr and Sonarr by service name, so a
+# sandbox copy must take its own control network rather than joining the
+# neighbour's.
+raise "Seerr control networks collide" if
+  first_seerr.dig("networks", "media-control", "name") ==
+  second_seerr.dig("networks", "media-control", "name")
 
 raise "Mac socket proxy publishes a host port" if first_beszel.dig("services", "socket-proxy").key?("ports")
 raise "Dozzle socket proxy publishes a host port" if first_dozzle.dig("services", "socket-proxy").key?("ports")

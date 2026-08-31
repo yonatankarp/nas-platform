@@ -193,7 +193,7 @@ projects:
             published_by: trailarr
   seerr:
     role: seerr
-    status: planned
+    status: implemented
     services:
       seerr:
         class: long_running

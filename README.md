@@ -19,10 +19,10 @@ off-site backup. RAID is not a backup.
 - [Adding a service](docs/adding-a-service.md)
 
 The [`services/manifest.yml`](services/manifest.yml) catalog distinguishes
-fourteen implemented service projects from one planned media-acquisition
-project. Runtime role and service directories exist only for the implemented
-projects; the planned entries remain inert and intentionally have no runtime
-role or Compose directory.
+fifteen implemented service projects from no planned media-acquisition
+projects. The media acquisition catalog is fully implemented; a project added
+to it in future stays inert, with no runtime role or Compose directory, until
+its own promotion.
 Prove the implemented platform on the Mac before preparing a fresh production NAS
 installation.
 
@@ -225,8 +225,22 @@ over the container environment at every start and the application writes to it,
 so the role owns that file as well as the Compose environment, and a setting or
 a login changed by hand is reverted by the next run only because it does.
 Monitoring and downloads are pinned off until the operator acceptance step has
-proved one trailer by hand, so a fresh deployment downloads nothing. The
-remaining acquisition project — Seerr — stays planned.
+proved one trailer by hand, so a fresh deployment downloads nothing.
+
+Phase 4 adds Seerr, the request front end, and completes the catalog. Household
+members ask for a film or a series in Seerr and Radarr and Sonarr acquire it,
+so it reads Jellyfin's user list and writes Radarr's and Sonarr's connection
+rows, all by Compose service name; it joins `media-control` and converges after
+Jellyfin, whose users it imports. Its bootstrap has to happen in the play that
+starts the container rather than in a later one, because
+`POST /api/v1/auth/jellyfin` is mounted without an authentication check — it is
+how the first administrator is created — and takes the Jellyfin hostname from
+the anonymous request body, so until a user row exists anyone who can reach
+port 5055 can point Seerr at a Jellyfin server they control and become its
+owner. Both identities may request with immediate automatic approval and no
+quota; `defaultPermissions` is pinned to 0 and `newPlexLogin` to false so a
+Jellyfin user the platform never declared inherits nothing, and `localLogin` is
+false because Seerr holds no local password for either identity.
 
 Each of the later phases was investigated before it was planned, against
 upstream source and a running container. The
@@ -349,8 +363,11 @@ says.
   production: one mode-0600 `services/<name>/.env` per stack, rendered from
   vault by each role's `templates/env.j2`.
 - **Service data under the Docker root**, `/volume1/Docker` in production:
-  Dozzle's data directory as a whole, Beszel's hub private key, and the
-  first-run configuration Ansible seeds and then leaves alone — SABnzbd's
+  Dozzle's data directory as a whole, Beszel's hub private key, Seerr's
+  `settings.json` and the `settings.old.json` beside it — both mode 0644,
+  holding the Seerr API key, the Jellyfin token Seerr minted for itself and the
+  session secret — and the first-run configuration Ansible seeds and then
+  leaves alone — SABnzbd's
   `sabnzbd/config/sabnzbd.ini` (administrator username, password and API key),
   the Radarr, Sonarr and Prowlarr `config/config.xml` files (API keys), and
   Bazarr's `bazarr/config/config/config.yaml` (API key, administrator identity).

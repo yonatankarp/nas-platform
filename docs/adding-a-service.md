@@ -390,9 +390,13 @@ runtime contract and it does not stop being true or useful once the service is
 implemented. Both `arr` and `downloaders` kept theirs through Phase 1, and
 `tests/contracts/pinchflat-foundation.sh` survives the Pinchflat promotion
 alongside the new `tests/contracts/pinchflat.sh`. What changes is the dispatch:
-the promoted project leaves the `seerr)` arm in
-`tests/integration.sh` for a branch of its own, and
-`tests/integration_suite_test.sh` pins both the shrunken arm and the new lane.
+the promoted project leaves the shared foundation dispatch in
+`tests/integration.sh` for whichever project is still planned, and
+`tests/integration_suite_test.sh` pins both that arm and the new lane. With the
+acquisition catalog fully implemented there is no planned project left, so that
+arm now sits in the last promoted project's own lane: it runs the shared
+foundation's runtime proof and then falls through to the lane's service proof
+rather than exiting there.
 
 Promotion also removes the service from the registers that asserted its absence:
 the catalog loop in `tests/mac/hooks/verify/15-media-acquisition-foundation.sh`

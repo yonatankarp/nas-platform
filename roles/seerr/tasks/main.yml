@@ -1,0 +1,266 @@
+---
+- name: Revalidate deployment paths before Seerr runtime use
+  ansible.builtin.include_role:
+    name: deployment_bundle
+    tasks_from: target
+  vars:
+    deployment_target_require_current_release: true
+    deployment_target_extra_paths:
+      - "{{ platform_current_dir }}/services/seerr"
+      - "{{ platform_current_dir }}/services/seerr/compose.yml"
+      - "{{ platform_current_dir }}/services/seerr/compose.{{ platform_compose_kind }}.yml"
+      - "{{ platform_runtime_dir }}/services/seerr"
+      - "{{ platform_runtime_dir }}/services/seerr/.env"
+
+# Redacted: the conditions name the Seerr API key, the Jellyfin administrator
+# pair and the ntfy publisher token. Compose reads the rendered .env line by
+# line, so a value carrying a newline would silently truncate the credential
+# rather than fail.
+- name: Require env-safe Seerr credentials
+  ansible.builtin.assert:
+    that:
+      - vault_seerr_api_key is match('^[0-9a-f]{32}\Z')
+      - vault_jellyfin_admin_username is match('^[^\r\n]+$')
+      - vault_jellyfin_admin_password is match('^[^\r\n]+$')
+      - vault_ntfy_seerr_token is match('^tk_[a-z0-9]{29}\Z')
+      - vault_arr_radarr_api_key is match('^[0-9a-f]{32}\Z')
+      - vault_arr_sonarr_api_key is match('^[0-9a-f]{32}\Z')
+    fail_msg: >-
+      Seerr needs a 32-character hexadecimal API key, a single-line Jellyfin
+      administrator name and password to bootstrap with, an ntfy publisher
+      token, and Radarr's and Sonarr's own keys. Seerr imposes no format on its
+      own key — it compares the value as an opaque string — so the shape is the
+      platform's, matching the vault_arr_* keys.
+  no_log: true
+
+# Redacted: this is where the API key enters the target filesystem.
+- name: Render the private Seerr environment
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ platform_runtime_dir }}/services/seerr/.env"
+    mode: "0600"
+  no_log: true
+
+- name: Deploy Seerr
+  community.docker.docker_compose_v2:
+    project_src: "{{ platform_current_dir }}/services/seerr"
+    project_name: "{{ seerr_compose_project_name }}"
+    files: "{{ platform_service_compose_files['seerr'] }}"
+    env_files: ["{{ platform_runtime_dir }}/services/seerr/.env"]
+    state: present
+    wait: true
+    wait_timeout: "{{ platform_compose_wait_timeout }}"
+  register: seerr_deploy
+
+- name: Report the Seerr deployment
+  ansible.builtin.include_role:
+    name: ntfy
+    tasks_from: deployment_report
+  vars:
+    ntfy_deployment_report_service: Seerr
+    ntfy_deployment_report_changed: "{{ seerr_deploy is changed }}"
+
+- name: Verify Seerr effective container CPU policy
+  ansible.builtin.include_role:
+    name: container_cpu
+  vars:
+    container_cpu_service_name: seerr
+    container_cpu_project_name: "{{ seerr_compose_project_name }}"
+
+# The image ships no HEALTHCHECK of its own, so the Compose file supplies one
+# and this loop is the second half of the same guard: docker_compose_v2 returns
+# as soon as the container is running, and Seerr takes several seconds after
+# that to answer HTTP.
+- name: Wait for Seerr application health
+  ansible.builtin.uri:
+    url: "{{ seerr_status_url }}"
+    method: GET
+    status_code: [200]
+    return_content: true
+  register: seerr_health
+  until:
+    - seerr_health.json | default(none) is mapping
+    - seerr_health.json.version | default('') | length > 0
+  retries: "{{ platform_readiness_retries }}"
+  delay: "{{ platform_readiness_delay }}"
+  changed_when: false
+  check_mode: false
+
+# Everything below is an HTTP write against an application that cannot be
+# simulated, so each one reports a predicted change under --check instead.
+- name: Close the Seerr takeover window
+  ansible.builtin.include_tasks: bootstrap.yml
+
+- name: Report the unreachable Seerr reconciliation
+  ansible.builtin.debug:
+    msg: >-
+      Seerr has no owner yet and check mode did not create one, so everything
+      below would answer 403 — the API key resolves to a user id 1 that does
+      not exist. A live run bootstraps first and then reconciles in the same
+      pass.
+  when: not seerr_configured | bool
+
+- name: Reconcile the declared Seerr settings
+  ansible.builtin.include_tasks: reconcile_settings.yml
+  when: seerr_configured | bool
+
+- name: Reconcile the Seerr arr connections
+  ansible.builtin.include_tasks: reconcile_arrs.yml
+  when:
+    - seerr_configured | bool
+    - media_usenet_enabled | bool
+
+- name: Report the inert Seerr arr connections
+  ansible.builtin.debug:
+    msg: >-
+      Usenet is disabled for this host, so Seerr declares no Radarr and no
+      Sonarr server. A request raised here would be approved and then have
+      nothing to fulfil it, which is what this host is for: the request front
+      end is proved against Jellyfin alone.
+  when: not media_usenet_enabled | bool
+
+- name: Reconcile the Seerr household identities
+  ansible.builtin.include_tasks: reconcile_users.yml
+  when: seerr_configured | bool
+
+# Seerr is the most exposed service in the set if it is ever published beyond
+# the LAN, so verification reads what an anonymous caller can see as well as
+# what the key can. /api/v1/settings/public answers without a credential both
+# before and after the bootstrap, and it carries exactly the three sign-in
+# switches the design's clause about newly discovered users rests on.
+- name: Verify the Seerr service endpoint
+  tags: [platform_verify_seerr]
+  ansible.builtin.uri:
+    url: "{{ seerr_status_url }}"
+    method: GET
+    status_code: [200]
+    return_content: true
+  register: seerr_verify_status
+  changed_when: false
+  check_mode: false
+
+- name: Verify the anonymous Seerr public settings
+  tags: [platform_verify_seerr]
+  ansible.builtin.uri:
+    url: "{{ seerr_public_settings_url }}"
+    method: GET
+    status_code: [200]
+    return_content: true
+  register: seerr_verify_public
+  changed_when: false
+  check_mode: false
+
+- name: Verify Seerr refuses an unauthenticated caller
+  tags: [platform_verify_seerr]
+  ansible.builtin.uri:
+    url: "{{ seerr_api }}/user"
+    method: GET
+    status_code: "{{ range(100, 600) | list }}"
+  register: seerr_verify_anonymous
+  failed_when: false
+  changed_when: false
+  check_mode: false
+
+# Redacted: the credential is the request.
+- name: Verify Seerr accepts the vault-authored API key
+  tags: [platform_verify_seerr]
+  ansible.builtin.uri:
+    url: "{{ seerr_api }}/settings/main"
+    method: GET
+    headers:
+      X-Api-Key: "{{ vault_seerr_api_key }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: seerr_verify_authenticated
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+# Redacted: the credential is the request.
+- name: Verify the Seerr permission identities
+  tags: [platform_verify_seerr]
+  ansible.builtin.uri:
+    url: "{{ seerr_api }}/user"
+    method: GET
+    headers:
+      X-Api-Key: "{{ vault_seerr_api_key }}"
+    status_code: [200]
+    return_content: true
+  register: seerr_verify_users
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+# Redacted: the credential is the request.
+- name: Verify the Seerr Jellyfin server declaration
+  tags: [platform_verify_seerr]
+  ansible.builtin.uri:
+    url: "{{ seerr_api }}/settings/jellyfin"
+    method: GET
+    headers:
+      X-Api-Key: "{{ vault_seerr_api_key }}"
+    status_code: [200]
+    return_content: true
+  register: seerr_verify_jellyfin
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+# Redacted: vault_managed_users carries every managed user's plaintext password
+# alongside the usernames this reads. The assertion below stays readable, which
+# is why the names are resolved into a fact here instead of inside it.
+- name: Resolve the declared Seerr household identities
+  tags: [platform_verify_seerr]
+  ansible.builtin.set_fact:
+    seerr_household_usernames: >-
+      {{ vault_managed_users.jellyfin | default([]) | map(attribute='username') | list }}
+  no_log: true
+
+- name: Require the exact Seerr verification results
+  tags: [platform_verify_seerr]
+  ansible.builtin.assert:
+    that:
+      - seerr_verify_status.json.version | default('') | length > 0
+      - seerr_verify_anonymous.status | default(0) | int == 401
+      - seerr_verify_authenticated.status | default(0) | int == 200
+      # The takeover window is closed exactly when a user row with id 1 exists:
+      # without it a correct key resolves to a user that is not there and the
+      # request above would answer 403 rather than 200.
+      - >-
+        seerr_verify_users.json.results | default([])
+        | selectattr('id', 'equalto', 1) | map(attribute='permissions') | list
+        == [seerr_owner_permissions]
+      - not seerr_verify_public.json.localLogin | default(true) | bool
+      - not seerr_verify_public.json.newPlexLogin | default(true) | bool
+      # Not a typo and not an oversight. mediaServerLogin is the switch that
+      # enables Jellyfin sign-in at all, not the one that auto-creates users:
+      # with it false the application answers every caller 500 "Jellyfin login
+      # is disabled", the two imported household identities included, and with
+      # localLogin false as well nobody could reach the service.
+      - seerr_verify_public.json.mediaServerLogin | default(false) | bool
+      - seerr_verify_public.json.mediaServerType | default(0) | int == seerr_media_server_type
+      - seerr_verify_public.json.initialized | default(false) | bool
+      - seerr_verify_authenticated.json.defaultPermissions | default(-1) | int == 0
+      - seerr_verify_jellyfin.json.ip | default('') == seerr_jellyfin_hostname
+      - seerr_verify_jellyfin.json.port | default(0) | int == seerr_jellyfin_port
+      # Every declared household identity is present and holds exactly REQUEST
+      # plus AUTO_APPROVE. Written as an emptiness test rather than a lookup so
+      # a missing row reports rather than raising.
+      - >-
+        seerr_verify_users.json.results | default([])
+        | selectattr('jellyfinUsername', 'defined')
+        | selectattr('jellyfinUsername', 'in', seerr_household_usernames)
+        | rejectattr('permissions', 'equalto', seerr_household_permissions)
+        | list | length == 0
+      - >-
+        seerr_verify_users.json.results | default([])
+        | selectattr('jellyfinUsername', 'defined')
+        | selectattr('jellyfinUsername', 'in', seerr_household_usernames)
+        | list | length == seerr_household_usernames | length
+    fail_msg: >-
+      Seerr is unhealthy, or it no longer declares exactly the platform's
+      sign-in policy, its Jellyfin server and its owner identity. A missing
+      user row with id 1 is the serious case: it is the only thing that closes
+      the anonymous takeover window on POST /api/v1/auth/jellyfin, and a
+      restore that brought back settings.json without db/db.sqlite3 reopens it.

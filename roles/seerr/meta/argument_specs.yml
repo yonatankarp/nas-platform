@@ -1,0 +1,105 @@
+---
+argument_specs:
+  main:
+    short_description: Deploy Seerr and reconcile its request front end for Jellyfin
+    options:
+      platform_compose_kind:
+        type: str
+        required: true
+      platform_project_name:
+        type: str
+        required: false
+      platform_public_host:
+        type: str
+        required: false
+      platform_callback_host:
+        type: str
+        required: false
+      media_usenet_enabled:
+        type: bool
+        required: false
+      seerr_port:
+        type: int
+        required: false
+      seerr_config_host_path:
+        type: path
+        required: false
+      seerr_application_url:
+        type: str
+        required: false
+      seerr_jellyfin_hostname:
+        type: str
+        required: false
+      seerr_jellyfin_port:
+        type: int
+        required: false
+      seerr_media_server_type:
+        type: int
+        required: false
+      seerr_main_settings:
+        type: dict
+        required: false
+      seerr_owner_permissions:
+        type: int
+        required: false
+      seerr_household_permissions:
+        type: int
+        required: false
+      seerr_notification_types:
+        type: int
+        required: false
+      seerr_ntfy_priority:
+        type: int
+        required: false
+      seerr_ntfy_locale:
+        type: str
+        required: false
+      seerr_ntfy_url:
+        type: str
+        required: false
+      seerr_ntfy_topic:
+        type: str
+        required: false
+      seerr_ntfy_declaration:
+        type: dict
+        required: false
+      seerr_radarr_server:
+        type: dict
+        required: false
+      seerr_sonarr_server:
+        type: dict
+        required: false
+      vault_seerr_api_key:
+        type: str
+        required: true
+      # Seerr needs no administrator credential of its own: the owner row is
+      # created with a Jellyfin user type and no local password, and the
+      # local-login route needs an email and password pair that only exists if
+      # somebody sets one. The bootstrap therefore signs in as the Jellyfin
+      # administrator this platform already authors, and the second household
+      # identity is the single vault_managed_users.jellyfin entry.
+      vault_jellyfin_admin_username:
+        type: str
+        required: true
+      vault_jellyfin_admin_password:
+        type: str
+        required: true
+      vault_managed_users:
+        type: dict
+        required: true
+      # Radarr's and Sonarr's own keys, consumed rather than minted again. A
+      # second copy would be a second thing to rotate and a second thing to
+      # drift, so tests/expected/seerr.yml lists only vault_seerr_* and these
+      # two are declared here as the dependency they are.
+      vault_arr_radarr_api_key:
+        type: str
+        required: true
+      vault_arr_sonarr_api_key:
+        type: str
+        required: true
+      # Seerr publishes request events to the platform's ntfy under its own
+      # identity. ntfy runs deny-all, so an agent without a token publishes
+      # nothing and fails silently.
+      vault_ntfy_seerr_token:
+        type: str
+        required: true

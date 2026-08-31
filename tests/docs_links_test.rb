@@ -806,8 +806,8 @@ else
   failures = check_sources(ROOT, SOURCES)
   documentation_contracts = {
     "README.md" => {
-      /manifest.*fourteen implemented service projects.*one planned (?:media-)?acquisition project/im =>
-        "distinguish the fourteen implemented service projects from the one planned acquisition project",
+      /manifest.*fifteen implemented service projects.*no planned (?:media-)?acquisition projects/im =>
+        "distinguish the fifteen implemented service projects from the empty planned set",
       /production retirement checkpoint has passed/i => "state that the production retirement checkpoint passed",
       /former metadata manager.*outside repository management.*not deleted/im =>
         "preserve former metadata-manager state outside repository management without claiming deletion",
@@ -821,8 +821,8 @@ else
         "state that the Mac inventory leaves both flags false and starts no acquisition containers",
       /Torrent enablement is false on every host/im =>
         "state that torrent enablement is false on every host",
-      /remaining acquisition project.*Seerr.*stays planned/im =>
-        "name the acquisition project that stays planned",
+      /Phase 4 adds Seerr.*completes the catalog/im =>
+        "record that Phase 4 completed the media acquisition catalog",
       /Open Subtitles.*Jellyfin.*Bazarr.*Phase 1/im =>
         "retain Jellyfin Open Subtitles through the Phase 1 Bazarr proof"
     },

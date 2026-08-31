@@ -4,7 +4,7 @@
     vault_contract_schema_errors: >-
       {{ vault_managed_users |
          vault_managed_user_errors([vault_ntfy_dozzle_token, vault_ntfy_beszel_token,
-                                    vault_ntfy_deploy_token],
+                                    vault_ntfy_deploy_token, vault_ntfy_seerr_token],
                                    vault_contract_reserved_identities) }}
   vars:
     # The administrator of each service, plus the usernames the platform
@@ -17,7 +17,7 @@
       immich: ["{{ vault_immich_admin_email }}"]
       jellyfin: ["{{ vault_jellyfin_admin_username }}"]
       komga: ["{{ vault_komga_admin_email }}"]
-      ntfy: ["{{ vault_ntfy_admin_user }}", dozzle, beszel, deploy]
+      ntfy: ["{{ vault_ntfy_admin_user }}", dozzle, beszel, deploy, seerr]
       paperless_ngx: ["{{ vault_paperless_admin_username }}"]
   no_log: true
 
@@ -129,6 +129,7 @@
           'vault_trailarr_admin_username': vault_trailarr_admin_username,
           'vault_trailarr_admin_password': vault_trailarr_admin_password,
           'vault_trailarr_admin_password_hash': vault_trailarr_admin_password_hash,
+          'vault_seerr_api_key': vault_seerr_api_key,
           'vault_ntfy_admin_user': vault_ntfy_admin_user,
           'vault_ntfy_admin_password': vault_ntfy_admin_password,
           'vault_ntfy_admin_password_hash': vault_ntfy_admin_password_hash,
@@ -138,6 +139,8 @@
           'vault_ntfy_dozzle_token': vault_ntfy_dozzle_token,
           'vault_ntfy_beszel_token': vault_ntfy_beszel_token,
           'vault_ntfy_deploy_token': vault_ntfy_deploy_token,
+          'vault_ntfy_seerr_password_hash': vault_ntfy_seerr_password_hash,
+          'vault_ntfy_seerr_token': vault_ntfy_seerr_token,
           'vault_beszel_superuser_email': vault_beszel_superuser_email,
           'vault_beszel_superuser_password': vault_beszel_superuser_password,
           'vault_beszel_app_user_email': vault_beszel_app_user_email,

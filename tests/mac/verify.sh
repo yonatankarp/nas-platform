@@ -18,7 +18,7 @@ mac_ansible_playbook -i "$mac_repo_dir/inventory/mac.yml" \
   -e @"$PLATFORM_MAC_VAULT_FILE" \
   -e @"$PLATFORM_MAC_FIXTURE_VARS_FILE" \
   -e "platform_vault_file=$PLATFORM_MAC_VAULT_FILE" \
-  --tags platform_verify_media_acquisition_foundation,platform_verify_ntfy,platform_verify_beszel,platform_verify_dozzle,platform_verify_audiobookshelf,platform_verify_komga,platform_verify_arr,platform_verify_downloaders,platform_verify_bindery,platform_verify_kapowarr,platform_verify_pinchflat,platform_verify_trailarr,platform_verify_jellyfin,platform_verify_immich,platform_verify_paperless
+  --tags platform_verify_media_acquisition_foundation,platform_verify_ntfy,platform_verify_beszel,platform_verify_dozzle,platform_verify_audiobookshelf,platform_verify_komga,platform_verify_arr,platform_verify_downloaders,platform_verify_bindery,platform_verify_kapowarr,platform_verify_pinchflat,platform_verify_trailarr,platform_verify_jellyfin,platform_verify_seerr,platform_verify_immich,platform_verify_paperless
 
 for mac_verify_hook in $MAC_VERIFY_INFRASTRUCTURE_HOOKS; do
   mac_verify_hook_path=$mac_script_dir/hooks/verify/$mac_verify_hook

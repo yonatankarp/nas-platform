@@ -26,3 +26,5 @@ contracts:
     path: tests/contracts/trailarr.sh
   - service: pinchflat
     path: tests/contracts/pinchflat.sh
+  - service: seerr
+    path: tests/contracts/seerr.sh

@@ -113,7 +113,9 @@ published beyond the LAN" — are correct afterwards and understated before.
 `settings.json` in that config volume is written mode `0644` and holds the Seerr
 API key, the Jellyfin token Seerr minted for itself, the session secret, the
 VAPID private key, and later the Radarr and Sonarr keys and the ntfy token.
-Confirmed. It belongs in the runtime secret-bearing list beside Dozzle's users
+Confirmed. A `settings.old.json` is written beside it at the same mode with the
+same contents one revision behind — **found during the promotion**, and it
+belongs in the same class. It belongs in the runtime secret-bearing list beside Dozzle's users
 file and Beszel's private key, not only in the `critical` recovery class.
 
 ## The wizard is bypassable, but not purely declaratively
@@ -138,6 +140,14 @@ Seeding the SQLite database directly was considered and rejected: it is a TypeOR
 database with migrations and live WAL files, and the schema is not a stable
 interface. So the bootstrap is `POST /api/v1/auth/jellyfin` with the
 vault-authored Jellyfin administrator credentials, confirmed end to end.
+
+**Corrected during the promotion.** The request body must carry
+`serverType: 2` — `MediaServerType.JELLYFIN`. Without it the route answers
+`500 {"message":"NO_ADMIN_USER"}`, which reads as "this account is not an
+administrator on that server" and is not: `routes/auth.js` reaches that throw
+only *after* passing the `IsAdministrator` check, when `body.serverType` is
+neither `JELLYFIN` nor `EMBY`. Measured both ways against the pinned image with
+an account that genuinely is a Jellyfin administrator.
 
 The guard that makes it idempotent, both branches confirmed:
 
@@ -180,10 +190,19 @@ response length; the status code is `201` in both cases, so it cannot key on
 that.
 
 The permission API is idempotent only if the role reads first.
-`GET /api/v1/user/:id/settings/permissions` is a clean comparable read, but
-`PUT /api/v1/user/:id` is an unconditional write that returns 200 with a bumped
-timestamp on an identical body — confirmed. So: read, compare, write only on
-drift, which is the same shape the `arr` and `jellyfin` roles already use.
+`GET /api/v1/user/:id/settings/permissions` is a clean comparable read, and the
+matching write is `POST` to the *same* path — **corrected during the
+promotion**: `PUT` there answers `405 PUT method not allowed`, and the route is
+`userSettingsRoutes.post('/permissions', ...)`. The write is unconditional and
+returns 200 with the same body on an identical request, so: read, compare,
+write only on drift, which is the same shape the `arr` and `jellyfin` roles
+already use.
+
+The owner is the exception and cannot be written at all. `POST
+/api/v1/user/1/settings/permissions` answers
+`403 {"message":"You do not have permission to modify this user"}` — measured —
+because the route refuses to modify the owner row. The bootstrap has already
+set `ADMIN`, so the role asserts the owner's value rather than repairing it.
 
 Permissions are bit flags, and `ADMIN` short-circuits every check, so the owner
 needs the single bit `2` and nothing else — which is exactly what the bootstrap
@@ -216,7 +235,31 @@ inherit these permissions automatically" clause twice over: the import path uses
 `defaultPermissions`, and `newPlexLogin` means **any Jellyfin user who signs in
 is silently created in Seerr** with those permissions. Confirmed from source and
 from the live settings. The role must set `defaultPermissions: 0` **and**
-`newPlexLogin: false`; confirmed applied and read back.
+`newPlexLogin: false`; confirmed applied and read back. `newPlexLogin` is named
+for Plex but gates the Jellyfin path too: the branch is
+`else if (!settings.main.newPlexLogin) { return next({status: 403, message:
+'Access denied.'}) }`, reached for a Jellyfin account with no Seerr row.
+
+**Added during the promotion, and it is the trap behind the trap.** There is a
+third switch, `mediaServerLogin`, which also ships `true`, is exposed
+anonymously beside the other two, and looks like the one to turn off. It is
+not. It does not auto-create anybody; it enables Jellyfin sign-in *at all*, and
+`routes/auth.js` returns `500 {"error":"Jellyfin login is disabled"}` for every
+caller when it is false — the two imported household identities included.
+Turning it off alongside `localLogin: false` would leave nobody able to reach
+the service. The design's clause is carried by `defaultPermissions` and
+`newPlexLogin` alone, so `mediaServerLogin` stays true and the role asserts
+that it is.
+
+Both halves of the clause were then proved from the outside rather than read
+from the source, because every other proof in this file authenticates with the
+API key or impersonates with `X-API-User` and both of those bypass sign-in
+entirely. Against a live instance holding exactly the platform's settings — the
+household user imported, `defaultPermissions: 0`, `newPlexLogin: false`,
+`localLogin: false` — `POST /api/v1/auth/jellyfin` for the imported household
+identity answered `200` with `{"id":2,"permissions":160}`, and the same request
+for a Jellyfin account the platform never declared answered
+`403 {"message":"Access denied."}`. Confirmed.
 
 `localLogin` also ships `true`, leaving a second password-based authentication
 path open on the most exposed service in the set. Nothing here sets a Seerr local
@@ -280,8 +323,21 @@ key comes back.
 Seerr's ntfy agent **does** support authentication even though the defaults hide
 it: a fresh instance returns only url, topic, priority and locale, which reads
 as "cannot authenticate". It can — either basic or a bearer token, confirmed
-accepted and persisted. This platform's ntfy is deny-all, so an unauthenticated
-agent would publish nothing and fail silently.
+accepted and persisted. The field names are `authMethodToken` (a boolean) with
+`token` beside it, or `authMethodUsernamePassword` with `username` and
+`password`; the agent builds `Bearer <token>` from the first. This platform's
+ntfy is deny-all, so an unauthenticated agent would publish nothing and fail
+silently.
+
+**Corrected during the promotion.** `POST /api/v1/settings/notifications/ntfy`
+*replaces* the agent object rather than merging into it — a body without
+`embedPoster` dropped that key from the read-back — so the role sends the whole
+declaration every converge and compares against the same shape. Unlike
+`/settings/main`, which really is a deep merge.
+
+`POST /api/v1/settings/radarr` does not validate connectivity either, which the
+"read, match on name" rule already covers but is worth stating: a row naming a
+host that does not exist was accepted with `201`, twice, producing ids 0 and 1.
 
 The bootstrap, the import and the permission write are all real HTTP writes
 against an external system and cannot be simulated, so under `--check` the role
@@ -314,6 +370,7 @@ reconverge; 10 through 18 are all read-compare-then-write.
  7 wait: GET /api/v1/status until 200      changed_when: false, check_mode: false
  8 probe: GET /api/v1/settings/main with X-API-Key   403 → 9, 200 → 10
  9 bootstrap: POST /api/v1/auth/jellyfin with the vault Jellyfin admin
+   and serverType 2, without which it answers 500 NO_ADMIN_USER
 10 GET /settings/main; POST on drift: defaultPermissions 0,
    newPlexLogin false, localLogin false, the application URL
 11 GET /settings/radarr; POST-if-absent or PUT-if-drifted
@@ -321,7 +378,8 @@ reconverge; 10 through 18 are all read-compare-then-write.
 13 GET /settings/jellyfin/users → map usernames to GUIDs
 14 POST /user/import-from-jellyfin      changed_when: json | length > 0
 15 GET /user → locate the two rows
-16 GET /user/<id>/settings/permissions; PUT only on drift  (2, and 160)
+16 GET /user/<id>/settings/permissions; POST the same path only on drift
+   (160). The owner's 2 is asserted, never written: that route refuses it
 17 GET /settings/notifications/ntfy; POST on drift, with the token
 18 GET /settings/public; POST /settings/initialize when not initialized
 19 platform_verify_seerr: assert the Jellyfin server is declared, both arr
@@ -334,18 +392,29 @@ and Sonarr's readiness endpoints rather than using a cross-project `depends_on`.
 
 ## What remains unsettled
 
+Two of the five entries this section carried were settled by the promotion and
+are recorded here rather than deleted, because what they turned out to be is
+the useful part.
+
+- `tests/policy_test.rb` accepts `init: true`. **Settled.** The Compose checks
+  are a list of required properties, not an allowlist of permitted keys, so
+  nothing had to be taught the key.
+- The ntfy topic for request events. **Settled by the operator on 2026-08-31:**
+  Seerr gets its own ntfy user, ACL entry and token on a new `nas-requests`
+  topic, minted by ntfy's own generator like the other three publishers. The
+  platform's ntfy is deny-all, so an unauthenticated agent publishes nothing
+  and fails silently; and a dedicated identity can be revoked without touching
+  deployment reporting, which reusing `vault_ntfy_deploy_token` could not.
 - Ownership and mode of the files Seerr creates on a real Linux bind mount.
   Docker Desktop masks it; only that `--user 1000:100` starts and writes was
-  confirmed. Assert it in the Linux integration lane.
+  confirmed, and re-confirmed against the pinned digest during the promotion.
+  Assert it in the Linux integration lane.
 - `GET /api/v1/settings/jellyfin/library?sync=true` returned `404` in the
   sandbox, whose Jellyfin had no libraries at all, so "route requires configured
   libraries" and "route moved" could not be distinguished. Nothing in the Phase 4
   acceptance criteria depends on it.
 - The end-to-end request proof — an auto-approved request producing a Radarr or
   Sonarr grab — was not executed, because no arr stack was running. The
-  *authorisation* half was confirmed; the *fulfilment* half belongs in the
-  contract test.
-- Whether `tests/policy_test.rb` accepts `init: true`.
-- Whether the ntfy topic for request events should be an existing topic or a new
-  one. An operator decision the design does not settle, and the vault key chain
-  differs accordingly.
+  *authorisation* half was confirmed, and re-confirmed through `X-API-User`
+  during the promotion; the *fulfilment* half belongs in the contract test's
+  Linux lane.

@@ -1,0 +1,6 @@
+---
+services:
+  seerr:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-seerr
+    ports: !override
+      - "${SEERR_HOST_PORT:?}:5055"

@@ -31,7 +31,7 @@ for reader in audiobookshelf jellyfin; do
   [ "$actual" = "$expected" ]
 done
 
-for catalog in radarr sonarr prowlarr bazarr configarr sabnzbd unpackerr gluetun qbittorrent seerr; do
+for catalog in radarr sonarr prowlarr bazarr configarr sabnzbd unpackerr gluetun qbittorrent; do
   [ -z "$(docker ps -aq --filter "name=^/$catalog$")" ]
   [ -z "$(docker ps -aq --filter "name=^/$PLATFORM_PROJECT_NAME-$catalog$")" ]
 done

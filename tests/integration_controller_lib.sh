@@ -104,7 +104,7 @@ run_enabled_idempotence() {
 
 # One launcher for every contract. The environment ABI every contract reads
 # is written once here and a service's extras arrive as a case arm, so the
-# eleven wrappers below carry only the name they run under. Each layer is
+# twelve wrappers below carry only the name they run under. Each layer is
 # prepended onto the positional parameters rather than pasted into an
 # unquoted string, so every path stays one word however it is spelled.
 run_contract() {
@@ -135,6 +135,14 @@ run_contract() {
       # to exist.
       set -- PLATFORM_PROJECT_NAME="$integration_project_namespace" \
         PLATFORM_TRAILARR_ARRS=true \
+        "$@"
+      ;;
+    seerr)
+      # The lane converges arr with the transport enabled and Jellyfin beside
+      # it, so Radarr, Sonarr and Jellyfin are all resolvable by name and every
+      # row Seerr declares is expected to exist.
+      set -- PLATFORM_PROJECT_NAME="$integration_project_namespace" \
+        PLATFORM_SEERR_ARRS=true \
         "$@"
       ;;
     bindery)
@@ -209,6 +217,10 @@ run_bindery_contract() {
 
 run_trailarr_contract() {
   run_contract trailarr "$@"
+}
+
+run_seerr_contract() {
+  run_contract seerr "$@"
 }
 
 run_kapowarr_contract() {
@@ -477,6 +489,10 @@ run_pinchflat_verify_only() {
 
 run_trailarr_verify_only() {
   run_verification trailarr
+}
+
+run_seerr_verify_only() {
+  run_verification seerr
 }
 
 converge_media_acquisition_reader_prerequisites() {
