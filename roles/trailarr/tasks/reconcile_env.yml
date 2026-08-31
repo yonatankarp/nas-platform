@@ -52,6 +52,18 @@
 #
 # Redacted: the computed content is the file, API key included.
 - name: Compute the platform-owned Trailarr application environment
+  vars:
+    # The separator is spelled once, here, in a double-quoted scalar YAML
+    # resolves to a real newline before Jinja is handed the expression. Written
+    # inline as join('\n') it is not a newline at all: the folded block below is
+    # a YAML block scalar, where a backslash is an ordinary character, and
+    # Jinja's own string literal does not unescape it back. The whole file then
+    # joins onto one line separated by a literal backslash and an n, which the
+    # application's `set -o allexport; source` reads as a single comment and
+    # discards -- so the repair silently destroyed the file it was repairing,
+    # and every following run found the environment it had just written back
+    # differing again.
+    trailarr_config_env_newline: "\n"
   ansible.builtin.set_fact:
     trailarr_config_env_repaired: >-
       {{ (trailarr_config_env_read.content | b64decode).splitlines()
@@ -64,7 +76,8 @@
                "WAIT_FOR_MEDIA='" ~ trailarr_config_env_wait_for_media ~ "'")
          | map('regex_replace', '^YT_COOKIES_PATH=.*$',
                "YT_COOKIES_PATH='" ~ trailarr_config_env_yt_cookies_path ~ "'")
-         | list | join('\n') ~ '\n' }}
+         | list | join(trailarr_config_env_newline)
+         ~ trailarr_config_env_newline }}
   when: trailarr_config_env_stat.stat.exists
   no_log: true
 

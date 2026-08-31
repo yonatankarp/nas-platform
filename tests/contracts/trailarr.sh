@@ -242,6 +242,17 @@ if failures.empty?
   end
   failures << "Trailarr must leave the entrypoint's own keys alone" if
     reconcile_env.include?("YTDLP_VERSION") || reconcile_env.include?("GPU_AVAILABLE")
+  # A YAML block scalar keeps a backslash as an ordinary character and Jinja's
+  # string literal does not unescape it back, so joining on a written-out
+  # backslash-n collapses the whole file onto one line. The application sources
+  # that as a single comment and keeps nothing, and the repair reports changed
+  # forever because what it wrote never matches what it reads back. The
+  # separator must come from a scalar YAML resolves to a real newline first.
+  # Read without the commentary, so the rule can be explained in the file it
+  # governs without the explanation tripping it.
+  reconcile_env_code = reconcile_env.lines.reject { |line| line.strip.start_with?("#") }.join
+  failures << "the Trailarr application environment must be joined on a real newline" if
+    reconcile_env_code.include?(%q{join('\n')}) || reconcile_env_code.include?(%q{~ '\n'})
 
   credential_tasks = tasks.select do |task|
     task.to_s.match?(/vault_trailarr_(?:api_key|admin_(?:username|password))/)
