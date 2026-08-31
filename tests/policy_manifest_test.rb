@@ -24,7 +24,7 @@ end
   "wrong status-map type" => [[], "service statuses must be a mapping"],
   "invalid status-map value" => [valid_statuses.merge("arr" => ["planned"]),
                                  "must be planned, implemented, or accepted"],
-  "implemented service with empty vault list" => [valid_statuses.merge("trailarr" => "implemented"),
+  "implemented service with empty vault list" => [valid_statuses.merge("seerr" => "implemented"),
                                                    "vault_keys must be a nonempty list"]
 }.each do |label, (statuses, diagnostic)|
   _expectations, problems = pinned_service_expectations(ROOT, statuses)
@@ -503,8 +503,8 @@ expect_failure(failures, "duplicate manifest service", "service manifest name va
 end
 
 expect_failure(failures, "planned service promoted without vault contract",
-               "tests/expected/trailarr.yml vault_keys must be a nonempty list") do |root|
-  mutate_manifest(root) { |document| service(document, "trailarr")["status"] = "implemented" }
+               "tests/expected/seerr.yml vault_keys must be a nonempty list") do |root|
+  mutate_manifest(root) { |document| service(document, "seerr")["status"] = "implemented" }
 end
 
 expect_failure(failures, "second acquisition job",
@@ -618,17 +618,17 @@ end
 
 expect_acquisition_failure.call(
   "planned acquisition source published prematurely",
-  "planned service tree exists prematurely: services/trailarr"
+  "planned service tree exists prematurely: services/seerr"
 ) do |root|
-  FileUtils.mkdir_p(File.join(root, "services", "trailarr"))
+  FileUtils.mkdir_p(File.join(root, "services", "seerr"))
 end
 
 {
   "dangling planned acquisition role" => [
-    "roles/trailarr", "planned role tree exists prematurely: roles/trailarr"
+    "roles/seerr", "planned role tree exists prematurely: roles/seerr"
   ],
   "dangling planned acquisition service" => [
-    "services/trailarr", "planned service tree exists prematurely: services/trailarr"
+    "services/seerr", "planned service tree exists prematurely: services/seerr"
   ]
 }.each do |label, (relative_path, diagnostic)|
   expect_acquisition_failure.call(label, diagnostic) do |root|
@@ -640,9 +640,9 @@ end
 
 expect_acquisition_failure.call(
   "planned acquisition project promoted prematurely",
-  "trailarr must be planned in the service manifest"
+  "seerr must be planned in the service manifest"
 ) do |root|
-  mutate_manifest(root) { |document| service(document, "trailarr")["status"] = "implemented" }
+  mutate_manifest(root) { |document| service(document, "seerr")["status"] = "implemented" }
 end
 
 run_foundation_wrapper = lambda do |filename:, mode: 0o755, mutate: nil, ruby_selection: nil,

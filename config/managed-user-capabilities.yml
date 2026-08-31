@@ -131,3 +131,18 @@ services:
       create: BASIC_AUTH_USERNAME/BASIC_AUTH_PASSWORD
       authenticate: Basic authentication
       reconcile: BASIC_AUTH_USERNAME/BASIC_AUTH_PASSWORD
+  # Trailarr has one identity and no user API. Both halves are os.getenv
+  # properties, so the environment is the whole mechanism — with the caveat
+  # that its own /config/.env is sourced over that environment at every start,
+  # which is why the role owns that file too. WEBUI_PASSWORD is a bcrypt hash
+  # compared with checkpw, never a plaintext.
+  trailarr:
+    preserves_unmanaged_users: true
+    password_rotation: refuse
+    existing_identity_password_update: forbidden
+    mode: declarative_environment
+    interfaces:
+      list: WEBUI_USERNAME
+      create: WEBUI_USERNAME/WEBUI_PASSWORD
+      authenticate: api/v1/auth/login
+      reconcile: WEBUI_USERNAME/WEBUI_PASSWORD

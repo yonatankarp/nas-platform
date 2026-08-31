@@ -1,0 +1,80 @@
+---
+# Trailer profiles are the object that actually decides what gets a trailer and
+# how it is encoded, and an unguarded migration seeds exactly two of them on a
+# fresh database — with different folder behaviour, which is why they have to be
+# reconciled rather than accepted.
+#
+# GET and PUT are a full-object read and replace and are idempotent: two
+# identical PUTs leave identical state. POST has no dedupe, so this file never
+# creates one; it compares against the two seeded ids and replaces in place.
+# Cross-field validators reject mp4 with vp8/vp9 and force opus for webm, so the
+# container, video and audio formats move together in one request.
+#
+# Redacted: the request carries the application API key.
+- name: Read the Trailarr trailer profiles
+  ansible.builtin.uri:
+    url: "{{ trailarr_api }}/trailerprofiles/"
+    method: GET
+    headers:
+      X-API-KEY: "{{ vault_trailarr_api_key }}"
+    status_code: [200]
+    return_content: true
+  register: trailarr_profiles_read
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Resolve the deployed Trailarr trailer profiles
+  ansible.builtin.set_fact:
+    trailarr_profiles_current: >-
+      {{ trailarr_profiles_read.json | default([])
+         | selectattr('id', 'in', trailarr_trailer_profiles | map(attribute='id') | list)
+         | list }}
+    trailarr_profiles_to_write: []
+
+- name: Require the seeded Trailarr trailer profiles to exist
+  ansible.builtin.assert:
+    that:
+      - trailarr_profiles_current | length == trailarr_trailer_profiles | length
+    fail_msg: >-
+      Trailarr does not hold the two trailer profiles its own migration seeds
+      ({{ trailarr_trailer_profiles | map(attribute='label') | join(', ') }}).
+      They are never created here, because the create route has no duplicate
+      check and would add a third on every run; restore or recreate them in the
+      application instead.
+
+- name: Resolve the Trailarr trailer profiles that differ from the declaration
+  ansible.builtin.set_fact:
+    trailarr_profiles_to_write: >-
+      {{ trailarr_profiles_to_write
+         + ([item] if item | combine(trailarr_trailer_profile_settings) != item else []) }}
+  loop: "{{ trailarr_profiles_current }}"
+  loop_control:
+    label: "trailarr-trailer-profile-{{ item.id }}"
+
+- name: Report the planned Trailarr trailer profile reconciliation
+  ansible.builtin.debug:
+    msg: >-
+      Trailarr trailer profile {{ item.id }} does not carry the declared
+      encoding and output layout; a live run would replace it.
+  loop: "{{ trailarr_profiles_to_write }}"
+  loop_control:
+    label: "trailarr-trailer-profile-{{ item.id }}"
+  when: ansible_check_mode
+
+# Redacted: the request carries the application API key.
+- name: Reconcile the Trailarr trailer profiles
+  ansible.builtin.uri:
+    url: "{{ trailarr_api }}/trailerprofiles/{{ item.id }}"
+    method: PUT
+    headers:
+      X-API-KEY: "{{ vault_trailarr_api_key }}"
+    body_format: json
+    body: "{{ item | combine(trailarr_trailer_profile_settings) }}"
+    status_code: [200]
+  loop: "{{ trailarr_profiles_to_write }}"
+  loop_control:
+    label: "trailarr-trailer-profile-{{ item.id }}"
+  when: not ansible_check_mode
+  changed_when: true
+  no_log: true

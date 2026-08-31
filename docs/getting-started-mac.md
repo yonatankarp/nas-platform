@@ -5,11 +5,11 @@ your Mac. It does not SSH to or otherwise contact the physical NAS. Service
 data is disposable; credentials may deliberately match the NAS so that reused
 logins, ntfy tokens, Beszel keys, and future integrations are proven portable.
 
-This proof deploys the eleven service projects in
+This proof deploys the twelve service projects in
 [`services/manifest.yml`](../services/manifest.yml) that need no transport
 flag—Audiobookshelf, Beszel, Bindery, Dozzle, Immich, Jellyfin, Kapowarr,
-Komga, ntfy, Paperless-ngx, and Pinchflat—and verifies the Arr and downloader
-projects in their inert, transport-disabled state alongside them. The production
+Komga, ntfy, Paperless-ngx, Pinchflat, and Trailarr—and verifies the Arr and
+downloader projects in their inert, transport-disabled state alongside them. The production
 retirement checkpoint has passed and its repository declarations have been
 removed without deleting the former metadata manager's preserved state. The
 harness sends test alerts to the sandbox's own ntfy instance. Mobile delivery
@@ -185,6 +185,13 @@ active service:
   credential-free read is the honest probe and exactly one login is spent.
   Confirm unattended auto-grabbing is still off; its kill switch fails open, so
   a missing setting reads as enabled.
+- Trailarr: sign in with the deployed administrator identity, then confirm the
+  published default administrator is refused and that monitoring and downloads
+  are still off. The interesting check is the inversion: change one setting in
+  the web interface and reconverge. The application persists every settings
+  mutation into its own `/config/.env`, which it sources over the container
+  environment at every start, so the change would otherwise survive forever;
+  the role owns that file, and the reconcile is what reverts it.
 
 After the review, produce the report and clean only the validated sandbox:
 

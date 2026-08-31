@@ -178,7 +178,7 @@ projects:
             published_by: pinchflat
   trailarr:
     role: trailarr
-    status: planned
+    status: implemented
     services:
       trailarr:
         class: long_running

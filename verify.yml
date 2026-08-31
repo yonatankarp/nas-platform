@@ -71,6 +71,8 @@
       tags: [never]
     - role: pinchflat
       tags: [never]
+    - role: trailarr
+      tags: [never]
     - role: jellyfin
       tags: [never]
     - role: immich

@@ -65,6 +65,7 @@ mac_recreate_and_reassert paperless paperless-ngx paperless \
 mac_recreate_and_reassert pinchflat pinchflat pinchflat pinchflat run
 mac_recreate_and_reassert kapowarr kapowarr kapowarr kapowarr run
 mac_recreate_and_reassert bindery bindery bindery bindery run
+mac_recreate_and_reassert trailarr trailarr trailarr trailarr run
 
 mac_assert_service_coverage fixtures-recreate 00-services.sh "$mac_recreated" \
   'arr=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite

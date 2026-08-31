@@ -310,6 +310,7 @@ downloaders downloaders
 bindery bindery
 kapowarr kapowarr
 pinchflat pinchflat
+trailarr trailarr
 '
 
 # Retry budget for a registry that refuses. These ceilings bound all shell
@@ -553,7 +554,6 @@ suite_pull_images() {
         *",$service_tag,"*) ;;
         *)
           case "$suite:$service_tag" in
-            trailarr:ntfy|trailarr:audiobookshelf|trailarr:jellyfin|\
             seerr:ntfy|seerr:audiobookshelf|seerr:jellyfin) ;;
             *) continue ;;
           esac
@@ -1396,7 +1396,7 @@ docker run --rm \
     integration_media_usenet_enabled=false
     integration_media_adopt_existing=false
     case "\$INTEGRATION_SUITE" in
-      arr|downloaders|bindery)
+      arr|downloaders|bindery|trailarr)
         integration_media_usenet_enabled=true
         integration_media_adopt_existing=true
         ;;
@@ -1741,7 +1741,7 @@ EOF
       /repo /repo/services/manifest.yml nas integration '$expected_release_id'
 
     case "\$INTEGRATION_SUITE" in
-      trailarr|seerr)
+      seerr)
         /repo/tests/contracts/"\$INTEGRATION_SUITE"-foundation.sh static
         converge_media_acquisition_reader_prerequisites
         run_media_acquisition_foundation_verify
@@ -1805,6 +1805,18 @@ EOF
       run_enabled_idempotence pinchflat
       run_play --tags pinchflat --check --diff
       printf 'PINCHFLAT_PHASE2_RUNTIME_VERIFIED\n'
+      cleanup_vault
+      exit 0
+    fi
+
+    if [ "\$INTEGRATION_SUITE" = trailarr ]; then
+      /repo/tests/contracts/arr.sh static
+      /repo/tests/contracts/trailarr.sh static
+      run_trailarr_contract run
+      run_trailarr_verify_only
+      run_enabled_idempotence arr,trailarr
+      run_play --tags arr,trailarr --check --diff
+      printf 'TRAILARR_PHASE3_RUNTIME_VERIFIED\n'
       cleanup_vault
       exit 0
     fi

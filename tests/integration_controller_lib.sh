@@ -104,7 +104,7 @@ run_enabled_idempotence() {
 
 # One launcher for every contract. The environment ABI every contract reads
 # is written once here and a service's extras arrive as a case arm, so the
-# ten wrappers below carry only the name they run under. Each layer is
+# eleven wrappers below carry only the name they run under. Each layer is
 # prepended onto the positional parameters rather than pasted into an
 # unquoted string, so every path stays one word however it is spelled.
 run_contract() {
@@ -127,6 +127,14 @@ run_contract() {
       ;;
     kapowarr|pinchflat)
       set -- PLATFORM_PROJECT_NAME="$integration_project_namespace" \
+        "$@"
+      ;;
+    trailarr)
+      # The lane converges arr with the transport enabled, so Radarr and Sonarr
+      # are resolvable by name and both of Trailarr's connections are expected
+      # to exist.
+      set -- PLATFORM_PROJECT_NAME="$integration_project_namespace" \
+        PLATFORM_TRAILARR_ARRS=true \
         "$@"
       ;;
     bindery)
@@ -197,6 +205,10 @@ run_komga_contract() {
 
 run_bindery_contract() {
   run_contract bindery "$@"
+}
+
+run_trailarr_contract() {
+  run_contract trailarr "$@"
 }
 
 run_kapowarr_contract() {
@@ -461,6 +473,10 @@ run_kapowarr_verify_only() {
 
 run_pinchflat_verify_only() {
   run_verification pinchflat
+}
+
+run_trailarr_verify_only() {
+  run_verification trailarr
 }
 
 converge_media_acquisition_reader_prerequisites() {

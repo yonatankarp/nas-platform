@@ -1,0 +1,135 @@
+---
+# Trailarr inverts this repository's core invariant, and this file is the
+# correction.
+#
+# scripts/start.sh runs as the application user, after the container
+# environment is already in place, and does `set -o allexport` around a
+# `source` of ${APP_DATA_DIR}/.env. Every key present in that file therefore
+# overwrites the Compose-supplied value permanently. The application writes to
+# it: the configuration object persists API_KEY, LOG_LEVEL, WAIT_FOR_MEDIA and
+# YT_COOKIES_PATH on every boot, and every settings mutation made through the
+# web interface writes its key there too. settings.py also calls
+# load_dotenv(..., override=False), which reads as though the environment wins;
+# it is a decoy, because the shell has already clobbered it.
+#
+# The measured consequences are that a rotated vault credential has no effect
+# after first boot, and that a login or a setting changed by hand survives a
+# converge — which is directly disqualifying against this repository's claim
+# that the next run reverts a hand edit.
+#
+# Removing the platform-owned keys and restarting restores every declared value,
+# and the file the application then writes back holds exactly those values, so
+# the steady state is a fixed point and the next run finds nothing to do.
+#
+# This is the one place in the role where a hand-rolled parse and compare is
+# correct rather than lazy. The entrypoint rewrites the GPU_* block through a
+# grep and a move on every start, and the yt-dlp version line with it, so a
+# whole-file template would report changed forever. Everything not named below
+# is carried through byte for byte.
+- name: Look for the Trailarr application environment
+  ansible.builtin.stat:
+    path: "{{ trailarr_config_host_path }}/.env"
+  register: trailarr_config_env_stat
+  changed_when: false
+  check_mode: false
+
+# Redacted: the file carries the API key, and a drifted one carries a
+# hand-made administrator hash beside it.
+- name: Read the Trailarr application environment
+  ansible.builtin.slurp:
+    src: "{{ trailarr_config_host_path }}/.env"
+  register: trailarr_config_env_read
+  when: trailarr_config_env_stat.stat.exists
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+# python-dotenv writes KEY='value' with quote_mode="always", so the repaired
+# line is written in exactly that form and a converged file compares equal
+# byte for byte. Nothing here needs escaping: the API key is contracted to 32
+# hexadecimal digits and the other three values are literals in the role's
+# defaults, so no value can carry a quote or a backslash.
+#
+# Redacted: the computed content is the file, API key included.
+- name: Compute the platform-owned Trailarr application environment
+  vars:
+    # The separator is spelled once, here, in a double-quoted scalar YAML
+    # resolves to a real newline before Jinja is handed the expression. Written
+    # inline as join('\n') it is not a newline at all: the folded block below is
+    # a YAML block scalar, where a backslash is an ordinary character, and
+    # Jinja's own string literal does not unescape it back. The whole file then
+    # joins onto one line separated by a literal backslash and an n, which the
+    # application's `set -o allexport; source` reads as a single comment and
+    # discards -- so the repair silently destroyed the file it was repairing,
+    # and every following run found the environment it had just written back
+    # differing again.
+    trailarr_config_env_newline: "\n"
+  ansible.builtin.set_fact:
+    trailarr_config_env_repaired: >-
+      {{ (trailarr_config_env_read.content | b64decode).splitlines()
+         | reject('match', trailarr_config_env_absent_pattern)
+         | map('regex_replace', '^API_KEY=.*$',
+               "API_KEY='" ~ vault_trailarr_api_key ~ "'")
+         | map('regex_replace', '^LOG_LEVEL=.*$',
+               "LOG_LEVEL='" ~ trailarr_config_env_log_level ~ "'")
+         | map('regex_replace', '^WAIT_FOR_MEDIA=.*$',
+               "WAIT_FOR_MEDIA='" ~ trailarr_config_env_wait_for_media ~ "'")
+         | map('regex_replace', '^YT_COOKIES_PATH=.*$',
+               "YT_COOKIES_PATH='" ~ trailarr_config_env_yt_cookies_path ~ "'")
+         | list | join(trailarr_config_env_newline)
+         ~ trailarr_config_env_newline }}
+  when: trailarr_config_env_stat.stat.exists
+  no_log: true
+
+# The repair itself has to be redacted, which leaves it unable to say why it
+# fired. These three facts are not credential material — a permission, a numeric
+# owner and whether the two contents differ at all — and between them they name
+# which of the file's properties drifted. Without this a repair that keeps
+# recurring is a silent `changed` with nothing to read.
+- name: Report the planned Trailarr application environment repair
+  vars:
+    trailarr_config_env_current_lines: >-
+      {{ (trailarr_config_env_read.content | b64decode).splitlines() }}
+    trailarr_config_env_repaired_lines: >-
+      {{ trailarr_config_env_repaired.splitlines() }}
+  ansible.builtin.debug:
+    msg: >-
+      {{ trailarr_config_host_path }}/.env is mode
+      {{ trailarr_config_env_stat.stat.mode }} owned by
+      {{ trailarr_config_env_stat.stat.uid }}:{{ trailarr_config_env_stat.stat.gid }};
+      {{ trailarr_config_env_current_lines | length }} lines against
+      {{ trailarr_config_env_repaired_lines | length }} in the platform-owned
+      form, differing on
+      [{{ (trailarr_config_env_current_lines
+           | symmetric_difference(trailarr_config_env_repaired_lines))
+          | map('regex_replace', '=.*$', '') | unique | sort | join(', ') }}]
+  when: trailarr_config_env_stat.stat.exists
+
+# python-dotenv's own rewriter reads the destination's mode and restores it
+# after every write, so the application keeps 0600 for every key it persists.
+# entrypoint.sh does not: it rewrites the file through a grep and a move on
+# every start, and the replacement lands at the image's default 0644. This mode
+# therefore holds only until the next start, and the permission the platform
+# relies on is enforced again after the deployment in main.yml. Leaving it
+# declared here keeps the file private the moment its content is repaired.
+#
+# Redacted: the content is the credential.
+- name: Own the Trailarr application environment
+  ansible.builtin.copy:
+    content: "{{ trailarr_config_env_repaired }}"
+    dest: "{{ trailarr_config_host_path }}/.env"
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0600"
+  register: trailarr_config_env_repair
+  when: trailarr_config_env_stat.stat.exists
+  no_log: true
+
+- name: Report the Trailarr application environment reconciliation
+  ansible.builtin.debug:
+    msg: >-
+      {{ trailarr_config_host_path }}/.env does not exist yet, so there is
+      nothing to reconcile. The application writes it on first boot from the
+      declared container environment, and the next run finds it already
+      matching.
+  when: not trailarr_config_env_stat.stat.exists

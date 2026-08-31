@@ -19,8 +19,8 @@ off-site backup. RAID is not a backup.
 - [Adding a service](docs/adding-a-service.md)
 
 The [`services/manifest.yml`](services/manifest.yml) catalog distinguishes
-thirteen implemented service projects from two planned media-acquisition
-projects. Runtime role and service directories exist only for the implemented
+fourteen implemented service projects from one planned media-acquisition
+project. Runtime role and service directories exist only for the implemented
 projects; the planned entries remain inert and intentionally have no runtime
 role or Compose directory.
 Prove the implemented platform on the Mac before preparing a fresh production NAS
@@ -212,8 +212,21 @@ flag Phase 1 does, so the NAS declares them and the Mac proof does not, but the
 container itself deploys unconditionally on both. Unattended auto-grabbing is
 pinned off explicitly, because Bindery's kill switch fails open and a missing
 setting reads as enabled, and telemetry is disabled; a deployment that has been
-given no author to monitor therefore downloads nothing. The remaining two
-acquisition projects — Trailarr and Seerr — stay planned.
+given no author to monitor therefore downloads nothing.
+
+Phase 3 adds Trailarr, which writes local trailers into the same `Media/Movies`
+and `Media/Series` item directories Radarr and Sonarr own and Jellyfin indexes
+as extras. It reads both arrs over their own APIs by Compose service name, and
+every connection it declares is validated with a live call at write time, so it
+joins `media-control` and its two connection rows follow the same transport flag
+Phase 1 does while the container deploys unconditionally on both hosts. Trailarr
+inverts this repository's usual direction: its own `/config/.env` is sourced
+over the container environment at every start and the application writes to it,
+so the role owns that file as well as the Compose environment, and a setting or
+a login changed by hand is reverted by the next run only because it does.
+Monitoring and downloads are pinned off until the operator acceptance step has
+proved one trailer by hand, so a fresh deployment downloads nothing. The
+remaining acquisition project — Seerr — stays planned.
 
 Each of the later phases was investigated before it was planned, against
 upstream source and a running container. The

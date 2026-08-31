@@ -31,8 +31,8 @@ RECONCILIATION_OWNED_PATHS = %w[
 # no other. Stated rather than imported for the same reason: widening the
 # classifier's own list must fail here.
 NTFY_LANES = %w[
-  static reconciliation arr downloaders bindery kapowarr pinchflat smoke beszel dozzle
-  audiobookshelf komga jellyfin immich paperless idempotence_check
+  static reconciliation arr downloaders bindery kapowarr pinchflat trailarr smoke beszel
+  dozzle audiobookshelf komga jellyfin immich paperless idempotence_check
 ].freeze
 failures = []
 
@@ -444,6 +444,40 @@ if defined?(ClassifyChanges)
     selected_tags=host_prep,deployment_bundle,ntfy,pinchflat
   OUTPUT
         "Pinchflat-only output must retain its exact tag plan: #{pinchflat_output.string.inspect}")
+
+  # Trailarr is Phase 3 and is the only lane that converges Arr without also
+  # converging the downloaders: it reads Radarr and Sonarr over their own APIs
+  # and validates every connection it declares with a live call at write time,
+  # but it acquires nothing itself and needs no download client.
+  trailarr_output = StringIO.new
+  ClassifyChanges.write_github_outputs(
+    ClassifyChanges.classify(["roles/trailarr/tasks/main.yml"]), trailarr_output
+  )
+  check(failures, trailarr_output.string == <<~OUTPUT,
+    static=true
+    docs=false
+    reconciliation=false
+    foundation=false
+    arr=false
+    downloaders=false
+    bindery=false
+    kapowarr=false
+    pinchflat=false
+    trailarr=true
+    seerr=false
+    smoke=false
+    beszel=false
+    dozzle=false
+    audiobookshelf=false
+    komga=false
+    jellyfin=false
+    immich=false
+    paperless=false
+    idempotence_check=true
+    suites=["trailarr","idempotence-check"]
+    selected_tags=host_prep,deployment_bundle,ntfy,arr,trailarr
+  OUTPUT
+        "Trailarr-only output must retain its exact tag plan: #{trailarr_output.string.inspect}")
 
   io = StringIO.new
   ClassifyChanges.write_github_outputs(ClassifyChanges.classify(["README.md"]), io)

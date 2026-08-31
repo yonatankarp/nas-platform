@@ -102,7 +102,7 @@ EXPECTED_PROJECTS = {
     }
   },
   "trailarr" => {
-    "role" => "trailarr", "status" => "planned", "services" => {
+    "role" => "trailarr", "status" => "implemented", "services" => {
       "trailarr" => service("long_running", 1.0, ui_port(7889, published_by: "trailarr"))
     }
   },
@@ -139,6 +139,7 @@ EXPECTED = {
 
 EXPECTED_IMPLEMENTED_PORTS = [
   ["arr", "bazarr", "0.0.0.0", 6767, 6767, "tcp"],
+  ["trailarr", "trailarr", "0.0.0.0", 7889, 7889, "tcp"],
   ["bindery", "bindery", "0.0.0.0", 8787, 8787, "tcp"],
   ["arr", "prowlarr", "0.0.0.0", 9696, 9696, "tcp"],
   ["arr", "radarr", "0.0.0.0", 7878, 7878, "tcp"],

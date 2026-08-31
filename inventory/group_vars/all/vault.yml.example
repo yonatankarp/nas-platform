@@ -65,6 +65,17 @@ vault_kapowarr_comicvine_api_key: example-comicvine-api-key
 vault_pinchflat_admin_username: example-admin
 vault_pinchflat_admin_password: example-pinchflat-password
 
+# Trailarr's web interface is a full write session over the Movies and Series
+# trees Radarr and Sonarr own, and the application ships a published default
+# administrator until this pair replaces it. WEBUI_PASSWORD is compared with
+# bcrypt.checkpw directly, so the hash is the value actually pushed and the
+# plaintext exists only for recovery; the two must be a matching pair. An API
+# key shorter than 32 characters is silently replaced by a random one.
+vault_trailarr_api_key: "66666666666666666666666666666666"
+vault_trailarr_admin_username: example-admin
+vault_trailarr_admin_password: example-trailarr-password
+vault_trailarr_admin_password_hash: "$2b$12$00000000000000000000000000000000000000000000000000000"
+
 # ntfy tokens are tk_ plus 29 lowercase alphanumeric characters. Password
 # hashes are bcrypt values produced by the pinned ntfy image.
 vault_ntfy_admin_user: example-admin
