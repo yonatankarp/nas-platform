@@ -1,14 +1,32 @@
+# Platform fragments. Compose resolves a YAML anchor only inside the file that
+# declares it, so every stack carries its own copy; tests/policy_test.rb pins the
+# copies equal and records there why cross-file sharing was not taken. A
+# container needing different health-check timing overrides only the fields it
+# changes, so a deviation reads as a deviation.
 x-logging: &default-logging
   driver: json-file
   options:
     max-size: 10m
     max-file: "3"
 
+x-service-defaults: &service-defaults
+  cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
+  security_opt:
+    - no-new-privileges:true
+  restart: unless-stopped
+  logging: *default-logging
+
+x-healthcheck-defaults: &healthcheck-defaults
+  interval: 30s
+  timeout: 10s
+  retries: 5
+  start_period: 60s
+
 services:
   hub:
+    <<: *service-defaults
     container_name: beszel
     image: ghcr.io/henrygd/beszel/beszel:0.18.8@sha256:99181067e5a46b3147231f456114280a8119eed371808bce79e6e7f173946975
-    cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
     cpus: 1.0
     labels:
       dev.dozzle.group: beszel
@@ -24,25 +42,24 @@ services:
       APP_URL: ${BESZEL_APP_URL:?}
       TZ: ${TZ:?}
     healthcheck:
+      <<: *healthcheck-defaults
       test: [CMD, /beszel, health, --url, "http://localhost:8090"]
-      interval: 30s
-      timeout: 10s
+      # Both agents gate their own start on this container reporting healthy, so
+      # the grace period is what the whole stack waits before it is told the hub
+      # is up. The hub is listening in about a second; the platform's 60s would
+      # only postpone that answer.
       retries: 4
       start_period: 5s
-    security_opt:
-      - no-new-privileges:true
-    restart: unless-stopped
     # The hub writes every incoming metric into the PocketBase database in
     # /beszel_data, which is recovery: critical and also holds the keypair
     # placed there before first start. 30s lets the open transaction commit.
     # The agents get no window: they hold a cache and reconnect.
     stop_grace_period: 30s
-    logging: *default-logging
 
   agent-portable:
+    <<: *service-defaults
     container_name: beszel_agent_portable
     image: ghcr.io/henrygd/beszel/beszel-agent:0.18.8@sha256:0f0c8939e7ed95707bd8a8da47fd20a7f1a61c2eebbe3b5eb82422486df1f2bf
-    cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
     cpus: 0.5
     labels:
       dev.dozzle.group: beszel
@@ -66,20 +83,18 @@ services:
       TOKEN: ${BESZEL_AGENT_TOKEN:?}
       TZ: ${TZ:?}
     healthcheck:
+      <<: *healthcheck-defaults
       test: [CMD, /agent, health]
-      interval: 30s
-      timeout: 10s
+      # Deviation carried over unchanged from before the defaults existed; the
+      # repository records no reason for it, and a de-duplication is not where a
+      # readiness window gets renegotiated.
       retries: 4
       start_period: 10s
-    security_opt:
-      - no-new-privileges:true
-    restart: unless-stopped
-    logging: *default-logging
 
   agent-intel:
+    <<: *service-defaults
     container_name: beszel_agent
     image: ghcr.io/henrygd/beszel/beszel-agent-intel:0.18.8@sha256:fdbb316e2b1366844f8e8926a3f8e8166ab0b7a10309c0f6aa6281f82c5c136a
-    cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
     cpus: 0.5
     labels:
       dev.dozzle.group: beszel
@@ -113,22 +128,20 @@ services:
       TOKEN: ${BESZEL_AGENT_TOKEN:?}
       TZ: ${TZ:?}
     healthcheck:
+      <<: *healthcheck-defaults
       test: [CMD, /agent, health]
-      interval: 30s
-      timeout: 10s
+      # Deviation carried over unchanged from before the defaults existed; the
+      # repository records no reason for it, and a de-duplication is not where a
+      # readiness window gets renegotiated.
       retries: 4
       start_period: 10s
-    security_opt:
-      - no-new-privileges:true
-    restart: unless-stopped
-    logging: *default-logging
 
   socket-proxy:
+    <<: *service-defaults
     container_name: beszel_socket_proxy
     # The only Docker socket reader. Read-only access with mutation refused, and
     # never published beyond loopback.
     image: lscr.io/linuxserver/socket-proxy:3.4.4@sha256:cba12c42b1df30a6446856028f5ab726e9d8921f1ea74be509216c5e41357d42
-    cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
     cpus: 0.5
     labels:
       dev.dozzle.group: beszel
@@ -143,15 +156,14 @@ services:
       POST: "0"
       TZ: ${TZ:?}
     healthcheck:
+      <<: *healthcheck-defaults
       test: [CMD-SHELL, "wget -q -O - http://127.0.0.1:2375/_ping | grep -qx OK"]
-      interval: 30s
+      # Both agents gate their own start on this container reporting healthy. It
+      # answers /_ping over loopback the moment it is listening, so the check is
+      # short on both ends rather than spending the platform's grace period.
       timeout: 5s
       retries: 4
       start_period: 5s
     read_only: true
     tmpfs:
       - /run
-    security_opt:
-      - no-new-privileges:true
-    restart: unless-stopped
-    logging: *default-logging

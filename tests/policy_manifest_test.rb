@@ -327,6 +327,40 @@ end
   end
 end
 
+# The platform fragments are copied per stack because Compose resolves an anchor
+# only inside its own file, so the property that matters is that the copies agree.
+# Each mutation below diverges one stack's copy from the eleven others.
+expect_failure(failures, "divergent logging fragment",
+               "komga: x-logging must hold the values every stack's copy of it shares") do |root|
+  mutate_compose.call(root, "services/komga/compose.yml") do |compose|
+    compose["x-logging"] = { "driver" => "json-file", "options" => { "max-size" => "50m", "max-file" => "3" } }
+  end
+end
+
+expect_failure(failures, "divergent health-check timing fragment",
+               "komga: x-healthcheck-defaults must hold the values every stack's copy of it shares") do |root|
+  mutate_compose.call(root, "services/komga/compose.yml") do |compose|
+    compose["x-healthcheck-defaults"] = { "interval" => "45s", "timeout" => "10s",
+                                          "retries" => 5, "start_period" => "60s" }
+  end
+end
+
+expect_failure(failures, "service defaults fragment disagreeing with platform policy",
+               "komga: x-service-defaults must carry the platform cpuset, " \
+               "security_opt, restart and logging") do |root|
+  mutate_compose.call(root, "services/komga/compose.yml") do |compose|
+    compose.fetch("x-service-defaults")["security_opt"] = []
+  end
+end
+
+expect_failure(failures, "container-local logging variant",
+               "komga/komga: logging must be the platform fragment, not a variant of it") do |root|
+  mutate_compose.call(root, "services/komga/compose.yml") do |compose|
+    compose.fetch("services").fetch("komga")["logging"] =
+      { "driver" => "json-file", "options" => { "max-size" => "1g", "max-file" => "99" } }
+  end
+end
+
 expect_failure(failures, "recreated retired role",
                "retired role directory must be absent") do |root|
   path = File.join(root, "roles", retired_token, "tasks", "main.yml")

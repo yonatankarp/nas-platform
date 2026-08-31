@@ -1,18 +1,36 @@
 ---
+# Platform fragments. Compose resolves a YAML anchor only inside the file that
+# declares it, so every stack carries its own copy; tests/policy_test.rb pins the
+# copies equal and records there why cross-file sharing was not taken. A
+# container needing different health-check timing overrides only the fields it
+# changes, so a deviation reads as a deviation.
 x-logging: &default-logging
   driver: json-file
   options:
     max-size: 10m
     max-file: "3"
 
+x-service-defaults: &service-defaults
+  cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
+  security_opt:
+    - no-new-privileges:true
+  restart: unless-stopped
+  logging: *default-logging
+
+x-healthcheck-defaults: &healthcheck-defaults
+  interval: 30s
+  timeout: 10s
+  retries: 5
+  start_period: 60s
+
 services:
   # Pinchflat is a self-contained YouTube writer: it calls no other platform
   # service, so it stays off the media-control network for the same reason Komga
   # does. Jellyfin reads what it writes from disk through its own library.
   pinchflat:
+    <<: *service-defaults
     container_name: pinchflat
     image: ghcr.io/kieraneglin/pinchflat:v2025.6.6@sha256:4e975edf58f0861a5cbfe8fc6aac4851ff5a02dfc3f05ffeea4982e3084a5a4a
-    cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
     cpus: 1.0
     labels:
       dev.dozzle.name: pinchflat
@@ -32,21 +50,14 @@ services:
       BASIC_AUTH_USERNAME: ${PINCHFLAT_BASIC_AUTH_USERNAME:?}
       BASIC_AUTH_PASSWORD: ${PINCHFLAT_BASIC_AUTH_PASSWORD:?}
     healthcheck:
+      <<: *healthcheck-defaults
       test:
         - CMD-SHELL
         - >-
           curl --fail --silent --show-error
           http://127.0.0.1:8945/healthcheck >/dev/null
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 60s
-    security_opt:
-      - no-new-privileges:true
-    restart: unless-stopped
     # The source list and download history are a SQLite database under a
     # recovery: critical config directory. 30s commits it. A yt-dlp download cut
     # short is re-queued from that same database, so the window does not wait
     # for one.
     stop_grace_period: 30s
-    logging: *default-logging
