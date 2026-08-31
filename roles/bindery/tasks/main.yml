@@ -4,13 +4,9 @@
     name: deployment_bundle
     tasks_from: target
   vars:
+    deployment_target_service: bindery
     deployment_target_require_current_release: true
     deployment_target_extra_paths:
-      - "{{ platform_current_dir }}/services/bindery"
-      - "{{ platform_current_dir }}/services/bindery/compose.yml"
-      - "{{ platform_current_dir }}/services/bindery/compose.{{ platform_compose_kind }}.yml"
-      - "{{ platform_runtime_dir }}/services/bindery"
-      - "{{ platform_runtime_dir }}/services/bindery/.env"
       - "{{ bindery_config_host_path }}"
 
 # Redacted: the conditions name the API-key seed and both halves of the

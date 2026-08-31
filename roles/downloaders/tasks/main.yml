@@ -8,13 +8,9 @@
     name: deployment_bundle
     tasks_from: target
   vars:
+    deployment_target_service: downloaders
     deployment_target_require_current_release: true
     deployment_target_extra_paths:
-      - "{{ platform_current_dir }}/services/downloaders"
-      - "{{ platform_current_dir }}/services/downloaders/compose.yml"
-      - "{{ platform_current_dir }}/services/downloaders/compose.{{ platform_compose_kind }}.yml"
-      - "{{ platform_runtime_dir }}/services/downloaders"
-      - "{{ platform_runtime_dir }}/services/downloaders/.env"
       - "{{ downloaders_sabnzbd_config_host_path }}"
 
 - name: Require INI-safe SABnzbd administrator credentials

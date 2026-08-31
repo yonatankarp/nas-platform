@@ -113,8 +113,15 @@ assembles an immutable release from the controller checkout, installs it at
 `platform_current_dir`, and keeps rendered secrets separately under
 `platform_runtime_dir`. Every service role's first task re-includes
 `deployment_bundle` with `tasks_from: target` and
-`deployment_target_require_current_release: true`, listing exactly the paths it
-is about to touch. `deployment_bundle` also stats each service's platform
+`deployment_target_require_current_release: true`, naming exactly the paths it
+is about to touch. It names them in two parts: `deployment_target_service` is
+the **manifest service directory** (`paperless-ngx`, not `paperless_ngx`), from
+which `deployment_bundle` derives the five paths every service role touches —
+the release directory, both Compose files, the runtime directory and its `.env`
+— and `deployment_target_extra_paths` is everything beyond those five, `[]` when
+there is nothing. Naming a service the role does not deploy fails the run rather
+than quietly widening what the role claims to touch.
+`deployment_bundle` also stats each service's platform
 override once per run and publishes `platform_service_compose_files` keyed by
 service name — read that, never restat the override yourself.
 

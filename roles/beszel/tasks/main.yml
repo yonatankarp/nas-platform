@@ -15,13 +15,9 @@
     name: deployment_bundle
     tasks_from: target
   vars:
+    deployment_target_service: beszel
     deployment_target_require_current_release: true
     deployment_target_extra_paths:
-      - "{{ platform_current_dir }}/services/beszel"
-      - "{{ platform_current_dir }}/services/beszel/compose.yml"
-      - "{{ platform_current_dir }}/services/beszel/compose.{{ platform_compose_kind }}.yml"
-      - "{{ platform_runtime_dir }}/services/beszel"
-      - "{{ platform_runtime_dir }}/services/beszel/.env"
       - "{{ nas_docker_root }}/beszel/hub/id_ed25519"
 
 - name: Select the Beszel mounted state root

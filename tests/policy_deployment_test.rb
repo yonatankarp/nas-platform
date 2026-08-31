@@ -330,6 +330,13 @@ check(failures, release_compare_tasks.one? &&
         "immutable release comparison must include #{metadata}")
 end
 
+manifest_entries = Array(
+  YAML.safe_load_file(File.join(ROOT, "services", "manifest.yml"))["services"]
+)
+manifest_service_directories = manifest_entries.to_h do |entry|
+  [entry["role"], entry["name"]]
+end
+
 # Parsed rather than byte-offset: a task name or a variable reference occurring inside a
 # comment or a when: expression is not evidence of task ordering. The validating task's own
 # deployment_target_extra_paths necessarily name the runtime roots, so it is excluded from
@@ -352,12 +359,14 @@ end
         "#{service_name} must revalidate target paths before runtime/current use")
   next unless target_validation
 
-  guarded = (service_tasks.fetch(target_validation)["vars"] || {})
-            .fetch("deployment_target_extra_paths", [])
-  check(failures,
-        guarded.any? { |path| path.to_s.end_with?("/compose.yml") } &&
-          guarded.any? { |path| path.to_s.end_with?("/compose.{{ platform_compose_kind }}.yml") },
-        "#{service_name} must guard every Compose file consumed by selective runs")
+  # Both Compose files are derived by target.yml from the named service rather
+  # than spelled out here, so what a role can still get wrong is the name. The
+  # manifest is the authority for it: roles/paperless_ngx deploys
+  # services/paperless-ngx, and a name taken from the role would guard nothing
+  # a selective run reads.
+  named_service = (service_tasks.fetch(target_validation)["vars"] || {})["deployment_target_service"]
+  check(failures, named_service == manifest_service_directories[service_name],
+        "#{service_name} must name the manifest service whose Compose files a selective run deploys")
 end
 
 # Two runtime failures nothing else catches, because every integration suite includes
@@ -545,6 +554,10 @@ check(failures, extra_paths_option.is_a?(Hash) && extra_paths_option["type"] == 
                 extra_paths_option["elements"] == "path" &&
                 extra_paths_option["required"] == true,
       "the target entry point must require an explicit list of the paths its caller touches")
+service_option = target_options["deployment_target_service"]
+check(failures, service_option.is_a?(Hash) && service_option["type"] == "str" &&
+                service_option["required"] == true,
+      "the target entry point must require an explicit service name for its derived paths")
 check(failures, deployment_defaults.keys.none? { |name| name.start_with?("deployment_target_") },
       "target containment parameters must not be silently defaulted in role defaults")
 check(failures,
@@ -609,6 +622,50 @@ target_include_sites.each do |relative_path, task|
   check(failures, declared_extra_paths.is_a?(Array) ||
                   declared_extra_paths.to_s.match?(/\A\{\{.*\}\}\z/m),
         "#{label} must declare the extra paths it is about to touch, even when there are none")
+
+  # Naming a service makes target.yml derive five more paths on the caller's
+  # behalf, so the name is now part of what the caller declares it touches. A
+  # widened declaration is the failure no other check can see: the containment
+  # validator accepts a path nobody writes to, and the run still passes. So the
+  # name must resolve through services/manifest.yml to the role that owns this
+  # file, and that role must be seen to use all five - the .env it renders, the
+  # release directory it deploys from, and the Compose selection keyed by the
+  # same manifest name. Anything else is a path this caller does not touch.
+  declared_service = task_vars["deployment_target_service"]
+  check(failures, declared_service.is_a?(String),
+        "#{label} must name the service whose standard deployment paths it touches, " \
+        "or the empty string when it owns none")
+  next unless declared_service.is_a?(String) && !declared_service.empty?
+
+  owning_role = relative_path[%r{\Aroles/([^/]+)/tasks/}, 1]
+  manifest_entry = manifest_entries.find { |entry| entry["name"] == declared_service }
+  check(failures, !manifest_entry.nil? && manifest_entry["role"] == owning_role,
+        "#{label} names service #{declared_service.inspect}, which is not the manifest service " \
+        "directory deployed by role #{owning_role.inspect}")
+  next unless manifest_entry && manifest_entry["role"] == owning_role
+
+  role_tasks = Dir[File.join(ROOT, "roles", owning_role, "tasks", "*.yml")].sort.flat_map do |file|
+    flatten_tasks(YAML.safe_load_file(file, aliases: true))
+  end
+  runtime_env = "{{ platform_runtime_dir }}/services/#{declared_service}/.env"
+  release_dir = "{{ platform_current_dir }}/services/#{declared_service}"
+  compose_selection = "{{ platform_service_compose_files['#{declared_service}'] }}"
+  renders_env = role_tasks.any? do |role_task|
+    %w[ansible.builtin.template ansible.builtin.copy].any? do |module_name|
+      role_task[module_name].is_a?(Hash) && role_task[module_name]["dest"] == runtime_env
+    end
+  end
+  deploys_release = role_tasks.any? do |role_task|
+    compose = role_task["community.docker.docker_compose_v2"]
+    compose.is_a?(Hash) && compose["project_src"] == release_dir &&
+      compose["files"] == compose_selection &&
+      Array(compose["env_files"]).include?(runtime_env)
+  end
+  check(failures, renders_env,
+        "#{label} derives #{runtime_env} but role #{owning_role} never renders it")
+  check(failures, deploys_release,
+        "#{label} derives the #{declared_service} release directory and both its Compose files " \
+        "but role #{owning_role} never deploys that project from them")
 end
 
 

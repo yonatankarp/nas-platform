@@ -113,12 +113,23 @@ argument_specs:
       - Re-included by every service role immediately before it writes runtime
         configuration or reads the current release, naming exactly the paths it
         is about to touch.
-      - Both parameters are required rather than defaulted. A defaulted
+      - All three parameters are required rather than defaulted. A defaulted
         deployment_target_require_current_release turns a renamed caller
-        parameter into a silently disabled release-containment guard, and a
+        parameter into a silently disabled release-containment guard, a
         defaulted deployment_target_extra_paths silently drops the paths the
-        caller declared.
+        caller declared, and a defaulted deployment_target_service silently
+        stops deriving the five standard paths of the service it names.
     options:
+      deployment_target_service:
+        type: str
+        required: true
+        description: >-
+          The manifest service directory whose five standard deployment paths
+          this caller touches - the release directory, both Compose files, the
+          runtime directory and its rendered .env. This is the service name from
+          services/manifest.yml, which differs from the role name for
+          paperless-ngx. The callers that own no single service, the play
+          preflight and host_prep among them, write an empty string.
       deployment_target_require_current_release:
         type: bool
         required: true

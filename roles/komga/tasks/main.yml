@@ -4,13 +4,9 @@
     name: deployment_bundle
     tasks_from: target
   vars:
+    deployment_target_service: komga
     deployment_target_require_current_release: true
-    deployment_target_extra_paths:
-      - "{{ platform_current_dir }}/services/komga"
-      - "{{ platform_current_dir }}/services/komga/compose.yml"
-      - "{{ platform_current_dir }}/services/komga/compose.{{ platform_compose_kind }}.yml"
-      - "{{ platform_runtime_dir }}/services/komga"
-      - "{{ platform_runtime_dir }}/services/komga/.env"
+    deployment_target_extra_paths: []
 
 - name: Render the Komga environment
   ansible.builtin.template:

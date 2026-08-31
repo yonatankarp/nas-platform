@@ -747,6 +747,14 @@ nowhere else is a path nobody checked. `deployment_target_require_current_releas
 true` additionally refuses to run unless `current` resolves to the release this
 run installed, which is what makes a lone `--tags navidrome` converge safe.
 
+`deployment_target_service` is the **manifest service directory**, not the role
+name — `services/manifest.yml` is the mapping, and it differs for
+`paperless-ngx`. From it `deployment_bundle` derives the five paths every service
+role touches: the service directory in the current release, both Compose files,
+the runtime directory and its rendered `.env`. Naming a service the role does not
+deploy fails the run, so `deployment_target_extra_paths` stays what it says it
+is — exactly the paths beyond those five. A role with none writes `[]`.
+
 ```yaml
 ---
 - name: Revalidate deployment paths before Navidrome runtime use
@@ -754,13 +762,9 @@ run installed, which is what makes a lone `--tags navidrome` converge safe.
     name: deployment_bundle
     tasks_from: target
   vars:
+    deployment_target_service: navidrome
     deployment_target_require_current_release: true
-    deployment_target_extra_paths:
-      - "{{ platform_current_dir }}/services/navidrome"
-      - "{{ platform_current_dir }}/services/navidrome/compose.yml"
-      - "{{ platform_current_dir }}/services/navidrome/compose.{{ platform_compose_kind }}.yml"
-      - "{{ platform_runtime_dir }}/services/navidrome"
-      - "{{ platform_runtime_dir }}/services/navidrome/.env"
+    deployment_target_extra_paths: []
 
 - name: Render the Navidrome environment
   ansible.builtin.template:
