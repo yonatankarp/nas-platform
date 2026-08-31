@@ -1,15 +1,40 @@
 ---
+# Platform fragments. Compose resolves a YAML anchor only inside the file that
+# declares it, so every stack carries its own copy; tests/policy_test.rb pins the
+# copies equal and records there why cross-file sharing was not taken. A
+# container needing different health-check timing overrides only the fields it
+# changes, so a deviation reads as a deviation.
 x-logging: &default-logging
   driver: json-file
   options:
     max-size: 10m
     max-file: "3"
 
+x-service-defaults: &service-defaults
+  cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
+  # These containers carry no `user:`, so PID 1 starts as root and the
+  # entrypoints drop to their service accounts with setuid(2), which
+  # no_new_privs does not restrict. Nothing here executes a setuid binary, so
+  # refusing the escalation outright costs the stack nothing — Chromium's setuid
+  # sandbox helper is the one binary that would be disarmed, and Gotenberg never
+  # reaches it: it launches Chromium with --no-sandbox, the only mode that works
+  # under Docker's default seccomp profile.
+  security_opt:
+    - no-new-privileges:true
+  restart: unless-stopped
+  logging: *default-logging
+
+x-healthcheck-defaults: &healthcheck-defaults
+  interval: 30s
+  timeout: 10s
+  retries: 5
+  start_period: 60s
+
 services:
   broker:
+    <<: *service-defaults
     container_name: paperless_redis
     image: docker.io/valkey/valkey:9.1.1-alpine@sha256:de31910896150d5e754a07d57d227cfdde4e258ddd0d1aa4607f2d2f95843715
-    cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
     cpus: 0.5
     labels:
       dev.dozzle.group: paperless
@@ -18,29 +43,27 @@ services:
       - ${PAPERLESS_REDIS_PATH:?}:/data
     environment:
       TZ: ${TZ:?}
-    # These containers carry no `user:`, so PID 1 starts as root and the
-    # entrypoints drop to their service accounts with setuid(2), which
-    # no_new_privs does not restrict. Nothing here executes a setuid binary, so
-    # refusing the escalation outright costs the stack nothing.
-    security_opt:
-      - no-new-privileges:true
-    restart: unless-stopped
     # Valkey answers SIGTERM by writing one final snapshot to /data before it
     # exits. That directory is recovery: cache — the task queue is rebuilt from
     # Postgres — so this window is about exiting with the write finished rather
     # than about protecting the data. 30s is well past what the snapshot costs.
     stop_grace_period: 30s
     healthcheck:
+      # Deliberately not merged from the platform fragment. This check declares
+      # no start_period at all, so failures count from the first probe, and a
+      # merged default cannot be taken back out again. The webserver gates its
+      # own start on this one, and the tighter interval is what makes that gate
+      # open promptly. Preserved as it was; the repository records no reason for
+      # the 10s/5s/12 numbers themselves.
       test: [CMD, valkey-cli, ping]
       interval: 10s
       timeout: 5s
       retries: 12
-    logging: *default-logging
 
   db:
+    <<: *service-defaults
     container_name: paperless_postgres
     image: docker.io/library/postgres:18.6-alpine@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2
-    cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
     cpus: 2.0
     labels:
       dev.dozzle.group: paperless
@@ -52,9 +75,6 @@ services:
       POSTGRES_DB: ${DB_NAME:?}
       POSTGRES_USER: ${DB_USER:?}
       POSTGRES_PASSWORD: ${DB_PASSWORD:?}
-    security_opt:
-      - no-new-privileges:true
-    restart: unless-stopped
     # The image's STOPSIGNAL is SIGINT, which is a Postgres fast shutdown:
     # connections dropped, open transactions aborted, then a checkpoint that
     # flushes every dirty buffer. A document archive's working set is small, so
@@ -63,16 +83,21 @@ services:
     # through WAL recovery.
     stop_grace_period: 1m
     healthcheck:
+      # Deliberately not merged from the platform fragment. This check declares
+      # no start_period at all, so failures count from the first probe, and a
+      # merged default cannot be taken back out again. The webserver gates its
+      # own start on this one, and the tighter interval is what makes that gate
+      # open promptly. Preserved as it was; the repository records no reason for
+      # the 10s/5s/12 numbers themselves.
       test: [CMD-SHELL, "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 12
-    logging: *default-logging
 
   webserver:
+    <<: *service-defaults
     container_name: paperless_webserver
     image: ghcr.io/paperless-ngx/paperless-ngx:3.1.1@sha256:73a1d0bcc5b50cb501f084da795722aa5e2988c6bc9b26ca1ae493a57a490c06
-    cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
     cpus: 3.0
     labels:
       dev.dozzle.group: paperless
@@ -129,28 +154,23 @@ services:
       USERMAP_GID: ${GROUP_ID:?}
       USERMAP_UID: ${USER_ID:?}
     healthcheck:
+      <<: *healthcheck-defaults
       test: [CMD, curl, --fail, --silent, --show-error, http://localhost:8000]
-      interval: 30s
-      timeout: 10s
       retries: 4
       # A fresh database applies every migration before binding port 8000. The
       # production NAS needed just over three minutes for that first boot.
       start_period: 300s
-    security_opt:
-      - no-new-privileges:true
-    restart: unless-stopped
     # Consumption moves a scanned original into the recovery: critical media
     # tree and writes its record to Postgres. A minute lets the document being
     # consumed reach both, so a shutdown does not leave a file in the archive
     # that no record names. OCR of a queued document is not waited for: it is
     # re-queued in the broker and runs again.
     stop_grace_period: 1m
-    logging: *default-logging
 
   gotenberg:
+    <<: *service-defaults
     container_name: paperless_gotenberg
     image: docker.io/gotenberg/gotenberg:8.36.0@sha256:87c16b9f364279d321bc9772d31fa58aa6abe036423c270698bd636c3a8e9466
-    cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
     cpus: 2.0
     labels:
       dev.dozzle.group: paperless
@@ -162,24 +182,18 @@ services:
     environment:
       TZ: ${TZ:?}
     healthcheck:
+      <<: *healthcheck-defaults
       test: [CMD, curl, --fail, --silent, --show-error, http://localhost:3000/health]
-      interval: 30s
-      timeout: 10s
+      # Deviation carried over unchanged from before the defaults existed; the
+      # repository records no reason for it, and a de-duplication is not where a
+      # readiness window gets renegotiated.
       retries: 4
       start_period: 30s
-    # Chromium's setuid sandbox helper is the one binary on this platform that
-    # no_new_privs would disarm, and Gotenberg never reaches it: it launches
-    # Chromium with --no-sandbox, the only mode that works under Docker's default
-    # seccomp profile. So this container is no exception either.
-    security_opt:
-      - no-new-privileges:true
-    restart: unless-stopped
-    logging: *default-logging
 
   tika:
+    <<: *service-defaults
     container_name: paperless_tika
     image: docker.io/apache/tika:3.3.1.0@sha256:90b7fa1dc018434075fce9e1d9b88b1e3d0ea6979d0cf86e116c79a8073ae973
-    cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
     cpus: 2.0
     labels:
       dev.dozzle.group: paperless
@@ -187,12 +201,10 @@ services:
     environment:
       TZ: ${TZ:?}
     healthcheck:
+      <<: *healthcheck-defaults
       test: [CMD, bash, -ec, "exec 3<>/dev/tcp/127.0.0.1/9998"]
-      interval: 30s
-      timeout: 10s
+      # Deviation carried over unchanged from before the defaults existed; the
+      # repository records no reason for it, and a de-duplication is not where a
+      # readiness window gets renegotiated.
       retries: 4
       start_period: 30s
-    security_opt:
-      - no-new-privileges:true
-    restart: unless-stopped
-    logging: *default-logging
