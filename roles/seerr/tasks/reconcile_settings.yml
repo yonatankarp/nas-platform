@@ -1,0 +1,147 @@
+---
+# Redacted: the request carries the API key.
+- name: Read the declared Seerr main settings
+  ansible.builtin.uri:
+    url: "{{ seerr_api }}/settings/main"
+    method: GET
+    headers:
+      X-Api-Key: "{{ vault_seerr_api_key }}"
+    status_code: [200]
+    return_content: true
+  register: seerr_main_current
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+# Only the declared keys are compared. The rest of the mapping is Seerr's own —
+# the API key, the VAPID pair, the locale — and the platform has no opinion on
+# it, so a change there must not read as drift.
+- name: Resolve the Seerr main settings reconciliation
+  ansible.builtin.set_fact:
+    seerr_main_declared_now: >-
+      {{ (seerr_main_current.json | default({})) | dict2items
+         | selectattr('key', 'in', seerr_main_settings.keys() | list)
+         | items2dict }}
+
+- name: Decide whether the Seerr main settings need repair
+  ansible.builtin.set_fact:
+    seerr_main_repair: "{{ seerr_main_declared_now != seerr_main_settings }}"
+
+- name: Report the planned Seerr main settings repair
+  ansible.builtin.debug:
+    msg: >-
+      A live run would declare {{ seerr_main_settings | dict2items
+      | map(attribute='key') | join(', ') }} on Seerr. defaultPermissions ships
+      as 32 and newPlexLogin ships as true, and together they would give every
+      Jellyfin user who signs in a standing request permission the design never
+      granted.
+  when:
+    - ansible_check_mode
+    - seerr_main_repair | bool
+
+# POST /api/v1/settings/main is a deep merge rather than a replace — measured,
+# the API key survived a partial body — so this sends only what the platform
+# declares and leaves the rest of the mapping alone.
+#
+# Redacted: the request carries the API key.
+- name: Declare the Seerr main settings
+  ansible.builtin.uri:
+    url: "{{ seerr_api }}/settings/main"
+    method: POST
+    headers:
+      X-Api-Key: "{{ vault_seerr_api_key }}"
+    body_format: json
+    body: "{{ seerr_main_settings }}"
+    status_code: [200]
+  when:
+    - not ansible_check_mode
+    - seerr_main_repair | bool
+  changed_when: true
+  no_log: true
+
+# Redacted: the request carries the API key.
+- name: Read the declared Seerr ntfy notification agent
+  ansible.builtin.uri:
+    url: "{{ seerr_api }}/settings/notifications/ntfy"
+    method: GET
+    headers:
+      X-Api-Key: "{{ vault_seerr_api_key }}"
+    status_code: [200]
+    return_content: true
+  register: seerr_ntfy_current
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Decide whether the Seerr ntfy notification agent needs repair
+  ansible.builtin.set_fact:
+    seerr_ntfy_repair: "{{ (seerr_ntfy_current.json | default({})) != seerr_ntfy_declaration }}"
+
+- name: Report the planned Seerr ntfy notification agent repair
+  ansible.builtin.debug:
+    msg: >-
+      A live run would point Seerr's ntfy agent at
+      {{ seerr_ntfy_url }}/{{ seerr_ntfy_topic }} with its own bearer token.
+      This platform's ntfy is deny-all, so an agent without one publishes
+      nothing and fails silently.
+  when:
+    - ansible_check_mode
+    - seerr_ntfy_repair | bool
+
+# The POST replaces the agent object rather than merging into it — measured, a
+# partial body dropped embedPoster from the read-back — so the whole options
+# mapping goes every time and the comparison above is against the same shape.
+#
+# Redacted: the request carries the API key and the ntfy publisher token.
+- name: Declare the Seerr ntfy notification agent
+  ansible.builtin.uri:
+    url: "{{ seerr_api }}/settings/notifications/ntfy"
+    method: POST
+    headers:
+      X-Api-Key: "{{ vault_seerr_api_key }}"
+    body_format: json
+    body: "{{ seerr_ntfy_declaration }}"
+    status_code: [200]
+  when:
+    - not ansible_check_mode
+    - seerr_ntfy_repair | bool
+  changed_when: true
+  no_log: true
+
+# settings.public.initialized is not a gate on the API at all; it only controls
+# whether the frontend redirects to /setup. POST /api/v1/settings/initialize is
+# an unconditional write, so it is guarded on the current value rather than
+# called every converge.
+- name: Read the anonymous Seerr public settings
+  ansible.builtin.uri:
+    url: "{{ seerr_public_settings_url }}"
+    method: GET
+    status_code: [200]
+    return_content: true
+  register: seerr_public_current
+  changed_when: false
+  check_mode: false
+
+- name: Report the planned Seerr initialization
+  ansible.builtin.debug:
+    msg: >-
+      A live run would mark Seerr initialized, which is what stops its web
+      interface redirecting every visitor to the setup wizard the platform has
+      already completed for them.
+  when:
+    - ansible_check_mode
+    - not seerr_public_current.json.initialized | default(false) | bool
+
+# Redacted: the request carries the API key.
+- name: Mark Seerr initialized
+  ansible.builtin.uri:
+    url: "{{ seerr_api }}/settings/initialize"
+    method: POST
+    headers:
+      X-Api-Key: "{{ vault_seerr_api_key }}"
+    status_code: [200]
+  when:
+    - not ansible_check_mode
+    - not seerr_public_current.json.initialized | default(false) | bool
+  changed_when: true
+  no_log: true

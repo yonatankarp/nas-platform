@@ -22,5 +22,9 @@ contracts:
     path: tests/contracts/bindery.sh
   - service: kapowarr
     path: tests/contracts/kapowarr.sh
+  - service: trailarr
+    path: tests/contracts/trailarr.sh
   - service: pinchflat
     path: tests/contracts/pinchflat.sh
+  - service: seerr
+    path: tests/contracts/seerr.sh

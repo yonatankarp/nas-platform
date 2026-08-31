@@ -24,8 +24,13 @@ mac_script_dir=$(CDPATH= cd -- "$mac_hook_dir/../.." && pwd -P)
 # owns, and its persisted database. Bindery's covers its closed first-run setup,
 # the ebook and audiobook roots it owns separately, both configured directories
 # being writable by the identity the container was given, and its own database.
+# Trailarr's covers the same three access outcomes against its API key and its
+# published default administrator, and the one thing no other service has: that
+# the application's own /config/.env carries the platform's keys and none of the
+# ones only a hand edit writes.
 mac_verified=
-for mac_verify_service in audiobookshelf komga jellyfin immich paperless pinchflat kapowarr bindery; do
+for mac_verify_service in audiobookshelf komga jellyfin immich paperless pinchflat kapowarr \
+    bindery trailarr seerr; do
   "$mac_script_dir/run-contract.sh" "$mac_verify_service" run
   mac_verified="$mac_verified$mac_verify_service
 "

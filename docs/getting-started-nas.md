@@ -4,9 +4,10 @@ This path targets a fresh production installation. Complete the
 [disposable Mac proof](getting-started-mac.md), protect any media already on the
 NAS, and confirm every required service is `implemented` or `accepted` in
 [`services/manifest.yml`](../services/manifest.yml) before installation. The
-twelve implemented service projects are Audiobookshelf, Beszel, Dozzle, Immich,
-Jellyfin, Kapowarr, Komga, ntfy, Paperless-ngx, Pinchflat, and the Arr and
-downloader projects, which this host runs because it enables Usenet. The
+fifteen implemented service projects are Audiobookshelf, Beszel, Bindery,
+Dozzle, Immich, Jellyfin, Kapowarr, Komga, ntfy, Paperless-ngx, Pinchflat,
+Seerr, Trailarr, and the Arr and downloader projects, which this host runs because it
+enables Usenet. The
 production retirement checkpoint has passed and the retired metadata manager
 declarations have been removed from the repository.
 
@@ -161,7 +162,7 @@ ansible-playbook -i inventory/remote.yml site.yml --ask-vault-pass
 
 Record the Git commit, encrypted vault checksum, recap, application checks, and
 operator decision without recording secrets. Existing NAS credentials must work
-unchanged for all twelve implemented service projects. Repeat the
+unchanged for all fifteen implemented service projects. Repeat the
 service-specific credential checks from the
 [Mac manual review](getting-started-mac.md#4-perform-the-manual-review)
 against the production deployment without exercising external integrations; for
@@ -318,7 +319,7 @@ ansible-playbook -i inventory/local.yml site.yml \
   --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE"
 
 ansible-playbook -i inventory/local.yml verify.yml \
-  --tags platform_verify_media_acquisition_foundation,platform_verify_ntfy,platform_verify_beszel,platform_verify_dozzle,platform_verify_audiobookshelf,platform_verify_komga,platform_verify_arr,platform_verify_downloaders,platform_verify_bindery,platform_verify_kapowarr,platform_verify_pinchflat,platform_verify_jellyfin,platform_verify_immich,platform_verify_paperless \
+  --tags platform_verify_media_acquisition_foundation,platform_verify_ntfy,platform_verify_beszel,platform_verify_dozzle,platform_verify_audiobookshelf,platform_verify_komga,platform_verify_arr,platform_verify_downloaders,platform_verify_bindery,platform_verify_kapowarr,platform_verify_pinchflat,platform_verify_trailarr,platform_verify_jellyfin,platform_verify_seerr,platform_verify_immich,platform_verify_paperless \
   --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE"
 ```
 

@@ -49,6 +49,11 @@ argument_specs:
       vault_kapowarr_comicvine_api_key: {type: str, required: true}
       vault_pinchflat_admin_username: {type: str, required: true}
       vault_pinchflat_admin_password: {type: str, required: true}
+      vault_trailarr_api_key: {type: str, required: true}
+      vault_trailarr_admin_username: {type: str, required: true}
+      vault_trailarr_admin_password: {type: str, required: true}
+      vault_trailarr_admin_password_hash: {type: str, required: true}
+      vault_seerr_api_key: {type: str, required: true}
       vault_ntfy_admin_user: {type: str, required: true}
       vault_ntfy_admin_password: {type: str, required: true}
       vault_ntfy_admin_password_hash: {type: str, required: true}
@@ -58,6 +63,8 @@ argument_specs:
       vault_ntfy_beszel_token: {type: str, required: true}
       vault_ntfy_deploy_password_hash: {type: str, required: true}
       vault_ntfy_deploy_token: {type: str, required: true}
+      vault_ntfy_seerr_password_hash: {type: str, required: true}
+      vault_ntfy_seerr_token: {type: str, required: true}
       vault_paperless_admin_username: {type: str, required: true}
       vault_paperless_admin_password: {type: str, required: true}
       vault_paperless_admin_email: {type: str, required: true}

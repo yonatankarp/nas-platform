@@ -102,12 +102,12 @@ EXPECTED_PROJECTS = {
     }
   },
   "trailarr" => {
-    "role" => "trailarr", "status" => "planned", "services" => {
+    "role" => "trailarr", "status" => "implemented", "services" => {
       "trailarr" => service("long_running", 1.0, ui_port(7889, published_by: "trailarr"))
     }
   },
   "seerr" => {
-    "role" => "seerr", "status" => "planned", "services" => {
+    "role" => "seerr", "status" => "implemented", "services" => {
       "seerr" => service("long_running", 1.0, ui_port(5055, published_by: "seerr"))
     }
   }
@@ -139,6 +139,8 @@ EXPECTED = {
 
 EXPECTED_IMPLEMENTED_PORTS = [
   ["arr", "bazarr", "0.0.0.0", 6767, 6767, "tcp"],
+  ["seerr", "seerr", "0.0.0.0", 5055, 5055, "tcp"],
+  ["trailarr", "trailarr", "0.0.0.0", 7889, 7889, "tcp"],
   ["bindery", "bindery", "0.0.0.0", 8787, 8787, "tcp"],
   ["arr", "prowlarr", "0.0.0.0", 9696, 9696, "tcp"],
   ["arr", "radarr", "0.0.0.0", 7878, 7878, "tcp"],
@@ -217,12 +219,22 @@ def jellyfin_defaults_contract_problems(defaults)
     ["Jellyfin Open Subtitles must remain until Bazarr is proven in Phase 1"]
 end
 
-def planned_tree_problems(existing_paths)
-  expected_paths = EXPECTED_PROJECTS.filter_map do |project_name, project|
+def planned_tree_paths(projects)
+  projects.filter_map do |project_name, project|
     next unless project.fetch("status") == "planned"
 
     ["roles/#{project.fetch('role')}", "services/#{project_name}"]
   end.flatten
+end
+
+# The planned set is an argument rather than a constant read, because the
+# catalog is allowed to be empty of planned projects and is: Phase 4 promoted
+# the last one. The guard itself is unchanged -- a project the pinned contract
+# calls planned must have no role or service tree on disk -- but its own proof
+# below can now hand it a project that will never be on the roster, instead of
+# borrowing whichever real one happened to still be planned.
+def planned_tree_problems(existing_paths, projects = EXPECTED_PROJECTS)
+  expected_paths = planned_tree_paths(projects)
   (existing_paths & expected_paths).map do |path|
     tree_kind = path.start_with?("roles/") ? "role" : "service"
     "planned #{tree_kind} tree exists prematurely: #{path}"
@@ -415,18 +427,20 @@ if catalog
     failures << "planned host publications collide" if collides?(left, right)
   end
 
-  planned_projects = catalog.fetch("projects").select do |_project_name, project|
-    project.fetch("status") == "planned"
-  end
-  planned_paths = planned_projects.flat_map do |project_name, project|
-    ["roles/#{project.fetch('role')}", "services/#{project_name}"]
-  end
+  planned_paths = planned_tree_paths(catalog.fetch("projects"))
   existing_planned_paths = planned_paths.select { |path| path_entry_exists?(File.join(ROOT, path)) }
   failures.concat(planned_tree_problems(existing_planned_paths))
 
-  premature_tree_rejections = planned_tree_problems([planned_paths.first]).length
+  # Both directions, against a synthetic project, because a guard that rejects
+  # everything is as broken as one that rejects nothing and neither shows up in
+  # an empty catalog.
+  synthetic_planned = {
+    "example-planned" => { "role" => "example_planned", "status" => "planned" }
+  }
   failures << "planned tree guard accepts a premature project directory" unless
-    premature_tree_rejections == 1
+    planned_tree_problems(["services/example-planned"], synthetic_planned).length == 1
+  failures << "planned tree guard rejects an implemented project tree" unless
+    planned_tree_problems(["services/komga", "roles/komga"], synthetic_planned).empty?
 end
 
 jellyfin_defaults_path = File.join(ROOT, "roles", "jellyfin", "defaults", "main.yml")

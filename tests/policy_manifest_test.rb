@@ -24,11 +24,41 @@ end
   "wrong status-map type" => [[], "service statuses must be a mapping"],
   "invalid status-map value" => [valid_statuses.merge("arr" => ["planned"]),
                                  "must be planned, implemented, or accepted"],
-  "implemented service with empty vault list" => [valid_statuses.merge("trailarr" => "implemented"),
-                                                   "vault_keys must be a nonempty list"]
 }.each do |label, (statuses, diagnostic)|
   _expectations, problems = pinned_service_expectations(ROOT, statuses)
   failures << "#{label}: missing #{diagnostic.inspect}" unless problems.any? { |problem| problem.include?(diagnostic) }
+end
+
+# The empty vault list used to be exercised against whichever service was still
+# planned, and the catalog no longer has one: every rostered service ships a
+# contract. So the subject is built rather than borrowed -- a scratch root whose
+# expectation files are the real ones with a single service's list emptied --
+# which also lets both branches of the rule be checked, not just the rejection.
+emptied_vault_root = lambda do |service_name, &block|
+  Dir.mktmpdir("nas-platform-expectations-") do |root|
+    expectations = File.join(root, "tests", "expected")
+    FileUtils.mkdir_p(expectations)
+    FileUtils.cp_r(File.join(ROOT, "tests", "expected", "."), expectations)
+    path = File.join(expectations, "#{service_name}.yml")
+    document = YAML.safe_load_file(path)
+    document["vault_keys"] = []
+    File.write(path, YAML.dump(document))
+    block.call(root)
+  end
+end
+emptied_vault_root.call("seerr") do |root|
+  _expectations, problems = pinned_service_expectations(root, valid_statuses)
+  diagnostic = "tests/expected/seerr.yml vault_keys must be a nonempty list"
+  failures << "implemented service with an emptied vault contract: missing #{diagnostic.inspect}" unless
+    problems.any? { |problem| problem.include?(diagnostic) }
+
+  # The other branch, which nothing else exercises now that the planned set is
+  # empty: a planned service is allowed to declare no credential at all.
+  _expectations, planned_problems = pinned_service_expectations(
+    root, valid_statuses.merge("seerr" => "planned")
+  )
+  failures << "planned service with an empty vault contract was rejected" if
+    planned_problems.any? { |problem| problem.include?(diagnostic) }
 end
 begin
   pinned_service_expectations(ROOT)
@@ -502,9 +532,9 @@ expect_failure(failures, "duplicate manifest service", "service manifest name va
   end
 end
 
-expect_failure(failures, "planned service promoted without vault contract",
-               "tests/expected/trailarr.yml vault_keys must be a nonempty list") do |root|
-  mutate_manifest(root) { |document| service(document, "trailarr")["status"] = "implemented" }
+expect_failure(failures, "implemented service stripped of its vault contract",
+               "tests/expected/seerr.yml vault_keys must be a nonempty list") do |root|
+  mutate_yaml_file(root, "tests/expected/seerr.yml") { |document| document["vault_keys"] = [] }
 end
 
 expect_failure(failures, "second acquisition job",
@@ -616,33 +646,17 @@ expect_failure(failures, "acquisition daemon claims Dozzle exemption",
   File.write(File.join(root, "services", "arr", "compose.yml"), YAML.dump(compose))
 end
 
+# The manifest and the pinned catalog contract have to agree on every project's
+# status, in both directions. Demotion is the direction left to exercise: the
+# acquisition catalog is fully implemented, so no project can be promoted
+# prematurely any more, and the premature-tree guard proves itself against a
+# synthetic project inside media_acquisition_foundation_test.rb rather than
+# against whichever real project happened to still be planned.
 expect_acquisition_failure.call(
-  "planned acquisition source published prematurely",
-  "planned service tree exists prematurely: services/trailarr"
+  "implemented acquisition project demoted in the manifest",
+  "seerr must be implemented in the service manifest"
 ) do |root|
-  FileUtils.mkdir_p(File.join(root, "services", "trailarr"))
-end
-
-{
-  "dangling planned acquisition role" => [
-    "roles/trailarr", "planned role tree exists prematurely: roles/trailarr"
-  ],
-  "dangling planned acquisition service" => [
-    "services/trailarr", "planned service tree exists prematurely: services/trailarr"
-  ]
-}.each do |label, (relative_path, diagnostic)|
-  expect_acquisition_failure.call(label, diagnostic) do |root|
-    path = File.join(root, relative_path)
-    FileUtils.mkdir_p(File.dirname(path))
-    File.symlink("missing-foundation-target", path)
-  end
-end
-
-expect_acquisition_failure.call(
-  "planned acquisition project promoted prematurely",
-  "trailarr must be planned in the service manifest"
-) do |root|
-  mutate_manifest(root) { |document| service(document, "trailarr")["status"] = "implemented" }
+  mutate_manifest(root) { |document| service(document, "seerr")["status"] = "planned" }
 end
 
 run_foundation_wrapper = lambda do |filename:, mode: 0o755, mutate: nil, ruby_selection: nil,

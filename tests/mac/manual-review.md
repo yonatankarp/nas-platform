@@ -24,6 +24,20 @@ private keys, password hashes, rendered environment files, or application logs.
       audiobook library roots and the persisted database survive recreation,
       and that unattended auto-grabbing is still off. Spend exactly one login —
       the limiter answers 429 to the correct password after five failures.
+- [ ] Trailarr: sign in with the deployed administrator identity; confirm the
+      published default administrator (admin / trailarr) is refused, that an
+      anonymous request to a protected route is refused, that monitoring and
+      downloads are still off, and that both trailer profiles write an mp4 into
+      a Trailers/ subdirectory of the item's own folder. Then change one
+      setting in the web interface, reconverge, and confirm it is reverted —
+      the application's own /config/.env is what makes that true.
+- [ ] Seerr: sign in with the deployed Jellyfin administrator and confirm the
+      managed household user can sign in too and can raise a request that is
+      approved immediately, with no quota and no service-administration menu.
+      Confirm the setup wizard does not appear. Then toggle "Enable New Media
+      Server Sign-In" on in the settings, reconverge, and confirm it is off
+      again — with it on, a Jellyfin user the platform never declared is
+      silently created here.
 - [ ] ntfy: confirm anonymous denial and authenticated disposable messages.
 - [ ] Beszel: inspect metrics/thresholds and send a disposable ntfy event.
 - [ ] Dozzle: inspect logs and event rules; confirm shell/actions/MCP are off.

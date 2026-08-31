@@ -1,0 +1,114 @@
+---
+trailarr_port: 7889
+trailarr_api: "http://127.0.0.1:{{ trailarr_port }}/api/v1"
+# /status is the only unauthenticated route outside /api/v1/auth/*, the OpenAPI
+# document and the single-page application, and it sits beside the API rather
+# than under it.
+trailarr_status_url: "http://127.0.0.1:{{ trailarr_port }}/status"
+trailarr_config_host_path: "{{ nas_docker_root }}/trailarr/config"
+trailarr_movies_host_path: "{{ nas_media_root }}/Media/Movies"
+trailarr_series_host_path: "{{ nas_media_root }}/Media/Series"
+# The container paths the two libraries are mounted at. They equal Radarr's and
+# Sonarr's own root folders exactly, which is what lets every connection carry
+# an empty path_mappings list: Trailarr appends a trailing slash to a mapping on
+# write, so a declared identity mapping reads back different from what was sent.
+trailarr_movies_root: /data/media/Movies
+trailarr_series_root: /data/media/Series
+
+# Trailarr addresses both arrs by their Compose service alias on the shared
+# media-control network. Compose registers the service name as a network alias
+# regardless of the per-project container_name the disposable lanes apply, so
+# these are correct in production and in a sandbox alike. The keys they carry
+# are Radarr's and Sonarr's own, read from vault rather than minted again here:
+# a second copy of an API key is a second thing to rotate and a second thing to
+# drift.
+trailarr_connections:
+  - name: Radarr
+    arr_type: radarr
+    url: http://radarr:7878
+    api_key: "{{ vault_arr_radarr_api_key }}"
+  - name: Sonarr
+    arr_type: sonarr
+    url: http://sonarr:8989
+    api_key: "{{ vault_arr_sonarr_api_key }}"
+
+# The monitoring profile, as one decision. MONITOR_ENABLED is a hard gate at the
+# top of the download task; DOWNLOADS_ENABLED is softer, and with it false the
+# task runs in preview mode, publishing what it would download while scans and
+# syncs keep running. monitor_new_media is applied once, when an item is first
+# created, and never rewritten, so flipping it does not retroactively monitor
+# an existing library — which is why turning monitoring on is an operator
+# acceptance step rather than something a converge decides. Until that step has
+# run this stays false and the platform declares no unattended outbound
+# download.
+trailarr_monitoring_enabled: false
+
+# The two trailer profiles a migration seeds on a fresh database, reconciled by
+# compare-then-PUT against their seeded ids. POST has no dedupe, so the role
+# never creates one.
+#
+# Both are seeded mkv/vp9/opus, which indexes correctly but has no hardware
+# encode path on this platform's N5105, so any client that cannot direct-play
+# VP9 software-transcodes every trailer under a 1.0-CPU ceiling. mp4/h264/aac
+# direct-plays everywhere. The three format fields move together in one PUT
+# because cross-field validators reject mp4 with vp9 and force opus for webm,
+# so the intermediate states are not writable.
+#
+# folder_enabled is reconciled true on both. The Movie profile ships it false,
+# which would drop the trailer beside the movie file on the very first
+# download; a Trailers/ subdirectory beneath the item directory is the boundary
+# the design draws, and Jellyfin types the file from that folder name and from
+# the -trailer filename token independently.
+trailarr_trailer_profiles:
+  - id: 1
+    label: Movie Trailers
+  - id: 2
+    label: Series Trailers
+trailarr_trailer_profile_settings:
+  folder_enabled: true
+  folder_name: Trailers
+  custom_folder: "{media_folder}"
+  file_format: mp4
+  video_format: h264
+  audio_format: aac
+
+# The application's own /config/.env, which is not the Compose environment.
+#
+# scripts/start.sh sources that file with `set -o allexport` after the container
+# environment is already in place, so every key present in it overwrites the
+# Compose-supplied value permanently, and the application writes to it. These
+# four are persisted on every boot by the configuration object's constructor, so
+# the reconcile rewrites the line only when the value differs.
+trailarr_config_env_log_level: INFO
+trailarr_config_env_wait_for_media: "False"
+trailarr_config_env_yt_cookies_path: ""
+# These are persisted only when a human changes something through the web
+# interface or the settings API, so their presence *is* the drift and removing
+# the line is the repair. Nothing here is created by a converge.
+trailarr_config_env_absent_keys:
+  - WEBUI_USERNAME
+  - WEBUI_PASSWORD
+  - WEBUI_DISABLE_AUTH
+  - MONITOR_ENABLED
+  - DOWNLOADS_ENABLED
+  - CREATE_MISSING_FOLDERS
+  - DELETE_TRAILER_CONNECTION
+  - DELETE_TRAILER_MEDIA
+  - URL_BASE
+# YTDLP_VERSION and the GPU_* block are deliberately not listed above and are
+# never rewritten: the entrypoint regenerates both on every start, so a
+# whole-file template would report changed forever. That is why this one file
+# is a hand-rolled parse and compare rather than a template.
+trailarr_config_env_absent_pattern: >-
+  ^({{ trailarr_config_env_absent_keys | join('|') }})=
+
+# Trailarr deploys unconditionally — its web interface is a useful trailer
+# manager with no arr attached — but a connection is validated with a live
+# GET {url}/api/v3/system/status at write time and answers 400 when the host
+# cannot be reached, so the two rows can only be written while Radarr and Sonarr
+# are running. That is exactly what this flag gates.
+media_usenet_enabled: false
+
+trailarr_compose_project_name: >-
+  {{ (platform_project_name ~ '-trailarr')
+     if platform_project_name | default('') | length > 0 else 'trailarr' }}

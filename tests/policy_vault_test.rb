@@ -140,6 +140,12 @@ example.each do |key, value|
   # digit past SABnzbd's, which keeps it obviously sanitized and keeps an
   # operator who copies the file from deploying the same stand-in twice.
   next if key == "vault_bindery_api_key" && value == "5" * 32
+  # Trailarr's key is contracted the same way and takes the next digit in that
+  # series, so no two services ship the same stand-in.
+  next if key == "vault_trailarr_api_key" && value == "6" * 32
+  # Seerr's takes the digit after Trailarr's, and closes the series: it is the
+  # last acquisition project.
+  next if key == "vault_seerr_api_key" && value == "7" * 32
   next if value.include?("example-only-not-a-real-private-key")
   next if foundation_example[key] == value
 

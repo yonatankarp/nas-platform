@@ -49,6 +49,17 @@ vault_kapowarr_admin_password: {{ kapowarr_admin_password }}
 vault_kapowarr_comicvine_api_key: replace-with-comicvine-api-key
 vault_pinchflat_admin_username: {{ pinchflat_admin_username }}
 vault_pinchflat_admin_password: {{ pinchflat_admin_password }}
+{# WEBUI_PASSWORD is compared with bcrypt.checkpw directly and nothing hashes
+   it, so the hash is what Trailarr is given and the plaintext is kept only so
+   an operator and the contract can log in. #}
+vault_trailarr_api_key: {{ trailarr_api_key | to_json }}
+vault_trailarr_admin_username: {{ trailarr_admin_username }}
+vault_trailarr_admin_password: {{ trailarr_admin_password }}
+vault_trailarr_admin_password_hash: "{{ trailarr_admin_password_hash }}"
+{# Seerr needs no administrator password of its own: its owner row is created
+   with a Jellyfin user type and no local password, from the Jellyfin
+   administrator pair above. This one key is the whole of its authentication. #}
+vault_seerr_api_key: {{ seerr_api_key | to_json }}
 
 vault_ntfy_admin_user: {{ ntfy_admin_user }}
 vault_ntfy_admin_password: {{ ntfy_admin_password }}
@@ -59,6 +70,8 @@ vault_ntfy_beszel_password_hash: "{{ ntfy_beszel_hash }}"
 vault_ntfy_beszel_token: {{ ntfy_beszel_token }}
 vault_ntfy_deploy_password_hash: "{{ ntfy_deploy_hash }}"
 vault_ntfy_deploy_token: {{ ntfy_deploy_token }}
+vault_ntfy_seerr_password_hash: "{{ ntfy_seerr_hash }}"
+vault_ntfy_seerr_token: {{ ntfy_seerr_token }}
 
 vault_beszel_superuser_email: {{ beszel_superuser_email }}
 vault_beszel_superuser_password: {{ beszel_superuser_password }}

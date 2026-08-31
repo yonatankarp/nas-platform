@@ -310,6 +310,8 @@ downloaders downloaders
 bindery bindery
 kapowarr kapowarr
 pinchflat pinchflat
+trailarr trailarr
+seerr seerr
 '
 
 # Retry budget for a registry that refuses. These ceilings bound all shell
@@ -552,9 +554,12 @@ suite_pull_images() {
       case ",$suite_tags," in
         *",$service_tag,"*) ;;
         *)
+          # The seerr lane carries the shared media-acquisition foundation
+          # proof as well as its own service, and that converges audiobookshelf
+          # -- the second reader the foundation verifies -- which its own tags
+          # have no reason to name.
           case "$suite:$service_tag" in
-            trailarr:ntfy|trailarr:audiobookshelf|trailarr:jellyfin|\
-            seerr:ntfy|seerr:audiobookshelf|seerr:jellyfin) ;;
+            seerr:audiobookshelf) ;;
             *) continue ;;
           esac
           ;;
@@ -1396,7 +1401,7 @@ docker run --rm \
     integration_media_usenet_enabled=false
     integration_media_adopt_existing=false
     case "\$INTEGRATION_SUITE" in
-      arr|downloaders|bindery)
+      arr|downloaders|bindery|trailarr|seerr)
         integration_media_usenet_enabled=true
         integration_media_adopt_existing=true
         ;;
@@ -1740,14 +1745,17 @@ EOF
       '$sandbox/volume1/Docker/nas-platform/current/manifest.yml' \
       /repo /repo/services/manifest.yml nas integration '$expected_release_id'
 
+    # Seerr is the last acquisition project, so its lane is where the shared
+    # inert foundation's own runtime proof lives now: nothing else converges
+    # both readers, and a foundation nobody verifies is a foundation nobody
+    # would notice breaking. It runs first and then falls through to Seerr's
+    # own arm below rather than exiting here.
     case "\$INTEGRATION_SUITE" in
-      trailarr|seerr)
+      seerr)
         /repo/tests/contracts/"\$INTEGRATION_SUITE"-foundation.sh static
         converge_media_acquisition_reader_prerequisites
         run_media_acquisition_foundation_verify
         printf 'MEDIA_ACQUISITION_FOUNDATION_RUNTIME_VERIFIED\n'
-        cleanup_vault
-        exit 0
         ;;
     esac
 
@@ -1805,6 +1813,30 @@ EOF
       run_enabled_idempotence pinchflat
       run_play --tags pinchflat --check --diff
       printf 'PINCHFLAT_PHASE2_RUNTIME_VERIFIED\n'
+      cleanup_vault
+      exit 0
+    fi
+
+    if [ "\$INTEGRATION_SUITE" = trailarr ]; then
+      /repo/tests/contracts/arr.sh static
+      /repo/tests/contracts/trailarr.sh static
+      run_trailarr_contract run
+      run_trailarr_verify_only
+      run_enabled_idempotence arr,trailarr
+      run_play --tags arr,trailarr --check --diff
+      printf 'TRAILARR_PHASE3_RUNTIME_VERIFIED\n'
+      cleanup_vault
+      exit 0
+    fi
+
+    if [ "\$INTEGRATION_SUITE" = seerr ]; then
+      /repo/tests/contracts/arr.sh static
+      /repo/tests/contracts/seerr.sh static
+      run_seerr_contract run
+      run_seerr_verify_only
+      run_enabled_idempotence arr,jellyfin,seerr
+      run_play --tags arr,jellyfin,seerr --check --diff
+      printf 'SEERR_PHASE4_RUNTIME_VERIFIED\n'
       cleanup_vault
       exit 0
     fi

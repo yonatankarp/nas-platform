@@ -1,0 +1,150 @@
+---
+# Nothing here is create-if-absent. POST /api/v1/settings/radarr and /sonarr
+# compute the new id from the last element and append unconditionally, with no
+# duplicate check and no connectivity test — measured, two identical posts
+# produced rows 0 and 1 and answered 201 both times. So each row is read,
+# matched on name, and either created once or repaired in place by id.
+#
+# Radarr and Sonarr are addressed by their Compose service alias on the shared
+# media-control network, which is why this whole file is gated on the host's
+# Usenet flag: on a host that runs neither arr, a declared server would name a
+# host that does not resolve and every request would be approved into nothing.
+#
+# Redacted: the request carries the API key.
+- name: Read the declared Seerr Radarr servers
+  ansible.builtin.uri:
+    url: "{{ seerr_api }}/settings/radarr"
+    method: GET
+    headers:
+      X-Api-Key: "{{ vault_seerr_api_key }}"
+    status_code: [200]
+    return_content: true
+  register: seerr_radarr_current
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+# Redacted: the request carries the API key.
+- name: Read the declared Seerr Sonarr servers
+  ansible.builtin.uri:
+    url: "{{ seerr_api }}/settings/sonarr"
+    method: GET
+    headers:
+      X-Api-Key: "{{ vault_seerr_api_key }}"
+    status_code: [200]
+    return_content: true
+  register: seerr_sonarr_current
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Resolve the Seerr arr server reconciliation
+  ansible.builtin.set_fact:
+    seerr_radarr_matches: >-
+      {{ seerr_radarr_current.json | default([])
+         | selectattr('name', 'equalto', seerr_radarr_server.name) | list }}
+    seerr_sonarr_matches: >-
+      {{ seerr_sonarr_current.json | default([])
+         | selectattr('name', 'equalto', seerr_sonarr_server.name) | list }}
+
+- name: Refuse an ambiguous Seerr arr server declaration
+  ansible.builtin.assert:
+    that:
+      - seerr_radarr_matches | length <= 1
+      - seerr_sonarr_matches | length <= 1
+    fail_msg: >-
+      Seerr holds more than one server named {{ seerr_radarr_server.name }} or
+      {{ seerr_sonarr_server.name }}. The create route appends without a
+      duplicate check, so a row added by hand cannot be reconciled by name;
+      remove the surplus rows in the application before running again.
+
+- name: Decide the Seerr arr server writes
+  ansible.builtin.set_fact:
+    seerr_radarr_create: "{{ seerr_radarr_matches | length == 0 }}"
+    seerr_radarr_repair: >-
+      {{ seerr_radarr_matches | length == 1
+         and (seerr_radarr_matches | first | dict2items
+              | rejectattr('key', 'equalto', 'id') | items2dict) != seerr_radarr_server }}
+    seerr_sonarr_create: "{{ seerr_sonarr_matches | length == 0 }}"
+    seerr_sonarr_repair: >-
+      {{ seerr_sonarr_matches | length == 1
+         and (seerr_sonarr_matches | first | dict2items
+              | rejectattr('key', 'equalto', 'id') | items2dict) != seerr_sonarr_server }}
+
+- name: Report the planned Seerr arr server writes
+  ansible.builtin.debug:
+    msg: >-
+      A live run would
+      {{ 'create' if seerr_radarr_create | bool else 'repair' }}
+      the Seerr Radarr server and
+      {{ 'create' if seerr_sonarr_create | bool else 'repair' }}
+      the Sonarr one, each carrying that arr's own API key.
+  when:
+    - ansible_check_mode
+    - >-
+      seerr_radarr_create | bool or seerr_radarr_repair | bool
+      or seerr_sonarr_create | bool or seerr_sonarr_repair | bool
+
+# Redacted: the request carries both the Seerr API key and Radarr's own.
+- name: Declare the Seerr Radarr server
+  ansible.builtin.uri:
+    url: "{{ seerr_api }}/settings/radarr"
+    method: POST
+    headers:
+      X-Api-Key: "{{ vault_seerr_api_key }}"
+    body_format: json
+    body: "{{ seerr_radarr_server }}"
+    status_code: [201]
+  when:
+    - not ansible_check_mode
+    - seerr_radarr_create | bool
+  changed_when: true
+  no_log: true
+
+# Redacted: the request carries both the Seerr API key and Radarr's own.
+- name: Repair the Seerr Radarr server
+  ansible.builtin.uri:
+    url: "{{ seerr_api }}/settings/radarr/{{ (seerr_radarr_matches | first).id | default(0) }}"
+    method: PUT
+    headers:
+      X-Api-Key: "{{ vault_seerr_api_key }}"
+    body_format: json
+    body: "{{ seerr_radarr_server }}"
+    status_code: [200]
+  when:
+    - not ansible_check_mode
+    - seerr_radarr_repair | bool
+  changed_when: true
+  no_log: true
+
+# Redacted: the request carries both the Seerr API key and Sonarr's own.
+- name: Declare the Seerr Sonarr server
+  ansible.builtin.uri:
+    url: "{{ seerr_api }}/settings/sonarr"
+    method: POST
+    headers:
+      X-Api-Key: "{{ vault_seerr_api_key }}"
+    body_format: json
+    body: "{{ seerr_sonarr_server }}"
+    status_code: [201]
+  when:
+    - not ansible_check_mode
+    - seerr_sonarr_create | bool
+  changed_when: true
+  no_log: true
+
+# Redacted: the request carries both the Seerr API key and Sonarr's own.
+- name: Repair the Seerr Sonarr server
+  ansible.builtin.uri:
+    url: "{{ seerr_api }}/settings/sonarr/{{ (seerr_sonarr_matches | first).id | default(0) }}"
+    method: PUT
+    headers:
+      X-Api-Key: "{{ vault_seerr_api_key }}"
+    body_format: json
+    body: "{{ seerr_sonarr_server }}"
+    status_code: [200]
+  when:
+    - not ansible_check_mode
+    - seerr_sonarr_repair | bool
+  changed_when: true
+  no_log: true

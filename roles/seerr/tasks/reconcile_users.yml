@@ -1,0 +1,170 @@
+---
+# The two Seerr identities are identities that already exist. The owner is the
+# vault Jellyfin administrator the bootstrap signed in as; the second household
+# member is the single vault_managed_users.jellyfin entry. Seerr needs no
+# administrator password of its own, because the owner row carries a Jellyfin
+# user type and no local password at all.
+#
+# GUIDs are discovered rather than guessed: the role matches on username and
+# never hardcodes one.
+#
+# Redacted: the request carries the API key.
+- name: Read the Jellyfin users Seerr can see
+  ansible.builtin.uri:
+    url: "{{ seerr_api }}/settings/jellyfin/users"
+    method: GET
+    headers:
+      X-Api-Key: "{{ vault_seerr_api_key }}"
+    status_code: [200]
+    return_content: true
+  register: seerr_jellyfin_users
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+# Redacted: vault_managed_users carries every managed user's plaintext password
+# alongside the usernames this reads.
+- name: Resolve the Seerr household Jellyfin identities
+  ansible.builtin.set_fact:
+    seerr_household_usernames: >-
+      {{ vault_managed_users.jellyfin | default([]) | map(attribute='username') | list }}
+  no_log: true
+
+- name: Resolve the Jellyfin identifiers Seerr must import
+  ansible.builtin.set_fact:
+    seerr_household_jellyfin_ids: >-
+      {{ seerr_jellyfin_users.json | default([])
+         | selectattr('username', 'in', seerr_household_usernames)
+         | map(attribute='id') | list }}
+
+- name: Require every declared Seerr household identity to exist in Jellyfin
+  ansible.builtin.assert:
+    that:
+      - seerr_household_jellyfin_ids | length == seerr_household_usernames | length
+    fail_msg: >-
+      Jellyfin does not hold every managed user Seerr is asked to import.
+      Seerr imports by identifier and the identifiers are discovered from
+      Jellyfin, so a name that is not there cannot be requested for.
+
+- name: Report the planned Seerr household import
+  ansible.builtin.debug:
+    msg: >-
+      A live run would import {{ seerr_household_usernames | join(', ') }} from
+      Jellyfin into Seerr and give each of them permission value
+      {{ seerr_household_permissions }} — REQUEST plus AUTO_APPROVE, and no 4K
+      or service-administration bit.
+  when: ansible_check_mode
+
+# The import is cleanly idempotent: it creates only when absent, and the
+# response body is the list of newly created users. Measured — run 1 returned
+# one entry and run 2 returned an empty list, both with status 201, so
+# changed_when cannot key on the status code.
+#
+# Redacted: the request carries the API key.
+- name: Import the Seerr household identities from Jellyfin
+  ansible.builtin.uri:
+    url: "{{ seerr_api }}/user/import-from-jellyfin"
+    method: POST
+    headers:
+      X-Api-Key: "{{ vault_seerr_api_key }}"
+    body_format: json
+    body:
+      jellyfinUserIds: "{{ seerr_household_jellyfin_ids }}"
+    status_code: [201]
+    return_content: true
+  register: seerr_import
+  when: not ansible_check_mode
+  changed_when: seerr_import.json | default([]) | length > 0
+  no_log: true
+
+# Redacted: the request carries the API key.
+- name: Read the Seerr user rows
+  ansible.builtin.uri:
+    url: "{{ seerr_api }}/user"
+    method: GET
+    headers:
+      X-Api-Key: "{{ vault_seerr_api_key }}"
+    status_code: [200]
+    return_content: true
+  register: seerr_users
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Resolve the Seerr household rows needing a permission repair
+  ansible.builtin.set_fact:
+    seerr_permission_repairs: >-
+      {{ seerr_users.json.results | default([])
+         | selectattr('jellyfinUsername', 'defined')
+         | selectattr('jellyfinUsername', 'in', seerr_household_usernames)
+         | rejectattr('permissions', 'equalto', seerr_household_permissions)
+         | map(attribute='id') | list }}
+
+# The owner is asserted rather than written, and the difference is not
+# stylistic: POST /api/v1/user/1/settings/permissions answers 403 "You do not
+# have permission to modify this user" — measured — because the owner row
+# cannot be modified through that route at all. The bootstrap already set ADMIN,
+# and ADMIN short-circuits every permission check, so the single bit is the
+# whole of what the owner needs.
+- name: Require the exact Seerr owner permissions
+  ansible.builtin.assert:
+    that:
+      - >-
+        seerr_users.json.results | default([])
+        | selectattr('id', 'equalto', 1) | map(attribute='permissions') | list
+        == [seerr_owner_permissions]
+    fail_msg: >-
+      Seerr has no owner row, or its owner does not hold exactly ADMIN. The
+      owner row is created by the bootstrap and cannot be repaired through the
+      permissions route, which refuses to modify it, so this is a hand edit to
+      be undone in the application — and its absence is the takeover window
+      standing open.
+
+# No quota means the quota fields left null, and posting zeroes stores them as
+# null because zero means unlimited. The defaults are already null, so this
+# asserts the design's clause rather than writing it.
+- name: Require unlimited Seerr request quotas
+  ansible.builtin.assert:
+    that:
+      - >-
+        seerr_users.json.results | default([])
+        | selectattr('jellyfinUsername', 'defined')
+        | selectattr('jellyfinUsername', 'in', seerr_household_usernames)
+        | rejectattr('movieQuotaLimit', 'none') | list | length == 0
+      - >-
+        seerr_users.json.results | default([])
+        | selectattr('jellyfinUsername', 'defined')
+        | selectattr('jellyfinUsername', 'in', seerr_household_usernames)
+        | rejectattr('tvQuotaLimit', 'none') | list | length == 0
+    fail_msg: >-
+      A Seerr household identity carries a request quota. The design grants
+      both identities immediate automatic approval and no quota.
+
+- name: Report the planned Seerr household permission repair
+  ansible.builtin.debug:
+    msg: >-
+      A live run would set permission value {{ seerr_household_permissions }}
+      on Seerr user id(s) {{ seerr_permission_repairs | join(', ') }}.
+  when:
+    - ansible_check_mode
+    - seerr_permission_repairs | length > 0
+
+# The write is POST, not PUT: PUT on this route answers 405. Read, compare,
+# write only on drift, because the write is unconditional and returns 200 with
+# the same body on an identical request.
+#
+# Redacted: the request carries the API key.
+- name: Repair the Seerr household permissions
+  ansible.builtin.uri:
+    url: "{{ seerr_api }}/user/{{ item }}/settings/permissions"
+    method: POST
+    headers:
+      X-Api-Key: "{{ vault_seerr_api_key }}"
+    body_format: json
+    body:
+      permissions: "{{ seerr_household_permissions }}"
+    status_code: [200]
+  loop: "{{ seerr_permission_repairs }}"
+  when: not ansible_check_mode
+  changed_when: true
+  no_log: true

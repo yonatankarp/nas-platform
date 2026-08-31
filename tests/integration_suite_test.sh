@@ -348,12 +348,17 @@ assert_output \
 assert_output \
   'suite=pinchflat tags=host_prep,deployment_bundle,ntfy,pinchflat playbook=site.yml scenarios=true' \
   --describe-suite pinchflat
-for project in trailarr seerr; do
-  assert_output \
-    "suite=$project tags=host_prep,deployment_bundle,media_acquisition_foundation playbook=site.yml scenarios=true" \
-    --describe-suite "$project"
-done
-grep -qF 'trailarr|seerr)' "$integration" || {
+assert_output \
+  'suite=trailarr tags=host_prep,deployment_bundle,ntfy,arr,trailarr playbook=site.yml scenarios=true' \
+  --describe-suite trailarr
+assert_output \
+  'suite=seerr tags=host_prep,deployment_bundle,ntfy,arr,jellyfin,seerr playbook=site.yml scenarios=true' \
+  --describe-suite seerr
+# The acquisition catalog is fully implemented, so the shared foundation's own
+# runtime proof lives in the last project's lane rather than in a lane of its
+# own. The dispatch arm is still a closed case arm; what changed is that it
+# falls through to that project's service proof instead of exiting.
+grep -qF 'seerr)' "$integration" || {
   printf '%s\n' 'integration runner has no closed acquisition foundation dispatch' >&2
   exit 1
 }
@@ -373,7 +378,7 @@ acquisition_runtime_contract_holds() {
   verification_launcher=$(sed -n '/^run_verification() {/,/^}$/p' "$library_path")
   forced_fact_arm=$(printf '%s\n' "$verification_launcher" |
     grep -B 1 -F -- '-e media_usenet_enabled=true' | head -n 1 | tr -d ' ')
-  acquisition_dispatch=$(sed -n '/trailarr|seerr)/,/;;/p' "$source_path" | tail -n 12)
+  acquisition_dispatch=$(sed -n '/^      seerr)/,/;;/p' "$source_path" | tail -n 12)
   printf '%s\n' "$reader_converge" |
     grep -qF -- '--tags host_prep,deployment_bundle,ntfy,audiobookshelf,jellyfin' &&
     printf '%s\n' "$foundation_verify" |
@@ -1160,17 +1165,23 @@ assert_pull_count "$runner_image" 6
 
 unset PREPULL_TOOLCHAIN
 
-for project in trailarr seerr; do
-  run_prepull 0 4 --suite "$project"
-  [ "$prepull_status" -eq 0 ] || prepull_fail "$project foundation pre-pull failed ($prepull_status)"
-  assert_toolchain_pull_set \
-    "$({ compose_images ntfy; compose_images audiobookshelf; compose_images jellyfin; } | sort -u)"
-done
-
 run_prepull 0 4 --suite bindery
 [ "$prepull_status" -eq 0 ] || prepull_fail "bindery pre-pull failed ($prepull_status)"
 assert_toolchain_pull_set \
   "$({ compose_images ntfy; compose_images arr; compose_images downloaders; compose_images bindery; } | sort -u)"
+
+run_prepull 0 4 --suite trailarr
+[ "$prepull_status" -eq 0 ] || prepull_fail "trailarr pre-pull failed ($prepull_status)"
+assert_toolchain_pull_set \
+  "$({ compose_images ntfy; compose_images arr; compose_images trailarr; } | sort -u)"
+
+# Audiobookshelf is in this set and not in the lane's tags on purpose: the lane
+# converges the shared foundation's reader prerequisites as well as its own
+# service, and audiobookshelf is the second reader the foundation verifies.
+run_prepull 0 4 --suite seerr
+[ "$prepull_status" -eq 0 ] || prepull_fail "seerr pre-pull failed ($prepull_status)"
+assert_toolchain_pull_set \
+  "$({ compose_images ntfy; compose_images arr; compose_images audiobookshelf; compose_images jellyfin; compose_images seerr; } | sort -u)"
 
 run_prepull 0 4 --suite kapowarr
 [ "$prepull_status" -eq 0 ] || prepull_fail "kapowarr pre-pull failed ($prepull_status)"

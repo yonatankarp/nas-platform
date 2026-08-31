@@ -380,21 +380,48 @@ validator rejects the intermediate states.
 
 ## What remains unsettled
 
-- Whether the derived vault-key checks tolerate the same `vault_arr_*` key
-  listed under two services. Most likely first failure of the promotion.
-- Whether every movie in the adopted library lives in its own folder.
+The promotion settled four of these; what it settled and how is recorded here
+rather than deleted, because the reasoning is the useful part.
+
+- ~~Whether the derived vault-key checks tolerate the same `vault_arr_*` key
+  listed under two services.~~ Settled, and the answer is that the question does
+  not arise: `tests/policy_support.rb` requires every key in
+  `tests/expected/<service>.yml` to carry that service's prefix, but *consuming*
+  another service's key in `tasks/` and `meta/argument_specs.yml` is the
+  established pattern — `roles/bindery` reads `vault_arr_prowlarr_api_key` and
+  `vault_downloaders_sabnzbd_api_key`, declares both `required: true`, and lists
+  only `vault_bindery_*` in its expectations file. Trailarr does the same with
+  Radarr's and Sonarr's keys.
+- Whether every movie in the adopted library lives in its own folder. Still
+  **unverified**: it needs the real NAS, and it decides which title the manual
+  acceptance step can prove.
 - Whether Compose service-name aliases resolve across projects on the external
-  `media-control` network in the Mac and integration lanes.
-- Whether the Movies and Series paths are already in the integration-writer
-  register from Phase 1 — this promotion may need **zero** `nas_storage` changes,
-  unlike its predecessors.
-- A real trailer download end to end. Not run; no arr with real media was
-  available, and the acceptance step is a manual proof by design.
-- Whether the dotenv writer ever emits a form `bash source` mis-parses. It writes
-  `KEY='value'`, which is safe, but the application defensively strips stray
-  quotes from `WEBUI_PASSWORD`, which suggests this has bitten upstream users.
-  Worth one contract assertion that the deployed line is single-quoted and
-  matches the vault hash.
+  `media-control` network in the Mac and integration lanes. Still **unverified**
+  here; the Trailarr CI lane converges `arr` and `trailarr` into one disposable
+  project namespace on one shared network, which is where it will first be
+  executed. The Mac lane leaves Usenet disabled, so it never declares a
+  connection at all.
+- ~~Whether the Movies and Series paths are already in the integration-writer
+  register from Phase 1.~~ Settled: they are. Both already carry
+  `media_acquisition_writer: true` in `nas_storage` and both are already in
+  `EXPECTED_INTEGRATION_WRITERS`, and `{{ nas_docker_root }}/trailarr/config`
+  was declared `recovery: critical` by Phase 0. The promotion needed **zero**
+  `nas_storage` changes — the first one that did.
+- A real trailer download end to end. Still not run; the acceptance step is a
+  manual proof by design, and monitoring and downloads ship pinned off until it
+  has happened.
+- ~~Whether the dotenv writer ever emits a form `bash source` mis-parses.~~
+  Settled by reading `dotenv.main.set_key` out of the pinned image and by
+  running it: `quote_mode` defaults to `"always"`, so it writes `KEY='value'`
+  with `\` and `'` escaped, and `dotenv.main.rewrite` reads the destination's
+  mode and restores it after every write — which is what makes the platform's
+  `0600` durable rather than a tug-of-war. `WEBUI_PASSWORD` is *absent* from a
+  converged `/config/.env`, because the constructor only persists it when the
+  supplied value is empty, so the contract assertion is absence rather than
+  quoting. Confirmed alongside it: the entrypoint moves the `GPU_*` block to the
+  *end* of the file on every restart after the first, so the converged file is
+  `YTDLP_VERSION`, the four persisted keys, then the GPU block — and it is a
+  fixed point from there, byte for byte, across restarts.
 
 One further trap with no home above: a failed alembic migration restores the
 backup and then **sleeps forever instead of exiting**. The container stays

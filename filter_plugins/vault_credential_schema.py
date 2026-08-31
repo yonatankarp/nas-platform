@@ -130,9 +130,11 @@ CREDENTIAL_RULES = {
     "vault_ntfy_dozzle_password_hash": ((PATTERN, BCRYPT_HASH),),
     "vault_ntfy_beszel_password_hash": ((PATTERN, BCRYPT_HASH),),
     "vault_ntfy_deploy_password_hash": ((PATTERN, BCRYPT_HASH),),
+    "vault_ntfy_seerr_password_hash": ((PATTERN, BCRYPT_HASH),),
     "vault_ntfy_dozzle_token": ((PATTERN, NTFY_TOKEN),),
     "vault_ntfy_beszel_token": ((PATTERN, NTFY_TOKEN),),
     "vault_ntfy_deploy_token": ((PATTERN, NTFY_TOKEN),),
+    "vault_ntfy_seerr_token": ((PATTERN, NTFY_TOKEN),),
     "vault_beszel_superuser_email": ((PATTERN, EMAIL),),
     "vault_beszel_superuser_password": ((NONEMPTY, None),),
     "vault_beszel_app_user_email": ((PATTERN, EMAIL),),
@@ -177,15 +179,20 @@ CREDENTIAL_RULES = {
     ),
     "vault_pinchflat_admin_username": ((NONEMPTY, None),),
     "vault_pinchflat_admin_password": ((NONEMPTY, None),),
+    "vault_trailarr_api_key": ((PATTERN, HEX_32),),
+    "vault_trailarr_admin_username": ((NONEMPTY, None),),
+    "vault_trailarr_admin_password": ((NONEMPTY, None),),
+    "vault_trailarr_admin_password_hash": ((PATTERN, BCRYPT_HASH),),
+    "vault_seerr_api_key": ((PATTERN, HEX_32),),
 }
 
-# The three publisher tokens authenticate three different ntfy identities. A
+# The four publisher tokens authenticate four different ntfy identities. A
 # duplicate would authorize one publisher as another, and the role's own
 # publisher separation rule for managed users would then have nothing to
 # separate.
 DISTINCT_KEY_GROUPS = (
     ("vault_ntfy_dozzle_token", "vault_ntfy_beszel_token",
-     "vault_ntfy_deploy_token"),
+     "vault_ntfy_deploy_token", "vault_ntfy_seerr_token"),
     ("vault_arr_radarr_api_key", "vault_arr_sonarr_api_key",
      "vault_arr_prowlarr_api_key", "vault_arr_bazarr_api_key",
      "vault_downloaders_sabnzbd_api_key"),

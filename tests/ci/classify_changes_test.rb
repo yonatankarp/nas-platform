@@ -31,8 +31,8 @@ RECONCILIATION_OWNED_PATHS = %w[
 # no other. Stated rather than imported for the same reason: widening the
 # classifier's own list must fail here.
 NTFY_LANES = %w[
-  static reconciliation arr downloaders bindery kapowarr pinchflat smoke beszel dozzle
-  audiobookshelf komga jellyfin immich paperless idempotence_check
+  static reconciliation arr downloaders bindery kapowarr pinchflat trailarr seerr smoke
+  beszel dozzle audiobookshelf komga jellyfin immich paperless idempotence_check
 ].freeze
 failures = []
 
@@ -445,6 +445,74 @@ if defined?(ClassifyChanges)
   OUTPUT
         "Pinchflat-only output must retain its exact tag plan: #{pinchflat_output.string.inspect}")
 
+  # Trailarr is Phase 3 and is the only lane that converges Arr without also
+  # converging the downloaders: it reads Radarr and Sonarr over their own APIs
+  # and validates every connection it declares with a live call at write time,
+  # but it acquires nothing itself and needs no download client.
+  trailarr_output = StringIO.new
+  ClassifyChanges.write_github_outputs(
+    ClassifyChanges.classify(["roles/trailarr/tasks/main.yml"]), trailarr_output
+  )
+  check(failures, trailarr_output.string == <<~OUTPUT,
+    static=true
+    docs=false
+    reconciliation=false
+    foundation=false
+    arr=false
+    downloaders=false
+    bindery=false
+    kapowarr=false
+    pinchflat=false
+    trailarr=true
+    seerr=false
+    smoke=false
+    beszel=false
+    dozzle=false
+    audiobookshelf=false
+    komga=false
+    jellyfin=false
+    immich=false
+    paperless=false
+    idempotence_check=true
+    suites=["trailarr","idempotence-check"]
+    selected_tags=host_prep,deployment_bundle,ntfy,arr,trailarr
+  OUTPUT
+        "Trailarr-only output must retain its exact tag plan: #{trailarr_output.string.inspect}")
+
+  # Seerr is Phase 4 and the only lane that converges Arr and Jellyfin
+  # together: it declares Radarr's and Sonarr's connection rows and imports
+  # Jellyfin's users, and its bootstrap signs in to Jellyfin as the vault
+  # administrator.
+  seerr_output = StringIO.new
+  ClassifyChanges.write_github_outputs(
+    ClassifyChanges.classify(["roles/seerr/tasks/main.yml"]), seerr_output
+  )
+  check(failures, seerr_output.string == <<~OUTPUT,
+    static=true
+    docs=false
+    reconciliation=false
+    foundation=false
+    arr=false
+    downloaders=false
+    bindery=false
+    kapowarr=false
+    pinchflat=false
+    trailarr=false
+    seerr=true
+    smoke=false
+    beszel=false
+    dozzle=false
+    audiobookshelf=false
+    komga=false
+    jellyfin=false
+    immich=false
+    paperless=false
+    idempotence_check=true
+    suites=["seerr","idempotence-check"]
+    selected_tags=host_prep,deployment_bundle,ntfy,arr,jellyfin,seerr
+  OUTPUT
+        "Seerr-only output must retain its exact tag plan: #{seerr_output.string.inspect}")
+
   io = StringIO.new
   ClassifyChanges.write_github_outputs(ClassifyChanges.classify(["README.md"]), io)
   check(failures, io.string.start_with?("static=true\ndocs=true\n"),
@@ -468,15 +536,19 @@ if defined?(ClassifyChanges)
           %w[arr idempotence-check],
         "an Arr-only change must dispatch its foundation suite without smoke")
 
+  # No lane emits the inert foundation tag plan any more: Phase 4 promoted the
+  # last planned acquisition project. A foundation contract now routes to its
+  # own project's lane, and Seerr's is the lane that carries the shared
+  # foundation's runtime proof on top of its own service.
   acquisition_output = StringIO.new
   ClassifyChanges.write_github_outputs(
     ClassifyChanges.classify(["tests/contracts/seerr-foundation.sh"]), acquisition_output
   )
   check(failures,
         acquisition_output.string.end_with?(
-          "selected_tags=host_prep,deployment_bundle,media_acquisition_foundation\n"
+          "selected_tags=host_prep,deployment_bundle,ntfy,arr,jellyfin,seerr\n"
         ),
-        "acquisition foundation lanes must emit only the fixed foundation tag plan")
+        "an acquisition foundation contract must route to its own project's lane")
   check(failures, !acquisition_output.string.downcase.include?("tmm"),
         "classifier outputs must not resurrect the retired tMM project")
 

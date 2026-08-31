@@ -1,0 +1,135 @@
+---
+# Platform fragments. Compose resolves a YAML anchor only inside the file that
+# declares it, so every stack carries its own copy; tests/policy_test.rb pins the
+# copies equal and records there why cross-file sharing was not taken. A
+# container needing different health-check timing overrides only the fields it
+# changes, so a deviation reads as a deviation.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
+x-service-defaults: &service-defaults
+  cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
+  # The entrypoint's gosu re-exec is a setuid(2) call made by root, not the
+  # execution of a setuid binary, so refusing privilege escalation leaves the
+  # PUID/PGID remap below intact.
+  security_opt:
+    - no-new-privileges:true
+  restart: unless-stopped
+  logging: *default-logging
+
+x-healthcheck-defaults: &healthcheck-defaults
+  interval: 30s
+  timeout: 10s
+  retries: 5
+  start_period: 60s
+
+services:
+  # Trailarr writes local trailers into the Movies and Series libraries Radarr
+  # and Sonarr own. It reads both arrs over their own APIs, addressing them by
+  # Compose service name, so unlike Kapowarr and Pinchflat it is not
+  # self-contained and joins media-control; site.yml converges it after arr.
+  #
+  # Upstream pushes `latest` and `nightly` on every master push rather than only
+  # on releases, so only an X.Y.Z tag is a safe Renovate target. The image also
+  # derives from an unpinned `FROM nandyalu/python-ffmpeg:latest`, so two
+  # rebuilds of the same version can rest on different base contents — which is
+  # exactly what the digest below pins down.
+  trailarr:
+    <<: *service-defaults
+    container_name: trailarr
+    image: docker.io/nandyalu/trailarr:0.11.4@sha256:ccad90731ee56806043bed6901a53f03a8e387bf04949bad68ea46d324aab4ac
+    # One trailer transcode at a time. ffmpeg is the only CPU-bound work here
+    # and it runs from a single scheduled task; the arr syncs are network-bound.
+    cpus: 1.0
+    labels:
+      dev.dozzle.name: trailarr
+    ports:
+      - "7889:7889"
+    # Movies and Series are mounted separately rather than the whole media tree,
+    # at exactly the container paths Radarr and Sonarr use for the same host
+    # directories. Matching them is what lets every connection carry an empty
+    # path_mappings list: Trailarr normalizes a mapping with a trailing slash on
+    # write, so a declared mapping reads back different from what was sent and
+    # reports drift forever. Music, YouTube, Audiobooks and the .acquisition
+    # tree stay out of reach.
+    volumes:
+      - ${TRAILARR_CONFIG_PATH:?}:/config
+      - ${TRAILARR_MOVIES_PATH:?}:/data/media/Movies
+      - ${TRAILARR_SERIES_PATH:?}:/data/media/Series
+    environment:
+      TZ: ${TZ:?}
+      # The entrypoint starts as root, reuses the existing account for this
+      # pair, chowns the data directory and re-executes through gosu, so the
+      # platform identity arrives under these names. A `user:` key would run the
+      # entrypoint as non-root and break that whole sequence.
+      PUID: ${NAS_UID:?}
+      PGID: ${NAS_GID:?}
+      # UMASK is deliberately absent: it appears nowhere in the application or
+      # its start scripts, so declaring it would be a no-op a reader mistakes
+      # for a control. The container inherits Docker's 0022.
+      APP_DATA_DIR: /config
+      # An API_KEY shorter than 32 characters is silently replaced by a random
+      # one, which is why the vault contract pins this to 32 hexadecimal digits.
+      API_KEY: ${TRAILARR_API_KEY:?}
+      LOG_LEVEL: INFO
+      WAIT_FOR_MEDIA: "False"
+      YT_COOKIES_PATH: ""
+      # WEBUI_PASSWORD must be a bcrypt hash, never a plaintext: verify_password
+      # calls bcrypt.checkpw against this value directly and nothing hashes it,
+      # so a plaintext here does not fail loudly — it makes login permanently
+      # impossible. Trailarr ships a published default administrator whose hash
+      # is a literal in its own settings module, and that account is a full
+      # write session over the same Movies and Series trees Radarr and Sonarr
+      # own, so both halves are required rather than optional.
+      WEBUI_USERNAME: ${TRAILARR_WEBUI_USERNAME:?}
+      WEBUI_PASSWORD: ${TRAILARR_WEBUI_PASSWORD_HASH:?}
+      # The hard kill switch: true mints a session for any caller. It is pinned
+      # false here and asserted absent from /config/.env by the role.
+      WEBUI_DISABLE_AUTH: "False"
+      # The monitoring profile. Until the operator acceptance step has run, the
+      # download task is gated off entirely and the platform declares no
+      # unattended outbound download.
+      MONITOR_ENABLED: ${TRAILARR_MONITOR_ENABLED:?}
+      DOWNLOADS_ENABLED: ${TRAILARR_DOWNLOADS_ENABLED:?}
+      # Trailarr must not become a creator of library directories, nor a
+      # deleter of media. DELETE_TRAILER_MEDIA only applies when
+      # DELETE_TRAILER_CONNECTION is true; both are pinned off regardless.
+      CREATE_MISSING_FOLDERS: "False"
+      DELETE_TRAILER_CONNECTION: "False"
+      DELETE_TRAILER_MEDIA: "False"
+      # Both of these make the container pip-install yt-dlp from the network at
+      # start, which is precisely what a digest-pinned platform exists to
+      # prevent. The image's bundled yt-dlp is part of the pinned contents.
+      UPDATE_YTDLP: "False"
+      YTDLP_NIGHTLY: "False"
+      # No reverse proxy is published in front of this service, and the
+      # application cannot clear a non-empty URL_BASE through its own API.
+      URL_BASE: ""
+    healthcheck:
+      <<: *healthcheck-defaults
+      # The image ships curl, python3 and bash but neither wget, nc nor
+      # busybox, so curl is the probe. /status is the only unauthenticated
+      # route outside /api/v1/auth/*, the OpenAPI document and the SPA; there is
+      # no /api/v1/health.
+      test:
+        - CMD-SHELL
+        - >-
+          curl --fail --silent --show-error
+          http://127.0.0.1:7889/status >/dev/null
+    # /config holds the SQLite database of every tracked title and its trailer
+    # state, and is recovery: critical. 30s commits the open transaction. An
+    # interrupted trailer download is re-queued from that same database, so the
+    # window does not wait for one.
+    stop_grace_period: 30s
+    networks:
+      - default
+      - media-control
+
+networks:
+  default: {}
+  media-control:
+    external: true
+    name: ${PLATFORM_MEDIA_NETWORK:?}

@@ -131,3 +131,33 @@ services:
       create: BASIC_AUTH_USERNAME/BASIC_AUTH_PASSWORD
       authenticate: Basic authentication
       reconcile: BASIC_AUTH_USERNAME/BASIC_AUTH_PASSWORD
+  # Trailarr has one identity and no user API. Both halves are os.getenv
+  # properties, so the environment is the whole mechanism — with the caveat
+  # that its own /config/.env is sourced over that environment at every start,
+  # which is why the role owns that file too. WEBUI_PASSWORD is a bcrypt hash
+  # compared with checkpw, never a plaintext.
+  trailarr:
+    preserves_unmanaged_users: true
+    password_rotation: refuse
+    existing_identity_password_update: forbidden
+    mode: declarative_environment
+    interfaces:
+      list: WEBUI_USERNAME
+      create: WEBUI_USERNAME/WEBUI_PASSWORD
+      authenticate: api/v1/auth/login
+      reconcile: WEBUI_USERNAME/WEBUI_PASSWORD
+  # Seerr has a user API and no passwords at all. Both identities are Jellyfin
+  # identities: the owner is created by signing in to Jellyfin as the vault
+  # administrator, and the household member is imported by Jellyfin GUID. Seerr
+  # stores no local password for either, so there is nothing to rotate here —
+  # rotating the Jellyfin password rotates both.
+  seerr:
+    preserves_unmanaged_users: true
+    password_rotation: refuse
+    existing_identity_password_update: forbidden
+    mode: api
+    interfaces:
+      list: api/v1/user
+      create: api/v1/user/import-from-jellyfin
+      authenticate: X-Api-Key
+      reconcile: api/v1/user/{id}/settings/permissions

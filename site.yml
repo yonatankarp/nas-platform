@@ -116,8 +116,28 @@
     - role: pinchflat
       tags: [pinchflat, media, media_acquisition_phase2]
 
+    # Trailarr is Phase 3. It reads Radarr and Sonarr over their own APIs,
+    # addressing them by Compose service name, and each connection it declares
+    # is validated with a live call at write time, so it joins media-control
+    # and converges after arr. It writes trailers into the same Movies and
+    # Series item directories Radarr and Sonarr own; Jellyfin, which indexes
+    # them as extras, converges below and needs no configuration for it.
+    - role: trailarr
+      tags: [trailarr, media, media_acquisition_phase3]
+
     - role: jellyfin
       tags: [jellyfin, media]
+
+    # Seerr is Phase 4, and the last acquisition project. It is the request
+    # front end: household members ask for a film or a series and Radarr and
+    # Sonarr acquire it. It converges after Jellyfin because it imports
+    # Jellyfin's users and signs in to Jellyfin as the vault administrator to
+    # create its own owner — and that bootstrap has to happen in the same play
+    # that starts the container, because until a user row exists anyone who can
+    # reach port 5055 can point Seerr at a Jellyfin server they control and
+    # become its owner.
+    - role: seerr
+      tags: [seerr, media, media_acquisition_phase4]
 
     - role: immich
       tags: [immich, media]

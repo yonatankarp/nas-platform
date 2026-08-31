@@ -266,6 +266,7 @@ vault, documentation. Never commit: the vault password, any decrypted vault
 copy, rendered `.env` files, plaintext credentials, or application data. At
 runtime plaintext lives in service `.env` files, Dozzle's whole data directory
 (its users file, plus the dispatcher record whose `Authorization: Bearer`
-header the platform POSTs in), Beszel's private key, and application data —
+header the platform POSTs in), Beszel's private key, Seerr's mode-0644
+`settings.json` and the `settings.old.json` beside it, and application data —
 treat those and their backups as secret-bearing. Losing the vault password
 means regenerating every credential; there is no backdoor.
