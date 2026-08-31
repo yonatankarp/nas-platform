@@ -257,9 +257,10 @@ tests/ci/suites.conf               one row: the suite, its kind, and the tags it
                                    fixed tags in the runner, all derive from it
 tests/ci/classify_changes.rb       SERVICE_NAMES
 tests/ci/classify_changes_test.rb  the pinned tag plan for the lane, and NTFY_LANES
-tests/integration.sh               the service/directory table, the contract
-                                   runner, the verify-only function, the suite
+tests/integration.sh               the service/directory table and the suite
                                    dispatch
+tests/integration_controller_lib.sh  the contract runner case arm and the
+                                   verify-only wrapper
 tests/integration_suite_test.sh    the pinned --describe-suite line and pre-pull set
 ```
 

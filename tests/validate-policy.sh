@@ -34,6 +34,7 @@ ruby tests/policy_platform_test.rb
 ruby tests/policy_ci_test.rb
 ruby tests/policy_beszel_test.rb
 ruby tests/policy_integration_test.rb
+shellcheck --shell=sh tests/integration_controller_lib.sh
 ruby tests/policy_deployment_test.rb
 ruby tests/policy_mac_test.rb
 ruby tests/policy_vault_test.rb

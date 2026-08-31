@@ -35,6 +35,7 @@ MAC_CONTRACT_WRAPPER = File.join(ROOT, "tests/mac/run-contract.sh")
 SEED_HOOK = File.join(ROOT, "tests/mac/hooks/fixtures-seed/00-services.sh")
 DRIFT_HOOK = File.join(ROOT, "tests/mac/hooks/drift/40-komga.sh")
 INTEGRATION_HARNESS = File.join(ROOT, "tests/integration.sh")
+INTEGRATION_LIBRARY = File.join(ROOT, "tests/integration_controller_lib.sh")
 ROLE_SOURCE = File.read(ROLE)
 DEFAULTS_SOURCE = File.read(DEFAULTS_PATH)
 DEFAULTS = YAML.safe_load(DEFAULTS_SOURCE, aliases: false)
@@ -140,7 +141,7 @@ else
 end
 
 def validate_runtime_health_paths!(sources)
-  contract, wrapper, seed_hook, integration = sources
+  contract, wrapper, seed_hook, integration, integration_library = sources
   base_policy = [
     "  base)",
     "    PLATFORM_KOMGA_CONTAINER=${PLATFORM_PROJECT_NAME:+$PLATFORM_PROJECT_NAME-}komga",
@@ -186,7 +187,7 @@ def validate_runtime_health_paths!(sources)
   raise "Komga health gates no longer precede authenticated assertions" unless
     gate_index && auth_index && gate_index < auth_index
   raise "Komga invoking harnesses do not bind exact runtime contexts" unless
-    integration.include?('PLATFORM_KOMGA_RUNTIME_CONTEXT=base') &&
+    integration_library.include?("PLATFORM_KOMGA_RUNTIME_CONTEXT=base") &&
       wrapper.include?('if [ "${PLATFORM_KIND:-}" = integration ]; then') &&
       wrapper.include?('PLATFORM_KOMGA_RUNTIME_CONTEXT=base') &&
       wrapper.include?('PLATFORM_KOMGA_RUNTIME_CONTEXT=mac-managed') &&
@@ -514,7 +515,8 @@ runtime_sources = [
   contract,
   mac_contract_wrapper,
   seed_hook,
-  File.read(INTEGRATION_HARNESS)
+  File.read(INTEGRATION_HARNESS),
+  File.read(INTEGRATION_LIBRARY)
 ]
 validate_runtime_health_paths!(runtime_sources)
 
@@ -645,7 +647,7 @@ managed_skips_health[0] = contract.sub(
 runtime_health_mutation_rejected!(managed_skips_health, "managed Docker health bypass")
 
 wrong_integration_context = runtime_sources.dup
-wrong_integration_context[3] = runtime_sources.fetch(3).sub(
+wrong_integration_context[4] = runtime_sources.fetch(4).sub(
   "PLATFORM_KOMGA_RUNTIME_CONTEXT=base",
   "PLATFORM_KOMGA_RUNTIME_CONTEXT=mac-managed"
 )

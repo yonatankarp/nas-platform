@@ -82,6 +82,7 @@ SAMPLE_TAGS = "host_prep,deployment_bundle,ntfy,beszel"
 STATIC_STEP_NAMES = [
   "Check out repository",
   "Validate shell syntax",
+  "Install ShellCheck",
   "Install Ansible tooling",
   "Check policy properties",
   "Check integration sandbox cleanup",

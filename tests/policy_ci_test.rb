@@ -201,8 +201,10 @@ enabled_idempotence_contracts.each do |suite, (idempotence_call, check_call)|
         "the #{suite} suite must run enabled idempotence before check mode")
 end
 check(failures,
-      integration_body.scan(/^    enabled_idempotence_recap_is_clean\(\) \{/).length == 1,
-      "tests/integration.sh must define one enabled idempotence recap parser")
+      File.read(File.join(ROOT, "tests", "integration_controller_lib.sh"))
+          .scan(/^enabled_idempotence_recap_is_clean\(\) \{/).length == 1,
+      "tests/integration_controller_lib.sh must define one enabled idempotence " \
+      "recap parser")
 
 # The manifest's own shape is policed elsewhere, which reports a malformed
 # document or a non-string service name by name. PolicySupport reads it tolerantly

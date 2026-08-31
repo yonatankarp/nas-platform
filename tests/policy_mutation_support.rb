@@ -93,6 +93,7 @@ BASE_FIXTURE_PATHS = %w[
   tests/compose_metadata_filter_test.yml
   tests/ci/suites.conf
   tests/integration.sh
+  tests/integration_controller_lib.sh
   tests/integration_lock.sh
   tests/integration_lock_test.sh
   tests/immich_release_helper_test.rb
