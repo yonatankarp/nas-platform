@@ -2034,6 +2034,18 @@ expect_failure(failures, "pinned CPU ceiling drifts from Compose",
   end
 end
 
+# The ceilings are oversubscribed against a shared cpuset on purpose, so their
+# sum proves nothing; a single ceiling wider than that cpuset is what the budget
+# relation catches. Raising one past the budget must fail by name rather than
+# only as Compose drift, which is why this mutation is separate from the one
+# above.
+expect_failure(failures, "pinned CPU ceiling exceeds the container CPU budget",
+               "jellyfin/jellyfin: CPU ceiling 4.0 exceeds the 3-CPU cpuset it shares") do |root|
+  mutate_yaml_file(root, "tests/expected/jellyfin.yml") do |expectation|
+    expectation["container_cpus"]["jellyfin"] = 4.0
+  end
+end
+
 expect_failure(failures, "pinned CPU ceiling is not a number",
                "tests/expected/jellyfin.yml container_cpus.jellyfin must be numeric") do |root|
   mutate_yaml_file(root, "tests/expected/jellyfin.yml") do |expectation|

@@ -8,6 +8,13 @@ media_usenet_enabled: true
 media_torrent_enabled: false
 
 # Three of four logical CPUs are available to containers; one stays container-free.
+# The budget is that shared cpuset, not a pool divided between the containers.
+# Each container's `cpus:` caps it on the shared set, and these workloads sit
+# idle almost all the time, so the declared ceilings add up to well over three
+# on purpose -- the total is not a number anything has to fit inside. A ceiling
+# equal to the budget is deliberate too: whichever container is busy may have
+# the whole set. A ceiling wider than the set is the error, because Docker
+# clamps it to the cpuset anyway; tests/policy_test.rb rejects one.
 platform_container_cpu_budget: 3
 
 platform_render_device_available: true
