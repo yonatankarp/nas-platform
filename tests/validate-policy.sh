@@ -129,6 +129,8 @@ ruby tests/run_contracts_test.rb
 ruby tests/run_contracts.rb --validate-only
 ruby tests/dozzle_quality_test.rb
 ruby tests/jellyfin_transcode_contract_test.rb
+ruby tests/pinchflat_contract_test.rb
+ruby tests/pinchflat_contract_test.rb --self-test
 ruby tests/contract_structure_mutation_test.rb
 tests/integration_lock_test.sh
 tests/integration_suite_test.sh
