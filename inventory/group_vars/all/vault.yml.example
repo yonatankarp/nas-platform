@@ -76,6 +76,15 @@ vault_trailarr_admin_username: example-admin
 vault_trailarr_admin_password: example-trailarr-password
 vault_trailarr_admin_password_hash: "$2b$12$00000000000000000000000000000000000000000000000000000"
 
+# Seerr's key is the whole of its authentication, and it is genuinely one-way:
+# the application reads API_KEY on every start, takes it on a virgin
+# configuration and overwrites a drifted stored value with it. Seerr imposes no
+# format and compares the value as an opaque string, so the shape is the
+# platform's, matching the vault_arr_* keys. Seerr needs no administrator
+# password of its own: its owner row is created with a Jellyfin user type and
+# no local password, from the Jellyfin administrator pair above.
+vault_seerr_api_key: "77777777777777777777777777777777"
+
 # ntfy tokens are tk_ plus 29 lowercase alphanumeric characters. Password
 # hashes are bcrypt values produced by the pinned ntfy image.
 vault_ntfy_admin_user: example-admin
@@ -87,6 +96,8 @@ vault_ntfy_beszel_password_hash: $2b$12$0000000000000000000000000000000000000000
 vault_ntfy_beszel_token: tk_11111111111111111111111111111
 vault_ntfy_deploy_password_hash: $2b$12$00000000000000000000000000000000000000000000000000000
 vault_ntfy_deploy_token: tk_01010101010101010101010101010
+vault_ntfy_seerr_password_hash: $2b$12$00000000000000000000000000000000000000000000000000000
+vault_ntfy_seerr_token: tk_10101010101010101010101010101
 
 # The Beszel hub keypair is authored before first start. The agent key contains
 # only the key type and public key, without a trailing comment.
@@ -168,6 +179,8 @@ vault_managed_users:
         - topic: nas-deployment
           permission: read-only
         - topic: nas-containers
+          permission: read-only
+        - topic: nas-requests
           permission: read-only
       tokens: []
   paperless_ngx:

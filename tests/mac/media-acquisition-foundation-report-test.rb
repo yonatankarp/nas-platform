@@ -57,6 +57,7 @@ def report_input
     "kapowarr_port" => 35_656,
     "bindery_port" => 38_787,
     "trailarr_port" => 37_889,
+    "seerr_port" => 35_055,
     "git_revision" => "abc123",
     "vault_checksum" => "0" * 64,
     "diagnostic_locations" => [],

@@ -12,3 +12,5 @@ vault_keys:
   - vault_ntfy_deploy_token
   - vault_ntfy_dozzle_password_hash
   - vault_ntfy_dozzle_token
+  - vault_ntfy_seerr_password_hash
+  - vault_ntfy_seerr_token

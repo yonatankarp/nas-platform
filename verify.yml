@@ -75,6 +75,8 @@
       tags: [never]
     - role: jellyfin
       tags: [never]
+    - role: seerr
+      tags: [never]
     - role: immich
       tags: [never]
     - role: paperless_ngx

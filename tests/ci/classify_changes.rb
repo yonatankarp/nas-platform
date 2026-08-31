@@ -50,6 +50,7 @@ module ClassifyChanges
     "kapowarr" => %w[kapowarr],
     "pinchflat" => %w[pinchflat],
     "trailarr" => %w[trailarr],
+    "seerr" => %w[seerr],
     "beszel" => %w[beszel],
     "dozzle" => %w[dozzle],
     "audiobookshelf" => %w[audiobookshelf],

@@ -44,4 +44,4 @@ services:
     status: implemented
   - name: seerr
     role: seerr
-    status: planned
+    status: implemented

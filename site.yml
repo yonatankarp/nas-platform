@@ -128,6 +128,17 @@
     - role: jellyfin
       tags: [jellyfin, media]
 
+    # Seerr is Phase 4, and the last acquisition project. It is the request
+    # front end: household members ask for a film or a series and Radarr and
+    # Sonarr acquire it. It converges after Jellyfin because it imports
+    # Jellyfin's users and signs in to Jellyfin as the vault administrator to
+    # create its own owner — and that bootstrap has to happen in the same play
+    # that starts the container, because until a user row exists anyone who can
+    # reach port 5055 can point Seerr at a Jellyfin server they control and
+    # become its owner.
+    - role: seerr
+      tags: [seerr, media, media_acquisition_phase4]
+
     - role: immich
       tags: [immich, media]
 

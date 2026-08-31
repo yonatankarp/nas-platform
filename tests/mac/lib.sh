@@ -177,7 +177,8 @@ mac_target_container_names() {
         "$mac_project-paperless-redis" "$mac_project-paperless-postgres" \
         "$mac_project-paperless-webserver" "$mac_project-paperless-gotenberg" \
         "$mac_project-paperless-tika" "$mac_project-pinchflat" \
-        "$mac_project-kapowarr" "$mac_project-bindery" "$mac_project-trailarr"
+        "$mac_project-kapowarr" "$mac_project-bindery" "$mac_project-trailarr" \
+        "$mac_project-seerr"
       ;;
     *) mac_die 'proof platform is invalid' ;;
   esac
@@ -200,7 +201,7 @@ mac_target_container_names() {
 # no caller outside that function can observe an order at all.
 MAC_SERVICE_PORT_ORDER='beszel ntfy dozzle audiobookshelf komga jellyfin immich
 paperless radarr sonarr prowlarr bazarr sabnzbd pinchflat kapowarr bindery
-trailarr'
+trailarr seerr'
 
 # How many services the roster holds, for callers validating a list length
 # against it. Resetting the positional parameters inside a function does not

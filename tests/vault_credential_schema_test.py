@@ -155,7 +155,7 @@ def _valid_value(key, rules):
     if key in FOUNDATION_PASSWORDS:
         return f"foundation-password-{FOUNDATION_PASSWORDS.index(key)}"
     if key in NTFY_DISTINCT_KEYS:
-        # The three publisher tokens have to differ from each other, so they are
+        # The four publisher tokens have to differ from each other, so they are
         # keyed off their position rather than off the shared pattern sample.
         return "tk_" + "abcdefghijklmnopqrstuvwxyz012"[:28] + str(
             NTFY_DISTINCT_KEYS.index(key))

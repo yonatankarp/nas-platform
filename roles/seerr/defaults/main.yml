@@ -1,0 +1,169 @@
+---
+seerr_port: 5055
+seerr_api: "http://127.0.0.1:{{ seerr_port }}/api/v1"
+# The only two routes a virgin Seerr answers anonymously. Measured against the
+# pinned image: /api/v1/status and /api/v1/settings/public return 200 before and
+# after the bootstrap, while /settings/main, /settings/jellyfin, /user, /request
+# and POST /request all return 401.
+seerr_status_url: "{{ seerr_api }}/status"
+seerr_public_settings_url: "{{ seerr_api }}/settings/public"
+seerr_config_host_path: "{{ nas_docker_root }}/seerr/config"
+
+# Where the operator reaches this service. Seerr embeds it in every notification
+# it sends, so a wrong value produces links nobody can follow. Same shape as
+# ntfy's and Beszel's own external addresses.
+seerr_application_url: "http://{{ platform_public_host }}:{{ seerr_port }}"
+
+# Seerr addresses Jellyfin, Radarr and Sonarr by their Compose service alias on
+# the shared media-control network. Compose registers the service name as a
+# network alias regardless of the per-project container_name the disposable
+# lanes apply, so these are correct in production and in a sandbox alike.
+seerr_jellyfin_hostname: jellyfin
+seerr_jellyfin_port: 8096
+# MediaServerType.JELLYFIN. This is not optional decoration on the bootstrap
+# request: routes/auth.js rejects a first-run body whose serverType is neither
+# JELLYFIN (2) nor EMBY (3) with 500 NO_ADMIN_USER — a message that reads as
+# "this account is not an administrator" and means "you did not say what kind of
+# server this is". Measured: the same request with an administrator account and
+# without this field answers 500; with it, 200 and {"id":1,"permissions":2}.
+seerr_media_server_type: 2
+
+# The declared main settings, reconciled by compare-then-POST. POST
+# /api/v1/settings/main is a deep merge rather than a replace, so a partial body
+# is safe — measured, the API key survived one.
+#
+# defaultPermissions ships as 32 (REQUEST) and newPlexLogin ships as true.
+# Together they defeat the design twice over: the import path applies
+# defaultPermissions, and newPlexLogin true means any Jellyfin user who signs in
+# is silently created in Seerr holding them. With newPlexLogin false, auth.js
+# answers an unimported Jellyfin user 403 Access denied instead.
+#
+# mediaServerLogin is deliberately NOT set false, and that is the subtle half.
+# It does not mean "auto-create users"; it is the switch that enables Jellyfin
+# sign-in at all, and auth.js returns 500 "Jellyfin login is disabled" for every
+# caller when it is false — the two imported household identities included. With
+# localLogin false as well, nobody could reach the service. The design's clause
+# is carried by defaultPermissions and newPlexLogin alone.
+#
+# localLogin false closes the second, password-based authentication path on the
+# most exposed service in the set. Nothing here sets a Seerr local password: the
+# owner row is created with a Jellyfin user type and no password at all, which
+# is why Seerr needs no administrator credential of its own.
+seerr_main_settings:
+  defaultPermissions: 0
+  newPlexLogin: false
+  localLogin: false
+  applicationUrl: "{{ seerr_application_url }}"
+
+# The two permission identities, as bit flags. ADMIN short-circuits every check,
+# so the owner needs the single bit 2 and nothing else — which is exactly what
+# the bootstrap sets. 160 is REQUEST (32) + AUTO_APPROVE (128): both users may
+# request films and series with immediate approval, and 160 deliberately
+# excludes every 4K bit and every MANAGE_* bit, which is the "without
+# service-administration permissions" half of the design.
+#
+# The owner is asserted rather than written. POST /api/v1/user/1/settings/
+# permissions answers 403 "You do not have permission to modify this user" —
+# measured — because the owner row cannot be modified through that route at all.
+seerr_owner_permissions: 2
+seerr_household_permissions: 160
+
+# Seerr's own notification agent, publishing request events to the platform's
+# ntfy. The POST replaces the agent object rather than merging into it —
+# measured, embedPoster vanished from the read-back of a partial body — so the
+# whole options mapping is declared here and sent every time.
+#
+# types is a bit mask: MEDIA_AVAILABLE (8) + MEDIA_FAILED (16) +
+# MEDIA_AUTO_APPROVED (128) = 152. MEDIA_PENDING, MEDIA_APPROVED and
+# MEDIA_DECLINED are omitted because both identities hold AUTO_APPROVE and none
+# of those three can ever fire.
+#
+# This platform's ntfy is deny-all, so an unauthenticated agent would publish
+# nothing and fail silently. Seerr does support authentication even though a
+# fresh instance's defaults hide it: the agent's own source reads
+# authMethodToken and sends `Bearer <token>`, and it is persisted — measured.
+seerr_notification_types: 152
+seerr_ntfy_priority: 3
+seerr_ntfy_locale: en
+# ntfy is published on the host rather than joined to media-control, so the
+# address is the callback host every other publisher on this platform uses:
+# the LAN address on the NAS, host.docker.internal in the Mac sandbox. The
+# topic and the port default here because they belong to the ntfy role, which
+# is out of scope while this one runs — the same shape Dozzle's and Beszel's
+# own ntfy declarations take.
+seerr_ntfy_url: "http://{{ platform_callback_host }}:{{ ntfy_port | default(2586) }}"
+seerr_ntfy_topic: "{{ ntfy_requests_topic | default('nas-requests') }}"
+seerr_ntfy_declaration:
+  enabled: true
+  embedPoster: true
+  types: "{{ seerr_notification_types }}"
+  options:
+    url: "{{ seerr_ntfy_url }}"
+    topic: "{{ seerr_ntfy_topic }}"
+    priority: "{{ seerr_ntfy_priority }}"
+    locale: "{{ seerr_ntfy_locale }}"
+    authMethodUsernamePassword: false
+    authMethodToken: true
+    token: "{{ vault_ntfy_seerr_token }}"
+
+# Radarr and Sonarr, addressed by service alias. The keys are the arrs' own,
+# read from vault rather than minted again here: a second copy of an API key is
+# a second thing to rotate and a second thing to drift.
+#
+# Each is the complete row Seerr stores, minus the id it assigns, because that
+# is what makes the comparison exact. POST /api/v1/settings/radarr and /sonarr
+# blindly append — measured, two identical posts produced rows 0 and 1 and no
+# error — so a role that posted every converge would grow a duplicate server
+# per run and could never report changed=0.
+#
+# activeDirectory is each arr's own root folder, so a grab Seerr requests lands
+# where Radarr and Sonarr already put everything else. activeProfileId 1 is the
+# "Any" quality profile both arrs seed on a first start. The anime fields are
+# null because this platform declares no separate anime library.
+seerr_radarr_server:
+  name: Radarr
+  hostname: radarr
+  port: 7878
+  apiKey: "{{ vault_arr_radarr_api_key }}"
+  useSsl: false
+  baseUrl: ""
+  activeProfileId: 1
+  activeProfileName: Any
+  activeDirectory: /data/media/Movies
+  is4k: false
+  minimumAvailability: released
+  isDefault: true
+  externalUrl: ""
+  syncEnabled: true
+  preventSearch: false
+  tagRequests: false
+seerr_sonarr_server:
+  name: Sonarr
+  hostname: sonarr
+  port: 8989
+  apiKey: "{{ vault_arr_sonarr_api_key }}"
+  useSsl: false
+  baseUrl: ""
+  activeProfileId: 1
+  activeProfileName: Any
+  activeDirectory: /data/media/Series
+  activeAnimeProfileId: null
+  activeAnimeProfileName: null
+  activeAnimeDirectory: null
+  is4k: false
+  isDefault: true
+  enableSeasonFolders: true
+  externalUrl: ""
+  syncEnabled: true
+  preventSearch: false
+  tagRequests: false
+
+# Seerr deploys unconditionally — the request front end is useful with Jellyfin
+# alone — but a Radarr or Sonarr row names a host that has to exist before a
+# request can be fulfilled, and neither arr is running on a host that has not
+# enabled Usenet. That is exactly what this flag gates.
+media_usenet_enabled: false
+
+seerr_compose_project_name: >-
+  {{ (platform_project_name ~ '-seerr')
+     if platform_project_name | default('') | length > 0 else 'seerr' }}

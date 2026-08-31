@@ -15,7 +15,13 @@ ntfy_compose_project_name: >-
 ntfy_topic: nas-critical
 ntfy_deployment_topic: nas-deployment
 ntfy_containers_topic: nas-containers
-ntfy_topics: "{{ [ntfy_topic, ntfy_deployment_topic, ntfy_containers_topic] }}"
+# Seerr's request events. Their own subject, because a household member asking
+# for a film is a different thing from a container restarting and a different
+# thing again from a release landing, and each has to be mutable on its own.
+ntfy_requests_topic: nas-requests
+ntfy_topics: >-
+  {{ [ntfy_topic, ntfy_deployment_topic, ntfy_containers_topic,
+      ntfy_requests_topic] }}
 
 # Where the provisioning proof publishes. Deliberately outside ntfy_topics: that
 # list is what a managed user may declare access to and what subscriptions are
@@ -51,6 +57,14 @@ ntfy_publishers:
     password_hash: "{{ vault_ntfy_deploy_password_hash }}"
     token: "{{ vault_ntfy_deploy_token }}"
     topics: "{{ [ntfy_topic, ntfy_deployment_topic, ntfy_verification_topic] }}"
+  # Seerr publishes only request events. It is the one publisher that is a
+  # user-facing application rather than an operator tool, and it holds its own
+  # identity rather than the deploy account's so it can be revoked without
+  # silencing deployment reporting.
+  - name: seerr
+    password_hash: "{{ vault_ntfy_seerr_password_hash }}"
+    token: "{{ vault_ntfy_seerr_token }}"
+    topics: "{{ [ntfy_requests_topic, ntfy_verification_topic] }}"
 
 # What counts as a deployment, for both the per-service reports and the
 # run-level summary: a run that moved the release. The two must agree, or a

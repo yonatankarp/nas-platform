@@ -24,6 +24,7 @@ bindery_port: "{{ lookup('env', 'PLATFORM_BINDERY_PORT') | int }}"
 kapowarr_port: "{{ lookup('env', 'PLATFORM_KAPOWARR_PORT') | int }}"
 pinchflat_port: "{{ lookup('env', 'PLATFORM_PINCHFLAT_PORT') | int }}"
 trailarr_port: "{{ lookup('env', 'PLATFORM_TRAILARR_PORT') | int }}"
+seerr_port: "{{ lookup('env', 'PLATFORM_SEERR_PORT') | int }}"
 nas_docker_root: "{{ lookup('env', 'PLATFORM_DOCKER_ROOT') | platform_physical_path }}"
 nas_media_root: "{{ lookup('env', 'PLATFORM_MEDIA_ROOT') | platform_physical_path }}"
 platform_render_device_available: false

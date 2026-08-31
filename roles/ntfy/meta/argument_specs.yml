@@ -34,6 +34,10 @@ argument_specs:
         type: str
         required: false
         description: Topic for the routine container record; recoveries.
+      ntfy_requests_topic:
+        type: str
+        required: false
+        description: Topic for the routine media request record.
       ntfy_topics:
         type: list
         elements: str

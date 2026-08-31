@@ -133,6 +133,9 @@ case $mac_service in
   trailarr)
     : "${PLATFORM_TRAILARR_PORT:?PLATFORM_TRAILARR_PORT is required}"
     ;;
+  seerr)
+    : "${PLATFORM_SEERR_PORT:?PLATFORM_SEERR_PORT is required}"
+    ;;
   kapowarr)
     : "${PLATFORM_KAPOWARR_PORT:?PLATFORM_KAPOWARR_PORT is required}"
     ;;

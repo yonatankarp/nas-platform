@@ -20,7 +20,8 @@ mac_persisted=
 for mac_persistence_entry in beszel:verify dozzle:verify \
     audiobookshelf:assert-persistence komga:assert-persistence \
     jellyfin:assert-persistence \
-    immich:assert-persistence pinchflat:run kapowarr:run bindery:run trailarr:run; do
+    immich:assert-persistence pinchflat:run kapowarr:run bindery:run trailarr:run \
+    seerr:run; do
   mac_persistence_service=${mac_persistence_entry%%:*}
   "$mac_script_dir/run-contract.sh" "$mac_persistence_service" "${mac_persistence_entry#*:}"
   mac_persisted="$mac_persisted$mac_persistence_service

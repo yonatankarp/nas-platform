@@ -1,0 +1,94 @@
+---
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
+services:
+  # Seerr is the request front end for the Jellyfin library: household members
+  # ask for a film or a series here and Radarr and Sonarr acquire it. It reads
+  # Jellyfin's user list and writes Radarr's and Sonarr's connection rows, all
+  # by Compose service alias, so it joins media-control; site.yml converges it
+  # after Jellyfin, whose users it imports.
+  #
+  # Seerr is the merged successor of Overseerr and Jellyseerr, not a fork of
+  # either. Do not substitute `fallenbagel/jellyseerr` or `sctx/overseerr`: the
+  # first has no Jellyfin user import at all and the LinuxServer-style
+  # PUID/PGID and JELLYFIN_TYPE conventions of the second do not apply here.
+  # The tag is v-prefixed and `:3.4.1` does not exist — a naive pin fails at
+  # pull time with `not found` — so Renovate must be given the v-prefixed
+  # versioning or it will silently never offer an update.
+  seerr:
+    container_name: seerr
+    image: ghcr.io/seerr-team/seerr:v3.4.1@sha256:f4768de5f616248d723e05891f3345a1402123775d03bf0890dbfedc0831bda1
+    cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
+    # Seerr transcodes nothing. Its work is TMDB lookups, the arr and Jellyfin
+    # syncs and serving a single-page application, all network-bound.
+    cpus: 1.0
+    labels:
+      dev.dozzle.name: seerr
+    # The image sets User: node:node, uid 1000 and gid 1000. Its entrypoint is
+    # the stock Node one, which only prepends `node` to the command: it never
+    # starts as root, performs no re-exec, and neither gosu nor su-exec is
+    # present in the image, so PUID/PGID would be dead configuration. The uid
+    # happens to equal this platform's nas_uid; the gid does not, and left
+    # alone Seerr would group-own its files outside the platform's media group.
+    user: "${NAS_UID:?}:${NAS_GID:?}"
+    # npm start forks, and without an init the container accumulates zombies.
+    init: true
+    ports:
+      - "5055:5055"
+    # Seerr holds no media. It never reads or writes the library; it asks
+    # Radarr and Sonarr to acquire, and they own the files.
+    volumes:
+      - ${SEERR_CONFIG_PATH:?}:/app/config
+    environment:
+      TZ: ${TZ:?}
+      LOG_LEVEL: info
+      # A genuine one-way credential, which is what makes this service fit the
+      # platform without compromise. Seerr reads API_KEY on every start: a
+      # virgin configuration takes the value as its key, and a stored value
+      # that has drifted is overwritten with the environment's. So the key is
+      # authored in vault and never read back — and if an operator rotates it
+      # from the web interface with POST /api/v1/settings/main/regenerate, the
+      # vault value comes back at the next container start.
+      API_KEY: ${SEERR_API_KEY:?}
+    healthcheck:
+      # curl is absent and wget is the BusyBox applet, not GNU wget, so the
+      # flags below are the only spelling that works. /api/v1/settings/public
+      # answers 200 anonymously both before and after the bootstrap, so the
+      # container never reports unhealthy merely because it is unconfigured.
+      # 127.0.0.1 rather than localhost: localhost resolves to ::1 here, and a
+      # v6-only resolution is a latent flake.
+      test:
+        - CMD-SHELL
+        - >-
+          wget --no-verbose --tries=1 --spider
+          http://127.0.0.1:5055/api/v1/settings/public || exit 1
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      # The image ships no HEALTHCHECK of its own, and Seerr takes several
+      # seconds after the container reports running to answer HTTP, so without
+      # this the first task after `wait: true` races the server.
+      start_period: 60s
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    # /app/config holds the SQLite database whose first user row is the only
+    # thing standing between this service and an anonymous takeover, plus every
+    # request and its state. 30s commits the open transaction; nothing here is
+    # a long-running job whose interruption costs more than a re-issued
+    # request.
+    stop_grace_period: 30s
+    logging: *default-logging
+    networks:
+      - default
+      - media-control
+
+networks:
+  default: {}
+  media-control:
+    external: true
+    name: ${PLATFORM_MEDIA_NETWORK:?}
