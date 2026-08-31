@@ -1,15 +1,33 @@
 ---
+# Platform fragments. Compose resolves a YAML anchor only inside the file that
+# declares it, so every stack carries its own copy; tests/policy_test.rb pins the
+# copies equal and records there why cross-file sharing was not taken. A
+# container needing different health-check timing overrides only the fields it
+# changes, so a deviation reads as a deviation.
 x-logging: &default-logging
   driver: json-file
   options:
     max-size: 10m
     max-file: "3"
 
+x-service-defaults: &service-defaults
+  cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
+  security_opt:
+    - no-new-privileges:true
+  restart: unless-stopped
+  logging: *default-logging
+
+x-healthcheck-defaults: &healthcheck-defaults
+  interval: 30s
+  timeout: 10s
+  retries: 5
+  start_period: 60s
+
 services:
   audiobookshelf:
+    <<: *service-defaults
     container_name: audiobookshelf
     image: ghcr.io/advplyr/audiobookshelf:2.36.0@sha256:180acad33d69c99ed208676465d8edcb268fa46967735579a7810859885b1a8e
-    cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
     cpus: 1.5
     labels:
       dev.dozzle.name: audiobookshelf
@@ -27,19 +45,17 @@ services:
       - default
       - media-control
     healthcheck:
+      <<: *healthcheck-defaults
       test: [CMD, wget, --no-verbose, --tries=1, --spider, http://localhost:80/healthcheck]
-      interval: 30s
-      timeout: 10s
+      # Deviation carried over unchanged from before the defaults existed; the
+      # repository records no reason for it, and a de-duplication is not where a
+      # readiness window gets renegotiated.
       retries: 4
       start_period: 30s
-    security_opt:
-      - no-new-privileges:true
-    restart: unless-stopped
     # The listening progress every client syncs lands in a SQLite database under
     # a recovery: critical config directory. 30s is enough to commit the open
     # transaction and check the write-ahead log back in.
     stop_grace_period: 30s
-    logging: *default-logging
 
 networks:
   default: {}

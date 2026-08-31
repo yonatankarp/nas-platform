@@ -1,14 +1,32 @@
+# Platform fragments. Compose resolves a YAML anchor only inside the file that
+# declares it, so every stack carries its own copy; tests/policy_test.rb pins the
+# copies equal and records there why cross-file sharing was not taken. A
+# container needing different health-check timing overrides only the fields it
+# changes, so a deviation reads as a deviation.
 x-logging: &default-logging
   driver: json-file
   options:
     max-size: 10m
     max-file: "3"
 
+x-service-defaults: &service-defaults
+  cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
+  security_opt:
+    - no-new-privileges:true
+  restart: unless-stopped
+  logging: *default-logging
+
+x-healthcheck-defaults: &healthcheck-defaults
+  interval: 30s
+  timeout: 10s
+  retries: 5
+  start_period: 60s
+
 services:
   alert-relay:
+    <<: *service-defaults
     container_name: dozzle_alert_relay
     image: docker.io/library/python:3.14-alpine@sha256:05b2b8b732ecd268fee8727a369f936f022d1321b59befd13c30ede22769dcdc
-    cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
     cpus: 0.5
     labels:
       dev.dozzle.group: dozzle
@@ -28,23 +46,22 @@ services:
       NTFY_TOKEN: ${NTFY_TOKEN:?}
       ALERT_STATE_PATH: /state/alert-relay.json
     healthcheck:
+      <<: *healthcheck-defaults
       test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:${ALERT_RELAY_PORT:?}/healthz', timeout=3).read()"]
-      interval: 30s
+      # Dozzle gates its own start on this container reporting healthy. It is
+      # listening within a second and the check runs over loopback, so both ends
+      # are short rather than spending the platform's grace period.
       timeout: 5s
       retries: 4
       start_period: 5s
     read_only: true
     tmpfs:
       - /tmp
-    security_opt:
-      - no-new-privileges:true
-    restart: unless-stopped
-    logging: *default-logging
 
   dozzle:
+    <<: *service-defaults
     container_name: dozzle
     image: docker.io/amir20/dozzle:v10.8.0@sha256:243666b0593ff33ed1373901575236f0d6bed8a2d6b451cdae4345969a7b6d5c
-    cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
     cpus: 1.0
     labels:
       dev.dozzle.group: dozzle
@@ -68,23 +85,21 @@ services:
       alert-relay:
         condition: service_healthy
     healthcheck:
+      <<: *healthcheck-defaults
       test: [CMD, /dozzle, healthcheck]
-      interval: 30s
-      timeout: 10s
+      # Deviation carried over unchanged from before the defaults existed; the
+      # repository records no reason for it, and a de-duplication is not where a
+      # readiness window gets renegotiated.
       retries: 4
       start_period: 30s
     read_only: true
     tmpfs:
       - /tmp
-    security_opt:
-      - no-new-privileges:true
-    restart: unless-stopped
-    logging: *default-logging
 
   socket-proxy:
+    <<: *service-defaults
     container_name: dozzle_socket_proxy
     image: lscr.io/linuxserver/socket-proxy:3.4.4@sha256:cba12c42b1df30a6446856028f5ab726e9d8921f1ea74be509216c5e41357d42
-    cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
     cpus: 0.5
     labels:
       dev.dozzle.group: dozzle
@@ -103,15 +118,14 @@ services:
       POST: "0"
       TZ: ${TZ:?}
     healthcheck:
+      <<: *healthcheck-defaults
       test: [CMD-SHELL, "wget -q -O - http://127.0.0.1:2375/_ping | grep -qx OK"]
-      interval: 30s
+      # Dozzle gates its own start on this container reporting healthy. It is
+      # listening within a second and the check runs over loopback, so both ends
+      # are short rather than spending the platform's grace period.
       timeout: 5s
       retries: 4
       start_period: 5s
     read_only: true
     tmpfs:
       - /run
-    security_opt:
-      - no-new-privileges:true
-    restart: unless-stopped
-    logging: *default-logging

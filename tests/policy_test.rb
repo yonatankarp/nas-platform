@@ -789,6 +789,51 @@ end
 # had to edit this file too, which is what a property check exists to avoid.
 IMAGE = %r{\A\S+:[^@\s]+@sha256:[0-9a-f]{64}\z}
 
+# Platform Compose fragments. The log rotation block and the health-check timing
+# default are platform policy rather than a per-stack choice, and Compose
+# resolves a YAML anchor only inside the file that declares it, so each stack
+# carries its own copy of both.
+#
+# Sharing one file across stacks is possible -- `extends:` predates the Compose
+# 2.18 floor nas_compose_minimum states, and Compose 5 resolves it -- and was
+# deliberately not taken. Every per-container property checked below is read
+# straight out of one parsed file today, for free, because Psych resolves the
+# anchors; seeing through `extends:` would mean reimplementing Compose's merge
+# here first, and the whole guard would then be only as good as that
+# reimplementation. On the target the trade is worse still: a platform override
+# that has not been deployed yet degrades to the canonical file, while a shared
+# file that has not been deployed yet is a parse error for every stack at once.
+#
+# So the copies stay, and they are pinned equal here instead. A fragment edited
+# in one stack fails by name rather than drifting away from the other eleven.
+PLATFORM_LOGGING = {
+  "driver" => "json-file",
+  "options" => { "max-size" => "10m", "max-file" => "3" }
+}.freeze
+
+# The tuple eight of the platform's twenty-four timed health checks already
+# carried, which is what makes it the default rather than a new opinion. A
+# container needing different timing overrides only the fields it changes, so a
+# deviation reads as a deviation instead of as another hand-written tuple.
+PLATFORM_HEALTHCHECK_DEFAULTS = {
+  "interval" => "30s",
+  "timeout" => "10s",
+  "retries" => 5,
+  "start_period" => "60s"
+}.freeze
+
+# The keys every long-running container on the platform shares. A stack may add
+# to its own fragment -- networks, or a shutdown window every consumer genuinely
+# wants -- but never disagree about these four. stop_grace_period is deliberately
+# not among them: absent means Docker's 10s, and the platform runs 10s, 30s, 1m
+# and 2m on purpose, so a shared default would flatten that silently.
+PLATFORM_SERVICE_DEFAULTS = {
+  "cpuset" => "${PLATFORM_CONTAINER_CPUSET:?}",
+  "security_opt" => ["no-new-privileges:true"],
+  "restart" => "unless-stopped",
+  "logging" => PLATFORM_LOGGING
+}.freeze
+
 declared_paths = YAML.safe_load_file(File.join(ROOT, "inventory", "group_vars", "all", "main.yml"))
                      .fetch("nas_storage").map { |entry| entry.fetch("path") }
 
@@ -823,6 +868,24 @@ service_dirs.each do |dir|
                               end
   check(failures, containers.keys.sort == expected_compose_services.sort,
         "#{name}: CPU policy must cover the exact Compose service set")
+
+  {
+    "x-logging" => PLATFORM_LOGGING,
+    "x-healthcheck-defaults" => PLATFORM_HEALTHCHECK_DEFAULTS
+  }.each do |fragment, expected|
+    next unless compose.key?(fragment)
+
+    check(failures, compose[fragment] == expected,
+          "#{name}: #{fragment} must hold the values every stack's copy of it shares")
+  end
+
+  if compose.key?("x-service-defaults")
+    shared = compose.fetch("x-service-defaults")
+    check(failures, shared.is_a?(Hash) &&
+                    PLATFORM_SERVICE_DEFAULTS.all? { |key, value| shared[key] == value },
+          "#{name}: x-service-defaults must carry the platform cpuset, " \
+          "security_opt, restart and logging")
+  end
 
   containers.each do |container, spec|
     label = "#{name}/#{container}"
@@ -881,6 +944,12 @@ service_dirs.each do |dir|
     options = logging["options"] || {}
     check(failures, options["max-size"] && options["max-file"],
           "#{label}: logging must be bounded by max-size and max-file")
+    # And bounded by the same two numbers everywhere. The keys above say a
+    # container cannot log without limit; this says twelve stacks cannot each
+    # pick their own limit, which is the drift the shared fragment exists to
+    # prevent and the one a presence check never sees.
+    check(failures, logging == PLATFORM_LOGGING,
+          "#{label}: logging must be the platform fragment, not a variant of it")
 
     # Paths must be parameterized. Hardcoded absolutes cannot be redirected, so
     # tests would need override files and local runs would diverge from the NAS.

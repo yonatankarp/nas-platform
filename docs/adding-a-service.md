@@ -502,14 +502,33 @@ roster entry and its `tests/expected/<name>.yml`.
 
 ```yaml
 ---
+# Platform fragments. Compose resolves a YAML anchor only inside the file that
+# declares it, so every stack carries its own copy; tests/policy_test.rb pins the
+# copies equal and records there why cross-file sharing was not taken. A
+# container needing different health-check timing overrides only the fields it
+# changes, so a deviation reads as a deviation.
 x-logging: &default-logging
   driver: json-file
   options:
     max-size: 10m
     max-file: "3"
 
+x-service-defaults: &service-defaults
+  cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
+  security_opt:
+    - no-new-privileges:true
+  restart: unless-stopped
+  logging: *default-logging
+
+x-healthcheck-defaults: &healthcheck-defaults
+  interval: 30s
+  timeout: 10s
+  retries: 5
+  start_period: 60s
+
 services:
   navidrome:
+    <<: *service-defaults
     container_name: navidrome
     image: docker.io/deluan/navidrome:0.58.0@sha256:2ae037d464de9f802d047165a13b1c9dc2bdbb14920a317ae4aef1233adc0a3c
     labels:
@@ -523,16 +542,22 @@ services:
     environment:
       TZ: ${TZ:?}
     healthcheck:
+      <<: *healthcheck-defaults
       test: [CMD-SHELL, "wget -q -O - http://127.0.0.1:4533/ping | grep -q '\"status\":\"ok\"'"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 60s
-    security_opt:
-      - no-new-privileges:true
-    restart: unless-stopped
-    logging: *default-logging
 ```
+
+Copy the three `x-` fragments verbatim from any existing stack. They are the
+platform's log rotation, the container defaults every long-running service
+shares, and the health-check timing default; `tests/policy_test.rb` compares
+each copy against the values it pins, so a stack that retypes one of them
+differently fails by name. The comment there records why the fragments are
+repeated per file rather than shared through `extends:`.
+
+A container whose health check genuinely needs different timing merges the
+fragment and then overrides only the fields it changes, so the diff from
+platform policy is what the file shows. State the reason beside the override; if
+the value predates the default and no reason is recorded, say that rather than
+inventing one, and preserve the value.
 
 The policy test enforces every one of these properties:
 
@@ -556,7 +581,10 @@ The policy test enforces every one of these properties:
   check in `tests/policy_test.rb` with the reason stated, never omitted in
   silence.
 - `restart: unless-stopped`.
-- `logging` with the `json-file` driver and both `max-size` and `max-file`.
+- `logging` with the `json-file` driver and both `max-size` and `max-file`, and
+  the same two values every other container uses. Presence alone would let
+  twelve stacks each pick their own ceiling, which is the drift the shared
+  fragment exists to prevent.
 - Volume sources must be `${VARIABLE:?}` references, never absolute paths. The
   `:?` suffix makes an unset variable fail loudly instead of silently creating a
   relative bind mount. Hardcoding `/volume1/...` is rejected outright, because
@@ -572,7 +600,11 @@ file it is writing but not long enough to wait on work that is simply re-queued.
 Containers that hold nothing — renderers, parsers, socket proxies, model caches —
 declare nothing and keep the default. This is judgement, not a policy check:
 there is no property that can tell the two apart, so state the reasoning in the
-comment.
+comment. For the same reason `stop_grace_period` never goes into a shared
+fragment: an omitted key means ten seconds, so inheriting one would quietly
+extend the shutdown window of every container that had deliberately declared
+nothing. The one exception is a fragment whose every consumer already wanted the
+same window, as in `services/arr/compose.yml`.
 
 A service that runs as a direct numeric user takes the shared platform identity,
 `user: "${NAS_UID:?}:${NAS_GID:?}"`, never a literal pair — even one that happens
