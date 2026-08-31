@@ -138,6 +138,7 @@ BASE_FIXTURE_PATHS = %w[
   tests/mac/media-acquisition-foundation-cleanup-test.sh
   tests/mac/run.sh
   tests/mac/run-phase-status-test.sh
+  tests/mac/pin-protected-input.rb
   tests/mac/snapshot-paperless.sh
   tests/mac/audiobookshelf-drift-hook-test.sh
   tests/mac/hooks/drift/30-audiobookshelf.sh
