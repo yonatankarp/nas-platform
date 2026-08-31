@@ -485,12 +485,14 @@ every key the service adds to the vault.
 
 This file is where a CPU ceiling is pinned, and the checks read it rather than
 keeping copies: `services/<name>/compose.yml` is asserted equal to it, and
-`tests/media_acquisition_phase1_test.rb` and `tests/configarr_job_test.rb` load
-it instead of restating the numbers. An ordinary service therefore holds its
-ceiling in two places — its Compose file and this one — and changing it is two
-edits. A media-acquisition service holds a third in `config/media-acquisition.yml`,
-which is deployed to the target rather than read by a test, and
-`tests/media_acquisition_foundation_test.rb` still pins that copy by hand.
+`tests/media_acquisition_phase1_test.rb`, `tests/configarr_job_test.rb` and
+`tests/media_acquisition_foundation_test.rb` load it instead of restating the
+numbers. An ordinary service therefore holds its ceiling in two places — its
+Compose file and this one — and changing it is two edits. A media-acquisition
+service holds a third in `config/media-acquisition.yml`, which is deployed to the
+target rather than read by a test; `tests/policy_test.rb` asserts that copy
+declares a ceiling for exactly the containers pinned here and that each one is
+equal, so it is a restatement to keep in step rather than a number of its own.
 
 Each ceiling must be **no greater than** `platform_container_cpu_budget` in
 `inventory/group_vars/nas_hosts/main.yml`, and `tests/policy_test.rb` fails by
