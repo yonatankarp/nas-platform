@@ -1,15 +1,33 @@
 ---
+# Platform fragments. Compose resolves a YAML anchor only inside the file that
+# declares it, so every stack carries its own copy; tests/policy_test.rb pins the
+# copies equal and records there why cross-file sharing was not taken. A
+# container needing different health-check timing overrides only the fields it
+# changes, so a deviation reads as a deviation.
 x-logging: &default-logging
   driver: json-file
   options:
     max-size: 10m
     max-file: "3"
 
+x-service-defaults: &service-defaults
+  cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
+  security_opt:
+    - no-new-privileges:true
+  restart: unless-stopped
+  logging: *default-logging
+
+x-healthcheck-defaults: &healthcheck-defaults
+  interval: 30s
+  timeout: 10s
+  retries: 5
+  start_period: 60s
+
 services:
   komga:
+    <<: *service-defaults
     container_name: komga
     image: docker.io/gotson/komga:1.26.3@sha256:6c2a967bbe9acefd05933b2eb498f34afe96a83c6f7f8ab0acb512a1bb3ab50f
-    cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
     cpus: 1.5
     labels:
       dev.dozzle.name: komga
@@ -22,20 +40,13 @@ services:
     environment:
       TZ: ${TZ:?}
     healthcheck:
+      <<: *healthcheck-defaults
       test:
         - CMD-SHELL
         - >-
           test "$$(/usr/bin/curl --fail --silent --show-error
           http://127.0.0.1:25600/actuator/health)" = '{"status":"UP"}'
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 60s
-    security_opt:
-      - no-new-privileges:true
-    restart: unless-stopped
     # Komga keeps its library database and its search index under a recovery:
     # critical config directory, and a scan writes to both. 30s covers the
     # commit and the index flush; the scan itself resumes on the next start.
     stop_grace_period: 30s
-    logging: *default-logging

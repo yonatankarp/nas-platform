@@ -66,7 +66,6 @@
   vars:
     container_cpu_service_name: seerr
     container_cpu_project_name: "{{ seerr_compose_project_name }}"
-  when: not ansible_check_mode
 
 # The image ships no HEALTHCHECK of its own, so the Compose file supplies one
 # and this loop is the second half of the same guard: docker_compose_v2 returns

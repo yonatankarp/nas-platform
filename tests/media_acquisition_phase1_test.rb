@@ -206,10 +206,19 @@ check(failures,
 check(failures, downloader_services.dig("unpackerr", "user") == "${NAS_UID:?}:${NAS_GID:?}",
       "Unpackerr must run as the NAS_UID/NAS_GID identity")
 
-expected_cpus = {
-  "radarr" => 1.0, "sonarr" => 1.0, "prowlarr" => 0.5, "bazarr" => 1.0,
-  "configarr" => 0.5, "sabnzbd" => 2.0, "unpackerr" => 1.0
-}
+# A CPU ceiling has one home: tests/expected/<service>.yml. tests/policy_test.rb
+# pins every Compose `cpus` to it and measures it against the container CPU
+# budget, so a copy of the numbers here would be a further place to keep equal
+# rather than a second opinion -- changing one ceiling would mean editing this
+# file too, and getting it wrong would fail here without saying which of the two
+# copies was meant. Reading the pinned file keeps the assertion (this stack's
+# Compose matches the pinned policy) and drops only the duplicate literals.
+expected_cpus = %w[arr downloaders].each_with_object({}) do |service, ceilings|
+  ceilings.merge!(
+    YAML.safe_load_file(File.join(ROOT, "tests", "expected", "#{service}.yml"))
+        .fetch("container_cpus")
+  )
+end
 (arr_services.merge(downloader_services)).each do |name, definition|
   image = definition["image"]
   check(failures,
@@ -272,7 +281,7 @@ check(failures, configarr["profiles"] == ["jobs"],
 check(failures, configarr["user"] == "${NAS_UID:?}:${NAS_GID:?}",
       "Configarr must derive its user from NAS_UID and NAS_GID")
 check(failures, configarr["cpuset"] == "${PLATFORM_CONTAINER_CPUSET:?}" &&
-                configarr["cpus"] == 0.5,
+                configarr["cpus"] == expected_cpus.fetch("configarr"),
       "Configarr must use its exact CPU policy")
 check(failures, !configarr.key?("restart"), "Configarr must not restart")
 check(failures, !configarr.key?("ports"), "Configarr must publish no ports")

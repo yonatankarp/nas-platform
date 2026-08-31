@@ -35,6 +35,7 @@ MAC_CONTRACT_WRAPPER = File.join(ROOT, "tests/mac/run-contract.sh")
 SEED_HOOK = File.join(ROOT, "tests/mac/hooks/fixtures-seed/00-services.sh")
 DRIFT_HOOK = File.join(ROOT, "tests/mac/hooks/drift/40-komga.sh")
 INTEGRATION_HARNESS = File.join(ROOT, "tests/integration.sh")
+INTEGRATION_LIBRARY = File.join(ROOT, "tests/integration_controller_lib.sh")
 ROLE_SOURCE = File.read(ROLE)
 DEFAULTS_SOURCE = File.read(DEFAULTS_PATH)
 DEFAULTS = YAML.safe_load(DEFAULTS_SOURCE, aliases: false)
@@ -140,7 +141,7 @@ else
 end
 
 def validate_runtime_health_paths!(sources)
-  contract, wrapper, seed_hook, integration = sources
+  contract, wrapper, seed_hook, integration, integration_library = sources
   base_policy = [
     "  base)",
     "    PLATFORM_KOMGA_CONTAINER=${PLATFORM_PROJECT_NAME:+$PLATFORM_PROJECT_NAME-}komga",
@@ -186,7 +187,7 @@ def validate_runtime_health_paths!(sources)
   raise "Komga health gates no longer precede authenticated assertions" unless
     gate_index && auth_index && gate_index < auth_index
   raise "Komga invoking harnesses do not bind exact runtime contexts" unless
-    integration.include?('PLATFORM_KOMGA_RUNTIME_CONTEXT=base') &&
+    integration_library.include?("PLATFORM_KOMGA_RUNTIME_CONTEXT=base") &&
       wrapper.include?('if [ "${PLATFORM_KIND:-}" = integration ]; then') &&
       wrapper.include?('PLATFORM_KOMGA_RUNTIME_CONTEXT=base') &&
       wrapper.include?('PLATFORM_KOMGA_RUNTIME_CONTEXT=mac-managed') &&
@@ -229,8 +230,8 @@ def model_failures(defaults_source, argument_specs, role_source, contract, drift
   settings = defaults["komga_library_settings"]
   failures << "the shared library settings are not a mapping" unless settings.is_a?(Hash)
   if settings.is_a?(Hash)
-    failures << "the six-hour scan schedule is not declared (scanInterval)" unless
-      settings["scanInterval"] == "EVERY_6H"
+    failures << "the hourly scan schedule is not declared (scanInterval)" unless
+      settings["scanInterval"] == "HOURLY"
     failures << "the .acquisition scan exclusion is not declared" unless
       settings["scanDirectoryExclusions"] == [".acquisition"]
     failures << "scanOnStartup is no longer owned as false" unless settings["scanOnStartup"] == false
@@ -296,8 +297,8 @@ def model_failures(defaults_source, argument_specs, role_source, contract, drift
     contract.include?('LIBRARY_MODEL = [') &&
       contract.include?("\"Comics\", \"root\" => \"#{COMICS_ROOT}\"") &&
       contract.include?("\"Ebooks\", \"root\" => \"#{EBOOKS_ROOT}\"")
-  failures << "the contract does not pin the six-hour scan schedule" unless
-    contract.include?('"scanInterval" => "EVERY_6H"')
+  failures << "the contract does not pin the hourly scan schedule" unless
+    contract.include?('"scanInterval" => "HOURLY"')
   failures << "the contract does not pin the .acquisition scan exclusion" unless
     contract.include?('"scanDirectoryExclusions" => [".acquisition"]')
 
@@ -473,7 +474,7 @@ def migration_completion_failures(role_source)
       patch&.fetch("target") == "/api/v1/libraries/legacy-library" &&
       patch&.fetch("json") == {
         "root" => COMICS_ROOT,
-        "scanInterval" => "EVERY_6H",
+        "scanInterval" => "HOURLY",
         "scanDirectoryExclusions" => [".acquisition"]
       }
     failures << "the migration did not create the Ebooks library" unless
@@ -514,7 +515,8 @@ runtime_sources = [
   contract,
   mac_contract_wrapper,
   seed_hook,
-  File.read(INTEGRATION_HARNESS)
+  File.read(INTEGRATION_HARNESS),
+  File.read(INTEGRATION_LIBRARY)
 ]
 validate_runtime_health_paths!(runtime_sources)
 
@@ -528,7 +530,7 @@ if self_test
   planted = [
     ["a disabled scan interval",
      lambda do
-       source = DEFAULTS_SOURCE.sub("scanInterval: EVERY_6H", "scanInterval: DISABLED")
+       source = DEFAULTS_SOURCE.sub("scanInterval: HOURLY", "scanInterval: DISABLED")
        abort "self-test could not plant a disabled scan interval" if source == DEFAULTS_SOURCE
        model_failures(source, argument_specs, ROLE_SOURCE, contract, drift_hook)
      end,
@@ -645,7 +647,7 @@ managed_skips_health[0] = contract.sub(
 runtime_health_mutation_rejected!(managed_skips_health, "managed Docker health bypass")
 
 wrong_integration_context = runtime_sources.dup
-wrong_integration_context[3] = runtime_sources.fetch(3).sub(
+wrong_integration_context[4] = runtime_sources.fetch(4).sub(
   "PLATFORM_KOMGA_RUNTIME_CONTEXT=base",
   "PLATFORM_KOMGA_RUNTIME_CONTEXT=mac-managed"
 )
@@ -794,7 +796,7 @@ with_http_service(libraries) do |port, requests|
   failures << "scan schedule repair did not converge both libraries" unless
     mutations(requests).length == 2 &&
       mutations(requests).map { |request| request.fetch("json") }.uniq == [{
-        "scanInterval" => "EVERY_6H", "scanDirectoryExclusions" => [".acquisition"]
+        "scanInterval" => "HOURLY", "scanDirectoryExclusions" => [".acquisition"]
       }]
 end
 

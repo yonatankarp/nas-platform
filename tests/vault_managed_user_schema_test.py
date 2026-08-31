@@ -37,7 +37,7 @@ VALID = {
     "dozzle": [{"username": "viewer", "password": "pw", "password_hash": HASH,
                 "email": "", "name": "Viewer", "filter": "", "roles": "user"}],
     "immich": [{"email": "i@example.invalid", "password": "pw", "name": "I",
-                "quota_size": 0}],
+                "quota_size": 1073741824}],
     "jellyfin": [{"username": "watcher", "password": "pw",
                   "policy": {"EnableMediaPlayback": True, "IsDisabled": False}}],
     "komga": [{"email": "k@example.invalid", "password": "pw",
@@ -123,6 +123,14 @@ RESERVED_IDENTITIES = {
 class VaultManagedUserSchemaTest(unittest.TestCase):
     def test_the_valid_contract_is_accepted(self):
         self.assertEqual(vault_managed_user_errors(VALID, RESERVED), [])
+
+    def test_an_unlimited_immich_quota_is_accepted(self):
+        # null is the only way to express "no limit": the server skips the quota
+        # check on null and refuses every upload on 0, so a schema that rejected
+        # null would leave an unlimited account undeclarable.
+        candidate = copy.deepcopy(VALID)
+        candidate["immich"][0]["quota_size"] = None
+        self.assertEqual(vault_managed_user_errors(candidate, RESERVED), [])
 
     def test_every_violation_is_rejected(self):
         for label, mutate in REJECTED.items():

@@ -95,7 +95,7 @@ abort "Komga contract failed: managed library model differs" unless
 abort "Komga contract failed: the retired singular library inputs survive" if
   defaults.key?("komga_library_name") || defaults.key?("komga_library_root")
 abort "Komga contract failed: managed scan schedule differs" unless
-  defaults.fetch("komga_library_settings").fetch("scanInterval") == "EVERY_6H"
+  defaults.fetch("komga_library_settings").fetch("scanInterval") == "HOURLY"
 abort "Komga contract failed: managed scan exclusions differ" unless
   defaults.fetch("komga_library_settings").fetch("scanDirectoryExclusions") == [".acquisition"]
 abort "Komga contract failed: the library root migration input is not one-convergence" unless
@@ -287,7 +287,7 @@ FIXTURE_PATH = LIBRARY_FILESYSTEM_ROOT.join(FIXTURE_RELATIVE)
 FIXTURE_LIBRARY_URL = "/data/Comics/task-10-contract-comic/Task 10 Contract Comic.cbz"
 STATE_PATH = REPORT_ROOT.join("komga-persistence.json")
 MANAGED_SETTINGS = {
-  "scanInterval" => "EVERY_6H",
+  "scanInterval" => "HOURLY",
   "scanDirectoryExclusions" => [".acquisition"],
   "scanOnStartup" => false,
   "scanCbx" => true,

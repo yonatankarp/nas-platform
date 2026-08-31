@@ -257,9 +257,10 @@ tests/ci/suites.conf               one row: the suite, its kind, and the tags it
                                    fixed tags in the runner, all derive from it
 tests/ci/classify_changes.rb       SERVICE_NAMES
 tests/ci/classify_changes_test.rb  the pinned tag plan for the lane, and NTFY_LANES
-tests/integration.sh               the service/directory table, the contract
-                                   runner, the verify-only function, the suite
+tests/integration.sh               the service/directory table and the suite
                                    dispatch
+tests/integration_controller_lib.sh  the contract runner case arm and the
+                                   verify-only wrapper
 tests/integration_suite_test.sh    the pinned --describe-suite line and pre-pull set
 ```
 
@@ -482,6 +483,29 @@ The `container_cpus` values must equal the `cpus:` keys in the service's
 `compose.yml`, and `vault_keys` must be prefixed for this service and must list
 every key the service adds to the vault.
 
+This file is where a CPU ceiling is pinned, and the checks read it rather than
+keeping copies: `services/<name>/compose.yml` is asserted equal to it, and
+`tests/media_acquisition_phase1_test.rb` and `tests/configarr_job_test.rb` load
+it instead of restating the numbers. An ordinary service therefore holds its
+ceiling in two places — its Compose file and this one — and changing it is two
+edits. A media-acquisition service holds a third in `config/media-acquisition.yml`,
+which is deployed to the target rather than read by a test, and
+`tests/media_acquisition_foundation_test.rb` still pins that copy by hand.
+
+Each ceiling must be **no greater than** `platform_container_cpu_budget` in
+`inventory/group_vars/nas_hosts/main.yml`, and `tests/policy_test.rb` fails by
+name when one is not. The budget is the width of the cpuset every managed
+container shares, not a pool divided between them: `cpus:` is a ceiling on that
+shared set rather than a reservation carved out of it, so the ceilings across the
+platform are deliberately oversubscribed and sum to many times the budget. These
+workloads are idle almost all the time, so that sum is not a quantity anything
+has to fit into. A single ceiling wider than the cpuset is the real error —
+Docker clamps the container to the cpuset anyway, so the number constrains
+nothing while reading as a deliberate limit. Equal to the budget is allowed and
+four containers use it, on the reasoning that whichever one is busy may have the
+whole set, so pick a ceiling from what the workload actually needs rather than
+from what is left over.
+
 There is a second list, `EXPECTED_FIXTURE_ROLES`, in
 `tests/policy_mutation_support.rb` — the shared harness the mutation checks build
 their sandboxes from. It is easy to miss because `policy_test.rb` will pass
@@ -505,14 +529,33 @@ roster entry and its `tests/expected/<name>.yml`.
 
 ```yaml
 ---
+# Platform fragments. Compose resolves a YAML anchor only inside the file that
+# declares it, so every stack carries its own copy; tests/policy_test.rb pins the
+# copies equal and records there why cross-file sharing was not taken. A
+# container needing different health-check timing overrides only the fields it
+# changes, so a deviation reads as a deviation.
 x-logging: &default-logging
   driver: json-file
   options:
     max-size: 10m
     max-file: "3"
 
+x-service-defaults: &service-defaults
+  cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
+  security_opt:
+    - no-new-privileges:true
+  restart: unless-stopped
+  logging: *default-logging
+
+x-healthcheck-defaults: &healthcheck-defaults
+  interval: 30s
+  timeout: 10s
+  retries: 5
+  start_period: 60s
+
 services:
   navidrome:
+    <<: *service-defaults
     container_name: navidrome
     image: docker.io/deluan/navidrome:0.58.0@sha256:2ae037d464de9f802d047165a13b1c9dc2bdbb14920a317ae4aef1233adc0a3c
     labels:
@@ -526,16 +569,22 @@ services:
     environment:
       TZ: ${TZ:?}
     healthcheck:
+      <<: *healthcheck-defaults
       test: [CMD-SHELL, "wget -q -O - http://127.0.0.1:4533/ping | grep -q '\"status\":\"ok\"'"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 60s
-    security_opt:
-      - no-new-privileges:true
-    restart: unless-stopped
-    logging: *default-logging
 ```
+
+Copy the three `x-` fragments verbatim from any existing stack. They are the
+platform's log rotation, the container defaults every long-running service
+shares, and the health-check timing default; `tests/policy_test.rb` compares
+each copy against the values it pins, so a stack that retypes one of them
+differently fails by name. The comment there records why the fragments are
+repeated per file rather than shared through `extends:`.
+
+A container whose health check genuinely needs different timing merges the
+fragment and then overrides only the fields it changes, so the diff from
+platform policy is what the file shows. State the reason beside the override; if
+the value predates the default and no reason is recorded, say that rather than
+inventing one, and preserve the value.
 
 The policy test enforces every one of these properties:
 
@@ -559,7 +608,10 @@ The policy test enforces every one of these properties:
   check in `tests/policy_test.rb` with the reason stated, never omitted in
   silence.
 - `restart: unless-stopped`.
-- `logging` with the `json-file` driver and both `max-size` and `max-file`.
+- `logging` with the `json-file` driver and both `max-size` and `max-file`, and
+  the same two values every other container uses. Presence alone would let
+  twelve stacks each pick their own ceiling, which is the drift the shared
+  fragment exists to prevent.
 - Volume sources must be `${VARIABLE:?}` references, never absolute paths. The
   `:?` suffix makes an unset variable fail loudly instead of silently creating a
   relative bind mount. Hardcoding `/volume1/...` is rejected outright, because
@@ -575,7 +627,11 @@ file it is writing but not long enough to wait on work that is simply re-queued.
 Containers that hold nothing — renderers, parsers, socket proxies, model caches —
 declare nothing and keep the default. This is judgement, not a policy check:
 there is no property that can tell the two apart, so state the reasoning in the
-comment.
+comment. For the same reason `stop_grace_period` never goes into a shared
+fragment: an omitted key means ten seconds, so inheriting one would quietly
+extend the shutdown window of every container that had deliberately declared
+nothing. The one exception is a fragment whose every consumer already wanted the
+same window, as in `services/arr/compose.yml`.
 
 A service that runs as a direct numeric user takes the shared platform identity,
 `user: "${NAS_UID:?}:${NAS_GID:?}"`, never a literal pair — even one that happens
@@ -919,8 +975,13 @@ leg through one `needs` entry.
 `tests/integration.sh` no longer restates the tags -- `tests/policy_ci_test.rb`
 fails if it does -- but it still wants the service in its service/directory table
 for image pre-pulling, a `run_<service>_contract` wrapper if the service has a
-contract, a `run_<service>_verify_only` function, and an arm in the suite dispatch
-that says what the lane actually does. `tests/integration_suite_test.sh` pins both
+contract, a `run_<service>_verify_only` wrapper, and an arm in the suite dispatch
+that says what the lane actually does. Both wrappers are three lines: they name
+the service and delegate to `run_contract` / `run_verification`, the two shared
+launchers that hold the environment ABI and the verification play. Anything the
+service needs beyond the shared block belongs in a case arm of `run_contract`,
+not in a wrapper body -- `tests/policy_integration_test.rb` rejects a
+verification wrapper that is anything other than a delegation. `tests/integration_suite_test.sh` pins both
 the `--describe-suite` line and the exact set of images the lane pre-pulls, so a
 lane that converges a new stack fails there until you say which images it needs.
 

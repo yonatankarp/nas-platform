@@ -125,7 +125,6 @@
     container_cpu_project_name: "{{ downloaders_compose_project_name }}"
   when:
     - media_usenet_enabled | bool
-    - not ansible_check_mode
 
 - name: Run downloader service verification
   ansible.builtin.include_tasks:

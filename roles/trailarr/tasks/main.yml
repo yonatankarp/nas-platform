@@ -43,12 +43,6 @@
     mode: "0600"
   no_log: true
 
-# The application's own /config/.env beats everything above, so it is reconciled
-# before Compose brings the container up: scripts/start.sh sources it after the
-# container environment is already in place.
-- name: Reconcile the platform-owned Trailarr application environment
-  ansible.builtin.include_tasks: reconcile_env.yml
-
 - name: Deploy Trailarr
   community.docker.docker_compose_v2:
     project_src: "{{ platform_current_dir }}/services/trailarr"
@@ -59,6 +53,17 @@
     wait: true
     wait_timeout: "{{ platform_compose_wait_timeout }}"
   register: trailarr_deploy
+
+# The application's own /config/.env beats the container environment, and it is
+# reconciled after Compose rather than before it because the application is what
+# writes it: on a first converge the file does not exist until the deployment
+# above has started the container once. Reconciling first meant the first run
+# could only report "nothing to reconcile" and the second run performed the
+# first repair, so the pair could never agree — which is exactly what an
+# idempotence check compares. The restart below is what makes a late repair take
+# effect, so ordering it this way costs nothing a converge did not already pay.
+- name: Reconcile the platform-owned Trailarr application environment
+  ansible.builtin.include_tasks: reconcile_env.yml
 
 # /config/.env lives under a bind mount rather than in the Compose spec, so
 # docker_compose_v2 does not recreate the container when it changes and the
@@ -95,7 +100,6 @@
   vars:
     container_cpu_service_name: trailarr
     container_cpu_project_name: "{{ trailarr_compose_project_name }}"
-  when: not ansible_check_mode
 
 # Two failures wear the same costume here and neither is a network problem.
 # When the hourly nvidia probe fails, /status raises 404 rather than 503, so the
@@ -129,6 +133,35 @@
       nvidia probe failing rather than a missing route, and a container that is
       up with nothing listening is a failed alembic migration sleeping forever
       after restoring its own backup.
+
+# The application writes /config/.env itself, and entrypoint.sh recreates it
+# through a grep and a move on every start, so the replacement lands at the
+# image's default 0644 — measured against the pinned image, not assumed. Nothing
+# else undoes that: python-dotenv, which the application uses for its own later
+# writes, reads the destination's mode and restores it.
+#
+# The permission is enforced here, behind the readiness gate, and not beside the
+# restart above. `docker compose restart --wait` returns while the entrypoint is
+# still running, so a chmod issued there is overtaken by the entrypoint's own
+# move a moment later and the next run finds 0644 again. Waiting for the
+# application to answer /status is what proves the file it wrote is the final
+# one. Enforcing it outside the repair also matters: a permission bit must not
+# mark the repair changed, because that restarts the container and recreates the
+# 0644 it just fixed.
+- name: Look for the Trailarr application environment after start
+  ansible.builtin.stat:
+    path: "{{ trailarr_config_host_path }}/.env"
+  register: trailarr_config_env_started
+  changed_when: false
+  check_mode: false
+
+- name: Restrict the Trailarr application environment after start
+  ansible.builtin.file:
+    path: "{{ trailarr_config_host_path }}/.env"
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0600"
+  when: trailarr_config_env_started.stat.exists
 
 - name: Reconcile the Trailarr trailer profiles
   ansible.builtin.include_tasks: reconcile_profiles.yml

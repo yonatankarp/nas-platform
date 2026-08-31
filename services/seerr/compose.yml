@@ -1,9 +1,27 @@
 ---
+# Platform fragments. Compose resolves a YAML anchor only inside the file that
+# declares it, so every stack carries its own copy; tests/policy_test.rb pins the
+# copies equal and records there why cross-file sharing was not taken. A
+# container needing different health-check timing overrides only the fields it
+# changes, so a deviation reads as a deviation.
 x-logging: &default-logging
   driver: json-file
   options:
     max-size: 10m
     max-file: "3"
+
+x-service-defaults: &service-defaults
+  cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
+  security_opt:
+    - no-new-privileges:true
+  restart: unless-stopped
+  logging: *default-logging
+
+x-healthcheck-defaults: &healthcheck-defaults
+  interval: 30s
+  timeout: 10s
+  retries: 5
+  start_period: 60s
 
 services:
   # Seerr is the request front end for the Jellyfin library: household members
@@ -20,9 +38,9 @@ services:
   # pull time with `not found` — so Renovate must be given the v-prefixed
   # versioning or it will silently never offer an update.
   seerr:
+    <<: *service-defaults
     container_name: seerr
     image: ghcr.io/seerr-team/seerr:v3.4.1@sha256:f4768de5f616248d723e05891f3345a1402123775d03bf0890dbfedc0831bda1
-    cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
     # Seerr transcodes nothing. Its work is TMDB lookups, the arr and Jellyfin
     # syncs and serving a single-page application, all network-bound.
     cpus: 1.0
@@ -55,6 +73,11 @@ services:
       # vault value comes back at the next container start.
       API_KEY: ${SEERR_API_KEY:?}
     healthcheck:
+      # The image ships no HEALTHCHECK of its own, and Seerr takes several
+      # seconds after the container reports running to answer HTTP, so the
+      # shared start_period below is load-bearing here rather than incidental:
+      # without it the first task after `wait: true` races the server.
+      <<: *healthcheck-defaults
       # curl is absent and wget is the BusyBox applet, not GNU wget, so the
       # flags below are the only spelling that works. /api/v1/settings/public
       # answers 200 anonymously both before and after the bootstrap, so the
@@ -66,23 +89,12 @@ services:
         - >-
           wget --no-verbose --tries=1 --spider
           http://127.0.0.1:5055/api/v1/settings/public || exit 1
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      # The image ships no HEALTHCHECK of its own, and Seerr takes several
-      # seconds after the container reports running to answer HTTP, so without
-      # this the first task after `wait: true` races the server.
-      start_period: 60s
-    security_opt:
-      - no-new-privileges:true
-    restart: unless-stopped
     # /app/config holds the SQLite database whose first user row is the only
     # thing standing between this service and an anonymous takeover, plus every
     # request and its state. 30s commits the open transaction; nothing here is
     # a long-running job whose interruption costs more than a re-issued
     # request.
     stop_grace_period: 30s
-    logging: *default-logging
     networks:
       - default
       - media-control

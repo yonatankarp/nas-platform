@@ -43,7 +43,6 @@
   vars:
     container_cpu_service_name: komga
     container_cpu_project_name: "{{ komga_compose_project_name }}"
-  when: not ansible_check_mode
 
 - name: Wait for Komga application health
   ansible.builtin.uri:

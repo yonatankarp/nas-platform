@@ -271,6 +271,14 @@ changes nothing, and a dry run works. Two of the worst bugs found so far, a fact
 that exists only on Linux and `command` being skipped under `--check`, both passed
 syntax checking and were caught only by running.
 
+The controller that container runs is a published image
+(`tests/integration.Dockerfile`), tagged with a digest of the harness's pins,
+`requirements.yml` and the Dockerfile itself, so a bumped pin is a new image
+rather than a stale one. Nothing requires it: a run that cannot pull the image
+builds it locally and reuses it afterwards, and a run that cannot build it
+installs the same toolchain inside the container the way the harness always did.
+`INTEGRATION_TOOLCHAIN=off` forces that last path.
+
 The current Mac proof covers ntfy, Beszel, Dozzle, Audiobookshelf, Komga,
 Jellyfin, Immich, Paperless-ngx, Pinchflat, and Kapowarr — every implemented
 service except `arr` and `downloaders`, whose Phase 1 runtime is
@@ -355,16 +363,20 @@ says.
   production: one mode-0600 `services/<name>/.env` per stack, rendered from
   vault by each role's `templates/env.j2`.
 - **Service data under the Docker root**, `/volume1/Docker` in production:
-  Dozzle's users file, Beszel's hub private key, Seerr's `settings.json` and
-  the `settings.old.json` beside it — both mode 0644, holding the Seerr API
-  key, the Jellyfin token Seerr minted for itself and the session secret — and
-  the first-run
-  configuration Ansible seeds and then leaves alone — SABnzbd's
+  Dozzle's data directory as a whole, Beszel's hub private key, Seerr's
+  `settings.json` and the `settings.old.json` beside it — both mode 0644,
+  holding the Seerr API key, the Jellyfin token Seerr minted for itself and the
+  session secret — and the first-run configuration Ansible seeds and then
+  leaves alone — SABnzbd's
   `sabnzbd/config/sabnzbd.ini` (administrator username, password and API key),
   the Radarr, Sonarr and Prowlarr `config/config.xml` files (API keys), and
   Bazarr's `bazarr/config/config/config.yaml` (API key, administrator identity).
   Each is seeded mode 0600 with `force: false`, so the application owns it
   afterwards; applications and databases keep further copies of their own.
+  Dozzle's directory is secret-bearing past its users file: Ansible POSTs a
+  notification dispatcher into Dozzle's API, and Dozzle persists that
+  dispatcher there complete with the `Authorization: Bearer` header it
+  carries.
 - **The deploy account's home**, once `install-production-auto-deploy.yml` has
   run. `~/.config/nas-platform` is mode 0700 and holds the mode-0600
   `vault-password` file the poller requires, plus two protected ntfy publisher
