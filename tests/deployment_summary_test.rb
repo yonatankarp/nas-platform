@@ -202,9 +202,11 @@ with_controller_repository do |directory, repository, previous, current|
   end
 end
 
-# The per-service report is the detail behind the summary. A release that moves
-# recreates only the services it changed, so a report that spoke only for those
-# left every other service indistinguishable from one that was never deployed.
+# The per-service report is the detail behind the summary, and only a service
+# Compose actually recreated has any detail to give. The summary already says a
+# deployment happened and which images it moved, so a service left running
+# unchanged publishes nothing rather than one "already current" message per
+# service on every release.
 RELEASE = "c" * 40
 PREDECESSOR = "d" * 40
 
@@ -250,14 +252,11 @@ check_report(failures, "recreated", {
         "a service report stays below the run summary it details")
 end
 
+# The release moved, but Compose left this service running the image it already
+# had. The summary speaks for the release; this service stays quiet.
 check_report(failures, "already current", {
                "deployment_bundle_previous_release_id" => PREDECESSOR
-             }, 1) do |document|
-  check(failures, document["title"] == "Komga deployed (already current)",
-        "a service the release left alone must still report: #{document['title'].inspect}")
-  check(failures, document["message"].to_s.include?("running unchanged"),
-        "an unchanged service must say Compose left it running")
-end
+             }, 0)
 
 # A converge that reinstalls the installed revision deployed nothing, so only a
 # service Compose actually touched has anything to report.
@@ -282,7 +281,7 @@ check_report(failures, "check mode", {
              }, 0, "--check")
 
 if failures.empty?
-  puts "Deployment record: every service the release moved reports its outcome, " \
+  puts "Deployment record: only a recreated service reports, " \
        "and one summary says what shipped"
 else
   failures.each { |failure| puts "FAIL #{failure}" }
