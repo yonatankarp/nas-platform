@@ -62,15 +62,23 @@
       {{ beszel_initial_authenticated_managed_user_ids | default({}) }}
   no_log: true
 
+# The two conditions this replaces are the one decision all six HTTP-driven
+# managed-user roles share; filter_plugins/managed_user_identity.py explains why
+# they are also the only one, and carries them for every service.
 - name: Refuse ambiguous normalized Beszel managed identities
   ansible.builtin.assert:
     that:
-      - beszel_managed_user_matches[item.email] | length <= 1
       - >-
-        beszel_managed_users_listing.json.get('items', []) | map(attribute='email') |
-        map('trim') | map('lower') | select('equalto', item.email | trim | lower) |
-        list | length == beszel_managed_user_matches[item.email] | length
-    fail_msg: Beszel contains duplicate normalized managed emails.
+        beszel_managed_users_listing.json.get('items', []) |
+        managed_user_ambiguity_errors(
+          'email', item.email, beszel_managed_user_matches[item.email]
+        ) | length == 0
+    fail_msg: >-
+      Beszel contains duplicate normalized managed emails:
+      {{ beszel_managed_users_listing.json.get('items', []) |
+         managed_user_ambiguity_errors(
+           'email', item.email, beszel_managed_user_matches[item.email]
+         ) | join('; ') }}
   loop: "{{ vault_managed_beszel_users }}"
   loop_control:
     label: beszel-managed-user
