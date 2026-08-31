@@ -92,6 +92,8 @@ BASE_FIXTURE_PATHS = %w[
   tests/contracts/registry.yml
   tests/compose_metadata_filter_test.yml
   tests/ci/suites.conf
+  tests/ci/classify_changes.rb
+  tests/integration.Dockerfile
   tests/integration.sh
   tests/integration_controller_lib.sh
   tests/integration_lock.sh

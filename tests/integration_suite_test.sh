@@ -761,8 +761,38 @@ prepull_fail() {
 cat > "$prepull_bin/docker" <<'EOF'
 #!/bin/sh
 set -eu
+# The controller image is resolved before anything is pulled: absent locally,
+# and -- unless the case says otherwise -- available from the registry.
+#
+# The formatted probe is the collision fixture asking for a registry digest. An
+# image this run pulled has one; an image built locally, which STUB_NO_REPO_DIGEST
+# stands in for, has none, and the fixture has to notice.
+if [ "${1:-}" = image ] && [ "${2:-}" = inspect ]; then
+  if [ "${3:-}" = --format ]; then
+    if [ "${STUB_NO_REPO_DIGEST:-false}" != true ] &&
+       grep -Fxq -- "${5:-}" "${STUB_PULL_LOG:?}" 2>/dev/null; then
+      printf '%s@sha256:%064d\n' "${5%%:*}" 0
+    fi
+    exit 0
+  fi
+  exit 1
+fi
+if [ "${1:-}" = version ]; then
+  printf '%s\n' "${STUB_DAEMON_ARCH:-amd64}"
+  exit 0
+fi
 if [ "${1:-}" = pull ]; then
   printf '%s\n' "$2" >> "${STUB_PULL_LOG:?}"
+  # A registry that answers "denied" rather than "toomanyrequests" is the
+  # ordinary missing-package case, not pressure, and must not be retried.
+  if [ -n "${STUB_DENY_PREFIX:-}" ]; then
+    case $2 in
+      "$STUB_DENY_PREFIX"*)
+        printf 'denied: denied\n' >&2
+        exit 1
+        ;;
+    esac
+  fi
   attempt=$(grep -Fxc -- "$2" "$STUB_PULL_LOG" || true)
   if [ "$attempt" -le "${STUB_PULL_REFUSALS:-0}" ]; then
     if [ -n "${STUB_RETRY_AFTER_LINE:-}" ]; then
@@ -814,13 +844,56 @@ if grep -qF 'ruby:3.2-alpine' "$collision_test"; then
 fi
 [ "$(grep -Fc -- '--pull=never' "$collision_test")" -eq 2 ] ||
   prepull_fail 'both collision endpoints must explicitly refuse implicit pulls'
-grep -qF 'MEDIA_CONTROL_COLLISION_IMAGE="$runner_image"' "$integration" ||
-  prepull_fail 'the owning integration lane does not pass its pre-pulled controller image'
+grep -qF 'MEDIA_CONTROL_COLLISION_IMAGE="$collision_image"' "$integration" ||
+  prepull_fail 'the owning integration lane does not pass its pre-pulled fixture image'
 grep -qF '/repo/tests/media_control_network_collision_test.sh live' "$integration" ||
   prepull_fail 'the owning integration lane does not execute the live collision test'
 
 compose_images() {
   sed -n 's/^[[:space:]]*image:[[:space:]]*//p' "$repo_dir/services/$1/compose.yml"
+}
+
+toolchain_prefix=$(sed -n \
+  's/^toolchain_repository=${INTEGRATION_TOOLCHAIN_REPOSITORY:-\(.*\)}$/\1/p' \
+  "$integration")
+[ -n "$toolchain_prefix" ] ||
+  prepull_fail 'could not read the controller toolchain repository'
+
+# The controller no longer costs a Docker Hub pull: it comes from the published
+# toolchain image, and the base python image is pulled only by the lanes that
+# converge it as a service in its own right. Measured across the seventeen CI
+# lanes that is 66 Docker Hub pulls per full matrix before and 52 after.
+#
+# The toolchain tag is a digest over the harness's own pins, so it is matched by
+# shape rather than restated here -- restating it would mean this test computed
+# the digest a second way and pinned that instead. Everything else in the log
+# must be exactly the services the suite converges.
+assert_toolchain_pull_set() {
+  toolchain_expected_services=$1
+  toolchain_actual=$(sort -u "$pull_log")
+  toolchain_seen=$(printf '%s\n' "$toolchain_actual" | grep "^$toolchain_prefix:" || true)
+  [ "$(printf '%s\n' "$toolchain_seen" | grep -c .)" -eq 1 ] ||
+    prepull_fail "expected exactly one controller toolchain pull, saw [$toolchain_seen]"
+  toolchain_tag=${toolchain_seen#"$toolchain_prefix":}
+  case $toolchain_tag in
+    amd64-*|arm64-*|unknown-*) ;;
+    *) prepull_fail "the controller toolchain tag names no daemon architecture: $toolchain_tag" ;;
+  esac
+  toolchain_tag_digest=${toolchain_tag#*-}
+  case $toolchain_tag_digest in
+    *[!0123456789abcdef]*|"")
+      prepull_fail "the controller toolchain tag is not content-addressed: $toolchain_tag"
+      ;;
+  esac
+  [ "${#toolchain_tag_digest}" -eq 32 ] ||
+    prepull_fail "the controller toolchain digest is the wrong width: $toolchain_tag"
+  toolchain_remaining=$(printf '%s\n' "$toolchain_actual" |
+    grep -v "^$toolchain_prefix:" || true)
+  [ "$toolchain_expected_services" = "$toolchain_remaining" ] || {
+    printf 'expected service pulls:\n%s\nactual service pulls:\n%s\n' \
+      "$toolchain_expected_services" "$toolchain_remaining" >&2
+    exit 1
+  }
 }
 
 run_prepull() {
@@ -839,6 +912,9 @@ run_prepull() {
     STUB_RETRY_AFTER_LINE=${PREPULL_RETRY_AFTER_LINE:-} \
     STUB_RANDOM_VALUE=${PREPULL_RANDOM_VALUE:-0} \
     INTEGRATION_PREPULL_ONLY=1 \
+    INTEGRATION_TOOLCHAIN=${PREPULL_TOOLCHAIN:-auto} \
+    STUB_DENY_PREFIX=${PREPULL_DENY_PREFIX:-} \
+    STUB_NO_REPO_DIGEST=${PREPULL_NO_REPO_DIGEST:-false} \
     INTEGRATION_IMAGE_PULL_ATTEMPTS=$prepull_attempts \
     INTEGRATION_IMAGE_PULL_DELAY=${PREPULL_DELAY:-1} \
     INTEGRATION_IMAGE_PULL_MAX_DELAY=${PREPULL_MAX_DELAY:-60} \
@@ -886,7 +962,10 @@ assert_retry_after_sleep() {
 # cost gigabytes of runner disk for images the run never starts.
 run_prepull 0 4 --suite beszel
 [ "$prepull_status" -eq 0 ] || prepull_fail "an answering registry failed the pre-pull ($prepull_status)"
-assert_pull_set "$({ printf '%s\n' "$runner_image"; compose_images ntfy; compose_images beszel; } | sort -u)"
+assert_toolchain_pull_set "$({ compose_images ntfy; compose_images beszel; } | sort -u)"
+if grep -qxF "$runner_image" "$pull_log"; then
+  prepull_fail 'the beszel suite still spent a Docker Hub pull on the controller'
+fi
 if grep -q 'immich' "$pull_log"; then
   prepull_fail 'the beszel suite pulled images it never converges'
 fi
@@ -905,6 +984,10 @@ cp "$integration" "$truncated_repo/tests/integration.sh"
 # truncated in services/, not in its suite table: without this copy the run
 # refuses for a missing table and never reaches the enumeration this asserts.
 cp "$repo_dir/tests/ci/suites.conf" "$truncated_repo/tests/ci/suites.conf"
+# The controller image's tag is a digest over these two, so the fixture carries
+# them for the same reason it carries the suite table.
+cp "$repo_dir/tests/integration.Dockerfile" "$truncated_repo/tests/integration.Dockerfile"
+cp "$repo_dir/requirements.yml" "$truncated_repo/requirements.yml"
 cp -R "$repo_dir/services" "$truncated_repo/services"
 rm "$truncated_repo/services/beszel/compose.yml"
 : > "$pull_log"
@@ -939,24 +1022,36 @@ fi
 # the case that proves the map rather than the naming coincidence.
 run_prepull 0 4 --suite paperless
 [ "$prepull_status" -eq 0 ] || prepull_fail "the paperless pre-pull failed ($prepull_status)"
-assert_pull_set \
-  "$({ printf '%s\n' "$runner_image"; compose_images ntfy; compose_images paperless-ngx; } | sort -u)"
+assert_toolchain_pull_set \
+  "$({ compose_images ntfy; compose_images paperless-ngx; } | sort -u)"
 
 # An untagged smoke run converges everything, so every service directory in the
 # tree must be reachable from the harness map. A directory the map forgot shows up
 # here as a missing pull.
 run_prepull 0 4 --suite smoke
 [ "$prepull_status" -eq 0 ] || prepull_fail "the untagged smoke pre-pull failed ($prepull_status)"
-all_service_images=$(printf '%s\n' "$runner_image"
-                     for compose in "$repo_dir"/services/*/compose.yml; do
+all_service_images=$(for compose in "$repo_dir"/services/*/compose.yml; do
                        sed -n 's/^[[:space:]]*image:[[:space:]]*//p' "$compose"
                      done)
-assert_pull_set "$(printf '%s\n' "$all_service_images" | sort -u)"
+assert_toolchain_pull_set "$(printf '%s\n' "$all_service_images" | sort -u)"
+# Dozzle's alert relay runs on the base python image as a service of its own, so
+# the lanes that converge it still pull it -- from Docker Hub, as a service. That
+# is why three of the seventeen lanes save nothing.
+grep -qxF "$runner_image" "$pull_log" ||
+  prepull_fail "the untagged smoke pre-pull skipped the alert relay image"
 
 # CI narrows smoke to the changed service, and the pre-pull has to narrow with it.
 run_prepull 0 4 --suite smoke --tags host_prep,deployment_bundle,ntfy,immich
 [ "$prepull_status" -eq 0 ] || prepull_fail "the tagged smoke pre-pull failed ($prepull_status)"
-assert_pull_set "$({ printf '%s\n' "$runner_image"; compose_images ntfy; compose_images immich; } | sort -u)"
+assert_toolchain_pull_set "$({ compose_images ntfy; compose_images immich; } | sort -u)"
+
+# Everything from here to the acquisition suites below is about the retry ladder
+# itself -- its backoff arithmetic, its ceilings and its budget -- rather than
+# about which image a lane needs. INTEGRATION_TOOLCHAIN=off pins it against the
+# base image the fallback path pulls, which is the path a developer's first run
+# and a fork's CI take, so the ladder is exercised where it still matters and the
+# cases stay readable as arithmetic.
+PREPULL_TOOLCHAIN=off
 
 # A registry that refuses twice and then answers must still produce a successful
 # pre-pull, with the pull retried rather than the suite failed. foundation
@@ -1066,42 +1161,44 @@ run_prepull 5 malformed --suite foundation
 [ "$prepull_status" -eq 0 ] || prepull_fail "malformed attempt budget removed the safe default"
 assert_pull_count "$runner_image" 6
 
+unset PREPULL_TOOLCHAIN
+
 for project in seerr; do
   run_prepull 0 4 --suite "$project"
   [ "$prepull_status" -eq 0 ] || prepull_fail "$project foundation pre-pull failed ($prepull_status)"
-  assert_pull_set \
-    "$({ printf '%s\n' "$runner_image"; compose_images ntfy; compose_images audiobookshelf; compose_images jellyfin; } | sort -u)"
+  assert_toolchain_pull_set \
+    "$({ compose_images ntfy; compose_images audiobookshelf; compose_images jellyfin; } | sort -u)"
 done
 
 run_prepull 0 4 --suite bindery
 [ "$prepull_status" -eq 0 ] || prepull_fail "bindery pre-pull failed ($prepull_status)"
-assert_pull_set \
-  "$({ printf '%s\n' "$runner_image"; compose_images ntfy; compose_images arr; compose_images downloaders; compose_images bindery; } | sort -u)"
+assert_toolchain_pull_set \
+  "$({ compose_images ntfy; compose_images arr; compose_images downloaders; compose_images bindery; } | sort -u)"
 
 run_prepull 0 4 --suite trailarr
 [ "$prepull_status" -eq 0 ] || prepull_fail "trailarr pre-pull failed ($prepull_status)"
-assert_pull_set \
-  "$({ printf '%s\n' "$runner_image"; compose_images ntfy; compose_images arr; compose_images trailarr; } | sort -u)"
+assert_toolchain_pull_set \
+  "$({ compose_images ntfy; compose_images arr; compose_images trailarr; } | sort -u)"
 
 run_prepull 0 4 --suite kapowarr
 [ "$prepull_status" -eq 0 ] || prepull_fail "kapowarr pre-pull failed ($prepull_status)"
-assert_pull_set \
-  "$({ printf '%s\n' "$runner_image"; compose_images ntfy; compose_images kapowarr; } | sort -u)"
+assert_toolchain_pull_set \
+  "$({ compose_images ntfy; compose_images kapowarr; } | sort -u)"
 
 run_prepull 0 4 --suite pinchflat
 [ "$prepull_status" -eq 0 ] || prepull_fail "pinchflat pre-pull failed ($prepull_status)"
-assert_pull_set \
-  "$({ printf '%s\n' "$runner_image"; compose_images ntfy; compose_images pinchflat; } | sort -u)"
+assert_toolchain_pull_set \
+  "$({ compose_images ntfy; compose_images pinchflat; } | sort -u)"
 
 run_prepull 0 4 --suite arr
 [ "$prepull_status" -eq 0 ] || prepull_fail "arr pre-pull failed ($prepull_status)"
-assert_pull_set \
-  "$({ printf '%s\n' "$runner_image"; compose_images ntfy; compose_images arr; } | sort -u)"
+assert_toolchain_pull_set \
+  "$({ compose_images ntfy; compose_images arr; } | sort -u)"
 
 run_prepull 0 4 --suite downloaders
 [ "$prepull_status" -eq 0 ] || prepull_fail "downloaders pre-pull failed ($prepull_status)"
-assert_pull_set \
-  "$({ printf '%s\n' "$runner_image"; compose_images ntfy; compose_images arr; compose_images downloaders; } | sort -u)"
+assert_toolchain_pull_set \
+  "$({ compose_images ntfy; compose_images arr; compose_images downloaders; } | sort -u)"
 
 # A registry that refuses more times than the budget allows must fail, and must
 # not go on pulling the rest: under a rate limit the remaining pulls would only
@@ -1111,6 +1208,7 @@ assert_pull_set \
 # answers, deliberately: a retry that lost its bound would answer on the fourth
 # attempt and fail this assertion, where against a permanent refusal it would
 # instead spin until the job timeout and prove nothing.
+PREPULL_TOOLCHAIN=off
 run_prepull 3 2 --suite beszel
 [ "$prepull_status" -ne 0 ] || prepull_fail 'refusals past the budget produced a successful pre-pull'
 assert_pull_count "$runner_image" 2
@@ -1133,6 +1231,7 @@ TMPDIR=$interrupt_tmp \
   STUB_RANDOM_VALUE=0 \
   STUB_SLEEP_INTERRUPT=1 \
   INTEGRATION_PREPULL_ONLY=1 \
+  INTEGRATION_TOOLCHAIN=off \
   INTEGRATION_IMAGE_PULL_ATTEMPTS=2 \
   INTEGRATION_IMAGE_PULL_DELAY=1 \
   INTEGRATION_IMAGE_PULL_MAX_DELAY=60 \
@@ -1151,9 +1250,69 @@ run_prepull 1 0 --suite foundation
   prepull_fail "a zero attempt budget removed the retry instead of being floored ($prepull_status)"
 assert_pull_count "$runner_image" 2
 
+unset PREPULL_TOOLCHAIN
+
+# The toolchain image is an optimization and never a precondition, so the three
+# ways it can be unavailable each have to land somewhere survivable.
+#
+# A registry that refuses it under pressure is transient: it gets the same ladder
+# every other image gets, and the run still reaches the published image rather
+# than rebuilding a toolchain it could have had.
+PREPULL_DENY_PREFIX= run_prepull 2 4 --suite foundation
+[ "$prepull_status" -eq 0 ] ||
+  prepull_fail "a rate-limited toolchain pull was not retried ($prepull_status)"
+assert_toolchain_pull_set ""
+if grep -qxF "$runner_image" "$pull_log"; then
+  prepull_fail 'a retried toolchain pull still fell back to the base image'
+fi
+[ "$(wc -l < "$pull_log" | tr -d " ")" -eq 3 ] ||
+  prepull_fail "the toolchain pull was not retried to its budget: $(cat "$pull_log")"
+
+# A registry that says the image is simply not there -- a developer's machine
+# with no credential, a fork, the first run after a pin moved -- is not
+# transient. Retrying it would spend the whole ladder in sleeps to rediscover a
+# 404, so it must fall through to the base image at the first refusal.
+PREPULL_DENY_PREFIX=$toolchain_prefix run_prepull 0 4 --suite foundation
+[ "$prepull_status" -eq 0 ] ||
+  prepull_fail "an unpublished toolchain failed the pre-pull ($prepull_status)"
+grep -qxF "$runner_image" "$pull_log" ||
+  prepull_fail 'an unpublished toolchain did not fall back to the base image'
+assert_pull_count "$runner_image" 1
+[ "$(grep -c "^$toolchain_prefix:" "$pull_log")" -eq 1 ] ||
+  prepull_fail "a plain denial was retried: $(cat "$pull_log")"
+assert_sleep_log ""
+grep -qF 'no controller toolchain at' "$prepull_output" ||
+  prepull_fail "the fallback to the base image was not reported: $(cat "$prepull_output")"
+
+# The assignments above are prefixes on a function call, so POSIX leaves them set
+# in the caller. Clearing the denial is what stops the next case from proving
+# itself through the previous case's fallback instead of its own.
+unset PREPULL_DENY_PREFIX
+
+# A toolchain built here rather than pulled has no registry digest, and the
+# collision fixture refuses a reference without one. That case must fall back to
+# the digest-pinned base image -- the one the local-build path has already pulled
+# -- rather than failing the arr lane on the digest guard.
+PREPULL_NO_REPO_DIGEST=true run_prepull 0 4 --suite foundation
+[ "$prepull_status" -eq 0 ] ||
+  prepull_fail "a locally built toolchain failed the pre-pull ($prepull_status)"
+grep -qxF "$runner_image" "$pull_log" ||
+  prepull_fail 'a toolchain without a registry digest left the collision fixture unpinned'
+unset PREPULL_NO_REPO_DIGEST
+
+# And the operator's escape hatch has to reproduce exactly what the harness did
+# before the image existed: the base image, pulled from Docker Hub, and nothing
+# from ghcr.io at all.
+PREPULL_TOOLCHAIN=off run_prepull 0 4 --suite beszel
+[ "$prepull_status" -eq 0 ] ||
+  prepull_fail "the disabled toolchain failed the pre-pull ($prepull_status)"
+assert_pull_set \
+  "$({ printf '%s\n' "$runner_image"; compose_images ntfy; compose_images beszel; } | sort -u)"
+
 # Counterexample: the stub must be able to fail a pre-pull at all, otherwise every
 # assertion above is vacuous.
 run_prepull 3 2 --suite foundation
 [ "$prepull_status" -ne 0 ] || prepull_fail 'the stub registry cannot refuse'
+unset PREPULL_TOOLCHAIN
 
 printf 'integration suite dispatch and image pre-pull tests passed\n'

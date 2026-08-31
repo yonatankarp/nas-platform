@@ -121,6 +121,7 @@ module ClassifyChanges
     tests/assert-no-vault-secrets.rb
     tests/ci/suites.conf
     tests/generate-ephemeral-vault.sh
+    tests/integration.Dockerfile
     tests/integration.sh
     tests/integration_controller_lib.sh
     tests/integration_lock.sh

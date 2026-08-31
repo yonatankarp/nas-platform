@@ -12,6 +12,7 @@ require "open3"
 require "rbconfig"
 require "set"
 require "yaml"
+require_relative "ci/classify_changes"
 require_relative "policy_support"
 
 include PolicySupport
@@ -157,9 +158,88 @@ service_image_sources = image_source_block.scan(/^([a-z0-9_-]+) ([a-z0-9-]+)$/)
 check(failures, !service_image_sources.empty?,
       "tests/integration.sh: service_image_sources could not be read")
 check(failures, integration_body.include?('pull_image "$runner_image"'),
-      "tests/integration.sh must retry the controller image pull: Docker Hub is anonymous here")
+      "tests/integration.sh must retry the base image pull it falls back to: " \
+      "Docker Hub is anonymous here")
 check(failures, integration_body.include?("prepull_images\n"),
       "tests/integration.sh must pre-pull the suite's images before the converge")
+
+# The controller toolchain is a published ghcr.io image the harness pulls instead
+# of installing apk, pip and ansible-galaxy inside every leg. The saving is not
+# the install time -- it is that the base python image stops being a Docker Hub
+# pull on every lane, measured at 66 Hub pulls per full matrix before and 52
+# after, with the remaining 52 belonging to services. Three lines are what that
+# rests on, and each of them is silently reversible, so each is pinned here as
+# well as in tests/ci/workflow_test.rb: this is the suite that runs on a mutated
+# copy of the tree.
+toolchain_dockerfile_path = File.join(ROOT, "tests", "integration.Dockerfile")
+toolchain_dockerfile = File.file?(toolchain_dockerfile_path) ? File.read(toolchain_dockerfile_path) : ""
+check(failures, integration_body.include?("toolchain_dockerfile=tests/integration.Dockerfile"),
+      "tests/integration.sh must name the Dockerfile its controller image is built from")
+# Named as a path in the harness rather than only in CI, which is what puts it in
+# the classifier's harness closure and therefore keeps it selecting every lane it
+# defines. tests/ci/classify_changes_test.rb enforces the other half.
+check(failures, ClassifyChanges::INTEGRATION_HARNESS_PATHS.include?("tests/integration.Dockerfile"),
+      "the controller Dockerfile must route as a harness input, not as a policy-gate test")
+resolve_index = integration_body.index("resolve_controller_image || return 1")
+service_skip_index = integration_body.index('[ "$pull_candidate" != "$controller_image" ]')
+check(failures, !resolve_index.nil? && !service_skip_index.nil? && resolve_index < service_skip_index,
+      "the pre-pull must resolve the controller image before it enumerates services, " \
+      "and must skip whatever the controller actually runs from")
+check(failures, integration_body.include?("cleanup_sandbox_image=$controller_image"),
+      "the sandbox teardown must reuse the resolved controller image: every lane " \
+      "runs it, so leaving it on the base image restores a Docker Hub pull per lane")
+# Correctness rather than cost. tests/media_control_network_collision_test.sh
+# starts its endpoints with --pull=never and refuses a reference that is not
+# digest-pinned, so it needs an image that is both local and named by digest.
+# Handing it the base image would fail the arr lane on a path that never pulls
+# one; handing it a locally built toolchain tag would fail the same lane on the
+# digest guard. Both properties are resolved rather than assumed.
+check(failures, integration_body.include?('MEDIA_CONTROL_COLLISION_IMAGE="$collision_image"'),
+      "the collision contract must be handed the resolved fixture image")
+check(failures,
+      integration_body.include?("resolve_collision_image || return 1") &&
+        integration_body.include?("{{if .RepoDigests}}{{index .RepoDigests 0}}{{end}}") &&
+        integration_body.include?("collision_image=$runner_image"),
+      "the collision fixture image must be resolved to a digest-pinned local " \
+      "image, falling back to the base image a local build already pulled")
+check(failures,
+      integration_body.include?('[ \\"\\$INTEGRATION_TOOLCHAIN_PREINSTALLED\\" != true ]') &&
+        integration_body.include?('-e INTEGRATION_TOOLCHAIN_PREINSTALLED="$toolchain_preinstalled"'),
+      "the in-container install must run only when no built toolchain is in play")
+# The fallback and the image must install the same things, or a developer's first
+# run and CI converge with different controllers.
+%w[docker-cli docker-cli-compose git tar openssl apache2-utils openssh-client].each do |package|
+  check(failures, toolchain_dockerfile.include?(package),
+        "the controller image must install #{package}, as the in-run fallback does")
+end
+check(failures,
+      toolchain_dockerfile.include?("ansible-core==${ANSIBLE_CORE_VERSION}") &&
+        toolchain_dockerfile.include?("requests==${REQUESTS_VERSION}") &&
+        toolchain_dockerfile.include?("ansible-galaxy collection install"),
+      "the controller image must install the pinned Ansible toolchain and collections")
+# Every version the image is built from arrives as an argument, so Renovate keeps
+# tracking exactly one copy of each in tests/integration.sh and the two paths
+# cannot drift. A default here is how that silently stops being true.
+%w[CONTROLLER_BASE_IMAGE ANSIBLE_CORE_VERSION REQUESTS_VERSION RUBY_PACKAGE CURL_PACKAGE].each do |argument|
+  check(failures, toolchain_dockerfile.match?(/^ARG #{argument}$/),
+        "the controller image must take #{argument} as an argument with no default")
+end
+# The sandbox teardown runs `docker run <image> python - ...` and relies on the
+# base image's bare command.
+check(failures, !toolchain_dockerfile.match?(/^\s*(ENTRYPOINT|CMD)\b/),
+      "the controller image must not set an entrypoint or command: the teardown " \
+      "runs python through the base image's own")
+
+# Publishing it is the workflow's side of the same contract. Without the job the
+# harness still works and every lane silently pays the install again.
+toolchain_job = ci.fetch("jobs", {}).fetch("toolchain", {})
+toolchain_steps = Array(toolchain_job["steps"]).select { |step| step.is_a?(Hash) }
+check(failures,
+      toolchain_steps.any? { |step| step.dig("env", "INTEGRATION_TOOLCHAIN_PUBLISH") == "1" },
+      "CI must publish the controller toolchain image once per run")
+check(failures,
+      toolchain_job.fetch("permissions", {}) == { "contents" => "read", "packages" => "write" },
+      "the toolchain job must hold exactly the scopes it publishes with")
 # The runner must read the suite table rather than restate it. This is what the
 # equality check between two hand-maintained tables used to buy, bought instead
 # by there being only one table: a case arm reintroducing per-suite tags in the
