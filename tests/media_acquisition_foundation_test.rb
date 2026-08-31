@@ -51,29 +51,70 @@ def ui_port(port, container_port: port, published_by:)
   }]
 end
 
-def service(service_class, cpus, host_ports = [], compose_profile: nil)
-  value = { "class" => service_class, "cpus" => cpus, "host_ports" => host_ports }
+def service(service_class, host_ports = [], compose_profile: nil)
+  value = { "class" => service_class, "host_ports" => host_ports }
   value["compose_profile"] = compose_profile if compose_profile
   value
 end
 
+# A CPU ceiling has one home: tests/expected/<project>.yml. tests/policy_test.rb
+# pins every Compose `cpus` to it, measures it against
+# platform_container_cpu_budget, and now also requires the deployed catalog to
+# restate it exactly -- so the literals this map used to carry were a further
+# place to keep equal rather than a second opinion. Changing one ceiling meant
+# editing them too, and getting that wrong failed here without saying which copy
+# was meant. Reading the pinned file keeps this file's assertion
+# (config/media-acquisition.yml matches the pinned contract in full, field for
+# field) and drops only the duplicated numbers.
+PINNED_CONTAINER_CPUS = ACQUISITION_PROJECTS.to_h do |project|
+  ceilings = begin
+    YAML.safe_load_file(File.join(ROOT, "tests", "expected", "#{project}.yml"))["container_cpus"]
+  rescue Errno::ENOENT, Psych::Exception
+    nil
+  end
+  [project, ceilings.is_a?(Hash) ? ceilings : {}]
+end.freeze
+
+# Derivation failures are reported by name. Left as a bare nil they would surface
+# as "the catalog differs from the pinned contract", which names neither the
+# container nor the file that failed to supply its ceiling.
+PINNED_CPU_PROBLEMS = []
+
+def pinned_cpus(project, container)
+  ceiling = PINNED_CONTAINER_CPUS.fetch(project)[container]
+  unless ceiling.is_a?(Numeric)
+    PINNED_CPU_PROBLEMS <<
+      "tests/expected/#{project}.yml must pin a numeric container_cpus.#{container}: " \
+      "the acquisition catalog contract is derived from it"
+  end
+  ceiling
+end
+
+# Names the derivation once per project instead of once per container, since the
+# container name the ceiling belongs to is already this map's key.
+def project_services(project, services)
+  services.to_h do |container, definition|
+    [container, definition.merge("cpus" => pinned_cpus(project, container))]
+  end
+end
+
 EXPECTED_PROJECTS = {
   "arr" => {
-    "role" => "arr", "status" => "implemented", "services" => {
-      "radarr" => service("long_running", 1.0, ui_port(7878, published_by: "radarr")),
-      "sonarr" => service("long_running", 1.0, ui_port(8989, published_by: "sonarr")),
-      "prowlarr" => service("long_running", 0.5, ui_port(9696, published_by: "prowlarr")),
-      "bazarr" => service("long_running", 1.0, ui_port(6767, published_by: "bazarr")),
-      "configarr" => service("one_shot", 0.5, [], compose_profile: "jobs")
-    }
+    "role" => "arr", "status" => "implemented", "services" => project_services("arr", {
+      "radarr" => service("long_running", ui_port(7878, published_by: "radarr")),
+      "sonarr" => service("long_running", ui_port(8989, published_by: "sonarr")),
+      "prowlarr" => service("long_running", ui_port(9696, published_by: "prowlarr")),
+      "bazarr" => service("long_running", ui_port(6767, published_by: "bazarr")),
+      "configarr" => service("one_shot", [], compose_profile: "jobs")
+    })
   },
   "downloaders" => {
-    "role" => "downloaders", "status" => "implemented", "services" => {
-      "sabnzbd" => service("long_running", 2.0,
+    "role" => "downloaders", "status" => "implemented", "services" => project_services("downloaders", {
+      "sabnzbd" => service("long_running",
                            ui_port(8085, container_port: 8080, published_by: "sabnzbd")),
-      "unpackerr" => service("long_running", 1.0),
-      "gluetun" => service("long_running", 0.5, [], compose_profile: "torrent"),
-      "qbittorrent" => service("long_running", 1.5, [
+      "unpackerr" => service("long_running"),
+      "gluetun" => service("long_running", [], compose_profile: "torrent"),
+      "qbittorrent" => service("long_running", [
         { "purpose" => "web_ui", "protocol" => "tcp", "bind_address" => "0.0.0.0",
           "exposure" => "lan_mesh", "host_port" => 8082, "container_port" => 8082,
           "published_by" => "gluetun" },
@@ -84,32 +125,32 @@ EXPECTED_PROJECTS = {
           "exposure" => "lan_mesh", "host_port" => 6881, "container_port" => 6881,
           "published_by" => "gluetun" }
       ], compose_profile: "torrent")
-    }
+    })
   },
   "bindery" => {
-    "role" => "bindery", "status" => "implemented", "services" => {
-      "bindery" => service("long_running", 1.0, ui_port(8787, published_by: "bindery"))
-    }
+    "role" => "bindery", "status" => "implemented", "services" => project_services("bindery", {
+      "bindery" => service("long_running", ui_port(8787, published_by: "bindery"))
+    })
   },
   "kapowarr" => {
-    "role" => "kapowarr", "status" => "implemented", "services" => {
-      "kapowarr" => service("long_running", 1.0, ui_port(5656, published_by: "kapowarr"))
-    }
+    "role" => "kapowarr", "status" => "implemented", "services" => project_services("kapowarr", {
+      "kapowarr" => service("long_running", ui_port(5656, published_by: "kapowarr"))
+    })
   },
   "pinchflat" => {
-    "role" => "pinchflat", "status" => "implemented", "services" => {
-      "pinchflat" => service("long_running", 1.0, ui_port(8945, published_by: "pinchflat"))
-    }
+    "role" => "pinchflat", "status" => "implemented", "services" => project_services("pinchflat", {
+      "pinchflat" => service("long_running", ui_port(8945, published_by: "pinchflat"))
+    })
   },
   "trailarr" => {
-    "role" => "trailarr", "status" => "implemented", "services" => {
-      "trailarr" => service("long_running", 1.0, ui_port(7889, published_by: "trailarr"))
-    }
+    "role" => "trailarr", "status" => "implemented", "services" => project_services("trailarr", {
+      "trailarr" => service("long_running", ui_port(7889, published_by: "trailarr"))
+    })
   },
   "seerr" => {
-    "role" => "seerr", "status" => "implemented", "services" => {
-      "seerr" => service("long_running", 1.0, ui_port(5055, published_by: "seerr"))
-    }
+    "role" => "seerr", "status" => "implemented", "services" => project_services("seerr", {
+      "seerr" => service("long_running", ui_port(5055, published_by: "seerr"))
+    })
   }
 }.freeze
 
@@ -363,6 +404,7 @@ rescue SystemCallError
 end
 
 failures = []
+failures.concat(PINNED_CPU_PROBLEMS)
 if SELECTED_PROJECT
   relative_wrapper_path = "tests/contracts/#{SELECTED_PROJECT}-foundation.sh"
   wrapper_path = File.join(ROOT, relative_wrapper_path)
@@ -867,6 +909,14 @@ end
   "extra port" => proc do |copy|
     copy.dig("projects", "arr", "services", "radarr", "host_ports") <<
       ui_port(9999, published_by: "radarr").first
+  end,
+  # The ceilings are no longer literals here, so this states what the derivation
+  # must not have cost: a catalog `cpus` that disagrees with the pinned ceiling is
+  # still rejected. Its value is in range and its shape is right -- only the
+  # number is wrong -- so the mutation cannot be caught by anything but the
+  # comparison it is aimed at.
+  "container CPU ceiling" => proc do |copy|
+    copy.dig("projects", "arr", "services", "radarr")["cpus"] = 2.0
   end,
   "Configarr class" => proc do |copy|
     copy.dig("projects", "arr", "services", "configarr")["class"] = "long_running"

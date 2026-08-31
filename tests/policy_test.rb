@@ -720,6 +720,44 @@ if container_cpu_budget.is_a?(Integer) && container_cpu_budget.positive?
   end
 end
 
+# config/media-acquisition.yml restates every acquisition ceiling, and it is not
+# a fixture that could simply be deleted: roles/deployment_bundle ships it into
+# the release, so the catalog an operator reads on the NAS is this file. It has
+# to stay authored there, which leaves the two copies to be related rather than
+# merged -- and until now nothing related them. The checks above pin Compose to
+# tests/expected/<service>.yml and tests/expected to the CPU budget; the catalog
+# was pinned only to a literal in tests/media_acquisition_foundation_test.rb, so
+# a ceiling changed in Compose and in tests/expected left the catalog stale and
+# silent.
+#
+# tests/expected/<service>.yml is the one home. This states the relation the
+# catalog owes it, by name, so a drift says which container and which two files
+# disagree instead of surfacing as a whole-structure mismatch.
+#
+# The container sets are compared in both directions first. A per-key loop over
+# either side alone goes quiet exactly where a key was dropped, which is the
+# drift most likely to be a mistake rather than an edit.
+if acquisition_projects.any?
+  acquisition_projects.each do |project, definition|
+    pinned = EXPECTED_CONTAINER_CPUS[project]
+    next unless pinned.is_a?(Hash)
+
+    services = definition.is_a?(Hash) && definition["services"].is_a?(Hash) ? definition["services"] : {}
+    check(failures, services.keys.sort == pinned.keys.sort,
+          "#{project}: config/media-acquisition.yml must declare a cpus ceiling for exactly the " \
+          "containers pinned in tests/expected/#{project}.yml " \
+          "(catalog: #{services.keys.sort.join(', ')}; pinned: #{pinned.keys.sort.join(', ')})")
+
+    (services.keys & pinned.keys).each do |container|
+      catalog_ceiling = services.fetch(container).is_a?(Hash) ? services.fetch(container)["cpus"] : nil
+      check(failures, catalog_ceiling == pinned.fetch(container),
+            "#{project}/#{container}: config/media-acquisition.yml cpus " \
+            "#{catalog_ceiling.inspect} must equal the #{pinned.fetch(container).inspect} pinned in " \
+            "tests/expected/#{project}.yml -- a ceiling has one home and the catalog restates it")
+    end
+  end
+end
+
 manifest_names = manifest_entries.filter_map do |service|
   unless service.is_a?(Hash)
     check(failures, false, "each service manifest entry must be a mapping")

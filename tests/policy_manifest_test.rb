@@ -2067,6 +2067,31 @@ expect_failure(failures, "pinned CPU ceiling is not a number",
   end
 end
 
+# config/media-acquisition.yml is shipped into the release, so it restates the
+# acquisition ceilings and cannot simply stop holding them. The value planted
+# here is in range and correctly shaped, so neither the budget relation nor the
+# numeric check can catch it: only the catalog-to-tests/expected equality can,
+# and it must name the catalog so a passing run cannot be credited to the Compose
+# drift check that shares the phrase "CPU ceiling".
+expect_failure(failures, "deployed acquisition catalog ceiling drifts from the pinned home",
+               "arr/radarr: config/media-acquisition.yml cpus 2.0 must equal the 1.0 pinned in " \
+               "tests/expected/arr.yml") do |root|
+  mutate_yaml_file(root, "config/media-acquisition.yml") do |catalog|
+    catalog.dig("projects", "arr", "services", "radarr")["cpus"] = 2.0
+  end
+end
+
+# The other half of that relation. A dropped container makes a per-key value loop
+# go quiet exactly where it mattered, so the container sets are compared in both
+# directions and this proves that comparison is live.
+expect_failure(failures, "deployed acquisition catalog drops a pinned container",
+               "downloaders: config/media-acquisition.yml must declare a cpus ceiling for exactly " \
+               "the containers pinned in tests/expected/downloaders.yml") do |root|
+  mutate_yaml_file(root, "config/media-acquisition.yml") do |catalog|
+    catalog.dig("projects", "downloaders", "services").delete("unpackerr")
+  end
+end
+
 expect_failure(failures, "pinned vault key dropped",
                "vault key vault_jellyfin_opensubtitles_password") do |root|
   mutate_yaml_file(root, "tests/expected/jellyfin.yml") do |expectation|
