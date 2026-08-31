@@ -694,6 +694,7 @@ source of values. Every key below is required.
 - Komga: `vault_komga_admin_email`, `vault_komga_admin_password`. Recover the deployed administrator identity from the current application and its matching password from the password manager. The email must contain a nonempty local and domain part.
 - Arr services: `vault_arr_radarr_api_key`, `vault_arr_radarr_admin_username`, `vault_arr_radarr_admin_password`, `vault_arr_sonarr_api_key`, `vault_arr_sonarr_admin_username`, `vault_arr_sonarr_admin_password`, `vault_arr_prowlarr_api_key`, `vault_arr_prowlarr_admin_username`, `vault_arr_prowlarr_admin_password`, `vault_arr_bazarr_api_key`, `vault_arr_bazarr_admin_username`, `vault_arr_bazarr_admin_password`. Recover each deployed administrator identity, its matching password, and the service-owned API key from the password manager and deployed application configuration. Preserve each triple unchanged. API keys are distinct 32-character lowercase hexadecimal strings, and the four administrator passwords are distinct.
 - Downloaders: `vault_downloaders_sabnzbd_api_key`, `vault_downloaders_sabnzbd_admin_username`, `vault_downloaders_sabnzbd_admin_password`. Recover the deployed SABnzbd administrator identity, its matching password, and the service-owned API key from the password manager and deployed application configuration. Preserve the triple unchanged. The API key is a 32-character lowercase hexadecimal string distinct from the four Arr API keys; the administrator password is distinct from the four Arr administrator passwords.
+- Bindery: `vault_bindery_api_key`, `vault_bindery_admin_username`, `vault_bindery_admin_password`. Recover the deployed administrator identity and its matching password from the password manager, and the service-owned API key from the deployed application's authentication settings. Preserve the triple unchanged. The API key is a 32-character lowercase hexadecimal string; the administrator password must be at least eight characters, which the application itself enforces. The key seeds Bindery's own on first boot only, and it is what lets the platform claim the administrator account in the same convergence that starts the container: Bindery's first-run setup route answers anyone anonymously until a user exists and then refuses everyone permanently, so whoever reaches the port first owns the install. A key rotated inside the application cannot be pushed back, and the only recovery is to read it out as the vault-authored administrator.
 - Kapowarr: `vault_kapowarr_admin_username`, `vault_kapowarr_admin_password`, `vault_kapowarr_comicvine_api_key`. Recover the deployed administrator identity and its matching password from the password manager; the application stores both halves hashed with a private per-install salt, so neither can be read back from it. Preserve the pair unchanged. This is Kapowarr's only access control: with the password empty the application hands its API key, and with it every route that renames or deletes comics, to anyone who can reach the port. The ComicVine key belongs to a third-party account at comicvine.gamespot.com and is recovered from that account or the password manager, never generated. The platform records it but does not push it, because Kapowarr validates the key against ComicVine before storing it; enter it once in the application and keep this entry as the authority.
 - Pinchflat: `vault_pinchflat_admin_username`, `vault_pinchflat_admin_password`. Recover the deployed basic-authentication identity and its matching password from the password manager and the deployed Compose environment. Preserve the pair unchanged. This is Pinchflat's only access control: with either half empty the application serves its web interface, which queues and deletes YouTube library media, to anyone who can reach the port.
 - ntfy: `vault_ntfy_admin_user`, `vault_ntfy_admin_password`, `vault_ntfy_admin_password_hash`, `vault_ntfy_dozzle_password_hash`, `vault_ntfy_dozzle_token`, `vault_ntfy_beszel_password_hash`, `vault_ntfy_beszel_token`, `vault_ntfy_deploy_password_hash`, `vault_ntfy_deploy_token`. Recover the administrator name and clear password from the password manager/current login, and recover the administrator hash, integration-user hashes, and access tokens from the deployed ntfy configuration and authentication data. The administrator password and hash must be the matching deployed pair. Preserve each Dozzle, Beszel or deploy hash with that same integration identity's token; do not infer a clear password from a hash or create a replacement token. Each hash has the bcrypt shape described above. Each access token is `tk_` followed by 29 lowercase letters or digits, and the Dozzle, Beszel and deploy tokens must all be distinct.
@@ -752,8 +753,11 @@ template update uses Ansible's atomic writer with unsafe writes disabled.
 
 `email` is the normalized login identity; `password` is its preserved clear
 credential; `name` is the displayed name; and `quota_size` is a non-negative
-integer in the units expected by the pinned Immich API. Administrator status is
-not part of this allowlist contract.
+integer of bytes, or `null` for no limit at all. `null` is the only value that
+lifts the limit: Immich skips the quota check entirely when it is null, and `0`
+is the opposite of unlimited -- it rejects every upload of a non-empty file with
+"Quota has been exceeded!". Administrator status is not part of this allowlist
+contract.
 
 #### jellyfin managed users
 
@@ -1057,8 +1061,16 @@ repository vault remains encrypted:
 
 - Service environment files beneath the configured platform runtime directory,
   `services/*/.env`, each mode 0600.
-- Dozzle's protected users file and Beszel's hub private key, in their own
-  protected data directories.
+- Dozzle's whole data directory and Beszel's hub private key, in their own
+  protected data directories. Dozzle's directory is secret-bearing past the
+  protected users file it holds: the platform POSTs a notification dispatcher
+  into `/api/notifications/dispatchers`, and Dozzle keeps that dispatcher —
+  its `Authorization: Bearer` header included — in the `/data` volume, the
+  only writable persistent path the read-only container has, and returns the
+  header in cleartext over the same API. That header currently carries the
+  same value as Dozzle's ntfy publish token, so a copy of Dozzle's data
+  directory is a copy of that token; the alert relay holds the same value in
+  its container environment.
 - Configuration this platform seeds once and then leaves to the application,
   under the Docker root and mode 0600: SABnzbd's `sabnzbd/config/sabnzbd.ini`
   carries the administrator username, the administrator password and the API
@@ -1066,6 +1078,12 @@ repository vault remains encrypted:
   `prowlarr/config/config.xml` carry their API keys; Bazarr's
   `bazarr/config/config/config.yaml` carries its API key and administrator
   identity.
+- Bindery's configuration root, which belongs in this class rather than merely
+  in the `critical` recovery class it already carries: it stores every
+  credential it holds — its own API key, the Prowlarr and indexer keys,
+  download-client passwords and the session signing secret — in plaintext
+  inside its SQLite database, and its pre-upgrade backup is a whole-database
+  copy written beside it under `backups/` at mode 0600.
 - Whatever the applications and their databases then retain in their own
   data and configuration.
 - On a NAS running the unattended poller, the deploy account's home. See

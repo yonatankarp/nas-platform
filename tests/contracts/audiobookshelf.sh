@@ -38,7 +38,6 @@ compose_path, mac_path, role_path, defaults_path, argument_specs_path,
   contract_source_path, mode = ARGV
 compose = YAML.safe_load_file(compose_path, aliases: true)
 mac = YAML.safe_load_file(mac_path, aliases: true)
-role_tasks = YAML.safe_load_file(role_path)
 defaults = YAML.safe_load_file(defaults_path)
 argument_specs = YAML.safe_load_file(argument_specs_path)
 integration = File.read(integration_path)
@@ -59,6 +58,11 @@ end
 # The role wraps its marker handling in a block, whose children are tasks too.
 require File.join(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR"), "tests", "policy_support")
 include PolicySupport
+# The role is one stage per file, imported from main.yml. static_role_tasks
+# assembles them the way Ansible does -- imports spliced in where they stand --
+# so the ordering assertions below still compare positions across the whole role
+# and not within whichever stage happens to hold both tasks.
+role_tasks = static_role_tasks(role_path)
 all_role_tasks = flatten_tasks(role_tasks)
 role_task_names = all_role_tasks.filter_map { |task| task["name"] }
 # The environment file has its own grammar, so it is read as the assignments it
@@ -270,6 +274,9 @@ require "pathname"
 require "timeout"
 require "uri"
 require "yaml"
+# The role is one stage per file; PolicySupport.static_role_tasks assembles them
+# the way Ansible does rather than reading main.yml alone.
+require File.join(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR"), "tests", "policy_support")
 
 MODE = ARGV.fetch(0)
 BASE = URI("http://127.0.0.1:#{Integer(ENV.fetch('PLATFORM_AUDIOBOOKSHELF_PORT'), 10)}")
@@ -1023,7 +1030,7 @@ when "authentication-budget-self-test"
       integration.include?('cleanup_sandbox "$sandbox"')
 
   repo_root = Pathname.new(ENV.fetch("PLATFORM_REPO_ROOT"))
-  main_tasks = YAML.safe_load_file(repo_root.join("roles/audiobookshelf/tasks/main.yml"))
+  main_tasks = PolicySupport.static_role_tasks(repo_root.join("roles/audiobookshelf/tasks/main.yml"))
   managed_tasks = YAML.safe_load_file(repo_root.join("roles/audiobookshelf/tasks/managed_users.yml"))
   auth_model = exact_role_auth_model(main_tasks, managed_tasks)
   expect_contract_failure("an added Audiobookshelf role authentication call was accepted") do

@@ -1,15 +1,35 @@
 ---
+# Platform fragments. Compose resolves a YAML anchor only inside the file that
+# declares it, so every stack carries its own copy; tests/policy_test.rb pins the
+# copies equal and records there why cross-file sharing was not taken.
+#
+# This stack declares no x-healthcheck-defaults on purpose. Three of these four
+# containers run the health check their image ships, and the fourth supplies
+# only a test; giving any of them the platform's interval, timeout, retries and
+# start_period would replace the image's own timing rather than share a default.
 x-logging: &default-logging
   driver: json-file
   options:
     max-size: 10m
     max-file: "3"
 
+x-service-defaults: &service-defaults
+  cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
+  # These containers carry no `user:`, so PID 1 starts as root. Refusing
+  # privilege escalation is what keeps that from being a path to more than
+  # root-in-a-namespace: nothing in the Immich images executes a setuid binary,
+  # and the Postgres entrypoint reaches its own account with setuid(2) as root,
+  # which no_new_privs does not restrict.
+  security_opt:
+    - no-new-privileges:true
+  restart: unless-stopped
+  logging: *default-logging
+
 services:
   immich-server:
+    <<: *service-defaults
     container_name: immich_server
     image: ghcr.io/immich-app/immich-server:v3.1.0@sha256:b434cb9287eea1471c9974845914d4dd328c9c2d652e446ed4930f99944f0ceb
-    cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
     cpus: 3.0
     labels:
       dev.dozzle.group: immich
@@ -48,24 +68,17 @@ services:
     # health check as ready the moment it is running.
     healthcheck:
       disable: false
-    # These containers carry no `user:`, so PID 1 starts as root. Refusing
-    # privilege escalation is what keeps that from being a path to more than
-    # root-in-a-namespace: nothing in the Immich images executes a setuid binary.
-    security_opt:
-      - no-new-privileges:true
-    restart: unless-stopped
     # This is the process that writes an original photograph to /data and its
     # row to Postgres. A minute is enough for an upload in flight to land on
     # both sides; it is deliberately not longer, because background transcodes
     # and thumbnail jobs write only regenerable derivatives and pick themselves
     # up again on the next start.
     stop_grace_period: 1m
-    logging: *default-logging
 
   immich-machine-learning:
+    <<: *service-defaults
     container_name: immich_machine_learning
     image: ghcr.io/immich-app/immich-machine-learning:v3.1.0@sha256:5a0839dc5303cd7215bcd2180a26aed3af41675aefb3e75e5157e9f10ad16e6e
-    cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
     cpus: 3.0
     labels:
       dev.dozzle.group: immich
@@ -78,10 +91,6 @@ services:
       TZ: ${TZ:?}
     healthcheck:
       disable: false
-    security_opt:
-      - no-new-privileges:true
-    restart: unless-stopped
-    logging: *default-logging
 
   # Deliberately still named redis: Immich resolves its cache by this Compose
   # service name, and the image behind it is Valkey.
@@ -90,24 +99,20 @@ services:
   # Immich releases, so ours need not equal the one the pinned tag shipped with.
   # Digest refreshes are wanted here for base-image patches.
   redis:
+    <<: *service-defaults
     container_name: immich_redis
-    image: docker.io/valkey/valkey:9@sha256:70739f85ad2ee01a726a965584a0f94895f01b0c60b3cc8b0aeef11eaa6888cf
-    cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
+    image: docker.io/valkey/valkey:9@sha256:64e361b630ecf18dff7ca4df6a88e6eafc193687eb48cff2c7e0a293ab67d29a
     cpus: 0.5
     labels:
       dev.dozzle.group: immich
       dev.dozzle.name: redis
     healthcheck:
       test: redis-cli ping || exit 1
-    security_opt:
-      - no-new-privileges:true
-    restart: unless-stopped
     # Valkey answers SIGTERM by writing one final snapshot before it exits. This
     # one keeps no volume at all — the job queue is rebuilt from Postgres — so
     # the window is only about exiting cleanly rather than being killed with a
     # write open. 30s is well past what that snapshot costs.
     stop_grace_period: 30s
-    logging: *default-logging
 
   # Not a version we chose, and not really one version. This is Immich's own
   # purpose-built Postgres image, and the tag encodes three coupled things:
@@ -121,9 +126,9 @@ services:
   # immich_restore_expected_postgres_major in roles/immich/defaults/main.yml
   # records the major and must agree.
   database:
+    <<: *service-defaults
     container_name: immich_postgres
     image: ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0@sha256:bcf63357191b76a916ae5eb93464d65c07511da41e3bf7a8416db519b40b1c23
-    cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
     cpus: 2.0
     labels:
       dev.dozzle.group: immich
@@ -139,11 +144,6 @@ services:
     shm_size: 128mb
     healthcheck:
       disable: false
-    # The Postgres entrypoint drops to the postgres account with setuid(2) as
-    # root before the server starts, which no_new_privs does not restrict.
-    security_opt:
-      - no-new-privileges:true
-    restart: unless-stopped
     # The image's STOPSIGNAL is SIGINT, which is a Postgres fast shutdown:
     # connections dropped, open transactions aborted, then a checkpoint that
     # flushes every dirty buffer. Two minutes, twice what the Paperless cluster
@@ -152,4 +152,3 @@ services:
     # the cluster is not lost, but it comes back through WAL recovery — and this
     # directory is recovery: critical.
     stop_grace_period: 2m
-    logging: *default-logging

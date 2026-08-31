@@ -1,0 +1,119 @@
+---
+# Server settings. Reads the current settings, validates their schema before
+# touching them, patches only the keys this platform owns and reads the result
+# back so the run proves what it applied.
+- name: Resolve desired Audiobookshelf server settings
+  ansible.builtin.set_fact:
+    audiobookshelf_desired_server_settings: >-
+      {{ audiobookshelf_owned_server_settings |
+         combine({
+           'backupPath': audiobookshelf_backup_container_path,
+           'backupSchedule': audiobookshelf_backup_cron,
+           'backupsToKeep': audiobookshelf_backup_retention
+         }) }}
+
+- name: Read Audiobookshelf server settings for reconciliation
+  ansible.builtin.uri:
+    url: "{{ audiobookshelf_api }}/api/authorize"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ audiobookshelf_reconcile_token }}"
+    status_code: [200]
+    return_content: true
+  register: audiobookshelf_server_settings_before
+  when: not ansible_check_mode or audiobookshelf_initialized | bool
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Validate current Audiobookshelf server settings schema
+  ansible.builtin.assert:
+    that:
+      - audiobookshelf_server_settings_before.json is mapping
+      - audiobookshelf_server_settings_before.json.serverSettings is mapping
+      - audiobookshelf_server_settings_before.json.serverSettings.id == 'server-settings'
+      - audiobookshelf_server_settings_before.json.serverSettings.version == '2.36.0'
+      - audiobookshelf_server_settings_before.json.serverSettings.timeZone | type_debug == 'str'
+      - audiobookshelf_server_settings_before.json.serverSettings.timeZone == 'Europe/Berlin'
+      - audiobookshelf_server_settings_before.json.serverSettings.storeCoverWithItem | type_debug == 'bool'
+      - audiobookshelf_server_settings_before.json.serverSettings.storeMetadataWithItem | type_debug == 'bool'
+      - audiobookshelf_server_settings_before.json.serverSettings.sortingIgnorePrefix | type_debug == 'bool'
+      - audiobookshelf_server_settings_before.json.serverSettings.scannerParseSubtitle | type_debug == 'bool'
+      - audiobookshelf_server_settings_before.json.serverSettings.scannerFindCovers | type_debug == 'bool'
+      - audiobookshelf_server_settings_before.json.serverSettings.scannerCoverProvider | type_debug == 'str'
+      - audiobookshelf_server_settings_before.json.serverSettings.scannerPreferMatchedMetadata | type_debug == 'bool'
+      - audiobookshelf_server_settings_before.json.serverSettings.scannerDisableWatcher | type_debug == 'bool'
+      - audiobookshelf_server_settings_before.json.serverSettings.chromecastEnabled | type_debug == 'bool'
+      - audiobookshelf_server_settings_before.json.serverSettings.allowIframe | type_debug == 'bool'
+      - audiobookshelf_server_settings_before.json.serverSettings.homeBookshelfView | type_debug == 'int'
+      - audiobookshelf_server_settings_before.json.serverSettings.bookshelfView | type_debug == 'int'
+      - audiobookshelf_server_settings_before.json.serverSettings.dateFormat | type_debug == 'str'
+      - audiobookshelf_server_settings_before.json.serverSettings.timeFormat | type_debug == 'str'
+      - audiobookshelf_server_settings_before.json.serverSettings.language | type_debug == 'str'
+      - audiobookshelf_server_settings_before.json.serverSettings.backupPath | type_debug == 'str'
+      - (audiobookshelf_server_settings_before.json.serverSettings.backupSchedule | type_debug) in ['str', 'bool']
+      - audiobookshelf_server_settings_before.json.serverSettings.backupsToKeep | type_debug == 'int'
+    fail_msg: >-
+      Audiobookshelf 2.36.0 returned an unsupported server-settings schema;
+      refusing to mutate settings.
+  when: not ansible_check_mode or audiobookshelf_initialized | bool
+
+- name: Resolve Audiobookshelf server settings reconciliation requirement
+  ansible.builtin.set_fact:
+    audiobookshelf_server_settings_drifted: >-
+      {{ dict(audiobookshelf_desired_server_settings.keys() |
+              zip(audiobookshelf_desired_server_settings.keys() |
+                  map('extract', audiobookshelf_server_settings_before.json.serverSettings))) !=
+         audiobookshelf_desired_server_settings }}
+  when: not ansible_check_mode or audiobookshelf_initialized | bool
+
+- name: Report planned Audiobookshelf server settings reconciliation
+  ansible.builtin.debug:
+    msg: AUDIOBOOKSHELF_PLAN_SERVER_SETTINGS_RECONCILE
+  when:
+    - ansible_check_mode
+    - audiobookshelf_initialized | bool
+    - audiobookshelf_server_settings_drifted | bool
+  changed_when: true
+
+- name: Reconcile owned Audiobookshelf server settings
+  ansible.builtin.uri:
+    url: "{{ audiobookshelf_api }}/api/settings"
+    method: PATCH
+    headers:
+      Authorization: "Bearer {{ audiobookshelf_reconcile_token }}"
+    body_format: json
+    body: "{{ audiobookshelf_desired_server_settings }}"
+    status_code: [200]
+  when:
+    - not ansible_check_mode
+    - audiobookshelf_server_settings_drifted | bool
+  changed_when: true
+  no_log: true
+
+- name: Re-authorize after Audiobookshelf server settings reconciliation
+  ansible.builtin.uri:
+    url: "{{ audiobookshelf_api }}/api/authorize"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ audiobookshelf_reconcile_token }}"
+    status_code: [200]
+    return_content: true
+  register: audiobookshelf_server_settings_after
+  when: not ansible_check_mode
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require exact owned Audiobookshelf server settings after reconciliation
+  ansible.builtin.assert:
+    that:
+      - audiobookshelf_server_settings_after.json is mapping
+      - audiobookshelf_server_settings_after.json.serverSettings is mapping
+      - audiobookshelf_server_settings_after.json.serverSettings.timeZone == 'Europe/Berlin'
+      - dict(audiobookshelf_desired_server_settings.keys() |
+             zip(audiobookshelf_desired_server_settings.keys() |
+                 map('extract', audiobookshelf_server_settings_after.json.serverSettings))) ==
+        audiobookshelf_desired_server_settings
+    fail_msg: Audiobookshelf server settings read-back differs from the exact owned state.
+  when: not ansible_check_mode

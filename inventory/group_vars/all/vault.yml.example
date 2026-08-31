@@ -43,6 +43,15 @@ vault_downloaders_sabnzbd_api_key: "44444444444444444444444444444444"
 vault_downloaders_sabnzbd_admin_username: nasadmin
 vault_downloaders_sabnzbd_admin_password: example-sabnzbd-password
 
+# Bindery's API key seeds the application's own on its first boot, which is what
+# lets the platform claim the administrator account before anyone else can: the
+# first-run setup route is anonymous until a user exists and refuses everyone
+# afterwards. The administrator pair is stored hashed in Bindery's database and
+# the application refuses a password shorter than eight characters.
+vault_bindery_api_key: "55555555555555555555555555555555"
+vault_bindery_admin_username: example-admin
+vault_bindery_admin_password: example-bindery-password
+
 # Kapowarr's only access control: the administrator pair it stores hashed in
 # its own database and demands before it hands out its API key. The ComicVine
 # key is a third-party account credential; the platform records it here and

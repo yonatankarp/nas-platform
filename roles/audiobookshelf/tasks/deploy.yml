@@ -1,0 +1,74 @@
+---
+# Deployment. Resolves the host paths this role owns, revalidates the release
+# it is about to run from, renders the private environment, brings the Compose
+# project up, reports the deployment and waits for the API to answer.
+- name: Resolve the effective Audiobookshelf backup directory
+  ansible.builtin.set_fact:
+    audiobookshelf_effective_config_host_path: "{{ nas_docker_root }}/audiobookshelf/config"
+    audiobookshelf_effective_backup_host_path: "{{ nas_docker_root }}/audiobookshelf/backups"
+
+- name: Require bounded Audiobookshelf initial scan timing
+  ansible.builtin.assert:
+    that:
+      - audiobookshelf_initial_scan_retries | type_debug == 'int'
+      - audiobookshelf_initial_scan_retries | int >= 1
+      - audiobookshelf_initial_scan_delay | type_debug == 'int'
+      - audiobookshelf_initial_scan_delay | int >= 0
+    fail_msg: Audiobookshelf initial scan retries and delay must be bounded non-negative integers.
+
+- name: Revalidate deployment paths before Audiobookshelf runtime use
+  ansible.builtin.include_role:
+    name: deployment_bundle
+    tasks_from: target
+  vars:
+    deployment_target_require_current_release: true
+    deployment_target_extra_paths:
+      - "{{ platform_current_dir }}/services/audiobookshelf"
+      - "{{ platform_current_dir }}/services/audiobookshelf/compose.yml"
+      - "{{ platform_current_dir }}/services/audiobookshelf/compose.{{ platform_compose_kind }}.yml"
+      - "{{ platform_runtime_dir }}/services/audiobookshelf"
+      - "{{ platform_runtime_dir }}/services/audiobookshelf/.env"
+      - "{{ audiobookshelf_effective_config_host_path }}"
+      - "{{ audiobookshelf_effective_backup_host_path }}"
+
+- name: Render the Audiobookshelf environment
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ platform_runtime_dir }}/services/audiobookshelf/.env"
+    mode: "0600"
+
+- name: Deploy Audiobookshelf
+  community.docker.docker_compose_v2:
+    project_src: "{{ platform_current_dir }}/services/audiobookshelf"
+    project_name: "{{ audiobookshelf_compose_project_name }}"
+    files: "{{ platform_service_compose_files['audiobookshelf'] }}"
+    env_files: ["{{ platform_runtime_dir }}/services/audiobookshelf/.env"]
+    state: present
+    wait: true
+    wait_timeout: "{{ platform_compose_wait_timeout }}"
+  register: audiobookshelf_deploy
+
+- name: Report the Audiobookshelf deployment
+  ansible.builtin.include_role:
+    name: ntfy
+    tasks_from: deployment_report
+  vars:
+    ntfy_deployment_report_service: Audiobookshelf
+    ntfy_deployment_report_changed: "{{ audiobookshelf_deploy is changed }}"
+
+- name: Verify Audiobookshelf effective container CPU policy
+  ansible.builtin.include_role:
+    name: container_cpu
+  vars:
+    container_cpu_service_name: audiobookshelf
+    container_cpu_project_name: "{{ audiobookshelf_compose_project_name }}"
+
+- name: Wait for Audiobookshelf to report healthy
+  ansible.builtin.uri:
+    url: "{{ audiobookshelf_api }}/healthcheck"
+  register: audiobookshelf_health
+  until: audiobookshelf_health.status | default(0) == 200
+  retries: "{{ platform_readiness_retries }}"
+  delay: "{{ platform_readiness_delay }}"
+  changed_when: false
+  check_mode: false

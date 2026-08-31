@@ -117,6 +117,12 @@ example.each do |key, value|
   next if value.match?(/^tk_[01]{29}$/)
   next if value == "ssh-ed25519 AAAA"
   next if value == "00000000-0000-4000-a000-000000000000"
+  # Bindery's key is contracted to be 32 lowercase hexadecimal characters, so it
+  # cannot carry an `example-` placeholder the way an opaque string can. It
+  # continues the repeated-digit series the five foundation API keys use, one
+  # digit past SABnzbd's, which keeps it obviously sanitized and keeps an
+  # operator who copies the file from deploying the same stand-in twice.
+  next if key == "vault_bindery_api_key" && value == "5" * 32
   next if value.include?("example-only-not-a-real-private-key")
   next if foundation_example[key] == value
 

@@ -65,6 +65,8 @@
       tags: [never]
     - role: downloaders
       tags: [never]
+    - role: bindery
+      tags: [never]
     - role: kapowarr
       tags: [never]
     - role: pinchflat

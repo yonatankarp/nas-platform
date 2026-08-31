@@ -1,4 +1,9 @@
 ---
+# Platform fragments. Compose resolves a YAML anchor only inside the file that
+# declares it, so every stack carries its own copy; tests/policy_test.rb pins the
+# copies equal and records there why cross-file sharing was not taken. A
+# container needing different health-check timing overrides only the fields it
+# changes, so a deviation reads as a deviation.
 x-logging: &default-logging
   driver: json-file
   options:
@@ -18,6 +23,12 @@ x-service-defaults: &service-defaults
   networks:
     - default
     - media-control
+
+x-healthcheck-defaults: &healthcheck-defaults
+  interval: 30s
+  timeout: 10s
+  retries: 5
+  start_period: 60s
 
 services:
   sabnzbd:
@@ -40,16 +51,13 @@ services:
       TZ: ${TZ:?}
       SABNZBD_API_KEY: ${SABNZBD_API_KEY:?}
     healthcheck:
+      <<: *healthcheck-defaults
       test:
         - CMD-SHELL
         - >-
           curl --fail --silent --show-error
           "http://127.0.0.1:8080/api?mode=version&output=json&apikey=$${SABNZBD_API_KEY}"
           >/dev/null
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 60s
     # SABnzbd answers SIGTERM by pausing the active download and writing the
     # queue and history admin under its recovery: critical config directory. A
     # minute lets that finish, so a restart resumes the transfer instead of
@@ -60,7 +68,7 @@ services:
   unpackerr:
     <<: *service-defaults
     container_name: unpackerr
-    image: docker.io/golift/unpackerr:0.15.2@sha256:057e34740d26c34d81ec8e2faf8ec11f8dbfc77489b7a42826f52b37e5ee1b6c
+    image: docker.io/golift/unpackerr:v0.16.1@sha256:244fc45cb207308f60e8f52dd703c2b3463385752de0f9517c58ff9d331ed15e
     cpus: 1.0
     labels:
       dev.dozzle.name: unpackerr
@@ -83,9 +91,11 @@ services:
       UN_RADARR_0_PATHS_0: /data/media/.acquisition/usenet/movies
       UN_RADARR_0_PROTOCOLS: usenet
     healthcheck:
+      <<: *healthcheck-defaults
       test: [CMD-SHELL, "kill -0 1"]
-      interval: 30s
-      timeout: 10s
+      # Deviation carried over unchanged from before the defaults existed; the
+      # repository records no reason for it, and a de-duplication is not where a
+      # readiness window gets renegotiated.
       retries: 3
       start_period: 15s
 

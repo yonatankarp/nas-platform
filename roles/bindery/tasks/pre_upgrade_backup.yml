@@ -1,0 +1,112 @@
+---
+# One single-maintainer application holds the acquisition state for two library
+# types, so its state is backed up before every upgrade and the upgrade does not
+# proceed unless that backup succeeded. The gate has to key on an actual image
+# change or it would fire on every converge and never report a converged run.
+#
+# It also has to run before Compose starts the new image: Bindery applies its
+# schema migrations at startup, and by the time the API answers again the old
+# schema is gone.
+- name: Read the deployed Bindery Compose definition
+  ansible.builtin.slurp:
+    path: "{{ platform_current_dir }}/services/bindery/compose.yml"
+  register: bindery_compose_source
+
+- name: Resolve the pinned Bindery image reference
+  ansible.builtin.set_fact:
+    bindery_pinned_image: >-
+      {{ (bindery_compose_source.content | b64decode | from_yaml).services.bindery.image }}
+
+# Only a running container is considered. The backup route is `VACUUM INTO`,
+# which is the whole point: SQLite runs in WAL mode, so copying bindery.db off
+# a stopped container silently omits whatever is still in bindery.db-wal. With
+# the application down there is no correct backup this platform can take, and
+# saying so is better than taking a wrong one.
+- name: List the running Bindery container
+  ansible.builtin.command:
+    argv:
+      - docker
+      - container
+      - ls
+      - --quiet
+      - --filter
+      - "label=com.docker.compose.project={{ bindery_compose_project_name }}"
+      - --filter
+      - "label=com.docker.compose.service=bindery"
+  register: bindery_running_ids
+  changed_when: false
+  check_mode: false
+
+# Redacted: `docker container inspect` returns the container's Env array, which
+# is the rendered .env and therefore the API-key seed.
+- name: Inspect the running Bindery container
+  ansible.builtin.command:
+    argv: "{{ ['docker', 'container', 'inspect'] + bindery_running_ids.stdout_lines }}"
+  register: bindery_running_inspection
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when: bindery_running_ids.stdout_lines | length > 0
+
+# Compose records the image reference it created the container from, digest
+# included, so comparing it with the pinned one names an upgrade exactly.
+- name: Resolve the running Bindery image reference
+  ansible.builtin.set_fact:
+    bindery_deployed_image: >-
+      {{ (bindery_running_inspection.stdout | default('[]', true) | from_json
+          | map(attribute='Config.Image') | list | first | default('', true)) }}
+
+- name: Resolve whether a Bindery upgrade is pending
+  ansible.builtin.set_fact:
+    bindery_upgrade_pending: >-
+      {{ bindery_deployed_image | length > 0
+         and bindery_deployed_image != bindery_pinned_image }}
+
+- name: Report the planned Bindery pre-upgrade backup
+  ansible.builtin.debug:
+    msg: >-
+      Bindery is running {{ bindery_deployed_image }} and the release pins
+      {{ bindery_pinned_image }}; a live run would take a database backup and
+      refuse the upgrade unless it succeeded.
+  when:
+    - ansible_check_mode
+    - bindery_upgrade_pending | bool
+
+- name: Resolve the Bindery API key before the upgrade
+  ansible.builtin.include_tasks: resolve_api_key.yml
+  when:
+    - not ansible_check_mode
+    - bindery_upgrade_pending | bool
+
+# Admin-only, 201 with the filename, size and duration on success. It stages to
+# a temporary name and renames, so an aborted run leaves no partial file
+# masquerading as a backup, and it lands on the config bind mount at
+# {{ bindery_config_host_path }}/backups, which needs no extra volume. This task
+# deliberately accepts only 201: anything else fails the play with the new image
+# still unstarted.
+# Redacted: the request carries the application API key.
+- name: Back up Bindery state before the pinned upgrade
+  ansible.builtin.uri:
+    url: "{{ bindery_api }}/backup"
+    method: POST
+    headers:
+      X-Api-Key: "{{ bindery_api_key }}"
+    body_format: json
+    body:
+      label: pre-upgrade
+    status_code: [201]
+  register: bindery_pre_upgrade_backup
+  when:
+    - not ansible_check_mode
+    - bindery_upgrade_pending | bool
+  changed_when: true
+  no_log: true
+
+- name: Report the completed Bindery pre-upgrade backup
+  ansible.builtin.debug:
+    msg: >-
+      Bindery state was backed up into {{ bindery_config_host_path }}/backups
+      before upgrading to {{ bindery_pinned_image }}.
+  when:
+    - not ansible_check_mode
+    - bindery_upgrade_pending | bool

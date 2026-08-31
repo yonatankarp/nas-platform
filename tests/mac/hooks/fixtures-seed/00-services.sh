@@ -36,4 +36,5 @@ mac_assert_service_coverage fixtures-seed 00-services.sh "$mac_seeded" \
 downloaders=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite
 ntfy=it has no contract suite of its own; its fixtures are the provisioned topics
 pinchflat=its only fixture would be a real YouTube download, which this lane must not make; its persisted state is the database its own run phase asserts
-kapowarr=its only fixture would be a real comic download, which needs a ComicVine account this lane cannot hold; its persisted state is the database its own run phase asserts'
+kapowarr=its only fixture would be a real comic download, which needs a ComicVine account this lane cannot hold; its persisted state is the database its own run phase asserts
+bindery=its only fixture would be a real Usenet download, which this lane has no transport for; its persisted state is the database its own run phase asserts'

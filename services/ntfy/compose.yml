@@ -1,14 +1,32 @@
+# Platform fragments. Compose resolves a YAML anchor only inside the file that
+# declares it, so every stack carries its own copy; tests/policy_test.rb pins the
+# copies equal and records there why cross-file sharing was not taken. A
+# container needing different health-check timing overrides only the fields it
+# changes, so a deviation reads as a deviation.
 x-logging: &default-logging
   driver: json-file
   options:
     max-size: 10m
     max-file: "3"
 
+x-service-defaults: &service-defaults
+  cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
+  security_opt:
+    - no-new-privileges:true
+  restart: unless-stopped
+  logging: *default-logging
+
+x-healthcheck-defaults: &healthcheck-defaults
+  interval: 30s
+  timeout: 10s
+  retries: 5
+  start_period: 60s
+
 services:
   ntfy:
+    <<: *service-defaults
     container_name: ntfy
     image: docker.io/binwiederhier/ntfy:v2.28.0@sha256:6ef4b819f722fccdc036af611c4774cfdc2de821ab74fdd48bbf4c9d6f8973da
-    cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
     cpus: 1.0
     labels:
       dev.dozzle.name: ntfy
@@ -40,9 +58,11 @@ services:
       NTFY_AUTH_TOKENS: ${NTFY_AUTH_TOKENS:-}
       TZ: ${TZ:?}
     healthcheck:
+      <<: *healthcheck-defaults
       test: [CMD-SHELL, "wget -q --tries=1 http://localhost:80/v1/health -O - | grep -Eo '\"healthy\"\\s*:\\s*true' || exit 1"]
-      interval: 30s
-      timeout: 10s
+      # Deviation carried over unchanged from before the defaults existed; the
+      # repository records no reason for it, and a de-duplication is not where a
+      # readiness window gets renegotiated.
       retries: 4
       start_period: 40s
     # Carried from ntfy's own reference Compose, and deliberately not copied
@@ -53,12 +73,8 @@ services:
     # nothing. Adding this key elsewhere would be cargo, and in the s6 case it
     # would break the container outright.
     init: true
-    security_opt:
-      - no-new-privileges:true
-    restart: unless-stopped
     # The auth database and the message cache are SQLite files, and /var/lib/ntfy
     # is recovery: critical — it is where the credentials this platform pushes
     # outward actually live. 30s commits the open transaction and checks the
     # write-ahead log back in.
     stop_grace_period: 30s
-    logging: *default-logging

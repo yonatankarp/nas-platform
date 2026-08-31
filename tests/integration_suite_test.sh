@@ -3,6 +3,26 @@ set -eu
 
 repo_dir=$(CDPATH= cd -P "$(dirname "$0")/.." && pwd -P)
 integration=$repo_dir/tests/integration.sh
+# The play, contract and verification launchers are a file of their own. They
+# are ordinary shell there rather than escaped text inside the controller
+# argument, so the assertions below read them without backslashes -- the same
+# guarantees, made where the code they police actually lives.
+controller_library=$repo_dir/tests/integration_controller_lib.sh
+[ -r "$controller_library" ] || {
+  printf '%s\n' 'integration controller library is missing' >&2
+  exit 1
+}
+grep -qF '. /repo/tests/integration_controller_lib.sh' "$integration" || {
+  printf '%s\n' 'integration controller does not source its launcher library' >&2
+  exit 1
+}
+grep -qF -- '-e PLATFORM_INTEGRATION_SANDBOX="$sandbox"' "$integration" &&
+  grep -qF -- \
+    '-e PLATFORM_INTEGRATION_PROJECT_NAMESPACE="$integration_project_namespace"' \
+    "$integration" || {
+  printf '%s\n' 'integration controller library is not given the sandbox it deploys into' >&2
+  exit 1
+}
 fake_bin=$(mktemp -d "${TMPDIR:-/tmp}/nas-platform-suite-test.XXXXXX")
 fake_bin=$(CDPATH= cd -P "$fake_bin" && pwd -P)
 docker_log=$fake_bin/docker.log
@@ -320,17 +340,20 @@ assert_output \
   'suite=downloaders tags=host_prep,deployment_bundle,ntfy,arr,downloaders playbook=site.yml scenarios=true' \
   --describe-suite downloaders
 assert_output \
+  'suite=bindery tags=host_prep,deployment_bundle,ntfy,arr,downloaders,bindery playbook=site.yml scenarios=true' \
+  --describe-suite bindery
+assert_output \
   'suite=kapowarr tags=host_prep,deployment_bundle,ntfy,kapowarr playbook=site.yml scenarios=true' \
   --describe-suite kapowarr
 assert_output \
   'suite=pinchflat tags=host_prep,deployment_bundle,ntfy,pinchflat playbook=site.yml scenarios=true' \
   --describe-suite pinchflat
-for project in bindery trailarr seerr; do
+for project in trailarr seerr; do
   assert_output \
     "suite=$project tags=host_prep,deployment_bundle,media_acquisition_foundation playbook=site.yml scenarios=true" \
     --describe-suite "$project"
 done
-grep -qF 'bindery|trailarr|seerr)' "$integration" || {
+grep -qF 'trailarr|seerr)' "$integration" || {
   printf '%s\n' 'integration runner has no closed acquisition foundation dispatch' >&2
   exit 1
 }
@@ -340,27 +363,39 @@ grep -qF '/repo/tests/contracts/"\$INTEGRATION_SUITE"-foundation.sh static' "$in
 }
 acquisition_runtime_contract_holds() {
   source_path=$1
-  reader_converge=$(sed -n '/converge_media_acquisition_reader_prerequisites() {/,/^    }$/p' "$source_path")
-  foundation_verify=$(sed -n '/run_media_acquisition_foundation_verify() {/,/^    }$/p' "$source_path")
-  acquisition_dispatch=$(sed -n '/bindery|trailarr|seerr)/,/;;/p' "$source_path" | tail -n 12)
+  library_path=$2
+  reader_converge=$(sed -n '/converge_media_acquisition_reader_prerequisites() {/,/^}$/p' "$library_path")
+  foundation_verify=$(sed -n '/run_media_acquisition_foundation_verify() {/,/^}$/p' "$library_path")
+  # The foundation verification now delegates to the one shared launcher, so the
+  # play it runs is read there. The single fact that launcher forces lives in a
+  # case arm; the foundation tag must not be named by it, or the lane would
+  # assert against a truth it supplied itself instead of the inventory's.
+  verification_launcher=$(sed -n '/^run_verification() {/,/^}$/p' "$library_path")
+  forced_fact_arm=$(printf '%s\n' "$verification_launcher" |
+    grep -B 1 -F -- '-e media_usenet_enabled=true' | head -n 1 | tr -d ' ')
+  acquisition_dispatch=$(sed -n '/trailarr|seerr)/,/;;/p' "$source_path" | tail -n 12)
   printf '%s\n' "$reader_converge" |
     grep -qF -- '--tags host_prep,deployment_bundle,ntfy,audiobookshelf,jellyfin' &&
-    printf '%s\n' "$foundation_verify" | grep -qF '/repo/verify.yml' &&
     printf '%s\n' "$foundation_verify" |
-      grep -qF -- '--tags platform_verify_media_acquisition_foundation' &&
-    ! printf '%s\n' "$foundation_verify" |
-      grep -Eq -- '-e (platform_media_control_network|media_usenet_enabled|media_torrent_enabled)=' &&
+      grep -qF 'run_verification media_acquisition_foundation' &&
+    printf '%s\n' "$verification_launcher" | grep -qF '/repo/verify.yml' &&
+    printf '%s\n' "$verification_launcher" |
+      grep -qF -- '--tags "platform_verify_$verification_tag"' &&
+    [ "$forced_fact_arm" = 'arr|downloaders)' ] &&
+    ! printf '%s\n' "$verification_launcher" |
+      grep -Eq -- '-e (platform_media_control_network|media_torrent_enabled)=' &&
     printf '%s\n' "$acquisition_dispatch" |
       grep -qF 'converge_media_acquisition_reader_prerequisites' &&
     printf '%s\n' "$acquisition_dispatch" |
       grep -qF 'run_media_acquisition_foundation_verify'
 }
-acquisition_runtime_contract_holds "$integration" || {
+acquisition_runtime_contract_holds "$integration" "$controller_library" || {
   printf '%s\n' 'acquisition suites omit the shared inventory-derived Linux runtime verifier path' >&2
   exit 1
 }
 sed '/run_media_acquisition_foundation_verify$/d' "$integration" > "$acquisition_runtime_mutant"
-if acquisition_runtime_contract_holds "$acquisition_runtime_mutant"; then
+if acquisition_runtime_contract_holds "$acquisition_runtime_mutant" \
+    "$controller_library"; then
   printf '%s\n' 'acquisition runtime contract accepts removal of real verifier execution' >&2
   exit 1
 fi
@@ -410,7 +445,7 @@ grep -qF 'chmod 0700 "$sandbox"' "$integration" || {
   exit 1
 }
 grep -qF -- '" integration-run "$playbook" "$@"' "$integration"
-grep -qF -- '\"\$playbook\" \"\$@\"' "$integration"
+grep -qF -- '"$playbook" "$@"' "$controller_library"
 grep -qF -- 'run_play --tags \"\$INTEGRATION_TAGS\" \"\$@\"' "$integration"
 grep -qF -- 'run_play \"\$@\"' "$integration"
 
@@ -454,12 +489,12 @@ controller_run_line=$(grep -nF 'docker run --rm' "$integration" |
   printf '%s\n' 'invalid integration namespaces are not refused before the play' >&2
   exit 1
 }
-run_play_namespace=$(sed -n '/^    run_play() {/,/^    }$/p' "$integration")
+run_play_namespace=$(sed -n '/^run_play() {/,/^}$/p' "$controller_library")
 for scoped_project_variable in \
   arr_platform_project_name downloaders_platform_project_name; do
   printf '%s\n' "$run_play_namespace" |
     grep -qF -- \
-      "-e $scoped_project_variable=\\\"\$integration_project_namespace\\\"" || {
+      "-e $scoped_project_variable=\"\$integration_project_namespace\"" || {
     printf 'integration plays omit scoped namespace %s\n' \
       "$scoped_project_variable" >&2
     exit 1
@@ -469,13 +504,13 @@ done
 # namespace, so the disposable lane must set it: a stack deployed under its
 # production project is not owned by sandbox cleanup and survives the run.
 printf '%s\n' "$run_play_namespace" |
-  grep -qF -- '-e platform_project_name=\"$integration_project_namespace\"' || {
+  grep -qF -- '-e platform_project_name="$integration_project_namespace"' || {
   printf '%s\n' 'integration plays do not deploy under the disposable namespace' >&2
   exit 1
 }
-if grep -n -- '-e platform_project_name=' "$integration" |
-   grep -vF -- '-e platform_project_name=\"$integration_project_namespace\"' |
-   grep -vF -- '-e platform_project_name=$integration_project_namespace-negative' \
+if grep -n -- '-e platform_project_name=' "$integration" "$controller_library" |
+   grep -vF -- '-e platform_project_name="$integration_project_namespace"' |
+   grep -vF -- '-e platform_project_name="$integration_project_namespace-negative"' \
      >/dev/null; then
   printf '%s\n' 'integration plays use a project name the sandbox does not derive' >&2
   exit 1
@@ -484,33 +519,13 @@ fi
 # Enabled acquisition suites must prove idempotence with a second normal play,
 # not infer it from check mode. Exercise the production recap parser directly so
 # task output cannot satisfy the gate and malformed or partial recaps fail closed.
-sed -n '/^    enabled_idempotence_recap_is_clean() {/,/^    }$/p' \
-  "$integration" | ruby -e '
-    # Reproduce what the controller receives, rather than merely unescaping.
-    # The helper lives inside a double-quoted string, so the shell removes an
-    # unescaped quote instead of passing it through: extracting with a plain
-    # unescape rebuilt a correct function from broken source and hid an awk
-    # syntax error that only appeared when a suite actually ran.
-    source = STDIN.read
-    out = +""
-    index = 0
-    while index < source.length
-      character = source[index]
-      if character == "\\" && index + 1 < source.length &&
-         ["$", "`", "\"", "\\"].include?(source[index + 1])
-        out << source[index + 1]
-        index += 2
-        next
-      end
-      if character == "\""
-        index += 1
-        next
-      end
-      out << character
-      index += 1
-    end
-    print out
-  ' > "$idempotence_helper"
+# The recap parser is ordinary shell in a file of its own, so the lane sources
+# the production function itself. It used to be rebuilt here from the escaped
+# text of the controller argument by a hand-written unescaper, because a plain
+# unescape produced a *correct-looking* function from broken source and hid an
+# awk syntax error that only appeared when a suite actually ran.
+sed -n '/^enabled_idempotence_recap_is_clean() {/,/^}$/p' \
+  "$controller_library" > "$idempotence_helper"
 [ -s "$idempotence_helper" ] || {
   printf '%s\n' 'integration runner has no enabled idempotence recap parser' >&2
   exit 1
@@ -518,9 +533,9 @@ sed -n '/^    enabled_idempotence_recap_is_clean() {/,/^    }$/p' \
 . "$idempotence_helper"
 
 enabled_idempotence_runner=$(sed -n \
-  '/^    run_enabled_idempotence() {/,/^    }$/p' "$integration")
+  '/^run_enabled_idempotence() {/,/^}$/p' "$controller_library")
 printf '%s\n' "$enabled_idempotence_runner" |
-  grep -qF 'run_play --tags "\$idempotence_tags"' || {
+  grep -qF 'run_play --tags "$idempotence_tags"' || {
     printf '%s\n' 'enabled idempotence gate does not run a tagged play' >&2
     exit 1
   }
@@ -633,7 +648,7 @@ grep -qF -- '-e PLATFORM_JELLYFIN_FIXTURE_PRESEEDED="$jellyfin_fixture_preseeded
 
 immich_negative_order_holds() {
   source_path=$1
-  function_body=$(sed -n '/run_immich_restore_negative_matrix() {/,/^    }$/p' "$source_path")
+  function_body=$(sed -n '/run_immich_restore_negative_matrix() {/,/^}$/p' "$source_path")
   host_prep_line=$(printf '%s\n' "$function_body" |
     grep -nF -- '--tags host_prep,deployment_bundle' | head -1 | cut -d: -f1)
   scenario_loop_line=$(printf '%s\n' "$function_body" |
@@ -642,7 +657,7 @@ immich_negative_order_holds() {
   [ -n "$host_prep_line" ] && [ -n "$scenario_loop_line" ] &&
     [ "$host_prep_line" -lt "$scenario_loop_line" ]
 }
-immich_negative_order_holds "$integration" || {
+immich_negative_order_holds "$controller_library" || {
   printf '%s\n' 'Immich isolated-root host preparation does not precede the negative matrix' >&2
   exit 1
 }
@@ -663,7 +678,7 @@ ruby -e '
   abort "cannot extract negative matrix loop" unless loop_index
   source.insert(loop_index + 1, *block)
   File.write(ARGV.fetch(1), source.join)
-' "$integration" "$immich_order_mutant"
+' "$controller_library" "$immich_order_mutant"
 if immich_negative_order_holds "$immich_order_mutant"; then
   printf '%s\n' 'Immich negative-matrix order guard accepts the loop-before-host-prep mutant' >&2
   exit 1
@@ -685,7 +700,7 @@ printf '%s\n' "$jellyfin_scenarios" | grep -qF 'run_jellyfin_contract run'
 grep -qF -- 'controller_mount=$sandbox/repo' "$integration"
 grep -qF -- 'install -m 0600 \"\$vault_file\" /repo/inventory/group_vars/all/vault.yml' "$integration"
 grep -qF -- 'export ANSIBLE_VAULT_PASSWORD_FILE=\"\$vault_password_file\"' "$integration"
-grep -qF -- '-e @\"\$fixture_vars_file\"' "$integration" || {
+grep -qF -- '-e @"$fixture_vars_file"' "$controller_library" || {
   printf '%s\n' 'integration deployment does not consume the protected Immich fixture policy' >&2
   exit 1
 }
@@ -743,8 +758,38 @@ prepull_fail() {
 cat > "$prepull_bin/docker" <<'EOF'
 #!/bin/sh
 set -eu
+# The controller image is resolved before anything is pulled: absent locally,
+# and -- unless the case says otherwise -- available from the registry.
+#
+# The formatted probe is the collision fixture asking for a registry digest. An
+# image this run pulled has one; an image built locally, which STUB_NO_REPO_DIGEST
+# stands in for, has none, and the fixture has to notice.
+if [ "${1:-}" = image ] && [ "${2:-}" = inspect ]; then
+  if [ "${3:-}" = --format ]; then
+    if [ "${STUB_NO_REPO_DIGEST:-false}" != true ] &&
+       grep -Fxq -- "${5:-}" "${STUB_PULL_LOG:?}" 2>/dev/null; then
+      printf '%s@sha256:%064d\n' "${5%%:*}" 0
+    fi
+    exit 0
+  fi
+  exit 1
+fi
+if [ "${1:-}" = version ]; then
+  printf '%s\n' "${STUB_DAEMON_ARCH:-amd64}"
+  exit 0
+fi
 if [ "${1:-}" = pull ]; then
   printf '%s\n' "$2" >> "${STUB_PULL_LOG:?}"
+  # A registry that answers "denied" rather than "toomanyrequests" is the
+  # ordinary missing-package case, not pressure, and must not be retried.
+  if [ -n "${STUB_DENY_PREFIX:-}" ]; then
+    case $2 in
+      "$STUB_DENY_PREFIX"*)
+        printf 'denied: denied\n' >&2
+        exit 1
+        ;;
+    esac
+  fi
   attempt=$(grep -Fxc -- "$2" "$STUB_PULL_LOG" || true)
   if [ "$attempt" -le "${STUB_PULL_REFUSALS:-0}" ]; then
     if [ -n "${STUB_RETRY_AFTER_LINE:-}" ]; then
@@ -796,13 +841,56 @@ if grep -qF 'ruby:3.2-alpine' "$collision_test"; then
 fi
 [ "$(grep -Fc -- '--pull=never' "$collision_test")" -eq 2 ] ||
   prepull_fail 'both collision endpoints must explicitly refuse implicit pulls'
-grep -qF 'MEDIA_CONTROL_COLLISION_IMAGE="$runner_image"' "$integration" ||
-  prepull_fail 'the owning integration lane does not pass its pre-pulled controller image'
+grep -qF 'MEDIA_CONTROL_COLLISION_IMAGE="$collision_image"' "$integration" ||
+  prepull_fail 'the owning integration lane does not pass its pre-pulled fixture image'
 grep -qF '/repo/tests/media_control_network_collision_test.sh live' "$integration" ||
   prepull_fail 'the owning integration lane does not execute the live collision test'
 
 compose_images() {
   sed -n 's/^[[:space:]]*image:[[:space:]]*//p' "$repo_dir/services/$1/compose.yml"
+}
+
+toolchain_prefix=$(sed -n \
+  's/^toolchain_repository=${INTEGRATION_TOOLCHAIN_REPOSITORY:-\(.*\)}$/\1/p' \
+  "$integration")
+[ -n "$toolchain_prefix" ] ||
+  prepull_fail 'could not read the controller toolchain repository'
+
+# The controller no longer costs a Docker Hub pull: it comes from the published
+# toolchain image, and the base python image is pulled only by the lanes that
+# converge it as a service in its own right. Measured across the seventeen CI
+# lanes that is 66 Docker Hub pulls per full matrix before and 52 after.
+#
+# The toolchain tag is a digest over the harness's own pins, so it is matched by
+# shape rather than restated here -- restating it would mean this test computed
+# the digest a second way and pinned that instead. Everything else in the log
+# must be exactly the services the suite converges.
+assert_toolchain_pull_set() {
+  toolchain_expected_services=$1
+  toolchain_actual=$(sort -u "$pull_log")
+  toolchain_seen=$(printf '%s\n' "$toolchain_actual" | grep "^$toolchain_prefix:" || true)
+  [ "$(printf '%s\n' "$toolchain_seen" | grep -c .)" -eq 1 ] ||
+    prepull_fail "expected exactly one controller toolchain pull, saw [$toolchain_seen]"
+  toolchain_tag=${toolchain_seen#"$toolchain_prefix":}
+  case $toolchain_tag in
+    amd64-*|arm64-*|unknown-*) ;;
+    *) prepull_fail "the controller toolchain tag names no daemon architecture: $toolchain_tag" ;;
+  esac
+  toolchain_tag_digest=${toolchain_tag#*-}
+  case $toolchain_tag_digest in
+    *[!0123456789abcdef]*|"")
+      prepull_fail "the controller toolchain tag is not content-addressed: $toolchain_tag"
+      ;;
+  esac
+  [ "${#toolchain_tag_digest}" -eq 32 ] ||
+    prepull_fail "the controller toolchain digest is the wrong width: $toolchain_tag"
+  toolchain_remaining=$(printf '%s\n' "$toolchain_actual" |
+    grep -v "^$toolchain_prefix:" || true)
+  [ "$toolchain_expected_services" = "$toolchain_remaining" ] || {
+    printf 'expected service pulls:\n%s\nactual service pulls:\n%s\n' \
+      "$toolchain_expected_services" "$toolchain_remaining" >&2
+    exit 1
+  }
 }
 
 run_prepull() {
@@ -821,6 +909,9 @@ run_prepull() {
     STUB_RETRY_AFTER_LINE=${PREPULL_RETRY_AFTER_LINE:-} \
     STUB_RANDOM_VALUE=${PREPULL_RANDOM_VALUE:-0} \
     INTEGRATION_PREPULL_ONLY=1 \
+    INTEGRATION_TOOLCHAIN=${PREPULL_TOOLCHAIN:-auto} \
+    STUB_DENY_PREFIX=${PREPULL_DENY_PREFIX:-} \
+    STUB_NO_REPO_DIGEST=${PREPULL_NO_REPO_DIGEST:-false} \
     INTEGRATION_IMAGE_PULL_ATTEMPTS=$prepull_attempts \
     INTEGRATION_IMAGE_PULL_DELAY=${PREPULL_DELAY:-1} \
     INTEGRATION_IMAGE_PULL_MAX_DELAY=${PREPULL_MAX_DELAY:-60} \
@@ -868,7 +959,10 @@ assert_retry_after_sleep() {
 # cost gigabytes of runner disk for images the run never starts.
 run_prepull 0 4 --suite beszel
 [ "$prepull_status" -eq 0 ] || prepull_fail "an answering registry failed the pre-pull ($prepull_status)"
-assert_pull_set "$({ printf '%s\n' "$runner_image"; compose_images ntfy; compose_images beszel; } | sort -u)"
+assert_toolchain_pull_set "$({ compose_images ntfy; compose_images beszel; } | sort -u)"
+if grep -qxF "$runner_image" "$pull_log"; then
+  prepull_fail 'the beszel suite still spent a Docker Hub pull on the controller'
+fi
 if grep -q 'immich' "$pull_log"; then
   prepull_fail 'the beszel suite pulled images it never converges'
 fi
@@ -887,6 +981,10 @@ cp "$integration" "$truncated_repo/tests/integration.sh"
 # truncated in services/, not in its suite table: without this copy the run
 # refuses for a missing table and never reaches the enumeration this asserts.
 cp "$repo_dir/tests/ci/suites.conf" "$truncated_repo/tests/ci/suites.conf"
+# The controller image's tag is a digest over these two, so the fixture carries
+# them for the same reason it carries the suite table.
+cp "$repo_dir/tests/integration.Dockerfile" "$truncated_repo/tests/integration.Dockerfile"
+cp "$repo_dir/requirements.yml" "$truncated_repo/requirements.yml"
 cp -R "$repo_dir/services" "$truncated_repo/services"
 rm "$truncated_repo/services/beszel/compose.yml"
 : > "$pull_log"
@@ -921,24 +1019,36 @@ fi
 # the case that proves the map rather than the naming coincidence.
 run_prepull 0 4 --suite paperless
 [ "$prepull_status" -eq 0 ] || prepull_fail "the paperless pre-pull failed ($prepull_status)"
-assert_pull_set \
-  "$({ printf '%s\n' "$runner_image"; compose_images ntfy; compose_images paperless-ngx; } | sort -u)"
+assert_toolchain_pull_set \
+  "$({ compose_images ntfy; compose_images paperless-ngx; } | sort -u)"
 
 # An untagged smoke run converges everything, so every service directory in the
 # tree must be reachable from the harness map. A directory the map forgot shows up
 # here as a missing pull.
 run_prepull 0 4 --suite smoke
 [ "$prepull_status" -eq 0 ] || prepull_fail "the untagged smoke pre-pull failed ($prepull_status)"
-all_service_images=$(printf '%s\n' "$runner_image"
-                     for compose in "$repo_dir"/services/*/compose.yml; do
+all_service_images=$(for compose in "$repo_dir"/services/*/compose.yml; do
                        sed -n 's/^[[:space:]]*image:[[:space:]]*//p' "$compose"
                      done)
-assert_pull_set "$(printf '%s\n' "$all_service_images" | sort -u)"
+assert_toolchain_pull_set "$(printf '%s\n' "$all_service_images" | sort -u)"
+# Dozzle's alert relay runs on the base python image as a service of its own, so
+# the lanes that converge it still pull it -- from Docker Hub, as a service. That
+# is why three of the seventeen lanes save nothing.
+grep -qxF "$runner_image" "$pull_log" ||
+  prepull_fail "the untagged smoke pre-pull skipped the alert relay image"
 
 # CI narrows smoke to the changed service, and the pre-pull has to narrow with it.
 run_prepull 0 4 --suite smoke --tags host_prep,deployment_bundle,ntfy,immich
 [ "$prepull_status" -eq 0 ] || prepull_fail "the tagged smoke pre-pull failed ($prepull_status)"
-assert_pull_set "$({ printf '%s\n' "$runner_image"; compose_images ntfy; compose_images immich; } | sort -u)"
+assert_toolchain_pull_set "$({ compose_images ntfy; compose_images immich; } | sort -u)"
+
+# Everything from here to the acquisition suites below is about the retry ladder
+# itself -- its backoff arithmetic, its ceilings and its budget -- rather than
+# about which image a lane needs. INTEGRATION_TOOLCHAIN=off pins it against the
+# base image the fallback path pulls, which is the path a developer's first run
+# and a fork's CI take, so the ladder is exercised where it still matters and the
+# cases stay readable as arithmetic.
+PREPULL_TOOLCHAIN=off
 
 # A registry that refuses twice and then answers must still produce a successful
 # pre-pull, with the pull retried rather than the suite failed. foundation
@@ -1048,32 +1158,39 @@ run_prepull 5 malformed --suite foundation
 [ "$prepull_status" -eq 0 ] || prepull_fail "malformed attempt budget removed the safe default"
 assert_pull_count "$runner_image" 6
 
-for project in bindery trailarr seerr; do
+unset PREPULL_TOOLCHAIN
+
+for project in trailarr seerr; do
   run_prepull 0 4 --suite "$project"
   [ "$prepull_status" -eq 0 ] || prepull_fail "$project foundation pre-pull failed ($prepull_status)"
-  assert_pull_set \
-    "$({ printf '%s\n' "$runner_image"; compose_images ntfy; compose_images audiobookshelf; compose_images jellyfin; } | sort -u)"
+  assert_toolchain_pull_set \
+    "$({ compose_images ntfy; compose_images audiobookshelf; compose_images jellyfin; } | sort -u)"
 done
+
+run_prepull 0 4 --suite bindery
+[ "$prepull_status" -eq 0 ] || prepull_fail "bindery pre-pull failed ($prepull_status)"
+assert_toolchain_pull_set \
+  "$({ compose_images ntfy; compose_images arr; compose_images downloaders; compose_images bindery; } | sort -u)"
 
 run_prepull 0 4 --suite kapowarr
 [ "$prepull_status" -eq 0 ] || prepull_fail "kapowarr pre-pull failed ($prepull_status)"
-assert_pull_set \
-  "$({ printf '%s\n' "$runner_image"; compose_images ntfy; compose_images kapowarr; } | sort -u)"
+assert_toolchain_pull_set \
+  "$({ compose_images ntfy; compose_images kapowarr; } | sort -u)"
 
 run_prepull 0 4 --suite pinchflat
 [ "$prepull_status" -eq 0 ] || prepull_fail "pinchflat pre-pull failed ($prepull_status)"
-assert_pull_set \
-  "$({ printf '%s\n' "$runner_image"; compose_images ntfy; compose_images pinchflat; } | sort -u)"
+assert_toolchain_pull_set \
+  "$({ compose_images ntfy; compose_images pinchflat; } | sort -u)"
 
 run_prepull 0 4 --suite arr
 [ "$prepull_status" -eq 0 ] || prepull_fail "arr pre-pull failed ($prepull_status)"
-assert_pull_set \
-  "$({ printf '%s\n' "$runner_image"; compose_images ntfy; compose_images arr; } | sort -u)"
+assert_toolchain_pull_set \
+  "$({ compose_images ntfy; compose_images arr; } | sort -u)"
 
 run_prepull 0 4 --suite downloaders
 [ "$prepull_status" -eq 0 ] || prepull_fail "downloaders pre-pull failed ($prepull_status)"
-assert_pull_set \
-  "$({ printf '%s\n' "$runner_image"; compose_images ntfy; compose_images arr; compose_images downloaders; } | sort -u)"
+assert_toolchain_pull_set \
+  "$({ compose_images ntfy; compose_images arr; compose_images downloaders; } | sort -u)"
 
 # A registry that refuses more times than the budget allows must fail, and must
 # not go on pulling the rest: under a rate limit the remaining pulls would only
@@ -1083,6 +1200,7 @@ assert_pull_set \
 # answers, deliberately: a retry that lost its bound would answer on the fourth
 # attempt and fail this assertion, where against a permanent refusal it would
 # instead spin until the job timeout and prove nothing.
+PREPULL_TOOLCHAIN=off
 run_prepull 3 2 --suite beszel
 [ "$prepull_status" -ne 0 ] || prepull_fail 'refusals past the budget produced a successful pre-pull'
 assert_pull_count "$runner_image" 2
@@ -1105,6 +1223,7 @@ TMPDIR=$interrupt_tmp \
   STUB_RANDOM_VALUE=0 \
   STUB_SLEEP_INTERRUPT=1 \
   INTEGRATION_PREPULL_ONLY=1 \
+  INTEGRATION_TOOLCHAIN=off \
   INTEGRATION_IMAGE_PULL_ATTEMPTS=2 \
   INTEGRATION_IMAGE_PULL_DELAY=1 \
   INTEGRATION_IMAGE_PULL_MAX_DELAY=60 \
@@ -1123,9 +1242,69 @@ run_prepull 1 0 --suite foundation
   prepull_fail "a zero attempt budget removed the retry instead of being floored ($prepull_status)"
 assert_pull_count "$runner_image" 2
 
+unset PREPULL_TOOLCHAIN
+
+# The toolchain image is an optimization and never a precondition, so the three
+# ways it can be unavailable each have to land somewhere survivable.
+#
+# A registry that refuses it under pressure is transient: it gets the same ladder
+# every other image gets, and the run still reaches the published image rather
+# than rebuilding a toolchain it could have had.
+PREPULL_DENY_PREFIX= run_prepull 2 4 --suite foundation
+[ "$prepull_status" -eq 0 ] ||
+  prepull_fail "a rate-limited toolchain pull was not retried ($prepull_status)"
+assert_toolchain_pull_set ""
+if grep -qxF "$runner_image" "$pull_log"; then
+  prepull_fail 'a retried toolchain pull still fell back to the base image'
+fi
+[ "$(wc -l < "$pull_log" | tr -d " ")" -eq 3 ] ||
+  prepull_fail "the toolchain pull was not retried to its budget: $(cat "$pull_log")"
+
+# A registry that says the image is simply not there -- a developer's machine
+# with no credential, a fork, the first run after a pin moved -- is not
+# transient. Retrying it would spend the whole ladder in sleeps to rediscover a
+# 404, so it must fall through to the base image at the first refusal.
+PREPULL_DENY_PREFIX=$toolchain_prefix run_prepull 0 4 --suite foundation
+[ "$prepull_status" -eq 0 ] ||
+  prepull_fail "an unpublished toolchain failed the pre-pull ($prepull_status)"
+grep -qxF "$runner_image" "$pull_log" ||
+  prepull_fail 'an unpublished toolchain did not fall back to the base image'
+assert_pull_count "$runner_image" 1
+[ "$(grep -c "^$toolchain_prefix:" "$pull_log")" -eq 1 ] ||
+  prepull_fail "a plain denial was retried: $(cat "$pull_log")"
+assert_sleep_log ""
+grep -qF 'no controller toolchain at' "$prepull_output" ||
+  prepull_fail "the fallback to the base image was not reported: $(cat "$prepull_output")"
+
+# The assignments above are prefixes on a function call, so POSIX leaves them set
+# in the caller. Clearing the denial is what stops the next case from proving
+# itself through the previous case's fallback instead of its own.
+unset PREPULL_DENY_PREFIX
+
+# A toolchain built here rather than pulled has no registry digest, and the
+# collision fixture refuses a reference without one. That case must fall back to
+# the digest-pinned base image -- the one the local-build path has already pulled
+# -- rather than failing the arr lane on the digest guard.
+PREPULL_NO_REPO_DIGEST=true run_prepull 0 4 --suite foundation
+[ "$prepull_status" -eq 0 ] ||
+  prepull_fail "a locally built toolchain failed the pre-pull ($prepull_status)"
+grep -qxF "$runner_image" "$pull_log" ||
+  prepull_fail 'a toolchain without a registry digest left the collision fixture unpinned'
+unset PREPULL_NO_REPO_DIGEST
+
+# And the operator's escape hatch has to reproduce exactly what the harness did
+# before the image existed: the base image, pulled from Docker Hub, and nothing
+# from ghcr.io at all.
+PREPULL_TOOLCHAIN=off run_prepull 0 4 --suite beszel
+[ "$prepull_status" -eq 0 ] ||
+  prepull_fail "the disabled toolchain failed the pre-pull ($prepull_status)"
+assert_pull_set \
+  "$({ printf '%s\n' "$runner_image"; compose_images ntfy; compose_images beszel; } | sort -u)"
+
 # Counterexample: the stub must be able to fail a pre-pull at all, otherwise every
 # assertion above is vacuous.
 run_prepull 3 2 --suite foundation
 [ "$prepull_status" -ne 0 ] || prepull_fail 'the stub registry cannot refuse'
+unset PREPULL_TOOLCHAIN
 
 printf 'integration suite dispatch and image pre-pull tests passed\n'

@@ -211,10 +211,15 @@ def _immich(errors, path, entry):
     string(errors, f"{path}.email", entry["email"], pattern=EMAIL)
     string(errors, f"{path}.password", entry["password"], nonempty=True)
     string(errors, f"{path}.name", entry["name"], nonempty=True)
-    if not _GUARDS.is_integer(entry["quota_size"]):
-        errors.append(f"{path}.quota_size: must be an integer")
-    elif entry["quota_size"] < 0:
-        errors.append(f"{path}.quota_size: must not be negative")
+    # null is Immich's own representation of an unlimited quota, and the only
+    # value that expresses one. The server skips the check entirely when
+    # quotaSizeInBytes is null; 0 is the opposite of unlimited and rejects every
+    # upload of a non-empty file.
+    if entry["quota_size"] is not None:
+        if not _GUARDS.is_integer(entry["quota_size"]):
+            errors.append(f"{path}.quota_size: must be an integer or null")
+        elif entry["quota_size"] < 0:
+            errors.append(f"{path}.quota_size: must not be negative")
 
 
 def _jellyfin(errors, path, entry):

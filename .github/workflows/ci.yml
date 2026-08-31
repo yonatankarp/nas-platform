@@ -118,6 +118,17 @@ jobs:
       - name: Validate shell syntax
         run: find tests -type f -name '*.sh' -exec sh -n {} +
 
+      - name: Install ShellCheck
+        run: |
+          # ubuntu-latest ships ShellCheck, so this normally installs nothing.
+          # The policy gate lints the integration controller library with it as
+          # one bare manifest line, which cannot guard itself, so recover here
+          # if the runner image ever drops the binary.
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            sudo apt-get -o Acquire::Retries=3 update
+            sudo apt-get -o Acquire::Retries=3 install --yes shellcheck
+          fi
+
       - name: Install Ansible tooling
         run: |
           # apache2-utils, openssh-client and openssl all ship in the ubuntu-latest
@@ -297,11 +308,69 @@ jobs:
           PART: ${{ matrix.part }}
         run: ruby "tests/media_acquisition_reconciliation_${PART}_test.rb"
 
+  toolchain:
+    # Every suite leg used to start a bare python:3.14-alpine and run apk, pip and
+    # ansible-galaxy inside it before it could converge anything -- the same
+    # toolchain installed up to seventeen times per matrix, from three registries,
+    # with no cache of any kind. One of those legs failed on 2026-08-30 with a
+    # corrupted galaxy response cache, a failure mode that only exists because the
+    # install repeats.
+    #
+    # It is built once here instead and published to ghcr.io, which the suites job
+    # already authenticates to. The tag is a digest of the harness's pins,
+    # tests/integration.Dockerfile and requirements.yml, so a bumped pin is a new
+    # tag rather than a stale layer and this job is a registry probe on every run
+    # that changes none of them. There is deliberately no actions/cache and no
+    # type=gha layer cache: a content-addressed tag only ever misses when its
+    # inputs changed, and then the layer cache would be cold too. The registry is
+    # the cache.
+    #
+    # Nothing depends on this succeeding. tests/integration.sh builds the image
+    # locally when it cannot pull one, and installs the toolchain inside the run
+    # when it cannot build one, which is exactly what it did before this job
+    # existed.
+    timeout-minutes: 20
+    needs: changes
+    # A fork's GITHUB_TOKEN is read-only, so no packages: write scope exists for it
+    # to publish with. Skipping is the honest outcome: the fork's suites then take
+    # the same local-build path a developer's machine takes.
+    if: ${{ needs.changes.outputs.suites != '[]' && github.event.pull_request.head.repo.fork != true }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Authenticate to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The harness owns the tag, the build arguments and the skip: naming them
+      # here as well is how the published image and the image the suites look for
+      # would drift apart.
+      - name: Publish the controller toolchain image
+        env:
+          INTEGRATION_TOOLCHAIN_PUBLISH: '1'
+        run: tests/integration.sh
+
   suites:
     timeout-minutes: 60
     name: ${{ matrix.suite }}
-    needs: changes
-    if: ${{ needs.changes.outputs.suites != '[]' }}
+    needs:
+      - changes
+      - toolchain
+    # The toolchain is an optimization, never a precondition, so a lane still runs
+    # when publishing failed or was skipped -- it builds the image itself instead.
+    # Dropping the implicit success gate that `needs` carries is what forces the
+    # explicit changes result term: without it a failed classification would reach
+    # the matrix as an empty selection rather than as a skip.
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.suites != '[]' }}
     runs-on: ubuntu-latest
     # This is the only job that talks to a container registry, so the extra scope
     # is granted here rather than at the top level. A job-level block REPLACES the
@@ -408,6 +477,7 @@ jobs:
       - docs
       - mutation
       - reconciliation
+      - toolchain
       - suites
     runs-on: ubuntu-latest
 
@@ -423,4 +493,5 @@ jobs:
             docs="${{ needs.docs.result }}" \
             mutation="${{ needs.mutation.result }}" \
             reconciliation="${{ needs.reconciliation.result }}" \
+            toolchain="${{ needs.toolchain.result }}" \
             suites="${{ needs.suites.result }}"

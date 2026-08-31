@@ -1,0 +1,96 @@
+---
+# Administrator bootstrap. Audiobookshelf starts uninitialized and takes its
+# first administrator through /init, so this reads that one-time state, creates
+# the vault-named administrator when the server has none, and resolves the
+# bearer every later reconciliation task authorizes with.
+- name: Read Audiobookshelf initialization state
+  ansible.builtin.uri:
+    url: "{{ audiobookshelf_api }}/status"
+    return_content: true
+  register: audiobookshelf_status
+  changed_when: false
+  check_mode: false
+
+- name: Resolve Audiobookshelf initialization state
+  ansible.builtin.set_fact:
+    audiobookshelf_initialized: "{{ audiobookshelf_status.json.isInit | bool }}"
+
+- name: Report planned Audiobookshelf administrator creation
+  ansible.builtin.debug:
+    msg: AUDIOBOOKSHELF_PLAN_ADMIN_CREATE
+  when:
+    - ansible_check_mode
+    - not audiobookshelf_initialized | bool
+  changed_when: true
+
+- name: Initialize the vault-named Audiobookshelf administrator
+  ansible.builtin.uri:
+    url: "{{ audiobookshelf_api }}/init"
+    method: POST
+    body_format: json
+    body:
+      newRoot:
+        username: "{{ vault_audiobookshelf_admin_username }}"
+        password: "{{ vault_audiobookshelf_admin_password }}"
+    status_code: [200]
+  when:
+    - not ansible_check_mode
+    - not audiobookshelf_initialized | bool
+  changed_when: true
+  no_log: true
+
+- name: Authenticate the Audiobookshelf administrator for reconciliation
+  ansible.builtin.uri:
+    url: "{{ audiobookshelf_api }}/login"
+    method: POST
+    body_format: json
+    body:
+      username: "{{ vault_audiobookshelf_admin_username }}"
+      password: "{{ vault_audiobookshelf_admin_password }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: audiobookshelf_reconcile_login
+  when: not ansible_check_mode or audiobookshelf_initialized | bool
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Resolve sanitized Audiobookshelf administrator authentication response
+  ansible.builtin.set_fact:
+    audiobookshelf_reconcile_login_status: "{{ audiobookshelf_reconcile_login.status | default(0) | int }}"
+    audiobookshelf_reconcile_login_kind: >-
+      {% set media_type = audiobookshelf_reconcile_login.content_type
+         | default('') | lower | regex_replace(';.*$', '') | trim %}
+      {{ 'json' if media_type == 'application/json' or media_type is match('^application/.+[+]json$')
+         else 'text' if media_type is match('^text/')
+         else 'binary' if media_type is match('^(audio/|application/octet-stream$)')
+         else 'other' }}
+  when: not ansible_check_mode or audiobookshelf_initialized | bool
+  no_log: true
+
+- name: Refuse unavailable Audiobookshelf administrator authentication
+  ansible.builtin.assert:
+    that:
+      - audiobookshelf_reconcile_login_status | int != 401
+    fail_msg: >-
+      Managed Audiobookshelf administrator cannot authenticate. Pinned Audiobookshelf 2.36.0
+      exposes no unauthenticated API path to reactivate an inactive root; verify vault credentials
+      or reactivate it through an already-authorized root session, then rerun.
+  when: not ansible_check_mode or audiobookshelf_initialized | bool
+
+- name: Refuse unexpected Audiobookshelf administrator authentication responses
+  ansible.builtin.assert:
+    that:
+      - audiobookshelf_reconcile_login_status | int == 200
+    fail_msg: >-
+      Audiobookshelf administrator authentication returned an unexpected sanitized response
+      (status={{ audiobookshelf_reconcile_login_status | int }},
+      content={{ audiobookshelf_reconcile_login_kind }}).
+  when: not ansible_check_mode or audiobookshelf_initialized | bool
+
+- name: Resolve the Audiobookshelf reconciliation bearer
+  ansible.builtin.set_fact:
+    audiobookshelf_reconcile_token: "{{ audiobookshelf_reconcile_login.json.user.accessToken }}"
+  when: not ansible_check_mode or audiobookshelf_initialized | bool
+  no_log: true

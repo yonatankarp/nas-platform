@@ -746,11 +746,14 @@ refuse("filename-injection mutation was not detected") unless
 
 contract_text = File.read(File.join(ROOT, "tests", "contracts", "immich.sh"))
 integration_text = File.read(File.join(ROOT, "tests", "integration.sh"))
-clean_restore_source = integration_text[/run_immich_clean_restore\(\) \{.*?^    \}/m].to_s
+# The launchers the Immich lane drives live in the controller's library, where
+# they are ordinary shell rather than escaped text inside the `sh -c` argument.
+library_text = File.read(File.join(ROOT, "tests", "integration_controller_lib.sh"))
+clean_restore_source = library_text[/^run_immich_clean_restore\(\) \{.*?^\}/m].to_s
 [
   "redis-cli --raw set",
   "redis-cli --raw exists",
-  "docker compose --project-name $integration_project_namespace-immich",
+  %(docker compose --project-name "$integration_project_namespace-immich"),
   "stop immich-server immich-machine-learning database",
   "rm -f database"
 ].each do |sentinel|
@@ -761,19 +764,27 @@ refuse("clean restore removes the live Redis container") if clean_restore_source
 %w[clean-restore-seed clean-restore-assert].each do |mode|
   refuse("Immich contract omits #{mode}") unless contract_text.include?(mode)
 end
+# What the restore scenarios do is written in the launcher library; that the
+# Immich suite reaches them is written in the controller's own dispatch. Both
+# halves are required: a library nothing calls proves nothing.
 [
-  "run_immich_contract clean-restore-seed",
-  "docker compose --project-name $integration_project_namespace-immich",
+  %(docker compose --project-name "$integration_project_namespace-immich"),
   "run_play --tags immich",
   "run_immich_contract clean-restore-assert",
   "IMMICH_CLEAN_RESTORE_IDEMPOTENT",
-  "run_immich_restore_negative_matrix",
   "missing-safe-backup",
   "unsafe-newest-backup",
   "ambiguous-newest-backup",
   "previous-failed-restore",
   "IMMICH_EXISTING_DATABASE_BACKUP_IGNORED",
   "IMMICH_NEGATIVE_RESTORE_MATRIX_OK"
+].each do |sentinel|
+  refuse("Immich integration library omits #{sentinel}") unless library_text.include?(sentinel)
+end
+[
+  "run_immich_contract clean-restore-seed",
+  "run_immich_clean_restore",
+  "run_immich_restore_negative_matrix"
 ].each do |sentinel|
   refuse("Immich integration omits #{sentinel}") unless integration_text.include?(sentinel)
 end

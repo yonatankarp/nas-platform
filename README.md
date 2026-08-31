@@ -19,7 +19,7 @@ off-site backup. RAID is not a backup.
 - [Adding a service](docs/adding-a-service.md)
 
 The [`services/manifest.yml`](services/manifest.yml) catalog distinguishes
-twelve implemented service projects from three planned media-acquisition
+thirteen implemented service projects from two planned media-acquisition
 projects. Runtime role and service directories exist only for the implemented
 projects; the planned entries remain inert and intentionally have no runtime
 role or Compose directory.
@@ -201,8 +201,19 @@ interface is the writer, and its only access control is the administrator
 identity authored in vault; nothing is downloaded until an operator declares a
 source in the application. Kapowarr additionally needs the vault-authored
 ComicVine key entered in the application before it can identify anything, which
-is the deliberate reason a fresh deployment acquires nothing. The remaining
-three acquisition projects — Bindery, Trailarr and Seerr — stay planned.
+is the deliberate reason a fresh deployment acquires nothing.
+
+Phase 2 also adds Bindery, which writes the `Books/Ebooks` library Komga reads
+and the `Media/Audiobooks` library Audiobookshelf reads. Bindery is not
+self-contained: it stores a Prowlarr instance and a SABnzbd download client, and
+it resolves the host in both URLs at write time, so it joins `media-control` and
+converges after those two projects. Those two rows follow the same transport
+flag Phase 1 does, so the NAS declares them and the Mac proof does not, but the
+container itself deploys unconditionally on both. Unattended auto-grabbing is
+pinned off explicitly, because Bindery's kill switch fails open and a missing
+setting reads as enabled, and telemetry is disabled; a deployment that has been
+given no author to monitor therefore downloads nothing. The remaining two
+acquisition projects — Trailarr and Seerr — stay planned.
 
 Each of the later phases was investigated before it was planned, against
 upstream source and a running container. The
@@ -232,6 +243,14 @@ real Docker socket. It asserts three properties: the run converges, a second run
 changes nothing, and a dry run works. Two of the worst bugs found so far, a fact
 that exists only on Linux and `command` being skipped under `--check`, both passed
 syntax checking and were caught only by running.
+
+The controller that container runs is a published image
+(`tests/integration.Dockerfile`), tagged with a digest of the harness's pins,
+`requirements.yml` and the Dockerfile itself, so a bumped pin is a new image
+rather than a stale one. Nothing requires it: a run that cannot pull the image
+builds it locally and reuses it afterwards, and a run that cannot build it
+installs the same toolchain inside the container the way the harness always did.
+`INTEGRATION_TOOLCHAIN=off` forces that last path.
 
 The current Mac proof covers ntfy, Beszel, Dozzle, Audiobookshelf, Komga,
 Jellyfin, Immich, Paperless-ngx, Pinchflat, and Kapowarr — every implemented
@@ -317,13 +336,17 @@ says.
   production: one mode-0600 `services/<name>/.env` per stack, rendered from
   vault by each role's `templates/env.j2`.
 - **Service data under the Docker root**, `/volume1/Docker` in production:
-  Dozzle's users file, Beszel's hub private key, and the first-run
-  configuration Ansible seeds and then leaves alone — SABnzbd's
+  Dozzle's data directory as a whole, Beszel's hub private key, and the
+  first-run configuration Ansible seeds and then leaves alone — SABnzbd's
   `sabnzbd/config/sabnzbd.ini` (administrator username, password and API key),
   the Radarr, Sonarr and Prowlarr `config/config.xml` files (API keys), and
   Bazarr's `bazarr/config/config/config.yaml` (API key, administrator identity).
   Each is seeded mode 0600 with `force: false`, so the application owns it
   afterwards; applications and databases keep further copies of their own.
+  Dozzle's directory is secret-bearing past its users file: Ansible POSTs a
+  notification dispatcher into Dozzle's API, and Dozzle persists that
+  dispatcher there complete with the `Authorization: Bearer` header it
+  carries.
 - **The deploy account's home**, once `install-production-auto-deploy.yml` has
   run. `~/.config/nas-platform` is mode 0700 and holds the mode-0600
   `vault-password` file the poller requires, plus two protected ntfy publisher

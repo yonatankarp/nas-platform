@@ -1,4 +1,9 @@
 ---
+# Platform fragments. Compose resolves a YAML anchor only inside the file that
+# declares it, so every stack carries its own copy; tests/policy_test.rb pins the
+# copies equal and records there why cross-file sharing was not taken. A
+# container needing different health-check timing overrides only the fields it
+# changes, so a deviation reads as a deviation.
 x-logging: &default-logging
   driver: json-file
   options:
@@ -22,7 +27,8 @@ x-service-defaults: &service-defaults
   # Each of these owns a SQLite database under a recovery: critical config
   # directory. A shutdown only has to commit the open transaction and check the
   # write-ahead log back into it; 30s is far past that and short enough that a
-  # stack restart stays quick.
+  # stack restart stays quick. A container wanting a different window states its
+  # own instead of joining this fragment: shutdown behaviour is never inherited.
   stop_grace_period: 30s
   logging: *default-logging
   networks:
@@ -36,6 +42,12 @@ x-job-defaults: &job-defaults
   logging: *default-logging
   networks:
     - media-control
+
+x-healthcheck-defaults: &healthcheck-defaults
+  interval: 30s
+  timeout: 10s
+  retries: 5
+  start_period: 60s
 
 services:
   radarr:
@@ -52,11 +64,8 @@ services:
       - ${MEDIA_ROOT:?}/Media:/data/media
     environment: *linuxserver-environment
     healthcheck:
+      <<: *healthcheck-defaults
       test: [CMD, curl, --fail, --silent, --show-error, http://127.0.0.1:7878/ping]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 60s
 
   sonarr:
     <<: *service-defaults
@@ -72,11 +81,8 @@ services:
       - ${MEDIA_ROOT:?}/Media:/data/media
     environment: *linuxserver-environment
     healthcheck:
+      <<: *healthcheck-defaults
       test: [CMD, curl, --fail, --silent, --show-error, http://127.0.0.1:8989/ping]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 60s
 
   prowlarr:
     <<: *service-defaults
@@ -91,11 +97,8 @@ services:
       - ${PROWLARR_CONFIG_PATH:?}:/config
     environment: *linuxserver-environment
     healthcheck:
+      <<: *healthcheck-defaults
       test: [CMD, curl, --fail, --silent, --show-error, http://127.0.0.1:9696/ping]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 60s
 
   bazarr:
     <<: *service-defaults
@@ -111,11 +114,8 @@ services:
       - ${MEDIA_ROOT:?}/Media:/data/media
     environment: *linuxserver-environment
     healthcheck:
+      <<: *healthcheck-defaults
       test: [CMD, curl, --fail, --silent, --show-error, http://127.0.0.1:6767/]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 60s
 
   configarr:
     <<: *job-defaults

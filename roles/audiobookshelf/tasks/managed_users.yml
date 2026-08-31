@@ -51,20 +51,29 @@
     label: audiobookshelf-managed-user
   no_log: true
 
+# The two conditions this replaces are the one decision all six HTTP-driven
+# managed-user roles share; filter_plugins/managed_user_identity.py explains why
+# they are also the only one, and carries them for every service. A third
+# condition asserted that the match's username equalled the requested one, which
+# `selectattr('username', 'equalto', ...)` above had already guaranteed; the
+# filter's docstring records why it cannot be reproduced for Immich.
 - name: Refuse ambiguous normalized Audiobookshelf managed identities
   ansible.builtin.assert:
     that:
-      - audiobookshelf_managed_user_matches[item.username] | length <= 1
       - >-
-        audiobookshelf_managed_users_listing.json.users | map(attribute='username') |
-        map('trim') | map('lower') | select('equalto', item.username | trim | lower) |
-        list | length == audiobookshelf_managed_user_matches[item.username] | length
-      - >-
-        audiobookshelf_managed_user_matches[item.username] | length == 0 or
-        audiobookshelf_managed_user_matches[item.username][0].username == item.username
+        audiobookshelf_managed_users_listing.json.users |
+        managed_user_ambiguity_errors(
+          'username', item.username,
+          audiobookshelf_managed_user_matches[item.username]
+        ) | length == 0
     fail_msg: >-
       Audiobookshelf contains a duplicate or normalized alias for a managed
-      username; resolve it manually before reconciliation.
+      username; resolve it manually before reconciliation:
+      {{ audiobookshelf_managed_users_listing.json.users |
+         managed_user_ambiguity_errors(
+           'username', item.username,
+           audiobookshelf_managed_user_matches[item.username]
+         ) | join('; ') }}
   loop: "{{ vault_managed_audiobookshelf_users }}"
   loop_control:
     label: audiobookshelf-managed-user

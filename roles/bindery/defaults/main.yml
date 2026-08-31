@@ -1,0 +1,51 @@
+---
+bindery_port: 8787
+bindery_api: "http://127.0.0.1:{{ bindery_port }}/api/v1"
+bindery_config_host_path: "{{ nas_docker_root }}/bindery/config"
+bindery_ebooks_host_path: "{{ nas_media_root }}/Books/Ebooks"
+bindery_audiobooks_host_path: "{{ nas_media_root }}/Media/Audiobooks"
+# Staging lands beside each library on the same volume and under the same
+# container path SABnzbd reports a finished download at, so an import needs no
+# path remap. The acquisition foundation already declares both directories.
+bindery_ebook_downloads_host_path: "{{ nas_media_root }}/Books/.acquisition/usenet/ebooks"
+bindery_audiobook_downloads_host_path: "{{ nas_media_root }}/Media/.acquisition/usenet/audiobooks"
+# The container paths the two libraries are mounted at, which are what Bindery
+# stores as its destination root folders. Ebooks and audiobooks must stay
+# separate roots; a single root is the collapse the design forbids.
+bindery_ebooks_root: /data/books/Ebooks
+bindery_audiobooks_root: /data/media/Audiobooks
+bindery_library_roots:
+  - "{{ bindery_ebooks_root }}"
+  - "{{ bindery_audiobooks_root }}"
+
+# Both integrations are addressed by their Compose service alias on the shared
+# media-control network, because Bindery resolves the host in each URL at write
+# time and rejects one it cannot look up.
+bindery_prowlarr_name: Prowlarr
+bindery_prowlarr_internal_url: http://prowlarr:9696
+bindery_sabnzbd_client_name: SABnzbd
+bindery_sabnzbd_host: sabnzbd
+bindery_sabnzbd_port: 8080
+# The two categories SABnzbd already declares for this platform, which is what
+# keeps an ebook and an audiobook landing in different staging directories.
+bindery_sabnzbd_ebook_category: ebooks
+bindery_sabnzbd_audiobook_category: audiobooks
+
+# The auto-grab kill switch fails open: a missing row reads as enabled, so
+# unattended grabbing is only actually disabled once the row exists and says
+# false. Telemetry is on by default with a daily ping and is pinned off here as
+# well as in the environment, so a future environment edit cannot re-enable it
+# silently.
+bindery_pinned_settings:
+  autoGrab.enabled: "false"
+  telemetry.enabled: "false"
+
+# Bindery deploys unconditionally — its web interface is the writer for both
+# libraries and is useful with no transport at all — but the Prowlarr and
+# SABnzbd rows can only be written while those two containers are running,
+# which is exactly what this flag gates.
+media_usenet_enabled: false
+
+bindery_compose_project_name: >-
+  {{ (platform_project_name ~ '-bindery')
+     if platform_project_name | default('') | length > 0 else 'bindery' }}

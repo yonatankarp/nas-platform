@@ -82,6 +82,7 @@ cp "$mac_test_dir/generate-immich-fixture-vars.rb" \
   "$fixture_mac/generate-immich-fixture-vars.rb"
 cp "$mac_test_dir/manual-validation-handoff.rb" \
   "$fixture_mac/manual-validation-handoff.rb"
+cp "$mac_test_dir/pin-protected-input.rb" "$fixture_mac/pin-protected-input.rb"
 cp "$repo_dir/tests/integration_lock.sh" "$fixture_repo/tests/integration_lock.sh"
 cat > "$fixture_repo/services/manifest.yml" <<'YAML'
 ---
@@ -92,7 +93,8 @@ cp "$repo_dir/inventory/group_vars/all/main.yml" \
   "$fixture_repo/inventory/group_vars/all/main.yml"
 chmod 0755 "$fixture_mac/run.sh" "$fixture_mac/report.rb" \
   "$fixture_mac/generate-immich-fixture-vars.rb" \
-  "$fixture_mac/manual-validation-handoff.rb"
+  "$fixture_mac/manual-validation-handoff.rb" \
+  "$fixture_mac/pin-protected-input.rb"
 
 phase_log=$temporary_parent/phase-log
 cleanup_log=$temporary_parent/cleanup-log

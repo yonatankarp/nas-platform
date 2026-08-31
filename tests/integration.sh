@@ -28,6 +28,15 @@ runner_image=docker.io/library/python:3.14-alpine@sha256:05b2b8b732ecd268fee8727
 ruby_package='ruby~3.4.9'
 curl_package='curl~8.21.0'
 
+# Where the pre-built controller toolchain is published. The image is the five
+# pins above plus tests/integration.Dockerfile and requirements.yml, already
+# installed, so a suite starts converging instead of spending a minute of every
+# lane re-running apk, pip and ansible-galaxy against three registries. Not a
+# precondition for anything: every path below falls back to installing them in a
+# bare base image, which is what this script did before the image existed.
+toolchain_repository=${INTEGRATION_TOOLCHAIN_REPOSITORY:-ghcr.io/yonatankarp/nas-platform-controller}
+toolchain_dockerfile=tests/integration.Dockerfile
+
 suite=full
 suite_tags=
 tags_explicit=false
@@ -298,6 +307,7 @@ immich immich
 paperless paperless-ngx
 arr arr
 downloaders downloaders
+bindery bindery
 kapowarr kapowarr
 pinchflat pinchflat
 '
@@ -456,8 +466,21 @@ image_pull_jitter() {
   '
 }
 
+# A refusal worth sleeping on. Docker Hub and ghcr.io both answer pressure with
+# "toomanyrequests", usually carrying a retry-after hint; both answer an image
+# that is not there, or that this caller may not read, with "denied" or "not
+# found". The distinction only matters for the toolchain image, whose absence is
+# the ordinary case on a developer's machine: retrying it would spend the whole
+# ladder in sleeps to rediscover a 404.
+refusal_is_rate_limited() {
+  LC_ALL=C grep -qiE 'toomanyrequests|too many requests|retry-after' "$1"
+}
+
 pull_image() {
   pull_target=$1
+  # When true, only a rate-limit refusal is retried and anything else fails at
+  # once. The caller is expected to have somewhere else to go.
+  pull_transient_only=${2:-false}
   pull_attempt=1
   pull_delay=$image_pull_delay
   pull_error=$(mktemp "${TMPDIR:-/tmp}/nas-platform-pull-error.XXXXXX") || pull_error=
@@ -477,6 +500,11 @@ pull_image() {
       return 0
     fi
     cat "$pull_error" >&2
+    if [ "$pull_transient_only" = true ] && ! refusal_is_rate_limited "$pull_error"; then
+      rm -f "$pull_error"
+      pull_error=
+      return 1
+    fi
     if [ "$pull_attempt" -ge "$image_pull_attempts" ]; then
       rm -f "$pull_error"
       pull_error=
@@ -525,7 +553,6 @@ suite_pull_images() {
         *",$service_tag,"*) ;;
         *)
           case "$suite:$service_tag" in
-            bindery:ntfy|bindery:audiobookshelf|bindery:jellyfin|\
             trailarr:ntfy|trailarr:audiobookshelf|trailarr:jellyfin|\
             seerr:ntfy|seerr:audiobookshelf|seerr:jellyfin) ;;
             *) continue ;;
@@ -564,10 +591,10 @@ suite_pull_images() {
 # Failing here fails the suite, deliberately: the point is to survive a transient
 # refusal, not to hide a registry that is genuinely unreachable.
 prepull_images() {
-  # The controller image is a Docker Hub pull every suite makes, and Docker Hub's
-  # anonymous allowance is the stricter of the two. No login covers it, so the
-  # retry is all this pull gets.
-  pull_image "$runner_image" || return 1
+  # Which image the controller runs from, and whether the toolchain is already
+  # in it, is decided before anything is pulled: it changes both what this
+  # function pulls and what the container has to install.
+  resolve_controller_image || return 1
   # `for candidate in $(suite_pull_images | sort -u)` would take its status from
   # sort, and #!/bin/sh has no pipefail to fix that. A missing
   # services/<dir>/compose.yml aborts the enumeration's `while` subshell under
@@ -593,20 +620,217 @@ prepull_images() {
   fi
   prepull_targets=$(sort -u "$prepull_list")
   cleanup_prepull_list
+  resolve_collision_image || return 1
   for pull_candidate in $prepull_targets; do
-    # Dozzle's alert relay runs on the same image as the controller, so skipping
-    # it here saves a second registry round trip on every suite that includes it.
-    if [ "$pull_candidate" != "$runner_image" ]; then
+    # Whatever the controller runs from is already local, so skipping it here
+    # saves a second registry round trip. On the toolchain path that is a ghcr.io
+    # image no service uses, and the base python image stops being pulled at all
+    # -- except by the three lanes that converge Dozzle, whose alert relay runs
+    # on it as a service in its own right.
+    if [ "$pull_candidate" != "$controller_image" ]; then
       pull_image "$pull_candidate" || return 1
     fi
   done
 }
 
+# Everything the controller image is built from, as one byte stream. The tag is
+# a digest of it, so a bumped pin, an edited Dockerfile or a new collection is a
+# different image rather than a stale one wearing the right name -- which is the
+# whole reason nothing here needs invalidating by hand.
+toolchain_digest_stream() {
+  printf '%s\n' "$runner_image" "$ansible_core_version" "$requests_version" \
+    "$ruby_package" "$curl_package"
+  cat "$repo_dir/$toolchain_dockerfile" "$repo_dir/requirements.yml"
+}
+
+# Alpine's base image ships none of these, and macOS ships only shasum, so the
+# digest is taken with whichever of the three the caller actually has.
+sha256_stream() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | cut -d' ' -f1
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 | cut -d' ' -f1
+  else
+    openssl dgst -sha256 | sed 's/.*[ =]//'
+  fi
+}
+
+# Only linux/amd64 is published, because only the CI runners are that. Naming the
+# daemon's architecture in the tag is what makes an Apple Silicon machine miss
+# cleanly and build its own native image, instead of pulling an amd64 controller
+# and running every play under emulation.
+toolchain_platform() {
+  toolchain_arch=$(docker version --format '{{.Server.Arch}}' 2>/dev/null) ||
+    toolchain_arch=
+  case $toolchain_arch in
+    ''|*[!abcdefghijklmnopqrstuvwxyz0123456789]*) toolchain_arch=unknown ;;
+  esac
+  printf '%s' "$toolchain_arch"
+}
+
+toolchain_reference=
+
+resolve_toolchain_reference() {
+  [ -z "$toolchain_reference" ] || return 0
+  toolchain_digest=$(toolchain_digest_stream | sha256_stream | cut -c1-32) ||
+    return 1
+  # A digest tool that answered with a diagnostic instead of a hash would
+  # otherwise become a tag, and every run would then miss on a different one.
+  case $toolchain_digest in
+    ''|*[!0123456789abcdef]*)
+      printf 'could not digest the controller toolchain inputs\n' >&2
+      return 1
+      ;;
+  esac
+  if [ "${#toolchain_digest}" -ne 32 ]; then
+    printf 'the controller toolchain digest is the wrong width\n' >&2
+    return 1
+  fi
+  toolchain_reference=$toolchain_repository:$(toolchain_platform)-$toolchain_digest
+}
+
+toolchain_context=
+
+cleanup_toolchain_context() {
+  if [ -n "$toolchain_context" ]; then
+    rm -rf -- "$toolchain_context" || true
+    toolchain_context=
+  fi
+}
+
+# The build context is exactly the two files the digest covers. Handing docker
+# the checkout instead would ship .git, every service definition and every
+# fixture to the daemon on a build that reads two files.
+build_toolchain_image() {
+  resolve_toolchain_reference || return 1
+  toolchain_context=$(mktemp -d "${TMPDIR:-/tmp}/nas-platform-toolchain.XXXXXX") ||
+    toolchain_context=
+  if [ -z "$toolchain_context" ]; then
+    printf 'could not create a toolchain build context under %s\n' \
+      "${TMPDIR:-/tmp}" >&2
+    return 1
+  fi
+  toolchain_build_status=0
+  cp "$repo_dir/$toolchain_dockerfile" "$toolchain_context/Dockerfile" &&
+    cp "$repo_dir/requirements.yml" "$toolchain_context/requirements.yml" &&
+    docker build \
+      --build-arg "CONTROLLER_BASE_IMAGE=$runner_image" \
+      --build-arg "ANSIBLE_CORE_VERSION=$ansible_core_version" \
+      --build-arg "REQUESTS_VERSION=$requests_version" \
+      --build-arg "RUBY_PACKAGE=$ruby_package" \
+      --build-arg "CURL_PACKAGE=$curl_package" \
+      --tag "$toolchain_reference" "$toolchain_context" >&2 ||
+    toolchain_build_status=$?
+  cleanup_toolchain_context
+  return "$toolchain_build_status"
+}
+
+# Chooses what the controller container starts from, in falling order of cost:
+# an image already on this daemon, the published one, one built here, and
+# finally the bare base image with the toolchain installed inside the run. Only
+# the last of those touches Docker Hub on a lane that converges no python
+# service, which is the whole point.
+controller_image=$runner_image
+toolchain_preinstalled=false
+
+resolve_controller_image() {
+  controller_image=$runner_image
+  toolchain_preinstalled=false
+
+  # The escape hatch for bisecting a failure against the pre-image behaviour.
+  if [ "${INTEGRATION_TOOLCHAIN:-auto}" = off ]; then
+    pull_image "$runner_image" || return 1
+    return 0
+  fi
+
+  resolve_toolchain_reference || return 1
+  if docker image inspect "$toolchain_reference" >/dev/null 2>&1 ||
+     pull_image "$toolchain_reference" true; then
+    controller_image=$toolchain_reference
+    toolchain_preinstalled=true
+    return 0
+  fi
+
+  printf 'no controller toolchain at %s; using the base image instead\n' \
+    "$toolchain_reference" >&2
+  pull_image "$runner_image" || return 1
+  # Pull-only mode exists to exercise the registry ladder, so it stops here
+  # rather than spending a minute building an image it will never run.
+  [ "${INTEGRATION_PREPULL_ONLY:-0}" != 1 ] || return 0
+  if build_toolchain_image; then
+    controller_image=$toolchain_reference
+    toolchain_preinstalled=true
+  else
+    printf 'could not build the controller toolchain; installing it in the run\n' >&2
+  fi
+}
+
+# The media-control collision fixture starts its endpoints with --pull=never and
+# refuses an image that is not digest-pinned, so it needs a reference that is both
+# already local and named by digest. The controller image is local by
+# construction but not always named that way, so the two properties are resolved
+# separately here rather than assumed to coincide:
+#
+#   base-image fallback  the reference is the digest-pinned pin itself
+#   pulled toolchain     the daemon knows its registry digest, and using it costs
+#                        nothing this run has not already spent
+#   built toolchain      a locally built image has no registry digest at all, so
+#                        the fixture falls back to the base image -- which that
+#                        path has already pulled, or pulls here
+collision_image=
+resolve_collision_image() {
+  collision_image=$controller_image
+  case $collision_image in
+    *@sha256:*) return 0 ;;
+  esac
+  collision_digest=$(docker image inspect \
+    --format '{{if .RepoDigests}}{{index .RepoDigests 0}}{{end}}' \
+    "$controller_image" 2>/dev/null) || collision_digest=
+  case $collision_digest in
+    *@sha256:*)
+      collision_image=$collision_digest
+      return 0
+      ;;
+  esac
+  pull_image "$runner_image" || return 1
+  collision_image=$runner_image
+}
+
+# Publishes the image the suites pull. Runs in CI only: a build here is
+# linux/amd64 because the runner is, and the tag says so.
+publish_toolchain_image() {
+  resolve_toolchain_reference || return 1
+  if docker buildx imagetools inspect "$toolchain_reference" >/dev/null 2>&1; then
+    printf '%s is already published\n' "$toolchain_reference" >&2
+    return 0
+  fi
+  pull_image "$runner_image" || return 1
+  build_toolchain_image || return 1
+  docker push "$toolchain_reference" >&2 || return 1
+  printf 'published %s\n' "$toolchain_reference" >&2
+}
+
 # Pull-only mode exists so tests/integration_suite_test.sh can drive the retry
 # against a stub docker without building a sandbox. It shares the code path the
 # real run uses rather than re-implementing it.
-trap 'cleanup_pull_error; cleanup_prepull_list' EXIT
+trap 'cleanup_pull_error; cleanup_prepull_list; cleanup_toolchain_context' EXIT
 trap 'exit 130' HUP INT TERM
+
+# Reports the image the suites on this daemon would run from, so the workflow
+# that publishes it and the harness that consumes it cannot disagree about which
+# tag that is.
+if [ "${INTEGRATION_TOOLCHAIN_REFERENCE_ONLY:-0}" = 1 ]; then
+  reference_status=0
+  resolve_toolchain_reference || reference_status=$?
+  [ "$reference_status" -ne 0 ] || printf '%s\n' "$toolchain_reference"
+  exit "$reference_status"
+fi
+
+if [ "${INTEGRATION_TOOLCHAIN_PUBLISH:-0}" = 1 ]; then
+  publish_status=0
+  publish_toolchain_image || publish_status=$?
+  exit "$publish_status"
+fi
 
 if [ "${INTEGRATION_PREPULL_ONLY:-0}" = 1 ]; then
   prepull_status=0
@@ -649,6 +873,7 @@ cleanup_integration_on_exit() {
   trap - EXIT HUP INT TERM
   cleanup_pull_error
   cleanup_prepull_list
+  cleanup_toolchain_context
   if [ -n "$sandbox" ] && ! cleanup_sandbox "$sandbox"; then
     [ "$integration_exit_status" -ne 0 ] || integration_exit_status=1
   fi
@@ -929,6 +1154,13 @@ printf 'host address: %s\n' "$nas_address"
 # read the run makes happens under the retry rather than half of them.
 prepull_images
 
+# The sandbox teardown runs a container of its own on the way out, and every
+# lane reaches it. Left pointing at the base image it would put a Docker Hub
+# pull back on the exit path of every lane and cancel out the saving the
+# toolchain image exists for; the controller image is local by construction and
+# carries the same python.
+cleanup_sandbox_image=$controller_image
+
 paperless_fixture_preseeded=false
 komga_fixture_preseeded=false
 jellyfin_fixture_preseeded=false
@@ -987,21 +1219,33 @@ docker run --rm \
   `# administered through, so the two coordinates coincide here. Stated` \
   `# explicitly because the inventory no longer infers one from the other.` \
   -e PLATFORM_PUBLIC_HOST="$nas_address" \
+  `# The launcher library is a real file rather than text pasted into the` \
+  `# controller argument, so the two values it needs cross the boundary as` \
+  `# environment rather than as interpolation.` \
+  -e PLATFORM_INTEGRATION_SANDBOX="$sandbox" \
+  -e PLATFORM_INTEGRATION_PROJECT_NAMESPACE="$integration_project_namespace" \
   -e INTEGRATION_SUITE="$suite" \
   -e INTEGRATION_TAGS="$suite_tags" \
   -e INTEGRATION_RUN_SERVICE_SCENARIOS="$run_service_scenarios" \
-  -e MEDIA_CONTROL_COLLISION_IMAGE="$runner_image" \
+  -e MEDIA_CONTROL_COLLISION_IMAGE="$collision_image" \
+  -e INTEGRATION_TOOLCHAIN_PREINSTALLED="$toolchain_preinstalled" \
   -e PLATFORM_PAPERLESS_FIXTURE_PRESEEDED="$paperless_fixture_preseeded" \
   -e PLATFORM_KOMGA_FIXTURE_PRESEEDED="$komga_fixture_preseeded" \
   -e PLATFORM_JELLYFIN_FIXTURE_PRESEEDED="$jellyfin_fixture_preseeded" \
   -w /repo \
-  "$runner_image" \
+  "$controller_image" \
   sh -eu -c "
-    apk add --no-cache --quiet docker-cli docker-cli-compose git tar openssl \
-      apache2-utils openssh-client '$ruby_package' '$curl_package' >/dev/null
-    pip install --quiet --no-input 'ansible-core==$ansible_core_version' \
-      'requests==$requests_version'
-    ansible-galaxy collection install -r /repo/requirements.yml >/dev/null
+    # The same three installs the controller image bakes, run here only when
+    # there is no such image to run from. Kept literally identical to
+    # tests/integration.Dockerfile: this is the path a developer's first run and
+    # a fork's CI take, and it must produce the same controller.
+    if [ \"\$INTEGRATION_TOOLCHAIN_PREINSTALLED\" != true ]; then
+      apk add --no-cache --quiet docker-cli docker-cli-compose git tar openssl \
+        apache2-utils openssh-client '$ruby_package' '$curl_package' >/dev/null
+      pip install --quiet --no-input 'ansible-core==$ansible_core_version' \
+        'requests==$requests_version'
+      ansible-galaxy collection install -r /repo/requirements.yml >/dev/null
+    fi
 
     # This container runs as root while the sandbox belongs to whoever started
     # the harness, so git refuses to read the controller checkout as a dubious
@@ -1152,531 +1396,20 @@ docker run --rm \
     integration_media_usenet_enabled=false
     integration_media_adopt_existing=false
     case "\$INTEGRATION_SUITE" in
-      arr|downloaders)
+      arr|downloaders|bindery)
         integration_media_usenet_enabled=true
         integration_media_adopt_existing=true
         ;;
     esac
 
-    run_play() {
-      ansible-playbook \
-        -i inventory/local.yml \
-        --vault-password-file \"\$vault_password_file\" \
-        -e @\"\$vault_file\" \
-        -e @\"\$fixture_vars_file\" \
-        -e platform_vault_file=\"\$vault_file\" \
-        -e nas_docker_root=$sandbox/volume1/Docker \
-        -e nas_media_root=$sandbox/volume2 \
-        -e platform_compose_kind=integration \
-        -e platform_project_name=\"$integration_project_namespace\" \
-        -e arr_platform_project_name=\"$integration_project_namespace\" \
-        -e downloaders_platform_project_name=\"$integration_project_namespace\" \
-        -e platform_beszel_agent_kind=portable \
-        -e media_usenet_enabled="\$integration_media_usenet_enabled" \
-        -e media_acquisition_adopt_existing_libraries="\$integration_media_adopt_existing" \
-        -e deployment_bundle_test_mode=true \
-        -e deployment_bundle_allow_dirty_controller=true \
-        \"\$playbook\" \"\$@\"
-    }
-
-    enabled_idempotence_recap_is_clean() {
-      idempotence_recap_file=\$1
-      idempotence_escape=\$(printf '\033')
-      sed \"s/\${idempotence_escape}\\[[0-9;]*[[:alpha:]]//g\" \
-        \"\$idempotence_recap_file\" |
-        awk '
-          /^PLAY RECAP[[:space:]]+\*+[[:space:]]*$/ {
-            recap_count++
-            in_recap = 1
-            next
-          }
-          in_recap && \$1 == \"nas\" && \$2 == \":\" {
-            target_count++
-            valid = 1
-            delete seen
-            delete value
-            for (field = 3; field <= NF; field++) {
-              parts = split(\$field, pair, \"=\")
-              if (parts != 2 || pair[1] == \"\" || pair[2] !~ /^[0-9]+\$/) {
-                valid = 0
-                continue
-              }
-              if (seen[pair[1]]++) {
-                valid = 0
-              }
-              value[pair[1]] = pair[2]
-            }
-            target_clean = valid &&
-              seen[\"changed\"] == 1 && value[\"changed\"] == \"0\" &&
-              seen[\"unreachable\"] == 1 && value[\"unreachable\"] == \"0\" &&
-              seen[\"failed\"] == 1 && value[\"failed\"] == \"0\"
-          }
-          END {
-            exit !(recap_count == 1 && target_count == 1 && target_clean)
-          }
-        '
-    }
-
-    run_enabled_idempotence() {
-      idempotence_tags=\$1
-      idempotence_output=/tmp/media-acquisition-idempotence.txt
-      if ! run_play --tags "\$idempotence_tags" \
-          >"\$idempotence_output" 2>&1; then
-        cat "\$idempotence_output" >&2
-        printf '%s\n' \
-          'enabled media acquisition convergence did not complete' >&2
-        exit 1
-      fi
-      if ! enabled_idempotence_recap_is_clean "\$idempotence_output"; then
-        cat "\$idempotence_output" >&2
-        printf '%s\n' \
-          'enabled media acquisition convergence was not idempotent' >&2
-        exit 1
-      fi
-    }
-
-    run_beszel_contract() {
-      env \
-        PLATFORM_KIND=integration \
-        PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\" \
-        PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=\"\$vault_password_file\" \
-        PLATFORM_DOCKER_ROOT='$sandbox/volume1/Docker' \
-        PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
-        PLATFORM_FIXTURE_ROOT='$sandbox/fixtures' \
-        PLATFORM_REPORT_ROOT='$sandbox/reports' \
-        /repo/tests/contracts/beszel.sh \"\$1\"
-    }
-
-    run_dozzle_contract() {
-      env \
-        PLATFORM_KIND=integration \
-        PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\" \
-        PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=\"\$vault_password_file\" \
-        PLATFORM_DOCKER_ROOT='$sandbox/volume1/Docker' \
-        PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
-        PLATFORM_FIXTURE_ROOT='$sandbox/fixtures' \
-        PLATFORM_REPORT_ROOT='$sandbox/reports' \
-        /repo/tests/contracts/dozzle.sh \"\$@\"
-    }
-
-    run_audiobookshelf_contract() {
-      env \
-        PLATFORM_KIND=integration \
-        PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\" \
-        PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=\"\$vault_password_file\" \
-        PLATFORM_DOCKER_ROOT='$sandbox/volume1/Docker' \
-        PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
-        PLATFORM_FIXTURE_ROOT='$sandbox/fixtures' \
-        PLATFORM_REPORT_ROOT='$sandbox/reports' \
-        PLATFORM_AUDIOBOOKSHELF_PORT=13378 \
-        PLATFORM_PROJECT_NAME=$integration_project_namespace \
-        PLATFORM_AUDIOBOOKSHELF_CONTAINER=$integration_project_namespace-audiobookshelf \
-        /repo/tests/contracts/audiobookshelf.sh \"\$@\"
-    }
-
-    run_komga_contract() {
-      env \
-        PLATFORM_KIND=integration \
-        PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\" \
-        PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=\"\$vault_password_file\" \
-        PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
-        PLATFORM_REPORT_ROOT='$sandbox/reports' \
-        PLATFORM_KOMGA_RUNTIME_CONTEXT=base \
-        PLATFORM_PROJECT_NAME=$integration_project_namespace \
-        /repo/tests/contracts/komga.sh \"\$@\"
-    }
-
-    run_kapowarr_contract() {
-      env \
-        PLATFORM_KIND=integration \
-        PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\" \
-        PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=\"\$vault_password_file\" \
-        PLATFORM_DOCKER_ROOT='$sandbox/volume1/Docker' \
-        PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
-        PLATFORM_REPORT_ROOT='$sandbox/reports' \
-        PLATFORM_PROJECT_NAME=$integration_project_namespace \
-        /repo/tests/contracts/kapowarr.sh \"\$@\"
-    }
-
-    run_pinchflat_contract() {
-      env \
-        PLATFORM_KIND=integration \
-        PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\" \
-        PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=\"\$vault_password_file\" \
-        PLATFORM_DOCKER_ROOT='$sandbox/volume1/Docker' \
-        PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
-        PLATFORM_REPORT_ROOT='$sandbox/reports' \
-        PLATFORM_PROJECT_NAME=$integration_project_namespace \
-        /repo/tests/contracts/pinchflat.sh \"\$@\"
-    }
-
-    run_jellyfin_contract() {
-      env \
-        PLATFORM_KIND=integration \
-        PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\" \
-        PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=\"\$vault_password_file\" \
-        PLATFORM_DOCKER_ROOT='$sandbox/volume1/Docker' \
-        PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
-        PLATFORM_REPORT_ROOT='$sandbox/reports' \
-        PLATFORM_JELLYFIN_CONTAINER=$integration_project_namespace-jellyfin \
-        /repo/tests/contracts/jellyfin.sh \"\$@\"
-    }
-
-    run_immich_contract() {
-      env \
-        PLATFORM_KIND=integration \
-        PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\" \
-        PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=\"\$vault_password_file\" \
-        PLATFORM_DOCKER_ROOT='$sandbox/volume1/Docker' \
-        PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
-        PLATFORM_FIXTURE_ROOT='$sandbox/fixtures' \
-        PLATFORM_REPORT_ROOT='$sandbox/reports' \
-        PLATFORM_MAC_FIXTURE_VARS_FILE=\"\$fixture_vars_file\" \
-        PLATFORM_IMMICH_SERVER_CONTAINER=$integration_project_namespace-immich-server \
-        PLATFORM_IMMICH_MACHINE_LEARNING_CONTAINER=$integration_project_namespace-immich-machine-learning \
-        PLATFORM_IMMICH_REDIS_CONTAINER=$integration_project_namespace-immich-redis \
-        PLATFORM_IMMICH_POSTGRES_CONTAINER=$integration_project_namespace-immich-postgres \
-        /repo/tests/contracts/immich.sh \"\$@\"
-    }
-
-    run_immich_clean_restore() {
-      immich_runtime='$sandbox/volume1/Docker/nas-platform/runtime/services/immich/.env'
-      immich_release='$sandbox/volume1/Docker/nas-platform/current/services/immich'
-      immich_postgres='$sandbox/volume1/Docker/immich/postgres'
-      immich_quarantine='$sandbox/reports/immich-postgres-quarantine'
-      immich_stale_redis_key=nas-platform-restore-stale
-      test ! -e "\$immich_quarantine"
-      redis_seed_result=\$(docker compose --project-name $integration_project_namespace-immich \
-        --env-file "\$immich_runtime" \
-        -f "\$immich_release/compose.yml" \
-        -f "\$immich_release/compose.integration.yml" \
-        exec -T redis redis-cli --raw set "\$immich_stale_redis_key" stale)
-      test "\$redis_seed_result" = OK
-      docker compose --project-name $integration_project_namespace-immich \
-        --env-file "\$immich_runtime" \
-        -f "\$immich_release/compose.yml" \
-        -f "\$immich_release/compose.integration.yml" \
-        stop immich-server immich-machine-learning database
-      docker compose --project-name $integration_project_namespace-immich \
-        --env-file "\$immich_runtime" \
-        -f "\$immich_release/compose.yml" \
-        -f "\$immich_release/compose.integration.yml" \
-        rm -f database
-      test -d "\$immich_postgres"
-      test ! -L "\$immich_postgres"
-      mv "\$immich_postgres" "\$immich_quarantine"
-      mkdir -m 0755 "\$immich_postgres"
-
-      run_play --tags immich
-      redis_stale_count=\$(docker compose --project-name $integration_project_namespace-immich \
-        --env-file "\$immich_runtime" \
-        -f "\$immich_release/compose.yml" \
-        -f "\$immich_release/compose.integration.yml" \
-        exec -T redis redis-cli --raw exists "\$immich_stale_redis_key")
-      test "\$redis_stale_count" = 0
-      run_immich_contract clean-restore-assert
-      test ! -e '$sandbox/volume1/Docker/immich/.restore-failed'
-
-      # Piping into tee would hand the pipeline tee's status, and this shell has
-      # no pipefail: a play that died would arrive at the recap grep below as if
-      # it had merely printed nothing.
-      immich_clean_restore_status=0
-      run_play --tags immich >/tmp/immich-clean-restore-second.txt 2>&1 ||
-        immich_clean_restore_status=\$?
-      cat /tmp/immich-clean-restore-second.txt
-      if [ \"\$immich_clean_restore_status\" -ne 0 ]; then
-        printf 'IMMICH CLEAN RESTORE REPLAY FAILED: status %s\n' \
-          \"\$immich_clean_restore_status\" >&2
-        exit 1
-      fi
-      grep -qE 'changed=0 .*failed=0 ' /tmp/immich-clean-restore-second.txt
-      run_immich_contract clean-restore-assert
-      printf 'IMMICH_CLEAN_RESTORE_IDEMPOTENT\n'
-    }
-
-    run_immich_restore_negative_matrix() {
-      immich_server_before=\$(docker inspect --format '{{.Id}}:{{.State.StartedAt}}' $integration_project_namespace-immich-server)
-      immich_database_before=\$(docker inspect --format '{{.Id}}:{{.State.StartedAt}}' $integration_project_namespace-immich-postgres)
-
-      # One root, and one bundle render for all five scenarios. Each scenario
-      # already asserts its own storage sha is unchanged across its play, which is
-      # the proof that no scenario mutates the tree, so a pristine root each time
-      # only bought five more renders of the same bundle at 66s apiece.
-      scenario_root='$sandbox/reports/immich-negative'
-      test ! -e \"\$scenario_root\"
-      mkdir -m 0755 \"\$scenario_root\"
-      mkdir -m 0755 \"\$scenario_root/docker\" \"\$scenario_root/media\"
-
-      run_play \
-        -e nas_docker_root=\"\$scenario_root/docker\" \
-        -e nas_media_root=\"\$scenario_root/media\" \
-        -e platform_project_name=$integration_project_namespace-negative \
-        --tags host_prep,deployment_bundle
-
-      postgres_root=\"\$scenario_root/docker/immich/postgres\"
-      originals_root=\"\$scenario_root/media/Immich/upload\"
-      backup_root=\"\$scenario_root/media/Immich-backups/database\"
-      marker=\"\$scenario_root/docker/immich/.restore-failed\"
-
-      for scenario in no-backup corrupt-newest ambiguous-newest unsafe-permissions prior-marker; do
-        # The fixtures are the only state that would carry between scenarios, and
-        # each expected failure is derived from exactly them: a backup left behind
-        # would make unsafe-permissions report ambiguous-newest-backup, and would
-        # stop no-backup from ever seeing an empty directory.
-        rm -rf \"\$backup_root\" \"\$marker\"
-        mkdir -p \"\$postgres_root\" \"\$originals_root\" \"\$backup_root\"
-        printf 'negative-matrix-original\n' > \"\$originals_root/asset.jpg\"
-        expected_failure=
-
-        case \$scenario in
-          no-backup)
-            expected_failure=missing-safe-backup
-            ;;
-          corrupt-newest)
-            printf 'SELECT 1;\n' | gzip -c > \
-              \"\$backup_root/immich-db-backup-20260814T010000-v3.1.0-pg14.19.sql.gz\"
-            printf 'not-a-gzip-stream\n' > \
-              \"\$backup_root/immich-db-backup-20260815T010000-v3.1.0-pg14.19.sql.gz\"
-            expected_failure=unsafe-newest-backup
-            ;;
-          ambiguous-newest)
-            printf 'SELECT 1;\n' | gzip -c > \
-              \"\$backup_root/immich-db-backup-20260815T010000-v3.1.0-pg14.19.sql.gz\"
-            printf 'SELECT 2;\n' | gzip -c > \
-              \"\$backup_root/immich-db-backup-20260815T010000-v3.1.1-pg14.20.sql.gz\"
-            expected_failure=ambiguous-newest-backup
-            ;;
-          unsafe-permissions)
-            printf 'SELECT 1;\n' | gzip -c > \
-              \"\$backup_root/immich-db-backup-20260815T010000-v3.1.0-pg14.19.sql.gz\"
-            chmod 0666 \
-              \"\$backup_root/immich-db-backup-20260815T010000-v3.1.0-pg14.19.sql.gz\"
-            expected_failure=unsafe-newest-backup
-            ;;
-          prior-marker)
-            printf '{\"version\":1,\"stage\":\"database-restore\"}\n' > \"\$marker\"
-            chmod 0600 \"\$marker\"
-            expected_failure=previous-failed-restore
-            ;;
-        esac
-
-        storage_before=\$(tar -C \"\$scenario_root\" -cf - docker/immich media | sha256sum)
-        output=/tmp/immich-negative-\$scenario.txt
-        if run_play \
-            -e nas_docker_root=\"\$scenario_root/docker\" \
-            -e nas_media_root=\"\$scenario_root/media\" \
-            -e platform_project_name=$integration_project_namespace-negative \
-            --tags immich >\"\$output\" 2>&1; then
-          cat \"\$output\" >&2
-          printf 'IMMICH NEGATIVE RESTORE SCENARIO SUCCEEDED: %s\n' \"\$scenario\" >&2
-          exit 1
-        fi
-        grep -qF \"\$expected_failure\" \"\$output\"
-        if grep -qF \"\$scenario_root\" \"\$output\" || \
-           grep -qF 'immich-db-backup-20260815T010000' \"\$output\" || \
-           grep -qF 'TASK [immich : Restore and verify the Immich database]' \"\$output\" || \
-           grep -qF 'TASK [immich : Deploy Immich]' \"\$output\" || \
-           grep -qF 'TASK [immich : Create the vault Immich administrator]' \"\$output\"; then
-          cat \"\$output\" >&2
-          printf 'IMMICH NEGATIVE RESTORE BOUNDARY FAILED: %s\n' \"\$scenario\" >&2
-          exit 1
-        fi
-        /repo/tests/assert-no-vault-secrets.rb \
-          \"\$vault_file\" \"\$vault_password_file\" \"\$output\"
-        storage_after=\$(tar -C \"\$scenario_root\" -cf - docker/immich media | sha256sum)
-        test \"\$storage_after\" = \"\$storage_before\"
-        test \"\$(docker inspect --format '{{.Id}}:{{.State.StartedAt}}' $integration_project_namespace-immich-server)\" = \
-          \"\$immich_server_before\"
-        test \"\$(docker inspect --format '{{.Id}}:{{.State.StartedAt}}' $integration_project_namespace-immich-postgres)\" = \
-          \"\$immich_database_before\"
-      done
-
-      existing_backup='$sandbox/volume2/Immich-backups/database/'\
-'immich-db-backup-20260816T010000-v3.1.0-pg14.19.sql.gz'
-      existing_quarantine='$sandbox/reports/immich-existing-newer-backup.quarantine'
-      test ! -e \"\$existing_backup\"
-      test ! -e \"\$existing_quarantine\"
-      printf 'newer-backup-must-not-be-read\n' > \"\$existing_backup\"
-      existing_backup_before=\$(sha256sum \"\$existing_backup\")
-      run_play --tags immich > /tmp/immich-existing-database-backup.txt 2>&1
-      test \"\$(sha256sum \"\$existing_backup\")\" = \"\$existing_backup_before\"
-      test ! -e '$sandbox/volume1/Docker/immich/.restore-failed'
-      test \"\$(docker inspect --format '{{.Id}}:{{.State.StartedAt}}' $integration_project_namespace-immich-server)\" = \
-        \"\$immich_server_before\"
-      run_immich_contract clean-restore-assert
-      mv \"\$existing_backup\" \"\$existing_quarantine\"
-      printf 'IMMICH_EXISTING_DATABASE_BACKUP_IGNORED\n'
-
-      run_immich_contract run
-      printf 'IMMICH_NEGATIVE_RESTORE_MATRIX_OK\n'
-    }
-
-    run_paperless_contract() {
-      env \
-        PLATFORM_KIND=integration \
-        PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\" \
-        PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=\"\$vault_password_file\" \
-        PLATFORM_DOCKER_ROOT='$sandbox/volume1/Docker' \
-        PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
-        PLATFORM_REPORT_ROOT='$sandbox/reports' \
-        PLATFORM_PAPERLESS_WEBSERVER_CONTAINER=$integration_project_namespace-paperless-webserver \
-        /repo/tests/contracts/paperless.sh \"\$@\"
-    }
-
-    run_paperless_snapshot() {
-      env \
-        PLATFORM_KIND=integration \
-        PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\" \
-        PLATFORM_CONTRACT_VAULT_PASSWORD_FILE=\"\$vault_password_file\" \
-        PLATFORM_DOCKER_ROOT='$sandbox/volume1/Docker' \
-        PLATFORM_MEDIA_ROOT='$sandbox/volume2' \
-        PLATFORM_PAPERLESS_WEBSERVER_CONTAINER=$integration_project_namespace-paperless-webserver \
-        PLATFORM_PAPERLESS_POSTGRES_CONTAINER=$integration_project_namespace-paperless-postgres \
-        PLATFORM_PAPERLESS_REDIS_CONTAINER=$integration_project_namespace-paperless-redis \
-        /repo/tests/mac/snapshot-paperless.sh \"\$@\"
-    }
-
-    run_verify_only() {
-      PLATFORM_VAULT_FILE=\"\$vault_file\" ansible-playbook \
-        -i inventory/local.yml \
-        --vault-password-file \"\$vault_password_file\" \
-        -e @\"\$vault_file\" \
-        -e platform_vault_file=\"\$vault_file\" \
-        -e nas_docker_root=$sandbox/volume1/Docker \
-        -e nas_media_root=$sandbox/volume2 \
-        -e platform_compose_kind=integration \
-        -e platform_project_name=\"$integration_project_namespace\" \
-        -e platform_beszel_agent_kind=portable \
-        -e deployment_bundle_test_mode=true \
-        -e deployment_bundle_allow_dirty_controller=true \
-        /repo/verify.yml \
-        --tags platform_verify_beszel
-    }
-
-    run_dozzle_verify_only() {
-      PLATFORM_VAULT_FILE=\"\$vault_file\" ansible-playbook \
-        -i inventory/local.yml \
-        --vault-password-file \"\$vault_password_file\" \
-        -e @\"\$vault_file\" \
-        -e platform_vault_file=\"\$vault_file\" \
-        -e nas_docker_root=$sandbox/volume1/Docker \
-        -e nas_media_root=$sandbox/volume2 \
-        -e platform_compose_kind=integration \
-        -e platform_project_name=\"$integration_project_namespace\" \
-        -e platform_beszel_agent_kind=portable \
-        -e deployment_bundle_test_mode=true \
-        -e deployment_bundle_allow_dirty_controller=true \
-        /repo/verify.yml \
-        --tags platform_verify_dozzle
-    }
-
-    run_audiobookshelf_verify_only() {
-      PLATFORM_VAULT_FILE=\"\$vault_file\" ansible-playbook \
-        -i inventory/local.yml \
-        --vault-password-file \"\$vault_password_file\" \
-        -e @\"\$vault_file\" \
-        -e platform_vault_file=\"\$vault_file\" \
-        -e nas_docker_root=$sandbox/volume1/Docker \
-        -e nas_media_root=$sandbox/volume2 \
-        -e platform_compose_kind=integration \
-        -e platform_project_name=\"$integration_project_namespace\" \
-        -e platform_beszel_agent_kind=portable \
-        -e deployment_bundle_test_mode=true \
-        -e deployment_bundle_allow_dirty_controller=true \
-        /repo/verify.yml \
-        --tags platform_verify_audiobookshelf
-    }
-
-    run_arr_verify_only() {
-      PLATFORM_VAULT_FILE="\$vault_file" ansible-playbook \
-        -i inventory/local.yml \
-        --vault-password-file "\$vault_password_file" \
-        -e @"\$vault_file" \
-        -e platform_vault_file="\$vault_file" \
-        -e nas_docker_root=$sandbox/volume1/Docker \
-        -e nas_media_root=$sandbox/volume2 \
-        -e platform_compose_kind=integration \
-        -e platform_project_name=\"$integration_project_namespace\" \
-        -e platform_beszel_agent_kind=portable \
-        -e deployment_bundle_test_mode=true \
-        -e deployment_bundle_allow_dirty_controller=true \
-        -e media_usenet_enabled=true \
-        /repo/verify.yml \
-        --tags platform_verify_arr
-    }
-
-    run_downloaders_verify_only() {
-      PLATFORM_VAULT_FILE="\$vault_file" ansible-playbook \
-        -i inventory/local.yml \
-        --vault-password-file "\$vault_password_file" \
-        -e @"\$vault_file" \
-        -e platform_vault_file="\$vault_file" \
-        -e nas_docker_root=$sandbox/volume1/Docker \
-        -e nas_media_root=$sandbox/volume2 \
-        -e platform_compose_kind=integration \
-        -e platform_project_name=\"$integration_project_namespace\" \
-        -e platform_beszel_agent_kind=portable \
-        -e deployment_bundle_test_mode=true \
-        -e deployment_bundle_allow_dirty_controller=true \
-        -e media_usenet_enabled=true \
-        /repo/verify.yml \
-        --tags platform_verify_downloaders
-    }
-
-    run_kapowarr_verify_only() {
-      PLATFORM_VAULT_FILE="\$vault_file" ansible-playbook \
-        -i inventory/local.yml \
-        --vault-password-file "\$vault_password_file" \
-        -e @"\$vault_file" \
-        -e platform_vault_file="\$vault_file" \
-        -e nas_docker_root=$sandbox/volume1/Docker \
-        -e nas_media_root=$sandbox/volume2 \
-        -e platform_compose_kind=integration \
-        -e platform_project_name=\"$integration_project_namespace\" \
-        -e platform_beszel_agent_kind=portable \
-        -e deployment_bundle_test_mode=true \
-        -e deployment_bundle_allow_dirty_controller=true \
-        /repo/verify.yml \
-        --tags platform_verify_kapowarr
-    }
-
-    run_pinchflat_verify_only() {
-      PLATFORM_VAULT_FILE="\$vault_file" ansible-playbook \
-        -i inventory/local.yml \
-        --vault-password-file "\$vault_password_file" \
-        -e @"\$vault_file" \
-        -e platform_vault_file="\$vault_file" \
-        -e nas_docker_root=$sandbox/volume1/Docker \
-        -e nas_media_root=$sandbox/volume2 \
-        -e platform_compose_kind=integration \
-        -e platform_project_name=\"$integration_project_namespace\" \
-        -e platform_beszel_agent_kind=portable \
-        -e deployment_bundle_test_mode=true \
-        -e deployment_bundle_allow_dirty_controller=true \
-        /repo/verify.yml \
-        --tags platform_verify_pinchflat
-    }
-
-    converge_media_acquisition_reader_prerequisites() {
-      run_play --tags host_prep,deployment_bundle,ntfy,audiobookshelf,jellyfin
-    }
-
-    run_media_acquisition_foundation_verify() {
-      PLATFORM_VAULT_FILE="\$vault_file" ansible-playbook \
-        -i inventory/local.yml \
-        --vault-password-file "\$vault_password_file" \
-        -e @"\$vault_file" \
-        -e platform_vault_file="\$vault_file" \
-        -e nas_docker_root=$sandbox/volume1/Docker \
-        -e nas_media_root=$sandbox/volume2 \
-        -e platform_compose_kind=integration \
-        -e platform_project_name=\"$integration_project_namespace\" \
-        -e platform_beszel_agent_kind=portable \
-        -e deployment_bundle_test_mode=true \
-        -e deployment_bundle_allow_dirty_controller=true \
-        /repo/verify.yml \
-        --tags platform_verify_media_acquisition_foundation
-    }
+    # Every play, contract and verification the controller launches is
+    # defined in a file of its own. Inside this argument the definitions were
+    # escaped shell inside a shell string, which no syntax check, no linter
+    # and no test could read as a program -- so the tests that guarded them
+    # pinned their escaped source text instead. Sourced rather than executed:
+    # the launchers read the vault this controller generated and run in its
+    # shell, so a refusal still ends the suite.
+    . /repo/tests/integration_controller_lib.sh
 
     assert_controller_symlink_refused() {
       evidence=\$1
@@ -2008,7 +1741,7 @@ EOF
       /repo /repo/services/manifest.yml nas integration '$expected_release_id'
 
     case "\$INTEGRATION_SUITE" in
-      bindery|trailarr|seerr)
+      trailarr|seerr)
         /repo/tests/contracts/"\$INTEGRATION_SUITE"-foundation.sh static
         converge_media_acquisition_reader_prerequisites
         run_media_acquisition_foundation_verify
@@ -2037,6 +1770,19 @@ EOF
       run_enabled_idempotence arr,downloaders
       run_play --tags arr,downloaders --check --diff
       printf 'DOWNLOADERS_PHASE1_RUNTIME_VERIFIED\n'
+      cleanup_vault
+      exit 0
+    fi
+
+    if [ "\$INTEGRATION_SUITE" = bindery ]; then
+      /repo/tests/contracts/arr.sh static
+      /repo/tests/contracts/downloaders.sh static
+      /repo/tests/contracts/bindery.sh static
+      run_bindery_contract run
+      run_bindery_verify_only
+      run_enabled_idempotence arr,downloaders,bindery
+      run_play --tags arr,downloaders,bindery --check --diff
+      printf 'BINDERY_PHASE2_RUNTIME_VERIFIED\n'
       cleanup_vault
       exit 0
     fi

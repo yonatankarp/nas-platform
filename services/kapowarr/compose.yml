@@ -1,9 +1,30 @@
 ---
+# Platform fragments. Compose resolves a YAML anchor only inside the file that
+# declares it, so every stack carries its own copy; tests/policy_test.rb pins the
+# copies equal and records there why cross-file sharing was not taken. A
+# container needing different health-check timing overrides only the fields it
+# changes, so a deviation reads as a deviation.
 x-logging: &default-logging
   driver: json-file
   options:
     max-size: 10m
     max-file: "3"
+
+x-service-defaults: &service-defaults
+  cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
+  # The entrypoint's gosu re-exec is a setuid(2) call made by root, not the
+  # execution of a setuid binary, so refusing privilege escalation leaves the
+  # PUID/PGID remap below intact.
+  security_opt:
+    - no-new-privileges:true
+  restart: unless-stopped
+  logging: *default-logging
+
+x-healthcheck-defaults: &healthcheck-defaults
+  interval: 30s
+  timeout: 10s
+  retries: 5
+  start_period: 60s
 
 services:
   # Kapowarr owns the Books/Comics library and its own SQLite database. In this
@@ -12,9 +33,9 @@ services:
   # network, the same reason Komga and Pinchflat do. Komga keeps reading the
   # library from disk.
   kapowarr:
+    <<: *service-defaults
     container_name: kapowarr
     image: docker.io/mrcas/kapowarr:v1.3.1@sha256:d455797e4f2c5b1a8ccc5ce05c427f1af2179451bb1af195ca3fa8c3e928623b
-    cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
     cpus: 1.0
     labels:
       dev.dozzle.name: kapowarr
@@ -32,6 +53,7 @@ services:
       PUID: ${NAS_UID:?}
       PGID: ${NAS_GID:?}
     healthcheck:
+      <<: *healthcheck-defaults
       # The runtime image is python:3.13-slim and ships neither curl nor wget,
       # so the interpreter Kapowarr itself runs on is the health probe.
       test:
@@ -39,18 +61,7 @@ services:
         - >-
           python3 -c "import urllib.request;
           urllib.request.urlopen('http://127.0.0.1:5656/api/public', timeout=5)"
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 60s
-    # The entrypoint's gosu re-exec is a setuid(2) call made by root, not the
-    # execution of a setuid binary, so refusing privilege escalation leaves the
-    # PUID/PGID remap above intact.
-    security_opt:
-      - no-new-privileges:true
-    restart: unless-stopped
     # /app/db is the SQLite database of the whole comic library and is recovery:
     # critical. 30s commits the open transaction; an interrupted download is
     # already retried from the queue that database holds.
     stop_grace_period: 30s
-    logging: *default-logging
