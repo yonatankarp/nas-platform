@@ -675,6 +675,51 @@ EXPECTED_CONTAINER_CPUS =
   SERVICE_EXPECTATIONS.transform_values { |expectation| expectation.fetch("container_cpus") }.freeze
 EXPECTED_VAULT_KEYS = pinned_vault_keys(SERVICE_EXPECTATIONS)
 
+# The ceilings and the budget are one policy, not two. Every managed container
+# runs on the *same* cpuset -- platform_container_cpu_budget logical CPUs of the
+# host, rendered as PLATFORM_CONTAINER_CPUSET -- and `cpus` is a per-container
+# ceiling on that shared set, not a reservation carved out of it. The ceilings
+# are therefore oversubscribed on purpose, sized for a workload that is idle
+# almost all the time, and their total is not a quantity the platform has to fit
+# anything into. inventory/group_vars/nas_hosts/main.yml records that model
+# beside the budget; reading the total as a budget is the mistake this check
+# exists to forestall.
+#
+# What does mean something is a single ceiling wider than the set it runs on.
+# Docker clamps such a container to the cpuset anyway, so the number constrains
+# nothing while reading as a deliberate limit -- it is a ceiling that lies. The
+# NAS budget is the one compared against because these ceilings are written for
+# the production set; a Mac host declares 0, meaning "whatever Docker reports",
+# and pins nothing.
+#
+# The relation is `<=`, and the four containers sitting at exactly the budget are
+# the point rather than an exemption: whichever one is busy may have the whole
+# shared set. `<` would reject them, so it is not the stricter form of this rule
+# but a different rule about how much of an idle machine a container may claim.
+nas_host_vars = begin
+  YAML.safe_load_file(File.join(ROOT, "inventory", "group_vars", "nas_hosts", "main.yml"))
+rescue Errno::ENOENT, Psych::Exception
+  nil
+end
+container_cpu_budget = nas_host_vars.is_a?(Hash) ? nas_host_vars["platform_container_cpu_budget"] : nil
+check(failures, container_cpu_budget.is_a?(Integer) && container_cpu_budget.positive?,
+      "inventory/group_vars/nas_hosts/main.yml must declare a positive integer " \
+      "platform_container_cpu_budget for the CPU ceilings to be measured against")
+if container_cpu_budget.is_a?(Integer) && container_cpu_budget.positive?
+  EXPECTED_CONTAINER_CPUS.each do |service, ceilings|
+    ceilings.each do |container, ceiling|
+      # A non-numeric ceiling is already reported against its own file.
+      next unless ceiling.is_a?(Numeric)
+
+      check(failures, ceiling <= container_cpu_budget,
+            "#{service}/#{container}: CPU ceiling #{ceiling} exceeds the " \
+            "#{container_cpu_budget}-CPU cpuset it shares -- the ceilings oversubscribe " \
+            "that set on purpose, but none may be wider than it (see " \
+            "platform_container_cpu_budget in inventory/group_vars/nas_hosts/main.yml)")
+    end
+  end
+end
+
 manifest_names = manifest_entries.filter_map do |service|
   unless service.is_a?(Hash)
     check(failures, false, "each service manifest entry must be a mapping")

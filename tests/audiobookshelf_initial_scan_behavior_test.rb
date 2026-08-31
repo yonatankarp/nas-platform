@@ -23,7 +23,11 @@ LIBRARY_ID = "managed-library"
 LIBRARY_NAME = DEFAULTS.fetch("audiobookshelf_library_name")
 MEDIA_SENTINEL = "MEDIA_SECRET_SENTINEL"
 
-def selected_scan_tasks(stop_after: nil, stop_before: nil)
+# The crash-resumable unit this file drives: the role's initial-scan stage, whole.
+# The stage has its own file, so it is read as one; a role that still carries the
+# stage inline is read as the slice between its first and last task, which is the
+# same list.
+def scan_task_slice
   return YAML.safe_load_file(SCAN_TASKS, aliases: false) if File.file?(SCAN_TASKS)
 
   tasks = YAML.safe_load_file(MAIN_TASKS, aliases: false)
@@ -31,7 +35,17 @@ def selected_scan_tasks(stop_after: nil, stop_before: nil)
   last = tasks.index { |task| task["name"] == "Clear completed Audiobookshelf initial scan intent" }
   raise "Audiobookshelf initial scan task slice is unavailable" unless first && last && first <= last
 
-  selected = tasks[first..last]
+  tasks[first..last]
+end
+
+# Which task to interrupt at. Reading the slice and inserting the interruption
+# were one method, and its early return for the stage file happened before the
+# insertion -- so the day roles/audiobookshelf/tasks/initial_scan.yml existed,
+# every scenario below ran to completion uninterrupted and the twelve
+# crash-resume properties reported failures against a run that never crashed.
+# They are two methods now so that neither path can skip the other.
+def selected_scan_tasks(stop_after: nil, stop_before: nil)
+  selected = scan_task_slice
   interruption = {
     "name" => "Interrupt Audiobookshelf reconciliation fixture",
     "ansible.builtin.fail" => { "msg" => "EXPECTED_RECONCILIATION_INTERRUPTION" },

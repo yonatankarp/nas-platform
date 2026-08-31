@@ -479,6 +479,29 @@ The `container_cpus` values must equal the `cpus:` keys in the service's
 `compose.yml`, and `vault_keys` must be prefixed for this service and must list
 every key the service adds to the vault.
 
+This file is where a CPU ceiling is pinned, and the checks read it rather than
+keeping copies: `services/<name>/compose.yml` is asserted equal to it, and
+`tests/media_acquisition_phase1_test.rb` and `tests/configarr_job_test.rb` load
+it instead of restating the numbers. An ordinary service therefore holds its
+ceiling in two places — its Compose file and this one — and changing it is two
+edits. A media-acquisition service holds a third in `config/media-acquisition.yml`,
+which is deployed to the target rather than read by a test, and
+`tests/media_acquisition_foundation_test.rb` still pins that copy by hand.
+
+Each ceiling must be **no greater than** `platform_container_cpu_budget` in
+`inventory/group_vars/nas_hosts/main.yml`, and `tests/policy_test.rb` fails by
+name when one is not. The budget is the width of the cpuset every managed
+container shares, not a pool divided between them: `cpus:` is a ceiling on that
+shared set rather than a reservation carved out of it, so the ceilings across the
+platform are deliberately oversubscribed and sum to many times the budget. These
+workloads are idle almost all the time, so that sum is not a quantity anything
+has to fit into. A single ceiling wider than the cpuset is the real error —
+Docker clamps the container to the cpuset anyway, so the number constrains
+nothing while reading as a deliberate limit. Equal to the budget is allowed and
+four containers use it, on the reasoning that whichever one is busy may have the
+whole set, so pick a ceiling from what the workload actually needs rather than
+from what is left over.
+
 There is a second list, `EXPECTED_FIXTURE_ROLES`, in
 `tests/policy_mutation_support.rb` — the shared harness the mutation checks build
 their sandboxes from. It is easy to miss because `policy_test.rb` will pass
