@@ -68,6 +68,21 @@
   when: trailarr_config_env_stat.stat.exists
   no_log: true
 
+# The repair itself has to be redacted, which leaves it unable to say why it
+# fired. These three facts are not credential material — a permission, a numeric
+# owner and whether the two contents differ at all — and between them they name
+# which of the file's properties drifted. Without this a repair that keeps
+# recurring is a silent `changed` with nothing to read.
+- name: Report the planned Trailarr application environment repair
+  ansible.builtin.debug:
+    msg: >-
+      {{ trailarr_config_host_path }}/.env is mode
+      {{ trailarr_config_env_stat.stat.mode }} owned by
+      {{ trailarr_config_env_stat.stat.uid }}:{{ trailarr_config_env_stat.stat.gid }};
+      its content differs from the platform-owned form:
+      {{ (trailarr_config_env_read.content | b64decode) != trailarr_config_env_repaired }}
+  when: trailarr_config_env_stat.stat.exists
+
 # python-dotenv's own rewriter reads the destination's mode and restores it
 # after every write, so the application keeps 0600 for every key it persists.
 # entrypoint.sh does not: it rewrites the file through a grep and a move on

@@ -43,12 +43,6 @@
     mode: "0600"
   no_log: true
 
-# The application's own /config/.env beats everything above, so it is reconciled
-# before Compose brings the container up: scripts/start.sh sources it after the
-# container environment is already in place.
-- name: Reconcile the platform-owned Trailarr application environment
-  ansible.builtin.include_tasks: reconcile_env.yml
-
 - name: Deploy Trailarr
   community.docker.docker_compose_v2:
     project_src: "{{ platform_current_dir }}/services/trailarr"
@@ -59,6 +53,17 @@
     wait: true
     wait_timeout: "{{ platform_compose_wait_timeout }}"
   register: trailarr_deploy
+
+# The application's own /config/.env beats the container environment, and it is
+# reconciled after Compose rather than before it because the application is what
+# writes it: on a first converge the file does not exist until the deployment
+# above has started the container once. Reconciling first meant the first run
+# could only report "nothing to reconcile" and the second run performed the
+# first repair, so the pair could never agree — which is exactly what an
+# idempotence check compares. The restart below is what makes a late repair take
+# effect, so ordering it this way costs nothing a converge did not already pay.
+- name: Reconcile the platform-owned Trailarr application environment
+  ansible.builtin.include_tasks: reconcile_env.yml
 
 # /config/.env lives under a bind mount rather than in the Compose spec, so
 # docker_compose_v2 does not recreate the container when it changes and the
