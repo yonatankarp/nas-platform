@@ -28,6 +28,15 @@ runner_image=docker.io/library/python:3.14-alpine@sha256:05b2b8b732ecd268fee8727
 ruby_package='ruby~3.4.9'
 curl_package='curl~8.21.0'
 
+# Where the pre-built controller toolchain is published. The image is the five
+# pins above plus tests/integration.Dockerfile and requirements.yml, already
+# installed, so a suite starts converging instead of spending a minute of every
+# lane re-running apk, pip and ansible-galaxy against three registries. Not a
+# precondition for anything: every path below falls back to installing them in a
+# bare base image, which is what this script did before the image existed.
+toolchain_repository=${INTEGRATION_TOOLCHAIN_REPOSITORY:-ghcr.io/yonatankarp/nas-platform-controller}
+toolchain_dockerfile=tests/integration.Dockerfile
+
 suite=full
 suite_tags=
 tags_explicit=false
@@ -457,8 +466,21 @@ image_pull_jitter() {
   '
 }
 
+# A refusal worth sleeping on. Docker Hub and ghcr.io both answer pressure with
+# "toomanyrequests", usually carrying a retry-after hint; both answer an image
+# that is not there, or that this caller may not read, with "denied" or "not
+# found". The distinction only matters for the toolchain image, whose absence is
+# the ordinary case on a developer's machine: retrying it would spend the whole
+# ladder in sleeps to rediscover a 404.
+refusal_is_rate_limited() {
+  LC_ALL=C grep -qiE 'toomanyrequests|too many requests|retry-after' "$1"
+}
+
 pull_image() {
   pull_target=$1
+  # When true, only a rate-limit refusal is retried and anything else fails at
+  # once. The caller is expected to have somewhere else to go.
+  pull_transient_only=${2:-false}
   pull_attempt=1
   pull_delay=$image_pull_delay
   pull_error=$(mktemp "${TMPDIR:-/tmp}/nas-platform-pull-error.XXXXXX") || pull_error=
@@ -478,6 +500,11 @@ pull_image() {
       return 0
     fi
     cat "$pull_error" >&2
+    if [ "$pull_transient_only" = true ] && ! refusal_is_rate_limited "$pull_error"; then
+      rm -f "$pull_error"
+      pull_error=
+      return 1
+    fi
     if [ "$pull_attempt" -ge "$image_pull_attempts" ]; then
       rm -f "$pull_error"
       pull_error=
@@ -564,10 +591,10 @@ suite_pull_images() {
 # Failing here fails the suite, deliberately: the point is to survive a transient
 # refusal, not to hide a registry that is genuinely unreachable.
 prepull_images() {
-  # The controller image is a Docker Hub pull every suite makes, and Docker Hub's
-  # anonymous allowance is the stricter of the two. No login covers it, so the
-  # retry is all this pull gets.
-  pull_image "$runner_image" || return 1
+  # Which image the controller runs from, and whether the toolchain is already
+  # in it, is decided before anything is pulled: it changes both what this
+  # function pulls and what the container has to install.
+  resolve_controller_image || return 1
   # `for candidate in $(suite_pull_images | sort -u)` would take its status from
   # sort, and #!/bin/sh has no pipefail to fix that. A missing
   # services/<dir>/compose.yml aborts the enumeration's `while` subshell under
@@ -593,20 +620,217 @@ prepull_images() {
   fi
   prepull_targets=$(sort -u "$prepull_list")
   cleanup_prepull_list
+  resolve_collision_image || return 1
   for pull_candidate in $prepull_targets; do
-    # Dozzle's alert relay runs on the same image as the controller, so skipping
-    # it here saves a second registry round trip on every suite that includes it.
-    if [ "$pull_candidate" != "$runner_image" ]; then
+    # Whatever the controller runs from is already local, so skipping it here
+    # saves a second registry round trip. On the toolchain path that is a ghcr.io
+    # image no service uses, and the base python image stops being pulled at all
+    # -- except by the three lanes that converge Dozzle, whose alert relay runs
+    # on it as a service in its own right.
+    if [ "$pull_candidate" != "$controller_image" ]; then
       pull_image "$pull_candidate" || return 1
     fi
   done
 }
 
+# Everything the controller image is built from, as one byte stream. The tag is
+# a digest of it, so a bumped pin, an edited Dockerfile or a new collection is a
+# different image rather than a stale one wearing the right name -- which is the
+# whole reason nothing here needs invalidating by hand.
+toolchain_digest_stream() {
+  printf '%s\n' "$runner_image" "$ansible_core_version" "$requests_version" \
+    "$ruby_package" "$curl_package"
+  cat "$repo_dir/$toolchain_dockerfile" "$repo_dir/requirements.yml"
+}
+
+# Alpine's base image ships none of these, and macOS ships only shasum, so the
+# digest is taken with whichever of the three the caller actually has.
+sha256_stream() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | cut -d' ' -f1
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 | cut -d' ' -f1
+  else
+    openssl dgst -sha256 | sed 's/.*[ =]//'
+  fi
+}
+
+# Only linux/amd64 is published, because only the CI runners are that. Naming the
+# daemon's architecture in the tag is what makes an Apple Silicon machine miss
+# cleanly and build its own native image, instead of pulling an amd64 controller
+# and running every play under emulation.
+toolchain_platform() {
+  toolchain_arch=$(docker version --format '{{.Server.Arch}}' 2>/dev/null) ||
+    toolchain_arch=
+  case $toolchain_arch in
+    ''|*[!abcdefghijklmnopqrstuvwxyz0123456789]*) toolchain_arch=unknown ;;
+  esac
+  printf '%s' "$toolchain_arch"
+}
+
+toolchain_reference=
+
+resolve_toolchain_reference() {
+  [ -z "$toolchain_reference" ] || return 0
+  toolchain_digest=$(toolchain_digest_stream | sha256_stream | cut -c1-32) ||
+    return 1
+  # A digest tool that answered with a diagnostic instead of a hash would
+  # otherwise become a tag, and every run would then miss on a different one.
+  case $toolchain_digest in
+    ''|*[!0123456789abcdef]*)
+      printf 'could not digest the controller toolchain inputs\n' >&2
+      return 1
+      ;;
+  esac
+  if [ "${#toolchain_digest}" -ne 32 ]; then
+    printf 'the controller toolchain digest is the wrong width\n' >&2
+    return 1
+  fi
+  toolchain_reference=$toolchain_repository:$(toolchain_platform)-$toolchain_digest
+}
+
+toolchain_context=
+
+cleanup_toolchain_context() {
+  if [ -n "$toolchain_context" ]; then
+    rm -rf -- "$toolchain_context" || true
+    toolchain_context=
+  fi
+}
+
+# The build context is exactly the two files the digest covers. Handing docker
+# the checkout instead would ship .git, every service definition and every
+# fixture to the daemon on a build that reads two files.
+build_toolchain_image() {
+  resolve_toolchain_reference || return 1
+  toolchain_context=$(mktemp -d "${TMPDIR:-/tmp}/nas-platform-toolchain.XXXXXX") ||
+    toolchain_context=
+  if [ -z "$toolchain_context" ]; then
+    printf 'could not create a toolchain build context under %s\n' \
+      "${TMPDIR:-/tmp}" >&2
+    return 1
+  fi
+  toolchain_build_status=0
+  cp "$repo_dir/$toolchain_dockerfile" "$toolchain_context/Dockerfile" &&
+    cp "$repo_dir/requirements.yml" "$toolchain_context/requirements.yml" &&
+    docker build \
+      --build-arg "CONTROLLER_BASE_IMAGE=$runner_image" \
+      --build-arg "ANSIBLE_CORE_VERSION=$ansible_core_version" \
+      --build-arg "REQUESTS_VERSION=$requests_version" \
+      --build-arg "RUBY_PACKAGE=$ruby_package" \
+      --build-arg "CURL_PACKAGE=$curl_package" \
+      --tag "$toolchain_reference" "$toolchain_context" >&2 ||
+    toolchain_build_status=$?
+  cleanup_toolchain_context
+  return "$toolchain_build_status"
+}
+
+# Chooses what the controller container starts from, in falling order of cost:
+# an image already on this daemon, the published one, one built here, and
+# finally the bare base image with the toolchain installed inside the run. Only
+# the last of those touches Docker Hub on a lane that converges no python
+# service, which is the whole point.
+controller_image=$runner_image
+toolchain_preinstalled=false
+
+resolve_controller_image() {
+  controller_image=$runner_image
+  toolchain_preinstalled=false
+
+  # The escape hatch for bisecting a failure against the pre-image behaviour.
+  if [ "${INTEGRATION_TOOLCHAIN:-auto}" = off ]; then
+    pull_image "$runner_image" || return 1
+    return 0
+  fi
+
+  resolve_toolchain_reference || return 1
+  if docker image inspect "$toolchain_reference" >/dev/null 2>&1 ||
+     pull_image "$toolchain_reference" true; then
+    controller_image=$toolchain_reference
+    toolchain_preinstalled=true
+    return 0
+  fi
+
+  printf 'no controller toolchain at %s; using the base image instead\n' \
+    "$toolchain_reference" >&2
+  pull_image "$runner_image" || return 1
+  # Pull-only mode exists to exercise the registry ladder, so it stops here
+  # rather than spending a minute building an image it will never run.
+  [ "${INTEGRATION_PREPULL_ONLY:-0}" != 1 ] || return 0
+  if build_toolchain_image; then
+    controller_image=$toolchain_reference
+    toolchain_preinstalled=true
+  else
+    printf 'could not build the controller toolchain; installing it in the run\n' >&2
+  fi
+}
+
+# The media-control collision fixture starts its endpoints with --pull=never and
+# refuses an image that is not digest-pinned, so it needs a reference that is both
+# already local and named by digest. The controller image is local by
+# construction but not always named that way, so the two properties are resolved
+# separately here rather than assumed to coincide:
+#
+#   base-image fallback  the reference is the digest-pinned pin itself
+#   pulled toolchain     the daemon knows its registry digest, and using it costs
+#                        nothing this run has not already spent
+#   built toolchain      a locally built image has no registry digest at all, so
+#                        the fixture falls back to the base image -- which that
+#                        path has already pulled, or pulls here
+collision_image=
+resolve_collision_image() {
+  collision_image=$controller_image
+  case $collision_image in
+    *@sha256:*) return 0 ;;
+  esac
+  collision_digest=$(docker image inspect \
+    --format '{{if .RepoDigests}}{{index .RepoDigests 0}}{{end}}' \
+    "$controller_image" 2>/dev/null) || collision_digest=
+  case $collision_digest in
+    *@sha256:*)
+      collision_image=$collision_digest
+      return 0
+      ;;
+  esac
+  pull_image "$runner_image" || return 1
+  collision_image=$runner_image
+}
+
+# Publishes the image the suites pull. Runs in CI only: a build here is
+# linux/amd64 because the runner is, and the tag says so.
+publish_toolchain_image() {
+  resolve_toolchain_reference || return 1
+  if docker buildx imagetools inspect "$toolchain_reference" >/dev/null 2>&1; then
+    printf '%s is already published\n' "$toolchain_reference" >&2
+    return 0
+  fi
+  pull_image "$runner_image" || return 1
+  build_toolchain_image || return 1
+  docker push "$toolchain_reference" >&2 || return 1
+  printf 'published %s\n' "$toolchain_reference" >&2
+}
+
 # Pull-only mode exists so tests/integration_suite_test.sh can drive the retry
 # against a stub docker without building a sandbox. It shares the code path the
 # real run uses rather than re-implementing it.
-trap 'cleanup_pull_error; cleanup_prepull_list' EXIT
+trap 'cleanup_pull_error; cleanup_prepull_list; cleanup_toolchain_context' EXIT
 trap 'exit 130' HUP INT TERM
+
+# Reports the image the suites on this daemon would run from, so the workflow
+# that publishes it and the harness that consumes it cannot disagree about which
+# tag that is.
+if [ "${INTEGRATION_TOOLCHAIN_REFERENCE_ONLY:-0}" = 1 ]; then
+  reference_status=0
+  resolve_toolchain_reference || reference_status=$?
+  [ "$reference_status" -ne 0 ] || printf '%s\n' "$toolchain_reference"
+  exit "$reference_status"
+fi
+
+if [ "${INTEGRATION_TOOLCHAIN_PUBLISH:-0}" = 1 ]; then
+  publish_status=0
+  publish_toolchain_image || publish_status=$?
+  exit "$publish_status"
+fi
 
 if [ "${INTEGRATION_PREPULL_ONLY:-0}" = 1 ]; then
   prepull_status=0
@@ -649,6 +873,7 @@ cleanup_integration_on_exit() {
   trap - EXIT HUP INT TERM
   cleanup_pull_error
   cleanup_prepull_list
+  cleanup_toolchain_context
   if [ -n "$sandbox" ] && ! cleanup_sandbox "$sandbox"; then
     [ "$integration_exit_status" -ne 0 ] || integration_exit_status=1
   fi
@@ -929,6 +1154,13 @@ printf 'host address: %s\n' "$nas_address"
 # read the run makes happens under the retry rather than half of them.
 prepull_images
 
+# The sandbox teardown runs a container of its own on the way out, and every
+# lane reaches it. Left pointing at the base image it would put a Docker Hub
+# pull back on the exit path of every lane and cancel out the saving the
+# toolchain image exists for; the controller image is local by construction and
+# carries the same python.
+cleanup_sandbox_image=$controller_image
+
 paperless_fixture_preseeded=false
 komga_fixture_preseeded=false
 jellyfin_fixture_preseeded=false
@@ -995,18 +1227,25 @@ docker run --rm \
   -e INTEGRATION_SUITE="$suite" \
   -e INTEGRATION_TAGS="$suite_tags" \
   -e INTEGRATION_RUN_SERVICE_SCENARIOS="$run_service_scenarios" \
-  -e MEDIA_CONTROL_COLLISION_IMAGE="$runner_image" \
+  -e MEDIA_CONTROL_COLLISION_IMAGE="$collision_image" \
+  -e INTEGRATION_TOOLCHAIN_PREINSTALLED="$toolchain_preinstalled" \
   -e PLATFORM_PAPERLESS_FIXTURE_PRESEEDED="$paperless_fixture_preseeded" \
   -e PLATFORM_KOMGA_FIXTURE_PRESEEDED="$komga_fixture_preseeded" \
   -e PLATFORM_JELLYFIN_FIXTURE_PRESEEDED="$jellyfin_fixture_preseeded" \
   -w /repo \
-  "$runner_image" \
+  "$controller_image" \
   sh -eu -c "
-    apk add --no-cache --quiet docker-cli docker-cli-compose git tar openssl \
-      apache2-utils openssh-client '$ruby_package' '$curl_package' >/dev/null
-    pip install --quiet --no-input 'ansible-core==$ansible_core_version' \
-      'requests==$requests_version'
-    ansible-galaxy collection install -r /repo/requirements.yml >/dev/null
+    # The same three installs the controller image bakes, run here only when
+    # there is no such image to run from. Kept literally identical to
+    # tests/integration.Dockerfile: this is the path a developer's first run and
+    # a fork's CI take, and it must produce the same controller.
+    if [ \"\$INTEGRATION_TOOLCHAIN_PREINSTALLED\" != true ]; then
+      apk add --no-cache --quiet docker-cli docker-cli-compose git tar openssl \
+        apache2-utils openssh-client '$ruby_package' '$curl_package' >/dev/null
+      pip install --quiet --no-input 'ansible-core==$ansible_core_version' \
+        'requests==$requests_version'
+      ansible-galaxy collection install -r /repo/requirements.yml >/dev/null
+    fi
 
     # This container runs as root while the sandbox belongs to whoever started
     # the harness, so git refuses to read the controller checkout as a dubious

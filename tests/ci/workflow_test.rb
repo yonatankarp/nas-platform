@@ -49,7 +49,7 @@ DOCKER_HUB_TOKEN_SECRET = "DOCKERHUB_TOKEN"
 # Every registry the job is able to authenticate to. A registry outside this list
 # is one nobody decided about, which is what the classification check below names.
 CREDENTIALED_REGISTRIES = (GITHUB_BACKED_REGISTRIES + [DOCKER_HUB_REGISTRY]).freeze
-EXPECTED_JOBS = %w[changes static docs mutation reconciliation suites validate].freeze
+EXPECTED_JOBS = %w[changes static docs mutation reconciliation toolchain suites validate].freeze
 # One reconciliation file per matrix leg, in the order a full run enumerates them.
 RECONCILIATION_PARTS = %w[core bazarr configarr].freeze
 RECONCILIATION_SUPPORT_PATH =
@@ -398,10 +398,53 @@ check(failures, mutation_commands.include?("ruby tests/policy_manifest_test.rb")
 check(failures, mutation_commands.any? { |command| command.include?("ansible-core==") },
       "the mutation job must install the pinned Ansible toolchain")
 
+# The controller toolchain is built once per run and published to ghcr.io rather
+# than installed inside every leg. The suites job depends on it so a run that does
+# rebuild it does so once, but it depends on it without the implicit success gate:
+# the harness builds the image itself when it cannot pull one, so a failed or
+# skipped publish must cost time rather than coverage. Dropping that gate is what
+# forces the explicit changes result term -- otherwise a failed classification
+# would reach the matrix as an empty selection instead of as a skip.
+toolchain_job = jobs.fetch("toolchain", {})
+check(failures, toolchain_job["needs"] == "changes",
+      "toolchain must depend only on changes")
+check(failures,
+      expression(toolchain_job["if"]) ==
+        "${{ needs.changes.outputs.suites != '[]' && " \
+        "github.event.pull_request.head.repo.fork != true }}",
+      "toolchain must publish only for the runs that dispatch suites, and never " \
+      "from a fork whose GITHUB_TOKEN cannot write packages, found " \
+      "#{expression(toolchain_job['if']).inspect}")
+check(failures,
+      toolchain_job.fetch("permissions", {}) == { "contents" => "read", "packages" => "write" },
+      "the toolchain job must hold exactly the scopes it publishes with")
+toolchain_steps = Array(toolchain_job["steps"]).select { |step| step.is_a?(Hash) }
+toolchain_login = toolchain_steps.find { |step| step["uses"].to_s.start_with?("docker/login-action@") }
+check(failures, toolchain_login&.dig("with", "registry") == "ghcr.io",
+      "the toolchain job must authenticate to ghcr.io before publishing")
+check(failures, toolchain_login&.dig("with", "password") == "${{ secrets.GITHUB_TOKEN }}",
+      "the toolchain publish must use the job's own GITHUB_TOKEN")
+toolchain_publish = toolchain_steps.find { |step| step["run"].to_s.include?("tests/integration.sh") }
+check(failures, !toolchain_publish.nil?,
+      "the toolchain job must publish through the harness that consumes the image")
+# Named through env and nowhere else. The tag, the build arguments and the
+# already-published skip all live in tests/integration.sh; restating any of them
+# here is how the published image and the image the suites look for drift apart.
+check(failures, toolchain_publish&.dig("env", "INTEGRATION_TOOLCHAIN_PUBLISH") == "1",
+      "the toolchain job must select the harness's publish mode through env")
+check(failures, toolchain_publish&.fetch("run", "").to_s.strip == "tests/integration.sh",
+      "the toolchain job must not restate the harness's build arguments: " \
+      "#{toolchain_publish&.fetch('run', nil).inspect}")
+
 suites_job = jobs.fetch("suites", {})
-check(failures, suites_job["needs"] == "changes", "suites must depend only on changes")
-check(failures, expression(suites_job["if"]) == "${{ needs.changes.outputs.suites != '[]' }}",
-      "suites must skip entirely when the classifier selects no suite")
+check(failures, Array(suites_job["needs"]) == %w[changes toolchain],
+      "suites must depend on the classifier and on the toolchain publish")
+check(failures,
+      expression(suites_job["if"]) ==
+        "${{ !cancelled() && needs.changes.result == 'success' && " \
+        "needs.changes.outputs.suites != '[]' }}",
+      "suites must skip when the classifier selects no suite, and must still run " \
+      "when the toolchain publish did not, found #{expression(suites_job['if']).inspect}")
 check(failures, expression(suites_job["name"]) == "${{ matrix.suite }}",
       "each matrix leg must report its own suite name as the check name")
 check(failures, suites_job.dig("strategy", "fail-fast") == false,
@@ -492,12 +535,19 @@ login_steps.each do |step|
         "the #{registry} login must precede the integration harness: " \
         "#{suites_steps.map { |item| item['name'] }.inspect}")
 end
-# Only the job that pulls images may hold the registry scope.
+# Only the job that pulls images and the job that publishes one may hold a
+# registry scope, and only the publisher may hold a writing one.
 jobs.each do |job_name, job|
-  next if job_name == "suites"
-
-  check(failures, !job.fetch("permissions", {}).key?("packages"),
-        "job #{job_name} must not request the registry scope: it pulls no images")
+  scope = job.fetch("permissions", {})["packages"]
+  case job_name
+  when "suites"
+    check(failures, scope == "read", "suites must read the registry and no more")
+  when "toolchain"
+    check(failures, scope == "write", "toolchain must hold the scope it publishes with")
+  else
+    check(failures, scope.nil?,
+          "job #{job_name} must not request the registry scope: it pulls no images")
+  end
 end
 
 integration_steps = Array(suites_job["steps"]).select { |step| step["run"]&.include?("tests/integration.sh") }
@@ -651,9 +701,10 @@ end
 validate = jobs.fetch("validate", {})
 check(failures, validate["name"] == "validate", "aggregate check name must remain validate")
 check(failures, expression(validate["if"]) == "${{ always() }}", "validate must always run")
-expected_needs = %w[changes static docs mutation reconciliation suites]
+expected_needs = %w[changes static docs mutation reconciliation toolchain suites]
 check(failures, Array(validate["needs"]) == expected_needs,
-      "validate must need changes, static, docs, mutation, reconciliation and the suite matrix " \
+      "validate must need changes, static, docs, mutation, reconciliation, the toolchain " \
+      "publish and the suite matrix " \
       "in canonical order")
 validate_checkout = Array(validate["steps"]).find { |step| step["uses"]&.start_with?("actions/checkout@") }
 check(failures, validate_checkout&.fetch("uses", nil).to_s.split("@").first == CHECKOUT_ACTION_NAME,
