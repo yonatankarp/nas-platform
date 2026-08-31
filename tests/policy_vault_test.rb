@@ -96,9 +96,26 @@ end
 # and ends up with a vault missing keys the roles require.
 example_path = File.join(ROOT, "inventory", "group_vars", "all", "vault.yml.example")
 example = YAML.safe_load_file(example_path)
+# The Radarr and Sonarr keys are the two this platform POSTs to Bazarr's settings
+# form, and Bazarr casts every submitted value with int() unless the last
+# dash-segment of its key is one of config.py's str_keys -- `apikey` is not -- so
+# a key of only decimal digits fails the schema's is_type_of str and is refused
+# with 406 for as long as it is deployed. Both keep the repeated-digit series
+# that makes every example key obviously sanitized and end in the one
+# hexadecimal letter that keeps an operator who copies the file deployable.
+BAZARR_SUBMITTED_EXAMPLE_KEYS = %w[
+  vault_arr_radarr_api_key
+  vault_arr_sonarr_api_key
+].freeze
+
 foundation_example = FOUNDATION_KEYS.to_h do |key|
   value = if key.end_with?("_api_key")
-            (FOUNDATION_KEYS.index(key) / 3).to_s * 32
+            digit = (FOUNDATION_KEYS.index(key) / 3).to_s
+            if BAZARR_SUBMITTED_EXAMPLE_KEYS.include?(key)
+              "#{digit * 31}a"
+            else
+              digit * 32
+            end
           elsif key.end_with?("_admin_username")
             "nasadmin"
           else
@@ -360,7 +377,14 @@ helper_guard_sources = {
   "cleanup leaf-symlink guard" => '[ ! -L "$directory/vault.yml" ] && [ ! -L "$directory/password" ]',
   "failure trap isolation" => "generate_vault() (",
   "failure cleanup trap" => 'trap \'rm -f -- "$plain" "$private_key" "$private_key.pub" "$password_file" "$output"\' EXIT',
-  "self-test cleanup trap" => "trap self_test_cleanup_on_exit EXIT"
+  "self-test cleanup trap" => "trap self_test_cleanup_on_exit EXIT",
+  # An ephemeral Radarr or Sonarr key of only decimal digits is cast to an int by
+  # Bazarr's settings form and refused with 406 for the life of that vault. The
+  # redraw is what stops it; dropping it back to a bare `openssl rand -hex 16`
+  # would pass every run but the one in 3e-7 that matters.
+  "Bazarr all-digit API key redraw" => "*[abcdef]*)",
+  "Bazarr API key computed before the heredoc" =>
+    "radarr_api_key=$(random_api_key) || die"
 }
 helper_guard_sources.each do |property, source|
   check(failures, ephemeral_helper.include?(source),

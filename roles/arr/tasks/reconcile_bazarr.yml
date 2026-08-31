@@ -62,6 +62,21 @@
   changed_when: false
   no_log: true
 
+# Bazarr 1.6.0 answers a settings POST it cannot validate with 406, not 4xx-with-
+# detail, and the run then reads only "Status code was 406 and not [204]" -- a
+# failure with no name on it. `app/config.py` casts every submitted string with
+# `int()` unless the last dash-segment of its key is one of its `str_keys`
+# (`chmod`, `log_include_filter`, `log_exclude_filter`, `password`, `f_password`,
+# `hashed_password` -- `apikey` is not among them), and dynaconf then validates
+# the whole schema, so a Radarr or Sonarr API key of only decimal digits arrives
+# as an `int`, fails `is_type_of str`, and is refused for good.
+#
+# 406 is therefore accepted from the request and refused by the assertion below,
+# which prints the setting name dynaconf named and nothing after it. Retrying
+# would buy only a slower failure: identical schema validation over an identical
+# body answers 406 every time. The response body echoes the offending value, and
+# for `sonarr.apikey` that value is the credential itself, which is why the
+# request stays redacted and only the extracted name is ever rendered.
 - name: Reconcile Bazarr authentication and identical-path Arr connections
   ansible.builtin.uri:
     url: "{{ arr_bazarr_api }}/system/settings"
@@ -70,7 +85,9 @@
       X-API-KEY: "{{ vault_arr_bazarr_api_key }}"
     body_format: form-urlencoded
     body: "{{ arr_bazarr_connection_body }}"
-    status_code: [204]
+    status_code: [204, 406]
+    return_content: true
+  register: arr_bazarr_connection_reconciled
   when: >-
     arr_bazarr_owned_projections.current.connection !=
       arr_bazarr_owned_projections.desired.connection or
@@ -78,6 +95,20 @@
       arr_desired_reconciliation_fingerprints.bazarr_providers
   changed_when: true
   no_log: true
+
+- name: Refuse a rejected Bazarr connection request by the setting it named
+  ansible.builtin.assert:
+    that:
+      - arr_bazarr_connection_reconciled.status | default(204) != 406
+    fail_msg: >-
+      Bazarr refused the connection settings request with 406 over
+      {{ arr_bazarr_connection_reconciled.content | default('') |
+         acquisition_bazarr_rejected_settings | join(', ') }}.
+      Bazarr casts every submitted value with int() unless its key's last
+      dash-segment is one of config.py's str_keys, so an API key of only
+      decimal digits fails the schema's is_type_of str. The refused value is
+      a credential and is deliberately not printed.
+    success_msg: Bazarr accepted the connection settings request.
 
 - name: Reconcile operator-owned Bazarr provider settings
   ansible.builtin.uri:
@@ -87,7 +118,9 @@
       X-API-KEY: "{{ vault_arr_bazarr_api_key }}"
     body_format: form-urlencoded
     body: "{{ item.value }}"
-    status_code: [204]
+    status_code: [204, 406]
+    return_content: true
+  register: arr_bazarr_providers_reconciled
   loop: "{{ arr_bazarr_declarations.provider_bodies | dict2items }}"
   loop_control:
     label: bazarr-operator-provider
@@ -98,3 +131,25 @@
       arr_desired_reconciliation_fingerprints.bazarr_providers
   changed_when: true
   no_log: true
+
+# The rejections are collected before they are asserted on because a *looped*
+# failing task prints its whole `item`, which here is a provider body carrying
+# provider credentials, and `loop_control.label` does not suppress that. One
+# unlooped assertion over the extracted names prints the names only.
+- name: Refuse rejected Bazarr provider requests by the settings they named
+  ansible.builtin.assert:
+    that:
+      - >-
+        arr_bazarr_providers_reconciled.results | default([]) |
+        selectattr('status', 'defined') |
+        selectattr('status', 'equalto', 406) | list | length == 0
+    fail_msg: >-
+      Bazarr refused an operator-owned provider settings request with 406 over
+      {{ arr_bazarr_providers_reconciled.results | default([]) |
+         selectattr('status', 'defined') |
+         selectattr('status', 'equalto', 406) |
+         map(attribute='content') | list |
+         acquisition_bazarr_rejected_settings | join(', ') }}.
+      The refused values can be provider credentials and are deliberately not
+      printed.
+    success_msg: Bazarr accepted every operator-owned provider settings request.

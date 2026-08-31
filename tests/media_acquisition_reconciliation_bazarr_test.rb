@@ -110,6 +110,38 @@ exercise_secret_change(
   safe_request_body: ->(request) { canonical_bazarr_connection_body?(request, []) }
 )
 
+# Bazarr answers a settings POST its dynaconf schema refuses with 406 and
+# nothing else, so without the extraction a converge reads only "Status code was
+# 406 and not [204]" and names neither the setting nor the reason. The body
+# carries dynaconf's "{name} must {operation} {op_value} but it is {value}",
+# whose value half is the submitted credential -- for `sonarr.apikey` it is the
+# API key -- so the diagnosis has to name the setting while printing nothing
+# after " must ". `check_sanity` fails on any secret sentinel reaching the run's
+# output, which is what proves the second half of that here.
+{
+  "a dynaconf validation message" => [
+    "sonarr.apikey must is_type_of <class 'str'> but it is #{SECRETS.fetch('sonarr')}",
+    "sonarr.apikey"
+  ],
+  "a body that names no setting" => [
+    "<html><body>#{SECRETS.fetch('sonarr')}</body></html>",
+    "an unnamed setting"
+  ]
+}.each_case(failures) do |(label, (body, expected)), failures; rejected_state, result, output|
+  rejected_state = deep_copy(bazarr_state)
+  rejected_state.dig("bazarr", "auth")["type"] = "basic"
+  with_api(rejected_state, bazarr_settings_rejection: ->(_form) { body }) do |api|
+    result = run_tasks(:bazarr, api, {})
+    next unless check_sanity(failures, "Bazarr rejection over #{label}", result, api)
+
+    failures << "Bazarr rejection over #{label} was accepted" if result.fetch("status").success?
+    output = result.values_at("stdout", "stderr").join("\n")
+    unless output.include?(expected)
+      failures << "Bazarr rejection over #{label} did not report #{expected}"
+    end
+  end
+end
+
 provider_state = { "bazarr" => deep_copy(BAZARR_WITH_PROVIDER) }
 provider_variables = { "media_bazarr_providers" => [deep_copy(BAZARR_PROVIDER)] }
 provider_mutations = {
@@ -131,6 +163,35 @@ end
 provider_projection = lambda do |settings|
   bazarr_projection(settings, [BAZARR_PROVIDER])
 end
+
+# The provider requests are looped, and a looped task that fails prints its whole
+# `item` -- here a provider body carrying the provider password -- so their
+# rejections are collected into one unlooped assertion instead. This case refuses
+# only the provider form, leaving the already-converged connection request
+# untouched, so the provider assertion is the one that has to report.
+provider_rejection_state = deep_copy(provider_state)
+provider_rejection_state.dig("bazarr", "providers", "opensubtitlescom")["username"] = "legacy"
+provider_rejection_body =
+  "opensubtitlescom.password must is_type_of <class 'str'> but it is " \
+  "#{SECRETS.fetch('provider')}"
+provider_rejection = lambda do |form|
+  provider_rejection_body if form.any? do |key, _value|
+    key.start_with?("settings-opensubtitlescom-")
+  end
+end
+with_api(provider_rejection_state, bazarr_settings_rejection: provider_rejection) do |api|
+  provider_rejection_result = run_tasks(:bazarr, api, provider_variables)
+  if check_sanity(failures, "Bazarr provider rejection", provider_rejection_result, api)
+    failures << "Bazarr provider rejection was accepted" if
+      provider_rejection_result.fetch("status").success?
+    provider_rejection_output =
+      provider_rejection_result.values_at("stdout", "stderr").join("\n")
+    unless provider_rejection_output.include?("opensubtitlescom.password")
+      failures << "Bazarr provider rejection did not report opensubtitlescom.password"
+    end
+  end
+end
+
 exercise_mutations(
   failures, relationship: "Bazarr provider", kind: :bazarr,
   baseline: provider_state, mutations: provider_mutations, variables: provider_variables,

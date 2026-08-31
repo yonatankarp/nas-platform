@@ -311,6 +311,45 @@ def collect_failures():
                 fixture["declarations"], "", fixture["password"], "k", "k"),
             "an empty administrator username must be refused")
 
+    # --- acquisition_bazarr_rejected_settings -----------------------------
+    # Bazarr answers a settings POST its schema refuses with 406 and dynaconf's
+    # own "{name} must {operation} {op_value} but it is {value}". The value can
+    # be the submitted API key, so the one property that matters is that nothing
+    # after the first " must " is ever returned.
+    named = plugin.acquisition_bazarr_rejected_settings
+    secret = "11111111111111111111111111111111"
+    rejection = (f"sonarr.apikey must is_type_of <class 'str'> but it is {secret}")
+    check(failures, named(rejection) == ["sonarr.apikey"],
+          "a dynaconf rejection must be reported as the setting it named")
+    check(failures, secret not in " ".join(named(rejection)),
+          "the value a 406 echoes must never be reported")
+    check(failures,
+          named(f'{{"error": "sonarr.apikey must is_type_of but it is {secret}"}}')
+          == ["sonarr.apikey"],
+          "a wrapped rejection message must still be reported as its setting")
+    check(failures, named(f"radarr.apikey must be a str but it is {secret} must go")
+          == ["radarr.apikey"],
+          "only the first separator may be split on, so a later one cannot leak")
+
+    withheld = plugin.BAZARR_REJECTION_WITHHELD
+    for opaque in (f"<html>{secret}</html>", "", None, 406, [secret]):
+        check(failures, named(opaque) == [withheld],
+              f"a body with no dynaconf message must be withheld, not printed: {opaque!r}")
+    check(failures, secret not in withheld,
+          "the withheld stand-in must carry no response content at all")
+
+    many = named([
+        rejection,
+        f"opensubtitlescom.password must is_type_of but it is {secret}",
+        "sonarr.apikey must is_type_of but it is other",
+        f"<html>{secret}</html>",
+    ])
+    check(failures,
+          many == ["sonarr.apikey", "opensubtitlescom.password", withheld],
+          "a sequence of bodies must report each setting once, in first-seen order")
+    check(failures, named(b"sonarr.apikey must be a str") == ["sonarr.apikey"],
+          "a bytes body must be decoded rather than reported as its repr")
+
     return failures
 
 

@@ -101,6 +101,30 @@ random_token() {
   printf 'tk_%s' "$(openssl rand -hex 15 2>/dev/null | cut -c1-29)"
 }
 
+# Bazarr's settings form is POSTed the Radarr and Sonarr API keys, and Bazarr
+# 1.6.0 casts every submitted value with int() unless the last dash-segment of
+# its key is one of app/config.py's str_keys -- `apikey` is not one. dynaconf
+# then validates the whole schema, so a key of only decimal digits fails
+# `is_type_of str` and the request is answered 406 for as long as that key is
+# deployed. A hex draw with no a-f in it is about one in 3e-7, so redrawing a
+# bounded number of times is certain in practice and cannot hang; exhausting the
+# bound is reported rather than papered over. Only these two keys need it: no
+# other vault credential reaches that cast.
+random_api_key() {
+  attempt=0
+  while [ "$attempt" -lt 8 ]; do
+    candidate_key=$(openssl rand -hex 16 2>/dev/null)
+    case $candidate_key in
+      *[abcdef]*)
+        printf '%s' "$candidate_key"
+        return 0
+        ;;
+    esac
+    attempt=$((attempt + 1))
+  done
+  return 1
+}
+
 random_uuid() {
   hex=$(openssl rand -hex 16 2>/dev/null)
   printf '%s-%s-4%s-a%s-%s' \
@@ -145,6 +169,8 @@ generate_vault() (
   dozzle_admin_password=$(random_password)
   managed_dozzle_password=$(random_password)
   managed_ntfy_password=$(random_password)
+  radarr_api_key=$(random_api_key) || die 'failed to generate a Radarr API key'
+  sonarr_api_key=$(random_api_key) || die 'failed to generate a Sonarr API key'
   ssh-keygen -q -t ed25519 -N '' -C 'ephemeral beszel hub' -f "$private_key" \
     >/dev/null 2>&1 || die 'failed to generate ephemeral key material'
 
@@ -174,10 +200,10 @@ vault_jellyfin_opensubtitles_username: ephemeral-opensubtitles-user
 vault_jellyfin_opensubtitles_password: '$(random_password)'
 vault_komga_admin_email: ephemeral-admin@example.invalid
 vault_komga_admin_password: '$(random_password)'
-vault_arr_radarr_api_key: '$(openssl rand -hex 16 2>/dev/null)'
+vault_arr_radarr_api_key: '$radarr_api_key'
 vault_arr_radarr_admin_username: nasadmin
 vault_arr_radarr_admin_password: '$(random_password)'
-vault_arr_sonarr_api_key: '$(openssl rand -hex 16 2>/dev/null)'
+vault_arr_sonarr_api_key: '$sonarr_api_key'
 vault_arr_sonarr_admin_username: nasadmin
 vault_arr_sonarr_admin_password: '$(random_password)'
 vault_arr_prowlarr_api_key: '$(openssl rand -hex 16 2>/dev/null)'
