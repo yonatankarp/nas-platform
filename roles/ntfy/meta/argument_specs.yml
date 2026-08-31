@@ -99,9 +99,9 @@ argument_specs:
     description:
       - Called by every service role after its Compose deployment, so the caller
         needs no ntfy port, topic or token of its own.
-      - Publishes on every run that moved the release, whether or not Compose
-        recreated the service, so the record names every service the deployment
-        covered rather than only the ones that happened to change.
+      - Publishes only when Compose recreated the service. What the whole run
+        deployed is deployment_summary's one message, so an unchanged service
+        has nothing left to add.
     options:
       ntfy_deployment_report_service:
         type: str
@@ -111,12 +111,8 @@ argument_specs:
         type: bool
         required: true
         description: >-
-          Whether Compose recreated anything. Decides how the message reads,
-          and publishes one on its own when the release did not move.
-      ntfy_deployment_release_moved:
-        type: bool
-        required: false
-        description: Whether this run moved the release; the default derives it.
+          Whether Compose recreated anything. The whole gate: false publishes
+          nothing.
       platform_release_id:
         type: str
         required: true

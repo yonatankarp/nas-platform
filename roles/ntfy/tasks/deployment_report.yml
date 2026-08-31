@@ -1,20 +1,20 @@
 ---
-# One message per service, on every run that moved the release. The report is
-# published by the controller rather than from inside the container, so a
-# service reports its own deployment without needing a token baked into its
-# image: only dozzle and beszel hold tokens, and only because they alert while
-# nothing else is running.
+# One message per service Compose actually recreated. The report is published by
+# the controller rather than from inside the container, so a service reports its
+# own deployment without needing a token baked into its image: only dozzle and
+# beszel hold tokens, and only because they alert while nothing else is running.
 #
-# It reports the service's outcome, not only the interesting half of it. Gating
-# the message on "Compose recreated something" made the record unreadable: a
-# release usually moves one image, Compose leaves every other stack running,
-# and a service that says nothing is indistinguishable from one that was never
-# deployed. Saying "already current" is the answer to the question the reader
-# actually has.
+# It used to speak for every service on every run that moved the release, so
+# that a silent service could not be confused with one that was never deployed.
+# That answer belongs to deployment_summary.yml, which publishes once per
+# release with the full image diff and the commit subjects it carries: the
+# reader already learns that the deployment happened and what it moved. Repeated
+# per service, "already current" was fifteen notifications of which fourteen
+# said nothing, and the topic stopped being read at all.
 #
-# A converge that does not move the release still publishes nothing unless
-# Compose recreated the service, so a selective converge and a re-run of the
-# installed revision stay silent.
+# So the gate is the Compose result alone. A release that repins one image
+# reports that one service; a converge that recreates nothing is silent in both
+# directions.
 - name: Publish the service deployment report
   ansible.builtin.uri:
     url: "http://127.0.0.1:{{ ntfy_port }}/"
@@ -24,20 +24,14 @@
     body_format: json
     body:
       topic: "{{ ntfy_deployment_topic }}"
-      title: >-
-        {{ ntfy_deployment_report_service }} deployed
-        ({{ 'recreated' if ntfy_deployment_report_changed | bool
-            else 'already current' }})
+      title: "{{ ntfy_deployment_report_service }} deployed (recreated)"
       message: >-
-        {{ ('Compose recreated ' ~ ntfy_deployment_report_service)
-           if ntfy_deployment_report_changed | bool
-           else ('Compose left ' ~ ntfy_deployment_report_service
-                 ~ ' running unchanged') }}
+        Compose recreated {{ ntfy_deployment_report_service }}
         at release {{ platform_release_id[:12] }}.
       # Low, because this is the per-service detail behind the deployment
       # summary the poller sends at default priority.
       priority: 2
-      tags: "{{ ['package'] if ntfy_deployment_report_changed | bool else ['heavy_check_mark'] }}"
+      tags: [package]
     status_code: [200]
   # A refused publish fails the converge on purpose. It costs nothing: ntfy is
   # deployed and its publish path verified before any service role runs, so a
@@ -48,7 +42,5 @@
   changed_when: false
   no_log: true
   when:
-    - >-
-      (ntfy_deployment_report_changed | bool) or
-      (ntfy_deployment_release_moved | bool)
+    - ntfy_deployment_report_changed | bool
     - not ansible_check_mode

@@ -197,18 +197,21 @@ id alone, and the phone then fetches the body from your server. An uncached
 proof therefore arrived as an empty "New message", once per publisher, on every
 converge.
 
-Every service reports its own deployment on `nas-deployment` at priority 2, one
-message per service, on every run that moved the release. Each says which of
-the two things happened — `Komga deployed (recreated)` when Compose replaced
-its containers, `Komga deployed (already current)` when the release left them
-running — because a release usually moves one image and leaves the rest alone,
-and a service that says nothing is indistinguishable from one that was never
-deployed. The controller publishes them with the deploy publisher's token, so
+A service reports its own deployment on `nas-deployment` at priority 2 —
+`Komga deployed (recreated)` — only when Compose actually replaced its
+containers. The controller publishes it with the deploy publisher's token, so
 no service needs a token of its own inside its image.
 
-A run that does not move the release publishes only for the services Compose
-actually recreated, so a selective converge and a re-run of the installed
-revision stay silent.
+A service the run left running unchanged says nothing. It used to report
+`already current` so that silence could not be mistaken for a service that was
+never deployed, but a release usually moves one image: fifteen services then
+published fifteen messages of which fourteen carried no information, and the
+topic stopped being read. The run-level summary below already answers "did a
+deployment happen, and what did it move", so the per-service report is now the
+detail behind it rather than a roll call.
+
+A run that recreates nothing therefore publishes nothing, which also keeps a
+selective converge and a re-run of the installed revision silent.
 
 After every service role, a single run-level summary follows on
 `nas-deployment` at priority 3, above the per-service detail. It diffs the
