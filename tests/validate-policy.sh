@@ -34,6 +34,7 @@ ruby tests/policy_platform_test.rb
 ruby tests/policy_ci_test.rb
 ruby tests/policy_beszel_test.rb
 ruby tests/policy_integration_test.rb
+shellcheck --shell=sh tests/integration_controller_lib.sh
 ruby tests/policy_deployment_test.rb
 ruby tests/policy_mac_test.rb
 ruby tests/policy_vault_test.rb
@@ -115,9 +116,12 @@ PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_configarr_filter_t
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/vault_managed_user_schema_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/vault_credential_schema_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/immich_preference_schema_test.py
+PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/immich_response_schema_test.py
+PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/managed_user_identity_filter_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/container_cpu_filter_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/deployment_summary_filter_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/jellyfin_plugin_repositories_filter_test.py
+PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/jellyfin_encoding_schema_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/filter_input_argument_spec_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/safe_slurp_test.py
 ansible-playbook -i localhost, -c local tests/compose_metadata_filter_test.yml
@@ -140,6 +144,8 @@ ruby tests/mac/report.rb --self-test
 tests/mac/cleanup.sh --self-test
 tests/mac/snapshot-immich.sh --self-test
 ruby tests/mac/sanitize-logs.rb --self-test
+ruby tests/mac/pin-protected-input-test.rb
+ruby tests/mac/pin-protected-input-test.rb --self-test
 POLICY_CHECKS
 }
 

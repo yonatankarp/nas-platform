@@ -93,6 +93,7 @@ BASE_FIXTURE_PATHS = %w[
   tests/compose_metadata_filter_test.yml
   tests/ci/suites.conf
   tests/integration.sh
+  tests/integration_controller_lib.sh
   tests/integration_lock.sh
   tests/integration_lock_test.sh
   tests/immich_release_helper_test.rb
@@ -137,6 +138,7 @@ BASE_FIXTURE_PATHS = %w[
   tests/mac/media-acquisition-foundation-cleanup-test.sh
   tests/mac/run.sh
   tests/mac/run-phase-status-test.sh
+  tests/mac/pin-protected-input.rb
   tests/mac/snapshot-paperless.sh
   tests/mac/audiobookshelf-drift-hook-test.sh
   tests/mac/hooks/drift/30-audiobookshelf.sh

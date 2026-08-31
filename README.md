@@ -341,13 +341,17 @@ says.
   production: one mode-0600 `services/<name>/.env` per stack, rendered from
   vault by each role's `templates/env.j2`.
 - **Service data under the Docker root**, `/volume1/Docker` in production:
-  Dozzle's users file, Beszel's hub private key, and the first-run
-  configuration Ansible seeds and then leaves alone — SABnzbd's
+  Dozzle's data directory as a whole, Beszel's hub private key, and the
+  first-run configuration Ansible seeds and then leaves alone — SABnzbd's
   `sabnzbd/config/sabnzbd.ini` (administrator username, password and API key),
   the Radarr, Sonarr and Prowlarr `config/config.xml` files (API keys), and
   Bazarr's `bazarr/config/config/config.yaml` (API key, administrator identity).
   Each is seeded mode 0600 with `force: false`, so the application owns it
   afterwards; applications and databases keep further copies of their own.
+  Dozzle's directory is secret-bearing past its users file: Ansible POSTs a
+  notification dispatcher into Dozzle's API, and Dozzle persists that
+  dispatcher there complete with the `Authorization: Bearer` header it
+  carries.
 - **The deploy account's home**, once `install-production-auto-deploy.yml` has
   run. `~/.config/nas-platform` is mode 0700 and holds the mode-0600
   `vault-password` file the poller requires, plus two protected ntfy publisher

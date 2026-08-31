@@ -273,7 +273,6 @@
   vars:
     container_cpu_service_name: immich
     container_cpu_project_name: "{{ immich_compose_project_name }}"
-  when: not ansible_check_mode
 
 # Unlike some other services in this platform, the API answers before the
 # container health check reports healthy, so this waits on the application's own

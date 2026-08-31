@@ -149,7 +149,6 @@
     container_cpu_project_name: "{{ arr_compose_project_name }}"
   when:
     - media_usenet_enabled | bool
-    - not ansible_check_mode
 
 - name: Run Arr service verification
   ansible.builtin.include_tasks:

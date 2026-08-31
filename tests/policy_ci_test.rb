@@ -201,8 +201,10 @@ enabled_idempotence_contracts.each do |suite, (idempotence_call, check_call)|
         "the #{suite} suite must run enabled idempotence before check mode")
 end
 check(failures,
-      integration_body.scan(/^    enabled_idempotence_recap_is_clean\(\) \{/).length == 1,
-      "tests/integration.sh must define one enabled idempotence recap parser")
+      File.read(File.join(ROOT, "tests", "integration_controller_lib.sh"))
+          .scan(/^enabled_idempotence_recap_is_clean\(\) \{/).length == 1,
+      "tests/integration_controller_lib.sh must define one enabled idempotence " \
+      "recap parser")
 
 # The manifest's own shape is policed elsewhere, which reports a malformed
 # document or a non-string service name by name. PolicySupport reads it tolerantly
@@ -293,6 +295,8 @@ validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "te
   ruby\ tests/mac/report.rb\ --self-test
   tests/mac/cleanup.sh\ --self-test
   ruby\ tests/mac/sanitize-logs.rb\ --self-test
+  ruby\ tests/mac/pin-protected-input-test.rb
+  ruby\ tests/mac/pin-protected-input-test.rb\ --self-test
 ].each do |command|
   check(failures, validation_commands.include?(command),
         "validate-policy.sh must run #{command}")

@@ -173,16 +173,22 @@ def collect_failures():
             "a projection missing a service must be refused")
 
     # --- acquisition_configarr_missing_custom_format_bodies ---------------
+    # The filter takes the materialized desired projection the play already
+    # holds, so each case here materializes it from the same current projection
+    # the filter is then handed.
     check(failures,
           plugin.acquisition_configarr_missing_custom_format_bodies(
-              CONFIG_SOURCE, projection) == {},
+              desired, projection) == {},
           "nothing may be created while both custom formats already exist")
     without_format = copy.deepcopy(projection)
     without_format["radarr"]["custom_format_identity_count"] = 0
     without_format["radarr"]["custom_format_id"] = None
     without_format["radarr"]["custom_format"] = None
     bodies = plugin.acquisition_configarr_missing_custom_format_bodies(
-        CONFIG_SOURCE, without_format
+        plugin.acquisition_configarr_desired_projection(
+            CONFIG_SOURCE, without_format
+        ),
+        without_format,
     )
     check(failures, list(bodies) == ["radarr"],
           "only the service whose custom format is absent may get a create body")
@@ -197,8 +203,12 @@ def collect_failures():
     ambiguous["radarr"]["custom_format_identity_count"] = 2
     refuses(failures,
             lambda: plugin.acquisition_configarr_missing_custom_format_bodies(
-                CONFIG_SOURCE, ambiguous),
+                desired, ambiguous),
             "an ambiguous custom-format identity must be refused, not created over")
+    refuses(failures,
+            lambda: plugin.acquisition_configarr_missing_custom_format_bodies(
+                CONFIG_SOURCE, without_format),
+            "a desired projection that is not a mapping must be refused")
 
     # --- acquisition_configarr_quality_definition_invariants --------------
     invariants = plugin.acquisition_configarr_quality_definition_invariants(

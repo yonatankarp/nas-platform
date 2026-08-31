@@ -95,7 +95,6 @@
   vars:
     container_cpu_service_name: trailarr
     container_cpu_project_name: "{{ trailarr_compose_project_name }}"
-  when: not ansible_check_mode
 
 # Two failures wear the same costume here and neither is a network problem.
 # When the hourly nvidia probe fails, /status raises 404 rather than 503, so the

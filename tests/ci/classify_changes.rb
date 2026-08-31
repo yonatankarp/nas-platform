@@ -122,6 +122,7 @@ module ClassifyChanges
     tests/ci/suites.conf
     tests/generate-ephemeral-vault.sh
     tests/integration.sh
+    tests/integration_controller_lib.sh
     tests/integration_lock.sh
     tests/mac/generate-immich-fixture-vars.rb
     tests/mac/snapshot-paperless.sh
