@@ -45,17 +45,24 @@
     label: komga-managed-user
   no_log: true
 
+# The two conditions this replaces are the one decision all six HTTP-driven
+# managed-user roles share; filter_plugins/managed_user_identity.py explains why
+# they are also the only one, and carries them for every service. The errors it
+# returns name an API attribute and a count, never an identity, so they are safe
+# to print from a task running under no_log.
 - name: Refuse ambiguous normalized Komga managed identities
   ansible.builtin.assert:
     that:
-      - komga_managed_user_matches[item.email] | length <= 1
       - >-
-        komga_managed_users_listing.json | map(attribute='email') |
-        map('trim') | map('lower') | select('equalto', item.email | trim | lower) |
-        list | length == komga_managed_user_matches[item.email] | length
+        komga_managed_users_listing.json | managed_user_ambiguity_errors(
+          'email', item.email, komga_managed_user_matches[item.email]
+        ) | length == 0
     fail_msg: >-
       Komga contains duplicate normalized managed emails; resolve the ambiguity
-      manually before reconciliation.
+      manually before reconciliation:
+      {{ komga_managed_users_listing.json | managed_user_ambiguity_errors(
+           'email', item.email, komga_managed_user_matches[item.email]
+         ) | join('; ') }}
   loop: "{{ vault_managed_komga_users }}"
   loop_control:
     label: komga-managed-user

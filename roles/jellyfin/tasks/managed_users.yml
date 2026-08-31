@@ -44,17 +44,24 @@
     label: jellyfin-managed-user
   no_log: true
 
+# The two conditions this replaces are the one decision all six HTTP-driven
+# managed-user roles share; filter_plugins/managed_user_identity.py explains why
+# they are also the only one, and carries them for every service. Jellyfin is
+# the role that proves the API attribute is a parameter and not the vault key:
+# the identity is authored as `username` and returned as `Name`.
 - name: Refuse ambiguous normalized Jellyfin managed identities
   ansible.builtin.assert:
     that:
-      - jellyfin_managed_user_matches[item.username] | length <= 1
       - >-
-        jellyfin_managed_users_listing.json | map(attribute='Name') |
-        map('trim') | map('lower') | select('equalto', item.username | trim | lower) |
-        list | length == jellyfin_managed_user_matches[item.username] | length
+        jellyfin_managed_users_listing.json | managed_user_ambiguity_errors(
+          'Name', item.username, jellyfin_managed_user_matches[item.username]
+        ) | length == 0
     fail_msg: >-
       Jellyfin contains duplicate normalized managed usernames; resolve the
-      ambiguity manually before reconciliation.
+      ambiguity manually before reconciliation:
+      {{ jellyfin_managed_users_listing.json | managed_user_ambiguity_errors(
+           'Name', item.username, jellyfin_managed_user_matches[item.username]
+         ) | join('; ') }}
   loop: "{{ vault_managed_jellyfin_users }}"
   loop_control:
     label: jellyfin-managed-user
