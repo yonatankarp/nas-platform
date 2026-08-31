@@ -285,13 +285,16 @@ aborted run leaves no partial file masquerading as a backup.
 
 The gate has to be conditional on an actual upgrade or it fires on every
 converge and is not idempotent; keying it on a difference between the deployed
-image digest and the pinned one is the obvious choice, and whether the
-repository already exposes the running container's digest somewhere is
-**unverified** — `roles/production_auto_deploy` and `roles/image_prune` are
-worth reading first. It must run before `docker_compose_v2` starts the new
-image, because Bindery applies its schema migrations on startup (81 of them at
-v1.33.2, a few hundred milliseconds on a fresh database) and by the time the API
-answers again the old schema is gone. The role's *first* task is still the
+image digest and the pinned one is the obvious choice. Nothing in the
+repository exposes that digest, but nothing needs to: Compose records the image
+reference it created the container from, digest included, so
+`docker container inspect`'s `.Config.Image` compared against
+`services.bindery.image` in the deployed Compose definition names an upgrade
+exactly. Confirmed, and it is what the promotion's gate does. It must run
+before `docker_compose_v2` starts the new image, because Bindery applies its
+schema migrations on startup (81 of them at v1.33.2, a few hundred milliseconds
+on a fresh database) and by the time the API answers again the old schema is
+gone. The role's *first* task is still the
 `deployment_bundle` re-include; that is invariant.
 
 **A backup is a whole-database copy and Bindery stores every credential in the
@@ -312,15 +315,25 @@ in the `recovery: critical` class it already carries.
   book files. It sits behind the same middleware and answered 401 anonymously on
   a fresh install, and it belongs in the "refuses an unauthenticated caller"
   probe.
+- The container paths matter more than the reproducing recipe below suggests.
+  Its flat `/books` and `/downloads` mounts are fine for a probe, but SABnzbd
+  reports a finished download by *its own* container path and Bindery reads that
+  path straight off the filesystem, so the two have to agree or every import
+  needs a `pathRemap`. Mount the libraries and staging roots at the paths
+  `services/downloaders/compose.yml` already uses — `/data/books/...` and
+  `/data/media/...` — rather than at Bindery's defaults. Confirmed against a
+  deployed pair.
 - `BINDERY_URL_BASE` and `BINDERY_TRUSTED_PROXY` both stay empty. An over-broad
   trusted-proxy entry disables the per-IP rate limiter, and upstream warns about
   it at boot.
 - The live hardlink probe reported `hardlinkable: false` with an EXDEV
   explanation, but that was on Docker Desktop for macOS, a known source of
   spurious EXDEV. Whether it reproduces on the NAS kernel is **unverified**.
-  Largely moot for the initial transport: `auto` and `hardlink` are both remapped
-  to `move` for a usenet client. It matters when qBittorrent arrives and seeding
-  must be preserved.
+  Moot for the initial transport, and not only because `auto` and `hardlink` are
+  both remapped to `move` for a usenet client: `MoveFileCtx` catches EXDEV and
+  falls back to a copy (`internal/importer/renamer.go`), so an import across two
+  separate bind mounts still completes. Confirmed. It matters when qBittorrent
+  arrives and seeding must be preserved.
 - `tests/expected/bindery.yml` currently carries `vault_keys: []`, and the
   planned-tree guard fails a `planned` project whose role or service directory
   exists — so the directory tree, the status flips and the expectations file all
@@ -335,8 +348,9 @@ in the `recovery: critical` class it already carries.
    comment it in the role, or reject the design that needs it.
 2. **Ownership of `Books/Ebooks` and `Media/Audiobooks` on the real NAS.** The
    image cannot repair it. `stat` before promoting.
-3. **Whether the pre-upgrade backup gate can read the deployed image digest**
-   from something that already exists.
+3. ~~**Whether the pre-upgrade backup gate can read the deployed image digest**
+   from something that already exists.~~ Settled: Compose's `.Config.Image`
+   carries the pinned reference, so no new helper is needed.
 4. **Whether the Komga two-library migration lands in this unit or beside it.**
    The design ties them together — the migration runs before Bindery is granted
    write access — and it calls for rewriting

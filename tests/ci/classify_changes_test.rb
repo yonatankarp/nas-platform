@@ -31,8 +31,8 @@ RECONCILIATION_OWNED_PATHS = %w[
 # no other. Stated rather than imported for the same reason: widening the
 # classifier's own list must fail here.
 NTFY_LANES = %w[
-  static reconciliation arr downloaders kapowarr pinchflat smoke beszel dozzle audiobookshelf
-  komga jellyfin immich paperless idempotence_check
+  static reconciliation arr downloaders bindery kapowarr pinchflat smoke beszel dozzle
+  audiobookshelf komga jellyfin immich paperless idempotence_check
 ].freeze
 failures = []
 
@@ -345,9 +345,42 @@ if defined?(ClassifyChanges)
   OUTPUT
         "Paperless-only output must retain its exact tag plan: #{paperless_output.string.inspect}")
 
-  # Kapowarr and Pinchflat are the implemented acquisition projects outside
-  # Phase 1: each lane converges its own role rather than the shared inert
-  # foundation, and neither also converges Arr.
+  # Bindery, Kapowarr and Pinchflat are the implemented acquisition projects
+  # outside Phase 1. Each lane converges its own role rather than the shared
+  # inert foundation, and Bindery is the only one of the three that also
+  # converges Arr and the downloaders: it stores a Prowlarr instance and a
+  # SABnzbd download client, and it resolves the host in both URLs at write
+  # time, so neither row can be written unless both are running.
+  bindery_output = StringIO.new
+  ClassifyChanges.write_github_outputs(
+    ClassifyChanges.classify(["roles/bindery/tasks/main.yml"]), bindery_output
+  )
+  check(failures, bindery_output.string == <<~OUTPUT,
+    static=true
+    docs=false
+    reconciliation=false
+    foundation=false
+    arr=false
+    downloaders=false
+    bindery=true
+    kapowarr=false
+    pinchflat=false
+    trailarr=false
+    seerr=false
+    smoke=false
+    beszel=false
+    dozzle=false
+    audiobookshelf=false
+    komga=false
+    jellyfin=false
+    immich=false
+    paperless=false
+    idempotence_check=true
+    suites=["bindery","idempotence-check"]
+    selected_tags=host_prep,deployment_bundle,ntfy,arr,downloaders,bindery
+  OUTPUT
+        "Bindery-only output must retain its exact tag plan: #{bindery_output.string.inspect}")
+
   kapowarr_output = StringIO.new
   ClassifyChanges.write_github_outputs(
     ClassifyChanges.classify(["roles/kapowarr/tasks/main.yml"]), kapowarr_output

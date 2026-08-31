@@ -1,0 +1,93 @@
+---
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
+services:
+  # Bindery is the acquisition manager for ebooks and audiobooks. Unlike
+  # Pinchflat and Kapowarr it is not self-contained: it stores a Prowlarr
+  # instance and a SABnzbd download client, and it resolves the host in both
+  # URLs at write time, so it must be able to reach them by name. That is why
+  # it joins media-control, and why site.yml converges it after arr and
+  # downloaders.
+  bindery:
+    container_name: bindery
+    image: ghcr.io/vavallee/bindery:v1.33.2@sha256:3778b97d8651cf51da57910ce4e4a5b175b42f9bbba55c5c9b07b16309144013
+    cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
+    # One library scan plus one import at a time; the metadata providers are
+    # network-bound rather than CPU-bound, and SABnzbd holds the download
+    # budget separately.
+    cpus: 1.0
+    labels:
+      dev.dozzle.name: bindery
+    # The runtime stage is distroless: no shell, no entrypoint script, no root
+    # phase and no gosu, so the container cannot remap or chown anything. The
+    # platform identity can only arrive through `user:`. BINDERY_PUID and
+    # BINDERY_PGID are not a remap — the binary compares them against its own
+    # uid and gid at startup and exits 1 on a mismatch, which turns a dropped
+    # `user:` line into a loud boot failure instead of files silently written
+    # as the image's uid 65532.
+    user: "${NAS_UID:?}:${NAS_GID:?}"
+    ports:
+      - "8787:8787"
+    # The two libraries and the two staging directories are mounted at the same
+    # absolute paths SABnzbd uses for the same host directories. SABnzbd reports
+    # a completed download by its own container path, and Bindery reads that
+    # path straight off the filesystem, so agreeing on the layout is what makes
+    # an import work without a path remap. Each pair is a separate bind mount,
+    # so a rename across it returns EXDEV and the importer falls back to a copy.
+    volumes:
+      - ${BINDERY_CONFIG_PATH:?}:/config
+      - ${BINDERY_EBOOKS_PATH:?}:/data/books/Ebooks
+      - ${BINDERY_AUDIOBOOKS_PATH:?}:/data/media/Audiobooks
+      - ${BINDERY_EBOOK_DOWNLOADS_PATH:?}:/data/books/.acquisition/usenet/ebooks
+      - ${BINDERY_AUDIOBOOK_DOWNLOADS_PATH:?}:/data/media/.acquisition/usenet/audiobooks
+    environment:
+      TZ: ${TZ:?}
+      BINDERY_PUID: ${NAS_UID:?}
+      BINDERY_PGID: ${NAS_GID:?}
+      # Seeds the persisted API key on first boot only, which is what lets the
+      # platform close the anonymous first-run setup window in the same
+      # convergence that starts the container.
+      BINDERY_API_KEY: ${BINDERY_API_KEY:?}
+      # Omitting either audiobook variable makes it fall back to its ebook
+      # equivalent and silently collapses the two libraries into one.
+      BINDERY_LIBRARY_DIR: /data/books/Ebooks
+      BINDERY_AUDIOBOOK_DIR: /data/media/Audiobooks
+      BINDERY_DOWNLOAD_DIR: /data/books/.acquisition/usenet/ebooks
+      BINDERY_AUDIOBOOK_DOWNLOAD_DIR: /data/media/.acquisition/usenet/audiobooks
+      # Telemetry is on by default and pings daily. The environment switch takes
+      # effect before the first ping in a way the settings row cannot; the role
+      # reconciles telemetry.enabled=false as well, for durability.
+      BINDERY_TELEMETRY_DISABLED: "true"
+      # BINDERY_URL_BASE and BINDERY_TRUSTED_PROXY are deliberately left unset.
+      # An over-broad trusted-proxy entry disables the per-IP login rate limiter,
+      # and this platform publishes no reverse proxy in front of the service.
+    healthcheck:
+      # The image is distroless: /bin, /sbin, /usr/bin and /usr/sbin all exist
+      # and are all empty, and the only executable is /bindery. A CMD-SHELL
+      # probe cannot run at all, so the probe is the binary's own subcommand,
+      # which requests the unauthenticated /api/v1/health and exits 0 on 200.
+      test: [CMD, /bindery, healthcheck]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    # There is no root phase to drop from and no gosu re-exec to preserve: the
+    # distroless runtime starts directly as the platform identity `user:` gives
+    # it, so nothing the container does can want a setuid binary.
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    logging: *default-logging
+    networks:
+      - default
+      - media-control
+
+networks:
+  default: {}
+  media-control:
+    external: true
+    name: ${PLATFORM_MEDIA_NETWORK:?}

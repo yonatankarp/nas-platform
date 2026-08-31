@@ -1,0 +1,218 @@
+---
+# Both writes below resolve the host in the submitted URL at write time and
+# answer 400 when the lookup fails, so neither can run unless Prowlarr and
+# SABnzbd are already up on the shared control network. That is why Bindery
+# joins media-control and why site.yml converges it after arr and downloaders,
+# and it is why this file runs only when the host has enabled Usenet.
+#
+# Neither create is create-if-absent: a repeated POST answers 201 and silently
+# adds a second row, so the configuration would grow on every converge. Both
+# are matched by name, repaired in place when a field drifted, and refused
+# outright when the name is already ambiguous.
+#
+# Redacted: the request carries the application API key.
+- name: Read the declared Bindery Prowlarr instances
+  ansible.builtin.uri:
+    url: "{{ bindery_api }}/prowlarr"
+    method: GET
+    headers:
+      X-Api-Key: "{{ bindery_api_key }}"
+    status_code: [200]
+    return_content: true
+  register: bindery_prowlarr_instances
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Resolve the declared Bindery Prowlarr reconciliation
+  ansible.builtin.set_fact:
+    bindery_prowlarr_matches: >-
+      {{ bindery_prowlarr_instances.json | default([])
+         | selectattr('name', 'equalto', bindery_prowlarr_name) | list }}
+
+- name: Refuse an ambiguous Bindery Prowlarr instance
+  ansible.builtin.assert:
+    that:
+      - bindery_prowlarr_matches | length <= 1
+    fail_msg: >-
+      Bindery holds more than one Prowlarr instance named
+      {{ bindery_prowlarr_name }}. A duplicate cannot be reconciled by name;
+      remove the surplus rows in the application before running again.
+
+- name: Resolve the Bindery Prowlarr desired state
+  ansible.builtin.set_fact:
+    bindery_prowlarr_current: "{{ bindery_prowlarr_matches | first | default({}, true) }}"
+
+- name: Resolve the Bindery Prowlarr reconciliation actions
+  ansible.builtin.set_fact:
+    bindery_prowlarr_create: "{{ bindery_prowlarr_current | length == 0 }}"
+    bindery_prowlarr_repair: >-
+      {{ bindery_prowlarr_current | length > 0 and
+         (bindery_prowlarr_current.url | default('') != bindery_prowlarr_internal_url or
+          not bindery_prowlarr_current.apiKeyConfigured | default(false) | bool or
+          not bindery_prowlarr_current.enabled | default(false) | bool or
+          not bindery_prowlarr_current.syncOnStartup | default(false) | bool) }}
+
+- name: Report the planned Bindery Prowlarr reconciliation
+  ansible.builtin.debug:
+    msg: >-
+      Bindery does not hold the declared Prowlarr instance at
+      {{ bindery_prowlarr_internal_url }}; a live run would
+      {{ 'create' if bindery_prowlarr_create | bool else 'repair' }} it.
+  when:
+    - ansible_check_mode
+    - bindery_prowlarr_create | bool or bindery_prowlarr_repair | bool
+
+# Redacted: the request carries both the application API key and Prowlarr's own.
+- name: Declare the Bindery Prowlarr instance
+  ansible.builtin.uri:
+    url: "{{ bindery_api }}/prowlarr"
+    method: POST
+    headers:
+      X-Api-Key: "{{ bindery_api_key }}"
+    body_format: json
+    body:
+      name: "{{ bindery_prowlarr_name }}"
+      url: "{{ bindery_prowlarr_internal_url }}"
+      apiKey: "{{ vault_arr_prowlarr_api_key }}"
+      enabled: true
+      syncOnStartup: true
+    status_code: [201]
+  when:
+    - not ansible_check_mode
+    - bindery_prowlarr_create | bool
+  changed_when: true
+  no_log: true
+
+# Redacted: the request carries both the application API key and Prowlarr's own.
+- name: Repair the Bindery Prowlarr instance
+  ansible.builtin.uri:
+    url: "{{ bindery_api }}/prowlarr/{{ bindery_prowlarr_current.id | default(0) }}"
+    method: PUT
+    headers:
+      X-Api-Key: "{{ bindery_api_key }}"
+    body_format: json
+    body:
+      name: "{{ bindery_prowlarr_name }}"
+      url: "{{ bindery_prowlarr_internal_url }}"
+      apiKey: "{{ vault_arr_prowlarr_api_key }}"
+      enabled: true
+      syncOnStartup: true
+    status_code: [200]
+  when:
+    - not ansible_check_mode
+    - bindery_prowlarr_repair | bool
+  changed_when: true
+  no_log: true
+
+# Indexers are deliberately left alone. They are synced from Prowlarr by the
+# instance above and carry Prowlarr's own per-indexer overrides, so declaring
+# them here would fight that sync on every run.
+#
+# Redacted: the request carries the application API key.
+- name: Read the declared Bindery download clients
+  ansible.builtin.uri:
+    url: "{{ bindery_api }}/downloadclient"
+    method: GET
+    headers:
+      X-Api-Key: "{{ bindery_api_key }}"
+    status_code: [200]
+    return_content: true
+  register: bindery_download_clients
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Resolve the declared Bindery download client reconciliation
+  ansible.builtin.set_fact:
+    bindery_client_matches: >-
+      {{ bindery_download_clients.json | default([])
+         | selectattr('name', 'equalto', bindery_sabnzbd_client_name) | list }}
+
+- name: Refuse an ambiguous Bindery download client
+  ansible.builtin.assert:
+    that:
+      - bindery_client_matches | length <= 1
+    fail_msg: >-
+      Bindery holds more than one download client named
+      {{ bindery_sabnzbd_client_name }}. A duplicate cannot be reconciled by
+      name; remove the surplus rows in the application before running again.
+
+- name: Resolve the Bindery download client desired state
+  ansible.builtin.set_fact:
+    bindery_client_current: "{{ bindery_client_matches | first | default({}, true) }}"
+
+# The two categories are the reason a single client can serve both libraries:
+# an ebook grab is handed to SABnzbd under one category and an audiobook under
+# the other, and SABnzbd's own category map is what lands each in the staging
+# directory its library imports from.
+- name: Resolve the Bindery download client reconciliation actions
+  ansible.builtin.set_fact:
+    bindery_client_create: "{{ bindery_client_current | length == 0 }}"
+    bindery_client_repair: >-
+      {{ bindery_client_current | length > 0 and
+         (bindery_client_current.type | default('') != 'sabnzbd' or
+          bindery_client_current.host | default('') != bindery_sabnzbd_host or
+          bindery_client_current.port | default(0) | int != bindery_sabnzbd_port | int or
+          bindery_client_current.category | default('') != bindery_sabnzbd_ebook_category or
+          bindery_client_current.categoryAudiobook | default('') != bindery_sabnzbd_audiobook_category or
+          not bindery_client_current.apiKeyConfigured | default(false) | bool or
+          not bindery_client_current.enabled | default(false) | bool) }}
+
+- name: Report the planned Bindery download client reconciliation
+  ansible.builtin.debug:
+    msg: >-
+      Bindery does not hold the declared SABnzbd download client at
+      {{ bindery_sabnzbd_host }}:{{ bindery_sabnzbd_port }}; a live run would
+      {{ 'create' if bindery_client_create | bool else 'repair' }} it.
+  when:
+    - ansible_check_mode
+    - bindery_client_create | bool or bindery_client_repair | bool
+
+# Redacted: the request carries both the application API key and SABnzbd's own.
+- name: Declare the Bindery download client
+  ansible.builtin.uri:
+    url: "{{ bindery_api }}/downloadclient"
+    method: POST
+    headers:
+      X-Api-Key: "{{ bindery_api_key }}"
+    body_format: json
+    body:
+      name: "{{ bindery_sabnzbd_client_name }}"
+      type: sabnzbd
+      host: "{{ bindery_sabnzbd_host }}"
+      port: "{{ bindery_sabnzbd_port | int }}"
+      apiKey: "{{ vault_downloaders_sabnzbd_api_key }}"
+      category: "{{ bindery_sabnzbd_ebook_category }}"
+      categoryAudiobook: "{{ bindery_sabnzbd_audiobook_category }}"
+      enabled: true
+    status_code: [201]
+  when:
+    - not ansible_check_mode
+    - bindery_client_create | bool
+  changed_when: true
+  no_log: true
+
+# Redacted: the request carries both the application API key and SABnzbd's own.
+- name: Repair the Bindery download client
+  ansible.builtin.uri:
+    url: "{{ bindery_api }}/downloadclient/{{ bindery_client_current.id | default(0) }}"
+    method: PUT
+    headers:
+      X-Api-Key: "{{ bindery_api_key }}"
+    body_format: json
+    body:
+      name: "{{ bindery_sabnzbd_client_name }}"
+      type: sabnzbd
+      host: "{{ bindery_sabnzbd_host }}"
+      port: "{{ bindery_sabnzbd_port | int }}"
+      apiKey: "{{ vault_downloaders_sabnzbd_api_key }}"
+      category: "{{ bindery_sabnzbd_ebook_category }}"
+      categoryAudiobook: "{{ bindery_sabnzbd_audiobook_category }}"
+      enabled: true
+    status_code: [200]
+  when:
+    - not ansible_check_mode
+    - bindery_client_repair | bool
+  changed_when: true
+  no_log: true

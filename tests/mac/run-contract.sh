@@ -127,6 +127,9 @@ case $mac_service in
     PLATFORM_PAPERLESS_WEBSERVER_CONTAINER=$(mac_container_name paperless-webserver)
     export PLATFORM_PAPERLESS_WEBSERVER_CONTAINER
     ;;
+  bindery)
+    : "${PLATFORM_BINDERY_PORT:?PLATFORM_BINDERY_PORT is required}"
+    ;;
   kapowarr)
     : "${PLATFORM_KAPOWARR_PORT:?PLATFORM_KAPOWARR_PORT is required}"
     ;;

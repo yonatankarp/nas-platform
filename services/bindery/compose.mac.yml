@@ -1,0 +1,6 @@
+---
+services:
+  bindery:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-bindery
+    ports: !override
+      - "${BINDERY_HOST_PORT:?}:8787"

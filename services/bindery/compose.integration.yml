@@ -1,0 +1,4 @@
+---
+services:
+  bindery:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-bindery

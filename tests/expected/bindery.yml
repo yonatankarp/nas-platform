@@ -2,4 +2,7 @@
 role: bindery
 container_cpus:
   bindery: 1.0
-vault_keys: []
+vault_keys:
+  - vault_bindery_api_key
+  - vault_bindery_admin_username
+  - vault_bindery_admin_password

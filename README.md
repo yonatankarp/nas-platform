@@ -19,7 +19,7 @@ off-site backup. RAID is not a backup.
 - [Adding a service](docs/adding-a-service.md)
 
 The [`services/manifest.yml`](services/manifest.yml) catalog distinguishes
-twelve implemented service projects from three planned media-acquisition
+thirteen implemented service projects from two planned media-acquisition
 projects. Runtime role and service directories exist only for the implemented
 projects; the planned entries remain inert and intentionally have no runtime
 role or Compose directory.
@@ -201,8 +201,19 @@ interface is the writer, and its only access control is the administrator
 identity authored in vault; nothing is downloaded until an operator declares a
 source in the application. Kapowarr additionally needs the vault-authored
 ComicVine key entered in the application before it can identify anything, which
-is the deliberate reason a fresh deployment acquires nothing. The remaining
-three acquisition projects — Bindery, Trailarr and Seerr — stay planned.
+is the deliberate reason a fresh deployment acquires nothing.
+
+Phase 2 also adds Bindery, which writes the `Books/Ebooks` library Komga reads
+and the `Media/Audiobooks` library Audiobookshelf reads. Bindery is not
+self-contained: it stores a Prowlarr instance and a SABnzbd download client, and
+it resolves the host in both URLs at write time, so it joins `media-control` and
+converges after those two projects. Those two rows follow the same transport
+flag Phase 1 does, so the NAS declares them and the Mac proof does not, but the
+container itself deploys unconditionally on both. Unattended auto-grabbing is
+pinned off explicitly, because Bindery's kill switch fails open and a missing
+setting reads as enabled, and telemetry is disabled; a deployment that has been
+given no author to monitor therefore downloads nothing. The remaining two
+acquisition projects — Trailarr and Seerr — stay planned.
 
 Each of the later phases was investigated before it was planned, against
 upstream source and a running container. The

@@ -340,17 +340,20 @@ assert_output \
   'suite=downloaders tags=host_prep,deployment_bundle,ntfy,arr,downloaders playbook=site.yml scenarios=true' \
   --describe-suite downloaders
 assert_output \
+  'suite=bindery tags=host_prep,deployment_bundle,ntfy,arr,downloaders,bindery playbook=site.yml scenarios=true' \
+  --describe-suite bindery
+assert_output \
   'suite=kapowarr tags=host_prep,deployment_bundle,ntfy,kapowarr playbook=site.yml scenarios=true' \
   --describe-suite kapowarr
 assert_output \
   'suite=pinchflat tags=host_prep,deployment_bundle,ntfy,pinchflat playbook=site.yml scenarios=true' \
   --describe-suite pinchflat
-for project in bindery trailarr seerr; do
+for project in trailarr seerr; do
   assert_output \
     "suite=$project tags=host_prep,deployment_bundle,media_acquisition_foundation playbook=site.yml scenarios=true" \
     --describe-suite "$project"
 done
-grep -qF 'bindery|trailarr|seerr)' "$integration" || {
+grep -qF 'trailarr|seerr)' "$integration" || {
   printf '%s\n' 'integration runner has no closed acquisition foundation dispatch' >&2
   exit 1
 }
@@ -370,7 +373,7 @@ acquisition_runtime_contract_holds() {
   verification_launcher=$(sed -n '/^run_verification() {/,/^}$/p' "$library_path")
   forced_fact_arm=$(printf '%s\n' "$verification_launcher" |
     grep -B 1 -F -- '-e media_usenet_enabled=true' | head -n 1 | tr -d ' ')
-  acquisition_dispatch=$(sed -n '/bindery|trailarr|seerr)/,/;;/p' "$source_path" | tail -n 12)
+  acquisition_dispatch=$(sed -n '/trailarr|seerr)/,/;;/p' "$source_path" | tail -n 12)
   printf '%s\n' "$reader_converge" |
     grep -qF -- '--tags host_prep,deployment_bundle,ntfy,audiobookshelf,jellyfin' &&
     printf '%s\n' "$foundation_verify" |
@@ -1060,12 +1063,17 @@ run_prepull 5 malformed --suite foundation
 [ "$prepull_status" -eq 0 ] || prepull_fail "malformed attempt budget removed the safe default"
 assert_pull_count "$runner_image" 6
 
-for project in bindery trailarr seerr; do
+for project in trailarr seerr; do
   run_prepull 0 4 --suite "$project"
   [ "$prepull_status" -eq 0 ] || prepull_fail "$project foundation pre-pull failed ($prepull_status)"
   assert_pull_set \
     "$({ printf '%s\n' "$runner_image"; compose_images ntfy; compose_images audiobookshelf; compose_images jellyfin; } | sort -u)"
 done
+
+run_prepull 0 4 --suite bindery
+[ "$prepull_status" -eq 0 ] || prepull_fail "bindery pre-pull failed ($prepull_status)"
+assert_pull_set \
+  "$({ printf '%s\n' "$runner_image"; compose_images ntfy; compose_images arr; compose_images downloaders; compose_images bindery; } | sort -u)"
 
 run_prepull 0 4 --suite kapowarr
 [ "$prepull_status" -eq 0 ] || prepull_fail "kapowarr pre-pull failed ($prepull_status)"

@@ -105,6 +105,15 @@ EXPECTED_SERVICES = {
       "reconcile" => "get_user_model"
     }
   ),
+  "bindery" => MULTI_USER_DEFAULTS.merge(
+    "mode" => "api",
+    "interfaces" => {
+      "list" => "api/v1/auth/users",
+      "create" => "api/v1/auth/users",
+      "authenticate" => "api/v1/auth/login",
+      "reconcile" => "api/v1/auth/users"
+    }
+  ),
   "kapowarr" => MULTI_USER_DEFAULTS.merge(
     "mode" => "single_identity_settings",
     "interfaces" => {
