@@ -233,6 +233,14 @@ changes nothing, and a dry run works. Two of the worst bugs found so far, a fact
 that exists only on Linux and `command` being skipped under `--check`, both passed
 syntax checking and were caught only by running.
 
+The controller that container runs is a published image
+(`tests/integration.Dockerfile`), tagged with a digest of the harness's pins,
+`requirements.yml` and the Dockerfile itself, so a bumped pin is a new image
+rather than a stale one. Nothing requires it: a run that cannot pull the image
+builds it locally and reuses it afterwards, and a run that cannot build it
+installs the same toolchain inside the container the way the harness always did.
+`INTEGRATION_TOOLCHAIN=off` forces that last path.
+
 The current Mac proof covers ntfy, Beszel, Dozzle, Audiobookshelf, Komga,
 Jellyfin, Immich, Paperless-ngx, Pinchflat, and Kapowarr — every implemented
 service except `arr` and `downloaders`, whose Phase 1 runtime is
