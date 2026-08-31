@@ -257,9 +257,10 @@ tests/ci/suites.conf               one row: the suite, its kind, and the tags it
                                    fixed tags in the runner, all derive from it
 tests/ci/classify_changes.rb       SERVICE_NAMES
 tests/ci/classify_changes_test.rb  the pinned tag plan for the lane, and NTFY_LANES
-tests/integration.sh               the service/directory table, the contract
-                                   runner, the verify-only function, the suite
+tests/integration.sh               the service/directory table and the suite
                                    dispatch
+tests/integration_controller_lib.sh  the contract runner case arm and the
+                                   verify-only wrapper
 tests/integration_suite_test.sh    the pinned --describe-suite line and pre-pull set
 ```
 
@@ -915,8 +916,13 @@ leg through one `needs` entry.
 `tests/integration.sh` no longer restates the tags -- `tests/policy_ci_test.rb`
 fails if it does -- but it still wants the service in its service/directory table
 for image pre-pulling, a `run_<service>_contract` wrapper if the service has a
-contract, a `run_<service>_verify_only` function, and an arm in the suite dispatch
-that says what the lane actually does. `tests/integration_suite_test.sh` pins both
+contract, a `run_<service>_verify_only` wrapper, and an arm in the suite dispatch
+that says what the lane actually does. Both wrappers are three lines: they name
+the service and delegate to `run_contract` / `run_verification`, the two shared
+launchers that hold the environment ABI and the verification play. Anything the
+service needs beyond the shared block belongs in a case arm of `run_contract`,
+not in a wrapper body -- `tests/policy_integration_test.rb` rejects a
+verification wrapper that is anything other than a delegation. `tests/integration_suite_test.sh` pins both
 the `--describe-suite` line and the exact set of images the lane pre-pulls, so a
 lane that converges a new stack fails there until you say which images it needs.
 

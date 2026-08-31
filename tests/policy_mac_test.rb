@@ -22,6 +22,7 @@ failures = []
 mac_harness_files = %w[
   lib.sh run.sh cleanup.sh fixtures.sh verify.sh drift.sh run-contract.sh report.rb
   sanitize-logs.rb manual-review.md manual-validation-handoff.rb
+  pin-protected-input.rb
 ]
 mac_harness_files.each do |name|
   check(failures, File.file?(File.join(ROOT, "tests", "mac", name)),
@@ -61,6 +62,26 @@ check(failures, mac_run.include?('if [ "$manual_validation" = true ] && [ "$phas
                 mac_run.include?('< "$manual_vault_plaintext" || handoff_status=$?') &&
                 mac_run.include?("remove_manual_vault_plaintext"),
       "Mac manual validation must stop through the preserved-sandbox EXIT trap after verify")
+
+# The protected-input pin is the Mac proof's trust boundary, and it was a
+# 313-line Ruby program inside a heredoc in run.sh until #147 -- unreachable by
+# sh -n, by a linter and by any unit test. These three checks are what stop it
+# from drifting back: the runner must call the program, the runner must not carry
+# the program, and the program must still hold the source through a directory
+# descriptor rather than by name. Losing the last one loses the TOCTOU property
+# without changing a single diagnostic.
+pin_path = File.join(ROOT, "tests", "mac", "pin-protected-input.rb")
+pin_source = File.file?(pin_path) ? File.read(pin_path) : ""
+check(failures, mac_run.include?('"$mac_script_dir/pin-protected-input.rb" "$pin_source"') &&
+                mac_run.include?('"$pin_kind" "$pin_external" "$mac_repo_dir" "$protected_input_root" "$pin_reuse"'),
+      "Mac lifecycle must pin its protected inputs through tests/mac/pin-protected-input.rb")
+check(failures, !mac_run.include?("Fiddle::Handle::DEFAULT") && !mac_run.include?("fail_pin"),
+      "Mac lifecycle must not re-embed the protected-input pin as a shell heredoc")
+check(failures, File.executable?(pin_path) &&
+                pin_source.include?('Fiddle::Handle::DEFAULT["fchdir"]') &&
+                pin_source.include?("flags = File::RDONLY | File::NOFOLLOW | File::NONBLOCK") &&
+                pin_source.scan(/in_directory\(parent_directory\)/).length >= 4,
+      "Mac protected-input pin must hold its source through a directory descriptor")
 
 mac_cleanup_path = File.join(ROOT, "tests", "mac", "cleanup.sh")
 mac_cleanup = File.file?(mac_cleanup_path) ? File.read(mac_cleanup_path) : ""

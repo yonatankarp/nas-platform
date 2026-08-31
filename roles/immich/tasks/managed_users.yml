@@ -66,11 +66,25 @@
       {{ immich_initial_authenticated_managed_user_ids | default({}) }}
   no_log: true
 
+# The shared decision in filter_plugins/managed_user_identity.py, which the
+# other five HTTP-driven managed-user roles reach through two Jinja conditions.
+# Immich reaches its second half by construction: the index above buckets the
+# listing by folded email, so the match list *is* the folded bucket and the
+# collision count cannot differ from it. Calling the filter therefore adds no
+# behaviour here, and keeps the one role that indexes from being the one that
+# drifts when the rule changes.
 - name: Refuse ambiguous normalized Immich managed identities
   ansible.builtin.assert:
     that:
-      - immich_managed_user_matches[item.email] | length <= 1
-    fail_msg: Immich contains a duplicate normalized managed email.
+      - >-
+        immich_managed_users_listing.json | managed_user_ambiguity_errors(
+          'email', item.email, immich_managed_user_matches[item.email]
+        ) | length == 0
+    fail_msg: >-
+      Immich contains a duplicate normalized managed email:
+      {{ immich_managed_users_listing.json | managed_user_ambiguity_errors(
+           'email', item.email, immich_managed_user_matches[item.email]
+         ) | join('; ') }}
   loop: "{{ vault_managed_immich_users }}"
   loop_control:
     label: immich-managed-user
@@ -262,49 +276,19 @@
   check_mode: false
   no_log: true
 
+# The thirty-six conditions this and its post-creation twin each spelled out are
+# one table in filter_plugins/immich_response_schema.py, called from both. Every
+# name that reaches fail_msg is an Immich API literal from that table, so the
+# operator is told which field of which scope Immich returned wrongly; item is
+# a vault managed-user record and never leaves this task, which is why only
+# item.json is passed in and why no_log stays.
 - name: Require supported existing Immich managed user preference responses
   ansible.builtin.assert:
     that:
-      - item.json | type_debug == 'dict'
-      - >-
-        ['albums', 'cast', 'download', 'emailNotifications', 'folders', 'memories',
-         'people', 'purchase', 'ratings', 'recentlyAdded', 'sharedLinks', 'tags'] |
-        difference(item.json.keys() | list) | length == 0
-      - item.json.albums is mapping
-      - item.json.cast is mapping
-      - item.json.download is mapping
-      - item.json.emailNotifications is mapping
-      - item.json.folders is mapping
-      - item.json.memories is mapping
-      - item.json.people is mapping
-      - item.json.purchase is mapping
-      - item.json.ratings is mapping
-      - item.json.recentlyAdded is mapping
-      - item.json.sharedLinks is mapping
-      - item.json.tags is mapping
-      - item.json.albums.defaultAssetOrder in ['asc', 'desc']
-      - item.json.cast.gCastEnabled is boolean
-      - item.json.download.archiveSize is integer
-      - item.json.download.includeEmbeddedVideos is boolean
-      - item.json.emailNotifications.enabled is boolean
-      - item.json.emailNotifications.albumInvite is boolean
-      - item.json.emailNotifications.albumUpdate is boolean
-      - item.json.folders.enabled is boolean
-      - item.json.folders.sidebarWeb is boolean
-      - item.json.memories.enabled is boolean
-      - item.json.memories.duration is integer
-      - item.json.people.enabled is boolean
-      - item.json.people.sidebarWeb is boolean
-      - item.json.people.minimumFaces is integer
-      - item.json.purchase.showSupportBadge is boolean
-      - item.json.purchase.hideBuyButtonUntil is string
-      - item.json.ratings.enabled is boolean
-      - item.json.recentlyAdded.sidebarWeb is boolean
-      - item.json.sharedLinks.enabled is boolean
-      - item.json.sharedLinks.sidebarWeb is boolean
-      - item.json.tags.enabled is boolean
-      - item.json.tags.sidebarWeb is boolean
-    fail_msg: Immich returned an unsupported existing managed user preference response.
+      - item.json | default(none) | immich_preference_response_errors | length == 0
+    fail_msg: >-
+      Immich returned an unsupported existing managed user preference response:
+      {{ item.json | default(none) | immich_preference_response_errors | join('; ') }}
   loop: >-
     {{ immich_existing_managed_user_preference_reads.results | default([]) |
        rejectattr('skipped', 'defined') | list }}
@@ -558,46 +542,10 @@
 - name: Require supported Immich managed user preference responses
   ansible.builtin.assert:
     that:
-      - item.json | type_debug == 'dict'
-      - >-
-        ['albums', 'cast', 'download', 'emailNotifications', 'folders', 'memories',
-         'people', 'purchase', 'ratings', 'recentlyAdded', 'sharedLinks', 'tags'] |
-        difference(item.json.keys() | list) | length == 0
-      - item.json.albums is mapping
-      - item.json.cast is mapping
-      - item.json.download is mapping
-      - item.json.emailNotifications is mapping
-      - item.json.folders is mapping
-      - item.json.memories is mapping
-      - item.json.people is mapping
-      - item.json.purchase is mapping
-      - item.json.ratings is mapping
-      - item.json.recentlyAdded is mapping
-      - item.json.sharedLinks is mapping
-      - item.json.tags is mapping
-      - item.json.albums.defaultAssetOrder in ['asc', 'desc']
-      - item.json.cast.gCastEnabled is boolean
-      - item.json.download.archiveSize is integer
-      - item.json.download.includeEmbeddedVideos is boolean
-      - item.json.emailNotifications.enabled is boolean
-      - item.json.emailNotifications.albumInvite is boolean
-      - item.json.emailNotifications.albumUpdate is boolean
-      - item.json.folders.enabled is boolean
-      - item.json.folders.sidebarWeb is boolean
-      - item.json.memories.enabled is boolean
-      - item.json.memories.duration is integer
-      - item.json.people.enabled is boolean
-      - item.json.people.sidebarWeb is boolean
-      - item.json.people.minimumFaces is integer
-      - item.json.purchase.showSupportBadge is boolean
-      - item.json.purchase.hideBuyButtonUntil is string
-      - item.json.ratings.enabled is boolean
-      - item.json.recentlyAdded.sidebarWeb is boolean
-      - item.json.sharedLinks.enabled is boolean
-      - item.json.sharedLinks.sidebarWeb is boolean
-      - item.json.tags.enabled is boolean
-      - item.json.tags.sidebarWeb is boolean
-    fail_msg: Immich returned an unsupported managed user preference response.
+      - item.json | default(none) | immich_preference_response_errors | length == 0
+    fail_msg: >-
+      Immich returned an unsupported managed user preference response:
+      {{ item.json | default(none) | immich_preference_response_errors | join('; ') }}
   loop: >-
     {{ immich_managed_user_preference_reads.results | default([]) |
        rejectattr('skipped', 'defined') | list }}

@@ -3,6 +3,26 @@ set -eu
 
 repo_dir=$(CDPATH= cd -P "$(dirname "$0")/.." && pwd -P)
 integration=$repo_dir/tests/integration.sh
+# The play, contract and verification launchers are a file of their own. They
+# are ordinary shell there rather than escaped text inside the controller
+# argument, so the assertions below read them without backslashes -- the same
+# guarantees, made where the code they police actually lives.
+controller_library=$repo_dir/tests/integration_controller_lib.sh
+[ -r "$controller_library" ] || {
+  printf '%s\n' 'integration controller library is missing' >&2
+  exit 1
+}
+grep -qF '. /repo/tests/integration_controller_lib.sh' "$integration" || {
+  printf '%s\n' 'integration controller does not source its launcher library' >&2
+  exit 1
+}
+grep -qF -- '-e PLATFORM_INTEGRATION_SANDBOX="$sandbox"' "$integration" &&
+  grep -qF -- \
+    '-e PLATFORM_INTEGRATION_PROJECT_NAMESPACE="$integration_project_namespace"' \
+    "$integration" || {
+  printf '%s\n' 'integration controller library is not given the sandbox it deploys into' >&2
+  exit 1
+}
 fake_bin=$(mktemp -d "${TMPDIR:-/tmp}/nas-platform-suite-test.XXXXXX")
 fake_bin=$(CDPATH= cd -P "$fake_bin" && pwd -P)
 docker_log=$fake_bin/docker.log
@@ -343,27 +363,39 @@ grep -qF '/repo/tests/contracts/"\$INTEGRATION_SUITE"-foundation.sh static' "$in
 }
 acquisition_runtime_contract_holds() {
   source_path=$1
-  reader_converge=$(sed -n '/converge_media_acquisition_reader_prerequisites() {/,/^    }$/p' "$source_path")
-  foundation_verify=$(sed -n '/run_media_acquisition_foundation_verify() {/,/^    }$/p' "$source_path")
+  library_path=$2
+  reader_converge=$(sed -n '/converge_media_acquisition_reader_prerequisites() {/,/^}$/p' "$library_path")
+  foundation_verify=$(sed -n '/run_media_acquisition_foundation_verify() {/,/^}$/p' "$library_path")
+  # The foundation verification now delegates to the one shared launcher, so the
+  # play it runs is read there. The single fact that launcher forces lives in a
+  # case arm; the foundation tag must not be named by it, or the lane would
+  # assert against a truth it supplied itself instead of the inventory's.
+  verification_launcher=$(sed -n '/^run_verification() {/,/^}$/p' "$library_path")
+  forced_fact_arm=$(printf '%s\n' "$verification_launcher" |
+    grep -B 1 -F -- '-e media_usenet_enabled=true' | head -n 1 | tr -d ' ')
   acquisition_dispatch=$(sed -n '/trailarr|seerr)/,/;;/p' "$source_path" | tail -n 12)
   printf '%s\n' "$reader_converge" |
     grep -qF -- '--tags host_prep,deployment_bundle,ntfy,audiobookshelf,jellyfin' &&
-    printf '%s\n' "$foundation_verify" | grep -qF '/repo/verify.yml' &&
     printf '%s\n' "$foundation_verify" |
-      grep -qF -- '--tags platform_verify_media_acquisition_foundation' &&
-    ! printf '%s\n' "$foundation_verify" |
-      grep -Eq -- '-e (platform_media_control_network|media_usenet_enabled|media_torrent_enabled)=' &&
+      grep -qF 'run_verification media_acquisition_foundation' &&
+    printf '%s\n' "$verification_launcher" | grep -qF '/repo/verify.yml' &&
+    printf '%s\n' "$verification_launcher" |
+      grep -qF -- '--tags "platform_verify_$verification_tag"' &&
+    [ "$forced_fact_arm" = 'arr|downloaders)' ] &&
+    ! printf '%s\n' "$verification_launcher" |
+      grep -Eq -- '-e (platform_media_control_network|media_torrent_enabled)=' &&
     printf '%s\n' "$acquisition_dispatch" |
       grep -qF 'converge_media_acquisition_reader_prerequisites' &&
     printf '%s\n' "$acquisition_dispatch" |
       grep -qF 'run_media_acquisition_foundation_verify'
 }
-acquisition_runtime_contract_holds "$integration" || {
+acquisition_runtime_contract_holds "$integration" "$controller_library" || {
   printf '%s\n' 'acquisition suites omit the shared inventory-derived Linux runtime verifier path' >&2
   exit 1
 }
 sed '/run_media_acquisition_foundation_verify$/d' "$integration" > "$acquisition_runtime_mutant"
-if acquisition_runtime_contract_holds "$acquisition_runtime_mutant"; then
+if acquisition_runtime_contract_holds "$acquisition_runtime_mutant" \
+    "$controller_library"; then
   printf '%s\n' 'acquisition runtime contract accepts removal of real verifier execution' >&2
   exit 1
 fi
@@ -413,7 +445,7 @@ grep -qF 'chmod 0700 "$sandbox"' "$integration" || {
   exit 1
 }
 grep -qF -- '" integration-run "$playbook" "$@"' "$integration"
-grep -qF -- '\"\$playbook\" \"\$@\"' "$integration"
+grep -qF -- '"$playbook" "$@"' "$controller_library"
 grep -qF -- 'run_play --tags \"\$INTEGRATION_TAGS\" \"\$@\"' "$integration"
 grep -qF -- 'run_play \"\$@\"' "$integration"
 
@@ -457,12 +489,12 @@ controller_run_line=$(grep -nF 'docker run --rm' "$integration" |
   printf '%s\n' 'invalid integration namespaces are not refused before the play' >&2
   exit 1
 }
-run_play_namespace=$(sed -n '/^    run_play() {/,/^    }$/p' "$integration")
+run_play_namespace=$(sed -n '/^run_play() {/,/^}$/p' "$controller_library")
 for scoped_project_variable in \
   arr_platform_project_name downloaders_platform_project_name; do
   printf '%s\n' "$run_play_namespace" |
     grep -qF -- \
-      "-e $scoped_project_variable=\\\"\$integration_project_namespace\\\"" || {
+      "-e $scoped_project_variable=\"\$integration_project_namespace\"" || {
     printf 'integration plays omit scoped namespace %s\n' \
       "$scoped_project_variable" >&2
     exit 1
@@ -472,13 +504,13 @@ done
 # namespace, so the disposable lane must set it: a stack deployed under its
 # production project is not owned by sandbox cleanup and survives the run.
 printf '%s\n' "$run_play_namespace" |
-  grep -qF -- '-e platform_project_name=\"$integration_project_namespace\"' || {
+  grep -qF -- '-e platform_project_name="$integration_project_namespace"' || {
   printf '%s\n' 'integration plays do not deploy under the disposable namespace' >&2
   exit 1
 }
-if grep -n -- '-e platform_project_name=' "$integration" |
-   grep -vF -- '-e platform_project_name=\"$integration_project_namespace\"' |
-   grep -vF -- '-e platform_project_name=$integration_project_namespace-negative' \
+if grep -n -- '-e platform_project_name=' "$integration" "$controller_library" |
+   grep -vF -- '-e platform_project_name="$integration_project_namespace"' |
+   grep -vF -- '-e platform_project_name="$integration_project_namespace-negative"' \
      >/dev/null; then
   printf '%s\n' 'integration plays use a project name the sandbox does not derive' >&2
   exit 1
@@ -487,33 +519,13 @@ fi
 # Enabled acquisition suites must prove idempotence with a second normal play,
 # not infer it from check mode. Exercise the production recap parser directly so
 # task output cannot satisfy the gate and malformed or partial recaps fail closed.
-sed -n '/^    enabled_idempotence_recap_is_clean() {/,/^    }$/p' \
-  "$integration" | ruby -e '
-    # Reproduce what the controller receives, rather than merely unescaping.
-    # The helper lives inside a double-quoted string, so the shell removes an
-    # unescaped quote instead of passing it through: extracting with a plain
-    # unescape rebuilt a correct function from broken source and hid an awk
-    # syntax error that only appeared when a suite actually ran.
-    source = STDIN.read
-    out = +""
-    index = 0
-    while index < source.length
-      character = source[index]
-      if character == "\\" && index + 1 < source.length &&
-         ["$", "`", "\"", "\\"].include?(source[index + 1])
-        out << source[index + 1]
-        index += 2
-        next
-      end
-      if character == "\""
-        index += 1
-        next
-      end
-      out << character
-      index += 1
-    end
-    print out
-  ' > "$idempotence_helper"
+# The recap parser is ordinary shell in a file of its own, so the lane sources
+# the production function itself. It used to be rebuilt here from the escaped
+# text of the controller argument by a hand-written unescaper, because a plain
+# unescape produced a *correct-looking* function from broken source and hid an
+# awk syntax error that only appeared when a suite actually ran.
+sed -n '/^enabled_idempotence_recap_is_clean() {/,/^}$/p' \
+  "$controller_library" > "$idempotence_helper"
 [ -s "$idempotence_helper" ] || {
   printf '%s\n' 'integration runner has no enabled idempotence recap parser' >&2
   exit 1
@@ -521,9 +533,9 @@ sed -n '/^    enabled_idempotence_recap_is_clean() {/,/^    }$/p' \
 . "$idempotence_helper"
 
 enabled_idempotence_runner=$(sed -n \
-  '/^    run_enabled_idempotence() {/,/^    }$/p' "$integration")
+  '/^run_enabled_idempotence() {/,/^}$/p' "$controller_library")
 printf '%s\n' "$enabled_idempotence_runner" |
-  grep -qF 'run_play --tags "\$idempotence_tags"' || {
+  grep -qF 'run_play --tags "$idempotence_tags"' || {
     printf '%s\n' 'enabled idempotence gate does not run a tagged play' >&2
     exit 1
   }
@@ -636,7 +648,7 @@ grep -qF -- '-e PLATFORM_JELLYFIN_FIXTURE_PRESEEDED="$jellyfin_fixture_preseeded
 
 immich_negative_order_holds() {
   source_path=$1
-  function_body=$(sed -n '/run_immich_restore_negative_matrix() {/,/^    }$/p' "$source_path")
+  function_body=$(sed -n '/run_immich_restore_negative_matrix() {/,/^}$/p' "$source_path")
   host_prep_line=$(printf '%s\n' "$function_body" |
     grep -nF -- '--tags host_prep,deployment_bundle' | head -1 | cut -d: -f1)
   scenario_loop_line=$(printf '%s\n' "$function_body" |
@@ -645,7 +657,7 @@ immich_negative_order_holds() {
   [ -n "$host_prep_line" ] && [ -n "$scenario_loop_line" ] &&
     [ "$host_prep_line" -lt "$scenario_loop_line" ]
 }
-immich_negative_order_holds "$integration" || {
+immich_negative_order_holds "$controller_library" || {
   printf '%s\n' 'Immich isolated-root host preparation does not precede the negative matrix' >&2
   exit 1
 }
@@ -666,7 +678,7 @@ ruby -e '
   abort "cannot extract negative matrix loop" unless loop_index
   source.insert(loop_index + 1, *block)
   File.write(ARGV.fetch(1), source.join)
-' "$integration" "$immich_order_mutant"
+' "$controller_library" "$immich_order_mutant"
 if immich_negative_order_holds "$immich_order_mutant"; then
   printf '%s\n' 'Immich negative-matrix order guard accepts the loop-before-host-prep mutant' >&2
   exit 1
@@ -688,7 +700,7 @@ printf '%s\n' "$jellyfin_scenarios" | grep -qF 'run_jellyfin_contract run'
 grep -qF -- 'controller_mount=$sandbox/repo' "$integration"
 grep -qF -- 'install -m 0600 \"\$vault_file\" /repo/inventory/group_vars/all/vault.yml' "$integration"
 grep -qF -- 'export ANSIBLE_VAULT_PASSWORD_FILE=\"\$vault_password_file\"' "$integration"
-grep -qF -- '-e @\"\$fixture_vars_file\"' "$integration" || {
+grep -qF -- '-e @"$fixture_vars_file"' "$controller_library" || {
   printf '%s\n' 'integration deployment does not consume the protected Immich fixture policy' >&2
   exit 1
 }

@@ -55,15 +55,25 @@
       {{ paperless_initial_authenticated_managed_user_ids | default({}) }}
   no_log: true
 
+# The two conditions this replaces are the one decision all six HTTP-driven
+# managed-user roles share; filter_plugins/managed_user_identity.py explains why
+# they are also the only one, and carries them for every service. Paperless is
+# the role that proves the listing is not a parameter: this one arrives as JSON
+# on the stdout of a management command inside the container, not from an API.
 - name: Refuse ambiguous normalized Paperless managed identities
   ansible.builtin.assert:
     that:
-      - paperless_managed_user_matches[item.username] | length <= 1
       - >-
-        paperless_managed_users_listing | map(attribute='username') |
-        map('trim') | map('lower') | select('equalto', item.username | trim | lower) |
-        list | length == paperless_managed_user_matches[item.username] | length
-    fail_msg: Paperless contains duplicate normalized managed usernames.
+        paperless_managed_users_listing | managed_user_ambiguity_errors(
+          'username', item.username,
+          paperless_managed_user_matches[item.username]
+        ) | length == 0
+    fail_msg: >-
+      Paperless contains duplicate normalized managed usernames:
+      {{ paperless_managed_users_listing | managed_user_ambiguity_errors(
+           'username', item.username,
+           paperless_managed_user_matches[item.username]
+         ) | join('; ') }}
   loop: "{{ vault_managed_paperless_ngx_users }}"
   loop_control:
     label: paperless-managed-user

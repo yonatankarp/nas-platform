@@ -1015,12 +1015,15 @@ end
 
 expect_failure(failures, "controller script loses its quoting",
                "controller script escapes its quoted argument") do |root|
-  # Unescape the inner quotes of the recap helper exactly as the regression did:
-  # the argument closes early and the `;` in the character class terminates the
-  # whole `docker run`, so the container starts with no operands at all.
+  # Unescape one condition's inner quotes exactly as the regression did: the
+  # argument closes early and the `;` that follows terminates the whole
+  # `docker run`, so the container starts with no operands at all.
   path = File.join(root, "tests", "integration.sh")
   body = File.read(path)
-  broken = body.sub('sed \\"s/', 'sed "s/').sub('//g\\" \\', '//g" \\')
+  broken = body.sub(
+    'if [ \\"\\$(cat \\"\\$existing_probe/user-data\\")\\" != sentinel ]; then',
+    'if [ "$(cat "$existing_probe/user-data")" != sentinel ]; then'
+  )
   raise "controller quoting mutation did not apply" if broken == body
 
   File.write(path, broken)
@@ -1776,21 +1779,30 @@ expect_failure(failures, "integration lock made non-atomic",
   File.write(path, File.read(path).sub('mkdir "$lock_candidate"', "true"))
 end
 
+# The three play bindings are spelled as plain shell in the launcher library;
+# the contract ABI is still written in the controller's own dispatch, where an
+# inner quote is escaped. Each mutation deletes the binding where it lives.
 {
-  "vault password file" => '--vault-password-file \"\$vault_password_file\"',
-  "encrypted vars input" => '-e @\"\$vault_file\"',
-  "encrypted artifact path" => '-e platform_vault_file=\"\$vault_file\"',
-  "contract vault ABI" => 'PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\"'
-}.each do |property, source|
+  "vault password file" => ["tests/integration_controller_lib.sh",
+                            '--vault-password-file "$vault_password_file"'],
+  "encrypted vars input" => ["tests/integration_controller_lib.sh",
+                             '-e @"$vault_file"'],
+  "encrypted artifact path" => ["tests/integration_controller_lib.sh",
+                                '-e platform_vault_file="$vault_file"'],
+  "contract vault ABI" => ["tests/integration.sh",
+                           'PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\"']
+}.each do |property, (relative_path, source)|
   expect_failure(failures, "integration #{property} removed",
                  "integration must consume the ephemeral encrypted vault without duplicate secret authoring") do |root|
-    path = File.join(root, "tests", "integration.sh")
+    path = File.join(root, relative_path)
     body = File.read(path)
     mutated = if property == "contract vault ABI"
                 replace_last(body, source, "removed-integration-vault-binding")
               else
                 body.sub(source, "removed-integration-vault-binding")
               end
+    raise "integration vault mutation did not apply" if mutated == body
+
     File.write(path, mutated)
   end
 end

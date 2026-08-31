@@ -1267,6 +1267,14 @@ manifest_entries.each do |service|
           (container_cpu_includes.length == 1 &&
            container_cpu_includes.fetch(0).dig("vars", "container_cpu_service_name") == name),
         "#{name}: role must verify its effective container CPU policy exactly once")
+  # The role gates itself: `roles/container_cpu/tasks/main.yml` includes the
+  # Docker inspection only when not in check mode. A caller that repeats that
+  # guard is copying a condition it does not own, and the next caller is the one
+  # that forgets it.
+  container_cpu_conditions = container_cpu_includes.flat_map { |task| Array(task["when"]) }
+  check(failures,
+        container_cpu_conditions.none? { |condition| condition.to_s.include?("ansible_check_mode") },
+        "#{name}: container CPU verification must not repeat the role's own check-mode gate")
   acquisition_state_names = acquisition_projects.dig(name, "services")&.keys || []
   service_storage_declared =
     declared_paths.any? { |path| path.include?("/#{name}/") || path.end_with?("/#{name}") } ||
