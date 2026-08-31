@@ -192,7 +192,7 @@ task.
 
 The library id is a UUID minted by ABS at library-creation time, so it must be
 resolved by name at converge time rather than pinned;
-`roles/audiobookshelf/tasks/main.yml` already reads `GET /api/libraries` and
+`roles/audiobookshelf/tasks/library.yml` already reads `GET /api/libraries` and
 matches on name, and reusing that is the smaller change.
 `POST /api/v1/abs/test` is a live end-to-end check returning server version,
 username and default library id — confirmed against ABS 2.36.0 — and makes a

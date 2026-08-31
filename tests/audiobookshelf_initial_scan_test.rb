@@ -3,6 +3,10 @@
 
 require "yaml"
 
+require_relative "policy_support"
+
+include PolicySupport
+
 ROOT = File.expand_path("..", __dir__)
 ROLE_PATH = File.join(ROOT, "roles", "audiobookshelf", "tasks", "main.yml")
 DEFAULTS_PATH = File.join(ROOT, "roles", "audiobookshelf", "defaults", "main.yml")
@@ -471,7 +475,9 @@ def mutation_rejected!(tasks, defaults, label)
   raise "#{label} mutation was not rejected"
 end
 
-tasks = YAML.safe_load_file(ROLE_PATH, aliases: false)
+# The role is stage files imported from main.yml; static_role_tasks assembles
+# them the way Ansible does, so this reads the whole role and not one stage.
+tasks = static_role_tasks(ROLE_PATH, aliases: false)
 defaults = YAML.safe_load_file(DEFAULTS_PATH, aliases: false)
 validate_initial_scan!(tasks, defaults)
 

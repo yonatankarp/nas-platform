@@ -222,6 +222,54 @@ IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
     (global_keys + documents.values.flat_map { |expectation| expectation.fetch("vault_keys") }).sort.freeze
   end
 
+  # A role's task list as Ansible statically assembles it: the named task file
+  # with every `import_tasks` of a sibling file spliced in where the import
+  # stands. Ansible inlines a static import at parse time, so an imported task
+  # is the importing file's task -- same order, same position, same inherited
+  # tags. A test that reads one file and calls that the role stops seeing
+  # everything the role runs the moment a role is split into stage files, and it
+  # stops silently, because the properties it checks are all of the "some task
+  # does X" kind that a shorter list simply fails to contradict.
+  #
+  # Imports are followed and dynamic `ansible.builtin.include_tasks` is
+  # deliberately not, which is the whole design and not a shortcut. Ansible
+  # leaves an include alone too: it resolves at run time under its own `when:`
+  # and `vars:`, its file is frequently phase-gated, and the callers here read
+  # those files separately or not at all.
+  #
+  # The obvious alternative -- walk every *.yml under the role's tasks/ tree --
+  # is wrong, and quietly so. `role_has_verification?` below is checked by ten
+  # mutation rows in tests/policy_manifest_test.rb that replace
+  # roles/ntfy/tasks/main.yml wholesale with a file that verifies nothing and
+  # require the failure to be reported. ntfy reaches subscription.yml,
+  # managed_users.yml and deployment_summary.yml through include_tasks, so a
+  # directory walk would let one of those satisfy the check on behalf of the
+  # mutant, and all ten rows would pass while proving nothing. Following the
+  # imports says exactly what Ansible would run as one file, and nothing else.
+  #
+  # +aliases+ is passed through to every file the assembly reads, so a caller
+  # that refuses YAML anchors refuses them in the stage files too. It defaults
+  # to false because that is what YAML.safe_load_file defaults to, and every
+  # caller here replaced a bare YAML.safe_load_file.
+  def static_role_tasks(path, aliases: false, importing: [])
+    real_path = File.expand_path(path)
+    return [] if importing.include?(real_path)
+
+    document = YAML.safe_load_file(real_path, aliases: aliases)
+    return [] unless document.is_a?(Array)
+
+    document.flat_map do |task|
+      imported = task.is_a?(Hash) ? task["ansible.builtin.import_tasks"] : nil
+      file_name = imported.is_a?(Hash) ? imported["file"] : imported
+      next [task] unless file_name.is_a?(String)
+
+      target = File.expand_path(File.join(File.dirname(real_path), file_name))
+      next [task] unless File.file?(target)
+
+      static_role_tasks(target, aliases: aliases, importing: importing + [real_path])
+    end
+  end
+
   # Ansible task lists nest through block/rescue/always, so a policy check that
   # looks for a task by name has to see through those sections.
   def flatten_tasks(tasks, flattened = [])
@@ -321,8 +369,18 @@ IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
     end
   end
 
+  # Reads the role Ansible would run, not the one file named. This used to be a
+  # bare YAML.safe_load_file(tasks_path), which was the same thing only for as
+  # long as every service role kept all of its tasks in main.yml.
+  #
+  # Its one caller in tests/policy_test.rb spends this as
+  # `role_verification || contract_verification`, so a role whose verification
+  # moves out of main.yml does not fail: it goes on passing on the contract half
+  # alone, with the role-side half returning false and nobody told. Anything that
+  # narrows what this function can see half-kills that check silently, which is
+  # why it reads the assembled role and why the assembly follows imports only.
   def role_has_verification?(tasks_path, service_name, role_name)
-    tasks = flatten_tasks(YAML.safe_load_file(tasks_path))
+    tasks = flatten_tasks(static_role_tasks(tasks_path))
     canonical_name = contract_basename(service_name)
     prefixes = [service_name.tr("-", "_"), role_name, canonical_name.tr("-", "_")].uniq
     service_names = [service_name, role_name, canonical_name].uniq
