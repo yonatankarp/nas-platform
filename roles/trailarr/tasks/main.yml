@@ -80,6 +80,37 @@
     wait_timeout: "{{ platform_compose_wait_timeout }}"
   when: trailarr_config_env_repair is changed
 
+# The reconcile above can only tighten a file that already exists, and on a
+# first converge it does not: the application writes /config/.env during the
+# very deployment below it. Worse, entrypoint.sh rewrites that file through a
+# grep and a move on every start — measured, not assumed: after a restart the
+# GPU block has moved from the head of the file to its tail and the mode has
+# gone back to the image's default 0644. python-dotenv restores the mode it
+# finds on the application's own later writes, so nothing else undoes this, but
+# nothing else repairs it either.
+#
+# Tightening it in the reconcile alone is therefore not a fixed point but a
+# tug-of-war: the next run must chmod the file the last start recreated, which
+# marks the repair changed, which restarts the container, which recreates 0644.
+# Enforcing the permission here instead — after the last start this run
+# performs, and without feeding the restart condition — converges in one run and
+# leaves the following run nothing to do. The file carries the API key, so the
+# 0755 config directory is not containment enough on its own.
+- name: Look for the Trailarr application environment after start
+  ansible.builtin.stat:
+    path: "{{ trailarr_config_host_path }}/.env"
+  register: trailarr_config_env_started
+  changed_when: false
+  check_mode: false
+
+- name: Restrict the Trailarr application environment after start
+  ansible.builtin.file:
+    path: "{{ trailarr_config_host_path }}/.env"
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0600"
+  when: trailarr_config_env_started.stat.exists
+
 - name: Report the Trailarr deployment
   ansible.builtin.include_role:
     name: ntfy

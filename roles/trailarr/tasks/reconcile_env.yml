@@ -69,8 +69,12 @@
   no_log: true
 
 # python-dotenv's own rewriter reads the destination's mode and restores it
-# after every write, so tightening the file here is durable rather than a
-# tug-of-war: the application keeps 0600 for every key it persists afterwards.
+# after every write, so the application keeps 0600 for every key it persists.
+# entrypoint.sh does not: it rewrites the file through a grep and a move on
+# every start, and the replacement lands at the image's default 0644. This mode
+# therefore holds only until the next start, and the permission the platform
+# relies on is enforced again after the deployment in main.yml. Leaving it
+# declared here keeps the file private the moment its content is repaired.
 #
 # Redacted: the content is the credential.
 - name: Own the Trailarr application environment
