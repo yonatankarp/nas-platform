@@ -29,12 +29,22 @@ case "$*" in
     [ ! -f "$token_count_file" ] || token_count=$(cat "$token_count_file")
     token_count=$((token_count + 1))
     printf '%s\n' "$token_count" > "$token_count_file"
-    # A distinct token per invocation: the playbook now asserts that every
-    # generated publisher token is unique, so repeating one fails the run.
+    # A distinct token per invocation: the playbook asserts that every generated
+    # publisher token is unique, so repeating one fails the run. There is one arm
+    # per publisher the playbook generates for, and the fallback refuses rather
+    # than repeating the last token -- a repeat would fail the run anyway, but as
+    # an unexplained credential-shape assertion rather than as the missing stub
+    # arm it actually is.
     case "$token_count" in
       1) printf 'tk_aaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n' ;;
       2) printf 'tk_bbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n' ;;
-      *) printf '%s\n' "tk_ccccccccccccccccccccccccccccc" ;;
+      3) printf 'tk_ccccccccccccccccccccccccccccc\n' ;;
+      4) printf 'tk_ddddddddddddddddddddddddddddd\n' ;;
+      *)
+        printf 'fake docker: no distinct token defined for invocation %s\n' \
+          "$token_count" >&2
+        exit 1
+        ;;
     esac
     ;;
   *)
@@ -49,7 +59,7 @@ assert_no_sentinel() {
   output=$1
   if grep -F -e SENTINEL_GENERATED_PASSWORD -e SENTINEL_GENERATED_TOKEN \
       -e tk_aaaaaaaaaaaaaaaaaaaaaaaaaaaaa -e tk_bbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
-      -e tk_ccccccccccccccccccccccccccccc \
+      -e tk_ccccccccccccccccccccccccccccc -e tk_ddddddddddddddddddddddddddddd \
       "$output" >/dev/null; then
     printf 'generated credential appeared in Ansible output\n' >&2
     exit 1
