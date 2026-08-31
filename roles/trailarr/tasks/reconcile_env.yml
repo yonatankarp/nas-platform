@@ -74,13 +74,22 @@
 # which of the file's properties drifted. Without this a repair that keeps
 # recurring is a silent `changed` with nothing to read.
 - name: Report the planned Trailarr application environment repair
+  vars:
+    trailarr_config_env_current_lines: >-
+      {{ (trailarr_config_env_read.content | b64decode).splitlines() }}
+    trailarr_config_env_repaired_lines: >-
+      {{ trailarr_config_env_repaired.splitlines() }}
   ansible.builtin.debug:
     msg: >-
       {{ trailarr_config_host_path }}/.env is mode
       {{ trailarr_config_env_stat.stat.mode }} owned by
       {{ trailarr_config_env_stat.stat.uid }}:{{ trailarr_config_env_stat.stat.gid }};
-      its content differs from the platform-owned form:
-      {{ (trailarr_config_env_read.content | b64decode) != trailarr_config_env_repaired }}
+      {{ trailarr_config_env_current_lines | length }} lines against
+      {{ trailarr_config_env_repaired_lines | length }} in the platform-owned
+      form, differing on
+      [{{ (trailarr_config_env_current_lines
+           | symmetric_difference(trailarr_config_env_repaired_lines))
+          | map('regex_replace', '=.*$', '') | unique | sort | join(', ') }}]
   when: trailarr_config_env_stat.stat.exists
 
 # python-dotenv's own rewriter reads the destination's mode and restores it
