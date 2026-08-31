@@ -1,9 +1,30 @@
 ---
+# Platform fragments. Compose resolves a YAML anchor only inside the file that
+# declares it, so every stack carries its own copy; tests/policy_test.rb pins the
+# copies equal and records there why cross-file sharing was not taken. A
+# container needing different health-check timing overrides only the fields it
+# changes, so a deviation reads as a deviation.
 x-logging: &default-logging
   driver: json-file
   options:
     max-size: 10m
     max-file: "3"
+
+x-service-defaults: &service-defaults
+  cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
+  # The entrypoint's gosu re-exec is a setuid(2) call made by root, not the
+  # execution of a setuid binary, so refusing privilege escalation leaves the
+  # PUID/PGID remap below intact.
+  security_opt:
+    - no-new-privileges:true
+  restart: unless-stopped
+  logging: *default-logging
+
+x-healthcheck-defaults: &healthcheck-defaults
+  interval: 30s
+  timeout: 10s
+  retries: 5
+  start_period: 60s
 
 services:
   # Trailarr writes local trailers into the Movies and Series libraries Radarr
@@ -17,9 +38,9 @@ services:
   # rebuilds of the same version can rest on different base contents — which is
   # exactly what the digest below pins down.
   trailarr:
+    <<: *service-defaults
     container_name: trailarr
     image: docker.io/nandyalu/trailarr:0.11.3@sha256:86d6ae3dffa583261f3281017106ebefc68693018e3fe8d1c58c6e731d88e4b1
-    cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
     # One trailer transcode at a time. ffmpeg is the only CPU-bound work here
     # and it runs from a single scheduled task; the arr syncs are network-bound.
     cpus: 1.0
@@ -88,6 +109,7 @@ services:
       # application cannot clear a non-empty URL_BASE through its own API.
       URL_BASE: ""
     healthcheck:
+      <<: *healthcheck-defaults
       # The image ships curl, python3 and bash but neither wget, nc nor
       # busybox, so curl is the probe. /status is the only unauthenticated
       # route outside /api/v1/auth/*, the OpenAPI document and the SPA; there is
@@ -97,22 +119,11 @@ services:
         - >-
           curl --fail --silent --show-error
           http://127.0.0.1:7889/status >/dev/null
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 60s
-    # The entrypoint's gosu re-exec is a setuid(2) call made by root, not the
-    # execution of a setuid binary, so refusing privilege escalation leaves the
-    # PUID/PGID remap above intact.
-    security_opt:
-      - no-new-privileges:true
-    restart: unless-stopped
     # /config holds the SQLite database of every tracked title and its trailer
     # state, and is recovery: critical. 30s commits the open transaction. An
     # interrupted trailer download is re-queued from that same database, so the
     # window does not wait for one.
     stop_grace_period: 30s
-    logging: *default-logging
     networks:
       - default
       - media-control
