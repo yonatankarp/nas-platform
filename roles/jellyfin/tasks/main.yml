@@ -14,67 +14,23 @@
 
 # Deliberately not redacted. On ansible-core 2.21.3 no_log on an assert hides only
 # the result dict; fail_msg prints from the error header either way. Hiding the dict
-# here costs the name of whichever of these 68 conditions failed, under a fail_msg
-# that lists four unrelated causes. The dict cannot carry credential material: the
-# assert is unlooped, so there is no item to echo, and the reported "assertion" field
-# is the source text of the condition rather than its rendered value, so the two
+# here costs the name of whichever condition failed, under a fail_msg that lists four
+# unrelated causes. The dict cannot carry credential material: the assert is unlooped,
+# so there is no item to echo, and the reported "assertion" field is the source text
+# of the condition rather than its rendered value, so the two
 # vault_jellyfin_opensubtitles_* presence checks disclose their variable names only.
+#
+# The forty-five field-type conditions this assert used to spell out three times over
+# live in filter_plugins/jellyfin_encoding_schema.py, which names the offending path
+# instead of failing anonymously. What stays here is what neither a filter nor
+# meta/argument_specs.yml can express: the value equalities that pin the shipped
+# defaults against an inline copy of themselves, so editing defaults/main.yml is
+# refused rather than deployed.
 - name: Require explicit Jellyfin acceleration and plugin policy
   ansible.builtin.assert:
     that:
+      - jellyfin_encoding_schema_errors | length == 0
       - platform_kind in jellyfin_encoding_profiles
-      - jellyfin_encoding_profiles is mapping
-      - jellyfin_encoding_profiles.nas is mapping
-      - jellyfin_encoding_profiles.mac is mapping
-      - jellyfin_encoding_policy is mapping
-      - jellyfin_encoding_policy.HardwareAccelerationType is string
-      - jellyfin_encoding_policy.QsvDevice is string
-      - jellyfin_encoding_policy.HardwareDecodingCodecs | type_debug == 'list'
-      - >-
-        jellyfin_encoding_policy.HardwareDecodingCodecs |
-        select('string') | list | length ==
-        jellyfin_encoding_policy.HardwareDecodingCodecs | length
-      - jellyfin_encoding_policy.EnableDecodingColorDepth10Hevc is boolean
-      - jellyfin_encoding_policy.EnableDecodingColorDepth10Vp9 is boolean
-      - jellyfin_encoding_policy.EnableHardwareEncoding is boolean
-      - jellyfin_encoding_policy.AllowHevcEncoding is boolean
-      - jellyfin_encoding_policy.AllowAv1Encoding is boolean
-      - jellyfin_encoding_policy.EnableIntelLowPowerH264HwEncoder is boolean
-      - jellyfin_encoding_policy.EnableIntelLowPowerHevcHwEncoder is boolean
-      - jellyfin_encoding_policy.EnableVppTonemapping is boolean
-      - jellyfin_encoding_policy.EnableTonemapping is boolean
-      - jellyfin_encoding_profiles.nas.HardwareAccelerationType is string
-      - jellyfin_encoding_profiles.nas.QsvDevice is string
-      - jellyfin_encoding_profiles.nas.HardwareDecodingCodecs | type_debug == 'list'
-      - >-
-        jellyfin_encoding_profiles.nas.HardwareDecodingCodecs |
-        select('string') | list | length ==
-        jellyfin_encoding_profiles.nas.HardwareDecodingCodecs | length
-      - jellyfin_encoding_profiles.nas.EnableDecodingColorDepth10Hevc is boolean
-      - jellyfin_encoding_profiles.nas.EnableDecodingColorDepth10Vp9 is boolean
-      - jellyfin_encoding_profiles.nas.EnableHardwareEncoding is boolean
-      - jellyfin_encoding_profiles.nas.AllowHevcEncoding is boolean
-      - jellyfin_encoding_profiles.nas.AllowAv1Encoding is boolean
-      - jellyfin_encoding_profiles.nas.EnableIntelLowPowerH264HwEncoder is boolean
-      - jellyfin_encoding_profiles.nas.EnableIntelLowPowerHevcHwEncoder is boolean
-      - jellyfin_encoding_profiles.nas.EnableVppTonemapping is boolean
-      - jellyfin_encoding_profiles.nas.EnableTonemapping is boolean
-      - jellyfin_encoding_profiles.mac.HardwareAccelerationType is string
-      - jellyfin_encoding_profiles.mac.QsvDevice is string
-      - jellyfin_encoding_profiles.mac.HardwareDecodingCodecs | type_debug == 'list'
-      - >-
-        jellyfin_encoding_profiles.mac.HardwareDecodingCodecs |
-        select('string') | list | length ==
-        jellyfin_encoding_profiles.mac.HardwareDecodingCodecs | length
-      - jellyfin_encoding_profiles.mac.EnableDecodingColorDepth10Hevc is boolean
-      - jellyfin_encoding_profiles.mac.EnableDecodingColorDepth10Vp9 is boolean
-      - jellyfin_encoding_profiles.mac.EnableHardwareEncoding is boolean
-      - jellyfin_encoding_profiles.mac.AllowHevcEncoding is boolean
-      - jellyfin_encoding_profiles.mac.AllowAv1Encoding is boolean
-      - jellyfin_encoding_profiles.mac.EnableIntelLowPowerH264HwEncoder is boolean
-      - jellyfin_encoding_profiles.mac.EnableIntelLowPowerHevcHwEncoder is boolean
-      - jellyfin_encoding_profiles.mac.EnableVppTonemapping is boolean
-      - jellyfin_encoding_profiles.mac.EnableTonemapping is boolean
       - jellyfin_encoding_profiles.nas == jellyfin_required_nas_encoding_policy
       - jellyfin_encoding_profiles.mac == jellyfin_required_mac_encoding_policy
       - >-
@@ -119,7 +75,14 @@
     fail_msg: >-
       Jellyfin requires an explicit pinned platform encoding policy, unique managed
       repositories, exact plugin identities, and nonempty Open Subtitles credentials.
+      {{ jellyfin_encoding_schema_errors |
+         ternary('Encoding schema violations: ' ~
+                 (jellyfin_encoding_schema_errors | join('; ')),
+                 'The encoding schema itself is well formed, so a pinned value differs.') }}
   vars:
+    jellyfin_encoding_schema_errors: >-
+      {{ jellyfin_encoding_profiles |
+         jellyfin_encoding_errors(jellyfin_encoding_policy) }}
     jellyfin_required_nas_encoding_policy:
       HardwareAccelerationType: qsv
       QsvDevice: /dev/dri/renderD128
