@@ -30,11 +30,15 @@ def run_registry(registry:, contracts: {}, mode: "--validate-only", env: {}, man
     File.write(File.join(contract_root, "registry.yml"), registry)
     contracts.each do |name, body|
       path = File.join(contract_root, name)
+      FileUtils.mkdir_p(File.dirname(path))
       if body.is_a?(Hash) && body.key?(:symlink)
         File.symlink(body.fetch(:symlink), path)
       else
-        File.write(path, body)
-        File.chmod(0o755, path)
+        # A sibling program invoked as `ruby program.rb` never consults its
+        # shebang, so the mode is the caller's to state rather than a constant.
+        content = body.is_a?(Hash) ? body.fetch(:content) : body
+        File.write(path, content)
+        File.chmod(body.is_a?(Hash) ? body.fetch(:mode, 0o755) : 0o755, path)
       end
     end
     setup&.call(root)
@@ -163,6 +167,138 @@ output, status = run_registry(
 )
 check(failures, status.success?,
       "contract with valid embedded Ruby was rejected: #{output.lines.first&.strip}")
+
+# The other legal shape: the Ruby lives in a file beside the contract and is
+# invoked with arguments. Issue #147 moves ~9,800 lines into that shape, so the
+# checks below are what keep it as well covered as the heredoc it replaces.
+#
+# This one fixture pins the four properties an extracted program depends on, and
+# it is deliberately the mode-0644 form: `ruby -rjson program.rb` never consults
+# a shebang, so requiring an execute bit would have outlawed the only invocation
+# that can carry the `-r` preloads the heredocs run under.
+sibling_probe = <<~'RUBY'
+  #!/usr/bin/env ruby
+  # Fixture standing in for tests/contracts/<name>_static.rb.
+  abort "preload was not carried" unless defined?(JSON)
+  abort "sibling consumed the caller stdin" unless $stdin.read.empty?
+  File.write(File.join(ENV.fetch("PLATFORM_REPORT_ROOT"), "probe.txt"), "#{ARGV.join(',')}\n")
+RUBY
+sibling_contract = <<~'SH'
+  #!/bin/sh
+  set -eu
+  printf 'caller-stdin\n' > "$PLATFORM_REPORT_ROOT/caller-stdin.txt"
+  {
+    ruby -rjson tests/contracts/ntfy_probe.rb alpha beta </dev/null
+    read -r survivor
+    printf '%s\n' "$survivor" >> "$PLATFORM_REPORT_ROOT/probe.txt"
+  } < "$PLATFORM_REPORT_ROOT/caller-stdin.txt"
+SH
+output, status, probe = run_registry(
+  registry: registry,
+  contracts: {
+    "ntfy.sh" => sibling_contract,
+    "ntfy_probe.rb" => { content: sibling_probe, mode: 0o644 }
+  },
+  mode: "--execute"
+) do |root|
+  path = File.join(root, "reports", "probe.txt")
+  File.file?(path) ? File.read(path) : nil
+end
+check(failures, status.success? && probe == "alpha,beta\ncaller-stdin\n",
+      "sibling Ruby program was not run with its arguments, preloads and an empty stdin: " \
+      "#{probe.inspect} #{output.lines.first&.strip}")
+
+# The trap the sibling shape introduces, demonstrated rather than legislated: a
+# heredoc exhausts the caller's stdin by construction, a sibling program inherits
+# it, so an invocation missing `</dev/null` eats input the contract still needs.
+# tests/mac/run.sh:225-236 carries the same redirect for the same reason. The
+# harness does not grep the wrapper for it -- these invocations already span
+# continuation lines, and a line-shaped rule would dictate their layout.
+output, status, probe = run_registry(
+  registry: registry,
+  contracts: {
+    "ntfy.sh" => sibling_contract.sub(" </dev/null", ""),
+    "ntfy_probe.rb" => { content: sibling_probe, mode: 0o644 }
+  },
+  mode: "--execute"
+) do |root|
+  File.exist?(File.join(root, "reports", "probe.txt"))
+end
+check(failures, !status.success? && output.include?("contract failed") && !probe,
+      "sibling Ruby program invoked without </dev/null did not consume the caller stdin")
+
+# A file is no more visible to `sh -n` than a heredoc was, so extraction must not
+# retire the static parse. This is the check that lets the later PRs move code.
+output, status = run_registry(
+  registry: registry,
+  contracts: {
+    "ntfy.sh" => "#!/bin/sh\nruby tests/contracts/ntfy_static.rb \"$1\" </dev/null\n",
+    "ntfy_static.rb" => "def broken(\n"
+  }
+)
+check(failures, !status.success? &&
+                output.include?("tests/contracts/ntfy_static.rb: sibling Ruby program has invalid syntax"),
+      "contract with a syntax-invalid sibling Ruby program was not rejected clearly")
+
+# Both shapes are legal at once, which is what makes the extraction incremental:
+# a contract keeps its remaining heredocs while one half moves out.
+output, status = run_registry(
+  registry: registry,
+  contracts: {
+    "ntfy.sh" => "#!/bin/sh\nruby - <<'RUBY'\nputs \"ok\"\nRUBY\n" \
+                 "ruby -ryaml tests/contracts/ntfy_static.rb \"$1\" </dev/null\n",
+    "ntfy_static.rb" => "puts ARGV.inspect\n"
+  }
+)
+check(failures, status.success?,
+      "contract mixing a heredoc and a sibling Ruby program was rejected: #{output.lines.first&.strip}")
+
+# A glob can never notice a path that is named but absent, which is what a typo
+# in an extracted invocation looks like.
+output, status = run_registry(
+  registry: registry,
+  contracts: { "ntfy.sh" => "#!/bin/sh\nruby tests/contracts/ntfy_absent.rb </dev/null\n" }
+)
+check(failures, !status.success? &&
+                output.include?("sibling Ruby program tests/contracts/ntfy_absent.rb is missing"),
+      "contract naming an absent sibling Ruby program was accepted")
+
+output, status = run_registry(
+  registry: registry,
+  contracts: {
+    "ntfy.sh" => "#!/bin/sh\nruby tests/contracts/ntfy_static.rb </dev/null\n",
+    "ntfy_probe.rb" => "puts 1\n",
+    "ntfy_static.rb" => { symlink: "ntfy_probe.rb" }
+  }
+)
+check(failures, !status.success? && output.include?("nonempty regular non-symlink file"),
+      "symlinked sibling Ruby program was accepted")
+
+# And the opposite hole: a program no contract names in full. The `-r` preload at
+# tests/contracts/support/beszel_telemetry is loaded without its extension, so a
+# reference scan alone would never reach it and it would keep the zero static
+# coverage the heredocs had.
+output, status = run_registry(
+  registry: registry,
+  contracts: {
+    "ntfy.sh" => "#!/bin/sh\ntrue\n",
+    "support/helper.rb" => { content: "def dangling(\n", mode: 0o644 }
+  }
+)
+check(failures, !status.success? &&
+                output.include?("tests/contracts/support/helper.rb: sibling Ruby program has invalid syntax"),
+      "unreferenced sibling Ruby library was not parsed")
+
+# The shape neither sweep sees: no heredoc and no sibling, which is what the
+# four *-foundation.sh contracts are. Both new loops run over nothing, and a
+# contract that was already legal has to stay legal.
+output, status = run_registry(
+  registry: registry,
+  contracts: { "ntfy.sh" => "#!/bin/sh\n# see tests/contracts/ntfy_retired.rb\nexec true\n" }
+)
+check(failures, status.success?,
+      "contract with neither a heredoc nor a sibling Ruby program was rejected: " \
+      "#{output.lines.first&.strip}")
 
 output, status = run_registry(
   registry: registry,

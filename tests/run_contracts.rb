@@ -172,6 +172,70 @@ entries.each do |entry|
   end
 end
 
+# The same defect, one file over. Issue #147 promotes each of those heredoc
+# bodies to a Ruby file beside its caller, invoked with arguments, and a file is
+# no more visible to `sh -n` than a heredoc was. Without the sweep below the
+# extraction would silently retire the only static check that ever reads the
+# code, so both shapes are parsed here and both stay legal.
+#
+# Two properties of the sibling shape an extraction has to preserve, recorded
+# here because this is the file whoever writes one will be reading:
+#
+#   * A heredoc consumes the caller's stdin by construction. A sibling program
+#     does not, so it must be invoked with `</dev/null` or it reads the stdin of
+#     whatever invoked the contract. tests/mac/run.sh:225-236 is the worked
+#     example, and tests/run_contracts_test.rb exercises both outcomes rather
+#     than this file policing the wrapper's text: the invocations already span
+#     continuation lines, and a line-shaped rule would dictate their layout.
+#   * The heredocs run under `-ryaml -rjson -rpathname -rdigest` preloads. The
+#     sibling form carries them verbatim -- `ruby -ryaml program.rb "$@"` -- and
+#     that form never consults the shebang, which is why no execute bit is
+#     required below. The library at tests/contracts/support is mode 0644 today.
+#
+# A program is found two ways because either way alone leaves a hole. The glob
+# reaches one no contract names in full, such as the `-r` preload
+# tests/contracts/support/beszel_telemetry, whose path carries no extension. The
+# reference scan reaches the opposite case, a path a contract names that does not
+# exist, which a glob can never notice. It skips a commented-out line so a
+# retired invocation does not keep demanding its program, but a path named
+# anywhere else, a trailing comment included, is read as a reference.
+def ruby_program_references(source)
+  source.each_line.reject { |line| line.lstrip.start_with?("#") }
+        .flat_map { |line| line.scan(%r{tests/contracts/[A-Za-z0-9_./-]+\.rb}) }
+        .map { |reference| Pathname.new(reference).cleanpath.to_s }
+        .uniq
+end
+
+referenced_programs = {}
+entries.each do |entry|
+  source = File.read(File.expand_path(entry.fetch("path"), ROOT))
+  ruby_program_references(source).each { |reference| referenced_programs[reference] ||= entry }
+end
+
+referenced_programs.each do |reference, entry|
+  next if File.exist?(File.expand_path(reference, ROOT))
+
+  warn "FAIL #{entry.fetch('service')} #{entry.fetch('path')}: " \
+       "sibling Ruby program #{reference} is missing"
+  exit 1
+end
+
+globbed_programs = Dir.glob("**/*.rb", base: CONTRACT_ROOT).map { |name| "tests/contracts/#{name}" }
+(globbed_programs | referenced_programs.keys).sort.each do |relative|
+  path = File.expand_path(relative, ROOT)
+  unless owned_contract?(path) && File.size?(path)
+    warn "FAIL #{relative}: sibling Ruby program must be a nonempty regular non-symlink file"
+    exit 1
+  end
+
+  _out, err, ruby_syntax = Open3.capture3(RbConfig.ruby, "-c", path)
+  next if ruby_syntax.success?
+
+  warn "FAIL #{relative}: sibling Ruby program has invalid syntax"
+  warn err.lines.first(3).map { |l| "  #{l.rstrip}" }.join("\n")
+  exit 1
+end
+
 if mode == "--validate-only"
   puts "contracts: all registered contracts validated"
   exit 0
