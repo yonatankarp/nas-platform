@@ -12,6 +12,13 @@ Servarr API returns a stored secret as a run of asterisks, which is neither the
 value nor absent, so a projection that included it would report drift on every
 run. `acquisition_merge_owned_fields` is the write-side counterpart: it replaces
 the fields this platform declares and preserves every field it does not.
+
+The three projections themselves are one function, `_owned_projection`, driven
+by a `_Relationship` descriptor each: they differ in their attribute and field
+lists, in one label, and in whether their owned fields are a fixed list or
+whatever the declaration names. Held apart they were ninety lines of the same
+masking shape written three times, which is one place for a mask to stop being
+honoured without the other two showing it.
 """
 
 from __future__ import annotations
@@ -19,7 +26,7 @@ from __future__ import annotations
 import importlib.util
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from ansible.errors import AnsibleFilterError
 
@@ -65,6 +72,98 @@ def _normalized_like(name: str, value: Any, desired: Any) -> Any:
     return _string(value)
 
 
+class _Relationship(NamedTuple):
+    """What this platform owns in one Prowlarr or Servarr relationship.
+
+    `label` names the resource itself in a guard's message and `masked_label`
+    names its masked-field list, because the download client is a "Servarr
+    SABnzbd client" when the resource is malformed and a "Servarr client" when
+    the mask is. `masked` is the relationship's own masking filter, used when a
+    caller did not compute one. `attributes` and `readable_fields` are always
+    projected; `secret_fields` are projected only when the API did not mask
+    them, since a run of asterisks is neither the value nor an absence.
+
+    `declaration_label` is set only by the indexer, whose owned fields are
+    whatever this platform declared rather than a fixed list, so its projection
+    also needs the declaration and its masking filter takes two arguments.
+    """
+
+    label: str
+    masked_label: str
+    masked: Any
+    attributes: tuple[tuple[str, Any], ...]
+    readable_fields: tuple[tuple[str, Any], ...] = ()
+    secret_fields: tuple[tuple[str, Any], ...] = ()
+    declaration_label: str | None = None
+
+
+def _declared_field_projection(
+    spec: _Relationship,
+    current_fields: dict[str, Any],
+    desired_fields: dict[str, Any],
+    masked_names: set[str],
+) -> dict[str, Any]:
+    """Project the fields a declaration names, normalized like their desired."""
+    projection = {}
+    for name, desired in desired_fields.items():
+        if name in masked_names:
+            continue
+        if name not in current_fields:
+            raise AnsibleFilterError(
+                f"{spec.label} field {name!r} is missing from readable state"
+            )
+        projection[name] = _normalized_like(name, current_fields[name], desired)
+    return projection
+
+
+def _owned_projection(
+    value: Any,
+    spec: _Relationship,
+    masked_fields: Any,
+    declaration: Any = None,
+) -> dict[str, Any]:
+    """Reduce a readback to the fields this platform owns, minus the masked ones.
+
+    The order of the guards below is itself contract: it decides which complaint
+    a caller sees when two of its arguments are malformed at once, and
+    `tests/acquisition_servarr_filter_test.py` pins the wording of each.
+    """
+    value = _mapping(value, spec.label)
+    if spec.declaration_label is not None:
+        declaration = _mapping(declaration, spec.declaration_label)
+    current_fields = _fields(value.get("fields", []))
+    desired_fields = (
+        {} if spec.declaration_label is None else _fields(declaration.get("fields", []))
+    )
+    if masked_fields is None:
+        masked_fields = (
+            spec.masked(value)
+            if spec.declaration_label is None
+            else spec.masked(value, declaration)
+        )
+    if not isinstance(masked_fields, (list, tuple)):
+        raise AnsibleFilterError(f"masked {spec.masked_label} fields must be a sequence")
+    masked_names = set(masked_fields)
+    projection = {name: coerce(value.get(name)) for name, coerce in spec.attributes}
+    # `tags` is the one owned attribute a Servarr API omits rather than returning
+    # empty, and it is the last attribute of all three projections. An explicit
+    # null is still refused: that is a type that changed, which is drift.
+    projection["tags"] = _sorted_integers(value.get("tags", []))
+    if spec.declaration_label is not None:
+        projection["fields"] = _declared_field_projection(
+            spec, current_fields, desired_fields, masked_names
+        )
+        return projection
+    fields = {
+        name: coerce(current_fields.get(name)) for name, coerce in spec.readable_fields
+    }
+    for name, coerce in spec.secret_fields:
+        if name not in masked_names:
+            fields[name] = coerce(current_fields.get(name))
+    projection["fields"] = fields
+    return projection
+
+
 def acquisition_application_body(
     declaration: Any, prowlarr_url: Any, sync_level: Any
 ) -> dict[str, Any]:
@@ -104,35 +203,27 @@ def acquisition_application_masked_fields(value: Any) -> list[str]:
     ]
 
 
+_APPLICATION = _Relationship(
+    label="Prowlarr application",
+    masked_label="Prowlarr application",
+    masked=acquisition_application_masked_fields,
+    attributes=(
+        ("name", _string), ("enable", _boolean), ("syncLevel", _string),
+        ("implementation", _string), ("implementationName", _string),
+        ("configContract", _string),
+    ),
+    readable_fields=(
+        ("prowlarrUrl", _string), ("baseUrl", _string), ("username", _string),
+        ("password", _string), ("syncCategories", _sorted_integers),
+    ),
+    secret_fields=(("apiKey", _string),),
+)
+
+
 def acquisition_application_projection(
     value: Any, masked_fields: Any = None
 ) -> dict[str, Any]:
-    value = _mapping(value, "Prowlarr application")
-    fields = _fields(value.get("fields", []))
-    if masked_fields is None:
-        masked_fields = acquisition_application_masked_fields(value)
-    if not isinstance(masked_fields, (list, tuple)):
-        raise AnsibleFilterError("masked Prowlarr application fields must be a sequence")
-    masked_names = set(masked_fields)
-    projection = {
-        "name": _string(value.get("name")),
-        "enable": _boolean(value.get("enable")),
-        "syncLevel": _string(value.get("syncLevel")),
-        "implementation": _string(value.get("implementation")),
-        "implementationName": _string(value.get("implementationName")),
-        "configContract": _string(value.get("configContract")),
-        "tags": _sorted_integers(value.get("tags", [])),
-        "fields": {
-            "prowlarrUrl": _string(fields.get("prowlarrUrl")),
-            "baseUrl": _string(fields.get("baseUrl")),
-            "username": _string(fields.get("username")),
-            "password": _string(fields.get("password")),
-            "syncCategories": _sorted_integers(fields.get("syncCategories")),
-        },
-    }
-    if "apiKey" not in masked_names:
-        projection["fields"]["apiKey"] = _string(fields.get("apiKey"))
-    return projection
+    return _owned_projection(value, _APPLICATION, masked_fields)
 
 
 def acquisition_servarr_client_body(
@@ -180,40 +271,28 @@ def acquisition_servarr_client_masked_fields(value: Any) -> list[str]:
     ]
 
 
+_SERVARR_CLIENT = _Relationship(
+    label="Servarr SABnzbd client",
+    masked_label="Servarr client",
+    masked=acquisition_servarr_client_masked_fields,
+    attributes=(
+        ("name", _string), ("enable", _boolean), ("protocol", _string),
+        ("priority", _integer), ("removeCompletedDownloads", _boolean),
+        ("removeFailedDownloads", _boolean), ("implementation", _string),
+        ("implementationName", _string), ("configContract", _string),
+    ),
+    readable_fields=(
+        ("host", _string), ("port", _integer), ("useSsl", _boolean),
+        ("urlBase", _string), ("movieCategory", _string), ("tvCategory", _string),
+    ),
+    secret_fields=(("apiKey", _string), ("username", _string), ("password", _string)),
+)
+
+
 def acquisition_servarr_client_projection(
     value: Any, masked_fields: Any = None
 ) -> dict[str, Any]:
-    value = _mapping(value, "Servarr SABnzbd client")
-    fields = _fields(value.get("fields", []))
-    if masked_fields is None:
-        masked_fields = acquisition_servarr_client_masked_fields(value)
-    if not isinstance(masked_fields, (list, tuple)):
-        raise AnsibleFilterError("masked Servarr client fields must be a sequence")
-    masked_names = set(masked_fields)
-    projection = {
-        "name": _string(value.get("name")),
-        "enable": _boolean(value.get("enable")),
-        "protocol": _string(value.get("protocol")),
-        "priority": _integer(value.get("priority")),
-        "removeCompletedDownloads": _boolean(value.get("removeCompletedDownloads")),
-        "removeFailedDownloads": _boolean(value.get("removeFailedDownloads")),
-        "implementation": _string(value.get("implementation")),
-        "implementationName": _string(value.get("implementationName")),
-        "configContract": _string(value.get("configContract")),
-        "tags": _sorted_integers(value.get("tags", [])),
-        "fields": {
-            "host": _string(fields.get("host")),
-            "port": _integer(fields.get("port")),
-            "useSsl": _boolean(fields.get("useSsl")),
-            "urlBase": _string(fields.get("urlBase")),
-            "movieCategory": _string(fields.get("movieCategory")),
-            "tvCategory": _string(fields.get("tvCategory")),
-        },
-    }
-    for name in ["apiKey", "username", "password"]:
-        if name not in masked_names:
-            projection["fields"][name] = _string(fields.get(name))
-    return projection
+    return _owned_projection(value, _SERVARR_CLIENT, masked_fields)
 
 
 def acquisition_servarr_client_url_matches(
@@ -269,38 +348,23 @@ def acquisition_indexer_masked_fields(value: Any, declaration: Any) -> list[str]
     )
 
 
+_INDEXER = _Relationship(
+    label="Prowlarr indexer",
+    masked_label="Prowlarr indexer",
+    masked=acquisition_indexer_masked_fields,
+    attributes=(
+        ("name", _string), ("enable", _boolean), ("priority", _integer),
+        ("implementation", _string), ("implementationName", _string),
+        ("configContract", _string),
+    ),
+    declaration_label="Prowlarr indexer declaration",
+)
+
+
 def acquisition_indexer_projection(
     value: Any, declaration: Any, masked_fields: Any = None
 ) -> dict[str, Any]:
-    value = _mapping(value, "Prowlarr indexer")
-    declaration = _mapping(declaration, "Prowlarr indexer declaration")
-    current_fields = _fields(value.get("fields", []))
-    desired_fields = _fields(declaration.get("fields", []))
-    if masked_fields is None:
-        masked_fields = acquisition_indexer_masked_fields(value, declaration)
-    if not isinstance(masked_fields, (list, tuple)):
-        raise AnsibleFilterError("masked Prowlarr indexer fields must be a sequence")
-    masked_names = set(masked_fields)
-    readable_fields = {}
-    for name, desired in desired_fields.items():
-        if name in masked_names:
-            continue
-        if name not in current_fields:
-            raise AnsibleFilterError(
-                f"Prowlarr indexer field {name!r} is missing from readable state"
-            )
-        current = current_fields[name]
-        readable_fields[name] = _normalized_like(name, current, desired)
-    return {
-        "name": _string(value.get("name")),
-        "enable": _boolean(value.get("enable")),
-        "priority": _integer(value.get("priority")),
-        "implementation": _string(value.get("implementation")),
-        "implementationName": _string(value.get("implementationName")),
-        "configContract": _string(value.get("configContract")),
-        "tags": _sorted_integers(value.get("tags", [])),
-        "fields": readable_fields,
-    }
+    return _owned_projection(value, _INDEXER, masked_fields, declaration)
 
 
 def acquisition_merge_owned_fields(

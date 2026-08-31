@@ -93,6 +93,22 @@ def refuses(failures, call, message):
     failures.append(message)
 
 
+def refuses_with(failures, call, expected, message):
+    """Assert both that a call is refused and how it words the refusal.
+
+    The three projections are one function driven by a per-relationship
+    descriptor, so the wording is what proves a descriptor is wired to the
+    relationship it names. An operator reads these strings out of a failed play.
+    """
+    try:
+        call()
+    except AnsibleFilterError as error:
+        if str(error) != expected:
+            failures.append(f"{message} (said {str(error)!r})")
+        return
+    failures.append(message)
+
+
 def collect_failures():
     failures = []
 
@@ -238,6 +254,67 @@ def collect_failures():
     check(failures,
           plugin.acquisition_indexer_masked_fields(undeclared, INDEXER_DECLARATION) == [],
           "a masked field this platform does not declare must not be reported")
+
+    # --- the shared owned projection --------------------------------------
+    refuses_with(failures,
+                 lambda: plugin.acquisition_application_projection(readable, "apiKey"),
+                 "masked Prowlarr application fields must be a sequence",
+                 "a non-sequence application mask must be refused as the application's")
+    refuses_with(failures,
+                 lambda: plugin.acquisition_servarr_client_projection(client, "apiKey"),
+                 "masked Servarr client fields must be a sequence",
+                 "a non-sequence client mask must be refused as the client's")
+    refuses_with(failures,
+                 lambda: plugin.acquisition_indexer_projection(
+                     live, INDEXER_DECLARATION, "apiKey"),
+                 "masked Prowlarr indexer fields must be a sequence",
+                 "a non-sequence indexer mask must be refused as the indexer's")
+    refuses_with(failures,
+                 lambda: plugin.acquisition_servarr_client_projection(None),
+                 "Servarr SABnzbd client must be a mapping",
+                 "a malformed download client must be named as the SABnzbd client")
+    declared_extra = dict(
+        INDEXER_DECLARATION,
+        fields=INDEXER_DECLARATION["fields"] + [{"name": "apiPath", "value": "/api"}],
+    )
+    refuses_with(failures,
+                 lambda: plugin.acquisition_indexer_projection(live, declared_extra),
+                 "Prowlarr indexer field 'apiPath' is missing from readable state",
+                 "a declared indexer field absent from the readback must be named")
+    check(failures,
+          "apiPath" not in plugin.acquisition_indexer_projection(
+              live, declared_extra, ["apiPath"])["fields"],
+          "a masked declared field must be skipped, not demanded of the readback")
+    check(failures, list(plugin.acquisition_servarr_client_projection(client)) == [
+        "name", "enable", "protocol", "priority", "removeCompletedDownloads",
+        "removeFailedDownloads", "implementation", "implementationName",
+        "configContract", "tags", "fields"],
+        "the client projection must carry exactly its owned attributes, tags last")
+    check(failures,
+          list(plugin.acquisition_servarr_client_projection(client)["fields"]) == [
+              "host", "port", "useSsl", "urlBase", "movieCategory", "tvCategory",
+              "apiKey", "username", "password"],
+          "the client projection must compare its readable fields and its secrets")
+    check(failures, list(plugin.acquisition_indexer_projection(
+        live, INDEXER_DECLARATION)) == [
+            "name", "enable", "priority", "implementation", "implementationName",
+            "configContract", "tags", "fields"],
+        "the indexer projection must carry exactly its owned attributes, tags last")
+    # A Servarr API omits `tags` from a resource that has none, and an explicit
+    # null is a type that changed rather than an absence.
+    without_tags = {key: item for key, item in readable.items() if key != "tags"}
+    try:
+        omitted_tags = plugin.acquisition_application_projection(without_tags)["tags"]
+    except AnsibleFilterError as error:
+        omitted_tags = f"refused: {error}"
+    check(failures, omitted_tags == [],
+          "a resource that omits tags entirely must project no tags, "
+          f"not {omitted_tags!r}")
+    refuses_with(failures,
+                 lambda: plugin.acquisition_application_projection(
+                     dict(readable, tags=None)),
+                 "relationship integer lists must be sequences",
+                 "a null tags value must be refused rather than read as empty")
 
     # --- acquisition_merge_owned_fields -----------------------------------
     current = [
