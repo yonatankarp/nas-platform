@@ -81,6 +81,10 @@ if defined?(ClassifyChanges)
     ["renovate.json"] => %w[static],
     ["generate-secrets.yml"] => %w[static],
     ["templates/vault-plain.yml.j2"] => %w[static],
+    # tests/integration.sh installs the sandbox vault over this path, so no suite
+    # reads the committed one; tests/policy_vault_test.rb is the only check that
+    # opens it, and the policy gate is where that runs.
+    ["inventory/group_vars/all/vault.yml"] => %w[static],
     ["install-production-auto-deploy.yml"] => %w[static],
     ["roles/production_auto_deploy/tasks/main.yml"] => %w[static],
     ["roles/image_prune/templates/config.json.j2"] => %w[static],

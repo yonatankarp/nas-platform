@@ -49,6 +49,11 @@ LIBRARY_WAIT_POLLED_TIMEOUT_SECONDS =
 # for a patient budget, so they get one.
 LIBRARY_WAIT_PATIENT_TIMEOUT_SECONDS =
   Float(ENV.fetch("JELLYFIN_LIBRARY_WAIT_PATIENT_TIMEOUT", "10"))
+# How long the proof keeps polling after the segment request returns. Production
+# is deliberately generous; the cases that never report a transcode have to
+# reach their diagnostic quickly, so they run against a small override. Only the
+# no-transcode paths ever consume it, and they fail sooner under load, not later.
+OBSERVATION_GRACE_SECONDS = Float(ENV.fetch("JELLYFIN_OBSERVATION_GRACE", "0.05"))
 
 failures = []
 
@@ -112,7 +117,7 @@ end
 class TranscodeScenario
   attr_reader :master_targets, :segment_cache_keys, :session_poll_while_active,
               :stale_cache_hit, :missing_deadline_paths, :attempt_deadlines,
-              :deadline_mismatch
+              :deadline_mismatch, :observed_after_completion
 
   # False for as long as the blocked segment request is still blocked. A proof
   # that gave up while this reads false was bounded by its own deadline, not by
@@ -136,6 +141,9 @@ class TranscodeScenario
     @attempt_deadlines = []
     @deadline_mismatch = false
     @segment_released = false
+    @segment_worker = nil
+    @segment_answered = false
+    @observed_after_completion = false
   end
 
   def request(_method, path, **options)
@@ -198,9 +206,16 @@ class TranscodeScenario
     File.binwrite(File.join(@transcode_root, cache_name), "\x47mpeg-ts")
   end
 
+  # The modes that model an observation landing after the segment request: they
+  # answer at once and record the worker, so `await_segment_completion` can hold
+  # every later Sessions poll until that worker has actually finished.
   def segment_response
     case @mode
-    when :fast_success
+    when :straddle, :no_transcode, :foreign_device
+      @mutex.synchronize do
+        @segment_worker = Thread.current == Thread.main ? nil : Thread.current
+        @segment_answered = true
+      end
       Response.new("200", "\x47mpeg-ts")
     when :success, :ordering, :stale_cache_only
       # The old contract issues this request synchronously and cannot observe a
@@ -230,7 +245,52 @@ class TranscodeScenario
     end
   end
 
+  # True only when the segment request has genuinely finished: the contract
+  # clears its in-progress flag in an `ensure` before the worker dies, so a dead
+  # worker is proof the flag is already false. Bounded by the hang guard, and it
+  # reports what it saw rather than assuming -- a wait that ran out must not let
+  # the straddle assertion pass on a straddle that never happened.
+  def await_segment_completion
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    loop do
+      answered, worker = @mutex.synchronize { [@segment_answered, @segment_worker] }
+      return true if answered && (worker.nil? || !worker.alive?)
+      return false if Process.clock_gettime(Process::CLOCK_MONOTONIC) - started >= HANG_GUARD_SECONDS
+
+      sleep 0.01
+    end
+  end
+
+  # A session whose DeviceId is not this attempt's. The proof must ignore it
+  # exactly as if no session had been reported at all.
+  def foreign_session
+    {
+      "DeviceId" => "nas-platform-jellyfin-proof-#{"f" * 32}",
+      "TranscodingInfo" => {
+        "IsVideoDirect" => false, "Width" => 32, "HardwareAccelerationType" => "none"
+      }
+    }
+  end
+
   def sessions_response(path)
+    if %i[straddle no_transcode foreign_device].include?(@mode)
+      @observed_after_completion = true if await_segment_completion
+      device_id = query_for(path)["deviceId"]
+      sessions =
+        case @mode
+        when :no_transcode then [{ "DeviceId" => device_id }]
+        when :foreign_device then [foreign_session]
+        else
+          [{
+            "DeviceId" => device_id,
+            "TranscodingInfo" => {
+              "IsVideoDirect" => false, "Width" => 32, "HardwareAccelerationType" => "none"
+            }
+          }]
+        end
+      return [Response.new("200", JSON.generate(sessions)), sessions]
+    end
+
     active = @mutex.synchronize do
       @condition.wait(@mutex, 0.1) unless @segment_active
       if @segment_active
@@ -326,6 +386,15 @@ Dir.mktmpdir("nas-platform-jellyfin-transcode-") do |directory|
   eval(library, TOPLEVEL_BINDING, CONTRACT)
   Object.send(:remove_const, :LIBRARY_RENAME_POLL_INTERVAL_SECONDS)
   Object.const_set(:LIBRARY_RENAME_POLL_INTERVAL_SECONDS, 0.01)
+  grace_overridden = Object.const_defined?(:TRANSCODE_OBSERVATION_GRACE_SECONDS)
+  if grace_overridden
+    Object.send(:remove_const, :TRANSCODE_OBSERVATION_GRACE_SECONDS)
+    Object.const_set(:TRANSCODE_OBSERVATION_GRACE_SECONDS, OBSERVATION_GRACE_SECONDS)
+  end
+  # Without the override the no-transcode cases would poll to the full proof
+  # timeout and assert the wrong diagnostic, inside a concurrent policy run.
+  check(failures, grace_overridden,
+        "the proof exposes no post-segment observation grace to bound")
   wait_source = library[/^def wait_for_complete_library.*?(?=^def assert_managed_library)/m]
   check(failures, !wait_source.nil?, "renamed-library wait helper cannot be extracted from production")
 
@@ -595,18 +664,49 @@ Dir.mktmpdir("nas-platform-jellyfin-transcode-") do |directory|
   check(failures, settle_threads(baseline_threads) == baseline_threads,
         "the stale-cache rejection leaked a segment worker thread")
 
-  fast_scenario = TranscodeScenario.new(:fast_success, transcode_root: transcodes)
-  $jellyfin_transcode_scenario = fast_scenario
+  # The regression this file exists to pin. A poll that straddles the segment
+  # request's completion sees a transcode the server really did produce for this
+  # attempt; the proof used to call that a failure and turn a correct platform
+  # red. The fixture holds every Sessions poll until the segment worker has
+  # finished, so the straddle is reproduced on purpose rather than raced into.
+  straddle_scenario = TranscodeScenario.new(:straddle, transcode_root: transcodes)
+  $jellyfin_transcode_scenario = straddle_scenario
   begin
     assert_cpu_transcode("#{SECRET}-token", "item", "source")
-    failures << "retained TranscodingInfo was accepted after the segment request completed"
   rescue ContractFailure => error
-    check(failures,
-          error.message == "transcode session was observed only after the segment request completed",
-          "completed-request transcode diagnostic differs")
+    failures << "a transcode first observed after the segment completed was rejected: #{error.message}"
+  end
+  check(failures, straddle_scenario.observed_after_completion,
+        "the straddle case did not observe the session after the segment request completed")
+  check(failures, settle_threads(baseline_threads) == baseline_threads,
+        "the straddled observation leaked a segment worker thread")
+
+  # Relaxing *when* the session may be seen must not relax whether one was seen.
+  no_transcode_scenario = TranscodeScenario.new(:no_transcode, transcode_root: transcodes)
+  $jellyfin_transcode_scenario = no_transcode_scenario
+  begin
+    assert_cpu_transcode("#{SECRET}-token", "item", "source")
+    failures << "a playback that never reported a transcode was accepted"
+  rescue ContractFailure => error
+    check(failures, error.message == "no transcode session was reported for this playback",
+          "absent-transcode diagnostic differs")
   end
   check(failures, settle_threads(baseline_threads) == baseline_threads,
-        "the completed-request rejection leaked a segment worker thread")
+        "the absent-transcode rejection leaked a segment worker thread")
+
+  # With the timing guard gone, the proof-specific DeviceId is the only thing
+  # keeping somebody else's transcode out of this attempt's result.
+  foreign_scenario = TranscodeScenario.new(:foreign_device, transcode_root: transcodes)
+  $jellyfin_transcode_scenario = foreign_scenario
+  begin
+    assert_cpu_transcode("#{SECRET}-token", "item", "source")
+    failures << "another device's transcode session satisfied this attempt"
+  rescue ContractFailure => error
+    check(failures, error.message == "no transcode session was reported for this playback",
+          "foreign-session diagnostic differs")
+  end
+  check(failures, settle_threads(baseline_threads) == baseline_threads,
+        "the foreign-session rejection leaked a segment worker thread")
 
   failure_scenario = TranscodeScenario.new(:failure, transcode_root: transcodes)
   $jellyfin_transcode_scenario = failure_scenario
@@ -680,5 +780,5 @@ check(failures,
       File.readlines(VALIDATE_POLICY).include?("ruby tests/jellyfin_transcode_contract_test.rb\n"),
       "Jellyfin transcode regression is not registered in the policy suite")
 
-report(failures, "Jellyfin transcode contract regressions: unique reruns and active observation hold",
+report(failures, "Jellyfin transcode contract regressions: unique reruns and bounded observation hold",
        "Jellyfin transcode contract regression(s)")

@@ -65,8 +65,14 @@ module ClassifyChanges
   # tests/integration.sh never names them -- so no suite can observe a change to
   # one. The vault generator is the same shape: the suites build their sandbox
   # vault with tests/generate-ephemeral-vault.sh, which writes its own plaintext
-  # rather than running this playbook. renovate.json is read by
-  # tests/renovate_policy_test.rb and by no play at all.
+  # rather than running this playbook. The encrypted vault is the other half of
+  # that: tests/integration.sh installs the sandbox vault *over*
+  # inventory/group_vars/all/vault.yml before any play runs, so no suite ever
+  # reads the committed one, and the only check that opens it is
+  # tests/policy_vault_test.rb, which asserts it is still encrypted. Falling open
+  # to every lane was costing a full seventeen-suite matrix to re-prove that one
+  # line. renovate.json is read by tests/renovate_policy_test.rb and by no play
+  # at all.
   #
   # The documents are here for the same reason and not because they are
   # documentation: each one is read *by name* by a check that only the static job
@@ -93,6 +99,7 @@ module ClassifyChanges
     docs/media-acquisition-phase1.md
     generate-secrets.yml
     install-production-auto-deploy.yml
+    inventory/group_vars/all/vault.yml
     renovate.json
     templates/vault-plain.yml.j2
   ].freeze

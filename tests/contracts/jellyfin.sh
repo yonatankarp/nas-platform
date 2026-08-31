@@ -560,6 +560,13 @@ VIDEO_FIXTURE = (
 CLIENT = 'MediaBrowser Client="nas-platform-contract", Device="contract", ' \
          'DeviceId="nas-platform-jellyfin-contract", Version="1.0.0"'
 TRANSCODE_PROOF_TIMEOUT_SECONDS = 60
+# How much longer the proof keeps asking for its own session after the segment
+# request has returned. The segment *is* the transcoder's output, so the session
+# exists by the time the request completes -- but the poll that would have seen
+# it can straddle that completion. This window is strictly wider than the single
+# poll gap the proof used to allow, so it can only remove false failures, and it
+# is paid for only when no transcode is ever reported.
+TRANSCODE_OBSERVATION_GRACE_SECONDS = 10
 LIBRARY_RENAME_POLL_INTERVAL_SECONDS = 1
 
 def fail_contract(message)
@@ -1005,6 +1012,7 @@ def assert_cpu_transcode(token, item_id, source_id)
     end
   end
   transcode = nil
+  observation_deadline = nil
   begin
     segment_state_mutex.synchronize do
       until segment_started
@@ -1014,7 +1022,9 @@ def assert_cpu_transcode(token, item_id, source_id)
       end
     end
     loop do
-      error = segment_state_mutex.synchronize { segment_error }
+      error, active = segment_state_mutex.synchronize do
+        [segment_error, segment_in_progress]
+      end
       raise error if error
 
       session_query = URI.encode_www_form("deviceId" => device_id)
@@ -1022,17 +1032,28 @@ def assert_cpu_transcode(token, item_id, source_id)
         "get", "/Sessions?#{session_query}", token: token,
         deadline: deadline, timeout_message: "transcode proof timed out"
       )
+      # The DeviceId was invented by this attempt moments ago, so a session
+      # carrying it -- and any TranscodingInfo on it -- can only have been
+      # produced by this playback. *When* the poll catches it says nothing about
+      # whose it is, which is why the observation is not required to land while
+      # the segment request is still in flight.
       session = sessions.find { |candidate| candidate["DeviceId"] == device_id }
       transcode = session && session["TranscodingInfo"]
-      error, active = segment_state_mutex.synchronize do
-        [segment_error, segment_in_progress]
-      end
+      error = segment_state_mutex.synchronize { segment_error }
       raise error if error
-      if transcode
-        fail_contract("transcode session was observed only after the segment request completed") unless active
-        break
+      break if transcode
+
+      # Once the segment request is done the window has to end, or a playback
+      # that produced no transcode at all would poll until the whole proof
+      # timed out and blame the clock instead of the server.
+      unless active
+        observation_deadline ||= [
+          Process.clock_gettime(Process::CLOCK_MONOTONIC) + TRANSCODE_OBSERVATION_GRACE_SECONDS,
+          deadline
+        ].min
+        fail_contract("no transcode session was reported for this playback") if
+          Process.clock_gettime(Process::CLOCK_MONOTONIC) >= observation_deadline
       end
-      fail_contract("transcode session was observed only after the segment request completed") unless active
 
       fail_contract("transcode proof timed out") if
         Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
