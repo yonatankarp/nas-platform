@@ -620,6 +620,7 @@ prepull_images() {
   fi
   prepull_targets=$(sort -u "$prepull_list")
   cleanup_prepull_list
+  resolve_collision_image || return 1
   for pull_candidate in $prepull_targets; do
     # Whatever the controller runs from is already local, so skipping it here
     # saves a second registry round trip. On the toolchain path that is a ghcr.io
@@ -762,6 +763,37 @@ resolve_controller_image() {
   else
     printf 'could not build the controller toolchain; installing it in the run\n' >&2
   fi
+}
+
+# The media-control collision fixture starts its endpoints with --pull=never and
+# refuses an image that is not digest-pinned, so it needs a reference that is both
+# already local and named by digest. The controller image is local by
+# construction but not always named that way, so the two properties are resolved
+# separately here rather than assumed to coincide:
+#
+#   base-image fallback  the reference is the digest-pinned pin itself
+#   pulled toolchain     the daemon knows its registry digest, and using it costs
+#                        nothing this run has not already spent
+#   built toolchain      a locally built image has no registry digest at all, so
+#                        the fixture falls back to the base image -- which that
+#                        path has already pulled, or pulls here
+collision_image=
+resolve_collision_image() {
+  collision_image=$controller_image
+  case $collision_image in
+    *@sha256:*) return 0 ;;
+  esac
+  collision_digest=$(docker image inspect \
+    --format '{{if .RepoDigests}}{{index .RepoDigests 0}}{{end}}' \
+    "$controller_image" 2>/dev/null) || collision_digest=
+  case $collision_digest in
+    *@sha256:*)
+      collision_image=$collision_digest
+      return 0
+      ;;
+  esac
+  pull_image "$runner_image" || return 1
+  collision_image=$runner_image
 }
 
 # Publishes the image the suites pull. Runs in CI only: a build here is
@@ -1195,10 +1227,7 @@ docker run --rm \
   -e INTEGRATION_SUITE="$suite" \
   -e INTEGRATION_TAGS="$suite_tags" \
   -e INTEGRATION_RUN_SERVICE_SCENARIOS="$run_service_scenarios" \
-  `# The collision contract runs its endpoints with --pull=never, so it must be` \
-  `# handed an image this run has already made local rather than the base image,` \
-  `# which the toolchain path never pulls.` \
-  -e MEDIA_CONTROL_COLLISION_IMAGE="$controller_image" \
+  -e MEDIA_CONTROL_COLLISION_IMAGE="$collision_image" \
   -e INTEGRATION_TOOLCHAIN_PREINSTALLED="$toolchain_preinstalled" \
   -e PLATFORM_PAPERLESS_FIXTURE_PRESEEDED="$paperless_fixture_preseeded" \
   -e PLATFORM_KOMGA_FIXTURE_PRESEEDED="$komga_fixture_preseeded" \

@@ -760,7 +760,18 @@ cat > "$prepull_bin/docker" <<'EOF'
 set -eu
 # The controller image is resolved before anything is pulled: absent locally,
 # and -- unless the case says otherwise -- available from the registry.
+#
+# The formatted probe is the collision fixture asking for a registry digest. An
+# image this run pulled has one; an image built locally, which STUB_NO_REPO_DIGEST
+# stands in for, has none, and the fixture has to notice.
 if [ "${1:-}" = image ] && [ "${2:-}" = inspect ]; then
+  if [ "${3:-}" = --format ]; then
+    if [ "${STUB_NO_REPO_DIGEST:-false}" != true ] &&
+       grep -Fxq -- "${5:-}" "${STUB_PULL_LOG:?}" 2>/dev/null; then
+      printf '%s@sha256:%064d\n' "${5%%:*}" 0
+    fi
+    exit 0
+  fi
   exit 1
 fi
 if [ "${1:-}" = version ]; then
@@ -830,8 +841,8 @@ if grep -qF 'ruby:3.2-alpine' "$collision_test"; then
 fi
 [ "$(grep -Fc -- '--pull=never' "$collision_test")" -eq 2 ] ||
   prepull_fail 'both collision endpoints must explicitly refuse implicit pulls'
-grep -qF 'MEDIA_CONTROL_COLLISION_IMAGE="$controller_image"' "$integration" ||
-  prepull_fail 'the owning integration lane does not pass its pre-pulled controller image'
+grep -qF 'MEDIA_CONTROL_COLLISION_IMAGE="$collision_image"' "$integration" ||
+  prepull_fail 'the owning integration lane does not pass its pre-pulled fixture image'
 grep -qF '/repo/tests/media_control_network_collision_test.sh live' "$integration" ||
   prepull_fail 'the owning integration lane does not execute the live collision test'
 
@@ -900,6 +911,7 @@ run_prepull() {
     INTEGRATION_PREPULL_ONLY=1 \
     INTEGRATION_TOOLCHAIN=${PREPULL_TOOLCHAIN:-auto} \
     STUB_DENY_PREFIX=${PREPULL_DENY_PREFIX:-} \
+    STUB_NO_REPO_DIGEST=${PREPULL_NO_REPO_DIGEST:-false} \
     INTEGRATION_IMAGE_PULL_ATTEMPTS=$prepull_attempts \
     INTEGRATION_IMAGE_PULL_DELAY=${PREPULL_DELAY:-1} \
     INTEGRATION_IMAGE_PULL_MAX_DELAY=${PREPULL_MAX_DELAY:-60} \
@@ -1263,6 +1275,22 @@ assert_pull_count "$runner_image" 1
 assert_sleep_log ""
 grep -qF 'no controller toolchain at' "$prepull_output" ||
   prepull_fail "the fallback to the base image was not reported: $(cat "$prepull_output")"
+
+# The assignments above are prefixes on a function call, so POSIX leaves them set
+# in the caller. Clearing the denial is what stops the next case from proving
+# itself through the previous case's fallback instead of its own.
+unset PREPULL_DENY_PREFIX
+
+# A toolchain built here rather than pulled has no registry digest, and the
+# collision fixture refuses a reference without one. That case must fall back to
+# the digest-pinned base image -- the one the local-build path has already pulled
+# -- rather than failing the arr lane on the digest guard.
+PREPULL_NO_REPO_DIGEST=true run_prepull 0 4 --suite foundation
+[ "$prepull_status" -eq 0 ] ||
+  prepull_fail "a locally built toolchain failed the pre-pull ($prepull_status)"
+grep -qxF "$runner_image" "$pull_log" ||
+  prepull_fail 'a toolchain without a registry digest left the collision fixture unpinned'
+unset PREPULL_NO_REPO_DIGEST
 
 # And the operator's escape hatch has to reproduce exactly what the harness did
 # before the image existed: the base image, pulled from Docker Hub, and nothing

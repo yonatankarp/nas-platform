@@ -188,11 +188,20 @@ check(failures, !resolve_index.nil? && !service_skip_index.nil? && resolve_index
 check(failures, integration_body.include?("cleanup_sandbox_image=$controller_image"),
       "the sandbox teardown must reuse the resolved controller image: every lane " \
       "runs it, so leaving it on the base image restores a Docker Hub pull per lane")
-# Correctness rather than cost: tests/media_control_network_collision_test.sh runs
-# its endpoints with --pull=never, so an image the toolchain path never pulls
-# fails the arr lane outright.
-check(failures, integration_body.include?('MEDIA_CONTROL_COLLISION_IMAGE="$controller_image"'),
-      "the collision contract must be handed the image this run made local")
+# Correctness rather than cost. tests/media_control_network_collision_test.sh
+# starts its endpoints with --pull=never and refuses a reference that is not
+# digest-pinned, so it needs an image that is both local and named by digest.
+# Handing it the base image would fail the arr lane on a path that never pulls
+# one; handing it a locally built toolchain tag would fail the same lane on the
+# digest guard. Both properties are resolved rather than assumed.
+check(failures, integration_body.include?('MEDIA_CONTROL_COLLISION_IMAGE="$collision_image"'),
+      "the collision contract must be handed the resolved fixture image")
+check(failures,
+      integration_body.include?("resolve_collision_image || return 1") &&
+        integration_body.include?("{{if .RepoDigests}}{{index .RepoDigests 0}}{{end}}") &&
+        integration_body.include?("collision_image=$runner_image"),
+      "the collision fixture image must be resolved to a digest-pinned local " \
+      "image, falling back to the base image a local build already pulled")
 check(failures,
       integration_body.include?('[ \\"\\$INTEGRATION_TOOLCHAIN_PREINSTALLED\\" != true ]') &&
         integration_body.include?('-e INTEGRATION_TOOLCHAIN_PREINSTALLED="$toolchain_preinstalled"'),
