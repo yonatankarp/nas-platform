@@ -1,0 +1,185 @@
+---
+# Verification. Every task here carries platform_verify_audiobookshelf, which is
+# how verify.yml reaches them while the role itself is tagged never.
+- name: Authenticate to Audiobookshelf for exact verification
+  tags: [platform_verify_audiobookshelf]
+  ansible.builtin.uri:
+    url: "{{ audiobookshelf_api }}/login"
+    method: POST
+    body_format: json
+    body:
+      username: "{{ vault_audiobookshelf_admin_username }}"
+      password: "{{ vault_audiobookshelf_admin_password }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: audiobookshelf_verify_login
+  when:
+    - not ansible_check_mode
+    - audiobookshelf_reconcile_token is not defined
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Resolve sanitized Audiobookshelf verification authentication response
+  tags: [platform_verify_audiobookshelf]
+  ansible.builtin.set_fact:
+    audiobookshelf_verify_login_status: "{{ audiobookshelf_verify_login.status | default(0) | int }}"
+    audiobookshelf_verify_login_kind: >-
+      {% set media_type = audiobookshelf_verify_login.content_type
+         | default('') | lower | regex_replace(';.*$', '') | trim %}
+      {{ 'json' if media_type == 'application/json' or media_type is match('^application/.+[+]json$')
+         else 'text' if media_type is match('^text/')
+         else 'binary' if media_type is match('^(audio/|application/octet-stream$)')
+         else 'other' }}
+  when:
+    - not ansible_check_mode
+    - audiobookshelf_reconcile_token is not defined
+  no_log: true
+
+- name: Refuse unavailable Audiobookshelf administrator authentication during verification
+  tags: [platform_verify_audiobookshelf]
+  ansible.builtin.assert:
+    that:
+      - audiobookshelf_verify_login_status | int != 401
+    fail_msg: >-
+      Managed Audiobookshelf administrator cannot authenticate. Pinned Audiobookshelf 2.36.0
+      exposes no unauthenticated API path to reactivate an inactive root; verify vault credentials
+      or reactivate it through an already-authorized root session, then rerun.
+  when:
+    - not ansible_check_mode
+    - audiobookshelf_reconcile_token is not defined
+
+- name: Refuse unexpected Audiobookshelf administrator authentication responses during verification
+  tags: [platform_verify_audiobookshelf]
+  ansible.builtin.assert:
+    that:
+      - audiobookshelf_verify_login_status | int == 200
+    fail_msg: >-
+      Audiobookshelf administrator authentication returned an unexpected sanitized response
+      (status={{ audiobookshelf_verify_login_status | int }},
+      content={{ audiobookshelf_verify_login_kind }}).
+  when:
+    - not ansible_check_mode
+    - audiobookshelf_reconcile_token is not defined
+
+- name: Resolve the Audiobookshelf verification token
+  tags: [platform_verify_audiobookshelf]
+  ansible.builtin.set_fact:
+    audiobookshelf_verification_token: >-
+      {{ audiobookshelf_reconcile_token
+         if audiobookshelf_reconcile_token is defined
+         else audiobookshelf_verify_login.json.user.accessToken }}
+  when: not ansible_check_mode
+  no_log: true
+
+- name: Resolve desired Audiobookshelf server settings for verification
+  tags: [platform_verify_audiobookshelf]
+  ansible.builtin.set_fact:
+    audiobookshelf_desired_server_settings_for_verification: >-
+      {{ audiobookshelf_owned_server_settings |
+         combine({
+           'backupPath': audiobookshelf_backup_container_path,
+           'backupSchedule': audiobookshelf_backup_cron,
+           'backupsToKeep': audiobookshelf_backup_retention
+         }) }}
+  when: not ansible_check_mode
+
+- name: Re-authorize for exact Audiobookshelf server settings verification
+  tags: [platform_verify_audiobookshelf]
+  ansible.builtin.uri:
+    url: "{{ audiobookshelf_api }}/api/authorize"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ audiobookshelf_verification_token }}"
+    status_code: [200]
+    return_content: true
+  register: audiobookshelf_verified_server_settings_response
+  when: not ansible_check_mode
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require exact managed Audiobookshelf server settings
+  tags: [platform_verify_audiobookshelf]
+  ansible.builtin.assert:
+    that:
+      - audiobookshelf_verified_server_settings_response.json is mapping
+      - audiobookshelf_verified_server_settings_response.json.serverSettings is mapping
+      - audiobookshelf_verified_server_settings_response.json.serverSettings.timeZone == 'Europe/Berlin'
+      - dict(audiobookshelf_desired_server_settings_for_verification.keys() |
+             zip(audiobookshelf_desired_server_settings_for_verification.keys() |
+                 map('extract', audiobookshelf_verified_server_settings_response.json.serverSettings))) ==
+        audiobookshelf_desired_server_settings_for_verification
+    fail_msg: >-
+      The managed Audiobookshelf server settings or library are absent, duplicated,
+      surplus, or drifted.
+  when: not ansible_check_mode
+
+- name: Verify managed Audiobookshelf users
+  tags: [platform_verify_audiobookshelf]
+  ansible.builtin.include_tasks:
+    file: managed_users.yml
+    apply:
+      tags: [platform_verify_audiobookshelf]
+  vars:
+    audiobookshelf_managed_users_phase: verify
+    audiobookshelf_managed_users_token: "{{ audiobookshelf_verification_token }}"
+  when: not ansible_check_mode
+
+- name: Read exact Audiobookshelf users and libraries
+  tags: [platform_verify_audiobookshelf]
+  ansible.builtin.uri:
+    url: "{{ audiobookshelf_api }}/api/{{ item }}"
+    headers:
+      Authorization: "Bearer {{ audiobookshelf_verification_token }}"
+    return_content: true
+  loop: [users, libraries]
+  register: audiobookshelf_verify_state
+  when: not ansible_check_mode
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+# Redacted: results[0] is the complete user listing, which carries
+# vault_audiobookshelf_admin_username and every managed username.
+- name: Resolve exact Audiobookshelf verification state
+  tags: [platform_verify_audiobookshelf]
+  ansible.builtin.set_fact:
+    audiobookshelf_verified_users: "{{ audiobookshelf_verify_state.results[0].json.users }}"
+    audiobookshelf_verified_libraries: "{{ audiobookshelf_verify_state.results[1].json.libraries }}"
+  when: not ansible_check_mode
+  no_log: true
+
+- name: Require exactly the managed Audiobookshelf administrator
+  tags: [platform_verify_audiobookshelf]
+  ansible.builtin.assert:
+    that:
+      - audiobookshelf_verified_admins | length == 1
+      - audiobookshelf_verified_admins[0].type == 'root'
+      - audiobookshelf_verified_admins[0].isActive
+    fail_msg: The vault-named Audiobookshelf administrator is absent, duplicated, or drifted.
+  vars:
+    audiobookshelf_verified_admins: >-
+      {{ audiobookshelf_verified_users
+         | selectattr('username', 'equalto', vault_audiobookshelf_admin_username) | list }}
+  when: not ansible_check_mode
+
+- name: Require exactly the managed Audiobookshelf library
+  tags: [platform_verify_audiobookshelf]
+  ansible.builtin.assert:
+    that:
+      - audiobookshelf_verified_libraries | length == 1
+      - audiobookshelf_verified_library | length == 1
+      - audiobookshelf_verified_library[0].mediaType == audiobookshelf_library_media_type
+      - audiobookshelf_verified_library[0].provider == audiobookshelf_library_provider
+      - audiobookshelf_verified_library[0].icon == audiobookshelf_library_icon
+      - audiobookshelf_verified_library[0].settings == audiobookshelf_library_settings
+      - audiobookshelf_verified_library[0].folders | map(attribute='fullPath') | list ==
+        audiobookshelf_library_folders | map(attribute='path') | list
+    fail_msg: The managed Audiobookshelf library is absent, duplicated, surplus, or drifted.
+  vars:
+    audiobookshelf_verified_library: >-
+      {{ audiobookshelf_verified_libraries
+         | selectattr('name', 'equalto', audiobookshelf_library_name) | list }}
+  when: not ansible_check_mode

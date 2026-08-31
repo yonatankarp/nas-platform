@@ -322,7 +322,8 @@ PAPERLESS_MAC_COMPOSE = "services/paperless-ngx/compose.mac.yml"
 GENERATOR = "generate-secrets.yml"
 BESZEL_VARS = "roles/beszel/vars/main.yml"
 BESZEL_ROLE = "roles/beszel/tasks/main.yml"
-AUDIOBOOKSHELF_ROLE = "roles/audiobookshelf/tasks/main.yml"
+AUDIOBOOKSHELF_MAIN = "roles/audiobookshelf/tasks/main.yml"
+AUDIOBOOKSHELF_VERIFY = "roles/audiobookshelf/tasks/verify.yml"
 AUDIOBOOKSHELF_ENVIRONMENT = "roles/audiobookshelf/templates/env.j2"
 IMMICH_ROLE = "roles/immich/tasks/main.yml"
 IMMICH_RESTORE = "roles/immich/tasks/restore.yml"
@@ -978,9 +979,25 @@ check_rejected(
   "backup environment is absent"
 )
 
+# The role is one stage per file, and main.yml imports each stage statically.
+# That is not a formatting choice: verify.yml lists this role with tags: [never],
+# and only a static import carries that inherited tag -- alongside each task's own
+# platform_verify_audiobookshelf -- down into the stage, so a stage demoted to a
+# dynamic include would be skipped before its file was read. It is also what lets
+# every check above see the whole role: static_role_tasks follows an import and
+# deliberately does not follow an include, so the demotion removes the stage from
+# the role this contract inspects rather than quietly passing on a shorter list.
+check_rejected(
+  failures, :audiobookshelf, "a verification stage demoted to a dynamic include",
+  [[AUDIOBOOKSHELF_MAIN,
+    "  ansible.builtin.import_tasks: verify.yml\n",
+    "  ansible.builtin.include_tasks: verify.yml\n"]],
+  "missing Require exactly the managed Audiobookshelf administrator"
+)
+
 check_rejected(
   failures, :audiobookshelf, "a required task that survives only as a comment",
-  [[AUDIOBOOKSHELF_ROLE,
+  [[AUDIOBOOKSHELF_VERIFY,
     "- name: Require exactly the managed Audiobookshelf library\n",
     "# - name: Require exactly the managed Audiobookshelf library\n" \
     "- name: Require exactly the managed Audiobookshelf libraries\n"]],

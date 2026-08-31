@@ -1,0 +1,55 @@
+---
+# The library inventory. Reads every library, resolves the managed one and its
+# folder paths, and refuses an ambiguous or unsafe identifier before anything
+# downstream mutates on it.
+- name: List Audiobookshelf libraries for reconciliation
+  ansible.builtin.uri:
+    url: "{{ audiobookshelf_api }}/api/libraries"
+    headers:
+      Authorization: "Bearer {{ audiobookshelf_reconcile_token }}"
+    return_content: true
+  register: audiobookshelf_libraries_before
+  when: not ansible_check_mode or audiobookshelf_initialized | bool
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Resolve Audiobookshelf libraries and managed IDs
+  ansible.builtin.set_fact:
+    audiobookshelf_libraries: >-
+      {{ audiobookshelf_libraries_before.json.libraries
+         if (not ansible_check_mode or audiobookshelf_initialized | bool) else [] }}
+    audiobookshelf_managed_library_ids: >-
+      {{ (audiobookshelf_libraries_before.json.libraries
+          | selectattr('name', 'equalto', audiobookshelf_library_name)
+          | map(attribute='id') | map('string') | sort)
+         if (not ansible_check_mode or audiobookshelf_initialized | bool) else [] }}
+
+- name: Require safe managed Audiobookshelf library IDs
+  ansible.builtin.assert:
+    that:
+      - audiobookshelf_managed_library_ids
+        | reject('match', '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$')
+        | list | length == 0
+    fail_msg: Managed Audiobookshelf library contains an unsafe API identifier.
+
+- name: Refuse duplicate managed Audiobookshelf libraries
+  ansible.builtin.assert:
+    that:
+      - audiobookshelf_managed_library_ids | length <= 1
+    fail_msg: >-
+      Managed Audiobookshelf library identity is duplicated at safe IDs:
+      {{ audiobookshelf_managed_library_ids | join(', ') }}
+
+- name: Resolve the existing managed Audiobookshelf library
+  ansible.builtin.set_fact:
+    audiobookshelf_existing_library: >-
+      {{ audiobookshelf_libraries
+         | selectattr('name', 'equalto', audiobookshelf_library_name)
+         | list | first | default({}) }}
+
+- name: Resolve existing Audiobookshelf library folder paths
+  ansible.builtin.set_fact:
+    audiobookshelf_existing_library_paths: >-
+      {{ audiobookshelf_existing_library.folders | default([])
+         | map(attribute='fullPath') | list }}

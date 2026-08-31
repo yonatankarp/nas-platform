@@ -1,0 +1,87 @@
+---
+# The administrator record. The bootstrap above proves an administrator exists;
+# this proves it is exactly the vault-named one, and repairs its non-secret
+# properties when it is not.
+- name: List Audiobookshelf administrators for reconciliation
+  ansible.builtin.uri:
+    url: "{{ audiobookshelf_api }}/api/users"
+    headers:
+      Authorization: "Bearer {{ audiobookshelf_reconcile_token }}"
+    return_content: true
+  register: audiobookshelf_users_before
+  when: not ansible_check_mode or audiobookshelf_initialized | bool
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Resolve managed Audiobookshelf administrator IDs
+  ansible.builtin.set_fact:
+    audiobookshelf_managed_admin_ids: >-
+      {{ (audiobookshelf_users_before.json.users
+          | selectattr('username', 'equalto', vault_audiobookshelf_admin_username)
+          | map(attribute='id') | map('string') | sort)
+         if (not ansible_check_mode or audiobookshelf_initialized | bool) else [] }}
+  no_log: true
+
+- name: Require safe managed Audiobookshelf administrator IDs
+  ansible.builtin.assert:
+    that:
+      - audiobookshelf_managed_admin_ids
+        | reject('match', '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$')
+        | list | length == 0
+    fail_msg: Managed Audiobookshelf administrator contains an unsafe API identifier.
+
+- name: Refuse duplicate managed Audiobookshelf administrators
+  ansible.builtin.assert:
+    that:
+      - audiobookshelf_managed_admin_ids | length <= 1
+    fail_msg: >-
+      Managed Audiobookshelf administrator is duplicated at safe IDs:
+      {{ audiobookshelf_managed_admin_ids | join(', ') }}
+
+- name: Require the initialized vault-named Audiobookshelf administrator
+  ansible.builtin.assert:
+    that:
+      - audiobookshelf_managed_admin_ids | length == 1
+    fail_msg: The initialized Audiobookshelf server does not contain the vault-named administrator.
+  when: not ansible_check_mode or audiobookshelf_initialized | bool
+
+- name: Resolve the managed Audiobookshelf administrator
+  ansible.builtin.set_fact:
+    audiobookshelf_existing_admin: >-
+      {{ (audiobookshelf_users_before.json.users
+          | selectattr('username', 'equalto', vault_audiobookshelf_admin_username)
+          | list | first)
+         if (not ansible_check_mode or audiobookshelf_initialized | bool) else {} }}
+  no_log: true
+
+- name: Resolve Audiobookshelf administrator repair requirement
+  ansible.builtin.set_fact:
+    audiobookshelf_admin_repair_required: >-
+      {{ audiobookshelf_existing_admin | length > 0 and
+         audiobookshelf_existing_admin.type != 'root' }}
+  no_log: true
+
+- name: Report planned Audiobookshelf administrator repair
+  ansible.builtin.debug:
+    msg: AUDIOBOOKSHELF_PLAN_ADMIN_REPAIR
+  when:
+    - ansible_check_mode
+    - audiobookshelf_admin_repair_required | bool
+  changed_when: true
+
+- name: Repair the managed Audiobookshelf administrator
+  ansible.builtin.uri:
+    url: "{{ audiobookshelf_api }}/api/users/{{ audiobookshelf_existing_admin.id }}"
+    method: PATCH
+    headers:
+      Authorization: "Bearer {{ audiobookshelf_reconcile_token }}"
+    body_format: json
+    body:
+      type: root
+    status_code: [200]
+  when:
+    - not ansible_check_mode
+    - audiobookshelf_admin_repair_required | bool
+  changed_when: true
+  no_log: true
