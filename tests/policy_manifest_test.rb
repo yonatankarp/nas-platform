@@ -24,7 +24,7 @@ end
   "wrong status-map type" => [[], "service statuses must be a mapping"],
   "invalid status-map value" => [valid_statuses.merge("arr" => ["planned"]),
                                  "must be planned, implemented, or accepted"],
-  "implemented service with empty vault list" => [valid_statuses.merge("bindery" => "implemented"),
+  "implemented service with empty vault list" => [valid_statuses.merge("trailarr" => "implemented"),
                                                    "vault_keys must be a nonempty list"]
 }.each do |label, (statuses, diagnostic)|
   _expectations, problems = pinned_service_expectations(ROOT, statuses)
@@ -469,8 +469,8 @@ expect_failure(failures, "duplicate manifest service", "service manifest name va
 end
 
 expect_failure(failures, "planned service promoted without vault contract",
-               "tests/expected/bindery.yml vault_keys must be a nonempty list") do |root|
-  mutate_manifest(root) { |document| service(document, "bindery")["status"] = "implemented" }
+               "tests/expected/trailarr.yml vault_keys must be a nonempty list") do |root|
+  mutate_manifest(root) { |document| service(document, "trailarr")["status"] = "implemented" }
 end
 
 expect_failure(failures, "second acquisition job",
@@ -584,17 +584,17 @@ end
 
 expect_acquisition_failure.call(
   "planned acquisition source published prematurely",
-  "planned service tree exists prematurely: services/bindery"
+  "planned service tree exists prematurely: services/trailarr"
 ) do |root|
-  FileUtils.mkdir_p(File.join(root, "services", "bindery"))
+  FileUtils.mkdir_p(File.join(root, "services", "trailarr"))
 end
 
 {
   "dangling planned acquisition role" => [
-    "roles/bindery", "planned role tree exists prematurely: roles/bindery"
+    "roles/trailarr", "planned role tree exists prematurely: roles/trailarr"
   ],
   "dangling planned acquisition service" => [
-    "services/bindery", "planned service tree exists prematurely: services/bindery"
+    "services/trailarr", "planned service tree exists prematurely: services/trailarr"
   ]
 }.each do |label, (relative_path, diagnostic)|
   expect_acquisition_failure.call(label, diagnostic) do |root|
@@ -606,9 +606,9 @@ end
 
 expect_acquisition_failure.call(
   "planned acquisition project promoted prematurely",
-  "bindery must be planned in the service manifest"
+  "trailarr must be planned in the service manifest"
 ) do |root|
-  mutate_manifest(root) { |document| service(document, "bindery")["status"] = "implemented" }
+  mutate_manifest(root) { |document| service(document, "trailarr")["status"] = "implemented" }
 end
 
 run_foundation_wrapper = lambda do |filename:, mode: 0o755, mutate: nil, ruby_selection: nil,

@@ -32,7 +32,7 @@ services:
     status: implemented
   - name: bindery
     role: bindery
-    status: planned
+    status: implemented
   - name: kapowarr
     role: kapowarr
     status: implemented

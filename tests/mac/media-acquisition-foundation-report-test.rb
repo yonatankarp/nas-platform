@@ -55,6 +55,7 @@ def report_input
     "sabnzbd_port" => 38_082,
     "pinchflat_port" => 38_945,
     "kapowarr_port" => 35_656,
+    "bindery_port" => 38_787,
     "git_revision" => "abc123",
     "vault_checksum" => "0" * 64,
     "diagnostic_locations" => [],

@@ -104,7 +104,7 @@ run_enabled_idempotence() {
 
 # One launcher for every contract. The environment ABI every contract reads
 # is written once here and a service's extras arrive as a case arm, so the
-# nine wrappers below carry only the name they run under. Each layer is
+# ten wrappers below carry only the name they run under. Each layer is
 # prepended onto the positional parameters rather than pasted into an
 # unquoted string, so every path stays one word however it is spelled.
 run_contract() {
@@ -127,6 +127,14 @@ run_contract() {
       ;;
     kapowarr|pinchflat)
       set -- PLATFORM_PROJECT_NAME="$integration_project_namespace" \
+        "$@"
+      ;;
+    bindery)
+      # The lane converges arr and downloaders with the transport enabled, so
+      # Prowlarr and SABnzbd are resolvable by name and both of Bindery's
+      # integration rows are expected to exist.
+      set -- PLATFORM_PROJECT_NAME="$integration_project_namespace" \
+        PLATFORM_BINDERY_USENET=true \
         "$@"
       ;;
     jellyfin)
@@ -185,6 +193,10 @@ run_audiobookshelf_contract() {
 
 run_komga_contract() {
   run_contract komga "$@"
+}
+
+run_bindery_contract() {
+  run_contract bindery "$@"
 }
 
 run_kapowarr_contract() {
@@ -437,6 +449,10 @@ run_arr_verify_only() {
 
 run_downloaders_verify_only() {
   run_verification downloaders
+}
+
+run_bindery_verify_only() {
+  run_verification bindery
 }
 
 run_kapowarr_verify_only() {

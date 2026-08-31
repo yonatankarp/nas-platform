@@ -93,6 +93,16 @@
     - role: downloaders
       tags: [downloaders, media, media_acquisition_phase1]
 
+    # Bindery is the first Phase 2 project that genuinely consumes platform
+    # APIs: it stores a Prowlarr instance and a SABnzbd download client, and it
+    # resolves the host in both URLs at write time, so neither row can be
+    # written until those two containers are up on media-control. That is why it
+    # converges after arr and downloaders rather than beside Kapowarr and
+    # Pinchflat. Audiobookshelf and Komga have already converged above and read
+    # the two libraries it writes from disk.
+    - role: bindery
+      tags: [bindery, media, media_acquisition_phase2]
+
     # Kapowarr is self-contained in the same way: it consumes no platform API,
     # and Komga reads the comics library it writes from disk. Komga has already
     # converged above, so the library root it scans exists before Kapowarr

@@ -307,6 +307,7 @@ immich immich
 paperless paperless-ngx
 arr arr
 downloaders downloaders
+bindery bindery
 kapowarr kapowarr
 pinchflat pinchflat
 '
@@ -552,7 +553,6 @@ suite_pull_images() {
         *",$service_tag,"*) ;;
         *)
           case "$suite:$service_tag" in
-            bindery:ntfy|bindery:audiobookshelf|bindery:jellyfin|\
             trailarr:ntfy|trailarr:audiobookshelf|trailarr:jellyfin|\
             seerr:ntfy|seerr:audiobookshelf|seerr:jellyfin) ;;
             *) continue ;;
@@ -1367,7 +1367,7 @@ docker run --rm \
     integration_media_usenet_enabled=false
     integration_media_adopt_existing=false
     case "\$INTEGRATION_SUITE" in
-      arr|downloaders)
+      arr|downloaders|bindery)
         integration_media_usenet_enabled=true
         integration_media_adopt_existing=true
         ;;
@@ -1712,7 +1712,7 @@ EOF
       /repo /repo/services/manifest.yml nas integration '$expected_release_id'
 
     case "\$INTEGRATION_SUITE" in
-      bindery|trailarr|seerr)
+      trailarr|seerr)
         /repo/tests/contracts/"\$INTEGRATION_SUITE"-foundation.sh static
         converge_media_acquisition_reader_prerequisites
         run_media_acquisition_foundation_verify
@@ -1741,6 +1741,19 @@ EOF
       run_enabled_idempotence arr,downloaders
       run_play --tags arr,downloaders --check --diff
       printf 'DOWNLOADERS_PHASE1_RUNTIME_VERIFIED\n'
+      cleanup_vault
+      exit 0
+    fi
+
+    if [ "\$INTEGRATION_SUITE" = bindery ]; then
+      /repo/tests/contracts/arr.sh static
+      /repo/tests/contracts/downloaders.sh static
+      /repo/tests/contracts/bindery.sh static
+      run_bindery_contract run
+      run_bindery_verify_only
+      run_enabled_idempotence arr,downloaders,bindery
+      run_play --tags arr,downloaders,bindery --check --diff
+      printf 'BINDERY_PHASE2_RUNTIME_VERIFIED\n'
       cleanup_vault
       exit 0
     fi

@@ -133,7 +133,7 @@ projects:
         compose_profile: torrent
   bindery:
     role: bindery
-    status: planned
+    status: implemented
     services:
       bindery:
         class: long_running

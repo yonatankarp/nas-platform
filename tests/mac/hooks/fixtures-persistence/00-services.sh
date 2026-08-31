@@ -14,13 +14,13 @@ mac_script_dir=$(CDPATH= cd -- "$mac_hook_dir/../.." && pwd -P)
 # Beszel and Dozzle reassert through verify: their persisted state is the
 # telemetry and the alert-relay state the verify phase already polls. Pinchflat
 # reasserts through run for the same reason: it seeds no fixture, and its
-# persisted state is the database that phase already reads. Kapowarr is the
-# same shape.
+# persisted state is the database that phase already reads. Kapowarr and
+# Bindery are the same shape.
 mac_persisted=
 for mac_persistence_entry in beszel:verify dozzle:verify \
     audiobookshelf:assert-persistence komga:assert-persistence \
     jellyfin:assert-persistence \
-    immich:assert-persistence pinchflat:run kapowarr:run; do
+    immich:assert-persistence pinchflat:run kapowarr:run bindery:run; do
   mac_persistence_service=${mac_persistence_entry%%:*}
   "$mac_script_dir/run-contract.sh" "$mac_persistence_service" "${mac_persistence_entry#*:}"
   mac_persisted="$mac_persisted$mac_persistence_service

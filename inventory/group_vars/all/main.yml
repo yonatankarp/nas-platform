@@ -151,6 +151,7 @@ nas_storage:
     mode: "0755"
     recovery: user
     media_acquisition_foundation: true
+    media_acquisition_writer: true
 
   # Komga. Application configuration is critical state; books remain NAS-owned
   # user media and are mounted read-only by the service.
@@ -188,6 +189,7 @@ nas_storage:
     mode: "0755"
     recovery: user
     media_acquisition_foundation: true
+    media_acquisition_writer: true
   - path: "{{ nas_media_root }}/Books/Comics"
     mode: "0755"
     recovery: user
