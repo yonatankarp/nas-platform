@@ -53,6 +53,7 @@ from vault_credential_schema import (  # noqa: E402
     OPENSUBTITLES_USERNAME_PLACEHOLDERS,
     OPENSSH_PRIVATE_KEY_MARKER,
     PATTERN,
+    SEARCH,
     SSH_ED25519_PUBLIC_KEY,
     UUID,
     vault_credential_errors,
@@ -147,11 +148,21 @@ FOUNDATION_USERNAMES = FOUNDATION_KEYS[1::3]
 FOUNDATION_PASSWORDS = FOUNDATION_KEYS[2::3]
 NTFY_DISTINCT_KEYS = DISTINCT_KEY_GROUPS[0]
 
+# Bazarr's settings form is the only place a vault API key is cast with `int()`,
+# and `acquisition_bazarr_connection_body` submits exactly these two. The other
+# API keys never reach that cast, so requiring a letter of them would refuse a
+# vault that deploys.
+BAZARR_SUBMITTED_API_KEYS = ("vault_arr_radarr_api_key", "vault_arr_sonarr_api_key")
+ALL_DIGIT_KEY = "1" * 32
+
 
 def _valid_value(key, rules):
     """Build the accepted value for one credential from its own rules."""
     if key in FOUNDATION_API_KEYS:
-        return format(FOUNDATION_API_KEYS.index(key), "032x")
+        # Leading "a" rather than a bare index: the two keys this platform
+        # submits to Bazarr must carry at least one a-f character, and an index
+        # rendered as 32 hex digits carries none.
+        return "a" + format(FOUNDATION_API_KEYS.index(key), "031x")
     if key in FOUNDATION_PASSWORDS:
         return f"foundation-password-{FOUNDATION_PASSWORDS.index(key)}"
     if key in NTFY_DISTINCT_KEYS:
@@ -441,6 +452,33 @@ class VaultCredentialSchemaTest(unittest.TestCase):
                 with self.subTest(key):
                     self.assertIn(f"{key}: does not match the required format",
                                   errors_for(**{key: MALFORMED[argument.pattern]}))
+
+    def test_only_the_bazarr_submitted_api_keys_require_a_hex_letter(self):
+        # Pinned rather than derived: widening the rule to a key Bazarr never
+        # sees would refuse a vault that deploys today, so it has to be a
+        # deliberate edit here as well as in the table.
+        carrying = tuple(key for key, rules in CREDENTIAL_RULES.items()
+                         if any(kind == SEARCH for kind, _ in rules))
+        self.assertEqual(carrying, BAZARR_SUBMITTED_API_KEYS)
+
+    def test_the_bazarr_submitted_api_keys_reject_an_all_digit_value(self):
+        for key in BAZARR_SUBMITTED_API_KEYS:
+            with self.subTest(key):
+                errors = errors_for(**{key: ALL_DIGIT_KEY})
+                self.assertIn(key, keys_named(errors))
+                self.assertTrue(
+                    any(error.startswith(f"{key}: must contain at least one a-f")
+                        for error in errors),
+                    errors,
+                )
+
+    def test_the_other_api_keys_accept_an_all_digit_value(self):
+        for key in FOUNDATION_API_KEYS:
+            if key in BAZARR_SUBMITTED_API_KEYS:
+                continue
+            with self.subTest(key):
+                self.assertEqual(errors_for(**{key: ALL_DIGIT_KEY}), [])
+        self.assertEqual(errors_for(vault_bindery_api_key=ALL_DIGIT_KEY), [])
 
     def test_the_jellyfin_administrator_username_is_pinned(self):
         for wrong in ("yonatan", "YONATAN", f" {JELLYFIN_ADMIN_USERNAME}",

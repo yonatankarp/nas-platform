@@ -69,6 +69,57 @@ BAZARR_STRING_SETTINGS = {
 }
 
 
+# Bazarr answers a settings POST it cannot validate with 406 and dynaconf's own
+# message, whose format is `default_messages`: "{name} must {operation}
+# {op_value} but it is {value}". Everything before the first " must " is the
+# setting's name and the value only ever appears after it, so splitting there is
+# what makes a 406 printable: for `sonarr.apikey` the rejected value *is* the
+# credential, and `roles/arr/tasks/reconcile_bazarr.yml` runs its requests under
+# `no_log` precisely so it never reaches a log.
+BAZARR_REJECTION_SEPARATOR = " must "
+
+# What a body that does not carry that message is reported as. Naming nothing is
+# the safe answer, because anything else would be echoing an unrecognised body
+# whose contents are unknown.
+BAZARR_REJECTION_WITHHELD = "an unnamed setting (Bazarr's response was withheld)"
+
+# dynaconf names a setting with dotted, bracketed identifier tokens. Taking the
+# trailing run of them survives a body that wraps the message — `{"error":
+# "sonarr.apikey must ...` yields `sonarr.apikey` — and reports nothing when the
+# prefix does not end in a name at all.
+_BAZARR_REJECTED_NAME = re.compile(r"[A-Za-z0-9_.\[\]-]+\Z")
+
+
+def acquisition_bazarr_rejected_settings(value: Any) -> list[str]:
+    """Name the settings a Bazarr 406 rejected, never echoing their values.
+
+    `value` is one response body or a sequence of them. The result is the
+    setting names in first-seen order, with `BAZARR_REJECTION_WITHHELD` standing
+    for every body that does not carry a dynaconf validation message. It is safe
+    to print from a `fail_msg` because nothing after the first " must " is read.
+    """
+    if isinstance(value, (str, bytes, bytearray)):
+        bodies: list[Any] = [value]
+    elif isinstance(value, (list, tuple)):
+        bodies = list(value)
+    else:
+        bodies = [value]
+
+    named: list[str] = []
+    for body in bodies:
+        if isinstance(body, (bytes, bytearray)):
+            body = body.decode("utf-8", "replace")
+        if isinstance(body, str) and BAZARR_REJECTION_SEPARATOR in body:
+            prefix = body.split(BAZARR_REJECTION_SEPARATOR, 1)[0].strip()
+            match = _BAZARR_REJECTED_NAME.search(prefix)
+            name = match.group(0) if match else BAZARR_REJECTION_WITHHELD
+        else:
+            name = BAZARR_REJECTION_WITHHELD
+        if name not in named:
+            named.append(name)
+    return named
+
+
 def _provider_desired_value(value: Any, label: str, setting_name: str) -> Any:
     value = _safe_setting_value(value, label)
     if isinstance(value, list):
@@ -601,4 +652,5 @@ class FilterModule:
                 acquisition_bazarr_projection_differences
             ),
             "acquisition_bazarr_connection_body": acquisition_bazarr_connection_body,
+            "acquisition_bazarr_rejected_settings": acquisition_bazarr_rejected_settings,
         }

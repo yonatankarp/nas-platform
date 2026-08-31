@@ -27,10 +27,16 @@ vault_komga_admin_password: example-password
 
 # Acquisition-service API keys are distinct 32-character lowercase hexadecimal
 # values. Administrator passwords are also distinct across these five services.
-vault_arr_radarr_api_key: "00000000000000000000000000000000"
+# The Radarr and Sonarr keys carry one further rule, because those two are the
+# ones POSTed to Bazarr's settings form: they must contain at least one a-f
+# character, which is why they end in one here. Bazarr casts every submitted
+# value with int() unless the last dash-segment of its key is one of config.py's
+# str_keys -- `apikey` is not -- so a key of only decimal digits fails the
+# schema's is_type_of str and Bazarr answers 406 for as long as it is deployed.
+vault_arr_radarr_api_key: "0000000000000000000000000000000a"
 vault_arr_radarr_admin_username: nasadmin
 vault_arr_radarr_admin_password: example-radarr-password
-vault_arr_sonarr_api_key: "11111111111111111111111111111111"
+vault_arr_sonarr_api_key: "1111111111111111111111111111111a"
 vault_arr_sonarr_admin_username: nasadmin
 vault_arr_sonarr_admin_password: example-sonarr-password
 vault_arr_prowlarr_api_key: "22222222222222222222222222222222"

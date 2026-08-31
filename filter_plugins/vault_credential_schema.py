@@ -52,6 +52,16 @@ BCRYPT_HASH = re.compile(r"^\$2[aby]\$[0-9]{2}\$[./A-Za-z0-9]{53}$")
 DATABASE_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
 EMAIL = re.compile(r"^[^@ ]+@[^@ ]+$")
 HEX_32 = re.compile(r"^[0-9a-f]{32}\Z")
+
+# Two of the hex API keys are submitted to Bazarr's settings form, and Bazarr
+# 1.6.0's `save_settings` casts every submitted string with `int()` unless the
+# last dash-segment of its key is one of `app/config.py`'s `str_keys` -- `apikey`
+# is not one. dynaconf then validates the whole schema, so a key of only decimal
+# digits arrives as an `int`, fails `is_type_of str`, and the request is answered
+# 406 for as long as that key is deployed. `openssl rand -hex 16` draws such a
+# key about once in 3e-7, but the operator also mints these by hand, and this is
+# the only place that sees a hand-authored one before it deploys.
+HEX_LETTER = re.compile(r"[a-f]")
 NTFY_TOKEN = re.compile(r"^tk_[a-z0-9]{29}$")
 SSH_ED25519_PUBLIC_KEY = re.compile(r"^ssh-ed25519 [A-Za-z0-9+/]+={0,3}$")
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}"
@@ -84,6 +94,7 @@ PATTERN = "pattern"
 EXACT = "exact"
 CONTAINS = "contains"
 NOT_PLACEHOLDER = "not_placeholder"
+SEARCH = "search"
 
 # One entry per portable scalar credential, in the order the role's conditions
 # stood in, so a diagnostic reads in the order an operator would scan the vault.
@@ -142,10 +153,10 @@ CREDENTIAL_RULES = {
     "vault_paperless_gmail_app_password": ((NONEMPTY, None),),
     "vault_paperless_mail_account_name": ((NONEMPTY, None),),
     "vault_paperless_mail_rule_name": ((NONEMPTY, None),),
-    "vault_arr_radarr_api_key": ((PATTERN, HEX_32),),
+    "vault_arr_radarr_api_key": ((PATTERN, HEX_32), (SEARCH, HEX_LETTER)),
     "vault_arr_radarr_admin_username": ((NONEMPTY, None),),
     "vault_arr_radarr_admin_password": ((NONEMPTY, None),),
-    "vault_arr_sonarr_api_key": ((PATTERN, HEX_32),),
+    "vault_arr_sonarr_api_key": ((PATTERN, HEX_32), (SEARCH, HEX_LETTER)),
     "vault_arr_sonarr_admin_username": ((NONEMPTY, None),),
     "vault_arr_sonarr_admin_password": ((NONEMPTY, None),),
     "vault_arr_prowlarr_api_key": ((PATTERN, HEX_32),),
@@ -221,6 +232,11 @@ def _apply(errors, key, value, kind, argument):
     elif kind == CONTAINS:
         if argument not in _text(value):
             errors.append(f"{key}: is missing the required key marker")
+    elif kind == SEARCH:
+        if not argument.search(_text(value)):
+            errors.append(f"{key}: must contain at least one a-f character, "
+                          "because Bazarr casts an all-digit API key to an int "
+                          "and then refuses it")
     elif kind == NOT_PLACEHOLDER:
         # `!=` against a non-string never matched, so only a string can be the
         # placeholder; the key's NONEMPTY rule is what rejects the rest.

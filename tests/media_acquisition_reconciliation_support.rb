@@ -127,7 +127,16 @@ NON_SECRET_TASK_NAMES = [
   "Validate the Servarr download client response collection",
   "Refuse ambiguous Servarr SABnzbd ownership",
   "Resolve Servarr SABnzbd name and URL ownership before mutation",
-  "Mark downloader relationship verification successful"
+  "Mark downloader relationship verification successful",
+  # Both read a Bazarr 406 body that echoes the credential it refused, and both
+  # render only the setting name dynaconf named -- everything before the first
+  # " must ". Redacting them would censor exactly that name and put the run back
+  # to reporting "Status code was 406 and not [204]" and nothing else, which is
+  # the failure they exist to replace. `tests/policy_vault_test.rb` requires an
+  # assertion that can render no credential to stay unredacted for the same
+  # reason.
+  "Refuse a rejected Bazarr connection request by the setting it named",
+  "Refuse rejected Bazarr provider requests by the settings they named"
 ].freeze
 FINGERPRINT_RECORD_TASK_NAME = "Record verified Arr desired-input fingerprints"
 FINGERPRINT_READER_TASK_NAME = "Atomically read private Arr desired-input fingerprints"
@@ -1146,7 +1155,7 @@ def reconciliation_tasks(kind)
   when :bazarr
     task_slice(
       "reconcile_bazarr.yml", "Validate operator-owned Bazarr declarations",
-      "Reconcile operator-owned Bazarr provider settings"
+      "Refuse rejected Bazarr provider requests by the settings they named"
     )
   when :configarr
     task_slice(
@@ -1716,8 +1725,10 @@ class AcquisitionApi
 
   def initialize(state, fail_configarr: false, partial_configarr: false, fail_client_service: nil,
                  corrupt_client_verification: false, mask_bazarr_provider_secrets: false,
-                 fail_custom_format_service: nil, malformed_custom_format_service: nil)
+                 fail_custom_format_service: nil, malformed_custom_format_service: nil,
+                 bazarr_settings_rejection: nil)
     @state = state
+    @bazarr_settings_rejection = bazarr_settings_rejection
     @fail_configarr = fail_configarr
     @partial_configarr = partial_configarr
     @fail_client_service = fail_client_service
@@ -1953,8 +1964,19 @@ class AcquisitionApi
       send_json(client, 200, public_bazarr_languages)
     when ["POST", "/api/system/settings"]
       request["form"] = URI.decode_www_form(body)
-      apply_bazarr(request.fetch("form"))
-      send_empty(client, 204)
+      # Bazarr answers a settings POST its dynaconf schema refuses with 406 and a
+      # body that echoes the offending value, which for an API key is the
+      # credential itself. Nothing is applied on that path, exactly as Bazarr
+      # applies nothing. The refusal is decided from the submitted form, the way
+      # every other matcher in this fixture is, so a case can refuse the
+      # connection request and the provider requests independently.
+      rejection = @bazarr_settings_rejection&.call(request.fetch("form"))
+      if rejection
+        send_response(client, 406, rejection, "text/plain")
+      else
+        apply_bazarr(request.fetch("form"))
+        send_empty(client, 204)
+      end
     when ["POST", "/_fixture/configarr/apply"]
       if @fail_configarr
         send_json(client, 500, { "error" => "fixture Configarr failure" })
@@ -2272,7 +2294,8 @@ class AcquisitionApi
   def send_response(client, status, body, content_type)
     reason = {
       200 => "OK", 201 => "Created", 202 => "Accepted", 204 => "No Content",
-      400 => "Bad Request", 500 => "Internal Server Error"
+      400 => "Bad Request", 406 => "Not Acceptable",
+      500 => "Internal Server Error"
     }.fetch(status)
     write_response(
       client,
@@ -2844,9 +2867,11 @@ end
 
 def with_api(state, fail_configarr: false, partial_configarr: false, fail_client_service: nil,
              corrupt_client_verification: false, mask_bazarr_provider_secrets: false,
-             fail_custom_format_service: nil, malformed_custom_format_service: nil)
+             fail_custom_format_service: nil, malformed_custom_format_service: nil,
+             bazarr_settings_rejection: nil)
   api = AcquisitionApi.new(
     state,
+    bazarr_settings_rejection: bazarr_settings_rejection,
     fail_configarr: fail_configarr,
     partial_configarr: partial_configarr,
     fail_client_service: fail_client_service,
