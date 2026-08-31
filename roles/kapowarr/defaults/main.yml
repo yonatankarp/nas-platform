@@ -19,18 +19,39 @@ kapowarr_compose_project_name: >-
 # nothing -- so this mapping is the whole of what a converge writes, and a key
 # absent from it is left exactly as the application holds it.
 #
-# The values are Kapowarr v1.3.1's own defaults. That is deliberate: the first
-# converge against an untouched deployment writes nothing, and every later one
-# reverts whatever was changed in the web interface. Changing a value here is
-# how the platform's opinion is expressed, and the naming group is the one with
-# a consequence outside Kapowarr, because Komga indexes the directory these
-# templates name.
+# Every value here is Kapowarr v1.3.1's own default except
+# volume_folder_naming, which the comment on that key explains. Staying on the
+# application's defaults is deliberate: a converge reverts whatever was changed
+# in the web interface without inventing an opinion the platform does not hold.
+# Changing a value here is how an opinion is expressed, and the naming group is
+# the one with a consequence outside Kapowarr, because Komga indexes the
+# directory these templates name.
+#
+# A settings write does not rename anything. update_settings() in
+# backend/internals/settings.py validates, writes the config table, sets the log
+# level and clears the cache; it enqueues no task and never calls mass_rename.
+# So a template change here is safe against a populated library and equally does
+# not migrate it -- existing volume folders keep their old shape until a rename
+# is triggered per volume, or in bulk from the mass editor.
 #
 # Numeric keys are range-checked rather than type-checked, and a request is
 # refused whole if any single key in it is invalid, so a wrong value here fails
 # the converge loudly instead of half-applying.
 kapowarr_settings:
-  volume_folder_naming: "{series_name}/Volume {volume_number} ({year})"
+  # Deliberately one directory level, and deliberately not Kapowarr's own
+  # default of "{series_name}/Volume {volume_number} ({year})". Komga builds a
+  # Series from the directory that *directly* contains books, so the nested
+  # default makes every series in the library read "Volume 01 (2024)" and buries
+  # the title in an unindexed parent. Kapowarr writes no ComicInfo.xml -- the
+  # string does not occur anywhere in v1.3.1 -- so Komga has nothing but the
+  # directory name to go on, and importComicInfoSeries cannot rescue it.
+  #
+  # The year alone disambiguates a series' volumes in every case this library
+  # has. It is not sufficient in general: two volumes of one series first
+  # published in the same year collide into a single folder, and scan_files
+  # would then have to separate them on volume_number alone. Declare
+  # "{series_name} Volume {volume_number} ({year})" instead if that ever lands.
+  volume_folder_naming: "{series_name} ({year})"
   file_naming: "{series_name} ({year}) Volume {volume_number} Issue {issue_number}"
   file_naming_empty: "{series_name} ({year}) Volume {volume_number} Issue {issue_number}"
   file_naming_special_version: "{series_name} ({year}) Volume {volume_number} {special_version}"
