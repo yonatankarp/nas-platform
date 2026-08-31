@@ -330,9 +330,19 @@ check(failures, release_compare_tasks.one? &&
         "immutable release comparison must include #{metadata}")
 end
 
-manifest_entries = Array(
-  YAML.safe_load_file(File.join(ROOT, "services", "manifest.yml"))["services"]
-)
+# The manifest is the authority for which service directory a role deploys, and
+# it is read defensively: policy_test.rb owns the malformed-manifest diagnostic,
+# and a parse error raised here would replace that diagnostic with a stack trace.
+# Without a parsed manifest there is nothing to check a service name against, so
+# the checks that consult it stand down rather than fail over its absence.
+manifest_entries = begin
+  manifest_document = YAML.safe_load_file(File.join(ROOT, "services", "manifest.yml"))
+  manifest_document.is_a?(Hash) ? Array(manifest_document["services"]) : []
+rescue Psych::SyntaxError
+  []
+end
+manifest_entries = manifest_entries.select { |entry| entry.is_a?(Hash) }
+manifest_known = !manifest_entries.empty?
 manifest_service_directories = manifest_entries.to_h do |entry|
   [entry["role"], entry["name"]]
 end
@@ -365,7 +375,7 @@ end
   # services/paperless-ngx, and a name taken from the role would guard nothing
   # a selective run reads.
   named_service = (service_tasks.fetch(target_validation)["vars"] || {})["deployment_target_service"]
-  check(failures, named_service == manifest_service_directories[service_name],
+  check(failures, !manifest_known || named_service == manifest_service_directories[service_name],
         "#{service_name} must name the manifest service whose Compose files a selective run deploys")
 end
 
@@ -635,7 +645,7 @@ target_include_sites.each do |relative_path, task|
   check(failures, declared_service.is_a?(String),
         "#{label} must name the service whose standard deployment paths it touches, " \
         "or the empty string when it owns none")
-  next unless declared_service.is_a?(String) && !declared_service.empty?
+  next unless manifest_known && declared_service.is_a?(String) && !declared_service.empty?
 
   owning_role = relative_path[%r{\Aroles/([^/]+)/tasks/}, 1]
   manifest_entry = manifest_entries.find { |entry| entry["name"] == declared_service }
