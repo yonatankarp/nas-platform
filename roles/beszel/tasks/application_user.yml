@@ -1,0 +1,253 @@
+---
+# The application user. Tokens, settings and alerts all relate to the users
+# collection rather than to _superusers, so the run needs an application user
+# alongside the superuser: read the collection completely, create the record
+# once, refuse duplicates, reconcile its role and verified flag, and resolve the
+# id every stage after this one is keyed on.
+
+# Collections use URL-encoded PocketBase identity filters, then repeat the exact
+# identity selection in Jinja before resolving a record. Totals remain enabled so
+# each read can refuse a result spanning more than the complete 500-record page.
+- name: Read the complete PocketBase users collection for managed users
+  ansible.builtin.uri:
+    url: "{{ beszel_api }}/api/collections/users/records?perPage=500"
+    headers:
+      Authorization: "{{ beszel_auth.json.token }}"
+    status_code: [200]
+    return_content: true
+  register: beszel_complete_users
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require a complete PocketBase users collection
+  ansible.builtin.assert:
+    that:
+      - beszel_complete_users.json.get('totalPages', 0) | int <= 1
+      - beszel_complete_users.json.get('items', []) | type_debug == 'list'
+      - >-
+        beszel_complete_users.json.get('totalItems',
+          beszel_complete_users.json.get('items', []) | length) | int ==
+        beszel_complete_users.json.get('items', []) | length
+    fail_msg: PocketBase users collection exceeds one complete page.
+
+- name: List application users
+  tags: [platform_verify_beszel]
+  ansible.builtin.uri:
+    url: >-
+      {{ beszel_api }}/api/collections/users/records?perPage=500&filter={{
+         beszel_user_filter | urlencode }}
+    headers:
+      Authorization: "{{ beszel_auth.json.token }}"
+  register: beszel_users
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require the complete managed application user result set
+  ansible.builtin.assert:
+    that: beszel_users.json.get('totalPages', 0) | int <= 1
+    fail_msg: Managed application user identity returned more than 500 records; refusing incomplete reconciliation.
+
+- name: Refuse duplicate managed application users
+  tags: [platform_verify_beszel]
+  ansible.builtin.assert:
+    that: beszel_matching_users | length <= 1
+    fail_msg: >-
+      Duplicate managed application user record IDs:
+      {{ beszel_matching_users | map(attribute='id') | join(',') }}
+  no_log: false
+
+# Alerts, tokens and settings all relate to the users collection, not to
+# _superusers, so an application user is required alongside the superuser.
+- name: Create the application user
+  ansible.builtin.uri:
+    url: "{{ beszel_api }}/api/collections/users/records"
+    method: POST
+    headers:
+      Authorization: "{{ beszel_auth.json.token }}"
+    body_format: json
+    body:
+      email: "{{ vault_beszel_app_user_email }}"
+      password: "{{ vault_beszel_app_user_password }}"
+      passwordConfirm: "{{ vault_beszel_app_user_password }}"
+      verified: true
+      # Defaults to user, so the admin equivalent is set explicitly. Verified not
+      # to be the cause of the list failure described below.
+      role: admin
+    status_code: [200]
+  register: beszel_created_user
+  when: beszel_matching_users | length == 0
+  changed_when: true
+  no_log: true
+
+- name: Report planned application user creation
+  ansible.builtin.debug:
+    msg: Managed application user would be created.
+  when:
+    - ansible_check_mode
+    - beszel_matching_users | length == 0
+  changed_when: true
+
+# PocketBase writes through one SQLite connection and validates relations through
+# another. Refreshing the pool after this one-time insert prevents the validator
+# from seeing a stale snapshot when the token and settings records are created.
+- name: Refresh Beszel database connections after creating the application user
+  community.docker.docker_compose_v2:
+    project_src: "{{ platform_current_dir }}/services/beszel"
+    project_name: "{{ beszel_compose_project_name }}"
+    files: "{{ platform_service_compose_files['beszel'] }}"
+    env_files: ["{{ platform_runtime_dir }}/services/beszel/.env"]
+    services: [hub]
+    state: restarted
+    wait: true
+    wait_timeout: "{{ platform_compose_wait_timeout }}"
+  when: beszel_matching_users | length == 0
+
+# Read the id back from the collection rather than trusting the create response.
+# The id returned by the POST was rejected as a missing relation when used
+# immediately, while an id read from the collection is accepted.
+- name: List application users again to resolve the id
+  tags: [platform_verify_beszel]
+  ansible.builtin.uri:
+    url: >-
+      {{ beszel_api }}/api/collections/users/records?perPage=500&filter={{
+         beszel_user_filter | urlencode }}
+    headers:
+      Authorization: "{{ beszel_auth.json.token }}"
+  register: beszel_users_after
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Refuse duplicate managed application users after reconciliation
+  tags: [platform_verify_beszel]
+  ansible.builtin.assert:
+    that:
+      - (beszel_users_after.json.get('items', [])
+         | selectattr('email', 'equalto', vault_beszel_app_user_email)
+         | list | length) <= 1
+    fail_msg: >-
+      Duplicate managed application user record IDs:
+      {{ beszel_users_after.json.get('items', [])
+         | selectattr('email', 'equalto', vault_beszel_app_user_email)
+         | map(attribute='id') | join(',') }}
+  no_log: false
+
+- name: Resolve the application user id
+  tags: [platform_verify_beszel]
+  ansible.builtin.set_fact:
+    beszel_user_id: >-
+      {{ (beszel_users_after.json.get('items', [])
+          | selectattr('email', 'equalto', vault_beszel_app_user_email)
+          | list | first | default({})).id | default('') }}
+  no_log: true
+
+- name: Check whether the managed application user accepts vault credentials
+  tags: [platform_verify_beszel]
+  ansible.builtin.uri:
+    url: "{{ beszel_api }}/api/collections/users/auth-with-password"
+    method: POST
+    body_format: json
+    body:
+      identity: "{{ vault_beszel_app_user_email }}"
+      password: "{{ vault_beszel_app_user_password }}"
+    status_code: [200, 400, 403]
+  register: beszel_app_user_auth
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when: beszel_user_id | length > 0
+
+- name: Require preserved Beszel application-user credentials
+  ansible.builtin.assert:
+    that:
+      - beszel_app_user_auth.status | int == 200
+    fail_msg: >-
+      Existing Beszel application user does not accept its preserved vault
+      password. Run the reviewed credential-migration procedure; Ansible will
+      not reset it automatically.
+  when: beszel_user_id | length > 0
+
+- name: Reconcile managed application user role and verification
+  ansible.builtin.uri:
+    url: "{{ beszel_api }}/api/collections/users/records/{{ beszel_user_id }}"
+    method: PATCH
+    headers:
+      Authorization: "{{ beszel_auth.json.token }}"
+    body_format: json
+    body:
+      verified: true
+      role: admin
+    status_code: [200]
+  when:
+    - beszel_user_id | length > 0
+    - >-
+      not (beszel_users_after.json.get('items', [])
+           | selectattr('id', 'equalto', beszel_user_id) | first).verified
+      or (beszel_users_after.json.get('items', [])
+          | selectattr('id', 'equalto', beszel_user_id) | first).role != 'admin'
+  changed_when: true
+  no_log: true
+
+- name: Report planned managed application user reconciliation
+  ansible.builtin.debug:
+    msg: Managed application user role or verification would be reconciled.
+  when:
+    - ansible_check_mode
+    - beszel_user_id | length > 0
+    - >-
+      not (beszel_users_after.json.get('items', [])
+           | selectattr('id', 'equalto', beszel_user_id) | first).verified
+      or (beszel_users_after.json.get('items', [])
+          | selectattr('id', 'equalto', beszel_user_id) | first).role != 'admin'
+  changed_when: true
+
+- name: Refresh application users after reconciliation
+  tags: [platform_verify_beszel]
+  ansible.builtin.uri:
+    url: >-
+      {{ beszel_api }}/api/collections/users/records?perPage=500&filter={{
+         beszel_user_filter | urlencode }}
+    headers:
+      Authorization: "{{ beszel_auth.json.token }}"
+  register: beszel_users_after
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Resolve the reconciled application user id
+  tags: [platform_verify_beszel]
+  ansible.builtin.set_fact:
+    beszel_user_id: >-
+      {{ (beszel_users_after.json.get('items', [])
+          | selectattr('email', 'equalto', vault_beszel_app_user_email)
+          | list | first | default({})).id | default('') }}
+  no_log: true
+
+- name: Verify the managed application user contract
+  tags: [platform_verify_beszel]
+  ansible.builtin.assert:
+    that:
+      - beszel_user_id | length > 0
+      - (beszel_users_after.json.get('items', [])
+         | selectattr('id', 'equalto', beszel_user_id) | first).verified == true
+      - (beszel_users_after.json.get('items', [])
+         | selectattr('id', 'equalto', beszel_user_id) | first).role == 'admin'
+    fail_msg: Managed application user is absent or differs from the verified admin contract.
+  when: not ansible_check_mode
+
+- name: Verify the managed application user accepts vault credentials
+  tags: [platform_verify_beszel]
+  ansible.builtin.uri:
+    url: "{{ beszel_api }}/api/collections/users/auth-with-password"
+    method: POST
+    body_format: json
+    body:
+      identity: "{{ vault_beszel_app_user_email }}"
+      password: "{{ vault_beszel_app_user_password }}"
+    status_code: [200]
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when: not ansible_check_mode

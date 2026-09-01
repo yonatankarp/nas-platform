@@ -353,9 +353,16 @@ end
 # the first-use search rather than compared against itself.
 %w[ntfy beszel dozzle audiobookshelf komga jellyfin immich
    paperless_ngx].each do |service_name|
-  service_tasks = YAML.safe_load_file(
+  # Read through static_role_tasks, not main.yml. A role that is one stage per file
+  # keeps only an index in main.yml, and both halves of this check then read false:
+  # target_validation is nil because the deployment_bundle re-include moved into
+  # deploy.yml, runtime_use is nil because no import entry mentions a runtime path,
+  # and `!runtime_use` reports the property holding before `next unless
+  # target_validation` skips every check below. Measured on roles/audiobookshelf
+  # and roles/jellyfin, which were both passing vacuously here.
+  service_tasks = PolicySupport.static_role_tasks(
     File.join(ROOT, "roles", service_name, "tasks", "main.yml"), aliases: true
-  ) || []
+  )
   target_validation = service_tasks.index do |task|
     include_role = task["ansible.builtin.include_role"]
     include_role.is_a?(Hash) && include_role["name"] == "deployment_bundle" &&

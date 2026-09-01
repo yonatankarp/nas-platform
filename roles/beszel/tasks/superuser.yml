@@ -1,0 +1,126 @@
+---
+# The superuser, and the proof the hub adopted the keypair from vault.
+# PocketBase offers no non-secret existence check, so the identity is
+# established by exact authentication either side of one atomic create. getkey
+# needs a superuser token, which is why the keypair assertion lives here rather
+# than beside the copy task that installed it.
+
+# PocketBase has no supported non-secret list or existence command. Exact
+# authentication safely proves the desired identity already exists; otherwise
+# its atomic create command is the reviewed exception. The command creates an
+# absent identity but cannot update an existing password. Post-authentication
+# distinguishes successful creation from an existing identity with another
+# password. Beszel 0.18.7 prints one exact non-secret success line only for the
+# controller that creates the record; duplicate create attempts print the unique
+# email error while still exiting zero. Exact post-authentication remains the
+# authority for credentials, and the pinned success line only owns the change.
+- name: Check for an existing Beszel superuser with vault credentials
+  ansible.builtin.uri:
+    url: "{{ beszel_api }}/api/collections/_superusers/auth-with-password"
+    method: POST
+    body_format: json
+    body:
+      identity: "{{ vault_beszel_superuser_email }}"
+      password: "{{ vault_beszel_superuser_password }}"
+    status_code: [200, 400, 403]
+  register: beszel_superuser_pre_auth
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Create the superuser without updating an existing identity
+  community.docker.docker_compose_v2_exec:
+    project_src: "{{ platform_current_dir }}/services/beszel"
+    project_name: "{{ beszel_compose_project_name }}"
+    files: "{{ platform_service_compose_files['beszel'] }}"
+    env_files: ["{{ platform_runtime_dir }}/services/beszel/.env"]
+    service: hub
+    argv:
+      - /beszel
+      - superuser
+      - create
+      - "{{ vault_beszel_superuser_email }}"
+      - "{{ vault_beszel_superuser_password }}"
+  register: beszel_superuser_create
+  when:
+    - not ansible_check_mode
+    - beszel_superuser_pre_auth.status | int != 200
+  failed_when: false
+  changed_when: false
+  no_log: true
+
+- name: Authenticate as the superuser
+  tags: [platform_verify_beszel]
+  ansible.builtin.uri:
+    url: "{{ beszel_api }}/api/collections/_superusers/auth-with-password"
+    method: POST
+    body_format: json
+    body:
+      identity: "{{ vault_beszel_superuser_email }}"
+      password: "{{ vault_beszel_superuser_password }}"
+    status_code: [200, 400, 403]
+  register: beszel_auth
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require created or preserved Beszel superuser credentials
+  tags: [platform_verify_beszel]
+  ansible.builtin.assert:
+    that:
+      - ansible_check_mode or beszel_auth.status | int == 200
+    fail_msg: >-
+      Beszel superuser creation failed or the existing identity does not accept
+      its preserved vault password. Run the reviewed credential-migration
+      procedure; Ansible will not reset it automatically.
+
+- name: Report newly created Beszel superuser
+  ansible.builtin.debug:
+    msg: Beszel superuser was created and authenticated.
+  when:
+    - not ansible_check_mode
+    - beszel_superuser_pre_auth.status | int != 200
+    - >-
+      beszel_superuser_create.stdout | default('') ==
+      'Successfully created new superuser "' ~ vault_beszel_superuser_email ~ '"!'
+    - beszel_auth.status | int == 200
+  changed_when: true
+  no_log: true
+
+- name: Report planned Beszel superuser creation
+  ansible.builtin.debug:
+    msg: Beszel superuser would be created and authenticated.
+  when:
+    - ansible_check_mode
+    - beszel_superuser_pre_auth.status | int != 200
+  changed_when: true
+
+# The point of authoring the keypair is that the hub adopts it, so assert rather
+# than assume. getkey needs superuser authentication, hence its position here.
+- name: Read the public key the hub advertises
+  tags: [platform_verify_beszel]
+  ansible.builtin.uri:
+    url: "{{ beszel_api }}/api/beszel/getkey"
+    headers:
+      Authorization: "{{ beszel_auth.json.token }}"
+  register: beszel_advertised_key
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Verify the advertised key matches vault, proving no read-back is needed
+  tags: [platform_verify_beszel]
+  ansible.builtin.assert:
+    that:
+      # Type and key material only: SSH public keys carry an optional trailing
+      # comment which the hub does not advertise.
+      - (beszel_advertised_key.json.key | default('')).split()[:2]
+        == vault_beszel_agent_key.split()[:2]
+    fail_msg: >-
+      The hub advertises a different public key than vault holds, so the agent
+      would be rejected. This happens when the hub started once before the keypair
+      was installed. Remove {{ beszel_state_root }}/id_ed25519 together
+      with the generated database, then run again.
+      Hub advertises '{{ beszel_advertised_key.json.key | default('<none>') }}',
+      vault holds '{{ vault_beszel_agent_key }}'.
+    success_msg: "Hub advertises the keypair from vault, no read-back needed"

@@ -27,7 +27,12 @@ probe_support_path = File.join(root, "module_utils/beszel_telemetry.py")
 probe_support = File.file?(probe_support_path) ? File.read(probe_support_path) : ""
 require File.join(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR"), "tests", "policy_support")
 include PolicySupport
-role_tasks = flatten_tasks(YAML.safe_load_file(role_path))
+# main.yml is read through static_role_tasks, which splices a statically imported
+# stage file in where it stands and leaves a dynamic include alone -- the role
+# Ansible runs. The Beszel role is one stage per file, so a bare read of the index
+# would find none of the required_tasks below and this contract would abort on a
+# role it never looked at.
+role_tasks = flatten_tasks(PolicySupport.static_role_tasks(role_path))
 role_task_names = role_tasks.filter_map { |task| task["name"] if task.is_a?(Hash) }
 # Assertions about what the role does read the parsed structure rather than the
 # file's bytes: a task name or a registered variable that survives only inside a

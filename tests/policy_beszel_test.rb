@@ -25,8 +25,13 @@ harness = File.read(File.join(ROOT, "tests", "integration.sh"))
 
 # Identity reads must be server-filtered and retain totals so the role can refuse
 # an identity result that exceeds the complete 500-record response page.
+#
+# Read through static_role_tasks, not main.yml: the role is one stage per file and
+# main.yml is an index of static imports, so the role Ansible runs is the imports
+# spliced in where they stand. A bare read of the index would select nothing and
+# report every property below holding on a role it never looked at.
 beszel_tasks = flatten_tasks(
-  YAML.safe_load_file(File.join(ROOT, "roles", "beszel", "tasks", "main.yml"))
+  static_role_tasks(File.join(ROOT, "roles", "beszel", "tasks", "main.yml"))
 )
 
 host_prep_tasks = YAML.safe_load_file(File.join(ROOT, "roles", "host_prep", "tasks", "main.yml"))

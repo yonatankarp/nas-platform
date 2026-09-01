@@ -43,7 +43,11 @@ def run_play(tasks, vars, vars_files: [])
 end
 
 failures = []
-tasks = PolicySupport.flatten_tasks(YAML.safe_load_file(ROLE_TASKS))
+# Read through static_role_tasks: the role is one stage per file and main.yml is
+# an index of static imports, so the capability assertion lives in deploy.yml and
+# the telemetry tasks in configure.yml. A bare read of the index finds none of
+# them and would report the assertions absent rather than exercising them.
+tasks = PolicySupport.flatten_tasks(PolicySupport.static_role_tasks(ROLE_TASKS))
 capability = tasks.find { |task| task["name"] == "Require the selected Beszel telemetry capability" }
 cardinality = tasks.find { |task| task["name"] == "Require exactly one managed Beszel system for telemetry" }
 resolve_evidence = tasks.find { |task| task["name"] == "Resolve persisted Beszel telemetry evidence" }

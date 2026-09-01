@@ -976,7 +976,7 @@ end
 
 expect_failure(failures, "unfiltered Beszel settings readback",
                "collection readback must use a URL-encoded identity filter with totals") do |root|
-  mutate_yaml_file(root, "roles/beszel/tasks/main.yml") do |tasks|
+  mutate_yaml_file(root, "roles/beszel/tasks/configure.yml") do |tasks|
     task = flatten_tasks(tasks).find do |entry|
       entry["name"] == "Refresh notification settings after reconciliation"
     end
@@ -987,7 +987,7 @@ end
 
 expect_failure(failures, "silent Beszel user creation",
                "Beszel user creation must report real and check-mode predicted changes") do |root|
-  mutate_yaml_file(root, "roles/beszel/tasks/main.yml") do |tasks|
+  mutate_yaml_file(root, "roles/beszel/tasks/application_user.yml") do |tasks|
     task = flatten_tasks(tasks).find do |entry|
       entry["name"] == "Create the application user"
     end
@@ -997,7 +997,7 @@ end
 
 expect_failure(failures, "unredacted Beszel webhook summary",
                "Beszel webhook mismatch diagnostics must never include URL bodies") do |root|
-  mutate_yaml_file(root, "roles/beszel/tasks/main.yml") do |tasks|
+  mutate_yaml_file(root, "roles/beszel/tasks/configure.yml") do |tasks|
     task = flatten_tasks(tasks).find do |entry|
       entry["name"] == "Summarize the managed ntfy webhook without URL bodies"
     end
@@ -1007,7 +1007,7 @@ end
 
 expect_failure(failures, "missing Beszel system ownership guard",
                "Beszel must reject same-name systems outside the managed user relation") do |root|
-  path = File.join(root, "roles", "beszel", "tasks", "main.yml")
+  path = File.join(root, "roles", "beszel", "tasks", "configure.yml")
   body = File.read(path).sub(
     "Refuse same-name systems outside the managed user relation",
     "Bypass same-name systems outside the managed user relation"
@@ -1729,7 +1729,7 @@ end
 # partial tree, which this sandbox is, so the message asserted here is the rule's.
 expect_failure(failures, "pinned redaction exception no longer covers a renamed task",
                "tasks that render a credential must set no_log") do |root|
-  path = File.join(root, "roles", "beszel", "tasks", "main.yml")
+  path = File.join(root, "roles", "beszel", "tasks", "application_user.yml")
   File.write(path, File.read(path).sub(
                      "- name: Refuse duplicate managed application users after reconciliation\n",
                      "- name: Refuse duplicate managed application users\n"

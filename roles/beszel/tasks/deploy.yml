@@ -1,0 +1,169 @@
+---
+# Deployment. Revalidates the release paths this role touches, derives the
+# mounted state root, refuses a telemetry capability that is not the one this
+# platform selected, installs the vault keypair before the hub can generate its
+# own, renders the environment, removes the agent this host did not select,
+# brings the project up, reports it, checks the applied CPU policy, and waits
+# for the hub's own health endpoint.
+
+# Beszel appears to force a read-back: the hub generates a keypair on first start
+# and its documentation says to copy the public key out of the Add System dialog.
+# It does not. The keypair is /beszel_data/id_ed25519, the advertised public key is
+# exactly `ssh-keygen -y` of that file, and a keypair placed there before first
+# start is used rather than regenerated. Authoring it in vault therefore removes
+# the read-back, the second deploy pass it required, and the least idempotent step
+# in the design.
+#
+# Read-only lookups below carry check_mode: false. uri is skipped under --check,
+# which would leave their registers without a status or json key and break every
+# conditional that follows. They change nothing, so running them is safe.
+- name: Revalidate deployment paths before Beszel runtime use
+  ansible.builtin.include_role:
+    name: deployment_bundle
+    tasks_from: target
+  vars:
+    deployment_target_service: beszel
+    deployment_target_require_current_release: true
+    deployment_target_extra_paths:
+      - "{{ nas_docker_root }}/beszel/hub/id_ed25519"
+
+- name: Select the Beszel mounted state root
+  tags: [platform_verify_beszel]
+  ansible.builtin.set_fact:
+    beszel_state_root: "{{ nas_docker_root }}/beszel/hub"
+
+- name: Require the internally derived Beszel mounted state root
+  ansible.builtin.assert:
+    that:
+      - beszel_state_root == (nas_docker_root ~ '/beszel/hub')
+
+- name: Require the selected Beszel telemetry capability
+  ansible.builtin.assert:
+    that:
+      - platform_kind in ['mac', 'nas']
+      - beszel_effective_required_telemetry_categories | length > 0
+      - beszel_effective_required_telemetry_categories | unique | list | length ==
+        beszel_effective_required_telemetry_categories | length
+      - beszel_effective_required_telemetry_categories |
+        difference(['core', 'disk', 'containers', 'gpu']) | length == 0
+      - beszel_telemetry_freshness_seconds | int >= 60
+      - beszel_telemetry_poll_timeout_seconds | int >= 90
+      - beszel_telemetry_request_timeout_seconds | int > 0
+      - beszel_telemetry_request_timeout_seconds | int <= 10
+      - beszel_telemetry_poll_delay_seconds | int > 0
+      - beszel_telemetry_poll_delay_seconds | int <= 10
+      - >-
+        beszel_integration_test_capability | bool ==
+        ((platform_compose_kind | default('') == 'integration') and
+         (deployment_bundle_test_mode | default(false) | bool))
+      - >-
+        beszel_effective_required_telemetry_categories ==
+        (['core', 'disk', 'containers']
+         if (beszel_integration_test_capability | bool)
+         else beszel_required_telemetry_categories)
+      - >-
+        beszel_effective_require_gpu_telemetry | bool ==
+        (false
+         if (beszel_integration_test_capability | bool)
+         else (beszel_require_gpu_telemetry | bool))
+      - >-
+        platform_kind != 'mac' or
+        (not (beszel_integration_test_capability | bool) and
+         beszel_effective_required_telemetry_categories | sort == ['containers', 'core', 'disk'] and
+         not (beszel_effective_require_gpu_telemetry | bool) and
+         platform_beszel_agent_kind == 'portable')
+      # The renderD128 literal in the Intel branch below is deliberate. NAS
+      # hosts are pinned to that device by design, and this disjunct only
+      # applies on a NAS with a real Intel GPU, so it never constrains a Mac
+      # host where platform_render_device_path is /dev/dri/card0 and the agent
+      # kind is portable.
+      - >-
+        platform_kind != 'nas' or
+        ((beszel_integration_test_capability | bool) and
+         beszel_effective_required_telemetry_categories | sort == ['containers', 'core', 'disk'] and
+         not (beszel_effective_require_gpu_telemetry | bool) and
+         platform_beszel_agent_kind == 'portable' and
+         not (preflight_gpu_available | bool)) or
+        (not (beszel_integration_test_capability | bool) and
+         beszel_effective_required_telemetry_categories | sort == ['containers', 'core', 'disk', 'gpu'] and
+         beszel_effective_require_gpu_telemetry | bool and
+         platform_beszel_agent_kind == 'intel' and
+         platform_render_device_path == '/dev/dri/renderD128' and
+         preflight_gpu_available | bool)
+    fail_msg: >-
+      Beszel telemetry capability does not match platform {{ platform_kind }}.
+      Required categories: {{ beszel_effective_required_telemetry_categories | join(',') }}.
+
+- name: Install the hub keypair before the hub can generate its own
+  ansible.builtin.copy:
+    content: "{{ vault_beszel_hub_private_key }}"
+    dest: "{{ beszel_state_root }}/id_ed25519"
+    mode: "0600"
+  no_log: true
+
+- name: Render the Beszel environment
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ platform_runtime_dir }}/services/beszel/.env"
+    mode: "0600"
+  no_log: true
+
+- name: List deployed Beszel Compose services
+  ansible.builtin.command:
+    argv: "{{ beszel_compose_cli_argv + ['ps', '--services', '--all'] }}"
+  register: beszel_deployed_compose_services
+  changed_when: false
+  check_mode: false
+
+- name: Remove managed Beszel agents not selected by host capabilities
+  community.docker.docker_compose_v2:
+    project_src: "{{ platform_current_dir }}/services/beszel"
+    project_name: "{{ beszel_compose_project_name }}"
+    files: "{{ platform_service_compose_files['beszel'] }}"
+    env_files: ["{{ platform_runtime_dir }}/services/beszel/.env"]
+    services: >-
+      {{ beszel_inactive_agent_services
+         | intersect(beszel_deployed_compose_services.stdout_lines) }}
+    state: absent
+  when: >-
+    beszel_inactive_agent_services
+    | intersect(beszel_deployed_compose_services.stdout_lines) | length > 0
+
+- name: Deploy Beszel
+  community.docker.docker_compose_v2:
+    project_src: "{{ platform_current_dir }}/services/beszel"
+    project_name: "{{ beszel_compose_project_name }}"
+    files: "{{ platform_service_compose_files['beszel'] }}"
+    env_files: ["{{ platform_runtime_dir }}/services/beszel/.env"]
+    services: "{{ ['hub', 'socket-proxy'] + ([beszel_agent_service] if beszel_agent_enabled else []) }}"
+    state: present
+    wait: true
+    wait_timeout: "{{ platform_compose_wait_timeout }}"
+  register: beszel_deploy
+
+- name: Report the Beszel deployment
+  ansible.builtin.include_role:
+    name: ntfy
+    tasks_from: deployment_report
+  vars:
+    ntfy_deployment_report_service: Beszel
+    ntfy_deployment_report_changed: "{{ beszel_deploy is changed }}"
+
+- name: Verify Beszel effective container CPU policy
+  ansible.builtin.include_role:
+    name: container_cpu
+  vars:
+    container_cpu_service_name: beszel
+    container_cpu_project_name: "{{ beszel_compose_project_name }}"
+    container_cpu_expected_services: >-
+      {{ ['hub', 'socket-proxy'] + ([beszel_agent_service] if beszel_agent_enabled else []) }}
+
+- name: Wait for the hub to report healthy
+  ansible.builtin.uri:
+    url: "{{ beszel_api }}/api/health"
+  register: beszel_health
+  until: beszel_health.status | default(0) == 200
+  retries: "{{ platform_readiness_retries }}"
+  delay: "{{ platform_readiness_delay }}"
+  changed_when: false
+  check_mode: false
