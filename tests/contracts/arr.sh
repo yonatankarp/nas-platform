@@ -210,6 +210,13 @@ if failures.empty?
     %w[settings-general-use_radarr settings-general-use_sonarr settings-radarr-apikey settings-sonarr-apikey].all? do |token|
       bazarr_scalars.any? { |value| value.include?(token) }
     end
+  # Pinned off, not merely absent: an unwritten flag is one a human can tick in
+  # Bazarr's web interface and keep forever. The reasoning for the decision is
+  # in the filter beside the desired projection.
+  failures << "Bazarr must pin its Jellyfin integration off rather than ignore it" unless
+    bazarr_scalars.any? do |value|
+      value.include?(%("settings-general-use_jellyfin": "false"))
+    end
   failures << "Bazarr must retain identical paths without remote mappings" unless
     bazarr_scalars.any? { |value| value.include?("path_mappings") } &&
       bazarr_scalars.any? { |value| value.include?("path_mappings_movie") }

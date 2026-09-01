@@ -358,6 +358,7 @@ ARR_ENVIRONMENT = "roles/arr/templates/env.j2"
 ARR_SERVARR = "roles/arr/tasks/reconcile_servarr.yml"
 ARR_PROWLARR = "roles/arr/tasks/reconcile_prowlarr.yml"
 ARR_BAZARR = "roles/arr/tasks/reconcile_bazarr.yml"
+ARR_BAZARR_FILTER = "filter_plugins/acquisition_bazarr.py"
 KOMGA_COMPOSE = "services/komga/compose.yml"
 DOWNLOADERS_COMPOSE = "services/downloaders/compose.yml"
 ARR_STATE_GUARD = "roles/arr/tasks/state_guard.yml"
@@ -1231,6 +1232,18 @@ check_accepted(
   [[ARR_PROWLARR,
     "---\n",
     "---\n# Prowlarr indexes; a download client is deliberately never created here.\n"]]
+)
+
+# Deleting the pin is the whole failure mode it guards against: Bazarr's Jellyfin
+# integration is left off deliberately, and an absent flag looks identical to a
+# decision that was never made. Without this row the assertion could stop biting
+# and every test would still pass.
+check_rejected(
+  failures, :arr, "the Jellyfin integration pin quietly deleted",
+  [[ARR_BAZARR_FILTER,
+    "        \"settings-general-use_jellyfin\": \"false\",\n",
+    ""]],
+  "Bazarr must pin its Jellyfin integration off rather than ignore it"
 )
 
 # --- Compose identity, adoption guard and the Paperless environment -------------
