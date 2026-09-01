@@ -1132,14 +1132,14 @@ expect_failure(failures, "CI drops the policy mutation job",
 end
 
 expect_failure(failures, "integration omits contract execution", "integration must execute registered contracts",
-               detected_by: %i[DERIVE1]) do |root|
+               detected_by: %i[integration]) do |root|
   path = File.join(root, "tests", "integration_controller.sh")
   File.write(path, File.read(path).sub(/^\s*ruby \/repo\/tests\/run_contracts\.rb --execute\n/, ""))
 end
 
 expect_failure(failures, "controller pasted back into an argument",
                "must not paste the controller back into an sh -c argument",
-               detected_by: %i[DERIVE2]) do |root|
+               detected_by: %i[policy integration]) do |root|
   # The escaped-argument form is what made the controller unreachable by sh -n
   # and shellcheck, and it cost a truncated `docker run` once: an unescaped
   # quote closed the argument and the `;` after it ended the whole command, so
@@ -1158,7 +1158,7 @@ expect_failure(failures, "controller pasted back into an argument",
 end
 
 expect_failure(failures, "integration omits contract ABI", "integration must set the contract environment ABI",
-               detected_by: %i[DERIVE3]) do |root|
+               detected_by: %i[integration]) do |root|
   path = File.join(root, "tests", "integration_controller.sh")
   body = File.read(path)
   source = body.scan(/^\s*PLATFORM_REPORT_ROOT=.*\n/).last
