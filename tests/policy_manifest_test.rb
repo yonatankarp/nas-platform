@@ -879,11 +879,10 @@ end
 expect_failure(failures, "missing Mac path fixture wiring",
                "integration must prove canonical Mac paths pass target validation",
                detected_by: %i[integration]) do |root|
-  path = File.join(root, "tests", "integration.sh")
-  source = File.read(path)
-    .gsub(/^.*mac_inventory_path_test\.yml.*\n/, "")
-    .gsub(/^.*MAC_PATH_(?:CANONICAL|LEXICAL_REFUSED).*\n/, "")
-  File.write(path, source)
+  mutate_text(root, "tests/integration_controller.sh",
+              /^.*mac_inventory_path_test\.yml.*\n/, "", occurrences: 2)
+  mutate_text(root, "tests/integration_controller.sh",
+              /^.*MAC_PATH_(?:CANONICAL|LEXICAL_REFUSED).*\n/, "", occurrences: 2)
 end
 
 expect_failure(failures, "missing host capability", "must define platform_beszel_agent_available",
@@ -1966,16 +1965,16 @@ end
 expect_failure(failures, "integration ephemeral helper bypassed",
                "integration must consume the ephemeral encrypted vault without duplicate secret authoring",
                detected_by: %i[integration]) do |root|
-  path = File.join(root, "tests", "integration.sh")
-  File.write(path, File.read(path).sub('--output \"\$vault_file\"', "--output-bypassed"))
+  mutate_text(root, "tests/integration_controller.sh",
+              '--output "$vault_file"', "--output-bypassed")
 end
 
 expect_failure(failures, "integration ephemeral cleanup context removed",
                "integration must consume the ephemeral encrypted vault without duplicate secret authoring",
                detected_by: %i[integration]) do |root|
-  path = File.join(root, "tests", "integration.sh")
-  File.write(path, File.read(path).sub("TMPDIR='$sandbox' /repo/tests/generate-ephemeral-vault.sh --cleanup",
-                                      "/repo/tests/generate-ephemeral-vault.sh --cleanup"))
+  mutate_text(root, "tests/integration_controller.sh",
+              'TMPDIR="$sandbox" /repo/tests/generate-ephemeral-vault.sh --cleanup',
+              "/repo/tests/generate-ephemeral-vault.sh --cleanup")
 end
 
 expect_failure(failures, "integration lock acquisition removed",
