@@ -571,6 +571,11 @@ POLICY_AUDIT = ARGV.include?("--audit")
 # Keyed by call site rather than by label, because a call site inside a loop is
 # one declaration covering several mutations and only their union has to match
 # it. Labels cannot key this: several rows share one, and some are interpolated.
+#
+# The key assumes one declared set per call site, which is what every loop here
+# does -- it passes the same `detected_by` on each iteration. A loop that
+# computed a different set per iteration would record only the first, so give it
+# its own call site rather than teaching this to merge declarations.
 POLICY_AUDIT_SITES = {}
 
 def resolve_policy_scripts(names, label)
