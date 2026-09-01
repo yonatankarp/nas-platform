@@ -170,6 +170,50 @@ EXPECTED_FIXTURE_ROLES = {
   "trailarr" => "trailarr", "seerr" => "seerr"
 }.freeze
 
+# The task files a role reaches through static import_tasks, main.yml included.
+# This follows exactly what PolicySupport.static_role_tasks follows, because that
+# is what assembles a role for the readers this fixture has to be able to satisfy,
+# and because Ansible resolves an import at parse time -- an imported file is part
+# of the role's body, not a separate thing the role calls.
+#
+# A dynamic include_tasks target is deliberately left out, and that exclusion is
+# load-bearing rather than an omission. Ansible resolves an include at runtime with
+# vars the caller passes, no reader assembles it into the role, and copying it
+# changes what the rows that replace a role's main.yml with a stub can see: with
+# managed_users.yml present, policy_test.rb's phase-gate check finds a gated file
+# whose caller the stub removed, and four expect_success rows fail on a mutation
+# they never made -- measured, not predicted:
+#
+#   FAIL assert from registered URI result: FAIL roles/ntfy/tasks/managed_users.yml:
+#     declares ntfy_managed_users_phase phases provision, subscription_sync, verify
+#     but its callers pass none
+#
+# Enumerated from the role rather than stated, which is the opposite of the rule
+# BASE_FIXTURE_PATHS states below, and deliberately so. That rule exists so a policy
+# check cannot be credited with reading a file the sandbox never had: the fixture
+# names the file, so the check has to find it. This is the other kind of path. A
+# role's stage files are not a check's subject, they are the subject's body, and
+# they have no fixed names -- a stated list would have to be extended by every
+# future split, which is the mistake that produced this bug.
+def static_task_files(root, role_root, relative = nil, seen = [])
+  relative ||= File.join(role_root, "tasks", "main.yml")
+  return [] if seen.include?(relative)
+
+  absolute = File.join(root, relative)
+  return [] unless File.file?(absolute)
+
+  document = YAML.safe_load_file(absolute)
+  return [relative] unless document.is_a?(Array)
+
+  [relative] + document.flat_map do |task|
+    imported = task.is_a?(Hash) ? task["ansible.builtin.import_tasks"] : nil
+    file_name = imported.is_a?(Hash) ? imported["file"] : imported
+    next [] unless file_name.is_a?(String)
+
+    static_task_files(root, role_root, File.join(role_root, "tasks", file_name), seen + [relative])
+  end
+end
+
 def fixture_paths(root = ROOT)
   paths = BASE_FIXTURE_PATHS.dup
   paths.concat(%w[
@@ -192,7 +236,16 @@ def fixture_paths(root = ROOT)
     paths << File.join("services", name, "compose.yml")
     role_root = File.join("roles", role)
     paths << File.join(role_root, "meta", "argument_specs.yml")
-    paths << File.join(role_root, "tasks", "main.yml")
+    # main.yml and everything it statically imports, because that whole set is
+    # the role's body rather than its entry point. A role that is one stage per
+    # file reaches its stages through import_tasks, so a sandbox holding only
+    # main.yml hands every reader that assembles the role an index of imports
+    # instead of the role -- and that is silent rather than loud wherever the
+    # reader's property is an OR or a nil-guard. audiobookshelf has been one
+    # stage per file since #238, and inside this fixture role_has_verification?
+    # answered false for it ever since, with policy_test.rb's verification
+    # property carried by the contract half of its OR and nobody told.
+    paths.concat(static_task_files(root, role_root))
     # A role states its Compose project either in defaults or, where the value is
     # not overridable, in vars. policy_integration_test.rb renders both to prove
     # every service derives its project from the platform namespace.
