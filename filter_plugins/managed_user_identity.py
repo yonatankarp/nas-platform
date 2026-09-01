@@ -46,6 +46,58 @@ What this module deliberately does **not** absorb:
 * **Listing completeness, authentication and repair.** One, four and five
   conditions respectively across the six, against different transports, request
   bodies and response shapes.
+* **The sixteen-step skeleton itself.** Parse all six files and bucket their
+  151 tasks by content with the service name masked, and 16 (11%) land in a
+  bucket some other service shares. Mask the identity attribute, the ID field
+  and the four safe-identifier regexes too and it is 22 (15%). Drop every value
+  and keep only the keys, the module, the control keywords and the list lengths
+  and it is 89 (59%) — that last is what "sixteen identical steps" measures,
+  and it is the shape of an Ansible task, not shared behaviour. Line-level
+  overlap reads higher still: 1,812 of the 2,498 significant lines have a twin
+  in another role. But those 1,812 occurrences are only 149 distinct texts,
+  of which `no_log: true` (126), `loop_control:` (117),
+  `label: <svc>-managed-user` (115) and `when:` (86) are already a quarter.
+
+Four task bodies are genuinely shared, spanning six, five, four and three
+services. The `debug` reporting planned creation is the only one of the 151
+with a twin in every other role — and even it needs the identity attribute
+masked, because until then it splits into an `email` half and a `username`
+half. The opening phase-validate assert spans five: every role but Jellyfin,
+which declares `['preflight', 'reconcile', 'verify']` where the other five
+declare `['reconcile', 'verify']`. The safe-identifier assert spans four,
+Audiobookshelf, Beszel, Jellyfin and Komga, and only once its four different
+regexes are masked away; unmasked it shares with nothing. The binding-facts
+initializer, `{{ x | default({}) }}` over the `initial_` ID map, spans three:
+Beszel, Immich and Paperless.
+
+That second bucket is the warning, because the phase gate is not uniform where
+it matters most. `Authenticate existing <svc> managed users` is gated three
+ways: Komga and Audiobookshelf run it only under `reconcile`; Jellyfin under
+`preflight` or `reconcile`; Beszel, Paperless and Immich under no phase gate at
+all, only `not ansible_check_mode` and a match count of one. The three ungated
+ones are deliberate. Their `Verify exact` asserts compare the listed record's
+id against `<svc>_authenticated_managed_user_ids` — Beszel and Immich against
+the `initial_` companion as well — and nothing but authentication sets those
+facts, so authentication must run during `verify` too. The three roles carrying
+the binding-facts initializer are exactly those three, for the same reason. A
+shared entry point that unified the gate would either break `verify.yml` for
+Beszel, Paperless and Immich or begin proving credentials during verify for
+Komga and Audiobookshelf. Only one of the six gates is pinned:
+`tests/contracts/audiobookshelf-runtime.rb` asserts Audiobookshelf's
+authenticate `when:` list in full, phase literal included. The other five are
+pinned only for the presence of `not ansible_check_mode`, so five of the six
+would ship green and the sixth would read like a contract that merely needed
+updating.
+
+`tests/policy_test.rb` closes the remaining door. A tasks file gating on a
+`*_phase` variable must open with an unconditional assert naming the phases it
+implements, and its callers must pass exactly that set — callers resolved only
+through `ansible.builtin.include_tasks` against a path relative to the
+including file. A shared `roles/managed_users/` reached by `include_role` with
+`tasks_from` is invisible to that resolution, so it would declare phases and
+fail with "declares … but its callers pass none". Parameterising the six would
+mean first weakening the guard that makes an unrecognised phase loud, in the
+same change that makes phase handling uniform.
 
 Every string this can return names the API attribute and a count. No identity
 value, and nothing drawn from the listing, ever reaches the result, so callers
