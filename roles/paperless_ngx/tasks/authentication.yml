@@ -1,0 +1,39 @@
+---
+# Authentication. Trades the vault administrator's password for an API token and
+# refuses anything but a 200 with a token, which is also how verification proves
+# the deployed identity is still the vault's. Every task carries
+# platform_verify_paperless, as it did inline.
+
+- name: Authenticate the vault Paperless administrator
+  tags: [platform_verify_paperless]
+  ansible.builtin.uri:
+    url: "{{ paperless_api }}/api/token/"
+    method: POST
+    body_format: json
+    body:
+      username: "{{ vault_paperless_admin_username }}"
+      password: "{{ vault_paperless_admin_password }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: paperless_authentication
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Resolve sanitized Paperless administrator authentication status
+  tags: [platform_verify_paperless]
+  ansible.builtin.set_fact:
+    paperless_authentication_status: "{{ paperless_authentication.status | default(0) | int }}"
+    paperless_api_token: "{{ paperless_authentication.json.token | default('') }}"
+  no_log: true
+
+- name: Require the vault Paperless administrator
+  tags: [platform_verify_paperless]
+  ansible.builtin.assert:
+    that:
+      - paperless_authentication_status | int == 200
+      - paperless_api_token | length > 0
+    fail_msg: >-
+      Paperless does not accept the preserved vault administrator. Restore the deployed identity
+      from the password manager or migrate it explicitly before rerunning.

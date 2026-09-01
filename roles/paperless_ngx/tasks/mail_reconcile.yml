@@ -1,0 +1,215 @@
+---
+# Mail reconciliation. Creates or repairs the managed account, then the rule
+# that points at it, reporting rather than acting under --check, and requires the
+# reconciled account and rule to match the payloads exactly.
+
+- name: Report planned Paperless mail account creation
+  ansible.builtin.debug:
+    msg: PAPERLESS_PLAN_MAIL_ACCOUNT_CREATE
+  when:
+    - ansible_check_mode
+    - paperless_mail_account_create_required | bool
+  changed_when: true
+
+- name: Create the managed Paperless mail account
+  ansible.builtin.uri:
+    url: "{{ paperless_api }}/api/mail_accounts/"
+    method: POST
+    headers:
+      Authorization: "Token {{ paperless_api_token }}"
+    body_format: json
+    body: "{{ paperless_mail_account_payload }}"
+    status_code: [201]
+  when:
+    - not ansible_check_mode
+    - paperless_candidate_mail_probe_verified | bool
+    - paperless_mail_account_create_required | bool
+  register: paperless_mail_account_created
+  changed_when: true
+  no_log: true
+
+- name: Report planned Paperless mail account repair
+  ansible.builtin.debug:
+    msg: PAPERLESS_PLAN_MAIL_ACCOUNT_REPAIR
+  when:
+    - ansible_check_mode
+    - paperless_mail_account_repair_required | bool
+  changed_when: true
+
+- name: Repair the managed Paperless mail account
+  ansible.builtin.uri:
+    url: "{{ paperless_api }}/api/mail_accounts/{{ paperless_existing_mail_account.id }}/"
+    method: PATCH
+    headers:
+      Authorization: "Token {{ paperless_api_token }}"
+    body_format: json
+    body: "{{ paperless_mail_account_payload }}"
+    status_code: [200]
+  when:
+    - not ansible_check_mode
+    - paperless_candidate_mail_probe_verified | bool
+    - paperless_mail_account_repair_required | bool
+  changed_when: true
+  no_log: true
+
+- name: Read the reconciled Paperless mail account
+  tags: [platform_verify_paperless]
+  ansible.builtin.uri:
+    url: "{{ paperless_api }}/api/mail_accounts/?page_size=1000"
+    headers:
+      Authorization: "Token {{ paperless_api_token }}"
+    status_code: [200]
+    return_content: true
+  register: paperless_mail_accounts_after
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require complete reconciled Paperless mail account listing
+  tags: [platform_verify_paperless]
+  ansible.builtin.assert:
+    that:
+      - paperless_mail_accounts_after.json is mapping
+      - paperless_mail_accounts_after.json.keys() | sort == ['count', 'next', 'previous', 'results']
+      - paperless_mail_accounts_after.json.count | type_debug == 'int'
+      - paperless_mail_accounts_after.json.next is none
+      - paperless_mail_accounts_after.json.previous is none
+      - paperless_mail_accounts_after.json.results | type_debug == 'list'
+      - paperless_mail_accounts_after.json.count == paperless_mail_accounts_after.json.results | length
+    fail_msg: Reconciled Paperless mail-account listing is incomplete or malformed.
+
+- name: Resolve the reconciled Paperless mail account
+  tags: [platform_verify_paperless]
+  ansible.builtin.set_fact:
+    paperless_reconciled_mail_accounts: >-
+      {{ paperless_mail_accounts_after.json.results
+         | selectattr('name', 'equalto', vault_paperless_mail_account_name) | list }}
+    paperless_reconciled_mail_account: >-
+      {{ (paperless_mail_accounts_after.json.results
+          | selectattr('name', 'equalto', vault_paperless_mail_account_name) | list | first)
+         | default({}) }}
+  no_log: true
+
+- name: Resolve the desired Paperless mail rule payload
+  tags: [platform_verify_paperless]
+  ansible.builtin.set_fact:
+    paperless_mail_rule_payload: >-
+      {{ paperless_mail_rule | combine({
+           'name': vault_paperless_mail_rule_name,
+           'account': paperless_reconciled_mail_account.id | default(0),
+           'owner': paperless_managed_administrators[0].id
+         }) }}
+  no_log: true
+
+- name: Resolve Paperless mail rule repair requirement
+  tags: [platform_verify_paperless]
+  ansible.builtin.set_fact:
+    paperless_mail_rule_repair_required: >-
+      {{ paperless_managed_mail_rules | length == 1 and
+         (paperless_existing_mail_rule | dict2items
+          | selectattr('key', 'in', paperless_mail_rule_payload.keys()) | items2dict) !=
+         paperless_mail_rule_payload }}
+  no_log: true
+
+- name: Report planned Paperless mail rule creation
+  ansible.builtin.debug:
+    msg: PAPERLESS_PLAN_MAIL_RULE_CREATE
+  when:
+    - ansible_check_mode
+    - paperless_mail_rule_create_required | bool
+  changed_when: true
+
+- name: Create the managed Paperless mail rule
+  ansible.builtin.uri:
+    url: "{{ paperless_api }}/api/mail_rules/"
+    method: POST
+    headers:
+      Authorization: "Token {{ paperless_api_token }}"
+    body_format: json
+    body: "{{ paperless_mail_rule_payload }}"
+    status_code: [201]
+  when:
+    - not ansible_check_mode
+    - paperless_candidate_mail_probe_verified | bool
+    - paperless_mail_rule_create_required | bool
+  changed_when: true
+  no_log: true
+
+- name: Report planned Paperless mail rule repair
+  ansible.builtin.debug:
+    msg: PAPERLESS_PLAN_MAIL_RULE_REPAIR
+  when:
+    - ansible_check_mode
+    - paperless_mail_rule_repair_required | bool
+  changed_when: true
+
+- name: Repair the managed Paperless mail rule
+  ansible.builtin.uri:
+    url: "{{ paperless_api }}/api/mail_rules/{{ paperless_existing_mail_rule.id }}/"
+    method: PATCH
+    headers:
+      Authorization: "Token {{ paperless_api_token }}"
+    body_format: json
+    body: "{{ paperless_mail_rule_payload }}"
+    status_code: [200]
+  when:
+    - not ansible_check_mode
+    - paperless_candidate_mail_probe_verified | bool
+    - paperless_mail_rule_repair_required | bool
+  changed_when: true
+  no_log: true
+
+- name: Read the exact reconciled Paperless mail rule
+  tags: [platform_verify_paperless]
+  ansible.builtin.uri:
+    url: "{{ paperless_api }}/api/mail_rules/?page_size=1000"
+    headers:
+      Authorization: "Token {{ paperless_api_token }}"
+    status_code: [200]
+    return_content: true
+  register: paperless_mail_rules_after
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require complete reconciled Paperless mail rule listing
+  tags: [platform_verify_paperless]
+  ansible.builtin.assert:
+    that:
+      - paperless_mail_rules_after.json is mapping
+      - paperless_mail_rules_after.json.keys() | sort == ['count', 'next', 'previous', 'results']
+      - paperless_mail_rules_after.json.count | type_debug == 'int'
+      - paperless_mail_rules_after.json.next is none
+      - paperless_mail_rules_after.json.previous is none
+      - paperless_mail_rules_after.json.results | type_debug == 'list'
+      - paperless_mail_rules_after.json.count == paperless_mail_rules_after.json.results | length
+    fail_msg: Reconciled Paperless mail-rule listing is incomplete or malformed.
+
+- name: Require exact Paperless administrator, mail account, and mail rule
+  tags: [platform_verify_paperless]
+  ansible.builtin.assert:
+    that:
+      - paperless_reconciled_mail_accounts | length == 1
+      - >-
+        (paperless_reconciled_mail_account | dict2items
+         | selectattr('key', 'in', (paperless_mail_account.keys() | list) + ['name', 'username', 'owner'])
+         | items2dict) ==
+        (paperless_mail_account_payload | dict2items
+         | rejectattr('key', 'equalto', 'password') | items2dict)
+      - paperless_verified_mail_rules | length == 1
+      - >-
+        (paperless_verified_mail_rules[0] | dict2items
+         | selectattr('key', 'in', paperless_mail_rule_payload.keys()) | items2dict) ==
+        paperless_mail_rule_payload
+    fail_msg: The managed Paperless administrator, Gmail account, or mail rule is absent or drifted.
+  vars:
+    paperless_verified_mail_rules: >-
+      {{ paperless_mail_rules_after.json.results
+         | selectattr('name', 'equalto', vault_paperless_mail_rule_name) | list }}
+  when:
+    - >-
+      not ansible_check_mode or
+      not (paperless_mail_account_create_required | bool or
+           paperless_mail_account_repair_required | bool or
+           paperless_mail_rule_create_required | bool or
+           paperless_mail_rule_repair_required | bool)

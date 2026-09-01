@@ -1,0 +1,12 @@
+---
+# The credential fingerprint is recorded last, after verification has passed, so
+# an interrupted run leaves the previous fingerprint in place and the next run
+# repairs the account rather than trusting it.
+
+- name: Record the verified Paperless Gmail credential fingerprint
+  ansible.builtin.copy:
+    content: "{{ paperless_mail_account_credential_fingerprint }}\n"
+    dest: "{{ platform_runtime_dir }}/services/paperless-ngx/.gmail-credential-fingerprint"
+    mode: "0600"
+  when: not ansible_check_mode
+  no_log: true

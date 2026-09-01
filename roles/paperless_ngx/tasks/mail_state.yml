@@ -1,0 +1,210 @@
+---
+# Desired mail state, and the state Paperless is in. Builds the account payload
+# and the credential fingerprint, reads the installed fingerprint, then lists
+# the accounts and rules and validates every collection and item schema before
+# anything is mutated. Ends by deciding creation or repair for each, and by
+# snapshotting the managed pair for the probe in mail_probe.yml to be compared
+# against.
+
+- name: Resolve the desired Paperless mail account payload
+  tags: [platform_verify_paperless]
+  ansible.builtin.set_fact:
+    paperless_mail_account_payload: >-
+      {{ paperless_mail_account | combine({
+           'name': vault_paperless_mail_account_name,
+           'username': vault_paperless_gmail_account,
+           'password': vault_paperless_gmail_app_password | replace(' ', ''),
+           'owner': paperless_managed_administrators[0].id
+         }) }}
+    paperless_mail_account_credential_fingerprint: >-
+      {{ (vault_paperless_django_secret_key ~ ':' ~
+          (vault_paperless_gmail_app_password | replace(' ', ''))) | hash('sha256') }}
+  no_log: true
+
+# Redacted through the read and resolve below: the file is a hash over
+# vault_paperless_gmail_username and vault_paperless_gmail_app_password.
+- name: Inspect the installed Paperless Gmail credential fingerprint
+  tags: [platform_verify_paperless]
+  ansible.builtin.stat:
+    path: "{{ platform_runtime_dir }}/services/paperless-ngx/.gmail-credential-fingerprint"
+    get_checksum: false
+  register: paperless_mail_account_fingerprint_file
+  no_log: true
+
+- name: Read the installed Paperless Gmail credential fingerprint
+  tags: [platform_verify_paperless]
+  ansible.builtin.slurp:
+    path: "{{ platform_runtime_dir }}/services/paperless-ngx/.gmail-credential-fingerprint"
+  register: paperless_mail_account_fingerprint_content
+  when: paperless_mail_account_fingerprint_file.stat.exists
+  no_log: true
+
+- name: Resolve the installed Paperless Gmail credential fingerprint
+  tags: [platform_verify_paperless]
+  ansible.builtin.set_fact:
+    paperless_installed_mail_account_credential_fingerprint: >-
+      {{ (paperless_mail_account_fingerprint_content.content | b64decode | trim)
+         if paperless_mail_account_fingerprint_file.stat.exists else '' }}
+  no_log: true
+
+- name: Require the installed Paperless Gmail credential fingerprint
+  tags: [never, platform_verify_paperless]
+  ansible.builtin.assert:
+    that:
+      - >-
+        paperless_installed_mail_account_credential_fingerprint ==
+        paperless_mail_account_credential_fingerprint
+    fail_msg: The installed Paperless Gmail credential configuration is absent or drifted.
+  no_log: true
+  when: "'platform_verify_paperless' in ansible_run_tags"
+
+- name: List Paperless mail accounts for reconciliation
+  tags: [platform_verify_paperless]
+  ansible.builtin.uri:
+    url: "{{ paperless_api }}/api/mail_accounts/?page_size=1000"
+    headers:
+      Authorization: "Token {{ paperless_api_token }}"
+    status_code: [200]
+    return_content: true
+  register: paperless_mail_accounts_before
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: List Paperless mail rules for reconciliation
+  tags: [platform_verify_paperless]
+  ansible.builtin.uri:
+    url: "{{ paperless_api }}/api/mail_rules/?page_size=1000"
+    headers:
+      Authorization: "Token {{ paperless_api_token }}"
+    status_code: [200]
+    return_content: true
+  register: paperless_mail_rules_before
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Validate Paperless mail account and rule schemas before mutation
+  tags: [platform_verify_paperless]
+  ansible.builtin.assert:
+    that:
+      - paperless_mail_accounts_before.json is mapping
+      - paperless_mail_accounts_before.json.keys() | sort == ['count', 'next', 'previous', 'results']
+      - paperless_mail_accounts_before.json.count | type_debug == 'int'
+      - paperless_mail_accounts_before.json.next is none
+      - paperless_mail_accounts_before.json.previous is none
+      - paperless_mail_accounts_before.json.results | type_debug == 'list'
+      - paperless_mail_accounts_before.json.count == paperless_mail_accounts_before.json.results | length
+      - paperless_mail_rules_before.json is mapping
+      - paperless_mail_rules_before.json.keys() | sort == ['count', 'next', 'previous', 'results']
+      - paperless_mail_rules_before.json.count | type_debug == 'int'
+      - paperless_mail_rules_before.json.next is none
+      - paperless_mail_rules_before.json.previous is none
+      - paperless_mail_rules_before.json.results | type_debug == 'list'
+      - paperless_mail_rules_before.json.count == paperless_mail_rules_before.json.results | length
+    fail_msg: >-
+      Paperless 3.0.5 returned unsupported mail collection schemas; refusing to mutate mail state.
+
+- name: Validate every existing Paperless mail account before mutation
+  tags: [platform_verify_paperless]
+  ansible.builtin.assert:
+    that:
+      - item is mapping
+      - item.id | type_debug == 'int'
+      - item.name | type_debug == 'str'
+      - item.imap_server | type_debug == 'str'
+      - item.imap_port | type_debug == 'int'
+      - item.imap_security | type_debug == 'int'
+      - item.username | type_debug == 'str'
+      - item.is_token | type_debug == 'bool'
+      - item.account_type | type_debug == 'int'
+      - item.character_set | type_debug == 'str'
+      - item.owner is none or item.owner | type_debug == 'int'
+    fail_msg: Paperless 3.0.5 returned an unsupported mail-account schema; refusing mutation.
+  loop: "{{ paperless_mail_accounts_before.json.results }}"
+  loop_control:
+    label: "{{ item.id | default('invalid') }}"
+  no_log: true
+
+- name: Validate every existing Paperless mail rule before mutation
+  tags: [platform_verify_paperless]
+  ansible.builtin.assert:
+    that:
+      - item is mapping
+      - item.id | type_debug == 'int'
+      - item.name | type_debug == 'str'
+      - item.account | type_debug == 'int'
+      - item.enabled | type_debug == 'bool'
+      - item.folder | type_debug == 'str'
+      - item.owner is none or item.owner | type_debug == 'int'
+    fail_msg: Paperless 3.0.5 returned an unsupported mail-rule schema; refusing mutation.
+  loop: "{{ paperless_mail_rules_before.json.results }}"
+  loop_control:
+    label: "{{ item.id | default('invalid') }}"
+  no_log: true
+
+- name: Resolve managed Paperless mail accounts
+  tags: [platform_verify_paperless]
+  ansible.builtin.set_fact:
+    paperless_managed_mail_accounts: >-
+      {{ paperless_mail_accounts_before.json.results
+         | selectattr('name', 'equalto', vault_paperless_mail_account_name) | list }}
+  no_log: true
+
+- name: Resolve managed Paperless mail rules
+  tags: [platform_verify_paperless]
+  ansible.builtin.set_fact:
+    paperless_managed_mail_rules: >-
+      {{ paperless_mail_rules_before.json.results
+         | selectattr('name', 'equalto', vault_paperless_mail_rule_name) | list }}
+  no_log: true
+
+- name: Refuse duplicate managed Paperless mail accounts
+  tags: [platform_verify_paperless]
+  ansible.builtin.assert:
+    that:
+      - paperless_managed_mail_accounts | length <= 1
+    fail_msg: The managed Paperless mail account name is duplicated; resolve it in Paperless.
+
+- name: Refuse duplicate managed Paperless mail rules
+  tags: [platform_verify_paperless]
+  ansible.builtin.assert:
+    that:
+      - paperless_managed_mail_rules | length <= 1
+    fail_msg: The managed Paperless mail rule name is duplicated; resolve it in Paperless.
+
+- name: Resolve Paperless mail account reconciliation
+  tags: [platform_verify_paperless]
+  ansible.builtin.set_fact:
+    paperless_existing_mail_account: "{{ paperless_managed_mail_accounts | first | default({}) }}"
+    paperless_mail_account_create_required: "{{ paperless_managed_mail_accounts | length == 0 }}"
+  no_log: true
+
+- name: Resolve Paperless mail account repair requirement
+  tags: [platform_verify_paperless]
+  ansible.builtin.set_fact:
+    paperless_mail_account_repair_required: >-
+      {{ paperless_managed_mail_accounts | length == 1 and
+         ((paperless_existing_mail_account | dict2items
+           | selectattr('key', 'in', (paperless_mail_account.keys() | list) + ['name', 'username', 'owner'])
+           | items2dict) !=
+          (paperless_mail_account_payload | dict2items
+           | rejectattr('key', 'equalto', 'password') | items2dict) or
+          paperless_installed_mail_account_credential_fingerprint !=
+          paperless_mail_account_credential_fingerprint) }}
+  no_log: true
+
+- name: Resolve Paperless mail rule reconciliation
+  tags: [platform_verify_paperless]
+  ansible.builtin.set_fact:
+    paperless_existing_mail_rule: "{{ paperless_managed_mail_rules | first | default({}) }}"
+    paperless_mail_rule_create_required: "{{ paperless_managed_mail_rules | length == 0 }}"
+  no_log: true
+
+- name: Snapshot normalized managed Paperless mail state before credential testing
+  tags: [platform_verify_paperless]
+  ansible.builtin.set_fact:
+    paperless_managed_mail_probe_state_before:
+      accounts: "{{ paperless_managed_mail_accounts | sort(attribute='id') }}"
+      rules: "{{ paperless_managed_mail_rules | sort(attribute='id') }}"
+  no_log: true
