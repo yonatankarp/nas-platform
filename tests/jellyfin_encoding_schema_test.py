@@ -2,7 +2,7 @@
 """Contract tests for the Jellyfin encoding schema filter.
 
 Every rejection here corresponds to one of the forty-five field-type conditions
-`roles/jellyfin/tasks/main.yml` repeated for the effective policy and for each of
+`roles/jellyfin/tasks/deploy.yml` repeated for the effective policy and for each of
 the two pinned profiles, before they moved into
 `filter_plugins/jellyfin_encoding_schema.py`.
 

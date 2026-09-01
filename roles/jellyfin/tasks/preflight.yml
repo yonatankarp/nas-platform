@@ -1,0 +1,236 @@
+---
+# Preflight. Every read of owned state, before any of it is written: the user
+# list and the primary administrator it resolves to, the server configuration,
+# the library inventory, and the approved administrator image against the
+# published one. Nothing here changes Jellyfin. The one thing it does write is
+# a local probe file to compare image bytes in, which check mode declines to do
+# and says so.
+
+- name: List Jellyfin users for primary administrator preflight
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Users"
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_reconcile_token }}"'
+    status_code: [200]
+    return_content: true
+  register: jellyfin_primary_users_before
+  when: not ansible_check_mode or jellyfin_wizard_completed | bool
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Initialize Jellyfin primary administrator matches
+  ansible.builtin.set_fact:
+    jellyfin_primary_id_matches: []
+    jellyfin_primary_exact_matches: []
+    jellyfin_primary_normalized_matches: []
+    jellyfin_primary_temporary_matches: []
+  when: not ansible_check_mode or jellyfin_wizard_completed | bool
+  no_log: true
+
+- name: Resolve Jellyfin primary administrator matches
+  ansible.builtin.set_fact:
+    jellyfin_primary_id_matches: >-
+      {{ jellyfin_primary_id_matches +
+         ([item] if item.Id | string == jellyfin_primary_authenticated_id else []) }}
+    jellyfin_primary_exact_matches: >-
+      {{ jellyfin_primary_exact_matches +
+         ([item] if item.Name == jellyfin_admin_username else []) }}
+    jellyfin_primary_normalized_matches: >-
+      {{ jellyfin_primary_normalized_matches +
+         ([item] if item.Name | trim | lower == jellyfin_admin_username | trim | lower else []) }}
+    jellyfin_primary_temporary_matches: >-
+      {{ jellyfin_primary_temporary_matches +
+         ([item] if item.Name == jellyfin_primary_temporary_name else []) }}
+  loop: "{{ jellyfin_primary_users_before.json | default([]) }}"
+  loop_control:
+    label: jellyfin-primary-user
+  when: not ansible_check_mode or jellyfin_wizard_completed | bool
+  no_log: true
+
+- name: Refuse ambiguous Jellyfin primary administrator identity
+  ansible.builtin.assert:
+    that:
+      - jellyfin_primary_users_before.json | type_debug == 'list'
+      - jellyfin_primary_id_matches | length == 1
+      - >-
+        jellyfin_primary_normalized_matches | length == 1 or
+        jellyfin_primary_temporary_matches | length == 1
+      - jellyfin_primary_exact_matches | length <= 1
+      - >-
+        jellyfin_primary_exact_matches | length == 0 or
+        jellyfin_primary_exact_matches[0].Id | string == jellyfin_primary_authenticated_id
+      - jellyfin_primary_temporary_matches | length <= 1
+      - >-
+        jellyfin_primary_temporary_matches | length == 0 or
+        jellyfin_primary_temporary_matches[0].Id | string == jellyfin_primary_authenticated_id
+      - >-
+        jellyfin_primary_normalized_matches | length +
+        jellyfin_primary_temporary_matches | length == 1
+      - jellyfin_primary_id_matches[0].Policy.IsAdministrator | bool
+      - jellyfin_primary_id_matches[0].Configuration is mapping
+    fail_msg: >-
+      The configured Jellyfin primary administrator is absent, duplicated, or conflicts
+      with a separate exact or temporary identity. Resolve it manually; no users were changed.
+  when: not ansible_check_mode or jellyfin_wizard_completed | bool
+
+- name: Resolve the existing Jellyfin primary administrator
+  ansible.builtin.set_fact:
+    jellyfin_primary_user_before: "{{ jellyfin_primary_id_matches[0] }}"
+    jellyfin_primary_rename_required: >-
+      {{ jellyfin_primary_id_matches[0].Name != jellyfin_admin_username }}
+    jellyfin_primary_temporary_recovery: >-
+      {{ jellyfin_primary_id_matches[0].Name == jellyfin_primary_temporary_name }}
+    jellyfin_primary_recovery_name: >-
+      {{ jellyfin_primary_recovery_state.original_name
+         if jellyfin_primary_recovery_state | length > 0
+         else jellyfin_primary_id_matches[0].Name }}
+  when: not ansible_check_mode or jellyfin_wizard_completed | bool
+  no_log: true
+
+- name: Read Jellyfin server configuration for preflight
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/System/Configuration"
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_reconcile_token }}"'
+    status_code: [200]
+    return_content: true
+  register: jellyfin_server_configuration_before
+  when: not ansible_check_mode or jellyfin_wizard_completed | bool
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+# Deliberately not redacted. Unlooped, so the result dict adds only the source text of
+# the failing condition, and the three conditions read the server-configuration document
+# Jellyfin returned, reaching one field, ServerName. The registered response above stays
+# redacted because it was fetched with the reconcile token. "Incomplete" covered three
+# faults that need different responses: Jellyfin answered with something that is not a
+# document at all, answered without a ServerName, or answered with a ServerName that is
+# not a string.
+- name: Require complete Jellyfin server configuration
+  ansible.builtin.assert:
+    that:
+      - jellyfin_server_configuration_before.json is mapping
+      - jellyfin_server_configuration_before.json.ServerName is defined
+      - jellyfin_server_configuration_before.json.ServerName is string
+    fail_msg: Jellyfin returned an incomplete server configuration; no owned state was changed.
+  when: not ansible_check_mode or jellyfin_wizard_completed | bool
+
+- name: Resolve Jellyfin server name repair requirement
+  ansible.builtin.set_fact:
+    jellyfin_server_name_update_required: >-
+      {{ jellyfin_server_configuration_before.json.ServerName != jellyfin_server_name }}
+  when: not ansible_check_mode or jellyfin_wizard_completed | bool
+
+- name: List Jellyfin libraries for preflight
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Library/VirtualFolders"
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_reconcile_token }}"'
+    status_code: [200]
+    return_content: true
+  register: jellyfin_libraries_before
+  when: not ansible_check_mode or jellyfin_wizard_completed | bool
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Validate and resolve Jellyfin managed library inventory
+  ansible.builtin.include_tasks: library_inventory.yml
+  vars:
+    jellyfin_library_inventory_response: "{{ jellyfin_libraries_before.json }}"
+  when: not ansible_check_mode or jellyfin_wizard_completed | bool
+
+- name: Inspect the approved Jellyfin administrator image
+  ansible.builtin.stat:
+    path: "{{ jellyfin_admin_avatar_source }}"
+    checksum_algorithm: sha256
+  register: jellyfin_admin_avatar_source_state
+  delegate_to: localhost
+  changed_when: false
+  check_mode: false
+
+- name: Require the approved Jellyfin administrator image
+  ansible.builtin.assert:
+    that:
+      - jellyfin_admin_avatar_source_state.stat.exists
+      - jellyfin_admin_avatar_source_state.stat.isreg
+      - not jellyfin_admin_avatar_source_state.stat.islnk
+      - jellyfin_admin_avatar_source_state.stat.size | int > 0
+      - jellyfin_admin_avatar_source_state.stat.checksum == jellyfin_admin_avatar_sha256
+    fail_msg: The approved Jellyfin administrator image is absent, unsafe, or has unexpected bytes.
+
+- name: Remove stale Jellyfin administrator image probe
+  ansible.builtin.file:
+    path: "{{ jellyfin_admin_avatar_probe }}"
+    state: absent
+  when: not ansible_check_mode
+  changed_when: false
+
+- name: Read the current Jellyfin primary administrator image
+  ansible.builtin.uri:
+    url: >-
+      {{ jellyfin_api ~ '/UserImage?userId=' ~
+         (jellyfin_primary_authenticated_id | urlencode) ~ '&tag=' ~
+         (jellyfin_primary_user_before.PrimaryImageTag | default('') | urlencode) ~
+         '&format=original' }}
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_reconcile_token }}"'
+    dest: "{{ jellyfin_admin_avatar_probe }}"
+    status_code: [200, 404]
+  register: jellyfin_admin_avatar_before
+  when:
+    - not ansible_check_mode
+    - jellyfin_primary_user_before.PrimaryImageTag | default('') | length > 0
+  changed_when: false
+  no_log: true
+
+- name: Inspect the current Jellyfin primary administrator image bytes
+  ansible.builtin.stat:
+    path: "{{ jellyfin_admin_avatar_probe }}"
+    checksum_algorithm: sha256
+  register: jellyfin_admin_avatar_before_state
+  when:
+    - not ansible_check_mode
+    - jellyfin_admin_avatar_before.status | default(404) | int == 200
+  changed_when: false
+
+# Comparing the published bytes means downloading them into the probe file, and
+# a check-mode review must write nothing. What check mode can still decide is
+# the case it reads for free: a primary administrator carrying no image tag at
+# all has no image, so that repair is reported. A byte difference hiding behind
+# an existing tag stays unknown and is treated as "no upload required" —
+# assuming an upload instead would make every review of a converged NAS report a
+# change it never proved, which is noise that hides real drift rather than
+# revealing it. The debug below discloses that the comparison was deferred.
+- name: Resolve Jellyfin primary administrator image repair requirement
+  ansible.builtin.set_fact:
+    jellyfin_admin_avatar_upload_required: >-
+      {{ jellyfin_primary_user_before.PrimaryImageTag | default('') | length == 0 or
+         (not ansible_check_mode and
+          (jellyfin_admin_avatar_before.status | default(404) | int != 200 or
+           jellyfin_admin_avatar_before_state.stat.checksum |
+             default('') != jellyfin_admin_avatar_sha256)) }}
+  when: not ansible_check_mode or jellyfin_wizard_completed | bool
+  no_log: true
+
+- name: Report deferred Jellyfin administrator image comparison in check mode
+  ansible.builtin.debug:
+    msg: >-
+      The published Jellyfin administrator image is compared by downloading it,
+      which check mode will not do; an image that differs from the approved
+      bytes behind the existing image tag is repaired during a normal
+      convergence.
+  when:
+    - ansible_check_mode
+    - jellyfin_wizard_completed | bool
+    - jellyfin_primary_user_before.PrimaryImageTag | default('') | length > 0
+  changed_when: false
+
+- name: Remove the Jellyfin administrator image preflight probe
+  ansible.builtin.file:
+    path: "{{ jellyfin_admin_avatar_probe }}"
+    state: absent
+  when: not ansible_check_mode
+  changed_when: false

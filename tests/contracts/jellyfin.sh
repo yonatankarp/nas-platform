@@ -187,7 +187,17 @@ inventory_top = load_tasks(File.join(tasks_dir, "library_inventory.yml"))
 # the middle of its own body, so resolving includes would interleave the
 # settings phases with the identity and library phases that the preflight
 # before mutation ordering assertion exists to keep apart.
-role_tasks = flatten_tasks(load_tasks(File.join(tasks_dir, "main.yml"))) +
+#
+# main.yml is read through static_role_tasks, which splices a statically
+# imported stage file in where its import stands and leaves a dynamic include
+# alone -- exactly what Ansible does, and exactly the distinction the paragraph
+# above depends on. Reading the index alone would leave role_tasks holding its
+# fifteen entries plus the four sibling files, and none of the tasks the seven
+# stage files carry, so the required-task and ordering assertions below would be
+# checking the wrong list.
+role_tasks = flatten_tasks(PolicySupport.static_role_tasks(
+  File.join(tasks_dir, "main.yml"), aliases: true
+)) +
   flatten_tasks(identity_top) + flatten_tasks(settings_top) +
   flatten_tasks(load_tasks(File.join(tasks_dir, "qsv_probe.yml"))) +
   flatten_tasks(inventory_top)

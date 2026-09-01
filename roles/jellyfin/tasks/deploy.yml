@@ -1,0 +1,213 @@
+---
+# Deployment. Revalidates the release paths this role touches, refuses an
+# acceleration or plugin policy that is not the shipped one, pins the render
+# device on the NAS, renders the environment, brings the project up, reports it,
+# checks the applied CPU policy, and waits for the startup API rather than for
+# the container health check.
+
+- name: Revalidate deployment paths before Jellyfin runtime use
+  ansible.builtin.include_role:
+    name: deployment_bundle
+    tasks_from: target
+  vars:
+    deployment_target_service: jellyfin
+    deployment_target_require_current_release: true
+    deployment_target_extra_paths: []
+
+# Deliberately not redacted. On ansible-core 2.21.3 no_log on an assert hides only
+# the result dict; fail_msg prints from the error header either way. Hiding the dict
+# here costs the name of whichever condition failed, under a fail_msg that lists four
+# unrelated causes. The dict cannot carry credential material: the assert is unlooped,
+# so there is no item to echo, and the reported "assertion" field is the source text
+# of the condition rather than its rendered value, so the two
+# vault_jellyfin_opensubtitles_* presence checks disclose their variable names only.
+#
+# The forty-five field-type conditions this assert used to spell out three times over
+# live in filter_plugins/jellyfin_encoding_schema.py, which names the offending path
+# instead of failing anonymously. What stays here is what neither a filter nor
+# meta/argument_specs.yml can express: the value equalities that pin the shipped
+# defaults against an inline copy of themselves, so editing defaults/main.yml is
+# refused rather than deployed.
+- name: Require explicit Jellyfin acceleration and plugin policy
+  ansible.builtin.assert:
+    that:
+      - jellyfin_encoding_schema_errors | length == 0
+      - platform_kind in jellyfin_encoding_profiles
+      - jellyfin_encoding_profiles.nas == jellyfin_required_nas_encoding_policy
+      - jellyfin_encoding_profiles.mac == jellyfin_required_mac_encoding_policy
+      - >-
+        jellyfin_encoding_policy == jellyfin_encoding_profiles[
+          'mac'
+          if ((platform_compose_kind | default('') == 'integration') and
+              (deployment_bundle_test_mode | default(false) | bool))
+          else platform_kind
+        ]
+      - jellyfin_plugin_repositories | type_debug == 'list'
+      - jellyfin_plugin_repositories | length == 2
+      - jellyfin_plugin_repositories[0] is mapping
+      - jellyfin_plugin_repositories[1] is mapping
+      - jellyfin_plugin_repositories[0].Name is string
+      - jellyfin_plugin_repositories[1].Name is string
+      - >-
+        jellyfin_plugin_repositories | map(attribute='Name') | list ==
+        ['Jellyfin Stable', 'Intro Skipper']
+      - >-
+        jellyfin_plugin_repositories[0].Url is string and
+        jellyfin_plugin_repositories[1].Url is string
+      - >-
+        jellyfin_plugin_repositories | map(attribute='Url') | list ==
+        ['https://repo.jellyfin.org/files/plugin/manifest.json',
+         'https://intro-skipper.org/manifest.json']
+      - >-
+        jellyfin_plugin_repositories[0].Enabled is boolean and
+        jellyfin_plugin_repositories[1].Enabled is boolean
+      - jellyfin_plugin_repositories[0].Enabled
+      - jellyfin_plugin_repositories[1].Enabled
+      - >-
+        jellyfin_retired_plugin_repository_urls ==
+        ['https://repo.jellyfin.org/releases/plugin/manifest-stable.json']
+      - jellyfin_plugins | type_debug == 'list'
+      - jellyfin_plugins | select('string') | list | length == jellyfin_plugins | length
+      - jellyfin_plugins == ['Intro Skipper', 'Open Subtitles']
+      - jellyfin_plugin_packages == jellyfin_required_plugin_packages
+      - jellyfin_opensubtitles_plugin_id is string
+      - jellyfin_opensubtitles_plugin_id == '4b9ed42f-5185-48b5-9803-6ff2989014c4'
+      - vault_jellyfin_opensubtitles_username | length > 0
+      - vault_jellyfin_opensubtitles_password | length > 0
+    fail_msg: >-
+      Jellyfin requires an explicit pinned platform encoding policy, unique managed
+      repositories, exact plugin identities, and nonempty Open Subtitles credentials.
+      {{ jellyfin_encoding_schema_errors |
+         ternary('Encoding schema violations: ' ~
+                 (jellyfin_encoding_schema_errors | join('; ')),
+                 'The encoding schema itself is well formed, so a pinned value differs.') }}
+  vars:
+    jellyfin_encoding_schema_errors: >-
+      {{ jellyfin_encoding_profiles |
+         jellyfin_encoding_errors(jellyfin_encoding_policy) }}
+    jellyfin_required_nas_encoding_policy:
+      HardwareAccelerationType: qsv
+      QsvDevice: /dev/dri/renderD128
+      HardwareDecodingCodecs: [h264, hevc, mpeg2video, vc1, vp8, vp9]
+      EnableDecodingColorDepth10Hevc: true
+      EnableDecodingColorDepth10Vp9: true
+      EnableHardwareEncoding: true
+      AllowHevcEncoding: true
+      AllowAv1Encoding: false
+      EnableIntelLowPowerH264HwEncoder: true
+      EnableIntelLowPowerHevcHwEncoder: true
+      EnableVppTonemapping: true
+      EnableTonemapping: false
+    jellyfin_required_mac_encoding_policy:
+      HardwareAccelerationType: none
+      QsvDevice: ""
+      HardwareDecodingCodecs: []
+      EnableDecodingColorDepth10Hevc: false
+      EnableDecodingColorDepth10Vp9: false
+      EnableHardwareEncoding: false
+      AllowHevcEncoding: false
+      AllowAv1Encoding: false
+      EnableIntelLowPowerH264HwEncoder: false
+      EnableIntelLowPowerHevcHwEncoder: false
+      EnableVppTonemapping: false
+      EnableTonemapping: false
+    jellyfin_required_plugin_packages:
+      - Name: Intro Skipper
+        AssemblyGuid: c83d86bb-a1e0-4c35-a113-e2101cf4ee6b
+        RepositoryUrl: https://intro-skipper.org/manifest.json
+      - Name: Open Subtitles
+        AssemblyGuid: 4b9ed42f-5185-48b5-9803-6ff2989014c4
+        RepositoryUrl: https://repo.jellyfin.org/files/plugin/manifest.json
+
+- name: Inspect the exact NAS Jellyfin render device
+  ansible.builtin.stat:
+    path: "{{ platform_render_device_path }}"
+    follow: false
+  register: jellyfin_render_device
+  when:
+    - platform_kind == 'nas'
+    - >-
+      not ((platform_compose_kind | default('') == 'integration') and
+           (deployment_bundle_test_mode | default(false) | bool))
+  changed_when: false
+  check_mode: false
+
+# The literal here is deliberate, not a missed substitution. NAS hosts are
+# pinned to renderD128 by design: the Compose definition passes that exact
+# device through by name, and the encoding policy above names it as QsvDevice.
+# This assert is what makes that pinning explicit rather than accidental, and it
+# is gated on platform_kind so it never constrains a Mac host, where the
+# variable is /dev/dri/card0 and no QSV device is expected at all.
+- name: Require the exact NAS Jellyfin render device
+  ansible.builtin.assert:
+    that:
+      - platform_render_device_available | bool
+      - platform_render_device_path == '/dev/dri/renderD128'
+      - jellyfin_render_device.stat.exists
+      - jellyfin_render_device.stat.ischr
+      - not jellyfin_render_device.stat.islnk
+    fail_msg: >-
+      The NAS must expose /dev/dri/renderD128 as the exact character render device
+      before Jellyfin Compose or application state is changed.
+  when:
+    - platform_kind == 'nas'
+    - >-
+      not ((platform_compose_kind | default('') == 'integration') and
+           (deployment_bundle_test_mode | default(false) | bool))
+
+- name: Render the Jellyfin environment
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ platform_runtime_dir }}/services/jellyfin/.env"
+    mode: "0600"
+
+- name: Deploy Jellyfin
+  community.docker.docker_compose_v2:
+    project_src: "{{ platform_current_dir }}/services/jellyfin"
+    project_name: "{{ jellyfin_compose_project_name }}"
+    files: "{{ platform_service_compose_files['jellyfin'] }}"
+    env_files: ["{{ platform_runtime_dir }}/services/jellyfin/.env"]
+    state: present
+    wait: true
+    wait_timeout: "{{ jellyfin_compose_wait_timeout }}"
+  register: jellyfin_deploy
+
+- name: Report the Jellyfin deployment
+  ansible.builtin.include_role:
+    name: ntfy
+    tasks_from: deployment_report
+  vars:
+    ntfy_deployment_report_service: Jellyfin
+    ntfy_deployment_report_changed: "{{ jellyfin_deploy is changed }}"
+
+- name: Verify Jellyfin effective container CPU policy
+  ansible.builtin.include_role:
+    name: container_cpu
+  vars:
+    container_cpu_service_name: jellyfin
+    container_cpu_project_name: "{{ jellyfin_compose_project_name }}"
+
+- name: Prove Jellyfin QSV during convergence
+  ansible.builtin.include_tasks: qsv_probe.yml
+  when:
+    - platform_kind == 'nas'
+    - >-
+      not ((platform_compose_kind | default('') == 'integration') and
+           (deployment_bundle_test_mode | default(false) | bool))
+
+# The container health check passes as soon as /health answers, which happens
+# well before the application can serve its own startup API: that endpoint
+# returns 503 until the server has finished initializing. Waiting on the
+# endpoint this role actually calls is what makes the next tasks meaningful.
+- name: Wait for the Jellyfin startup API
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Startup/Configuration"
+    headers:
+      Authorization: "{{ jellyfin_client_header }}"
+    status_code: "{{ range(100, 600) | list }}"
+  register: jellyfin_startup_api
+  until: jellyfin_startup_api.status | default(0) | int in [200, 401, 403]
+  retries: "{{ jellyfin_startup_retries }}"
+  delay: "{{ platform_readiness_delay }}"
+  changed_when: false
+  check_mode: false

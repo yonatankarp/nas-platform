@@ -1,0 +1,297 @@
+---
+# The managed libraries. Renames adopted libraries and waits for their
+# replacement identities, creates absent ones, removes unmanaged extra paths,
+# repairs owned options, and refreshes the server once if anything changed.
+
+- name: Report planned Jellyfin managed library renames
+  ansible.builtin.debug:
+    msg: "JELLYFIN_PLAN_LIBRARY_RENAME {{ item.desired.name }}"
+  loop: "{{ jellyfin_library_targets | default([]) }}"
+  loop_control:
+    label: "{{ item.desired.name }}"
+  when:
+    - ansible_check_mode
+    - item.path_matches | length == 1
+    - item.path_matches[0].raw.Name != item.desired.name
+  changed_when: true
+
+- name: Rename adopted Jellyfin managed libraries
+  ansible.builtin.uri:
+    url: >-
+      {{ jellyfin_api ~ '/Library/VirtualFolders/Name?name=' ~
+         (item.path_matches[0].raw.Name | urlencode) ~ '&newName=' ~
+         (item.desired.name | urlencode) ~ '&refreshLibrary=true' }}
+    method: POST
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_reconcile_token }}"'
+    status_code: [204]
+  loop: "{{ jellyfin_library_targets | default([]) }}"
+  loop_control:
+    label: "{{ item.desired.name }}"
+  when:
+    - not ansible_check_mode
+    - item.path_matches | length == 1
+    - item.path_matches[0].raw.Name != item.desired.name
+  register: jellyfin_library_renames
+  changed_when: true
+  no_log: true
+
+# Jellyfin 10.11 can return from a virtual-folder rename before the replacement
+# CollectionFolder (and its path-derived ItemId) is visible. Do not carry the
+# pre-rename identity into an ItemId-scoped mutation.
+- name: Wait for renamed Jellyfin managed library identities
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Library/VirtualFolders"
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_reconcile_token }}"'
+    status_code: [200]
+    return_content: true
+    timeout: 5
+  loop: "{{ jellyfin_library_targets | default([]) }}"
+  loop_control:
+    label: "{{ item.desired.name }}"
+  when:
+    - not ansible_check_mode
+    - item.path_matches | length == 1
+    - item.path_matches[0].raw.Name != item.desired.name
+  register: jellyfin_library_identity_observations
+  until:
+    - jellyfin_library_identity_observation.json | default(none) | type_debug == 'list'
+    - jellyfin_library_identity_inventory_globally_settled | bool
+    - jellyfin_library_identity_name_matches | length == 1
+    - jellyfin_library_identity_match.Name | default(none) is string
+    - jellyfin_library_identity_match.Name == item.desired.name
+    - jellyfin_library_identity_match.CollectionType | default(none) is string
+    - jellyfin_library_identity_match.CollectionType == item.desired.collection_type
+    - >-
+      jellyfin_library_identity_match.ItemId | default('') | string
+      is match('^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$')
+    - jellyfin_library_identity_match.Locations | default(none) | type_debug == 'list'
+    - >-
+      jellyfin_library_identity_match.Locations | select('string') | list | length ==
+      jellyfin_library_identity_match.Locations | length
+    - jellyfin_library_identity_match.LibraryOptions | default(none) is mapping
+    - >-
+      jellyfin_library_identity_match.LibraryOptions.PathInfos |
+      default(none) | type_debug == 'list'
+    - item.normalized_path in jellyfin_library_identity_normalized_paths
+  retries: "{{ jellyfin_library_identity_retries }}"
+  delay: "{{ jellyfin_library_identity_delay }}"
+  vars:
+    jellyfin_library_identity_observation: "{{ jellyfin_library_identity_observations }}"
+    jellyfin_library_identity_folders: >-
+      {{ jellyfin_library_identity_observation.json
+         if jellyfin_library_identity_observation.json | default(none) |
+           type_debug == 'list' else [] }}
+    jellyfin_library_identity_folder_count: "{{ jellyfin_library_identity_folders | length }}"
+    jellyfin_library_identity_inventory_globally_settled: >-
+      {{
+        jellyfin_library_identity_folders | select('mapping') | list | length ==
+          jellyfin_library_identity_folder_count | int and
+        jellyfin_library_identity_folders | selectattr('Name', 'defined') | list | length ==
+          jellyfin_library_identity_folder_count | int and
+        jellyfin_library_identity_folders | map(attribute='Name') |
+          select('string') | list | length == jellyfin_library_identity_folder_count | int and
+        jellyfin_library_identity_folders | selectattr('ItemId', 'defined') | list | length ==
+          jellyfin_library_identity_folder_count | int and
+        jellyfin_library_identity_folders | map(attribute='ItemId') |
+          select('string') |
+          select('match', '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$') | list | length ==
+          jellyfin_library_identity_folder_count | int and
+        jellyfin_library_identity_folders | selectattr('CollectionType', 'defined') |
+          list | length == jellyfin_library_identity_folder_count | int and
+        jellyfin_library_identity_folders | map(attribute='CollectionType') |
+          select('string') | list | length == jellyfin_library_identity_folder_count | int and
+        jellyfin_library_identity_folders | selectattr('Locations', 'defined') | list | length ==
+          jellyfin_library_identity_folder_count | int and
+        jellyfin_library_identity_folders | map(attribute='Locations') | map('type_debug') |
+          select('equalto', 'list') | list | length == jellyfin_library_identity_folder_count | int and
+        jellyfin_library_identity_folders | map(attribute='Locations') | flatten |
+          select('string') | list | length ==
+          jellyfin_library_identity_folders | map(attribute='Locations') | flatten | list | length and
+        jellyfin_library_identity_folders | selectattr('LibraryOptions', 'defined') |
+          list | length == jellyfin_library_identity_folder_count | int and
+        jellyfin_library_identity_folders | map(attribute='LibraryOptions') |
+          select('mapping') | list | length == jellyfin_library_identity_folder_count | int and
+        jellyfin_library_identity_folders |
+          selectattr('LibraryOptions.PathInfos', 'defined') | list | length ==
+          jellyfin_library_identity_folder_count | int and
+        jellyfin_library_identity_folders | map(attribute='LibraryOptions.PathInfos') |
+          map('type_debug') | select('equalto', 'list') | list | length ==
+          jellyfin_library_identity_folder_count | int and
+        jellyfin_library_identity_folders | map(attribute='LibraryOptions.PathInfos') | flatten |
+          select('mapping') | list | length ==
+          jellyfin_library_identity_folders | map(attribute='LibraryOptions.PathInfos') |
+            flatten | list | length and
+        jellyfin_library_identity_folders | map(attribute='LibraryOptions.PathInfos') | flatten |
+          selectattr('Path', 'defined') | list | length ==
+          jellyfin_library_identity_folders | map(attribute='LibraryOptions.PathInfos') |
+            flatten | list | length and
+        jellyfin_library_identity_folders | map(attribute='LibraryOptions.PathInfos') | flatten |
+          map(attribute='Path') | select('string') | list | length ==
+          jellyfin_library_identity_folders | map(attribute='LibraryOptions.PathInfos') |
+            flatten | list | length
+      }}
+    jellyfin_library_identity_name_matches: >-
+      {{ jellyfin_library_identity_observation.json | default([]) |
+         select('mapping') | selectattr('Name', 'defined') |
+         selectattr('Name', 'equalto', item.desired.name) | list }}
+    jellyfin_library_identity_match: >-
+      {{ jellyfin_library_identity_name_matches | first | default({}) }}
+    jellyfin_library_identity_normalized_paths: >-
+      {{ (((jellyfin_library_identity_match.Locations
+            if jellyfin_library_identity_match.Locations | default(none) |
+              type_debug == 'list' else []) | select('string') | list) +
+          ((jellyfin_library_identity_match.LibraryOptions.PathInfos
+            if jellyfin_library_identity_match.LibraryOptions | default(none) is mapping and
+               jellyfin_library_identity_match.LibraryOptions.PathInfos |
+                 default(none) | type_debug == 'list' else []) |
+           select('mapping') | selectattr('Path', 'defined') |
+           map(attribute='Path') | select('string') | list)) |
+         map('regex_replace', '/+$', '') | list }}
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Revalidate complete Jellyfin library inventory after renames
+  ansible.builtin.include_tasks: library_inventory.yml
+  vars:
+    jellyfin_library_inventory_response: >-
+      {{ jellyfin_library_identity_observations.results |
+         selectattr('json', 'defined') | map(attribute='json') | last }}
+  when:
+    - not ansible_check_mode
+    - jellyfin_library_renames is changed
+
+- name: Report planned Jellyfin managed library creation
+  ansible.builtin.debug:
+    msg: "JELLYFIN_PLAN_LIBRARY_CREATE {{ item.desired.name }}"
+  loop: "{{ jellyfin_library_targets | default([]) }}"
+  loop_control:
+    label: "{{ item.desired.name }}"
+  when:
+    - ansible_check_mode
+    - item.path_matches | length == 0
+  changed_when: true
+
+- name: Create absent Jellyfin managed libraries
+  ansible.builtin.uri:
+    url: >-
+      {{ jellyfin_api ~ '/Library/VirtualFolders?name=' ~
+         (item.desired.name | urlencode) ~ '&collectionType=' ~
+         (item.desired.collection_type | urlencode) ~ '&refreshLibrary=false' }}
+    method: POST
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_reconcile_token }}"'
+    body_format: json
+    body:
+      LibraryOptions: >-
+        {{ jellyfin_library_options |
+           combine({'PathInfos': [{'Path': item.desired.path}]}) }}
+    status_code: [204]
+  loop: "{{ jellyfin_library_targets | default([]) }}"
+  loop_control:
+    label: "{{ item.desired.name }}"
+  when:
+    - not ansible_check_mode
+    - item.path_matches | length == 0
+  register: jellyfin_library_creations
+  changed_when: true
+  no_log: true
+
+- name: Report planned Jellyfin managed library option repairs
+  ansible.builtin.debug:
+    msg: "JELLYFIN_PLAN_LIBRARY_OPTIONS {{ item.desired.name }}"
+  loop: "{{ jellyfin_library_targets | default([]) }}"
+  loop_control:
+    label: "{{ item.desired.name }}"
+  when:
+    - ansible_check_mode
+    - item.path_matches | length == 1
+    - >-
+      item.path_matches[0].raw.Locations != [item.desired.path] or
+      item.path_matches[0].raw.LibraryOptions.PathInfos |
+        map(attribute='Path') | list != [item.desired.path] or
+      (item.path_matches[0].raw.LibraryOptions | dict2items |
+       selectattr('key', 'in', jellyfin_library_options.keys()) |
+       items2dict) != jellyfin_library_options
+  changed_when: true
+
+- name: Report planned Jellyfin managed library extra-path removals
+  ansible.builtin.debug:
+    msg: "JELLYFIN_PLAN_LIBRARY_REMOVE_EXTRA_PATH {{ item.0.desired.name }}"
+  loop: >-
+    {{ jellyfin_library_targets | default([]) |
+       subelements('extra_paths', skip_missing=True) }}
+  loop_control:
+    label: "{{ item.0.desired.name }} extra-path"
+  when: ansible_check_mode
+  changed_when: true
+
+- name: Remove extra paths from Jellyfin managed libraries
+  ansible.builtin.uri:
+    url: >-
+      {{ jellyfin_api ~ '/Library/VirtualFolders/Paths?name=' ~
+         (item.0.desired.name | urlencode) ~ '&path=' ~
+         (item.1 | urlencode) ~ '&refreshLibrary=false' }}
+    method: DELETE
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_reconcile_token }}"'
+    status_code: [204]
+  loop: >-
+    {{ jellyfin_library_targets | default([]) |
+       subelements('extra_paths', skip_missing=True) }}
+  loop_control:
+    label: "{{ item.0.desired.name }} extra-path"
+  when: not ansible_check_mode
+  register: jellyfin_library_extra_path_removals
+  changed_when: true
+  no_log: true
+
+- name: Repair Jellyfin managed library options
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Library/VirtualFolders/LibraryOptions"
+    method: POST
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_reconcile_token }}"'
+    body_format: json
+    body:
+      Id: "{{ item.path_matches[0].raw.ItemId }}"
+      LibraryOptions: >-
+        {{ item.path_matches[0].raw.LibraryOptions |
+           combine(jellyfin_library_options) |
+           combine({'PathInfos': [{'Path': item.desired.path}]}) }}
+    status_code: [204]
+  loop: "{{ jellyfin_library_targets | default([]) }}"
+  loop_control:
+    label: "{{ item.desired.name }}"
+  when:
+    - not ansible_check_mode
+    - item.path_matches | length == 1
+    - >-
+      item.path_matches[0].raw.Locations != [item.desired.path] or
+      item.path_matches[0].raw.LibraryOptions.PathInfos |
+        map(attribute='Path') | list != [item.desired.path] or
+      (item.path_matches[0].raw.LibraryOptions | dict2items |
+       selectattr('key', 'in', jellyfin_library_options.keys()) |
+       items2dict) != jellyfin_library_options
+  register: jellyfin_library_option_repairs
+  changed_when: true
+  no_log: true
+
+- name: Refresh Jellyfin after managed library changes
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Library/Refresh"
+    method: POST
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_reconcile_token }}"'
+    status_code: [204]
+  when:
+    - not ansible_check_mode
+    - >-
+      jellyfin_library_renames is changed or
+      jellyfin_library_creations is changed or
+      jellyfin_library_extra_path_removals is changed or
+      jellyfin_library_option_repairs is changed
+  changed_when: true
+  no_log: true
