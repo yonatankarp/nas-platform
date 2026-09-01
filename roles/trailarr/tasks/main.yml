@@ -170,6 +170,18 @@
   ansible.builtin.include_tasks: reconcile_connections.yml
   when: media_usenet_enabled | bool
 
+# Runs under the same gate as the connections above, because without a
+# connection there is no synced media and the reconcile has nothing to address.
+# It is deliberately *not* gated on trailarr_monitoring_enabled: monitoring an
+# item states which titles the platform intends to have a trailer, while that
+# flag states whether fetching is permitted, and the useful staging position is
+# the first without the second.
+- name: Reconcile the Trailarr per-item monitoring
+  ansible.builtin.include_tasks: reconcile_monitoring.yml
+  when:
+    - media_usenet_enabled | bool
+    - trailarr_monitor_all_media | bool
+
 - name: Report the inert Trailarr arr connections
   ansible.builtin.debug:
     msg: >-

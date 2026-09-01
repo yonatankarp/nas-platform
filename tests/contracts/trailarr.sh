@@ -28,6 +28,7 @@ required = %w[
   roles/trailarr/tasks/reconcile_env.yml
   roles/trailarr/tasks/reconcile_profiles.yml
   roles/trailarr/tasks/reconcile_connections.yml
+  roles/trailarr/tasks/reconcile_monitoring.yml
   roles/trailarr/templates/env.j2
   services/trailarr/compose.yml
   services/trailarr/compose.mac.yml
@@ -163,10 +164,16 @@ if failures.empty?
   failures << "Trailarr must address both arrs by their Compose service alias" unless
     Array(defaults["trailarr_connections"]).map { |entry| entry["url"] } ==
       ["http://radarr:7878", "http://sonarr:8989"]
-  # The monitoring profile stays off until the operator acceptance step has
-  # proved one trailer by hand.
+  # Permission to fetch stays off by default, so a disposable lane never makes an
+  # outbound request to YouTube. Only a host may open it.
   failures << "Trailarr monitoring must default to off" unless
     defaults["trailarr_monitoring_enabled"] == false
+  # Intent is the other half and defaults on, which is what makes the reconcile
+  # reachable in a lane that keeps the gate shut. The two must stay separate
+  # variables: collapsing them would mean a lane can only execute the reconcile
+  # by also permitting the download.
+  failures << "Trailarr must intend a trailer for every item by default" unless
+    defaults["trailarr_monitor_all_media"] == true
   # Both seeded profiles ship mkv/vp9/opus and the Movie one ships the trailer
   # beside the movie file. Both are reconciled to a directly playable container
   # in a Trailers/ subdirectory of the item's own folder.
@@ -229,6 +236,60 @@ if failures.empty?
   # every call writes to /config/.env, which is the drift mechanism itself.
   failures << "Trailarr must never reconcile through the settings update route" if
     tasks.any? { |task| task.to_s.include?("settings/update") }
+
+  # batch_update's action is typed as a bare string with no enum, its four
+  # accepted values live only in the endpoint description, and it answered a
+  # successful monitor with a literal null body. A status code therefore proves
+  # nothing here, exactly as it proves nothing for settings/update above, so the
+  # reconcile has to read the library back and assert on what it finds.
+  monitoring = flatten_tasks(
+    YAML.safe_load_file(
+      File.join(root, "roles/trailarr/tasks/reconcile_monitoring.yml"), aliases: true
+    )
+  )
+  failures << "Trailarr must monitor through one batch request, not a loop" unless
+    monitoring.count { |task|
+      task.dig("ansible.builtin.uri", "url").to_s.include?("media/batch_update")
+    } == 1 &&
+      monitoring.none? { |task|
+        task["loop"] && task.dig("ansible.builtin.uri", "url").to_s.include?("media/")
+      }
+  failures << "Trailarr must prove the batch update by re-reading the library" unless
+    monitoring.any? { |task| task["ansible.builtin.assert"] } &&
+      monitoring.count { |task|
+        task.dig("ansible.builtin.uri", "url").to_s.end_with?("media/all")
+      } == 2
+  # An item Trailarr already counts satisfied must be excluded by set membership.
+  # downloaded_at reads null even on a satisfied item, so keying off it would
+  # re-monitor every finished title forever.
+  failures << "Trailarr must exclude satisfied media by set membership" unless
+    monitoring.any? { |task|
+      task.dig("ansible.builtin.uri", "url").to_s.end_with?("media/downloaded")
+    } && monitoring.to_s.include?("difference") &&
+      !monitoring.to_s.include?("downloaded_at")
+  # Every task carrying the API key is redacted, so the count is reported by a
+  # separate debug built from ids and lengths alone.
+  failures << "Trailarr monitoring must redact every task carrying the API key" unless
+    monitoring.select { |task| task.to_s.include?("vault_trailarr_api_key") }
+              .all? { |task| task["no_log"] == true }
+  failures << "Trailarr monitoring must report its plan from non-credential facts" unless
+    monitoring.any? { |task|
+      task["ansible.builtin.debug"] && task["no_log"].nil?
+    }
+  # A converged library must write nothing, or the role reports changed forever.
+  failures << "Trailarr must skip the batch update when nothing is unmonitored" unless
+    monitoring.any? { |task|
+      task.dig("ansible.builtin.uri", "url").to_s.include?("media/batch_update") &&
+        Array(task["when"]).any? { |clause|
+          clause.to_s.include?("trailarr_media_to_monitor | length > 0")
+        }
+    }
+  # A read that does not run under --check leaves the selection empty and makes
+  # the prediction a lie.
+  failures << "Trailarr monitoring reads must run under check mode" unless
+    monitoring.select { |task| task["ansible.builtin.uri"] &&
+                               task.dig("ansible.builtin.uri", "method") == "GET" }
+              .all? { |task| task["changed_when"] == false && task["check_mode"] == false }
 
   # The reconcile is a hand-rolled parse and compare rather than a template,
   # because the entrypoint rewrites the GPU block and the yt-dlp version line on

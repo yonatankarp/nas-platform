@@ -32,16 +32,46 @@ trailarr_connections:
     url: http://sonarr:8989
     api_key: "{{ vault_arr_sonarr_api_key }}"
 
-# The monitoring profile, as one decision. MONITOR_ENABLED is a hard gate at the
-# top of the download task; DOWNLOADS_ENABLED is softer, and with it false the
-# task runs in preview mode, publishing what it would download while scans and
-# syncs keep running. monitor_new_media is applied once, when an item is first
-# created, and never rewritten, so flipping it does not retroactively monitor
-# an existing library — which is why turning monitoring on is an operator
-# acceptance step rather than something a converge decides. Until that step has
-# run this stays false and the platform declares no unattended outbound
-# download.
+# Whether the platform permits Trailarr to fetch trailers at all.
+#
+# MONITOR_ENABLED is a hard gate at the top of the download task. Measured on
+# the NAS: with it false the task logs "Monitoring is disabled, skipping
+# trailers download" and returns in eight milliseconds. DOWNLOADS_ENABLED is
+# softer, and with it false the task runs in preview mode, publishing what it
+# would download while scans and syncs keep running.
+#
+# The gate also swallows a manual download, which corrects what this comment
+# used to claim. POST /api/v1/media/batch_update with action "download" against
+# a monitored item queued nothing at all: no job in /media/{id}/downloads, no
+# entry in /media/downloading, and the response body was null rather than the
+# message the endpoint documents. So "prove one trailer by hand, then open the
+# gate" is not a possible sequence; nothing can be proved until the gate is
+# open.
+#
+# What makes that safe anyway is that the monitored set is itself the throttle.
+# With the gate open the download task fetches exactly the items that are
+# monitored, so the blast radius of opening it equals however many items
+# trailarr_monitor_all_media and the operator have monitored so far.
+#
+# monitor_new_media on a connection is applied once, when an item is first
+# created, and never rewritten, so this flag alone does not retroactively
+# monitor an adopted library. reconcile_monitoring.yml is what closes that gap.
 trailarr_monitoring_enabled: false
+
+# Which items the platform intends to have a trailer, as distinct from whether
+# it is allowed to fetch them. The two are separate questions and separating
+# them buys three things.
+#
+# It is the useful staging state: monitor everything, leave the gate shut, and
+# read the preview report the download task publishes before any outbound
+# request is made. It is the only way the disposable lanes execute this file at
+# all, since they keep the gate shut and would otherwise never reach it. And it
+# says the true thing, which is that monitoring an item is a statement about
+# intent while MONITOR_ENABLED is a statement about permission.
+#
+# Items Trailarr already counts satisfied are excluded rather than monitored, so
+# a library whose trailers all exist converges to no writes at all.
+trailarr_monitor_all_media: true
 
 # The two trailer profiles a migration seeds on a fresh database, reconciled by
 # compare-then-PUT against their seeded ids. POST has no dedupe, so the role

@@ -93,6 +93,24 @@ platform_runtime_dir: "{{ platform_deploy_root }}/runtime"
 platform_media_control_network: >-
   {{ (platform_project_name ~ '-media-control') if platform_project_name | default('') | length > 0 else 'media-control' }}
 
+# Whether Trailarr may fetch a trailer, which is the one outbound request this
+# platform makes to a service it does not run.
+#
+# It is derived rather than declared because the two obvious homes are both
+# wrong. A host group may hold machine facts only -- tests/policy_platform_test.rb
+# rejects service configuration there by name -- and a literal here would open
+# the gate in every disposable lane, since the integration harness converges
+# against inventory/local.yml and is therefore a nas_hosts run like any other.
+#
+# An empty project namespace is what already distinguishes the real platform from
+# a disposable copy: every lane sets one so several isolated copies can run side
+# by side, and production leaves it empty. tests/contracts/trailarr.sh names the
+# container by the same signal. So the rule reads as "only the platform itself
+# reaches YouTube", and a sandbox is off by construction rather than by an
+# override someone has to remember.
+trailarr_monitoring_enabled: >-
+  {{ platform_project_name | default('') | length == 0 }}
+
 # Lowest interpreter the plays are known to work on.
 nas_python_minimum: "3.8"
 

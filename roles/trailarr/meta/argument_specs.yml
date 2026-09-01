@@ -37,6 +37,9 @@ argument_specs:
       trailarr_monitoring_enabled:
         type: bool
         required: false
+      trailarr_monitor_all_media:
+        type: bool
+        required: false
       trailarr_trailer_profiles:
         type: list
         elements: dict
