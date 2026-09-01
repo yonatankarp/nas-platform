@@ -4,13 +4,9 @@
     name: deployment_bundle
     tasks_from: target
   vars:
+    deployment_target_service: jellyfin
     deployment_target_require_current_release: true
-    deployment_target_extra_paths:
-      - "{{ platform_current_dir }}/services/jellyfin"
-      - "{{ platform_current_dir }}/services/jellyfin/compose.yml"
-      - "{{ platform_current_dir }}/services/jellyfin/compose.{{ platform_compose_kind }}.yml"
-      - "{{ platform_runtime_dir }}/services/jellyfin"
-      - "{{ platform_runtime_dir }}/services/jellyfin/.env"
+    deployment_target_extra_paths: []
 
 # Deliberately not redacted. On ansible-core 2.21.3 no_log on an assert hides only
 # the result dict; fail_msg prints from the error header either way. Hiding the dict

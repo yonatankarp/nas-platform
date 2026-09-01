@@ -102,13 +102,9 @@
     name: deployment_bundle
     tasks_from: target
   vars:
+    deployment_target_service: paperless-ngx
     deployment_target_require_current_release: true
     deployment_target_extra_paths:
-      - "{{ platform_current_dir }}/services/paperless-ngx"
-      - "{{ platform_current_dir }}/services/paperless-ngx/compose.yml"
-      - "{{ platform_current_dir }}/services/paperless-ngx/compose.{{ platform_compose_kind }}.yml"
-      - "{{ platform_runtime_dir }}/services/paperless-ngx"
-      - "{{ platform_runtime_dir }}/services/paperless-ngx/.env"
       - "{{ platform_runtime_dir }}/services/paperless-ngx/.gmail-credential-fingerprint"
       - "{{ paperless_effective_state_host_path }}/postgres"
       - "{{ paperless_effective_state_host_path }}/redis"

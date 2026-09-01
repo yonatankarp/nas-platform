@@ -4,13 +4,9 @@
     name: deployment_bundle
     tasks_from: target
   vars:
+    deployment_target_service: seerr
     deployment_target_require_current_release: true
-    deployment_target_extra_paths:
-      - "{{ platform_current_dir }}/services/seerr"
-      - "{{ platform_current_dir }}/services/seerr/compose.yml"
-      - "{{ platform_current_dir }}/services/seerr/compose.{{ platform_compose_kind }}.yml"
-      - "{{ platform_runtime_dir }}/services/seerr"
-      - "{{ platform_runtime_dir }}/services/seerr/.env"
+    deployment_target_extra_paths: []
 
 # Redacted: the conditions name the Seerr API key, the Jellyfin administrator
 # pair and the ntfy publisher token. Compose reads the rendered .env line by

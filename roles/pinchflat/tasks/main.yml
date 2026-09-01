@@ -4,13 +4,9 @@
     name: deployment_bundle
     tasks_from: target
   vars:
+    deployment_target_service: pinchflat
     deployment_target_require_current_release: true
     deployment_target_extra_paths:
-      - "{{ platform_current_dir }}/services/pinchflat"
-      - "{{ platform_current_dir }}/services/pinchflat/compose.yml"
-      - "{{ platform_current_dir }}/services/pinchflat/compose.{{ platform_compose_kind }}.yml"
-      - "{{ platform_runtime_dir }}/services/pinchflat"
-      - "{{ platform_runtime_dir }}/services/pinchflat/.env"
       - "{{ pinchflat_config_host_path }}"
 
 # Redacted: the conditions name the two halves of the Pinchflat basic-auth

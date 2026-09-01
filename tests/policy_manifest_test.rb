@@ -1532,17 +1532,33 @@ expect_failure(failures, "play-level containment validation repeated",
 end
 
 # The guardrail from the issue that removed the adjacent revalidations: hoisting
-# the check out of the roles would leave this policy passing over nothing.
+# the check out of the roles would leave this policy passing over nothing. Both
+# Compose files are now derived from the named service, so the way to leave them
+# unguarded is to misname it.
 expect_failure(failures, "service Compose override left unguarded",
-               "komga must guard every Compose file consumed by selective runs") do |root|
+               "komga must name the manifest service whose Compose files a selective run deploys") do |root|
   path = File.join(root, "roles", "komga", "tasks", "main.yml")
   tasks = YAML.safe_load_file(path)
   tasks.each do |task|
     next unless task.dig("ansible.builtin.include_role", "tasks_from") == "target"
 
-    task.fetch("vars").fetch("deployment_target_extra_paths").reject! do |candidate|
-      candidate.to_s.end_with?("/compose.{{ platform_compose_kind }}.yml")
-    end
+    task.fetch("vars")["deployment_target_service"] = "komga-typo"
+  end
+  File.write(path, YAML.dump(tasks))
+end
+
+# A derivation that names a service the role does not deploy widens what the
+# caller declares it touches, and the containment validator would accept the
+# extra paths in silence.
+expect_failure(failures, "derived deployment paths widened past the role",
+               "names service \"jellyfin\", which is not the manifest service directory " \
+               "deployed by role \"komga\"") do |root|
+  path = File.join(root, "roles", "komga", "tasks", "main.yml")
+  tasks = YAML.safe_load_file(path)
+  tasks.each do |task|
+    next unless task.dig("ansible.builtin.include_role", "tasks_from") == "target"
+
+    task.fetch("vars")["deployment_target_service"] = "jellyfin"
   end
   File.write(path, YAML.dump(tasks))
 end

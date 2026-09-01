@@ -4,14 +4,10 @@
     name: deployment_bundle
     tasks_from: target
   vars:
+    deployment_target_service: dozzle
     deployment_target_require_current_release: true
     deployment_target_extra_paths:
-      - "{{ platform_current_dir }}/services/dozzle"
-      - "{{ platform_current_dir }}/services/dozzle/compose.yml"
-      - "{{ platform_current_dir }}/services/dozzle/compose.{{ platform_compose_kind }}.yml"
       - "{{ platform_current_dir }}/services/dozzle/alert_relay.py"
-      - "{{ platform_runtime_dir }}/services/dozzle"
-      - "{{ platform_runtime_dir }}/services/dozzle/.env"
       - "{{ nas_docker_root }}/dozzle/data/users.yml"
 
 - name: Select the Dozzle mounted state root

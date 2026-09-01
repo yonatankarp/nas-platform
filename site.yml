@@ -54,6 +54,7 @@
         apply:
           tags: [always]
       vars:
+        deployment_target_service: ""
         deployment_target_require_current_release: false
         deployment_target_extra_paths: []
       tags: [always]

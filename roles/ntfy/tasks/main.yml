@@ -10,13 +10,9 @@
     name: deployment_bundle
     tasks_from: target
   vars:
+    deployment_target_service: ntfy
     deployment_target_require_current_release: true
     deployment_target_extra_paths:
-      - "{{ platform_current_dir }}/services/ntfy"
-      - "{{ platform_current_dir }}/services/ntfy/compose.yml"
-      - "{{ platform_current_dir }}/services/ntfy/compose.{{ platform_compose_kind }}.yml"
-      - "{{ platform_runtime_dir }}/services/ntfy"
-      - "{{ platform_runtime_dir }}/services/ntfy/.env"
       - "{{ nas_docker_root }}/ntfy/data/auth.db"
 
 - name: Select the ntfy mounted state root

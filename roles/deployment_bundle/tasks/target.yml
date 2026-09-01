@@ -17,6 +17,31 @@
     deployment_target_expected_root: >-
       {{ (nas_docker_root | regex_replace('/+$', '')) ~ '/nas-platform' }}
 
+# The service a caller names is the manifest service *directory*, not its role:
+# roles/paperless_ngx deploys services/paperless-ngx, so a name derived from the
+# role would validate five paths that do not exist while the five it is about to
+# touch went unchecked. Membership in the manifest is asserted rather than
+# assumed, so that mistake fails the run at the caller instead of silently
+# weakening containment. deployment_bundle_services is absent in the playbooks
+# that validate target paths without parsing controller inputs, and the shape
+# check still applies there.
+- name: Validate the named deployment target service
+  ansible.builtin.assert:
+    that:
+      - deployment_target_service is string
+      - deployment_target_service == '' or
+        deployment_target_service is match('^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$')
+      - deployment_target_service == '' or
+        deployment_target_known_services | length == 0 or
+        deployment_target_service in deployment_target_known_services
+    fail_msg: >-
+      A caller naming a deployment target service must name a service directory
+      the controller manifest carries, not its Ansible role name. An empty
+      string is written by the callers that own no single service.
+  vars:
+    deployment_target_known_services: >-
+      {{ deployment_bundle_services | default([]) | map(attribute='name') | list }}
+
 # A read-only check against pre-existing symlinks and canonical escapes, run
 # once per distinct set of paths, before the tasks that mutate them: once for
 # the play in site.yml pre_tasks, and once per role for the extra paths only
@@ -45,7 +70,25 @@
   vars:
     deployment_target_candidate_paths: >-
       {{ (deployment_target_paths | list) +
+         (deployment_target_service_paths | list) +
          (deployment_target_extra_paths | list) }}
+    # The five paths every service role touches, built here rather than copied
+    # into fifteen role bodies: the service directory in the current release,
+    # both Compose files a selective run may deploy from, and the runtime
+    # directory holding the rendered .env. A caller owning no single service
+    # names the empty string and derives nothing.
+    deployment_target_service_paths: >-
+      {{ []
+         if deployment_target_service | length == 0
+         else [deployment_target_service_release,
+               deployment_target_service_release ~ '/compose.yml',
+               deployment_target_service_release ~ '/compose.' ~ platform_compose_kind ~ '.yml',
+               deployment_target_service_runtime,
+               deployment_target_service_runtime ~ '/.env'] }}
+    deployment_target_service_release: >-
+      {{ platform_current_dir ~ '/services/' ~ deployment_target_service }}
+    deployment_target_service_runtime: >-
+      {{ platform_runtime_dir ~ '/services/' ~ deployment_target_service }}
     deployment_target_paths: >-
       {{ [nas_docker_root,
           nas_docker_root ~ '/.nas-platform-preflight-probe',

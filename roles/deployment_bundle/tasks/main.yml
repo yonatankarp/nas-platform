@@ -14,6 +14,9 @@
 - name: Validate target containment when not already checked by the play
   ansible.builtin.include_tasks: target.yml
   vars:
+    # This validates the whole platform path set rather than one service's, so
+    # it derives no service paths.
+    deployment_target_service: ""
     # A deployment may legitimately replace an older active release. Runtime
     # service callers require the current release once the pointer is active.
     deployment_target_require_current_release: false

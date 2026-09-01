@@ -4,13 +4,9 @@
     name: deployment_bundle
     tasks_from: target
   vars:
+    deployment_target_service: kapowarr
     deployment_target_require_current_release: true
     deployment_target_extra_paths:
-      - "{{ platform_current_dir }}/services/kapowarr"
-      - "{{ platform_current_dir }}/services/kapowarr/compose.yml"
-      - "{{ platform_current_dir }}/services/kapowarr/compose.{{ platform_compose_kind }}.yml"
-      - "{{ platform_runtime_dir }}/services/kapowarr"
-      - "{{ platform_runtime_dir }}/services/kapowarr/.env"
       - "{{ kapowarr_config_host_path }}"
 
 # The ComicVine key is the one Kapowarr credential this platform authors but
