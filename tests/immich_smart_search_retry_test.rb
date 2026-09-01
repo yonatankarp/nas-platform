@@ -8,7 +8,12 @@ require "timeout"
 require "uri"
 
 ROOT = File.expand_path("..", __dir__)
-CONTRACT = File.join(ROOT, "tests", "contracts", "immich.sh")
+# The runtime half of the Immich contract, whose `request` and
+# `assert_cpu_machine_learning` this test slices out and evals. It was a
+# `<<'RUBY'` heredoc inside tests/contracts/immich.sh until #147 and is a file
+# now, which changes nothing here beyond the path: extract_method matches `^def`
+# at column zero either way.
+CONTRACT = File.join(ROOT, "tests", "contracts", "immich-runtime.rb")
 FIXTURE_IDS = %w[photo-fixture video-fixture].freeze
 SLEEP_DURATIONS = []
 
