@@ -18,6 +18,10 @@ include TestScaffold
 failures = []
 
 harness = File.read(File.join(ROOT, "tests", "integration.sh"))
+# The launcher is tests/integration.sh; the program it runs in the controller
+# container is tests/integration_controller.sh. Every property below is read
+# from whichever of the two holds the code it polices.
+controller = File.read(File.join(ROOT, "tests", "integration_controller.sh"))
 # A release ID names committed controller content. Production must reject any
 # modified or untracked file in the controller checkout; only the disposable
 # integration platform may opt into the deliberately dirty pre-commit tree.
@@ -81,9 +85,10 @@ check(failures, cleanliness_assert&.dig("ansible.builtin.assert", "that").to_s
 check(failures, cleanliness_assert && !cleanliness_assert.key?("run_once"),
       "dirty controller refusal must be evaluated independently for every target host")
 check(failures, !harness.include?("-e platform_kind=integration") &&
-                harness.include?("-e platform_compose_kind=integration") &&
-                harness.include?("-e deployment_bundle_test_mode=true") &&
-                harness.include?("-e deployment_bundle_allow_dirty_controller=true"),
+                !controller.include?("-e platform_kind=integration") &&
+                controller.include?("-e platform_compose_kind=integration") &&
+                controller.include?("-e deployment_bundle_test_mode=true") &&
+                controller.include?("-e deployment_bundle_allow_dirty_controller=true"),
       "integration must preserve platform_kind and explicitly enable its Compose test override")
 %w[
   DIRTY_TRACKED_REFUSED DIRTY_UNTRACKED_REFUSED
@@ -91,7 +96,7 @@ check(failures, !harness.include?("-e platform_kind=integration") &&
   DIRTY_PRODUCTION_BYPASS_REFUSED DIRTY_INTEGRATION_ACCEPTED
   DIRTY_REFUSAL_TARGET_UNCHANGED
 ].each do |evidence|
-  check(failures, harness.include?(evidence),
+  check(failures, controller.include?(evidence),
         "integration must execute and report #{evidence.downcase.tr('_', ' ')}")
 end
 site_play = YAML.safe_load_file(File.join(ROOT, "site.yml")).first
@@ -500,7 +505,8 @@ site_source = File.read(File.join(ROOT, "site.yml"))
 check(failures, !site_source.include?("nothing is delegated to the controller"),
       "site documentation must acknowledge explicit controller delegation")
 
-integration_evidence = harness + File.read(File.join(ROOT, "tests", "verify_deployment_manifest.rb"))
+integration_evidence = controller +
+                       File.read(File.join(ROOT, "tests", "verify_deployment_manifest.rb"))
 %w[
   STALE_ROOT_SEEDED STALE_BUNDLE_REPLACED STALE_BUNDLE_CLEAN STALE_MANIFEST_EXACT
   ISOLATED_IMAGE_MERGE_EXACT
@@ -521,7 +527,7 @@ integration_evidence = harness + File.read(File.join(ROOT, "tests", "verify_depl
         "integration must execute and report #{evidence.downcase.tr('_', ' ')}")
 end
 check(failures, harness.include?('stale_docker_root="$sandbox/stale-root/Docker"') &&
-                harness.include?("test ! -e '$sandbox/volume1/Docker/nas-platform'"),
+                controller.include?(%(test ! -e "$sandbox/volume1/Docker/nas-platform")),
       "integration must isolate stale replacement from the genuinely fresh service root")
 manifest_verifier = File.read(File.join(ROOT, "tests", "verify_deployment_manifest.rb"))
 check(failures, manifest_verifier.include?("require-image-merge") &&

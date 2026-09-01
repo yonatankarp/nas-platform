@@ -35,6 +35,7 @@ ruby tests/policy_ci_test.rb
 ruby tests/policy_beszel_test.rb
 ruby tests/policy_integration_test.rb
 shellcheck --shell=sh tests/integration_controller_lib.sh
+shellcheck --shell=sh -x --exclude=SC2068,SC2070,SC2086 tests/integration_controller.sh
 ruby tests/policy_deployment_test.rb
 ruby tests/policy_mac_test.rb
 ruby tests/policy_vault_test.rb

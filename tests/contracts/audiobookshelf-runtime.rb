@@ -406,15 +406,21 @@ def generated_audiobookshelf_user_count(generator)
   count
 end
 
-def exact_baseline_role_runs(integration)
-  selector = integration.scan(
-    /^\s*run_selected_play\(\) \{\n\s*if \[ -n "\\\$INTEGRATION_TAGS" \]; then\n\s*run_play --tags \\"\\\$INTEGRATION_TAGS\\" \\"\\\$@\\"\n\s*elif \[ "\\\$#" -eq 0 \]; then\n\s*run_play\n\s*else\n\s*run_play \\"\\\$@\\"\n\s*fi\n\s*\}$/
+# The four play bindings this counts are the controller's. They were written
+# with `\$` and `\"` while the controller was an `sh -c` argument; in a file of
+# its own the escapes are gone, and where a bare `\"` used to toggle the
+# launching shell's quoting rather than emit a character, the word is plain
+# unquoted -- `[ -n $INTEGRATION_TAGS ]`, `run_selected_play $@`. These patterns
+# are built from the controller's own bytes, not from de-escaping the old ones.
+def exact_baseline_role_runs(controller)
+  selector = controller.scan(
+    /^\s*run_selected_play\(\) \{\n\s*if \[ -n \$INTEGRATION_TAGS \]; then\n\s*run_play --tags "\$INTEGRATION_TAGS" "\$@"\n\s*elif \[ \$# -eq 0 \]; then\n\s*run_play\n\s*else\n\s*run_play "\$@"\n\s*fi\n\s*\}$/
   ).length
-  initial = integration.scan(
-    /^\s*if \[ -z "\\\$INTEGRATION_TAGS" \] && \[ "\\\$#" -eq 0 \]; then\n\s*run_play\n\s*else\n\s*run_selected_play "\\\$@"\n\s*fi$/
+  initial = controller.scan(
+    /^\s*if \[ -z \$INTEGRATION_TAGS \] && \[ \$# -eq 0 \]; then\n\s*run_play\n\s*else\n\s*run_selected_play \$@\n\s*fi$/
   ).length
-  idempotence = integration.scan(/^\s*run_selected_play "\\\$@" >\/tmp\/second\.txt 2>&1 \|\| idempotence_status=\\\$\?$/).length
-  check = integration.scan(/^\s*if run_selected_play "\\\$@" --check --diff; then$/).length
+  idempotence = controller.scan(/^\s*run_selected_play \$@ >\/tmp\/second\.txt 2>&1 \|\| idempotence_status=\$\?$/).length
+  check = controller.scan(/^\s*if run_selected_play \$@ --check --diff; then$/).length
   fail_contract("Audiobookshelf baseline role call sequence differs") unless
     selector == 1 && initial == 1 && idempotence == 1 && check == 1
   { normal: initial + idempotence, check: check }
@@ -753,8 +759,16 @@ when "seed-fixture-only"
   puts "Audiobookshelf media fixture prepared before deployment"
   exit 0
 when "authentication-budget-self-test"
-  integration = Pathname.new(ENV.fetch("PLATFORM_REPO_ROOT")).join("tests/integration.sh").read
-  contract_modes = integration.scan(/^\s*run_audiobookshelf_contract\s+([a-z0-9-]+)/).flatten
+  # Two files, deliberately. Everything that happens *inside* the container --
+  # the scenario dispatch, the role runs, the verify-only reads -- is the
+  # controller program's. The sandbox lifecycle around it -- the exit trap, the
+  # signal trap, the sandbox removal -- is the launcher's, on the Docker host,
+  # and stays read from there. Reading one file for both would leave whichever
+  # half lost its subject unable to fail.
+  repo_root = Pathname.new(ENV.fetch("PLATFORM_REPO_ROOT"))
+  launcher = repo_root.join("tests/integration.sh").read
+  controller = repo_root.join("tests/integration_controller.sh").read
+  contract_modes = controller.scan(/^\s*run_audiobookshelf_contract\s+([a-z0-9-]+)/).flatten
   expected_modes = %w[
     run inactive-admin-refusal duplicate-admin-api-refusal
     duplicate-library-create duplicate-library-verify duplicate-library-assert-output
@@ -765,18 +779,17 @@ when "authentication-budget-self-test"
   ]
   fail_contract("Audiobookshelf integration contract call sequence differs") unless contract_modes == expected_modes
 
-  tagged_role_calls = integration.scan(/run_play --tags audiobookshelf/).length
-  check_role_calls = integration.scan(/run_play --tags audiobookshelf --check --diff/).length
-  verify_role_calls = integration.scan(/^\s*if run_audiobookshelf_verify_only/).length
+  tagged_role_calls = controller.scan(/run_play --tags audiobookshelf/).length
+  check_role_calls = controller.scan(/run_play --tags audiobookshelf --check --diff/).length
+  verify_role_calls = controller.scan(/^\s*if run_audiobookshelf_verify_only/).length
   fail_contract("Audiobookshelf integration role call sequence differs") unless
     tagged_role_calls == 7 && check_role_calls == 2 && verify_role_calls == 4
   fail_contract("Audiobookshelf integration session cleanup lifecycle differs") unless
-    integration.include?("run_audiobookshelf_contract authentication-session-cleanup") &&
-      integration.include?("trap cleanup_integration_on_exit EXIT") &&
-      integration.include?("trap 'exit 130' HUP INT TERM") &&
-      integration.include?('cleanup_sandbox "$sandbox"')
+    controller.include?("run_audiobookshelf_contract authentication-session-cleanup") &&
+      launcher.include?("trap cleanup_integration_on_exit EXIT") &&
+      launcher.include?("trap 'exit 130' HUP INT TERM") &&
+      launcher.include?('cleanup_sandbox "$sandbox"')
 
-  repo_root = Pathname.new(ENV.fetch("PLATFORM_REPO_ROOT"))
   main_tasks = PolicySupport.static_role_tasks(repo_root.join("roles/audiobookshelf/tasks/main.yml"))
   managed_tasks = YAML.safe_load_file(repo_root.join("roles/audiobookshelf/tasks/managed_users.yml"))
   auth_model = exact_role_auth_model(main_tasks, managed_tasks)
@@ -786,7 +799,7 @@ when "authentication-budget-self-test"
   managed_user_count = generated_audiobookshelf_user_count(
     repo_root.join("tests/generate-ephemeral-vault.sh").read
   )
-  baseline_runs = exact_baseline_role_runs(integration)
+  baseline_runs = exact_baseline_role_runs(controller)
   normal_role_logins = auth_model.fetch(:reconcile_admin) +
                        auth_model.fetch(:managed_per_user) * managed_user_count
   check_role_logins = auth_model.fetch(:check_admin)

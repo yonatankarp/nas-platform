@@ -78,6 +78,7 @@ FIXTURE_FILES = %w[
   services/audiobookshelf/compose.mac.yml
   inventory/group_vars/all/main.yml
   tests/integration.sh
+  tests/integration_controller.sh
   tests/generate-ephemeral-vault.sh
   tests/policy_support.rb
   tests/contracts/audiobookshelf-runtime.rb
@@ -100,7 +101,7 @@ STATIC_ARGUMENTS = %w[
   roles/audiobookshelf/defaults/main.yml
   roles/audiobookshelf/meta/argument_specs.yml
   roles/audiobookshelf/templates/env.j2
-  tests/integration.sh
+  tests/integration_controller.sh
   inventory/group_vars/all/main.yml
   tests/contracts/audiobookshelf-runtime.rb
 ].freeze
@@ -416,7 +417,7 @@ STATIC_ROWS = [
   {
     name: "an integration marker that stopped being asserted",
     break: lambda { |root|
-      edit_text(root, "tests/integration.sh") do |source|
+      edit_text(root, "tests/integration_controller.sh") do |source|
         source.gsub("AUDIOBOOKSHELF_DRIFT_REPAIRED", "ABSENT_DERIAPER_TFIRD_FLEHSKOOBOIDUA")
       end
     },
@@ -561,7 +562,7 @@ RUNTIME_ROWS = [
     name: "a contract mode dropped from the integration lane",
     mode: "authentication-budget-self-test",
     break: lambda { |root|
-      edit_text(root, "tests/integration.sh") do |source|
+      edit_text(root, "tests/integration_controller.sh") do |source|
         source.sub(/^(\s*)run_audiobookshelf_contract seed-progress/, '\1run_audiobookshelf_contract run')
       end
     },
@@ -571,7 +572,7 @@ RUNTIME_ROWS = [
     name: "an extra role run in the integration lane",
     mode: "authentication-budget-self-test",
     break: lambda { |root|
-      edit_text(root, "tests/integration.sh") do |source|
+      edit_text(root, "tests/integration_controller.sh") do |source|
         source.sub(/^(\s*)(run_play --tags audiobookshelf\n)/) { "#{$1}#{$2}#{$1}#{$2}" }
       end
     },
@@ -1079,7 +1080,7 @@ PROGRAM_MUTATIONS = [
   {
     label: "the session cleanup lifecycle check",
     program: :runtime,
-    from: 'integration.include?("run_audiobookshelf_contract authentication-session-cleanup") &&',
+    from: 'controller.include?("run_audiobookshelf_contract authentication-session-cleanup") &&',
     to: "true ||",
     rows: ["the integration lane losing its cleanup trap"]
   },

@@ -22,6 +22,10 @@ failures = []
 beszel_contract_path = File.join(ROOT, "tests", "contracts", "beszel.sh")
 beszel_contract = File.file?(beszel_contract_path) ? File.read(beszel_contract_path) : ""
 harness = File.read(File.join(ROOT, "tests", "integration.sh"))
+# The launcher is tests/integration.sh; the program it runs in the controller
+# container is tests/integration_controller.sh. Every property below is read
+# from whichever of the two holds the code it polices.
+controller = File.read(File.join(ROOT, "tests", "integration_controller.sh"))
 
 # Identity reads must be server-filtered and retain totals so the role can refuse
 # an identity result that exceeds the complete 500-record response page.
@@ -201,7 +205,7 @@ check(failures, beszel_contract.include?("URI.encode_www_form") &&
                 !beszel_contract.include?("skipTotal=1"),
       "Beszel contract must use complete encoded identity filters and enforce system ownership")
 %w[sentinel-user sentinel-password sentinel-query-key].each do |sentinel|
-  check(failures, harness.include?(sentinel),
+  check(failures, controller.include?(sentinel),
         "integration must test redaction of arbitrary webhook sentinel #{sentinel}")
 end
 

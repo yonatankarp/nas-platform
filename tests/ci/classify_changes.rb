@@ -131,6 +131,7 @@ module ClassifyChanges
     tests/generate-ephemeral-vault.sh
     tests/integration.Dockerfile
     tests/integration.sh
+    tests/integration_controller.sh
     tests/integration_controller_lib.sh
     tests/integration_lock.sh
     tests/mac/generate-immich-fixture-vars.rb

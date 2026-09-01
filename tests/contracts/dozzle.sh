@@ -26,7 +26,9 @@ defaults=$repo_dir/roles/dozzle/defaults/main.yml
 env_template=$repo_dir/roles/dozzle/templates/env.j2
 deployment_inputs=$repo_dir/roles/deployment_bundle/tasks/inputs.yml
 deployment_bundle=$repo_dir/roles/deployment_bundle/tasks/main.yml
-integration=$repo_dir/tests/integration.sh
+# The five scenario markers this contract insists the integration lane prints
+# are spelled in the controller program, not in the launcher that starts it.
+integration=$repo_dir/tests/integration_controller.sh
 mac_drift=$repo_dir/tests/mac/hooks/drift/20-dozzle.sh
 mac_verify=$repo_dir/tests/mac/hooks/verify/20-dozzle.sh
 

@@ -29,8 +29,15 @@ harness = File.read(File.join(ROOT, "tests", "integration.sh"))
 controller_library = File.read(
   File.join(ROOT, "tests", "integration_controller_lib.sh")
 )
+# So is the controller itself. tests/integration.sh is the launcher --
+# the sandbox, the lock, the mounts, the environment it hands across --
+# and tests/integration_controller.sh is the program that runs inside the
+# container. Each property below is asserted against whichever of the two
+# holds the code it polices, and the controller's spellings carry no
+# backslashes because it is a program now rather than text in an argument.
+controller = File.read(File.join(ROOT, "tests", "integration_controller.sh"))
 check(failures,
-      harness.include?(". /repo/tests/integration_controller_lib.sh") &&
+      controller.include?(". /repo/tests/integration_controller_lib.sh") &&
         harness.include?('-e PLATFORM_INTEGRATION_SANDBOX="$sandbox"') &&
         harness.include?(
           '-e PLATFORM_INTEGRATION_PROJECT_NAMESPACE="$integration_project_namespace"'
@@ -42,55 +49,23 @@ check(failures,
       "the controller must source its launcher library and hand it the sandbox " \
       "it deploys into")
 
-# The controller script is one double-quoted argument to `sh -eu -c`, built by
-# a shell that is still parsing. An unescaped quote inside it closes the
-# argument, and the next shell metacharacter then terminates the whole
-# `docker run` — silently truncating the script and starting the container with
-# no operands. That is invisible to `sh -n` and to every static read of the
-# file, and it broke every suite once before, so walk the quoting the way the
-# shell does and require that nothing escapes the argument.
-controller_regions = []
-controller_state = "DQ"
-controller_offset = harness.index('sh -eu -c "')
-check(failures, !controller_offset.nil?,
-      "tests/integration.sh must invoke the controller through sh -eu -c")
-if controller_offset
-  controller_offset += 'sh -eu -c "'.length
-  controller_line = harness[0, controller_offset].count("\n") + 1
-  controller_region = nil
-  while controller_offset < harness.length
-    character = harness[controller_offset]
-    if controller_state != "SQ" && character == "\\"
-      controller_line += 1 if harness[controller_offset + 1] == "\n"
-      controller_offset += 2
-      next
-    end
-    case [controller_state, character]
-    in ["DQ", '"'] then controller_state = "OUT"
-                        controller_region = [controller_line, +""]
-    in ["OUT", '"'] then controller_state = "DQ"
-                         controller_regions << controller_region if controller_region
-                         controller_region = nil
-    in ["OUT", "'"] then controller_state = "SQ"
-    in ["SQ", "'"] then controller_state = "OUT"
-    else
-      controller_region[1] << character if controller_state != "DQ" && controller_region
-    end
-    controller_line += 1 if character == "\n"
-    controller_offset += 1
-  end
-  # Only the final line may leave the quoted argument: that is where the
-  # operands `integration-run "$playbook" "$@"` are appended.
-  final_line = harness.count("\n") + (harness.end_with?("\n") ? 0 : 1)
-  escaped = controller_regions.reject { |line, _text| line >= final_line }
-                              .select { |_line, text| text.match?(/[\s;&|()<>]/) }
-  check(failures, escaped.empty?,
-        "controller script escapes its quoted argument at " \
-        "#{escaped.map { |line, text| "line #{line}: #{text.inspect}" }.join(', ')}; " \
-        "escape the inner quotes so the whole script stays one argument")
-  check(failures, controller_state == "OUT",
-        "controller script argument is never closed")
-end
+# The controller used to be one double-quoted argument to `sh -eu -c`,
+# built by a shell that was still parsing. An unescaped quote inside it
+# closed the argument and the next metacharacter terminated the whole
+# `docker run`, silently truncating the program -- invisible to `sh -n`
+# and to every static read of the file, and it broke every suite once.
+# That failure mode goes with the argument: the controller is a file the
+# container runs. What is left to assert is that it never becomes an
+# argument again, and that the launcher runs the file it claims to.
+check(failures, !harness.include?(%(sh -eu -c ")),
+      "tests/integration.sh must not paste the controller back into an " \
+      "sh -c argument, where no syntax check and no linter can read it")
+check(failures,
+      harness.include?(
+        %(sh /repo/tests/integration_controller.sh "$playbook" "$@")
+      ),
+      "tests/integration.sh must run the controller as a file, handing " \
+      "it the playbook and the remaining arguments as argv")
 dozzle_contract = File.read(File.join(ROOT, "tests", "contracts", "dozzle.sh"))
 check(failures, dozzle_contract.include?('exec ruby - "$mode" "$@"'),
       "Dozzle contract must pass its default verify mode to the dynamic probe")
@@ -101,9 +76,9 @@ mac_path_fixture_tasks = flatten_tasks(
     .flat_map { |play| Array(play["tasks"]) }
 )
 mac_path_fixture_strings = task_strings(mac_path_fixture_tasks)
-check(failures, harness.include?("MAC_PATH_CANONICAL") &&
-                harness.include?("MAC_PATH_LEXICAL_REFUSED") &&
-                harness.include?("mac_inventory_path_test.yml") &&
+check(failures, controller.include?("MAC_PATH_CANONICAL") &&
+                controller.include?("MAC_PATH_LEXICAL_REFUSED") &&
+                controller.include?("mac_inventory_path_test.yml") &&
                 mac_path_fixture_tasks.any? do |task|
                   task.dig("ansible.builtin.include_role", "tasks_from") == "target"
                 end &&
@@ -112,14 +87,18 @@ check(failures, harness.include?("MAC_PATH_CANONICAL") &&
                 end,
       "integration must prove canonical Mac paths pass target validation")
 ["IDEMPOTENT", "CHECK MODE"].each do |property|
-  check(failures, harness.include?(property), "integration harness must assert #{property}")
+  check(failures, controller.include?(property),
+        "integration harness must assert #{property}")
 end
 # `producer | tee log` reports tee's status, and every script here is #!/bin/sh
 # with no pipefail available, so a play that died reached its recap grep looking
 # merely quiet. Redirect and read the producer's own status instead.
 check(failures,
-      !harness.match?(/\|\s*tee\b/) && !controller_library.match?(/\|\s*tee\b/) &&
-        harness.include?('run_selected_play "\$@" >/tmp/second.txt 2>&1 || idempotence_status=\$?') &&
+      !harness.match?(/\|\s*tee\b/) && !controller.match?(/\|\s*tee\b/) &&
+        !controller_library.match?(/\|\s*tee\b/) &&
+        controller.include?(
+          "run_selected_play $@ >/tmp/second.txt 2>&1 || idempotence_status=$?"
+        ) &&
         controller_library.include?(
           "run_play --tags immich >/tmp/immich-clean-restore-second.txt 2>&1 ||"
         ),
@@ -129,9 +108,9 @@ check(failures,
         harness.include?('for pull_candidate in $prepull_targets; do') &&
         harness.include?('"$repo_dir/services/$service_dir/compose.yml" || exit 1'),
       "integration must fail the pre-pull when enumerating its images fails")
-first_converge = harness.index("\n    run_play\n")
-contract_execution = harness.index("ruby /repo/tests/run_contracts.rb --execute")
-idempotence_phase = harness.index("=== phase 2: asserting idempotence ===")
+first_converge = controller.index("\n    run_play\n")
+contract_execution = controller.index("ruby /repo/tests/run_contracts.rb --execute")
+idempotence_phase = controller.index("=== phase 2: asserting idempotence ===")
 check(failures, first_converge && contract_execution && idempotence_phase &&
                 first_converge < contract_execution && contract_execution < idempotence_phase,
       "integration must execute registered contracts after converge and before idempotence")
@@ -139,9 +118,10 @@ contract_abi_names = %w[
   PLATFORM_KIND PLATFORM_CONTRACT_VAULT_FILE PLATFORM_DOCKER_ROOT
   PLATFORM_MEDIA_ROOT PLATFORM_FIXTURE_ROOT PLATFORM_REPORT_ROOT
 ]
-contract_environment_start = contract_execution && harness.rindex("\n      env \\", contract_execution)
+contract_environment_start = contract_execution &&
+                             controller.rindex("\n      env \\", contract_execution)
 contract_environment = if contract_environment_start && contract_execution
-                         harness[contract_environment_start..contract_execution]
+                         controller[contract_environment_start..contract_execution]
                        else
                          ""
                        end
@@ -195,7 +175,7 @@ check(failures, verify_only_bodies.length >= 6 &&
 # reduce to the sandbox namespace: any other project is a stack sandbox cleanup
 # does not own.
 negative_project_names = (
-  harness.scan(/-e platform_project_name=([^\s\\]+)/).flatten.reject do |value|
+  (harness + controller).scan(/-e platform_project_name=([^\s\\]+)/).flatten.reject do |value|
     value == "\\\"$integration_project_namespace\\\""
   end +
   controller_library.scan(/-e platform_project_name=(\S+)/).flatten.reject do |value|
@@ -469,34 +449,42 @@ check(failures, harness.match?(/^ruby_package='ruby~\d+\.\d+\.\d+'$/) &&
                 harness.match?(/^curl_package='curl~\d+\.\d+\.\d+'$/),
       "integration must pin distro ruby and curl packages")
 check(failures,
-      harness.include?("/repo/tests/generate-ephemeral-vault.sh") &&
-      harness.include?("--output \\\"\\$vault_file\\\"") &&
-        harness.include?("--password-file") &&
+      controller.include?("/repo/tests/generate-ephemeral-vault.sh") &&
+      controller.include?(%(--output "$vault_file")) &&
+        controller.include?("--password-file") &&
         run_play_body.include?(%(--vault-password-file "$vault_password_file")) &&
         run_play_body.include?(%(-e @"$vault_file")) &&
         run_play_body.include?(%(-e platform_vault_file="$vault_file")) &&
-        harness.include?("TMPDIR='$sandbox' /repo/tests/generate-ephemeral-vault.sh --cleanup") &&
-        contract_environment.include?("PLATFORM_CONTRACT_VAULT_FILE=\\\"\\$vault_file\\\"") &&
-        !harness.include?("sandbox-vault.yml") &&
-        !harness.include?("random_password()") &&
-        !harness.include?("ntfy_token()"),
+        controller.include?(
+          %(TMPDIR="$sandbox" /repo/tests/generate-ephemeral-vault.sh --cleanup)
+        ) &&
+        contract_environment.include?(%(PLATFORM_CONTRACT_VAULT_FILE="$vault_file")) &&
+        !controller.include?("sandbox-vault.yml") &&
+        !controller.include?("random_password()") &&
+        !controller.include?("ntfy_token()"),
       "integration must consume the ephemeral encrypted vault without duplicate secret authoring")
 check(failures,
-      harness.include?('/repo/tests/mac/generate-immich-fixture-vars.rb') &&
-        harness.include?('ANSIBLE_VAULT_PASSWORD_FILE=\"\$vault_password_file\" ansible-vault view') &&
-        harness.include?('fixture_vars_file=\"\$fixture_input_directory/immich-fixture-vars.yml\"') &&
+      controller.include?('/repo/tests/mac/generate-immich-fixture-vars.rb') &&
+        controller.include?(
+          %(ANSIBLE_VAULT_PASSWORD_FILE="$vault_password_file" ansible-vault view)
+        ) &&
+        controller.include?(
+          %(fixture_vars_file="$fixture_input_directory/immich-fixture-vars.yml")
+        ) &&
         controller_library.include?('PLATFORM_MAC_FIXTURE_VARS_FILE="$fixture_vars_file"') &&
-        harness.include?('install -m 0600 /dev/null \"\$fixture_vars_file\"') &&
-        harness.include?('chmod 0600 \"\$fixture_vars_file\"') &&
-        harness.include?('rm -f \"\$fixture_vault_view\"') &&
-        harness.include?('trap cleanup_fixture_vault_view EXIT'),
+        controller.include?(%(install -m 0600 /dev/null "$fixture_vars_file")) &&
+        controller.include?(%(chmod 0600 "$fixture_vars_file")) &&
+        controller.include?(%(rm -f "$fixture_vault_view")) &&
+        controller.include?('trap cleanup_fixture_vault_view EXIT'),
       "integration must generate and protect the Immich fixture policy")
 check(failures,
       harness.include?('controller_mount=$sandbox/repo') &&
         harness.include?('git clone --quiet --no-local --no-checkout "$repo_dir" "$controller_mount"') &&
         harness.include?('git -C "$controller_mount" checkout -q --detach "$expected_release_id"') &&
         harness.include?('-v "$controller_mount":/repo') &&
-        harness.include?('install -m 0600 \"\$vault_file\" /repo/inventory/group_vars/all/vault.yml') &&
+        controller.include?(
+          %(install -m 0600 "$vault_file" /repo/inventory/group_vars/all/vault.yml)
+        ) &&
         !harness.include?('controller_mount=$repo_dir'),
       "integration must isolate normal and linked-worktree controllers before installing its ephemeral vault")
 lock_acquire_index = harness.index("acquire_integration_lock")

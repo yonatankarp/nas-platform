@@ -95,6 +95,7 @@ BASE_FIXTURE_PATHS = %w[
   tests/ci/classify_changes.rb
   tests/integration.Dockerfile
   tests/integration.sh
+  tests/integration_controller.sh
   tests/integration_controller_lib.sh
   tests/integration_lock.sh
   tests/integration_lock_test.sh
@@ -538,6 +539,25 @@ def mutate_yaml_file(root, relative_path)
   document = YAML.safe_load_file(path)
   yield document
   File.write(path, YAML.dump(document))
+end
+
+# Text mutation with the match count asserted, the guard
+# tests/contract_structure_mutation_test.rb has had since it was written and this
+# harness never learned. `sub` and `gsub` return the subject unchanged when
+# nothing matches -- no exception -- so a row whose subject text moved plants
+# nothing, the policy set correctly passes a tree with no defect in it, and the
+# row reports "policy unexpectedly passed" while looking like a real check. A
+# count that drifted upward is the other half: the row would mutate somewhere it
+# never meant to. `occurrences` is stated per call site rather than fixed at one
+# because a row may legitimately have to delete every occurrence of a line.
+def mutate_text(root, relative_path, pattern, replacement, occurrences: 1)
+  path = File.join(root, relative_path)
+  body = File.read(path)
+  found = body.scan(pattern).length
+  raise "#{relative_path}: expected #{occurrences} match(es) of #{pattern.inspect}, found #{found}" unless
+    found == occurrences
+
+  File.write(path, occurrences == 1 ? body.sub(pattern, replacement) : body.gsub(pattern, replacement))
 end
 
 def service(manifest, name)
