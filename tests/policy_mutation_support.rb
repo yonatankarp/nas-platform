@@ -95,6 +95,7 @@ BASE_FIXTURE_PATHS = %w[
   tests/ci/classify_changes.rb
   tests/integration.Dockerfile
   tests/integration.sh
+  tests/integration_controller.sh
   tests/integration_controller_lib.sh
   tests/integration_lock.sh
   tests/integration_lock_test.sh

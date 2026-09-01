@@ -1132,31 +1132,34 @@ expect_failure(failures, "CI drops the policy mutation job",
 end
 
 expect_failure(failures, "integration omits contract execution", "integration must execute registered contracts",
-               detected_by: %i[integration]) do |root|
-  path = File.join(root, "tests", "integration.sh")
+               detected_by: %i[DERIVE1]) do |root|
+  path = File.join(root, "tests", "integration_controller.sh")
   File.write(path, File.read(path).sub(/^\s*ruby \/repo\/tests\/run_contracts\.rb --execute\n/, ""))
 end
 
-expect_failure(failures, "controller script loses its quoting",
-               "controller script escapes its quoted argument",
-               detected_by: %i[integration]) do |root|
-  # Unescape one condition's inner quotes exactly as the regression did: the
-  # argument closes early and the `;` that follows terminates the whole
-  # `docker run`, so the container starts with no operands at all.
+expect_failure(failures, "controller pasted back into an argument",
+               "must not paste the controller back into an sh -c argument",
+               detected_by: %i[DERIVE2]) do |root|
+  # The escaped-argument form is what made the controller unreachable by sh -n
+  # and shellcheck, and it cost a truncated `docker run` once: an unescaped
+  # quote closed the argument and the `;` after it ended the whole command, so
+  # the container started with no operands. Plant the shape, not the quoting
+  # bug -- with the program in a file of its own the bug has nowhere to live.
   path = File.join(root, "tests", "integration.sh")
   body = File.read(path)
   broken = body.sub(
-    'if [ \\"\\$(cat \\"\\$existing_probe/user-data\\")\\" != sentinel ]; then',
-    'if [ "$(cat "$existing_probe/user-data")" != sentinel ]; then'
+    %(  sh /repo/tests/integration_controller.sh "$playbook" "$@"),
+    %(  sh -eu -c "\n    exec /repo/tests/integration_controller.sh\n  " ) +
+    %(integration-run "$playbook" "$@")
   )
-  raise "controller quoting mutation did not apply" if broken == body
+  raise "controller argument mutation did not apply" if broken == body
 
   File.write(path, broken)
 end
 
 expect_failure(failures, "integration omits contract ABI", "integration must set the contract environment ABI",
-               detected_by: %i[integration]) do |root|
-  path = File.join(root, "tests", "integration.sh")
+               detected_by: %i[DERIVE3]) do |root|
+  path = File.join(root, "tests", "integration_controller.sh")
   body = File.read(path)
   source = body.scan(/^\s*PLATFORM_REPORT_ROOT=.*\n/).last
   File.write(path, replace_last(body, source, ""))
@@ -1989,9 +1992,10 @@ expect_failure(failures, "integration lock made non-atomic",
   File.write(path, File.read(path).sub('mkdir "$lock_candidate"', "true"))
 end
 
-# The three play bindings are spelled as plain shell in the launcher library;
-# the contract ABI is still written in the controller's own dispatch, where an
-# inner quote is escaped. Each mutation deletes the binding where it lives.
+# The three play bindings are spelled as plain shell in the launcher library,
+# and the contract ABI in the controller's own dispatch -- also plain shell now
+# that the controller is a file. Each mutation deletes the binding where it
+# lives.
 {
   "vault password file" => ["tests/integration_controller_lib.sh",
                             '--vault-password-file "$vault_password_file"'],
@@ -1999,8 +2003,8 @@ end
                              '-e @"$vault_file"'],
   "encrypted artifact path" => ["tests/integration_controller_lib.sh",
                                 '-e platform_vault_file="$vault_file"'],
-  "contract vault ABI" => ["tests/integration.sh",
-                           'PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\"']
+  "contract vault ABI" => ["tests/integration_controller.sh",
+                           'PLATFORM_CONTRACT_VAULT_FILE="$vault_file"']
 }.each do |property, (relative_path, source)|
   expect_failure(failures, "integration #{property} removed",
                  "integration must consume the ephemeral encrypted vault without duplicate secret authoring",
