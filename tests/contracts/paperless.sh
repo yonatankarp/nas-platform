@@ -593,12 +593,17 @@ refuse("managed mail rule must be enabled and non-destructive") unless
   rule.fetch("action") == 3 && rule.fetch("consumption_scope") == 1
 RUBY
 
-grep -qF 'run_paperless_contract seed' "$repo_dir/tests/integration.sh" ||
+# Two of these three subjects live in the controller program that
+# tests/integration.sh runs inside the container; the fixture pre-seed is the
+# launcher's own work, on the Docker host, before the container starts. Reading
+# each from the file that actually spells it is what keeps all three able to
+# fail.
+grep -qF 'run_paperless_contract seed' "$repo_dir/tests/integration_controller.sh" ||
   fail_contract 'integration does not exercise Paperless document fixtures'
 grep -qF '"$repo_dir/tests/contracts/paperless.sh" seed-fixture-only' \
   "$repo_dir/tests/integration.sh" ||
   fail_contract 'integration does not prepare Paperless fixtures on the Docker host'
-grep -qF 'run_paperless_snapshot drill' "$repo_dir/tests/integration.sh" ||
+grep -qF 'run_paperless_snapshot drill' "$repo_dir/tests/integration_controller.sh" ||
   fail_contract 'integration does not exercise coordinated Paperless recovery'
 grep -qF 'run("docker", "stop", WEBSERVER, REDIS)' "$snapshot" ||
   fail_contract 'Paperless snapshot does not quiesce writers'
