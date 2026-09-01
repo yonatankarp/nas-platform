@@ -744,7 +744,11 @@ mutated_shell = shell_source.sub('$1', "{{ immich_restore_backup_filename }}")
 refuse("filename-injection mutation was not detected") unless
   mutated_shell.include?("immich_restore_backup_filename")
 
-contract_text = File.read(File.join(ROOT, "tests", "contracts", "immich.sh"))
+# The two clean-restore modes are dispatched by the contract's runtime half,
+# which #147 moved out of a heredoc in tests/contracts/immich.sh and into
+# tests/contracts/immich-runtime.rb. Reading the wrapper for them would now find
+# nothing and report a lane that is in fact still wired.
+contract_text = File.read(File.join(ROOT, "tests", "contracts", "immich-runtime.rb"))
 integration_text = File.read(File.join(ROOT, "tests", "integration.sh"))
 # The launchers the Immich lane drives live in the controller's library, where
 # they are ordinary shell rather than escaped text inside the `sh -c` argument.

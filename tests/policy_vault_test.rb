@@ -481,15 +481,15 @@ REDACTION_ASSERTION_EXCEPTIONS = {
   ["roles/downloaders/tasks/verify.yml", "Verify SABnzbd owned settings and category paths"] =>
     "tests/media_acquisition_reconciliation_core_test.rb",
   ["roles/immich/tasks/configured_password.yml", "Require unique desired configured Immich identities"] =>
-    "tests/contracts/immich.sh",
+    "tests/contracts/immich-static.rb",
   ["roles/immich/tasks/configured_password.yml",
-   "Require a complete configured-password Immich user listing"] => "tests/contracts/immich.sh",
+   "Require a complete configured-password Immich user listing"] => "tests/contracts/immich-static.rb",
   ["roles/immich/tasks/configured_password.yml",
-   "Require unique configured-password Immich target identifiers"] => "tests/contracts/immich.sh",
+   "Require unique configured-password Immich target identifiers"] => "tests/contracts/immich-static.rb",
   ["roles/immich/tasks/configured_password.yml",
-   "Require a complete authoritative configured-password user listing"] => "tests/contracts/immich.sh",
+   "Require a complete authoritative configured-password user listing"] => "tests/contracts/immich-static.rb",
   ["roles/immich/tasks/configured_password.yml",
-   "Require unique authoritative configured-password target identifiers"] => "tests/contracts/immich.sh",
+   "Require unique authoritative configured-password target identifiers"] => "tests/contracts/immich-static.rb",
   ["roles/paperless_ngx/tasks/main.yml", "Require the installed Paperless Gmail credential fingerprint"] =>
     "tests/contracts/paperless.sh",
   ["roles/arr/tasks/reconciliation_fingerprints.yml",
